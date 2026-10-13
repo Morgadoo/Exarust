@@ -2361,6 +2361,7 @@ dependencies = [
  "bevy",
  "exa_assets",
  "exa_game",
+ "exa_world",
 ]
 
 [[package]]

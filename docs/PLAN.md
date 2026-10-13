@@ -120,7 +120,13 @@ checked outside the engine through exporters.
 **M1 "asset viewer":** `exa-tool export-gltf` opens any prop, weapon,
 character or level in Blender, and `corpus` reports full coverage.
 
-### Phase 2 — Static world
+### Phase 2 — Static world (in progress)
+
+Done (change `add-level-viewer`): level props and grid header decoded;
+models, materials and BC textures converted to Bevy; `exarust level <name>`
+shows a level's props and lights with a fly camera; `exarust model`.
+Remaining: walls and floors from the tile grid, terrain, sectors/portals,
+`exanima://` asset source, streaming.
 
 - `exa_assets`: `exanima://<pack>/<entry>` Bevy asset source, asset loaders
   for meshes, materials and images, direct upload of BC textures with mip
@@ -259,9 +265,9 @@ holds the runtime and the documentation of formats and behaviour.
 1. ✅ OpenSpec change `add-static-mesh-decoding`: static meshes, material
    texture layers, `exa-tool export-gltf`, `exa-tool corpus meshes`. Waiting
    on a visual mirroring check against the running game.
-2. Level grid (`3DED`), level sections and set pieces, giving `arena.rfc` as
-   a glTF (next change).
-3. Skeleton and motions (`.rsq`) plus skinned meshes (`A4` skin streams,
+2. ✅ Level props and grid header in Bevy (`exarust level`).
+3. Tile-grid builder: walls, floors and ceilings from the sets (next change).
+4. Skeleton and motions (`.rsq`) plus skinned meshes (`A4` skin streams,
    `*base.rfc`).
 4. `exa-tool corpus` coverage report.
 5. `exa_assets` asset source and loaders, then a Bevy level viewer (M2).

@@ -56,7 +56,7 @@ pub fn meshes(game: &GameData) -> Result<()> {
                 match &node.body {
                     NodeBody::Mesh(_) => t.meshes += 1,
                     NodeBody::Instance(_) => t.instances += 1,
-                    NodeBody::NotMesh => t.other_nodes += 1,
+                    NodeBody::NotMesh | NodeBody::Light(_) => t.other_nodes += 1,
                     NodeBody::Invalid(err) => {
                         t.invalid += 1;
                         note(
@@ -140,4 +140,74 @@ fn generalise(reason: &str) -> String {
         }
     }
     out
+}
+
+/// `exa-tool corpus levels`: grids and props of every level file.
+pub fn levels(game: &GameData) -> Result<()> {
+    let Some(resource) = game.pack(exa_rpk::PackKind::Resource) else {
+        return Ok(());
+    };
+    let objlib = game.pack(exa_rpk::PackKind::Objlib);
+    let (mut levels, mut grids, mut props, mut resolved, mut errors) = (0, 0, 0, 0, 0);
+    let mut missing: BTreeMap<String, usize> = BTreeMap::new();
+    println!(
+        "{:<18} {:>9} {:>8} {:>7} {:>9}",
+        "level", "grid", "sets w/f", "props", "resolved"
+    );
+    for e in resource.entries() {
+        let b = resource.bytes(e);
+        if !matches!(FileKind::detect(b), FileKind::ChunkTree) {
+            continue;
+        }
+        let Ok(scene) = Scene::parse(b) else { continue };
+        if scene.grid.is_none() && scene.props.is_empty() {
+            continue;
+        }
+        levels += 1;
+        errors += scene.level_errors.len();
+        for err in &scene.level_errors {
+            println!("  {}: {err}", e.name);
+        }
+        let here = scene
+            .props
+            .iter()
+            .filter(|p| {
+                let found = objlib.is_some_and(|o| o.find(&p.object).is_some());
+                if !found {
+                    *missing.entry(p.object.clone()).or_default() += 1;
+                }
+                found
+            })
+            .count();
+        props += scene.props.len();
+        resolved += here;
+        let (grid, sets) = match &scene.grid {
+            Some(g) => {
+                grids += 1;
+                (
+                    format!("{}x{}", g.width, g.height),
+                    format!("{}/{}", g.wall_sets.len(), g.floor_sets.len()),
+                )
+            }
+            None => ("-".into(), "-".into()),
+        };
+        println!(
+            "{:<18} {:>9} {:>8} {:>7} {:>9}",
+            e.name,
+            grid,
+            sets,
+            scene.props.len(),
+            here
+        );
+    }
+    println!(
+        "\n{levels} levels, {grids} grids, {props} props, {resolved} resolved in Objlib, {errors} section errors"
+    );
+    if !missing.is_empty() {
+        println!("missing objects:");
+        for (name, n) in missing.iter().take(20) {
+            println!("  {n:>5}  {name}");
+        }
+    }
+    Ok(())
 }

@@ -10,6 +10,7 @@
 //! Geometry is returned in metres, right-handed and Y-up. The stored units are
 //! centimetres in the same handedness, so the conversion is a uniform scale.
 
+use crate::level::{self, LevelGrid, Prop};
 use crate::material::Material;
 use crate::{Error, Result};
 
@@ -21,6 +22,7 @@ const CENTIMETRES_TO_METRES: f32 = 0.01;
 pub const NODE_LIST: u32 = 0x3D00_0000;
 pub const MATERIAL_LIST: u32 = 0xBA00;
 pub const NODE_MESH: u32 = 0x3D03;
+pub const NODE_LIGHT: u32 = 0x3D06;
 const TOPOLOGY: u32 = 0x3DC0;
 const TRIANGLES: u32 = 0x3DC1;
 
@@ -68,6 +70,12 @@ pub struct Scene {
     pub nodes: Vec<Node>,
     /// Materials defined in the file, by name; undecodable payloads keep the error.
     pub materials: Vec<(String, std::result::Result<Material, String>)>,
+    /// Tile grid, in dungeon level files.
+    pub grid: Option<LevelGrid>,
+    /// Objects placed from the object library, in level files.
+    pub props: Vec<Prop>,
+    /// Level sections that could not be decoded.
+    pub level_errors: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -87,12 +95,28 @@ pub struct Node {
 #[derive(Debug, Clone)]
 pub enum NodeBody {
     Mesh(Mesh),
+    Light(Light),
     /// The node reuses another object's data; nothing else is stored.
     Instance(u32),
     /// A node kind that is not a mesh (lights, plain nodes, …).
     NotMesh,
     /// A mesh record that could not be decoded.
     Invalid(String),
+}
+
+/// An omni light (`0x3D06`). Values are kept raw where their meaning is
+/// only partly established.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Light {
+    pub flags: u32,
+    /// Linear RGB.
+    pub color: [f32; 3],
+    /// Two factors whose product scales the light (`0.1 × 60`, `1.0 × 1.3`, …).
+    pub multiplier: f32,
+    pub intensity: f32,
+    /// Radius of influence in metres.
+    pub radius: f32,
+    pub unknown: [f32; 2],
 }
 
 /// A triangle mesh with unified vertices.
@@ -135,9 +159,22 @@ impl Scene {
         let version = c.u16()?;
         let mut nodes = Vec::new();
         let mut materials = Vec::new();
+        let mut grid = None;
+        let mut props = Vec::new();
+        let mut level_errors = Vec::new();
         while c.remaining() >= 8 {
             let (tag, mut chunk) = c.chunk()?;
-            if tag == MATERIAL_LIST {
+            if tag == level::GRID {
+                match level::read_grid(chunk.b) {
+                    Ok(g) => grid = Some(g),
+                    Err(e) => level_errors.push(format!("grid: {e}")),
+                }
+            } else if tag == level::PROPS {
+                match level::read_props(chunk.b) {
+                    Ok(p) => props.extend(p),
+                    Err(e) => level_errors.push(format!("props: {e}")),
+                }
+            } else if tag == MATERIAL_LIST {
                 if let Err(e) = read_materials(&mut chunk, &mut materials) {
                     materials.push((String::new(), Err(format!("material list: {e}"))));
                 }
@@ -154,6 +191,9 @@ impl Scene {
             version,
             nodes,
             materials,
+            grid,
+            props,
+            level_errors,
         })
     }
 
@@ -210,6 +250,11 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
             Ok(m) => NodeBody::Mesh(m),
             Err(e) => NodeBody::Invalid(e.to_string()),
         }
+    } else if kind == NODE_LIGHT {
+        match read_light(&mut c) {
+            Ok(l) => NodeBody::Light(l),
+            Err(e) => NodeBody::Invalid(e.to_string()),
+        }
     } else {
         NodeBody::NotMesh
     };
@@ -221,6 +266,24 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
         parent: (parent > 0).then_some(parent),
         transform,
         body,
+    })
+}
+
+fn read_light(c: &mut Cursor<'_>) -> Result<Light> {
+    let flags = c.u32()?;
+    let color = [c.f32()?, c.f32()?, c.f32()?];
+    c.skip(4)?;
+    let multiplier = c.f32()?;
+    let intensity = c.f32()?;
+    let radius = c.f32()? * CENTIMETRES_TO_METRES;
+    let unknown = [c.f32()?, c.f32()?];
+    Ok(Light {
+        flags,
+        color,
+        multiplier,
+        intensity,
+        radius,
+        unknown,
     })
 }
 

@@ -1,11 +1,11 @@
 # `exa_world`
 
-Levels: tile-grid dungeons built from wall/floor sets, terrain levels, object placement, sectors/portals, doors and triggers.
+Levels in the Bevy world.
 
-**Phase:** Phase 2 (see [`docs/PLAN.md`](../../docs/PLAN.md)). Status: skeleton.
+**Phase:** 2. Status: props, level scene nodes and lights spawn
+(`spawn_level`, `spawn_model`); walls/floors from the tile grid, terrain,
+sectors and portals are next (see [`docs/PLAN.md`](../../docs/PLAN.md)).
 
-## Scope
-
-- Load level `.rfc` (grid header, wall/floor set references, placed objects) and companion `.rft` terrain.
-- Instantiate modular pieces from `Resource.rpk` sets and `Objlib.rpk` props.
-- Sectors, portals and visibility; level transitions; save-game world state.
+- `spawn_model(commands, model, placement)`: a cached model with its node hierarchy; a placement replaces the root transform, as level props do.
+- `spawn_level(commands, loader, name)`: the level's own meshes and omni lights plus every prop from `Objlib.rpk`.
+- `point_light(light)`: the original omni light approximated as a Bevy `PointLight`.

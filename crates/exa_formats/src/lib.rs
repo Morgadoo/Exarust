@@ -7,6 +7,7 @@
 
 pub mod chunk;
 pub mod kind;
+pub mod level;
 pub mod material;
 pub mod rdb;
 pub mod rfc;

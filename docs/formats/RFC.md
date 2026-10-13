@@ -135,23 +135,61 @@ running game has not been checked yet.
 Textures pair with texture coordinates unchanged when images keep their
 stored (bottom-up) row order.
 
-## Level (`3DED`) — observed
+## Light node (`3D06`)
+
+Body after the node header: `u32 flags`, `f32 rgb[3]` (linear colour),
+`u32 ?`, then five `f32`: a multiplier and an intensity whose product scales
+the light (`0.1 × 60`, `1.0 × 1.3`), the radius in centimetres (630–1500),
+and two unidentified values (`0`, `0.5`/`1.0`). When `flags2 & 0x300 == 0x200`
+two more floats follow, and when `flags & 0x30000` is set, a skipped word and
+three floats. `exanima01` has 196 of these lights; arenas have one or two.
+
+## Level (`3DED`)
+
+Status: **verified** (REA on the loader; `exa-tool corpus levels` decodes all
+29 levels).
 
 Tile-grid dungeons are assembled from modular sets in `Resource.rpk`:
-`gews_*` (wall sets, `TGEWallSet`) and `gefs_*` (floor sets,
-`TGEFloorSet`).
+`gews_*` wall sets (`TGEWallSet`) and `gefs_*` floor sets (`TGEFloorSet`).
 
 ```
 u32  n_wall_sets;  char name[16] × n     "GEWS_UWA01"
 u32  n_floor_sets; char name[16] × n     "GEFS_WodPlA1"
-u32  grid_w, grid_h                      32, 32
-u32  ?                                   0
-u32  cell_size?                          600
-u8   cells[grid_w * grid_h][12]          per-cell wall/floor/flags
+u32  width, height                       32×32, 32×40, 64×64, 24×24
+u32  legacy_marker                       600 → planes B and C use an older bit layout (converted on load)
+u32  ?                                   600 in retail files
+u32  plane_a[width × height]             edges and corners
+u32  plane_b[width × height]
+u32  plane_c[width × height]
 ```
 
-Large outdoor-style levels (`arenao*`, `exanima05..08`) have a companion
-`.rft` terrain with the same base name.
+Plane A packs four 4-bit edge codes in the low 16 bits (top, left, bottom,
+right) and four corner codes in the high 16 bits. The engine fills borders
+with fixed values (`0x20010007` top row, `0x00120070` left column,
+`0x12007000` right column, `0x01200700` bottom row, distinct corner values)
+that rotate the codes one nibble per side; `7` is a solid wall edge. Planes B
+and C (floor and ceiling data) and the selection of set pieces are decoded in
+the grid-builder work.
+
+Set pieces are named `<prefix><type><sub><variant>`: prefix `+` main piece,
+`[` attachment; type `W` wall, `C` corner, `F` floor, `R` roof/ceiling,
+`T` trim; sub-types such as `CA` centre, `LF`/`RF` left/right, `DF` door
+frame, `IA`/`OA` inner/outer corner; a two-digit variant.
+
+## Props (`3DE10000`)
+
+`u32 count`, then one chunk per prop (`3DE10100`):
+
+```
+u32  flags
+char object[16]       an Objlib entry
+f32  matrix[12]       3×4 placement (cm); replaces the object's root transform
+u32  parent           1-based prop index, 0 = level root
+u32  ?
+sub-chunks            0x3DE0EC00, 0x3DE0ECAC, 0x3DE0ECDB (not decoded)
+```
+
+All 79 935 props in the 29 retail levels name existing Objlib objects.
 
 ## Level and set naming
 

@@ -1,11 +1,20 @@
 //! Exarust launcher.
 //!
-//! Today this opens the installation, lists its packs and shows one texture
-//! decoded from the original data ("first light"). Usage:
-//!
 //! ```text
-//! exarust [--game <dir>] [texture-name]
+//! exarust [--game <dir>] [options] level <name>          a level with its props and lights
+//! exarust [--game <dir>] [options] model <pack> <entry>  one model
+//! exarust [--game <dir>] [options] texture <name>        one texture (first light)
+//!
+//! options: --camera x,y,z,yaw,pitch   start pose (metres, degrees)
+//!          --screenshot <file.png>    save a frame and exit
+//!          --frames <n>               frames to wait before the screenshot (default 90)
+//!          --ev <ev100>               camera exposure (default 6, lower is brighter)
 //! ```
+//!
+//! Controls: hold the right mouse button to look, WASD to move, Q/E down/up,
+//! Shift to go faster.
+
+mod viewer;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,16 +22,74 @@ use std::sync::Arc;
 use bevy::prelude::*;
 use exa_assets::{Game, GameData, locate_install};
 
+#[derive(Resource, Clone, Debug)]
+pub enum View {
+    Level(String),
+    Model { pack: String, entry: String },
+    Texture(String),
+}
+
+#[derive(Resource, Clone, Debug, Default)]
+pub struct Options {
+    pub camera: Option<[f32; 5]>,
+    pub screenshot: Option<PathBuf>,
+    pub frames: u32,
+    /// Camera exposure; dungeon interiors need far less than daylight.
+    pub ev100: f32,
+}
+
+fn usage() -> AppExit {
+    eprintln!(
+        "usage: exarust [--game <dir>] [--camera x,y,z,yaw,pitch] [--screenshot out.png] \
+         (level <name> | model <pack> <entry> | texture <name>)"
+    );
+    AppExit::from_code(2)
+}
+
 fn main() -> AppExit {
-    let mut args = std::env::args().skip(1);
+    let mut args = std::env::args().skip(1).peekable();
     let mut game_dir: Option<PathBuf> = None;
-    let mut texture = String::from("humandiff");
+    let mut options = Options {
+        frames: 90,
+        ev100: 6.0,
+        ..default()
+    };
+    let mut positional = Vec::new();
     while let Some(a) = args.next() {
         match a.as_str() {
             "--game" => game_dir = args.next().map(PathBuf::from),
-            _ => texture = a,
+            "--screenshot" => options.screenshot = args.next().map(PathBuf::from),
+            "--ev" => options.ev100 = args.next().and_then(|v| v.parse().ok()).unwrap_or(6.0),
+            "--frames" => options.frames = args.next().and_then(|v| v.parse().ok()).unwrap_or(90),
+            "--camera" => {
+                let v: Vec<f32> = args
+                    .next()
+                    .unwrap_or_default()
+                    .split(',')
+                    .filter_map(|x| x.trim().parse().ok())
+                    .collect();
+                if let Ok(pose) = <[f32; 5]>::try_from(v.as_slice()) {
+                    options.camera = Some(pose);
+                }
+            }
+            _ => positional.push(a),
         }
     }
+    let view = match positional
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        ["level", name] => View::Level((*name).to_string()),
+        ["model", pack, entry @ ..] if !entry.is_empty() => View::Model {
+            pack: (*pack).to_string(),
+            entry: entry.join(" "),
+        },
+        ["texture", name] => View::Texture((*name).to_string()),
+        [] => View::Texture("humandiff".into()),
+        _ => return usage(),
+    };
 
     let Some(root) = locate_install(game_dir.as_deref()) else {
         eprintln!(
@@ -42,73 +109,15 @@ fn main() -> AppExit {
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Exarust".into(),
+                resolution: (1600, 900).into(),
                 ..default()
             }),
             ..default()
         }))
         .add_plugins(exa_game::GamePlugin)
         .insert_resource(Game(Arc::new(data)))
-        .insert_resource(FirstLight(texture))
-        .add_systems(Startup, first_light)
+        .insert_resource(view)
+        .insert_resource(options)
+        .add_plugins(viewer::ViewerPlugin)
         .run()
-}
-
-#[derive(Resource)]
-struct FirstLight(String);
-
-fn first_light(
-    mut commands: Commands,
-    game: Res<Game>,
-    request: Res<FirstLight>,
-    mut images: ResMut<Assets<Image>>,
-) {
-    commands.spawn(Camera2d);
-
-    let mut lines = vec![format!(
-        "{} — {}",
-        game.0.project().name,
-        game.0.root().display()
-    )];
-    for (kind, pack) in game.0.packs() {
-        lines.push(format!(
-            "{:<13} {:>5} entries",
-            kind.file_stem(),
-            pack.len()
-        ));
-    }
-    let image = match game.load_texture(&request.0, true) {
-        Ok(img) => {
-            lines.push(format!("texture: {}", request.0));
-            Some(images.add(img))
-        }
-        Err(e) => {
-            lines.push(format!("texture: {e}"));
-            None
-        }
-    };
-
-    commands
-        .spawn(Node {
-            width: Val::Percent(100.0),
-            height: Val::Percent(100.0),
-            column_gap: Val::Px(24.0),
-            padding: UiRect::all(Val::Px(16.0)),
-            ..default()
-        })
-        .with_children(|root| {
-            root.spawn((
-                Text::new(lines.join("\n")),
-                TextColor(Color::srgb(0.9, 0.85, 0.7)),
-            ));
-            if let Some(handle) = image {
-                root.spawn((
-                    ImageNode::new(handle),
-                    Node {
-                        height: Val::Percent(100.0),
-                        aspect_ratio: Some(1.0),
-                        ..default()
-                    },
-                ));
-            }
-        });
 }

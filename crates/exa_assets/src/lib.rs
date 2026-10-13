@@ -1,22 +1,28 @@
 //! Bridge between an Exanima installation and Bevy.
 //!
 //! Holds the opened [`GameData`] as a resource and converts parsed formats
-//! into Bevy assets. Conversions currently decode on the CPU; uploading block
-//! compressed data directly and an `exanima://` asset source are Phase 1 work
-//! in `docs/PLAN.md`.
+//! into Bevy assets: images ([`texture`]) and models with their materials
+//! ([`model`]), each cached by name.
+
+pub mod model;
+pub mod texture;
 
 use std::sync::Arc;
 
-use bevy::asset::RenderAssetUsages;
+use bevy::image::CompressedImageFormatSupport;
 use bevy::prelude::*;
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use exa_formats::rfi::Rfi;
 pub use exa_rpk::{GameData, PackKind, locate_install};
+
+pub use model::{Model, ModelCache, ModelLoader, ModelNode, transform_from_rows};
+pub use texture::ColorSpace;
 
 pub struct AssetsPlugin;
 
 impl Plugin for AssetsPlugin {
-    fn build(&self, _app: &mut App) {}
+    fn build(&self, app: &mut App) {
+        app.init_resource::<ModelCache>();
+    }
 }
 
 /// The installation the app was started against.
@@ -24,31 +30,17 @@ impl Plugin for AssetsPlugin {
 pub struct Game(pub Arc<GameData>);
 
 impl Game {
-    pub fn load_texture(&self, name: &str, srgb: bool) -> Result<Image, String> {
+    pub fn load_texture(
+        &self,
+        name: &str,
+        space: ColorSpace,
+        support: Option<&CompressedImageFormatSupport>,
+    ) -> Result<Image, String> {
         let bytes = self
             .0
             .texture(name)
             .ok_or_else(|| format!("texture {name:?} not found"))?;
         let rfi = Rfi::parse(bytes).map_err(|e| e.to_string())?;
-        rfi_to_image(&rfi, srgb).map_err(|e| e.to_string())
+        texture::rfi_to_image(&rfi, space, model::bc_supported(support)).map_err(|e| e.to_string())
     }
-}
-
-pub fn rfi_to_image(rfi: &Rfi, srgb: bool) -> exa_formats::Result<Image> {
-    let rgba = rfi.decode_rgba8()?;
-    Ok(Image::new(
-        Extent3d {
-            width: rfi.header.width,
-            height: rfi.header.height,
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        rgba,
-        if srgb {
-            TextureFormat::Rgba8UnormSrgb
-        } else {
-            TextureFormat::Rgba8Unorm
-        },
-        RenderAssetUsages::RENDER_WORLD,
-    ))
 }
