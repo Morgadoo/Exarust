@@ -7,7 +7,9 @@
 
 pub mod chunk;
 pub mod kind;
+pub mod material;
 pub mod rdb;
+pub mod rfc;
 pub mod rfi;
 
 pub use kind::FileKind;

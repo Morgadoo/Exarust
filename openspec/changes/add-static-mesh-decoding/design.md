@@ -40,6 +40,19 @@ streams with index remaps, per-material ranges, and a collision chunk
   scale factor; confirm against known object sizes (doors, tables, tiles of
   600 units).
 
+## Findings (REA + corpus, 2026-10-14)
+
+- Scene nodes share one header (name, flags, instance reference, parent index,
+  3×4 transform, bounds); the chunk tag selects the kind. `0x3D03` is the only
+  mesh kind. `0x3D06`/`0x3D0C` are light-like nodes and `0x3D01` a plain node,
+  so they are decoded as non-mesh nodes rather than mesh variants.
+- Streams: positions (F3), texture coordinates (F2), RGBA8 vertex colours
+  (B4) and skin weights (A4, 4 bones + 4 weights). Index maps link each
+  unified vertex to stream elements; normals are not stored and are computed
+  from the smoothing map.
+- Units are centimetres, Y-up, counter-clockwise front faces, matching glTF
+  after scaling by 0.01. All 23 065 mesh records in the retail data parse.
+
 ## Open reverse-engineering questions
 
 | question | how it is answered |

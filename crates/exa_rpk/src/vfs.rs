@@ -123,6 +123,23 @@ impl GameData {
         self.packs.iter().map(|(k, v)| (*k, v))
     }
 
+    /// Finds an image by bare name (no extension), searching the texture
+    /// packs first and the resource pack (where entries keep `.rfi`) last.
+    pub fn texture(&self, name: &str) -> Option<&[u8]> {
+        const PACKS: [PackKind; 5] = [
+            PackKind::Textures,
+            PackKind::Apparel,
+            PackKind::ComponentTex,
+            PackKind::Emblems,
+            PackKind::Resource,
+        ];
+        let with_ext = format!("{name}.rfi");
+        PACKS.iter().find_map(|&kind| {
+            let pack = self.pack(kind)?;
+            pack.get(name).or_else(|| pack.get(&with_ext))
+        })
+    }
+
     /// Resolves a material library path from the project (`Resource\Common.rml`)
     /// to its bytes inside the resource pack.
     pub fn resource_file(&self, path: &str) -> Option<&[u8]> {

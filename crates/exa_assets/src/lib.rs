@@ -23,27 +23,11 @@ impl Plugin for AssetsPlugin {
 #[derive(Resource, Clone)]
 pub struct Game(pub Arc<GameData>);
 
-/// Packs searched, in order, when a texture is referenced by bare name.
-const TEXTURE_PACKS: [PackKind; 5] = [
-    PackKind::Textures,
-    PackKind::Apparel,
-    PackKind::ComponentTex,
-    PackKind::Emblems,
-    PackKind::Resource,
-];
-
 impl Game {
-    pub fn texture_bytes(&self, name: &str) -> Option<&[u8]> {
-        let with_ext = format!("{name}.rfi");
-        TEXTURE_PACKS.iter().find_map(|&kind| {
-            let pack = self.0.pack(kind)?;
-            pack.get(name).or_else(|| pack.get(&with_ext))
-        })
-    }
-
     pub fn load_texture(&self, name: &str, srgb: bool) -> Result<Image, String> {
         let bytes = self
-            .texture_bytes(name)
+            .0
+            .texture(name)
             .ok_or_else(|| format!("texture {name:?} not found"))?;
         let rfi = Rfi::parse(bytes).map_err(|e| e.to_string())?;
         rfi_to_image(&rfi, srgb).map_err(|e| e.to_string())

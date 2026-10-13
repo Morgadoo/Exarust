@@ -8,7 +8,12 @@
 //! exa-tool rfi Textures afcrnflg_01d  image header
 //! exa-tool png Textures afcrnflg_01d out.png
 //! exa-tool extract Sound out/ [--filter msc_]
+//! exa-tool corpus meshes              decode every chunk tree, report coverage
+//! exa-tool export-gltf Objlib afr_cornflag_a01 out.glb
 //! ```
+
+mod corpus;
+mod gltf;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -58,6 +63,17 @@ enum Cmd {
         entry: String,
         out: PathBuf,
     },
+    /// Decode every entry of a format and report coverage.
+    Corpus {
+        #[arg(value_enum)]
+        what: CorpusKind,
+    },
+    /// Export a chunk tree's meshes to binary glTF with resolved textures.
+    ExportGltf {
+        pack: String,
+        entry: String,
+        out: PathBuf,
+    },
     /// Write entries to a directory, with an extension guessed from the magic.
     Extract {
         pack: String,
@@ -67,6 +83,11 @@ enum Cmd {
         #[arg(long)]
         inner: Option<String>,
     },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum CorpusKind {
+    Meshes,
 }
 
 fn main() -> Result<()> {
@@ -129,6 +150,24 @@ fn main() -> Result<()> {
                 rfi.format,
                 out.display()
             );
+            Ok(())
+        }
+        Cmd::Corpus {
+            what: CorpusKind::Meshes,
+        } => corpus::meshes(&game),
+        Cmd::ExportGltf { pack, entry, out } => {
+            let scene = exa_formats::rfc::Scene::parse(entry_bytes(&game, &pack, &entry)?)
+                .with_context(|| format!("decoding {pack}/{entry}"))?;
+            let warnings = gltf::export(&game, &scene, &entry, &out)?;
+            let meshes = scene.meshes().count();
+            println!(
+                "{pack}/{entry}: {} nodes, {meshes} meshes -> {}",
+                scene.nodes.len(),
+                out.display()
+            );
+            for w in warnings {
+                eprintln!("warning: {w}");
+            }
             Ok(())
         }
         Cmd::Extract {

@@ -64,8 +64,8 @@ then utterances. Format unknown beyond that.
 
 ## Material libraries (`.rml`)
 
-Packs of material records (same layout as `BA01` payloads) keyed by
-material name: `common.rml` (51), `underworld0.rml` (24), `underworldb.rml`,
+Packs of material payloads (the same layout as `BA01` payloads, see
+[RFC.md](RFC.md#material-list-ba00)) keyed by material name: `common.rml` (51), `underworld0.rml` (24), `underworldb.rml`,
 `humanbase.rml` (`eyehuman`, `skinhuman`). Named in `Exanima.rfp`.
 
 ## Shader libraries (`.flb`)

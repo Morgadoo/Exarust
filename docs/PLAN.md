@@ -104,8 +104,8 @@ checked outside the engine through exporters.
 
 | work item | crate | notes |
 |---|---|---|
-| Static mesh (`3D03` and variants): vertex streams, n-gon topology, material groups, transforms | `exa_formats::rfc` | triangulate n-gons; units and axes (Y-up vs Z-up, cm) settled against known object sizes |
-| Materials (`BA01`, `.rml` libraries): colours, texture slots, shader/plug-in IDs | `exa_formats::material` | map to plug-in classes seen in the binary (`TMaterialPlugIn`, `TRTMatPlugIn`, `TProcMaterial`) |
+| ✅ Static mesh (`3D03`): vertex streams, index maps, triangles, material groups, node transforms | `exa_formats::rfc` | done: 23 065/23 065 retail meshes decode; cm → m, right-handed Y-up confirmed |
+| Materials (`BA01`, `.rml` libraries): ✅ texture layers and slots; parameter block (colours, shader/plug-in IDs) still open | `exa_formats::material` | map the 184-byte parameter block to plug-in classes seen in the binary (`TMaterialPlugIn`, `TRTMatPlugIn`, `TProcMaterial`) |
 | Skinned meshes, weights, morph targets (`*base.rfc`, `*morph.rfc`) | `exa_formats::rfc` | |
 | Skeleton and motions (`.rsq`) | `exa_formats::rsq` | 18 bones, 48 clips, keyframe controllers (linear, Catmull-Rom) |
 | Level grid (`3DED`), level sections (`3DE10000`, `DBC0`, …), object placement | `exa_formats::level` | wall/floor sets `gews_*` / `gefs_*` |
@@ -114,8 +114,8 @@ checked outside the engine through exporters.
 | Databases (`races`, `objdb`, `charroles`, `locales`, `objstrings`) | `exa_formats::rdb` | record schemas |
 | Factories, actors, powers, dialogue (`.rcd`) | `exa_formats::{factory,actor,power,dialogue}` | |
 | Shader libraries (`.flb`) | `exa_formats::flb` | optional: capturing the running game with RenderDoc/apitrace gives the plain GLSL directly |
-| Exporters: glTF (meshes, skinned characters, assembled levels), PNG, WAV | `exa_tool` | check results in Blender |
-| Corpus test: parse every entry and report coverage | `exa_tool corpus` | target 100 %; the report is the progress meter |
+| Exporters: ✅ glTF for static meshes with textures; skinned characters and assembled levels open; PNG ✅; WAV | `exa_tool` | check results in Blender |
+| Corpus test: parse every entry and report coverage | `exa_tool corpus` | ✅ `corpus meshes`; more kinds as formats land |
 
 **M1 "asset viewer":** `exa-tool export-gltf` opens any prop, weapon,
 character or level in Blender, and `corpus` reports full coverage.
@@ -256,11 +256,12 @@ holds the runtime and the documentation of formats and behaviour.
 
 ## 7. Immediate next steps (Phase 1, in order)
 
-1. OpenSpec change `add-static-mesh-decoding` (ready to apply):
-   `exa_formats::rfc` static mesh decoding (`3D03`), `exa-tool export-gltf`
-   for one prop (`trn_grassa01`), then all of Objlib.
-2. Material records (`BA01`, `.rml`) and texture slot names, hooked into the
-   glTF export.
-3. Level grid (`3DED`) and set pieces, giving `arena.rfc` as a glTF.
+1. ✅ OpenSpec change `add-static-mesh-decoding`: static meshes, material
+   texture layers, `exa-tool export-gltf`, `exa-tool corpus meshes`. Waiting
+   on a visual mirroring check against the running game.
+2. Level grid (`3DED`), level sections and set pieces, giving `arena.rfc` as
+   a glTF (next change).
+3. Skeleton and motions (`.rsq`) plus skinned meshes (`A4` skin streams,
+   `*base.rfc`).
 4. `exa-tool corpus` coverage report.
 5. `exa_assets` asset source and loaders, then a Bevy level viewer (M2).
