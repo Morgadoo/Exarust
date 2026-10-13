@@ -1,0 +1,14 @@
+[package]
+name = "exa_world"
+description = "Levels"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+bevy.workspace = true
+exa_assets.workspace = true
+exa_formats.workspace = true
+
+[lints]
+workspace = true

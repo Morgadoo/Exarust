@@ -1,0 +1,12 @@
+[package]
+name = "exa_combat"
+description = "Combat resolution"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+bevy.workspace = true
+
+[lints]
+workspace = true

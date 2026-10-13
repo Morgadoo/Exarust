@@ -1,0 +1,20 @@
+[package]
+name = "exa_tool"
+description = "Command-line inspector and extractor for Exanima data"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "exa-tool"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+exa_formats.workspace = true
+exa_rpk.workspace = true
+png.workspace = true
+
+[lints]
+workspace = true

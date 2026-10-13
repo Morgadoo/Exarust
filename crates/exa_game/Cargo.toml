@@ -1,0 +1,24 @@
+[package]
+name = "exa_game"
+description = "Game modes and session flow"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+bevy.workspace = true
+exa_render.workspace = true
+exa_physics.workspace = true
+exa_anim.workspace = true
+exa_character.workspace = true
+exa_items.workspace = true
+exa_combat.workspace = true
+exa_ai.workspace = true
+exa_world.workspace = true
+exa_audio.workspace = true
+exa_script.workspace = true
+exa_ui.workspace = true
+exa_assets.workspace = true
+
+[lints]
+workspace = true

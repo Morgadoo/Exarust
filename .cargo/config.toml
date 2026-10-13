@@ -1,0 +1,2 @@
+[alias]
+exa = "run --quiet --release --package exa_tool --"

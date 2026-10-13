@@ -1,0 +1,14 @@
+[package]
+name = "exa_assets"
+description = "Bridge between an Exanima installation and Bevy assets"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+bevy.workspace = true
+exa_formats.workspace = true
+exa_rpk.workspace = true
+
+[lints]
+workspace = true

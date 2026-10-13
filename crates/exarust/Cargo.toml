@@ -1,0 +1,14 @@
+[package]
+name = "exarust"
+description = "Exarust: an open-source Exanima runtime on Bevy"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+bevy.workspace = true
+exa_assets.workspace = true
+exa_game.workspace = true
+
+[lints]
+workspace = true

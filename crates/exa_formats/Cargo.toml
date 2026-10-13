@@ -1,0 +1,13 @@
+[package]
+name = "exa_formats"
+description = "Parsers for Exanima asset formats (chunked models/levels, images, databases, skeletons)"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+bcdec_rs.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

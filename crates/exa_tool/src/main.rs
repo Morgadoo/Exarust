@@ -1,0 +1,274 @@
+//! `exa-tool`: inspect and extract Exanima data from your own installation.
+//!
+//! ```text
+//! exa-tool info                       packs, entry counts, project file
+//! exa-tool ls Resource [--inner common.rml]
+//! exa-tool stats Objlib               formats by magic
+//! exa-tool chunks Resource arena.rfc  chunk tree of an .rfc
+//! exa-tool rfi Textures afcrnflg_01d  image header
+//! exa-tool png Textures afcrnflg_01d out.png
+//! exa-tool extract Sound out/ [--filter msc_]
+//! ```
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, anyhow};
+use clap::{Parser, Subcommand};
+use exa_formats::FileKind;
+use exa_formats::chunk::{self, Chunk, Chunks};
+use exa_formats::rfi::Rfi;
+use exa_rpk::{Archive, GameData, PackKind};
+
+#[derive(Parser)]
+#[command(version, about)]
+struct Cli {
+    /// Exanima installation; defaults to EXANIMA_DIR (environment or .env).
+    #[arg(long, global = true)]
+    game: Option<PathBuf>,
+    #[command(subcommand)]
+    cmd: Cmd,
+}
+
+#[derive(Subcommand)]
+enum Cmd {
+    /// Project file and pack inventory.
+    Info,
+    /// List entries of a pack, or of an archive nested inside it.
+    Ls {
+        pack: String,
+        #[arg(long)]
+        inner: Option<String>,
+    },
+    /// Count entries by detected format.
+    Stats { pack: String },
+    /// Print the chunk tree of an .rfc entry.
+    Chunks {
+        pack: String,
+        entry: String,
+        #[arg(long, default_value_t = 4)]
+        depth: usize,
+    },
+    /// Print an .rfi header.
+    Rfi { pack: String, entry: String },
+    /// Decode the base level of an .rfi to PNG.
+    Png {
+        pack: String,
+        entry: String,
+        out: PathBuf,
+    },
+    /// Write entries to a directory, with an extension guessed from the magic.
+    Extract {
+        pack: String,
+        out: PathBuf,
+        #[arg(long)]
+        filter: Option<String>,
+        #[arg(long)]
+        inner: Option<String>,
+    },
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    let root = locate(cli.game.as_deref())?;
+    let game = GameData::open(&root).with_context(|| format!("opening {}", root.display()))?;
+    match cli.cmd {
+        Cmd::Info => info(&game),
+        Cmd::Ls { pack, inner } => with_archive(&game, &pack, inner.as_deref(), |a| {
+            for e in a.entries() {
+                let kind = FileKind::detect(a.bytes(e));
+                println!("{:<18} {:>12} {:?}", e.name, e.size, kind);
+            }
+            Ok(())
+        }),
+        Cmd::Stats { pack } => with_archive(&game, &pack, None, |a| {
+            let mut counts: BTreeMap<FileKind, (usize, u64)> = BTreeMap::new();
+            for e in a.entries() {
+                let c = counts.entry(FileKind::detect(a.bytes(e))).or_default();
+                c.0 += 1;
+                c.1 += u64::from(e.size);
+            }
+            for (k, (n, bytes)) in counts {
+                println!(
+                    "{:<28} {:>6} entries {:>12} bytes",
+                    format!("{k:?}"),
+                    n,
+                    bytes
+                );
+            }
+            Ok(())
+        }),
+        Cmd::Chunks { pack, entry, depth } => {
+            let b = entry_bytes(&game, &pack, &entry)?;
+            for c in chunk::rfc_chunks(b)? {
+                print_chunk(&c?, 0, depth);
+            }
+            Ok(())
+        }
+        Cmd::Rfi { pack, entry } => {
+            let rfi = Rfi::parse(entry_bytes(&game, &pack, &entry)?)?;
+            println!("{:#?}", rfi.header);
+            println!(
+                "format: {:?}  mips: {}  packed: {}",
+                rfi.format,
+                rfi.mip_count,
+                rfi.is_packed()
+            );
+            Ok(())
+        }
+        Cmd::Png { pack, entry, out } => {
+            let rfi = Rfi::parse(entry_bytes(&game, &pack, &entry)?)?;
+            let rgba = rfi.decode_rgba8()?;
+            write_png(&out, rfi.header.width, rfi.header.height, &rgba)?;
+            println!(
+                "{} {}x{} {:?} -> {}",
+                entry,
+                rfi.header.width,
+                rfi.header.height,
+                rfi.format,
+                out.display()
+            );
+            Ok(())
+        }
+        Cmd::Extract {
+            pack,
+            out,
+            filter,
+            inner,
+        } => with_archive(&game, &pack, inner.as_deref(), |a| {
+            extract(a, &out, filter.as_deref())
+        }),
+    }
+}
+
+fn locate(explicit: Option<&Path>) -> Result<PathBuf> {
+    exa_rpk::locate_install(explicit).ok_or_else(|| {
+        anyhow!("no installation: pass --game or set EXANIMA_DIR (see .env.example)")
+    })
+}
+
+fn pack_kind(name: &str) -> Result<PackKind> {
+    PackKind::from_name(name).ok_or_else(|| anyhow!("unknown pack {name:?}"))
+}
+
+fn with_archive(
+    game: &GameData,
+    pack: &str,
+    inner: Option<&str>,
+    f: impl FnOnce(&Archive<'_>) -> Result<()>,
+) -> Result<()> {
+    let mapped = game
+        .pack(pack_kind(pack)?)
+        .ok_or_else(|| anyhow!("{pack}.rpk is not installed"))?;
+    match inner {
+        None => f(&Archive::parse(mapped.data())?),
+        Some(inner) => {
+            let b = mapped
+                .get(inner)
+                .ok_or_else(|| anyhow!("{inner:?} not found in {pack}"))?;
+            f(&Archive::parse(b)?)
+        }
+    }
+}
+
+fn entry_bytes<'g>(game: &'g GameData, pack: &str, entry: &str) -> Result<&'g [u8]> {
+    let mapped = game
+        .pack(pack_kind(pack)?)
+        .ok_or_else(|| anyhow!("{pack}.rpk is not installed"))?;
+    mapped
+        .get(entry)
+        .ok_or_else(|| anyhow!("{entry:?} not found in {pack}"))
+}
+
+fn info(game: &GameData) -> Result<()> {
+    let p = game.project();
+    println!("install:   {}", game.root().display());
+    println!("project:   {}", p.name);
+    println!("resource:  {}", p.resource_pack);
+    println!("objlibs:   {:?}", p.object_libraries);
+    println!("texlibs:   {:?}", p.texture_libraries);
+    println!("matlibs:   {:?}", p.material_libraries);
+    println!();
+    for (kind, pack) in game.packs() {
+        let bytes: u64 = pack.entries().iter().map(|e| u64::from(e.size)).sum();
+        println!(
+            "{:<14} {:>6} entries {:>8.1} MiB",
+            kind.file_stem(),
+            pack.len(),
+            bytes as f64 / 1048576.0
+        );
+    }
+    Ok(())
+}
+
+fn print_chunk(c: &Chunk<'_>, depth: usize, max_depth: usize) {
+    let preview: String = c
+        .data
+        .iter()
+        .take(24)
+        .map(|&b| {
+            if b.is_ascii_graphic() || b == b' ' {
+                b as char
+            } else {
+                '.'
+            }
+        })
+        .collect();
+    println!(
+        "{:indent$}{:08x} {:>9}  {}",
+        "",
+        c.tag,
+        c.data.len(),
+        preview,
+        indent = depth * 2
+    );
+    if depth + 1 >= max_depth {
+        return;
+    }
+    if let Some((_, kids)) = chunk::list_children(c) {
+        for k in &kids {
+            print_chunk(k, depth + 1, max_depth);
+        }
+    } else if let Ok(kids) = Chunks::new(c.data, 0).collect::<exa_formats::Result<Vec<_>>>()
+        && !kids.is_empty()
+        && kids.iter().all(|k| k.tag != 0)
+    {
+        for k in &kids {
+            print_chunk(k, depth + 1, max_depth);
+        }
+    }
+}
+
+fn write_png(path: &Path, w: u32, h: u32, rgba: &[u8]) -> Result<()> {
+    let file = fs::File::create(path).with_context(|| path.display().to_string())?;
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header()?.write_image_data(rgba)?;
+    Ok(())
+}
+
+fn extract(a: &Archive<'_>, out: &Path, filter: Option<&str>) -> Result<()> {
+    fs::create_dir_all(out)?;
+    let mut n = 0;
+    for e in a.entries() {
+        if filter.is_some_and(|f| !e.name.contains(f)) {
+            continue;
+        }
+        let bytes = a.bytes(e);
+        let has_ext = e
+            .name
+            .rsplit_once('.')
+            .is_some_and(|(_, x)| (2..=3).contains(&x.len()));
+        let name = if has_ext {
+            e.name.clone()
+        } else {
+            format!("{}.{}", e.name, FileKind::detect(bytes).extension())
+        };
+        fs::write(out.join(name.replace(['/', '\\'], "_")), bytes)?;
+        n += 1;
+    }
+    println!("extracted {n} entries to {}", out.display());
+    Ok(())
+}

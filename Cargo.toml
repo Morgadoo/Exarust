@@ -1,0 +1,94 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/exa_rpk",
+    "crates/exa_formats",
+    "crates/exa_assets",
+    "crates/exa_render",
+    "crates/exa_physics",
+    "crates/exa_anim",
+    "crates/exa_character",
+    "crates/exa_items",
+    "crates/exa_combat",
+    "crates/exa_ai",
+    "crates/exa_world",
+    "crates/exa_audio",
+    "crates/exa_script",
+    "crates/exa_ui",
+    "crates/exa_game",
+    "crates/exa_tool",
+    "crates/exarust",
+]
+
+[workspace.package]
+edition = "2024"
+license = "Apache-2.0"
+version = "0.0.1"
+rust-version = "1.90"
+
+[workspace.dependencies]
+bevy = { version = "0.20", default-features = false, features = [
+    "bevy_asset",
+    "bevy_core_pipeline",
+    "bevy_log",
+    "bevy_pbr",
+    "bevy_render",
+    "bevy_state",
+    "bevy_text",
+    "bevy_ui",
+    "bevy_ui_render",
+    "bevy_window",
+    "bevy_winit",
+    "multi_threaded",
+    "png",
+    "tonemapping_luts",
+    "ktx2",
+    "zstd_rust",
+    "wayland",
+    "x11",
+] }
+anyhow = "1"
+bcdec_rs = "0.2"
+clap = { version = "4.6", features = ["derive"] }
+memmap2 = "0.9"
+png = "0.18"
+thiserror = "2"
+
+exa_rpk = { path = "crates/exa_rpk" }
+exa_formats = { path = "crates/exa_formats" }
+exa_assets = { path = "crates/exa_assets" }
+exa_render = { path = "crates/exa_render" }
+exa_physics = { path = "crates/exa_physics" }
+exa_anim = { path = "crates/exa_anim" }
+exa_character = { path = "crates/exa_character" }
+exa_items = { path = "crates/exa_items" }
+exa_combat = { path = "crates/exa_combat" }
+exa_ai = { path = "crates/exa_ai" }
+exa_world = { path = "crates/exa_world" }
+exa_audio = { path = "crates/exa_audio" }
+exa_script = { path = "crates/exa_script" }
+exa_ui = { path = "crates/exa_ui" }
+exa_game = { path = "crates/exa_game" }
+
+# Values transcribed from the original data keep their full f32 precision.
+[workspace.lints.clippy]
+excessive_precision = "allow"
+approx_constant = "allow"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# Day-to-day optimized build: release speed without the fat-LTO link.
+[profile.play]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"

@@ -1,0 +1,15 @@
+Exarust
+
+Exarust is an independent, open-source runtime for Exanima, written in Rust
+on the Bevy engine. It is licensed under the Apache License, Version 2.0; see
+LICENSE.
+
+Exanima, its assets and trademarks belong to Bare Mettle Entertainment Ltd.
+(https://www.baremettle.com/).
+Exarust is not affiliated with or endorsed by Bare Mettle. Exarust contains
+no game assets and no code from the original game; it reads data from an
+installation the user already owns.
+
+The project was inspired by IW4L (https://github.com/vladtrc/iw4L), which
+does the same for Call of Duty: Modern Warfare 2, and follows its project
+layout and working conventions.

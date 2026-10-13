@@ -1,0 +1,13 @@
+[package]
+name = "exa_rpk"
+description = "Reader for Exanima .rpk packs, the .rfp project file and a virtual file system over an installation"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+memmap2.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
