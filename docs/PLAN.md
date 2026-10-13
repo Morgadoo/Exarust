@@ -7,8 +7,9 @@ reads the retail packs in place, the way OpenMW reads Morrowind or IW4L
 reads Modern Warfare 2.
 
 This file describes the plan as it stands today. Update it when the plan
-changes. The record of individual work sessions lives in `context/` (see
-`CONTEXT.md`).
+changes. Each work item becomes an OpenSpec change (`docs/WORKFLOW.md`).
+Behaviour that exists is specified in `openspec/specs/`. The record of
+individual work sessions lives in `context/` (see `CONTEXT.md`).
 
 ---
 
@@ -232,12 +233,11 @@ take precedence over packs), regression tests based on recorded inputs.
 | tool | use |
 |---|---|
 | `exa-tool` + hex inspection | format structure, corpus statistics |
-| Ghidra on `Exanima.exe` | readers (`TRFCReader`, image loader, packed-image decompressor), constants (physics, damage), rules. FPC RTTI names classes and virtual tables. Decompiled code is never copied: rules and constants are rewritten in Exarust's own terms |
+| REA (Ghidra provider) on `Exanima.exe` — see `RE-TOOLING.md` | readers (`TRFCReader`, image loader, packed-image decompressor), constants (physics, damage), rules. FPC RTTI names classes and virtual tables. Decompiled code is never copied: rules and constants are rewritten in Exarust's own terms |
 | RenderDoc / apitrace on the running game (Proton/Wine) | GL state, plain GLSL as compiled, draw order, light counts, shadow resolutions |
 | Side-by-side capture | identical scenes and camera paths in both runtimes; screenshot and video diffs |
 | Official sources | [baremettle.com](https://www.baremettle.com/) news archive (`/news/`), forums and Steam devlogs: release notes, combat demo videos and design statements, used as behavioural reference |
 | Community references | the community format spec Structs.txt; the Rust [Exanima Modding Toolkit](https://codeberg.org/ExanimaModding/Toolkit); [ExanimaREP](https://github.com/Horse4Horse/ExanimaREP) (IDA database with ~330 named classes); translation projects that solved the image RLE; Jango's Blender RFC editor. All collected in `docs/research/online-research.md`. They show where to look; they are not evidence. Respect each licence: some are source-available with no redistribution, so read them for facts only. |
-| [REA](https://rea.tools/) | a general agent-driven reverse-engineering tool (no Exanima content); optional help with the Ghidra/IDA work on `Exanima.exe` |
 
 Facts, offsets and dumps stay in `context/` (untracked). The tracked tree
 holds the runtime and the documentation of formats and behaviour.
@@ -256,7 +256,8 @@ holds the runtime and the documentation of formats and behaviour.
 
 ## 7. Immediate next steps (Phase 1, in order)
 
-1. `exa_formats::rfc` static mesh decoding (`3D03`), then `exa-tool export-gltf`
+1. OpenSpec change `add-static-mesh-decoding` (ready to apply):
+   `exa_formats::rfc` static mesh decoding (`3D03`), `exa-tool export-gltf`
    for one prop (`trn_grassa01`), then all of Objlib.
 2. Material records (`BA01`, `.rml`) and texture slot names, hooked into the
    glTF export.

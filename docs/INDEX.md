@@ -3,6 +3,8 @@
 | file | about |
 |---|---|
 | [`PLAN.md`](PLAN.md) | the reimplementation plan: phases, milestones, risks, next steps |
+| [`WORKFLOW.md`](WORKFLOW.md) | spec-driven development with OpenSpec: specs, changes, the propose → apply → archive loop |
+| [`RE-TOOLING.md`](RE-TOOLING.md) | REA + Ghidra setup and how reverse engineering of `Exanima.exe` is done |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | crate layers, schedules, asset data flow, determinism rules |
 | [`BUILD.md`](BUILD.md) | toolchain and system packages, building and running |
 | [`formats/`](formats/README.md) | every retail data format: layout, status, evidence |

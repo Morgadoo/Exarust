@@ -66,6 +66,11 @@ docs/            plan, architecture, formats, research
 
 ## Documentation
 
+Development is spec-driven with [OpenSpec](https://openspec.dev/)
+([workflow](docs/WORKFLOW.md)). Reverse engineering of the original
+executable uses [REA](https://rea.tools/) with Ghidra
+([tooling](docs/RE-TOOLING.md)).
+
 - [Plan](docs/PLAN.md): phases, milestones, risks, next steps
 - [Architecture](docs/ARCHITECTURE.md): crate layers, schedules, data flow
 - [Formats](docs/formats/README.md): what is known about each retail format

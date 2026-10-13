@@ -55,7 +55,7 @@ impl FileKind {
             {
                 FileKind::Database
             }
-            _ if m & 0xFFFF_00FF == 0xAFCE_000F => FileKind::Factory,
+            _ if m & 0xFFFF_FF00 == 0xAFCE_0F00 => FileKind::Factory,
             _ if m & 0xFFFF_FF00 == 0x00CD_AC00 => FileKind::Actor,
             _ => FileKind::Unknown(m),
         }
@@ -77,5 +77,26 @@ impl FileKind {
             FileKind::Dds => "dds",
             FileKind::Unknown(_) => "bin",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_shipped_magics() {
+        assert_eq!(FileKind::detect(&[0x01, 0x0C, 0xBF, 0xAF]), FileKind::Pack);
+        assert_eq!(
+            FileKind::detect(&[0xCF, 0xAF, 0x23, 0x3D]),
+            FileKind::ChunkTree
+        );
+        assert_eq!(FileKind::detect(&[0xC6, 0x3D, 0x2D, 0x1D]), FileKind::Image);
+        for v in 0..3 {
+            assert_eq!(FileKind::detect(&[v, 0x0F, 0xCE, 0xAF]), FileKind::Factory);
+        }
+        assert_eq!(FileKind::detect(&[0x07, 0xAC, 0xCD, 0x00]), FileKind::Actor);
+        assert_eq!(FileKind::detect(b"RIFF"), FileKind::Wave);
+        assert_eq!(FileKind::detect(&[1, 2]), FileKind::Unknown(0));
     }
 }
