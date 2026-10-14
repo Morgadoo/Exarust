@@ -93,7 +93,10 @@ impl Plugin for PostPlugin {
 
 /// Gives every new 3D camera the original's post-processing instead of
 /// Bevy's tonemapping.
-fn adopt_cameras(mut commands: Commands, cameras: Query<Entity, Added<Camera3d>>) {
+fn adopt_cameras(
+    mut commands: Commands,
+    cameras: Query<Entity, (Added<Camera3d>, Without<crate::supersample::Supersample>)>,
+) {
     for camera in &cameras {
         commands
             .entity(camera)

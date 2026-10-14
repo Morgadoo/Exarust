@@ -20,6 +20,25 @@ The original works in **linear light with sRGB storage**:
 - Exposure is a constant 1. The settings slider scales lights, ambient and
   emissive. There is no gamma or brightness option.
 
+## Supersampling
+
+At the original's 4× setting (`Supersample = 4`, level n = 3) each frame is
+drawn four times at window resolution:
+- each sub-frame has a sub-pixel jitter of (−0.29, −0.15), (0.30, 0.15),
+  (0.20, −0.35) or (−0.21, 0.35) pixels;
+- the four go into the quadrants of a buffer twice the size;
+- they are averaged with equal weights into the window-sized image, in
+  linear light.
+
+Bloom and the final pass then run at window resolution. Supersampling also
+turns on the final pass's sharpen.
+
+Exarust (`exa_render::supersample`) draws the scene at twice the window's
+resolution on each axis, an ordered 2 × 2 grid instead of the jittered
+four. A display camera resolves each 2 × 2 block by bilinear sampling at
+its centre, then runs the post chain at window resolution. It is on in the
+viewer; `--no-supersample` turns it off.
+
 ## Post-processing
 
 Always on (`exa_render::post`, replacing Bevy's tonemapping; cameras get
@@ -384,7 +403,7 @@ lengths in cm, and the simulation runs at the 83 Hz tick):
 
 ## Not done yet
 
-Supersampling and its sharpen, medium and large fire templates, the sun
+The jittered supersampling pattern, medium and large fire templates, the sun
 and terrain in the GI volume, several resident GI blocks, fog, vertex dirt, glass refraction, effect programs (smoke, powers), hair and skin
 programs, terrain parallax and wetness, and the outdoor environment cube.
 Software rendering here cannot afford the light shadows, so test frames use

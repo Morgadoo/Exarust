@@ -333,7 +333,7 @@ fn symmetry(n: u8, u: f32, v: f32) -> (f32, f32) {
 }
 
 fn build_meshes(
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
     fires: Query<&Flame>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {

@@ -208,7 +208,7 @@ fn sky_cameras(
     mut commands: Commands,
     sky: Option<Res<LevelSky>>,
     skies: Query<Entity, With<Sky>>,
-    cameras: Query<(Entity, Has<AtmosphereSettings>), With<Camera3d>>,
+    cameras: Query<(Entity, Has<AtmosphereSettings>), exa_render::supersample::SceneCamera>,
     mut media: ResMut<Assets<ScatteringMedium>>,
 ) {
     match sky {
@@ -241,7 +241,7 @@ fn sky_cameras(
 fn fog_cameras(
     mut commands: Commands,
     fog: Option<Res<LevelFog>>,
-    cameras: Query<(Entity, Has<DistanceFog>), With<Camera3d>>,
+    cameras: Query<(Entity, Has<DistanceFog>), exa_render::supersample::SceneCamera>,
 ) {
     for (camera, fogged) in &cameras {
         match &fog {

@@ -176,7 +176,7 @@ fn follow_camera(
     source: Option<Res<GiSource>>,
     block: Option<Res<GiBlock>>,
     settings: Res<GiSettings>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
 ) {
     let Some(source) = source else { return };
     let Some(camera) = cameras.iter().next() else {

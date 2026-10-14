@@ -410,7 +410,7 @@ fn prepare_bind_group(
 
 #[allow(clippy::too_many_arguments)]
 fn propagate(
-    _view: ViewQuery<&ExtractedView>,
+    view: ViewQuery<(&ExtractedView, Has<crate::supersample::DisplayCamera>)>,
     textures: Option<Res<GiTextures>>,
     bind_group: Option<Res<GiBindGroup>>,
     pipeline: Option<Res<GiPipeline>>,
@@ -419,6 +419,10 @@ fn propagate(
     mut owed: ResMut<GiOwed>,
     mut ctx: RenderContext,
 ) {
+    // Once per frame, for the scene view (not a supersampling display).
+    if view.into_inner().1 {
+        return;
+    }
     let (Some(textures), Some(bind_group), Some(pipeline)) = (textures, bind_group, pipeline)
     else {
         return;

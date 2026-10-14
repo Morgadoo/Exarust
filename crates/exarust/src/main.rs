@@ -13,6 +13,7 @@
 //!          --fov <degrees>            vertical field of view (default 45)
 //!          --no-shadows               lights cast no shadows (for software rendering)
 //!          --no-gi                    no voxel GI (ambient from the environment cube)
+//!          --no-supersample           draw at window resolution (default: 4× supersampling, as the original)
 //!          --gi-warm-up <steps>       GI steps run when a level loads (default 600)
 //!          --size WxH                 window size (default 1600x900)
 //!          --screenshot <file.png>    save a frame and exit
@@ -56,6 +57,8 @@ pub struct Options {
     pub no_shadows: bool,
     /// The voxel GI settings.
     pub gi: exa_world::gi_volume::GiSettings,
+    /// Draw at window resolution instead of 4× supersampling.
+    pub no_supersample: bool,
     /// Window size in logical pixels.
     pub size: Option<(u32, u32)>,
     /// Play mode: start here instead of the level's start (metres).
@@ -109,6 +112,7 @@ fn main() -> AppExit {
             "--limp" => options.limp = true,
             "--no-shadows" => options.no_shadows = true,
             "--no-gi" => options.gi.enabled = false,
+            "--no-supersample" => options.no_supersample = true,
             "--gi-warm-up" => {
                 if let Some(n) = args.next().and_then(|v| v.parse().ok()) {
                     options.gi.warm_up = n;

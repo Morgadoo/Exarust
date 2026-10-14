@@ -287,15 +287,22 @@ fn setup(
             let (spawned, missing) =
                 spawn_placed_characters(&mut commands, &mut loader, &races, &placed);
             info!("level {name}: {spawned} characters placed, {missing} without a body");
-            commands.spawn((
-                Camera3d::default(),
-                Exposure {
-                    ev100: options.ev100,
-                },
-                Transform::from_translation(start + Vec3::new(0.0, 4.0, 4.0)),
-                exa_game::player::ChaseCamera::default(),
-                SpatialListener::new(0.3),
-            ));
+            let camera = commands
+                .spawn((
+                    Camera3d::default(),
+                    Exposure {
+                        ev100: options.ev100,
+                    },
+                    Transform::from_translation(start + Vec3::new(0.0, 4.0, 4.0)),
+                    exa_game::player::ChaseCamera::default(),
+                    SpatialListener::new(0.3),
+                ))
+                .id();
+            if !options.no_supersample {
+                commands
+                    .entity(camera)
+                    .insert(exa_render::supersample::Supersample);
+            }
             return;
         }
         View::Texture(name) => {
@@ -332,7 +339,7 @@ fn setup(
         ));
     }
     let (yaw, pitch, _) = transform.rotation.to_euler(EulerRot::YXZ);
-    commands.spawn((
+    let camera = commands.spawn((
         Camera3d::default(),
         Projection::Perspective(PerspectiveProjection {
             fov: options.fov.unwrap_or(45.0).to_radians(),
@@ -348,6 +355,12 @@ fn setup(
             speed: pose.2,
         },
     ));
+    if !options.no_supersample {
+        let camera = camera.id();
+        commands
+            .entity(camera)
+            .insert(exa_render::supersample::Supersample);
+    }
 }
 
 fn fly_camera(
