@@ -40,6 +40,10 @@ const ENVIRONMENT: u32 = 256u;
 const DIRT_MAP: u32 = 512u;
 const GLOSS_MAP: u32 = 1024u;
 const GI: u32 = 2048u;
+// The original's texture LOD bias at its top texture quality with 4×
+// supersampling, −0.75 × (4 − 1)/3, on colour textures only (not normal,
+// gloss or packed specular maps). Rules: docs/RENDERING.md (Textures).
+const TEXTURE_BIAS: f32 = -0.75;
 // The level ambient scales the GI volume ×15 (passed ×16).
 const GI_SCALE: f32 = 15.0;
 
@@ -151,11 +155,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 }
     var dif_tex = vec4(1.0);
     if has(DIFFUSE_MAP) {
-        dif_tex = textureSample(diffuse_map, diffuse_sampler, uv);
+        dif_tex = textureSampleBias(diffuse_map, diffuse_sampler, uv, TEXTURE_BIAS);
     }
     var alpha = material.diffuse.a * dif_tex.a;
     if has(OPACITY_MAP) {
-        let o = textureSample(opacity_map, opacity_sampler, uv).a;
+        let o = textureSampleBias(opacity_map, opacity_sampler, uv, TEXTURE_BIAS).a;
         alpha = material.diffuse.a * o * o;
     }
 
@@ -163,11 +167,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     if !has(LIT) {
         var e = material.emissive.rgb;
         if has(EMISSIVE_MAP) {
-            e *= textureSample(emissive_map, emissive_sampler, uv).rgb;
+            e *= textureSampleBias(emissive_map, emissive_sampler, uv, TEXTURE_BIAS).rgb;
         }
         var a = material.emissive.a;
         if has(OPACITY_MAP) {
-            a *= textureSample(opacity_map, opacity_sampler, uv).a;
+            a *= textureSampleBias(opacity_map, opacity_sampler, uv, TEXTURE_BIAS).a;
         }
         out.color = vec4(e, a);
         return out;
@@ -201,7 +205,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     s.f0 = material.specular.rgb;
     s.legacy = !has(PACKED_SPECULAR);
     if has(SPECULAR_MAP) {
-        let rgm = textureSample(specular_map, specular_sampler, uv);
+        let rgm = textureSampleBias(specular_map, specular_sampler, uv, select(TEXTURE_BIAS, 0.0, has(PACKED_SPECULAR)));
         if has(PACKED_SPECULAR) {
             let metal = rgm.b;
             s.f0 = mix(vec3(0.04), dif_tex.rgb * material.specular.rgb, metal);
@@ -301,7 +305,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 
     var e = material.emissive.rgb;
     if has(EMISSIVE_MAP) {
-        e *= textureSample(emissive_map, emissive_sampler, uv).rgb;
+        e *= textureSampleBias(emissive_map, emissive_sampler, uv, TEXTURE_BIAS).rgb;
     }
     colour += e;
     out.color = vec4(colour, alpha);

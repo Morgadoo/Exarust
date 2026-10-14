@@ -78,3 +78,10 @@ The system SHALL draw small fires' flames as the original's particles. Particles
 #### Scenario: Menu torches
 - **WHEN** the main menu scene is shown at the original's camera
 - **THEN** each torch shows a rising, tapering flame about as tall as the original's
+
+### Requirement: Texture sampling
+The system SHALL sample material textures as the original does at its top texture quality with 4× supersampling. Filtering is 16× anisotropic. Colour textures get a −0.75 LOD bias; normal, gloss and packed specular maps get none.
+
+#### Scenario: Floor at a grazing angle
+- **WHEN** a floor is seen at a grazing angle
+- **THEN** its texture keeps fine detail instead of blurring to a low mip level

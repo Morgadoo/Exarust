@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use bevy::math::Affine3A;
 use bevy::prelude::*;
 use exa_assets::{Model, ModelLoader, PackKind, transform_from_rows};
 use exa_formats::level::LevelGrid;
@@ -252,6 +253,10 @@ pub fn spawn_grid(
         .collect();
 
     let mut stats = GridStats::default();
+    let mut uvs = FloorUvs {
+        meshes: &mut *loader.meshes,
+        cache: HashMap::new(),
+    };
     let mut children_cache: HashMap<*const Model, Vec<Vec<usize>>> = HashMap::new();
     let w = grid.width as i64;
     let h = grid.height as i64;
@@ -297,6 +302,7 @@ pub fn spawn_grid(
                     side_transform(side, centre),
                     parent,
                     &rules,
+                    &mut uvs,
                 )
             };
 
@@ -469,10 +475,70 @@ struct Strips {
     ceiling: bool,
 }
 
+/// Floor meshes re-mapped the way the original maps a cell's merged floor:
+/// `+`-material triangles get planar UVs, one square repeat per 6 m cell
+/// aligned to its borders (u = x/6 + ½, v = ½ − z/6 in cell-local metres,
+/// after the piece's rotation). Cached per mesh and cell-local placement.
+struct FloorUvs<'a> {
+    meshes: &'a mut Assets<Mesh>,
+    cache: HashMap<(AssetId<Mesh>, [i32; 7]), Handle<Mesh>>,
+}
+
+impl FloorUvs<'_> {
+    fn remap(&mut self, mesh: &Handle<Mesh>, local: Affine3A) -> Handle<Mesh> {
+        let (_, rotation, translation) = local.to_scale_rotation_translation();
+        let q = |v: f32| (v * 1000.0).round() as i32;
+        let key = (
+            mesh.id(),
+            [
+                q(rotation.x),
+                q(rotation.y),
+                q(rotation.z),
+                q(rotation.w),
+                q(translation.x),
+                q(translation.y),
+                q(translation.z),
+            ],
+        );
+        if let Some(h) = self.cache.get(&key) {
+            return h.clone();
+        }
+        let Some(source) = self.meshes.get(mesh) else {
+            return mesh.clone();
+        };
+        let mut m = source.clone();
+        let uv: Option<Vec<[f32; 2]>> = m
+            .attribute(Mesh::ATTRIBUTE_POSITION)
+            .and_then(|a| a.as_float3())
+            .map(|ps| {
+                ps.iter()
+                    .map(|&p| {
+                        let c = local.transform_point3(Vec3::from(p));
+                        [c.x / CELL_M + 0.5, 0.5 - c.z / CELL_M]
+                    })
+                    .collect()
+            });
+        let handle = match uv {
+            Some(uv) => {
+                m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
+                let _ = m.generate_tangents();
+                self.meshes.add(m)
+            }
+            None => mesh.clone(),
+        };
+        self.cache.insert(key, handle.clone());
+        handle
+    }
+}
+
+/// A grid cell's side, metres.
+const CELL_M: f32 = CELL_CM / 100.0;
+
 /// Spawns `node` (with the given transform in place of its own) and its
 /// descendants under `parent`. Direct children named `+F…` are the piece's
 /// own floor strip (its `+` materials take the floor set's surface), `+R…`
 /// its ceiling strip (only with ceilings), and `[…` occluders, never drawn.
+#[allow(clippy::too_many_arguments)]
 fn spawn_piece(
     commands: &mut Commands,
     model: &Model,
@@ -481,17 +547,29 @@ fn spawn_piece(
     transform: Transform,
     parent: Entity,
     rules: &PieceRules,
+    uvs: &mut FloorUvs,
 ) -> Strips {
     let mut strips = Strips::default();
     let whole_floor = rules
         .floor_set
         .as_ref()
         .is_some_and(|f| std::ptr::eq(f.as_ref(), model));
-    let root = spawn_node(commands, model, node, transform, parent, None, whole_floor);
+    // The piece in its cell: the side rotation, about the cell centre.
+    let cell_local = Affine3A::from_quat(transform.rotation);
+    let root = spawn_node(
+        commands,
+        model,
+        node,
+        transform,
+        parent,
+        None,
+        whole_floor.then_some((cell_local, &mut *uvs)),
+    );
     let mut stack: Vec<(
         usize,
         Entity,
         Option<&Handle<exa_render::material::ExaMaterial>>,
+        Affine3A,
     )> = Vec::new();
     for &k in &kids[node] {
         let name = model.nodes[k].name.as_bytes();
@@ -500,20 +578,21 @@ fn spawn_piece(
             [b'+', b'R', ..] => {
                 strips.ceiling = true;
                 if rules.ceilings {
-                    stack.push((k, root, None));
+                    stack.push((k, root, None, cell_local));
                 }
             }
             [b'+', b'F', ..] => {
                 strips.floor = true;
                 if let Some(surface) = &rules.surface {
-                    stack.push((k, root, Some(surface)));
+                    stack.push((k, root, Some(surface), cell_local));
                 }
             }
-            _ => stack.push((k, root, None)),
+            _ => stack.push((k, root, None, cell_local)),
         }
     }
-    while let Some((n, p, surface)) = stack.pop() {
+    while let Some((n, p, surface, above)) = stack.pop() {
         let floor = whole_floor || surface.is_some();
+        let local = above * model.nodes[n].transform.compute_affine();
         let e = spawn_node(
             commands,
             model,
@@ -521,9 +600,9 @@ fn spawn_piece(
             model.nodes[n].transform,
             p,
             surface,
-            floor,
+            floor.then_some((local, &mut *uvs)),
         );
-        stack.extend(kids[n].iter().map(|&k| (k, e, surface)));
+        stack.extend(kids[n].iter().map(|&k| (k, e, surface, local)));
     }
     strips
 }
@@ -535,25 +614,26 @@ fn spawn_node(
     transform: Transform,
     parent: Entity,
     surface: Option<&Handle<exa_render::material::ExaMaterial>>,
-    floor: bool,
+    mut floor: Option<(Affine3A, &mut FloorUvs)>,
 ) -> Entity {
     let n = &model.nodes[node];
     let e = commands
         .spawn((transform, Visibility::default(), ChildOf(parent)))
         .id();
     for (i, (mesh, material)) in n.parts.iter().enumerate() {
+        let surfaced = n.part_materials[i].starts_with('+');
         let material = match surface {
-            Some(s) if n.part_materials[i].starts_with('+') => s,
+            Some(s) if surfaced => s,
             _ => material,
         };
+        let mesh = match &mut floor {
+            Some((local, uvs)) if surfaced => uvs.remap(mesh, *local),
+            _ => mesh.clone(),
+        };
         let part = commands
-            .spawn((
-                Mesh3d(mesh.clone()),
-                MeshMaterial3d(material.clone()),
-                ChildOf(e),
-            ))
+            .spawn((Mesh3d(mesh), MeshMaterial3d(material.clone()), ChildOf(e)))
             .id();
-        if floor {
+        if floor.is_some() {
             commands.entity(part).insert(crate::gi_volume::GiFloor);
         }
     }

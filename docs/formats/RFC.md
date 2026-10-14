@@ -209,11 +209,16 @@ Exarust match the original look).
   (types 6–9), `00770FFF`; types 5–8 keep the centre floor.
 - Floors and ceilings are merged into `+Floor` and `+Ceiling` meshes per cell
   in the original; walls stay separate objects.
+- Every `+`-material triangle of a cell's floor (the centre variant, the edge
+  strips and the pieces' `+F…` strips) gets planar UVs `u = x/600 + 0.5`,
+  `v = 0.5 − z/600` in cell-local cm, after the piece's side rotation: one
+  square repeat per cell. The stored UVs are discarded. Ceilings, walls and
+  non-`+` materials keep their stored UVs.
 - Direct children of wall, corner and special-tile pieces are redirected:
   `+F…` is the piece's own floor strip and replaces the floor set's strip on
   that edge (slot 3, or 4 for corners). Its `+` materials take the floor
-  set's own `+` material, with planar UVs `u = x/600 + 0.5`, `v = 0.5 − z/600`
-  in cell-local cm. `+R…` is its ceiling strip and replaces the ceiling slot.
+  set's own `+` material. `+R…` is its ceiling strip and replaces the
+  ceiling slot.
   `[…` are occluders and are never drawn.
 - Plane A flag `0x800000` applies only to open cells without a wall set
   (nibble `F`). The original then adds a ceiling cap from the first wall set

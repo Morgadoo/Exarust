@@ -84,7 +84,8 @@ pub fn rfi_to_image(
         mag_filter: ImageFilterMode::Linear,
         min_filter: ImageFilterMode::Linear,
         mipmap_filter: ImageFilterMode::Linear,
-        anisotropy_clamp: 8,
+        // The original at its top texture quality: 2^4.
+        anisotropy_clamp: 16,
         ..ImageSamplerDescriptor::linear()
     });
     Ok(image)

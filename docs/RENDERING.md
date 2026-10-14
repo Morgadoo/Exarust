@@ -114,6 +114,18 @@ program.
   - the specular colour is ×3 with a specular map.
 - Emissive adds on top. Unlit materials show only their emissive.
 
+**Textures** are sampled with the original's settings at its top texture
+quality (`TextureQuality = 5`) and 4× supersampling:
+- anisotropic filtering 2^(4 − mode), so 16× for ordinary textures;
+- a LOD bias of base × f(supersample), with base −0.75 at quality 5 (−0.5 at
+  4, 0 below) and f = (ss − 1)/3 for ss ≥ 2. That gives −0.75. It applies
+  to colour textures (diffuse, emissive, opacity, legacy specular), not to
+  normal, gloss or packed specular maps. wgpu samplers have no bias, so the
+  shader applies it.
+
+Floor UVs are generated per cell (see `formats/RFC.md`, tile grids): one
+square repeat per 6 m cell.
+
 **Blending** comes from the material's blend word (`0x44`):
 - the source factor is bits 8–11 and the destination bits 0–3;
 - `0x100` is opaque;
