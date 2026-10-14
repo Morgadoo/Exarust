@@ -119,6 +119,12 @@ fn setup(
                         .entity(root)
                         .insert(exa_character::Wielded::model(w.clone()));
                 }
+                if options.limp {
+                    commands.entity(root).insert(exa_physics::body::GoLimp {
+                        velocity: Vec3::new(0.0, 0.5, -0.8),
+                        delay: 20,
+                    });
+                }
             }
             commands.spawn((
                 DirectionalLight {
@@ -129,7 +135,13 @@ fn setup(
             ));
             let floor = loader.meshes.add(Plane3d::default().mesh().size(6.0, 6.0));
             let floor_mat = loader.materials.add(Color::srgb(0.25, 0.23, 0.2));
-            commands.spawn((Mesh3d(floor), MeshMaterial3d(floor_mat)));
+            commands
+                .spawn((
+                    Transform::default(),
+                    Visibility::default(),
+                    exa_physics::StaticGeometry,
+                ))
+                .with_child((Mesh3d(floor), MeshMaterial3d(floor_mat)));
             pose = (Vec3::new(1.6, 1.4, 2.6), Vec3::new(0.0, 0.9, 0.0), 2.0);
         }
         View::Play(name) => {
@@ -372,9 +384,12 @@ fn spawn_placed_characters(
         }
         let root = root.id();
         let model = exa_world::spawn_model(commands, body, None);
-        let mut anim = exa_anim::Animator::new("Default", "Idle");
+        let anim = exa_anim::Animator::new("Default", "Idle");
         if c.dead {
-            anim.play_loop("Unconcious 1");
+            // The dead fall where they lie.
+            commands
+                .entity(model)
+                .insert(exa_physics::body::GoLimp::default());
         }
         commands.entity(model).insert((
             Transform::from_rotation(Quat::from_rotation_y(c.yaw)),

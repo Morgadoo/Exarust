@@ -21,6 +21,115 @@ pub struct Sequences {
     /// Bones as scene nodes; a bone's index is the two-digit prefix of its name.
     pub skeleton: Scene,
     pub motions: MotionSet,
+    /// Physical body data per skeleton node (same order as the nodes).
+    pub bodies: Vec<BoneBody>,
+}
+
+/// How a bone's body part joins its parent and touches the ground: links
+/// (point on this part, point on the parent, slack), foot contact points
+/// and shoulder pins, in the bone's space (metres).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BoneBody {
+    pub links: Vec<BoneLink>,
+    pub contacts: Vec<[f32; 3]>,
+    pub pins: Vec<[f32; 3]>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BoneLink {
+    pub flags: u32,
+    /// On this bone's part.
+    pub on_part: [f32; 3],
+    /// On the parent's part, in the parent's space.
+    pub on_parent: [f32; 3],
+    /// Free distance before the link pulls (0: a pivot).
+    pub slack: f32,
+    pub stiffness: f32,
+    pub smoothing: f32,
+}
+
+const BODY_DATA: u32 = 0x3DD0_B100;
+const LINKS: u32 = 0xDDB0;
+const CONTACTS: u32 = 0xDDBC;
+const PINS: u32 = 0xDDBB;
+/// Bytes of a scene node's header before its sub-chunks.
+const NODE_HEADER: usize = 112;
+/// Offset of the nested chunks inside the body data.
+const BODY_CHUNKS: usize = 0x5C;
+
+fn read_bodies(list: &[u8]) -> Result<Vec<BoneBody>> {
+    let mut r = Reader { b: list, pos: 0 };
+    let count = r.u32()? as usize;
+    let mut out = Vec::with_capacity(count.min(256));
+    for _ in 0..count {
+        r.u32()?;
+        let size = r.u32()? as usize;
+        let node = r.bytes(size)?;
+        let mut body = BoneBody::default();
+        let mut sub = Reader {
+            b: node,
+            pos: NODE_HEADER.min(node.len()),
+        };
+        while sub.b.len() - sub.pos >= 8 {
+            let tag = sub.u32()?;
+            let len = sub.u32()? as usize;
+            let data = sub.bytes(len)?;
+            if tag == BODY_DATA {
+                read_body_chunks(data.get(BODY_CHUNKS..).unwrap_or(&[]), &mut body)?;
+            }
+        }
+        out.push(body);
+    }
+    Ok(out)
+}
+
+fn read_body_chunks(b: &[u8], body: &mut BoneBody) -> Result<()> {
+    let mut r = Reader { b, pos: 0 };
+    let cm = |v: f32| v * CENTIMETRES_TO_METRES;
+    while r.b.len() - r.pos >= 8 {
+        let tag = r.u32()?;
+        let len = r.u32()? as usize;
+        let data = r.bytes(len)?;
+        let mut d = Reader { b: data, pos: 0 };
+        match tag {
+            LINKS => {
+                let n = d.u32()? as usize;
+                for _ in 0..n.min(16) {
+                    let flags = d.u32()?;
+                    let on_part = [d.f32()?, d.f32()?, d.f32()?].map(cm);
+                    let on_parent = [d.f32()?, d.f32()?, d.f32()?].map(cm);
+                    let slack = cm(d.f32()?);
+                    let stiffness = d.f32()?;
+                    let smoothing = d.f32()?;
+                    if flags & 4 != 0 {
+                        d.bytes(12)?; // slider axis
+                    }
+                    body.links.push(BoneLink {
+                        flags,
+                        on_part,
+                        on_parent,
+                        slack,
+                        stiffness,
+                        smoothing,
+                    });
+                }
+            }
+            CONTACTS | PINS => {
+                let n = d.u32()? as usize;
+                for _ in 0..n.min(16) {
+                    d.u32()?;
+                    let p = [d.f32()?, d.f32()?, d.f32()?].map(cm);
+                    if tag == CONTACTS {
+                        body.contacts.push(p);
+                    } else {
+                        body.pins.push(p);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default)]
@@ -97,6 +206,7 @@ impl Sequences {
     pub fn parse(b: &[u8]) -> Result<Self> {
         let mut skeleton = None;
         let mut motions = None;
+        let mut bodies = Vec::new();
         let mut pos = 0usize;
         while pos + 8 <= b.len() {
             let tag = u32::from_le_bytes(b[pos..pos + 4].try_into().expect("4 bytes"));
@@ -113,6 +223,7 @@ impl Sequences {
                     let mut framed = vec![0xCF, 0xAF, 0x23, 0x3D];
                     framed.extend_from_slice(&b[pos..pos + 8 + size]);
                     skeleton = Some(Scene::parse(&framed)?);
+                    bodies = read_bodies(data)?;
                 }
                 MOTION_SET => motions = Some(read_motions(data)?),
                 _ => {}
@@ -122,6 +233,7 @@ impl Sequences {
         Ok(Self {
             skeleton: skeleton.ok_or_else(|| Error::Malformed("no skeleton".into()))?,
             motions: motions.ok_or_else(|| Error::Malformed("no motion set".into()))?,
+            bodies,
         })
     }
 }

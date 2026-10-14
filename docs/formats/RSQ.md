@@ -14,8 +14,8 @@ chunk 0x00003DAB  motion set
 ## Bones
 
 Standard scene nodes. The first two characters of the name are the bone
-index (`01lvis` = 01 pelvis, `08umbar` = 08 lumbar); the rest of each node
-is sub-chunks (likely body-part collision shapes). Hierarchy:
+index (`01lvis` = 01 pelvis, `08umbar` = 08 lumbar); each node carries a
+physical-body chunk (see below). Hierarchy:
 
 ```
 01 pelvis ─ 02 femur ─ 03 lower leg ─ 04 foot
@@ -27,6 +27,45 @@ is sub-chunks (likely body-part collision shapes). Hierarchy:
 
 Character models (`humanbase.rfc`, …) are hierarchies of body-part meshes
 named with the same indices (`01Pelvis`, `09Chest`, `17RHand`).
+
+## Physical body (`0x3DD0B100`)
+
+Each bone node carries a body chunk. The node header is 112 bytes. Its
+nested sub-chunks start at offset `0x5C` inside the chunk:
+
+| chunk | content |
+|---|---|
+| `0xDDB0` | links to the parent part: u32 n, then n × {u32 flags, vec3 point on the part, vec3 point on the parent, f32 slack, f32 stiffness, f32 smoothing, vec3 axis if flags & 4} |
+| `0xDDBC` | foot contact points (each lower leg: one, at (±0.16, −48.97, 2.4) cm) |
+| `0xDDBB` | thorax pins (two shoulder points at (±10.4, 9.65, 1.25) cm) |
+
+All values are in cm. **Both points of a link are in the part's own rest
+frame.** The parent's point reaches the parent through the part's rest
+placement under it. In the rest pose the two points of every link lie
+within the slack. Each bone has 2 links; each hand has 3. One link is the
+pivot (knee: slack 0; hip: 3 cm). The other limits the joint's range
+(femur 14.9 cm, shin 12.7 cm).
+
+How the original simulates a body (`exa_physics::body`):
+
+- Every part is a rigid tetrahedron of 4 particles, kept rigid by its 6
+  edge lengths. The particles start from a regular template laid over the
+  part mesh's box (each extent at least 6 cm) and scaled by 1.25. The part's
+  frame follows the particles through the inverse rest matrix.
+- Verlet integration at 83 Hz with gravity −9.80665 m/s². Velocity retention
+  per second for characters is 0.2556 / 0.15 / 0.03, by speed (over 40, over
+  20, and under 20 cm/s). Slow bodies are damped hard, which acts as sleep.
+- Each tick runs 20 link iterations. A link is a hard radius: past its slack
+  it is corrected fully, the correction split by the parts' inverse masses
+  (relative masses: pelvis 0.45, thighs 0.7, shins 1, feet 2.8, lumbar
+  0.45, thorax 0.5, head 1, shoulders 1, upper arms 1.2, forearms 1.5,
+  hands 2.5).
+- Each tick then runs 8 contact iterations of sphere colliders against the
+  world. Friction cancels slip up to μ·(n_y²·0.99 + 0.01) times the contact
+  correction; past that, the limit is taken off. There is no restitution.
+- Dead characters (condition `0xA00`) are plain ragdolls without muscles.
+  Living bodies add a pose drive and PD muscles toward the animation,
+  plus balance; Exarust does not implement those yet.
 
 ## Motion set (`3DAB`)
 

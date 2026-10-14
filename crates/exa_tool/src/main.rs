@@ -171,8 +171,19 @@ fn main() -> Result<()> {
         Cmd::Rsq { entry } => {
             let seq = exa_formats::rsq::Sequences::parse(entry_bytes(&game, "Resource", &entry)?)?;
             println!("bones:");
-            for n in &seq.skeleton.nodes {
-                println!("  {:<16} parent {:?}", n.name, n.parent);
+            for (i, n) in seq.skeleton.nodes.iter().enumerate() {
+                let body = seq.bodies.get(i).cloned().unwrap_or_default();
+                println!(
+                    "  {:<16} parent {:?}  links {:?}  contacts {}  pins {}",
+                    n.name,
+                    n.parent,
+                    body.links
+                        .iter()
+                        .map(|l| (l.slack * 100.0).round() / 100.0)
+                        .collect::<Vec<_>>(),
+                    body.contacts.len(),
+                    body.pins.len()
+                );
             }
             let m = &seq.motions;
             println!("{} actions, {} movesets", m.actions.len(), m.movesets.len());

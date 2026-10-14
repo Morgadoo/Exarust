@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use exa_assets::{Game, PackKind, SkinnedPart};
-use exa_formats::rsq::{Clip, MotionSet, Sequences, bone_index};
+use exa_formats::rsq::{BoneBody, Clip, MotionSet, Sequences, bone_index};
 
 /// Clip time units per second (keys are stored in frames).
 pub const FRAMES_PER_SECOND: f32 = 60.0;
@@ -26,15 +26,25 @@ impl Plugin for AnimPlugin {
     }
 }
 
-/// The decoded motion set, loaded on demand.
+/// The decoded motion set, and the skeleton's physical body data by bone
+/// index, loaded on demand.
 #[derive(Resource, Clone)]
-pub struct Motions(pub Arc<MotionSet>);
+pub struct Motions(pub Arc<MotionSet>, pub Arc<HashMap<usize, BoneBody>>);
 
 impl Motions {
     pub fn load(game: &Game) -> Option<Self> {
         let bytes = game.0.pack(PackKind::Resource)?.get("humanoid.rsq")?;
         match Sequences::parse(bytes) {
-            Ok(seq) => Some(Self(Arc::new(seq.motions))),
+            Ok(seq) => {
+                let bodies = seq
+                    .skeleton
+                    .nodes
+                    .iter()
+                    .zip(seq.bodies)
+                    .filter_map(|(n, b)| Some((bone_index(&n.name)?, b)))
+                    .collect();
+                Some(Self(Arc::new(seq.motions), Arc::new(bodies)))
+            }
             Err(e) => {
                 error!("humanoid.rsq: {e}");
                 None

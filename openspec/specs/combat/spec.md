@@ -21,11 +21,11 @@ The system SHALL register at most one contact per attack and target, when the bl
 - **THEN** one hit on the nearest body part is reported
 
 ### Requirement: Damage and reactions
-The system SHALL reduce the target's health by an amount that grows with the square of the blade tip's speed, play a stagger reaction, and play a fall into the unconscious pose when health runs out.
+The system SHALL reduce the target's health by an amount that grows with the square of the blade tip's speed, play a stagger reaction, and make the body go limp when health runs out.
 
 #### Scenario: Knock-down
 - **WHEN** a fighter's health drops to zero or below
-- **THEN** it falls, stays down, and is no longer attacked
+- **THEN** its body goes limp and falls, it stays down, and it is no longer attacked
 
 ### Requirement: Duellist AI
 The system SHALL drive an opponent to face its target, approach to striking distance and attack at intervals with varied strikes, using the same animation and attack paths as the player.

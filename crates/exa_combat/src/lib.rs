@@ -176,7 +176,13 @@ fn react_to_hits(
         if f.health <= 0.0 && !f.down {
             f.down = true;
             info!("fighter {:?} is down", hit.target);
-            anim.play_once("Fall Backward", "Unconcious 1");
+            // The body goes limp and falls under the blow.
+            commands
+                .entity(hit.target)
+                .insert(exa_physics::body::GoLimp {
+                    velocity: Vec3::Y * 0.3,
+                    delay: 0,
+                });
         } else if !f.down {
             let stance = if anim.moveset == "Default" {
                 "Idle"

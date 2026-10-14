@@ -2,6 +2,7 @@
 //!
 //! Planned in Phase 4–7; see `README.md` next to this crate and `docs/PLAN.md`.
 
+pub mod limp;
 pub mod player;
 
 use bevy::prelude::*;
@@ -24,6 +25,7 @@ impl Plugin for GamePlugin {
             exa_audio::AudioPlugin,
             exa_script::ScriptPlugin,
             exa_ui::UiPlugin,
-        ));
+        ))
+        .add_plugins(limp::LimpPlugin);
     }
 }

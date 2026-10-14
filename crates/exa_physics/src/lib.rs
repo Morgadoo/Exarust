@@ -4,6 +4,8 @@
 //! This is the collision foundation. The articulated, motor-driven character
 //! body of the original (`docs/PLAN.md`, Phase 3) builds on it.
 
+pub mod body;
+
 use bevy::prelude::*;
 use rapier3d::control::{CharacterAutostep, CharacterLength, KinematicCharacterController};
 use rapier3d::prelude::*;
@@ -29,7 +31,8 @@ impl Plugin for PhysicsPlugin {
             .add_systems(
                 FixedUpdate,
                 (register_characters, move_characters, step_world).chain(),
-            );
+            )
+            .add_systems(Update, (release_characters, body::step_ragdolls));
     }
 }
 
@@ -90,6 +93,19 @@ fn register_characters(
             body: handle,
             collider,
         });
+    }
+}
+
+/// Removes the capsules of characters that stopped being controlled (a
+/// body gone limp keeps no capsule).
+fn release_characters(
+    mut commands: Commands,
+    mut physics: ResMut<Physics>,
+    released: Query<(Entity, &CharacterHandles), Without<CharacterBody>>,
+) {
+    for (e, handles) in &released {
+        physics.0.remove_body_with_colliders(handles.body, true);
+        commands.entity(e).remove::<CharacterHandles>();
     }
 }
 

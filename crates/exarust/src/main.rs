@@ -13,6 +13,7 @@
 //!          --frames <n>               frames to wait before the screenshot (default 90)
 //!          --ev <ev100>               camera exposure (default 6, lower is brighter)
 //!          --ceilings                 build ceilings of tile-grid levels
+//!          --limp                     character view: the body goes limp and falls
 //!          --outfit a,b,c             apparel for character/play (Characters.rpk entries)
 //!          --weapon <name>            weapon in the right hand (Objects.rpk entry)
 //!          --opponent                 an armed duellist in play mode (F: combat mode, left click: attack)
@@ -51,6 +52,8 @@ pub struct Options {
     pub ceilings: bool,
     /// Hold "forward" in play mode (for unattended checks).
     pub autowalk: bool,
+    /// Character view: let the body go limp and fall.
+    pub limp: bool,
     /// Apparel for the character (`Characters.rpk` entries).
     pub outfit: Vec<String>,
     /// Weapon in the right hand (`Objects.rpk` entry).
@@ -81,6 +84,7 @@ fn main() -> AppExit {
             "--game" => game_dir = args.next().map(PathBuf::from),
             "--screenshot" => options.screenshot = args.next().map(PathBuf::from),
             "--ceilings" => options.ceilings = true,
+            "--limp" => options.limp = true,
             "--autowalk" => options.autowalk = true,
             "--weapon" => options.weapon = args.next(),
             "--opponent" => options.opponent = true,

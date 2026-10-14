@@ -6,6 +6,7 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+exa_physics.workspace = true
 bevy.workspace = true
 exa_anim.workspace = true
 exa_world.workspace = true
