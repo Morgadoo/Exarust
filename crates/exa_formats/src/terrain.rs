@@ -48,6 +48,8 @@ pub struct TerrainTile {
     pub x: u32,
     pub y: u32,
     pub flags: u32,
+    /// Seed of the tile's grass and plant placement.
+    pub vegetation_seed: u32,
     /// 244 × 244 row-major apron grid, metres; see [`TerrainTile::height`].
     heights: Vec<f32>,
     holes: Option<Vec<u8>>,
@@ -136,7 +138,7 @@ fn read_tile(b: &[u8], to_metres: f32) -> Result<TerrainTile> {
     let flags = r.u32()?;
     let x = r.u32()?;
     let y = r.u32()?;
-    r.u32()?;
+    let vegetation_seed = r.u32()?;
     let heights = r
         .bytes(HEIGHTS_BYTES)?
         .as_chunks::<4>()
@@ -172,6 +174,7 @@ fn read_tile(b: &[u8], to_metres: f32) -> Result<TerrainTile> {
         x,
         y,
         flags,
+        vegetation_seed,
         heights,
         holes,
         layers,

@@ -33,7 +33,7 @@ x along +X and y along +Z.
 |---|---|
 | u32 | flags (`0x200`: has a hole mask) |
 | u32 × 2 | grid x, y |
-| u32 | unknown (differs per tile, perhaps a checksum) |
+| u32 | vegetation seed (random when the tile was created) |
 | f32 [244 × 244] | heights, row-major (rows = y) |
 | u8 [31 × 241] | hole mask, only with flag `0x200` |
 | chunks | `0xBD01`: painted layers |
@@ -144,5 +144,34 @@ displacement pass (B) and the grass placed from the plant records.
 
 ### Plant (104 bytes)
 
-`u32 flags`, `name[16]` (an object, e.g. `Trn_GrassA01`), then 21 f32
-parameters (colours and sizes). Not interpreted yet.
+`u32 flags`, `name[16]` (e.g. `Trn_GrassA01`), then 21 f32. The runtime reads
+only the first record's f0..f2, the plants' colour (a linear multiplier); the
+names and other values are editor data.
+
+## Vegetation
+
+One system grows grass and plants (`exa_world::terrain::vegetation`):
+
+- **Shapes**: every mesh of `trn_grassa02.rfc` (1 grass), `trn_splnta02.rfc`
+  (6 small) and `trn_lplnta02.rfc` (29 large) is a variant, all textured with
+  `PlantSet_01D`/`N`. Grass is shrunk to 0.75. Grass and small plants are
+  lit as if facing up. Alpha test 0.1, no wind, no fade.
+- **Points**: one Poisson-disc set for every tile, from the 32-bit LCG
+  (`s = s·0x08088405 + 1`) seeded `0x17972D3E`: radius 1.3 vertex steps
+  (26 cm) over 240 × 240, 30 attempts per active point, margin r/4. The set
+  is partitioned in place into 8 × 8 chunks of 6 m, rows first.
+- **Density**: the mask pass layers each material's f13 (green), with cover
+  forced to 1. A point reads it as a byte, d = G/255 − 0.2, or −1 in a hole.
+  Nothing grows below d = 0.35, so only materials with f13 ≥ 0.55 (e.g.
+  `Mat GrassT`) carry plants.
+- **Choice** (tile seed, the `.rft` tile word after x and y): for every
+  point in chunk order, two steps decide: grass when (s·N)>>32 < 10 with
+  N = round(50d²), then the variant. A second pass, two steps per point,
+  gives rotation rand·2π (applied times 2π again) and scale
+  (2d + 0.1)(0.4 + 0.33·rand).
+- **Placement**: on the displaced ground of the cell's triangle, rotated
+  about Y only, never tilted to the slope.
+
+Each tile also hangs a 0.5 m skirt from its edges (an Exarust addition). It
+hides cracks where neighbouring tiles, keeping different materials, lift a
+shared edge differently.

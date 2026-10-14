@@ -10,6 +10,7 @@
 
 pub mod blend;
 pub mod height;
+pub mod vegetation;
 
 use bevy::asset::{AssetPath, RenderAssetUsages, embedded_asset, embedded_path};
 use bevy::mesh::{Indices, PrimitiveTopology};
@@ -26,7 +27,7 @@ use exa_formats::terrain::{
 };
 
 use blend::{NoiseMaps, RuleTree, over_alphas};
-use height::{HeightLayer, Plane, displacement};
+use height::{HeightLayer, Plane, displacement, vegetation as vegetation_density};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -37,6 +38,8 @@ const SPLAT_LAYERS: usize = 4;
 const UV_PER_METRE: f32 = 4.0 / 48.0;
 /// Diffuse colour is texture × tint × this.
 const TINT_GAIN: f32 = 1.5;
+/// Depth of the skirt below each tile's edge, metres.
+const SKIRT_DEPTH: f32 = 0.5;
 /// Materials whose share of a tile is below this are dropped.
 const MIN_TILE_SHARE: f32 = 1.0 / 510.0;
 
@@ -155,6 +158,179 @@ pub struct TerrainStats {
     pub unresolved_layers: usize,
     /// Tiles that use more materials than the four a tile can show.
     pub truncated_tiles: usize,
+    /// Grass tufts and plants grown.
+    pub plants: usize,
+}
+
+/// Plant models baked onto terrain chunks: grass first, then the small and
+/// large plants, sharing one material.
+struct Plants {
+    variants: Vec<vegetation::Variant>,
+    grass: usize,
+    material: Handle<StandardMaterial>,
+}
+
+impl Plants {
+    const MODELS: [&str; 3] = ["trn_grassa02.rfc", "trn_splnta02.rfc", "trn_lplnta02.rfc"];
+
+    fn load(loader: &mut ModelLoader<'_>, palette: &Palette) -> Option<Self> {
+        let mut variants = Vec::new();
+        let mut grass = 0;
+        for (kind, name) in Self::MODELS.iter().enumerate() {
+            let model = loader.model(PackKind::Resource, name)?;
+            for node in &model.nodes {
+                let mut v = vegetation::Variant::default();
+                for (mesh, _) in &node.parts {
+                    let Some(mesh) = loader.meshes.get(mesh) else {
+                        continue;
+                    };
+                    append_mesh(&mut v, mesh);
+                }
+                if v.indices.is_empty() {
+                    continue;
+                }
+                // Grass and small plants are lit as if facing up; grass is smaller.
+                if kind < 2 {
+                    v.normals.iter_mut().for_each(|n| *n = Vec3::Y);
+                }
+                if kind == 0 {
+                    v.positions
+                        .iter_mut()
+                        .for_each(|p| *p *= vegetation::GRASS_SCALE);
+                    grass += 1;
+                }
+                variants.push(v);
+            }
+        }
+        let tint = palette.plants.first().map_or([0.72, 0.68, 0.76], |p| {
+            std::array::from_fn(|i| p.params.get(i).copied().unwrap_or(1.0))
+        });
+        let base_color_texture = loader
+            .texture("plantset_01d", ColorSpace::Srgb)
+            .map(|(t, _)| t);
+        let normal_map_texture = loader
+            .texture("plantset_01n", ColorSpace::Linear)
+            .map(|(t, _)| t);
+        let material = loader.materials.add(StandardMaterial {
+            // The shader multiplies the texture by the tint as is.
+            base_color: Color::linear_rgb(tint[0], tint[1], tint[2]),
+            base_color_texture,
+            normal_map_texture,
+            alpha_mode: AlphaMode::Mask(0.1),
+            double_sided: true,
+            cull_mode: None,
+            perceptual_roughness: 0.8,
+            ..default()
+        });
+        Some(Self {
+            variants,
+            grass,
+            material,
+        })
+    }
+
+    /// Grows a tile's plants as chunk meshes under `tile_entity`; returns
+    /// how many grew.
+    fn spawn(
+        &self,
+        commands: &mut Commands,
+        loader: &mut ModelLoader<'_>,
+        terrain: &Terrain,
+        tile: &TerrainTile,
+        built: &BuiltTile,
+        tile_entity: Entity,
+    ) -> usize {
+        let n = TILE_VERTICES;
+        let last = (n - 2) as f32;
+        let density = |p: bevy::math::Vec2| {
+            if tile.is_hole(p.x.round() as usize, p.y.round() as usize) {
+                return -1.0;
+            }
+            let i = (p.x * last / (n - 1) as f32).round() as usize;
+            let j = (p.y * last / (n - 1) as f32).round() as usize;
+            built.density[j * n + i]
+        };
+        let growth = vegetation::grow(
+            tile.vegetation_seed,
+            self.grass,
+            self.variants.len() - self.grass,
+            density,
+        );
+        let s = terrain.spacing;
+        let half = (n - 1) as f32 * 0.5 * s;
+        let place = |p: bevy::math::Vec2| {
+            Vec3::new(
+                p.x * s - half,
+                vegetation::ground(&built.heights, n, p),
+                p.y * s - half,
+            )
+        };
+        let mut grown = 0;
+        for (k, chunk) in growth.iter().enumerate() {
+            if chunk.is_empty() {
+                continue;
+            }
+            grown += chunk.len();
+            let baked = vegetation::bake(&self.variants, chunk, place);
+            let mut mesh = Mesh::new(
+                PrimitiveTopology::TriangleList,
+                RenderAssetUsages::default(),
+            );
+            mesh.insert_attribute(
+                Mesh::ATTRIBUTE_POSITION,
+                baked
+                    .positions
+                    .iter()
+                    .map(|p| p.to_array())
+                    .collect::<Vec<_>>(),
+            );
+            mesh.insert_attribute(
+                Mesh::ATTRIBUTE_NORMAL,
+                baked
+                    .normals
+                    .iter()
+                    .map(|p| p.to_array())
+                    .collect::<Vec<_>>(),
+            );
+            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, baked.uvs);
+            mesh.insert_indices(Indices::U32(baked.indices));
+            let _ = mesh.generate_tangents();
+            commands.spawn((
+                Name::new(format!("plants {}", k)),
+                Mesh3d(loader.meshes.add(mesh)),
+                MeshMaterial3d(self.material.clone()),
+                Transform::IDENTITY,
+                Visibility::default(),
+                ChildOf(tile_entity),
+            ));
+        }
+        grown
+    }
+}
+
+/// Appends a Bevy mesh's positions, normals, UVs and indices to a variant.
+fn append_mesh(v: &mut vegetation::Variant, mesh: &Mesh) {
+    use bevy::mesh::VertexAttributeValues as A;
+    let Some(A::Float32x3(positions)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else {
+        return;
+    };
+    let base = v.positions.len() as u32;
+    v.positions.extend(positions.iter().map(|p| Vec3::from(*p)));
+    match mesh.attribute(Mesh::ATTRIBUTE_NORMAL) {
+        Some(A::Float32x3(n)) => v.normals.extend(n.iter().map(|p| Vec3::from(*p))),
+        _ => v
+            .normals
+            .extend(std::iter::repeat_n(Vec3::Y, positions.len())),
+    }
+    match mesh.attribute(Mesh::ATTRIBUTE_UV_0) {
+        Some(A::Float32x2(uv)) => v.uvs.extend_from_slice(uv),
+        _ => v
+            .uvs
+            .extend(std::iter::repeat_n([0.0, 0.0], positions.len())),
+    }
+    if let Some(indices) = mesh.indices() {
+        v.indices.extend(indices.iter().map(|i| i as u32 + base));
+    }
 }
 
 /// Spawns the terrain stored beside a level (`<level>.rft`), if any, under
@@ -219,13 +395,15 @@ pub fn spawn_terrain(
                     mask: plane(material.texture(TerrainTexture::Mask)),
                     sharpness: look.sharpness,
                     tiling: look.tiling,
+                    vegetation: p(13, 0.0),
                 }
             })
             .collect()
     };
+    let plants = Plants::load(loader, &palette);
     let mut stats = TerrainStats::default();
     for tile in &terrain.tiles {
-        let built = build_tile(&terrain, tile, &palette, &tree, &noise, &mut height_layers);
+        let mut built = build_tile(&terrain, tile, &palette, &tree, &noise, &mut height_layers);
         stats.unresolved_layers += built.unresolved;
         stats.truncated_tiles += usize::from(built.truncated);
         let mut splat = TerrainSplat::default();
@@ -270,14 +448,19 @@ pub fn spawn_terrain(
             }
         }
         let centre = terrain.tile_centre(tile);
-        commands.spawn((
-            Name::new(format!("terrain {} {}", tile.x, tile.y)),
-            Mesh3d(loader.meshes.add(built.mesh)),
-            PendingSplat(splat),
-            Transform::from_xyz(centre[0], 0.0, centre[1]),
-            Visibility::default(),
-            ChildOf(parent),
-        ));
+        let tile_entity = commands
+            .spawn((
+                Name::new(format!("terrain {} {}", tile.x, tile.y)),
+                Mesh3d(loader.meshes.add(built.mesh.take().expect("built once"))),
+                PendingSplat(splat),
+                Transform::from_xyz(centre[0], 0.0, centre[1]),
+                Visibility::default(),
+                ChildOf(parent),
+            ))
+            .id();
+        if let Some(plants) = &plants {
+            stats.plants += plants.spawn(commands, loader, &terrain, tile, &built, tile_entity);
+        }
         stats.tiles += 1;
     }
     Some(stats)
@@ -316,7 +499,11 @@ impl Look {
 }
 
 struct BuiltTile {
-    mesh: Mesh,
+    /// Taken when the tile spawns.
+    mesh: Option<Mesh>,
+    /// Displaced vertex heights (metres) and vegetation density per vertex.
+    heights: Vec<f32>,
+    density: Vec<f32>,
     /// Palette material indices, one per vertex-colour channel, ascending.
     materials: Vec<usize>,
     unresolved: usize,
@@ -388,11 +575,18 @@ fn build_tile(
     // Opacities for the shader, and the height pass moving the vertices.
     let centre = terrain.tile_centre(tile);
     let lift = height_layers(&used);
+    let mut density = vec![0.0f32; n * n];
     let colours: Vec<[f32; 4]> = (0..n * n)
         .map(|v| {
             let w = &weights[v * m..(v + 1) * m];
             let kept: Vec<f32> = used.iter().map(|&i| w[i]).collect();
             let alphas = over_alphas(&kept);
+            density[v] = vegetation_density(
+                &lift,
+                &alphas,
+                positions[v][0] + centre[0],
+                positions[v][2] + centre[1],
+            );
             let p = &mut positions[v];
             p[1] += displacement(
                 &lift,
@@ -405,6 +599,7 @@ fn build_tile(
         })
         .collect();
     let normals = grid_normals(&positions, n);
+    let heights: Vec<f32> = positions.iter().map(|p| p[1]).collect();
 
     let mut indices = Vec::with_capacity((n - 1) * (n - 1) * 6);
     for j in 0..n - 1 {
@@ -419,6 +614,32 @@ fn build_tile(
             indices.extend_from_slice(&[a, c, b, b, c, d]);
         }
     }
+    // A skirt hanging from the tile's edge hides cracks where neighbouring
+    // tiles lift a shared edge differently.
+    let mut normals = normals;
+    let mut colours = colours;
+    let edge: Vec<usize> = (0..n - 1)
+        .chain((0..n - 1).map(|j| j * n + n - 1))
+        .chain((1..n).rev().map(|i| (n - 1) * n + i))
+        .chain((1..n).rev().map(|j| j * n))
+        .collect();
+    let first_skirt = positions.len() as u32;
+    for &v in &edge {
+        let mut p = positions[v];
+        p[1] -= SKIRT_DEPTH;
+        positions.push(p);
+        normals.push(normals[v]);
+        uvs.push(uvs[v]);
+        colours.push(colours[v]);
+    }
+    for k in 0..edge.len() {
+        let (a, b) = (edge[k] as u32, edge[(k + 1) % edge.len()] as u32);
+        let (c, d) = (
+            first_skirt + k as u32,
+            first_skirt + ((k + 1) % edge.len()) as u32,
+        );
+        indices.extend_from_slice(&[a, b, c, b, d, c, a, c, b, b, c, d]);
+    }
 
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
@@ -430,7 +651,9 @@ fn build_tile(
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colours);
     mesh.insert_indices(Indices::U32(indices));
     BuiltTile {
-        mesh,
+        mesh: Some(mesh),
+        heights,
+        density,
         materials: used,
         unresolved,
         truncated,

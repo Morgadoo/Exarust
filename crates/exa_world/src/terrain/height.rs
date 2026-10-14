@@ -66,6 +66,8 @@ pub struct HeightLayer {
     pub sharpness: [f32; 2],
     /// Texture repeats per metre.
     pub tiling: f32,
+    /// Vegetation density this material paints (green of its mask colour).
+    pub vegetation: f32,
 }
 
 impl HeightLayer {
@@ -99,6 +101,26 @@ pub fn displacement(layers: &[HeightLayer], alphas: &[f32], x: f32, z: f32, up: 
     (byte - 127.0) * CM_PER_STEP * (2.0 - up) / 100.0
 }
 
+/// Vegetation density at world (`x`, `z`): the materials' mask-pass green
+/// layered by their opacities and blend masks, stored as a byte, less 0.2.
+pub fn vegetation(layers: &[HeightLayer], alphas: &[f32], x: f32, z: f32) -> f32 {
+    let mut total = 0.0;
+    for (k, layer) in layers.iter().enumerate() {
+        if k == 0 {
+            total = layer.vegetation;
+            continue;
+        }
+        let (u, v) = (x * layer.tiling, z * layer.tiling);
+        let mut op = alphas.get(k).copied().unwrap_or(0.0);
+        if let Some(mask) = &layer.mask {
+            let [s, t] = layer.sharpness;
+            op = ((s + t) * op - s * (1.0 - mask.sample(u, v))).clamp(0.0, 1.0);
+        }
+        total = total * (1.0 - op) + layer.vegetation * op;
+    }
+    (total * 255.0).round().clamp(0.0, 255.0) / 255.0 - 0.2
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,7 +134,16 @@ mod tests {
             mask: None,
             sharpness: [1.0, 0.0],
             tiling: 1.0,
+            vegetation: 0.0,
         }
+    }
+
+    #[test]
+    fn vegetation_follows_the_covering_material() {
+        let mut grass = flat(0.5);
+        grass.vegetation = 1.0;
+        let d = vegetation(&[flat(0.5), grass], &[1.0, 1.0], 0.0, 0.0);
+        assert!((d - 0.8).abs() < 1e-5);
     }
 
     #[test]

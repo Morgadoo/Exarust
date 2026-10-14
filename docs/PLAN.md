@@ -135,9 +135,10 @@ Done (change `add-level-lighting`): the level environment record (ambient
 colour, extent, sun) and the original's per-level presets: sunlight with
 shadows and fog on the outdoor arenas.
 Done (change `refine-grid-and-terrain`): wall pieces' own floor/ceiling
-strips and occluders, the terrain height pass.
+strips and occluders, the terrain height pass. Done (change
+`add-vegetation`): grass and plants grown as the original grows them.
 Remaining: ceiling caps of terrain cells, per-room mesh merging, rooms and
-portals, terrain gloss textures, fine displacement and grass, the sky, time of day
+portals, terrain gloss textures, fine displacement, the sky, time of day
 and weather of the outdoor arenas,
 sectors/portals (the room flood fill is understood),
 `exanima://` asset source, streaming.
