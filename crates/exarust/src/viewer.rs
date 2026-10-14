@@ -107,9 +107,10 @@ fn setup(
             }
             if let Some(body) = loader.model(PackKind::Resource, "humanbase.rfc") {
                 let root = exa_world::spawn_model(&mut commands, &body, None);
-                commands
-                    .entity(root)
-                    .insert(exa_anim::Animator::new(moveset, action));
+                commands.entity(root).insert((
+                    exa_anim::Animator::new(moveset, action),
+                    exa_character::Outfit(options.outfit.clone()),
+                ));
             }
             commands.spawn((
                 DirectionalLight {
@@ -151,6 +152,7 @@ fn setup(
                 commands.entity(model).insert((
                     exa_anim::Animator::new("Default", "Idle"),
                     exa_game::player::PlayerBody { yaw: 0.0 },
+                    exa_character::Outfit(options.outfit.clone()),
                     ChildOf(player),
                 ));
             }

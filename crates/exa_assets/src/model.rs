@@ -164,6 +164,13 @@ impl ModelLoader<'_> {
         if let Some(h) = self.cache.materials.get(&key) {
             return h.clone();
         }
+        // `&` names are resolved at run time by the item system; their texture
+        // set follows from the name (see `apparel_texture_key`).
+        if let Some(texture_key) = apparel_texture_key(name) {
+            let handle = self.apparel_material(&texture_key);
+            self.cache.materials.insert(key, handle.clone());
+            return handle;
+        }
         let source = local.or_else(|| library_material(self.game, name));
         let mut mat = StandardMaterial {
             perceptual_roughness: 0.85,
@@ -201,6 +208,28 @@ impl ModelLoader<'_> {
         let handle = self.materials.add(mat);
         self.cache.materials.insert(key, handle.clone());
         handle
+    }
+
+    fn apparel_material(&mut self, texture_key: &str) -> Handle<StandardMaterial> {
+        let mut mat = StandardMaterial {
+            perceptual_roughness: 0.8,
+            metallic: 0.0,
+            reflectance: 0.3,
+            ..default()
+        };
+        match self.texture(&format!("{texture_key}d"), ColorSpace::Srgb) {
+            Some((img, alpha)) => {
+                mat.base_color_texture = Some(img);
+                if alpha {
+                    mat.alpha_mode = AlphaMode::Mask(0.5);
+                }
+            }
+            None => mat.base_color = Color::srgb(0.5, 0.45, 0.4),
+        }
+        if let Some((img, _)) = self.texture(&format!("{texture_key}n"), ColorSpace::Linear) {
+            mat.normal_map_texture = Some(img);
+        }
+        self.materials.add(mat)
     }
 
     /// Image handle and whether it has alpha.
@@ -282,4 +311,41 @@ fn group_mesh(mesh: &RfcMesh, indices: &[u32]) -> Option<Mesh> {
         let _ = m.generate_tangents();
     }
     Some(m)
+}
+
+/// Texture-name stem for a run-time material `&<model><set><n>`: the model
+/// name's base padded with `_` to eight characters, its variant, then the
+/// texture set (`&doublet_ba1` → `doublet_ba`, completed with `d`, `n`, `m1`).
+pub fn apparel_texture_key(material: &str) -> Option<String> {
+    let rest = material.strip_prefix('&')?;
+    let rest = rest.trim_end_matches(|c: char| c.is_ascii_digit());
+    let (model, set) = rest.split_at(rest.len().checked_sub(1)?);
+    let (base, variant) = model.rsplit_once('_')?;
+    if base.is_empty() || variant.is_empty() {
+        return None;
+    }
+    let base = base.trim_end_matches('_');
+    Some(format!("{base:_<8}{variant}{set}").to_ascii_lowercase())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apparel_keys() {
+        assert_eq!(
+            apparel_texture_key("&doublet_ba1").as_deref(),
+            Some("doublet_ba")
+        );
+        assert_eq!(
+            apparel_texture_key("&armet___ba1").as_deref(),
+            Some("armet___ba")
+        );
+        assert_eq!(
+            apparel_texture_key("&helm_ba2").as_deref(),
+            Some("helm____ba")
+        );
+        assert_eq!(apparel_texture_key("skinhuman"), None);
+    }
 }

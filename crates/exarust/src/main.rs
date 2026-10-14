@@ -12,6 +12,7 @@
 //!          --frames <n>               frames to wait before the screenshot (default 90)
 //!          --ev <ev100>               camera exposure (default 6, lower is brighter)
 //!          --ceilings                 build ceilings of tile-grid levels
+//!          --outfit a,b,c             apparel for character/play (Characters.rpk entries)
 //! ```
 //!
 //! Controls: hold the right mouse button to look, WASD to move, Q/E down/up,
@@ -45,6 +46,8 @@ pub struct Options {
     pub ceilings: bool,
     /// Hold "forward" in play mode (for unattended checks).
     pub autowalk: bool,
+    /// Apparel for the character (`Characters.rpk` entries).
+    pub outfit: Vec<String>,
 }
 
 fn usage() -> AppExit {
@@ -70,6 +73,15 @@ fn main() -> AppExit {
             "--screenshot" => options.screenshot = args.next().map(PathBuf::from),
             "--ceilings" => options.ceilings = true,
             "--autowalk" => options.autowalk = true,
+            "--outfit" => {
+                options.outfit = args
+                    .next()
+                    .unwrap_or_default()
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+            }
             "--ev" => options.ev100 = args.next().and_then(|v| v.parse().ok()).unwrap_or(6.0),
             "--frames" => options.frames = args.next().and_then(|v| v.parse().ok()).unwrap_or(90),
             "--camera" => {

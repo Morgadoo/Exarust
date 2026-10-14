@@ -1,12 +1,13 @@
 [package]
 name = "exa_character"
-description = "Characters"
+description = "Characters: bodies, apparel fitted to body parts, stats, injuries"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
 
 [dependencies]
 bevy.workspace = true
+exa_anim.workspace = true
 exa_assets.workspace = true
 exa_formats.workspace = true
 

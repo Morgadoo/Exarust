@@ -2272,6 +2272,7 @@ name = "exa_character"
 version = "0.0.1"
 dependencies = [
  "bevy",
+ "exa_anim",
  "exa_assets",
  "exa_formats",
 ]
@@ -2390,6 +2391,7 @@ dependencies = [
  "bevy",
  "exa_anim",
  "exa_assets",
+ "exa_character",
  "exa_game",
  "exa_physics",
  "exa_world",
