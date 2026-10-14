@@ -4,6 +4,7 @@
 
 pub mod environment;
 pub mod fire;
+pub mod flame;
 pub mod gi_volume;
 pub mod grid;
 pub mod start;
@@ -23,6 +24,7 @@ impl Plugin for WorldPlugin {
             terrain::TerrainPlugin,
             environment::EnvironmentPlugin,
             fire::FirePlugin,
+            flame::FlamePlugin,
             gi_volume::GiVolumePlugin,
         ));
     }

@@ -222,8 +222,44 @@ Every tick the intensity is density · (1 + 0.05·x) · base:
   +1, v += u past −1, otherwise v += 2(u − ½); then x += 0.3·v·u.
 - The density ramps in as 0.8·density + 0.2·(live particles / maximum).
 
-Candles have no fire and give no light. The flame itself is premultiplied
-particles with a nine-key colour ramp (not done yet).
+Candles have no fire and give no light.
+
+**Flame particles** (`exa_world::flame`, small fires such as torches; all
+lengths in cm, and the simulation runs at the 83 Hz tick):
+- **Template** for size s:
+  - rate round(250s) per second, lifetime 1.25 s (103 ticks);
+  - half-size 10·(0.5 + 0.5s), growing by twice that over the life;
+  - spawn ring 35·(0.5s + s²) (4.9 for a torch);
+  - buoyancy −1.25s × gravity (it rises);
+  - pull toward the axis 0.0007 per tick; reach 140s; "full" count
+    round(450·(0.9s² + 0.1s)).
+- **Emission**: an accumulator drops by 1 with probability ⅔ each tick
+  (and faster after several deaths at once). While it is below 1, a
+  particle spawns and the accumulator gains (83/rate)·⅔. New particles
+  start at rest at r·(cos θ, 0, −sin θ) from the node, with r = ring·(1 −
+  u⁴), inheriting 0.3 of the node's own motion.
+- **Each tick**:
+  - a particle loses an extra tick half the time;
+  - its life is cut to round((reach − D)·L/reach) when that is shorter,
+    with D = |(x, 0.7y, z)| from the node;
+  - dead particles at the head are dropped;
+  - Verlet step: d = p − q, d.y += gravity·buoyancy, then the pull
+    toward the axis.
+  
+  A torch's wisps live about half a second and rise about 40 cm.
+- **Drawing**: each particle is a diamond facing the camera, with its long
+  axis along its motion (plus 0.25 cm/tick up, so resting particles point
+  up). Half-width = half-size + ℓ·t²·growth, where ℓ is the sine between
+  the motion and the view. It is stretched along the motion by
+  (2 − 2/(|w| + 1))·0.6·angle.
+  - UVs: one of the four wisps of `FirePrt02` (a 2 × 2 atlas), under one of
+    the eight symmetries of the square.
+  - Colour: eleven keys over the life (RGB × 0.7 for keys 2–10; odd ring
+    slots run one key later), used as linear bytes/255.
+  - Output: texture × colour, premultiplied (ONE, ONE_MINUS_SRC_ALPHA), with
+    no depth writes, drawn oldest first.
+- The fire's density follows 0.8·density + 0.2·live/full each tick; it
+  settles a little above 1.
 
 ## Cameras
 
@@ -234,7 +270,7 @@ particles with a nine-key colour ramp (not done yet).
 
 ## Not done yet
 
-Flame particles, the sun and terrain in the GI volume, several resident GI
+Medium and large fire templates, the sun and terrain in the GI volume, several resident GI
 blocks, fog, displacement and parallax, vertex
 dirt, glass refraction, effect programs (smoke, powers), hair and skin
 programs, terrain on the new shading, and the outdoor environment cube.

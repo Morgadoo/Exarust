@@ -2,6 +2,7 @@
 //! chain replaces Bevy's tonemapping (grading curve, bloom); materials and
 //! lighting follow. Rules: `docs/RENDERING.md`.
 
+pub mod flame;
 pub mod gi;
 pub mod material;
 pub mod post;
@@ -12,7 +13,12 @@ pub struct RenderPlugin;
 
 impl Plugin for RenderPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((post::PostPlugin, material::MaterialsPlugin, gi::GiPlugin))
+        app.add_plugins((
+            post::PostPlugin,
+            material::MaterialsPlugin,
+            gi::GiPlugin,
+            flame::FlamePlugin,
+        ))
             // Cube shadow maps of lights and fires.
             .insert_resource(bevy::light::PointLightShadowMap { size: 512 });
     }

@@ -25,8 +25,8 @@ const SMALL_WIDENED_FROM: f32 = 0.2;
 /// Height of the light above the fire node, metres.
 const SMALL_LIFT: f32 = 0.05;
 const LARGE_LIFT: f32 = 0.40;
-/// Flicker steps per second.
-const TICK_HZ: f32 = 83.0;
+/// Flicker and particle steps per second.
+pub(crate) const TICK_HZ: f32 = 83.0;
 
 /// A burning fire's light.
 #[derive(Component, Debug, Clone)]
@@ -40,12 +40,17 @@ pub struct Fire {
     density: f32,
     seed: u32,
     accumulator: f32,
+    /// Live particles over the most the flame keeps, once it has a flame.
+    pub(crate) liveliness: Option<f32>,
+    /// Ticks run.
+    ticks: u32,
 }
 
 impl Fire {
-    /// Whether the fire has ramped up to its full light.
+    /// Whether the fire has burnt long enough for its flame and light to
+    /// have built up (two seconds).
     pub fn settled(&self) -> bool {
-        self.density > 0.99
+        self.ticks as f32 >= 2.0 * TICK_HZ
     }
 }
 
@@ -90,12 +95,15 @@ pub fn spawn_fire(commands: &mut Commands, node: Entity, size: f32) {
             density: 0.0,
             seed: node.index_u32().wrapping_mul(0x9E37_79B9) | 1,
             accumulator: 0.0,
+            liveliness: None,
+            ticks: 0,
         },
+        crate::flame::FlameSize { size, lift },
         ChildOf(node),
     ));
 }
 
-fn unit(seed: &mut u32) -> f32 {
+pub(crate) fn unit(seed: &mut u32) -> f32 {
     *seed = seed.wrapping_mul(0x0808_8405).wrapping_add(1);
     (*seed as f64 * 2f64.powi(-32)) as f32
 }
@@ -103,6 +111,7 @@ fn unit(seed: &mut u32) -> f32 {
 /// One step of the original's flicker: a soft-bounded random walk drives
 /// ±5 % of the intensity while the fire establishes itself.
 fn step(fire: &mut Fire) {
+    fire.ticks = fire.ticks.saturating_add(1);
     let u = unit(&mut fire.seed);
     if fire.walk > 1.0 || fire.speed > 1.0 {
         fire.speed -= u;
@@ -113,8 +122,8 @@ fn step(fire: &mut Fire) {
     }
     let u = unit(&mut fire.seed);
     fire.walk += 0.3 * fire.speed * u;
-    // Without particles the fire is always fully alive.
-    fire.density = 0.8 * fire.density + 0.2;
+    // The fire is as established as its flame is full (fully, without one).
+    fire.density = 0.8 * fire.density + 0.2 * fire.liveliness.unwrap_or(1.0);
 }
 
 fn flicker(time: Res<Time>, mut fires: Query<(&mut Fire, &mut PointLight)>) {
@@ -153,6 +162,8 @@ mod tests {
             density: 0.0,
             seed: 7,
             accumulator: 0.0,
+            liveliness: None,
+            ticks: 0,
         };
         for _ in 0..10_000 {
             step(&mut fire);
