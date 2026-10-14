@@ -638,7 +638,7 @@ fn spawn_node(
         }
     }
     if let Some(light) = &n.light {
-        commands.entity(e).insert(crate::point_light(light));
+        commands.entity(e).insert(crate::light_bundle(light));
     }
     if !n.gi_points.is_empty() {
         commands

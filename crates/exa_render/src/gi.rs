@@ -94,6 +94,11 @@ pub struct GiTextures {
     warm_up: u32,
 }
 
+/// A light's share of the GI injection (its record's multiplier); lights
+/// without one inject in full.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct GiMultiplier(pub f32);
+
 /// The lights injected into the volume this frame.
 #[derive(Resource, Clone, Default, ExtractResource)]
 #[extract_app(RenderApp)]
@@ -103,6 +108,8 @@ pub struct GiLights(Vec<GiLight>);
 struct GiLight {
     position_radius: Vec4,
     colour: Vec4,
+    /// Vertical shaping (y, z), as the surface shader reads it.
+    shaping: Vec4,
 }
 
 const MAX_LIGHTS: usize = 32;
@@ -199,7 +206,7 @@ fn create_textures(
 
 fn gather_lights(
     mut gi: ResMut<GiLights>,
-    lights: Query<(&PointLight, &GlobalTransform)>,
+    lights: Query<(&PointLight, &GlobalTransform, Option<&GiMultiplier>)>,
     textures: Option<ResMut<GiTextures>>,
 ) {
     gi.0.clear();
@@ -210,12 +217,22 @@ fn gather_lights(
     if !textures.is_added() && textures.warm_up > 0 {
         textures.warm_up = 0;
     }
-    for (light, at) in lights.iter().take(MAX_LIGHTS) {
+    for (light, at, share) in lights
+        .iter()
+        .filter(|l| l.2.is_none_or(|m| m.0 > 0.0))
+        .take(MAX_LIGHTS)
+    {
         let c = light.color.to_linear();
-        let intensity = light.intensity / LUMENS_PER_INTENSITY;
+        let intensity = light.intensity / LUMENS_PER_INTENSITY * share.map_or(1.0, |m| m.0);
         gi.0.push(GiLight {
             position_radius: at.translation().extend(light.range / REACH),
             colour: (Vec3::new(c.red, c.green, c.blue) * intensity * INJECTION).extend(0.0),
+            shaping: Vec4::new(
+                light.shadow_depth_bias,
+                light.shadow_normal_bias * crate::NORMAL_BIAS_SCALE,
+                0.0,
+                0.0,
+            ),
         });
     }
 }

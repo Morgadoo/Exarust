@@ -131,16 +131,32 @@ pub enum NodeBody {
 /// only partly established.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Light {
+    /// Body flags: `0x10` static, `0x10000` flicker, `0x20000` fade.
     pub flags: u32,
-    /// Linear RGB.
+    /// sRGB.
     pub color: [f32; 3],
-    /// Two factors whose product scales the light (`0.1 × 60`, `1.0 × 1.3`, …).
+    /// Scales the light's injection into the voxel GI only (0 leaves it out).
     pub multiplier: f32,
+    /// Scales the light's colour.
     pub intensity: f32,
     /// Radius of influence in metres.
     pub radius: f32,
-    pub unknown: [f32; 2],
+    /// Shadow softness: the shadow filter radius is (softness + 1)·0.005.
+    pub softness: f32,
+    /// Vertical spot shaping (q, p), stored for nodes whose flags masked by
+    /// `0x300` are `0x200`.
+    pub spot: Option<[f32; 2]>,
+    /// Falls off with distance (node flag `0x40000`); otherwise the light
+    /// reaches everywhere at full strength.
+    pub ranged: bool,
 }
+
+/// Node flags (`flags2`) of a light with vertical spot shaping, under
+/// [`SPOT_MASK`].
+pub const SPOT: u32 = 0x200;
+pub const SPOT_MASK: u32 = 0x300;
+/// Node flag (`flags2`): the light falls off with distance.
+pub const RANGED: u32 = 0x4_0000;
 
 /// A triangle mesh with unified vertices.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -444,7 +460,7 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
             Err(e) => NodeBody::Invalid(e.to_string()),
         }
     } else if kind == NODE_LIGHT {
-        match read_light(&mut c) {
+        match read_light(&mut c, flags2) {
             Ok(l) => NodeBody::Light(l),
             Err(e) => NodeBody::Invalid(e.to_string()),
         }
@@ -464,21 +480,30 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
     })
 }
 
-fn read_light(c: &mut Cursor<'_>) -> Result<Light> {
+fn read_light(c: &mut Cursor<'_>, node_flags: u32) -> Result<Light> {
     let flags = c.u32()?;
     let color = [c.f32()?, c.f32()?, c.f32()?];
     c.skip(4)?;
     let multiplier = c.f32()?;
     let intensity = c.f32()?;
     let radius = c.f32()? * CENTIMETRES_TO_METRES;
-    let unknown = [c.f32()?, c.f32()?];
+    // One unread value, then the softness.
+    c.skip(4)?;
+    let softness = c.f32()?;
+    let spot = if node_flags & SPOT_MASK == SPOT {
+        Some([c.f32()?, c.f32()?])
+    } else {
+        None
+    };
     Ok(Light {
         flags,
         color,
         multiplier,
         intensity,
         radius,
-        unknown,
+        softness,
+        spot,
+        ranged: node_flags & RANGED != 0,
     })
 }
 

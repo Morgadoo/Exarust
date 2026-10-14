@@ -10,6 +10,8 @@ struct GiLight {
     position_radius: vec4<f32>,
     // Per-step injection colour (linear colour × intensity × 0.15 × 0.01).
     colour: vec4<f32>,
+    // Vertical shaping y, z (1, 1 for none).
+    shaping: vec4<f32>,
 }
 
 struct GiParams {
@@ -82,8 +84,13 @@ fn propagate(@builtin(global_invocation_id) id: vec3<u32>) {
     let count = u32(params.extent.w);
     for (var i = 0u; i < count; i++) {
         let lt = params.lights[i];
-        let d = length(world - lt.position_radius.xyz);
-        let atn = pow(max(1.0 - d / max(lt.position_radius.w, 1e-3), 0.0), 4.0) * open;
+        let to = lt.position_radius.xyz - world;
+        let d = length(to);
+        // The light's vertical shaping, as on surfaces.
+        let ly = to.y / max(d, 1e-4);
+        let z = lt.shaping.y;
+        let shape = max((exp2((ly + (1.0 - ly) * lt.shaping.x) * z) - 1.0) / max(exp2(z) - 1.0, 1e-4), 0.0);
+        let atn = pow(max(1.0 - d / max(lt.position_radius.w, 1e-3), 0.0), 4.0) * open * shape;
         rgb += lt.colour.rgb * atn;
     }
     textureStore(light_next, vec3<i32>(id), vec4(to_srgb(max(rgb, vec3(0.0))), stored_alpha));

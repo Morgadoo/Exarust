@@ -86,11 +86,13 @@ pub fn spawn_fire(commands: &mut Commands, node: Entity, size: f32) {
         multiplier: 1.0,
         intensity: base,
         radius,
-        unknown: [0.0; 2],
+        softness: SOFTNESS,
+        spot: None,
+        ranged: true,
     };
     commands.spawn((
         Name::new("_FireLight"),
-        crate::point_light(&light),
+        crate::light_bundle(&light),
         Transform::from_xyz(0.0, lift, 0.0),
         Fire {
             base,

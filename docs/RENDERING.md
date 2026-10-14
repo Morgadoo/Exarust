@@ -146,6 +146,16 @@ quality (`TextureQuality = 5`) and 4× supersampling:
 Floor UVs are generated per cell (see `formats/RFC.md`, tile grids): one
 square repeat per 6 m cell.
 
+**Terrain** shades with the same lighting as models (`exa_render::shading`,
+shared by `exa.wesl` and the terrain shader), as the original's terrain
+program uses its `lights`, `ambient` and `speculargi` includes:
+- the layered splat colour and normal;
+- Fresnel F0 = 0.04 per light;
+- a gloss taken from the ground's colour:
+  a = √min(max(b − 0.8·r + 0.01, 0)·glossiness·14, 0.9), roughness 1 − a;
+- GI or cube ambient, cube reflections;
+- specular scaled by min(255·r, 1).
+
 **Blending** comes from the material's blend word (`0x44`):
 - the source factor is bits 8–11 and the destination bits 0–3;
 - `0x100` is opaque;
@@ -235,9 +245,29 @@ side-by-side check on the GPU at the same camera.
 
 ## Lights
 
-- A point light's shader colour is linear(colour) · intensity · 2/π. Exarust
-  sets Bevy's intensity to 8 lumens per unit, since Bevy divides by 4π.
+- A point light's shader colour is linear(colour) · intensity · 2/π (not the
+  multiplier). Exarust sets Bevy's intensity to 8 lumens per unit, since
+  Bevy divides by 4π.
 - Attenuation is max(1 − 0.8·d/R, 0)⁴, reaching nothing at 1.25 radii.
+- The light record (body): flags, sRGB colour, 4 unread bytes, then:
+  - the **multiplier**, which scales only the light's GI injection (0 leaves
+    the light out of the GI);
+  - the **intensity**, which scales its colour;
+  - the radius in cm;
+  - one unread value;
+  - the **shadow softness**.
+
+  Nodes whose flags (`flags2`) masked by `0x300` equal `0x200` add the spot
+  values q, p. Node flag `0x40000` makes the light fall off with distance;
+  without it, it reaches everywhere at full strength.
+- Lights with spot values are shaped vertically:
+  - y = ½·sin(qπ/2) for q ≥ 0, otherwise 3 − 3/cos(qπ/2); z = p + 1;
+  - factor max((2^(z·(Ly + (1 − Ly)·y)) − 1)/(2^z − 1), 0), with Ly the
+    vertical part of the direction to the light (1 straight below it);
+  - applied on surfaces and in the GI injection.
+  
+  Exarust carries y and z in the light's shadow-bias fields, which its own
+  shadow filter does not use.
   Exarust sets Bevy's range to 1.25·R and computes (1 − d/range)⁴ itself.
 - Lights cast shadows from cube maps (512² per face; the sun's map is 4096²
   at the top shadow detail).
@@ -327,6 +357,6 @@ lengths in cm, and the simulation runs at the 83 Hz tick):
 
 Supersampling and its sharpen, medium and large fire templates, the sun
 and terrain in the GI volume, several resident GI blocks, fog, vertex dirt, glass refraction, effect programs (smoke, powers), hair and skin
-programs, terrain on the new shading, and the outdoor environment cube.
+programs, terrain parallax and wetness, and the outdoor environment cube.
 Software rendering here cannot afford the light shadows, so test frames use
 `--no-shadows`.

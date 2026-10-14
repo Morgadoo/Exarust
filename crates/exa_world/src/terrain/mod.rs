@@ -14,7 +14,7 @@ pub mod vegetation;
 
 use bevy::asset::{AssetPath, RenderAssetUsages, embedded_asset, embedded_path};
 use bevy::mesh::{Indices, PrimitiveTopology};
-use bevy::pbr::{ExtendedMaterial, MaterialExtension};
+use bevy::pbr::{Material, MaterialPlugin};
 use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::shader::ShaderRef;
@@ -49,11 +49,13 @@ impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "terrain.wesl");
         app.add_plugins(MaterialPlugin::<TerrainMaterial>::default())
-            .add_systems(PostUpdate, apply_splats);
+            .add_systems(PostUpdate, (apply_splats, give_terrain_gi).chain());
     }
 }
 
-pub type TerrainMaterial = ExtendedMaterial<StandardMaterial, TerrainSplat>;
+/// The terrain's material: its layered textures, shaded with the original's
+/// lighting (`exa_render::shading`) and its terrain gloss rule.
+pub type TerrainMaterial = TerrainSplat;
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone, Default)]
 pub struct TerrainSplat {
@@ -92,6 +94,14 @@ pub struct TerrainSplat {
     #[texture(121)]
     #[sampler(122)]
     pub normal3: Option<Handle<Image>>,
+    /// The voxel GI light volume, once it exists.
+    #[texture(123, dimension = "3d")]
+    #[sampler(124)]
+    pub gi_volume: Option<Handle<Image>>,
+    /// The environment cube.
+    #[texture(125, dimension = "cube")]
+    #[sampler(126)]
+    pub environment: Option<Handle<Image>>,
 }
 
 #[derive(ShaderType, Reflect, Debug, Clone, Copy, Default)]
@@ -105,6 +115,20 @@ pub struct SplatParams {
     pub normal: [Vec4; SPLAT_LAYERS],
     /// Texture repeats per metre per material.
     pub tiling: Vec4,
+    /// The GI volume's lowest corner and size (metres).
+    pub gi_origin: Vec4,
+    pub gi_extent: Vec4,
+    /// [`terrain_flags`].
+    pub flags: u32,
+    pub pad0: u32,
+    pub pad1: u32,
+    pub pad2: u32,
+}
+
+/// Which optional inputs a terrain material has.
+pub mod terrain_flags {
+    pub const GI: u32 = 1;
+    pub const ENVIRONMENT: u32 = 2;
 }
 
 fn shader() -> ShaderRef {
@@ -113,12 +137,8 @@ fn shader() -> ShaderRef {
     )
 }
 
-impl MaterialExtension for TerrainSplat {
+impl Material for TerrainSplat {
     fn fragment_shader() -> ShaderRef {
-        shader()
-    }
-
-    fn deferred_fragment_shader() -> ShaderRef {
         shader()
     }
 }
@@ -134,18 +154,45 @@ fn apply_splats(
     mut materials: ResMut<Assets<TerrainMaterial>>,
 ) {
     for (e, splat) in &pending {
-        let material = materials.add(TerrainMaterial {
-            base: StandardMaterial {
-                perceptual_roughness: 0.85,
-                reflectance: 0.2,
-                ..default()
-            },
-            extension: splat.0.clone(),
-        });
+        let material = materials.add(splat.0.clone());
         commands
             .entity(e)
             .insert(MeshMaterial3d(material))
             .remove::<PendingSplat>();
+    }
+}
+
+/// Points terrain materials at the GI volume when it is (re)built, and new
+/// materials as they come.
+fn give_terrain_gi(
+    textures: Option<Res<exa_render::gi::GiTextures>>,
+    mut materials: ResMut<Assets<TerrainMaterial>>,
+    mut events: MessageReader<AssetEvent<TerrainMaterial>>,
+) {
+    let Some(textures) = textures else {
+        events.clear();
+        return;
+    };
+    let added: Vec<AssetId<TerrainMaterial>> = events
+        .read()
+        .filter_map(|e| match e {
+            AssetEvent::Added { id } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    let ids: Vec<AssetId<TerrainMaterial>> = if textures.is_changed() {
+        materials.ids().collect()
+    } else {
+        added
+    };
+    for id in ids {
+        let Some(mut m) = materials.get_mut(id) else {
+            continue;
+        };
+        m.gi_volume = Some(textures.light.clone());
+        m.params.gi_origin = textures.origin.extend(1.0);
+        m.params.gi_extent = textures.extent.extend(0.0);
+        m.params.flags |= terrain_flags::GI;
     }
 }
 
@@ -371,6 +418,7 @@ pub fn spawn_terrain(
         }
     };
     let tree = RuleTree::new(&palette);
+    let environment = loader.environment_map();
     let noise = NoiseMaps::default();
     let game = loader.game;
     let mut planes: HashMap<String, Option<Arc<Plane>>> = HashMap::new();
@@ -411,7 +459,13 @@ pub fn spawn_terrain(
         let mut built = build_tile(&terrain, tile, &palette, &tree, &noise, &mut height_layers);
         stats.unresolved_layers += built.unresolved;
         stats.truncated_tiles += usize::from(built.truncated);
-        let mut splat = TerrainSplat::default();
+        let mut splat = TerrainSplat {
+            environment: environment.clone(),
+            ..default()
+        };
+        if splat.environment.is_some() {
+            splat.params.flags |= terrain_flags::ENVIRONMENT;
+        }
         for (slot, &m) in built.materials.iter().enumerate() {
             let material = &palette.materials[m];
             let diffuse = material

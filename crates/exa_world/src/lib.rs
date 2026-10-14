@@ -264,7 +264,7 @@ pub fn spawn_model(commands: &mut Commands, model: &Model, placement: Option<Tra
         }
         parts_of.push(parts);
         if let Some(light) = &node.light {
-            commands.entity(e).insert(point_light(light));
+            commands.entity(e).insert(light_bundle(light));
         }
         if let Some(size) = node.fire {
             fire::spawn_fire(commands, e, size);
@@ -317,14 +317,9 @@ fn self_shadowless(model: &Model) -> Vec<usize> {
 }
 
 /// Approximation of the original omni light in Bevy units.
-/// A level light as the original shades it: its colour linearised and scaled
-/// by its intensity and 2/π (Bevy divides lumens by 4π), falling to nothing
-/// at 1.25 times its radius, casting shadows.
-/// Lumens giving the shader a colour of 2/π per unit of intensity.
+/// Lumens giving the shader a colour of 2/π per unit of intensity (Bevy
+/// divides lumens by 4π).
 pub const LUMENS_PER_INTENSITY: f32 = 8.0;
-
-/// Shadow softness of level lights (their records' usual value).
-const LIGHT_SOFTNESS: f32 = 0.5;
 
 /// A light's shadow filter radius (radians around the light direction) for
 /// its softness, at the original's top shading quality.
@@ -332,19 +327,53 @@ pub fn shadow_radius(softness: f32) -> f32 {
     (softness + 1.0) * 0.005
 }
 
-pub fn point_light(light: &Light) -> PointLight {
+/// A light's vertical shaping (y, z) from its spot values q, p: the shader
+/// scales the light by max((2^(z·(Ly + (1 − Ly)·y)) − 1)/(2^z − 1), 0), with
+/// Ly the vertical part of the direction to the light (1 straight below it).
+/// Lights without a spot get (1, 1), a factor of 1.
+pub fn vertical_shaping(light: &Light) -> (f32, f32) {
+    let Some([q, p]) = light.spot else {
+        return (1.0, 1.0);
+    };
+    let half_pi = std::f32::consts::FRAC_PI_2;
+    let y = if q >= 0.0 {
+        0.5 * (q * half_pi).sin()
+    } else {
+        3.0 - 3.0 / (q * half_pi).cos()
+    };
+    (y, p + 1.0)
+}
+
+/// How far an unranged light reaches, metres (it does not fall off).
+const UNRANGED: f32 = 500.0;
+
+/// A level light as the original shades it, with its share of the GI
+/// injection: colour linearised and scaled by the intensity (the multiplier
+/// scales only the GI), falling to nothing at 1.25 radii when ranged, shaped
+/// vertically when it has a spot, casting shadows softened by its softness.
+pub fn light_bundle(light: &Light) -> (PointLight, exa_render::gi::GiMultiplier) {
     /// The falloff reaches zero this far out, in radii.
     const REACH: f32 = 1.25;
     let c = exa_render::material::linear_rgb(light.color);
-    PointLight {
+    let (y, z) = vertical_shaping(light);
+    let point = PointLight {
         color: Color::linear_rgb(c.x, c.y, c.z),
         intensity: light.intensity.max(0.0) * LUMENS_PER_INTENSITY,
-        range: (light.radius * REACH).max(0.5),
-        // The shadow filter radius (read by the shader): (softness + 1)·0.005.
-        radius: shadow_radius(LIGHT_SOFTNESS),
+        range: if light.ranged {
+            (light.radius * REACH).max(0.5)
+        } else {
+            UNRANGED
+        },
+        // The shadow filter radius (read by the shader).
+        radius: shadow_radius(light.softness),
         shadow_maps_enabled: true,
+        // The vertical shaping, read by the shader from the two shadow bias
+        // fields it does not otherwise use (Bevy scales the normal bias).
+        shadow_depth_bias: y,
+        shadow_normal_bias: z / exa_render::NORMAL_BIAS_SCALE,
         ..default()
-    }
+    };
+    (point, exa_render::gi::GiMultiplier(light.multiplier))
 }
 
 /// Spawns a level from `Resource.rpk` (`name` with or without `.rfc`): its own

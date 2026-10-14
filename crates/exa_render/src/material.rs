@@ -15,6 +15,7 @@ pub struct MaterialsPlugin;
 
 impl Plugin for MaterialsPlugin {
     fn build(&self, app: &mut App) {
+        bevy::shader::load_shader_library!(app, "shading.wesl");
         embedded_asset!(app, "exa.wesl");
         embedded_asset!(app, "exa_prepass.wesl");
         app.add_plugins(MaterialPlugin::<ExaMaterial>::default())
