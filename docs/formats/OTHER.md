@@ -170,7 +170,143 @@ factory weapons of a real save, part for part and material for material.
 
 Exarust assembles factory weapons for held items, placed objects and
 `--weapon @name`. Not yet: taper, bend and radial deforms, atlas UV
-cropping, weapon stats and their use in combat.
+cropping.
+
+## Weapon stats
+
+Status: **verified** (REA on the builder, the factory stat pass and the
+condition step). A reference implementation reproduced bytes `0x30..0x3F`
+of all 143 factory weapons in a real save, byte for byte. Exarust:
+`exa_formats::weapon_stats`.
+
+**Weapon section bytes** (`0x4000` body):
+
+| off | meaning |
+|---|---|
+| `0x30` | weight, 0..100 |
+| `0x31` | balance, 0..100 |
+| `0x32` | impact adjustment (127 neutral) |
+| `0x33` | thrust |
+| `0x34` | striking side's type code |
+| `0x35`, `0x36` | start and end of the striking part, ×0.005 of the length |
+| `0x37`, `0x38`, `0x39` | slash, crush, pierce |
+| `0x3A..0x3F` | the same block for the flipped side (e.g. a falchion's back) |
+| `0x40` | adjustment, 0x80 neutral |
+| `0x41` | hit sound class |
+
+The section's first word holds the flags:
+- kind (bits 0–3): 1 bladed, 2 hafted head, 3 stick, 4 flail;
+- hands (bits 4–5): 0 unarmed, 1 one-handed, 2 two-handed, 3 polearm;
+- haft material (bits 16–17): 1 wood, 2 metal, 3 other.
+
+**Factory weapons** start from their template item's bytes.
+- Each chosen variant adds its slash, crush, pierce and thrust (variant
+  +0x1A, i16 each, low byte, wrapping). It also sets the type code from
+  its flags (>> 4 & 0xF). Role-6 parts fill the flipped block instead.
+- Each deform with value x = v·stat weight (deform +0x14) scales bytes by
+  role. F(x) = 1 + x·amount, or 1/(1 − x·amount) when that is ≤ 0. G(x)
+  is the same without the amount.
+
+| role | deform | effect |
+|---|---|---|
+| blade | type 1, Y | weight ×F, balance ÷F |
+| blade | type 1, X | weight ×F, balance ÷F, slash ×F, thrust ÷F |
+| blade | type 3, Y | balance and 1/slash ×(F/2 + ½), thrust ×F |
+| blade | type 4 (bend) | thrust by G (depends on flags) |
+| haft | type 1 or 2, Y | f = 0.4G + 0.6; weight ×(f/2 + ½), balance ÷f |
+| haft | type 1, XZ | weight ×(0.1G + 0.9) |
+| guard | type 1, Y | thrust ×F |
+| head | type 1 | the same as a haft, with f = F (halfway when per axis) |
+| head | type 3, Y | same, with f = 0.5G(−x/2) + 0.5 |
+| head | type 5, all or XZ | pierce ×(0.6G(x/2) + 0.4), crush ÷ the same |
+| head | type 5, Y | same as a haft, with f = 0.4G(x/2) + 0.6 |
+
+- Every step rounds. Weight and balance are capped at 100. Variant flag
+  `0x800` removes the flipped side.
+- Factory items then scale by condition c = (1 − 0.4d)(0.8 + 0.5q), with q
+  and d the quality and damage bytes /255:
+  - slash, pierce and thrust ×c;
+  - crush ×(0.7c + 0.3);
+  - each capped at 160.
+- The head's striking extent (`0x35`/`0x36`) comes from assembled
+  geometry; Exarust keeps the template's values for now.
+- Materials and dirt do not enter the stats. There is no physical
+  material table.
+
+**Record** (`exa_combat::damage::WeaponRecord`):
+- weight w = b30/100, balance b = b31/100;
+- impact = (1 − b)·0.6 + 0.4w + 0.1 + (b32 − 127)/100;
+- slash, crush, pierce and thrust = 0.5·(byte/100)^0.7;
+- the length is the farthest component point along +Y, in cm.
+
+## Armour
+
+Apparel item body (`0x1000`) fields:
+- `0x150 + 4·(bone − 1)`: coverage percent (u32) per bone;
+- `0x1A0`: padding ×0.005;
+- `0x1A1..0x1A3`: slash, crush and pierce ×1/140;
+- `0x1A5`: encumbrance ×0.0025;
+- `0x1A6`: hit sound class (0 flesh, 1 cloth, 2 leather, 3 mail, 4 plate,
+  6 golem).
+
+Instances scale padding and resistances by their condition c (the
+appearance block's quality and damage). Races add a natural inner layer:
+`races.rdb` coverage at `0x21C`, protection at `0x11C`. Skeletons, golems,
+demons and the Fael head have one.
+
+Each body part keeps two layers, filled in equipment order. A new item
+folds the old outer layer into the inner one:
+- each layer's effective coverage is γ(c) = c, or c + 1.75(1 − c)(c − 0.5)
+  above ½;
+- padding adds as γ-weighted;
+- resistances combine as s0′ + (1 − s0′)·γ1·s1, with s0′ = γ0·s0;
+- the inner layer's coverage becomes 1.
+
+The 19×8 slot table at `0xA8` is not read for armour.
+
+## Damage
+
+Implemented in `exa_combat::damage`.
+
+**Inputs**
+- Speed v of the struck point (cm/tick): capped at 30; below 10 it is
+  softened to 10(2 − v/10)(v/10)²; overhead swings ×1.5. u = 0.05v.
+- Swing impact I = (impact + 0.3)·1.1·u^(1 − impact/2), times the zone
+  factor along the weapon:
+  - past its tip there is no hit;
+  - below the striking part (the haft) the edge share fades;
+  - bladed weapons: impact peaks near the middle and falls towards the
+    tip, where the draw-cut share grows.
+- Stabs: energy T from the tip (full within 7 cm), weight and the lunge.
+
+**Armour**
+- One roll r per blow. A layer counts fully when r < coverage, partly
+  (1.75(c − ½)) above half coverage, otherwise not.
+- Padding A sums. Resistances combine multiplicatively; pierce resistance
+  is weighted by (½ + r/2).
+
+**Through the armour**
+- Impact: J = max(I − 0.2A, 0)/(A² + A + 1).
+- Crush: C·1.58·J^(2 − C), then reduced by crush resistance.
+- Slash: a mix of chop and draw by the draw share, each reduced by slash
+  resistance.
+- Pierce: P·1.58·J^(1 + P/2), less 0.75 of pierce resistance.
+- Penetration P = 0.5·max(J − 0.8, 0) + slash + crush + pierce.
+
+**Outcome**
+- Part multipliers (damage/stun): head 1.6/1.4, thorax 1.2/1.2, lower legs
+  0.6, feet 0.4, forearms 0.5/0.75, hands 0.3/0.6, others 1.
+- Red = 0.75·P/(P + 1)·m. Yellow = 0.75·(T/2 + (2(P − P/(P + 1)) + J)·m).
+- Health starts at 0.25 × the race's factor (`races.rdb` `0xE4`: human 1,
+  ogre 6, golem 2, …).
+- Applying a blow: yellow −= 0.1·Y; red −= 0.2·R; yellow is rescaled by
+  how much red is left. Yellow under 0.01 is death.
+- Daze = √(0.75P + 1.25J)·stun·0.5·0.25/max health.
+- Blows with J > 0.5 shove the victim by 10J cm/tick.
+
+Not yet: the bite (weapons sticking in), blocking and parrying, shields,
+encumbrance's effect on swings, and the state that knocks a character
+unconscious.
 
 ## Actors
 

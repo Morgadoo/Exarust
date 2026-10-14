@@ -42,6 +42,8 @@ pub struct Deform {
     pub range: f32,
     /// Share of the second seed stream in the value.
     pub blend: f32,
+    /// How strongly the value changes the weapon's stats (0 before v1).
+    pub stat_weight: f32,
 }
 
 /// One slot of the recipe (grip, guard, blade, pommel, haft, head…).
@@ -72,6 +74,8 @@ pub struct Variant {
     /// Material area of each mask texture m1..m4.
     pub mask_areas: [u8; 4],
     pub weight: u32,
+    /// Slash, crush, pierce and thrust added to the weapon's stat bytes.
+    pub bonuses: [i16; 4],
     pub tags: u8,
     /// Parts (by bit index) this variant excludes.
     pub excludes: u16,
@@ -133,12 +137,13 @@ impl Factory {
             for _ in 0..3 {
                 let header = r.u32()?;
                 let (amount, pivot, range) = (r.f32()?, r.f32()?, r.f32()?);
-                let blend = if version == 0 {
-                    0.3
+                let (blend, stat_weight) = if version == 0 {
+                    (0.3, 0.0)
                 } else {
                     let blend = r.f32()?;
-                    r.bytes(8)?; // stat weight, reserved
-                    blend
+                    let weight = r.f32()?;
+                    r.bytes(4)?; // reserved
+                    (blend, weight)
                 };
                 read.push(Deform {
                     kind: header as u8,
@@ -148,6 +153,7 @@ impl Factory {
                     pivot,
                     range,
                     blend,
+                    stat_weight,
                 });
             }
             let deforms = [read[0], read[1], read[2]];
@@ -165,6 +171,9 @@ impl Factory {
                     model: name(&v[..16]),
                     mask_areas: [v[0x10], v[0x11], v[0x12], v[0x13]],
                     weight,
+                    bonuses: std::array::from_fn(|k| {
+                        i16::from_le_bytes([v[0x1A + 2 * k], v[0x1B + 2 * k]])
+                    }),
                     tags: v[0x23],
                     excludes: u16::from_le_bytes([v[0x24], v[0x25]]),
                     flags: u16::from_le_bytes([v[0x26], v[0x27]]),
@@ -628,6 +637,7 @@ mod tests {
             pivot,
             range,
             blend: 0.3,
+            stat_weight: 0.0,
         }
     }
 

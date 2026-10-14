@@ -472,14 +472,15 @@ fn spawn_placed_characters(
                 c.worn
                     .iter()
                     .filter(|_| physical)
-                    .map(|(model, appearance, hides)| exa_character::Garment {
-                        model: model.clone(),
-                        appearance: *appearance,
-                        hides: Some(*hides),
+                    .map(|w| exa_character::Garment {
+                        model: w.model.clone(),
+                        appearance: w.appearance,
+                        hides: Some(w.hides),
+                        armour: w.armour,
                     })
                     .collect(),
             ),
-            exa_combat::Fighter::default(),
+            exa_combat::Fighter::of_race(race.map_or(1.0, |r| r.health), race.map(|r| r.natural)),
             ChildOf(root),
         ));
         if let Some((model_name, weapon)) = &c.held {

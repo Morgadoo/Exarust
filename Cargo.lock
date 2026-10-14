@@ -2384,6 +2384,7 @@ version = "0.0.1"
 dependencies = [
  "bevy",
  "exa_anim",
+ "exa_formats",
  "exa_physics",
  "exa_world",
 ]

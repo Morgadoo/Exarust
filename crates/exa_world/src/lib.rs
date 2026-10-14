@@ -67,12 +67,22 @@ pub struct PlacedCharacter {
     /// 0 for humans.
     pub race: u8,
     pub female: bool,
-    /// Worn items: model entry (`Characters.rpk`), appearance and the body
-    /// slots they hide.
-    pub worn: Vec<(String, Option<Appearance>, u32)>,
+    /// Worn items, outermost last.
+    pub worn: Vec<Worn>,
     /// Item in the right hand: model (`@factory` for assembled weapons) and
     /// its weapon data.
     pub held: Option<(String, Option<exa_formats::objdb::Weapon>)>,
+}
+
+/// An item a placed character wears.
+#[derive(Debug, Clone)]
+pub struct Worn {
+    /// `Characters.rpk` entry.
+    pub model: String,
+    pub appearance: Option<Appearance>,
+    /// Body slots it hides, as a bit mask.
+    pub hides: u32,
+    pub armour: Option<exa_formats::objdb::Armour>,
 }
 
 /// Resolves a level's placed characters: records from its own database,
@@ -107,8 +117,12 @@ fn placed_characters(scene: &Scene, global: &[Item]) -> Vec<PlacedCharacter> {
                 .iter()
                 .filter_map(|&id| {
                     let item = find(id)?;
-                    (!item.model.is_empty())
-                        .then(|| (item.model.clone(), item.appearance, item.hidden_slots()))
+                    (!item.model.is_empty()).then(|| Worn {
+                        model: item.model.clone(),
+                        appearance: item.appearance,
+                        hides: item.hidden_slots(),
+                        armour: item.armour,
+                    })
                 })
                 .collect();
             Some(PlacedCharacter {

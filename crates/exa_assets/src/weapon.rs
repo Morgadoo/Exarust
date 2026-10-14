@@ -8,6 +8,7 @@ use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
 use exa_formats::factory::{Deform, Factory, band_stretch, deform_factor};
 use exa_formats::objdb::{Appearance, Layer, Weapon};
+use exa_formats::weapon_stats::{self, StatBytes};
 
 use crate::PackKind;
 use crate::model::{Model, ModelLoader, ModelNode};
@@ -27,6 +28,27 @@ impl ModelLoader<'_> {
         let built = self.build_factory_weapon(name, weapon).map(Arc::new);
         self.cache_model(key, built.clone());
         built
+    }
+
+    /// The stat bytes of the weapon factory `name` makes for an item: its
+    /// template bytes changed by the chosen parts and deforms, then scaled by
+    /// the item's condition.
+    pub fn factory_weapon_stats(&self, name: &str, weapon: Option<&Weapon>) -> Option<StatBytes> {
+        let pack = self.game.pack(PackKind::Factories)?;
+        let bytes = pack
+            .get(name)
+            .or_else(|| pack.get(&format!("{name}.fty")))?;
+        let factory = Factory::parse(bytes).ok()?;
+        let (seeds, quality, damage) = weapon.map_or(([0x1234_5678; 2], 128, 0), |w| {
+            (w.seeds, w.quality, w.damage)
+        });
+        let stored = weapon
+            .filter(|w| w.has_stored_choices())
+            .map(|w| w.selection.as_slice());
+        let generated = factory.generate(seeds[0], seeds[1], quality, stored);
+        let template = weapon.map_or_else(StatBytes::default, |w| w.stats);
+        let stats = weapon_stats::factory_stats(&factory, &generated, template);
+        Some(weapon_stats::condition(stats, quality, damage))
     }
 
     fn build_factory_weapon(&mut self, name: &str, weapon: Option<&Weapon>) -> Option<Model> {

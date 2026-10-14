@@ -8,6 +8,7 @@
 //! body whose bytes `0x1B0..0x214` are the appearance block.
 
 use crate::rdb::Database;
+use crate::weapon_stats::StatBytes;
 use crate::{Error, Result};
 
 const NAME: u32 = 0x1000_0000;
@@ -23,6 +24,12 @@ pub const SLOTS: usize = 19;
 /// A slot byte with this bit hides the body part of that slot.
 pub const HIDES_BODY: u8 = 0x80;
 const APPEARANCE_LEN: usize = 4 + LAYERS * LAYER_LEN;
+/// Apparel protection: per-bone coverage (u32 percentages, bones 1..18),
+/// then padding, slash, crush, pierce, coverage display, encumbrance and
+/// hit-sound material bytes.
+const COVERAGE_OFFSET: usize = 0x150;
+const PROTECTION_OFFSET: usize = 0x1A0;
+pub const BONES: usize = 18;
 const LAYERS: usize = 8;
 const LAYER_LEN: usize = 12;
 
@@ -38,6 +45,43 @@ pub struct Item {
     pub slot_layers: [u8; SLOTS],
     /// Seeds, condition and choices of a factory-made weapon.
     pub weapon: Option<Weapon>,
+    /// What the item protects when worn.
+    pub armour: Option<Armour>,
+}
+
+/// Protection of a worn item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Armour {
+    /// Coverage per bone 1..18, percent.
+    pub coverage: [u8; BONES],
+    /// Padding (×0.005) and slash, crush and pierce resistances (×1/140).
+    pub padding: u8,
+    pub slash: u8,
+    pub crush: u8,
+    pub pierce: u8,
+    /// ×0.0025 of the wearer's encumbrance.
+    pub encumbrance: u8,
+    /// Hit sound class: 0 flesh, 1 cloth, 2 leather, 3 mail, 4 plate, 6 golem.
+    pub material: u8,
+}
+
+impl Armour {
+    fn parse(body: &[u8]) -> Option<Self> {
+        let cov = body.get(COVERAGE_OFFSET..COVERAGE_OFFSET + 4 * BONES)?;
+        let p = body.get(PROTECTION_OFFSET..PROTECTION_OFFSET + 7)?;
+        let coverage: [u8; BONES] = std::array::from_fn(|i| {
+            u32::from_le_bytes(cov[4 * i..4 * i + 4].try_into().expect("4 bytes")).min(100) as u8
+        });
+        coverage.iter().any(|&c| c != 0).then_some(Self {
+            coverage,
+            padding: p[0],
+            slash: p[1],
+            crush: p[2],
+            pierce: p[3],
+            encumbrance: p[5],
+            material: p[6],
+        })
+    }
 }
 
 /// The weapon section of an item (`0x4000`).
@@ -52,6 +96,8 @@ pub struct Weapon {
     pub materials: [(u8, u8, u8); 4],
     /// 1-based variant per factory part (0: none).
     pub selection: [u8; 10],
+    /// Weight, balance, slash, crush, pierce, thrust… (`weapon_stats`).
+    pub stats: StatBytes,
 }
 
 impl Weapon {
@@ -71,6 +117,7 @@ impl Weapon {
                 (m[0], m[3], m[4])
             }),
             selection: std::array::from_fn(|i| b[0x50 + i]),
+            stats: StatBytes::from_section(b)?,
         })
     }
 
@@ -157,6 +204,7 @@ impl Item {
             appearance: None,
             slot_layers: [0; SLOTS],
             weapon: None,
+            armour: None,
         };
         let mut pos = 0;
         while pos + 8 <= payload.len() {
@@ -180,6 +228,7 @@ impl Item {
                     if let Some(t) = body.get(SLOT_LAYERS_OFFSET..SLOT_LAYERS_OFFSET + SLOTS * 8) {
                         item.slot_layers = std::array::from_fn(|s| t[s * 8]);
                     }
+                    item.armour = Armour::parse(body);
                 }
                 WEAPON => item.weapon = Weapon::parse(body),
                 _ => {}
@@ -242,6 +291,26 @@ mod tests {
         assert_eq!(item.hidden_slots(), 1 << 10);
         let (q, _, _) = a.condition();
         assert!((q - 0x70 as f32 / 255.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn armour_of_a_breastplate() {
+        let mut body = vec![0u8; APPEARANCE_OFFSET];
+        for (bone, pct) in [(8usize, 40u32), (9, 75), (11, 30), (14, 30)] {
+            let at = COVERAGE_OFFSET + 4 * (bone - 1);
+            body[at..at + 4].copy_from_slice(&pct.to_le_bytes());
+        }
+        body[PROTECTION_OFFSET..PROTECTION_OFFSET + 7]
+            .copy_from_slice(&[60, 100, 60, 80, 0, 12, 4]);
+        let item = Item::parse(1, &section(BODY, &body)).unwrap();
+        let a = item.armour.unwrap();
+        assert_eq!(a.coverage[8], 75);
+        assert_eq!(a.coverage[0], 0);
+        assert_eq!((a.padding, a.slash, a.crush, a.pierce), (60, 100, 60, 80));
+        assert_eq!((a.encumbrance, a.material), (12, 4));
+        // Nothing covered: no armour.
+        let bare = Item::parse(1, &section(BODY, &vec![0u8; APPEARANCE_OFFSET])).unwrap();
+        assert!(bare.armour.is_none());
     }
 
     #[test]

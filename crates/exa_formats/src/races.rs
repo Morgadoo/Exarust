@@ -1,7 +1,8 @@
 //! `races.rdb`: the character races. Each record (624 bytes) names the race,
 //! its body model stem (`Skel` → `skelbase.rfc` in `Resource.rpk`) and its
 //! movesets (the shared `Default` and the race's own, such as `Golem`),
-//! followed by body parameters and sound names not decoded yet.
+//! followed by body parameters (the health factor at `0xE4`), sound names
+//! and the race's natural armour (`0x11C` protection, `0x21C` coverage).
 //!
 //! A character record's race byte is the race record's id minus one.
 
@@ -9,7 +10,7 @@ use crate::rdb::Database;
 use crate::{Error, Result};
 
 /// A race record.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Race {
     pub id: u32,
     pub name: String,
@@ -17,11 +18,30 @@ pub struct Race {
     pub stem: String,
     /// The shared and the race's own moveset.
     pub movesets: [String; 2],
+    /// Health relative to a human's.
+    pub health: f32,
+    /// Natural armour (bones, plates, hide) under any worn items.
+    pub natural: Natural,
+}
+
+/// A race's natural armour layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Natural {
+    /// Coverage per bone 1..18, percent.
+    pub coverage: [u8; 18],
+    /// Padding (×0.005), slash, crush and pierce (×1/140).
+    pub padding: u8,
+    pub slash: u8,
+    pub crush: u8,
+    pub pierce: u8,
 }
 
 const NAME: usize = 0x00;
 const STEM: usize = 0x20;
 const MOVESETS: [usize; 2] = [0x38, 0x48];
+const HEALTH: usize = 0xE4;
+const PROTECTION: usize = 0x11C;
+const COVERAGE: usize = 0x21C;
 const RECORD: usize = 0x270;
 
 fn text(b: &[u8], at: usize, len: usize) -> String {
@@ -68,6 +88,14 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Race>> {
             name: text(b, NAME, 0x20),
             stem: text(b, STEM, 0x18),
             movesets: MOVESETS.map(|at| text(b, at, 0x10)),
+            health: f32::from_le_bytes(b[HEALTH..HEALTH + 4].try_into().expect("4 bytes")),
+            natural: Natural {
+                coverage: std::array::from_fn(|i| b[COVERAGE + 4 * i].min(100)),
+                padding: b[PROTECTION],
+                slash: b[PROTECTION + 1],
+                crush: b[PROTECTION + 2],
+                pierce: b[PROTECTION + 3],
+            },
         });
     }
     Ok(races)
@@ -88,6 +116,9 @@ mod tests {
         b[STEM..STEM + stem.len()].copy_from_slice(stem.as_bytes());
         b[MOVESETS[0]..MOVESETS[0] + 7].copy_from_slice(b"Default");
         b[MOVESETS[1]..MOVESETS[1] + own.len()].copy_from_slice(own.as_bytes());
+        b[HEALTH..HEALTH + 4].copy_from_slice(&2.0f32.to_le_bytes());
+        b[PROTECTION..PROTECTION + 4].copy_from_slice(&[70, 130, 70, 80]);
+        b[COVERAGE + 4 * 9] = 100;
         b
     }
 
@@ -113,6 +144,9 @@ mod tests {
         let golem = of_character(&races, 16).unwrap();
         assert_eq!(golem.model(), "golembase.rfc");
         assert_eq!(golem.moveset(), "Golem");
+        assert_eq!(golem.health, 2.0);
+        assert_eq!(golem.natural.coverage[9], 100);
+        assert_eq!(golem.natural.slash, 130);
         assert_eq!(of_character(&races, 0).unwrap().name, "Human");
         assert!(of_character(&races, 1).is_none());
     }

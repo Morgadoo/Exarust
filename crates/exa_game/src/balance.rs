@@ -69,8 +69,9 @@ fn off_line(p: Vec3, a: Vec3, b: Vec3) -> f32 {
 /// the body falls.
 fn update_balance(balance: &mut Balance, offset: f32, energy: f32, speed: f32, ticks: f32) -> bool {
     let threshold = (energy * 0.75 + 0.25) * THRESHOLD;
-    // Steady within half the threshold, hopeless past one and a half.
-    let stability = (1.5 - offset / threshold).clamp(0.0, 1.0);
+    // Steady within the threshold, hopeless past twice it (the original's
+    // measure is not known; attack lunges reach about 20 cm).
+    let stability = (2.0 - offset / threshold).clamp(0.0, 1.0);
     let score = stability.powi(8);
     balance.counter += (10.0 - 10.0 * score) * ticks;
     if balance.counter >= 100.0 {

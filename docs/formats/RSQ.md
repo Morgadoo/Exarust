@@ -87,8 +87,9 @@ critical damping relative to the pose's own motion:
   - The centre of mass is projected 0.1 s ahead by its velocity and
     measured against the segment between the feet.
   - The threshold is (energy·0.75 + 0.25)·30 cm. The score is stability⁸.
-    Exarust takes stability as 1 within half the threshold, falling to 0
-    at 1.5 thresholds; the original's exact measure is unknown.
+    Exarust takes stability as 1 within the threshold, falling to 0 at
+    twice it; the original's exact measure is unknown. Attack lunges move
+    the centre of mass up to 20 cm off the feet.
   - A counter grows by 10 − 10·score per tick. At 100 it sets balance to
     the score. Otherwise balance recovers by (5 − speed in cm/tick)·0.01
     per tick.
