@@ -307,3 +307,64 @@ pub fn terrain(game: &GameData) -> Result<()> {
     );
     Ok(())
 }
+
+/// `exa-tool corpus factories`: every weapon factory, plus two generated
+/// examples checked against the original's choices.
+pub fn factories(game: &GameData) -> Result<()> {
+    use exa_formats::factory::Factory;
+    let Some(pack) = game.pack(exa_rpk::PackKind::Factories) else {
+        return Ok(());
+    };
+    let (mut ok, mut failed) = (0, 0);
+    let mut versions = [0usize; 3];
+    for e in pack.entries() {
+        match Factory::parse(pack.bytes(e)) {
+            Ok(f) => {
+                ok += 1;
+                versions[f.version as usize] += 1;
+            }
+            Err(err) => {
+                failed += 1;
+                println!("  {}: {err}", e.name);
+            }
+        }
+    }
+    println!(
+        "{ok} factories parsed (v0 {}, v1 {}, v2 {}), {failed} failed",
+        versions[0], versions[1], versions[2]
+    );
+    for (name, seed, quality) in [
+        ("AxeTool2H_A01", 0x0D31_0870u32, 107u8),
+        ("sword_lnga1", 0x1234_5678, 128),
+    ] {
+        let Some(f) = pack
+            .get(name)
+            .or_else(|| pack.get(&format!("{name}.fty")))
+            .and_then(|b| Factory::parse(b).ok())
+        else {
+            println!("{name}: not found");
+            continue;
+        };
+        let g = f.generate(seed, seed, quality, None);
+        let chosen: Vec<String> = f
+            .parts
+            .iter()
+            .zip(&g.selection)
+            .filter(|(_, s)| **s > 0)
+            .map(|(p, s)| format!("{} = {}", p.name, p.variants[*s as usize - 1].model))
+            .collect();
+        println!(
+            "{name} seed {seed:#x} q {quality}: {:?} -> {}",
+            g.selection,
+            chosen.join(", ")
+        );
+        for placed in f.place(&g) {
+            println!(
+                "    {:<10} at {:?}",
+                f.parts[placed.part].name,
+                placed.position.map(|v| (v * 1000.0).round() / 1000.0)
+            );
+        }
+    }
+    Ok(())
+}

@@ -13,6 +13,9 @@ use crate::{Error, Result};
 const NAME: u32 = 0x1000_0000;
 const MODEL: u32 = 0x0010_0000;
 const BODY: u32 = 0x1000;
+const WEAPON: u32 = 0x4000;
+/// The weapon's stored part choices and materials are valid.
+pub const WEAPON_STORED: u32 = 0x1000_0000;
 const APPEARANCE_OFFSET: usize = 0x1B0;
 /// Per-slot layer bytes of apparel: 8 bytes per body slot (bone index).
 const SLOT_LAYERS_OFFSET: usize = 0xA8;
@@ -33,6 +36,47 @@ pub struct Item {
     /// Apparel's first layer byte per body slot: low bits the layer, bit
     /// `0x80` hides the body part, `0x40` its partial variant.
     pub slot_layers: [u8; SLOTS],
+    /// Seeds, condition and choices of a factory-made weapon.
+    pub weapon: Option<Weapon>,
+}
+
+/// The weapon section of an item (`0x4000`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Weapon {
+    pub flags: u32,
+    pub seeds: [u32; 2],
+    pub quality: u8,
+    pub damage: u8,
+    pub dirt: u8,
+    /// Up to four material slots: (material, finish, colour).
+    pub materials: [(u8, u8, u8); 4],
+    /// 1-based variant per factory part (0: none).
+    pub selection: [u8; 10],
+}
+
+impl Weapon {
+    fn parse(b: &[u8]) -> Option<Self> {
+        if b.len() < 0x5A {
+            return None;
+        }
+        let u32_at = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().expect("4 bytes"));
+        Some(Self {
+            flags: u32_at(0),
+            seeds: [u32_at(4), u32_at(8)],
+            quality: b[0x0C],
+            damage: b[0x0D],
+            dirt: b[0x0E],
+            materials: std::array::from_fn(|k| {
+                let m = &b[0x10 + 8 * k..0x18 + 8 * k];
+                (m[0], m[3], m[4])
+            }),
+            selection: std::array::from_fn(|i| b[0x50 + i]),
+        })
+    }
+
+    pub fn has_stored_choices(&self) -> bool {
+        self.flags & WEAPON_STORED != 0
+    }
 }
 
 impl Item {
@@ -112,6 +156,7 @@ impl Item {
             model: String::new(),
             appearance: None,
             slot_layers: [0; SLOTS],
+            weapon: None,
         };
         let mut pos = 0;
         while pos + 8 <= payload.len() {
@@ -136,6 +181,7 @@ impl Item {
                         item.slot_layers = std::array::from_fn(|s| t[s * 8]);
                     }
                 }
+                WEAPON => item.weapon = Weapon::parse(body),
                 _ => {}
             }
             pos += size;

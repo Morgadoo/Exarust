@@ -8,6 +8,7 @@
 pub mod characters;
 pub mod chunk;
 pub mod environment;
+pub mod factory;
 pub mod kind;
 pub mod level;
 pub mod material;

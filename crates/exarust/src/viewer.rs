@@ -117,7 +117,7 @@ fn setup(
                 if let Some(w) = &options.weapon {
                     commands
                         .entity(root)
-                        .insert(exa_character::Wielded(w.clone()));
+                        .insert(exa_character::Wielded::model(w.clone()));
                 }
             }
             commands.spawn((
@@ -188,7 +188,7 @@ fn setup(
                 if let Some(w) = &options.weapon {
                     commands
                         .entity(model)
-                        .insert(exa_character::Wielded(w.clone()));
+                        .insert(exa_character::Wielded::model(w.clone()));
                 }
                 if options.opponent {
                     let foe_at = exa_world::start::opponent_start(name)
@@ -211,7 +211,7 @@ fn setup(
                             "boots_b".into(),
                             "helm_b".into(),
                         ]),
-                        exa_character::Wielded(
+                        exa_character::Wielded::model(
                             options
                                 .weapon
                                 .clone()
@@ -392,6 +392,12 @@ fn spawn_placed_characters(
             exa_combat::Fighter::default(),
             ChildOf(root),
         ));
+        if let Some((model_name, weapon)) = &c.held {
+            commands.entity(model).insert(exa_character::Wielded {
+                model: model_name.clone(),
+                weapon: *weapon,
+            });
+        }
         spawned += 1;
     }
     (spawned, skipped)

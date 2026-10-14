@@ -58,7 +58,22 @@ impl Outfit {
 
 /// A weapon or tool from `Objects.rpk` held in the right hand.
 #[derive(Component, Clone, Debug)]
-pub struct Wielded(pub String);
+pub struct Wielded {
+    /// An `Objects.rpk` model, or `@` and a factory name for an assembled
+    /// weapon.
+    pub model: String,
+    /// The item's seeds, condition and choices for factory weapons.
+    pub weapon: Option<exa_formats::objdb::Weapon>,
+}
+
+impl Wielded {
+    pub fn model(model: impl Into<String>) -> Self {
+        Self {
+            model: model.into(),
+            weapon: None,
+        }
+    }
+}
 
 /// Right hand bone.
 pub const RIGHT_HAND: usize = 17;
@@ -179,9 +194,12 @@ fn equip_outfits(
                 }
             }
         }
-        if let Some(Wielded(item)) = wielded
+        if let Some(held) = wielded
             && let Some(hand) = by_bone.get(&RIGHT_HAND).copied()
-            && let Some(weapon) = loader.model(PackKind::Objects, item)
+            && let Some(weapon) = match held.model.strip_prefix('@') {
+                Some(factory) => loader.factory_weapon(factory, held.weapon.as_ref()),
+                None => loader.model(PackKind::Objects, &held.model),
+            }
         {
             let holder = commands
                 .spawn((
@@ -196,11 +214,19 @@ fn equip_outfits(
                     },
                 ))
                 .id();
-            for node in &weapon.nodes {
+            // Plain models drop their root node's placement; assembled
+            // weapons keep each component's.
+            for (i, node) in weapon.nodes.iter().enumerate() {
+                let transform = if node.parent.is_none() && i == 0 {
+                    Transform::IDENTITY
+                } else {
+                    node.transform
+                };
                 for (mesh, material) in &node.parts {
                     commands.spawn((
                         Mesh3d(mesh.clone()),
                         MeshMaterial3d(material.clone()),
+                        transform,
                         ChildOf(holder),
                     ));
                 }

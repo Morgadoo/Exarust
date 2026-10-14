@@ -70,6 +70,9 @@ pub struct PlacedCharacter {
     /// Worn items: model entry (`Characters.rpk`), appearance and the body
     /// slots they hide.
     pub worn: Vec<(String, Option<Appearance>, u32)>,
+    /// Item in the right hand: model (`@factory` for assembled weapons) and
+    /// its weapon data.
+    pub held: Option<(String, Option<exa_formats::objdb::Weapon>)>,
 }
 
 /// Resolves a level's placed characters: records from its own database,
@@ -84,16 +87,26 @@ fn placed_characters(scene: &Scene, global: &[Item]) -> Vec<PlacedCharacter> {
         .iter()
         .filter_map(|p| {
             let record = chars.record(p.id)?;
+            let find = |id: u32| -> Option<&Item> {
+                let items: &[Item] = if id & LOCAL_ITEM != 0 {
+                    &scene.local_items
+                } else {
+                    global
+                };
+                items.iter().find(|i| i.id == id & ID_MASK)
+            };
+            let held = record
+                .hands
+                .first()
+                .filter(|&&id| id != 0)
+                .and_then(|&id| find(id))
+                .filter(|item| !item.model.is_empty())
+                .map(|item| (item.model.clone(), item.weapon));
             let worn = record
                 .worn
                 .iter()
                 .filter_map(|&id| {
-                    let items: &[Item] = if id & LOCAL_ITEM != 0 {
-                        &scene.local_items
-                    } else {
-                        global
-                    };
-                    let item = items.iter().find(|i| i.id == id & ID_MASK)?;
+                    let item = find(id)?;
                     (!item.model.is_empty())
                         .then(|| (item.model.clone(), item.appearance, item.hidden_slots()))
                 })
@@ -106,6 +119,7 @@ fn placed_characters(scene: &Scene, global: &[Item]) -> Vec<PlacedCharacter> {
                 race: record.race,
                 female: record.female,
                 worn,
+                held,
             })
         })
         .collect()
@@ -131,8 +145,24 @@ fn spawn_placed_objects(
         let Some(item) = items.iter().find(|i| i.id == id) else {
             continue;
         };
-        // `@` names scripted objects; triggers and markers have no model.
-        if item.model.is_empty() || item.model.starts_with('@') {
+        // Triggers and markers have no model.
+        if item.model.is_empty() {
+            continue;
+        }
+        // `@` names a weapon assembled by a factory.
+        if let Some(factory) = item.model.strip_prefix('@') {
+            match loader.factory_weapon(factory, item.weapon.as_ref()) {
+                Some(model) => {
+                    let e = spawn_model(commands, &model, None);
+                    commands.entity(e).insert((
+                        transform_from_rows(&object.transform),
+                        Name::new(item.name.clone()),
+                        ChildOf(parent),
+                    ));
+                    placed += 1;
+                }
+                None => missing += 1,
+            }
             continue;
         }
         let in_pack = |kind| {

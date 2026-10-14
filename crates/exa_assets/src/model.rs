@@ -106,6 +106,14 @@ impl ModelLoader<'_> {
         }
     }
 
+    pub(crate) fn cached_model(&self, key: &str) -> Option<Option<Arc<Model>>> {
+        self.cache.models.get(key).cloned()
+    }
+
+    pub(crate) fn cache_model(&mut self, key: String, model: Option<Arc<Model>>) {
+        self.cache.models.insert(key, model);
+    }
+
     pub fn model(&mut self, pack: PackKind, entry: &str) -> Option<Arc<Model>> {
         let key = format!("{}/{}", pack.file_stem(), entry.to_ascii_lowercase());
         if let Some(cached) = self.cache.models.get(&key) {
@@ -387,7 +395,12 @@ impl ModelLoader<'_> {
             Some(shade) => {
                 let mut owned: Vec<OwnedLayer> = Vec::new();
                 for layer in appearance.used_layers() {
-                    let Some(mask) = self.texels(&format!("{stem}m{}", layer.mask)) else {
+                    // Items and recipes may name masks a texture set lacks.
+                    let mask_name = format!("{stem}m{}", layer.mask);
+                    if self.game.texture(&mask_name).is_none() {
+                        continue;
+                    }
+                    let Some(mask) = self.texels(&mask_name) else {
                         continue;
                     };
                     let material = layer_material(layer);

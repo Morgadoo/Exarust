@@ -103,12 +103,47 @@ Moved to [TERRAIN.md](TERRAIN.md) (verified).
 referencing icon images (`thmmndico1`). Four domains: displacement, energy,
 force, mind — the thaumaturgy skill trees.
 
-## Weapon factories
+## Weapon factories (`.fty`)
 
-`Factories.rpk`, magic `0x00/01/02 0F CE AF` (three versions). Recipes that
-assemble `Components.rpk` parts (heads, hafts, guards, pommels, langets) with
-procedural materials (`TItemFactory`, `TFactoryMaterial*`, `TSteelGen`,
-`TIronGen`).
+Status: **verified**. All 106 parse (v0 46, v1 34, v2 26). The generator
+reproduces the original's choices; the reference generator matched all 143
+factory weapons of a real save, part for part and material for material.
+`exa_formats::factory`, `exa-tool corpus factories`.
+
+- **Header**: `u32 magic` `0xAFCE0F0v`, 8 reserved bytes, name[16] (empty),
+  atlas width and height, `i32` grips (0) × 8 bytes, `i32` material areas
+  (at most 8 read) × 56 bytes: name[16], 8 candidates
+  {material, bits, fixed colour, mode}, count at +0x30.
+- **Parts**: `i32 n`, then per part `u32 flags` (bit 0 texture-only overlay,
+  `0x10` random twist), name[16], position, rotation (radians), scale
+  (cm), atlas rectangle, a texture parameter, 3 deforms (16 bytes in v0,
+  28 in v1/v2: header type|axis<<8|flags, amount, pivot, range, blend, stat
+  weight, 0), {chance, attach-to (1-based), role, attach mode}, then
+  `i32` variants of 40 bytes (44 in v2): model[16], mask areas[4],
+  slash/crush/pierce/thrust bonuses, weight (0 → 100 before v2), tags,
+  exclude mask, flags, and in v2 a child Y offset (mm). A trailer lists the
+  tag names.
+- **Generation** (32-bit LCG `s·0x08088405 + 1`; seeds A and B; quality
+  q = byte/255): a twist per part from B; per part and deform
+  value = (2B−1)·blend + (1−blend)·(2A−1); per part a presence roll and a
+  weighted pick among variants whose tags agree with earlier choices. The
+  first part offering a tag owns it. Then per area a weighted material
+  roll (weights 100/50/20/10 by class, scaled by distance from q to the
+  candidate's level) with a finish and a colour by material class. Items
+  with flag `0x10000000` in their weapon section keep their stored choices
+  and materials.
+- **Assembly**: components (`Components.rpk`, one mesh each, +Y along the
+  weapon, cm) are placed in recipe order on their nearest chosen ancestor.
+  The ancestor's scale and band deforms move the attach point, and twists
+  accumulate. Textures are `<model>d`, `n`, `m1`..`m4`, painted per mask
+  with the material of the area the variant maps it to.
+- **Items** name a factory by a model name starting with `@`. Their weapon
+  section (`0x4000`, 96 bytes) holds flags, seeds, quality, damage, dirt,
+  4 material slots, stats, and the stored choices at +0x50.
+
+Exarust assembles factory weapons for held items, placed objects and
+`--weapon @name`. Not yet: taper, bend and radial deforms, atlas UV
+cropping, weapon stats and their use in combat.
 
 ## Actors
 

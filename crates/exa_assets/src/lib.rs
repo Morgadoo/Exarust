@@ -8,6 +8,7 @@ pub mod model;
 pub mod paint;
 pub mod skin;
 pub mod texture;
+pub mod weapon;
 
 use std::sync::Arc;
 
