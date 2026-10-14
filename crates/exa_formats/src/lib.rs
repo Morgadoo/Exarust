@@ -12,6 +12,7 @@ pub mod material;
 pub mod rdb;
 pub mod rfc;
 pub mod rfi;
+pub mod rsq;
 
 pub use kind::FileKind;
 

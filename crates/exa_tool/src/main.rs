@@ -63,6 +63,11 @@ enum Cmd {
         entry: String,
         out: PathBuf,
     },
+    /// Summarise the skeleton and motion set of a `.rsq`.
+    Rsq {
+        #[arg(default_value = "humanoid.rsq")]
+        entry: String,
+    },
     /// Decode every entry of a format and report coverage.
     Corpus {
         #[arg(value_enum)]
@@ -151,6 +156,24 @@ fn main() -> Result<()> {
                 rfi.format,
                 out.display()
             );
+            Ok(())
+        }
+        Cmd::Rsq { entry } => {
+            let seq = exa_formats::rsq::Sequences::parse(entry_bytes(&game, "Resource", &entry)?)?;
+            println!("bones:");
+            for n in &seq.skeleton.nodes {
+                println!("  {:<16} parent {:?}", n.name, n.parent);
+            }
+            let m = &seq.motions;
+            println!("{} actions, {} movesets", m.actions.len(), m.movesets.len());
+            for ms in &m.movesets {
+                let defined = ms.clips.iter().filter(|c| c.is_some()).count();
+                let keys: usize = ms.clips.iter().flatten().map(|c| c.keys.len()).sum();
+                println!(
+                    "  {:<14} <- {:<12} {defined:>2} actions, {keys:>3} keys",
+                    ms.name, ms.parent
+                );
+            }
             Ok(())
         }
         Cmd::Corpus {

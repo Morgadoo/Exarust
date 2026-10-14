@@ -2359,6 +2359,7 @@ name = "exarust"
 version = "0.0.1"
 dependencies = [
  "bevy",
+ "exa_anim",
  "exa_assets",
  "exa_game",
  "exa_world",

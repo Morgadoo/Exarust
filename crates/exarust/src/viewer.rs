@@ -96,6 +96,32 @@ fn setup(
             },
             None => error!("unknown pack {pack}"),
         },
+        View::Character { motion } => {
+            let (moveset, action) = motion
+                .split_once('/')
+                .unwrap_or(("Default", motion.as_str()));
+            match exa_anim::Motions::load(&game) {
+                Some(m) => commands.insert_resource(m),
+                None => error!("humanoid.rsq could not be loaded"),
+            }
+            if let Some(body) = loader.model(PackKind::Resource, "humanbase.rfc") {
+                let root = exa_world::spawn_model(&mut commands, &body, None);
+                commands
+                    .entity(root)
+                    .insert(exa_anim::Animator::new(moveset, action));
+            }
+            commands.spawn((
+                DirectionalLight {
+                    illuminance: 5000.0,
+                    ..default()
+                },
+                Transform::from_xyz(2.0, 4.0, 3.0).looking_at(Vec3::Y, Vec3::Y),
+            ));
+            let floor = loader.meshes.add(Plane3d::default().mesh().size(6.0, 6.0));
+            let floor_mat = loader.materials.add(Color::srgb(0.25, 0.23, 0.2));
+            commands.spawn((Mesh3d(floor), MeshMaterial3d(floor_mat)));
+            pose = (Vec3::new(1.6, 1.4, 2.6), Vec3::new(0.0, 0.9, 0.0), 2.0);
+        }
         View::Texture(name) => {
             match loader.texture(name, ColorSpace::Srgb) {
                 Some((img, _)) => {

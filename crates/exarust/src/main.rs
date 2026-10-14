@@ -4,6 +4,7 @@
 //! exarust [--game <dir>] [options] level <name>          a level with its props and lights
 //! exarust [--game <dir>] [options] model <pack> <entry>  one model
 //! exarust [--game <dir>] [options] texture <name>        one texture (first light)
+//! exarust [--game <dir>] [options] character [moveset/action]  the human body playing a motion
 //!
 //! options: --camera x,y,z,yaw,pitch   start pose (metres, degrees)
 //!          --screenshot <file.png>    save a frame and exit
@@ -28,6 +29,7 @@ pub enum View {
     Level(String),
     Model { pack: String, entry: String },
     Texture(String),
+    Character { motion: String },
 }
 
 #[derive(Resource, Clone, Debug, Default)]
@@ -91,6 +93,12 @@ fn main() -> AppExit {
             entry: entry.join(" "),
         },
         ["texture", name] => View::Texture((*name).to_string()),
+        ["character"] => View::Character {
+            motion: "Default/Walk".into(),
+        },
+        ["character", motion @ ..] => View::Character {
+            motion: motion.join(" "),
+        },
         [] => View::Texture("humandiff".into()),
         _ => return usage(),
     };

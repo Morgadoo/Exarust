@@ -144,7 +144,10 @@ terrain (`.rft`), sectors/portals (the room flood fill is understood),
 **M2 "walkable world":** load any arena or story level, fly around, and get
 correct geometry, textures and light placement.
 
-### Phase 3 — Bodies: skeleton, physics, control
+### Phase 3 — Bodies: skeleton, physics, control (started)
+
+Done (change `add-motion-playback`): skeleton and motion set decoded;
+clips play on the human body (`exarust character Default/Walk`).
 
 This phase carries the most risk and defines how the game feels.
 
@@ -270,7 +273,8 @@ holds the runtime and the documentation of formats and behaviour.
    on a visual mirroring check against the running game.
 2. ✅ Level props and grid header in Bevy (`exarust level`).
 3. ✅ Tile-grid builder: walls, floors and ceilings from the sets.
-4. Skeleton and motions (`.rsq`) plus skinned meshes (`A4` skin streams,
-   `*base.rfc`).
+4. ✅ Skeleton and motions (`.rsq`).
+5. Seam stitching between body parts, apparel on bodies, then the player
+   character in a level with physics (avian3d) and controls.
 4. `exa-tool corpus` coverage report.
 5. `exa_assets` asset source and loaders, then a Bevy level viewer (M2).
