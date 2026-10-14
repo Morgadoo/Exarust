@@ -26,6 +26,8 @@ struct ExaParams {
     pad2: u32,
     gi_origin: vec4<f32>,
     gi_extent: vec4<f32>,
+    // Parallax scale per UV axis (xy), displacement-shadow step (z), bias (w).
+    displacement: vec4<f32>,
 }
 
 const DIFFUSE_MAP: u32 = 1u;
@@ -40,6 +42,11 @@ const ENVIRONMENT: u32 = 256u;
 const DIRT_MAP: u32 = 512u;
 const GLOSS_MAP: u32 = 1024u;
 const GI: u32 = 2048u;
+const HEIGHT_MAP: u32 = 4096u;
+const DISPLACEMENT_SHADOWS: u32 = 8192u;
+// Displacement-shadow taps toward each light: four per sub-sample over the
+// original's four supersampling passes.
+const SHADOW_STEPS: i32 = 16;
 // The original's texture LOD bias at its top texture quality with 4×
 // supersampling, −0.75 × (4 − 1)/3, on colour textures only (not normal,
 // gloss or packed specular maps). Rules: docs/RENDERING.md (Textures).
@@ -76,6 +83,26 @@ const SUN_LUX: f32 = 160.0;
 @group(constants::MATERIAL_BIND_GROUP) @binding(116) var gloss_sampler: sampler;
 @group(constants::MATERIAL_BIND_GROUP) @binding(117) var gi_volume: texture_3d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(118) var gi_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(119) var height_map: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(120) var height_sampler: sampler;
+
+fn height(uv: vec2<f32>) -> f32 {
+    return textureSample(height_map, height_sampler, uv).r;
+}
+
+// The height map's shadow on one light (direction l): taps marched toward
+// the light in the tangent plane; lit where the surface stands above them.
+fn displacement_shadow(uv: vec2<f32>, l: vec3<f32>, ax: vec3<f32>, ay: vec3<f32>, n: vec3<f32>, h0: f32) -> f32 {
+    // Tangent-space light; its y runs along +v.
+    let t = vec3(dot(l, ax), -dot(l, ay), dot(l, n));
+    let a = material.displacement.z * (2.0 - t.z);
+    var lit = 0.0;
+    for (var j = 1; j <= SHADOW_STEPS; j++) {
+        let h = height(uv + t.xy * a * f32(j));
+        lit += clamp((h0 + 0.1 * t.z - h) * 20.0, 0.0, 1.0);
+    }
+    return lit / f32(SHADOW_STEPS);
+}
 
 // The GI volume around a surface point: four taps 20 cm out along the
 // normal, spread across the tangent plane; light and openness averaged.
@@ -153,6 +180,32 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 @if(VERTEX_UVS_A) {
     uv = in.uv;
 }
+    let p = in.world_position.xyz;
+    let v = normalize(view_bindings::view.world_position.xyz - p);
+    // Parallax: the view in tangent space shifts the texture coordinates
+    // by the height map, in four accumulating steps; every map then reads
+    // at the shifted coordinates.
+    var displaced = false;
+    var dsp_val = 0.0;
+    var ax = vec3(1.0, 0.0, 0.0);
+    var ay = vec3(0.0, 0.0, 1.0);
+    let ns = normalize(in.world_normal);
+@if(VERTEX_TANGENTS) {
+    if has(HEIGHT_MAP) {
+        let tg = normalize(in.world_tangent.xyz);
+        let btng = normalize(cross(tg, ns) * in.world_tangent.w);
+        let eye = -v;
+        let vt = vec3(dot(eye, tg), dot(eye, btng), dot(eye, ns));
+        let dsp = vt.xy * material.displacement.xy * (4.0 + 3.0 * vt.z);
+        for (var k = 0; k < 4; k++) {
+            dsp_val = height(uv) - 0.5;
+            uv -= dsp * dsp_val;
+        }
+        ax = normalize(in.world_tangent.xyz - ns * dot(in.world_tangent.xyz, ns));
+        ay = cross(ns, ax) * in.world_tangent.w;
+        displaced = true;
+    }
+}
     var dif_tex = vec4(1.0);
     if has(DIFFUSE_MAP) {
         dif_tex = textureSampleBias(diffuse_map, diffuse_sampler, uv, TEXTURE_BIAS);
@@ -192,9 +245,6 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         n = normalize(t * xy.x + b * xy.y + n * z);
     }
 }
-    let p = in.world_position.xyz;
-    let v = normalize(view_bindings::view.world_position.xyz - p);
-
     var s: Surface;
     s.n = n;
     s.v = v;
@@ -223,6 +273,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 
     var diffuse = vec3(0.0);
     var specular = vec3(0.0);
+    let self_shadowed = displaced && has(DISPLACEMENT_SHADOWS);
+    let h0 = dsp_val + material.displacement.w + 0.5;
     let receiver = (mesh[in.instance_index].flags & MESH_FLAGS_SHADOW_RECEIVER_BIT) != 0u;
 
     // Point lights in this fragment's cluster.
@@ -248,7 +300,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         if receiver && ((*lt).flags & mesh_view_types::POINT_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u {
             shadow = shadows::fetch_point_shadow(id, in.world_position, in.world_normal, in.position.xy);
         }
-        let lit = light(s, to / max(d, 1e-4), (*lt).color_inverse_square_range.rgb * atn * shadow);
+        let l = to / max(d, 1e-4);
+        if self_shadowed {
+            shadow *= displacement_shadow(uv, l, ax, ay, ns, h0);
+        }
+        let lit = light(s, l, (*lt).color_inverse_square_range.rgb * atn * shadow);
         diffuse += lit.diffuse;
         specular += lit.specular;
     }
@@ -258,6 +314,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         var shadow = 1.0;
         if receiver && ((*sun).flags & mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u {
             shadow = shadows::fetch_directional_shadow(i, in.world_position, in.world_normal, view_z, in.position.xy);
+        }
+        if self_shadowed {
+            shadow *= displacement_shadow(uv, (*sun).direction_to_light, ax, ay, ns, h0);
         }
         let lit = light(s, (*sun).direction_to_light, (*sun).color.rgb / SUN_LUX * shadow);
         diffuse += lit.diffuse;
@@ -291,6 +350,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             mirrored = textureSampleLevel(environment_map, environment_sampler, r, max(s.rough - 0.1, 0.0) * 8.0).rgb;
         }
         reflected = (mirrored + mirrored * mirrored) * level / AMBIENT_SCALE * REFLECTION_STRENGTH * gv;
+    }
+    // Parallax without displacement shadows darkens the ambient in hollows.
+    if displaced && !self_shadowed {
+        ambient *= min(dsp_val + 1.2, 1.0);
     }
     var colour = (diffuse + ambient) * dif_col;
     if s.legacy {

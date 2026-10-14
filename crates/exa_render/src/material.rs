@@ -39,6 +39,10 @@ pub mod flags {
     pub const GLOSS_MAP: u32 = 1024;
     /// Ambient comes from the voxel GI volume.
     pub const GI: u32 = 2048;
+    /// A height map displaces the texture coordinates (parallax).
+    pub const HEIGHT_MAP: u32 = 4096;
+    /// The height map also shadows the lights.
+    pub const DISPLACEMENT_SHADOWS: u32 = 8192;
 }
 
 #[derive(Clone, Copy, Debug, ShaderType)]
@@ -56,6 +60,9 @@ pub struct ExaParams {
     /// The GI volume's lowest corner (m), and its size (m).
     pub gi_origin: Vec4,
     pub gi_extent: Vec4,
+    /// Parallax scale per UV axis (xy), displacement-shadow step (z) and
+    /// bias (w).
+    pub displacement: Vec4,
 }
 
 impl Default for ExaParams {
@@ -70,6 +77,7 @@ impl Default for ExaParams {
             pad2: 0,
             gi_origin: Vec4::ZERO,
             gi_extent: Vec4::ONE,
+            displacement: Vec4::ZERO,
         }
     }
 }
@@ -109,6 +117,10 @@ pub struct ExaMaterial {
     #[texture(117, dimension = "3d")]
     #[sampler(118)]
     pub gi_volume: Option<Handle<Image>>,
+    /// Height map (red, linear) for parallax and displacement shadows.
+    #[texture(119)]
+    #[sampler(120)]
+    pub height_map: Option<Handle<Image>>,
     pub alpha_mode: AlphaMode,
 }
 

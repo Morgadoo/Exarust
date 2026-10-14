@@ -48,11 +48,13 @@ impl TextureSlot {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TextureLayer {
     pub slot: TextureSlot,
     /// Texture entry name, without any `.rfi`/`.dds` extension.
     pub texture: String,
+    /// The layer's amount (body +4); for a height layer, the parallax depth.
+    pub amount: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -74,6 +76,11 @@ pub struct Material {
     /// 0: legacy (diffuse ×1.5); bit 0: the specular map is a packed
     /// intensity/gloss/metal map.
     pub kind: u32,
+    /// Extra flags (`0x4C`): `0x100000` enables displacement shadows.
+    pub extra: u32,
+    /// Displacement-shadow step and bias (`0x5C`, `0x60`), with a height map.
+    pub displacement_step: f32,
+    pub displacement_bias: f32,
     pub layers: Vec<TextureLayer>,
 }
 
@@ -129,6 +136,7 @@ impl Material {
             layers.push(TextureLayer {
                 slot: TextureSlot::from_flag(flag),
                 texture: strip_extension(&name).to_string(),
+                amount: f32::from_le_bytes(rec[12..16].try_into().expect("4 bytes")),
             });
             p += LAYER_LEN;
         }
@@ -142,8 +150,15 @@ impl Material {
             class: u32_at(0x44),
             flags: u32_at(0x48),
             kind: u32_at(0x50),
+            extra: u32_at(0x4C),
+            displacement_step: f32_at(0x5C),
+            displacement_bias: f32_at(0x60),
             layers,
         })
+    }
+
+    pub fn layer(&self, slot: TextureSlot) -> Option<&TextureLayer> {
+        self.layers.iter().find(|l| l.slot == slot)
     }
 
     pub fn texture(&self, slot: TextureSlot) -> Option<&str> {
@@ -186,6 +201,23 @@ mod tests {
         assert_eq!(m.texture(TextureSlot::Diffuse), Some("GrassPalA01D"));
         assert_eq!(m.texture(TextureSlot::Normal), Some("wall01n"));
         assert_eq!(m.diffuse[0], 0.5);
+    }
+
+    #[test]
+    fn reads_height_depth_and_displacement_settings() {
+        let mut p = vec![0u8; PARAMETER_BLOCK];
+        p[0x4C..0x50].copy_from_slice(&0x0010_0100u32.to_le_bytes());
+        p[0x5C..0x60].copy_from_slice(&0.5f32.to_le_bytes());
+        p[0x60..0x64].copy_from_slice(&0.25f32.to_le_bytes());
+        let mut h = layer(0x0080_0000, "UA1FA01H.rfi");
+        h[12..16].copy_from_slice(&0.6f32.to_le_bytes());
+        p.extend(h);
+        let m = Material::parse(&p).unwrap();
+        let height = m.layer(TextureSlot::Height).unwrap();
+        assert_eq!(height.texture, "UA1FA01H");
+        assert!((height.amount - 0.6).abs() < 1e-6);
+        assert_eq!(m.extra, 0x0010_0100);
+        assert_eq!((m.displacement_step, m.displacement_bias), (0.5, 0.25));
     }
 
     #[test]

@@ -113,6 +113,26 @@ program.
   - (lights + reflection) × specular colour × (0.5 + 0.5·Schlick);
   - the specular colour is ×3 with a specular map.
 - Emissive adds on top. Unlit materials show only their emissive.
+- **Parallax** (`0x800000` height layer, with a normal map; shading quality
+  ≥ 4):
+  - Depth: P = round(50·L), where L is the height layer's amount (body +4;
+    0.6 on the menu floor). With the height map's size W × H,
+    Y = round(P·2048/H), X = round(Y·H/W), and the scale is (X, Y)·3·10⁻⁵:
+    a fixed number of texels.
+  - Shift: the view from the eye in tangent space (T, +∂P/∂v, N) gives
+    d = view.xy·scale·(4 + 3·view.z).
+  - Four accumulating steps uv −= d·(h(uv) − ½). Every map reads at the
+    final coordinates.
+- **Displacement shadows** (material extra flags `0x4C` bit `0x100000`;
+  shading quality ≥ 5): each light is dimmed by height taps marched toward
+  it in the tangent plane.
+  - Step a = (`0x5C`·0.004)·(2 − l.z), with l the light in tangent space.
+  - lit = clamp((h₀ + 0.1·l.z − h)·20, 0, 1), with h₀ = h − ½ +
+    `0x60`·0.05 + ½.
+  - The taps are averaged: four per pass, sixteen in all over the original's
+    four supersampling passes.
+- Without displacement shadows, parallax darkens the ambient by
+  min(h − ½ + 1.2, 1).
 
 **Textures** are sampled with the original's settings at its top texture
 quality (`TextureQuality = 5`) and 4× supersampling:
@@ -282,9 +302,8 @@ lengths in cm, and the simulation runs at the 83 Hz tick):
 
 ## Not done yet
 
-Medium and large fire templates, the sun and terrain in the GI volume, several resident GI
-blocks, fog, displacement and parallax, vertex
-dirt, glass refraction, effect programs (smoke, powers), hair and skin
+Supersampling and its sharpen, medium and large fire templates, the sun
+and terrain in the GI volume, several resident GI blocks, fog, vertex dirt, glass refraction, effect programs (smoke, powers), hair and skin
 programs, terrain on the new shading, and the outdoor environment cube.
 Software rendering here cannot afford the light shadows, so test frames use
 `--no-shadows`.

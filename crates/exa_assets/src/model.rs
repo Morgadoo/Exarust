@@ -410,6 +410,32 @@ impl ModelLoader<'_> {
         if let Some(t) = m.texture(TextureSlot::Gloss) {
             mat.gloss_map = self.texture(t, ColorSpace::Linear).map(|t| t.0);
         }
+        // Parallax: the height layer's depth as a fixed number of texels of
+        // the height map; displacement shadows when the record asks.
+        if let Some(layer) = m.layer(TextureSlot::Height)
+            && layer.amount > 0.0
+            && mat.normal_map.is_some()
+            && let Some((img, _)) = self.texture(&layer.texture, ColorSpace::Linear)
+            && let Some(size) = self.images.get(&img).map(|i| i.size())
+            && size.x > 1
+            && size.y > 1
+        {
+            let (w, h) = (size.x as f32, size.y as f32);
+            let depth = (50.0 * layer.amount).round().min(65535.0);
+            let y = (depth * 2048.0 / h).round();
+            let x = (y * h / w).round();
+            mat.params.displacement = Vec4::new(
+                x * PARALLAX_UNIT,
+                y * PARALLAX_UNIT,
+                m.displacement_step * 0.004,
+                m.displacement_bias * 0.05,
+            );
+            mat.params.flags |= flags::HEIGHT_MAP;
+            if m.extra & DISPLACEMENT_SHADOWS != 0 {
+                mat.params.flags |= flags::DISPLACEMENT_SHADOWS;
+            }
+            mat.height_map = Some(img);
+        }
         mat.alpha_mode = blend_mode(m.class, cut_out || mat.opacity_map.is_some());
         if mat.alpha_mode == AlphaMode::Premultiplied {
             let a = mat.params.diffuse.w;
@@ -749,6 +775,11 @@ fn library_material(game: &GameData, name: &str) -> Option<Material> {
     }
     None
 }
+
+/// Parallax scale per unit of the height layer's texel count.
+const PARALLAX_UNIT: f32 = 3e-5;
+/// Material extra flag (`0x4C`) enabling displacement shadows.
+const DISPLACEMENT_SHADOWS: u32 = 0x10_0000;
 
 /// A Bevy mesh holding only the vertices one material group uses.
 fn group_mesh(mesh: &RfcMesh, indices: &[u32], skin: Option<&[VertexSkin]>) -> Option<Mesh> {
