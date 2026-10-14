@@ -61,6 +61,8 @@ pub struct Options {
     pub no_supersample: bool,
     /// Hide the frame-rate readout.
     pub no_fps: bool,
+    /// Present frames as soon as they are drawn (for measuring).
+    pub no_vsync: bool,
     /// Window size in logical pixels.
     pub size: Option<(u32, u32)>,
     /// Play mode: start here instead of the level's start (metres).
@@ -116,6 +118,7 @@ fn main() -> AppExit {
             "--no-gi" => options.gi.enabled = false,
             "--no-supersample" => options.no_supersample = true,
             "--no-fps" => options.no_fps = true,
+            "--no-vsync" => options.no_vsync = true,
             "--gi-warm-up" => {
                 if let Some(n) = args.next().and_then(|v| v.parse().ok()) {
                     options.gi.warm_up = n;
@@ -216,6 +219,11 @@ fn main() -> AppExit {
                     primary_window: Some(Window {
                         title: "Exarust".into(),
                         resolution: options.size.unwrap_or((1600, 900)).into(),
+                        present_mode: if options.no_vsync {
+                            bevy::window::PresentMode::AutoNoVsync
+                        } else {
+                            bevy::window::PresentMode::AutoVsync
+                        },
                         ..default()
                     }),
                     ..default()

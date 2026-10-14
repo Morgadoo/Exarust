@@ -169,3 +169,10 @@ The system SHALL supersample the scene as the original does at its 4× setting: 
 #### Scenario: Fine texture detail
 - **WHEN** a detailed floor fills the view
 - **THEN** its fine detail shows cleanly, without aliasing patterns
+
+### Requirement: No multisampling under supersampling
+The system SHALL draw the supersampled scene without hardware multisampling, as the original does (`HWMultisample = 0`); the sub-frames are the only antialiasing.
+
+#### Scenario: Supersampled frame
+- **WHEN** a level is drawn with supersampling on
+- **THEN** the scene image has one sample per pixel

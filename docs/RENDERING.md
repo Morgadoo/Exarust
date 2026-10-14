@@ -37,7 +37,8 @@ Exarust (`exa_render::supersample`) draws the scene at twice the window's
 resolution on each axis, an ordered 2 × 2 grid instead of the jittered
 four. A display camera resolves each 2 × 2 block by bilinear sampling at
 its centre, then runs the post chain at window resolution. It is on in the
-viewer; `--no-supersample` turns it off.
+viewer; `--no-supersample` turns it off. The original multisamples nothing
+(`HWMultisample = 0`), so the supersampled scene is drawn without MSAA.
 
 ## Post-processing
 

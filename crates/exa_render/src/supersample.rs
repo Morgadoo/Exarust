@@ -119,6 +119,9 @@ fn start_supersampling(
                 RenderTarget::Image(image.clone().into()),
                 Hdr,
                 Tonemapping::None,
+                // The original multisamples nothing (`HWMultisample` 0):
+                // the sub-frames are its only antialiasing.
+                Msaa::Off,
             ))
             .remove::<ExaPost>();
         let material = materials.add(ResolveMaterial {

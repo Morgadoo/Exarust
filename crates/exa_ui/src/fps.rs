@@ -95,6 +95,7 @@ fn update(
         }
         let fps = readout.frames as f32 / readout.seconds;
         *readout = FpsReadout::default();
+        debug!("{fps:.2} FPS");
         let line = font.0.render(&format!("{fps:.2} FPS"));
         node.width = px(line.width as f32 * SCALE * unit);
         node.height = px(line.height as f32 * SCALE * unit);
