@@ -241,6 +241,22 @@ side-by-side check on the GPU at the same camera.
 - Shadow maps cut alpha-tested surfaces (cobwebs, grates) the way their
   colour is cut. Surfaces with opacity ≤ 0.8 (glass, decals) and those whose
   record has extra flag `0x4` cast no shadows.
+- A light leaves its own object out of its shadow map: its siblings, its
+  parent and its grandparent. A fire's light hangs under the fire node, so a
+  torch does not shadow its own flame. Only the torch's hidden `TorchSdw`
+  disc casts, a narrow cone along the handle. A light at its object's root
+  excludes nothing. Bevy has no per-light casters, so the excluded meshes
+  cast no shadows at all.
+- **Filter** (point lights):
+  - the surface is pushed toward the light by 0.008·(1 − |N·L|)·d along the
+    normal;
+  - eight taps from a fixed disc lie around the light direction, turned per
+    pixel by π·fract(3.5557·x + 0.3093·y), each a hardware 2 × 2
+    comparison, averaged;
+  - the disc radius is (softness + 1)·0.005: 0.0075 for level lights
+    (softness 0.5), and (2j + 1)·0.005 for fires, where the jitter j walks
+    by ±0.0625 a tick within [0.87, 1.15];
+  - distances are compared 0.5 % short.
 - The sun's colour per unit of intensity is 160 lux in Exarust's scene units
   (scaled back in the shader).
 

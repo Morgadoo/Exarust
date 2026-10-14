@@ -25,6 +25,8 @@ const SMALL_WIDENED_FROM: f32 = 0.2;
 /// Height of the light above the fire node, metres.
 const SMALL_LIFT: f32 = 0.05;
 const LARGE_LIFT: f32 = 0.40;
+/// A fire light's shadow softness before its jitter.
+const SOFTNESS: f32 = 2.0;
 /// Flicker and particle steps per second.
 pub(crate) const TICK_HZ: f32 = 83.0;
 
@@ -44,6 +46,8 @@ pub struct Fire {
     pub(crate) liveliness: Option<f32>,
     /// Ticks run.
     ticks: u32,
+    /// Shadow-softness jitter, 0.87–1.15.
+    jitter: f32,
 }
 
 impl Fire {
@@ -97,6 +101,7 @@ pub fn spawn_fire(commands: &mut Commands, node: Entity, size: f32) {
             accumulator: 0.0,
             liveliness: None,
             ticks: 0,
+            jitter: 1.0,
         },
         crate::flame::FlameSize { size, lift },
         ChildOf(node),
@@ -122,6 +127,8 @@ fn step(fire: &mut Fire) {
     }
     let u = unit(&mut fire.seed);
     fire.walk += 0.3 * fire.speed * u;
+    let u = unit(&mut fire.seed);
+    fire.jitter = (fire.jitter + (u - 0.5) * 0.125).clamp(0.87, 1.15);
     // The fire is as established as its flame is full (fully, without one).
     fire.density = 0.8 * fire.density + 0.2 * fire.liveliness.unwrap_or(1.0);
 }
@@ -138,6 +145,7 @@ fn flicker(time: Res<Time>, mut fires: Query<(&mut Fire, &mut PointLight)>) {
         fire.accumulator = fire.accumulator.min(1.0 / TICK_HZ);
         let intensity = fire.density * (1.0 + 0.05 * fire.walk) * fire.base;
         light.intensity = crate::LUMENS_PER_INTENSITY * intensity.max(0.0);
+        light.radius = crate::shadow_radius(SOFTNESS * fire.jitter);
     }
 }
 
@@ -164,6 +172,7 @@ mod tests {
             accumulator: 0.0,
             liveliness: None,
             ticks: 0,
+            jitter: 1.0,
         };
         for _ in 0..10_000 {
             step(&mut fire);

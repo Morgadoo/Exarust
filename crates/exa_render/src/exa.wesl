@@ -122,6 +122,67 @@ fn gi_sample(p: vec3<f32>, n: vec3<f32>) -> vec4<f32> {
     return sum * 0.25;
 }
 
+// The original's cube-shadow filter: eight taps of a fixed disc around the
+// light direction, turned per pixel, over the light's filter radius
+// (`PointLight::radius`: (softness + 1)·0.005), each a hardware 2 × 2
+// comparison; a normal offset of 0.008·(1 − |N·L|)·d and a 0.5 % depth bias.
+const SHADOW_TAPS = array<vec2<f32>, 8>(
+    vec2(0.2725, -0.5487), vec2(-0.2880, 0.6186), vec2(0.3617, 0.1806), vec2(-0.5052, -0.2395),
+    vec2(-0.3028, -0.6664), vec2(-0.8588, 0.4718), vec2(0.3960, 0.7947), vec2(0.7731, -0.3697),
+);
+const SHADOW_DEPTH_SCALE: f32 = 0.995;
+const PI: f32 = 3.14159265;
+const SHADOW_NORMAL_OFFSET: f32 = 0.008;
+const FLIP_Z = vec3(1.0, 1.0, -1.0);
+
+fn point_shadow(id: u32, p: vec3<f32>, nrm: vec3<f32>, frag: vec2<f32>) -> f32 {
+    let lt = &view_bindings::clustered_lights.data[id];
+    let l = (*lt).position_radius.xyz - p;
+    let d = max(length(l), 1e-4);
+    let ln = l / d;
+    // Toward the light from the surface pushed out along the normal.
+    let push = (1.0 - abs(dot(nrm, ln))) * d * SHADOW_NORMAL_OFFSET;
+    let s_vec = (l - nrm * push) / d;
+    // A frame around the light direction.
+    let ia = 1.0 / (1.00001 + ln.z);
+    let bb = -ln.x * ln.y * ia;
+    let ax = vec3(1.0 - ln.x * ln.x * ia, bb, -ln.x);
+    let ay = vec3(bb, 1.0 - ln.y * ln.y * ia, -ln.y);
+    let turn = PI * fract(3.555713358 * frag.x + 0.309269245 * frag.y);
+    let rb = vec2(sin(turn), cos(turn));
+    let radius = (*lt).position_radius.w;
+    var lit = 0.0;
+    for (var j = 0; j < 8; j++) {
+        let t = SHADOW_TAPS[j];
+        let rs = vec2(t.x * rb.y - t.y * rb.x, t.x * rb.x + t.y * rb.y);
+        let dir = (ax * rs.x + ay * rs.y) * radius - s_vec;
+        // The surface's distance along this tap, in Bevy's cube depth.
+        let q = normalize(dir) * d * SHADOW_DEPTH_SCALE;
+        let major = max(abs(q.x), max(abs(q.y), abs(q.z)));
+        let zw = -major * (*lt).light_custom_data.xy + (*lt).light_custom_data.zw;
+        lit += cube_compare(dir * FLIP_Z, id, zw.x / zw.y);
+    }
+    return lit / 8.0;
+}
+
+fn cube_compare(dir: vec3<f32>, id: u32, depth: f32) -> f32 {
+    @if(NO_CUBE_ARRAY_TEXTURES_SUPPORT)
+    return textureSampleCompare(
+        view_bindings::point_shadow_textures,
+        view_bindings::point_shadow_textures_comparison_sampler,
+        dir,
+        depth,
+    );
+    @else
+    return textureSampleCompareLevel(
+        view_bindings::point_shadow_textures,
+        view_bindings::point_shadow_textures_comparison_sampler,
+        dir,
+        i32(id),
+        depth,
+    );
+}
+
 fn has(bit: u32) -> bool {
     return (material.flags & bit) != 0u;
 }
@@ -298,7 +359,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         }
         var shadow = 1.0;
         if receiver && ((*lt).flags & mesh_view_types::POINT_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u {
-            shadow = shadows::fetch_point_shadow(id, in.world_position, in.world_normal, in.position.xy);
+            shadow = point_shadow(id, p, n, in.position.xy);
         }
         let l = to / max(d, 1e-4);
         if self_shadowed {

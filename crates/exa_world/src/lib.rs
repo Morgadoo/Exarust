@@ -228,6 +228,7 @@ pub fn spawn_model(commands: &mut Commands, model: &Model, placement: Option<Tra
         .map(|r| model.nodes[r].transform.to_matrix().inverse())
         .unwrap_or(Mat4::IDENTITY);
     let mut entities = Vec::with_capacity(model.nodes.len());
+    let mut parts_of: Vec<Vec<Entity>> = Vec::with_capacity(model.nodes.len());
     for (i, node) in model.nodes.iter().enumerate() {
         let local = match (placement, node.parent) {
             (Some(_), None) if Some(i) == first_root => Transform::IDENTITY,
@@ -245,6 +246,7 @@ pub fn spawn_model(commands: &mut Commands, model: &Model, placement: Option<Tra
                 },
             ))
             .id();
+        let mut parts = Vec::with_capacity(node.parts.len());
         for (mesh, material) in &node.parts {
             let part = commands
                 .spawn((
@@ -258,7 +260,9 @@ pub fn spawn_model(commands: &mut Commands, model: &Model, placement: Option<Tra
                     .entity(part)
                     .insert(exa_assets::SkinnedPart { bone });
             }
+            parts.push(part);
         }
+        parts_of.push(parts);
         if let Some(light) = &node.light {
             commands.entity(e).insert(point_light(light));
         }
@@ -276,7 +280,40 @@ pub fn spawn_model(commands: &mut Commands, model: &Model, placement: Option<Tra
         let parent = node.parent.map_or(root, |p| entities[p]);
         commands.entity(entities[i]).insert(ChildOf(parent));
     }
+    for node in self_shadowless(model) {
+        for &part in &parts_of[node] {
+            commands.entity(part).insert(bevy::light::NotShadowCaster);
+        }
+    }
     root
+}
+
+/// Nodes whose meshes a light of the same model leaves out of its shadow
+/// map, as the original does: the light's siblings, its parent and its
+/// grandparent (a fire's light hangs under the fire node, so a torch does
+/// not shadow its own flame). A light at the model's root leaves out
+/// nothing. Bevy has no per-light casters, so these cast no shadows at all.
+fn self_shadowless(model: &Model) -> Vec<usize> {
+    let mut out = Vec::new();
+    for (i, node) in model.nodes.iter().enumerate() {
+        // The light's parent: the fire node for fires, the light node's
+        // parent for lights.
+        let parent = if node.fire.is_some() {
+            Some(i)
+        } else if node.light.is_some() {
+            node.parent
+        } else {
+            continue;
+        };
+        let Some(parent) = parent else { continue };
+        let siblings = (0..model.nodes.len()).filter(|&j| model.nodes[j].parent == Some(parent));
+        out.extend(siblings.filter(|&j| j != i || node.fire.is_some()));
+        out.push(parent);
+        out.extend(model.nodes[parent].parent);
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 /// Approximation of the original omni light in Bevy units.
@@ -286,6 +323,15 @@ pub fn spawn_model(commands: &mut Commands, model: &Model, placement: Option<Tra
 /// Lumens giving the shader a colour of 2/π per unit of intensity.
 pub const LUMENS_PER_INTENSITY: f32 = 8.0;
 
+/// Shadow softness of level lights (their records' usual value).
+const LIGHT_SOFTNESS: f32 = 0.5;
+
+/// A light's shadow filter radius (radians around the light direction) for
+/// its softness, at the original's top shading quality.
+pub fn shadow_radius(softness: f32) -> f32 {
+    (softness + 1.0) * 0.005
+}
+
 pub fn point_light(light: &Light) -> PointLight {
     /// The falloff reaches zero this far out, in radii.
     const REACH: f32 = 1.25;
@@ -294,7 +340,8 @@ pub fn point_light(light: &Light) -> PointLight {
         color: Color::linear_rgb(c.x, c.y, c.z),
         intensity: light.intensity.max(0.0) * LUMENS_PER_INTENSITY,
         range: (light.radius * REACH).max(0.5),
-        radius: 0.05,
+        // The shadow filter radius (read by the shader): (softness + 1)·0.005.
+        radius: shadow_radius(LIGHT_SOFTNESS),
         shadow_maps_enabled: true,
         ..default()
     }
