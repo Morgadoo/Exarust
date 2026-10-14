@@ -302,7 +302,8 @@ impl ModelLoader<'_> {
                         library: lib.iter().map(|t| t.as_deref()).collect(),
                     })
                     .collect();
-                let mut rgba = paint(&shade, &layers, appearance);
+                let painted = paint(&shade, &layers, appearance);
+                let mut rgba = painted.colour;
                 // Keep the cut-outs of the shade map.
                 for (o, s) in rgba
                     .as_chunks_mut::<4>()
@@ -313,12 +314,16 @@ impl ModelLoader<'_> {
                     o[3] = s[3];
                 }
                 let alpha = shade.rgba.as_chunks::<4>().0.iter().any(|p| p[3] < 128);
-                let image = painted_image(shade.width as u32, shade.height as u32, rgba);
+                let (w, h) = (shade.width as u32, shade.height as u32);
+                let image = painted_image(w, h, rgba, true);
+                let surface = painted_image(w, h, painted.surface, false);
                 let mut mat = StandardMaterial {
                     base_color_texture: Some(self.images.add(image)),
-                    perceptual_roughness: 0.8,
-                    metallic: 0.0,
-                    reflectance: 0.3,
+                    metallic_roughness_texture: Some(self.images.add(surface)),
+                    // Scales of the texture's channels.
+                    perceptual_roughness: 1.0,
+                    metallic: 1.0,
+                    reflectance: 0.5,
                     ..default()
                 };
                 if alpha {
@@ -365,8 +370,8 @@ impl ModelLoader<'_> {
 /// A layer's mask, material, colour and library textures, owned while painting.
 type OwnedLayer = (Arc<Texels>, u8, u8, Vec<Option<Arc<Texels>>>);
 
-/// An sRGB image with a box-filtered mip chain from RGBA8 pixels.
-fn painted_image(width: u32, height: u32, rgba: Vec<u8>) -> Image {
+/// An image with a box-filtered mip chain from RGBA8 pixels, sRGB or linear.
+fn painted_image(width: u32, height: u32, rgba: Vec<u8>, srgb: bool) -> Image {
     use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
     use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
     let mut data = rgba.clone();
@@ -397,7 +402,11 @@ fn painted_image(width: u32, height: u32, rgba: Vec<u8>) -> Image {
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
-        TextureFormat::Rgba8UnormSrgb,
+        if srgb {
+            TextureFormat::Rgba8UnormSrgb
+        } else {
+            TextureFormat::Rgba8Unorm
+        },
         RenderAssetUsages::RENDER_WORLD,
     );
     image.texture_descriptor.mip_level_count = levels;

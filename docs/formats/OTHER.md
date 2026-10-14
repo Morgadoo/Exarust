@@ -63,8 +63,11 @@ v = min(k·step·0.13 + base, 1) and s = (1 − (0.09k)²)·sat, scaled by (v + 
 when v < 0.4. Then HSV → RGB. Family 0 is the greys (0.91 down to black).
 
 Exarust paints on the CPU (`exa_assets::paint`; `exa-tool paint <model>
-<stem> out.png`). Not yet painted: the normal and gloss/metal passes (the
-item's own normal map is used), wood, bronze, gemstone and resin finishes
+<stem> out.png`). The original's surface pass writes specular occlusion, gloss
+and metalness, with roughness = 1 − gloss. Exarust paints gloss and metalness
+into Bevy's metallic-roughness texture. Plate, painted steel and mail follow
+the original; fabrics and hides are approximated without their gloss textures.
+Not yet painted: the normal pass (the item's own normal map is used), wood, bronze, gemstone and resin finishes
 (drawn plain), pattern opacity textures, and per-instance appearances
 (randomised items, wear on characters).
 

@@ -365,8 +365,20 @@ fn paint_item(game: &GameData, model: &str, stem: &str, out: &Path) -> Result<()
             library: lib.iter().map(Option::as_ref).collect(),
         })
         .collect();
-    let rgba = paint(&shade, &layers, &appearance);
-    write_png(out, shade.width as u32, shade.height as u32, &rgba)?;
+    let painted = paint(&shade, &layers, &appearance);
+    write_png(
+        out,
+        shade.width as u32,
+        shade.height as u32,
+        &painted.colour,
+    )?;
+    let surface = out.with_extension("surface.png");
+    write_png(
+        &surface,
+        shade.width as u32,
+        shade.height as u32,
+        &painted.surface,
+    )?;
     println!("{} ({}) -> {}", item.name, model, out.display());
     Ok(())
 }

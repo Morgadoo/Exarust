@@ -475,12 +475,84 @@ pub struct PaintLayer<'a> {
     pub library: Vec<Option<&'a Texels>>,
 }
 
-/// Paints an item: every layer's finish over its mask, in order, on black.
-/// Returns RGBA8 at the shade map's size.
-pub fn paint(shade: &Texels, layers: &[PaintLayer<'_>], appearance: &Appearance) -> Vec<u8> {
+/// Gloss and metalness of a finish at one texel, 0..=1.
+fn surface(finish: Finish, t: &Texel) -> (f32, f32) {
+    let (shd, dmg, q) = (t.shade, t.damage, t.quality);
+    let lit = shd * (2.0 - shd);
+    match finish {
+        Finish::Plate | Finish::Painted => {
+            let (rust_cover, scuffs) = metal_scuff(t);
+            let mut sheen = t.lib[0].x;
+            sheen = sheen + (sheen * sheen * 1.5 - sheen) * dmg;
+            sheen += (0.5 - sheen) * (0.5 - dmg * 0.5);
+            sheen *= 1.0 - dmg * 0.5;
+            let purity = t.lib[1].x * (1.0 - q * q) + q * q;
+            sheen *= purity * 0.54;
+            let worn = 0.96 + (1.0 - (1.0 - dmg).powi(4)) * 0.15;
+            let bright = (1.0 - rust_cover.clamp(0.0, 1.0)) * worn;
+            let gloss = (lit
+                * (0.3 + sheen)
+                * 1.7
+                * (0.8 + ((1.0 - scuffs) * 0.5 + 0.5) * 0.2)
+                * (1.2 + dmg * (1.0 - q) * 0.3 + q * 0.1)
+                * bright)
+                .clamp(0.0, 1.0);
+            let mut metal = gloss * purity;
+            if finish == Finish::Painted {
+                let chips = (lit.powi(4) * 4.0 * scuffs * (0.25 + dmg * 2.0)).powi(3) * 3.0;
+                metal = 0.25 + (metal - 0.25) * chips.min(1.0);
+            }
+            (gloss * gloss * (0.7 + (0.5 - dmg).abs() * 0.2), metal)
+        }
+        Finish::Mail => {
+            let scuffs = 1.0 - t.lib[3].x * 0.5;
+            let mut gloss = lit * 0.75 * (scuffs * 2.0 * dmg + (1.0 - dmg));
+            gloss += (gloss * (2.0 - gloss) - gloss) * 0.75 * (1.0 - dmg);
+            gloss *= (t.lib[4].x * dmg + 1.0 - dmg) * 0.5 + 0.5;
+            let ring = t.lib[0].y;
+            let bright = ring * (2.0 - ring);
+            let mat = ring * ring * dmg + bright * (2.0 - bright) * (1.0 - dmg);
+            let metal = shd * mat * (1.6 + dmg * dmg) * (gloss * dmg + 1.0 - dmg);
+            (gloss * 0.65, metal.clamp(0.0, 1.0))
+        }
+        // Hides: a moderate sheen on raised, clean parts.
+        Finish::Leather | Finish::Suede => {
+            let ridge = (1.0 - (shd - 0.5).powi(2) * 32.0).max(0.0);
+            let g = (0.5 * ridge * (0.9 + q * 0.2) * lit * 0.5 + 0.25) * (1.0 - t.dirt * 0.4);
+            (
+                if finish == Finish::Leather {
+                    g * 0.8
+                } else {
+                    g * 0.5
+                },
+                0.0,
+            )
+        }
+        // Fabrics: nearly matte.
+        Finish::Cloth | Finish::Velvet | Finish::Plain => {
+            let fibre = t.weight * 0.5 * 0.25 + 0.375;
+            let open = 1.0 - (1.0 - shd).powi(2);
+            let g = (1.0 - (1.0 - fibre) / open.max(1e-3)).max(0.0).powi(3) + 0.01;
+            (g * (1.0 - t.dirt * 0.5), 0.0)
+        }
+    }
+}
+
+/// A painted item: colour (sRGB RGBA8) and surface (linear RGBA8 with
+/// roughness in green and metalness in blue, as Bevy reads them).
+pub struct Painted {
+    pub colour: Vec<u8>,
+    pub surface: Vec<u8>,
+}
+
+/// Paints an item: every layer's finish over its mask, in order, on black,
+/// at the shade map's size.
+pub fn paint(shade: &Texels, layers: &[PaintLayer<'_>], appearance: &Appearance) -> Painted {
     let (w, h) = (shade.width, shade.height);
     let (quality, damage, dirt) = appearance.condition();
     let mut out = vec![Vec3::ZERO; w * h];
+    // Gloss and metal start nearly matte, as the original clears them.
+    let mut finish_out = vec![(0.01f32, 0.0f32); w * h];
     for layer in layers {
         let colour = palette_colour(layer.colour);
         let weight = wear_weight(layer.material);
@@ -524,15 +596,24 @@ pub fn paint(shade: &Texels, layers: &[PaintLayer<'_>], appearance: &Appearance)
                 let c = paint_finish(&texel).clamp(Vec3::ZERO, Vec3::ONE);
                 let o = &mut out[y * w + x];
                 *o = mix(*o, c, cover);
+                let (gloss, metal) = surface(layer_finish, &texel);
+                let f = &mut finish_out[y * w + x];
+                f.0 += (gloss.clamp(0.0, 1.0) - f.0) * cover;
+                f.1 += (metal.clamp(0.0, 1.0) - f.1) * cover;
             }
         }
     }
-    out.iter()
-        .flat_map(|c| {
-            let c = (*c * 255.0).round();
-            [c.x as u8, c.y as u8, c.z as u8, 255]
-        })
-        .collect()
+    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    Painted {
+        colour: out
+            .iter()
+            .flat_map(|c| [byte(c.x), byte(c.y), byte(c.z), 255])
+            .collect(),
+        surface: finish_out
+            .iter()
+            .flat_map(|&(gloss, metal)| [255, byte(1.0 - gloss), byte(metal), 255])
+            .collect(),
+    }
 }
 
 /// Whether library texture `i` of a finish is laid one texel per painted
@@ -604,7 +685,7 @@ mod tests {
             layers: Default::default(),
         };
         let red = 4 * 8 + 2; // family 4 is pure red
-        let out = paint(&shade, &[layer(&full, red), layer(&none, 0)], &appearance);
+        let out = paint(&shade, &[layer(&full, red), layer(&none, 0)], &appearance).colour;
         assert!(
             out[0] > 100 && out[0] > 3 * out[1] && out[1] == out[2],
             "{:?}",
