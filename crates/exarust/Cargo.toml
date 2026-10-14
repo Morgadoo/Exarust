@@ -7,7 +7,9 @@ version.workspace = true
 
 [dependencies]
 bevy.workspace = true
+exa_ai.workspace = true
 exa_anim.workspace = true
+exa_combat.workspace = true
 exa_assets.workspace = true
 exa_character.workspace = true
 exa_game.workspace = true

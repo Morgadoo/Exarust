@@ -1,12 +1,15 @@
 [package]
 name = "exa_ai"
-description = "NPC behaviour"
+description = "NPC behaviour: perception, navigation and combat AI driving the same controls as the player"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
 
 [dependencies]
 bevy.workspace = true
+exa_anim.workspace = true
+exa_combat.workspace = true
+exa_physics.workspace = true
 
 [lints]
 workspace = true

@@ -29,6 +29,8 @@ pub struct ModelNode {
     pub transform: Transform,
     pub parts: Vec<(Handle<Mesh>, Handle<StandardMaterial>)>,
     pub light: Option<exa_formats::rfc::Light>,
+    /// Bounding sphere in the node's space (metres).
+    pub bounds: (Vec3, f32),
 }
 
 impl Model {
@@ -118,6 +120,7 @@ impl ModelLoader<'_> {
                     .map(|p| p - 1),
                 transform: transform_from_rows(&node.transform),
                 parts,
+                bounds: (Vec3::from(node.bounds_centre), node.bounds_radius),
                 light: match &node.body {
                     NodeBody::Light(l) => Some(*l),
                     _ => None,

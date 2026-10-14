@@ -48,6 +48,10 @@ pub struct Animator {
     pub time: f32,
     pub speed: f32,
     pub looping: bool,
+    /// Action to switch to (looping) when a non-looping clip ends.
+    pub then: Option<String>,
+    /// Set when a non-looping clip has reached its end.
+    pub finished: bool,
 }
 
 impl Animator {
@@ -58,7 +62,37 @@ impl Animator {
             time: 0.0,
             speed: 1.0,
             looping: true,
+            then: None,
+            finished: false,
         }
+    }
+
+    /// Switches to a looping action unless it is already playing.
+    pub fn play_loop(&mut self, action: &str) {
+        if self.action != action || !self.looping {
+            self.action = action.into();
+            self.time = 0.0;
+            self.looping = true;
+            self.finished = false;
+            self.then = None;
+        }
+    }
+
+    /// Plays `action` once, then loops `then`.
+    pub fn play_once(&mut self, action: &str, then: &str) {
+        self.action = action.into();
+        self.time = 0.0;
+        self.looping = false;
+        self.finished = false;
+        self.then = Some(then.into());
+    }
+
+    /// Progress through the current clip, 0..=1 (when the clip is known).
+    pub fn progress(&self, motions: &MotionSet) -> Option<f32> {
+        let clip = motions.clip(&self.moveset, &self.action)?;
+        let (first, last) = (clip.keys.first()?.time, clip.keys.last()?.time);
+        let len = (last - first).max(f32::EPSILON);
+        Some(((self.time - first) / len).clamp(0.0, 1.0))
     }
 }
 
@@ -134,11 +168,19 @@ fn play_clips(
         anim.time += time.delta_secs() * FRAMES_PER_SECOND * anim.speed;
         let length = last.time - first.time;
         if anim.time > last.time {
-            anim.time = if anim.looping && length > 0.0 {
-                first.time + (anim.time - first.time) % length
+            if anim.looping && length > 0.0 {
+                anim.time = first.time + (anim.time - first.time) % length;
             } else {
-                last.time
-            };
+                anim.time = last.time;
+                anim.finished = true;
+                if let Some(next) = anim.then.take() {
+                    anim.action = next;
+                    anim.time = 0.0;
+                    anim.looping = true;
+                    anim.finished = false;
+                    continue;
+                }
+            }
         }
         if anim.time < first.time {
             anim.time = first.time;

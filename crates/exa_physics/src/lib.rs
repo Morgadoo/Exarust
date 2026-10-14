@@ -20,12 +20,16 @@ impl Plugin for PhysicsPlugin {
         world.gravity = Vec3::new(0.0, GRAVITY, 0.0);
         world.integration_parameters.dt = (1.0 / STEP_HZ) as f32;
         app.insert_resource(Physics(world))
+            .init_resource::<PendingKinematics>()
             .insert_resource(Time::<Fixed>::from_hz(STEP_HZ))
             .add_systems(
                 PostUpdate,
                 build_static_colliders.after(TransformSystems::Propagate),
             )
-            .add_systems(FixedUpdate, (move_characters, step_world).chain());
+            .add_systems(
+                FixedUpdate,
+                (register_characters, move_characters, step_world).chain(),
+            );
     }
 }
 
@@ -58,6 +62,34 @@ impl Default for CharacterBody {
             vertical_velocity: 0.0,
             grounded: false,
         }
+    }
+}
+
+/// The character's own body and capsule in the physics world, so other
+/// characters collide with it.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct CharacterHandles {
+    pub body: RigidBodyHandle,
+    pub collider: ColliderHandle,
+}
+
+fn register_characters(
+    mut commands: Commands,
+    mut physics: ResMut<Physics>,
+    new: Query<(Entity, &CharacterBody, &Transform), Without<CharacterHandles>>,
+) {
+    for (e, body, t) in &new {
+        let centre = t.translation + Vec3::Y * (body.half_height + body.radius);
+        let rb = RigidBodyBuilder::kinematic_position_based()
+            .translation(centre)
+            .build();
+        let handle = physics.0.insert_body(rb);
+        let collider = ColliderBuilder::capsule_y(body.half_height, body.radius).build();
+        let collider = physics.0.insert_collider(collider, Some(handle));
+        commands.entity(e).insert(CharacterHandles {
+            body: handle,
+            collider,
+        });
     }
 }
 
@@ -111,10 +143,20 @@ fn trimesh_collider(mesh: &Mesh, global: &GlobalTransform) -> Option<Collider> {
         .map(|b| b.build())
 }
 
+/// Kinematic targets computed this step, applied before the world steps.
+#[derive(Resource, Default)]
+pub struct PendingKinematics(pub Vec<(RigidBodyHandle, Vec3)>);
+
 fn move_characters(
     time: Res<Time>,
     physics: Res<Physics>,
-    mut bodies: Query<(&mut CharacterBody, &mut Transform)>,
+    mut bodies: Query<(
+        &mut CharacterBody,
+        &mut Transform,
+        Option<&CharacterHandles>,
+    )>,
+    mut moves: Local<Vec<(RigidBodyHandle, Vec3)>>,
+    mut physics_mut: ResMut<PendingKinematics>,
 ) {
     let dt = time.delta_secs();
     let controller = KinematicCharacterController {
@@ -131,8 +173,13 @@ fn move_characters(
         snap_to_ground: Some(CharacterLength::Absolute(0.3)),
         ..Default::default()
     };
-    let queries = physics.0.query_pipeline();
-    for (mut body, mut transform) in &mut bodies {
+    moves.clear();
+    for (mut body, mut transform, handles) in &mut bodies {
+        let filter = match handles {
+            Some(h) => QueryFilter::default().exclude_rigid_body(h.body),
+            None => QueryFilter::default(),
+        };
+        let queries = physics.0.query_pipeline_with_filter(filter);
         let shape = Capsule::new_y(body.half_height, body.radius);
         // The entity's origin is at the feet; the capsule is centred above.
         let centre_offset = body.half_height + body.radius;
@@ -149,9 +196,18 @@ fn move_characters(
         if body.grounded {
             body.vertical_velocity = 0.0;
         }
+        if let Some(h) = handles {
+            moves.push((h.body, transform.translation + Vec3::Y * centre_offset));
+        }
     }
+    physics_mut.0.clone_from(&moves);
 }
 
-fn step_world(mut physics: ResMut<Physics>) {
+fn step_world(mut physics: ResMut<Physics>, mut pending: ResMut<PendingKinematics>) {
+    for (handle, centre) in pending.0.drain(..) {
+        if let Some(rb) = physics.0.bodies.get_mut(handle) {
+            rb.set_next_kinematic_translation(centre);
+        }
+    }
     physics.0.step();
 }

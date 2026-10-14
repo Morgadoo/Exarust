@@ -14,6 +14,13 @@ impl Plugin for WorldPlugin {
     fn build(&self, _app: &mut App) {}
 }
 
+/// Bounding sphere of a model node, in its local space.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct PartBounds {
+    pub centre: Vec3,
+    pub radius: f32,
+}
+
 /// Marks the root entity of a spawned level.
 #[derive(Component)]
 pub struct LevelRoot {
@@ -52,7 +59,15 @@ pub fn spawn_model(commands: &mut Commands, model: &Model, placement: Option<Tra
             _ => node.transform,
         };
         let e = commands
-            .spawn((Name::new(node.name.clone()), local, Visibility::default()))
+            .spawn((
+                Name::new(node.name.clone()),
+                local,
+                Visibility::default(),
+                PartBounds {
+                    centre: node.bounds.0,
+                    radius: node.bounds.1,
+                },
+            ))
             .id();
         for (mesh, material) in &node.parts {
             commands.spawn((

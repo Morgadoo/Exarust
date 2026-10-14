@@ -89,6 +89,9 @@ pub struct Node {
     pub parent: Option<usize>,
     /// Row-major 3×4: three rotation rows, then the translation (metres).
     pub transform: [[f32; 3]; 4],
+    /// Bounding sphere in the node's space (metres).
+    pub bounds_centre: [f32; 3],
+    pub bounds_radius: f32,
     pub body: NodeBody,
 }
 
@@ -241,8 +244,11 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
     for v in &mut transform[3] {
         *v *= CENTIMETRES_TO_METRES;
     }
-    // Bounds (extent, centre, radius) and one unidentified word.
-    c.skip(12 + 12 + 4 + 4)?;
+    // Bounds: half extents, centre, radius; then one unidentified word.
+    c.skip(12)?;
+    let bounds_centre = [c.f32()?, c.f32()?, c.f32()?].map(|v| v * CENTIMETRES_TO_METRES);
+    let bounds_radius = c.f32()? * CENTIMETRES_TO_METRES;
+    c.skip(4)?;
     let body = if instance != 0 {
         NodeBody::Instance(instance)
     } else if kind == NODE_MESH {
@@ -265,6 +271,8 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
         flags2,
         parent: (parent > 0).then_some(parent),
         transform,
+        bounds_centre,
+        bounds_radius,
         body,
     })
 }

@@ -111,6 +111,11 @@ fn setup(
                     exa_anim::Animator::new(moveset, action),
                     exa_character::Outfit(options.outfit.clone()),
                 ));
+                if let Some(w) = &options.weapon {
+                    commands
+                        .entity(root)
+                        .insert(exa_character::Wielded(w.clone()));
+                }
             }
             commands.spawn((
                 DirectionalLight {
@@ -151,10 +156,55 @@ fn setup(
                 let model = exa_world::spawn_model(&mut commands, &body, None);
                 commands.entity(model).insert((
                     exa_anim::Animator::new("Default", "Idle"),
-                    exa_game::player::PlayerBody { yaw: 0.0 },
+                    exa_game::player::PlayerBody {
+                        yaw: 0.0,
+                        combat: false,
+                    },
                     exa_character::Outfit(options.outfit.clone()),
                     ChildOf(player),
                 ));
+                commands
+                    .entity(model)
+                    .insert(exa_combat::Fighter::default());
+                if let Some(w) = &options.weapon {
+                    commands
+                        .entity(model)
+                        .insert(exa_character::Wielded(w.clone()));
+                }
+                if options.opponent {
+                    let foe_root = commands
+                        .spawn((
+                            Transform::from_translation(start + Vec3::new(0.0, 0.2, 2.5)),
+                            Visibility::default(),
+                            exa_physics::CharacterBody::default(),
+                        ))
+                        .id();
+                    let foe = exa_world::spawn_model(&mut commands, &body, None);
+                    let mut anim = exa_anim::Animator::new("One Handed", "Cmbt - Idle");
+                    anim.time = 0.0;
+                    commands.entity(foe).insert((
+                        anim,
+                        exa_character::Outfit(vec![
+                            "leathjac_a".into(),
+                            "trouser_a".into(),
+                            "boots_b".into(),
+                            "helm_b".into(),
+                        ]),
+                        exa_character::Wielded(
+                            options
+                                .weapon
+                                .clone()
+                                .unwrap_or_else(|| "ub05ssworda".into()),
+                        ),
+                        exa_combat::Fighter::default(),
+                        exa_ai::Duellist {
+                            target: player,
+                            cooldown: 2.0,
+                            next_strike: 0,
+                        },
+                        ChildOf(foe_root),
+                    ));
+                }
             }
             commands.spawn((
                 Camera3d::default(),

@@ -26,6 +26,21 @@ impl Plugin for CharacterPlugin {
 #[derive(Component, Clone, Debug, Default)]
 pub struct Outfit(pub Vec<String>);
 
+/// A weapon or tool from `Objects.rpk` held in the right hand.
+#[derive(Component, Clone, Debug)]
+pub struct Wielded(pub String);
+
+/// Right hand bone.
+pub const RIGHT_HAND: usize = 17;
+
+/// Grip of a held item relative to the hand part: weapon models have their
+/// handle at the origin and the blade along +Y; the fist closes around the
+/// hand's local Z axis.
+pub fn grip_transform() -> Transform {
+    Transform::from_xyz(-0.085, -0.01, 0.0)
+        .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2))
+}
+
 /// Marks a body whose outfit has been attached.
 #[derive(Component)]
 pub struct Dressed;
@@ -34,7 +49,7 @@ pub struct Dressed;
 fn equip_outfits(
     mut commands: Commands,
     game: Option<Res<Game>>,
-    bodies: Query<(Entity, &Outfit), Without<Dressed>>,
+    bodies: Query<(Entity, &Outfit, Option<&Wielded>), Without<Dressed>>,
     children: Query<&Children>,
     parts: Query<&BodyPart>,
     mut cache: ResMut<ModelCache>,
@@ -44,7 +59,7 @@ fn equip_outfits(
     support: Option<Res<CompressedImageFormatSupport>>,
 ) {
     let Some(game) = game else { return };
-    for (body, outfit) in &bodies {
+    for (body, outfit, wielded) in &bodies {
         let by_bone: HashMap<usize, Entity> = children
             .iter_descendants(body)
             .filter_map(|e| parts.get(e).ok().map(|p| (p.bone, e)))
@@ -74,6 +89,33 @@ fn equip_outfits(
                         MeshMaterial3d(material.clone()),
                         Transform::IDENTITY,
                         ChildOf(parent),
+                    ));
+                }
+            }
+        }
+        if let Some(Wielded(item)) = wielded
+            && let Some(hand) = by_bone.get(&RIGHT_HAND).copied()
+            && let Some(weapon) = loader.model(PackKind::Objects, item)
+        {
+            let holder = commands
+                .spawn((
+                    grip_transform(),
+                    Visibility::default(),
+                    ChildOf(hand),
+                    exa_combat::Blade {
+                        wielder: body,
+                        length: 0.85,
+                        tip_last: None,
+                        tip_speed: 0.0,
+                    },
+                ))
+                .id();
+            for node in &weapon.nodes {
+                for (mesh, material) in &node.parts {
+                    commands.spawn((
+                        Mesh3d(mesh.clone()),
+                        MeshMaterial3d(material.clone()),
+                        ChildOf(holder),
                     ));
                 }
             }

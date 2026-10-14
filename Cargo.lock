@@ -679,6 +679,7 @@ dependencies = [
  "indexmap",
  "log",
  "nonmax",
+ "rand",
  "serde",
  "slotmap",
  "smallvec",
@@ -2238,6 +2239,9 @@ name = "exa_ai"
 version = "0.0.1"
 dependencies = [
  "bevy",
+ "exa_anim",
+ "exa_combat",
+ "exa_physics",
 ]
 
 [[package]]
@@ -2274,6 +2278,7 @@ dependencies = [
  "bevy",
  "exa_anim",
  "exa_assets",
+ "exa_combat",
  "exa_formats",
 ]
 
@@ -2282,6 +2287,8 @@ name = "exa_combat"
 version = "0.0.1"
 dependencies = [
  "bevy",
+ "exa_anim",
+ "exa_world",
 ]
 
 [[package]]
@@ -2389,9 +2396,11 @@ name = "exarust"
 version = "0.0.1"
 dependencies = [
  "bevy",
+ "exa_ai",
  "exa_anim",
  "exa_assets",
  "exa_character",
+ "exa_combat",
  "exa_game",
  "exa_physics",
  "exa_world",

@@ -1,12 +1,14 @@
 [package]
 name = "exa_combat"
-description = "Combat resolution"
+description = "Combat: weapon contacts against body parts, momentum-scaled damage, reactions"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
 
 [dependencies]
 bevy.workspace = true
+exa_anim.workspace = true
+exa_world.workspace = true
 
 [lints]
 workspace = true
