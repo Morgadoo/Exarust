@@ -136,6 +136,7 @@ fn setup(
                 None => error!("humanoid.rsq could not be loaded"),
             }
             let mut start = Vec3::ZERO;
+            let mut start_yaw = 0.0;
             if let Some((root, info)) =
                 exa_world::spawn_level(&mut commands, &mut loader, name, options.ceilings)
             {
@@ -143,9 +144,15 @@ fn setup(
                 commands.insert_resource(exa_audio::LevelMusic(
                     exa_audio::music_for_level(name).into(),
                 ));
-                start = info
-                    .spawn
-                    .unwrap_or((info.bounds_min + info.bounds_max) * 0.5);
+                // The original's start where it fixes one, else a floored cell.
+                match exa_world::start::player_start(name) {
+                    Some(s) => (start, start_yaw) = (s.position, s.yaw),
+                    None => {
+                        start = info
+                            .spawn
+                            .unwrap_or((info.bounds_min + info.bounds_max) * 0.5);
+                    }
+                }
                 info!("level {name}: player starts at {start}");
             }
             let player = commands
@@ -159,9 +166,10 @@ fn setup(
             if let Some(body) = loader.model(PackKind::Resource, "humanbase.rfc") {
                 let model = exa_world::spawn_model(&mut commands, &body, None);
                 commands.entity(model).insert((
+                    Transform::from_rotation(Quat::from_rotation_y(start_yaw)),
                     exa_anim::Animator::new("Default", "Idle"),
                     exa_game::player::PlayerBody {
-                        yaw: 0.0,
+                        yaw: start_yaw,
                         combat: false,
                     },
                     exa_character::Outfit(options.outfit.clone()),
@@ -176,9 +184,11 @@ fn setup(
                         .insert(exa_character::Wielded(w.clone()));
                 }
                 if options.opponent {
+                    let foe_at = exa_world::start::opponent_start(name)
+                        .map_or(start + Vec3::new(0.0, 0.0, 2.5), |s| s.position);
                     let foe_root = commands
                         .spawn((
-                            Transform::from_translation(start + Vec3::new(0.0, 0.2, 2.5)),
+                            Transform::from_translation(foe_at + Vec3::Y * 0.2),
                             Visibility::default(),
                             exa_physics::CharacterBody::default(),
                         ))

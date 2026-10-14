@@ -259,6 +259,44 @@ Elsewhere, "auto" lights a sun only when the level has no lights at all.
 Exarust applies the presets and the ambient colour. It does not yet do the
 sky, the time of day or the weather (`exa_world::environment`).
 
+## Starts, characters and placed objects
+
+**Player starts** (`exa_world::start`). Facing convention: yaw gives a local
++Z of (sin yaw, 0, cos yaw), and characters face their matrix's Z row.
+
+- New game in `exanima01`: hard-coded at about (81, 0, 39.2) m. The
+  "unknown" background wakes lying, facing yaw 150°; the other backgrounds
+  start at (82, 2.1–3.0, 39.2) with yaw −50°.
+- Arena hub: (0, 0, 3) facing −Z. Old `arena`/`arenae`: (0, 0, 5) facing −Z.
+- Arena matches: a centre per arena (`arena1` (0,0,3), `arena3` (−3,0,3),
+  `arena4` (−15,0,−4.5), `arenao3` (9,0,1), `arenao5` (8,0,1), …; see the
+  code). Fighters stand on a ring of radius min(0.5·teams·size + 1, 3.5) m,
+  each facing the centre. Per team t of k: spread = 2(k−1)/(k+1),
+  a = 6t/N − spread/2 + m·spread/(k−1), θ = 2π(3 − a)/6,
+  position = centre − r·(sin θ, 0, cos θ). In a duel the player stands 2 m
+  along +Z.
+- Level transitions: the arrival marker in the new level's placed objects.
+  It is an objdb class `0x8000AC07` box whose flags' low byte is `0x40`, with
+  +0x18 = the previous level's id (from `locales.rdb`, which is the level
+  list) and +0x14 = the entrance number. The player gets its matrix;
+  followers stand at offsets (−1,0,−1), (1,0,−1), (0,0,1.5), (1,0,2) m in its
+  frame.
+
+**Characters (`CAC00001`)**: `i32 n`, an optional local character database
+(`CECDDB00`, an RDB with magic `0xDBACCD00`), then n × `CAC0CA00`. Each is
+`u32 id` (low 28 bits = record; `0x40000000` = world database), `f32 pos[3]`
+(cm), `f32 yaw`, `i32 condition` (`0xA00` = dead, placed from its pose), then
+sub-chunks: `CAC0EB00` pose as a bone tree (per node a 3×4 matrix, a word
+and a child count), `CAC0E100` legacy flat bone matrices, `CAC0EA00` motion
+state, `CACE0F77` AI home (saves). `exanima01` places 39 characters, 8 of
+them corpses. Hostility comes from each record's roles in `charroles.rdb`.
+
+**Placed objects (`DBC0` → `DBCE`)**: `i32 n`, then n × `DB01`. Each is
+`u32 node id` (`0x80000000` = local objdb `DBDB`, `0x40000000` = world
+objdb), `u32` placement flags (version `0x3D23`), `u32` object flags, a 3×4
+matrix (cm), container slot, a field, and sub-chunks for articulated or
+deformed parts. `exanima01` has 1888.
+
 ## Props (`3DE10000`)
 
 `u32 count`, then one chunk per prop (`3DE10100`):

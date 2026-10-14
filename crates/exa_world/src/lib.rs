@@ -4,6 +4,7 @@
 
 pub mod environment;
 pub mod grid;
+pub mod start;
 pub mod terrain;
 
 use bevy::prelude::*;

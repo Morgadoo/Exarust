@@ -12,7 +12,8 @@ payloads
 ```
 
 `races.rdb` (19 records of 624 bytes), `charroles.rdb` (dialogue and AI
-roles, including a C-like script language), `locales.rdb` (language list),
+roles, including a C-like script language), `locales.rdb` (the level list:
+ids 1 Exanima, 2 Exanima01 … 13 Exanima67, 17 Arak_Ar),
 `objdb.rdb` (object database, 0x5900/16 = 1424 records), `objstrings.rdb`
 (string library, magic `0xAFBF0C02`). The community spec reports a trailing
 garbage record in each table (the reader skips entries pointing outside the
