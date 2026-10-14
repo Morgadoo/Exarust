@@ -6,6 +6,7 @@ use bevy::prelude::*;
 use exa_anim::Animator;
 use exa_combat::{Attacking, Fighter};
 use exa_physics::CharacterBody;
+use exa_physics::body::Fallen;
 
 pub struct AiPlugin;
 
@@ -45,15 +46,16 @@ fn duellist(
         &Fighter,
         &ChildOf,
         Option<&Attacking>,
+        Has<Fallen>,
     )>,
     mut roots: Query<(&mut CharacterBody, &GlobalTransform)>,
 ) {
-    for (entity, mut ai, mut t, mut anim, fighter, parent, attacking) in &mut npcs {
+    for (entity, mut ai, mut t, mut anim, fighter, parent, attacking, fallen) in &mut npcs {
         let Ok((mut body, root_gt)) = roots.get_mut(parent.parent()) else {
             continue;
         };
         body.desired_velocity = Vec3::ZERO;
-        if fighter.down {
+        if fighter.down || fallen {
             continue;
         }
         let Ok(target) = targets.get(ai.target) else {

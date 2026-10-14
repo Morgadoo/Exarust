@@ -2,6 +2,7 @@
 //!
 //! Planned in Phase 4–7; see `README.md` next to this crate and `docs/PLAN.md`.
 
+pub mod balance;
 pub mod limp;
 pub mod player;
 
@@ -26,6 +27,6 @@ impl Plugin for GamePlugin {
             exa_script::ScriptPlugin,
             exa_ui::UiPlugin,
         ))
-        .add_plugins(limp::LimpPlugin);
+        .add_plugins((limp::LimpPlugin, balance::BalancePlugin));
     }
 }

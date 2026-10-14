@@ -359,23 +359,29 @@ fn screenshot_after_frames(
     }
 }
 
-/// A blow to the chest of every simulated body at the `--shove` frame.
+/// A body blow, from the front, to every simulated body at the `--shove`
+/// frame.
 fn shove_at_frame(
     options: Res<Options>,
     mut frames: Local<u32>,
-    bodies: Query<Entity, With<exa_physics::body::Ragdoll>>,
+    bodies: Query<(Entity, &GlobalTransform), With<exa_physics::body::Ragdoll>>,
     mut shoves: MessageWriter<exa_physics::body::Shove>,
 ) {
     let Some(at) = options.shove else { return };
     *frames += 1;
     if *frames == at {
-        for body in &bodies {
-            shoves.write(exa_physics::body::Shove {
-                body,
-                bone: 9,
-                velocity: Vec3::new(-3.0, 0.0, 0.0),
-                daze: 0.7,
-            });
+        info!("shoving {} bodies", bodies.iter().count());
+        for (body, gt) in &bodies {
+            // A body blow from the front (the model faces +Z) to the lower
+            // back, chest and head.
+            for bone in [8, 9, 10] {
+                shoves.write(exa_physics::body::Shove {
+                    body,
+                    bone,
+                    velocity: gt.rotation() * Vec3::NEG_Z * 4.0,
+                    daze: 0.5,
+                });
+            }
         }
     }
 }

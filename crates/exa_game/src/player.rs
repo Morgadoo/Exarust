@@ -7,6 +7,7 @@ use bevy::window::PrimaryWindow;
 use exa_anim::Animator;
 use exa_combat::{Attacking, Fighter};
 use exa_physics::CharacterBody;
+use exa_physics::body::Fallen;
 
 const WALK_SPEED: f32 = 1.4;
 const RUN_SPEED: f32 = 3.6;
@@ -52,6 +53,7 @@ impl Plugin for PlayerPlugin {
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn player_input(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -62,6 +64,7 @@ fn player_input(
         &mut Transform,
         &mut Animator,
         Option<&Fighter>,
+        Has<Fallen>,
     )>,
 ) {
     let yaw = cameras.iter().next().map_or(0.0, |c| c.yaw);
@@ -84,10 +87,10 @@ fn player_input(
     for (mut body, children) in &mut players {
         body.desired_velocity = dir * speed;
         for child in children.iter() {
-            let Ok((mut pb, mut t, mut anim, fighter)) = bodies.get_mut(child) else {
+            let Ok((mut pb, mut t, mut anim, fighter, fallen)) = bodies.get_mut(child) else {
                 continue;
             };
-            if fighter.is_some_and(|f| f.down) {
+            if fallen || fighter.is_some_and(|f| f.down) {
                 body.desired_velocity = Vec3::ZERO;
                 continue;
             }
@@ -166,10 +169,11 @@ fn player_combat(
         &mut Animator,
         Option<&Fighter>,
         Option<&Attacking>,
+        Has<Fallen>,
     )>,
 ) {
-    for (entity, mut pb, mut t, mut anim, fighter, attacking) in &mut bodies {
-        if fighter.is_some_and(|f| f.down) {
+    for (entity, mut pb, mut t, mut anim, fighter, attacking, fallen) in &mut bodies {
+        if fallen || fighter.is_some_and(|f| f.down) {
             continue;
         }
         if keys.just_pressed(KeyCode::KeyF) {

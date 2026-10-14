@@ -187,6 +187,9 @@ fn main() -> Result<()> {
             }
             let m = &seq.motions;
             println!("{} actions, {} movesets", m.actions.len(), m.movesets.len());
+            for (i, a) in m.actions.iter().enumerate() {
+                println!("  action {i:#04x} {:<20} params {:?}", a.name, a.params);
+            }
             for ms in &m.movesets {
                 let defined = ms.clips.iter().filter(|c| c.is_some()).count();
                 let keys: usize = ms.clips.iter().flatten().map(|c| c.keys.len()).sum();

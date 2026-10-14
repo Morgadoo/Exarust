@@ -31,6 +31,8 @@ const MAX_TICKS: u32 = 4;
 const INVERSE_MASS: [f32; 18] = [
     0.45, 0.7, 1.0, 2.8, 0.7, 1.0, 2.8, 0.45, 0.5, 1.0, 1.0, 1.2, 1.5, 1.0, 1.2, 1.5, 2.5, 2.5,
 ];
+/// Muscle tone of a fallen body.
+const FALLEN_TONE: f32 = 0.5;
 /// Share of the gap to the animated pose closed per tick at full strength.
 const DRIVE: f32 = 0.084;
 /// The weaker drive of the hands.
@@ -166,6 +168,16 @@ impl Part {
     }
 }
 
+/// On a living body model root that lost its balance: it lies on the ground
+/// and is not steered until it has got up.
+#[derive(Component, Debug, Clone, Default)]
+pub struct Fallen {
+    /// Seconds since the fall.
+    pub time: f32,
+    /// The get-up clip is playing.
+    pub getting_up: bool,
+}
+
 /// Asks for the body under this entity (a body model root) to go limp:
 /// its parts become a [`Ragdoll`] from their current pose.
 #[derive(Component, Debug, Clone, Copy)]
@@ -216,6 +228,8 @@ pub struct Ragdoll {
     pub parts: Vec<Part>,
     pub links: Vec<Link>,
     pub drive: Option<Drive>,
+    /// Ticks run in the last frame.
+    pub ticks: u32,
     accumulator: f32,
 }
 
@@ -235,6 +249,9 @@ pub struct Drive {
     /// Daze: 1 when alert; blows lower it and it recovers over time. Muscle
     /// strength follows its fourth power.
     pub energy: f32,
+    /// Standing: the controller carries the body and tone holds it up.
+    /// A fallen body only holds its limbs relative to its pelvis.
+    pub supported: bool,
 }
 
 impl Default for Drive {
@@ -246,6 +263,7 @@ impl Default for Drive {
             root: None,
             tone: 1.0,
             energy: 1.0,
+            supported: true,
         }
     }
 }
@@ -303,6 +321,7 @@ impl Ragdoll {
             parts,
             links,
             drive: None,
+            ticks: 0,
             accumulator: 0.0,
         }
     }
@@ -318,9 +337,22 @@ impl Ragdoll {
     /// body is carried along with the root's own motion, so the muscles
     /// only work against the pose and outside forces.
     pub fn aim(&mut self, root: Affine3A, targets: Vec<Affine3A>, frame: f32) {
+        let pelvis = self.parts.iter().position(|p| p.bone == 1);
+        let pelvis_world = pelvis.map(|i| self.parts[i].transform());
         let Some(drive) = self.drive.as_mut() else {
             return;
         };
+        // A fallen body follows the pose relative to its own pelvis.
+        let targets = match (drive.supported, pelvis, pelvis_world) {
+            (false, Some(i), Some(world)) => {
+                let align = world * targets[i].inverse();
+                targets.iter().map(|t| align * *t).collect()
+            }
+            _ => targets,
+        };
+        if !drive.supported {
+            drive.root = None;
+        }
         if let Some(previous) = drive.root {
             let carry = root * previous.inverse();
             for p in &mut self.parts {
@@ -363,6 +395,46 @@ impl Ragdoll {
         drive.root = Some(root);
     }
 
+    /// Loses the controller's support: the body falls with slack muscles.
+    pub fn fall(&mut self) {
+        if let Some(d) = self.drive.as_mut() {
+            d.supported = false;
+            d.tone = FALLEN_TONE;
+        }
+    }
+
+    /// Stands again on the controller, from wherever the body lies.
+    pub fn stand(&mut self) {
+        if let Some(d) = self.drive.as_mut() {
+            d.supported = true;
+            d.tone = 1.0;
+            d.root = None;
+            d.aimed.clear();
+        }
+    }
+
+    /// The part of `bone`.
+    pub fn part_of(&self, bone: usize) -> Option<&Part> {
+        self.parts.iter().find(|p| p.bone == bone)
+    }
+
+    /// Centre of mass and its velocity (m/s).
+    pub fn centre_of_mass(&self) -> (Vec3, Vec3) {
+        let (mut mass, mut centre, mut velocity) = (0.0, Vec3::ZERO, Vec3::ZERO);
+        for p in &self.parts {
+            let m = 1.0 / p.inverse_mass;
+            let here: Vec3 = p.positions.iter().copied().sum::<Vec3>() * 0.25;
+            let before: Vec3 = p.previous.iter().copied().sum::<Vec3>() * 0.25;
+            mass += m;
+            centre += here * m;
+            velocity += (here - before) * m;
+        }
+        if mass <= 0.0 {
+            return (Vec3::ZERO, Vec3::ZERO);
+        }
+        (centre / mass, velocity / mass * BODY_HZ)
+    }
+
     /// Applies a blow to the part of `bone`.
     pub fn shove(&mut self, bone: usize, velocity: Vec3, daze: f32) {
         let step = velocity / BODY_HZ;
@@ -392,7 +464,11 @@ impl Ragdoll {
     pub fn tick(&mut self, contact: &dyn Fn(Vec3, f32) -> Option<Vec3>) {
         let dt = 1.0 / BODY_HZ;
         // Muscle tone holds the body up against gravity.
-        let support = self.drive.as_ref().map_or(0.0, |d| d.tone * d.energy);
+        let support = self
+            .drive
+            .as_ref()
+            .filter(|d| d.supported)
+            .map_or(0.0, |d| d.tone * d.energy);
         let gravity = Vec3::Y * GRAVITY * dt * dt * (1.0 - support);
         let retention = RETENTION.map(|r| r.powf(dt));
         for p in &mut self.parts {
@@ -478,7 +554,9 @@ fn drive_parts(parts: &mut [Part], drive: &mut Drive) {
     let strength = drive.tone * drive.tone * drive.energy.powi(4);
     for (i, p) in parts.iter_mut().enumerate() {
         let base = match p.bone {
-            1 => DRIVE * SUPPORT,
+            1 if drive.supported => DRIVE * SUPPORT,
+            // A fallen body's pelvis is where the pose is measured from.
+            1 => 0.0,
             17 | 18 => HAND_DRIVE,
             _ => DRIVE,
         };
@@ -575,6 +653,7 @@ pub fn step_ragdolls(
             ticks += 1;
         }
         body.accumulator = body.accumulator.min(1.0 / BODY_HZ);
+        body.ticks = ticks;
         // Local transforms from the parts' world transforms.
         let worlds: Vec<Affine3A> = body.parts.iter().map(Part::transform).collect();
         for (i, p) in body.parts.iter().enumerate() {

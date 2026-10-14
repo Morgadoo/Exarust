@@ -83,7 +83,26 @@ critical damping relative to the pose's own motion:
   muscles only work against the pose and outside forces.
 - Animation clips play in place: the root's horizontal travel over a clip
   is removed, since the controller moves the body.
-- Link PD muscles, balance and foot planting are not reproduced yet.
+- Balance follows the original's rule (`exa_game::balance`):
+  - The centre of mass is projected 0.1 s ahead by its velocity and
+    measured against the segment between the feet.
+  - The threshold is (energy·0.75 + 0.25)·30 cm. The score is stability⁸.
+    Exarust takes stability as 1 within half the threshold, falling to 0
+    at 1.5 thresholds; the original's exact measure is unknown.
+  - A counter grows by 10 − 10·score per tick. At 100 it sets balance to
+    the score. Otherwise balance recovers by (5 − speed in cm/tick)·0.01
+    per tick.
+  - Below 0.6 the body falls. Its support goes, tone drops to 0.5, and it
+    plays Fall Forward/Backward into Unconcious 1, held relative to its own
+    pelvis.
+- Getting up:
+  - Once settled (2.5 s, energy ≥ 0.9), the body plays whichever of
+    `Get up` / `Get Up 2` has a first pose lying the same way, judged by the
+    pelvis's front axis facing up or down.
+  - The controller is first turned and moved so that clip's first pose lies
+    on the body.
+  - While getting up, balance rises by 0.05 per tick.
+- Link PD muscles, recovery steps and foot planting are not reproduced yet.
 
 ## Motion set (`3DAB`)
 
