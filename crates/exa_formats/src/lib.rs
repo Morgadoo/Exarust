@@ -13,6 +13,7 @@ pub mod rdb;
 pub mod rfc;
 pub mod rfi;
 pub mod rsq;
+pub mod terrain;
 
 pub use kind::FileKind;
 

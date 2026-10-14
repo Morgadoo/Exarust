@@ -17,8 +17,8 @@ extension; the format is identified by its leading magic
 | image `.rfi` | `C6 3D 2D 1D` | Textures, Apparel, ComponentTex, Emblems, Resource | verified | [RFI.md](RFI.md) |
 | skeleton + motions `.rsq` | `00 00 00 3D` | `Resource/humanoid.rsq` | framing | [RSQ.md](RSQ.md) |
 | database `.rdb` | `xx 0D xx DB` (strings: `02 0C BF AF`) | `Resource/*.rdb` | framing | [OTHER.md](OTHER.md#databases-rdb) |
-| terrain `.rft` | `01 AD EF 3E` | Resource (17) | observed | [OTHER.md](OTHER.md#terrain-rft-and-ftb) |
-| terrain table `.ftb` | `02/03 BD EF 3E` | Resource (15) | observed | [OTHER.md](OTHER.md#terrain-rft-and-ftb) |
+| terrain `.rft` | `01 AD EF 3E` | Resource (17) | verified | [TERRAIN.md](TERRAIN.md) |
+| terrain table `.ftb` | `02/03 BD EF 3E` | Resource (15) | verified | [TERRAIN.md](TERRAIN.md) |
 | power `.pwr` | `CE 01 CE AF` | Resource (4) | observed | [OTHER.md](OTHER.md#powers-pwr) |
 | weapon factory | `0x 0F CE AF` | Factories (106) | observed | [OTHER.md](OTHER.md#weapon-factories) |
 | actor | `06/07 AC CD 00` | `Resource/actors.rpk` (21) | observed | [OTHER.md](OTHER.md#actors) |

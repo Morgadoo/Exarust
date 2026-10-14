@@ -63,11 +63,12 @@ fn setup(
             match exa_world::spawn_level(&mut commands, &mut loader, name, options.ceilings) {
                 Some((_, info)) => {
                     info!(
-                        "level {name}: {} props ({} missing), {} lights, grid {:?}, loaded in {:.1?}",
+                        "level {name}: {} props ({} missing), {} lights, grid {:?}, terrain {:?}, loaded in {:.1?}",
                         info.props,
                         info.missing_props,
                         info.lights,
                         info.grid,
+                        info.terrain,
                         started.elapsed()
                     );
                     let centre = (info.bounds_min + info.bounds_max) * 0.5;

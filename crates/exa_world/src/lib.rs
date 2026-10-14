@@ -1,8 +1,9 @@
 //! Levels: placing models, props and lights of the original levels in the
-//! Bevy world. Walls and floors from the tile grid and terrain come later
-//! (see `README.md` and `docs/PLAN.md`).
+//! Bevy world. Walls and floors come from the tile grid (`grid`), outdoor
+//! ground from the terrain heightfields (`terrain`).
 
 pub mod grid;
+pub mod terrain;
 
 use bevy::prelude::*;
 use exa_assets::{Model, ModelLoader, PackKind, transform_from_rows};
@@ -11,7 +12,9 @@ use exa_formats::rfc::{Light, Scene};
 pub struct WorldPlugin;
 
 impl Plugin for WorldPlugin {
-    fn build(&self, _app: &mut App) {}
+    fn build(&self, app: &mut App) {
+        app.add_plugins(terrain::TerrainPlugin);
+    }
 }
 
 /// Bounding sphere of a model node, in its local space.
@@ -34,6 +37,7 @@ pub struct LevelInfo {
     pub missing_props: usize,
     pub lights: usize,
     pub grid: Option<grid::GridStats>,
+    pub terrain: Option<terrain::TerrainStats>,
     /// A floored cell to start in (stand-in for the level's start marker).
     pub spawn: Option<Vec3>,
     pub bounds_min: Vec3,
@@ -139,6 +143,7 @@ pub fn spawn_level(
         .grid
         .as_ref()
         .map(|g| grid::spawn_grid(commands, loader, g, root, ceilings));
+    let terrain_stats = terrain::spawn_terrain(commands, loader, &entry, root);
 
     let mut lights = 0;
     if let Some(own) = loader.model(PackKind::Resource, &entry) {
@@ -186,6 +191,7 @@ pub fn spawn_level(
             missing_props: missing,
             lights,
             grid: grid_stats,
+            terrain: terrain_stats,
             spawn: scene.grid.as_ref().and_then(grid::spawn_point),
             bounds_min: min,
             bounds_max: max,

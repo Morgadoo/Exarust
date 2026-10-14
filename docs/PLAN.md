@@ -127,8 +127,13 @@ models, materials and BC textures converted to Bevy; `exarust level <name>`
 shows a level's props and lights with a fly camera; `exarust model`.
 Done (change `add-grid-builder`): walls, floors and ceilings from the tile
 grid; `exanima01` and the arenas are recognisable.
+Done (change `add-terrain`): terrain heightfields with holes, the palette's
+blend rules (height, slope, the original's noise maps) and masked material
+layering in a WESL shader; outdoor arenas render and are walkable
+([formats/TERRAIN.md](formats/TERRAIN.md)).
 Remaining: the alternate builder for flagged cells, per-room mesh merging,
-terrain (`.rft`), sectors/portals (the room flood fill is understood),
+terrain normal/gloss maps, height displacement and grass, an outdoor sun,
+sectors/portals (the room flood fill is understood),
 `exanima://` asset source, streaming.
 
 - `exa_assets`: `exanima://<pack>/<entry>` Bevy asset source, asset loaders

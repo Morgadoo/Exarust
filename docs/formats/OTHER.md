@@ -28,15 +28,7 @@ its own save format; this is documented for reference only.
 
 ## Terrain (`.rft` and `.ftb`)
 
-`.rft` (`01 AD EF 3E`): `u32 0`, `name[16]` of its terrain table
-(`UWA1`, `UWB6`, `GrassLand…`, `Seaside`, `vulcanic`), then grid sizes (e.g.
-`f32 20.0`, `4`, `5`, `20`) and large data blocks (0.35–40 MB): heightfield,
-material layer weights, cached GI/AO blocks (`TTerrainBlock`, `TGIMapBlock`,
-`TStaticTerrain`).
-
-`.ftb` (`02/03 BD EF 3E`): `u32 0`, `name[16]`, then a ~5 KB table of terrain
-material layers (`TTerrainMat`, `TATrnMatLyr`), grass/plant meshes
-(`trn_grass*`, `trn_lplnt*`, `trn_splnt*` in Resource).
+Moved to [TERRAIN.md](TERRAIN.md) (verified).
 
 ## Powers (`.pwr`)
 

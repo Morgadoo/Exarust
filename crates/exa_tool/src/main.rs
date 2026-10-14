@@ -94,6 +94,7 @@ enum Cmd {
 enum CorpusKind {
     Meshes,
     Levels,
+    Terrain,
 }
 
 fn main() -> Result<()> {
@@ -182,6 +183,9 @@ fn main() -> Result<()> {
         Cmd::Corpus {
             what: CorpusKind::Levels,
         } => corpus::levels(&game),
+        Cmd::Corpus {
+            what: CorpusKind::Terrain,
+        } => corpus::terrain(&game),
         Cmd::ExportGltf { pack, entry, out } => {
             let scene = exa_formats::rfc::Scene::parse(entry_bytes(&game, &pack, &entry)?)
                 .with_context(|| format!("decoding {pack}/{entry}"))?;

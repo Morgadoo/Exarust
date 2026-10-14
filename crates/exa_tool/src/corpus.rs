@@ -211,3 +211,76 @@ pub fn levels(game: &GameData) -> Result<()> {
     }
     Ok(())
 }
+
+/// `exa-tool corpus terrain`: every terrain and palette, and whether each
+/// painted layer resolves in its palette.
+pub fn terrain(game: &GameData) -> Result<()> {
+    use exa_formats::terrain::{Palette, Terrain};
+    let Some(resource) = game.pack(exa_rpk::PackKind::Resource) else {
+        return Ok(());
+    };
+    let (mut palettes, mut palette_errors) = (0, 0);
+    for e in resource.entries() {
+        if matches!(FileKind::detect(resource.bytes(e)), FileKind::TerrainTable) {
+            match Palette::parse(resource.bytes(e)) {
+                Ok(_) => palettes += 1,
+                Err(err) => {
+                    palette_errors += 1;
+                    println!("  {}: {err}", e.name);
+                }
+            }
+        }
+    }
+    println!(
+        "{:<20} {:<12} {:>5} {:>6} {:>7} {:>10}",
+        "terrain", "palette", "grid", "tiles", "holes", "unresolved"
+    );
+    let (mut terrains, mut errors, mut tiles, mut unresolved) = (0, 0, 0, 0);
+    for e in resource.entries() {
+        let b = resource.bytes(e);
+        if !matches!(FileKind::detect(b), FileKind::Terrain) {
+            continue;
+        }
+        let t = match Terrain::parse(b) {
+            Ok(t) => t,
+            Err(err) => {
+                errors += 1;
+                println!("  {}: {err}", e.name);
+                continue;
+            }
+        };
+        terrains += 1;
+        tiles += t.tiles.len();
+        let palette = resource
+            .get(&format!("{}.ftb", t.palette))
+            .and_then(|b| Palette::parse(b).ok());
+        let mut missing: Vec<&str> = t
+            .tiles
+            .iter()
+            .flat_map(|tile| &tile.layers)
+            .filter(|l| palette.as_ref().is_none_or(|p| p.entry(&l.name).is_none()))
+            .map(|l| l.name.as_str())
+            .collect();
+        missing.sort_unstable();
+        missing.dedup();
+        unresolved += missing.len();
+        println!(
+            "{:<20} {:<12} {:>5} {:>6} {:>7} {:>10}  {}",
+            e.name,
+            if palette.is_some() {
+                t.palette.clone()
+            } else {
+                format!("{}?", t.palette)
+            },
+            format!("{}x{}", t.width, t.height),
+            t.tiles.len(),
+            t.tiles.iter().filter(|t| t.flags & 0x200 != 0).count(),
+            missing.len(),
+            missing.join(", ")
+        );
+    }
+    println!(
+        "\n{terrains} terrains ({errors} errors), {tiles} tiles, {palettes} palettes ({palette_errors} errors), {unresolved} unresolved layer names"
+    );
+    Ok(())
+}
