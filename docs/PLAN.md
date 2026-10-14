@@ -148,6 +148,9 @@ correct geometry, textures and light placement.
 
 Done (change `add-motion-playback`): skeleton and motion set decoded;
 clips play on the human body (`exarust character Default/Walk`).
+Done (change `add-player-movement`): rapier physics with level colliders,
+kinematic player capsule, camera-relative movement, chase camera
+(`exarust play <level>`).
 
 This phase carries the most risk and defines how the game feels.
 
@@ -189,6 +192,12 @@ Hits land where the weapon actually touched, and armour visibly matters.
 
 ### Phase 5 — Visual and audio fidelity
 
+- Materials: one `ExaMaterial` whose parameters follow
+  [OpenPBR](https://github.com/AcademySoftwareFoundation/OpenPBR) names
+  (mapping in `research/openpbr.md`), with two shading modes: **Original**
+  (default, reproduces the captured GLSL lighting model) and **Enhanced**
+  (an OpenPBR subset in WGSL: base, specular, coat, fuzz, approximate
+  subsurface).
 - Lighting: cube-map shadows for many point lights (torches, candles),
   a GI approximation chosen by measurement: baked or voxel cone tracing
   similar to the original, with Bevy's own GI options as the fallback.

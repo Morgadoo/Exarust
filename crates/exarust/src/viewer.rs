@@ -20,6 +20,7 @@ impl Plugin for ViewerPlugin {
                 ..default()
             })
             .add_systems(Startup, setup)
+            .add_systems(PreUpdate, autowalk.after(bevy::input::InputSystems))
             .add_systems(Update, (fly_camera, screenshot_after_frames));
     }
 }
@@ -122,6 +123,47 @@ fn setup(
             commands.spawn((Mesh3d(floor), MeshMaterial3d(floor_mat)));
             pose = (Vec3::new(1.6, 1.4, 2.6), Vec3::new(0.0, 0.9, 0.0), 2.0);
         }
+        View::Play(name) => {
+            match exa_anim::Motions::load(&game) {
+                Some(m) => commands.insert_resource(m),
+                None => error!("humanoid.rsq could not be loaded"),
+            }
+            let mut start = Vec3::ZERO;
+            if let Some((root, info)) =
+                exa_world::spawn_level(&mut commands, &mut loader, name, options.ceilings)
+            {
+                commands.entity(root).insert(exa_physics::StaticGeometry);
+                start = info
+                    .spawn
+                    .unwrap_or((info.bounds_min + info.bounds_max) * 0.5);
+                info!("level {name}: player starts at {start}");
+            }
+            let player = commands
+                .spawn((
+                    Transform::from_translation(start + Vec3::Y * 0.2),
+                    Visibility::default(),
+                    exa_physics::CharacterBody::default(),
+                    exa_game::player::Player,
+                ))
+                .id();
+            if let Some(body) = loader.model(PackKind::Resource, "humanbase.rfc") {
+                let model = exa_world::spawn_model(&mut commands, &body, None);
+                commands.entity(model).insert((
+                    exa_anim::Animator::new("Default", "Idle"),
+                    exa_game::player::PlayerBody { yaw: 0.0 },
+                    ChildOf(player),
+                ));
+            }
+            commands.spawn((
+                Camera3d::default(),
+                Exposure {
+                    ev100: options.ev100,
+                },
+                Transform::from_translation(start + Vec3::new(0.0, 4.0, 4.0)),
+                exa_game::player::ChaseCamera::default(),
+            ));
+            return;
+        }
         View::Texture(name) => {
             match loader.texture(name, ColorSpace::Srgb) {
                 Some((img, _)) => {
@@ -216,5 +258,11 @@ fn screenshot_after_frames(
     }
     if *frames == options.frames + 20 {
         exit.write(AppExit::Success);
+    }
+}
+
+fn autowalk(options: Res<Options>, mut keys: ResMut<ButtonInput<KeyCode>>) {
+    if options.autowalk {
+        keys.press(KeyCode::KeyW);
     }
 }

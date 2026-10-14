@@ -5,6 +5,7 @@
 //! exarust [--game <dir>] [options] model <pack> <entry>  one model
 //! exarust [--game <dir>] [options] texture <name>        one texture (first light)
 //! exarust [--game <dir>] [options] character [moveset/action]  the human body playing a motion
+//! exarust [--game <dir>] [options] play <level>          walk the level as the player (WASD, Shift, right-drag)
 //!
 //! options: --camera x,y,z,yaw,pitch   start pose (metres, degrees)
 //!          --screenshot <file.png>    save a frame and exit
@@ -30,6 +31,7 @@ pub enum View {
     Model { pack: String, entry: String },
     Texture(String),
     Character { motion: String },
+    Play(String),
 }
 
 #[derive(Resource, Clone, Debug, Default)]
@@ -41,6 +43,8 @@ pub struct Options {
     pub ev100: f32,
     /// Build ceiling pieces of tile-grid levels.
     pub ceilings: bool,
+    /// Hold "forward" in play mode (for unattended checks).
+    pub autowalk: bool,
 }
 
 fn usage() -> AppExit {
@@ -65,6 +69,7 @@ fn main() -> AppExit {
             "--game" => game_dir = args.next().map(PathBuf::from),
             "--screenshot" => options.screenshot = args.next().map(PathBuf::from),
             "--ceilings" => options.ceilings = true,
+            "--autowalk" => options.autowalk = true,
             "--ev" => options.ev100 = args.next().and_then(|v| v.parse().ok()).unwrap_or(6.0),
             "--frames" => options.frames = args.next().and_then(|v| v.parse().ok()).unwrap_or(90),
             "--camera" => {
@@ -93,6 +98,7 @@ fn main() -> AppExit {
             entry: entry.join(" "),
         },
         ["texture", name] => View::Texture((*name).to_string()),
+        ["play", name] => View::Play((*name).to_string()),
         ["character"] => View::Character {
             motion: "Default/Walk".into(),
         },

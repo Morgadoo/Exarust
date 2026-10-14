@@ -267,9 +267,10 @@ fn group_mesh(mesh: &RfcMesh, indices: &[u32]) -> Option<Mesh> {
         .collect();
     let positions: Vec<[f32; 3]> = used.iter().map(|&i| mesh.positions[i]).collect();
     let normals: Vec<[f32; 3]> = used.iter().map(|&i| mesh.normals[i]).collect();
+    // Kept in the main world too: static colliders are built from mesh data.
     let mut m = Mesh::new(
         PrimitiveTopology::TriangleList,
-        RenderAssetUsages::RENDER_WORLD,
+        RenderAssetUsages::default(),
     )
     .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)

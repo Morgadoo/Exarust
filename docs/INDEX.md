@@ -10,4 +10,5 @@
 | [`formats/`](formats/README.md) | every retail data format: layout, status, evidence |
 | [`research/game-files.md`](research/game-files.md) | inventory of a retail installation and naming conventions |
 | [`research/engine-classes.md`](research/engine-classes.md) | the original engine's class map (from FPC RTTI) and technology facts |
+| [`research/openpbr.md`](research/openpbr.md) | whether and how OpenPBR fits the renderer (material model, Original vs Enhanced shading) |
 | [`research/online-research.md`](research/online-research.md) | community tools, prior reverse-engineering work, gameplay references |

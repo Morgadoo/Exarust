@@ -382,6 +382,38 @@ pub fn spawn_grid(
     stats
 }
 
+/// Centre (metres) of the open, floored cell nearest the grid centre: a
+/// stand-in start position until level start markers are decoded.
+pub fn spawn_point(grid: &LevelGrid) -> Option<Vec3> {
+    let w = grid.width as i64;
+    let h = grid.height as i64;
+    let mut best: Option<(i64, Vec3)> = None;
+    for y in 1..(h - 1) {
+        for x in 1..(w - 1) {
+            let cell = (y * w + x) as usize;
+            let c = grid.plane_c[cell];
+            let has_floor = ((c >> 4) & 0xF) < grid.floor_sets.len() as u32;
+            if grid.edges[cell] & CELL_OPEN == 0
+                || c & 0xF == 0xF
+                || !has_floor
+                || (c >> 16) & 0x1F != 0
+            {
+                continue;
+            }
+            let d = (x - w / 2).pow(2) + (y - h / 2).pow(2);
+            if best.is_none_or(|(bd, _)| d < bd) {
+                let p = Vec3::new(
+                    ((x - w / 2) as f32 + 0.5) * CELL_CM,
+                    0.0,
+                    ((y - h / 2) as f32 + 0.5) * CELL_CM,
+                ) * 0.01;
+                best = Some((d, p));
+            }
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
 /// Rotation by a quarter turn per side about +Y, then the cell centre.
 fn side_transform(side: u32, centre: Vec3) -> Transform {
     let (s, c) = (side as f32 * std::f32::consts::FRAC_PI_2).sin_cos();

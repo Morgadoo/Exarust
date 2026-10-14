@@ -27,6 +27,8 @@ pub struct LevelInfo {
     pub missing_props: usize,
     pub lights: usize,
     pub grid: Option<grid::GridStats>,
+    /// A floored cell to start in (stand-in for the level's start marker).
+    pub spawn: Option<Vec3>,
     pub bounds_min: Vec3,
     pub bounds_max: Vec3,
 }
@@ -169,6 +171,7 @@ pub fn spawn_level(
             missing_props: missing,
             lights,
             grid: grid_stats,
+            spawn: scene.grid.as_ref().and_then(grid::spawn_point),
             bounds_min: min,
             bounds_max: max,
         },

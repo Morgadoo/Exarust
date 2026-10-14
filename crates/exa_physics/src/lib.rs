@@ -1,11 +1,157 @@
-//! Rigid-body and articulated-body simulation: the core of Exanima's feel (physically driven characters, momentum-based combat, cloth).
+//! Physics: a fixed-step rapier world, static colliders built from level
+//! geometry, and kinematic character bodies.
 //!
-//! Planned in Phase 3; see `README.md` next to this crate and `docs/PLAN.md`.
+//! This is the collision foundation. The articulated, motor-driven character
+//! body of the original (`docs/PLAN.md`, Phase 3) builds on it.
 
 use bevy::prelude::*;
+use rapier3d::control::{CharacterAutostep, CharacterLength, KinematicCharacterController};
+use rapier3d::prelude::*;
+
+/// Simulation rate of the fixed step.
+pub const STEP_HZ: f64 = 120.0;
+const GRAVITY: f32 = -9.81;
 
 pub struct PhysicsPlugin;
 
 impl Plugin for PhysicsPlugin {
-    fn build(&self, _app: &mut App) {}
+    fn build(&self, app: &mut App) {
+        let mut world = PhysicsWorld::new();
+        world.gravity = Vec3::new(0.0, GRAVITY, 0.0);
+        world.integration_parameters.dt = (1.0 / STEP_HZ) as f32;
+        app.insert_resource(Physics(world))
+            .insert_resource(Time::<Fixed>::from_hz(STEP_HZ))
+            .add_systems(
+                PostUpdate,
+                build_static_colliders.after(TransformSystems::Propagate),
+            )
+            .add_systems(FixedUpdate, (move_characters, step_world).chain());
+    }
+}
+
+#[derive(Resource)]
+pub struct Physics(pub PhysicsWorld);
+
+/// Marks a subtree whose meshes become static triangle-mesh colliders once
+/// their world transforms are known. Removed after the colliders are built.
+#[derive(Component)]
+pub struct StaticGeometry;
+
+/// A kinematic capsule moved by the character controller.
+#[derive(Component, Debug, Clone)]
+pub struct CharacterBody {
+    pub radius: f32,
+    /// Distance between the capsule's sphere centres.
+    pub half_height: f32,
+    /// Desired horizontal velocity (m/s), set by input or AI.
+    pub desired_velocity: Vec3,
+    pub vertical_velocity: f32,
+    pub grounded: bool,
+}
+
+impl Default for CharacterBody {
+    fn default() -> Self {
+        Self {
+            radius: 0.28,
+            half_height: 0.62,
+            desired_velocity: Vec3::ZERO,
+            vertical_velocity: 0.0,
+            grounded: false,
+        }
+    }
+}
+
+fn build_static_colliders(
+    mut commands: Commands,
+    mut physics: ResMut<Physics>,
+    roots: Query<Entity, With<StaticGeometry>>,
+    children: Query<&Children>,
+    shapes: Query<(&Mesh3d, &GlobalTransform)>,
+    meshes: Res<Assets<Mesh>>,
+) {
+    for root in &roots {
+        let mut built = 0;
+        for e in children.iter_descendants(root) {
+            let Ok((mesh, global)) = shapes.get(e) else {
+                continue;
+            };
+            let Some(mesh) = meshes.get(&mesh.0) else {
+                continue;
+            };
+            if let Some(collider) = trimesh_collider(mesh, global) {
+                physics.0.insert_collider(collider, None);
+                built += 1;
+            }
+        }
+        debug!("static colliders built: {built}");
+        commands.entity(root).remove::<StaticGeometry>();
+    }
+}
+
+fn trimesh_collider(mesh: &Mesh, global: &GlobalTransform) -> Option<Collider> {
+    let positions = mesh.attribute(Mesh::ATTRIBUTE_POSITION)?.as_float3()?;
+    let indices: Vec<u32> = mesh.indices()?.iter().map(|i| i as u32).collect();
+    if indices.len() < 3 {
+        return None;
+    }
+    let m = global.to_matrix();
+    let vertices: Vec<Vec3> = positions
+        .iter()
+        .map(|p| m.transform_point3(Vec3::from(*p)))
+        .collect();
+    let triangles: Vec<[u32; 3]> = indices
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .copied()
+        .filter(|t| t.iter().all(|&i| (i as usize) < vertices.len()))
+        .collect();
+    ColliderBuilder::trimesh(vertices, triangles)
+        .ok()
+        .map(|b| b.build())
+}
+
+fn move_characters(
+    time: Res<Time>,
+    physics: Res<Physics>,
+    mut bodies: Query<(&mut CharacterBody, &mut Transform)>,
+) {
+    let dt = time.delta_secs();
+    let controller = KinematicCharacterController {
+        up: Vec3::Y,
+        offset: CharacterLength::Absolute(0.02),
+        slide: true,
+        autostep: Some(CharacterAutostep {
+            max_height: CharacterLength::Absolute(0.35),
+            min_width: CharacterLength::Absolute(0.2),
+            include_dynamic_bodies: false,
+        }),
+        max_slope_climb_angle: 50f32.to_radians(),
+        min_slope_slide_angle: 40f32.to_radians(),
+        snap_to_ground: Some(CharacterLength::Absolute(0.3)),
+        ..Default::default()
+    };
+    let queries = physics.0.query_pipeline();
+    for (mut body, mut transform) in &mut bodies {
+        let shape = Capsule::new_y(body.half_height, body.radius);
+        // The entity's origin is at the feet; the capsule is centred above.
+        let centre_offset = body.half_height + body.radius;
+        let pose = Pose::from_translation(transform.translation + Vec3::Y * centre_offset);
+        body.vertical_velocity = if body.grounded {
+            GRAVITY * dt
+        } else {
+            (body.vertical_velocity + GRAVITY * dt).max(-50.0)
+        };
+        let desired = body.desired_velocity * dt + Vec3::Y * body.vertical_velocity * dt;
+        let moved = controller.move_shape(dt, &queries, &shape, &pose, desired, |_| {});
+        transform.translation += moved.translation;
+        body.grounded = moved.grounded;
+        if body.grounded {
+            body.vertical_velocity = 0.0;
+        }
+    }
+}
+
+fn step_world(mut physics: ResMut<Physics>) {
+    physics.0.step();
 }
