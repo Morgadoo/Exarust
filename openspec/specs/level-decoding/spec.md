@@ -34,3 +34,10 @@ The system SHALL decode the characters a level places, with their records and wo
 #### Scenario: First story level
 - **WHEN** `exarust play exanima01` runs
 - **THEN** the level's human inhabitants stand where the level places them, dressed in their own clothes, and its dead lie down
+
+### Requirement: Placed objects
+The system SHALL decode the object-database objects a level places and spawn each with its item's model at its transform.
+
+#### Scenario: First story level
+- **WHEN** `exarust level exanima01` runs
+- **THEN** the level's placed objects appear, and none of their models are missing

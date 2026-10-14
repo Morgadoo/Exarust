@@ -85,6 +85,9 @@ pub struct Scene {
     /// The level's own object database (items its characters and placed
     /// objects refer to with local ids).
     pub local_items: Vec<Item>,
+    /// Objects from the object databases placed in the level (items, doors,
+    /// containers).
+    pub placed_objects: Vec<PlacedObject>,
     /// Level sections that could not be decoded.
     pub level_errors: Vec<String>,
 }
@@ -160,7 +163,31 @@ pub struct Mesh {
 pub const LOCAL_DATABASE: u32 = 0xDBC0;
 const LOCAL_OBJECTS: u32 = 0xDBDB;
 
-fn read_local_items(b: &[u8]) -> Result<Vec<Item>> {
+const PLACED_OBJECTS: u32 = 0xDBCE;
+const PLACED_OBJECT: u32 = 0xDB01;
+
+/// An object-database entry placed in a level.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlacedObject {
+    /// `0x80000000`: the level's own database; `0x40000000`: the world
+    /// database; otherwise `objdb.rdb`. The low 30 bits are the record id.
+    pub id: u32,
+    pub flags: u32,
+    /// Row-major 3×4: three rotation rows, then the translation (metres).
+    pub transform: [[f32; 3]; 4],
+    /// Slot in a containing object (0 in the world).
+    pub slot: i32,
+}
+
+impl PlacedObject {
+    pub const ID_MASK: u32 = 0x3FFF_FFFF;
+    pub fn is_local(&self) -> bool {
+        self.id & 0x8000_0000 != 0
+    }
+}
+
+fn read_local_database(b: &[u8], version: u16) -> Result<(Vec<Item>, Vec<PlacedObject>)> {
+    let (mut items, mut objects) = (Vec::new(), Vec::new());
     let mut pos = 0;
     while pos + 8 <= b.len() {
         let tag = read_u32(b, pos)?;
@@ -170,12 +197,46 @@ fn read_local_items(b: &[u8]) -> Result<Vec<Item>> {
             needed: size,
             len: b.len(),
         })?;
-        if tag == LOCAL_OBJECTS {
-            return Ok(crate::objdb::items(&Database::parse(body)?));
+        match tag {
+            LOCAL_OBJECTS => items = crate::objdb::items(&Database::parse(body)?),
+            PLACED_OBJECTS => objects = read_placed_objects(body, version)?,
+            _ => {}
         }
         pos += 8 + size;
     }
-    Ok(Vec::new())
+    Ok((items, objects))
+}
+
+fn read_placed_objects(b: &[u8], version: u16) -> Result<Vec<PlacedObject>> {
+    let mut c = Cursor::new(b);
+    let count = c.u32()? as usize;
+    let mut out = Vec::with_capacity(count.min(65_536));
+    while c.remaining() >= 8 {
+        let (tag, mut o) = c.chunk()?;
+        if tag != PLACED_OBJECT {
+            continue;
+        }
+        let id = o.u32()?;
+        let flags = if version >= 0x3D23 { o.u32()? } else { 0 };
+        o.u32()?; // object flags
+        let mut transform = [[0.0f32; 3]; 4];
+        for row in &mut transform {
+            for v in row.iter_mut() {
+                *v = o.f32()?;
+            }
+        }
+        for v in &mut transform[3] {
+            *v *= CENTIMETRES_TO_METRES;
+        }
+        let slot = o.u32()? as i32;
+        out.push(PlacedObject {
+            id,
+            flags,
+            transform,
+            slot,
+        });
+    }
+    Ok(out)
 }
 
 /// Per-triangle flag sub-chunk of the triangle list.
@@ -212,6 +273,7 @@ impl Scene {
         let mut environment = None;
         let mut characters = None;
         let mut local_items = Vec::new();
+        let mut placed_objects = Vec::new();
         let mut level_errors = Vec::new();
         while c.remaining() >= 8 {
             let (tag, mut chunk) = c.chunk()?;
@@ -231,8 +293,8 @@ impl Scene {
                     Err(e) => level_errors.push(format!("characters: {e}")),
                 }
             } else if tag == LOCAL_DATABASE {
-                match read_local_items(chunk.b) {
-                    Ok(items) => local_items = items,
+                match read_local_database(chunk.b, version) {
+                    Ok((items, objects)) => (local_items, placed_objects) = (items, objects),
                     Err(e) => level_errors.push(format!("local database: {e}")),
                 }
             } else if tag == ENVIRONMENT {
@@ -262,6 +324,7 @@ impl Scene {
             environment,
             characters,
             local_items,
+            placed_objects,
             level_errors,
         })
     }

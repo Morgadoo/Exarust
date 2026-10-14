@@ -45,6 +45,10 @@ pub struct LevelInfo {
     pub lighting: environment::Lighting,
     /// Characters placed in the level.
     pub characters: Vec<PlacedCharacter>,
+    /// Object-database objects placed in the level, and those whose model
+    /// was not found.
+    pub placed_objects: usize,
+    pub missing_objects: usize,
     /// A floored cell to start in (stand-in for the level's start marker).
     pub spawn: Option<Vec3>,
     pub bounds_min: Vec3,
@@ -69,17 +73,11 @@ pub struct PlacedCharacter {
 
 /// Resolves a level's placed characters: records from its own database,
 /// worn items from its local object database or the game's.
-fn placed_characters(scene: &Scene, game: &exa_assets::GameData) -> Vec<PlacedCharacter> {
+fn placed_characters(scene: &Scene, global: &[Item]) -> Vec<PlacedCharacter> {
     use exa_formats::characters::{ID_MASK, LOCAL_ITEM};
     let Some(chars) = &scene.characters else {
         return Vec::new();
     };
-    let global: Vec<Item> = game
-        .pack(PackKind::Resource)
-        .and_then(|p| p.get("objdb.rdb"))
-        .and_then(|b| Database::parse(b).ok())
-        .map(|db| objdb::items(&db))
-        .unwrap_or_default();
     chars
         .placements
         .iter()
@@ -89,10 +87,10 @@ fn placed_characters(scene: &Scene, game: &exa_assets::GameData) -> Vec<PlacedCh
                 .worn
                 .iter()
                 .filter_map(|&id| {
-                    let items = if id & LOCAL_ITEM != 0 {
+                    let items: &[Item] = if id & LOCAL_ITEM != 0 {
                         &scene.local_items
                     } else {
-                        &global
+                        global
                     };
                     let item = items.iter().find(|i| i.id == id & ID_MASK)?;
                     (!item.model.is_empty()).then(|| (item.model.clone(), item.appearance))
@@ -109,6 +107,58 @@ fn placed_characters(scene: &Scene, game: &exa_assets::GameData) -> Vec<PlacedCh
             })
         })
         .collect()
+}
+
+/// Spawns the object-database objects a level places (items, doors,
+/// containers) as static models; returns (placed, missing models).
+fn spawn_placed_objects(
+    commands: &mut Commands,
+    loader: &mut ModelLoader<'_>,
+    scene: &Scene,
+    global: &[Item],
+    parent: Entity,
+) -> (usize, usize) {
+    let (mut placed, mut missing) = (0, 0);
+    for object in scene.placed_objects.iter().filter(|o| o.slot == 0) {
+        let items: &[Item] = if object.is_local() {
+            &scene.local_items
+        } else {
+            global
+        };
+        let id = object.id & exa_formats::rfc::PlacedObject::ID_MASK;
+        let Some(item) = items.iter().find(|i| i.id == id) else {
+            continue;
+        };
+        // `@` names scripted objects; triggers and markers have no model.
+        if item.model.is_empty() || item.model.starts_with('@') {
+            continue;
+        }
+        let in_pack = |kind| {
+            loader
+                .game
+                .pack(kind)
+                .is_some_and(|p| p.find(&item.model).is_some())
+        };
+        let model = [PackKind::Objects, PackKind::Objlib]
+            .into_iter()
+            .find(|&kind| in_pack(kind))
+            .and_then(|kind| loader.model(kind, &item.model));
+        match model {
+            Some(model) => {
+                let e = spawn_model(
+                    commands,
+                    &model,
+                    Some(transform_from_rows(&object.transform)),
+                );
+                commands
+                    .entity(e)
+                    .insert((Name::new(item.name.clone()), ChildOf(parent)));
+                placed += 1;
+            }
+            None => missing += 1,
+        }
+    }
+    (placed, missing)
 }
 
 /// Spawns `model` under a new entity. With a placement, the placement takes
@@ -254,6 +304,14 @@ pub fn spawn_level(
         };
         commands.entity(prop_entities[i]).insert(ChildOf(parent));
     }
+    let global_items: Vec<Item> = loader
+        .game
+        .pack(PackKind::Resource)
+        .and_then(|p| p.get("objdb.rdb"))
+        .and_then(|b| Database::parse(b).ok())
+        .map(|db| objdb::items(&db))
+        .unwrap_or_default();
+    let placed_objects = spawn_placed_objects(commands, loader, &scene, &global_items, root);
     let lighting = environment::level_lighting(&entry, scene.environment.as_ref(), lights);
     environment::apply_lighting(commands, &lighting, root);
     if scene.props.is_empty() {
@@ -269,7 +327,9 @@ pub fn spawn_level(
             grid: grid_stats,
             terrain: terrain_stats,
             lighting,
-            characters: placed_characters(&scene, loader.game),
+            characters: placed_characters(&scene, &global_items),
+            placed_objects: placed_objects.0,
+            missing_objects: placed_objects.1,
             spawn: scene.grid.as_ref().and_then(grid::spawn_point),
             bounds_min: min,
             bounds_max: max,

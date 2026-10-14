@@ -306,7 +306,10 @@ items (`exa_formats::characters`).
 `u32 node id` (`0x80000000` = local objdb `DBDB`, `0x40000000` = world
 objdb), `u32` placement flags (version `0x3D23`), `u32` object flags, a 3×4
 matrix (cm), container slot, a field, and sub-chunks for articulated or
-deformed parts. `exanima01` has 1888.
+deformed parts. `exanima01` has 1888, all in the world (slot 0). Exarust
+spawns each as a static model, its item's model from `Objects.rpk` or
+`Objlib.rpk` (1763 in `exanima01`, none missing). Scripted (`@`) objects and
+model-less triggers or markers are skipped.
 
 ## Props (`3DE10000`)
 

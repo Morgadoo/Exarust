@@ -63,9 +63,11 @@ fn setup(
             match exa_world::spawn_level(&mut commands, &mut loader, name, options.ceilings) {
                 Some((_, info)) => {
                     info!(
-                        "level {name}: {} props ({} missing), {} lights, grid {:?}, terrain {:?}, loaded in {:.1?}",
+                        "level {name}: {} props ({} missing), {} placed objects ({} missing), {} lights, grid {:?}, terrain {:?}, loaded in {:.1?}",
                         info.props,
                         info.missing_props,
+                        info.placed_objects,
+                        info.missing_objects,
                         info.lights,
                         info.grid,
                         info.terrain,
