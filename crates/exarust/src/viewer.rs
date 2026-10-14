@@ -43,7 +43,7 @@ fn setup(
     options: Res<Options>,
     mut cache: ResMut<ModelCache>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<exa_render::material::ExaMaterial>>,
     mut images: ResMut<Assets<Image>>,
     support: Option<Res<CompressedImageFormatSupport>>,
 ) {
@@ -287,11 +287,18 @@ fn setup(
             match loader.texture(name, ColorSpace::Srgb) {
                 Some((img, _)) => {
                     let quad = loader.meshes.add(Rectangle::new(4.0, 4.0));
-                    let mat = loader.materials.add(StandardMaterial {
-                        base_color_texture: Some(img),
-                        unlit: true,
-                        ..default()
-                    });
+                    let mat = loader.materials.add(
+                        exa_render::material::ExaMaterial {
+                            params: exa_render::material::ExaParams {
+                                emissive: Vec4::ONE,
+                                flags: exa_render::material::flags::EMISSIVE_MAP,
+                                ..default()
+                            },
+                            emissive_map: Some(img),
+                            ..default()
+                        }
+                        .with_map_flags(),
+                    );
                     commands.spawn((Mesh3d(quad), MeshMaterial3d(mat)));
                 }
                 None => error!("texture {name} not found"),
@@ -312,6 +319,10 @@ fn setup(
     let (yaw, pitch, _) = transform.rotation.to_euler(EulerRot::YXZ);
     commands.spawn((
         Camera3d::default(),
+        Projection::Perspective(PerspectiveProjection {
+            fov: options.fov.unwrap_or(45.0).to_radians(),
+            ..default()
+        }),
         Exposure {
             ev100: options.ev100,
         },

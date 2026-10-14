@@ -17,11 +17,14 @@ use bevy::pbr::{AtmosphereSettings, DistanceFog, FogFalloff};
 use bevy::prelude::*;
 use exa_formats::environment::{Environment, SunMode};
 
-/// Ambient colour of a typical level; the record's colour is applied
-/// relative to it so typical levels keep the viewer's calibrated ambient.
+/// Ambient colour of a typical level (sRGB grey).
+#[cfg(test)]
 const REFERENCE_AMBIENT: f32 = 0.6275;
-/// Ambient brightness the viewer is calibrated for.
-const AMBIENT_BRIGHTNESS: f32 = 80.0;
+/// The original's ambient is the environment map's blurred colour × the
+/// level's ambient × 16. Until the environment maps are decoded, their
+/// average stands in for the map.
+const AMBIENT_SCALE: f32 = 16.0;
+const ENVIRONMENT_AVERAGE: f32 = 0.02;
 /// Sun strength in the original's units: without and with the sky.
 const SUN_INTENSITY: f32 = 3.0;
 const SUN_INTENSITY_WITH_SKY: f32 = 4.5;
@@ -46,7 +49,7 @@ impl Plugin for EnvironmentPlugin {
 /// How a level is lit.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Lighting {
-    /// Linear multiplier of the ambient light.
+    /// The level's ambient colour, linear.
     pub ambient: Vec3,
     pub sun: Option<Sun>,
     pub fog: Option<LevelFog>,
@@ -114,8 +117,7 @@ fn linear(srgb: [f32; 3]) -> Vec3 {
 /// lights its own nodes and props bring.
 pub fn level_lighting(level: &str, record: Option<&Environment>, lights: usize) -> Lighting {
     let env = record.cloned().unwrap_or_default();
-    let reference = linear([REFERENCE_AMBIENT; 3]);
-    let ambient = linear(env.ambient) / reference;
+    let ambient = linear(env.ambient);
     let sun = |intensity: f32| Sun {
         towards: Vec3::from_array(env.sun_direction()).normalize(),
         colour: linear(env.sun_colour),
@@ -162,10 +164,10 @@ pub fn level_lighting(level: &str, record: Option<&Environment>, lights: usize) 
 /// Applies `lighting`: ambient and background resources, a sun under
 /// `parent`, and fog for the cameras.
 pub fn apply_lighting(commands: &mut Commands, lighting: &Lighting, parent: Entity) {
-    let ambient = lighting.ambient;
+    let ambient = lighting.ambient * AMBIENT_SCALE * ENVIRONMENT_AVERAGE;
     commands.insert_resource(GlobalAmbientLight {
         color: Color::linear_rgb(ambient.x, ambient.y, ambient.z),
-        brightness: AMBIENT_BRIGHTNESS,
+        brightness: 1.0,
         ..default()
     });
     let bg = lighting.background;
@@ -280,12 +282,12 @@ mod tests {
     }
 
     #[test]
-    fn typical_ambient_is_neutral() {
+    fn ambient_is_linearised() {
         let env = Environment {
             ambient: [REFERENCE_AMBIENT; 3],
             ..Default::default()
         };
         let l = level_lighting("exanima02", Some(&env), 5);
-        assert!((l.ambient - Vec3::ONE).abs().max_element() < 1e-5);
+        assert!((l.ambient.x - 0.3515).abs() < 1e-3);
     }
 }

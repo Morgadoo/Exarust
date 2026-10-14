@@ -2354,6 +2354,7 @@ version = "0.0.1"
 dependencies = [
  "bevy",
  "exa_formats",
+ "exa_render",
  "exa_rpk",
 ]
 
@@ -2376,6 +2377,7 @@ dependencies = [
  "exa_assets",
  "exa_combat",
  "exa_formats",
+ "exa_render",
 ]
 
 [[package]]
@@ -2438,7 +2440,6 @@ name = "exa_render"
 version = "0.0.1"
 dependencies = [
  "bevy",
- "exa_assets",
  "exa_formats",
 ]
 
@@ -2488,6 +2489,7 @@ dependencies = [
  "bevy",
  "exa_assets",
  "exa_formats",
+ "exa_render",
 ]
 
 [[package]]
@@ -2504,6 +2506,7 @@ dependencies = [
  "exa_formats",
  "exa_game",
  "exa_physics",
+ "exa_render",
  "exa_world",
 ]
 

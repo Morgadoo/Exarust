@@ -1,11 +1,16 @@
-//! Rendering on Bevy/wgpu: material plug-ins, skinned characters, terrain, grass, lights and shadow cube maps, voxel GI, post-processing.
-//!
-//! Planned in Phase 2 (static world), Phase 5 (lighting fidelity); see `README.md` next to this crate and `docs/PLAN.md`.
+//! Rendering: the original's look rebuilt on Bevy. The post-processing
+//! chain replaces Bevy's tonemapping (grading curve, bloom); materials and
+//! lighting follow. Rules: `docs/RENDERING.md`.
+
+pub mod material;
+pub mod post;
 
 use bevy::prelude::*;
 
 pub struct RenderPlugin;
 
 impl Plugin for RenderPlugin {
-    fn build(&self, _app: &mut App) {}
+    fn build(&self, app: &mut App) {
+        app.add_plugins((post::PostPlugin, material::MaterialsPlugin));
+    }
 }

@@ -1,0 +1,224 @@
+// The original's surface shading (its `shadeopt` program), on Bevy's lights.
+// Linear workflow; GGX specular with Schlick Fresnel and no 1/π (the
+// normalisation is in the light colours); point lights fall off as
+// (1 − d/range)⁴; ambient comes from the level. Rules: docs/RENDERING.md.
+
+import bevy_pbr::render::{
+    forward_io::{VertexOutput, FragmentOutput},
+    mesh_bindings::mesh,
+    mesh_view_bindings as view_bindings,
+    mesh_view_types,
+    mesh_types::MESH_FLAGS_SHADOW_RECEIVER_BIT,
+    clustered_forward as clustering,
+    shadows,
+};
+
+struct ExaParams {
+    // Linear rgb (×1.5 for legacy materials); a = opacity.
+    diffuse: vec4<f32>,
+    // Linear rgb × level; w = glossiness.
+    specular: vec4<f32>,
+    // Linear rgb; a = unlit opacity.
+    emissive: vec4<f32>,
+    flags: u32,
+    pad0: u32,
+    pad1: u32,
+    pad2: u32,
+}
+
+const DIFFUSE_MAP: u32 = 1u;
+const NORMAL_MAP: u32 = 2u;
+const SPECULAR_MAP: u32 = 4u;
+const EMISSIVE_MAP: u32 = 8u;
+const OPACITY_MAP: u32 = 16u;
+const LIT: u32 = 32u;
+const PACKED_SPECULAR: u32 = 64u;
+const TWO_SIDED: u32 = 128u;
+
+// The sun's illuminance per unit of the original's intensity.
+const SUN_LUX: f32 = 160.0;
+
+@group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> material: ExaParams;
+@group(constants::MATERIAL_BIND_GROUP) @binding(101) var diffuse_map: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(102) var diffuse_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(103) var normal_map: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(104) var normal_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(105) var specular_map: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(106) var specular_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(107) var emissive_map: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(108) var emissive_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(109) var opacity_map: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(110) var opacity_sampler: sampler;
+
+fn has(bit: u32) -> bool {
+    return (material.flags & bit) != 0u;
+}
+
+fn schlick(f0: vec3<f32>, c: f32) -> vec3<f32> {
+    return f0 + (vec3(1.0) - f0) * exp2((-5.55473 * c - 6.98316) * c);
+}
+
+struct Surface {
+    n: vec3<f32>,
+    v: vec3<f32>,
+    ndv: f32,
+    // 1 − glossiness: r2 = rough⁴.
+    rough: f32,
+    f0: vec3<f32>,
+}
+
+// Diffuse (x) and specular (rgb in the second) from one light of colour c.
+struct Lit {
+    diffuse: vec3<f32>,
+    specular: vec3<f32>,
+}
+
+fn light(s: Surface, l: vec3<f32>, colour: vec3<f32>) -> Lit {
+    var out: Lit;
+    let ndl = max(dot(s.n, l), 0.0);
+    if ndl <= 0.0 {
+        return out;
+    }
+    let h = normalize(l + s.v);
+    let ndh = max(dot(s.n, h), 0.0);
+    let hdv = max(dot(h, s.v), 0.0);
+    let r2 = pow(s.rough, 4.0);
+    let k = (s.rough + 1.0) * (s.rough + 1.0) / 8.0;
+    let denom = ndh * ndh * (r2 - 1.0) + 1.0;
+    let dg = r2 * ndl / (denom * denom * (ndl * (1.0 - k) + k));
+    let d = 0.25 / (s.ndv * (1.0 - k) + k);
+    let fs = schlick(s.f0, hdv);
+    out.specular = dg * d * fs * colour;
+    out.diffuse = ndl * (vec3(1.0) - fs) * colour;
+    return out;
+}
+
+@fragment
+fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
+    var out: FragmentOutput;
+    var uv = vec2(0.0);
+@if(VERTEX_UVS_A) {
+    uv = in.uv;
+}
+    var dif_tex = vec4(1.0);
+    if has(DIFFUSE_MAP) {
+        dif_tex = textureSample(diffuse_map, diffuse_sampler, uv);
+    }
+    var alpha = material.diffuse.a * dif_tex.a;
+    if has(OPACITY_MAP) {
+        let o = textureSample(opacity_map, opacity_sampler, uv).a;
+        alpha = material.diffuse.a * o * o;
+    }
+
+    // Unlit: emissive only.
+    if !has(LIT) {
+        var e = material.emissive.rgb;
+        if has(EMISSIVE_MAP) {
+            e *= textureSample(emissive_map, emissive_sampler, uv).rgb;
+        }
+        var a = material.emissive.a;
+        if has(OPACITY_MAP) {
+            a *= textureSample(opacity_map, opacity_sampler, uv).a;
+        }
+        out.color = vec4(e, a);
+        return out;
+    }
+
+    var n = normalize(in.world_normal);
+    if !is_front {
+        n = -n;
+    }
+@if(VERTEX_TANGENTS) {
+    if has(NORMAL_MAP) {
+        let t = normalize(in.world_tangent.xyz - n * dot(in.world_tangent.xyz, n));
+        let b = cross(n, t) * in.world_tangent.w;
+        let xy = textureSample(normal_map, normal_sampler, uv).rg * 2.0 - 1.0;
+        let z = sqrt(max(1.0 - dot(xy, xy), 0.0));
+        n = normalize(t * xy.x + b * xy.y + n * z);
+    }
+}
+    let p = in.world_position.xyz;
+    let v = normalize(view_bindings::view.world_position.xyz - p);
+
+    var s: Surface;
+    s.n = n;
+    s.v = v;
+    s.ndv = abs(dot(v, n));
+    var dif_col = material.diffuse.rgb * dif_tex.rgb;
+    var cavity = 1.0;
+    s.rough = 1.0 - material.specular.w;
+    s.f0 = material.specular.rgb;
+    if has(SPECULAR_MAP) {
+        let rgm = textureSample(specular_map, specular_sampler, uv);
+        if has(PACKED_SPECULAR) {
+            let metal = rgm.b;
+            s.f0 = mix(vec3(0.04), dif_tex.rgb * material.specular.rgb, metal);
+            dif_col *= 1.0 - metal;
+            s.rough = 1.0 - material.specular.w * rgm.g;
+            cavity = rgm.r;
+        } else {
+            s.f0 = material.specular.rgb * rgm.rgb;
+        }
+    }
+    s.rough = clamp(s.rough, 0.02, 1.0);
+
+    var diffuse = vec3(0.0);
+    var specular = vec3(0.0);
+    let receiver = (mesh[in.instance_index].flags & MESH_FLAGS_SHADOW_RECEIVER_BIT) != 0u;
+
+    // Point lights in this fragment's cluster.
+    let view_z = dot(vec4<f32>(
+        view_bindings::view.view_from_world[0].z,
+        view_bindings::view.view_from_world[1].z,
+        view_bindings::view.view_from_world[2].z,
+        view_bindings::view.view_from_world[3].z,
+    ), in.world_position);
+    let ortho = view_bindings::view.clip_from_view[3].w == 1.0;
+    let cluster = clustering::view_fragment_cluster_index(in.position.xy, view_z, ortho);
+    let ranges = clustering::unpack_clusterable_object_index_ranges(cluster);
+    for (var i = ranges.first_point_light_index_offset; i < ranges.first_spot_light_index_offset; i++) {
+        let id = clustering::get_clusterable_object_id(i);
+        let lt = &view_bindings::clustered_lights.data[id];
+        let to = (*lt).position_radius.xyz - p;
+        let d = length(to);
+        let atn = pow(max(1.0 - d / max((*lt).range, 1e-3), 0.0), 4.0);
+        if atn <= 0.0 {
+            continue;
+        }
+        var shadow = 1.0;
+        if receiver && ((*lt).flags & mesh_view_types::POINT_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u {
+            shadow = shadows::fetch_point_shadow(id, in.world_position, in.world_normal, in.position.xy);
+        }
+        let lit = light(s, to / max(d, 1e-4), (*lt).color_inverse_square_range.rgb * atn * shadow);
+        diffuse += lit.diffuse;
+        specular += lit.specular;
+    }
+    // The sun.
+    for (var i = 0u; i < view_bindings::lights.n_directional_lights; i++) {
+        let sun = &view_bindings::lights.directional_lights[i];
+        var shadow = 1.0;
+        if receiver && ((*sun).flags & mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u {
+            shadow = shadows::fetch_directional_shadow(i, in.world_position, in.world_normal, view_z, in.position.xy);
+        }
+        let lit = light(s, (*sun).direction_to_light, (*sun).color.rgb / SUN_LUX * shadow);
+        diffuse += lit.diffuse;
+        specular += lit.specular;
+    }
+
+    // Ambient: the level's, set on the CPU from its record.
+    let ambient = view_bindings::lights.ambient_color.rgb;
+    var colour = (diffuse + ambient) * dif_col;
+    // Reflection of the surroundings, approximated from the ambient.
+    let k = (s.rough + 1.0) * (s.rough + 1.0) / 8.0;
+    let reflected = ambient * 0.5 * s.ndv / (s.ndv * (1.0 - k) + k);
+    specular += reflected * schlick(s.f0, s.ndv);
+    colour += specular * cavity;
+
+    var e = material.emissive.rgb;
+    if has(EMISSIVE_MAP) {
+        e *= textureSample(emissive_map, emissive_sampler, uv).rgb;
+    }
+    colour += e;
+    out.color = vec4(colour, alpha);
+    return out;
+}

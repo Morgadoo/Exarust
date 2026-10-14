@@ -9,6 +9,7 @@
 //!
 //! options: --camera x,y,z,yaw,pitch   start pose (metres, degrees)
 //!          --at x,y,z                 play mode: start here (metres)
+//!          --fov <degrees>            vertical field of view (default 45)
 //!          --screenshot <file.png>    save a frame and exit
 //!          --frames <n>               frames to wait before the screenshot (default 90)
 //!          --ev <ev100>               camera exposure (default 6, lower is brighter)
@@ -44,6 +45,8 @@ pub enum View {
 #[derive(Resource, Clone, Debug, Default)]
 pub struct Options {
     pub camera: Option<[f32; 5]>,
+    /// Vertical field of view, degrees.
+    pub fov: Option<f32>,
     /// Play mode: start here instead of the level's start (metres).
     pub at: Option<[f32; 3]>,
     pub screenshot: Option<PathBuf>,
@@ -91,6 +94,7 @@ fn main() -> AppExit {
             "--screenshot" => options.screenshot = args.next().map(PathBuf::from),
             "--ceilings" => options.ceilings = true,
             "--limp" => options.limp = true,
+            "--fov" => options.fov = args.next().and_then(|v| v.parse().ok()),
             "--race" => options.race = args.next().and_then(|v| v.parse().ok()),
             "--shove" => options.shove = args.next().and_then(|v| v.parse().ok()),
             "--autowalk" => options.autowalk = true,

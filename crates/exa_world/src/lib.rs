@@ -263,14 +263,21 @@ pub fn spawn_model(commands: &mut Commands, model: &Model, placement: Option<Tra
 }
 
 /// Approximation of the original omni light in Bevy units.
+/// A level light as the original shades it: its colour linearised and scaled
+/// by its intensity and 2/π (Bevy divides lumens by 4π), falling to nothing
+/// at 1.25 times its radius, casting shadows.
 pub fn point_light(light: &Light) -> PointLight {
-    const LUMENS_PER_UNIT: f32 = 4000.0;
+    /// Lumens giving the shader a colour of 2/π per unit of intensity.
+    const LUMENS_PER_INTENSITY: f32 = 8.0;
+    /// The falloff reaches zero this far out, in radii.
+    const REACH: f32 = 1.25;
+    let c = exa_render::material::linear_rgb(light.color);
     PointLight {
-        color: Color::linear_rgb(light.color[0], light.color[1], light.color[2]),
-        intensity: (light.multiplier * light.intensity).max(0.0) * LUMENS_PER_UNIT,
-        range: light.radius.max(0.5),
+        color: Color::linear_rgb(c.x, c.y, c.z),
+        intensity: light.intensity.max(0.0) * LUMENS_PER_INTENSITY,
+        range: (light.radius * REACH).max(0.5),
         radius: 0.05,
-        shadow_maps_enabled: false,
+        shadow_maps_enabled: true,
         ..default()
     }
 }

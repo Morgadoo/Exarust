@@ -21,8 +21,13 @@ pub enum TextureSlot {
     Gloss,
     Specular,
     Height,
+    /// Environment-map override (a cube map).
     Reflection,
-    Detail,
+    /// Opacity: the alpha channel is used (cobwebs, foliage cards).
+    Opacity,
+    Emissive,
+    /// Dirt and grime, mixed in by vertex alpha.
+    Dirt,
     Other(u32),
 }
 
@@ -35,7 +40,9 @@ impl TextureSlot {
             0x0004_0000 => Self::Specular,
             0x0080_0000 => Self::Height,
             0x0010_0000 => Self::Reflection,
-            0x0040_0000 => Self::Detail,
+            0x0040_0000 => Self::Opacity,
+            0x0008_0000 => Self::Emissive,
+            0x0800_0000 => Self::Dirt,
             other => Self::Other(other),
         }
     }
@@ -50,11 +57,33 @@ pub struct TextureLayer {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Material {
-    /// Linear RGBA.
+    /// Colours as stored: sRGB, linearised by the renderer.
+    pub emissive: [f32; 4],
     pub diffuse: [f32; 4],
-    /// Linear RGBA.
     pub specular: [f32; 4],
+    /// 1 solid, 0 glass, 0.6 decals.
+    pub opacity: f32,
+    /// 0..1.
+    pub glossiness: f32,
+    /// Multiplies the specular colour.
+    pub specular_level: f32,
+    /// Render class: low nibble 3 is transparent; bits 12..14 the blend mode.
+    pub class: u32,
+    /// Shading flags ([`flags`]) and the texture slots in use.
+    pub flags: u32,
+    /// 0: legacy (diffuse ×1.5); bit 0: the specular map is a packed
+    /// intensity/gloss/metal map.
+    pub kind: u32,
     pub layers: Vec<TextureLayer>,
+}
+
+/// Material shading flags.
+pub mod flags {
+    /// Lit by ambient and lights.
+    pub const LIT: u32 = 0x3;
+    pub const TWO_SIDED: u32 = 0x10;
+    pub const REFRACT: u32 = 0x200;
+    pub const OPACITY_FALLOFF: u32 = 0x800;
 }
 
 impl Material {
@@ -75,8 +104,8 @@ impl Material {
                 )
             })
         };
-        let diffuse = rgba(16);
-        let specular = rgba(32);
+        let f32_at = |o: usize| f32::from_le_bytes(payload[o..o + 4].try_into().expect("4 bytes"));
+        let u32_at = |o: usize| u32::from_le_bytes(payload[o..o + 4].try_into().expect("4 bytes"));
         let mut layers = Vec::new();
         let mut p = PARAMETER_BLOCK;
         while p < payload.len() {
@@ -102,8 +131,15 @@ impl Material {
             p += LAYER_LEN;
         }
         Ok(Self {
-            diffuse,
-            specular,
+            emissive: rgba(0x00),
+            diffuse: rgba(0x10),
+            specular: rgba(0x20),
+            opacity: f32_at(0x38),
+            glossiness: f32_at(0x3C),
+            specular_level: f32_at(0x40),
+            class: u32_at(0x44),
+            flags: u32_at(0x48),
+            kind: u32_at(0x50),
             layers,
         })
     }

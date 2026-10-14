@@ -201,7 +201,7 @@ fn equip_outfits(
     parts: Query<&BodyPart>,
     mut cache: ResMut<ModelCache>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<exa_render::material::ExaMaterial>>,
     mut images: ResMut<Assets<Image>>,
     support: Option<Res<CompressedImageFormatSupport>>,
 ) {

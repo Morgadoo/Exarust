@@ -17,7 +17,9 @@ use exa_rpk::{Archive, GameData, PackKind};
 use crate::paint::{PaintLayer, Texels, layer_material, library, normal_library, paint};
 use crate::skin::{Joint, VertexSkin, auto_skin};
 use crate::texture::{ColorSpace, has_alpha, rfi_to_image};
+use exa_formats::material::flags as material_flags;
 use exa_formats::objdb::Appearance;
+use exa_render::material::{ExaMaterial, ExaParams, flags, linear_rgb};
 
 /// A decoded model ready to spawn any number of times.
 #[derive(Debug, Clone)]
@@ -70,7 +72,7 @@ pub fn is_body_model(entry: &str) -> bool {
 }
 
 /// A mesh part: its mesh and material.
-pub type Part = (Handle<Mesh>, Handle<StandardMaterial>);
+pub type Part = (Handle<Mesh>, Handle<ExaMaterial>);
 
 /// A loaded texture and whether it carries alpha.
 type CachedTexture = Option<(Handle<Image>, bool)>;
@@ -79,11 +81,11 @@ type CachedTexture = Option<(Handle<Image>, bool)>;
 pub struct ModelCache {
     models: HashMap<String, Option<Arc<Model>>>,
     textures: HashMap<(String, ColorSpace), CachedTexture>,
-    materials: HashMap<String, Handle<StandardMaterial>>,
+    materials: HashMap<String, Handle<ExaMaterial>>,
     /// Textures decoded on the CPU, for painting.
     texels: HashMap<String, Option<Arc<Texels>>>,
     /// Painted apparel materials by texture stem and appearance.
-    painted: HashMap<(String, Appearance), Handle<StandardMaterial>>,
+    painted: HashMap<(String, Appearance), Handle<ExaMaterial>>,
     /// The body's skinned vertices per bone (part space, metres), for
     /// apparel to take its weights from.
     body_skin: HashMap<u16, Arc<Vec<(Vec3, VertexSkin)>>>,
@@ -95,7 +97,7 @@ pub struct ModelLoader<'a> {
     pub game: &'a GameData,
     pub cache: &'a mut ModelCache,
     pub meshes: &'a mut Assets<Mesh>,
-    pub materials: &'a mut Assets<StandardMaterial>,
+    pub materials: &'a mut Assets<ExaMaterial>,
     pub images: &'a mut Assets<Image>,
     pub bc_supported: bool,
 }
@@ -284,7 +286,7 @@ impl ModelLoader<'_> {
         out
     }
 
-    fn material(&mut self, entry: &str, scene: &Scene, name: &str) -> Handle<StandardMaterial> {
+    fn material(&mut self, entry: &str, scene: &Scene, name: &str) -> Handle<ExaMaterial> {
         let local = scene.material(name).cloned();
         let key = if local.is_some() {
             format!(
@@ -306,64 +308,111 @@ impl ModelLoader<'_> {
             return handle;
         }
         let source = local.or_else(|| library_material(self.game, name));
-        let mut mat = StandardMaterial {
-            perceptual_roughness: 0.85,
-            metallic: 0.0,
-            reflectance: 0.3,
-            ..default()
-        };
-        match source {
-            Some(m) => {
-                let [r, g, b, _] = m.diffuse.map(|v| v.clamp(0.0, 1.0));
-                mat.base_color = Color::linear_rgb(r, g, b);
-                let spec = (m.specular[0] + m.specular[1] + m.specular[2]) / 3.0;
-                mat.reflectance = (spec * 0.5).clamp(0.0, 0.5);
-                if let Some(t) = m.texture(TextureSlot::Diffuse)
-                    && let Some((img, alpha)) = self.texture(t, ColorSpace::Srgb)
-                {
-                    mat.base_color_texture = Some(img);
-                    if alpha {
-                        mat.alpha_mode = AlphaMode::Mask(0.5);
-                        mat.double_sided = true;
-                        mat.cull_mode = None;
-                    }
-                }
-                if let Some(t) = m.texture(TextureSlot::Normal)
-                    && let Some((img, _)) = self.texture(t, ColorSpace::Linear)
-                {
-                    mat.normal_map_texture = Some(img);
-                }
-            }
+        let mat = match source {
+            Some(m) => self.exa_material(&m),
             None => {
                 self.warn_once(format!("material {name:?} not found"));
-                mat.base_color = Color::srgb(0.6, 0.6, 0.6);
+                ExaMaterial {
+                    params: ExaParams {
+                        diffuse: Vec4::new(0.32, 0.32, 0.32, 1.0),
+                        ..default()
+                    },
+                    ..default()
+                }
             }
-        }
+        };
         let handle = self.materials.add(mat);
         self.cache.materials.insert(key, handle.clone());
         handle
     }
 
-    fn apparel_material(&mut self, texture_key: &str) -> Handle<StandardMaterial> {
-        let mut mat = StandardMaterial {
-            perceptual_roughness: 0.8,
-            metallic: 0.0,
-            reflectance: 0.3,
+    /// A material shaded like the original's from its library record.
+    fn exa_material(&mut self, m: &Material) -> ExaMaterial {
+        let rgb = |c: [f32; 4]| linear_rgb([c[0], c[1], c[2]]);
+        // Legacy materials brighten their diffuse colour.
+        let mut diffuse = rgb(m.diffuse);
+        if m.kind == 0 {
+            diffuse *= 1.5;
+        }
+        let packed = m.kind & 1 != 0;
+        let mut specular = rgb(m.specular) * m.specular_level;
+        if m.texture(TextureSlot::Specular).is_some() {
+            specular *= 3.0;
+        }
+        let mut shading = 0;
+        if m.flags & material_flags::LIT != 0 {
+            shading |= flags::LIT;
+        }
+        if m.flags & material_flags::TWO_SIDED != 0 {
+            shading |= flags::TWO_SIDED;
+        }
+        if packed {
+            shading |= flags::PACKED_SPECULAR;
+        }
+        let mut mat = ExaMaterial {
+            params: ExaParams {
+                diffuse: diffuse.extend(m.opacity.clamp(0.0, 1.0)),
+                specular: specular.extend(m.glossiness.clamp(0.01, 1.0)),
+                emissive: rgb(m.emissive).extend(m.emissive[3]),
+                flags: shading,
+                ..default()
+            },
             ..default()
         };
+        let mut cut_out = false;
+        if let Some(t) = m.texture(TextureSlot::Diffuse)
+            && let Some((img, alpha)) = self.texture(t, ColorSpace::Srgb)
+        {
+            mat.diffuse_map = Some(img);
+            cut_out = alpha;
+        }
+        if let Some(t) = m.texture(TextureSlot::Normal) {
+            mat.normal_map = self.texture(t, ColorSpace::Linear).map(|t| t.0);
+        }
+        if let Some(t) = m.texture(TextureSlot::Specular) {
+            let space = if packed {
+                ColorSpace::Linear
+            } else {
+                ColorSpace::Srgb
+            };
+            mat.specular_map = self.texture(t, space).map(|t| t.0);
+        }
+        if let Some(t) = m.texture(TextureSlot::Emissive) {
+            mat.emissive_map = self.texture(t, ColorSpace::Srgb).map(|t| t.0);
+        }
+        if let Some(t) = m.texture(TextureSlot::Opacity) {
+            mat.opacity_map = self.texture(t, ColorSpace::Linear).map(|t| t.0);
+        }
+        let transparent = m.class & 0xF == 3 || mat.opacity_map.is_some();
+        mat.alpha_mode = if transparent {
+            AlphaMode::Blend
+        } else if cut_out {
+            AlphaMode::Mask(0.5)
+        } else {
+            AlphaMode::Opaque
+        };
+        // Cut-outs are seen from both sides.
+        if cut_out || transparent {
+            mat.params.flags |= flags::TWO_SIDED;
+        }
+        mat.with_map_flags()
+    }
+
+    fn apparel_material(&mut self, texture_key: &str) -> Handle<ExaMaterial> {
+        let mut mat = ExaMaterial::default();
         match self.texture(&format!("{texture_key}d"), ColorSpace::Srgb) {
             Some((img, alpha)) => {
-                mat.base_color_texture = Some(img);
+                mat.diffuse_map = Some(img);
                 if alpha {
                     mat.alpha_mode = AlphaMode::Mask(0.5);
                 }
             }
-            None => mat.base_color = Color::srgb(0.5, 0.45, 0.4),
+            None => mat.params.diffuse = Vec4::new(0.21, 0.18, 0.13, 1.0),
         }
-        if let Some((img, _)) = self.texture(&format!("{texture_key}n"), ColorSpace::Linear) {
-            mat.normal_map_texture = Some(img);
-        }
-        self.materials.add(mat)
+        mat.normal_map = self
+            .texture(&format!("{texture_key}n"), ColorSpace::Linear)
+            .map(|t| t.0);
+        self.materials.add(mat.with_map_flags())
     }
 
     /// A texture decoded to RGBA8 on the CPU, cached by name.
@@ -394,11 +443,7 @@ impl ModelLoader<'_> {
     /// painted with an item's appearance, as the original paints equipped
     /// items. Falls back to the unpainted material when the shade map is
     /// missing.
-    pub fn painted_apparel(
-        &mut self,
-        stem: &str,
-        appearance: &Appearance,
-    ) -> Handle<StandardMaterial> {
+    pub fn painted_apparel(&mut self, stem: &str, appearance: &Appearance) -> Handle<ExaMaterial> {
         let key = (stem.to_ascii_lowercase(), *appearance);
         if let Some(h) = self.cache.painted.get(&key) {
             return h.clone();
@@ -448,33 +493,40 @@ impl ModelLoader<'_> {
                 let alpha = shade.rgba.as_chunks::<4>().0.iter().any(|p| p[3] < 128);
                 let (w, h) = (shade.width as u32, shade.height as u32);
                 let image = painted_image(w, h, rgba, true);
-                let surface = painted_image(w, h, painted.surface, false);
-                let mut mat = StandardMaterial {
-                    base_color_texture: Some(self.images.add(image)),
-                    metallic_roughness_texture: Some(self.images.add(surface)),
-                    // Scales of the texture's channels.
-                    perceptual_roughness: 1.0,
-                    metallic: 1.0,
-                    reflectance: 0.5,
+                // The painter's surface map (roughness in G, metal in B) as
+                // the original's packed specular map: intensity, gloss, metal.
+                let mut surface = painted.surface;
+                for px in surface.as_chunks_mut::<4>().0 {
+                    px[0] = 255;
+                    px[1] = 255 - px[1];
+                }
+                let surface = painted_image(w, h, surface, false);
+                let mut mat = ExaMaterial {
+                    params: ExaParams {
+                        specular: Vec4::new(1.0, 1.0, 1.0, 1.0),
+                        flags: flags::LIT | flags::PACKED_SPECULAR,
+                        ..default()
+                    },
+                    diffuse_map: Some(self.images.add(image)),
+                    specular_map: Some(self.images.add(surface)),
                     ..default()
                 };
                 if alpha {
                     mat.alpha_mode = AlphaMode::Mask(0.5);
+                    mat.params.flags |= flags::TWO_SIDED;
                 }
                 match painted.normal {
                     Some(normal) => {
                         let image = painted_image(w, h, normal, false);
-                        mat.normal_map_texture = Some(self.images.add(image));
+                        mat.normal_map = Some(self.images.add(image));
                     }
                     None => {
-                        if let Some((img, _)) =
-                            self.texture(&format!("{stem}n"), ColorSpace::Linear)
-                        {
-                            mat.normal_map_texture = Some(img);
-                        }
+                        mat.normal_map = self
+                            .texture(&format!("{stem}n"), ColorSpace::Linear)
+                            .map(|t| t.0);
                     }
                 }
-                self.materials.add(mat)
+                self.materials.add(mat.with_map_flags())
             }
             None => self.apparel_material(stem),
         };

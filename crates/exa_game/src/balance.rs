@@ -48,6 +48,11 @@ const FALL_BELOW: f32 = 0.6;
 const THRESHOLD: f32 = 0.3;
 /// How far ahead the centre of mass is projected by its velocity, seconds.
 const LOOK_AHEAD: f32 = 0.1;
+/// Fastest the centre of mass is taken to move for the look-ahead, m/s
+/// (clip changes snap the pose until clips blend).
+const LOOK_AHEAD_SPEED: f32 = 2.0;
+/// Score of a steady stance.
+const STEADY: f32 = 0.99;
 /// Seconds lying down before trying to get up, and the energy and speed
 /// needed.
 const GET_UP_AFTER: f32 = 2.5;
@@ -73,6 +78,10 @@ fn update_balance(balance: &mut Balance, offset: f32, energy: f32, speed: f32, t
     // measure is not known; attack lunges reach about 20 cm).
     let stability = (2.0 - offset / threshold).clamp(0.0, 1.0);
     let score = stability.powi(8);
+    // A steady stance clears what small wobbles added up.
+    if score >= STEADY {
+        balance.counter = 0.0;
+    }
     balance.counter += (10.0 - 10.0 * score) * ticks;
     if balance.counter >= 100.0 {
         balance.value = score;
@@ -112,7 +121,8 @@ fn keep_balance(
         };
         let (a, b) = (right.transform().translation, left.transform().translation);
         let (centre, velocity) = body.centre_of_mass();
-        let ahead = centre + velocity * LOOK_AHEAD;
+        let drift = Vec3::new(velocity.x, 0.0, velocity.z).clamp_length_max(LOOK_AHEAD_SPEED);
+        let ahead = centre + drift * LOOK_AHEAD;
         let offset = off_line(ahead, a.into(), b.into());
         let falls = update_balance(&mut balance, offset, energy, velocity.length(), ticks);
         if falls {

@@ -93,7 +93,7 @@ struct FloorSet {
     middle: Table,
     /// The set's surface material (its `+`-named material), which also
     /// replaces `+` materials on the floor strips of wall pieces.
-    surface: Option<Handle<StandardMaterial>>,
+    surface: Option<Handle<exa_render::material::ExaMaterial>>,
 }
 
 fn name_bytes(name: &str) -> [u8; 6] {
@@ -456,7 +456,7 @@ struct PieceRules {
     ceilings: bool,
     /// Material for `+` materials on floor strips; strips are dropped
     /// without one.
-    surface: Option<Handle<StandardMaterial>>,
+    surface: Option<Handle<exa_render::material::ExaMaterial>>,
 }
 
 /// The floor and ceiling strips a piece brought with it.
@@ -481,7 +481,11 @@ fn spawn_piece(
 ) -> Strips {
     let mut strips = Strips::default();
     let root = spawn_node(commands, model, node, transform, parent, None);
-    let mut stack: Vec<(usize, Entity, Option<&Handle<StandardMaterial>>)> = Vec::new();
+    let mut stack: Vec<(
+        usize,
+        Entity,
+        Option<&Handle<exa_render::material::ExaMaterial>>,
+    )> = Vec::new();
     for &k in &kids[node] {
         let name = model.nodes[k].name.as_bytes();
         match name {
@@ -514,7 +518,7 @@ fn spawn_node(
     node: usize,
     transform: Transform,
     parent: Entity,
-    surface: Option<&Handle<StandardMaterial>>,
+    surface: Option<&Handle<exa_render::material::ExaMaterial>>,
 ) -> Entity {
     let n = &model.nodes[node];
     let e = commands

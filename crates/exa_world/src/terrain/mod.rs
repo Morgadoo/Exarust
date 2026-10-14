@@ -167,7 +167,7 @@ pub struct TerrainStats {
 struct Plants {
     variants: Vec<vegetation::Variant>,
     grass: usize,
-    material: Handle<StandardMaterial>,
+    material: Handle<exa_render::material::ExaMaterial>,
 }
 
 impl Plants {
@@ -211,17 +211,22 @@ impl Plants {
         let normal_map_texture = loader
             .texture("plantset_01n", ColorSpace::Linear)
             .map(|(t, _)| t);
-        let material = loader.materials.add(StandardMaterial {
-            // The shader multiplies the texture by the tint as is.
-            base_color: Color::linear_rgb(tint[0], tint[1], tint[2]),
-            base_color_texture,
-            normal_map_texture,
-            alpha_mode: AlphaMode::Mask(0.1),
-            double_sided: true,
-            cull_mode: None,
-            perceptual_roughness: 0.8,
-            ..default()
-        });
+        use exa_render::material::{ExaMaterial, ExaParams, flags};
+        let material = loader.materials.add(
+            ExaMaterial {
+                params: ExaParams {
+                    // The shader multiplies the texture by the tint as is.
+                    diffuse: Vec4::new(tint[0], tint[1], tint[2], 1.0),
+                    flags: flags::LIT | flags::TWO_SIDED,
+                    ..default()
+                },
+                diffuse_map: base_color_texture,
+                normal_map: normal_map_texture,
+                alpha_mode: AlphaMode::Mask(0.1),
+                ..default()
+            }
+            .with_map_flags(),
+        );
         Some(Self {
             variants,
             grass,
