@@ -6,9 +6,14 @@
 //! (`arenao*`) get sunlight, sky and fog. Elsewhere the record's sun mode
 //! applies, where "auto" lights a sun only in levels without lights.
 //! Evidence: `docs/formats/RFC.md` (Environment).
+//!
+//! The original's sky shader is not decoded; outdoor skies use Bevy's
+//! physically based atmosphere lit by the level's sun, as a stand-in.
 
+use bevy::light::Atmosphere;
+use bevy::light::atmosphere::ScatteringMedium;
 use bevy::light::{CascadeShadowConfigBuilder, DirectionalLightShadowMap};
-use bevy::pbr::{DistanceFog, FogFalloff};
+use bevy::pbr::{AtmosphereSettings, DistanceFog, FogFalloff};
 use bevy::prelude::*;
 use exa_formats::environment::{Environment, SunMode};
 
@@ -34,7 +39,7 @@ pub struct EnvironmentPlugin;
 impl Plugin for EnvironmentPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(DirectionalLightShadowMap { size: 2048 })
-            .add_systems(PostUpdate, fog_cameras);
+            .add_systems(PostUpdate, (fog_cameras, sky_cameras));
     }
 }
 
@@ -45,9 +50,22 @@ pub struct Lighting {
     pub ambient: Vec3,
     pub sun: Option<Sun>,
     pub fog: Option<LevelFog>,
+    /// An open sky over the level.
+    pub sky: bool,
     /// Linear background colour.
     pub background: Vec3,
 }
+
+/// Present while the level has an open sky.
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct LevelSky;
+
+/// The atmosphere entity of the current sky.
+#[derive(Component)]
+struct Sky;
+
+/// Resolution of the atmosphere's scattering tables.
+const SKY_RESOLUTION: u32 = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Sun {
@@ -108,6 +126,7 @@ pub fn level_lighting(level: &str, record: Option<&Environment>, lights: usize) 
             ambient,
             sun: None,
             fog: None,
+            sky: false,
             background: Vec3::ZERO,
         },
         Preset::Outdoor => {
@@ -119,6 +138,7 @@ pub fn level_lighting(level: &str, record: Option<&Environment>, lights: usize) 
                     colour,
                     distance: OUTDOOR_FOG_DISTANCE,
                 }),
+                sky: true,
                 background: colour,
             }
         }
@@ -132,6 +152,7 @@ pub fn level_lighting(level: &str, record: Option<&Environment>, lights: usize) 
                 ambient,
                 sun: lit.then(|| sun(SUN_INTENSITY)),
                 fog: None,
+                sky: false,
                 background: Vec3::ZERO,
             }
         }
@@ -172,6 +193,47 @@ pub fn apply_lighting(commands: &mut Commands, lighting: &Lighting, parent: Enti
     match lighting.fog {
         Some(fog) => commands.insert_resource(fog),
         None => commands.remove_resource::<LevelFog>(),
+    }
+    if lighting.sky {
+        commands.insert_resource(LevelSky);
+    } else {
+        commands.remove_resource::<LevelSky>();
+    }
+}
+
+/// Spawns the atmosphere of an open sky and renders it on every 3D camera;
+/// removes both when the level has none.
+fn sky_cameras(
+    mut commands: Commands,
+    sky: Option<Res<LevelSky>>,
+    skies: Query<Entity, With<Sky>>,
+    cameras: Query<(Entity, Has<AtmosphereSettings>), With<Camera3d>>,
+    mut media: ResMut<Assets<ScatteringMedium>>,
+) {
+    match sky {
+        Some(_) => {
+            if skies.is_empty() {
+                let medium = media.add(ScatteringMedium::earth(SKY_RESOLUTION, SKY_RESOLUTION));
+                commands.spawn((Name::new("_Sky"), Sky, Atmosphere::earth(medium)));
+            }
+            for (camera, has) in &cameras {
+                if !has {
+                    commands
+                        .entity(camera)
+                        .insert(AtmosphereSettings::default());
+                }
+            }
+        }
+        None => {
+            for sky in &skies {
+                commands.entity(sky).despawn();
+            }
+            for (camera, has) in &cameras {
+                if has {
+                    commands.entity(camera).remove::<AtmosphereSettings>();
+                }
+            }
+        }
     }
 }
 
