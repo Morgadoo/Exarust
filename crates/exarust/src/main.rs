@@ -8,6 +8,7 @@
 //! exarust [--game <dir>] [options] play <level>          walk the level as the player (WASD, Shift, right-drag)
 //!
 //! options: --camera x,y,z,yaw,pitch   start pose (metres, degrees)
+//!          --at x,y,z                 play mode: start here (metres)
 //!          --screenshot <file.png>    save a frame and exit
 //!          --frames <n>               frames to wait before the screenshot (default 90)
 //!          --ev <ev100>               camera exposure (default 6, lower is brighter)
@@ -40,6 +41,8 @@ pub enum View {
 #[derive(Resource, Clone, Debug, Default)]
 pub struct Options {
     pub camera: Option<[f32; 5]>,
+    /// Play mode: start here instead of the level's start (metres).
+    pub at: Option<[f32; 3]>,
     pub screenshot: Option<PathBuf>,
     pub frames: u32,
     /// Camera exposure; dungeon interiors need far less than daylight.
@@ -102,6 +105,15 @@ fn main() -> AppExit {
                 if let Ok(pose) = <[f32; 5]>::try_from(v.as_slice()) {
                     options.camera = Some(pose);
                 }
+            }
+            "--at" => {
+                let v: Vec<f32> = args
+                    .next()
+                    .unwrap_or_default()
+                    .split(',')
+                    .filter_map(|x| x.trim().parse().ok())
+                    .collect();
+                options.at = <[f32; 3]>::try_from(v.as_slice()).ok();
             }
             _ => positional.push(a),
         }

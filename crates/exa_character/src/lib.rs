@@ -24,9 +24,33 @@ impl Plugin for CharacterPlugin {
     }
 }
 
-/// Apparel to put on (entries of `Characters.rpk`), on a body model root.
+/// Apparel to put on, on a body model root.
 #[derive(Component, Clone, Debug, Default)]
-pub struct Outfit(pub Vec<String>);
+pub struct Outfit(pub Vec<Garment>);
+
+/// A worn item: its model (an entry of `Characters.rpk`) and how it is
+/// painted. Without an appearance, the first object-database item showing
+/// the model supplies one.
+#[derive(Clone, Debug)]
+pub struct Garment {
+    pub model: String,
+    pub appearance: Option<Appearance>,
+}
+
+impl Outfit {
+    /// An outfit of models painted with their default appearances.
+    pub fn of_models(models: &[String]) -> Self {
+        Self(
+            models
+                .iter()
+                .map(|m| Garment {
+                    model: m.clone(),
+                    appearance: None,
+                })
+                .collect(),
+        )
+    }
+}
 
 /// A weapon or tool from `Objects.rpk` held in the right hand.
 #[derive(Component, Clone, Debug)]
@@ -103,11 +127,15 @@ fn equip_outfits(
             images: &mut images,
             bc_supported: model::bc_supported(support.as_deref()),
         };
-        for item in &outfit.0 {
-            let Some(apparel) = loader.model(PackKind::Characters, item) else {
+        for garment in &outfit.0 {
+            let Some(apparel) = loader.model(PackKind::Characters, &garment.model) else {
                 continue;
             };
-            let appearance = appearances.get(&item.to_ascii_lowercase()).copied();
+            let appearance = garment.appearance.or_else(|| {
+                appearances
+                    .get(&garment.model.to_ascii_lowercase())
+                    .copied()
+            });
             for node in &apparel.nodes {
                 let parent = bone_index(&node.name)
                     .and_then(|b| by_bone.get(&b).copied())

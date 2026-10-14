@@ -10,10 +10,13 @@
 //! Geometry is returned in metres, right-handed and Y-up. The stored units are
 //! centimetres in the same handedness, so the conversion is a uniform scale.
 
+use crate::characters::{CHARACTERS, LevelCharacters};
 use crate::environment::{ENVIRONMENT, Environment};
 use crate::level::{self, LevelGrid, Prop};
 use crate::material::Material;
-use crate::{Error, Result};
+use crate::objdb::Item;
+use crate::rdb::Database;
+use crate::{Error, Result, read_u32};
 
 const SANITY: u16 = 0xAFCF;
 /// Format versions after this one store one extra word at the start of a mesh body.
@@ -77,6 +80,11 @@ pub struct Scene {
     pub props: Vec<Prop>,
     /// Ambient, extent and sun settings, in level files.
     pub environment: Option<Environment>,
+    /// Characters placed in the level and their records.
+    pub characters: Option<LevelCharacters>,
+    /// The level's own object database (items its characters and placed
+    /// objects refer to with local ids).
+    pub local_items: Vec<Item>,
     /// Level sections that could not be decoded.
     pub level_errors: Vec<String>,
 }
@@ -147,6 +155,29 @@ pub struct Mesh {
     pub skin_flags: u32,
 }
 
+/// A level's local database: sub-chunks for its objects, strings and
+/// placed objects.
+pub const LOCAL_DATABASE: u32 = 0xDBC0;
+const LOCAL_OBJECTS: u32 = 0xDBDB;
+
+fn read_local_items(b: &[u8]) -> Result<Vec<Item>> {
+    let mut pos = 0;
+    while pos + 8 <= b.len() {
+        let tag = read_u32(b, pos)?;
+        let size = read_u32(b, pos + 4)? as usize;
+        let body = b.get(pos + 8..pos + 8 + size).ok_or(Error::Truncated {
+            offset: pos + 8,
+            needed: size,
+            len: b.len(),
+        })?;
+        if tag == LOCAL_OBJECTS {
+            return Ok(crate::objdb::items(&Database::parse(body)?));
+        }
+        pos += 8 + size;
+    }
+    Ok(Vec::new())
+}
+
 /// Per-triangle flag sub-chunk of the triangle list.
 pub const TRIANGLE_FLAGS: u32 = 0x3DC3;
 
@@ -179,6 +210,8 @@ impl Scene {
         let mut grid = None;
         let mut props = Vec::new();
         let mut environment = None;
+        let mut characters = None;
+        let mut local_items = Vec::new();
         let mut level_errors = Vec::new();
         while c.remaining() >= 8 {
             let (tag, mut chunk) = c.chunk()?;
@@ -191,6 +224,16 @@ impl Scene {
                 match level::read_props(chunk.b) {
                     Ok(p) => props.extend(p),
                     Err(e) => level_errors.push(format!("props: {e}")),
+                }
+            } else if tag == CHARACTERS {
+                match LevelCharacters::parse(chunk.b) {
+                    Ok(c) => characters = Some(c),
+                    Err(e) => level_errors.push(format!("characters: {e}")),
+                }
+            } else if tag == LOCAL_DATABASE {
+                match read_local_items(chunk.b) {
+                    Ok(items) => local_items = items,
+                    Err(e) => level_errors.push(format!("local database: {e}")),
                 }
             } else if tag == ENVIRONMENT {
                 match Environment::parse(chunk.b) {
@@ -217,6 +260,8 @@ impl Scene {
             grid,
             props,
             environment,
+            characters,
+            local_items,
             level_errors,
         })
     }

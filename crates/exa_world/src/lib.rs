@@ -9,6 +9,8 @@ pub mod terrain;
 
 use bevy::prelude::*;
 use exa_assets::{Model, ModelLoader, PackKind, transform_from_rows};
+use exa_formats::objdb::{self, Appearance, Item};
+use exa_formats::rdb::Database;
 use exa_formats::rfc::{Light, Scene};
 
 pub struct WorldPlugin;
@@ -41,10 +43,72 @@ pub struct LevelInfo {
     pub grid: Option<grid::GridStats>,
     pub terrain: Option<terrain::TerrainStats>,
     pub lighting: environment::Lighting,
+    /// Characters placed in the level.
+    pub characters: Vec<PlacedCharacter>,
     /// A floored cell to start in (stand-in for the level's start marker).
     pub spawn: Option<Vec3>,
     pub bounds_min: Vec3,
     pub bounds_max: Vec3,
+}
+
+/// A character placed in a level, resolved to what can be spawned.
+#[derive(Debug, Clone)]
+pub struct PlacedCharacter {
+    pub name: String,
+    /// Feet position, metres.
+    pub position: Vec3,
+    /// Facing: looks along (sin yaw, 0, cos yaw).
+    pub yaw: f32,
+    pub dead: bool,
+    /// 0 for humans.
+    pub race: u8,
+    pub female: bool,
+    /// Worn items: model entry (`Characters.rpk`) and appearance.
+    pub worn: Vec<(String, Option<Appearance>)>,
+}
+
+/// Resolves a level's placed characters: records from its own database,
+/// worn items from its local object database or the game's.
+fn placed_characters(scene: &Scene, game: &exa_assets::GameData) -> Vec<PlacedCharacter> {
+    use exa_formats::characters::{ID_MASK, LOCAL_ITEM};
+    let Some(chars) = &scene.characters else {
+        return Vec::new();
+    };
+    let global: Vec<Item> = game
+        .pack(PackKind::Resource)
+        .and_then(|p| p.get("objdb.rdb"))
+        .and_then(|b| Database::parse(b).ok())
+        .map(|db| objdb::items(&db))
+        .unwrap_or_default();
+    chars
+        .placements
+        .iter()
+        .filter_map(|p| {
+            let record = chars.record(p.id)?;
+            let worn = record
+                .worn
+                .iter()
+                .filter_map(|&id| {
+                    let items = if id & LOCAL_ITEM != 0 {
+                        &scene.local_items
+                    } else {
+                        &global
+                    };
+                    let item = items.iter().find(|i| i.id == id & ID_MASK)?;
+                    (!item.model.is_empty()).then(|| (item.model.clone(), item.appearance))
+                })
+                .collect();
+            Some(PlacedCharacter {
+                name: record.name.clone(),
+                position: Vec3::from_array(p.position),
+                yaw: p.yaw,
+                dead: p.is_dead(),
+                race: record.race,
+                female: record.female,
+                worn,
+            })
+        })
+        .collect()
 }
 
 /// Spawns `model` under a new entity. With a placement, the placement takes
@@ -205,6 +269,7 @@ pub fn spawn_level(
             grid: grid_stats,
             terrain: terrain_stats,
             lighting,
+            characters: placed_characters(&scene, loader.game),
             spawn: scene.grid.as_ref().and_then(grid::spawn_point),
             bounds_min: min,
             bounds_max: max,

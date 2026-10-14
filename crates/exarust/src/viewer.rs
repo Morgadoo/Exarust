@@ -110,7 +110,7 @@ fn setup(
                 let root = exa_world::spawn_model(&mut commands, &body, None);
                 commands.entity(root).insert((
                     exa_anim::Animator::new(moveset, action),
-                    exa_character::Outfit(options.outfit.clone()),
+                    exa_character::Outfit::of_models(&options.outfit),
                 ));
                 if let Some(w) = &options.weapon {
                     commands
@@ -137,10 +137,12 @@ fn setup(
             }
             let mut start = Vec3::ZERO;
             let mut start_yaw = 0.0;
+            let mut placed = Vec::new();
             if let Some((root, info)) =
                 exa_world::spawn_level(&mut commands, &mut loader, name, options.ceilings)
             {
                 commands.entity(root).insert(exa_physics::StaticGeometry);
+                placed = info.characters.clone();
                 commands.insert_resource(exa_audio::LevelMusic(
                     exa_audio::music_for_level(name).into(),
                 ));
@@ -152,6 +154,9 @@ fn setup(
                             .spawn
                             .unwrap_or((info.bounds_min + info.bounds_max) * 0.5);
                     }
+                }
+                if let Some(at) = options.at {
+                    start = Vec3::from_array(at);
                 }
                 info!("level {name}: player starts at {start}");
             }
@@ -172,7 +177,7 @@ fn setup(
                         yaw: start_yaw,
                         combat: false,
                     },
-                    exa_character::Outfit(options.outfit.clone()),
+                    exa_character::Outfit::of_models(&options.outfit),
                     ChildOf(player),
                 ));
                 commands
@@ -198,7 +203,7 @@ fn setup(
                     anim.time = 0.0;
                     commands.entity(foe).insert((
                         anim,
-                        exa_character::Outfit(vec![
+                        exa_character::Outfit::of_models(&[
                             "leathjac_a".into(),
                             "trouser_a".into(),
                             "boots_b".into(),
@@ -219,6 +224,12 @@ fn setup(
                         ChildOf(foe_root),
                     ));
                 }
+            }
+            if let Some(body) = loader.model(PackKind::Resource, "humanbase.rfc") {
+                let (spawned, other_races) = spawn_placed_characters(&mut commands, &body, &placed);
+                info!(
+                    "level {name}: {spawned} characters placed, {other_races} of other races not yet shown"
+                );
             }
             commands.spawn((
                 Camera3d::default(),
@@ -332,4 +343,53 @@ fn autowalk(options: Res<Options>, mut keys: ResMut<ButtonInput<KeyCode>>) {
     if options.autowalk {
         keys.press(KeyCode::KeyW);
     }
+}
+
+/// Spawns a level's placed human characters, standing (or lying, for the
+/// dead) where the level puts them, dressed in their own items. Returns how
+/// many were spawned and how many of other races were skipped.
+fn spawn_placed_characters(
+    commands: &mut Commands,
+    body: &exa_assets::Model,
+    placed: &[exa_world::PlacedCharacter],
+) -> (usize, usize) {
+    let (mut spawned, mut skipped) = (0, 0);
+    for c in placed {
+        // Other races use their own bodies.
+        if c.race != 0 {
+            skipped += 1;
+            continue;
+        }
+        let mut root = commands.spawn((
+            Transform::from_translation(c.position + Vec3::Y * 0.05),
+            Visibility::default(),
+            Name::new(c.name.clone()),
+        ));
+        if !c.dead {
+            root.insert(exa_physics::CharacterBody::default());
+        }
+        let root = root.id();
+        let model = exa_world::spawn_model(commands, body, None);
+        let mut anim = exa_anim::Animator::new("Default", "Idle");
+        if c.dead {
+            anim.play_loop("Unconcious 1");
+        }
+        commands.entity(model).insert((
+            Transform::from_rotation(Quat::from_rotation_y(c.yaw)),
+            anim,
+            exa_character::Outfit(
+                c.worn
+                    .iter()
+                    .map(|(model, appearance)| exa_character::Garment {
+                        model: model.clone(),
+                        appearance: *appearance,
+                    })
+                    .collect(),
+            ),
+            exa_combat::Fighter::default(),
+            ChildOf(root),
+        ));
+        spawned += 1;
+    }
+    (spawned, skipped)
 }

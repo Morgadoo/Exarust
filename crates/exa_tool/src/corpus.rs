@@ -150,6 +150,7 @@ pub fn levels(game: &GameData) -> Result<()> {
     let objlib = game.pack(exa_rpk::PackKind::Objlib);
     let (mut levels, mut grids, mut props, mut resolved, mut errors) = (0, 0, 0, 0, 0);
     let mut environments = 0;
+    let (mut placed, mut with_record, mut worn, mut worn_found) = (0, 0, 0, 0);
     let mut missing: BTreeMap<String, usize> = BTreeMap::new();
     println!(
         "{:<18} {:>9} {:>8} {:>7} {:>9}",
@@ -166,6 +167,23 @@ pub fn levels(game: &GameData) -> Result<()> {
         }
         levels += 1;
         environments += usize::from(scene.environment.is_some());
+        if let Some(chars) = &scene.characters {
+            for p in &chars.placements {
+                placed += 1;
+                let Some(rec) = chars.record(p.id) else {
+                    continue;
+                };
+                with_record += 1;
+                for &item in &rec.worn {
+                    worn += 1;
+                    let local = item & exa_formats::characters::LOCAL_ITEM != 0;
+                    let id = item & exa_formats::characters::ID_MASK;
+                    if local && scene.local_items.iter().any(|i| i.id == id) {
+                        worn_found += 1;
+                    }
+                }
+            }
+        }
         errors += scene.level_errors.len();
         for err in &scene.level_errors {
             println!("  {}: {err}", e.name);
@@ -204,6 +222,9 @@ pub fn levels(game: &GameData) -> Result<()> {
     }
     println!(
         "\n{levels} levels, {grids} grids, {environments} environments, {props} props, {resolved} resolved in Objlib, {errors} section errors"
+    );
+    println!(
+        "{placed} placed characters, {with_record} with a local record, {worn_found}/{worn} worn items found in local databases"
     );
     if !missing.is_empty() {
         println!("missing objects:");

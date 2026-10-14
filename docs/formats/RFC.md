@@ -291,6 +291,17 @@ and a child count), `CAC0E100` legacy flat bone matrices, `CAC0EA00` motion
 state, `CACE0F77` AI home (saves). `exanima01` places 39 characters, 8 of
 them corpses. Hostility comes from each record's roles in `charroles.rdb`.
 
+Character records (`0x00CDAC07`, framed as tag + size): name[16],
+surname[16], physique f32×2, height, age, skin colour u16×2, hair style,
+hair colour u8×4, face styles u16×2 (v ≥ 3), voice[16], pitch,
+profession (bit 0 female, byte 1 race), last locale, four held items
+{id, flags}, then the worn items: `i32 n` and n × {id, flags}. Ids with
+`0x80000000` refer to the level's own object database (`DBC0` → `DBDB`, an
+RDB of item records like `objdb.rdb`'s). Across the 29 levels, all 477
+placed characters have a record and 908 of their 979 worn items resolve
+locally (`exa-tool corpus levels`). Exarust parses records up to the worn
+items (`exa_formats::characters`).
+
 **Placed objects (`DBC0` → `DBCE`)**: `i32 n`, then n × `DB01`. Each is
 `u32 node id` (`0x80000000` = local objdb `DBDB`, `0x40000000` = world
 objdb), `u32` placement flags (version `0x3D23`), `u32` object flags, a 3×4
