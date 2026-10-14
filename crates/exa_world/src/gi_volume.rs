@@ -16,8 +16,12 @@ pub struct GiVolumePlugin;
 
 impl Plugin for GiVolumePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<GiSettings>()
-            .add_systems(PostUpdate, build_volume.after(TransformSystems::Propagate));
+        app.init_resource::<GiSettings>().add_systems(
+            PostUpdate,
+            (collect_source, follow_camera)
+                .chain()
+                .after(TransformSystems::Propagate),
+        );
     }
 }
 
@@ -62,7 +66,29 @@ impl Default for GiSettings {
 /// ambient, at the original's top shading quality.
 pub const BASE_AMBIENT: f32 = 0.001;
 
-fn build_volume(
+/// The level's GI inputs in world space, collected once its nodes have
+/// settled: every sample point and every upward floor triangle.
+#[derive(Resource)]
+struct GiSource {
+    points: Vec<Vec3>,
+    floors: Vec<[Vec3; 3]>,
+    level: PendingGi,
+}
+
+/// The block now built: the sector-aligned origin it was built at.
+#[derive(Resource)]
+struct GiBlock {
+    origin: Vec3,
+}
+
+/// How far ahead of the camera the block is centred (metres), as the
+/// original keeps its blocks around a point 20 m in front of the camera.
+const FOCUS_AHEAD: f32 = 20.0;
+/// The block is rebuilt once its centre would move by more than this many
+/// sectors.
+const REBUILD_SECTORS: f32 = 2.0;
+
+fn collect_source(
     mut commands: Commands,
     pending: Option<Res<PendingGi>>,
     settings: Res<GiSettings>,
@@ -78,59 +104,100 @@ fn build_volume(
         return;
     }
     commands.remove_resource::<PendingGi>();
+    commands.remove_resource::<GiBlock>();
     if !settings.enabled {
         commands.remove_resource::<GiVolume>();
+        commands.remove_resource::<GiSource>();
         return;
     }
-    let mut occupancy = Occupancy::new(pending.centre, pending.top, pending.bottom);
-    let (mut nodes, mut splats) = (0, 0);
+    let mut world = Vec::new();
     for (gi, at) in &points {
         let m = at.affine();
-        for &p in gi.0.iter() {
-            occupancy.splat(m.transform_point3(p));
-        }
-        nodes += 1;
-        splats += gi.0.len();
+        world.extend(gi.0.iter().map(|&p| m.transform_point3(p)));
     }
-    let mut surface = FloorSurface::new(&occupancy);
+    let mut triangles = Vec::new();
     for (mesh, at) in &floors {
         let Some(mesh) = meshes.get(&mesh.0) else {
             continue;
         };
         let m = at.affine();
-        let Some(positions) = mesh
-            .attribute(Mesh::ATTRIBUTE_POSITION)
-            .and_then(|a| a.as_float3())
-        else {
+        let (Some(positions), Some(indices)) = (
+            mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+                .and_then(|a| a.as_float3()),
+            mesh.indices(),
+        ) else {
             continue;
         };
-        let Some(indices) = mesh.indices() else {
-            continue;
-        };
-        let world: Vec<Vec3> = positions
+        let corners: Vec<Vec3> = positions
             .iter()
             .map(|&p| m.transform_point3(Vec3::from(p)))
             .collect();
-        let corners: Vec<usize> = indices.iter().collect();
-        for t in corners.as_chunks::<3>().0 {
-            surface.add([world[t[0]], world[t[1]], world[t[2]]]);
+        let order: Vec<usize> = indices.iter().collect();
+        for t in order.as_chunks::<3>().0 {
+            triangles.push([corners[t[0]], corners[t[1]], corners[t[2]]]);
         }
+    }
+    info!(
+        "GI source: {} meshes, {} points, {} floor triangles",
+        points.iter().count(),
+        world.len(),
+        triangles.len()
+    );
+    commands.insert_resource(GiSource {
+        points: world,
+        floors: triangles,
+        level: *pending,
+    });
+}
+
+/// Keeps the block around the point ahead of the camera, rebuilding it when
+/// that point has moved on.
+fn follow_camera(
+    mut commands: Commands,
+    source: Option<Res<GiSource>>,
+    block: Option<Res<GiBlock>>,
+    settings: Res<GiSettings>,
+    cameras: Query<&GlobalTransform, With<Camera3d>>,
+) {
+    let Some(source) = source else { return };
+    let Some(camera) = cameras.iter().next() else {
+        return;
+    };
+    let focus = camera.translation() + camera.forward().as_vec3() * FOCUS_AHEAD;
+    let level = source.level;
+    let wanted = Occupancy::new(focus, level.top, level.bottom).origin;
+    if let Some(block) = &block {
+        let moved = (wanted - block.origin).xz().abs().max_element();
+        if moved <= REBUILD_SECTORS * SECTOR_M {
+            return;
+        }
+    }
+    let mut occupancy = Occupancy::new(focus, level.top, level.bottom);
+    for &p in &source.points {
+        occupancy.splat(p);
+    }
+    let mut surface = FloorSurface::new(&occupancy);
+    for &t in &source.floors {
+        surface.add(t);
     }
     let floor_points = surface.apply(&mut occupancy);
     info!(
-        "GI volume: {nodes} meshes, {splats} points, {floor_points} floor voxels, origin {:.2}, {} slices",
+        "GI block: {floor_points} floor voxels, origin {:.2}, {} slices",
         occupancy.origin, occupancy.depth
     );
     if let Some(path) = std::env::var_os("EXA_GI_DUMP") {
         let _ = std::fs::write(path, &occupancy.cells);
     }
+    commands.insert_resource(GiBlock {
+        origin: occupancy.origin,
+    });
     commands.insert_resource(GiVolume {
         origin: occupancy.origin,
         size: UVec3::new(SIDE as u32, SIDE as u32, occupancy.depth as u32),
         voxel: VOXEL,
         floors: Arc::new(occupancy.floors()),
         cells: Arc::new(occupancy.cells),
-        base_ambient: pending.base_ambient,
+        base_ambient: level.base_ambient,
         warm_up: settings.warm_up,
     });
 }

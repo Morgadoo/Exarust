@@ -168,8 +168,11 @@ The original's bounce light is a light volume of 20 cm voxels
   level's highest and lowest points are more than 12.8 m apart).
 - Sectors fall on world multiples of 6 m. The block's top is the level
   record's highest point (`0x98`), truncated to whole voxels.
-- The original keeps up to nine blocks resident around the camera; Exarust
-  builds one block around the level's centre.
+- The original keeps up to nine blocks resident around a point 20 m in
+  front of the camera. Exarust keeps one block centred on that point, and
+  rebuilds it (with a new warm-up) when the point moves more than two
+  sectors. The level's points and floor triangles are collected once in
+  world space.
 - The top slice holds 26 and the slice below 5, a soft lid.
 - Every mesh's stored **GI sample points** (chunk `0x3D0CEC05`: a spacing
   word, a count, then object-space points in cm) are transformed to the
