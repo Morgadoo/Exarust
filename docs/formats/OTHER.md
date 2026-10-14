@@ -67,7 +67,10 @@ Exarust paints on the CPU (`exa_assets::paint`; `exa-tool paint <model>
 and metalness, with roughness = 1 − gloss. Exarust paints gloss and metalness
 into Bevy's metallic-roughness texture. Plate, painted steel and mail follow
 the original; fabrics and hides are approximated without their gloss textures.
-Not yet painted: the normal pass (the item's own normal map is used), wood, bronze, gemstone and resin finishes
+The normal pass adds the material's weave or grain normal to the item's own
+normal, scaled by wear, plus the damage normal where cloth frays or hide
+scuffs. Exarust paints it for fabrics and hides; metals keep the item normal.
+Not yet painted: wood, bronze, gemstone and resin finishes
 (drawn plain), pattern opacity textures, and per-instance appearances
 (randomised items, wear on characters).
 

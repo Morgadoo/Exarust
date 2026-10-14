@@ -129,6 +129,22 @@ pub fn library(material: u8) -> &'static [&'static str] {
     }
 }
 
+/// Normal maps a material's finish adds to the item's own: the material's
+/// weave or grain, and the damage normal.
+pub fn normal_library(material: u8) -> &'static [&'static str] {
+    match material {
+        1 => &["clothrgha03n", "leatherdmga02n"],
+        2 | 3 => &["clothfina01n", "leatherdmga02n"],
+        4 => &["clothvlva01n", "leatherdmga02n"],
+        5 => &["clthp01n", "leatherdmga02n"],
+        6 => &["clthp02n", "leatherdmga02n"],
+        7 => &["leathera02n", "leatherdmga02n"],
+        8 => &["leathera01n", "leatherdmga02n"],
+        9 | 10 => &["suedea01n", "leatherdmga02n"],
+        _ => &[],
+    }
+}
+
 /// Hue, saturation and the value range of the 32 palette families.
 const FAMILIES: [[f32; 4]; 32] = [
     [0.0000, 0.0000, 0.0000, 1.0000],
@@ -473,6 +489,58 @@ pub struct PaintLayer<'a> {
     pub colour: u8,
     /// Library textures in [`library`] order (missing ones read as grey).
     pub library: Vec<Option<&'a Texels>>,
+    /// Normal maps in [`normal_library`] order.
+    pub normals: Vec<Option<&'a Texels>>,
+}
+
+/// Tangent-space normal xy (−1..1) of a texel.
+fn unit_xy(c: Vec3) -> bevy::math::Vec2 {
+    bevy::math::Vec2::new(c.x, c.y) * 2.0 - bevy::math::Vec2::ONE
+}
+
+/// The normal xy a finish paints: the item's normal plus the material's
+/// normal scaled by wear, and the damage normal where the surface frays.
+fn finish_normal(
+    finish: Finish,
+    material: u8,
+    t: &Texel,
+    item: bevy::math::Vec2,
+    weave: bevy::math::Vec2,
+    torn: bevy::math::Vec2,
+) -> bevy::math::Vec2 {
+    let (shd, dmg) = (t.shade, t.damage);
+    let damage_map = t.lib[1];
+    match finish {
+        Finish::Cloth | Finish::Velvet => {
+            let ridge = shd * 0.85;
+            let exposure = ridge * ridge * (ridge * (dmg * 2.0 - 3.0) + 3.0);
+            let padded = matches!(material, 5 | 6);
+            let mut resistance = damage_map.y * (0.75 + dmg * 0.75) + 0.25;
+            if !padded {
+                resistance = resistance * resistance * 2.0;
+            }
+            let fray = (1.0 - (1.0 - exposure) / resistance) * (1.0 + dmg * 0.5);
+            if padded {
+                let fray = (fray * shd * shd * 3.0).clamp(0.0, 1.0);
+                item + weave + torn * fray * 1.5
+            } else {
+                let fray = fray.clamp(0.0, 1.0);
+                let fray = fray * fray * (2.0 - dmg);
+                item + weave * (1.0 + dmg * 0.025 + fray * 0.5) * 0.5 + torn * fray * 0.5
+            }
+        }
+        Finish::Leather | Finish::Suede => {
+            let mut a = damage_map.y * (2.0 - damage_map.x);
+            a *= 2.0 - a;
+            a = a * (0.75 - dmg * 0.5) + a * a * dmg;
+            let raised = shd * (2.0 - shd) * (0.45 + dmg * (2.0 - dmg) * 0.15);
+            let scuff = (((1.0 - (1.0 - raised) / a) * (1.0 + dmg * 0.5)) * 3.0).clamp(0.0, 1.0);
+            let grain =
+                weave * (2.0 - t.quality) * (1.0 + dmg * 0.5 + shd * shd * scuff * 4.0) * 0.5;
+            item + grain + torn * scuff * 0.5
+        }
+        _ => item,
+    }
 }
 
 /// Gloss and metalness of a finish at one texel, 0..=1.
@@ -543,12 +611,21 @@ fn surface(finish: Finish, t: &Texel) -> (f32, f32) {
 pub struct Painted {
     pub colour: Vec<u8>,
     pub surface: Vec<u8>,
+    /// Linear RGBA8 tangent-space normals (z rebuilt), when the item has a
+    /// normal map.
+    pub normal: Option<Vec<u8>>,
 }
 
 /// Paints an item: every layer's finish over its mask, in order, on black,
 /// at the shade map's size.
-pub fn paint(shade: &Texels, layers: &[PaintLayer<'_>], appearance: &Appearance) -> Painted {
+pub fn paint(
+    shade: &Texels,
+    item_normal: Option<&Texels>,
+    layers: &[PaintLayer<'_>],
+    appearance: &Appearance,
+) -> Painted {
     let (w, h) = (shade.width, shade.height);
+    let mut normal_out = vec![bevy::math::Vec2::ZERO; w * h];
     let (quality, damage, dirt) = appearance.condition();
     let mut out = vec![Vec3::ZERO; w * h];
     // Gloss and metal start nearly matte, as the original clears them.
@@ -596,6 +673,27 @@ pub fn paint(shade: &Texels, layers: &[PaintLayer<'_>], appearance: &Appearance)
                 let c = paint_finish(&texel).clamp(Vec3::ZERO, Vec3::ONE);
                 let o = &mut out[y * w + x];
                 *o = mix(*o, c, cover);
+                if let Some(item) = item_normal {
+                    let item = unit_xy(sample_scaled(item, x, y, w, h));
+                    let weave = layer
+                        .normals
+                        .first()
+                        .copied()
+                        .flatten()
+                        .map_or(bevy::math::Vec2::ZERO, |t| {
+                            unit_xy(t.at(x as i64, y as i64))
+                        });
+                    let torn = layer.normals.get(1).copied().flatten().map_or(
+                        bevy::math::Vec2::ZERO,
+                        |t| {
+                            let s = t.width as f32 / DAMAGE_TEXELS;
+                            unit_xy(t.at((x as f32 * s) as i64, (y as f32 * s) as i64))
+                        },
+                    );
+                    let n = finish_normal(layer_finish, layer.material, &texel, item, weave, torn);
+                    let o = &mut normal_out[y * w + x];
+                    *o += (n - *o) * cover;
+                }
                 let (gloss, metal) = surface(layer_finish, &texel);
                 let f = &mut finish_out[y * w + x];
                 f.0 += (gloss.clamp(0.0, 1.0) - f.0) * cover;
@@ -613,6 +711,21 @@ pub fn paint(shade: &Texels, layers: &[PaintLayer<'_>], appearance: &Appearance)
             .iter()
             .flat_map(|&(gloss, metal)| [255, byte(1.0 - gloss), byte(metal), 255])
             .collect(),
+        normal: item_normal.map(|_| {
+            normal_out
+                .iter()
+                .flat_map(|n| {
+                    let n = n.clamp_length_max(0.999);
+                    let z = (1.0 - n.length_squared()).sqrt();
+                    [
+                        byte(n.x * 0.5 + 0.5),
+                        byte(n.y * 0.5 + 0.5),
+                        byte(z * 0.5 + 0.5),
+                        255,
+                    ]
+                })
+                .collect()
+        }),
     }
 }
 
@@ -677,6 +790,7 @@ mod tests {
             material: 30, // a plain finish
             colour,
             library: vec![],
+            normals: vec![],
         };
         let appearance = Appearance {
             quality: 255,
@@ -685,7 +799,13 @@ mod tests {
             layers: Default::default(),
         };
         let red = 4 * 8 + 2; // family 4 is pure red
-        let out = paint(&shade, &[layer(&full, red), layer(&none, 0)], &appearance).colour;
+        let out = paint(
+            &shade,
+            None,
+            &[layer(&full, red), layer(&none, 0)],
+            &appearance,
+        )
+        .colour;
         assert!(
             out[0] > 100 && out[0] > 3 * out[1] && out[1] == out[2],
             "{:?}",

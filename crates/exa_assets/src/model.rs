@@ -13,7 +13,7 @@ use exa_formats::rfc::{Mesh as RfcMesh, NodeBody, Scene};
 use exa_formats::rfi::Rfi;
 use exa_rpk::{Archive, GameData, PackKind};
 
-use crate::paint::{PaintLayer, Texels, layer_material, library, paint};
+use crate::paint::{PaintLayer, Texels, layer_material, library, normal_library, paint};
 use crate::texture::{ColorSpace, has_alpha, rfi_to_image};
 use exa_formats::objdb::Appearance;
 
@@ -291,18 +291,24 @@ impl ModelLoader<'_> {
                     };
                     let material = layer_material(layer);
                     let lib = library(material).iter().map(|n| self.texels(n)).collect();
-                    owned.push((mask, material, layer.colour, lib));
+                    let normals = normal_library(material)
+                        .iter()
+                        .map(|n| self.texels(n))
+                        .collect();
+                    owned.push((mask, material, layer.colour, lib, normals));
                 }
                 let layers: Vec<PaintLayer<'_>> = owned
                     .iter()
-                    .map(|(mask, material, colour, lib)| PaintLayer {
+                    .map(|(mask, material, colour, lib, normals)| PaintLayer {
                         mask,
                         material: *material,
                         colour: *colour,
                         library: lib.iter().map(|t| t.as_deref()).collect(),
+                        normals: normals.iter().map(|t| t.as_deref()).collect(),
                     })
                     .collect();
-                let painted = paint(&shade, &layers, appearance);
+                let item_normal = self.texels(&format!("{stem}n"));
+                let painted = paint(&shade, item_normal.as_deref(), &layers, appearance);
                 let mut rgba = painted.colour;
                 // Keep the cut-outs of the shade map.
                 for (o, s) in rgba
@@ -329,8 +335,18 @@ impl ModelLoader<'_> {
                 if alpha {
                     mat.alpha_mode = AlphaMode::Mask(0.5);
                 }
-                if let Some((img, _)) = self.texture(&format!("{stem}n"), ColorSpace::Linear) {
-                    mat.normal_map_texture = Some(img);
+                match painted.normal {
+                    Some(normal) => {
+                        let image = painted_image(w, h, normal, false);
+                        mat.normal_map_texture = Some(self.images.add(image));
+                    }
+                    None => {
+                        if let Some((img, _)) =
+                            self.texture(&format!("{stem}n"), ColorSpace::Linear)
+                        {
+                            mat.normal_map_texture = Some(img);
+                        }
+                    }
                 }
                 self.materials.add(mat)
             }
@@ -368,7 +384,13 @@ impl ModelLoader<'_> {
 }
 
 /// A layer's mask, material, colour and library textures, owned while painting.
-type OwnedLayer = (Arc<Texels>, u8, u8, Vec<Option<Arc<Texels>>>);
+type OwnedLayer = (
+    Arc<Texels>,
+    u8,
+    u8,
+    Vec<Option<Arc<Texels>>>,
+    Vec<Option<Arc<Texels>>>,
+);
 
 /// An image with a box-filtered mip chain from RGBA8 pixels, sRGB or linear.
 fn painted_image(width: u32, height: u32, rgba: Vec<u8>, srgb: bool) -> Image {
