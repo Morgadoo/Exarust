@@ -193,10 +193,14 @@ fn fragment(
     let m2 = su.s[2].b;
     let m3 = su.s[3].b;
 
-    var colour = textureSample(diffuse0, diffuse0_sampler, uv0).rgb * splat.colour[0].rgb;
-    colour = stack(colour, textureSample(diffuse1, diffuse1_sampler, uv1).rgb * splat.colour[1].rgb, alpha.y, m1, 1);
-    colour = stack(colour, textureSample(diffuse2, diffuse2_sampler, uv2).rgb * splat.colour[2].rgb, alpha.z, m2, 2);
-    colour = stack(colour, textureSample(diffuse3, diffuse3_sampler, uv3).rgb * splat.colour[3].rgb, alpha.w, m3, 3);
+    // The original composites each 6 m block into textures of about 170
+    // texels per metre without mip levels, so terrain always shows its
+    // layers' full detail: colour and normal layers are read at their base
+    // level (supersampling smooths what that aliases).
+    var colour = textureSampleLevel(diffuse0, diffuse0_sampler, uv0, 0.0).rgb * splat.colour[0].rgb;
+    colour = stack(colour, textureSampleLevel(diffuse1, diffuse1_sampler, uv1, 0.0).rgb * splat.colour[1].rgb, alpha.y, m1, 1);
+    colour = stack(colour, textureSampleLevel(diffuse2, diffuse2_sampler, uv2, 0.0).rgb * splat.colour[2].rgb, alpha.z, m2, 2);
+    colour = stack(colour, textureSampleLevel(diffuse3, diffuse3_sampler, uv3, 0.0).rgb * splat.colour[3].rgb, alpha.w, m3, 3);
     colour *= TERRAIN_DIFFUSE;
 
     // The composited gloss map: each layer's gloss × its factor, stacked like
@@ -206,10 +210,10 @@ fn fragment(
     gloss = stack(gloss, vec3<f32>(su.s[2].g * splat.surface[2].x), alpha.z, m2, 2);
     gloss = stack(gloss, vec3<f32>(su.s[3].g * splat.surface[3].x), alpha.w, m3, 3);
 
-    var nxy = normal_xy(textureSample(normal0, normal0_sampler, uv0), 0);
-    nxy = stack_normal(nxy, normal_xy(textureSample(normal1, normal1_sampler, uv1), 1), alpha.y, m1, 1);
-    nxy = stack_normal(nxy, normal_xy(textureSample(normal2, normal2_sampler, uv2), 2), alpha.z, m2, 2);
-    nxy = stack_normal(nxy, normal_xy(textureSample(normal3, normal3_sampler, uv3), 3), alpha.w, m3, 3);
+    var nxy = normal_xy(textureSampleLevel(normal0, normal0_sampler, uv0, 0.0), 0);
+    nxy = stack_normal(nxy, normal_xy(textureSampleLevel(normal1, normal1_sampler, uv1, 0.0), 1), alpha.y, m1, 1);
+    nxy = stack_normal(nxy, normal_xy(textureSampleLevel(normal2, normal2_sampler, uv2, 0.0), 2), alpha.z, m2, 2);
+    nxy = stack_normal(nxy, normal_xy(textureSampleLevel(normal3, normal3_sampler, uv3, 0.0), 3), alpha.w, m3, 3);
     let nz = sqrt(1.0 - min(dot(nxy, nxy), 0.999));
     // The normal map's frame: +X and +Z across the ground (green along −v),
     // as the original's terrain program builds it.

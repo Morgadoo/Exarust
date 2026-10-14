@@ -191,6 +191,11 @@ textures. Exarust evaluates the same per-layer stacking per pixel:
 - Fresnel F0 = 0.04 per light; GI or cube ambient, cube reflections;
   specular × min(255·r, 1).
 
+The original's composites hold about 170 texels per metre and have no mip
+levels, so its terrain always shows the layers' full detail. Exarust reads
+the colour and normal layers at their base level and lets supersampling
+smooth the aliasing.
+
 Each layer's height, gloss and blend mask are packed into one texture, to
 fit the per-stage texture limit. The terrain's displacement self-shadowing
 is effectively off in the original (its step is ~0).

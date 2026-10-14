@@ -69,3 +69,10 @@ The system SHALL shade terrain from the original's composite rules. Gloss comes 
 #### Scenario: Dry dungeon floor
 - **WHEN** a torch lights a terrain floor of cobblestones
 - **THEN** the stones look matte, with soft relief, not wet
+
+### Requirement: Terrain texture detail
+The system SHALL read terrain colour and normal layers at their base level, as the original's mip-less composites show them.
+
+#### Scenario: Floor seen from the game's camera
+- **WHEN** a cobbled terrain floor is seen from the game's camera height
+- **THEN** it shows the stones' full grain, not a mip-blurred surface
