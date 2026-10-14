@@ -437,6 +437,9 @@ impl ModelLoader<'_> {
             mat.height_map = Some(img);
         }
         mat.alpha_mode = blend_mode(m.class, cut_out || mat.opacity_map.is_some());
+        // Faint surfaces (cobwebs, glass, decals) and those the record marks
+        // cast no shadows.
+        mat.no_shadows = m.opacity <= 0.8 || m.extra & NO_SHADOWS != 0;
         if mat.alpha_mode == AlphaMode::Premultiplied {
             let a = mat.params.diffuse.w;
             mat.params.diffuse = (mat.params.diffuse.truncate() * a).extend(a);
@@ -778,6 +781,8 @@ fn library_material(game: &GameData, name: &str) -> Option<Material> {
 
 /// Parallax scale per unit of the height layer's texel count.
 const PARALLAX_UNIT: f32 = 3e-5;
+/// Material extra flag (`0x4C`): casts no shadows.
+const NO_SHADOWS: u32 = 0x4;
 /// Material extra flag (`0x4C`) enabling displacement shadows.
 const DISPLACEMENT_SHADOWS: u32 = 0x10_0000;
 

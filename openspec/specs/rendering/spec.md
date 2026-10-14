@@ -99,3 +99,10 @@ The system SHALL shadow lights by the height map on materials whose extra flags 
 #### Scenario: Grooves in torchlight
 - **WHEN** a torch lights the floor at a low angle
 - **THEN** the grooves between the bricks fall into shadow on the side away from the torch
+
+### Requirement: Shadow casters
+The system SHALL cast shadows as the original does. Alpha-tested surfaces are cut in the shadow maps the way their colour is cut. Surfaces with opacity ≤ 0.8, or flagged by the material record, cast no shadows.
+
+#### Scenario: Cobwebs in torchlight
+- **WHEN** a torch lights a wall hung with cobwebs
+- **THEN** the cobwebs' shadows follow their strands instead of darkening the wall in solid sheets

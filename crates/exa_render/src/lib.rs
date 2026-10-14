@@ -19,7 +19,9 @@ impl Plugin for RenderPlugin {
             gi::GiPlugin,
             flame::FlamePlugin,
         ))
-            // Cube shadow maps of lights and fires.
-            .insert_resource(bevy::light::PointLightShadowMap { size: 512 });
+            // The original's shadow maps at its top shadow detail: 512² cubes
+            // for lights and fires, 4096² for the sun.
+            .insert_resource(bevy::light::PointLightShadowMap { size: 512 })
+            .insert_resource(bevy::light::DirectionalLightShadowMap { size: 4096 });
     }
 }

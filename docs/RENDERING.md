@@ -236,7 +236,11 @@ side-by-side check on the GPU at the same camera.
   sets Bevy's intensity to 8 lumens per unit, since Bevy divides by 4π.
 - Attenuation is max(1 − 0.8·d/R, 0)⁴, reaching nothing at 1.25 radii.
   Exarust sets Bevy's range to 1.25·R and computes (1 − d/range)⁴ itself.
-- Lights cast shadows from cube maps.
+- Lights cast shadows from cube maps (512² per face; the sun's map is 4096²
+  at the top shadow detail).
+- Shadow maps cut alpha-tested surfaces (cobwebs, grates) the way their
+  colour is cut. Surfaces with opacity ≤ 0.8 (glass, decals) and those whose
+  record has extra flag `0x4` cast no shadows.
 - The sun's colour per unit of intensity is 160 lux in Exarust's scene units
   (scaled back in the shader).
 

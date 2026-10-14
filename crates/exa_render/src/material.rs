@@ -16,7 +16,22 @@ pub struct MaterialsPlugin;
 impl Plugin for MaterialsPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "exa.wesl");
-        app.add_plugins(MaterialPlugin::<ExaMaterial>::default());
+        embedded_asset!(app, "exa_prepass.wesl");
+        app.add_plugins(MaterialPlugin::<ExaMaterial>::default())
+            .add_systems(PostUpdate, mark_shadowless);
+    }
+}
+
+/// Meshes whose material casts no shadows leave the shadow maps.
+fn mark_shadowless(
+    mut commands: Commands,
+    added: Query<(Entity, &MeshMaterial3d<ExaMaterial>), Added<MeshMaterial3d<ExaMaterial>>>,
+    materials: Res<Assets<ExaMaterial>>,
+) {
+    for (e, m) in &added {
+        if materials.get(&m.0).is_some_and(|m| m.no_shadows) {
+            commands.entity(e).insert(bevy::light::NotShadowCaster);
+        }
     }
 }
 
@@ -122,6 +137,8 @@ pub struct ExaMaterial {
     #[sampler(120)]
     pub height_map: Option<Handle<Image>>,
     pub alpha_mode: AlphaMode,
+    /// The surface casts no shadows (opacity ≤ 0.8, or the record says so).
+    pub no_shadows: bool,
 }
 
 impl ExaMaterial {
@@ -180,6 +197,12 @@ impl Material for ExaMaterial {
     fn fragment_shader() -> ShaderRef {
         ShaderRef::Path(
             AssetPath::from_path_buf(embedded_path!("exa.wesl")).with_source("embedded"),
+        )
+    }
+
+    fn prepass_fragment_shader() -> ShaderRef {
+        ShaderRef::Path(
+            AssetPath::from_path_buf(embedded_path!("exa_prepass.wesl")).with_source("embedded"),
         )
     }
 
