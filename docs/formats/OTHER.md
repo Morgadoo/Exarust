@@ -11,13 +11,40 @@ records[table_len/16]: u32 id, u32 flags, u32 offset (from end of table), u32 si
 payloads
 ```
 
-`races.rdb` (19 records of 624 bytes), `charroles.rdb` (dialogue and AI
+`races.rdb` (18 records of 624 bytes), `charroles.rdb` (dialogue and AI
 roles, including a C-like script language), `locales.rdb` (the level list:
 ids 1 Exanima, 2 Exanima01 … 13 Exanima67, 17 Arak_Ar),
 `objdb.rdb` (object database, 0x5900/16 = 1424 records), `objstrings.rdb`
 (string library, magic `0xAFBF0C02`). The community spec reports a trailing
 garbage record in each table (the reader skips entries pointing outside the
-file). `objdb` item records are decoded (see below); other payloads are not.
+file). `objdb` item records and race records are decoded; other payloads are
+not.
+
+**Races** (`exa_formats::races`): 18 records of 624 bytes, then an empty
+entry. Layout:
+
+| offset | field |
+|---|---|
+| `+0x00` | name[32] |
+| `+0x20` | body model stem[24]: `Skel` → `skelbase.rfc`, `GlmBsA` → `glmbsabase.rfc` |
+| `+0x38` | shared moveset[16] (`Default`) |
+| `+0x48` | the race's own moveset[16] (`Golem`, `Herath`, `Ogre`, `Demon A01`, …) |
+| from `+0x58` | body parameters (floats), sound names at `+0x144` (`StpSft`, `SkelHit`, …) and per-part values; not decoded |
+
+A character record's race byte is the race's id minus one. Placed
+characters across the levels, by race byte:
+
+- 0 Human 103, 1 Skeleton 147, 2 Ancient 23, 4 Sir (Herath ogre) 1,
+  5 Fael 6, 6 Ghoul 56, 7 Ghoul H 41, 8 Gobbler 10, 9 Manipulator 19,
+  10 Harvester 3.
+- 16 Golem Guard 46, 17 Golem Boss 1, 18 Golem Suit 1, 19 Golem BAM 10,
+  20 Golem BAF 10.
+
+Bodies of the human frame (human, skeleton, ancient) name their parts like
+the human body (`01Pelvis`). The others name them like apparel
+(`0100Pelvis`, pelvis at the origin). All use the bone indices of
+`humanoid.rsq` and its clips. Root positions are scaled by the body's leg
+length against `humanbase` (golem 1.42×, ogre 1.39×).
 
 ## Object database items and apparel painting
 

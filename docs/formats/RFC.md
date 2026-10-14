@@ -300,7 +300,9 @@ profession (bit 0 female, byte 1 race), last locale, four held items
 RDB of item records like `objdb.rdb`'s). Across the 29 levels, all 477
 placed characters have a record and 908 of their 979 worn items resolve
 locally (`exa-tool corpus levels`). Exarust parses records up to the worn
-items (`exa_formats::characters`).
+items (`exa_formats::characters`). It spawns every race in its own body
+with its own moveset (see `races.rdb` in OTHER.md). Only the human frame is
+physical and dressed, and dead bodies of other frames are not shown yet.
 
 **Placed objects (`DBC0` → `DBCE`)**: `i32 n`, then n × `DB01`. Each is
 `u32 node id` (`0x80000000` = local objdb `DBDB`, `0x40000000` = world

@@ -111,13 +111,31 @@ fn setup(
                 Some(m) => commands.insert_resource(m),
                 None => error!("humanoid.rsq could not be loaded"),
             }
-            if let Some(body) = loader.model(PackKind::Resource, "humanbase.rfc") {
+            let race = options.race.and_then(|r| {
+                let races = game
+                    .0
+                    .pack(PackKind::Resource)
+                    .and_then(|p| p.get("races.rdb"))
+                    .and_then(|b| exa_formats::races::parse(b).ok())?;
+                exa_formats::races::of_character(&races, r).cloned()
+            });
+            let (body_name, moveset) = match &race {
+                // The race's own moveset stands in for the shared one.
+                Some(r) if moveset == "Default" => (r.model(), r.moveset()),
+                Some(r) => (r.model(), moveset),
+                None => (model::BODY_MODEL.to_string(), moveset),
+            };
+            if let Some(body) = loader.model(PackKind::Resource, &body_name) {
                 let root = exa_world::spawn_model(&mut commands, &body, None);
                 commands.entity(root).insert((
                     exa_anim::Animator::new(moveset, action),
                     exa_character::Outfit::of_models(&options.outfit),
-                    exa_physics::body::Physical::default(),
                 ));
+                if options.race.is_none_or(human_frame) {
+                    commands
+                        .entity(root)
+                        .insert(exa_physics::body::Physical::default());
+                }
                 if let Some(w) = &options.weapon {
                     commands
                         .entity(root)
@@ -245,12 +263,15 @@ fn setup(
                     ));
                 }
             }
-            if let Some(body) = loader.model(PackKind::Resource, "humanbase.rfc") {
-                let (spawned, other_races) = spawn_placed_characters(&mut commands, &body, &placed);
-                info!(
-                    "level {name}: {spawned} characters placed, {other_races} of other races not yet shown"
-                );
-            }
+            let races = game
+                .0
+                .pack(PackKind::Resource)
+                .and_then(|p| p.get("races.rdb"))
+                .and_then(|b| exa_formats::races::parse(b).ok())
+                .unwrap_or_default();
+            let (spawned, missing) =
+                spawn_placed_characters(&mut commands, &mut loader, &races, &placed);
+            info!("level {name}: {spawned} characters placed, {missing} without a body");
             commands.spawn((
                 Camera3d::default(),
                 Exposure {
@@ -392,19 +413,35 @@ fn autowalk(options: Res<Options>, mut keys: ResMut<ButtonInput<KeyCode>>) {
     }
 }
 
-/// Spawns a level's placed human characters, standing (or lying, for the
-/// dead) where the level puts them, dressed in their own items. Returns how
-/// many were spawned and how many of other races were skipped.
+/// Races with the human frame (human, skeleton, ancient): their bodies
+/// take the skeleton's physical links and fit human apparel.
+fn human_frame(race: u8) -> bool {
+    race <= 2
+}
+
+/// Spawns a level's placed characters in their race's bodies, standing (or
+/// lying, for the dead) where the level puts them, those of human frame
+/// dressed in their own items. Returns how many were spawned and how many
+/// had no body.
 fn spawn_placed_characters(
     commands: &mut Commands,
-    body: &exa_assets::Model,
+    loader: &mut ModelLoader,
+    races: &[exa_formats::races::Race],
     placed: &[exa_world::PlacedCharacter],
 ) -> (usize, usize) {
-    let (mut spawned, mut skipped) = (0, 0);
+    let (mut spawned, mut missing) = (0, 0);
     for c in placed {
-        // Other races use their own bodies.
-        if c.race != 0 {
-            skipped += 1;
+        let race = exa_formats::races::of_character(races, c.race);
+        let model_name = race.map_or_else(|| model::BODY_MODEL.to_string(), |r| r.model());
+        let moveset = race.map_or("Default", |r| r.moveset()).to_string();
+        let Some(body) = loader.model(PackKind::Resource, &model_name) else {
+            missing += 1;
+            continue;
+        };
+        let physical = human_frame(c.race);
+        // Bodies of other frames have no physical links to lie down with.
+        if c.dead && !physical {
+            missing += 1;
             continue;
         }
         let mut root = commands.spawn((
@@ -416,14 +453,14 @@ fn spawn_placed_characters(
             root.insert(exa_physics::CharacterBody::default());
         }
         let root = root.id();
-        let model = exa_world::spawn_model(commands, body, None);
-        let anim = exa_anim::Animator::new("Default", "Idle");
+        let model = exa_world::spawn_model(commands, &body, None);
+        let anim = exa_anim::Animator::new(&moveset, "Idle");
         if c.dead {
             // The dead fall where they lie.
             commands
                 .entity(model)
                 .insert(exa_physics::body::GoLimp::default());
-        } else {
+        } else if physical {
             commands
                 .entity(model)
                 .insert(exa_physics::body::Physical::default());
@@ -434,6 +471,7 @@ fn spawn_placed_characters(
             exa_character::Outfit(
                 c.worn
                     .iter()
+                    .filter(|_| physical)
                     .map(|(model, appearance, hides)| exa_character::Garment {
                         model: model.clone(),
                         appearance: *appearance,
@@ -452,5 +490,5 @@ fn spawn_placed_characters(
         }
         spawned += 1;
     }
-    (spawned, skipped)
+    (spawned, missing)
 }

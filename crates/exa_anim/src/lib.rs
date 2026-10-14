@@ -35,16 +35,26 @@ impl Plugin for AnimPlugin {
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AnimSystems;
 
-/// The decoded motion set, and the skeleton's physical body data by bone
-/// index, loaded on demand.
+/// The decoded motion set, the skeleton's physical body data by bone
+/// index, and the leg length (metres, thigh plus shin) of the human body the
+/// clips fit, loaded on demand.
 #[derive(Resource, Clone)]
-pub struct Motions(pub Arc<MotionSet>, pub Arc<HashMap<usize, BoneBody>>);
+pub struct Motions(
+    pub Arc<MotionSet>,
+    pub Arc<HashMap<usize, BoneBody>>,
+    pub f32,
+);
+
+/// Bones whose offsets from their parents make up the leg: lower leg (from
+/// the hip) and foot (from the knee).
+const LEG_BONES: [usize; 2] = [3, 4];
 
 impl Motions {
     pub fn load(game: &Game) -> Option<Self> {
         let bytes = game.0.pack(PackKind::Resource)?.get("humanoid.rsq")?;
         match Sequences::parse(bytes) {
             Ok(seq) => {
+                let leg = human_leg(game).unwrap_or(0.0);
                 let bodies = seq
                     .skeleton
                     .nodes
@@ -52,7 +62,7 @@ impl Motions {
                     .zip(seq.bodies)
                     .filter_map(|(n, b)| Some((bone_index(&n.name)?, b)))
                     .collect();
-                Some(Self(Arc::new(seq.motions), Arc::new(bodies)))
+                Some(Self(Arc::new(seq.motions), Arc::new(bodies), leg))
             }
             Err(e) => {
                 error!("humanoid.rsq: {e}");
@@ -60,6 +70,23 @@ impl Motions {
             }
         }
     }
+}
+
+/// Leg length of the human body model.
+fn human_leg(game: &Game) -> Option<f32> {
+    let bytes = game
+        .0
+        .pack(PackKind::Resource)?
+        .get(exa_assets::model::BODY_MODEL)?;
+    let scene = exa_formats::rfc::Scene::parse(bytes).ok()?;
+    Some(
+        scene
+            .nodes
+            .iter()
+            .filter(|n| bone_index(&n.name).is_some_and(|b| LEG_BONES.contains(&b)))
+            .map(|n| Vec3::from(n.transform[3]).length())
+            .sum(),
+    )
 }
 
 /// Plays `action` from `moveset` on the character this is attached to.
@@ -125,20 +152,37 @@ pub struct BodyPart {
     pub rest: Transform,
 }
 
+/// How a body's legs compare with the skeleton the clips were made for: the
+/// clips' root positions are scaled by it (golems and ogres stand taller).
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Stature(pub f32);
+
 fn attach_body_parts(
     mut commands: Commands,
+    motions: Option<Res<Motions>>,
     roots: Query<Entity, Added<Animator>>,
     children: Query<&Children>,
     parts: Query<(&Name, &Transform)>,
 ) {
     for root in &roots {
+        let mut leg = 0.0;
         for e in children.iter_descendants(root) {
             if let Ok((name, t)) = parts.get(e)
                 && let Some(bone) = bone_index(name.as_str())
             {
+                if LEG_BONES.contains(&bone) {
+                    leg += t.translation.length();
+                }
                 commands.entity(e).insert(BodyPart { bone, rest: *t });
             }
         }
+        let reference = motions.as_ref().map_or(0.0, |m| m.2);
+        let stature = if leg > 0.0 && reference > 0.0 {
+            leg / reference
+        } else {
+            1.0
+        };
+        commands.entity(root).insert(Stature(stature));
     }
 }
 
@@ -255,12 +299,12 @@ fn to_quat(r: [f32; 4]) -> Quat {
 fn play_clips(
     time: Res<Time>,
     motions: Option<Res<Motions>>,
-    mut animators: Query<(Entity, &mut Animator)>,
+    mut animators: Query<(Entity, &mut Animator, Option<&Stature>)>,
     children: Query<&Children>,
     mut parts: Query<(&BodyPart, &mut Transform)>,
 ) {
     let Some(motions) = motions else { return };
-    for (root, mut anim) in &mut animators {
+    for (root, mut anim, stature) in &mut animators {
         let Some(clip) = motions.0.clip(&anim.moveset, &anim.action) else {
             continue;
         };
@@ -290,7 +334,7 @@ fn play_clips(
         let Some((rotations, root_pos)) = sample(clip, anim.time) else {
             continue;
         };
-        let root_pos = in_place(clip, anim.time, root_pos);
+        let root_pos = in_place(clip, anim.time, root_pos) * stature.map_or(1.0, |s| s.0);
         for e in children.iter_descendants(root) {
             if let Ok((part, mut t)) = parts.get_mut(e)
                 && let Some(r) = part.bone.checked_sub(1).and_then(|i| rotations.get(i))

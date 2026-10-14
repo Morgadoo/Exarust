@@ -63,6 +63,12 @@ pub fn transform_from_rows(t: &[[f32; 3]; 4]) -> Transform {
 /// The human body model; its parts are skinned and apparel follows them.
 pub const BODY_MODEL: &str = "humanbase.rfc";
 
+/// Whether a `Resource.rpk` entry is a race's body model (`humanbase.rfc`,
+/// `skelbase.rfc`, `golembase.rfc`, …).
+pub fn is_body_model(entry: &str) -> bool {
+    entry.to_ascii_lowercase().ends_with("base.rfc")
+}
+
 /// A mesh part: its mesh and material.
 pub type Part = (Handle<Mesh>, Handle<StandardMaterial>);
 
@@ -144,9 +150,10 @@ impl ModelLoader<'_> {
         for (index, node) in scene.nodes.iter().enumerate() {
             let skin = match &node.body {
                 NodeBody::Mesh(mesh)
-                    if pack == PackKind::Characters || entry.eq_ignore_ascii_case(BODY_MODEL) =>
+                    if pack == PackKind::Characters
+                        || (pack == PackKind::Resource && is_body_model(entry)) =>
                 {
-                    self.node_skin(&scene, index, mesh, pack)
+                    self.node_skin(&scene, index, mesh, pack, entry)
                 }
                 _ => None,
             };
@@ -185,13 +192,15 @@ impl ModelLoader<'_> {
 
     /// Skin weights of a node's mesh: worked out from the seams for body
     /// parts (nodes named after a bone with bone neighbours), taken from the
-    /// nearest body vertex for apparel. Remembers the body's weights.
+    /// nearest body vertex for apparel. Remembers the human body's weights,
+    /// which apparel is fitted to.
     fn node_skin(
         &mut self,
         scene: &Scene,
         index: usize,
         mesh: &RfcMesh,
         pack: PackKind,
+        entry: &str,
     ) -> Option<(u16, Vec<VertexSkin>)> {
         let node = &scene.nodes[index];
         let bone = bone_index(&node.name)? as u16;
@@ -233,6 +242,9 @@ impl ModelLoader<'_> {
             return None;
         }
         let skin = auto_skin(mesh, bone, &joints);
+        if !entry.eq_ignore_ascii_case(BODY_MODEL) {
+            return Some((bone, skin));
+        }
         let reference = mesh
             .positions
             .iter()

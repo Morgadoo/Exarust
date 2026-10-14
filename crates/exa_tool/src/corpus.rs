@@ -151,6 +151,7 @@ pub fn levels(game: &GameData) -> Result<()> {
     let (mut levels, mut grids, mut props, mut resolved, mut errors) = (0, 0, 0, 0, 0);
     let mut environments = 0;
     let (mut placed, mut with_record, mut worn, mut worn_found) = (0, 0, 0, 0);
+    let mut races: std::collections::BTreeMap<(u8, bool), usize> = Default::default();
     let mut missing: BTreeMap<String, usize> = BTreeMap::new();
     println!(
         "{:<18} {:>9} {:>8} {:>7} {:>9}",
@@ -174,6 +175,9 @@ pub fn levels(game: &GameData) -> Result<()> {
                     continue;
                 };
                 with_record += 1;
+                *races
+                    .entry((rec.race, p.condition == exa_formats::characters::DEAD))
+                    .or_default() += 1;
                 for &item in &rec.worn {
                     worn += 1;
                     let local = item & exa_formats::characters::LOCAL_ITEM != 0;
@@ -226,6 +230,7 @@ pub fn levels(game: &GameData) -> Result<()> {
     println!(
         "{placed} placed characters, {with_record} with a local record, {worn_found}/{worn} worn items found in local databases"
     );
+    println!("placed characters by (race, dead): {races:?}");
     if !missing.is_empty() {
         println!("missing objects:");
         for (name, n) in missing.iter().take(20) {

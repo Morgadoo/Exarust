@@ -2500,6 +2500,7 @@ dependencies = [
  "exa_audio",
  "exa_character",
  "exa_combat",
+ "exa_formats",
  "exa_game",
  "exa_physics",
  "exa_world",

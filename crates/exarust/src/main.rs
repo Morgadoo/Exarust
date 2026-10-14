@@ -14,6 +14,7 @@
 //!          --ev <ev100>               camera exposure (default 6, lower is brighter)
 //!          --ceilings                 build ceilings of tile-grid levels
 //!          --limp                     character view: the body goes limp and falls
+//!          --race <n>                 character view: the body of race n (a character record's race byte)
 //!          --shove <frame>            a body blow to every simulated body at that frame
 //!          --outfit a,b,c             apparel for character/play (Characters.rpk entries)
 //!          --weapon <name>            weapon in the right hand (Objects.rpk entry)
@@ -55,6 +56,8 @@ pub struct Options {
     pub autowalk: bool,
     /// Character view: let the body go limp and fall.
     pub limp: bool,
+    /// Character view: the body of this race (character race byte).
+    pub race: Option<u8>,
     /// Deal every simulated body a blow at this frame.
     pub shove: Option<u32>,
     /// Apparel for the character (`Characters.rpk` entries).
@@ -88,6 +91,7 @@ fn main() -> AppExit {
             "--screenshot" => options.screenshot = args.next().map(PathBuf::from),
             "--ceilings" => options.ceilings = true,
             "--limp" => options.limp = true,
+            "--race" => options.race = args.next().and_then(|v| v.parse().ok()),
             "--shove" => options.shove = args.next().and_then(|v| v.parse().ok()),
             "--autowalk" => options.autowalk = true,
             "--weapon" => options.weapon = args.next(),
