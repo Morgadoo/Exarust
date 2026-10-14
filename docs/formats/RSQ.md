@@ -61,3 +61,48 @@ One Handed / 1H & Shield / Polearm.
 About 1 200 keys in total serve every humanoid and creature: the original
 drives physically simulated bodies toward these poses rather than playing
 them directly.
+
+## Skinning
+
+The original computes skin weights for the body at load time; none are
+stored. Body parts (`humanbase.rfc`) are meshes in their bone's space. Each
+carries invisible seam triangles (material `_null`) whose per-triangle flags
+(sub-chunk `0x3DC3` after the triangle ranges: a `u32` per triangle) hold a
+seam class in the high byte:
+
+| bits | falloff radius | multiplier on distance² (cm²) |
+|---|---|---|
+| `0xC0000000` | 20 cm | 0.0025 |
+| `0x30000000` | 15 cm | 0.00444 |
+| `0x0C000000` | 10 cm | 0.01 |
+| `0x03000000` | 5 cm | 0.04 |
+
+Visible skin triangles have flag 1. Bits `0x200000`/`0x400000` are apparel
+cull bits. The word before a mesh's streams (newer files) holds skinning-mode
+flags; `0x100000` marks apparel.
+
+Rules (`exa_assets::skin`):
+
+1. Connected regions of seam triangles (class `0xC0`) form groups. Their
+   boundary edges (shared with non-seam triangles) form the loop that meets
+   the neighbouring part. The group centre is the centre of the loop's box.
+2. Joints: the parent at the part's origin, each child at its translation.
+   Each joint takes the nearest free group, nearest pairs first.
+3. Vertices of a seam region are split between the own bone and the group's
+   neighbour: 0.5 on class `0xC0`, 0.25 on `0x30`, 0.125 on `0x0C`.
+   Shared loops therefore sit half and half, and adjacent parts coincide.
+4. Other vertices: for each group, m = min over loop edges of
+   distance²·multiplier. Keep up to 3 groups with m < 0.999. Each gets
+   w = 1 − √m, damped with s = Σw, q = Σw², k = s/q (s ≤ 1) or 1/q,
+   w = min(w, w²k). Each neighbour receives 0.5·w; the own bone keeps the rest.
+
+Checked against the shipped body: in `12RUArm`, the elbow and shoulder loops
+get 0.5/0.5, and at x = −20.3 cm the weights are 0.563 own, 0.403 forearm and
+0.033 shoulder.
+
+Exarust skins each part as a Bevy `SkinnedMesh` whose joint j is the part of
+bone j. The inverse bind pose is relative to the part's rest pose. Apparel
+takes each vertex's weights from the nearest body vertex of its bone. The
+original runs a similar builder for apparel; it also hides covered body slots
+(per-slot coverage bits of equipped items) and culls apparel triangles by the
+cull bits. Neither is done yet.

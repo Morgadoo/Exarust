@@ -77,11 +77,18 @@ pub fn spawn_model(commands: &mut Commands, model: &Model, placement: Option<Tra
             ))
             .id();
         for (mesh, material) in &node.parts {
-            commands.spawn((
-                Mesh3d(mesh.clone()),
-                MeshMaterial3d(material.clone()),
-                ChildOf(e),
-            ));
+            let part = commands
+                .spawn((
+                    Mesh3d(mesh.clone()),
+                    MeshMaterial3d(material.clone()),
+                    ChildOf(e),
+                ))
+                .id();
+            if let Some(bone) = node.skin_bone {
+                commands
+                    .entity(part)
+                    .insert(exa_assets::SkinnedPart { bone });
+            }
         }
         if let Some(light) = &node.light {
             commands.entity(e).insert(point_light(light));

@@ -9,7 +9,10 @@
 use std::sync::Arc;
 
 use bevy::prelude::*;
-use exa_assets::{Game, PackKind};
+use std::collections::HashMap;
+
+use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
+use exa_assets::{Game, PackKind, SkinnedPart};
 use exa_formats::rsq::{Clip, MotionSet, Sequences, bone_index};
 
 /// Clip time units per second (keys are stored in frames).
@@ -19,7 +22,7 @@ pub struct AnimPlugin;
 
 impl Plugin for AnimPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (attach_body_parts, play_clips).chain());
+        app.add_systems(Update, (attach_body_parts, bind_skins, play_clips).chain());
     }
 }
 
@@ -117,6 +120,73 @@ fn attach_body_parts(
                 commands.entity(e).insert(BodyPart { bone, rest: *t });
             }
         }
+    }
+}
+
+/// Binds skinned body and apparel meshes to their character's body parts:
+/// joint `j` is the part of bone `j`, with an inverse bind pose relative to
+/// the mesh's own part in the rest pose.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn bind_skins(
+    mut commands: Commands,
+    unbound: Query<(Entity, &SkinnedPart), Without<SkinnedMesh>>,
+    parents: Query<&ChildOf>,
+    roots: Query<(), With<Animator>>,
+    children: Query<&Children>,
+    parts: Query<&BodyPart>,
+    transforms: Query<&Transform>,
+    mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
+    mut bound: Local<HashMap<(Entity, u16), (Handle<SkinnedMeshInverseBindposes>, Vec<Entity>)>>,
+) {
+    for (mesh, skinned) in &unbound {
+        let Some(root) = parents.iter_ancestors(mesh).find(|&a| roots.contains(a)) else {
+            continue;
+        };
+        let key = (root, skinned.bone);
+        if let std::collections::hash_map::Entry::Vacant(slot) = bound.entry(key) {
+            // Rest pose of every body part relative to the root.
+            let mut rest: HashMap<usize, (Entity, Mat4)> = HashMap::new();
+            for e in children.iter_descendants(root) {
+                let Ok(part) = parts.get(e) else { continue };
+                let mut m = Mat4::IDENTITY;
+                let mut node = e;
+                while node != root {
+                    let local = match parts.get(node) {
+                        Ok(p) => p.rest,
+                        Err(_) => transforms.get(node).copied().unwrap_or_default(),
+                    };
+                    m = local.to_matrix() * m;
+                    match parents.get(node) {
+                        Ok(p) => node = p.parent(),
+                        Err(_) => break,
+                    }
+                }
+                rest.insert(part.bone, (e, m));
+            }
+            let Some(&(own_entity, own_rest)) = rest.get(&(skinned.bone as usize)) else {
+                continue; // the skeleton is not attached yet
+            };
+            let count = rest.keys().max().map_or(0, |b| b + 1);
+            let (joints, inverse): (Vec<Entity>, Vec<Mat4>) = (0..count)
+                .map(|b| match rest.get(&b) {
+                    Some(&(e, m)) => (e, m.inverse() * own_rest),
+                    None => (own_entity, Mat4::IDENTITY),
+                })
+                .unzip();
+            slot.insert((
+                bindposes.add(SkinnedMeshInverseBindposes::from(inverse)),
+                joints,
+            ));
+        }
+        let (inverse_bindposes, joints) = bound[&key].clone();
+        commands.entity(mesh).insert((
+            SkinnedMesh {
+                inverse_bindposes,
+                joints,
+            },
+            // Skinned vertices move away from the mesh's own bounds.
+            bevy::camera::visibility::NoFrustumCulling,
+        ));
     }
 }
 

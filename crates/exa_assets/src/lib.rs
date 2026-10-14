@@ -6,6 +6,7 @@
 
 pub mod model;
 pub mod paint;
+pub mod skin;
 pub mod texture;
 
 use std::sync::Arc;
@@ -17,6 +18,13 @@ pub use exa_rpk::{GameData, PackKind, locate_install};
 
 pub use model::{Model, ModelCache, ModelLoader, ModelNode, transform_from_rows};
 pub use texture::ColorSpace;
+
+/// A mesh whose vertices carry skin weights over a character's bones, in
+/// the space of body part `bone`; bound to the skeleton once it is known.
+#[derive(bevy::prelude::Component, Debug, Clone, Copy)]
+pub struct SkinnedPart {
+    pub bone: u16,
+}
 
 pub struct AssetsPlugin;
 

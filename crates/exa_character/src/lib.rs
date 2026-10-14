@@ -118,12 +118,19 @@ fn equip_outfits(
                         (Some(a), Some(stem)) => loader.painted_apparel(&stem, &a),
                         _ => material.clone(),
                     };
-                    commands.spawn((
-                        Mesh3d(mesh.clone()),
-                        MeshMaterial3d(material),
-                        Transform::IDENTITY,
-                        ChildOf(parent),
-                    ));
+                    let part = commands
+                        .spawn((
+                            Mesh3d(mesh.clone()),
+                            MeshMaterial3d(material),
+                            Transform::IDENTITY,
+                            ChildOf(parent),
+                        ))
+                        .id();
+                    if let Some(bone) = node.skin_bone {
+                        commands
+                            .entity(part)
+                            .insert(exa_assets::SkinnedPart { bone });
+                    }
                 }
             }
         }

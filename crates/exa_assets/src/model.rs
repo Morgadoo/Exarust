@@ -11,9 +11,11 @@ use bevy::prelude::*;
 use exa_formats::material::{Material, TextureSlot};
 use exa_formats::rfc::{Mesh as RfcMesh, NodeBody, Scene};
 use exa_formats::rfi::Rfi;
+use exa_formats::rsq::bone_index;
 use exa_rpk::{Archive, GameData, PackKind};
 
 use crate::paint::{PaintLayer, Texels, layer_material, library, normal_library, paint};
+use crate::skin::{Joint, VertexSkin, auto_skin};
 use crate::texture::{ColorSpace, has_alpha, rfi_to_image};
 use exa_formats::objdb::Appearance;
 
@@ -32,6 +34,9 @@ pub struct ModelNode {
     pub parts: Vec<Part>,
     /// Material name of each part, as stored in the file.
     pub part_materials: Vec<String>,
+    /// Bone whose space the parts are in, when their meshes carry skin
+    /// weights (joint indices are bone numbers).
+    pub skin_bone: Option<u16>,
     pub light: Option<exa_formats::rfc::Light>,
     /// Bounding sphere in the node's space (metres).
     pub bounds: (Vec3, f32),
@@ -55,6 +60,9 @@ pub fn transform_from_rows(t: &[[f32; 3]; 4]) -> Transform {
     Transform::from_matrix(m)
 }
 
+/// The human body model; its parts are skinned and apparel follows them.
+pub const BODY_MODEL: &str = "humanbase.rfc";
+
 /// A mesh part: its mesh and material.
 pub type Part = (Handle<Mesh>, Handle<StandardMaterial>);
 
@@ -70,6 +78,9 @@ pub struct ModelCache {
     texels: HashMap<String, Option<Arc<Texels>>>,
     /// Painted apparel materials by texture stem and appearance.
     painted: HashMap<(String, Appearance), Handle<StandardMaterial>>,
+    /// The body's skinned vertices per bone (part space, metres), for
+    /// apparel to take its weights from.
+    body_skin: HashMap<u16, Arc<Vec<(Vec3, VertexSkin)>>>,
     warned: HashSet<String>,
 }
 
@@ -117,10 +128,31 @@ impl ModelLoader<'_> {
                 return None;
             }
         };
+        // Apparel takes its weights from the body, which must be known first.
+        if pack == PackKind::Characters && self.cache.body_skin.is_empty() {
+            self.model(PackKind::Resource, BODY_MODEL);
+        }
         let mut nodes = Vec::with_capacity(scene.nodes.len());
-        for node in &scene.nodes {
+        for (index, node) in scene.nodes.iter().enumerate() {
+            let skin = match &node.body {
+                NodeBody::Mesh(mesh)
+                    if pack == PackKind::Characters || entry.eq_ignore_ascii_case(BODY_MODEL) =>
+                {
+                    self.node_skin(&scene, index, mesh, pack)
+                }
+                _ => None,
+            };
+            let skin_bone = skin.as_ref().map(|(bone, _)| *bone);
             let (parts, part_materials) = match &node.body {
-                NodeBody::Mesh(mesh) => self.parts(entry, &scene, mesh).into_iter().unzip(),
+                NodeBody::Mesh(mesh) => self
+                    .parts(
+                        entry,
+                        &scene,
+                        mesh,
+                        skin.as_ref().map(|(_, s)| s.as_slice()),
+                    )
+                    .into_iter()
+                    .unzip(),
                 _ => (Vec::new(), Vec::new()),
             };
             nodes.push(ModelNode {
@@ -132,6 +164,7 @@ impl ModelLoader<'_> {
                 transform: transform_from_rows(&node.transform),
                 parts,
                 part_materials,
+                skin_bone,
                 bounds: (Vec3::from(node.bounds_centre), node.bounds_radius),
                 light: match &node.body {
                     NodeBody::Light(l) => Some(*l),
@@ -142,12 +175,80 @@ impl ModelLoader<'_> {
         Some(Model { nodes })
     }
 
-    fn parts(&mut self, entry: &str, scene: &Scene, mesh: &RfcMesh) -> Vec<(Part, String)> {
+    /// Skin weights of a node's mesh: worked out from the seams for body
+    /// parts (nodes named after a bone with bone neighbours), taken from the
+    /// nearest body vertex for apparel. Remembers the body's weights.
+    fn node_skin(
+        &mut self,
+        scene: &Scene,
+        index: usize,
+        mesh: &RfcMesh,
+        pack: PackKind,
+    ) -> Option<(u16, Vec<VertexSkin>)> {
+        let node = &scene.nodes[index];
+        let bone = bone_index(&node.name)? as u16;
+        if pack == PackKind::Characters {
+            let body = self.cache.body_skin.get(&bone)?.clone();
+            let skin = mesh
+                .positions
+                .iter()
+                .map(|p| {
+                    let p = Vec3::from(*p);
+                    body.iter()
+                        .min_by(|a, b| a.0.distance_squared(p).total_cmp(&b.0.distance_squared(p)))
+                        .map_or([(bone, 1.0), (bone, 0.0), (bone, 0.0), (bone, 0.0)], |b| {
+                            b.1
+                        })
+                })
+                .collect();
+            return Some((bone, skin));
+        }
+        let bone_of = |i: usize| bone_index(&scene.nodes[i].name).map(|b| b as u16);
+        let mut joints = Vec::new();
+        if let Some(parent) = node.parent.and_then(|p| p.checked_sub(1)).and_then(bone_of) {
+            joints.push(Joint {
+                bone: parent,
+                pivot: Vec3::ZERO,
+            });
+        }
+        for (i, child) in scene.nodes.iter().enumerate() {
+            if child.parent == Some(index + 1)
+                && let Some(b) = bone_of(i)
+            {
+                joints.push(Joint {
+                    bone: b,
+                    pivot: Vec3::from(child.transform[3]),
+                });
+            }
+        }
+        if joints.is_empty() || mesh.triangle_flags.is_none() {
+            return None;
+        }
+        let skin = auto_skin(mesh, bone, &joints);
+        let reference = mesh
+            .positions
+            .iter()
+            .map(|p| Vec3::from(*p))
+            .zip(skin.iter().copied());
+        self.cache
+            .body_skin
+            .entry(bone)
+            .or_insert_with(|| Arc::new(reference.collect()));
+        Some((bone, skin))
+    }
+
+    fn parts(
+        &mut self,
+        entry: &str,
+        scene: &Scene,
+        mesh: &RfcMesh,
+        skin: Option<&[VertexSkin]>,
+    ) -> Vec<(Part, String)> {
         let mut out = Vec::with_capacity(mesh.groups.len());
         for group in &mesh.groups {
             let start = group.first_index as usize;
             let indices = &mesh.indices[start..start + group.index_count as usize];
-            let Some(bevy_mesh) = group_mesh(mesh, indices) else {
+            let Some(bevy_mesh) = group_mesh(mesh, indices, skin) else {
                 continue;
             };
             // `_null` marks geometry the original never draws.
@@ -462,7 +563,7 @@ fn library_material(game: &GameData, name: &str) -> Option<Material> {
 }
 
 /// A Bevy mesh holding only the vertices one material group uses.
-fn group_mesh(mesh: &RfcMesh, indices: &[u32]) -> Option<Mesh> {
+fn group_mesh(mesh: &RfcMesh, indices: &[u32], skin: Option<&[VertexSkin]>) -> Option<Mesh> {
     if indices.is_empty() {
         return None;
     }
@@ -492,6 +593,15 @@ fn group_mesh(mesh: &RfcMesh, indices: &[u32]) -> Option<Mesh> {
         m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
         // Tangents are only needed for normal mapping; failures leave the mesh usable.
         let _ = m.generate_tangents();
+    }
+    if let Some(skin) = skin {
+        let joints: Vec<[u16; 4]> = used.iter().map(|&i| skin[i].map(|(b, _)| b)).collect();
+        let weights: Vec<[f32; 4]> = used.iter().map(|&i| skin[i].map(|(_, w)| w)).collect();
+        m.insert_attribute(
+            Mesh::ATTRIBUTE_JOINT_INDEX,
+            bevy::mesh::VertexAttributeValues::Uint16x4(joints),
+        );
+        m.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, weights);
     }
     Some(m)
 }

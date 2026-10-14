@@ -134,10 +134,21 @@ pub struct Mesh {
     /// Raw per-vertex RGBA8; channel order is not yet verified.
     pub colors: Option<Vec<[u8; 4]>>,
     pub skin: Option<Vec<SkinWeights>>,
+    /// Position-stream element of each vertex: vertices sharing a position
+    /// share an id (seams split vertices by UV or normal).
+    pub position_ids: Vec<u32>,
     /// Triangle list, counter-clockwise front faces.
     pub indices: Vec<u32>,
     pub groups: Vec<MeshGroup>,
+    /// Per-triangle flags (sub-chunk `0x3DC3`): seam classes in the high
+    /// byte, apparel cull bits `0x200000`/`0x400000`.
+    pub triangle_flags: Option<Vec<u32>>,
+    /// The word before the streams in newer files: skinning mode flags.
+    pub skin_flags: u32,
 }
+
+/// Per-triangle flag sub-chunk of the triangle list.
+pub const TRIANGLE_FLAGS: u32 = 0x3DC3;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SkinWeights {
@@ -313,9 +324,11 @@ struct Stream<'a> {
 }
 
 fn read_mesh(c: &mut Cursor<'_>, version: u16) -> Result<Mesh> {
-    if version > VERSION_WITHOUT_MESH_PREFIX {
-        c.skip(4)?;
-    }
+    let skin_flags = if version > VERSION_WITHOUT_MESH_PREFIX {
+        c.u32()?
+    } else {
+        0
+    };
     let stream_count = c.count_minus_one(12)?;
     let mut streams = Vec::with_capacity(stream_count);
     for _ in 0..stream_count {
@@ -357,6 +370,7 @@ fn read_mesh(c: &mut Cursor<'_>, version: u16) -> Result<Mesh> {
 
     let mut indices = Vec::new();
     let mut tri_ranges = Vec::new();
+    let mut triangle_flags = None;
     if topo.remaining() > 0 {
         let (tag, mut tris) = topo.chunk()?;
         if tag != TRIANGLES {
@@ -369,6 +383,14 @@ fn read_mesh(c: &mut Cursor<'_>, version: u16) -> Result<Mesh> {
         indices = tris.indices(tri_count * 3, wide)?;
         for _ in 0..group_count {
             tri_ranges.push((tris.u32()? as usize, tris.u32()? as usize));
+        }
+        while tris.remaining() >= 8 {
+            let Ok((tag, mut sub)) = tris.chunk() else {
+                break;
+            };
+            if tag == TRIANGLE_FLAGS && sub.remaining() >= tri_count * 4 {
+                triangle_flags = Some((0..tri_count).map(|_| sub.u32()).collect::<Result<_>>()?);
+            }
         }
         if let Some(&bad) = indices.iter().find(|&&i| i as usize >= vertex_count) {
             return Err(Error::Malformed(format!(
@@ -475,8 +497,11 @@ fn read_mesh(c: &mut Cursor<'_>, version: u16) -> Result<Mesh> {
         uvs,
         colors,
         skin,
+        position_ids: pos_idx.iter().map(|&i| i as u32).collect(),
         indices,
         groups,
+        triangle_flags,
+        skin_flags,
     })
 }
 
