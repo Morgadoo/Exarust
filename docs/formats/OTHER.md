@@ -37,10 +37,19 @@ byte, then eight 12-byte layers: +1 mask number (`<stem>m<n>`, 0 = unused),
 +2 material set (used when the material is 0), +4 material, +8 palette colour.
 276 of the 387 item records name a model in `Characters.rpk` directly.
 
+Item body offset `0xA8` holds apparel's per-slot layer table: 8 bytes for
+each of 19 body slots (bone indices). Low bits give the layer level. Bit
+`0x80` hides the body part of that slot (helm: head; trousers: thighs and
+shins; boots: feet; gambeson: torso and arms). Bit `0x40` hides the slot's
+partial body variant. Exarust hides covered body parts' meshes when
+dressing (from the first byte of each slot). Fit variants and culling of
+apparel triangles by their cull bits are not done yet.
+
 The game never draws an apparel item's own textures. It paints a colour
 texture per item from the shade map `<stem>d` (cavities dark), stacking each
 layer's finish over its mask on black. Run-time materials `&<10 chars><digit>`
-name the stem (`&doublet_aa1` → `doublet_aa`). The finishes by material
+name the stem: the ten characters after the `&` (`&doublet_aa1` →
+`doublet_aa`, `&gambsonaba1` → `gambsonaba`). The finishes by material
 number:
 
 | material | finish | library textures |

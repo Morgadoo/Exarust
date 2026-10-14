@@ -67,8 +67,9 @@ pub struct PlacedCharacter {
     /// 0 for humans.
     pub race: u8,
     pub female: bool,
-    /// Worn items: model entry (`Characters.rpk`) and appearance.
-    pub worn: Vec<(String, Option<Appearance>)>,
+    /// Worn items: model entry (`Characters.rpk`), appearance and the body
+    /// slots they hide.
+    pub worn: Vec<(String, Option<Appearance>, u32)>,
 }
 
 /// Resolves a level's placed characters: records from its own database,
@@ -93,7 +94,8 @@ fn placed_characters(scene: &Scene, global: &[Item]) -> Vec<PlacedCharacter> {
                         global
                     };
                     let item = items.iter().find(|i| i.id == id & ID_MASK)?;
-                    (!item.model.is_empty()).then(|| (item.model.clone(), item.appearance))
+                    (!item.model.is_empty())
+                        .then(|| (item.model.clone(), item.appearance, item.hidden_slots()))
                 })
                 .collect();
             Some(PlacedCharacter {

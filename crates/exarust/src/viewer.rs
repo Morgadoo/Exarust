@@ -382,9 +382,10 @@ fn spawn_placed_characters(
             exa_character::Outfit(
                 c.worn
                     .iter()
-                    .map(|(model, appearance)| exa_character::Garment {
+                    .map(|(model, appearance, hides)| exa_character::Garment {
                         model: model.clone(),
                         appearance: *appearance,
+                        hides: Some(*hides),
                     })
                     .collect(),
             ),

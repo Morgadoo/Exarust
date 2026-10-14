@@ -35,6 +35,9 @@ pub struct Outfit(pub Vec<Garment>);
 pub struct Garment {
     pub model: String,
     pub appearance: Option<Appearance>,
+    /// Body slots (bone indices) the garment hides, as a bit mask; looked up
+    /// with the appearance when absent.
+    pub hides: Option<u32>,
 }
 
 impl Outfit {
@@ -46,6 +49,7 @@ impl Outfit {
                 .map(|m| Garment {
                     model: m.clone(),
                     appearance: None,
+                    hides: None,
                 })
                 .collect(),
         )
@@ -71,9 +75,9 @@ pub fn grip_transform() -> Transform {
 #[derive(Component)]
 pub struct Dressed;
 
-/// Appearance of each apparel model, from the object database (by model
-/// entry name, lower case).
-fn item_appearances(game: &exa_assets::GameData) -> HashMap<String, Appearance> {
+/// Appearance and hidden body slots of each apparel model, from the object
+/// database (by model entry name, lower case).
+fn item_appearances(game: &exa_assets::GameData) -> HashMap<String, (Appearance, u32)> {
     let Some(bytes) = game
         .pack(PackKind::Resource)
         .and_then(|p| p.get("objdb.rdb"))
@@ -86,7 +90,8 @@ fn item_appearances(game: &exa_assets::GameData) -> HashMap<String, Appearance> 
     let mut out = HashMap::new();
     for item in objdb::items(&db) {
         if let (false, Some(a)) = (item.model.is_empty(), item.appearance) {
-            out.entry(item.model.to_ascii_lowercase()).or_insert(a);
+            out.entry(item.model.to_ascii_lowercase())
+                .or_insert((a, item.hidden_slots()));
         }
     }
     out
@@ -96,7 +101,8 @@ fn item_appearances(game: &exa_assets::GameData) -> HashMap<String, Appearance> 
 fn equip_outfits(
     mut commands: Commands,
     game: Option<Res<Game>>,
-    mut appearances: Local<Option<HashMap<String, Appearance>>>,
+    mut appearances: Local<Option<HashMap<String, (Appearance, u32)>>>,
+    meshes_of: Query<(), With<Mesh3d>>,
     bodies: Query<(Entity, &Outfit, Option<&Wielded>), Without<Dressed>>,
     children: Query<&Children>,
     parts: Query<&BodyPart>,
@@ -127,15 +133,16 @@ fn equip_outfits(
             images: &mut images,
             bc_supported: model::bc_supported(support.as_deref()),
         };
+        let mut hidden = 0u32;
         for garment in &outfit.0 {
             let Some(apparel) = loader.model(PackKind::Characters, &garment.model) else {
                 continue;
             };
-            let appearance = garment.appearance.or_else(|| {
-                appearances
-                    .get(&garment.model.to_ascii_lowercase())
-                    .copied()
-            });
+            let known = appearances
+                .get(&garment.model.to_ascii_lowercase())
+                .copied();
+            let appearance = garment.appearance.or(known.map(|k| k.0));
+            hidden |= garment.hides.or(known.map(|k| k.1)).unwrap_or(0);
             for node in &apparel.nodes {
                 let parent = bone_index(&node.name)
                     .and_then(|b| by_bone.get(&b).copied())
@@ -158,6 +165,16 @@ fn equip_outfits(
                         commands
                             .entity(part)
                             .insert(exa_assets::SkinnedPart { bone });
+                    }
+                }
+            }
+        }
+        // Body parts under apparel that covers them are not drawn.
+        for (&bone, &part) in &by_bone {
+            if bone < 32 && hidden & (1 << bone) != 0 {
+                for child in children.get(part).into_iter().flat_map(|c| c.iter()) {
+                    if meshes_of.contains(child) {
+                        commands.entity(child).insert(Visibility::Hidden);
                     }
                 }
             }

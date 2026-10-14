@@ -606,19 +606,13 @@ fn group_mesh(mesh: &RfcMesh, indices: &[u32], skin: Option<&[VertexSkin]>) -> O
     Some(m)
 }
 
-/// Texture-name stem for a run-time material `&<model><set><n>`: the model
-/// name's base padded with `_` to eight characters, its variant, then the
-/// texture set (`&doublet_ba1` → `doublet_ba`, completed with `d`, `n`, `m1`).
+/// Texture-name stem of a run-time material: the ten characters after the
+/// `&`, lower case (`&doublet_ba1` → `doublet_ba`, `&gambsonaba1` →
+/// `gambsonaba`), completed with `d`, `n` or `m<n>`.
 pub fn apparel_texture_key(material: &str) -> Option<String> {
     let rest = material.strip_prefix('&')?;
-    let rest = rest.trim_end_matches(|c: char| c.is_ascii_digit());
-    let (model, set) = rest.split_at(rest.len().checked_sub(1)?);
-    let (base, variant) = model.rsplit_once('_')?;
-    if base.is_empty() || variant.is_empty() {
-        return None;
-    }
-    let base = base.trim_end_matches('_');
-    Some(format!("{base:_<8}{variant}{set}").to_ascii_lowercase())
+    let stem: String = rest.chars().take(10).collect();
+    (stem.len() == 10).then(|| stem.to_ascii_lowercase())
 }
 
 #[cfg(test)]
@@ -636,9 +630,10 @@ mod tests {
             Some("armet___ba")
         );
         assert_eq!(
-            apparel_texture_key("&helm_ba2").as_deref(),
-            Some("helm____ba")
+            apparel_texture_key("&gambsonaba1").as_deref(),
+            Some("gambsonaba")
         );
+        assert_eq!(apparel_texture_key("&short"), None);
         assert_eq!(apparel_texture_key("skinhuman"), None);
     }
 }

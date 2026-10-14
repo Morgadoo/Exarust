@@ -14,6 +14,11 @@ const NAME: u32 = 0x1000_0000;
 const MODEL: u32 = 0x0010_0000;
 const BODY: u32 = 0x1000;
 const APPEARANCE_OFFSET: usize = 0x1B0;
+/// Per-slot layer bytes of apparel: 8 bytes per body slot (bone index).
+const SLOT_LAYERS_OFFSET: usize = 0xA8;
+pub const SLOTS: usize = 19;
+/// A slot byte with this bit hides the body part of that slot.
+pub const HIDES_BODY: u8 = 0x80;
 const APPEARANCE_LEN: usize = 4 + LAYERS * LAYER_LEN;
 const LAYERS: usize = 8;
 const LAYER_LEN: usize = 12;
@@ -25,6 +30,20 @@ pub struct Item {
     /// Model entry (e.g. in `Characters.rpk` for apparel); may be empty.
     pub model: String,
     pub appearance: Option<Appearance>,
+    /// Apparel's first layer byte per body slot: low bits the layer, bit
+    /// `0x80` hides the body part, `0x40` its partial variant.
+    pub slot_layers: [u8; SLOTS],
+}
+
+impl Item {
+    /// Body slots (bone indices) this item hides, as a bit mask.
+    pub fn hidden_slots(&self) -> u32 {
+        self.slot_layers
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| **b & HIDES_BODY != 0)
+            .fold(0, |m, (s, _)| m | 1 << s)
+    }
 }
 
 /// How an item is painted: condition and up to eight material layers, each
@@ -92,6 +111,7 @@ impl Item {
             name: String::new(),
             model: String::new(),
             appearance: None,
+            slot_layers: [0; SLOTS],
         };
         let mut pos = 0;
         while pos + 8 <= payload.len() {
@@ -112,6 +132,9 @@ impl Item {
                     item.appearance = body
                         .get(APPEARANCE_OFFSET..)
                         .and_then(|b| Appearance::parse(b).ok());
+                    if let Some(t) = body.get(SLOT_LAYERS_OFFSET..SLOT_LAYERS_OFFSET + SLOTS * 8) {
+                        item.slot_layers = std::array::from_fn(|s| t[s * 8]);
+                    }
                 }
                 _ => {}
             }
@@ -155,6 +178,7 @@ mod tests {
     #[test]
     fn item_names_and_appearance() {
         let mut body = vec![0u8; APPEARANCE_OFFSET];
+        body[SLOT_LAYERS_OFFSET + 10 * 8] = 0x83; // hides the head
         body.extend([0x70, 0x40, 0x52, 0x92]);
         body.extend([0, 1, 12, 1, 13, 0, 0, 0, 3, 0, 0, 0]);
         body.extend([0, 2, 10, 1, 7, 0, 0, 0, 0x36, 0, 0, 0]);
@@ -169,6 +193,7 @@ mod tests {
         assert_eq!(a.used_layers().count(), 2);
         assert_eq!(a.layers[0].material, 13);
         assert_eq!(a.layers[1].colour, 0x36);
+        assert_eq!(item.hidden_slots(), 1 << 10);
         let (q, _, _) = a.condition();
         assert!((q - 0x70 as f32 / 255.0).abs() < 1e-6);
     }
