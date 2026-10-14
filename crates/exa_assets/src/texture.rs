@@ -59,22 +59,26 @@ pub fn rfi_to_image(
             image
         }
         _ => {
-            let rgba = rfi.decode_rgba8()?;
-            Image::new(
+            // Every stored mip level, decoded, so distant surfaces filter as
+            // the original's do instead of shimmering.
+            let rgba = rfi.decode_mips_rgba8()?;
+            let mut image = Image::new_uninit(
                 Extent3d {
                     width: w,
                     height: h,
                     depth_or_array_layers: 1,
                 },
                 TextureDimension::D2,
-                rgba,
                 if srgb {
                     TextureFormat::Rgba8UnormSrgb
                 } else {
                     TextureFormat::Rgba8Unorm
                 },
                 RenderAssetUsages::RENDER_WORLD,
-            )
+            );
+            image.texture_descriptor.mip_level_count = rfi.mip_count.max(1);
+            image.data = Some(rgba);
+            image
         }
     };
     image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
