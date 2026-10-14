@@ -140,6 +140,10 @@ impl ModelLoader<'_> {
             let Some(bevy_mesh) = group_mesh(mesh, indices) else {
                 continue;
             };
+            // `_null` marks geometry the original never draws.
+            if group.material.eq_ignore_ascii_case("_null") {
+                continue;
+            }
             let material = self.material(entry, scene, &group.material);
             out.push((self.meshes.add(bevy_mesh), material));
         }
@@ -169,6 +173,10 @@ impl ModelLoader<'_> {
         };
         match source {
             Some(m) => {
+                let [r, g, b, _] = m.diffuse.map(|v| v.clamp(0.0, 1.0));
+                mat.base_color = Color::linear_rgb(r, g, b);
+                let spec = (m.specular[0] + m.specular[1] + m.specular[2]) / 3.0;
+                mat.reflectance = (spec * 0.5).clamp(0.0, 0.5);
                 if let Some(t) = m.texture(TextureSlot::Diffuse)
                     && let Some((img, alpha)) = self.texture(t, ColorSpace::Srgb)
                 {

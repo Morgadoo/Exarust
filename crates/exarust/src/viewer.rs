@@ -59,13 +59,14 @@ fn setup(
     match &*view {
         View::Level(name) => {
             let started = std::time::Instant::now();
-            match exa_world::spawn_level(&mut commands, &mut loader, name) {
+            match exa_world::spawn_level(&mut commands, &mut loader, name, options.ceilings) {
                 Some((_, info)) => {
                     info!(
-                        "level {name}: {} props ({} missing), {} lights, loaded in {:.1?}",
+                        "level {name}: {} props ({} missing), {} lights, grid {:?}, loaded in {:.1?}",
                         info.props,
                         info.missing_props,
                         info.lights,
+                        info.grid,
                         started.elapsed()
                     );
                     let centre = (info.bounds_min + info.bounds_max) * 0.5;

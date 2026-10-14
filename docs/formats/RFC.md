@@ -176,6 +176,40 @@ Set pieces are named `<prefix><type><sub><variant>`: prefix `+` main piece,
 `T` trim; sub-types such as `CA` centre, `LF`/`RF` left/right, `DF` door
 frame, `IA`/`OA` inner/outer corner; a two-digit variant.
 
+## Grid building
+
+Status: **verified** (REA on the builder; `arena` and `exanima01` rebuilt in
+Exarust match the original look).
+
+- Cells are 6 m (600 units). Cell `(x, y)` is centred at
+  `((x − w/2) + 0.5) × 600, 0, ((y − h/2) + 0.5) × 600`; border cells are
+  never built; a cell is built only when plane A has the open flag `0x80000`.
+- Plane C: bits 0–3 wall-set index (`F` = no cell), bits 4–7 floor-set index
+  (out of range = no floor), bits 8–15 centre-floor variant, bits 16–20
+  special tile type, 21–22 its rotation, 23–27 which matching trim to use.
+- Plane A: side `i` (0 back/−Z, 1 left/−X, 2 front, 3 right) has edge code
+  `(A >> 4i) & 0xF` and corner code `(A >> (16 + 4i)) & 7`; bit 3 of the
+  corner nibbles are flags (`0x80000` open cell, `0x800000` alternate builder).
+- Plane B: the matching 4-bit variant of every edge and corner.
+- Pieces are authored for side 0 and rotated by `i × 90°` about +Y (rows
+  `[cos, 0, −sin]`, `[0, 1, 0]`, `[sin, 0, cos]`), positioned at the cell
+  centre; their stored transform is ignored.
+- Wall sets index pieces `+W?nn` (`C` straight, `D` door, `L`/`R` ends),
+  `+C?nn` (`L`, `R`, `I`, `O` for corner codes 1–4), `+R?` ceilings (`M`, `L`,
+  `R`, `B`, `C` → slots 0–4) and `+T??nn` special tiles; a fourth character
+  `B` marks an alternate piece used on sides 2 and 3. Floor sets index `+FM`
+  centre variants and `L`, `R`, `B`, `C` edge slots 1–4.
+- Per cell: centre floor variant and ceiling slot 0; per side, edge code 0 →
+  floor and ceiling slot 3; 7 → straight wall; `B` → door; 1 → left end plus
+  slot-2 strips; 2 → right end plus slot-1 strips; 3 → both ends; every wall
+  adds slot-3 strips. Per corner, code 0 → floor and ceiling slot 4; codes
+  1–4 → corner piece, floor slot 4, ceiling slot 3.
+- Special tiles: a mask per type removes the regular pieces they cover:
+  `7777FFFF`, `7070FFFF`, `7077FFFF`, `7777FFFF`, `7777FFFF`, `7007000F`
+  (types 6–9), `00770FFF`; types 5–8 keep the centre floor.
+- Floors and ceilings are merged into `+Floor` and `+Ceiling` meshes per cell
+  in the original; walls stay separate objects.
+
 ## Props (`3DE10000`)
 
 `u32 count`, then one chunk per prop (`3DE10100`):

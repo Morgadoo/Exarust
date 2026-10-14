@@ -1,8 +1,9 @@
 //! Material records: the payload stored after the name in a chunk tree's
 //! material list (`0xBA01`) and as entries of `.rml` material libraries.
 //!
-//! The payload is a 184-byte block of shading parameters (not decoded yet)
-//! followed by 56-byte texture layer records. Each layer names a texture and
+//! The payload is a 184-byte block of shading parameters followed by 56-byte
+//! texture layer records. Of the block, the diffuse colour (bytes 16..32) and
+//! specular colour (32..48) are decoded; the rest is not yet. Each layer names a texture and
 //! the slot it fills. Slot roles were assigned from the suffixes of the
 //! texture names that use them across the retail data (`d` diffuse, `n`
 //! normal, …).
@@ -47,8 +48,12 @@ pub struct TextureLayer {
     pub texture: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Material {
+    /// Linear RGBA.
+    pub diffuse: [f32; 4],
+    /// Linear RGBA.
+    pub specular: [f32; 4],
     pub layers: Vec<TextureLayer>,
 }
 
@@ -61,6 +66,17 @@ impl Material {
                 len: payload.len(),
             });
         }
+        let rgba = |o: usize| -> [f32; 4] {
+            std::array::from_fn(|i| {
+                f32::from_le_bytes(
+                    payload[o + i * 4..o + i * 4 + 4]
+                        .try_into()
+                        .expect("4 bytes"),
+                )
+            })
+        };
+        let diffuse = rgba(16);
+        let specular = rgba(32);
         let mut layers = Vec::new();
         let mut p = PARAMETER_BLOCK;
         while p < payload.len() {
@@ -85,7 +101,11 @@ impl Material {
             });
             p += LAYER_LEN;
         }
-        Ok(Self { layers })
+        Ok(Self {
+            diffuse,
+            specular,
+            layers,
+        })
     }
 
     pub fn texture(&self, slot: TextureSlot) -> Option<&str> {
@@ -121,11 +141,13 @@ mod tests {
     #[test]
     fn reads_layers_and_strips_extensions() {
         let mut p = vec![0u8; PARAMETER_BLOCK];
+        p[16..20].copy_from_slice(&0.5f32.to_le_bytes());
         p.extend(layer(0x0002_0000, "GrassPalA01D"));
         p.extend(layer(0x0020_0000, "wall01n.rfi"));
         let m = Material::parse(&p).unwrap();
         assert_eq!(m.texture(TextureSlot::Diffuse), Some("GrassPalA01D"));
         assert_eq!(m.texture(TextureSlot::Normal), Some("wall01n"));
+        assert_eq!(m.diffuse[0], 0.5);
     }
 
     #[test]

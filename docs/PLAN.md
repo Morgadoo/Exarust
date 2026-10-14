@@ -125,7 +125,10 @@ character or level in Blender, and `corpus` reports full coverage.
 Done (change `add-level-viewer`): level props and grid header decoded;
 models, materials and BC textures converted to Bevy; `exarust level <name>`
 shows a level's props and lights with a fly camera; `exarust model`.
-Remaining: walls and floors from the tile grid, terrain, sectors/portals,
+Done (change `add-grid-builder`): walls, floors and ceilings from the tile
+grid; `exanima01` and the arenas are recognisable.
+Remaining: the alternate builder for flagged cells, per-room mesh merging,
+terrain (`.rft`), sectors/portals (the room flood fill is understood),
 `exanima://` asset source, streaming.
 
 - `exa_assets`: `exanima://<pack>/<entry>` Bevy asset source, asset loaders
@@ -266,7 +269,7 @@ holds the runtime and the documentation of formats and behaviour.
    texture layers, `exa-tool export-gltf`, `exa-tool corpus meshes`. Waiting
    on a visual mirroring check against the running game.
 2. ✅ Level props and grid header in Bevy (`exarust level`).
-3. Tile-grid builder: walls, floors and ceilings from the sets (next change).
+3. ✅ Tile-grid builder: walls, floors and ceilings from the sets.
 4. Skeleton and motions (`.rsq`) plus skinned meshes (`A4` skin streams,
    `*base.rfc`).
 4. `exa-tool corpus` coverage report.

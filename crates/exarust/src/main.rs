@@ -9,6 +9,7 @@
 //!          --screenshot <file.png>    save a frame and exit
 //!          --frames <n>               frames to wait before the screenshot (default 90)
 //!          --ev <ev100>               camera exposure (default 6, lower is brighter)
+//!          --ceilings                 build ceilings of tile-grid levels
 //! ```
 //!
 //! Controls: hold the right mouse button to look, WASD to move, Q/E down/up,
@@ -36,6 +37,8 @@ pub struct Options {
     pub frames: u32,
     /// Camera exposure; dungeon interiors need far less than daylight.
     pub ev100: f32,
+    /// Build ceiling pieces of tile-grid levels.
+    pub ceilings: bool,
 }
 
 fn usage() -> AppExit {
@@ -59,6 +62,7 @@ fn main() -> AppExit {
         match a.as_str() {
             "--game" => game_dir = args.next().map(PathBuf::from),
             "--screenshot" => options.screenshot = args.next().map(PathBuf::from),
+            "--ceilings" => options.ceilings = true,
             "--ev" => options.ev100 = args.next().and_then(|v| v.parse().ok()).unwrap_or(6.0),
             "--frames" => options.frames = args.next().and_then(|v| v.parse().ok()).unwrap_or(90),
             "--camera" => {

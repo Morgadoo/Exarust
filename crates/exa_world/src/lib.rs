@@ -2,6 +2,8 @@
 //! Bevy world. Walls and floors from the tile grid and terrain come later
 //! (see `README.md` and `docs/PLAN.md`).
 
+pub mod grid;
+
 use bevy::prelude::*;
 use exa_assets::{Model, ModelLoader, PackKind, transform_from_rows};
 use exa_formats::rfc::{Light, Scene};
@@ -24,6 +26,7 @@ pub struct LevelInfo {
     pub props: usize,
     pub missing_props: usize,
     pub lights: usize,
+    pub grid: Option<grid::GridStats>,
     pub bounds_min: Vec3,
     pub bounds_max: Vec3,
 }
@@ -87,6 +90,7 @@ pub fn spawn_level(
     commands: &mut Commands,
     loader: &mut ModelLoader<'_>,
     name: &str,
+    ceilings: bool,
 ) -> Option<(Entity, LevelInfo)> {
     let entry = if name.ends_with(".rfc") {
         name.to_string()
@@ -113,6 +117,11 @@ pub fn spawn_level(
             Visibility::default(),
         ))
         .id();
+
+    let grid_stats = scene
+        .grid
+        .as_ref()
+        .map(|g| grid::spawn_grid(commands, loader, g, root, ceilings));
 
     let mut lights = 0;
     if let Some(own) = loader.model(PackKind::Resource, &entry) {
@@ -159,6 +168,7 @@ pub fn spawn_level(
             props: scene.props.len(),
             missing_props: missing,
             lights,
+            grid: grid_stats,
             bounds_min: min,
             bounds_max: max,
         },
