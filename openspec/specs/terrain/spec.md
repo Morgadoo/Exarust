@@ -55,3 +55,10 @@ The system SHALL shade terrain with the original's lighting: its lights and shad
 #### Scenario: Light on a terrain floor
 - **WHEN** a level light hangs above a terrain floor
 - **THEN** the floor shows the light's pool, lit in the same units as the models around it
+
+### Requirement: Terrain texture orientation
+The system SHALL map terrain textures with u along +X and v along −Z of the world, as the original does.
+
+#### Scenario: Cobble layout
+- **WHEN** the exanima01 start room is shown at the game's camera
+- **THEN** the floor's cobblestones lie in the same rows as in the original

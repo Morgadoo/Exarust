@@ -108,7 +108,9 @@ fn fragment(
     alpha = in.color;
 }
 
-    let p = in.world_position.xz;
+    // Texture u runs along +X and v along −Z on the ground, as the original
+    // maps its terrain (and its tile-grid floors).
+    let p = vec2(in.world_position.x, -in.world_position.z);
     let uv0 = p * splat.tiling.x;
     let uv1 = p * splat.tiling.y;
     let uv2 = p * splat.tiling.z;
@@ -132,7 +134,8 @@ fn fragment(
     nxy = stack_normal(nxy, normal_xy(textureSample(normal2, normal2_sampler, uv2), 2), alpha.z, m2, 2);
     nxy = stack_normal(nxy, normal_xy(textureSample(normal3, normal3_sampler, uv3), 3), alpha.w, m3, 3);
     let nz = sqrt(1.0 - min(dot(nxy, nxy), 0.999));
-    // Texture u runs along +X and v along +Z on the ground.
+    // The normal map's frame: +X and +Z across the ground (green along −v),
+    // as the original's terrain program builds it.
     var ng = normalize(in.world_normal);
     if !is_front {
         ng = -ng;
