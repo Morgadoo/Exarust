@@ -3,8 +3,8 @@
 //! A character is a hierarchy of body-part nodes whose names start with the
 //! bone index (`01Pelvis`, `09Chest`, …). A clip key stores one rotation per
 //! bone and the root (pelvis) position; sampling replaces each part's local
-//! rotation and the pelvis translation. These poses are the targets the
-//! physics character will later follow.
+//! rotation and the pelvis translation. Living physical bodies follow these
+//! poses with their muscles.
 
 use std::sync::Arc;
 
@@ -22,9 +22,18 @@ pub struct AnimPlugin;
 
 impl Plugin for AnimPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (attach_body_parts, bind_skins, play_clips).chain());
+        app.add_systems(
+            Update,
+            (attach_body_parts, bind_skins, play_clips)
+                .chain()
+                .in_set(AnimSystems),
+        );
     }
 }
+
+/// The systems posing bodies from their clips.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AnimSystems;
 
 /// The decoded motion set, and the skeleton's physical body data by bone
 /// index, loaded on demand.
@@ -226,6 +235,19 @@ pub fn sample(clip: &Clip, time: f32) -> Option<(Vec<Quat>, Vec3)> {
     Some((rotations, root))
 }
 
+/// The root position without the clip's horizontal travel: a walk cycle
+/// advances its root over the clip and starts again behind, while the body
+/// itself is carried by its character controller.
+pub fn in_place(clip: &Clip, time: f32, root: Vec3) -> Vec3 {
+    let (Some(first), Some(last)) = (clip.keys.first(), clip.keys.last()) else {
+        return root;
+    };
+    let span = (last.time - first.time).max(f32::EPSILON);
+    let progress = ((time - first.time) / span).clamp(0.0, 1.0);
+    let travel = Vec3::from(last.root) - Vec3::from(first.root);
+    root - Vec3::new(travel.x, 0.0, travel.z) * progress
+}
+
 fn to_quat(r: [f32; 4]) -> Quat {
     Quat::from_xyzw(r[0], r[1], r[2], r[3]).normalize()
 }
@@ -268,6 +290,7 @@ fn play_clips(
         let Some((rotations, root_pos)) = sample(clip, anim.time) else {
             continue;
         };
+        let root_pos = in_place(clip, anim.time, root_pos);
         for e in children.iter_descendants(root) {
             if let Ok((part, mut t)) = parts.get_mut(e)
                 && let Some(r) = part.bone.checked_sub(1).and_then(|i| rotations.get(i))
@@ -310,5 +333,17 @@ mod tests {
         assert!((angle - 0.5).abs() < 1e-4 && axis.y > 0.99);
         let (_, end) = sample(&clip, 99.0).unwrap();
         assert!((end.y - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn travel_is_taken_out_of_the_root() {
+        let mut clip = Clip {
+            mode: 3,
+            keys: vec![key(0.0, 0.0, 1.0), key(10.0, 0.0, 1.0)],
+        };
+        clip.keys[1].root = [0.0, 1.2, 0.6];
+        let (_, root) = sample(&clip, 5.0).unwrap();
+        let fixed = in_place(&clip, 5.0, root);
+        assert!(fixed.z.abs() < 1e-6 && (fixed.y - 1.1).abs() < 1e-6);
     }
 }

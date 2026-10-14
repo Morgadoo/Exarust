@@ -21,7 +21,10 @@ impl Plugin for ViewerPlugin {
             })
             .add_systems(Startup, setup)
             .add_systems(PreUpdate, autowalk.after(bevy::input::InputSystems))
-            .add_systems(Update, (fly_camera, screenshot_after_frames));
+            .add_systems(
+                Update,
+                (fly_camera, screenshot_after_frames, shove_at_frame),
+            );
     }
 }
 
@@ -113,6 +116,7 @@ fn setup(
                 commands.entity(root).insert((
                     exa_anim::Animator::new(moveset, action),
                     exa_character::Outfit::of_models(&options.outfit),
+                    exa_physics::body::Physical::default(),
                 ));
                 if let Some(w) = &options.weapon {
                     commands
@@ -194,9 +198,10 @@ fn setup(
                     exa_character::Outfit::of_models(&options.outfit),
                     ChildOf(player),
                 ));
-                commands
-                    .entity(model)
-                    .insert(exa_combat::Fighter::default());
+                commands.entity(model).insert((
+                    exa_combat::Fighter::default(),
+                    exa_physics::body::Physical::default(),
+                ));
                 if let Some(w) = &options.weapon {
                     commands
                         .entity(model)
@@ -230,6 +235,7 @@ fn setup(
                                 .unwrap_or_else(|| "ub05ssworda".into()),
                         ),
                         exa_combat::Fighter::default(),
+                        exa_physics::body::Physical::default(),
                         exa_ai::Duellist {
                             target: player,
                             cooldown: 2.0,
@@ -353,6 +359,27 @@ fn screenshot_after_frames(
     }
 }
 
+/// A blow to the chest of every simulated body at the `--shove` frame.
+fn shove_at_frame(
+    options: Res<Options>,
+    mut frames: Local<u32>,
+    bodies: Query<Entity, With<exa_physics::body::Ragdoll>>,
+    mut shoves: MessageWriter<exa_physics::body::Shove>,
+) {
+    let Some(at) = options.shove else { return };
+    *frames += 1;
+    if *frames == at {
+        for body in &bodies {
+            shoves.write(exa_physics::body::Shove {
+                body,
+                bone: 9,
+                velocity: Vec3::new(-3.0, 0.0, 0.0),
+                daze: 0.7,
+            });
+        }
+    }
+}
+
 fn autowalk(options: Res<Options>, mut keys: ResMut<ButtonInput<KeyCode>>) {
     if options.autowalk {
         keys.press(KeyCode::KeyW);
@@ -390,6 +417,10 @@ fn spawn_placed_characters(
             commands
                 .entity(model)
                 .insert(exa_physics::body::GoLimp::default());
+        } else {
+            commands
+                .entity(model)
+                .insert(exa_physics::body::Physical::default());
         }
         commands.entity(model).insert((
             Transform::from_rotation(Quat::from_rotation_y(c.yaw)),

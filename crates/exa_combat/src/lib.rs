@@ -10,6 +10,7 @@ use std::collections::HashSet;
 
 use bevy::prelude::*;
 use exa_anim::{Animator, BodyPart, Motions};
+use exa_physics::body::{GoLimp, Shove};
 use exa_world::PartBounds;
 
 pub struct CombatPlugin;
@@ -52,6 +53,8 @@ pub struct Blade {
     pub length: f32,
     pub tip_last: Option<Vec3>,
     pub tip_speed: f32,
+    /// Tip velocity, m/s.
+    pub tip_velocity: Vec3,
 }
 
 /// Attack in progress on a fighter: which targets it has already struck.
@@ -68,6 +71,8 @@ pub struct Hit {
     pub bone: usize,
     pub damage: f32,
     pub point: Vec3,
+    /// Velocity of the blade tip, m/s.
+    pub velocity: Vec3,
 }
 
 const PART_RADIUS: f32 = 0.16;
@@ -77,6 +82,10 @@ const MIN_HIT_SPEED: f32 = 1.5;
 /// Attack window, as clip progress.
 const ACTIVE_FROM: f32 = 0.35;
 const ACTIVE_TO: f32 = 0.85;
+/// Share of the blade's velocity a struck part takes.
+const SHOVE_SHARE: f32 = 0.15;
+/// Daze per point of damage.
+const DAZE_PER_DAMAGE: f32 = 1.0 / 150.0;
 
 /// Starts an attack clip on a fighter.
 pub fn start_attack(
@@ -94,9 +103,8 @@ fn track_blades(time: Res<Time>, mut blades: Query<(&mut Blade, &GlobalTransform
     let dt = time.delta_secs().max(1e-4);
     for (mut blade, gt) in &mut blades {
         let tip = gt.transform_point(Vec3::Y * blade.length);
-        blade.tip_speed = blade
-            .tip_last
-            .map_or(0.0, |last| (tip - last).length() / dt);
+        blade.tip_velocity = blade.tip_last.map_or(Vec3::ZERO, |last| (tip - last) / dt);
+        blade.tip_speed = blade.tip_velocity.length();
         blade.tip_last = Some(tip);
     }
 }
@@ -153,6 +161,7 @@ fn detect_hits(
                     bone,
                     damage: DAMAGE_PER_SPEED2 * blade.tip_speed * blade.tip_speed,
                     point,
+                    velocity: blade.tip_velocity,
                 });
             }
         }
@@ -162,6 +171,7 @@ fn detect_hits(
 fn react_to_hits(
     mut commands: Commands,
     mut hits: MessageReader<Hit>,
+    mut shoves: MessageWriter<Shove>,
     mut fighters: Query<(Entity, &mut Fighter, &mut Animator, Has<Attacking>)>,
 ) {
     for hit in hits.read() {
@@ -169,6 +179,13 @@ fn react_to_hits(
             continue;
         };
         f.health -= hit.damage;
+        // The blow pushes the struck part and dazes the body.
+        shoves.write(Shove {
+            body: hit.target,
+            bone: hit.bone,
+            velocity: hit.velocity * SHOVE_SHARE,
+            daze: hit.damage * DAZE_PER_DAMAGE,
+        });
         info!(
             "hit on bone {} for {:.0} (health {:.0})",
             hit.bone, hit.damage, f.health
@@ -177,12 +194,10 @@ fn react_to_hits(
             f.down = true;
             info!("fighter {:?} is down", hit.target);
             // The body goes limp and falls under the blow.
-            commands
-                .entity(hit.target)
-                .insert(exa_physics::body::GoLimp {
-                    velocity: Vec3::Y * 0.3,
-                    delay: 0,
-                });
+            commands.entity(hit.target).insert(GoLimp {
+                velocity: hit.velocity * SHOVE_SHARE + Vec3::Y * 0.3,
+                delay: 0,
+            });
         } else if !f.down {
             let stance = if anim.moveset == "Default" {
                 "Idle"

@@ -4,9 +4,11 @@
 //! slack). Particles move by Verlet integration at the original's 83 Hz,
 //! then constraints and contacts are solved by moving positions.
 //!
-//! This stage simulates limp bodies (the dead and the knocked out); muscles
-//! driving the living body towards its animation come next. Evidence:
-//! `docs/formats/RSQ.md` (Physical body).
+//! A limp body (the dead, the knocked out) is only that. A living body adds
+//! muscles: a [`Drive`] pulls every particle towards where the animated pose
+//! puts it, with damping, and compensates gravity by muscle tone. Blows shove
+//! parts and daze the body, which weakens its muscles until it recovers.
+//! Evidence: `docs/formats/RSQ.md` (Physical body).
 
 use bevy::math::{Affine3A, Mat3};
 use bevy::prelude::*;
@@ -29,6 +31,17 @@ const MAX_TICKS: u32 = 4;
 const INVERSE_MASS: [f32; 18] = [
     0.45, 0.7, 1.0, 2.8, 0.7, 1.0, 2.8, 0.45, 0.5, 1.0, 1.0, 1.2, 1.5, 1.0, 1.2, 1.5, 2.5, 2.5,
 ];
+/// Share of the gap to the animated pose closed per tick at full strength.
+const DRIVE: f32 = 0.084;
+/// The weaker drive of the hands.
+const HAND_DRIVE: f32 = 0.07;
+/// The pelvis carries the body: its drive is this much stronger.
+const SUPPORT: f32 = 2.0;
+/// Energy regained per tick after a daze, and its floor.
+const ENERGY_RECOVERY: f32 = 0.005;
+const MIN_ENERGY: f32 = 0.05;
+/// Most of its energy a single blow takes.
+const MAX_DAZE: f32 = 0.9;
 /// Friction coefficient of body parts against the world.
 const FRICTION: f32 = 1.0;
 const MIN_EXTENT: f32 = 0.06;
@@ -163,6 +176,20 @@ pub struct GoLimp {
     pub delay: u32,
 }
 
+/// Makes the body under this entity (a body model root) physical: its parts
+/// become a [`Ragdoll`] with muscles following its animation.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct Physical {
+    /// Frames to wait first (a body spawned this frame is not posed yet).
+    pub delay: u32,
+}
+
+impl Default for Physical {
+    fn default() -> Self {
+        Self { delay: 3 }
+    }
+}
+
 impl Default for GoLimp {
     fn default() -> Self {
         Self {
@@ -182,13 +209,60 @@ pub struct Link {
     pub slack: f32,
 }
 
-/// A limp simulated body.
+/// A simulated body: limp, or driven by its muscles when it has a
+/// [`Drive`].
 #[derive(Component, Debug, Clone)]
 pub struct Ragdoll {
     pub parts: Vec<Part>,
     pub links: Vec<Link>,
+    pub drive: Option<Drive>,
     accumulator: f32,
 }
+
+/// Muscles of a living body: the animated pose it follows.
+#[derive(Debug, Clone)]
+pub struct Drive {
+    /// Animated world transform of each part, as last aimed.
+    aimed: Vec<Affine3A>,
+    /// The same, advanced tick by tick towards the next aim.
+    targets: Vec<Affine3A>,
+    /// How far each target moves per tick.
+    target_steps: Vec<Affine3A>,
+    /// The body root's world transform when last aimed.
+    root: Option<Affine3A>,
+    /// Muscle tone, 0..=1: drive strength and gravity compensation.
+    pub tone: f32,
+    /// Daze: 1 when alert; blows lower it and it recovers over time. Muscle
+    /// strength follows its fourth power.
+    pub energy: f32,
+}
+
+impl Default for Drive {
+    fn default() -> Self {
+        Self {
+            aimed: Vec::new(),
+            targets: Vec::new(),
+            target_steps: Vec::new(),
+            root: None,
+            tone: 1.0,
+            energy: 1.0,
+        }
+    }
+}
+
+/// A blow to a body part: a change of velocity (m/s) and how much it dazes.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct Shove {
+    /// The body model root.
+    pub body: Entity,
+    pub bone: usize,
+    pub velocity: Vec3,
+    pub daze: f32,
+}
+
+/// The systems stepping bodies; animation targets are set before them.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BodySystems;
 
 /// What building a body needs for each part.
 #[derive(Debug, Clone)]
@@ -228,7 +302,77 @@ impl Ragdoll {
         Self {
             parts,
             links,
+            drive: None,
             accumulator: 0.0,
+        }
+    }
+
+    /// Gives the body muscles following its animation.
+    pub fn with_drive(mut self) -> Self {
+        self.drive = Some(Drive::default());
+        self
+    }
+
+    /// Sets the animated pose to follow: the root's world transform and each
+    /// part's animated world transform, `frame` seconds after the last. The
+    /// body is carried along with the root's own motion, so the muscles
+    /// only work against the pose and outside forces.
+    pub fn aim(&mut self, root: Affine3A, targets: Vec<Affine3A>, frame: f32) {
+        let Some(drive) = self.drive.as_mut() else {
+            return;
+        };
+        if let Some(previous) = drive.root {
+            let carry = root * previous.inverse();
+            for p in &mut self.parts {
+                for x in p.positions.iter_mut().chain(p.previous.iter_mut()) {
+                    *x = carry.transform_point3(*x);
+                }
+            }
+            for t in &mut drive.aimed {
+                *t = carry * *t;
+            }
+        }
+        let ticks = (frame * BODY_HZ).max(1.0);
+        drive.target_steps = if drive.aimed.len() == targets.len() {
+            targets
+                .iter()
+                .zip(&drive.aimed)
+                .map(|(now, before)| {
+                    let step = *now * before.inverse();
+                    // A share of the frame's motion, per tick.
+                    let (scale, rotation, translation) = step.to_scale_rotation_translation();
+                    // The short way round.
+                    let rotation = if rotation.w < 0.0 {
+                        -rotation
+                    } else {
+                        rotation
+                    };
+                    let (axis, angle) = rotation.to_axis_angle();
+                    Affine3A::from_scale_rotation_translation(
+                        scale,
+                        Quat::from_axis_angle(axis, angle / ticks),
+                        translation / ticks,
+                    )
+                })
+                .collect()
+        } else {
+            vec![Affine3A::IDENTITY; targets.len()]
+        };
+        drive.targets.clone_from(&targets);
+        drive.aimed = targets;
+        drive.root = Some(root);
+    }
+
+    /// Applies a blow to the part of `bone`.
+    pub fn shove(&mut self, bone: usize, velocity: Vec3, daze: f32) {
+        let step = velocity / BODY_HZ;
+        if let Some(p) = self.parts.iter_mut().find(|p| p.bone == bone) {
+            for prev in &mut p.previous {
+                *prev -= step;
+            }
+        }
+        if let Some(d) = self.drive.as_mut() {
+            d.energy = (d.energy * (1.0 - daze.clamp(0.0, MAX_DAZE))).max(MIN_ENERGY);
         }
     }
 
@@ -247,7 +391,9 @@ impl Ragdoll {
     /// radius) out of the world, returning the correction.
     pub fn tick(&mut self, contact: &dyn Fn(Vec3, f32) -> Option<Vec3>) {
         let dt = 1.0 / BODY_HZ;
-        let gravity = Vec3::Y * GRAVITY * dt * dt;
+        // Muscle tone holds the body up against gravity.
+        let support = self.drive.as_ref().map_or(0.0, |d| d.tone * d.energy);
+        let gravity = Vec3::Y * GRAVITY * dt * dt * (1.0 - support);
         let retention = RETENTION.map(|r| r.powf(dt));
         for p in &mut self.parts {
             let moved = (0..4)
@@ -266,6 +412,9 @@ impl Ragdoll {
                 p.previous[i] = p.positions[i];
                 p.positions[i] += v * keep + gravity;
             }
+        }
+        if let Some(drive) = self.drive.as_mut() {
+            drive_parts(&mut self.parts, drive);
         }
         for _ in 0..LINK_ITERATIONS {
             for p in &mut self.parts {
@@ -320,6 +469,37 @@ impl Ragdoll {
     }
 }
 
+/// Pulls every particle towards its place in the animated pose, damping its
+/// velocity relative to the pose's own motion (a PD muscle per particle).
+fn drive_parts(parts: &mut [Part], drive: &mut Drive) {
+    if drive.targets.len() != parts.len() {
+        return;
+    }
+    let strength = drive.tone * drive.tone * drive.energy.powi(4);
+    for (i, p) in parts.iter_mut().enumerate() {
+        let base = match p.bone {
+            1 => DRIVE * SUPPORT,
+            17 | 18 => HAND_DRIVE,
+            _ => DRIVE,
+        };
+        let gain = (base * strength).min(1.0);
+        let damping = (2.0 * gain.sqrt()).min(1.0);
+        // The target advances through the tick.
+        let step = drive.target_steps[i];
+        drive.targets[i] = step * drive.targets[i];
+        let target = drive.targets[i];
+        let before = step.inverse() * target;
+        for k in 0..4 {
+            let goal = target.transform_point3(p.rest[k]);
+            let goal_velocity = goal - before.transform_point3(p.rest[k]);
+            let velocity = p.positions[k] - p.previous[k];
+            p.positions[k] += (goal - p.positions[k]) * gain;
+            p.previous[k] += (velocity - goal_velocity) * damping;
+        }
+    }
+    drive.energy = (drive.energy + ENERGY_RECOVERY).min(1.0);
+}
+
 /// Restores a part's six edge lengths.
 fn keep_rigid(p: &mut Part) {
     const EDGES: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
@@ -336,13 +516,38 @@ fn keep_rigid(p: &mut Part) {
     }
 }
 
+/// World transform of `entity` from the local transforms up its ancestry
+/// (current this frame, unlike the propagated global transforms).
+pub fn world_of(
+    entity: Entity,
+    parents: &Query<&ChildOf>,
+    transforms: &Query<&mut Transform>,
+) -> Affine3A {
+    let mut world = Affine3A::IDENTITY;
+    let mut node = Some(entity);
+    while let Some(e) = node {
+        if let Ok(t) = transforms.get(e) {
+            world = t.compute_affine() * world;
+        }
+        node = parents.get(e).ok().map(ChildOf::parent);
+    }
+    world
+}
+
 /// Steps every ragdoll at the body rate and writes the parts' transforms.
 pub fn step_ragdolls(
     time: Res<Time>,
     physics: Res<Physics>,
-    mut bodies: Query<(&mut Ragdoll, &GlobalTransform)>,
+    mut shoves: MessageReader<Shove>,
+    mut bodies: Query<(Entity, &mut Ragdoll)>,
+    parents: Query<&ChildOf>,
     mut transforms: Query<&mut Transform>,
 ) {
+    for s in shoves.read() {
+        if let Ok((_, mut body)) = bodies.get_mut(s.body) {
+            body.shove(s.bone, s.velocity, s.daze);
+        }
+    }
     let world = &physics.0;
     let contact = |centre: Vec3, radius: f32| -> Option<Vec3> {
         let (_, projection) = world.project_point(
@@ -361,7 +566,7 @@ pub fn step_ragdolls(
             None
         }
     };
-    for (mut body, root) in &mut bodies {
+    for (_, mut body) in &mut bodies {
         body.accumulator += time.delta_secs();
         let mut ticks = 0;
         while body.accumulator >= 1.0 / BODY_HZ && ticks < MAX_TICKS {
@@ -372,11 +577,13 @@ pub fn step_ragdolls(
         body.accumulator = body.accumulator.min(1.0 / BODY_HZ);
         // Local transforms from the parts' world transforms.
         let worlds: Vec<Affine3A> = body.parts.iter().map(Part::transform).collect();
-        let root_inverse = root.affine().inverse();
         for (i, p) in body.parts.iter().enumerate() {
             let parent = match p.parent {
                 Some(j) => worlds[j].inverse(),
-                None => root_inverse,
+                None => match parents.get(p.entity) {
+                    Ok(up) => world_of(up.parent(), &parents, &transforms).inverse(),
+                    Err(_) => Affine3A::IDENTITY,
+                },
             };
             if let Ok(mut t) = transforms.get_mut(p.entity) {
                 *t = Transform::from_matrix((parent * worlds[i]).into());
@@ -448,5 +655,51 @@ mod tests {
         let rest = (p.rest[1] - p.rest[0]).length();
         let now = (p.positions[1] - p.positions[0]).length();
         assert!((rest - now).abs() < 0.01);
+    }
+
+    #[test]
+    fn driven_body_follows_its_pose() {
+        let mut body = two_parts(0.0).with_drive();
+        let none = |_: Vec3, _: f32| None;
+        let targets = |z: f32| {
+            let r = Quat::from_rotation_y(z * 10.0);
+            vec![
+                Affine3A::from_rotation_translation(r, Vec3::new(0.0, 1.0, z)),
+                Affine3A::from_rotation_translation(r, Vec3::new(0.0, 0.6, z)),
+            ]
+        };
+        for f in 0..300 {
+            let z = (f % 40) as f32 * 0.02;
+            body.aim(Affine3A::IDENTITY, targets(z), 1.0 / 60.0);
+            for _ in 0..if f % 3 == 0 { 2 } else { 1 } {
+                body.tick(&none);
+            }
+            let c = body.parts[0].transform().translation;
+            assert!(c.is_finite() && c.length() < 3.0, "frame {f}: {c}");
+        }
+    }
+
+    #[test]
+    fn a_shove_staggers_and_the_body_recovers() {
+        let mut body = two_parts(0.0).with_drive();
+        let none = |_: Vec3, _: f32| None;
+        let pose = vec![
+            Affine3A::from_translation(Vec3::new(0.0, 1.0, 0.0)),
+            Affine3A::from_translation(Vec3::new(0.0, 0.6, 0.0)),
+        ];
+        let step = |body: &mut Ragdoll, ticks: usize| {
+            for _ in 0..ticks {
+                body.aim(Affine3A::IDENTITY, pose.clone(), 1.0 / BODY_HZ);
+                body.tick(&none);
+            }
+            body.parts[0].transform().translation.x
+        };
+        step(&mut body, 20);
+        body.shove(1, Vec3::X * 3.0, 0.7);
+        let pushed = step(&mut body, 10);
+        assert!(pushed > 0.05, "barely moved: {pushed}");
+        let back = step(&mut body, 400);
+        assert!(back.abs() < 0.02, "did not recover: {back}");
+        assert_eq!(body.drive.as_ref().unwrap().energy, 1.0);
     }
 }

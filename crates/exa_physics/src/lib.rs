@@ -32,7 +32,9 @@ impl Plugin for PhysicsPlugin {
                 FixedUpdate,
                 (register_characters, move_characters, step_world).chain(),
             )
-            .add_systems(Update, (release_characters, body::step_ragdolls));
+            .add_message::<body::Shove>()
+            .add_systems(Update, release_characters)
+            .add_systems(Update, body::step_ragdolls.in_set(body::BodySystems));
     }
 }
 

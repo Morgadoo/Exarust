@@ -211,6 +211,7 @@ fn equip_outfits(
                         length: 0.85,
                         tip_last: None,
                         tip_speed: 0.0,
+                        tip_velocity: Vec3::ZERO,
                     },
                 ))
                 .id();

@@ -14,6 +14,7 @@
 //!          --ev <ev100>               camera exposure (default 6, lower is brighter)
 //!          --ceilings                 build ceilings of tile-grid levels
 //!          --limp                     character view: the body goes limp and falls
+//!          --shove <frame>            character view: a blow to the chest at that frame
 //!          --outfit a,b,c             apparel for character/play (Characters.rpk entries)
 //!          --weapon <name>            weapon in the right hand (Objects.rpk entry)
 //!          --opponent                 an armed duellist in play mode (F: combat mode, left click: attack)
@@ -54,6 +55,8 @@ pub struct Options {
     pub autowalk: bool,
     /// Character view: let the body go limp and fall.
     pub limp: bool,
+    /// Character view: shove the body's chest at this frame.
+    pub shove: Option<u32>,
     /// Apparel for the character (`Characters.rpk` entries).
     pub outfit: Vec<String>,
     /// Weapon in the right hand (`Objects.rpk` entry).
@@ -85,6 +88,7 @@ fn main() -> AppExit {
             "--screenshot" => options.screenshot = args.next().map(PathBuf::from),
             "--ceilings" => options.ceilings = true,
             "--limp" => options.limp = true,
+            "--shove" => options.shove = args.next().and_then(|v| v.parse().ok()),
             "--autowalk" => options.autowalk = true,
             "--weapon" => options.weapon = args.next(),
             "--opponent" => options.opponent = true,

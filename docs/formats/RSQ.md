@@ -64,8 +64,26 @@ How the original simulates a body (`exa_physics::body`):
   world. Friction cancels slip up to μ·(n_y²·0.99 + 0.01) times the contact
   correction; past that, the limit is taken off. There is no restitution.
 - Dead characters (condition `0xA00`) are plain ragdolls without muscles.
-  Living bodies add a pose drive and PD muscles toward the animation,
-  plus balance; Exarust does not implement those yet.
+- Living bodies have muscles:
+  - Gravity is compensated by muscle tone.
+  - A pose drive pulls each particle toward its rest vertex under the part's
+    animated transform. The gain is 0.084 per tick (0.07 on the hands),
+    scaled by tone² and by energy⁴.
+  - Energy is the daze level. A blow takes up to 90 % of it, with a floor
+    of 0.05. It recovers 0.005 per tick.
+  - The original also runs a PD muscle per link toward the animated anchor,
+    balance with recovery steps, foot planting, and hidden support forces
+    on the pelvis and thorax pins.
+
+Exarust's muscles (`exa_physics::body::Drive`) are a pose drive with
+critical damping relative to the pose's own motion:
+
+- The pelvis drive is 2× stronger and stands in for the support forces.
+- The body is carried rigidly with its character controller's motion, so
+  muscles only work against the pose and outside forces.
+- Animation clips play in place: the root's horizontal travel over a clip
+  is removed, since the controller moves the body.
+- Link PD muscles, balance and foot planting are not reproduced yet.
 
 ## Motion set (`3DAB`)
 
