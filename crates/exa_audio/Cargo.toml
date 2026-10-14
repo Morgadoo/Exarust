@@ -1,6 +1,6 @@
 [package]
 name = "exa_audio"
-description = "Audio"
+description = "Audio: PCM sounds from Sound.rpk, positional effects, music and ambience"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
@@ -8,7 +8,8 @@ version.workspace = true
 [dependencies]
 bevy.workspace = true
 exa_assets.workspace = true
-exa_formats.workspace = true
+exa_combat.workspace = true
+exa_physics.workspace = true
 
 [lints]
 workspace = true

@@ -11,6 +11,7 @@ exa_ai.workspace = true
 exa_anim.workspace = true
 exa_combat.workspace = true
 exa_assets.workspace = true
+exa_audio.workspace = true
 exa_character.workspace = true
 exa_game.workspace = true
 exa_physics.workspace = true

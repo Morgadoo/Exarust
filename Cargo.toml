@@ -29,6 +29,8 @@ rust-version = "1.90"
 [workspace.dependencies]
 bevy = { version = "0.20", default-features = false, features = [
     "bevy_asset",
+    "bevy_audio",
+    "wav",
     "bevy_core_pipeline",
     "bevy_log",
     "debug",

@@ -139,6 +139,9 @@ fn setup(
                 exa_world::spawn_level(&mut commands, &mut loader, name, options.ceilings)
             {
                 commands.entity(root).insert(exa_physics::StaticGeometry);
+                commands.insert_resource(exa_audio::LevelMusic(
+                    exa_audio::music_for_level(name).into(),
+                ));
                 start = info
                     .spawn
                     .unwrap_or((info.bounds_min + info.bounds_max) * 0.5);
@@ -213,6 +216,7 @@ fn setup(
                 },
                 Transform::from_translation(start + Vec3::new(0.0, 4.0, 4.0)),
                 exa_game::player::ChaseCamera::default(),
+                SpatialListener::new(0.3),
             ));
             return;
         }
