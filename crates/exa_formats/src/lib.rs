@@ -6,6 +6,7 @@
 //! read; see `docs/formats/` for what is known about each.
 
 pub mod chunk;
+pub mod environment;
 pub mod kind;
 pub mod level;
 pub mod material;

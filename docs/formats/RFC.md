@@ -210,6 +210,39 @@ Exarust match the original look).
 - Floors and ceilings are merged into `+Floor` and `+Ceiling` meshes per cell
   in the original; walls stay separate objects.
 
+## Environment (`EC00DC00`)
+
+A fixed 248-byte record in every level file (29/29 decode;
+`exa_formats::environment`). Only some fields are read by the 0.9.5 runtime:
+
+| off | type | meaning |
+|---|---|---|
+| 0x00 | u32 | flags: `0x10000` always; `0x20` on the outdoor terrain arenas (effect unknown) |
+| 0x04 | u32 | sun mode: 0 auto, 1 off, 2 on (stored; the presets below decide) |
+| 0x08 | f32 | sun altitude: 0 down, 0.5 horizon, 1 zenith (default 0.7516) |
+| 0x0C | f32 | sun azimuth: 0 towards +Z, growing towards −X, ±1 towards −Z (default −0.21) |
+| 0x10 | f32 ×4 | sun colour, sRGB (0.75 grey) |
+| 0x30 | f32 ×4 | secondary ambient, sRGB (0.04 grey on most levels) |
+| 0x40 | f32 ×3 | **main ambient colour**, sRGB (0.6275 grey, warm on some arenas): the shader's `Ambient` |
+| 0x90 | i32 | top of the level's height grid, cm (used when 0x98 is 0) |
+| 0x94 | i32 | lowest point of the level, cm |
+| 0x98 | i32 | highest point of the level, cm (fog anchor, top of the GI volume) |
+| 0xD0 | f32 | added to the reverb decay (1.49 s) |
+
+Other fields (fog colour 0.5, a cubemap name `EnvMapIA01`, …) are stored but
+not read. Without the record a level gets ambient 0.314 and extent 0..3.4 m.
+
+Sun direction (Y up, unit vector towards the sun): θ = (1 − altitude)·π,
+φ = −azimuth·π, `(sin θ sin φ, cos θ, sin θ cos φ)`. Light travels the
+opposite way. The sun's intensity is 3.0, or 4.5 with the sky.
+
+The game overrides the record per level: story levels and `arena1`–`7` use an
+indoor preset (no sun, sky or fog, black background). The outdoor arenas
+`arenao1`–`5` get sunlight, a sky, fog (about 1 km) and randomised weather.
+Elsewhere, "auto" lights a sun only when the level has no lights at all.
+Exarust applies the presets and the ambient colour. It does not yet do the
+sky, the time of day or the weather (`exa_world::environment`).
+
 ## Props (`3DE10000`)
 
 `u32 count`, then one chunk per prop (`3DE10100`):

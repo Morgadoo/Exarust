@@ -10,6 +10,7 @@
 //! Geometry is returned in metres, right-handed and Y-up. The stored units are
 //! centimetres in the same handedness, so the conversion is a uniform scale.
 
+use crate::environment::{ENVIRONMENT, Environment};
 use crate::level::{self, LevelGrid, Prop};
 use crate::material::Material;
 use crate::{Error, Result};
@@ -74,6 +75,8 @@ pub struct Scene {
     pub grid: Option<LevelGrid>,
     /// Objects placed from the object library, in level files.
     pub props: Vec<Prop>,
+    /// Ambient, extent and sun settings, in level files.
+    pub environment: Option<Environment>,
     /// Level sections that could not be decoded.
     pub level_errors: Vec<String>,
 }
@@ -164,6 +167,7 @@ impl Scene {
         let mut materials = Vec::new();
         let mut grid = None;
         let mut props = Vec::new();
+        let mut environment = None;
         let mut level_errors = Vec::new();
         while c.remaining() >= 8 {
             let (tag, mut chunk) = c.chunk()?;
@@ -176,6 +180,11 @@ impl Scene {
                 match level::read_props(chunk.b) {
                     Ok(p) => props.extend(p),
                     Err(e) => level_errors.push(format!("props: {e}")),
+                }
+            } else if tag == ENVIRONMENT {
+                match Environment::parse(chunk.b) {
+                    Ok(e) => environment = Some(e),
+                    Err(e) => level_errors.push(format!("environment: {e}")),
                 }
             } else if tag == MATERIAL_LIST {
                 if let Err(e) = read_materials(&mut chunk, &mut materials) {
@@ -196,6 +205,7 @@ impl Scene {
             materials,
             grid,
             props,
+            environment,
             level_errors,
         })
     }

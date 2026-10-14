@@ -131,8 +131,12 @@ Done (change `add-terrain`): terrain heightfields with holes, the palette's
 blend rules (height, slope, the original's noise maps) and masked material
 layering in a WESL shader; outdoor arenas render and are walkable
 ([formats/TERRAIN.md](formats/TERRAIN.md)).
+Done (change `add-level-lighting`): the level environment record (ambient
+colour, extent, sun) and the original's per-level presets: sunlight with
+shadows and fog on the outdoor arenas.
 Remaining: the alternate builder for flagged cells, per-room mesh merging,
-terrain gloss textures, height displacement and grass, an outdoor sun,
+terrain gloss textures, height displacement and grass, the sky, time of day
+and weather of the outdoor arenas,
 sectors/portals (the room flood fill is understood),
 `exanima://` asset source, streaming.
 

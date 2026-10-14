@@ -2,6 +2,7 @@
 //! Bevy world. Walls and floors come from the tile grid (`grid`), outdoor
 //! ground from the terrain heightfields (`terrain`).
 
+pub mod environment;
 pub mod grid;
 pub mod terrain;
 
@@ -13,7 +14,7 @@ pub struct WorldPlugin;
 
 impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(terrain::TerrainPlugin);
+        app.add_plugins((terrain::TerrainPlugin, environment::EnvironmentPlugin));
     }
 }
 
@@ -38,6 +39,7 @@ pub struct LevelInfo {
     pub lights: usize,
     pub grid: Option<grid::GridStats>,
     pub terrain: Option<terrain::TerrainStats>,
+    pub lighting: environment::Lighting,
     /// A floored cell to start in (stand-in for the level's start marker).
     pub spawn: Option<Vec3>,
     pub bounds_min: Vec3,
@@ -180,6 +182,8 @@ pub fn spawn_level(
         };
         commands.entity(prop_entities[i]).insert(ChildOf(parent));
     }
+    let lighting = environment::level_lighting(&entry, scene.environment.as_ref(), lights);
+    environment::apply_lighting(commands, &lighting, root);
     if scene.props.is_empty() {
         min = Vec3::splat(-10.0);
         max = Vec3::splat(10.0);
@@ -192,6 +196,7 @@ pub fn spawn_level(
             lights,
             grid: grid_stats,
             terrain: terrain_stats,
+            lighting,
             spawn: scene.grid.as_ref().and_then(grid::spawn_point),
             bounds_min: min,
             bounds_max: max,

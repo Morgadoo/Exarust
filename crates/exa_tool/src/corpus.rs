@@ -149,6 +149,7 @@ pub fn levels(game: &GameData) -> Result<()> {
     };
     let objlib = game.pack(exa_rpk::PackKind::Objlib);
     let (mut levels, mut grids, mut props, mut resolved, mut errors) = (0, 0, 0, 0, 0);
+    let mut environments = 0;
     let mut missing: BTreeMap<String, usize> = BTreeMap::new();
     println!(
         "{:<18} {:>9} {:>8} {:>7} {:>9}",
@@ -164,6 +165,7 @@ pub fn levels(game: &GameData) -> Result<()> {
             continue;
         }
         levels += 1;
+        environments += usize::from(scene.environment.is_some());
         errors += scene.level_errors.len();
         for err in &scene.level_errors {
             println!("  {}: {err}", e.name);
@@ -201,7 +203,7 @@ pub fn levels(game: &GameData) -> Result<()> {
         );
     }
     println!(
-        "\n{levels} levels, {grids} grids, {props} props, {resolved} resolved in Objlib, {errors} section errors"
+        "\n{levels} levels, {grids} grids, {environments} environments, {props} props, {resolved} resolved in Objlib, {errors} section errors"
     );
     if !missing.is_empty() {
         println!("missing objects:");

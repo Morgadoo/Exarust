@@ -1,0 +1,229 @@
+//! Level lighting: ambient colour, sunlight, fog and background, from the
+//! level's environment record and the per-level presets of the original.
+//!
+//! The original overrides the record by level: story levels and the indoor
+//! arenas use an indoor preset (no sun, sky or fog); the outdoor arenas
+//! (`arenao*`) get sunlight, sky and fog. Elsewhere the record's sun mode
+//! applies, where "auto" lights a sun only in levels without lights.
+//! Evidence: `docs/formats/RFC.md` (Environment).
+
+use bevy::light::{CascadeShadowConfigBuilder, DirectionalLightShadowMap};
+use bevy::pbr::{DistanceFog, FogFalloff};
+use bevy::prelude::*;
+use exa_formats::environment::{Environment, SunMode};
+
+/// Ambient colour of a typical level; the record's colour is applied
+/// relative to it so typical levels keep the viewer's calibrated ambient.
+const REFERENCE_AMBIENT: f32 = 0.6275;
+/// Ambient brightness the viewer is calibrated for.
+const AMBIENT_BRIGHTNESS: f32 = 80.0;
+/// Sun strength in the original's units: without and with the sky.
+const SUN_INTENSITY: f32 = 3.0;
+const SUN_INTENSITY_WITH_SKY: f32 = 4.5;
+/// Lux per unit of the original's light intensity.
+const LUX_PER_INTENSITY: f32 = 160.0;
+/// Outdoor fog: distance (m) and colour (sRGB) of the original's sky-less
+/// outdoor default.
+const OUTDOOR_FOG_DISTANCE: f32 = 1000.0;
+const OUTDOOR_FOG: [f32; 3] = [0.47, 0.53, 0.70];
+/// Shadowed range of the sun, metres.
+const SUN_SHADOW_RANGE: f32 = 60.0;
+
+pub struct EnvironmentPlugin;
+
+impl Plugin for EnvironmentPlugin {
+    fn build(&self, app: &mut App) {
+        app.insert_resource(DirectionalLightShadowMap { size: 2048 })
+            .add_systems(PostUpdate, fog_cameras);
+    }
+}
+
+/// How a level is lit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Lighting {
+    /// Linear multiplier of the ambient light.
+    pub ambient: Vec3,
+    pub sun: Option<Sun>,
+    pub fog: Option<LevelFog>,
+    /// Linear background colour.
+    pub background: Vec3,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Sun {
+    /// Unit vector towards the sun.
+    pub towards: Vec3,
+    /// Linear colour.
+    pub colour: Vec3,
+    pub illuminance: f32,
+}
+
+/// Fog a level asks the cameras for.
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+pub struct LevelFog {
+    /// Linear colour.
+    pub colour: Vec3,
+    /// Metres at which the fog reaches about two thirds.
+    pub distance: f32,
+}
+
+enum Preset {
+    Indoor,
+    Outdoor,
+    FromRecord,
+}
+
+fn preset(level: &str) -> Preset {
+    let stem = level
+        .strip_suffix(".rfc")
+        .unwrap_or(level)
+        .to_ascii_lowercase();
+    if stem.starts_with("arenao") {
+        Preset::Outdoor
+    } else if stem.starts_with("exanima") || stem.starts_with("arena") && stem != "arenahub" {
+        Preset::Indoor
+    } else {
+        Preset::FromRecord
+    }
+}
+
+fn linear(srgb: [f32; 3]) -> Vec3 {
+    let c = Color::srgb(srgb[0], srgb[1], srgb[2]).to_linear();
+    Vec3::new(c.red, c.green, c.blue)
+}
+
+/// The lighting of `level`, given its environment record and the number of
+/// lights its own nodes and props bring.
+pub fn level_lighting(level: &str, record: Option<&Environment>, lights: usize) -> Lighting {
+    let env = record.cloned().unwrap_or_default();
+    let reference = linear([REFERENCE_AMBIENT; 3]);
+    let ambient = linear(env.ambient) / reference;
+    let sun = |intensity: f32| Sun {
+        towards: Vec3::from_array(env.sun_direction()).normalize(),
+        colour: linear(env.sun_colour),
+        illuminance: intensity * LUX_PER_INTENSITY,
+    };
+    match preset(level) {
+        Preset::Indoor => Lighting {
+            ambient,
+            sun: None,
+            fog: None,
+            background: Vec3::ZERO,
+        },
+        Preset::Outdoor => {
+            let colour = linear(OUTDOOR_FOG);
+            Lighting {
+                ambient,
+                sun: Some(sun(SUN_INTENSITY_WITH_SKY)),
+                fog: Some(LevelFog {
+                    colour,
+                    distance: OUTDOOR_FOG_DISTANCE,
+                }),
+                background: colour,
+            }
+        }
+        Preset::FromRecord => {
+            let lit = match env.sun_mode {
+                SunMode::On => true,
+                SunMode::Off => false,
+                SunMode::Auto => lights == 0,
+            };
+            Lighting {
+                ambient,
+                sun: lit.then(|| sun(SUN_INTENSITY)),
+                fog: None,
+                background: Vec3::ZERO,
+            }
+        }
+    }
+}
+
+/// Applies `lighting`: ambient and background resources, a sun under
+/// `parent`, and fog for the cameras.
+pub fn apply_lighting(commands: &mut Commands, lighting: &Lighting, parent: Entity) {
+    let ambient = lighting.ambient;
+    commands.insert_resource(GlobalAmbientLight {
+        color: Color::linear_rgb(ambient.x, ambient.y, ambient.z),
+        brightness: AMBIENT_BRIGHTNESS,
+        ..default()
+    });
+    let bg = lighting.background;
+    commands.insert_resource(ClearColor(Color::linear_rgb(bg.x, bg.y, bg.z)));
+    if let Some(sun) = lighting.sun {
+        commands.spawn((
+            Name::new("_Sunlight"),
+            DirectionalLight {
+                color: Color::linear_rgb(sun.colour.x, sun.colour.y, sun.colour.z),
+                illuminance: sun.illuminance,
+                shadow_maps_enabled: true,
+                ..default()
+            },
+            CascadeShadowConfigBuilder {
+                num_cascades: 2,
+                maximum_distance: SUN_SHADOW_RANGE,
+                ..default()
+            }
+            .build(),
+            // The light shines along its −Z, away from the sun.
+            Transform::default().looking_to(-sun.towards, Vec3::Y),
+            ChildOf(parent),
+        ));
+    }
+    match lighting.fog {
+        Some(fog) => commands.insert_resource(fog),
+        None => commands.remove_resource::<LevelFog>(),
+    }
+}
+
+fn fog_cameras(
+    mut commands: Commands,
+    fog: Option<Res<LevelFog>>,
+    cameras: Query<(Entity, Has<DistanceFog>), With<Camera3d>>,
+) {
+    for (camera, fogged) in &cameras {
+        match &fog {
+            Some(fog) if !fogged || fog.is_changed() => {
+                let c = fog.colour;
+                commands.entity(camera).insert(DistanceFog {
+                    color: Color::linear_rgb(c.x, c.y, c.z),
+                    falloff: FogFalloff::Exponential {
+                        density: 1.0 / fog.distance,
+                    },
+                    ..default()
+                });
+            }
+            None if fogged => {
+                commands.entity(camera).remove::<DistanceFog>();
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn presets_by_level() {
+        let story = level_lighting("exanima01.rfc", None, 0);
+        assert!(story.sun.is_none() && story.fog.is_none());
+        let outdoor = level_lighting("arenao3", None, 0);
+        assert!(outdoor.sun.is_some() && outdoor.fog.is_some());
+        let sun = outdoor.sun.unwrap();
+        assert!(sun.towards.y > 0.0);
+        // Auto sunlight only without lights.
+        assert!(level_lighting("menuscene", None, 0).sun.is_some());
+        assert!(level_lighting("menuscene", None, 3).sun.is_none());
+    }
+
+    #[test]
+    fn typical_ambient_is_neutral() {
+        let env = Environment {
+            ambient: [REFERENCE_AMBIENT; 3],
+            ..Default::default()
+        };
+        let l = level_lighting("exanima02", Some(&env), 5);
+        assert!((l.ambient - Vec3::ONE).abs().max_element() < 1e-5);
+    }
+}
