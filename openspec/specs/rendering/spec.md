@@ -46,3 +46,28 @@ The system SHALL blend materials as their blend word says: `0x4000` alpha-tested
 #### Scenario: Cobwebs
 - **WHEN** a cobweb material (blend word `0x4103`) is drawn
 - **THEN** it is cut out by its opacity map and drawn opaque
+
+### Requirement: Voxel light volume
+The system SHALL build a level's voxel light volume as the original does. Each mesh's GI sample points mark a block of 20 cm voxels below the level's highest point. Every frame, light propagates through the open voxels from their eight diagonal neighbours, the level's base ambient and lights are injected, and the result is stored as 8-bit sRGB.
+
+#### Scenario: Block height
+- **WHEN** a level is taller than 12.8 m
+- **THEN** its block is 256 × 256 × 128 voxels instead of 256 × 256 × 64
+
+### Requirement: Voxel GI shading
+The system SHALL light surfaces inside the volume from it. The ambient is the volume 20 cm along the normal × the level ambient × 15 × openness. Reflections are the environment cube × that ambient × 16.
+
+#### Scenario: Torchlit room
+- **WHEN** a level with torches has been shown for its warm-up
+- **THEN** walls and floor out of a torch's direct reach show its warm bounce light
+
+#### Scenario: Outside the block
+- **WHEN** a surface lies outside the GI block, or GI is turned off
+- **THEN** it takes its ambient from the environment cube as before
+
+### Requirement: Normal-map orientation
+The system SHALL apply normal maps in the original's tangent frame. The tangent runs along +u and the bitangent along −v of the stored UVs. The map's red and green channels are used as stored, with z rebuilt as √(1 − x² − y²).
+
+#### Scenario: Wall relief
+- **WHEN** a torch lights a stone wall from below
+- **THEN** the mortar grooves read as recessed, lit on the faces turned toward the torch

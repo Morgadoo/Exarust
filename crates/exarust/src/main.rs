@@ -11,6 +11,8 @@
 //!          --at x,y,z                 play mode: start here (metres)
 //!          --fov <degrees>            vertical field of view (default 45)
 //!          --no-shadows               lights cast no shadows (for software rendering)
+//!          --no-gi                    no voxel GI (ambient from the environment cube)
+//!          --gi-warm-up <steps>       GI steps run when a level loads (default 600)
 //!          --size WxH                 window size (default 1600x900)
 //!          --screenshot <file.png>    save a frame and exit
 //!          --frames <n>               frames to wait before the screenshot (default 90)
@@ -51,6 +53,8 @@ pub struct Options {
     pub fov: Option<f32>,
     /// Lights cast no shadows.
     pub no_shadows: bool,
+    /// The voxel GI settings.
+    pub gi: exa_world::gi_volume::GiSettings,
     /// Window size in logical pixels.
     pub size: Option<(u32, u32)>,
     /// Play mode: start here instead of the level's start (metres).
@@ -101,6 +105,12 @@ fn main() -> AppExit {
             "--ceilings" => options.ceilings = true,
             "--limp" => options.limp = true,
             "--no-shadows" => options.no_shadows = true,
+            "--no-gi" => options.gi.enabled = false,
+            "--gi-warm-up" => {
+                if let Some(n) = args.next().and_then(|v| v.parse().ok()) {
+                    options.gi.warm_up = n;
+                }
+            }
             "--size" => {
                 options.size = args.next().and_then(|v| {
                     let (w, h) = v.split_once('x')?;
@@ -185,17 +195,27 @@ fn main() -> AppExit {
     };
 
     App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Exarust".into(),
-                resolution: options.size.unwrap_or((1600, 900)).into(),
-                ..default()
-            }),
-            ..default()
-        }))
+        .add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Exarust".into(),
+                        resolution: options.size.unwrap_or((1600, 900)).into(),
+                        ..default()
+                    }),
+                    ..default()
+                })
+                // A stalled frame breaks the ALSA stream, and rodio then
+                // reports the same error in a tight loop (gigabytes of log).
+                .set(bevy::log::LogPlugin {
+                    filter: format!("{},rodio::stream=off", bevy::log::DEFAULT_FILTER),
+                    ..default()
+                }),
+        )
         .add_plugins(exa_game::GamePlugin)
         .insert_resource(Game(Arc::new(data)))
         .insert_resource(view)
+        .insert_resource(options.gi)
         .insert_resource(options)
         .add_plugins(viewer::ViewerPlugin)
         .run()

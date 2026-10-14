@@ -24,6 +24,8 @@ struct ExaParams {
     pad0: u32,
     pad1: u32,
     pad2: u32,
+    gi_origin: vec4<f32>,
+    gi_extent: vec4<f32>,
 }
 
 const DIFFUSE_MAP: u32 = 1u;
@@ -37,6 +39,9 @@ const TWO_SIDED: u32 = 128u;
 const ENVIRONMENT: u32 = 256u;
 const DIRT_MAP: u32 = 512u;
 const GLOSS_MAP: u32 = 1024u;
+const GI: u32 = 2048u;
+// The level ambient scales the GI volume ×15 (passed ×16).
+const GI_SCALE: f32 = 15.0;
 
 // The environment cube's strength in reflections indoors (`Ambient.w`), and
 // the cube's level standing in when a material has none.
@@ -65,6 +70,26 @@ const SUN_LUX: f32 = 160.0;
 @group(constants::MATERIAL_BIND_GROUP) @binding(114) var dirt_sampler: sampler;
 @group(constants::MATERIAL_BIND_GROUP) @binding(115) var gloss_map: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(116) var gloss_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(117) var gi_volume: texture_3d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(118) var gi_sampler: sampler;
+
+// The GI volume around a surface point: four taps 20 cm out along the
+// normal, spread across the tangent plane; light and openness averaged.
+fn gi_sample(p: vec3<f32>, n: vec3<f32>) -> vec4<f32> {
+    let a = select(vec3(0.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0), abs(n.y) > 0.9);
+    let ax = normalize(cross(n, a));
+    let ay = cross(n, ax);
+    var sum = vec4(0.0);
+    for (var i = 0; i < 4; i++) {
+        let sx = select(-0.5, 0.5, (i & 1) == 1);
+        let sy = select(-0.5, 0.5, (i & 2) == 2);
+        let d = n + ax * sx + ay * sy;
+        let w = (p + d * 0.2 - material.gi_origin.xyz) / material.gi_extent.xyz;
+        let t = textureSampleLevel(gi_volume, gi_sampler, w.xzy, 0.0);
+        sum += t;
+    }
+    return sum * 0.25;
+}
 
 fn has(bit: u32) -> bool {
     return (material.flags & bit) != 0u;
@@ -156,8 +181,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     if has(NORMAL_MAP) {
         let t = normalize(in.world_tangent.xyz - n * dot(in.world_tangent.xyz, n));
         let b = cross(n, t) * in.world_tangent.w;
-        // The original's tangent frame has its bitangent along −v.
-        let xy = (textureSample(normal_map, normal_sampler, uv).rg * 2.0 - 1.0) * vec2(1.0, -1.0);
+        // The original's bitangent runs along −v of the stored UVs, as
+        // Bevy's (its MikkTSpace sign is flipped), so green maps as stored.
+        let xy = textureSample(normal_map, normal_sampler, uv).rg * 2.0 - 1.0;
         let z = sqrt(max(1.0 - dot(xy, xy), 0.0));
         n = normalize(t * xy.x + b * xy.y + n * z);
     }
@@ -239,15 +265,30 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let level = view_bindings::lights.ambient_color.rgb;
     var ambient = level * ENVIRONMENT_FALLBACK;
     var mirrored = vec3(ENVIRONMENT_FALLBACK);
-    if has(ENVIRONMENT) {
-        ambient = textureSampleLevel(environment_map, environment_sampler, n, 5.0).rgb * level;
-        let r = reflect(-v, n);
-        mirrored = textureSampleLevel(environment_map, environment_sampler, r, max(s.rough - 0.1, 0.0) * 8.0).rgb;
+    let r = reflect(-v, n);
+    let k = (s.rough + 1.0) * (s.rough + 1.0) / 8.0;
+    let gv = s.ndv / (s.ndv * (1.0 - k) + k);
+    var reflected: vec3<f32>;
+    let gw = (p - material.gi_origin.xyz) / material.gi_extent.xyz;
+    if has(GI) && all(gw >= vec3(0.0)) && all(gw <= vec3(1.0)) {
+        // Voxel GI: the volume's light, lifted where faint, × the level
+        // ambient × 15 × openness; reflections take the cube × that.
+        let g = gi_sample(p, n);
+        let a = length(g.rgb);
+        let b = (1.0 - a) * (1.0 - a) * 0.03 / (a + 0.016) + 0.47 * a + 0.53;
+        ambient = g.rgb * level / AMBIENT_SCALE * GI_SCALE * b * g.a;
+        if has(ENVIRONMENT) {
+            mirrored = textureSampleLevel(environment_map, environment_sampler, r, max(s.rough - 0.05, 0.0) * 8.0).rgb;
+        }
+        reflected = mirrored * ambient * REFLECTION_STRENGTH * 2.0 * gv;
+    } else {
+        if has(ENVIRONMENT) {
+            ambient = textureSampleLevel(environment_map, environment_sampler, n, 5.0).rgb * level;
+            mirrored = textureSampleLevel(environment_map, environment_sampler, r, max(s.rough - 0.1, 0.0) * 8.0).rgb;
+        }
+        reflected = (mirrored + mirrored * mirrored) * level / AMBIENT_SCALE * REFLECTION_STRENGTH * gv;
     }
     var colour = (diffuse + ambient) * dif_col;
-    let k = (s.rough + 1.0) * (s.rough + 1.0) / 8.0;
-    let reflected = (mirrored + mirrored * mirrored) * level / AMBIENT_SCALE * REFLECTION_STRENGTH
-        * s.ndv / (s.ndv * (1.0 - k) + k);
     if s.legacy {
         // Older program: (lights + reflection) × specular colour × a soft
         // Fresnel between 0.5 and 1.

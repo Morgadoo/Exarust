@@ -279,6 +279,7 @@ pub fn spawn_grid(
             let rules = PieceRules {
                 ceilings,
                 surface: fs.and_then(|f| f.surface.clone()),
+                floor_set: fs.map(|f| f.model.clone()),
             };
             let mut place = |model: &Arc<Model>, node: Option<usize>, side: u32| -> Strips {
                 let Some(node) = node else {
@@ -457,6 +458,8 @@ struct PieceRules {
     /// Material for `+` materials on floor strips; strips are dropped
     /// without one.
     surface: Option<Handle<exa_render::material::ExaMaterial>>,
+    /// The cell's floor set, whose pieces are all floor.
+    floor_set: Option<Arc<Model>>,
 }
 
 /// The floor and ceiling strips a piece brought with it.
@@ -480,7 +483,11 @@ fn spawn_piece(
     rules: &PieceRules,
 ) -> Strips {
     let mut strips = Strips::default();
-    let root = spawn_node(commands, model, node, transform, parent, None);
+    let whole_floor = rules
+        .floor_set
+        .as_ref()
+        .is_some_and(|f| std::ptr::eq(f.as_ref(), model));
+    let root = spawn_node(commands, model, node, transform, parent, None, whole_floor);
     let mut stack: Vec<(
         usize,
         Entity,
@@ -506,7 +513,16 @@ fn spawn_piece(
         }
     }
     while let Some((n, p, surface)) = stack.pop() {
-        let e = spawn_node(commands, model, n, model.nodes[n].transform, p, surface);
+        let floor = whole_floor || surface.is_some();
+        let e = spawn_node(
+            commands,
+            model,
+            n,
+            model.nodes[n].transform,
+            p,
+            surface,
+            floor,
+        );
         stack.extend(kids[n].iter().map(|&k| (k, e, surface)));
     }
     strips
@@ -519,6 +535,7 @@ fn spawn_node(
     transform: Transform,
     parent: Entity,
     surface: Option<&Handle<exa_render::material::ExaMaterial>>,
+    floor: bool,
 ) -> Entity {
     let n = &model.nodes[node];
     let e = commands
@@ -529,14 +546,24 @@ fn spawn_node(
             Some(s) if n.part_materials[i].starts_with('+') => s,
             _ => material,
         };
-        commands.spawn((
-            Mesh3d(mesh.clone()),
-            MeshMaterial3d(material.clone()),
-            ChildOf(e),
-        ));
+        let part = commands
+            .spawn((
+                Mesh3d(mesh.clone()),
+                MeshMaterial3d(material.clone()),
+                ChildOf(e),
+            ))
+            .id();
+        if floor {
+            commands.entity(part).insert(crate::gi_volume::GiFloor);
+        }
     }
     if let Some(light) = &n.light {
         commands.entity(e).insert(crate::point_light(light));
+    }
+    if !n.gi_points.is_empty() {
+        commands
+            .entity(e)
+            .insert(crate::gi_volume::GiPoints(n.gi_points.clone()));
     }
     e
 }

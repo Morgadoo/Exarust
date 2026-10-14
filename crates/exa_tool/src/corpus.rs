@@ -17,6 +17,8 @@ struct PackTally {
     other_nodes: usize,
     materials: usize,
     bad_materials: usize,
+    gi_meshes: usize,
+    gi_points: usize,
 }
 
 pub fn meshes(game: &GameData) -> Result<()> {
@@ -54,7 +56,13 @@ pub fn meshes(game: &GameData) -> Result<()> {
             };
             for node in &scene.nodes {
                 match &node.body {
-                    NodeBody::Mesh(_) => t.meshes += 1,
+                    NodeBody::Mesh(m) => {
+                        t.meshes += 1;
+                        if !m.gi_points.is_empty() {
+                            t.gi_meshes += 1;
+                            t.gi_points += m.gi_points.len();
+                        }
+                    }
                     NodeBody::Instance(_) => t.instances += 1,
                     NodeBody::NotMesh | NodeBody::Light(_) | NodeBody::Emitter { .. } => {
                         t.other_nodes += 1
@@ -91,6 +99,12 @@ pub fn meshes(game: &GameData) -> Result<()> {
         total.other_nodes += t.other_nodes;
         total.materials += t.materials;
         total.bad_materials += t.bad_materials;
+        total.gi_meshes += t.gi_meshes;
+        total.gi_points += t.gi_points;
+        println!(
+            "  {:<11} GI points in {} meshes ({} points)",
+            "", t.gi_meshes, t.gi_points
+        );
     }
     print_row("total", &total);
     let decodable = total.meshes + total.invalid;

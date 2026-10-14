@@ -37,6 +37,8 @@ pub mod flags {
     pub const DIRT_MAP: u32 = 512;
     /// A gloss map scales the glossiness.
     pub const GLOSS_MAP: u32 = 1024;
+    /// Ambient comes from the voxel GI volume.
+    pub const GI: u32 = 2048;
 }
 
 #[derive(Clone, Copy, Debug, ShaderType)]
@@ -51,6 +53,9 @@ pub struct ExaParams {
     pub pad0: u32,
     pub pad1: u32,
     pub pad2: u32,
+    /// The GI volume's lowest corner (m), and its size (m).
+    pub gi_origin: Vec4,
+    pub gi_extent: Vec4,
 }
 
 impl Default for ExaParams {
@@ -63,6 +68,8 @@ impl Default for ExaParams {
             pad0: 0,
             pad1: 0,
             pad2: 0,
+            gi_origin: Vec4::ZERO,
+            gi_extent: Vec4::ONE,
         }
     }
 }
@@ -98,6 +105,10 @@ pub struct ExaMaterial {
     #[texture(115)]
     #[sampler(116)]
     pub gloss_map: Option<Handle<Image>>,
+    /// The voxel GI light volume (8-bit sRGB, sampled through an sRGB view).
+    #[texture(117, dimension = "3d")]
+    #[sampler(118)]
+    pub gi_volume: Option<Handle<Image>>,
     pub alpha_mode: AlphaMode,
 }
 

@@ -42,6 +42,13 @@ pub struct Fire {
     accumulator: f32,
 }
 
+impl Fire {
+    /// Whether the fire has ramped up to its full light.
+    pub fn settled(&self) -> bool {
+        self.density > 0.99
+    }
+}
+
 /// The light a fire of `size` gives: base intensity, radius (m) and its
 /// height above the fire node.
 pub fn fire_light(size: f32) -> (f32, f32, f32) {

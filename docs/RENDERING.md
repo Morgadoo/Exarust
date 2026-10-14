@@ -80,8 +80,8 @@ program.
 - Without voxel GI, ambient = environment cube at the normal (mip 5) ×
   level ambient × 16, added to the lights before the diffuse colour.
   **The game always runs with voxel GI** (GI mode 3), whose bounce light
-  replaces this term (×15 level ambient). Exarust uses the cube path until
-  the GI volume is built.
+  replaces this term (see Voxel GI). Exarust uses the cube path only outside
+  the GI block or with `--no-gi`.
 - The cube is `genref01r` for every indoor level (six 256² sRGB faces, each
   with nine mips); outdoors it is `genref02r` masked by `genref02rm`. The
   level record's `EnvMapIA01` is unread.
@@ -99,7 +99,9 @@ program.
 - Dirt maps only act through vertex colours, which level meshes do not
   have.
 - Tangents are generated from the UVs, and the original's bitangent runs
-  along −v. With MikkTSpace tangents the normal map's green is negated.
+  along −v (its tangent sign is the opposite of MikkTSpace's). Bevy flips
+  the MikkTSpace sign too, so its bitangent also runs along −v and the
+  normal map's channels are used as stored.
 - The program follows the material type:
   - 0 legacy;
   - 1 PBR;
@@ -122,6 +124,79 @@ program.
   map², cut at ½).
 
 Blended draws are sorted by the layer in bits 4–7, without depth writes.
+
+## Voxel GI
+
+The original's bounce light is a light volume of 20 cm voxels
+(`exa_world::gi_volume` builds it, `exa_render::gi` propagates it).
+
+**Occupancy** (one byte per voxel, on the CPU at level load):
+- One block of 256 × 256 voxels across: eight 6 m sectors of 30 columns
+  plus an 8-voxel margin on each side. It is 64 voxels high (128 when the
+  level's highest and lowest points are more than 12.8 m apart).
+- Sectors fall on world multiples of 6 m. The block's top is the level
+  record's highest point (`0x98`), truncated to whole voxels.
+- The original keeps up to nine blocks resident around the camera; Exarust
+  builds one block around the level's centre.
+- The top slice holds 26 and the slice below 5, a soft lid.
+- Every mesh's stored **GI sample points** (chunk `0x3D0CEC05`: a spacing
+  word, a count, then object-space points in cm) are transformed to the
+  world and splatted:
+  - trilinearly with weight 20, each cell's share rounded on its own, the
+    sum saturating at 255;
+  - points within a voxel of the block's sides, or in its top slice, are
+    dropped;
+  - the spacing word is unused. Wall pieces store 100, and their points
+    land one per voxel centre, making solid slabs.
+- Many wall sets (the menu's `GEWS_UWA02`) store no points, and the original
+  generates none for walls. Those walls block nothing.
+- **Floor layer**: each tile-grid cell's floor (the floor set's pieces and
+  the wall pieces' `+F` strips) is rasterised:
+  - one column per 10 cm, taking the highest upward-facing face;
+  - the 10 cm cell under that top is marked;
+  - every 20 cm voxel holding four marks (its four columns in the same band)
+    gets a point at its centre.
+  
+  A flat floor at height 0 fills the slice from −20 to 0 cm.
+- Each column remembers the lowest slice a point fell in. A sector's floor
+  is the lowest over its 30 × 30 columns.
+
+**Propagation**, one step per frame (a warm-up runs at load, 600 steps by
+default). The light is 8-bit sRGB RGB, with A = 1 − 5·occ.
+
+Only slices from the sector's floor up to the second-highest are updated.
+Sectors with no points at all, and the margins, are never updated: they
+stay dark and absorb light that reaches them through open walls.
+
+For each updated voxel, with occ normalised:
+- open = max(1 − 13·occ, 0);
+- for the eight diagonal neighbours n at ±1.33 voxels:
+  - a = open(n);
+  - P = light(n) · a² (· a with a sun);
+  - sum += mix(old, P, a);
+- open fades out over the lowest slices: · (1 − 2^(−16·r));
+- k = min(8·Σa, 1) · (0.3·open + 0.699);
+- light = sum·k/8 + base·open + Σ lights;
+- base = level record `0x30` (as stored) × 0.001;
+- each light adds lin(colour)·intensity·0.15·0.01 · (1 − d/R)⁴ · open.
+
+Light builds up toward about direct/(1 − k). With open walls and dark
+sectors around it, the menu room converges within a few hundred steps.
+
+**Open question:** with every input verified against the executable, the
+menu still renders darker than the original's capture. The floor's bounce
+light is about 0.005 linear, and the torch-lit walls are about 1.45× darker
+even without GI, so part of the gap lies outside the GI. This needs a
+side-by-side check on the GPU at the same camera.
+
+**Shading**:
+- Four taps 20 cm out along the normal, spread across the tangent plane,
+  averaged. Light gives g, alpha gives the occlusion o.
+- a = |g|; b = (1 − a)²·0.03/(a + 0.016) + 0.47a + 0.53, which lifts faint
+  light.
+- ambient = g · lin(level ambient) · 15 · b · o.
+- Reflections are the cube along the mirror direction at mip
+  (rough − 0.05)·8 × ambient × 8 × 2 × the geometry term.
 
 ## Lights
 
@@ -159,7 +234,8 @@ particles with a nine-key colour ramp (not done yet).
 
 ## Not done yet
 
-Flame particles, the voxel GI volume, fog, displacement and parallax, vertex
+Flame particles, the sun and terrain in the GI volume, several resident GI
+blocks, fog, displacement and parallax, vertex
 dirt, glass refraction, effect programs (smoke, powers), hair and skin
 programs, terrain on the new shading, and the outdoor environment cube.
 Software rendering here cannot afford the light shadows, so test frames use

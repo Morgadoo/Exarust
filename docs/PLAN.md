@@ -225,8 +225,8 @@ Hits land where the weapon actually touched, and armour visibly matters.
   (an OpenPBR subset in WGSL: base, specular, coat, fuzz, approximate
   subsurface).
 - Lighting: cube-map shadows for many point lights (torches, candles),
-  a GI approximation chosen by measurement: baked or voxel cone tracing
-  similar to the original, with Bevy's own GI options as the fallback.
+  and the original's voxel light-propagation GI rebuilt as a compute pass
+  (done: one block per level; see `docs/RENDERING.md`).
   Ambient occlusion, bloom, tone mapping, colour grading against reference
   screenshots.
 - Effects: particles (fire, sparks), blood sprays and spatter decals,

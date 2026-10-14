@@ -44,6 +44,9 @@ pub struct ModelNode {
     pub fire: Option<f32>,
     /// Bounding sphere in the node's space (metres).
     pub bounds: (Vec3, f32),
+    /// The mesh's GI sample points in the node's space (metres), which mark
+    /// the voxels it fills.
+    pub gi_points: Arc<Vec<Vec3>>,
 }
 
 impl Model {
@@ -187,6 +190,12 @@ impl ModelLoader<'_> {
                 part_materials,
                 skin_bone,
                 bounds: (Vec3::from(node.bounds_centre), node.bounds_radius),
+                gi_points: Arc::new(match &node.body {
+                    NodeBody::Mesh(mesh) if skin_bone.is_none() => {
+                        mesh.gi_points.iter().map(|&p| Vec3::from(p)).collect()
+                    }
+                    _ => Vec::new(),
+                }),
                 fire: match &node.body {
                     NodeBody::Emitter { kind, size } if *kind == exa_formats::rfc::FIRE => {
                         Some(*size)

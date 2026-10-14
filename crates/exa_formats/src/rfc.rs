@@ -111,7 +111,7 @@ pub struct Node {
 
 #[derive(Debug, Clone)]
 pub enum NodeBody {
-    Mesh(Mesh),
+    Mesh(Box<Mesh>),
     Light(Light),
     /// The node reuses another object's data; nothing else is stored.
     Instance(u32),
@@ -160,6 +160,10 @@ pub struct Mesh {
     /// Per-triangle flags (sub-chunk `0x3DC3`): seam classes in the high
     /// byte, apparel cull bits `0x200000`/`0x400000`.
     pub triangle_flags: Option<Vec<u32>>,
+    /// Points sampling the surfaces on a ~40 cm lattice (sub-chunk
+    /// `0x3D0CEC05`, after the mesh body), in metres: they mark the mesh's
+    /// cells as solid for the global illumination volume.
+    pub gi_points: Vec<[f32; 3]>,
     /// The word before the streams in newer files: skinning mode flags.
     pub skin_flags: u32,
 }
@@ -344,7 +348,7 @@ impl Scene {
 
     pub fn meshes(&self) -> impl Iterator<Item = (&Node, &Mesh)> {
         self.nodes.iter().filter_map(|n| match &n.body {
-            NodeBody::Mesh(m) => Some((n, m)),
+            NodeBody::Mesh(m) => Some((n, m.as_ref())),
             _ => None,
         })
     }
@@ -362,6 +366,37 @@ fn read_materials(
         out.push((name, Material::parse(payload).map_err(|e| e.to_string())));
     }
     Ok(())
+}
+
+/// Sub-chunk of GI sample points after a mesh body: `u32 spacing (cm),
+/// u32 count, count × f32[3]` object-space points (cm).
+pub const GI_POINTS: u32 = 0x3D0C_EC05;
+
+/// The GI sample points among the sub-chunks after a mesh body; none when
+/// the chunk is absent or malformed.
+fn read_gi_points(c: &mut Cursor<'_>) -> Vec<[f32; 3]> {
+    while c.remaining() >= 8 {
+        let Ok((tag, mut sub)) = c.chunk() else {
+            break;
+        };
+        if tag != GI_POINTS {
+            continue;
+        }
+        let (Ok(_spacing), Ok(count)) = (sub.u32(), sub.u32()) else {
+            break;
+        };
+        let count = count as usize;
+        if sub.remaining() < count * 12 {
+            break;
+        }
+        return (0..count)
+            .filter_map(|_| {
+                let p = [sub.f32().ok()?, sub.f32().ok()?, sub.f32().ok()?];
+                Some(p.map(|v| v * CENTIMETRES_TO_METRES))
+            })
+            .collect();
+    }
+    Vec::new()
 }
 
 /// Emitter records end a plain node's body: `u32 type, u32 4, f32 size`.
@@ -402,7 +437,10 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
         NodeBody::Instance(instance)
     } else if kind == NODE_MESH {
         match read_mesh(&mut c, version) {
-            Ok(m) => NodeBody::Mesh(m),
+            Ok(mut m) => {
+                m.gi_points = read_gi_points(&mut c);
+                NodeBody::Mesh(Box::new(m))
+            }
             Err(e) => NodeBody::Invalid(e.to_string()),
         }
     } else if kind == NODE_LIGHT {
@@ -629,6 +667,7 @@ fn read_mesh(c: &mut Cursor<'_>, version: u16) -> Result<Mesh> {
         indices,
         groups,
         triangle_flags,
+        gi_points: Vec::new(),
         skin_flags,
     })
 }

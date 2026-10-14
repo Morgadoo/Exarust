@@ -4,6 +4,7 @@
 
 pub mod environment;
 pub mod fire;
+pub mod gi_volume;
 pub mod grid;
 pub mod start;
 pub mod terrain;
@@ -22,6 +23,7 @@ impl Plugin for WorldPlugin {
             terrain::TerrainPlugin,
             environment::EnvironmentPlugin,
             fire::FirePlugin,
+            gi_volume::GiVolumePlugin,
         ));
     }
 }
@@ -261,6 +263,11 @@ pub fn spawn_model(commands: &mut Commands, model: &Model, placement: Option<Tra
         if let Some(size) = node.fire {
             fire::spawn_fire(commands, e, size);
         }
+        if !node.gi_points.is_empty() {
+            commands
+                .entity(e)
+                .insert(gi_volume::GiPoints(node.gi_points.clone()));
+        }
         entities.push(e);
     }
     for (i, node) in model.nodes.iter().enumerate() {
@@ -380,6 +387,13 @@ pub fn spawn_level(
         min = Vec3::splat(-10.0);
         max = Vec3::splat(10.0);
     }
+    let env = scene.environment.clone().unwrap_or_default();
+    commands.insert_resource(gi_volume::PendingGi {
+        centre: (min + max) / 2.0,
+        top: env.ceiling,
+        bottom: env.floor,
+        base_ambient: env.fill[0] * gi_volume::BASE_AMBIENT,
+    });
     Some((
         root,
         LevelInfo {
