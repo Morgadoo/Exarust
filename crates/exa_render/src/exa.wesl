@@ -156,7 +156,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     if has(NORMAL_MAP) {
         let t = normalize(in.world_tangent.xyz - n * dot(in.world_tangent.xyz, n));
         let b = cross(n, t) * in.world_tangent.w;
-        let xy = textureSample(normal_map, normal_sampler, uv).rg * 2.0 - 1.0;
+        // The original's tangent frame has its bitangent along −v.
+        let xy = (textureSample(normal_map, normal_sampler, uv).rg * 2.0 - 1.0) * vec2(1.0, -1.0);
         let z = sqrt(max(1.0 - dot(xy, xy), 0.0));
         n = normalize(t * xy.x + b * xy.y + n * z);
     }
@@ -187,12 +188,6 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     }
     if has(GLOSS_MAP) && !has(SPECULAR_MAP) {
         s.rough = 1.0 - material.specular.w * textureSample(gloss_map, gloss_sampler, uv).r;
-    }
-    // Dirt roughens where it is far from mid-grey (the original's dirt mode
-    // 1, without vertex dirt).
-    if has(DIRT_MAP) {
-        let drt = textureSample(dirt_map, dirt_sampler, uv).g;
-        s.rough = 1.0 - (1.0 - s.rough) * (1.0 - abs(0.5 - drt) * 2.0);
     }
     s.rough = clamp(s.rough, 0.02, 1.0);
 

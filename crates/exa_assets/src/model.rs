@@ -345,8 +345,12 @@ impl ModelLoader<'_> {
             diffuse *= 1.5;
         }
         let packed = m.kind & 1 != 0;
+        // No specular without the material's specular bit; PBR materials
+        // with a specular map triple it.
         let mut specular = rgb(m.specular) * m.specular_level;
-        if m.texture(TextureSlot::Specular).is_some() {
+        if m.flags & material_flags::SPECULAR == 0 {
+            specular = Vec3::ZERO;
+        } else if packed && m.texture(TextureSlot::Specular).is_some() {
             specular *= 3.0;
         }
         let mut shading = 0;
@@ -393,13 +397,8 @@ impl ModelLoader<'_> {
         if let Some(t) = m.texture(TextureSlot::Opacity) {
             mat.opacity_map = self.texture(t, ColorSpace::Linear).map(|t| t.0);
         }
-        if let Some(t) = m.texture(TextureSlot::Dirt) {
-            mat.dirt_map = self.texture(t, ColorSpace::Srgb).map(|t| t.0);
-        }
-        // Gloss maps count only when the material's flags name them.
-        if m.flags & GLOSS_SLOT != 0
-            && let Some(t) = m.texture(TextureSlot::Gloss)
-        {
+        // Dirt maps only act through vertex colours, which level meshes lack.
+        if let Some(t) = m.texture(TextureSlot::Gloss) {
             mat.gloss_map = self.texture(t, ColorSpace::Linear).map(|t| t.0);
         }
         mat.alpha_mode = blend_mode(m.class, cut_out || mat.opacity_map.is_some());
@@ -633,9 +632,6 @@ fn blend_mode(word: u32, has_alpha: bool) -> AlphaMode {
         _ => AlphaMode::Blend,
     }
 }
-
-/// The gloss-map texture slot, as named in a material's flags.
-const GLOSS_SLOT: u32 = 0x0100_0000;
 
 /// The environment cube of indoor scenes.
 const ENVIRONMENT_MAP: &str = "genref01r";

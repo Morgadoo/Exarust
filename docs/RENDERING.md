@@ -77,18 +77,35 @@ program.
 - Diffuse is N·L·(1 − F), times the diffuse colour.
 - Packed specular maps give the metalness: diffuse × (1 − metal), F0 =
   mix(0.04, albedo·specular, metal), and the intensity scales the specular.
-- Ambient = environment cube at the normal (mip 5) × level ambient × 16,
-  added to the lights before the diffuse colour.
+- Without voxel GI, ambient = environment cube at the normal (mip 5) ×
+  level ambient × 16, added to the lights before the diffuse colour.
+  **The game always runs with voxel GI** (GI mode 3), whose bounce light
+  replaces this term (×15 level ambient). Exarust uses the cube path until
+  the GI volume is built.
 - The cube is `genref01r` for every indoor level (six 256² sRGB faces, each
   with nine mips); outdoors it is `genref02r` masked by `genref02rm`. The
   level record's `EnvMapIA01` is unread.
 - Reflections sample the cube along the mirror direction at mip
   (rough − 0.1)·8, as (e + e²) × level ambient × 8 × the geometry term.
-- Gloss maps count only when the flags name them: rough = 1 − glossiness ×
-  gloss.r.
-- Dirt maps roughen where they deviate from mid-grey: rough = 1 − (1 −
-  rough)(1 − |0.5 − dirt.g|·2). This is dirt mode 1 without vertex dirt;
-  vertex dirt and modes 2 and 4 are not done.
+- Roughness ("Gloss" in the shaders) depends on the maps present:
+  - 1 − glossiness × specular map green;
+  - otherwise 1 − glossiness × gloss map red;
+  - otherwise 1 − glossiness.
+
+  Glossiness is the record's `0x3C` as stored. Gloss maps are dark, so the
+  menu floor's 0.9 becomes a matte roughness of about 0.8.
+- The specular colour is zero unless the flags carry `0x4`. It is tripled
+  only for PBR materials (type 1) with a specular map.
+- Dirt maps only act through vertex colours, which level meshes do not
+  have.
+- Tangents are generated from the UVs, and the original's bitangent runs
+  along −v. With MikkTSpace tangents the normal map's green is negated.
+- The program follows the material type:
+  - 0 legacy;
+  - 1 PBR;
+  - 2 unlit;
+  - 3 hair;
+  - 4 skin (subsurface).
 - Legacy materials (type 0) use the older program:
   - no Fresnel per light, and diffuse is N·L;
   - (lights + reflection) × specular colour × (0.5 + 0.5·Schlick);

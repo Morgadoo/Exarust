@@ -81,6 +81,8 @@ pub struct Material {
 pub mod flags {
     /// Lit by ambient and lights.
     pub const LIT: u32 = 0x3;
+    /// Has a specular colour.
+    pub const SPECULAR: u32 = 0x4;
     pub const TWO_SIDED: u32 = 0x10;
     pub const REFRACT: u32 = 0x200;
     pub const OPACITY_FALLOFF: u32 = 0x800;
