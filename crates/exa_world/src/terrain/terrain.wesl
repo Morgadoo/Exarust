@@ -25,6 +25,8 @@ struct TerrainSplat {
     normal: array<vec4<f32>, 4>,
     // Texture repeats per metre per layer.
     tiling: vec4<f32>,
+    // Gloss factor; parallax height base, reference, scale.
+    surface: array<vec4<f32>, 4>,
     gi_origin: vec4<f32>,
     gi_extent: vec4<f32>,
     flags: u32,
@@ -35,6 +37,7 @@ struct TerrainSplat {
 
 const GI: u32 = 1u;
 const ENVIRONMENT: u32 = 2u;
+const DEBUG_GI: u32 = 4u;
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> splat: TerrainSplat;
 @group(constants::MATERIAL_BIND_GROUP) @binding(101) var diffuse0: texture_2d<f32>;
@@ -45,12 +48,15 @@ const ENVIRONMENT: u32 = 2u;
 @group(constants::MATERIAL_BIND_GROUP) @binding(106) var diffuse2_sampler: sampler;
 @group(constants::MATERIAL_BIND_GROUP) @binding(107) var diffuse3: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(108) var diffuse3_sampler: sampler;
-@group(constants::MATERIAL_BIND_GROUP) @binding(109) var mask1: texture_2d<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(110) var mask1_sampler: sampler;
-@group(constants::MATERIAL_BIND_GROUP) @binding(111) var mask2: texture_2d<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(112) var mask2_sampler: sampler;
-@group(constants::MATERIAL_BIND_GROUP) @binding(113) var mask3: texture_2d<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(114) var mask3_sampler: sampler;
+// Per layer: parallax height (r), gloss (g), blend mask (b).
+@group(constants::MATERIAL_BIND_GROUP) @binding(109) var surface0: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(110) var surface0_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(111) var surface1: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(112) var surface1_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(113) var surface2: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(114) var surface2_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(127) var surface3: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(128) var surface3_sampler: sampler;
 @group(constants::MATERIAL_BIND_GROUP) @binding(115) var normal0: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(116) var normal0_sampler: sampler;
 @group(constants::MATERIAL_BIND_GROUP) @binding(117) var normal1: texture_2d<f32>;
@@ -92,6 +98,48 @@ fn normal_xy(sample: vec4<f32>, k: i32) -> vec2<f32> {
     return (sample.xy * 2.0 - 1.0) * splat.normal[k].z;
 }
 
+// The four layers' packed surface samples at ground position `p` (metres
+// along +X, −Z).
+struct Surfaces {
+    s: array<vec4<f32>, 4>,
+}
+
+fn surfaces(p: vec2<f32>) -> Surfaces {
+    var out: Surfaces;
+    out.s[0] = textureSampleLevel(surface0, surface0_sampler, p * splat.tiling.x, 0.0);
+    out.s[1] = textureSampleLevel(surface1, surface1_sampler, p * splat.tiling.y, 0.0);
+    out.s[2] = textureSampleLevel(surface2, surface2_sampler, p * splat.tiling.z, 0.0);
+    out.s[3] = textureSampleLevel(surface3, surface3_sampler, p * splat.tiling.w, 0.0);
+    return out;
+}
+
+// The composited parallax height at `p`: each layer's f20 + (B − f21)·f22,
+// stacked like the normals.
+fn height_at(p: vec2<f32>, alpha: vec4<f32>) -> f32 {
+    let su = surfaces(p);
+    var h = layer_height(su.s[0], 0);
+    h = stack_height(h, layer_height(su.s[1], 1), alpha.y, su.s[1].b, 1);
+    h = stack_height(h, layer_height(su.s[2], 2), alpha.z, su.s[2].b, 2);
+    h = stack_height(h, layer_height(su.s[3], 3), alpha.w, su.s[3].b, 3);
+    return h;
+}
+
+fn layer_height(su: vec4<f32>, k: i32) -> f32 {
+    let q = splat.surface[k];
+    return q.y + (su.r - q.z) * q.w;
+}
+
+fn stack_height(below: f32, h: f32, a: f32, m: f32, k: i32) -> f32 {
+    let nb = splat.normal[k];
+    return mix(below, h, sharpen(a, m, nb.x, nb.y, splat.blend[k].z > 0.5));
+}
+
+// The original's terrain diffuse factor (`MatDif`).
+const TERRAIN_DIFFUSE: f32 = 0.75;
+// Parallax scale in 6 m block units.
+const PARALLAX: f32 = 0.007;
+const BLOCK: f32 = 6.0;
+
 // Normal xy of layer `k` stacked on `below`.
 fn stack_normal(below: vec2<f32>, n: vec2<f32>, a: f32, m: f32, k: i32) -> vec2<f32> {
     let nb = splat.normal[k];
@@ -107,27 +155,56 @@ fn fragment(
 @if(VERTEX_COLORS) {
     alpha = in.color;
 }
+    let wp = in.world_position.xyz;
+    let v = normalize(view_bindings::view.world_position.xyz - wp);
+    var ng = normalize(in.world_normal);
+    if !is_front {
+        ng = -ng;
+    }
 
     // Texture u runs along +X and v along −Z on the ground, as the original
     // maps its terrain (and its tile-grid floors).
-    let p = vec2(in.world_position.x, -in.world_position.z);
+    let ground = vec2(wp.x, -wp.z);
+    // Parallax in 6 m block coordinates, as the original's terrain program:
+    // the tangent-space view shifts them by the composited height in four
+    // accumulating steps, then eases back where the height changes sharply.
+    let tu = normalize(vec3(1.0, 0.0, 0.0) - ng * ng.x);
+    let tv = normalize(vec3(0.0, 0.0, -1.0) + ng * ng.z);
+    let eye = -v;
+    let vt = vec3(dot(eye, tu), dot(eye, tv), dot(eye, ng));
+    let dsp = vt.xy * PARALLAX * (4.0 + 3.0 * vt.z);
+    let start = ground / BLOCK;
+    let d = height_at(start * BLOCK, alpha) - 0.5;
+    var uvb = start - dsp * d;
+    var last = d;
+    for (var k = 0; k < 3; k++) {
+        last = height_at(uvb * BLOCK, alpha) - 0.5;
+        uvb -= dsp * last;
+    }
+    uvb = mix(uvb, start, min((d - last) * 2.0, 1.0));
+    let p = uvb * BLOCK;
+
     let uv0 = p * splat.tiling.x;
     let uv1 = p * splat.tiling.y;
     let uv2 = p * splat.tiling.z;
     let uv3 = p * splat.tiling.w;
-    let m1 = textureSample(mask1, mask1_sampler, uv1).r;
-    let m2 = textureSample(mask2, mask2_sampler, uv2).r;
-    let m3 = textureSample(mask3, mask3_sampler, uv3).r;
+    let su = surfaces(p);
+    let m1 = su.s[1].b;
+    let m2 = su.s[2].b;
+    let m3 = su.s[3].b;
 
     var colour = textureSample(diffuse0, diffuse0_sampler, uv0).rgb * splat.colour[0].rgb;
     colour = stack(colour, textureSample(diffuse1, diffuse1_sampler, uv1).rgb * splat.colour[1].rgb, alpha.y, m1, 1);
     colour = stack(colour, textureSample(diffuse2, diffuse2_sampler, uv2).rgb * splat.colour[2].rgb, alpha.z, m2, 2);
     colour = stack(colour, textureSample(diffuse3, diffuse3_sampler, uv3).rgb * splat.colour[3].rgb, alpha.w, m3, 3);
+    colour *= TERRAIN_DIFFUSE;
 
-    var gloss = vec3<f32>(splat.normal[0].w);
-    gloss = stack(gloss, vec3<f32>(splat.normal[1].w), alpha.y, m1, 1);
-    gloss = stack(gloss, vec3<f32>(splat.normal[2].w), alpha.z, m2, 2);
-    gloss = stack(gloss, vec3<f32>(splat.normal[3].w), alpha.w, m3, 3);
+    // The composited gloss map: each layer's gloss × its factor, stacked like
+    // the colour; roughness is 1 − gloss (no wetness indoors).
+    var gloss = vec3<f32>(su.s[0].g * splat.surface[0].x);
+    gloss = stack(gloss, vec3<f32>(su.s[1].g * splat.surface[1].x), alpha.y, m1, 1);
+    gloss = stack(gloss, vec3<f32>(su.s[2].g * splat.surface[2].x), alpha.z, m2, 2);
+    gloss = stack(gloss, vec3<f32>(su.s[3].g * splat.surface[3].x), alpha.w, m3, 3);
 
     var nxy = normal_xy(textureSample(normal0, normal0_sampler, uv0), 0);
     nxy = stack_normal(nxy, normal_xy(textureSample(normal1, normal1_sampler, uv1), 1), alpha.y, m1, 1);
@@ -136,25 +213,15 @@ fn fragment(
     let nz = sqrt(1.0 - min(dot(nxy, nxy), 0.999));
     // The normal map's frame: +X and +Z across the ground (green along −v),
     // as the original's terrain program builds it.
-    var ng = normalize(in.world_normal);
-    if !is_front {
-        ng = -ng;
-    }
     let t = normalize(vec3<f32>(1.0, 0.0, 0.0) - ng * ng.x);
     let b = normalize(vec3<f32>(0.0, 0.0, 1.0) - ng * ng.z);
     let n = normalize(t * nxy.x + b * nxy.y + ng * nz);
 
-    // The original's terrain gloss: bluish, darker ground shines, scaled by
-    // the material's glossiness.
-    let shine = sqrt(min(max(colour.b - colour.r * 0.8 + 0.01, 0.0) * clamp(gloss.x, 0.0, 1.0) * 14.0, 0.9));
-
-    let wp = in.world_position.xyz;
-    let v = normalize(view_bindings::view.world_position.xyz - wp);
     var s: Surface;
     s.n = n;
     s.v = v;
     s.ndv = abs(dot(v, n));
-    s.rough = clamp(1.0 - shine, 0.02, 1.0);
+    s.rough = clamp(1.0 - clamp(gloss.x, 0.0, 1.0), 0.02, 1.0);
     s.f0 = vec3(0.04);
     s.legacy = false;
 
@@ -171,7 +238,13 @@ fn fragment(
     let gi_origin = splat.gi_origin.xyz;
     let gi_extent = splat.gi_extent.xyz;
     if has(GI) && in_gi(gi_origin, gi_extent, wp) {
-        ambient = gi_ambient(gi_sample(gi_volume, gi_sampler, gi_origin, gi_extent, wp, n), level);
+        let g = gi_sample(gi_volume, gi_sampler, gi_origin, gi_extent, wp, n);
+        if has(DEBUG_GI) {
+            var dbg: FragmentOutput;
+            dbg.color = vec4(g.rgb * 10.0, 1.0);
+            return dbg;
+        }
+        ambient = gi_ambient(g, level);
         if has(ENVIRONMENT) {
             mirrored = textureSampleLevel(environment_map, environment_sampler, r, max(s.rough - 0.05, 0.0) * 8.0).rgb;
         }

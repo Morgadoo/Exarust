@@ -217,11 +217,24 @@ fn gather_lights(
     if !textures.is_added() && textures.warm_up > 0 {
         textures.warm_up = 0;
     }
-    for (light, at, share) in lights
+    // The lights whose reach overlaps the block, nearest its centre first
+    // (the original injects the lights of each sector group).
+    let (lo, hi) = (textures.origin, textures.origin + textures.extent);
+    let centre = (lo + hi) * 0.5;
+    let mut near: Vec<_> = lights
         .iter()
         .filter(|l| l.2.is_none_or(|m| m.0 > 0.0))
-        .take(MAX_LIGHTS)
-    {
+        .filter(|(light, at, _)| {
+            let p = at.translation();
+            p.clamp(lo, hi).distance(p) < light.range / REACH
+        })
+        .collect();
+    near.sort_by(|a, b| {
+        a.1.translation()
+            .distance_squared(centre)
+            .total_cmp(&b.1.translation().distance_squared(centre))
+    });
+    for (light, at, share) in near.into_iter().take(MAX_LIGHTS) {
         let c = light.color.to_linear();
         let intensity = light.intensity / LUMENS_PER_INTENSITY * share.map_or(1.0, |m| m.0);
         gi.0.push(GiLight {
@@ -271,6 +284,9 @@ fn give_materials_gi(
         m.params.gi_origin = textures.origin.extend(1.0);
         m.params.gi_extent = textures.extent.extend(0.0);
         m.params.flags |= flags::GI;
+        if std::env::var_os("EXA_GI_DEBUG").is_some() {
+            m.params.flags |= flags::DEBUG_GI;
+        }
     }
 }
 

@@ -11,10 +11,11 @@ import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput;
 @group(0) @binding(3) var<uniform> settings: PostSettings;
 
 struct PostSettings {
-    // Bloom strength (1 in play), desaturation (0 in play), unused, unused.
+    // Bloom strength (1 in play), desaturation (0 in play), the sharpen
+    // supersampling turns on, unused.
     bloom_strength: f32,
     desaturate: f32,
-    pad0: f32,
+    sharpen: f32,
     pad1: f32,
 }
 
@@ -63,6 +64,26 @@ fn blur_y(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
 fn finish(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let full = textureSampleLevel(source, source_sampler, in.uv, 0.0);
     var c = clamp(full.rgb, vec3(0.0), vec3(1.0));
+    // The sharpen: four diagonal samples half a pixel out (each a 2 × 2
+    // average); flat areas are unsharp-masked, strong edges eased toward
+    // their neighbours.
+    if settings.sharpen > 0.01 {
+        let px = 0.5 / vec2<f32>(textureDimensions(source));
+        var around = vec3(0.0);
+        var contrast = 0.0;
+        for (var i = 0; i < 4; i++) {
+            let sx = select(-1.0, 1.0, i == 1 || i == 2);
+            let sy = select(-1.0, 1.0, i >= 2);
+            let s = scene(in.uv + px * vec2(sx, sy));
+            around += s;
+            let diff = c - s;
+            contrast += dot(diff, diff);
+        }
+        let mean = (around - c) * 0.33333;
+        contrast *= 16.0;
+        let w = (min(contrast * 0.16, 0.8) - pow(clamp(1.0 - contrast, 0.0, 1.0), 16.0)) * settings.sharpen;
+        c = c * (1.0 - w) + mean * w;
+    }
     let d = settings.desaturate;
     c = mix(c, vec3(c.g), d);
     c *= c.g * 2.0 * d + 1.0 - d * 0.5;

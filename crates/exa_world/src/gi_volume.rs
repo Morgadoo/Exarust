@@ -34,6 +34,10 @@ pub struct GiPoints(pub Arc<Vec<Vec3>>);
 #[derive(Component, Clone, Copy)]
 pub struct GiFloor;
 
+/// A terrain tile mesh: the voxels below its surface are solid.
+#[derive(Component, Clone, Copy)]
+pub struct GiTerrain;
+
 /// A level waiting for its GI volume, once its nodes have world transforms.
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct PendingGi {
@@ -72,6 +76,7 @@ pub const BASE_AMBIENT: f32 = 0.001;
 struct GiSource {
     points: Vec<Vec3>,
     floors: Vec<[Vec3; 3]>,
+    terrain: Vec<[Vec3; 3]>,
     level: PendingGi,
 }
 
@@ -88,12 +93,14 @@ const FOCUS_AHEAD: f32 = 20.0;
 /// sectors.
 const REBUILD_SECTORS: f32 = 2.0;
 
+#[allow(clippy::too_many_arguments)]
 fn collect_source(
     mut commands: Commands,
     pending: Option<Res<PendingGi>>,
     settings: Res<GiSettings>,
     points: Query<(&GiPoints, &GlobalTransform)>,
     floors: Query<(&Mesh3d, &GlobalTransform), With<GiFloor>>,
+    terrain: Query<(&Mesh3d, &GlobalTransform), With<GiTerrain>>,
     meshes: Res<Assets<Mesh>>,
     fires: Query<&crate::fire::Fire>,
 ) {
@@ -115,8 +122,30 @@ fn collect_source(
         let m = at.affine();
         world.extend(gi.0.iter().map(|&p| m.transform_point3(p)));
     }
+    let triangles = world_triangles(floors.iter(), &meshes);
+    let ground = world_triangles(terrain.iter(), &meshes);
+    info!(
+        "GI source: {} meshes, {} points, {} floor and {} terrain triangles",
+        points.iter().count(),
+        world.len(),
+        triangles.len(),
+        ground.len()
+    );
+    commands.insert_resource(GiSource {
+        points: world,
+        floors: triangles,
+        terrain: ground,
+        level: *pending,
+    });
+}
+
+/// The triangles of `meshes` in world space.
+fn world_triangles<'a>(
+    parts: impl Iterator<Item = (&'a Mesh3d, &'a GlobalTransform)>,
+    meshes: &Assets<Mesh>,
+) -> Vec<[Vec3; 3]> {
     let mut triangles = Vec::new();
-    for (mesh, at) in &floors {
+    for (mesh, at) in parts {
         let Some(mesh) = meshes.get(&mesh.0) else {
             continue;
         };
@@ -137,17 +166,7 @@ fn collect_source(
             triangles.push([corners[t[0]], corners[t[1]], corners[t[2]]]);
         }
     }
-    info!(
-        "GI source: {} meshes, {} points, {} floor triangles",
-        points.iter().count(),
-        world.len(),
-        triangles.len()
-    );
-    commands.insert_resource(GiSource {
-        points: world,
-        floors: triangles,
-        level: *pending,
-    });
+    triangles
 }
 
 /// Keeps the block around the point ahead of the camera, rebuilding it when
@@ -173,6 +192,12 @@ fn follow_camera(
         }
     }
     let mut occupancy = Occupancy::new(focus, level.top, level.bottom);
+    // Terrain first, then the meshes' points, as the original builds a block.
+    let mut ground = FloorSurface::with_columns(&occupancy, 1);
+    for &t in &source.terrain {
+        ground.add(t);
+    }
+    let terrain_columns = ground.apply_terrain(&mut occupancy);
     for &p in &source.points {
         occupancy.splat(p);
     }
@@ -182,11 +207,14 @@ fn follow_camera(
     }
     let floor_points = surface.apply(&mut occupancy);
     info!(
-        "GI block: {floor_points} floor voxels, origin {:.2}, {} slices",
+        "GI block: {terrain_columns} terrain columns, {floor_points} floor voxels, origin {:.2}, {} slices",
         occupancy.origin, occupancy.depth
     );
     if let Some(path) = std::env::var_os("EXA_GI_DUMP") {
-        let _ = std::fs::write(path, &occupancy.cells);
+        let _ = std::fs::write(&path, &occupancy.cells);
+        let mut floors = path.clone();
+        floors.push(".floors");
+        let _ = std::fs::write(floors, occupancy.floors());
     }
     commands.insert_resource(GiBlock {
         origin: occupancy.origin,
@@ -219,19 +247,28 @@ const SECTORS: usize = 8;
 const SECTOR_M: f32 = SECTOR as f32 * VOXEL;
 /// Floor columns are half a voxel wide.
 const FINE: usize = 2;
+/// Occupancy of a voxel below the terrain surface.
+const TERRAIN_SOLID: u8 = 20;
 
-/// The top of the floors over the block, per 10 cm column (X fastest),
-/// for the floor layer.
+/// The top of a surface over the block, per column (X fastest): 10 cm
+/// columns for the floor layer, whole voxels for terrain.
 struct FloorSurface {
     origin: Vec3,
+    /// Columns per voxel along each axis.
+    fine: usize,
     tops: Vec<f32>,
 }
 
 impl FloorSurface {
     fn new(o: &Occupancy) -> Self {
+        Self::with_columns(o, FINE)
+    }
+
+    fn with_columns(o: &Occupancy, fine: usize) -> Self {
         Self {
             origin: o.origin,
-            tops: vec![f32::NEG_INFINITY; SIDE * FINE * SIDE * FINE],
+            fine,
+            tops: vec![f32::NEG_INFINITY; SIDE * fine * SIDE * fine],
         }
     }
 
@@ -242,15 +279,12 @@ impl FloorSurface {
         if n.y <= 1e-7 * n.length() {
             return;
         }
-        let fine = VOXEL / FINE as f32;
+        let columns = SIDE * self.fine;
+        let fine = VOXEL / self.fine as f32;
         let to_grid = |p: Vec3| ((p - self.origin) / fine).xz();
         let [a, b, c] = t.map(to_grid);
         let lo = a.min(b).min(c).floor().max(Vec2::ZERO);
-        let hi = a
-            .max(b)
-            .max(c)
-            .ceil()
-            .min(Vec2::splat((SIDE * FINE) as f32));
+        let hi = a.max(b).max(c).ceil().min(Vec2::splat(columns as f32));
         let area = (b - a).perp_dot(c - a);
         for z in lo.y as usize..hi.y as usize {
             for x in lo.x as usize..hi.x as usize {
@@ -262,10 +296,43 @@ impl FloorSurface {
                     continue;
                 }
                 let h = wa * t[0].y + wb * t[1].y + wc * t[2].y;
-                let top = &mut self.tops[x + z * SIDE * FINE];
+                let top = &mut self.tops[x + z * columns];
                 *top = top.max(h);
             }
         }
+    }
+
+    /// Fills terrain as the original does (whole-voxel columns): voxels below
+    /// the surface hold 20, the surface voxel its covered fraction of 20; the
+    /// margins are left alone. Returns the columns filled.
+    fn apply_terrain(&self, o: &mut Occupancy) -> usize {
+        debug_assert_eq!(self.fine, 1);
+        let mut filled = 0;
+        for z in MARGIN..SIDE - MARGIN {
+            for x in MARGIN..SIDE - MARGIN {
+                let top = self.tops[x + z * SIDE];
+                if !top.is_finite() {
+                    continue;
+                }
+                let g = (top - self.origin.y) / VOXEL;
+                if g <= 0.0 {
+                    continue;
+                }
+                let surface = (g.floor() as usize).min(o.depth);
+                for y in 0..surface {
+                    o.cells[x + z * SIDE + y * SIDE * SIDE] = TERRAIN_SOLID;
+                }
+                if surface < o.depth {
+                    let frac = g - surface as f32;
+                    o.cells[x + z * SIDE + surface * SIDE * SIDE] =
+                        (frac * TERRAIN_SOLID as f32).round() as u8;
+                }
+                let column = &mut o.lowest[x + z * SIDE];
+                *column = (*column).min(surface.min(o.depth - 1) as u8);
+                filled += 1;
+            }
+        }
+        filled
     }
 
     /// Fills each voxel holding the 10 cm cells under at least four of its

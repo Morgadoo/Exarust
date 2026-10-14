@@ -73,15 +73,20 @@ pub struct TerrainSplat {
     #[texture(107)]
     #[sampler(108)]
     pub diffuse3: Option<Handle<Image>>,
+    /// Per layer: parallax height (red), gloss (green) and blend mask (blue)
+    /// packed together, so a tile fits the per-stage texture limit.
     #[texture(109)]
     #[sampler(110)]
-    pub mask1: Option<Handle<Image>>,
+    pub surface0: Option<Handle<Image>>,
     #[texture(111)]
     #[sampler(112)]
-    pub mask2: Option<Handle<Image>>,
+    pub surface1: Option<Handle<Image>>,
     #[texture(113)]
     #[sampler(114)]
-    pub mask3: Option<Handle<Image>>,
+    pub surface2: Option<Handle<Image>>,
+    #[texture(127)]
+    #[sampler(128)]
+    pub surface3: Option<Handle<Image>>,
     #[texture(115)]
     #[sampler(116)]
     pub normal0: Option<Handle<Image>>,
@@ -115,6 +120,9 @@ pub struct SplatParams {
     pub normal: [Vec4; SPLAT_LAYERS],
     /// Texture repeats per metre per material.
     pub tiling: Vec4,
+    /// Per layer: gloss factor (f10 × 1.5 × min(f9, 1)), then the parallax
+    /// height's base, reference and scale (f20 + (B − f21)·f22).
+    pub surface: [Vec4; SPLAT_LAYERS],
     /// The GI volume's lowest corner and size (metres).
     pub gi_origin: Vec4,
     pub gi_extent: Vec4,
@@ -129,6 +137,8 @@ pub struct SplatParams {
 pub mod terrain_flags {
     pub const GI: u32 = 1;
     pub const ENVIRONMENT: u32 = 2;
+    /// Debug view: the raw GI sample (`EXA_GI_DEBUG`).
+    pub const DEBUG_GI: u32 = 4;
 }
 
 fn shader() -> ShaderRef {
@@ -193,6 +203,9 @@ fn give_terrain_gi(
         m.params.gi_origin = textures.origin.extend(1.0);
         m.params.gi_extent = textures.extent.extend(0.0);
         m.params.flags |= terrain_flags::GI;
+        if std::env::var_os("EXA_GI_DEBUG").is_some() {
+            m.params.flags |= terrain_flags::DEBUG_GI;
+        }
     }
 }
 
@@ -454,6 +467,7 @@ pub fn spawn_terrain(
             .collect()
     };
     let plants = Plants::load(loader, &palette);
+    let mut surfaces: HashMap<usize, Option<Handle<Image>>> = HashMap::new();
     let mut stats = TerrainStats::default();
     for tile in &terrain.tiles {
         let mut built = build_tile(&terrain, tile, &palette, &tree, &noise, &mut height_layers);
@@ -472,10 +486,11 @@ pub fn spawn_terrain(
                 .texture(TerrainTexture::Diffuse)
                 .and_then(|name| loader.texture(name, ColorSpace::Srgb))
                 .map(|(img, _)| img);
-            let mask = material
-                .texture(TerrainTexture::Mask)
-                .and_then(|name| loader.texture(name, ColorSpace::Linear))
-                .map(|(img, _)| img);
+            let masked = material.texture(TerrainTexture::Mask).is_some();
+            let surface = surfaces
+                .entry(m)
+                .or_insert_with(|| surface_texture(loader, material))
+                .clone();
             let normal = material
                 .texture(TerrainTexture::Normal)
                 .and_then(|name| loader.texture(name, ColorSpace::Linear))
@@ -495,15 +510,21 @@ pub fn spawn_terrain(
             splat.params.blend[slot] = Vec4::new(
                 look.sharpness[0],
                 look.sharpness[1],
-                if mask.is_some() { 1.0 } else { 0.0 },
+                if masked { 1.0 } else { 0.0 },
                 0.0,
             );
             splat.params.tiling[slot] = look.tiling;
+            splat.params.surface[slot] = Vec4::new(
+                look.gloss,
+                look.parallax[0],
+                look.parallax[1],
+                look.parallax[2],
+            );
             match slot {
-                0 => (splat.diffuse0, splat.normal0) = (diffuse, normal),
-                1 => (splat.diffuse1, splat.mask1, splat.normal1) = (diffuse, mask, normal),
-                2 => (splat.diffuse2, splat.mask2, splat.normal2) = (diffuse, mask, normal),
-                _ => (splat.diffuse3, splat.mask3, splat.normal3) = (diffuse, mask, normal),
+                0 => (splat.diffuse0, splat.surface0, splat.normal0) = (diffuse, surface, normal),
+                1 => (splat.diffuse1, splat.surface1, splat.normal1) = (diffuse, surface, normal),
+                2 => (splat.diffuse2, splat.surface2, splat.normal2) = (diffuse, surface, normal),
+                _ => (splat.diffuse3, splat.surface3, splat.normal3) = (diffuse, surface, normal),
             }
         }
         let centre = terrain.tile_centre(tile);
@@ -512,6 +533,7 @@ pub fn spawn_terrain(
                 Name::new(format!("terrain {} {}", tile.x, tile.y)),
                 Mesh3d(loader.meshes.add(built.mesh.take().expect("built once"))),
                 PendingSplat(splat),
+                crate::gi_volume::GiTerrain,
                 Transform::from_xyz(centre[0], 0.0, centre[1]),
                 Visibility::default(),
                 ChildOf(parent),
@@ -525,6 +547,91 @@ pub fn spawn_terrain(
     Some(stats)
 }
 
+/// Decodes a palette texture's base level to RGBA8 with its size.
+fn decode(game: &exa_assets::GameData, name: Option<&str>) -> Option<(usize, usize, Vec<u8>)> {
+    let rfi = Rfi::parse(game.texture(name?)?).ok()?;
+    let rgba = rfi.decode_rgba8().ok()?;
+    Some((rfi.header.width as usize, rfi.header.height as usize, rgba))
+}
+
+/// A palette material's parallax height (its bump slot, red), gloss (green)
+/// and blend mask (blue) in one linear texture at the largest of their
+/// sizes, with a box-filtered mip chain. Missing maps read as height ½,
+/// gloss 0 and mask 1.
+fn surface_texture(
+    loader: &mut ModelLoader<'_>,
+    material: &PaletteMaterial,
+) -> Option<Handle<Image>> {
+    let game = loader.game;
+    let bump = decode(game, material.texture(TerrainTexture::Bump));
+    let gloss = decode(game, material.texture(TerrainTexture::Gloss));
+    let mask = decode(game, material.texture(TerrainTexture::Mask));
+    let (w, h) = [&bump, &gloss, &mask]
+        .iter()
+        .filter_map(|m| m.as_ref().map(|(w, h, _)| (*w, *h)))
+        .max()
+        .unwrap_or((1, 1));
+    // The red channel of `map` at (x, y) of the w × h output, or `missing`.
+    let channel = |map: &Option<(usize, usize, Vec<u8>)>, x: usize, y: usize, missing: u8| {
+        map.as_ref().map_or(missing, |(mw, mh, px)| {
+            let (sx, sy) = (x * mw / w, y * mh / h);
+            px[(sx + sy * mw) * 4]
+        })
+    };
+    let mut level = vec![0u8; w * h * 4];
+    for y in 0..h {
+        for x in 0..w {
+            let i = (x + y * w) * 4;
+            level[i] = channel(&bump, x, y, 128);
+            level[i + 1] = channel(&gloss, x, y, 0);
+            level[i + 2] = channel(&mask, x, y, 255);
+            level[i + 3] = 255;
+        }
+    }
+    let (mut lw, mut lh) = (w, h);
+    let mut data = level.clone();
+    let mut mips = 1;
+    while lw > 1 || lh > 1 {
+        let (nw, nh) = ((lw / 2).max(1), (lh / 2).max(1));
+        let mut next = vec![0u8; nw * nh * 4];
+        for y in 0..nh {
+            for x in 0..nw {
+                for c in 0..4 {
+                    let mut sum = 0u32;
+                    for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                        let (sx, sy) = ((x * 2 + dx).min(lw - 1), (y * 2 + dy).min(lh - 1));
+                        sum += level[(sx + sy * lw) * 4 + c] as u32;
+                    }
+                    next[(x + y * nw) * 4 + c] = (sum / 4) as u8;
+                }
+            }
+        }
+        data.extend_from_slice(&next);
+        level = next;
+        (lw, lh) = (nw, nh);
+        mips += 1;
+    }
+    let mut image = Image::new_uninit(
+        bevy::render::render_resource::Extent3d {
+            width: w as u32,
+            height: h as u32,
+            depth_or_array_layers: 1,
+        },
+        bevy::render::render_resource::TextureDimension::D2,
+        bevy::render::render_resource::TextureFormat::Rgba8Unorm,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.texture_descriptor.mip_level_count = mips;
+    image.data = Some(data);
+    image.sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
+        address_mode_u: bevy::image::ImageAddressMode::Repeat,
+        address_mode_v: bevy::image::ImageAddressMode::Repeat,
+        anisotropy_clamp: 16,
+        ..bevy::image::ImageSamplerDescriptor::linear()
+    });
+    Some(loader.images.add(image))
+}
+
 /// Shading values of a palette material, from its parameter block.
 struct Look {
     colour: Vec4,
@@ -532,6 +639,8 @@ struct Look {
     normal_sharpness: [f32; 2],
     normal_strength: f32,
     gloss: f32,
+    /// Parallax height base, reference and scale (f20, f21, f22).
+    parallax: [f32; 3],
     tiling: f32,
 }
 
@@ -552,6 +661,7 @@ impl Look {
             normal_sharpness: [p(4, 1.0), p(5, 0.0)],
             normal_strength: p(11, 1.0),
             gloss: p(10, 0.25) * gain,
+            parallax: [p(20, 0.5), p(21, 0.5), p(22, 1.0)],
             tiling: tile * UV_PER_METRE,
         }
     }

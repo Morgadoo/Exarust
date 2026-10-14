@@ -9,6 +9,7 @@
 //!
 //! options: --camera x,y,z,yaw,pitch   start pose (metres, degrees)
 //!          --at x,y,z                 play mode: start here (metres)
+//!          --torch x,y,z              a burning torch fire here (metres), e.g. to stand in for a held one
 //!          --fov <degrees>            vertical field of view (default 45)
 //!          --no-shadows               lights cast no shadows (for software rendering)
 //!          --no-gi                    no voxel GI (ambient from the environment cube)
@@ -59,6 +60,8 @@ pub struct Options {
     pub size: Option<(u32, u32)>,
     /// Play mode: start here instead of the level's start (metres).
     pub at: Option<[f32; 3]>,
+    /// A torch fire at this point (metres).
+    pub torch: Option<[f32; 3]>,
     pub screenshot: Option<PathBuf>,
     pub frames: u32,
     /// Camera exposure; dungeon interiors need far less than daylight.
@@ -145,14 +148,19 @@ fn main() -> AppExit {
                     options.camera = Some(pose);
                 }
             }
-            "--at" => {
+            "--at" | "--torch" => {
                 let v: Vec<f32> = args
                     .next()
                     .unwrap_or_default()
                     .split(',')
                     .filter_map(|x| x.trim().parse().ok())
                     .collect();
-                options.at = <[f32; 3]>::try_from(v.as_slice()).ok();
+                let point = <[f32; 3]>::try_from(v.as_slice()).ok();
+                if a == "--at" {
+                    options.at = point;
+                } else {
+                    options.torch = point;
+                }
             }
             _ => positional.push(a),
         }

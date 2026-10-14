@@ -134,3 +134,31 @@ The system SHALL shape lights flagged `0x200` (under mask `0x300`) vertically by
 #### Scenario: Unshaped light
 - **WHEN** a light's flags do not ask for shaping
 - **THEN** its light falls off by distance alone
+
+### Requirement: Terrain in the GI volume
+The system SHALL fill the GI occupancy below the terrain surface, as the original does, so light does not drain beneath terrain floors.
+
+#### Scenario: Room on terrain
+- **WHEN** a torch burns in a room whose floor is terrain
+- **THEN** its bounce light stays in the room and reaches surfaces in shadow
+
+### Requirement: GI light selection
+The system SHALL inject into the GI the lights whose reach overlaps the current block, nearest first.
+
+#### Scenario: Large level
+- **WHEN** the camera is in a part of a level with hundreds of lights
+- **THEN** the lights near it are the ones lighting the GI volume
+
+### Requirement: Post-processing sharpen
+The system SHALL sharpen the frame in the final post pass as the original does with supersampling on: an unsharp mask from four diagonal half-pixel samples, weighted by their contrast, before the grading curve.
+
+#### Scenario: Floor detail
+- **WHEN** a textured floor fills the view
+- **THEN** its fine detail is as crisp as in the original
+
+### Requirement: Torch light reach
+The system SHALL widen a small fire's light radius by 1.25 when its size, compared in double precision, is above 0.2 (up to 0.35), as the original does, so a torch (size 0.2 stored in 32 bits) reaches 838.5 cm.
+
+#### Scenario: Wall torch
+- **WHEN** a torch of size 0.2 burns
+- **THEN** its light's radius is 838.5 cm

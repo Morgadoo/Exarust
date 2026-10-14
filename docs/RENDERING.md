@@ -30,8 +30,15 @@ Always on (`exa_render::post`, replacing Bevy's tonemapping; cameras get
    texels apart), horizontally then vertically at a quarter of the
    resolution. Weights fall from 0.0711 to 0.0162; the total gain is about
    1.23.
-3. **Final pass**: the scene clamped to 1, optionally desaturated (0 in
-   play), then
+3. **Final pass**: the scene clamped to 1, then:
+   - a **sharpen**, on when supersampling is (strength 1.5 × (0.075·n +
+     0.4) at supersample level n; 0.9375 at the original's 4×). It takes
+     four diagonal samples half a pixel out (each a 2 × 2 average) and
+     their contrast a = 16·Σ|C − S|². The weight is (min(0.16a, 0.8) −
+     clamp(1 − a, 0, 1)¹⁶)·strength, and C′ = C + w·((ΣS − C)/3 − C): an
+     unsharp mask on flat areas, easing toward the neighbours on strong
+     edges;
+   - optional desaturation (0 in play);
    - the **grading curve** b = 0.9c² + 0.1c, c′ = 7.05b/(6.5b + 0.55), a
      strong lift of the mid-tones (0.2 → 0.43, 0.5 → 0.83, 1 → 1);
    - the **bloom** combined like a screen:
@@ -148,13 +155,26 @@ square repeat per 6 m cell.
 
 **Terrain** shades with the same lighting as models (`exa_render::shading`,
 shared by `exa.wesl` and the terrain shader), as the original's terrain
-program uses its `lights`, `ambient` and `speculargi` includes:
-- the layered splat colour and normal;
-- Fresnel F0 = 0.04 per light;
-- a gloss taken from the ground's colour:
-  a = √min(max(b − 0.8·r + 0.01, 0)·glossiness·14, 0.9), roughness 1 − a;
-- GI or cube ambient, cube reflections;
-- specular scaled by min(255·r, 1).
+program uses its `lights`, `ambient` and `speculargi` includes. The original
+composites each 6 m block of a tile into colour, normal, gloss and height
+textures. Exarust evaluates the same per-layer stacking per pixel:
+- texture coordinates (X, −Z)·f0/12 per metre;
+- colour: texture × linear(tint) × 1.5·min(f9, 1), cover f9, sharpness
+  f2/f3; then × 0.75 (the terrain's `MatDif`);
+- normal: (N·2 − 1)·f11, mixed by the mask-sharpened opacity (f4/f5), in a
+  frame of +X and +Z across the ground (green along −v);
+- gloss: the gloss texture × f10 × 1.5·min(f9, 1), stacked like the colour;
+  roughness = 1 − gloss (no wetness indoors);
+- parallax height: f20 + (B − f21)·f22 from the bump slot, stacked like the
+  normals;
+- parallax: scale 0.007 in 6 m block units, four accumulating steps, then
+  eased back toward the unshifted coordinates by min((h₀ − h₃)·2, 1);
+- Fresnel F0 = 0.04 per light; GI or cube ambient, cube reflections;
+  specular × min(255·r, 1).
+
+Each layer's height, gloss and blend mask are packed into one texture, to
+fit the per-stage texture limit. The terrain's displacement self-shadowing
+is effectively off in the original (its step is ~0).
 
 **Blending** comes from the material's blend word (`0x44`):
 - the source factor is bits 8–11 and the destination bits 0–3;
@@ -184,6 +204,9 @@ The original's bounce light is a light volume of 20 cm voxels
   sectors. The level's points and floor triangles are collected once in
   world space.
 - The top slice holds 26 and the slice below 5, a soft lid.
+- Terrain comes first: in each interior column (not the margins), voxels
+  below the terrain surface hold 20, and the surface voxel its covered
+  fraction of 20.
 - Every mesh's stored **GI sample points** (chunk `0x3D0CEC05`: a spacing
   word, a count, then object-space points in cm) are transformed to the
   world and splatted:
@@ -223,7 +246,11 @@ For each updated voxel, with occ normalised:
 - k = min(8·Σa, 1) · (0.3·open + 0.699);
 - light = sum·k/8 + base·open + Σ lights;
 - base = level record `0x30` (as stored) × 0.001;
-- each light adds lin(colour)·intensity·0.15·0.01 · (1 − d/R)⁴ · open.
+- each light adds lin(colour)·intensity·multiplier·0.15·0.01 · (1 − d/R)⁴
+  · open · shaping;
+- the lights injected are those whose reach overlaps the block, nearest its
+  centre first, up to 32. The original injects each sector group's lights,
+  up to 12 per group.
 
 Light builds up toward about direct/(1 − k). With open walls and dark
 sectors around it, the menu room converges within a few hundred steps.
@@ -298,8 +325,10 @@ side-by-side check on the GPU at the same camera.
 A model node with a fire emitter (`0x3DD0E002`, size s; a torch's `_Fire`
 is 0.2) becomes an omni light:
 - colour sRGB (1, 0.68, 0.43);
-- intensity 8√s and radius 1500√s cm, ×1.25 for 0.2 < s ≤ 0.35; larger
-  fires use other templates;
+- intensity 8√s and radius 1500√s cm, ×1.25 for 0.2 < s ≤ 0.35, compared
+  in double precision: a torch's stored 0.2 (0.2000000030) is above 0.2, so
+  a torch's radius is 838.5 cm (reaching zero at 1048 cm); larger fires use
+  other templates;
 - placed 5 cm above the node, casting shadows.
 
 Every tick the intensity is density · (1 + 0.05·x) · base:

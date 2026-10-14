@@ -59,6 +59,8 @@ pub mod flags {
     pub const HEIGHT_MAP: u32 = 4096;
     /// The height map also shadows the lights.
     pub const DISPLACEMENT_SHADOWS: u32 = 8192;
+    /// Debug view: the surface shows its raw GI sample (`EXA_GI_DEBUG`).
+    pub const DEBUG_GI: u32 = 16384;
 }
 
 #[derive(Clone, Copy, Debug, ShaderType)]

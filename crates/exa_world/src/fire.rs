@@ -18,10 +18,10 @@ const COLOUR: [f32; 3] = [1.0, 0.68, 0.43];
 const SMALL_INTENSITY: f32 = 8.0;
 const SMALL_RADIUS_CM: f32 = 1500.0;
 const LARGE_INTENSITY: f32 = 12.0;
-/// Fires up to this size use the small template, and between these sizes
-/// its radius grows by a quarter.
-const SMALL_UP_TO: f32 = 0.35;
-const SMALL_WIDENED_FROM: f32 = 0.2;
+/// Fires up to this size use the small template, and above the second its
+/// radius grows by a quarter (both compared in double precision).
+const SMALL_UP_TO: f64 = 0.35;
+const SMALL_WIDENED_FROM: f64 = 0.2;
 /// Height of the light above the fire node, metres.
 const SMALL_LIFT: f32 = 0.05;
 const LARGE_LIFT: f32 = 0.40;
@@ -62,9 +62,11 @@ impl Fire {
 /// height above the fire node.
 pub fn fire_light(size: f32) -> (f32, f32, f32) {
     let s = size.max(0.01);
-    if s <= SMALL_UP_TO {
+    if f64::from(s) <= SMALL_UP_TO {
         let mut radius = SMALL_RADIUS_CM * s.sqrt() / 100.0;
-        if s > SMALL_WIDENED_FROM {
+        // Compared in double precision, as the original does: a torch's
+        // stored 0.2 (0.2000000030) is above 0.2, so its radius widens.
+        if f64::from(s) > SMALL_WIDENED_FROM {
             radius *= 1.25;
         }
         (SMALL_INTENSITY * s.sqrt(), radius, SMALL_LIFT)
@@ -159,7 +161,8 @@ mod tests {
     fn a_torch_fire() {
         let (base, radius, lift) = fire_light(0.2);
         assert!((base - 3.578).abs() < 1e-3);
-        assert!((radius - 6.708).abs() < 1e-3);
+        // 1500 cm × √0.2 × 1.25: a torch's 0.2 is widened.
+        assert!((radius - 8.385).abs() < 1e-3);
         assert_eq!(lift, SMALL_LIFT);
     }
 

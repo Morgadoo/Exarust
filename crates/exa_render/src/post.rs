@@ -31,6 +31,10 @@ use bevy::render::view::{ExtractedView, ViewTarget};
 use bevy::render::{Render, RenderApp, RenderStartup, RenderSystems};
 use std::collections::HashMap;
 
+/// The original's sharpen at its 4× supersampling (level 3):
+/// 1.5 × (0.075·3 + 0.4).
+pub const SHARPEN: f32 = 0.9375;
+
 /// The original's post-processing settings, on a 3D camera.
 #[derive(Component, ExtractComponent, ShaderType, Clone, Copy, Debug)]
 #[extract_app(RenderApp)]
@@ -39,7 +43,9 @@ pub struct ExaPost {
     pub bloom_strength: f32,
     /// Desaturation: 0 in play, faded in for transitions.
     pub desaturate: f32,
-    pad0: f32,
+    /// The sharpen supersampling turns on: 1.5 × (0.075·n + 0.4) at
+    /// supersample level n (0 without supersampling).
+    pub sharpen: f32,
     pad1: f32,
 }
 
@@ -48,7 +54,7 @@ impl Default for ExaPost {
         Self {
             bloom_strength: 1.0,
             desaturate: 0.0,
-            pad0: 0.0,
+            sharpen: SHARPEN,
             pad1: 0.0,
         }
     }

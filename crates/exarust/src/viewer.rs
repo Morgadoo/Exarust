@@ -67,6 +67,16 @@ fn setup(
     let mut pose = (Vec3::new(0.0, 2.0, 5.0), Vec3::ZERO, 4.0);
     match &*view {
         View::Level(name) => {
+            if let Some(at) = options.torch {
+                // A torch's fire (size 0.2), as a held torch burns.
+                let node = commands
+                    .spawn((
+                        Transform::from_translation(Vec3::from(at)),
+                        Visibility::default(),
+                    ))
+                    .id();
+                exa_world::fire::spawn_fire(&mut commands, node, 0.2);
+            }
             let started = std::time::Instant::now();
             match exa_world::spawn_level(&mut commands, &mut loader, name, options.ceilings) {
                 Some((_, info)) => {

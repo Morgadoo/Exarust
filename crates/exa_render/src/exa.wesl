@@ -48,6 +48,7 @@ const GLOSS_MAP: u32 = 1024u;
 const GI: u32 = 2048u;
 const HEIGHT_MAP: u32 = 4096u;
 const DISPLACEMENT_SHADOWS: u32 = 8192u;
+const DEBUG_GI: u32 = 16384u;
 // Displacement-shadow taps toward each light: four per sub-sample over the
 // original's four supersampling passes.
 const SHADOW_STEPS: i32 = 16;
@@ -260,6 +261,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // Voxel GI: the volume's light, lifted where faint, × the level
         // ambient × 15 × openness; reflections take the cube × that.
         let g = gi_sample(gi_volume, gi_sampler, gi_origin, gi_extent, p, n);
+        if has(DEBUG_GI) {
+            out.color = vec4(g.rgb * 10.0, 1.0);
+            return out;
+        }
         ambient = gi_ambient(g, level);
         if has(ENVIRONMENT) {
             mirrored = textureSampleLevel(environment_map, environment_sampler, r, max(s.rough - 0.05, 0.0) * 8.0).rgb;
