@@ -9,6 +9,7 @@
 //! in the vertex colour.
 
 pub mod blend;
+pub mod height;
 
 use bevy::asset::{AssetPath, RenderAssetUsages, embedded_asset, embedded_path};
 use bevy::mesh::{Indices, PrimitiveTopology};
@@ -18,12 +19,16 @@ use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::shader::ShaderRef;
 use exa_assets::texture::ColorSpace;
 use exa_assets::{ModelLoader, PackKind};
+use exa_formats::rfi::Rfi;
 use exa_formats::terrain::{
     Palette, TILE_VERTICES, Terrain, TerrainMaterial as PaletteMaterial, TerrainTexture,
     TerrainTile,
 };
 
 use blend::{NoiseMaps, RuleTree, over_alphas};
+use height::{HeightLayer, Plane, displacement};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Materials a tile stacks (one vertex-colour channel each).
 const SPLAT_LAYERS: usize = 4;
@@ -186,9 +191,41 @@ pub fn spawn_terrain(
     };
     let tree = RuleTree::new(&palette);
     let noise = NoiseMaps::default();
+    let game = loader.game;
+    let mut planes: HashMap<String, Option<Arc<Plane>>> = HashMap::new();
+    let mut plane = |name: Option<&str>| -> Option<Arc<Plane>> {
+        let name = name?;
+        planes
+            .entry(name.to_ascii_lowercase())
+            .or_insert_with(|| {
+                let rfi = Rfi::parse(game.texture(name)?).ok()?;
+                let rgba = rfi.decode_rgba8().ok()?;
+                let (w, h) = (rfi.header.width as usize, rfi.header.height as usize);
+                Plane::from_rgba(w, h, &rgba).map(Arc::new)
+            })
+            .clone()
+    };
+    let mut height_layers = |used: &[usize]| -> Vec<HeightLayer> {
+        used.iter()
+            .map(|&m| {
+                let material = &palette.materials[m];
+                let p = |i: usize, d: f32| material.params.get(i).copied().unwrap_or(d);
+                let look = Look::of(material);
+                HeightLayer {
+                    base: p(16, 0.5),
+                    offset: p(17, 0.5),
+                    scale: p(18, 0.5),
+                    height_map: plane(material.texture(TerrainTexture::Height)),
+                    mask: plane(material.texture(TerrainTexture::Mask)),
+                    sharpness: look.sharpness,
+                    tiling: look.tiling,
+                }
+            })
+            .collect()
+    };
     let mut stats = TerrainStats::default();
     for tile in &terrain.tiles {
-        let built = build_tile(&terrain, tile, &palette, &tree, &noise);
+        let built = build_tile(&terrain, tile, &palette, &tree, &noise, &mut height_layers);
         stats.unresolved_layers += built.unresolved;
         stats.truncated_tiles += usize::from(built.truncated);
         let mut splat = TerrainSplat::default();
@@ -292,6 +329,7 @@ fn build_tile(
     palette: &Palette,
     tree: &RuleTree,
     noise: &NoiseMaps,
+    height_layers: &mut dyn FnMut(&[usize]) -> Vec<HeightLayer>,
 ) -> BuiltTile {
     let n = TILE_VERTICES;
     let s = terrain.spacing;
@@ -347,14 +385,26 @@ fn build_tile(
     used.truncate(SPLAT_LAYERS);
     used.sort_unstable();
 
+    // Opacities for the shader, and the height pass moving the vertices.
+    let centre = terrain.tile_centre(tile);
+    let lift = height_layers(&used);
     let colours: Vec<[f32; 4]> = (0..n * n)
         .map(|v| {
             let w = &weights[v * m..(v + 1) * m];
             let kept: Vec<f32> = used.iter().map(|&i| w[i]).collect();
             let alphas = over_alphas(&kept);
+            let p = &mut positions[v];
+            p[1] += displacement(
+                &lift,
+                &alphas,
+                p[0] + centre[0],
+                p[2] + centre[1],
+                normals[v][1],
+            );
             std::array::from_fn(|k| alphas.get(k).copied().unwrap_or(0.0))
         })
         .collect();
+    let normals = grid_normals(&positions, n);
 
     let mut indices = Vec::with_capacity((n - 1) * (n - 1) * 6);
     for j in 0..n - 1 {
@@ -385,6 +435,20 @@ fn build_tile(
         unresolved,
         truncated,
     }
+}
+
+/// Normals of a displaced `n` × `n` vertex grid from central differences
+/// (one-sided at the edges).
+fn grid_normals(positions: &[[f32; 3]], n: usize) -> Vec<[f32; 3]> {
+    let at = |i: usize, j: usize| Vec3::from_array(positions[j * n + i]);
+    (0..n * n)
+        .map(|v| {
+            let (i, j) = (v % n, v / n);
+            let dx = at((i + 1).min(n - 1), j) - at(i.saturating_sub(1), j);
+            let dz = at(i, (j + 1).min(n - 1)) - at(i, j.saturating_sub(1));
+            dz.cross(dx).normalize_or(Vec3::Y).to_array()
+        })
+        .collect()
 }
 
 /// Surface normal from a 3 × 3 Sobel filter over the heights, reaching into

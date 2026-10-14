@@ -209,6 +209,22 @@ Exarust match the original look).
   (types 6–9), `00770FFF`; types 5–8 keep the centre floor.
 - Floors and ceilings are merged into `+Floor` and `+Ceiling` meshes per cell
   in the original; walls stay separate objects.
+- Direct children of wall, corner and special-tile pieces are redirected:
+  `+F…` is the piece's own floor strip and replaces the floor set's strip on
+  that edge (slot 3, or 4 for corners). Its `+` materials take the floor
+  set's own `+` material, with planar UVs `u = x/600 + 0.5`, `v = 0.5 − z/600`
+  in cell-local cm. `+R…` is its ceiling strip and replaces the ceiling slot.
+  `[…` are occluders and are never drawn.
+- Plane A flag `0x800000` applies only to open cells without a wall set
+  (nibble `F`). The original then adds a ceiling cap from the first wall set
+  (no floor, no walls) so the room stays closed. It appears only in levels
+  with terrain, whose ground and props provide those cells. Levels without
+  wall sets build nothing from the grid.
+- Rooms and portals: open cells are flood-filled up to walls. Doors (`B`)
+  start new rooms joined by portals, sized from plane B's side nibble
+  (0: 82 × 245 cm, otherwise 115 × 290 cm, special tiles 200 × 340 cm).
+- The marker and skip words are 0 and 600 in every level; the builder reads
+  only width, height and the planes.
 
 ## Environment (`EC00DC00`)
 

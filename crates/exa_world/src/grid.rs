@@ -91,6 +91,9 @@ struct FloorSet {
     model: Arc<Model>,
     edges: Table,
     middle: Table,
+    /// The set's surface material (its `+`-named material), which also
+    /// replaces `+` materials on the floor strips of wall pieces.
+    surface: Option<Handle<StandardMaterial>>,
 }
 
 fn name_bytes(name: &str) -> [u8; 6] {
@@ -177,10 +180,17 @@ fn index_wall_set(model: Arc<Model>) -> WallSet {
 }
 
 fn index_floor_set(model: Arc<Model>) -> FloorSet {
+    let surface = model.nodes.iter().find_map(|n| {
+        n.part_materials
+            .iter()
+            .position(|m| m.starts_with('+'))
+            .map(|i| n.parts[i].1.clone())
+    });
     let mut s = FloorSet {
         model: model.clone(),
         edges: Table::default(),
         middle: Table::default(),
+        surface,
     };
     for (i, node) in model.nodes.iter().enumerate() {
         let b = name_bytes(&node.name);
@@ -266,11 +276,18 @@ pub fn spawn_grid(
                 0.0,
                 ((y - h / 2) as f32 + 0.5) * CELL_CM,
             ) * 0.01;
-            let mut place = |model: &Arc<Model>, node: Option<usize>, side: u32| {
-                let Some(node) = node else { return };
+            let rules = PieceRules {
+                ceilings,
+                surface: fs.and_then(|f| f.surface.clone()),
+            };
+            let mut place = |model: &Arc<Model>, node: Option<usize>, side: u32| -> Strips {
+                let Some(node) = node else {
+                    return Strips::default();
+                };
                 let kids = children_cache
                     .entry(Arc::as_ptr(model))
                     .or_insert_with(|| children_of(model));
+                stats.pieces += 1;
                 spawn_piece(
                     commands,
                     model,
@@ -278,8 +295,8 @@ pub fn spawn_grid(
                     node,
                     side_transform(side, centre),
                     parent,
-                );
-                stats.pieces += 1;
+                    &rules,
+                )
             };
 
             let special = (c >> 16) & 0x1F;
@@ -337,11 +354,12 @@ pub fn spawn_grid(
                     }
                     for &(table, extra_slot) in walls_here {
                         if let Some(piece) = table.pick(variant, side) {
-                            place(&ws.model, Some(piece), side);
-                            if let Some(fs) = fs {
+                            // A wall's own strips replace the sets' strips.
+                            let own = place(&ws.model, Some(piece), side);
+                            if let (Some(fs), false) = (fs, own.floor) {
                                 place(&fs.model, floor(SLOT_BACK), side);
                             }
-                            if ceilings {
+                            if ceilings && !own.ceiling {
                                 place(&ws.model, ws.ceiling.primary(SLOT_BACK), side);
                             }
                         }
@@ -359,19 +377,20 @@ pub fn spawn_grid(
                 if mask & (0x7 << (16 + side * 4)) == 0 {
                     let corner = (a >> (16 + side * 4)) & 0x7;
                     let variant = ((b >> (16 + side * 4)) & 0xF) as usize;
-                    let ceiling_slot = if corner == 0 {
-                        SLOT_CORNER
+                    let (ceiling_slot, own) = if corner == 0 {
+                        (SLOT_CORNER, Strips::default())
                     } else {
-                        if let Some(t) = ws.corners.get(corner as usize - 1) {
-                            place(&ws.model, t.pick(variant, side), side);
-                        }
-                        SLOT_BACK
+                        let own = match ws.corners.get(corner as usize - 1) {
+                            Some(t) => place(&ws.model, t.pick(variant, side), side),
+                            None => Strips::default(),
+                        };
+                        (SLOT_BACK, own)
                     };
                     if (1..=4).contains(&corner) || corner == 0 {
-                        if let Some(fs) = fs {
+                        if let (Some(fs), false) = (fs, own.floor) {
                             place(&fs.model, floor(SLOT_CORNER), side);
                         }
-                        if ceilings {
+                        if ceilings && !own.ceiling {
                             place(&ws.model, ws.ceiling.primary(ceiling_slot), side);
                         }
                     }
@@ -432,8 +451,25 @@ fn children_of(model: &Model) -> Vec<Vec<usize>> {
     kids
 }
 
-/// Spawns `node` (with the given transform in place of its own) and all its
-/// descendants under `parent`.
+/// How the direct children of a placed piece are treated.
+struct PieceRules {
+    ceilings: bool,
+    /// Material for `+` materials on floor strips; strips are dropped
+    /// without one.
+    surface: Option<Handle<StandardMaterial>>,
+}
+
+/// The floor and ceiling strips a piece brought with it.
+#[derive(Debug, Default, Clone, Copy)]
+struct Strips {
+    floor: bool,
+    ceiling: bool,
+}
+
+/// Spawns `node` (with the given transform in place of its own) and its
+/// descendants under `parent`. Direct children named `+F…` are the piece's
+/// own floor strip (its `+` materials take the floor set's surface), `+R…`
+/// its ceiling strip (only with ceilings), and `[…` occluders, never drawn.
 fn spawn_piece(
     commands: &mut Commands,
     model: &Model,
@@ -441,13 +477,35 @@ fn spawn_piece(
     node: usize,
     transform: Transform,
     parent: Entity,
-) {
-    let root = spawn_node(commands, model, node, transform, parent);
-    let mut stack: Vec<(usize, Entity)> = kids[node].iter().map(|&k| (k, root)).collect();
-    while let Some((n, p)) = stack.pop() {
-        let e = spawn_node(commands, model, n, model.nodes[n].transform, p);
-        stack.extend(kids[n].iter().map(|&k| (k, e)));
+    rules: &PieceRules,
+) -> Strips {
+    let mut strips = Strips::default();
+    let root = spawn_node(commands, model, node, transform, parent, None);
+    let mut stack: Vec<(usize, Entity, Option<&Handle<StandardMaterial>>)> = Vec::new();
+    for &k in &kids[node] {
+        let name = model.nodes[k].name.as_bytes();
+        match name {
+            [b'[', ..] => {}
+            [b'+', b'R', ..] => {
+                strips.ceiling = true;
+                if rules.ceilings {
+                    stack.push((k, root, None));
+                }
+            }
+            [b'+', b'F', ..] => {
+                strips.floor = true;
+                if let Some(surface) = &rules.surface {
+                    stack.push((k, root, Some(surface)));
+                }
+            }
+            _ => stack.push((k, root, None)),
+        }
     }
+    while let Some((n, p, surface)) = stack.pop() {
+        let e = spawn_node(commands, model, n, model.nodes[n].transform, p, surface);
+        stack.extend(kids[n].iter().map(|&k| (k, e, surface)));
+    }
+    strips
 }
 
 fn spawn_node(
@@ -456,12 +514,17 @@ fn spawn_node(
     node: usize,
     transform: Transform,
     parent: Entity,
+    surface: Option<&Handle<StandardMaterial>>,
 ) -> Entity {
     let n = &model.nodes[node];
     let e = commands
         .spawn((transform, Visibility::default(), ChildOf(parent)))
         .id();
-    for (mesh, material) in &n.parts {
+    for (i, (mesh, material)) in n.parts.iter().enumerate() {
+        let material = match surface {
+            Some(s) if n.part_materials[i].starts_with('+') => s,
+            _ => material,
+        };
         commands.spawn((
             Mesh3d(mesh.clone()),
             MeshMaterial3d(material.clone()),

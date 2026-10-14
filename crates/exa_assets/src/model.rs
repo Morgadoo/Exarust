@@ -27,7 +27,9 @@ pub struct ModelNode {
     /// Index into [`Model::nodes`].
     pub parent: Option<usize>,
     pub transform: Transform,
-    pub parts: Vec<(Handle<Mesh>, Handle<StandardMaterial>)>,
+    pub parts: Vec<Part>,
+    /// Material name of each part, as stored in the file.
+    pub part_materials: Vec<String>,
     pub light: Option<exa_formats::rfc::Light>,
     /// Bounding sphere in the node's space (metres).
     pub bounds: (Vec3, f32),
@@ -50,6 +52,9 @@ pub fn transform_from_rows(t: &[[f32; 3]; 4]) -> Transform {
     );
     Transform::from_matrix(m)
 }
+
+/// A mesh part: its mesh and material.
+pub type Part = (Handle<Mesh>, Handle<StandardMaterial>);
 
 /// A loaded texture and whether it carries alpha.
 type CachedTexture = Option<(Handle<Image>, bool)>;
@@ -108,9 +113,9 @@ impl ModelLoader<'_> {
         };
         let mut nodes = Vec::with_capacity(scene.nodes.len());
         for node in &scene.nodes {
-            let parts = match &node.body {
-                NodeBody::Mesh(mesh) => self.parts(entry, &scene, mesh),
-                _ => Vec::new(),
+            let (parts, part_materials) = match &node.body {
+                NodeBody::Mesh(mesh) => self.parts(entry, &scene, mesh).into_iter().unzip(),
+                _ => (Vec::new(), Vec::new()),
             };
             nodes.push(ModelNode {
                 name: node.name.clone(),
@@ -120,6 +125,7 @@ impl ModelLoader<'_> {
                     .map(|p| p - 1),
                 transform: transform_from_rows(&node.transform),
                 parts,
+                part_materials,
                 bounds: (Vec3::from(node.bounds_centre), node.bounds_radius),
                 light: match &node.body {
                     NodeBody::Light(l) => Some(*l),
@@ -130,12 +136,7 @@ impl ModelLoader<'_> {
         Some(Model { nodes })
     }
 
-    fn parts(
-        &mut self,
-        entry: &str,
-        scene: &Scene,
-        mesh: &RfcMesh,
-    ) -> Vec<(Handle<Mesh>, Handle<StandardMaterial>)> {
+    fn parts(&mut self, entry: &str, scene: &Scene, mesh: &RfcMesh) -> Vec<(Part, String)> {
         let mut out = Vec::with_capacity(mesh.groups.len());
         for group in &mesh.groups {
             let start = group.first_index as usize;
@@ -148,7 +149,10 @@ impl ModelLoader<'_> {
                 continue;
             }
             let material = self.material(entry, scene, &group.material);
-            out.push((self.meshes.add(bevy_mesh), material));
+            out.push((
+                (self.meshes.add(bevy_mesh), material),
+                group.material.clone(),
+            ));
         }
         out
     }

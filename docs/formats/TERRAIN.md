@@ -134,8 +134,13 @@ displacement textures, using up to 32 materials in groups of four. Exarust
 evaluates the same weights per vertex and layers the four heaviest materials
 of a tile in a shader. Normal maps are layered the same way, with the N-pass
 sharpness (f4, f5) and strength (f11). Gloss uses the scalar f10 without the G
-texture. Not yet reproduced: the G texture, the height displacement of the
-mesh (from the H pass), and the grass placed from the plant records.
+texture. The H pass is evaluated per vertex on the CPU and moves the mesh as
+the original does, by `(byte − 127) × 1.25 × (2 − normal y)` cm. The opacity
+there is boosted by 1.5, and each material contributes
+`f16 + (H − f17) × f18`. Neutral materials (0.5) store as byte 128, so painted
+ground rests about 1.25 cm above dungeon floors laid at 0 and covers them
+(dirt over flagstones). Not yet reproduced: the G texture, the fine
+displacement pass (B) and the grass placed from the plant records.
 
 ### Plant (104 bytes)
 

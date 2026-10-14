@@ -134,8 +134,10 @@ layering in a WESL shader; outdoor arenas render and are walkable
 Done (change `add-level-lighting`): the level environment record (ambient
 colour, extent, sun) and the original's per-level presets: sunlight with
 shadows and fog on the outdoor arenas.
-Remaining: the alternate builder for flagged cells, per-room mesh merging,
-terrain gloss textures, height displacement and grass, the sky, time of day
+Done (change `refine-grid-and-terrain`): wall pieces' own floor/ceiling
+strips and occluders, the terrain height pass.
+Remaining: ceiling caps of terrain cells, per-room mesh merging, rooms and
+portals, terrain gloss textures, fine displacement and grass, the sky, time of day
 and weather of the outdoor arenas,
 sectors/portals (the room flood fill is understood),
 `exanima://` asset source, streaming.
