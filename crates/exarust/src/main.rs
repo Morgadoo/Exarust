@@ -59,6 +59,8 @@ pub struct Options {
     pub gi: exa_world::gi_volume::GiSettings,
     /// Draw at window resolution instead of 4× supersampling.
     pub no_supersample: bool,
+    /// Hide the frame-rate readout.
+    pub no_fps: bool,
     /// Window size in logical pixels.
     pub size: Option<(u32, u32)>,
     /// Play mode: start here instead of the level's start (metres).
@@ -113,6 +115,7 @@ fn main() -> AppExit {
             "--no-shadows" => options.no_shadows = true,
             "--no-gi" => options.gi.enabled = false,
             "--no-supersample" => options.no_supersample = true,
+            "--no-fps" => options.no_fps = true,
             "--gi-warm-up" => {
                 if let Some(n) = args.next().and_then(|v| v.parse().ok()) {
                     options.gi.warm_up = n;
@@ -228,6 +231,7 @@ fn main() -> AppExit {
         .insert_resource(Game(Arc::new(data)))
         .insert_resource(view)
         .insert_resource(options.gi)
+        .insert_resource(exa_ui::ShowFps(!options.no_fps))
         .insert_resource(options)
         .add_plugins(viewer::ViewerPlugin)
         .run()
