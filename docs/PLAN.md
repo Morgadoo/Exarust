@@ -169,6 +169,15 @@ Done (change `add-player-movement`): rapier physics with level colliders,
 kinematic player capsule, camera-relative movement, chase camera
 (`exarust play <level>`).
 
+Done (changes `add-ragdoll`, `add-muscles`, `add-balance`): the
+original's own body solver, not rapier joints. Each part is a rigid
+tetrahedron of four particles with sphere colliders, joined by the
+skeleton's links, under Verlet at 83 Hz. The dead and the knocked out go
+limp. Living bodies follow their clips through muscles (pose drive, tone,
+daze). Blows shove and daze; a body that loses its balance falls and gets
+up ([formats/RSQ.md](formats/RSQ.md)). Still to do: link PD muscles,
+recovery steps, foot planting, collisions between bodies.
+
 This phase carries the most risk and defines how the game feels.
 
 - `exa_anim`: skeleton, clip sampling and blending, procedural layers
