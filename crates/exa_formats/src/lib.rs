@@ -10,6 +10,7 @@ pub mod environment;
 pub mod kind;
 pub mod level;
 pub mod material;
+pub mod objdb;
 pub mod rdb;
 pub mod rfc;
 pub mod rfi;

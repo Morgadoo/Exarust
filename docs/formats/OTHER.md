@@ -15,7 +15,58 @@ payloads
 roles, including a C-like script language), `locales.rdb` (language list),
 `objdb.rdb` (object database, 0x5900/16 = 1424 records), `objstrings.rdb`
 (string library, magic `0xAFBF0C02`). The community spec reports a trailing
-garbage record in each table. Record payloads are not decoded yet.
+garbage record in each table (the reader skips entries pointing outside the
+file). `objdb` item records are decoded (see below); other payloads are not.
+
+## Object database items and apparel painting
+
+`objdb.rdb` holds 1424 table entries; the last points outside the file and is
+skipped. An item record payload is a chain of `u32 tag, u32 size` sections,
+where the size counts the 8-byte header:
+
+| tag | contents |
+|---|---|
+| `0x10000000` | display name[16], two words |
+| `0x00100000` | model entry name[16] (in `Characters.rpk` for apparel), … |
+| `0x1000` | item body; bytes `0x1B0..0x214` are the appearance block |
+
+Appearance block (100 bytes): quality, damage and dirt bytes (the painter uses
+q = x, damage = x/(2−x), dirt = (x²+x)/2 with x = byte/255), one unknown
+byte, then eight 12-byte layers: +1 mask number (`<stem>m<n>`, 0 = unused),
++2 material set (used when the material is 0), +4 material, +8 palette colour.
+276 of the 387 item records name a model in `Characters.rpk` directly.
+
+The game never draws an apparel item's own textures. It paints a colour
+texture per item from the shade map `<stem>d` (cavities dark), stacking each
+layer's finish over its mask on black. Run-time materials `&<10 chars><digit>`
+name the stem (`&doublet_aa1` → `doublet_aa`). The finishes by material
+number:
+
+| material | finish | library textures |
+|---|---|---|
+| 1 Cloth Rough, 2 Cloth Fine, 3 Silk, 5–6 Padded | cloth | weave (`ClothRghA03`, `ClothFinA01`, `ClthP01/02`), `LeatherDmgA02`, `ClothDmgA01` (worn), `DrtApr01` |
+| 4 Velvet | velvet | `ClothFinA01` with a pale sheen |
+| 7–8 Leather | leather | `LeatherA02/A01`, `LeatherDmgA02`, `DrtApr01` |
+| 9 Suede, 10 Rawhide | suede | `SuedeA01` |
+| 11 Mail | mail | `MailStlA01` d/o, rust, scuffs |
+| 12–13, 15 Steel, Plate, Gilded | plate | `MtlStlBas01`, `MtlImpure01`, rust `MtlRustA03/A04`, `ScuffsGnrA01` |
+| 14 Painted | painted steel | as plate plus `MtlDirtA01` |
+
+Material 0 takes the first material of its set (sets 1/3/5/6/8 → 1, 2/9 → 5,
+4/10 → 7, 7/12/13 → 13, 11 → 11, 14 → 20, 15 → 23). Library textures are laid
+one texel per painted texel (weave, worn weave, impurities); damage, dirt,
+rust and scuff maps are laid at 1024 texels across.
+
+Palette: index = family × 8 + shade. Each of the 32 families has hue,
+saturation, base value and value step. With k = 7 − shade:
+v = min(k·step·0.13 + base, 1) and s = (1 − (0.09k)²)·sat, scaled by (v + 0.6)²
+when v < 0.4. Then HSV → RGB. Family 0 is the greys (0.91 down to black).
+
+Exarust paints on the CPU (`exa_assets::paint`; `exa-tool paint <model>
+<stem> out.png`). Not yet painted: the normal and gloss/metal passes (the
+item's own normal map is used), wood, bronze, gemstone and resin finishes
+(drawn plain), pattern opacity textures, and per-instance appearances
+(randomised items, wear on characters).
 
 ## Saves (`.rsg`, `.rcp`)
 

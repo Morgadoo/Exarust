@@ -63,6 +63,13 @@ enum Cmd {
         entry: String,
         out: PathBuf,
     },
+    /// Paint an apparel texture set (e.g. `doublet_aa`) with the appearance
+    /// of the item showing `model` (e.g. `doublet_a`), as the game does.
+    Paint {
+        model: String,
+        stem: String,
+        out: PathBuf,
+    },
     /// Summarise the skeleton and motion set of a `.rsq`.
     Rsq {
         #[arg(default_value = "humanoid.rsq")]
@@ -145,6 +152,7 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
+        Cmd::Paint { model, stem, out } => paint_item(&game, &model, &stem, &out),
         Cmd::Png { pack, entry, out } => {
             let rfi = Rfi::parse(entry_bytes(&game, &pack, &entry)?)?;
             let rgba = rfi.decode_rgba8()?;
@@ -308,6 +316,59 @@ fn print_chunk(c: &Chunk<'_>, depth: usize, max_depth: usize) {
             print_chunk(k, depth + 1, max_depth);
         }
     }
+}
+
+fn paint_item(game: &GameData, model: &str, stem: &str, out: &Path) -> Result<()> {
+    use exa_assets::paint::{PaintLayer, Texels, layer_material, library, paint};
+    let db_bytes = game
+        .pack(exa_rpk::PackKind::Resource)
+        .and_then(|p| p.get("objdb.rdb"))
+        .context("objdb.rdb not found")?;
+    let db = exa_formats::rdb::Database::parse(db_bytes)?;
+    let item = exa_formats::objdb::items(&db)
+        .into_iter()
+        .find(|i| i.model.eq_ignore_ascii_case(model) && i.appearance.is_some())
+        .with_context(|| format!("no item shows {model}"))?;
+    let appearance = item.appearance.expect("filtered");
+    let texels = |name: &str| -> Option<Texels> {
+        let rfi = Rfi::parse(game.texture(name)?).ok()?;
+        Some(Texels {
+            width: rfi.header.width as usize,
+            height: rfi.header.height as usize,
+            rgba: rfi.decode_rgba8().ok()?,
+        })
+    };
+    let shade = texels(&format!("{stem}d")).context("no shade map")?;
+    let mut owned = Vec::new();
+    for layer in appearance.used_layers() {
+        let material = layer_material(layer);
+        let Some(mask) = texels(&format!("{stem}m{}", layer.mask)) else {
+            println!("  mask {} missing", layer.mask);
+            continue;
+        };
+        let lib: Vec<Option<Texels>> = library(material).iter().map(|n| texels(n)).collect();
+        println!(
+            "  mask {} material {material} colour {:#04x} library {}/{}",
+            layer.mask,
+            layer.colour,
+            lib.iter().filter(|t| t.is_some()).count(),
+            lib.len()
+        );
+        owned.push((mask, material, layer.colour, lib));
+    }
+    let layers: Vec<PaintLayer<'_>> = owned
+        .iter()
+        .map(|(mask, material, colour, lib)| PaintLayer {
+            mask,
+            material: *material,
+            colour: *colour,
+            library: lib.iter().map(Option::as_ref).collect(),
+        })
+        .collect();
+    let rgba = paint(&shade, &layers, &appearance);
+    write_png(out, shade.width as u32, shade.height as u32, &rgba)?;
+    println!("{} ({}) -> {}", item.name, model, out.display());
+    Ok(())
 }
 
 fn write_png(path: &Path, w: u32, h: u32, rgba: &[u8]) -> Result<()> {

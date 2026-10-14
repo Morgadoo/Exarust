@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+exa_assets.workspace = true
 clap.workspace = true
 exa_formats.workspace = true
 exa_rpk.workspace = true

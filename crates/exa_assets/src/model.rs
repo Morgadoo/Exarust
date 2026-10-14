@@ -13,7 +13,9 @@ use exa_formats::rfc::{Mesh as RfcMesh, NodeBody, Scene};
 use exa_formats::rfi::Rfi;
 use exa_rpk::{Archive, GameData, PackKind};
 
+use crate::paint::{PaintLayer, Texels, layer_material, library, paint};
 use crate::texture::{ColorSpace, has_alpha, rfi_to_image};
+use exa_formats::objdb::Appearance;
 
 /// A decoded model ready to spawn any number of times.
 #[derive(Debug, Clone)]
@@ -64,6 +66,10 @@ pub struct ModelCache {
     models: HashMap<String, Option<Arc<Model>>>,
     textures: HashMap<(String, ColorSpace), CachedTexture>,
     materials: HashMap<String, Handle<StandardMaterial>>,
+    /// Textures decoded on the CPU, for painting.
+    texels: HashMap<String, Option<Arc<Texels>>>,
+    /// Painted apparel materials by texture stem and appearance.
+    painted: HashMap<(String, Appearance), Handle<StandardMaterial>>,
     warned: HashSet<String>,
 }
 
@@ -239,6 +245,96 @@ impl ModelLoader<'_> {
         self.materials.add(mat)
     }
 
+    /// A texture decoded to RGBA8 on the CPU, cached by name.
+    pub fn texels(&mut self, name: &str) -> Option<Arc<Texels>> {
+        let key = name.to_ascii_lowercase();
+        if let Some(t) = self.cache.texels.get(&key) {
+            return t.clone();
+        }
+        let decoded = self.game.texture(name).and_then(|b| {
+            let rfi = Rfi::parse(b).ok()?;
+            let rgba = rfi.decode_rgba8().ok()?;
+            Some(Arc::new(Texels {
+                width: rfi.header.width as usize,
+                height: rfi.header.height as usize,
+                rgba,
+            }))
+        });
+        if decoded.is_none() {
+            self.warn_once(format!(
+                "texture {name:?} could not be decoded for painting"
+            ));
+        }
+        self.cache.texels.insert(key, decoded.clone());
+        decoded
+    }
+
+    /// The material of an apparel texture set (`stem`, e.g. `doublet_aa`)
+    /// painted with an item's appearance, as the original paints equipped
+    /// items. Falls back to the unpainted material when the shade map is
+    /// missing.
+    pub fn painted_apparel(
+        &mut self,
+        stem: &str,
+        appearance: &Appearance,
+    ) -> Handle<StandardMaterial> {
+        let key = (stem.to_ascii_lowercase(), *appearance);
+        if let Some(h) = self.cache.painted.get(&key) {
+            return h.clone();
+        }
+        let handle = match self.texels(&format!("{stem}d")) {
+            Some(shade) => {
+                let mut owned: Vec<OwnedLayer> = Vec::new();
+                for layer in appearance.used_layers() {
+                    let Some(mask) = self.texels(&format!("{stem}m{}", layer.mask)) else {
+                        continue;
+                    };
+                    let material = layer_material(layer);
+                    let lib = library(material).iter().map(|n| self.texels(n)).collect();
+                    owned.push((mask, material, layer.colour, lib));
+                }
+                let layers: Vec<PaintLayer<'_>> = owned
+                    .iter()
+                    .map(|(mask, material, colour, lib)| PaintLayer {
+                        mask,
+                        material: *material,
+                        colour: *colour,
+                        library: lib.iter().map(|t| t.as_deref()).collect(),
+                    })
+                    .collect();
+                let mut rgba = paint(&shade, &layers, appearance);
+                // Keep the cut-outs of the shade map.
+                for (o, s) in rgba
+                    .as_chunks_mut::<4>()
+                    .0
+                    .iter_mut()
+                    .zip(shade.rgba.as_chunks::<4>().0)
+                {
+                    o[3] = s[3];
+                }
+                let alpha = shade.rgba.as_chunks::<4>().0.iter().any(|p| p[3] < 128);
+                let image = painted_image(shade.width as u32, shade.height as u32, rgba);
+                let mut mat = StandardMaterial {
+                    base_color_texture: Some(self.images.add(image)),
+                    perceptual_roughness: 0.8,
+                    metallic: 0.0,
+                    reflectance: 0.3,
+                    ..default()
+                };
+                if alpha {
+                    mat.alpha_mode = AlphaMode::Mask(0.5);
+                }
+                if let Some((img, _)) = self.texture(&format!("{stem}n"), ColorSpace::Linear) {
+                    mat.normal_map_texture = Some(img);
+                }
+                self.materials.add(mat)
+            }
+            None => self.apparel_material(stem),
+        };
+        self.cache.painted.insert(key, handle.clone());
+        handle
+    }
+
     /// Image handle and whether it has alpha.
     pub fn texture(&mut self, name: &str, space: ColorSpace) -> CachedTexture {
         let key = (name.to_ascii_lowercase(), space);
@@ -264,6 +360,55 @@ impl ModelLoader<'_> {
         self.cache.textures.insert(key, value.clone());
         value
     }
+}
+
+/// A layer's mask, material, colour and library textures, owned while painting.
+type OwnedLayer = (Arc<Texels>, u8, u8, Vec<Option<Arc<Texels>>>);
+
+/// An sRGB image with a box-filtered mip chain from RGBA8 pixels.
+fn painted_image(width: u32, height: u32, rgba: Vec<u8>) -> Image {
+    use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
+    use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+    let mut data = rgba.clone();
+    let (mut w, mut h, mut level) = (width as usize, height as usize, rgba);
+    let mut levels = 1;
+    while w > 1 && h > 1 && w.is_multiple_of(2) && h.is_multiple_of(2) {
+        let (nw, nh) = (w / 2, h / 2);
+        let mut next = vec![0u8; nw * nh * 4];
+        for y in 0..nh {
+            for x in 0..nw {
+                for c in 0..4 {
+                    let at = |dx: usize, dy: usize| {
+                        level[((2 * y + dy) * w + 2 * x + dx) * 4 + c] as u32
+                    };
+                    next[(y * nw + x) * 4 + c] =
+                        ((at(0, 0) + at(1, 0) + at(0, 1) + at(1, 1) + 2) / 4) as u8;
+                }
+            }
+        }
+        data.extend_from_slice(&next);
+        (w, h, level) = (nw, nh, next);
+        levels += 1;
+    }
+    let mut image = Image::new_uninit(
+        Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.texture_descriptor.mip_level_count = levels;
+    image.data = Some(data);
+    image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: ImageAddressMode::Repeat,
+        address_mode_v: ImageAddressMode::Repeat,
+        anisotropy_clamp: 8,
+        ..ImageSamplerDescriptor::linear()
+    });
+    image
 }
 
 fn library_material(game: &GameData, name: &str) -> Option<Material> {

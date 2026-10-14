@@ -5,6 +5,7 @@
 //! ([`model`]), each cached by name.
 
 pub mod model;
+pub mod paint;
 pub mod texture;
 
 use std::sync::Arc;

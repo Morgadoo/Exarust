@@ -157,6 +157,11 @@ correct geometry, textures and light placement.
 
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
+Done (change `add-apparel-painting`): object database items and the
+apparel painter (palette, cloth/leather/suede/velvet/mail/plate/painted
+finishes); dressed characters show their colours
+([formats/OTHER.md](formats/OTHER.md)).
+
 Done (change `add-motion-playback`): skeleton and motion set decoded;
 clips play on the human body (`exarust character Default/Walk`).
 Done (change `add-player-movement`): rapier physics with level colliders,

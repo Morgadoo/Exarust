@@ -87,6 +87,13 @@ opt-level = 1
 [profile.dev.package."*"]
 opt-level = 3
 
+# Apparel painting and terrain building run per texel on the CPU.
+[profile.dev.package.exa_assets]
+opt-level = 3
+
+[profile.dev.package.exa_world]
+opt-level = 3
+
 # Day-to-day optimized build: release speed without the fat-LTO link.
 [profile.play]
 inherits = "release"

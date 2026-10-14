@@ -40,14 +40,13 @@ impl<'a> Database<'a> {
                 offset: read_u32(b, i + 8)?,
                 size: read_u32(b, i + 12)?,
             };
-            if base + r.offset as usize + r.size as usize > b.len() {
-                return Err(Error::Truncated {
-                    offset: base + r.offset as usize,
-                    needed: r.size as usize,
-                    len: b.len(),
-                });
+            // `objdb.rdb` ends its table with an entry that points nowhere.
+            if (base + r.offset as usize)
+                .checked_add(r.size as usize)
+                .is_some_and(|end| end <= b.len())
+            {
+                records.push(r);
             }
-            records.push(r);
         }
         Ok(Self {
             magic,
@@ -60,5 +59,23 @@ impl<'a> Database<'a> {
     pub fn payload(&self, r: &Record) -> &'a [u8] {
         let start = self.base + r.offset as usize;
         &self.data[start..start + r.size as usize]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn records_pointing_outside_the_data_are_skipped() {
+        let mut b = 0xDBAC_0D09u32.to_le_bytes().to_vec();
+        b.extend(32u32.to_le_bytes());
+        for r in [[1u32, 0, 0, 4], [2, 0, 0x4000_0000, 8]] {
+            b.extend(r.iter().flat_map(|v| v.to_le_bytes()));
+        }
+        b.extend([7, 7, 7, 7]);
+        let db = Database::parse(&b).unwrap();
+        assert_eq!(db.records.len(), 1);
+        assert_eq!(db.payload(&db.records[0]), &[7, 7, 7, 7]);
     }
 }
