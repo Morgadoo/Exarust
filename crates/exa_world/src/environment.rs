@@ -20,11 +20,10 @@ use exa_formats::environment::{Environment, SunMode};
 /// Ambient colour of a typical level (sRGB grey).
 #[cfg(test)]
 const REFERENCE_AMBIENT: f32 = 0.6275;
-/// The original's ambient is the environment map's blurred colour × the
-/// level's ambient × 16. Until the environment maps are decoded, their
-/// average stands in for the map.
+/// The original's ambient is the environment cube's blurred colour × the
+/// level's ambient × 16; the shader samples the cube, the scene carries the
+/// rest.
 const AMBIENT_SCALE: f32 = 16.0;
-const ENVIRONMENT_AVERAGE: f32 = 0.02;
 /// Sun strength in the original's units: without and with the sky.
 const SUN_INTENSITY: f32 = 3.0;
 const SUN_INTENSITY_WITH_SKY: f32 = 4.5;
@@ -164,7 +163,7 @@ pub fn level_lighting(level: &str, record: Option<&Environment>, lights: usize) 
 /// Applies `lighting`: ambient and background resources, a sun under
 /// `parent`, and fog for the cameras.
 pub fn apply_lighting(commands: &mut Commands, lighting: &Lighting, parent: Entity) {
-    let ambient = lighting.ambient * AMBIENT_SCALE * ENVIRONMENT_AVERAGE;
+    let ambient = lighting.ambient * AMBIENT_SCALE;
     commands.insert_resource(GlobalAmbientLight {
         color: Color::linear_rgb(ambient.x, ambient.y, ambient.z),
         brightness: 1.0,

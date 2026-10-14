@@ -40,6 +40,8 @@ pub struct ModelNode {
     /// weights (joint indices are bone numbers).
     pub skin_bone: Option<u16>,
     pub light: Option<exa_formats::rfc::Light>,
+    /// Size of the fire this node becomes (torches 0.2, braziers 0.41).
+    pub fire: Option<f32>,
     /// Bounding sphere in the node's space (metres).
     pub bounds: (Vec3, f32),
 }
@@ -86,6 +88,8 @@ pub struct ModelCache {
     texels: HashMap<String, Option<Arc<Texels>>>,
     /// Painted apparel materials by texture stem and appearance.
     painted: HashMap<(String, Appearance), Handle<ExaMaterial>>,
+    /// The environment cube, once looked for.
+    environment: Option<Option<Handle<Image>>>,
     /// The body's skinned vertices per bone (part space, metres), for
     /// apparel to take its weights from.
     body_skin: HashMap<u16, Arc<Vec<(Vec3, VertexSkin)>>>,
@@ -183,6 +187,12 @@ impl ModelLoader<'_> {
                 part_materials,
                 skin_bone,
                 bounds: (Vec3::from(node.bounds_centre), node.bounds_radius),
+                fire: match &node.body {
+                    NodeBody::Emitter { kind, size } if *kind == exa_formats::rfc::FIRE => {
+                        Some(*size)
+                    }
+                    _ => None,
+                },
                 light: match &node.body {
                     NodeBody::Light(l) => Some(*l),
                     _ => None,
@@ -383,23 +393,29 @@ impl ModelLoader<'_> {
         if let Some(t) = m.texture(TextureSlot::Opacity) {
             mat.opacity_map = self.texture(t, ColorSpace::Linear).map(|t| t.0);
         }
-        let transparent = m.class & 0xF == 3 || mat.opacity_map.is_some();
-        mat.alpha_mode = if transparent {
-            AlphaMode::Blend
-        } else if cut_out {
-            AlphaMode::Mask(0.5)
-        } else {
-            AlphaMode::Opaque
-        };
-        // Cut-outs are seen from both sides.
-        if cut_out || transparent {
-            mat.params.flags |= flags::TWO_SIDED;
+        if let Some(t) = m.texture(TextureSlot::Dirt) {
+            mat.dirt_map = self.texture(t, ColorSpace::Srgb).map(|t| t.0);
         }
+        // Gloss maps count only when the material's flags name them.
+        if m.flags & GLOSS_SLOT != 0
+            && let Some(t) = m.texture(TextureSlot::Gloss)
+        {
+            mat.gloss_map = self.texture(t, ColorSpace::Linear).map(|t| t.0);
+        }
+        mat.alpha_mode = blend_mode(m.class, cut_out || mat.opacity_map.is_some());
+        if mat.alpha_mode == AlphaMode::Premultiplied {
+            let a = mat.params.diffuse.w;
+            mat.params.diffuse = (mat.params.diffuse.truncate() * a).extend(a);
+        }
+        mat.environment = self.environment_map();
         mat.with_map_flags()
     }
 
     fn apparel_material(&mut self, texture_key: &str) -> Handle<ExaMaterial> {
-        let mut mat = ExaMaterial::default();
+        let mut mat = ExaMaterial {
+            environment: self.environment_map(),
+            ..default()
+        };
         match self.texture(&format!("{texture_key}d"), ColorSpace::Srgb) {
             Some((img, alpha)) => {
                 mat.diffuse_map = Some(img);
@@ -509,6 +525,7 @@ impl ModelLoader<'_> {
                     },
                     diffuse_map: Some(self.images.add(image)),
                     specular_map: Some(self.images.add(surface)),
+                    environment: self.environment_map(),
                     ..default()
                 };
                 if alpha {
@@ -531,6 +548,27 @@ impl ModelLoader<'_> {
             None => self.apparel_material(stem),
         };
         self.cache.painted.insert(key, handle.clone());
+        handle
+    }
+
+    /// The environment cube the original lights and reflects with
+    /// (`genref01r` indoors): six faces with their mip chains, sRGB.
+    pub fn environment_map(&mut self) -> Option<Handle<Image>> {
+        if let Some(h) = &self.cache.environment {
+            return h.clone();
+        }
+        let image = self
+            .game
+            .texture(ENVIRONMENT_MAP)
+            .and_then(|b| Rfi::parse(b).ok())
+            .and_then(|rfi| cube_image(&rfi));
+        if image.is_none() {
+            self.warn_once(format!(
+                "environment map {ENVIRONMENT_MAP} could not be read"
+            ));
+        }
+        let handle = image.map(|i| self.images.add(i));
+        self.cache.environment = Some(handle.clone());
         handle
     }
 
@@ -571,6 +609,74 @@ type OwnedLayer = (
 );
 
 /// An image with a box-filtered mip chain from RGBA8 pixels, sRGB or linear.
+/// How a material blends, from its blend word: `0x4000` alpha-tests (when
+/// a map gives alpha); otherwise the source and destination factors (bits
+/// 8–11 and 0–3) pick opaque, premultiplied, additive or alpha blending.
+fn blend_mode(word: u32, has_alpha: bool) -> AlphaMode {
+    const ONE: u32 = 1;
+    const SRC_ALPHA: u32 = 2;
+    const ONE_MINUS_SRC_ALPHA: u32 = 3;
+    if word & 0x4000 != 0 {
+        return if has_alpha {
+            AlphaMode::Mask(0.5)
+        } else {
+            AlphaMode::Opaque
+        };
+    }
+    if word & 0x3F0F == 0x100 || word == 0 {
+        return AlphaMode::Opaque;
+    }
+    match ((word >> 8) & 0xF, word & 0xF) {
+        (ONE, ONE_MINUS_SRC_ALPHA) => AlphaMode::Premultiplied,
+        (SRC_ALPHA, ONE) => AlphaMode::Add,
+        (SRC_ALPHA, ONE_MINUS_SRC_ALPHA) => AlphaMode::Blend,
+        _ => AlphaMode::Blend,
+    }
+}
+
+/// The gloss-map texture slot, as named in a material's flags.
+const GLOSS_SLOT: u32 = 0x0100_0000;
+
+/// The environment cube of indoor scenes.
+const ENVIRONMENT_MAP: &str = "genref01r";
+
+/// A cube map from an RGB8 `.rfi` holding six faces, each with its mips.
+fn cube_image(rfi: &Rfi) -> Option<Image> {
+    use bevy::render::render_resource::{
+        Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension,
+    };
+    let (w, h) = (rfi.header.width, rfi.header.height);
+    let levels: Vec<(u32, u32)> = (0..rfi.mip_count)
+        .map(|m| ((w >> m).max(1), (h >> m).max(1)))
+        .collect();
+    let face: usize = levels.iter().map(|&(lw, lh)| (lw * lh * 3) as usize).sum();
+    if rfi.format != exa_formats::rfi::PixelFormat::Rgb8 || rfi.data.len() < face * 6 {
+        return None;
+    }
+    // RGB to RGBA, layer by layer with each layer's mips.
+    let mut data = Vec::with_capacity(face * 6 * 4 / 3);
+    for px in rfi.data[..face * 6].as_chunks::<3>().0 {
+        data.extend_from_slice(&[px[0], px[1], px[2], 255]);
+    }
+    let mut image = Image::new_uninit(
+        Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 6,
+        },
+        TextureDimension::D2,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.texture_descriptor.mip_level_count = rfi.mip_count;
+    image.data = Some(data);
+    image.texture_view_descriptor = Some(TextureViewDescriptor {
+        dimension: Some(TextureViewDimension::Cube),
+        ..default()
+    });
+    Some(image)
+}
+
 fn painted_image(width: u32, height: u32, rgba: Vec<u8>, srgb: bool) -> Image {
     use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
     use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};

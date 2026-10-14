@@ -3,6 +3,7 @@
 //! ground from the terrain heightfields (`terrain`).
 
 pub mod environment;
+pub mod fire;
 pub mod grid;
 pub mod start;
 pub mod terrain;
@@ -17,7 +18,11 @@ pub struct WorldPlugin;
 
 impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((terrain::TerrainPlugin, environment::EnvironmentPlugin));
+        app.add_plugins((
+            terrain::TerrainPlugin,
+            environment::EnvironmentPlugin,
+            fire::FirePlugin,
+        ));
     }
 }
 
@@ -253,6 +258,9 @@ pub fn spawn_model(commands: &mut Commands, model: &Model, placement: Option<Tra
         if let Some(light) = &node.light {
             commands.entity(e).insert(point_light(light));
         }
+        if let Some(size) = node.fire {
+            fire::spawn_fire(commands, e, size);
+        }
         entities.push(e);
     }
     for (i, node) in model.nodes.iter().enumerate() {
@@ -266,9 +274,10 @@ pub fn spawn_model(commands: &mut Commands, model: &Model, placement: Option<Tra
 /// A level light as the original shades it: its colour linearised and scaled
 /// by its intensity and 2/π (Bevy divides lumens by 4π), falling to nothing
 /// at 1.25 times its radius, casting shadows.
+/// Lumens giving the shader a colour of 2/π per unit of intensity.
+pub const LUMENS_PER_INTENSITY: f32 = 8.0;
+
 pub fn point_light(light: &Light) -> PointLight {
-    /// Lumens giving the shader a colour of 2/π per unit of intensity.
-    const LUMENS_PER_INTENSITY: f32 = 8.0;
     /// The falloff reaches zero this far out, in radii.
     const REACH: f32 = 1.25;
     let c = exa_render::material::linear_rgb(light.color);

@@ -56,7 +56,9 @@ pub fn meshes(game: &GameData) -> Result<()> {
                 match &node.body {
                     NodeBody::Mesh(_) => t.meshes += 1,
                     NodeBody::Instance(_) => t.instances += 1,
-                    NodeBody::NotMesh | NodeBody::Light(_) => t.other_nodes += 1,
+                    NodeBody::NotMesh | NodeBody::Light(_) | NodeBody::Emitter { .. } => {
+                        t.other_nodes += 1
+                    }
                     NodeBody::Invalid(err) => {
                         t.invalid += 1;
                         note(

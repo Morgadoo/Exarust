@@ -31,6 +31,12 @@ pub mod flags {
     /// The specular map packs intensity, gloss and metalness.
     pub const PACKED_SPECULAR: u32 = 64;
     pub const TWO_SIDED: u32 = 128;
+    /// The environment cube lights and reflects the surface.
+    pub const ENVIRONMENT: u32 = 256;
+    /// A dirt map roughens the surface where it deviates from mid-grey.
+    pub const DIRT_MAP: u32 = 512;
+    /// A gloss map scales the glossiness.
+    pub const GLOSS_MAP: u32 = 1024;
 }
 
 #[derive(Clone, Copy, Debug, ShaderType)]
@@ -82,6 +88,16 @@ pub struct ExaMaterial {
     #[texture(109)]
     #[sampler(110)]
     pub opacity_map: Option<Handle<Image>>,
+    /// The scene's environment cube (`genref01r` indoors).
+    #[texture(111, dimension = "cube")]
+    #[sampler(112)]
+    pub environment: Option<Handle<Image>>,
+    #[texture(113)]
+    #[sampler(114)]
+    pub dirt_map: Option<Handle<Image>>,
+    #[texture(115)]
+    #[sampler(116)]
+    pub gloss_map: Option<Handle<Image>>,
     pub alpha_mode: AlphaMode,
 }
 
@@ -95,6 +111,9 @@ impl ExaMaterial {
             (self.specular_map.is_some(), flags::SPECULAR_MAP),
             (self.emissive_map.is_some(), flags::EMISSIVE_MAP),
             (self.opacity_map.is_some(), flags::OPACITY_MAP),
+            (self.environment.is_some(), flags::ENVIRONMENT),
+            (self.dirt_map.is_some(), flags::DIRT_MAP),
+            (self.gloss_map.is_some(), flags::GLOSS_MAP),
         ] {
             if map {
                 *f |= bit;

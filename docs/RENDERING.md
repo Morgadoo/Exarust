@@ -77,10 +77,34 @@ program.
 - Diffuse is N·L·(1 − F), times the diffuse colour.
 - Packed specular maps give the metalness: diffuse × (1 − metal), F0 =
   mix(0.04, albedo·specular, metal), and the intensity scales the specular.
-- Ambient = environment map (normal, blurred) × level ambient × 16, added to
-  the lights before the diffuse colour. Exarust uses a constant average for
-  the map until environment maps are decoded.
+- Ambient = environment cube at the normal (mip 5) × level ambient × 16,
+  added to the lights before the diffuse colour.
+- The cube is `genref01r` for every indoor level (six 256² sRGB faces, each
+  with nine mips); outdoors it is `genref02r` masked by `genref02rm`. The
+  level record's `EnvMapIA01` is unread.
+- Reflections sample the cube along the mirror direction at mip
+  (rough − 0.1)·8, as (e + e²) × level ambient × 8 × the geometry term.
+- Gloss maps count only when the flags name them: rough = 1 − glossiness ×
+  gloss.r.
+- Dirt maps roughen where they deviate from mid-grey: rough = 1 − (1 −
+  rough)(1 − |0.5 − dirt.g|·2). This is dirt mode 1 without vertex dirt;
+  vertex dirt and modes 2 and 4 are not done.
+- Legacy materials (type 0) use the older program:
+  - no Fresnel per light, and diffuse is N·L;
+  - (lights + reflection) × specular colour × (0.5 + 0.5·Schlick);
+  - the specular colour is ×3 with a specular map.
 - Emissive adds on top. Unlit materials show only their emissive.
+
+**Blending** comes from the material's blend word (`0x44`):
+- the source factor is bits 8–11 and the destination bits 0–3;
+- `0x100` is opaque;
+- ONE / ONE_MINUS_SRC_ALPHA is premultiplied (the diffuse is pre-scaled by
+  opacity);
+- SRC_ALPHA / ONE is additive;
+- `0x4000` is alpha-tested and drawn opaque (cobwebs: alpha = opacity ·
+  map², cut at ½).
+
+Blended draws are sorted by the layer in bits 4–7, without depth writes.
 
 ## Lights
 
@@ -92,6 +116,23 @@ program.
 - The sun's colour per unit of intensity is 160 lux in Exarust's scene units
   (scaled back in the shader).
 
+## Fires
+
+A model node with a fire emitter (`0x3DD0E002`, size s; a torch's `_Fire`
+is 0.2) becomes an omni light:
+- colour sRGB (1, 0.68, 0.43);
+- intensity 8√s and radius 1500√s cm, ×1.25 for 0.2 < s ≤ 0.35; larger
+  fires use other templates;
+- placed 5 cm above the node, casting shadows.
+
+Every tick the intensity is density · (1 + 0.05·x) · base:
+- x is a soft-bounded random walk. With u uniform in [0, 1): v −= u past
+  +1, v += u past −1, otherwise v += 2(u − ½); then x += 0.3·v·u.
+- The density ramps in as 0.8·density + 0.2·(live particles / maximum).
+
+Candles have no fire and give no light. The flame itself is premultiplied
+particles with a nine-key colour ramp (not done yet).
+
 ## Cameras
 
 - Vertical field of view in degrees.
@@ -101,7 +142,8 @@ program.
 
 ## Not done yet
 
-Torch and flame lights, environment maps and specular reflections, the
-voxel GI volume, fog, displacement and parallax, dirt, glass refraction,
-effect programs (smoke, flames, powers), hair and skin programs, and
-terrain on the new shading.
+Flame particles, the voxel GI volume, fog, displacement and parallax, vertex
+dirt, glass refraction, effect programs (smoke, powers), hair and skin
+programs, terrain on the new shading, and the outdoor environment cube.
+Software rendering here cannot afford the light shadows, so test frames use
+`--no-shadows`.

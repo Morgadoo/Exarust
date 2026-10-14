@@ -115,6 +115,12 @@ pub enum NodeBody {
     Light(Light),
     /// The node reuses another object's data; nothing else is stored.
     Instance(u32),
+    /// A plain node carrying a particle emitter record (`0x3DD0E002` is a
+    /// fire): its type and size.
+    Emitter {
+        kind: u32,
+        size: f32,
+    },
     /// A node kind that is not a mesh (lights, plain nodes, …).
     NotMesh,
     /// A mesh record that could not be decoded.
@@ -358,6 +364,20 @@ fn read_materials(
     Ok(())
 }
 
+/// Emitter records end a plain node's body: `u32 type, u32 4, f32 size`.
+const EMITTER: u32 = 0x3DD0_E000;
+pub const FIRE: u32 = 0x3DD0_E002;
+
+fn emitter(body: &[u8]) -> Option<NodeBody> {
+    let tail = body.len().checked_sub(12).map(|at| &body[at..])?;
+    let word = |o: usize| u32::from_le_bytes(tail[o..o + 4].try_into().expect("4 bytes"));
+    let kind = word(0);
+    (kind & 0xFFFF_FF00 == EMITTER && word(4) == 4).then(|| NodeBody::Emitter {
+        kind,
+        size: f32::from_bits(word(8)),
+    })
+}
+
 fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
     let name = c.name()?;
     let flags = c.u32()?;
@@ -391,7 +411,7 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
             Err(e) => NodeBody::Invalid(e.to_string()),
         }
     } else {
-        NodeBody::NotMesh
+        emitter(c.bytes(c.remaining())?).unwrap_or(NodeBody::NotMesh)
     };
     Ok(Node {
         kind,

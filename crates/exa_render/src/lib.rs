@@ -11,6 +11,8 @@ pub struct RenderPlugin;
 
 impl Plugin for RenderPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((post::PostPlugin, material::MaterialsPlugin));
+        app.add_plugins((post::PostPlugin, material::MaterialsPlugin))
+            // Cube shadow maps of lights and fires.
+            .insert_resource(bevy::light::PointLightShadowMap { size: 512 });
     }
 }

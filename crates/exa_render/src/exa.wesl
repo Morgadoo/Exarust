@@ -34,6 +34,16 @@ const OPACITY_MAP: u32 = 16u;
 const LIT: u32 = 32u;
 const PACKED_SPECULAR: u32 = 64u;
 const TWO_SIDED: u32 = 128u;
+const ENVIRONMENT: u32 = 256u;
+const DIRT_MAP: u32 = 512u;
+const GLOSS_MAP: u32 = 1024u;
+
+// The environment cube's strength in reflections indoors (`Ambient.w`), and
+// the cube's level standing in when a material has none.
+const REFLECTION_STRENGTH: f32 = 8.0;
+const ENVIRONMENT_FALLBACK: f32 = 0.02;
+// The level ambient is passed ×16, as the original scales its cube lookup.
+const AMBIENT_SCALE: f32 = 16.0;
 
 // The sun's illuminance per unit of the original's intensity.
 const SUN_LUX: f32 = 160.0;
@@ -49,6 +59,12 @@ const SUN_LUX: f32 = 160.0;
 @group(constants::MATERIAL_BIND_GROUP) @binding(108) var emissive_sampler: sampler;
 @group(constants::MATERIAL_BIND_GROUP) @binding(109) var opacity_map: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(110) var opacity_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(111) var environment_map: texture_cube<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(112) var environment_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(113) var dirt_map: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(114) var dirt_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(115) var gloss_map: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(116) var gloss_sampler: sampler;
 
 fn has(bit: u32) -> bool {
     return (material.flags & bit) != 0u;
@@ -65,6 +81,9 @@ struct Surface {
     // 1 − glossiness: r2 = rough⁴.
     rough: f32,
     f0: vec3<f32>,
+    // Legacy materials use the original's older program: no Fresnel per
+    // light, specular tinted by the specular colour at the end.
+    legacy: bool,
 }
 
 // Diffuse (x) and specular (rgb in the second) from one light of colour c.
@@ -87,6 +106,11 @@ fn light(s: Surface, l: vec3<f32>, colour: vec3<f32>) -> Lit {
     let denom = ndh * ndh * (r2 - 1.0) + 1.0;
     let dg = r2 * ndl / (denom * denom * (ndl * (1.0 - k) + k));
     let d = 0.25 / (s.ndv * (1.0 - k) + k);
+    if s.legacy {
+        out.specular = dg * d * colour;
+        out.diffuse = ndl * colour;
+        return out;
+    }
     let fs = schlick(s.f0, hdv);
     out.specular = dg * d * fs * colour;
     out.diffuse = ndl * (vec3(1.0) - fs) * colour;
@@ -148,6 +172,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     var cavity = 1.0;
     s.rough = 1.0 - material.specular.w;
     s.f0 = material.specular.rgb;
+    s.legacy = !has(PACKED_SPECULAR);
     if has(SPECULAR_MAP) {
         let rgm = textureSample(specular_map, specular_sampler, uv);
         if has(PACKED_SPECULAR) {
@@ -159,6 +184,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         } else {
             s.f0 = material.specular.rgb * rgm.rgb;
         }
+    }
+    if has(GLOSS_MAP) && !has(SPECULAR_MAP) {
+        s.rough = 1.0 - material.specular.w * textureSample(gloss_map, gloss_sampler, uv).r;
+    }
+    // Dirt roughens where it is far from mid-grey (the original's dirt mode
+    // 1, without vertex dirt).
+    if has(DIRT_MAP) {
+        let drt = textureSample(dirt_map, dirt_sampler, uv).g;
+        s.rough = 1.0 - (1.0 - s.rough) * (1.0 - abs(0.5 - drt) * 2.0);
     }
     s.rough = clamp(s.rough, 0.02, 1.0);
 
@@ -205,14 +239,29 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         specular += lit.specular;
     }
 
-    // Ambient: the level's, set on the CPU from its record.
-    let ambient = view_bindings::lights.ambient_color.rgb;
+    // Ambient: the environment cube's blurred colour around the normal ×
+    // the level's ambient × 16; reflections sample it by gloss.
+    let level = view_bindings::lights.ambient_color.rgb;
+    var ambient = level * ENVIRONMENT_FALLBACK;
+    var mirrored = vec3(ENVIRONMENT_FALLBACK);
+    if has(ENVIRONMENT) {
+        ambient = textureSampleLevel(environment_map, environment_sampler, n, 5.0).rgb * level;
+        let r = reflect(-v, n);
+        mirrored = textureSampleLevel(environment_map, environment_sampler, r, max(s.rough - 0.1, 0.0) * 8.0).rgb;
+    }
     var colour = (diffuse + ambient) * dif_col;
-    // Reflection of the surroundings, approximated from the ambient.
     let k = (s.rough + 1.0) * (s.rough + 1.0) / 8.0;
-    let reflected = ambient * 0.5 * s.ndv / (s.ndv * (1.0 - k) + k);
-    specular += reflected * schlick(s.f0, s.ndv);
-    colour += specular * cavity;
+    let reflected = (mirrored + mirrored * mirrored) * level / AMBIENT_SCALE * REFLECTION_STRENGTH
+        * s.ndv / (s.ndv * (1.0 - k) + k);
+    if s.legacy {
+        // Older program: (lights + reflection) × specular colour × a soft
+        // Fresnel between 0.5 and 1.
+        let spf = 0.5 + 0.5 * exp2((-5.55473 * s.ndv - 6.98316) * s.ndv);
+        colour += (specular + reflected) * s.f0 * spf;
+    } else {
+        specular += reflected * schlick(s.f0, s.ndv);
+        colour += specular * cavity;
+    }
 
     var e = material.emissive.rgb;
     if has(EMISSIVE_MAP) {

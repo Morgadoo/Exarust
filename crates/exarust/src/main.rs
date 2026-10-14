@@ -10,6 +10,8 @@
 //! options: --camera x,y,z,yaw,pitch   start pose (metres, degrees)
 //!          --at x,y,z                 play mode: start here (metres)
 //!          --fov <degrees>            vertical field of view (default 45)
+//!          --no-shadows               lights cast no shadows (for software rendering)
+//!          --size WxH                 window size (default 1600x900)
 //!          --screenshot <file.png>    save a frame and exit
 //!          --frames <n>               frames to wait before the screenshot (default 90)
 //!          --ev <ev100>               camera exposure (default 6, lower is brighter)
@@ -47,6 +49,10 @@ pub struct Options {
     pub camera: Option<[f32; 5]>,
     /// Vertical field of view, degrees.
     pub fov: Option<f32>,
+    /// Lights cast no shadows.
+    pub no_shadows: bool,
+    /// Window size in logical pixels.
+    pub size: Option<(u32, u32)>,
     /// Play mode: start here instead of the level's start (metres).
     pub at: Option<[f32; 3]>,
     pub screenshot: Option<PathBuf>,
@@ -94,6 +100,13 @@ fn main() -> AppExit {
             "--screenshot" => options.screenshot = args.next().map(PathBuf::from),
             "--ceilings" => options.ceilings = true,
             "--limp" => options.limp = true,
+            "--no-shadows" => options.no_shadows = true,
+            "--size" => {
+                options.size = args.next().and_then(|v| {
+                    let (w, h) = v.split_once('x')?;
+                    Some((w.parse().ok()?, h.parse().ok()?))
+                })
+            }
             "--fov" => options.fov = args.next().and_then(|v| v.parse().ok()),
             "--race" => options.race = args.next().and_then(|v| v.parse().ok()),
             "--shove" => options.shove = args.next().and_then(|v| v.parse().ok()),
@@ -175,7 +188,7 @@ fn main() -> AppExit {
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Exarust".into(),
-                resolution: (1600, 900).into(),
+                resolution: options.size.unwrap_or((1600, 900)).into(),
                 ..default()
             }),
             ..default()

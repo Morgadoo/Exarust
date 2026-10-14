@@ -76,6 +76,7 @@ impl ModelLoader<'_> {
             part_materials: Vec::new(),
             skin_bone: None,
             light: None,
+            fire: None,
             bounds: (Vec3::ZERO, 1.0),
         }];
         for placed in factory.place(&generated) {
@@ -137,6 +138,7 @@ impl ModelLoader<'_> {
                 part_materials: vec![String::new(); count],
                 skin_bone: None,
                 light: None,
+                fire: None,
                 bounds: (Vec3::ZERO, 0.5),
             });
         }
