@@ -132,7 +132,7 @@ blend rules (height, slope, the original's noise maps) and masked material
 layering in a WESL shader; outdoor arenas render and are walkable
 ([formats/TERRAIN.md](formats/TERRAIN.md)).
 Remaining: the alternate builder for flagged cells, per-room mesh merging,
-terrain normal/gloss maps, height displacement and grass, an outdoor sun,
+terrain gloss textures, height displacement and grass, an outdoor sun,
 sectors/portals (the room flood fill is understood),
 `exanima://` asset source, streaming.
 

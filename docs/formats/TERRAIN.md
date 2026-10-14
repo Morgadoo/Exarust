@@ -132,9 +132,10 @@ their flat tint (e.g. black `Mat STint`, which fills unseen ground).
 The original bakes this into per-tile colour, normal, gloss, mask, height and
 displacement textures, using up to 32 materials in groups of four. Exarust
 evaluates the same weights per vertex and layers the four heaviest materials
-of a tile in a shader. Not yet reproduced: normal and gloss maps, the height
-displacement of the mesh (from the H pass), and the grass placed from the
-plant records.
+of a tile in a shader. Normal maps are layered the same way, with the N-pass
+sharpness (f4, f5) and strength (f11). Gloss uses the scalar f10 without the G
+texture. Not yet reproduced: the G texture, the height displacement of the
+mesh (from the H pass), and the grass placed from the plant records.
 
 ### Plant (104 bytes)
 

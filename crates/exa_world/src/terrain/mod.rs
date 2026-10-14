@@ -72,6 +72,18 @@ pub struct TerrainSplat {
     #[texture(113)]
     #[sampler(114)]
     pub mask3: Option<Handle<Image>>,
+    #[texture(115)]
+    #[sampler(116)]
+    pub normal0: Option<Handle<Image>>,
+    #[texture(117)]
+    #[sampler(118)]
+    pub normal1: Option<Handle<Image>>,
+    #[texture(119)]
+    #[sampler(120)]
+    pub normal2: Option<Handle<Image>>,
+    #[texture(121)]
+    #[sampler(122)]
+    pub normal3: Option<Handle<Image>>,
 }
 
 #[derive(ShaderType, Reflect, Debug, Clone, Copy, Default)]
@@ -80,6 +92,9 @@ pub struct SplatParams {
     pub colour: [Vec4; SPLAT_LAYERS],
     /// Mask sharpness `s`, `t`, then 1 when the layer has a blend mask.
     pub blend: [Vec4; SPLAT_LAYERS],
+    /// Mask sharpness `s`, `t` of the normal pass, normal-map strength (0
+    /// without a normal map), gloss.
+    pub normal: [Vec4; SPLAT_LAYERS],
     /// Texture repeats per metre per material.
     pub tiling: Vec4,
 }
@@ -187,7 +202,21 @@ pub fn spawn_terrain(
                 .texture(TerrainTexture::Mask)
                 .and_then(|name| loader.texture(name, ColorSpace::Linear))
                 .map(|(img, _)| img);
+            let normal = material
+                .texture(TerrainTexture::Normal)
+                .and_then(|name| loader.texture(name, ColorSpace::Linear))
+                .map(|(img, _)| img);
             let look = Look::of(material);
+            splat.params.normal[slot] = Vec4::new(
+                look.normal_sharpness[0],
+                look.normal_sharpness[1],
+                if normal.is_some() {
+                    look.normal_strength
+                } else {
+                    0.0
+                },
+                look.gloss,
+            );
             splat.params.colour[slot] = look.colour;
             splat.params.blend[slot] = Vec4::new(
                 look.sharpness[0],
@@ -197,10 +226,10 @@ pub fn spawn_terrain(
             );
             splat.params.tiling[slot] = look.tiling;
             match slot {
-                0 => splat.diffuse0 = diffuse,
-                1 => (splat.diffuse1, splat.mask1) = (diffuse, mask),
-                2 => (splat.diffuse2, splat.mask2) = (diffuse, mask),
-                _ => (splat.diffuse3, splat.mask3) = (diffuse, mask),
+                0 => (splat.diffuse0, splat.normal0) = (diffuse, normal),
+                1 => (splat.diffuse1, splat.mask1, splat.normal1) = (diffuse, mask, normal),
+                2 => (splat.diffuse2, splat.mask2, splat.normal2) = (diffuse, mask, normal),
+                _ => (splat.diffuse3, splat.mask3, splat.normal3) = (diffuse, mask, normal),
             }
         }
         let centre = terrain.tile_centre(tile);
@@ -221,6 +250,9 @@ pub fn spawn_terrain(
 struct Look {
     colour: Vec4,
     sharpness: [f32; 2],
+    normal_sharpness: [f32; 2],
+    normal_strength: f32,
+    gloss: f32,
     tiling: f32,
 }
 
@@ -238,6 +270,9 @@ impl Look {
         Self {
             colour: Vec4::new(tint.red * gain, tint.green * gain, tint.blue * gain, cover),
             sharpness: [p(2, 1.0), p(3, 0.0)],
+            normal_sharpness: [p(4, 1.0), p(5, 0.0)],
+            normal_strength: p(11, 1.0),
+            gloss: p(10, 0.25) * gain,
             tiling: tile * UV_PER_METRE,
         }
     }
@@ -383,6 +418,7 @@ mod tests {
         assert!((look.colour.x - 0.75).abs() < 1e-5);
         assert_eq!(look.colour.w, 0.5);
         assert_eq!(look.sharpness, [3.0, 1.0]);
+        assert_eq!(look.normal_strength, 0.0);
         assert!((look.tiling - 2.0 / 12.0).abs() < 1e-6);
     }
 }
