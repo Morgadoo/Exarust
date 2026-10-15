@@ -641,7 +641,7 @@ fn spawn_node(
             .spawn((
                 Mesh3d(mesh),
                 MeshMaterial3d(material.clone()),
-                exa_render::shadow_bias::tag(bias),
+                exa_render::lights::ShadowBias(bias),
                 ChildOf(e),
             ))
             .id();

@@ -1,9 +1,10 @@
-//! Which meshes cast into which light's shadow map, as the original links
-//! nodes to lights. A mesh casts into a light when their bounding spheres
+//! Which meshes cast into which light's shadow map, and which lights light
+//! which mesh, as the original links nodes to lights. A mesh casts into a light when their bounding spheres
 //! overlap and the light still matters at the mesh's near side:
 //! (1 − 0.8·d/R)⁴ · luma(colour · intensity) > 0.01, with d the distance from
 //! the light to the sphere's surface and R the light's radius. A light's own
-//! object (its siblings, parent and grandparent) stays out of its map.
+//! object (its siblings, parent and grandparent) stays out of its map. A
+//! mesh is lit by its six strongest links ([`exa_render::lights::MeshLights`]).
 //!
 //! Bevy takes a light's casters from render layers: every shadowed light
 //! gets a layer of its own, a mesh carries layer 0 and the layers of the
@@ -18,6 +19,7 @@ use bevy::ecs::entity::EntityHashSet;
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 use bevy::transform::TransformSystems;
+use exa_render::lights::{LightId, LightsSystems, MAX_MESH_LIGHTS, MeshLights};
 use exa_render::supersample::DisplayCamera;
 
 pub struct ShadowLinksPlugin;
@@ -30,6 +32,8 @@ impl Plugin for ShadowLinksPlugin {
                 .chain()
                 .after(TransformSystems::Propagate)
                 .after(VisibilitySystems::CalculateBounds)
+                .after(LightsSystems::Ids)
+                .before(LightsSystems::Lists)
                 .before(VisibilitySystems::CheckVisibility),
         );
     }
@@ -73,6 +77,8 @@ struct LightLayer(usize);
 #[derive(Clone, Copy, Debug)]
 struct LinkedLight {
     entity: Entity,
+    /// The light's id in the shaders' records.
+    id: u32,
     layer: usize,
     /// The light's parent (its object), for [`ShadowExclude`].
     anchor: Option<Entity>,
@@ -90,14 +96,42 @@ struct LinkedLights {
     layers_changed: bool,
 }
 
-/// Whether `light` reaches a mesh with world bounding sphere (`c`, `r`).
-fn linked(light: &LinkedLight, c: Vec3, r: f32) -> bool {
+/// The link weight of `light` to a mesh with world bounding sphere (`c`,
+/// `r`), if they are linked.
+fn link_weight(light: &LinkedLight, c: Vec3, r: f32) -> Option<f32> {
     let reach = light.reach.radius.max(1e-3);
     let d = (c.distance(light.position) - r).max(0.0);
     if d >= reach {
-        return false;
+        return None;
     }
-    (1.0 - 0.8 * d / reach).powi(4) * light.reach.luma > LINK_WEIGHT
+    let w = (1.0 - 0.8 * d / reach).powi(4) * light.reach.luma;
+    (w > LINK_WEIGHT).then_some(w)
+}
+
+/// A mesh's links: (light layer, light id, weight).
+#[derive(Component, Clone, Debug, Default, PartialEq)]
+pub struct LightLinks(Vec<(usize, u32, f32)>);
+
+impl LightLinks {
+    /// The render layers that make the mesh cast into its lights.
+    fn layers(&self) -> RenderLayers {
+        std::iter::once(0)
+            .chain(self.0.iter().map(|l| l.0))
+            .collect()
+    }
+
+    /// The lights the mesh is lit by: its strongest links.
+    fn lights(&self) -> MeshLights {
+        let mut by_weight = self.0.clone();
+        by_weight.sort_by(|a, b| b.2.total_cmp(&a.2));
+        MeshLights(
+            by_weight
+                .iter()
+                .take(MAX_MESH_LIGHTS)
+                .map(|l| l.1)
+                .collect(),
+        )
+    }
 }
 
 fn excluded(light: &LinkedLight, exclude: Option<&ShadowExclude>) -> bool {
@@ -125,13 +159,14 @@ type LightQuery<'w, 's> = Query<
         Option<&'static ShadowReach>,
         Option<&'static ChildOf>,
         Option<&'static LightLayer>,
+        &'static LightId,
     ),
 >;
 
 /// A light added or moved this frame.
 type LightMoved = Or<(Changed<GlobalTransform>, Added<PointLight>)>;
 
-/// Gives new shadowed lights a layer and notes the lights that moved.
+/// Gives new lights a layer and notes the lights that moved.
 fn track_lights(
     mut commands: Commands,
     mut table: ResMut<LinkedLights>,
@@ -143,10 +178,9 @@ fn track_lights(
     }
     // Lights gone: drop them (their layers stay retired).
     table.lights.retain(|l| lights.contains(l.entity));
-    for (entity, light, transform, reach, parent, layer) in &lights {
-        if !light.shadow_maps_enabled {
-            continue;
-        }
+    for (entity, light, transform, reach, parent, layer, id) in &lights {
+        // Lights without shadow maps are linked too: links also choose the
+        // lights a mesh is lit by.
         let reach = reach.copied().unwrap_or(ShadowReach {
             radius: light.range,
             luma: 1.0,
@@ -172,6 +206,7 @@ fn track_lights(
                     .insert((LightLayer(l), RenderLayers::from_layers(&[l])));
                 table.lights.push(LinkedLight {
                     entity,
+                    id: id.0,
                     layer: l,
                     anchor: parent.map(ChildOf::parent),
                     position: transform.translation(),
@@ -192,7 +227,7 @@ type CasterQuery<'w, 's> = Query<
         &'static Aabb,
         &'static GlobalTransform,
         Option<&'static ShadowExclude>,
-        Option<&'static RenderLayers>,
+        Option<&'static LightLinks>,
     ),
     (With<Mesh3d>, Without<NotShadowCaster>, Without<PointLight>),
 >;
@@ -223,31 +258,37 @@ fn link_casters(
                       aabb: &Aabb,
                       transform: &GlobalTransform,
                       exclude: Option<&ShadowExclude>,
-                      current: Option<&RenderLayers>,
+                      current: Option<&LightLinks>,
                       only: Option<&[usize]>| {
         let (c, r) = sphere(aabb, transform);
-        let on = |l: &LinkedLight| !excluded(l, exclude) && linked(l, c, r);
-        let layers = match only {
+        let link = |l: &LinkedLight| {
+            (!excluded(l, exclude))
+                .then(|| link_weight(l, c, r))
+                .flatten()
+                .map(|w| (l.layer, l.id, w))
+        };
+        let links = match only {
             // Every link afresh.
-            None => std::iter::once(0)
-                .chain(lights.iter().filter(|l| on(l)).map(|l| l.layer))
-                .collect::<RenderLayers>(),
+            None => LightLinks(lights.iter().filter_map(link).collect()),
             // Only the moved lights' links change.
             Some(indices) => {
-                let mut layers = current.cloned().unwrap_or_default();
+                let mut links = current.cloned().unwrap_or_default();
                 for &i in indices {
                     let l = &lights[i];
-                    layers = if on(l) {
-                        layers.with(l.layer)
-                    } else {
-                        layers.without(l.layer)
-                    };
+                    links.0.retain(|x| x.0 != l.layer);
+                    links.0.extend(link(l));
                 }
-                layers
+                links
             }
         };
-        if current != Some(&layers) {
-            commands.entity(entity).insert(layers);
+        if current != Some(&links) {
+            let changed_lights = current.is_none_or(|c| c.lights() != links.lights());
+            let mut e = commands.entity(entity);
+            e.insert(links.layers());
+            if changed_lights {
+                e.insert(links.lights());
+            }
+            e.insert(links);
         }
     };
     for entity in &fresh {
@@ -292,6 +333,7 @@ mod tests {
     fn torch() -> LinkedLight {
         LinkedLight {
             entity: Entity::PLACEHOLDER,
+            id: 0,
             layer: FIRST_LIGHT_LAYER,
             anchor: None,
             position: Vec3::ZERO,
@@ -305,21 +347,28 @@ mod tests {
     #[test]
     fn links_by_reach_and_weight() {
         let l = torch();
-        assert!(linked(&l, Vec3::new(3.0, 0.0, 0.0), 0.5));
+        assert!(link_weight(&l, Vec3::new(3.0, 0.0, 0.0), 0.5).is_some());
         // Beyond the radius: no link.
-        assert!(!linked(&l, Vec3::new(9.0, 0.0, 0.0), 0.5));
+        assert!(link_weight(&l, Vec3::new(9.0, 0.0, 0.0), 0.5).is_none());
         // Inside the radius, but the weight is below 0.01 near its edge.
-        assert!(!linked(&l, Vec3::new(7.9, 0.0, 0.0), 0.1));
+        assert!(link_weight(&l, Vec3::new(7.9, 0.0, 0.0), 0.1).is_none());
         // A big mesh reaching in is linked by its near side.
-        assert!(linked(&l, Vec3::new(9.0, 0.0, 0.0), 4.0));
+        assert!(link_weight(&l, Vec3::new(9.0, 0.0, 0.0), 4.0).is_some());
     }
 
     #[test]
     fn faint_lights_link_less() {
         let mut l = torch();
         l.reach.luma = 0.05;
-        assert!(!linked(&l, Vec3::new(4.0, 0.0, 0.0), 0.1));
-        assert!(linked(&l, Vec3::new(1.0, 0.0, 0.0), 0.1));
+        assert!(link_weight(&l, Vec3::new(4.0, 0.0, 0.0), 0.1).is_none());
+        assert!(link_weight(&l, Vec3::new(1.0, 0.0, 0.0), 0.1).is_some());
+    }
+
+    #[test]
+    fn lit_by_the_six_strongest_links() {
+        let links = LightLinks((0..8).map(|i| (i + 2, i as u32, i as f32)).collect());
+        assert_eq!(links.lights(), MeshLights(vec![7, 6, 5, 4, 3, 2]));
+        assert_eq!(links.layers().iter().count(), 9);
     }
 
     #[test]

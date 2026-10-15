@@ -12,7 +12,7 @@ import bevy_pbr::render::{
     shadows,
 };
 import exa_render::shading::{
-    Surface, Lit, taps, shadow_depth_scale, shadow_bias_level, light, schlick, point_shadow, view_depth, vertical_shaping, gi_sample, in_gi,
+    Surface, Lit, taps, shadow_depth_scale, shadow_bias_level, lit_by, light, schlick, point_shadow, view_depth, vertical_shaping, gi_sample, in_gi,
     gi_ambient,
     REFLECTION_STRENGTH, ENVIRONMENT_FALLBACK, AMBIENT_SCALE, SUN_LUX,
 };
@@ -207,7 +207,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let receiver = (mesh[in.instance_index].flags & MESH_FLAGS_SHADOW_RECEIVER_BIT) != 0u;
 
     let disc = taps(in.position.xy, has(SPLIT_TAPS));
-    let depth_scale = shadow_depth_scale(shadow_bias_level(mesh[in.instance_index].tag));
+    let tag = mesh[in.instance_index].tag;
+    let depth_scale = shadow_depth_scale(shadow_bias_level(tag));
     // Point lights in this fragment's cluster.
     let view_z = view_depth(in.world_position);
     let ortho = view_bindings::view.clip_from_view[3].w == 1.0;
@@ -215,6 +216,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let ranges = clustering::unpack_clusterable_object_index_ranges(cluster);
     for (var i = ranges.first_point_light_index_offset; i < ranges.first_spot_light_index_offset; i++) {
         let id = clustering::get_clusterable_object_id(i);
+        if !lit_by(tag, id) {
+            continue;
+        }
         let lt = &view_bindings::clustered_lights.data[id];
         let to = (*lt).position_radius.xyz - p;
         let d = length(to);

@@ -115,6 +115,10 @@ pub struct TerrainSplat {
     #[texture(125, dimension = "cube")]
     #[sampler(126)]
     pub environment: Option<Handle<Image>>,
+    /// Light records ([`exa_render::lights`]); the default handle is the
+    /// shared buffer.
+    #[storage(130, read_only)]
+    pub lights: Handle<bevy::render::storage::ShaderBuffer>,
 }
 
 #[derive(ShaderType, Reflect, Debug, Clone, Copy, Default)]

@@ -319,8 +319,9 @@ side-by-side check on the GPU at the same camera.
     vertical part of the direction to the light (1 straight below it);
   - applied on surfaces and in the GI injection.
   
-  Exarust carries y and z in the light's shadow-bias fields, which its own
-  shadow filter does not use.
+  Exarust keeps y and z in a per-light record the shaders read
+  (`exa_render::lights`). Each light's id travels in its depth-bias field,
+  which Exarust's own shadow filter does not use.
   Exarust sets Bevy's range to 1.25·R and computes (1 − d/range)⁴ itself.
 - Lights cast shadows from cube maps (512² per face; the sun's map is 4096²
   at the top shadow detail).
@@ -348,9 +349,16 @@ side-by-side check on the GPU at the same camera.
   mesh in reach casting into every light, Bevy's per-face bookkeeping grew
   to about 12 GB and the frame rate fell below 2 FPS.
 
+- **Lights per mesh**: a mesh is lit only by its 6 strongest links, as the
+  original lights an object. A mesh with no links gets no point light, only
+  ambient. Each mesh's list sits in the lights buffer, and its slot travels
+  in the mesh tag above the shadow-bias level. Terrain tiles, which are
+  larger than the original's 6 m terrain blocks, and meshes that cast no
+  shadows keep every light in reach.
+
   Not done yet: the original's other limits on the same links. Lights stop
   at walls (a top-down flood fill through the 6 m wall grid, at most 12
-  lights per cell). A mesh is lit by at most its 6 strongest links. Cube
+  lights per cell). Cube
   faces are rendered only when they hold a visible receiver and a light or
   caster has moved; otherwise they are cached across frames. Draw sets are
   per room, with one portal step into the next room. The notes are in

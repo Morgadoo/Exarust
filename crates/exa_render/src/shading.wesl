@@ -187,14 +187,41 @@ fn cube_compare(dir: vec3<f32>, id: u32, depth: f32) -> f32 {
     );
 }
 
+// Light records and mesh light lists (`exa_render::lights`), bound to every
+// surface material: element 0 holds the first list's index, element 1 + id
+// light `id`'s shaping (y, z), each list two elements (count, then ids).
+@group(constants::MATERIAL_BIND_GROUP) @binding(130) var<storage, read> exa_lights: array<vec4<u32>>;
+
+// A clustered light's id in the records, carried in its depth-bias field.
+fn light_id(index: u32) -> u32 {
+    return u32(view_bindings::clustered_lights.data[index].shadow_depth_bias);
+}
+
+// Whether the mesh with tag `tag` is lit by clustered light `index`: a mesh
+// with a light list (tag bits 3 and up) only by the lights on it, as the
+// original lights an object by its strongest links; others by every light.
+fn lit_by(tag: u32, index: u32) -> bool {
+    let slot = tag >> 3u;
+    if slot == 0u {
+        return true;
+    }
+    let base = exa_lights[0].x + 2u * (slot - 1u);
+    let a = exa_lights[base];
+    let b = exa_lights[base + 1u];
+    let id = light_id(index);
+    let n = a.x;
+    return (n > 0u && a.y == id) || (n > 1u && a.z == id) || (n > 2u && a.w == id)
+        || (n > 3u && b.x == id) || (n > 4u && b.y == id) || (n > 5u && b.z == id);
+}
+
 // A level light's vertical shaping for the vertical part `ly` of the
 // direction to it (1 straight below): max((2^(z·(ly + (1 − ly)·y)) − 1) /
-// (2^z − 1), 0), with y and z carried in the light's shadow bias fields.
-// Unshaped lights carry (1, 1): a factor of 1.
-fn vertical_shaping(id: u32, ly: f32) -> f32 {
-    let lt = &view_bindings::clustered_lights.data[id];
-    let y = (*lt).shadow_depth_bias;
-    let z = (*lt).shadow_normal_bias;
+// (2^z − 1), 0), with y and z from the light's record. Unshaped lights
+// carry (1, 1): a factor of 1.
+fn vertical_shaping(index: u32, ly: f32) -> f32 {
+    let rec = exa_lights[1u + light_id(index)];
+    let y = bitcast<f32>(rec.x);
+    let z = bitcast<f32>(rec.y);
     let a = (ly + (1.0 - ly) * y) * z;
     return max((exp2(a) - 1.0) / max(exp2(z) - 1.0, 1e-4), 0.0);
 }
@@ -211,8 +238,9 @@ fn view_depth(world_position: vec4<f32>) -> f32 {
 
 // Every point light and the sun on surface `s` at `world_position`, with
 // shadows when the mesh receives them (`nrm` offsets the shadow lookups,
-// `t` are the fragment's disc taps, `bias` its shadow-bias level).
-fn direct(s: Surface, world_position: vec4<f32>, nrm: vec3<f32>, frag: vec2<f32>, t: Taps, receiver: bool, bias: u32) -> Lit {
+// `t` are the fragment's disc taps, `tag` its mesh tag: shadow-bias level and
+// light list).
+fn direct(s: Surface, world_position: vec4<f32>, nrm: vec3<f32>, frag: vec2<f32>, t: Taps, receiver: bool, tag: u32) -> Lit {
     var out: Lit;
     let p = world_position.xyz;
     let view_z = view_depth(world_position);
@@ -221,6 +249,9 @@ fn direct(s: Surface, world_position: vec4<f32>, nrm: vec3<f32>, frag: vec2<f32>
     let ranges = clustering::unpack_clusterable_object_index_ranges(cluster);
     for (var i = ranges.first_point_light_index_offset; i < ranges.first_spot_light_index_offset; i++) {
         let id = clustering::get_clusterable_object_id(i);
+        if !lit_by(tag, id) {
+            continue;
+        }
         let lt = &view_bindings::clustered_lights.data[id];
         let to = (*lt).position_radius.xyz - p;
         let d = length(to);
@@ -230,7 +261,7 @@ fn direct(s: Surface, world_position: vec4<f32>, nrm: vec3<f32>, frag: vec2<f32>
         }
         var shadow = 1.0;
         if receiver && ((*lt).flags & mesh_view_types::POINT_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u {
-            shadow = point_shadow(id, p, nrm, t, shadow_depth_scale(bias));
+            shadow = point_shadow(id, p, nrm, t, shadow_depth_scale(shadow_bias_level(tag)));
         }
         let lit = light(s, to / max(d, 1e-4), (*lt).color_inverse_square_range.rgb * atn * shadow);
         out.diffuse += lit.diffuse;

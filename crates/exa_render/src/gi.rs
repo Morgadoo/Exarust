@@ -206,7 +206,12 @@ fn create_textures(
 
 fn gather_lights(
     mut gi: ResMut<GiLights>,
-    lights: Query<(&PointLight, &GlobalTransform, Option<&GiMultiplier>)>,
+    lights: Query<(
+        &PointLight,
+        &GlobalTransform,
+        Option<&GiMultiplier>,
+        Option<&crate::lights::LightShaping>,
+    )>,
     textures: Option<ResMut<GiTextures>>,
 ) {
     gi.0.clear();
@@ -224,7 +229,7 @@ fn gather_lights(
     let mut near: Vec<_> = lights
         .iter()
         .filter(|l| l.2.is_none_or(|m| m.0 > 0.0))
-        .filter(|(light, at, _)| {
+        .filter(|(light, at, _, _)| {
             let p = at.translation();
             p.clamp(lo, hi).distance(p) < light.range / REACH
         })
@@ -234,18 +239,13 @@ fn gather_lights(
             .distance_squared(centre)
             .total_cmp(&b.1.translation().distance_squared(centre))
     });
-    for (light, at, share) in near.into_iter().take(MAX_LIGHTS) {
+    for (light, at, share, shaping) in near.into_iter().take(MAX_LIGHTS) {
         let c = light.color.to_linear();
         let intensity = light.intensity / LUMENS_PER_INTENSITY * share.map_or(1.0, |m| m.0);
         gi.0.push(GiLight {
             position_radius: at.translation().extend(light.range / REACH),
             colour: (Vec3::new(c.red, c.green, c.blue) * intensity * INJECTION).extend(0.0),
-            shaping: Vec4::new(
-                light.shadow_depth_bias,
-                light.shadow_normal_bias * crate::NORMAL_BIAS_SCALE,
-                0.0,
-                0.0,
-            ),
+            shaping: shaping.map_or(Vec2::ONE, |s| s.0).extend(0.0).extend(0.0),
         });
     }
 }

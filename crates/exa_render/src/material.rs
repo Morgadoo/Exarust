@@ -9,6 +9,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{
     AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
 };
+use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
 
 pub struct MaterialsPlugin;
@@ -142,6 +143,10 @@ pub struct ExaMaterial {
     #[texture(119)]
     #[sampler(120)]
     pub height_map: Option<Handle<Image>>,
+    /// Light records and mesh light lists ([`crate::lights`]); the default
+    /// handle is the shared buffer.
+    #[storage(130, read_only)]
+    pub lights: Handle<ShaderBuffer>,
     pub alpha_mode: AlphaMode,
     /// The surface casts no shadows (opacity ≤ 0.8, or the record says so).
     pub no_shadows: bool,

@@ -373,6 +373,7 @@ pub fn light_bundle(
     PointLight,
     exa_render::gi::GiMultiplier,
     shadow_links::ShadowReach,
+    exa_render::lights::LightShaping,
 ) {
     /// The falloff reaches zero this far out, in radii.
     const REACH: f32 = 1.25;
@@ -389,16 +390,13 @@ pub fn light_bundle(
         // The shadow filter radius (read by the shader).
         radius: shadow_radius(light.softness),
         shadow_maps_enabled: true,
-        // The vertical shaping, read by the shader from the two shadow bias
-        // fields it does not otherwise use (Bevy scales the normal bias).
-        shadow_depth_bias: y,
-        shadow_normal_bias: z / exa_render::NORMAL_BIAS_SCALE,
         ..default()
     };
     (
         point,
         exa_render::gi::GiMultiplier(light.multiplier),
         shadow_links::ShadowReach::new(c, light.intensity, light.radius),
+        exa_render::lights::LightShaping(Vec2::new(y, z)),
     )
 }
 
