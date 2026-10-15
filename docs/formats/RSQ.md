@@ -55,14 +55,40 @@ How the original simulates a body (`exa_physics::body`):
 - Verlet integration at 83 Hz with gravity −9.80665 m/s². Velocity retention
   per second for characters is 0.2556 / 0.15 / 0.03, by speed (over 40, over
   20, and under 20 cm/s). Slow bodies are damped hard, which acts as sleep.
-- Each tick runs 20 link iterations. A link is a hard radius: past its slack
-  it is corrected fully, the correction split by the parts' inverse masses
-  (relative masses: pelvis 0.45, thighs 0.7, shins 1, feet 2.8, lumbar
-  0.45, thorax 0.5, head 1, shoulders 1, upper arms 1.2, forearms 1.5,
-  hands 2.5).
-- Each tick then runs 8 contact iterations of sphere colliders against the
-  world. Friction cancels slip up to μ·(n_y²·0.99 + 0.01) times the contact
-  correction; past that, the limit is taken off. There is no restitution.
+- Each tick runs 20 iterations over the body tree (a living body from its
+  hands and feet in, a limp one from the pelvis out). In each, a part takes
+  its links to its parent, then its level contacts from the last tick, then
+  restores its edges. A link is a hard radius: past its slack it is
+  corrected fully, the correction split by the parts' mobilities (inverse
+  masses: pelvis 0.45, thighs 0.7, shins 1, feet 2.8, lumbar 0.45, thorax
+  0.5, head 1, shoulders 1, upper arms 1.2, forearms 1.5, hands 2.5).
+- After the iterations, every sphere collider is tested once against the
+  level's triangles (`exa_physics::contact`):
+  - A triangle pushes only from its front, the side its winding faces in
+    its own mesh, and only a sphere whose centre is in front of its plane
+    within the radius. The push takes the centre off the closest point on
+    the triangle by the overlap, along the closest-point direction. It
+    moves the part at once, spread so the heaviest particle takes all of
+    it, and is not clamped (the original computes a 160 cm clamp and then
+    discards it).
+  - A sphere whose centre moved more than 0.1 cm² (squared, about 3.2 mm)
+    since the end of the last tick is swept from there. An end that crossed
+    a triangle's plane goes back to where the sphere first touched it. In
+    one rare branch (the closest point beyond both ends of the sweep) the
+    original scales the vector from the start, which can push by metres;
+    Exarust pushes off the touched point instead.
+  - Each push is kept as a contact: the touched point, the normal, and a
+    plane 0.1 cm under the surface. A part keeps at most four, the four
+    spread widest over its particles. They are enforced in the next tick's
+    20 iterations (the point lifted onto its plane), then dropped.
+  - Friction uses the part's own coefficient μ (limbs 2.5; Exarust gives
+    feet 0.5 until foot planting is ported). With the limit
+    T = 0.5·μ·(0.01 + 0.99·n_y²) in cm² per tick², a contact point's slide
+    this tick whose square is under T is cancelled; a larger slide is cut
+    by only 0.01·T of itself. Friction runs in 8 passes after detection and
+    again in the next tick's iterations. Walls are nearly frictionless.
+    There is no restitution.
+  - A sleeping body is not tested, and no contact wakes a body.
 - Dead characters (condition `0xA00`) are plain ragdolls without muscles.
 - Living bodies have muscles:
   - Gravity is compensated by muscle tone.
@@ -80,7 +106,15 @@ critical damping relative to the pose's own motion:
 
 - The pelvis drive is 2× stronger and stands in for the support forces.
 - The body is carried rigidly with its character controller's motion, so
-  muscles only work against the pose and outside forces.
+  muscles only work against the pose and outside forces. Where the last
+  tick left each part, and its level contacts, are carried with it.
+- A frame's pose change is spread over its ticks as a motion of each part
+  about itself. A fall restarts the targets, which are then measured from
+  the body's own pelvis. A fallen body's muscles act inside the body: its
+  limbs are damped relative to its rigid motion (bulk velocity and spin),
+  and the net shift and turn of the whole body that the pulls and damping
+  add up to are taken back out, so muscles change its pose but not where it
+  goes.
 - Animation clips play in place: the root's horizontal travel over a clip
   is removed, since the controller moves the body.
 - Balance follows the original's rule (`exa_game::balance`):

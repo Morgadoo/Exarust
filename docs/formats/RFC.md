@@ -132,6 +132,22 @@ are 300 × 300 units. Geometry is therefore centimetres, right-handed, Y-up,
 CCW fronts, the same as glTF after scaling by 0.01. Mirroring relative to the
 running game has not been checked yet.
 
+Level geometry faces outward, floors up (`exa-tool corpus winding`: the 29
+levels' own meshes and 79 935 props in the world, the 1 619 pieces of the 36
+grid sets they use in the piece frame, as Exarust builds its one-sided level
+colliders). Of the near-horizontal (|n.y| > 0.7) grid-floor triangles (floor
+sets and `+F…` strips), 98.6 % face +Y; the downward rest are the undersides
+of grates, pit lips and trim strips, except `gews_ubb02` `+TCD23.200`'s strip
+`+FTC00.210`: 50 triangles, all facing down (the trim selection of the grid
+builder places it once, in `exanima08`). Over walls, level meshes and props
+62.7 % of 21.2 M face up and 90.6 % of the downward ones are the bottoms of
+solids (the first face of the object above them faces up); open downward faces
+below 2 m are 2.7 %, mostly rock overhangs and foliage. Ceiling pieces (`+R…`)
+are black caps facing up (80.6 % of their horizontal area), not downward
+ceilings. No node and no prop placement is mirrored (negative determinant).
+`_null` groups (254 229 triangles, half of the horizontal ones up) are neither
+drawn nor built.
+
 Textures pair with texture coordinates unchanged when images keep their
 stored (bottom-up) row order.
 

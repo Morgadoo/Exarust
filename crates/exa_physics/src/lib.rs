@@ -5,6 +5,7 @@
 //! body of the original (`docs/PLAN.md`, Phase 3) builds on it.
 
 pub mod body;
+pub mod contact;
 
 use bevy::prelude::*;
 use rapier3d::control::{CharacterAutostep, CharacterLength, KinematicCharacterController};
@@ -204,12 +205,16 @@ fn trimesh_collider(mesh: &Mesh, global: &GlobalTransform) -> Option<Collider> {
         .iter()
         .map(|p| m.transform_point3(Vec3::from(*p)))
         .collect();
+    // Bodies collide with the front of a face only, the side its winding
+    // faces in the mesh's own space; a mirrored placement keeps it there.
+    let mirrored = m.determinant() < 0.0;
     let triangles: Vec<[u32; 3]> = indices
         .as_chunks::<3>()
         .0
         .iter()
         .copied()
         .filter(|t| t.iter().all(|&i| (i as usize) < vertices.len()))
+        .map(|[a, b, c]| if mirrored { [a, c, b] } else { [a, b, c] })
         .collect();
     ColliderBuilder::trimesh(vertices, triangles)
         .ok()
@@ -307,6 +312,27 @@ fn step_world(mut physics: ResMut<Physics>, mut pending: ResMut<PendingKinematic
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A mirrored placement of a level mesh keeps its faces' front where
+    /// the mesh's own winding puts it.
+    #[test]
+    fn mirrored_level_meshes_keep_their_front() {
+        use crate::contact::Level;
+        let mesh = Plane3d::default().mesh().size(2.0, 2.0).build();
+        for scale in [Vec3::ONE, Vec3::new(1.0, 1.0, -1.0)] {
+            let at = GlobalTransform::from(Transform::from_scale(scale));
+            let mut world = PhysicsWorld::new();
+            world.insert_collider(trimesh_collider(&mesh, &at).unwrap(), None);
+            world.step();
+            let (mut pieces, mut tris) = (Vec::new(), Vec::new());
+            world.pieces(Vec3::splat(-1.0), Vec3::splat(1.0), &mut pieces);
+            world.triangles(pieces[0], Vec3::splat(-1.0), Vec3::splat(1.0), &mut tris);
+            for t in tris {
+                let n = (t[1] - t[0]).cross(t[2] - t[0]);
+                assert!(n.y > 0.0, "scale {scale}: a face turned down");
+            }
+        }
+    }
 
     #[test]
     fn characters_are_drawn_between_their_steps() {

@@ -14,6 +14,7 @@ use bevy::math::{Affine3A, Mat3};
 use bevy::prelude::*;
 
 use crate::Physics;
+use crate::contact::{CONTACT_SLOP, Level, LevelContact, rub, sphere_hit, swept_hit};
 
 /// Simulation rate of the body.
 pub const BODY_HZ: f32 = 83.0;
@@ -23,7 +24,7 @@ const RETENTION: [f32; 3] = [0.2556, 0.15, 0.03];
 /// Speeds (m/s) separating the retention bands.
 const RETENTION_SPEEDS: [f32; 2] = [0.4, 0.2];
 const LINK_ITERATIONS: usize = 20;
-const CONTACT_ITERATIONS: usize = 8;
+const FRICTION_PASSES: usize = 8;
 /// Ticks run per frame at most.
 const MAX_TICKS: u32 = 4;
 /// The fastest a particle may move (m/s): well above any blow or fall.
@@ -51,9 +52,26 @@ const ENERGY_RECOVERY: f32 = 0.005;
 const MIN_ENERGY: f32 = 0.05;
 /// Most of its energy a single blow takes.
 const MAX_DAZE: f32 = 0.9;
-/// Friction coefficient of body parts against the world.
-const FRICTION: f32 = 1.0;
+/// Friction of a limb against the level.
+const LIMB_FRICTION: f32 = 2.5;
+/// Friction of a foot (bones 4 and 7).
+const FOOT_FRICTION: f32 = 0.5;
 const MIN_EXTENT: f32 = 0.06;
+/// Level contacts a part keeps between ticks.
+const MAX_CONTACTS: usize = 4;
+/// Squared travel (m²) of a sphere centre over a tick above which the sphere
+/// is swept from where the last tick left it.
+const SWEEP_TRAVEL2: f32 = 1e-5;
+/// Pushes shorter than this (squared, m²) are ignored.
+const MIN_PUSH2: f32 = 1e-9;
+/// Depth (m) under a stored contact plane that is corrected.
+const MIN_DEPTH: f32 = 1e-7;
+/// Push length (m) at detection, and depth (m) in the plane pass, summed
+/// before a part's edges are restored.
+const PUSH_STRAIN: f32 = 0.001;
+const DEPTH_STRAIN: f32 = 0.01;
+/// A level push longer than this (m) is reported, not clamped.
+const EXCESSIVE_PUSH: f32 = 1.6;
 
 /// Regular tetrahedron, centred on the origin.
 const TEMPLATE: [Vec3; 4] = [
@@ -81,6 +99,17 @@ pub struct Part {
     /// Collision spheres in the part's space: centre, radius.
     pub spheres: Vec<(Vec3, f32)>,
     rest_inverse: Mat3,
+    /// Friction against the level.
+    pub friction: f32,
+    /// Particles at the start of the tick (where the last tick left them).
+    start: [Vec3; 4],
+    /// The part's transform where the last tick left it.
+    settled: Affine3A,
+    /// Level contacts found last tick, enforced in this tick's iterations.
+    pub contacts: Vec<LevelContact>,
+    /// Pushes and depths summed since the edges were last restored (or
+    /// the tick began).
+    strain: f32,
 }
 
 /// Barycentric weights of a point given in a part's space.
@@ -138,7 +167,23 @@ impl Part {
                 .unwrap_or(1.0),
             spheres,
             rest_inverse: edges.inverse(),
+            friction: if matches!(bone, 4 | 7) {
+                FOOT_FRICTION
+            } else {
+                LIMB_FRICTION
+            },
+            start: positions,
+            settled: Affine3A::IDENTITY,
+            contacts: Vec::new(),
+            strain: 0.0,
         }
+        .settle()
+    }
+
+    /// Records where the tick leaves the part.
+    fn settle(mut self) -> Self {
+        self.settled = self.transform();
+        self
     }
 
     fn point(&self, w: &[f32; 4]) -> Vec3 {
@@ -153,6 +198,137 @@ impl Part {
         }
         for (p, wi) in self.positions.iter_mut().zip(w) {
             *p += delta * (wi / norm);
+        }
+    }
+
+    /// Weights of the world point `x` over the current particles.
+    fn weights_now(&self, x: Vec3) -> Option<[f32; 4]> {
+        let edges = Mat3::from_cols(
+            self.positions[1] - self.positions[0],
+            self.positions[2] - self.positions[0],
+            self.positions[3] - self.positions[0],
+        );
+        if edges.determinant().abs() < 1e-12 {
+            return None;
+        }
+        let w = edges.inverse() * (x - self.positions[0]);
+        Some([1.0 - w.x - w.y - w.z, w.x, w.y, w.z])
+    }
+
+    /// How far the point with weights `w` moved this tick.
+    fn slip(&self, w: &[f32; 4]) -> Vec3 {
+        (0..4)
+            .map(|i| (self.positions[i] - self.start[i]) * w[i])
+            .sum()
+    }
+
+    /// A level hit on sphere `centre` (part space): the closest point `q` on
+    /// the triangle and the push `delta` that takes the sphere off it. The
+    /// part is pushed at once and the contact kept for the next tick.
+    fn hit(&mut self, centre: Vec3, q: Vec3, delta: Vec3) -> bool {
+        let len2 = delta.length_squared();
+        if !(len2 >= MIN_PUSH2 && len2.is_finite()) {
+            return false;
+        }
+        if len2 > EXCESSIVE_PUSH * EXCESSIVE_PUSH {
+            warn_once!("excessive level contact push: {:.2} m", len2.sqrt());
+        }
+        // The deepest point of the sphere, or its centre when that lies far
+        // outside the tetrahedron.
+        let w = self
+            .weights_now(q - delta)
+            .filter(|w| w.iter().all(|x| x.abs() <= 1.0))
+            .unwrap_or_else(|| weights(self, centre));
+        let normal = delta / len2.sqrt();
+        self.offer(LevelContact {
+            weights: w,
+            point: q,
+            normal,
+            plane: normal.dot(q) - CONTACT_SLOP,
+        });
+        // Spread so that the heaviest particle takes the whole push.
+        let clamped = w.map(|x| x.max(0.0));
+        let top = clamped.iter().copied().fold(0.0, f32::max);
+        if top > 0.0 {
+            for (x, c) in self.positions.iter_mut().zip(clamped) {
+                *x += delta * (c / top);
+            }
+        }
+        self.strain += len2.sqrt();
+        if self.strain > PUSH_STRAIN {
+            keep_rigid(self);
+        }
+        true
+    }
+
+    /// Keeps a new contact, or, with four kept, the four spread widest over
+    /// the part.
+    fn offer(&mut self, contact: LevelContact) {
+        if self.contacts.len() < MAX_CONTACTS {
+            self.contacts.push(contact);
+            return;
+        }
+        let mut all = [contact.weights; MAX_CONTACTS + 1];
+        for (w, c) in all.iter_mut().zip(&self.contacts) {
+            *w = c.weights;
+        }
+        let gap =
+            |a: usize, b: usize| -> f32 { (0..4).map(|k| (all[a][k] - all[b][k]).powi(2)).sum() };
+        let mut pair = (0, 1, f32::MAX);
+        for a in 0..all.len() {
+            for b in a + 1..all.len() {
+                let d = gap(a, b);
+                if d < pair.2 {
+                    pair = (a, b, d);
+                }
+            }
+        }
+        // Of the closest pair, the one nearer to the rest goes.
+        let nearest = |i: usize, partner: usize| {
+            (0..all.len())
+                .filter(|&j| j != i && j != partner)
+                .map(|j| gap(i, j))
+                .fold(f32::MAX, f32::min)
+        };
+        let (a, b, _) = pair;
+        let out = if nearest(a, b) < nearest(b, a) { a } else { b };
+        if out < MAX_CONTACTS {
+            self.contacts.swap_remove(out);
+            self.contacts.push(contact);
+        }
+    }
+
+    /// Enforces the stored contacts once: a point under its plane is lifted
+    /// onto it, and its slip this tick is cancelled below the friction
+    /// limit and damped above it.
+    fn hold_contacts(&mut self) {
+        let mut depth = 0.0;
+        for k in 0..self.contacts.len() {
+            let c = self.contacts[k];
+            let mut correction = rub(self.slip(&c.weights), c.normal, self.friction);
+            let below = c.plane - c.normal.dot(self.point(&c.weights));
+            if below > MIN_DEPTH {
+                correction += c.normal * below;
+                depth += below;
+            }
+            for (x, w) in self.positions.iter_mut().zip(c.weights) {
+                *x += correction * w.max(0.0);
+            }
+            self.strain += depth;
+            if self.strain > DEPTH_STRAIN {
+                keep_rigid(self);
+            }
+        }
+    }
+
+    /// Friction only, from the contacts found this tick.
+    fn rub_contacts(&mut self) {
+        for k in 0..self.contacts.len() {
+            let c = self.contacts[k];
+            let correction = rub(self.slip(&c.weights), c.normal, self.friction);
+            for (x, w) in self.positions.iter_mut().zip(c.weights) {
+                *x += correction * w;
+            }
         }
     }
 
@@ -348,6 +524,13 @@ impl Ragdoll {
 
     /// Simulates the body again.
     pub fn wake(&mut self) {
+        if self.asleep {
+            // A sleeping body kept no contacts; it starts afresh where it lies.
+            for p in &mut self.parts {
+                p.contacts.clear();
+                p.settled = p.transform();
+            }
+        }
         self.asleep = false;
         self.still = 0;
     }
@@ -392,6 +575,14 @@ impl Ragdoll {
                 for x in p.positions.iter_mut().chain(p.previous.iter_mut()) {
                     *x = carry.transform_point3(*x);
                 }
+                // Where the last tick left it moves too, or the carry would
+                // read as a sweep; its contacts travel with it.
+                p.settled = carry * p.settled;
+                for c in &mut p.contacts {
+                    c.point = carry.transform_point3(c.point);
+                    c.normal = carry.transform_vector3(c.normal).normalize_or(c.normal);
+                    c.plane = c.normal.dot(c.point) - CONTACT_SLOP;
+                }
             }
             for t in &mut drive.aimed {
                 *t = carry * *t;
@@ -403,7 +594,9 @@ impl Ragdoll {
                 .iter()
                 .zip(&drive.aimed)
                 .map(|(now, before)| {
-                    let step = *now * before.inverse();
+                    // In the part's own frame: a turn about the part, not
+                    // about the world's origin.
+                    let step = before.inverse() * *now;
                     // A share of the frame's motion, per tick.
                     let (scale, rotation, translation) = step.to_scale_rotation_translation();
                     // The short way round.
@@ -434,6 +627,10 @@ impl Ragdoll {
         if let Some(d) = self.drive.as_mut() {
             d.supported = false;
             d.tone = FALLEN_TONE;
+            // The pose is measured from the pelvis from now on: a new start,
+            // not motion.
+            d.root = None;
+            d.aimed.clear();
         }
     }
 
@@ -494,9 +691,36 @@ impl Ragdoll {
         }
     }
 
-    /// One tick of the simulation. `contact` pushes a sphere (centre,
-    /// radius) out of the world, returning the correction.
-    pub fn tick(&mut self, contact: &dyn Fn(Vec3, f32) -> Option<Vec3>) {
+    /// One tick of the simulation against the static `level`, in the
+    /// original's order: integrate and drive; 20 iterations of links, each
+    /// part's stored level contacts and its edges; level detection with an
+    /// immediate push, keeping the contacts for the next tick; 8 friction
+    /// passes on them.
+    pub fn tick<L: Level + ?Sized>(&mut self, level: &L) {
+        self.integrate();
+        if let Some(drive) = self.drive.as_mut() {
+            drive_parts(&mut self.parts, drive);
+        }
+        for _ in 0..LINK_ITERATIONS {
+            self.iterate();
+        }
+        for p in &mut self.parts {
+            p.contacts.clear();
+        }
+        self.detect(level);
+        for _ in 0..FRICTION_PASSES {
+            for p in &mut self.parts {
+                if p.friction > 0.0 {
+                    p.rub_contacts();
+                }
+            }
+        }
+        for p in &mut self.parts {
+            p.settled = p.transform();
+        }
+    }
+
+    fn integrate(&mut self) {
         let dt = 1.0 / BODY_HZ;
         // Muscle tone holds the body up against gravity.
         let support = self
@@ -518,22 +742,28 @@ impl Ragdoll {
             } else {
                 retention[2]
             };
+            p.start = p.positions;
+            p.strain = 0.0;
             for i in 0..4 {
-                // A particle never carries more than MAX_SPEED: a deep
-                // contact push must not turn into a runaway velocity.
+                // A particle never carries more than MAX_SPEED (Exarust's
+                // guard; the original has none).
                 let v = (p.positions[i] - p.previous[i]).clamp_length_max(MAX_SPEED / BODY_HZ);
                 p.previous[i] = p.positions[i];
                 p.positions[i] += v * keep + gravity;
             }
         }
-        if let Some(drive) = self.drive.as_mut() {
-            drive_parts(&mut self.parts, drive);
-        }
-        for _ in 0..LINK_ITERATIONS {
-            for p in &mut self.parts {
-                keep_rigid(p);
-            }
-            for l in &self.links {
+    }
+
+    /// One constraint iteration over the body tree. A living body is solved
+    /// from its hands and feet in to its pelvis, a limp one from the pelvis
+    /// out; each part takes its links to its parent, then its stored level
+    /// contacts, then its edges.
+    fn iterate(&mut self) {
+        let n = self.parts.len();
+        let living = self.drive.is_some();
+        for k in 0..n {
+            let i = if living { n - 1 - k } else { k };
+            for l in self.links.iter().filter(|l| l.part == i) {
                 let a = self.parts[l.part].point(&l.on_part);
                 let b = self.parts[l.parent].point(&l.on_parent);
                 let d = b - a;
@@ -542,46 +772,144 @@ impl Ragdoll {
                     continue;
                 }
                 let correction = d * ((len - l.slack) / len);
-                let (ia, ib) = (
-                    self.parts[l.part].inverse_mass,
-                    self.parts[l.parent].inverse_mass,
-                );
+                // Each point's share by its generalised inverse mass (the
+                // part's, times the squared weights of the point): the two
+                // parts' momenta change by equal and opposite amounts, even
+                // when a point lies outside its tetrahedron.
+                let ia =
+                    self.parts[l.part].inverse_mass * l.on_part.iter().map(|w| w * w).sum::<f32>();
+                let ib = self.parts[l.parent].inverse_mass
+                    * l.on_parent.iter().map(|w| w * w).sum::<f32>();
                 let total = ia + ib;
+                if total <= 0.0 {
+                    continue;
+                }
                 self.parts[l.part].displace(&l.on_part, correction * (ia / total));
                 self.parts[l.parent].displace(&l.on_parent, -correction * (ib / total));
             }
+            let p = &mut self.parts[i];
+            p.hold_contacts();
+            keep_rigid(p);
         }
-        for _ in 0..CONTACT_ITERATIONS {
-            for p in &mut self.parts {
-                let frame = p.transform();
+    }
+
+    /// Tests every sphere against the level: swept from where the last tick
+    /// left it when it moved far enough, else where it is.
+    fn detect<L: Level + ?Sized>(&mut self, level: &L) {
+        let mut pieces = Vec::new();
+        let mut triangles = Vec::new();
+        for p in &mut self.parts {
+            let before = p.settled;
+            let (mut lo, mut hi) = (Vec3::MAX, Vec3::MIN);
+            let now = p.transform();
+            for &(c, r) in &p.spheres {
+                for x in [before.transform_point3(c), now.transform_point3(c)] {
+                    lo = lo.min(x - Vec3::splat(2.0 * r));
+                    hi = hi.max(x + Vec3::splat(2.0 * r));
+                }
+            }
+            pieces.clear();
+            level.pieces(lo, hi, &mut pieces);
+            for &piece in &pieces {
                 for k in 0..p.spheres.len() {
-                    let (centre, radius) = p.spheres[k];
-                    let world = frame.transform_point3(centre);
-                    if let Some(push) = contact(world, radius) {
-                        // A sphere found deep inside geometry is pushed out
-                        // a little at a time.
-                        let push = push.clamp_length_max(2.0 * radius);
-                        let w = weights(p, centre);
-                        p.displace(&w, push);
-                        // Friction: slip under the limit (larger on flat
-                        // ground) stops; beyond it, the limit is taken off.
-                        let n = push.normalize_or_zero();
-                        let limit = FRICTION * (n.y * n.y * 0.99 + 0.01) * push.length();
-                        for ((x, prev), wi) in p.positions.iter().zip(&mut p.previous).zip(w) {
-                            let slide = *x - *prev;
-                            let tangent = slide - n * slide.dot(n);
-                            let len = tangent.length();
-                            let cancel = if len <= limit {
-                                tangent
-                            } else {
-                                tangent * (limit / len)
-                            };
-                            *prev += cancel * wi.max(0.0);
+                    let (centre, r) = p.spheres[k];
+                    let start = before.transform_point3(centre);
+                    let mut end = p.transform().transform_point3(centre);
+                    let swept = start.distance_squared(end) > SWEEP_TRAVEL2;
+                    // Room for the pushes of earlier triangles.
+                    let reach = Vec3::splat(2.0 * r);
+                    let (lo, hi) = if swept {
+                        (start.min(end) - reach, start.max(end) + reach)
+                    } else {
+                        (end - reach, end + reach)
+                    };
+                    triangles.clear();
+                    level.triangles(piece, lo, hi, &mut triangles);
+                    for t in &triangles {
+                        let hit = if swept {
+                            swept_hit(t, start, end, r)
+                        } else {
+                            sphere_hit(t, end, r)
+                        };
+                        if let Some((q, delta)) = hit
+                            && p.hit(centre, q, delta)
+                        {
+                            end = p.transform().transform_point3(centre);
                         }
                     }
                 }
             }
         }
+    }
+}
+
+/// The rigid motion of a body's particles: centre of mass, velocity and
+/// spin (per tick), and the inverse of the inertia about the centre.
+struct Bulk {
+    centre: Vec3,
+    mass: f32,
+    velocity: Vec3,
+    spin: Vec3,
+    inverse_inertia: Mat3,
+}
+
+impl Bulk {
+    fn of(parts: &[Part]) -> Option<Self> {
+        let mass: f32 = parts.iter().map(|p| 1.0 / p.inverse_mass).sum();
+        if mass <= 0.0 {
+            return None;
+        }
+        // Each particle carries a quarter of its part's mass.
+        let (mut centre, mut velocity) = (Vec3::ZERO, Vec3::ZERO);
+        for p in parts {
+            let m = 0.25 / p.inverse_mass;
+            for k in 0..4 {
+                centre += p.positions[k] * m;
+                velocity += (p.positions[k] - p.previous[k]) * m;
+            }
+        }
+        let (centre, velocity) = (centre / mass, velocity / mass);
+        let (mut inertia, mut momentum) = (Mat3::ZERO, Vec3::ZERO);
+        for p in parts {
+            let m = 0.25 / p.inverse_mass;
+            for k in 0..4 {
+                let r = p.positions[k] - centre;
+                let outer = Mat3::from_cols(r * r.x, r * r.y, r * r.z);
+                inertia += (Mat3::IDENTITY * r.length_squared() - outer) * m;
+                momentum += r.cross(p.positions[k] - p.previous[k]) * m;
+            }
+        }
+        let inverse_inertia = inertia.inverse();
+        if !inverse_inertia.is_finite() {
+            return None;
+        }
+        Some(Self {
+            centre,
+            mass,
+            velocity,
+            spin: inverse_inertia * momentum,
+            inverse_inertia,
+        })
+    }
+
+    /// Velocity (per tick) of the body's rigid motion at `x`.
+    fn velocity_at(&self, x: Vec3) -> Vec3 {
+        self.velocity + self.spin.cross(x - self.centre)
+    }
+
+    /// The rigid motion (a shift and a small turn about the centre) that the
+    /// changes `moves` of the particles at `parts` add up to.
+    fn net(&self, parts: &[Part], moves: impl Fn(usize, usize) -> Vec3) -> (Vec3, Vec3) {
+        let (mut shift, mut turn) = (Vec3::ZERO, Vec3::ZERO);
+        for (i, p) in parts.iter().enumerate() {
+            let m = 0.25 / p.inverse_mass;
+            for k in 0..4 {
+                let d = moves(i, k);
+                shift += d * m;
+                turn += (p.positions[k] - self.centre).cross(d) * m;
+            }
+        }
+        (shift / self.mass, self.inverse_inertia * turn)
     }
 }
 
@@ -592,7 +920,23 @@ fn drive_parts(parts: &mut [Part], drive: &mut Drive) {
         return;
     }
     let strength = drive.tone * drive.tone * drive.energy.powi(4);
-    for (i, p) in parts.iter_mut().enumerate() {
+    // A standing body's targets are where its controller carries it. A
+    // fallen body's follow its own pelvis, so they are only its pose: its
+    // muscles work inside the body. Its limbs are damped relative to the
+    // body's rigid motion, its bulk velocity and its spin (feeding the
+    // targets' motion back flings the body, damping against the world holds
+    // its fall back), and the net shift and turn of the whole body that the
+    // pulls and the damping add up to are taken back out: a pose measured
+    // from the pelvis, pulled on the limbs alone, turns the whole body, and
+    // a turning body rolls and crawls over the floor.
+    let bulk = if drive.supported {
+        None
+    } else {
+        Bulk::of(parts)
+    };
+    let mut pulls = vec![[Vec3::ZERO; 4]; parts.len()];
+    let mut brakes = vec![[Vec3::ZERO; 4]; parts.len()];
+    for (i, p) in parts.iter().enumerate() {
         let base = match p.bone {
             1 if drive.supported => DRIVE * SUPPORT,
             // A fallen body's pelvis is where the pose is measured from.
@@ -603,16 +947,33 @@ fn drive_parts(parts: &mut [Part], drive: &mut Drive) {
         let gain = (base * strength).min(1.0);
         let damping = (2.0 * gain.sqrt()).min(1.0);
         // The target advances through the tick.
-        let step = drive.target_steps[i];
-        drive.targets[i] = step * drive.targets[i];
+        let before = drive.targets[i];
+        drive.targets[i] *= drive.target_steps[i];
         let target = drive.targets[i];
-        let before = step.inverse() * target;
         for k in 0..4 {
             let goal = target.transform_point3(p.rest[k]);
-            let goal_velocity = goal - before.transform_point3(p.rest[k]);
+            let goal_velocity = match &bulk {
+                Some(b) => b.velocity_at(p.positions[k]),
+                None => goal - before.transform_point3(p.rest[k]),
+            };
             let velocity = p.positions[k] - p.previous[k];
-            p.positions[k] += (goal - p.positions[k]) * gain;
-            p.previous[k] += (velocity - goal_velocity) * damping;
+            pulls[i][k] = (goal - p.positions[k]) * gain;
+            brakes[i][k] = (velocity - goal_velocity) * damping;
+        }
+    }
+    let ((shift, turn), (slowed, unturned)) = match &bulk {
+        Some(b) => (
+            b.net(parts, |i, k| pulls[i][k]),
+            b.net(parts, |i, k| brakes[i][k]),
+        ),
+        None => Default::default(),
+    };
+    let centre = bulk.as_ref().map_or(Vec3::ZERO, |b| b.centre);
+    for (i, p) in parts.iter_mut().enumerate() {
+        for k in 0..4 {
+            let r = p.positions[k] - centre;
+            p.positions[k] += pulls[i][k] - (shift + turn.cross(r));
+            p.previous[k] += brakes[i][k] - (slowed + unturned.cross(r));
         }
     }
     drive.energy = (drive.energy + ENERGY_RECOVERY).min(1.0);
@@ -632,6 +993,8 @@ fn keep_rigid(p: &mut Part) {
         p.positions[a] += c;
         p.positions[b] -= c;
     }
+    // As in the original, restoring the edges starts the strain afresh.
+    p.strain = 0.0;
 }
 
 /// World transform of `entity` from the local transforms up its ancestry
@@ -666,24 +1029,7 @@ pub fn step_ragdolls(
             body.shove(s.bone, s.velocity, s.daze);
         }
     }
-    let world = &physics.0;
-    let contact = |centre: Vec3, radius: f32| -> Option<Vec3> {
-        let (_, projection) = world.project_point(
-            centre,
-            radius * 2.0,
-            false,
-            rapier3d::prelude::QueryFilter::only_fixed(),
-        )?;
-        let to_centre = centre - projection.point;
-        let distance = to_centre.length();
-        if projection.is_inside {
-            Some(-to_centre.normalize_or(Vec3::Y) * (distance + radius))
-        } else if distance < radius {
-            Some(to_centre.normalize_or(Vec3::Y) * (radius - distance))
-        } else {
-            None
-        }
-    };
+    let level = &physics.0;
     for (_, mut body) in &mut bodies {
         if body.asleep {
             body.accumulator = 0.0;
@@ -693,7 +1039,7 @@ pub fn step_ragdolls(
         body.accumulator += time.delta_secs();
         let mut ticks = 0;
         while body.accumulator >= 1.0 / BODY_HZ && ticks < MAX_TICKS {
-            body.tick(&contact);
+            body.tick(level);
             body.accumulator -= 1.0 / BODY_HZ;
             ticks += 1;
         }
@@ -725,8 +1071,27 @@ pub fn step_ragdolls(
 }
 
 #[cfg(test)]
+#[path = "body_floor_test.rs"]
+mod floor_test;
+
+#[cfg(test)]
+#[path = "body_contact_test.rs"]
+mod contact_test;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A square floor at height `y`, facing up.
+    pub(super) fn floor_quad(y: f32, half: f32) -> Vec<[Vec3; 3]> {
+        let at = |x: f32, z: f32| Vec3::new(x * half, y, z * half);
+        vec![
+            [at(-1.0, -1.0), at(-1.0, 1.0), at(1.0, 1.0)],
+            [at(-1.0, -1.0), at(1.0, 1.0), at(1.0, -1.0)],
+        ]
+    }
+
+    const NONE: &[[Vec3; 3]] = &[];
 
     fn two_parts(slack: f32) -> Ragdoll {
         let e = Entity::PLACEHOLDER;
@@ -766,9 +1131,9 @@ mod tests {
     #[test]
     fn parts_fall_and_rest_on_the_ground() {
         let mut body = two_parts(0.0);
-        let ground = |c: Vec3, r: f32| (c.y < r).then(|| Vec3::Y * (r - c.y));
+        let ground = floor_quad(0.0, 5.0);
         for _ in 0..400 {
-            body.tick(&ground);
+            body.tick(ground.as_slice());
         }
         for p in &body.parts {
             let lowest = p.positions.iter().map(|v| v.y).fold(f32::MAX, f32::min);
@@ -785,9 +1150,8 @@ mod tests {
     #[test]
     fn links_hold_parts_together_and_edges_keep_shape() {
         let mut body = two_parts(0.0);
-        let none = |_: Vec3, _: f32| None;
         for _ in 0..50 {
-            body.tick(&none);
+            body.tick(NONE);
         }
         let l = &body.links[0];
         let a = body.parts[1].point(&l.on_part);
@@ -799,10 +1163,43 @@ mod tests {
         assert!((rest - now).abs() < 0.01);
     }
 
+    /// A link whose points lie unevenly inside their tetrahedra (the
+    /// parent's outside it) moves the two parts by equal and opposite
+    /// momenta, so the constraints alone never set a body moving.
+    #[test]
+    fn links_keep_the_bodys_momentum() {
+        let mut body = two_parts(0.0);
+        let l = &body.links[0];
+        let spread = |w: &[f32; 4]| w.iter().map(|x| x * x).sum::<f32>();
+        assert!((spread(&l.on_part) - spread(&l.on_parent)).abs() > 0.2);
+        // Pull the lower part off its joint, twisted.
+        let twist = Affine3A::from_rotation_translation(
+            Quat::from_rotation_z(0.4),
+            Vec3::new(0.15, -0.05, 0.1),
+        );
+        for x in &mut body.parts[1].positions {
+            *x = twist.transform_point3(*x);
+        }
+        let before: Vec<[Vec3; 4]> = body.parts.iter().map(|p| p.positions).collect();
+        for _ in 0..LINK_ITERATIONS {
+            body.iterate();
+        }
+        // Each particle carries its part's mass.
+        let momentum: Vec3 = body
+            .parts
+            .iter()
+            .zip(&before)
+            .flat_map(|(p, b)| (0..4).map(move |i| (p.positions[i] - b[i]) / p.inverse_mass))
+            .sum();
+        assert!(
+            momentum.length() < 1e-4,
+            "constraints moved the body by {momentum}"
+        );
+    }
+
     #[test]
     fn driven_body_follows_its_pose() {
         let mut body = two_parts(0.0).with_drive();
-        let none = |_: Vec3, _: f32| None;
         let targets = |z: f32| {
             let r = Quat::from_rotation_y(z * 10.0);
             vec![
@@ -814,7 +1211,7 @@ mod tests {
             let z = (f % 40) as f32 * 0.02;
             body.aim(Affine3A::IDENTITY, targets(z), 1.0 / 60.0);
             for _ in 0..if f % 3 == 0 { 2 } else { 1 } {
-                body.tick(&none);
+                body.tick(NONE);
             }
             let c = body.parts[0].transform().translation;
             assert!(c.is_finite() && c.length() < 3.0, "frame {f}: {c}");
@@ -824,7 +1221,6 @@ mod tests {
     #[test]
     fn a_shove_staggers_and_the_body_recovers() {
         let mut body = two_parts(0.0).with_drive();
-        let none = |_: Vec3, _: f32| None;
         let pose = vec![
             Affine3A::from_translation(Vec3::new(0.0, 1.0, 0.0)),
             Affine3A::from_translation(Vec3::new(0.0, 0.6, 0.0)),
@@ -832,7 +1228,7 @@ mod tests {
         let step = |body: &mut Ragdoll, ticks: usize| {
             for _ in 0..ticks {
                 body.aim(Affine3A::IDENTITY, pose.clone(), 1.0 / BODY_HZ);
-                body.tick(&none);
+                body.tick(NONE);
             }
             body.parts[0].transform().translation.x
         };

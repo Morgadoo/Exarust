@@ -178,8 +178,12 @@ tetrahedron of four particles with sphere colliders, joined by the
 skeleton's links, under Verlet at 83 Hz. The dead and the knocked out go
 limp. Living bodies follow their clips through muscles (pose drive, tone,
 daze). Blows shove and daze; a body that loses its balance falls and gets
-up ([formats/RSQ.md](formats/RSQ.md)). Still to do: link PD muscles,
-recovery steps, foot planting, collisions between bodies.
+up ([formats/RSQ.md](formats/RSQ.md)). Done (change
+`keep-bodies-out-of-level`): level contacts as the original makes them
+(one-sided faces, swept tests, four stored contacts per part held through
+the next tick, its friction), so shoved bodies stay on the floor. Still to
+do: link PD muscles, recovery steps, foot planting, collisions between
+bodies.
 
 This phase carries the most risk and defines how the game feels.
 
@@ -327,8 +331,8 @@ holds the runtime and the documentation of formats and behaviour.
 [`COMPONENT-MAP.md`](COMPONENT-MAP.md) sets every component of the original
 against Exarust and lists the largest missing ones. In order:
 
-1. Bodies that stay on the floor after a shove, link PD muscles, recovery
-   steps, foot planting and collisions between bodies (Phase 3).
+1. Link PD muscles, recovery steps, foot planting and collisions between
+   bodies (Phase 3).
 2. Inventory, equipment and containers, then blocking and parrying
    (Phase 4).
 3. The original's NPC brain: perception, targets and the combat state that
