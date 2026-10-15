@@ -16,11 +16,14 @@ shows about 31 FPS at the same spot on the same machine.
 | everything, before shadow links (decayed after ~30 s, ~12 GB RAM) | ~1.3 |
 | shadow links (per light, render layers) | ~6 under load |
 | + lights stop at walls | ~12–13 under the same load |
+| + cached cube shadows for static casters | ~200–210 (quiet machine) |
 | shadows off | ~245 |
 | shadows off, 4× MSAA on top of supersampling (now removed) | ~195 |
 
-Point-light shadows dominate. Everything else together costs a few
-milliseconds.
+Point-light shadows dominated until they were cached. With the cached
+cubes the log room runs at about 200 FPS, six times the original's frame
+rate at the same spot. Play mode, with 39 characters animated in the level,
+is bound by the CPU (about 9 FPS) and is next.
 
 ## Techniques against Exarust
 
@@ -53,7 +56,8 @@ or the original does not do it).
 | Clustered lighting | done | Bevy's clusters, read by Exarust's own shading. |
 | Lights per object | done | At most the six strongest links per mesh, as in the original. |
 | Lights stop at walls | done | The original's flood through the wall grid bounds each light's casters to its rooms. |
-| Shadow caching | next | The original renders a cube face only when it holds a visible receiver and its light or a caster in it moved; flicker never dirties it. A static dungeon renders almost no cube faces per frame. Bevy re-renders every face every frame, so this needs Exarust's own cube pass for static casters. Characters stay on Bevy's shadows. |
+| Shadow caching | done | Exarust's own cube pass for static casters renders a face only when it is needed and dirty, as the original does; characters stay on Bevy's shadows. |
+| Skinned bounds | done | Character meshes carry per-joint boxes, so they are frustum-culled for the camera and per cube face instead of always drawn. |
 | Shadow tap split | done | Under supersampling each sub-frame takes 2 of the 8 shadow and GI taps, as in the original: a quarter of the filter work. |
 | Depth prepass / early Z | later | The surface shader is heavy: parallax, GI taps, six lights with 2 shadow taps each. A depth prepass would shade each pixel once in cluttered rooms. It is also what occlusion culling needs. |
 | Shader specialisation | later | Material features are runtime flags today. Shader variants per flag set would drop dead branches; the image is the same. |
@@ -79,8 +83,7 @@ or the original does not do it).
 
 ## Order of work
 
-1. Shadow caching: Exarust's own cube pass for static casters, rendering only
-   needed and dirty faces.
+1. Play mode's CPU cost: characters' animation, simulation and skinning.
 2. Depth prepass, then Bevy's GPU occlusion culling.
 3. Room and portal culling from the grid's rooms and doors.
 4. Shader specialisation of the surface materials.

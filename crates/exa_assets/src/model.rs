@@ -826,6 +826,8 @@ fn group_mesh(mesh: &RfcMesh, indices: &[u32], skin: Option<&[VertexSkin]>) -> O
             bevy::mesh::VertexAttributeValues::Uint16x4(joints),
         );
         m.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, weights);
+        // Per-joint boxes, so the skinned mesh's box can follow its joints.
+        let _ = m.generate_skinned_mesh_bounds();
     }
     Some(m)
 }

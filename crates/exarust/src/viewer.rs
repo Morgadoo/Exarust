@@ -23,12 +23,7 @@ impl Plugin for ViewerPlugin {
             .add_systems(PreUpdate, autowalk.after(bevy::input::InputSystems))
             .add_systems(
                 Update,
-                (
-                    fly_camera,
-                    screenshot_after_frames,
-                    shove_at_frame,
-                    no_shadows,
-                ),
+                (fly_camera, screenshot_after_frames, shove_at_frame),
             );
     }
 }
@@ -426,14 +421,6 @@ fn screenshot_after_frames(
 }
 
 /// Turns light shadows off with `--no-shadows`.
-fn no_shadows(options: Res<Options>, mut lights: Query<&mut PointLight, Added<PointLight>>) {
-    if options.no_shadows {
-        for mut light in &mut lights {
-            light.shadow_maps_enabled = false;
-        }
-    }
-}
-
 /// A body blow, from the front, to every simulated body at the `--shove`
 /// frame.
 fn shove_at_frame(

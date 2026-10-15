@@ -8,20 +8,28 @@
 //! ([`crate::light_flood`]). A
 //! mesh is lit by its six strongest links ([`exa_render::lights::MeshLights`]).
 //!
-//! Bevy takes a light's casters from render layers: every shadowed light
-//! gets a layer of its own, a mesh carries layer 0 and the layers of the
-//! lights it is linked to, and the scene cameras see them all. Links are
+//! Static meshes cast into their lights' cached cubes
+//! ([`exa_render::cube_shadows`]): each light keeps the list of them, and a
+//! change of links or a move puts its cube out of date. Skinned meshes cast
+//! through Bevy's cube maps, which take a light's casters from render layers:
+//! every light gets a layer of its own, a skinned mesh carries layer 0 and
+//! the layers of the lights it is linked to, and the scene cameras see them
+//! all. A light keeps Bevy's shadow map only while a skinned mesh is linked
+//! to it. Links are
 //! kept current incrementally: a moved light is relinked against every mesh,
 //! a moved mesh against every light. Rules: `docs/RENDERING.md` (Shadow
 //! links).
 
-use bevy::camera::primitives::Aabb;
+use bevy::camera::primitives::{Aabb, MeshAabb};
 use bevy::camera::visibility::{RenderLayers, VisibilitySystems};
 use bevy::ecs::entity::EntityHashSet;
 use bevy::light::NotShadowCaster;
+use bevy::mesh::skinning::SkinnedMesh;
+use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy::transform::TransformSystems;
 use exa_formats::level::LevelGrid;
+use exa_render::cube_shadows::{CubeShadow, PointShadows, StaticCasters};
 use exa_render::lights::{LightId, LightsSystems, MAX_MESH_LIGHTS, MeshLights};
 use exa_render::supersample::DisplayCamera;
 
@@ -38,7 +46,7 @@ impl Plugin for ShadowLinksPlugin {
                 .after(TransformSystems::Propagate)
                 .after(VisibilitySystems::CalculateBounds)
                 .after(LightsSystems::Ids)
-                .before(LightsSystems::Lists)
+                .before(LightsSystems::Cubes)
                 .before(VisibilitySystems::CheckVisibility),
         );
     }
@@ -121,6 +129,8 @@ struct LinkedLight {
     anchor: Option<Entity>,
     position: Vec3,
     reach: ShadowReach,
+    /// Skinned meshes linked to it: it needs Bevy's shadow map while any are.
+    skinned: u32,
 }
 
 #[derive(Resource, Default)]
@@ -265,6 +275,7 @@ fn track_lights(
                     anchor: parent.map(ChildOf::parent),
                     position: transform.translation(),
                     reach,
+                    skinned: 0,
                 });
                 table.lights.len() - 1
             }
@@ -302,14 +313,34 @@ type CasterQuery<'w, 's> = Query<
     's,
     (
         Entity,
-        &'static Aabb,
+        (Option<&'static Aabb>, &'static Mesh3d),
         &'static GlobalTransform,
         Option<&'static ShadowExclude>,
-        Option<&'static LightLinks>,
+        (Option<&'static LightLinks>, Option<&'static LinkedAt>),
         Has<Unwalled>,
+        (Has<SkinnedMesh>, Has<exa_assets::SkinnedPart>),
     ),
     (With<Mesh3d>, Without<NotShadowCaster>, Without<PointLight>),
 >;
+
+/// Where a skinned mesh's links were last worked out (world metres).
+#[derive(Component, Clone, Copy, Debug)]
+pub struct LinkedAt(Vec3);
+
+/// A skinned mesh is relinked only after moving this far (metres): animation
+/// touches every body part every frame, and its shadow follows it through
+/// Bevy's maps regardless.
+const RELINK_DISTANCE: f32 = 0.1;
+
+/// A mesh whose links changed or that moved: its lights' layers before and
+/// after.
+struct Relinked {
+    entity: Entity,
+    skinned: bool,
+    before: Vec<usize>,
+    after: Vec<usize>,
+    moved: bool,
+}
 
 /// A casting mesh added, moved or resized this frame.
 type CasterMoved = (
@@ -320,28 +351,52 @@ type CasterMoved = (
 
 /// Relinks moved lights against every mesh and moved meshes against every
 /// light, rewriting the meshes' layers where their links changed.
+#[allow(clippy::too_many_arguments)]
 fn link_casters(
     mut commands: Commands,
     mut table: ResMut<LinkedLights>,
     casters: CasterQuery,
     moved_casters: Query<Entity, CasterMoved>,
     walls: Option<Res<LevelWalls>>,
+    mut cubes: Query<(&mut StaticCasters, &mut CubeShadow, &mut PointLight)>,
+    shadows: Res<PointShadows>,
+    meshes: Res<Assets<Mesh>>,
+    mut mesh_bounds: Local<HashMap<AssetId<Mesh>, Option<Aabb>>>,
 ) {
     let moved: Vec<usize> = std::mem::take(&mut table.moved);
     let all_moved = !moved.is_empty();
     let fresh: EntityHashSet = moved_casters.iter().collect();
-    if !all_moved && fresh.is_empty() {
+    if !all_moved && fresh.is_empty() && !shadows.is_changed() {
         return;
     }
+    let mut relinked: Vec<Relinked> = Vec::new();
     let lights = &table.lights;
+    // Skinned meshes have no box from Bevy; their mesh's own box, carried by
+    // the bone they follow, stands in.
+    let mut box_of = |aabb: Option<&Aabb>, mesh: &Mesh3d| -> Option<Aabb> {
+        aabb.copied().or_else(|| {
+            *mesh_bounds
+                .entry(mesh.0.id())
+                .or_insert_with(|| meshes.get(&mesh.0).and_then(MeshAabb::get_aabb))
+        })
+    };
     let mut relink = |entity: Entity,
                       aabb: &Aabb,
                       transform: &GlobalTransform,
                       exclude: Option<&ShadowExclude>,
                       current: Option<&LightLinks>,
+                      at: Option<&LinkedAt>,
                       unwalled: bool,
+                      skinned: bool,
                       only: Option<&[usize]>| {
         let (c, r) = sphere(aabb, transform);
+        if skinned
+            && only.is_none()
+            && current.is_some()
+            && at.is_some_and(|a| a.0.distance(c) < RELINK_DISTANCE)
+        {
+            return;
+        }
         let bounds = bounds(aabb, transform);
         // In tile-grid levels a ranged light must see the mesh past the
         // walls.
@@ -372,10 +427,29 @@ fn link_casters(
                 links
             }
         };
+        // A static mesh that moved puts its lights' cubes out of date.
+        let moved_static = !skinned && only.is_none() && current.is_some();
+        if current != Some(&links) || moved_static {
+            relinked.push(Relinked {
+                entity,
+                skinned,
+                before: current.map_or(Vec::new(), |c| c.0.iter().map(|l| l.0).collect()),
+                after: links.0.iter().map(|l| l.0).collect(),
+                moved: moved_static,
+            });
+        }
         if current != Some(&links) {
             let changed_lights = current.is_none_or(|c| c.lights() != links.lights());
             let mut e = commands.entity(entity);
-            e.insert(links.layers());
+            if skinned {
+                e.insert(LinkedAt(c));
+            }
+            // Only skinned meshes cast through Bevy's maps.
+            e.insert(if skinned {
+                links.layers()
+            } else {
+                RenderLayers::layer(0)
+            });
             if changed_lights {
                 e.insert(links.lights());
             }
@@ -383,16 +457,112 @@ fn link_casters(
         }
     };
     for entity in &fresh {
-        if let Ok((e, aabb, t, x, current, unwalled)) = casters.get(*entity) {
-            relink(e, aabb, t, x, current, unwalled, None);
+        if let Ok((e, (aabb, mesh), t, x, (current, at), unwalled, (skin, part))) =
+            casters.get(*entity)
+            && let Some(aabb) = box_of(aabb, mesh)
+        {
+            relink(e, &aabb, t, x, current, at, unwalled, skin || part, None);
         }
     }
     if all_moved {
-        for (e, aabb, t, x, current, unwalled) in &casters {
+        for (e, (aabb, mesh), t, x, (current, at), unwalled, (skin, part)) in &casters {
             if fresh.contains(&e) {
                 continue;
             }
-            relink(e, aabb, t, x, current, unwalled, Some(&moved));
+            let Some(aabb) = box_of(aabb, mesh) else {
+                continue;
+            };
+            relink(
+                e,
+                &aabb,
+                t,
+                x,
+                current,
+                at,
+                unwalled,
+                skin || part,
+                Some(&moved),
+            );
+        }
+    }
+    apply_relinks(
+        &mut table,
+        relinked,
+        &mut cubes,
+        shadows.0,
+        shadows.is_changed(),
+    );
+}
+
+/// Moves static meshes in and out of their lights' cube caster lists,
+/// counts the skinned meshes of each light, and gives Bevy's shadow map only
+/// to lights with skinned meshes.
+fn apply_relinks(
+    table: &mut LinkedLights,
+    relinked: Vec<Relinked>,
+    cubes: &mut Query<(&mut StaticCasters, &mut CubeShadow, &mut PointLight)>,
+    enabled: bool,
+    toggled: bool,
+) {
+    let by_layer: HashMap<usize, usize> = table
+        .lights
+        .iter()
+        .enumerate()
+        .map(|(i, l)| (l.layer, i))
+        .collect();
+    let mut recount = Vec::new();
+    for r in relinked {
+        let added = r.after.iter().filter(|l| !r.before.contains(l));
+        let removed = r.before.iter().filter(|l| !r.after.contains(l));
+        if r.skinned {
+            for (layer, delta) in added.map(|l| (l, 1i64)).chain(removed.map(|l| (l, -1))) {
+                if let Some(&i) = by_layer.get(layer) {
+                    let n = &mut table.lights[i].skinned;
+                    *n = (*n as i64 + delta).max(0) as u32;
+                    recount.push(i);
+                }
+            }
+            continue;
+        }
+        for &layer in added.clone() {
+            let Some(&i) = by_layer.get(&layer) else {
+                continue;
+            };
+            if let Ok((mut list, mut cube, _)) = cubes.get_mut(table.lights[i].entity) {
+                list.0.push(r.entity);
+                cube.invalidate();
+            }
+        }
+        for &layer in removed.clone() {
+            let Some(&i) = by_layer.get(&layer) else {
+                continue;
+            };
+            if let Ok((mut list, mut cube, _)) = cubes.get_mut(table.lights[i].entity) {
+                list.0.retain(|&e| e != r.entity);
+                cube.invalidate();
+            }
+        }
+        if r.moved {
+            for layer in r.before.iter().chain(&r.after) {
+                let Some(&i) = by_layer.get(layer) else {
+                    continue;
+                };
+                if let Ok((_, mut cube, _)) = cubes.get_mut(table.lights[i].entity) {
+                    cube.invalidate();
+                }
+            }
+        }
+    }
+    if toggled {
+        recount = (0..table.lights.len()).collect();
+    }
+    for i in recount {
+        let l = &table.lights[i];
+        let want = enabled && l.skinned > 0;
+        if let Ok((_, _, mut light)) = cubes.get_mut(l.entity)
+            && light.shadow_maps_enabled != want
+        {
+            light.shadow_maps_enabled = want;
         }
     }
 }
@@ -434,6 +604,7 @@ mod tests {
                 ranged: true,
                 shaped: None,
             },
+            skinned: 0,
         }
     }
 

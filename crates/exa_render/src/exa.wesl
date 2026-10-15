@@ -12,7 +12,7 @@ import bevy_pbr::render::{
     shadows,
 };
 import exa_render::shading::{
-    Surface, Lit, taps, shadow_depth_scale, shadow_bias_level, lit_by, light, schlick, point_shadow, view_depth, vertical_shaping, gi_sample, in_gi,
+    Surface, Lit, taps, lit_by, light_shadow, light, schlick, view_depth, vertical_shaping, gi_sample, in_gi,
     gi_ambient,
     REFLECTION_STRENGTH, ENVIRONMENT_FALLBACK, AMBIENT_SCALE, SUN_LUX,
 };
@@ -208,7 +208,6 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 
     let disc = taps(in.position.xy, has(SPLIT_TAPS));
     let tag = mesh[in.instance_index].tag;
-    let depth_scale = shadow_depth_scale(shadow_bias_level(tag));
     // Point lights in this fragment's cluster.
     let view_z = view_depth(in.world_position);
     let ortho = view_bindings::view.clip_from_view[3].w == 1.0;
@@ -226,10 +225,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         if atn <= 0.0 {
             continue;
         }
-        var shadow = 1.0;
-        if receiver && ((*lt).flags & mesh_view_types::POINT_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u {
-            shadow = point_shadow(id, p, n, disc, depth_scale);
-        }
+        var shadow = light_shadow(id, p, n, disc, tag, receiver);
         let l = to / max(d, 1e-4);
         if self_shadowed {
             shadow *= displacement_shadow(uv, l, ax, ay, ns, h0);

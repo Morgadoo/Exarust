@@ -65,7 +65,7 @@ impl Plugin for TerrainPlugin {
 /// lighting (`exa_render::shading`) and its terrain gloss rule.
 pub type TerrainMaterial = TerrainSplat;
 
-#[derive(Asset, AsBindGroup, Reflect, Debug, Clone, Default)]
+#[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 pub struct TerrainSplat {
     #[uniform(100)]
     pub params: SplatParams,
@@ -119,6 +119,34 @@ pub struct TerrainSplat {
     /// shared buffer.
     #[storage(130, read_only)]
     pub lights: Handle<bevy::render::storage::ShaderBuffer>,
+    /// The cached cube shadow pool (`exa_render::cube_shadows`).
+    #[texture(131, dimension = "cube_array", sample_type = "depth")]
+    #[sampler(132, sampler_type = "comparison")]
+    pub shadow_cubes: Handle<Image>,
+}
+
+impl Default for TerrainSplat {
+    fn default() -> Self {
+        Self {
+            params: SplatParams::default(),
+            diffuse0: None,
+            diffuse1: None,
+            diffuse2: None,
+            diffuse3: None,
+            surface0: None,
+            surface1: None,
+            surface2: None,
+            surface3: None,
+            normal0: None,
+            normal1: None,
+            normal2: None,
+            normal3: None,
+            gi_volume: None,
+            environment: None,
+            lights: Handle::default(),
+            shadow_cubes: exa_render::cube_shadows::CUBE_POOL,
+        }
+    }
 }
 
 #[derive(ShaderType, Reflect, Debug, Clone, Copy, Default)]
@@ -560,6 +588,7 @@ pub fn spawn_terrain(
                 PendingSplat(splat),
                 crate::gi_volume::GiTerrain,
                 crate::shadow_links::Unwalled,
+                exa_render::lights::ShadowBias(exa_render::shadow_bias::FLOOR),
                 Transform::from_xyz(centre[0], 0.0, centre[1]),
                 Visibility::default(),
                 ChildOf(parent),

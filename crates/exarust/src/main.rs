@@ -240,6 +240,7 @@ fn main() -> AppExit {
         .insert_resource(view)
         .insert_resource(options.gi)
         .insert_resource(exa_ui::ShowFps(!options.no_fps))
+        .insert_resource(exa_render::cube_shadows::PointShadows(!options.no_shadows))
         .insert_resource(options)
         .add_plugins(viewer::ViewerPlugin)
         .run()

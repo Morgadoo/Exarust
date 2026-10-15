@@ -24,23 +24,33 @@ pub struct LightsPlugin;
 impl Plugin for LightsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<LightTable>()
-            .configure_sets(PostUpdate, LightsSystems::Ids.before(LightsSystems::Lists))
+            .configure_sets(
+                PostUpdate,
+                (
+                    LightsSystems::Ids,
+                    LightsSystems::Cubes,
+                    LightsSystems::Lists,
+                )
+                    .chain(),
+            )
             .add_systems(Startup, create_buffer)
             .add_systems(PostUpdate, assign_light_ids.in_set(LightsSystems::Ids))
             .add_systems(
                 PostUpdate,
-                (assign_mesh_slots, free_mesh_slots, upload)
+                (cube_records, assign_mesh_slots, free_mesh_slots, upload)
                     .chain()
                     .in_set(LightsSystems::Lists),
             );
     }
 }
 
-/// Light ids are given out in `Ids`; mesh light lists are written to the
-/// shaders' buffer in `Lists`. Systems that fill [`MeshLights`] run between.
+/// Light ids are given out in `Ids`; cached cube slots are handed out in
+/// `Cubes`; mesh light lists and records are written to the shaders' buffer
+/// in `Lists`. Systems that fill [`MeshLights`] run before `Cubes`.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LightsSystems {
     Ids,
+    Cubes,
     Lists,
 }
 
@@ -65,10 +75,28 @@ pub struct MeshLights(pub Vec<u32>);
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ShadowBias(pub u32);
 
+/// A light's record: shaping y, z, cached cube slot + 1 (0 for none), and
+/// its radius R in metres.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Record {
+    shaping: Vec2,
+    cube: u32,
+    radius: f32,
+}
+
+impl Default for Record {
+    fn default() -> Self {
+        Self {
+            shaping: Vec2::ONE,
+            cube: 0,
+            radius: 1.0,
+        }
+    }
+}
+
 #[derive(Resource, Default)]
 struct LightTable {
-    /// Per light id: shaping y, z.
-    records: Vec<Vec2>,
+    records: Vec<Record>,
     /// Per mesh slot: count, then the light ids.
     lists: Vec<[u32; 8]>,
     free: Vec<u32>,
@@ -78,20 +106,23 @@ struct LightTable {
 }
 
 /// The buffer's layout, as `array<vec4<u32>>`: element 0 holds the index of
-/// the first list; element 1 + id holds light `id`'s shaping (y, z as f32
-/// bits); each mesh slot takes two elements from the first list on.
+/// the first list; element 1 + id holds light `id`'s record (shaping y, z and
+/// radius as f32 bits, cube slot + 1); each mesh slot takes two elements
+/// from the first list on.
 fn layout(table: &LightTable) -> Vec<[u32; 4]> {
     let first_list = 1 + table.records.len().max(1) as u32;
     let mut data = Vec::with_capacity(first_list as usize + table.lists.len() * 2 + 2);
     data.push([first_list, 0, 0, 0]);
-    data.extend(
-        table
-            .records
-            .iter()
-            .map(|s| [s.x.to_bits(), s.y.to_bits(), 0, 0]),
-    );
+    data.extend(table.records.iter().map(|r| {
+        [
+            r.shaping.x.to_bits(),
+            r.shaping.y.to_bits(),
+            r.cube,
+            r.radius.to_bits(),
+        ]
+    }));
     if table.records.is_empty() {
-        data.push([1f32.to_bits(), 1f32.to_bits(), 0, 0]);
+        data.push([1f32.to_bits(), 1f32.to_bits(), 0, 1f32.to_bits()]);
     }
     for list in &table.lists {
         data.push([list[0], list[1], list[2], list[3]]);
@@ -119,16 +150,43 @@ fn assign_light_ids(
 ) {
     for (entity, mut light, shaping) in &mut lights {
         let id = table.records.len() as u32;
-        table.records.push(shaping.map_or(Vec2::ONE, |s| s.0));
+        table.records.push(Record {
+            shaping: shaping.map_or(Vec2::ONE, |s| s.0),
+            ..default()
+        });
         light.shadow_depth_bias = id as f32;
         commands.entity(entity).insert(LightId(id));
         table.dirty = true;
     }
     for (id, shaping) in &mut shaped {
         if let Some(r) = table.records.get_mut(id.0 as usize)
-            && *r != shaping.0
+            && r.shaping != shaping.0
         {
-            *r = shaping.0;
+            r.shaping = shaping.0;
+            table.dirty = true;
+        }
+    }
+}
+
+/// Writes lights' cached cube slots into their records.
+fn cube_records(
+    mut table: ResMut<LightTable>,
+    cubes: Query<
+        (&LightId, &crate::cube_shadows::CubeSlot),
+        Changed<crate::cube_shadows::CubeSlot>,
+    >,
+) {
+    for (id, cube) in &cubes {
+        let Some(r) = table.records.get_mut(id.0 as usize) else {
+            continue;
+        };
+        let new = Record {
+            cube: cube.slot.map_or(0, |s| s + 1),
+            radius: cube.radius,
+            ..*r
+        };
+        if *r != new {
+            *r = new;
             table.dirty = true;
         }
     }
@@ -230,7 +288,14 @@ mod tests {
     #[test]
     fn layout_places_records_then_lists() {
         let table = LightTable {
-            records: vec![Vec2::new(0.5, 2.0), Vec2::ONE],
+            records: vec![
+                Record {
+                    shaping: Vec2::new(0.5, 2.0),
+                    cube: 3,
+                    radius: 7.5,
+                },
+                Record::default(),
+            ],
             lists: vec![[2, 7, 9, 0, 0, 0, 0, 0]],
             ..default()
         };
@@ -238,6 +303,8 @@ mod tests {
         assert_eq!(data[0][0], 3);
         assert_eq!(f32::from_bits(data[1][0]), 0.5);
         assert_eq!(f32::from_bits(data[1][1]), 2.0);
+        assert_eq!(data[1][2], 3);
+        assert_eq!(f32::from_bits(data[1][3]), 7.5);
         assert_eq!(data[3], [2, 7, 9, 0]);
         assert_eq!(data[4], [0; 4]);
     }

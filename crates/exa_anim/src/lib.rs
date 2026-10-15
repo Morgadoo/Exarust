@@ -247,8 +247,9 @@ fn bind_skins(
                 inverse_bindposes,
                 joints,
             },
-            // Skinned vertices move away from the mesh's own bounds.
-            bevy::camera::visibility::NoFrustumCulling,
+            // Skinned vertices move away from the mesh's rest bounds: its
+            // box follows the joints instead.
+            bevy::camera::visibility::DynamicSkinnedMeshBounds,
         ));
     }
 }

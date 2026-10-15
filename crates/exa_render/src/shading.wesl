@@ -169,6 +169,58 @@ fn point_shadow(id: u32, p: vec3<f32>, nrm: vec3<f32>, t: Taps, depth_scale: f32
     return lit / f32(t.count);
 }
 
+// Exarust's cached cube shadow maps of static casters
+// (`exa_render::cube_shadows`): the original's linear depth, distance /
+// (R·k_c), compared against 0.995·d / (R·k_r) with the receiver's k_r.
+@group(constants::MATERIAL_BIND_GROUP) @binding(131) var exa_cubes: texture_depth_cube_array;
+@group(constants::MATERIAL_BIND_GROUP) @binding(132) var exa_cube_sampler: sampler_comparison;
+
+// The receiver depth scale k_r of shadow-bias level `v`.
+fn receiver_scale(v: u32) -> f32 {
+    if v == 0u {
+        return 1.0;
+    }
+    return 1.0 - 0.005 * f32(v);
+}
+
+// The cached cube's filter, with the same taps as the point-shadow filter.
+fn cached_shadow(slot: u32, reach: f32, id: u32, p: vec3<f32>, nrm: vec3<f32>, t: Taps, level: u32) -> f32 {
+    let lt = &view_bindings::clustered_lights.data[id];
+    let l = (*lt).position_radius.xyz - p;
+    let d = max(length(l), 1e-4);
+    let ln = l / d;
+    let push = (1.0 - abs(dot(nrm, ln))) * d * SHADOW_NORMAL_OFFSET;
+    let s_vec = (l - nrm * push) / d;
+    let axes = disc_frame(ln);
+    let radius = (*lt).position_radius.w;
+    let reference = SHADOW_DEPTH_SCALE * d / (reach * receiver_scale(level));
+    var lit = 0.0;
+    for (var j = t.first; j < t.first + t.count; j++) {
+        let rs = tap(t, j);
+        let dir = (axes[0] * rs.x + axes[1] * rs.y) * radius - s_vec;
+        lit += textureSampleCompareLevel(exa_cubes, exa_cube_sampler, dir * FLIP_Z, i32(slot), reference);
+    }
+    return lit / f32(t.count);
+}
+
+// The shadow of clustered light `id` on a receiver with mesh tag `tag`: the
+// cached cube of its static casters times Bevy's cube of its skinned ones.
+fn light_shadow(id: u32, p: vec3<f32>, nrm: vec3<f32>, t: Taps, tag: u32, receiver: bool) -> f32 {
+    if !receiver {
+        return 1.0;
+    }
+    var shadow = 1.0;
+    let rec = exa_lights[1u + light_id(id)];
+    if rec.z > 0u {
+        shadow = cached_shadow(rec.z - 1u, bitcast<f32>(rec.w), id, p, nrm, t, shadow_bias_level(tag));
+    }
+    let lt = &view_bindings::clustered_lights.data[id];
+    if ((*lt).flags & mesh_view_types::POINT_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u {
+        shadow *= point_shadow(id, p, nrm, t, shadow_depth_scale(shadow_bias_level(tag)));
+    }
+    return shadow;
+}
+
 fn cube_compare(dir: vec3<f32>, id: u32, depth: f32) -> f32 {
     @if(NO_CUBE_ARRAY_TEXTURES_SUPPORT)
     return textureSampleCompare(
@@ -259,10 +311,7 @@ fn direct(s: Surface, world_position: vec4<f32>, nrm: vec3<f32>, frag: vec2<f32>
         if atn <= 0.0 {
             continue;
         }
-        var shadow = 1.0;
-        if receiver && ((*lt).flags & mesh_view_types::POINT_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u {
-            shadow = point_shadow(id, p, nrm, t, shadow_depth_scale(shadow_bias_level(tag)));
-        }
+        let shadow = light_shadow(id, p, nrm, t, tag, receiver);
         let lit = light(s, to / max(d, 1e-4), (*lt).color_inverse_square_range.rgb * atn * shadow);
         out.diffuse += lit.diffuse;
         out.specular += lit.specular;

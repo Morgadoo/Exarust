@@ -390,7 +390,9 @@ pub fn light_bundle(
         },
         // The shadow filter radius (read by the shader).
         radius: shadow_radius(light.softness),
-        shadow_maps_enabled: true,
+        // Static casters shadow it through the cached cubes; Bevy's map is
+        // turned on only while a skinned mesh is linked to it.
+        shadow_maps_enabled: false,
         ..default()
     };
     (

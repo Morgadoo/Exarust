@@ -105,7 +105,7 @@ impl Default for ExaParams {
 }
 
 /// A surface shaded like the original's.
-#[derive(Asset, TypePath, AsBindGroup, Clone, Debug, Default)]
+#[derive(Asset, TypePath, AsBindGroup, Clone, Debug)]
 #[bind_group_data(ExaMaterialKey)]
 pub struct ExaMaterial {
     #[uniform(100)]
@@ -147,9 +147,35 @@ pub struct ExaMaterial {
     /// handle is the shared buffer.
     #[storage(130, read_only)]
     pub lights: Handle<ShaderBuffer>,
+    /// The cached cube shadow pool ([`crate::cube_shadows`]).
+    #[texture(131, dimension = "cube_array", sample_type = "depth")]
+    #[sampler(132, sampler_type = "comparison")]
+    pub shadow_cubes: Handle<Image>,
     pub alpha_mode: AlphaMode,
     /// The surface casts no shadows (opacity ≤ 0.8, or the record says so).
     pub no_shadows: bool,
+}
+
+impl Default for ExaMaterial {
+    fn default() -> Self {
+        Self {
+            params: ExaParams::default(),
+            diffuse_map: None,
+            normal_map: None,
+            specular_map: None,
+            emissive_map: None,
+            opacity_map: None,
+            environment: None,
+            dirt_map: None,
+            gloss_map: None,
+            gi_volume: None,
+            height_map: None,
+            lights: Handle::default(),
+            shadow_cubes: crate::cube_shadows::CUBE_POOL,
+            alpha_mode: AlphaMode::default(),
+            no_shadows: false,
+        }
+    }
 }
 
 impl ExaMaterial {

@@ -2,6 +2,7 @@
 //! chain replaces Bevy's tonemapping (grading curve, bloom); materials and
 //! lighting follow. Rules: `docs/RENDERING.md`.
 
+pub mod cube_shadows;
 pub mod flame;
 pub mod gi;
 pub mod lights;
@@ -35,6 +36,7 @@ impl Plugin for RenderPlugin {
             flame::FlamePlugin,
             supersample::SupersamplePlugin,
             lights::LightsPlugin,
+            cube_shadows::CubeShadowsPlugin,
         ))
             // The original's shadow maps at its top shadow detail: 512² cubes
             // for lights and fires, 4096² for the sun.

@@ -380,11 +380,32 @@ side-by-side check on the GPU at the same camera.
   the test. The original's GI also takes its lights from the cell lists;
   Exarust's GI still picks the lights nearest its block.
 
-  Not done yet: the original's other limits on the same links. Cube
-  faces are rendered only when they hold a visible receiver and a light or
-  caster has moved; otherwise they are cached across frames. Draw sets are
-  per room, with one portal step into the next room. The notes are in
-  `context/re/optimizations.md`.
+- **Cached cube shadows** (`exa_render::cube_shadows`): static meshes cast
+  into cube maps kept across frames, as the original keeps its shadow maps:
+  - a face is rendered only when it is needed (its pyramid out to R meets
+    the camera's view) and dirty (the light moved, a caster linked to it
+    moved or changed links, or the light just took its slot);
+  - torch flicker changes only colour and intensity, so it never dirties a
+    face;
+  - each face holds the original's linear depth, distance / (R·k_c), in
+    16 bits, with near plane 3 cm and back faces culled (two-sided
+    materials cast both sides). Alpha-cut materials cut their shadow as they
+    cut their colour;
+  - receivers compare 0.995·d / (R·k_r), lit when less. With k_c and k_r
+    from both sides' shadow-bias levels, this is the original's rule
+    exactly, cross terms included;
+  - the 64 cubes form a pool. A light that needs a slot takes a free one,
+    or one whose light needs no face this frame (that light's faces go out
+    of date).
+
+  Skinned meshes (characters) still cast through Bevy's cube maps, which
+  are re-rendered every frame. Bevy's map is kept only for lights that have
+  a skinned mesh linked. The shaders multiply both. Skinned meshes carry
+  per-joint boxes (`DynamicSkinnedMeshBounds`), so they are culled per view
+  and per cube face.
+
+  Not done yet: draw sets per room, with one portal step into the next
+  room. The notes are in `context/re/optimizations.md`.
 - **Filter** (point lights):
   - the surface is pushed toward the light by 0.008·(1 − |N·L|)·d along the
     normal;
