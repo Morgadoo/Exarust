@@ -137,6 +137,9 @@ fn setup(
                     exa_anim::Animator::new(moveset, action),
                     exa_character::Outfit::of_models(&options.outfit),
                 ));
+                if options.race.is_none_or(|r| r == exa_character::HUMAN) {
+                    commands.entity(root).insert(exa_character::WearsUnderwear);
+                }
                 if options.race.is_none_or(human_frame) {
                     commands
                         .entity(root)

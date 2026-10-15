@@ -23,7 +23,7 @@
 //!          --limp                     character view: the body goes limp and falls
 //!          --race <n>                 character view: the body of race n (a character record's race byte)
 //!          --shove <frame>            a body blow to every simulated body at that frame
-//!          --outfit a,b,c             apparel for character/play (Characters.rpk entries)
+//!          --outfit a,b,c             apparel for character/play (Characters.rpk entries), over the underwear
 //!          --weapon <name>            weapon in the right hand (Objects.rpk entry)
 //!          --opponent                 an armed duellist in play mode (F: combat mode, left click: attack)
 //! ```

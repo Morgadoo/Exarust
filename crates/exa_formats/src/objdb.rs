@@ -1,11 +1,14 @@
-//! Item records of the object database (`objdb.rdb`): names, the model they
-//! show, and the appearance block that colours apparel. Layout and evidence:
-//! `docs/formats/OTHER.md` (Object database).
+//! Item records of the object database (`objdb.rdb`): names, the models
+//! they are shown and worn as, what they occupy, and the appearance block
+//! that colours apparel. Layout and evidence: `docs/formats/OTHER.md`
+//! (Object database).
 //!
 //! A record payload is a chain of `u32 tag, u32 size` sections (the size
 //! counts the 8-byte header): `0x10000000`
-//! holds the display name, `0x00100000` the model name, `0x1000` the item
-//! body whose bytes `0x1B0..0x214` are the appearance block.
+//! holds the display name, `0x00100000` the ground model's name, `0x1000`
+//! the item body, which starts with the worn model's name, holds the
+//! per-bone occupancy table at `0x10` and the appearance block at bytes
+//! `0x1B0..0x214`.
 
 use crate::rdb::Database;
 use crate::weapon_stats::StatBytes;
@@ -18,6 +21,12 @@ const WEAPON: u32 = 0x4000;
 /// The weapon's stored part choices and materials are valid.
 pub const WEAPON_STORED: u32 = 0x1000_0000;
 const APPEARANCE_OFFSET: usize = 0x1B0;
+/// Per-bone occupancy of apparel: a `u64` for each of bones 1..20, whose
+/// byte L holds the sub-parts of the bone the item occupies on layer L.
+const OCCUPANCY_OFFSET: usize = 0x10;
+pub const OCCUPANCY_BONES: usize = 20;
+/// The pelvis sub-part an innermost-layer item covers the groin with.
+pub const GROIN: u8 = 0x02;
 /// Per-slot layer bytes of apparel: 8 bytes per body slot (bone index).
 const SLOT_LAYERS_OFFSET: usize = 0xA8;
 pub const SLOTS: usize = 19;
@@ -37,12 +46,21 @@ const LAYER_LEN: usize = 12;
 pub struct Item {
     pub id: u32,
     pub name: String,
-    /// Model entry (e.g. in `Characters.rpk` for apparel); may be empty.
+    /// The model the item shows on the ground or as an icon (an entry of
+    /// `Objects.rpk` or `Objlib.rpk`, or `@` and a factory name); may be
+    /// empty, as for the underwear.
     pub model: String,
+    /// The `Characters.rpk` entry the item is worn as, named by its body;
+    /// empty without a body.
+    pub worn_model: String,
     pub appearance: Option<Appearance>,
     /// Apparel's first layer byte per body slot: low bits the layer, bit
     /// `0x80` hides the body part, `0x40` its partial variant.
     pub slot_layers: [u8; SLOTS],
+    /// Sub-parts occupied per bone 1..20 (index 0 is the pelvis): byte L of
+    /// each entry is layer L, 0 the innermost. Items that overlap here are
+    /// not worn together. Zero when the body is too short to hold it.
+    pub occupancy: [u64; OCCUPANCY_BONES],
     /// Seeds, condition and choices of a factory-made weapon.
     pub weapon: Option<Weapon>,
     /// What the item protects when worn.
@@ -135,6 +153,12 @@ impl Item {
             .filter(|(_, b)| **b & HIDES_BODY != 0)
             .fold(0, |m, (s, _)| m | 1 << s)
     }
+
+    /// Whether the item covers the groin on the innermost layer, as
+    /// trousers, hose and braies do.
+    pub fn covers_groin(&self) -> bool {
+        self.occupancy[0] as u8 & GROIN != 0
+    }
 }
 
 /// How an item is painted: condition and up to eight material layers, each
@@ -201,8 +225,10 @@ impl Item {
             id,
             name: String::new(),
             model: String::new(),
+            worn_model: String::new(),
             appearance: None,
             slot_layers: [0; SLOTS],
+            occupancy: [0; OCCUPANCY_BONES],
             weapon: None,
             armour: None,
         };
@@ -222,6 +248,13 @@ impl Item {
                 NAME => item.name = name(body),
                 MODEL => item.model = name(body),
                 BODY => {
+                    item.worn_model = name(body);
+                    let table = OCCUPANCY_OFFSET..OCCUPANCY_OFFSET + OCCUPANCY_BONES * 8;
+                    if let Some(t) = body.get(table) {
+                        item.occupancy = std::array::from_fn(|b| {
+                            u64::from_le_bytes(t[8 * b..8 * b + 8].try_into().expect("8 bytes"))
+                        });
+                    }
                     item.appearance = body
                         .get(APPEARANCE_OFFSET..)
                         .and_then(|b| Appearance::parse(b).ok());
@@ -311,6 +344,75 @@ mod tests {
         // Nothing covered: no armour.
         let bare = Item::parse(1, &section(BODY, &vec![0u8; APPEARANCE_OFFSET])).unwrap();
         assert!(bare.armour.is_none());
+    }
+
+    /// An apparel body worn as `worn`, with per-bone occupancy entries
+    /// (bone, u64) and appearance layers (mask, set, material, colour).
+    fn apparel_body(worn: &str, occupancy: &[(usize, u64)], layers: &[[u8; 4]]) -> Vec<u8> {
+        let mut body = padded(worn, APPEARANCE_OFFSET);
+        for &(bone, bits) in occupancy {
+            let at = OCCUPANCY_OFFSET + 8 * (bone - 1);
+            body[at..at + 8].copy_from_slice(&bits.to_le_bytes());
+        }
+        body.extend([160, 64, 0, 0]);
+        for &[mask, set, material, colour] in layers {
+            body.extend([0, mask, set, 0, material, 0, 0, 0, colour, 0, 0, 0]);
+        }
+        body.resize(APPEARANCE_OFFSET + APPEARANCE_LEN, 0);
+        body
+    }
+
+    #[test]
+    fn worn_model_is_named_by_the_body() {
+        let mut p = section(NAME, &padded("Trouser Qui A", 0x20));
+        p.extend(section(MODEL, &padded("Trouser_At", 0x30)));
+        p.extend(section(BODY, &apparel_body("Trouser_A", &[(1, 0x03)], &[])));
+        let item = Item::parse(0x11d, &p).unwrap();
+        assert_eq!(item.model, "Trouser_At");
+        assert_eq!(item.worn_model, "Trouser_A");
+    }
+
+    #[test]
+    fn item_without_ground_model() {
+        let body = apparel_body(
+            "Braies_A",
+            &[(1, 0x03), (2, 0x01), (5, 0x01)],
+            &[[1, 3, 1, 1], [2, 3, 1, 1]],
+        );
+        let mut p = section(NAME, &padded("Braies_A", 0x20));
+        p.extend(section(BODY, &body));
+        let item = Item::parse(8, &p).unwrap();
+        assert!(item.model.is_empty());
+        assert_eq!(item.worn_model, "Braies_A");
+        assert!(item.covers_groin());
+        assert_eq!(item.hidden_slots(), 0);
+        assert_eq!(item.occupancy[1], 0x01);
+        let a = item.appearance.unwrap();
+        assert_eq!((a.quality, a.damage, a.dirt), (160, 64, 0));
+        assert!(a.used_layers().all(|l| l.material == 1 && l.colour == 1));
+    }
+
+    #[test]
+    fn groin_cover_is_the_innermost_layer() {
+        let covers = |pelvis: u64| {
+            let p = section(BODY, &apparel_body("X", &[(1, pelvis)], &[]));
+            Item::parse(1, &p).unwrap().covers_groin()
+        };
+        // Mail legs occupy the pelvis on layer 1 only.
+        assert!(!covers(0x0300));
+        assert!(!covers(0x01));
+        assert!(covers(0x02));
+    }
+
+    #[test]
+    fn short_body_has_no_occupancy() {
+        let mut body = padded("Braies_A", 0x20);
+        body[OCCUPANCY_OFFSET] = 0x03;
+        let item = Item::parse(8, &section(BODY, &body)).unwrap();
+        assert_eq!(item.worn_model, "Braies_A");
+        assert_eq!(item.occupancy, [0; OCCUPANCY_BONES]);
+        assert!(!item.covers_groin());
+        assert!(item.appearance.is_none());
     }
 
     #[test]

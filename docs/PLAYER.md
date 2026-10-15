@@ -52,6 +52,23 @@ The left button attacks; the mouse's vertical motion picks the strike.
   4) when a wall blocks the view, and fades geometry between the camera and
   the player.
 
+## Start outfit
+
+- The original's human body is nude. Underwear is an item, "Braies_A"
+  (pale grey linen braies), and the engine keeps every human record it
+  creates or re-dresses in it: when nothing worn covers the groin, the
+  braies go on. Trousers, hose and braies cover it; shirts, mail legs and
+  plate do not ([formats/OTHER.md](formats/OTHER.md), Underwear).
+- A new character starts in braies; story background 0 keeps nothing else
+  but a start letter, the proctor and villager start in their templates'
+  clothes.
+- Exarust's play mode starts the player as that new character without a
+  kit: braies only. `--outfit` puts apparel on over them, and an item that
+  covers the groin takes their place (`--outfit trouser_a,shirt_b` wears no
+  braies). The character view's human body is kept in braies the same way.
+- Not yet: taking clothes off and the braies coming back, and conflicts
+  between garments given together; they wait for equipping.
+
 ## The carried torch
 
 - The torch (`torcha02`, item "Torch A01") sits in the off-hand slot, the

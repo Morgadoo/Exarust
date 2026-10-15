@@ -111,7 +111,7 @@ checked outside the engine through exporters.
 | ✅ Level grid (`3DED`), level sections (`3DE10000`, `DBC0`, …), placed objects and characters, starts | `exa_formats::{level,characters}` | wall/floor sets `gews_*` / `gefs_*` |
 | ✅ Terrain (`.rft`) and terrain tables (`.ftb`) | `exa_formats::terrain` | heightfield, layers, grass and plants |
 | ~~Packed `.rfi` storage~~ | `exa_formats::rfi` | done in Phase 0 (RLE) |
-| Databases: ✅ `races`, `objdb` (apparel, weapons, layer table), `locales` (level list); `charroles` and `objstrings` still open | `exa_formats::{rdb,races,objdb}` | record schemas |
+| Databases: ✅ `races`, `objdb` (apparel, weapons, layer table, worn model, occupancy), `locales` (level list); `charroles` and `objstrings` still open | `exa_formats::{rdb,races,objdb}` | record schemas |
 | Factories ✅ (`add-weapon-factories`); actors, powers, dialogue (`.rcd`) still open | `exa_formats::{factory,actor,power,dialogue}` | |
 | Shader libraries (`.flb`) | `exa_formats::flb` | optional: capturing the running game with RenderDoc/apitrace gives the plain GLSL directly |
 | Exporters: ✅ glTF for static meshes with textures; skinned characters and assembled levels open; PNG ✅; WAV | `exa_tool` | check results in Blender |
@@ -165,6 +165,12 @@ Done (change `add-apparel-painting`): object database items and the
 apparel painter (palette, cloth/leather/suede/velvet/mail/plate/painted
 finishes); dressed characters show their colours
 ([formats/OTHER.md](formats/OTHER.md)).
+
+Done (change `keep-humans-in-underwear`): apparel is worn as the model its
+item's body names, so placed characters wear every stored item (103 of 103
+placed humans covered); the player and the character view's human body are
+kept in the original's underwear, pale grey linen braies, by its rule
+([formats/OTHER.md](formats/OTHER.md), Underwear).
 
 Done (change `add-motion-playback`): skeleton and motion set decoded;
 clips play on the human body (`exarust character Default/Walk`).

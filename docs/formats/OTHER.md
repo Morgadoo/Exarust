@@ -50,19 +50,49 @@ length against `humanbase` (golem 1.42×, ogre 1.39×).
 
 `objdb.rdb` holds 1424 table entries; the last points outside the file and is
 skipped. An item record payload is a chain of `u32 tag, u32 size` sections,
-where the size counts the 8-byte header:
+where the size counts the 8-byte header. A record's table flags are the OR
+of the tags of the sections it holds (1422 of 1423 records; the exception
+is "Map"), so `0x10101000` is name, ground model and body, and `0x10001000`
+name and body only.
 
 | tag | contents |
 |---|---|
-| `0x10000000` | display name[16], two words |
-| `0x00100000` | model entry name[16] (in `Characters.rpk` for apparel), … |
-| `0x1000` | item body; bytes `0x1B0..0x214` are the appearance block |
+| `0x10000000` | display name[16], a word (0, 1 or 2, else noise; [guess] editor state), the parent id: the editor folder for global items (`+Apparel/+Misc`, `+Clothes/+Legs`, …), the source item for level-local copies |
+| `0x00100000` | ground or icon model name[16] (`Objects.rpk` or `Objlib.rpk`, or `@` and a factory), …; absent in "Braies_A" |
+| `0x1000` | item body: the worn model name[16] (`Characters.rpk`), the occupancy table at `0x10`, the slot table at `0xA8`, coverage and protection at `0x150`/`0x1A0`, the appearance block at `0x1B0..0x214` |
+
+**Worn and ground model.** A character is dressed in the model the body
+names, never the `0x00100000` one: REA on the apparel model loader shows it
+loading and caching the body's leading name from `Characters.rpk`, and the
+icon builder gives no icon when the `0x00100000` section is missing. Across
+`objdb.rdb` and every level's own database the two names agree for 1617
+apparel records (363 global, 1254 local). They differ for item 8
+"Braies_A", which has no ground model, and for "Legg Cloth Lay A", "Trouser
+Qui A" and their 39 local copies, which are worn as `Trouser_A` and shown
+on the ground as `Trouser_At` (an `Objects.rpk` entry). 366 of the 388
+objdb records with a body are worn as a `Characters.rpk` model (319
+models), against 363 by the ground model. Exarust reads both
+(`Item.worn_model`, `Item.model`): apparel is dressed, painted and looked
+up by its worn model, weapons by their ground model.
 
 Appearance block (100 bytes): quality, damage and dirt bytes (the painter uses
 q = x, damage = x/(2−x), dirt = (x²+x)/2 with x = byte/255), one unknown
 byte, then eight 12-byte layers: +1 mask number (`<stem>m<n>`, 0 = unused),
 +2 material set (used when the material is 0), +4 material, +8 palette colour.
-276 of the 387 item records name a model in `Characters.rpk` directly.
+
+**Occupancy table** at body `0x10`: a `u64` for each of bones 1..20 (bone b
+at `0x10 + 8(b − 1)`). Byte L is a bit mask of the bone's sub-parts the
+item occupies on layer L, 0 innermost. Established by REA: the apparel
+loader takes an item's layer as the highest non-zero byte over the table
+and keeps worn items sorted by it; putting an item on takes off every worn
+item whose table overlaps the new one's on any bone; the underwear rule
+tests bit `0x02` of the pelvis's layer-0 byte, the groin. Only that bit is
+tied to behaviour; the other sub-part bits are not decoded. Trousers, hose
+and braies set it (pelvis `0x03` on layer 0); mail legs sit on layer 1,
+shirts and gambesons on 2, tunics and coats on 4, plate on 6–7. The table's
+last entry (bone 20) is the first word of the slot table at `0xA8`.
+Exarust reads it (`Item.occupancy`, `Item::covers_groin`) for the
+underwear rule; wear conflicts wait for equipping.
 
 Item body offset `0xA8` holds apparel's per-slot layer table: 8 bytes for
 each of 19 body slots (bone indices). Low bits give the layer level. Bit
@@ -71,6 +101,57 @@ shins; boots: feet; gambeson: torso and arms). Bit `0x40` hides the slot's
 partial body variant. Exarust hides covered body parts' meshes when
 dressing (from the first byte of each slot). Fit variants and culling of
 apparel triangles by their cull bits are not done yet.
+
+### Underwear
+
+The human body is nude: `humanbase.rfc` has no underwear part and the skin
+textures are painted bare. Underwear is an item, objdb record 8
+"Braies_A", and the engine refers to it only by that id.
+
+- **The item.** Worn as `braies_a` (one node on the pelvis, texture set
+  `braies__aa`, which has masks 1 and 2 only). No ground model, so it has
+  no icon and cannot be dragged off the figure ([inf] from the icon code;
+  not tried in the game). Occupancy: pelvis `0b11` and both thighs bit 0,
+  on layer 0. Its slot table is all zero: it hides no body part.
+  Coverage: pelvis 60 %, thighs 100 %, with zero padding and resistances
+  and the cloth hit sound. Appearance: quality 160, damage 64, dirt 0;
+  masks 1 and 2 rough cloth (material 1) in colour 1, palette family 0
+  shade 1, `#c7c7c7`: pale grey linen. "Braies_P" (425) is the same model
+  shown on the ground as `braies_a` and painted in mauve silk (colour 250);
+  no level, local item, container, drop table or actor uses it.
+- **The rule.** If a character record's race byte is 0 (human; [inf] that
+  the tested byte is the race byte) and none of its worn items covers the
+  groin, item 8 is appended to its worn list. It runs when a record is
+  created, when the character screen opens, after an item is taken off the
+  figure, looted or stripped, and in the arena's outfit generators. It does
+  not run at spawn: a placed character is dressed exactly as stored.
+- **Displaced braies vanish.** Putting on anything that overlaps them
+  (trousers, hose) takes them off, and every handler of displaced items
+  drops item 8 instead of storing it, so braies are never carried. Taking
+  the trousers off again brings them back through the rule.
+- **Start outfits.** A fresh record wears `[8]`, also in the play-start
+  fallback with no player file. Story background 0 ("unknown") is cut to
+  braies only, plus a start letter in the pack; its creator kit offers a
+  shirt, trousers and shoes. The proctor and villager backgrounds use their
+  `actors.rpk` templates, which wear trousers; 0.9.5 has no template for the
+  knight. No kit, template or level lists braies for the player.
+- **Corpus.** Of the 103 placed humans, 4 wear item 8 and nothing else
+  (Sticky and two dead men in exanima01, Fergus in exanima02) and 99 wear
+  trousers: all 103 are covered by their stored items.
+- **Evidence.** REA on `Exanima.exe` 0.9.5 (the rule and its callers, the
+  record defaults, the creator's background presets, kit tables and mode
+  filter, the equip conflict pass and the displaced-item handlers, the
+  apparel loader), the corpus above, and a retail save whose fresh story
+  player (background 0) wears item 8 only, as do its Sticky and two
+  unnamed humans.
+
+Exarust (`exa_character`) applies the rule to the humans it makes at run
+time: the player in play mode and the character view's human body. The
+underwear goes on beneath the given outfit, painted with item 8's own
+appearance, when nothing in the outfit covers the groin. Placed characters
+are dressed as stored. Not done until equipping exists: the rule on
+unequip, braies vanishing when displaced, wear conflicts between garments
+given on the command line.
 
 The game never draws an apparel item's own textures. It paints a colour
 texture per item from the shade map `<stem>d` (cavities dark), stacking each

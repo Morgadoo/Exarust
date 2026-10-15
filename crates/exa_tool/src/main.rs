@@ -65,7 +65,8 @@ enum Cmd {
         out: PathBuf,
     },
     /// Paint an apparel texture set (e.g. `doublet_aa`) with the appearance
-    /// of the item showing `model` (e.g. `doublet_a`), as the game does.
+    /// of the first item worn as `model` (e.g. `doublet_a`), as the game
+    /// does.
     Paint {
         model: String,
         stem: String,
@@ -351,8 +352,8 @@ fn paint_item(game: &GameData, model: &str, stem: &str, out: &Path) -> Result<()
     let db = exa_formats::rdb::Database::parse(db_bytes)?;
     let item = exa_formats::objdb::items(&db)
         .into_iter()
-        .find(|i| i.model.eq_ignore_ascii_case(model) && i.appearance.is_some())
-        .with_context(|| format!("no item shows {model}"))?;
+        .find(|i| i.worn_model.eq_ignore_ascii_case(model) && i.appearance.is_some())
+        .with_context(|| format!("no item is worn as {model}"))?;
     let appearance = item.appearance.expect("filtered");
     let texels = |name: &str| -> Option<Texels> {
         let rfi = Rfi::parse(game.texture(name)?).ok()?;

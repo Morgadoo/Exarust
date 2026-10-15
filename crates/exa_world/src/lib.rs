@@ -128,9 +128,11 @@ fn placed_characters(scene: &Scene, global: &[Item]) -> Vec<PlacedCharacter> {
                 .worn
                 .iter()
                 .filter_map(|&id| {
+                    // Worn as the model its body names, which may differ
+                    // from the one it shows on the ground or lack one.
                     let item = find(id)?;
-                    (!item.model.is_empty()).then(|| Worn {
-                        model: item.model.clone(),
+                    (!item.worn_model.is_empty()).then(|| Worn {
+                        model: item.worn_model.clone(),
                         appearance: item.appearance,
                         hides: item.hidden_slots(),
                         armour: item.armour,
@@ -525,4 +527,88 @@ pub fn spawn_level(
             bounds_max: max,
         },
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use exa_formats::characters::{CharacterRecord, LOCAL_ITEM, LevelCharacters, Placement};
+
+    fn item(id: u32, model: &str, worn: &str, colour: u8) -> Item {
+        let mut layers = [objdb::Layer::default(); 8];
+        layers[0] = objdb::Layer {
+            mask: 1,
+            random_set: 3,
+            material: 1,
+            colour,
+        };
+        Item {
+            id,
+            name: worn.into(),
+            model: model.into(),
+            worn_model: worn.into(),
+            appearance: Some(Appearance {
+                quality: 160,
+                damage: 64,
+                dirt: 0,
+                layers,
+            }),
+            slot_layers: [0; objdb::SLOTS],
+            occupancy: [0; objdb::OCCUPANCY_BONES],
+            weapon: None,
+            armour: None,
+        }
+    }
+
+    fn record(id: u32, worn: Vec<u32>) -> CharacterRecord {
+        CharacterRecord {
+            id,
+            name: format!("record {id}"),
+            surname: String::new(),
+            female: false,
+            race: 0,
+            voice: String::new(),
+            hands: [0; 4],
+            worn,
+        }
+    }
+
+    fn placement(id: u32) -> Placement {
+        Placement {
+            id,
+            position: [0.0; 3],
+            yaw: 0.0,
+            condition: 0,
+            pose: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn placed_characters_wear_their_stored_items() {
+        // The underwear has no ground model; quilted trousers show
+        // `Trouser_At` on the ground but are worn as `Trouser_A`.
+        let global = [item(8, "", "Braies_A", 1), item(9, "Shirt_B", "Shirt_B", 2)];
+        let scene = Scene {
+            version: 0,
+            nodes: Vec::new(),
+            materials: Vec::new(),
+            grid: None,
+            props: Vec::new(),
+            environment: None,
+            characters: Some(LevelCharacters {
+                records: vec![record(1, vec![8, LOCAL_ITEM | 3]), record(2, Vec::new())],
+                placements: vec![placement(1), placement(2)],
+            }),
+            local_items: vec![item(3, "Trouser_At", "Trouser_A", 5)],
+            placed_objects: Vec::new(),
+            level_errors: Vec::new(),
+        };
+        let placed = placed_characters(&scene, &global);
+        assert_eq!(placed.len(), 2);
+        let worn: Vec<&str> = placed[0].worn.iter().map(|w| w.model.as_str()).collect();
+        assert_eq!(worn, ["Braies_A", "Trouser_A"]);
+        let braies = placed[0].worn[0].appearance.unwrap();
+        assert_eq!(braies.layers[0].colour, 1);
+        assert!(placed[1].worn.is_empty());
+    }
 }

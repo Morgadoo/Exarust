@@ -54,8 +54,10 @@ const STEP_HOLD: f32 = 0.2;
 #[derive(Component)]
 pub struct Player;
 
-/// The visual body under the player root.
+/// The visual body under the player root. The player is human and is
+/// kept in underwear, as the original keeps its player's record.
 #[derive(Component, Debug)]
+#[require(exa_character::WearsUnderwear)]
 pub struct PlayerBody {
     /// The body's yaw (rad; the model faces +Z).
     pub yaw: f32,
@@ -524,6 +526,17 @@ mod tests {
         // At most 240°/s × 0.9 in the first tick.
         let first = body_turn(0.0, 3.0, true, 0.0);
         assert!((first - BODY_TURN * 0.9 / TICK_HZ).abs() < 1e-4);
+    }
+
+    #[test]
+    fn player_body_wears_underwear() {
+        let mut world = World::new();
+        let body = world.spawn(PlayerBody::new(0.0)).id();
+        assert!(
+            world
+                .entity(body)
+                .contains::<exa_character::WearsUnderwear>()
+        );
     }
 
     #[test]

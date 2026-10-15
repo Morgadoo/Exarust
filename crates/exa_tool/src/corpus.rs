@@ -159,12 +159,23 @@ fn generalise(reason: &str) -> String {
     out
 }
 
-/// `exa-tool corpus levels`: grids and props of every level file.
+/// `exa-tool corpus levels`: grids and props of every level file, and what
+/// its placed humans wear.
 pub fn levels(game: &GameData) -> Result<()> {
+    use exa_formats::characters::{ID_MASK, LOCAL_ITEM};
     let Some(resource) = game.pack(exa_rpk::PackKind::Resource) else {
         return Ok(());
     };
     let objlib = game.pack(exa_rpk::PackKind::Objlib);
+    let characters = game.pack(exa_rpk::PackKind::Characters);
+    let global = resource
+        .get("objdb.rdb")
+        .and_then(|b| exa_formats::rdb::Database::parse(b).ok())
+        .map(|db| exa_formats::objdb::items(&db))
+        .unwrap_or_default();
+    // Placed humans, those covered at the groin, the items they wear and
+    // those worn as a `Characters.rpk` model.
+    let (mut humans, mut covered, mut human_worn, mut with_model) = (0, 0, 0, 0);
     let (mut levels, mut grids, mut props, mut resolved, mut errors) = (0, 0, 0, 0, 0);
     let mut environments = 0;
     let (mut placed, mut with_record, mut worn, mut worn_found) = (0, 0, 0, 0);
@@ -195,13 +206,33 @@ pub fn levels(game: &GameData) -> Result<()> {
                 *races
                     .entry((rec.race, p.condition == exa_formats::characters::DEAD))
                     .or_default() += 1;
+                // Race byte 0: humans.
+                let (human, mut groin) = (rec.race == 0, false);
                 for &item in &rec.worn {
                     worn += 1;
-                    let local = item & exa_formats::characters::LOCAL_ITEM != 0;
-                    let id = item & exa_formats::characters::ID_MASK;
+                    let local = item & LOCAL_ITEM != 0;
+                    let id = item & ID_MASK;
                     if local && scene.local_items.iter().any(|i| i.id == id) {
                         worn_found += 1;
                     }
+                    if !human {
+                        continue;
+                    }
+                    human_worn += 1;
+                    let items = if local { &scene.local_items } else { &global };
+                    let Some(found) = items.iter().find(|i| i.id == id) else {
+                        continue;
+                    };
+                    // Only an item drawn on the body covers it.
+                    let model = &found.worn_model;
+                    if !model.is_empty() && characters.is_some_and(|c| c.find(model).is_some()) {
+                        with_model += 1;
+                        groin |= found.covers_groin();
+                    }
+                }
+                if human {
+                    humans += 1;
+                    covered += usize::from(groin);
                 }
             }
         }
@@ -248,6 +279,9 @@ pub fn levels(game: &GameData) -> Result<()> {
         "{placed} placed characters, {with_record} with a local record, {worn_found}/{worn} worn items found in local databases"
     );
     println!("placed characters by (race, dead): {races:?}");
+    println!(
+        "placed humans {humans}, covered at the groin {covered}; items they wear {human_worn}, with a Characters model {with_model}"
+    );
     if !missing.is_empty() {
         println!("missing objects:");
         for (name, n) in missing.iter().take(20) {

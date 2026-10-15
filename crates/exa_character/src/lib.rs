@@ -5,6 +5,11 @@
 //! named `<bone><layer><name>` (`0900Chest`, `1000Head`) is authored in the
 //! space of the body part with the same bone index, so it is attached to that
 //! part and follows it.
+//!
+//! Humans Exarust makes at run time are kept in the original's underwear:
+//! when nothing they wear covers the groin, they also wear the object
+//! database's braies, beneath everything else (`docs/formats/OTHER.md`,
+//! Underwear).
 
 use std::collections::HashMap;
 
@@ -12,7 +17,7 @@ use bevy::image::CompressedImageFormatSupport;
 use bevy::prelude::*;
 use exa_anim::BodyPart;
 use exa_assets::{Game, ModelCache, ModelLoader, PackKind, model};
-use exa_formats::objdb::{self, Appearance, Armour};
+use exa_formats::objdb::{self, Appearance, Armour, Item};
 use exa_formats::rdb::Database;
 use exa_formats::rsq::bone_index;
 use exa_formats::weapon_stats::{StatBytes, at, condition_factor};
@@ -21,7 +26,17 @@ pub struct CharacterPlugin;
 
 impl Plugin for CharacterPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, equip_outfits);
+        app.add_systems(
+            Update,
+            (
+                load_underwear_items
+                    .run_if(resource_exists::<Game>)
+                    .run_if(not(resource_exists::<UnderwearItems>)),
+                keep_underwear.run_if(resource_exists::<UnderwearItems>),
+                equip_outfits,
+            )
+                .chain(),
+        );
     }
 }
 
@@ -30,7 +45,7 @@ impl Plugin for CharacterPlugin {
 pub struct Outfit(pub Vec<Garment>);
 
 /// A worn item: its model (an entry of `Characters.rpk`) and how it is
-/// painted. Without an appearance, the first object-database item showing
+/// painted. Without an appearance, the first object-database item worn as
 /// the model supplies one.
 #[derive(Clone, Debug)]
 pub struct Garment {
@@ -94,37 +109,154 @@ pub fn grip_transform() -> Transform {
 #[derive(Component)]
 pub struct Dressed;
 
-/// What the object database says about the items showing a model: the
-/// first apparel item's appearance, hidden body slots and armour, and the
-/// first weapon section.
+/// The object-database item humans wear when nothing else covers the
+/// groin: "Braies_A", pale grey linen braies (`docs/formats/OTHER.md`,
+/// Underwear).
+pub const UNDERWEAR_ITEM: u32 = 8;
+/// The race byte of humans in character records.
+pub const HUMAN: u8 = 0;
+
+/// The original's underwear rule: a human wears the underwear when none of
+/// its worn items covers the groin on the innermost layer. Other races
+/// never do.
+pub fn needs_underwear(race: u8, mut covers_groin: impl Iterator<Item = bool>) -> bool {
+    race == HUMAN && !covers_groin.any(|c| c)
+}
+
+/// Marks a human Exarust makes at run time (the player, the character
+/// view's body) and keeps in underwear, as the original keeps every
+/// character record it creates or re-dresses. Characters a level places
+/// are dressed exactly as stored and never carry it.
+#[derive(Component, Default)]
+pub struct WearsUnderwear;
+
+/// The underwear and which worn models cover the groin, from the object
+/// database.
+#[derive(Resource, Default)]
+struct UnderwearItems {
+    /// The underwear item as a garment painted with its own appearance;
+    /// `None` when the database lacks it.
+    underwear: Option<Garment>,
+    /// Whether the first item worn as a model (lower case) covers the groin.
+    covers: HashMap<String, bool>,
+}
+
+impl UnderwearItems {
+    fn of(items: &[Item]) -> Self {
+        let mut covers = HashMap::new();
+        for item in items.iter().filter(|i| !i.worn_model.is_empty()) {
+            covers
+                .entry(item.worn_model.to_ascii_lowercase())
+                .or_insert_with(|| item.covers_groin());
+        }
+        let underwear = items
+            .iter()
+            .find(|i| i.id == UNDERWEAR_ITEM && !i.worn_model.is_empty())
+            .map(|i| Garment {
+                model: i.worn_model.clone(),
+                appearance: i.appearance,
+                hides: Some(i.hidden_slots()),
+                armour: i.armour,
+            });
+        Self { underwear, covers }
+    }
+
+    /// Whether a garment covers the groin; a model no item is worn as does
+    /// not.
+    fn covers(&self, garment: &Garment) -> bool {
+        self.covers
+            .get(&garment.model.to_ascii_lowercase())
+            .copied()
+            .unwrap_or(false)
+    }
+}
+
+/// Puts the underwear on beneath an outfit that leaves the groin bare, as
+/// the original dresses a new record: the underwear first, the rest over
+/// it. The underwear counts as its own cover, so a second call adds
+/// nothing. Returns whether the outfit changed.
+fn put_on_underwear(outfit: &mut Outfit, items: &UnderwearItems) -> bool {
+    let Some(underwear) = &items.underwear else {
+        return false;
+    };
+    let covered = outfit
+        .0
+        .iter()
+        .map(|g| items.covers(g) || g.model.eq_ignore_ascii_case(&underwear.model));
+    if !needs_underwear(HUMAN, covered) {
+        return false;
+    }
+    outfit.0.insert(0, underwear.clone());
+    true
+}
+
+/// Reads the underwear items once the game is open.
+fn load_underwear_items(mut commands: Commands, game: Res<Game>) {
+    commands.insert_resource(UnderwearItems::of(&objdb_items(&game.0)));
+}
+
+/// Keeps marked humans in underwear until they are dressed: the rule
+/// changes what an outfit holds, and dressing then fits and paints the
+/// underwear like any other garment.
+#[allow(clippy::type_complexity)]
+fn keep_underwear(
+    items: Res<UnderwearItems>,
+    mut outfits: Query<
+        &mut Outfit,
+        (
+            With<WearsUnderwear>,
+            Without<Dressed>,
+            Or<(Added<WearsUnderwear>, Changed<Outfit>)>,
+        ),
+    >,
+) {
+    for mut outfit in &mut outfits {
+        // Marked changed only when the underwear goes on.
+        if put_on_underwear(outfit.bypass_change_detection(), &items) {
+            outfit.set_changed();
+        }
+    }
+}
+
+/// What the object database says about a model: the appearance, hidden
+/// body slots and armour of the first item worn as it, and the weapon
+/// section of the first item that shows it.
 #[derive(Debug, Clone, Default)]
 struct ItemInfo {
     apparel: Option<(Appearance, u32, Option<Armour>)>,
     weapon: Option<objdb::Weapon>,
 }
 
+/// Every item of the game's object database.
+fn objdb_items(game: &exa_assets::GameData) -> Vec<Item> {
+    game.pack(PackKind::Resource)
+        .and_then(|p| p.get("objdb.rdb"))
+        .and_then(|bytes| Database::parse(bytes).ok())
+        .map(|db| objdb::items(&db))
+        .unwrap_or_default()
+}
+
 /// Item information by model entry name (lower case).
 fn item_info(game: &exa_assets::GameData) -> HashMap<String, ItemInfo> {
-    let Some(bytes) = game
-        .pack(PackKind::Resource)
-        .and_then(|p| p.get("objdb.rdb"))
-    else {
-        return HashMap::new();
-    };
-    let Ok(db) = Database::parse(bytes) else {
-        return HashMap::new();
-    };
+    item_info_of(&objdb_items(game))
+}
+
+/// Item information by model entry name: apparel by the model it is worn
+/// as, weapons by the model they show.
+fn item_info_of(items: &[Item]) -> HashMap<String, ItemInfo> {
     let mut out: HashMap<String, ItemInfo> = HashMap::new();
-    for item in objdb::items(&db) {
-        if item.model.is_empty() {
-            continue;
+    for item in items {
+        if let (false, Some(a)) = (item.worn_model.is_empty(), item.appearance) {
+            let info = out.entry(item.worn_model.to_ascii_lowercase()).or_default();
+            if info.apparel.is_none() {
+                info.apparel = Some((a, item.hidden_slots(), item.armour));
+            }
         }
-        let info = out.entry(item.model.to_ascii_lowercase()).or_default();
-        if let (None, Some(a)) = (&info.apparel, item.appearance) {
-            info.apparel = Some((a, item.hidden_slots(), item.armour));
-        }
-        if info.weapon.is_none() {
-            info.weapon = item.weapon;
+        if let (false, Some(w)) = (item.model.is_empty(), item.weapon) {
+            let info = out.entry(item.model.to_ascii_lowercase()).or_default();
+            if info.weapon.is_none() {
+                info.weapon = Some(w);
+            }
         }
     }
     out
@@ -328,5 +460,147 @@ fn equip_outfits(
             }
         }
         commands.entity(body).insert(Dressed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use exa_formats::objdb::Layer;
+
+    /// An apparel item shown as `model`, worn as `worn`, occupying the
+    /// pelvis with `pelvis` and painted with `colour` on its first mask.
+    fn apparel(id: u32, model: &str, worn: &str, pelvis: u64, colour: u8) -> Item {
+        let mut layers = [Layer::default(); 8];
+        layers[0] = Layer {
+            mask: 1,
+            random_set: 3,
+            material: 1,
+            colour,
+        };
+        let mut occupancy = [0; objdb::OCCUPANCY_BONES];
+        occupancy[0] = pelvis;
+        Item {
+            id,
+            name: worn.into(),
+            model: model.into(),
+            worn_model: worn.into(),
+            appearance: Some(Appearance {
+                quality: 160,
+                damage: 64,
+                dirt: 0,
+                layers,
+            }),
+            slot_layers: [0; objdb::SLOTS],
+            occupancy,
+            weapon: None,
+            armour: None,
+        }
+    }
+
+    /// The underwear (no ground model), the unused silk braies, a shirt
+    /// (layer 2), trousers (layer 0) and mail legs (layer 1).
+    fn database() -> Vec<Item> {
+        vec![
+            apparel(UNDERWEAR_ITEM, "", "Braies_A", 0x03, 1),
+            apparel(35, "Trousers_C", "Trousers_C", 0x0300, 0x10),
+            apparel(78, "Trouser_A", "Trouser_A", 0x03, 0x20),
+            apparel(144, "Shirt_B", "Shirt_B", 0x03_0000, 0x30),
+            apparel(425, "Braies_A", "Braies_A", 0x03, 250),
+        ]
+    }
+
+    fn models(outfit: &Outfit) -> Vec<String> {
+        outfit
+            .0
+            .iter()
+            .map(|g| g.model.to_ascii_lowercase())
+            .collect()
+    }
+
+    #[test]
+    fn needs_underwear_only_for_bare_humans() {
+        let items = UnderwearItems::of(&database());
+        let needs = |race: u8, worn: &[&str]| {
+            let outfit = Outfit::of_models(&worn.iter().map(|m| m.to_string()).collect::<Vec<_>>());
+            needs_underwear(race, outfit.0.iter().map(|g| items.covers(g)))
+        };
+        assert!(needs(HUMAN, &[]));
+        assert!(needs(HUMAN, &["trousers_c"]));
+        assert!(needs(HUMAN, &["shirt_b"]));
+        assert!(!needs(HUMAN, &["trouser_a"]));
+        assert!(!needs(HUMAN, &["braies_a"]));
+        assert!(!needs(1, &[]));
+    }
+
+    #[test]
+    fn put_on_underwear_beneath_a_bare_outfit() {
+        let items = UnderwearItems::of(&database());
+        let dressed = |worn: &[&str]| {
+            let mut outfit =
+                Outfit::of_models(&worn.iter().map(|m| m.to_string()).collect::<Vec<_>>());
+            put_on_underwear(&mut outfit, &items);
+            outfit
+        };
+        let bare = dressed(&[]);
+        assert_eq!(models(&bare), ["braies_a"]);
+        let braies = &bare.0[0];
+        assert_eq!(braies.appearance.unwrap().layers[0].colour, 1);
+        assert_eq!(braies.hides, Some(0));
+        assert_eq!(models(&dressed(&["shirt_b"])), ["braies_a", "shirt_b"]);
+        assert_eq!(
+            models(&dressed(&["trousers_c"])),
+            ["braies_a", "trousers_c"]
+        );
+        assert_eq!(models(&dressed(&["trouser_a"])), ["trouser_a"]);
+        assert_eq!(models(&dressed(&["braies_a"])), ["braies_a"]);
+        assert_eq!(models(&dressed(&["nothing_a"])), ["braies_a", "nothing_a"]);
+        // A second pass adds nothing.
+        let mut twice = dressed(&[]);
+        assert!(!put_on_underwear(&mut twice, &items));
+        assert_eq!(models(&twice), ["braies_a"]);
+        // Without the underwear item nothing is added.
+        let none = UnderwearItems::of(&database()[1..]);
+        let mut outfit = Outfit::default();
+        assert!(!put_on_underwear(&mut outfit, &none));
+        assert!(outfit.0.is_empty());
+    }
+
+    #[test]
+    fn item_info_of_keys_apparel_by_worn_model() {
+        let mut items = vec![
+            apparel(UNDERWEAR_ITEM, "", "Braies_A", 0x03, 1),
+            apparel(425, "Braies_A", "Braies_A", 0x03, 250),
+        ];
+        let mut sword = apparel(500, "@SwordA", "SwordBody", 0, 0);
+        sword.weapon = Some(plain_sword());
+        items.push(sword);
+        let info = item_info_of(&items);
+        let braies = info["braies_a"].apparel.unwrap();
+        assert_eq!(braies.0.layers[0].colour, 1);
+        assert!(info["@sworda"].weapon.is_some());
+        assert!(info.get("swordbody").is_none_or(|i| i.weapon.is_none()));
+    }
+
+    #[test]
+    fn keep_underwear_only_marks() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(UnderwearItems::of(&database()))
+            .add_systems(Update, keep_underwear);
+        let shirt = || Outfit::of_models(&["shirt_b".into()]);
+        let marked = app.world_mut().spawn((shirt(), WearsUnderwear)).id();
+        let placed = app.world_mut().spawn(shirt()).id();
+        let dressed = app
+            .world_mut()
+            .spawn((shirt(), WearsUnderwear, Dressed))
+            .id();
+        app.update();
+        app.update();
+        let world = app.world();
+        let worn = |e: Entity| models(world.get::<Outfit>(e).unwrap());
+        assert_eq!(worn(marked), ["braies_a", "shirt_b"]);
+        assert_eq!(worn(placed), ["shirt_b"]);
+        assert_eq!(worn(dressed), ["shirt_b"]);
     }
 }
