@@ -7,7 +7,7 @@ version.workspace = true
 
 [dependencies]
 bevy.workspace = true
-exa_assets.workspace = true
+bytemuck.workspace = true
 exa_formats.workspace = true
 
 [lints]

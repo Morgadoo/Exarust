@@ -225,9 +225,25 @@ impl<'a> Rfi<'a> {
 
     /// Decodes the base level to tightly packed RGBA8.
     pub fn decode_rgba8(&self) -> Result<Vec<u8>> {
-        let (w, h) = (self.header.width as usize, self.header.height as usize);
         let pixels = self.pixels()?;
-        let src = self.level(&pixels, 0)?;
+        self.decode_level_rgba8(&pixels, 0)
+    }
+
+    /// Decodes every stored mip level to RGBA8, base first, back to back.
+    pub fn decode_mips_rgba8(&self) -> Result<Vec<u8>> {
+        let pixels = self.pixels()?;
+        let mut out = Vec::new();
+        for level in 0..self.mip_count {
+            out.extend(self.decode_level_rgba8(&pixels, level)?);
+        }
+        Ok(out)
+    }
+
+    /// Decodes mip level `level` of `pixels` (from [`Rfi::pixels`]).
+    pub fn decode_level_rgba8(&self, pixels: &[u8], level: u32) -> Result<Vec<u8>> {
+        let (w, h) = level_dims(self.header.width, self.header.height, level);
+        let (w, h) = (w as usize, h as usize);
+        let src = self.level(pixels, level)?;
         let mut out = vec![0u8; w * h * 4];
         match self.format {
             PixelFormat::Bc1 | PixelFormat::Bc3 | PixelFormat::Bc4 | PixelFormat::Bc5 => {
@@ -343,6 +359,30 @@ mod tests {
         // 2 bytes/pixel: threshold 63, run of 2.
         assert_eq!(unpack(&[63, 1, 2], 2, 4).unwrap(), [1, 2, 1, 2]);
         assert!(unpack(&[5, 1], 1, 6).is_err());
+    }
+
+    #[test]
+    fn decodes_every_stored_mip_level() {
+        // A 2x2 luminance image with its 1x1 level.
+        let data = [10, 20, 30, 40, 99];
+        let rfi = Rfi {
+            header: RfiHeader {
+                width: 2,
+                height: 2,
+                depth: 1,
+                format_word: 0,
+                flags: 0,
+                storage: 0,
+                data_size: data.len() as u32,
+            },
+            format: PixelFormat::L8,
+            mip_count: 2,
+            data: &data,
+        };
+        let mips = rfi.decode_mips_rgba8().unwrap();
+        assert_eq!(mips.len(), 2 * 2 * 4 + 4);
+        assert_eq!(&mips[16..], &[99, 99, 99, 255]);
+        assert_eq!(rfi.decode_rgba8().unwrap(), mips[..16]);
     }
 
     #[test]

@@ -7,8 +7,9 @@ reads the retail packs in place, the way OpenMW reads Morrowind or IW4L
 reads Modern Warfare 2.
 
 This file describes the plan as it stands today. Update it when the plan
-changes. The record of individual work sessions lives in `context/` (see
-`CONTEXT.md`).
+changes. Each work item becomes an OpenSpec change (`docs/WORKFLOW.md`).
+Behaviour that exists is specified in `openspec/specs/`. The record of
+individual work sessions lives in `context/` (see `CONTEXT.md`).
 
 ---
 
@@ -103,8 +104,8 @@ checked outside the engine through exporters.
 
 | work item | crate | notes |
 |---|---|---|
-| Static mesh (`3D03` and variants): vertex streams, n-gon topology, material groups, transforms | `exa_formats::rfc` | triangulate n-gons; units and axes (Y-up vs Z-up, cm) settled against known object sizes |
-| Materials (`BA01`, `.rml` libraries): colours, texture slots, shader/plug-in IDs | `exa_formats::material` | map to plug-in classes seen in the binary (`TMaterialPlugIn`, `TRTMatPlugIn`, `TProcMaterial`) |
+| ✅ Static mesh (`3D03`): vertex streams, index maps, triangles, material groups, node transforms | `exa_formats::rfc` | done: 23 065/23 065 retail meshes decode; cm → m, right-handed Y-up confirmed |
+| Materials (`BA01`, `.rml` libraries): ✅ texture layers and slots; parameter block (colours, shader/plug-in IDs) still open | `exa_formats::material` | map the 184-byte parameter block to plug-in classes seen in the binary (`TMaterialPlugIn`, `TRTMatPlugIn`, `TProcMaterial`) |
 | Skinned meshes, weights, morph targets (`*base.rfc`, `*morph.rfc`) | `exa_formats::rfc` | |
 | Skeleton and motions (`.rsq`) | `exa_formats::rsq` | 18 bones, 48 clips, keyframe controllers (linear, Catmull-Rom) |
 | Level grid (`3DED`), level sections (`3DE10000`, `DBC0`, …), object placement | `exa_formats::level` | wall/floor sets `gews_*` / `gefs_*` |
@@ -113,13 +114,34 @@ checked outside the engine through exporters.
 | Databases (`races`, `objdb`, `charroles`, `locales`, `objstrings`) | `exa_formats::rdb` | record schemas |
 | Factories, actors, powers, dialogue (`.rcd`) | `exa_formats::{factory,actor,power,dialogue}` | |
 | Shader libraries (`.flb`) | `exa_formats::flb` | optional: capturing the running game with RenderDoc/apitrace gives the plain GLSL directly |
-| Exporters: glTF (meshes, skinned characters, assembled levels), PNG, WAV | `exa_tool` | check results in Blender |
-| Corpus test: parse every entry and report coverage | `exa_tool corpus` | target 100 %; the report is the progress meter |
+| Exporters: ✅ glTF for static meshes with textures; skinned characters and assembled levels open; PNG ✅; WAV | `exa_tool` | check results in Blender |
+| Corpus test: parse every entry and report coverage | `exa_tool corpus` | ✅ `corpus meshes`; more kinds as formats land |
 
 **M1 "asset viewer":** `exa-tool export-gltf` opens any prop, weapon,
 character or level in Blender, and `corpus` reports full coverage.
 
-### Phase 2 — Static world
+### Phase 2 — Static world (in progress)
+
+Done (change `add-level-viewer`): level props and grid header decoded;
+models, materials and BC textures converted to Bevy; `exarust level <name>`
+shows a level's props and lights with a fly camera; `exarust model`.
+Done (change `add-grid-builder`): walls, floors and ceilings from the tile
+grid; `exanima01` and the arenas are recognisable.
+Done (change `add-terrain`): terrain heightfields with holes, the palette's
+blend rules (height, slope, the original's noise maps) and masked material
+layering in a WESL shader; outdoor arenas render and are walkable
+([formats/TERRAIN.md](formats/TERRAIN.md)).
+Done (change `add-level-lighting`): the level environment record (ambient
+colour, extent, sun) and the original's per-level presets: sunlight with
+shadows and fog on the outdoor arenas.
+Done (change `refine-grid-and-terrain`): wall pieces' own floor/ceiling
+strips and occluders, the terrain height pass. Done (change
+`add-vegetation`): grass and plants grown as the original grows them.
+Remaining: ceiling caps of terrain cells, per-room mesh merging, rooms and
+portals, terrain gloss textures, fine displacement, the sky, time of day
+and weather of the outdoor arenas,
+sectors/portals (the room flood fill is understood),
+`exanima://` asset source, streaming.
 
 - `exa_assets`: `exanima://<pack>/<entry>` Bevy asset source, asset loaders
   for meshes, materials and images, direct upload of BC textures with mip
@@ -134,13 +156,33 @@ character or level in Blender, and `corpus` reports full coverage.
 **M2 "walkable world":** load any arena or story level, fly around, and get
 correct geometry, textures and light placement.
 
-### Phase 3 — Bodies: skeleton, physics, control
+### Phase 3 — Bodies: skeleton, physics, control (started)
+
+Done (change `add-apparel-painting`): object database items and the
+apparel painter (palette, cloth/leather/suede/velvet/mail/plate/painted
+finishes); dressed characters show their colours
+([formats/OTHER.md](formats/OTHER.md)).
+
+Done (change `add-motion-playback`): skeleton and motion set decoded;
+clips play on the human body (`exarust character Default/Walk`).
+Done (change `add-player-movement`): rapier physics with level colliders,
+kinematic player capsule, camera-relative movement, chase camera
+(`exarust play <level>`).
+
+Done (changes `add-ragdoll`, `add-muscles`, `add-balance`): the
+original's own body solver, not rapier joints. Each part is a rigid
+tetrahedron of four particles with sphere colliders, joined by the
+skeleton's links, under Verlet at 83 Hz. The dead and the knocked out go
+limp. Living bodies follow their clips through muscles (pose drive, tone,
+daze). Blows shove and daze; a body that loses its balance falls and gets
+up ([formats/RSQ.md](formats/RSQ.md)). Still to do: link PD muscles,
+recovery steps, foot planting, collisions between bodies.
 
 This phase carries the most risk and defines how the game feels.
 
 - `exa_anim`: skeleton, clip sampling and blending, procedural layers
   (aim, look-at, stance, idle noise) that produce **target poses**.
-- `exa_physics`: fixed-step simulation (start at 120 Hz). Rigid bodies and
+- `exa_physics`: fixed-step simulation at the original's 83 Hz. Rigid bodies and
   collision for props and level geometry. **Articulated character bodies**
   driven by joint motors toward the target pose (an "active ragdoll"), with
   balance (`Rebalance`, falls, get-ups), momentum and joint limits.
@@ -176,9 +218,15 @@ Hits land where the weapon actually touched, and armour visibly matters.
 
 ### Phase 5 — Visual and audio fidelity
 
+- Materials: one `ExaMaterial` whose parameters follow
+  [OpenPBR](https://github.com/AcademySoftwareFoundation/OpenPBR) names
+  (mapping in `research/openpbr.md`), with two shading modes: **Original**
+  (default, reproduces the captured GLSL lighting model) and **Enhanced**
+  (an OpenPBR subset in WGSL: base, specular, coat, fuzz, approximate
+  subsurface).
 - Lighting: cube-map shadows for many point lights (torches, candles),
-  a GI approximation chosen by measurement: baked or voxel cone tracing
-  similar to the original, with Bevy's own GI options as the fallback.
+  and the original's voxel light-propagation GI rebuilt as a compute pass
+  (done: one block per level; see `docs/RENDERING.md`).
   Ambient occlusion, bloom, tone mapping, colour grading against reference
   screenshots.
 - Effects: particles (fire, sparks), blood sprays and spatter decals,
@@ -232,12 +280,11 @@ take precedence over packs), regression tests based on recorded inputs.
 | tool | use |
 |---|---|
 | `exa-tool` + hex inspection | format structure, corpus statistics |
-| Ghidra on `Exanima.exe` | readers (`TRFCReader`, image loader, packed-image decompressor), constants (physics, damage), rules. FPC RTTI names classes and virtual tables. Decompiled code is never copied: rules and constants are rewritten in Exarust's own terms |
+| REA (Ghidra provider) on `Exanima.exe` — see `RE-TOOLING.md` | readers (`TRFCReader`, image loader, packed-image decompressor), constants (physics, damage), rules. FPC RTTI names classes and virtual tables. Decompiled code is never copied: rules and constants are rewritten in Exarust's own terms |
 | RenderDoc / apitrace on the running game (Proton/Wine) | GL state, plain GLSL as compiled, draw order, light counts, shadow resolutions |
 | Side-by-side capture | identical scenes and camera paths in both runtimes; screenshot and video diffs |
 | Official sources | [baremettle.com](https://www.baremettle.com/) news archive (`/news/`), forums and Steam devlogs: release notes, combat demo videos and design statements, used as behavioural reference |
 | Community references | the community format spec Structs.txt; the Rust [Exanima Modding Toolkit](https://codeberg.org/ExanimaModding/Toolkit); [ExanimaREP](https://github.com/Horse4Horse/ExanimaREP) (IDA database with ~330 named classes); translation projects that solved the image RLE; Jango's Blender RFC editor. All collected in `docs/research/online-research.md`. They show where to look; they are not evidence. Respect each licence: some are source-available with no redistribution, so read them for facts only. |
-| [REA](https://rea.tools/) | a general agent-driven reverse-engineering tool (no Exanima content); optional help with the Ghidra/IDA work on `Exanima.exe` |
 
 Facts, offsets and dumps stay in `context/` (untracked). The tracked tree
 holds the runtime and the documentation of formats and behaviour.
@@ -256,10 +303,13 @@ holds the runtime and the documentation of formats and behaviour.
 
 ## 7. Immediate next steps (Phase 1, in order)
 
-1. `exa_formats::rfc` static mesh decoding (`3D03`), then `exa-tool export-gltf`
-   for one prop (`trn_grassa01`), then all of Objlib.
-2. Material records (`BA01`, `.rml`) and texture slot names, hooked into the
-   glTF export.
-3. Level grid (`3DED`) and set pieces, giving `arena.rfc` as a glTF.
+1. ✅ OpenSpec change `add-static-mesh-decoding`: static meshes, material
+   texture layers, `exa-tool export-gltf`, `exa-tool corpus meshes`. Waiting
+   on a visual mirroring check against the running game.
+2. ✅ Level props and grid header in Bevy (`exarust level`).
+3. ✅ Tile-grid builder: walls, floors and ceilings from the sets.
+4. ✅ Skeleton and motions (`.rsq`).
+5. Seam stitching between body parts, apparel on bodies, then the player
+   character in a level with physics (avian3d) and controls.
 4. `exa-tool corpus` coverage report.
 5. `exa_assets` asset source and loaders, then a Bevy level viewer (M2).

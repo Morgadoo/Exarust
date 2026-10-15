@@ -12,6 +12,6 @@
 | `rfi <pack> <entry>` | image header, format, mip count |
 | `png <pack> <entry> <out.png>` | decode an image's base level |
 | `extract <pack> <dir> [--filter s] [--inner e]` | write entries with guessed extensions |
-
-Planned: `corpus` (parse every entry and report coverage) and `export-gltf`.
+| `corpus meshes` | decode every chunk tree; per-pack table and reasons for unsupported records |
+| `export-gltf <pack> <entry> <out.glb>` | static meshes, node hierarchy and materials with embedded PNG textures |
 Extracted data stays on your machine; `/extracted/` is git-ignored.

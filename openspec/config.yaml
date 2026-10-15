@@ -1,0 +1,49 @@
+schema: spec-driven
+
+context: |
+  Exarust reimplements the Exanima engine (Bare Mettle) in Rust on Bevy 0.20 / wgpu.
+  It reads the retail data from the user's own installation (EXANIMA_DIR in .env)
+  and must stay as close as possible to the original in looks, feel and rules.
+  The roadmap is docs/PLAN.md (Phases 0-8); every change belongs to one phase.
+  Hard constraints an agent cannot infer from the code:
+  - Never commit, attach or embed game data or anything converted from it.
+    Tests use synthetic bytes; real-data checks read EXANIMA_DIR and skip without it.
+  - Format and behaviour claims need evidence: a corpus parse of the installed
+    build, a capture of the running game, or reverse engineering of Exanima.exe.
+    Community specs (docs/research/online-research.md) are leads, not evidence,
+    and predate the 64-bit 0.9.5 build.
+  - Reverse engineering of Exanima.exe (Free Pascal 3.2.2, Win64 PE) is done
+    with the REA MCP tools (Ghidra provider). Decompiled code is never copied:
+    rules and constants are re-expressed in Exarust's own terms.
+  - No retail addresses, offsets or decompiler names (FUN_/DAT_) in code.
+  - exa_rpk and exa_formats stay free of Bevy; parsers return errors, never panic.
+  - Research dumps and journals go in context/ (git-ignored); living knowledge
+    goes in docs/formats/ and docs/PLAN.md.
+
+rules:
+  proposal:
+    - Name the docs/PLAN.md phase and milestone the change advances
+    - State the evidence sources the change will rely on (corpus, REA/Ghidra, capture)
+    - Always state what is out of scope
+  specs:
+    - Data-format requirements state the corpus they must hold for (e.g. every chunk tree in Objlib.rpk)
+    - Never reference retail addresses, offsets into Exanima.exe or decompiler names
+    - Express observable behaviour (what a tool, loader or game system does), not internal type names
+  design:
+    - List the open reverse-engineering questions and how each will be answered (REA tool, corpus statistic, capture)
+    - Link the docs/formats/ page the change extends
+  tasks:
+    - Include a task that verifies against the real installation corpus (exa-tool), skipped when EXANIMA_DIR is unset
+    - Include tasks to update docs/formats/ and docs/PLAN.md when they change
+    - End with `make check` (fmt, clippy -D warnings, tests)
+
+operations:
+  apply:
+    guidance:
+      - Before guessing a field or constant, query Exanima.exe through the REA MCP tools; record findings in context/artifacts/
+      - Keep probes and dumps out of the tracked tree; remove them before the change is considered done
+      - Run `make check` and the relevant `cargo exa` corpus command before marking tasks complete
+  archive:
+    guidance:
+      - Update the phase status and next steps in docs/PLAN.md
+      - Summarize what was verified against the corpus and what remains unverified

@@ -5,10 +5,21 @@
 //! Formats whose layout is only partly understood expose the raw fields they
 //! read; see `docs/formats/` for what is known about each.
 
+pub mod characters;
 pub mod chunk;
+pub mod environment;
+pub mod factory;
 pub mod kind;
+pub mod level;
+pub mod material;
+pub mod objdb;
+pub mod races;
 pub mod rdb;
+pub mod rfc;
 pub mod rfi;
+pub mod rsq;
+pub mod terrain;
+pub mod weapon_stats;
 
 pub use kind::FileKind;
 

@@ -1,7 +1,20 @@
 # Agent guide
 
 Read in this order: this file → `CONTEXT.md` → `docs/INDEX.md` →
-`docs/PLAN.md`.
+`docs/PLAN.md` → `docs/WORKFLOW.md`.
+
+## How work is done
+
+- **Spec-driven (OpenSpec).** Non-trivial work starts as a change under
+  `openspec/changes/` (`/opsx:propose`), is implemented with `/opsx:apply`,
+  and is archived with `/opsx:archive`, which updates `openspec/specs/`.
+  `openspec/config.yaml` holds the rules every proposal, spec, design and task
+  list follows. Run `openspec validate --all --strict` before committing.
+- **Reverse engineering with REA.** Questions about the original engine are
+  answered by querying `Exanima.exe` through the REA MCP tools (Ghidra
+  provider; the `reverse-engineer-anything` skill), plus corpus statistics
+  from `cargo exa`. Setup and conventions: `docs/RE-TOOLING.md`. Snapshots
+  and notes go in `context/re/`.
 
 ## What this repository is
 

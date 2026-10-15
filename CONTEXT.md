@@ -10,7 +10,7 @@ the contract for that folder. A fresh clone has these rules and an empty
 context/
   artifacts/     one folder per task: YYYY-MM-DD-<slug>/
   externals/     third-party clones, for reference only, never a source of truth
-  re/            Ghidra projects, hex notes, captures of the original game
+  re/            REA/Ghidra snapshots and evidence, hex notes, captures of the original game
 ```
 
 ## Artifacts

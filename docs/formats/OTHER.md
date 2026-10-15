@@ -11,11 +11,105 @@ records[table_len/16]: u32 id, u32 flags, u32 offset (from end of table), u32 si
 payloads
 ```
 
-`races.rdb` (19 records of 624 bytes), `charroles.rdb` (dialogue and AI
-roles, including a C-like script language), `locales.rdb` (language list),
+`races.rdb` (18 records of 624 bytes), `charroles.rdb` (dialogue and AI
+roles, including a C-like script language), `locales.rdb` (the level list:
+ids 1 Exanima, 2 Exanima01 … 13 Exanima67, 17 Arak_Ar),
 `objdb.rdb` (object database, 0x5900/16 = 1424 records), `objstrings.rdb`
 (string library, magic `0xAFBF0C02`). The community spec reports a trailing
-garbage record in each table. Record payloads are not decoded yet.
+garbage record in each table (the reader skips entries pointing outside the
+file). `objdb` item records and race records are decoded; other payloads are
+not.
+
+**Races** (`exa_formats::races`): 18 records of 624 bytes, then an empty
+entry. Layout:
+
+| offset | field |
+|---|---|
+| `+0x00` | name[32] |
+| `+0x20` | body model stem[24]: `Skel` → `skelbase.rfc`, `GlmBsA` → `glmbsabase.rfc` |
+| `+0x38` | shared moveset[16] (`Default`) |
+| `+0x48` | the race's own moveset[16] (`Golem`, `Herath`, `Ogre`, `Demon A01`, …) |
+| from `+0x58` | body parameters (floats), sound names at `+0x144` (`StpSft`, `SkelHit`, …) and per-part values; not decoded |
+
+A character record's race byte is the race's id minus one. Placed
+characters across the levels, by race byte:
+
+- 0 Human 103, 1 Skeleton 147, 2 Ancient 23, 4 Sir (Herath ogre) 1,
+  5 Fael 6, 6 Ghoul 56, 7 Ghoul H 41, 8 Gobbler 10, 9 Manipulator 19,
+  10 Harvester 3.
+- 16 Golem Guard 46, 17 Golem Boss 1, 18 Golem Suit 1, 19 Golem BAM 10,
+  20 Golem BAF 10.
+
+Bodies of the human frame (human, skeleton, ancient) name their parts like
+the human body (`01Pelvis`). The others name them like apparel
+(`0100Pelvis`, pelvis at the origin). All use the bone indices of
+`humanoid.rsq` and its clips. Root positions are scaled by the body's leg
+length against `humanbase` (golem 1.42×, ogre 1.39×).
+
+## Object database items and apparel painting
+
+`objdb.rdb` holds 1424 table entries; the last points outside the file and is
+skipped. An item record payload is a chain of `u32 tag, u32 size` sections,
+where the size counts the 8-byte header:
+
+| tag | contents |
+|---|---|
+| `0x10000000` | display name[16], two words |
+| `0x00100000` | model entry name[16] (in `Characters.rpk` for apparel), … |
+| `0x1000` | item body; bytes `0x1B0..0x214` are the appearance block |
+
+Appearance block (100 bytes): quality, damage and dirt bytes (the painter uses
+q = x, damage = x/(2−x), dirt = (x²+x)/2 with x = byte/255), one unknown
+byte, then eight 12-byte layers: +1 mask number (`<stem>m<n>`, 0 = unused),
++2 material set (used when the material is 0), +4 material, +8 palette colour.
+276 of the 387 item records name a model in `Characters.rpk` directly.
+
+Item body offset `0xA8` holds apparel's per-slot layer table: 8 bytes for
+each of 19 body slots (bone indices). Low bits give the layer level. Bit
+`0x80` hides the body part of that slot (helm: head; trousers: thighs and
+shins; boots: feet; gambeson: torso and arms). Bit `0x40` hides the slot's
+partial body variant. Exarust hides covered body parts' meshes when
+dressing (from the first byte of each slot). Fit variants and culling of
+apparel triangles by their cull bits are not done yet.
+
+The game never draws an apparel item's own textures. It paints a colour
+texture per item from the shade map `<stem>d` (cavities dark), stacking each
+layer's finish over its mask on black. Run-time materials `&<10 chars><digit>`
+name the stem: the ten characters after the `&` (`&doublet_aa1` →
+`doublet_aa`, `&gambsonaba1` → `gambsonaba`). The finishes by material
+number:
+
+| material | finish | library textures |
+|---|---|---|
+| 1 Cloth Rough, 2 Cloth Fine, 3 Silk, 5–6 Padded | cloth | weave (`ClothRghA03`, `ClothFinA01`, `ClthP01/02`), `LeatherDmgA02`, `ClothDmgA01` (worn), `DrtApr01` |
+| 4 Velvet | velvet | `ClothFinA01` with a pale sheen |
+| 7–8 Leather | leather | `LeatherA02/A01`, `LeatherDmgA02`, `DrtApr01` |
+| 9 Suede, 10 Rawhide | suede | `SuedeA01` |
+| 11 Mail | mail | `MailStlA01` d/o, rust, scuffs |
+| 12–13, 15 Steel, Plate, Gilded | plate | `MtlStlBas01`, `MtlImpure01`, rust `MtlRustA03/A04`, `ScuffsGnrA01` |
+| 14 Painted | painted steel | as plate plus `MtlDirtA01` |
+
+Material 0 takes the first material of its set (sets 1/3/5/6/8 → 1, 2/9 → 5,
+4/10 → 7, 7/12/13 → 13, 11 → 11, 14 → 20, 15 → 23). Library textures are laid
+one texel per painted texel (weave, worn weave, impurities); damage, dirt,
+rust and scuff maps are laid at 1024 texels across.
+
+Palette: index = family × 8 + shade. Each of the 32 families has hue,
+saturation, base value and value step. With k = 7 − shade:
+v = min(k·step·0.13 + base, 1) and s = (1 − (0.09k)²)·sat, scaled by (v + 0.6)²
+when v < 0.4. Then HSV → RGB. Family 0 is the greys (0.91 down to black).
+
+Exarust paints on the CPU (`exa_assets::paint`; `exa-tool paint <model>
+<stem> out.png`). The original's surface pass writes specular occlusion, gloss
+and metalness, with roughness = 1 − gloss. Exarust paints gloss and metalness
+into Bevy's metallic-roughness texture. Plate, painted steel and mail follow
+the original; fabrics and hides are approximated without their gloss textures.
+The normal pass adds the material's weave or grain normal to the item's own
+normal, scaled by wear, plus the damage normal where cloth frays or hide
+scuffs. Exarust paints it for fabrics and hides; metals keep the item normal.
+Not yet painted: wood, bronze, gemstone and resin finishes
+(drawn plain), pattern opacity textures, and per-instance appearances
+(randomised items, wear on characters).
 
 ## Saves (`.rsg`, `.rcp`)
 
@@ -28,15 +122,7 @@ its own save format; this is documented for reference only.
 
 ## Terrain (`.rft` and `.ftb`)
 
-`.rft` (`01 AD EF 3E`): `u32 0`, `name[16]` of its terrain table
-(`UWA1`, `UWB6`, `GrassLand…`, `Seaside`, `vulcanic`), then grid sizes (e.g.
-`f32 20.0`, `4`, `5`, `20`) and large data blocks (0.35–40 MB): heightfield,
-material layer weights, cached GI/AO blocks (`TTerrainBlock`, `TGIMapBlock`,
-`TStaticTerrain`).
-
-`.ftb` (`02/03 BD EF 3E`): `u32 0`, `name[16]`, then a ~5 KB table of terrain
-material layers (`TTerrainMat`, `TATrnMatLyr`), grass/plant meshes
-(`trn_grass*`, `trn_lplnt*`, `trn_splnt*` in Resource).
+Moved to [TERRAIN.md](TERRAIN.md) (verified).
 
 ## Powers (`.pwr`)
 
@@ -44,12 +130,183 @@ material layers (`TTerrainMat`, `TATrnMatLyr`), grass/plant meshes
 referencing icon images (`thmmndico1`). Four domains: displacement, energy,
 force, mind — the thaumaturgy skill trees.
 
-## Weapon factories
+## Weapon factories (`.fty`)
 
-`Factories.rpk`, magic `0x00/01/02 0F CE AF` (three versions). Recipes that
-assemble `Components.rpk` parts (heads, hafts, guards, pommels, langets) with
-procedural materials (`TItemFactory`, `TFactoryMaterial*`, `TSteelGen`,
-`TIronGen`).
+Status: **verified**. All 106 parse (v0 46, v1 34, v2 26). The generator
+reproduces the original's choices; the reference generator matched all 143
+factory weapons of a real save, part for part and material for material.
+`exa_formats::factory`, `exa-tool corpus factories`.
+
+- **Header**: `u32 magic` `0xAFCE0F0v`, 8 reserved bytes, name[16] (empty),
+  atlas width and height, `i32` grips (0) × 8 bytes, `i32` material areas
+  (at most 8 read) × 56 bytes: name[16], 8 candidates
+  {material, bits, fixed colour, mode}, count at +0x30.
+- **Parts**: `i32 n`, then per part `u32 flags` (bit 0 texture-only overlay,
+  `0x10` random twist), name[16], position, rotation (radians), scale
+  (cm), atlas rectangle, a texture parameter, 3 deforms (16 bytes in v0,
+  28 in v1/v2: header type|axis<<8|flags, amount, pivot, range, blend, stat
+  weight, 0), {chance, attach-to (1-based), role, attach mode}, then
+  `i32` variants of 40 bytes (44 in v2): model[16], mask areas[4],
+  slash/crush/pierce/thrust bonuses, weight (0 → 100 before v2), tags,
+  exclude mask, flags, and in v2 a child Y offset (mm). A trailer lists the
+  tag names.
+- **Generation** (32-bit LCG `s·0x08088405 + 1`; seeds A and B; quality
+  q = byte/255): a twist per part from B; per part and deform
+  value = (2B−1)·blend + (1−blend)·(2A−1); per part a presence roll and a
+  weighted pick among variants whose tags agree with earlier choices. The
+  first part offering a tag owns it. Then per area a weighted material
+  roll (weights 100/50/20/10 by class, scaled by distance from q to the
+  candidate's level) with a finish and a colour by material class. Items
+  with flag `0x10000000` in their weapon section keep their stored choices
+  and materials.
+- **Assembly**: components (`Components.rpk`, one mesh each, +Y along the
+  weapon, cm) are placed in recipe order on their nearest chosen ancestor.
+  The ancestor's scale and band deforms move the attach point, and twists
+  accumulate. Textures are `<model>d`, `n`, `m1`..`m4`, painted per mask
+  with the material of the area the variant maps it to.
+- **Items** name a factory by a model name starting with `@`. Their weapon
+  section (`0x4000`, 96 bytes) holds flags, seeds, quality, damage, dirt,
+  4 material slots, stats, and the stored choices at +0x50.
+
+Exarust assembles factory weapons for held items, placed objects and
+`--weapon @name`. Not yet: taper, bend and radial deforms, atlas UV
+cropping.
+
+## Weapon stats
+
+Status: **verified** (REA on the builder, the factory stat pass and the
+condition step). A reference implementation reproduced bytes `0x30..0x3F`
+of all 143 factory weapons in a real save, byte for byte. Exarust:
+`exa_formats::weapon_stats`.
+
+**Weapon section bytes** (`0x4000` body):
+
+| off | meaning |
+|---|---|
+| `0x30` | weight, 0..100 |
+| `0x31` | balance, 0..100 |
+| `0x32` | impact adjustment (127 neutral) |
+| `0x33` | thrust |
+| `0x34` | striking side's type code |
+| `0x35`, `0x36` | start and end of the striking part, ×0.005 of the length |
+| `0x37`, `0x38`, `0x39` | slash, crush, pierce |
+| `0x3A..0x3F` | the same block for the flipped side (e.g. a falchion's back) |
+| `0x40` | adjustment, 0x80 neutral |
+| `0x41` | hit sound class |
+
+The section's first word holds the flags:
+- kind (bits 0–3): 1 bladed, 2 hafted head, 3 stick, 4 flail;
+- hands (bits 4–5): 0 unarmed, 1 one-handed, 2 two-handed, 3 polearm;
+- haft material (bits 16–17): 1 wood, 2 metal, 3 other.
+
+**Factory weapons** start from their template item's bytes.
+- Each chosen variant adds its slash, crush, pierce and thrust (variant
+  +0x1A, i16 each, low byte, wrapping). It also sets the type code from
+  its flags (>> 4 & 0xF). Role-6 parts fill the flipped block instead.
+- Each deform with value x = v·stat weight (deform +0x14) scales bytes by
+  role. F(x) = 1 + x·amount, or 1/(1 − x·amount) when that is ≤ 0. G(x)
+  is the same without the amount.
+
+| role | deform | effect |
+|---|---|---|
+| blade | type 1, Y | weight ×F, balance ÷F |
+| blade | type 1, X | weight ×F, balance ÷F, slash ×F, thrust ÷F |
+| blade | type 3, Y | balance and 1/slash ×(F/2 + ½), thrust ×F |
+| blade | type 4 (bend) | thrust by G (depends on flags) |
+| haft | type 1 or 2, Y | f = 0.4G + 0.6; weight ×(f/2 + ½), balance ÷f |
+| haft | type 1, XZ | weight ×(0.1G + 0.9) |
+| guard | type 1, Y | thrust ×F |
+| head | type 1 | the same as a haft, with f = F (halfway when per axis) |
+| head | type 3, Y | same, with f = 0.5G(−x/2) + 0.5 |
+| head | type 5, all or XZ | pierce ×(0.6G(x/2) + 0.4), crush ÷ the same |
+| head | type 5, Y | same as a haft, with f = 0.4G(x/2) + 0.6 |
+
+- Every step rounds. Weight and balance are capped at 100. Variant flag
+  `0x800` removes the flipped side.
+- Factory items then scale by condition c = (1 − 0.4d)(0.8 + 0.5q), with q
+  and d the quality and damage bytes /255:
+  - slash, pierce and thrust ×c;
+  - crush ×(0.7c + 0.3);
+  - each capped at 160.
+- The head's striking extent (`0x35`/`0x36`) comes from assembled
+  geometry; Exarust keeps the template's values for now.
+- Materials and dirt do not enter the stats. There is no physical
+  material table.
+
+**Record** (`exa_combat::damage::WeaponRecord`):
+- weight w = b30/100, balance b = b31/100;
+- impact = (1 − b)·0.6 + 0.4w + 0.1 + (b32 − 127)/100;
+- slash, crush, pierce and thrust = 0.5·(byte/100)^0.7;
+- the length is the farthest component point along +Y, in cm.
+
+## Armour
+
+Apparel item body (`0x1000`) fields:
+- `0x150 + 4·(bone − 1)`: coverage percent (u32) per bone;
+- `0x1A0`: padding ×0.005;
+- `0x1A1..0x1A3`: slash, crush and pierce ×1/140;
+- `0x1A5`: encumbrance ×0.0025;
+- `0x1A6`: hit sound class (0 flesh, 1 cloth, 2 leather, 3 mail, 4 plate,
+  6 golem).
+
+Instances scale padding and resistances by their condition c (the
+appearance block's quality and damage). Races add a natural inner layer:
+`races.rdb` coverage at `0x21C`, protection at `0x11C`. Skeletons, golems,
+demons and the Fael head have one.
+
+Each body part keeps two layers, filled in equipment order. A new item
+folds the old outer layer into the inner one:
+- each layer's effective coverage is γ(c) = c, or c + 1.75(1 − c)(c − 0.5)
+  above ½;
+- padding adds as γ-weighted;
+- resistances combine as s0′ + (1 − s0′)·γ1·s1, with s0′ = γ0·s0;
+- the inner layer's coverage becomes 1.
+
+The 19×8 slot table at `0xA8` is not read for armour.
+
+## Damage
+
+Implemented in `exa_combat::damage`.
+
+**Inputs**
+- Speed v of the struck point (cm/tick): capped at 30; below 10 it is
+  softened to 10(2 − v/10)(v/10)²; overhead swings ×1.5. u = 0.05v.
+- Swing impact I = (impact + 0.3)·1.1·u^(1 − impact/2), times the zone
+  factor along the weapon:
+  - past its tip there is no hit;
+  - below the striking part (the haft) the edge share fades;
+  - bladed weapons: impact peaks near the middle and falls towards the
+    tip, where the draw-cut share grows.
+- Stabs: energy T from the tip (full within 7 cm), weight and the lunge.
+
+**Armour**
+- One roll r per blow. A layer counts fully when r < coverage, partly
+  (1.75(c − ½)) above half coverage, otherwise not.
+- Padding A sums. Resistances combine multiplicatively; pierce resistance
+  is weighted by (½ + r/2).
+
+**Through the armour**
+- Impact: J = max(I − 0.2A, 0)/(A² + A + 1).
+- Crush: C·1.58·J^(2 − C), then reduced by crush resistance.
+- Slash: a mix of chop and draw by the draw share, each reduced by slash
+  resistance.
+- Pierce: P·1.58·J^(1 + P/2), less 0.75 of pierce resistance.
+- Penetration P = 0.5·max(J − 0.8, 0) + slash + crush + pierce.
+
+**Outcome**
+- Part multipliers (damage/stun): head 1.6/1.4, thorax 1.2/1.2, lower legs
+  0.6, feet 0.4, forearms 0.5/0.75, hands 0.3/0.6, others 1.
+- Red = 0.75·P/(P + 1)·m. Yellow = 0.75·(T/2 + (2(P − P/(P + 1)) + J)·m).
+- Health starts at 0.25 × the race's factor (`races.rdb` `0xE4`: human 1,
+  ogre 6, golem 2, …).
+- Applying a blow: yellow −= 0.1·Y; red −= 0.2·R; yellow is rescaled by
+  how much red is left. Yellow under 0.01 is death.
+- Daze = √(0.75P + 1.25J)·stun·0.5·0.25/max health.
+- Blows with J > 0.5 shove the victim by 10J cm/tick.
+
+Not yet: the bite (weapons sticking in), blocking and parrying, shields,
+encumbrance's effect on swings, and the state that knocks a character
+unconscious.
 
 ## Actors
 
@@ -64,8 +321,8 @@ then utterances. Format unknown beyond that.
 
 ## Material libraries (`.rml`)
 
-Packs of material records (same layout as `BA01` payloads) keyed by
-material name: `common.rml` (51), `underworld0.rml` (24), `underworldb.rml`,
+Packs of material payloads (the same layout as `BA01` payloads, see
+[RFC.md](RFC.md#material-list-ba00)) keyed by material name: `common.rml` (51), `underworld0.rml` (24), `underworldb.rml`,
 `humanbase.rml` (`eyehuman`, `skinhuman`). Named in `Exanima.rfp`.
 
 ## Shader libraries (`.flb`)

@@ -2,6 +2,11 @@
 //!
 //! Planned in Phase 4–7; see `README.md` next to this crate and `docs/PLAN.md`.
 
+pub mod balance;
+pub mod limp;
+pub mod player;
+pub mod torch;
+
 use bevy::prelude::*;
 
 pub struct GamePlugin;
@@ -10,6 +15,7 @@ impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
             exa_assets::AssetsPlugin,
+            player::PlayerPlugin,
             exa_render::RenderPlugin,
             exa_physics::PhysicsPlugin,
             exa_anim::AnimPlugin,
@@ -21,6 +27,7 @@ impl Plugin for GamePlugin {
             exa_audio::AudioPlugin,
             exa_script::ScriptPlugin,
             exa_ui::UiPlugin,
-        ));
+        ))
+        .add_plugins((limp::LimpPlugin, balance::BalancePlugin, torch::TorchPlugin));
     }
 }

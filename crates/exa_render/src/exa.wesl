@@ -1,0 +1,305 @@
+// The original's surface shading (its `shadeopt` program) for models, on
+// Bevy's lights; the lighting itself is shared (`shading.wesl`). Rules:
+// docs/RENDERING.md.
+
+import bevy_pbr::render::{
+    forward_io::{VertexOutput, FragmentOutput},
+    mesh_bindings::mesh,
+    mesh_view_bindings as view_bindings,
+    mesh_view_types,
+    mesh_types::MESH_FLAGS_SHADOW_RECEIVER_BIT,
+    clustered_forward as clustering,
+    shadows,
+};
+import exa_render::shading::{
+    Surface, Lit, taps, lit_by, light_shadow, light, schlick, view_depth, vertical_shaping, gi_sample, in_gi,
+    gi_ambient,
+    REFLECTION_STRENGTH, ENVIRONMENT_FALLBACK, AMBIENT_SCALE, SUN_LUX,
+};
+
+struct ExaParams {
+    // Linear rgb (×1.5 for legacy materials); a = opacity.
+    diffuse: vec4<f32>,
+    // Linear rgb × level; w = glossiness.
+    specular: vec4<f32>,
+    // Linear rgb; a = unlit opacity.
+    emissive: vec4<f32>,
+    flags: u32,
+    pad0: u32,
+    pad1: u32,
+    pad2: u32,
+    gi_origin: vec4<f32>,
+    gi_extent: vec4<f32>,
+    // Parallax scale per UV axis (xy), displacement-shadow step (z), bias (w).
+    displacement: vec4<f32>,
+}
+
+const DIFFUSE_MAP: u32 = 1u;
+const NORMAL_MAP: u32 = 2u;
+const SPECULAR_MAP: u32 = 4u;
+const EMISSIVE_MAP: u32 = 8u;
+const OPACITY_MAP: u32 = 16u;
+const LIT: u32 = 32u;
+const PACKED_SPECULAR: u32 = 64u;
+const TWO_SIDED: u32 = 128u;
+const ENVIRONMENT: u32 = 256u;
+const DIRT_MAP: u32 = 512u;
+const GLOSS_MAP: u32 = 1024u;
+const GI: u32 = 2048u;
+const HEIGHT_MAP: u32 = 4096u;
+const DISPLACEMENT_SHADOWS: u32 = 8192u;
+const DEBUG_GI: u32 = 16384u;
+const SPLIT_TAPS: u32 = 32768u;
+// Displacement-shadow taps toward each light: four per sub-sample over the
+// original's four supersampling passes.
+const SHADOW_STEPS: i32 = 16;
+// The original's texture LOD bias at its top texture quality with 4×
+// supersampling, −0.75 × (4 − 1)/3, on colour textures only (not normal,
+// gloss or packed specular maps). Rules: docs/RENDERING.md (Textures).
+const TEXTURE_BIAS: f32 = -0.75;
+
+@group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> material: ExaParams;
+@group(constants::MATERIAL_BIND_GROUP) @binding(101) var diffuse_map: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(102) var diffuse_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(103) var normal_map: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(104) var normal_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(105) var specular_map: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(106) var specular_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(107) var emissive_map: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(108) var emissive_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(109) var opacity_map: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(110) var opacity_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(111) var environment_map: texture_cube<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(112) var environment_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(113) var dirt_map: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(114) var dirt_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(115) var gloss_map: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(116) var gloss_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(117) var gi_volume: texture_3d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(118) var gi_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(119) var height_map: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(120) var height_sampler: sampler;
+
+fn height(uv: vec2<f32>) -> f32 {
+    return textureSample(height_map, height_sampler, uv).r;
+}
+
+// The height map's shadow on one light (direction l): taps marched toward
+// the light in the tangent plane; lit where the surface stands above them.
+fn displacement_shadow(uv: vec2<f32>, l: vec3<f32>, ax: vec3<f32>, ay: vec3<f32>, n: vec3<f32>, h0: f32) -> f32 {
+    // Tangent-space light; its y runs along +v.
+    let t = vec3(dot(l, ax), -dot(l, ay), dot(l, n));
+    let a = material.displacement.z * (2.0 - t.z);
+    var lit = 0.0;
+    for (var j = 1; j <= SHADOW_STEPS; j++) {
+        let h = height(uv + t.xy * a * f32(j));
+        lit += clamp((h0 + 0.1 * t.z - h) * 20.0, 0.0, 1.0);
+    }
+    return lit / f32(SHADOW_STEPS);
+}
+
+fn has(bit: u32) -> bool {
+    return (material.flags & bit) != 0u;
+}
+
+@fragment
+fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
+    var out: FragmentOutput;
+    var uv = vec2(0.0);
+@if(VERTEX_UVS_A) {
+    uv = in.uv;
+}
+    let p = in.world_position.xyz;
+    let v = normalize(view_bindings::view.world_position.xyz - p);
+    // Parallax: the view in tangent space shifts the texture coordinates
+    // by the height map, in four accumulating steps; every map then reads
+    // at the shifted coordinates.
+    var displaced = false;
+    var dsp_val = 0.0;
+    var ax = vec3(1.0, 0.0, 0.0);
+    var ay = vec3(0.0, 0.0, 1.0);
+    let ns = normalize(in.world_normal);
+@if(VERTEX_TANGENTS) {
+    if has(HEIGHT_MAP) {
+        let tg = normalize(in.world_tangent.xyz);
+        let btng = normalize(cross(tg, ns) * in.world_tangent.w);
+        let eye = -v;
+        let vt = vec3(dot(eye, tg), dot(eye, btng), dot(eye, ns));
+        let dsp = vt.xy * material.displacement.xy * (4.0 + 3.0 * vt.z);
+        for (var k = 0; k < 4; k++) {
+            dsp_val = height(uv) - 0.5;
+            uv -= dsp * dsp_val;
+        }
+        ax = normalize(in.world_tangent.xyz - ns * dot(in.world_tangent.xyz, ns));
+        ay = cross(ns, ax) * in.world_tangent.w;
+        displaced = true;
+    }
+}
+    var dif_tex = vec4(1.0);
+    if has(DIFFUSE_MAP) {
+        dif_tex = textureSampleBias(diffuse_map, diffuse_sampler, uv, TEXTURE_BIAS);
+    }
+    var alpha = material.diffuse.a * dif_tex.a;
+    if has(OPACITY_MAP) {
+        let o = textureSampleBias(opacity_map, opacity_sampler, uv, TEXTURE_BIAS).a;
+        alpha = material.diffuse.a * o * o;
+    }
+
+    // Unlit: emissive only.
+    if !has(LIT) {
+        var e = material.emissive.rgb;
+        if has(EMISSIVE_MAP) {
+            e *= textureSampleBias(emissive_map, emissive_sampler, uv, TEXTURE_BIAS).rgb;
+        }
+        var a = material.emissive.a;
+        if has(OPACITY_MAP) {
+            a *= textureSampleBias(opacity_map, opacity_sampler, uv, TEXTURE_BIAS).a;
+        }
+        out.color = vec4(e, a);
+        return out;
+    }
+
+    var n = normalize(in.world_normal);
+    if !is_front {
+        n = -n;
+    }
+@if(VERTEX_TANGENTS) {
+    if has(NORMAL_MAP) {
+        let t = normalize(in.world_tangent.xyz - n * dot(in.world_tangent.xyz, n));
+        let b = cross(n, t) * in.world_tangent.w;
+        // The original's bitangent runs along −v of the stored UVs, as
+        // Bevy's (its MikkTSpace sign is flipped), so green maps as stored.
+        let xy = textureSample(normal_map, normal_sampler, uv).rg * 2.0 - 1.0;
+        let z = sqrt(max(1.0 - dot(xy, xy), 0.0));
+        n = normalize(t * xy.x + b * xy.y + n * z);
+    }
+}
+    var s: Surface;
+    s.n = n;
+    s.v = v;
+    s.ndv = abs(dot(v, n));
+    var dif_col = material.diffuse.rgb * dif_tex.rgb;
+    var cavity = 1.0;
+    s.rough = 1.0 - material.specular.w;
+    s.f0 = material.specular.rgb;
+    s.legacy = !has(PACKED_SPECULAR);
+    if has(SPECULAR_MAP) {
+        let rgm = textureSampleBias(specular_map, specular_sampler, uv, select(TEXTURE_BIAS, 0.0, has(PACKED_SPECULAR)));
+        if has(PACKED_SPECULAR) {
+            let metal = rgm.b;
+            s.f0 = mix(vec3(0.04), dif_tex.rgb * material.specular.rgb, metal);
+            dif_col *= 1.0 - metal;
+            s.rough = 1.0 - material.specular.w * rgm.g;
+            cavity = rgm.r;
+        } else {
+            s.f0 = material.specular.rgb * rgm.rgb;
+        }
+    }
+    if has(GLOSS_MAP) && !has(SPECULAR_MAP) {
+        s.rough = 1.0 - material.specular.w * textureSample(gloss_map, gloss_sampler, uv).r;
+    }
+    s.rough = clamp(s.rough, 0.02, 1.0);
+
+    var diffuse = vec3(0.0);
+    var specular = vec3(0.0);
+    let self_shadowed = displaced && has(DISPLACEMENT_SHADOWS);
+    let h0 = dsp_val + material.displacement.w + 0.5;
+    let receiver = (mesh[in.instance_index].flags & MESH_FLAGS_SHADOW_RECEIVER_BIT) != 0u;
+
+    let disc = taps(in.position.xy, has(SPLIT_TAPS));
+    let tag = mesh[in.instance_index].tag;
+    // Point lights in this fragment's cluster.
+    let view_z = view_depth(in.world_position);
+    let ortho = view_bindings::view.clip_from_view[3].w == 1.0;
+    let cluster = clustering::view_fragment_cluster_index(in.position.xy, view_z, ortho);
+    let ranges = clustering::unpack_clusterable_object_index_ranges(cluster);
+    for (var i = ranges.first_point_light_index_offset; i < ranges.first_spot_light_index_offset; i++) {
+        let id = clustering::get_clusterable_object_id(i);
+        if !lit_by(tag, id) {
+            continue;
+        }
+        let lt = &view_bindings::clustered_lights.data[id];
+        let to = (*lt).position_radius.xyz - p;
+        let d = length(to);
+        let atn = pow(max(1.0 - d / max((*lt).range, 1e-3), 0.0), 4.0) * vertical_shaping(id, to.y / max(d, 1e-4));
+        if atn <= 0.0 {
+            continue;
+        }
+        var shadow = light_shadow(id, p, n, disc, tag, receiver);
+        let l = to / max(d, 1e-4);
+        if self_shadowed {
+            shadow *= displacement_shadow(uv, l, ax, ay, ns, h0);
+        }
+        let lit = light(s, l, (*lt).color_inverse_square_range.rgb * atn * shadow);
+        diffuse += lit.diffuse;
+        specular += lit.specular;
+    }
+    // The sun.
+    for (var i = 0u; i < view_bindings::lights.n_directional_lights; i++) {
+        let sun = &view_bindings::lights.directional_lights[i];
+        var shadow = 1.0;
+        if receiver && ((*sun).flags & mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u {
+            shadow = shadows::fetch_directional_shadow(i, in.world_position, in.world_normal, view_z, in.position.xy);
+        }
+        if self_shadowed {
+            shadow *= displacement_shadow(uv, (*sun).direction_to_light, ax, ay, ns, h0);
+        }
+        let lit = light(s, (*sun).direction_to_light, (*sun).color.rgb / SUN_LUX * shadow);
+        diffuse += lit.diffuse;
+        specular += lit.specular;
+    }
+
+    // Ambient: the environment cube's blurred colour around the normal ×
+    // the level's ambient × 16; reflections sample it by gloss.
+    let level = view_bindings::lights.ambient_color.rgb;
+    var ambient = level * ENVIRONMENT_FALLBACK;
+    var mirrored = vec3(ENVIRONMENT_FALLBACK);
+    let r = reflect(-v, n);
+    let k = (s.rough + 1.0) * (s.rough + 1.0) / 8.0;
+    let gv = s.ndv / (s.ndv * (1.0 - k) + k);
+    var reflected: vec3<f32>;
+    let gi_origin = material.gi_origin.xyz;
+    let gi_extent = material.gi_extent.xyz;
+    if has(GI) && in_gi(gi_origin, gi_extent, p) {
+        // Voxel GI: the volume's light, lifted where faint, × the level
+        // ambient × 15 × openness; reflections take the cube × that.
+        let g = gi_sample(gi_volume, gi_sampler, gi_origin, gi_extent, p, n, disc);
+        if has(DEBUG_GI) {
+            out.color = vec4(g.rgb * 10.0, 1.0);
+            return out;
+        }
+        ambient = gi_ambient(g, level);
+        if has(ENVIRONMENT) {
+            mirrored = textureSampleLevel(environment_map, environment_sampler, r, max(s.rough - 0.05, 0.0) * 8.0).rgb;
+        }
+        reflected = mirrored * ambient * REFLECTION_STRENGTH * 2.0 * gv;
+    } else {
+        if has(ENVIRONMENT) {
+            ambient = textureSampleLevel(environment_map, environment_sampler, n, 5.0).rgb * level;
+            mirrored = textureSampleLevel(environment_map, environment_sampler, r, max(s.rough - 0.1, 0.0) * 8.0).rgb;
+        }
+        reflected = (mirrored + mirrored * mirrored) * level / AMBIENT_SCALE * REFLECTION_STRENGTH * gv;
+    }
+    // Parallax without displacement shadows darkens the ambient in hollows.
+    if displaced && !self_shadowed {
+        ambient *= min(dsp_val + 1.2, 1.0);
+    }
+    var colour = (diffuse + ambient) * dif_col;
+    if s.legacy {
+        // Older program: (lights + reflection) × specular colour × a soft
+        // Fresnel between 0.5 and 1.
+        let spf = 0.5 + 0.5 * exp2((-5.55473 * s.ndv - 6.98316) * s.ndv);
+        colour += (specular + reflected) * s.f0 * spf;
+    } else {
+        specular += reflected * schlick(s.f0, s.ndv);
+        colour += specular * cavity;
+    }
+
+    var e = material.emissive.rgb;
+    if has(EMISSIVE_MAP) {
+        e *= textureSampleBias(emissive_map, emissive_sampler, uv, TEXTURE_BIAS).rgb;
+    }
+    colour += e;
+    out.color = vec4(colour, alpha);
+    return out;
+}

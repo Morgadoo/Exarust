@@ -1,6 +1,6 @@
 [package]
 name = "exa_anim"
-description = "Skeletons and motion sequences from `"
+description = "Skeletons and motion clips from .rsq, sampled onto body parts"
 edition.workspace = true
 license.workspace = true
 version.workspace = true

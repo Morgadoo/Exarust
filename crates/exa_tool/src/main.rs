@@ -8,7 +8,12 @@
 //! exa-tool rfi Textures afcrnflg_01d  image header
 //! exa-tool png Textures afcrnflg_01d out.png
 //! exa-tool extract Sound out/ [--filter msc_]
+//! exa-tool corpus meshes              decode every chunk tree, report coverage
+//! exa-tool export-gltf Objlib afr_cornflag_a01 out.glb
 //! ```
+
+mod corpus;
+mod gltf;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -58,6 +63,29 @@ enum Cmd {
         entry: String,
         out: PathBuf,
     },
+    /// Paint an apparel texture set (e.g. `doublet_aa`) with the appearance
+    /// of the item showing `model` (e.g. `doublet_a`), as the game does.
+    Paint {
+        model: String,
+        stem: String,
+        out: PathBuf,
+    },
+    /// Summarise the skeleton and motion set of a `.rsq`.
+    Rsq {
+        #[arg(default_value = "humanoid.rsq")]
+        entry: String,
+    },
+    /// Decode every entry of a format and report coverage.
+    Corpus {
+        #[arg(value_enum)]
+        what: CorpusKind,
+    },
+    /// Export a chunk tree's meshes to binary glTF with resolved textures.
+    ExportGltf {
+        pack: String,
+        entry: String,
+        out: PathBuf,
+    },
     /// Write entries to a directory, with an extension guessed from the magic.
     Extract {
         pack: String,
@@ -67,6 +95,14 @@ enum Cmd {
         #[arg(long)]
         inner: Option<String>,
     },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum CorpusKind {
+    Meshes,
+    Levels,
+    Terrain,
+    Factories,
 }
 
 fn main() -> Result<()> {
@@ -117,6 +153,7 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
+        Cmd::Paint { model, stem, out } => paint_item(&game, &model, &stem, &out),
         Cmd::Png { pack, entry, out } => {
             let rfi = Rfi::parse(entry_bytes(&game, &pack, &entry)?)?;
             let rgba = rfi.decode_rgba8()?;
@@ -129,6 +166,65 @@ fn main() -> Result<()> {
                 rfi.format,
                 out.display()
             );
+            Ok(())
+        }
+        Cmd::Rsq { entry } => {
+            let seq = exa_formats::rsq::Sequences::parse(entry_bytes(&game, "Resource", &entry)?)?;
+            println!("bones:");
+            for (i, n) in seq.skeleton.nodes.iter().enumerate() {
+                let body = seq.bodies.get(i).cloned().unwrap_or_default();
+                println!(
+                    "  {:<16} parent {:?}  links {:?}  contacts {}  pins {}",
+                    n.name,
+                    n.parent,
+                    body.links
+                        .iter()
+                        .map(|l| (l.slack * 100.0).round() / 100.0)
+                        .collect::<Vec<_>>(),
+                    body.contacts.len(),
+                    body.pins.len()
+                );
+            }
+            let m = &seq.motions;
+            println!("{} actions, {} movesets", m.actions.len(), m.movesets.len());
+            for (i, a) in m.actions.iter().enumerate() {
+                println!("  action {i:#04x} {:<20} params {:?}", a.name, a.params);
+            }
+            for ms in &m.movesets {
+                let defined = ms.clips.iter().filter(|c| c.is_some()).count();
+                let keys: usize = ms.clips.iter().flatten().map(|c| c.keys.len()).sum();
+                println!(
+                    "  {:<14} <- {:<12} {defined:>2} actions, {keys:>3} keys",
+                    ms.name, ms.parent
+                );
+            }
+            Ok(())
+        }
+        Cmd::Corpus {
+            what: CorpusKind::Meshes,
+        } => corpus::meshes(&game),
+        Cmd::Corpus {
+            what: CorpusKind::Levels,
+        } => corpus::levels(&game),
+        Cmd::Corpus {
+            what: CorpusKind::Terrain,
+        } => corpus::terrain(&game),
+        Cmd::Corpus {
+            what: CorpusKind::Factories,
+        } => corpus::factories(&game),
+        Cmd::ExportGltf { pack, entry, out } => {
+            let scene = exa_formats::rfc::Scene::parse(entry_bytes(&game, &pack, &entry)?)
+                .with_context(|| format!("decoding {pack}/{entry}"))?;
+            let warnings = gltf::export(&game, &scene, &entry, &out)?;
+            let meshes = scene.meshes().count();
+            println!(
+                "{pack}/{entry}: {} nodes, {meshes} meshes -> {}",
+                scene.nodes.len(),
+                out.display()
+            );
+            for w in warnings {
+                eprintln!("warning: {w}");
+            }
             Ok(())
         }
         Cmd::Extract {
@@ -238,6 +334,79 @@ fn print_chunk(c: &Chunk<'_>, depth: usize, max_depth: usize) {
             print_chunk(k, depth + 1, max_depth);
         }
     }
+}
+
+fn paint_item(game: &GameData, model: &str, stem: &str, out: &Path) -> Result<()> {
+    use exa_assets::paint::{PaintLayer, Texels, layer_material, library, normal_library, paint};
+    let db_bytes = game
+        .pack(exa_rpk::PackKind::Resource)
+        .and_then(|p| p.get("objdb.rdb"))
+        .context("objdb.rdb not found")?;
+    let db = exa_formats::rdb::Database::parse(db_bytes)?;
+    let item = exa_formats::objdb::items(&db)
+        .into_iter()
+        .find(|i| i.model.eq_ignore_ascii_case(model) && i.appearance.is_some())
+        .with_context(|| format!("no item shows {model}"))?;
+    let appearance = item.appearance.expect("filtered");
+    let texels = |name: &str| -> Option<Texels> {
+        let rfi = Rfi::parse(game.texture(name)?).ok()?;
+        Some(Texels {
+            width: rfi.header.width as usize,
+            height: rfi.header.height as usize,
+            rgba: rfi.decode_rgba8().ok()?,
+        })
+    };
+    let shade = texels(&format!("{stem}d")).context("no shade map")?;
+    let mut owned = Vec::new();
+    for layer in appearance.used_layers() {
+        let material = layer_material(layer);
+        let Some(mask) = texels(&format!("{stem}m{}", layer.mask)) else {
+            println!("  mask {} missing", layer.mask);
+            continue;
+        };
+        let lib: Vec<Option<Texels>> = library(material).iter().map(|n| texels(n)).collect();
+        let normals: Vec<Option<Texels>> =
+            normal_library(material).iter().map(|n| texels(n)).collect();
+        println!(
+            "  mask {} material {material} colour {:#04x} library {}/{}",
+            layer.mask,
+            layer.colour,
+            lib.iter().filter(|t| t.is_some()).count(),
+            lib.len()
+        );
+        owned.push((mask, material, layer.colour, lib, normals));
+    }
+    let layers: Vec<PaintLayer<'_>> = owned
+        .iter()
+        .map(|(mask, material, colour, lib, normals)| PaintLayer {
+            mask,
+            material: *material,
+            colour: *colour,
+            library: lib.iter().map(Option::as_ref).collect(),
+            normals: normals.iter().map(Option::as_ref).collect(),
+        })
+        .collect();
+    let item_normal = texels(&format!("{stem}n"));
+    let painted = paint(&shade, item_normal.as_ref(), &layers, &appearance);
+    write_png(
+        out,
+        shade.width as u32,
+        shade.height as u32,
+        &painted.colour,
+    )?;
+    let surface = out.with_extension("surface.png");
+    write_png(
+        &surface,
+        shade.width as u32,
+        shade.height as u32,
+        &painted.surface,
+    )?;
+    if let Some(normal) = &painted.normal {
+        let path = out.with_extension("normal.png");
+        write_png(&path, shade.width as u32, shade.height as u32, normal)?;
+    }
+    println!("{} ({}) -> {}", item.name, model, out.display());
+    Ok(())
 }
 
 fn write_png(path: &Path, w: u32, h: u32, rgba: &[u8]) -> Result<()> {

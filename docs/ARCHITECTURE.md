@@ -37,7 +37,7 @@ Rules:
 | schedule | content |
 |---|---|
 | `Startup` / `OnEnter(state)` | open install, load level, spawn entities |
-| `FixedUpdate` (120 Hz, deterministic) | input → control intents → AI intents → animation targets → physics step → contacts → combat resolution → injuries |
+| `FixedUpdate` (83 Hz, the original's 12 ms tick, deterministic) | input → control intents → AI intents → animation targets → physics step → contacts → combat resolution → injuries |
 | `Update` | camera, UI, audio triggers, streaming |
 | `PostUpdate` | transform propagation, skinning, visibility |
 | Render | Bevy render graph + custom nodes (shadow cubes, GI, post) |
@@ -63,6 +63,10 @@ with nested packs as `exanima://Resource/common.rml/bontile`.
 - All simulation state is ECS components and resources. There are no globals
   and no wall-clock reads inside `FixedUpdate`.
 - Random numbers come from a seeded, per-match RNG resource.
+- A slow frame catches up at most 4 fixed steps (48 ms of game time); the
+  rest of the backlog is dropped and game time slows, as the original drops
+  its time-critical thread's backlog. Characters are drawn between their
+  last two fixed steps, so they move smoothly at any frame rate.
 - Physics uses a fixed step with a fixed iteration count. Floating-point
   determinism is expected per build and per platform, not across platforms.
 
