@@ -356,9 +356,31 @@ side-by-side check on the GPU at the same camera.
   larger than the original's 6 m terrain blocks, and meshes that cast no
   shadows keep every light in reach.
 
-  Not done yet: the original's other limits on the same links. Lights stop
-  at walls (a top-down flood fill through the 6 m wall grid, at most 12
-  lights per cell). Cube
+- **Lights stop at walls** (tile-grid levels, ranged lights): each light
+  floods the 6 m cell grid from its own cell, top down, carrying an angular
+  window of the directions still open:
+  - the light's own cell sees everything; each open side of it starts a
+    half-plane window;
+  - the walk is depth-first and stops when 31 entries are waiting;
+  - a cell is entered while its centre lies within R/6 m + ½ cell of the
+    light, measured top down;
+  - the walk only leaves a cell through sides facing away from the light;
+  - a side narrows the window to its opening. A solid wall closes it. A wall
+    stub (edge bit 1 or 2) moves an end to ±0.2 cell, a corner flag moves an
+    end to ±0.4 cell, and a door is a fixed ±0.2 cell (±0.35 in cells with a
+    special tile), whatever its real width and whether it is open or shut;
+  - each cell records the window it was entered through (re-entries widen
+    it), for at most 12 lights; later lights are dropped there.
+
+  A ranged light links to a mesh only if the mesh's angular extent (centre
+  angle ± atan(r/d)) overlaps the window in the mesh's cell, or in a
+  neighbouring cell its box spills into past no wall; a mesh around the
+  light always passes. That keeps light and shadow casters in their rooms.
+  Terrain tiles, far larger than the original's 6 m terrain blocks, skip
+  the test. The original's GI also takes its lights from the cell lists;
+  Exarust's GI still picks the lights nearest its block.
+
+  Not done yet: the original's other limits on the same links. Cube
   faces are rendered only when they hold a visible receiver and a light or
   caster has moved; otherwise they are cached across frames. Draw sets are
   per room, with one portal step into the next room. The notes are in

@@ -3,7 +3,9 @@
 //! overlap and the light still matters at the mesh's near side:
 //! (1 − 0.8·d/R)⁴ · luma(colour · intensity) > 0.01, with d the distance from
 //! the light to the sphere's surface and R the light's radius. A light's own
-//! object (its siblings, parent and grandparent) stays out of its map. A
+//! object (its siblings, parent and grandparent) stays out of its map. In
+//! tile-grid levels a ranged light must also see the mesh past the walls
+//! ([`crate::light_flood`]). A
 //! mesh is lit by its six strongest links ([`exa_render::lights::MeshLights`]).
 //!
 //! Bevy takes a light's casters from render layers: every shadowed light
@@ -19,8 +21,11 @@ use bevy::ecs::entity::EntityHashSet;
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 use bevy::transform::TransformSystems;
+use exa_formats::level::LevelGrid;
 use exa_render::lights::{LightId, LightsSystems, MAX_MESH_LIGHTS, MeshLights};
 use exa_render::supersample::DisplayCamera;
+
+use crate::light_flood::{CellLights, FloodLight, NodeBounds, WallGrid};
 
 pub struct ShadowLinksPlugin;
 
@@ -45,6 +50,10 @@ impl Plugin for ShadowLinksPlugin {
 pub struct ShadowReach {
     pub radius: f32,
     pub luma: f32,
+    /// The light falls off with distance; only such lights stop at walls.
+    pub ranged: bool,
+    /// The vertical shaping's y of a light shaped downwards.
+    pub shaped: Option<f32>,
 }
 
 impl ShadowReach {
@@ -53,9 +62,37 @@ impl ShadowReach {
         Self {
             radius,
             luma: linear.dot(LUMA) * intensity.max(0.0),
+            ranged: true,
+            shaped: None,
         }
     }
 }
+
+/// A tile-grid level's walls and the windows its lights left in each cell.
+#[derive(Resource)]
+pub struct LevelWalls {
+    grid: WallGrid,
+    cells: CellLights,
+}
+
+impl LevelWalls {
+    /// From a level's grid; `None` when its planes do not fit its size.
+    pub fn new(grid: &LevelGrid) -> Option<Self> {
+        let walls = WallGrid::new(
+            grid.width as usize,
+            grid.height as usize,
+            grid.edges.clone(),
+            grid.plane_c.clone(),
+        )?;
+        let cells = CellLights::new(&walls);
+        Some(Self { grid: walls, cells })
+    }
+}
+
+/// A mesh the wall test leaves alone: terrain tiles, far larger than the
+/// original's 6 m terrain blocks, span many cells.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct Unwalled;
 
 /// Rec. 601 luma weights.
 const LUMA: Vec3 = Vec3::new(0.299, 0.587, 0.114);
@@ -149,6 +186,20 @@ fn sphere(aabb: &Aabb, transform: &GlobalTransform) -> (Vec3, f32) {
     (c, Vec3::from(aabb.half_extents).length() * scale)
 }
 
+/// A mesh's world box as the wall test reads it.
+fn bounds(aabb: &Aabb, transform: &GlobalTransform) -> NodeBounds {
+    let (centre, radius) = sphere(aabb, transform);
+    let m = transform.affine().matrix3;
+    let h = aabb.half_extents;
+    let extent = |row: usize| (m.row(row).abs()).dot(h);
+    NodeBounds {
+        centre,
+        radius,
+        extent_x: extent(0),
+        extent_z: extent(2),
+    }
+}
+
 type LightQuery<'w, 's> = Query<
     'w,
     's,
@@ -172,6 +223,7 @@ fn track_lights(
     mut table: ResMut<LinkedLights>,
     lights: LightQuery,
     changed: Query<(), LightMoved>,
+    walls: Option<ResMut<LevelWalls>>,
 ) {
     if table.next_layer == 0 {
         table.next_layer = FIRST_LIGHT_LAYER;
@@ -184,6 +236,8 @@ fn track_lights(
         let reach = reach.copied().unwrap_or(ShadowReach {
             radius: light.range,
             luma: 1.0,
+            ranged: true,
+            shaped: None,
         });
         let index = match layer {
             Some(&LightLayer(l)) => {
@@ -217,6 +271,30 @@ fn track_lights(
         };
         table.moved.push(index);
     }
+    let Some(mut walls) = walls else { return };
+    if walls.is_added() {
+        table.moved = (0..table.lights.len()).collect();
+    }
+    // Flood in the order the lights came: a full cell keeps its first
+    // twelve.
+    let table = &mut *table;
+    let lights = &table.lights;
+    table.moved.sort_by_key(|&i| lights[i].id);
+    table.moved.dedup();
+    let walls = &mut *walls;
+    for &i in &table.moved {
+        let l = &table.lights[i];
+        if l.reach.ranged {
+            let light = FloodLight {
+                position: l.position,
+                radius: l.reach.radius,
+                shaped: l.reach.shaped,
+            };
+            walls.cells.flood(&walls.grid, l.id, &light);
+        } else {
+            walls.cells.remove(l.id);
+        }
+    }
 }
 
 type CasterQuery<'w, 's> = Query<
@@ -228,6 +306,7 @@ type CasterQuery<'w, 's> = Query<
         &'static GlobalTransform,
         Option<&'static ShadowExclude>,
         Option<&'static LightLinks>,
+        Has<Unwalled>,
     ),
     (With<Mesh3d>, Without<NotShadowCaster>, Without<PointLight>),
 >;
@@ -246,6 +325,7 @@ fn link_casters(
     mut table: ResMut<LinkedLights>,
     casters: CasterQuery,
     moved_casters: Query<Entity, CasterMoved>,
+    walls: Option<Res<LevelWalls>>,
 ) {
     let moved: Vec<usize> = std::mem::take(&mut table.moved);
     let all_moved = !moved.is_empty();
@@ -259,12 +339,23 @@ fn link_casters(
                       transform: &GlobalTransform,
                       exclude: Option<&ShadowExclude>,
                       current: Option<&LightLinks>,
+                      unwalled: bool,
                       only: Option<&[usize]>| {
         let (c, r) = sphere(aabb, transform);
+        let bounds = bounds(aabb, transform);
+        // In tile-grid levels a ranged light must see the mesh past the
+        // walls.
+        let seen = |l: &LinkedLight| match &walls {
+            Some(w) if l.reach.ranged && !unwalled => {
+                w.cells.sees(&w.grid, l.id, l.position, &bounds)
+            }
+            _ => true,
+        };
         let link = |l: &LinkedLight| {
             (!excluded(l, exclude))
                 .then(|| link_weight(l, c, r))
                 .flatten()
+                .filter(|_| seen(l))
                 .map(|w| (l.layer, l.id, w))
         };
         let links = match only {
@@ -292,16 +383,16 @@ fn link_casters(
         }
     };
     for entity in &fresh {
-        if let Ok((e, aabb, t, x, current)) = casters.get(*entity) {
-            relink(e, aabb, t, x, current, None);
+        if let Ok((e, aabb, t, x, current, unwalled)) = casters.get(*entity) {
+            relink(e, aabb, t, x, current, unwalled, None);
         }
     }
     if all_moved {
-        for (e, aabb, t, x, current) in &casters {
+        for (e, aabb, t, x, current, unwalled) in &casters {
             if fresh.contains(&e) {
                 continue;
             }
-            relink(e, aabb, t, x, current, Some(&moved));
+            relink(e, aabb, t, x, current, unwalled, Some(&moved));
         }
     }
 }
@@ -340,6 +431,8 @@ mod tests {
             reach: ShadowReach {
                 radius: 8.0,
                 luma: 1.88,
+                ranged: true,
+                shaped: None,
             },
         }
     }

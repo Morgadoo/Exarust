@@ -7,6 +7,7 @@ pub mod fire;
 pub mod flame;
 pub mod gi_volume;
 pub mod grid;
+pub mod light_flood;
 pub mod shadow_links;
 pub mod start;
 pub mod terrain;
@@ -395,7 +396,11 @@ pub fn light_bundle(
     (
         point,
         exa_render::gi::GiMultiplier(light.multiplier),
-        shadow_links::ShadowReach::new(c, light.intensity, light.radius),
+        shadow_links::ShadowReach {
+            ranged: light.ranged,
+            shaped: light.spot.map(|_| y),
+            ..shadow_links::ShadowReach::new(c, light.intensity, light.radius)
+        },
         exa_render::lights::LightShaping(Vec2::new(y, z)),
     )
 }
@@ -438,6 +443,11 @@ pub fn spawn_level(
         .grid
         .as_ref()
         .map(|g| grid::spawn_grid(commands, loader, g, root, ceilings));
+    // Lights stop at the grid's walls.
+    match scene.grid.as_ref().and_then(shadow_links::LevelWalls::new) {
+        Some(walls) => commands.insert_resource(walls),
+        None => commands.remove_resource::<shadow_links::LevelWalls>(),
+    }
     let terrain_stats = terrain::spawn_terrain(commands, loader, &entry, root);
 
     let mut lights = 0;

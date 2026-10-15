@@ -559,6 +559,7 @@ pub fn spawn_terrain(
                 Mesh3d(loader.meshes.add(built.mesh.take().expect("built once"))),
                 PendingSplat(splat),
                 crate::gi_volume::GiTerrain,
+                crate::shadow_links::Unwalled,
                 Transform::from_xyz(centre[0], 0.0, centre[1]),
                 Visibility::default(),
                 ChildOf(parent),
