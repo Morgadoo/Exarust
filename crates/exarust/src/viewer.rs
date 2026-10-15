@@ -14,11 +14,7 @@ pub struct ViewerPlugin;
 impl Plugin for ViewerPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(ClearColor(Color::srgb(0.01, 0.01, 0.012)))
-            .insert_resource(GlobalAmbientLight {
-                color: Color::srgb(0.75, 0.8, 1.0),
-                brightness: 80.0,
-                ..default()
-            })
+            .insert_resource(exa_world::environment::reference_ambient())
             .add_systems(Startup, setup)
             .add_systems(PreUpdate, autowalk.after(bevy::input::InputSystems))
             .add_systems(
@@ -103,7 +99,7 @@ fn setup(
                     exa_world::spawn_model(&mut commands, &m, Some(Transform::IDENTITY));
                     commands.spawn((
                         DirectionalLight {
-                            illuminance: 6000.0,
+                            illuminance: exa_world::environment::SUN_LUX,
                             ..default()
                         },
                         Transform::from_xyz(3.0, 6.0, 4.0).looking_at(Vec3::ZERO, Vec3::Y),
@@ -160,7 +156,7 @@ fn setup(
             }
             commands.spawn((
                 DirectionalLight {
-                    illuminance: 5000.0,
+                    illuminance: exa_world::environment::SUN_LUX,
                     ..default()
                 },
                 Transform::from_xyz(2.0, 4.0, 3.0).looking_at(Vec3::Y, Vec3::Y),

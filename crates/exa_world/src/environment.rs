@@ -18,7 +18,6 @@ use bevy::prelude::*;
 use exa_formats::environment::{Environment, SunMode};
 
 /// Ambient colour of a typical level (sRGB grey).
-#[cfg(test)]
 const REFERENCE_AMBIENT: f32 = 0.6275;
 /// The original's ambient is the environment cube's blurred colour × the
 /// level's ambient × 16; the shader samples the cube, the scene carries the
@@ -29,6 +28,10 @@ const SUN_INTENSITY: f32 = 3.0;
 const SUN_INTENSITY_WITH_SKY: f32 = 4.5;
 /// Lux per unit of the original's light intensity.
 const LUX_PER_INTENSITY: f32 = 160.0;
+/// The sun of the original's lit outdoor levels (no sky), in lux: the light
+/// a scene without a level is shown under. The shading divides lux back into
+/// the original's units, so a brighter light only washes the picture out.
+pub const SUN_LUX: f32 = SUN_INTENSITY * LUX_PER_INTENSITY;
 /// Outdoor fog: distance (m) and colour (sRGB) of the original's sky-less
 /// outdoor default.
 const OUTDOOR_FOG_DISTANCE: f32 = 1000.0;
@@ -162,6 +165,23 @@ pub fn level_lighting(level: &str, record: Option<&Environment>, lights: usize) 
 
 /// Applies `lighting`: ambient and background resources, a sun under
 /// `parent`, and fog for the cameras.
+/// The ambient of a typical level, in the original's units: what a scene
+/// without a level (a model or the character view) is shown under. The
+/// shading reads the scene's ambient as the level's ambient × 16, so Bevy's
+/// usual brightness washes surfaces lit by the environment cube out.
+pub fn reference_ambient() -> GlobalAmbientLight {
+    let grey = Color::srgb(REFERENCE_AMBIENT, REFERENCE_AMBIENT, REFERENCE_AMBIENT).to_linear();
+    GlobalAmbientLight {
+        color: Color::linear_rgb(
+            grey.red * AMBIENT_SCALE,
+            grey.green * AMBIENT_SCALE,
+            grey.blue * AMBIENT_SCALE,
+        ),
+        brightness: 1.0,
+        ..default()
+    }
+}
+
 pub fn apply_lighting(commands: &mut Commands, lighting: &Lighting, parent: Entity) {
     let ambient = lighting.ambient * AMBIENT_SCALE;
     commands.insert_resource(GlobalAmbientLight {
