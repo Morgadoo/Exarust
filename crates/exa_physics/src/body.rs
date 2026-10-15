@@ -26,6 +26,8 @@ const LINK_ITERATIONS: usize = 20;
 const CONTACT_ITERATIONS: usize = 8;
 /// Ticks run per frame at most.
 const MAX_TICKS: u32 = 4;
+/// The fastest a particle may move (m/s): well above any blow or fall.
+const MAX_SPEED: f32 = 25.0;
 /// A limp body whose particles all stay slower than this (m/s) ...
 const SLEEP_SPEED: f32 = 0.01;
 /// ... for this many ticks (2 s) falls asleep. Its contacts are with fixed
@@ -372,7 +374,11 @@ impl Ragdoll {
         // A fallen body follows the pose relative to its own pelvis.
         let targets = match (drive.supported, pelvis, pelvis_world) {
             (false, Some(i), Some(world)) => {
-                let align = world * targets[i].inverse();
+                // The pelvis's place and turn only: its particles deform a
+                // little, and a scale carried into the targets would grow
+                // the body away from the world's origin.
+                let (_, turn, place) = world.to_scale_rotation_translation();
+                let align = Affine3A::from_rotation_translation(turn, place) * targets[i].inverse();
                 targets.iter().map(|t| align * *t).collect()
             }
             _ => targets,
@@ -408,7 +414,8 @@ impl Ragdoll {
                     };
                     let (axis, angle) = rotation.to_axis_angle();
                     Affine3A::from_scale_rotation_translation(
-                        scale,
+                        // Each tick takes its share of the scale too.
+                        scale.powf(1.0 / ticks),
                         Quat::from_axis_angle(axis, angle / ticks),
                         translation / ticks,
                     )
@@ -512,7 +519,9 @@ impl Ragdoll {
                 retention[2]
             };
             for i in 0..4 {
-                let v = p.positions[i] - p.previous[i];
+                // A particle never carries more than MAX_SPEED: a deep
+                // contact push must not turn into a runaway velocity.
+                let v = (p.positions[i] - p.previous[i]).clamp_length_max(MAX_SPEED / BODY_HZ);
                 p.previous[i] = p.positions[i];
                 p.positions[i] += v * keep + gravity;
             }
@@ -549,6 +558,9 @@ impl Ragdoll {
                     let (centre, radius) = p.spheres[k];
                     let world = frame.transform_point3(centre);
                     if let Some(push) = contact(world, radius) {
+                        // A sphere found deep inside geometry is pushed out
+                        // a little at a time.
+                        let push = push.clamp_length_max(2.0 * radius);
                         let w = weights(p, centre);
                         p.displace(&w, push);
                         // Friction: slip under the limit (larger on flat

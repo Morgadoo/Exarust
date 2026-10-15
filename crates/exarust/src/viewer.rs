@@ -219,16 +219,16 @@ fn setup(
                 commands.entity(model).insert((
                     Transform::from_rotation(Quat::from_rotation_y(start_yaw)),
                     exa_anim::Animator::new("Default", "Idle"),
-                    exa_game::player::PlayerBody {
-                        yaw: start_yaw,
-                        combat: false,
-                    },
+                    exa_game::player::PlayerBody::new(start_yaw),
                     exa_character::Outfit::of_models(&options.outfit),
                     ChildOf(player),
                 ));
                 commands.entity(model).insert((
                     exa_combat::Fighter::default(),
                     exa_physics::body::Physical::default(),
+                    // A lit torch in the left hand, as the player carries
+                    // one through the original's dungeons.
+                    exa_game::torch::CarriesTorch,
                 ));
                 if let Some(w) = &options.weapon {
                     commands
@@ -289,7 +289,7 @@ fn setup(
                         ev100: options.ev100,
                     },
                     Transform::from_translation(start + Vec3::new(0.0, 4.0, 4.0)),
-                    exa_game::player::ChaseCamera::default(),
+                    exa_game::player::ChaseCamera::behind(start_yaw),
                     SpatialListener::new(0.3),
                 ))
                 .id();
@@ -450,6 +450,8 @@ fn shove_at_frame(
 
 fn autowalk(options: Res<Options>, mut keys: ResMut<ButtonInput<KeyCode>>) {
     if options.autowalk {
+        // Unattended: only the scripted key, whatever reaches the window.
+        keys.reset_all();
         keys.press(KeyCode::KeyW);
     }
 }

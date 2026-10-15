@@ -57,6 +57,17 @@ fn limit_backlog(mut time: ResMut<Time<Virtual>>) {
 #[derive(Resource)]
 pub struct Physics(pub PhysicsWorld);
 
+impl Physics {
+    /// How far along `direction` (unit) from `origin` the first fixed
+    /// collider lies, within `max` metres.
+    pub fn fixed_hit(&self, origin: Vec3, direction: Vec3, max: f32) -> Option<f32> {
+        let ray = Ray::new(origin, direction);
+        self.0
+            .cast_ray(&ray, max, true, QueryFilter::only_fixed())
+            .map(|(_, toi)| toi)
+    }
+}
+
 /// Marks a subtree whose meshes become static triangle-mesh colliders once
 /// their world transforms are known. Removed after the colliders are built.
 #[derive(Component)]
