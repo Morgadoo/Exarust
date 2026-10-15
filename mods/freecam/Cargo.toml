@@ -1,0 +1,24 @@
+[workspace]
+
+[package]
+name = "exa_freecam"
+description = "Exanima mod: free camera and a level picker"
+edition = "2021"
+license = "Apache-2.0"
+version = "0.1.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+name = "exa_freecam"
+
+[dependencies]
+minhook = "0.8"
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemServices",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }

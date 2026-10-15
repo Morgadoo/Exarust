@@ -1,0 +1,12 @@
+[plugin]
+id = "dev.exarust.freecam"
+executable = "exa_freecam.dll"
+enabled = true
+name = "Free camera"
+description = "Fly through and out of levels, and jump between maps."
+version = "0.1.0"
+supported_versions = []
+url = "https://github.com/morgadoo/Exarust"
+
+[plugin.author]
+name = "Exarust"
