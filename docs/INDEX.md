@@ -6,6 +6,7 @@
 | [`WORKFLOW.md`](WORKFLOW.md) | spec-driven development with OpenSpec: specs, changes, the propose → apply → archive loop |
 | [`RE-TOOLING.md`](RE-TOOLING.md) | REA + Ghidra setup and how reverse engineering of `Exanima.exe` is done |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | crate layers, schedules, asset data flow, determinism rules |
+| [`PERFORMANCE.md`](PERFORMANCE.md) | how the frame rate is kept without changing the picture: measurements, techniques, order of work |
 | [`UI.md`](UI.md) | the interface: the game's bitmap font, the frame-rate readout |
 | [`BUILD.md`](BUILD.md) | toolchain and system packages, building and running |
 | [`formats/`](formats/README.md) | every retail data format: layout, status, evidence |
