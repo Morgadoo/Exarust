@@ -16,6 +16,9 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    # Bevy's windowing and audio link against these system libraries.
+    - name: System libraries
+      run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
     - name: Build
       run: cargo build --verbose
     - name: Run tests
