@@ -331,8 +331,30 @@ side-by-side check on the GPU at the same camera.
   parent and its grandparent. A fire's light hangs under the fire node, so a
   torch does not shadow its own flame. Only the torch's hidden `TorchSdw`
   disc casts, a narrow cone along the handle. A light at its object's root
-  excludes nothing. Bevy has no per-light casters, so the excluded meshes
-  cast no shadows at all.
+  excludes nothing. The excluded meshes still cast into other lights.
+- **Shadow links**: a mesh casts into a light only when the two are linked,
+  as the original links nodes to lights:
+  - their bounding spheres overlap (the light's of radius R);
+  - (1 − 0.8·d/R)⁴ · luma₆₀₁(linear colour · intensity) > 0.01, with d the
+    distance from the light to the mesh's sphere;
+  - the mesh is not in the light's own object.
+
+  Links are kept current incrementally: a moved light is relinked against
+  every mesh, a moved mesh against every light. Exarust hands them to Bevy
+  as render layers: each shadowed light has a layer of its own (from 2 up;
+  layer 1 is the supersampling resolve quad), a mesh carries layer 0 and its
+  lights' layers, and the scene cameras see them all. In exanima01 (229
+  lights, 13 000 meshes) this keeps memory flat at about 3 GB. With every
+  mesh in reach casting into every light, Bevy's per-face bookkeeping grew
+  to about 12 GB and the frame rate fell below 2 FPS.
+
+  Not done yet: the original's other limits on the same links. Lights stop
+  at walls (a top-down flood fill through the 6 m wall grid, at most 12
+  lights per cell). A mesh is lit by at most its 6 strongest links. Cube
+  faces are rendered only when they hold a visible receiver and a light or
+  caster has moved; otherwise they are cached across frames. Draw sets are
+  per room, with one portal step into the next room. The notes are in
+  `context/re/optimizations.md`.
 - **Filter** (point lights):
   - the surface is pushed toward the light by 0.008·(1 − |N·L|)·d along the
     normal;

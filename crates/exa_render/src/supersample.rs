@@ -108,8 +108,9 @@ pub struct DisplayCamera;
 /// a supersampling display.
 pub type SceneCamera = (With<Camera3d>, Without<DisplayCamera>);
 
-/// The render layer of the resolve quad.
-const RESOLVE_LAYER: usize = 31;
+/// The render layer of the resolve quad. Layers above it are free for the
+/// lights' shadow casters.
+pub const RESOLVE_LAYER: usize = 1;
 /// Scene resolution per window pixel, on each axis.
 const SCALE: u32 = 2;
 

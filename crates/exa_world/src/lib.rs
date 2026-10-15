@@ -7,6 +7,7 @@ pub mod fire;
 pub mod flame;
 pub mod gi_volume;
 pub mod grid;
+pub mod shadow_links;
 pub mod start;
 pub mod terrain;
 
@@ -26,6 +27,7 @@ impl Plugin for WorldPlugin {
             fire::FirePlugin,
             flame::FlamePlugin,
             gi_volume::GiVolumePlugin,
+            shadow_links::ShadowLinksPlugin,
         ));
     }
 }
@@ -280,9 +282,18 @@ pub fn spawn_model(commands: &mut Commands, model: &Model, placement: Option<Tra
         let parent = node.parent.map_or(root, |p| entities[p]);
         commands.entity(entities[i]).insert(ChildOf(parent));
     }
-    for node in self_shadowless(model) {
+    let mut excluded: Vec<Vec<Entity>> = vec![Vec::new(); model.nodes.len()];
+    for (node, anchor) in self_shadowless(model) {
+        excluded[node].push(entities[anchor]);
+    }
+    for (node, anchors) in excluded.into_iter().enumerate() {
+        if anchors.is_empty() {
+            continue;
+        }
         for &part in &parts_of[node] {
-            commands.entity(part).insert(bevy::light::NotShadowCaster);
+            commands
+                .entity(part)
+                .insert(shadow_links::ShadowExclude(anchors.clone()));
         }
     }
     root
@@ -292,8 +303,9 @@ pub fn spawn_model(commands: &mut Commands, model: &Model, placement: Option<Tra
 /// map, as the original does: the light's siblings, its parent and its
 /// grandparent (a fire's light hangs under the fire node, so a torch does
 /// not shadow its own flame). A light at the model's root leaves out
-/// nothing. Bevy has no per-light casters, so these cast no shadows at all.
-fn self_shadowless(model: &Model) -> Vec<usize> {
+/// nothing. Each node comes with the light's parent node, which identifies
+/// the light ([`shadow_links::ShadowExclude`]).
+fn self_shadowless(model: &Model) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     for (i, node) in model.nodes.iter().enumerate() {
         // The light's parent: the fire node for fires, the light node's
@@ -307,9 +319,13 @@ fn self_shadowless(model: &Model) -> Vec<usize> {
         };
         let Some(parent) = parent else { continue };
         let siblings = (0..model.nodes.len()).filter(|&j| model.nodes[j].parent == Some(parent));
-        out.extend(siblings.filter(|&j| j != i || node.fire.is_some()));
-        out.push(parent);
-        out.extend(model.nodes[parent].parent);
+        out.extend(
+            siblings
+                .filter(|&j| j != i || node.fire.is_some())
+                .map(|j| (j, parent)),
+        );
+        out.push((parent, parent));
+        out.extend(model.nodes[parent].parent.map(|g| (g, parent)));
     }
     out.sort_unstable();
     out.dedup();
@@ -351,7 +367,13 @@ const UNRANGED: f32 = 500.0;
 /// injection: colour linearised and scaled by the intensity (the multiplier
 /// scales only the GI), falling to nothing at 1.25 radii when ranged, shaped
 /// vertically when it has a spot, casting shadows softened by its softness.
-pub fn light_bundle(light: &Light) -> (PointLight, exa_render::gi::GiMultiplier) {
+pub fn light_bundle(
+    light: &Light,
+) -> (
+    PointLight,
+    exa_render::gi::GiMultiplier,
+    shadow_links::ShadowReach,
+) {
     /// The falloff reaches zero this far out, in radii.
     const REACH: f32 = 1.25;
     let c = exa_render::material::linear_rgb(light.color);
@@ -373,7 +395,11 @@ pub fn light_bundle(light: &Light) -> (PointLight, exa_render::gi::GiMultiplier)
         shadow_normal_bias: z / exa_render::NORMAL_BIAS_SCALE,
         ..default()
     };
-    (point, exa_render::gi::GiMultiplier(light.multiplier))
+    (
+        point,
+        exa_render::gi::GiMultiplier(light.multiplier),
+        shadow_links::ShadowReach::new(c, light.intensity, light.radius),
+    )
 }
 
 /// Spawns a level from `Resource.rpk` (`name` with or without `.rfc`): its own
