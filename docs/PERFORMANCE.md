@@ -78,12 +78,14 @@ or the original does not do it).
 | Texture compression (BC) | done | BC textures upload as BC. |
 | Mipmaps | done | Every stored level is uploaded. Terrain reads its base level on purpose, as the original's mip-less composites show. |
 | Texture streaming | later | The original decodes textures on a loader thread with a placeholder until ready. That shortens loads, not frames. |
-| Fixed-step simulation | done | Physics, AI and particles tick at 83 Hz, as in the original. |
-| Physics sleeping, AI throttling | later | The original picks targets for one AI per tick. |
+| Fixed-step simulation | done | Physics, AI and particles tick at 83 Hz, as in the original. A slow frame catches up at most 4 steps, as the original drops its backlog; the fixed schedule no longer spirals (play mode 6 → 35 FPS). Characters are drawn between steps. |
+| Settled characters | done | A grounded character not trying to move is not swept by the character controller. |
+| Physics sleeping | done | A limp body still for 2 s sleeps until shoved; its contacts are with fixed geometry only, so it would not have moved. |
+| AI throttling | later | The original picks targets for one AI per tick. |
 
 ## Order of work
 
-1. Play mode's CPU cost: characters' animation, simulation and skinning.
+1. Play mode while walking: a moving character and its carried light.
 2. Depth prepass, then Bevy's GPU occlusion culling.
 3. Room and portal culling from the grid's rooms and doors.
 4. Shader specialisation of the surface materials.

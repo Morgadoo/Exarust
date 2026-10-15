@@ -182,7 +182,7 @@ This phase carries the most risk and defines how the game feels.
 
 - `exa_anim`: skeleton, clip sampling and blending, procedural layers
   (aim, look-at, stance, idle noise) that produce **target poses**.
-- `exa_physics`: fixed-step simulation (start at 120 Hz). Rigid bodies and
+- `exa_physics`: fixed-step simulation at the original's 83 Hz. Rigid bodies and
   collision for props and level geometry. **Articulated character bodies**
   driven by joint motors toward the target pose (an "active ragdoll"), with
   balance (`Rebalance`, falls, get-ups), momentum and joint limits.

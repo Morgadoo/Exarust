@@ -26,6 +26,11 @@ const LINK_ITERATIONS: usize = 20;
 const CONTACT_ITERATIONS: usize = 8;
 /// Ticks run per frame at most.
 const MAX_TICKS: u32 = 4;
+/// A limp body whose particles all stay slower than this (m/s) ...
+const SLEEP_SPEED: f32 = 0.01;
+/// ... for this many ticks (2 s) falls asleep. Its contacts are with fixed
+/// geometry only, so it stays exactly as it is until shoved.
+const SLEEP_TICKS: u32 = 166;
 /// Relative inverse mass per part (bone − 1): pelvis, legs, torso, head,
 /// arms, hands.
 const INVERSE_MASS: [f32; 18] = [
@@ -231,6 +236,10 @@ pub struct Ragdoll {
     /// Ticks run in the last frame.
     pub ticks: u32,
     accumulator: f32,
+    /// Ticks a limp body has lain still.
+    still: u32,
+    /// A limp body at rest is not simulated until something shoves it.
+    pub asleep: bool,
 }
 
 /// Muscles of a living body: the animated pose it follows.
@@ -323,13 +332,31 @@ impl Ragdoll {
             drive: None,
             ticks: 0,
             accumulator: 0.0,
+            still: 0,
+            asleep: false,
         }
     }
 
     /// Gives the body muscles following its animation.
     pub fn with_drive(mut self) -> Self {
         self.drive = Some(Drive::default());
+        self.wake();
         self
+    }
+
+    /// Simulates the body again.
+    pub fn wake(&mut self) {
+        self.asleep = false;
+        self.still = 0;
+    }
+
+    /// The fastest particle's speed in the last tick (m/s).
+    fn fastest(&self) -> f32 {
+        self.parts
+            .iter()
+            .flat_map(|p| (0..4).map(move |i| (p.positions[i] - p.previous[i]).length()))
+            .fold(0.0, f32::max)
+            * BODY_HZ
     }
 
     /// Sets the animated pose to follow: the root's world transform and each
@@ -437,6 +464,7 @@ impl Ragdoll {
 
     /// Applies a blow to the part of `bone`.
     pub fn shove(&mut self, bone: usize, velocity: Vec3, daze: f32) {
+        self.wake();
         let step = velocity / BODY_HZ;
         if let Some(p) = self.parts.iter_mut().find(|p| p.bone == bone) {
             for prev in &mut p.previous {
@@ -645,6 +673,11 @@ pub fn step_ragdolls(
         }
     };
     for (_, mut body) in &mut bodies {
+        if body.asleep {
+            body.accumulator = 0.0;
+            body.ticks = 0;
+            continue;
+        }
         body.accumulator += time.delta_secs();
         let mut ticks = 0;
         while body.accumulator >= 1.0 / BODY_HZ && ticks < MAX_TICKS {
@@ -654,6 +687,14 @@ pub fn step_ragdolls(
         }
         body.accumulator = body.accumulator.min(1.0 / BODY_HZ);
         body.ticks = ticks;
+        if body.drive.is_none() && ticks > 0 {
+            body.still = if body.fastest() < SLEEP_SPEED {
+                body.still + ticks
+            } else {
+                0
+            };
+            body.asleep = body.still >= SLEEP_TICKS;
+        }
         // Local transforms from the parts' world transforms.
         let worlds: Vec<Affine3A> = body.parts.iter().map(Part::transform).collect();
         for (i, p) in body.parts.iter().enumerate() {
@@ -698,6 +739,16 @@ mod tests {
                 links: vec![(Vec3::new(0.0, 0.2, 0.0), Vec3::new(0.0, -0.2, 0.0), slack)],
             },
         ])
+    }
+
+    #[test]
+    fn resting_limp_bodies_sleep_until_shoved() {
+        let mut body = two_parts(0.0);
+        body.still = SLEEP_TICKS;
+        body.asleep = true;
+        body.shove(1, Vec3::X, 0.0);
+        assert!(!body.asleep);
+        assert_eq!(body.still, 0);
     }
 
     #[test]
