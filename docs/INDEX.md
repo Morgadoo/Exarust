@@ -3,6 +3,7 @@
 | file | about |
 |---|---|
 | [`PLAN.md`](PLAN.md) | the reimplementation plan: phases, milestones, risks, next steps |
+| [`COMPONENT-MAP.md`](COMPONENT-MAP.md) | every component of the original `Exanima.exe` set against Exarust: sections, coverage, largest missing parts |
 | [`WORKFLOW.md`](WORKFLOW.md) | spec-driven development with OpenSpec: specs, changes, the propose → apply → archive loop |
 | [`RE-TOOLING.md`](RE-TOOLING.md) | REA + Ghidra setup and how reverse engineering of `Exanima.exe` is done |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | crate layers, schedules, asset data flow, determinism rules |

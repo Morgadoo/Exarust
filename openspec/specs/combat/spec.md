@@ -20,12 +20,15 @@ The system SHALL register at most one contact per attack and target, when the bl
 - **WHEN** an opponent's attack sweeps its blade through the player's body
 - **THEN** one hit on the nearest body part is reported
 
-### Requirement: Damage and reactions
-The system SHALL resolve each weapon contact by the original's damage model. The inputs are the weapon's stat record, where along the weapon and how fast the struck point met the part, and whether the blow was a stab. The blow passes through the struck part's two armour layers by a coverage roll, giving impact, crush, slash and pierce through padding and resistances. Part multipliers apply. The system SHALL take the yellow and red health bars accordingly, daze the victim, shove it on heavy impact, play a stagger reaction, and make the body go limp when yellow health falls below 0.01.
+### Requirement: Blow damage
+The system SHALL resolve each weapon contact by the original's damage model. The inputs are the weapon's stat record, where along the weapon and how fast the struck point met the part, and whether the blow was a stab. The blow passes through the struck part's two armour layers by a coverage roll, giving impact, crush, slash and pierce through padding and resistances. Part multipliers apply.
 
 #### Scenario: Armour stops the edge
 - **WHEN** a sword cut lands on a chest fully covered by plate
 - **THEN** its penetration is less than a third of the same cut on bare flesh
+
+### Requirement: Blow reactions
+The system SHALL take the yellow and red health bars by a resolved blow, daze the victim, shove it on heavy impact, play a stagger reaction, and make the body go limp when yellow health falls below 0.01.
 
 #### Scenario: Knock-down
 - **WHEN** a fighter's yellow health falls below 0.01

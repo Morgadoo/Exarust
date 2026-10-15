@@ -105,14 +105,14 @@ checked outside the engine through exporters.
 | work item | crate | notes |
 |---|---|---|
 | ✅ Static mesh (`3D03`): vertex streams, index maps, triangles, material groups, node transforms | `exa_formats::rfc` | done: 23 065/23 065 retail meshes decode; cm → m, right-handed Y-up confirmed |
-| Materials (`BA01`, `.rml` libraries): ✅ texture layers and slots; parameter block (colours, shader/plug-in IDs) still open | `exa_formats::material` | map the 184-byte parameter block to plug-in classes seen in the binary (`TMaterialPlugIn`, `TRTMatPlugIn`, `TProcMaterial`) |
-| Skinned meshes, weights, morph targets (`*base.rfc`, `*morph.rfc`) | `exa_formats::rfc` | |
-| Skeleton and motions (`.rsq`) | `exa_formats::rsq` | 18 bones, 48 clips, keyframe controllers (linear, Catmull-Rom) |
-| Level grid (`3DED`), level sections (`3DE10000`, `DBC0`, …), object placement | `exa_formats::level` | wall/floor sets `gews_*` / `gefs_*` |
-| Terrain (`.rft`) and terrain tables (`.ftb`) | `exa_formats::terrain` | heightfield, layers, grass |
+| Materials (`BA01`, `.rml` libraries): ✅ texture layers and slots; ✅ parameter block colours, opacity, gloss, specular level, render class, flags, kind and displacement shadows; subsurface colour, opacity fall-off and refraction still open | `exa_formats::material` | map the rest of the 184-byte block to the plug-in classes seen in the binary (`TMaterialPlugIn`, `TRTMatPlugIn`, `TProcMaterial`) |
+| ✅ Skinned meshes: weights from seams (`add-skinning`), every race's body (`add-race-bodies`); morph targets (`*morph.rfc`) still open | `exa_formats::rfc`, `exa_assets::skin` | |
+| ✅ Skeleton and motions (`.rsq`) | `exa_formats::rsq` | 18 bones, 48 clips, keyframe controllers (linear, Catmull-Rom) |
+| ✅ Level grid (`3DED`), level sections (`3DE10000`, `DBC0`, …), placed objects and characters, starts | `exa_formats::{level,characters}` | wall/floor sets `gews_*` / `gefs_*` |
+| ✅ Terrain (`.rft`) and terrain tables (`.ftb`) | `exa_formats::terrain` | heightfield, layers, grass and plants |
 | ~~Packed `.rfi` storage~~ | `exa_formats::rfi` | done in Phase 0 (RLE) |
-| Databases (`races`, `objdb`, `charroles`, `locales`, `objstrings`) | `exa_formats::rdb` | record schemas |
-| Factories, actors, powers, dialogue (`.rcd`) | `exa_formats::{factory,actor,power,dialogue}` | |
+| Databases: ✅ `races`, `objdb` (apparel, weapons, layer table), `locales` (level list); `charroles` and `objstrings` still open | `exa_formats::{rdb,races,objdb}` | record schemas |
+| Factories ✅ (`add-weapon-factories`); actors, powers, dialogue (`.rcd`) still open | `exa_formats::{factory,actor,power,dialogue}` | |
 | Shader libraries (`.flb`) | `exa_formats::flb` | optional: capturing the running game with RenderDoc/apitrace gives the plain GLSL directly |
 | Exporters: ✅ glTF for static meshes with textures; skinned characters and assembled levels open; PNG ✅; WAV | `exa_tool` | check results in Blender |
 | Corpus test: parse every entry and report coverage | `exa_tool corpus` | ✅ `corpus meshes`; more kinds as formats land |
@@ -137,9 +137,12 @@ shadows and fog on the outdoor arenas.
 Done (change `refine-grid-and-terrain`): wall pieces' own floor/ceiling
 strips and occluders, the terrain height pass. Done (change
 `add-vegetation`): grass and plants grown as the original grows them.
+Done (change `add-outdoor-sky`): an open sky over the outdoor arenas
+(Bevy's atmosphere stands in for the original's sky shader, which is not
+decoded).
 Remaining: ceiling caps of terrain cells, per-room mesh merging, rooms and
-portals, terrain gloss textures, fine displacement, the sky, time of day
-and weather of the outdoor arenas,
+portals, terrain gloss textures, fine displacement, the original's sky
+shader, time of day and weather of the outdoor arenas,
 sectors/portals (the room flood fill is understood),
 `exanima://` asset source, streaming.
 
@@ -186,21 +189,33 @@ This phase carries the most risk and defines how the game feels.
   collision for props and level geometry. **Articulated character bodies**
   driven by joint motors toward the target pose (an "active ragdoll"), with
   balance (`Rebalance`, falls, get-ups), momentum and joint limits.
-  - Decision: prototype collision and rigid bodies on **avian3d** (ECS-native,
-    deterministic mode). Keep the character solver in-house behind
-    `exa_physics` so it can later be tuned or replaced to match the original.
+  - Decision: **rapier3d** for level colliders, props and the player
+    capsule. The character solver is in-house behind `exa_physics` (done,
+    see above), so it can be tuned to match the original.
 - `exa_character`: race body plus morphs, skinning, hair, apparel meshes fitted
   to the body (the original uses skin pivots and edge splitting, see
   `TSkinBuilder` and `TEdgSplt`).
-- Player control matching the original: movement relative to the camera, the
-  body facing the mouse, combat mode toggle, attacks steered by mouse
-  movement, run/walk, crouch, interact. Camera: elevated third-person follow
-  with zoom.
+- Player control matching the original (done, `original-controls-and-torch`,
+  see `docs/PLAYER.md`): W walks the heading and A/D steer it, the right
+  button walks to the cursor, Tab toggles combat mode where the body faces
+  the cursor and the mouse steers attacks. Camera at a fixed 20 m with a
+  field-of-view zoom. Still to do: crouch, interact.
 
 **M3 "standing man":** a fully dressed character walks around a level under
 player control, stumbles when pushed, falls and gets up.
 
-### Phase 4 — Combat and items
+### Phase 4 — Combat and items (started)
+
+Done (change `add-combat-prototype`): held weapons, attacks steered by the
+mouse, hits between blade and body parts, knock-downs and a duellist.
+Done (change `add-weapon-factories`): weapons assembled from the factory
+recipes with the original's seeded choices, deforms and painted parts.
+Done (change `add-damage-model`): weapon stats, apparel protection and
+races' natural armour decoded, and every blow resolved by the original's
+model: the zone along the weapon, the speed of the struck point, two armour
+layers per part with the coverage roll, impact, crush, slash and pierce.
+Still to do: inventory and containers, injuries beyond damage, blocking,
+parrying, grabs, practice mode.
 
 - `exa_items`: item database, item instances, inventory and containers,
   equip and wield, weapon assembly from factories, mass and centre of
@@ -216,7 +231,13 @@ player control, stumbles when pushed, falls and gets up.
 **M4 "first duel":** fight a passive or scripted opponent in an arena.
 Hits land where the weapon actually touched, and armour visibly matters.
 
-### Phase 5 — Visual and audio fidelity
+### Phase 5 — Visual and audio fidelity (started)
+
+Done: the original's render pipeline (legacy and PBR programs, the
+environment cube, parallax, supersampling without MSAA, sharpening),
+voxel GI, fires and their particles, point lights that stop at walls with
+cached cube shadows, and basic audio (music, ambience, impacts, footsteps).
+See `docs/RENDERING.md` and `docs/PERFORMANCE.md`.
 
 - Materials: one `ExaMaterial` whose parameters follow
   [OpenPBR](https://github.com/AcademySoftwareFoundation/OpenPBR) names
@@ -301,15 +322,17 @@ holds the runtime and the documentation of formats and behaviour.
 | Bevy API churn | upgrade cost | pinned version, thin integration crates |
 | Legal | takedown | no assets, no decompiled code, no keys; the user must own the game |
 
-## 7. Immediate next steps (Phase 1, in order)
+## 7. Immediate next steps
 
-1. ✅ OpenSpec change `add-static-mesh-decoding`: static meshes, material
-   texture layers, `exa-tool export-gltf`, `exa-tool corpus meshes`. Waiting
-   on a visual mirroring check against the running game.
-2. ✅ Level props and grid header in Bevy (`exarust level`).
-3. ✅ Tile-grid builder: walls, floors and ceilings from the sets.
-4. ✅ Skeleton and motions (`.rsq`).
-5. Seam stitching between body parts, apparel on bodies, then the player
-   character in a level with physics (avian3d) and controls.
-4. `exa-tool corpus` coverage report.
-5. `exa_assets` asset source and loaders, then a Bevy level viewer (M2).
+[`COMPONENT-MAP.md`](COMPONENT-MAP.md) sets every component of the original
+against Exarust and lists the largest missing ones. In order:
+
+1. Bodies that stay on the floor after a shove, link PD muscles, recovery
+   steps, foot planting and collisions between bodies (Phase 3).
+2. Inventory, equipment and containers, then blocking and parrying
+   (Phase 4).
+3. The original's NPC brain: perception, targets and the combat state that
+   drives the same inputs as the player (Phase 6).
+4. Rooms and portals, and level transitions (Phase 2).
+5. `add-static-mesh-decoding` is still open, waiting on a visual mirroring
+   check against the running game.

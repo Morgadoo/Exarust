@@ -1,7 +1,9 @@
 # physical-body Specification
 
 ## Purpose
-TBD - created by archiving change add-ragdoll. Update Purpose after archive.
+Simulates every character's body as the original does: limb parts as rigid
+particle tetrahedra stepped at 83 Hz, muscles that pull them toward the
+animation, balance, falls and get-ups, blows, and limp bodies.
 
 ## Requirements
 

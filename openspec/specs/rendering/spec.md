@@ -1,7 +1,9 @@
 # rendering Specification
 
 ## Purpose
-TBD - created by archiving change add-render-pipeline. Update Purpose after archive.
+Draws levels, characters and effects the way the original renderer does:
+its surface shading, lights and shadows, voxel global illumination,
+post-processing and supersampling, on Bevy and wgpu.
 
 ## Requirements
 

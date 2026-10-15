@@ -2,8 +2,11 @@
 //! material list (`0xBA01`) and as entries of `.rml` material libraries.
 //!
 //! The payload is a 184-byte block of shading parameters followed by 56-byte
-//! texture layer records. Of the block, the diffuse colour (bytes 16..32) and
-//! specular colour (32..48) are decoded; the rest is not yet. Each layer names a texture and
+//! texture layer records. Of the block, the emissive, diffuse and specular
+//! colours, opacity, glossiness, specular level, render class, shading flags,
+//! material kind, extra flags and the displacement-shadow step and bias are
+//! decoded; the rest (among it the subsurface colour, the opacity fall-off and
+//! the refraction parameters) is not yet. Each layer names a texture and
 //! the slot it fills. Slot roles were assigned from the suffixes of the
 //! texture names that use them across the retail data (`d` diffuse, `n`
 //! normal, …).

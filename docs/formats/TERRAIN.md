@@ -139,8 +139,9 @@ the original does, by `(byte − 127) × 1.25 × (2 − normal y)` cm. The opaci
 there is boosted by 1.5, and each material contributes
 `f16 + (H − f17) × f18`. Neutral materials (0.5) store as byte 128, so painted
 ground rests about 1.25 cm above dungeon floors laid at 0 and covers them
-(dirt over flagstones). Not yet reproduced: the G texture, the fine
-displacement pass (B) and the grass placed from the plant records.
+(dirt over flagstones). Not yet reproduced: the G texture and the fine
+displacement pass (B). Grass and plants grow from the mask pass (see
+Vegetation); the plant records only give their colour.
 
 ### Plant (104 bytes)
 

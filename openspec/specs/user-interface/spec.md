@@ -1,7 +1,8 @@
 # user-interface Specification
 
 ## Purpose
-TBD - created by archiving change show-frame-rate. Update Purpose after archive.
+Shows the game's on-screen interface in the original's look, starting with
+its bitmap font and the frame-rate readout.
 
 ## Requirements
 
