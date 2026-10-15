@@ -61,6 +61,9 @@ pub mod flags {
     pub const DISPLACEMENT_SHADOWS: u32 = 8192;
     /// Debug view: the surface shows its raw GI sample (`EXA_GI_DEBUG`).
     pub const DEBUG_GI: u32 = 16384;
+    /// The frame is supersampled: each sub-frame takes its share of the
+    /// shadow and GI taps ([`crate::supersample::SplitTaps`]).
+    pub const SPLIT_TAPS: u32 = 32768;
 }
 
 #[derive(Clone, Copy, Debug, ShaderType)]

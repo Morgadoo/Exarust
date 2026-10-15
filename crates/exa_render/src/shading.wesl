@@ -71,19 +71,82 @@ fn light(s: Surface, l: vec3<f32>, colour: vec3<f32>) -> Lit {
     return out;
 }
 
-// The original's cube-shadow filter: eight taps of a fixed disc around the
-// light direction, turned per pixel, over the light's filter radius
-// (`PointLight::radius`: (softness + 1)·0.005), each a hardware 2 × 2
+// The original's cube-shadow filter: taps of a fixed eight-point disc around
+// the light direction, turned per window pixel, over the light's filter
+// radius (`PointLight::radius`: (softness + 1)·0.005), each a hardware 2 × 2
 // comparison; a normal offset of 0.008·(1 − |N·L|)·d and a 0.5 % depth bias.
+// The GI lookup takes the same taps.
 const SHADOW_TAPS = array<vec2<f32>, 8>(
     vec2(0.2725, -0.5487), vec2(-0.2880, 0.6186), vec2(0.3617, 0.1806), vec2(-0.5052, -0.2395),
     vec2(-0.3028, -0.6664), vec2(-0.8588, 0.4718), vec2(0.3960, 0.7947), vec2(0.7731, -0.3697),
 );
 const SHADOW_DEPTH_SCALE: f32 = 0.995;
+// A node's shadow-bias level v (0–7, the mesh tag's low bits) scales a
+// receiver's distances by 1/k_r and a caster's by 1/k_c, with
+// k_r = 1 − 0.005·v and k_c = k_r − 0.01 when v > 0 (terrain and floors 3,
+// grid set pieces 1). Exarust applies only the receiver side, as the margin
+// a surface keeps against itself: its distances are compared
+// 0.995·k_c/k_r short (1.5 % instead of 0.5 %).
+const SHADOW_BIAS_MASK: u32 = 7u;
 const SHADOW_NORMAL_OFFSET: f32 = 0.008;
 const FLIP_Z = vec3(1.0, 1.0, -1.0);
 
-fn point_shadow(id: u32, p: vec3<f32>, nrm: vec3<f32>, frag: vec2<f32>) -> f32 {
+// The disc taps a fragment takes, and the disc's turn (sin, cos).
+struct Taps {
+    first: i32,
+    count: i32,
+    turn: vec2<f32>,
+}
+
+// All eight taps; or, in a supersampled frame (`split`), the two of the
+// fragment's sub-frame, as the original spreads the taps over its four
+// sub-frames: each 2 × 2 block of the scene image is one window pixel and
+// its four pixels are the sub-frames, so the resolve averages all eight.
+fn taps(frag: vec2<f32>, split: bool) -> Taps {
+    var t: Taps;
+    var pixel = frag;
+    t.first = 0;
+    t.count = 8;
+    if split {
+        let cell = vec2<i32>(floor(frag));
+        t.first = 2 * ((cell.x & 1) + 2 * (cell.y & 1));
+        t.count = 2;
+        pixel = floor(frag * 0.5) + 0.5;
+    }
+    let turn = PI * fract(3.555713358 * pixel.x + 0.309269245 * pixel.y);
+    t.turn = vec2(sin(turn), cos(turn));
+    return t;
+}
+
+// Disc tap `j` turned by `t`.
+fn tap(t: Taps, j: i32) -> vec2<f32> {
+    let k = SHADOW_TAPS[j];
+    return vec2(k.x * t.turn.y - k.y * t.turn.x, k.x * t.turn.x + k.y * t.turn.y);
+}
+
+// The receiver's distance scale for shadow-bias level `v`.
+fn shadow_depth_scale(v: u32) -> f32 {
+    if v == 0u {
+        return SHADOW_DEPTH_SCALE;
+    }
+    let kr = 1.0 - 0.005 * f32(v);
+    return SHADOW_DEPTH_SCALE * (kr - 0.01) / kr;
+}
+
+// The shadow-bias level carried in a mesh tag.
+fn shadow_bias_level(tag: u32) -> u32 {
+    return tag & SHADOW_BIAS_MASK;
+}
+
+// Two axes across direction `d` (unit), as the original builds its disc
+// frame.
+fn disc_frame(d: vec3<f32>) -> array<vec3<f32>, 2> {
+    let ia = 1.0 / (1.00001 + d.z);
+    let bb = -d.x * d.y * ia;
+    return array<vec3<f32>, 2>(vec3(1.0 - d.x * d.x * ia, bb, -d.x), vec3(bb, 1.0 - d.y * d.y * ia, -d.y));
+}
+
+fn point_shadow(id: u32, p: vec3<f32>, nrm: vec3<f32>, t: Taps, depth_scale: f32) -> f32 {
     let lt = &view_bindings::clustered_lights.data[id];
     let l = (*lt).position_radius.xyz - p;
     let d = max(length(l), 1e-4);
@@ -91,26 +154,19 @@ fn point_shadow(id: u32, p: vec3<f32>, nrm: vec3<f32>, frag: vec2<f32>) -> f32 {
     // Toward the light from the surface pushed out along the normal.
     let push = (1.0 - abs(dot(nrm, ln))) * d * SHADOW_NORMAL_OFFSET;
     let s_vec = (l - nrm * push) / d;
-    // A frame around the light direction.
-    let ia = 1.0 / (1.00001 + ln.z);
-    let bb = -ln.x * ln.y * ia;
-    let ax = vec3(1.0 - ln.x * ln.x * ia, bb, -ln.x);
-    let ay = vec3(bb, 1.0 - ln.y * ln.y * ia, -ln.y);
-    let turn = PI * fract(3.555713358 * frag.x + 0.309269245 * frag.y);
-    let rb = vec2(sin(turn), cos(turn));
+    let axes = disc_frame(ln);
     let radius = (*lt).position_radius.w;
     var lit = 0.0;
-    for (var j = 0; j < 8; j++) {
-        let t = SHADOW_TAPS[j];
-        let rs = vec2(t.x * rb.y - t.y * rb.x, t.x * rb.x + t.y * rb.y);
-        let dir = (ax * rs.x + ay * rs.y) * radius - s_vec;
+    for (var j = t.first; j < t.first + t.count; j++) {
+        let rs = tap(t, j);
+        let dir = (axes[0] * rs.x + axes[1] * rs.y) * radius - s_vec;
         // The surface's distance along this tap, in Bevy's cube depth.
-        let q = normalize(dir) * d * SHADOW_DEPTH_SCALE;
+        let q = normalize(dir) * d * depth_scale;
         let major = max(abs(q.x), max(abs(q.y), abs(q.z)));
         let zw = -major * (*lt).light_custom_data.xy + (*lt).light_custom_data.zw;
         lit += cube_compare(dir * FLIP_Z, id, zw.x / zw.y);
     }
-    return lit / 8.0;
+    return lit / f32(t.count);
 }
 
 fn cube_compare(dir: vec3<f32>, id: u32, depth: f32) -> f32 {
@@ -154,8 +210,9 @@ fn view_depth(world_position: vec4<f32>) -> f32 {
 }
 
 // Every point light and the sun on surface `s` at `world_position`, with
-// shadows when the mesh receives them (`nrm` offsets the shadow lookups).
-fn direct(s: Surface, world_position: vec4<f32>, nrm: vec3<f32>, frag: vec2<f32>, receiver: bool) -> Lit {
+// shadows when the mesh receives them (`nrm` offsets the shadow lookups,
+// `t` are the fragment's disc taps, `bias` its shadow-bias level).
+fn direct(s: Surface, world_position: vec4<f32>, nrm: vec3<f32>, frag: vec2<f32>, t: Taps, receiver: bool, bias: u32) -> Lit {
     var out: Lit;
     let p = world_position.xyz;
     let view_z = view_depth(world_position);
@@ -173,7 +230,7 @@ fn direct(s: Surface, world_position: vec4<f32>, nrm: vec3<f32>, frag: vec2<f32>
         }
         var shadow = 1.0;
         if receiver && ((*lt).flags & mesh_view_types::POINT_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u {
-            shadow = point_shadow(id, p, nrm, frag);
+            shadow = point_shadow(id, p, nrm, t, shadow_depth_scale(bias));
         }
         let lit = light(s, to / max(d, 1e-4), (*lt).color_inverse_square_range.rgb * atn * shadow);
         out.diffuse += lit.diffuse;
@@ -192,9 +249,9 @@ fn direct(s: Surface, world_position: vec4<f32>, nrm: vec3<f32>, frag: vec2<f32>
     return out;
 }
 
-// The GI volume around a surface point: four taps 20 cm out along the
-// normal, spread across the tangent plane; light and openness averaged.
-// `origin` and `extent` place the volume (metres).
+// The GI volume around a surface point: the fragment's disc taps (`t`),
+// spread half a unit across the normal and taken 20 cm out along it; light
+// and openness averaged. `origin` and `extent` place the volume (metres).
 fn gi_sample(
     volume: texture_3d<f32>,
     volume_sampler: sampler,
@@ -202,19 +259,22 @@ fn gi_sample(
     extent: vec3<f32>,
     p: vec3<f32>,
     n: vec3<f32>,
+    t: Taps,
 ) -> vec4<f32> {
+    // Any frame across the normal will do (the disc is turned per pixel);
+    // this one holds for every normal, unlike the shadows' frame, which
+    // fails toward −Z.
     let a = select(vec3(0.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0), abs(n.y) > 0.9);
     let ax = normalize(cross(n, a));
     let ay = cross(n, ax);
     var sum = vec4(0.0);
-    for (var i = 0; i < 4; i++) {
-        let sx = select(-0.5, 0.5, (i & 1) == 1);
-        let sy = select(-0.5, 0.5, (i & 2) == 2);
-        let d = n + ax * sx + ay * sy;
+    for (var j = t.first; j < t.first + t.count; j++) {
+        let rs = tap(t, j);
+        let d = n + (ax * rs.x + ay * rs.y) * 0.5;
         let w = (p + d * 0.2 - origin) / extent;
         sum += textureSampleLevel(volume, volume_sampler, w.xzy, 0.0);
     }
-    return sum * 0.25;
+    return sum / f32(t.count);
 }
 
 // Whether `p` lies inside the GI volume.

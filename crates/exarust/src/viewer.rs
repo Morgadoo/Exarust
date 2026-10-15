@@ -364,12 +364,18 @@ fn setup(
 }
 
 fn fly_camera(
+    options: Res<Options>,
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     mut q: Query<(&mut Transform, &mut FlyCamera)>,
 ) {
+    // An unattended screenshot keeps its camera: the window takes the
+    // focus when it opens, and typing elsewhere would steer it.
+    if options.screenshot.is_some() {
+        return;
+    }
     let Ok((mut t, mut cam)) = q.single_mut() else {
         return;
     };

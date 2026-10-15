@@ -49,7 +49,15 @@ impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "terrain.wesl");
         app.add_plugins(MaterialPlugin::<TerrainMaterial>::default())
-            .add_systems(PostUpdate, (apply_splats, give_terrain_gi).chain());
+            .add_systems(
+                PostUpdate,
+                (
+                    apply_splats,
+                    give_terrain_gi,
+                    exa_render::supersample::sync_split_taps::<TerrainMaterial>,
+                )
+                    .chain(),
+            );
     }
 }
 
@@ -139,6 +147,19 @@ pub mod terrain_flags {
     pub const ENVIRONMENT: u32 = 2;
     /// Debug view: the raw GI sample (`EXA_GI_DEBUG`).
     pub const DEBUG_GI: u32 = 4;
+    /// The frame is supersampled: each sub-frame takes its share of the
+    /// shadow and GI taps (`exa_render::supersample::SplitTaps`).
+    pub const SPLIT_TAPS: u32 = 8;
+}
+
+impl exa_render::supersample::SplitTapsFlag for TerrainMaterial {
+    const BIT: u32 = terrain_flags::SPLIT_TAPS;
+    fn flags(&self) -> u32 {
+        self.params.flags
+    }
+    fn flags_mut(&mut self) -> &mut u32 {
+        &mut self.params.flags
+    }
 }
 
 fn shader() -> ShaderRef {

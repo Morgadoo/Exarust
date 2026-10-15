@@ -18,6 +18,20 @@ pub const POINT_SHADOW_SIZE: usize = 512;
 /// sees it; values carried in that field are divided by it first.
 pub const NORMAL_BIAS_SCALE: f32 = 2.0 / POINT_SHADOW_SIZE as f32 * std::f32::consts::SQRT_2;
 
+/// A node's shadow-bias level, carried to the shaders in the mesh tag:
+/// terrain and tile-grid floors are 3, other grid set pieces 1, everything
+/// else 0. A higher level keeps a surface's own shadow off itself (see
+/// `shading.wesl`).
+pub mod shadow_bias {
+    pub const FLOOR: u32 = 3;
+    pub const GRID_PIECE: u32 = 1;
+
+    /// The mesh tag for `level`.
+    pub fn tag(level: u32) -> bevy::mesh::MeshTag {
+        bevy::mesh::MeshTag::new(level & 7)
+    }
+}
+
 pub struct RenderPlugin;
 
 impl Plugin for RenderPlugin {

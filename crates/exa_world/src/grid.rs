@@ -630,8 +630,20 @@ fn spawn_node(
             Some((local, uvs)) if surfaced => uvs.remap(mesh, *local),
             _ => mesh.clone(),
         };
+        // Floors keep their own shadow off themselves as terrain does; the
+        // rest of a set piece less so.
+        let bias = if floor.is_some() {
+            exa_render::shadow_bias::FLOOR
+        } else {
+            exa_render::shadow_bias::GRID_PIECE
+        };
         let part = commands
-            .spawn((Mesh3d(mesh), MeshMaterial3d(material.clone()), ChildOf(e)))
+            .spawn((
+                Mesh3d(mesh),
+                MeshMaterial3d(material.clone()),
+                exa_render::shadow_bias::tag(bias),
+                ChildOf(e),
+            ))
             .id();
         if floor.is_some() {
             commands.entity(part).insert(crate::gi_volume::GiFloor);

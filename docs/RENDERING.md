@@ -287,8 +287,9 @@ even without GI, so part of the gap lies outside the GI. This needs a
 side-by-side check on the GPU at the same camera.
 
 **Shading**:
-- Four taps 20 cm out along the normal, spread across the tangent plane,
-  averaged. Light gives g, alpha gives the occlusion o.
+- The shadow filter's disc taps (below), turned the same way, spread half a
+  unit across the normal and taken 20 cm out along it, averaged. Light
+  gives g, alpha gives the occlusion o.
 - a = |g|; b = (1 − a)²·0.03/(a + 0.016) + 0.47a + 0.53, which lifts faint
   light.
 - ambient = g · lin(level ambient) · 15 · b · o.
@@ -341,7 +342,21 @@ side-by-side check on the GPU at the same camera.
   - the disc radius is (softness + 1)·0.005: 0.0075 for level lights
     (softness 0.5), and (2j + 1)·0.005 for fires, where the jitter j walks
     by ±0.0625 a tick within [0.87, 1.15];
-  - distances are compared 0.5 % short.
+  - distances are compared 0.5 % short;
+  - each node has a shadow-bias level v: 3 for terrain blocks and tile-grid
+    floors, 1 for other grid set pieces, 0 otherwise. For v > 0 the
+    original divides receiver distances by k_r = 1 − 0.005·v and caster
+    distances by k_c = k_r − 0.01, so a surface keeps about 1.5 % of the
+    light distance between itself and its own shadow. That is what keeps
+    floors free of acne at grazing light. Exarust carries v in the mesh
+    tag and applies the receiver side as that self margin (0.995·k_c/k_r);
+    the cross terms between levels are left out until the cube maps are
+    Exarust's own;
+  - in a supersampled frame each sub-frame takes two of the eight taps
+    (sub-frame i takes taps 2i and 2i + 1) and the turn is per window
+    pixel, so each output pixel still averages all eight. Exarust's
+    sub-frames are the four pixels of each 2 × 2 block of the scene image.
+    The GI lookup splits its taps the same way.
 - The sun's colour per unit of intensity is 160 lux in Exarust's scene units
   (scaled back in the shader).
 

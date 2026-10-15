@@ -12,7 +12,7 @@ import bevy_pbr::render::{
     mesh_types::MESH_FLAGS_SHADOW_RECEIVER_BIT,
 };
 import exa_render::shading::{
-    Surface, direct, schlick, gi_sample, in_gi, gi_ambient,
+    Surface, taps, direct, schlick, gi_sample, in_gi, gi_ambient,
     REFLECTION_STRENGTH, ENVIRONMENT_FALLBACK, AMBIENT_SCALE,
 };
 
@@ -38,6 +38,7 @@ struct TerrainSplat {
 const GI: u32 = 1u;
 const ENVIRONMENT: u32 = 2u;
 const DEBUG_GI: u32 = 4u;
+const SPLIT_TAPS: u32 = 8u;
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> splat: TerrainSplat;
 @group(constants::MATERIAL_BIND_GROUP) @binding(101) var diffuse0: texture_2d<f32>;
@@ -134,6 +135,8 @@ fn stack_height(below: f32, h: f32, a: f32, m: f32, k: i32) -> f32 {
     return mix(below, h, sharpen(a, m, nb.x, nb.y, splat.blend[k].z > 0.5));
 }
 
+// Terrain blocks' shadow-bias level (see `exa_render::shading`).
+const TERRAIN_SHADOW_BIAS: u32 = 3u;
 // The original's terrain diffuse factor (`MatDif`).
 const TERRAIN_DIFFUSE: f32 = 0.75;
 // Parallax scale in 6 m block units.
@@ -230,7 +233,8 @@ fn fragment(
     s.legacy = false;
 
     let receiver = (mesh[in.instance_index].flags & MESH_FLAGS_SHADOW_RECEIVER_BIT) != 0u;
-    let lit = direct(s, in.world_position, n, in.position.xy, receiver);
+    let disc = taps(in.position.xy, has(SPLIT_TAPS));
+    let lit = direct(s, in.world_position, n, in.position.xy, disc, receiver, TERRAIN_SHADOW_BIAS);
 
     let level = view_bindings::lights.ambient_color.rgb;
     var ambient = level * ENVIRONMENT_FALLBACK;
@@ -242,7 +246,7 @@ fn fragment(
     let gi_origin = splat.gi_origin.xyz;
     let gi_extent = splat.gi_extent.xyz;
     if has(GI) && in_gi(gi_origin, gi_extent, wp) {
-        let g = gi_sample(gi_volume, gi_sampler, gi_origin, gi_extent, wp, n);
+        let g = gi_sample(gi_volume, gi_sampler, gi_origin, gi_extent, wp, n, disc);
         if has(DEBUG_GI) {
             var dbg: FragmentOutput;
             dbg.color = vec4(g.rgb * 10.0, 1.0);

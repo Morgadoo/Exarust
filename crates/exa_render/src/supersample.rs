@@ -18,7 +18,7 @@ use bevy::render::render_resource::{
     AsBindGroup, Extent3d, TextureDimension, TextureFormat, TextureUsages,
 };
 use bevy::shader::ShaderRef;
-use bevy::window::{PrimaryWindow, WindowResized};
+use bevy::window::PrimaryWindow;
 
 use crate::post::ExaPost;
 
@@ -31,7 +31,65 @@ impl Plugin for SupersamplePlugin {
             MaterialPlugin::<ResolveMaterial>::default(),
             ExtractComponentPlugin::<DisplayCamera>::default(),
         ))
-        .add_systems(PostUpdate, (start_supersampling, follow_window).chain());
+        .init_resource::<SplitTaps>()
+        .add_systems(
+            PostUpdate,
+            (
+                start_supersampling,
+                follow_window,
+                sync_split_taps::<crate::material::ExaMaterial>,
+            )
+                .chain(),
+        );
+    }
+}
+
+/// Whether the scene is supersampled, so that each sub-frame takes its
+/// share of the shadow and GI taps, as the original spreads them over its
+/// sub-frames. Surface materials follow it through [`SplitTapsFlag`].
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SplitTaps(pub bool);
+
+/// A material whose shader splits its taps when its flag bit is set.
+pub trait SplitTapsFlag: Asset {
+    const BIT: u32;
+    fn flags(&self) -> u32;
+    fn flags_mut(&mut self) -> &mut u32;
+}
+
+impl SplitTapsFlag for crate::material::ExaMaterial {
+    const BIT: u32 = crate::material::flags::SPLIT_TAPS;
+    fn flags(&self) -> u32 {
+        self.params.flags
+    }
+    fn flags_mut(&mut self) -> &mut u32 {
+        &mut self.params.flags
+    }
+}
+
+/// Keeps every material's split-taps bit equal to [`SplitTaps`].
+pub fn sync_split_taps<M: SplitTapsFlag>(
+    split: Res<SplitTaps>,
+    mut materials: ResMut<Assets<M>>,
+    mut events: MessageReader<AssetEvent<M>>,
+) {
+    let added = events.read().filter_map(|e| match e {
+        AssetEvent::Added { id } => Some(*id),
+        _ => None,
+    });
+    let ids: Vec<AssetId<M>> = if split.is_changed() {
+        materials.ids().collect()
+    } else {
+        added.collect()
+    };
+    for id in ids {
+        let Some(m) = materials.get(id) else { continue };
+        if (m.flags() & M::BIT != 0) == split.0 {
+            continue;
+        }
+        if let Some(mut m) = materials.get_mut(id) {
+            *m.flags_mut() ^= M::BIT;
+        }
     }
 }
 
@@ -103,6 +161,7 @@ fn window_size(window: &Window) -> UVec2 {
 #[allow(clippy::too_many_arguments)]
 fn start_supersampling(
     mut commands: Commands,
+    mut split: ResMut<SplitTaps>,
     cameras: Query<(Entity, &Camera), Added<Supersample>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut images: ResMut<Assets<Image>>,
@@ -111,6 +170,7 @@ fn start_supersampling(
 ) {
     let Ok(window) = windows.single() else { return };
     for (entity, camera) in &cameras {
+        split.0 = true;
         let size = window_size(window) * SCALE;
         let image = images.add(scene_image(size));
         commands
@@ -164,17 +224,14 @@ fn start_supersampling(
     }
 }
 
-/// Rebuilds the scene image when the window changes size.
+/// Rebuilds the scene image whenever the window's size differs from it
+/// (checked every frame: the window may settle after the camera starts).
 fn follow_window(
-    mut resized: MessageReader<WindowResized>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut cameras: Query<(&mut RenderTarget, &mut SupersampleTarget)>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<ResolveMaterial>>,
 ) {
-    if resized.read().last().is_none() {
-        return;
-    }
     let Ok(window) = windows.single() else { return };
     let size = window_size(window) * SCALE;
     for (mut target, mut ss) in &mut cameras {

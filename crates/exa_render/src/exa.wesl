@@ -12,7 +12,7 @@ import bevy_pbr::render::{
     shadows,
 };
 import exa_render::shading::{
-    Surface, Lit, light, schlick, point_shadow, view_depth, vertical_shaping, gi_sample, in_gi,
+    Surface, Lit, taps, shadow_depth_scale, shadow_bias_level, light, schlick, point_shadow, view_depth, vertical_shaping, gi_sample, in_gi,
     gi_ambient,
     REFLECTION_STRENGTH, ENVIRONMENT_FALLBACK, AMBIENT_SCALE, SUN_LUX,
 };
@@ -49,6 +49,7 @@ const GI: u32 = 2048u;
 const HEIGHT_MAP: u32 = 4096u;
 const DISPLACEMENT_SHADOWS: u32 = 8192u;
 const DEBUG_GI: u32 = 16384u;
+const SPLIT_TAPS: u32 = 32768u;
 // Displacement-shadow taps toward each light: four per sub-sample over the
 // original's four supersampling passes.
 const SHADOW_STEPS: i32 = 16;
@@ -205,6 +206,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let h0 = dsp_val + material.displacement.w + 0.5;
     let receiver = (mesh[in.instance_index].flags & MESH_FLAGS_SHADOW_RECEIVER_BIT) != 0u;
 
+    let disc = taps(in.position.xy, has(SPLIT_TAPS));
+    let depth_scale = shadow_depth_scale(shadow_bias_level(mesh[in.instance_index].tag));
     // Point lights in this fragment's cluster.
     let view_z = view_depth(in.world_position);
     let ortho = view_bindings::view.clip_from_view[3].w == 1.0;
@@ -221,7 +224,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         }
         var shadow = 1.0;
         if receiver && ((*lt).flags & mesh_view_types::POINT_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u {
-            shadow = point_shadow(id, p, n, in.position.xy);
+            shadow = point_shadow(id, p, n, disc, depth_scale);
         }
         let l = to / max(d, 1e-4);
         if self_shadowed {
@@ -260,7 +263,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     if has(GI) && in_gi(gi_origin, gi_extent, p) {
         // Voxel GI: the volume's light, lifted where faint, × the level
         // ambient × 15 × openness; reflections take the cube × that.
-        let g = gi_sample(gi_volume, gi_sampler, gi_origin, gi_extent, p, n);
+        let g = gi_sample(gi_volume, gi_sampler, gi_origin, gi_extent, p, n, disc);
         if has(DEBUG_GI) {
             out.color = vec4(g.rgb * 10.0, 1.0);
             return out;
