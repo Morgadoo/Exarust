@@ -83,6 +83,17 @@ impl WeaponRecord {
         }
     }
 
+    /// The reach (m) of a wielder of body scale `scale` holding this
+    /// weapon: 60 cm times the scale plus the distance from the grip to
+    /// the weapon's sweet spot, 60 % of the way along its striking part.
+    /// The original measures the sweet spot on the weapon's last part and
+    /// adds the parts before it whole; on a weapon of one part, as here,
+    /// that is the same.
+    pub fn reach(&self, scale: f32) -> f32 {
+        let sweet = self.start + 0.6 * (self.end - self.start);
+        (60.0 * scale + self.length * sweet) / 100.0
+    }
+
     /// A human's fists: weightless, fully balanced, impact +0.33, no edge.
     pub fn fists(length: f32) -> Self {
         let mut s = StatBytes::default();
@@ -232,9 +243,10 @@ pub struct Outcome {
     pub yellow: f32,
     /// Share of the victim's wits taken.
     pub daze: f32,
-    /// Impact left after the armour.
+    /// Impact left after the armour: what shoves the victim, before its
+    /// readiness lessens the wound.
     pub impact: f32,
-    /// Penetration through the armour.
+    /// Penetration through the armour, lessened by the victim's readiness.
     pub penetration: f32,
     /// How far the weapon bites in (it sticks above 0.1).
     pub bite: f32,
@@ -244,14 +256,17 @@ pub struct Outcome {
 
 /// Resolves a blow of `weapon` on body part `bone` with its `armour`;
 /// `roll` is a uniform random number in 0..1 for the armour's coverage.
-/// `max_health` is the victim's. Returns `None` when the contact is past
-/// the weapon's tip.
+/// `max_health` and `readiness` (0..=1, [`crate::Fighter::readiness`]) are
+/// the victim's: readiness g scales the wound's penetration, impact and
+/// stab energy by 1 − 0.5·g, after the shove's impact is taken. Returns
+/// `None` when the contact is past the weapon's tip.
 pub fn resolve(
     weapon: &WeaponRecord,
     strike: &Strike,
     armour: &PartArmour,
     bone: usize,
     max_health: f32,
+    readiness: f32,
     roll: f32,
 ) -> Option<Outcome> {
     let length = weapon.length.max(1.0);
@@ -383,7 +398,12 @@ pub fn resolve(
     let _ = total;
     pierce = (pierce - 0.75 * rp).max(0.0);
 
-    let penetration = 0.5 * (j - 0.8).max(0.0) + slash + pierce + crush;
+    let shove = j;
+    // The victim's readiness lessens the wound, not the shove.
+    let defended = 1.0 - 0.5 * readiness.clamp(0.0, 1.0);
+    let penetration = (0.5 * (j - 0.8).max(0.0) + slash + pierce + crush) * defended;
+    let j = j * defended;
+    let stab_energy = stab_energy * defended;
     let (mult, stun) = part_multipliers(bone);
     let lasting = penetration / (penetration + 1.0);
     let red = lasting * mult * 0.75;
@@ -393,7 +413,7 @@ pub fn resolve(
         red,
         yellow,
         daze,
-        impact: j,
+        impact: shove,
         penetration,
         bite,
         material,
@@ -536,7 +556,7 @@ mod tests {
             clock: 0.8,
             along: 70.0,
         };
-        resolve(&sword_a(), &strike, armour, 9, 0.25, roll).unwrap()
+        resolve(&sword_a(), &strike, armour, 9, 0.25, 0.0, roll).unwrap()
     }
 
     #[test]
@@ -561,6 +581,49 @@ mod tests {
         assert_eq!(armoured.material, 4);
     }
 
+    /// Readiness 1 halves the wound (penetration, the red and yellow bars,
+    /// the daze's terms) but not the impact that shoves; 0.5 takes a
+    /// quarter off.
+    #[test]
+    fn readiness_halves_the_wound() {
+        let strike = Strike {
+            speed: 20.0,
+            stab: false,
+            overhead: false,
+            clock: 0.8,
+            along: 70.0,
+        };
+        let bare = PartArmour::default();
+        let at = |g| resolve(&sword_a(), &strike, &bare, 9, 0.25, g, 0.5).unwrap();
+        let (open, ready, half) = (at(0.0), at(1.0), at(0.5));
+        assert!(open.penetration > 0.3, "{open:?}");
+        assert!((ready.penetration - 0.5 * open.penetration).abs() < 1e-5);
+        assert!((half.penetration - 0.75 * open.penetration).abs() < 1e-5);
+        assert_eq!(ready.impact, open.impact);
+        assert!(ready.red < open.red && ready.yellow < open.yellow);
+        assert!((ready.daze - open.daze * 0.5f32.sqrt()).abs() < 1e-5);
+        // A stab's energy too.
+        let stab = Strike {
+            stab: true,
+            clock: 0.5,
+            along: 85.0,
+            ..strike
+        };
+        let s = |g| resolve(&sword_a(), &stab, &bare, 9, 0.25, g, 0.5).unwrap();
+        let (open, ready) = (s(0.0), s(1.0));
+        assert!(open.penetration > 0.0, "{open:?}");
+        assert!((ready.penetration - 0.5 * open.penetration).abs() < 1e-5);
+        assert!(ready.yellow < 0.75 * open.yellow, "{ready:?} {open:?}");
+    }
+
+    /// The tests' sword, 90 cm striking from 10 % to the tip, in a human's
+    /// hand: 60 + 90·(0.1 + 0.6·0.9) = 117.6 cm.
+    #[test]
+    fn reach_is_60_cm_plus_the_sweet_spot() {
+        assert!((sword_a().reach(1.0) - 1.176).abs() < 1e-5);
+        assert!((sword_a().reach(2.0) - 1.776).abs() < 1e-5);
+    }
+
     #[test]
     fn past_the_tip_is_no_hit() {
         let strike = Strike {
@@ -570,7 +633,18 @@ mod tests {
             clock: 0.5,
             along: 95.0,
         };
-        assert!(resolve(&sword_a(), &strike, &PartArmour::default(), 9, 0.25, 0.5).is_none());
+        assert!(
+            resolve(
+                &sword_a(),
+                &strike,
+                &PartArmour::default(),
+                9,
+                0.25,
+                0.0,
+                0.5
+            )
+            .is_none()
+        );
     }
 
     #[test]

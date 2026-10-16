@@ -297,8 +297,9 @@ This phase carries the most risk and defines how the game feels.
   `TSkinBuilder` and `TEdgSplt`).
 - Player control matching the original (done, `original-controls-and-torch`,
   see `docs/PLAYER.md`): W walks the heading and A/D steer it, the right
-  button walks to the cursor, Tab toggles combat mode where the body faces
-  the cursor and the mouse steers attacks. Camera at a fixed 20 m with a
+  button walks to the cursor, Tab toggles combat mode (on at every
+  practice and arena fight start) where the body faces the cursor and the
+  mouse steers attacks. Camera at a fixed 20 m with a
   field-of-view zoom. Still to do: crouch, interact.
 
 **M3 "standing man":** a fully dressed character walks around a level under
@@ -334,11 +335,22 @@ facing, an overhead on a double click), so unarmed it throws the "Default"
 punches, which cannot land yet; in combat mode the heading turns to the
 cursor beyond 30° and the body turns toward it
 ([PLAYER.md](PLAYER.md), Combat mode and Moveset from held items).
+Done (change `take-the-combat-stance`): every fighter keeps the
+original's stance, the looping clip it returns to; in combat mode the
+player stands in the Defence stance (unarmed, the fists-up guard of the
+reference shots) and drops to Cmbt - Idle with its target within 3.5 m or
+for 3 s after its attack, and stays there when the target leaves, as the
+original's body tick never switches away from Cmbt - Idle; practice and
+arena fights start in combat mode once the level shows; the duellist
+enters combat in its guard and guards at four reaches or more; standing
+3 s in Cmbt - Idle halves a blow's wound (readiness); `--still-opponent`
+shows the stances at a chosen distance ([PLAYER.md](PLAYER.md), The
+combat stance).
 Still to do: inventory and containers, injuries beyond damage, blocking,
 parrying, grabs, practice mode, the knockback step, the swing stall and
-the striker's recoil, a lethal wound's fall and collapse; next in the
-combat look: the combat stance (`take-the-combat-stance`) and fists that
-strike.
+the striker's recoil, a lethal wound's fall and collapse, the daze's guard
+and pose hold and the stance blends (C10), the balance's Defence stance
+and Rebalance (C11); next in the combat look: fists that strike.
 
 - `exa_items`: item database, item instances, inventory and containers,
   equip and wield, weapon assembly from factories, mass and centre of

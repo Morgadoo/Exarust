@@ -51,7 +51,12 @@ impl Plugin for ViewerPlugin {
             )
             .add_systems(
                 Update,
-                (fly_camera, screenshot_after_frames, shove_at_frame),
+                (
+                    fly_camera,
+                    screenshot_after_frames,
+                    shove_at_frame,
+                    start_fight,
+                ),
             );
     }
 }
@@ -644,8 +649,11 @@ fn spawn_players(
                 ))
                 .id();
             let foe = exa_world::spawn_model(commands, &body, None);
-            // What it holds picks its moveset once it is dressed.
-            let anim = exa_anim::Animator::new(exa_character::held::DEFAULT_MOVESET, "Cmbt - Idle");
+            // What it holds picks its moveset once it is dressed; it stands
+            // idle until the fight starts.
+            let anim = exa_anim::Animator::new(exa_character::held::DEFAULT_MOVESET, "Idle");
+            let mut duellist = exa_ai::Duellist::new(player);
+            duellist.holds_ground = options.still_opponent;
             commands.entity(foe).insert((
                 anim,
                 exa_character::held::Hands::default(),
@@ -663,11 +671,7 @@ fn spawn_players(
                 ),
                 exa_combat::Fighter::default(),
                 exa_physics::body::Physical::default(),
-                exa_ai::Duellist {
-                    target: player,
-                    cooldown: 2.0,
-                    next_strike: 0,
-                },
+                duellist,
                 ChildOf(foe_root),
             ));
         }
@@ -883,6 +887,45 @@ fn shove_at_frame(
             }
         }
     }
+}
+
+/// The fight starts when the level shows: every duellist enters combat,
+/// and in a practice or arena fight (not the arena hub) the player's
+/// combat mode turns on, as the original turns it on at every fight start.
+fn start_fight(
+    view: Res<View>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    mut started: Local<bool>,
+    mut duellists: Query<&mut exa_ai::Duellist>,
+    mut players: Query<&mut exa_game::player::PlayerBody>,
+) {
+    let View::Play(level) = &*view else { return };
+    if *started || loading.is_some() || duellists.is_empty() {
+        return;
+    }
+    *started = true;
+    for mut duellist in &mut duellists {
+        duellist.engaged = true;
+    }
+    if fight_level(level) {
+        for mut player in &mut players {
+            player.set_combat(true);
+        }
+        info!("the fight starts: combat mode on");
+    } else {
+        info!("the fight starts");
+    }
+}
+
+/// Whether the original fights in `level` with combat mode on from the
+/// start: practice and arena fights, not the arena hub.
+fn fight_level(level: &str) -> bool {
+    use exa_world::start::{Mode, mode};
+    let hub = level
+        .strip_suffix(".rfc")
+        .unwrap_or(level)
+        .eq_ignore_ascii_case("arenahub");
+    matches!(mode(level), Some(Mode::Practice | Mode::Arena)) && !hub
 }
 
 fn autowalk(

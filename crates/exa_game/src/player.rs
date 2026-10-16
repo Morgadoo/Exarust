@@ -6,17 +6,21 @@
 //! and backpedals, and the right mouse button walks toward the cursor. The
 //! camera follows the character's position only: it never turns by itself,
 //! the middle mouse button orbits it and the wheel zooms by field of view.
-//! Combat mode (Tab) turns toward the cursor and steps relative to it; the
-//! left button attacks with the clips of the moveset the held items pick
-//! (`exa_character::held`).
+//! Combat mode (Tab, or the start of a fight) turns toward the cursor and
+//! steps relative to it; the left button attacks with the clips of the
+//! moveset the held items pick (`exa_character::held`). In combat mode the
+//! player stands in its guard until a target comes close or it attacks
+//! (`exa_combat::stance`).
 
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use exa_anim::Animator;
+use exa_anim::Stature;
 use exa_character::held::{Hands, HeldMoveset, class};
+use exa_combat::stance::{self, Stance};
 use exa_combat::{Attacking, Fighter};
-use exa_physics::body::Fallen;
+use exa_physics::body::{Fallen, GoLimp, Ragdoll};
 use exa_physics::{CharacterBody, Physics};
 
 /// Walking speed (m/s): where the original's walk drive settles.
@@ -69,9 +73,9 @@ pub struct Player;
 
 /// The visual body under the player root. The player is human and is
 /// kept in underwear, as the original keeps its player's record; what its
-/// hands hold picks its moveset.
+/// hands hold picks its moveset, and it keeps a combat stance.
 #[derive(Component, Debug)]
-#[require(exa_character::WearsUnderwear, Hands)]
+#[require(exa_character::WearsUnderwear, Hands, Stance)]
 pub struct PlayerBody {
     /// The body's yaw (rad; the model faces +Z).
     pub yaw: f32,
@@ -89,6 +93,10 @@ pub struct PlayerBody {
     quarter_wait: f32,
     /// Seconds the combat footwork keys have been held.
     held: f32,
+    /// The clip the combat footwork's walk replaced, which it gives back.
+    walk_from: Option<String>,
+    /// When its last attack last ticked (s, on the fixed clock).
+    last_attack: Option<f32>,
 }
 
 impl PlayerBody {
@@ -103,6 +111,8 @@ impl PlayerBody {
             run: 0.0,
             quarter_wait: 0.0,
             held: 0.0,
+            walk_from: None,
+            last_attack: None,
         }
     }
 
@@ -114,6 +124,21 @@ impl PlayerBody {
     /// What is left of the body's turn toward its heading (rad).
     pub fn turn_left(&self) -> f32 {
         turn_between(self.yaw, self.heading)
+    }
+
+    /// Turns combat mode on or off, as Tab does: the footwork's direction
+    /// starts along the heading.
+    pub fn toggle_combat(&mut self) {
+        self.set_combat(!self.combat);
+    }
+
+    /// Turns combat mode on (as the original does at the start of every
+    /// practice and arena fight) or off.
+    pub fn set_combat(&mut self, on: bool) {
+        if self.combat != on {
+            self.combat = on;
+            self.aim = self.heading;
+        }
     }
 }
 
@@ -207,7 +232,7 @@ pub struct PlayerPlugin;
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CursorGround>()
-            .add_systems(FixedPreUpdate, steer_player)
+            .add_systems(FixedPreUpdate, (steer_player, take_player_stance).chain())
             .add_systems(
                 Update,
                 (cursor_ground, toggle_combat, player_combat, chase_camera).chain(),
@@ -283,6 +308,7 @@ fn steer_player(
         &mut PlayerBody,
         &mut Transform,
         &mut Animator,
+        &Stance,
         Option<&Fighter>,
         Has<Fallen>,
     )>,
@@ -290,7 +316,8 @@ fn steer_player(
     let dt = 1.0 / TICK_HZ;
     for (mut body, at, children) in &mut players {
         for child in children.iter() {
-            let Ok((mut pb, mut t, mut anim, fighter, fallen)) = bodies.get_mut(child) else {
+            let Ok((mut pb, mut t, mut anim, &stance, fighter, fallen)) = bodies.get_mut(child)
+            else {
                 continue;
             };
             if fallen || fighter.is_some_and(|f| f.down) {
@@ -303,9 +330,10 @@ fn steer_player(
                 // The body turns toward the heading, which the cursor sets.
                 pb.yaw = body_turn(pb.yaw, pb.heading, false, speed);
                 t.rotation = Quat::from_rotation_y(pb.yaw);
-                combat_steps(&keys, &mut body, &mut pb, &mut anim, dt);
+                combat_steps(&keys, &mut body, &mut pb, &mut anim, stance, dt);
                 continue;
             }
+            pb.walk_from = None;
             let held = |k| keys.pressed(k);
             let to_cursor = cursor
                 .0
@@ -381,12 +409,19 @@ fn steer_player(
 }
 
 /// Combat footwork: W, S, A and D step along and across the cursor
-/// direction; held, they walk on.
+/// direction; held, they walk on. The original's footwork steps the feet
+/// and never changes the clip; Exarust's interim one plays "Combat Walk"
+/// while a key is held and gives back the clip it replaced (the stance's,
+/// if that clip was a stance) once they are released. A walk, run or
+/// backpedal of the exploration steering still playing when combat mode
+/// turned on ends in the stance, as the original's walk ends in it once
+/// the body stands.
 fn combat_steps(
     keys: &ButtonInput<KeyCode>,
     body: &mut CharacterBody,
     pb: &mut PlayerBody,
     anim: &mut Animator,
+    stance: Stance,
     dt: f32,
 ) {
     let look = forward(pb.aim);
@@ -410,27 +445,121 @@ fn combat_steps(
     } else {
         Vec3::ZERO
     };
-    let action = if walking || dir != Vec3::ZERO {
-        "Combat Walk"
-    } else {
-        "Cmbt - Idle"
-    };
-    if anim.looping && anim.action != action {
-        anim.play_loop(action);
+    if !anim.looping {
+        return;
+    }
+    if walking || dir != Vec3::ZERO {
+        if anim.action != COMBAT_WALK {
+            pb.walk_from = Some(anim.action.clone());
+            anim.play_loop(COMBAT_WALK);
+        }
+    } else if anim.action == COMBAT_WALK {
+        let back = pb
+            .walk_from
+            .take()
+            .filter(|clip| !GAITS.contains(&clip.as_str()))
+            .unwrap_or_else(|| stance.action().into());
+        anim.play_loop(&back);
+    } else if GAITS.contains(&anim.action.as_str()) {
+        pb.walk_from = None;
+        anim.play_loop(stance.action());
     }
 }
 
-fn toggle_combat(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut bodies: Query<(&mut PlayerBody, &mut Animator)>,
+/// Exarust's interim combat footwork clip.
+const COMBAT_WALK: &str = "Combat Walk";
+/// The exploration steering's looping gaits, which only it ends.
+const GAITS: [&str; 3] = ["Walk", "Run", "Backpedal"];
+
+/// The player's stance, each behaviour tick: Idle out of combat mode (the
+/// clip follows when it was the old stance's); in combat mode the guard,
+/// or the combat idle with a target within 3.5 m or within 3 s of its last
+/// attack's last tick. The target is the best of the other living fighters
+/// within 5 m of the cursor's direction (`exa_combat::stance`). The clip
+/// changes in the body tick, never from the combat idle. Not yet: the
+/// original's line-of-sight test on the target.
+#[allow(clippy::type_complexity)]
+fn take_player_stance(
+    time: Res<Time>,
+    mut bodies: Query<(
+        Entity,
+        &mut PlayerBody,
+        &mut Stance,
+        &mut Animator,
+        &Fighter,
+        &GlobalTransform,
+        Option<&Ragdoll>,
+        Has<Attacking>,
+    )>,
+    others: Query<
+        (
+            Entity,
+            &Fighter,
+            &GlobalTransform,
+            Option<&Ragdoll>,
+            Option<&Stature>,
+        ),
+        Without<GoLimp>,
+    >,
 ) {
+    let now = time.elapsed_secs();
+    for (me, mut pb, mut stance, mut anim, fighter, gt, body, attacking) in &mut bodies {
+        if fighter.down {
+            continue;
+        }
+        if attacking {
+            pb.last_attack = Some(now);
+        }
+        if !pb.combat {
+            if *stance != Stance::Idle {
+                info!("player stance: Idle");
+            }
+            stance::set_stance(&mut stance, &mut anim, Stance::Idle);
+            continue;
+        }
+        let from = stance::chest_point(gt, body);
+        let target = stance::pick_target(
+            from,
+            forward(pb.aim),
+            others
+                .iter()
+                // Living: not dead, and with its muscles (the dead a level
+                // places lie limp).
+                .filter(|(e, f, _, b, _)| {
+                    *e != me && !f.down && b.is_none_or(|b| b.drive.is_some())
+                })
+                .map(|(e, _, gt, b, scale)| {
+                    ((e, scale.map_or(1.0, |s| s.0)), stance::chest_point(gt, b))
+                }),
+        )
+        .map(|((_, scale), d)| (d, scale));
+        let chosen = stance::player_stance(
+            true,
+            fighter.health.yellow,
+            target,
+            pb.last_attack.map(|t| now - t),
+        );
+        // In combat mode the stance is written as it is: the body tick
+        // switches the clip.
+        if stance.set_if_neq(chosen) {
+            info!(
+                "player stance: {chosen:?} (target {}, {} s since an attack)",
+                target.map_or("none".into(), |(d, _)| format!("at {d:.2} m")),
+                pb.last_attack
+                    .map_or("never".into(), |t| format!("{:.1}", now - t)),
+            );
+        }
+    }
+}
+
+/// Tab turns combat mode on or off; the stance follows (the guard or the
+/// combat idle in, Idle out).
+fn toggle_combat(keys: Res<ButtonInput<KeyCode>>, mut bodies: Query<&mut PlayerBody>) {
     if !keys.just_pressed(KeyCode::Tab) {
         return;
     }
-    for (mut pb, mut anim) in &mut bodies {
-        pb.combat = !pb.combat;
-        pb.aim = pb.heading;
-        anim.play_loop(if pb.combat { "Cmbt - Idle" } else { "Idle" });
+    for mut pb in &mut bodies {
+        pb.toggle_combat();
     }
 }
 
@@ -449,6 +578,7 @@ fn player_combat(
         Entity,
         &mut PlayerBody,
         &mut Animator,
+        &Stance,
         Option<&HeldMoveset>,
         Option<&Fighter>,
         Option<&Attacking>,
@@ -458,7 +588,7 @@ fn player_combat(
     let Some(player) = players.iter().next() else {
         return;
     };
-    for (entity, mut pb, mut anim, held, fighter, attacking, fallen) in &mut bodies {
+    for (entity, mut pb, mut anim, stance, held, fighter, attacking, fallen) in &mut bodies {
         if fallen || fighter.is_some_and(|f| f.down) || !pb.combat {
             continue;
         }
@@ -493,7 +623,8 @@ fn player_combat(
                 anim.moveset,
                 aim.map_or(0.0, |a| turn_between(pb.yaw, a).to_degrees())
             );
-            exa_combat::start_attack(&mut commands, entity, &mut anim, action, "Cmbt - Idle");
+            // It ends in the stance the player holds by then.
+            exa_combat::start_attack(&mut commands, entity, &mut anim, action, stance.action());
         }
     }
 }
@@ -663,6 +794,13 @@ mod tests {
     }
 
     #[test]
+    fn the_player_keeps_a_stance() {
+        let mut world = World::new();
+        let body = world.spawn(PlayerBody::new(0.0)).id();
+        assert_eq!(world.entity(body).get::<Stance>(), Some(&Stance::Idle));
+    }
+
+    #[test]
     fn the_player_holds_its_fists() {
         let mut world = World::new();
         let body = world.spawn(PlayerBody::new(0.0)).id();
@@ -671,6 +809,161 @@ mod tests {
             (held.moveset.as_str(), held.weapon_class),
             ("Default", class::FISTS)
         );
+    }
+
+    /// An app running the player's stance rule, with the player at the
+    /// origin facing +Z in combat mode and an opponent `distance` m ahead.
+    fn stance_app(distance: f32) -> (App, Entity, Entity) {
+        let mut app = App::new();
+        app.init_resource::<Time>()
+            .add_systems(Update, take_player_stance);
+        let mut pb = PlayerBody::new(0.0);
+        pb.set_combat(true);
+        let player = app
+            .world_mut()
+            .spawn((
+                pb,
+                Animator::new("Default", "Idle"),
+                Fighter::default(),
+                GlobalTransform::IDENTITY,
+            ))
+            .id();
+        let foe = app
+            .world_mut()
+            .spawn((
+                Fighter::default(),
+                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, distance)),
+            ))
+            .id();
+        (app, player, foe)
+    }
+
+    fn stance_of(app: &App, player: Entity) -> Stance {
+        *app.world().get::<Stance>(player).unwrap()
+    }
+
+    fn place(app: &mut App, foe: Entity, at: Vec3) {
+        *app.world_mut().get_mut::<GlobalTransform>(foe).unwrap() =
+            GlobalTransform::from_translation(at);
+    }
+
+    /// In combat mode the player guards with its opponent 4 m ahead, takes
+    /// the combat idle once it is within 3.5 m, and guards again (as a
+    /// stance) when it leaves; behind it (beyond 120° of the cursor), dead
+    /// or limp the opponent is no target. Out of combat mode: Idle.
+    #[test]
+    fn the_player_guards_until_its_target_comes_close() {
+        let (mut app, player, foe) = stance_app(4.0);
+        app.update();
+        assert_eq!(stance_of(&app, player), Stance::Defence);
+        place(&mut app, foe, Vec3::new(0.0, 0.0, 3.4));
+        app.update();
+        assert_eq!(stance_of(&app, player), Stance::CombatIdle);
+        place(&mut app, foe, Vec3::new(0.0, 0.0, 3.6));
+        app.update();
+        assert_eq!(stance_of(&app, player), Stance::Defence);
+        place(&mut app, foe, Vec3::new(0.0, 0.0, -2.0));
+        app.update();
+        assert_eq!(stance_of(&app, player), Stance::Defence);
+        place(&mut app, foe, Vec3::new(0.0, 0.0, 2.0));
+        app.world_mut().get_mut::<Fighter>(foe).unwrap().down = true;
+        app.update();
+        assert_eq!(stance_of(&app, player), Stance::Defence);
+        // A limp body (a corpse the level placed) is no target either.
+        app.world_mut().get_mut::<Fighter>(foe).unwrap().down = false;
+        app.update();
+        assert_eq!(stance_of(&app, player), Stance::CombatIdle);
+        app.world_mut().entity_mut(foe).insert(GoLimp::default());
+        place(&mut app, foe, Vec3::new(0.0, 0.0, 4.0));
+        app.update();
+        place(&mut app, foe, Vec3::new(0.0, 0.0, 2.0));
+        app.update();
+        assert_eq!(stance_of(&app, player), Stance::Defence);
+        app.world_mut()
+            .get_mut::<PlayerBody>(player)
+            .unwrap()
+            .set_combat(false);
+        app.update();
+        assert_eq!(stance_of(&app, player), Stance::Idle);
+    }
+
+    /// While attacking, and for 3 s after its attack's last tick, the
+    /// player stays in the combat idle with no target near.
+    #[test]
+    fn the_player_stays_ready_3_s_after_an_attack() {
+        let (mut app, player, _) = stance_app(9.0);
+        app.world_mut()
+            .entity_mut(player)
+            .insert(Attacking::default());
+        app.update();
+        assert_eq!(stance_of(&app, player), Stance::CombatIdle);
+        app.world_mut().entity_mut(player).remove::<Attacking>();
+        let time = |app: &mut App, s: f32| {
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(std::time::Duration::from_secs_f32(s));
+            app.update();
+        };
+        time(&mut app, 2.9);
+        assert_eq!(stance_of(&app, player), Stance::CombatIdle);
+        time(&mut app, 0.2);
+        assert_eq!(stance_of(&app, player), Stance::Defence);
+    }
+
+    /// The interim footwork plays the combat walk while a key is held and
+    /// gives back the clip it replaced: the guard stays the guard.
+    #[test]
+    fn the_combat_walk_gives_back_the_clip_it_replaced() {
+        let mut keys = ButtonInput::<KeyCode>::default();
+        let mut body = CharacterBody::default();
+        let mut pb = PlayerBody::new(0.0);
+        pb.set_combat(true);
+        let mut anim = Animator::new("Default", "Defence stance");
+        keys.press(KeyCode::KeyA);
+        combat_steps(
+            &keys,
+            &mut body,
+            &mut pb,
+            &mut anim,
+            Stance::CombatIdle,
+            0.012,
+        );
+        assert_eq!(anim.action, "Combat Walk");
+        assert!(body.desired_velocity.x > 0.0, "{}", body.desired_velocity);
+        keys.release(KeyCode::KeyA);
+        combat_steps(
+            &keys,
+            &mut body,
+            &mut pb,
+            &mut anim,
+            Stance::CombatIdle,
+            0.012,
+        );
+        assert_eq!(anim.action, "Defence stance");
+        assert_eq!(body.desired_velocity, Vec3::ZERO);
+    }
+
+    /// Tab pressed while walking: the exploration walk (or run, or
+    /// backpedal) ends in the stance once the body stands, also after the
+    /// footwork's walk took over from it, instead of walking on the spot.
+    #[test]
+    fn an_exploration_walk_ends_in_the_stance() {
+        let mut keys = ButtonInput::<KeyCode>::default();
+        let mut body = CharacterBody::default();
+        let mut pb = PlayerBody::new(0.0);
+        pb.set_combat(true);
+        for gait in ["Walk", "Run", "Backpedal"] {
+            let mut anim = Animator::new("Default", gait);
+            combat_steps(&keys, &mut body, &mut pb, &mut anim, Stance::Defence, 0.012);
+            assert_eq!(anim.action, "Defence stance", "{gait}");
+        }
+        let mut anim = Animator::new("Default", "Walk");
+        keys.press(KeyCode::KeyW);
+        combat_steps(&keys, &mut body, &mut pb, &mut anim, Stance::Defence, 0.012);
+        assert_eq!(anim.action, "Combat Walk");
+        keys.release(KeyCode::KeyW);
+        combat_steps(&keys, &mut body, &mut pb, &mut anim, Stance::Defence, 0.012);
+        assert_eq!(anim.action, "Defence stance");
     }
 
     #[test]

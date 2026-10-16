@@ -7,9 +7,11 @@
 //! struck part's armour layers. It takes health, shoves and dazes the target,
 //! and kills it when its yellow health runs out. A blow that does not kill
 //! starts no clip on the target; a target struck while attacking stops its
-//! attack and returns to its stance.
+//! attack and returns to its stance. A fighter's stance and combat
+//! readiness are kept by [`stance`].
 
 pub mod damage;
+pub mod stance;
 
 use std::collections::HashSet;
 
@@ -25,12 +27,14 @@ pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<Hit>().add_systems(
-            PostUpdate,
-            (track_blades, detect_hits, react_to_hits)
-                .chain()
-                .after(TransformSystems::Propagate),
-        );
+        app.add_message::<Hit>()
+            .add_plugins(stance::StancePlugin)
+            .add_systems(
+                PostUpdate,
+                (track_blades, detect_hits, react_to_hits)
+                    .chain()
+                    .after(TransformSystems::Propagate),
+            );
     }
 }
 
@@ -44,6 +48,9 @@ pub struct Fighter {
     pub armour: [PartArmour; 18],
     /// Dead.
     pub down: bool,
+    /// Combat readiness, 0..=1: it rises standing in the combat idle and
+    /// halves the wounds a blow deals at 1 ([`stance::readiness_step`]).
+    pub readiness: f32,
 }
 
 impl Default for Fighter {
@@ -60,6 +67,7 @@ impl Fighter {
             natural,
             armour: damage::armour_layers(natural.as_ref(), &[]),
             down: false,
+            readiness: 0.0,
         }
     }
 }
@@ -284,6 +292,7 @@ fn react_to_hits(
             armour,
             hit.bone,
             f.health.max,
+            f.readiness,
             roll.next(),
         ) else {
             continue;
@@ -306,12 +315,13 @@ fn react_to_hits(
         });
         info!(
             "hit on bone {} at {:.0} cm, {:.1} cm/tick: impact {:.2}, penetration {:.2} \
-             (yellow {:.3}, red {:.3} of {:.2})",
+             at readiness {:.2} (yellow {:.3}, red {:.3} of {:.2})",
             hit.bone,
             hit.strike.along,
             hit.strike.speed,
             outcome.impact,
             outcome.penetration,
+            f.readiness,
             f.health.yellow,
             f.health.red,
             f.health.max
@@ -397,6 +407,7 @@ mod tests {
             &PartArmour::default(),
             bone,
             0.25,
+            0.0,
             roll,
         )
         .unwrap()

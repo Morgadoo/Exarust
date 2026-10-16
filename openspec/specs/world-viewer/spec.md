@@ -133,5 +133,12 @@ P SHALL pause and resume the fixed step (character controllers, character ticks 
 - **THEN** the camera stays at that pose, looking at the duel from its side
 
 #### Scenario: Scripted punch
-- **WHEN** `exarust --opponent --press Tab@100,LMB@200 play arena` runs
-- **THEN** the player enters combat mode at frame 100 and throws a punch at frame 200
+- **WHEN** `exarust --opponent --press LMB@200 play arena` runs
+- **THEN** the player, in combat mode from the fight start, throws a punch at frame 200
+
+### Requirement: Still opponent
+`--still-opponent` SHALL spawn the play mode duellist as `--opponent` does, standing its ground: it SHALL face the player and take its stance, but neither walk nor strike.
+
+#### Scenario: Stances at a distance
+- **WHEN** `exarust --still-opponent --at 0,0,6 play arenao1` runs
+- **THEN** the duellist stays 8 m from the player, facing it in the Defence stance

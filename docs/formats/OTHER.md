@@ -385,7 +385,14 @@ two clawed ones).
 - weight w = b30/100, balance b = b31/100;
 - impact = (1 − b)·0.6 + 0.4w + 0.1 + (b32 − 127)/100;
 - slash, crush, pierce and thrust = 0.5·(byte/100)^0.7;
-- the length is the farthest component point along +Y, in cm.
+- the length is the farthest component point along +Y, in cm;
+- the holder's reach = 60 cm × its body scale + the distance from the grip
+  to the sweet spot, 60 % of the way along the striking part
+  (`0x35`/`0x36`), or the race's own when unarmed (50 cm for a human). The
+  original measures the sweet spot on the weapon's last part and adds the
+  parts before it whole; Exarust measures it along the whole length, the
+  same for a weapon of one part. A duellist guards beyond four reaches
+  ([PLAYER.md](../PLAYER.md), The combat stance).
 
 ## Armour
 
@@ -450,6 +457,11 @@ Implemented in `exa_combat::damage`.
 - Applying a blow: yellow −= 0.1·Y; red −= 0.2·R; yellow is rescaled by
   how much red is left. Yellow under 0.01 is death.
 - Daze = √(0.75P + 1.25J)·stun·0.5·0.25/max health.
+- Readiness: before the outcome, P, J and T are scaled by 1 − 0.5g, g the
+  victim's combat readiness (0..1; it rises 0.004 a tick while the victim
+  stands in its combat idle, [PLAYER.md](../PLAYER.md), The combat stance).
+  The knockback step takes J before it, so a ready fighter is shoved as
+  far but wounded half as much.
 
 **What the struck character does** (REA on the damage routine and what it
 calls)

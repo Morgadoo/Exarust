@@ -7,10 +7,12 @@ Game modes and session flow: Story, Arena (company management, matches, seasons)
 It already runs the character ticks of physical bodies (`limp`: each body's
 bearing (with its walk's lowest ankle while it moves), balance against the
 level, clip, targets and lift, the player's last),
-Exarust's falls and get-ups from the measured balance (`balance`; a fall
+Exarust's falls and get-ups from the measured balance (`balance`; the
+get-up ends in the fighter's stance; a fall
 stops the controller carrying and holding the body and keeps its tone), the
-player (`player`: tank controls, the chase camera, combat facing and the
-original's attack choice, with the clips of the moveset its hands pick), the
+player (`player`: tank controls, the chase camera, combat facing, its
+combat stance and the original's attack choice, with the clips of the
+moveset its hands pick), the
 held torch (`torch`, which fills its hand), the per-tick body trace
 (`trace`), and the debug tools ([`docs/DEBUGGING.md`](../../docs/DEBUGGING.md)):
 the body overlay and joint readout (`body_overlay`), the joint trace

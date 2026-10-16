@@ -25,7 +25,8 @@
 //!          --shove <frame>            a body blow to every simulated body at that frame after loading
 //!          --outfit a,b,c             apparel for character/play (Characters.rpk entries), over the underwear
 //!          --weapon <name>            weapon in the right hand (Objects.rpk entry)
-//!          --opponent                 an armed duellist in play mode (Tab: combat mode, left click: attack)
+//!          --opponent                 an armed duellist in play mode; practice and arena fights start in combat mode (Tab toggles it, left click attacks)
+//!          --still-opponent           the duellist stands its ground: it faces the player in its stance but neither walks nor strikes
 //!          --trace <file.csv>         the player's body (else every simulated body) after every 83 Hz tick, in cm
 //!          --debug-bodies             start with the body overlay and joint readout shown (F3 toggles it)
 //!          --joint-trace <file.csv>   every joint of every simulated body after every 83 Hz tick (degrees, cm)
@@ -99,6 +100,8 @@ pub struct Options {
     pub weapon: Option<String>,
     /// Spawn an armed opponent in play mode.
     pub opponent: bool,
+    /// The opponent stands its ground (no steps, no strikes).
+    pub still_opponent: bool,
     /// Write the body state after every tick here (CSV).
     pub trace: Option<PathBuf>,
     /// Start with the body overlay shown.
@@ -257,6 +260,10 @@ fn main() -> AppExit {
             "--autowalk" => options.autowalk = true,
             "--weapon" => options.weapon = args.next(),
             "--opponent" => options.opponent = true,
+            "--still-opponent" => {
+                options.opponent = true;
+                options.still_opponent = true;
+            }
             "--trace" => options.trace = args.next().map(PathBuf::from),
             "--debug-bodies" => options.debug_bodies = true,
             "--joint-trace" => options.joint_trace = args.next().map(PathBuf::from),

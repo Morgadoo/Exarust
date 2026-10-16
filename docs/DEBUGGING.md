@@ -35,14 +35,25 @@ exarust --debug-bodies --opponent --pause-on-stretch 1 \
 | `--press key@frame,...` | press keys or mouse buttons at frames counted from the end of the load (`.`, `[`, `]`, `Tab`, `F1`–`F12`, a letter, or `LMB`, `RMB`, `MMB`), e.g. `.@400,.@401,P@500`; each is released the frame after |
 | `--camera x,y,z,yaw,pitch` | in play mode, a fixed camera there instead of the chase camera (metres, degrees), for unattended shots; with `--fov` |
 | `--cursor x,y` | in play mode, the cursor stays at this window point (logical pixels) instead of following the pointer; it needs the chase camera (not `--camera`) |
+| `--still-opponent` | `--opponent`, but the duellist stands its ground: it faces the player and takes its stance (by its distance, [PLAYER.md](PLAYER.md), The combat stance) but never walks or strikes; with `--at` it shows the stances at a chosen distance |
 
 An unattended attack: `exarust --opponent --sim-speed 0.25 --camera
-4.2,1.4,0.6,90,-8 --press Tab@60,LMB@100 play arenao1` throws the unarmed
-player's right straight at the duellist, seen from the side; the log names
-each attack, its moveset and how far left of the facing the cursor was.
-With the chase camera and `--cursor` left of the player (e.g. `--cursor
-650,280 --press Tab@60,LMB@62`) it is a left straight; `LMB@100,LMB@106`
-is a double click, an overhead.
+4.2,1.4,0.6,90,-8 --press LMB@100 play arenao1` throws the unarmed
+player's right straight at the duellist, seen from the side (an arena
+fight starts in combat mode: Tab would turn it off); the log names each
+attack, its moveset and how far left of the facing the cursor was. With
+the chase camera and `--cursor` left of the player (e.g. `--cursor
+650,280 --press LMB@2`, before the body has turned to the cursor) it is a
+left straight; `LMB@200,LMB@206` is a double click, an overhead.
+
+The stances: the log names every change of the player's stance (with its
+target's distance and the time since its last attack) and the duellist's
+(with its distance and reach); `RUST_LOG=info,exa_combat::stance=debug`
+also logs each clip the body tick switches to. `exarust --still-opponent
+--at 0,0,6 --camera 8,1.3,2,90,-6 play arenao1` shows both fighters in
+their guard 8 m apart, `--at 0,0,1.7` the duellist in its combat idle
+while the player still guards (3.7 m), `--at 0,0,1` both in the combat
+idle.
 
 With `--pause-at-tick` or `--pause-on-stretch`, `--screenshot` counts its
 `--frames` from the pause, so the picture shows the paused body.

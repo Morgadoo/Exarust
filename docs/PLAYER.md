@@ -51,8 +51,15 @@ The original has no camera-relative keyboard movement. Outside combat:
 
 ## Combat mode
 
-**Tab** toggles it. W, S, A and D step along and across the cursor's
-direction, and keys held longer than 200 ms walk on.
+**Tab** toggles it, and every practice or arena fight starts with it on, as
+the original turns it on at each fight start (with `--opponent`, once the
+level shows; not in the arena hub). W, S, A and D step along and across
+the cursor's direction, and keys held longer than 200 ms walk on. The
+original's footwork steps the feet and never changes the clip; Exarust's
+interim one plays "Combat Walk" while a key is held and gives back the
+clip it replaced (the guard stays the guard) when they are released. A
+walk or run still playing when Tab turns combat mode on ends in the stance
+once the body stands, as the original's walk does.
 
 - **Facing.** The heading turns to the cursor's direction once it is more
   than 30° off it, and follows it exactly while the left button is held
@@ -79,11 +86,77 @@ direction, and keys held longer than 200 ms walk on.
   the right straight (the right arm out, the body twisted into it, the
   left fist pulled back), the other side the left straight, and the
   overhead a right overhand.
-- Not yet: the combat stance (the Defence stance until an opponent comes
-  within 350 cm); fists that land, the cooldown between attacks (400 ms
-  before the first, then 300 ms × the weapon's recovery + 300 ms) and the
-  energy needed to attack (80 %); holding the button to repeat or chain
-  attacks; Alt thrusts; parries. Unarmed attacks play but never hit.
+- Not yet: fists that land, the cooldown between attacks (400 ms before
+  the first, then 300 ms × the weapon's recovery + 300 ms) and the energy
+  needed to attack (80 %); holding the button to repeat or chain attacks;
+  Alt thrusts; parries. Unarmed attacks play but never hit.
+
+## The combat stance
+
+Every fighter keeps a **stance**: the looping clip it returns to. Every
+clip it plays once (an attack, a get-up) ends in the stance it holds when
+the clip ends, and a balanced fighter (balance 0.8 or more, muscle tone
+0.85 or more) standing in another looping clip switches to it. The
+original's body tick leaves three clips alone: **Cmbt - Idle**, the walk
+and the run each have their own branch, which skips the switch (Exarust
+also leaves its interim backpedal and combat walk alone).
+
+| who | stance |
+|---|---|
+| the player out of combat mode | Idle (the clip follows at once when it was the old stance's) |
+| the player in combat mode, dying (yellow health under 0.01) | Defence stance |
+| the player in combat mode, its target nearer than 3.5 m × the target's body scale (chest to chest), or within 3 s of its last attack's last tick | Cmbt - Idle |
+| the player in combat mode otherwise | Defence stance |
+| a duellist entering combat (at the fight start) | Defence stance |
+| a duellist in combat | Defence stance at 4 reaches or more from its target, Cmbt - Idle within |
+
+- **The player's target** is picked every tick among the other living
+  fighters within 5 m: the best (5 − d)·(cos + 0.5), the angle measured
+  from the cursor's direction, so never one more than 120° off it.
+- **The guard.** Unarmed, the Defence stance of the "Default" moveset is
+  the fists-up guard: hunched, the fists before the chest and chin, knees
+  bent (reference shots 1 and 2). Armed with "One Handed" it holds the
+  sword hand at mid-chest; Cmbt - Idle holds the hands, or the weapon, low
+  before the hips (reference shot 6; the blade's angle is the grip's,
+  L12).
+- **The original's quirk.** The switch never runs while Cmbt - Idle plays,
+  so a player who dropped to Cmbt - Idle stays there when the target walks
+  away or dies, or 3 s after its attack: its stance turns back to the
+  Defence stance but its clip does not. The guard returns through the end
+  of a clip played once (an attack, a get-up), a fall, or a new fight. (An
+  attack ends within 3 s of its own last tick, so it ends in Cmbt - Idle
+  unless the player is dying.) The live retail trace showed exactly this:
+  Cmbt - Idle with the Defence stance for seconds, also after the opponent
+  died.
+- **A duellist** starts its stance whenever it is free (not attacking), so
+  it guards again when its target leaves. Its **reach** is 60 cm plus its
+  weapon's sweet spot ([formats/OTHER.md](formats/OTHER.md), Weapon
+  stats), 50 cm unarmed: the arena sword's 98 cm makes it guard beyond
+  3.92 m.
+- **Readiness.** Standing in Cmbt - Idle, with that stance, a fighter's
+  readiness rises 0.004 a tick (0 to 1 in 3 s); anything else resets it.
+  A blow's wound (penetration, impact, stab energy) is scaled by 1 − 0.5 ×
+  readiness, so a fighter ready for 3 s takes half the wound; the shove is
+  not lessened ([formats/OTHER.md](formats/OTHER.md), Damage).
+
+Not yet, with the change that brings each:
+- the daze: a dazed fighter (energy more than 0.05 under its cap) takes
+  the Defence stance, and its body holds the pose it is physically in
+  (C10, which lands both: without the pose hold the guard would rise at
+  every dazing blow, which the original never shows);
+- the blends of every stance change (30 frames for the switch, 2 × the
+  weapon's recovery time at an attack's end, …), C10: Exarust's stance
+  changes snap and the muscles smooth them;
+- the Defence stance and Rebalance a fighter takes from its balance
+  (below 0.8) or its tone (below 0.85), C11;
+- parries, whose clips are stances while they last, and readiness while
+  parrying or with an attack ready to chain (L10, C21);
+- the original's line-of-sight test on the player's target; the AI's own
+  footwork in its stance instead of the combat walk, and its parries (C16,
+  L11). The live retail opponent took its guard for 0.4 s at the fight
+  start before Cmbt - Idle; Exarust's duellist holds it one frame when it
+  starts within four reaches (that part of the original's AI is not
+  traced).
 
 ## Moveset from held items
 
@@ -113,8 +186,8 @@ are the low 16 bits of the item's weapon section's first word
 one-handed stick (flags `0x13`).
 
 In Exarust the player and the duellist follow this rule: the player
-unarmed fights with the "Default" punches, armed with "One Handed" (also
-idling with it out of combat), and with a torch as below. The character
+unarmed fights with the "Default" guard and punches, armed with "One
+Handed" (also idling with it out of combat), and with a torch as below. The character
 view keeps the moveset its command line names, and level characters keep
 their race's moveset until they have equipment. Not yet: shields and a
 second weapon (no Exarust item holds them), the "Torch" overlay over a

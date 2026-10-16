@@ -13,6 +13,7 @@
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 use exa_anim::{Animator, Motions, in_place, sample};
+use exa_combat::stance::Stance;
 use exa_physics::CharacterBody;
 use exa_physics::body::{BODY_HZ, CharacterTicks, Fallen, Ragdoll};
 
@@ -88,11 +89,12 @@ fn get_up(
         &mut Transform,
         &ChildOf,
         Option<&mut PlayerBody>,
+        Option<&Stance>,
     )>,
     mut characters: Query<(&mut Transform, &mut CharacterBody), Without<Ragdoll>>,
 ) {
     let Some(motions) = motions else { return };
-    for (root, mut body, mut anim, mut fallen, mut t, parent, player) in &mut bodies {
+    for (root, mut body, mut anim, mut fallen, mut t, parent, player, stance) in &mut bodies {
         let ticks = body.ticks as f32;
         // Body time, which may run slower than the clock.
         fallen.time += ticks / BODY_HZ;
@@ -100,11 +102,10 @@ fn get_up(
             continue;
         };
         controller.desired_velocity = Vec3::ZERO;
-        // The get-up ends in the stance: the player's by its combat mode
-        // (its moveset follows what it holds, in and out of combat).
-        let stance = match &player {
-            Some(pb) if pb.combat => "Cmbt - Idle",
-            Some(_) => "Idle",
+        // The get-up ends in the fighter's stance (the one it holds when
+        // the clip ends, `exa_combat::stance`), else its moveset's idle.
+        let stance = match stance {
+            Some(s) => s.action(),
             None if anim.moveset == "Default" => "Idle",
             None => "Cmbt - Idle",
         };
