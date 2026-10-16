@@ -318,6 +318,21 @@ garment, which the original merges into one skinned mesh) and every other
 mesh under its head part (hair, helmets). Never held items, rigid items on
 other parts, or body parts hidden under apparel.
 
+**Wounds from hits** (`exa_combat::wounds`): a blow bleeds when the
+struck character's race bleeds and the wound's size R (the blow's lasting
+damage on the part, its multiplier applied, before the red bar's 0.75)
+exceeds 0.05 ([formats/OTHER.md](formats/OTHER.md), Damage). The wound
+waits on the victim, seven at most (a new one is dropped while seven
+wait), with the striking body (the blade, or the fist), where on it the
+blow landed (weights in its tetrahedron: Exarust's blades move rigidly, so
+the tetrahedron is the blade's origin and the ends of its axes), the
+contact point and R. Every body tick counts each waiting wound down; seven
+ticks after the blow (84 ms) the first is painted, one a tick, on corpses
+too. Its travel D is where the striker's weights put that point now less
+the contact point, its radius 30·R + 10 cm (11.5 cm at the threshold, 19 cm
+at R = 0.3). Nothing paints the striker (a fist stays clean). Blood never
+spreads, fades or drips, and corpses keep it.
+
 **Painter**, for a wound with contact point P, travel D (how the striking
 point moved on since the blow) and radius r (the original's 30·R + 10 cm),
 on the vertices' current skinned positions:
@@ -368,9 +383,15 @@ apparel, hair and translucent programs' dirt mode 4 blocks), the corpus
 pinned by tests), and retail screenshots: blood pixels median sRGB (54, 25,
 21) on skin of about (81, 68, 58), speckled edges, glossy thick coats.
 
-Not yet: wounds from hits (the bleed test, the delay after the blow, the
-radius from the damage), blood sprays, blade stains, the hair program,
-the translucent program's blood ((0.5, 0.03, 0)), and dirt modes 1–3.
+In the arena duel the struck fighters' blood pixels have a median sRGB of
+(64, 31, 26) on the living player and (51, 25, 22) on its corpse, against
+the original's (54, 25, 21) and (47, 24, 20).
+
+Not yet: blood sprays, blade stains, the attacker's own blood when it
+strikes with a body part of its own (creatures), the hair program, the
+translucent program's blood ((0.5, 0.03, 0)), and dirt modes 1–3. Exarust
+never re-dresses a character, so the original's clean meshes after an
+equipment change do not arise yet.
 
 ## Voxel GI
 

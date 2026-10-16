@@ -122,7 +122,7 @@ P SHALL pause and resume the fixed step (character controllers, character ticks 
 - **THEN** `s.png` shows the duel stopped at the tick a link first opened 1 cm past its slack, with that part's row red
 
 ### Requirement: Scripted input and camera
-`--press key@frame,...` SHALL press each key, or mouse button (`LMB`, `RMB`, `MMB`), at its frame counted from the end of the load and release it the frame after. In play mode, `--camera x,y,z,yaw,pitch` SHALL place a fixed camera there instead of the chase camera, and `--cursor x,y` SHALL hold the cursor at that window point (logical pixels).
+`--press key@frame,...` SHALL press each key, or mouse button (`LMB`, `RMB`, `MMB`), at its frame counted from the end of the load and release it the frame after, and `--click frame,...` SHALL click the left mouse button the same way. In play mode, `--camera x,y,z,yaw,pitch` SHALL place a fixed camera there instead of the chase camera, and `--cursor x,y` SHALL hold the cursor at that window point (logical pixels).
 
 #### Scenario: Scripted steps
 - **WHEN** `exarust --pause-at-tick 300 --press .@500,.@510,.@520 character` runs
@@ -142,6 +142,10 @@ P SHALL pause and resume the fixed step (character controllers, character ticks 
 #### Scenario: Stances at a distance
 - **WHEN** `exarust --still-opponent --at 0,0,6 play arenao1` runs
 - **THEN** the duellist stays 8 m from the player, facing it in the Defence stance
+
+#### Scenario: Unattended attacks
+- **WHEN** `exarust --opponent --weapon ub05ssworda --click 100,125,150 play arena1` runs
+- **THEN** the player, in combat mode from the fight start, swings its sword at those frames
 
 ### Requirement: Debug wounds
 `--debug-wound bone,radius_cm[,dx,dy,dz]`, repeatable, SHALL paint a test wound on the player's body or the character view's body once it is dressed and bound: at its body part's front (the part's visible vertex furthest along the body's facing), of that radius, smeared along d (cm, in the body's frame, +Y up, +Z forward). A bone SHALL be given by number (1–18) or by part name (`chest`, `luarm`, …).

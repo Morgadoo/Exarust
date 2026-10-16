@@ -16,3 +16,17 @@ wound after 3 s in Cmbt - Idle; rules in
 - Hit detection from physics contacts (edge, point, blunt surfaces of a weapon).
 - Momentum/energy based damage; blunt, cut and pierce through armour layers.
 - Stagger, knockdown, grabs, blocking with weapon or shield.
+
+## Wounds
+
+`wounds`: a blow bleeds when the struck fighter's race bleeds
+(`Fighter::bleeds`, from `races.rdb` flag bit 0 through
+`Fighter::of_record`) and its wound's size R (`Outcome::wound`, the lasting
+damage on the part before the red bar's 0.75) exceeds 0.05. The wound waits
+on the victim (`WoundQueue`, seven at most, a new one dropped when full)
+with the striking body (`Hit::striker`), the contact point as weights in
+its tetrahedron, the world point and R. Each body tick counts the waiting
+wounds down; seven ticks after the blow the first is sent as a `Bleed`
+(one a tick, corpses too) with how the striker's struck point moved on
+since and the radius 30·R + 10 cm; `exa_character::blood` paints it. See
+[`docs/RENDERING.md`](../../docs/RENDERING.md) (Blood).

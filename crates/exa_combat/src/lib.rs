@@ -8,20 +8,24 @@
 //! and kills it when its yellow health runs out. A blow that does not kill
 //! starts no clip on the target; a target struck while attacking stops its
 //! attack and returns to its stance. A fighter's stance and combat
-//! readiness are kept by [`stance`].
+//! readiness are kept by [`stance`]. A blow whose wound is deep enough
+//! bleeds on a victim whose race bleeds, seven body ticks later
+//! ([`wounds`]).
 
 pub mod damage;
 pub mod stance;
+pub mod wounds;
 
 use std::collections::HashSet;
 
 use bevy::prelude::*;
 use damage::{Health, PartArmour, Strike, WeaponRecord};
 use exa_anim::{Animator, BodyPart, Motions};
-use exa_formats::races::Natural;
+use exa_formats::races::{Natural, Race};
 use exa_physics::body::BODY_HZ;
-use exa_physics::body::{GoLimp, Shove};
+use exa_physics::body::{BodyTicks, GoLimp, Shove};
 use exa_world::PartBounds;
+use wounds::{WoundQueue, frame_tetra, tetra_weights};
 
 pub struct CombatPlugin;
 
@@ -29,17 +33,31 @@ impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<Hit>()
             .add_plugins(stance::StancePlugin)
+            .add_message::<wounds::Bleed>()
             .add_systems(
                 PostUpdate,
-                (track_blades, detect_hits, react_to_hits)
+                // Wounds struck this frame wait from the next tick on.
+                (
+                    wounds::count_down_wounds,
+                    track_blades,
+                    detect_hits,
+                    react_to_hits,
+                )
                     .chain()
+                    .in_set(CombatSystems)
                     .after(TransformSystems::Propagate),
             );
     }
 }
 
+/// The combat's frame systems: wounds counted down, blades tracked, hits
+/// found and dealt. In `PostUpdate`, after transforms propagate.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CombatSystems;
+
 /// A character that can fight and be hurt (on the body model root).
 #[derive(Component, Debug, Clone)]
+#[require(WoundQueue)]
 pub struct Fighter {
     pub health: Health,
     /// The race's natural armour, under worn items.
@@ -51,6 +69,8 @@ pub struct Fighter {
     /// Combat readiness, 0..=1: it rises standing in the combat idle and
     /// halves the wounds a blow deals at 1 ([`stance::readiness_step`]).
     pub readiness: f32,
+    /// Its race bleeds: its wounds paint blood (`races.rdb` flag bit 0).
+    pub bleeds: bool,
 }
 
 impl Default for Fighter {
@@ -68,6 +88,16 @@ impl Fighter {
             armour: damage::armour_layers(natural.as_ref(), &[]),
             down: false,
             readiness: 0.0,
+            bleeds: true,
+        }
+    }
+
+    /// A fighter of `race`: its health factor, natural armour and whether
+    /// it bleeds.
+    pub fn of_record(race: &Race) -> Self {
+        Self {
+            bleeds: race.bleeds(),
+            ..Self::of_race(race.health, Some(race.natural))
         }
     }
 }
@@ -120,6 +150,9 @@ pub struct Attacking {
 #[derive(Message, Debug, Clone)]
 pub struct Hit {
     pub attacker: Entity,
+    /// The body that struck: the blade (the entity holding the weapon
+    /// model), or the fist.
+    pub striker: Entity,
     pub target: Entity,
     pub bone: usize,
     pub point: Vec3,
@@ -168,7 +201,7 @@ fn track_blades(time: Res<Time>, mut blades: Query<(&mut Blade, &GlobalTransform
 
 fn detect_hits(
     motions: Option<Res<Motions>>,
-    blades: Query<(&Blade, &GlobalTransform)>,
+    blades: Query<(Entity, &Blade, &GlobalTransform)>,
     mut attackers: Query<(&Animator, &mut Attacking)>,
     fighters: Query<(Entity, &Fighter)>,
     children: Query<&Children>,
@@ -176,7 +209,7 @@ fn detect_hits(
     mut hits: MessageWriter<Hit>,
 ) {
     let Some(motions) = motions else { return };
-    for (blade, gt) in &blades {
+    for (striker, blade, gt) in &blades {
         let Ok((anim, mut attack)) = attackers.get_mut(blade.wielder) else {
             continue;
         };
@@ -239,6 +272,7 @@ fn detect_hits(
                 };
                 hits.write(Hit {
                     attacker: blade.wielder,
+                    striker,
                     target,
                     bone,
                     point,
@@ -272,15 +306,25 @@ fn stance_of(anim: &Animator) -> String {
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn react_to_hits(
     mut commands: Commands,
     mut hits: MessageReader<Hit>,
     mut shoves: MessageWriter<Shove>,
-    mut fighters: Query<(Entity, &mut Fighter, &mut Animator, Has<Attacking>)>,
+    mut fighters: Query<(
+        Entity,
+        &mut Fighter,
+        &mut Animator,
+        Has<Attacking>,
+        Option<&mut WoundQueue>,
+    )>,
+    strikers: Query<&GlobalTransform>,
+    ticks: Option<Res<BodyTicks>>,
     mut roll: Local<Roll>,
 ) {
+    let tick = ticks.map_or(0, |t| t.0);
     for hit in hits.read() {
-        let Ok((_, mut f, mut anim, attacking)) = fighters.get_mut(hit.target) else {
+        let Ok((_, mut f, mut anim, attacking, queue)) = fighters.get_mut(hit.target) else {
             continue;
         };
         let Some(armour) = hit.bone.checked_sub(1).and_then(|i| f.armour.get(i)) else {
@@ -298,6 +342,25 @@ fn react_to_hits(
             continue;
         };
         let killed = f.health.take(&outcome);
+        // A deep enough wound on a race that bleeds waits on the victim to
+        // bleed, anchored to the striker; the killing blow too.
+        if f.bleeds
+            && wounds::bleeds(outcome.wound)
+            && let Some(mut queue) = queue
+        {
+            let weights = strikers
+                .get(hit.striker)
+                .ok()
+                .and_then(|g| tetra_weights(hit.point, &frame_tetra(&g.affine())));
+            if queue.push(hit.striker, weights, hit.point, outcome.wound) {
+                debug!("wound R {:.3} queued on {:?}", outcome.wound, hit.target);
+            } else {
+                info!(
+                    "wound R {:.3} dropped: {:?} has seven waiting",
+                    outcome.wound, hit.target
+                );
+            }
+        }
         // The blow pushes the struck part, shoves the body when heavy, and
         // dazes it.
         let along = hit.velocity.normalize_or_zero();
@@ -314,14 +377,16 @@ fn react_to_hits(
             daze: outcome.daze,
         });
         info!(
-            "hit on bone {} at {:.0} cm, {:.1} cm/tick: impact {:.2}, penetration {:.2} \
-             at readiness {:.2} (yellow {:.3}, red {:.3} of {:.2})",
+            "hit on {:?} bone {} at tick {tick}, {:.0} cm, {:.1} cm/tick: impact {:.2}, \
+             penetration {:.2} at readiness {:.2}, wound {:.3} (yellow {:.3}, red {:.3} of {:.2})",
+            hit.target,
             hit.bone,
             hit.strike.along,
             hit.strike.speed,
             outcome.impact,
             outcome.penetration,
             f.readiness,
+            outcome.wound,
             f.health.yellow,
             f.health.red,
             f.health.max
@@ -349,7 +414,7 @@ fn react_to_hits(
             commands.entity(hit.target).remove::<Attacking>();
         }
     }
-    for (e, _, anim, attacking) in &fighters {
+    for (e, _, anim, attacking, _) in &fighters {
         if attacking && anim.looping {
             commands.entity(e).remove::<Attacking>();
         }
@@ -417,6 +482,7 @@ mod tests {
     fn strike(app: &mut App, target: Entity, bone: usize) {
         app.world_mut().write_message(Hit {
             attacker: Entity::PLACEHOLDER,
+            striker: Entity::PLACEHOLDER,
             target,
             bone,
             point: Vec3::ZERO,
@@ -529,5 +595,235 @@ mod tests {
             assert!(app.world().get::<Attacking>(id).is_none());
             assert_eq!(shoves(&app).len(), 1);
         }
+    }
+
+    /// An app running the wound countdown and the blow reactions, with a
+    /// body tick clock.
+    fn bleeding() -> App {
+        let mut app = App::new();
+        app.add_message::<Hit>()
+            .add_message::<Shove>()
+            .add_message::<wounds::Bleed>()
+            .init_resource::<exa_physics::body::BodyTicks>()
+            .add_systems(Update, (wounds::count_down_wounds, react_to_hits).chain());
+        app.update();
+        app
+    }
+
+    /// The cut on `bone` of `target`, dealt by `striker` at `point`.
+    fn cut_by(app: &mut App, striker: Entity, target: Entity, bone: usize, point: Vec3) {
+        app.world_mut().write_message(Hit {
+            attacker: Entity::PLACEHOLDER,
+            striker,
+            target,
+            bone,
+            point,
+            velocity: Vec3::new(3.0, 0.0, 0.0),
+            weapon: damage::sword_a(),
+            strike: cut(),
+        });
+    }
+
+    /// One body tick and the frame after it; the wounds that bled.
+    fn tick(app: &mut App) -> Vec<wounds::Bleed> {
+        app.world_mut()
+            .resource_mut::<exa_physics::body::BodyTicks>()
+            .0 += 1;
+        app.update();
+        let messages = app.world().resource::<Messages<wounds::Bleed>>();
+        messages.iter_current_update_messages().copied().collect()
+    }
+
+    fn waiting(app: &App, fighter: Entity) -> usize {
+        app.world()
+            .get::<WoundQueue>(fighter)
+            .unwrap()
+            .pending()
+            .len()
+    }
+
+    /// A human cut on the bare chest (R = 0.457, over 0.05) bleeds seven
+    /// body ticks later, not before, with the radius 30·R + 10 cm (23.7 cm)
+    /// and the travel of the blade's struck point since the blow.
+    #[test]
+    fn a_wound_bleeds_seven_ticks_after_the_blow() {
+        let o = outcome(9);
+        assert!((o.wound - 0.457).abs() < 1e-3, "{o:?}");
+        assert!((o.red - 0.75 * o.wound).abs() < 1e-6);
+        let mut app = bleeding();
+        let fighter = app
+            .world_mut()
+            .spawn((Fighter::default(), Animator::new("Default", "Idle")))
+            .id();
+        // The blade lies along +Y from its grip, turned; the blow lands
+        // 70 cm along it.
+        let blade = Transform::from_xyz(0.2, 1.0, 0.5).with_rotation(Quat::from_rotation_z(-1.2));
+        let striker = app.world_mut().spawn(GlobalTransform::from(blade)).id();
+        let contact = blade.transform_point(Vec3::Y * 0.7);
+        cut_by(&mut app, striker, fighter, 9, contact);
+        app.update();
+        let queued = app.world().get::<WoundQueue>(fighter).unwrap().pending()[0];
+        assert_eq!((queued.striker, queued.delay), (striker, 7));
+        assert_eq!((queued.contact, queued.size), (contact, o.wound));
+        // The blade swings on: by the 7th tick it has turned further and
+        // dropped 10 cm.
+        let on = blade
+            .with_rotation(Quat::from_rotation_z(-1.6))
+            .with_translation(Vec3::new(0.2, 0.9, 0.5));
+        *app.world_mut().get_mut::<GlobalTransform>(striker).unwrap() = on.into();
+        for t in 1..7 {
+            assert!(tick(&mut app).is_empty(), "tick {t}");
+        }
+        let bled = tick(&mut app);
+        assert_eq!(bled.len(), 1);
+        let b = bled[0];
+        assert_eq!((b.body, b.contact), (fighter, contact));
+        assert!((b.radius - (0.3 * o.wound + 0.1)).abs() < 1e-6);
+        assert!((b.radius - 0.237).abs() < 1e-3);
+        let moved = on.transform_point(Vec3::Y * 0.7) - contact;
+        assert!(b.travel.distance(moved) < 1e-4, "{:?} {moved:?}", b.travel);
+        assert_eq!(waiting(&app, fighter), 0);
+        assert!(tick(&mut app).is_empty());
+    }
+
+    /// Nothing bleeds on a race that does not: a skeleton (flags 0), cut as
+    /// deep, keeps no wound; a human of the same record bleeds.
+    #[test]
+    fn skeletons_do_not_bleed() {
+        let race = |flags: u32| Race {
+            id: 2,
+            name: "Skeleton".into(),
+            flags,
+            stem: "Skel".into(),
+            movesets: ["Default".into(), "Skeleton".into()],
+            health: 1.0,
+            natural: Natural::default(),
+            body: exa_formats::races::RaceBody::FALLBACK,
+        };
+        let skeleton = Fighter::of_record(&race(0));
+        assert!(!skeleton.bleeds);
+        assert!(Fighter::of_record(&race(0x0F)).bleeds);
+        assert!(Fighter::default().bleeds);
+        let mut app = bleeding();
+        let bones = app
+            .world_mut()
+            .spawn((skeleton, Animator::new("Default", "Idle")))
+            .id();
+        cut_by(&mut app, Entity::PLACEHOLDER, bones, 9, Vec3::ZERO);
+        app.update();
+        assert!(app.world().get::<Fighter>(bones).unwrap().health.red < 0.25);
+        assert_eq!(waiting(&app, bones), 0);
+        for _ in 0..8 {
+            assert!(tick(&mut app).is_empty());
+        }
+    }
+
+    /// The threshold is on R, before the red bar's 0.75: a slow cut on
+    /// the bare hand at 4 cm a tick (R 0.045) does not bleed, at 6 cm a
+    /// tick (R 0.064, red 0.048) it does.
+    #[test]
+    fn shallow_wounds_do_not_bleed() {
+        for (speed, size, bleeds) in [(4.0, 0.0454, false), (6.0, 0.0640, true)] {
+            let strike = Strike { speed, ..cut() };
+            let roll = Roll::default().next();
+            let o = damage::resolve(
+                &damage::sword_a(),
+                &strike,
+                &PartArmour::default(),
+                17,
+                0.25,
+                0.0,
+                roll,
+            )
+            .unwrap();
+            assert!((o.wound - size).abs() < 1e-4, "{o:?}");
+            assert!(f64::from(o.red) < wounds::BLEED_FROM);
+            let mut app = bleeding();
+            let id = app
+                .world_mut()
+                .spawn((Fighter::default(), Animator::new("Default", "Idle")))
+                .id();
+            app.world_mut().write_message(Hit {
+                attacker: Entity::PLACEHOLDER,
+                striker: Entity::PLACEHOLDER,
+                target: id,
+                bone: 17,
+                point: Vec3::ZERO,
+                velocity: Vec3::X,
+                weapon: damage::sword_a(),
+                strike,
+            });
+            app.update();
+            assert_eq!(waiting(&app, id), usize::from(bleeds), "{speed} cm/tick");
+        }
+    }
+
+    /// The killing blow bleeds on the corpse; a wound struck while seven
+    /// wait is dropped.
+    #[test]
+    fn the_fallen_bleed_and_seven_wait_at_most() {
+        let mut app = bleeding();
+        let mut dying = Fighter::default();
+        dying.health.yellow = 0.011;
+        let id = app
+            .world_mut()
+            .spawn((dying, Animator::new("Default", "Idle")))
+            .id();
+        cut_by(&mut app, Entity::PLACEHOLDER, id, 9, Vec3::ZERO);
+        app.update();
+        assert!(app.world().get::<Fighter>(id).unwrap().down);
+        let bled: Vec<_> = (0..7).flat_map(|_| tick(&mut app)).collect();
+        assert_eq!(bled.len(), 1);
+        assert_eq!((bled[0].body, bled[0].travel), (id, Vec3::ZERO));
+
+        // A sturdy fighter takes nine cuts in one frame: seven wait, and
+        // they bleed one a tick from the 7th tick on.
+        let sturdy = app
+            .world_mut()
+            .spawn((
+                Fighter::of_race(100.0, None),
+                Animator::new("Default", "Idle"),
+            ))
+            .id();
+        for i in 0..9 {
+            cut_by(&mut app, Entity::PLACEHOLDER, sturdy, 9, Vec3::X * i as f32);
+        }
+        app.update();
+        assert_eq!(waiting(&app, sturdy), 7);
+        let per_tick: Vec<Vec<Vec3>> = (0..14)
+            .map(|_| tick(&mut app).iter().map(|b| b.contact).collect())
+            .collect();
+        for (t, contacts) in per_tick.iter().enumerate() {
+            match t {
+                0..6 => assert!(contacts.is_empty(), "tick {}", t + 1),
+                6..13 => assert_eq!(contacts, &[Vec3::X * (t - 6) as f32], "tick {}", t + 1),
+                _ => assert!(contacts.is_empty()),
+            }
+        }
+    }
+
+    /// A punch bleeds on the one struck, never on the puncher's own fist or
+    /// body.
+    #[test]
+    fn fists_stay_clean() {
+        let mut app = bleeding();
+        let puncher = app
+            .world_mut()
+            .spawn((Fighter::default(), Animator::new("Default", "Idle")))
+            .id();
+        let fist = app
+            .world_mut()
+            .spawn((GlobalTransform::from_xyz(0.0, 1.4, 0.4), ChildOf(puncher)))
+            .id();
+        let struck = app
+            .world_mut()
+            .spawn((Fighter::default(), Animator::new("Default", "Idle")))
+            .id();
+        cut_by(&mut app, fist, struck, 9, Vec3::new(0.0, 1.4, 0.5));
+        app.update();
+        assert_eq!((waiting(&app, struck), waiting(&app, puncher)), (1, 0));
+        let bled: Vec<_> = (0..7).flat_map(|_| tick(&mut app)).collect();
+        assert_eq!(bled.len(), 1);
+        assert_eq!(bled[0].body, struck);
     }
 }

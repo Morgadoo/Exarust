@@ -946,8 +946,9 @@ fn autowalk(
     }
 }
 
-/// `--press`: presses each scripted key or mouse button at its frame,
-/// counted from the end of the load, and lets it go the frame after.
+/// `--press` and `--click`: presses each scripted key or mouse button (and
+/// clicks the left mouse button) at its frame, counted from the end of the
+/// load, and lets it go the frame after.
 fn press_keys(
     options: Res<Options>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
@@ -955,7 +956,7 @@ fn press_keys(
     mut buttons: ResMut<ButtonInput<MouseButton>>,
     mut frames: Local<u32>,
 ) {
-    if options.press.is_empty() || loading.is_some() {
+    if (options.press.is_empty() && options.clicks.is_empty()) || loading.is_some() {
         return;
     }
     *frames += 1;
@@ -971,6 +972,14 @@ fn press_keys(
             (crate::Press::Key(key), false) => keys.release(key),
             (crate::Press::Button(button), true) => buttons.press(button),
             (crate::Press::Button(button), false) => buttons.release(button),
+        }
+    }
+    for &at in &options.clicks {
+        if at == *frames {
+            info!("clicking the left mouse button");
+            buttons.press(MouseButton::Left);
+        } else if at + 1 == *frames {
+            buttons.release(MouseButton::Left);
         }
     }
 }
@@ -1053,7 +1062,7 @@ fn spawn_placed_characters(
                     })
                     .collect(),
             ),
-            exa_combat::Fighter::of_race(race.map_or(1.0, |r| r.health), race.map(|r| r.natural)),
+            race.map_or_else(exa_combat::Fighter::default, exa_combat::Fighter::of_record),
             ChildOf(root),
         ));
         if let Some((model_name, weapon)) = &c.held {

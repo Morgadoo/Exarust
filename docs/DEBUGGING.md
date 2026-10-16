@@ -33,6 +33,7 @@ exarust --debug-bodies --opponent --pause-on-stretch 1 \
 | `--pause-at-tick <n>` | pause at the end of body tick `n` (the `tick` column of both traces, counted from the start, the load included; see below) |
 | `--pause-on-stretch <cm>` | pause at the end of the tick in which a link of a body first goes this far past its slack; the log and the readout name the body, the part and the link |
 | `--press key@frame,...` | press keys or mouse buttons at frames counted from the end of the load (`.`, `[`, `]`, `Tab`, `F1`–`F12`, a letter, or `LMB`, `RMB`, `MMB`), e.g. `.@400,.@401,P@500`; each is released the frame after |
+| `--click frame,...` | click the left mouse button at frames counted from the end of the load (the same as `LMB@frame` in `--press`): with `--weapon` in an arena fight, which starts in combat mode, the player attacks unattended |
 | `--camera x,y,z,yaw,pitch` | in play mode, a fixed camera there instead of the chase camera (metres, degrees), for unattended shots; with `--fov` |
 | `--cursor x,y` | in play mode, the cursor stays at this window point (logical pixels) instead of following the pointer; it needs the chase camera (not `--camera`) |
 | `--still-opponent` | `--opponent`, but the duellist stands its ground: it faces the player and takes its stance (by its distance, [PLAYER.md](PLAYER.md), The combat stance) but never walks or strikes; with `--at` it shows the stances at a chosen distance |
@@ -221,3 +222,15 @@ exarust --debug-wound belly,15,0,-40,0 --debug-wound ruleg,14,0,-30,0 character
 The log names each test wound's contact point and, for every wound, how
 many meshes it painted and copied and the copies' size. The tool costs
 nothing without the flag (its system waits behind a run condition).
+
+Wounds from hits log the same line seven body ticks after the blow; each
+hit's line names the struck body, the body tick and the wound's size R
+(it bleeds above 0.05). An unattended duel in which both fighters strike:
+
+```bash
+# The armed player (in combat mode from the fight start) attacks every
+# 25 frames; paused after the duellist's second blow, from the player's front.
+exarust --opponent --weapon ub05ssworda \
+  --click $(seq -s, 100 25 1400) --camera 1.3,1.7,3.4,135,-14 \
+  --pause-at-tick 760 --screenshot hits.png --frames 20 play arena1
+```

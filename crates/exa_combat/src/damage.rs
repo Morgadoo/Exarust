@@ -240,6 +240,10 @@ pub struct Outcome {
     /// Damage to the red (lasting) and yellow (current) bars, before their
     /// weights.
     pub red: f32,
+    /// The lasting damage on the struck part, its multiplier applied, before
+    /// the red bar's 0.75: the size R of the wound the blow leaves, which
+    /// bleeds above 0.05 ([`crate::wounds`]).
+    pub wound: f32,
     pub yellow: f32,
     /// Share of the victim's wits taken.
     pub daze: f32,
@@ -406,11 +410,13 @@ pub fn resolve(
     let stab_energy = stab_energy * defended;
     let (mult, stun) = part_multipliers(bone);
     let lasting = penetration / (penetration + 1.0);
-    let red = lasting * mult * 0.75;
+    let wound = lasting * mult;
+    let red = wound * 0.75;
     let yellow = (0.5 * stab_energy + (2.0 * (penetration - lasting) + j) * mult) * 0.75;
     let daze = (0.75 * penetration + 1.25 * j).sqrt() * stun * 0.5 * (0.25 / max_health.max(1e-3));
     Some(Outcome {
         red,
+        wound,
         yellow,
         daze,
         impact: shove,

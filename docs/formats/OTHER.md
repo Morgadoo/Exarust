@@ -492,6 +492,20 @@ calls)
   Defence stance with a step also answers electricity and energy effects.
 - A lethal wound plays Fall Backward and collapses the character; Exarust
   sends the body limp at once.
+- It bleeds (REA on the damage routine's blood branch, the wound queue and
+  its consumer in the body tick) when its race bleeds (`races.rdb` flag
+  bit 0) and the wound's size R = P/(P + 1)·m, before the 0.75 of red,
+  exceeds 0.05. The wound waits on the victim, at most seven (a new one is
+  dropped when seven wait), with the striking body (the weapon, or the
+  hand), the contact point as weights in its tetrahedron, the world point
+  and R. Each body tick counts every waiting wound down from 7; the first
+  whose count reaches 0 is painted, one a tick, corpses included: 7 ticks
+  (84 ms) after the blow (the blow is dealt in the striker's post-step,
+  after that tick's body ticks, so the count starts on the next tick).
+  The weights give where that point of the
+  striker is then; D, how it moved on from the contact point, smears the
+  wound, of radius 30·R + 10 cm ([RENDERING.md](../RENDERING.md), Blood).
+  A punch bleeds on the struck only: hands never take blood themselves.
 
 Not yet: the bite (weapons sticking in), blocking and parrying, shields,
 encumbrance's effect on swings, and the state that knocks a character

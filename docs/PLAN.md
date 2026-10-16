@@ -384,7 +384,13 @@ the meshes under its head, each shared mesh copied for the struck
 character on its first wound; dirt mode 4 shading against the speckle
 `spatter01` for the human skin, painted apparel, factory items and a
 bleeding race's skin (`races.rdb` flag bit 0), and `--debug-wound` to paint
-test wounds. Next: wounds from hits (L7), then blade stains and sprays.
+test wounds.
+Done (change `bleed-from-wounds`): blows bleed as the original's do: on a
+race that bleeds, when the wound's size R (the lasting damage on the part
+before the red bar's 0.75) exceeds 0.05, the wound waits on the victim
+(seven at most) anchored to the striking blade and is painted seven body
+ticks later, smeared along the blade's follow-through, with radius
+30·R + 10 cm, on corpses too. Next: blade stains (L8) and sprays (L9).
 See `docs/RENDERING.md` and `docs/PERFORMANCE.md`.
 
 - Materials: one `ExaMaterial` whose parameters follow

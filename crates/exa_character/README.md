@@ -53,4 +53,6 @@ Characters: races, body morphs, appearance, apparel fitting, stats/attributes/sk
   duellist's outfit 1.9 MiB, on the CPU and the GPU each.
 - `blood::DebugWounds` (`--debug-wound`, [`docs/DEBUGGING.md`](../../docs/DEBUGGING.md))
   paints test wounds once the player's or the character view's body is
-  dressed. Wounds from hits come with the bleeding change (L7).
+  dressed.
+- Wounds from hits: each `exa_combat::wounds::Bleed` (a blow's wound whose
+  seven ticks are up) is painted as a `PaintWound`, on corpses too.

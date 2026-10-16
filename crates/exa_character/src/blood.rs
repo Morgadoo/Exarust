@@ -23,8 +23,11 @@
 //!   that runs on to the end of the mesh. Vertices are taken where the
 //!   current pose puts them.
 //!
-//! [`PaintWound`] paints one wound now; what produces wounds from hits (the
-//! bleeding races, the delay after the blow) is the combat's.
+//! [`PaintWound`] paints one wound now. Wounds from hits come from the
+//! combat (`exa_combat::wounds`): a blow deep enough on a race that bleeds
+//! waits seven body ticks on the victim, then bleeds ([`Bleed`]) with how
+//! the striker moved on since, and is painted here, on corpses too. Blood
+//! never spreads, fades or drips.
 //! [`DebugWounds`] paints test wounds on the player or the character view's
 //! body (`--debug-wound`, `docs/DEBUGGING.md`).
 
@@ -37,6 +40,8 @@ use bevy::prelude::*;
 use bevy::transform::TransformSystems;
 use exa_anim::BodyPart;
 use exa_assets::SkinnedPart;
+use exa_combat::CombatSystems;
+use exa_combat::wounds::Bleed;
 use exa_render::material::ExaMaterial;
 
 use crate::Dressed;
@@ -46,16 +51,20 @@ pub struct BloodPlugin;
 impl Plugin for BloodPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<PaintWound>()
+            .add_message::<Bleed>()
             .init_resource::<WoundRng>()
             .add_systems(
                 PostUpdate,
                 (
                     paint_debug_wounds.run_if(resource_exists::<DebugWounds>),
+                    bleed_wounds,
                     paint_wounds,
                 )
                     .chain()
-                    // Vertices are taken where this frame's pose puts them.
-                    .after(TransformSystems::Propagate),
+                    // Vertices are taken where this frame's pose puts them,
+                    // after the combat's wounds bled.
+                    .after(TransformSystems::Propagate)
+                    .after(CombatSystems),
             );
     }
 }
@@ -278,6 +287,18 @@ fn wound_targets(
                     .is_some_and(|p| p.bone == HEAD)
         })
         .collect()
+}
+
+/// Paints the wounds that bleed this frame.
+fn bleed_wounds(mut bleeds: MessageReader<Bleed>, mut out: MessageWriter<PaintWound>) {
+    for b in bleeds.read() {
+        out.write(PaintWound {
+            body: b.body,
+            contact: b.contact,
+            travel: b.travel,
+            radius: b.radius,
+        });
+    }
 }
 
 /// Paints every wound sent this frame onto its character's meshes.
@@ -825,5 +846,116 @@ mod tests {
         let both = alphas(&app, b.chest).unwrap();
         assert_eq!((both[3], both[7]), (0, 0));
         assert_eq!(both[5], 255);
+    }
+
+    /// The original's one-handed sword `sword_a` (90 cm): a cut 70 cm along
+    /// it at 20 cm a tick wounds a bare chest with R = 0.457.
+    fn sword_cut() -> (exa_combat::damage::WeaponRecord, exa_combat::damage::Strike) {
+        use exa_formats::weapon_stats::{StatBytes, at};
+        let mut s = StatBytes::default();
+        for (off, v) in [
+            (at::WEIGHT, 50),
+            (at::BALANCE, 80),
+            (at::IMPACT, 127),
+            (at::THRUST, 54),
+            (at::KIND, 2),
+            (at::START, 20),
+            (at::END, 200),
+            (at::SLASH, 72),
+        ] {
+            s.set(off, v);
+        }
+        (
+            exa_combat::damage::WeaponRecord::new(0x11, &s, false, 90.0),
+            exa_combat::damage::Strike {
+                speed: 20.0,
+                stab: false,
+                overhead: false,
+                clock: 0.8,
+                along: 70.0,
+            },
+        )
+    }
+
+    /// A sword cut on the chest bleeds seven body ticks after the blow, as
+    /// a smear along the blade's follow-through: the blade moved on 20 cm
+    /// along +x, so the wound centres 10 cm behind the contact point and
+    /// soaks the strip ahead to its end. Only the struck body is painted.
+    #[test]
+    fn hits_bleed_seven_ticks_later() {
+        use exa_combat::Fighter;
+        use exa_combat::wounds::WoundQueue;
+        use exa_physics::body::{BodyTicks, Shove};
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<SkinnedMeshInverseBindposes>>()
+            .init_resource::<BodyTicks>()
+            .add_message::<Shove>()
+            .add_plugins((exa_combat::CombatPlugin, BloodPlugin));
+        let (skinned, rigid) = {
+            let mut meshes = app.world_mut().resource_mut::<Assets<Mesh>>();
+            (meshes.add(strip(true)), meshes.add(strip(false)))
+        };
+        let a = body(app.world_mut(), 0.0, &skinned, &rigid);
+        let b = body(app.world_mut(), 5.0, &skinned, &rigid);
+        for root in [a.root, b.root] {
+            app.world_mut().entity_mut(root).insert((
+                Fighter::default(),
+                exa_anim::Animator::new("Default", "Idle"),
+            ));
+        }
+        app.update();
+        let blade = app.world_mut().spawn(GlobalTransform::IDENTITY).id();
+        let (weapon, strike) = sword_cut();
+        app.world_mut().write_message(exa_combat::Hit {
+            attacker: b.root,
+            striker: blade,
+            target: a.root,
+            bone: 9,
+            point: Vec3::ZERO,
+            velocity: Vec3::new(3.0, 0.0, 0.0),
+            weapon,
+            strike,
+        });
+        app.update();
+        let size = app.world().get::<WoundQueue>(a.root).unwrap().pending()[0].size;
+        assert!((size - 0.457).abs() < 1e-3, "{size}");
+        let r = 0.3 * size + 0.1;
+        // The blade follows through.
+        *app.world_mut().get_mut::<GlobalTransform>(blade).unwrap() =
+            GlobalTransform::from_xyz(0.2, 0.0, 0.0);
+        let tick = |app: &mut App| {
+            app.world_mut().resource_mut::<BodyTicks>().0 += 1;
+            app.update();
+        };
+        for t in 1..7 {
+            tick(&mut app);
+            assert!(alphas(&app, a.chest).is_none(), "tick {t}");
+        }
+        tick(&mut app);
+        let chest = alphas(&app, a.chest).expect("painted on the 7th tick");
+        // Ahead of the centre (x ≥ −10 cm): soaked to the strip's end.
+        assert!(chest[4..].iter().all(|&v| v == 0), "{chest:?}");
+        // Behind it a ball of radius r: 10 cm back f = 1 − 0.01/r²,
+        // 20 cm back f = 1 − 0.04/r², 30 cm back outside.
+        let range = |d: f32| {
+            let f = 1.0 - d * d / (r * r);
+            (255.0 * (1.0 - f)).floor() as u8..=(255.0 * (1.0 - f * f * f)).ceil() as u8
+        };
+        assert!(range(0.1).contains(&chest[3]), "{chest:?}");
+        assert!(range(0.2).contains(&chest[2]), "{chest:?}");
+        assert_eq!(chest[..2], [255, 255]);
+        // The striker, the helmet and the sword are untouched.
+        for part in [b.chest, a.helmet, a.sword, b.helmet] {
+            assert!(alphas(&app, part).is_none());
+        }
+        assert!(
+            app.world()
+                .get::<WoundQueue>(b.root)
+                .unwrap()
+                .pending()
+                .is_empty()
+        );
     }
 }

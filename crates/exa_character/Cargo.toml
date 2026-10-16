@@ -13,5 +13,8 @@ exa_assets.workspace = true
 exa_combat.workspace = true
 exa_formats.workspace = true
 
+[dev-dependencies]
+exa_physics.workspace = true
+
 [lints]
 workspace = true

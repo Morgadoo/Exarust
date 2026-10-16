@@ -35,6 +35,7 @@
 //!          --pause-on-stretch <cm>    pause the simulation when a link goes this far past its slack
 //!          --press key@frame,...      press keys or mouse buttons (LMB, RMB, MMB) at frames after loading (e.g. `.@400,P@500,LMB@600`)
 //!          --cursor x,y               play mode: the cursor stays at this window point (logical pixels), for unattended runs
+//!          --click frame,...          click the left mouse button at frames after loading
 //!          --debug-wound b,r[,dx,dy,dz]  a test wound on the player's (or the character view's) body part b
 //!                                     (1–18 or chest, luarm, …), radius r cm, smeared along d cm; repeatable
 //! ```
@@ -119,6 +120,8 @@ pub struct Options {
     pub press: Vec<(Press, u32)>,
     /// Play mode: a cursor fixed at this window point (logical pixels).
     pub cursor: Option<[f32; 2]>,
+    /// Left mouse button clicks at frames after the load.
+    pub clicks: Vec<u32>,
     /// Test wounds on the player's or the character view's body.
     pub debug_wounds: Vec<exa_character::blood::DebugWound>,
 }
@@ -227,6 +230,14 @@ fn parse_presses(list: &str) -> Option<Vec<(Press, u32)>> {
         .collect()
 }
 
+/// Reads `frame,...`.
+fn parse_clicks(list: &str) -> Option<Vec<u32>> {
+    list.split(',')
+        .filter(|s| !s.trim().is_empty())
+        .map(|f| f.trim().parse().ok())
+        .collect()
+}
+
 fn main() -> AppExit {
     let mut args = std::env::args().skip(1).peekable();
     let mut game_dir: Option<PathBuf> = None;
@@ -299,6 +310,16 @@ fn main() -> AppExit {
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
                     .collect();
+            }
+            "--click" => {
+                let list = args.next().unwrap_or_default();
+                match parse_clicks(&list) {
+                    Some(c) => options.clicks = c,
+                    None => {
+                        eprintln!("--click: cannot read {list:?} (frame,...)");
+                        return AppExit::from_code(2);
+                    }
+                }
             }
             "--debug-wound" => {
                 let text = args.next().unwrap_or_default();
@@ -493,6 +514,8 @@ mod tests {
             ])
         );
         assert_eq!(parse_presses(""), Some(vec![]));
+        assert_eq!(parse_clicks("300, 420,540"), Some(vec![300, 420, 540]));
+        assert_eq!(parse_clicks("300,x"), None);
         for bad in ["P", "P@x", "F13@1", "Esc@2", "@3", "lmb@4", "XMB@5"] {
             assert_eq!(parse_presses(bad), None, "{bad}");
         }
