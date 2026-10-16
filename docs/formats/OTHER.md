@@ -29,7 +29,40 @@ entry. Layout:
 | `+0x20` | body model stem[24]: `Skel` → `skelbase.rfc`, `GlmBsA` → `glmbsabase.rfc` |
 | `+0x38` | shared moveset[16] (`Default`) |
 | `+0x48` | the race's own moveset[16] (`Golem`, `Herath`, `Ogre`, `Demon A01`, …) |
-| from `+0x58` | body parameters (floats), sound names at `+0x144` (`StpSft`, `SkelHit`, …) and per-part values; not decoded |
+| `+0x58`, `+0x5C` | floats, not decoded |
+| `+0x60` | support-pin factor: scales the pull of the two thorax pins and the pelvis pin toward the stance (human 1.25) |
+| `+0x64`–`+0x70` | floats, not decoded |
+| `+0x74` | balance bonus (1.0 in every record): the balance score gains 0.05 × it, and the recovery-step reach grows by (1 + it); the original sets 1.5 or 2.0 instead for some creature types |
+| `+0x78` | stance factor: the share of muscle tone a standing body uses (tone target = tone × it) and the divisor of the standing joint-muscle damping, k = 40 / it (human 0.5; skeleton, fael and ghouls 0.75; golems and the harvester 1.0) |
+| `+0x7C` | arm relaxation: scales how far the arms' muscle anchors may relax toward the current pose (human 1.0, skeleton 0.5) |
+| `+0x80` | limb damping ratio r: a living body's velocity retention is scaled by u², u = (1 − balance)(1 − r) + r (1.0 for most races, so no extra damping; golems 0.95, the golem suit 0.97) |
+| `+0x84`–`+0x90` | floats, not decoded |
+| `+0x94` | gait table: 4 rows (walk, jog, sprint, backpedal) × 5 floats, see below |
+| `+0xE4` | health factor (damage model, below) |
+| from `+0xE8` | sound names at `+0x144` (`StpSft`, `SkelHit`, …), protection at `+0x11C` and coverage at `+0x21C` (natural armour, below); the rest not decoded |
+
+Gait rows, per second as stored. The original's loader divides columns 0
+and 3 by 83 and column 1 by 83² to get per-tick values.
+
+| column | meaning |
+|---|---|
+| 0 | thrust: the push along the heading (human walk 88.9, jog 350, sprint 472.2, backpedal 77.8) |
+| 1 | push scale: how the push enters the body's carry (550 in every human row; 1600 in some creatures' walk) |
+| 2 | 0 in every record and never read: the loader fills this slot with a built-in value per row (0.05, 0.2, 0.25, 0.05) whose use is not traced |
+| 3 | clip rate (human 27, 16.6, 13.5, 28) [inf: feeds the gait's clip clock; not traced] |
+| 4 | speed along the heading under which the gait's phase push is boosted (0 everywhere but the harvester's walk, 20) |
+
+How the factors were established: reverse engineering of `Exanima.exe`
+0.9.5. The character builder looks the race up by its id (race byte + 1) in
+the `races.rdb` id database, which is loaded raw, so every read of a race
+field uses the file's own record and offsets. Each factor's meaning comes
+from the routine that reads it (the support pins, the balance score and
+recovery steps, the stance factor of the body tick, the arms' anchor
+relaxation, the limbs' retention). When the id is missing, the original
+uses a built-in record instead: every factor 1.0 and an all-zero gait
+table, so a character on it cannot walk (`RaceBody::FALLBACK`). The values
+per race are printed by `exa-tool races`; a corpus test checks every
+record.
 
 A character record's race byte is the race's id minus one. Placed
 characters across the levels, by race byte:

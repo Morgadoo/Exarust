@@ -100,6 +100,12 @@ How the original simulates a body (`exa_physics::body`):
   - The original also runs a PD muscle per link toward the animated anchor,
     balance with recovery steps, foot planting, and hidden support forces
     on the pelvis and thorax pins.
+  - Several of these read the character's race record in `races.rdb`: the
+    stance factor (a standing human uses half its tone, and its joint
+    muscles are damped with k = 40 / 0.5), the support-pin factor, the
+    balance bonus, the arms' relaxation, the limb damping ratio and the
+    gait table ([OTHER.md](OTHER.md), Races). Exarust decodes them
+    (`exa_formats::races::RaceBody`) but does not use them yet.
 
 How a tick runs. The original steps every body of the world in one 83 Hz
 tick, in this order:

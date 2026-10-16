@@ -13,6 +13,7 @@
 | `png <pack> <entry> <out.png>` | decode an image's base level |
 | `extract <pack> <dir> [--filter s] [--inner e]` | write entries with guessed extensions |
 | `paint <model> <stem> <out.png>` | paint an apparel texture set with the appearance of the first item worn as the model (`paint braies_a braies__aa b.png`) |
+| `races` | every race of `races.rdb`: names, model, movesets, health, the body controller's factors and the gait table |
 | `corpus meshes` | decode every chunk tree; per-pack table and reasons for unsupported records |
 | `corpus levels` | grids, props and placed characters of every level; placed humans covered at the groin and their worn items with a `Characters.rpk` model |
 | `corpus images` | every image by format word and storage; decodes the uncompressed ones and checks that RGB8 normal maps hold z in blue |

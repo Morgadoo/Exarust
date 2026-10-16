@@ -11,6 +11,7 @@
 //! exa-tool corpus meshes              decode every chunk tree, report coverage
 //! exa-tool corpus images              images by format; RGB8 normals z in blue
 //! exa-tool corpus winding             which way level faces point, floors up?
+//! exa-tool races                      races with their body parameters and gaits
 //! exa-tool export-gltf Objlib afr_cornflag_a01 out.glb
 //! ```
 
@@ -78,6 +79,8 @@ enum Cmd {
         #[arg(default_value = "humanoid.rsq")]
         entry: String,
     },
+    /// Every race of `races.rdb` with its body parameters and gait table.
+    Races,
     /// Decode every entry of a format and report coverage.
     Corpus {
         #[arg(value_enum)]
@@ -207,6 +210,7 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Cmd::Races => races(&game),
         Cmd::Corpus {
             what: CorpusKind::Meshes,
         } => corpus::meshes(&game),
@@ -249,6 +253,37 @@ fn main() -> Result<()> {
             extract(a, &out, filter.as_deref())
         }),
     }
+}
+
+fn races(game: &GameData) -> Result<()> {
+    let races = exa_formats::races::parse(entry_bytes(game, "Resource", "races.rdb")?)?;
+    println!(
+        "{} races (factors as stored; gait rows per second)",
+        races.len()
+    );
+    for r in &races {
+        let b = &r.body;
+        println!(
+            "{:>3} {:<16} {:<18} {} / {:<10} health {}",
+            r.id,
+            r.name,
+            r.model(),
+            r.movesets[0],
+            r.movesets[1],
+            r.health
+        );
+        println!(
+            "    pins {}  balance bonus {}  stance {}  arm relaxation {}  damping ratio {}",
+            b.pin_factor, b.balance_bonus, b.stance, b.arm_relaxation, b.damping_ratio
+        );
+        for (name, g) in exa_formats::races::GAIT_NAMES.iter().zip(&b.gaits) {
+            println!(
+                "    {name:<9} thrust {:>8.3}  push {:>6}  clip rate {:>5}  boost below {}",
+                g.thrust, g.push_scale, g.clip_rate, g.boost_below
+            );
+        }
+    }
+    Ok(())
 }
 
 fn locate(explicit: Option<&Path>) -> Result<PathBuf> {

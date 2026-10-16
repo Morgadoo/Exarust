@@ -48,3 +48,10 @@ Every command SHALL exit with a non-zero status and a message naming the missing
 #### Scenario: Unknown entry
 - **WHEN** `exa-tool rfi Textures does_not_exist` runs
 - **THEN** it exits non-zero with a message naming the entry and pack
+
+### Requirement: Race inspection
+`exa-tool races` SHALL print every race of the installation's `races.rdb`: its id, name, body model, movesets and health, its body parameters (support-pin factor, balance bonus, stance factor, arm relaxation, damping ratio) and its four gait rows.
+
+#### Scenario: Retail races
+- **WHEN** `exa-tool races` runs against a retail installation
+- **THEN** 18 races are printed, Human with stance factor 0.5 and a walk thrust of 88.9 per second

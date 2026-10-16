@@ -9,5 +9,9 @@ version.workspace = true
 bcdec_rs.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+# Corpus tests read the installed packs (and skip without them).
+exa_rpk.workspace = true
+
 [lints]
 workspace = true

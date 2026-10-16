@@ -216,8 +216,13 @@ bodies tick in the fixed step as one world in the original's order (every
 character tick, the player's last, then the solver over every body). Clips
 are sampled every tick, blows are queued for the next tick, parts are drawn
 between ticks, and `exarust --trace` writes the body state per tick in the
-retail probe's columns. Still to do: link PD muscles, recovery steps, foot
-planting, collisions between bodies.
+retail probe's columns. Done (change `decode-race-body-fields`, C2): the
+race factors the body controller reads (support pins, balance bonus,
+stance factor, arm relaxation, limb damping) and the gait table are decoded
+from `races.rdb` for every race, with the original's fallback for an
+unknown race, and printed by `exa-tool races`
+([formats/OTHER.md](formats/OTHER.md), Races). Still to do: link PD
+muscles, recovery steps, foot planting, collisions between bodies.
 
 This phase carries the most risk and defines how the game feels.
 
