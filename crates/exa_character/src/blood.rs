@@ -44,6 +44,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use bevy::ecs::system::SystemParam;
 use bevy::image::{CompressedImageFormatSupport, ImageAddressMode, ImageSampler};
 use bevy::math::Affine3A;
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
@@ -667,28 +668,88 @@ const BONE_NAMES: [(&str, usize); 18] = [
     ("lhand", 18),
 ];
 
+/// A body part's bone by number (1–18) or by its name (`chest`, `luarm`,
+/// …), for the debug flags.
+pub fn bone_by_name(text: &str) -> Option<usize> {
+    let name = text.trim().to_ascii_lowercase();
+    let bone = match name.parse::<usize>() {
+        Ok(b) => b,
+        Err(_) => BONE_NAMES.iter().find(|(n, _)| *n == name)?.1,
+    };
+    (1..=18).contains(&bone).then_some(bone)
+}
+
 impl DebugWound {
     /// Reads `bone,radius_cm[,dx,dy,dz]`: the bone by number (1–18) or by
     /// its body part's name (`chest`, `luarm`, …), the radius and the
     /// travel in centimetres.
     pub fn parse(text: &str) -> Option<Self> {
         let mut fields = text.split(',').map(str::trim);
-        let bone_name = fields.next()?.to_ascii_lowercase();
-        let bone = match bone_name.parse::<usize>() {
-            Ok(b) => b,
-            Err(_) => BONE_NAMES.iter().find(|(n, _)| *n == bone_name)?.1,
-        };
+        let bone = bone_by_name(fields.next()?)?;
         let numbers: Vec<f32> = fields.map(|f| f.parse().ok()).collect::<Option<_>>()?;
         let (radius, travel) = match numbers.as_slice() {
             [r] => (*r, Vec3::ZERO),
             [r, x, y, z] => (*r, Vec3::new(*x, *y, *z)),
             _ => return None,
         };
-        ((1..=18).contains(&bone) && radius > 0.0).then_some(Self {
+        (radius > 0.0).then_some(Self {
             bone,
             radius: radius / 100.0,
             travel: travel / 100.0,
         })
+    }
+}
+
+/// Finds the front of a body part on a character: of its visible skinned
+/// meshes, the vertex furthest along a direction, where the current pose
+/// puts it. For the debug wounds and sprays.
+#[derive(SystemParam)]
+pub struct PartFronts<'w, 's> {
+    children: Query<'w, 's, &'static Children>,
+    skinned: Query<
+        'w,
+        's,
+        (
+            &'static SkinnedPart,
+            Option<&'static SkinnedMesh>,
+            &'static Mesh3d,
+            Option<&'static Visibility>,
+        ),
+    >,
+    unbound: Query<'w, 's, (), (With<SkinnedPart>, Without<SkinnedMesh>)>,
+    transforms: Query<'w, 's, &'static GlobalTransform>,
+    bindposes: Res<'w, Assets<SkinnedMeshInverseBindposes>>,
+    meshes: Res<'w, Assets<Mesh>>,
+}
+
+impl PartFronts<'_, '_> {
+    /// Whether every skinned part of `body` is bound to its skeleton.
+    pub fn bound(&self, body: Entity) -> bool {
+        !self
+            .children
+            .iter_descendants(body)
+            .any(|e| self.unbound.contains(e))
+    }
+
+    /// The vertex of `body`'s visible meshes on bone `bone` furthest along
+    /// `facing`, in world space; none when it has no such mesh.
+    pub fn front(&self, body: Entity, bone: usize, facing: Vec3) -> Option<Vec3> {
+        self.children
+            .iter_descendants(body)
+            .filter_map(|e| self.skinned.get(e).ok())
+            .filter(|(part, _, _, visibility)| {
+                usize::from(part.bone) == bone && *visibility != Some(&Visibility::Hidden)
+            })
+            .filter_map(|(_, skin, mesh, _)| {
+                skinned_positions(
+                    self.meshes.get(&mesh.0)?,
+                    skin?,
+                    &self.bindposes,
+                    &self.transforms,
+                )
+            })
+            .flatten()
+            .max_by(|a, b| a.dot(facing).total_cmp(&b.dot(facing)))
     }
 }
 
@@ -697,21 +758,11 @@ impl DebugWound {
 const DEBUG_WOUND_DELAY: u32 = 3;
 
 /// Sends the test wounds for each marked body once it is dressed and bound.
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+#[allow(clippy::type_complexity)]
 fn paint_debug_wounds(
     wounds: Res<DebugWounds>,
     bodies: Query<(Entity, &GlobalTransform), (With<DebugWoundTarget>, With<Dressed>)>,
-    children: Query<&Children>,
-    skinned: Query<(
-        &SkinnedPart,
-        Option<&SkinnedMesh>,
-        &Mesh3d,
-        Option<&Visibility>,
-    )>,
-    unbound: Query<(), (With<SkinnedPart>, Without<SkinnedMesh>)>,
-    transforms: Query<&GlobalTransform>,
-    bindposes: Res<Assets<SkinnedMeshInverseBindposes>>,
-    meshes: Res<Assets<Mesh>>,
+    fronts: PartFronts,
     mut waiting: Local<HashMap<Entity, u32>>,
     mut done: Local<HashSet<Entity>>,
     mut out: MessageWriter<PaintWound>,
@@ -720,7 +771,7 @@ fn paint_debug_wounds(
         if done.contains(&body) {
             continue;
         }
-        if children.iter_descendants(body).any(|e| unbound.contains(e)) {
+        if !fronts.bound(body) {
             continue;
         }
         let frames = waiting.entry(body).or_default();
@@ -731,18 +782,7 @@ fn paint_debug_wounds(
         done.insert(body);
         let facing = body_transform.rotation() * Vec3::Z;
         for wound in &wounds.0 {
-            let front = children
-                .iter_descendants(body)
-                .filter_map(|e| skinned.get(e).ok())
-                .filter(|(part, _, _, visibility)| {
-                    usize::from(part.bone) == wound.bone && *visibility != Some(&Visibility::Hidden)
-                })
-                .filter_map(|(_, skin, mesh, _)| {
-                    skinned_positions(meshes.get(&mesh.0)?, skin?, &bindposes, &transforms)
-                })
-                .flatten()
-                .max_by(|a, b| a.dot(facing).total_cmp(&b.dot(facing)));
-            let Some(contact) = front else {
+            let Some(contact) = fronts.front(body, wound.bone, facing) else {
                 warn!(
                     "debug wound: body {body:?} has no visible mesh on bone {}",
                     wound.bone

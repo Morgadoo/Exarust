@@ -32,3 +32,10 @@ on the mesh's position in the weapon's frame so that it runs down from
 the tip as far as the weapon's blood takes it (`stain.wesl`; depth writes
 off, the depth nudged toward the camera, no shadows). Rules:
 [`docs/RENDERING.md`](../../docs/RENDERING.md) (Blood on weapons).
+
+`spray::SprayMaterial` is the original's blood droplet material
+(`_BloodPrt02`): the droplet texture `BldPrt02` (sRGB, clamped) mixed
+toward white by each droplet's vertex alpha and
+multiplied into the frame (`spray.wesl`; unlit, both faces, no depth
+writes, no shadows). Rules: [`docs/RENDERING.md`](../../docs/RENDERING.md)
+(Blood sprays).

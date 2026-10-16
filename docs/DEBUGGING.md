@@ -32,6 +32,7 @@ exarust --debug-bodies --opponent --pause-on-stretch 1 \
 | `--sim-speed <f>` | run the simulation at this speed (0.25 is a quarter as fast), from the end of the load |
 | `--pause-at-tick <n>` | pause at the end of body tick `n` (the `tick` column of both traces, counted from the start, the load included; see below) |
 | `--pause-on-stretch <cm>` | pause at the end of the tick in which a link of a body first goes this far past its slack; the log and the readout name the body, the part and the link |
+| `--pause-after-jet <n>` | pause at the end of the `n`th body tick after the tick that first finds a blood jet started (a bleeding blow's, or `--debug-spray`'s), to catch a jet in flight ([Wounds](#wounds)) |
 | `--press key@frame,...` | press keys or mouse buttons at frames counted from the end of the load (`.`, `[`, `]`, `Tab`, `Ctrl`, `F1`–`F12`, a letter, or `LMB`, `RMB`, `MMB`), e.g. `.@400,.@401,P@500`; each is released the frame after; `key@a-b` holds it from frame a and lets it go at frame b, e.g. `RMB@60-400` |
 | `--click frame,...` | click the left mouse button at frames counted from the end of the load (the same as `LMB@frame` in `--press`): with `--weapon` in an arena fight, which starts in combat mode, the player attacks unattended |
 | `--camera x,y,z,yaw,pitch` | in play mode, a fixed camera there instead of the chase camera (metres, degrees), for unattended shots; with `--fov` |
@@ -42,6 +43,7 @@ exarust --debug-bodies --opponent --pause-on-stretch 1 \
 | `--debug-wound bone,radius_cm[,dx,dy,dz]` | a test wound on the player's or the character view's body ([Wounds](#wounds)); repeatable |
 | `--debug-nav` | start with the navigation grid drawn ([Navigation grid](#navigation-grid)) |
 | `--weapon-blood <a>` | the player's or the character view's held weapon holds blood a (0 to 1) from the start, so its stain shows without a fight ([Wounds](#wounds)) |
+| `--debug-spray bone,R[,dx,dy,dz]` | a blood jet from the player's or the character view's body part every second, as a bleeding blow of size R swinging along d would spray ([Wounds](#wounds)); repeatable |
 
 An unattended attack: `exarust --opponent --sim-speed 0.25 --camera
 4.2,1.4,0.6,90,-8 --press LMB@100 play arenao1` throws the unarmed
@@ -92,8 +94,9 @@ exarust --at 0,0,1 --press Tab@50,Tab@300 --screenshot fade.png --frames 372 pla
 exarust --heartbeat --opponent --health 0.06,0.25 --screenshot beat.png --frames 200 play arena
 ```
 
-With `--pause-at-tick` or `--pause-on-stretch`, `--screenshot` counts its
-`--frames` from the pause, so the picture shows the paused body.
+With `--pause-at-tick`, `--pause-on-stretch` or `--pause-after-jet`,
+`--screenshot` counts its `--frames` from the pause, so the picture shows
+the paused body.
 
 The traces start while the loading screen is still up (bodies tick from
 the moment they are built; the log's `loading took` line marks its end). A
@@ -282,6 +285,41 @@ fight:
 # guard; at 0.25 the stain ends 35 cm below the tip.
 exarust --weapon ub05ssworda --weapon-blood 1 character
 ```
+
+Each bleeding blow also starts a blood jet at the blow ([RENDERING.md](RENDERING.md),
+Blood sprays); the log names it ("blood jet on … bone …: n droplets,
+against a swing of … m/s"). `--pause-after-jet n` stops the simulation n
+ticks after the first one, wherever the fight is by then:
+
+```bash
+# The duel, paused 12 ticks (0.14 s) after the first bleeding blow: the
+# jet's first droplets fly off the struck part against the blade's swing.
+exarust --opponent --weapon ub05ssworda \
+  --click $(seq -s, 100 25 1400) --camera 1.3,1.7,3.4,135,-14 \
+  --pause-after-jet 12 --screenshot jet.png --frames 20 play arena1
+```
+
+`--debug-spray bone,R[,dx,dy,dz]` fires a jet from the player's (play
+mode) or the character view's body every second, once it is dressed and
+bound, without a fight:
+
+- `bone`: the body part, as for `--debug-wound`;
+- the jet starts at the front of that part (as a test wound's contact);
+- `R`: the size of the bleeding wound it stands for (over 0): 36·R
+  droplets, 60 at most (R 1 sends 36, over 0.9 s);
+- `dx,dy,dz`: how the striking point swung, in the body's frame (+Y up, +Z
+  the way it faces; any length); the jet runs against it. Without it
+  `0,0,-1`: a blow driving into the front, so the jet sprays out of it.
+
+```bash
+# A full jet from the chest toward the body's right, in the lit arena,
+# 45 ticks after it starts.
+exarust --debug-spray chest,1,1,0,0 --camera 1.3,1.7,3.4,135,-14 \
+  --pause-after-jet 45 --screenshot spray.png --frames 20 play arena1
+```
+
+Droplets darken what lies behind them, so they show over bodies, walls
+and floors and not against black. The tool costs nothing without the flag.
 
 ## Navigation grid
 

@@ -459,6 +459,91 @@ depth nudge, the gradient's loader flags and the wrap and linear-upload
 rules, the two GLSL sources), and the corpus (`BldGr02D`'s rows and flags,
 the weapon models, pinned by tests).
 
+### Blood sprays
+
+Each bleeding blow sprays a short jet of blood droplets from the wound
+(`exa_character::spray`; all lengths in cm, all rules at the 83 Hz body
+tick). Droplets fly and fall but touch nothing: blood never reaches the
+floor (the original has no floor blood from combat; its floor blood is
+placed by the level designers).
+
+**Jets**: one per bleeding blow (R over 0.05 on a race that bleeds,
+[Blood](#blood)), started at the blow even when the wound is dropped from
+a full queue (`exa_combat::wounds::Spray`):
+- at the contact point, fixed to the struck part's frame (where the
+  body's last tick left it), so it rides with the limb;
+- pointing against the striking point's swing (the blade tip's velocity),
+  its frame's second axis along the jet, the first across it and the
+  world's +Z, the third across both (a jet along ±Z keeps only its axis);
+- strength 120·R, or 200 once R exceeds 1.67 (in double precision); it
+  sends round(0.3 × strength) droplets, halves to even: 36·R droplets, 60
+  at most (16 for the chest cut of R 0.457), and then stops; a new jet
+  takes the first finished jet's place.
+
+**Emission**: the scene's sprays share one clock. Each tick it drops by 1
+with probability ⅔; while it is below 1, every running jet sends a
+droplet and the clock gains (83/40)·⅔ = 1.383 ticks. So a jet sends 40
+droplets a second and lasts 0.9·R s (1.5 s at most).
+
+**A droplet** starts at the jet's origin:
+- velocity (cm/tick): the jet's frame applied to (u₁, u₂, u₃), u₁ and u₃
+  uniform in ±0.25 (thousandths), u₂ in 0…1, times 48/83; plus 0.15 of how
+  the jet's origin moved since its last droplet; averaged half and half
+  with the jet's previous droplet's velocity. A new jet's "previous"
+  velocity is twice its axis as the struck part's own frame sees it (the
+  original seeds it after turning the axis into the part's frame), so the
+  first droplets lean that way and the lean halves with each droplet;
+- placed 0.8 of its velocity ahead of the origin and its previous position
+  1.2 behind, so it leaves at twice that velocity: the first droplets of
+  a jet fly at 2–2.6 cm/tick (1.7–2.1 m/s), later ones at about 1.2
+  cm/tick at most plus 0.3 of the limb's own motion;
+- it lives 62 ticks (83 × 0.75, truncated). At most 512 live at once (the
+  original's pool; Exarust drops a droplet past it, where the original's
+  ring would overrun).
+
+**Each tick** every droplet ages a tick, the dead are dropped, and the rest
+take a Verlet step: d = p − q, d.y += 0.25 × (−980.665/83²), p += d ×
+0.95^(1/83). A droplet at rest falls 66.4 cm in the 61 ticks it moves.
+
+**Drawing** (per frame, between the last two ticks, oldest first, one
+world-space mesh): each droplet is a diamond facing the camera (the view
+is the camera's forward axis):
+- its long axis along its motion less 0.25 cm/tick up, so a slow droplet
+  hangs down;
+- half-width s + ℓ·t²·24, with s its ring slot's size (each of the 513
+  slots draws 24·(0.5 + 0.5u) once, 12 to 24 cm), ℓ the sine between the
+  motion and the view and t its age (0 to 1);
+- stretched along the motion by (2 − 2/(σ + 1))·angle, σ the motion in
+  cm/tick and the angle between it and the view;
+- alpha over its life 0.5 → 1 → 0.5 → 0.25 → 0 at ages 0, ¼, ½, ¾, 1
+  (bytes 128, 255, 128, 64, 0, interpolated and rounded, halves to
+  even);
+- UVs: one of the four splats of `BldPrt02` (`Textures.rpk`, 256², BC1,
+  a 2 × 2 atlas of red spatter on white), under one of the eight
+  symmetries of the square, as fires draw their wisps.
+
+**Material** (`exa_render::spray`, the original's `_BloodPrt02`): the
+texel (sRGB, clamped on both axes: neither the material's load flags
+`0xF0` nor the file's `0x20A80000` carry a wrap bit; the colour textures'
+LOD bias) mixed toward white by the droplet's alpha, written
+opaque and multiplied into the frame (the original's ZERO, SRC_COLOR):
+white leaves the scene unchanged and the splats darken it, so droplets
+show over bodies, walls and floors and not against black. Unlit, both
+faces, no depth writes, no shadows.
+
+**Differences**: the original multiplies its 8-bit frame (lit values
+already clamped at 1) and fades the droplets with its distance fog;
+Exarust's float frame clamps in its post-processing and has no distance
+fog yet. The original clears the sprays at the end of a session and on
+respawn; Exarust has neither.
+
+**Evidence**: reverse engineering of `Exanima.exe` 0.9.5 (the blood
+branch's two jet calls and their strengths, the jet routine's life,
+frame, part link and seed, the spray template and its derived values,
+the particle tick, spawn, quad and colour routines with the template's
+flags, the droplet material), and `BldPrt02`'s header (256², BC1, the
+file's wrap flags); the rules are pinned by tests.
+
 ## Voxel GI
 
 The original's bounce light is a light volume of 20 cm voxels

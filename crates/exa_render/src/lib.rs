@@ -9,6 +9,7 @@ pub mod lights;
 pub mod material;
 pub mod post;
 pub mod shell;
+pub mod spray;
 pub mod stain;
 pub mod supersample;
 
@@ -36,6 +37,7 @@ impl Plugin for RenderPlugin {
             material::MaterialsPlugin,
             gi::GiPlugin,
             flame::FlamePlugin,
+            spray::SprayPlugin,
             stain::StainPlugin,
             supersample::SupersamplePlugin,
             lights::LightsPlugin,

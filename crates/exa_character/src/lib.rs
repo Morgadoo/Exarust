@@ -16,6 +16,7 @@
 pub mod held;
 
 pub mod blood;
+pub mod spray;
 
 use std::collections::HashMap;
 
@@ -36,7 +37,7 @@ pub struct CharacterPlugin;
 
 impl Plugin for CharacterPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(blood::BloodPlugin)
+        app.add_plugins((blood::BloodPlugin, spray::SprayPlugin))
             .init_resource::<Painting>()
             .init_resource::<Fitting>()
             .add_systems(

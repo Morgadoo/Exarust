@@ -487,7 +487,17 @@ than 0.01 a second, multiplying pass draws the blood gradient `BldGr02D`
 over its model's first mesh (every part of an assembled weapon), keyed on
 the height up the blade so that the stain runs down √(80·L·blood) cm from
 the tip, densest at the tip and speckled at its edge; `--weapon-blood`
-shows one without a fight. Next: sprays (L9).
+shows one without a fight.
+Done (change `spray-blood-from-wounds`): bleeding blows spray as the
+original's do: one jet per bleeding blow, fixed to the struck part at the
+contact point and pointing against the blade's swing, sending 36·R
+droplets (60 at most) at 40 a second; each droplet flies off at up to
+twice its jet's velocity, falls at a quarter of gravity for its 62 ticks
+and never touches the floor, drawn as a camera-facing diamond of the
+`BldPrt02` spatter that multiplies the frame (white leaves it unchanged);
+`--debug-spray` fires test jets and `--pause-after-jet` stops a fight just
+after the first. Next: blood across saves and respawns, creatures' own
+blood (their striking body parts), the 8-bit clamp before the multiplies.
 See `docs/RENDERING.md` and `docs/PERFORMANCE.md`.
 
 - Materials: one `ExaMaterial` whose parameters follow

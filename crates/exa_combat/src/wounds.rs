@@ -20,6 +20,13 @@
 //! ([`BladeBlood`]): half the wound's size R, up to 1, never washed off.
 //! The blood stains the blade from its tip (`exa_character::blood`). Fists
 //! draw none.
+//!
+//! A bleeding wound also sprays at once ([`Spray`]): a jet of droplets at
+//! the contact point, on the struck part, running against the striker's
+//! swing. Its strength is 120·R (200 once R exceeds 1.67,
+//! [`spray_strength`]) and it sends round(0.3 × strength) droplets
+//! ([`jet_droplets`]): 36·R, at most 60. The droplets fly and fall in
+//! `exa_character::spray`.
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;
@@ -36,6 +43,48 @@ pub const WOUND_DELAY: i32 = 7;
 /// Blood a weapon draws from each bleeding wound it deals, as a share of
 /// the wound's size R.
 pub const BLADE_BLOOD_PER_WOUND: f32 = 0.5;
+/// A bleeding wound's spray strength per unit of its size R.
+pub const SPRAY_PER_WOUND: f32 = 120.0;
+/// Above this size R (compared in double precision) a wound sprays at
+/// [`SPRAY_FULL`] instead.
+pub const SPRAY_FULL_FROM: f64 = 1.67;
+/// The strongest spray.
+pub const SPRAY_FULL: f32 = 200.0;
+/// Droplets a jet sends per unit of its strength (a double).
+pub const DROPLETS_PER_STRENGTH: f64 = 0.3;
+
+/// The spray strength of a bleeding wound of size R: 120·R, or 200 when R
+/// exceeds 1.67 (R widened to double first).
+pub fn spray_strength(size: f32) -> f32 {
+    if f64::from(size) > SPRAY_FULL_FROM {
+        SPRAY_FULL
+    } else {
+        size * SPRAY_PER_WOUND
+    }
+}
+
+/// The droplets a jet of strength `strength` sends: 0.3 × strength in
+/// double precision, rounded to the nearest whole number, halves to even
+/// (36·R for a wound of size R, 60 at most).
+pub fn jet_droplets(strength: f32) -> i32 {
+    (f64::from(strength) * DROPLETS_PER_STRENGTH).round_ties_even() as i32
+}
+
+/// A jet of blood from a bleeding wound, sent at the blow.
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct Spray {
+    /// The struck fighter's body model root.
+    pub body: Entity,
+    /// The struck body part's bone.
+    pub bone: usize,
+    /// Where the blow landed, in world space (metres).
+    pub contact: Vec3,
+    /// How the striking point moved at the blow (m/s): the jet runs
+    /// against it.
+    pub swing: Vec3,
+    /// The droplets the jet sends ([`jet_droplets`]).
+    pub droplets: i32,
+}
 
 /// The blood a held weapon has drawn, from 0 (clean) to 1, on the entity
 /// holding its model (the striker of its hits). Each bleeding wound it
@@ -255,6 +304,27 @@ mod tests {
         let mut faint = BladeBlood::default();
         faint.draw(0.0501);
         assert!((faint.0 - 0.025_05).abs() < 1e-7);
+    }
+
+    /// A wound of size R sprays at 120·R and sends round(0.3 × 120·R)
+    /// droplets: the chest cut (R 0.457) 54.84 → 16, R 1 → 36, the smallest
+    /// bleeding wound (R 0.05) 6 → 2; above R 1.67 (in double precision,
+    /// so the single-precision 1.67 is not above it) 200 → 60. Halves round
+    /// to even: 15 → 4.5 → 4, 5 → 1.5 → 2.
+    #[test]
+    fn jets_send_droplets_by_the_wound() {
+        assert!((spray_strength(0.457) - 54.84).abs() < 1e-4);
+        assert_eq!(jet_droplets(spray_strength(0.457)), 16);
+        assert_eq!(jet_droplets(spray_strength(1.0)), 36);
+        assert_eq!(jet_droplets(spray_strength(0.05)), 2);
+        assert_eq!(spray_strength(1.67), 1.67 * 120.0);
+        assert_eq!(jet_droplets(spray_strength(1.67)), 60);
+        assert_eq!(spray_strength(1.6701), 200.0);
+        assert_eq!(spray_strength(5.0), 200.0);
+        assert_eq!(jet_droplets(200.0), 60);
+        assert_eq!(jet_droplets(15.0), 4);
+        assert_eq!(jet_droplets(5.0), 2);
+        assert_eq!(jet_droplets(25.0), 8);
     }
 
     /// The weights follow the striker: a point of a blade turned and moved

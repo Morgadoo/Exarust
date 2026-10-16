@@ -34,6 +34,7 @@
 //!          --sim-speed <f>            run the simulation at this speed (e.g. 0.25)
 //!          --pause-at-tick <n>        pause the simulation at the end of body tick n
 //!          --pause-on-stretch <cm>    pause the simulation when a link goes this far past its slack
+//!          --pause-after-jet <n>      pause the simulation n body ticks after the first blood jet
 //!          --press key@frame,...      press keys (Ctrl among them) or mouse buttons (LMB, RMB, MMB) at frames after
 //!                                     loading (e.g. `.@400,P@500,LMB@600`); `key@a-b` holds it from frame a to b
 //!          --cursor x,y               play mode: the cursor stays at this window point (logical pixels), for unattended runs
@@ -41,6 +42,8 @@
 //!          --debug-wound b,r[,dx,dy,dz]  a test wound on the player's (or the character view's) body part b
 //!                                     (1–18 or chest, luarm, …), radius r cm, smeared along d cm; repeatable
 //!          --weapon-blood <a>         the player's (or the character view's) weapon holds blood a (0–1) from the start
+//!          --debug-spray b,R[,dx,dy,dz]  a blood jet from the player's (or the character view's) body part b every
+//!                                     second, as a bleeding blow of size R swinging along d would spray; repeatable
 //!          --health yellow,red        play mode: the player's starting health (a human's full health is 0.25)
 //!          --heartbeat                play mode: the low-health heartbeat in any level (the original: story mode only)
 //! ```
@@ -130,6 +133,8 @@ pub struct Options {
     pub sim_speed: Option<f32>,
     pub pause_at_tick: Option<u64>,
     pub pause_on_stretch: Option<f32>,
+    /// Pause the simulation this many ticks after the first blood jet.
+    pub pause_after_jet: Option<u64>,
     /// Keys and buttons pressed at frames after the load (for unattended
     /// checks): each is held over its frames and let go at the range's end.
     pub press: Vec<(Press, Range<u32>)>,
@@ -139,6 +144,8 @@ pub struct Options {
     pub clicks: Vec<u32>,
     /// Test wounds on the player's or the character view's body.
     pub debug_wounds: Vec<exa_character::blood::DebugWound>,
+    /// Test blood jets from the player's or the character view's body.
+    pub debug_sprays: Vec<exa_character::spray::DebugSpray>,
     /// Blood the player's or the character view's weapon starts with.
     pub weapon_blood: Option<exa_character::blood::DebugWeaponBlood>,
     /// The player's starting yellow and red health.
@@ -320,6 +327,9 @@ fn main() -> AppExit {
                     .filter(|s: &f32| *s > 0.0 && s.is_finite())
             }
             "--pause-at-tick" => options.pause_at_tick = args.next().and_then(|v| v.parse().ok()),
+            "--pause-after-jet" => {
+                options.pause_after_jet = args.next().and_then(|v| v.parse().ok())
+            }
             "--pause-on-stretch" => {
                 options.pause_on_stretch = args.next().and_then(|v| v.parse().ok())
             }
@@ -375,6 +385,16 @@ fn main() -> AppExit {
                         eprintln!(
                             "--debug-wound: cannot read {text:?} (bone,radius_cm[,dx,dy,dz])"
                         );
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
+            "--debug-spray" => {
+                let text = args.next().unwrap_or_default();
+                match exa_character::spray::DebugSpray::parse(&text) {
+                    Some(s) => options.debug_sprays.push(s),
+                    None => {
+                        eprintln!("--debug-spray: cannot read {text:?} (bone,R[,dx,dy,dz])");
                         return AppExit::from_code(2);
                     }
                 }
@@ -489,6 +509,11 @@ fn main() -> AppExit {
             options.debug_wounds.clone(),
         ));
     }
+    if !options.debug_sprays.is_empty() {
+        app.insert_resource(exa_character::spray::DebugSprays(
+            options.debug_sprays.clone(),
+        ));
+    }
     if let Some(blood) = options.weapon_blood {
         app.insert_resource(blood);
     }
@@ -534,12 +559,15 @@ fn main() -> AppExit {
     .insert_resource(exa_world::nav::NavOverlay {
         on: options.debug_nav,
     })
-    .insert_resource(exa_game::sim_control::SimControl::scripted(
-        options.sim_speed.unwrap_or(1.0),
-        options.pause_at_tick,
-        // Centimetres on the command line.
-        options.pause_on_stretch.map(|cm| cm / 100.0),
-    ))
+    .insert_resource(
+        exa_game::sim_control::SimControl::scripted(
+            options.sim_speed.unwrap_or(1.0),
+            options.pause_at_tick,
+            // Centimetres on the command line.
+            options.pause_on_stretch.map(|cm| cm / 100.0),
+        )
+        .after_jet(options.pause_after_jet),
+    )
     .insert_resource(options)
     .add_plugins(viewer::ViewerPlugin)
     .run()

@@ -37,3 +37,11 @@ The weapon that deals a bleeding blow draws blood at the blow
 R, up to 1, never washed off, even when the wound itself is dropped from a
 full queue. Fists have none. `exa_character::blood` draws its stain
 ([`docs/RENDERING.md`](../../docs/RENDERING.md), Blood on weapons).
+
+A bleeding blow also sprays at the blow (`wounds::Spray`, a message): one
+jet on the struck part at the contact point, against the striking point's
+swing, of round(0.3 × strength) droplets (ties to even) with strength 120·R,
+or 200 once R exceeds 1.67 (`spray_strength`, `jet_droplets`): 36·R
+droplets, 60 at most, even when the wound is dropped from a full queue.
+`exa_character::spray` flies them
+([`docs/RENDERING.md`](../../docs/RENDERING.md), Blood sprays).

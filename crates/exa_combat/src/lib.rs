@@ -9,8 +9,9 @@
 //! starts no clip on the target; a target struck while attacking stops its
 //! attack and returns to its stance. A fighter's stance and combat
 //! readiness are kept by [`stance`]. A blow whose wound is deep enough
-//! bleeds on a victim whose race bleeds, seven body ticks later, and the
-//! weapon that dealt it draws blood ([`wounds`]).
+//! bleeds on a victim whose race bleeds, seven body ticks later; at the
+//! blow it sprays a jet of blood and the weapon that dealt it draws blood
+//! ([`wounds`]).
 
 pub mod damage;
 pub mod stance;
@@ -34,6 +35,7 @@ impl Plugin for CombatPlugin {
         app.add_message::<Hit>()
             .add_plugins(stance::StancePlugin)
             .add_message::<wounds::Bleed>()
+            .add_message::<wounds::Spray>()
             .add_systems(
                 PostUpdate,
                 // Wounds struck this frame wait from the next tick on.
@@ -311,6 +313,7 @@ fn react_to_hits(
     mut commands: Commands,
     mut hits: MessageReader<Hit>,
     mut shoves: MessageWriter<Shove>,
+    mut sprays: MessageWriter<wounds::Spray>,
     mut fighters: Query<(
         Entity,
         &mut Fighter,
@@ -343,10 +346,19 @@ fn react_to_hits(
             continue;
         };
         let killed = f.health.take(&outcome);
-        // A deep enough wound on a race that bleeds waits on the victim to
-        // bleed, anchored to the striker; the killing blow too. The weapon
-        // that dealt it draws blood at once, even when the wound is dropped.
+        // A deep enough wound on a race that bleeds sprays a jet at once
+        // and waits on the victim to bleed, anchored to the striker; the
+        // killing blow too. The weapon that dealt it draws blood at once,
+        // even when the wound is dropped.
         if f.bleeds && wounds::bleeds(outcome.wound) {
+            let strength = wounds::spray_strength(outcome.wound);
+            sprays.write(wounds::Spray {
+                body: hit.target,
+                bone: hit.bone,
+                contact: hit.point,
+                swing: hit.velocity,
+                droplets: wounds::jet_droplets(strength),
+            });
             if let Some(mut queue) = queue {
                 let weights = strikers
                     .get(hit.striker)
@@ -454,6 +466,7 @@ mod tests {
         let mut app = App::new();
         app.add_message::<Hit>()
             .add_message::<Shove>()
+            .add_message::<wounds::Spray>()
             .add_systems(Update, react_to_hits);
         app
     }
@@ -612,6 +625,7 @@ mod tests {
         app.add_message::<Hit>()
             .add_message::<Shove>()
             .add_message::<wounds::Bleed>()
+            .add_message::<wounds::Spray>()
             .init_resource::<exa_physics::body::BodyTicks>()
             .add_systems(Update, (wounds::count_down_wounds, react_to_hits).chain());
         app.update();
@@ -887,6 +901,80 @@ mod tests {
         app.update();
         assert_eq!(waiting(&app, human), 1);
         assert!(app.world().get::<BladeBlood>(fist).is_none());
+    }
+
+    /// The jets sent this frame.
+    fn sprays(app: &App) -> Vec<wounds::Spray> {
+        let messages = app.world().resource::<Messages<wounds::Spray>>();
+        messages.iter_current_update_messages().copied().collect()
+    }
+
+    /// A bleeding blow sprays one jet at the blow, on the struck part at
+    /// the contact point, against the swing: the chest cut (R 0.457) sends
+    /// 16 droplets, a jet for every cut even when the wound is dropped from
+    /// a full queue; a skeleton's cut and a cut on the hand at 4 cm a tick
+    /// (R 0.045) spray nothing.
+    #[test]
+    fn bleeding_blows_spray_at_the_blow() {
+        let mut app = bleeding();
+        let human = app
+            .world_mut()
+            .spawn((
+                Fighter::of_race(100.0, None),
+                Animator::new("Default", "Idle"),
+            ))
+            .id();
+        let contact = Vec3::new(0.1, 1.3, 0.2);
+        cut_by(&mut app, Entity::PLACEHOLDER, human, 9, contact);
+        app.update();
+        let jets = sprays(&app);
+        assert_eq!(jets.len(), 1);
+        let jet = jets[0];
+        assert_eq!((jet.body, jet.bone, jet.contact), (human, 9, contact));
+        assert_eq!(jet.swing, Vec3::new(3.0, 0.0, 0.0));
+        assert_eq!(jet.droplets, 16);
+        assert_eq!(
+            jet.droplets,
+            wounds::jet_droplets(wounds::spray_strength(outcome(9).wound))
+        );
+        // Not again on the ticks that follow, when the wound bleeds.
+        let bled: Vec<_> = (0..7).flat_map(|_| tick(&mut app)).collect();
+        assert_eq!(bled.len(), 1);
+        assert!(sprays(&app).is_empty());
+        // Eight cuts in a frame: seven wait, one is dropped, all spray.
+        for _ in 0..8 {
+            cut_by(&mut app, Entity::PLACEHOLDER, human, 9, contact);
+        }
+        app.update();
+        assert_eq!(waiting(&app, human), 7);
+        assert_eq!(sprays(&app).len(), 8);
+
+        let skeleton = app
+            .world_mut()
+            .spawn((
+                Fighter {
+                    bleeds: false,
+                    ..Fighter::default()
+                },
+                Animator::new("Default", "Idle"),
+            ))
+            .id();
+        cut_by(&mut app, Entity::PLACEHOLDER, skeleton, 9, contact);
+        app.world_mut().write_message(Hit {
+            attacker: Entity::PLACEHOLDER,
+            striker: Entity::PLACEHOLDER,
+            target: human,
+            bone: 17,
+            point: contact,
+            velocity: Vec3::X,
+            weapon: damage::sword_a(),
+            strike: Strike {
+                speed: 4.0,
+                ..cut()
+            },
+        });
+        app.update();
+        assert!(sprays(&app).is_empty());
     }
 
     /// A punch bleeds on the one struck, never on the puncher's own fist or

@@ -24,7 +24,9 @@ image across its width, height and depth; without them it clamps to its
 edge (established by reverse engineering of the loader and its wrap
 setup). `BldGr02D`, the weapon blood gradient, has `0x20A90000`: it
 repeats across and clamps along its height (pinned by a corpus test in
-`exa_character`). The other bits are not decoded.
+`exa_character`). `BldPrt02`, the blood droplet atlas, has `0x20A80000`,
+and its built-in material loads it with `0xF0` (no wrap bit either): it
+clamps on both axes (pinned likewise). The other bits are not decoded.
 
 Raw images store the mip chain largest-first right after the header; the
 chain is either complete (down to 1x1) or only the base level. The mip count

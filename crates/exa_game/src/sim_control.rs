@@ -2,8 +2,9 @@
 //! step (the character controllers, the character ticks and the body
 //! solver), step exactly one 83 Hz tick while paused, and run it slower or
 //! faster through Bevy's virtual time. Scripted runs can start slowed
-//! (`--sim-speed`), pause at a tick (`--pause-at-tick`) or pause the moment
-//! a link stretches past its slack (`--pause-on-stretch`). Rendering and
+//! (`--sim-speed`), pause at a tick (`--pause-at-tick`), pause the moment
+//! a link stretches past its slack (`--pause-on-stretch`) or pause a number
+//! of ticks after the first blood jet (`--pause-after-jet`). Rendering and
 //! the cameras keep running on real time, so a paused body can be looked
 //! at from every side. The starting speed and the scripted pauses wait
 //! for the loading screen's end where they can: the load waits on things
@@ -11,6 +12,7 @@
 //! flags: `docs/DEBUGGING.md`.
 
 use bevy::prelude::*;
+use exa_character::spray::BloodSprays;
 use exa_physics::body::{BodySystems, BodyTicks, Ragdoll, inspect};
 
 /// Pauses and resumes the simulation.
@@ -32,6 +34,9 @@ pub struct SimControl {
     pub pause_at_tick: Option<u64>,
     /// Pause when a link of a body goes this far past its slack (m).
     pub pause_on_stretch: Option<f32>,
+    /// Pause this many ticks after the tick that first finds a blood jet
+    /// started (`exa_character::spray`).
+    pub pause_after_jet: Option<u64>,
     /// Ticks asked for while paused, run one a frame.
     steps: u32,
     /// The starting speed is set (once the loading screen is gone).
@@ -46,6 +51,7 @@ impl Default for SimControl {
             speed: 1.0,
             pause_at_tick: None,
             pause_on_stretch: None,
+            pause_after_jet: None,
             steps: 0,
             started: false,
             reason: None,
@@ -65,9 +71,17 @@ impl SimControl {
         }
     }
 
+    /// The same run, also pausing `ticks` ticks after the first blood jet.
+    pub fn after_jet(mut self, ticks: Option<u64>) -> Self {
+        self.pause_after_jet = ticks;
+        self
+    }
+
     /// Whether a scripted pause is armed: a screenshot then waits for it.
     pub fn waits_for_pause(&self) -> bool {
-        self.pause_at_tick.is_some() || self.pause_on_stretch.is_some()
+        self.pause_at_tick.is_some()
+            || self.pause_on_stretch.is_some()
+            || self.pause_after_jet.is_some()
     }
 }
 
@@ -186,22 +200,36 @@ fn step_once(
     fixed.accumulate_overstep(step);
 }
 
-/// Pauses at `--pause-at-tick`, or when a link first goes further past its
-/// slack than `--pause-on-stretch` allows, at the end of that tick: no
-/// further tick runs in the frame.
+/// Pauses at `--pause-at-tick`, when a link first goes further past its
+/// slack than `--pause-on-stretch` allows, or `--pause-after-jet` ticks
+/// after the first blood jet, at the end of that tick: no further tick runs
+/// in the frame.
 #[allow(clippy::too_many_arguments)]
 fn scripted_pause(
     mut control: ResMut<SimControl>,
     clock: Res<BodyTicks>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     bodies: Query<(Entity, &Ragdoll)>,
+    sprays: Option<Res<BloodSprays>>,
     mut virt: ResMut<Time<Virtual>>,
     mut fixed: ResMut<Time<Fixed>>,
     mut over: Local<Vec<Entity>>,
+    mut first_jet: Local<Option<u64>>,
 ) {
     let mut reason = None;
     if control.pause_at_tick == Some(clock.0) {
         reason = Some(format!("tick {}", clock.0));
+    }
+    if let Some(after) = control.pause_after_jet {
+        if first_jet.is_none() && sprays.is_some_and(|s| s.started > 0) {
+            *first_jet = Some(clock.0);
+        }
+        if first_jet.is_some_and(|t| clock.0 == t + after) && reason.is_none() {
+            reason = Some(format!(
+                "tick {}, {after} ticks after the first blood jet",
+                clock.0
+            ));
+        }
     }
     if let Some(limit) = control.pause_on_stretch {
         let worst: Vec<_> = bodies
@@ -357,6 +385,27 @@ mod tests {
             app.update();
         }
         assert!(ticks(&app) > 100, "{}", ticks(&app));
+    }
+
+    /// `--pause-after-jet 12`: no pause while no jet has started; then the
+    /// run stops 12 ticks after the tick that first finds one.
+    #[test]
+    fn pause_after_the_first_jet() {
+        let mut app = app(SimControl::default().after_jet(Some(12)));
+        app.init_resource::<BloodSprays>();
+        for _ in 0..20 {
+            app.update();
+        }
+        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
+        app.world_mut().resource_mut::<BloodSprays>().started = 1;
+        let first = ticks(&app);
+        for _ in 0..30 {
+            app.update();
+        }
+        assert!(app.world().resource::<Time<Virtual>>().is_paused());
+        // The first tick after the jet sees it; 12 more.
+        assert_eq!(ticks(&app), first + 1 + 12);
+        assert!(app.world().resource::<SimControl>().waits_for_pause());
     }
 
     /// The starting speed waits for the loading screen to go.
