@@ -239,6 +239,9 @@ How the original simulates a body (`exa_physics::body`):
     with its pelvis at ground + 101.5 cm. Not reproduced: the stepping
     (h + 10, 70 cm crouched) and resting (h + 20) variants, the walking
     blend weights and swing flags, and the gait-smoothed ground (C19).
+    Until the feet step and the legs bend, Exarust reads each foot's
+    ground no lower than its character controller's floor less 6 cm
+    (stairs, below: Exarust's own).
   - **Link muscles** turn every joint (`exa_physics`, `body_muscle.rs`). Each
     slack link (slack over 0.01 cm) pulls its point on the part toward its
     anchor: where the clip's joint angle puts that point, given where the
@@ -438,10 +441,27 @@ and support pins (C9, C14, C18):
   tone² × E⁴, critically damped (2√g) against its horizontal velocity in
   the carried frame, the same push on all four of its particles, so it
   never turns the pelvis.
-- Stairs: the capsule steps up before the feet do, and nothing yet lifts a
-  walking foot onto a step (the original's swing flags, ground probe ahead
-  and leg IK, C13 and C19), so a walking body catches its feet on the
-  risers: in exanima01 it climbed one or two steps and fell forward.
+- Stairs (`exa_physics::body` `climb`, a stopgap that C13 and C19
+  remove): the capsule steps up before the feet do, and nothing yet lifts
+  a walking foot onto a step or brings the trailing foot up (the
+  original's swing flags, ground probe ahead, closing step and leg IK).
+  With the original's target alone the pelvis stayed on the lowest foot, a
+  step under the capsule: walkers caught their feet on the risers (in
+  exanima01's stair room 4–5 times in 50 s from one start, once from the
+  other) and a body stopping on the stairs sank onto its trailing foot. So,
+  while a body that has not fallen has its controller on the ground,
+  standing or moving, the lift reads no foot's ground lower than the
+  controller's floor less 6 cm (a fallen body's capsule lifts nothing).
+  Over level ground the capsule floats 2 cm walking and up to 5.05 cm
+  standing (the arena after spawning) over the ground the feet's Height
+  Query finds, so nothing changes: the arena walk's target is the same
+  every tick. On the stairs the target follows the capsule up: both exanima01
+  starts climb to the landing without a fall and stand there (balance
+  0.85–1). (At `--at 7.5,-0.95,64.4` the body may still fall once at spawn,
+  as before: its capsule is still in the air at its first tick, its feet
+  20 cm over the ground.) Perched on a stone, a standing body is held up
+  to the floor less 6 cm: at exanima01's start (the capsule 12.2 cm up)
+  the target rises 2.1 cm and the pelvis 0.9 cm.
 - A duellist's blows (energy down to 0.62) sag the struck player's pelvis
   by under 1 cm and leave its balance at 1: the lift and the legs carry the
   dazed upper body.

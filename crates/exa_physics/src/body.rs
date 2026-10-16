@@ -13,7 +13,9 @@
 //! their animated orientation about where each part is (it has no position
 //! target), and a carry holds it up on its feet: its limb particles fall by
 //! gravity less a lift that holds its pelvis at a target height over the
-//! ground under its feet (`lift`).
+//! ground under its feet (`lift`; until its feet step and its legs bend,
+//! that ground is read no lower than its controller's floor less 6 cm,
+//! Exarust's own: `climb`).
 //! Its character tick measures its balance and the ground under its feet,
 //! which give its support (`balance`). Blows shove parts and daze the body,
 //! which weakens its muscles until it recovers.
@@ -42,6 +44,8 @@ pub use muscle::{Bearing, RaceMuscles};
 #[path = "body_balance.rs"]
 mod balance;
 pub use balance::{Balance, Leg};
+#[path = "body_climb.rs"]
+mod climb;
 #[path = "body_inspect.rs"]
 pub mod inspect;
 #[path = "body_lift.rs"]

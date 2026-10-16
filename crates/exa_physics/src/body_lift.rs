@@ -17,13 +17,18 @@
 //! the ankle and the foot's ground offset (its sole height standing),
 //! blended with the other foot's, capped at the ground plus sole plus leg
 //! length, plus 5 cm. The rules are the original's, in its centimetres and
-//! ticks (evidence: `docs/formats/RSQ.md`, Physical body).
+//! ticks (evidence: `docs/formats/RSQ.md`, Physical body), but for one
+//! Exarust stopgap until the feet step and the legs bend: while a body
+//! that has not fallen has its controller on the ground, a foot's ground
+//! is read no lower than its floor less 6 cm, so a body climbs the steps
+//! its capsule climbs (`climb`).
 //! (Included from body.rs: `#[path = "body_lift.rs"] mod lift;`)
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 
 use super::balance::cm;
+use super::climb::climbing_ground;
 use super::{BODY_HZ, Bearing, CM, GRAVITY, Ragdoll};
 
 /// Standing, f = 0.075 per cm of h + 15, at most 1.5.
@@ -187,8 +192,9 @@ impl Ragdoll {
     /// the lift. Each leg's ground offset is set (its sole height standing;
     /// moving, its animated ankle's height over the walk's lowest, plus the
     /// sole), then the target pelvis height from the ground under the feet
-    /// and the clip root's height over each ankle, then the lift servo, with
-    /// support only.
+    /// (read no lower than a grounded controller's floor less 6 cm,
+    /// Exarust's own: `climb`) and the clip root's height over each ankle,
+    /// then the lift servo, with support only.
     pub(super) fn lift(&mut self) {
         let measured = self.measures_balance();
         let root = self.parts.iter().position(|p| p.parent.is_none());
@@ -213,6 +219,10 @@ impl Ragdoll {
         let posed = drive.targets.len() == parts.len();
         let pelvis_target = posed.then(|| Vec3::from(drive.targets[root].translation));
         let floor = drive.root.map(|r: Affine3A| r.translation.y);
+        // Exarust's own, until the feet step and the legs bend: a standing
+        // body climbs with its grounded controller (`climb`); a fallen one
+        // does not ride it.
+        let climbing = floor.filter(|_| bearing.carried && drive.supported);
         let heights: Vec<LegHeight> = legs
             .iter_mut()
             .map(|leg| {
@@ -224,8 +234,12 @@ impl Ragdoll {
                     _ => *sole,
                 };
                 let over_ankle = pelvis_target.zip(ankle).map_or(0.0, |(p, a)| p.y - a.y);
+                let ground = leg.ground.map(cm);
                 LegHeight {
-                    ground: leg.ground.map(cm),
+                    ground: match climbing {
+                        Some(f) => ground.map(|g| climbing_ground(g, cm(f))),
+                        None => ground,
+                    },
                     contact: cm(parts[leg.shin].point(&leg.contact).y),
                     stance: cm(over_ankle + leg.offset),
                     length: cm(leg.length),

@@ -47,7 +47,10 @@ The original has no camera-relative keyboard movement. Outside combat:
   it ([formats/RSQ.md](formats/RSQ.md), Physical body).
 - Stairs: the capsule climbs a step before the feet do, and nothing lifts a
   walking foot onto it yet (the original's walking feet and leg IK come
-  later), so the player catches its feet on the risers and may fall.
+  later). Until then the body is held no lower than 6 cm under the
+  capsule's floor (Exarust's own), so it climbs with the capsule, its feet
+  dragging behind, and stands on the stairs; on level ground nothing
+  changes ([formats/RSQ.md](formats/RSQ.md), Physical body).
 
 ## Combat mode
 

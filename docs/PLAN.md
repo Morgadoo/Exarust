@@ -275,11 +275,17 @@ ankle, capped at the leg's reach (an idle human's pelvis at 101.5 cm); the
 capsule carries the body only across the ground and turns it, and holds
 its pelvis horizontally (Exarust's own until the support pins, C14). A
 get-up no longer hops (the end of `Get Up 2` overshoots 3–5 cm and settles
-in 45–100 ticks, from 10.7 cm ringing 90). Stairs regress until the
-original's walking feet and leg IK (C13, C19): a walking body catches its
-feet on the risers. Still to do: the frame anchor and support pins, the
-original's falls and get-ups, recovery steps, foot planting, clip
-blending, collisions between bodies (and their wake of a sleeper).
+in 45–100 ticks, from 10.7 cm ringing 90). Done (change
+`climb-steps-until-feet-step`, Exarust's own stopgap): until the
+original's walking feet and leg IK (C13, C19), the lift reads no foot's
+ground lower than the grounded controller's floor less 6 cm, so a body
+climbs the steps its capsule climbs and stands on them (both exanima01
+stair starts reach the landing without a fall; C8 alone fell 1–5 times),
+while level ground is unchanged (the capsule floats 2–5 cm there; the
+arena walk's target is the same every tick). C13 and C19 remove it.
+Still to do: the frame anchor and support pins, the original's falls and
+get-ups, recovery steps, foot planting, clip blending, collisions between
+bodies (and their wake of a sleeper).
 
 This phase carries the most risk and defines how the game feels.
 

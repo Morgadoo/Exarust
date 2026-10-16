@@ -23,7 +23,10 @@ orientation about each part's own origin, scaled by the support S²
 a lift servo holding its pelvis at a target height over the ground under
 its feet (`src/body_lift.rs`). The controller carries a standing body only
 across the ground and turns it, and holds its pelvis horizontally until the
-original's support pins do.
+original's support pins do. Until the feet step and the legs bend, a
+stopgap of Exarust's own reads each foot's ground no lower than the
+grounded controller's floor less 6 cm, so a body climbs the steps its
+capsule climbs (`src/body_climb.rs`).
 Each character tick measures a living body's balance at its chest against
 its ankles and asks the level for the ground under each foot
 (`contact::Level::height_below`, the original's Height Query), which give

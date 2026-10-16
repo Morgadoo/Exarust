@@ -139,7 +139,9 @@ pub struct Bearing {
     /// a standing body across the ground and may stand where its feet do
     /// not (perched on a stone), so a carried standing body keeps its
     /// balance while no foot is grounded, dropping onto its feet; a fallen
-    /// one is not carried.
+    /// one is not carried. A carried body's lift reads no foot's ground
+    /// lower than the root's floor less 6 cm, so it climbs the steps its
+    /// controller climbs (until its feet step and its legs bend).
     pub carried: bool,
     /// What is left of its turn toward its heading (rad).
     pub turn: f32,
