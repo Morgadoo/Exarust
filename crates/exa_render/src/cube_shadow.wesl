@@ -1,25 +1,23 @@
 // Casters into Exarust's cached cube shadow maps, as the original's caster
-// program writes them: the distance from the light, linear, divided by the
+// programs write them: the distance from the light, linear, divided by the
 // light's radius R and the caster's depth scale k_c, so the map holds
-// distance / (R·k_c) in [0, 1]. Alpha-cut materials (cobwebs, grates) cut
-// their shadow the way they cut their colour. Rules: docs/RENDERING.md
-// (Cached cube shadows).
+// distance / (R·k_c) in [0, 1]. Surfaces cast the alpha-tested way
+// (cobwebs, grates) drop the texels whose cut texture has an alpha below ½,
+// as the original's alpha-tested caster does, whatever their opacity.
+// Rules: docs/RENDERING.md (Cached cube shadows).
 
 struct Draw {
     world_from_local: mat4x4<f32>,
     clip_from_world: mat4x4<f32>,
     // xyz the light (metres), w 1 / (R·k_c).
     light: vec4<f32>,
-    // x the material's opacity, y 1 when the texture is an opacity map (its
-    // alpha squared) rather than the diffuse map (its alpha as is).
-    alpha: vec4<f32>,
 }
 
 @group(0) @binding(0) var<storage, read> draws: array<Draw>;
 @group(1) @binding(0) var cut_texture: texture_2d<f32>;
 @group(1) @binding(1) var cut_sampler: sampler;
 
-// The alpha cut of masked materials, as `exa.wesl`.
+// The alpha-tested caster's cut.
 const CUTOFF: f32 = 0.5;
 
 struct Vertex {
@@ -54,9 +52,7 @@ fn vertex(v: Vertex) -> Varyings {
 fn fragment(in: Varyings) -> @builtin(frag_depth) f32 {
     let d = &draws[in.draw];
 @if(ALPHA_CUT) {
-    let texel = textureSample(cut_texture, cut_sampler, in.uv).a;
-    let a = (*d).alpha.x * select(texel, texel * texel, (*d).alpha.y > 0.5);
-    if a < CUTOFF {
+    if textureSample(cut_texture, cut_sampler, in.uv).a < CUTOFF {
         discard;
     }
 }

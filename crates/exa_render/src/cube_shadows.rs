@@ -80,6 +80,7 @@ impl Plugin for CubeShadowsPlugin {
         };
         render_app
             .init_resource::<SpecializedMeshPipelines<CubePipeline>>()
+            .init_resource::<PreparedCubes>()
             .add_systems(RenderStartup, init_pipeline)
             .add_systems(
                 Render,
@@ -185,7 +186,7 @@ struct CasterDraw {
     mesh: AssetId<Mesh>,
     gpu: GpuDraw,
     two_sided: bool,
-    /// The texture an alpha-cut material cuts its shadow with.
+    /// The texture whose alpha cuts the shadow ([`shadow_cut_texture`]).
     cut: Option<AssetId<Image>>,
 }
 
@@ -196,7 +197,6 @@ struct GpuDraw {
     world_from_local: [f32; 16],
     clip_from_world: [f32; 16],
     light: [f32; 4],
-    alpha: [f32; 4],
 }
 
 fn create_pool(mut images: ResMut<Assets<Image>>) {
@@ -359,6 +359,21 @@ fn assign_slots(
     }
 }
 
+/// The texture whose alpha cuts a material's shadow, for materials cast the
+/// original's alpha-tested way ([`ExaMaterial::cuts_shadow`]): the opacity
+/// map, or else the diffuse map. Without either the shadow is whole (and
+/// still cast from both sides).
+fn shadow_cut_texture(material: &ExaMaterial) -> Option<AssetId<Image>> {
+    if !material.cuts_shadow() {
+        return None;
+    }
+    material
+        .opacity_map
+        .as_ref()
+        .or(material.diffuse_map.as_ref())
+        .map(Handle::id)
+}
+
 /// The depth scale k_c of a caster of shadow-bias level `v`.
 fn caster_scale(v: u32) -> f32 {
     if v == 0 {
@@ -420,32 +435,19 @@ fn build_jobs(
                 };
                 let k_c = caster_scale(bias.map_or(0, |b| b.0));
                 let material = material.and_then(|m| materials.get(&m.0));
-                let cut = material.and_then(|m| {
-                    matches!(m.alpha_mode, AlphaMode::Mask(_)).then(|| {
-                        let opacity = m.params.flags & flags::OPACITY_MAP != 0;
-                        let texture = if opacity {
-                            m.opacity_map.as_ref()
-                        } else {
-                            m.diffuse_map.as_ref()
-                        };
-                        texture.map(|t| (t.id(), opacity, m.params.diffuse.w))
-                    })?
-                });
+                let cut = material.and_then(shadow_cut_texture);
                 jobs.draws.push(CasterDraw {
                     mesh: mesh.0.id(),
                     gpu: GpuDraw {
                         world_from_local: at.to_matrix().to_cols_array(),
                         clip_from_world: clip_from_world.to_cols_array(),
                         light: position.extend(1.0 / (slot.radius * k_c)).to_array(),
-                        alpha: [
-                            cut.map_or(1.0, |c| c.2),
-                            cut.map_or(0.0, |c| if c.1 { 1.0 } else { 0.0 }),
-                            0.0,
-                            0.0,
-                        ],
                     },
-                    two_sided: material.is_some_and(|m| m.params.flags & flags::TWO_SIDED != 0),
-                    cut: cut.map(|c| c.0),
+                    // The original turns culling off for its alpha-tested
+                    // casters, with or without a texture to cut with.
+                    two_sided: material
+                        .is_some_and(|m| m.cuts_shadow() || m.params.flags & flags::TWO_SIDED != 0),
+                    cut,
                 });
             }
             let end = jobs.draws.len() as u32;
@@ -567,9 +569,32 @@ struct PreparedCubes {
     pending: bool,
 }
 
+impl Default for PreparedCubes {
+    fn default() -> Self {
+        Self {
+            buffer: RawBufferVec::new(BufferUsages::STORAGE),
+            draws: None,
+            cuts: HashMap::default(),
+            pipelines: Vec::new(),
+            layers: Vec::new(),
+            pending: false,
+        }
+    }
+}
+
+/// Hands every face of the frame back as not drawn, so it stays dirty: a
+/// face never drawn reads as wholly shadowed.
+fn fail_all(jobs: &CubeJobs) {
+    if jobs.faces.is_empty() {
+        return;
+    }
+    if let Ok(mut f) = jobs.failed.0.lock() {
+        f.extend(jobs.faces.iter().map(|j| (j.light, 1u8 << j.face)));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn prepare_draws(
-    mut commands: Commands,
     jobs: Res<CubeJobs>,
     pipeline: Option<Res<CubePipeline>>,
     mut specialized: ResMut<SpecializedMeshPipelines<CubePipeline>>,
@@ -578,24 +603,11 @@ fn prepare_draws(
     images: Res<RenderAssets<GpuImage>>,
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
-    prepared: Option<ResMut<PreparedCubes>>,
+    mut prepared: ResMut<PreparedCubes>,
 ) {
-    let Some(pipeline) = pipeline else { return };
-    let mut prepared = match prepared {
-        Some(p) => p,
-        None => {
-            commands.insert_resource(PreparedCubes {
-                buffer: RawBufferVec::new(BufferUsages::STORAGE),
-                draws: None,
-                cuts: HashMap::default(),
-                pipelines: Vec::new(),
-                layers: Vec::new(),
-                pending: false,
-            });
-            return;
-        }
-    };
-    let Some(pool) = images.get(CUBE_POOL.id()) else {
+    let (Some(pipeline), Some(pool)) = (pipeline, images.get(CUBE_POOL.id())) else {
+        prepared.pending = false;
+        fail_all(&jobs);
         return;
     };
     if prepared.layers.len() != (6 * CUBE_CAPACITY) as usize {
@@ -659,7 +671,7 @@ fn prepare_draws(
 fn render_faces(
     view: ViewQuery<Has<DisplayCamera>>,
     jobs: Res<CubeJobs>,
-    prepared: Option<ResMut<PreparedCubes>>,
+    mut prepared: ResMut<PreparedCubes>,
     cache: Res<PipelineCache>,
     meshes: Res<RenderAssets<RenderMesh>>,
     allocator: Res<MeshAllocator>,
@@ -669,14 +681,17 @@ fn render_faces(
     if view.into_inner() {
         return;
     }
-    let Some(mut prepared) = prepared else { return };
     if !prepared.pending {
         return;
     }
     prepared.pending = false;
-    let Some(draws) = prepared.draws.clone() else {
+    // Faces without casters are only cleared; faces with casters need the
+    // frame's draws.
+    let draws = prepared.draws.clone();
+    if draws.is_none() && !jobs.draws.is_empty() {
+        fail_all(&jobs);
         return;
-    };
+    }
     let mut failed = Vec::new();
     for job in &jobs.faces {
         let Some(view) = prepared.layers.get(job.layer as usize) else {
@@ -698,7 +713,9 @@ fn render_faces(
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_bind_group(0, &draws, &[]);
+        if let Some(draws) = &draws {
+            pass.set_bind_group(0, draws, &[]);
+        }
         for i in job.draws.clone() {
             let d = &jobs.draws[i as usize];
             let ready = prepared
@@ -771,6 +788,40 @@ mod tests {
         assert_eq!(caster_scale(0), 1.0);
         assert!((caster_scale(3) - 0.975).abs() < 1e-6);
         assert!((caster_scale(1) - 0.985).abs() < 1e-6);
+    }
+
+    #[test]
+    fn shadow_cuts_follow_the_alpha_tested_caster() {
+        const OPACITY: Handle<Image> = uuid_handle!("0c7b6a52-5d0e-4c55-9a7e-6f1b2c3d4e01");
+        const DIFFUSE: Handle<Image> = uuid_handle!("0c7b6a52-5d0e-4c55-9a7e-6f1b2c3d4e02");
+        // A blended cobweb marked to cut: its opacity map cuts.
+        let cobweb = ExaMaterial {
+            opacity_map: Some(OPACITY),
+            diffuse_map: Some(DIFFUSE),
+            alpha_mode: AlphaMode::Blend,
+            cut_shadow: true,
+            ..default()
+        };
+        assert_eq!(shadow_cut_texture(&cobweb), Some(OPACITY.id()));
+        // Blended and not marked: a whole shadow.
+        let glass = ExaMaterial {
+            cut_shadow: false,
+            ..cobweb.clone()
+        };
+        assert_eq!(shadow_cut_texture(&glass), None);
+        // Alpha-tested with only a diffuse map: the diffuse map cuts.
+        let grate = ExaMaterial {
+            diffuse_map: Some(DIFFUSE),
+            alpha_mode: AlphaMode::Mask(0.5),
+            ..default()
+        };
+        assert_eq!(shadow_cut_texture(&grate), Some(DIFFUSE.id()));
+        // Alpha-tested without a texture: nothing to cut with.
+        let bare = ExaMaterial {
+            alpha_mode: AlphaMode::Mask(0.5),
+            ..default()
+        };
+        assert_eq!(shadow_cut_texture(&bare), None);
     }
 
     #[test]

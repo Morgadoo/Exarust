@@ -437,9 +437,10 @@ impl ModelLoader<'_> {
             mat.height_map = Some(img);
         }
         mat.alpha_mode = blend_mode(m.class, cut_out || mat.opacity_map.is_some());
-        // Faint surfaces (cobwebs, glass, decals) and those the record marks
-        // cast no shadows.
+        // Faint surfaces (glass, decals) and those the record marks cast no
+        // shadows.
         mat.no_shadows = m.opacity <= 0.8 || m.extra & NO_SHADOWS != 0;
+        mat.cut_shadow = cuts_shadow(m, mat.opacity_map.is_some());
         if mat.alpha_mode == AlphaMode::Premultiplied {
             let a = mat.params.diffuse.w;
             mat.params.diffuse = (mat.params.diffuse.truncate() * a).extend(a);
@@ -645,6 +646,16 @@ type OwnedLayer = (
     Vec<Option<Arc<Texels>>>,
 );
 
+/// Whether the original casts a material through its alpha-tested caster,
+/// whatever the surface's blending: an alpha-tested blend word (`0x4000`),
+/// or an opacity above 0.75 with the opacity flag, which the record sets or
+/// a loaded opacity map adds (`cobweb01`: blended, opacity 1).
+/// `opacity_map` is whether the opacity layer's texture loaded.
+fn cuts_shadow(m: &Material, opacity_map: bool) -> bool {
+    let opacity_flag = m.flags & OPACITY_FLAG != 0 || opacity_map;
+    m.class & ALPHA_TESTED != 0 || opacity_flag && m.opacity > CUT_SHADOW_OPACITY
+}
+
 /// An image with a box-filtered mip chain from RGBA8 pixels, sRGB or linear.
 /// How a material blends, from its blend word: `0x4000` alpha-tests (when
 /// a map gives alpha); otherwise the source and destination factors (bits
@@ -653,7 +664,7 @@ fn blend_mode(word: u32, has_alpha: bool) -> AlphaMode {
     const ONE: u32 = 1;
     const SRC_ALPHA: u32 = 2;
     const ONE_MINUS_SRC_ALPHA: u32 = 3;
-    if word & 0x4000 != 0 {
+    if word & ALPHA_TESTED != 0 {
         return if has_alpha {
             AlphaMode::Mask(0.5)
         } else {
@@ -783,6 +794,15 @@ fn library_material(game: &GameData, name: &str) -> Option<Material> {
 const PARALLAX_UNIT: f32 = 3e-5;
 /// Material extra flag (`0x4C`): casts no shadows.
 const NO_SHADOWS: u32 = 0x4;
+/// A material with the opacity flag and an opacity above this casts a cut
+/// shadow, whatever its blending.
+const CUT_SHADOW_OPACITY: f32 = 0.75;
+/// Material flag (`0x48`) of the opacity layer, also set when its texture
+/// loads. Not every record that sets it has the layer (`harhps1`), nor the
+/// reverse.
+const OPACITY_FLAG: u32 = 0x40_0000;
+/// Blend-word bit of alpha-tested materials.
+const ALPHA_TESTED: u32 = 0x4000;
 /// Material extra flag (`0x4C`) enabling displacement shadows.
 const DISPLACEMENT_SHADOWS: u32 = 0x10_0000;
 
@@ -861,5 +881,82 @@ mod tests {
         );
         assert_eq!(apparel_texture_key("&short"), None);
         assert_eq!(apparel_texture_key("skinhuman"), None);
+    }
+
+    fn record(class: u32, flags: u32, opacity: f32) -> Material {
+        Material {
+            class,
+            flags,
+            opacity,
+            ..default()
+        }
+    }
+
+    #[test]
+    fn blended_cobwebs_cut_their_shadow() {
+        // `cobweb01`: alpha-blended (source alpha, one minus source alpha),
+        // opacity 1, the opacity flag and an opacity map.
+        let cobweb = record(0x0203, 0x40_0017, 1.0);
+        assert_eq!(blend_mode(cobweb.class, true), AlphaMode::Blend);
+        assert!(cuts_shadow(&cobweb, true));
+        // The flag alone (`harhps1`, no opacity layer), or a loaded opacity
+        // map alone (records without the flag), is enough.
+        assert!(cuts_shadow(&record(0x0203, 0x72_0007, 1.0), false));
+        assert!(cuts_shadow(&record(0x0203, 0x22_0017, 1.0), true));
+        // At or below 0.75 the shadow is whole (and at or below 0.8 there is
+        // none at all).
+        assert!(!cuts_shadow(&record(0x0203, 0x40_0017, 0.75), true));
+        // Neither the flag nor an opacity map: a whole shadow.
+        assert!(!cuts_shadow(&record(0x0203, 0x22_0017, 1.0), false));
+        // Alpha-tested blend words always use the alpha-tested caster.
+        assert!(cuts_shadow(&record(0x4100, 0x22_0017, 0.5), false));
+    }
+
+    /// The corpus records the rule was established on (run with
+    /// `cargo test -p exa_assets -- --ignored` and the game installed).
+    #[test]
+    #[ignore]
+    fn shipped_cut_shadow_records() {
+        use exa_formats::FileKind;
+        let Some(dir) = crate::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(dir).unwrap();
+        let mut found = HashMap::new();
+        'packs: for (_, pack) in game.packs() {
+            for e in pack.entries() {
+                let bytes = pack.bytes(e);
+                if !matches!(
+                    FileKind::detect(bytes),
+                    FileKind::ChunkTree | FileKind::ChunkTreeAlt
+                ) {
+                    continue;
+                }
+                let Ok(scene) = Scene::parse(bytes) else {
+                    continue;
+                };
+                for (name, m) in scene.materials {
+                    if let Ok(m) = m
+                        && (name.eq_ignore_ascii_case("cobweb01")
+                            || name.eq_ignore_ascii_case("harhps1"))
+                    {
+                        found.insert(name.to_ascii_lowercase(), m);
+                    }
+                }
+                if found.len() == 2 {
+                    break 'packs;
+                }
+            }
+        }
+        let cobweb = &found["cobweb01"];
+        assert_eq!((cobweb.class, cobweb.flags), (0x0203, 0x40_0017));
+        assert_eq!(cobweb.opacity, 1.0);
+        assert_eq!(cobweb.texture(TextureSlot::Opacity), Some("CobWb01O"));
+        assert!(cuts_shadow(cobweb, true));
+        // The opacity flag without an opacity layer.
+        let harhps = &found["harhps1"];
+        assert_ne!(harhps.flags & OPACITY_FLAG, 0);
+        assert_eq!(harhps.texture(TextureSlot::Opacity), None);
+        assert!(cuts_shadow(harhps, false));
     }
 }

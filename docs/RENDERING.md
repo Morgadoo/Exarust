@@ -280,11 +280,13 @@ For each updated voxel, with occ normalised:
 Light builds up toward about direct/(1 − k). With open walls and dark
 sectors around it, the menu room converges within a few hundred steps.
 
-**Open question:** with every input verified against the executable, the
-menu still renders darker than the original's capture. The floor's bounce
-light is about 0.005 linear, and the torch-lit walls are about 1.45× darker
-even without GI, so part of the gap lies outside the GI. This needs a
-side-by-side check on the GPU at the same camera.
+**Menu check:** at the original's menu camera, with shadows, after the GI
+has warmed up (`--frames 420`; at the default 90 frames the GI block is not
+built yet), the mean brightness of the torch-lit walls and floor lies
+within about 4 of 255 sRGB levels of the original's capture. Before
+blended cobwebs cut their shadows (see Lights) the same regions were 10 to
+22 levels darker, which is most of what earlier notes reported as a darker
+menu.
 
 **Shading**:
 - The shadow filter's disc taps (below), turned the same way, spread half a
@@ -325,9 +327,25 @@ side-by-side check on the GPU at the same camera.
   Exarust sets Bevy's range to 1.25·R and computes (1 − d/range)⁴ itself.
 - Lights cast shadows from cube maps (512² per face; the sun's map is 4096²
   at the top shadow detail).
-- Shadow maps cut alpha-tested surfaces (cobwebs, grates) the way their
-  colour is cut. Surfaces with opacity ≤ 0.8 (glass, decals) and those whose
-  record has extra flag `0x4` cast no shadows.
+- Surfaces with opacity ≤ 0.8 (glass, decals) and those whose record has
+  extra flag `0x4` cast no shadows. The others cast whole, except through
+  the original's **alpha-tested caster**, which is used for:
+  - alpha-tested materials (blend word `0x4000`), with or without a map
+    that gives alpha;
+  - materials with the opacity flag and an opacity above 0.75, whatever
+    their blending. The flag is `0x400000` in the record's flags, which
+    the original also sets when an opacity map loads. Records with the
+    flag and records with an opacity layer differ in 61 of the corpus's
+    1584 materials. The menu's cobwebs (`cobweb01`) are alpha-blended,
+    opacity 1, with both the flag and the layer.
+
+  The alpha-tested caster draws both sides of the surface. It drops every
+  texel whose cut texture has an alpha below ½: the opacity map, otherwise
+  the diffuse map. Unlike the colour pass, the cut ignores the material's
+  opacity and does not square the opacity map. This rule holds in the
+  cached cube maps (static casters of point lights); Bevy's own shadow
+  passes (the sun, skinned meshes) still cut as the colour pass does
+  (`exa_prepass.wesl`).
 - A light leaves its own object out of its shadow map: its siblings, its
   parent and its grandparent. A fire's light hangs under the fire node, so a
   torch does not shadow its own flame. Only the torch's hidden `TorchSdw`
@@ -388,9 +406,11 @@ side-by-side check on the GPU at the same camera.
   - torch flicker changes only colour and intensity, so it never dirties a
     face;
   - each face holds the original's linear depth, distance / (R·k_c), in
-    16 bits, with near plane 3 cm and back faces culled (two-sided
-    materials cast both sides). Alpha-cut materials cut their shadow as they
-    cut their colour;
+    16 bits, with near plane 3 cm and back faces culled. Two-sided
+    materials and the alpha-tested caster (see above) draw both sides;
+  - a face the renderer could not draw stays dirty and is drawn later,
+    because a face never drawn reads as wholly shadowed. That happens on
+    the first frame, or while a pipeline or mesh is not ready;
   - receivers compare 0.995·d / (R·k_r), lit when less. With k_c and k_r
     from both sides' shadow-bias levels, this is the original's rule
     exactly, cross terms included;

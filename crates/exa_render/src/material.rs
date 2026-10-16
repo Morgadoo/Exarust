@@ -154,6 +154,11 @@ pub struct ExaMaterial {
     pub alpha_mode: AlphaMode,
     /// The surface casts no shadows (opacity ≤ 0.8, or the record says so).
     pub no_shadows: bool,
+    /// The record casts through the original's alpha-tested caster,
+    /// whatever the surface's blending: an alpha-tested blend word, or the
+    /// opacity flag with an opacity above 0.75 (see
+    /// [`ExaMaterial::cuts_shadow`]).
+    pub cut_shadow: bool,
 }
 
 impl Default for ExaMaterial {
@@ -174,11 +179,20 @@ impl Default for ExaMaterial {
             shadow_cubes: crate::cube_shadows::CUBE_POOL,
             alpha_mode: AlphaMode::default(),
             no_shadows: false,
+            cut_shadow: false,
         }
     }
 }
 
 impl ExaMaterial {
+    /// Whether the surface casts as the original's alpha-tested caster
+    /// does: both sides, dropping the texels whose cut texture (the opacity
+    /// map, else the diffuse map) has an alpha below ½. Alpha-tested
+    /// surfaces and those marked [`ExaMaterial::cut_shadow`] (cobwebs).
+    pub fn cuts_shadow(&self) -> bool {
+        self.cut_shadow || matches!(self.alpha_mode, AlphaMode::Mask(_))
+    }
+
     /// Sets the flags of the maps present, keeping the shading flags.
     pub fn with_map_flags(mut self) -> Self {
         let f = &mut self.params.flags;
