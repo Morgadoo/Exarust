@@ -1239,12 +1239,8 @@ mod tests {
         CharacterRecord {
             id,
             name: format!("record {id}"),
-            surname: String::new(),
-            female: false,
-            race: 0,
-            voice: String::new(),
-            hands: [0; 4],
             worn,
+            ..Default::default()
         }
     }
 

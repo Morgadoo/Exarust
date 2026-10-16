@@ -14,6 +14,7 @@
 | `extract <pack> <dir> [--filter s] [--inner e]` | write entries with guessed extensions |
 | `paint <model> <stem> <out.png>` | paint an apparel texture set with the appearance of the first item worn as the model (`paint braies_a braies__aa b.png`) |
 | `races` | every race of `races.rdb`: names, model, movesets, health, flag words, the body scalars and the body controller's factors, the stats (reach, weapon factors, AI, footsteps, voice) and the gait table with brake distances |
+| `characters <level\|actors>` | every character record of a level (`exanima01`) with where it is placed, or of the arena's actors: looks, feral level, pools, combat skill, experience, traits, voice, skills with their learnt techniques, perks, Manoeuvring tier, Deflection, roles, saved state, powers |
 | `corpus meshes` | decode every chunk tree; per-pack table and reasons for unsupported records |
 | `corpus levels` | grids, props and placed characters of every level; placed humans covered at the groin and their worn items with a `Characters.rpk` model |
 | `corpus images` | every image by format word and storage; decodes the uncompressed ones and checks that RGB8 normal maps hold z in blue |

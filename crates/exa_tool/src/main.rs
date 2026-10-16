@@ -12,9 +12,12 @@
 //! exa-tool corpus images              images by format; RGB8 normals z in blue
 //! exa-tool corpus winding             which way level faces point, floors up?
 //! exa-tool races                      races with their flags, body parameters, stats, gaits
+//! exa-tool characters exanima01       a level's character records, read whole, and placements
+//! exa-tool characters actors          the arena's actors in actors.rpk
 //! exa-tool export-gltf Objlib afr_cornflag_a01 out.glb
 //! ```
 
+mod characters;
 mod corpus;
 mod gltf;
 
@@ -82,6 +85,10 @@ enum Cmd {
     /// Every race of `races.rdb` with its flags, body parameters, stats and
     /// gait table.
     Races,
+    /// Every character record of a level (`exanima01`), with where it
+    /// places them, or of the arena's actors (`actors`): looks, feral level,
+    /// saved pools, skills with their techniques, perks, roles and powers.
+    Characters { source: String },
     /// Decode every entry of a format and report coverage.
     Corpus {
         #[arg(value_enum)]
@@ -212,6 +219,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Races => races(&game),
+        Cmd::Characters { source } => characters::characters(&game, &source),
         Cmd::Corpus {
             what: CorpusKind::Meshes,
         } => corpus::meshes(&game),

@@ -238,7 +238,18 @@ word (red regeneration, claws, hovering, quadruped); the unarmed reach,
 the weapon swing-turn and recovery factors, the AI attack bonus and
 perception, the held-item offset, the footstep set and the voice. Nothing
 uses them yet; deriving each character's stats from them at spawn is a
-later change of that lane. Done (change
+later change of that lane. Done (change `read-character-records-fully`, M39
+of the master plan): character records are read whole, versions 5–7, in
+the level databases and `actors.rpk` (every shipped record parses to its
+end): physique, height, age, the feral level (every living human of the
+story levels is undead, 0.4–1.0), the saved health and focus pools (full in
+every living placement), combat skill, traits, experience, the six skills
+with the technique learnt at each level, inventory, roles, saved state and
+powers; the learnt techniques give the perks combat reads (Remise, Feint,
+Fend, Riposte, Security, the six shield perks and the thaumaturgy ones),
+the Manoeuvring in Armour tier and Deflection; `exa-tool characters`
+prints them ([formats/RFC.md](formats/RFC.md), character records). Nothing
+uses them yet. Done (change
 `join-parts-at-their-origins`, C3): every part is pinned at its origin to
 its place in the parent, as the original registers it, so joints are ball
 joints and the knee a hinge; the skeleton's links meet the parent at the

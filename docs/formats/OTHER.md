@@ -292,8 +292,9 @@ Not yet painted: wood, bronze, gemstone and resin finishes
 Not shipped; created in `%APPDATA%\Exanima`. Magic `0xDA7AEA02`, then a
 section table padded to `0x2000` with `#playerdata`, `#worldchrdb`,
 `#worldobjdb`, and a full modified copy of every visited level's `.rfc`.
-Character records (`0x00CDAC06`, the same as actors) hold body, race,
-equipment, health, personality, skills, roles and relations. Exarust uses
+Character records (`0x00CDACvv`, the same as actors and the levels' own;
+layout in [RFC.md](RFC.md#starts-characters-and-placed-objects)) hold body,
+race, equipment, health, personality, skills, roles and relations. Exarust uses
 its own save format; this is documented for reference only.
 
 ## Terrain (`.rft` and `.ftb`)
@@ -546,9 +547,16 @@ unconscious.
 
 ## Actors
 
-`actors.rpk` inside Resource: 21 entries, magic `06/07 AC CD 00`, then a size
-and a `name[16]` (`ArenaShpKp`, `opponent01..`, `Demon A01`): spawnable
-character templates with loadouts.
+`actors.rpk` inside Resource: 21 entries, each a character record (the
+layout of [RFC.md](RFC.md#starts-characters-and-placed-objects), versions 6
+and 7: 14 and 7) followed by the actor's own item database (`DBDB`):
+spawnable character templates with loadouts (`ArenaShpKp`, `opponent01..16`,
+`Demon A01`, `proctor`, `villager`, `Derrin`). Every record parses to its
+end (`exa-tool characters actors`); the opponents climb from no skills to
+opponent16's Close Combat 20000 and Armour 25000 (Manoeuvring tier 3,
+Deflection, Security). The sixteen opponents and the proctor store empty
+pools (0, either version); ArenaShpKp, the demon, the villager and Derrin
+store full yellow and red.
 
 ## Dialogue (`.rcd`)
 

@@ -12,6 +12,7 @@ bytes and returns plain data or an error. No Bevy dependency.
 | `rfi` | images: header, mip chain, BC1/3/4/5 + uncompressed decoding, RLE unpacking |
 | `rdb` | database index |
 | `races` | races: names, flag words (bleeding, red regeneration, claws, hovering, quadruped), body model, movesets, health, natural armour, the body scalars (clip-rate base, size, scale, mass divisor) and the body controller's factors, the gait table with its brake distances and the feral sprint blend, and the stats (unarmed reach, weapon swing-turn and recovery factors, AI attack bonus, perception, held offset, footsteps, voice) |
+| `characters` | a level's placed characters (position, facing, condition, pose) and their records read whole, versions 5–7 (level databases and `actors.rpk`): looks, held and worn items, feral level, saved pools, combat skill, traits, experience, the six skills with their techniques, inventory, roles, relations, saved state, powers; the perks the learnt techniques give, the Manoeuvring tier and Deflection |
 | `rfc` | scene nodes (meshes, lights, voxel lights) and static meshes (all retail meshes decode) |
 | `material` | material payloads: texture layers and slot roles |
-| levels, `rsq`, terrain, factories, actors, powers | Phase 1 |
+| levels, `rsq`, terrain, factories, powers | Phase 1 |

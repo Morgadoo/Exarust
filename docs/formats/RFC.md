@@ -383,18 +383,79 @@ and a child count), `CAC0E100` legacy flat bone matrices, `CAC0EA00` motion
 state, `CACE0F77` AI home (saves). `exanima01` places 39 characters, 8 of
 them corpses. Hostility comes from each record's roles in `charroles.rdb`.
 
-Character records (`0x00CDAC07`, framed as tag + size): name[16],
-surname[16], physique f32×2, height, age, skin colour u16×2, hair style,
-hair colour u8×4, face styles u16×2 (v ≥ 3), voice[16], pitch,
-profession (bit 0 female, byte 1 race), last locale, four held items
-{id, flags}, then the worn items: `i32 n` and n × {id, flags}. Ids with
-`0x80000000` refer to the level's own object database (`DBC0` → `DBDB`, an
-RDB of item records like `objdb.rdb`'s). Across the 29 levels, all 477
-placed characters have a record and 908 of their 979 worn items resolve
-locally (`exa-tool corpus levels`). Exarust parses records up to the worn
-items (`exa_formats::characters`). It spawns every race in its own body
-with its own moveset (see `races.rdb` in OTHER.md). Only the human frame is
-physical and dressed, and dead bodies of other frames are not shown yet.
+Character records (`0x00CDACvv`, the low byte the version; framed as tag +
+size, the record ends at its size): name[16], surname[16], physique f32×2,
+height (−1…1, positive is shorter), age (0…1), skin colour u16×2, hair
+style, hair colour u8×4, face styles u16×2 (read by every version),
+voice[16] (`xx0N` gives voice number N − 1), pitch, profession (bit 0
+female, byte 1 race), last locale, four held items {id, flags}, then the
+worn items: `i32 n` and n × {id, flags}. Ids with `0x80000000` refer to the
+level's own object database (`DBC0` → `DBDB`, an RDB of item records like
+`objdb.rdb`'s). Across the 29 levels, all 477 placed characters have a
+record and 908 of their 979 worn items resolve locally (`exa-tool corpus
+levels`). Exarust spawns every race in its own body with its own moveset
+(see `races.rdb` in OTHER.md). Only the human frame is physical and
+dressed, and dead bodies of other frames are not shown yet.
+
+The rest of the record, in order (versions 5–7 alike up to the inventory):
+
+| field | type | meaning |
+|---|---|---|
+| feral level | f32 | 0…1: how far gone an undead is (weaker, looser, undead voices); 0 for the living and every non-human race |
+| pools | u16 ×3 | yellow (current health) and red (the ceiling it heals to) as shares of the maximum, and focus; share = value / 65535 |
+| seed | u16 | random at save |
+| combat skill | f32 | 0…100, the AI's skill |
+| undead voice | u32 | which undead voice set a feral character uses |
+| traits | u8 ×4 | value + 100 (−100…100); the AI reads the second and third |
+| search seed | u32 | read by the AI's search activity |
+| experience | i32 | multiples of 5000 in the levels |
+| (word) | u32 | always 0 |
+| skills | `i32 n`, n × {u16 slot, u16 points, u8 k, k bytes} | six slots: Close Combat, Ranged Combat, Armour, Shields, Insight, Concentration; byte i = the technique chosen at level i (1-based id, at most six); one level per 5000 points |
+| inventory | `i32 n`, n × {u32 item, u32 flags, u32 ?} | carried items |
+| roles | v7: `u32 count`, `u32 len`, len bytes | count × {u32 role, f32 weight, u8 flags (bit 0 explicit), u8 inherited count, u8 n, u8 pad, n × u32 variables}, newest first |
+| relations | v7: table, then `i32 m` × {8 bytes, table} | table = `i32 n`; if n ≥ 1: n × {character, offset}, `i32 len`, blob; none in the shipped data |
+| saved state | `i32 n`, n × {u32 tag, u32 value} | `CECC0001` heal pool (f32 red still to heal), `CECC0002` potion expiry (game clock) |
+| sub-chunks | {u32 tag, i32 size, payload} to the record's end | `CDEC01`/`CDEC02` powers: u32, ten u32 slots, `i32 n`, n × {u32 id, u32 flags; with flag `0x10000000` an `i32 size` and size − 4 bytes}; `CDEC00` and `CDEC12` never occur |
+
+Versions 5 and 6 (the legacy reader) differ after the inventory: roles are
+`i32 n`, n × {u32 role, u32 ignored}, each added in turn (with its parents
+from `charroles.rdb`), except that a first role of 13 (Disposition), 27
+(XA_Proctor) or 22 (Skeleton - Wait) is replaced by 8 (Corpse), 26 (XA
+Undead Bandit) or 9 (Skeleton), each followed by 33 (Activity Wait);
+relations are skipped (version 5: `i32 n` × 16 bytes, `i32 m` × {8, `i32 k`
+× 16}; version 6: a table, then `i32 m` × {8, table}, all skipped);
+powers are 16-byte entries. Every placed character's record is version 7;
+24 unplaced records in the levels are versions 5 and 6, as are 14 of the 21
+arena actors in `actors.rpk` (each actor file is one record followed by its
+own item database).
+
+**Techniques and perks.** The original turns the learnt techniques into the
+perks its combat and body read: Close Combat 1–4 Remise, Feint, Fend,
+Riposte; Armour 5 Security; Shields 1–6 Counter, Synchrony, Ward, Persist,
+Endure, Mobility; Insight 6 Iteration; Concentration 1, 5, 6, 8 Sustain,
+Abstraction, Clarity, Volition. Close Combat 5–8 (Draw, Impel, Brace, Dual
+Wield) give none (the first three are marked unavailable; 37 level records
+learn Dual Wield). Armour 1–3 are the Manoeuvring in Armour tiers: the
+armour builder takes the highest learnt and lowers encumbrance by 0.3 per
+tier; Armour 4 is Deflection (worn coverage up). The name table has a
+seventh skill, Meditation, without a slot or techniques.
+
+**Saving.** The save writes yellow and red as round(value / max × 65535)
+(red 0 when not positive), focus × 65535, the seed as 0xFFFF (a random
+one when a body is released) and the saved-state entries; the load sets
+yellow and red to max × stored value / 65535 and focus to stored value /
+65535. Its saved-state loop reads the last entry's value for both tags
+(harmless with one entry; with both, the heal pool gets the potion's
+expiry), a quirk left to the save system to decide.
+
+Evidence: REA on both record readers, the inventory and relation readers,
+the technique routine, the armour builder, the save hook and load, and the
+skill and technique name tables; every record of the 13 level databases
+(478 version 7, 20 version 6, 4 version 5; 26 deleted entries and two
+stubs that are not records) and of `actors.rpk` parses to its end
+(`exa_formats::characters` corpus tests, `exa-tool characters`). Every
+living placement stores full pools, and every living human is feral (0.4,
+0.42, 0.5 ×27, 0.84 ×21, 1.0 ×47).
 
 **Placed objects (`DBC0` → `DBCE`)**: `i32 n`, then n × `DB01`. Each is
 `u32 node id` (`0x80000000` = local objdb `DBDB`, `0x40000000` = world

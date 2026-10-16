@@ -21,7 +21,7 @@ extension; the format is identified by its leading magic
 | terrain table `.ftb` | `02/03 BD EF 3E` | Resource (15) | verified | [TERRAIN.md](TERRAIN.md) |
 | power `.pwr` | `CE 01 CE AF` | Resource (4) | observed | [OTHER.md](OTHER.md#powers-pwr) |
 | weapon factory | `0x 0F CE AF` | Factories (106) | observed | [OTHER.md](OTHER.md#weapon-factories) |
-| actor | `06/07 AC CD 00` | `Resource/actors.rpk` (21) | observed | [OTHER.md](OTHER.md#actors) |
+| actor | `06/07 AC CD 00` | `Resource/actors.rpk` (21) | verified (character record) | [OTHER.md](OTHER.md#actors) |
 | material library `.rml` | pack | Resource (4) | verified (texture layers) | [OTHER.md](OTHER.md#material-libraries-rml) |
 | shader library `.flb` | pack, entries obfuscated | Resource (2) | unknown | [OTHER.md](OTHER.md#shader-libraries-flb) |
 | save `.rsg` (not shipped) | `02 EA 7A DA` | `%APPDATA%\\Exanima` | reference only | [OTHER.md](OTHER.md#saves-rsg-rcp) |
