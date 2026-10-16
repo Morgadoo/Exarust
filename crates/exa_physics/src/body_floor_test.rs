@@ -309,9 +309,9 @@ fn a_centre_behind_a_face_is_not_pushed() {
     );
 }
 
-/// (g) Re-aiming a fallen body far from the world's origin must not hand
-/// its muscles goal speeds of tens of metres per tick: no floor, no blow,
-/// only the switch to a pose measured from its own pelvis.
+/// (g) A fallen body lying far from the world's origin while its pose
+/// keeps being aimed is not flung: no floor, no blow, only its link
+/// muscles (it has no support, so no pose drive).
 #[test]
 fn a_fallen_body_far_from_the_origin_is_not_flung() {
     let at = Vec3::new(60.0, 0.0, 40.0);
@@ -347,9 +347,9 @@ fn a_fallen_body_far_from_the_origin_is_not_flung() {
 }
 
 /// A standing body far from the world's origin turning on the spot: each
-/// tick's targets turn about the body, and the pose's motion over a tick
-/// (this tick's targets against last tick's) is a turn about each part, so
-/// the muscles never ask for speeds of metres per tick.
+/// tick's targets turn about the body, and the pose drive turns each part
+/// about its own origin, so the muscles never ask for speeds of metres per
+/// tick.
 #[test]
 fn a_turning_pose_far_from_the_origin_is_followed_gently() {
     let at = Vec3::new(81.0, 0.0, 39.2);
@@ -379,10 +379,10 @@ fn a_turning_pose_far_from_the_origin_is_followed_gently() {
     assert!(fastest < 3.0, "a particle reached {fastest:.1} m/s");
 }
 
-/// A fallen body's muscles are inside it: they cannot slow its fall. With
-/// the goal velocity of a fallen body's targets set to zero, its damping
-/// (2·√gain, up to 0.29 per tick at full energy) acts against the world, and
-/// an undazed fallen body falls about nine times slower than a limp one.
+/// A fallen body's muscles are inside it: they cannot slow its fall. It
+/// has no support, so no pose drive, and its link muscles pull its parts
+/// against each other. (A drive damping the world velocity of a fallen
+/// body made an undazed one fall about nine times slower than a limp one.)
 #[test]
 fn a_fallen_body_falls_as_fast_as_a_limp_one() {
     let (setup, pose) = humanoid(Vec3::new(0.0, 10.0, 0.0));
@@ -423,10 +423,11 @@ fn momenta(body: &Ragdoll) -> (Vec3, Vec3) {
     (linear, angular)
 }
 
-/// A fallen body's muscles change its pose only: one drive pass towards a
-/// pose bent about the pelvis leaves the moving body's momentum and angular
-/// momentum as they were. Pulling the limbs alone towards a pose measured
-/// from the pelvis turned the whole body by a third of its own spin a tick.
+/// A fallen body's pose drive does nothing: one drive pass toward a pose
+/// bent about the pelvis leaves the moving body's momentum and angular
+/// momentum as they were. (Pulling its limbs toward a pose measured from
+/// the pelvis once turned the whole body by a third of its own spin a
+/// tick.)
 #[test]
 fn a_fallen_bodys_muscles_neither_push_nor_turn_it() {
     let (setup, pose) = humanoid(Vec3::new(5.0, 0.0, 3.0));
@@ -442,7 +443,7 @@ fn a_fallen_bodys_muscles_neither_push_nor_turn_it() {
     body.aim(Affine3A::IDENTITY, pose.iter().map(|t| bend * *t).collect());
     let (linear, angular) = momenta(&body);
     let Ragdoll { parts, drive, .. } = &mut body;
-    drive_parts(parts, drive.as_mut().unwrap());
+    drive_parts(parts, drive.as_ref().unwrap());
     let (pushed, turned) = momenta(&body);
     assert!(
         (pushed - linear).length() < 1e-5,
@@ -458,8 +459,9 @@ fn a_fallen_bodys_muscles_neither_push_nor_turn_it() {
 
 /// A fallen body lying on its back whose pose kicks its legs and swings its
 /// arms, as the fall and unconscious clips do, kicks them with its link
-/// muscles and stays where it lies: with the pose drive's net turn left in,
-/// it rolled and crawled 1–2 m in six seconds.
+/// muscles alone and stays where it lies. (A pose drive pulling a fallen
+/// body's parts toward a pose measured from its pelvis once rolled and
+/// crawled it 1–2 m in six seconds.)
 #[test]
 fn a_fallen_body_kicking_its_legs_stays_where_it_lies() {
     let at = Vec3::new(20.0, 0.0, -10.0);

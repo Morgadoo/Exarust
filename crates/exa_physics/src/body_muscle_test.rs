@@ -457,21 +457,22 @@ fn one_muscle_pass_keeps_the_momentum() {
     );
 }
 
-/// The pose drive pulls only the pelvis, feet, spine and head: an arm or a
-/// leg aimed away from where it is keeps its particles through the drive.
+/// The pose drive turns only the pelvis, feet, spine and head: an arm or a
+/// leg aimed away from how it is turned keeps its particles through the
+/// drive.
 #[test]
 fn the_pose_drive_leaves_the_limbs_to_their_muscles() {
     let (setup, pose) = super::super::floor_test::humanoid(Vec3::ZERO);
     let mut body = Ragdoll::new(&setup).with_drive();
     let away: Vec<Affine3A> = pose
         .iter()
-        .map(|t| Affine3A::from_translation(Vec3::new(0.05, 0.0, 0.03)) * *t)
+        .map(|t| *t * Affine3A::from_rotation_y(0.3))
         .collect();
     body.aim(Affine3A::IDENTITY, pose);
     body.aim(Affine3A::IDENTITY, away);
     let before: Vec<[Vec3; 4]> = body.parts.iter().map(|p| p.positions).collect();
     let Ragdoll { parts, drive, .. } = &mut body;
-    drive_parts(parts, drive.as_mut().unwrap());
+    drive_parts(parts, drive.as_ref().unwrap());
     for (p, b) in body.parts.iter().zip(&before) {
         let moved = p.positions != *b;
         let driven = matches!(p.bone, 1 | 4 | 7..=10);

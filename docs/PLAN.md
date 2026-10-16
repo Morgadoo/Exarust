@@ -259,9 +259,17 @@ particles, links (coloured by how far past their slack) and muscle
 anchors; a readout of one body's joints (turn from the rest, swing and
 twist, distance from the clip, range used, pivot gap); a per-part joint
 trace; pause, single tick steps and slow motion, with scripted pauses at a
-tick or on a stretched link. Still to do: the original's pose drive
-and lift, its falls and get-ups, recovery steps, foot planting, clip
-blending, collisions between bodies (and their wake of a sleeper).
+tick or on a stretched link. Done (change `match-the-pose-drive`,
+C7): the pose drive is the original's: it turns the pelvis, spine, head
+and feet toward the clip's orientation about each part's own origin, with
+no position target, by G·o·(1 − c) (a one-sided damper of the particle's
+velocity), G scaled by t²·T·E⁴·(0.5T + 0.5)·S², only with support; a fall
+keeps the tone and a fallen body is left to its link muscles; until the
+body carries itself (C8, C9, C14) the controller holds a standing body's
+pelvis (Exarust's own), so blows now sway the struck body
+([formats/RSQ.md](formats/RSQ.md)). Still to do: the original's lift, its
+falls and get-ups, recovery steps, foot planting, clip blending,
+collisions between bodies (and their wake of a sleeper).
 
 This phase carries the most risk and defines how the game feels.
 
@@ -423,9 +431,8 @@ holds the runtime and the documentation of formats and behaviour.
 [`COMPONENT-MAP.md`](COMPONENT-MAP.md) sets every component of the original
 against Exarust and lists the largest missing ones. In order:
 
-1. The original's pose drive and lift, its falls and get-ups, recovery
-   steps, foot planting, clip blending and collisions between bodies
-   (Phase 3).
+1. The original's lift, its falls and get-ups, recovery steps, foot
+   planting, clip blending and collisions between bodies (Phase 3).
 2. Inventory, equipment and containers, then blocking and parrying
    (Phase 4).
 3. The original's NPC brain: perception, targets and the combat state that

@@ -9,8 +9,9 @@
 //! damped inside their range, and each part keeps its velocity by how fast
 //! it moves. A living body adds muscles ([`Drive`]): every slack link
 //! becomes a link muscle that turns its joint toward the animated angle
-//! (`muscle`), a pose drive pulls the pelvis, spine, head and feet towards
-//! where the animated pose puts them, and muscle tone compensates gravity.
+//! (`muscle`), a pose drive turns the pelvis, spine, head and feet toward
+//! their animated orientation about where each part is (it has no position
+//! target), and muscle tone compensates gravity.
 //! Its character tick measures its balance and the ground under its feet,
 //! which give its support (`balance`). Blows shove parts and daze the body,
 //! which weakens its muscles until it recovers.
@@ -88,7 +89,7 @@ const LENGTH_EPSILON: f32 = 1.19e-9;
 /// Softening of a pivot per cm of its gap (a living body's) or per cm² (a
 /// limp body's).
 const PIVOT_SOFTENING: f32 = 0.001;
-/// Squared gaps (m², 1.19e-7 cm²) a link leaves alone.
+/// Squared gaps (m², 1.19e-7 cm²) a link, or the pose drive, leaves alone.
 const LINK_EPSILON2: f32 = 1.19e-11;
 /// A living body's slack-link correction is cut to this (m, 80 cm); a
 /// pivot farther apart is reported but corrected in full.
@@ -97,15 +98,26 @@ const MAX_CORRECTION: f32 = 0.8;
 /// it pulls at this strength while the body lives.
 const LEG_LIMIT_SLACK: f32 = 0.1;
 const LEG_LIMIT_STRENGTH: f32 = 0.2;
-/// Muscle tone of a fallen body.
-const FALLEN_TONE: f32 = 0.5;
-/// Share of the gap to the animated pose closed per tick at full strength.
-const DRIVE: f32 = 0.084;
-/// The pelvis carries the body: its drive is this much stronger.
-const SUPPORT: f32 = 2.0;
-/// Energy regained per tick after a daze, and its floor.
+/// The original's drive scale K = 19200/83² (2.787): the pose drive's
+/// gains are shares of it.
+const DRIVE_SCALE: f32 = 19200.0 / (BODY_HZ * BODY_HZ);
+/// Pose-drive gains, as shares of [`DRIVE_SCALE`]: the pelvis, lumbar,
+/// thorax and feet (0.0836), and the head (0.0279; the original lowers a
+/// character's by its age, nothing in Exarust ages).
+const TRUNK_GAIN: f32 = 0.03;
+const HEAD_GAIN: f32 = 0.01;
+/// The share of a pose push's vertical component that is kept.
+const VERTICAL_PUSH: f32 = 0.1;
+/// Exarust's own, until the body carries itself on its feet (the
+/// original's lift servo and support pins): the share of the gap to where
+/// its controller carries the pose's pelvis that a standing body's pelvis
+/// closes per tick at full strength.
+const CONTROLLER_HOLD: f32 = 0.168;
+/// Energy regained per tick after a daze, its floor and its cap (a normal
+/// human's most energy).
 const ENERGY_RECOVERY: f32 = 0.005;
 const MIN_ENERGY: f32 = 0.05;
+const MAX_ENERGY: f32 = 1.0;
 /// Most of its energy a single blow takes.
 const MAX_DAZE: f32 = 0.9;
 /// Friction of a limb against the level.
@@ -159,6 +171,13 @@ pub struct Part {
     pub friction: f32,
     /// Particles at the start of the tick (where the last tick left them).
     start: [Vec3; 4],
+    /// Each particle's displacement over the last tick, as this tick's
+    /// integration found it (before its inertia): the velocity the pose
+    /// drive damps.
+    moved: [Vec3; 4],
+    /// The weights of the part's own origin (its joint, the point (0, 0, 0)
+    /// of its space) on its particles: where the pose drive turns it about.
+    own_origin: [f32; 4],
     /// The part's transform where the last tick left it.
     settled: Affine3A,
     /// Where the tick before last and the last tick left the part, untouched
@@ -213,6 +232,8 @@ impl Part {
         let half = half.max(Vec3::splat(MIN_EXTENT.max(0.2 * largest)));
         let rest = TEMPLATE.map(|t| centre + t * half * TEMPLATE_SCALE);
         let edges = Mat3::from_cols(rest[1] - rest[0], rest[2] - rest[0], rest[3] - rest[0]);
+        let rest_inverse = edges.inverse();
+        let own = rest_inverse * -rest[0];
         let positions = rest.map(|r| world.transform_point3(r));
         // Spheres along the longest axis of the box.
         let axis = if half.x >= half.y && half.x >= half.z {
@@ -248,13 +269,15 @@ impl Part {
                 .copied()
                 .unwrap_or(1.0),
             spheres,
-            rest_inverse: edges.inverse(),
+            rest_inverse,
             friction: if matches!(bone, 4 | 7) {
                 FOOT_FRICTION
             } else {
                 LIMB_FRICTION
             },
             start: positions,
+            moved: [Vec3::ZERO; 4],
+            own_origin: [1.0 - own.x - own.y - own.z, own.x, own.y, own.z],
             settled: Affine3A::IDENTITY,
             shown: (Affine3A::IDENTITY, Affine3A::IDENTITY),
             contacts: Vec::new(),
@@ -730,20 +753,22 @@ pub struct Ragdoll {
 /// Muscles of a living body: the animated pose it follows.
 #[derive(Debug, Clone)]
 pub struct Drive {
-    /// Animated world transform of each part this tick.
+    /// Animated world transform of each part this tick: the pose drive
+    /// reads its rotation, the link muscles each part's turn relative to
+    /// its parent's.
     targets: Vec<Affine3A>,
-    /// The same last tick, carried with the root since: the pose's own
-    /// motion over the tick.
-    before: Vec<Affine3A>,
     /// The body root's world transform when last aimed.
     root: Option<Affine3A>,
-    /// Muscle tone, 0..=1: drive strength and gravity compensation.
+    /// Muscle tone, 0..=1: muscle strength and gravity compensation. A
+    /// fall leaves it as it is.
     pub tone: f32,
     /// Daze: 1 when alert; blows lower it and it recovers over time. The
     /// pose drive follows its fourth power, the link muscles its root.
     pub energy: f32,
-    /// Standing: the controller carries the body and tone holds it up.
-    /// A fallen body only holds its limbs relative to its pelvis.
+    /// Standing on its controller, which carries it and holds its pelvis,
+    /// and tone holds it up (Exarust's own, until the body stands on its
+    /// own feet). A fallen body is neither carried nor held, and its
+    /// balance is measured lying.
     pub supported: bool,
     /// The race's factors the muscles read.
     pub race: RaceMuscles,
@@ -763,7 +788,6 @@ impl Default for Drive {
     fn default() -> Self {
         Self {
             targets: Vec::new(),
-            before: Vec::new(),
             root: None,
             tone: 1.0,
             energy: 1.0,
@@ -780,9 +804,30 @@ impl Default for Drive {
 
 impl Drive {
     /// Each part's animated world transform this tick (none before the
-    /// first aim, or after a fall or a get-up until the next).
+    /// first aim).
     pub fn targets(&self) -> &[Affine3A] {
         &self.targets
+    }
+
+    /// The pose drive's strength this tick, which its gains are scaled by:
+    /// t²·T·E⁴·(0.5T + 0.5)·S², t the tone, T = tone·s the tone target, E
+    /// the energy and S the support.
+    pub fn pose_strength(&self) -> f32 {
+        let tone = self.tone_target();
+        self.tone
+            * self.tone
+            * tone
+            * self.energy.powi(4)
+            * (0.5 * tone + 0.5)
+            * self.support
+            * self.support
+    }
+
+    /// The pose drive's gain G on the part of `bone` this tick: its share
+    /// of K times [`Drive::pose_strength`] (an idle human's pelvis 0.0314,
+    /// its head 0.0105); none on the thighs, shins, arms and hands.
+    pub fn pose_gain(&self, bone: usize) -> f32 {
+        pose_share(bone) * DRIVE_SCALE * self.pose_strength()
     }
 
     /// The stance factor s: the race's standing, rising toward 0.7 walking
@@ -1083,38 +1128,19 @@ impl Ragdoll {
 
     /// Sets this tick's animated pose (the character tick does, every tick
     /// before the solver): the root's world transform, and each part's
-    /// animated world transform, the root's times the clip's pose. The body
-    /// is carried along with the root's motion since the last aim, so the
-    /// muscles only work against the pose and outside forces.
+    /// animated world transform, the root's times the clip's pose. Only
+    /// their rotations are followed: the pose drive turns parts about where
+    /// they are, the link muscles turn joints. A standing body is carried
+    /// along with the root's motion since the last aim (Exarust's own, its
+    /// controller carries it).
     pub fn aim(&mut self, root: Affine3A, targets: Vec<Affine3A>) {
-        let Some(supported) = self.drive.as_ref().map(|d| d.supported) else {
+        if self.drive.is_none() {
             return;
-        };
-        let pelvis = self.parts.iter().position(|p| p.bone == 1);
-        // A fallen body follows the pose relative to its own pelvis.
-        let targets = match pelvis {
-            Some(i) if !supported && targets.len() == self.parts.len() => {
-                // The pelvis's place and turn only: its particles deform a
-                // little, and a scale carried into the targets would grow
-                // the body away from the world's origin.
-                let world = self.parts[i].transform();
-                let (_, turn, place) = world.to_scale_rotation_translation();
-                let align = Affine3A::from_rotation_translation(turn, place) * targets[i].inverse();
-                targets.iter().map(|t| align * *t).collect()
-            }
-            _ => targets,
-        };
+        }
         self.carry(root);
-        let Some(drive) = self.drive.as_mut() else {
-            return;
-        };
-        drive.before = if drive.targets.len() == targets.len() {
-            std::mem::replace(&mut drive.targets, targets)
-        } else {
-            // A new start, not motion.
+        if let Some(drive) = self.drive.as_mut() {
             drive.targets = targets;
-            drive.targets.clone()
-        };
+        }
         self.tune_muscles();
     }
 
@@ -1122,9 +1148,6 @@ impl Ragdoll {
     /// none to give.
     pub fn hold(&mut self, root: Affine3A) {
         self.carry(root);
-        if let Some(d) = self.drive.as_mut() {
-            d.before.clone_from(&d.targets);
-        }
         self.tune_muscles();
     }
 
@@ -1160,16 +1183,14 @@ impl Ragdoll {
         }
     }
 
-    /// Loses the controller's support: the body falls with slack muscles.
+    /// Loses the controller's support: the body is no longer carried and
+    /// its balance is measured lying. Its tone is kept, as the original's
+    /// fall keeps it: once it lies its support is 0, so the pose drive
+    /// stops and its link muscles alone play the fall.
     pub fn fall(&mut self) {
         if let Some(d) = self.drive.as_mut() {
             d.supported = false;
-            d.tone = FALLEN_TONE;
-            // The pose is measured from the pelvis from now on: a new start,
-            // not motion.
             d.root = None;
-            d.targets.clear();
-            d.before.clear();
         }
     }
 
@@ -1177,10 +1198,7 @@ impl Ragdoll {
     pub fn stand(&mut self) {
         if let Some(d) = self.drive.as_mut() {
             d.supported = true;
-            d.tone = 1.0;
             d.root = None;
-            d.targets.clear();
-            d.before.clear();
         }
     }
 
@@ -1260,17 +1278,23 @@ impl Ragdoll {
         }
     }
 
-    /// The integration step: the sleep countdown, inertia and gravity, then
-    /// the pose drive's pull; a living body's link muscles remember where
-    /// the tick began.
+    /// The integration step: the sleep countdown and a living body's energy
+    /// recovery (the original's character tick, before the body moves, so
+    /// the pose drive and the link muscles read the same energy), inertia
+    /// and gravity, then the pose drive's push and the controller's hold; a
+    /// living body's link muscles remember where the tick began.
     fn step(&mut self) {
         self.tick_countdown();
+        if let Some(drive) = self.drive.as_mut() {
+            drive.energy = (drive.energy + ENERGY_RECOVERY).min(MAX_ENERGY);
+        }
         self.integrate();
         if self.drive.is_some() {
             self.remember_anchors();
         }
         if let Some(drive) = self.drive.as_mut() {
             drive_parts(&mut self.parts, drive);
+            hold_on_controller(&mut self.parts, drive);
         }
     }
 
@@ -1367,6 +1391,7 @@ impl Ragdoll {
                 // A particle never carries more than MAX_SPEED (Exarust's
                 // guard; the original has none).
                 let v = (p.positions[i] - p.previous[i]).clamp_length_max(MAX_SPEED / BODY_HZ);
+                p.moved[i] = v;
                 p.previous[i] = p.positions[i];
                 p.positions[i] += v * keep + gravity;
             }
@@ -1553,143 +1578,97 @@ pub fn equalise_sleep(a: &mut Ragdoll, b: &mut Ragdoll) {
     }
 }
 
-/// The rigid motion of a body's particles: centre of mass, velocity and
-/// spin (per tick), and the inverse of the inertia about the centre.
-struct Bulk {
-    centre: Vec3,
-    mass: f32,
-    velocity: Vec3,
-    spin: Vec3,
-    inverse_inertia: Mat3,
-}
-
-impl Bulk {
-    fn of(parts: &[Part]) -> Option<Self> {
-        let mass: f32 = parts.iter().map(|p| 1.0 / p.inverse_mass).sum();
-        if mass <= 0.0 {
-            return None;
-        }
-        // Each particle carries a quarter of its part's mass.
-        let (mut centre, mut velocity) = (Vec3::ZERO, Vec3::ZERO);
-        for p in parts {
-            let m = 0.25 / p.inverse_mass;
-            for k in 0..4 {
-                centre += p.positions[k] * m;
-                velocity += (p.positions[k] - p.previous[k]) * m;
-            }
-        }
-        let (centre, velocity) = (centre / mass, velocity / mass);
-        let (mut inertia, mut momentum) = (Mat3::ZERO, Vec3::ZERO);
-        for p in parts {
-            let m = 0.25 / p.inverse_mass;
-            for k in 0..4 {
-                let r = p.positions[k] - centre;
-                let outer = Mat3::from_cols(r * r.x, r * r.y, r * r.z);
-                inertia += (Mat3::IDENTITY * r.length_squared() - outer) * m;
-                momentum += r.cross(p.positions[k] - p.previous[k]) * m;
-            }
-        }
-        let inverse_inertia = inertia.inverse();
-        if !inverse_inertia.is_finite() {
-            return None;
-        }
-        Some(Self {
-            centre,
-            mass,
-            velocity,
-            spin: inverse_inertia * momentum,
-            inverse_inertia,
-        })
-    }
-
-    /// Velocity (per tick) of the body's rigid motion at `x`.
-    fn velocity_at(&self, x: Vec3) -> Vec3 {
-        self.velocity + self.spin.cross(x - self.centre)
-    }
-
-    /// The rigid motion (a shift and a small turn about the centre) that the
-    /// changes `moves` of the particles at `parts` add up to.
-    fn net(&self, parts: &[Part], moves: impl Fn(usize, usize) -> Vec3) -> (Vec3, Vec3) {
-        let (mut shift, mut turn) = (Vec3::ZERO, Vec3::ZERO);
-        for (i, p) in parts.iter().enumerate() {
-            let m = 0.25 / p.inverse_mass;
-            for k in 0..4 {
-                let d = moves(i, k);
-                shift += d * m;
-                turn += (p.positions[k] - self.centre).cross(d) * m;
-            }
-        }
-        (shift / self.mass, self.inverse_inertia * turn)
+/// A part's pose-drive gain as a share of K, by its bone: the pelvis, the
+/// feet, the lumbar and the thorax 0.03, the head 0.01; the thighs, shins,
+/// arms and hands have no pose drive.
+fn pose_share(bone: usize) -> f32 {
+    match bone {
+        1 | 4 | 7 | 8 | 9 => TRUNK_GAIN,
+        10 => HEAD_GAIN,
+        _ => 0.0,
     }
 }
 
-/// The pose drive: pulls the particles of the pelvis, the feet, the spine
-/// and the head towards their places in the animated pose, damping their
-/// velocity relative to the pose's own motion (a PD muscle per particle).
-/// The other parts are turned by their link muscles alone.
-fn drive_parts(parts: &mut [Part], drive: &mut Drive) {
-    if drive.targets.len() != parts.len() || drive.before.len() != parts.len() {
+/// One particle's pose push, in the original's cm and ticks: `offset` o
+/// from the particle to its target, `moved` v its displacement over the
+/// last tick, `stance` the stance factor s and `gain` G. The share of o
+/// that v already closes, c = o·v/(s|o|²), is taken off: G·o·(1 − c), only
+/// when c < 1 (a particle closing fast enough is left alone, one moving
+/// away is pushed harder), its vertical cut to a tenth. None under
+/// 1.19e-7 cm².
+fn pose_push(offset: Vec3, moved: Vec3, stance: f32, gain: f32) -> Option<Vec3> {
+    let len2 = offset.length_squared();
+    if len2.is_nan() || len2 < LINK_EPSILON2 * CM * CM {
+        return None;
+    }
+    let c = offset.dot(moved) / len2 / stance;
+    if c.is_nan() || c >= 1.0 {
+        return None;
+    }
+    let mut push = offset * (1.0 - c);
+    push.y *= VERTICAL_PUSH;
+    Some(push * gain)
+}
+
+/// The pose drive, after inertia. It turns the pelvis, the feet, the
+/// lumbar, the thorax and the head toward their animated orientation about
+/// where each part's origin is now: a particle's target is its rest vertex
+/// under the part's animated rotation, placed at the part's origin measured
+/// on its particles, so it has no position or height target. Each particle
+/// is pushed by [`pose_push`] against its own velocity (in the frame its
+/// controller carries, while one carries it), with the gain
+/// [`Drive::pose_gain`]; only while the body has support. The other parts
+/// are turned by their link muscles alone.
+fn drive_parts(parts: &mut [Part], drive: &Drive) {
+    if drive.targets.len() == parts.len() && drive.balance.has_support() {
+        let stance = drive.stance.max(muscle::MIN_STANCE);
+        for (p, target) in parts.iter_mut().zip(&drive.targets) {
+            let gain = drive.pose_gain(p.bone);
+            if gain.is_nan() || gain <= 0.0 {
+                continue;
+            }
+            let (_, turn, _) = target.to_scale_rotation_translation();
+            let origin = p.point(&p.own_origin);
+            for k in 0..4 {
+                let offset = origin + turn * p.rest[k] - p.positions[k];
+                if let Some(push) = pose_push(offset * CM, p.moved[k] * CM, stance, gain) {
+                    p.positions[k] += push / CM;
+                }
+            }
+        }
+    }
+}
+
+/// Exarust's own, until the body carries itself on its feet: while a body
+/// stands on its controller, which carries it, its pelvis is held where the
+/// controller carries the pose's pelvis, by a critically damped spring on
+/// the pelvis's origin ([`CONTROLLER_HOLD`] × tone² × E⁴, damping its
+/// velocity in the carried frame). The same push moves each of its
+/// particles, so it never turns the pelvis: its orientation is the pose
+/// drive's. Without it nothing would hold a standing body's height or its
+/// place on its controller: with gravity compensated by its tone, a body
+/// pushed up 1 cm by the floor floats 30 cm up.
+fn hold_on_controller(parts: &mut [Part], drive: &Drive) {
+    if !drive.supported || drive.targets.len() != parts.len() {
         return;
     }
-    let strength = drive.tone * drive.tone * drive.energy.powi(4);
-    // A standing body's targets are where its controller carries it. A
-    // fallen body's follow its own pelvis, so they are only its pose: its
-    // muscles work inside the body. Its limbs are damped relative to the
-    // body's rigid motion, its bulk velocity and its spin (feeding the
-    // targets' motion back flings the body, damping against the world holds
-    // its fall back), and the net shift and turn of the whole body that the
-    // pulls and the damping add up to are taken back out: a pose measured
-    // from the pelvis, pulled on the limbs alone, turns the whole body, and
-    // a turning body rolls and crawls over the floor.
-    let bulk = if drive.supported {
-        None
-    } else {
-        Bulk::of(parts)
-    };
-    let mut pulls = vec![[Vec3::ZERO; 4]; parts.len()];
-    let mut brakes = vec![[Vec3::ZERO; 4]; parts.len()];
-    for (i, p) in parts.iter().enumerate() {
-        let base = match p.bone {
-            1 if drive.supported => DRIVE * SUPPORT,
-            // Feet, lumbar, thorax and head.
-            4 | 7..=10 => DRIVE,
-            // A fallen body's pelvis is where the pose is measured from;
-            // thighs, shins, arms and hands follow their link muscles only.
-            _ => 0.0,
-        };
-        let gain = (base * strength).min(1.0);
-        let damping = (2.0 * gain.sqrt()).min(1.0);
-        // Where the pose put the part last tick and this tick.
-        let (before, target) = (drive.before[i], drive.targets[i]);
+    let gain = (CONTROLLER_HOLD * drive.tone * drive.tone * drive.energy.powi(4)).min(1.0);
+    let damping = (2.0 * gain.sqrt()).min(1.0);
+    for (p, target) in parts.iter_mut().zip(&drive.targets) {
+        if p.bone != 1 {
+            continue;
+        }
+        let w = p.own_origin;
+        let pull = (Vec3::from(target.translation) - p.point(&w)) * gain;
+        let brake: Vec3 = (0..4)
+            .map(|k| (p.positions[k] - p.previous[k]) * w[k])
+            .sum::<Vec3>()
+            * damping;
         for k in 0..4 {
-            let goal = target.transform_point3(p.rest[k]);
-            let goal_velocity = match &bulk {
-                Some(b) => b.velocity_at(p.positions[k]),
-                None => goal - before.transform_point3(p.rest[k]),
-            };
-            let velocity = p.positions[k] - p.previous[k];
-            pulls[i][k] = (goal - p.positions[k]) * gain;
-            brakes[i][k] = (velocity - goal_velocity) * damping;
+            p.positions[k] += pull;
+            p.previous[k] += brake;
         }
     }
-    let ((shift, turn), (slowed, unturned)) = match &bulk {
-        Some(b) => (
-            b.net(parts, |i, k| pulls[i][k]),
-            b.net(parts, |i, k| brakes[i][k]),
-        ),
-        None => Default::default(),
-    };
-    let centre = bulk.as_ref().map_or(Vec3::ZERO, |b| b.centre);
-    for (i, p) in parts.iter_mut().enumerate() {
-        for k in 0..4 {
-            let r = p.positions[k] - centre;
-            p.positions[k] += pulls[i][k] - (shift + turn.cross(r));
-            p.previous[k] += brakes[i][k] - (slowed + unturned.cross(r));
-        }
-    }
-    // Without a new aim the pose stands still.
-    drive.before.clone_from(&drive.targets);
-    drive.energy = (drive.energy + ENERGY_RECOVERY).min(1.0);
 }
 
 /// Restores a part's six edge lengths.
@@ -1836,6 +1815,10 @@ mod joint_test;
 #[cfg(test)]
 #[path = "body_sleep_test.rs"]
 mod sleep_test;
+
+#[cfg(test)]
+#[path = "body_drive_test.rs"]
+mod drive_test;
 
 #[cfg(test)]
 mod tests {

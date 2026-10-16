@@ -313,7 +313,9 @@ fn a_carried_body_moves_its_last_pose_and_contacts() {
     let (setup, pose) = humanoid(Vec3::new(0.0, -0.01, 0.0));
     let mut body = Ragdoll::new(&setup).with_drive();
     let floor = quad_floor(0.0);
-    for _ in 0..10 {
+    // A few ticks: the floor pushes the body up out of it, and its
+    // controller's hold takes it back down only slowly.
+    for _ in 0..3 {
         body.aim(Affine3A::IDENTITY, pose.clone());
         body.tick(floor.as_slice());
     }

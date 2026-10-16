@@ -31,10 +31,16 @@ The original has no camera-relative keyboard movement. Outside combat:
 - Moving firms the body up: its stance factor rises 0.01 per tick from the
   race's 0.5 to 0.7 walking and 1 running (it keeps what it reached until
   the character stops), so its link muscles pull with tone × 0.7 or × 1
-  instead of × 0.5 and damp with k = 50. In the walk and run cycles the arms
-  hang loosely (stiffness 0.2); while the body turns toward its heading
-  they stiffen with the turn left (0.4 per rad, at most 0.4)
-  ([formats/RSQ.md](formats/RSQ.md), Physical body).
+  instead of × 0.5 and damp with k = 50, and its pose drive turns the
+  pelvis, spine and feet with a gain of 0.0497 or 0.0836 instead of 0.0314.
+  In the walk and run cycles the arms hang loosely (stiffness 0.2); while
+  the body turns toward its heading they stiffen with the turn left (0.4
+  per rad, at most 0.4) ([formats/RSQ.md](formats/RSQ.md), Physical body).
+- The pose drive only turns the body's parts; it holds no position. Until
+  the body carries itself on its feet, the controller holds the player's
+  pelvis where it carries it (Exarust's own), and the spine and head sway
+  under blows: a duellist's hits move the pelvis 11–14 cm and take the
+  balance down to 0.7–0.9 without knocking the player over.
 
 ## Combat mode
 

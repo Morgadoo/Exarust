@@ -247,12 +247,36 @@ How the original simulates a body (`exa_physics::body`):
     - Support S: grounded × balance, measured each tick (Balance and
       support, below). A body without two legs has 1 while it stands and 0
       once fallen.
-  - A **pose drive** pulls the particles of the pelvis, lumbar, thorax,
-    head and feet toward their rest vertices under the part's animated
-    transform: 0.084 per tick, scaled by tone² and by energy⁴. Thighs,
-    shins, arms and hands have none, as in the original.
+  - A **pose drive** turns the pelvis, lumbar, thorax and feet (gain
+    0.03·K, K = 19200/83² = 2.787) and the head (0.01·K; the original
+    lowers an aged character's) toward their animated orientation; thighs,
+    shins, arms and hands have none (`exa_physics::body`, `drive_parts`;
+    REA on the limb step, its gain setup and the body tick). After inertia,
+    each particle's target is its rest vertex under the part's animated
+    rotation (the body root's turn times the clip's), placed at the part's
+    origin as its particles now put it: there is no position or height
+    target, and a part moved as a whole is not pushed. In cm:
+    1. o = target − particle; under 1.19e-7 cm² nothing;
+    2. c = o·v/(s|o|²), v the particle's displacement over the last tick
+       (before this tick's inertia), s the stance factor; at c ≥ 1 (the
+       particle already closes at s|o| a tick) nothing;
+    3. push G·o·(1 − c), its vertical cut to 0.1: a P term and a
+       one-sided damper along o that never brakes past the target, and
+       pushes harder (c < 0) a particle moving away;
+    4. G = gain·t²·T·E⁴·(0.5T + 0.5)·S², t the tone, T = tone·s, E the
+       energy, S the support; only while the body has support. An alert
+       human: idle 0.0314 (head 0.0105), walking 0.0497, running 0.0836.
+       A dazed body (E = 0.5) keeps a sixteenth.
+    The original's v is the particle's world velocity, the body's travel
+    included, so a walking body (|c| ≫ 1) is not pushed along its motion
+    and pushed harder against it. While Exarust's capsule carries a body
+    (until C18), the carry is not velocity: v is the velocity in the
+    carried frame. The original also multiplies a lean into the spine's
+    rotation and keeps only the vertical push for the unconscious; neither
+    is reproduced.
   - Energy is the daze level. A blow takes up to 90 % of it, with a floor
-    of 0.05. It recovers 0.005 per tick.
+    of 0.05. It recovers 0.005 per tick up to the most energy (1 for a
+    human).
   - The original also runs recovery steps, foot planting, a lift servo
     and hidden support forces on the pelvis and thorax pins.
   - Several of these read the character's race record in `races.rdb`: the
@@ -356,30 +380,33 @@ tick and muscle setup). Every rule is in the original's cm and ticks:
   query tries a 2 m column before the whole depth, with an exact drop onto
   each face, edge and corner).
 
-Exarust's pose drive (`exa_physics::body::Drive`) has critical damping
-relative to the pose's own motion, not the original's law yet:
+Exarust's own, while a character controller (a capsule) still carries
+the body instead of the original's lift servo, frame anchor and support
+pins (C8, C9, C14):
 
-- The pelvis drive is 2× stronger and stands in for the support forces.
 - The body is carried rigidly with its root's (its character controller's)
-  motion since the last tick, so muscles only work against the pose and
-  outside forces. Where the last tick left each part, its level contacts
-  and last tick's targets are carried with it.
-- The pose's own motion over a tick is this tick's targets against last
-  tick's. A fall restarts the targets, which are then measured from the
-  body's own pelvis. A fallen body's muscles act inside the body: its
-  limbs are damped relative to its rigid motion (bulk velocity and spin),
-  and the net shift and turn of the whole body that the pulls and damping
-  add up to are taken back out, so muscles change its pose but not where it
-  goes.
+  motion since the last tick. Where the last tick left each part, its level
+  contacts and last tick's targets are carried with it.
+- The controller holds a standing body's pelvis: its origin is pulled
+  toward where the controller carries the pose's pelvis by 0.168 a tick ×
+  tone² × E⁴, critically damped (2√g) against its velocity in the carried
+  frame, the same push on all four of its particles, so it never turns the
+  pelvis. Gravity is compensated by tone × energy, so a standing body has
+  no weight: without the hold a body whose feet the floor pushes up 1 cm
+  floats 30 cm up, and a get-up never rises. On the pelvis alone (an eighth
+  of the mass) it holds the whole body like a spring of about 0.02 a tick,
+  and the spine and head sway freely: a duellist's blows (energy down to
+  0.6) move the struck player's pelvis 11–14 cm and its balance to 0.7–0.9.
 - Animation clips play in place: the root's horizontal travel over a clip
   is removed, since the controller moves the body.
 - Falling is still Exarust's (`exa_game::balance`; the original's
   Rebalance, Defence stance, staggers and down state come with C11). In the
   fixed step, before the character ticks, a standing body whose balance was
-  below 0.6 last tick falls: its support goes, tone drops to 0.5, and it
-  plays Fall Forward when its lean (support point to chest) points ahead of
-  it, else Fall Backward, into Unconcious 1, held relative to its own
-  pelvis.
+  below 0.6 last tick falls: it is no longer carried or held, its tone
+  stays (as in the original), and it plays Fall Forward when its lean
+  (support point to chest) points ahead of it, else Fall Backward, into
+  Unconcious 1. Once it lies its support is 0, so only its link muscles
+  act, inside the body: it falls as fast as a limp body.
 - Getting up:
   - Once settled (2.5 s, energy ≥ 0.9), the body plays whichever of
     `Get up` / `Get Up 2` has a first pose lying the same way, judged by the

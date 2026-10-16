@@ -41,7 +41,7 @@ const STANDING_K: f32 = 40.0;
 const LEG_DAMPING: f32 = 0.6;
 /// The lowest stance factor the standing k divides by (a guard against
 /// broken race data).
-const MIN_STANCE: f32 = 0.01;
+pub(super) const MIN_STANCE: f32 = 0.01;
 /// A moving body's stance factor rises this much a tick toward
 /// 0.7 + 0.3·run.
 const WALK_STANCE: f32 = 0.7;

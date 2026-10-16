@@ -6,7 +6,8 @@ Game modes and session flow: Story, Arena (company management, matches, seasons)
 
 It already runs the character ticks of physical bodies (`limp`: each body's
 bearing, balance against the level, clip and targets, the player's last),
-Exarust's falls and get-ups from the measured balance (`balance`), the
+Exarust's falls and get-ups from the measured balance (`balance`; a fall
+stops the controller carrying and holding the body and keeps its tone), the
 player (`player`), the held torch (`torch`), the per-tick body trace
 (`trace`), and the debug tools ([`docs/DEBUGGING.md`](../../docs/DEBUGGING.md)):
 the body overlay and joint readout (`body_overlay`), the joint trace
