@@ -50,11 +50,20 @@ The original has no camera-relative keyboard movement. Outside combat:
   pelvis at a height over the ground under its feet (1.7 cm over the
   target, 101.5 cm for an idle human), its height comes from the clip
   root's over each ankle, and it falls by gravity once its feet have no
-  ground. The controller only moves it across the ground and turns it,
-  and holds its pelvis over where it carries it (Exarust's own). Walking,
-  the pelvis bobs with the walk's root (about 2.5 cm). A duellist's hits
-  daze the player without swaying its balance: the lift and the legs carry
-  it ([formats/RSQ.md](formats/RSQ.md), Physical body).
+  ground. The controller only moves it across the ground and turns it
+  (Exarust's own). Walking, the pelvis bobs with the walk's root (about
+  2.5 cm). A duellist's hits daze the player without swaying its balance:
+  the lift and the legs carry it ([formats/RSQ.md](formats/RSQ.md),
+  Physical body).
+- The animated pose is put on the body's character frame, as the
+  original's is: it rides on the pelvis while the player walks, stays put
+  while the player stands steady (support 0.95 or more), and follows the
+  pelvis once it is 5 cm off while the player is unsteady, 5 cm while it
+  lies, 10 cm as it starts getting up. A steady player is held on its
+  stance spot; a player shoved off balance stays where it was pushed. The
+  controller follows the frame, a tenth of the way a tick and at most
+  2 cm (Exarust's own), so the player's position stays with the body when
+  it is shoved, falls or gets up, gliding instead of jumping.
 - Stairs: the capsule climbs a step before the feet do, and nothing lifts a
   walking foot onto it yet (the original's walking feet and leg IK come
   later). Until then the body is held no lower than 6 cm under the

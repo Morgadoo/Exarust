@@ -5,11 +5,13 @@ Game modes and session flow: Story, Arena (company management, matches, seasons)
 **Phase:** Phase 4–7 (see [`docs/PLAN.md`](../../docs/PLAN.md)). Status: skeleton.
 
 It already runs the character ticks of physical bodies (`limp`: each body's
-bearing (with its walk's lowest ankle while it moves), balance against the
-level, clip, targets and lift, the player's last),
-Exarust's falls and get-ups from the measured balance (`balance`; the
-get-up ends in the fighter's stance; a fall
-stops the controller carrying and holding the body and keeps its tone), the
+bearing (with its walk's lowest ankle while it moves, and its get-up's
+first quarter), balance against the level, clip, targets on its character
+frame and lift, the player's last; its controller is told to follow the
+frame), Exarust's falls and get-ups from the measured balance (`balance`; a
+fall stops the controller carrying and holding the body and keeps its
+tone; a get-up turns the body, lets its frame re-anchor and ends in the
+fighter's stance), the
 player (`player`: tank controls whose steering starts only the gaits, the
 chase camera on the drawn pelvis, combat facing, its combat stance and the
 original's attack request each behaviour tick (press, hold, release, the

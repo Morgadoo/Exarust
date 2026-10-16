@@ -312,9 +312,20 @@ climbs the steps its capsule climbs and stands on them (both exanima01
 stair starts reach the landing without a fall; C8 alone fell 1–5 times),
 while level ground is unchanged (the capsule floats 2–5 cm there; the
 arena walk's target is the same every tick). C13 and C19 remove it.
-Still to do: the frame anchor and support pins, the original's falls and
-get-ups, recovery steps, foot planting, clip blending, collisions between
-bodies (and their wake of a sleeper).
+Done (change `anchor-the-character-frame`, C9): the
+pose is put on the original's character frame, whose origin is the pelvis
+less the clip root's offset across the ground: it rides on the pelvis
+while the body moves, follows it exactly without support, within 5 cm
+while a standing body's support is under 0.95 and not at all from 0.95,
+within 5 cm while down and 10 cm as a get-up starts. The capsule's
+horizontal hold now pulls toward the frame's pelvis (Exarust's own until
+the support pins, C14), so a steady body keeps its stance spot and an
+unsteady one stays where it is pushed; the capsule follows the frame
+through the controller (a tenth of the way a tick, at most 2 cm), so it
+stays with a shoved, falling or rising body, and a get-up no longer moves
+the capsule in one go. Still to do: the support
+pins, the original's falls and get-ups, recovery steps, foot planting,
+clip blending, collisions between bodies (and their wake of a sleeper).
 
 Done (change `decode-object-bodies-and-mechanisms`, data only): models'
 rigid bodies are decoded as the original stores them (class, mobility,
@@ -611,7 +622,7 @@ holds the runtime and the documentation of formats and behaviour.
 [`COMPONENT-MAP.md`](COMPONENT-MAP.md) sets every component of the original
 against Exarust and lists the largest missing ones. In order:
 
-1. The frame anchor and support pins, the original's falls and get-ups,
+1. The support pins, the original's falls and get-ups,
    recovery steps, foot planting and leg IK (stairs), clip blending and
    collisions between bodies (Phase 3).
 2. Inventory, equipment and containers, then blocking and parrying

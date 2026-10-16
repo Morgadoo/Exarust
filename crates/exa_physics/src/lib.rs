@@ -127,6 +127,18 @@ const BUILD_TRIANGLES: usize = 60_000;
 /// Builds in flight at once; more wait, so the pool stays free for others.
 const BUILDS_IN_FLIGHT: usize = 4;
 
+/// The share of the way to its follow point ([`CharacterBody::follow`]) a
+/// character's feet go in a fixed step, at most [`FOLLOW_MOST`]: a body's
+/// frame moves in steps (5 and 10 cm dead-bands, a get-up's re-anchoring
+/// by up to a metre), and the character, the player's position, glides
+/// after it.
+pub const FOLLOW_SHARE: f32 = 0.1;
+/// The farthest (m) a character's feet follow in a fixed step: 2 cm, about
+/// a brisk walk (1.66 m/s).
+pub const FOLLOW_MOST: f32 = 0.02;
+/// A follow point closer than this (m) across the ground is not followed.
+const FOLLOW_MIN: f32 = 0.001;
+
 /// A kinematic capsule moved by the character controller.
 #[derive(Component, Debug, Clone)]
 pub struct CharacterBody {
@@ -137,6 +149,15 @@ pub struct CharacterBody {
     pub desired_velocity: Vec3,
     pub vertical_velocity: f32,
     pub grounded: bool,
+    /// A place across the ground the next fixed step draws the feet toward,
+    /// [`FOLLOW_SHARE`] of the way (at most [`FOLLOW_MOST`]), through the
+    /// controller, before the character's own walk: its
+    /// body's frame, which a living character follows (Exarust's own: the
+    /// original has no capsule). Taken by the step.
+    pub follow: Option<Vec3>,
+    /// How far the last step's follow moved the feet (m): the body, which
+    /// is carried with its character, has made that move already.
+    followed: Vec3,
     /// Where the last fixed step left the feet, and where the step before
     /// left them: the drawn position lies between the two.
     steps: Option<(Vec3, Vec3)>,
@@ -155,6 +176,8 @@ impl Default for CharacterBody {
             desired_velocity: Vec3::ZERO,
             vertical_velocity: 0.0,
             grounded: false,
+            follow: None,
+            followed: Vec3::ZERO,
             steps: None,
             shown: Vec3::ZERO,
         }
@@ -162,6 +185,11 @@ impl Default for CharacterBody {
 }
 
 impl CharacterBody {
+    /// How far the last fixed step's follow moved the feet (m).
+    pub fn followed(&self) -> Vec3 {
+        self.followed
+    }
+
     /// The simulated feet position, given the entity's transform.
     fn simulated(&self, transform: &Transform) -> Vec3 {
         match self.steps {
@@ -391,9 +419,15 @@ fn move_characters(
     moves.clear();
     for (mut body, mut transform, handles) in &mut bodies {
         let start = body.simulated(&transform);
-        // A character standing still on the ground stays where it is: no
-        // sweep needed.
-        if body.grounded && body.desired_velocity == Vec3::ZERO {
+        body.followed = Vec3::ZERO;
+        let gap = body
+            .follow
+            .take()
+            .map_or(Vec3::ZERO, |f| (f - start).with_y(0.0));
+        let following = gap.length() > FOLLOW_MIN;
+        // A character standing still on the ground, with nothing to follow,
+        // stays where it is: no sweep needed.
+        if body.grounded && body.desired_velocity == Vec3::ZERO && !following {
             body.stepped(start, start);
             transform.translation = start;
             continue;
@@ -406,18 +440,33 @@ fn move_characters(
         let shape = Capsule::new_y(body.half_height, body.radius);
         // The entity's origin is at the feet; the capsule is centred above.
         let centre_offset = body.half_height + body.radius;
-        let pose = Pose::from_translation(start + Vec3::Y * centre_offset);
-        body.vertical_velocity = if body.grounded {
-            GRAVITY * dt
+        let mut at = start;
+        // First the follow, across the ground, through the controller: it
+        // is stopped by walls and steps up as a walk is.
+        if following {
+            let pose = Pose::from_translation(at + Vec3::Y * centre_offset);
+            let step = (gap * FOLLOW_SHARE).clamp_length_max(FOLLOW_MOST);
+            let moved = controller.move_shape(dt, &queries, &shape, &pose, step, |_| {});
+            at += moved.translation;
+            body.followed = moved.translation;
+            body.grounded = moved.grounded;
+        }
+        let end = if body.grounded && body.desired_velocity == Vec3::ZERO {
+            at
         } else {
-            (body.vertical_velocity + GRAVITY * dt).max(-50.0)
+            let pose = Pose::from_translation(at + Vec3::Y * centre_offset);
+            body.vertical_velocity = if body.grounded {
+                GRAVITY * dt
+            } else {
+                (body.vertical_velocity + GRAVITY * dt).max(-50.0)
+            };
+            let desired = body.desired_velocity * dt + Vec3::Y * body.vertical_velocity * dt;
+            let moved = controller.move_shape(dt, &queries, &shape, &pose, desired, |_| {});
+            body.grounded = moved.grounded;
+            at + moved.translation
         };
-        let desired = body.desired_velocity * dt + Vec3::Y * body.vertical_velocity * dt;
-        let moved = controller.move_shape(dt, &queries, &shape, &pose, desired, |_| {});
-        let end = start + moved.translation;
         body.stepped(start, end);
         transform.translation = end;
-        body.grounded = moved.grounded;
         if body.grounded {
             body.vertical_velocity = 0.0;
         }
@@ -511,6 +560,89 @@ mod tests {
         assert!(!app.world().entity(root).contains::<StaticGeometry>());
         assert_eq!(app.world().resource::<Physics>().0.colliders.len(), 40);
         assert_eq!(app.world().resource::<StaticBuild>().fraction(), 1.0);
+    }
+
+    /// A standing character drawn toward a follow point goes a tenth of the
+    /// way each step, but no more than 2 cm, through the controller, and
+    /// says how far it went (its body has made that move already); its
+    /// body's frame sets the point again each tick. Half a metre away it
+    /// goes 2 cm a step until it is 20 cm away, then a tenth of the rest. A
+    /// point within a millimetre is not followed, and a point is followed
+    /// only in the step after it was set.
+    #[test]
+    fn a_character_glides_after_its_follow_point() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_secs_f64(1.0 / STEP_HZ),
+            ))
+            .init_resource::<PendingKinematics>()
+            .add_systems(Update, move_characters);
+        let mesh = Plane3d::default().mesh().size(40.0, 40.0).build();
+        let mut world = PhysicsWorld::new();
+        world.insert_collider(
+            trimesh_collider(&mesh, &GlobalTransform::default()).unwrap(),
+            None,
+        );
+        world.step();
+        app.insert_resource(Physics(world));
+        let character = app
+            .world_mut()
+            .spawn((
+                Transform::from_xyz(5.0, 0.02, -3.0),
+                CharacterBody {
+                    grounded: true,
+                    ..default()
+                },
+            ))
+            .id();
+        // Away from the floor's diagonal, whose edge the controller's step
+        // would catch.
+        let goal = Vec3::new(5.3, 5.0, -3.4);
+        let mut gap = 0.5;
+        for step in 0..40 {
+            app.world_mut()
+                .get_mut::<CharacterBody>(character)
+                .unwrap()
+                .follow = Some(goal);
+            app.update();
+            let world = app.world();
+            let body = world.get::<CharacterBody>(character).unwrap();
+            let at = world.get::<Transform>(character).unwrap().translation;
+            let left = (goal - at).xz().length();
+            let went = (gap * FOLLOW_SHARE).min(FOLLOW_MOST);
+            assert!(
+                (left - (gap - went)).abs() < 2e-4,
+                "step {step}: {left} m left of {gap}"
+            );
+            assert!((body.followed().xz().length() - went).abs() < 2e-4);
+            if step < 15 {
+                assert!((went - 0.02).abs() < 1e-6, "step {step}: {went}");
+            }
+            assert!(body.follow.is_none());
+            gap = left;
+        }
+        // Unset, nothing is followed; within a millimetre, nothing either.
+        app.update();
+        assert_eq!(
+            app.world()
+                .get::<CharacterBody>(character)
+                .unwrap()
+                .followed(),
+            Vec3::ZERO
+        );
+        let at = app.world().get::<Transform>(character).unwrap().translation;
+        app.world_mut()
+            .get_mut::<CharacterBody>(character)
+            .unwrap()
+            .follow = Some(at + Vec3::X * 0.0009);
+        app.update();
+        let world = app.world();
+        assert_eq!(world.get::<Transform>(character).unwrap().translation, at);
+        assert_eq!(
+            world.get::<CharacterBody>(character).unwrap().followed(),
+            Vec3::ZERO
+        );
     }
 
     #[test]

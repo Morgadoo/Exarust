@@ -7,7 +7,8 @@
 //! solver, the player's last, as the original orders them: the body
 //! measures its balance and the ground under its feet, its clip clock
 //! advances by one tick and its clip is sampled, its targets are the body
-//! root's world transform times the clip's pose, and its lift holds its
+//! root's world transform times the clip's pose put on its character frame
+//! (which its character's controller follows), and its lift holds its
 //! pelvis over the ground under its feet.
 
 use std::collections::HashMap;
@@ -192,7 +193,9 @@ fn go_limp(
 /// balance and the ground under its feet against the level; its clip clock
 /// advances by one tick, its clip is sampled, and its targets are set to
 /// the body root's world transform times the clip's pose (the body is
-/// carried with the root's motion since the last tick).
+/// carried with the root's motion since the last tick, less its
+/// controller's follow), then put on its character frame. Its controller is
+/// told to follow the frame.
 #[allow(clippy::type_complexity)]
 fn tick_characters(
     motions: Option<Res<Motions>>,
@@ -210,7 +213,7 @@ fn tick_characters(
     >,
     parents: Query<&ChildOf>,
     nodes: Query<(&Transform, Option<&BodyPart>)>,
-    controllers: Query<&CharacterBody>,
+    mut controllers: Query<&mut CharacterBody>,
     mut order: Local<Vec<(bool, Entity)>>,
 ) {
     let Some(motions) = motions else { return };
@@ -221,6 +224,11 @@ fn tick_characters(
             .map(|(e, _, _, _, player, _)| (player.is_some(), e)),
     );
     player_last(&mut order);
+    let world = |e: Entity| {
+        world_with(e, &parents, |n| {
+            nodes.get(n).ok().map(|(t, _)| t.compute_affine())
+        })
+    };
     for &(_, root) in order.iter() {
         let Ok((_, mut body, mut anim, stature, player, fallen)) = bodies.get_mut(root) else {
             continue;
@@ -228,23 +236,26 @@ fn tick_characters(
         if body.drive.is_none() {
             continue;
         }
-        let controller = parents
+        let character = parents
             .iter_ancestors(root)
-            .find_map(|a| controllers.get(a).ok());
+            .find(|&a| controllers.contains(a));
+        let controller = character.and_then(|c| controllers.get(c).ok());
         let stature = stature.map_or(1.0, |s| s.0);
         let mut bearing = bearing(controller, player, &anim, fallen);
+        bearing.rising = rising(&motions, &anim, fallen);
         if bearing.moving {
             bearing.gait_floor =
                 gait_floor(&motions, &anim, stature, &body, root, &parents, &nodes);
+        }
+        if let Some(c) = controller {
+            body.followed(c.followed());
         }
         body.set_bearing(bearing);
         if let Some(physics) = &physics {
             body.measure_balance(&physics.0);
         }
         let pose = clip_tick(&motions, &mut anim, stature);
-        let root_world = world_with(root, &parents, |e| {
-            nodes.get(e).ok().map(|(t, _)| t.compute_affine())
-        });
+        let root_world = world(root);
         match pose {
             Some(pose) => {
                 let targets: Vec<Affine3A> = body
@@ -256,7 +267,33 @@ fn tick_characters(
             }
             None => body.hold(root_world),
         }
+        // The character follows its body's frame: its feet go where the
+        // frame's origin puts the body root.
+        let anchor = body.drive.as_ref().and_then(|d| d.anchor());
+        if let (Some(c), Some(anchor)) = (character, anchor)
+            && let Ok(mut controller) = controllers.get_mut(c)
+        {
+            let lead = Vec3::from(root_world.translation - world(c).translation);
+            controller.follow = Some(anchor - lead);
+        }
     }
+}
+
+/// A get-up is rising in its clip's first quarter: its frame follows its
+/// pelvis within 10 cm until then, as the original re-anchors it while its
+/// get-up's progress is under a quarter.
+const RISING_SHARE: f32 = 0.25;
+
+/// Whether a body gets up and its get-up clip (the one `anim` plays) is in
+/// its first quarter, by last tick's clock.
+fn rising(motions: &Motions, anim: &Animator, fallen: Option<&Fallen>) -> bool {
+    fallen.is_some_and(|f| f.getting_up)
+        && !anim.looping
+        && motions
+            .0
+            .clip(&anim.moveset, &anim.action)
+            .and_then(|c| c.keys.last())
+            .is_some_and(|last| anim.time < RISING_SHARE * last.time)
 }
 
 /// What a body's character does this tick, for its muscles and balance: it
@@ -278,6 +315,7 @@ fn bearing(
         striding: matches!(anim.action.as_str(), "Walk" | "Run"),
         off_balance: fallen.is_some(),
         getting_up: fallen.is_some_and(|f| f.getting_up),
+        rising: false,
         crouch: 0.0,
         carried: controller.is_none_or(|c| c.grounded),
         turn: player.map_or(0.0, PlayerBody::turn_left),
@@ -771,6 +809,30 @@ pub(crate) mod tests {
         }
     }
 
+    /// A get-up rises while its clip's clock is in the first quarter of the
+    /// clip (whose last key is at frame 30 here): its frame then follows
+    /// its pelvis within 10 cm. Not once the clip is past it, nor for a body
+    /// lying or standing, nor once the stance loops.
+    #[test]
+    fn get_ups_rise_in_their_first_quarter() {
+        let motions = motions();
+        let up = Fallen {
+            time: 3.0,
+            getting_up: true,
+        };
+        let mut anim = Animator::new("Default", "Idle");
+        anim.play_once("Idle", "Idle");
+        anim.time = 7.49;
+        assert!(rising(&motions, &anim, Some(&up)));
+        assert!(!rising(&motions, &anim, Some(&Fallen::default())));
+        assert!(!rising(&motions, &anim, None));
+        anim.time = 7.5;
+        assert!(!rising(&motions, &anim, Some(&up)));
+        anim.time = 1.0;
+        anim.looping = true;
+        assert!(!rising(&motions, &anim, Some(&up)));
+    }
+
     #[test]
     fn the_player_is_ticked_last() {
         let e = |i: u32| Entity::from_raw_u32(i).unwrap();
@@ -805,10 +867,13 @@ pub(crate) mod tests {
 
     /// A physical body's clip clock advances by one tick's worth of frames
     /// in every tick, whatever the frame rate, and each tick's targets are
-    /// the body root's world transform (where the character's controller
-    /// put it that tick) times the clip's pose at that tick.
+    /// the clip's pose at that tick on the body's frame: the body root's
+    /// world transform (where the character put it that tick) moved to the
+    /// frame's origin, which the first tick placed under the body (a stride
+    /// behind the character, which walked before it) and which is carried
+    /// with the root since, the body standing steady.
     #[test]
-    fn clips_are_sampled_every_tick_and_placed_on_the_root() {
+    fn clips_are_sampled_every_tick_and_placed_on_the_frame() {
         let count = 60;
         let reference = run_at(60.0, count);
         for fps in [30.0, 144.0, 240.0] {
@@ -819,7 +884,7 @@ pub(crate) mod tests {
             let clock = (tick * 60.0 / BODY_HZ) % 30.0;
             assert!((time - clock).abs() < 1e-3, "tick {tick}: clock {time}");
             let (swing, y) = idle_at(*time);
-            let root = Affine3A::from_translation(START + Vec3::X * STRIDE * tick)
+            let root = Affine3A::from_translation(START + Vec3::X * STRIDE * (tick - 1.0))
                 * Affine3A::from_rotation_y(YAW);
             let pelvis = root * Affine3A::from_translation(Vec3::Y * y);
             let thigh =

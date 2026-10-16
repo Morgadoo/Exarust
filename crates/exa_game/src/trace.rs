@@ -3,8 +3,9 @@
 //! body). Lengths are in the original's centimetres and the clip clock in
 //! frames, in the columns of the retail body probe, so that the two can be
 //! compared row by row. What Exarust does not simulate yet is left empty.
-//! Two of Exarust's own columns follow the probe's: the body's sleep
-//! countdown and state. Columns: `docs/formats/RSQ.md` (Physical body,
+//! Exarust's own columns follow the probe's: the body's sleep countdown and
+//! state, its character frame's origin and its body root (where its
+//! controller stands) across the ground. Columns: `docs/formats/RSQ.md` (Physical body,
 //! per-tick trace).
 
 use std::fmt::Write as _;
@@ -39,6 +40,9 @@ const SCALARS: [&str; 11] = [
     "balance",
     "balance_counter",
 ];
+/// Exarust's own place columns, after its sleep columns (cm): the character
+/// frame's origin and the body root across the ground.
+const OWN: [&str; 4] = ["frame_x", "frame_z", "root_x", "root_z"];
 /// A part target's columns: its place (cm) and its rotation.
 const TARGET: [&str; 7] = ["x", "y", "z", "qx", "qy", "qz", "qw"];
 
@@ -102,6 +106,7 @@ pub fn header() -> String {
     columns.push("clock".into());
     columns.push("countdown".into());
     columns.push("sleep".into());
+    columns.extend(OWN.iter().map(|s| s.to_string()));
     columns.join(",")
 }
 
@@ -262,6 +267,12 @@ fn row(
     row.whole(Some(body.countdown().max(0) as usize));
     row.0.push(',');
     row.0.push_str(body.sleep.name());
+    let frame = drive.and_then(|d| d.anchor()).map(|a| a * CM);
+    row.value(frame.map(|a| a.x));
+    row.value(frame.map(|a| a.z));
+    let at = Vec3::from(root_world.translation) * CM;
+    row.value(Some(at.x));
+    row.value(Some(at.z));
     row.0
 }
 
@@ -296,7 +307,7 @@ mod tests {
         let columns: Vec<&str> = lines.next().unwrap().split(',').collect();
         assert_eq!(
             columns.len(),
-            2 + 12 + SCALARS.len() + BONES * TARGET.len() + 8 + 2 + 2
+            2 + 12 + SCALARS.len() + BONES * TARGET.len() + 8 + 2 + 2 + OWN.len()
         );
         let rows: Vec<Vec<&str>> = lines.map(|l| l.split(',').collect()).collect();
         assert_eq!(rows.len() as u64, ticks);
@@ -318,6 +329,13 @@ mod tests {
             assert!(number(row, "pelvis_p3_z").is_finite());
             let lifted = number(row, "frame_height") + number(row, "root_clip_height");
             assert!((number(row, "target1_y") - lifted).abs() < 1e-2);
+            // The steady body's frame stays where the first tick placed it
+            // under the body, a 1 cm stride behind its walking character,
+            // and is carried with it.
+            let off = |axis: &str| {
+                number(row, &format!("frame_{axis}")) - number(row, &format!("root_{axis}"))
+            };
+            assert!((off("x") + 1.0).abs() < 1e-2 && off("z").abs() < 1e-2);
             assert!(row[at("target3_x")].is_empty() && row[at("target_pelvis_height")].is_empty());
         }
     }

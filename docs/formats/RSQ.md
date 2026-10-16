@@ -350,8 +350,8 @@ Exarust runs the same order in its fixed step. The character controllers
 move first. Then each living body's character tick (`CharacterTicks`,
 player last) measures its balance and the ground under its feet (below),
 advances its clip clock by one tick and samples the clip; its targets are
-the body root's world transform times the clip pose, and its carry is set
-from the lift. Then the
+the body root's world transform times the clip pose, put on its character
+frame (below), and its carry is set from the lift. Then the
 solver (`BodySystems`) deals the queued blows and runs steps 2–6 over every
 awake body. The same ticks give the same particles at any frame rate. Blows
 sent between ticks wait in a queue for the next one. Parts are drawn
@@ -429,19 +429,67 @@ tick and muscle setup). Every rule is in the original's cm and ticks:
   query tries a 2 m column before the whole depth, with an exact drop onto
   each face, edge and corner).
 
+The **character frame** (`exa_physics::body`, `body_frame.rs`; REA on the
+original's anchor routine and its callers in the body tick, the get-up
+start and the locomotion branch, its constants read from the executable).
+The animated pose is put on a frame that turns with the body. Its origin,
+the character's place, is where the pelvis origin is less the pose's root
+offset (the clip root turned into the world), across the ground, at the
+pelvis's height. Each character tick, before the targets are set, it
+follows the pelvis:
+
+- while the body moves, onto the pelvis origin itself, every tick (the
+  original also while stepping);
+- without support, to the pelvis less the root offset, every tick;
+- standing on its feet, only while its support is under 0.95 (the
+  original compares with a double, so a support of exactly 0.95f is under
+  it), and then once that place is more than 5 cm away; at 0.95 or more it
+  stays put. Its height is brought to the pelvis's every tick either way.
+  A steady body's stance spot is so fixed in the world, and an unsteady
+  one's follows its pelvis;
+- down (off balance with a balance under 0.3), within 5 cm, the distance
+  measured in all three axes from where it was last placed;
+- getting up, within 10 cm while the get-up clip is in its first quarter,
+  then not at all until the body stands. Exarust starts a get-up's clip at
+  its first key, so the re-anchoring uses that key's root offset and the
+  clip's pelvis lands on the body; the original re-anchors with the offset
+  its sampler left the tick before, then blends into the clip (C10).
+
+It is placed at once the first time. Not reproduced yet: the jolt that
+moves the stance toward the feet (C15) and the collapse (every tick, C23).
+Only the targets' rotations drive the muscles; their places matter to the
+stance hold (below), and later to the support pins and the foot targets
+(C12, C14).
+
 Exarust's own, while a character controller (a capsule) still moves the
-body across the ground instead of the original's locomotion, frame anchor
-and support pins (C9, C14, C18):
+body across the ground instead of the original's locomotion and support
+pins (C14, C18):
 
 - The body is carried with its root's (its character controller's) motion
-  since the last tick across the ground and about the vertical only: its
-  height is the lift's. Where the last tick left each part, its level
-  contacts and last tick's targets are carried with it.
-- The controller holds a standing body's pelvis over where it carries the
-  pose's pelvis: its origin is pulled across the ground by 0.168 a tick ×
+  since the last tick across the ground and about the vertical only, its
+  frame with it: its height is the lift's. Where the last tick left each
+  part, its level contacts and last tick's targets are carried with it.
+  The controller's moves to follow the frame are left out (the body made
+  them already).
+- The controller follows the frame. Each fixed step moves its feet a
+  tenth of the way to where the frame's origin puts the body root, at most
+  2 cm, through the controller (stopped by walls, stepping up as a walk
+  does), before its own walk. The controller, the player's position (the
+  camera follows the drawn pelvis), so stays with a shoved or falling body,
+  and glides after a get-up's re-anchoring instead of jumping: that can be
+  a metre, since Exarust's
+  lying clip (Unconcious 1, until C11) keeps its pelvis 57 cm off its
+  root, and the controller stands at the frame's origin while the body
+  lies.
+- The stance hold: a standing body's pelvis origin is pulled across the
+  ground toward where its frame puts the pose's pelvis by 0.168 a tick ×
   tone² × E⁴, critically damped (2√g) against its horizontal velocity in
   the carried frame, the same push on all four of its particles, so it
-  never turns the pelvis.
+  never turns the pelvis. While the frame stays put it holds a steady body
+  on its stance spot, as the original's support pins and planted feet do
+  (C12, C14); while the frame follows, an unsteady body stays about where
+  it is pushed. While the body moves its frame rides on its pelvis and
+  only the damping acts.
 - Stairs (`exa_physics::body` `climb`, a stopgap that C13 and C19
   remove): the capsule steps up before the feet do, and nothing yet lifts
   a walking foot onto a step or brings the trailing foot up (the
@@ -480,9 +528,10 @@ and support pins (C9, C14, C18):
   - Once settled (2.5 s, energy ≥ 0.9), the body plays whichever of
     `Get up` / `Get Up 2` has a first pose lying the same way, judged by the
     pelvis's front axis facing up or down.
-  - The controller is first turned and moved so that clip's first pose lies
-    on the body, and settles on the ground there (it is marked airborne, so
-    the next tick sweeps it down).
+  - The body is first turned so that clip's first pose lies the way the
+    body does; its frame then re-anchors to the pelvis (above), so the
+    clip's pelvis lies on the body, and the controller follows the frame
+    there.
   - While its get-up clip plays the body's balance rises (above).
 - Recovery steps and foot planting are not reproduced yet. After a get-up
   the feet stay where the clip left them (they bear weight now), so the
@@ -508,10 +557,11 @@ is left empty.
 | `tone`, `energy` | muscle tone and energy (daze) |
 | `support` | support S = grounded × balance |
 | `balance`, `balance_counter` | balance and its instability counter |
-| `target{1..18}_{x,y,z,qx,qy,qz,qw}` | each part's animated world transform this tick: place and rotation |
+| `target{1..18}_{x,y,z,qx,qy,qz,qw}` | each part's animated world transform this tick, on the character frame: place and rotation |
 | `foot_{r,l}_flags`, `foot_{r,l}_anchor_{x,y,z}` | foot contacts (empty) |
 | `motion`, `clock` | the action's index in the motion set, and the clip clock |
 | `countdown`, `sleep` | Exarust's own, after the probe's: the body's sleep countdown and state (`awake`, `asleep`, `deep`) |
+| `frame_x`, `frame_z`, `root_x`, `root_z` | Exarust's own: the character frame's origin, and the body root (where the character controller stands), across the ground |
 
 The joint trace (`--joint-trace`), one row per body part, and the body
 overlay are described in [`docs/DEBUGGING.md`](../DEBUGGING.md).

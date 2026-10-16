@@ -3,8 +3,9 @@
 //! A body whose balance has dropped below 0.6 falls, the way it leans; once
 //! it has settled and recovered its wits it gets up with the get-up clip
 //! matching how it lies (on its back or its front), and stands again on its
-//! character controller. While its get-up clip plays its balance rises by
-//! 0.05 a tick.
+//! character controller, which follows its frame to where it rises (the
+//! frame re-anchors to its pelvis within 10 cm in the clip's first
+//! quarter). While its get-up clip plays its balance rises by 0.05 a tick.
 //!
 //! The fall and the get-up are still Exarust's own (the original's
 //! staggers, Rebalance and get-up rules come later). Rules:
@@ -91,14 +92,14 @@ fn get_up(
         Option<&mut PlayerBody>,
         Option<&Stance>,
     )>,
-    mut characters: Query<(&mut Transform, &mut CharacterBody), Without<Ragdoll>>,
+    mut characters: Query<&mut CharacterBody, Without<Ragdoll>>,
 ) {
     let Some(motions) = motions else { return };
     for (root, mut body, mut anim, mut fallen, mut t, parent, player, stance) in &mut bodies {
         let ticks = body.ticks as f32;
         // Body time, which may run slower than the clock.
         fallen.time += ticks / BODY_HZ;
-        let Ok((mut ct, mut controller)) = characters.get_mut(parent.parent()) else {
+        let Ok(mut controller) = characters.get_mut(parent.parent()) else {
             continue;
         };
         controller.desired_velocity = Vec3::ZERO;
@@ -147,21 +148,16 @@ fn get_up(
         else {
             continue;
         };
-        // Turn and move the character so the clip's first pose lies on the
-        // body: head the same way, pelvis over the pelvis.
+        // Turn the body so the clip's first pose lies the way the body does,
+        // head the same way. Its frame re-anchors to the pelvis in its
+        // character tick as the get-up starts, so the clip's pelvis lies on
+        // the body, and its character follows the frame there.
         let heading = |m: Affine3A| {
             let up = m.transform_vector3(Vec3::Y);
             up.x.atan2(up.z)
         };
         let yaw = heading(pelvis) - heading(start);
         let turn = Quat::from_rotation_y(yaw);
-        let offset = turn * Vec3::from(start.translation);
-        let pelvis_at = Vec3::from(pelvis.translation);
-        ct.translation.x = pelvis_at.x - offset.x;
-        ct.translation.z = pelvis_at.z - offset.z;
-        // Moved off what it stood on, the controller settles on the ground
-        // under the body again (its feet are measured from there).
-        controller.grounded = false;
         t.rotation = turn;
         if let Some(mut pb) = player {
             pb.yaw = yaw;

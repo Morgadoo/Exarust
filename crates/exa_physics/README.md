@@ -21,12 +21,17 @@ a pose drive turns the pelvis, spine, head and feet toward the clip's
 orientation about each part's own origin, scaled by the support S²
 (`body::Drive`); and the carry holds the body up in place of gravity, with
 a lift servo holding its pelvis at a target height over the ground under
-its feet (`src/body_lift.rs`). The controller carries a standing body only
-across the ground and turns it, and holds its pelvis horizontally until the
-original's support pins do. Until the feet step and the legs bend, a
-stopgap of Exarust's own reads each foot's ground no lower than the
-grounded controller's floor less 6 cm, so a body climbs the steps its
-capsule climbs (`src/body_climb.rs`).
+its feet (`src/body_lift.rs`). The pose is put on the original's character
+frame, whose origin follows the pelvis by its rules: on the pelvis while
+moving, frozen while standing steady, behind dead-bands of 5 and 10 cm
+otherwise (`src/body_frame.rs`, `body::Drive::anchor`). The controller
+carries a standing body only across the ground and turns it, holds its
+pelvis horizontally over the frame's until the original's support pins do,
+and follows the frame (`CharacterBody::follow`, a tenth of the way a step,
+at most 2 cm), leaving its follow out of the carry. Until the feet step and
+the legs bend, a stopgap of Exarust's own reads each foot's ground no lower
+than the grounded controller's floor less 6 cm, so a body climbs the steps
+its capsule climbs (`src/body_climb.rs`).
 Each character tick measures a living body's balance at its chest against
 its ankles and asks the level for the ground under each foot
 (`contact::Level::height_below`, the original's Height Query), which give

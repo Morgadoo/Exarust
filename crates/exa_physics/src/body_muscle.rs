@@ -131,6 +131,9 @@ pub struct Bearing {
     /// It plays its get-up clip: its balance rises and it has support near
     /// the ground.
     pub getting_up: bool,
+    /// Its get-up clip is in its first quarter: its frame follows its pelvis
+    /// within 10 cm, and not at all for the rest of the get-up.
+    pub rising: bool,
     /// How far it crouches, 0 to 1: its chest is measured 10 cm back at a
     /// full crouch.
     pub crouch: f32,
@@ -159,6 +162,7 @@ impl Default for Bearing {
             striding: false,
             off_balance: false,
             getting_up: false,
+            rising: false,
             crouch: 0.0,
             carried: true,
             turn: 0.0,
