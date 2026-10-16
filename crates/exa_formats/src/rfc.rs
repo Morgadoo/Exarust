@@ -27,6 +27,9 @@ pub const NODE_LIST: u32 = 0x3D00_0000;
 pub const MATERIAL_LIST: u32 = 0xBA00;
 pub const NODE_MESH: u32 = 0x3D03;
 pub const NODE_LIGHT: u32 = 0x3D06;
+/// A voxel light: light the node adds straight into the GI volume around
+/// itself (class `0x41`), never onto surfaces.
+pub const NODE_VOXEL_LIGHT: u32 = 0x3D0C;
 const TOPOLOGY: u32 = 0x3DC0;
 const TRIANGLES: u32 = 0x3DC1;
 
@@ -113,6 +116,7 @@ pub struct Node {
 pub enum NodeBody {
     Mesh(Box<Mesh>),
     Light(Light),
+    VoxelLight(VoxelLight),
     /// The node reuses another object's data; nothing else is stored.
     Instance(u32),
     /// A plain node carrying a particle emitter record (`0x3DD0E002` is a
@@ -149,6 +153,18 @@ pub struct Light {
     /// Falls off with distance (node flag `0x40000`); otherwise the light
     /// reaches everywhere at full strength.
     pub ranged: bool,
+}
+
+/// A voxel light (`0x3D0C`): a glowing item's light (salves, power
+/// crystals, embers, …), which the original adds into its GI volume only.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VoxelLight {
+    /// sRGB.
+    pub color: [f32; 3],
+    /// Scales the light by its square root.
+    pub intensity: f32,
+    /// Stored radius in metres; the GI injection never reads it.
+    pub radius: f32,
 }
 
 /// Node flags (`flags2`) of a light with vertical spot shaping, under
@@ -464,6 +480,11 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
             Ok(l) => NodeBody::Light(l),
             Err(e) => NodeBody::Invalid(e.to_string()),
         }
+    } else if kind == NODE_VOXEL_LIGHT {
+        match read_voxel_light(&mut c) {
+            Ok(l) => NodeBody::VoxelLight(l),
+            Err(e) => NodeBody::Invalid(e.to_string()),
+        }
     } else {
         emitter(c.bytes(c.remaining())?).unwrap_or(NodeBody::NotMesh)
     };
@@ -504,6 +525,23 @@ fn read_light(c: &mut Cursor<'_>, node_flags: u32) -> Result<Light> {
         softness,
         spot,
         ranged: node_flags & RANGED != 0,
+    })
+}
+
+/// A voxel light's body: a word (0 in the corpus), the sRGB colour, an
+/// unread value (1), the intensity, the radius in centimetres and a last
+/// word (0).
+fn read_voxel_light(c: &mut Cursor<'_>) -> Result<VoxelLight> {
+    c.skip(4)?;
+    let color = [c.f32()?, c.f32()?, c.f32()?];
+    c.skip(4)?;
+    let intensity = c.f32()?;
+    let radius = c.f32()? * CENTIMETRES_TO_METRES;
+    c.skip(4)?;
+    Ok(VoxelLight {
+        color,
+        intensity,
+        radius,
     })
 }
 
@@ -950,6 +988,52 @@ mod tests {
     fn out_of_range_index_marks_mesh_invalid() {
         let scene = Scene::parse(&quad_file(Some(9))).unwrap();
         assert!(matches!(&scene.nodes[0].body, NodeBody::Invalid(e) if e.contains("out of 4")));
+    }
+
+    /// A file holding one voxel-light node with `body` after the header.
+    fn voxel_light_file(body: &[u8]) -> Vec<u8> {
+        let mut node = name("@Omni001");
+        node.extend(u32s(&[0x41, 0x10, 0, 0]));
+        node.extend(f32s(&[
+            1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 3.0, 0.0,
+        ]));
+        node.extend(f32s(&[0.0; 7]));
+        node.extend(u32s(&[0]));
+        node.extend_from_slice(body);
+        let mut list = u32s(&[1]);
+        list.extend(chunk(NODE_VOXEL_LIGHT, &node));
+        let mut file = vec![0xCF, 0xAF, 0x23, 0x3D];
+        file.extend(chunk(NODE_LIST, &list));
+        file
+    }
+
+    #[test]
+    fn decodes_voxel_light() {
+        let mut body = u32s(&[0]);
+        body.extend(f32s(&[0.2157, 0.6784, 1.0, 1.0, 16.0, 300.0]));
+        body.extend(u32s(&[0]));
+        let scene = Scene::parse(&voxel_light_file(&body)).unwrap();
+        let node = &scene.nodes[0];
+        assert_eq!(
+            (node.kind, node.name.as_str()),
+            (NODE_VOXEL_LIGHT, "@Omni001")
+        );
+        assert_eq!(node.flags & 0xFF, 0x41);
+        assert_eq!(node.transform[3], [0.0, 0.03, 0.0]);
+        let NodeBody::VoxelLight(light) = node.body else {
+            panic!("not a voxel light: {:?}", node.body);
+        };
+        assert_eq!(light.color, [0.2157, 0.6784, 1.0]);
+        assert_eq!(light.intensity, 16.0);
+        assert!((light.radius - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn short_voxel_light_is_invalid() {
+        let mut body = u32s(&[0]);
+        body.extend(f32s(&[0.2157, 0.6784, 1.0, 1.0, 16.0]));
+        let scene = Scene::parse(&voxel_light_file(&body)).unwrap();
+        assert!(matches!(&scene.nodes[0].body, NodeBody::Invalid(_)));
     }
 
     #[test]

@@ -641,6 +641,7 @@ mod tests {
             id,
             name: worn.into(),
             model: model.into(),
+            model_flags: 0,
             worn_model: worn.into(),
             appearance: Some(Appearance {
                 quality: 160,

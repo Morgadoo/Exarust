@@ -20,6 +20,7 @@ struct PackTally {
     bad_materials: usize,
     gi_meshes: usize,
     gi_points: usize,
+    voxel_lights: usize,
 }
 
 pub fn meshes(game: &GameData) -> Result<()> {
@@ -65,6 +66,10 @@ pub fn meshes(game: &GameData) -> Result<()> {
                         }
                     }
                     NodeBody::Instance(_) => t.instances += 1,
+                    NodeBody::VoxelLight(_) => {
+                        t.other_nodes += 1;
+                        t.voxel_lights += 1;
+                    }
                     NodeBody::NotMesh | NodeBody::Light(_) | NodeBody::Emitter { .. } => {
                         t.other_nodes += 1
                     }
@@ -102,9 +107,10 @@ pub fn meshes(game: &GameData) -> Result<()> {
         total.bad_materials += t.bad_materials;
         total.gi_meshes += t.gi_meshes;
         total.gi_points += t.gi_points;
+        total.voxel_lights += t.voxel_lights;
         println!(
-            "  {:<11} GI points in {} meshes ({} points)",
-            "", t.gi_meshes, t.gi_points
+            "  {:<11} GI points in {} meshes ({} points), {} voxel lights",
+            "", t.gi_meshes, t.gi_points, t.voxel_lights
         );
     }
     print_row("total", &total);

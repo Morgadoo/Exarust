@@ -42,6 +42,8 @@ pub struct ModelNode {
     /// weights (joint indices are bone numbers).
     pub skin_bone: Option<u16>,
     pub light: Option<exa_formats::rfc::Light>,
+    /// A voxel light: light the node adds into the GI volume only.
+    pub voxel_light: Option<exa_formats::rfc::VoxelLight>,
     /// Size of the fire this node becomes (torches 0.2, braziers 0.41).
     pub fire: Option<f32>,
     /// Bounding sphere in the node's space (metres).
@@ -315,6 +317,10 @@ impl ModelLoader<'_> {
                     NodeBody::Light(l) => Some(*l),
                     _ => None,
                 },
+                voxel_light: match &node.body {
+                    NodeBody::VoxelLight(l) => Some(*l),
+                    _ => None,
+                },
             });
         }
         Model { nodes }
@@ -400,7 +406,7 @@ impl ModelLoader<'_> {
             params: ExaParams {
                 diffuse: diffuse.extend(m.opacity.clamp(0.0, 1.0)),
                 specular: specular.extend(m.glossiness.clamp(0.01, 1.0)),
-                emissive: rgb(m.emissive).extend(m.emissive[3]),
+                emissive: emissive(m),
                 flags: shading,
                 ..default()
             },
@@ -461,6 +467,9 @@ impl ModelLoader<'_> {
             mat.height_map = Some(img);
         }
         mat.alpha_mode = blend_mode(m.class, cut_out || mat.opacity_map.is_some());
+        if mat.alpha_mode == AlphaMode::Add {
+            mat.params.flags |= flags::ADDITIVE;
+        }
         // Faint surfaces (glass, decals) and those the record marks cast no
         // shadows.
         mat.no_shadows = m.opacity <= 0.8 || m.extra & NO_SHADOWS != 0;
@@ -468,6 +477,13 @@ impl ModelLoader<'_> {
         if mat.alpha_mode == AlphaMode::Premultiplied {
             let a = mat.params.diffuse.w;
             mat.params.diffuse = (mat.params.diffuse.truncate() * a).extend(a);
+        }
+        // The fall-off's floor comes off the opacity (after the
+        // premultiplication, which takes the opacity as stored).
+        if let Some((f, floor)) = opacity_falloff(m) {
+            mat.params.opacity_falloff = f;
+            mat.params.diffuse.w -= floor;
+            mat.params.flags |= flags::OPACITY_FALLOFF;
         }
         mat.environment = self.environment_map();
         mat.with_map_flags()
@@ -862,6 +878,39 @@ type OwnedLayer = (
     Vec<Option<Arc<Texels>>>,
 );
 
+/// A record's emissive term as the shader takes it (the original's MatEmi):
+/// the linear colour, doubled for shaded materials (lit or specular bits)
+/// with an emissive layer; alpha the opacity for the others, the colour's
+/// own alpha for shaded ones.
+fn emissive(m: &Material) -> Vec4 {
+    let shaded = m.flags & SHADED != 0;
+    let mut rgb = linear_rgb([m.emissive[0], m.emissive[1], m.emissive[2]]);
+    if shaded && m.flags & EMISSIVE_LAYER != 0 {
+        rgb *= 2.0;
+    }
+    let alpha = if shaded {
+        m.emissive[3]
+    } else {
+        m.opacity.clamp(0.0, 1.0)
+    };
+    rgb.extend(alpha)
+}
+
+/// The opacity fall-off of a record whose amount (`0x64`) is above 0.01 in
+/// magnitude, whatever its blending, and the floor it takes off the
+/// opacity: with f = 2^(−1.8·exponent), (f + 1)·f.
+fn opacity_falloff(m: &Material) -> Option<(Vec4, f32)> {
+    (m.falloff_amount.abs() > FALLOFF_MIN).then(|| {
+        let f = (-1.8 * m.falloff_exponent).exp2();
+        let params = ExaParams::falloff(
+            m.falloff_amount,
+            m.falloff_exponent,
+            m.extra & FALLOFF_INVERTED != 0,
+        );
+        (params, (f + 1.0) * f)
+    })
+}
+
 /// Whether the original casts a material through its alpha-tested caster,
 /// whatever the surface's blending: an alpha-tested blend word (`0x4000`),
 /// or an opacity above 0.75 with the opacity flag, which the record sets or
@@ -1140,6 +1189,16 @@ const OPACITY_FLAG: u32 = 0x40_0000;
 const ALPHA_TESTED: u32 = 0x4000;
 /// Material extra flag (`0x4C`) enabling displacement shadows.
 const DISPLACEMENT_SHADOWS: u32 = 0x10_0000;
+/// Material extra flag (`0x4C`): the opacity fall-off fades toward the
+/// silhouette instead of toward the centre (set in most records).
+const FALLOFF_INVERTED: u32 = 0x100;
+/// Fall-off amounts at or below this leave a surface alone.
+const FALLOFF_MIN: f32 = 0.01;
+/// Material flags (`0x48`): lit or specular. Without any, the emissive's
+/// alpha is the opacity.
+const SHADED: u32 = 0x7;
+/// Material flag (`0x48`) of the emissive layer.
+const EMISSIVE_LAYER: u32 = 0x8_0000;
 
 /// A Bevy mesh holding only the vertices one material group uses.
 fn group_mesh(mesh: &RfcMesh, indices: &[u32], skin: Option<&[VertexSkin]>) -> Option<Mesh> {
@@ -1329,6 +1388,66 @@ mod tests {
         assert!(!cuts_shadow(&record(0x0203, 0x22_0017, 1.0), false));
         // Alpha-tested blend words always use the alpha-tested caster.
         assert!(cuts_shadow(&record(0x4100, 0x22_0017, 0.5), false));
+    }
+
+    #[test]
+    fn salve_glow_is_additive_and_fades_toward_its_outline() {
+        // `jarsm01glow`: unlit, emissive (0.235, 0.467, 0.627), opacity 0,
+        // source alpha / one, fall-off amount 1 and exponent 2, extra 0x104.
+        let glow = Material {
+            emissive: [0.2353, 0.4667, 0.6275, 1.0],
+            opacity: 0.0,
+            class: 0x0001_0201,
+            flags: 0x0008_0008,
+            extra: 0x104,
+            falloff_amount: 1.0,
+            falloff_exponent: 2.0,
+            ..default()
+        };
+        assert_eq!(blend_mode(glow.class, false), AlphaMode::Add);
+        let e = emissive(&glow);
+        // Unlit: no doubling, and the opacity as alpha.
+        assert!(
+            (e.truncate() - Vec3::new(0.0450, 0.1845, 0.3515))
+                .abs()
+                .max_element()
+                < 1e-3
+        );
+        assert_eq!(e.w, 0.0);
+        let (f, floor) = opacity_falloff(&glow).unwrap();
+        assert_eq!((f.x, f.y), (1.0, -3.6));
+        assert!((f.z - 1.0825).abs() < 1e-4);
+        // (f + 1)·f with f = 2^−3.6.
+        assert!((floor - 1.0825 * 0.0825).abs() < 1e-4);
+        // A faint amount has none.
+        let faint = Material {
+            falloff_amount: 0.01,
+            ..glow.clone()
+        };
+        assert!(opacity_falloff(&faint).is_none());
+    }
+
+    #[test]
+    fn lit_emissive_maps_double_the_colour() {
+        let handle = Material {
+            emissive: [1.0, 0.5, 0.0, 1.0],
+            flags: 0x0008_0003,
+            ..default()
+        };
+        let e = emissive(&handle);
+        assert!(
+            (e.truncate() - Vec3::new(2.0, 2.0 * linear(0.5), 0.0))
+                .abs()
+                .max_element()
+                < 1e-5
+        );
+        assert_eq!(e.w, 1.0);
+        // Without an emissive layer the colour stays as it is.
+        let plain = Material {
+            flags: 0x3,
+            ..handle.clone()
+        };
+        assert_eq!(emissive(&plain).x, 1.0);
     }
 
     /// The corpus records the rule was established on (run with

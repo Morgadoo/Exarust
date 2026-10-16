@@ -199,10 +199,18 @@ fn placed_object_model(
         .map(|kind| (kind, item.model.clone()))
 }
 
+/// What spawning a placed object came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlacedSpawn {
+    /// Placed, bringing this many lights.
+    Placed { lights: usize },
+    /// Its model is missing.
+    Missing,
+}
+
 /// Spawns an object-database object a level places (an item, door or
-/// container) as a static model: `Some(true)` when placed, `Some(false)`
-/// when its model is missing, `None` for objects without a model (triggers,
-/// markers) or of a slot other than the level's.
+/// container) as a static model. `None` for objects without a model
+/// (triggers, markers) or of a slot other than the level's.
 fn spawn_placed_object(
     commands: &mut Commands,
     loader: &mut ModelLoader<'_>,
@@ -210,12 +218,12 @@ fn spawn_placed_object(
     global: &[Item],
     parent: Entity,
     object: &exa_formats::rfc::PlacedObject,
-) -> Option<bool> {
+) -> Option<PlacedSpawn> {
     let item = placed_item(scene, global, object)?;
     // `@` names a weapon assembled by a factory.
     if let Some(factory) = item.model.strip_prefix('@') {
         let Some(model) = loader.factory_weapon(factory, item.weapon.as_ref()) else {
-            return Some(false);
+            return Some(PlacedSpawn::Missing);
         };
         let e = spawn_model(commands, &model, None);
         commands.entity(e).insert((
@@ -223,22 +231,80 @@ fn spawn_placed_object(
             Name::new(item.name.clone()),
             ChildOf(parent),
         ));
-        return Some(true);
+        return Some(PlacedSpawn::Placed { lights: 0 });
     }
     let model = placed_object_model(loader, scene, global, object)
         .and_then(|(kind, entry)| loader.model(kind, &entry));
     let Some(model) = model else {
-        return Some(false);
+        return Some(PlacedSpawn::Missing);
+    };
+    let share = item.light_share(object.flags);
+    let scaled;
+    let model = if share == 1.0 {
+        model.as_ref()
+    } else {
+        let mut m = with_light_share(&model, share);
+        dim_child_glows(&mut m, share, loader.materials);
+        scaled = m;
+        &scaled
     };
     let e = spawn_model(
         commands,
-        &model,
+        model,
         Some(transform_from_rows(&object.transform)),
     );
     commands
         .entity(e)
         .insert((Name::new(item.name.clone()), ChildOf(parent)));
-    Some(true)
+    Some(PlacedSpawn::Placed {
+        lights: model.nodes.iter().filter(|n| n.light.is_some()).count(),
+    })
+}
+
+/// `model` with the voxel lights hanging directly under its root scaled by
+/// an item's condition share ([`Item::light_share`]), as the original dims
+/// a salve by its charge.
+fn with_light_share(model: &Model, share: f32) -> Model {
+    let mut model = model.clone();
+    let root = model.roots().next();
+    for node in &mut model.nodes {
+        if node.parent.is_some()
+            && node.parent == root
+            && let Some(light) = &mut node.voxel_light
+        {
+            light.intensity *= share;
+        }
+    }
+    model
+}
+
+/// Scales the emissive colour of the meshes hanging directly under
+/// `model`'s root by an item's condition share, as the original scales a
+/// salve's glow mesh with its voxel light: the parts get copies of their
+/// materials, so the shared ones stay as they are.
+fn dim_child_glows(
+    model: &mut Model,
+    share: f32,
+    materials: &mut Assets<exa_render::material::ExaMaterial>,
+) {
+    let root = model.roots().next();
+    for node in &mut model.nodes {
+        if node.parent.is_none() || node.parent != root {
+            continue;
+        }
+        for (_, handle) in &mut node.parts {
+            let Some(material) = materials.get(handle.id()) else {
+                continue;
+            };
+            let e = material.params.emissive;
+            if e.truncate() == Vec3::ZERO {
+                continue;
+            }
+            let mut dimmed = material.clone();
+            dimmed.params.emissive = (e.truncate() * share).extend(e.w);
+            *handle = materials.add(dimmed);
+        }
+    }
 }
 
 /// Spawns `model` under a new entity. With a placement, the placement takes
@@ -290,6 +356,12 @@ pub fn spawn_model(commands: &mut Commands, model: &Model, placement: Option<Tra
         parts_of.push(parts);
         if let Some(light) = &node.light {
             commands.entity(e).insert(light_bundle(light));
+        }
+        if let Some(light) = &node.voxel_light {
+            commands.entity(e).insert(exa_render::gi::VoxelLight::new(
+                light.color,
+                light.intensity,
+            ));
         }
         if let Some(size) = node.fire {
             fire::spawn_fire(commands, e, size);
@@ -676,8 +748,11 @@ impl LevelLoad {
                         self.root,
                         object,
                     ) {
-                        Some(true) => self.placed_objects += 1,
-                        Some(false) => self.missing_objects += 1,
+                        Some(PlacedSpawn::Placed { lights }) => {
+                            self.placed_objects += 1;
+                            self.lights += lights;
+                        }
+                        Some(PlacedSpawn::Missing) => self.missing_objects += 1,
                         None => {}
                     }
                     self.objects_done += 1;
@@ -878,6 +953,98 @@ mod tests {
         }
     }
 
+    fn node(name: &str, parent: Option<usize>, intensity: Option<f32>) -> exa_assets::ModelNode {
+        exa_assets::ModelNode {
+            name: name.into(),
+            parent,
+            transform: Transform::IDENTITY,
+            parts: Vec::new(),
+            part_materials: Vec::new(),
+            skin_bone: None,
+            light: None,
+            voxel_light: intensity.map(|intensity| exa_formats::rfc::VoxelLight {
+                color: [0.2157, 0.6784, 1.0],
+                intensity,
+                radius: 3.0,
+            }),
+            fire: None,
+            bounds: (Vec3::ZERO, 1.0),
+            gi_points: Default::default(),
+        }
+    }
+
+    #[test]
+    fn condition_dims_only_the_voxel_lights_under_the_root() {
+        // A salve: the jar at the root, its voxel light under it, and (for
+        // the test) one deeper and one beside the root.
+        let model = Model {
+            nodes: vec![
+                node("HealSalve", None, None),
+                node("@Omni001", Some(0), Some(16.0)),
+                node("Deeper", Some(1), Some(16.0)),
+                node("Beside", None, Some(16.0)),
+            ],
+        };
+        let scaled = with_light_share(&model, 0.25);
+        let intensity = |i: usize| scaled.nodes[i].voxel_light.map(|l| l.intensity);
+        assert_eq!(intensity(1), Some(4.0));
+        assert_eq!(intensity(2), Some(16.0));
+        assert_eq!(intensity(3), Some(16.0));
+        assert_eq!(intensity(0), None);
+    }
+
+    #[test]
+    fn condition_dims_the_glow_meshes_under_the_root() {
+        use exa_render::material::{ExaMaterial, ExaParams};
+        let mut materials = Assets::<ExaMaterial>::default();
+        let mut meshes = Assets::<Mesh>::default();
+        let mesh = meshes.add(Cuboid::default());
+        let material = |materials: &mut Assets<ExaMaterial>, e: Vec4| {
+            materials.add(ExaMaterial {
+                params: ExaParams {
+                    emissive: e,
+                    ..default()
+                },
+                ..default()
+            })
+        };
+        let glow = material(&mut materials, Vec4::new(0.04, 0.18, 0.35, 0.0));
+        let glass = material(&mut materials, Vec4::new(0.0, 0.0, 0.0, 1.0));
+        // The jar (glass and glow) at the root, the glow mesh under it, and
+        // a glow deeper down.
+        let mut model = Model {
+            nodes: vec![
+                node("HealSalve", None, None),
+                node("JarGlow", Some(0), None),
+                node("Deeper", Some(1), None),
+            ],
+        };
+        model.nodes[0].parts = vec![(mesh.clone(), glow.clone()), (mesh.clone(), glass.clone())];
+        model.nodes[1].parts = vec![(mesh.clone(), glow.clone()), (mesh.clone(), glass.clone())];
+        model.nodes[2].parts = vec![(mesh.clone(), glow.clone())];
+        dim_child_glows(&mut model, 0.25, &mut materials);
+        let emissive = |n: usize, p: usize| {
+            materials
+                .get(model.nodes[n].parts[p].1.id())
+                .unwrap()
+                .params
+                .emissive
+        };
+        // Only the child's glowing part gets a dimmed copy; its alpha stays.
+        assert!(
+            (emissive(1, 0) - Vec4::new(0.01, 0.045, 0.0875, 0.0))
+                .abs()
+                .max_element()
+                < 1e-6
+        );
+        assert_ne!(model.nodes[1].parts[0].1, glow);
+        assert_eq!(model.nodes[1].parts[1].1, glass);
+        assert_eq!(model.nodes[0].parts[0].1, glow);
+        assert_eq!(model.nodes[2].parts[0].1, glow);
+        // The shared material is untouched.
+        assert_eq!(emissive(0, 0), Vec4::new(0.04, 0.18, 0.35, 0.0));
+    }
+
     fn item(id: u32, model: &str, worn: &str, colour: u8) -> Item {
         let mut layers = [objdb::Layer::default(); 8];
         layers[0] = objdb::Layer {
@@ -890,6 +1057,7 @@ mod tests {
             id,
             name: worn.into(),
             model: model.into(),
+            model_flags: 0,
             worn_model: worn.into(),
             appearance: Some(Appearance {
                 quality: 160,

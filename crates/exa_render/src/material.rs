@@ -117,15 +117,24 @@ pub mod flags {
     /// sRGB space, as the original bakes a character's skin texture from the
     /// race's undecoded one, without encoding, into an sRGB texture.
     pub const TINT_AS_SRGB: u32 = 262144;
+    /// The surface adds its colour weighted by its alpha (the original's
+    /// SRC_ALPHA, ONE), drawn through Bevy's premultiplied blending.
+    pub const ADDITIVE: u32 = 524288;
+    /// The surface's alpha gains the opacity fall-off with the view angle
+    /// ([`super::ExaParams::opacity_falloff`]); unlit surfaces only with an
+    /// emissive map.
+    pub const OPACITY_FALLOFF: u32 = 1048576;
 }
 
 #[derive(Clone, Copy, Debug, ShaderType)]
 pub struct ExaParams {
-    /// Linear rgb (×1.5 for legacy materials); a = opacity.
+    /// Linear rgb (×1.5 for legacy materials); a = opacity, less the
+    /// opacity fall-off's floor.
     pub diffuse: Vec4,
     /// Linear rgb × specular level; w = glossiness.
     pub specular: Vec4,
-    /// Linear rgb; a = opacity of unlit materials.
+    /// Linear rgb (×2 for lit materials with an emissive map); a = the
+    /// opacity, for unlit materials.
     pub emissive: Vec4,
     pub flags: u32,
     pub pad0: u32,
@@ -142,6 +151,28 @@ pub struct ExaParams {
     /// and the blur (w): the mip level of the normal map the scattered light
     /// reads, which also widens how far the light wraps past the terminator.
     pub subsurface: Vec4,
+    /// The opacity fall-off: alpha += 2^((x − N·V)·y)·z, with x = 1 and
+    /// y < 0 when it fades toward the silhouette, x = 0 and y > 0 when
+    /// toward the centre; a lit surface's emissive map is weighted by
+    /// N·V²·z + 1 − z (zero for none).
+    pub opacity_falloff: Vec4,
+}
+
+impl ExaParams {
+    /// The opacity fall-off of a record's amount (`0x64`) and exponent
+    /// (`0x68`), as the original packs it: the amount term
+    /// (2^(−1.8·exponent) + 1)·amount and the exponent term 1.8·exponent are
+    /// both negated when `inverted` (extra flag `0x100`); z is the amount
+    /// term's magnitude, x is 1 when the amount term is negative, and y is
+    /// the exponent term. With the usual positive amount, an inverted
+    /// fall-off fades toward the silhouette.
+    pub fn falloff(amount: f32, exponent: f32, inverted: bool) -> Vec4 {
+        let f = (-1.8 * exponent).exp2();
+        let sign = if inverted { -1.0 } else { 1.0 };
+        let term = (f + 1.0) * amount * sign;
+        let x = if term < 0.0 { 1.0 } else { 0.0 };
+        Vec4::new(x, 1.8 * exponent * sign, term.abs(), 0.0)
+    }
 }
 
 impl Default for ExaParams {
@@ -158,6 +189,7 @@ impl Default for ExaParams {
             gi_extent: Vec4::ONE,
             displacement: Vec4::ZERO,
             subsurface: Vec4::ZERO,
+            opacity_falloff: Vec4::ZERO,
         }
     }
 }
@@ -345,4 +377,41 @@ pub fn linear(c: f32) -> f32 {
 /// An sRGB colour as linear rgb.
 pub fn linear_rgb(c: [f32; 3]) -> Vec3 {
     Vec3::new(linear(c[0]), linear(c[1]), linear(c[2]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The alpha the shader gives an unlit surface with fall-off.
+    fn falloff_alpha(opacity: f32, f: Vec4, ndv: f32) -> f32 {
+        opacity + ((f.x - ndv) * f.y).exp2() * f.z
+    }
+
+    #[test]
+    fn salve_glow_fades_toward_its_silhouette() {
+        // The salve's glow: opacity 0, amount 1, exponent 2, inverted.
+        let f = ExaParams::falloff(1.0, 2.0, true);
+        assert!((f.z - 1.0825).abs() < 1e-4);
+        assert!((falloff_alpha(0.0, f, 1.0) - 1.0825).abs() < 1e-4);
+        assert!((falloff_alpha(0.0, f, 0.0) - 0.0893).abs() < 1e-4);
+        // Not inverted, the rim is the bright part.
+        let rim = ExaParams::falloff(1.0, 2.0, false);
+        assert!((falloff_alpha(0.0, rim, 0.0) - 1.0825).abs() < 1e-4);
+        assert!(falloff_alpha(0.0, rim, 1.0) < 0.09);
+    }
+
+    #[test]
+    fn negative_falloff_amount_flips_the_offset_only() {
+        // A negative amount (`wraithskin`: −1, exponent 1, not inverted)
+        // makes the packed amount term negative: x = 1 and the magnitude,
+        // with the exponent term as the flag leaves it.
+        let f = ExaParams::falloff(-1.0, 1.0, false);
+        assert_eq!((f.x, f.y), (1.0, 1.8));
+        assert!((f.z - (2f32.powf(-1.8) + 1.0)).abs() < 1e-6);
+        // Inverted as well, the two negations cancel in x.
+        let g = ExaParams::falloff(-1.0, 1.0, true);
+        assert_eq!((g.x, g.y), (0.0, -1.8));
+        assert_eq!(g.z, f.z);
+    }
 }

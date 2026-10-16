@@ -2,7 +2,9 @@
 //! light from the level's lights spreads through the open cells, one step
 //! per frame, and surfaces take their ambient from it. The occupancy comes
 //! from the world (`exa_world::gi_volume`); this module owns the volume
-//! textures, the propagation pass (`gi.wesl`) and the lights it injects.
+//! textures, the propagation pass (`gi.wesl`) and the lights it injects:
+//! point lights, and voxel lights (glowing items), which add their light
+//! straight into the volume around themselves.
 //! Rules: `docs/RENDERING.md` (Voxel GI).
 
 use std::sync::Arc;
@@ -29,7 +31,7 @@ use bevy::render::texture::GpuImage;
 use bevy::render::view::ExtractedView;
 use bevy::render::{Render, RenderApp, RenderStartup, RenderSystems};
 
-use crate::material::{ExaMaterial, flags};
+use crate::material::{ExaMaterial, flags, linear_rgb};
 
 pub struct GiPlugin;
 
@@ -142,6 +144,9 @@ pub struct GiTextures {
     scratch: Handle<Image>,
     pub origin: Vec3,
     pub extent: Vec3,
+    /// Voxel edge, metres, and the texture's size (X, Z, Y).
+    voxel: f32,
+    dims: UVec3,
     base_ambient: f32,
     /// Steps run at once when the volume is created.
     warm_up: u32,
@@ -155,10 +160,32 @@ pub struct GiTextures {
 #[derive(Component, Clone, Copy, Debug)]
 pub struct GiMultiplier(pub f32);
 
+/// A voxel light (the original's `0x3D0C` node: a salve's, a power
+/// crystal's or embers' glow). Every step it adds its colour straight into
+/// the voxels around it; it never lights a surface directly.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub struct VoxelLight {
+    /// lin(colour)·√intensity·3.
+    pub colour: Vec3,
+}
+
+impl VoxelLight {
+    /// The light of a node's sRGB colour and intensity: the intensity
+    /// counts by its square root, ×3 in the original's linear workflow.
+    pub fn new(srgb: [f32; 3], intensity: f32) -> Self {
+        Self {
+            colour: linear_rgb(srgb) * intensity.max(0.0).sqrt() * VOXEL_LIGHT_GAIN,
+        }
+    }
+}
+
 /// The lights injected into the volume this frame.
 #[derive(Resource, Clone, Default, ExtractResource)]
 #[extract_app(RenderApp)]
-pub struct GiLights(Vec<GiLight>);
+pub struct GiLights {
+    lights: Vec<GiLight>,
+    voxel_lights: Vec<GiVoxelLight>,
+}
 
 #[derive(Clone, Copy, Default, ShaderType)]
 struct GiLight {
@@ -170,11 +197,30 @@ struct GiLight {
 
 const MAX_LIGHTS: usize = 32;
 
+/// A voxel light as the pass reads it.
+#[derive(Clone, Copy, Default, ShaderType)]
+struct GiVoxelLight {
+    /// The light in voxels from the block's corner (texture axes X, Z, Y).
+    position: Vec4,
+    /// Per-step colour: [`VoxelLight::colour`] × 0.1.
+    colour: Vec4,
+    /// The voxels it reaches: from `lo` up to but not including `hi`.
+    lo: UVec4,
+    hi: UVec4,
+}
+
+/// Voxel lights injected into a block at once; the corpus has at most a
+/// handful in a level.
+const MAX_VOXEL_LIGHTS: usize = 64;
+
 #[derive(Clone, ShaderType)]
 struct GiParams {
     origin: Vec4,
     extent: Vec4,
     lights: [GiLight; MAX_LIGHTS],
+    /// x = the number of voxel lights.
+    voxel_count: UVec4,
+    voxel_lights: [GiVoxelLight; MAX_VOXEL_LIGHTS],
 }
 
 /// Lumens per unit of the original's light intensity (see `exa_world`).
@@ -183,6 +229,71 @@ const LUMENS_PER_INTENSITY: f32 = 8.0;
 const REACH: f32 = 1.25;
 /// The per-step injection of a light: 0.15 × 0.01 of its colour.
 const INJECTION: f32 = 0.0015;
+/// A voxel light's colour per unit of √intensity (the original's linear
+/// workflow; 0.6 on its legacy path).
+const VOXEL_LIGHT_GAIN: f32 = 3.0;
+/// The share of a voxel light's colour added per step.
+const VOXEL_LIGHT_SHARE: f32 = 0.1;
+/// The columns a voxel light reaches on each side of the voxel corner
+/// nearest it, and the slices below it (one more above).
+const VOXEL_LIGHT_REACH: i32 = 3;
+/// Columns at each side of a block a voxel light never reaches.
+const VOXEL_LIGHT_MARGIN: i32 = 8;
+
+/// The voxels a voxel light at `at` (in voxels from the block's corner,
+/// texture axes X, Z, Y) adds to, as the original draws it: 6 × 6 columns
+/// around the voxel corner nearest it, outside the block's 8-column
+/// margins, and the slices from 3 below that corner to 3 above (fewer when
+/// it is within 6 slices of the bottom; none at or below it). `None` when
+/// that leaves nothing.
+pub fn voxel_light_box(at: Vec3, dims: UVec3) -> Option<(UVec3, UVec3)> {
+    if !at.is_finite() {
+        return None;
+    }
+    let corner = at.round().as_ivec3();
+    let reach = VOXEL_LIGHT_REACH;
+    let columns = |c: i32, size: u32| {
+        let far = size as i32 - VOXEL_LIGHT_MARGIN;
+        ((c - reach).max(VOXEL_LIGHT_MARGIN), (c + reach).min(far))
+    };
+    let (x0, x1) = columns(corner.x, dims.x);
+    let (y0, y1) = columns(corner.y, dims.y);
+    let k = corner.z;
+    if x0 >= x1 || y0 >= y1 || k <= 0 {
+        return None;
+    }
+    // 2·reach + 1 slices from k − reach, k + 1 of them near the bottom.
+    let first = k - reach;
+    let count = (k + 1).min(2 * reach + 1);
+    let (z0, z1) = (first.max(0), (first + count).min(dims.z as i32));
+    if z0 >= z1 {
+        return None;
+    }
+    Some((
+        UVec3::new(x0 as u32, y0 as u32, z0 as u32),
+        UVec3::new(x1 as u32, y1 as u32, z1 as u32),
+    ))
+}
+
+/// What a voxel light adds to a voxel per step, per unit of its per-step
+/// colour (`gi.wesl` does the same): `offset` runs from the light to the
+/// voxel's centre in voxels (texture axes), `blocked` is min(20·(1 −
+/// o(voxel)·o(midpoint)), 1) with o = 1 − occupancy. The light falls off
+/// as max(1 − 5000·d², 0)⁴ with d in the block's texture units (W = 256
+/// voxels across, the vertical counted the same way), reaching nothing at
+/// 3.62 voxels; where geometry blocks it, only about 1.2 voxels around the
+/// light are lit.
+pub fn voxel_light_weight(offset: Vec3, dims: UVec3, blocked: f32) -> f32 {
+    let w = dims.x.max(1) as f32;
+    let h = dims.y.max(1) as f32;
+    let d = Vec3::new(offset.x / w, offset.y / h, offset.z / w);
+    let atn = (1.0 - 5000.0 * d.length_squared()).max(0.0).powi(4);
+    if atn <= 0.0 {
+        return 0.0;
+    }
+    let near = (2.0 - 0.75 / (atn * atn)).max(0.0);
+    atn * 0.25 * (1.0 - blocked * (1.0 - near))
+}
 
 fn volume_image(size: UVec3, format: TextureFormat, data: Vec<u8>, storage: bool) -> Image {
     let mut image = Image::new(
@@ -258,6 +369,8 @@ fn create_textures(
         scratch,
         origin: volume.origin,
         extent,
+        voxel: volume.voxel,
+        dims: size,
         base_ambient: volume.base_ambient,
         warm_up: volume.warm_up,
         serial: warm_up.serial,
@@ -272,12 +385,15 @@ fn gather_lights(
         Option<&GiMultiplier>,
         Option<&crate::lights::LightShaping>,
     )>,
+    voxel_lights: Query<(&VoxelLight, &GlobalTransform)>,
     textures: Option<Res<GiTextures>>,
 ) {
-    gi.0.clear();
+    gi.lights.clear();
+    gi.voxel_lights.clear();
     let Some(textures) = textures else {
         return;
     };
+    gather_voxel_lights(&mut gi.voxel_lights, &textures, voxel_lights.iter());
     // The lights whose reach overlaps the block, nearest its centre first
     // (the original injects the lights of each sector group).
     let (lo, hi) = (textures.origin, textures.origin + textures.extent);
@@ -298,12 +414,42 @@ fn gather_lights(
     for (light, at, share, shaping) in near.into_iter().take(MAX_LIGHTS) {
         let c = light.color.to_linear();
         let intensity = light.intensity / LUMENS_PER_INTENSITY * share.map_or(1.0, |m| m.0);
-        gi.0.push(GiLight {
+        gi.lights.push(GiLight {
             position_radius: at.translation().extend(light.range / REACH),
             colour: (Vec3::new(c.red, c.green, c.blue) * intensity * INJECTION).extend(0.0),
             shaping: shaping.map_or(Vec2::ONE, |s| s.0).extend(0.0).extend(0.0),
         });
     }
+}
+
+/// The voxel lights that reach into the block, nearest its centre first (the
+/// original injects every sector's voxel lights).
+fn gather_voxel_lights<'a>(
+    out: &mut Vec<GiVoxelLight>,
+    textures: &GiTextures,
+    lights: impl Iterator<Item = (&'a VoxelLight, &'a GlobalTransform)>,
+) {
+    let centre = textures.dims.as_vec3() * 0.5;
+    let mut near: Vec<(f32, GiVoxelLight)> = lights
+        .filter(|(light, _)| light.colour.max_element() > 0.0)
+        .filter_map(|(light, at)| {
+            // World X, Y, Z to texture X, Z, Y, in voxels.
+            let p = (at.translation() - textures.origin) / textures.voxel;
+            let voxels = Vec3::new(p.x, p.z, p.y);
+            let (lo, hi) = voxel_light_box(voxels, textures.dims)?;
+            Some((
+                voxels.distance_squared(centre),
+                GiVoxelLight {
+                    position: voxels.extend(0.0),
+                    colour: (light.colour * VOXEL_LIGHT_SHARE).extend(0.0),
+                    lo: lo.extend(0),
+                    hi: hi.extend(0),
+                },
+            ))
+        })
+        .collect();
+    near.sort_by(|a, b| a.0.total_cmp(&b.0));
+    out.extend(near.into_iter().take(MAX_VOXEL_LIGHTS).map(|(_, l)| l));
 }
 
 /// Points every surface material at the volume once it exists (and new
@@ -436,15 +582,26 @@ fn prepare_bind_group(
         return;
     };
     let mut entries = [GiLight::default(); MAX_LIGHTS];
-    for (slot, l) in entries.iter_mut().zip(&lights.0) {
+    for (slot, l) in entries.iter_mut().zip(&lights.lights) {
+        *slot = *l;
+    }
+    let mut voxel_entries = [GiVoxelLight::default(); MAX_VOXEL_LIGHTS];
+    for (slot, l) in voxel_entries.iter_mut().zip(&lights.voxel_lights) {
         *slot = *l;
     }
     let mut params = UniformBuffer::from(GiParams {
         origin: textures.origin.extend(textures.base_ambient),
         extent: textures
             .extent
-            .extend(lights.0.len().min(MAX_LIGHTS) as f32),
+            .extend(lights.lights.len().min(MAX_LIGHTS) as f32),
         lights: entries,
+        voxel_count: UVec4::new(
+            lights.voxel_lights.len().min(MAX_VOXEL_LIGHTS) as u32,
+            0,
+            0,
+            0,
+        ),
+        voxel_lights: voxel_entries,
     });
     params.write_buffer(&device, &queue);
     let Some(binding) = params.binding() else {
@@ -548,6 +705,81 @@ fn propagate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const BLOCK: UVec3 = UVec3::new(256, 256, 64);
+
+    #[test]
+    fn salve_voxel_light_colour() {
+        // The menu's Healing Salve: (0.2157, 0.6784, 1.0), intensity 16.
+        let light = VoxelLight::new([0.2157, 0.6784, 1.0], 16.0);
+        let expected = Vec3::new(0.458, 5.01, 12.0);
+        assert!((light.colour - expected).abs().max_element() < 0.01);
+        // Its per-step colour at its own voxel, in open space.
+        let step = light.colour * VOXEL_LIGHT_SHARE * voxel_light_weight(Vec3::ZERO, BLOCK, 0.0);
+        assert!((step - Vec3::new(0.0115, 0.125, 0.30)).abs().max_element() < 0.001);
+        // A spent salve (condition share 0.0044) is about 15 times dimmer.
+        let spent = VoxelLight::new([0.2157, 0.6784, 1.0], 16.0 * 0.0044);
+        assert!((spent.colour.z - 12.0 * 0.0044f32.sqrt()).abs() < 1e-3);
+        assert_eq!(VoxelLight::new([1.0; 3], -1.0).colour, Vec3::ZERO);
+    }
+
+    #[test]
+    fn voxel_light_falls_off_within_four_voxels() {
+        let w = |n: f32, blocked: f32| voxel_light_weight(Vec3::new(n, 0.0, 0.0), BLOCK, blocked);
+        assert!((w(0.0, 0.0) - 0.25).abs() < 1e-6);
+        assert!(w(3.6, 0.0) > 0.0);
+        assert_eq!(w(3.63, 0.0), 0.0);
+        // Vertical distances count as horizontal ones.
+        let up = voxel_light_weight(Vec3::new(0.0, 0.0, 2.0), BLOCK, 0.0);
+        assert!((up - w(2.0, 0.0)).abs() < 1e-7);
+        // Blocked by geometry it lights only about 1.2 voxels, a little more
+        // at the light itself.
+        assert!((w(0.0, 1.0) - 0.25 * 1.25).abs() < 1e-6);
+        assert!(w(1.2, 1.0) > 0.0);
+        assert_eq!(w(1.25, 1.0), 0.0);
+        assert!(w(1.0, 1.0) < w(1.0, 0.0));
+    }
+
+    #[test]
+    fn voxel_light_box_sums_as_the_original() {
+        // At a voxel centre the box gathers 22.0 voxels' worth in open
+        // space, and 3.8 where everything around blocks it.
+        let at = Vec3::new(100.5, 100.5, 30.5);
+        let (lo, hi) = voxel_light_box(at, BLOCK).unwrap();
+        assert_eq!((lo, hi), (UVec3::new(98, 98, 28), UVec3::new(104, 104, 35)));
+        let sum = |blocked: f32| {
+            let mut s = 0.0;
+            for z in lo.z..hi.z {
+                for y in lo.y..hi.y {
+                    for x in lo.x..hi.x {
+                        let centre = UVec3::new(x, y, z).as_vec3() + 0.5;
+                        s += voxel_light_weight(centre - at, BLOCK, blocked);
+                    }
+                }
+            }
+            s / 0.25
+        };
+        assert!((sum(0.0) - 22.0).abs() < 0.05);
+        assert!((sum(1.0) - 3.8).abs() < 0.05);
+    }
+
+    #[test]
+    fn voxel_light_box_keeps_out_of_margins_and_the_bottom() {
+        // Clamped to the 8-column margins, and empty inside them.
+        let (lo, hi) = voxel_light_box(Vec3::new(9.2, 247.0, 20.0), BLOCK).unwrap();
+        assert_eq!((lo.x, hi.x, lo.y, hi.y), (8, 12, 244, 248));
+        assert!(voxel_light_box(Vec3::new(3.0, 100.0, 20.0), BLOCK).is_none());
+        // Near the bottom: k + 1 slices from k − 3, none at or below it.
+        let (lo, hi) = voxel_light_box(Vec3::new(100.0, 100.0, 4.0), BLOCK).unwrap();
+        assert_eq!((lo.z, hi.z), (1, 6));
+        let (lo, hi) = voxel_light_box(Vec3::new(100.0, 100.0, 2.0), BLOCK).unwrap();
+        assert_eq!((lo.z, hi.z), (0, 2));
+        assert!(voxel_light_box(Vec3::new(100.0, 100.0, 0.4), BLOCK).is_none());
+        // At the top only the slices inside the block.
+        let (lo, hi) = voxel_light_box(Vec3::new(100.0, 100.0, 63.0), BLOCK).unwrap();
+        assert_eq!((lo.z, hi.z), (60, 64));
+        assert!(voxel_light_box(Vec3::new(f32::NAN, 0.0, 0.0), BLOCK).is_none());
+    }
 
     #[test]
     fn warm_up_progress_counts_the_newest_volume_only() {

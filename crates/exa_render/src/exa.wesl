@@ -22,7 +22,7 @@ struct ExaParams {
     diffuse: vec4<f32>,
     // Linear rgb × level; w = glossiness.
     specular: vec4<f32>,
-    // Linear rgb; a = unlit opacity.
+    // Linear rgb (×2 lit with an emissive map); a = unlit opacity.
     emissive: vec4<f32>,
     flags: u32,
     pad0: u32,
@@ -34,6 +34,8 @@ struct ExaParams {
     displacement: vec4<f32>,
     // Skin: the scattered share of the diffuse colour (rgb) and the blur (w).
     subsurface: vec4<f32>,
+    // Opacity fall-off: alpha += 2^((x − N·V)·y)·z.
+    opacity_falloff: vec4<f32>,
 }
 
 const DIFFUSE_MAP: u32 = 1u;
@@ -61,6 +63,8 @@ const FADE_RADIUS: f32 = 2.0;
 // The mip level of the diffuse map the light scattered under the skin
 // takes its colour from (the original's subsurface program).
 const SCATTER_COLOUR_LOD: f32 = 1.5;
+const ADDITIVE: u32 = 524288u;
+const OPACITY_FALLOFF: u32 = 1048576u;
 // Displacement-shadow taps toward each light: four per sub-sample over the
 // original's four supersampling passes.
 const SHADOW_STEPS: i32 = 16;
@@ -120,6 +124,21 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     return select(hi, lo, c <= vec3(0.04045));
 }
 
+// The colour as drawn. Alpha is clamped to [0, 1] as the original's 8-bit
+// target clamps a fragment before blending; the opacity fall-off takes it
+// past 1 at a glass's outline, which on Exarust's float target would
+// subtract what is behind. Additive surfaces (the original's SRC_ALPHA, ONE)
+// go through Bevy's premultiplied blending (ONE, ONE_MINUS_SRC_ALPHA) as
+// their colour, clamped to 1 likewise, times alpha with no alpha, which
+// leaves what is behind them whole.
+fn blended(rgb: vec3<f32>, alpha: f32) -> vec4<f32> {
+    let a = clamp(alpha, 0.0, 1.0);
+    if has(ADDITIVE) {
+        return vec4(min(rgb, vec3(1.0)) * a, 0.0);
+    }
+    return vec4(rgb, a);
+}
+
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     var out: FragmentOutput;
@@ -170,10 +189,16 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             e *= textureSampleBias(emissive_map, emissive_sampler, uv, TEXTURE_BIAS).rgb;
         }
         var a = material.emissive.a;
+        if has(OPACITY_FALLOFF) && has(EMISSIVE_MAP) {
+            // The opacity fall-off with the view angle: a salve's glow is
+            // strong where it faces the eye and fades toward its outline.
+            let f = material.opacity_falloff;
+            a += exp2((f.x - abs(dot(v, ns))) * f.y) * f.z;
+        }
         if has(OPACITY_MAP) {
             a *= textureSampleBias(opacity_map, opacity_sampler, uv, TEXTURE_BIAS).a;
         }
-        out.color = vec4(e, a);
+        out.color = blended(e, a);
         return out;
     }
 
@@ -359,9 +384,20 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         colour += specular * cavity;
     }
 
+    // The opacity fall-off, as on unlit surfaces but with the shaded normal,
+    // and an emissive map's glow dimmed toward the outline by the fall-off's
+    // amount, N·V²·z + 1 − z (1 without a fall-off). Only the PBR program
+    // does either; the older one's lit path has neither.
+    var fall = material.opacity_falloff;
+    if s.legacy {
+        fall = vec4(0.0);
+    }
+    if has(OPACITY_FALLOFF) && !s.legacy {
+        alpha += exp2((fall.x - s.ndv) * fall.y) * fall.z;
+    }
     var e = material.emissive.rgb;
     if has(EMISSIVE_MAP) {
-        e *= textureSampleBias(emissive_map, emissive_sampler, uv, TEXTURE_BIAS).rgb;
+        e *= textureSampleBias(emissive_map, emissive_sampler, uv, TEXTURE_BIAS).rgb * (s.ndv * s.ndv * fall.z + 1.0 - fall.z);
     }
     colour += e;
     // The character screen's fade: black by FADE_RADIUS from the origin.
@@ -369,6 +405,6 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let a = min(length(p.xz) / FADE_RADIUS, 1.0);
         colour *= 1.0 - a * (2.0 - a);
     }
-    out.color = vec4(colour, alpha);
+    out.color = blended(colour, alpha);
     return out;
 }

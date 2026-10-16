@@ -17,6 +17,7 @@ struct ExaParams {
     gi_extent: vec4<f32>,
     displacement: vec4<f32>,
     subsurface: vec4<f32>,
+    opacity_falloff: vec4<f32>,
 }
 
 const DIFFUSE_MAP: u32 = 1u;

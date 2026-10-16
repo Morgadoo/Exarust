@@ -58,7 +58,7 @@ name and body only.
 | tag | contents |
 |---|---|
 | `0x10000000` | display name[16], a word (0, 1 or 2, else noise; [guess] editor state), the parent id: the editor folder for global items (`+Apparel/+Misc`, `+Clothes/+Legs`, …), the source item for level-local copies |
-| `0x00100000` | ground or icon model name[16] (`Objects.rpk` or `Objlib.rpk`, or `@` and a factory), …; absent in "Braies_A" |
+| `0x00100000` | ground or icon model name[16] (`Objects.rpk` or `Objlib.rpk`, or `@` and a factory), then a flags word: bit 0 dims the model's voxel lights and glow meshes by the placement's condition byte (salves `0x51`/`0x1`, power crystals `0x1031`, Diviner's Deck, Repair Sphere, PedestalHand; see `RFC.md`, placed objects), …; absent in "Braies_A" |
 | `0x1000` | item body: the worn model name[16] (`Characters.rpk`), the occupancy table at `0x10`, the slot table at `0xA8`, coverage and protection at `0x150`/`0x1A0`, the appearance block at `0x1B0..0x214` |
 
 **Worn and ground model.** A character is dressed in the model the body

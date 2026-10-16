@@ -84,8 +84,10 @@ program.
 | `0x3C` | glossiness |
 | `0x40` | specular level |
 | `0x44` | render class (low nibble 3 = transparent; bits 12–14 = blend mode) |
-| `0x48` | flags: lit `0x3`, two-sided `0x10`, refraction `0x200`, opacity falloff `0x800`, plus the texture slots |
+| `0x48` | flags: lit `0x3`, specular `0x4`, emissive `0x8`, two-sided `0x10`, refraction `0x200`, opacity falloff `0x800` (the loader also sets it when `0x64` > 0), plus the texture slots |
+| `0x4C` | extra flags: `0x100` the opacity fall-off fades toward the outline (most records), `0x100000` displacement shadows |
 | `0x50` | type: bit 0 means the specular map is a packed intensity/gloss/metal map |
+| `0x64`, `0x68` | opacity fall-off amount and exponent |
 
 **Texture slots**:
 - `0x20000` diffuse
@@ -140,7 +142,30 @@ program.
   - no Fresnel per light, and diffuse is N·L;
   - (lights + reflection) × specular colour × (0.5 + 0.5·Schlick);
   - the specular colour is ×3 with a specular map.
-- Emissive adds on top. Unlit materials show only their emissive.
+- **Emissive** (MatEmi) is lin(emissive colour), doubled for materials
+  with lit or specular bits and an emissive layer (torch handles, lamp
+  bodies). It adds on top. With an emissive map the PBR program weights
+  it by N·V²·z + 1 − z, z the fall-off's amount term (0 without a
+  fall-off).
+- **Unlit** materials (no lit or specular bits) show only their emissive:
+  colour MatEmi × the emissive map, alpha the opacity (`0x38`, not the
+  colour's alpha), plus the fall-off when they have an emissive map.
+- **Opacity fall-off**, for every record whose amount `0x64` exceeds 0.01
+  in magnitude: alpha += 2^((x − N·V)·y)·z, with f = 2^(−1.8·`0x68`).
+  The original packs a = (f + 1)·`0x64` and y = 1.8·`0x68`, both negated
+  with extra flag `0x100`; z = |a|, and x = 1 when a is negative, else 0.
+  With the usual positive amount and the flag the surface fades toward its
+  outline; without the flag, toward its centre. The opacity loses
+  (f + 1)·f. On lit surfaces only the PBR program adds the term (and
+  weights the emissive map, above); the legacy program's lit path does
+  neither, though no legacy lit record carries a fall-off. The menu
+  salve's glow (`¹jarsm01glow`: unlit, opacity 0, amount 1, exponent 2)
+  has alpha 1.08 where it faces the eye and 0.09 at its outline. Every
+  additive material in the corpus is such a glow (salves, power crystals,
+  light-globe glass, teleporters, lamps).
+- Emissive surfaces light nothing else: the GI takes no emissive term. A
+  glowing object spreads light through a voxel light (see Voxel GI) or a
+  point light in its model.
 - **Parallax** (`0x800000` height layer, with a normal map; shading quality
   ≥ 4):
   - Depth: P = round(50·L), where L is the height layer's amount (body +4;
@@ -207,7 +232,12 @@ is effectively off in the original (its step is ~0).
 - `0x100` is opaque;
 - ONE / ONE_MINUS_SRC_ALPHA is premultiplied (the diffuse is pre-scaled by
   opacity);
-- SRC_ALPHA / ONE is additive;
+- SRC_ALPHA / ONE is additive. Exarust draws it through Bevy's
+  premultiplied blending as (colour·alpha, 0), colour clamped to 1 first;
+- every fragment's alpha is clamped to [0, 1] before blending, as the
+  original's 8-bit target clamps it. The opacity fall-off takes it past 1
+  at a glass's outline, which on Exarust's float target would otherwise
+  subtract what is behind;
 - `0x4000` is alpha-tested and drawn opaque (cobwebs: alpha = opacity ·
   map², cut at ½).
 
@@ -330,6 +360,33 @@ For each updated voxel, with occ normalised:
 - the lights injected are those whose reach overlaps the block, nearest its
   centre first, up to 32. The original injects each sector group's lights,
   up to 12 per group.
+
+**Voxel lights** (`0x3D0C` nodes: glowing items and a few level nodes)
+add straight into the volume, after the propagation, every step and in
+the warm-up:
+- colour C = lin(rgb)·√intensity·3 (the original's linear workflow; 0.6
+  on its legacy path), × 0.1 per step. An item whose model section sets
+  bit 0 scales the intensity of the voxel lights under its root by
+  k = (1 − c/255)², c its placement's condition byte, and the emissive
+  colour (not its alpha) of the meshes under its root by the same k, so a
+  spent salve's glow dims with its light;
+- the voxels reached: 6 × 6 columns around the voxel corner nearest the
+  light, never in the 8-column margins, and the slices from 3 below that
+  corner to 3 above (k + 1 slices from k − 3 when the corner k is below
+  slice 6; none at or below the bottom);
+- each voxel gains C·0.1·atn·0.25·sdw, with atn = max(1 − 5000·d², 0)⁴, d
+  in texture units (the vertical counted in voxels across, 256), which
+  reaches nothing at 3.62 voxels (72 cm);
+- blocked = min(20·(1 − o(voxel)·o(midpoint)), 1) with o = 1 − occupancy,
+  and sdw = 1 − blocked·(1 − max(2 − 0.75/atn², 0)): through geometry the
+  light reaches only about 1.2 voxels;
+- alpha is left alone, and the stored radius is unused. Exarust adds the
+  term only where the step writes, keeps up to 64 voxel lights per block,
+  nearest its centre first, apart from the point lights.
+
+The menu's Healing Salve adds (0.011, 0.125, 0.30) per step at its own
+voxel, 1.7 times a torch's blue over its box, packed into a 70 cm ball:
+the blue on the shelf and the wall behind it.
 
 Light builds up toward about direct/(1 − k). With open walls and dark
 sectors around it, the menu room converges within a few hundred steps.
@@ -591,8 +648,10 @@ The inventory and trade dolls light the body differently (a sun of sRGB
 
 ## Not done yet
 
-The jittered supersampling pattern, medium and large fire templates, the sun
-and terrain in the GI volume, several resident GI blocks, distance fog (the
+The emissive scale of a fire's parent mesh by the fire, the emissive
+map's alpha on unlit surfaces without a fall-off, the jittered
+supersampling pattern, medium and large fire templates, the sun and
+terrain in the GI volume, several resident GI blocks, distance fog (the
 first fog mode), vertex dirt, glass refraction, effect programs (smoke,
 powers), the hair program, terrain parallax and wetness, and the outdoor
 environment cube.

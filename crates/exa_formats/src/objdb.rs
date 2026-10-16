@@ -18,6 +18,9 @@ const NAME: u32 = 0x1000_0000;
 const MODEL: u32 = 0x0010_0000;
 const BODY: u32 = 0x1000;
 const WEAPON: u32 = 0x4000;
+/// Model flag: the item's voxel lights are scaled by (1 − c/255)², with c
+/// the condition byte of its placement (a salve's charge).
+pub const CONDITION_SCALED: u32 = 1;
 /// The weapon's stored part choices and materials are valid.
 pub const WEAPON_STORED: u32 = 0x1000_0000;
 const APPEARANCE_OFFSET: usize = 0x1B0;
@@ -50,6 +53,9 @@ pub struct Item {
     /// `Objects.rpk` or `Objlib.rpk`, or `@` and a factory name); may be
     /// empty, as for the underwear.
     pub model: String,
+    /// The model section's word after the name: bit 0 ([`CONDITION_SCALED`])
+    /// dims the model's glow by the placed object's condition byte.
+    pub model_flags: u32,
     /// The `Characters.rpk` entry the item is worn as, named by its body;
     /// empty without a body.
     pub worn_model: String,
@@ -154,6 +160,17 @@ impl Item {
             .fold(0, |m, (s, _)| m | 1 << s)
     }
 
+    /// The share of its voxel lights' intensity a placed copy keeps:
+    /// (1 − c/255)² with c bits 16–23 of the placement's flags word, for
+    /// items whose model flags carry [`CONDITION_SCALED`]; 1 otherwise.
+    pub fn light_share(&self, placement_flags: u32) -> f32 {
+        if self.model_flags & CONDITION_SCALED == 0 {
+            return 1.0;
+        }
+        let c = ((placement_flags >> 16) & 0xFF) as f32;
+        (1.0 - c / 255.0).powi(2)
+    }
+
     /// Whether the item covers the groin on the innermost layer, as
     /// trousers, hose and braies do.
     pub fn covers_groin(&self) -> bool {
@@ -225,6 +242,7 @@ impl Item {
             id,
             name: String::new(),
             model: String::new(),
+            model_flags: 0,
             worn_model: String::new(),
             appearance: None,
             slot_layers: [0; SLOTS],
@@ -246,7 +264,12 @@ impl Item {
             })?;
             match tag {
                 NAME => item.name = name(body),
-                MODEL => item.model = name(body),
+                MODEL => {
+                    item.model = name(body);
+                    item.model_flags = body
+                        .get(16..20)
+                        .map_or(0, |w| u32::from_le_bytes(w.try_into().expect("4 bytes")));
+                }
                 BODY => {
                     item.worn_model = name(body);
                     let table = OCCUPANCY_OFFSET..OCCUPANCY_OFFSET + OCCUPANCY_BONES * 8;
@@ -413,6 +436,28 @@ mod tests {
         assert_eq!(item.occupancy, [0; OCCUPANCY_BONES]);
         assert!(!item.covers_groin());
         assert!(item.appearance.is_none());
+    }
+
+    #[test]
+    fn condition_scales_the_lights_of_marked_models() {
+        let mut model = padded("JarSalve A01", 16);
+        model.extend(0x51u32.to_le_bytes());
+        let salve = Item::parse(0x12, &section(MODEL, &model)).unwrap();
+        assert_eq!(salve.model, "JarSalve A01");
+        assert_eq!(salve.model_flags, 0x51);
+        assert_eq!(salve.light_share(0), 1.0);
+        // An almost spent salve (condition byte 0xEE).
+        let spent = salve.light_share(0x00EE_0000);
+        assert!((spent - (17.0f32 / 255.0).powi(2)).abs() < 1e-6);
+        // Other bytes of the word leave it alone.
+        assert_eq!(salve.light_share(0xFF00_FFFF), 1.0);
+        // A model without the flag, and a section too short for the word.
+        let mut lamp = padded("Lamp", 16);
+        lamp.extend(0x50u32.to_le_bytes());
+        let lamp = Item::parse(1, &section(MODEL, &lamp)).unwrap();
+        assert_eq!(lamp.light_share(0x00EE_0000), 1.0);
+        let short = Item::parse(1, &section(MODEL, &padded("Jar", 16))).unwrap();
+        assert_eq!(short.model_flags, 0);
     }
 
     #[test]

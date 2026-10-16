@@ -268,8 +268,10 @@ Hits land where the weapon actually touched, and armour visibly matters.
 
 Done: the original's render pipeline (legacy and PBR programs, the
 environment cube, parallax, supersampling without MSAA, sharpening),
-voxel GI, fires and their particles, point lights that stop at walls with
-cached cube shadows, and basic audio (music, ambience, impacts, footsteps).
+voxel GI with the voxel lights of glowing items, emissive surfaces drawn
+as the original's (additive glows, opacity fall-off), fires and their
+particles, point lights that stop at walls with cached cube shadows, and
+basic audio (music, ambience, impacts, footsteps).
 See `docs/RENDERING.md` and `docs/PERFORMANCE.md`.
 
 - Materials: one `ExaMaterial` whose parameters follow

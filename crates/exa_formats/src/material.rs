@@ -4,8 +4,8 @@
 //! The payload is a 184-byte block of shading parameters followed by 56-byte
 //! texture layer records. Of the block, the emissive, diffuse and specular
 //! colours, opacity, glossiness, specular level, render class, shading flags,
-//! material kind, extra flags and the displacement-shadow step and bias are
-//! decoded; the rest (among it the subsurface colour, the opacity fall-off and
+//! material kind, extra flags, the displacement-shadow step and bias and the
+//! opacity fall-off are decoded; the rest (among it the subsurface colour and
 //! the refraction parameters) is not yet. Each layer names a texture and
 //! the slot it fills. Slot roles were assigned from the suffixes of the
 //! texture names that use them across the retail data (`d` diffuse, `n`
@@ -79,11 +79,16 @@ pub struct Material {
     /// 0: legacy (diffuse ×1.5); bit 0: the specular map is a packed
     /// intensity/gloss/metal map.
     pub kind: u32,
-    /// Extra flags (`0x4C`): `0x100000` enables displacement shadows.
+    /// Extra flags (`0x4C`): `0x100000` enables displacement shadows,
+    /// `0x100` turns the opacity fall-off toward the silhouette around.
     pub extra: u32,
     /// Displacement-shadow step and bias (`0x5C`, `0x60`), with a height map.
     pub displacement_step: f32,
     pub displacement_bias: f32,
+    /// Opacity fall-off amount and exponent (`0x64`, `0x68`): surfaces
+    /// fade with the view angle when the amount exceeds 0.01.
+    pub falloff_amount: f32,
+    pub falloff_exponent: f32,
     pub layers: Vec<TextureLayer>,
 }
 
@@ -156,6 +161,8 @@ impl Material {
             extra: u32_at(0x4C),
             displacement_step: f32_at(0x5C),
             displacement_bias: f32_at(0x60),
+            falloff_amount: f32_at(0x64),
+            falloff_exponent: f32_at(0x68),
             layers,
         })
     }
@@ -212,6 +219,8 @@ mod tests {
         p[0x4C..0x50].copy_from_slice(&0x0010_0100u32.to_le_bytes());
         p[0x5C..0x60].copy_from_slice(&0.5f32.to_le_bytes());
         p[0x60..0x64].copy_from_slice(&0.25f32.to_le_bytes());
+        p[0x64..0x68].copy_from_slice(&1.0f32.to_le_bytes());
+        p[0x68..0x6C].copy_from_slice(&2.0f32.to_le_bytes());
         let mut h = layer(0x0080_0000, "UA1FA01H.rfi");
         h[12..16].copy_from_slice(&0.6f32.to_le_bytes());
         p.extend(h);
@@ -221,6 +230,7 @@ mod tests {
         assert!((height.amount - 0.6).abs() < 1e-6);
         assert_eq!(m.extra, 0x0010_0100);
         assert_eq!((m.displacement_step, m.displacement_bias), (0.5, 0.25));
+        assert_eq!((m.falloff_amount, m.falloff_exponent), (1.0, 2.0));
     }
 
     #[test]

@@ -1,9 +1,10 @@
 // One step of the original's voxel global illumination, a light-propagation
 // volume: each open voxel gathers its eight diagonal neighbours' light
 // (weighted by how open they are), keeps most of it, gains a faint base
-// ambient and the direct light of nearby lights. Light builds up over many
-// steps. Storage is 8-bit sRGB like the original's. Rules:
-// docs/RENDERING.md (Voxel GI).
+// ambient and the direct light of nearby lights; voxel lights (glowing
+// items) then add their light straight into the voxels around them. Light
+// builds up over many steps. Storage is 8-bit sRGB like the original's.
+// Rules: docs/RENDERING.md (Voxel GI).
 
 struct GiLight {
     // World position (m), radius (m).
@@ -14,12 +15,25 @@ struct GiLight {
     shaping: vec4<f32>,
 }
 
+struct GiVoxelLight {
+    // The light in voxels from the block's corner (texture axes).
+    position: vec4<f32>,
+    // Per-step colour (linear colour × √intensity × 3 × 0.1).
+    colour: vec4<f32>,
+    // The voxels it reaches: lo up to but not including hi.
+    lo: vec4<u32>,
+    hi: vec4<u32>,
+}
+
 struct GiParams {
     // Lowest corner of the block (m); w = base ambient per step.
     origin: vec4<f32>,
     // Size of the block (m); w = number of lights.
     extent: vec4<f32>,
     lights: array<GiLight, 32>,
+    // x = number of voxel lights.
+    voxel_count: vec4<u32>,
+    voxel_lights: array<GiVoxelLight, 64>,
 }
 
 @group(0) @binding(0) var light_prev: texture_3d<f32>;
@@ -37,6 +51,38 @@ fn to_srgb(c: vec3<f32>) -> vec3<f32> {
 
 fn openness(occ: f32) -> f32 {
     return max(1.0 - 13.0 * occ, 0.0);
+}
+
+// What the voxel lights add to voxel `id` this step (the original's
+// gi_emission pass, one light at a time). Each reaches the box the CPU
+// worked out for it and falls off as max(1 − 5000·d², 0)⁴, with d in
+// texture units (the vertical counted in voxels across, W = 256), nothing
+// beyond 3.62 voxels. Geometry at the voxel or halfway to the light
+// (openness 1 − occupancy, unlike the propagation's) leaves only the
+// voxels within about 1.2 of the light lit.
+fn voxel_lights(id: vec3<u32>, dims: vec3<u32>) -> vec3<f32> {
+    var rgb = vec3(0.0);
+    let size = vec3<f32>(dims);
+    let centre = vec3<f32>(id) + 0.5;
+    for (var i = 0u; i < params.voxel_count.x; i++) {
+        let lt = params.voxel_lights[i];
+        if any(id < lt.lo.xyz) || any(id >= lt.hi.xyz) {
+            continue;
+        }
+        let to = (centre - lt.position.xyz) / vec3(size.x, size.y, size.x);
+        let atn = pow(max(1.0 - dot(to, to) * 5000.0, 0.0), 4.0);
+        if atn <= 0.0 {
+            continue;
+        }
+        let here = centre / size;
+        let mid = mix(lt.position.xyz / size, here, 0.5);
+        let open_here = 1.0 - textureSampleLevel(occupancy, linear_sampler, here, 0.0).r;
+        let open_mid = 1.0 - textureSampleLevel(occupancy, linear_sampler, mid, 0.0).r;
+        let blocked = min(20.0 * (1.0 - open_here * open_mid), 1.0);
+        let near = max(2.0 - 0.75 / (atn * atn), 0.0);
+        rgb += lt.colour.rgb * atn * 0.25 * (1.0 - blocked * (1.0 - near));
+    }
+    return rgb;
 }
 
 @compute @workgroup_size(4, 4, 4)
@@ -93,5 +139,6 @@ fn propagate(@builtin(global_invocation_id) id: vec3<u32>) {
         let atn = pow(max(1.0 - d / max(lt.position_radius.w, 1e-3), 0.0), 4.0) * open * shape;
         rgb += lt.colour.rgb * atn;
     }
+    rgb += voxel_lights(id, dims);
     textureStore(light_next, vec3<i32>(id), vec4(to_srgb(max(rgb, vec3(0.0))), stored_alpha));
 }

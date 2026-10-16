@@ -18,7 +18,9 @@ pub mod tag {
     pub const MESH: u32 = 0x0000_3D03;
     pub const MESH_V1: u32 = 0x0000_3D01;
     pub const MESH_V6: u32 = 0x0000_3D06;
-    pub const MESH_VC: u32 = 0x0000_3D0C;
+    /// A voxel light node: light added straight into the GI volume, not a
+    /// mesh (`rfc::NODE_VOXEL_LIGHT`).
+    pub const VOXEL_LIGHT: u32 = 0x0000_3D0C;
     /// Tile-grid level header (wall/floor set names and the cell grid).
     pub const LEVEL_GRID: u32 = 0x0000_3DED;
 }
