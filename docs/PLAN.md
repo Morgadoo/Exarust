@@ -228,9 +228,16 @@ joints and the knee a hinge; the skeleton's links meet the parent at the
 stored point plus the model's translation, unturned; corrections are shared
 by the parts' mobilities; living pivots, limp pivots and slack limits follow
 the original's laws; the leg limit strengths and the limp smoothing are
-kept ([formats/RSQ.md](formats/RSQ.md)). Still to do: limp joint damping,
-link PD muscles, recovery steps, foot planting, collisions between
-bodies.
+kept ([formats/RSQ.md](formats/RSQ.md)). Done (change `damp-limp-joints`,
+C4): a limp joint is damped inside its range through each link's smoothed
+length, set from the pose the body is built in and reset when it goes
+limp, so the limp character lies curled on its side instead of kneeling;
+velocity retention is the original's default environment (0.426 / 0.25 /
+0.05 per second, banded by each limp part's speed; living limbs keep the
+fast value). Its weaker resting damping leaves some corpses jittering at a
+few cm/s, above Exarust's 1 cm/s sleep rule, until the original's sleep
+countdown (S1) lands. Still to do: the sleep countdown, link PD muscles,
+recovery steps, foot planting, collisions between bodies.
 
 This phase carries the most risk and defines how the game feels.
 

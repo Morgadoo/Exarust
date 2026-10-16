@@ -83,6 +83,30 @@ fn leg_and_hand() -> Ragdoll {
     Ragdoll::new(&setup)
 }
 
+/// A pelvis and a femur with its two stored links, both inside their slack
+/// as built (8.07 and 2.17 cm apart).
+fn pelvis_and_femur() -> Ragdoll {
+    let cm = |x: f32, y: f32, z: f32| Vec3::new(x, y, z) * 0.01;
+    let hip = cm(-9.07, -8.46, 3.5);
+    let pelvis = Affine3A::from_translation(Vec3::Y);
+    let mut setup = vec![
+        part(1, None, pelvis, Vec3::ZERO, Vec3::new(0.15, 0.1, 0.1)),
+        part(
+            2,
+            Some(0),
+            pelvis * Affine3A::from_translation(hip),
+            cm(0.0, -22.0, 0.0),
+            Vec3::new(0.06, 0.22, 0.06),
+        ),
+    ];
+    setup[1].origin = hip;
+    setup[1].links = vec![
+        (cm(0.0, -12.49, 0.0), cm(2.65, -9.88, 7.16), 0.14879),
+        (cm(8.32, 0.0, 0.0), cm(8.04, -2.15, 0.0), 0.03029),
+    ];
+    Ragdoll::new(&setup)
+}
+
 /// Every part with a parent takes the skeleton's links and then a pivot from
 /// its origin to its place in the parent; the parent's link points are the
 /// stored ones plus that place, never turned by the part's rest rotation.
@@ -165,7 +189,7 @@ fn leg_limits_and_smoothing() {
 #[test]
 fn pivots_and_limits_correct_as_the_original() {
     let body = leg_and_hand();
-    let (pivot, limit) = (
+    let (mut pivot, mut limit) = (
         links_of(&body, 2).last().unwrap().clone(),
         links_of(&body, 2)[1].clone(),
     );
@@ -269,7 +293,9 @@ fn the_hips_stay_in_their_sockets_under_a_shove() {
 }
 
 /// The knee is a hinge: its origin pivot and a pivot on its lateral axis let
-/// a lower leg struck sideways and forward turn about that axis only.
+/// a lower leg struck sideways and forward turn about that axis only. A limp
+/// knee is damped inside its range, so it is struck three times as hard and
+/// bends less.
 #[test]
 fn the_knee_bends_about_its_lateral_axis() {
     let femur = Affine3A::from_translation(Vec3::new(0.0, 1.0, 0.0));
@@ -294,13 +320,15 @@ fn the_knee_bends_about_its_lateral_axis() {
             0.12,
         ),
     ];
-    for living in [false, true] {
+    // How hard the lower leg is struck, how far it must bend (°) and how
+    // near the knee's plane it must stay.
+    for (living, blow, least, most) in [(false, 3.0, 5.0, 2.5), (true, 1.0, 10.0, 5.0)] {
         let mut body = Ragdoll::new(&setup);
         if living {
             body = body.with_drive();
             body.fall();
         }
-        body.shove(3, Vec3::new(2.0, 0.0, 3.0), 0.0);
+        body.shove(3, Vec3::new(2.0, 0.0, 3.0) * blow, 0.0);
         let mut bent = 0.0f32;
         let mut off = 0.0f32;
         for _ in 0..83 {
@@ -312,10 +340,190 @@ fn the_knee_bends_about_its_lateral_axis() {
             off = off.max(axis.x.abs().asin().to_degrees());
             bent = bent.max(axis.z.atan2(-axis.y).abs().to_degrees());
         }
-        assert!(bent > 10.0, "the knee barely bent: {bent:.1}°");
         assert!(
-            off < 5.0,
+            bent > least,
+            "the knee barely bent: {bent:.1}° (living {living})"
+        );
+        assert!(
+            off < most,
             "the lower leg left the knee's plane by {off:.1}° (living {living})"
         );
     }
+}
+
+/// Inside its slack a limp link is a damper on its length. Its smoothed
+/// length L follows the gap, L ← s·L + (1 − s)·|d|, and each pass takes the
+/// points back to the L they had. When each pass closes its whole
+/// correction, the length and L meet within the tick, and of the change
+/// inertia made only (1 − s)/(2 − s) survives: 0.20 for the femur's point
+/// 12.49 cm from its origin (s = 0.755). Beyond the slack the link is a
+/// hard radius, and L is the slack.
+#[test]
+fn limp_slack_links_damp_through_their_smoothed_length() {
+    let body = leg_and_hand();
+    let mut link = links_of(&body, 1)[0].clone();
+    // The posed distance, set when the body was built.
+    let (a, b) = (
+        body.parts[1].point(&link.on_part),
+        body.parts[0].point(&link.on_parent),
+    );
+    assert!(
+        (link.length - a.distance(b)).abs() < 1e-6,
+        "{}",
+        link.length
+    );
+    let s = link.smoothing;
+    assert!((s - 0.755).abs() < 1e-3);
+    // At its smoothed length the link does nothing.
+    link.length = 0.1;
+    assert_eq!(link.limp(Vec3::Y * 0.1), None);
+    // Inertia stretched it by 1 cm this tick: 20 passes, each closing what
+    // the link asks for.
+    let mut d = Vec3::Y * 0.11;
+    for _ in 0..LINK_ITERATIONS {
+        if let Some(c) = link.limp(d) {
+            d -= c;
+        }
+    }
+    let kept = (d.length() - 0.1) / 0.01;
+    assert!(
+        (kept - (1.0 - s) / (2.0 - s)).abs() < 1e-3 && (kept - 0.197).abs() < 2e-3,
+        "kept {kept:.4} of the stretch"
+    );
+    assert!((link.length - d.length()).abs() < 1e-5);
+    // Beyond its 14.88 cm of slack: the excess at full strength.
+    let c = link.limp(Vec3::Y * 0.2).unwrap();
+    assert!(c.abs_diff_eq(Vec3::Y * (0.2 - link.slack), 1e-6), "{c}");
+    assert_eq!(link.length, link.slack);
+}
+
+/// Turns the femur and lower leg of `body` by `turn` about the hip, at rest.
+fn bend_the_hip(body: &mut Ragdoll, turn: Quat) {
+    let hip: Vec3 = body.parts[1].transform().translation.into();
+    let about = Affine3A::from_translation(hip)
+        * Affine3A::from_quat(turn)
+        * Affine3A::from_translation(-hip);
+    for p in &mut body.parts[1..2] {
+        for k in 0..4 {
+            p.positions[k] = about.transform_point3(p.positions[k]);
+            p.previous[k] = p.positions[k];
+        }
+    }
+}
+
+/// The femur's rotation relative to the pelvis.
+fn hip_angle(body: &Ragdoll) -> Quat {
+    let pelvis = body.parts[0].transform();
+    let femur = body.parts[1].transform();
+    Quat::from_mat3a(&(pelvis.matrix3.inverse() * femur.matrix3))
+}
+
+/// Going limp starts each slack link's smoothed length where the link is,
+/// within its slack, as the original's death does: a joint bent while the
+/// body lived and at rest inside its range then stays where it is. Left at
+/// the lengths of the pose it was built in, the hip springs back.
+#[test]
+fn a_joint_gone_limp_at_rest_stays_put() {
+    for reset in [true, false] {
+        let mut body = pelvis_and_femur().with_drive();
+        bend_the_hip(&mut body, Quat::from_rotation_x(0.35));
+        let bent = hip_angle(&body);
+        if reset {
+            body.go_limp();
+            for (k, l) in body.links.iter().enumerate() {
+                let (a, b) = (
+                    body.parts[l.part].point(&l.on_part),
+                    body.parts[l.parent].point(&l.on_parent),
+                );
+                let want = if l.slack > 0.0 {
+                    a.distance(b).min(l.slack)
+                } else {
+                    0.0
+                };
+                assert!((l.length - want).abs() < 1e-6, "link {k}: {}", l.length);
+            }
+        } else {
+            body.drive = None;
+        }
+        for _ in 0..200 {
+            body.tick(NONE);
+        }
+        let moved = hip_angle(&body).angle_between(bent).to_degrees();
+        if reset {
+            assert!(moved < 0.1, "the hip moved {moved:.2}° at rest");
+        } else {
+            assert!(moved > 5.0, "the hip moved only {moved:.2}°");
+        }
+    }
+    // A link pulled past its slack starts at the slack.
+    let mut body = pelvis_and_femur().with_drive();
+    let k = body.links_of[1].start + 1;
+    for p in &mut body.parts[1..2] {
+        for x in p.positions.iter_mut().chain(p.previous.iter_mut()) {
+            *x += Vec3::X * 0.1;
+        }
+    }
+    body.go_limp();
+    assert_eq!(body.links[k].length, body.links[k].slack);
+}
+
+/// A limp leg swinging inside its range is damped by its links: its swing,
+/// and the stretch of its long link, keep 0.8 a tick and under 0.2 after
+/// ten ticks (the points' weights spread each pass's correction, so the
+/// body keeps more than the 0.20 of a link closing in full), where a leg
+/// held by its hip alone keeps 0.86.
+#[test]
+fn a_limp_swing_inside_its_range_is_damped() {
+    // The hip's turn and its long link's stretch in each tick after a swing
+    // of 0.03 rad per tick.
+    let swing = |body: &mut Ragdoll| {
+        let hip: Vec3 = body.parts[1].transform().translation.into();
+        let back = Affine3A::from_translation(hip)
+            * Affine3A::from_rotation_x(-0.03)
+            * Affine3A::from_translation(-hip);
+        for p in &mut body.parts[1..2] {
+            for k in 0..4 {
+                p.previous[k] = back.transform_point3(p.positions[k]);
+            }
+        }
+        let k = body.links_of[1].start;
+        let length = |body: &Ragdoll, previous: bool| {
+            let l = &body.links[k];
+            let at = |p: &Part, w: &[f32; 4]| {
+                (0..4)
+                    .map(|i| if previous { p.previous[i] } else { p.positions[i] } * w[i])
+                    .sum::<Vec3>()
+            };
+            at(&body.parts[0], &l.on_parent).distance(at(&body.parts[1], &l.on_part))
+        };
+        let stretch0 = length(body, false) - length(body, true);
+        let mut out = Vec::new();
+        for _ in 0..10 {
+            let before = hip_angle(body);
+            body.tick(NONE);
+            out.push((
+                hip_angle(body).angle_between(before) / 0.03,
+                (length(body, false) - length(body, true)) / stretch0,
+            ));
+        }
+        out
+    };
+    let damped = swing(&mut pelvis_and_femur());
+    let mut free = pelvis_and_femur();
+    for k in free.links_of[1].clone() {
+        if !free.links[k].origin {
+            free.links[k].strength = 0.0;
+        }
+    }
+    let free = swing(&mut free);
+    let (first, tenth) = (damped[0], damped[9]);
+    assert!(
+        first.0 < 0.85 && first.1 < 0.85,
+        "first tick kept {first:?}"
+    );
+    assert!(tenth.0 < 0.2 && tenth.1 < 0.2, "tenth tick kept {tenth:?}");
+    assert!(
+        free[0].0 > 0.95 && free[9].0 > 0.8,
+        "a free hip kept {free:?}"
+    );
 }

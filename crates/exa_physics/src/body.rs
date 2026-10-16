@@ -5,10 +5,12 @@
 //! range). Particles move by Verlet integration at the original's 83 Hz,
 //! then constraints and contacts are solved by moving positions.
 //!
-//! A limp body (the dead, the knocked out) is only that. A living body adds
-//! muscles: a [`Drive`] pulls every particle towards where the animated pose
-//! puts it, with damping, and compensates gravity by muscle tone. Blows shove
-//! parts and daze the body, which weakens its muscles until it recovers.
+//! A limp body (the dead, the knocked out) is only that: its joints are
+//! damped inside their range, and each part keeps its velocity by how fast
+//! it moves. A living body adds muscles: a [`Drive`] pulls every particle
+//! towards where the animated pose puts it, with damping, and compensates
+//! gravity by muscle tone. Blows shove parts and daze the body, which
+//! weakens its muscles until it recovers.
 //!
 //! Bodies tick in the fixed step, as one world in the original's order:
 //! every living body's character tick (its clip sampled and its targets
@@ -26,10 +28,15 @@ use crate::contact::{CONTACT_SLOP, Level, LevelContact, rub, sphere_hit, swept_h
 /// Simulation rate of the body.
 pub const BODY_HZ: f32 = 83.0;
 const GRAVITY: f32 = -9.806_65;
-/// Velocity kept per second, by speed: fast, middling, slow (characters).
-const RETENTION: [f32; 3] = [0.2556, 0.15, 0.03];
-/// Speeds (m/s) separating the retention bands.
-const RETENTION_SPEEDS: [f32; 2] = [0.4, 0.2];
+/// Velocity a limp part keeps per second, by its speed: fast, slow and
+/// resting (the original's default environment, which every body uses).
+const RETENTION: [f32; 3] = [0.426, 0.25, 0.05];
+/// Speeds (cm/s) a limp part's last tick must exceed to be fast, or slow.
+const RETENTION_SPEEDS: [f32; 2] = [40.0, 20.0];
+/// u = (1 − b)(1 − r) + r, from a race's limb damping ratio r and the
+/// balance b. A living limb keeps the fast retention × u², and a human's r
+/// of 1 makes u 1 at any balance.
+const HUMAN_LIMB_DAMPING: f32 = 1.0;
 const LINK_ITERATIONS: usize = 20;
 const FRICTION_PASSES: usize = 8;
 /// The fastest a particle may move (m/s): well above any blow or fall.
@@ -50,8 +57,13 @@ const LINK_MOBILITY: f32 = 0.175;
 /// Centimetres per metre: the links' softening and smoothing constants are
 /// the original's, in cm.
 const CM: f32 = 100.0;
-/// A link with at most this slack (m, 0.01 cm) is a pivot.
+/// A link with at most this slack (m, 0.01 cm) is a pivot in a living
+/// body; in a limp one, a link with at most 1.19e-7 cm.
 const PIVOT_SLACK: f32 = 1e-4;
+const LIMP_PIVOT_SLACK: f32 = 1.19e-9;
+/// A limp slack link whose length is this close (m, 1.19e-7 cm) to its
+/// smoothed length is left alone.
+const LENGTH_EPSILON: f32 = 1.19e-9;
 /// Softening of a pivot per cm of its gap (a living body's) or per cm² (a
 /// limp body's).
 const PIVOT_SOFTENING: f32 = 0.001;
@@ -457,6 +469,10 @@ pub struct Link {
     /// slack: (1 − (r² − 25)·0.001)², at most 0.99, r the point's distance
     /// from the part's origin in cm (0 within √0.1 cm of it).
     pub smoothing: f32,
+    /// The smoothed length (m) a limp slack link holds its points to: the
+    /// posed distance when the body is built, the distance within the
+    /// slack when it goes limp.
+    pub length: f32,
     /// The shares of a correction the part and its parent take, by their
     /// mobilities: m/(m + m_parent) and m_parent/(m + m_parent).
     shares: (f32, f32),
@@ -492,22 +508,70 @@ impl Link {
     }
 
     /// The correction of a limp body's link with gap `d`: a pivot closes
-    /// strength/(1 + 0.001|d|²) of it (cm²), a slack link takes back
-    /// strength times its excess beyond the slack.
-    fn limp(&self, d: Vec3) -> Option<Vec3> {
+    /// strength/(1 + 0.001|d|²) of it (cm²). A slack link inside its slack
+    /// is a damper: its smoothed length L follows the gap, L ← s·L + (1 −
+    /// s)·|d|, and the points are taken back to the L they had, by strength
+    /// × (|d| − L)/|d|; beyond the slack it takes back strength times its
+    /// excess, and L is the slack.
+    fn limp(&mut self, d: Vec3) -> Option<Vec3> {
         let len2 = d.length_squared();
         if len2 <= LINK_EPSILON2 {
             return None;
         }
-        if self.slack <= PIVOT_SLACK {
+        if self.slack <= LIMP_PIVOT_SLACK {
             return Some(d * (self.strength / (1.0 + PIVOT_SOFTENING * len2 * CM * CM)));
         }
         let len = len2.sqrt();
-        if len <= self.slack {
+        if len > self.slack {
+            self.length = self.slack;
+            return Some(d * (self.strength * (len - self.slack) / len));
+        }
+        let old = self.length;
+        if (len - old).abs() <= LENGTH_EPSILON {
             return None;
         }
-        Some(d * (self.strength * (len - self.slack) / len))
+        self.length = old * self.smoothing + (1.0 - self.smoothing) * len;
+        Some(d * (self.strength * (len - old) / len))
     }
+
+    /// Starts a limp slack link's smoothed length at the gap `d`, within
+    /// the slack, as the original's death and placement do.
+    fn reset_length(&mut self, d: Vec3) {
+        if self.slack <= LIMP_PIVOT_SLACK {
+            return;
+        }
+        let len2 = d.length_squared();
+        self.length = if len2 <= LINK_EPSILON2 {
+            0.0
+        } else {
+            len2.sqrt().min(self.slack)
+        };
+    }
+}
+
+/// The per-tick retention of `r` kept per second: r^(1/83), none for r ≤ 0.
+fn per_tick(r: f32) -> f32 {
+    if r <= 0.0 { 0.0 } else { r.powf(1.0 / BODY_HZ) }
+}
+
+/// The velocity a limp part keeps this tick, by the farthest one of its
+/// particles moved in the last tick (`moved`, cm): the fast retention above
+/// 40/83 cm, the slow one above 20/83 cm, else the resting one.
+fn limp_retention(moved: f32) -> f32 {
+    let band = if moved > RETENTION_SPEEDS[0] / BODY_HZ {
+        0
+    } else if moved > RETENTION_SPEEDS[1] / BODY_HZ {
+        1
+    } else {
+        2
+    };
+    per_tick(RETENTION[band])
+}
+
+/// The velocity a living body's limbs keep each tick, whatever their
+/// speed: the fast retention × u².
+fn living_retention(u: f32) -> f32 {
+    per_tick(RETENTION[0]) * u * u
 }
 
 /// The original's smoothing for a link point `r` (m) from its part's origin.
@@ -692,12 +756,21 @@ impl Ragdoll {
                         slack,
                         strength: 1.0,
                         smoothing: setup_smoothing(on_part),
+                        length: 0.0,
                         shares,
                         origin,
                     });
                 }
             }
             links_of.push(first..links.len());
+        }
+        // Each slack link's smoothed length starts at its posed distance.
+        for l in &mut links {
+            if l.slack > LIMP_PIVOT_SLACK {
+                l.length = parts[l.parent]
+                    .point(&l.on_parent)
+                    .distance(parts[l.part].point(&l.on_part));
+            }
         }
         // A lower leg's long link limits the leg, at a fifth of its
         // strength; its femur's first long link is the femur's limit.
@@ -740,14 +813,20 @@ impl Ragdoll {
     }
 
     /// Takes the body's muscles: it becomes a plain ragdoll, solved from
-    /// the pelvis out, and its leg limit links pull at full strength again,
-    /// as the original's death sets them.
+    /// the pelvis out. As the original's death does, its leg limit links
+    /// pull at full strength again and each slack link's smoothed length
+    /// starts where the link is, within its slack, so the joints neither
+    /// jolt nor spring back.
     pub fn go_limp(&mut self) {
         self.drive = None;
         for p in &self.parts {
             if let Some(k) = p.leg_limit {
                 self.links[k].strength = 1.0;
             }
+        }
+        let parts = &self.parts;
+        for l in &mut self.links {
+            l.reset_length(parts[l.parent].point(&l.on_parent) - parts[l.part].point(&l.on_part));
         }
     }
 
@@ -997,19 +1076,19 @@ impl Ragdoll {
             .filter(|d| d.supported)
             .map_or(0.0, |d| d.tone * d.energy);
         let gravity = Vec3::Y * GRAVITY * dt * dt * (1.0 - support);
-        let retention = RETENTION.map(|r| r.powf(dt));
+        // A limp part keeps its velocity by how fast it moved last tick; a
+        // living limb keeps the fast retention whatever its speed.
+        let living = self
+            .drive
+            .is_some()
+            .then(|| living_retention(HUMAN_LIMB_DAMPING));
         for p in &mut self.parts {
-            let moved = (0..4)
-                .map(|i| (p.positions[i] - p.previous[i]).length())
-                .fold(0.0, f32::max)
-                / dt;
-            let keep = if moved > RETENTION_SPEEDS[0] {
-                retention[0]
-            } else if moved > RETENTION_SPEEDS[1] {
-                retention[1]
-            } else {
-                retention[2]
-            };
+            let keep = living.unwrap_or_else(|| {
+                let moved = (0..4)
+                    .map(|i| (p.positions[i] - p.previous[i]).length())
+                    .fold(0.0, f32::max);
+                limp_retention(moved * CM)
+            });
             p.start = p.positions;
             p.strain = 0.0;
             for i in 0..4 {
@@ -1037,7 +1116,7 @@ impl Ragdoll {
             } else {
                 self.outward[k]
             };
-            for l in &self.links[self.links_of[i].clone()] {
+            for l in &mut self.links[self.links_of[i].clone()] {
                 let a = self.parts[l.part].point(&l.on_part);
                 let b = self.parts[l.parent].point(&l.on_parent);
                 let correction = if living {
@@ -1553,33 +1632,91 @@ mod tests {
     /// momenta, so the constraints alone never set a body moving.
     #[test]
     fn links_keep_the_bodys_momentum() {
-        let mut body = two_parts(0.0);
-        let l = &body.links[0];
-        let spread = |w: &[f32; 4]| w.iter().map(|x| x * x).sum::<f32>();
-        assert!((spread(&l.on_part) - spread(&l.on_parent)).abs() > 0.2);
-        // Pull the lower part off its joint, twisted.
-        let twist = Affine3A::from_rotation_translation(
-            Quat::from_rotation_z(0.4),
-            Vec3::new(0.15, -0.05, 0.1),
-        );
-        for x in &mut body.parts[1].positions {
-            *x = twist.transform_point3(*x);
+        // A pivot, and a slack link damping inside its slack.
+        for slack in [0.0, 0.3] {
+            let mut body = two_parts(slack);
+            body.links[0].length = 0.1;
+            let l = &body.links[0];
+            let spread = |w: &[f32; 4]| w.iter().map(|x| x * x).sum::<f32>();
+            assert!((spread(&l.on_part) - spread(&l.on_parent)).abs() > 0.2);
+            // Pull the lower part off its joint, twisted.
+            let twist = Affine3A::from_rotation_translation(
+                Quat::from_rotation_z(0.4),
+                Vec3::new(0.15, -0.05, 0.1),
+            );
+            for x in &mut body.parts[1].positions {
+                *x = twist.transform_point3(*x);
+            }
+            let before: Vec<[Vec3; 4]> = body.parts.iter().map(|p| p.positions).collect();
+            for _ in 0..LINK_ITERATIONS {
+                body.iterate();
+            }
+            // Each particle carries its part's mass.
+            let momentum: Vec3 = body
+                .parts
+                .iter()
+                .zip(&before)
+                .flat_map(|(p, b)| (0..4).map(move |i| (p.positions[i] - b[i]) / p.inverse_mass))
+                .sum();
+            assert!(
+                momentum.length() < 1e-4,
+                "constraints moved the body by {momentum} (slack {slack})"
+            );
         }
-        let before: Vec<[Vec3; 4]> = body.parts.iter().map(|p| p.positions).collect();
-        for _ in 0..LINK_ITERATIONS {
-            body.iterate();
+    }
+
+    /// Velocity retention as the original's default environment gives it:
+    /// 0.426, 0.25 and 0.05 per second, 0.98977, 0.98344 and 0.96455 per
+    /// tick. A limp part takes its band from the farthest one of its
+    /// particles moved last tick, strictly over 40/83 cm (fast) or 20/83 cm
+    /// (slow); a living limb keeps the fast retention × u², 0.98977 for a
+    /// human, whatever its speed.
+    #[test]
+    fn velocity_is_kept_as_the_default_environment_gives_it() {
+        let close = |a: f32, b: f32| (a - b).abs() < 5e-6;
+        let [fast, slow, resting] = RETENTION.map(per_tick);
+        assert!(close(fast, 0.98977) && close(slow, 0.98344) && close(resting, 0.96455));
+        assert_eq!(per_tick(0.0), 0.0);
+        for (moved, want) in [
+            (0.49, fast),
+            (40.0 / BODY_HZ, slow),
+            (0.25, slow),
+            (20.0 / BODY_HZ, resting),
+            (0.0, resting),
+        ] {
+            assert_eq!(limp_retention(moved), want, "{moved} cm in a tick");
         }
-        // Each particle carries its part's mass.
-        let momentum: Vec3 = body
-            .parts
-            .iter()
-            .zip(&before)
-            .flat_map(|(p, b)| (0..4).map(move |i| (p.positions[i] - b[i]) / p.inverse_mass))
-            .sum();
-        assert!(
-            momentum.length() < 1e-4,
-            "constraints moved the body by {momentum}"
-        );
+        assert!(close(living_retention(HUMAN_LIMB_DAMPING), 0.98977));
+        // One tick of a lone part drifting sideways at 6 cm/s (resting) and
+        // at 60 cm/s (fast), limp and living (held up by its tone).
+        for (speed, living, want) in [
+            (0.06, false, resting),
+            (0.6, false, fast),
+            (0.06, true, fast),
+        ] {
+            let mut body = Ragdoll::new(&[PartSetup {
+                bone: 11,
+                entity: Entity::PLACEHOLDER,
+                parent: None,
+                world: Affine3A::IDENTITY,
+                centre: Vec3::ZERO,
+                half: Vec3::splat(0.06),
+                origin: Vec3::ZERO,
+                links: vec![],
+                foot: false,
+            }]);
+            if living {
+                body = body.with_drive();
+            }
+            body.set_velocity(Vec3::X * speed);
+            let x = body.parts[0].positions[0].x;
+            body.integrate();
+            let kept = (body.parts[0].positions[0].x - x) / (speed / BODY_HZ);
+            assert!(
+                (kept - want).abs() < 1e-4,
+                "{speed} m/s, living {living}: kept {kept}"
+            );
+        }
     }
 
     #[test]

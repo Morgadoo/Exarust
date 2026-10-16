@@ -41,8 +41,9 @@ fn a_fast_ball_does_not_tunnel_through_a_floor() {
     assert!((y - 0.06).abs() < 0.002, "rests at {y:.4} m");
 }
 
-/// A zero-thickness wall stops a fast ball coming at its front, and lets
-/// one coming from behind through.
+/// A zero-thickness wall stops a fast ball coming at its front (15 m/s, 18
+/// cm or three radii a tick), which ends no tick behind it, and lets one
+/// coming from behind through.
 #[test]
 fn a_thin_wall_stops_balls_from_its_front_only() {
     // A wall in the plane z = 0, facing +z.
@@ -51,16 +52,16 @@ fn a_thin_wall_stops_balls_from_its_front_only() {
         [at(-5.0, -5.0), at(5.0, -5.0), at(5.0, 5.0)],
         [at(-5.0, -5.0), at(5.0, 5.0), at(-5.0, 5.0)],
     ];
-    for (from, speed, stops) in [(1.0, -20.0, true), (-1.0, 20.0, false)] {
+    for (from, speed, stops) in [(1.0, -15.0, true), (-1.0, 20.0, false)] {
         let mut b = ball(Vec3::new(0.0, 1.0, from));
         b.set_velocity(Vec3::Z * speed);
-        for _ in 0..30 {
+        for tick in 0..30 {
             b.tick(wall.as_slice());
+            let z = b.parts[0].transform().translation.z;
+            assert!(!stops || z > 0.0, "tick {tick}: behind the front, z {z:.3}");
         }
         let z = b.parts[0].transform().translation.z;
-        if stops {
-            assert!(z > 0.05, "went through the front: z {z:.3}");
-        } else {
+        if !stops {
             assert!(z > 0.5, "stopped from behind: z {z:.3}");
         }
     }

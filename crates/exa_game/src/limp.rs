@@ -572,6 +572,23 @@ pub(crate) mod tests {
             assert_eq!(body.links[k].strength, 0.2);
             assert!(body.links[k].slack > 0.12);
         }
+        // Limp, every slack link damps its length with a smoothing from
+        // 0.640 (the humerus's point 15 cm out) to 0.914 (8.32 cm out): a
+        // link closing in full keeps (1 − s)/(2 − s) of a stretch a tick,
+        // 0.27 to 0.08.
+        let smoothing: Vec<f32> = body
+            .links
+            .iter()
+            .filter(|l| l.slack > 0.0)
+            .map(|l| l.smoothing)
+            .collect();
+        let (least, most) = smoothing
+            .iter()
+            .fold((1.0f32, 0.0f32), |(a, b), &s| (a.min(s), b.max(s)));
+        assert!((least - 0.640).abs() < 1e-3, "{smoothing:?}");
+        assert!((most - 0.914).abs() < 1e-3, "{smoothing:?}");
+        let kept = |s: f32| (1.0 - s) / (2.0 - s);
+        assert!((kept(least) - 0.265).abs() < 1e-3 && (kept(most) - 0.079).abs() < 1e-3);
     }
 
     #[test]

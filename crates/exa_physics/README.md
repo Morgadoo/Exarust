@@ -11,7 +11,11 @@ and targets set, player last), then the body solver over every awake body
 (`body::BodySystems`). Blows are queued for the next tick, and parts are
 drawn between their last two ticks (`body::BodyPlugin`). Every part is
 pinned at its origin to its parent, and the skeleton's links bound each
-joint's range (`body::Ragdoll::new`).
+joint's range (`body::Ragdoll::new`); a limp body's links also damp each
+joint inside its range through their smoothed lengths, reset when the
+body goes limp (`body::Ragdoll::go_limp`). Velocity retention is the
+original's default environment: banded by speed for limp parts, the fast
+value for living limbs.
 
 ## Scope
 

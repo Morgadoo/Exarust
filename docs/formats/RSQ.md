@@ -57,9 +57,18 @@ How the original simulates a body (`exa_physics::body`):
   edge lengths. The particles start from a regular template laid over the
   part mesh's box (each extent at least 6 cm) and scaled by 1.25. The part's
   frame follows the particles through the inverse rest matrix.
-- Verlet integration at 83 Hz with gravity −9.80665 m/s². Velocity retention
-  per second for characters is 0.2556 / 0.15 / 0.03, by speed (over 40, over
-  20, and under 20 cm/s). Slow bodies are damped hard, which acts as sleep.
+- Verlet integration at 83 Hz with gravity −9.80665 m/s². Every body,
+  characters living or dead included, takes the simulation's default
+  environment (REA on every writer of a body's environment). A limp part
+  keeps 0.426 / 0.25 / 0.05 of its velocity per second (0.98977 / 0.98344
+  / 0.96455 per tick, r^(1/83)) when the farthest of its four particles
+  moved over 40/83 cm, over 20/83 cm, or less in the last tick (strictly
+  over). A living limb keeps the fast value × u² whatever its speed, with
+  u = (1 − balance)(1 − r) + r and r the race's limb damping ratio (1 for
+  humans, so 0.98977). The original also builds a 0.6× environment
+  (0.2556 / 0.15 / 0.03) that no body ever uses. Exarust leaves out the
+  living ×0.95 the original applies in a state of dormant statues and
+  golems, and caps particles at 25 m/s, a guard the original lacks.
 - Joints (`Ragdoll::new`). Every part with a parent part takes its stored
   links and then one more, made when the body is registered: a **pivot**
   from its origin (the joint centre) to its origin's place in the parent,
@@ -85,15 +94,30 @@ How the original simulates a body (`exa_physics::body`):
     link takes back its excess beyond the slack at full weight, cut to
     80 cm. The link muscles that also pull each slack link toward the
     animated angle are not reproduced yet.
-  - Limp: a pivot closes strength/(1 + 0.001|d|²) of its gap; a slack link
-    takes back strength × its excess. The original also damps a limp joint
-    inside its slack through a smoothed length; not reproduced yet.
+  - Limp: a pivot (slack ≤ 1.19e-7 cm) closes strength/(1 + 0.001|d|²) of
+    its gap. A slack link damps its length inside the slack through a
+    smoothed length L: unless |d| is within 1.19e-7 cm of L, L ← s·L +
+    (1 − s)·|d| and the points are taken back to the L they had, by
+    strength·(|d| − L_old)/|d| of the gap d. Over the 20 passes L catches
+    up, so a change of length is resisted in proportion to its speed and a
+    joint at rest stays where it is, with no spring back. With every pass
+    closing in full, (1 − s)/(2 − s) of a tick's stretch survives (0.20
+    for s = 0.755, inferred); the points' weights spread each pass, so in
+    Exarust's synthetic pelvis and femur a swinging hip keeps about 0.8 of
+    its swing a tick and under 0.2 after ten. Beyond the slack the link
+    takes back strength × its excess and L is the slack.
+  - L starts at the link's distance in the pose the body is built in (the
+    original registers it in its starting pose). Going limp sets it to the
+    distance, at most the slack, as the original's death does (also its
+    placement routine and one power), so a fresh ragdoll neither jolts nor
+    springs back. The living iteration never uses L.
   - Each link keeps a strength: 1, except a lower leg's first link with
     over 10 cm of slack (the leg limit), 0.2 while the body lives and 1
     again once it goes limp, as the original's death sets it. The femur's
     first such link is its leg limit. Each link also keeps the original's
     smoothing (1 − (r² − 25)·0.001)², at most 0.99 and 0 within √0.1 cm, r
-    its point's distance from the part's origin in cm, for the limp damping.
+    its point's distance from the part's origin in cm: the shipped slack
+    links take 0.640 (the humerus's point 15 cm out) to 0.914.
 - After the iterations, every sphere collider is tested once against the
   level's triangles (`exa_physics::contact`):
   - A triangle pushes only from its front, the side its winding faces in
