@@ -4,6 +4,8 @@
 //! Exploration uses tank controls: W walks along the character's heading,
 //! A and D steer it (or turn a quarter in place when standing), S brakes
 //! and backpedals, and the right mouse button walks toward the cursor. The
+//! steering starts only the walk, run and backpedal; what a standing
+//! character plays is its stance's. The
 //! camera follows the character's pelvis only: it never turns by itself,
 //! the middle mouse button orbits it and the wheel zooms by field of view.
 //! Combat mode (Tab, or the start of a fight) turns toward the cursor and
@@ -422,19 +424,38 @@ fn steer_player(
                 }
             }
             body.desired_velocity = velocity;
-            let action = if velocity == Vec3::ZERO {
-                "Idle"
+            let gait = if velocity == Vec3::ZERO {
+                None
             } else if back {
-                "Backpedal"
+                Some("Backpedal")
             } else if pb.run > 0.5 {
-                "Run"
+                Some("Run")
             } else {
-                "Walk"
+                Some("Walk")
             };
-            if anim.looping && anim.action != action {
-                anim.play_loop(action);
-            }
+            explore_clip(&mut anim, gait);
         }
+    }
+}
+
+/// The exploration steering's part in the clip, as the original's: moving,
+/// the gait starts from any looping clip; standing, a gait (or the interim
+/// combat walk left over from combat mode) ends in Idle, the exploration
+/// stance. The steering starts no other clip: the stance does, through the
+/// helper that sets it ([`stance::set_stance`]) and the body tick's
+/// posture switch, which never leaves Cmbt - Idle. So a player that turns
+/// combat mode off in the combat idle with the Defence stance keeps it
+/// until it walks.
+fn explore_clip(anim: &mut Animator, gait: Option<&str>) {
+    if !anim.looping {
+        return;
+    }
+    match gait {
+        Some(gait) if anim.action != gait => anim.play_loop(gait),
+        None if GAITS.contains(&anim.action.as_str()) || anim.action == COMBAT_WALK => {
+            anim.play_loop(Stance::Idle.action())
+        }
+        _ => {}
     }
 }
 
@@ -1090,6 +1111,149 @@ mod tests {
         keys.release(KeyCode::KeyW);
         combat_steps(&keys, &mut body, &mut pb, &mut anim, Stance::Defence, 0.012);
         assert_eq!(anim.action, "Defence stance");
+    }
+
+    /// A player carrying the torch ("Torch") in combat mode, playing
+    /// `action` with `stance`, under its root, with the steering, the
+    /// stance rule and the body tick's stance part; [`behaviour_tick`]
+    /// runs them as the fixed step does.
+    fn steered_app(action: &str, stance: Stance) -> (App, Entity) {
+        let mut app = App::new();
+        app.init_resource::<Time>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<CursorGround>()
+            .init_resource::<Physics>()
+            .add_plugins(exa_combat::stance::StancePlugin)
+            .add_systems(FixedPreUpdate, (steer_player, take_player_stance).chain());
+        let mut pb = PlayerBody::new(0.0);
+        pb.set_combat(true);
+        let body = app
+            .world_mut()
+            .spawn((
+                pb,
+                Transform::default(),
+                GlobalTransform::IDENTITY,
+                Animator::new("Torch", action),
+                stance,
+                Fighter::default(),
+            ))
+            .id();
+        app.world_mut()
+            .spawn((Player, CharacterBody::default(), GlobalTransform::IDENTITY))
+            .add_child(body);
+        (app, body)
+    }
+
+    fn behaviour_tick(app: &mut App) {
+        app.world_mut().run_schedule(FixedPreUpdate);
+        app.world_mut().run_schedule(FixedUpdate);
+    }
+
+    fn clip_and_stance(app: &App, body: Entity) -> (String, Stance) {
+        (
+            app.world().get::<Animator>(body).unwrap().action.clone(),
+            *app.world().get::<Stance>(body).unwrap(),
+        )
+    }
+
+    fn set_key(app: &mut App, key: KeyCode, down: bool) {
+        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        if down {
+            keys.press(key);
+        } else {
+            keys.release(key);
+        }
+    }
+
+    /// The original's exploration steering starts no clip but the walk:
+    /// a player that turns combat mode off in Cmbt - Idle with the Defence
+    /// stance (3 s after its attack, or its target gone) keeps the combat
+    /// idle, with the torch the compact carry before the chest, standing
+    /// and turning in place, until it walks; the walk then ends in Idle.
+    #[test]
+    fn the_combat_idle_stays_after_combat_mode_until_the_player_walks() {
+        let (mut app, body) = steered_app("Cmbt - Idle", Stance::Defence);
+        behaviour_tick(&mut app);
+        assert_eq!(
+            clip_and_stance(&app, body),
+            ("Cmbt - Idle".into(), Stance::Defence)
+        );
+        app.world_mut()
+            .get_mut::<PlayerBody>(body)
+            .unwrap()
+            .set_combat(false);
+        for _ in 0..200 {
+            behaviour_tick(&mut app);
+        }
+        assert_eq!(
+            clip_and_stance(&app, body),
+            ("Cmbt - Idle".into(), Stance::Idle)
+        );
+        // A quarter turn in place starts no clip.
+        set_key(&mut app, KeyCode::KeyD, true);
+        behaviour_tick(&mut app);
+        set_key(&mut app, KeyCode::KeyD, false);
+        for _ in 0..90 {
+            behaviour_tick(&mut app);
+        }
+        let pb = app.world().get::<PlayerBody>(body).unwrap();
+        assert!((pb.heading + std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+        assert_eq!(clip_and_stance(&app, body).0, "Cmbt - Idle");
+        // W walks; released, the walk ends in Idle.
+        set_key(&mut app, KeyCode::KeyW, true);
+        behaviour_tick(&mut app);
+        assert_eq!(clip_and_stance(&app, body).0, "Walk");
+        set_key(&mut app, KeyCode::KeyW, false);
+        behaviour_tick(&mut app);
+        assert_eq!(clip_and_stance(&app, body), ("Idle".into(), Stance::Idle));
+    }
+
+    /// Combat mode turned off while the stance's own clip plays: the helper
+    /// starts Idle at once, from the guard and from the combat idle held
+    /// as the stance (within 3 s of an attack, or with a target near).
+    #[test]
+    fn the_stance_clip_turns_to_idle_with_combat_mode() {
+        for (action, stance) in [
+            ("Cmbt - Idle", Stance::CombatIdle),
+            ("Defence stance", Stance::Defence),
+        ] {
+            let (mut app, body) = steered_app(action, stance);
+            app.world_mut()
+                .get_mut::<PlayerBody>(body)
+                .unwrap()
+                .set_combat(false);
+            behaviour_tick(&mut app);
+            assert_eq!(
+                clip_and_stance(&app, body),
+                ("Idle".into(), Stance::Idle),
+                "{action}"
+            );
+        }
+    }
+
+    /// Standing in exploration, a gait and the interim combat walk end in
+    /// Idle; any other looping clip is the stance's to change, and a clip
+    /// played once is left to end; moving starts the gait from any loop.
+    #[test]
+    fn the_exploration_steering_only_ends_walks() {
+        for gait in ["Walk", "Run", "Backpedal", "Combat Walk"] {
+            let mut anim = Animator::new("Torch", gait);
+            explore_clip(&mut anim, None);
+            assert_eq!(anim.action, "Idle", "{gait}");
+        }
+        for kept in ["Cmbt - Idle", "Defence stance", "Idle"] {
+            let mut anim = Animator::new("Torch", kept);
+            explore_clip(&mut anim, None);
+            assert_eq!(anim.action, kept);
+            explore_clip(&mut anim, Some("Run"));
+            assert_eq!(anim.action, "Run", "{kept}");
+        }
+        let mut anim = Animator::new("Torch", "Cmbt - Idle");
+        anim.play_once("Attack Mid", "Cmbt - Idle");
+        explore_clip(&mut anim, Some("Walk"));
+        explore_clip(&mut anim, None);
+        assert_eq!(anim.action, "Attack Mid");
     }
 
     #[test]

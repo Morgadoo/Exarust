@@ -14,11 +14,15 @@ The system SHALL turn the meshes of a level shown in play mode into static colli
 - **THEN** the player stands on the floor instead of falling through it
 
 ### Requirement: Clips follow movement
-The system SHALL play the idle clip when the player is still, the walk clip when walking and the run clip when running.
+The system SHALL play the walk clip when the player walks and the run clip when it runs, starting them from any looping clip, and SHALL end them in the idle clip when the player stops out of combat mode. Standing still out of combat mode, the steering SHALL start no other clip: the stance decides, so the combat idle stays until the player walks.
 
 #### Scenario: Start and stop
 - **WHEN** the player starts walking and then stops
 - **THEN** the clip changes from idle to walk and back to idle
+
+#### Scenario: Combat idle after combat mode
+- **WHEN** Tab turns combat mode off while the player stands in Cmbt - Idle with the Defence stance, and it then turns in place, walks and stops
+- **THEN** it keeps Cmbt - Idle while standing and turning, plays the walk, and stops in idle
 
 ### Requirement: Chase camera
 The system SHALL keep the camera 20 m from the player's pelvis, drawn between its last two body ticks as its mesh is (the player's feet while it has no body), and SHALL zoom by field of view (zoom / 2000 × 45° × √(1.6 / aspect), six wheel stops from 800 to 2000). The pitch SHALL follow the zoom (0.8 to 0.925 rad below the horizon) unless the middle-mouse orbit drag raises it, up to 1.5 rad. The camera SHALL never turn by itself in exploration.
@@ -97,6 +101,14 @@ The system SHALL give the player the game's lit torch in play mode in story leve
 #### Scenario: Arena match
 - **WHEN** `exarust play arenao1` runs
 - **THEN** the player carries no torch, walks with the default moveset, and no torchlight falls on the body
+
+#### Scenario: Exploring with the torch
+- **WHEN** the player carrying the torch in the right hand stands out of combat mode
+- **THEN** it holds the torch up beside its head as "Torch" Idle asks: the elbow bent about 123°, the upper arm about 40° out to the side, the wrist at shoulder height
+
+#### Scenario: Torch in combat mode
+- **WHEN** the player carrying the torch in the right hand attacks in combat mode with no target near
+- **THEN** the attack ends in "Torch" Cmbt - Idle, the carry of the reference shots: the upper arm tucked and 32° forward, the elbow bent about 100°, the wrist 32 cm before the shoulder
 
 ### Requirement: Start outfit
 The system SHALL start the player in play mode as the original's new character without a background kit: wearing only the underwear, with any apparel given on the command line put on over it. Apparel that covers the groin SHALL take the underwear's place.

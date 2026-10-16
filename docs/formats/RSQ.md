@@ -552,6 +552,20 @@ Polearm (Default); Golem, Golem B; Herath, Gobbler, Fael, Demon A01,
 Harvester, Herath Ogre, Ogre, Ogre old, UnarmClaw; and creature variants of
 One Handed / 1H & Shield / Polearm.
 
+A moveset lacking an action takes its parent's clip whole: the original's
+motion constructor copies every clip pointer a moveset defines over its
+parent's table, with no per-bone mask (REA). The per-bone word of a key is
+no mask either: it is 0, or 1 on the lower legs (bones 3 and 6, a foot
+flag), in every key but some keys of 16 clips, where it holds float bit
+patterns: Default Backpedal; "Torch" Walk (the last four of its eight
+keys); 1H & Torch Walk and Cmbt - Idle; five 1H Heavy attacks; 2H Light
+and Two Handed Cmbt - Idle, Two Handed Walk; the Gobbler's and the ogres'
+walks and runs (corpus: 3 342 ones on the lower legs and 818 other words
+in the installed `humanoid.rsq`). "Torch" (parent One Handed) defines Walk,
+Cmbt - Idle, Attack Mid and Idle; its arm on the body model, in
+[PLAYER.md](../PLAYER.md) (The carried torch), is pinned by a test against
+the installed files.
+
 About 1 200 keys in total serve every humanoid and creature: the original
 drives physically simulated bodies toward these poses rather than playing
 them directly.

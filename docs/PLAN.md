@@ -425,6 +425,16 @@ rigid parts; the built-in fists and claws by race; the shield record and
 its factors; the step reach. Held weapons and the duellist's reach use it;
 fists that strike, the swing clock and weapons as bodies build on it
 ([formats/OTHER.md](formats/OTHER.md), Weapon record).
+Done (change `keep-the-combat-idle-until-the-player-walks`): the
+user's reference shots of the original's torch arm (a compact carry before
+the chest) are its combat mode, the "Torch" Cmbt - Idle; exploring, both
+games raise the torch beside the head with "Torch" Idle, and the grip,
+overlay, arm muscles and tracking were measured equal. The exploration
+steering now starts only the gaits, as the original's, so a player that
+turns combat mode off in Cmbt - Idle keeps that carry until it walks;
+tests pin both carries to the installed clips ([PLAYER.md](PLAYER.md), The
+carried torch). Next for the torch's look: the torso twist and head look
+toward the cursor (M8) and the open hand.
 Still to do: inventory and containers, injuries beyond damage, blocking,
 parrying, grabs, practice mode, the knockback step, the swing stall and
 the striker's recoil, a lethal wound's fall and collapse, the daze's guard

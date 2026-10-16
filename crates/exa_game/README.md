@@ -10,12 +10,13 @@ level, clip, targets and lift, the player's last),
 Exarust's falls and get-ups from the measured balance (`balance`; the
 get-up ends in the fighter's stance; a fall
 stops the controller carrying and holding the body and keeps its tone), the
-player (`player`: tank controls, the chase camera on the drawn pelvis, combat facing, its
-combat stance and the original's attack choice, with the clips of the
-moveset its hands pick), the world cursor's shape from the player's state
-(`cursor`), the health bars' values and the low-health heartbeat with its
-sound (`hud`), the
-held torch (`torch`, which fills its hand), the per-tick body trace
+player (`player`: tank controls whose steering starts only the gaits, the
+chase camera on the drawn pelvis, combat facing, its combat stance and the
+original's attack choice, with the clips of the moveset its hands pick),
+the world cursor's shape from the player's state (`cursor`), the health
+bars' values and the low-health heartbeat with its sound (`hud`), the
+held torch (`torch`, which fills its hand; its tests pin the "Torch"
+clips' arm on the body model), the per-tick body trace
 (`trace`), and the debug tools ([`docs/DEBUGGING.md`](../../docs/DEBUGGING.md)):
 the body overlay and joint readout (`body_overlay`), the joint trace
 (`joint_trace`) and the simulation controls (`sim_control`).

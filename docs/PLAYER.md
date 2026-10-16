@@ -23,6 +23,13 @@ The original has no camera-relative keyboard movement. Outside combat:
   viewport: with supersampling the scene is drawn into an image twice the
   window's size, and window positions are scaled to it.
 - **Shift** runs: a run blend rises 0.05 per tick and falls 0.015.
+- **The clips.** The steering starts the walk, run or backpedal when the
+  character moves, from whatever looping clip plays, and ends it in Idle
+  when the character stops. It starts no other clip: what a standing
+  character plays is its stance's ([The combat stance](#the-combat-stance)),
+  so a player that turned combat mode off in Cmbt - Idle keeps it, also
+  while turning in place, until it walks. (REA: the original's exploration
+  steering reaches the clip start only through the set-stance helper.)
 - The body's yaw follows the heading at up to 240°/s, ×0.9 with the keys,
   slower when moving fast, and eased over the last 0.6 rad. There is no
   turn-in-place clip.
@@ -133,7 +140,15 @@ also leaves its interim backpedal and combat walk alone).
   attack ends within 3 s of its own last tick, so it ends in Cmbt - Idle
   unless the player is dying.) The live retail trace showed exactly this:
   Cmbt - Idle with the Defence stance for seconds, also after the opponent
-  died.
+  died, and the user's own game for over half an hour at the exanima01
+  start, the torch carried before the chest.
+- **Leaving combat mode.** Tab off writes the stance Idle through the
+  set-stance helper, which starts Idle only when the playing clip is the
+  old stance's: from the guard, or from Cmbt - Idle within 3 s of an attack
+  or with a target near, the player idles at once. From Cmbt - Idle with
+  the Defence stance (the quirk above) nothing starts it: the stance turns
+  to Idle, the clip stays Cmbt - Idle until the player walks, and the walk
+  ends in Idle.
 - **A duellist** starts its stance whenever it is free (not attacking), so
   it guards again when its target leaves. Its **reach** is 60 cm plus its
   weapon's sweet spot ([formats/OTHER.md](formats/OTHER.md), Weapon
@@ -256,8 +271,8 @@ combat mode.
 
 - The torch (`torcha02`, item "Torch A01") goes in one of two hand slots:
   - the main hand, the **right** (bone 17): the moveset becomes the
-    **"Torch"** overlay on "One Handed", which holds the right hand at
-    shoulder height, about 25 cm forward;
+    **"Torch"** overlay on "One Handed", which raises the torch beside the
+    head out of combat and carries it before the chest in combat (below);
   - the off hand, the **left** (bone 18): **"1H & Torch"**, the left hand
     at shoulder height, about 12 cm forward.
 
@@ -265,6 +280,38 @@ combat mode.
   combat, as the held items pick it ([Moveset from held items](#moveset-from-held-items)). A new game puts the torch in the off hand for two of the four
   backgrounds; the player in the reference captures holds it raised in the
   right hand.
+- **The two carries** of the right hand. "Torch" defines four clips, Walk,
+  Cmbt - Idle, Attack Mid and Idle, each replacing One Handed's whole; the
+  guard (Defence stance) and the other attacks are One Handed's. The two
+  standing clips' arm, from their first key on the body model's bone
+  offsets, in the chest's frame (the elbow is the angle between the upper
+  arm and the forearm, 0° straight; the wrist is the hand's origin from
+  the shoulder joint):
+
+  | clip | played | elbow | upper arm | wrist from the shoulder |
+  |---|---|---|---|---|
+  | Idle | out of combat mode | 122.6° | 39.8° out to the side, 11.4° forward | 16.4 cm out, 1.4 cm up, 18.7 cm forward |
+  | Cmbt - Idle | in combat mode, after an attack or with a target near (and kept, above) | 101.5° | 24.9° out, 31.8° forward | 8.6 cm out, 3.0 cm down, 31.6 cm forward |
+
+  Out of combat the torch is up beside the head, the flame about 27 cm over
+  the top of it, the elbow near its link limit (Exarust's body uses 99.6 %
+  of the elbow's range there); in combat it is the compact carry, the upper
+  arm tucked, the hand before the chest, the flame about 21 cm over the
+  top of the head and 11 cm before it. The
+  user's reference shots of the original carrying the torch before the
+  chest show **combat mode** (the red cursor ring is the original's combat
+  cursor), its Cmbt - Idle; exploring, the original raises it as Exarust
+  does, with "Torch" Idle (REA: its steering sets the Idle stance; not yet
+  watched live). In Exarust: Tab, a left click, and the attack ends in
+  that carry, kept when Tab turns combat mode off, until the player walks.
+  The walk's arms hang loosely (stiffness 0.2): "Torch" Walk asks for the
+  elbow at 125–129° and the upper arm 37–49° out.
+  Measured equal to the original's (REA and its running game, read only):
+  the grip below, the overlay (whole clips), the arm's muscles in
+  Cmbt - Idle (stiffness 0.4, part factor 0.5, relaxation 0.36, saturation
+  0.1; no arm state for a held light) and how closely both bodies follow
+  the clip (within 1°). The torch weighs next to nothing on the hand: the
+  hand takes 5 % of each grip correction, the torch the rest.
 - Exarust's play mode gives the player a lit torch in the story levels
   (and scenes no game mode plays): in the right hand, or in the left beside
   a weapon given with `--weapon`. Practice (`arena`, `arenae`) and the arena
@@ -281,7 +328,14 @@ combat mode.
   cos x·cos z, sin x·cos y + cos x·sin z·sin y): applied to the item, the
   turn about X first, then Z, then Y, all about the hand's axes. Not yet:
   the offset's scaling by character size and its per-race correction, and
-  the hand closing around the handle.
+  the hand: the original's lies open under the torch, the handle in its
+  palm, where Exarust's looks curled (a skinning or hand-mesh question,
+  not looked into yet).
+- Not yet: the original's torso twist and head look toward the cursor. In
+  Cmbt - Idle it turns the belly about 8°, the chest 15° and the head 19°
+  about a near-vertical axis, while the arms keep the clip's turn relative
+  to the pelvis, so its arm ends about 7° off the clip; Exarust's trunk and
+  head stay on the clip (M8).
 - The light is the torch's own `_Fire` emitter. A moving torch dirties all
   its cube faces every frame it moves; its flicker never does. Nothing keeps
   it off its holder: the original has no owner test in its light selection,

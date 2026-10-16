@@ -112,7 +112,7 @@ The system SHALL start an attack on a left click in combat mode from the player'
 - **THEN** the second click starts the overhead swing
 
 ### Requirement: Combat stance
-The system SHALL keep each fighter's stance, the looping clip it returns to. The player's SHALL be Idle out of combat mode; in combat mode Cmbt - Idle while its target (the best fighter within 5 m and 120° of the cursor) is nearer than 3.5 m × its body scale or within 3 s of its last attack, else Defence stance, also while dying. A clip played once SHALL end in the stance; a balanced fighter SHALL switch to it from other looping clips but Cmbt - Idle and walks.
+The system SHALL keep each fighter's stance, the looping clip it returns to. The player's SHALL be Idle out of combat mode, starting Idle only when the old stance's clip plays; in combat mode Cmbt - Idle while its target (the best within 5 m and 120° of the cursor) is nearer than 3.5 m × its body scale or within 3 s of its last attack, else, or dying, Defence stance. A clip played once SHALL end in the stance; a balanced fighter SHALL switch to it from looping clips but Cmbt - Idle and walks.
 
 #### Scenario: Guard at the fight start
 - **WHEN** `exarust --opponent play arenao1` starts without `--weapon`
@@ -125,6 +125,14 @@ The system SHALL keep each fighter's stance, the looping clip it returns to. The
 #### Scenario: After an attack
 - **WHEN** the player attacks with no target within 3.5 m
 - **THEN** the attack ends in Cmbt - Idle, its stance stays Cmbt - Idle for 3 s after the attack's last tick, and the clip stays Cmbt - Idle after that
+
+#### Scenario: Combat mode off in the combat idle
+- **WHEN** Tab turns combat mode off while the player plays Cmbt - Idle with the Defence stance
+- **THEN** its stance turns to Idle and it keeps playing Cmbt - Idle until it walks
+
+#### Scenario: Combat mode off in the stance's clip
+- **WHEN** Tab turns combat mode off while the player plays the Defence stance, or Cmbt - Idle within 3 s of an attack
+- **THEN** it starts Idle at once
 
 ### Requirement: Combat readiness
 The system SHALL raise a fighter's readiness by 0.004 per tick, up to 1, while its stance and its clip are both Cmbt - Idle, and SHALL reset it to 0 otherwise. A blow SHALL scale the victim's penetration, impact and stab energy by 1 − 0.5 × its readiness, after the shove is taken from the impact.

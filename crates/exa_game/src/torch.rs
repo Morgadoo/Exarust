@@ -266,6 +266,140 @@ mod tests {
         }
     }
 
+    /// How a clip holds the right arm, from its first key on the body
+    /// model's bone offsets, in the chest's frame (+X the body's left, +Y
+    /// up, +Z forward).
+    #[derive(Debug)]
+    struct RightArm {
+        /// The angle between the upper arm and the forearm (°): 0 straight.
+        elbow: f32,
+        /// The upper arm's tilt out to the side and forward from hanging
+        /// straight down (°).
+        out: f32,
+        forward: f32,
+        /// The wrist (the hand's origin) from the shoulder joint (the upper
+        /// arm's origin), cm.
+        wrist: Vec3,
+    }
+
+    const PELVIS: usize = 1;
+    const CHEST: usize = 9;
+    const UPPER_ARM: usize = 12;
+    const FOREARM: usize = 13;
+
+    /// Each bone's parent bone and offset in it (m), from `humanbase.rfc`.
+    fn bone_offsets(scene: &exa_formats::rfc::Scene) -> HashMap<usize, (Option<usize>, Vec3)> {
+        let bone_of = |i: usize| exa_formats::rsq::bone_index(&scene.nodes[i].name);
+        (0..scene.nodes.len())
+            .filter_map(|n| {
+                let bone = bone_of(n)?;
+                let mut up = scene.nodes[n].parent.map(|p| p - 1);
+                while let Some(u) = up.filter(|&u| bone_of(u).is_none()) {
+                    up = scene.nodes[u].parent.map(|p| p - 1);
+                }
+                let parent = up.and_then(bone_of);
+                Some((bone, (parent, Vec3::from(scene.nodes[n].transform[3]))))
+            })
+            .collect()
+    }
+
+    fn right_arm(
+        motions: &exa_formats::rsq::MotionSet,
+        offsets: &HashMap<usize, (Option<usize>, Vec3)>,
+        moveset: &str,
+        action: &str,
+    ) -> RightArm {
+        let clip = motions.clip(moveset, action).expect("clip");
+        let key = &clip.keys[0];
+        let mut world: HashMap<usize, (Quat, Vec3)> = HashMap::default();
+        // Every bone's parent has a lower number.
+        for bone in PELVIS..=LEFT_HAND {
+            let r = key.rotations[bone - 1];
+            let turn = Quat::from_xyzw(r[0], r[1], r[2], r[3]).normalize();
+            let (parent, offset) = offsets[&bone];
+            let placed = match parent {
+                None => (turn, Vec3::ZERO),
+                Some(p) => {
+                    let (pr, pt) = world[&p];
+                    (pr * turn, pt + pr * offset)
+                }
+            };
+            world.insert(bone, placed);
+        }
+        let chest = world[&CHEST].0.inverse();
+        let at = |bone: usize| world[&bone].1;
+        let upper = chest * (at(FOREARM) - at(UPPER_ARM));
+        let fore = chest * (at(RIGHT_HAND) - at(FOREARM));
+        RightArm {
+            elbow: upper.angle_between(fore).to_degrees(),
+            out: (-upper.x).atan2(-upper.y).to_degrees(),
+            forward: upper.z.atan2(-upper.y).to_degrees(),
+            wrist: chest * (at(RIGHT_HAND) - at(UPPER_ARM)) * 100.0,
+        }
+    }
+
+    /// The installed "Torch" clips, on the body model: out of combat the
+    /// torch is held up beside the head, the elbow bent to its 120° limit
+    /// and the upper arm 40° out to the side; the combat idle is the
+    /// compact carry of the user's reference shots of the original, the
+    /// upper arm tucked and forward, the elbow at about 100°, the wrist
+    /// before the chest. "Torch" overlays whole clips on "One Handed"
+    /// (Walk, Cmbt - Idle, Attack Mid and Idle); the guard is One
+    /// Handed's.
+    #[test]
+    fn the_torch_clips_raise_it_beside_the_head_and_carry_it_before_the_chest() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let data = std::sync::Arc::new(exa_assets::GameData::open(&dir).unwrap());
+        let motions =
+            exa_anim::Motions::load(&exa_assets::Game(data.clone())).expect("humanoid.rsq");
+        let set = &motions.0;
+        let bytes = data
+            .pack(PackKind::Resource)
+            .and_then(|p| p.get(model::BODY_MODEL))
+            .expect("humanbase.rfc");
+        let offsets = bone_offsets(&exa_formats::rfc::Scene::parse(bytes).unwrap());
+        assert_eq!(offsets.len(), 18);
+
+        let torch = set.moveset("Torch").unwrap();
+        assert_eq!(torch.parent, "One Handed");
+        let defined: Vec<&str> = set
+            .actions
+            .iter()
+            .zip(&torch.clips)
+            .filter(|(_, c)| c.is_some())
+            .map(|(a, _)| a.name.as_str())
+            .collect();
+        assert_eq!(defined, ["Walk", "Cmbt - Idle", "Attack Mid", "Idle"]);
+        assert_eq!(
+            set.clip("Torch", "Defence stance"),
+            set.clip("One Handed", "Defence stance")
+        );
+
+        let near = |got: f32, want: f32, what: &str| {
+            assert!((got - want).abs() < 0.1, "{what}: {got:.2}, not {want}");
+        };
+        let idle = right_arm(set, &offsets, "Torch", "Idle");
+        near(idle.elbow, 122.6, "Idle elbow");
+        near(idle.out, 39.8, "Idle upper arm out");
+        near(idle.forward, 11.4, "Idle upper arm forward");
+        assert!(
+            idle.wrist.abs_diff_eq(Vec3::new(-16.4, 1.4, 18.7), 0.1),
+            "Idle wrist {}",
+            idle.wrist
+        );
+        let combat = right_arm(set, &offsets, "Torch", "Cmbt - Idle");
+        near(combat.elbow, 101.5, "Cmbt - Idle elbow");
+        near(combat.out, 24.9, "Cmbt - Idle upper arm out");
+        near(combat.forward, 31.8, "Cmbt - Idle upper arm forward");
+        assert!(
+            combat.wrist.abs_diff_eq(Vec3::new(-8.6, -3.0, 31.6), 0.1),
+            "Cmbt - Idle wrist {}",
+            combat.wrist
+        );
+    }
+
     #[test]
     fn main_grip_places_the_torch_in_the_fist() {
         let t = MAIN_GRIP.transform();
