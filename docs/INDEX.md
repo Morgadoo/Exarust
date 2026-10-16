@@ -11,6 +11,7 @@
 | [`PLAYER.md`](PLAYER.md) | player control, the chase camera and the carried torch, as the original does them |
 | [`DEBUGGING.md`](DEBUGGING.md) | debug tools for bodies: the body overlay and joint readout, the joint trace, pausing, stepping and slowing the simulation, test wounds |
 | [`UI.md`](UI.md) | the interface: the game's bitmap font, the frame-rate readout |
+| [`reviews/`](reviews/2026-10-16-progress.md) | dated progress reviews: coverage, commits, risks to fidelity, recommendations |
 | [`BUILD.md`](BUILD.md) | toolchain and system packages, building and running |
 | [`formats/`](formats/README.md) | every retail data format: layout, status, evidence |
 | [`research/game-files.md`](research/game-files.md) | inventory of a retail installation and naming conventions |
