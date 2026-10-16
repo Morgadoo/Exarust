@@ -172,6 +172,14 @@ placed humans covered); the player and the character view's human body are
 kept in the original's underwear, pale grey linen braies, by its rule
 ([formats/OTHER.md](formats/OTHER.md), Underwear).
 
+Done (change `paint-in-the-originals-colour-space`): painted apparel colour
+follows the original's chain (inputs read as stored, the finishes' values
+kept as sRGB texels and decoded when lit), now stated at the painter and
+pinned by a test; painted colour mips average in linear light. The braies
+still read darker than the skin because the skin lacks the original's
+`chargen_*` composite (Phase 5, character surface)
+([formats/OTHER.md](formats/OTHER.md), Colour space).
+
 Done (change `add-motion-playback`): skeleton and motion set decoded;
 clips play on the human body (`exarust character Default/Walk`).
 Done (change `add-player-movement`): rapier physics with level colliders,

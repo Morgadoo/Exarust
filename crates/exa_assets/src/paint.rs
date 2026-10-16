@@ -7,6 +7,15 @@
 //!
 //! The rules follow the original's texture painters; evidence and the mapping
 //! of material numbers in `docs/formats/OTHER.md` (Apparel painting).
+//!
+//! Colour space follows the original's chain end to end. The finishes read
+//! the shade map, the masks and every library texture as stored, never
+//! decoded from sRGB, and take the palette colour as computed. The original
+//! writes what its finishes compute into an sRGB colour target without
+//! encoding it, so those values become sRGB-encoded texels that the scene
+//! decodes to linear light when it samples them. The surface and normal maps
+//! are plain linear data. [`Painted::COLOUR`], [`Painted::SURFACE`] and
+//! [`Painted::NORMAL`] state this for the upload.
 
 use bevy::math::Vec3;
 use exa_formats::objdb::{Appearance, Layer};
@@ -606,14 +615,35 @@ fn surface(finish: Finish, t: &Texel) -> (f32, f32) {
     }
 }
 
-/// A painted item: colour (sRGB RGBA8) and surface (linear RGBA8 with
-/// roughness in green and metalness in blue, as Bevy reads them).
+/// How a painted map's texels are read when sampled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Encoding {
+    /// sRGB-encoded: the sampler decodes texels to linear light before it
+    /// filters them, and mip levels are averaged in linear light.
+    Srgb,
+    /// Linear data: texels are read and averaged as stored.
+    Linear,
+}
+
+/// A painted item: colour (RGBA8, [`Painted::COLOUR`]) and surface (linear
+/// RGBA8 with roughness in green and metalness in blue, as Bevy reads them).
 pub struct Painted {
     pub colour: Vec<u8>,
     pub surface: Vec<u8>,
     /// Linear RGBA8 tangent-space normals (z rebuilt), when the item has a
     /// normal map.
     pub normal: Option<Vec<u8>>,
+}
+
+impl Painted {
+    /// The colour map holds the finishes' values unchanged as sRGB texels. The
+    /// original paints into an sRGB target with encoding off and its scene
+    /// samples the result with sRGB decoding.
+    pub const COLOUR: Encoding = Encoding::Srgb;
+    /// The surface map: the original's specular target is linear RGB8.
+    pub const SURFACE: Encoding = Encoding::Linear;
+    /// The normal map: the original's normal target is linear RG8.
+    pub const NORMAL: Encoding = Encoding::Linear;
 }
 
 /// Paints an item: every layer's finish over its mask, in order, on black,

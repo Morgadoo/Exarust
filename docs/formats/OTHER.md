@@ -180,6 +180,30 @@ saturation, base value and value step. With k = 7 − shade:
 v = min(k·step·0.13 + base, 1) and s = (1 − (0.09k)²)·sat, scaled by (v + 0.6)²
 when v < 0.4. Then HSV → RGB. Family 0 is the greys (0.91 down to black).
 
+**Colour space.** REA on the original's paint jobs and texture loading shows
+the following.
+- The finishes read the shade map, the masks, the item normal and every
+  library texture as stored. All are loaded as data and none is decoded from
+  sRGB.
+- The palette colour reaches the programs as computed (HSV to RGB, not
+  linearised).
+- The colour target is sRGB RGB8 (sRGB RGBA8 for items with alpha). The job
+  switches sRGB encoding off before drawing, so each texel stores the
+  program's output unchanged.
+- The scene samples the colour target through sRGB decoding and multiplies it
+  by the painted material's diffuse colour, which is 1.
+- The specular target is linear RGB8 and the normal target linear RG8.
+- The GPU builds the mips of all three targets after drawing (the original
+  skips them when the GL driver reports a Radeon).
+
+A finish's output is therefore an sRGB value, not a linear albedo. Pale grey
+rough linen (palette colour 1, the braies' quality and damage) over a mid-grey
+shade map and mid-grey library textures paints texel 96 and is lit as 0.117.
+Exarust keeps this chain. It uploads the colour map as sRGB with the texels
+as painted and averages its mip levels in linear light ([inf] that the
+original's driver builds sRGB mips in linear light, as it filters them). The
+surface and normal maps are uploaded as linear data.
+
 Exarust paints on the CPU (`exa_assets::paint`; `exa-tool paint <model>
 <stem> out.png`). The original's surface pass writes specular occlusion, gloss
 and metalness, with roughness = 1 − gloss. Exarust paints gloss and metalness

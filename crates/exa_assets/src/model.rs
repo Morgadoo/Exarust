@@ -14,12 +14,14 @@ use exa_formats::rfi::Rfi;
 use exa_formats::rsq::bone_index;
 use exa_rpk::{Archive, GameData, PackKind};
 
-use crate::paint::{PaintLayer, Texels, layer_material, library, normal_library, paint};
+use crate::paint::{
+    Encoding, PaintLayer, Painted, Texels, layer_material, library, normal_library, paint,
+};
 use crate::skin::{Joint, VertexSkin, auto_skin};
 use crate::texture::{ColorSpace, has_alpha, rfi_to_image};
 use exa_formats::material::flags as material_flags;
 use exa_formats::objdb::Appearance;
-use exa_render::material::{ExaMaterial, ExaParams, flags, linear_rgb};
+use exa_render::material::{ExaMaterial, ExaParams, flags, linear, linear_rgb};
 
 /// A decoded model ready to spawn any number of times.
 #[derive(Debug, Clone)]
@@ -546,7 +548,7 @@ impl ModelLoader<'_> {
                 }
                 let alpha = shade.rgba.as_chunks::<4>().0.iter().any(|p| p[3] < 128);
                 let (w, h) = (shade.width as u32, shade.height as u32);
-                let image = painted_image(w, h, rgba, true);
+                let image = painted_image(w, h, rgba, Painted::COLOUR);
                 // The painter's surface map (roughness in G, metal in B) as
                 // the original's packed specular map: intensity, gloss, metal.
                 let mut surface = painted.surface;
@@ -554,7 +556,7 @@ impl ModelLoader<'_> {
                     px[0] = 255;
                     px[1] = 255 - px[1];
                 }
-                let surface = painted_image(w, h, surface, false);
+                let surface = painted_image(w, h, surface, Painted::SURFACE);
                 let mut mat = ExaMaterial {
                     params: ExaParams {
                         specular: Vec4::new(1.0, 1.0, 1.0, 1.0),
@@ -572,7 +574,7 @@ impl ModelLoader<'_> {
                 }
                 match painted.normal {
                     Some(normal) => {
-                        let image = painted_image(w, h, normal, false);
+                        let image = painted_image(w, h, normal, Painted::NORMAL);
                         mat.normal_map = Some(self.images.add(image));
                     }
                     None => {
@@ -656,7 +658,6 @@ fn cuts_shadow(m: &Material, opacity_map: bool) -> bool {
     m.class & ALPHA_TESTED != 0 || opacity_flag && m.opacity > CUT_SHADOW_OPACITY
 }
 
-/// An image with a box-filtered mip chain from RGBA8 pixels, sRGB or linear.
 /// How a material blends, from its blend word: `0x4000` alpha-tests (when
 /// a map gives alpha); otherwise the source and destination factors (bits
 /// 8–11 and 0–3) pick opaque, premultiplied, additive or alpha blending.
@@ -722,9 +723,14 @@ fn cube_image(rfi: &Rfi) -> Option<Image> {
     Some(image)
 }
 
-fn painted_image(width: u32, height: u32, rgba: Vec<u8>, srgb: bool) -> Image {
+/// An image of a painted map with a box-filtered mip chain. An sRGB map keeps
+/// its texels as painted and averages its colour in linear light, as the GPU
+/// builds the mips of the original's sRGB paint targets; alpha and linear maps
+/// are averaged as stored.
+fn painted_image(width: u32, height: u32, rgba: Vec<u8>, encoding: Encoding) -> Image {
     use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
     use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+    let srgb = SrgbTables::new();
     let mut data = rgba.clone();
     let (mut w, mut h, mut level) = (width as usize, height as usize, rgba);
     let mut levels = 1;
@@ -734,11 +740,13 @@ fn painted_image(width: u32, height: u32, rgba: Vec<u8>, srgb: bool) -> Image {
         for y in 0..nh {
             for x in 0..nw {
                 for c in 0..4 {
-                    let at = |dx: usize, dy: usize| {
-                        level[((2 * y + dy) * w + 2 * x + dx) * 4 + c] as u32
+                    let at = |dx: usize, dy: usize| level[((2 * y + dy) * w + 2 * x + dx) * 4 + c];
+                    let texels = [at(0, 0), at(1, 0), at(0, 1), at(1, 1)];
+                    next[(y * nw + x) * 4 + c] = if c < 3 && encoding == Encoding::Srgb {
+                        srgb.mean(texels)
+                    } else {
+                        ((texels.iter().map(|&t| t as u32).sum::<u32>() + 2) / 4) as u8
                     };
-                    next[(y * nw + x) * 4 + c] =
-                        ((at(0, 0) + at(1, 0) + at(0, 1) + at(1, 1) + 2) / 4) as u8;
                 }
             }
         }
@@ -753,10 +761,9 @@ fn painted_image(width: u32, height: u32, rgba: Vec<u8>, srgb: bool) -> Image {
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
-        if srgb {
-            TextureFormat::Rgba8UnormSrgb
-        } else {
-            TextureFormat::Rgba8Unorm
+        match encoding {
+            Encoding::Srgb => TextureFormat::Rgba8UnormSrgb,
+            Encoding::Linear => TextureFormat::Rgba8Unorm,
         },
         RenderAssetUsages::RENDER_WORLD,
     );
@@ -769,6 +776,30 @@ fn painted_image(width: u32, height: u32, rgba: Vec<u8>, srgb: bool) -> Image {
         ..ImageSamplerDescriptor::linear()
     });
     image
+}
+
+/// sRGB texel values in linear light, and the linear values at which encoding
+/// rounds up to the next texel value, for averaging sRGB texels in linear
+/// light.
+struct SrgbTables {
+    decode: [f32; 256],
+    /// `round_up[k]`: the linear value from which `k + 1` encodes it.
+    round_up: [f32; 255],
+}
+
+impl SrgbTables {
+    fn new() -> Self {
+        Self {
+            decode: std::array::from_fn(|i| linear(i as f32 / 255.0)),
+            round_up: std::array::from_fn(|k| linear((k as f32 + 0.5) / 255.0)),
+        }
+    }
+
+    /// The sRGB texel value encoding the linear mean of four texels.
+    fn mean(&self, texels: [u8; 4]) -> u8 {
+        let mean = texels.iter().map(|&t| self.decode[t as usize]).sum::<f32>() / 4.0;
+        self.round_up.partition_point(|&r| r <= mean) as u8
+    }
 }
 
 fn library_material(game: &GameData, name: &str) -> Option<Material> {
@@ -864,6 +895,90 @@ pub fn apparel_texture_key(material: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::render::render_resource::TextureFormat;
+
+    fn flat(w: usize, v: u8) -> Texels {
+        Texels {
+            width: w,
+            height: w,
+            rgba: [v, v, v, 255].repeat(w * w),
+        }
+    }
+
+    fn condition(quality: u8, damage: u8) -> Appearance {
+        Appearance {
+            quality,
+            damage,
+            dirt: 0,
+            layers: Default::default(),
+        }
+    }
+
+    /// The original's colour chain: the finishes read the shade map and
+    /// library textures as stored and the palette colour as computed; their
+    /// result is kept as an sRGB texel and decoded when sampled. Palette
+    /// colour 1 (`#c7c7c7`, 0.78) on a mid-grey shade map (128):
+    /// - a finish without its own painter paints 0.78 × 0.502 × 1.6 = 0.626,
+    ///   texel 160, sampled as 0.3515. Decoding the shade map would paint
+    ///   texel 69, linearising the colour 117, and uploading the texel as
+    ///   linear data would sample 0.627;
+    /// - rough cloth in the braies' condition (quality 160, damage 64) over
+    ///   flat mid-grey library textures paints texel 96, sampled as 0.1170
+    ///   (the original's cloth program gives the same for these inputs).
+    #[test]
+    fn painted_colour_samples_as_the_original_does() {
+        let shade = flat(4, 128);
+        let full = flat(4, 255);
+        let grey = flat(4, 128);
+        for (material, appearance, texel, sampled) in [
+            (30, condition(255, 0), 160, 0.3515),
+            (1, condition(160, 64), 96, 0.1170),
+        ] {
+            let layer = PaintLayer {
+                mask: &full,
+                material,
+                colour: 1,
+                library: vec![Some(&grey); 4],
+                normals: vec![],
+            };
+            let painted = paint(&shade, None, &[layer], &appearance);
+            let image = painted_image(4, 4, painted.colour, Painted::COLOUR);
+            assert_eq!(
+                image.texture_descriptor.format,
+                TextureFormat::Rgba8UnormSrgb
+            );
+            let data = image.data.expect("pixels");
+            assert_eq!(data[..3], [texel; 3], "material {material}");
+            let decoded = linear(data[0] as f32 / 255.0);
+            assert!(
+                (decoded - sampled).abs() < 1e-3,
+                "material {material}: {decoded}"
+            );
+        }
+        let surface = painted_image(4, 4, vec![0; 64], Painted::SURFACE);
+        assert_eq!(surface.texture_descriptor.format, TextureFormat::Rgba8Unorm);
+        let normal = painted_image(4, 4, vec![0; 64], Painted::NORMAL);
+        assert_eq!(normal.texture_descriptor.format, TextureFormat::Rgba8Unorm);
+    }
+
+    /// An sRGB map's mips average colour in linear light: one white texel in
+    /// four is a linear 0.25, texel 137, where averaging the stored values
+    /// gives 64. Flat areas keep their texel; alpha is averaged as stored.
+    #[test]
+    fn srgb_mips_average_in_linear_light() {
+        let px = |v: u8, a: u8| [v, v, v, a];
+        let rgba = [px(0, 255), px(0, 255), px(0, 0), px(255, 0)].concat();
+        let mip = |encoding| {
+            painted_image(2, 2, rgba.clone(), encoding)
+                .data
+                .expect("pixels")[16..20]
+                .to_vec()
+        };
+        assert_eq!(mip(Encoding::Srgb), [137, 137, 137, 128]);
+        assert_eq!(mip(Encoding::Linear), [64, 64, 64, 128]);
+        let flat = painted_image(2, 2, px(160, 255).repeat(4), Encoding::Srgb);
+        assert_eq!(flat.data.expect("pixels")[16..20], [160, 160, 160, 255]);
+    }
 
     #[test]
     fn apparel_keys() {
