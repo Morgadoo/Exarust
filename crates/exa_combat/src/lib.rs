@@ -19,6 +19,7 @@
 pub mod attack;
 pub mod damage;
 pub mod stance;
+pub mod swing;
 pub mod wounds;
 
 use std::collections::HashSet;
@@ -26,7 +27,7 @@ use std::collections::HashSet;
 use attack::{AttackMotion, Attacker, Slot};
 use bevy::prelude::*;
 use damage::{Health, PartArmour, Strike, WeaponRecord};
-use exa_anim::{Animator, BodyPart, Motions};
+use exa_anim::{Animator, BodyPart, Ease, Motions};
 use exa_formats::races::{Natural, Race};
 use exa_physics::body::BODY_HZ;
 use exa_physics::body::{BodyTicks, CharacterTicks, GoLimp, Shove};
@@ -237,6 +238,9 @@ pub fn start_attack(
     stance: &str,
 ) {
     anim.play_once(motion.action(), stance);
+    // The original's first-side attacks start with no blend, eased
+    // smoothly from where the body is to the clip's first key.
+    anim.blended(0, Ease::Smooth);
     attacker.primary = Some(attack::primary_slot(weapon_class, motion));
     commands
         .entity(fighter)

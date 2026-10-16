@@ -7,13 +7,16 @@
 //! frame re-anchors to its pelvis within 10 cm in the clip's first
 //! quarter). While its get-up clip plays its balance rises by 0.05 a tick.
 //!
-//! The fall and the get-up are still Exarust's own (the original's
-//! staggers, Rebalance and get-up rules come later). Rules:
-//! `docs/formats/RSQ.md` (Physical body).
+//! The fall starts as the original's posture block starts one, with no
+//! blend and the fast ease; the get-up as the original's get-up from the
+//! floor, blending over (first key + 20) frames from the lying body's
+//! whole physical pose. When the fall and the get-up happen is still
+//! Exarust's own (the original's staggers, Rebalance and get-up rules come
+//! later). Rules: `docs/formats/RSQ.md` (Physical body).
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;
-use exa_anim::{Animator, Motions, in_place, sample};
+use exa_anim::{Animator, Ease, Motions, sample};
 use exa_combat::stance::Stance;
 use exa_physics::CharacterBody;
 use exa_physics::body::{BODY_HZ, CharacterTicks, Fallen, Ragdoll};
@@ -39,6 +42,8 @@ const GET_UP_AFTER: f32 = 2.5;
 const GET_UP_ENERGY: f32 = 0.9;
 const SETTLED_SPEED: f32 = 0.2;
 const PELVIS: usize = 1;
+/// A get-up from the floor blends this many frames past its first key.
+const GET_UP_BLEND: u32 = 20;
 
 /// The fall clip for a body leaning along `lean` (the unit offset from its
 /// support point to its chest) and facing `forward`: Fall Backward when the
@@ -70,6 +75,7 @@ fn fall_off_balance(
         body.fall();
         let forward = root_gt.rotation() * Vec3::Z;
         anim.play_once(fall_toward(lean, forward), "Unconcious 1");
+        anim.blended(0, Ease::Fast);
         commands
             .entity(root)
             .insert(Fallen::default())
@@ -134,10 +140,7 @@ fn get_up(
                 let clip = motions.0.clip(&anim.moveset, a)?;
                 let time = clip.keys.first()?.time;
                 let (rotations, root_pos) = sample(clip, time)?;
-                let pose = Affine3A::from_rotation_translation(
-                    *rotations.first()?,
-                    in_place(clip, time, root_pos),
-                );
+                let pose = Affine3A::from_rotation_translation(*rotations.first()?, root_pos);
                 Some((a, pose))
             })
             .max_by(|x, y| {
@@ -164,6 +167,7 @@ fn get_up(
         }
         body.stand();
         anim.play_once(action, stance);
+        anim.blended(GET_UP_BLEND, Ease::Linear).capture_whole();
         fallen.getting_up = true;
         info!("{root:?} gets up ({action})");
     }

@@ -190,6 +190,13 @@ impl CharacterBody {
         self.followed
     }
 
+    /// How far the character walked in the last fixed step (m): its move
+    /// less the follow.
+    pub fn walked(&self) -> Vec3 {
+        self.steps
+            .map_or(Vec3::ZERO, |(now, before)| now - before - self.followed)
+    }
+
     /// The simulated feet position, given the entity's transform.
     fn simulated(&self, transform: &Transform) -> Vec3 {
         match self.steps {

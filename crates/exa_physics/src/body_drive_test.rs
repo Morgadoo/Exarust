@@ -336,3 +336,41 @@ fn the_stance_hold_pulls_the_pelvis_across_the_ground_only() {
         }
     }
 }
+
+/// The weight with which a body's targets give way to the pose it holds:
+/// dazed (energy more than 0.05 under its most), 1 − (1 − S)²·(1 − s)·
+/// (E/Emax)⁴, so a dazed body standing on its feet holds its pose in full
+/// and one lying (E = 0.5) 0.9375; alert, (1 − S)·s, nothing without a
+/// blow sag. The sag fades 0.01 a tick, and is gone once the body falls.
+#[test]
+fn a_dazed_body_holds_its_pose() {
+    let mut d = Drive {
+        energy: 0.5,
+        ..Drive::default()
+    };
+    assert!(d.dazed() && d.holds_pose());
+    assert_eq!(d.hold_weight(), 1.0);
+    d.support = 0.0;
+    assert!(close(d.hold_weight(), 0.9375, 1e-6));
+    d.support = 0.5;
+    d.sag = 0.5;
+    assert!(close(d.hold_weight(), 1.0 - 0.25 * 0.5 * 0.0625, 1e-6));
+    d.energy = 0.951;
+    assert!(!d.dazed());
+    assert!(close(d.hold_weight(), 0.25, 1e-6));
+    d.sag = 0.0;
+    assert_eq!(d.hold_weight(), 0.0);
+    assert!(d.holds_pose());
+    d.support = 1.0;
+    assert!(!d.holds_pose());
+    // The sag fades with the ticks, and goes with a fall.
+    let (mut body, targets) = standing();
+    let floor = floor_quad(0.0, 5.0);
+    body.aim(Affine3A::IDENTITY, targets);
+    body.drive.as_mut().unwrap().sag = 0.5;
+    body.tick(floor.as_slice());
+    assert!(close(body.drive.as_ref().unwrap().sag, 0.49, 1e-6));
+    body.fall();
+    body.tick(floor.as_slice());
+    assert_eq!(body.drive.as_ref().unwrap().sag, 0.0);
+}

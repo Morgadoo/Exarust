@@ -769,6 +769,13 @@ mod tests {
         ] {
             assert_eq!(flags(name), Some((word, false)), "{name}");
         }
+        // The clip clock's base (every race's in `shipped_stats`: 1.0, but
+        // 1.5 for the two ghouls); the human's clip rates 27, 16.6, 13.5 and
+        // 28 frames a second.
+        assert_eq!(h.clip_rate, 1.0);
+        for (g, rate) in h.gaits.iter().zip([27.0, 16.6, 13.5, 28.0]) {
+            assert!(close(g.clip_rate, rate), "{g:?}");
+        }
         for r in &races {
             let b = r.body;
             for v in [b.pin_factor, b.balance_bonus, b.stance, b.arm_relaxation] {

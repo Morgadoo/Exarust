@@ -5,7 +5,9 @@
 //! bone and the root (pelvis) position; sampling replaces each part's local
 //! rotation and the pelvis translation. Living physical bodies follow these
 //! poses with their muscles: their clips are advanced and sampled by their
-//! body's 83 Hz tick ([`TickedClips`]), every other body's once a frame.
+//! body's 83 Hz tick ([`TickedClips`]) at the original's clocks, every other
+//! body's once a frame. A clip starts from where the body is and blends to
+//! its first key ([`clock`]).
 
 use std::sync::Arc;
 
@@ -16,7 +18,11 @@ use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use exa_assets::{Game, PackKind, SkinnedPart};
 use exa_formats::rsq::{BoneBody, Clip, MotionSet, Sequences, bone_index};
 
-/// Clip time units per second (keys are stored in frames).
+mod clock;
+pub use clock::{ATTACKS, Capture, Ease, FOOTWORK, LOCOMOTION, follow_up_blend, in_place};
+
+/// Clip frames per second of a body without a body tick (Exarust's own:
+/// every character of the original is a body, ticked at its clocks).
 pub const FRAMES_PER_SECOND: f32 = 60.0;
 
 pub struct AnimPlugin;
@@ -95,13 +101,34 @@ fn human_leg(game: &Game) -> Option<f32> {
 pub struct Animator {
     pub moveset: String,
     pub action: String,
+    /// The clip clock, in frames.
     pub time: f32,
+    /// Scales the clock of a body without a body tick.
     pub speed: f32,
     pub looping: bool,
     /// Action to switch to (looping) when a non-looping clip ends.
     pub then: Option<String>,
-    /// Set when a non-looping clip has reached its end.
+    /// Set when a non-looping clip without a follow-up has reached its end.
     pub finished: bool,
+    /// The blend from the capture (frames): the clip reaches its first key
+    /// when its clock reaches the first key's time plus this.
+    pub blend: f32,
+    /// How the blend from the capture eases.
+    pub ease: Ease,
+    /// The clip still blends from its start's capture (it has not aimed
+    /// past its first key since it started).
+    pub leading: bool,
+    /// Where the body was when the clip started: each bone's turn and the
+    /// root (unscaled), once its tick has taken it.
+    pub capture: Option<ClipPose>,
+    /// A start whose capture the body's next tick takes.
+    pub pending: Option<Capture>,
+    /// The pose last sampled (the root unscaled): the bones' current
+    /// targets.
+    pub pose: Option<ClipPose>,
+    /// How far the last sample pulled the bones toward the pose the body
+    /// holds, 0..=1.
+    pub held: f32,
 }
 
 impl Animator {
@@ -114,67 +141,37 @@ impl Animator {
             looping: true,
             then: None,
             finished: false,
+            blend: 0.0,
+            ease: Ease::Linear,
+            leading: true,
+            capture: None,
+            pending: None,
+            pose: None,
+            held: 0.0,
         }
     }
 
-    /// Switches to a looping action unless it is already playing.
+    /// Switches to a looping action unless it is already playing: it starts
+    /// from where the body is with no blend beyond its first key, linear.
     pub fn play_loop(&mut self, action: &str) {
         if self.action != action || !self.looping {
-            self.action = action.into();
-            self.time = 0.0;
-            self.looping = true;
-            self.finished = false;
-            self.then = None;
+            self.start(action, true, None, 0, Ease::Linear);
         }
     }
 
-    /// Plays `action` once, then loops `then`.
+    /// Plays `action` once, then loops `then`; it starts from where the body
+    /// is with no blend beyond its first key, linear.
     pub fn play_once(&mut self, action: &str, then: &str) {
-        self.action = action.into();
-        self.time = 0.0;
-        self.looping = false;
-        self.finished = false;
-        self.then = Some(then.into());
+        self.start(action, false, Some(then.into()), 0, Ease::Linear);
     }
 
-    /// Advances the clip clock by `seconds` on `clip`, the current action's
-    /// clip: a looping clip wraps, a clip played once holds its last key and
-    /// then switches to its follow-up, which starts from its beginning.
-    /// Returns `false` when the clip has no keys or the clock switched to the
-    /// follow-up (whose clip the caller looks up afresh).
-    pub fn advance(&mut self, clip: &Clip, seconds: f32) -> bool {
-        let (Some(first), Some(last)) = (clip.keys.first(), clip.keys.last()) else {
-            return false;
-        };
-        self.time += seconds * FRAMES_PER_SECOND * self.speed;
-        let length = last.time - first.time;
-        if self.time > last.time {
-            if self.looping && length > 0.0 {
-                self.time = first.time + (self.time - first.time) % length;
-            } else {
-                self.time = last.time;
-                self.finished = true;
-                if let Some(next) = self.then.take() {
-                    self.action = next;
-                    self.time = 0.0;
-                    self.looping = true;
-                    self.finished = false;
-                    return false;
-                }
-            }
-        }
-        if self.time < first.time {
-            self.time = first.time;
-        }
-        true
-    }
-
-    /// Progress through the current clip, 0..=1 (when the clip is known).
+    /// Progress through the current clip, 0..=1, from its first key to its
+    /// last (Exarust's measure, which the combat's strike window reads).
     pub fn progress(&self, motions: &MotionSet) -> Option<f32> {
         let clip = motions.clip(&self.moveset, &self.action)?;
         let (first, last) = (clip.keys.first()?.time, clip.keys.last()?.time);
         let len = (last - first).max(f32::EPSILON);
-        Some(((self.time - first) / len).clamp(0.0, 1.0))
+        Some(((self.time - self.blend - first) / len).clamp(0.0, 1.0))
     }
 }
 
@@ -320,21 +317,7 @@ pub fn sample(clip: &Clip, time: f32) -> Option<(Vec<Quat>, Vec3)> {
     Some((rotations, root))
 }
 
-/// The root position without the clip's horizontal travel: a walk cycle
-/// advances its root over the clip and starts again behind, while the body
-/// itself is carried by its character controller.
-pub fn in_place(clip: &Clip, time: f32, root: Vec3) -> Vec3 {
-    let (Some(first), Some(last)) = (clip.keys.first(), clip.keys.last()) else {
-        return root;
-    };
-    let span = (last.time - first.time).max(f32::EPSILON);
-    let progress = ((time - first.time) / span).clamp(0.0, 1.0);
-    let travel = Vec3::from(last.root) - Vec3::from(first.root);
-    root - Vec3::new(travel.x, 0.0, travel.z) * progress
-}
-
-/// A clip's pose at one time: each bone's rotation, and the root position
-/// in place and scaled by the body's stature.
+/// A pose: each bone's rotation (bone − 1 indexed), and the root position.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClipPose {
     pub rotations: Vec<Quat>,
@@ -342,13 +325,23 @@ pub struct ClipPose {
 }
 
 impl ClipPose {
-    /// The pose of `clip` at `time` frames for a body of `stature`.
-    pub fn at(clip: &Clip, time: f32, stature: f32) -> Option<Self> {
-        let (rotations, root) = sample(clip, time)?;
+    /// The pose of `clip` at `time` frames (clamped to its keys) for a body
+    /// of `stature`, its root's z left out when the clip plays `in_place`.
+    pub fn at(clip: &Clip, time: f32, stature: f32, in_place: bool) -> Option<Self> {
+        let (rotations, mut root) = sample(clip, time)?;
+        if in_place {
+            root.z = 0.0;
+        }
         Some(Self {
             rotations,
-            root: in_place(clip, time, root) * stature,
+            root: root * stature,
         })
+    }
+
+    /// The pose with its root scaled by the body's stature.
+    pub fn scaled(mut self, stature: f32) -> Self {
+        self.root *= stature;
+        self
     }
 
     /// Poses a body part's local transform: its bone's rotation, and the
@@ -374,7 +367,8 @@ fn to_quat(r: [f32; 4]) -> Quat {
 }
 
 /// Advances and poses, once a frame, the clips of every body that its body
-/// does not tick.
+/// does not tick: their clock runs at [`FRAMES_PER_SECOND`], and a start
+/// blends from the last pose (such a body has no physical pose).
 fn play_clips(
     time: Res<Time>,
     motions: Option<Res<Motions>>,
@@ -383,16 +377,25 @@ fn play_clips(
     mut parts: Query<(&BodyPart, &mut Transform)>,
 ) {
     let Some(motions) = motions else { return };
+    let set = &*motions.0;
     for (root, mut anim, stature) in &mut animators {
-        let Some(clip) = motions.0.clip(&anim.moveset, &anim.action) else {
+        anim.take_capture(&[]);
+        let Some(clip) = set.clip(&anim.moveset, &anim.action) else {
             continue;
         };
-        if !anim.advance(clip, time.delta_secs()) {
-            continue;
+        let ending = set.action_index(&anim.action);
+        let frames = time.delta_secs() * FRAMES_PER_SECOND * anim.speed;
+        if anim.tick(clip, frames, follow_up_blend(ending, 0)) {
+            anim.take_capture(&[]);
         }
-        let Some(pose) = ClipPose::at(clip, anim.time, stature.map_or(1.0, |s| s.0)) else {
+        let Some(clip) = set.clip(&anim.moveset, &anim.action) else {
             continue;
         };
+        let still = in_place(set.action_index(&anim.action));
+        let Some(pose) = anim.sample(clip, still, None) else {
+            continue;
+        };
+        let pose = pose.scaled(stature.map_or(1.0, |s| s.0));
         for e in children.iter_descendants(root) {
             if let Ok((part, mut t)) = parts.get_mut(e) {
                 pose.place(part, &mut t);
@@ -430,16 +433,18 @@ mod tests {
         assert!((end.y - 2.0).abs() < 1e-6);
     }
 
+    /// Only a clip played in place loses its root's travel (along z).
     #[test]
-    fn travel_is_taken_out_of_the_root() {
+    fn travel_is_left_out_only_in_place() {
         let mut clip = Clip {
             mode: 3,
             keys: vec![key(0.0, 0.0, 1.0), key(10.0, 0.0, 1.0)],
         };
-        clip.keys[1].root = [0.0, 1.2, 0.6];
-        let (_, root) = sample(&clip, 5.0).unwrap();
-        let fixed = in_place(&clip, 5.0, root);
-        assert!(fixed.z.abs() < 1e-6 && (fixed.y - 1.1).abs() < 1e-6);
+        clip.keys[1].root = [0.2, 1.2, 0.6];
+        let still = ClipPose::at(&clip, 5.0, 1.0, true).unwrap().root;
+        assert!(still.abs_diff_eq(Vec3::new(0.1, 1.1, 0.0), 1e-6), "{still}");
+        let kept = ClipPose::at(&clip, 5.0, 2.0, false).unwrap().root;
+        assert!(kept.abs_diff_eq(Vec3::new(0.2, 2.2, 0.6), 1e-6), "{kept}");
     }
 
     fn walk() -> Clip {
@@ -447,24 +452,6 @@ mod tests {
             mode: 3,
             keys: vec![key(10.0, 0.0, 1.0), key(20.0, 1.0, 2.0)],
         }
-    }
-
-    #[test]
-    fn the_clock_loops_and_hands_over_to_the_follow_up() {
-        let clip = walk();
-        let mut anim = Animator::new("Default", "Walk");
-        // 60 frames a second.
-        assert!(anim.advance(&clip, 0.2));
-        assert!((anim.time - 12.0).abs() < 1e-4);
-        assert!(anim.advance(&clip, 0.2));
-        assert!((anim.time - 14.0).abs() < 1e-4, "wrapped to {}", anim.time);
-        anim.play_once("Wave", "Walk");
-        assert!(anim.advance(&clip, 0.1));
-        assert!(!anim.finished);
-        // Past the end: the follow-up starts from its beginning.
-        assert!(!anim.advance(&clip, 0.5));
-        assert_eq!((anim.action.as_str(), anim.time), ("Walk", 0.0));
-        assert!(anim.looping && !anim.finished);
     }
 
     /// Frames leave alone the clips of bodies their body ticks.
@@ -499,7 +486,8 @@ mod tests {
             app.update();
         }
         let time = |e: Entity| app.world().get::<Animator>(e).unwrap().time;
-        assert!(time(framed) > 10.0);
+        // 50 ms frames at 60 frames a second (the first has no time).
+        assert!((time(framed) - 6.0).abs() < 1e-4, "{}", time(framed));
         assert_eq!(time(ticked), 0.0);
     }
 }

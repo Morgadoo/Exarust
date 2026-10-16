@@ -5,8 +5,9 @@
 //! compared row by row. What Exarust does not simulate yet is left empty.
 //! Exarust's own columns follow the probe's: the body's sleep countdown and
 //! state, its character frame's origin and its body root (where its
-//! controller stands) across the ground. Columns: `docs/formats/RSQ.md` (Physical body,
-//! per-tick trace).
+//! controller stands) across the ground, its clip's blend and how far its
+//! pose is held. Columns: `docs/formats/RSQ.md` (Physical body, per-tick
+//! trace).
 
 use std::fmt::Write as _;
 use std::fs::File;
@@ -14,7 +15,7 @@ use std::io::{BufWriter, Write as _};
 use std::path::Path;
 
 use bevy::prelude::*;
-use exa_anim::{Animator, BodyPart, ClipPose, Motions, Stature};
+use exa_anim::{Animator, BodyPart, Motions, Stature};
 use exa_physics::body::{BodySystems, BodyTicks, Ragdoll, world_with};
 
 use crate::limp::clip_pose;
@@ -43,6 +44,9 @@ const SCALARS: [&str; 11] = [
 /// Exarust's own place columns, after its sleep columns (cm): the character
 /// frame's origin and the body root across the ground.
 const OWN: [&str; 4] = ["frame_x", "frame_z", "root_x", "root_z"];
+/// Exarust's own clip columns, last: the blend from the clip's capture
+/// (frames, 0 once its first key is reached) and the hold weight.
+const CLIP: [&str; 2] = ["blend", "hold"];
 /// A part target's columns: its place (cm) and its rotation.
 const TARGET: [&str; 7] = ["x", "y", "z", "qx", "qy", "qz", "qw"];
 
@@ -107,6 +111,7 @@ pub fn header() -> String {
     columns.push("countdown".into());
     columns.push("sleep".into());
     columns.extend(OWN.iter().map(|s| s.to_string()));
+    columns.extend(CLIP.iter().map(|s| s.to_string()));
     columns.join(",")
 }
 
@@ -213,13 +218,8 @@ fn row(
     let root_world = world_with(root, parents, |e| {
         nodes.get(e).ok().map(|(t, _)| t.compute_affine())
     });
-    let pose = match (motions, anim) {
-        (Some(m), Some(a)) => {
-            m.0.clip(&a.moveset, &a.action)
-                .and_then(|c| ClipPose::at(c, a.time, stature))
-        }
-        _ => None,
-    };
+    // The pose the tick sampled.
+    let pose = anim.and_then(|a| a.pose.clone()).map(|p| p.scaled(stature));
     let drive = body.drive.as_ref();
     // The scalars, in the order of `SCALARS`. The original's frame sits at
     // the pelvis height; Exarust's is the body root, at the feet.
@@ -273,17 +273,18 @@ fn row(
     let at = Vec3::from(root_world.translation) * CM;
     row.value(Some(at.x));
     row.value(Some(at.z));
+    row.value(anim.map(|a| a.blend));
+    row.value(anim.map(|a| a.held));
     row.0
 }
 
 #[cfg(test)]
 mod tests {
-    use exa_physics::body::BODY_HZ;
-
     use super::*;
 
     /// The trace has a row per tick for the body, with the header's
-    /// columns: its clip clock advancing by a tick's worth of frames, its
+    /// columns: its clip clock advancing 0.6 frames a tick (a standing
+    /// body's, as the original's), no blend and no hold, its
     /// tone, stance factor, tone target and support (a standing human: 1,
     /// 0.5, 0.5 and 1; this body has no legs to measure its balance on, so
     /// its balance stays 1 and its counter 0), its targets in cm (the
@@ -307,7 +308,7 @@ mod tests {
         let columns: Vec<&str> = lines.next().unwrap().split(',').collect();
         assert_eq!(
             columns.len(),
-            2 + 12 + SCALARS.len() + BONES * TARGET.len() + 8 + 2 + 2 + OWN.len()
+            2 + 12 + SCALARS.len() + BONES * TARGET.len() + 8 + 2 + 2 + OWN.len() + CLIP.len()
         );
         let rows: Vec<Vec<&str>> = lines.map(|l| l.split(',').collect()).collect();
         assert_eq!(rows.len() as u64, ticks);
@@ -316,8 +317,9 @@ mod tests {
         for (k, row) in rows.iter().enumerate() {
             assert_eq!(row.len(), columns.len());
             assert_eq!(row[at("tick")], (k + 1).to_string());
-            let clock = (k + 1) as f32 * 60.0 / BODY_HZ;
+            let clock = (k + 1) as f32 * 0.6;
             assert!((number(row, "clock") - clock).abs() < 1e-3);
+            assert_eq!((number(row, "blend"), number(row, "hold")), (0.0, 0.0));
             assert_eq!(row[at("motion")], "0");
             assert_eq!(number(row, "tone"), 1.0);
             assert_eq!(number(row, "stance"), 0.5);

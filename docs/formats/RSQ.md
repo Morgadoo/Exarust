@@ -349,15 +349,15 @@ tick, in this order:
 Exarust runs the same order in its fixed step. The character controllers
 move first. Then each living body's character tick (`CharacterTicks`,
 player last) measures its balance and the ground under its feet (below),
-advances its clip clock by one tick and samples the clip; its targets are
-the body root's world transform times the clip pose, put on its character
-frame (below), and its carry is set from the lift. Then the
-solver (`BodySystems`) deals the queued blows and runs steps 2–6 over every
-awake body. The same ticks give the same particles at any frame rate. Blows
-sent between ticks wait in a queue for the next one. Parts are drawn
-between where the tick before last and the last tick left them. Exarust
-keeps the clip clock at 60 frames a second until the original's rates are
-pinned.
+takes the capture of a clip started since its last tick, advances its
+clip clock by the original's rate and samples the clip ([Motion
+playback](#motion-playback)); its targets are the body root's world
+transform times the clip pose, put on its character frame (below), and its
+carry is set from the lift. Then the solver (`BodySystems`) deals the
+queued blows and runs steps 2–6 over every awake body. The same ticks give
+the same particles at any frame rate. Blows sent between ticks wait in a
+queue for the next one. Parts are drawn between where the tick before last
+and the last tick left them.
 
 Balance and support (`exa_physics::body::Balance`, `Ragdoll::measure_balance`;
 REA on the original's balance and feet routines, its Height Query, its body
@@ -449,11 +449,11 @@ follows the pelvis:
   one's follows its pelvis;
 - down (off balance with a balance under 0.3), within 5 cm, the distance
   measured in all three axes from where it was last placed;
-- getting up, within 10 cm while the get-up clip is in its first quarter,
-  then not at all until the body stands. Exarust starts a get-up's clip at
-  its first key, so the re-anchoring uses that key's root offset and the
-  clip's pelvis lands on the body; the original re-anchors with the offset
-  its sampler left the tick before, then blends into the clip (C10).
+- getting up, within 10 cm while the get-up clip is in its first quarter
+  (its progress, (clock − blend) / last key, under 0.25), then not at all
+  until the body stands. The clip blends from the lying body to its first
+  key ([Motion playback](#motion-playback)), and the frame re-anchors with
+  the root offset of that blend.
 
 It is placed at once the first time. Not reproduced yet: the jolt that
 moves the stance toward the feet (C15) and the collapse (every tick, C23).
@@ -514,30 +514,42 @@ pins (C14, C18):
 - A duellist's blows (energy down to 0.62) sag the struck player's pelvis
   by under 1 cm and leave its balance at 1: the lift and the legs carry the
   dazed upper body.
-- Animation clips play in place: the root's horizontal travel over a clip
-  is removed, since the controller moves the body.
+- Clips keep their root's travel, but for the walk, the run and the
+  backpedal (and Exarust's interim `Combat Walk`), whose travel along z is
+  left out since the body's own motion makes it ([Motion
+  playback](#motion-playback)). A get-up's travel moves its targets, and
+  the stance hold pulls the pelvis along.
 - Falling is still Exarust's (`exa_game::balance`; the original's
   Rebalance, Defence stance, staggers and down state come with C11). In the
   fixed step, before the character ticks, a standing body whose balance was
   below 0.6 last tick falls: it is no longer carried or held, its tone
   stays (as in the original), and it plays Fall Forward when its lean
-  (support point to chest) points ahead of it, else Fall Backward, into
-  Unconcious 1. Once it lies its support is 0, so only its link muscles
-  act, inside the body: it falls as fast as a limp body.
+  (support point to chest) points ahead of it, else Fall Backward (started
+  as the original's posture block starts a fall: no blend, the fast ease),
+  into Unconcious 1. Once it lies its support is 0, so only its link
+  muscles act, inside the body: it falls as fast as a limp body.
 - Getting up:
   - Once settled (2.5 s, energy ≥ 0.9), the body plays whichever of
     `Get up` / `Get Up 2` has a first pose lying the same way, judged by the
     pelvis's front axis facing up or down.
   - The body is first turned so that clip's first pose lies the way the
-    body does; its frame then re-anchors to the pelvis (above), so the
-    clip's pelvis lies on the body, and the controller follows the frame
-    there.
+    body does; its frame then re-anchors to the pelvis (above), and the
+    controller follows the frame there.
+  - The clip starts as the original's get-up from the floor: a blend of
+    20 frames from a whole capture of the lying body (each part's
+    physical turn, the pelvis's on the frame), so its targets go from the
+    lying body to the clip's first key over (first key + 20) frames, 44
+    ticks for `Get up` and 39 for `Get Up 2` at the get-up clock.
+  - It ends into the stance with no blend and the smooth ease, from the
+    get-up's last root (`Get Up 2`: (6.1, 81.7, −1.8) cm) to Idle's first
+    key over 20 frames (33 ticks): no jump (36 cm in one tick before).
   - While its get-up clip plays the body's balance rises (above).
 - Recovery steps and foot planting are not reproduced yet. After a get-up
   the feet stay where the clip left them (they bear weight now), so the
   body may stand leaning over them (balance 0.97 after `--shove 60`).
-- The duellist's strike range is Exarust's own (1.2 m): link-muscle arms
-  reach 10–15 cm less far than the clip's pose.
+- The duellist's strike range is Exarust's own (1.15 m): link-muscle arms
+  reach 15–20 cm less far than the clip's pose at the original's swing
+  speed.
 
 Per-tick trace. `exarust --trace <file.csv>` writes one row per traced body
 after every tick. It traces the player's body, or every simulated body when
@@ -562,6 +574,7 @@ is left empty.
 | `motion`, `clock` | the action's index in the motion set, and the clip clock |
 | `countdown`, `sleep` | Exarust's own, after the probe's: the body's sleep countdown and state (`awake`, `asleep`, `deep`) |
 | `frame_x`, `frame_z`, `root_x`, `root_z` | Exarust's own: the character frame's origin, and the body root (where the character controller stands), across the ground |
+| `blend`, `hold` | Exarust's own: the blend (frames) the clip still has from its start's capture (0 once its first key is reached), and how far the sample was pulled toward the pose the body holds |
 
 The joint trace (`--joint-trace`), one row per body part, and the body
 overlay are described in [`docs/DEBUGGING.md`](../DEBUGGING.md).
@@ -576,7 +589,8 @@ moveset × movesets:
   char parent[16]        "Default": the moveset that supplies missing actions
   per action:
     i32 keys             ≤ 0: not defined in this moveset
-    i32 mode             (3 in most clips)
+    i32 mode             bit 0: the clip loops (the original's clip start
+                         reads only it); 3 in most clips
     f32 time[keys]       frames (10, 20, 30, …)
     f32 root[keys][3]    pelvis position (cm)
     pose[keys][bones]:   f32 rotation[4] (local x, y, z, w), u32 flags
@@ -619,6 +633,82 @@ the installed files.
 About 1 200 keys in total serve every humanoid and creature: the original
 drives physically simulated bodies toward these poses rather than playing
 them directly.
+
+## Motion playback
+
+Evidence: REA (Ghidra 12.1.4) decompiles and `exe.asm` of the original's
+character init, clip start, captures, living sampler and body-tick clock
+block, constants read from `Exanima.exe`; `humanoid.rsq` and `races.rdb`
+from the installation. Exarust: `exa_anim` (`Animator`, its `clock`),
+`exa_game::limp` (the rates, the physical turns), `exa_combat::swing`.
+
+**Clock.** A clip's clock counts frames; each body tick adds a rate. The
+base is the race's clip rate (`races.rdb` `0x5C`: 1.0, the ghouls 1.5; the
+character init first stores (80/83)/scale, then overwrites it). Per tick:
+
+| state | frames a tick | a human, full tone |
+|---|---|---|
+| walking or running in the walk, run or backpedal clip | the gait's clip rate ÷ 83 (walk → jog by √run, or the backpedal's) × (0.8 × speed + 1), speed in cm a tick | 0.76 walking (1.69 cm), 0.89 running, 0.74 backpedalling |
+| getting up | tone × 1.5 × base × 0.6, only above half tone | 0.9 |
+| an attack (actions 5–12) | the swing's rate (below) | ≈ 1.0–1.3 |
+| off balance (falling, lying) | 0.6 × 1.25 × base | 0.75 |
+| otherwise (stances, idle) | 0.6 × base | 0.6 (49.8 frames a second) |
+
+The clip ends when its clock less its blend reaches the last key's time. A
+looping clip (mode bit 0, or one Exarust loops) then wraps by the last
+key's time, and its frames before the first key blend from the last key
+back to the first. A clip played once starts its follow-up with a blend
+of twice its weapon's recovery for an attack, 60 frames from action 0x21
+on, 20 from 0x1F, none below, eased smoothly; without a follow-up it
+holds its last key. Progress is (clock − blend) / the last key's time.
+
+**Starts.** Starting a clip sets its clock to 0, its blend (frames) and its
+ease (linear unless the caller sets one) and captures where the body is:
+the root and the pelvis's and legs' (bones 1–7) last targets, and every
+other bone's physical turn under its parent part; the capture becomes the
+bones' targets. A get-up from the floor captures every part's physical
+turn, the pelvis's on the character frame. The original takes the capture
+in the start; Exarust in the body's next tick, from the same state.
+
+**Sampling.** With t′ = clock − blend: before the first key the clip blends
+from its capture to the first key by clock / (first key + blend), eased
+(smooth f²(3 − 2f), or fast 1 + 0.11f − 1/(1 + 8f) after falls); without
+a capture, from its first key (from its last when looping). Once t′ aims
+past the first key the blend ends for good: the clock loses the blend.
+Keys are slerped, the root lerped. The root keeps the clip's travel, but
+the walk's, run's and backpedal's z (Exarust also drops its interim
+`Combat Walk`'s). A body that has not sampled a clip yet has no capture
+and starts from the keys, with no blend.
+
+**Pose hold.** Each bone is then pulled toward the pose the body holds by
+w = 1 − (1 − S)²·(1 − s)·(E/Emax)⁴ while dazed (energy more than 0.05 under
+its most), else (1 − S)·s, when w is over 1.19e-7 (S support, s blow sag,
+which fades 0.01 a tick and is 0 down; nothing sets it yet). The held pose
+is the pelvis's and legs' current targets and every other bone's physical
+turn, taken each tick the body is dazed, has a sag, or its support is
+under 1. A dazed body standing on its feet holds its physical pose in
+full: the clip has no say until its energy recovers. The root is not held.
+The original lerps the quaternions' components without a sign check;
+Exarust takes the short way.
+
+**Swing.** An attack's clock runs speed × g × 1.125 × base frames a tick,
+g = 1 − 0.833·m·(d + d²), d = |progress − 0.5| (at progress 0, 1 − 0.833·m);
+a stab ×1.2, and below 40 % also × (1.2·progress + 0.5). Under 0.8 of its
+most energy the swing stops; under its most the rate is (E/Emax)². Speed,
+m and the recovery are the primary striker's weapon record (W15, W18, W19,
+[formats/OTHER.md](OTHER.md), Weapon record); with no armour encumbrance
+speed = (1 − weight)·0.15 + 1.05 (×1.2 unarmed), m = 1 − balance, recovery
+= round((weight + 1 − balance)·10) frames; fists 1.44, 0, 0. Attacks start
+with no blend, eased smoothly.
+
+Not reproduced yet: the locomotion clock's stride modulation, its start
+key and the run overlay (C18); the stagger, Defence and Rebalance starts
+and the get-up re-pick (C11); the daze's Defence stance and its blend
+round((1.05 − E)·300) (with the combat stance); the blow sag's writer, the
+swing's alignment wait, skill, recoil and slow state (C21); the torso
+twist in the captures (identity without it); the femur posture flag; the
+foot contacts' flag in the capture; the armour encumbrance; the creature
+classes' own clock bases.
 
 ## Skinning
 

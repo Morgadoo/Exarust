@@ -323,9 +323,27 @@ the support pins, C14), so a steady body keeps its stance spot and an
 unsteady one stays where it is pushed; the capsule follows the frame
 through the controller (a tenth of the way a tick, at most 2 cm), so it
 stays with a shoved, falling or rising body, and a get-up no longer moves
-the capsule in one go. Still to do: the support
-pins, the original's falls and get-ups, recovery steps, foot planting,
-clip blending, collisions between bodies (and their wake of a sleeper).
+the capsule in one go. Done (change
+`blend-clip-starts`, C10): clips play at the original's clocks (a race's
+base rate × 0.6 a tick standing, 0.75 off balance, 0.9 getting up, the
+weapon's swing rate attacking, the gait's rate × (0.8 × speed + 1)
+walking), loop by their last key with a blend back to the first, and
+start from where the body is: a capture of its root, its legs' targets
+and its upper body's physical turns (a get-up from the floor: the whole
+lying body), blended to the clip's first key over (first key + blend)
+frames, eased; a clip played once ends into its stance with the
+original's blend table (2 × the weapon's stance blend after an attack).
+Clips keep their root's travel but for the walk, run and backpedal. A
+dazed or unsteady body holds its physical pose by the original's hold
+weight. The end of `Get Up 2` no longer jumps (36 cm in one tick before;
+its pelvis target now moves under 1 cm a tick), though the pelvis still
+overshoots its target height by about 4.7 cm while the lift catches up;
+attacks take about 1 s (1.4 before)
+([formats/RSQ.md](formats/RSQ.md), Motion playback). Still to do: the
+support pins, the original's falls and get-ups, recovery steps, foot
+planting, the locomotion clock's stride terms and the run overlay, the
+daze's Defence stance, collisions between bodies (and their wake of a
+sleeper).
 
 Done (change `decode-object-bodies-and-mechanisms`, data only): models'
 rigid bodies are decoded as the original stores them (class, mobility,

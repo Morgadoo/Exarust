@@ -1028,6 +1028,8 @@ fn race_muscles(body: &exa_formats::races::RaceBody) -> RaceMuscles {
         stance: body.stance,
         arm_relaxation: body.arm_relaxation,
         balance_bonus: body.balance_bonus,
+        clip_rate: body.clip_rate,
+        gait_rates: body.gaits.map(|g| g.clip_rate),
     }
 }
 

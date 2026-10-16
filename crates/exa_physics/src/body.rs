@@ -132,6 +132,10 @@ const MIN_ENERGY: f32 = 0.05;
 pub const MAX_ENERGY: f32 = 1.0;
 /// Most of its energy a single blow takes.
 const MAX_DAZE: f32 = 0.9;
+/// A body is dazed while its energy is more than this under its most.
+const DAZED_BELOW_MAX: f32 = 0.05;
+/// The blow sag fades by this a tick.
+const SAG_FADE: f32 = 0.01;
 /// Friction of a limb against the level.
 const LIMB_FRICTION: f32 = 2.5;
 /// Friction of a foot (bones 4 and 7).
@@ -812,6 +816,11 @@ pub struct Drive {
     lift_target: Option<f32>,
     /// The lift's factor f this tick, tone included (0 without support).
     lift: f32,
+    /// Blow sag s, 0..=1: how much an unsteady body's targets give way to
+    /// the pose it holds after a blow (the original's damage routine sets
+    /// it, which Exarust's does not yet); it fades 0.01 a tick, and is 0
+    /// while the body is down.
+    pub sag: f32,
 }
 
 impl Default for Drive {
@@ -833,6 +842,7 @@ impl Default for Drive {
             carry: lift::gravity_per_tick(),
             lift_target: None,
             lift: 0.0,
+            sag: 0.0,
         }
     }
 }
@@ -922,6 +932,31 @@ impl Drive {
     /// on its legs, 0 lifts nothing.
     pub fn lift(&self) -> f32 {
         self.lift
+    }
+
+    /// Dazed: its energy is more than 0.05 under its most.
+    pub fn dazed(&self) -> bool {
+        self.energy < MAX_ENERGY - DAZED_BELOW_MAX
+    }
+
+    /// How far its targets give way to the pose it holds this tick (its
+    /// clip's pose is pulled toward it by this): dazed, 1 − (1 − S)²·(1 −
+    /// s)·(E/Emax)⁴, so a dazed body standing on its feet holds its pose
+    /// in full; else (1 − S)·s, S its support and s its blow sag.
+    pub fn hold_weight(&self) -> f32 {
+        let loose = 1.0 - self.support;
+        if self.dazed() {
+            let e = self.energy / MAX_ENERGY;
+            1.0 - loose * loose * (1.0 - self.sag) * e.powi(4)
+        } else {
+            loose * self.sag
+        }
+    }
+
+    /// Whether it captures the pose it holds this tick: dazed, its blow
+    /// sag still on, or its support under 1.
+    pub fn holds_pose(&self) -> bool {
+        self.dazed() || self.sag > 0.0 || self.support < 1.0
     }
 }
 
@@ -1400,6 +1435,11 @@ impl Ragdoll {
         self.tick_countdown();
         if let Some(drive) = self.drive.as_mut() {
             drive.energy = (drive.energy + ENERGY_RECOVERY).min(MAX_ENERGY);
+            drive.sag = if drive.supported {
+                (drive.sag - SAG_FADE).max(0.0)
+            } else {
+                0.0
+            };
         }
         self.integrate();
         if self.drive.is_some() {

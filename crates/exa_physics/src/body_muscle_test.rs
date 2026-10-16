@@ -91,7 +91,7 @@ fn damping_gains_are_the_originals() {
         race: RaceMuscles {
             stance: 0.75,
             arm_relaxation: 0.5,
-            balance_bonus: 1.0,
+            ..RaceMuscles::HUMAN
         },
         ..Drive::default()
     };
@@ -174,7 +174,7 @@ fn arm_stiffness_follows_the_bodys_state() {
     let skeleton = RaceMuscles {
         stance: 0.75,
         arm_relaxation: 0.5,
-        balance_bonus: 1.0,
+        ..RaceMuscles::HUMAN
     };
     let mut y = 0.0;
     for _ in 0..60 {

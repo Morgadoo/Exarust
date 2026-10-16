@@ -5,22 +5,29 @@
 //!
 //! Each fixed tick runs every living body's character tick before the body
 //! solver, the player's last, as the original orders them: the body
-//! measures its balance and the ground under its feet, its clip clock
-//! advances by one tick and its clip is sampled, its targets are the body
-//! root's world transform times the clip's pose put on its character frame
-//! (which its character's controller follows), and its lift holds its
-//! pelvis over the ground under its feet.
+//! measures its balance and the ground under its feet; a clip started
+//! since its last tick captures where the body is; its clip clock advances
+//! at the original's rate for what the body does and its clip is sampled,
+//! blending from that capture and held toward its physical pose while it
+//! is dazed or unsteady; its targets are the body root's world transform
+//! times the clip's pose put on its character frame (which its character's
+//! controller follows), and its lift holds its pelvis over the ground under
+//! its feet.
 
 use std::collections::HashMap;
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;
-use exa_anim::{AnimSystems, Animator, BodyPart, ClipPose, Motions, Stature, TickedClips};
+use exa_anim::{
+    ATTACKS, AnimSystems, Animator, BodyPart, ClipPose, LOCOMOTION, Motions, Stature, TickedClips,
+    follow_up_blend, in_place,
+};
 use exa_assets::SkinnedPart;
+use exa_combat::swing::{Swing, pace_swings};
 use exa_formats::rsq::BoneBody;
 use exa_physics::body::{
-    BODY_HZ, Bearing, CharacterTicks, Fallen, GoLimp, PartSetup, Physical, RaceMuscles, Ragdoll,
-    world_with,
+    BODY_HZ, Bearing, CharacterTicks, Drive, Fallen, GoLimp, PartSetup, Physical, RaceMuscles,
+    Ragdoll, world_with,
 };
 use exa_physics::{CharacterBody, Physics};
 
@@ -31,6 +38,7 @@ pub struct LimpPlugin;
 impl Plugin for LimpPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, (build_bodies, go_limp).chain().after(AnimSystems))
+            .add_systems(Update, pace_swings)
             .add_systems(FixedUpdate, tick_characters.in_set(CharacterTicks));
     }
 }
@@ -190,12 +198,13 @@ fn go_limp(
 
 /// The character tick of every living physical body, the player's last:
 /// the body learns what its character does ([`Bearing`]) and measures its
-/// balance and the ground under its feet against the level; its clip clock
-/// advances by one tick, its clip is sampled, and its targets are set to
-/// the body root's world transform times the clip's pose (the body is
-/// carried with the root's motion since the last tick, less its
-/// controller's follow), then put on its character frame. Its controller is
-/// told to follow the frame.
+/// balance and the ground under its feet against the level; a clip started
+/// since its last tick captures where it is, its clip clock advances at its
+/// rate ([`clip_frames`]) and its clip is sampled ([`Animator::sample`]),
+/// and its targets are set to the body root's world transform times the
+/// clip's pose (the body is carried with the root's motion since the last
+/// tick, less its controller's follow), then put on its character frame.
+/// Its controller is told to follow the frame.
 #[allow(clippy::type_complexity)]
 fn tick_characters(
     motions: Option<Res<Motions>>,
@@ -208,6 +217,7 @@ fn tick_characters(
             Option<&Stature>,
             Option<&PlayerBody>,
             Option<&Fallen>,
+            Option<&Swing>,
         ),
         With<TickedClips>,
     >,
@@ -221,7 +231,7 @@ fn tick_characters(
     order.extend(
         bodies
             .iter()
-            .map(|(e, _, _, _, player, _)| (player.is_some(), e)),
+            .map(|(e, _, _, _, player, ..)| (player.is_some(), e)),
     );
     player_last(&mut order);
     let world = |e: Entity| {
@@ -230,7 +240,8 @@ fn tick_characters(
         })
     };
     for &(_, root) in order.iter() {
-        let Ok((_, mut body, mut anim, stature, player, fallen)) = bodies.get_mut(root) else {
+        let Ok((_, mut body, mut anim, stature, player, fallen, swing)) = bodies.get_mut(root)
+        else {
             continue;
         };
         if body.drive.is_none() {
@@ -247,6 +258,7 @@ fn tick_characters(
             bearing.gait_floor =
                 gait_floor(&motions, &anim, stature, &body, root, &parents, &nodes);
         }
+        let walked = controller.map_or(0.0, |c| c.walked().with_y(0.0).length() * CM);
         if let Some(c) = controller {
             body.followed(c.followed());
         }
@@ -254,10 +266,25 @@ fn tick_characters(
         if let Some(physics) = &physics {
             body.measure_balance(&physics.0);
         }
-        let pose = clip_tick(&motions, &mut anim, stature);
         let root_world = world(root);
+        let pace = Pace {
+            walked,
+            run: player.map_or(0.0, PlayerBody::run),
+            swing: swing.copied().unwrap_or(Swing::FISTS),
+        };
+        let pose = clip_tick(&motions, &mut anim, &body, &pace, |body| {
+            physical_turns(
+                body,
+                root,
+                root_world,
+                motions.0.bone_count,
+                &parents,
+                &nodes,
+            )
+        });
         match pose {
             Some(pose) => {
+                let pose = pose.scaled(stature);
                 let targets: Vec<Affine3A> = body
                     .parts
                     .iter()
@@ -279,21 +306,179 @@ fn tick_characters(
     }
 }
 
+/// Centimetres per metre: the clocks' speeds are the original's, in cm a
+/// tick.
+const CM: f32 = 100.0;
+
+/// What a body's clip clock reads besides its drive: how far its character
+/// walked in the last step (cm), the player's run blend, and its swing.
+struct Pace {
+    walked: f32,
+    run: f32,
+    swing: Swing,
+}
+
+/// One tick of a living body's clip: a start since the last tick captures
+/// where the body is (`turns` measures each bone's physical turn, only when
+/// needed); the clock advances by [`clip_frames`] and a clip played once
+/// may end into its follow-up (which captures at once); the clip is
+/// sampled, held toward the body's physical pose by its drive's hold
+/// weight while it is dazed or unsteady.
+fn clip_tick(
+    motions: &Motions,
+    anim: &mut Animator,
+    body: &Ragdoll,
+    pace: &Pace,
+    turns: impl Fn(&Ragdoll) -> Vec<Option<Quat>>,
+) -> Option<ClipPose> {
+    let set = &*motions.0;
+    let drive = body.drive.as_ref()?;
+    let holding = drive.holds_pose();
+    let physical = (anim.pending.is_some() || holding).then(|| turns(body));
+    let physical = physical.as_deref().unwrap_or(&[]);
+    anim.take_capture(physical);
+    let playing = set.action_index(&anim.action);
+    if let Some(clip) = set.clip(&anim.moveset, &anim.action) {
+        let frames = clip_frames(playing, anim.clip_progress(clip), drive, pace);
+        if anim.tick(clip, frames, follow_up_blend(playing, pace.swing.recovery)) {
+            if physical.is_empty() {
+                anim.take_capture(&turns(body));
+            } else {
+                anim.take_capture(physical);
+            }
+        }
+    }
+    let hold = holding.then(|| anim.hold_pose(physical)).flatten();
+    let weight = drive.hold_weight();
+    let clip = set.clip(&anim.moveset, &anim.action)?;
+    let still = in_place(set.action_index(&anim.action));
+    anim.sample(clip, still, hold.as_deref().map(|h| (h, weight)))
+}
+
+/// A standing body's clip clock runs this share of its rate a tick.
+const STANDING_PACE: f32 = 0.6;
+/// Off balance (falling, lying) its rate is 1.25 times the base.
+const OFF_BALANCE_RATE: f32 = 1.25;
+/// Getting up its rate is 1.5 times the base (less half the armour
+/// encumbrance, which Exarust does not have yet), the clock running
+/// tone × rate × 0.6 a tick, and only above half tone.
+const RISING_RATE: f32 = 1.5;
+const RISING_TONE: f32 = 0.5;
+/// Walking, the clock runs the gait's clip rate × (0.8·speed + 1), the
+/// speed in cm a tick.
+const STRIDE_PACE: f32 = 0.8;
+/// The gait rows: walk, jog and backpedal.
+const WALK: usize = 0;
+const JOG: usize = 1;
+const BACKPEDAL: usize = 3;
+/// The backpedal's action index.
+const BACKPEDAL_ACTION: usize = 2;
+
+/// Frames a living body's clip clock advances this tick, as the original's
+/// body tick sets them, from the clip `playing` (its action index), its
+/// `progress` by last tick's clock, its drive and its pace, a human's at
+/// full tone in brackets: walking or running in its locomotion clip, the
+/// gait's clip rate (walk to jog by √run, or the backpedal's) ×
+/// (0.8·speed + 1) (0.76 at 1.69 cm a tick); getting up, tone × 1.5 × base
+/// × 0.6 above half tone (0.9); attacking, its swing's rate (about 1.1);
+/// otherwise 0.6 × base, × 1.25 off balance (0.6, 0.75).
+fn clip_frames(playing: Option<usize>, progress: f32, drive: &Drive, pace: &Pace) -> f32 {
+    let race = &drive.race;
+    let base = race.clip_rate;
+    let bearing = &drive.bearing;
+    match playing {
+        Some(a) if bearing.moving && LOCOMOTION.contains(&a) => {
+            let per_tick = |row: usize| race.gait_rates[row] / BODY_HZ;
+            let gait = if a == BACKPEDAL_ACTION {
+                per_tick(BACKPEDAL)
+            } else {
+                let run = pace.run.clamp(0.0, 1.0).sqrt();
+                per_tick(WALK) + (per_tick(JOG) - per_tick(WALK)) * run
+            };
+            gait * (STRIDE_PACE * pace.walked + 1.0)
+        }
+        _ if bearing.getting_up => {
+            if drive.tone > RISING_TONE {
+                drive.tone * RISING_RATE * base * STANDING_PACE
+            } else {
+                0.0
+            }
+        }
+        Some(a) if ATTACKS.contains(&a) => pace.swing.frames(playing, progress, base, drive.energy),
+        _ if bearing.off_balance => STANDING_PACE * OFF_BALANCE_RATE * base,
+        _ => STANDING_PACE * base,
+    }
+}
+
+/// Each bone's physical turn under its parent (bone − 1 indexed, `bones`
+/// long): its part's rotation where the last tick left its particles,
+/// relative to its parent part's (through any plain node between them),
+/// the pelvis's relative to the character frame (last tick's, or the body
+/// root's before the first).
+fn physical_turns(
+    body: &Ragdoll,
+    root: Entity,
+    root_world: Affine3A,
+    bones: usize,
+    parents: &Query<&ChildOf>,
+    nodes: &Query<(&Transform, Option<&BodyPart>)>,
+) -> Vec<Option<Quat>> {
+    let frame = body
+        .drive
+        .as_ref()
+        .and_then(|d| d.frame())
+        .unwrap_or(root_world);
+    let turn = |a: Affine3A| Quat::from_mat3a(&a.matrix3).normalize();
+    let mut out = vec![None; bones];
+    for p in &body.parts {
+        let Some(slot) = p.bone.checked_sub(1).and_then(|i| out.get_mut(i)) else {
+            continue;
+        };
+        let (above, upto) = match p.parent.and_then(|j| body.parts.get(j)) {
+            Some(parent) => (turn(parent.transform()), parent.entity),
+            None => (turn(frame), root),
+        };
+        let between = plain_turn(p.entity, upto, parents, nodes);
+        *slot = Some(((above * between).inverse() * turn(p.transform())).normalize());
+    }
+    out
+}
+
+/// The turn of the plain nodes between `part` and its ancestor `upto` (its
+/// parent part, or the body root), from `upto` down.
+fn plain_turn(
+    part: Entity,
+    upto: Entity,
+    parents: &Query<&ChildOf>,
+    nodes: &Query<(&Transform, Option<&BodyPart>)>,
+) -> Quat {
+    let mut between = Quat::IDENTITY;
+    for node in parents.iter_ancestors(part) {
+        if node == upto {
+            break;
+        }
+        if let Ok((t, None)) = nodes.get(node) {
+            between = t.rotation * between;
+        }
+    }
+    between
+}
+
 /// A get-up is rising in its clip's first quarter: its frame follows its
 /// pelvis within 10 cm until then, as the original re-anchors it while its
 /// get-up's progress is under a quarter.
 const RISING_SHARE: f32 = 0.25;
 
 /// Whether a body gets up and its get-up clip (the one `anim` plays) is in
-/// its first quarter, by last tick's clock.
+/// its first quarter, by last tick's clock: its progress, (clock − blend)
+/// over its last key's time, is under a quarter.
 fn rising(motions: &Motions, anim: &Animator, fallen: Option<&Fallen>) -> bool {
     fallen.is_some_and(|f| f.getting_up)
         && !anim.looping
         && motions
             .0
             .clip(&anim.moveset, &anim.action)
-            .and_then(|c| c.keys.last())
-            .is_some_and(|last| anim.time < RISING_SHARE * last.time)
+            .is_some_and(|c| anim.clip_progress(c) < RISING_SHARE)
 }
 
 /// What a body's character does this tick, for its muscles and balance: it
@@ -336,7 +521,7 @@ fn gait_floor(
     nodes: &Query<(&Transform, Option<&BodyPart>)>,
 ) -> Option<f32> {
     let walk = motions.0.clip(&anim.moveset, "Walk")?;
-    let pose = ClipPose::at(walk, walk.keys.first()?.time, stature)?;
+    let pose = ClipPose::at(walk, walk.keys.first()?.time, stature, true)?;
     body.legs()
         .iter()
         .map(|leg| {
@@ -351,19 +536,6 @@ fn gait_floor(
 /// to the first, the player.
 fn player_last(order: &mut [(bool, Entity)]) {
     order.sort_by_key(|&(player, _)| player);
-}
-
-/// Advances `anim`'s clip clock by one body tick and samples its clip; a
-/// clip that ends into its follow-up gives the follow-up's first pose.
-fn clip_tick(motions: &Motions, anim: &mut Animator, stature: f32) -> Option<ClipPose> {
-    let set = &*motions.0;
-    let clip = set.clip(&anim.moveset, &anim.action)?;
-    let clip = if anim.advance(clip, 1.0 / BODY_HZ) {
-        clip
-    } else {
-        set.clip(&anim.moveset, &anim.action)?
-    };
-    ClipPose::at(clip, anim.time, stature)
 }
 
 /// Where `pose` puts `part` in the space of its body root `root`: the
@@ -466,7 +638,7 @@ pub(crate) mod tests {
     use bevy::time::TimeUpdateStrategy;
     use exa_formats::rsq::{Action, Clip, Key, MotionSet, Moveset};
     use exa_physics::Physics;
-    use exa_physics::body::{BodyPlugin, BodySystems};
+    use exa_physics::body::{BodyPlugin, BodySystems, BodyTicks};
 
     use super::*;
 
@@ -833,6 +1005,123 @@ pub(crate) mod tests {
         assert!(!rising(&motions, &anim, Some(&up)));
     }
 
+    /// A drive whose body does what `bearing` says, at `tone`.
+    fn doing(bearing: Bearing, tone: f32) -> Drive {
+        let mut drive = Drive::default();
+        drive.bearing = bearing;
+        drive.tone = tone;
+        drive
+    }
+
+    /// A human's clip clocks, as the original's: standing 0.6 frames a
+    /// tick, off balance 0.75, getting up 0.9 at full tone (0.72 at 0.8,
+    /// none at half tone); walking 1.687 cm a tick 0.764 (27/83 × (0.8 ×
+    /// 1.687 + 1)), running 4.337 cm a tick on the jog row 0.894,
+    /// backpedalling 1.476 cm a tick 0.736; a walk clip held still runs
+    /// the standing clock; fists swing 1.62; a ghoul's base of 1.5 stands
+    /// at 0.9.
+    #[test]
+    fn clocks_run_at_the_originals_rates() {
+        let pace = Pace {
+            walked: 0.0,
+            run: 0.0,
+            swing: Swing::FISTS,
+        };
+        let still = Bearing::default();
+        let frames = |a: usize, d: &Drive, p: &Pace| clip_frames(Some(a), 0.3, d, p);
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        assert!(close(frames(0x13, &doing(still, 1.0), &pace), 0.6));
+        let falling = Bearing {
+            off_balance: true,
+            ..still
+        };
+        assert!(close(frames(0x11, &doing(falling, 1.0), &pace), 0.75));
+        let rising = Bearing {
+            getting_up: true,
+            ..falling
+        };
+        assert!(close(frames(0x0F, &doing(rising, 1.0), &pace), 0.9));
+        assert!(close(frames(0x0F, &doing(rising, 0.8), &pace), 0.72));
+        assert_eq!(frames(0x0F, &doing(rising, 0.5), &pace), 0.0);
+        let moving = Bearing {
+            moving: true,
+            ..still
+        };
+        let walk = Pace {
+            walked: 1.687,
+            ..pace
+        };
+        assert!(close(frames(0, &doing(moving, 1.0), &walk), 0.7643));
+        let run = Pace {
+            walked: 4.337,
+            run: 1.0,
+            ..pace
+        };
+        assert!(close(frames(1, &doing(moving, 1.0), &run), 0.8939));
+        let back = Pace {
+            walked: 1.476,
+            ..pace
+        };
+        assert!(close(frames(2, &doing(moving, 1.0), &back), 0.7357));
+        assert!(close(frames(0, &doing(still, 1.0), &walk), 0.6));
+        assert!(close(frames(5, &doing(still, 1.0), &pace), 1.62));
+        let mut ghoul = doing(still, 1.0);
+        ghoul.race.clip_rate = 1.5;
+        assert!(close(frames(0x13, &ghoul, &pace), 0.9));
+    }
+
+    /// A get-up from the floor starts from the lying body: after the tick
+    /// that takes its whole capture, each target turns as its part does,
+    /// the pelvis on the frame and the thigh under the pelvis, wherever the
+    /// clip's pose is (the thigh here is turned 0.4 rad off first).
+    #[test]
+    fn a_whole_capture_starts_from_the_physical_pose() {
+        let (mut app, root) = app(1.0 / BODY_HZ);
+        let ticks = |app: &App| app.world().resource::<BodyTicks>().0;
+        while ticks(&app) < 20 {
+            app.update();
+        }
+        let rot = |a: Affine3A| Quat::from_mat3a(&a.matrix3);
+        let body = app.world().get::<Ragdoll>(root).unwrap();
+        let unturned = rot(body.parts[0].transform()).inverse() * rot(body.parts[1].transform());
+        {
+            let mut body = app.world_mut().get_mut::<Ragdoll>(root).unwrap();
+            let hip = Vec3::from(body.parts[1].transform().translation);
+            let turn = Quat::from_rotation_x(0.4);
+            for k in 0..4 {
+                let x = hip + turn * (body.parts[1].positions[k] - hip);
+                body.parts[1].positions[k] = x;
+                body.parts[1].previous[k] = x;
+            }
+        }
+        let body = app.world().get::<Ragdoll>(root).unwrap();
+        let physical: Vec<Quat> = body.parts.iter().map(|p| rot(p.transform())).collect();
+        {
+            let mut anim = app.world_mut().get_mut::<Animator>(root).unwrap();
+            anim.play_once("Idle", "Idle");
+            anim.blended(20, exa_anim::Ease::Linear).capture_whole();
+        }
+        let at = ticks(&app);
+        while ticks(&app) == at {
+            app.update();
+        }
+        let body = app.world().get::<Ragdoll>(root).unwrap();
+        let targets: Vec<Quat> = body
+            .drive
+            .as_ref()
+            .unwrap()
+            .targets()
+            .iter()
+            .map(|&t| rot(t))
+            .collect();
+        let same = |a: Quat, b: Quat| a.dot(b).abs() > 1.0 - 1e-5;
+        assert!(same(targets[0], physical[0]));
+        let under = targets[0].inverse() * targets[1];
+        assert!(same(under, physical[0].inverse() * physical[1]));
+        // The capture took the thigh as turned, 0.4 rad off where it was.
+        assert!((under.angle_between(unturned) - 0.4).abs() < 0.01);
+    }
+
     #[test]
     fn the_player_is_ticked_last() {
         let e = |i: u32| Entity::from_raw_u32(i).unwrap();
@@ -865,8 +1154,8 @@ pub(crate) mod tests {
         ticks
     }
 
-    /// A physical body's clip clock advances by one tick's worth of frames
-    /// in every tick, whatever the frame rate, and each tick's targets are
+    /// A physical body's clip clock advances by a standing body's 0.6
+    /// frames in every tick, whatever the frame rate, and each tick's targets are
     /// the clip's pose at that tick on the body's frame: the body root's
     /// world transform (where the character put it that tick) moved to the
     /// frame's origin, which the first tick placed under the body (a stride
@@ -881,7 +1170,7 @@ pub(crate) mod tests {
         }
         for (k, (time, targets)) in reference.iter().enumerate() {
             let tick = (k + 1) as f32;
-            let clock = (tick * 60.0 / BODY_HZ) % 30.0;
+            let clock = (tick * 0.6) % 30.0;
             assert!((time - clock).abs() < 1e-3, "tick {tick}: clock {time}");
             let (swing, y) = idle_at(*time);
             let root = Affine3A::from_translation(START + Vec3::X * STRIDE * (tick - 1.0))

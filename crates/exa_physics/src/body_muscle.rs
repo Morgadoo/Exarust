@@ -100,6 +100,12 @@ pub struct RaceMuscles {
     pub arm_relaxation: f32,
     /// Adds 0.05 × it to the balance score (1 in every race record).
     pub balance_bonus: f32,
+    /// The base rate of the clip clock: frames a tick before what the body
+    /// does multiplies it (1 for a human).
+    pub clip_rate: f32,
+    /// The walk's, jog's, sprint's and backpedal's clip rates, frames a
+    /// second: the locomotion clock's (a human's 27, 16.6, 13.5 and 28).
+    pub gait_rates: [f32; 4],
 }
 
 impl RaceMuscles {
@@ -107,6 +113,8 @@ impl RaceMuscles {
         stance: 0.5,
         arm_relaxation: 1.0,
         balance_bonus: 1.0,
+        clip_rate: 1.0,
+        gait_rates: [27.0, 16.6, 13.5, 28.0],
     };
 }
 

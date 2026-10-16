@@ -41,6 +41,10 @@ for limp parts, the fast value for living limbs. A limp body sleeps by the
 original's countdown (`body::Ragdoll::countdown`: 256, two off each tick
 under 20 cm/s, held at 30–32 between 20 and 40 cm/s, back to 256 above)
 and is woken by a blow or by going limp; a living body never sleeps.
+A dazed or unsteady body's targets give way to the pose it holds by the
+original's weight (`body::Drive::hold_weight`), which the character tick
+hands to the sampler; the race's clip rates (`body::RaceMuscles`) set its
+clip clock.
 
 The debug tools' measures are in `body::inspect` (`src/body_inspect.rs`):
 each joint's turn from its rest turn (stored when the body is built,
