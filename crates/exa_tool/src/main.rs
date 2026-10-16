@@ -11,7 +11,7 @@
 //! exa-tool corpus meshes              decode every chunk tree, report coverage
 //! exa-tool corpus images              images by format; RGB8 normals z in blue
 //! exa-tool corpus winding             which way level faces point, floors up?
-//! exa-tool races                      races with their body parameters and gaits
+//! exa-tool races                      races with their flags, body parameters, stats, gaits
 //! exa-tool export-gltf Objlib afr_cornflag_a01 out.glb
 //! ```
 
@@ -79,7 +79,8 @@ enum Cmd {
         #[arg(default_value = "humanoid.rsq")]
         entry: String,
     },
-    /// Every race of `races.rdb` with its body parameters and gait table.
+    /// Every race of `races.rdb` with its flags, body parameters, stats and
+    /// gait table.
     Races,
     /// Decode every entry of a format and report coverage.
     Corpus {
@@ -262,7 +263,7 @@ fn races(game: &GameData) -> Result<()> {
         races.len()
     );
     for r in &races {
-        let b = &r.body;
+        let (b, s) = (&r.body, &r.stats);
         println!(
             "{:>3} {:<16} {:<18} {} / {:<10} health {}",
             r.id,
@@ -273,13 +274,37 @@ fn races(game: &GameData) -> Result<()> {
             r.health
         );
         println!(
+            "    flags {:#x} / {:#x}  kind {:#x}{}{}",
+            r.flags,
+            s.flags2,
+            s.kind,
+            if r.clawed() { "  clawed" } else { "" },
+            if r.regenerates_red() {
+                "  regenerates red"
+            } else {
+                ""
+            }
+        );
+        println!(
+            "    clip rate {}  size {}  scale {}  mass divisor {}",
+            b.clip_rate, b.size, b.scale, b.mass_divisor
+        );
+        println!(
             "    pins {}  balance bonus {}  stance {}  arm relaxation {}  damping ratio {}",
             b.pin_factor, b.balance_bonus, b.stance, b.arm_relaxation, b.damping_ratio
         );
+        println!(
+            "    unarmed reach {} m  swing turn {}  recovery {}  AI attack bonus {}  perception {}  held offset {:.3?} m",
+            s.unarmed_reach, s.swing_turn, s.recovery, s.attack_bonus, s.perception, s.held_offset
+        );
+        println!(
+            "    footsteps {:?}  voice volume {}  attack voices {}",
+            s.footsteps, s.voice_volume, s.attack_voices
+        );
         for (name, g) in exa_formats::races::GAIT_NAMES.iter().zip(&b.gaits) {
             println!(
-                "    {name:<9} thrust {:>8.3}  push {:>6}  clip rate {:>5}  boost below {}",
-                g.thrust, g.push_scale, g.clip_rate, g.boost_below
+                "    {name:<9} thrust {:>8.3}  push {:>6}  brake {:>3} m  clip rate {:>5}  boost below {}",
+                g.thrust, g.push_scale, g.brake_distance, g.clip_rate, g.boost_below
             );
         }
     }

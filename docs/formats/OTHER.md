@@ -21,53 +21,86 @@ file). `objdb` item records and race records are decoded; other payloads are
 not.
 
 **Races** (`exa_formats::races`): 18 records of 624 bytes, then an empty
-entry. Layout:
+entry. Lengths below are as stored; the parser returns them in metres.
+Layout:
 
 | offset | field |
 |---|---|
 | `+0x00` | name[32] |
-| `+0x18` | flags (u32, inside the name field after the short name): bit 0 bleeds. Human `0x0F`, Ogre `0x27`, Sir, harvester and demon `0x23`, Fael, both ghouls, Gobbler and Manipulator `0x03` bleed; Skeleton and Ancient 0, Wraith `0x300`, golems `0x1030`, `0x2030`, `0x20B8` do not. Other bits not decoded |
+| `+0x18` | first flag word (u32, inside the name field after the short name): bit 0 bleeds; `0x8` in the story, a dead character of the race may be raised again (humans, the golem suit) [inf: from the character rule bit it sets]; `0x20` sets a character rule bit read by the damage routine [?]; `0x80` red regeneration (the golem suit); `0x200` hovering feet, so the simple ground probe (the wraith). Human `0x0F`, Ogre `0x27`, Sir, harvester and demon `0x23`, Fael, both ghouls, Gobbler and Manipulator `0x03` bleed; Skeleton and Ancient 0, Wraith `0x300`, golems `0x1030`, `0x2030`, the suit `0x20B8` do not. Bits `0x2`, `0x4`, `0x10`, `0x100`, `0x1000`, `0x2000` not decoded (the golem bits `0x1000` and `0x2000` are tested together with two particular items) |
+| `+0x1C` | second flag word: `0x4` red regeneration (Ogre, Sir, the harvester, the demon: `0x7`, `0x7`, `0xF`, `0x7`), `0x8` quadruped, which stabs with both hands (the harvester); `0x1` and `0x2` set character rule bits whose effects are not traced. Fael, ghouls, Gobbler and Manipulator `0x3`; the others 0 |
 | `+0x20` | body model stem[24]: `Skel` → `skelbase.rfc`, `GlmBsA` → `glmbsabase.rfc` |
 | `+0x38` | shared moveset[16] (`Default`) |
 | `+0x48` | the race's own moveset[16] (`Golem`, `Herath`, `Ogre`, `Demon A01`, …) |
-| `+0x58`, `+0x5C` | floats, not decoded |
+| `+0x58` | kind word: `0x100` the fists are claws (weapon class `0xC0` instead of `0x80`: Ghoul and Ghoul H `0x100`; Sir, Fael, Gobbler and the harvester `0x20100`); the left hand's fist record is chosen by the whole word (`0x100` one claw record, `0x20100` the other, anything else a human fist), the right hand's by the race, so the harvester keeps a right fist. An item check matches `0x10000` (golems, `0x10001`) with items flagged `0x2000000` and `0x20000` (Ogre and the demon `0x20001`, the clawed Herath races) with items flagged `0x4000000`. Others `0x1` |
+| `+0x5C` | clip-rate base: the character's clip clock advances by it times the per-motion factors each tick (1.0; the two ghouls 1.5) |
 | `+0x60` | support-pin factor: scales the pull of the two thorax pins and the pelvis pin toward the stance (human 1.25) |
-| `+0x64`–`+0x70` | floats, not decoded |
+| `+0x64` | character size, × (1 − 0.05·height) at spawn (human 1.0, Ogre, Sir, Fael, the demon and Golem Boss 1.5, the harvester 1.8, the other golems but the suit 1.4): held weapons are placed and scaled by it |
+| `+0x68` | body scale, capped at 1.5 then × (1 − 0.05·height) at spawn (human 1.0, Fael 1.35, Ogre and Sir 1.5, the golems but the suit 1.2, the harvester and the demon 1.8, so 1.5): the voice volume, turn and step rates follow it |
+| `+0x6C` | 1.0 in every record, no reader found |
+| `+0x70` | mass divisor: the spawn's part-mass normalisation multiplies its divisor by it, so the parts are lighter (1.0; Sir, Fael and the demon 1.1) |
 | `+0x74` | balance bonus (1.0 in every record): the balance score gains 0.05 × it, and the recovery-step reach grows by (1 + it); the original sets 1.5 or 2.0 instead for some creature types |
 | `+0x78` | stance factor: the share of muscle tone a standing body uses (tone target = tone × it) and the divisor of the standing joint-muscle damping, k = 40 / it (human 0.5; skeleton, fael and ghouls 0.75; golems and the harvester 1.0) |
 | `+0x7C` | arm relaxation: scales how far every part's link-muscle anchors may relax toward the current pose while the clip holds still, and the arms' relaxed stiffness, 0.4·(0.5 + 0.5·it) (human 1.0, skeleton 0.5) |
 | `+0x80` | limb damping ratio r: a living body's velocity retention is scaled by u², u = (1 − balance)(1 − r) + r (1.0 for most races, so no extra damping; golems 0.95, the golem suit 0.97) |
-| `+0x84`–`+0x90` | floats, not decoded |
+| `+0x84` | unarmed reach, cm: the character's reach while it holds no weapon (human, skeleton, ancient, Manipulator, Wraith, the golem suit 50; Ogre, the ghouls, the demon and the golems 100; Fael 130; Sir, Gobbler and the harvester 150) |
+| `+0x88` | swing-turn factor: scales each held weapon's swing-turn amplitude, how far the AI turns its body through a swing (1; Ogre, Gobbler and the golem suit 0.5; Sir, the harvester, the demon and the other golems 0) |
+| `+0x8C` | AI attack bonus: the AI's combat state scales an attack-opportunity term by (1 + it) (Fael 0.2, the others 0) [inf: one reader] |
+| `+0x90` | recovery factor: scales each held weapon's recovery, the frames the stance blends in over after an attack, rounded (1; golems 0.5) |
 | `+0x94` | gait table: 4 rows (walk, jog, sprint, backpedal) × 5 floats, see below |
 | `+0xE4` | health factor (damage model, below) |
-| from `+0xE8` | sound names at `+0x144` (`StpSft`, `SkelHit`, …), protection at `+0x11C` and coverage at `+0x21C` (natural armour, below); the rest not decoded |
+| `+0xE8`–`+0x108` | bytes and floats read by view and camera routines, not decoded (Sir `+0xF8`/`+0xFC` −8 and 14, `+0x100`–`+0x108` 1.4) |
+| `+0x110` | perception: how well the race's AI sees a character masked by a mind power; p scales its sighting range (1200 cm) by 1 − 0.9·(1 − p), and its outer range is that range scaled again by 1 − 0.8·(1 − p) (1; Ancient 0.5; Skeleton and Wraith 0). A feral character uses 1 − feral/2 |
+| `+0x11C` | protection (natural armour, below) |
+| `+0x12C` | held-item offset: three signed bytes × 0.1 cm added to the grip of items in the hands, x taken off in the right hand and added in the left (the demon 90, so 9 cm along x; 0 elsewhere) |
+| `+0x134`, `+0x154`, `+0x164` | sound names (`Golem_Foley`; `FlsCol`, `SkelHit`, `HitGlm`; `WndFls`, `SkelHit`, `HitGlm`), readers not traced |
+| `+0x144` | footstep sound set (up to 15 characters): `StpSft` (Human, Ancient, the ghouls, Gobbler, Manipulator, the harvester, Wraith), `SkelStp`, `StpHvy` (Ogre, Sir, the demon), `StpMed` (Fael), `Golem_Stp`. Characters whose record flags them as golems use `Golem_Stp` whatever their race |
+| `+0x174`, `+0x184` | voice set names (`VH{S}`, `VH{S}DA`, `VOM01`, …; `{S}` becomes `m` or `f`), read by the race loader, not decoded |
+| `+0x1B4` | voice volume: × the body scale at spawn (1; Ogre, Sir and the demon 3; Fael, Ghoul and the harvester 1.5; Ghoul H and Manipulator 2; golems 0.5) |
+| `+0x1C4` | attack voices (i32): 0 never voices an attack; otherwise a swing voices with odds of one (or two) in a counter that grows by (this − 1) with each voice and shrinks by 1 with each silent swing [inf] (human, Ancient, Wraith 4; Gobbler, Manipulator 3; Fael, ghouls, the harvester, the demon 2; Ogre, Sir 1; skeletons and golems 0). A feral character uses 2 |
+| `+0x21C` | coverage (natural armour, below); the rest of the record not decoded |
 
 Gait rows, per second as stored. The original's loader divides columns 0
-and 3 by 83 and column 1 by 83² to get per-tick values.
+and 3 by 83 and column 1 by 83² to get per-tick values, and negates the
+backpedal row's columns 0 and 3.
 
 | column | meaning |
 |---|---|
 | 0 | thrust: the push along the heading (human walk 88.9, jog 350, sprint 472.2, backpedal 77.8) |
 | 1 | push scale: how the push enters the body's carry (550 in every human row; 1600 in some creatures' walk) |
-| 2 | 0 in every record and never read: the loader fills this slot with a built-in value per row (0.05, 0.2, 0.25, 0.05) whose use is not traced |
-| 3 | clip rate (human 27, 16.6, 13.5, 28) [inf: feeds the gait's clip clock; not traced] |
+| 2 | never read (0 in every record but the backpedal row, which holds stray bytes `84 1E 00 00`): the loader fills this slot with a built-in value per row (0.05, 0.2, 0.25, 0.05), which the locomotion reads × 1000 as the brake distance in cm: a walking body brakes 50 cm from its goal, jogging 200, sprinting 250, backpedalling 50 (a running body never brakes for its goal). The parser returns these as `Gait::brake_distance` (0.5, 2, 2.5, 0.5 m), the fallback's rows included |
+| 3 | clip rate, frames per second (human 27, 16.6, 13.5, 28): the base rate of the locomotion clock, blended from walk toward the gait by the run blend |
 | 4 | speed along the heading under which the gait's phase push is boosted (0 everywhere but the harvester's walk, 20) |
 
-How the factors were established: reverse engineering of `Exanima.exe`
+A feral character (character record feral level f > 0) sprints with the
+sprint row moved toward the jog row by f, every column alike, set at its
+spawn (`RaceBody::sprint_gait`): a fully feral zombie sprints at the jog
+row.
+
+How the fields were established: reverse engineering of `Exanima.exe`
 0.9.5. The character builder looks the race up by its id (race byte + 1) in
 the `races.rdb` id database, which is loaded raw, so every read of a race
-field uses the file's own record and offsets. Each factor's meaning comes
-from the routine that reads it (the support pins, the balance score and
-recovery steps, the stance factor of the body tick, the arms' anchor
-relaxation, the limbs' retention). When the id is missing, the original
-uses a built-in record instead: every factor 1.0 and an all-zero gait
-table, so a character on it cannot walk (`RaceBody::FALLBACK`). The
-character builder copies the flag word to the character; the damage
+field uses the file's own record and offsets. Each field's meaning comes
+from the routine that reads it: the character builder (scale capped at
+1.5, size, the mass divisor, the height factor), the character init (the
+clip-rate base as (83/83) × the field, the flag words to the character's
+rule bits, perception, the AI bonus, voice volume and attack voices), the
+weapon pass on every equip (recovery, swing turn, unarmed reach), the
+moveset chooser and fist record choice (claws), the footstep set, the hand
+placement, the AI's sighting ranges and attack scoring, the support pins,
+the balance score and recovery steps, the stance factor of the body tick,
+the arms' anchor relaxation and the limbs' retention. When the id is
+missing, the original uses a built-in record instead, through the same
+loader: every factor 1.0, an all-zero gait table (so a character on it
+cannot walk) with the brake distances, 100 cm of unarmed reach, swing turn
+and recovery 1, attack bonus 0, perception 1, no footsteps, voice volume 0
+and attack voices 0 (`RaceBody::FALLBACK`, `RaceStats::FALLBACK`). The
+character builder copies the first flag word to the character; the damage
 routine's blood branch tests bit 0, and the race loader turns the blood
 dirt mode on for the race's body-model materials whose names start with
 `s` when it is set ([RENDERING.md](../RENDERING.md), Blood). The values
 per race are printed by `exa-tool races`; a corpus test checks every
-record.
+field of every record.
 
 A character record's race byte is the race's id minus one. Placed
 characters across the levels, by race byte:

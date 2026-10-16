@@ -699,6 +699,7 @@ mod tests {
             health: 1.0,
             natural: Natural::default(),
             body: exa_formats::races::RaceBody::FALLBACK,
+            stats: exa_formats::races::RaceStats::FALLBACK,
         };
         let skeleton = Fighter::of_record(&race(0));
         assert!(!skeleton.bleeds);

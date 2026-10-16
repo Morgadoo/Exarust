@@ -327,9 +327,10 @@ How the original simulates a body (`exa_physics::body`):
     stance factor, the support-pin factor, the balance bonus, the arms'
     relaxation, the limb damping ratio and the gait table
     ([OTHER.md](OTHER.md), Races). Exarust decodes them
-    (`exa_formats::races::RaceBody`); the muscles use the stance factor and
-    the arm relaxation (Skeleton 0.75 and 0.5), the balance the balance
-    bonus (1 in every record).
+    (`exa_formats::races::RaceBody`, with the clip-rate base, size, scale
+    and mass divisor the character's spawn reads); the muscles use the
+    stance factor and the arm relaxation (Skeleton 0.75 and 0.5), the
+    balance the balance bonus (1 in every record).
 
 How a tick runs. The original steps every body of the world in one 83 Hz
 tick, in this order:

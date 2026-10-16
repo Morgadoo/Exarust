@@ -229,6 +229,16 @@ stance factor, arm relaxation, limb damping) and the gait table are decoded
 from `races.rdb` for every race, with the original's fallback for an
 unknown race, and printed by `exa-tool races`
 ([formats/OTHER.md](formats/OTHER.md), Races). Done (change
+`decode-race-stat-fields`, M40 of the master plan): the rest of the race
+record the original reads is decoded for all 18 races, with its built-in
+fallback: the clip-rate base (1.5 for the ghouls), size, scale (capped at
+1.5 at spawn) and mass divisor; the gait rows' brake distances and the
+feral sprint blend toward the jog row; the second flag word and the kind
+word (red regeneration, claws, hovering, quadruped); the unarmed reach,
+the weapon swing-turn and recovery factors, the AI attack bonus and
+perception, the held-item offset, the footstep set and the voice. Nothing
+uses them yet; deriving each character's stats from them at spawn is a
+later change of that lane. Done (change
 `join-parts-at-their-origins`, C3): every part is pinned at its origin to
 its place in the parent, as the original registers it, so joints are ball
 joints and the knee a hinge; the skeleton's links meet the parent at the

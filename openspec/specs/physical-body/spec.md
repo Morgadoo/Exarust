@@ -278,7 +278,7 @@ The system SHALL advance a living physical body's clip clock by one tick, at 60 
 - **THEN** `t.csv` has one row per tick for the player's body, its clock advancing 60/83 of a frame per row, and its pelvis 1.7 cm over its target pelvis height
 
 ### Requirement: Race body parameters
-The system SHALL decode, for every record of the installed `races.rdb`, the body parameters the original reads: the support-pin factor, the balance bonus, the stance factor, the arm relaxation factor, the limb damping ratio, and four gait rows (walk, jog, sprint, backpedal) of thrust, push scale, clip rate and boost speed. A race the database lacks SHALL get the original's fallback: every factor 1.0 and an all-zero gait table.
+The system SHALL decode, for every record of the installed `races.rdb`, the body parameters the original reads: the clip-rate base, support-pin factor, size, scale, mass divisor, balance bonus, stance factor, arm relaxation, limb damping ratio, and four gait rows (walk, jog, sprint, backpedal) of thrust, push scale, brake distance (the loader's 0.5, 2, 2.5, 0.5 m), clip rate and boost speed. A missing race SHALL get the original's fallback: every factor 1.0 and gaits with no push.
 
 #### Scenario: Human
 - **WHEN** the installed `races.rdb` is parsed
@@ -291,6 +291,18 @@ The system SHALL decode, for every record of the installed `races.rdb`, the body
 #### Scenario: Unknown race
 - **WHEN** a character's race byte names no race in the database
 - **THEN** its body parameters are the fallback, whose gait table cannot move it
+
+#### Scenario: Clip-rate base
+- **WHEN** the installed `races.rdb` is parsed
+- **THEN** Ghoul and Ghoul H have a clip-rate base of 1.5 and every other race 1.0
+
+#### Scenario: Large races
+- **WHEN** the installed `races.rdb` is parsed
+- **THEN** Ogre has size 1.5 and scale 1.5, the harvester 1.8 and 1.8, Fael 1.5 and 1.35, Golem Guard 1.4 and 1.2, and Sir, Fael and the demon a mass divisor of 1.1
+
+#### Scenario: Brake distances
+- **WHEN** any race's gait rows are read, the fallback's included
+- **THEN** a walking body brakes 0.5 m from its goal, jogging 2 m, sprinting 2.5 m and backpedalling 0.5 m
 
 ### Requirement: Joints at the part origins
 The system SHALL join every part that has a parent part by its skeleton links and then a pivot from its origin to its place in the parent, the model's local translation of the part. A link's parent point SHALL be the stored point plus that translation, unturned. A correction SHALL be shared m/(m + m_parent), m being 0.175 times the bone's mobility, and spread over each part's particles by the point's weights, unclamped. A joint's range SHALL come from its links alone.
@@ -607,3 +619,14 @@ Until the feet step and the legs bend (Exarust's own), while a living body that 
 #### Scenario: Fallen
 - **WHEN** a body has just fallen, its feet on the floor and its grounded controller 12 cm over it
 - **THEN** its target is the original's every tick, as with its controller on the floor
+
+### Requirement: Feral sprint gait
+The sprint gait of a character SHALL be its race's sprint row when its feral level is 0, and otherwise every column of that row moved linearly toward the race's jog row by the feral level.
+
+#### Scenario: Half feral human
+- **WHEN** a human of feral level 0.5 sprints
+- **THEN** its sprint thrust is 411.1 per second, its clip rate 15.05 frames per second and its brake distance 2.25 m
+
+#### Scenario: Zombie
+- **WHEN** a human of feral level 1.0 sprints
+- **THEN** it uses the jog row: thrust 350 per second
