@@ -5,8 +5,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **13.7% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 12.6% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **14.4% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by function count (zero-byte imported names left out): 13.3% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **27.3%** reproduced.
 
 ## By section
@@ -14,14 +14,14 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | section | functions | KB | components | reimplemented | by engine | largest missing |
 |---|---:|---:|---:|---:|---:|---|
 | Runtime & platform | 2,407 | 293 | 26 | 4% | 72% | Steam Input action bindings, Win32 clipboard image/icon glue, Steam API glue |
-| Core, math & threading | 282 | 37 | 11 | 38% | 1% | RFT_BoundSphere, RF_WorkerThreads, RF_MultiLoop |
-| Data, assets & I/O | 440 | 91 | 26 | 20% | 0% | FLX_Content_Stream, RFE_Export_RFC2, Graphics & key settings (ini) |
-| Rendering & GPU | 823 | 334 | 63 | 34% | 3% | RFE_MeshSubdivide, RFP_Mipmaps_Kaiser, RF_Polyhedra |
+| Core, math & threading | 282 | 37 | 11 | 41% | 1% | RFT_BoundSphere, Bounding-sphere vector helpers (FLX_Entities by address) |
+| Data, assets & I/O | 440 | 91 | 26 | 21% | 0% | RFE_Export_RFC2, Graphics & key settings (ini), RF_StoreSettings |
+| Rendering & GPU | 823 | 334 | 63 | 35% | 3% | RFE_MeshSubdivide, RFP_Mipmaps_Kaiser, RF_Polyhedra |
 | World, levels & terrain | 454 | 174 | 31 | 29% | 7% | TGridEnvManager, TRBDDoor, RF_Dynamics_Game |
-| Physics, bodies & cloth | 363 | 242 | 13 | 19% | 0% | TVCCloth, RF_Dynamics_Volumes, TVoxelMap |
-| Characters, motion & animation | 506 | 198 | 23 | 25% | 0% | RF_Morphing, Equipment effects and focus-item slot (RFE_Effects_Electricity by address), Golem guardians and alarm zones (RFE_Effects_Electricity by address) |
+| Physics, bodies & cloth | 363 | 242 | 13 | 20% | 0% | TVCCloth, RF_Dynamics_Volumes, TVoxelMap |
+| Characters, motion & animation | 506 | 198 | 23 | 27% | 0% | RF_Morphing, Equipment effects and focus-item slot (RFE_Effects_Electricity by address), Golem guardians and alarm zones (RFE_Effects_Electricity by address) |
 | Combat, weapons & damage | 14 | 3 | 3 | 0% | 0% | TWeaponBlood, RFE_Effects_Blood, TBloodSprays |
-| Items, materials & crafting | 341 | 140 | 40 | 16% | 0% | TGUIItemContainer, Item description phrases, SG_ItemGUI |
+| Items, materials & crafting | 341 | 140 | 40 | 17% | 0% | TGUIItemContainer, Item description phrases, SG_ItemGUI |
 | AI & behaviour | 437 | 206 | 17 | 1% | 0% | TMotileAI, SG_PlayerControls, TPathFinder |
 | Thaumaturgy & effects | 697 | 296 | 83 | 3% | 0% | TThaumTree, SG_Thaum_Mind, TForceBlastEffect |
 | Audio | 59 | 18 | 4 | 28% | 0% |  |
@@ -66,15 +66,15 @@ Ordered by code size; these are where most of the original still has no counterp
 | SG_GameGUI | UI | 62 | 22 | 1% |
 | SG_Thaum_Mind | Thaumaturgy & effects | 45 | 21 | 0% |
 | TGUIForm | UI | 77 | 20 | 0% |
-| SG_GameMain | Game modes, arena & session | 59 | 20 | 2% |
-| SG_Character_Data | Characters, motion & animation | 76 | 20 | 8% |
-| SG_ObjectDB2 | Data, assets & I/O | 116 | 19 | 9% |
+| SG_GameMain | Game modes, arena & session | 59 | 20 | 3% |
+| SG_Character_Data | Characters, motion & animation | 76 | 20 | 9% |
+| SG_ObjectDB2 | Data, assets & I/O | 116 | 19 | 11% |
 | RFG_Dialogue | Script, dialogue & story | 62 | 18 | 0% |
 | TSkillUI | UI | 29 | 18 | 0% |
 | RFE_MeshSubdivide | Rendering & GPU | 23 | 18 | 0% |
 | TPlayerBehaviour | AI & behaviour | 31 | 17 | 16% |
 | TMatchBoard | Game modes, arena & session | 30 | 17 | 0% |
-| SG_Character_Create | Game modes, arena & session | 90 | 17 | 0% |
+| SG_Character_Create | Game modes, arena & session | 90 | 17 | 1% |
 | TCombatant | AI & behaviour | 30 | 17 | 0% |
 | TForceBlastEffect | Thaumaturgy & effects | 22 | 17 | 0% |
 | RF_Morphing | Characters, motion & animation | 25 | 16 | 0% |
@@ -83,18 +83,19 @@ Ordered by code size; these are where most of the original still has no counterp
 
 | component | section | KB | coverage | Exarust |
 |---|---|---:|---:|---|
-| TVXGIManager | Rendering & GPU | 29 | 50% | exa_render/src/gi.rs; exa_render/src/gi.wesl |
+| TVXGIManager | Rendering & GPU | 29 | 55% | exa_render/src/gi.rs; exa_render/src/gi.wesl |
+| TMesh | Rendering & GPU | 25 | 60% | exa_formats/src/rfc.rs; exa_assets/src/model.rs |
 | RF_Skinning | Characters, motion & animation | 25 | 55% | exa_assets/src/skin.rs; exa_assets/src/model.rs |
 | FLX_ItemFactory | Items, materials & crafting | 24 | 50% | exa_formats::factory; exa_formats::weapon_stats |
-| RF_Import_RFC2 | Data, assets & I/O | 17 | 50% | exa_formats/src/rfc.rs; exa_formats/src/level.rs |
+| RF_Import_RFC2 | Data, assets & I/O | 17 | 51% | exa_formats/src/rfc.rs; exa_formats/src/chunk.rs |
 | Texture compression formats (DXT/LATC) | Rendering & GPU | 11 | 75% | exa_formats/src/rfi.rs; exa_assets/src/texture.rs |
 | TTerrainGrass | World, levels & terrain | 12 | 60% | exa_world/src/terrain/vegetation.rs; exa_world/src/terrain/mod.rs |
 | RF_3DView | Rendering & GPU | 11 | 60% | exa_render/src/supersample.rs; exa_render/src/resolve.wesl |
-| FLX_System | Core, math & threading | 12 | 50% | glam via bevy::math; exa_game/src/player.rs |
-| Engine math (vectors, matrices, fast trig) | Core, math & threading | 8 | 70% | exa_game/src/player.rs; exa_world/src/light_flood.rs |
+| FLX_System | Core, math & threading | 12 | 51% | glam via bevy::math; exa_game/src/player.rs |
+| Engine math (vectors, matrices, fast trig) | Core, math & threading | 8 | 73% | exa_game/src/player.rs; exa_game/src/torch.rs |
 | TSkinController2 | Characters, motion & animation | 8 | 65% | exa_anim/src/lib.rs; Bevy SkinnedMesh / SkinnedMeshInverseBindposes GPU skinning |
 | TNavCameraControl | Rendering & GPU | 8 | 55% | exa_game/src/player.rs |
-| TShadowCubeMap | Rendering & GPU | 5 | 80% | exa_render/src/cube_shadows.rs; exa_render/src/cube_shadow.wesl |
+| TShadowCubeMap | Rendering & GPU | 5 | 83% | exa_render/src/cube_shadows.rs; exa_render/src/cube_shadow.wesl |
 | RF_Terrain_Materials | World, levels & terrain | 6 | 65% | exa_world/src/terrain/blend.rs; exa_world/src/terrain/mod.rs |
 | .rfi image codec | Rendering & GPU | 6 | 56% | exa_formats/src/rfi.rs; exa_assets/src/model.rs |
 | TTerrainManager | World, levels & terrain | 5 | 61% | exa_formats/src/terrain.rs; exa_world/src/terrain/mod.rs |
@@ -102,7 +103,6 @@ Ordered by code size; these are where most of the original still has no counterp
 | OpenAL loader | Audio | 4 | 58% | rodio 0.22 / cpal 0.17; bevy_audio 0.20 lib.rs |
 | FLX_PostProcess | Rendering & GPU | 2 | 85% | exa_render/src/post.rs; exa_render/src/post.wesl |
 | TScene | World, levels & terrain | 3 | 59% | exa_world/src/lib.rs; exa_world/src/shadow_links.rs |
-| TProjectManager | Data, assets & I/O | 3 | 60% | exa_rpk/src/project.rs; exa_rpk/src/vfs.rs |
 
 ## Combat rules
 
