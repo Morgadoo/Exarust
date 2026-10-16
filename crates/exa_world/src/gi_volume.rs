@@ -5,10 +5,16 @@
 //! under their surface, and the top two slices form a soft lid.
 //! Light then spreads through the open cells each frame (`exa_render::gi`).
 //! Rules: `docs/RENDERING.md` (Voxel GI).
+//!
+//! A block is built on the async compute pool from a shared copy of the
+//! level's GI inputs, and handed to the renderer when it is done: the build
+//! takes seconds on a large outdoor level, and the window must keep
+//! answering meanwhile.
 
 use std::sync::Arc;
 
 use bevy::prelude::*;
+use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
 use bevy::transform::TransformSystems;
 use exa_render::gi::GiVolume;
 
@@ -16,12 +22,15 @@ pub struct GiVolumePlugin;
 
 impl Plugin for GiVolumePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<GiSettings>().add_systems(
-            PostUpdate,
-            (collect_source, follow_camera)
-                .chain()
-                .after(TransformSystems::Propagate),
-        );
+        app.init_resource::<GiSettings>()
+            .init_resource::<GiState>()
+            .add_systems(
+                PostUpdate,
+                (collect_source, follow_camera)
+                    .chain()
+                    .after(TransformSystems::Propagate)
+                    .before(exa_render::gi::GiSystems),
+            );
     }
 }
 
@@ -66,24 +75,80 @@ impl Default for GiSettings {
     }
 }
 
+/// Where the level's GI block stands, for whoever waits for it (the
+/// loading screen, which then waits for the warm-up,
+/// `exa_render::gi::GiWarmUp`).
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum GiState {
+    /// No level asked for GI, or GI is off.
+    #[default]
+    Off,
+    /// The level's fires are still ramping up; the block waits for them.
+    Settling,
+    /// A block is being built, or one is wanted around the camera.
+    Building,
+    /// The block around the camera is built and handed to the renderer.
+    Built,
+}
+
+/// Asks for the block around the camera's present focus, even when the
+/// block built is within the rebuild distance of it. A loading screen asks
+/// once the view the level starts with is in place, so the first frame
+/// shown is lit around it, as the original builds its block after loading.
+#[derive(Resource, Debug, Clone, Copy, Default)]
+pub struct GiRefocus;
+
 /// The level record's secondary ambient (`0x30`) scale for the per-step base
 /// ambient, at the original's top shading quality.
 pub const BASE_AMBIENT: f32 = 0.001;
 
 /// The level's GI inputs in world space, collected once its nodes have
-/// settled: every sample point and every upward floor triangle.
+/// settled: every sample point and every upward floor triangle. Shared with
+/// the block builds.
 #[derive(Resource)]
 struct GiSource {
+    inputs: SourceInputs,
+    level: PendingGi,
+}
+
+/// The inputs, put in world space on the async compute pool (millions of
+/// points and triangles on a large level).
+enum SourceInputs {
+    Collecting(Task<GiInputs>),
+    Ready(Arc<GiInputs>),
+}
+
+struct GiInputs {
+    meshes: usize,
     points: Vec<Vec3>,
     floors: Vec<[Vec3; 3]>,
     terrain: Vec<[Vec3; 3]>,
-    level: PendingGi,
+}
+
+/// A mesh's positions and triangle corners with its world transform, owned
+/// for the collection.
+struct MeshCopy {
+    positions: Vec<[f32; 3]>,
+    indices: Vec<u32>,
+    at: bevy::math::Affine3A,
 }
 
 /// The block now built: the sector-aligned origin it was built at.
 #[derive(Resource)]
 struct GiBlock {
     origin: Vec3,
+}
+
+/// The block being built off the main thread; at most one at a time.
+#[derive(Resource)]
+struct GiBuild(Task<BuiltBlock>);
+
+/// A finished block and what its build counted.
+struct BuiltBlock {
+    occupancy: Occupancy,
+    floors: Vec<u8>,
+    terrain_columns: usize,
+    floor_points: usize,
 }
 
 /// How far ahead of the camera the block is centred (metres), as the
@@ -103,131 +168,203 @@ fn collect_source(
     terrain: Query<(&Mesh3d, &GlobalTransform), With<GiTerrain>>,
     meshes: Res<Assets<Mesh>>,
     fires: Query<&crate::fire::Fire>,
+    mut state: ResMut<GiState>,
 ) {
     let Some(pending) = pending else { return };
     // The warm-up injects the lights as they are now: wait for the fires to
     // ramp up.
     if fires.iter().any(|f| !f.settled()) {
+        *state = GiState::Settling;
         return;
     }
     commands.remove_resource::<PendingGi>();
     commands.remove_resource::<GiBlock>();
+    // A build for the previous level is dropped, which cancels it.
+    commands.remove_resource::<GiBuild>();
     if !settings.enabled {
         commands.remove_resource::<GiVolume>();
         commands.remove_resource::<GiSource>();
+        *state = GiState::Off;
         return;
     }
-    let mut world = Vec::new();
-    for (gi, at) in &points {
-        let m = at.affine();
-        world.extend(gi.0.iter().map(|&p| m.transform_point3(p)));
-    }
-    let triangles = world_triangles(floors.iter(), &meshes);
-    let ground = world_triangles(terrain.iter(), &meshes);
-    info!(
-        "GI source: {} meshes, {} points, {} floor and {} terrain triangles",
-        points.iter().count(),
-        world.len(),
-        triangles.len(),
-        ground.len()
-    );
+    *state = GiState::Building;
+    // Only shared or copied here; the world-space work runs elsewhere.
+    let points: Vec<_> = points
+        .iter()
+        .map(|(gi, at)| (gi.0.clone(), at.affine()))
+        .collect();
+    let floors = mesh_copies(floors.iter(), &meshes);
+    let ground = mesh_copies(terrain.iter(), &meshes);
+    let task = AsyncComputeTaskPool::get().spawn(async move {
+        let mut world = Vec::new();
+        for (gi, m) in &points {
+            world.extend(gi.iter().map(|&p| m.transform_point3(p)));
+        }
+        GiInputs {
+            meshes: points.len(),
+            points: world,
+            floors: world_triangles(&floors),
+            terrain: world_triangles(&ground),
+        }
+    });
     commands.insert_resource(GiSource {
-        points: world,
-        floors: triangles,
-        terrain: ground,
+        inputs: SourceInputs::Collecting(task),
         level: *pending,
     });
 }
 
-/// The triangles of `meshes` in world space.
-fn world_triangles<'a>(
+/// The positions and triangles of `meshes`, copied with their transforms.
+fn mesh_copies<'a>(
     parts: impl Iterator<Item = (&'a Mesh3d, &'a GlobalTransform)>,
     meshes: &Assets<Mesh>,
-) -> Vec<[Vec3; 3]> {
+) -> Vec<MeshCopy> {
+    parts
+        .filter_map(|(mesh, at)| {
+            let mesh = meshes.get(&mesh.0)?;
+            Some(MeshCopy {
+                positions: mesh
+                    .attribute(Mesh::ATTRIBUTE_POSITION)?
+                    .as_float3()?
+                    .to_vec(),
+                indices: mesh.indices()?.iter().map(|i| i as u32).collect(),
+                at: at.affine(),
+            })
+        })
+        .collect()
+}
+
+/// The triangles of `meshes` in world space.
+fn world_triangles(meshes: &[MeshCopy]) -> Vec<[Vec3; 3]> {
     let mut triangles = Vec::new();
-    for (mesh, at) in parts {
-        let Some(mesh) = meshes.get(&mesh.0) else {
-            continue;
-        };
-        let m = at.affine();
-        let (Some(positions), Some(indices)) = (
-            mesh.attribute(Mesh::ATTRIBUTE_POSITION)
-                .and_then(|a| a.as_float3()),
-            mesh.indices(),
-        ) else {
-            continue;
-        };
-        let corners: Vec<Vec3> = positions
+    for mesh in meshes {
+        let corners: Vec<Vec3> = mesh
+            .positions
             .iter()
-            .map(|&p| m.transform_point3(Vec3::from(p)))
+            .map(|&p| mesh.at.transform_point3(Vec3::from(p)))
             .collect();
-        let order: Vec<usize> = indices.iter().collect();
-        for t in order.as_chunks::<3>().0 {
-            triangles.push([corners[t[0]], corners[t[1]], corners[t[2]]]);
+        for t in mesh.indices.as_chunks::<3>().0 {
+            let corner = |i: u32| corners.get(i as usize).copied();
+            if let (Some(a), Some(b), Some(c)) = (corner(t[0]), corner(t[1]), corner(t[2])) {
+                triangles.push([a, b, c]);
+            }
         }
     }
     triangles
 }
 
-/// Keeps the block around the point ahead of the camera, rebuilding it when
-/// that point has moved on.
+/// Keeps the block around the point ahead of the camera: starts a build
+/// when that point has moved on, and hands the block to the renderer when
+/// the build is done. A newer focus waits for the build in flight.
+#[allow(clippy::too_many_arguments)]
 fn follow_camera(
     mut commands: Commands,
-    source: Option<Res<GiSource>>,
+    source: Option<ResMut<GiSource>>,
     block: Option<Res<GiBlock>>,
+    build: Option<ResMut<GiBuild>>,
+    refocus: Option<Res<GiRefocus>>,
+    mut state: ResMut<GiState>,
     settings: Res<GiSettings>,
     cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
 ) {
-    let Some(source) = source else { return };
+    let Some(mut source) = source else { return };
+    if let SourceInputs::Collecting(task) = &mut source.inputs {
+        let Some(inputs) = block_on(poll_once(task)) else {
+            return;
+        };
+        info!(
+            "GI source: {} meshes, {} points, {} floor and {} terrain triangles",
+            inputs.meshes,
+            inputs.points.len(),
+            inputs.floors.len(),
+            inputs.terrain.len()
+        );
+        source.inputs = SourceInputs::Ready(Arc::new(inputs));
+    }
+    let SourceInputs::Ready(inputs) = &source.inputs else {
+        return;
+    };
+    let inputs = inputs.clone();
+    let level = source.level;
+    let mut origin = block.map(|b| b.origin);
+    if let Some(mut build) = build {
+        let Some(built) = block_on(poll_once(&mut build.0)) else {
+            return;
+        };
+        commands.remove_resource::<GiBuild>();
+        let occupancy = built.occupancy;
+        info!(
+            "GI block: {} terrain columns, {} floor voxels, origin {:.2}, {} slices",
+            built.terrain_columns, built.floor_points, occupancy.origin, occupancy.depth
+        );
+        origin = Some(occupancy.origin);
+        commands.insert_resource(GiBlock {
+            origin: occupancy.origin,
+        });
+        commands.insert_resource(GiVolume {
+            origin: occupancy.origin,
+            size: UVec3::new(SIDE as u32, SIDE as u32, occupancy.depth as u32),
+            voxel: VOXEL,
+            floors: Arc::new(built.floors),
+            cells: Arc::new(occupancy.cells),
+            base_ambient: level.base_ambient,
+            warm_up: settings.warm_up,
+        });
+        *state = GiState::Built;
+    }
     let Some(camera) = cameras.iter().next() else {
         return;
     };
     let focus = camera.translation() + camera.forward().as_vec3() * FOCUS_AHEAD;
-    let level = source.level;
-    let wanted = Occupancy::new(focus, level.top, level.bottom).origin;
-    if let Some(block) = &block {
-        let moved = (wanted - block.origin).xz().abs().max_element();
-        if moved <= REBUILD_SECTORS * SECTOR_M {
+    let (wanted, _) = Occupancy::placement(focus, level.top, level.bottom);
+    if refocus.is_some() {
+        commands.remove_resource::<GiRefocus>();
+    }
+    if let Some(origin) = origin {
+        let moved = (wanted - origin).xz().abs().max_element();
+        let allowed = if refocus.is_some() {
+            0.0
+        } else {
+            REBUILD_SECTORS * SECTOR_M
+        };
+        if moved <= allowed {
             return;
         }
     }
+    let task = AsyncComputeTaskPool::get().spawn(async move { build_block(focus, level, &inputs) });
+    commands.insert_resource(GiBuild(task));
+    *state = GiState::Building;
+}
+
+/// Builds the block centred on `focus`: terrain first, then the meshes'
+/// points, then the floors, as the original builds a block.
+fn build_block(focus: Vec3, level: PendingGi, inputs: &GiInputs) -> BuiltBlock {
     let mut occupancy = Occupancy::new(focus, level.top, level.bottom);
-    // Terrain first, then the meshes' points, as the original builds a block.
     let mut ground = FloorSurface::with_columns(&occupancy, 1);
-    for &t in &source.terrain {
+    for &t in &inputs.terrain {
         ground.add(t);
     }
     let terrain_columns = ground.apply_terrain(&mut occupancy);
-    for &p in &source.points {
+    for &p in &inputs.points {
         occupancy.splat(p);
     }
     let mut surface = FloorSurface::new(&occupancy);
-    for &t in &source.floors {
+    for &t in &inputs.floors {
         surface.add(t);
     }
     let floor_points = surface.apply(&mut occupancy);
-    info!(
-        "GI block: {terrain_columns} terrain columns, {floor_points} floor voxels, origin {:.2}, {} slices",
-        occupancy.origin, occupancy.depth
-    );
+    let floors = occupancy.floors();
     if let Some(path) = std::env::var_os("EXA_GI_DUMP") {
         let _ = std::fs::write(&path, &occupancy.cells);
-        let mut floors = path.clone();
-        floors.push(".floors");
-        let _ = std::fs::write(floors, occupancy.floors());
+        let mut floors_path = path.clone();
+        floors_path.push(".floors");
+        let _ = std::fs::write(floors_path, &floors);
     }
-    commands.insert_resource(GiBlock {
-        origin: occupancy.origin,
-    });
-    commands.insert_resource(GiVolume {
-        origin: occupancy.origin,
-        size: UVec3::new(SIDE as u32, SIDE as u32, occupancy.depth as u32),
-        voxel: VOXEL,
-        floors: Arc::new(occupancy.floors()),
-        cells: Arc::new(occupancy.cells),
-        base_ambient: level.base_ambient,
-        warm_up: settings.warm_up,
-    });
+    BuiltBlock {
+        occupancy,
+        floors,
+        terrain_columns,
+        floor_points,
+    }
 }
 
 /// Voxel edge, metres.
@@ -386,15 +523,7 @@ impl Occupancy {
     /// An empty block centred on `centre` (X, Z) whose top is the level's
     /// highest point `top`; `bottom` (the lowest point) picks its height.
     pub fn new(centre: Vec3, top: f32, bottom: f32) -> Self {
-        let depth = if top - bottom > TALL_FROM { 128 } else { 64 };
-        // Sectors fall on world multiples of 6 m, the block four sectors
-        // either side of the one nearest the centre, plus the margin.
-        let corner = |c: f32| {
-            ((c / SECTOR_M).round() - SECTORS as f32 / 2.0) * SECTOR_M - MARGIN as f32 * VOXEL
-        };
-        // The top sits a whole number of voxels above the origin.
-        let below = ((depth as f32 * VOXEL - top) / VOXEL).trunc();
-        let origin = Vec3::new(corner(centre.x), -below * VOXEL, corner(centre.z));
+        let (origin, depth) = Self::placement(centre, top, bottom);
         let mut cells = vec![0u8; SIDE * SIDE * depth];
         for (slice, &v) in LID.iter().enumerate() {
             let y = depth - 1 - slice;
@@ -406,6 +535,21 @@ impl Occupancy {
             cells,
             lowest: vec![255; SIDE * SIDE],
         }
+    }
+
+    /// Where a block centred on `centre` sits and how many voxels high it
+    /// is ([`Occupancy::new`]).
+    pub fn placement(centre: Vec3, top: f32, bottom: f32) -> (Vec3, usize) {
+        let depth = if top - bottom > TALL_FROM { 128 } else { 64 };
+        // Sectors fall on world multiples of 6 m, the block four sectors
+        // either side of the one nearest the centre, plus the margin.
+        let corner = |c: f32| {
+            ((c / SECTOR_M).round() - SECTORS as f32 / 2.0) * SECTOR_M - MARGIN as f32 * VOXEL
+        };
+        // The top sits a whole number of voxels above the origin.
+        let below = ((depth as f32 * VOXEL - top) / VOXEL).trunc();
+        let origin = Vec3::new(corner(centre.x), -below * VOXEL, corner(centre.z));
+        (origin, depth)
     }
 
     /// Size of the block, metres.
@@ -476,6 +620,80 @@ impl Occupancy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Runs `app` until `done` holds (the build runs on another thread).
+    fn update_until(app: &mut App, done: impl Fn(&World) -> bool) {
+        for _ in 0..2000 {
+            if done(app.world()) {
+                return;
+            }
+            app.update();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        panic!("timed out");
+    }
+
+    #[test]
+    fn blocks_are_built_off_the_main_thread_around_the_camera() {
+        let mut app = App::new();
+        app.add_plugins((TaskPoolPlugin::default(), GiVolumePlugin))
+            .init_resource::<Assets<Mesh>>();
+        let camera = app
+            .world_mut()
+            .spawn((Camera3d::default(), GlobalTransform::default()))
+            .id();
+        let level = PendingGi {
+            centre: Vec3::ZERO,
+            top: 6.0,
+            bottom: 0.0,
+            base_ambient: 0.01,
+        };
+        app.insert_resource(level);
+        app.update();
+        assert_eq!(*app.world().resource::<GiState>(), GiState::Building);
+        update_until(&mut app, |w| w.contains_resource::<GiVolume>());
+        assert_eq!(*app.world().resource::<GiState>(), GiState::Built);
+        // Around the point ahead of the camera (it looks along −Z).
+        let ahead = Vec3::NEG_Z * FOCUS_AHEAD;
+        let (origin, depth) = Occupancy::placement(ahead, 6.0, 0.0);
+        let volume = app.world().resource::<GiVolume>();
+        assert_eq!(volume.origin, origin);
+        assert_eq!(
+            volume.size,
+            UVec3::new(SIDE as u32, SIDE as u32, depth as u32)
+        );
+        // A small move keeps the block; a far one rebuilds it.
+        *app.world_mut().get_mut::<GlobalTransform>(camera).unwrap() =
+            GlobalTransform::from_xyz(5.0, 0.0, 0.0);
+        app.update();
+        assert_eq!(*app.world().resource::<GiState>(), GiState::Built);
+        *app.world_mut().get_mut::<GlobalTransform>(camera).unwrap() =
+            GlobalTransform::from_xyz(40.0, 0.0, 0.0);
+        app.update();
+        assert_eq!(*app.world().resource::<GiState>(), GiState::Building);
+        update_until(&mut app, |w| *w.resource::<GiState>() == GiState::Built);
+        let (moved, _) = Occupancy::placement(Vec3::new(40.0, 0.0, 0.0) + ahead, 6.0, 0.0);
+        assert_eq!(app.world().resource::<GiVolume>().origin, moved);
+        // A refocus rebuilds even for a small move.
+        *app.world_mut().get_mut::<GlobalTransform>(camera).unwrap() =
+            GlobalTransform::from_xyz(46.0, 0.0, 0.0);
+        app.insert_resource(GiRefocus);
+        app.update();
+        assert_eq!(*app.world().resource::<GiState>(), GiState::Building);
+        update_until(&mut app, |w| *w.resource::<GiState>() == GiState::Built);
+        assert!(!app.world().contains_resource::<GiRefocus>());
+    }
+
+    #[test]
+    fn placement_is_where_a_new_block_sits() {
+        for (centre, top) in [
+            (Vec3::new(10.0, 0.0, -5.0), 6.0),
+            (Vec3::splat(-33.0), 20.0),
+        ] {
+            let o = Occupancy::new(centre, top, 0.0);
+            assert_eq!(Occupancy::placement(centre, top, 0.0), (o.origin, o.depth));
+        }
+    }
 
     #[test]
     fn block_placement_and_lid() {

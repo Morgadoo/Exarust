@@ -140,6 +140,9 @@ strips and occluders, the terrain height pass. Done (change
 Done (change `add-outdoor-sky`): an open sky over the outdoor arenas
 (Bevy's atmosphere stands in for the original's sky shader, which is not
 decoded).
+Done (change `load-behind-a-loading-screen`): levels and play mode load over
+frames behind a loading screen, the long parts on the async compute pool,
+so the window keeps answering the desktop ([UI.md](UI.md)).
 Remaining: ceiling caps of terrain cells, per-room mesh merging, rooms and
 portals, terrain gloss textures, fine displacement, the original's sky
 shader, time of day and weather of the outdoor arenas,

@@ -223,7 +223,8 @@ pub struct GridStats {
     pub pieces: usize,
 }
 
-/// Spawns walls, floors and (optionally) ceilings of `grid` under `parent`.
+/// Spawns walls, floors and (optionally) ceilings of `grid` under `parent`,
+/// all at once ([`GridBuild`] spreads the same work over steps).
 pub fn spawn_grid(
     commands: &mut Commands,
     loader: &mut ModelLoader<'_>,
@@ -231,181 +232,287 @@ pub fn spawn_grid(
     parent: Entity,
     ceilings: bool,
 ) -> GridStats {
-    let mut load = |names: &[String], fallback: &str| -> Vec<Option<Arc<Model>>> {
-        names
-            .iter()
-            .map(|n| {
-                loader
-                    .model(PackKind::Resource, &set_entry(n))
-                    .or_else(|| loader.model(PackKind::Resource, &set_entry(fallback)))
-            })
-            .collect()
-    };
-    let wall_models = load(&grid.wall_sets, "GEWS_UWA01");
-    let floor_models = load(&grid.floor_sets, "GEFS_UWA01");
-    let walls: Vec<Option<WallSet>> = wall_models
-        .into_iter()
-        .map(|m| m.map(index_wall_set))
-        .collect();
-    let floors: Vec<Option<FloorSet>> = floor_models
-        .into_iter()
-        .map(|m| m.map(index_floor_set))
-        .collect();
+    let mut build = GridBuild::new(parent, ceilings);
+    while !build.step(commands, loader, grid, std::time::Duration::MAX) {}
+    build.stats
+}
 
-    let mut stats = GridStats::default();
-    let mut uvs = FloorUvs {
-        meshes: &mut *loader.meshes,
-        cache: HashMap::new(),
-    };
-    let mut children_cache: HashMap<*const Model, Vec<Vec<usize>>> = HashMap::new();
+/// A tile grid spawned a part at a time, so a level load can keep its
+/// frames short: the wall and floor sets first (a set's materials and
+/// textures are warmed over as many steps as they take, then the set
+/// loads), then rows of cells until each step's time is up.
+pub struct GridBuild {
+    parent: Entity,
+    ceilings: bool,
+    walls: Vec<Option<WallSet>>,
+    floors: Vec<Option<FloorSet>>,
+    /// The next row of cells (starting inside the border).
+    row: i64,
+    stats: GridStats,
+    uvs: HashMap<(AssetId<Mesh>, [i32; 7]), Handle<Mesh>>,
+    /// Each set model's node children, by the model's address (the sets
+    /// hold the models for the whole build).
+    children: HashMap<usize, Vec<Vec<usize>>>,
+}
+
+impl GridBuild {
+    pub fn new(parent: Entity, ceilings: bool) -> Self {
+        Self {
+            parent,
+            ceilings,
+            walls: Vec::new(),
+            floors: Vec::new(),
+            row: 1,
+            stats: GridStats::default(),
+            uvs: HashMap::new(),
+            children: HashMap::new(),
+        }
+    }
+
+    /// What the grid spawned so far.
+    pub fn stats(&self) -> GridStats {
+        self.stats
+    }
+
+    /// Loads sets, or spawns rows of cells, until `budget` has passed (at
+    /// least one piece of work); `true` once the whole grid is spawned.
+    pub fn step(
+        &mut self,
+        commands: &mut Commands,
+        loader: &mut ModelLoader<'_>,
+        grid: &LevelGrid,
+        budget: std::time::Duration,
+    ) -> bool {
+        let started = std::time::Instant::now();
+        let deadline = started.checked_add(budget);
+        // A set's materials are warmed first, over as many steps as its
+        // textures take; then the set loads.
+        let load = |loader: &mut ModelLoader<'_>, name: &str, fallback: &str| {
+            let warm = |loader: &mut ModelLoader<'_>, name: &str| {
+                deadline
+                    .is_none_or(|d| loader.warm_materials(PackKind::Resource, &set_entry(name), d))
+            };
+            let exists = loader
+                .game
+                .pack(PackKind::Resource)
+                .is_some_and(|p| p.get(&set_entry(name)).is_some());
+            if !warm(loader, name) || (!exists && !warm(loader, fallback)) {
+                return None;
+            }
+            Some(
+                loader
+                    .model(PackKind::Resource, &set_entry(name))
+                    .or_else(|| loader.model(PackKind::Resource, &set_entry(fallback))),
+            )
+        };
+        while self.walls.len() < grid.wall_sets.len() {
+            let Some(model) = load(loader, &grid.wall_sets[self.walls.len()], "GEWS_UWA01") else {
+                return false;
+            };
+            self.walls.push(model.map(index_wall_set));
+            if started.elapsed() >= budget {
+                return false;
+            }
+        }
+        while self.floors.len() < grid.floor_sets.len() {
+            let Some(model) = load(loader, &grid.floor_sets[self.floors.len()], "GEFS_UWA01")
+            else {
+                return false;
+            };
+            self.floors.push(model.map(index_floor_set));
+            if started.elapsed() >= budget {
+                return false;
+            }
+        }
+        let mut uvs = FloorUvs {
+            meshes: &mut *loader.meshes,
+            cache: std::mem::take(&mut self.uvs),
+        };
+        let (w, h) = (grid.width as i64, grid.height as i64);
+        while self.row < h - 1 {
+            for x in 1..(w - 1) {
+                spawn_cell(
+                    commands,
+                    grid,
+                    x,
+                    self.row,
+                    &self.walls,
+                    &self.floors,
+                    self.ceilings,
+                    self.parent,
+                    &mut self.stats,
+                    &mut self.children,
+                    &mut uvs,
+                );
+            }
+            self.row += 1;
+            if started.elapsed() >= budget {
+                break;
+            }
+        }
+        self.uvs = uvs.cache;
+        self.row >= h - 1
+    }
+}
+
+/// Spawns the pieces of the cell at (`x`, `y`).
+#[allow(clippy::too_many_arguments)]
+fn spawn_cell(
+    commands: &mut Commands,
+    grid: &LevelGrid,
+    x: i64,
+    y: i64,
+    walls: &[Option<WallSet>],
+    floors: &[Option<FloorSet>],
+    ceilings: bool,
+    parent: Entity,
+    stats: &mut GridStats,
+    children_cache: &mut HashMap<usize, Vec<Vec<usize>>>,
+    uvs: &mut FloorUvs,
+) {
     let w = grid.width as i64;
     let h = grid.height as i64;
-    for y in 1..(h - 1) {
-        for x in 1..(w - 1) {
-            let cell = (y * w + x) as usize;
-            let a = grid.edges[cell];
-            let b = grid.plane_b[cell];
-            let c = grid.plane_c[cell];
-            if a & CELL_OPEN == 0 || c & 0xF == 0xF {
-                continue;
-            }
-            let Some(Some(ws)) = walls.get((c & 0xF) as usize) else {
-                continue;
-            };
-            let fs = floors
-                .get(((c >> 4) & 0xF) as usize)
-                .and_then(Option::as_ref);
-            stats.cells += 1;
-            let centre = Vec3::new(
-                ((x - w / 2) as f32 + 0.5) * CELL_CM,
-                0.0,
-                ((y - h / 2) as f32 + 0.5) * CELL_CM,
-            ) * 0.01;
-            let rules = PieceRules {
-                ceilings,
-                surface: fs.and_then(|f| f.surface.clone()),
-                floor_set: fs.map(|f| f.model.clone()),
-            };
-            let mut place = |model: &Arc<Model>, node: Option<usize>, side: u32| -> Strips {
-                let Some(node) = node else {
-                    return Strips::default();
-                };
-                let kids = children_cache
-                    .entry(Arc::as_ptr(model))
-                    .or_insert_with(|| children_of(model));
-                stats.pieces += 1;
-                spawn_piece(
-                    commands,
-                    model,
-                    kids,
-                    node,
-                    side_transform(side, centre),
-                    parent,
-                    &rules,
-                    &mut uvs,
-                )
-            };
+    let cell = (y * w + x) as usize;
+    let a = grid.edges[cell];
+    let b = grid.plane_b[cell];
+    let c = grid.plane_c[cell];
+    if a & CELL_OPEN == 0 || c & 0xF == 0xF {
+        return;
+    }
+    let Some(Some(ws)) = walls.get((c & 0xF) as usize) else {
+        return;
+    };
+    let fs = floors
+        .get(((c >> 4) & 0xF) as usize)
+        .and_then(Option::as_ref);
+    stats.cells += 1;
+    let centre = Vec3::new(
+        ((x - w / 2) as f32 + 0.5) * CELL_CM,
+        0.0,
+        ((y - h / 2) as f32 + 0.5) * CELL_CM,
+    ) * 0.01;
+    let rules = PieceRules {
+        ceilings,
+        surface: fs.and_then(|f| f.surface.clone()),
+        floor_set: fs.map(|f| f.model.clone()),
+    };
+    let mut place = |model: &Arc<Model>, node: Option<usize>, side: u32| -> Strips {
+        let Some(node) = node else {
+            return Strips::default();
+        };
+        let kids = children_cache
+            .entry(Arc::as_ptr(model) as usize)
+            .or_insert_with(|| children_of(model));
+        stats.pieces += 1;
+        spawn_piece(
+            commands,
+            model,
+            kids,
+            node,
+            side_transform(side, centre),
+            parent,
+            &rules,
+            uvs,
+        )
+    };
 
-            let special = (c >> 16) & 0x1F;
-            let mut mask = 0;
-            let mut floor_middle = true;
-            if special != 0 && (special as usize) <= SPECIAL_MASKS.len() {
-                let rotation = (c >> 21) & 3;
-                let nth = (c >> 23) & 0x1F;
-                mask = SPECIAL_MASKS[special as usize - 1][rotation as usize];
-                floor_middle = SPECIAL_HAS_FLOOR[special as usize - 1];
-                let mut remaining = nth as i64;
-                if let Some((p, alt, _)) = ws.trims.iter().find(|t| {
-                    if (t.2 & 0x1F_0000) >> 16 == special {
-                        remaining -= 1;
-                        remaining < 0
-                    } else {
-                        false
-                    }
-                }) {
-                    let node = if rotation >= 2 { alt.or(*p) } else { *p };
-                    place(&ws.model, node, rotation);
-                }
+    let special = (c >> 16) & 0x1F;
+    let mut mask = 0;
+    let mut floor_middle = true;
+    if special != 0 && (special as usize) <= SPECIAL_MASKS.len() {
+        let rotation = (c >> 21) & 3;
+        let nth = (c >> 23) & 0x1F;
+        mask = SPECIAL_MASKS[special as usize - 1][rotation as usize];
+        floor_middle = SPECIAL_HAS_FLOOR[special as usize - 1];
+        let mut remaining = nth as i64;
+        if let Some((p, alt, _)) = ws.trims.iter().find(|t| {
+            if (t.2 & 0x1F_0000) >> 16 == special {
+                remaining -= 1;
+                remaining < 0
+            } else {
+                false
             }
-            if floor_middle {
+        }) {
+            let node = if rotation >= 2 { alt.or(*p) } else { *p };
+            place(&ws.model, node, rotation);
+        }
+    }
+    if floor_middle {
+        if let Some(fs) = fs {
+            let variant = ((c >> 8) & 0xFF) as usize;
+            place(&fs.model, fs.middle.pick(variant, 0), 0);
+        }
+        if ceilings {
+            place(&ws.model, ws.ceiling.primary(SLOT_MIDDLE), 0);
+        }
+    }
+
+    for side in 0..4u32 {
+        let floor = |slot: usize| fs.and_then(|f| f.edges.primary(slot));
+        if mask & (0xF << (side * 4)) == 0 {
+            let edge = (a >> (side * 4)) & 0xF;
+            let variant = ((b >> (side * 4)) & 0xF) as usize;
+            let walls_here: &[(&Table, usize)] = match edge {
+                0 => &[],
+                7 => &[(&ws.straight, 0)],
+                0xB => &[(&ws.door, 0)],
+                1 => &[(&ws.left_end, SLOT_RIGHT)],
+                2 => &[(&ws.right_end, SLOT_LEFT)],
+                3 => &[(&ws.left_end, 0), (&ws.right_end, 0)],
+                _ => &[],
+            };
+            if edge == 0 {
                 if let Some(fs) = fs {
-                    let variant = ((c >> 8) & 0xFF) as usize;
-                    place(&fs.model, fs.middle.pick(variant, 0), 0);
+                    place(&fs.model, floor(SLOT_BACK), side);
                 }
                 if ceilings {
-                    place(&ws.model, ws.ceiling.primary(SLOT_MIDDLE), 0);
+                    place(&ws.model, ws.ceiling.primary(SLOT_BACK), side);
                 }
             }
-
-            for side in 0..4u32 {
-                let floor = |slot: usize| fs.and_then(|f| f.edges.primary(slot));
-                if mask & (0xF << (side * 4)) == 0 {
-                    let edge = (a >> (side * 4)) & 0xF;
-                    let variant = ((b >> (side * 4)) & 0xF) as usize;
-                    let walls_here: &[(&Table, usize)] = match edge {
-                        0 => &[],
-                        7 => &[(&ws.straight, 0)],
-                        0xB => &[(&ws.door, 0)],
-                        1 => &[(&ws.left_end, SLOT_RIGHT)],
-                        2 => &[(&ws.right_end, SLOT_LEFT)],
-                        3 => &[(&ws.left_end, 0), (&ws.right_end, 0)],
-                        _ => &[],
-                    };
-                    if edge == 0 {
-                        if let Some(fs) = fs {
-                            place(&fs.model, floor(SLOT_BACK), side);
-                        }
-                        if ceilings {
-                            place(&ws.model, ws.ceiling.primary(SLOT_BACK), side);
-                        }
+            for &(table, extra_slot) in walls_here {
+                if let Some(piece) = table.pick(variant, side) {
+                    // A wall's own strips replace the sets' strips.
+                    let own = place(&ws.model, Some(piece), side);
+                    if let (Some(fs), false) = (fs, own.floor) {
+                        place(&fs.model, floor(SLOT_BACK), side);
                     }
-                    for &(table, extra_slot) in walls_here {
-                        if let Some(piece) = table.pick(variant, side) {
-                            // A wall's own strips replace the sets' strips.
-                            let own = place(&ws.model, Some(piece), side);
-                            if let (Some(fs), false) = (fs, own.floor) {
-                                place(&fs.model, floor(SLOT_BACK), side);
-                            }
-                            if ceilings && !own.ceiling {
-                                place(&ws.model, ws.ceiling.primary(SLOT_BACK), side);
-                            }
-                        }
-                        // End walls add their half strip even without a wall piece.
-                        if extra_slot != 0 {
-                            if let Some(fs) = fs {
-                                place(&fs.model, floor(extra_slot), side);
-                            }
-                            if ceilings {
-                                place(&ws.model, ws.ceiling.primary(extra_slot), side);
-                            }
-                        }
+                    if ceilings && !own.ceiling {
+                        place(&ws.model, ws.ceiling.primary(SLOT_BACK), side);
                     }
                 }
-                if mask & (0x7 << (16 + side * 4)) == 0 {
-                    let corner = (a >> (16 + side * 4)) & 0x7;
-                    let variant = ((b >> (16 + side * 4)) & 0xF) as usize;
-                    let (ceiling_slot, own) = if corner == 0 {
-                        (SLOT_CORNER, Strips::default())
-                    } else {
-                        let own = match ws.corners.get(corner as usize - 1) {
-                            Some(t) => place(&ws.model, t.pick(variant, side), side),
-                            None => Strips::default(),
-                        };
-                        (SLOT_BACK, own)
-                    };
-                    if (1..=4).contains(&corner) || corner == 0 {
-                        if let (Some(fs), false) = (fs, own.floor) {
-                            place(&fs.model, floor(SLOT_CORNER), side);
-                        }
-                        if ceilings && !own.ceiling {
-                            place(&ws.model, ws.ceiling.primary(ceiling_slot), side);
-                        }
+                // End walls add their half strip even without a wall piece.
+                if extra_slot != 0 {
+                    if let Some(fs) = fs {
+                        place(&fs.model, floor(extra_slot), side);
+                    }
+                    if ceilings {
+                        place(&ws.model, ws.ceiling.primary(extra_slot), side);
                     }
                 }
             }
         }
+        if mask & (0x7 << (16 + side * 4)) == 0 {
+            let corner = (a >> (16 + side * 4)) & 0x7;
+            let variant = ((b >> (16 + side * 4)) & 0xF) as usize;
+            let (ceiling_slot, own) = if corner == 0 {
+                (SLOT_CORNER, Strips::default())
+            } else {
+                let own = match ws.corners.get(corner as usize - 1) {
+                    Some(t) => place(&ws.model, t.pick(variant, side), side),
+                    None => Strips::default(),
+                };
+                (SLOT_BACK, own)
+            };
+            if (1..=4).contains(&corner) || corner == 0 {
+                if let (Some(fs), false) = (fs, own.floor) {
+                    place(&fs.model, floor(SLOT_CORNER), side);
+                }
+                if ceilings && !own.ceiling {
+                    place(&ws.model, ws.ceiling.primary(ceiling_slot), side);
+                }
+            }
+        }
     }
-    stats
 }
 
 /// Centre (metres) of the open, floored cell nearest the grid centre: a

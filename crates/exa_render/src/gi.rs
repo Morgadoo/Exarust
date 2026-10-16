@@ -6,6 +6,7 @@
 //! Rules: `docs/RENDERING.md` (Voxel GI).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use bevy::asset::{AssetPath, RenderAssetUsages, embedded_asset, embedded_path};
 use bevy::core_pipeline::Core3dSystems;
@@ -35,20 +36,26 @@ pub struct GiPlugin;
 impl Plugin for GiPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "gi.wesl");
+        let warm_up = GiWarmUp::default();
+        let report = WarmUpReport(warm_up.report.clone());
         app.init_resource::<GiLights>()
+            .insert_resource(warm_up)
             .add_plugins((
                 ExtractResourcePlugin::<GiTextures>::default(),
                 ExtractResourcePlugin::<GiLights>::default(),
             ))
             .add_systems(
                 PostUpdate,
-                (create_textures, gather_lights, give_materials_gi).chain(),
+                (create_textures, gather_lights, give_materials_gi)
+                    .chain()
+                    .in_set(GiSystems),
             );
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
         render_app
             .init_resource::<GiOwed>()
+            .insert_resource(report)
             .add_systems(RenderStartup, init_pipeline)
             .add_systems(
                 Render,
@@ -57,6 +64,52 @@ impl Plugin for GiPlugin {
             .add_systems(Core3d, propagate.in_set(Core3dSystems::Prepass));
     }
 }
+
+/// The main-world GI systems: they make the textures of a new [`GiVolume`]
+/// and gather the lights. Whatever inserts a volume runs before them, so the
+/// textures and [`GiWarmUp`] follow it within the frame.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct GiSystems;
+
+/// How far the warm-up of the newest volume has run, in the main world (a
+/// loading screen waits for it). The steps run in the render world, which
+/// reports each frame's count through a counter both worlds hold: the
+/// volume's serial in the high half, the steps done in the low half. Nothing
+/// is read back from the GPU; a step counts once it has been encoded.
+#[derive(Resource, Default)]
+pub struct GiWarmUp {
+    report: Arc<AtomicU64>,
+    /// The newest volume's serial and its warm-up length.
+    serial: u32,
+    steps: u32,
+}
+
+impl GiWarmUp {
+    /// The share of the newest volume's warm-up that has run (0–1); 0
+    /// before there is a volume.
+    pub fn progress(&self) -> f32 {
+        if self.serial == 0 {
+            return 0.0;
+        }
+        if self.steps == 0 {
+            return 1.0;
+        }
+        let report = self.report.load(Ordering::Acquire);
+        if (report >> 32) as u32 != self.serial {
+            return 0.0;
+        }
+        (report as u32).min(self.steps) as f32 / self.steps as f32
+    }
+
+    /// Whether the newest volume's warm-up has run in full.
+    pub fn finished(&self) -> bool {
+        self.progress() >= 1.0
+    }
+}
+
+/// The render world's side of [`GiWarmUp`].
+#[derive(Resource)]
+struct WarmUpReport(Arc<AtomicU64>);
 
 /// The occupancy of a GI block, as the world built it: cells X fastest,
 /// then Z, then Y (0..255).
@@ -90,8 +143,11 @@ pub struct GiTextures {
     pub origin: Vec3,
     pub extent: Vec3,
     base_ambient: f32,
-    /// Steps still owed to the warm-up.
+    /// Steps run at once when the volume is created.
     warm_up: u32,
+    /// Which volume these are (counting from 1), so the render world starts
+    /// each volume's warm-up once.
+    serial: u32,
 }
 
 /// A light's share of the GI injection (its record's multiplier); lights
@@ -168,6 +224,7 @@ fn create_textures(
     mut commands: Commands,
     volume: Option<Res<GiVolume>>,
     mut images: ResMut<Assets<Image>>,
+    mut warm_up: ResMut<GiWarmUp>,
 ) {
     let Some(volume) = volume else { return };
     if !volume.is_changed() {
@@ -192,6 +249,8 @@ fn create_textures(
     let light = images.add(light_image(size, empty.clone()));
     let scratch = images.add(volume_image(size, TextureFormat::Rgba8Unorm, empty, true));
     let extent = Vec3::new(size.x as f32, size.z as f32, size.y as f32) * volume.voxel;
+    warm_up.serial += 1;
+    warm_up.steps = volume.warm_up;
     commands.insert_resource(GiTextures {
         occupancy,
         floors,
@@ -201,6 +260,7 @@ fn create_textures(
         extent,
         base_ambient: volume.base_ambient,
         warm_up: volume.warm_up,
+        serial: warm_up.serial,
     });
 }
 
@@ -212,16 +272,12 @@ fn gather_lights(
         Option<&GiMultiplier>,
         Option<&crate::lights::LightShaping>,
     )>,
-    textures: Option<ResMut<GiTextures>>,
+    textures: Option<Res<GiTextures>>,
 ) {
     gi.0.clear();
-    let Some(mut textures) = textures else {
+    let Some(textures) = textures else {
         return;
     };
-    // The warm-up was handed to the render world with the new volume.
-    if !textures.is_added() && textures.warm_up > 0 {
-        textures.warm_up = 0;
-    }
     // The lights whose reach overlaps the block, nearest its centre first
     // (the original injects the lights of each sector group).
     let (lo, hi) = (textures.origin, textures.origin + textures.extent);
@@ -343,14 +399,22 @@ struct GiBindGroup {
     _params: UniformBuffer<GiParams>,
 }
 
-/// Warm-up steps not yet run (kept until the pipeline is ready).
+/// The warm-up of the volume being lit: its serial, its length and the
+/// steps not yet run (kept until the pipeline is ready).
 #[derive(Resource, Default)]
-struct GiOwed(u32);
+struct GiOwed {
+    serial: u32,
+    total: u32,
+    left: u32,
+}
+
+/// Warm-up steps done in one frame at most; the rest follow in later frames.
+const MAX_STEPS_PER_FRAME: u32 = 16;
 
 #[allow(clippy::too_many_arguments)]
 fn prepare_bind_group(
     mut commands: Commands,
-    textures: Option<ResMut<GiTextures>>,
+    textures: Option<Res<GiTextures>>,
     lights: Res<GiLights>,
     pipeline: Option<Res<GiPipeline>>,
     cache: Res<PipelineCache>,
@@ -359,7 +423,7 @@ fn prepare_bind_group(
     queue: Res<RenderQueue>,
     mut owed: ResMut<GiOwed>,
 ) {
-    let (Some(mut textures), Some(pipeline)) = (textures, pipeline) else {
+    let (Some(textures), Some(pipeline)) = (textures, pipeline) else {
         commands.remove_resource::<GiBindGroup>();
         return;
     };
@@ -398,9 +462,12 @@ fn prepare_bind_group(
             &floors.texture_view,
         )),
     );
-    if textures.warm_up > 0 {
-        owed.0 = textures.warm_up;
-        textures.warm_up = 0;
+    if owed.serial != textures.serial {
+        *owed = GiOwed {
+            serial: textures.serial,
+            total: textures.warm_up,
+            left: textures.warm_up,
+        };
     }
     commands.insert_resource(GiBindGroup {
         bind_group,
@@ -417,6 +484,7 @@ fn propagate(
     cache: Res<PipelineCache>,
     images: Res<RenderAssets<GpuImage>>,
     mut owed: ResMut<GiOwed>,
+    report: Res<WarmUpReport>,
     mut ctx: RenderContext,
 ) {
     // Once per frame, for the scene view (not a supersampling display).
@@ -435,9 +503,14 @@ fn propagate(
         return;
     };
     let size = light.texture.size();
-    // The warm-up runs at once; then one step per frame.
-    let steps = owed.0.max(1);
-    owed.0 = 0;
+    // The warm-up runs a few steps a frame (all of it in one frame stalled
+    // the window for seconds); then one step per frame.
+    let steps = owed.left.clamp(1, MAX_STEPS_PER_FRAME);
+    owed.left -= steps.min(owed.left);
+    report.0.store(
+        (u64::from(owed.serial) << 32) | u64::from(owed.total - owed.left),
+        Ordering::Release,
+    );
     for _ in 0..steps {
         let encoder = ctx.command_encoder();
         {
@@ -469,5 +542,29 @@ fn propagate(
             },
             size,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn warm_up_progress_counts_the_newest_volume_only() {
+        let mut warm = GiWarmUp::default();
+        assert_eq!(warm.progress(), 0.0);
+        (warm.serial, warm.steps) = (2, 600);
+        // A report for the previous volume counts nothing.
+        warm.report.store((1 << 32) | 600, Ordering::Release);
+        assert_eq!(warm.progress(), 0.0);
+        warm.report.store((2 << 32) | 150, Ordering::Release);
+        assert_eq!(warm.progress(), 0.25);
+        assert!(!warm.finished());
+        // Steps past the warm-up (one a frame) keep it finished.
+        warm.report.store((2 << 32) | 640, Ordering::Release);
+        assert!(warm.finished());
+        // Without a warm-up there is nothing to wait for.
+        warm.steps = 0;
+        assert!(warm.finished());
     }
 }

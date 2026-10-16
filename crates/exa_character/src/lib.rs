@@ -15,7 +15,9 @@ use std::collections::HashMap;
 
 use bevy::image::CompressedImageFormatSupport;
 use bevy::prelude::*;
+use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
 use exa_anim::BodyPart;
+use exa_assets::model::{Paint, PaintedSet};
 use exa_assets::{Game, ModelCache, ModelLoader, PackKind, model};
 use exa_formats::objdb::{self, Appearance, Armour, Item};
 use exa_formats::rdb::Database;
@@ -26,17 +28,24 @@ pub struct CharacterPlugin;
 
 impl Plugin for CharacterPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Update,
-            (
+        app.init_resource::<Painting>()
+            .init_resource::<Fitting>()
+            .add_systems(
+                Update,
+                (
                 load_underwear_items
                     .run_if(resource_exists::<Game>)
                     .run_if(not(resource_exists::<UnderwearItems>)),
                 keep_underwear.run_if(resource_exists::<UnderwearItems>),
                 equip_outfits,
             )
-                .chain(),
-        );
+                .chain()
+                // The skinned garments are bound to the skeleton in the
+                // frame they appear: a skinned mesh drawn before it is
+                // bound fails wgpu validation (a skinned pipeline with the
+                // unskinned mesh bind group).
+                .before(exa_anim::AnimSystems),
+            );
     }
 }
 
@@ -218,6 +227,19 @@ fn keep_underwear(
     }
 }
 
+/// Apparel being painted on the async compute pool, by texture stem and
+/// appearance. Painting is per-texel work: a level's crowd painted on the
+/// main thread stalled the window for seconds. A body is dressed once all
+/// its paints are in.
+#[derive(Resource, Default)]
+struct Painting(HashMap<(String, Appearance), Task<PaintedSet>>);
+
+/// Apparel models being built on the async compute pool, by entry (lower
+/// case): fitting a garment's weights to the body and building its meshes
+/// took a frame up to a few hundred milliseconds.
+#[derive(Resource, Default)]
+struct Fitting(HashMap<String, Task<model::BuiltModel>>);
+
 /// What the object database says about a model: the appearance, hidden
 /// body slots and armour of the first item worn as it, and the weapon
 /// section of the first item that shows it.
@@ -314,11 +336,105 @@ fn weapon_length(model: &model::Model, meshes: &Assets<Mesh>) -> f32 {
     longest
 }
 
+/// The appearance a garment is painted with: its own, else the first
+/// object-database item showing its model.
+fn garment_appearance(garment: &Garment, infos: &HashMap<String, ItemInfo>) -> Option<Appearance> {
+    garment.appearance.or_else(|| {
+        infos
+            .get(&garment.model.to_ascii_lowercase())
+            .and_then(|i| i.apparel)
+            .map(|k| k.0)
+    })
+}
+
+/// Loads the models of `outfit` and starts painting what it needs and is
+/// not painted yet; `true` when all of it is loaded and painted. A
+/// garment's materials and the textures its painting reads take tens of
+/// milliseconds each to load: they are loaded one at a time, and past
+/// `deadline` the rest waits for the next frame. Its model is built on the
+/// async compute pool meanwhile.
+fn outfit_painted(
+    outfit: &Outfit,
+    infos: &HashMap<String, ItemInfo>,
+    loader: &mut ModelLoader,
+    painting: &mut Painting,
+    fitting: &mut Fitting,
+    deadline: std::time::Instant,
+) -> bool {
+    let mut ready = true;
+    for garment in &outfit.0 {
+        if std::time::Instant::now() >= deadline
+            || !loader.warm_materials(PackKind::Characters, &garment.model, deadline)
+        {
+            return false;
+        }
+        let Some(apparel) = fitted_model(&garment.model, loader, fitting) else {
+            ready = false;
+            continue;
+        };
+        let Some(apparel) = apparel else {
+            continue;
+        };
+        let Some(appearance) = garment_appearance(garment, infos) else {
+            continue;
+        };
+        for name in apparel.nodes.iter().flat_map(|n| &n.part_materials) {
+            let Some(stem) = model::apparel_texture_key(name) else {
+                continue;
+            };
+            let key = (stem, appearance);
+            if painting.0.contains_key(&key) {
+                ready = false;
+                continue;
+            }
+            if !loader.warm_paint(&key.0, &appearance, deadline) {
+                return false;
+            }
+            if let Paint::Job(job) = loader.paint_job(&key.0, &appearance) {
+                let task = AsyncComputeTaskPool::get().spawn(async move { job.paint() });
+                painting.0.insert(key, task);
+                ready = false;
+            }
+        }
+    }
+    ready
+}
+
+/// An apparel model once it is built (`Some(None)` when it cannot be):
+/// starts building it on the async compute pool, or takes the finished
+/// build.
+fn fitted_model(
+    entry: &str,
+    loader: &mut ModelLoader,
+    fitting: &mut Fitting,
+) -> Option<Option<std::sync::Arc<model::Model>>> {
+    if let Some(model) = loader.loaded_model(PackKind::Characters, entry) {
+        return Some(model);
+    }
+    let key = entry.to_ascii_lowercase();
+    if let Some(task) = fitting.0.get_mut(&key) {
+        let built = block_on(poll_once(task))?;
+        fitting.0.remove(&key);
+        return Some(loader.finish_model(built));
+    }
+    match loader.model_job(PackKind::Characters, entry) {
+        Some(job) => {
+            let task = AsyncComputeTaskPool::get().spawn(async move { job.build(None) });
+            fitting.0.insert(key, task);
+            None
+        }
+        // Missing or unreadable: remembered as such.
+        None => Some(loader.model(PackKind::Characters, entry)),
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn equip_outfits(
     mut commands: Commands,
     game: Option<Res<Game>>,
     mut infos: Local<Option<HashMap<String, ItemInfo>>>,
+    mut painting: ResMut<Painting>,
+    mut fitting: ResMut<Fitting>,
     meshes_of: Query<(), With<Mesh3d>>,
     mut bodies: Query<
         (
@@ -338,11 +454,43 @@ fn equip_outfits(
     support: Option<Res<CompressedImageFormatSupport>>,
 ) {
     let Some(game) = game else { return };
+    let mut loader = ModelLoader {
+        game: &game.0,
+        cache: &mut cache,
+        meshes: &mut meshes,
+        materials: &mut materials,
+        images: &mut images,
+        bc_supported: model::bc_supported(support.as_deref()),
+    };
+    // Paints done since the last frame become materials, within the upload
+    // budget: a crowd's painted textures uploaded in one frame stalled it
+    // for hundreds of milliseconds.
+    let mut uploaded = 0;
+    painting.0.retain(|_, task| {
+        if uploaded >= PAINT_UPLOAD_BUDGET {
+            return true;
+        }
+        match block_on(poll_once(task)) {
+            Some(painted) => {
+                uploaded += painted.bytes();
+                loader.painted_material(painted);
+                false
+            }
+            None => true,
+        }
+    });
     if bodies.is_empty() {
         return;
     }
     let infos = infos.get_or_insert_with(|| item_info(&game.0));
+    // A level's characters are dressed over several frames: all of them in
+    // one frame stalled the window for seconds.
+    let started = std::time::Instant::now();
+    let deadline = started + DRESS_BUDGET;
     for (body, outfit, wielded, fighter) in &mut bodies {
+        if started.elapsed() >= DRESS_BUDGET {
+            break;
+        }
         let by_bone: HashMap<usize, Entity> = children
             .iter_descendants(body)
             .filter_map(|e| parts.get(e).ok().map(|p| (p.bone, e)))
@@ -350,14 +498,16 @@ fn equip_outfits(
         if by_bone.is_empty() {
             continue; // body parts not attached yet
         }
-        let mut loader = ModelLoader {
-            game: &game.0,
-            cache: &mut cache,
-            meshes: &mut meshes,
-            materials: &mut materials,
-            images: &mut images,
-            bc_supported: model::bc_supported(support.as_deref()),
-        };
+        if !outfit_painted(
+            outfit,
+            infos,
+            &mut loader,
+            &mut painting,
+            &mut fitting,
+            deadline,
+        ) {
+            continue;
+        }
         let mut hidden = 0u32;
         let mut protection = Vec::new();
         for garment in &outfit.0 {
@@ -367,7 +517,7 @@ fn equip_outfits(
             let known = infos
                 .get(&garment.model.to_ascii_lowercase())
                 .and_then(|i| i.apparel);
-            let appearance = garment.appearance.or(known.map(|k| k.0));
+            let appearance = garment_appearance(garment, infos);
             hidden |= garment.hides.or(known.map(|k| k.1)).unwrap_or(0);
             if let Some(armour) = garment.armour.or(known.and_then(|k| k.2)) {
                 let condition = appearance.map_or(1.0, |a| condition_factor(a.quality, a.damage));
@@ -462,6 +612,13 @@ fn equip_outfits(
         commands.entity(body).insert(Dressed);
     }
 }
+
+/// Bytes of painted textures one frame makes at most (at least one set):
+/// they are uploaded to the GPU the frame after.
+const PAINT_UPLOAD_BUDGET: usize = 32 << 20;
+
+/// Time one frame may spend dressing bodies; the rest wait for later frames.
+const DRESS_BUDGET: std::time::Duration = std::time::Duration::from_millis(8);
 
 #[cfg(test)]
 mod tests {

@@ -141,7 +141,74 @@ impl ModelLoader<'_> {
         model
     }
 
+    /// Loads the materials of a model, and so their textures, until
+    /// `deadline`, without building the model; `true` once they are all
+    /// loaded (or the model cannot be). A model with many textures takes a
+    /// few hundred milliseconds to load: warming its materials over several
+    /// frames first lets the model itself load within one.
+    pub fn warm_materials(
+        &mut self,
+        pack: PackKind,
+        entry: &str,
+        deadline: std::time::Instant,
+    ) -> bool {
+        let key = format!("{}/{}", pack.file_stem(), entry.to_ascii_lowercase());
+        if self.cache.models.contains_key(&key) {
+            return true;
+        }
+        let Some(scene) = self
+            .game
+            .pack(pack)
+            .and_then(|p| p.get(entry))
+            .and_then(|b| Scene::parse(b).ok())
+        else {
+            return true;
+        };
+        // The materials `parts` gives the model's meshes; at least one new
+        // one per call, so warming always gets somewhere.
+        let mut loaded = false;
+        for node in &scene.nodes {
+            let NodeBody::Mesh(mesh) = &node.body else {
+                continue;
+            };
+            for group in &mesh.groups {
+                if group.index_count == 0 || group.material.eq_ignore_ascii_case("_null") {
+                    continue;
+                }
+                let key = Self::material_key(entry, &scene, &group.material);
+                if self.cache.materials.contains_key(&key) {
+                    continue;
+                }
+                if loaded && std::time::Instant::now() >= deadline {
+                    return false;
+                }
+                self.material(entry, &scene, &group.material);
+                loaded = true;
+            }
+        }
+        true
+    }
+
     fn load(&mut self, pack: PackKind, entry: &str) -> Option<Model> {
+        let job = self.model_job(pack, entry)?;
+        let built = job.build(bevy::tasks::ComputeTaskPool::try_get());
+        Some(self.assemble(built))
+    }
+
+    /// The model of `entry` in `pack` when it has been loaded (`Some(None)`
+    /// when it could not be).
+    pub fn loaded_model(&self, pack: PackKind, entry: &str) -> Option<Option<Arc<Model>>> {
+        let key = format!("{}/{}", pack.file_stem(), entry.to_ascii_lowercase());
+        self.cache.models.get(&key).cloned()
+    }
+
+    /// What building a model takes, owned so that [`ModelJob::build`] can run
+    /// on any thread: the parsed file and, for apparel, the body's weights
+    /// it takes its own from. `None` when the file is missing or does not
+    /// parse (warned once). [`ModelLoader::finish_model`] then adds the
+    /// built meshes and the materials, as [`ModelLoader::model`] does at
+    /// once.
+    pub fn model_job(&mut self, pack: PackKind, entry: &str) -> Option<ModelJob> {
         let Some(bytes) = self.game.pack(pack).and_then(|p| p.get(entry)) else {
             self.warn_once(format!("model {}/{entry} not found", pack.file_stem()));
             return None;
@@ -157,27 +224,67 @@ impl ModelLoader<'_> {
         if pack == PackKind::Characters && self.cache.body_skin.is_empty() {
             self.model(PackKind::Resource, BODY_MODEL);
         }
+        let body = if pack == PackKind::Characters {
+            self.cache.body_skin.clone()
+        } else {
+            HashMap::new()
+        };
+        Some(ModelJob {
+            pack,
+            entry: entry.to_string(),
+            scene,
+            body,
+        })
+    }
+
+    /// The model a [`ModelJob`] built, its meshes and materials added and
+    /// cached as [`ModelLoader::model`] caches it.
+    pub fn finish_model(&mut self, built: BuiltModel) -> Option<Arc<Model>> {
+        let key = format!(
+            "{}/{}",
+            built.pack.file_stem(),
+            built.entry.to_ascii_lowercase()
+        );
+        let model = Some(Arc::new(self.assemble(built)));
+        self.cache.models.insert(key, model.clone());
+        model
+    }
+
+    /// Adds a built model's meshes and materials. Remembers the human body's
+    /// weights, which apparel is fitted to.
+    fn assemble(&mut self, built: BuiltModel) -> Model {
+        let BuiltModel {
+            pack,
+            entry,
+            scene,
+            nodes: built_nodes,
+        } = built;
         let mut nodes = Vec::with_capacity(scene.nodes.len());
-        for (index, node) in scene.nodes.iter().enumerate() {
-            let skin = match &node.body {
-                NodeBody::Mesh(mesh)
-                    if pack == PackKind::Characters
-                        || (pack == PackKind::Resource && is_body_model(entry)) =>
-                {
-                    self.node_skin(&scene, index, mesh, pack, entry)
-                }
-                _ => None,
-            };
-            let skin_bone = skin.as_ref().map(|(bone, _)| *bone);
+        for (node, built) in scene.nodes.iter().zip(built_nodes) {
+            let skin_bone = built.skin.as_ref().map(|(bone, _)| *bone);
+            if let (NodeBody::Mesh(mesh), Some((bone, skin))) = (&node.body, &built.skin)
+                && pack == PackKind::Resource
+                && entry.eq_ignore_ascii_case(BODY_MODEL)
+            {
+                let reference = mesh
+                    .positions
+                    .iter()
+                    .map(|p| Vec3::from(*p))
+                    .zip(skin.iter().copied());
+                self.cache
+                    .body_skin
+                    .entry(*bone)
+                    .or_insert_with(|| Arc::new(reference.collect()));
+            }
             let (parts, part_materials) = match &node.body {
-                NodeBody::Mesh(mesh) => self
-                    .parts(
-                        entry,
-                        &scene,
-                        mesh,
-                        skin.as_ref().map(|(_, s)| s.as_slice()),
-                    )
+                NodeBody::Mesh(mesh) => built
+                    .meshes
                     .into_iter()
+                    .map(|(group, bevy_mesh)| {
+                        let name = &mesh.groups[group].material;
+                        let material = self.material(&entry, &scene, name);
+                        ((self.meshes.add(bevy_mesh), material), name.clone())
+                    })
                     .unzip(),
                 _ => (Vec::new(), Vec::new()),
             };
@@ -210,106 +317,12 @@ impl ModelLoader<'_> {
                 },
             });
         }
-        Some(Model { nodes })
+        Model { nodes }
     }
 
-    /// Skin weights of a node's mesh: worked out from the seams for body
-    /// parts (nodes named after a bone with bone neighbours), taken from the
-    /// nearest body vertex for apparel. Remembers the human body's weights,
-    /// which apparel is fitted to.
-    fn node_skin(
-        &mut self,
-        scene: &Scene,
-        index: usize,
-        mesh: &RfcMesh,
-        pack: PackKind,
-        entry: &str,
-    ) -> Option<(u16, Vec<VertexSkin>)> {
-        let node = &scene.nodes[index];
-        let bone = bone_index(&node.name)? as u16;
-        if pack == PackKind::Characters {
-            let body = self.cache.body_skin.get(&bone)?.clone();
-            let skin = mesh
-                .positions
-                .iter()
-                .map(|p| {
-                    let p = Vec3::from(*p);
-                    body.iter()
-                        .min_by(|a, b| a.0.distance_squared(p).total_cmp(&b.0.distance_squared(p)))
-                        .map_or([(bone, 1.0), (bone, 0.0), (bone, 0.0), (bone, 0.0)], |b| {
-                            b.1
-                        })
-                })
-                .collect();
-            return Some((bone, skin));
-        }
-        let bone_of = |i: usize| bone_index(&scene.nodes[i].name).map(|b| b as u16);
-        let mut joints = Vec::new();
-        if let Some(parent) = node.parent.and_then(|p| p.checked_sub(1)).and_then(bone_of) {
-            joints.push(Joint {
-                bone: parent,
-                pivot: Vec3::ZERO,
-            });
-        }
-        for (i, child) in scene.nodes.iter().enumerate() {
-            if child.parent == Some(index + 1)
-                && let Some(b) = bone_of(i)
-            {
-                joints.push(Joint {
-                    bone: b,
-                    pivot: Vec3::from(child.transform[3]),
-                });
-            }
-        }
-        if joints.is_empty() || mesh.triangle_flags.is_none() {
-            return None;
-        }
-        let skin = auto_skin(mesh, bone, &joints);
-        if !entry.eq_ignore_ascii_case(BODY_MODEL) {
-            return Some((bone, skin));
-        }
-        let reference = mesh
-            .positions
-            .iter()
-            .map(|p| Vec3::from(*p))
-            .zip(skin.iter().copied());
-        self.cache
-            .body_skin
-            .entry(bone)
-            .or_insert_with(|| Arc::new(reference.collect()));
-        Some((bone, skin))
-    }
-
-    fn parts(
-        &mut self,
-        entry: &str,
-        scene: &Scene,
-        mesh: &RfcMesh,
-        skin: Option<&[VertexSkin]>,
-    ) -> Vec<(Part, String)> {
-        let mut out = Vec::with_capacity(mesh.groups.len());
-        for group in &mesh.groups {
-            let start = group.first_index as usize;
-            let indices = &mesh.indices[start..start + group.index_count as usize];
-            let Some(bevy_mesh) = group_mesh(mesh, indices, skin) else {
-                continue;
-            };
-            // `_null` marks geometry the original never draws.
-            if group.material.eq_ignore_ascii_case("_null") {
-                continue;
-            }
-            let material = self.material(entry, scene, &group.material);
-            out.push((
-                (self.meshes.add(bevy_mesh), material),
-                group.material.clone(),
-            ));
-        }
-        out
-    }
-
-    fn material(&mut self, entry: &str, scene: &Scene, name: &str) -> Handle<ExaMaterial> {
-        let local = scene.material(name).cloned();
-        let key = if local.is_some() {
+    /// The cache key of a model's material: its own, or the library's.
+    fn material_key(entry: &str, scene: &Scene, name: &str) -> String {
+        if scene.material(name).is_some() {
             format!(
                 "{}#{}",
                 entry.to_ascii_lowercase(),
@@ -317,7 +330,12 @@ impl ModelLoader<'_> {
             )
         } else {
             format!("lib#{}", name.to_ascii_lowercase())
-        };
+        }
+    }
+
+    fn material(&mut self, entry: &str, scene: &Scene, name: &str) -> Handle<ExaMaterial> {
+        let local = scene.material(name).cloned();
+        let key = Self::material_key(entry, scene, name);
         if let Some(h) = self.cache.materials.get(&key) {
             return h.clone();
         }
@@ -498,95 +516,142 @@ impl ModelLoader<'_> {
     /// The material of an apparel texture set (`stem`, e.g. `doublet_aa`)
     /// painted with an item's appearance, as the original paints equipped
     /// items. Falls back to the unpainted material when the shade map is
-    /// missing.
+    /// missing. Paints on the calling thread; [`ModelLoader::paint_job`]
+    /// lets the painting run elsewhere.
     pub fn painted_apparel(&mut self, stem: &str, appearance: &Appearance) -> Handle<ExaMaterial> {
+        match self.paint_job(stem, appearance) {
+            Paint::Ready(handle) => handle,
+            Paint::Job(job) => {
+                let painted = job.paint();
+                self.painted_material(painted)
+            }
+        }
+    }
+
+    /// Decodes the textures painting `stem` with `appearance` reads, one at
+    /// a time until `deadline` (at least one per call); `true` once they are
+    /// all decoded and [`ModelLoader::paint_job`] only reads the cache. A
+    /// texture takes tens of milliseconds to decode, a texture set's dozen
+    /// of them too long for one frame.
+    pub fn warm_paint(
+        &mut self,
+        stem: &str,
+        appearance: &Appearance,
+        deadline: std::time::Instant,
+    ) -> bool {
+        if self
+            .cache
+            .painted
+            .contains_key(&(stem.to_ascii_lowercase(), *appearance))
+        {
+            return true;
+        }
+        let mut names = vec![format!("{stem}d")];
+        for layer in appearance.used_layers() {
+            let mask = format!("{stem}m{}", layer.mask);
+            if self.game.texture(&mask).is_none() {
+                continue;
+            }
+            names.push(mask);
+            let material = layer_material(layer);
+            names.extend(library(material).iter().map(|n| n.to_string()));
+            names.extend(normal_library(material).iter().map(|n| n.to_string()));
+        }
+        names.push(format!("{stem}n"));
+        let mut decoded = false;
+        for (i, name) in names.iter().enumerate() {
+            let cached = self.cache.texels.get(&name.to_ascii_lowercase()).cloned();
+            let texels = match cached {
+                Some(texels) => texels,
+                None => {
+                    if decoded && std::time::Instant::now() >= deadline {
+                        return false;
+                    }
+                    decoded = true;
+                    self.texels(name)
+                }
+            };
+            // Without a shade map nothing is painted.
+            if i == 0 && texels.is_none() {
+                return true;
+            }
+        }
+        true
+    }
+
+    /// The painted material of `stem` with `appearance` when it is ready
+    /// (painted before, or the unpainted material standing in for a missing
+    /// shade map); otherwise what painting it takes, gathered from the
+    /// decoded-texture cache.
+    pub fn paint_job(&mut self, stem: &str, appearance: &Appearance) -> Paint {
         let key = (stem.to_ascii_lowercase(), *appearance);
         if let Some(h) = self.cache.painted.get(&key) {
-            return h.clone();
+            return Paint::Ready(h.clone());
         }
-        let handle = match self.texels(&format!("{stem}d")) {
-            Some(shade) => {
-                let mut owned: Vec<OwnedLayer> = Vec::new();
-                for layer in appearance.used_layers() {
-                    // Items and recipes may name masks a texture set lacks.
-                    let mask_name = format!("{stem}m{}", layer.mask);
-                    if self.game.texture(&mask_name).is_none() {
-                        continue;
-                    }
-                    let Some(mask) = self.texels(&mask_name) else {
-                        continue;
-                    };
-                    let material = layer_material(layer);
-                    let lib = library(material).iter().map(|n| self.texels(n)).collect();
-                    let normals = normal_library(material)
-                        .iter()
-                        .map(|n| self.texels(n))
-                        .collect();
-                    owned.push((mask, material, layer.colour, lib, normals));
-                }
-                let layers: Vec<PaintLayer<'_>> = owned
-                    .iter()
-                    .map(|(mask, material, colour, lib, normals)| PaintLayer {
-                        mask,
-                        material: *material,
-                        colour: *colour,
-                        library: lib.iter().map(|t| t.as_deref()).collect(),
-                        normals: normals.iter().map(|t| t.as_deref()).collect(),
-                    })
-                    .collect();
-                let item_normal = self.texels(&format!("{stem}n"));
-                let painted = paint(&shade, item_normal.as_deref(), &layers, appearance);
-                let mut rgba = painted.colour;
-                // Keep the cut-outs of the shade map.
-                for (o, s) in rgba
-                    .as_chunks_mut::<4>()
-                    .0
-                    .iter_mut()
-                    .zip(shade.rgba.as_chunks::<4>().0)
-                {
-                    o[3] = s[3];
-                }
-                let alpha = shade.rgba.as_chunks::<4>().0.iter().any(|p| p[3] < 128);
-                let (w, h) = (shade.width as u32, shade.height as u32);
-                let image = painted_image(w, h, rgba, Painted::COLOUR);
-                // The painter's surface map (roughness in G, metal in B) as
-                // the original's packed specular map: intensity, gloss, metal.
-                let mut surface = painted.surface;
-                for px in surface.as_chunks_mut::<4>().0 {
-                    px[0] = 255;
-                    px[1] = 255 - px[1];
-                }
-                let surface = painted_image(w, h, surface, Painted::SURFACE);
-                let mut mat = ExaMaterial {
-                    params: ExaParams {
-                        specular: Vec4::new(1.0, 1.0, 1.0, 1.0),
-                        flags: flags::LIT | flags::PACKED_SPECULAR,
-                        ..default()
-                    },
-                    diffuse_map: Some(self.images.add(image)),
-                    specular_map: Some(self.images.add(surface)),
-                    environment: self.environment_map(),
-                    ..default()
-                };
-                if alpha {
-                    mat.alpha_mode = AlphaMode::Mask(0.5);
-                    mat.params.flags |= flags::TWO_SIDED;
-                }
-                match painted.normal {
-                    Some(normal) => {
-                        let image = painted_image(w, h, normal, Painted::NORMAL);
-                        mat.normal_map = Some(self.images.add(image));
-                    }
-                    None => {
-                        mat.normal_map = self
-                            .texture(&format!("{stem}n"), ColorSpace::Linear)
-                            .map(|t| t.0);
-                    }
-                }
-                self.materials.add(mat.with_map_flags())
-            }
-            None => self.apparel_material(stem),
+        let Some(shade) = self.texels(&format!("{stem}d")) else {
+            let handle = self.apparel_material(stem);
+            self.cache.painted.insert(key, handle.clone());
+            return Paint::Ready(handle);
         };
+        let mut layers: Vec<OwnedLayer> = Vec::new();
+        for layer in appearance.used_layers() {
+            // Items and recipes may name masks a texture set lacks.
+            let mask_name = format!("{stem}m{}", layer.mask);
+            if self.game.texture(&mask_name).is_none() {
+                continue;
+            }
+            let Some(mask) = self.texels(&mask_name) else {
+                continue;
+            };
+            let material = layer_material(layer);
+            let lib = library(material).iter().map(|n| self.texels(n)).collect();
+            let normals = normal_library(material)
+                .iter()
+                .map(|n| self.texels(n))
+                .collect();
+            layers.push((mask, material, layer.colour, lib, normals));
+        }
+        let item_normal = self.texels(&format!("{stem}n"));
+        Paint::Job(PaintJob {
+            key,
+            shade,
+            item_normal,
+            layers,
+        })
+    }
+
+    /// The material of a painted texture set, cached for
+    /// [`ModelLoader::painted_apparel`].
+    pub fn painted_material(&mut self, painted: PaintedSet) -> Handle<ExaMaterial> {
+        let PaintedSet {
+            key,
+            colour,
+            surface,
+            normal,
+            alpha,
+        } = painted;
+        let mut mat = ExaMaterial {
+            params: ExaParams {
+                specular: Vec4::new(1.0, 1.0, 1.0, 1.0),
+                flags: flags::LIT | flags::PACKED_SPECULAR,
+                ..default()
+            },
+            diffuse_map: Some(self.images.add(colour)),
+            specular_map: Some(self.images.add(surface)),
+            environment: self.environment_map(),
+            ..default()
+        };
+        if alpha {
+            mat.alpha_mode = AlphaMode::Mask(0.5);
+            mat.params.flags |= flags::TWO_SIDED;
+        }
+        mat.normal_map = match normal {
+            Some(image) => Some(self.images.add(image)),
+            None => self
+                .texture(&format!("{}n", key.0), ColorSpace::Linear)
+                .map(|t| t.0),
+        };
+        let handle = self.materials.add(mat.with_map_flags());
         self.cache.painted.insert(key, handle.clone());
         handle
     }
@@ -639,6 +704,151 @@ impl ModelLoader<'_> {
     }
 }
 
+/// A model to build: its parsed file and, for apparel, the body's weights
+/// by bone ([`ModelLoader::model_job`]).
+pub struct ModelJob {
+    pack: PackKind,
+    entry: String,
+    scene: Scene,
+    body: HashMap<u16, Arc<Vec<(Vec3, VertexSkin)>>>,
+}
+
+/// A model's meshes, built and not yet added as assets
+/// ([`ModelLoader::finish_model`]).
+pub struct BuiltModel {
+    pack: PackKind,
+    entry: String,
+    scene: Scene,
+    nodes: Vec<BuiltNode>,
+}
+
+/// A node's skin weights (with the bone whose space they are in) and its
+/// drawn mesh groups' meshes, by group index.
+struct BuiltNode {
+    skin: Option<(u16, Vec<VertexSkin>)>,
+    meshes: Vec<(usize, Mesh)>,
+}
+
+impl ModelJob {
+    /// Works out the skin weights and builds the meshes, the groups of a
+    /// node on every thread of `pool` when given (one by one, a large
+    /// model's meshes, their tangents most of all, took hundreds of
+    /// milliseconds).
+    pub fn build(self, pool: Option<&bevy::tasks::ComputeTaskPool>) -> BuiltModel {
+        let (pack, entry) = (self.pack, self.entry.as_str());
+        let nodes = self
+            .scene
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| {
+                let NodeBody::Mesh(mesh) = &node.body else {
+                    return BuiltNode {
+                        skin: None,
+                        meshes: Vec::new(),
+                    };
+                };
+                let skin = if pack == PackKind::Characters
+                    || (pack == PackKind::Resource && is_body_model(entry))
+                {
+                    node_skin(&self.scene, index, mesh, pack, &self.body)
+                } else {
+                    None
+                };
+                let meshes = group_meshes(mesh, skin.as_ref().map(|(_, s)| s.as_slice()), pool);
+                BuiltNode { skin, meshes }
+            })
+            .collect();
+        BuiltModel {
+            pack: self.pack,
+            entry: self.entry,
+            scene: self.scene,
+            nodes,
+        }
+    }
+}
+
+/// Skin weights of a node's mesh: worked out from the seams for body parts
+/// (nodes named after a bone with bone neighbours), taken from the nearest
+/// vertex of the body's part (`body`, by bone) for apparel.
+fn node_skin(
+    scene: &Scene,
+    index: usize,
+    mesh: &RfcMesh,
+    pack: PackKind,
+    body: &HashMap<u16, Arc<Vec<(Vec3, VertexSkin)>>>,
+) -> Option<(u16, Vec<VertexSkin>)> {
+    let node = &scene.nodes[index];
+    let bone = bone_index(&node.name)? as u16;
+    if pack == PackKind::Characters {
+        let body = body.get(&bone)?;
+        let skin = mesh
+            .positions
+            .iter()
+            .map(|p| {
+                let p = Vec3::from(*p);
+                body.iter()
+                    .min_by(|a, b| a.0.distance_squared(p).total_cmp(&b.0.distance_squared(p)))
+                    .map_or([(bone, 1.0), (bone, 0.0), (bone, 0.0), (bone, 0.0)], |b| {
+                        b.1
+                    })
+            })
+            .collect();
+        return Some((bone, skin));
+    }
+    let bone_of = |i: usize| bone_index(&scene.nodes[i].name).map(|b| b as u16);
+    let mut joints = Vec::new();
+    if let Some(parent) = node.parent.and_then(|p| p.checked_sub(1)).and_then(bone_of) {
+        joints.push(Joint {
+            bone: parent,
+            pivot: Vec3::ZERO,
+        });
+    }
+    for (i, child) in scene.nodes.iter().enumerate() {
+        if child.parent == Some(index + 1)
+            && let Some(b) = bone_of(i)
+        {
+            joints.push(Joint {
+                bone: b,
+                pivot: Vec3::from(child.transform[3]),
+            });
+        }
+    }
+    if joints.is_empty() || mesh.triangle_flags.is_none() {
+        return None;
+    }
+    Some((bone, auto_skin(mesh, bone, &joints)))
+}
+
+/// The meshes of a mesh's drawn groups (`_null` marks geometry the
+/// original never draws), by group index, built on `pool` when given.
+fn group_meshes(
+    mesh: &RfcMesh,
+    skin: Option<&[VertexSkin]>,
+    pool: Option<&bevy::tasks::ComputeTaskPool>,
+) -> Vec<(usize, Mesh)> {
+    let groups: Vec<usize> = (0..mesh.groups.len())
+        .filter(|&g| !mesh.groups[g].material.eq_ignore_ascii_case("_null"))
+        .collect();
+    let build = |g: usize| {
+        let group = &mesh.groups[g];
+        let start = group.first_index as usize;
+        mesh.indices
+            .get(start..start + group.index_count as usize)
+            .and_then(|indices| group_mesh(mesh, indices, skin))
+            .map(|m| (g, m))
+    };
+    let built: Vec<Option<(usize, Mesh)>> = match pool {
+        Some(pool) if groups.len() > 1 => pool.scope(|scope| {
+            for &g in &groups {
+                scope.spawn(async move { build(g) });
+            }
+        }),
+        _ => groups.iter().map(|&g| build(g)).collect(),
+    };
+    built.into_iter().flatten().collect()
+}
+
 /// A layer's mask, material, colour and library textures, owned while painting.
 type OwnedLayer = (
     Arc<Texels>,
@@ -656,6 +866,96 @@ type OwnedLayer = (
 fn cuts_shadow(m: &Material, opacity_map: bool) -> bool {
     let opacity_flag = m.flags & OPACITY_FLAG != 0 || opacity_map;
     m.class & ALPHA_TESTED != 0 || opacity_flag && m.opacity > CUT_SHADOW_OPACITY
+}
+
+/// A painted apparel material, or what painting it takes.
+pub enum Paint {
+    Ready(Handle<ExaMaterial>),
+    Job(PaintJob),
+}
+
+/// Everything painting an apparel texture set with an appearance reads,
+/// shared from the decoded-texture cache: the painting (per-texel work, a
+/// large share of dressing a crowd) can run on any thread.
+pub struct PaintJob {
+    key: (String, Appearance),
+    shade: Arc<Texels>,
+    item_normal: Option<Arc<Texels>>,
+    layers: Vec<OwnedLayer>,
+}
+
+/// A painted texture set's images, for [`ModelLoader::painted_material`].
+pub struct PaintedSet {
+    key: (String, Appearance),
+    colour: Image,
+    surface: Image,
+    normal: Option<Image>,
+    /// The shade map cuts the item out.
+    alpha: bool,
+}
+
+impl PaintedSet {
+    /// Bytes of image data the set uploads to the GPU.
+    pub fn bytes(&self) -> usize {
+        [
+            Some(&self.colour),
+            Some(&self.surface),
+            self.normal.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(|image| image.data.as_ref())
+        .map(Vec::len)
+        .sum()
+    }
+}
+
+impl PaintJob {
+    /// Paints the texture set: colour, surface and normal images with their
+    /// mip chains.
+    pub fn paint(self) -> PaintedSet {
+        let layers: Vec<PaintLayer<'_>> = self
+            .layers
+            .iter()
+            .map(|(mask, material, colour, lib, normals)| PaintLayer {
+                mask,
+                material: *material,
+                colour: *colour,
+                library: lib.iter().map(|t| t.as_deref()).collect(),
+                normals: normals.iter().map(|t| t.as_deref()).collect(),
+            })
+            .collect();
+        let shade = &self.shade;
+        let painted = paint(shade, self.item_normal.as_deref(), &layers, &self.key.1);
+        let mut rgba = painted.colour;
+        // Keep the cut-outs of the shade map.
+        for (o, s) in rgba
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(shade.rgba.as_chunks::<4>().0)
+        {
+            o[3] = s[3];
+        }
+        let alpha = shade.rgba.as_chunks::<4>().0.iter().any(|p| p[3] < 128);
+        let (w, h) = (shade.width as u32, shade.height as u32);
+        // The painter's surface map (roughness in G, metal in B) as the
+        // original's packed specular map: intensity, gloss, metal.
+        let mut surface = painted.surface;
+        for px in surface.as_chunks_mut::<4>().0 {
+            px[0] = 255;
+            px[1] = 255 - px[1];
+        }
+        PaintedSet {
+            colour: painted_image(w, h, rgba, Painted::COLOUR),
+            surface: painted_image(w, h, surface, Painted::SURFACE),
+            normal: painted
+                .normal
+                .map(|n| painted_image(w, h, n, Painted::NORMAL)),
+            alpha,
+            key: self.key,
+        }
+    }
 }
 
 /// How a material blends, from its blend word: `0x4000` alpha-tests (when

@@ -18,6 +18,7 @@ use bevy::pbr::{Material, MaterialPlugin};
 use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::shader::ShaderRef;
+use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
 use exa_assets::texture::ColorSpace;
 use exa_assets::{ModelLoader, PackKind};
 use exa_formats::rfi::Rfi;
@@ -452,102 +453,245 @@ fn append_mesh(v: &mut vegetation::Variant, mesh: &Mesh) {
 }
 
 /// Spawns the terrain stored beside a level (`<level>.rft`), if any, under
-/// `parent`.
+/// `parent`, all at once ([`TerrainBuild`] spreads the same work over
+/// steps).
 pub fn spawn_terrain(
     commands: &mut Commands,
     loader: &mut ModelLoader<'_>,
     level: &str,
     parent: Entity,
 ) -> Option<TerrainStats> {
-    let stem = level.strip_suffix(".rfc").unwrap_or(level);
-    let resource = loader.game.pack(PackKind::Resource)?;
-    let bytes = resource.get(&format!("{stem}.rft"))?;
-    let terrain = match Terrain::parse(bytes) {
-        Ok(t) => t,
-        Err(e) => {
-            loader.warn_once(format!("terrain {stem}.rft: {e}"));
-            return None;
+    let mut build = TerrainBuild::begin(loader, level, parent)?;
+    while !build.step(commands, loader, std::time::Duration::MAX) {
+        std::thread::yield_now();
+    }
+    Some(build.stats)
+}
+
+/// A level's terrain spawned a part at a time, so a level load can keep its
+/// frames short. Each part is one tile's heightfield and weights, one
+/// palette material's textures (loaded the first time a tile uses it), or
+/// spawning a built tile with its plants.
+pub struct TerrainBuild {
+    terrain: Terrain,
+    palette: Palette,
+    tree: RuleTree,
+    noise: NoiseMaps,
+    environment: Option<Handle<Image>>,
+    /// Height and mask planes by texture name (lower case).
+    planes: HashMap<String, Option<Arc<Plane>>>,
+    plants: Option<Plants>,
+    /// Each palette material's diffuse, surface and normal textures.
+    textures: HashMap<usize, MaterialTextures>,
+    /// Surface maps being packed, by palette material.
+    surfaces: HashMap<usize, Surface>,
+    /// Bytes of textures made in this step.
+    uploaded: usize,
+    /// The tile being built, once its heightfield is.
+    built: Option<BuiltTile>,
+    next: usize,
+    parent: Entity,
+    stats: TerrainStats,
+}
+
+/// Bytes of textures one step makes at most (at least one material's): they
+/// are uploaded to the GPU the frame after, and a level's palette at once
+/// stalled a frame.
+const UPLOAD_BUDGET: usize = 24 << 20;
+
+/// A palette material's surface map, packed on the async compute pool:
+/// decoding, packing and filtering three maps took over 100 ms.
+enum Surface {
+    Packing(Task<Image>),
+    Ready(Box<Image>),
+}
+
+impl Surface {
+    /// Starts packing `material`'s surface map from copies of its maps.
+    fn start(game: &exa_assets::GameData, material: &PaletteMaterial) -> Self {
+        let bytes = |slot| {
+            material
+                .texture(slot)
+                .and_then(|name| game.texture(name))
+                .map(<[u8]>::to_vec)
+        };
+        let maps = [
+            bytes(TerrainTexture::Bump),
+            bytes(TerrainTexture::Gloss),
+            bytes(TerrainTexture::Mask),
+        ];
+        match AsyncComputeTaskPool::try_get() {
+            Some(pool) => Self::Packing(pool.spawn(async move { surface_image(&maps) })),
+            None => Self::Ready(Box::new(surface_image(&maps))),
         }
-    };
-    let palette = match resource
-        .get(&format!("{}.ftb", terrain.palette))
-        .map(Palette::parse)
-    {
-        Some(Ok(p)) => p,
-        Some(Err(e)) => {
-            loader.warn_once(format!("terrain palette {}: {e}", terrain.palette));
-            return None;
+    }
+
+    /// The packed map, once it is done.
+    fn poll(&mut self) -> Option<Image> {
+        match self {
+            Self::Packing(task) => block_on(poll_once(task)),
+            Self::Ready(image) => Some(std::mem::take(&mut **image)),
         }
-        None => {
-            loader.warn_once(format!("terrain palette {} not found", terrain.palette));
-            return None;
+    }
+}
+
+/// A palette material's diffuse, surface and normal textures.
+type MaterialTextures = (
+    Option<Handle<Image>>,
+    Option<Handle<Image>>,
+    Option<Handle<Image>>,
+);
+
+impl TerrainBuild {
+    /// Reads the terrain beside `level` and its palette; `None` when the
+    /// level has no terrain or it does not parse.
+    pub fn begin(loader: &mut ModelLoader<'_>, level: &str, parent: Entity) -> Option<Self> {
+        let stem = level.strip_suffix(".rfc").unwrap_or(level);
+        let resource = loader.game.pack(PackKind::Resource)?;
+        let bytes = resource.get(&format!("{stem}.rft"))?;
+        let terrain = match Terrain::parse(bytes) {
+            Ok(t) => t,
+            Err(e) => {
+                loader.warn_once(format!("terrain {stem}.rft: {e}"));
+                return None;
+            }
+        };
+        let palette = match resource
+            .get(&format!("{}.ftb", terrain.palette))
+            .map(Palette::parse)
+        {
+            Some(Ok(p)) => p,
+            Some(Err(e)) => {
+                loader.warn_once(format!("terrain palette {}: {e}", terrain.palette));
+                return None;
+            }
+            None => {
+                loader.warn_once(format!("terrain palette {} not found", terrain.palette));
+                return None;
+            }
+        };
+        let tree = RuleTree::new(&palette);
+        let environment = loader.environment_map();
+        let plants = Plants::load(loader, &palette);
+        Some(Self {
+            terrain,
+            palette,
+            tree,
+            noise: NoiseMaps::default(),
+            environment,
+            planes: HashMap::new(),
+            plants,
+            textures: HashMap::new(),
+            surfaces: HashMap::new(),
+            uploaded: 0,
+            built: None,
+            next: 0,
+            parent,
+            stats: TerrainStats::default(),
+        })
+    }
+
+    /// What the terrain spawned so far.
+    pub fn stats(&self) -> &TerrainStats {
+        &self.stats
+    }
+
+    /// Does parts of the terrain until `budget` has passed (at least one);
+    /// `true` once every tile is spawned.
+    pub fn step(
+        &mut self,
+        commands: &mut Commands,
+        loader: &mut ModelLoader<'_>,
+        budget: std::time::Duration,
+    ) -> bool {
+        let started = std::time::Instant::now();
+        self.uploaded = 0;
+        while self.next < self.terrain.tiles.len() {
+            // A surface map still being packed waits for a later step, and
+            // so do textures past the step's upload budget.
+            if !self.part(commands, loader)
+                || started.elapsed() >= budget
+                || self.uploaded >= UPLOAD_BUDGET
+            {
+                break;
+            }
         }
-    };
-    let tree = RuleTree::new(&palette);
-    let environment = loader.environment_map();
-    let noise = NoiseMaps::default();
-    let game = loader.game;
-    let mut planes: HashMap<String, Option<Arc<Plane>>> = HashMap::new();
-    let mut plane = |name: Option<&str>| -> Option<Arc<Plane>> {
-        let name = name?;
-        planes
-            .entry(name.to_ascii_lowercase())
-            .or_insert_with(|| {
-                let rfi = Rfi::parse(game.texture(name)?).ok()?;
-                let rgba = rfi.decode_rgba8().ok()?;
-                let (w, h) = (rfi.header.width as usize, rfi.header.height as usize);
-                Plane::from_rgba(w, h, &rgba).map(Arc::new)
-            })
-            .clone()
-    };
-    let mut height_layers = |used: &[usize]| -> Vec<HeightLayer> {
-        used.iter()
-            .map(|&m| {
-                let material = &palette.materials[m];
-                let p = |i: usize, d: f32| material.params.get(i).copied().unwrap_or(d);
-                let look = Look::of(material);
-                HeightLayer {
-                    base: p(16, 0.5),
-                    offset: p(17, 0.5),
-                    scale: p(18, 0.5),
-                    height_map: plane(material.texture(TerrainTexture::Height)),
-                    mask: plane(material.texture(TerrainTexture::Mask)),
-                    sharpness: look.sharpness,
-                    tiling: look.tiling,
-                    vegetation: p(13, 0.0),
+        self.next >= self.terrain.tiles.len()
+    }
+
+    /// One part of the next tile: its heightfield, a material's textures,
+    /// or the tile itself; `false` when it waits for a surface map.
+    fn part(&mut self, commands: &mut Commands, loader: &mut ModelLoader<'_>) -> bool {
+        let tile = &self.terrain.tiles[self.next];
+        let Some(built) = &mut self.built else {
+            let game = loader.game;
+            let (planes, palette) = (&mut self.planes, &self.palette);
+            let mut height_layers = |used: &[usize]| height_layers(game, palette, planes, used);
+            let built = build_tile(
+                &self.terrain,
+                tile,
+                &self.palette,
+                &self.tree,
+                &self.noise,
+                &mut height_layers,
+            );
+            self.stats.unresolved_layers += built.unresolved;
+            self.stats.truncated_tiles += usize::from(built.truncated);
+            // Its new materials' surface maps are packed meanwhile.
+            for &m in &built.materials {
+                if !self.textures.contains_key(&m) && !self.surfaces.contains_key(&m) {
+                    let surface = Surface::start(loader.game, &self.palette.materials[m]);
+                    self.surfaces.insert(m, surface);
                 }
-            })
-            .collect()
-    };
-    let plants = Plants::load(loader, &palette);
-    let mut surfaces: HashMap<usize, Option<Handle<Image>>> = HashMap::new();
-    let mut stats = TerrainStats::default();
-    for tile in &terrain.tiles {
-        let mut built = build_tile(&terrain, tile, &palette, &tree, &noise, &mut height_layers);
-        stats.unresolved_layers += built.unresolved;
-        stats.truncated_tiles += usize::from(built.truncated);
+            }
+            self.built = Some(built);
+            return true;
+        };
+        if let Some(&m) = built
+            .materials
+            .iter()
+            .find(|m| !self.textures.contains_key(m))
+        {
+            let material = &self.palette.materials[m];
+            let surface = self
+                .surfaces
+                .entry(m)
+                .or_insert_with(|| Surface::start(loader.game, material));
+            let Some(surface) = surface.poll() else {
+                return false;
+            };
+            self.surfaces.remove(&m);
+            let diffuse = material
+                .texture(TerrainTexture::Diffuse)
+                .and_then(|name| loader.texture(name, ColorSpace::Srgb))
+                .map(|(img, _)| img);
+            let surface = Some(loader.images.add(surface));
+            let normal = material
+                .texture(TerrainTexture::Normal)
+                .and_then(|name| loader.texture(name, ColorSpace::Linear))
+                .map(|(img, _)| img);
+            let size = |image: &Option<Handle<Image>>| {
+                image
+                    .as_ref()
+                    .and_then(|h| loader.images.get(h))
+                    .and_then(|i| i.data.as_ref())
+                    .map_or(0, Vec::len)
+            };
+            self.uploaded += size(&diffuse) + size(&surface) + size(&normal);
+            self.textures.insert(m, (diffuse, surface, normal));
+            return true;
+        }
         let mut splat = TerrainSplat {
-            environment: environment.clone(),
+            environment: self.environment.clone(),
             ..default()
         };
         if splat.environment.is_some() {
             splat.params.flags |= terrain_flags::ENVIRONMENT;
         }
         for (slot, &m) in built.materials.iter().enumerate() {
-            let material = &palette.materials[m];
-            let diffuse = material
-                .texture(TerrainTexture::Diffuse)
-                .and_then(|name| loader.texture(name, ColorSpace::Srgb))
-                .map(|(img, _)| img);
+            let material = &self.palette.materials[m];
+            let (diffuse, surface, normal) = self.textures[&m].clone();
             let masked = material.texture(TerrainTexture::Mask).is_some();
-            let surface = surfaces
-                .entry(m)
-                .or_insert_with(|| surface_texture(loader, material))
-                .clone();
-            let normal = material
-                .texture(TerrainTexture::Normal)
-                .and_then(|name| loader.texture(name, ColorSpace::Linear))
-                .map(|(img, _)| img);
             let look = Look::of(material);
             splat.params.normal[slot] = Vec4::new(
                 look.normal_sharpness[0],
@@ -580,7 +724,7 @@ pub fn spawn_terrain(
                 _ => (splat.diffuse3, splat.surface3, splat.normal3) = (diffuse, surface, normal),
             }
         }
-        let centre = terrain.tile_centre(tile);
+        let centre = self.terrain.tile_centre(tile);
         let tile_entity = commands
             .spawn((
                 Name::new(format!("terrain {} {}", tile.x, tile.y)),
@@ -591,20 +735,62 @@ pub fn spawn_terrain(
                 exa_render::lights::ShadowBias(exa_render::shadow_bias::FLOOR),
                 Transform::from_xyz(centre[0], 0.0, centre[1]),
                 Visibility::default(),
-                ChildOf(parent),
+                ChildOf(self.parent),
             ))
             .id();
-        if let Some(plants) = &plants {
-            stats.plants += plants.spawn(commands, loader, &terrain, tile, &built, tile_entity);
+        if let Some(plants) = &self.plants {
+            self.stats.plants +=
+                plants.spawn(commands, loader, &self.terrain, tile, built, tile_entity);
         }
-        stats.tiles += 1;
+        self.stats.tiles += 1;
+        self.built = None;
+        self.next += 1;
+        true
     }
-    Some(stats)
+}
+
+/// The height layers of the palette materials `used`, their height and mask
+/// planes decoded once by name.
+fn height_layers(
+    game: &exa_assets::GameData,
+    palette: &Palette,
+    planes: &mut HashMap<String, Option<Arc<Plane>>>,
+    used: &[usize],
+) -> Vec<HeightLayer> {
+    let mut plane = |name: Option<&str>| -> Option<Arc<Plane>> {
+        let name = name?;
+        planes
+            .entry(name.to_ascii_lowercase())
+            .or_insert_with(|| {
+                let rfi = Rfi::parse(game.texture(name)?).ok()?;
+                let rgba = rfi.decode_rgba8().ok()?;
+                let (w, h) = (rfi.header.width as usize, rfi.header.height as usize);
+                Plane::from_rgba(w, h, &rgba).map(Arc::new)
+            })
+            .clone()
+    };
+    used.iter()
+        .map(|&m| {
+            let material = &palette.materials[m];
+            let p = |i: usize, d: f32| material.params.get(i).copied().unwrap_or(d);
+            let look = Look::of(material);
+            HeightLayer {
+                base: p(16, 0.5),
+                offset: p(17, 0.5),
+                scale: p(18, 0.5),
+                height_map: plane(material.texture(TerrainTexture::Height)),
+                mask: plane(material.texture(TerrainTexture::Mask)),
+                sharpness: look.sharpness,
+                tiling: look.tiling,
+                vegetation: p(13, 0.0),
+            }
+        })
+        .collect()
 }
 
 /// Decodes a palette texture's base level to RGBA8 with its size.
-fn decode(game: &exa_assets::GameData, name: Option<&str>) -> Option<(usize, usize, Vec<u8>)> {
-    let rfi = Rfi::parse(game.texture(name?)?).ok()?;
+fn decode(bytes: Option<&[u8]>) -> Option<(usize, usize, Vec<u8>)> {
+    let rfi = Rfi::parse(bytes?).ok()?;
     let rgba = rfi.decode_rgba8().ok()?;
     Some((rfi.header.width as usize, rfi.header.height as usize, rgba))
 }
@@ -612,15 +798,9 @@ fn decode(game: &exa_assets::GameData, name: Option<&str>) -> Option<(usize, usi
 /// A palette material's parallax height (its bump slot, red), gloss (green)
 /// and blend mask (blue) in one linear texture at the largest of their
 /// sizes, with a box-filtered mip chain. Missing maps read as height ½,
-/// gloss 0 and mask 1.
-fn surface_texture(
-    loader: &mut ModelLoader<'_>,
-    material: &PaletteMaterial,
-) -> Option<Handle<Image>> {
-    let game = loader.game;
-    let bump = decode(game, material.texture(TerrainTexture::Bump));
-    let gloss = decode(game, material.texture(TerrainTexture::Gloss));
-    let mask = decode(game, material.texture(TerrainTexture::Mask));
+/// gloss 0 and mask 1. `maps` are the bump, gloss and mask maps' files.
+fn surface_image(maps: &[Option<Vec<u8>>; 3]) -> Image {
+    let [bump, gloss, mask] = maps.each_ref().map(|m| decode(m.as_deref()));
     let (w, h) = [&bump, &gloss, &mask]
         .iter()
         .filter_map(|m| m.as_ref().map(|(w, h, _)| (*w, *h)))
@@ -684,7 +864,7 @@ fn surface_texture(
         anisotropy_clamp: 16,
         ..bevy::image::ImageSamplerDescriptor::linear()
     });
-    Some(loader.images.add(image))
+    image
 }
 
 /// Shading values of a palette material, from its parameter block.

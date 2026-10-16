@@ -17,12 +17,12 @@
 //!          --gi-warm-up <steps>       GI steps run when a level loads (default 600)
 //!          --size WxH                 window size (default 1600x900)
 //!          --screenshot <file.png>    save a frame and exit
-//!          --frames <n>               frames to wait before the screenshot (default 90)
+//!          --frames <n>               frames to wait before the screenshot, after loading (default 90)
 //!          --ev <ev100>               camera exposure (default 6, lower is brighter)
 //!          --ceilings                 build ceilings of tile-grid levels
 //!          --limp                     character view: the body goes limp and falls
 //!          --race <n>                 character view: the body of race n (a character record's race byte)
-//!          --shove <frame>            a body blow to every simulated body at that frame
+//!          --shove <frame>            a body blow to every simulated body at that frame after loading
 //!          --outfit a,b,c             apparel for character/play (Characters.rpk entries), over the underwear
 //!          --weapon <name>            weapon in the right hand (Objects.rpk entry)
 //!          --opponent                 an armed duellist in play mode (F: combat mode, left click: attack)
@@ -218,6 +218,9 @@ fn main() -> AppExit {
                 .set(WindowPlugin {
                     primary_window: Some(Window {
                         title: "Exarust".into(),
+                        // The Wayland app id (X11 class): without one, GNOME
+                        // names the window "Unknown" in its dialogs.
+                        name: Some("exarust".into()),
                         resolution: options.size.unwrap_or((1600, 900)).into(),
                         present_mode: if options.no_vsync {
                             bevy::window::PresentMode::AutoNoVsync

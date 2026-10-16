@@ -153,72 +153,92 @@ fn placed_characters(scene: &Scene, global: &[Item]) -> Vec<PlacedCharacter> {
         .collect()
 }
 
-/// Spawns the object-database objects a level places (items, doors,
-/// containers) as static models; returns (placed, missing models).
-fn spawn_placed_objects(
+/// The item a placed object shows, when it is the level's own and has a
+/// model.
+fn placed_item<'a>(
+    scene: &'a Scene,
+    global: &'a [Item],
+    object: &exa_formats::rfc::PlacedObject,
+) -> Option<&'a Item> {
+    if object.slot != 0 {
+        return None;
+    }
+    let items: &[Item] = if object.is_local() {
+        &scene.local_items
+    } else {
+        global
+    };
+    let id = object.id & exa_formats::rfc::PlacedObject::ID_MASK;
+    // Triggers and markers have no model.
+    items
+        .iter()
+        .find(|i| i.id == id)
+        .filter(|i| !i.model.is_empty())
+}
+
+/// The pack and entry of a placed object's model (none for weapons a
+/// factory assembles).
+fn placed_object_model(
+    loader: &ModelLoader<'_>,
+    scene: &Scene,
+    global: &[Item],
+    object: &exa_formats::rfc::PlacedObject,
+) -> Option<(PackKind, String)> {
+    let item = placed_item(scene, global, object)?;
+    if item.model.starts_with('@') {
+        return None;
+    }
+    [PackKind::Objects, PackKind::Objlib]
+        .into_iter()
+        .find(|&kind| {
+            loader
+                .game
+                .pack(kind)
+                .is_some_and(|p| p.find(&item.model).is_some())
+        })
+        .map(|kind| (kind, item.model.clone()))
+}
+
+/// Spawns an object-database object a level places (an item, door or
+/// container) as a static model: `Some(true)` when placed, `Some(false)`
+/// when its model is missing, `None` for objects without a model (triggers,
+/// markers) or of a slot other than the level's.
+fn spawn_placed_object(
     commands: &mut Commands,
     loader: &mut ModelLoader<'_>,
     scene: &Scene,
     global: &[Item],
     parent: Entity,
-) -> (usize, usize) {
-    let (mut placed, mut missing) = (0, 0);
-    for object in scene.placed_objects.iter().filter(|o| o.slot == 0) {
-        let items: &[Item] = if object.is_local() {
-            &scene.local_items
-        } else {
-            global
+    object: &exa_formats::rfc::PlacedObject,
+) -> Option<bool> {
+    let item = placed_item(scene, global, object)?;
+    // `@` names a weapon assembled by a factory.
+    if let Some(factory) = item.model.strip_prefix('@') {
+        let Some(model) = loader.factory_weapon(factory, item.weapon.as_ref()) else {
+            return Some(false);
         };
-        let id = object.id & exa_formats::rfc::PlacedObject::ID_MASK;
-        let Some(item) = items.iter().find(|i| i.id == id) else {
-            continue;
-        };
-        // Triggers and markers have no model.
-        if item.model.is_empty() {
-            continue;
-        }
-        // `@` names a weapon assembled by a factory.
-        if let Some(factory) = item.model.strip_prefix('@') {
-            match loader.factory_weapon(factory, item.weapon.as_ref()) {
-                Some(model) => {
-                    let e = spawn_model(commands, &model, None);
-                    commands.entity(e).insert((
-                        transform_from_rows(&object.transform),
-                        Name::new(item.name.clone()),
-                        ChildOf(parent),
-                    ));
-                    placed += 1;
-                }
-                None => missing += 1,
-            }
-            continue;
-        }
-        let in_pack = |kind| {
-            loader
-                .game
-                .pack(kind)
-                .is_some_and(|p| p.find(&item.model).is_some())
-        };
-        let model = [PackKind::Objects, PackKind::Objlib]
-            .into_iter()
-            .find(|&kind| in_pack(kind))
-            .and_then(|kind| loader.model(kind, &item.model));
-        match model {
-            Some(model) => {
-                let e = spawn_model(
-                    commands,
-                    &model,
-                    Some(transform_from_rows(&object.transform)),
-                );
-                commands
-                    .entity(e)
-                    .insert((Name::new(item.name.clone()), ChildOf(parent)));
-                placed += 1;
-            }
-            None => missing += 1,
-        }
+        let e = spawn_model(commands, &model, None);
+        commands.entity(e).insert((
+            transform_from_rows(&object.transform),
+            Name::new(item.name.clone()),
+            ChildOf(parent),
+        ));
+        return Some(true);
     }
-    (placed, missing)
+    let model = placed_object_model(loader, scene, global, object)
+        .and_then(|(kind, entry)| loader.model(kind, &entry));
+    let Some(model) = model else {
+        return Some(false);
+    };
+    let e = spawn_model(
+        commands,
+        &model,
+        Some(transform_from_rows(&object.transform)),
+    );
+    commands
+        .entity(e)
+        .insert((Name::new(item.name.clone()), ChildOf(parent)));
+    Some(true)
 }
 
 /// Spawns `model` under a new entity. With a placement, the placement takes
@@ -411,128 +431,452 @@ pub fn light_bundle(
 
 /// Spawns a level from `Resource.rpk` (`name` with or without `.rfc`): its own
 /// scene nodes (meshes and lights) and every prop from the object library.
+/// All of it at once; [`LevelLoad`] spreads the same work over frames.
 pub fn spawn_level(
     commands: &mut Commands,
     loader: &mut ModelLoader<'_>,
     name: &str,
     ceilings: bool,
 ) -> Option<(Entity, LevelInfo)> {
-    let entry = if name.ends_with(".rfc") {
-        name.to_string()
-    } else {
-        format!("{name}.rfc")
-    };
-    let bytes = loader.game.pack(PackKind::Resource)?.get(&entry)?;
-    let scene = match Scene::parse(bytes) {
-        Ok(s) => s,
-        Err(e) => {
-            loader.warn_once(format!("level {entry}: {e}"));
-            return None;
+    let mut load = LevelLoad::begin(commands, loader, name, ceilings)?;
+    loop {
+        if let LoadProgress::Finished(root, info) =
+            load.step(commands, loader, std::time::Duration::MAX)
+        {
+            return Some((root, *info));
         }
-    };
-    for err in &scene.level_errors {
-        loader.warn_once(format!("level {entry}: {err}"));
     }
-    let root = commands
-        .spawn((
-            LevelRoot {
-                name: entry.clone(),
-            },
-            Transform::default(),
-            Visibility::default(),
-        ))
-        .id();
+}
 
-    let grid_stats = scene
-        .grid
-        .as_ref()
-        .map(|g| grid::spawn_grid(commands, loader, g, root, ceilings));
-    // Lights stop at the grid's walls.
-    match scene.grid.as_ref().and_then(shadow_links::LevelWalls::new) {
-        Some(walls) => commands.insert_resource(walls),
-        None => commands.remove_resource::<shadow_links::LevelWalls>(),
-    }
-    let terrain_stats = terrain::spawn_terrain(commands, loader, &entry, root);
+/// What [`LevelLoad::step`] reached.
+pub enum LoadProgress {
+    /// More steps to go: what is being built and how far the load is (0–1).
+    Loading { stage: &'static str, fraction: f32 },
+    /// The level is spawned.
+    Finished(Entity, Box<LevelInfo>),
+}
 
-    let mut lights = 0;
-    if let Some(own) = loader.model(PackKind::Resource, &entry) {
-        lights += own.nodes.iter().filter(|n| n.light.is_some()).count();
-        let e = spawn_model(commands, &own, None);
-        commands.entity(e).insert(ChildOf(root));
-    }
+/// The parts of a level load, in order.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Stage {
+    Grid,
+    Terrain,
+    OwnModel,
+    Props,
+    PlacedObjects,
+    Lighting,
+    Done,
+}
 
-    let mut min = Vec3::splat(f32::MAX);
-    let mut max = Vec3::splat(f32::MIN);
-    let mut missing = 0;
-    let mut prop_entities = Vec::with_capacity(scene.props.len());
-    for prop in &scene.props {
-        let placement = transform_from_rows(&prop.transform);
-        min = min.min(placement.translation);
-        max = max.max(placement.translation);
-        let e = match loader.model(PackKind::Objlib, &prop.object) {
-            Some(model) => {
-                lights += model.nodes.iter().filter(|n| n.light.is_some()).count();
-                spawn_model(commands, &model, Some(placement))
-            }
-            None => {
-                missing += 1;
-                commands.spawn((placement, Visibility::default())).id()
+/// A level spawned a step at a time, so a caller can keep the window
+/// answering (and a loading screen drawn) while it builds. Each step does
+/// as much of the current part as fits in the step's time budget (at least
+/// one piece of it): the grid's sets and rows of cells, the terrain's tiles
+/// and their textures, the level's own model, props, placed objects, and
+/// last the lighting.
+pub struct LevelLoad {
+    entry: String,
+    ceilings: bool,
+    scene: Scene,
+    root: Entity,
+    stage: Stage,
+    grid: Option<grid::GridBuild>,
+    grid_stats: Option<grid::GridStats>,
+    terrain: Option<terrain::TerrainBuild>,
+    terrain_stats: Option<terrain::TerrainStats>,
+    lights: usize,
+    min: Vec3,
+    max: Vec3,
+    missing: usize,
+    prop_entities: Vec<Entity>,
+    /// The game's object database, read for the placed objects.
+    global_items: Vec<Item>,
+    /// Placed objects looked at, spawned and missing their model.
+    objects_done: usize,
+    placed_objects: usize,
+    missing_objects: usize,
+}
+
+impl LevelLoad {
+    /// Parses the level and spawns its root. `None` when the level is not
+    /// in `Resource.rpk` or does not parse.
+    pub fn begin(
+        commands: &mut Commands,
+        loader: &mut ModelLoader<'_>,
+        name: &str,
+        ceilings: bool,
+    ) -> Option<Self> {
+        let entry = if name.ends_with(".rfc") {
+            name.to_string()
+        } else {
+            format!("{name}.rfc")
+        };
+        let bytes = loader.game.pack(PackKind::Resource)?.get(&entry)?;
+        let scene = match Scene::parse(bytes) {
+            Ok(s) => s,
+            Err(e) => {
+                loader.warn_once(format!("level {entry}: {e}"));
+                return None;
             }
         };
-        commands.entity(e).insert(Name::new(prop.object.clone()));
-        prop_entities.push(e);
+        for err in &scene.level_errors {
+            loader.warn_once(format!("level {entry}: {err}"));
+        }
+        let root = commands
+            .spawn((
+                LevelRoot {
+                    name: entry.clone(),
+                },
+                Transform::default(),
+                Visibility::default(),
+            ))
+            .id();
+        let props = scene.props.len();
+        Some(Self {
+            entry,
+            ceilings,
+            scene,
+            root,
+            stage: Stage::Grid,
+            grid: None,
+            grid_stats: None,
+            terrain: None,
+            terrain_stats: None,
+            lights: 0,
+            min: Vec3::splat(f32::MAX),
+            max: Vec3::splat(f32::MIN),
+            missing: 0,
+            prop_entities: Vec::with_capacity(props),
+            global_items: Vec::new(),
+            objects_done: 0,
+            placed_objects: 0,
+            missing_objects: 0,
+        })
     }
-    for (i, prop) in scene.props.iter().enumerate() {
-        let parent = match prop.parent {
-            Some(p) if p >= 1 && p <= prop_entities.len() && p - 1 != i => prop_entities[p - 1],
-            _ => root,
+
+    /// The level's root entity (spawned by [`LevelLoad::begin`]).
+    pub fn root(&self) -> Entity {
+        self.root
+    }
+
+    /// Does the next part of the load, until `budget` has passed (at least
+    /// one piece of work per step).
+    pub fn step(
+        &mut self,
+        commands: &mut Commands,
+        loader: &mut ModelLoader<'_>,
+        budget: std::time::Duration,
+    ) -> LoadProgress {
+        let started = std::time::Instant::now();
+        match self.stage {
+            Stage::Grid => {
+                let done = match &self.scene.grid {
+                    Some(g) => {
+                        let build = self
+                            .grid
+                            .get_or_insert_with(|| grid::GridBuild::new(self.root, self.ceilings));
+                        build.step(commands, loader, g, budget)
+                    }
+                    None => true,
+                };
+                if done {
+                    self.grid_stats = self.grid.take().map(|b| b.stats());
+                    // Lights stop at the grid's walls.
+                    match self
+                        .scene
+                        .grid
+                        .as_ref()
+                        .and_then(shadow_links::LevelWalls::new)
+                    {
+                        Some(walls) => commands.insert_resource(walls),
+                        None => commands.remove_resource::<shadow_links::LevelWalls>(),
+                    }
+                    self.terrain = terrain::TerrainBuild::begin(loader, &self.entry, self.root);
+                    self.stage = Stage::Terrain;
+                }
+            }
+            Stage::Terrain => {
+                let done = self
+                    .terrain
+                    .as_mut()
+                    .is_none_or(|t| t.step(commands, loader, budget));
+                if done {
+                    self.terrain_stats = self.terrain.take().map(|t| t.stats().clone());
+                    self.stage = Stage::OwnModel;
+                }
+            }
+            Stage::OwnModel => {
+                // Its materials first, over as many steps as they take.
+                if let Some(deadline) = started.checked_add(budget)
+                    && !loader.warm_materials(PackKind::Resource, &self.entry, deadline)
+                {
+                    return self.progress();
+                }
+                if let Some(own) = loader.model(PackKind::Resource, &self.entry) {
+                    self.lights += own.nodes.iter().filter(|n| n.light.is_some()).count();
+                    let e = spawn_model(commands, &own, None);
+                    commands.entity(e).insert(ChildOf(self.root));
+                }
+                self.stage = Stage::Props;
+            }
+            Stage::Props => {
+                while let Some(prop) = self.scene.props.get(self.prop_entities.len()) {
+                    // A prop whose materials do not warm up in time waits
+                    // for the next step.
+                    if let Some(deadline) = started.checked_add(budget)
+                        && !loader.warm_materials(PackKind::Objlib, &prop.object, deadline)
+                    {
+                        break;
+                    }
+                    let placement = transform_from_rows(&prop.transform);
+                    self.min = self.min.min(placement.translation);
+                    self.max = self.max.max(placement.translation);
+                    let e = match loader.model(PackKind::Objlib, &prop.object) {
+                        Some(model) => {
+                            self.lights += model.nodes.iter().filter(|n| n.light.is_some()).count();
+                            spawn_model(commands, &model, Some(placement))
+                        }
+                        None => {
+                            self.missing += 1;
+                            commands.spawn((placement, Visibility::default())).id()
+                        }
+                    };
+                    commands.entity(e).insert(Name::new(prop.object.clone()));
+                    self.prop_entities.push(e);
+                    if started.elapsed() >= budget {
+                        break;
+                    }
+                }
+                if self.prop_entities.len() == self.scene.props.len() {
+                    self.link_props(commands);
+                    self.global_items = loader
+                        .game
+                        .pack(PackKind::Resource)
+                        .and_then(|p| p.get("objdb.rdb"))
+                        .and_then(|b| Database::parse(b).ok())
+                        .map(|db| objdb::items(&db))
+                        .unwrap_or_default();
+                    self.stage = Stage::PlacedObjects;
+                }
+            }
+            Stage::PlacedObjects => {
+                while let Some(object) = self.scene.placed_objects.get(self.objects_done) {
+                    if let Some(deadline) = started.checked_add(budget)
+                        && let Some((kind, model)) =
+                            placed_object_model(loader, &self.scene, &self.global_items, object)
+                        && !loader.warm_materials(kind, &model, deadline)
+                    {
+                        break;
+                    }
+                    match spawn_placed_object(
+                        commands,
+                        loader,
+                        &self.scene,
+                        &self.global_items,
+                        self.root,
+                        object,
+                    ) {
+                        Some(true) => self.placed_objects += 1,
+                        Some(false) => self.missing_objects += 1,
+                        None => {}
+                    }
+                    self.objects_done += 1;
+                    if started.elapsed() >= budget {
+                        break;
+                    }
+                }
+                if self.objects_done == self.scene.placed_objects.len() {
+                    self.stage = Stage::Lighting;
+                }
+            }
+            Stage::Lighting => return self.finish(commands),
+            Stage::Done => {}
+        }
+        self.progress()
+    }
+
+    fn progress(&self) -> LoadProgress {
+        LoadProgress::Loading {
+            stage: self.stage(),
+            fraction: self.fraction(),
+        }
+    }
+
+    /// Parents each prop to the prop it names, else to the level root.
+    fn link_props(&self, commands: &mut Commands) {
+        for (i, prop) in self.scene.props.iter().enumerate() {
+            let parent = match prop.parent {
+                Some(p) if p >= 1 && p <= self.prop_entities.len() && p - 1 != i => {
+                    self.prop_entities[p - 1]
+                }
+                _ => self.root,
+            };
+            commands
+                .entity(self.prop_entities[i])
+                .insert(ChildOf(parent));
+        }
+    }
+
+    /// Lighting and the GI request; the load's last step.
+    fn finish(&mut self, commands: &mut Commands) -> LoadProgress {
+        let lighting =
+            environment::level_lighting(&self.entry, self.scene.environment.as_ref(), self.lights);
+        environment::apply_lighting(commands, &lighting, self.root);
+        let (min, max) = if self.scene.props.is_empty() {
+            (Vec3::splat(-10.0), Vec3::splat(10.0))
+        } else {
+            (self.min, self.max)
         };
-        commands.entity(prop_entities[i]).insert(ChildOf(parent));
+        let env = self.scene.environment.clone().unwrap_or_default();
+        commands.insert_resource(gi_volume::PendingGi {
+            centre: (min + max) / 2.0,
+            top: env.ceiling,
+            bottom: env.floor,
+            base_ambient: env.fill[0] * gi_volume::BASE_AMBIENT,
+        });
+        self.stage = Stage::Done;
+        LoadProgress::Finished(
+            self.root,
+            Box::new(LevelInfo {
+                props: self.scene.props.len(),
+                missing_props: self.missing,
+                lights: self.lights,
+                grid: self.grid_stats,
+                terrain: self.terrain_stats.clone(),
+                lighting,
+                characters: placed_characters(&self.scene, &self.global_items),
+                placed_objects: self.placed_objects,
+                missing_objects: self.missing_objects,
+                spawn: self.scene.grid.as_ref().and_then(grid::spawn_point),
+                bounds_min: min,
+                bounds_max: max,
+            }),
+        )
     }
-    let global_items: Vec<Item> = loader
-        .game
-        .pack(PackKind::Resource)
-        .and_then(|p| p.get("objdb.rdb"))
-        .and_then(|b| Database::parse(b).ok())
-        .map(|db| objdb::items(&db))
-        .unwrap_or_default();
-    let placed_objects = spawn_placed_objects(commands, loader, &scene, &global_items, root);
-    let lighting = environment::level_lighting(&entry, scene.environment.as_ref(), lights);
-    environment::apply_lighting(commands, &lighting, root);
-    if scene.props.is_empty() {
-        min = Vec3::splat(-10.0);
-        max = Vec3::splat(10.0);
+
+    /// What the next step builds.
+    pub fn stage(&self) -> &'static str {
+        match self.stage {
+            Stage::Grid => "walls and floors",
+            Stage::Terrain => "terrain",
+            Stage::OwnModel => "level model",
+            Stage::Props => "props",
+            Stage::PlacedObjects => "objects",
+            Stage::Lighting => "lights",
+            Stage::Done => "done",
+        }
     }
-    let env = scene.environment.clone().unwrap_or_default();
-    commands.insert_resource(gi_volume::PendingGi {
-        centre: (min + max) / 2.0,
-        top: env.ceiling,
-        bottom: env.floor,
-        base_ambient: env.fill[0] * gi_volume::BASE_AMBIENT,
-    });
-    Some((
-        root,
-        LevelInfo {
-            props: scene.props.len(),
-            missing_props: missing,
-            lights,
-            grid: grid_stats,
-            terrain: terrain_stats,
-            lighting,
-            characters: placed_characters(&scene, &global_items),
-            placed_objects: placed_objects.0,
-            missing_objects: placed_objects.1,
-            spawn: scene.grid.as_ref().and_then(grid::spawn_point),
-            bounds_min: min,
-            bounds_max: max,
-        },
-    ))
+
+    /// How far the load is, 0–1: the props weigh most, then the placed
+    /// objects; the grid, terrain and level model a tenth each.
+    fn fraction(&self) -> f32 {
+        let share = |done: usize, total: usize| {
+            if total == 0 {
+                1.0
+            } else {
+                done as f32 / total as f32
+            }
+        };
+        let (props, objects) = (
+            share(self.prop_entities.len(), self.scene.props.len()),
+            share(self.objects_done, self.scene.placed_objects.len()),
+        );
+        let past = |stage: Stage| self.stage as u8 > stage as u8;
+        let part = |stage: Stage| if past(stage) { 0.1 } else { 0.0 };
+        (part(Stage::Grid)
+            + part(Stage::Terrain)
+            + part(Stage::OwnModel)
+            + props * 0.5
+            + objects * 0.2)
+            .min(1.0)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::ecs::world::CommandQueue;
+    use exa_assets::{GameData, ModelCache};
     use exa_formats::characters::{CharacterRecord, LOCAL_ITEM, LevelCharacters, Placement};
+
+    /// What spawning `name` produced: the level's info, the names spawned
+    /// and the number of entities and assets. Built at once, or in steps of
+    /// `budget`.
+    fn spawn(game: &GameData, name: &str, budget: Option<std::time::Duration>) -> Vec<String> {
+        let mut world = World::new();
+        let mut queue = CommandQueue::default();
+        let mut cache = ModelCache::default();
+        let mut meshes = Assets::<Mesh>::default();
+        let mut materials = Assets::<exa_render::material::ExaMaterial>::default();
+        let mut images = Assets::<Image>::default();
+        let mut loader = ModelLoader {
+            game,
+            cache: &mut cache,
+            meshes: &mut meshes,
+            materials: &mut materials,
+            images: &mut images,
+            bc_supported: true,
+        };
+        let info = {
+            let mut commands = Commands::new(&mut queue, &world);
+            match budget {
+                None => spawn_level(&mut commands, &mut loader, name, false).map(|r| r.1),
+                Some(budget) => {
+                    let mut load = LevelLoad::begin(&mut commands, &mut loader, name, false)
+                        .expect("level parses");
+                    let mut steps = 0;
+                    loop {
+                        steps += 1;
+                        if let LoadProgress::Finished(_, info) =
+                            load.step(&mut commands, &mut loader, budget)
+                        {
+                            assert!(steps > 1, "{name}: built in one step");
+                            break Some(*info);
+                        }
+                    }
+                }
+            }
+        };
+        queue.apply(&mut world);
+        let mut names: Vec<String> = world
+            .query::<&Name>()
+            .iter(&world)
+            .map(|n| n.to_string())
+            .collect();
+        names.sort();
+        let mut out = vec![
+            format!("{info:?}"),
+            format!("{} entities", world.entities().len()),
+            format!(
+                "{} meshes, {} materials, {} images",
+                meshes.len(),
+                materials.len(),
+                images.len()
+            ),
+        ];
+        out.extend(names);
+        out
+    }
+
+    /// A level built a step at a time is the level built at once (run with
+    /// `cargo test -p exa_world -- --ignored` and the game installed).
+    #[test]
+    #[ignore]
+    fn a_level_built_in_steps_is_the_level_built_at_once() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(&dir).unwrap();
+        // A tile grid, a terrain, and both with thousands of props.
+        for name in ["arena", "arenao1", "exanima01"] {
+            let whole = spawn(&game, name, None);
+            let stepped = spawn(&game, name, Some(std::time::Duration::ZERO));
+            assert_eq!(whole.len(), stepped.len(), "{name}");
+            for (a, b) in whole.iter().zip(&stepped) {
+                assert_eq!(a, b, "{name}");
+            }
+        }
+    }
 
     fn item(id: u32, model: &str, worn: &str, colour: u8) -> Item {
         let mut layers = [objdb::Layer::default(); 8];

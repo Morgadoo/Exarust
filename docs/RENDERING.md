@@ -217,7 +217,10 @@ Blended draws are sorted by the layer in bits 4–7, without depth writes.
 The original's bounce light is a light volume of 20 cm voxels
 (`exa_world::gi_volume` builds it, `exa_render::gi` propagates it).
 
-**Occupancy** (one byte per voxel, on the CPU at level load):
+**Occupancy** (one byte per voxel, on the CPU at level load, built on the
+async compute pool: a large outdoor level's block takes seconds, and the
+window keeps answering meanwhile; the level's points and triangles are put
+in world space there too):
 - One block of 256 × 256 voxels across: eight 6 m sectors of 30 columns
   plus an 8-voxel margin on each side. It is 64 voxels high (128 when the
   level's highest and lowest points are more than 12.8 m apart).
@@ -226,8 +229,10 @@ The original's bounce light is a light volume of 20 cm voxels
 - The original keeps up to nine blocks resident around a point 20 m in
   front of the camera. Exarust keeps one block centred on that point, and
   rebuilds it (with a new warm-up) when the point moves more than two
-  sectors. The level's points and floor triangles are collected once in
-  world space.
+  sectors. One build runs at a time; a newer focus waits for it. The
+  level's points and floor triangles are collected once in world space.
+  When a load ends, the block is rebuilt around the camera's starting
+  view if it is not already there.
 - The top slice holds 26 and the slice below 5, a soft lid.
 - Terrain comes first: in each interior column (not the margins), voxels
   below the terrain surface hold 20, and the surface voxel its covered
@@ -254,8 +259,9 @@ The original's bounce light is a light volume of 20 cm voxels
 - Each column remembers the lowest slice a point fell in. A sector's floor
   is the lowest over its 30 × 30 columns.
 
-**Propagation**, one step per frame (a warm-up runs at load, 600 steps by
-default). The light is 8-bit sRGB RGB, with A = 1 − 5·occ.
+**Propagation**, one step per frame. A new block first gets a warm-up,
+600 steps by default, run 16 steps a frame (all of them in one frame stalled
+the window for seconds); the loading screen waits for it. The light is 8-bit sRGB RGB, with A = 1 − 5·occ.
 
 Only slices from the sector's floor up to the second-highest are updated.
 Sectors with no points at all, and the margins, are never updated: they

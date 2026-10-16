@@ -8,6 +8,7 @@ pub mod body;
 pub mod contact;
 
 use bevy::prelude::*;
+use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
 use rapier3d::control::{CharacterAutostep, CharacterLength, KinematicCharacterController};
 use rapier3d::prelude::*;
 
@@ -28,6 +29,7 @@ impl Plugin for PhysicsPlugin {
         world.integration_parameters.dt = (1.0 / STEP_HZ) as f32;
         app.insert_resource(Physics(world))
             .init_resource::<PendingKinematics>()
+            .init_resource::<StaticBuild>()
             .insert_resource(Time::<Fixed>::from_hz(STEP_HZ))
             .add_systems(Startup, limit_backlog)
             .add_systems(
@@ -70,9 +72,50 @@ impl Physics {
 }
 
 /// Marks a subtree whose meshes become static triangle-mesh colliders once
-/// their world transforms are known. Removed after the colliders are built.
+/// their world transforms are known. Removed after the colliders are built,
+/// which for a large level takes several frames ([`StaticBuild`]).
 #[derive(Component)]
 pub struct StaticGeometry;
+
+/// The static colliders being built. A level's meshes are copied a batch at
+/// a time, within [`STATIC_BUILD_BUDGET`] per frame, and built into
+/// triangle-mesh colliders on the async compute pool: one large mesh (a
+/// terrain tile) takes tens of milliseconds to build, a level's thousands
+/// of meshes seconds, and the window must keep answering meanwhile.
+#[derive(Resource, Default)]
+pub struct StaticBuild {
+    roots: Vec<RootBuild>,
+    built: usize,
+    total: usize,
+}
+
+/// One root's meshes, how many are handed to builds, and the builds in
+/// flight with the number of meshes each covers.
+struct RootBuild {
+    root: Entity,
+    parts: Vec<Entity>,
+    handed: usize,
+    tasks: Vec<(usize, Task<Vec<Collider>>)>,
+}
+
+impl StaticBuild {
+    /// The share of the meshes queued since the last idle moment that are
+    /// built (1 when nothing is being built).
+    pub fn fraction(&self) -> f32 {
+        if self.total == 0 {
+            1.0
+        } else {
+            self.built as f32 / self.total as f32
+        }
+    }
+}
+
+/// Time one frame may spend handing meshes to collider builds.
+pub const STATIC_BUILD_BUDGET: std::time::Duration = std::time::Duration::from_millis(4);
+/// Triangles a collider build takes at most, unless one mesh has more.
+const BUILD_TRIANGLES: usize = 60_000;
+/// Builds in flight at once; more wait, so the pool stays free for others.
+const BUILDS_IN_FLIGHT: usize = 4;
 
 /// A kinematic capsule moved by the character controller.
 #[derive(Component, Debug, Clone)]
@@ -170,55 +213,137 @@ fn release_characters(
 fn build_static_colliders(
     mut commands: Commands,
     mut physics: ResMut<Physics>,
+    mut build: ResMut<StaticBuild>,
     roots: Query<Entity, With<StaticGeometry>>,
     children: Query<&Children>,
     shapes: Query<(&Mesh3d, &GlobalTransform)>,
     meshes: Res<Assets<Mesh>>,
 ) {
     for root in &roots {
-        let mut built = 0;
-        for e in children.iter_descendants(root) {
-            let Ok((mesh, global)) = shapes.get(e) else {
-                continue;
+        if build.roots.iter().any(|r| r.root == root) {
+            continue;
+        }
+        let parts: Vec<Entity> = children
+            .iter_descendants(root)
+            .filter(|&e| shapes.contains(e))
+            .collect();
+        build.total += parts.len();
+        build.roots.push(RootBuild {
+            root,
+            parts,
+            handed: 0,
+            tasks: Vec::new(),
+        });
+    }
+    let started = std::time::Instant::now();
+    let build = &mut *build;
+    // Finished builds join the world.
+    for root in &mut build.roots {
+        root.tasks.retain_mut(|(count, task)| {
+            let Some(colliders) = block_on(poll_once(task)) else {
+                return true;
             };
-            let Some(mesh) = meshes.get(&mesh.0) else {
-                continue;
-            };
-            if let Some(collider) = trimesh_collider(mesh, global) {
+            for collider in colliders {
                 physics.0.insert_collider(collider, None);
-                built += 1;
+            }
+            build.built += *count;
+            false
+        });
+    }
+    // New builds, a batch of copied meshes each.
+    let pool = AsyncComputeTaskPool::get();
+    let mut in_flight: usize = build.roots.iter().map(|r| r.tasks.len()).sum();
+    for root in &mut build.roots {
+        while root.handed < root.parts.len()
+            && in_flight < BUILDS_IN_FLIGHT
+            && started.elapsed() < STATIC_BUILD_BUDGET
+        {
+            let mut batch = Vec::new();
+            let mut triangles = 0;
+            let first = root.handed;
+            while root.handed < root.parts.len()
+                && (batch.is_empty() || triangles < BUILD_TRIANGLES)
+            {
+                let e = root.parts[root.handed];
+                root.handed += 1;
+                if let Ok((mesh, global)) = shapes.get(e)
+                    && let Some(copy) = meshes.get(&mesh.0).and_then(|m| MeshCopy::of(m, global))
+                {
+                    triangles += copy.indices.len() / 3;
+                    batch.push(copy);
+                }
+            }
+            let count = root.handed - first;
+            let task = pool
+                .spawn(async move { batch.into_iter().filter_map(MeshCopy::collider).collect() });
+            root.tasks.push((count, task));
+            in_flight += 1;
+        }
+    }
+    build.roots.retain(|root| {
+        let finished = root.handed == root.parts.len() && root.tasks.is_empty();
+        if finished {
+            debug!("static colliders built: {} meshes", root.parts.len());
+            if roots.contains(root.root) {
+                commands.entity(root.root).remove::<StaticGeometry>();
             }
         }
-        debug!("static colliders built: {built}");
-        commands.entity(root).remove::<StaticGeometry>();
+        !finished
+    });
+    if build.roots.is_empty() {
+        build.built = 0;
+        build.total = 0;
     }
 }
 
-fn trimesh_collider(mesh: &Mesh, global: &GlobalTransform) -> Option<Collider> {
-    let positions = mesh.attribute(Mesh::ATTRIBUTE_POSITION)?.as_float3()?;
-    let indices: Vec<u32> = mesh.indices()?.iter().map(|i| i as u32).collect();
-    if indices.len() < 3 {
-        return None;
+/// A mesh's positions and triangles with its world transform, owned so a
+/// collider can be built from it on another thread.
+struct MeshCopy {
+    positions: Vec<[f32; 3]>,
+    indices: Vec<u32>,
+    transform: Mat4,
+}
+
+impl MeshCopy {
+    fn of(mesh: &Mesh, global: &GlobalTransform) -> Option<Self> {
+        let positions = mesh.attribute(Mesh::ATTRIBUTE_POSITION)?.as_float3()?;
+        let indices: Vec<u32> = mesh.indices()?.iter().map(|i| i as u32).collect();
+        (indices.len() >= 3).then(|| Self {
+            positions: positions.to_vec(),
+            indices,
+            transform: global.to_matrix(),
+        })
     }
-    let m = global.to_matrix();
-    let vertices: Vec<Vec3> = positions
-        .iter()
-        .map(|p| m.transform_point3(Vec3::from(*p)))
-        .collect();
-    // Bodies collide with the front of a face only, the side its winding
-    // faces in the mesh's own space; a mirrored placement keeps it there.
-    let mirrored = m.determinant() < 0.0;
-    let triangles: Vec<[u32; 3]> = indices
-        .as_chunks::<3>()
-        .0
-        .iter()
-        .copied()
-        .filter(|t| t.iter().all(|&i| (i as usize) < vertices.len()))
-        .map(|[a, b, c]| if mirrored { [a, c, b] } else { [a, b, c] })
-        .collect();
-    ColliderBuilder::trimesh(vertices, triangles)
-        .ok()
-        .map(|b| b.build())
+
+    /// The mesh as a static triangle-mesh collider in world space.
+    fn collider(self) -> Option<Collider> {
+        let m = self.transform;
+        let vertices: Vec<Vec3> = self
+            .positions
+            .iter()
+            .map(|p| m.transform_point3(Vec3::from(*p)))
+            .collect();
+        // Bodies collide with the front of a face only, the side its winding
+        // faces in the mesh's own space; a mirrored placement keeps it there.
+        let mirrored = m.determinant() < 0.0;
+        let triangles: Vec<[u32; 3]> = self
+            .indices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .copied()
+            .filter(|t| t.iter().all(|&i| (i as usize) < vertices.len()))
+            .map(|[a, b, c]| if mirrored { [a, c, b] } else { [a, b, c] })
+            .collect();
+        ColliderBuilder::trimesh(vertices, triangles)
+            .ok()
+            .map(|b| b.build())
+    }
+}
+
+#[cfg(test)]
+fn trimesh_collider(mesh: &Mesh, global: &GlobalTransform) -> Option<Collider> {
+    MeshCopy::of(mesh, global)?.collider()
 }
 
 /// Kinematic targets computed this step, applied before the world steps.
@@ -332,6 +457,42 @@ mod tests {
                 assert!(n.y > 0.0, "scale {scale}: a face turned down");
             }
         }
+    }
+
+    #[test]
+    fn static_colliders_are_built_then_the_marker_goes() {
+        let mut app = App::new();
+        app.add_plugins(TaskPoolPlugin::default())
+            .insert_resource(Physics(PhysicsWorld::new()))
+            .init_resource::<StaticBuild>()
+            .init_resource::<Assets<Mesh>>()
+            .add_systems(Update, build_static_colliders);
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Plane3d::default().mesh().size(2.0, 2.0));
+        let root = app
+            .world_mut()
+            .spawn((StaticGeometry, Transform::default()))
+            .id();
+        for i in 0..40 {
+            app.world_mut().spawn((
+                Mesh3d(mesh.clone()),
+                GlobalTransform::from_xyz(i as f32 * 3.0, 0.0, 0.0),
+                ChildOf(root),
+            ));
+        }
+        // The colliders are built on another thread.
+        for _ in 0..2000 {
+            if !app.world().entity(root).contains::<StaticGeometry>() {
+                break;
+            }
+            app.update();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(!app.world().entity(root).contains::<StaticGeometry>());
+        assert_eq!(app.world().resource::<Physics>().0.colliders.len(), 40);
+        assert_eq!(app.world().resource::<StaticBuild>().fraction(), 1.0);
     }
 
     #[test]

@@ -107,7 +107,7 @@ fn update(
 }
 
 /// White text with the coverage as alpha; the node's colour tints it.
-fn text_image(width: usize, height: usize, alpha: &[u8]) -> Image {
+pub(crate) fn text_image(width: usize, height: usize, alpha: &[u8]) -> Image {
     let data = alpha.iter().flat_map(|&a| [255, 255, 255, a]).collect();
     Image::new(
         Extent3d {
