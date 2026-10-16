@@ -22,5 +22,6 @@
 | `corpus levels` | grids, props and placed characters of every level; placed humans covered at the groin and their worn items with a `Characters.rpk` model |
 | `corpus images` | every image by format word and storage; decodes the uncompressed ones and checks that RGB8 normal maps hold z in blue |
 | `corpus winding` | near-horizontal level faces up or down (grid pieces, level meshes, props), open downward faces, mirrored nodes |
+| `nav <level> [--png out.png]` | the level's navigation grid built as the game builds it at load: size, inputs, columns by span count, floor, passable and open-sky cells per layer; the picture shows both layers ([`docs/NAVIGATION.md`](../../docs/NAVIGATION.md)) |
 | `export-gltf <pack> <entry> <out.glb>` | static meshes, node hierarchy and materials with embedded PNG textures |
 Extracted data stays on your machine; `/extracted/` is git-ignored.

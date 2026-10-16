@@ -40,6 +40,7 @@ exarust --debug-bodies --opponent --pause-on-stretch 1 \
 | `--heartbeat` | in play mode, the low-health heartbeat may play in any level (the original plays it in story mode only, so never in the arenas) |
 | `--still-opponent` | `--opponent`, but the duellist stands its ground: it faces the player and takes its stance (by its distance, [PLAYER.md](PLAYER.md), The combat stance) but never walks or strikes; with `--at` it shows the stances at a chosen distance |
 | `--debug-wound bone,radius_cm[,dx,dy,dz]` | a test wound on the player's or the character view's body ([Wounds](#wounds)); repeatable |
+| `--debug-nav` | start with the navigation grid drawn ([Navigation grid](#navigation-grid)) |
 
 An unattended attack: `exarust --opponent --sim-speed 0.25 --camera
 4.2,1.4,0.6,90,-8 --press LMB@100 play arenao1` throws the unarmed
@@ -106,6 +107,7 @@ timeout passes; the log warns of it. Pick a tick after the load.
 | F3 | show or hide the overlay and the readout |
 | F4 | draw every body, or only the inspected one |
 | F5 | inspect the body under the cursor, or the next body when none is under it |
+| F6 | show or hide the navigation grid |
 | P | pause or resume the simulation |
 | `.` | step one tick (pausing first if running) |
 | `[` / `]` | slower / faster: ×0.1, ×0.25, ×0.5, ×1, ×2 |
@@ -266,4 +268,34 @@ hit's line names the struck body, the body tick and the wound's size R
 exarust --opponent --weapon ub05ssworda \
   --click $(seq -s, 100 25 1400) --camera 1.3,1.7,3.4,135,-14 \
   --pause-at-tick 760 --screenshot hits.png --frames 20 play arena1
+```
+
+## Navigation grid
+
+The level's navigation grid ([NAVIGATION.md](NAVIGATION.md)) is built when
+the load ends; the log names its inputs and counts (`navigation grid:` and
+`navigation grid built:`). `--debug-nav`, or F6 in any view, draws it
+around where the camera looks:
+
+- every floor cell within 8 m, a square 2 cm above its floor, 24 cm across;
+- the lower layer green where its clearance is 0, through yellow at 180
+  (the most a walker of size class 0 passes), red beyond;
+- the upper layer (a floor over another: tables, galleries, bridges) cyan
+  through blue, magenta beyond;
+- cells with no floor, and open sky (wall tops, anything higher than 1.5 m
+  under the level's grid top), are not drawn.
+
+`exarust --debug-nav --no-gi --no-supersample --size 960x540 play arena`
+shows the arena's floor cut by its walls. Without a window, `exa-tool nav
+<level> --png nav.png` builds the same grid, prints its counts and draws
+both layers side by side, a pixel per cell (X right, Z down), shaded by
+the floor's height:
+
+```text
+$ exa-tool nav exanima01 --png nav.png
+exanima01: 640 × 800 cells, voxel 0 tops out at -22.10 m
+inputs: 13384 meshes (4590297 points), 869 floor meshes, 20 terrain tiles; built in 1.79s
+columns by spans (0–3): [4610, 506409, 981, 0]
+Lower: 385525 floors, 385444 passable (size class 0), 121865 open sky
+Upper: 854 floors, 854 passable (size class 0), 127 open sky
 ```

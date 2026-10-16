@@ -825,6 +825,11 @@ impl TerrainBuild {
                 }
             }
         }
+        commands
+            .entity(tile_entity)
+            .insert(crate::nav::view::Ground(Arc::new(
+                crate::nav::GroundTile::new(&self.terrain, tile, built.heights.clone()),
+            )));
         if let Some(plants) = &self.plants {
             self.stats.plants += plants.spawn(
                 commands,

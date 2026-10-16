@@ -2474,6 +2474,7 @@ dependencies = [
  "exa_assets",
  "exa_formats",
  "exa_rpk",
+ "exa_world",
  "png",
  "serde_json",
 ]

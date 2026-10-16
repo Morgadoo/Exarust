@@ -489,10 +489,19 @@ See `docs/RENDERING.md` and `docs/PERFORMANCE.md`.
 **M5 "looks and sounds like Exanima":** reference shots taken from matching
 camera positions in the original and in Exarust are hard to tell apart.
 
-### Phase 6 — AI
+### Phase 6 — AI (started)
+
+Done (change `build-the-navigation-grid`): every level gets the original's
+navigation grid when its load ends, a 30 cm grid of voxel columns built
+from its terrain, its meshes' GI sample points and its tile-grid floors,
+reduced to two layers with the cost bytes the planner reads; `--debug-nav`
+draws it and `exa-tool nav` dumps it ([NAVIGATION.md](NAVIGATION.md)).
+Next: the grid queries and the original's look-ahead, then A\* and NPC
+paths.
 
 - Perception (sight, hearing), navigation on tile grids and terrain
-  (generated navmesh plus grid A*), activities and idles.
+  (the original's 30 cm two-layer grid and its A\*, no navigation mesh),
+  activities and idles.
 - Combat AI that drives the **same control inputs** as the player
   (movement, facing, attack direction, stance), so NPCs obey the same
   physics. Skill-dependent timing and aggression.

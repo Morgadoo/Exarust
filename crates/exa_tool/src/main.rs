@@ -18,12 +18,14 @@
 //! exa-tool mechanisms [exanima01]     door and operative records
 //! exa-tool corpus bodies              bodies, links and cloth markers per pack
 //! exa-tool export-gltf Objlib afr_cornflag_a01 out.glb
+//! exa-tool nav exanima01 [--png nav.png]  the level's navigation grid
 //! ```
 
 mod bodies;
 mod characters;
 mod corpus;
 mod gltf;
+mod nav;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -103,6 +105,13 @@ enum Cmd {
     Corpus {
         #[arg(value_enum)]
         what: CorpusKind,
+    },
+    /// Build a level's navigation grid as the game does at load, print its
+    /// counts, and with `--png` draw its two layers side by side.
+    Nav {
+        level: String,
+        #[arg(long)]
+        png: Option<PathBuf>,
     },
     /// Export a chunk tree's meshes to binary glTF with resolved textures.
     ExportGltf {
@@ -255,6 +264,7 @@ fn main() -> Result<()> {
         Cmd::Corpus {
             what: CorpusKind::Bodies,
         } => bodies::corpus(&game),
+        Cmd::Nav { level, png } => nav::nav(&game, &level, png.as_deref()),
         Cmd::ExportGltf { pack, entry, out } => {
             let scene = exa_formats::rfc::Scene::parse(entry_bytes(&game, &pack, &entry)?)
                 .with_context(|| format!("decoding {pack}/{entry}"))?;
@@ -507,7 +517,7 @@ fn paint_item(game: &GameData, model: &str, stem: &str, out: &Path) -> Result<()
     Ok(())
 }
 
-fn write_png(path: &Path, w: u32, h: u32, rgba: &[u8]) -> Result<()> {
+pub(crate) fn write_png(path: &Path, w: u32, h: u32, rgba: &[u8]) -> Result<()> {
     let file = fs::File::create(path).with_context(|| path.display().to_string())?;
     let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
     enc.set_color(png::ColorType::Rgba);

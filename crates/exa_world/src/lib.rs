@@ -9,6 +9,7 @@ pub mod flame;
 pub mod gi_volume;
 pub mod grid;
 pub mod light_flood;
+pub mod nav;
 pub mod room_view;
 pub mod rooms;
 pub mod shadow_links;
@@ -31,6 +32,7 @@ impl Plugin for WorldPlugin {
             fire::FirePlugin,
             flame::FlamePlugin,
             gi_volume::GiVolumePlugin,
+            nav::NavPlugin,
             shadow_links::ShadowLinksPlugin,
             room_view::RoomViewPlugin,
         ));
@@ -834,6 +836,14 @@ impl LevelLoad {
             top: env.ceiling,
             bottom: env.floor,
             base_ambient: env.fill[0] * gi_volume::BASE_AMBIENT,
+        });
+        let (width, depth) =
+            nav::source::grid_size(self.scene.grid.as_ref().map(|g| (g.width, g.height)));
+        commands.insert_resource(nav::PendingNav {
+            root: self.root,
+            width,
+            depth,
+            base: nav::source::grid_base(env.grid_top),
         });
         self.stage = Stage::Done;
         LoadProgress::Finished(

@@ -29,6 +29,7 @@
 //!          --still-opponent           the duellist stands its ground: it faces the player in its stance but neither walks nor strikes
 //!          --trace <file.csv>         the player's body (else every simulated body) after every 83 Hz tick, in cm
 //!          --debug-bodies             start with the body overlay and joint readout shown (F3 toggles it)
+//!          --debug-nav                draw the level's navigation grid around the view (F6 toggles it)
 //!          --joint-trace <file.csv>   every joint of every simulated body after every 83 Hz tick (degrees, cm)
 //!          --sim-speed <f>            run the simulation at this speed (e.g. 0.25)
 //!          --pause-at-tick <n>        pause the simulation at the end of body tick n
@@ -52,8 +53,8 @@
 //!
 //! Controls: hold the right mouse button to look, WASD to move, Q/E down/up,
 //! Shift to go faster. Debug keys (`docs/DEBUGGING.md`): F3 body overlay, F4
-//! only the inspected body, F5 inspect the body under the cursor, P pause,
-//! `.` step one tick, `[` / `]` slower / faster.
+//! only the inspected body, F5 inspect the body under the cursor, F6 the
+//! navigation grid, P pause, `.` step one tick, `[` / `]` slower / faster.
 
 mod viewer;
 
@@ -120,6 +121,8 @@ pub struct Options {
     pub trace: Option<PathBuf>,
     /// Start with the body overlay shown.
     pub debug_bodies: bool,
+    /// Start with the navigation grid drawn.
+    pub debug_nav: bool,
     /// Write every joint after every tick here (CSV).
     pub joint_trace: Option<PathBuf>,
     /// The simulation's speed, its scripted pauses (tick; cm past a slack).
@@ -305,6 +308,7 @@ fn main() -> AppExit {
             }
             "--trace" => options.trace = args.next().map(PathBuf::from),
             "--debug-bodies" => options.debug_bodies = true,
+            "--debug-nav" => options.debug_nav = true,
             "--joint-trace" => options.joint_trace = args.next().map(PathBuf::from),
             "--sim-speed" => {
                 options.sim_speed = args
@@ -510,6 +514,9 @@ fn main() -> AppExit {
     .insert_resource(exa_game::body_overlay::BodyOverlay {
         on: options.debug_bodies,
         ..default()
+    })
+    .insert_resource(exa_world::nav::NavOverlay {
+        on: options.debug_nav,
     })
     .insert_resource(exa_game::sim_control::SimControl::scripted(
         options.sim_speed.unwrap_or(1.0),

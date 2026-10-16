@@ -16,3 +16,4 @@ and the grid's rooms; portal clipping is next (see
 - `terrain`: tiles, blend rules, height pass and plants; in a grid level only the 6 m blocks the grid flags, one mesh per block room.
 - `gi_volume`: the voxel GI occupancy block, built on the async compute pool around the camera's focus; `GiState` tells a loading screen where it stands.
 - `point_light(light)`: the original omni light approximated as a Bevy `PointLight`.
+- `nav`: the original's navigation grid (30 cm cells, two layers, cost bytes), built for each level when its load ends from its terrain, its meshes' GI sample points and its tile-grid floors, on the async compute pool (`NavGrid` resource, `NavState`); `--debug-nav`/F6 draws it, `nav::headless` builds it without a window ([`docs/NAVIGATION.md`](../../docs/NAVIGATION.md)).

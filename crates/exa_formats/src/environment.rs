@@ -34,6 +34,10 @@ pub struct Environment {
     /// Vertical extent of the level, metres.
     pub floor: f32,
     pub ceiling: f32,
+    /// Top of the level's height grid, metres (`0x90`, or the highest point
+    /// `0x98` when `0x90` is 0, as the loader fills it in): the navigation
+    /// grid's columns reach 25.5 m down from it.
+    pub grid_top: f32,
     /// Added to the base reverb decay time, seconds.
     pub reverb_decay: f32,
 }
@@ -51,6 +55,7 @@ impl Default for Environment {
             ambient: [0.314; 3],
             floor: 0.0,
             ceiling: 3.4,
+            grid_top: 3.4,
             reverb_decay: 0.0,
         }
     }
@@ -74,6 +79,11 @@ impl Environment {
             c => c,
         } as f32
             / CENTIMETRES_PER_METRE;
+        let grid_top = match i32_at(0x90) {
+            0 => i32_at(0x98),
+            t => t,
+        } as f32
+            / CENTIMETRES_PER_METRE;
         Ok(Self {
             flags: u32_at(0),
             sun_mode: match u32_at(0x04) {
@@ -88,6 +98,7 @@ impl Environment {
             ambient: [f32_at(0x40), f32_at(0x44), f32_at(0x48)],
             floor,
             ceiling,
+            grid_top,
             reverb_decay: f32_at(0xD0),
         })
     }
@@ -131,7 +142,20 @@ mod tests {
         assert_eq!(e.floor, -5.0);
         // A zero ceiling falls back to the grid top.
         assert_eq!(e.ceiling, 4.0);
+        assert_eq!(e.grid_top, 4.0);
         assert!(Environment::parse(&[0; 10]).is_err());
+    }
+
+    #[test]
+    fn a_zero_grid_top_takes_the_highest_point() {
+        // arena1: 0x90 is 0 and 0x98 is 340 cm.
+        let mut b = record();
+        b[0x90..0x94].copy_from_slice(&0i32.to_le_bytes());
+        b[0x98..0x9C].copy_from_slice(&340i32.to_le_bytes());
+        let e = Environment::parse(&b).unwrap();
+        assert_eq!(e.grid_top, 3.4);
+        assert_eq!(e.ceiling, 3.4);
+        assert_eq!(Environment::default().grid_top, 3.4);
     }
 
     #[test]

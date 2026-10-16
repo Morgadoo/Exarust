@@ -410,7 +410,7 @@ A fixed 248-byte record in every level file (29/29 decode;
 | 0x10 | f32 ×4 | sun colour, sRGB (0.75 grey) |
 | 0x30 | f32 ×4 | secondary ambient, sRGB (0.04 grey on most levels) |
 | 0x40 | f32 ×3 | **main ambient colour**, sRGB (0.6275 grey, warm on some arenas): the shader's `Ambient` |
-| 0x90 | i32 | top of the level's height grid, cm (used when 0x98 is 0) |
+| 0x90 | i32 | top of the level's height grid, cm; the loader fills it from 0x98 when it is 0 (arenas 1, 2, 4, 5, 6). The navigation grid's columns reach 25.5 m down from it ([NAVIGATION.md](../NAVIGATION.md)); Exarust also takes it as the highest point when 0x98 is 0 |
 | 0x94 | i32 | lowest point of the level, cm |
 | 0x98 | i32 | highest point of the level, cm (fog anchor, top of the GI volume) |
 | 0xD0 | f32 | added to the reverb decay (1.49 s) |
