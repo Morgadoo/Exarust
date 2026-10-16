@@ -5,7 +5,7 @@
 //! pieces as the player (body velocity, animator, stance, attacks).
 
 use bevy::prelude::*;
-use exa_anim::{Animator, Stature};
+use exa_anim::Animator;
 use exa_combat::stance::{self, Stance};
 use exa_combat::{Attacking, Blade, Fighter};
 use exa_physics::CharacterBody;
@@ -63,13 +63,14 @@ const STRIKES: [&str; 3] = ["Attack Mid", "Attack Up", "Attack Down"];
 /// Exarust's interim footwork clip (the original's AI steps in its stance).
 const COMBAT_WALK: &str = "Combat Walk";
 
-/// A fighter's reach (m): its longest held weapon's, else the unarmed
-/// human's.
-fn reach_of(fighter: Entity, scale: f32, blades: &Query<&Blade>) -> f32 {
+/// A fighter's reach (m), as the original's equip refresh sets it: its
+/// longest held weapon's record reach (60 cm × its size plus the weapon's
+/// sweet spot), else its race's unarmed reach (the human's 50 cm).
+fn reach_of(fighter: Entity, blades: &Query<&Blade>) -> f32 {
     blades
         .iter()
         .filter(|b| b.wielder == fighter)
-        .map(|b| b.record.reach(scale))
+        .map(|b| b.record.reach_metres())
         .reduce(f32::max)
         .unwrap_or(stance::UNARMED_REACH)
 }
@@ -89,15 +90,12 @@ fn duellist(
         &mut Transform,
         &mut Animator,
         &ChildOf,
-        Option<&Stature>,
         Option<&Attacking>,
         Has<Fallen>,
     )>,
     mut roots: Query<(&mut CharacterBody, &GlobalTransform)>,
 ) {
-    for (entity, mut ai, mut stance, mut t, mut anim, parent, stature, attacking, fallen) in
-        &mut npcs
-    {
+    for (entity, mut ai, mut stance, mut t, mut anim, parent, attacking, fallen) in &mut npcs {
         let Ok((mut body, root_gt)) = roots.get_mut(parent.parent()) else {
             continue;
         };
@@ -126,7 +124,7 @@ fn duellist(
         // reaches or more, the combat idle within.
         if let Some((_, tgt, tgt_body)) = target_body {
             let d = stance::chest_point(gt, ragdoll).distance(stance::chest_point(tgt, tgt_body));
-            let reach = reach_of(entity, stature.map_or(1.0, |s| s.0), &blades);
+            let reach = reach_of(entity, &blades);
             let chosen = stance::duellist_stance(d, reach);
             if *stance != chosen {
                 info!("duellist {entity:?} stance: {chosen:?} at {d:.2} m (reach {reach:.2} m)");

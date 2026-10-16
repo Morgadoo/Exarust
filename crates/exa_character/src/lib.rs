@@ -27,7 +27,9 @@ use exa_assets::model::{Paint, PaintedSet};
 use exa_assets::{Game, ModelCache, ModelLoader, PackKind, model};
 use exa_formats::objdb::{self, Appearance, Armour, Item};
 use exa_formats::rdb::Database;
+use exa_formats::rfc::Scene;
 use exa_formats::rsq::bone_index;
+use exa_formats::weapon_record::{self, Holder, Lengths, RaceWeapons, Section, WeaponRecord};
 use exa_formats::weapon_stats::{StatBytes, at, condition_factor};
 
 pub struct CharacterPlugin;
@@ -318,6 +320,46 @@ fn plain_sword() -> objdb::Weapon {
     }
 }
 
+const CM_PER_M: f32 = 100.0;
+
+/// The record a wielded weapon fights with, built as the original builds it
+/// ([`weapon_record`]): from its flags and stat bytes, its lengths along its
+/// parts and its holder. A plain model (`name` in `Objects.rpk`) is measured
+/// along its first-child chain of rigid parts; an assembled factory weapon,
+/// one merged part in the original, up to its highest point, `top` (cm).
+/// Exarust's armed characters are humans of average height in no armour
+/// until characters have sizes and encumbrance, so they hold it as the
+/// human does.
+fn held_record(
+    game: &exa_assets::GameData,
+    name: &str,
+    top: impl FnOnce() -> f32,
+    flags: u32,
+    stats: StatBytes,
+) -> WeaponRecord {
+    let start = f32::from(stats.get(at::START)) * 0.005;
+    let end = f32::from(stats.get(at::END)) * 0.005;
+    let chain = (!name.starts_with('@'))
+        .then(|| game.pack(PackKind::Objects)?.get(name))
+        .flatten()
+        .and_then(|b| Scene::parse(b).ok())
+        .map(|scene| weapon_record::chain(&scene.nodes, 0))
+        .filter(|chain| !chain.is_empty());
+    let lengths = match chain {
+        Some(chain) => Lengths::armed(&chain, start, end),
+        None => Lengths::one_part(top(), start, end),
+    };
+    let section = Section { flags, stats };
+    let mut record = WeaponRecord::build(&section, false, lengths, &Holder::AVERAGE);
+    weapon_record::equip(
+        std::slice::from_mut(&mut record),
+        &Holder::AVERAGE,
+        &RaceWeapons::HUMAN,
+        0,
+    );
+    record
+}
+
 /// Length of a weapon model from its grip (the origin) to its farthest
 /// point along +Y, metres.
 fn weapon_length(model: &model::Model, meshes: &Assets<Mesh>) -> f32 {
@@ -594,9 +636,9 @@ fn equip_outfits(
             if let Some(mut hands) = hands {
                 hands.main = Some(held::HeldItem::weapon(item.flags));
             }
-            let length = weapon_length(&weapon, loader.meshes).max(0.1);
-            let record =
-                exa_combat::damage::WeaponRecord::new(item.flags, &stats, false, length * 100.0);
+            let top = || weapon_length(&weapon, loader.meshes) * CM_PER_M;
+            let record = held_record(loader.game, &held.model, top, item.flags, stats);
+            let length = (record.length / CM_PER_M).max(0.1);
             let holder = commands
                 .spawn((
                     grip_transform(),
@@ -667,6 +709,7 @@ mod tests {
             occupancy,
             weapon: None,
             armour: None,
+            shield: None,
         }
     }
 
@@ -774,5 +817,73 @@ mod tests {
         assert_eq!(worn(marked), ["braies_a", "shirt_b"]);
         assert_eq!(worn(placed), ["shirt_b"]);
         assert_eq!(worn(dressed), ["shirt_b"]);
+    }
+
+    /// The weapon items of the installed object database are held with
+    /// their records: a plain model measured along its chain (no model to
+    /// assemble), a factory weapon up to its assembled top (skipped without
+    /// the game).
+    #[test]
+    fn shipped_weapons_are_held_with_their_records() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let items = objdb_items(&game);
+        let mut plain = 0;
+        for item in &items {
+            let Some(w) = item.weapon else { continue };
+            if item.model.starts_with('@') {
+                continue;
+            }
+            let Some(objects) = game.pack(PackKind::Objects) else {
+                return;
+            };
+            if objects.get(&item.model).is_none() {
+                continue;
+            }
+            let top = || panic!("{} is measured along its chain", item.model);
+            let r = held_record(&game, &item.model, top, w.flags, w.stats);
+            assert!(r.length > 5.0 && r.length < 300.0, "{} {r:?}", item.name);
+            assert!((r.reach - 60.0 - r.sweet_spot).abs() < 1e-3);
+            plain += 1;
+        }
+        assert_eq!(plain, 103);
+        let torch = items.iter().find(|i| i.name == "Torch A01").unwrap();
+        let w = torch.weapon.unwrap();
+        let r = held_record(&game, &torch.model, || 0.0, w.flags, w.stats);
+        assert!((r.length - 58.3).abs() < 0.05, "{r:?}");
+        // Factory weapons: their assembled top, as the original's one
+        // merged part.
+        let mut cache = ModelCache::default();
+        let mut meshes = Assets::<Mesh>::default();
+        let mut materials = Assets::<exa_render::material::ExaMaterial>::default();
+        let mut images = Assets::<Image>::default();
+        let mut loader = ModelLoader {
+            game: &game,
+            cache: &mut cache,
+            meshes: &mut meshes,
+            materials: &mut materials,
+            images: &mut images,
+            bc_supported: false,
+        };
+        for name in ["Sword 2hA", "Halberd A", "Falchion A"] {
+            let item = items.iter().find(|i| i.name == name).unwrap();
+            let w = item.weapon.unwrap();
+            let factory = item.model.strip_prefix('@').unwrap();
+            let model = loader.factory_weapon(factory, Some(&w)).unwrap();
+            let stats = loader.factory_weapon_stats(factory, Some(&w)).unwrap();
+            let top = weapon_length(&model, loader.meshes) * CM_PER_M;
+            let r = held_record(loader.game, &item.model, || top, w.flags, stats);
+            assert_eq!(r.length, top, "{name}");
+            assert!(r.length > 50.0 && r.length < 300.0, "{name} {r:?}");
+            // Swords strike from 10 % of their length to the tip.
+            if name != "Halberd A" {
+                assert!(
+                    (r.sweet_spot - 0.64 * r.length).abs() < 1e-3,
+                    "{name} {r:?}"
+                );
+            }
+        }
     }
 }

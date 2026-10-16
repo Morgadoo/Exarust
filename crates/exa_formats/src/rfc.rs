@@ -106,9 +106,14 @@ pub struct Node {
     pub parent: Option<usize>,
     /// Row-major 3×4: three rotation rows, then the translation (metres).
     pub transform: [[f32; 3]; 4],
-    /// Bounding sphere in the node's space (metres).
+    /// Bounding box in the node's space (metres): its centre and half
+    /// extents. The sphere shares the centre.
     pub bounds_centre: [f32; 3],
+    pub bounds_half_extents: [f32; 3],
     pub bounds_radius: f32,
+    /// The node carries a collision body (sub-chunk [`RIGID_BODY`] after a
+    /// mesh body): the original makes it a rigid body.
+    pub rigid_body: bool,
     pub body: NodeBody,
 }
 
@@ -403,15 +408,23 @@ fn read_materials(
 /// Sub-chunk of GI sample points after a mesh body: `u32 spacing (cm),
 /// u32 count, count × f32[3]` object-space points (cm).
 pub const GI_POINTS: u32 = 0x3D0C_EC05;
+/// Sub-chunk of a collision body after a mesh body: the node is a rigid
+/// body (1 163 of the 1 253 models of `Objects.rpk` have one).
+pub const RIGID_BODY: u32 = 0x3DD0_B001;
 
-/// The GI sample points among the sub-chunks after a mesh body; none when
-/// the chunk is absent or malformed.
-fn read_gi_points(c: &mut Cursor<'_>) -> Vec<[f32; 3]> {
+/// The GI sample points among the sub-chunks after a mesh body (none when
+/// the chunk is absent or malformed), and whether a collision body follows.
+fn read_sub_chunks(c: &mut Cursor<'_>) -> (Vec<[f32; 3]>, bool) {
+    let mut points = None;
+    let mut rigid_body = false;
     while c.remaining() >= 8 {
         let Ok((tag, mut sub)) = c.chunk() else {
             break;
         };
-        if tag != GI_POINTS {
+        if tag == RIGID_BODY {
+            rigid_body = true;
+        }
+        if tag != GI_POINTS || points.is_some() {
             continue;
         }
         let (Ok(_spacing), Ok(count)) = (sub.u32(), sub.u32()) else {
@@ -421,14 +434,16 @@ fn read_gi_points(c: &mut Cursor<'_>) -> Vec<[f32; 3]> {
         if sub.remaining() < count * 12 {
             break;
         }
-        return (0..count)
-            .filter_map(|_| {
-                let p = [sub.f32().ok()?, sub.f32().ok()?, sub.f32().ok()?];
-                Some(p.map(|v| v * CENTIMETRES_TO_METRES))
-            })
-            .collect();
+        points = Some(
+            (0..count)
+                .filter_map(|_| {
+                    let p = [sub.f32().ok()?, sub.f32().ok()?, sub.f32().ok()?];
+                    Some(p.map(|v| v * CENTIMETRES_TO_METRES))
+                })
+                .collect(),
+        );
     }
-    Vec::new()
+    (points.unwrap_or_default(), rigid_body)
 }
 
 /// Emitter records end a plain node's body: `u32 type, u32 4, f32 size`.
@@ -461,16 +476,17 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
         *v *= CENTIMETRES_TO_METRES;
     }
     // Bounds: half extents, centre, radius; then one unidentified word.
-    c.skip(12)?;
+    let bounds_half_extents = [c.f32()?, c.f32()?, c.f32()?].map(|v| v * CENTIMETRES_TO_METRES);
     let bounds_centre = [c.f32()?, c.f32()?, c.f32()?].map(|v| v * CENTIMETRES_TO_METRES);
     let bounds_radius = c.f32()? * CENTIMETRES_TO_METRES;
     c.skip(4)?;
+    let mut rigid_body = false;
     let body = if instance != 0 {
         NodeBody::Instance(instance)
     } else if kind == NODE_MESH {
         match read_mesh(&mut c, version) {
             Ok(mut m) => {
-                m.gi_points = read_gi_points(&mut c);
+                (m.gi_points, rigid_body) = read_sub_chunks(&mut c);
                 NodeBody::Mesh(Box::new(m))
             }
             Err(e) => NodeBody::Invalid(e.to_string()),
@@ -496,7 +512,9 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
         parent: (parent > 0).then_some(parent),
         transform,
         bounds_centre,
+        bounds_half_extents,
         bounds_radius,
+        rigid_body,
         body,
     })
 }
@@ -917,13 +935,27 @@ mod tests {
     /// One mesh node: a unit quad in the XZ plane (centimetres) as two
     /// triangles, two materials, a UV stream.
     fn quad_file(tri_index_override: Option<u16>) -> Vec<u8> {
+        file_of(&quad_body(tri_index_override))
+    }
+
+    fn file_of(body: &[u8]) -> Vec<u8> {
+        let mut list = u32s(&[1]);
+        list.extend(chunk(NODE_MESH, body));
+        let mut file = vec![0xCF, 0xAF, 0x23, 0x3D];
+        file.extend(chunk(NODE_LIST, &list));
+        file
+    }
+
+    /// The quad's node chunk body; its box is 50 × 0 × 50 cm about
+    /// (50, 0, −50).
+    fn quad_body(tri_index_override: Option<u16>) -> Vec<u8> {
         let mut body = Vec::new();
         body.extend(name("Quad"));
         body.extend(u32s(&[0x89, 0, 0, 0]));
         body.extend(f32s(&[
             1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 100.0, 0.0, 0.0,
         ]));
-        body.extend(f32s(&[0.0; 7]));
+        body.extend(f32s(&[50.0, 0.0, 50.0, 50.0, 0.0, -50.0, 70.7]));
         body.extend(u32s(&[0]));
         body.extend(u32s(&[0])); // version prefix
         body.extend(u32s(&[1])); // two streams
@@ -955,12 +987,7 @@ mod tests {
         tris.extend(chunk(0x3DC2, &[0, 0]));
         topo.extend(chunk(TRIANGLES, &tris));
         body.extend(chunk(TOPOLOGY, &topo));
-
-        let mut list = u32s(&[1]);
-        list.extend(chunk(NODE_MESH, &body));
-        let mut file = vec![0xCF, 0xAF, 0x23, 0x3D];
-        file.extend(chunk(NODE_LIST, &list));
-        file
+        body
     }
 
     #[test]
@@ -982,6 +1009,28 @@ mod tests {
         for n in &mesh.normals {
             assert!((n[1] - 1.0).abs() < 1e-6, "quad faces +Y: {n:?}");
         }
+    }
+
+    #[test]
+    fn keeps_the_box_and_finds_a_collision_body() {
+        let scene = Scene::parse(&quad_file(None)).unwrap();
+        let node = &scene.nodes[0];
+        assert_eq!(node.bounds_half_extents, [0.5, 0.0, 0.5]);
+        assert_eq!(node.bounds_centre, [0.5, 0.0, -0.5]);
+        assert!(!node.rigid_body);
+        // GI points, then a collision body, after the mesh body.
+        let mut body = quad_body(None);
+        let mut gi = u32s(&[40, 1]);
+        gi.extend(f32s(&[100.0, 200.0, 300.0]));
+        body.extend(chunk(GI_POINTS, &gi));
+        body.extend(chunk(RIGID_BODY, &[0; 8]));
+        let scene = Scene::parse(&file_of(&body)).unwrap();
+        let node = &scene.nodes[0];
+        assert!(node.rigid_body);
+        let NodeBody::Mesh(mesh) = &node.body else {
+            panic!("not a mesh");
+        };
+        assert_eq!(mesh.gi_points, [[1.0, 2.0, 3.0]]);
     }
 
     #[test]

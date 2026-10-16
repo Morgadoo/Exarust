@@ -137,7 +137,7 @@ also leaves its interim backpedal and combat walk alone).
 - **A duellist** starts its stance whenever it is free (not attacking), so
   it guards again when its target leaves. Its **reach** is 60 cm plus its
   weapon's sweet spot ([formats/OTHER.md](formats/OTHER.md), Weapon
-  stats), 50 cm unarmed: the arena sword's 98 cm makes it guard beyond
+  record), 50 cm unarmed: the arena sword's 98 cm makes it guard beyond
   3.92 m.
 - **Readiness.** Standing in Cmbt - Idle, with that stance, a fighter's
   readiness rises 0.004 a tick (0 to 1 in 3 s); anything else resets it.

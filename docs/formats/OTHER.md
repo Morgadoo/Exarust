@@ -131,6 +131,8 @@ name and body only.
 | `0x10000000` | display name[16], a word (0, 1 or 2, else noise; [guess] editor state), the parent id: the editor folder for global items (`+Apparel/+Misc`, `+Clothes/+Legs`, …), the source item for level-local copies |
 | `0x00100000` | ground or icon model name[16] (`Objects.rpk` or `Objlib.rpk`, or `@` and a factory), then a flags word: bit 0 dims the model's voxel lights and glow meshes by the placement's condition byte (salves `0x51`/`0x1`, power crystals `0x1031`, Diviner's Deck, Repair Sphere, PedestalHand; see `RFC.md`, placed objects), …; absent in "Braies_A" |
 | `0x1000` | item body: the worn model name[16] (`Characters.rpk`), the occupancy table at `0x10`, the slot table at `0xA8`, coverage and protection at `0x150`/`0x1A0`, the appearance block at `0x1B0..0x214` |
+| `0x4000` | weapon section (208 items): flags, factory seeds and choices, stat bytes `0x30..0x42` (Weapon stats) |
+| `0x8000` | shield section (22 items, 80 bytes): weight, block and bulk bytes at 4, 5, 6 (Weapon record) |
 
 **Worn and ground model.** A character is dressed in the model the body
 names, never the `0x00100000` one: REA on the apparel model loader shows it
@@ -420,18 +422,123 @@ two clawed ones).
 - Materials and dirt do not enter the stats. There is no physical
   material table.
 
-**Record** (`exa_combat::damage::WeaponRecord`):
-- weight w = b30/100, balance b = b31/100;
-- impact = (1 − b)·0.6 + 0.4w + 0.1 + (b32 − 127)/100;
-- slash, crush, pierce and thrust = 0.5·(byte/100)^0.7;
-- the length is the farthest component point along +Y, in cm;
-- the holder's reach = 60 cm × its body scale + the distance from the grip
-  to the sweet spot, 60 % of the way along the striking part
-  (`0x35`/`0x36`), or the race's own when unarmed (50 cm for a human). The
-  original measures the sweet spot on the weapon's last part and adds the
-  parts before it whole; Exarust measures it along the whole length, the
-  same for a weapon of one part. A duellist guards beyond four reaches
-  ([PLAYER.md](../PLAYER.md), The combat stance).
+The record a held weapon fights with is built from these bytes: see
+Weapon record below.
+
+## Weapon record
+
+Status: **verified** (REA on the record builder, the holding pass, the
+length and sweet-spot walks, the mass spread and table, the equip
+refresh, the unarmed set-up, the shield record and its attach, the step
+reach; corpus below). Exarust: `exa_formats::weapon_record`
+(`exa_combat::damage::WeaponRecord`).
+
+Every body that can strike carries a record of 28 elements W0..W27: a held
+weapon, a hand, or a shield (a short record of its own). Lengths are in
+cm. Below, w and b are the weight and balance bytes /100, g the holder's
+armour encumbrance, s its character size, u the share of the held
+weapons' weight a special worn item takes away (0 for everyone else).
+
+**Build**, from the section (the flipped block for `0x34..0x39` when the
+weapon is flipped):
+
+| element | value |
+|---|---|
+| W0 flags | the section's flags & `0x0603FFFF` |
+| W1 type code | byte `0x34` |
+| W3 | the start below, 0.7 when under 0.15, at most 0.99 (readers not found) |
+| W4, W5 striking part | bytes `0x35`, `0x36` × 0.005, of the last part's length |
+| W6, W7 | w, b |
+| W10 impact | (1 − b)·0.6 + 0.4w + 0.1 (0.4w + 0.1 above balance 100) + (byte `0x32` − 127)/100 |
+| W11..W14 | slash, crush, pierce, thrust: 0.5·(x/100)^0.7, 0 for a 0 byte (double precision) |
+| W16 handling | 0.8 − ((1 − u/2)·w + 1 − b)/8 (readers not found) |
+| W21 length | armed: the box top (centre.y + half extent.y) of the weapon's node plus that of every rigid node down its first-child chain; unarmed: across the hand, \|centre.x\| + half extent.x |
+| W22 sweet spot | armed: whole parts while the next one down the chain is rigid, then (W4 + 0.6·(W5 − W4)) of the part it stopped at; unarmed: W21 |
+| W23 (unarmed) | the end byte as a number (80 for the fists); unused for reach |
+| W24 second hand | (byte `0x40` − 128)·0.00156 + 1: where the second hand holds a haft (a two-hander's −30·W24 cm, a polearm's −40·W24) |
+| hit sound | byte `0x41`: `WH_SwordA`, `WH_MaceMA`, `WH_AxeA`, `WH_ClubMW`, `WH_MaceMA`, `WH_ClubMW`, `WH_WoodA`, `WH_ClawsL`, `BdyCol` |
+
+A node is rigid when its mesh body is followed by a collision body chunk
+(`0x3DD0B001`, [RFC.md](RFC.md)). An assembled factory weapon is one part
+in the original, so its length is its assembled top. Corpus: the box of
+every one of the 103 plain weapon models of `Objects.rpk` tops at its
+highest vertex within 0.05 cm; "Torch A01" is 58.3 cm (its shadow and
+flame nodes are not rigid), "Flail A" 84.4 cm and "Ogre Flail" 172.0 cm
+(their links are rigid).
+
+**Holding pass**, at the build and on every equip change:
+
+| element | value |
+|---|---|
+| W8, W9 held weight and balance | w, b; with the half-sword hold (2 − w)·w and 0.7·b (what sets it is not found); W8 × (1 − u) |
+| h | (1 − W9)·0.6 + 0.4·W8 + 0.1 (0.4·W8 + 0.1 above balance 1) |
+| W17 recoil | g/2 + h: a blocked striker recoils by v·W17; the recovery after a released swing and the attack cooldown follow it |
+| k | ((1 − g) + W9)·g/2 + W9·(1 − g) |
+| W18 swing shaping | 1 − k (the swing clock slows away from its middle by it) |
+| W19 blend | round((W8 + 1 − k)·10), an integer: attacks end into the stance over 2·W19 frames |
+| W20 arm stiffness | 0.7 − 0.3·W17; two-handers (hands bits 2) out of the half-sword hold × (0.7 − 0.2·W9); greatswords (`0x521`) × 1.5; unarmed 0.5/s |
+| W15 swing speed | (1 − W8)·0.15 + 1.05; × 1.2 for the human fists (no hand-class bits) |
+| W27 AI swing turn | min(0.4·W18 + 0.3·W8 + 0.4, 1.5); unarmed × 1.5 for claws, × 0.5 for fists |
+| W25, W26 swing volume and pitch | up to 124 cm 1.5·√((250 − L)·0.004) and (250 − L)/180, else 1 and 0.7; W26 × (1 + d/2), d = W9 − W8 halved when negative; unarmed W25 × 0.7·√scale, W26 × 0.6/scale |
+| W23 reach | armed: 60·s + W22 |
+
+Worked example, "- Sword A" (90 cm): W15 1.125, W17 0.42, W18 0.2, W19 7,
+W20 0.574, W22 57.6, W23 117.6, W25 1.2, W26 1.022, W27 0.63. With g 0.5:
+W17 0.67, W18 0.275, W19 8.
+
+**Mass** (simulation units): M = heavy·w + (1 − w)·light by hands and size
+
+| size | one-handed | two-handed | polearm |
+|---|---|---|---|
+| normal | 0.16 – 0.40 | 0.20 – 0.50 | 0.20 – 0.50 |
+| ogre (`0x2000000`) | 0.32 – 0.80 | 0.50 – 1.00 | 0.50 – 1.00 |
+| demon (`0x4000000`) | 0.50 – 1.20 | 0.75 – 1.50 | 0.75 – 1.50 |
+
+spread over the weapon's rigid parts half evenly and half by their own
+masses; the weapon's own part then weighs s times more.
+
+**Equip refresh**: each held record is held again with the character's g
+and s; the character's reach is the largest W23; W19 = round(W19 × race
+`0x90`) (0.5 for the five golems, else 1) and W27 × race `0x88` (0 for
+Sir, the harvester, the demon and four golems; 0.5 for the ogre, the
+gobbler and the golem suit; else 1); the AI's thrust preference is
+round(W14/(W11 + W12 + W13)·5) + 1 capped at 9, 10 without edges, 0
+holding nothing. Unarmed, the reach is race `0x84` (human, skeleton,
+ancient, manipulator, wraith and golem suit 50 cm; ogre, ghouls, demon and
+the other golems 100; Fael 130; Sir, gobbler, harvester 150) and the
+hands weigh twice their part's mass (four times with heavy
+claws). Race index 6 and 7 (the ghouls) swing with W20 = 1; race index 5
+(the Fael) turns half as far (W27 × 0.5).
+
+**Fists and claws.** Unarmed, both hands are held, each with a built-in
+section: the right hand's by race index (8 heavy claws; 6, 7 claws; 4, 5
+heavy claws), the left hand's by the race's word at `0x58` (`0x100` claws,
+`0x20100` heavy claws), else the human fists. So the Harvester (index 10,
+word `0x20100`) strikes with a right fist and a left heavy claw.
+
+| section | flags | balance | impact | type | start = end | slash, pierce | `0x40` | sound |
+|---|---|---|---|---|---|---|---|---|
+| fists | 0 | 100 | 160 | 1 | 80 (0.4) | 0, 0 | 0 | 8 `BdyCol` |
+| claws (ghouls) | `0x40` | 100 | 180 | 1 | 60 (0.3) | 60, 40 | 0 | 7 |
+| heavy claws | `0x40` | 100 | 200 | 1 | 150 (0.75) | 60, 40 | 0 | 7 |
+
+A human fist is 17.66 cm (the hand node's box), with impact 0.43, W15
+1.44, W17 0.1, W18 0, W19 0, W20 0.5, W24 0.80032.
+
+**Shield record**, item section `0x8000` (22 items): weight, block and
+bulk = bytes 4, 5, 6 × 0.01 (a round shield 0.5, 0.58, 0.6). In the off
+hand it gives parry effectiveness 0.5 + 1.5·(1 − weight)² (weight/2 with
+the Mobility technique), a block leak of 1 − block/2, a stamina cost per
+block of the leak (× 2/3 with Endure), and adds (2 − u)·bulk/4 to the
+encumbrance.
+
+**Step reach**: 80·√scale·(1 − 0.3·feral, when the feral level is not
+negative)·(1 − 0.2·g); the long steps and the footwork are measured in it.
+
+In Exarust, every holder is a human of average height in no armour (g 0,
+s 1) until characters have sizes and encumbrance. The race fields are
+read from the `races.rdb` payload. A duellist guards beyond four reaches
+([PLAYER.md](../PLAYER.md), The combat stance).
 
 ## Armour
 

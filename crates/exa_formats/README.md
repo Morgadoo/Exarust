@@ -13,6 +13,9 @@ bytes and returns plain data or an error. No Bevy dependency.
 | `rdb` | database index |
 | `races` | races: names, flag words (bleeding, red regeneration, claws, hovering, quadruped), body model, movesets, health, natural armour, the body scalars (clip-rate base, size, scale, mass divisor) and the body controller's factors, the gait table with its brake distances and the feral sprint blend, and the stats (unarmed reach, weapon swing-turn and recovery factors, AI attack bonus, perception, held offset, footsteps, voice) |
 | `characters` | a level's placed characters (position, facing, condition, pose) and their records read whole, versions 5–7 (level databases and `actors.rpk`): looks, held and worn items, feral level, saved pools, combat skill, traits, experience, the six skills with their techniques, inventory, roles, relations, saved state, powers; the perks the learnt techniques give, the Manoeuvring tier and Deflection |
-| `rfc` | scene nodes (meshes, lights, voxel lights) and static meshes (all retail meshes decode) |
+| `rfc` | scene nodes (meshes, lights, voxel lights; box, collision-body flag) and static meshes (all retail meshes decode) |
 | `material` | material payloads: texture layers and slot roles |
-| levels, `rsq`, terrain, factories, powers | Phase 1 |
+| `objdb` | object database items: names, models, occupancy, appearance, protection, weapon and shield sections |
+| `weapon_stats` | weapon stat bytes and how a factory recipe and the item's condition produce them |
+| `weapon_record` | the record a held weapon fights with (all 28 elements, the holding pass and the equip refresh), its length along the model's rigid parts, the built-in fists and claws by race, the mass table, the shield record and the step reach |
+| levels, `rsq`, terrain, factories, actors, powers | Phase 1 |

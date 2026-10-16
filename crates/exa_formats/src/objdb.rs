@@ -8,9 +8,10 @@
 //! holds the display name, `0x00100000` the ground model's name, `0x1000`
 //! the item body, which starts with the worn model's name, holds the
 //! per-bone occupancy table at `0x10` and the appearance block at bytes
-//! `0x1B0..0x214`.
+//! `0x1B0..0x214`; `0x4000` a weapon's section and `0x8000` a shield's.
 
 use crate::rdb::Database;
+use crate::weapon_record::ShieldRecord;
 use crate::weapon_stats::StatBytes;
 use crate::{Error, Result};
 
@@ -18,6 +19,7 @@ const NAME: u32 = 0x1000_0000;
 const MODEL: u32 = 0x0010_0000;
 const BODY: u32 = 0x1000;
 const WEAPON: u32 = 0x4000;
+const SHIELD: u32 = 0x8000;
 /// Model flag: the item's voxel lights are scaled by (1 − c/255)², with c
 /// the condition byte of its placement (a salve's charge).
 pub const CONDITION_SCALED: u32 = 1;
@@ -71,6 +73,8 @@ pub struct Item {
     pub weapon: Option<Weapon>,
     /// What the item protects when worn.
     pub armour: Option<Armour>,
+    /// What the item blocks with when held as a shield.
+    pub shield: Option<ShieldRecord>,
 }
 
 /// Protection of a worn item.
@@ -249,6 +253,7 @@ impl Item {
             occupancy: [0; OCCUPANCY_BONES],
             weapon: None,
             armour: None,
+            shield: None,
         };
         let mut pos = 0;
         while pos + 8 <= payload.len() {
@@ -287,6 +292,7 @@ impl Item {
                     item.armour = Armour::parse(body);
                 }
                 WEAPON => item.weapon = Weapon::parse(body),
+                SHIELD => item.shield = ShieldRecord::from_section(body),
                 _ => {}
             }
             pos += size;
@@ -458,6 +464,22 @@ mod tests {
         assert_eq!(lamp.light_share(0x00EE_0000), 1.0);
         let short = Item::parse(1, &section(MODEL, &padded("Jar", 16))).unwrap();
         assert_eq!(short.model_flags, 0);
+    }
+
+    #[test]
+    fn shield_section() {
+        let mut body = [0u8; 80];
+        body[4..7].copy_from_slice(&[15, 50, 8]);
+        let mut p = section(NAME, &padded("Buckler A", 0x20));
+        p.extend(section(SHIELD, &body));
+        let shield = Item::parse(80, &p).unwrap().shield.unwrap();
+        assert_eq!(
+            (shield.weight, shield.block, shield.bulk),
+            (15.0 * 0.01, 0.5, 8.0 * 0.01)
+        );
+        // Too short for the three bytes: no shield.
+        let short = Item::parse(80, &section(SHIELD, &[0; 6])).unwrap();
+        assert!(short.shield.is_none());
     }
 
     #[test]

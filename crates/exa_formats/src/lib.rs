@@ -19,6 +19,7 @@ pub mod rfc;
 pub mod rfi;
 pub mod rsq;
 pub mod terrain;
+pub mod weapon_record;
 pub mod weapon_stats;
 
 pub use kind::FileKind;

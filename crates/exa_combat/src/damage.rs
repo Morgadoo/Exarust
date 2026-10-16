@@ -1,117 +1,18 @@
 //! The original's damage model: a weapon's stat record, the two armour
 //! layers of each body part, and what a blow does through them (impact,
 //! slash, crush, pierce), to the health bars and the victim's wits.
-//! Rules and constants: `docs/formats/OTHER.md` (Weapon stats, Armour,
+//! Rules and constants: `docs/formats/OTHER.md` (Weapon record, Armour,
 //! Damage).
 //!
 //! Units follow the original: lengths in cm, speeds in cm per body tick.
 
 use exa_formats::objdb::Armour;
 use exa_formats::races::Natural;
+#[cfg(test)]
 use exa_formats::weapon_stats::{StatBytes, at};
 
-/// Weapon flags (low bits of the weapon section's first word).
-pub mod flags {
-    /// Kind: 1 bladed, 2 hafted head, 3 stick, 4 flail.
-    pub const KIND: u32 = 0xF;
-    pub const BLADED: u32 = 1;
-    pub const STICK: u32 = 3;
-    /// Hands: 0 unarmed, 1 one-handed, 2 two-handed, 3 polearm.
-    pub const HANDS: u32 = 0x30;
-    /// Two-handed or polearm.
-    pub const TWO_HANDS: u32 = 0x20;
-    /// Haft material for hits below the head: 1 wood, 2 metal, 3 other.
-    pub const HAFT_SHIFT: u32 = 16;
-}
-
-/// The stat record a held weapon fights with.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct WeaponRecord {
-    pub flags: u32,
-    /// Type code of the striking side.
-    pub code: u8,
-    /// Start and end of the striking part, as fractions of the length.
-    pub start: f32,
-    pub end: f32,
-    pub weight: f32,
-    pub balance: f32,
-    /// Impact factor.
-    pub impact: f32,
-    pub slash: f32,
-    pub crush: f32,
-    pub pierce: f32,
-    pub thrust: f32,
-    /// Length from the grip to the tip, cm.
-    pub length: f32,
-}
-
-/// A stat byte as a damage share: 0.5·(x/100)^0.7.
-fn share(x: u8) -> f32 {
-    if x == 0 {
-        0.0
-    } else {
-        0.5 * (x as f32 / 100.0).powf(0.7)
-    }
-}
-
-impl WeaponRecord {
-    /// The record of a weapon from its flags and stat bytes, striking with
-    /// its flipped side when `flipped`, `length` cm long.
-    pub fn new(flags: u32, stats: &StatBytes, flipped: bool, length: f32) -> Self {
-        let side = if flipped { at::FLIP } else { 0 };
-        let weight = stats.get(at::WEIGHT) as f32 / 100.0;
-        let balance_byte = stats.get(at::BALANCE);
-        let balance = balance_byte as f32 / 100.0;
-        let base = if balance_byte <= 100 {
-            (1.0 - balance) * 0.6 + 0.4 * weight + 0.1
-        } else {
-            0.4 * weight + 0.1
-        };
-        Self {
-            flags,
-            code: stats.get(at::KIND + side),
-            start: stats.get(at::START + side) as f32 * 0.005,
-            end: stats.get(at::END + side) as f32 * 0.005,
-            weight,
-            balance,
-            impact: base + (stats.get(at::IMPACT) as f32 - 127.0) / 100.0,
-            slash: share(stats.get(at::SLASH + side)),
-            crush: share(stats.get(at::CRUSH + side)),
-            pierce: share(stats.get(at::PIERCE + side)),
-            thrust: share(stats.get(at::THRUST)),
-            length,
-        }
-    }
-
-    /// The reach (m) of a wielder of body scale `scale` holding this
-    /// weapon: 60 cm times the scale plus the distance from the grip to
-    /// the weapon's sweet spot, 60 % of the way along its striking part.
-    /// The original measures the sweet spot on the weapon's last part and
-    /// adds the parts before it whole; on a weapon of one part, as here,
-    /// that is the same.
-    pub fn reach(&self, scale: f32) -> f32 {
-        let sweet = self.start + 0.6 * (self.end - self.start);
-        (60.0 * scale + self.length * sweet) / 100.0
-    }
-
-    /// A human's fists: weightless, fully balanced, impact +0.33, no edge.
-    pub fn fists(length: f32) -> Self {
-        let mut s = StatBytes::default();
-        s.set(at::BALANCE, 100);
-        s.set(at::IMPACT, 160);
-        s.set(at::START, 80);
-        s.set(at::END, 80);
-        Self::new(0, &s, false, length)
-    }
-
-    fn kind(&self) -> u32 {
-        self.flags & flags::KIND
-    }
-
-    fn armed(&self) -> bool {
-        self.flags & flags::HANDS != 0
-    }
-}
+/// The record a held weapon fights with, and its flags.
+pub use exa_formats::weapon_record::{WeaponRecord, flags};
 
 /// One armour layer of a body part.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -538,7 +439,7 @@ pub(crate) fn sword_a() -> WeaponRecord {
     ] {
         s.set(off, v);
     }
-    WeaponRecord::new(0x11, &s, false, 90.0)
+    WeaponRecord::of_one_part(0x11, &s, false, 90.0)
 }
 
 #[cfg(test)]
@@ -626,8 +527,7 @@ mod tests {
     /// hand: 60 + 90·(0.1 + 0.6·0.9) = 117.6 cm.
     #[test]
     fn reach_is_60_cm_plus_the_sweet_spot() {
-        assert!((sword_a().reach(1.0) - 1.176).abs() < 1e-5);
-        assert!((sword_a().reach(2.0) - 1.776).abs() < 1e-5);
+        assert!((sword_a().reach_metres() - 1.176).abs() < 1e-5);
     }
 
     #[test]

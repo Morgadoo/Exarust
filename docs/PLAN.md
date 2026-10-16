@@ -396,6 +396,15 @@ rule (no shields yet); the low-health heartbeat (a pulsing dark red border
 and its sound, story levels only); the interface laid over the game's view
 premultiplied, which fixed every translucent interface pixel
 ([UI.md](UI.md), Health bars, Heartbeat, Compositing).
+Done (change `complete-the-weapon-record`): a held weapon's whole record
+as the original builds it: swing speed and shaping, recoil, stance
+blend, arm stiffness, second-hand place, swing sound and AI turn factors,
+reach and mass, held by the holder's encumbrance and size and refreshed
+on equipping with the race's factors; its length along the model's
+rigid parts; the built-in fists and claws by race; the shield record and
+its factors; the step reach. Held weapons and the duellist's reach use it;
+fists that strike, the swing clock and weapons as bodies build on it
+([formats/OTHER.md](formats/OTHER.md), Weapon record).
 Still to do: inventory and containers, injuries beyond damage, blocking,
 parrying, grabs, practice mode, the knockback step, the swing stall and
 the striker's recoil, a lethal wound's fall and collapse, the daze's guard

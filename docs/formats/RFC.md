@@ -78,15 +78,23 @@ u32  flags2
 u32  instance      non-zero: the node reuses other data and stores nothing more
 u32  parent        1-based index into the node list; 0 = root
 f32  matrix[12]    3x4 row-major: three rotation rows, then translation (cm)
-f32  extent[3]
-f32  centre[3]
+f32  extent[3]      the box's half extents (cm, node space)
+f32  centre[3]      the box's and the sphere's centre
 f32  radius
 u32  ?
 ```
 
+The box is the mesh's vertex bounds: for every one of the 103 plain weapon
+models of `Objects.rpk`, centre.y + extent.y is the highest vertex to
+0.05 cm. The original keeps centre and half extents on the node and
+measures weapons by them (`OTHER.md`, Weapon record).
+
 The body depends on the kind; after it come optional sub-chunks
-(`0x3AC1`, `0x3D0CEC05`, `0x3DD0B001` collision body, `0xEDC0C589`) that are
-skipped for now.
+(`0x3AC1`, `0x3D0CEC05` GI points, `0x3DD0B001` collision body,
+`0xEDC0C589`). Exarust reads the GI points and whether a collision body
+follows (`Node::rigid_body`: the original makes the node a rigid body;
+1 163 of the 1 253 `Objects.rpk` models have one, all on mesh nodes); the
+others are skipped for now.
 
 ## Mesh body (`3D03`)
 

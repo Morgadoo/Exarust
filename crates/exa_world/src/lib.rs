@@ -1232,6 +1232,7 @@ mod tests {
             occupancy: [0; objdb::OCCUPANCY_BONES],
             weapon: None,
             armour: None,
+            shield: None,
         }
     }
 

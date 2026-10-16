@@ -38,6 +38,12 @@ Characters: races, body morphs, appearance, apparel fitting, stats/attributes/sk
   the chosen moveset into the body's `Animator` whenever the hands change.
   Only bodies with `Hands` follow it (the player and the duellist). See
   [`docs/PLAYER.md`](../../docs/PLAYER.md) (Moveset from held items).
+- A wielded weapon's `Blade` carries its record as the original builds it
+  (`exa_formats::weapon_record`): a plain model measured along its
+  first-child chain of rigid parts, a factory weapon up to its assembled
+  top, held by an average human until characters have sizes and
+  encumbrance. See [`docs/formats/OTHER.md`](../../docs/formats/OTHER.md)
+  (Weapon record).
 
 ## Blood
 
