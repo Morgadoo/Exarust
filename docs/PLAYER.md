@@ -208,8 +208,20 @@ combat mode.
 
 ## Camera
 
-- The camera follows the player's position only, at a fixed **20 m**. It
-  never turns by itself in exploration.
+- The camera follows the player's **pelvis** only, at a fixed **20 m**: the
+  pelvis as it is drawn in the frame, between its last two body ticks, so
+  the view rises and falls with the walking body (the feet before the
+  player has a body). It never turns by itself in exploration.
+- The camera **ticks every 17 ms** of real time: a tick runs once the frame
+  passes its start, at most nine a frame (a longer stall drops the rest).
+  Each frame shows the direction to the eye, the zoom and any shake offset
+  between the last two ticks, by how far the frame is into the last one, so
+  the view moves smoothly on any refresh rate. A shake offset moves the eye
+  only, and only while it is over 1e-5 cm² squared. A **kick** moves the
+  offset one way and the last tick's the other; each tick then keeps 0.96
+  of its change and 0.99 of the whole, a wobble of about a second that
+  dies away, and drops it once both are tiny (change within 1e-7 cm²,
+  offset within 1e-4 cm², squared). Nothing kicks the camera yet.
 - **Zoom is field of view**: fov = zoom / 2000 × 45° × √(1.6 / aspect),
   clamped to 10–100°. The wheel steps through six stops from 800 to 2000
   (18° to 45°); the game starts at 1300.

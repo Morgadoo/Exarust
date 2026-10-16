@@ -10,7 +10,7 @@ level, clip, targets and lift, the player's last),
 Exarust's falls and get-ups from the measured balance (`balance`; the
 get-up ends in the fighter's stance; a fall
 stops the controller carrying and holding the body and keeps its tone), the
-player (`player`: tank controls, the chase camera, combat facing, its
+player (`player`: tank controls, the chase camera on the drawn pelvis, combat facing, its
 combat stance and the original's attack choice, with the clips of the
 moveset its hands pick), the world cursor's shape from the player's state
 (`cursor`), the health bars' values and the low-health heartbeat with its

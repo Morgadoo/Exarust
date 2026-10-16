@@ -4,7 +4,7 @@
 //! Exploration uses tank controls: W walks along the character's heading,
 //! A and D steer it (or turn a quarter in place when standing), S brakes
 //! and backpedals, and the right mouse button walks toward the cursor. The
-//! camera follows the character's position only: it never turns by itself,
+//! camera follows the character's pelvis only: it never turns by itself,
 //! the middle mouse button orbits it and the wheel zooms by field of view.
 //! Combat mode (Tab, or the start of a fight) turns toward the cursor and
 //! steps relative to it; the left button attacks with the clips of the
@@ -666,6 +666,8 @@ fn player_combat(
 const CAMERA_DISTANCE: f32 = 20.0;
 /// The camera's tick (s) and the spring constants per tick.
 const CAMERA_TICK: f32 = 0.017;
+/// Camera ticks a frame runs at most; the rest of a backlog is dropped.
+const MAX_CAMERA_TICKS: u32 = 9;
 const ORBIT_STIFFNESS: f32 = 0.0718;
 const ORBIT_RETENTION: f32 = 0.616;
 /// The yaw leads the shown yaw by at most this per tick (rad).
@@ -677,6 +679,17 @@ const ZOOM_STOPS: usize = 6;
 const ZOOM_START: f32 = 1300.0;
 /// The steepest pitch the orbit drag reaches (rad below the horizon).
 const MAX_PITCH: f32 = 1.5;
+/// A shake offset shows while its squared length is above the original's
+/// 1e-5 cm² (here in m²).
+const SHAKE_FLOOR: f32 = 1e-9;
+/// Each tick the shake offset keeps this share of its last change, and then
+/// this share of itself: a damped wobble of about a second.
+const SHAKE_CARRY: f32 = 0.96;
+const SHAKE_KEEP: f32 = 0.99;
+/// The shake stops once its change in a tick squared is within the
+/// original's 1e-7 cm² and the offset squared within 1e-4 cm² (here in m²).
+const SHAKE_STILL_CHANGE: f32 = 1e-11;
+const SHAKE_STILL: f32 = 1e-8;
 
 #[derive(Component, Debug)]
 pub struct ChaseCamera {
@@ -691,13 +704,21 @@ pub struct ChaseCamera {
     /// Zoom: the target and the shown value (800–2000).
     zoom: f32,
     shown_zoom: f32,
-    /// Time left over from the last camera tick (s).
-    carry: f32,
+    /// How far the last camera tick ends after the present frame (s).
+    ahead: f32,
+    /// The backward unit vector and zoom the tick before the last left: a
+    /// frame shows them between these and the last tick's.
+    before: (Vec3, f32),
+    /// The eye's shake offset (m) and the tick before's: `kick` moves them
+    /// apart, each tick carries the offset on, and a frame adds it between
+    /// the two.
+    shake: Vec3,
+    shake_before: Vec3,
 }
 
 impl Default for ChaseCamera {
     fn default() -> Self {
-        Self {
+        let mut cam = Self {
             yaw: 0.0,
             shown_yaw: 0.0,
             yaw_speed: 0.0,
@@ -705,8 +726,13 @@ impl Default for ChaseCamera {
             pitch: min_pitch(ZOOM_START),
             zoom: ZOOM_START,
             shown_zoom: ZOOM_START,
-            carry: 0.0,
-        }
+            ahead: 0.0,
+            before: (Vec3::Z, ZOOM_START),
+            shake: Vec3::ZERO,
+            shake_before: Vec3::ZERO,
+        };
+        cam.before = (cam.backward(), cam.shown_zoom);
+        cam
     }
 }
 
@@ -714,11 +740,77 @@ impl ChaseCamera {
     /// A camera behind a character facing `yaw`.
     pub fn behind(yaw: f32) -> Self {
         let yaw = yaw + std::f32::consts::PI;
-        Self {
+        let mut cam = Self {
             yaw,
             shown_yaw: yaw,
             ..default()
+        };
+        cam.before = (cam.backward(), cam.shown_zoom);
+        cam
+    }
+
+    /// The unit vector from the focus to the eye the last tick left.
+    fn backward(&self) -> Vec3 {
+        Quat::from_euler(EulerRot::YXZ, self.shown_yaw, -self.pitch, 0.0) * Vec3::Z
+    }
+
+    /// Shakes the camera: the eye's offset moves by `by` (m) and the tick
+    /// before's the other way, so the next ticks carry it on.
+    pub fn kick(&mut self, by: Vec3) {
+        self.shake += by;
+        self.shake_before -= by;
+    }
+
+    /// One 17 ms tick: the shake, the orbit spring, the pitch and the zoom
+    /// ease.
+    fn tick(&mut self) {
+        self.before = (self.backward(), self.shown_zoom);
+        let change = self.shake - self.shake_before;
+        if change.length_squared() > SHAKE_STILL_CHANGE || self.shake.length_squared() > SHAKE_STILL
+        {
+            self.shake_before = self.shake;
+            self.shake = (self.shake + change * SHAKE_CARRY) * SHAKE_KEEP;
+        } else {
+            self.shake = Vec3::ZERO;
+            self.shake_before = Vec3::ZERO;
         }
+        let lead = turn_between(self.shown_yaw, self.yaw).clamp(-MAX_YAW_LEAD, MAX_YAW_LEAD);
+        self.yaw_speed = ORBIT_RETENTION * (self.yaw_speed + ORBIT_STIFFNESS * lead);
+        self.shown_yaw += self.yaw_speed;
+        let target_pitch = self.user_pitch.max(min_pitch(self.shown_zoom));
+        self.pitch += (target_pitch - self.pitch) * 0.1;
+        let ease = 5.0 / 59.0;
+        self.shown_zoom += (self.zoom - self.shown_zoom) * ease;
+    }
+
+    /// Runs the ticks whose start the frame has reached, `dt` (s) after the
+    /// last frame: at most nine, the rest of a backlog dropped. Returns how
+    /// far the frame is into the last tick (0–1).
+    fn advance(&mut self, dt: f32) -> f32 {
+        self.ahead -= dt;
+        let mut ran = 0;
+        while self.ahead < 0.0 && ran < MAX_CAMERA_TICKS {
+            self.ahead += CAMERA_TICK;
+            self.tick();
+            ran += 1;
+        }
+        self.ahead = self.ahead.max(0.0);
+        1.0 - self.ahead / CAMERA_TICK
+    }
+
+    /// The backward vector, zoom and eye offset to show `t` of the way from
+    /// the tick before the last to the last.
+    fn shown(&self, t: f32) -> (Vec3, f32, Vec3) {
+        let backward = self.before.0.lerp(self.backward(), t).normalize_or(Vec3::Z);
+        let zoom = self.before.1 + (self.shown_zoom - self.before.1) * t;
+        // The present offset decides whether there is a shake at all, as the
+        // original tests it: one ending drops out at once.
+        let shake = if self.shake.length_squared() > SHAKE_FLOOR {
+            self.shake_before.lerp(self.shake, t)
+        } else {
+            Vec3::ZERO
+        };
+        (backward, zoom, shake)
     }
 }
 
@@ -738,21 +830,36 @@ fn zoom_fov(zoom: f32, aspect: f32) -> f32 {
         .to_radians()
 }
 
+/// Where the camera looks: the player's pelvis, drawn between its last two
+/// body ticks as its mesh is (`alpha` of the way), or the player's feet
+/// while it has no body.
+fn camera_focus(feet: Vec3, body: Option<&Ragdoll>, alpha: f32) -> Vec3 {
+    body.and_then(|b| b.parts.iter().find(|p| p.parent.is_none()))
+        .map_or(feet, |pelvis| pelvis.drawn(alpha).translation.into())
+}
+
 /// The camera ticks on real time, so it keeps orbiting while the
 /// simulation is paused or slowed (`docs/DEBUGGING.md`).
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(crate) fn chase_camera(
     time: Res<Time<Real>>,
+    fixed: Res<Time<Fixed>>,
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
     windows: Query<&Window, With<PrimaryWindow>>,
     players: Query<&Transform, (With<Player>, Without<ChaseCamera>)>,
+    bodies: Query<&Ragdoll, With<PlayerBody>>,
     mut cameras: Query<(&mut ChaseCamera, &mut Transform, &mut Projection)>,
 ) {
     let Some(target) = players.iter().next() else {
         return;
     };
+    let focus = camera_focus(
+        target.translation,
+        bodies.iter().next(),
+        fixed.overstep_fraction(),
+    );
     let (width, aspect) = windows.single().map_or((1600.0, 1.6), |w| {
         (w.width().max(1.0), w.width() / w.height().max(1.0))
     });
@@ -767,24 +874,13 @@ pub(crate) fn chase_camera(
         }
         let floor = min_pitch(cam.shown_zoom);
         cam.user_pitch = cam.user_pitch.clamp(floor, MAX_PITCH);
-        // The camera's own tick: springs and eases at 17 ms.
-        cam.carry += time.delta_secs();
-        while cam.carry >= CAMERA_TICK {
-            cam.carry -= CAMERA_TICK;
-            let lead = turn_between(cam.shown_yaw, cam.yaw).clamp(-MAX_YAW_LEAD, MAX_YAW_LEAD);
-            cam.yaw_speed = ORBIT_RETENTION * (cam.yaw_speed + ORBIT_STIFFNESS * lead);
-            cam.shown_yaw += cam.yaw_speed;
-            let target_pitch = cam.user_pitch.max(min_pitch(cam.shown_zoom));
-            cam.pitch += (target_pitch - cam.pitch) * 0.1;
-            let ease = 5.0 / 59.0;
-            cam.shown_zoom += (cam.zoom - cam.shown_zoom) * ease;
-        }
-        let focus = target.translation;
-        let rot = Quat::from_euler(EulerRot::YXZ, cam.shown_yaw, -cam.pitch, 0.0);
-        t.translation = focus + rot * Vec3::new(0.0, 0.0, CAMERA_DISTANCE);
+        let along = cam.advance(time.delta_secs());
+        let (backward, zoom, shake) = cam.shown(along);
+        t.translation = focus + backward * CAMERA_DISTANCE;
         t.look_at(focus, Vec3::Y);
+        t.translation += shake;
         if let Projection::Perspective(p) = projection.as_mut() {
-            p.fov = zoom_fov(cam.shown_zoom, aspect);
+            p.fov = zoom_fov(zoom, aspect);
         }
     }
 }
@@ -1066,6 +1162,114 @@ mod tests {
         }
         // Each side keeps its own last pick.
         assert_ne!(choice.pick(1), 0);
+    }
+
+    #[test]
+    fn the_camera_ticks_every_17_ms_and_at_most_nine_a_frame() {
+        let mut cam = ChaseCamera::behind(0.0);
+        cam.zoom = 2000.0;
+        // The first frame starts a tick that ends 7 ms after it: 10 ms in.
+        let t = cam.advance(0.010);
+        assert!((t - 0.010 / 0.017).abs() < 1e-5);
+        assert!((cam.ahead - 0.007).abs() < 1e-6);
+        // 7 ms more reach its end: no new tick, all the way in.
+        let zoom = cam.shown_zoom;
+        assert!((cam.advance(0.007) - 1.0).abs() < 1e-4);
+        assert_eq!(cam.shown_zoom, zoom);
+        // A second's stall runs nine ticks and drops the rest.
+        let mut nine = ChaseCamera::behind(0.0);
+        nine.zoom = 2000.0;
+        nine.shown_zoom = cam.shown_zoom;
+        assert_eq!(cam.advance(1.0), 1.0);
+        for _ in 0..9 {
+            nine.tick();
+        }
+        assert!((cam.shown_zoom - nine.shown_zoom).abs() < 1e-3);
+        assert_eq!(cam.ahead, 0.0);
+    }
+
+    #[test]
+    fn the_camera_shows_its_last_two_ticks_blended() {
+        let mut cam = ChaseCamera::behind(0.0);
+        cam.zoom = 2000.0;
+        cam.advance(0.017);
+        let (b0, z0) = cam.before;
+        let (b1, z1) = (cam.backward(), cam.shown_zoom);
+        assert!(z1 > z0);
+        let (b, z, _) = cam.shown(0.5);
+        assert!((z - (z0 + z1) / 2.0).abs() < 1e-3);
+        assert!((b - (b0 + b1).normalize()).length() < 1e-5);
+        assert_eq!(cam.shown(1.0).1, z1);
+        // The shake is shown between the tick before's offset and the
+        // present one.
+        cam.shake_before = Vec3::new(0.01, 0.0, 0.0);
+        cam.shake = Vec3::new(0.03, 0.0, 0.0);
+        assert!((cam.shown(0.5).2.x - 0.02).abs() < 1e-7);
+        // The present offset decides: one ending drops out at once.
+        cam.shake = Vec3::new(2e-5, 0.0, 0.0);
+        assert_eq!(cam.shown(0.5).2, Vec3::ZERO);
+    }
+
+    #[test]
+    fn a_kick_rings_the_camera_down() {
+        let mut cam = ChaseCamera::behind(0.0);
+        // A 1 cm kick: the offset at 1 cm, the tick before's at −1 cm.
+        cam.kick(Vec3::new(0.01, 0.0, 0.0));
+        assert!((cam.shown(0.75).2.x - 0.005).abs() < 1e-7);
+        // A tick keeps 0.96 of the 2 cm change, then 0.99 of the whole:
+        // 0.99 × (1 + 0.96 × 2) = 2.8908 cm.
+        cam.advance(0.017);
+        assert!((cam.shake.x - 0.028_908).abs() < 1e-7, "{}", cam.shake.x);
+        assert_eq!(cam.shake_before.x, 0.01);
+        assert!((cam.shown(0.5).2.x - 0.019_454).abs() < 1e-7);
+        // It wobbles back through nothing, still moving after 4 s and
+        // stopped for good by 6 s.
+        let mut crossed = false;
+        for _ in 1..240 {
+            cam.tick();
+            crossed |= cam.shake.x < 0.0;
+        }
+        assert!(crossed);
+        assert_ne!(cam.shake, Vec3::ZERO);
+        for _ in 240..360 {
+            cam.tick();
+        }
+        assert_eq!((cam.shake, cam.shake_before), (Vec3::ZERO, Vec3::ZERO));
+        // Under the 1e-5 cm² floor a kick is not shown; one too small to
+        // move (change within 1e-7 cm², offset within 1e-4 cm²) is dropped
+        // by the next tick.
+        cam.kick(Vec3::splat(1e-5));
+        assert_eq!(cam.shown(1.0).2, Vec3::ZERO);
+        let mut still = ChaseCamera::behind(0.0);
+        still.kick(Vec3::new(1e-6, 0.0, 0.0));
+        still.tick();
+        assert_eq!((still.shake, still.shake_before), (Vec3::ZERO, Vec3::ZERO));
+    }
+
+    #[test]
+    fn the_camera_follows_the_pelvis_or_the_feet_before_a_body() {
+        let feet = Vec3::new(1.0, 0.0, 2.0);
+        assert_eq!(camera_focus(feet, None, 0.5), feet);
+        // A pelvis 1 m over the feet and a thigh under it: the focus is the
+        // pelvis, the part without a parent.
+        let part = |bone, parent, at: Vec3| exa_physics::body::PartSetup {
+            bone,
+            entity: Entity::PLACEHOLDER,
+            parent,
+            world: bevy::math::Affine3A::from_translation(at),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.08),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+        };
+        let body = Ragdoll::new(&[
+            part(1, None, feet + Vec3::Y),
+            part(2, Some(0), feet + Vec3::new(0.1, 0.6, 0.0)),
+        ]);
+        let focus = camera_focus(feet, Some(&body), 0.5);
+        assert!((focus - (feet + Vec3::Y)).length() < 1e-5, "{focus}");
     }
 
     #[test]
