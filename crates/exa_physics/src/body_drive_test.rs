@@ -65,6 +65,14 @@ fn pose_gains_are_the_originals() {
     d.energy = 1.0;
     d.support = 0.5;
     assert!(close(d.pose_gain(1), alert / 4.0, 1e-7));
+    // A feral character's head gain: half feral 0.0052 idle, a zombie none;
+    // the trunk keeps its gain.
+    d.support = 1.0;
+    d.stats.head_gain = 0.5;
+    assert!(close(d.pose_gain(10), 0.0105 / 2.0, 5e-5));
+    d.stats.head_gain = 0.0;
+    assert_eq!(d.pose_gain(10), 0.0);
+    assert!(close(d.pose_gain(1), 0.0314, 5e-5));
 }
 
 /// The push G·o·(1 − c), c = o·v/(s|o|²), in cm a tick, at s = 0.5: still,
@@ -247,7 +255,8 @@ fn no_support_no_pose_drive_and_a_fall_keeps_the_tone() {
     }
 }
 
-/// Energy recovers 0.005 a tick, up to a normal human's most, 1.
+/// Energy recovers 0.005 a tick, up to a normal human's most, 1; a
+/// zombie's most is 0.9, so it is cut to 0.9 on its first tick.
 #[test]
 fn energy_recovers_to_its_cap() {
     let (setup, _) = humanoid(Vec3::ZERO);
@@ -258,7 +267,18 @@ fn energy_recovers_to_its_cap() {
     assert!(close(body.drive.as_ref().unwrap().energy, 0.995, 1e-6));
     body.tick(none);
     body.tick(none);
-    assert_eq!(body.drive.as_ref().unwrap().energy, MAX_ENERGY);
+    assert_eq!(body.drive.as_ref().unwrap().energy, 1.0);
+    let zombie = BodyStats {
+        max_energy: 0.9,
+        ..BodyStats::HUMAN
+    };
+    let mut body = Ragdoll::new(&setup).with_drive().with_stats(zombie);
+    assert_eq!(body.drive.as_ref().unwrap().energy, 1.0);
+    body.tick(none);
+    assert_eq!(body.drive.as_ref().unwrap().energy, 0.9);
+    body.drive.as_mut().unwrap().energy = 0.5;
+    body.tick(none);
+    assert!(close(body.drive.as_ref().unwrap().energy, 0.505, 1e-6));
 }
 
 /// A standing body shoved at the chest at 1.5 m/s sways and recovers: its
@@ -379,4 +399,30 @@ fn a_dazed_body_holds_its_pose() {
     body.fall();
     body.tick(floor.as_slice());
     assert_eq!(body.drive.as_ref().unwrap().sag, 0.0);
+}
+
+/// A feral body is dazed by its own most energy: a zombie's (most 0.9)
+/// is dazed under 0.85, in double precision, and holds its pose by E/0.9.
+#[test]
+fn a_feral_body_is_dazed_under_its_own_most() {
+    let mut d = Drive {
+        energy: 0.9,
+        stats: BodyStats {
+            max_energy: 0.9,
+            ..BodyStats::HUMAN
+        },
+        ..Drive::default()
+    };
+    assert_eq!(d.max_energy(), 0.9);
+    assert!(!d.dazed());
+    // 0.9f less the double 0.05 is a hair under 0.85f: 0.85f is not
+    // dazed, the float under it is.
+    d.energy = 0.85;
+    assert!(!d.dazed());
+    d.energy = 0.85f32.next_down();
+    assert!(d.dazed());
+    d.energy = 0.45;
+    d.support = 0.0;
+    assert!(close(d.energy_share(), 0.5, 1e-6));
+    assert!(close(d.hold_weight(), 0.9375, 1e-6));
 }

@@ -6,7 +6,8 @@ use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 use exa_assets::{ColorSpace, Game, ModelCache, ModelLoader, PackKind, model};
-use exa_physics::body::RaceMuscles;
+use exa_formats::character_stats::{CharacterStats, Spawn};
+use exa_physics::body::{BodyStats, RaceMuscles};
 
 use crate::{Options, View};
 
@@ -628,6 +629,20 @@ fn spawn_players(
     options: &Options,
 ) {
     let (position, yaw) = (start.position, start.yaw);
+    let races = game
+        .0
+        .pack(PackKind::Resource)
+        .and_then(|p| p.get("races.rdb"))
+        .and_then(|b| exa_formats::races::parse(b).ok())
+        .unwrap_or_default();
+    let story = exa_world::start::mode(name) == Some(exa_world::start::Mode::Story);
+    // The player and the duellist have no record of their own yet: a new
+    // human record (height 0, not feral), without a natural armour layer.
+    let new_human = || {
+        let human = exa_formats::races::of_character(&races, exa_character::HUMAN);
+        let record = exa_formats::characters::CharacterRecord::default();
+        CharacterStats::derive(&record, human, Spawn { story, dead: false })
+    };
     let player = commands
         .spawn((
             Transform::from_translation(position + Vec3::Y * 0.2),
@@ -649,14 +664,18 @@ fn spawn_players(
             exa_character::Outfit::of_models(&options.outfit),
             ChildOf(player),
         ));
-        let mut fighter = exa_combat::Fighter::default();
+        let stats = new_human();
+        let mut fighter = exa_combat::Fighter::of_stats(None, stats);
         if let Some([yellow, red]) = options.health {
             fighter.health.yellow = yellow;
             fighter.health.red = red;
         }
         commands.entity(model).insert((
             fighter,
-            exa_physics::body::Physical::default(),
+            exa_physics::body::Physical {
+                stats: body_stats(&stats),
+                ..default()
+            },
             exa_character::blood::DebugWoundTarget,
         ));
         // A lit torch, as the player carries one through the original's
@@ -701,20 +720,18 @@ fn spawn_players(
                         .clone()
                         .unwrap_or_else(|| "ub05ssworda".into()),
                 ),
-                exa_combat::Fighter::default(),
-                exa_physics::body::Physical::default(),
+                exa_combat::Fighter::of_stats(None, new_human()),
+                exa_physics::body::Physical {
+                    stats: body_stats(&new_human()),
+                    ..default()
+                },
                 duellist,
                 ChildOf(foe_root),
             ));
         }
     }
-    let races = game
-        .0
-        .pack(PackKind::Resource)
-        .and_then(|p| p.get("races.rdb"))
-        .and_then(|b| exa_formats::races::parse(b).ok())
-        .unwrap_or_default();
-    let (spawned, missing) = spawn_placed_characters(commands, loader, &races, &start.characters);
+    let (spawned, missing) =
+        spawn_placed_characters(commands, loader, &races, &start.characters, story);
     info!("level {name}: {spawned} characters placed, {missing} without a body");
     // The loading screen stays until everyone is dressed: the first frame
     // drawn with the 3D camera must already have every skinned garment.
@@ -1033,15 +1050,29 @@ fn race_muscles(body: &exa_formats::races::RaceBody) -> RaceMuscles {
     }
 }
 
+/// What a character's stats give its body.
+fn body_stats(stats: &CharacterStats) -> BodyStats {
+    BodyStats {
+        max_energy: stats.max_energy,
+        scale: stats.scale,
+        head_gain: stats.head_gain,
+        head_factor: stats.head_factor,
+        walking_arms: stats.walking_arms,
+        pin_factor: stats.pin_factor,
+    }
+}
+
 /// Spawns a level's placed characters in their race's bodies, standing (or
 /// lying, for the dead) where the level puts them, those of human frame
-/// dressed in their own items. Returns how many were spawned and how many
-/// had no body.
+/// dressed in their own items, each with the stats its record and race
+/// give it (`story`: the level is a story level). Returns how many were
+/// spawned and how many had no body.
 fn spawn_placed_characters(
     commands: &mut Commands,
     loader: &mut ModelLoader,
     races: &[exa_formats::races::Race],
     placed: &[exa_world::PlacedCharacter],
+    story: bool,
 ) -> (usize, usize) {
     let (mut spawned, mut missing) = (0, 0);
     for c in placed {
@@ -1053,6 +1084,14 @@ fn spawn_placed_characters(
             continue;
         };
         let physical = human_frame(c.race);
+        let stats = CharacterStats::derive(
+            &c.record,
+            race,
+            Spawn {
+                story,
+                dead: c.dead,
+            },
+        );
         // Bodies of other frames have no physical links to lie down with.
         if c.dead && !physical {
             missing += 1;
@@ -1079,6 +1118,7 @@ fn spawn_placed_characters(
             let body = exa_formats::races::body_of_character(races, c.race);
             commands.entity(model).insert(exa_physics::body::Physical {
                 race: race_muscles(&body),
+                stats: body_stats(&stats),
                 ..default()
             });
         }
@@ -1097,7 +1137,7 @@ fn spawn_placed_characters(
                     })
                     .collect(),
             ),
-            race.map_or_else(exa_combat::Fighter::default, exa_combat::Fighter::of_record),
+            exa_combat::Fighter::of_stats(race, stats),
             race.map_or_else(
                 exa_character::RaceWeaponry::default,
                 exa_character::RaceWeaponry::of_race,

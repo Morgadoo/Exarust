@@ -2,6 +2,7 @@
 //! places them) or of the arena's actors, read whole.
 
 use anyhow::{Context, Result, anyhow};
+use exa_formats::character_stats::{CharacterStats, Spawn};
 use exa_formats::characters::{
     CharacterRecord, LevelCharacters, Placement, SAVED_HEAL_POOL, SAVED_POTION, SKILL_NAMES,
     technique_name,
@@ -29,7 +30,7 @@ pub fn characters(game: &GameData, source: &str) -> Result<()> {
         println!("actors.rpk: {} actors", actors.entries().len());
         for e in actors.entries() {
             match CharacterRecord::parse(0, actors.bytes(e)) {
-                Ok(r) => print_record(&e.name, &r, &races, &[]),
+                Ok(r) => print_record(&e.name, &r, &races, &[], false),
                 Err(err) => println!("{}: not a record ({err})", e.name),
             }
         }
@@ -48,6 +49,7 @@ pub fn characters(game: &GameData, source: &str) -> Result<()> {
         .find(|c| c.tag == exa_formats::characters::CHARACTERS)
         .ok_or_else(|| anyhow!("{entry} places no characters"))?;
     let level = LevelCharacters::parse(section.data)?;
+    let story = entry.to_ascii_lowercase().starts_with("exanima");
     let entries = LevelCharacters::read_database(section.data)?;
     let unread = entries.iter().filter(|(_, r)| r.is_err()).count();
     println!(
@@ -62,13 +64,20 @@ pub fn characters(game: &GameData, source: &str) -> Result<()> {
                 .iter()
                 .filter(|p| p.record() == *id)
                 .collect();
-            print_record(&format!("{id:#x}"), r, &races, &placed);
+            print_record(&format!("{id:#x}"), r, &races, &placed, story);
         }
     }
     Ok(())
 }
 
-fn print_record(label: &str, r: &CharacterRecord, races: &[Race], placed: &[&Placement]) {
+/// `story`: the record is placed in a story level (else the arena).
+fn print_record(
+    label: &str,
+    r: &CharacterRecord,
+    races: &[Race],
+    placed: &[&Placement],
+    story: bool,
+) {
     let race = races::of_character(races, r.race).map_or("?", |race| race.name.as_str());
     println!(
         "{label:<10} {:<16} {:<10} v{} {race} {}  feral {}  height {}  age {}  physique {:?}",
@@ -108,6 +117,33 @@ fn print_record(label: &str, r: &CharacterRecord, races: &[Race], placed: &[&Pla
         };
         println!("    {} {}: {learnt}", SKILL_NAMES[slot], skill.points);
     }
+    let dead = placed.first().is_some_and(|p| p.is_dead());
+    let s = CharacterStats::derive(r, races::of_character(races, r.race), Spawn { story, dead });
+    println!(
+        "    spawns with scale {:.4}  size {:.4}  pelvis {:.4} m  leg reach {:.4} m  most energy {:.4}  step reach {:.4} m  pins {:.4}  head gain {:.4} factor {:.4}  walking arms {:.4}  sprint {:.1}/s",
+        s.scale,
+        s.size,
+        s.standing_height,
+        s.leg_reach,
+        s.max_energy,
+        s.step_reach(0.0),
+        s.pin_factor,
+        s.head_gain,
+        s.head_factor,
+        s.walking_arms,
+        s.sprint.thrust
+    );
+    println!(
+        "    health {:.4} / {:.4} of {:.4}  rules {:#x}  perception {:.3}  voice pitch {:.3} volume {:.3} attack step {}",
+        s.yellow,
+        s.red,
+        s.max_health,
+        s.rules.0,
+        s.perception,
+        s.voice_pitch,
+        s.voice_volume,
+        s.attack_voice_step
+    );
     let perks: Vec<&str> = r.perks().iter().map(|p| p.name()).collect();
     println!(
         "    perks [{}]  manoeuvring tier {}  deflection {}",

@@ -92,6 +92,9 @@ pub struct PlacedCharacter {
     /// Item in the right hand: model (`@factory` for assembled weapons) and
     /// its weapon data.
     pub held: Option<(String, Option<exa_formats::objdb::Weapon>)>,
+    /// The character's whole record, from which its spawn derives its
+    /// stats.
+    pub record: exa_formats::characters::CharacterRecord,
 }
 
 /// An item a placed character wears.
@@ -156,6 +159,7 @@ fn placed_characters(scene: &Scene, global: &[Item]) -> Vec<PlacedCharacter> {
                 female: record.female,
                 worn,
                 held,
+                record: record.clone(),
             })
         })
         .collect()

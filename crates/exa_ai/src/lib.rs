@@ -189,10 +189,10 @@ fn duellist(
         stance::take_ai_stance(&mut anim, *stance, primary_blend);
         // Its request goes through the original's executor: enough energy
         // and the cooldown since its last attack's last tick.
-        let energy = ragdoll
+        let (energy, most) = ragdoll
             .and_then(|r| r.drive.as_ref())
-            .map_or(MAX_ENERGY, |d| d.energy);
-        let ready = attack::has_energy(energy, MAX_ENERGY)
+            .map_or((MAX_ENERGY, MAX_ENERGY), |d| (d.energy, d.max_energy()));
+        let ready = attack::has_energy(energy, most)
             && attack::execute(
                 attack::Request::default(),
                 now,

@@ -751,14 +751,14 @@ fn request_attacks(
         pb.attack.thrust = attack::may_thrust(weapon_class)
             && (keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight));
         pb.heading = pb.aim;
-        let energy = body
+        let (energy, most) = body
             .and_then(|b| b.drive.as_ref())
-            .map_or(MAX_ENERGY, |d| d.energy);
-        let dazed = !attack::has_energy(energy, MAX_ENERGY);
+            .map_or((MAX_ENERGY, MAX_ENERGY), |d| (d.energy, d.max_energy()));
+        let dazed = !attack::has_energy(energy, most);
         if dazed != pb.attack.dazed {
             pb.attack.dazed = dazed;
             if dazed {
-                info!("attack waits: energy {energy:.2}, under 80 % of {MAX_ENERGY:.2}");
+                info!("attack waits: energy {energy:.2}, under 80 % of {most:.2}");
             }
         }
         if dazed {
@@ -1603,6 +1603,41 @@ mod tests {
             .as_mut()
             .unwrap()
             .energy = 0.8;
+        assert!(request_tick(&mut app, body, true).0.starts_with("Attack"));
+    }
+
+    /// A feral player's gate is 80 % of its own most energy: with most
+    /// 0.9 it waits at 0.71 and attacks at 0.72.
+    #[test]
+    fn a_feral_attack_waits_for_80_percent_of_its_most() {
+        let (mut app, body) = attack_app();
+        let part = exa_physics::body::PartSetup {
+            bone: 1,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: bevy::math::Affine3A::IDENTITY,
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.08),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+        };
+        let feral = exa_physics::body::BodyStats {
+            max_energy: 0.9,
+            ..exa_physics::body::BodyStats::HUMAN
+        };
+        let mut ragdoll = Ragdoll::new(&[part]).with_drive().with_stats(feral);
+        ragdoll.drive.as_mut().unwrap().energy = 0.71;
+        app.world_mut().entity_mut(body).insert(ragdoll);
+        assert_eq!(request_tick(&mut app, body, true).0, "Cmbt - Idle");
+        let mut e = app.world_mut().entity_mut(body);
+        e.get_mut::<Ragdoll>()
+            .unwrap()
+            .drive
+            .as_mut()
+            .unwrap()
+            .energy = 0.72;
         assert!(request_tick(&mut app, body, true).0.starts_with("Attack"));
     }
 

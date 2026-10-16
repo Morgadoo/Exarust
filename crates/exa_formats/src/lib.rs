@@ -5,6 +5,7 @@
 //! Formats whose layout is only partly understood expose the raw fields they
 //! read; see `docs/formats/` for what is known about each.
 
+pub mod character_stats;
 pub mod characters;
 pub mod chunk;
 pub mod environment;

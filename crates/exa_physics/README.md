@@ -16,7 +16,10 @@ joint inside its range through their smoothed lengths, reset when the
 body goes limp (`body::Ragdoll::go_limp`). In a living body every slack
 link is a link muscle that turns its joint toward the clip's angle, with
 the gains the character tick sets from what the character does
-(`body::Bearing`) and its race (`body::RaceMuscles`) (`src/body_muscle.rs`);
+(`body::Bearing`), its race (`body::RaceMuscles`) and its own character's
+stats from its record (`body::BodyStats`: most energy, the limbs' scale,
+the head's gain and factor and the walking arms of the undead)
+(`src/body_muscle.rs`);
 a pose drive turns the pelvis, spine, head and feet toward the clip's
 orientation about each part's own origin, scaled by the support S²
 (`body::Drive`); and the carry holds the body up in place of gravity, with

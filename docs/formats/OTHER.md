@@ -667,8 +667,9 @@ Implemented in `exa_combat::damage`.
 - Part multipliers (damage/stun): head 1.6/1.4, thorax 1.2/1.2, lower legs
   0.6, feet 0.4, forearms 0.5/0.75, hands 0.3/0.6, others 1.
 - Red = 0.75·P/(P + 1)·m. Yellow = 0.75·(T/2 + (2(P − P/(P + 1)) + J)·m).
-- Health starts at 0.25 × the race's factor (`races.rdb` `0xE4`: human 1,
-  ogre 6, golem 2, …).
+- Maximum health is 0.25 × the race's factor (`races.rdb` `0xE4`: human 1,
+  ogre 6, golem 2, …) with the init's race-byte rules, and health starts at
+  the record's saved pools ([RFC.md](RFC.md), Stats derived at spawn).
 - Applying a blow: yellow −= 0.1·Y; red −= 0.2·R; yellow is rescaled by
   how much red is left. Yellow under 0.01 is death.
 - Daze = √(0.75P + 1.25J)·stun·0.5·0.25/max health.

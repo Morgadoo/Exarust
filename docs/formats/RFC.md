@@ -538,6 +538,67 @@ stubs that are not records) and of `actors.rpk` parses to its end
 living placement stores full pools, and every living human is feral (0.4,
 0.42, 0.5 ×27, 0.84 ×21, 1.0 ×47).
 
+**Stats derived at spawn** (`exa_formats::character_stats`). The spawn
+runs the character builder, then registers the body (its last call is the
+character's init), then the armour pass, the reach pass and the load of
+the pools. From the record (h its height, kept within −1…1; f its feral
+level, kept within 0…1) and its race (or the built-in record):
+
+| stat | rule |
+|---|---|
+| body scale | min(race scale, 1.5) × (1 − 0.05·h): a dynamics factor (limbs' muscles 1.25 × it, √scale in turns and reach), not a mesh scale |
+| size | race size × (1 − 0.05·h) |
+| standing pelvis | 109.5 − 11.25·h cm over the floor (the spawn places the body at it less 8 cm) |
+| leg reach | 107.2 − 11.1·h cm (the init's, written after the builder's 108.5 − 11.25·h) |
+| locomotion clock | × 1/(1 − 0.1·h) |
+| most energy | 1, or 1 − 0.1·f |
+| step reach | 80 cm·√scale·(1 − 0.3·f)·(1 − 0.2·encumbrance) |
+| support pins' factor | race `0x60`, less 0.25·f² when feral (every earlier race-byte value is overwritten) |
+| head | pose gain × (1 − f), muscle factor × (1 − 0.8·f) |
+| walking arms | 0.2 − 0.15·f, at least 0.05 (the arms in the walk and run cycles) |
+| sprint gait | the race's sprint row moved toward its jog by f (OTHER.md, Races) |
+| perception | race `0x110`, or 1 − f/2 when feral |
+| voice | pitch: the record's within 0.9…1.07 (race byte 7, the hulking ghoul, 0.85); volume: scale × race `0x1B4`; attack-voice step: race `0x1C4` − 1, or 1 when feral |
+| clip-rate base | race `0x5C` |
+
+Maximum health is 0.25 × the race's health factor, then by race byte (the
+record's, which also picks the race): 3 (ogre) 1.5 and 4 (Sir) 1.0 unless
+a golem; golems (bit `0x10` of the byte) 0.5, byte 17 (the boss) 1.0; then
+2 (ancient), 6 (ghoul) and 9 (manipulator) 0.375, 5 (Fael) 0.75, 7 and 8
+(hulking ghoul, gobbler) 0.5. Only the manipulator differs from 0.25 × its
+race's factor (0.375, where its factor 1 gives 0.25). Yellow and red start
+at the maximum and the load sets them to the saved shares (× 1.5259022e-5).
+The placement reader first sets both pools full when a living placement's
+record stores red 0: the arena's opponents and proctor store 0/0 and spawn
+full.
+
+The init's rule bits (the body's rule word):
+
+| bit | set for | read by |
+|---|---|---|
+| `0x1` | creatures (race bytes 3–9), race second word bit 0 | the held-item pass (no fist sphere), the AI |
+| `0x2` | living humans not feral, creatures | bandages and potions |
+| `0x4` | over half feral, creatures, second word bit 1 | the AI only |
+| `0x8` | feral humans, skeletons, ancients | damage: blows take no red health |
+| `0x10` | living humans not feral and first word bit 3, in the story | the AI manager's revival |
+| `0x20` | ogre and Sir, first word bit 7, second word bit 2 | red regeneration |
+| `0x40` | ogre and Sir, first word bit 5 | damage: a quarter of the daze, no swing stall |
+| `0x100` | golems (first word `0x3000`, by the armour pass) unless they wear their kind's core (item 500 for `0x2000`, 431 for `0x1000`; every placed golem does) | blocks red regeneration |
+
+Feral levels clear `0x2` and `0x10` and set `0x8`. In the story levels the
+97 living humans spawn with most energy 0.9 (×47), 0.9158 (×21), 0.95
+(×27), 0.9576 and 0.9602, support pins 1.0 to 1.21, no head gain for the
+47 at f = 1, and rule bits `0xC` (×68) or `0x8`; every one of the 451 living
+characters spawns at full health. Exarust's body reads the most energy, the
+head's gain and factor, the walking arms and the scale (RSQ.md, Physical
+body); the player and the duellist spawn from a new human record.
+
+Evidence: REA and `exe.asm` on the builder, the init, its head setup, the
+body tick's walking arms and energy cap, the spawn's call order, the
+placement readers and the readers of the rule bits; corpus tests over
+every placed character and arena actor (`exa_formats::character_stats`,
+`exa-tool characters`).
+
 **Placed objects (`DBC0` → `DBCE`)**: `i32 n`, then n × `DB01`. Each is
 `u32 node id` (`0x80000000` = local objdb `DBDB`, `0x40000000` = world
 objdb), `u32` placement flags (version `0x3D23`), `u32` object flags, a 3×4

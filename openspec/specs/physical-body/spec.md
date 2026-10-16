@@ -44,7 +44,7 @@ The system SHALL turn a posed body asked to go limp into a ragdoll from its curr
 - **THEN** the body drops to the floor in a sprawl with its parts joined
 
 ### Requirement: Muscles
-The system SHALL drive a living physical body toward its animated pose: its link muscles turn every joint, and a pose drive turns the pelvis, lumbar, thorax and feet (gain 0.03·K, K = 19200/83²) and the head (0.01·K) toward their animated orientation about where each part's origin is, with no position target. Thighs, shins, arms and hands SHALL have no pose drive. The carry holds the body up in place of gravity.
+The system SHALL drive a living physical body toward its animated pose: its link muscles turn every joint, and a pose drive turns the pelvis, lumbar, thorax and feet (gain 0.03·K, K = 19200/83²) and the head (0.01·K times its character's head gain) toward their animated orientation about where each part's origin is, with no position target. Thighs, shins, arms and hands SHALL have no pose drive. The carry holds the body up in place of gravity.
 
 #### Scenario: Driven walk
 - **WHEN** `exarust character` plays the walk on a physical body
@@ -66,6 +66,10 @@ The system SHALL drive a living physical body toward its animated pose: its link
 - **WHEN** a part at rest is turned 0.3 rad about the vertical off its pose
 - **THEN** one tick turns it back by G of the angle, about its origin, which stays where it is
 
+#### Scenario: Feral heads
+- **WHEN** a half-feral human and a fully feral one stand alert
+- **THEN** their heads' pose gain is 0.0052 and none, their trunks' still 0.0314
+
 ### Requirement: Living bodies in motion
 The system SHALL give a living physical body the animated pose of each tick on its character frame. A standing body SHALL be carried with its root's motion since the last tick, less its controller's follow, across the ground and about the vertical only, with where the last tick left it, its level contacts, last tick's targets and its frame, and its pelvis held over the frame's by 0.168 × tone² × energy⁴ a tick, critically damped, only damped while it moves (Exarust's own).
 
@@ -82,7 +86,7 @@ The system SHALL give a living physical body the animated pose of each tick on i
 - **THEN** it is pulled back across the ground, and the hold never moves it up or down; while the body moves it is only braked
 
 ### Requirement: Blows and daze
-The system SHALL let a blow change the velocity of the struck part and take a share of the body's energy (at most 90 %, never below 0.05), which recovers by 0.005 per tick up to the body's most energy, 1 for a human. Blows SHALL be queued and dealt by the next tick, whichever frame sends them.
+The system SHALL let a blow change the velocity of the struck part and take a share of the body's energy (at most 90 %, never below 0.05), which recovers by 0.005 per tick up to the body's most energy: its character's, 1 for a human that is not feral. Blows SHALL be queued and dealt by the next tick, whichever frame sends them.
 
 #### Scenario: Stagger
 - **WHEN** a body's chest is shoved at 3 m/s with daze 0.7
@@ -91,6 +95,10 @@ The system SHALL let a blow change the velocity of the struck part and take a sh
 #### Scenario: Blow between ticks
 - **WHEN** a blow is sent in a frame that runs no tick
 - **THEN** it waits in the queue and the next tick deals it
+
+#### Scenario: Zombie energy
+- **WHEN** a fully feral body (most energy 0.9) spawns at energy 1, and later is dazed to 0.5
+- **THEN** its first tick leaves it at 0.9, and it then recovers 0.005 a tick back to 0.9
 
 ### Requirement: Balance
 Each tick a living body SHALL score its lean: q = u_y⁸ standing, u_y⁴ moving, plus 0.05 × the race's balance bonus, at most 1, u being the unit offset from its support point to its chest. While q ≤ 0.99 an instability counter SHALL grow by 10 − 10q rounded half to even; else it falls by 5 to no less than 80 standing still, or by 10 to 0. At 100 balance SHALL be q; below, it recovers by (5 − v)·0.01 a tick at a slow chest speed v under 5 cm/tick.
@@ -403,7 +411,7 @@ In a living body each slack link SHALL pull its point toward its anchor, where t
 - **THEN** the body's momentum is unchanged
 
 ### Requirement: Muscle gains
-Each tick the character tick SHALL set: the stance factor s, the race's standing (human 0.5), rising 0.01 a tick toward 0.7 + 0.3·run while moving; T = tone·s; part factors 0.5, a foot half its lower leg's, the head a quarter of the thorax's, a thigh 0.25 standing and 0.2 moving, shoulders, arms and hands 1.25 × arm stiffness; each leg limit link's strength s ← 0.9s + 0.1t, t = 0.5·S² standing, 0.4 moving.
+Each tick the character tick SHALL set: the stance factor s, the race's standing (human 0.5), rising 0.01 a tick toward 0.7 + 0.3·run while moving; T = tone·s; part factors 0.5, a foot half its lower leg's, the head a quarter of the thorax's times its character's head factor, a thigh 0.25 × scale standing and 0.2 moving, shoulders, arms and hands 1.25 × scale × arm stiffness; each leg limit link's strength s ← 0.9s + 0.1t, t = 0.5·S² standing, 0.4 moving.
 
 #### Scenario: Walking firms the body
 - **WHEN** a standing human starts walking
@@ -413,8 +421,12 @@ Each tick the character tick SHALL set: the stance factor s, the race's standing
 - **WHEN** a living human stands for one tick
 - **THEN** its leg limit links pull at 0.23, settling at 0.5, at 0.4 while it moves and toward 0 without support
 
+#### Scenario: Feral heads and short limbs
+- **WHEN** a fully feral and a half-feral human are built, and a short human (scale 0.95) falls
+- **THEN** their head factors are 0.025 and 0.075, and the short human's arms pull with σ = 0.297 off balance
+
 ### Requirement: Arm stiffness
-The arms' stiffness SHALL be 0.5 off balance (balance under 0.6, falling, lying or getting up), 0.2 at tone under 0.85 or in the walk and run cycles, and otherwise x ← 0.8x + 0.08·(0.5 + 0.5·race arm relaxation), never under min(0.4·|turn left in rad|, 0.4). An arm part's anchor relaxation SHALL be capped at 0.6 − (x − 0.1)·0.8.
+The arms' stiffness SHALL be 0.5 off balance (balance under 0.6, falling, lying or getting up), 0.2 at tone under 0.85, the character's walking arms (0.2 unless feral) in the walk and run cycles, and otherwise x ← 0.8x + 0.08·(0.5 + 0.5·race arm relaxation), never under min(0.4·|turn left in rad|, 0.4). An arm part's anchor relaxation SHALL be capped at 0.6 − (x − 0.1)·0.8.
 
 #### Scenario: Idle human arms
 - **WHEN** an alert human stands still
@@ -423,6 +435,10 @@ The arms' stiffness SHALL be 0.5 off balance (balance under 0.6, falling, lying 
 #### Scenario: Walking and off balance
 - **WHEN** the human walks, and later falls
 - **THEN** its arms pull with σ = 0.175 walking and 0.3125 off balance
+
+#### Scenario: Zombie arms
+- **WHEN** a fully feral human walks, and is then dazed to tone 0.8
+- **THEN** its arms' stiffness is 0.05 walking and 0.2 dazed
 
 ### Requirement: Anchor relaxation
 Each tick a part with link muscles SHALL move its relaxation λ toward 0.6 − 32|Δa|² (cm², the most one of its anchors moved since the last tick) × the race's arm relaxation, capped by the part: up by 0.015 a tick, down at once, and not at all for a negative target. A supported lower leg and its thigh SHALL instead take clamp(0.6 − 0.001·| |hip − foot contact|² − (2r)² |, 0, 0.2), r the contact's (the ankle's) distance from the knee, rising 0.01.
@@ -699,3 +715,7 @@ A living body's sampled turns SHALL be pulled toward the pose it holds (its pelv
 #### Scenario: Threshold
 - **WHEN** a body's energy is 0.95 as a float, a hair under the double 0.95, or the next float up
 - **THEN** it is dazed, or it is not
+
+#### Scenario: Feral threshold
+- **WHEN** a fully feral body (most energy 0.9) has energy 0.85 as a float, or the float under it, and lies with energy 0.45
+- **THEN** it is not dazed, or it is, and lying its turns are pulled 0.9375 of the way to its physical pose

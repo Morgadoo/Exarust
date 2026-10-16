@@ -28,6 +28,7 @@ use attack::{AttackMotion, Attacker, Slot};
 use bevy::prelude::*;
 use damage::{Health, PartArmour, Strike, WeaponRecord};
 use exa_anim::{Animator, BodyPart, Ease, Motions};
+use exa_formats::character_stats::CharacterStats;
 use exa_formats::races::{Natural, Race};
 use exa_physics::body::BODY_HZ;
 use exa_physics::body::{BodyTicks, CharacterTicks, GoLimp, Shove};
@@ -84,33 +85,37 @@ pub struct Fighter {
     pub readiness: f32,
     /// Its race bleeds: its wounds paint blood (`races.rdb` flag bit 0).
     pub bleeds: bool,
+    /// What its record and race gave it when it spawned (maximum health,
+    /// scale, size, reach, rule bits, …).
+    pub stats: CharacterStats,
 }
 
 impl Default for Fighter {
+    /// A new record of no known race: a human's health (0.25), no natural
+    /// armour, bleeding.
     fn default() -> Self {
-        Self::of_race(1.0, None)
+        Self::of_stats(None, CharacterStats::default())
     }
 }
 
 impl Fighter {
-    /// A fighter of a race with health factor `health` and natural armour.
-    pub fn of_race(health: f32, natural: Option<Natural>) -> Self {
+    /// A fighter of `race` (none: the original's built-in race) with the
+    /// stats its record spawned with: its health from them, its race's
+    /// natural armour and whether it bleeds.
+    pub fn of_stats(race: Option<&Race>, stats: CharacterStats) -> Self {
+        let natural = race.map(|r| r.natural);
         Self {
-            health: Health::of_race(health),
+            health: Health {
+                yellow: stats.yellow,
+                red: stats.red,
+                max: stats.max_health,
+            },
             natural,
             armour: damage::armour_layers(natural.as_ref(), &[]),
             down: false,
             readiness: 0.0,
-            bleeds: true,
-        }
-    }
-
-    /// A fighter of `race`: its health factor, natural armour and whether
-    /// it bleeds.
-    pub fn of_record(race: &Race) -> Self {
-        Self {
-            bleeds: race.bleeds(),
-            ..Self::of_race(race.health, Some(race.natural))
+            bleeds: race.is_none_or(Race::bleeds),
+            stats,
         }
     }
 }
@@ -801,9 +806,10 @@ mod tests {
             body: exa_formats::races::RaceBody::FALLBACK,
             stats: exa_formats::races::RaceStats::FALLBACK,
         };
-        let skeleton = Fighter::of_record(&race(0));
+        let of = |r: &Race| Fighter::of_stats(Some(r), CharacterStats::default());
+        let skeleton = of(&race(0));
         assert!(!skeleton.bleeds);
-        assert!(Fighter::of_record(&race(0x0F)).bleeds);
+        assert!(of(&race(0x0F)).bleeds);
         assert!(Fighter::default().bleeds);
         let mut app = bleeding();
         let bones = app
@@ -882,7 +888,10 @@ mod tests {
         let sturdy = app
             .world_mut()
             .spawn((
-                Fighter::of_race(100.0, None),
+                Fighter {
+                    health: Health::of_race(100.0),
+                    ..Fighter::default()
+                },
                 Animator::new("Default", "Idle"),
             ))
             .id();
@@ -913,7 +922,10 @@ mod tests {
         let human = app
             .world_mut()
             .spawn((
-                Fighter::of_race(100.0, None),
+                Fighter {
+                    health: Health::of_race(100.0),
+                    ..Fighter::default()
+                },
                 Animator::new("Default", "Idle"),
             ))
             .id();
@@ -998,7 +1010,10 @@ mod tests {
         let human = app
             .world_mut()
             .spawn((
-                Fighter::of_race(100.0, None),
+                Fighter {
+                    health: Health::of_race(100.0),
+                    ..Fighter::default()
+                },
                 Animator::new("Default", "Idle"),
             ))
             .id();

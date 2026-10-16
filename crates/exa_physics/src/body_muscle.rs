@@ -15,7 +15,9 @@
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 
-use super::{CM, Drive, LINK_EPSILON2, Link, MAX_CORRECTION, PIVOT_SLACK, Part, Ragdoll, weights};
+use super::{
+    CM, Drive, LINK_EPSILON2, Link, MAX_CORRECTION, MAX_ENERGY, PIVOT_SLACK, Part, Ragdoll, weights,
+};
 
 /// A part's link muscle factor, until the character tick sets the thighs'
 /// and arms'.
@@ -47,7 +49,8 @@ pub(super) const MIN_STANCE: f32 = 0.01;
 const WALK_STANCE: f32 = 0.7;
 const RUN_STANCE: f32 = 0.3;
 const STANCE_RISE: f32 = 0.01;
-/// Limbs' factors scale by 1.25 times the body's scale (1 in Exarust).
+/// Limbs' factors scale by 1.25 times the body's scale
+/// ([`BodyStats::scale`]).
 const LIMB_SCALE: f32 = 1.25;
 /// A thigh's factor: this moving, times [`LIMB_SCALE`] standing.
 const THIGH_FACTOR: f32 = 0.2;
@@ -56,12 +59,15 @@ const THIGH_FACTOR: f32 = 0.2;
 const LEG_LIMIT_BLEND: f32 = 0.1;
 const LEG_LIMIT_STANDING: f32 = 0.5;
 const LEG_LIMIT_MOVING: f32 = 0.4;
-/// Arm stiffness: off balance, and dazed (tone under 0.85) or striding. A
-/// body is off balance below this balance.
+/// Arm stiffness: off balance, and dazed (tone under 0.85) or striding
+/// (the walking arms of a character that is not feral). A body is off
+/// balance below this balance.
 const ARM_OFF_BALANCE: f32 = 0.5;
 const OFF_BALANCE_BELOW: f32 = 0.6;
 const ARM_LOOSE: f32 = 0.2;
 const ARM_DAZED_TONE: f32 = 0.85;
+/// A human's support pins' factor (its race's 1.25).
+const HUMAN_PINS: f32 = 1.25;
 /// Otherwise it eases each tick, x ← 0.8x + 0.08·(0.5 + 0.5·race arm
 /// relaxation): to 0.4 for a human.
 const ARM_KEEP: f32 = 0.8;
@@ -119,6 +125,47 @@ impl RaceMuscles {
 }
 
 impl Default for RaceMuscles {
+    fn default() -> Self {
+        Self::HUMAN
+    }
+}
+
+/// What a living body takes from its own character, as the character's
+/// init derives it when the character spawns (from its record's height
+/// and feral level), beside its race's factors ([`RaceMuscles`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BodyStats {
+    /// The most energy it recovers to after a daze: 1, or 1 − 0.1 × its
+    /// feral level.
+    pub max_energy: f32,
+    /// Its body scale: its limbs' muscle factors are 1.25 times it.
+    pub scale: f32,
+    /// Scales its head's pose-drive gain: 1, or 1 − its feral level.
+    pub head_gain: f32,
+    /// Scales its head's muscle factor: 1, or 1 − 0.8 × its feral level.
+    pub head_factor: f32,
+    /// Its arms' stiffness in the walk and run cycles: 0.2, or 0.2 − 0.15
+    /// × its feral level, at least 0.05.
+    pub walking_arms: f32,
+    /// Its support pins' factor (its race's, less 0.25 × its feral
+    /// level²). Nothing reads it until the support pins hold a standing
+    /// body.
+    pub pin_factor: f32,
+}
+
+impl BodyStats {
+    /// A human of average height who is not feral.
+    pub const HUMAN: Self = Self {
+        max_energy: MAX_ENERGY,
+        scale: 1.0,
+        head_gain: 1.0,
+        head_factor: 1.0,
+        walking_arms: ARM_LOOSE,
+        pin_factor: HUMAN_PINS,
+    };
+}
+
+impl Default for BodyStats {
     fn default() -> Self {
         Self::HUMAN
     }
@@ -203,12 +250,13 @@ fn role(bone: usize) -> Role {
 }
 
 /// The part factors a body starts with: a foot half its lower leg's, the
-/// head a quarter of its thorax's, every other part 0.5.
-pub(super) fn set_part_factors(parts: &mut [Part]) {
+/// head a quarter of its thorax's times `head` (its character's head
+/// factor, 1 unless feral), every other part 0.5.
+pub(super) fn set_part_factors(parts: &mut [Part], head: f32) {
     for i in 0..parts.len() {
         let share = match role(parts[i].bone) {
             Role::Foot => FOOT_SHARE,
-            Role::Head => HEAD_SHARE,
+            Role::Head => HEAD_SHARE * head,
             _ => continue,
         };
         let parent = parts[i]
@@ -235,14 +283,23 @@ pub(super) fn stance_factor(s: f32, bearing: &Bearing, race: &RaceMuscles) -> f3
 }
 
 /// The arms' stiffness after one tick, `x` last tick's: 0.5 off balance;
-/// 0.2 dazed (tone under 0.85) or striding; else easing to
-/// 0.4·(0.5 + 0.5·race arm relaxation). While the body turns it is at least
-/// min(0.4·|turn left|, 0.4).
-pub(super) fn arm_stiffness(x: f32, bearing: &Bearing, tone: f32, race: &RaceMuscles) -> f32 {
+/// 0.2 dazed (tone under 0.85); striding, the character's walking arms
+/// (0.2, looser for the feral); else easing to 0.4·(0.5 + 0.5·race arm
+/// relaxation). While the body turns it is at least min(0.4·|turn left|,
+/// 0.4).
+pub(super) fn arm_stiffness(
+    x: f32,
+    bearing: &Bearing,
+    tone: f32,
+    race: &RaceMuscles,
+    stats: &BodyStats,
+) -> f32 {
     let x = if bearing.off_balance {
         ARM_OFF_BALANCE
-    } else if tone < ARM_DAZED_TONE || bearing.striding {
+    } else if tone < ARM_DAZED_TONE {
         ARM_LOOSE
+    } else if bearing.striding {
+        stats.walking_arms
     } else {
         ARM_KEEP * x + ARM_EASE * (0.5 + 0.5 * race.arm_relaxation)
     };
@@ -386,12 +443,13 @@ impl Ragdoll {
                 || drive.balance.value < OFF_BALANCE_BELOW,
             ..bearing
         };
-        drive.arm = arm_stiffness(drive.arm, &unsteady, drive.tone, &drive.race);
+        drive.arm = arm_stiffness(drive.arm, &unsteady, drive.tone, &drive.race, &drive.stats);
+        let limbs = LIMB_SCALE * drive.stats.scale;
         let (thigh, limit) = if bearing.moving {
             (THIGH_FACTOR, LEG_LIMIT_MOVING)
         } else {
             (
-                THIGH_FACTOR * LIMB_SCALE,
+                THIGH_FACTOR * limbs,
                 LEG_LIMIT_STANDING * drive.support * drive.support,
             )
         };
@@ -408,7 +466,7 @@ impl Ragdoll {
                 }
                 Role::Arm => {
                     let p = &mut parts[i];
-                    p.factor = drive.arm * LIMB_SCALE;
+                    p.factor = drive.arm * limbs;
                     p.relax_cap = arm_relax_cap(drive.arm);
                     p.saturation = SATURATION;
                 }

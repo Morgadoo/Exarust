@@ -37,7 +37,8 @@ frames of blend (`attack::start_blend`)
 
 `wounds`: a blow bleeds when the struck fighter's race bleeds
 (`Fighter::bleeds`, from `races.rdb` flag bit 0 through
-`Fighter::of_record`) and its wound's size R (`Outcome::wound`, the lasting
+`Fighter::of_stats`, which also takes the fighter's health from the stats
+its record spawned with, kept as `Fighter::stats`) and its wound's size R (`Outcome::wound`, the lasting
 damage on the part before the red bar's 0.75) exceeds 0.05. The wound waits
 on the victim (`WoundQueue`, seven at most, a new one dropped when full)
 with the striking body (`Hit::striker`), the contact point as weights in

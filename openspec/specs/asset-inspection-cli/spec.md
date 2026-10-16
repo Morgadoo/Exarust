@@ -61,7 +61,7 @@ Every command SHALL exit with a non-zero status and a message naming the missing
 - **THEN** Ghoul is printed with flags `0x3` / `0x3`, kind `0x100` and clawed, clip-rate base 1.5, unarmed reach 1 m and footsteps `StpSft`
 
 ### Requirement: Character inspection
-`exa-tool characters <level>` SHALL print every record of a level's character database with where the level places it, and `exa-tool characters actors` every arena actor: name, version, race, sex, feral level, height, age, physique, pools, combat skill, experience, traits, voice, each skill with its learnt techniques, perks, Manoeuvring tier, Deflection, roles, worn and carried counts, saved state and powers.
+`exa-tool characters <level>` SHALL print every record of a level's character database with where the level places it, and `exa-tool characters actors` every arena actor: name, version, race, sex, feral level, height, age, physique, pools, combat skill, experience, traits, voice, each skill with its learnt techniques, perks, Manoeuvring tier, Deflection, roles, worn and carried counts, saved state, powers, and the stats it spawns with.
 
 #### Scenario: First story level
 - **WHEN** `exa-tool characters exanima01` runs against a retail installation
@@ -70,6 +70,10 @@ Every command SHALL exit with a non-zero status and a message naming the missing
 #### Scenario: Arena actors
 - **WHEN** `exa-tool characters actors` runs against a retail installation
 - **THEN** 21 actors are printed, opponent16 with Close Combat 20000 (Remise, Feint, Fend, Riposte) and Armour 25000
+
+#### Scenario: Spawn stats
+- **WHEN** `exa-tool characters exanima01` and `exa-tool characters actors` run against a retail installation
+- **THEN** Zombie01 spawns with most energy 0.9, no head gain and health 0.25 of 0.25, and every opponent with full health
 
 ### Requirement: Body and mechanism inspection
 `exa-tool bodies` SHALL print the rigid bodies and cloth markers of a chunk-tree entry's nodes (root or child, class, mobility, rest points, spheres, links with a slider's travel, sound slots, in cm); `exa-tool mechanisms` SHALL print the door and operative records of `objdb.rdb` or of a level's own database with the mechanism each gives its model; `exa-tool corpus bodies` SHALL count bodies, links, sliders and cloth markers per model pack.

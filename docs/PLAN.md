@@ -237,9 +237,8 @@ fallback: the clip-rate base (1.5 for the ghouls), size, scale (capped at
 feral sprint blend toward the jog row; the second flag word and the kind
 word (red regeneration, claws, hovering, quadruped); the unarmed reach,
 the weapon swing-turn and recovery factors, the AI attack bonus and
-perception, the held-item offset, the footstep set and the voice. Nothing
-uses them yet; deriving each character's stats from them at spawn is a
-later change of that lane. Done (change `read-character-records-fully`, M39
+perception, the held-item offset, the footstep set and the voice; each
+character's stats are derived from them at spawn (M41, below). Done (change `read-character-records-fully`, M39
 of the master plan): character records are read whole, versions 5–7, in
 the level databases and `actors.rpk` (every shipped record parses to its
 end): physique, height, age, the feral level (every living human of the
@@ -249,8 +248,25 @@ with the technique learnt at each level, inventory, roles, saved state and
 powers; the learnt techniques give the perks combat reads (Remise, Feint,
 Fend, Riposte, Security, the six shield perks and the thaumaturgy ones),
 the Manoeuvring in Armour tier and Deflection; `exa-tool characters`
-prints them ([formats/RFC.md](formats/RFC.md), character records). Nothing
-uses them yet. Done (change
+prints them ([formats/RFC.md](formats/RFC.md), character records). Done
+(change `derive-character-stats-at-spawn`, M41 of the master plan): every
+character spawns with the stats the original's builder and init derive
+from its record and race: body scale and size from its height (0.95 to
+1.05; the race's scale capped at 1.5), standing pelvis and leg reach, the
+most energy (1 − 0.1 × the feral level), step reach, support pins' factor,
+the head's pose gain and muscle factor and the walking arms of the
+undead, the sprint gait, perception and voice, maximum health with the
+race-byte rules (the manipulator 0.375) and the saved pools (a living
+record that saved no red health, as the arena's opponents, spawns full),
+and the body rule bits. The body now reads the most energy, the head, the
+walking arms and the scale: exanima01's zombies recover only to 0.9, are
+dazed under 0.85 and hold their heads by their weakened muscles alone (the
+daze, its pose hold, the swing clock and the attack gate measure energy
+against the character's most); the player and the
+duellist spawn from a new human record; `exa-tool characters` prints each
+record's stats ([formats/RFC.md](formats/RFC.md), Stats derived at spawn).
+The support pins, gait, weapon record, damage bits and regeneration read
+them when they land. Done (change
 `join-parts-at-their-origins`, C3): every part is pinned at its origin to
 its place in the parent, as the original registers it, so joints are ball
 joints and the knee a hinge; the skeleton's links meet the parent at the

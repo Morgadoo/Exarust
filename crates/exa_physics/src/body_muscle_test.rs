@@ -164,6 +164,9 @@ fn the_stance_factor_rises_with_the_gait() {
 #[test]
 fn arm_stiffness_follows_the_bodys_state() {
     let human = RaceMuscles::HUMAN;
+    let alive = BodyStats::HUMAN;
+    let arm_stiffness =
+        |x, b: &Bearing, tone, race: &RaceMuscles| arm_stiffness(x, b, tone, race, &alive);
     let still = Bearing::default();
     let mut x = 0.0;
     for _ in 0..60 {
@@ -202,6 +205,34 @@ fn arm_stiffness_follows_the_bodys_state() {
     for (x, cap) in [(0.4, 0.36), (0.2, 0.52), (0.5, 0.28)] {
         assert!((arm_relax_cap(x) - cap).abs() < 1e-6, "{x}");
     }
+}
+
+/// A feral character's arms hang looser in the walk and run cycles, at its
+/// walking arms (a zombie's 0.05, a half-feral one's 0.125), but dazed
+/// they are 0.2 and off balance 0.5 as anyone's.
+#[test]
+fn feral_arms_hang_loose_striding() {
+    let human = RaceMuscles::HUMAN;
+    let zombie = BodyStats {
+        walking_arms: 0.05,
+        ..BodyStats::HUMAN
+    };
+    let striding = Bearing {
+        striding: true,
+        ..Bearing::default()
+    };
+    assert_eq!(arm_stiffness(0.4, &striding, 1.0, &human, &zombie), 0.05);
+    let half = BodyStats {
+        walking_arms: 0.125,
+        ..BodyStats::HUMAN
+    };
+    assert_eq!(arm_stiffness(0.4, &striding, 1.0, &human, &half), 0.125);
+    assert_eq!(arm_stiffness(0.4, &striding, 0.8, &human, &zombie), 0.2);
+    let fallen = Bearing {
+        off_balance: true,
+        ..striding
+    };
+    assert_eq!(arm_stiffness(0.4, &fallen, 1.0, &human, &zombie), 0.5);
 }
 
 /// Relaxation rises by its step and falls to its target at once; a
@@ -348,6 +379,22 @@ fn part_factors_and_arm_strengths() {
     let body = Ragdoll::new(&setup);
     let factors: Vec<f32> = body.parts.iter().map(|p| p.factor).collect();
     assert_eq!(factors, [0.5, 0.5, 0.125, 0.5, 0.25]);
+    // A zombie's head keeps a fifth of its muscle (1 − 0.8), a half-feral
+    // one's 0.6: 0.025 and 0.075.
+    for (head_factor, head) in [(0.2, 0.025), (0.6, 0.075)] {
+        let stats = BodyStats {
+            head_factor,
+            ..BodyStats::HUMAN
+        };
+        let body = Ragdoll::new(&setup).with_drive().with_stats(stats);
+        let factors: Vec<f32> = body.parts.iter().map(|p| p.factor).collect();
+        assert_eq!(factors.len(), 5);
+        assert!((factors[2] - head).abs() < 1e-7, "{factors:?}");
+        assert_eq!(
+            [factors[0], factors[1], factors[3], factors[4]],
+            [0.5, 0.5, 0.5, 0.25]
+        );
+    }
 
     let sigma = |body: &Ragdoll| {
         let d = body.drive.as_ref().unwrap();
@@ -376,6 +423,23 @@ fn part_factors_and_arm_strengths() {
     let pose = arm_pose(&body, REST);
     body.aim(Affine3A::IDENTITY, pose);
     assert!((sigma(&body) - 0.3125).abs() < 1e-4, "{}", sigma(&body));
+    // A short character's (scale 0.95) limbs are 1.25 × 0.95 times their
+    // stiffness: off balance 0.5 × 1.1875 × 0.5 = 0.2969.
+    let mut short = arm().with_stats(BodyStats {
+        scale: 0.95,
+        ..BodyStats::HUMAN
+    });
+    short.set_bearing(Bearing {
+        off_balance: true,
+        ..Bearing::default()
+    });
+    let pose = arm_pose(&short, REST);
+    short.aim(Affine3A::IDENTITY, pose);
+    assert!(
+        (sigma(&short) - 0.296_875).abs() < 1e-4,
+        "{}",
+        sigma(&short)
+    );
 }
 
 /// The elbow follows the clip. Swung 40° over 10 ticks, it lags the clip

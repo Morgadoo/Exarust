@@ -26,8 +26,8 @@ use exa_assets::SkinnedPart;
 use exa_combat::swing::{Swing, pace_swings};
 use exa_formats::rsq::BoneBody;
 use exa_physics::body::{
-    BODY_HZ, Bearing, CharacterTicks, Drive, Fallen, GoLimp, PartSetup, Physical, RaceMuscles,
-    Ragdoll, world_with,
+    BODY_HZ, Bearing, BodyStats, CharacterTicks, Drive, Fallen, GoLimp, PartSetup, Physical,
+    RaceMuscles, Ragdoll, world_with,
 };
 use exa_physics::{CharacterBody, Physics};
 
@@ -66,6 +66,7 @@ fn build_bodies(
     let Some(motions) = motions else { return };
     for (root, physical, limp) in &mut requests {
         let race = physical.as_ref().map_or(RaceMuscles::HUMAN, |p| p.race);
+        let stats = physical.as_ref().map_or(BodyStats::HUMAN, |p| p.stats);
         // Wait until the body has been placed and posed.
         let delay = match (physical, limp) {
             (_, Some(l)) => &mut l.into_inner().delay,
@@ -121,6 +122,7 @@ fn build_bodies(
                 Ragdoll::new(&setup)
                     .with_drive()
                     .with_race(race)
+                    .with_stats(stats)
                     .with_rest_turns(&rest_turns),
                 TickedClips,
             ))
@@ -404,7 +406,10 @@ fn clip_frames(playing: Option<usize>, progress: f32, drive: &Drive, pace: &Pace
                 0.0
             }
         }
-        Some(a) if ATTACKS.contains(&a) => pace.swing.frames(playing, progress, base, drive.energy),
+        Some(a) if ATTACKS.contains(&a) => {
+            pace.swing
+                .frames(playing, progress, base, drive.energy_share())
+        }
         _ if bearing.off_balance => STANDING_PACE * OFF_BALANCE_RATE * base,
         _ => STANDING_PACE * base,
     }
@@ -1018,8 +1023,9 @@ pub(crate) mod tests {
     /// none at half tone); walking 1.687 cm a tick 0.764 (27/83 × (0.8 ×
     /// 1.687 + 1)), running 4.337 cm a tick on the jog row 0.894,
     /// backpedalling 1.476 cm a tick 0.736; a walk clip held still runs
-    /// the standing clock; fists swing 1.62; a ghoul's base of 1.5 stands
-    /// at 0.9.
+    /// the standing clock; fists swing 1.62, a zombie (most energy 0.9)
+    /// at full energy too, and at 0.81 by its share squared, 0.81; a
+    /// ghoul's base of 1.5 stands at 0.9.
     #[test]
     fn clocks_run_at_the_originals_rates() {
         let pace = Pace {
@@ -1065,6 +1071,12 @@ pub(crate) mod tests {
         assert!(close(frames(2, &doing(moving, 1.0), &back), 0.7357));
         assert!(close(frames(0, &doing(still, 1.0), &walk), 0.6));
         assert!(close(frames(5, &doing(still, 1.0), &pace), 1.62));
+        let mut zombie = doing(still, 1.0);
+        zombie.stats.max_energy = 0.9;
+        zombie.energy = 0.9;
+        assert!(close(frames(5, &zombie, &pace), 1.62));
+        zombie.energy = 0.81;
+        assert!(close(frames(5, &zombie, &pace), 0.81));
         let mut ghoul = doing(still, 1.0);
         ghoul.race.clip_rate = 1.5;
         assert!(close(frames(0x13, &ghoul, &pace), 0.9));

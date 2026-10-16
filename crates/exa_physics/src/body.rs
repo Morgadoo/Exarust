@@ -41,7 +41,7 @@ use crate::contact::{CONTACT_SLOP, Level, LevelContact, rub, sphere_hit, swept_h
 
 #[path = "body_muscle.rs"]
 mod muscle;
-pub use muscle::{Bearing, RaceMuscles};
+pub use muscle::{Bearing, BodyStats, RaceMuscles};
 
 #[path = "body_balance.rs"]
 mod balance;
@@ -114,8 +114,8 @@ const LEG_LIMIT_STRENGTH: f32 = 0.2;
 /// gains are shares of it.
 const DRIVE_SCALE: f32 = 19200.0 / (BODY_HZ * BODY_HZ);
 /// Pose-drive gains, as shares of [`DRIVE_SCALE`]: the pelvis, lumbar,
-/// thorax and feet (0.0836), and the head (0.0279; the original lowers a
-/// character's by its age, nothing in Exarust ages).
+/// thorax and feet (0.0836), and the head (0.0279; a feral character's by
+/// its head gain, [`BodyStats::head_gain`]).
 const TRUNK_GAIN: f32 = 0.03;
 const HEAD_GAIN: f32 = 0.01;
 /// The share of a pose push's vertical component that is kept.
@@ -125,10 +125,12 @@ const VERTICAL_PUSH: f32 = 0.1;
 /// the pose's pelvis that a standing body's pelvis closes per tick at full
 /// strength.
 const STANCE_HOLD: f32 = 0.168;
-/// Energy regained per tick after a daze, its floor and its cap (a normal
-/// human's most energy).
+/// Energy regained per tick after a daze, up to the body's most energy
+/// ([`BodyStats::max_energy`]), and its floor.
 const ENERGY_RECOVERY: f32 = 0.005;
 const MIN_ENERGY: f32 = 0.05;
+/// The most energy of a body that is not feral (a feral body's is less,
+/// [`BodyStats::max_energy`]).
 pub const MAX_ENERGY: f32 = 1.0;
 /// Most of its energy a single blow takes.
 const MAX_DAZE: f32 = 0.9;
@@ -536,6 +538,8 @@ pub struct Physical {
     pub delay: u32,
     /// The race's muscle factors.
     pub race: RaceMuscles,
+    /// What the body takes from its own character's stats.
+    pub stats: BodyStats,
 }
 
 impl Default for Physical {
@@ -543,6 +547,7 @@ impl Default for Physical {
         Self {
             delay: 3,
             race: RaceMuscles::HUMAN,
+            stats: BodyStats::HUMAN,
         }
     }
 }
@@ -800,6 +805,8 @@ pub struct Drive {
     pub supported: bool,
     /// The race's factors the muscles read.
     pub race: RaceMuscles,
+    /// What the body takes from its own character's stats.
+    pub stats: BodyStats,
     /// What the character tick knows of the body's character this tick.
     pub bearing: Bearing,
     /// Stance factor s: the share of its tone the body uses (T = tone·s).
@@ -836,6 +843,7 @@ impl Default for Drive {
             energy: 1.0,
             supported: true,
             race: RaceMuscles::HUMAN,
+            stats: BodyStats::HUMAN,
             bearing: Bearing::default(),
             stance: RaceMuscles::HUMAN.stance,
             arm: 0.0,
@@ -885,9 +893,14 @@ impl Drive {
 
     /// The pose drive's gain G on the part of `bone` this tick: its share
     /// of K times [`Drive::pose_strength`] (an idle human's pelvis 0.0314,
-    /// its head 0.0105); none on the thighs, shins, arms and hands.
+    /// its head 0.0105, times its character's head gain); none on the
+    /// thighs, shins, arms and hands.
     pub fn pose_gain(&self, bone: usize) -> f32 {
-        pose_share(bone) * DRIVE_SCALE * self.pose_strength()
+        let share = match bone {
+            HEAD => pose_share(bone) * self.stats.head_gain,
+            _ => pose_share(bone),
+        };
+        share * DRIVE_SCALE * self.pose_strength()
     }
 
     /// The stance factor s: the race's standing, rising toward 0.7 walking
@@ -936,10 +949,22 @@ impl Drive {
         self.lift
     }
 
+    /// The most energy it recovers to: its character's
+    /// ([`BodyStats::max_energy`]), 1 unless feral.
+    pub fn max_energy(&self) -> f32 {
+        self.stats.max_energy
+    }
+
+    /// Its energy as a share of its most, E/Emax.
+    pub fn energy_share(&self) -> f32 {
+        self.energy / self.stats.max_energy
+    }
+
     /// Dazed: its energy is more than 0.05 under its most (in double
-    /// precision: 0.95f, a hair under the double 0.95, is dazed).
+    /// precision: 0.95f, a hair under the double 0.95, is dazed; a zombie
+    /// whose most is 0.9 is dazed under 0.85).
     pub fn dazed(&self) -> bool {
-        f64::from(self.energy) < f64::from(MAX_ENERGY) - DAZED_BELOW_MAX
+        f64::from(self.energy) < f64::from(self.stats.max_energy) - DAZED_BELOW_MAX
     }
 
     /// How far its targets give way to the pose it holds this tick (its
@@ -949,7 +974,7 @@ impl Drive {
     pub fn hold_weight(&self) -> f32 {
         let loose = 1.0 - self.support;
         if self.dazed() {
-            let e = self.energy / MAX_ENERGY;
+            let e = self.energy_share();
             1.0 - loose * loose * (1.0 - self.sag) * e.powi(4)
         } else {
             loose * self.sag
@@ -1130,7 +1155,7 @@ impl Ragdoll {
                 parts[j].leg_limit = long(&links, &links_of[j]);
             }
         }
-        muscle::set_part_factors(&mut parts);
+        muscle::set_part_factors(&mut parts, BodyStats::HUMAN.head_factor);
         let (outward, inward) = tree_orders(&parts);
         let (chest, legs, sole) = balance::build(setup, &mut parts);
         Self {
@@ -1165,6 +1190,17 @@ impl Ragdoll {
         if let Some(d) = self.drive.as_mut() {
             d.race = race;
             d.stance = race.stance;
+        }
+        self
+    }
+
+    /// Gives a living body what it takes from its own character's stats:
+    /// its most energy, its limbs' scale, its head's gain and muscle factor
+    /// and its walking arms.
+    pub fn with_stats(mut self, stats: BodyStats) -> Self {
+        if let Some(d) = self.drive.as_mut() {
+            d.stats = stats;
+            muscle::set_part_factors(&mut self.parts, stats.head_factor);
         }
         self
     }
@@ -1437,7 +1473,7 @@ impl Ragdoll {
     fn step(&mut self) {
         self.tick_countdown();
         if let Some(drive) = self.drive.as_mut() {
-            drive.energy = (drive.energy + ENERGY_RECOVERY).min(MAX_ENERGY);
+            drive.energy = (drive.energy + ENERGY_RECOVERY).min(drive.stats.max_energy);
             drive.sag = if drive.supported {
                 (drive.sag - SAG_FADE).max(0.0)
             } else {
@@ -1742,10 +1778,13 @@ pub fn equalise_sleep(a: &mut Ragdoll, b: &mut Ragdoll) {
 fn pose_share(bone: usize) -> f32 {
     match bone {
         1 | 4 | 7 | 8 | 9 => TRUNK_GAIN,
-        10 => HEAD_GAIN,
+        HEAD => HEAD_GAIN,
         _ => 0.0,
     }
 }
+
+/// The head's bone.
+const HEAD: usize = 10;
 
 /// One particle's pose push, in the original's cm and ticks: `offset` o
 /// from the particle to its target, `moved` v its displacement over the

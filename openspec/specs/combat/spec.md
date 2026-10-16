@@ -193,6 +193,10 @@ The system SHALL start a requested attack, the player's and the AI's, only with 
 - **WHEN** the player holding the arena sword (recoil 0.42) holds the left button
 - **THEN** its attacks start 426 ms or more after the last tick of the one before, from the first
 
+#### Scenario: Feral attacker
+- **WHEN** a fighter whose most energy is 0.9 requests an attack at energy 0.71, then at 0.72
+- **THEN** no attack starts at 0.71, and one starts at 0.72
+
 ### Requirement: Fist strikers
 The system SHALL give an unarmed fighter's hands strikers built from its race's fist or claw records, each a segment from the hand's origin across its box. With the fists, claws or two weapons only the motion's hand SHALL strike: the right in the main side, stab and overhead (both claws in a clawed overhead), the left in the other side; else every held weapon strikes and fists do not. A fist SHALL meet a part at its knuckles.
 
@@ -226,6 +230,10 @@ An attack's clock SHALL gain speed × g × 1.125 × base frames a tick, g = 1 �
 #### Scenario: Duel
 - **WHEN** `exarust --opponent play arenao1` runs
 - **THEN** each of the duellist's attacks takes about 1 s from its start to its stance, and its strikes land
+
+#### Scenario: Feral swing
+- **WHEN** a fighter whose most energy is 0.9 punches at energy 0.9, then at 0.81
+- **THEN** its clock gains 1.62 frames a tick, then 0.81
 
 ### Requirement: Dazed stance
 While a fighter's energy is more than 0.05 under its most (in double precision), its stance SHALL be the Defence stance every body tick, and the player's stance rule SHALL not give Cmbt - Idle. Unless it is down or attacking, its clip SHALL start the Defence stance when another clip plays, with a blend of round((1.05 − E) × 300) frames, eased smoothly. A daze SHALL be decided before a fall in the same tick, so the fall's clip wins.

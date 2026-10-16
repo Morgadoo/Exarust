@@ -268,10 +268,16 @@ How the original simulates a body (`exa_physics::body`):
       rises 0.01 a tick toward 0.7 + 0.3·run and keeps what it reached.
       T = tone·s, so an idle human pulls at √E·0.5.
     - Part factors: 0.5; a foot half its lower leg's (0.25); the head a
-      quarter of the thorax's (0.125); a thigh 0.2 × 1.25 standing and 0.2
-      moving; the shoulders, arms and hands 1.25 × the arm stiffness.
+      quarter of the thorax's (0.125) times the character's head factor
+      (1 − 0.8 × its feral level: a zombie's 0.025); a thigh 0.2 × 1.25 ×
+      the body scale standing and 0.2 moving; the shoulders, arms and hands
+      1.25 × the body scale × the arm stiffness (the scale is the
+      character's, 0.95 to 1.05 by its height: RFC.md, Stats derived at
+      spawn).
     - Arm stiffness (both arms): 0.5 off balance (balance under 0.6,
-      falling, lying, getting up); 0.2 at tone under 0.85 or in the walk and run cycles; otherwise
+      falling, lying, getting up); 0.2 at tone under 0.85; in the walk and
+      run cycles the character's walking arms (0.2, or 0.2 − 0.15 × its
+      feral level, at least 0.05: a zombie's arms hang at 0.05); otherwise
       x ← 0.8x + 0.08·(0.5 + 0.5·race arm relaxation), 0.4 for a human; at
       least 0.4 × the turn left (rad), at most 0.4. An idle arm pulls at
       σ = 0.25, walking 0.175, off balance 0.31. The original's attack,
@@ -292,8 +298,9 @@ How the original simulates a body (`exa_physics::body`):
       support, below). A body without two legs has 1 while it stands and 0
       once fallen.
   - A **pose drive** turns the pelvis, lumbar, thorax and feet (gain
-    0.03·K, K = 19200/83² = 2.787) and the head (0.01·K; the original
-    lowers an aged character's) toward their animated orientation; thighs,
+    0.03·K, K = 19200/83² = 2.787) and the head (0.01·K × the character's
+    head gain, 1 − its feral level: none for a zombie) toward their
+    animated orientation; thighs,
     shins, arms and hands have none (`exa_physics::body`, `drive_parts`;
     REA on the limb step, its gain setup and the body tick). After inertia,
     each particle's target is its rest vertex under the part's animated
@@ -319,8 +326,12 @@ How the original simulates a body (`exa_physics::body`):
     original also multiplies a lean into the spine's rotation and keeps
     only the vertical push for the unconscious; neither is reproduced.
   - Energy is the daze level. A blow takes up to 90 % of it, with a floor
-    of 0.05. It recovers 0.005 per tick up to the most energy (1 for a
-    human).
+    of 0.05. It recovers 0.005 per tick up to the character's most energy
+    (1, or 1 − 0.1 × its feral level: a zombie's 0.9). A body starts at 1,
+    so a feral one is cut to its most on its first tick, as the original's
+    body tick clamps it. The daze (energy more than 0.05 under the most:
+    a zombie under 0.85), the pose hold, the swing clock and the attack
+    gate all measure the energy against this most.
   - The original also runs recovery steps, foot planting and support
     forces on the pelvis and thorax pins.
   - Several of these read the character's race record in `races.rdb`: the
@@ -330,7 +341,11 @@ How the original simulates a body (`exa_physics::body`):
     (`exa_formats::races::RaceBody`, with the clip-rate base, size, scale
     and mass divisor the character's spawn reads); the muscles use the
     stance factor and the arm relaxation (Skeleton 0.75 and 0.5), the
-    balance the balance bonus (1 in every record).
+    balance the balance bonus (1 in every record). What the body takes
+    from its own character (most energy, head gain and factor, walking
+    arms, scale, the pins' factor for the support pins to come) is derived
+    from its record when it spawns (`exa_physics::body::BodyStats`;
+    [RFC.md](RFC.md), Stats derived at spawn).
 
 How a tick runs. The original steps every body of the world in one 83 Hz
 tick, in this order:
