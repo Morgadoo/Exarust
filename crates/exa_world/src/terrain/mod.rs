@@ -825,11 +825,14 @@ impl TerrainBuild {
                 }
             }
         }
+        // The navigation grid reads the ground of the blocks built here.
+        let mut ground = crate::nav::GroundTile::new(&self.terrain, tile, built.heights.clone());
+        if let Some(b) = blocks {
+            ground = ground.with_blocks(b.present);
+        }
         commands
             .entity(tile_entity)
-            .insert(crate::nav::view::Ground(Arc::new(
-                crate::nav::GroundTile::new(&self.terrain, tile, built.heights.clone()),
-            )));
+            .insert(crate::nav::view::Ground(Arc::new(ground)));
         if let Some(plants) = &self.plants {
             self.stats.plants += plants.spawn(
                 commands,
@@ -1504,5 +1507,49 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// All 17 installed levels with a terrain have a tile grid, and none
+    /// flags a cell in a tile slot its `.rft` leaves empty: the original's
+    /// flat tile for such a slot, which Exarust leaves out, never appears
+    /// (skipped without the game).
+    #[test]
+    fn shipped_levels_flag_no_empty_tile_slot() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let pack = game.pack(PackKind::Resource).unwrap();
+        let side = TileBlocks::SIDE as i64;
+        let mut levels = 0;
+        for entry in pack.entries() {
+            let Some(level) = entry.name.strip_suffix(".rft") else {
+                continue;
+            };
+            levels += 1;
+            let terrain = Terrain::parse(pack.bytes(entry)).unwrap();
+            let rfc = pack.get(&format!("{level}.rfc")).unwrap();
+            let g = exa_formats::rfc::Scene::parse(rfc).unwrap().grid;
+            let g = g.unwrap_or_else(|| panic!("{level} has no tile grid"));
+            let x0 = (g.width as i64 - side * terrain.width as i64) / 2;
+            let y0 = (g.height as i64 - side * terrain.height as i64) / 2;
+            for ty in 0..terrain.height {
+                for tx in 0..terrain.width {
+                    if terrain.tiles.iter().any(|t| (t.x, t.y) == (tx, ty)) {
+                        continue;
+                    }
+                    for (bx, by) in (0..side).flat_map(|by| (0..side).map(move |bx| (bx, by))) {
+                        let x = x0 + side * tx as i64 + bx;
+                        let y = y0 + side * ty as i64 + by;
+                        let flagged = x >= 0
+                            && y >= 0
+                            && g.cell(x as u32, y as u32)
+                                .is_some_and(|c| g.edges[c] & CELL_TERRAIN != 0);
+                        assert!(!flagged, "{level} ({x}, {y})");
+                    }
+                }
+            }
+        }
+        assert_eq!(levels, 17);
     }
 }

@@ -374,8 +374,8 @@ the floor's height:
 ```text
 $ exa-tool nav exanima01 --png nav.png
 exanima01: 640 × 800 cells, voxel 0 tops out at -22.10 m
-inputs: 13384 meshes (4590297 points), 869 floor meshes, 20 terrain tiles; built in 1.79s
-columns by spans (0–3): [4610, 506409, 981, 0]
-Lower: 385525 floors, 385444 passable (size class 0), 121865 open sky
-Upper: 854 floors, 854 passable (size class 0), 127 open sky
+inputs: 13384 meshes (4590297 points), 869 floor meshes, 20 terrain tiles; built in 236.29ms
+columns by spans (0–3): [190963, 320141, 896, 0]
+Lower: 219292 floors, 219225 passable (size class 0), 101745 open sky
+Upper: 792 floors, 792 passable (size class 0), 104 open sky
 ```

@@ -38,11 +38,21 @@ across)/2 and y0 likewise, each halved towards zero. Each block goes to the
 room of its centre ([RFC.md](RFC.md), Grid building), else to the default
 sector. Without a grid every block is built. Evidence: REA on the
 terrain's frame hook and the grid loader; corpus: `exanima01` flags 682
-cells, all open (its 441 closed cells, the rock between rooms, get no
+cells, all open (its 477 closed cells, the rock between rooms, get no
 ground), `arenao3` a 16 × 15 rectangle around the arena, `arenao1` and
 `arena7` their arena floors. Exarust drops the plants of absent blocks as
 it drops those of holes [guess: the original's grass chunks were not
 traced].
+
+The navigation grid reads the same blocks: its terrain fill walks each
+tile's list of built blocks, and the level load builds the terrain before
+the grid ([NAVIGATION.md](../NAVIGATION.md)). In a grid level the original
+also creates a tile, flat at height 0, for a tile slot the file leaves
+empty when one of that slot's cells is flagged. None of the 17 shipped
+levels with a terrain (all have a grid) has a flagged cell outside a
+stored tile, so Exarust creates no such tile. Evidence: REA on the
+presence builder and the tile constructor; corpus: the 17 levels
+(`exa_world` test `shipped_levels_flag_no_empty_tile_slot`).
 
 ### Tile (`0xBDAD`)
 

@@ -5,9 +5,11 @@
 //!
 //! The build, in the original's order:
 //! 1. **Columns.** Terrain fills each cell's column from the bottom to the
-//!    ground's height at the cell centre. Every static mesh's GI sample
-//!    points (and the points generated for each tile-grid cell's floor,
-//!    lifted half a voxel) mark one voxel each.
+//!    ground's height at the cell centre, under the 6 m terrain blocks the
+//!    level builds (in a tile-grid level only those its grid flags).
+//!    Every static mesh's GI sample points (and the points generated for
+//!    each tile-grid cell's floor, lifted half a voxel) mark one voxel
+//!    each.
 //! 2. **Spans.** Scanned from the top a byte (8 voxels) at a time, a solid
 //!    slab with more than 12 free voxels (120 cm) above starts a span;
 //!    slabs closer below join it. A span keeps its floor (the slab's top

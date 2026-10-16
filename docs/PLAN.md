@@ -624,8 +624,11 @@ navigation grid when its load ends, a 30 cm grid of voxel columns built
 from its terrain, its meshes' GI sample points and its tile-grid floors,
 reduced to two layers with the cost bytes the planner reads; `--debug-nav`
 draws it and `exa-tool nav` dumps it ([NAVIGATION.md](NAVIGATION.md)).
-Next: the grid queries and the original's look-ahead, then A\* and NPC
-paths.
+Done (change `build-nav-terrain-only-where-blocks-are`): the grid's
+terrain comes only from the 6 m blocks the level builds, the renderer's
+(in a tile-grid level the flagged ones), so the rock between exanima01's
+rooms is no longer floor. Next: the grid queries and the original's
+look-ahead, then A\* and NPC paths.
 
 - Perception (sight, hearing), navigation on tile grids and terrain
   (the original's 30 cm two-layer grid and its A\*, no navigation mesh),

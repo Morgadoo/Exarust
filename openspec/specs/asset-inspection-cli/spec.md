@@ -99,4 +99,4 @@ Every command SHALL exit with a non-zero status and a message naming the missing
 
 #### Scenario: exanima01
 - **WHEN** `exa-tool nav exanima01 --png nav.png` runs against a retail installation
-- **THEN** it prints 640 × 800 cells with 385525 lower floors and writes a 1284 × 800 picture of the dungeon's rooms
+- **THEN** it prints 640 × 800 cells with 219292 lower floors and writes a 1284 × 800 picture of the dungeon's rooms, black over the rock between them

@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use super::source::{FloorMesh, floor_points, grid_base, grid_size};
 use super::*;
+use crate::rooms::CELL_OPEN;
 use bevy::math::Affine3A;
 
 /// A column with voxels `lo..=hi` of each slab solid.
@@ -282,6 +285,7 @@ fn ground_tiles_sample_bilinearly_and_read_holes_a_byte_at_a_time() {
         side,
         heights: (0..side * side).map(|v| (v % side) as f32 * 0.01).collect(),
         holes: vec![false; side * side],
+        blocks: GroundTile::ALL_BLOCKS,
     };
     assert!((tile.height(10.5, 3.0).unwrap() - 0.105).abs() < 1e-6);
     tile.holes[8] = true;
@@ -293,6 +297,55 @@ fn ground_tiles_sample_bilinearly_and_read_holes_a_byte_at_a_time() {
     assert!(tile.height(3.5, 0.5).is_none());
     assert!(tile.height(3.5, 1.5).is_none());
     assert!(tile.height(3.5, 2.5).is_some());
+}
+
+#[test]
+fn ground_fills_only_the_blocks_that_exist() {
+    // A 48 m tile centred on a 200 × 200 cell grid (its vertex 0 at cell
+    // 20), its ground rising 5 mm a vertex along Z.
+    let side = 241;
+    let full = GroundTile {
+        corner: Vec2::splat(-24.0),
+        spacing: 0.2,
+        side,
+        heights: (0..side * side)
+            .map(|v| (v / side) as f32 * 0.005)
+            .collect(),
+        holes: vec![false; side * side],
+        blocks: GroundTile::ALL_BLOCKS,
+    };
+    let build = |ground: GroundTile| {
+        NavSource {
+            width: 200,
+            depth: 200,
+            base: grid_base(3.4),
+            ground: vec![Arc::new(ground)],
+            ..Default::default()
+        }
+        .build()
+    };
+    // Every block: 8 × 8 blocks of 20 × 20 cells.
+    let all = build(full.clone());
+    assert_eq!(all.stats().floors, [25_600, 0]);
+    // Blocks (0, 0) and (5, 2) of a grid level: 400 cells each.
+    let mut present = [0u8; 8];
+    present[0] = 1;
+    present[2] = 1 << 5;
+    let some = full.with_blocks(present);
+    assert!(some.has_block(0, 0) && some.has_block(5, 2) && !some.has_block(1, 0));
+    let g = build(some);
+    assert_eq!(g.stats().floors, [800, 0]);
+    assert_eq!(g.cell(20, 20, Layer::Lower).floor, 221);
+    assert!(!g.cell(40, 20, Layer::Lower).has_floor());
+    // Block (5, 2) samples its cells where the whole tile does: cell (125,
+    // 65) at vertex row 2·30 + 5.5·1.5 = 68.25, 34 cm up, voxel 224.
+    assert_eq!(g.cell(125, 65, Layer::Lower).floor, 224);
+    for z in 60..80 {
+        for x in 120..140 {
+            let (a, b) = (g.cell(x, z, Layer::Lower), all.cell(x, z, Layer::Lower));
+            assert_eq!(a.floor, b.floor, "({x}, {z})");
+        }
+    }
 }
 
 #[test]
@@ -438,10 +491,25 @@ fn reach(g: &NavGrid, start: Vec3) -> std::collections::HashSet<(usize, usize, u
     seen
 }
 
+/// Cells with a floor on either layer whose 6 m tile-grid room is closed
+/// (the rock between rooms), in a grid of 20 cells a room.
+fn floors_over_closed_rooms(g: &NavGrid, grid: &exa_formats::level::LevelGrid) -> usize {
+    let (w, d) = g.size();
+    (0..d)
+        .flat_map(|z| (0..w).map(move |x| (x, z)))
+        .filter(|&(x, z)| {
+            let room = grid.cell((x / CELLS_PER_ROOM) as u32, (z / CELLS_PER_ROOM) as u32);
+            room.is_some_and(|c| grid.edges[c] & CELL_OPEN == 0)
+                && Layer::BOTH.iter().any(|&l| g.cell(x, z, l).floor != 0)
+        })
+        .count()
+}
+
 /// The installed game's levels (with `EXANIMA_DIR`), built as the game
 /// builds them: sizes, spans, floors, open cells, and how far a walker gets
 /// from the level's start (in exanima01, down the stair room to its floor
-/// a metre lower).
+/// a metre lower). Terrain fills only the blocks the grid flags: 34 in
+/// arenao1, 682 in exanima01, none over its closed rooms.
 #[test]
 fn shipped_levels() {
     let Some(dir) = exa_assets::locate_install(None) else {
@@ -460,34 +528,45 @@ fn shipped_levels() {
                 sky: [531, 0],
             },
             1856,
+            0,
         ),
         (
             "arenao1",
             NavStats {
                 width: 640,
                 depth: 640,
-                columns_by_spans: [383_670, 20_566, 5364, 0],
-                floors: [25_144, 4847],
-                passable: [25_139, 4847],
-                sky: [786, 517],
+                columns_by_spans: [392_056, 13_617, 3927, 0],
+                floors: [14_677, 3657],
+                passable: [14_670, 3657],
+                sky: [2867, 270],
             },
             5050,
+            34,
         ),
         (
             "exanima01",
             NavStats {
                 width: 640,
                 depth: 800,
-                columns_by_spans: [4610, 506_409, 981, 0],
-                floors: [385_525, 854],
-                passable: [385_444, 854],
-                sky: [121_865, 127],
+                columns_by_spans: [190_963, 320_141, 896, 0],
+                floors: [219_292, 792],
+                passable: [219_225, 792],
+                sky: [101_745, 104],
             },
-            338_283,
+            190_954,
+            682,
         ),
     ];
-    for (name, stats, reached) in cases {
+    for (name, stats, reached, blocks) in cases {
         let level = headless::level_source(&game, name).expect("level loads");
+        let present: u32 = level
+            .source
+            .ground
+            .iter()
+            .flat_map(|t| t.blocks)
+            .map(u8::count_ones)
+            .sum();
+        assert_eq!(present, blocks, "{name}");
         let g = level.build();
         assert_eq!(g.stats(), stats, "{name}");
         let start = crate::start::player_start(name).unwrap().position;
@@ -504,6 +583,22 @@ fn shipped_levels() {
                 let (x, z) = g.cell_at(Vec3::new(8.9, -1.0, 64.0)).unwrap();
                 assert_eq!(g.cell(x, z, Layer::Lower).floor, 211);
                 assert!(reaches(Vec3::new(8.9, -1.0, 64.0)));
+                // Over its 477 closed rooms only the walls' edges have floors
+                // (1120 cells); filling whole tiles, the ground between the
+                // rooms made 186 721 and the walk reached 338 283 cells.
+                let pack = game.pack(exa_assets::PackKind::Resource).unwrap();
+                let scene = exa_formats::rfc::Scene::parse(pack.get("exanima01.rfc").unwrap());
+                let grid = scene.unwrap().grid.unwrap();
+                let closed = grid.edges.iter();
+                assert_eq!(closed.filter(|&&e| e & CELL_OPEN == 0).count(), 477);
+                assert_eq!(floors_over_closed_rooms(&g, &grid), 1120);
+                let mut whole = level.source.clone();
+                for tile in &mut whole.ground {
+                    *tile = Arc::new((**tile).clone().with_blocks(GroundTile::ALL_BLOCKS));
+                }
+                let g = whole.build();
+                assert_eq!(floors_over_closed_rooms(&g, &grid), 186_721);
+                assert_eq!(reach(&g, start).len(), 338_283);
             }
             _ => {}
         }

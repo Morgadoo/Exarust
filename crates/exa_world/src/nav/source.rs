@@ -17,10 +17,12 @@ pub const FLOOR_COLUMN_CM: i64 = 10;
 pub const FLOOR_BLOCK_CM: i64 = 20;
 /// Smallest upward component of a floor face's unit normal.
 const UPWARD: f32 = 1.2e-7;
+/// Blocks of 6 m along a terrain tile's side.
+pub const TILE_BLOCKS: usize = crate::terrain::TileBlocks::SIDE;
 
 /// A terrain tile's ground as the original samples it: the vertex heights
-/// (displaced by the height pass, as the game moves its vertices) and the
-/// holes.
+/// (displaced by the height pass, as the game moves its vertices), the
+/// holes, and which of its 6 m blocks the level builds.
 #[derive(Debug, Clone)]
 pub struct GroundTile {
     /// World X and Z of vertex (0, 0), metres.
@@ -33,10 +35,18 @@ pub struct GroundTile {
     pub heights: Vec<f32>,
     /// Vertices cut out of the surface, same layout.
     pub holes: Vec<bool>,
+    /// The tile's [`TILE_BLOCKS`] × [`TILE_BLOCKS`] blocks that exist: bit
+    /// `bx` of row `by` (along X and Z). Every block outside a tile-grid
+    /// level; in one, only those the terrain builds.
+    pub blocks: [u8; TILE_BLOCKS],
 }
 
 impl GroundTile {
-    /// The ground of `tile` with `heights` (displaced, `side × side`).
+    /// Every block of a tile.
+    pub const ALL_BLOCKS: [u8; TILE_BLOCKS] = [u8::MAX; TILE_BLOCKS];
+
+    /// The ground of `tile` with `heights` (displaced, `side × side`),
+    /// every block present.
     pub fn new(
         terrain: &exa_formats::terrain::Terrain,
         tile: &exa_formats::terrain::TerrainTile,
@@ -54,7 +64,22 @@ impl GroundTile {
             side,
             heights,
             holes,
+            blocks: Self::ALL_BLOCKS,
         }
+    }
+
+    /// The same ground with only the blocks `present` (bit `bx` of row
+    /// `by`), as a tile-grid level builds them.
+    pub fn with_blocks(mut self, present: [u8; TILE_BLOCKS]) -> Self {
+        self.blocks = present;
+        self
+    }
+
+    /// Whether block (`bx`, `by`) exists.
+    pub fn has_block(&self, bx: usize, by: usize) -> bool {
+        self.blocks
+            .get(by)
+            .is_some_and(|row| bx < TILE_BLOCKS && row & (1 << bx) != 0)
     }
 
     /// The ground of `tile` at its stored heights (no height pass).
@@ -134,6 +159,7 @@ pub struct NavSource {
     pub meshes: Vec<(Arc<Vec<Vec3>>, Affine3A)>,
     /// The tile grid's floor meshes.
     pub floors: Vec<FloorMesh>,
+    /// The terrain tiles the level builds, with their blocks.
     pub ground: Vec<Arc<GroundTile>>,
 }
 
@@ -174,26 +200,43 @@ impl NavSource {
     }
 }
 
-/// Fills the columns under a terrain tile: each cell from the bottom to the
-/// ground's height at its centre (no ground in holes).
+/// Fills the columns under a terrain tile a 6 m block at a time, as the
+/// original walks the blocks its terrain built: each cell of a present
+/// block from the bottom to the ground's height at its centre (no ground
+/// in holes); absent blocks fill nothing.
 fn fill_ground(columns: &mut Columns, ground: &GroundTile, width: usize, depth: usize) {
-    let cells = (((ground.side - 1) as f32 * ground.spacing) / CELL).round() as usize;
-    let first = |corner: f32, n: usize| (corner / CELL).round() as i64 + (n / 2) as i64;
-    let (x0, z0) = (first(ground.corner.x, width), first(ground.corner.y, depth));
+    // Vertices along a block (30), its edge (6 m) and its cells (20).
+    let per_block = (ground.side - 1) / TILE_BLOCKS;
+    let block = per_block as f32 * ground.spacing;
+    let cells = (block / CELL).round() as usize;
     let step = CELL / ground.spacing;
-    for k in 0..cells {
-        let z = z0 + k as i64;
-        if z < 0 || z >= depth as i64 {
-            continue;
-        }
-        for i in 0..cells {
-            let x = x0 + i as i64;
-            if x < 0 || x >= width as i64 {
+    let first = |corner: f32, b: usize, n: usize| {
+        ((corner + b as f32 * block) / CELL).round() as i64 + (n / 2) as i64
+    };
+    for by in 0..TILE_BLOCKS {
+        for bx in 0..TILE_BLOCKS {
+            if !ground.has_block(bx, by) {
                 continue;
             }
-            let (u, v) = ((i as f32 + 0.5) * step, (k as f32 + 0.5) * step);
-            if let Some(h) = ground.height(u, v) {
-                columns.fill_ground(x as usize, z as usize, f64::from(h));
+            let x0 = first(ground.corner.x, bx, width);
+            let z0 = first(ground.corner.y, by, depth);
+            let (u0, v0) = ((bx * per_block) as f32, (by * per_block) as f32);
+            for k in 0..cells {
+                let z = z0 + k as i64;
+                if z < 0 || z >= depth as i64 {
+                    continue;
+                }
+                for i in 0..cells {
+                    let x = x0 + i as i64;
+                    if x < 0 || x >= width as i64 {
+                        continue;
+                    }
+                    let u = (i as f32 + 0.5) * step + u0;
+                    let v = (k as f32 + 0.5) * step + v0;
+                    if let Some(h) = ground.height(u, v) {
+                        columns.fill_ground(x as usize, z as usize, f64::from(h));
+                    }
+                }
             }
         }
     }

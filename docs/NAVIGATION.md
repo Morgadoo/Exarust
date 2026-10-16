@@ -6,10 +6,10 @@ grid of 30 cm cells built from the level at load, with at most two floors
 per cell, and plans over it with A\*. The player's wall look-ahead, combat
 footwork and every NPC path go through it.
 
-Exarust builds the grid as the original does (`exa_world::nav`, change
-`build-the-navigation-grid`). The queries and the planner (line walks,
-straight walks, nearest walkable point, A\*, character footprints) come
-next. Until a level's grid is built, and for anything without one, they
+Exarust builds the grid as the original does (`exa_world::nav`, changes
+`build-the-navigation-grid` and `build-nav-terrain-only-where-blocks-are`).
+The queries and the planner (line walks, straight walks, nearest walkable
+point, A\*, character footprints) come next. Until a level's grid is built, and for anything without one, they
 answer as the original's fallback does: no path, no obstacle, no cost,
 the point unchanged.
 
@@ -35,9 +35,15 @@ and the installed levels (`exa-tool nav`, the corpus test
 
 In order:
 
-1. **Terrain.** Each 6 m block of every terrain tile fills its 20 × 20
-   cells from voxel 0 up to the voxel of the ground's height at the cell
-   centre, rounded (only within the column's 25.5 m). The height is
+1. **Terrain.** Each 6 m block the level's terrain builds fills its
+   20 × 20 cells from voxel 0 up to the voxel of the ground's height at the
+   cell centre, rounded (only within the column's 25.5 m). The blocks are
+   the renderer's: in a tile-grid level only those whose grid cell carries
+   the terrain flag, elsewhere every block of every tile
+   ([formats/TERRAIN.md](formats/TERRAIN.md), Blocks in grid levels). The
+   original's fill walks each tile's list of built blocks; a block's first
+   cell is half the grid plus its corner over 30 cm, and its cells sample
+   the tile at vertex (i + ½)·1.5 + 30 × the block's index. The height is
    bilinear between the four vertices around the centre, as the game has
    moved them (the height pass, [formats/TERRAIN.md](formats/TERRAIN.md)).
    A centre next to a hole has no ground. The original reads the hole mask
@@ -152,14 +158,18 @@ from the level's start by the planner's step rules: under 50 cm up, under
 | level | cells | floor cells (lower, upper) | open sky (lower, upper) | reached from the start |
 |---|---|---|---|---|
 | `arena` | 640 × 640 | 1935, 0 | 531, 0 | 1856 |
-| `arenao1` | 640 × 640 | 25144, 4847 | 786, 517 | 5050 |
-| `exanima01` | 640 × 800 | 385525, 854 | 121865, 127 | 338283 |
+| `arenao1` | 640 × 640 | 14677, 3657 | 2867, 270 | 5050 |
+| `exanima01` | 640 × 800 | 219292, 792 | 101745, 104 | 190954 |
 
 In exanima01 the walk from the start reaches the foot of the stair room
 (8.9, −1, 64), whose floor reads voxel 211, a metre under the corridors,
-down steps of 10–20 cm. Its terrain lies at about 0 between the dungeon's
-rooms and is floor in the grid too, as it would be in the original from
-the same inputs (a guess: no retail grid has been read to compare).
+down steps of 10–20 cm. Its terrain fills only its 682 flagged blocks: of
+the cells over its 477 closed grid cells (the rock between the rooms) 1120
+keep a floor, at the walls' edges. Filling the whole tiles instead (what
+Exarust did before `build-nav-terrain-only-where-blocks-are`) made the
+rock's ground, at about 0, floor too: 186 721 such cells, and a walk from
+the start reaching 338 283 cells. arenao1 fills its 34 flagged blocks of
+its one tile.
 
 Not reproduced, with what it changes:
 
@@ -178,3 +188,7 @@ Not reproduced, with what it changes:
 - Each cell's floor points come from all tile-grid floors over its columns
   rather than from its own merged mesh; they differ only where two cells'
   floors overlap.
+- In a tile-grid level the original gives a tile slot the `.rft` leaves
+  empty a flat tile at height 0 when one of its cells is flagged, and that
+  tile's blocks fill the grid. No shipped level has such a cell, so
+  Exarust has no such tile ([formats/TERRAIN.md](formats/TERRAIN.md)).
