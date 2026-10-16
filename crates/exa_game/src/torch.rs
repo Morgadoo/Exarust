@@ -1,14 +1,21 @@
-//! A lit torch carried in the left hand, as the player carries one through
-//! the original's dungeons. The torch is the game's own model (`torcha02`),
+//! A lit torch carried in a hand, as the player carries one through the
+//! original's dungeons. The torch is the game's own model (`torcha02`),
 //! with its light and its fire, so it flickers, burns and casts its
 //! shadows like any other torch; the hand holding it keeps its own handle
-//! out of the light's shadow map, as the original does.
+//! out of the light's shadow map, as the original does. Nothing keeps the
+//! light off the body holding it: the original has no such rule either.
+//!
+//! A free main hand (the right) takes the torch, with the "Torch" overlay
+//! on the one-handed moveset raising it; beside a weapon it goes in the off
+//! hand (the left), with "1H & Torch". Each hand holds it by the original's
+//! grip for that hand. Rules: `docs/PLAYER.md` (The carried torch).
 
 use bevy::image::CompressedImageFormatSupport;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use exa_anim::BodyPart;
 use exa_assets::{Game, ModelCache, ModelLoader, PackKind, model};
+use exa_character::{RIGHT_HAND, Wielded};
 
 pub struct TorchPlugin;
 
@@ -18,7 +25,8 @@ impl Plugin for TorchPlugin {
     }
 }
 
-/// A body carrying a lit torch in its left hand.
+/// A body carrying a lit torch: in the right hand, or in the left beside a
+/// weapon ([`TorchHand::of`]), unless a [`TorchHand`] on the body fixes it.
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct CarriesTorch;
 
@@ -35,18 +43,96 @@ pub const LEFT_HAND: usize = 18;
 /// The torch model in `Objects.rpk`.
 const TORCH: &str = "torcha02";
 
-/// The torch upright in the fist, its flame above the hand: the model's
-/// handle runs along its +Y, turned onto the left hand's grip.
-fn left_grip() -> Transform {
-    Transform::from_xyz(0.085, -0.01, 0.0)
-        .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2))
+/// The hand a torch is carried in. On a body carrying a torch it fixes the
+/// hand (the character view shows a torch moveset's own hand); without it
+/// the hand follows [`TorchHand::of`].
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TorchHand {
+    /// The right hand, which holds a lone item.
+    Main,
+    /// The left hand, beside a weapon in the right.
+    Off,
 }
 
-#[allow(clippy::too_many_arguments)]
+/// How a hand holds an item: an offset (cm) and a turn (Euler angles in
+/// degrees, about the hand's X, Y and Z), in the hand part's space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Grip {
+    pub offset: Vec3,
+    pub euler: Vec3,
+}
+
+/// The original's grip for a lone item in the right hand.
+pub const MAIN_GRIP: Grip = Grip {
+    offset: Vec3::new(-12.0, -1.5, 6.0),
+    euler: Vec3::new(70.0, -15.0, 20.0),
+};
+/// The original's grip for an item in the left hand.
+pub const OFF_GRIP: Grip = Grip {
+    offset: Vec3::new(11.0, -0.5, 6.0),
+    euler: Vec3::new(110.0, 15.0, 160.0),
+};
+
+impl Grip {
+    /// The item's placement under the hand part. The original's rotation
+    /// builder puts the item's X axis on (cos z·cos y, sin z, −cos z·sin y):
+    /// the turn about Y, then about Z, then about X, each in the frame the
+    /// previous one left (glam's intrinsic `YZX`), or, applied to the item,
+    /// X first, then Z, then Y, all about the hand's axes (`docs/PLAYER.md`).
+    pub fn transform(self) -> Transform {
+        let a = self.euler * std::f32::consts::PI / 180.0;
+        let turn = Quat::from_euler(EulerRot::YZX, a.y, a.z, a.x);
+        Transform::from_translation(self.offset / 100.0).with_rotation(turn)
+    }
+}
+
+impl TorchHand {
+    /// The right hand when it is free, the left beside a weapon.
+    pub fn of(wields: bool) -> Self {
+        if wields { Self::Off } else { Self::Main }
+    }
+
+    pub fn bone(self) -> usize {
+        match self {
+            Self::Main => RIGHT_HAND,
+            Self::Off => LEFT_HAND,
+        }
+    }
+
+    /// The moveset a body carrying the torch in this hand moves with, in
+    /// and out of combat: the one-handed moveset with the "Torch" overlay
+    /// (the right hand held up at the shoulder), or "1H & Torch" (the left).
+    pub fn moveset(self) -> &'static str {
+        match self {
+            Self::Main => "Torch",
+            Self::Off => "1H & Torch",
+        }
+    }
+
+    pub fn grip(self) -> Grip {
+        match self {
+            Self::Main => MAIN_GRIP,
+            Self::Off => OFF_GRIP,
+        }
+    }
+
+    /// The hand of a body moving with a torch moveset (`moveset`), if it is
+    /// one.
+    pub fn of_moveset(moveset: &str) -> Option<Self> {
+        [Self::Main, Self::Off]
+            .into_iter()
+            .find(|h| h.moveset().eq_ignore_ascii_case(moveset))
+    }
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn light_torches(
     mut commands: Commands,
     game: Option<Res<Game>>,
-    bodies: Query<Entity, (With<CarriesTorch>, Without<TorchLit>)>,
+    bodies: Query<
+        (Entity, Has<Wielded>, Option<&TorchHand>),
+        (With<CarriesTorch>, Without<TorchLit>),
+    >,
     children: Query<&Children>,
     parts: Query<&BodyPart>,
     mut cache: ResMut<ModelCache>,
@@ -56,12 +142,13 @@ fn light_torches(
     support: Option<Res<CompressedImageFormatSupport>>,
 ) {
     let Some(game) = game else { return };
-    for body in &bodies {
+    for (body, wields, fixed) in &bodies {
+        let hand = fixed.copied().unwrap_or(TorchHand::of(wields));
         let by_bone: HashMap<usize, Entity> = children
             .iter_descendants(body)
             .filter_map(|e| parts.get(e).ok().map(|p| (p.bone, e)))
             .collect();
-        let Some(&hand) = by_bone.get(&LEFT_HAND) else {
+        let Some(&holder) = by_bone.get(&hand.bone()) else {
             continue; // body parts not attached yet
         };
         let mut loader = ModelLoader {
@@ -77,7 +164,58 @@ fn light_torches(
             warn!("{TORCH} not found: no torch in hand");
             continue;
         };
-        let root = exa_world::spawn_model(&mut commands, &torch, Some(left_grip()));
-        commands.entity(root).insert((TorchRoot, ChildOf(hand)));
+        let grip = hand.grip().transform();
+        let root = exa_world::spawn_model(&mut commands, &torch, Some(grip));
+        commands.entity(root).insert((TorchRoot, ChildOf(holder)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_free_right_hand_takes_the_torch() {
+        assert_eq!(TorchHand::of(false), TorchHand::Main);
+        assert_eq!(TorchHand::of(false).bone(), RIGHT_HAND);
+        assert_eq!(TorchHand::of(false).moveset(), "Torch");
+        assert_eq!(TorchHand::of(true).bone(), LEFT_HAND);
+        assert_eq!(TorchHand::of(true).moveset(), "1H & Torch");
+        assert_eq!(TorchHand::of_moveset("torch"), Some(TorchHand::Main));
+        assert_eq!(TorchHand::of_moveset("1H & Torch"), Some(TorchHand::Off));
+        assert_eq!(TorchHand::of_moveset("One Handed"), None);
+    }
+
+    #[test]
+    fn the_grip_turns_about_x_then_z_then_y() {
+        // The item's axes land on the rows the original builds the grip's
+        // rotation from: X on (cos z·cos y, sin z, −cos z·sin y), Y on
+        // (sin x·sin y − cos x·sin z·cos y, cos x·cos z,
+        // sin x·cos y + cos x·sin z·sin y) and Z on
+        // (cos x·sin y + sin x·sin z·cos y, −sin x·cos z,
+        // cos x·cos y − sin x·sin z·sin y).
+        for grip in [MAIN_GRIP, OFF_GRIP] {
+            let a = grip.euler * std::f32::consts::PI / 180.0;
+            let (sx, cx) = a.x.sin_cos();
+            let (sy, cy) = a.y.sin_cos();
+            let (sz, cz) = a.z.sin_cos();
+            let q = grip.transform().rotation;
+            let x = Vec3::new(cz * cy, sz, -cz * sy);
+            let y = Vec3::new(sx * sy - cx * sz * cy, cx * cz, sx * cy + cx * sz * sy);
+            let z = Vec3::new(cx * sy + sx * sz * cy, -sx * cz, cx * cy - sx * sz * sy);
+            assert!((q * Vec3::X - x).length() < 1e-5, "{}", q * Vec3::X);
+            assert!((q * Vec3::Y - y).length() < 1e-5, "{}", q * Vec3::Y);
+            assert!((q * Vec3::Z - z).length() < 1e-5, "{}", q * Vec3::Z);
+        }
+    }
+
+    #[test]
+    fn main_grip_places_the_torch_in_the_fist() {
+        let t = MAIN_GRIP.transform();
+        assert!((t.translation - Vec3::new(-0.12, -0.015, 0.06)).length() < 1e-6);
+        // The handle (the model's +Y) runs mostly along the hand's Z, the
+        // axis the fist closes around.
+        let handle = t.rotation * Vec3::Y;
+        assert!(handle.z.abs() > 0.7, "{handle}");
     }
 }

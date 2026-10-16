@@ -1,7 +1,8 @@
 //! Where characters start in a level, as the original decides it: story
 //! levels and the arena hub have fixed starts; arena fighters stand on a
-//! ring around the arena's centre, each facing it. Evidence:
-//! `docs/formats/RFC.md` (Starts).
+//! ring around the arena's centre, each facing it. Also which game mode a
+//! level is played in, and so whether the player keeps a torch there.
+//! Evidence: `docs/formats/RFC.md` (Starts).
 
 use bevy::math::Vec3;
 
@@ -73,6 +74,40 @@ pub fn arena_ring(centre: Vec3, teams: usize, team_size: usize) -> Vec<Vec<Start
         .collect()
 }
 
+/// The game mode the original plays a level in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// The story levels (`exanima…`).
+    Story,
+    /// The practice ladder's arenas (`arena`, `arenae`).
+    Practice,
+    /// The arena career: its hub and the arenas its matches are fought in.
+    Arena,
+}
+
+/// The mode `level` is played in; `None` for scenes no mode plays (the
+/// title scene).
+pub fn mode(level: &str) -> Option<Mode> {
+    let stem = stem(level);
+    if stem.starts_with("exanima") {
+        Some(Mode::Story)
+    } else if stem == "arena" || stem == "arenae" {
+        Some(Mode::Practice)
+    } else if stem == "arenahub" || arena_centre(&stem).is_some() {
+        Some(Mode::Arena)
+    } else {
+        None
+    }
+}
+
+/// Whether the player may carry a torch in `level`. Before a practice or
+/// arena session the original takes the torch out of the player's hands
+/// (arena keeps only its starter weapons), so only the story levels, and
+/// scenes no mode plays, keep it.
+pub fn keeps_torch(level: &str) -> bool {
+    !matches!(mode(level), Some(Mode::Practice | Mode::Arena))
+}
+
 /// The player's start in `level`, where the original fixes it: a new game
 /// in the first story level, the arena hub, the old practice arenas, and the
 /// first slot of an arena match.
@@ -124,6 +159,34 @@ mod tests {
         let r = |n, k| arena_ring(Vec3::ZERO, n, k)[0][0].position.length();
         assert!((r(2, 1) - 2.0).abs() < 1e-4);
         assert!((r(3, 3) - 3.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn modes_by_level() {
+        assert_eq!(mode("exanima01.rfc"), Some(Mode::Story));
+        assert_eq!(mode("exanima67_sw"), Some(Mode::Story));
+        assert_eq!(mode("arenae"), Some(Mode::Practice));
+        assert_eq!(mode("ARENA.rfc"), Some(Mode::Practice));
+        assert_eq!(mode("arenahub"), Some(Mode::Arena));
+        assert_eq!(mode("arena4"), Some(Mode::Arena));
+        assert_eq!(mode("arenao1"), Some(Mode::Arena));
+        assert_eq!(mode("menuscene"), None);
+    }
+
+    #[test]
+    fn the_torch_stays_out_of_practice_and_arenas() {
+        assert!(keeps_torch("exanima01"));
+        assert!(keeps_torch("menuscene"));
+        for level in [
+            "arena",
+            "arenae",
+            "arenahub",
+            "arena1",
+            "arenao1",
+            "arenao5.rfc",
+        ] {
+            assert!(!keeps_torch(level), "{level}");
+        }
     }
 
     #[test]

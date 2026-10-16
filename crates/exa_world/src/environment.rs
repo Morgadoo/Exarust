@@ -163,32 +163,29 @@ pub fn level_lighting(level: &str, record: Option<&Environment>, lights: usize) 
     }
 }
 
-/// Applies `lighting`: ambient and background resources, a sun under
-/// `parent`, and fog for the cameras.
-/// The ambient of a typical level, in the original's units: what a scene
-/// without a level (a model or the character view) is shown under. The
-/// shading reads the scene's ambient as the level's ambient × 16, so Bevy's
-/// usual brightness washes surfaces lit by the environment cube out.
-pub fn reference_ambient() -> GlobalAmbientLight {
-    let grey = Color::srgb(REFERENCE_AMBIENT, REFERENCE_AMBIENT, REFERENCE_AMBIENT).to_linear();
+/// The scene's ambient light for a level ambient colour (linear), in the
+/// original's units: the shading reads the scene's ambient as the level's
+/// ambient × 16, so Bevy's usual brightness washes surfaces lit by the
+/// environment cube out.
+pub fn ambient_light(level: Vec3) -> GlobalAmbientLight {
+    let a = level * AMBIENT_SCALE;
     GlobalAmbientLight {
-        color: Color::linear_rgb(
-            grey.red * AMBIENT_SCALE,
-            grey.green * AMBIENT_SCALE,
-            grey.blue * AMBIENT_SCALE,
-        ),
+        color: Color::linear_rgb(a.x, a.y, a.z),
         brightness: 1.0,
         ..default()
     }
 }
 
+/// The ambient of a typical level: what a scene without a level (a model)
+/// is shown under.
+pub fn reference_ambient() -> GlobalAmbientLight {
+    ambient_light(linear([REFERENCE_AMBIENT; 3]))
+}
+
+/// Applies `lighting`: ambient and background resources, a sun under
+/// `parent`, and fog for the cameras.
 pub fn apply_lighting(commands: &mut Commands, lighting: &Lighting, parent: Entity) {
-    let ambient = lighting.ambient * AMBIENT_SCALE;
-    commands.insert_resource(GlobalAmbientLight {
-        color: Color::linear_rgb(ambient.x, ambient.y, ambient.z),
-        brightness: 1.0,
-        ..default()
-    });
+    commands.insert_resource(ambient_light(lighting.ambient));
     let bg = lighting.background;
     commands.insert_resource(ClearColor(Color::linear_rgb(bg.x, bg.y, bg.z)));
     if let Some(sun) = lighting.sun {

@@ -71,6 +71,34 @@ fn light(s: Surface, l: vec3<f32>, colour: vec3<f32>) -> Lit {
     return out;
 }
 
+// Skin lit by one light, as the original's subsurface program lights it:
+// plain N·L diffuse without the Fresnel share, GGX specular as `light`, and
+// the light scattered under the skin (`scatter`), read against the blurred
+// normal `sn`. The scatter wraps past the terminator: with b = sn·L and
+// c = 0.5 + 0.05·blur, it is min(max(b + c, 0)²/2, ½) + max(b − 1 + c, 0),
+// so it reaches 1.1 facing the light and fades out at b = −c.
+struct LitSkin {
+    diffuse: vec3<f32>,
+    scatter: vec3<f32>,
+    specular: vec3<f32>,
+}
+
+fn light_skin(s: Surface, sn: vec3<f32>, blur: f32, l: vec3<f32>, colour: vec3<f32>) -> LitSkin {
+    var out: LitSkin;
+    let b = dot(sn, l);
+    let c = 0.5 + 0.05 * blur;
+    let w = max(b + c, 0.0);
+    out.scatter = (min(w * w * 0.5, 0.5) + max(b - 1.0 + c, 0.0)) * colour;
+    let ndl = max(dot(s.n, l), 0.0);
+    if ndl <= 0.0 {
+        return out;
+    }
+    let lit = light(s, l, colour);
+    out.specular = lit.specular;
+    out.diffuse = ndl * colour;
+    return out;
+}
+
 // The original's cube-shadow filter: taps of a fixed eight-point disc around
 // the light direction, turned per window pixel, over the light's filter
 // radius (`PointLight::radius`: (softness + 1)·0.005), each a hardware 2 × 2

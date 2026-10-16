@@ -12,8 +12,8 @@ import bevy_pbr::render::{
     shadows,
 };
 import exa_render::shading::{
-    Surface, Lit, taps, lit_by, light_shadow, light, schlick, view_depth, vertical_shaping, gi_sample, in_gi,
-    gi_ambient,
+    Surface, Lit, taps, lit_by, light_shadow, light, light_skin, schlick, view_depth, vertical_shaping,
+    gi_sample, in_gi, gi_ambient,
     REFLECTION_STRENGTH, ENVIRONMENT_FALLBACK, AMBIENT_SCALE, SUN_LUX,
 };
 
@@ -32,6 +32,8 @@ struct ExaParams {
     gi_extent: vec4<f32>,
     // Parallax scale per UV axis (xy), displacement-shadow step (z), bias (w).
     displacement: vec4<f32>,
+    // Skin: the scattered share of the diffuse colour (rgb) and the blur (w).
+    subsurface: vec4<f32>,
 }
 
 const DIFFUSE_MAP: u32 = 1u;
@@ -50,6 +52,15 @@ const HEIGHT_MAP: u32 = 4096u;
 const DISPLACEMENT_SHADOWS: u32 = 8192u;
 const DEBUG_GI: u32 = 16384u;
 const SPLIT_TAPS: u32 = 32768u;
+const SUBSURFACE: u32 = 65536u;
+const FADE_TO_BLACK: u32 = 131072u;
+const TINT_AS_SRGB: u32 = 262144u;
+// The horizontal distance from the origin (m) at which the fade to black
+// reaches black (`exa_render::material::FADE_RADIUS`).
+const FADE_RADIUS: f32 = 2.0;
+// The mip level of the diffuse map the light scattered under the skin
+// takes its colour from (the original's subsurface program).
+const SCATTER_COLOUR_LOD: f32 = 1.5;
 // Displacement-shadow taps toward each light: four per sub-sample over the
 // original's four supersampling passes.
 const SHADOW_STEPS: i32 = 16;
@@ -100,6 +111,13 @@ fn displacement_shadow(uv: vec2<f32>, l: vec3<f32>, ax: vec3<f32>, ay: vec3<f32>
 
 fn has(bit: u32) -> bool {
     return (material.flags & bit) != 0u;
+}
+
+// The sRGB curve's decoding, per channel.
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    let lo = c / 12.92;
+    let hi = pow((c + 0.055) / 1.055, vec3(2.4));
+    return select(hi, lo, c <= vec3(0.04045));
 }
 
 @fragment
@@ -163,6 +181,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     if !is_front {
         n = -n;
     }
+    // Skin: the light scattered under it reads a blurred normal.
+    let skin = has(SUBSURFACE);
+    let blur = material.subsurface.w;
+    var sn = n;
 @if(VERTEX_TANGENTS) {
     if has(NORMAL_MAP) {
         let t = normalize(in.world_tangent.xyz - n * dot(in.world_tangent.xyz, n));
@@ -171,6 +193,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // Bevy's (its MikkTSpace sign is flipped), so green maps as stored.
         let xy = textureSample(normal_map, normal_sampler, uv).rg * 2.0 - 1.0;
         let z = sqrt(max(1.0 - dot(xy, xy), 0.0));
+        if skin {
+            let bxy = textureSampleLevel(normal_map, normal_sampler, uv, blur).rg * 2.0 - 1.0;
+            let bz = sqrt(max(1.0 - dot(bxy, bxy), 0.0));
+            sn = normalize(t * bxy.x + b * bxy.y + n * bz);
+        }
         n = normalize(t * xy.x + b * xy.y + n * z);
     }
 }
@@ -179,6 +206,19 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     s.v = v;
     s.ndv = abs(dot(v, n));
     var dif_col = material.diffuse.rgb * dif_tex.rgb;
+    // The colour the light scattered under the skin takes: the diffuse map
+    // blurred.
+    var scatter_col = material.diffuse.rgb;
+    if skin && has(DIFFUSE_MAP) {
+        scatter_col *= textureSampleLevel(diffuse_map, diffuse_sampler, uv, SCATTER_COLOUR_LOD).rgb;
+    }
+    // A map tinted in sRGB space (a character's skin, which the original
+    // bakes from undecoded texels and reads back as sRGB): decode the
+    // product.
+    if has(TINT_AS_SRGB) {
+        dif_col = srgb_to_linear(dif_col);
+        scatter_col = srgb_to_linear(scatter_col);
+    }
     var cavity = 1.0;
     s.rough = 1.0 - material.specular.w;
     s.f0 = material.specular.rgb;
@@ -189,6 +229,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             let metal = rgm.b;
             s.f0 = mix(vec3(0.04), dif_tex.rgb * material.specular.rgb, metal);
             dif_col *= 1.0 - metal;
+            scatter_col *= 1.0 - metal;
             s.rough = 1.0 - material.specular.w * rgm.g;
             cavity = rgm.r;
         } else {
@@ -201,6 +242,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     s.rough = clamp(s.rough, 0.02, 1.0);
 
     var diffuse = vec3(0.0);
+    var scatter = vec3(0.0);
     var specular = vec3(0.0);
     let self_shadowed = displaced && has(DISPLACEMENT_SHADOWS);
     let h0 = dsp_val + material.displacement.w + 0.5;
@@ -230,7 +272,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         if self_shadowed {
             shadow *= displacement_shadow(uv, l, ax, ay, ns, h0);
         }
-        let lit = light(s, l, (*lt).color_inverse_square_range.rgb * atn * shadow);
+        let colour = (*lt).color_inverse_square_range.rgb * atn * shadow;
+        if skin {
+            let lit = light_skin(s, sn, blur, l, colour);
+            diffuse += lit.diffuse;
+            scatter += lit.scatter;
+            specular += lit.specular;
+            continue;
+        }
+        let lit = light(s, l, colour);
         diffuse += lit.diffuse;
         specular += lit.specular;
     }
@@ -244,7 +294,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         if self_shadowed {
             shadow *= displacement_shadow(uv, (*sun).direction_to_light, ax, ay, ns, h0);
         }
-        let lit = light(s, (*sun).direction_to_light, (*sun).color.rgb / SUN_LUX * shadow);
+        let colour = (*sun).color.rgb / SUN_LUX * shadow;
+        if skin {
+            let lit = light_skin(s, sn, blur, (*sun).direction_to_light, colour);
+            diffuse += lit.diffuse;
+            scatter += lit.scatter;
+            specular += lit.specular;
+            continue;
+        }
+        let lit = light(s, (*sun).direction_to_light, colour);
         diffuse += lit.diffuse;
         specular += lit.specular;
     }
@@ -285,6 +343,12 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         ambient *= min(dsp_val + 1.2, 1.0);
     }
     var colour = (diffuse + ambient) * dif_col;
+    if skin {
+        // The scattered share takes its own light; ambient reaches both
+        // shares, so it weighs 1 in all.
+        let sss = material.subsurface.rgb;
+        colour = (diffuse + ambient) * (vec3(1.0) - sss) * dif_col + (scatter + ambient) * sss * scatter_col;
+    }
     if s.legacy {
         // Older program: (lights + reflection) × specular colour × a soft
         // Fresnel between 0.5 and 1.
@@ -300,6 +364,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         e *= textureSampleBias(emissive_map, emissive_sampler, uv, TEXTURE_BIAS).rgb;
     }
     colour += e;
+    // The character screen's fade: black by FADE_RADIUS from the origin.
+    if has(FADE_TO_BLACK) {
+        let a = min(length(p.xz) / FADE_RADIUS, 1.0);
+        colour *= 1.0 - a * (2.0 - a);
+    }
     out.color = vec4(colour, alpha);
     return out;
 }

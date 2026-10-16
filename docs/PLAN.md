@@ -183,6 +183,18 @@ still read darker than the skin because the skin lacks the original's
 `chargen_*` composite (Phase 5, character surface)
 ([formats/OTHER.md](formats/OTHER.md), Colour space).
 
+Done (change `light-skin-and-torch-as-original`): human and ancient skin is
+drawn as the original's built-in skins, from the race's own textures, with
+the diffuse half of its `chargen_*` composite (the race texture tinted by
+the middle skin tone in sRGB space), rougher, with the subsurface program
+([RENDERING.md](RENDERING.md), Skin);
+the character view is the original's creation scene, two lights, no sun,
+the floor fading to black ([RENDERING.md](RENDERING.md), Character views);
+the carried torch is raised in the right hand with the "Torch" moveset by
+the original's grip, and practice and arena levels start without it
+([PLAYER.md](PLAYER.md), The carried torch). Skin tones per character
+remain.
+
 Done (change `add-motion-playback`): skeleton and motion set decoded;
 clips play on the human body (`exarust character Default/Walk`).
 Done (change `add-player-movement`): rapier physics with level colliders,

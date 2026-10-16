@@ -348,6 +348,10 @@ impl ModelLoader<'_> {
         }
         let source = local.or_else(|| library_material(self.game, name));
         let mat = match source {
+            // The body's skin is drawn as the original's built-in skin.
+            Some(_) if crate::human_skin::is_race_skin(entry, name) => {
+                crate::human_skin::skin_material(self, entry)
+            }
             Some(m) => self.exa_material(&m),
             None => {
                 self.warn_once(format!("material {name:?} not found"));

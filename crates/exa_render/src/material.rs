@@ -20,7 +20,48 @@ impl Plugin for MaterialsPlugin {
         embedded_asset!(app, "exa.wesl");
         embedded_asset!(app, "exa_prepass.wesl");
         app.add_plugins(MaterialPlugin::<ExaMaterial>::default())
-            .add_systems(PostUpdate, mark_shadowless);
+            .init_resource::<FadeToBlack>()
+            .add_systems(PostUpdate, (mark_shadowless, sync_fade_to_black));
+    }
+}
+
+/// Whether lit surfaces fade to black with their horizontal distance from
+/// the world's origin, black from [`FADE_RADIUS`] out, as the original's
+/// character screen fades its floor (its environment's second fog mode).
+/// Every surface material follows it.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FadeToBlack(pub bool);
+
+/// Horizontal distance from the origin (m) at which [`FadeToBlack`] reaches
+/// black; the fade is a·(2 − a) with a = min(distance / radius, 1).
+pub const FADE_RADIUS: f32 = 2.0;
+
+/// Keeps every material's fade bit equal to [`FadeToBlack`].
+fn sync_fade_to_black(
+    fade: Res<FadeToBlack>,
+    mut materials: ResMut<Assets<ExaMaterial>>,
+    mut events: MessageReader<AssetEvent<ExaMaterial>>,
+) {
+    let added: Vec<AssetId<ExaMaterial>> = events
+        .read()
+        .filter_map(|e| match e {
+            AssetEvent::Added { id } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    let ids: Vec<AssetId<ExaMaterial>> = if fade.is_changed() {
+        materials.ids().collect()
+    } else {
+        added
+    };
+    for id in ids {
+        let Some(m) = materials.get(id) else { continue };
+        if (m.params.flags & flags::FADE_TO_BLACK != 0) == fade.0 {
+            continue;
+        }
+        if let Some(mut m) = materials.get_mut(id) {
+            m.params.flags ^= flags::FADE_TO_BLACK;
+        }
     }
 }
 
@@ -65,6 +106,17 @@ pub mod flags {
     /// The frame is supersampled: each sub-frame takes its share of the
     /// shadow and GI taps ([`crate::supersample::SplitTaps`]).
     pub const SPLIT_TAPS: u32 = 32768;
+    /// Skin: light scatters under the surface ([`super::ExaParams::subsurface`]),
+    /// as the original's subsurface program draws a body's skin.
+    pub const SUBSURFACE: u32 = 65536;
+    /// The surface fades to black away from the origin
+    /// ([`super::FadeToBlack`]).
+    pub const FADE_TO_BLACK: u32 = 131072;
+    /// The diffuse map times the diffuse colour is an sRGB colour, decoded
+    /// after the product: a map read as stored (not decoded) is tinted in
+    /// sRGB space, as the original bakes a character's skin texture from the
+    /// race's undecoded one, without encoding, into an sRGB texture.
+    pub const TINT_AS_SRGB: u32 = 262144;
 }
 
 #[derive(Clone, Copy, Debug, ShaderType)]
@@ -85,6 +137,11 @@ pub struct ExaParams {
     /// Parallax scale per UV axis (xy), displacement-shadow step (z) and
     /// bias (w).
     pub displacement: Vec4,
+    /// With [`flags::SUBSURFACE`]: the share of the diffuse colour that
+    /// scatters under the surface (linear rgb; the rest is plain diffuse),
+    /// and the blur (w): the mip level of the normal map the scattered light
+    /// reads, which also widens how far the light wraps past the terminator.
+    pub subsurface: Vec4,
 }
 
 impl Default for ExaParams {
@@ -100,6 +157,7 @@ impl Default for ExaParams {
             gi_origin: Vec4::ZERO,
             gi_extent: Vec4::ONE,
             displacement: Vec4::ZERO,
+            subsurface: Vec4::ZERO,
         }
     }
 }

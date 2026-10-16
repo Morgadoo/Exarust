@@ -9,6 +9,17 @@ use exa_assets::{ColorSpace, Game, ModelCache, ModelLoader, PackKind, model};
 
 use crate::{Options, View};
 
+/// The character-creation scene the original shows a body in: a floor and
+/// two lights.
+const CREATION_SCENE: &str = "sgccflr01.rfc";
+/// The creation screen's camera: it looks at a target from a distance along
+/// the direction of a stored eye (metres), with a vertical field of view
+/// (degrees).
+const CREATION_EYE: Vec3 = Vec3::new(-2.0, 2.1, 3.6);
+const CREATION_TARGET: Vec3 = Vec3::new(0.0, 0.6, 0.0);
+const CREATION_DISTANCE: f32 = 4.0;
+const CREATION_FOV: f32 = 50.0;
+
 pub struct ViewerPlugin;
 
 impl Plugin for ViewerPlugin {
@@ -71,6 +82,7 @@ fn setup(
 
     // Default pose: (position, look-at target, fly speed).
     let mut pose = (Vec3::new(0.0, 2.0, 5.0), Vec3::ZERO, 4.0);
+    let mut fov = 45.0;
     match &*view {
         View::Level(name) => {
             if let Some(at) = options.torch {
@@ -86,7 +98,7 @@ fn setup(
             if begin_level(&mut commands, &mut loader, name, &options) {
                 // The camera is there from the start, behind the loading
                 // screen; it moves to the level's view when the load ends.
-                spawn_fly_camera(&mut commands, pose, &options);
+                spawn_fly_camera(&mut commands, pose, fov, &options);
                 return;
             }
             error!("level {name} not found in Resource.rpk");
@@ -148,6 +160,13 @@ fn setup(
                         .entity(root)
                         .insert(exa_character::Wielded::model(w.clone()));
                 }
+                // A torch moveset shows the body holding the lit torch in
+                // the hand that moveset raises.
+                if let Some(hand) = exa_game::torch::TorchHand::of_moveset(moveset) {
+                    commands
+                        .entity(root)
+                        .insert((exa_game::torch::CarriesTorch, hand));
+                }
                 if options.limp {
                     commands.entity(root).insert(exa_physics::body::GoLimp {
                         velocity: Vec3::new(0.0, 0.5, -0.8),
@@ -155,23 +174,26 @@ fn setup(
                     });
                 }
             }
-            commands.spawn((
-                DirectionalLight {
-                    illuminance: exa_world::environment::SUN_LUX,
-                    ..default()
-                },
-                Transform::from_xyz(2.0, 4.0, 3.0).looking_at(Vec3::Y, Vec3::Y),
-            ));
-            let floor = loader.meshes.add(Plane3d::default().mesh().size(6.0, 6.0));
-            let floor_mat = loader.materials.add(Color::srgb(0.25, 0.23, 0.2));
-            commands
-                .spawn((
-                    Transform::default(),
-                    Visibility::default(),
-                    exa_physics::StaticGeometry,
-                ))
-                .with_child((Mesh3d(floor), MeshMaterial3d(floor_mat)));
-            pose = (Vec3::new(1.6, 1.4, 2.6), Vec3::new(0.0, 0.9, 0.0), 2.0);
+            // The original's character-creation scene: its cobbled floor
+            // and two lights (a white key light in front, a warm one behind),
+            // no sun, the floor fading to black 2 m out, framed by its
+            // camera. Its grey ambient (sRGB 0.3) only scales the voxel GI,
+            // which stays dark in a scene without GI geometry: no ambient
+            // reaches the body or the floor.
+            match loader.model(PackKind::Resource, CREATION_SCENE) {
+                Some(scene) => {
+                    let root = exa_world::spawn_model(&mut commands, &scene, None);
+                    commands.entity(root).insert(exa_physics::StaticGeometry);
+                }
+                None => error!("{CREATION_SCENE} not found in Resource.rpk"),
+            }
+            commands.insert_resource(exa_world::environment::ambient_light(Vec3::ZERO));
+            commands.insert_resource(ClearColor(Color::BLACK));
+            commands.insert_resource(exa_render::material::FadeToBlack(true));
+            let eye =
+                CREATION_TARGET + (CREATION_EYE - CREATION_TARGET).normalize() * CREATION_DISTANCE;
+            pose = (eye, CREATION_TARGET, 2.0);
+            fov = CREATION_FOV;
         }
         View::Play(name) => {
             match exa_anim::Motions::load(&game) {
@@ -215,7 +237,7 @@ fn setup(
         }
     }
 
-    spawn_fly_camera(&mut commands, pose, &options);
+    spawn_fly_camera(&mut commands, pose, fov, &options);
 }
 
 /// How long one frame may spend building the level while it loads. The rest
@@ -352,14 +374,15 @@ fn continue_level(
 }
 
 /// The free-fly camera at `pose` (position, look-at target, fly speed),
-/// unless `--camera` places it.
-fn spawn_fly_camera(commands: &mut Commands, pose: (Vec3, Vec3, f32), options: &Options) {
+/// unless `--camera` places it, with a vertical field of view (degrees)
+/// unless `--fov` sets it.
+fn spawn_fly_camera(commands: &mut Commands, pose: (Vec3, Vec3, f32), fov: f32, options: &Options) {
     let transform = fly_transform(pose, options);
     let (yaw, pitch, _) = transform.rotation.to_euler(EulerRot::YXZ);
     let camera = commands.spawn((
         Camera3d::default(),
         Projection::Perspective(PerspectiveProjection {
-            fov: options.fov.unwrap_or(45.0).to_radians(),
+            fov: options.fov.unwrap_or(fov).to_radians(),
             ..default()
         }),
         Exposure {
@@ -566,10 +589,12 @@ fn spawn_players(
         commands.entity(model).insert((
             exa_combat::Fighter::default(),
             exa_physics::body::Physical::default(),
-            // A lit torch in the left hand, as the player carries one
-            // through the original's dungeons.
-            exa_game::torch::CarriesTorch,
         ));
+        // A lit torch, as the player carries one through the original's
+        // dungeons; practice and arena take it away.
+        if exa_world::start::keeps_torch(name) {
+            commands.entity(model).insert(exa_game::torch::CarriesTorch);
+        }
         if let Some(w) = &options.weapon {
             commands
                 .entity(model)

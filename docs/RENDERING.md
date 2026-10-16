@@ -13,7 +13,8 @@ The original works in **linear light with sRGB storage**:
   exact sRGB transfer function).
 - Colour textures upload as sRGB, and data textures (normal, gloss, height,
   packed specular) as linear. The `.rfi` format word's top byte decides:
-  `0x81`/`0x01`/`0x02` colour, `0x82`/`0x92`/`0x12` data.
+  `0x81`/`0x01`/`0x02` colour, `0x82`/`0x92`/`0x12` data. A loader can force
+  data: the race's skin textures load that way (see Skin).
 - No shader applies a gamma power.
 - The scene renders into an 8-bit sRGB target, so the lit result **clamps
   at 1**. There are no float buffers and no automatic exposure.
@@ -211,6 +212,53 @@ is effectively off in the original (its step is ~0).
   map², cut at ½).
 
 Blended draws are sorted by the layer in bits 4–7, without depth writes.
+
+### Skin
+
+The body model's own skin material (`skinhuman`, local to `humanbase.rfc`
+and `ancientbase.rfc`) is never drawn. For races whose record asks for it,
+the original puts a built-in material in its place (`exa_assets::human_skin`):
+`_HumanSkin`, or `_AncientSkin` for ancients. Both have diffuse, specular
+and glossiness 1, PBR with a packed specular map and textures generated
+per character; they differ in the subsurface colour, sRGB (1.0, 0.8, 0.46)
+for humans and (1.0, 0.63, 0.133) for ancients (read from the two built-in
+payloads), and in the blood-spatter dirt only humans get. Exarust tells
+ancients by the body model `ancientbase.rfc` (the original by a race kind
+word it sets on the character, 0x200 for ancients) **[inf]**.
+
+- **Textures**: the race's own, which the race loader names after the
+  body model's stem and loads as data: `<stem>difm` (colour), `<stem>spcm`
+  (gloss) and `<stem>nrmm0…5` (normal, one per physique), with `f` in place
+  of the last `m` for women. Whatever the skin material names plays no
+  part: `humanbase.rfc`'s names the same textures, `ancientbase.rfc`'s only
+  a `missing.dds`. Exarust uses the men's textures and the first physique's
+  normal map.
+- **Diffuse map**: the race's skin texture (`humandifm`, `humandiff` for
+  women) times the character's skin tone. The original loads the race
+  texture as data, so the product is taken on its stored, sRGB-encoded
+  values; it renders the map with the sRGB encoding off into an sRGB
+  texture, which drawing the skin decodes once. The tone multiplier comes
+  from a 3 × 3 grid read bilinearly at the appearance's two tone values:
+  0.29–0.64, (0.46, 0.47, 0.47) at the centre. The texture's own skin
+  colour, sRGB (0.80, 0.65, 0.57), shows as linear (0.112, 0.076, 0.059) at
+  the middle tone. Exarust has no skin tones yet: every human and ancient
+  wears the middle one.
+- **Specular map**: intensity 1, gloss 0.8 × the race's gloss texture
+  (`humanspcm`), no metal. So F0 is 0.04 and the roughness 1 − 0.8·gloss.
+- **Subsurface program**: of the diffuse colour, the subsurface colour's
+  share (linear (1.0, 0.604, 0.178) for humans) scatters and the rest is
+  plain diffuse, N·L without the Fresnel share. The scattered share is lit by a
+  wrapped term on the normal map read at mip 2: with b = N·L and
+  c = 0.5 + 0.05·2, min(max(b + c, 0)²/2, ½) + max(b − 1 + c, 0). It takes
+  its colour from the diffuse map at mip 1.5. Ambient reaches both shares.
+  Lit skin is as bright as plain diffuse (1.10, 1.06, 1.02 facing a light),
+  with a red glow past the terminator (0.18, 0.11, 0.03 at N·L = 0).
+- There is no light-receive scale, skin cap or exposure adaptation: lit skin
+  is limited only by the 8-bit scene clamp.
+
+Not yet: skin tones per character (the player's are in its save, which is
+not shipped), women's skin textures, the generated normal map's blend of
+the physique variants (`humannrmm0…5`), the dirt and blood layers.
 
 ## Voxel GI
 
@@ -518,13 +566,35 @@ lengths in cm, and the simulation runs at the 83 Hz tick):
 
 - Vertical field of view in degrees.
 - Main menu: 60°, eye (0, 5, 7) m looking at (0, 0, −2) m.
-- Character creation: 50°.
+- Character creation: 50°, looking at (0, 0.6, 0) m from 4 m along the
+  direction of (−2, 2.1, 3.6) m.
 - Play: 45°·√(1.6/aspect) at the reference zoom, clamped to 10°–100°.
+
+## Character views
+
+`exarust character` shows the body in the original's character-creation
+scene:
+- the floor scene `sgccflr01.rfc`: a cobbled plane and two omni lights, a
+  white key light (intensity 3, radius 14.6 m) at (1.43, 2.43, 1.50) m and a
+  warm one, sRGB (1.0, 0.73, 0.4) (intensity 3, radius 8.3 m), at
+  (−1.39, 1.53, −1.81) m;
+- no sun. The screen's grey ambient (sRGB 0.3) only scales the voxel GI,
+  and nothing in the scene fills the GI volume, so no ambient light reaches
+  the body or the floor;
+- the environment's second fog mode: every lit surface fades to black with
+  its horizontal distance d from the origin, by a·(2 − a) with
+  a = min(d / 2 m, 1), over a black background;
+- the camera above.
+
+The inventory and trade dolls light the body differently (a sun of sRGB
+0.75 grey × 3, ambient 0.5, no floor); they are not shown yet.
 
 ## Not done yet
 
 The jittered supersampling pattern, medium and large fire templates, the sun
-and terrain in the GI volume, several resident GI blocks, fog, vertex dirt, glass refraction, effect programs (smoke, powers), hair and skin
-programs, terrain parallax and wetness, and the outdoor environment cube.
+and terrain in the GI volume, several resident GI blocks, distance fog (the
+first fog mode), vertex dirt, glass refraction, effect programs (smoke,
+powers), the hair program, terrain parallax and wetness, and the outdoor
+environment cube.
 Software rendering here cannot afford the light shadows, so test frames use
 `--no-shadows`.

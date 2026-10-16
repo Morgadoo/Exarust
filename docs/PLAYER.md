@@ -71,20 +71,43 @@ The left button attacks; the mouse's vertical motion picks the strike.
 
 ## The carried torch
 
-- The torch (`torcha02`, item "Torch A01") sits in the off-hand slot, the
-  **left hand** (bone 18). A new game puts it there for two of the four
-  backgrounds. Exarust's play mode always gives the player one.
-- Carrying it switches the whole moveset to **"1H & Torch"**, which holds
-  the left hand at shoulder height, about 12 cm forward. There is no
-  additive arm layer.
-- The original's grip table gives the off-hand item an offset of
-  (11, −0.5, 6) cm and Euler angles (110°, 15°, 160°) in an order not yet
-  pinned. Exarust holds the torch upright in the fist until that order is
-  confirmed.
+- The torch (`torcha02`, item "Torch A01") goes in one of two hand slots:
+  - the main hand, the **right** (bone 17): the moveset becomes the
+    **"Torch"** overlay on "One Handed", which holds the right hand at
+    shoulder height, about 25 cm forward;
+  - the off hand, the **left** (bone 18): **"1H & Torch"**, the left hand
+    at shoulder height, about 12 cm forward.
+
+  There is no additive arm layer: the whole moveset changes, in and out of
+  combat. A new game puts the torch in the off hand for two of the four
+  backgrounds; the player in the reference captures holds it raised in the
+  right hand.
+- Exarust's play mode gives the player a lit torch in the story levels
+  (and scenes no game mode plays): in the right hand, or in the left beside
+  a weapon given with `--weapon`. Practice (`arena`, `arenae`) and the arena
+  career (`arenahub`, the match arenas such as `arenao1`) start without it:
+  before those sessions the original clears the torch from both hands, and
+  the arena keeps only its starter clothes and weapons.
+- Each hand holds the item by the original's grip table, offset (cm) and
+  Euler angles (degrees) in the hand's space:
+  - right hand: (−12, −1.5, 6), (70°, −15°, 20°);
+  - left hand: (11, −0.5, 6), (110°, 15°, 160°).
+
+  The rotation builder puts the item's X axis on (cos z·cos y, sin z,
+  −cos z·sin y) and its Y axis on (sin x·sin y − cos x·sin z·cos y,
+  cos x·cos z, sin x·cos y + cos x·sin z·sin y): applied to the item, the
+  turn about X first, then Z, then Y, all about the hand's axes. Not yet:
+  the offset's scaling by character size and its per-race correction, and
+  the hand closing around the handle.
 - The light is the torch's own `_Fire` emitter. A moving torch dirties all
-  its cube faces every frame it moves; its flicker never does.
+  its cube faces every frame it moves; its flicker never does. Nothing keeps
+  it off its holder: the original has no owner test in its light selection,
+  and only the torch's own mesh stays out of the torch's shadow map.
 - The original adds no separate glow around the player, except with
   night-vision headgear or one Mind power.
+- `exarust character Torch/Idle` (or any "Torch" or "1H & Torch" action)
+  shows the body holding the lit torch in the hand that moveset raises: the
+  right for "Torch", the left for "1H & Torch".
 
 ## Unattended runs
 

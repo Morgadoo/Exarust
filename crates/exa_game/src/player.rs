@@ -12,11 +12,12 @@ use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use exa_anim::Animator;
+use exa_character::Wielded;
 use exa_combat::{Attacking, Fighter};
 use exa_physics::body::Fallen;
 use exa_physics::{CharacterBody, Physics};
 
-use crate::torch::CarriesTorch;
+use crate::torch::{CarriesTorch, TorchHand};
 
 /// Walking speed (m/s): where the original's walk drive settles.
 const WALK_SPEED: f32 = 1.4;
@@ -88,8 +89,17 @@ impl PlayerBody {
 
 /// Moveset and idle used in combat mode with a one-handed weapon.
 pub const COMBAT_MOVESET: &str = "One Handed";
-/// The exploration moveset carrying a torch in the left hand.
-pub const TORCH_MOVESET: &str = "1H & Torch";
+
+/// The moveset of a body in or out of combat: a carried torch's (the
+/// "Torch" overlay in the right hand, "1H & Torch" beside a weapon), else
+/// the one-handed moveset in combat and the default one outside it.
+pub fn moveset(combat: bool, torch: bool, wields: bool) -> &'static str {
+    match (torch, combat) {
+        (true, _) => TorchHand::of(wields).moveset(),
+        (false, true) => COMBAT_MOVESET,
+        (false, false) => "Default",
+    }
+}
 
 /// The point under the cursor on the player's hip plane, for the right
 /// mouse button.
@@ -178,12 +188,14 @@ fn steer_player(
         Option<&Fighter>,
         Has<Fallen>,
         Has<CarriesTorch>,
+        Has<Wielded>,
     )>,
 ) {
     let dt = 1.0 / TICK_HZ;
     for (mut body, at, children) in &mut players {
         for child in children.iter() {
-            let Ok((mut pb, mut t, mut anim, fighter, fallen, torch)) = bodies.get_mut(child)
+            let Ok((mut pb, mut t, mut anim, fighter, fallen, torch, wields)) =
+                bodies.get_mut(child)
             else {
                 continue;
             };
@@ -264,7 +276,7 @@ fn steer_player(
             } else {
                 "Walk"
             };
-            let moveset = if torch { TORCH_MOVESET } else { "Default" };
+            let moveset = moveset(false, torch, wields);
             if anim.looping && (anim.action != action || anim.moveset != moveset) {
                 anim.moveset = moveset.into();
                 anim.play_loop(action);
@@ -315,19 +327,19 @@ fn combat_steps(
 
 fn toggle_combat(
     keys: Res<ButtonInput<KeyCode>>,
-    mut bodies: Query<(&mut PlayerBody, &mut Animator, Has<CarriesTorch>)>,
+    mut bodies: Query<(
+        &mut PlayerBody,
+        &mut Animator,
+        Has<CarriesTorch>,
+        Has<Wielded>,
+    )>,
 ) {
     if !keys.just_pressed(KeyCode::Tab) {
         return;
     }
-    for (mut pb, mut anim, torch) in &mut bodies {
+    for (mut pb, mut anim, torch, wields) in &mut bodies {
         pb.combat = !pb.combat;
-        anim.moveset = match (pb.combat, torch) {
-            (true, true) => TORCH_MOVESET.into(),
-            (true, false) => COMBAT_MOVESET.into(),
-            (false, true) => TORCH_MOVESET.into(),
-            (false, false) => "Default".into(),
-        };
+        anim.moveset = moveset(pb.combat, torch, wields).into();
         anim.play_loop(if pb.combat { "Cmbt - Idle" } else { "Idle" });
     }
 }
@@ -537,6 +549,16 @@ mod tests {
                 .entity(body)
                 .contains::<exa_character::WearsUnderwear>()
         );
+    }
+
+    #[test]
+    fn a_torch_picks_the_moveset_in_and_out_of_combat() {
+        for combat in [false, true] {
+            assert_eq!(moveset(combat, true, false), "Torch");
+            assert_eq!(moveset(combat, true, true), "1H & Torch");
+        }
+        assert_eq!(moveset(true, false, true), COMBAT_MOVESET);
+        assert_eq!(moveset(false, false, true), "Default");
     }
 
     #[test]
