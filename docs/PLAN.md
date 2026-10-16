@@ -304,7 +304,6 @@ ankle, capped at the leg's reach (an idle human's pelvis at 101.5 cm); the
 capsule carries the body only across the ground and turns it, and holds
 its pelvis horizontally (Exarust's own until the support pins, C14). A
 get-up no longer hops (the end of `Get Up 2` overshoots 3–5 cm and settles
-<<<<<<< HEAD
 in 45–100 ticks, from 10.7 cm ringing 90). Done (change
 `climb-steps-until-feet-step`, Exarust's own stopgap): until the
 original's walking feet and leg IK (C13, C19), the lift reads no foot's
@@ -329,18 +328,12 @@ jobs, relays) and the body class a record gives its model
 ([formats/OTHER.md](formats/OTHER.md)). `exa-tool bodies`, `mechanisms` and
 `corpus bodies` print them. Next: props as bodies in the solver (M32), then
 world links, the hand's drag, doors, levers and plates (M33–M35).
-=======
-in 45–100 ticks, from 10.7 cm ringing 90). Stairs regress until the
-original's walking feet and leg IK (C13, C19): a walking body catches its
-feet on the risers. Still to do: the frame anchor and support pins, the
-original's falls and get-ups, recovery steps, foot planting, clip
-blending, collisions between bodies (and their wake of a sleeper). Done
-(change `follow-the-pelvis-with-the-camera`, M3 of the movement plan): the
+
+Done (change `follow-the-pelvis-with-the-camera`, M3 of the movement plan): the
 chase camera looks at the pelvis as it is drawn between body ticks, and
 shows its own 17 ms ticks blended by how far the frame is into the last
 (nine ticks a frame at most), and rings a kick of the camera down as the
 original's shake does ([PLAYER.md](PLAYER.md), Camera).
->>>>>>> 24883d8 (Follow the pelvis with the camera as the original does)
 
 This phase carries the most risk and defines how the game feels.
 
