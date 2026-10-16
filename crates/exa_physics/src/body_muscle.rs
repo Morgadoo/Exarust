@@ -56,8 +56,10 @@ const THIGH_FACTOR: f32 = 0.2;
 const LEG_LIMIT_BLEND: f32 = 0.1;
 const LEG_LIMIT_STANDING: f32 = 0.5;
 const LEG_LIMIT_MOVING: f32 = 0.4;
-/// Arm stiffness: off balance, and dazed (tone under 0.85) or striding.
+/// Arm stiffness: off balance, and dazed (tone under 0.85) or striding. A
+/// body is off balance below this balance.
 const ARM_OFF_BALANCE: f32 = 0.5;
+const OFF_BALANCE_BELOW: f32 = 0.6;
 const ARM_LOOSE: f32 = 0.2;
 const ARM_DAZED_TONE: f32 = 0.85;
 /// Otherwise it eases each tick, x ← 0.8x + 0.08·(0.5 + 0.5·race arm
@@ -96,12 +98,15 @@ pub struct RaceMuscles {
     /// while the pose holds still, and the arms' relaxed stiffness (human
     /// 1).
     pub arm_relaxation: f32,
+    /// Adds 0.05 × it to the balance score (1 in every race record).
+    pub balance_bonus: f32,
 }
 
 impl RaceMuscles {
     pub const HUMAN: Self = Self {
         stance: 0.5,
         arm_relaxation: 1.0,
+        balance_bonus: 1.0,
     };
 }
 
@@ -123,9 +128,19 @@ pub struct Bearing {
     pub striding: bool,
     /// It has lost its balance: falling, lying or getting up.
     pub off_balance: bool,
-    /// Its character stands on the ground (a body without a character
-    /// controller does).
-    pub grounded: bool,
+    /// It plays its get-up clip: its balance rises and it has support near
+    /// the ground.
+    pub getting_up: bool,
+    /// How far it crouches, 0 to 1: its chest is measured 10 cm back at a
+    /// full crouch.
+    pub crouch: f32,
+    /// Its character controller stands on the ground (a body without one
+    /// counts as carried). Exarust's own: until the body stands on its own
+    /// feet, the controller's capsule carries a standing body and may hold
+    /// its feet off the ground (perched on a stone), so a carried standing
+    /// body keeps its balance when no foot is grounded; a fallen one is not
+    /// carried.
+    pub carried: bool,
     /// What is left of its turn toward its heading (rad).
     pub turn: f32,
 }
@@ -137,7 +152,9 @@ impl Default for Bearing {
             run: 0.0,
             striding: false,
             off_balance: false,
-            grounded: true,
+            getting_up: false,
+            crouch: 0.0,
+            carried: true,
             turn: 0.0,
         }
     }
@@ -322,10 +339,13 @@ impl Link {
 
 impl Ragdoll {
     /// The character tick's settings for the link muscles, once the pose
-    /// is set, in the original's order: support, stance factor, the legs'
-    /// factors and limit strengths, the arms' stiffness, then the anchors
-    /// and their relaxation (a supported leg's from its reach).
+    /// is set and the support measured, in the original's order: stance
+    /// factor, the legs' factors and limit strengths, the arms' stiffness,
+    /// then the anchors and their relaxation (a supported leg's from its
+    /// reach). A body whose balance is not measured has support 1 while it
+    /// stands and 0 once fallen.
     pub(super) fn tune_muscles(&mut self) {
+        let measured = self.measures_balance();
         let Ragdoll {
             parts,
             links,
@@ -337,14 +357,14 @@ impl Ragdoll {
             return;
         };
         let bearing = drive.bearing;
-        drive.support = if drive.supported && bearing.grounded {
-            1.0
-        } else {
-            0.0
-        };
+        if !measured {
+            drive.support = if drive.supported { 1.0 } else { 0.0 };
+        }
         drive.stance = stance_factor(drive.stance, &bearing, &drive.race);
         let unsteady = Bearing {
-            off_balance: bearing.off_balance || !drive.supported,
+            off_balance: bearing.off_balance
+                || !drive.supported
+                || drive.balance.value < OFF_BALANCE_BELOW,
             ..bearing
         };
         drive.arm = arm_stiffness(drive.arm, &unsteady, drive.tone, &drive.race);

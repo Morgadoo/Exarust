@@ -123,5 +123,14 @@ scripted run is not steered by typing elsewhere.
 
 `--trace <file.csv>` writes the player's body state after every 83 Hz tick,
 in the columns of the retail body probe (`docs/formats/RSQ.md`, Physical
-body), the stance factor, tone target and support included. Steering
-already runs once per body tick, as the original runs it.
+body), the stance factor, tone target, support, balance and its counter
+included (standing still: 1, 80 and 1). Steering already runs once per body
+tick, as the original runs it.
+
+The body keeps its own balance, as the original measures it: its chest
+against its ankles, and the ground under each foot. Standing still it never
+falls; standing with no ground under its feet (dropped, or walked off a
+ledge and stopped) it loses its balance and falls, then gets up once
+settled. A standing player whose capsule perches on a stone its feet hang
+beside keeps its balance (Exarust's own, until the body stands on its
+feet).

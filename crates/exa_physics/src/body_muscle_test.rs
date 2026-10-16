@@ -39,6 +39,7 @@ fn arm() -> Ragdoll {
             origin: Vec3::ZERO,
             links: vec![],
             foot: None,
+            pins: Vec::new(),
         },
         PartSetup {
             bone: 13,
@@ -53,6 +54,7 @@ fn arm() -> Ragdoll {
                 (cm(0.0, 0.0, 12.0), cm(10.39, 0.0, 6.0), 0.12),
             ],
             foot: None,
+            pins: Vec::new(),
         },
     ];
     Ragdoll::new(&setup).with_drive()
@@ -89,6 +91,7 @@ fn damping_gains_are_the_originals() {
         race: RaceMuscles {
             stance: 0.75,
             arm_relaxation: 0.5,
+            balance_bonus: 1.0,
         },
         ..Drive::default()
     };
@@ -171,6 +174,7 @@ fn arm_stiffness_follows_the_bodys_state() {
     let skeleton = RaceMuscles {
         stance: 0.75,
         arm_relaxation: 0.5,
+        balance_bonus: 1.0,
     };
     let mut y = 0.0;
     for _ in 0..60 {
@@ -213,6 +217,9 @@ fn relaxation_rises_slowly_falls_at_once_and_ignores_fast_motion() {
     assert_eq!(leg_relax_target(92.17f32.powi(2), 49.03), 0.0);
     assert!((leg_relax_target(98.06f32.powi(2), 49.03) - 0.2).abs() < 1e-6);
     assert!((leg_relax_target(98.06f32.powi(2) + 450.0, 49.03) - 0.15).abs() < 1e-3);
+    // The contact is the ankle, 41.95 cm from the knee: a straight human
+    // leg, its hip 85.15 cm from the ankle, relaxes at the cap of 0.2.
+    assert!((leg_relax_target(85.15f32.powi(2), 41.95) - 0.2).abs() < 1e-6);
 }
 
 /// Each slack link's anchor is its point placed by the part's animated turn
@@ -297,11 +304,13 @@ fn the_legs_strength_follows_the_gait_and_support() {
     }
     assert!((body.links[limit].strength - 0.4).abs() < 1e-4);
     assert!((body.parts[thigh].factor - 0.2).abs() < 1e-6);
+    // Standing with no ground under its feet.
     body.set_bearing(Bearing {
-        grounded: false,
+        carried: false,
         ..Bearing::default()
     });
     for _ in 0..200 {
+        body.measure_balance(NONE);
         body.aim(Affine3A::IDENTITY, pose.clone());
     }
     assert_eq!(body.drive.as_ref().unwrap().support(), 0.0);
@@ -333,6 +342,7 @@ fn part_factors_and_arm_strengths() {
             origin: Vec3::ZERO,
             links: vec![],
             foot: None,
+            pins: Vec::new(),
         })
         .collect();
     let body = Ragdoll::new(&setup);

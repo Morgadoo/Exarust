@@ -4,9 +4,10 @@
 //! animated and steered.
 //!
 //! Each fixed tick runs every living body's character tick before the body
-//! solver, the player's last, as the original orders them: the body's clip
-//! clock advances by one tick and its clip is sampled, and its targets are
-//! the body root's world transform times the clip's pose.
+//! solver, the player's last, as the original orders them: the body
+//! measures its balance and the ground under its feet, its clip clock
+//! advances by one tick and its clip is sampled, and its targets are the
+//! body root's world transform times the clip's pose.
 
 use std::collections::HashMap;
 
@@ -15,11 +16,11 @@ use bevy::prelude::*;
 use exa_anim::{AnimSystems, Animator, BodyPart, ClipPose, Motions, Stature, TickedClips};
 use exa_assets::SkinnedPart;
 use exa_formats::rsq::BoneBody;
-use exa_physics::CharacterBody;
 use exa_physics::body::{
     BODY_HZ, Bearing, CharacterTicks, Fallen, GoLimp, PartSetup, Physical, RaceMuscles, Ragdoll,
     world_with,
 };
+use exa_physics::{CharacterBody, Physics};
 
 use crate::player::PlayerBody;
 
@@ -114,8 +115,8 @@ fn build_bodies(
 
 /// What building a part's body needs: its links to its parent as the
 /// skeleton stores them (the parent's points still measured from the part's
-/// origin, which `origin` places in the parent), and its foot contact point
-/// if it carries one.
+/// origin, which `origin` places in the parent), its foot contact point if
+/// it carries one, and its pins.
 pub(crate) fn part_setup(
     bone: usize,
     entity: Entity,
@@ -151,6 +152,9 @@ pub(crate) fn part_setup(
         foot: body
             .and_then(|b| b.contacts.first())
             .map(|&c| Vec3::from_array(c)),
+        pins: body.map_or_else(Vec::new, |b| {
+            b.pins.iter().map(|&p| Vec3::from_array(p)).collect()
+        }),
     }
 }
 
@@ -178,13 +182,15 @@ fn go_limp(
 }
 
 /// The character tick of every living physical body, the player's last:
-/// its clip clock advances by one tick, its clip is sampled, and its
-/// targets are set to the body root's world transform times the clip's pose
-/// (the body is carried with the root's motion since the last tick). The
-/// body learns what its character does ([`Bearing`]) first.
+/// the body learns what its character does ([`Bearing`]) and measures its
+/// balance and the ground under its feet against the level; its clip clock
+/// advances by one tick, its clip is sampled, and its targets are set to
+/// the body root's world transform times the clip's pose (the body is
+/// carried with the root's motion since the last tick).
 #[allow(clippy::type_complexity)]
 fn tick_characters(
     motions: Option<Res<Motions>>,
+    physics: Option<Res<Physics>>,
     mut bodies: Query<
         (
             Entity,
@@ -192,7 +198,7 @@ fn tick_characters(
             &mut Animator,
             Option<&Stature>,
             Option<&PlayerBody>,
-            Has<Fallen>,
+            Option<&Fallen>,
         ),
         With<TickedClips>,
     >,
@@ -220,6 +226,9 @@ fn tick_characters(
             .iter_ancestors(root)
             .find_map(|a| controllers.get(a).ok());
         body.set_bearing(bearing(controller, player, &anim, fallen));
+        if let Some(physics) = &physics {
+            body.measure_balance(&physics.0);
+        }
         let pose = clip_tick(&motions, &mut anim, stature.map_or(1.0, |s| s.0));
         let root_world = world_with(root, &parents, |e| {
             nodes.get(e).ok().map(|(t, _)| t.compute_affine())
@@ -238,23 +247,26 @@ fn tick_characters(
     }
 }
 
-/// What a body's character does this tick, for its muscles: it moves while
-/// its controller is asked to, runs by the player's run blend, strides in
-/// the walk and run cycles, is off balance from its fall until it has got
-/// up, stands on the ground when its controller does (or has none), and
-/// turns by what is left of the player's turn.
+/// What a body's character does this tick, for its muscles and balance: it
+/// moves while its controller is asked to, runs by the player's run blend,
+/// strides in the walk and run cycles, is off balance from its fall until
+/// it has got up, gets up while its get-up clip plays, never crouches (no
+/// crouch yet), is carried while its controller stands on the ground (or
+/// it has none), and turns by what is left of the player's turn.
 fn bearing(
     controller: Option<&CharacterBody>,
     player: Option<&PlayerBody>,
     anim: &Animator,
-    fallen: bool,
+    fallen: Option<&Fallen>,
 ) -> Bearing {
     Bearing {
         moving: controller.is_some_and(|c| c.desired_velocity != Vec3::ZERO),
         run: player.map_or(0.0, PlayerBody::run),
         striding: matches!(anim.action.as_str(), "Walk" | "Run"),
-        off_balance: fallen,
-        grounded: controller.is_none_or(|c| c.grounded),
+        off_balance: fallen.is_some(),
+        getting_up: fallen.is_some_and(|f| f.getting_up),
+        crouch: 0.0,
+        carried: controller.is_none_or(|c| c.grounded),
         turn: player.map_or(0.0, PlayerBody::turn_left),
     }
 }
@@ -489,6 +501,7 @@ pub(crate) mod tests {
                 origin: Vec3::ZERO,
                 links: vec![],
                 foot: None,
+                pins: Vec::new(),
             },
             // Pinned at its origin, the hip.
             PartSetup {
@@ -501,6 +514,7 @@ pub(crate) mod tests {
                 origin: THIGH_REST,
                 links: vec![],
                 foot: None,
+                pins: Vec::new(),
             },
         ];
         world.entity_mut(root).insert((
@@ -603,6 +617,30 @@ pub(crate) mod tests {
             knee.abs_diff_eq(cm(-0.3, -43.19, -1.09), 5e-4),
             "{}",
             knee * 100.0
+        );
+        // The balance stands each leg on its ankle, its foot's origin
+        // (1.24, −41.87, −2.32) cm in the lower leg, not the stored contact
+        // (0.16, −48.97, 2.4): a leg is 43.20 + 41.95 cm long. The chest is
+        // the mean of the thorax pins (±10.40, 9.65, 1.25) cm.
+        let shins: Vec<usize> = body
+            .legs()
+            .iter()
+            .map(|l| body.parts[l.shin].bone)
+            .collect();
+        assert_eq!(shins, [3, 6]);
+        let leg = &body.legs()[0];
+        assert_eq!(leg.point, setup[index(4)].origin);
+        assert!(
+            leg.point.abs_diff_eq(cm(1.24, -41.87, -2.32), 5e-4),
+            "{}",
+            leg.point * 100.0
+        );
+        assert!((leg.length - 0.8515).abs() < 5e-4, "{}", leg.length);
+        let chest = body.chest_point().unwrap();
+        assert!(
+            chest.abs_diff_eq(cm(0.0, 9.65, 1.25), 5e-4),
+            "{}",
+            chest * 100.0
         );
         // The lower legs carry the foot contacts, so their long links limit
         // the legs.

@@ -877,6 +877,7 @@ fn race_muscles(body: &exa_formats::races::RaceBody) -> RaceMuscles {
     RaceMuscles {
         stance: body.stance,
         arm_relaxation: body.arm_relaxation,
+        balance_bonus: body.balance_bonus,
     }
 }
 

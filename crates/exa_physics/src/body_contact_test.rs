@@ -15,6 +15,7 @@ fn ball(at: Vec3) -> Ragdoll {
         origin: Vec3::ZERO,
         links: vec![],
         foot: None,
+        pins: Vec::new(),
     }])
 }
 
@@ -105,6 +106,7 @@ fn stored_contacts_hold_a_limb_dragged_by_its_links() {
             origin: Vec3::ZERO,
             links: vec![],
             foot: None,
+            pins: Vec::new(),
         },
         PartSetup {
             bone: 3,
@@ -118,6 +120,7 @@ fn stored_contacts_hold_a_limb_dragged_by_its_links() {
             origin: Vec3::new(-0.2, -0.39, 0.0),
             links: vec![(Vec3::new(0.2, 0.05, 0.0), Vec3::new(0.2, 0.05, 0.0), 0.0)],
             foot: None,
+            pins: Vec::new(),
         },
     ]);
     for _ in 0..200 {
@@ -413,6 +416,7 @@ fn conflicting_links_do_not_propel_a_limp_body() {
             origin: Vec3::ZERO,
             links: vec![],
             foot: None,
+            pins: Vec::new(),
         },
         PartSetup {
             bone: 3,
@@ -430,6 +434,7 @@ fn conflicting_links_do_not_propel_a_limp_body() {
                 (Vec3::new(-0.15, 0.0, 0.1), Vec3::new(-0.25, 0.0, 0.1), 0.0),
             ],
             foot: None,
+            pins: Vec::new(),
         },
     ]);
     for _ in 0..83 {

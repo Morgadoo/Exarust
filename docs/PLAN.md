@@ -246,9 +246,16 @@ tick its parts move under 20 cm/s, held at 30–32 between 20 and 40 cm/s,
 back to 256 above), its first tick asleep takes its velocity away and then
 it lies in deep sleep; blows and going limp wake a body, and living bodies
 never sleep. All seven exanima01 corpses now sleep 3–5 s after going limp
-(3 of 7 before). Still to do: balance and support, the original's pose
-drive and lift, recovery steps, foot planting, clip blending, collisions
-between bodies (and their wake of a sleeper).
+(3 of 7 before). Done (change `measure-balance-and-support`, C6): balance
+is measured as the original's at the chest (the thorax pins) against the
+ankles (where the original's muscle setup moves the foot contacts), with
+its lean score, counter (floor 80 standing still) and recovery; each leg
+asks the level for its ground with the original's Height Query, and
+support S = grounded × balance feeds the link muscles; Exarust's falls
+follow the lean, decided in the fixed step from last tick's balance
+([formats/RSQ.md](formats/RSQ.md)). Still to do: the original's pose drive
+and lift, its falls and get-ups, recovery steps, foot planting, clip
+blending, collisions between bodies (and their wake of a sleeper).
 
 This phase carries the most risk and defines how the game feels.
 
@@ -400,7 +407,7 @@ holds the runtime and the documentation of formats and behaviour.
 [`COMPONENT-MAP.md`](COMPONENT-MAP.md) sets every component of the original
 against Exarust and lists the largest missing ones. In order:
 
-1. Balance and support, the original's pose drive and lift, recovery
+1. The original's pose drive and lift, its falls and get-ups, recovery
    steps, foot planting, clip blending and collisions between bodies
    (Phase 3).
 2. Inventory, equipment and containers, then blocking and parrying

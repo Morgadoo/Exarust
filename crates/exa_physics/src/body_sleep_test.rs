@@ -19,6 +19,7 @@ fn ball(at: Vec3) -> Ragdoll {
         origin: Vec3::ZERO,
         links: vec![],
         foot: None,
+        pins: Vec::new(),
     }])
 }
 

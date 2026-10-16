@@ -25,6 +25,7 @@ fn part(
         origin: Vec3::ZERO,
         links: vec![],
         foot: None,
+        pins: Vec::new(),
     }
 }
 

@@ -32,6 +32,138 @@ pub trait Level {
     fn pieces(&self, lo: Vec3, hi: Vec3, out: &mut Vec<u32>);
     /// Triangles of `piece` meeting the box `lo..hi`, in world space.
     fn triangles(&self, piece: u32, lo: Vec3, hi: Vec3, out: &mut Vec<[Vec3; 3]>);
+
+    /// The original's Height Query: a sphere of `radius` whose lowest point
+    /// starts at `at` is swept straight down by at most `depth`. Returns
+    /// the height of its lowest point where it first meets the front of an
+    /// upward face, or `None`. A sphere that starts against a face finds it
+    /// at `at` (the original counts a negative distance as 0). Only the
+    /// level answers it: living bodies are not part of it.
+    fn height_below(&self, at: Vec3, radius: f32, depth: f32) -> Option<f32> {
+        height_query(self, at, radius, depth)
+    }
+}
+
+/// How deep (m) a Height Query looks first; it looks the whole way down
+/// only when nothing is that near (the answer is the same, the column of
+/// triangles to test much shorter).
+const NEAR_DEPTH: f32 = 2.0;
+
+/// The Height Query over a level's triangles: the near column first, then
+/// the whole one.
+fn height_query<L: Level + ?Sized>(level: &L, at: Vec3, radius: f32, depth: f32) -> Option<f32> {
+    if !(radius > 0.0 && depth > 0.0 && at.is_finite()) {
+        return None;
+    }
+    let near = depth.min(NEAR_DEPTH);
+    sweep_down(level, at, radius, near).or_else(|| {
+        (depth > near)
+            .then(|| sweep_down(level, at, radius, depth))
+            .flatten()
+    })
+}
+
+/// The sphere swept down `depth` against the triangles of the column under
+/// it, highest first, until none can be met sooner.
+fn sweep_down<L: Level + ?Sized>(level: &L, at: Vec3, radius: f32, depth: f32) -> Option<f32> {
+    let centre = at + Vec3::Y * radius;
+    let side = Vec3::new(radius, 0.0, radius);
+    let (lo, hi) = (
+        at - side - Vec3::Y * depth,
+        centre + side + Vec3::Y * radius,
+    );
+    let (mut pieces, mut triangles) = (Vec::new(), Vec::new());
+    level.pieces(lo, hi, &mut pieces);
+    for &piece in &pieces {
+        level.triangles(piece, lo, hi, &mut triangles);
+    }
+    // Upward faces with the sphere in front of them, highest first.
+    let mut faces: Vec<(f32, [Vec3; 3])> = triangles
+        .iter()
+        .filter(|t| {
+            let n = (t[1] - t[0]).cross(t[2] - t[0]);
+            n.y > 0.0 && n.dot(centre - t[0]) >= 0.0
+        })
+        .map(|t| (t[0].y.max(t[1].y).max(t[2].y), *t))
+        .collect();
+    faces.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let mut nearest: Option<f32> = None;
+    for (top, t) in faces {
+        let reach = nearest.unwrap_or(depth);
+        // A face stops the sphere's lowest point at its own highest point
+        // or under it: one no higher than where it already stops cannot
+        // stop it sooner.
+        if top <= centre.y - reach - radius {
+            break;
+        }
+        if let Some(d) = drop_onto(&t, centre, radius, reach) {
+            nearest = Some(d);
+        }
+    }
+    nearest.map(|d| at.y - d)
+}
+
+/// How far (at most `reach`) a sphere of radius `r` centred at `c` drops
+/// straight down before it meets triangle `t`: the first of its face, its
+/// edges and its corners it touches; 0 when it starts against it.
+pub(crate) fn drop_onto(t: &[Vec3; 3], c: Vec3, r: f32, reach: f32) -> Option<f32> {
+    let n = (t[1] - t[0]).cross(t[2] - t[0]).try_normalize()?;
+    let r2 = r * r;
+    let mut first = f32::INFINITY;
+    // The face: the centre one radius over the plane (or nearer to start
+    // with), over the triangle.
+    let s = n.dot(c - t[0]);
+    if n.y > 0.0 && s >= 0.0 {
+        let d = ((s - r) / n.y).max(0.0);
+        let below = c - Vec3::Y * d;
+        if inside(t, n, below - n * n.dot(below - t[0])) {
+            first = d;
+        }
+    }
+    for k in 0..3 {
+        let (p, q) = (t[k], t[(k + 1) % 3]);
+        // A corner: the centre one radius from it.
+        let w = c - p;
+        let w2 = w.length_squared();
+        if w2 <= r2 {
+            return Some(0.0);
+        }
+        let disc = w.y * w.y - (w2 - r2);
+        if disc >= 0.0 && w.y > 0.0 {
+            first = first.min(w.y - disc.sqrt());
+        }
+        // An edge: the centre one radius from its line, between its ends.
+        let length = (q - p).length();
+        if length <= 0.0 {
+            continue;
+        }
+        let u = (q - p) / length;
+        let a = 1.0 - u.y * u.y;
+        if a <= 1e-9 {
+            continue;
+        }
+        let along = w.dot(u);
+        let b = -w.y + along * u.y;
+        let rest = w2 - along * along - r2;
+        let disc = b * b - a * rest;
+        if disc < 0.0 {
+            continue;
+        }
+        let d = ((-b - disc.sqrt()) / a).max(0.0);
+        let at = along + d * -u.y;
+        if (0.0..=length).contains(&at) && (rest > 0.0 || d == 0.0) && (rest <= 0.0 || -b > 0.0) {
+            first = first.min(d);
+        }
+    }
+    (first <= reach).then_some(first)
+}
+
+/// Whether `x`, on the plane of triangle `t` with normal `n`, lies inside it.
+fn inside(t: &[Vec3; 3], n: Vec3, x: Vec3) -> bool {
+    (0..3).all(|k| {
+        let (p, q) = (t[k], t[(k + 1) % 3]);
+        (q - p).cross(x - p).dot(n) >= -1e-7
+    })
 }
 
 /// A plain triangle list, one piece.

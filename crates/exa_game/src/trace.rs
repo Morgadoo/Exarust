@@ -14,7 +14,6 @@ use bevy::prelude::*;
 use exa_anim::{Animator, BodyPart, ClipPose, Motions, Stature};
 use exa_physics::body::{BodySystems, BodyTicks, Ragdoll, world_with};
 
-use crate::balance::Balance;
 use crate::limp::clip_pose;
 use crate::player::PlayerBody;
 
@@ -142,7 +141,6 @@ fn trace_bodies(
         &Ragdoll,
         Option<&Animator>,
         Option<&Stature>,
-        Option<&Balance>,
         Has<PlayerBody>,
     )>,
     parents: Query<&ChildOf>,
@@ -153,7 +151,7 @@ fn trace_bodies(
     }
     let player = bodies.iter().any(|(.., p)| p);
     let mut text = String::new();
-    for (root, body, anim, stature, balance, is_player) in &bodies {
+    for (root, body, anim, stature, is_player) in &bodies {
         if player && !is_player {
             continue;
         }
@@ -163,7 +161,6 @@ fn trace_bodies(
             body,
             anim,
             stature.map_or(1.0, |s| s.0),
-            balance,
             motions.as_deref(),
             &parents,
             &nodes,
@@ -192,7 +189,6 @@ fn row(
     body: &Ragdoll,
     anim: Option<&Animator>,
     stature: f32,
-    balance: Option<&Balance>,
     motions: Option<&Motions>,
     parents: &Query<&ChildOf>,
     nodes: &Query<(&Transform, Option<&BodyPart>)>,
@@ -233,8 +229,8 @@ fn row(
     row.value(drive.map(|d| d.tone));
     row.value(drive.map(|d| d.energy));
     row.value(drive.map(|d| d.support()));
-    row.value(balance.map(|b| b.value));
-    row.value(balance.map(Balance::counter));
+    row.value(drive.map(|d| d.balance().value));
+    row.value(drive.map(|d| d.balance().counter() as f32));
     let targets = drive.map_or(&[][..], |d| d.targets());
     for bone in 1..=BONES {
         let target = body
@@ -272,9 +268,10 @@ mod tests {
     /// The trace has a row per tick for the body, with the header's
     /// columns: its clip clock advancing by a tick's worth of frames, its
     /// tone, stance factor, tone target and support (a standing human: 1,
-    /// 0.5, 0.5 and 1), its targets in cm (the pelvis's at the clip root's
-    /// height above the body root), and empty columns for what is not
-    /// simulated yet.
+    /// 0.5, 0.5 and 1; this body has no legs to measure its balance on, so
+    /// its balance stays 1 and its counter 0), its targets in cm (the
+    /// pelvis's at the clip root's height above the body root), and empty
+    /// columns for what is not simulated yet.
     #[test]
     fn the_trace_has_a_row_per_tick() {
         let path = std::env::temp_dir().join(format!("exarust-trace-{}.csv", std::process::id()));
@@ -309,6 +306,8 @@ mod tests {
             assert_eq!(number(row, "stance"), 0.5);
             assert_eq!(number(row, "tone_target"), 0.5);
             assert_eq!(number(row, "support"), 1.0);
+            assert_eq!(number(row, "balance"), 1.0);
+            assert_eq!(number(row, "balance_counter"), 0.0);
             assert!(number(row, "pelvis_p3_z").is_finite());
             let lifted = number(row, "frame_height") + number(row, "root_clip_height");
             assert!((number(row, "target1_y") - lifted).abs() < 1e-2);

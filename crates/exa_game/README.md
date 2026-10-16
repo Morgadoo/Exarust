@@ -4,6 +4,12 @@ Game modes and session flow: Story, Arena (company management, matches, seasons)
 
 **Phase:** Phase 4–7 (see [`docs/PLAN.md`](../../docs/PLAN.md)). Status: skeleton.
 
+It already runs the character ticks of physical bodies (`limp`: each body's
+bearing, balance against the level, clip and targets, the player's last),
+Exarust's falls and get-ups from the measured balance (`balance`), the
+player (`player`), the held torch (`torch`) and the per-tick body trace
+(`trace`).
+
 ## Scope
 
 - App states (boot → menu → loading → in-game).

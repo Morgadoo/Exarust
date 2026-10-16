@@ -18,6 +18,10 @@ link is a link muscle that turns its joint toward the clip's angle, with
 the gains the character tick sets from what the character does
 (`body::Bearing`) and its race (`body::RaceMuscles`); a pose drive holds
 the pelvis, spine, head and feet (`src/body_muscle.rs`, `body::Drive`).
+Each character tick measures a living body's balance at its chest against
+its ankles and asks the level for the ground under each foot
+(`contact::Level::height_below`, the original's Height Query), which give
+its support S (`src/body_balance.rs`, `body::Ragdoll::measure_balance`).
 Velocity retention is the original's default environment: banded by speed
 for limp parts, the fast value for living limbs. A limp body sleeps by the
 original's countdown (`body::Ragdoll::countdown`: 256, two off each tick

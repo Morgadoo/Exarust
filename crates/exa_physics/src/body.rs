@@ -11,8 +11,9 @@
 //! becomes a link muscle that turns its joint toward the animated angle
 //! (`muscle`), a pose drive pulls the pelvis, spine, head and feet towards
 //! where the animated pose puts them, and muscle tone compensates gravity.
-//! Blows shove parts and daze the body, which weakens its muscles until it
-//! recovers.
+//! Its character tick measures its balance and the ground under its feet,
+//! which give its support (`balance`). Blows shove parts and daze the body,
+//! which weakens its muscles until it recovers.
 //!
 //! Bodies tick in the fixed step, as one world in the original's order:
 //! every living body's character tick (its clip sampled and its targets
@@ -34,6 +35,10 @@ use crate::contact::{CONTACT_SLOP, Level, LevelContact, rub, sphere_hit, swept_h
 #[path = "body_muscle.rs"]
 mod muscle;
 pub use muscle::{Bearing, RaceMuscles};
+
+#[path = "body_balance.rs"]
+mod balance;
+pub use balance::{Balance, Leg};
 
 /// Simulation rate of the body.
 pub const BODY_HZ: f32 = 83.0;
@@ -699,6 +704,11 @@ pub struct Ragdoll {
     /// children first (a living body's).
     outward: Vec<usize>,
     inward: Vec<usize>,
+    /// The thorax pins whose mean is the chest (part, weights), the legs
+    /// and the feet's sole height (m): what the balance reads.
+    chest: Vec<balance::Pin>,
+    legs: Vec<Leg>,
+    sole: f32,
     pub drive: Option<Drive>,
     /// Ticks the body was solved since the frame began.
     pub ticks: u32,
@@ -738,6 +748,8 @@ pub struct Drive {
     arm: f32,
     /// Support S, 0..=1.
     support: f32,
+    /// The balance its character tick measures.
+    balance: Balance,
 }
 
 impl Default for Drive {
@@ -754,6 +766,7 @@ impl Default for Drive {
             stance: RaceMuscles::HUMAN.stance,
             arm: 0.0,
             support: 1.0,
+            balance: Balance::default(),
         }
     }
 }
@@ -776,10 +789,16 @@ impl Drive {
         self.tone * self.stance
     }
 
-    /// Support S: until balance and feet are measured, 1 while the body
-    /// stands on a grounded controller, else 0.
+    /// Support S: grounded × balance, as its character tick measures them
+    /// ([`Ragdoll::measure_balance`]). A body without two legs has 1 while
+    /// it stands and 0 once fallen.
     pub fn support(&self) -> f32 {
         self.support
+    }
+
+    /// The body's balance.
+    pub fn balance(&self) -> &Balance {
+        &self.balance
     }
 
     /// The arms' stiffness (their link muscle factor is 1.25 times it).
@@ -860,8 +879,10 @@ pub struct PartSetup {
     /// axes, measured from this part's origin), and the slack.
     pub links: Vec<(Vec3, Vec3, f32)>,
     /// The part's foot contact point, in its space, when it carries one (a
-    /// lower leg): its long link limits the leg.
+    /// lower leg): its long link limits the leg, and it stands on it.
     pub foot: Option<Vec3>,
+    /// The part's pins, in its space (the thorax's two: the chest).
+    pub pins: Vec<Vec3>,
 }
 
 impl Ragdoll {
@@ -870,7 +891,9 @@ impl Ragdoll {
     /// stored points plus the part's origin in the parent (no rotation: the
     /// stored point is already turned into the parent's axes), then a pivot
     /// from its origin to that place. A lower leg's long link and its
-    /// femur's limit the leg. Each part's link muscles get its factor.
+    /// femur's limit the leg. Each part's link muscles get its factor. The
+    /// thorax pins and the legs' foot contacts (at the ankles) are kept for
+    /// the balance.
     pub fn new(setup: &[PartSetup]) -> Self {
         let mut parts: Vec<Part> = setup.iter().map(Part::new).collect();
         let mut links = Vec::new();
@@ -935,12 +958,16 @@ impl Ragdoll {
         }
         muscle::set_part_factors(&mut parts);
         let (outward, inward) = tree_orders(&parts);
+        let (chest, legs, sole) = balance::build(setup, &mut parts);
         Self {
             parts,
             links,
             links_of,
             outward,
             inward,
+            chest,
+            legs,
+            sole,
             drive: None,
             ticks: 0,
             // Built woken. The original registers a body at 0, asleep after
@@ -1824,6 +1851,7 @@ mod tests {
                 origin: Vec3::ZERO,
                 links: vec![],
                 foot: None,
+                pins: Vec::new(),
             },
             // Pinned at its middle, 40 cm under the parent's; its top meets
             // the parent's bottom.
@@ -1837,6 +1865,7 @@ mod tests {
                 origin: Vec3::new(0.0, -0.4, 0.0),
                 links: vec![(Vec3::new(0.0, 0.2, 0.0), Vec3::new(0.0, 0.2, 0.0), slack)],
                 foot: None,
+                pins: Vec::new(),
             },
         ])
     }
@@ -1953,6 +1982,7 @@ mod tests {
                 origin: Vec3::ZERO,
                 links: vec![],
                 foot: None,
+                pins: Vec::new(),
             }]);
             if living {
                 body = body.with_drive();

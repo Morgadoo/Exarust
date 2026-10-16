@@ -180,6 +180,7 @@ pub(super) fn hinged(at: Vec3) -> (Vec<PartSetup>, Vec<Affine3A>) {
                     .to_vec()
             }),
             foot: None,
+            pins: Vec::new(),
         })
         .collect();
     (setup, pose)
@@ -259,6 +260,7 @@ fn a_sphere_crossing_the_floor_in_one_tick_is_pushed_back_up() {
         origin: Vec3::ZERO,
         links: vec![],
         foot: None,
+        pins: Vec::new(),
     };
     let mut ragdoll = Ragdoll::new(&[ball]);
     ragdoll.set_velocity(Vec3::NEG_Y * 9.0);
@@ -294,6 +296,7 @@ fn a_centre_behind_a_face_is_not_pushed() {
         origin: Vec3::ZERO,
         links: vec![],
         foot: None,
+        pins: Vec::new(),
     };
     let body = app.world_mut().spawn(Ragdoll::new(&[ball])).id();
     for _ in 0..40 {

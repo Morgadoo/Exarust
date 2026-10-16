@@ -36,7 +36,7 @@ nested sub-chunks start at offset `0x5C` inside the chunk:
 | chunk | content |
 |---|---|
 | `0xDDB0` | links to the parent part: u32 n, then n × {u32 flags, vec3 point on the part, vec3 point on the parent, f32 slack, f32 stiffness, f32 smoothing, vec3 axis if flags & 4} |
-| `0xDDBC` | foot contact points (each lower leg: one, at (±0.16, −48.97, 2.4) cm) |
+| `0xDDBC` | foot contact points (each lower leg: one, at (±0.16, −48.97, 2.4) cm; the original stands the leg on its foot part's origin instead, below) |
 | `0xDDBB` | thorax pins (two shoulder points at (±10.4, 9.65, 1.25) cm) |
 
 All values are in cm. The point on the part is in the part's own frame.
@@ -203,8 +203,8 @@ How the original simulates a body (`exa_physics::body`):
     - Part factors: 0.5; a foot half its lower leg's (0.25); the head a
       quarter of the thorax's (0.125); a thigh 0.2 × 1.25 standing and 0.2
       moving; the shoulders, arms and hands 1.25 × the arm stiffness.
-    - Arm stiffness (both arms): 0.5 off balance (falling, lying, getting
-      up); 0.2 at tone under 0.85 or in the walk and run cycles; otherwise
+    - Arm stiffness (both arms): 0.5 off balance (balance under 0.6,
+      falling, lying, getting up); 0.2 at tone under 0.85 or in the walk and run cycles; otherwise
       x ← 0.8x + 0.08·(0.5 + 0.5·race arm relaxation), 0.4 for a human; at
       least 0.4 × the turn left (rad), at most 0.4. An idle arm pulls at
       σ = 0.25, walking 0.175, off balance 0.31. The original's attack,
@@ -219,25 +219,26 @@ How the original simulates a body (`exa_physics::body`):
       the target is negative. A held pose is followed softly (an idle arm's
       λ settles at 0.36). A supported lower leg and its thigh instead take
       clamp(0.6 − 0.001·| |hip − foot contact|² − (2r)² |, 0, 0.2), r the
-      contact's distance from the knee, rising 0.01: about 0 for a standing
-      human.
-    - Support S: until balance and the feet are measured (C6 of the body
-      plan), 1 while the body has not fallen and its controller stands on
-      the ground (a body without a controller counts as grounded), else 0.
+      contact's (the ankle's, 41.95 cm) distance from the knee, rising
+      0.01: 0.2 for a straight standing human (hip 85 cm from the ankle).
+    - Support S: grounded × balance, measured each tick (Balance and
+      support, below). A body without two legs has 1 while it stands and 0
+      once fallen.
   - A **pose drive** pulls the particles of the pelvis, lumbar, thorax,
     head and feet toward their rest vertices under the part's animated
     transform: 0.084 per tick, scaled by tone² and by energy⁴. Thighs,
     shins, arms and hands have none, as in the original.
   - Energy is the daze level. A blow takes up to 90 % of it, with a floor
     of 0.05. It recovers 0.005 per tick.
-  - The original also runs balance with recovery steps, foot planting, a
-    lift servo and hidden support forces on the pelvis and thorax pins.
+  - The original also runs recovery steps, foot planting, a lift servo
+    and hidden support forces on the pelvis and thorax pins.
   - Several of these read the character's race record in `races.rdb`: the
     stance factor, the support-pin factor, the balance bonus, the arms'
     relaxation, the limb damping ratio and the gait table
     ([OTHER.md](OTHER.md), Races). Exarust decodes them
     (`exa_formats::races::RaceBody`); the muscles use the stance factor and
-    the arm relaxation (Skeleton 0.75 and 0.5).
+    the arm relaxation (Skeleton 0.75 and 0.5), the balance the balance
+    bonus (1 in every record).
 
 How a tick runs. The original steps every body of the world in one 83 Hz
 tick, in this order:
@@ -255,14 +256,82 @@ tick, in this order:
 
 Exarust runs the same order in its fixed step. The character controllers
 move first. Then each living body's character tick (`CharacterTicks`,
-player last) advances its clip clock by one tick and samples the clip; its
-targets are the body root's world transform times the clip pose. Then the
+player last) measures its balance and the ground under its feet (below),
+advances its clip clock by one tick and samples the clip; its targets are
+the body root's world transform times the clip pose. Then the
 solver (`BodySystems`) deals the queued blows and runs steps 2–6 over every
 awake body. The same ticks give the same particles at any frame rate. Blows
 sent between ticks wait in a queue for the next one. Parts are drawn
 between where the tick before last and the last tick left them. Exarust
 keeps the clip clock at 60 frames a second until the original's rates are
-pinned. Balance still runs once a frame, over the ticks that frame ran.
+pinned.
+
+Balance and support (`exa_physics::body::Balance`, `Ragdoll::measure_balance`;
+REA on the original's balance and feet routines, its Height Query, its body
+tick and muscle setup). Every rule is in the original's cm and ticks:
+
+- The **chest** is the balance point: the mean of the two thorax pins
+  (±10.4, 9.65, 1.25 cm in the thorax) on the body's particles (the root
+  part's origin without pins). Its motion is smoothed twice a tick, fast
+  (0.4) and slow (0.1), from where it was the last two ticks: a motion
+  shows a tick late.
+- **Each leg stands on its ankle.** The original's muscle setup replaces
+  the stored foot contact with the origin of the leg's foot part, the
+  model's translation (±1.24, −41.87, −2.32 cm in the lower leg), before
+  anything reads it. A leg is 43.20 + 41.95 = 85.15 cm long (knee plus
+  ankle). The sole height is the depth of the foot's box under its origin
+  less 0.5 cm (9.68 cm on Exarust's foot mesh box).
+- The **support point** is the closest point to the chest on the segment
+  between the two ankles (the parameter taken horizontally, the point
+  keeping the ankles' heights), moved halfway to the ankles' centre while
+  standing. The chest is first led: standing after a landing by the slow
+  velocity × a weight that starts at 5 and fades 0.05 a tick; moving with
+  support by 3 × the fast velocity; back by 10 cm at a full crouch
+  (Exarust has no crouch yet).
+- The **score** is q = u_y⁸ standing, u_y⁴ moving, plus 0.05 × the race's
+  balance bonus, at most 1, u being the unit offset from the support point
+  to the chest. A human (bonus 1) is steady (q > 0.99) within 15.6 cm of
+  lean with the chest 125 cm up and scores under 0.6 past 50.2 cm (52.2 cm
+  with the chest 130 cm up; 44 cm scores 0.698).
+- A slow vertical chest speed v over 3 cm/tick sets the counter to 100 and,
+  for a body grounded last tick, cuts q by (1 − 0.333(v − 3))², to 0 above
+  6.
+- The **instability counter** grows by 10 − 10q, rounded half to even (the
+  processor's rounding), while q ≤ 0.99: nothing until q < 0.95. Otherwise
+  it falls by 5 but never under 80 standing still (from 0 it jumps to 80 on
+  the first steady tick), else by 10 to 0. At 100 balance is q and the
+  counter stays at 100; below it balance recovers by (5 − v)·0.01 a tick at
+  a slow chest speed v under 5 cm/tick (0.05 at rest). So once a body has
+  stood, a second wobble topples it fast: a lean scoring 0.55 takes a fresh
+  body 25 ticks, one that has stood 5. Getting up, balance rises 0.05 a
+  tick and the counter falls by 5 while above 2.
+- Then the **feet**. Each leg asks the level for the ground under it with a
+  **Height Query**: a sphere whose lowest point starts at a point is swept
+  straight down, and the answer is the height of its lowest point where it
+  first meets the front of an upward face (where it starts, if it starts
+  against one; a miss is −10000 cm). The probe is 5 cm along the lower
+  leg's forward axis from the ankle, 70 cm above it, a 10 cm sphere,
+  2000 cm down; while the body is down (lying or getting up) it starts at
+  the ankle and the sphere is 5 cm. Living bodies are not part of the level
+  (Exarust's level is its static colliders, so dead bodies and loose props
+  are not either). The original's normal condition also sways the probe
+  forward by the gait phase and widens it to 20 cm, and in combat shrinks
+  it to 5 cm; Exarust leaves these for the gait (C19).
+- Ground higher than half the leg (42.6 cm) under the pelvis is out of reach
+  (the foot is lifted over it), except getting up. A foot is grounded when
+  its ankle is within 20 cm (30 cm moving) of its ground plus the sole
+  height. With a grounded foot the body has support (regaining it sets the
+  landing weight to 5); without, it counts the ticks it is airborne, and a
+  standing body loses its balance. S = grounded × balance. A body getting up
+  with no foot grounded and its pelvis within 30 cm of the ground under it
+  has support at half its balance.
+- Exarust's own, until the body stands on its own feet: its controller's
+  capsule (28 cm radius) carries it and may perch on a stone the feet hang
+  beside, so a standing body whose controller stands on the ground keeps
+  its balance when no foot is grounded (S is still 0).
+- Measuring costs about 15 µs a body a tick in exanima01 (two queries; the
+  query tries a 2 m column before the whole depth, with an exact drop onto
+  each face, edge and corner).
 
 Exarust's pose drive (`exa_physics::body::Drive`) has critical damping
 relative to the pose's own motion, not the original's law yet:
@@ -281,26 +350,21 @@ relative to the pose's own motion, not the original's law yet:
   goes.
 - Animation clips play in place: the root's horizontal travel over a clip
   is removed, since the controller moves the body.
-- Balance follows the original's rule (`exa_game::balance`):
-  - The centre of mass is projected 0.1 s ahead by its velocity and
-    measured against the segment between the feet.
-  - The threshold is (energy·0.75 + 0.25)·30 cm. The score is stability⁸.
-    Exarust takes stability as 1 within the threshold, falling to 0 at
-    twice it; the original's exact measure is unknown. Attack lunges move
-    the centre of mass up to 20 cm off the feet.
-  - A counter grows by 10 − 10·score per tick. At 100 it sets balance to
-    the score. Otherwise balance recovers by (5 − speed in cm/tick)·0.01
-    per tick.
-  - Below 0.6 the body falls. Its support goes, tone drops to 0.5, and it
-    plays Fall Forward/Backward into Unconcious 1, held relative to its own
-    pelvis.
+- Falling is still Exarust's (`exa_game::balance`; the original's
+  Rebalance, Defence stance, staggers and down state come with C11). In the
+  fixed step, before the character ticks, a standing body whose balance was
+  below 0.6 last tick falls: its support goes, tone drops to 0.5, and it
+  plays Fall Forward when its lean (support point to chest) points ahead of
+  it, else Fall Backward, into Unconcious 1, held relative to its own
+  pelvis.
 - Getting up:
   - Once settled (2.5 s, energy ≥ 0.9), the body plays whichever of
     `Get up` / `Get Up 2` has a first pose lying the same way, judged by the
     pelvis's front axis facing up or down.
   - The controller is first turned and moved so that clip's first pose lies
-    on the body.
-  - While getting up, balance rises by 0.05 per tick.
+    on the body, and settles on the ground there (it is marked airborne, so
+    the next tick sweeps it down).
+  - While its get-up clip plays the body's balance rises (above).
 - Recovery steps, foot planting and the lift servo are not reproduced yet.
 - The duellist's strike range is Exarust's own (1.2 m): link-muscle arms
   reach 10–15 cm less far than the clip's pose.
@@ -321,7 +385,7 @@ is left empty.
 | `frame_height` | the height of the frame the targets are placed in: the original's sits at the pelvis height, Exarust's body root at the feet |
 | `target_pelvis_height`, `stance`, `tone_target` | the lift servo's target (empty), the stance factor s, the tone target T = tone·s |
 | `tone`, `energy` | muscle tone and energy (daze) |
-| `support` | support S (until balance is measured: 1 standing on a grounded controller, 0 fallen) |
+| `support` | support S = grounded × balance |
 | `balance`, `balance_counter` | balance and its instability counter |
 | `target{1..18}_{x,y,z,qx,qy,qz,qw}` | each part's animated world transform this tick: place and rotation |
 | `foot_{r,l}_flags`, `foot_{r,l}_anchor_{x,y,z}` | foot contacts (empty) |
