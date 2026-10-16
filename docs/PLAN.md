@@ -359,6 +359,15 @@ death or with Ctrl, amber chevrons walking to the cursor and the
 arrowhead or cross outside combat; the cursor's point on the 80 cm aim
 plane, found through the supersampled camera's viewport
 ([UI.md](UI.md), Interface scale and World cursor).
+Done (change `draw-the-health-bars`): the HUD's health bar (yellow, brown
+for damage that will heal, red for lasting damage) and focus bar (full blue:
+no powers yet) at the bottom centre, painted as the original draws them
+(gradients, inner and drop shadows, frames tinted by `guitex.rfi`) and
+fading in with combat mode and out 200 ms + 2 s after; the stamina gauge's
+rule (no shields yet); the low-health heartbeat (a pulsing dark red border
+and its sound, story levels only); the interface laid over the game's view
+premultiplied, which fixed every translucent interface pixel
+([UI.md](UI.md), Health bars, Heartbeat, Compositing).
 Still to do: inventory and containers, injuries beyond damage, blocking,
 parrying, grabs, practice mode, the knockback step, the swing stall and
 the striker's recoil, a lethal wound's fall and collapse, the daze's guard

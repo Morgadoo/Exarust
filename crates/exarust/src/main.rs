@@ -39,6 +39,8 @@
 //!          --click frame,...          click the left mouse button at frames after loading
 //!          --debug-wound b,r[,dx,dy,dz]  a test wound on the player's (or the character view's) body part b
 //!                                     (1–18 or chest, luarm, …), radius r cm, smeared along d cm; repeatable
+//!          --health yellow,red        play mode: the player's starting health (a human's full health is 0.25)
+//!          --heartbeat                play mode: the low-health heartbeat in any level (the original: story mode only)
 //! ```
 //!
 //! Controls: hold the right mouse button to look, WASD to move, Q/E down/up,
@@ -126,6 +128,10 @@ pub struct Options {
     pub clicks: Vec<u32>,
     /// Test wounds on the player's or the character view's body.
     pub debug_wounds: Vec<exa_character::blood::DebugWound>,
+    /// The player's starting yellow and red health.
+    pub health: Option<[f32; 2]>,
+    /// Let the low-health heartbeat play in any level.
+    pub heartbeat: bool,
 }
 
 /// What a `--press` entry presses.
@@ -313,15 +319,21 @@ fn main() -> AppExit {
                     }
                 }
             }
-            "--cursor" => {
+            "--cursor" | "--health" => {
                 let v: Vec<f32> = args
                     .next()
                     .unwrap_or_default()
                     .split(',')
                     .filter_map(|x| x.trim().parse().ok())
                     .collect();
-                options.cursor = <[f32; 2]>::try_from(v.as_slice()).ok();
+                let pair = <[f32; 2]>::try_from(v.as_slice()).ok();
+                if a == "--cursor" {
+                    options.cursor = pair;
+                } else {
+                    options.health = pair;
+                }
             }
+            "--heartbeat" => options.heartbeat = true,
             "--outfit" => {
                 options.outfit = args
                     .next()

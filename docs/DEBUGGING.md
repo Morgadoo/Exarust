@@ -36,6 +36,8 @@ exarust --debug-bodies --opponent --pause-on-stretch 1 \
 | `--click frame,...` | click the left mouse button at frames counted from the end of the load (the same as `LMB@frame` in `--press`): with `--weapon` in an arena fight, which starts in combat mode, the player attacks unattended |
 | `--camera x,y,z,yaw,pitch` | in play mode, a fixed camera there instead of the chase camera (metres, degrees), for unattended shots; with `--fov` |
 | `--cursor x,y` | in play mode, the cursor stays at this window point (logical pixels, from the top left) whatever the mouse does: the world cursor, walking to the cursor and combat facing use it ([UI.md](UI.md), World cursor) |
+| `--health yellow,red` | in play mode, the player starts with this yellow and red health (a human's full health is 0.25), e.g. `0.176,0.226` for the retail reference shot of the health bar ([UI.md](UI.md), Health bars) |
+| `--heartbeat` | in play mode, the low-health heartbeat may play in any level (the original plays it in story mode only, so never in the arenas) |
 | `--still-opponent` | `--opponent`, but the duellist stands its ground: it faces the player and takes its stance (by its distance, [PLAYER.md](PLAYER.md), The combat stance) but never walks or strikes; with `--at` it shows the stances at a chosen distance |
 | `--debug-wound bone,radius_cm[,dx,dy,dz]` | a test wound on the player's or the character view's body ([Wounds](#wounds)); repeatable |
 
@@ -67,6 +69,25 @@ The world cursor's shape changes are logged at debug level
 exarust --opponent --cursor 808,452 --screenshot ring.png --frames 200 play arena
 # Running to the cursor: two amber chevrons pointing up the screen.
 exarust --press RMB@60-400 --cursor 800,120 --screenshot run.png --frames 200 play arena
+```
+
+The player's health changes are logged at debug level
+(`RUST_LOG=info,exa_game::hud=debug`, "player health: yellow …, red …"),
+as is every repaint of the health bars with its fade
+(`exa_ui::hud=debug`); a heartbeat's start is logged at info level:
+
+```bash
+# The health bar as in the retail reference (yellow 0.176, red 0.226), the
+# player stood so that the floor lies under the bars.
+exarust --at 0,0,1 --health 0.176,0.226 --press Tab@50 --screenshot bars.png --frames 200 play arena
+# The bars fading out: combat mode off at frame 300, 1.2 s later at 60
+# frames per second (frames, not seconds: a slower run shoots later).
+exarust --at 0,0,1 --press Tab@50,Tab@300 --screenshot fade.png --frames 372 play arena
+# The heartbeat after the duellist's first blow (about 2 s after the fight
+# starts, in combat mode); its border pulses for 7 s, faint at the start of
+# every 800 ms, so a shot can need a second try: the log says when it
+# started.
+exarust --heartbeat --opponent --health 0.06,0.25 --screenshot beat.png --frames 200 play arena
 ```
 
 With `--pause-at-tick` or `--pause-on-stretch`, `--screenshot` counts its

@@ -90,7 +90,7 @@ Exarust (`exa_ui::cursor` draws, `exa_game::cursor` picks the shape):
   Exarust remaps the opacities so that the result is the original's: the
   outline's exactly over any background, the sprite's exactly over black
   and closely over the dark floors (over bright ground it comes out a
-  little fainter);
+  little fainter; see Compositing below);
 - the reach test casts the pointer's ray at the level and measures the
   point from the player's aim point, 80 cm up (the original measures from
   the character's position at pelvis height; 3 m across and 3 m up or
@@ -102,6 +102,120 @@ Exarust (`exa_ui::cursor` draws, `exa_game::cursor` picks the shape):
   through the 3 s collapse; the crosshair has no use until interaction;
 - `--cursor x,y` holds the pointer at a window position for unattended
   runs ([DEBUGGING.md](DEBUGGING.md)).
+
+## Health bars
+
+At the bottom centre of the game's view the original draws two framed bars
+side by side: the player's health and, beside it, focus (the thaumaturgy
+pool) in blue. With the window W × H physical pixels and the GUI scale g:
+
+- **Place.** Each bar is 48·g wide; the health bar starts 50·g left of the
+  centre (W/2, rounded down), the focus bar 52·g further right; both at
+  y = H − 5·g. The fill covers rows y + 2 to y + 4·g − 5 (14 rows at scale
+  5). In the user's 1600 × 1014 retail window: x 550–789 and 810–1049, rows
+  991–1004, as on its screenshots.
+- **Segments.** A bar takes two shares a and b of its width and fills
+  three segments: to a, to b, and the rest. The pixel where the first ends
+  is mixed from the first's colours towards the second's by how much of it
+  the first leaves uncovered (the original draws it as a one-pixel line).
+  Health: yellow to yellow / max, dark brown to red / max (damage that will
+  heal), red beyond (lasting damage); no brown at red ≤ 0.01. Focus: blue
+  to the focus, grey-blue to the focus capacity (spent focus that will
+  return), purple beyond (capacity held by lasting powers); its blue is
+  drawn only when at least a pixel wide.
+- **Colours.** Each segment is two vertical gradients, the top half from a
+  light colour to a dark one, the bottom half from a dark one back to a
+  bright one, with the original's RGBA stops (top, middle, middle,
+  bottom): yellow (240, 230, 200, 240), (120, 85, 15, 210), (130, 80, 0,
+  200), (210, 180, 30, 240); brown (180, 160, 145, 200), (70, 50, 10, 160),
+  (70, 40, 0, 128), (100, 80, 50, 200); red (220, 160, 130, 220), (100, 25,
+  5, 210), (90, 0, 0, 190), (140, 60, 15, 220); blue (150, 180, 230, 240),
+  (20, 60, 160, 210), (0, 30, 80, 200), (40, 120, 255, 240); grey-blue
+  (135, 140, 150, 200), (30, 40, 50, 160), (5, 10, 40, 128), (70, 90, 120,
+  200); purple (180, 170, 220, 220), (60, 20, 100, 210), (30, 0, 70, 190),
+  (100, 40, 200, 220).
+- **Inner shadow.** Over the fill, black at 240 along the bar's edge (the
+  rectangle from y + 1, 4·g − 4 tall) fading to nothing g pixels in.
+- **Frame.** Two one-pixel rings round the rectangle from (x − 2, y) to
+  (x + w + 2, y + 4·g − 2): the outer in (129, 134, 135), the inner in
+  (28, 30, 30), both at 239, each multiplied by the stone texture
+  `guitex.rfi` (512² in the resource pack, mean (111, 113, 117)) sampled
+  one texel per window pixel, rows counted from the window's bottom. The
+  colours are the HUD skin's palette (its scheme's base (97, 104, 105)
+  scaled by 1.3 and desaturated by 0.4, and by 0.29).
+- **Drop shadow.** Black outside that rectangle, 2·g pixels wide, at
+  220 × (1 − d / 2g)⁴ with d the distance from the rectangle (round at the
+  corners).
+- **Order.** Both frames, both drop shadows, the health bar, the focus bar.
+
+**Fade.** The bars show while combat mode is on, and in any frame in which
+the drawn yellow health differs from the last frame's or the focus has
+dropped (the original also shows them while a power is cast, for 1 s after
+red health is restored or a quick-bar power is used, and for 5 s when the
+player interacts with its own body; Exarust has none of these). They fade
+in over 500 ms; once no longer shown they stay 200 ms and fade out over
+2 s (game time; from a partial fade they rise or fall from where they
+are). The fills blend at the fade squared, the frames and shadows at the
+fade. A single frame of change shows nothing: what brings the bars up out
+of combat mode is a change frame after frame, such as the original's
+yellow health regenerating after a blow. Exarust's yellow health does not
+regenerate yet, so out of combat mode a blow alone shows no bars.
+
+**Stamina gauge.** With a shield in combat mode a thinner bar shows above
+the others, 48·g wide and centred, 2·g tall at y = H − 9·g, with its own
+fade by the same rule: block stamina, white to grey for what is left and
+grey to black for what is used, with a three-pixel inner shadow (g/2 + 1)
+and the same frame drawn over it.
+
+Exarust (`exa_ui::hud` draws, `exa_game::hud` reads the player):
+- the bars are painted on the CPU in the original's order and blended in
+  gamma space, then shown as one image node in physical pixels, repainted
+  only when the values, the fade or the window change;
+- Exarust has no powers: focus and its capacity are 1, the full blue bar
+  the original shows for a character who casts nothing. It has no shields:
+  the stamina gauge never shows;
+- the original offsets the stone by the last form it drew; on a lossless
+  capture of the user's running game the offset is zero (the window's
+  bottom-left corner, as Exarust samples it): its frame lines follow the
+  texture texel by texel and differ from the rule above only by the
+  floor's share at opacity 239;
+- on the retail values (`--health 0.176,0.226`) the bars match the
+  reference screenshot within about 5 of 255 down every column of the fill
+  ([DEBUGGING.md](DEBUGGING.md)).
+
+## Heartbeat
+
+When a blow that does not kill leaves the player's yellow health below
+0.05 (at 0.01 or more), the original starts the heartbeat, at most once a
+minute, in story mode only (never in practice or the arena): for 7 s a
+dark red (80, 0, 0) border lies round the view, strongest at the window's
+edges and fading to nothing a fifth of the window's height in (on the
+sides too, measured by the height), pulsing every 800 ms from 0 to an
+opacity of 96 at the pulse's middle (opacity (1 − |400 − t mod 800| /
+400)² × 96, t in ms of real time). Meanwhile the `heartbeat` sound loops at
+gain 0.3. Both stop after 7 s (menus and level changes fade them over 1 s).
+An item's "second wind", when ready, fires instead.
+
+Exarust (`exa_ui::heartbeat` draws, `exa_game::hud` starts it and plays the
+sound): every level but the arenas counts as story mode; `--heartbeat`
+allows it anywhere. The border is drawn from an image an eighth of the
+window's size, linearly stretched.
+
+## Compositing
+
+The original's interface blends sRGB values; Bevy blends in linear light.
+Interface images painted on the CPU (the health bars, the heartbeat's
+border) are composited as the original blends, and each pixel's opacity is
+then fitted so that Bevy's blend gives the original's result over the
+arena's dark floor (40 of 255): exact there, black within 3.5 levels over
+floors from 10 to 60, brighter ground showing through a little more.
+
+The interface camera draws into its own texture, cleared to transparent
+black, which then goes over the game's view. Its colours there are already
+multiplied by their opacity, so it is laid over premultiplied. (Bevy's
+default for a later camera, straight alpha, multiplied every translucent
+pixel twice: half-transparent white came out at 87 of 255 over the floor
+instead of about 150.)
 
 ## Frame rate
 

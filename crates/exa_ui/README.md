@@ -6,9 +6,13 @@ User interface: main menu, character creation, inventory, arena management, HUD,
 
 So far ([`docs/UI.md`](../../docs/UI.md)): the game's bitmap font
 (`font`), the interface scale from the window's height (`scale`), the
-frame-rate readout (`fps`), the loading screen (`loading`) and the
+frame-rate readout (`fps`), the loading screen (`loading`, whose camera
+draws the whole interface over the game's view, premultiplied), the
 in-game world cursor from `cursors.rfi` (`cursor`; the game crate picks
-its shape).
+its shape), the health and focus bars with their fade and the stamina gauge
+(`hud`, framed with `guitex.rfi`), the low-health heartbeat's border
+(`heartbeat`; the game crate starts it), and gamma-space compositing for
+images painted on the CPU (`blend`).
 
 ## Scope
 

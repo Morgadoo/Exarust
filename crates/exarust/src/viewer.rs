@@ -489,6 +489,9 @@ fn play_level(
     commands.insert_resource(exa_audio::LevelMusic(
         exa_audio::music_for_level(name).into(),
     ));
+    commands.insert_resource(exa_game::hud::HeartbeatRule {
+        allowed: options.heartbeat || exa_game::hud::heartbeat_allowed(name),
+    });
     // The original's start where it fixes one, else a floored cell.
     let (mut position, yaw) = match exa_world::start::player_start(name) {
         Some(s) => (s.position, s.yaw),
@@ -622,8 +625,13 @@ fn spawn_players(
             exa_character::Outfit::of_models(&options.outfit),
             ChildOf(player),
         ));
+        let mut fighter = exa_combat::Fighter::default();
+        if let Some([yellow, red]) = options.health {
+            fighter.health.yellow = yellow;
+            fighter.health.red = red;
+        }
         commands.entity(model).insert((
-            exa_combat::Fighter::default(),
+            fighter,
             exa_physics::body::Physical::default(),
             exa_character::blood::DebugWoundTarget,
         ));

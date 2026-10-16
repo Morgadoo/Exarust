@@ -13,7 +13,8 @@ stops the controller carrying and holding the body and keeps its tone), the
 player (`player`: tank controls, the chase camera, combat facing, its
 combat stance and the original's attack choice, with the clips of the
 moveset its hands pick), the world cursor's shape from the player's state
-(`cursor`), the
+(`cursor`), the health bars' values and the low-health heartbeat with its
+sound (`hud`), the
 held torch (`torch`, which fills its hand), the per-tick body trace
 (`trace`), and the debug tools ([`docs/DEBUGGING.md`](../../docs/DEBUGGING.md)):
 the body overlay and joint readout (`body_overlay`), the joint trace

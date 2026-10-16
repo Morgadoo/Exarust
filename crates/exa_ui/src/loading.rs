@@ -11,7 +11,9 @@
 
 use std::time::{Duration, Instant};
 
+use bevy::camera::CameraOutputMode;
 use bevy::prelude::*;
+use bevy::render::render_resource::BlendState;
 use bevy::window::PrimaryWindow;
 use exa_assets::Game;
 use exa_formats::rfi::Rfi;
@@ -273,13 +275,21 @@ fn show(
     // ends. It stays after the load and draws the rest of the interface
     // (the frame rate) over the game's view, without clearing it: as the
     // highest-ordered camera it is the interface's camera, and Bevy draws no
-    // interface when that camera is off.
+    // interface when that camera is off. The interface is drawn into the
+    // camera's own texture, cleared to transparent black, so its colours
+    // there are already multiplied by their opacity: it goes over the game's
+    // view premultiplied. (Bevy's default for a later camera blends it as
+    // straight alpha, which multiplied every translucent pixel twice.)
     commands.spawn((
         LoadingScreen,
         Camera2d,
         Camera {
             order: 10,
             clear_color: ClearColorConfig::None,
+            output_mode: CameraOutputMode::Write {
+                blend_state: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                clear_color: ClearColorConfig::Default,
+            },
             ..default()
         },
     ));
