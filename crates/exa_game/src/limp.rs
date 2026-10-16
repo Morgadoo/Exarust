@@ -14,6 +14,7 @@ use bevy::math::Affine3A;
 use bevy::prelude::*;
 use exa_anim::{AnimSystems, Animator, BodyPart, ClipPose, Motions, Stature, TickedClips};
 use exa_assets::SkinnedPart;
+use exa_formats::rsq::BoneBody;
 use exa_physics::CharacterBody;
 use exa_physics::body::{
     BODY_HZ, CharacterTicks, GoLimp, PartSetup, Physical, Ragdoll, world_with,
@@ -79,34 +80,22 @@ fn build_bodies(
                     .take_while(|&a| a != root)
                     .find_map(|a| index.get(&a).copied());
                 let (centre, half) = part_box(entity, bone, &children, &skinned, &meshes);
-                // Both points of a link are given in the part's rest frame;
-                // the parent's is carried into the parent through the rest
-                // placement of the part under it.
-                let links = match (parent, motions.1.get(&bone)) {
-                    (Some(p), Some(body)) => {
-                        let to_parent = rest_under(entity, found[p].0, &parents, &parts, &locals);
-                        body.links
-                            .iter()
-                            .map(|l| {
-                                (
-                                    Vec3::from_array(l.on_part),
-                                    to_parent.transform_point3(Vec3::from_array(l.on_parent)),
-                                    l.slack,
-                                )
-                            })
-                            .collect()
-                    }
-                    _ => Vec::new(),
-                };
-                PartSetup {
+                // The part's origin in its parent: the model's translation
+                // of the part (rotations play no part in joining them).
+                let origin = parent.map_or(Vec3::ZERO, |p| {
+                    rest_under(entity, found[p].0, &parents, &parts, &locals)
+                        .translation
+                        .into()
+                });
+                part_setup(
                     bone,
                     entity,
                     parent,
-                    world: world.affine(),
-                    centre,
-                    half,
-                    links,
-                }
+                    world.affine(),
+                    (centre, half),
+                    origin,
+                    motions.1.get(&bone),
+                )
             })
             .collect();
         // A limp request is honoured by `go_limp` next. From now on the
@@ -115,6 +104,46 @@ fn build_bodies(
             .entity(root)
             .insert((Ragdoll::new(&setup).with_drive(), TickedClips))
             .remove::<Physical>();
+    }
+}
+
+/// What building a part's body needs: its links to its parent as the
+/// skeleton stores them (the parent's points still measured from the part's
+/// origin, which `origin` places in the parent), and whether it carries foot
+/// contacts.
+pub(crate) fn part_setup(
+    bone: usize,
+    entity: Entity,
+    parent: Option<usize>,
+    world: Affine3A,
+    (centre, half): (Vec3, Vec3),
+    origin: Vec3,
+    body: Option<&BoneBody>,
+) -> PartSetup {
+    let links = match (parent, body) {
+        (Some(_), Some(body)) => body
+            .links
+            .iter()
+            .map(|l| {
+                (
+                    Vec3::from_array(l.on_part),
+                    Vec3::from_array(l.on_parent),
+                    l.slack,
+                )
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    PartSetup {
+        bone,
+        entity,
+        parent,
+        world,
+        centre,
+        half,
+        origin,
+        links,
+        foot: body.is_some_and(|b| !b.contacts.is_empty()),
     }
 }
 
@@ -127,7 +156,7 @@ fn go_limp(
     controlled: Query<(), With<CharacterBody>>,
 ) {
     for (root, limp, mut body) in &mut bodies {
-        body.drive = None;
+        body.go_limp();
         body.set_velocity(limp.velocity);
         commands
             .entity(root)
@@ -245,6 +274,7 @@ pub(crate) fn clip_pose(
 
 /// Rest placement of `part` in the space of its ancestor `parent`: body
 /// parts contribute their rest transforms, other nodes their current ones.
+/// Only its translation joins the part to its parent.
 fn rest_under(
     part: Entity,
     parent: Entity,
@@ -417,8 +447,11 @@ pub(crate) mod tests {
                 world: pelvis_world,
                 centre: Vec3::ZERO,
                 half: Vec3::new(0.15, 0.1, 0.1),
+                origin: Vec3::ZERO,
                 links: vec![],
+                foot: false,
             },
+            // Pinned at its origin, the hip.
             PartSetup {
                 bone: 2,
                 entity: thigh,
@@ -426,7 +459,9 @@ pub(crate) mod tests {
                 world: pelvis_world * Affine3A::from_translation(THIGH_REST),
                 centre: Vec3::new(0.0, -0.2, 0.0),
                 half: Vec3::new(0.07, 0.25, 0.07),
-                links: vec![(Vec3::ZERO, THIGH_REST, 0.0)],
+                origin: THIGH_REST,
+                links: vec![],
+                foot: false,
             },
         ];
         world.entity_mut(root).insert((
@@ -435,6 +470,108 @@ pub(crate) mod tests {
             TickedClips,
         ));
         root
+    }
+
+    /// The human body's joints from the installed `humanoid.rsq` and
+    /// `humanbase.rfc` (skipped without the game), built as the game builds
+    /// them: every part takes its stored links and its origin pivot (a
+    /// femur 3, a hand 4); every stored parent point is as far from the
+    /// part's origin as its part's point (it is already turned into the
+    /// parent's axes); and the parent points are the stored ones plus the
+    /// model's translation of the part, unturned.
+    #[test]
+    fn shipped_links_join_at_the_model_origins() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let data = Arc::new(exa_assets::GameData::open(&dir).unwrap());
+        let motions = Motions::load(&exa_assets::Game(data.clone())).expect("humanoid.rsq");
+        let bytes = data
+            .pack(exa_assets::PackKind::Resource)
+            .and_then(|p| p.get(exa_assets::model::BODY_MODEL))
+            .expect("humanbase.rfc");
+        let scene = exa_formats::rfc::Scene::parse(bytes).unwrap();
+        let bone_of = |i: usize| exa_formats::rsq::bone_index(&scene.nodes[i].name);
+        let nodes: Vec<usize> = (0..scene.nodes.len())
+            .filter(|&i| bone_of(i).is_some())
+            .collect();
+        assert_eq!(nodes.len(), 18);
+        let setup: Vec<PartSetup> = nodes
+            .iter()
+            .map(|&n| {
+                let bone = bone_of(n).unwrap();
+                // The nearest ancestor node that is a part.
+                let mut up = scene.nodes[n].parent.map(|p| p - 1);
+                while let Some(u) = up.filter(|&u| bone_of(u).is_none()) {
+                    up = scene.nodes[u].parent.map(|p| p - 1);
+                }
+                let parent = up.and_then(|u| nodes.iter().position(|&x| x == u));
+                let origin = Vec3::from(scene.nodes[n].transform[3]);
+                part_setup(
+                    bone,
+                    Entity::PLACEHOLDER,
+                    parent,
+                    Affine3A::IDENTITY,
+                    (Vec3::ZERO, Vec3::splat(FALLBACK_HALF)),
+                    origin,
+                    motions.1.get(&bone),
+                )
+            })
+            .collect();
+        let body = Ragdoll::new(&setup);
+        let index = |bone: usize| setup.iter().position(|s| s.bone == bone).unwrap();
+        for (i, s) in setup.iter().enumerate() {
+            let stored = motions.1.get(&s.bone).map_or(0, |b| b.links.len());
+            let want = if s.parent.is_some() { stored + 1 } else { 0 };
+            assert_eq!(body.links_of(i).len(), want, "bone {}", s.bone);
+            for &(on_part, on_parent, _) in &s.links {
+                assert!(
+                    (on_part.length() - on_parent.length()).abs() < 1e-4,
+                    "bone {}: {on_part} against {on_parent}",
+                    s.bone
+                );
+            }
+        }
+        for bone in [2, 5] {
+            assert_eq!(body.links_of(index(bone)).len(), 3, "femur {bone}");
+        }
+        for bone in [17, 18] {
+            assert_eq!(body.links_of(index(bone)).len(), 4, "hand {bone}");
+        }
+        let cm = |x: f32, y: f32, z: f32| Vec3::new(x, y, z) * 0.01;
+        let parent_point = |bone: usize, k: usize| {
+            let links = body.links_of(index(bone));
+            let k = k.min(links.len() - 1);
+            body.link_points(&links[k]).1
+        };
+        // The right humerus's first link: stored (−9.42, −8.6, 7.89) plus
+        // its translation (−12.16, 0.04, −1.38) in the shoulder.
+        let humerus = parent_point(12, 0);
+        assert!(
+            humerus.abs_diff_eq(cm(-21.58, -8.56, 6.51), 5e-4),
+            "{}",
+            humerus * 100.0
+        );
+        // The pivots of the right hip and knee.
+        let hip = parent_point(2, usize::MAX);
+        assert!(
+            hip.abs_diff_eq(cm(-9.07, -8.46, 3.5), 5e-4),
+            "{}",
+            hip * 100.0
+        );
+        let knee = parent_point(3, usize::MAX);
+        assert!(
+            knee.abs_diff_eq(cm(-0.3, -43.19, -1.09), 5e-4),
+            "{}",
+            knee * 100.0
+        );
+        // The lower legs carry the foot contacts, so their long links limit
+        // the legs.
+        for bone in [3, 6] {
+            let k = body.parts[index(bone)].leg_limit.expect("leg limit");
+            assert_eq!(body.links[k].strength, 0.2);
+            assert!(body.links[k].slack > 0.12);
+        }
     }
 
     #[test]

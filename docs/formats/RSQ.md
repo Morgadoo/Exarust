@@ -39,12 +39,17 @@ nested sub-chunks start at offset `0x5C` inside the chunk:
 | `0xDDBC` | foot contact points (each lower leg: one, at (±0.16, −48.97, 2.4) cm) |
 | `0xDDBB` | thorax pins (two shoulder points at (±10.4, 9.65, 1.25) cm) |
 
-All values are in cm. **Both points of a link are in the part's own rest
-frame.** The parent's point reaches the parent through the part's rest
-placement under it. In the rest pose the two points of every link lie
-within the slack. Each bone has 2 links; each hand has 3. One link is the
-pivot (knee: slack 0; hip: 3 cm). The other limits the joint's range
-(femur 14.9 cm, shin 12.7 cm).
+All values are in cm. The point on the part is in the part's own frame.
+**The parent's point is that same point turned into the parent's axes and
+measured from the part's origin**: for all 36 links of `humanoid.rsq` its
+length equals the part's point's to 0.01 cm. On the parent it lies at the
+stored point plus the part's origin in the parent, the character model's
+local translation of the part (`humanbase.rfc`), with no rotation added
+(REA on the original's link conversion; corpus check). Each bone has 2
+links; each hand has 3. The original's 0.9.5 reader keeps flags, both
+points, slack and smoothing; it replaces the stiffness with 1 and reads no
+slider axis (`exa_formats::rsq` skips 12 bytes for one; no shipped link
+sets flag 4).
 
 How the original simulates a body (`exa_physics::body`):
 
@@ -55,13 +60,40 @@ How the original simulates a body (`exa_physics::body`):
 - Verlet integration at 83 Hz with gravity −9.80665 m/s². Velocity retention
   per second for characters is 0.2556 / 0.15 / 0.03, by speed (over 40, over
   20, and under 20 cm/s). Slow bodies are damped hard, which acts as sleep.
-- Each tick runs 20 iterations over the body tree (a living body from its
-  hands and feet in, a limp one from the pelvis out). In each, a part takes
-  its links to its parent, then its level contacts from the last tick, then
-  restores its edges. A link is a hard radius: past its slack it is
-  corrected fully, the correction split by the parts' mobilities (inverse
-  masses: pelvis 0.45, thighs 0.7, shins 1, feet 2.8, lumbar 0.45, thorax
-  0.5, head 1, shoulders 1, upper arms 1.2, forearms 1.5, hands 2.5).
+- Joints (`Ragdoll::new`). Every part with a parent part takes its stored
+  links and then one more, made when the body is registered: a **pivot**
+  from its origin (the joint centre) to its origin's place in the parent,
+  with no slack. So a femur has 3 links and a hand 4. The pivot is the ball
+  joint. A second zero-slack link on the lateral axis makes the knee a
+  hinge. The other links bound each joint's range: a point at r cm from the
+  origin may drift by its slack, about 2·asin(slack/2r) of swing (femur
+  14.9 cm, shin 12.7 cm, …). There are no angle limits. The original
+  scales the points and slacks by the body's scale; Exarust does not yet,
+  which matters for bodies of another size.
+- A correction is shared by the parts' mobilities, m/(m + m_parent), with
+  m = 0.175 × the bone's value (pelvis 0.45, thighs 0.7, shins 1, feet 2.8,
+  lumbar 0.45, thorax 0.5, head 1, shoulders 1, upper arms 1.2, forearms
+  1.5, hands 2.5; larger moves more). It is spread over each part's
+  particles by the point's weights, unclamped, so the two parts' momenta
+  change by equal and opposite amounts.
+- Each tick runs 20 iterations over the body tree: a living body children
+  first, from its hands and feet in; a limp one parents first, depth first,
+  from the pelvis out. In each, a part takes its links to its parent, then
+  its level contacts from the last tick, then restores its edges.
+  - Living: a pivot (slack ≤ 0.01 cm) closes d/(1 + 0.001|d|) of its gap d
+    (cm), in full however far apart (past 80 cm it is reported); a slack
+    link takes back its excess beyond the slack at full weight, cut to
+    80 cm. The link muscles that also pull each slack link toward the
+    animated angle are not reproduced yet.
+  - Limp: a pivot closes strength/(1 + 0.001|d|²) of its gap; a slack link
+    takes back strength × its excess. The original also damps a limp joint
+    inside its slack through a smoothed length; not reproduced yet.
+  - Each link keeps a strength: 1, except a lower leg's first link with
+    over 10 cm of slack (the leg limit), 0.2 while the body lives and 1
+    again once it goes limp, as the original's death sets it. The femur's
+    first such link is its leg limit. Each link also keeps the original's
+    smoothing (1 − (r² − 25)·0.001)², at most 0.99 and 0 within √0.1 cm, r
+    its point's distance from the part's origin in cm, for the limp damping.
 - After the iterations, every sphere collider is tested once against the
   level's triangles (`exa_physics::contact`):
   - A triangle pushes only from its front, the side its winding faces in
@@ -97,9 +129,9 @@ How the original simulates a body (`exa_physics::body`):
     scaled by tone² and by energy⁴.
   - Energy is the daze level. A blow takes up to 90 % of it, with a floor
     of 0.05. It recovers 0.005 per tick.
-  - The original also runs a PD muscle per link toward the animated anchor,
-    balance with recovery steps, foot planting, and hidden support forces
-    on the pelvis and thorax pins.
+  - The original also runs a PD muscle per slack link toward the animated
+    anchor, balance with recovery steps, foot planting, and hidden support
+    forces on the pelvis and thorax pins.
   - Several of these read the character's race record in `races.rdb`: the
     stance factor (a standing human uses half its tone, and its joint
     muscles are damped with k = 40 / 0.5), the support-pin factor, the

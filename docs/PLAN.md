@@ -221,8 +221,16 @@ race factors the body controller reads (support pins, balance bonus,
 stance factor, arm relaxation, limb damping) and the gait table are decoded
 from `races.rdb` for every race, with the original's fallback for an
 unknown race, and printed by `exa-tool races`
-([formats/OTHER.md](formats/OTHER.md), Races). Still to do: link PD
-muscles, recovery steps, foot planting, collisions between bodies.
+([formats/OTHER.md](formats/OTHER.md), Races). Done (change
+`join-parts-at-their-origins`, C3): every part is pinned at its origin to
+its place in the parent, as the original registers it, so joints are ball
+joints and the knee a hinge; the skeleton's links meet the parent at the
+stored point plus the model's translation, unturned; corrections are shared
+by the parts' mobilities; living pivots, limp pivots and slack limits follow
+the original's laws; the leg limit strengths and the limp smoothing are
+kept ([formats/RSQ.md](formats/RSQ.md)). Still to do: limp joint damping,
+link PD muscles, recovery steps, foot planting, collisions between
+bodies.
 
 This phase carries the most risk and defines how the game feels.
 

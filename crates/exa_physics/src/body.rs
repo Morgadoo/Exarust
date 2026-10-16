@@ -1,7 +1,8 @@
 //! The physical body: each body part is a tetrahedron of four particles kept
-//! rigid by its edges, carrying sphere colliders, and joined to its parent by
-//! the skeleton's links (a point on each part, allowed to drift apart by a
-//! slack). Particles move by Verlet integration at the original's 83 Hz,
+//! rigid by its edges, carrying sphere colliders, and joined to its parent
+//! by a pivot at its origin (its joint centre) and by the skeleton's links
+//! (a point on each part, allowed to drift apart by a slack: the joint's
+//! range). Particles move by Verlet integration at the original's 83 Hz,
 //! then constraints and contacts are solved by moving positions.
 //!
 //! A limp body (the dead, the knocked out) is only that. A living body adds
@@ -43,6 +44,26 @@ const SLEEP_TICKS: u32 = 166;
 const INVERSE_MASS: [f32; 18] = [
     0.45, 0.7, 1.0, 2.8, 0.7, 1.0, 2.8, 0.45, 0.5, 1.0, 1.0, 1.2, 1.5, 1.0, 1.2, 1.5, 2.5, 2.5,
 ];
+/// A link end's mobility is this times its part's [`INVERSE_MASS`]; only
+/// the ratio between the two parts matters, so it cancels between limbs.
+const LINK_MOBILITY: f32 = 0.175;
+/// Centimetres per metre: the links' softening and smoothing constants are
+/// the original's, in cm.
+const CM: f32 = 100.0;
+/// A link with at most this slack (m, 0.01 cm) is a pivot.
+const PIVOT_SLACK: f32 = 1e-4;
+/// Softening of a pivot per cm of its gap (a living body's) or per cm² (a
+/// limp body's).
+const PIVOT_SOFTENING: f32 = 0.001;
+/// Squared gaps (m², 1.19e-7 cm²) a link leaves alone.
+const LINK_EPSILON2: f32 = 1.19e-11;
+/// A living body's slack-link correction is cut to this (m, 80 cm); a
+/// pivot farther apart is reported but corrected in full.
+const MAX_CORRECTION: f32 = 0.8;
+/// A lower leg's link with more slack than this (m, 10 cm) limits the leg;
+/// it pulls at this strength while the body lives.
+const LEG_LIMIT_SLACK: f32 = 0.1;
+const LEG_LIMIT_STRENGTH: f32 = 0.2;
 /// Muscle tone of a fallen body.
 const FALLEN_TONE: f32 = 0.5;
 /// Share of the gap to the animated pose closed per tick at full strength.
@@ -117,6 +138,9 @@ pub struct Part {
     /// Pushes and depths summed since the edges were last restored (or
     /// the tick began).
     strain: f32,
+    /// The link (an index into [`Ragdoll::links`]) that limits the leg: a
+    /// lower leg's and its femur's first with over 10 cm of slack.
+    pub leg_limit: Option<usize>,
 }
 
 /// Barycentric weights of a point given in a part's space.
@@ -184,6 +208,7 @@ impl Part {
             shown: (Affine3A::IDENTITY, Affine3A::IDENTITY),
             contacts: Vec::new(),
             strain: 0.0,
+            leg_limit: None,
         }
         .settle()
     }
@@ -215,14 +240,12 @@ impl Part {
         (0..4).map(|i| self.positions[i] * w[i]).sum()
     }
 
-    /// Moves the part so that the point with weights `w` moves by `delta`.
-    fn displace(&mut self, w: &[f32; 4], delta: Vec3) {
-        let norm: f32 = w.iter().map(|x| x * x).sum();
-        if norm <= 1e-9 {
-            return;
-        }
+    /// Moves each particle by `delta` times its weight in `w`, unclamped (a
+    /// negative weight moves its particle the other way, as the original's
+    /// does): the point itself moves by Σw² of `delta`.
+    fn push(&mut self, w: &[f32; 4], delta: Vec3) {
         for (p, wi) in self.positions.iter_mut().zip(w) {
-            *p += delta * (wi / norm);
+            *p += delta * *wi;
         }
     }
 
@@ -419,7 +442,8 @@ impl Default for GoLimp {
     }
 }
 
-/// A link between a part and its parent part.
+/// A link between a part and its parent part: a point on each, allowed to
+/// drift apart by a slack. A link with no slack is a pivot.
 #[derive(Debug, Clone)]
 pub struct Link {
     pub part: usize,
@@ -427,6 +451,72 @@ pub struct Link {
     on_part: [f32; 4],
     on_parent: [f32; 4],
     pub slack: f32,
+    /// 1, or 0.2 on a living lower leg's limit link.
+    pub strength: f32,
+    /// How fast a limp joint's smoothed length follows its links inside the
+    /// slack: (1 − (r² − 25)·0.001)², at most 0.99, r the point's distance
+    /// from the part's origin in cm (0 within √0.1 cm of it).
+    pub smoothing: f32,
+    /// The shares of a correction the part and its parent take, by their
+    /// mobilities: m/(m + m_parent) and m_parent/(m + m_parent).
+    shares: (f32, f32),
+    /// The pivot at the part's origin, not one of the skeleton's links.
+    pub origin: bool,
+}
+
+impl Link {
+    /// The correction of a living body's link with gap `d` (the parent's
+    /// point minus the part's): a pivot closes d/(1 + 0.001|d|) (cm), a
+    /// slack link takes back its excess beyond the slack, cut to 80 cm.
+    fn living(&self, d: Vec3) -> Option<Vec3> {
+        let len2 = d.length_squared();
+        if len2 <= LINK_EPSILON2 {
+            return None;
+        }
+        let len = len2.sqrt();
+        if self.slack <= PIVOT_SLACK {
+            if len > MAX_CORRECTION {
+                warn_once!("excessive pivot delta: {:.2} m", len);
+            }
+            return Some(d / (1.0 + PIVOT_SOFTENING * len * CM));
+        }
+        if len <= self.slack {
+            return None;
+        }
+        let excess = d * ((len - self.slack) / len);
+        if excess.length_squared() > MAX_CORRECTION * MAX_CORRECTION {
+            warn_once!("excessive constraint delta: {:.2} m", excess.length());
+            return Some(excess.clamp_length_max(MAX_CORRECTION));
+        }
+        Some(excess)
+    }
+
+    /// The correction of a limp body's link with gap `d`: a pivot closes
+    /// strength/(1 + 0.001|d|²) of it (cm²), a slack link takes back
+    /// strength times its excess beyond the slack.
+    fn limp(&self, d: Vec3) -> Option<Vec3> {
+        let len2 = d.length_squared();
+        if len2 <= LINK_EPSILON2 {
+            return None;
+        }
+        if self.slack <= PIVOT_SLACK {
+            return Some(d * (self.strength / (1.0 + PIVOT_SOFTENING * len2 * CM * CM)));
+        }
+        let len = len2.sqrt();
+        if len <= self.slack {
+            return None;
+        }
+        Some(d * (self.strength * (len - self.slack) / len))
+    }
+}
+
+/// The original's smoothing for a link point `r` (m) from its part's origin.
+fn setup_smoothing(r: Vec3) -> f32 {
+    let r2 = (r * CM).length_squared();
+    if r2 <= 0.1 {
+        return 0.0;
+    }
+    (1.0 - (r2 - 25.0) * 0.001).powi(2).min(0.99)
 }
 
 /// A simulated body: limp, or driven by its muscles when it has a
@@ -434,7 +524,14 @@ pub struct Link {
 #[derive(Component, Debug, Clone)]
 pub struct Ragdoll {
     pub parts: Vec<Part>,
+    /// Every part's links, the skeleton's then its origin pivot, part by part.
     pub links: Vec<Link>,
+    /// The links of each part.
+    links_of: Vec<std::ops::Range<usize>>,
+    /// The parts parents first, depth first (a limp body's order), and
+    /// children first (a living body's).
+    outward: Vec<usize>,
+    inward: Vec<usize>,
     pub drive: Option<Drive>,
     /// Ticks the body was solved since the frame began.
     pub ticks: u32,
@@ -548,32 +645,86 @@ pub struct PartSetup {
     /// Box of the part's mesh in its space.
     pub centre: Vec3,
     pub half: Vec3,
-    /// Links to the parent: point on this part, point on the parent, slack.
+    /// Where the part's origin (its joint centre) sits in its parent's
+    /// space: the model's local translation of the part. The part is pinned
+    /// there, and the parent's link points are measured from it.
+    pub origin: Vec3,
+    /// The skeleton's links to the parent, as stored: the point on this
+    /// part, the parent's point (the same point turned into the parent's
+    /// axes, measured from this part's origin), and the slack.
     pub links: Vec<(Vec3, Vec3, f32)>,
+    /// The part carries foot contacts (a lower leg): its long link limits
+    /// the leg.
+    pub foot: bool,
 }
 
 impl Ragdoll {
+    /// Builds the body as the original registers it. Each part with a
+    /// parent takes the skeleton's links, whose parent points are the
+    /// stored points plus the part's origin in the parent (no rotation: the
+    /// stored point is already turned into the parent's axes), then a pivot
+    /// from its origin to that place. A lower leg's long link and its
+    /// femur's limit the leg.
     pub fn new(setup: &[PartSetup]) -> Self {
-        let parts: Vec<Part> = setup
+        let mut parts: Vec<Part> = setup
             .iter()
             .map(|s| Part::new(s.bone, s.entity, s.parent, s.centre, s.half, s.world))
             .collect();
         let mut links = Vec::new();
+        let mut links_of = Vec::with_capacity(setup.len());
         for (i, s) in setup.iter().enumerate() {
-            let Some(parent) = s.parent else { continue };
-            for &(on_part, on_parent, slack) in &s.links {
-                links.push(Link {
-                    part: i,
-                    parent,
-                    on_part: weights(&parts[i], on_part),
-                    on_parent: weights(&parts[parent], on_parent),
-                    slack,
-                });
+            let first = links.len();
+            if let Some(parent) = s.parent.filter(|&j| j < parts.len() && j != i) {
+                let (m, m_parent) = (
+                    LINK_MOBILITY * parts[i].inverse_mass,
+                    LINK_MOBILITY * parts[parent].inverse_mass,
+                );
+                let shares = (m / (m + m_parent), m_parent / (m + m_parent));
+                let pivot = (Vec3::ZERO, Vec3::ZERO, 0.0);
+                for (k, &(on_part, on_parent, slack)) in s.links.iter().chain([&pivot]).enumerate()
+                {
+                    let origin = k == s.links.len();
+                    links.push(Link {
+                        part: i,
+                        parent,
+                        on_part: weights(&parts[i], on_part),
+                        on_parent: weights(&parts[parent], on_parent + s.origin),
+                        slack,
+                        strength: 1.0,
+                        smoothing: setup_smoothing(on_part),
+                        shares,
+                        origin,
+                    });
+                }
+            }
+            links_of.push(first..links.len());
+        }
+        // A lower leg's long link limits the leg, at a fifth of its
+        // strength; its femur's first long link is the femur's limit.
+        let long = |links: &[Link], range: &std::ops::Range<usize>| {
+            range
+                .clone()
+                .find(|&k| !links[k].origin && links[k].slack > LEG_LIMIT_SLACK)
+        };
+        for (i, s) in setup.iter().enumerate() {
+            if !s.foot {
+                continue;
+            }
+            if let Some(k) = long(&links, &links_of[i]) {
+                links[k].strength *= LEG_LIMIT_STRENGTH;
+                parts[i].leg_limit = Some(k);
+            }
+            if let Some(j) = parts[i].parent.filter(|&j| j < parts.len()) {
+                parts[j].leg_limit = long(&links, &links_of[j]);
             }
         }
+        let (outward, inward) = tree_orders(&parts);
         Self {
             parts,
             links,
+            links_of,
+            outward,
+            inward,
             drive: None,
             ticks: 0,
             still: 0,
@@ -586,6 +737,18 @@ impl Ragdoll {
         self.drive = Some(Drive::default());
         self.wake();
         self
+    }
+
+    /// Takes the body's muscles: it becomes a plain ragdoll, solved from
+    /// the pelvis out, and its leg limit links pull at full strength again,
+    /// as the original's death sets them.
+    pub fn go_limp(&mut self) {
+        self.drive = None;
+        for p in &self.parts {
+            if let Some(k) = p.leg_limit {
+                self.links[k].strength = 1.0;
+            }
+        }
     }
 
     /// Simulates the body again.
@@ -710,6 +873,24 @@ impl Ragdoll {
             d.targets.clear();
             d.before.clear();
         }
+    }
+
+    /// The links of the part at `index`: the skeleton's, then its origin
+    /// pivot.
+    pub fn links_of(&self, index: usize) -> &[Link] {
+        self.links_of
+            .get(index)
+            .map_or(&[], |r| &self.links[r.clone()])
+    }
+
+    /// Where a link's two points sit on their parts: in the part's own
+    /// space and in its parent's (from the rest particles).
+    pub fn link_points(&self, l: &Link) -> (Vec3, Vec3) {
+        let at = |p: &Part, w: &[f32; 4]| (0..4).map(|k| p.rest[k] * w[k]).sum::<Vec3>();
+        (
+            at(&self.parts[l.part], &l.on_part),
+            at(&self.parts[l.parent], &l.on_parent),
+        )
     }
 
     /// The part of `bone`.
@@ -842,37 +1023,33 @@ impl Ragdoll {
     }
 
     /// One constraint iteration over the body tree. A living body is solved
-    /// from its hands and feet in to its pelvis, a limp one from the pelvis
-    /// out; each part takes its links to its parent, then its stored level
-    /// contacts, then its edges.
+    /// children first, from its hands and feet in to its pelvis; a limp one
+    /// parents first, from the pelvis out. Each part takes its links to its
+    /// parent, then its stored level contacts, then its edges. A link's
+    /// correction is shared by the two parts' mobilities and spread over
+    /// each part's particles by the point's weights, so the parts' momenta
+    /// change by equal and opposite amounts.
     fn iterate(&mut self) {
-        let n = self.parts.len();
         let living = self.drive.is_some();
-        for k in 0..n {
-            let i = if living { n - 1 - k } else { k };
-            for l in self.links.iter().filter(|l| l.part == i) {
+        for k in 0..self.parts.len() {
+            let i = if living {
+                self.inward[k]
+            } else {
+                self.outward[k]
+            };
+            for l in &self.links[self.links_of[i].clone()] {
                 let a = self.parts[l.part].point(&l.on_part);
                 let b = self.parts[l.parent].point(&l.on_parent);
-                let d = b - a;
-                let len = d.length();
-                if len <= l.slack || len <= 1e-6 {
+                let correction = if living {
+                    l.living(b - a)
+                } else {
+                    l.limp(b - a)
+                };
+                let Some(c) = correction.filter(|c| c.is_finite()) else {
                     continue;
-                }
-                let correction = d * ((len - l.slack) / len);
-                // Each point's share by its generalised inverse mass (the
-                // part's, times the squared weights of the point): the two
-                // parts' momenta change by equal and opposite amounts, even
-                // when a point lies outside its tetrahedron.
-                let ia =
-                    self.parts[l.part].inverse_mass * l.on_part.iter().map(|w| w * w).sum::<f32>();
-                let ib = self.parts[l.parent].inverse_mass
-                    * l.on_parent.iter().map(|w| w * w).sum::<f32>();
-                let total = ia + ib;
-                if total <= 0.0 {
-                    continue;
-                }
-                self.parts[l.part].displace(&l.on_part, correction * (ia / total));
-                self.parts[l.parent].displace(&l.on_parent, -correction * (ib / total));
+                };
+                self.parts[l.part].push(&l.on_part, c * l.shares.0);
+                self.parts[l.parent].push(&l.on_parent, -c * l.shares.1);
             }
             let p = &mut self.parts[i];
             p.hold_contacts();
@@ -928,6 +1105,48 @@ impl Ragdoll {
             }
         }
     }
+}
+
+/// The parts in two orders over their tree, siblings in index order: parents
+/// first, depth first, and children first.
+fn tree_orders(parts: &[Part]) -> (Vec<usize>, Vec<usize>) {
+    let n = parts.len();
+    let parent = |i: usize| parts[i].parent.filter(|&j| j < n && j != i);
+    let mut children = vec![Vec::new(); n];
+    let mut roots = Vec::new();
+    for i in 0..n {
+        match parent(i) {
+            Some(j) => children[j].push(i),
+            None => roots.push(i),
+        }
+    }
+    let (mut outward, mut inward) = (Vec::with_capacity(n), Vec::with_capacity(n));
+    let mut seen = vec![false; n];
+    // (part, children visited); a cycle in bad input is broken by `seen`.
+    let mut stack: Vec<(usize, usize)> = Vec::new();
+    for start in roots.into_iter().chain(0..n) {
+        if seen[start] {
+            continue;
+        }
+        seen[start] = true;
+        outward.push(start);
+        stack.push((start, 0));
+        while let Some((i, next)) = stack.last_mut() {
+            let i = *i;
+            if let Some(&c) = children[i].get(*next) {
+                *next += 1;
+                if !seen[c] {
+                    seen[c] = true;
+                    outward.push(c);
+                    stack.push((c, 0));
+                }
+            } else {
+                inward.push(i);
+                stack.pop();
+            }
+        }
+    }
+    (outward, inward)
 }
 
 /// One tick of the world's solver over `bodies` against the static `level`,
@@ -1235,6 +1454,10 @@ mod contact_test;
 mod tick_test;
 
 #[cfg(test)]
+#[path = "body_joint_test.rs"]
+mod joint_test;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1260,8 +1483,12 @@ mod tests {
                 world: at(1.0),
                 centre: Vec3::ZERO,
                 half: Vec3::splat(0.1),
+                origin: Vec3::ZERO,
                 links: vec![],
+                foot: false,
             },
+            // Pinned at its middle, 40 cm under the parent's; its top meets
+            // the parent's bottom.
             PartSetup {
                 bone: 2,
                 entity: e,
@@ -1269,7 +1496,9 @@ mod tests {
                 world: at(0.6),
                 centre: Vec3::ZERO,
                 half: Vec3::new(0.05, 0.2, 0.05),
-                links: vec![(Vec3::new(0.0, 0.2, 0.0), Vec3::new(0.0, -0.2, 0.0), slack)],
+                origin: Vec3::new(0.0, -0.4, 0.0),
+                links: vec![(Vec3::new(0.0, 0.2, 0.0), Vec3::new(0.0, 0.2, 0.0), slack)],
+                foot: false,
             },
         ])
     }

@@ -136,32 +136,34 @@ pub(super) fn humanoid(at: Vec3) -> (Vec<PartSetup>, Vec<Affine3A>) {
             Vec3::new(-0.3, 1.65, 0.0),
         ),
     ];
-    let pose: Vec<Affine3A> = parts
-        .iter()
-        .map(|p| Affine3A::from_translation(at + p.2))
+    // Each part's origin is its joint (the pelvis's its centre), as in the
+    // body models.
+    let origin = |i: usize| match parts[i].1 {
+        Some(_) => parts[i].4,
+        None => parts[i].2,
+    };
+    let pose: Vec<Affine3A> = (0..parts.len())
+        .map(|i| Affine3A::from_translation(at + origin(i)))
         .collect();
     let setup = parts
         .iter()
         .enumerate()
-        .map(|(i, &(bone, parent, centre, half, joint))| PartSetup {
+        .map(|(i, &(bone, parent, centre, half, _))| PartSetup {
             bone,
             entity: Entity::PLACEHOLDER,
             parent,
             world: pose[i],
-            centre: Vec3::ZERO,
+            centre: centre - origin(i),
             half,
-            // Two points across each joint, in each part's own space.
-            links: parent.map_or(vec![], |j| {
+            origin: parent.map_or(Vec3::ZERO, |j| origin(i) - origin(j)),
+            // Two points beside the joint on its lateral axis: with the
+            // origin pivot, a hinge.
+            links: parent.map_or(vec![], |_| {
                 [0.04, -0.04]
-                    .map(|x| {
-                        (
-                            joint + Vec3::X * x - centre,
-                            joint + Vec3::X * x - parts[j].2,
-                            0.0,
-                        )
-                    })
+                    .map(|x| (Vec3::X * x, Vec3::X * x, 0.0))
                     .to_vec()
             }),
+            foot: false,
         })
         .collect();
     (setup, pose)
@@ -238,7 +240,9 @@ fn a_sphere_crossing_the_floor_in_one_tick_is_pushed_back_up() {
         world: Affine3A::from_translation(Vec3::new(0.0, 0.07, 0.0)),
         centre: Vec3::ZERO,
         half: Vec3::splat(0.06),
+        origin: Vec3::ZERO,
         links: vec![],
+        foot: false,
     };
     let mut ragdoll = Ragdoll::new(&[ball]);
     ragdoll.set_velocity(Vec3::NEG_Y * 9.0);
@@ -271,7 +275,9 @@ fn a_centre_behind_a_face_is_not_pushed() {
         world: Affine3A::from_translation(Vec3::new(0.0, -0.01, 0.0)),
         centre: Vec3::ZERO,
         half: Vec3::splat(0.06),
+        origin: Vec3::ZERO,
         links: vec![],
+        foot: false,
     };
     let body = app.world_mut().spawn(Ragdoll::new(&[ball])).id();
     for _ in 0..40 {

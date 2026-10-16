@@ -12,7 +12,9 @@ fn ball(at: Vec3) -> Ragdoll {
         world: Affine3A::from_translation(at),
         centre: Vec3::ZERO,
         half: Vec3::splat(0.06),
+        origin: Vec3::ZERO,
         links: vec![],
+        foot: false,
     }])
 }
 
@@ -99,16 +101,22 @@ fn stored_contacts_hold_a_limb_dragged_by_its_links() {
             world: Affine3A::from_translation(Vec3::new(0.0, 0.45, 0.0)),
             centre: Vec3::ZERO,
             half: Vec3::splat(0.1),
+            origin: Vec3::ZERO,
             links: vec![],
+            foot: false,
         },
         PartSetup {
             bone: 3,
             entity: e,
             parent: Some(0),
-            world: Affine3A::from_translation(Vec3::new(0.0, 0.06, 0.0)),
-            centre: Vec3::ZERO,
+            // Its origin, the knee, at its end; pinned there and above its
+            // middle.
+            world: Affine3A::from_translation(Vec3::new(-0.2, 0.06, 0.0)),
+            centre: Vec3::new(0.2, 0.0, 0.0),
             half: Vec3::new(0.2, 0.05, 0.05),
-            links: vec![(Vec3::new(0.0, 0.05, 0.0), Vec3::new(0.0, -0.34, 0.0), 0.0)],
+            origin: Vec3::new(-0.2, -0.39, 0.0),
+            links: vec![(Vec3::new(0.2, 0.05, 0.0), Vec3::new(0.2, 0.05, 0.0), 0.0)],
+            foot: false,
         },
     ]);
     for _ in 0..200 {
@@ -172,6 +180,23 @@ fn a_limp_body_rests_on_the_floor_and_sleeps() {
         for &(c, r) in &p.spheres {
             let gap = t.transform_point3(c).y - at.y - r;
             assert!(gap > -0.003, "bone {} sphere sunk {:.4} m", p.bone, -gap);
+        }
+    }
+    // Every part rests within a centimetre of its socket, and every link
+    // within its slack.
+    for (i, p) in ragdoll.parts.iter().enumerate() {
+        let Some(j) = p.parent else { continue };
+        let (own, parent) = (p.transform(), ragdoll.parts[j].transform());
+        for l in ragdoll.links_of(i) {
+            let (a, b) = ragdoll.link_points(l);
+            let beyond = own.transform_point3(a).distance(parent.transform_point3(b)) - l.slack;
+            assert!(
+                beyond < 0.01,
+                "bone {} rests {:.1} mm beyond its link (origin pivot {})",
+                p.bone,
+                beyond * 1000.0,
+                l.origin
+            );
         }
     }
     // Asleep, it is not tested against the level and stays as it is.
@@ -367,11 +392,11 @@ fn stored_contacts_stick_inside_the_iterations() {
 
 /// Links are inside the body: links that cannot all hold (a skeleton's
 /// links laid over box-shaped tetrahedra need not agree) must not move the
-/// body as a whole. They do: the correction moves each link point by
-/// exactly its share, which does not balance the two parts' momentum, and a
-/// lasting conflict drives the body at up to 25 m/s. It is the likely cause
-/// of the placed corpses flying across exanima01 at 20–50 m/s, before and
-/// after the level-contact change.
+/// body as a whole. Moving each link point by exactly its share does not
+/// balance the two parts' momentum, and a lasting conflict drove the body at
+/// up to 25 m/s (the likely cause of placed corpses flying across exanima01
+/// at 20–50 m/s); shares spread over the particles by the points' weights
+/// balance it.
 #[test]
 fn conflicting_links_do_not_propel_a_limp_body() {
     let e = Entity::PLACEHOLDER;
@@ -384,7 +409,9 @@ fn conflicting_links_do_not_propel_a_limp_body() {
             world: at(0.0),
             centre: Vec3::ZERO,
             half: Vec3::splat(0.1),
+            origin: Vec3::ZERO,
             links: vec![],
+            foot: false,
         },
         PartSetup {
             bone: 3,
@@ -393,12 +420,15 @@ fn conflicting_links_do_not_propel_a_limp_body() {
             world: at(0.3),
             centre: Vec3::ZERO,
             half: Vec3::splat(0.1),
-            // The first holds at rest; the second asks for the part 10 cm
-            // nearer at z = 0.1: both cannot hold on rigid parts.
+            origin: Vec3::new(0.3, 0.0, 0.0),
+            // The first holds at rest, as the origin pivot does; the second
+            // asks for the part 10 cm nearer at z = 0.1: they cannot all
+            // hold on rigid parts.
             links: vec![
-                (Vec3::new(-0.15, 0.0, 0.0), Vec3::new(0.15, 0.0, 0.0), 0.0),
-                (Vec3::new(-0.15, 0.0, 0.1), Vec3::new(0.05, 0.0, 0.1), 0.0),
+                (Vec3::new(-0.15, 0.0, 0.0), Vec3::new(-0.15, 0.0, 0.0), 0.0),
+                (Vec3::new(-0.15, 0.0, 0.1), Vec3::new(-0.25, 0.0, 0.1), 0.0),
             ],
+            foot: false,
         },
     ]);
     for _ in 0..83 {

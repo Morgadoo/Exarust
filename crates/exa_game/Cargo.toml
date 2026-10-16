@@ -19,8 +19,6 @@ exa_audio.workspace = true
 exa_script.workspace = true
 exa_ui.workspace = true
 exa_assets.workspace = true
-
-[dev-dependencies]
 exa_formats.workspace = true
 
 [lints]
