@@ -217,9 +217,6 @@ fn setup(
             }
             let camera = spawn_chase_camera(&mut commands, &options);
             commands.insert_resource(PlayCamera(camera));
-            if let Some([x, y]) = options.cursor {
-                commands.insert_resource(exa_game::player::ScriptedCursor(Vec2::new(x, y)));
-            }
             if !begin_level(&mut commands, &mut loader, name, &options) {
                 let start = PlayStart {
                     position: Vec3::ZERO,
@@ -948,7 +945,8 @@ fn autowalk(
 
 /// `--press` and `--click`: presses each scripted key or mouse button (and
 /// clicks the left mouse button) at its frame, counted from the end of the
-/// load, and lets it go the frame after.
+/// load, holds it over its frames, and lets it go at the range's end (the
+/// frame after, for a tap or a click).
 fn press_keys(
     options: Res<Options>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
@@ -960,25 +958,26 @@ fn press_keys(
         return;
     }
     *frames += 1;
-    for &(press, at) in &options.press {
-        let down = at == *frames;
-        if down {
+    let frame = *frames;
+    for (press, over) in &options.press {
+        if frame == over.start {
             info!("pressing {press:?}");
-        } else if at + 1 != *frames {
-            continue;
         }
-        match (press, down) {
-            (crate::Press::Key(key), true) => keys.press(key),
-            (crate::Press::Key(key), false) => keys.release(key),
-            (crate::Press::Button(button), true) => buttons.press(button),
-            (crate::Press::Button(button), false) => buttons.release(button),
+        let held = over.contains(&frame);
+        let let_go = frame == over.end;
+        match *press {
+            crate::Press::Key(key) if held => keys.press(key),
+            crate::Press::Key(key) if let_go => keys.release(key),
+            crate::Press::Button(button) if held => buttons.press(button),
+            crate::Press::Button(button) if let_go => buttons.release(button),
+            _ => {}
         }
     }
     for &at in &options.clicks {
-        if at == *frames {
+        if at == frame {
             info!("clicking the left mouse button");
             buttons.press(MouseButton::Left);
-        } else if at + 1 == *frames {
+        } else if at + 1 == frame {
             buttons.release(MouseButton::Left);
         }
     }

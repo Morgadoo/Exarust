@@ -32,10 +32,10 @@ exarust --debug-bodies --opponent --pause-on-stretch 1 \
 | `--sim-speed <f>` | run the simulation at this speed (0.25 is a quarter as fast), from the end of the load |
 | `--pause-at-tick <n>` | pause at the end of body tick `n` (the `tick` column of both traces, counted from the start, the load included; see below) |
 | `--pause-on-stretch <cm>` | pause at the end of the tick in which a link of a body first goes this far past its slack; the log and the readout name the body, the part and the link |
-| `--press key@frame,...` | press keys or mouse buttons at frames counted from the end of the load (`.`, `[`, `]`, `Tab`, `F1`–`F12`, a letter, or `LMB`, `RMB`, `MMB`), e.g. `.@400,.@401,P@500`; each is released the frame after |
+| `--press key@frame,...` | press keys or mouse buttons at frames counted from the end of the load (`.`, `[`, `]`, `Tab`, `Ctrl`, `F1`–`F12`, a letter, or `LMB`, `RMB`, `MMB`), e.g. `.@400,.@401,P@500`; each is released the frame after; `key@a-b` holds it from frame a and lets it go at frame b, e.g. `RMB@60-400` |
 | `--click frame,...` | click the left mouse button at frames counted from the end of the load (the same as `LMB@frame` in `--press`): with `--weapon` in an arena fight, which starts in combat mode, the player attacks unattended |
 | `--camera x,y,z,yaw,pitch` | in play mode, a fixed camera there instead of the chase camera (metres, degrees), for unattended shots; with `--fov` |
-| `--cursor x,y` | in play mode, the cursor stays at this window point (logical pixels) instead of following the pointer; it needs the chase camera (not `--camera`) |
+| `--cursor x,y` | in play mode, the cursor stays at this window point (logical pixels, from the top left) whatever the mouse does: the world cursor, walking to the cursor and combat facing use it ([UI.md](UI.md), World cursor) |
 | `--still-opponent` | `--opponent`, but the duellist stands its ground: it faces the player and takes its stance (by its distance, [PLAYER.md](PLAYER.md), The combat stance) but never walks or strikes; with `--at` it shows the stances at a chosen distance |
 | `--debug-wound bone,radius_cm[,dx,dy,dz]` | a test wound on the player's or the character view's body ([Wounds](#wounds)); repeatable |
 
@@ -56,6 +56,18 @@ also logs each clip the body tick switches to. `exarust --still-opponent
 their guard 8 m apart, `--at 0,0,1.7` the duellist in its combat idle
 while the player still guards (3.7 m), `--at 0,0,1` both in the combat
 idle.
+
+The world cursor's shape changes are logged at debug level
+(`RUST_LOG=info,exa_game::cursor=debug`), and its size once it is drawn:
+
+```bash
+# The red ring by the player's feet in combat mode, which the arena fight
+# starts in (with --frames 3000 the duellist has killed the player, and the
+# red arrowhead shows).
+exarust --opponent --cursor 808,452 --screenshot ring.png --frames 200 play arena
+# Running to the cursor: two amber chevrons pointing up the screen.
+exarust --press RMB@60-400 --cursor 800,120 --screenshot run.png --frames 200 play arena
+```
 
 With `--pause-at-tick` or `--pause-on-stretch`, `--screenshot` counts its
 `--frames` from the pause, so the picture shows the paused body.

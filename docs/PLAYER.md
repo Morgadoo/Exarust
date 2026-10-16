@@ -16,9 +16,12 @@ The original has no camera-relative keyboard movement. Outside combat:
   second.
 - **S** backpedals. Faster than 1 cm per tick, it first brakes; it never
   turns the character about.
-- **Right mouse** walks toward the cursor's point on the hip-height plane,
+- **Right mouse** walks toward the cursor's point on the plane 80 cm above
+  the player's ground (the original's aim plane, about hip height),
   running when it is more than 3 m away. A reversal of more than 120° turns
-  before walking.
+  before walking. The point is found through the scene camera's own
+  viewport: with supersampling the scene is drawn into an image twice the
+  window's size, and window positions are scaled to it.
 - **Shift** runs: a run blend rises 0.05 per tick and falls 0.015.
 - The body's yaw follows the heading at up to 240°/s, ×0.9 with the keys,
   slower when moving fast, and eased over the last 0.6 rad. There is no
@@ -197,6 +200,12 @@ second weapon (no Exarust item holds them), the "Torch" overlay over a
 shield moveset, and the armed movesets of other races, which the original
 looks up under the race's own moveset.
 
+The cursor is the game's own world cursor ([UI.md](UI.md), World cursor):
+a red ring in combat mode, and outside it an amber arrowhead over ground
+within reach, a cross beyond it and chevrons while walking to it. Not yet
+in Exarust: the original's right button also walks to the cursor in
+combat mode.
+
 ## Camera
 
 - The camera follows the player's position only, at a fixed **20 m**. It
@@ -290,9 +299,12 @@ settled. A standing player whose capsule perches on a stone its feet hang
 beside keeps its balance and drops onto its feet (Exarust's own, while the
 capsule leads the body).
 
-`--press key@frame,...` presses keys at frames after the load, and in play
-mode `--camera x,y,z,yaw,pitch` puts a fixed camera there instead of the
-chase camera, for unattended pictures. The body overlay (F3), the joint
+`--press key@frame,...` presses keys at frames after the load
+(`key@a-b` holds one from frame a to b, and `LMB`, `RMB`, `MMB` and `Ctrl`
+are keys too), `--click frame,...` clicks the left button,
+`--cursor x,y` holds the pointer at a window position, and in
+play mode `--camera x,y,z,yaw,pitch` puts a fixed camera there instead of
+the chase camera, for unattended pictures. The body overlay (F3), the joint
 readout and trace, and the pause (P), step (`.`) and speed (`[`, `]`) keys
 are described in [DEBUGGING.md](DEBUGGING.md). The chase camera runs on
 real time, so it keeps orbiting while the simulation is paused or slowed.

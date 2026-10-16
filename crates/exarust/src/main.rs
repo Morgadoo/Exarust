@@ -33,7 +33,8 @@
 //!          --sim-speed <f>            run the simulation at this speed (e.g. 0.25)
 //!          --pause-at-tick <n>        pause the simulation at the end of body tick n
 //!          --pause-on-stretch <cm>    pause the simulation when a link goes this far past its slack
-//!          --press key@frame,...      press keys or mouse buttons (LMB, RMB, MMB) at frames after loading (e.g. `.@400,P@500,LMB@600`)
+//!          --press key@frame,...      press keys (Ctrl among them) or mouse buttons (LMB, RMB, MMB) at frames after
+//!                                     loading (e.g. `.@400,P@500,LMB@600`); `key@a-b` holds it from frame a to b
 //!          --cursor x,y               play mode: the cursor stays at this window point (logical pixels), for unattended runs
 //!          --click frame,...          click the left mouse button at frames after loading
 //!          --debug-wound b,r[,dx,dy,dz]  a test wound on the player's (or the character view's) body part b
@@ -47,6 +48,7 @@
 
 mod viewer;
 
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -116,8 +118,8 @@ pub struct Options {
     pub pause_at_tick: Option<u64>,
     pub pause_on_stretch: Option<f32>,
     /// Keys and buttons pressed at frames after the load (for unattended
-    /// checks).
-    pub press: Vec<(Press, u32)>,
+    /// checks): each is held over its frames and let go at the range's end.
+    pub press: Vec<(Press, Range<u32>)>,
     /// Play mode: a cursor fixed at this window point (logical pixels).
     pub cursor: Option<[f32; 2]>,
     /// Left mouse button clicks at frames after the load.
@@ -141,8 +143,8 @@ fn usage() -> AppExit {
     AppExit::from_code(2)
 }
 
-/// The key a `--press` entry names: a letter, `.`, `[`, `]`, `Tab` or
-/// `F1`–`F12`.
+/// The key a `--press` entry names: a letter, `.`, `[`, `]`, `Tab`, `Ctrl`
+/// or `F1`–`F12`.
 fn key_named(name: &str) -> Option<KeyCode> {
     let fkeys = [
         KeyCode::F1,
@@ -191,6 +193,7 @@ fn key_named(name: &str) -> Option<KeyCode> {
         "[" => Some(KeyCode::BracketLeft),
         "]" => Some(KeyCode::BracketRight),
         "Tab" => Some(KeyCode::Tab),
+        "Ctrl" => Some(KeyCode::ControlLeft),
         _ => {
             if let Some(n) = name.strip_prefix('F').and_then(|n| n.parse::<usize>().ok()) {
                 return n.checked_sub(1).and_then(|i| fkeys.get(i)).copied();
@@ -216,16 +219,24 @@ fn button_named(name: &str) -> Option<MouseButton> {
     }
 }
 
-/// Reads `key@frame,...`.
-fn parse_presses(list: &str) -> Option<Vec<(Press, u32)>> {
+/// Reads `key@frame,...`, where a frame may be a range `from-to` the key
+/// is held over (let go at `to`); a single frame is let go the frame after.
+fn parse_presses(list: &str) -> Option<Vec<(Press, Range<u32>)>> {
     list.split(',')
         .filter(|s| !s.trim().is_empty())
         .map(|entry| {
-            let (key, frame) = entry.trim().rsplit_once('@')?;
+            let (key, frames) = entry.trim().rsplit_once('@')?;
             let press = button_named(key)
                 .map(Press::Button)
                 .or_else(|| key_named(key).map(Press::Key))?;
-            Some((press, frame.parse().ok()?))
+            let (from, to) = match frames.split_once('-') {
+                Some((from, to)) => (from.parse().ok()?, to.parse().ok()?),
+                None => {
+                    let at: u32 = frames.parse().ok()?;
+                    (at, at.checked_add(1)?)
+                }
+            };
+            (to > from).then_some((press, from..to))
         })
         .collect()
 }
@@ -302,6 +313,15 @@ fn main() -> AppExit {
                     }
                 }
             }
+            "--cursor" => {
+                let v: Vec<f32> = args
+                    .next()
+                    .unwrap_or_default()
+                    .split(',')
+                    .filter_map(|x| x.trim().parse().ok())
+                    .collect();
+                options.cursor = <[f32; 2]>::try_from(v.as_slice()).ok();
+            }
             "--outfit" => {
                 options.outfit = args
                     .next()
@@ -345,15 +365,6 @@ fn main() -> AppExit {
                 if let Ok(pose) = <[f32; 5]>::try_from(v.as_slice()) {
                     options.camera = Some(pose);
                 }
-            }
-            "--cursor" => {
-                let v: Vec<f32> = args
-                    .next()
-                    .unwrap_or_default()
-                    .split(',')
-                    .filter_map(|x| x.trim().parse().ok())
-                    .collect();
-                options.cursor = <[f32; 2]>::try_from(v.as_slice()).ok();
             }
             "--at" | "--torch" => {
                 let v: Vec<f32> = args
@@ -475,6 +486,7 @@ fn main() -> AppExit {
     .insert_resource(view)
     .insert_resource(options.gi)
     .insert_resource(exa_ui::ShowFps(!options.no_fps))
+    .insert_resource(exa_ui::ScriptedPointer(options.cursor.map(Vec2::from)))
     .insert_resource(exa_render::cube_shadows::PointShadows(!options.no_shadows))
     .insert_resource(exa_game::body_overlay::BodyOverlay {
         on: options.debug_bodies,
@@ -497,27 +509,42 @@ mod tests {
 
     #[test]
     fn scripted_presses_are_read() {
-        let key = Press::Key;
+        let key = |key, at: u32| (Press::Key(key), at..at + 1);
+        let button = |button, at: u32| (Press::Button(button), at..at + 1);
         assert_eq!(
             parse_presses(".@400, P@500,F3@1,]@2,[@3,Tab@4,f@5,LMB@6,RMB@7,MMB@8"),
             Some(vec![
-                (key(KeyCode::Period), 400),
-                (key(KeyCode::KeyP), 500),
-                (key(KeyCode::F3), 1),
-                (key(KeyCode::BracketRight), 2),
-                (key(KeyCode::BracketLeft), 3),
-                (key(KeyCode::Tab), 4),
-                (key(KeyCode::KeyF), 5),
-                (Press::Button(MouseButton::Left), 6),
-                (Press::Button(MouseButton::Right), 7),
-                (Press::Button(MouseButton::Middle), 8),
+                key(KeyCode::Period, 400),
+                key(KeyCode::KeyP, 500),
+                key(KeyCode::F3, 1),
+                key(KeyCode::BracketRight, 2),
+                key(KeyCode::BracketLeft, 3),
+                key(KeyCode::Tab, 4),
+                key(KeyCode::KeyF, 5),
+                button(MouseButton::Left, 6),
+                button(MouseButton::Right, 7),
+                button(MouseButton::Middle, 8),
             ])
         );
         assert_eq!(parse_presses(""), Some(vec![]));
         assert_eq!(parse_clicks("300, 420,540"), Some(vec![300, 420, 540]));
         assert_eq!(parse_clicks("300,x"), None);
-        for bad in ["P", "P@x", "F13@1", "Esc@2", "@3", "lmb@4", "XMB@5"] {
+        for bad in [
+            "P", "P@x", "F13@1", "Esc@2", "@3", "lmb@4", "XMB@5", "RMB@5-5", "RMB@9-4", "W@1-x",
+        ] {
             assert_eq!(parse_presses(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn scripted_holds_and_mouse_buttons_are_read() {
+        assert_eq!(
+            parse_presses("RMB@100-400,Ctrl@50-60,LMB@7"),
+            Some(vec![
+                (Press::Button(MouseButton::Right), 100..400),
+                (Press::Key(KeyCode::ControlLeft), 50..60),
+                (Press::Button(MouseButton::Left), 7..8),
+            ])
+        );
     }
 }

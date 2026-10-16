@@ -352,6 +352,13 @@ enters combat in its guard and guards at four reaches or more; standing
 3 s in Cmbt - Idle halves a blow's wound (readiness); `--still-opponent`
 shows the stances at a chosen distance ([PLAYER.md](PLAYER.md), The
 combat stance).
+Done (change `draw-world-cursor`): the original's world cursor in place of
+the system pointer, from `cursors.rfi` at the GUI scale's size (30 px in
+a 900-pixel window): the red ring in combat mode, the arrowhead after
+death or with Ctrl, amber chevrons walking to the cursor and the
+arrowhead or cross outside combat; the cursor's point on the 80 cm aim
+plane, found through the supersampled camera's viewport
+([UI.md](UI.md), Interface scale and World cursor).
 Still to do: inventory and containers, injuries beyond damage, blocking,
 parrying, grabs, practice mode, the knockback step, the swing stall and
 the striker's recoil, a lethal wound's fall and collapse, the daze's guard

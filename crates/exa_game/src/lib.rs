@@ -4,6 +4,7 @@
 
 pub mod balance;
 pub mod body_overlay;
+pub mod cursor;
 pub mod joint_trace;
 pub mod limp;
 pub mod player;
@@ -35,6 +36,7 @@ impl Plugin for GamePlugin {
         .add_plugins((
             limp::LimpPlugin,
             balance::BalancePlugin,
+            cursor::CursorPlugin,
             torch::TorchPlugin,
             trace::TracePlugin,
         ))

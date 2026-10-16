@@ -45,13 +45,16 @@ const RUN_RISE: f32 = 0.05;
 const RUN_FALL: f32 = 0.015;
 /// The right mouse button walks to a cursor this close (m) and runs to
 /// one further away.
-const CURSOR_RUN_FROM: f32 = 3.0;
+pub(crate) const CURSOR_RUN_FROM: f32 = 3.0;
 /// A cursor closer than this (m) gives no direction.
 const CURSOR_MIN: f32 = 0.5;
 /// S faster than this (m/s) brakes before backpedalling (1 cm per tick).
 const BRAKE_ABOVE: f32 = 0.01 * TICK_HZ;
-/// The cursor's ground plane lies this far above the feet (hip height, m).
+/// The look-ahead probe starts this far above the feet (hip height, m).
 const HIP: f32 = 0.9;
+/// The cursor's point lies on the plane this far above the player's ground
+/// (m): the original's aim plane, 80 cm.
+pub(crate) const AIM_HEIGHT: f32 = 0.8;
 /// Combat footwork held longer than this (s) walks on.
 const STEP_HOLD: f32 = 0.2;
 /// In combat mode the heading turns to the cursor once it is further off
@@ -217,15 +220,10 @@ fn other_side(cursor: f32, yaw: f32, weapon_class: u8) -> bool {
     turn_between(yaw, cursor) > beyond
 }
 
-/// The point under the cursor on the player's hip plane, for the right
-/// mouse button.
+/// The point under the cursor on the player's aim plane, for the right
+/// mouse button, combat facing and the world cursor.
 #[derive(Resource, Default)]
-struct CursorGround(Option<Vec3>);
-
-/// A cursor position (logical pixels in the window) that stands in for the
-/// pointer, for unattended runs (`--cursor`).
-#[derive(Resource, Clone, Copy, Debug)]
-pub struct ScriptedCursor(pub Vec2);
+pub(crate) struct CursorGround(pub(crate) Option<Vec3>);
 
 pub struct PlayerPlugin;
 
@@ -268,9 +266,42 @@ fn body_turn(yaw: f32, heading: f32, keyboard: bool, speed: f32) -> f32 {
     yaw + error.clamp(-rate, rate)
 }
 
+/// Camera viewport pixels per window pixel: a supersampled camera draws
+/// into an image larger than the window.
+fn viewport_scale(camera: &Camera, window: &Window) -> Vec2 {
+    camera
+        .logical_viewport_size()
+        .map_or(Vec2::ONE, |v| v / window.size().max(Vec2::ONE))
+}
+
+/// The camera's ray through a point of the window (logical pixels).
+pub(crate) fn window_ray(
+    camera: &Camera,
+    eye: &GlobalTransform,
+    window: &Window,
+    at: Vec2,
+) -> Option<Ray3d> {
+    camera
+        .viewport_to_world(eye, at * viewport_scale(camera, window))
+        .ok()
+}
+
+/// Where a world point shows in the window (logical pixels).
+pub(crate) fn window_point(
+    camera: &Camera,
+    eye: &GlobalTransform,
+    window: &Window,
+    point: Vec3,
+) -> Option<Vec2> {
+    camera
+        .world_to_viewport(eye, point)
+        .ok()
+        .map(|p| p / viewport_scale(camera, window))
+}
+
 fn cursor_ground(
     mut ground: ResMut<CursorGround>,
-    scripted: Option<Res<ScriptedCursor>>,
+    scripted: Res<exa_ui::ScriptedPointer>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ChaseCamera>>,
     players: Query<&GlobalTransform, With<Player>>,
@@ -282,13 +313,12 @@ fn cursor_ground(
         return;
     };
     let Some(ray) = scripted
-        .map(|s| s.0)
-        .or_else(|| window.cursor_position())
-        .and_then(|c| camera.viewport_to_world(eye, c).ok())
+        .position(window)
+        .and_then(|c| window_ray(camera, eye, window, c))
     else {
         return;
     };
-    let plane = player.translation().y + HIP;
+    let plane = player.translation().y + AIM_HEIGHT;
     if ray.direction.y.abs() > 1e-4 {
         let d = (plane - ray.origin.y) / ray.direction.y;
         if d > 0.0 {
@@ -337,7 +367,7 @@ fn steer_player(
             let held = |k| keys.pressed(k);
             let to_cursor = cursor
                 .0
-                .map(|c| c - (feet + Vec3::Y * HIP))
+                .map(|c| c - (feet + Vec3::Y * AIM_HEIGHT))
                 .filter(|d| d.xz().length() >= CURSOR_MIN);
             let mouse = buttons.pressed(MouseButton::Right) && to_cursor.is_some();
             let ahead = held(KeyCode::KeyW) || mouse;
@@ -711,7 +741,7 @@ fn zoom_fov(zoom: f32, aspect: f32) -> f32 {
 /// The camera ticks on real time, so it keeps orbiting while the
 /// simulation is paused or slowed (`docs/DEBUGGING.md`).
 #[allow(clippy::type_complexity)]
-fn chase_camera(
+pub(crate) fn chase_camera(
     time: Res<Time<Real>>,
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
