@@ -496,26 +496,28 @@ impl Health {
     }
 }
 
+/// A one-handed sword's record, 90 cm long: the tests' worked example.
+#[cfg(test)]
+pub(crate) fn sword_a() -> WeaponRecord {
+    let mut s = StatBytes::default();
+    for (off, v) in [
+        (at::WEIGHT, 50),
+        (at::BALANCE, 80),
+        (at::IMPACT, 127),
+        (at::THRUST, 54),
+        (at::KIND, 2),
+        (at::START, 20),
+        (at::END, 200),
+        (at::SLASH, 72),
+    ] {
+        s.set(off, v);
+    }
+    WeaponRecord::new(0x11, &s, false, 90.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sword_a() -> WeaponRecord {
-        let mut s = StatBytes::default();
-        for (off, v) in [
-            (at::WEIGHT, 50),
-            (at::BALANCE, 80),
-            (at::IMPACT, 127),
-            (at::THRUST, 54),
-            (at::KIND, 2),
-            (at::START, 20),
-            (at::END, 200),
-            (at::SLASH, 72),
-        ] {
-            s.set(off, v);
-        }
-        WeaponRecord::new(0x11, &s, false, 90.0)
-    }
 
     #[test]
     fn sword_a_record() {

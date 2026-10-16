@@ -273,7 +273,7 @@ The system SHALL decode, for every record of the installed `races.rdb`, the body
 - **THEN** its body parameters are the fallback, whose gait table cannot move it
 
 ### Requirement: Joints at the part origins
-The system SHALL join every part that has a parent part by its skeleton links and then a pivot from its origin to its place in the parent, the model's local translation of the part. A link's parent point SHALL be the stored point plus that translation, unturned. A correction SHALL be shared m/(m + m_parent), m being 0.175 times the bone's mobility, and spread over each part's particles by the point's weights, unclamped.
+The system SHALL join every part that has a parent part by its skeleton links and then a pivot from its origin to its place in the parent, the model's local translation of the part. A link's parent point SHALL be the stored point plus that translation, unturned. A correction SHALL be shared m/(m + m_parent), m being 0.175 times the bone's mobility, and spread over each part's particles by the point's weights, unclamped. A joint's range SHALL come from its links alone.
 
 #### Scenario: Shipped human body
 - **WHEN** the human body is built from the installed `humanoid.rsq` and `humanbase.rfc`
@@ -290,6 +290,10 @@ The system SHALL join every part that has a parent part by its skeleton links an
 #### Scenario: Knee hinge
 - **WHEN** a lower leg is struck sideways and forward
 - **THEN** it turns about the knee's lateral axis and stays within 5° of the plane across it
+
+#### Scenario: Elbow and knee ranges
+- **WHEN** the installed `humanoid.rsq` links of each forearm and lower leg are turned about their hinge axes
+- **THEN** each elbow bends from straight to 120° and not past straight, where 10° past straight stretches its long link 1.8 cm beyond its slack, and each knee bends from 10° to 130°
 
 ### Requirement: Living joint corrections
 In a living body a pivot (slack at most 0.01 cm) SHALL close d/(1 + 0.001|d|) of its gap d in cm, in full however far apart, and a slack link SHALL take back its excess beyond the slack at full weight, cut to 80 cm.

@@ -440,7 +440,31 @@ Implemented in `exa_combat::damage`.
 - Applying a blow: yellow −= 0.1·Y; red −= 0.2·R; yellow is rescaled by
   how much red is left. Yellow under 0.01 is death.
 - Daze = √(0.75P + 1.25J)·stun·0.5·0.25/max health.
-- Blows with J > 0.5 shove the victim by 10J cm/tick.
+
+**What the struck character does** (REA on the damage routine and what it
+calls)
+- It starts no clip. The damage routine starts clips only through the
+  striker's recoil, on blocked and clashing hits. The struck character
+  takes the daze (energy × (1 − min(daze, 0.9)), at least 0.05), pain
+  voices, and on J > 0.5 a knockback step: 2·(20·s + 10)·J cm along the
+  swing flattened to the horizontal, s the Force Strikes level (0 without
+  the power), plus 20 ticks of its chest's smoothed velocity, capped at
+  its step length. Exarust shoves the struck part by 10J cm/tick plus a
+  tenth of the blade's velocity until the step exists.
+- A character struck while swinging has its swing stalled. With D the daze
+  (at most 0.9), f a factor of the blow (1 for a human in most blows),
+  reach its attack reach (cm) and w its weapon's recoil factor,
+  r = 4·D·f − (1 − D)·min(0.005·reach, 1)·w. When r ≥ 0.001 its swing
+  strength P falls by r each tick and scales the swing's clock, and at
+  min(80·P/r ms, the swing's remaining time) it returns to its stance,
+  blended over a time from its weapon record. Exarust has no swing
+  strength yet: a struck attacker returns to its stance at once and its
+  blade deals no further hit.
+- Rebalance, Defence stance, staggers and falls come from balance, not
+  from the blow. Head Pain is a story clip ([RSQ.md](RSQ.md), Motion set).
+  Defence stance with a step also answers electricity and energy effects.
+- A lethal wound plays Fall Backward and collapses the character; Exarust
+  sends the body limp at once.
 
 Not yet: the bite (weapons sticking in), blocking and parrying, shields,
 encumbrance's effect on swings, and the state that knocks a character

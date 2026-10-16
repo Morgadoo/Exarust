@@ -290,8 +290,18 @@ Done (change `add-damage-model`): weapon stats, apparel protection and
 races' natural armour decoded, and every blow resolved by the original's
 model: the zone along the weapon, the speed of the struck point, two armour
 layers per part with the coverage roll, impact, crush, slash and pierce.
-Still to do: inventory and containers, injuries beyond damage, blocking,
-parrying, grabs, practice mode.
+Done (change `start-no-clip-on-a-wound`): a blow that does not kill starts
+no clip on the struck fighter, as in the original (Exarust used to play
+Head Pain, a story clip, for any wound to the chest, head or arms, and
+Rebalance below); a fighter struck mid-attack stops it and returns to its
+stance at once, Exarust's stand-in for the original's swing stall; the
+shipped elbows and knees are shown to be hinges bounded by their links
+(elbow straight to 120°, knee 10° to 130°)
+([formats/OTHER.md](formats/OTHER.md), Damage;
+[formats/RSQ.md](formats/RSQ.md)). Still to do: inventory and containers,
+injuries beyond damage, blocking, parrying, grabs, practice mode, the
+knockback step, the swing stall and the striker's recoil, a lethal
+wound's fall and collapse.
 
 - `exa_items`: item database, item instances, inventory and containers,
   equip and wield, weapon assembly from factories, mass and centre of

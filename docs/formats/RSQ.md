@@ -79,6 +79,29 @@ How the original simulates a body (`exa_physics::body`):
   14.9 cm, shin 12.7 cm, …). There are no angle limits. The original
   scales the points and slacks by the body's scale; Exarust does not yet,
   which matters for bodies of another size.
+- Joint ranges. Nothing but the links bounds a joint: no bone carries a
+  bend weight or an angular stiffness, and the solver's only test is a
+  link's length against its slack (REA on both link iterations). The
+  ranges of `humanoid.rsq`, as turns from the clip's zero turn:
+  - Elbow: a hinge about the forearm's y axis, through its 2.61 cm link's
+    point. Its 12 cm link lets it bend from straight to 120° and never
+    past straight: 10° past straight stretches that link 1.8 cm beyond its
+    slack, 45° past 7 cm, and a living link takes the excess back in full
+    every pass (`exa_game` test of the shipped links).
+  - Knee: a hinge about the lower leg's x axis, through its zero-slack
+    link's point, bent from 10° to 130°; it never quite straightens (same
+    test).
+  - Computed by scanning every turn (research notes, not tested): the
+    shoulder a cone of 45–51° with ±41–46° of twist, and with the
+    collarbone the upper arm rises at most 35–40° above the horizontal;
+    the wrist 74° toward the palm, 27° back, about ±30° sideways and ±65°
+    of twist; the elbow's side bend and twist about ±15°.
+  - The clips are authored inside these ranges: most links' worst key is
+    1.00–1.05 × the slack, and only a few keys of Fall Forward and Break
+    Tangle reach 1.4–3.3 ×. The original clamps angles only in the
+    animated pose (the leg IK keeps the knee's inner angle within
+    30°–180°, the head look within ±72°·0.8, the foot's ground pitch),
+    never an arm's.
 - A correction is shared by the parts' mobilities, m/(m + m_parent), with
   m = 0.175 × the bone's value (pelvis 0.45, thighs 0.7, shins 1, feet 2.8,
   lumbar 0.45, thorax 0.5, head 1, shoulders 1, upper arms 1.2, forearms
@@ -413,6 +436,12 @@ Forward/Backward/High, Jump, Idle, Idle 2, Parry Left/Right/Up/Left Dn/Rgt
 Dn, Stand 2, Scratch 1, Break Tangle, Unconcious 1/2, Sitting, Switch
 Weapons, Kneel, Rebalance, Force Blast/Barrier/Raise/Weapon/Torrent, Energy
 Shock, Disp Form, Cower, Combat Walk, Power, Head Pain.
+
+Head Pain (action `0x2D`, both hands on the head, elbows bent near 120°)
+is played by a story event, the player recalling a memory, never as a
+reaction to a wound (REA: its only writer is the game-script handler that
+also shows `XU_Memory` and plays `XAU_Memory`; player input is blocked
+while it plays).
 
 Movesets (parent): Default; One Handed (Default); 1H & Shield, 1H & Torch,
 2W Light, Torch, 1H Heavy (One Handed); Shield C1/C2 (1H & Shield); Two

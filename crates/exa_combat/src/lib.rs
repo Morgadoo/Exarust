@@ -5,7 +5,9 @@
 //! A contact is resolved by the original's damage model ([`damage`]): the
 //! weapon's stats, where along it the blow lands and how fast, against the
 //! struck part's armour layers. It takes health, shoves and dazes the target,
-//! and kills it when its yellow health runs out.
+//! and kills it when its yellow health runs out. A blow that does not kill
+//! starts no clip on the target; a target struck while attacking stops its
+//! attack and returns to its stance.
 
 pub mod damage;
 
@@ -252,6 +254,16 @@ impl Roll {
     }
 }
 
+/// The looping stance a fighter returns to: the follow-up of the clip it is
+/// playing once, else its moveset's idle.
+fn stance_of(anim: &Animator) -> String {
+    match &anim.then {
+        Some(then) => then.clone(),
+        None if anim.moveset == "Default" => "Idle".into(),
+        None => "Cmbt - Idle".into(),
+    }
+}
+
 fn react_to_hits(
     mut commands: Commands,
     mut hits: MessageReader<Hit>,
@@ -260,7 +272,7 @@ fn react_to_hits(
     mut roll: Local<Roll>,
 ) {
     for hit in hits.read() {
-        let Ok((_, mut f, mut anim, _)) = fighters.get_mut(hit.target) else {
+        let Ok((_, mut f, mut anim, attacking)) = fighters.get_mut(hit.target) else {
             continue;
         };
         let Some(armour) = hit.bone.checked_sub(1).and_then(|i| f.armour.get(i)) else {
@@ -312,18 +324,19 @@ fn react_to_hits(
                 velocity: velocity * 0.5 + Vec3::Y * 0.3,
                 delay: 0,
             });
-        } else if !f.down && outcome.penetration + outcome.impact > 0.2 {
-            let stance = if anim.moveset == "Default" {
-                "Idle"
-            } else {
-                "Cmbt - Idle"
-            };
-            let reaction = if hit.bone >= 9 {
-                "Head Pain"
-            } else {
-                "Rebalance"
-            };
-            anim.play_once(reaction, stance);
+        }
+        // A blow that does not kill starts no clip on the struck fighter:
+        // its stance changes come from its balance, not from the blow.
+        if attacking {
+            // Stand-in for the original's swing stall until the swing
+            // strength exists: there the daze drains a struck attacker's
+            // swing and returns it to its stance within the swing's time;
+            // here the attack stops at once and deals no further hit.
+            if !f.down {
+                let stance = stance_of(&anim);
+                anim.play_loop(&stance);
+            }
+            commands.entity(hit.target).remove::<Attacking>();
         }
     }
     for (e, _, anim, attacking) in &fighters {
@@ -342,6 +355,8 @@ fn closest_on_segment(a: Vec3, b: Vec3, p: Vec3) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::ecs::message::Messages;
+    use damage::{DEATH, Outcome};
 
     #[test]
     fn segment_projection() {
@@ -349,5 +364,159 @@ mod tests {
         assert_eq!(p, Vec3::new(0.0, 0.5, 0.0));
         let end = closest_on_segment(Vec3::ZERO, Vec3::Y, Vec3::new(0.0, 3.0, 0.0));
         assert_eq!(end, Vec3::Y);
+    }
+
+    /// An app running only the blow reactions.
+    fn reactions() -> App {
+        let mut app = App::new();
+        app.add_message::<Hit>()
+            .add_message::<Shove>()
+            .add_systems(Update, react_to_hits);
+        app
+    }
+
+    /// The damage tests' sword cut: 20 cm a tick, 70 cm along the blade,
+    /// late in the swing.
+    fn cut() -> Strike {
+        Strike {
+            speed: 20.0,
+            stab: false,
+            overhead: false,
+            clock: 0.8,
+            along: 70.0,
+        }
+    }
+
+    /// What the cut does to bare flesh on `bone` of a human, with the
+    /// reactions' first coverage roll.
+    fn outcome(bone: usize) -> Outcome {
+        let roll = Roll::default().next();
+        damage::resolve(
+            &damage::sword_a(),
+            &cut(),
+            &PartArmour::default(),
+            bone,
+            0.25,
+            roll,
+        )
+        .unwrap()
+    }
+
+    /// Cuts `target` on `bone` and runs one update.
+    fn strike(app: &mut App, target: Entity, bone: usize) {
+        app.world_mut().write_message(Hit {
+            attacker: Entity::PLACEHOLDER,
+            target,
+            bone,
+            point: Vec3::ZERO,
+            velocity: Vec3::new(3.0, 0.0, 0.0),
+            weapon: damage::sword_a(),
+            strike: cut(),
+        });
+        app.update();
+    }
+
+    fn shoves(app: &App) -> Vec<Shove> {
+        let messages = app.world().resource::<Messages<Shove>>();
+        messages.get_cursor().read(messages).copied().collect()
+    }
+
+    /// A sword cut that wounds but does not kill starts no clip: a bare
+    /// forearm (13), chest (9), head (10) or foot (4) of a human in its
+    /// stance, each over the 0.2 of penetration and impact that used to
+    /// start Head Pain or Rebalance, leaves it in its idle, shoved once on
+    /// that part. One getting up keeps playing its get-up.
+    #[test]
+    fn a_wound_starts_no_clip() {
+        for bone in [13, 9, 10, 4] {
+            let o = outcome(bone);
+            assert!(o.penetration + o.impact > 0.2, "bone {bone}: {o:?}");
+            let mut health = Health::of_race(1.0);
+            assert!(!health.take(&o), "bone {bone}: the cut kills");
+            let mut app = reactions();
+            let fighter = app
+                .world_mut()
+                .spawn((Fighter::default(), Animator::new("Default", "Idle")))
+                .id();
+            strike(&mut app, fighter, bone);
+            let anim = app.world().get::<Animator>(fighter).unwrap();
+            assert_eq!(
+                (anim.action.as_str(), anim.looping, anim.then.as_deref()),
+                ("Idle", true, None),
+                "bone {bone}"
+            );
+            assert_eq!(anim.time, 0.0, "bone {bone}");
+            let f = app.world().get::<Fighter>(fighter).unwrap();
+            assert!(f.health.yellow < 0.25, "bone {bone}: {:?}", f.health);
+            assert!(f.health.yellow >= DEATH && !f.down, "bone {bone}");
+            assert_eq!(f.health, health, "bone {bone}");
+            let s = shoves(&app);
+            assert_eq!(s.len(), 1, "bone {bone}");
+            assert_eq!((s[0].body, s[0].bone), (fighter, bone));
+            assert_eq!(s[0].daze, o.daze, "bone {bone}");
+            assert!(app.world().get::<GoLimp>(fighter).is_none());
+        }
+        let mut app = reactions();
+        let mut anim = Animator::new("Default", "Idle");
+        anim.play_once("Get up", "Idle");
+        let fighter = app.world_mut().spawn((Fighter::default(), anim)).id();
+        strike(&mut app, fighter, 13);
+        let anim = app.world().get::<Animator>(fighter).unwrap();
+        assert_eq!(
+            (anim.action.as_str(), anim.looping, anim.then.as_deref()),
+            ("Get up", false, Some("Idle"))
+        );
+    }
+
+    /// A fighter cut on the forearm in the middle of its attack stops it:
+    /// it no longer counts as attacking, so its blade deals no further hit,
+    /// and it is back in its combat stance.
+    #[test]
+    fn a_wound_stops_a_swing() {
+        let mut app = reactions();
+        let mut anim = Animator::new("One Handed", "Cmbt - Idle");
+        anim.play_once("Attack Mid", "Cmbt - Idle");
+        anim.time = 12.0;
+        let fighter = app
+            .world_mut()
+            .spawn((Fighter::default(), anim, Attacking::default()))
+            .id();
+        strike(&mut app, fighter, 13);
+        assert!(app.world().get::<Attacking>(fighter).is_none());
+        let anim = app.world().get::<Animator>(fighter).unwrap();
+        assert_eq!(
+            (anim.action.as_str(), anim.looping, anim.then.as_deref()),
+            ("Cmbt - Idle", true, None)
+        );
+        assert_eq!(anim.time, 0.0);
+        let f = app.world().get::<Fighter>(fighter).unwrap();
+        assert!(!f.down);
+        assert_eq!(shoves(&app).len(), 1);
+    }
+
+    /// A cut that takes yellow health under 0.01 still sends the body limp
+    /// under the blow, and ends an attack it was making.
+    #[test]
+    fn a_killing_wound_still_goes_limp() {
+        for attacking in [false, true] {
+            let mut app = reactions();
+            let mut fighter = Fighter::default();
+            fighter.health.yellow = 0.011;
+            let mut anim = Animator::new("One Handed", "Cmbt - Idle");
+            let id = if attacking {
+                anim.play_once("Attack Mid", "Cmbt - Idle");
+                app.world_mut()
+                    .spawn((fighter, anim, Attacking::default()))
+                    .id()
+            } else {
+                app.world_mut().spawn((fighter, anim)).id()
+            };
+            strike(&mut app, id, 9);
+            let f = app.world().get::<Fighter>(id).unwrap();
+            assert!(f.down && f.health.yellow == 0.0, "{:?}", f.health);
+            assert!(app.world().get::<GoLimp>(id).is_some());
+            assert!(app.world().get::<Attacking>(id).is_none());
+            assert_eq!(shoves(&app).len(), 1);
+        }
     }
 }

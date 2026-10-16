@@ -668,6 +668,72 @@ pub(crate) mod tests {
         assert!((kept(least) - 0.265).abs() < 1e-3 && (kept(most) - 0.079).abs() < 1e-3);
     }
 
+    /// A hinge's range from its stored links alone (no angle limit exists):
+    /// the turns about the axis through its tightest link's point, 0.1°
+    /// apart and measured from the clip's zero turn, that keep every slack
+    /// link within its slack, signed so the joint bends positive; and how
+    /// far past its slack (cm) the most stretched link is at a turn.
+    fn hinge_range(links: &[exa_formats::rsq::BoneLink]) -> ((f32, f32), impl Fn(f32) -> f32) {
+        let tightest = links
+            .iter()
+            .min_by(|a, b| a.slack.total_cmp(&b.slack))
+            .unwrap();
+        let axis = Vec3::from_array(tightest.on_part).normalize();
+        let slack: Vec<_> = links.iter().filter(|l| l.slack > 1e-4).copied().collect();
+        let stretch = move |deg: f32| {
+            let turn = Quat::from_axis_angle(axis, deg.to_radians());
+            slack
+                .iter()
+                .map(|l| {
+                    let d = turn * Vec3::from_array(l.on_part) - Vec3::from_array(l.on_parent);
+                    (d.length() - l.slack) * 100.0
+                })
+                .fold(f32::MIN, f32::max)
+        };
+        let allowed: Vec<f32> = (-1800..=1800)
+            .map(|t| t as f32 * 0.1)
+            .filter(|&deg| stretch(deg) <= 0.01)
+            .collect();
+        let (lo, hi) = (allowed[0], allowed[allowed.len() - 1]);
+        // One stretch of turns, without gaps.
+        assert_eq!(allowed.len(), ((hi - lo) * 10.0).round() as usize + 1);
+        let sign = if hi.abs() >= lo.abs() { 1.0 } else { -1.0 };
+        let range = if sign > 0.0 { (lo, hi) } else { (-hi, -lo) };
+        (range, move |deg: f32| stretch(sign * deg))
+    }
+
+    /// The shipped elbows and knees are hinges bounded by their links
+    /// (skipped without the game): an elbow bends from straight to 120°
+    /// and not past straight, 10° beyond straight stretching its long link
+    /// 1.8 cm past its slack and 45° beyond it 7 cm, and a knee from 10° to
+    /// 130°, never quite straight.
+    #[test]
+    fn shipped_elbows_and_knees_bend_within_their_links() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let data = Arc::new(exa_assets::GameData::open(&dir).unwrap());
+        let motions = Motions::load(&exa_assets::Game(data)).expect("humanoid.rsq");
+        for bone in [13, 16] {
+            let ((lo, hi), stretch) = hinge_range(&motions.1[&bone].links);
+            assert!(
+                lo.abs() < 0.5 && (hi - 120.0).abs() < 0.5,
+                "elbow {bone}: {lo}..{hi}"
+            );
+            let past = stretch(lo - 10.0);
+            assert!((past - 1.8).abs() < 0.05, "elbow {bone}: {past} cm");
+            let far = stretch(lo - 45.0);
+            assert!((far - 7.0).abs() < 0.1, "elbow {bone}: {far} cm");
+        }
+        for bone in [3, 6] {
+            let ((lo, hi), _) = hinge_range(&motions.1[&bone].links);
+            assert!(
+                (lo - 10.0).abs() < 0.5 && (hi - 130.0).abs() < 0.5,
+                "knee {bone}: {lo}..{hi}"
+            );
+        }
+    }
+
     #[test]
     fn the_player_is_ticked_last() {
         let e = |i: u32| Entity::from_raw_u32(i).unwrap();
