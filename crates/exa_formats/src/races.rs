@@ -45,8 +45,9 @@ pub struct RaceBody {
     /// 0.5, skeleton 0.75). A moving body uses 0.7 walking and 1 running
     /// instead.
     pub stance: f32,
-    /// Scales how far the arms' muscle anchors relax toward the current
-    /// pose when the animation holds still (`0x7C`; human 1.0, skeleton 0.5).
+    /// Scales how far the link muscles' anchors relax toward the current
+    /// pose when the animation holds still, and the arms' relaxed stiffness
+    /// (`0x7C`; human 1.0, skeleton 0.5).
     pub arm_relaxation: f32,
     /// Limb damping ratio r (`0x80`): a living body's velocity retention is
     /// scaled by u² with u = (1 − b)(1 − r) + r and b its balance, so a

@@ -24,7 +24,7 @@ fn part(
         half,
         origin: Vec3::ZERO,
         links: vec![],
-        foot: false,
+        foot: None,
     }
 }
 
@@ -73,7 +73,7 @@ fn leg_and_hand() -> Ragdoll {
         (cm(8.32, 0.0, 0.0), cm(8.32, 0.21, 0.26), 0.0),
         (cm(0.0, -12.49, -2.08), cm(0.44, -2.31, -12.44), 0.12657),
     ];
-    setup[2].foot = true;
+    setup[2].foot = Some(cm(0.16, -48.97, 2.4));
     setup[3].origin = wrist;
     setup[3].links = vec![
         (cm(0.0, 0.0, 8.32), cm(-1.6, 2.74, 7.7), 0.08323),

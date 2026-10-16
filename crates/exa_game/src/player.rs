@@ -85,6 +85,16 @@ impl PlayerBody {
             held: 0.0,
         }
     }
+
+    /// The run blend: 0 walks, 1 runs.
+    pub fn run(&self) -> f32 {
+        self.run
+    }
+
+    /// What is left of the body's turn toward its heading (rad).
+    pub fn turn_left(&self) -> f32 {
+        turn_between(self.yaw, self.heading)
+    }
 }
 
 /// Moveset and idle used in combat mode with a one-handed weapon.

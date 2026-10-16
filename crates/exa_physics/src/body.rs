@@ -7,10 +7,12 @@
 //!
 //! A limp body (the dead, the knocked out) is only that: its joints are
 //! damped inside their range, and each part keeps its velocity by how fast
-//! it moves. A living body adds muscles: a [`Drive`] pulls every particle
-//! towards where the animated pose puts it, with damping, and compensates
-//! gravity by muscle tone. Blows shove parts and daze the body, which
-//! weakens its muscles until it recovers.
+//! it moves. A living body adds muscles ([`Drive`]): every slack link
+//! becomes a link muscle that turns its joint toward the animated angle
+//! (`muscle`), a pose drive pulls the pelvis, spine, head and feet towards
+//! where the animated pose puts them, and muscle tone compensates gravity.
+//! Blows shove parts and daze the body, which weakens its muscles until it
+//! recovers.
 //!
 //! Bodies tick in the fixed step, as one world in the original's order:
 //! every living body's character tick (its clip sampled and its targets
@@ -24,6 +26,10 @@ use bevy::prelude::*;
 
 use crate::Physics;
 use crate::contact::{CONTACT_SLOP, Level, LevelContact, rub, sphere_hit, swept_hit};
+
+#[path = "body_muscle.rs"]
+mod muscle;
+pub use muscle::{Bearing, RaceMuscles};
 
 /// Simulation rate of the body.
 pub const BODY_HZ: f32 = 83.0;
@@ -80,8 +86,6 @@ const LEG_LIMIT_STRENGTH: f32 = 0.2;
 const FALLEN_TONE: f32 = 0.5;
 /// Share of the gap to the animated pose closed per tick at full strength.
 const DRIVE: f32 = 0.084;
-/// The weaker drive of the hands.
-const HAND_DRIVE: f32 = 0.07;
 /// The pelvis carries the body: its drive is this much stronger.
 const SUPPORT: f32 = 2.0;
 /// Energy regained per tick after a daze, and its floor.
@@ -153,6 +157,20 @@ pub struct Part {
     /// The link (an index into [`Ragdoll::links`]) that limits the leg: a
     /// lower leg's and its femur's first with over 10 cm of slack.
     pub leg_limit: Option<usize>,
+    /// Where the part's origin sits in its parent's space (the model's
+    /// translation of the part): its animated joint is placed there.
+    origin: Vec3,
+    /// A lower leg's foot contact point, in its space.
+    foot: Option<Vec3>,
+    /// The part's link muscle factor: the share of the body's strength
+    /// its link muscles pull with.
+    pub factor: f32,
+    /// Saturation c of its link muscles' error, per cm: e/(1 + c|e|).
+    saturation: f32,
+    /// Anchor relaxation λ: how far its link muscles' anchors are drawn
+    /// toward where its points already are, and its cap.
+    pub relax: f32,
+    relax_cap: f32,
 }
 
 /// Barycentric weights of a point given in a part's space.
@@ -162,14 +180,16 @@ fn weights(part: &Part, local: Vec3) -> [f32; 4] {
 }
 
 impl Part {
-    fn new(
-        bone: usize,
-        entity: Entity,
-        parent: Option<usize>,
-        centre: Vec3,
-        half: Vec3,
-        world: Affine3A,
-    ) -> Self {
+    fn new(s: &PartSetup) -> Self {
+        let PartSetup {
+            bone,
+            entity,
+            parent,
+            centre,
+            half,
+            world,
+            ..
+        } = *s;
         let largest = half.max_element();
         let half = half.max(Vec3::splat(MIN_EXTENT.max(0.2 * largest)));
         let rest = TEMPLATE.map(|t| centre + t * half * TEMPLATE_SCALE);
@@ -221,6 +241,12 @@ impl Part {
             contacts: Vec::new(),
             strain: 0.0,
             leg_limit: None,
+            origin: s.origin,
+            foot: s.foot,
+            factor: muscle::PART_FACTOR,
+            saturation: muscle::SATURATION,
+            relax: 0.0,
+            relax_cap: muscle::RELAX_CAP,
         }
         .settle()
     }
@@ -250,6 +276,16 @@ impl Part {
 
     fn point(&self, w: &[f32; 4]) -> Vec3 {
         (0..4).map(|i| self.positions[i] * w[i]).sum()
+    }
+
+    /// The point with weights `w` where the tick began.
+    fn point_at_start(&self, w: &[f32; 4]) -> Vec3 {
+        (0..4).map(|i| self.start[i] * w[i]).sum()
+    }
+
+    /// The point with weights `w` in the part's own space.
+    fn rest_point(&self, w: &[f32; 4]) -> Vec3 {
+        (0..4).map(|i| self.rest[i] * w[i]).sum()
     }
 
     /// Moves each particle by `delta` times its weight in `w`, unclamped (a
@@ -437,11 +473,16 @@ pub struct GoLimp {
 pub struct Physical {
     /// Frames to wait first (a body spawned this frame is not posed yet).
     pub delay: u32,
+    /// The race's muscle factors.
+    pub race: RaceMuscles,
 }
 
 impl Default for Physical {
     fn default() -> Self {
-        Self { delay: 3 }
+        Self {
+            delay: 3,
+            race: RaceMuscles::HUMAN,
+        }
     }
 }
 
@@ -478,6 +519,15 @@ pub struct Link {
     shares: (f32, f32),
     /// The pivot at the part's origin, not one of the skeleton's links.
     pub origin: bool,
+    /// A living slack link's muscle: where the animated joint angle puts
+    /// the part's point, as weights on the parent's particles (none before
+    /// the body's first pose), and that point in the parent's space when
+    /// last sampled.
+    anchor: Option<[f32; 4]>,
+    kept: Option<Vec3>,
+    /// The part's point and the (relaxed) anchor where the tick began: the
+    /// muscle damps how the gap between them changes over the tick.
+    history: (Vec3, Vec3),
 }
 
 impl Link {
@@ -617,12 +667,22 @@ pub struct Drive {
     root: Option<Affine3A>,
     /// Muscle tone, 0..=1: drive strength and gravity compensation.
     pub tone: f32,
-    /// Daze: 1 when alert; blows lower it and it recovers over time. Muscle
-    /// strength follows its fourth power.
+    /// Daze: 1 when alert; blows lower it and it recovers over time. The
+    /// pose drive follows its fourth power, the link muscles its root.
     pub energy: f32,
     /// Standing: the controller carries the body and tone holds it up.
     /// A fallen body only holds its limbs relative to its pelvis.
     pub supported: bool,
+    /// The race's factors the muscles read.
+    pub race: RaceMuscles,
+    /// What the character tick knows of the body's character this tick.
+    pub bearing: Bearing,
+    /// Stance factor s: the share of its tone the body uses (T = tone·s).
+    stance: f32,
+    /// The arms' stiffness.
+    arm: f32,
+    /// Support S, 0..=1.
+    support: f32,
 }
 
 impl Default for Drive {
@@ -634,6 +694,11 @@ impl Default for Drive {
             tone: 1.0,
             energy: 1.0,
             supported: true,
+            race: RaceMuscles::HUMAN,
+            bearing: Bearing::default(),
+            stance: RaceMuscles::HUMAN.stance,
+            arm: 0.0,
+            support: 1.0,
         }
     }
 }
@@ -643,6 +708,28 @@ impl Drive {
     /// first aim, or after a fall or a get-up until the next).
     pub fn targets(&self) -> &[Affine3A] {
         &self.targets
+    }
+
+    /// The stance factor s: the race's standing, rising toward 0.7 walking
+    /// and 1 running.
+    pub fn stance(&self) -> f32 {
+        self.stance
+    }
+
+    /// The tone target T = tone·s, which scales the link muscles.
+    pub fn tone_target(&self) -> f32 {
+        self.tone * self.stance
+    }
+
+    /// Support S: until balance and feet are measured, 1 while the body
+    /// stands on a grounded controller, else 0.
+    pub fn support(&self) -> f32 {
+        self.support
+    }
+
+    /// The arms' stiffness (their link muscle factor is 1.25 times it).
+    pub fn arm_stiffness(&self) -> f32 {
+        self.arm
     }
 }
 
@@ -717,9 +804,9 @@ pub struct PartSetup {
     /// part, the parent's point (the same point turned into the parent's
     /// axes, measured from this part's origin), and the slack.
     pub links: Vec<(Vec3, Vec3, f32)>,
-    /// The part carries foot contacts (a lower leg): its long link limits
-    /// the leg.
-    pub foot: bool,
+    /// The part's foot contact point, in its space, when it carries one (a
+    /// lower leg): its long link limits the leg.
+    pub foot: Option<Vec3>,
 }
 
 impl Ragdoll {
@@ -728,12 +815,9 @@ impl Ragdoll {
     /// stored points plus the part's origin in the parent (no rotation: the
     /// stored point is already turned into the parent's axes), then a pivot
     /// from its origin to that place. A lower leg's long link and its
-    /// femur's limit the leg.
+    /// femur's limit the leg. Each part's link muscles get its factor.
     pub fn new(setup: &[PartSetup]) -> Self {
-        let mut parts: Vec<Part> = setup
-            .iter()
-            .map(|s| Part::new(s.bone, s.entity, s.parent, s.centre, s.half, s.world))
-            .collect();
+        let mut parts: Vec<Part> = setup.iter().map(Part::new).collect();
         let mut links = Vec::new();
         let mut links_of = Vec::with_capacity(setup.len());
         for (i, s) in setup.iter().enumerate() {
@@ -759,6 +843,9 @@ impl Ragdoll {
                         length: 0.0,
                         shares,
                         origin,
+                        anchor: None,
+                        kept: None,
+                        history: (Vec3::ZERO, Vec3::ZERO),
                     });
                 }
             }
@@ -780,7 +867,7 @@ impl Ragdoll {
                 .find(|&k| !links[k].origin && links[k].slack > LEG_LIMIT_SLACK)
         };
         for (i, s) in setup.iter().enumerate() {
-            if !s.foot {
+            if s.foot.is_none() {
                 continue;
             }
             if let Some(k) = long(&links, &links_of[i]) {
@@ -791,6 +878,7 @@ impl Ragdoll {
                 parts[j].leg_limit = long(&links, &links_of[j]);
             }
         }
+        muscle::set_part_factors(&mut parts);
         let (outward, inward) = tree_orders(&parts);
         Self {
             parts,
@@ -810,6 +898,23 @@ impl Ragdoll {
         self.drive = Some(Drive::default());
         self.wake();
         self
+    }
+
+    /// Gives a living body its race's muscle factors.
+    pub fn with_race(mut self, race: RaceMuscles) -> Self {
+        if let Some(d) = self.drive.as_mut() {
+            d.race = race;
+            d.stance = race.stance;
+        }
+        self
+    }
+
+    /// Tells a living body what its character does this tick (before it is
+    /// aimed).
+    pub fn set_bearing(&mut self, bearing: Bearing) {
+        if let Some(d) = self.drive.as_mut() {
+            d.bearing = bearing;
+        }
     }
 
     /// Takes the body's muscles: it becomes a plain ragdoll, solved from
@@ -887,6 +992,7 @@ impl Ragdoll {
             drive.targets = targets;
             drive.targets.clone()
         };
+        self.tune_muscles();
     }
 
     /// Keeps last tick's pose, carried with the root, when this tick has
@@ -896,6 +1002,7 @@ impl Ragdoll {
         if let Some(d) = self.drive.as_mut() {
             d.before.clone_from(&d.targets);
         }
+        self.tune_muscles();
     }
 
     /// Carries a standing body with its root's motion since the last aim:
@@ -1025,9 +1132,13 @@ impl Ragdoll {
         solve(&mut [self], level);
     }
 
-    /// The integration step: inertia and gravity, then the muscles' pull.
+    /// The integration step: inertia and gravity, then the pose drive's
+    /// pull; a living body's link muscles remember where the tick began.
     fn step(&mut self) {
         self.integrate();
+        if self.drive.is_some() {
+            self.remember_anchors();
+        }
         if let Some(drive) = self.drive.as_mut() {
             drive_parts(&mut self.parts, drive);
         }
@@ -1104,25 +1215,29 @@ impl Ragdoll {
     /// One constraint iteration over the body tree. A living body is solved
     /// children first, from its hands and feet in to its pelvis; a limp one
     /// parents first, from the pelvis out. Each part takes its links to its
-    /// parent, then its stored level contacts, then its edges. A link's
+    /// parent, then its stored level contacts, then its edges. In a living
+    /// body each slack link with an anchor is also a link muscle. A link's
     /// correction is shared by the two parts' mobilities and spread over
     /// each part's particles by the point's weights, so the parts' momenta
     /// change by equal and opposite amounts.
     fn iterate(&mut self) {
-        let living = self.drive.is_some();
+        let gains = self.drive.as_ref().map(Drive::muscle_gains);
         for k in 0..self.parts.len() {
-            let i = if living {
+            let i = if gains.is_some() {
                 self.inward[k]
             } else {
                 self.outward[k]
             };
             for l in &mut self.links[self.links_of[i].clone()] {
-                let a = self.parts[l.part].point(&l.on_part);
-                let b = self.parts[l.parent].point(&l.on_parent);
-                let correction = if living {
-                    l.living(b - a)
-                } else {
-                    l.limp(b - a)
+                let (part, parent) = (&self.parts[l.part], &self.parts[l.parent]);
+                let a = part.point(&l.on_part);
+                let b = parent.point(&l.on_parent);
+                let correction = match (gains, l.anchor) {
+                    (Some(gains), Some(anchor)) if l.slack > PIVOT_SLACK => {
+                        l.muscle(part, parent, anchor, gains)
+                    }
+                    (Some(_), _) => l.living(b - a),
+                    (None, _) => l.limp(b - a),
                 };
                 let Some(c) = correction.filter(|c| c.is_finite()) else {
                     continue;
@@ -1333,8 +1448,10 @@ impl Bulk {
     }
 }
 
-/// Pulls every particle towards its place in the animated pose, damping its
+/// The pose drive: pulls the particles of the pelvis, the feet, the spine
+/// and the head towards their places in the animated pose, damping their
 /// velocity relative to the pose's own motion (a PD muscle per particle).
+/// The other parts are turned by their link muscles alone.
 fn drive_parts(parts: &mut [Part], drive: &mut Drive) {
     if drive.targets.len() != parts.len() || drive.before.len() != parts.len() {
         return;
@@ -1359,10 +1476,11 @@ fn drive_parts(parts: &mut [Part], drive: &mut Drive) {
     for (i, p) in parts.iter().enumerate() {
         let base = match p.bone {
             1 if drive.supported => DRIVE * SUPPORT,
-            // A fallen body's pelvis is where the pose is measured from.
-            1 => 0.0,
-            17 | 18 => HAND_DRIVE,
-            _ => DRIVE,
+            // Feet, lumbar, thorax and head.
+            4 | 7..=10 => DRIVE,
+            // A fallen body's pelvis is where the pose is measured from;
+            // thighs, shins, arms and hands follow their link muscles only.
+            _ => 0.0,
         };
         let gain = (base * strength).min(1.0);
         let damping = (2.0 * gain.sqrt()).min(1.0);
@@ -1564,7 +1682,7 @@ mod tests {
                 half: Vec3::splat(0.1),
                 origin: Vec3::ZERO,
                 links: vec![],
-                foot: false,
+                foot: None,
             },
             // Pinned at its middle, 40 cm under the parent's; its top meets
             // the parent's bottom.
@@ -1577,7 +1695,7 @@ mod tests {
                 half: Vec3::new(0.05, 0.2, 0.05),
                 origin: Vec3::new(0.0, -0.4, 0.0),
                 links: vec![(Vec3::new(0.0, 0.2, 0.0), Vec3::new(0.0, 0.2, 0.0), slack)],
-                foot: false,
+                foot: None,
             },
         ])
     }
@@ -1703,7 +1821,7 @@ mod tests {
                 half: Vec3::splat(0.06),
                 origin: Vec3::ZERO,
                 links: vec![],
-                foot: false,
+                foot: None,
             }]);
             if living {
                 body = body.with_drive();

@@ -13,9 +13,13 @@ drawn between their last two ticks (`body::BodyPlugin`). Every part is
 pinned at its origin to its parent, and the skeleton's links bound each
 joint's range (`body::Ragdoll::new`); a limp body's links also damp each
 joint inside its range through their smoothed lengths, reset when the
-body goes limp (`body::Ragdoll::go_limp`). Velocity retention is the
-original's default environment: banded by speed for limp parts, the fast
-value for living limbs.
+body goes limp (`body::Ragdoll::go_limp`). In a living body every slack
+link is a link muscle that turns its joint toward the clip's angle, with
+the gains the character tick sets from what the character does
+(`body::Bearing`) and its race (`body::RaceMuscles`); a pose drive holds
+the pelvis, spine, head and feet (`src/body_muscle.rs`, `body::Drive`).
+Velocity retention is the original's default environment: banded by speed
+for limp parts, the fast value for living limbs.
 
 ## Scope
 

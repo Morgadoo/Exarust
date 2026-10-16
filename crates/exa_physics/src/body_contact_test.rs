@@ -1,6 +1,6 @@
 //! Level contacts of the physical body: static and swept detection,
 //! one-sided faces, stored contacts inside the iterations, friction, rest.
-use super::floor_test::{app, floor, humanoid, lowest};
+use super::floor_test::{app, floor, hinged, humanoid, lowest};
 use super::*;
 
 /// A limp ball of radius 6 cm with its centre at `at`.
@@ -14,7 +14,7 @@ fn ball(at: Vec3) -> Ragdoll {
         half: Vec3::splat(0.06),
         origin: Vec3::ZERO,
         links: vec![],
-        foot: false,
+        foot: None,
     }])
 }
 
@@ -104,7 +104,7 @@ fn stored_contacts_hold_a_limb_dragged_by_its_links() {
             half: Vec3::splat(0.1),
             origin: Vec3::ZERO,
             links: vec![],
-            foot: false,
+            foot: None,
         },
         PartSetup {
             bone: 3,
@@ -117,7 +117,7 @@ fn stored_contacts_hold_a_limb_dragged_by_its_links() {
             half: Vec3::new(0.2, 0.05, 0.05),
             origin: Vec3::new(-0.2, -0.39, 0.0),
             links: vec![(Vec3::new(0.2, 0.05, 0.0), Vec3::new(0.2, 0.05, 0.0), 0.0)],
-            foot: false,
+            foot: None,
         },
     ]);
     for _ in 0..200 {
@@ -149,7 +149,7 @@ fn stored_contacts_hold_a_limb_dragged_by_its_links() {
 fn a_limp_body_rests_on_the_floor_and_sleeps() {
     let at = Vec3::new(81.0, 0.0, 39.2);
     let mut app = app(floor(at), 1.0 / BODY_HZ);
-    let (setup, _) = humanoid(at + Vec3::Y * 0.3);
+    let (setup, _) = hinged(at + Vec3::Y * 0.3);
     let body = app.world_mut().spawn(Ragdoll::new(&setup)).id();
     for _ in 0..(3 * 83) {
         app.update();
@@ -412,7 +412,7 @@ fn conflicting_links_do_not_propel_a_limp_body() {
             half: Vec3::splat(0.1),
             origin: Vec3::ZERO,
             links: vec![],
-            foot: false,
+            foot: None,
         },
         PartSetup {
             bone: 3,
@@ -429,7 +429,7 @@ fn conflicting_links_do_not_propel_a_limp_body() {
                 (Vec3::new(-0.15, 0.0, 0.0), Vec3::new(-0.15, 0.0, 0.0), 0.0),
                 (Vec3::new(-0.15, 0.0, 0.1), Vec3::new(-0.25, 0.0, 0.1), 0.0),
             ],
-            foot: false,
+            foot: None,
         },
     ]);
     for _ in 0..83 {

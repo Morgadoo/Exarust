@@ -236,8 +236,15 @@ velocity retention is the original's default environment (0.426 / 0.25 /
 0.05 per second, banded by each limp part's speed; living limbs keep the
 fast value). Its weaker resting damping leaves some corpses jittering at a
 few cm/s, above Exarust's 1 cm/s sleep rule, until the original's sleep
-countdown (S1) lands. Still to do: the sleep countdown, link PD muscles,
-recovery steps, foot planting, collisions between bodies.
+countdown (S1) lands. Done (change `add-link-muscles`, C5): every slack
+link is a link muscle that turns its joint toward the clip's angle (damped
+by the joint's own motion, saturated, relaxed toward a held pose), with the
+gains the original's character tick sets: the race's stance factor rising
+with the gait, part factors, arm stiffness states and the leg limit's
+blend; the pose drive is left only on the pelvis, spine, head and feet
+([formats/RSQ.md](formats/RSQ.md)). Still to do: the sleep countdown,
+balance and support, the original's pose drive and lift, recovery steps,
+foot planting, clip blending, collisions between bodies.
 
 This phase carries the most risk and defines how the game feels.
 
@@ -389,8 +396,9 @@ holds the runtime and the documentation of formats and behaviour.
 [`COMPONENT-MAP.md`](COMPONENT-MAP.md) sets every component of the original
 against Exarust and lists the largest missing ones. In order:
 
-1. Link PD muscles, recovery steps, foot planting and collisions between
-   bodies (Phase 3).
+1. Balance and support, the original's pose drive and lift, recovery
+   steps, foot planting, clip blending and collisions between bodies
+   (Phase 3).
 2. Inventory, equipment and containers, then blocking and parrying
    (Phase 4).
 3. The original's NPC brain: perception, targets and the combat state that

@@ -226,10 +226,13 @@ fn row(
             * CM
     }));
     row.value(Some(root_world.translation.y * CM));
-    row.empty(3);
+    // The lift servo's target is not simulated yet.
+    row.empty(1);
+    row.value(drive.map(|d| d.stance()));
+    row.value(drive.map(|d| d.tone_target()));
     row.value(drive.map(|d| d.tone));
     row.value(drive.map(|d| d.energy));
-    row.empty(1);
+    row.value(drive.map(|d| d.support()));
     row.value(balance.map(|b| b.value));
     row.value(balance.map(Balance::counter));
     let targets = drive.map_or(&[][..], |d| d.targets());
@@ -268,8 +271,10 @@ mod tests {
 
     /// The trace has a row per tick for the body, with the header's
     /// columns: its clip clock advancing by a tick's worth of frames, its
-    /// tone, its targets in cm (the pelvis's at the clip root's height above
-    /// the body root), and empty columns for what is not simulated yet.
+    /// tone, stance factor, tone target and support (a standing human: 1,
+    /// 0.5, 0.5 and 1), its targets in cm (the pelvis's at the clip root's
+    /// height above the body root), and empty columns for what is not
+    /// simulated yet.
     #[test]
     fn the_trace_has_a_row_per_tick() {
         let path = std::env::temp_dir().join(format!("exarust-trace-{}.csv", std::process::id()));
@@ -301,10 +306,13 @@ mod tests {
             assert!((number(row, "clock") - clock).abs() < 1e-3);
             assert_eq!(row[at("motion")], "0");
             assert_eq!(number(row, "tone"), 1.0);
+            assert_eq!(number(row, "stance"), 0.5);
+            assert_eq!(number(row, "tone_target"), 0.5);
+            assert_eq!(number(row, "support"), 1.0);
             assert!(number(row, "pelvis_p3_z").is_finite());
             let lifted = number(row, "frame_height") + number(row, "root_clip_height");
             assert!((number(row, "target1_y") - lifted).abs() < 1e-2);
-            assert!(row[at("target3_x")].is_empty() && row[at("support")].is_empty());
+            assert!(row[at("target3_x")].is_empty() && row[at("target_pelvis_height")].is_empty());
         }
     }
 }

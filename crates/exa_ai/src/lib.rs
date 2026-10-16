@@ -26,7 +26,11 @@ pub struct Duellist {
     pub next_strike: usize,
 }
 
-const STRIKE_RANGE: f32 = 1.5;
+/// The duellist strikes from this far (m, between the characters). It is
+/// Exarust's stand-in for the original's reach: the arm follows its clip
+/// through link muscles, which damp its swing (about 10–15 cm less reach
+/// than the clip's pose), and the strike lands only from this close.
+const STRIKE_RANGE: f32 = 1.2;
 const APPROACH_SPEED: f32 = 1.2;
 const STRIKE_INTERVAL: f32 = 2.2;
 const STRIKES: [&str; 3] = ["Attack Mid", "Attack Up", "Attack Down"];

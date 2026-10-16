@@ -91,9 +91,8 @@ How the original simulates a body (`exa_physics::body`):
   its level contacts from the last tick, then restores its edges.
   - Living: a pivot (slack ≤ 0.01 cm) closes d/(1 + 0.001|d|) of its gap d
     (cm), in full however far apart (past 80 cm it is reported); a slack
-    link takes back its excess beyond the slack at full weight, cut to
-    80 cm. The link muscles that also pull each slack link toward the
-    animated angle are not reproduced yet.
+    link is a link muscle (below), plus its excess beyond the slack at full
+    weight; the sum is cut to 80 cm.
   - Limp: a pivot (slack ≤ 1.19e-7 cm) closes strength/(1 + 0.001|d|²) of
     its gap. A slack link damps its length inside the slack through a
     smoothed length L: unless |d| is within 1.19e-7 cm of L, L ← s·L +
@@ -112,9 +111,10 @@ How the original simulates a body (`exa_physics::body`):
     placement routine and one power), so a fresh ragdoll neither jolts nor
     springs back. The living iteration never uses L.
   - Each link keeps a strength: 1, except a lower leg's first link with
-    over 10 cm of slack (the leg limit), 0.2 while the body lives and 1
-    again once it goes limp, as the original's death sets it. The femur's
-    first such link is its leg limit. Each link also keeps the original's
+    over 10 cm of slack (the leg limit): 0.2 when a living body is built,
+    then following its gait (below), and 1 again once it goes limp, as the
+    original's death sets it. The femur's first such link is its leg limit.
+    Each link also keeps the original's
     smoothing (1 − (r² − 25)·0.001)², at most 0.99 and 0 within √0.1 cm, r
     its point's distance from the part's origin in cm: the shipped slack
     links take 0.640 (the humerus's point 15 cm out) to 0.914.
@@ -148,20 +148,69 @@ How the original simulates a body (`exa_physics::body`):
 - Dead characters (condition `0xA00`) are plain ragdolls without muscles.
 - Living bodies have muscles:
   - Gravity is compensated by muscle tone.
-  - A pose drive pulls each particle toward its rest vertex under the part's
-    animated transform. The gain is 0.084 per tick (0.07 on the hands),
-    scaled by tone² and by energy⁴.
+  - **Link muscles** turn every joint (`exa_physics`, `body_muscle.rs`). Each
+    slack link (slack over 0.01 cm) pulls its point on the part toward its
+    anchor: where the clip's joint angle puts that point, given where the
+    parent actually is. The anchor is the point under the part's animated
+    turn relative to its parent's, placed at the part's origin (the model's
+    translation), kept as weights on the parent and read on its current
+    particles. In each of the 20 iterations, in cm:
+    1. the anchor is drawn toward the point by the part's relaxation λ;
+       e = anchor − point;
+    2. e += (how the gap changed since the tick began) × D·k/(0.5|e|² +
+       1.4), × 0.6 on the pelvis and legs (bones under 8). D = (E − 0.5)²,
+       0 below E = 0.5; k = 50 while the body moves, else 40 / the race's
+       stance factor (80 for a human). Idle that is a gain of 14.3 (8.6 on
+       the legs), walking 8.9. Under 1.19e-7 cm² the link does nothing;
+    3. saturated e/(1 + c|e|), c = 0.1 per cm;
+    4. times σ = link strength × part factor × √E·T, plus the excess
+       beyond the slack at full weight, cut to 80 cm, shared by the parts'
+       mobilities.
+    The damping acts on the joint's own motion, not the clip's, so a joint
+    lags a fast clip: an elbow swung 40° in 10 ticks is 18° behind when
+    the swing ends and within 3° twenty ticks later.
+  - **Gains**, set every tick by the character tick:
+    - Stance factor s: the race's standing (human 0.5); while moving it
+      rises 0.01 a tick toward 0.7 + 0.3·run and keeps what it reached.
+      T = tone·s, so an idle human pulls at √E·0.5.
+    - Part factors: 0.5; a foot half its lower leg's (0.25); the head a
+      quarter of the thorax's (0.125); a thigh 0.2 × 1.25 standing and 0.2
+      moving; the shoulders, arms and hands 1.25 × the arm stiffness.
+    - Arm stiffness (both arms): 0.5 off balance (falling, lying, getting
+      up); 0.2 at tone under 0.85 or in the walk and run cycles; otherwise
+      x ← 0.8x + 0.08·(0.5 + 0.5·race arm relaxation), 0.4 for a human; at
+      least 0.4 × the turn left (rad), at most 0.4. An idle arm pulls at
+      σ = 0.25, walking 0.175, off balance 0.31. The original's attack,
+      parry, recoil and power states are not reproduced: attacks use the
+      relaxed value.
+    - A leg limit link's strength moves a tenth of the way each tick to
+      0.5·S² standing or 0.4 moving (0.2 → 0.5 standing).
+    - Relaxation λ of a part with link muscles: toward 0.6 − 32|Δa|² (cm²,
+      the most one of its anchors moved since the last tick) × the race's
+      arm relaxation, capped (an arm part at 0.6 − (x − 0.1)·0.8, others at
+      1); it rises 0.015 a tick, falls to the target at once and stays when
+      the target is negative. A held pose is followed softly (an idle arm's
+      λ settles at 0.36). A supported lower leg and its thigh instead take
+      clamp(0.6 − 0.001·| |hip − foot contact|² − (2r)² |, 0, 0.2), r the
+      contact's distance from the knee, rising 0.01: about 0 for a standing
+      human.
+    - Support S: until balance and the feet are measured (C6 of the body
+      plan), 1 while the body has not fallen and its controller stands on
+      the ground (a body without a controller counts as grounded), else 0.
+  - A **pose drive** pulls the particles of the pelvis, lumbar, thorax,
+    head and feet toward their rest vertices under the part's animated
+    transform: 0.084 per tick, scaled by tone² and by energy⁴. Thighs,
+    shins, arms and hands have none, as in the original.
   - Energy is the daze level. A blow takes up to 90 % of it, with a floor
     of 0.05. It recovers 0.005 per tick.
-  - The original also runs a PD muscle per slack link toward the animated
-    anchor, balance with recovery steps, foot planting, and hidden support
-    forces on the pelvis and thorax pins.
+  - The original also runs balance with recovery steps, foot planting, a
+    lift servo and hidden support forces on the pelvis and thorax pins.
   - Several of these read the character's race record in `races.rdb`: the
-    stance factor (a standing human uses half its tone, and its joint
-    muscles are damped with k = 40 / 0.5), the support-pin factor, the
-    balance bonus, the arms' relaxation, the limb damping ratio and the
-    gait table ([OTHER.md](OTHER.md), Races). Exarust decodes them
-    (`exa_formats::races::RaceBody`) but does not use them yet.
+    stance factor, the support-pin factor, the balance bonus, the arms'
+    relaxation, the limb damping ratio and the gait table
+    ([OTHER.md](OTHER.md), Races). Exarust decodes them
+    (`exa_formats::races::RaceBody`); the muscles use the stance factor and
+    the arm relaxation (Skeleton 0.75 and 0.5).
 
 How a tick runs. The original steps every body of the world in one 83 Hz
 tick, in this order:
@@ -188,8 +237,8 @@ between where the tick before last and the last tick left them. Exarust
 keeps the clip clock at 60 frames a second until the original's rates are
 pinned. Balance still runs once a frame, over the ticks that frame ran.
 
-Exarust's muscles (`exa_physics::body::Drive`) are a pose drive with
-critical damping relative to the pose's own motion:
+Exarust's pose drive (`exa_physics::body::Drive`) has critical damping
+relative to the pose's own motion, not the original's law yet:
 
 - The pelvis drive is 2× stronger and stands in for the support forces.
 - The body is carried rigidly with its root's (its character controller's)
@@ -225,7 +274,9 @@ critical damping relative to the pose's own motion:
   - The controller is first turned and moved so that clip's first pose lies
     on the body.
   - While getting up, balance rises by 0.05 per tick.
-- Link PD muscles, recovery steps and foot planting are not reproduced yet.
+- Recovery steps, foot planting and the lift servo are not reproduced yet.
+- The duellist's strike range is Exarust's own (1.2 m): link-muscle arms
+  reach 10–15 cm less far than the clip's pose.
 
 Per-tick trace. `exarust --trace <file.csv>` writes one row per traced body
 after every tick. It traces the player's body, or every simulated body when
@@ -241,9 +292,9 @@ is left empty.
 | `pelvis_height` | the pelvis part's origin height |
 | `root_clip_height` | the clip root's height over the body root (the pelvis's clip pose) |
 | `frame_height` | the height of the frame the targets are placed in: the original's sits at the pelvis height, Exarust's body root at the feet |
-| `target_pelvis_height`, `stance`, `tone_target` | the lift servo's target, the stance factor, the tone target (empty) |
+| `target_pelvis_height`, `stance`, `tone_target` | the lift servo's target (empty), the stance factor s, the tone target T = tone·s |
 | `tone`, `energy` | muscle tone and energy (daze) |
-| `support` | support S, grounded × balance (empty) |
+| `support` | support S (until balance is measured: 1 standing on a grounded controller, 0 fallen) |
 | `balance`, `balance_counter` | balance and its instability counter |
 | `target{1..18}_{x,y,z,qx,qy,qz,qw}` | each part's animated world transform this tick: place and rotation |
 | `foot_{r,l}_flags`, `foot_{r,l}_anchor_{x,y,z}` | foot contacts (empty) |

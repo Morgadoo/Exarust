@@ -75,8 +75,24 @@ pub(super) fn lowest(body: &Ragdoll) -> (f32, usize) {
 }
 
 /// A small standing humanoid (pelvis, thighs, shins, torso, arms) with
-/// its feet at `at`; returns its parts and their standing world pose.
+/// its feet at `at`, every joint a hinge about its lateral axis turned by a
+/// link muscle; returns its parts and their standing world pose.
 pub(super) fn humanoid(at: Vec3) -> (Vec<PartSetup>, Vec<Affine3A>) {
+    let (mut setup, pose) = hinged(at);
+    for s in &mut setup {
+        if s.parent.is_some() {
+            // 12 cm along the part, with as much slack (about 60° of swing).
+            let along = s.centre.normalize_or(Vec3::NEG_Y) * 0.12;
+            s.links[1] = (along, along, 0.12);
+        }
+    }
+    (setup, pose)
+}
+
+/// The same humanoid with every joint a hinge and nothing more: limp, it
+/// has no joint left free to swing (a limp joint is not damped inside its
+/// slack yet).
+pub(super) fn hinged(at: Vec3) -> (Vec<PartSetup>, Vec<Affine3A>) {
     // bone, parent, centre (relative to the feet), half extents, joint
     let parts = [
         (
@@ -163,7 +179,7 @@ pub(super) fn humanoid(at: Vec3) -> (Vec<PartSetup>, Vec<Affine3A>) {
                     .map(|x| (Vec3::X * x, Vec3::X * x, 0.0))
                     .to_vec()
             }),
-            foot: false,
+            foot: None,
         })
         .collect();
     (setup, pose)
@@ -242,7 +258,7 @@ fn a_sphere_crossing_the_floor_in_one_tick_is_pushed_back_up() {
         half: Vec3::splat(0.06),
         origin: Vec3::ZERO,
         links: vec![],
-        foot: false,
+        foot: None,
     };
     let mut ragdoll = Ragdoll::new(&[ball]);
     ragdoll.set_velocity(Vec3::NEG_Y * 9.0);
@@ -277,7 +293,7 @@ fn a_centre_behind_a_face_is_not_pushed() {
         half: Vec3::splat(0.06),
         origin: Vec3::ZERO,
         links: vec![],
-        foot: false,
+        foot: None,
     };
     let body = app.world_mut().spawn(Ragdoll::new(&[ball])).id();
     for _ in 0..40 {
@@ -438,8 +454,9 @@ fn a_fallen_bodys_muscles_neither_push_nor_turn_it() {
 }
 
 /// A fallen body lying on its back whose pose kicks its legs and swings its
-/// arms, as the fall and unconscious clips do, stays where it lies: with the
-/// muscles' net turn left in, it rolled and crawled 1–2 m in six seconds.
+/// arms, as the fall and unconscious clips do, kicks them with its link
+/// muscles and stays where it lies: with the pose drive's net turn left in,
+/// it rolled and crawled 1–2 m in six seconds.
 #[test]
 fn a_fallen_body_kicking_its_legs_stays_where_it_lies() {
     let at = Vec3::new(20.0, 0.0, -10.0);
@@ -487,14 +504,24 @@ fn a_fallen_body_kicking_its_legs_stays_where_it_lies() {
         .id();
     let start = app.world().get::<Ragdoll>(body).unwrap().centre_of_mass().0;
     let mut furthest = 0.0f32;
+    // The right hip's angle (its thigh in the pelvis, about the lateral
+    // axis): the link muscles kick the legs.
+    let (mut low, mut high) = (f32::MAX, f32::MIN);
     // Six seconds.
     for _ in 0..250 {
         app.update();
-        let centre = app.world().get::<Ragdoll>(body).unwrap().centre_of_mass().0;
+        let ragdoll = app.world().get::<Ragdoll>(body).unwrap();
+        let centre = ragdoll.centre_of_mass().0;
         furthest = furthest.max((centre - start).xz().length());
+        let pelvis = ragdoll.part_of(1).unwrap().transform();
+        let thigh = ragdoll.part_of(2).unwrap().transform();
+        let down = pelvis.matrix3.inverse() * (thigh.matrix3 * Vec3::NEG_Y);
+        let hip = down.z.atan2(-down.y).to_degrees();
+        (low, high) = (low.min(hip), high.max(hip));
     }
     assert!(
         furthest < 0.3,
         "the kicking body travelled {furthest:.2} m from where it lay"
     );
+    assert!(high - low > 20.0, "the legs kicked only {:.1}°", high - low);
 }

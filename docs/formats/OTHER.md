@@ -34,7 +34,7 @@ entry. Layout:
 | `+0x64`–`+0x70` | floats, not decoded |
 | `+0x74` | balance bonus (1.0 in every record): the balance score gains 0.05 × it, and the recovery-step reach grows by (1 + it); the original sets 1.5 or 2.0 instead for some creature types |
 | `+0x78` | stance factor: the share of muscle tone a standing body uses (tone target = tone × it) and the divisor of the standing joint-muscle damping, k = 40 / it (human 0.5; skeleton, fael and ghouls 0.75; golems and the harvester 1.0) |
-| `+0x7C` | arm relaxation: scales how far the arms' muscle anchors may relax toward the current pose (human 1.0, skeleton 0.5) |
+| `+0x7C` | arm relaxation: scales how far every part's link-muscle anchors may relax toward the current pose while the clip holds still, and the arms' relaxed stiffness, 0.4·(0.5 + 0.5·it) (human 1.0, skeleton 0.5) |
 | `+0x80` | limb damping ratio r: a living body's velocity retention is scaled by u², u = (1 − balance)(1 − r) + r (1.0 for most races, so no extra damping; golems 0.95, the golem suit 0.97) |
 | `+0x84`–`+0x90` | floats, not decoded |
 | `+0x94` | gait table: 4 rows (walk, jog, sprint, backpedal) × 5 floats, see below |

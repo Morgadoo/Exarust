@@ -6,6 +6,7 @@ use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 use exa_assets::{ColorSpace, Game, ModelCache, ModelLoader, PackKind, model};
+use exa_physics::body::RaceMuscles;
 
 use crate::{Options, View};
 
@@ -151,9 +152,12 @@ fn setup(
                     commands.entity(root).insert(exa_character::WearsUnderwear);
                 }
                 if options.race.is_none_or(human_frame) {
-                    commands
-                        .entity(root)
-                        .insert(exa_physics::body::Physical::default());
+                    commands.entity(root).insert(exa_physics::body::Physical {
+                        race: race
+                            .as_ref()
+                            .map_or(RaceMuscles::HUMAN, |r| race_muscles(&r.body)),
+                        ..default()
+                    });
                 }
                 if let Some(w) = &options.weapon {
                     commands
@@ -868,6 +872,14 @@ fn human_frame(race: u8) -> bool {
     race <= 2
 }
 
+/// The factors a race gives its bodies' muscles.
+fn race_muscles(body: &exa_formats::races::RaceBody) -> RaceMuscles {
+    RaceMuscles {
+        stance: body.stance,
+        arm_relaxation: body.arm_relaxation,
+    }
+}
+
 /// Spawns a level's placed characters in their race's bodies, standing (or
 /// lying, for the dead) where the level puts them, those of human frame
 /// dressed in their own items. Returns how many were spawned and how many
@@ -910,9 +922,11 @@ fn spawn_placed_characters(
                 .entity(model)
                 .insert(exa_physics::body::GoLimp::default());
         } else if physical {
-            commands
-                .entity(model)
-                .insert(exa_physics::body::Physical::default());
+            let body = exa_formats::races::body_of_character(races, c.race);
+            commands.entity(model).insert(exa_physics::body::Physical {
+                race: race_muscles(&body),
+                ..default()
+            });
         }
         commands.entity(model).insert((
             Transform::from_rotation(Quat::from_rotation_y(c.yaw)),

@@ -17,7 +17,8 @@ use exa_assets::SkinnedPart;
 use exa_formats::rsq::BoneBody;
 use exa_physics::CharacterBody;
 use exa_physics::body::{
-    BODY_HZ, CharacterTicks, GoLimp, PartSetup, Physical, Ragdoll, world_with,
+    BODY_HZ, Bearing, CharacterTicks, Fallen, GoLimp, PartSetup, Physical, RaceMuscles, Ragdoll,
+    world_with,
 };
 
 use crate::player::PlayerBody;
@@ -53,6 +54,7 @@ fn build_bodies(
 ) {
     let Some(motions) = motions else { return };
     for (root, physical, limp) in &mut requests {
+        let race = physical.as_ref().map_or(RaceMuscles::HUMAN, |p| p.race);
         // Wait until the body has been placed and posed.
         let delay = match (physical, limp) {
             (_, Some(l)) => &mut l.into_inner().delay,
@@ -102,15 +104,18 @@ fn build_bodies(
         // body's ticks advance and sample its clips.
         commands
             .entity(root)
-            .insert((Ragdoll::new(&setup).with_drive(), TickedClips))
+            .insert((
+                Ragdoll::new(&setup).with_drive().with_race(race),
+                TickedClips,
+            ))
             .remove::<Physical>();
     }
 }
 
 /// What building a part's body needs: its links to its parent as the
 /// skeleton stores them (the parent's points still measured from the part's
-/// origin, which `origin` places in the parent), and whether it carries foot
-/// contacts.
+/// origin, which `origin` places in the parent), and its foot contact point
+/// if it carries one.
 pub(crate) fn part_setup(
     bone: usize,
     entity: Entity,
@@ -143,7 +148,9 @@ pub(crate) fn part_setup(
         half,
         origin,
         links,
-        foot: body.is_some_and(|b| !b.contacts.is_empty()),
+        foot: body
+            .and_then(|b| b.contacts.first())
+            .map(|&c| Vec3::from_array(c)),
     }
 }
 
@@ -173,7 +180,8 @@ fn go_limp(
 /// The character tick of every living physical body, the player's last:
 /// its clip clock advances by one tick, its clip is sampled, and its
 /// targets are set to the body root's world transform times the clip's pose
-/// (the body is carried with the root's motion since the last tick).
+/// (the body is carried with the root's motion since the last tick). The
+/// body learns what its character does ([`Bearing`]) first.
 #[allow(clippy::type_complexity)]
 fn tick_characters(
     motions: Option<Res<Motions>>,
@@ -183,25 +191,35 @@ fn tick_characters(
             &mut Ragdoll,
             &mut Animator,
             Option<&Stature>,
-            Has<PlayerBody>,
+            Option<&PlayerBody>,
+            Has<Fallen>,
         ),
         With<TickedClips>,
     >,
     parents: Query<&ChildOf>,
     nodes: Query<(&Transform, Option<&BodyPart>)>,
+    controllers: Query<&CharacterBody>,
     mut order: Local<Vec<(bool, Entity)>>,
 ) {
     let Some(motions) = motions else { return };
     order.clear();
-    order.extend(bodies.iter().map(|(e, .., player)| (player, e)));
+    order.extend(
+        bodies
+            .iter()
+            .map(|(e, _, _, _, player, _)| (player.is_some(), e)),
+    );
     player_last(&mut order);
     for &(_, root) in order.iter() {
-        let Ok((_, mut body, mut anim, stature, _)) = bodies.get_mut(root) else {
+        let Ok((_, mut body, mut anim, stature, player, fallen)) = bodies.get_mut(root) else {
             continue;
         };
         if body.drive.is_none() {
             continue;
         }
+        let controller = parents
+            .iter_ancestors(root)
+            .find_map(|a| controllers.get(a).ok());
+        body.set_bearing(bearing(controller, player, &anim, fallen));
         let pose = clip_tick(&motions, &mut anim, stature.map_or(1.0, |s| s.0));
         let root_world = world_with(root, &parents, |e| {
             nodes.get(e).ok().map(|(t, _)| t.compute_affine())
@@ -217,6 +235,27 @@ fn tick_characters(
             }
             None => body.hold(root_world),
         }
+    }
+}
+
+/// What a body's character does this tick, for its muscles: it moves while
+/// its controller is asked to, runs by the player's run blend, strides in
+/// the walk and run cycles, is off balance from its fall until it has got
+/// up, stands on the ground when its controller does (or has none), and
+/// turns by what is left of the player's turn.
+fn bearing(
+    controller: Option<&CharacterBody>,
+    player: Option<&PlayerBody>,
+    anim: &Animator,
+    fallen: bool,
+) -> Bearing {
+    Bearing {
+        moving: controller.is_some_and(|c| c.desired_velocity != Vec3::ZERO),
+        run: player.map_or(0.0, PlayerBody::run),
+        striding: matches!(anim.action.as_str(), "Walk" | "Run"),
+        off_balance: fallen,
+        grounded: controller.is_none_or(|c| c.grounded),
+        turn: player.map_or(0.0, PlayerBody::turn_left),
     }
 }
 
@@ -449,7 +488,7 @@ pub(crate) mod tests {
                 half: Vec3::new(0.15, 0.1, 0.1),
                 origin: Vec3::ZERO,
                 links: vec![],
-                foot: false,
+                foot: None,
             },
             // Pinned at its origin, the hip.
             PartSetup {
@@ -461,7 +500,7 @@ pub(crate) mod tests {
                 half: Vec3::new(0.07, 0.25, 0.07),
                 origin: THIGH_REST,
                 links: vec![],
-                foot: false,
+                foot: None,
             },
         ];
         world.entity_mut(root).insert((
