@@ -27,10 +27,18 @@
 //!          --weapon <name>            weapon in the right hand (Objects.rpk entry)
 //!          --opponent                 an armed duellist in play mode (F: combat mode, left click: attack)
 //!          --trace <file.csv>         the player's body (else every simulated body) after every 83 Hz tick, in cm
+//!          --debug-bodies             start with the body overlay and joint readout shown (F3 toggles it)
+//!          --joint-trace <file.csv>   every joint of every simulated body after every 83 Hz tick (degrees, cm)
+//!          --sim-speed <f>            run the simulation at this speed (e.g. 0.25)
+//!          --pause-at-tick <n>        pause the simulation at the end of body tick n
+//!          --pause-on-stretch <cm>    pause the simulation when a link goes this far past its slack
+//!          --press key@frame,...      press keys at frames after loading (e.g. `.@400,P@500`)
 //! ```
 //!
 //! Controls: hold the right mouse button to look, WASD to move, Q/E down/up,
-//! Shift to go faster.
+//! Shift to go faster. Debug keys (`docs/DEBUGGING.md`): F3 body overlay, F4
+//! only the inspected body, F5 inspect the body under the cursor, P pause,
+//! `.` step one tick, `[` / `]` slower / faster.
 
 mod viewer;
 
@@ -92,6 +100,16 @@ pub struct Options {
     pub opponent: bool,
     /// Write the body state after every tick here (CSV).
     pub trace: Option<PathBuf>,
+    /// Start with the body overlay shown.
+    pub debug_bodies: bool,
+    /// Write every joint after every tick here (CSV).
+    pub joint_trace: Option<PathBuf>,
+    /// The simulation's speed, its scripted pauses (tick; cm past a slack).
+    pub sim_speed: Option<f32>,
+    pub pause_at_tick: Option<u64>,
+    pub pause_on_stretch: Option<f32>,
+    /// Keys pressed at frames after the load (for unattended checks).
+    pub press: Vec<(KeyCode, u32)>,
 }
 
 fn usage() -> AppExit {
@@ -100,6 +118,82 @@ fn usage() -> AppExit {
          (level <name> | model <pack> <entry> | texture <name>)"
     );
     AppExit::from_code(2)
+}
+
+/// The key a `--press` entry names: a letter, `.`, `[`, `]`, `Tab` or
+/// `F1`–`F12`.
+fn key_named(name: &str) -> Option<KeyCode> {
+    let fkeys = [
+        KeyCode::F1,
+        KeyCode::F2,
+        KeyCode::F3,
+        KeyCode::F4,
+        KeyCode::F5,
+        KeyCode::F6,
+        KeyCode::F7,
+        KeyCode::F8,
+        KeyCode::F9,
+        KeyCode::F10,
+        KeyCode::F11,
+        KeyCode::F12,
+    ];
+    let letters = [
+        KeyCode::KeyA,
+        KeyCode::KeyB,
+        KeyCode::KeyC,
+        KeyCode::KeyD,
+        KeyCode::KeyE,
+        KeyCode::KeyF,
+        KeyCode::KeyG,
+        KeyCode::KeyH,
+        KeyCode::KeyI,
+        KeyCode::KeyJ,
+        KeyCode::KeyK,
+        KeyCode::KeyL,
+        KeyCode::KeyM,
+        KeyCode::KeyN,
+        KeyCode::KeyO,
+        KeyCode::KeyP,
+        KeyCode::KeyQ,
+        KeyCode::KeyR,
+        KeyCode::KeyS,
+        KeyCode::KeyT,
+        KeyCode::KeyU,
+        KeyCode::KeyV,
+        KeyCode::KeyW,
+        KeyCode::KeyX,
+        KeyCode::KeyY,
+        KeyCode::KeyZ,
+    ];
+    match name {
+        "." => Some(KeyCode::Period),
+        "[" => Some(KeyCode::BracketLeft),
+        "]" => Some(KeyCode::BracketRight),
+        "Tab" => Some(KeyCode::Tab),
+        _ => {
+            if let Some(n) = name.strip_prefix('F').and_then(|n| n.parse::<usize>().ok()) {
+                return n.checked_sub(1).and_then(|i| fkeys.get(i)).copied();
+            }
+            let mut chars = name.chars();
+            match (chars.next(), chars.next()) {
+                (Some(c), None) if c.is_ascii_alphabetic() => letters
+                    .get((c.to_ascii_uppercase() as u8 - b'A') as usize)
+                    .copied(),
+                _ => None,
+            }
+        }
+    }
+}
+
+/// Reads `key@frame,...`.
+fn parse_presses(list: &str) -> Option<Vec<(KeyCode, u32)>> {
+    list.split(',')
+        .filter(|s| !s.trim().is_empty())
+        .map(|entry| {
+            let (key, frame) = entry.trim().rsplit_once('@')?;
+            Some((key_named(key)?, frame.parse().ok()?))
+        })
+        .collect()
 }
 
 fn main() -> AppExit {
@@ -140,6 +234,28 @@ fn main() -> AppExit {
             "--weapon" => options.weapon = args.next(),
             "--opponent" => options.opponent = true,
             "--trace" => options.trace = args.next().map(PathBuf::from),
+            "--debug-bodies" => options.debug_bodies = true,
+            "--joint-trace" => options.joint_trace = args.next().map(PathBuf::from),
+            "--sim-speed" => {
+                options.sim_speed = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .filter(|s: &f32| *s > 0.0 && s.is_finite())
+            }
+            "--pause-at-tick" => options.pause_at_tick = args.next().and_then(|v| v.parse().ok()),
+            "--pause-on-stretch" => {
+                options.pause_on_stretch = args.next().and_then(|v| v.parse().ok())
+            }
+            "--press" => {
+                let list = args.next().unwrap_or_default();
+                match parse_presses(&list) {
+                    Some(p) => options.press = p,
+                    None => {
+                        eprintln!("--press: cannot read {list:?} (key@frame,...)");
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
             "--outfit" => {
                 options.outfit = args
                     .next()
@@ -227,9 +343,24 @@ fn main() -> AppExit {
         Some(Ok(t)) => Some(t),
         None => None,
     };
+    let joint_trace = match options
+        .joint_trace
+        .as_deref()
+        .map(exa_game::joint_trace::JointTrace::create)
+    {
+        Some(Err(e)) => {
+            eprintln!("cannot write the joint trace: {e}");
+            return AppExit::from_code(2);
+        }
+        Some(Ok(t)) => Some(t),
+        None => None,
+    };
 
     let mut app = App::new();
     if let Some(trace) = trace {
+        app.insert_resource(trace);
+    }
+    if let Some(trace) = joint_trace {
         app.insert_resource(trace);
     }
     app.add_plugins(
@@ -263,7 +394,42 @@ fn main() -> AppExit {
     .insert_resource(options.gi)
     .insert_resource(exa_ui::ShowFps(!options.no_fps))
     .insert_resource(exa_render::cube_shadows::PointShadows(!options.no_shadows))
+    .insert_resource(exa_game::body_overlay::BodyOverlay {
+        on: options.debug_bodies,
+        ..default()
+    })
+    .insert_resource(exa_game::sim_control::SimControl::scripted(
+        options.sim_speed.unwrap_or(1.0),
+        options.pause_at_tick,
+        // Centimetres on the command line.
+        options.pause_on_stretch.map(|cm| cm / 100.0),
+    ))
     .insert_resource(options)
     .add_plugins(viewer::ViewerPlugin)
     .run()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scripted_presses_are_read() {
+        assert_eq!(
+            parse_presses(".@400, P@500,F3@1,]@2,[@3,Tab@4,f@5"),
+            Some(vec![
+                (KeyCode::Period, 400),
+                (KeyCode::KeyP, 500),
+                (KeyCode::F3, 1),
+                (KeyCode::BracketRight, 2),
+                (KeyCode::BracketLeft, 3),
+                (KeyCode::Tab, 4),
+                (KeyCode::KeyF, 5),
+            ])
+        );
+        assert_eq!(parse_presses(""), Some(vec![]));
+        for bad in ["P", "P@x", "F13@1", "Esc@2", "@3"] {
+            assert_eq!(parse_presses(bad), None, "{bad}");
+        }
+    }
 }

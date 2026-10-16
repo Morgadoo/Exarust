@@ -478,9 +478,11 @@ fn zoom_fov(zoom: f32, aspect: f32) -> f32 {
         .to_radians()
 }
 
+/// The camera ticks on real time, so it keeps orbiting while the
+/// simulation is paused or slowed (`docs/DEBUGGING.md`).
 #[allow(clippy::type_complexity)]
 fn chase_camera(
-    time: Res<Time>,
+    time: Res<Time<Real>>,
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,

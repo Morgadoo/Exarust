@@ -3,7 +3,9 @@
 //! body). Lengths are in the original's centimetres and the clip clock in
 //! frames, in the columns of the retail body probe, so that the two can be
 //! compared row by row. What Exarust does not simulate yet is left empty.
-//! Columns: `docs/formats/RSQ.md` (Physical body, per-tick trace).
+//! Two of Exarust's own columns follow the probe's: the body's sleep
+//! countdown and state. Columns: `docs/formats/RSQ.md` (Physical body,
+//! per-tick trace).
 
 use std::fmt::Write as _;
 use std::fs::File;
@@ -98,6 +100,8 @@ pub fn header() -> String {
     }
     columns.push("motion".into());
     columns.push("clock".into());
+    columns.push("countdown".into());
+    columns.push("sleep".into());
     columns.join(",")
 }
 
@@ -256,6 +260,9 @@ fn row(
             .and_then(|(a, m)| m.0.action_index(&a.action)),
     );
     row.value(anim.map(|a| a.time));
+    row.whole(Some(body.countdown().max(0) as usize));
+    row.0.push(',');
+    row.0.push_str(body.sleep.name());
     row.0
 }
 
@@ -290,7 +297,7 @@ mod tests {
         let columns: Vec<&str> = lines.next().unwrap().split(',').collect();
         assert_eq!(
             columns.len(),
-            2 + 12 + SCALARS.len() + BONES * TARGET.len() + 8 + 2
+            2 + 12 + SCALARS.len() + BONES * TARGET.len() + 8 + 2 + 2
         );
         let rows: Vec<Vec<&str>> = lines.map(|l| l.split(',').collect()).collect();
         assert_eq!(rows.len() as u64, ticks);
@@ -308,6 +315,7 @@ mod tests {
             assert_eq!(number(row, "support"), 1.0);
             assert_eq!(number(row, "balance"), 1.0);
             assert_eq!(number(row, "balance_counter"), 0.0);
+            assert_eq!((row[at("countdown")], row[at("sleep")]), ("256", "awake"));
             assert!(number(row, "pelvis_p3_z").is_finite());
             let lifted = number(row, "frame_height") + number(row, "root_clip_height");
             assert!((number(row, "target1_y") - lifted).abs() < 1e-2);

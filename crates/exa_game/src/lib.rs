@@ -3,8 +3,11 @@
 //! Planned in Phase 4–7; see `README.md` next to this crate and `docs/PLAN.md`.
 
 pub mod balance;
+pub mod body_overlay;
+pub mod joint_trace;
 pub mod limp;
 pub mod player;
+pub mod sim_control;
 pub mod torch;
 pub mod trace;
 
@@ -34,6 +37,12 @@ impl Plugin for GamePlugin {
             balance::BalancePlugin,
             torch::TorchPlugin,
             trace::TracePlugin,
+        ))
+        // Debug tools: idle unless their flags or keys turn them on.
+        .add_plugins((
+            body_overlay::BodyOverlayPlugin,
+            joint_trace::JointTracePlugin,
+            sim_control::SimControlPlugin,
         ));
     }
 }

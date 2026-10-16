@@ -75,6 +75,7 @@ fn build_bodies(
         }
         let index: HashMap<Entity, usize> =
             found.iter().enumerate().map(|(i, f)| (f.0, i)).collect();
+        let mut rest_turns = Vec::with_capacity(found.len());
         let setup: Vec<PartSetup> = found
             .iter()
             .map(|&(entity, bone, world)| {
@@ -84,12 +85,13 @@ fn build_bodies(
                     .find_map(|a| index.get(&a).copied());
                 let (centre, half) = part_box(entity, bone, &children, &skinned, &meshes);
                 // The part's origin in its parent: the model's translation
-                // of the part (rotations play no part in joining them).
-                let origin = parent.map_or(Vec3::ZERO, |p| {
+                // of the part (rotations play no part in joining them; the
+                // debug tools measure the joint from the rest turn).
+                let rest = parent.map_or(Affine3A::IDENTITY, |p| {
                     rest_under(entity, found[p].0, &parents, &parts, &locals)
-                        .translation
-                        .into()
                 });
+                let (_, turn, origin) = rest.to_scale_rotation_translation();
+                rest_turns.push(turn);
                 part_setup(
                     bone,
                     entity,
@@ -106,7 +108,10 @@ fn build_bodies(
         commands
             .entity(root)
             .insert((
-                Ragdoll::new(&setup).with_drive().with_race(race),
+                Ragdoll::new(&setup)
+                    .with_drive()
+                    .with_race(race)
+                    .with_rest_turns(&rest_turns),
                 TickedClips,
             ))
             .remove::<Physical>();

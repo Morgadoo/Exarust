@@ -134,3 +134,10 @@ ledge and stopped) it loses its balance and falls, then gets up once
 settled. A standing player whose capsule perches on a stone its feet hang
 beside keeps its balance (Exarust's own, until the body stands on its
 feet).
+
+`--press key@frame,...` presses keys at frames after the load, and in play
+mode `--camera x,y,z,yaw,pitch` puts a fixed camera there instead of the
+chase camera, for unattended pictures. The body overlay (F3), the joint
+readout and trace, and the pause (P), step (`.`) and speed (`[`, `]`) keys
+are described in [DEBUGGING.md](DEBUGGING.md). The chase camera runs on
+real time, so it keeps orbiting while the simulation is paused or slowed.

@@ -99,6 +99,8 @@ executable uses [REA](https://rea.tools/) with Ghidra
 - [Component map](docs/COMPONENT-MAP.md): every component of the original set
   against Exarust
 - [Architecture](docs/ARCHITECTURE.md): crate layers, schedules, data flow
+- [Debugging bodies](docs/DEBUGGING.md): the body overlay, joint readout and
+  joint trace, and pausing, stepping and slowing the simulation
 - [Formats](docs/formats/README.md): what is known about each retail format
 - [Research](docs/INDEX.md): installation inventory, the engine's class map,
   community tools

@@ -28,6 +28,15 @@ original's countdown (`body::Ragdoll::countdown`: 256, two off each tick
 under 20 cm/s, held at 30–32 between 20 and 40 cm/s, back to 256 above)
 and is woken by a blow or by going limp; a living body never sleeps.
 
+The debug tools' measures are in `body::inspect` (`src/body_inspect.rs`):
+each joint's turn from its rest turn (stored when the body is built,
+`Ragdoll::with_rest_turns`) split into a swing of the bone axis and a twist
+about it, its distance from the clip's turn, each link's gap against its
+slack, the range a joint's slack links use, its pivot's gap, and where
+parts, links and anchors are drawn. `body::DealtShoves` keeps the blows the
+last tick dealt. Nothing calls them unless a tool is on
+([`docs/DEBUGGING.md`](../../docs/DEBUGGING.md)).
+
 ## Scope
 
 - Fixed-timestep deterministic simulation set, independent of frame rate.

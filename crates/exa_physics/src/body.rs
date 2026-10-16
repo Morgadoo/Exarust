@@ -39,6 +39,8 @@ pub use muscle::{Bearing, RaceMuscles};
 #[path = "body_balance.rs"]
 mod balance;
 pub use balance::{Balance, Leg};
+#[path = "body_inspect.rs"]
+pub mod inspect;
 
 /// Simulation rate of the body.
 pub const BODY_HZ: f32 = 83.0;
@@ -184,6 +186,10 @@ pub struct Part {
     /// toward where its points already are, and its cap.
     pub relax: f32,
     relax_cap: f32,
+    /// The part's turn relative to its parent in the model's rest pose,
+    /// which the debug tools measure its joint from
+    /// ([`Ragdoll::with_rest_turns`]).
+    rest_turn: Quat,
 }
 
 /// Barycentric weights of a point given in a part's space.
@@ -260,6 +266,7 @@ impl Part {
             saturation: muscle::SATURATION,
             relax: 0.0,
             relax_cap: muscle::RELAX_CAP,
+            rest_turn: Quat::IDENTITY,
         }
         .settle()
     }
@@ -823,6 +830,10 @@ pub struct Shove {
 #[derive(Resource, Debug, Default)]
 pub struct ShoveQueue(pub Vec<Shove>);
 
+/// The blows the last tick dealt, for the debug tools (the joint trace).
+#[derive(Resource, Debug, Default)]
+pub struct DealtShoves(pub Vec<Shove>);
+
 /// Ticks the bodies have run since the start.
 #[derive(Resource, Debug, Default, Clone, Copy)]
 pub struct BodyTicks(pub u64);
@@ -845,6 +856,7 @@ impl Plugin for BodyPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<Shove>()
             .init_resource::<ShoveQueue>()
+            .init_resource::<DealtShoves>()
             .init_resource::<BodyTicks>()
             .configure_sets(FixedUpdate, (CharacterTicks, BodySystems).chain())
             .add_systems(FixedUpdate, step_bodies.in_set(BodySystems))
@@ -1750,12 +1762,15 @@ fn begin_frame(
 pub fn step_bodies(
     physics: Res<Physics>,
     mut queue: ResMut<ShoveQueue>,
+    mut dealt: ResMut<DealtShoves>,
     mut clock: ResMut<BodyTicks>,
     mut bodies: Query<&mut Ragdoll>,
 ) {
+    dealt.0.clear();
     for s in queue.0.drain(..) {
         if let Ok(mut body) = bodies.get_mut(s.body) {
             body.shove(s.bone, s.velocity, s.daze);
+            dealt.0.push(s);
         }
     }
     let mut awake: Vec<Mut<Ragdoll>> = Vec::new();

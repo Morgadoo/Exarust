@@ -413,6 +413,10 @@ is left empty.
 | `target{1..18}_{x,y,z,qx,qy,qz,qw}` | each part's animated world transform this tick: place and rotation |
 | `foot_{r,l}_flags`, `foot_{r,l}_anchor_{x,y,z}` | foot contacts (empty) |
 | `motion`, `clock` | the action's index in the motion set, and the clip clock |
+| `countdown`, `sleep` | Exarust's own, after the probe's: the body's sleep countdown and state (`awake`, `asleep`, `deep`) |
+
+The joint trace (`--joint-trace`), one row per body part, and the body
+overlay are described in [`docs/DEBUGGING.md`](../DEBUGGING.md).
 
 ## Motion set (`3DAB`)
 

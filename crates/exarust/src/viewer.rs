@@ -43,7 +43,12 @@ impl Plugin for ViewerPlugin {
                 )
                     .before(exa_anim::AnimSystems),
             )
-            .add_systems(PreUpdate, autowalk.after(bevy::input::InputSystems))
+            .add_systems(
+                PreUpdate,
+                (autowalk, press_keys)
+                    .chain()
+                    .after(bevy::input::InputSystems),
+            )
             .add_systems(
                 Update,
                 (fly_camera, screenshot_after_frames, shove_at_frame),
@@ -212,7 +217,7 @@ fn setup(
                     yaw: 0.0,
                     characters: Vec::new(),
                 };
-                place_chase_camera(&mut commands, camera, &start);
+                place_chase_camera(&mut commands, camera, &start, &options);
                 spawn_players(&mut commands, &mut loader, &game, name, &start, &options);
             }
             return;
@@ -380,7 +385,12 @@ fn continue_level(
 /// The free-fly camera at `pose` (position, look-at target, fly speed),
 /// unless `--camera` places it, with a vertical field of view (degrees)
 /// unless `--fov` sets it.
-fn spawn_fly_camera(commands: &mut Commands, pose: (Vec3, Vec3, f32), fov: f32, options: &Options) {
+fn spawn_fly_camera(
+    commands: &mut Commands,
+    pose: (Vec3, Vec3, f32),
+    fov: f32,
+    options: &Options,
+) -> Entity {
     let transform = fly_transform(pose, options);
     let (yaw, pitch, _) = transform.rotation.to_euler(EulerRot::YXZ);
     let camera = commands.spawn((
@@ -399,12 +409,13 @@ fn spawn_fly_camera(commands: &mut Commands, pose: (Vec3, Vec3, f32), fov: f32, 
             speed: pose.2,
         },
     ));
+    let camera = camera.id();
     if !options.no_supersample {
-        let camera = camera.id();
         commands
             .entity(camera)
             .insert(exa_render::supersample::Supersample);
     }
+    camera
 }
 
 /// Where the fly camera stands for `pose`, unless `--camera` places it.
@@ -422,7 +433,14 @@ fn fly_transform(pose: (Vec3, Vec3, f32), options: &Options) -> Transform {
 struct PlayCamera(Entity);
 
 /// Play mode's chase camera; it follows the player once there is one.
+/// `--camera` puts a fixed camera there instead, for unattended shots (the
+/// right mouse button and WASD fly it, as in the other views).
 fn spawn_chase_camera(commands: &mut Commands, options: &Options) -> Entity {
+    if options.camera.is_some() {
+        let camera = spawn_fly_camera(commands, (Vec3::ZERO, Vec3::NEG_Z, 4.0), 45.0, options);
+        commands.entity(camera).insert(SpatialListener::new(0.3));
+        return camera;
+    }
     let camera = commands
         .spawn((
             Camera3d::default(),
@@ -484,7 +502,7 @@ fn play_level(
         characters: info.characters,
     };
     if let Some(camera) = camera {
-        place_chase_camera(commands, camera, &start);
+        place_chase_camera(commands, camera, &start, options);
     }
     commands.insert_resource(exa_ui::LoadingStatus {
         title: format!("Loading {name}"),
@@ -500,8 +518,16 @@ fn play_level(
 }
 
 /// The chase camera, waiting behind the loading screen: it starts behind
-/// the player, facing the way the player does.
-fn place_chase_camera(commands: &mut Commands, camera: Entity, start: &PlayStart) {
+/// the player, facing the way the player does. A fixed `--camera` stays.
+fn place_chase_camera(
+    commands: &mut Commands,
+    camera: Entity,
+    start: &PlayStart,
+    options: &Options,
+) {
+    if options.camera.is_some() {
+        return;
+    }
     commands.entity(camera).insert((
         Transform::from_translation(start.position + Vec3::new(0.0, 4.0, 4.0)),
         exa_game::player::ChaseCamera::behind(start.yaw),
@@ -751,9 +777,11 @@ fn finish_lighting(
     commands.remove_resource::<exa_ui::LoadingStatus>();
 }
 
+/// The free-fly camera, on real time: it keeps moving while the
+/// simulation is paused or slowed.
 fn fly_camera(
     options: Res<Options>,
-    time: Res<Time>,
+    time: Res<Time<Real>>,
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
@@ -794,18 +822,21 @@ fn fly_camera(
 }
 
 /// Saves the `--screenshot` after `--frames` frames of the scene (frames
-/// behind the loading screen do not count), then exits.
+/// behind the loading screen do not count, nor, with a scripted pause
+/// armed, frames before the simulation pauses), then exits.
 fn screenshot_after_frames(
     mut commands: Commands,
     options: Res<Options>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
+    control: Res<exa_game::sim_control::SimControl>,
+    time: Res<Time<Virtual>>,
     mut frames: Local<u32>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(path) = &options.screenshot else {
         return;
     };
-    if loading.is_some() {
+    if loading.is_some() || (control.waits_for_pause() && !time.is_paused()) {
         return;
     }
     *frames += 1;
@@ -862,6 +893,28 @@ fn autowalk(
         keys.reset_all();
         if loading.is_none() {
             keys.press(KeyCode::KeyW);
+        }
+    }
+}
+
+/// `--press`: presses each scripted key at its frame, counted from the end
+/// of the load, and lets it go the frame after.
+fn press_keys(
+    options: Res<Options>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    mut keys: ResMut<ButtonInput<KeyCode>>,
+    mut frames: Local<u32>,
+) {
+    if options.press.is_empty() || loading.is_some() {
+        return;
+    }
+    *frames += 1;
+    for &(key, at) in &options.press {
+        if at == *frames {
+            info!("pressing {key:?}");
+            keys.press(key);
+        } else if at + 1 == *frames {
+            keys.release(key);
         }
     }
 }

@@ -253,7 +253,13 @@ its lean score, counter (floor 80 standing still) and recovery; each leg
 asks the level for its ground with the original's Height Query, and
 support S = grounded × balance feeds the link muscles; Exarust's falls
 follow the lean, decided in the fixed step from last tick's balance
-([formats/RSQ.md](formats/RSQ.md)). Still to do: the original's pose drive
+([formats/RSQ.md](formats/RSQ.md)). Done (change `add-body-debug-tools`): debug tools for
+bodies ([DEBUGGING.md](DEBUGGING.md)): an overlay of every body's
+particles, links (coloured by how far past their slack) and muscle
+anchors; a readout of one body's joints (turn from the rest, swing and
+twist, distance from the clip, range used, pivot gap); a per-part joint
+trace; pause, single tick steps and slow motion, with scripted pauses at a
+tick or on a stretched link. Still to do: the original's pose drive
 and lift, its falls and get-ups, recovery steps, foot planting, clip
 blending, collisions between bodies (and their wake of a sleeper).
 
