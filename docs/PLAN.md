@@ -322,10 +322,23 @@ stance at once, Exarust's stand-in for the original's swing stall; the
 shipped elbows and knees are shown to be hinges bounded by their links
 (elbow straight to 120°, knee 10° to 130°)
 ([formats/OTHER.md](formats/OTHER.md), Damage;
-[formats/RSQ.md](formats/RSQ.md)). Still to do: inventory and containers,
-injuries beyond damage, blocking, parrying, grabs, practice mode, the
-knockback step, the swing stall and the striker's recoil, a lethal
-wound's fall and collapse.
+[formats/RSQ.md](formats/RSQ.md)).
+Done (change `choose-the-moveset-from-held-items`): what a character holds
+picks its moveset, stance class and weapon class as the original's rule
+does, in and out of combat mode (the fists the race's own moveset, a
+one-handed weapon "One Handed", two-handers by their flags, polearms,
+shields, a torch in either hand), for the player and the duellist; the
+player's left click picks the original's attack (the main side at random
+without repeats, the other side with the cursor more than 20° left of the
+facing, an overhead on a double click), so unarmed it throws the "Default"
+punches, which cannot land yet; in combat mode the heading turns to the
+cursor beyond 30° and the body turns toward it
+([PLAYER.md](PLAYER.md), Combat mode and Moveset from held items).
+Still to do: inventory and containers, injuries beyond damage, blocking,
+parrying, grabs, practice mode, the knockback step, the swing stall and
+the striker's recoil, a lethal wound's fall and collapse; next in the
+combat look: the combat stance (`take-the-combat-stance`) and fists that
+strike.
 
 - `exa_items`: item database, item instances, inventory and containers,
   equip and wield, weapon assembly from factories, mass and centre of

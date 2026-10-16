@@ -53,11 +53,15 @@ The system SHALL walk the player toward the cursor's point on the hip-height pla
 - **THEN** the player runs toward it
 
 ### Requirement: Combat footwork
-The system SHALL toggle combat mode on Tab. In combat mode the character SHALL face the cursor, and W, S, A and D SHALL step along and across that direction.
+The system SHALL toggle combat mode on Tab. In combat mode the character's heading SHALL turn to the cursor's direction once it is more than 30° off it, and follow it while the left button is held; the body SHALL turn toward the heading at the body-turn rate. W, S, A and D SHALL step along and across the cursor's direction.
 
 #### Scenario: Side step
 - **WHEN** A is held in combat mode
 - **THEN** the player steps to its left while still facing the cursor
+
+#### Scenario: Small cursor move
+- **WHEN** the cursor moves 20° to the side of the facing in combat mode
+- **THEN** the player keeps its facing, and turns toward the cursor once it is more than 30° off
 
 ### Requirement: Carried torch
 The system SHALL give the player the game's lit torch in play mode in story levels. It goes in the right hand with the "Torch" moveset, or in the left hand with "1H & Torch" when a weapon is held. Each hand places it by the original's grip table: an offset plus Euler angles applied about X, then Z, then Y of the hand. Practice and arena levels SHALL start the player without a torch. The torch's light SHALL also light its holder.

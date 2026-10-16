@@ -32,8 +32,17 @@ exarust --debug-bodies --opponent --pause-on-stretch 1 \
 | `--sim-speed <f>` | run the simulation at this speed (0.25 is a quarter as fast), from the end of the load |
 | `--pause-at-tick <n>` | pause at the end of body tick `n` (the `tick` column of both traces, counted from the start, the load included; see below) |
 | `--pause-on-stretch <cm>` | pause at the end of the tick in which a link of a body first goes this far past its slack; the log and the readout name the body, the part and the link |
-| `--press key@frame,...` | press keys at frames counted from the end of the load (`.`, `[`, `]`, `Tab`, `F1`–`F12` or a letter), e.g. `.@400,.@401,P@500` |
+| `--press key@frame,...` | press keys or mouse buttons at frames counted from the end of the load (`.`, `[`, `]`, `Tab`, `F1`–`F12`, a letter, or `LMB`, `RMB`, `MMB`), e.g. `.@400,.@401,P@500`; each is released the frame after |
 | `--camera x,y,z,yaw,pitch` | in play mode, a fixed camera there instead of the chase camera (metres, degrees), for unattended shots; with `--fov` |
+| `--cursor x,y` | in play mode, the cursor stays at this window point (logical pixels) instead of following the pointer; it needs the chase camera (not `--camera`) |
+
+An unattended attack: `exarust --opponent --sim-speed 0.25 --camera
+4.2,1.4,0.6,90,-8 --press Tab@60,LMB@100 play arenao1` throws the unarmed
+player's right straight at the duellist, seen from the side; the log names
+each attack, its moveset and how far left of the facing the cursor was.
+With the chase camera and `--cursor` left of the player (e.g. `--cursor
+650,280 --press Tab@60,LMB@62`) it is a left straight; `LMB@100,LMB@106`
+is a double click, an overhead.
 
 With `--pause-at-tick` or `--pause-on-stretch`, `--screenshot` counts its
 `--frames` from the pause, so the picture shows the paused body.

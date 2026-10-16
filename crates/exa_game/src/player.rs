@@ -6,18 +6,18 @@
 //! and backpedals, and the right mouse button walks toward the cursor. The
 //! camera follows the character's position only: it never turns by itself,
 //! the middle mouse button orbits it and the wheel zooms by field of view.
-//! Combat mode (Tab) faces the cursor and steps relative to it.
+//! Combat mode (Tab) turns toward the cursor and steps relative to it; the
+//! left button attacks with the clips of the moveset the held items pick
+//! (`exa_character::held`).
 
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use exa_anim::Animator;
-use exa_character::Wielded;
+use exa_character::held::{Hands, HeldMoveset, class};
 use exa_combat::{Attacking, Fighter};
 use exa_physics::body::Fallen;
 use exa_physics::{CharacterBody, Physics};
-
-use crate::torch::{CarriesTorch, TorchHand};
 
 /// Walking speed (m/s): where the original's walk drive settles.
 const WALK_SPEED: f32 = 1.4;
@@ -50,21 +50,39 @@ const BRAKE_ABOVE: f32 = 0.01 * TICK_HZ;
 const HIP: f32 = 0.9;
 /// Combat footwork held longer than this (s) walks on.
 const STEP_HOLD: f32 = 0.2;
+/// In combat mode the heading turns to the cursor once it is further off
+/// than this (rad, 30°).
+const FACE_CURSOR_BEYOND: f32 = std::f32::consts::FRAC_PI_6;
+/// A click this soon (s) after the one before is a double click.
+const DOUBLE_CLICK: f32 = 0.3;
+/// A cursor further left of the facing than this (rad) attacks on the
+/// other side: 20°, or 15° for weapon class 0.
+const OTHER_SIDE: f32 = 20.0 * std::f32::consts::PI / 180.0;
+const OTHER_SIDE_EMPTY: f32 = 15.0 * std::f32::consts::PI / 180.0;
+/// The attacks of each side, picked among at random.
+const MAIN_SIDE: [&str; 3] = ["Attack Mid", "Attack Down", "Attack Up"];
+const OTHER_SIDE_ATTACKS: [&str; 3] = ["Attack Combo 1", "Attack Combo 2", "Attack Combo 3"];
 
 /// The player's physics root (origin at the feet).
 #[derive(Component)]
 pub struct Player;
 
 /// The visual body under the player root. The player is human and is
-/// kept in underwear, as the original keeps its player's record.
+/// kept in underwear, as the original keeps its player's record; what its
+/// hands hold picks its moveset.
 #[derive(Component, Debug)]
-#[require(exa_character::WearsUnderwear)]
+#[require(exa_character::WearsUnderwear, Hands)]
 pub struct PlayerBody {
     /// The body's yaw (rad; the model faces +Z).
     pub yaw: f32,
     /// The heading the body turns toward and walks along.
     pub heading: f32,
     pub combat: bool,
+    /// In combat mode, the cursor's direction from the player (a yaw): the
+    /// footwork steps along and across it.
+    pub aim: f32,
+    /// The last click and attack picks, for the attack choice.
+    attack: AttackChoice,
     /// 0 walks, 1 runs.
     run: f32,
     /// Seconds until A or D may turn a quarter again.
@@ -80,6 +98,8 @@ impl PlayerBody {
             yaw,
             heading: yaw,
             combat: false,
+            aim: yaw,
+            attack: AttackChoice::default(),
             run: 0.0,
             quarter_wait: 0.0,
             held: 0.0,
@@ -97,24 +117,90 @@ impl PlayerBody {
     }
 }
 
-/// Moveset and idle used in combat mode with a one-handed weapon.
-pub const COMBAT_MOVESET: &str = "One Handed";
+/// What a left click in combat mode asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Strike {
+    /// One of the main side's attacks (the right fist, the weapon's
+    /// forehand).
+    Main,
+    /// One of the other side's (the left fist for the fists).
+    Other,
+    /// The overhead swing of a double click.
+    Overhead,
+}
 
-/// The moveset of a body in or out of combat: a carried torch's (the
-/// "Torch" overlay in the right hand, "1H & Torch" beside a weapon), else
-/// the one-handed moveset in combat and the default one outside it.
-pub fn moveset(combat: bool, torch: bool, wields: bool) -> &'static str {
-    match (torch, combat) {
-        (true, _) => TorchHand::of(wields).moveset(),
-        (false, true) => COMBAT_MOVESET,
-        (false, false) => "Default",
+/// The original's attack choice: the time of the last click (for double
+/// clicks), and each side's last pick with the generator that picks.
+#[derive(Debug, Default)]
+struct AttackChoice {
+    last_click: Option<f32>,
+    seed: u32,
+    /// The last pick of each side, 0 until the first (as the original's
+    /// zeroed fields, so the first pick of a side is never its first clip).
+    last: [usize; 2],
+}
+
+impl AttackChoice {
+    /// A click at `now` (s): an overhead when it comes within 300 ms of the
+    /// click before (which then no longer counts), else the side the cursor
+    /// gives.
+    fn click(&mut self, now: f32, other_side: bool) -> Strike {
+        let double = self.last_click.is_some_and(|t| now < t + DOUBLE_CLICK);
+        self.last_click = if double { None } else { Some(now) };
+        match (double, other_side) {
+            (true, _) => Strike::Overhead,
+            (false, false) => Strike::Main,
+            (false, true) => Strike::Other,
+        }
     }
+
+    /// One of a side's three attacks at random, never the one it picked
+    /// last, by the original's 32-bit generator.
+    fn pick(&mut self, side: usize) -> usize {
+        loop {
+            self.seed = self.seed.wrapping_mul(0x0808_8405).wrapping_add(1);
+            let i = ((self.seed as u64 * 3) >> 32) as usize;
+            if i != self.last[side] {
+                self.last[side] = i;
+                return i;
+            }
+        }
+    }
+}
+
+/// The combat-mode heading toward a cursor at yaw `aim`: the cursor's
+/// direction once it is more than 30° off, or at once while the left
+/// button is held (an attack request stands); else unchanged.
+fn combat_heading(heading: f32, aim: f32, requesting: bool) -> f32 {
+    if requesting || turn_between(heading, aim).abs() > FACE_CURSOR_BEYOND {
+        aim
+    } else {
+        heading
+    }
+}
+
+/// Whether a cursor at yaw `cursor` lies far enough left of a body facing
+/// `yaw` to attack on the other side: more than 20°, or 15° for weapon
+/// class 0 (a body holding nothing at all, or a shield or an off-hand
+/// light beside the fists, whose class has no hands bits).
+fn other_side(cursor: f32, yaw: f32, weapon_class: u8) -> bool {
+    let beyond = if weapon_class == class::NONE {
+        OTHER_SIDE_EMPTY
+    } else {
+        OTHER_SIDE
+    };
+    turn_between(yaw, cursor) > beyond
 }
 
 /// The point under the cursor on the player's hip plane, for the right
 /// mouse button.
 #[derive(Resource, Default)]
 struct CursorGround(Option<Vec3>);
+
+/// A cursor position (logical pixels in the window) that stands in for the
+/// pointer, for unattended runs (`--cursor`).
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct ScriptedCursor(pub Vec2);
 
 pub struct PlayerPlugin;
 
@@ -159,6 +245,7 @@ fn body_turn(yaw: f32, heading: f32, keyboard: bool, speed: f32) -> f32 {
 
 fn cursor_ground(
     mut ground: ResMut<CursorGround>,
+    scripted: Option<Res<ScriptedCursor>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ChaseCamera>>,
     players: Query<&GlobalTransform, With<Player>>,
@@ -169,8 +256,9 @@ fn cursor_ground(
     else {
         return;
     };
-    let Some(ray) = window
-        .cursor_position()
+    let Some(ray) = scripted
+        .map(|s| s.0)
+        .or_else(|| window.cursor_position())
         .and_then(|c| camera.viewport_to_world(eye, c).ok())
     else {
         return;
@@ -197,16 +285,12 @@ fn steer_player(
         &mut Animator,
         Option<&Fighter>,
         Has<Fallen>,
-        Has<CarriesTorch>,
-        Has<Wielded>,
     )>,
 ) {
     let dt = 1.0 / TICK_HZ;
     for (mut body, at, children) in &mut players {
         for child in children.iter() {
-            let Ok((mut pb, mut t, mut anim, fighter, fallen, torch, wields)) =
-                bodies.get_mut(child)
-            else {
+            let Ok((mut pb, mut t, mut anim, fighter, fallen)) = bodies.get_mut(child) else {
                 continue;
             };
             if fallen || fighter.is_some_and(|f| f.down) {
@@ -216,6 +300,9 @@ fn steer_player(
             let feet = at.translation();
             let speed = body.desired_velocity.length();
             if pb.combat {
+                // The body turns toward the heading, which the cursor sets.
+                pb.yaw = body_turn(pb.yaw, pb.heading, false, speed);
+                t.rotation = Quat::from_rotation_y(pb.yaw);
                 combat_steps(&keys, &mut body, &mut pb, &mut anim, dt);
                 continue;
             }
@@ -286,9 +373,7 @@ fn steer_player(
             } else {
                 "Walk"
             };
-            let moveset = moveset(false, torch, wields);
-            if anim.looping && (anim.action != action || anim.moveset != moveset) {
-                anim.moveset = moveset.into();
+            if anim.looping && anim.action != action {
                 anim.play_loop(action);
             }
         }
@@ -296,7 +381,7 @@ fn steer_player(
 }
 
 /// Combat footwork: W, S, A and D step along and across the cursor
-/// direction (the body faces the cursor); held, they walk on.
+/// direction; held, they walk on.
 fn combat_steps(
     keys: &ButtonInput<KeyCode>,
     body: &mut CharacterBody,
@@ -304,7 +389,7 @@ fn combat_steps(
     anim: &mut Animator,
     dt: f32,
 ) {
-    let look = forward(pb.yaw);
+    let look = forward(pb.aim);
     let side = Vec3::new(look.z, 0.0, -look.x);
     let mut dir = Vec3::ZERO;
     for (key, d) in [
@@ -337,37 +422,34 @@ fn combat_steps(
 
 fn toggle_combat(
     keys: Res<ButtonInput<KeyCode>>,
-    mut bodies: Query<(
-        &mut PlayerBody,
-        &mut Animator,
-        Has<CarriesTorch>,
-        Has<Wielded>,
-    )>,
+    mut bodies: Query<(&mut PlayerBody, &mut Animator)>,
 ) {
     if !keys.just_pressed(KeyCode::Tab) {
         return;
     }
-    for (mut pb, mut anim, torch, wields) in &mut bodies {
+    for (mut pb, mut anim) in &mut bodies {
         pb.combat = !pb.combat;
-        anim.moveset = moveset(pb.combat, torch, wields).into();
+        pb.aim = pb.heading;
         anim.play_loop(if pb.combat { "Cmbt - Idle" } else { "Idle" });
     }
 }
 
-/// Combat mode (Tab): facing the cursor, attacks on the left button whose
-/// direction follows the mouse's vertical motion.
+/// Combat mode (Tab): the heading turns to the cursor once it is more than
+/// 30° off, and follows it while the left button is held. A left click
+/// attacks: on the main side, or on the other side when the cursor is far
+/// enough left of the body's facing, or overhead on a double click.
 #[allow(clippy::type_complexity)]
 fn player_combat(
     mut commands: Commands,
+    time: Res<Time>,
     buttons: Res<ButtonInput<MouseButton>>,
-    motion: Res<AccumulatedMouseMotion>,
     cursor: Res<CursorGround>,
     players: Query<&GlobalTransform, With<Player>>,
     mut bodies: Query<(
         Entity,
         &mut PlayerBody,
-        &mut Transform,
         &mut Animator,
+        Option<&HeldMoveset>,
         Option<&Fighter>,
         Option<&Attacking>,
         Has<Fallen>,
@@ -376,24 +458,41 @@ fn player_combat(
     let Some(player) = players.iter().next() else {
         return;
     };
-    for (entity, mut pb, mut t, mut anim, fighter, attacking, fallen) in &mut bodies {
+    for (entity, mut pb, mut anim, held, fighter, attacking, fallen) in &mut bodies {
         if fallen || fighter.is_some_and(|f| f.down) || !pb.combat {
             continue;
         }
-        if let Some(c) = cursor.0 {
-            let to = c - player.translation();
-            if to.xz().length() > 0.2 {
-                pb.yaw = yaw_of(to);
-                pb.heading = pb.yaw;
-                t.rotation = Quat::from_rotation_y(pb.yaw);
-            }
+        let aim = cursor
+            .0
+            .map(|c| c - player.translation())
+            .filter(|to| to.xz().length() > 0.2)
+            .map(yaw_of);
+        if let Some(aim) = aim {
+            pb.aim = aim;
+            pb.heading = combat_heading(pb.heading, aim, buttons.pressed(MouseButton::Left));
         }
-        if buttons.just_pressed(MouseButton::Left) && attacking.is_none() && anim.looping {
-            let action = match motion.delta.y {
-                y if y < -2.0 => "Attack Up",
-                y if y > 2.0 => "Attack Down",
-                _ => "Attack Mid",
-            };
+        if !buttons.just_pressed(MouseButton::Left) {
+            continue;
+        }
+        let weapon_class = held.map_or(class::FISTS, |h| h.weapon_class);
+        let other = aim.is_some_and(|a| other_side(a, pb.yaw, weapon_class));
+        let strike = pb.attack.click(time.elapsed_secs(), other);
+        let resting = attacking.is_none() && anim.looping;
+        let action = match strike {
+            // An overhead cuts a side's attack short, but not a stab or
+            // another overhead.
+            Strike::Overhead => (!matches!(anim.action.as_str(), "Stab" | "Overhead Swing"))
+                .then_some("Overhead Swing"),
+            _ if !resting => None,
+            Strike::Main => Some(MAIN_SIDE[pb.attack.pick(0)]),
+            Strike::Other => Some(OTHER_SIDE_ATTACKS[pb.attack.pick(1)]),
+        };
+        if let Some(action) = action {
+            info!(
+                "attack: {action} in {} (cursor {:.0}° left of the facing)",
+                anim.moveset,
+                aim.map_or(0.0, |a| turn_between(pb.yaw, a).to_degrees())
+            );
             exa_combat::start_attack(&mut commands, entity, &mut anim, action, "Cmbt - Idle");
         }
     }
@@ -564,13 +663,86 @@ mod tests {
     }
 
     #[test]
-    fn a_torch_picks_the_moveset_in_and_out_of_combat() {
-        for combat in [false, true] {
-            assert_eq!(moveset(combat, true, false), "Torch");
-            assert_eq!(moveset(combat, true, true), "1H & Torch");
+    fn the_player_holds_its_fists() {
+        let mut world = World::new();
+        let body = world.spawn(PlayerBody::new(0.0)).id();
+        let held = world.entity(body).get::<HeldMoveset>().unwrap();
+        assert_eq!(
+            (held.moveset.as_str(), held.weapon_class),
+            ("Default", class::FISTS)
+        );
+    }
+
+    #[test]
+    fn the_cursor_left_of_the_facing_attacks_on_the_other_side() {
+        let deg = |d: f32| d.to_radians();
+        // Positive turns go to the body's left (+X from +Z; its right is −X).
+        assert!(turn_between(0.0, deg(25.0)) > 0.0);
+        assert_eq!(forward(deg(90.0)).x.signum(), 1.0);
+        for yaw in [0.0, 3.0, -3.0] {
+            assert!(!other_side(yaw + deg(19.5), yaw, class::FISTS));
+            assert!(other_side(yaw + deg(20.5), yaw, class::FISTS));
+            assert!(other_side(yaw + deg(20.5), yaw, class::ONE_HANDED));
+            // Only the left: far to the right stays on the main side.
+            assert!(!other_side(yaw - deg(90.0), yaw, class::FISTS));
+            // Nothing held at all: from 15°.
+            assert!(!other_side(yaw + deg(14.5), yaw, class::NONE));
+            assert!(other_side(yaw + deg(15.5), yaw, class::NONE));
         }
-        assert_eq!(moveset(true, false, true), COMBAT_MOVESET);
-        assert_eq!(moveset(false, false, true), "Default");
+    }
+
+    #[test]
+    fn a_second_click_within_300_ms_is_an_overhead() {
+        let mut choice = AttackChoice::default();
+        assert_eq!(choice.click(10.0, false), Strike::Main);
+        assert_eq!(choice.click(10.29, false), Strike::Overhead);
+        // The double click used both clicks up.
+        assert_eq!(choice.click(10.4, true), Strike::Other);
+        assert_eq!(choice.click(10.75, false), Strike::Main);
+        assert_eq!(choice.click(11.1, false), Strike::Main);
+    }
+
+    #[test]
+    fn the_combat_heading_turns_to_the_cursor_beyond_30_degrees() {
+        let deg = |d: f32| d.to_radians();
+        for heading in [0.0, 3.0, -3.0] {
+            // Within 30° the heading stays, either side.
+            for off in [29.5, -29.5] {
+                let aim = heading + deg(off);
+                assert_eq!(combat_heading(heading, aim, false), heading);
+                // A held button (a standing attack request) follows it.
+                assert_eq!(combat_heading(heading, aim, true), aim);
+            }
+            for off in [30.5, -30.5] {
+                let aim = heading + deg(off);
+                assert_eq!(combat_heading(heading, aim, false), aim);
+            }
+        }
+    }
+
+    #[test]
+    fn the_picks_follow_the_original_generator() {
+        // × 0x08088405 + 1 from 0, clip = state × 3 >> 32, redrawn while
+        // it equals the last pick (0 at first).
+        let mut choice = AttackChoice::default();
+        let picks: Vec<usize> = (0..8).map(|_| choice.pick(0)).collect();
+        assert_eq!(picks, [2, 0, 2, 0, 1, 0, 1, 0]);
+        assert_eq!(choice.seed, 303_092_965);
+    }
+
+    #[test]
+    fn a_side_never_repeats_its_last_attack() {
+        let mut choice = AttackChoice::default();
+        let picks: Vec<usize> = (0..200).map(|_| choice.pick(0)).collect();
+        // The first pick is never the first clip: the last pick starts at 0.
+        assert_ne!(picks[0], 0);
+        assert!(picks.windows(2).all(|w| w[0] != w[1]));
+        for i in 0..3 {
+            let n = picks.iter().filter(|&&p| p == i).count();
+            assert!((50..=84).contains(&n), "clip {i}: {n} of 200");
+        }
+        // Each side keeps its own last pick.
+        assert_ne!(choice.pick(1), 0);
     }
 
     #[test]

@@ -211,6 +211,9 @@ fn setup(
             }
             let camera = spawn_chase_camera(&mut commands, &options);
             commands.insert_resource(PlayCamera(camera));
+            if let Some([x, y]) = options.cursor {
+                commands.insert_resource(exa_game::player::ScriptedCursor(Vec2::new(x, y)));
+            }
             if !begin_level(&mut commands, &mut loader, name, &options) {
                 let start = PlayStart {
                     position: Vec3::ZERO,
@@ -641,10 +644,11 @@ fn spawn_players(
                 ))
                 .id();
             let foe = exa_world::spawn_model(commands, &body, None);
-            let mut anim = exa_anim::Animator::new("One Handed", "Cmbt - Idle");
-            anim.time = 0.0;
+            // What it holds picks its moveset once it is dressed.
+            let anim = exa_anim::Animator::new(exa_character::held::DEFAULT_MOVESET, "Cmbt - Idle");
             commands.entity(foe).insert((
                 anim,
+                exa_character::held::Hands::default(),
                 exa_character::Outfit::of_models(&[
                     "leathjac_a".into(),
                     "trouser_a".into(),
@@ -897,24 +901,31 @@ fn autowalk(
     }
 }
 
-/// `--press`: presses each scripted key at its frame, counted from the end
-/// of the load, and lets it go the frame after.
+/// `--press`: presses each scripted key or mouse button at its frame,
+/// counted from the end of the load, and lets it go the frame after.
 fn press_keys(
     options: Res<Options>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     mut keys: ResMut<ButtonInput<KeyCode>>,
+    mut buttons: ResMut<ButtonInput<MouseButton>>,
     mut frames: Local<u32>,
 ) {
     if options.press.is_empty() || loading.is_some() {
         return;
     }
     *frames += 1;
-    for &(key, at) in &options.press {
-        if at == *frames {
-            info!("pressing {key:?}");
-            keys.press(key);
-        } else if at + 1 == *frames {
-            keys.release(key);
+    for &(press, at) in &options.press {
+        let down = at == *frames;
+        if down {
+            info!("pressing {press:?}");
+        } else if at + 1 != *frames {
+            continue;
+        }
+        match (press, down) {
+            (crate::Press::Key(key), true) => keys.press(key),
+            (crate::Press::Key(key), false) => keys.release(key),
+            (crate::Press::Button(button), true) => buttons.press(button),
+            (crate::Press::Button(button), false) => buttons.release(button),
         }
     }
 }

@@ -337,6 +337,16 @@ The section's first word holds the flags:
 - hands (bits 4–5): 0 unarmed, 1 one-handed, 2 two-handed, 3 polearm;
 - haft material (bits 16–17): 1 wood, 2 metal, 3 other.
 
+The low 16 bits also pick the holder's moveset (REA on the routine run
+after every equip change; [PLAYER.md](../PLAYER.md), Moveset from held
+items): by the hands bits, and among two-handers "Greatsword" for exactly
+`0x521`, "2H Light" when bit 0 is set, else "Two Handed". The installed
+object database's 208 weapon items give "One Handed" 136 times, "Polearm"
+32, "Two Handed" 19, "2H Light" 18 and "Greatsword" 3; none lacks hands
+bits. The torch, "Torch A01", is a one-handed stick (`0x01000013`). The
+fists' built-in records have no hands bits (flags 0, or `0x40` for the
+two clawed ones).
+
 **Factory weapons** start from their template item's bytes.
 - Each chosen variant adds its slash, crush, pierce and thrust (variant
   +0x1A, i16 each, low byte, wrapping). It also sets the type code from

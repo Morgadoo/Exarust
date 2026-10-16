@@ -15,6 +15,7 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use exa_anim::BodyPart;
 use exa_assets::{Game, ModelCache, ModelLoader, PackKind, model};
+use exa_character::held::{Hands, HeldItem};
 use exa_character::{RIGHT_HAND, Wielded};
 
 pub struct TorchPlugin;
@@ -42,6 +43,8 @@ pub struct TorchRoot;
 pub const LEFT_HAND: usize = 18;
 /// The torch model in `Objects.rpk`.
 const TORCH: &str = "torcha02";
+/// The weapon flags of the torch's item ("Torch A01"): a one-handed stick.
+pub const TORCH_FLAGS: u16 = 0x13;
 
 /// The hand a torch is carried in. On a body carrying a torch it fixes the
 /// hand (the character view shows a torch moveset's own hand); without it
@@ -101,7 +104,8 @@ impl TorchHand {
 
     /// The moveset a body carrying the torch in this hand moves with, in
     /// and out of combat: the one-handed moveset with the "Torch" overlay
-    /// (the right hand held up at the shoulder), or "1H & Torch" (the left).
+    /// (the right hand held up at the shoulder), or "1H & Torch" (the left),
+    /// as the held items pick it (`exa_character::held`).
     pub fn moveset(self) -> &'static str {
         match self {
             Self::Main => "Torch",
@@ -129,8 +133,8 @@ impl TorchHand {
 fn light_torches(
     mut commands: Commands,
     game: Option<Res<Game>>,
-    bodies: Query<
-        (Entity, Has<Wielded>, Option<&TorchHand>),
+    mut bodies: Query<
+        (Entity, Has<Wielded>, Option<&TorchHand>, Option<&mut Hands>),
         (With<CarriesTorch>, Without<TorchLit>),
     >,
     children: Query<&Children>,
@@ -142,7 +146,7 @@ fn light_torches(
     support: Option<Res<CompressedImageFormatSupport>>,
 ) {
     let Some(game) = game else { return };
-    for (body, wields, fixed) in &bodies {
+    for (body, wields, fixed, hands) in &mut bodies {
         let hand = fixed.copied().unwrap_or(TorchHand::of(wields));
         let by_bone: HashMap<usize, Entity> = children
             .iter_descendants(body)
@@ -160,6 +164,18 @@ fn light_torches(
             bc_supported: model::bc_supported(support.as_deref()),
         };
         commands.entity(body).insert(TorchLit);
+        // The torch in its hand picks the moveset.
+        if let Some(mut hands) = hands {
+            match hand {
+                TorchHand::Main => {
+                    hands.main = Some(HeldItem {
+                        flags: TORCH_FLAGS,
+                        light: true,
+                    })
+                }
+                TorchHand::Off => hands.off_light = true,
+            }
+        }
         let Some(torch) = loader.model(PackKind::Objects, TORCH) else {
             warn!("{TORCH} not found: no torch in hand");
             continue;
@@ -184,6 +200,47 @@ mod tests {
         assert_eq!(TorchHand::of_moveset("torch"), Some(TorchHand::Main));
         assert_eq!(TorchHand::of_moveset("1H & Torch"), Some(TorchHand::Off));
         assert_eq!(TorchHand::of_moveset("One Handed"), None);
+    }
+
+    #[test]
+    fn the_held_torch_picks_the_torch_hand_moveset() {
+        use exa_character::held::{DEFAULT_MOVESET, choose};
+        let main = Hands {
+            main: Some(HeldItem {
+                flags: TORCH_FLAGS,
+                light: true,
+            }),
+            ..default()
+        };
+        let beside_sword = Hands {
+            main: Some(HeldItem::weapon(0x11)),
+            off_light: true,
+            ..default()
+        };
+        for (hands, hand) in [(main, TorchHand::Main), (beside_sword, TorchHand::Off)] {
+            assert_eq!(
+                choose(&hands, DEFAULT_MOVESET, false).moveset,
+                hand.moveset()
+            );
+        }
+    }
+
+    /// The installed torch item is a one-handed stick.
+    #[test]
+    fn the_shipped_torch_is_a_one_handed_stick() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let bytes = game
+            .pack(PackKind::Resource)
+            .and_then(|p| p.get("objdb.rdb"))
+            .unwrap();
+        let db = exa_formats::rdb::Database::parse(bytes).unwrap();
+        let items = exa_formats::objdb::items(&db);
+        let torch = items.iter().find(|i| i.name == "Torch A01").unwrap();
+        assert_eq!(torch.model.to_ascii_lowercase(), TORCH);
+        assert_eq!(torch.weapon.unwrap().flags & 0xFFFF, TORCH_FLAGS as u32);
     }
 
     #[test]

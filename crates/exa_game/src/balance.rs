@@ -100,10 +100,13 @@ fn get_up(
             continue;
         };
         controller.desired_velocity = Vec3::ZERO;
-        let stance = if anim.moveset == "Default" {
-            "Idle"
-        } else {
-            "Cmbt - Idle"
+        // The get-up ends in the stance: the player's by its combat mode
+        // (its moveset follows what it holds, in and out of combat).
+        let stance = match &player {
+            Some(pb) if pb.combat => "Cmbt - Idle",
+            Some(_) => "Idle",
+            None if anim.moveset == "Default" => "Idle",
+            None => "Cmbt - Idle",
         };
         if fallen.getting_up {
             // Its balance rises in its character ticks meanwhile.

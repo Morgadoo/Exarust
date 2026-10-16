@@ -10,6 +10,10 @@
 //! when nothing they wear covers the groin, they also wear the object
 //! database's braies, beneath everything else (`docs/formats/OTHER.md`,
 //! Underwear).
+//!
+//! What a character holds picks the moveset its clips come from ([`held`]).
+
+pub mod held;
 
 use std::collections::HashMap;
 
@@ -38,6 +42,7 @@ impl Plugin for CharacterPlugin {
                     .run_if(not(resource_exists::<UnderwearItems>)),
                 keep_underwear.run_if(resource_exists::<UnderwearItems>),
                 equip_outfits,
+                held::choose_held_movesets,
             )
                 .chain()
                 // The skinned garments are bound to the skeleton in the
@@ -442,6 +447,7 @@ fn equip_outfits(
             &Outfit,
             Option<&Wielded>,
             Option<&mut exa_combat::Fighter>,
+            Option<&mut held::Hands>,
         ),
         Without<Dressed>,
     >,
@@ -487,7 +493,7 @@ fn equip_outfits(
     // one frame stalled the window for seconds.
     let started = std::time::Instant::now();
     let deadline = started + DRESS_BUDGET;
-    for (body, outfit, wielded, fighter) in &mut bodies {
+    for (body, outfit, wielded, fighter, hands) in &mut bodies {
         if started.elapsed() >= DRESS_BUDGET {
             break;
         }
@@ -581,6 +587,10 @@ fn equip_outfits(
                     .unwrap_or(item.stats),
                 None => item.stats,
             };
+            // The weapon in the main hand picks the moveset.
+            if let Some(mut hands) = hands {
+                hands.main = Some(held::HeldItem::weapon(item.flags));
+            }
             let length = weapon_length(&weapon, loader.meshes).max(0.1);
             let record =
                 exa_combat::damage::WeaponRecord::new(item.flags, &stats, false, length * 100.0);

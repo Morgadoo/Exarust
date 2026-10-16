@@ -25,14 +25,15 @@
 //!          --shove <frame>            a body blow to every simulated body at that frame after loading
 //!          --outfit a,b,c             apparel for character/play (Characters.rpk entries), over the underwear
 //!          --weapon <name>            weapon in the right hand (Objects.rpk entry)
-//!          --opponent                 an armed duellist in play mode (F: combat mode, left click: attack)
+//!          --opponent                 an armed duellist in play mode (Tab: combat mode, left click: attack)
 //!          --trace <file.csv>         the player's body (else every simulated body) after every 83 Hz tick, in cm
 //!          --debug-bodies             start with the body overlay and joint readout shown (F3 toggles it)
 //!          --joint-trace <file.csv>   every joint of every simulated body after every 83 Hz tick (degrees, cm)
 //!          --sim-speed <f>            run the simulation at this speed (e.g. 0.25)
 //!          --pause-at-tick <n>        pause the simulation at the end of body tick n
 //!          --pause-on-stretch <cm>    pause the simulation when a link goes this far past its slack
-//!          --press key@frame,...      press keys at frames after loading (e.g. `.@400,P@500`)
+//!          --press key@frame,...      press keys or mouse buttons (LMB, RMB, MMB) at frames after loading (e.g. `.@400,P@500,LMB@600`)
+//!          --cursor x,y               play mode: the cursor stays at this window point (logical pixels), for unattended runs
 //! ```
 //!
 //! Controls: hold the right mouse button to look, WASD to move, Q/E down/up,
@@ -108,8 +109,18 @@ pub struct Options {
     pub sim_speed: Option<f32>,
     pub pause_at_tick: Option<u64>,
     pub pause_on_stretch: Option<f32>,
-    /// Keys pressed at frames after the load (for unattended checks).
-    pub press: Vec<(KeyCode, u32)>,
+    /// Keys and buttons pressed at frames after the load (for unattended
+    /// checks).
+    pub press: Vec<(Press, u32)>,
+    /// Play mode: a cursor fixed at this window point (logical pixels).
+    pub cursor: Option<[f32; 2]>,
+}
+
+/// What a `--press` entry presses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Press {
+    Key(KeyCode),
+    Button(MouseButton),
 }
 
 fn usage() -> AppExit {
@@ -185,13 +196,26 @@ fn key_named(name: &str) -> Option<KeyCode> {
     }
 }
 
+/// The mouse button a `--press` entry names: `LMB`, `RMB` or `MMB`.
+fn button_named(name: &str) -> Option<MouseButton> {
+    match name {
+        "LMB" => Some(MouseButton::Left),
+        "RMB" => Some(MouseButton::Right),
+        "MMB" => Some(MouseButton::Middle),
+        _ => None,
+    }
+}
+
 /// Reads `key@frame,...`.
-fn parse_presses(list: &str) -> Option<Vec<(KeyCode, u32)>> {
+fn parse_presses(list: &str) -> Option<Vec<(Press, u32)>> {
     list.split(',')
         .filter(|s| !s.trim().is_empty())
         .map(|entry| {
             let (key, frame) = entry.trim().rsplit_once('@')?;
-            Some((key_named(key)?, frame.parse().ok()?))
+            let press = button_named(key)
+                .map(Press::Button)
+                .or_else(|| key_named(key).map(Press::Key))?;
+            Some((press, frame.parse().ok()?))
         })
         .collect()
 }
@@ -277,6 +301,15 @@ fn main() -> AppExit {
                 if let Ok(pose) = <[f32; 5]>::try_from(v.as_slice()) {
                     options.camera = Some(pose);
                 }
+            }
+            "--cursor" => {
+                let v: Vec<f32> = args
+                    .next()
+                    .unwrap_or_default()
+                    .split(',')
+                    .filter_map(|x| x.trim().parse().ok())
+                    .collect();
+                options.cursor = <[f32; 2]>::try_from(v.as_slice()).ok();
             }
             "--at" | "--torch" => {
                 let v: Vec<f32> = args
@@ -415,20 +448,24 @@ mod tests {
 
     #[test]
     fn scripted_presses_are_read() {
+        let key = Press::Key;
         assert_eq!(
-            parse_presses(".@400, P@500,F3@1,]@2,[@3,Tab@4,f@5"),
+            parse_presses(".@400, P@500,F3@1,]@2,[@3,Tab@4,f@5,LMB@6,RMB@7,MMB@8"),
             Some(vec![
-                (KeyCode::Period, 400),
-                (KeyCode::KeyP, 500),
-                (KeyCode::F3, 1),
-                (KeyCode::BracketRight, 2),
-                (KeyCode::BracketLeft, 3),
-                (KeyCode::Tab, 4),
-                (KeyCode::KeyF, 5),
+                (key(KeyCode::Period), 400),
+                (key(KeyCode::KeyP), 500),
+                (key(KeyCode::F3), 1),
+                (key(KeyCode::BracketRight), 2),
+                (key(KeyCode::BracketLeft), 3),
+                (key(KeyCode::Tab), 4),
+                (key(KeyCode::KeyF), 5),
+                (Press::Button(MouseButton::Left), 6),
+                (Press::Button(MouseButton::Right), 7),
+                (Press::Button(MouseButton::Middle), 8),
             ])
         );
         assert_eq!(parse_presses(""), Some(vec![]));
-        for bad in ["P", "P@x", "F13@1", "Esc@2", "@3"] {
+        for bad in ["P", "P@x", "F13@1", "Esc@2", "@3", "lmb@4", "XMB@5"] {
             assert_eq!(parse_presses(bad), None, "{bad}");
         }
     }

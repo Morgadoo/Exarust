@@ -51,9 +51,75 @@ The original has no camera-relative keyboard movement. Outside combat:
 
 ## Combat mode
 
-**Tab** toggles it. The character faces the cursor; W, S, A and D step
-along and across that direction, and keys held longer than 200 ms walk on.
-The left button attacks; the mouse's vertical motion picks the strike.
+**Tab** toggles it. W, S, A and D step along and across the cursor's
+direction, and keys held longer than 200 ms walk on.
+
+- **Facing.** The heading turns to the cursor's direction once it is more
+  than 30° off it, and follows it exactly while the left button is held
+  (every attack request sets it). The body turns toward the heading as in
+  exploration: up to 240°/s, eased over the last 0.6 rad. A cursor moved
+  less than 30° leaves the character facing where it faced.
+- **Attacks.** A left click asks for an attack from the moveset the held
+  items pick (below):
+  - **the main side**: Attack Mid, Down or Up, picked at random and never
+    the one picked last;
+  - **the other side**, when the cursor lies more than 20° to the left of
+    the body's facing (15° for weapon class 0: a body holding nothing at
+    all, which a human never is since the fists count as held, or a shield
+    or an off-hand light beside the fists): Attack Combo 1, 2 or 3, the
+    same way;
+  - **an overhead** (Overhead Swing) on a click within 300 ms of the one
+    before; that click no longer counts for the next double click. It cuts
+    a side's attack short, but never a Stab or another overhead.
+
+  The picks use the original's 32-bit generator (× 0x08088405 + 1, clip =
+  state × 3 >> 32), redrawn while equal to the side's last pick; a side's
+  last pick starts at 0, so its first attack is never its first clip.
+  Unarmed, the three clips of each side are one clip: the main side is
+  the right straight (the right arm out, the body twisted into it, the
+  left fist pulled back), the other side the left straight, and the
+  overhead a right overhand.
+- Not yet: the combat stance (the Defence stance until an opponent comes
+  within 350 cm); fists that land, the cooldown between attacks (400 ms
+  before the first, then 300 ms × the weapon's recovery + 300 ms) and the
+  energy needed to attack (80 %); holding the button to repeat or chain
+  attacks; Alt thrusts; parries. Unarmed attacks play but never hit.
+
+## Moveset from held items
+
+What a character holds picks the moveset its clips come from, after every
+equip change and in or out of combat mode, as the original picks it. The
+same choice gives a stance class (what the other arm does while one
+swings) and a weapon class (the held weapon's hands bits, `0x80` for the
+fists). A moveset lacking a clip falls back to its parent ("One Handed" to
+"Default").
+
+| held | moveset | stance class | weapon class |
+|---|---|---|---|
+| empty hands (the fists) | the race's own ("Default") | 5 | `0x80` (`0xC0` for a clawed race) |
+| one one-handed weapon | "One Handed" | 1 | `0x10` |
+| two one-handed weapons | "2W Light" | 6 | `0x90` |
+| a two-hander with flags `0x521` | "Greatsword" | 2 | `0x20` |
+| another two-hander, kind bit 0 set (bladed, stick) | "2H Light" | 2 | `0x20` |
+| another two-hander | "Two Handed" | 2 | `0x20` |
+| a polearm | "Polearm" | 2 | `0x30` |
+| a shield (beside anything) | "1H & Shield", or "Shield C1" / "Shield C2" by two character flags | 3 | the main item's |
+| a light in the off hand | "1H & Torch" | 4 | the main item's (`0` beside the fists) |
+| a light in the main hand | "One Handed" with the "Torch" overlay (Exarust's "Torch" moveset) | 5 | the light's (`0x10` for the torch) |
+
+The rows are tried top to bottom from the shield down; the weapon flags
+are the low 16 bits of the item's weapon section's first word
+([formats/OTHER.md](formats/OTHER.md), Weapon stats). The torch item is a
+one-handed stick (flags `0x13`).
+
+In Exarust the player and the duellist follow this rule: the player
+unarmed fights with the "Default" punches, armed with "One Handed" (also
+idling with it out of combat), and with a torch as below. The character
+view keeps the moveset its command line names, and level characters keep
+their race's moveset until they have equipment. Not yet: shields and a
+second weapon (no Exarust item holds them), the "Torch" overlay over a
+shield moveset, and the armed movesets of other races, which the original
+looks up under the race's own moveset.
 
 ## Camera
 
@@ -99,7 +165,7 @@ The left button attacks; the mouse's vertical motion picks the strike.
     at shoulder height, about 12 cm forward.
 
   There is no additive arm layer: the whole moveset changes, in and out of
-  combat. A new game puts the torch in the off hand for two of the four
+  combat, as the held items pick it ([Moveset from held items](#moveset-from-held-items)). A new game puts the torch in the off hand for two of the four
   backgrounds; the player in the reference captures holds it raised in the
   right hand.
 - Exarust's play mode gives the player a lit torch in the story levels
