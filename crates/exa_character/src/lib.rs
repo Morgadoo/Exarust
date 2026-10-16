@@ -1,5 +1,5 @@
-//! Characters: apparel fitted to body parts (and later appearance, stats,
-//! injuries).
+//! Characters: apparel fitted to body parts, wound blood ([`blood`]), and
+//! later appearance, stats and injuries.
 //!
 //! Apparel models in `Characters.rpk` use the body's part hierarchy: a node
 //! named `<bone><layer><name>` (`0900Chest`, `1000Head`) is authored in the
@@ -14,6 +14,8 @@
 //! What a character holds picks the moveset its clips come from ([`held`]).
 
 pub mod held;
+
+pub mod blood;
 
 use std::collections::HashMap;
 
@@ -32,7 +34,8 @@ pub struct CharacterPlugin;
 
 impl Plugin for CharacterPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Painting>()
+        app.add_plugins(blood::BloodPlugin)
+            .init_resource::<Painting>()
             .init_resource::<Fitting>()
             .add_systems(
                 Update,

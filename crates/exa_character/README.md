@@ -38,3 +38,19 @@ Characters: races, body morphs, appearance, apparel fitting, stats/attributes/sk
   the chosen moveset into the body's `Animator` whenever the hands change.
   Only bodies with `Hands` follow it (the player and the duellist). See
   [`docs/PLAYER.md`](../../docs/PLAYER.md) (Moveset from held items).
+
+## Blood
+
+- `blood::PaintWound` paints a wound now, as the original's painter does:
+  around the contact point less half the striking point's travel, a ball
+  behind and a smear ahead, into the vertex colour's alpha (255 clean,
+  only ever lowered) of the character's skinned meshes and the meshes under
+  its head, on their current skinned positions. Held items, rigid items on
+  other parts and hidden parts are never painted.
+- A model's meshes stay shared until a wound lowers a value of one: the
+  struck character then gets its own copy (marked `Bloodied`), painted in
+  place afterwards. A whole human body in braies costs 278 KiB, the
+  duellist's outfit 1.9 MiB, on the CPU and the GPU each.
+- `blood::DebugWounds` (`--debug-wound`, [`docs/DEBUGGING.md`](../../docs/DEBUGGING.md))
+  paints test wounds once the player's or the character view's body is
+  dressed. Wounds from hits come with the bleeding change (L7).

@@ -11,3 +11,12 @@ Rendering on Bevy/wgpu: material plug-ins, skinned characters, terrain, grass, l
 - Lighting: point/spot lights with cube/spot shadow maps; voxel global illumination (original engine has a VXGI pass); ambient occlusion map.
 - Terrain (`.rft` + `.ftb` material layers), grass/foliage instancing, particles, blood spatter, power effects.
 - Post-processing: bloom, blur, tone mapping matching the original look.
+
+## Blood
+
+`material::BloodProgram` is the original's dirt mode 4 in its three
+programs (cloth, skin, hair): the vertex colour's alpha (255 clean, lowered
+by wounds) against the tiling speckle `spatter01` bound as the dirt map,
+with the original's tints and wet roughness. `exa.wesl` runs it only for
+meshes with a colour stream, so clean characters draw as before. Rules:
+[`docs/RENDERING.md`](../../docs/RENDERING.md) (Blood).

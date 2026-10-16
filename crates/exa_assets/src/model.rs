@@ -21,7 +21,9 @@ use crate::skin::{Joint, VertexSkin, auto_skin};
 use crate::texture::{ColorSpace, has_alpha, rfi_to_image};
 use exa_formats::material::flags as material_flags;
 use exa_formats::objdb::Appearance;
-use exa_render::material::{ExaMaterial, ExaParams, flags, linear, linear_rgb};
+use exa_render::material::{
+    BloodProgram, ExaMaterial, ExaParams, SPATTER, flags, linear, linear_rgb,
+};
 
 /// A decoded model ready to spawn any number of times.
 #[derive(Debug, Clone)]
@@ -100,6 +102,8 @@ pub struct ModelCache {
     /// The body's skinned vertices per bone (part space, metres), for
     /// apparel to take its weights from.
     body_skin: HashMap<u16, Arc<Vec<(Vec3, VertexSkin)>>>,
+    /// Body model stems (lower case) of the races that bleed, once read.
+    bleeding_stems: Option<HashSet<String>>,
     warned: HashSet<String>,
 }
 
@@ -358,7 +362,14 @@ impl ModelLoader<'_> {
             Some(_) if crate::human_skin::is_race_skin(entry, name) => {
                 crate::human_skin::skin_material(self, entry)
             }
-            Some(m) => self.exa_material(&m),
+            Some(mut m) => {
+                // A bleeding race's skin takes the blood dirt mode, as the
+                // original's race loader sets it.
+                if is_body_model(entry) && takes_race_blood(name) && self.race_bleeds(entry) {
+                    m.extra |= DIRT_MODE_BLOOD;
+                }
+                self.exa_material(&m)
+            }
             None => {
                 self.warn_once(format!("material {name:?} not found"));
                 ExaMaterial {
@@ -486,9 +497,20 @@ impl ModelLoader<'_> {
             mat.params.flags |= flags::OPACITY_FALLOFF;
         }
         mat.environment = self.environment_map();
+        // Dirt mode 4 (blood) needs a diffuse map and a program with dirt.
+        if m.extra & DIRT_MODE == DIRT_MODE_BLOOD
+            && mat.diffuse_map.is_some()
+            && let Some(program) = BloodProgram::of_type(m.kind)
+        {
+            let spatter = self.spatter();
+            mat = mat.with_blood(program, spatter);
+        }
         mat.with_map_flags()
     }
 
+    /// The material of a run-time (`&`) apparel texture set without its
+    /// painting, as the original's `_procmat1` built-in replaces it: blood
+    /// shows on it as on cloth.
     fn apparel_material(&mut self, texture_key: &str) -> Handle<ExaMaterial> {
         let mut mat = ExaMaterial {
             environment: self.environment_map(),
@@ -506,7 +528,35 @@ impl ModelLoader<'_> {
         mat.normal_map = self
             .texture(&format!("{texture_key}n"), ColorSpace::Linear)
             .map(|t| t.0);
+        if mat.diffuse_map.is_some() {
+            let spatter = self.spatter();
+            mat = mat.with_blood(BloodProgram::Cloth, spatter);
+        }
         self.materials.add(mat.with_map_flags())
+    }
+
+    /// The speckle texture blood shows through (`spatter01`, read as data).
+    pub fn spatter(&mut self) -> Option<Handle<Image>> {
+        self.texture(SPATTER, ColorSpace::Linear).map(|t| t.0)
+    }
+
+    /// Whether a race whose body model is `entry` bleeds (`races.rdb`).
+    fn race_bleeds(&mut self, entry: &str) -> bool {
+        let game = self.game;
+        let stems = self.cache.bleeding_stems.get_or_insert_with(|| {
+            game.pack(PackKind::Resource)
+                .and_then(|p| p.get("races.rdb"))
+                .and_then(|b| exa_formats::races::parse(b).ok())
+                .unwrap_or_default()
+                .iter()
+                .filter(|r| r.bleeds())
+                .map(|r| r.stem.to_ascii_lowercase())
+                .collect()
+        });
+        let lower = entry.to_ascii_lowercase();
+        lower
+            .strip_suffix("base.rfc")
+            .is_some_and(|stem| stems.contains(stem))
     }
 
     /// A texture decoded to RGBA8 on the CPU, cached by name.
@@ -671,7 +721,12 @@ impl ModelLoader<'_> {
                 .texture(&format!("{}n", key.0), ColorSpace::Linear)
                 .map(|t| t.0),
         };
-        let handle = self.materials.add(mat.with_map_flags());
+        // The original's painted apparel (`_procmat1`) and factory items
+        // (`_procmatr`) show blood as cloth.
+        let spatter = self.spatter();
+        let handle = self
+            .materials
+            .add(mat.with_blood(BloodProgram::Cloth, spatter));
         self.cache.painted.insert(key, handle.clone());
         handle
     }
@@ -1199,6 +1254,19 @@ const FALLOFF_MIN: f32 = 0.01;
 const SHADED: u32 = 0x7;
 /// Material flag (`0x48`) of the emissive layer.
 const EMISSIVE_LAYER: u32 = 0x8_0000;
+/// Material extra flags (`0x4C`) choosing the dirt mode.
+const DIRT_MODE: u32 = 0x7000;
+/// The dirt mode that shows blood: the speckle texture against the vertex
+/// alpha, whatever dirt map the record names.
+const DIRT_MODE_BLOOD: u32 = 0x4000;
+
+/// Whether a bleeding race's body-model material shows blood: the original
+/// race loader turns dirt mode 4 on for the materials whose name starts
+/// with `s` (`skinhuman`, `skinogre`, `sdemona01`, `shrtogra`,
+/// `sknhrtghoula`, …), not the eyes.
+fn takes_race_blood(material: &str) -> bool {
+    material.starts_with('s')
+}
 
 /// A Bevy mesh holding only the vertices one material group uses.
 fn group_mesh(mesh: &RfcMesh, indices: &[u32], skin: Option<&[VertexSkin]>) -> Option<Mesh> {
@@ -1448,6 +1516,135 @@ mod tests {
             ..handle.clone()
         };
         assert_eq!(emissive(&plain).x, 1.0);
+    }
+
+    #[test]
+    fn race_blood_takes_the_skins_not_the_eyes() {
+        for skin in [
+            "skinhuman",
+            "skinogre",
+            "sdemona01",
+            "shrtogra",
+            "sknhrtghoula",
+        ] {
+            assert!(takes_race_blood(skin), "{skin}");
+        }
+        for other in [
+            "eyehuman",
+            "ogreeyemouth",
+            "hrthogaeye",
+            "golemgrda01",
+            "Skin",
+        ] {
+            assert!(!takes_race_blood(other), "{other}");
+        }
+    }
+
+    /// Which shipped materials show blood, and how (skipped without the
+    /// game): the human skin as skin, the braies as cloth, a bleeding
+    /// race's skin as cloth and not its eyes, nothing on the ancient's
+    /// skin or a skeleton (which does not bleed).
+    #[test]
+    fn shipped_blood_materials() {
+        let Some(dir) = crate::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(dir).unwrap();
+        let mut cache = ModelCache::default();
+        let mut meshes = Assets::<Mesh>::default();
+        let mut materials = Assets::<ExaMaterial>::default();
+        let mut images = Assets::<Image>::default();
+        let mut loader = ModelLoader {
+            game: &game,
+            cache: &mut cache,
+            meshes: &mut meshes,
+            materials: &mut materials,
+            images: &mut images,
+            bc_supported: false,
+        };
+        let blood = |loader: &mut ModelLoader, entry: &str| {
+            let model = loader.model(PackKind::Resource, entry).unwrap();
+            let mut found: Vec<(String, Option<BloodProgram>)> = model
+                .nodes
+                .iter()
+                .flat_map(|n| n.parts.iter().map(|p| p.1.clone()).zip(&n.part_materials))
+                .map(|(h, name)| {
+                    let m = loader.materials.get(&h).unwrap();
+                    if m.blood().is_some() {
+                        assert!(m.dirt_map.is_some(), "{entry} {name}");
+                    }
+                    (name.to_ascii_lowercase(), m.blood())
+                })
+                .collect();
+            found.sort_by(|a, b| a.0.cmp(&b.0));
+            found.dedup();
+            found
+        };
+        assert_eq!(
+            blood(&mut loader, "humanbase.rfc"),
+            [
+                ("eyehuman".into(), None),
+                ("skinhuman".into(), Some(BloodProgram::Skin))
+            ]
+        );
+        assert_eq!(
+            blood(&mut loader, "ogrebase.rfc"),
+            [
+                ("ogreeyemouth".into(), None),
+                ("skinogre".into(), Some(BloodProgram::Cloth))
+            ]
+        );
+        assert_eq!(
+            blood(&mut loader, "demona01base.rfc"),
+            [("sdemona01".into(), Some(BloodProgram::Cloth))]
+        );
+        assert!(
+            blood(&mut loader, "ancientbase.rfc")
+                .iter()
+                .all(|(_, b)| b.is_none())
+        );
+        assert!(
+            blood(&mut loader, "skelbase.rfc")
+                .iter()
+                .all(|(_, b)| b.is_none())
+        );
+        let braies = Appearance {
+            quality: 160,
+            damage: 64,
+            dirt: 0,
+            layers: Default::default(),
+        };
+        let painted = loader.painted_apparel("braies__aa", &braies);
+        let m = loader.materials.get(&painted).unwrap();
+        assert_eq!(m.blood(), Some(BloodProgram::Cloth));
+    }
+
+    /// The speckle blood shows through (skipped without the game): texels
+    /// at or above 0.5 cover about 13 % of `spatter01`, at or above 0.25
+    /// 46 %, at or above 0.125 83 %. So a skin vertex painted to 128 shows
+    /// blood as separate droplets on about an eighth of its texels.
+    #[test]
+    fn shipped_spatter_speckle() {
+        let Some(dir) = crate::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(dir).unwrap();
+        let rfi = Rfi::parse(game.texture(SPATTER).expect("spatter01")).unwrap();
+        assert_eq!((rfi.header.width, rfi.header.height), (1024, 1024));
+        let rgba = rfi.decode_rgba8().unwrap();
+        let red: Vec<f32> = rgba.iter().step_by(4).map(|&r| r as f32 / 255.0).collect();
+        let share = |at: f32| red.iter().filter(|&&a| a >= at).count() as f32 / red.len() as f32;
+        for (at, expected) in [(0.5, 0.13), (0.25, 0.46), (0.125, 0.83)] {
+            let s = share(at);
+            assert!((s - expected).abs() < 0.015, "{at}: {s}");
+        }
+        let alpha = 128.0 / 255.0;
+        let bleeding = red
+            .iter()
+            .filter(|&&a| BloodProgram::Skin.amount(a, alpha) > 0.0)
+            .count() as f32
+            / red.len() as f32;
+        assert!((bleeding - 0.13).abs() < 0.015, "{bleeding}");
     }
 
     /// The corpus records the rule was established on (run with

@@ -65,6 +65,16 @@ const FADE_RADIUS: f32 = 2.0;
 const SCATTER_COLOUR_LOD: f32 = 1.5;
 const ADDITIVE: u32 = 524288u;
 const OPACITY_FALLOFF: u32 = 1048576u;
+// Blood (the original's dirt mode 4) as its apparel and item, skin and hair
+// programs show it (`exa_render::material::BloodProgram`).
+const BLOOD: u32 = 2097152u;
+const BLOOD_SKIN: u32 = 4194304u;
+const BLOOD_HAIR: u32 = 8388608u;
+const BLOOD_TINT = vec3(0.6, 0.03, 0.0);
+const HAIR_BLOOD_TINT = vec3(0.45, 0.03, 0.02);
+const SKIN_ALPHA_FLOOR: f32 = 0.02;
+const CLOTH_BLOOD_GAIN: f32 = 1.3;
+const WET_ROUGHNESS: f32 = 0.2;
 // Displacement-shadow taps toward each light: four per sub-sample over the
 // original's four supersampling passes.
 const SHADOW_STEPS: i32 = 16;
@@ -264,6 +274,41 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     if has(GLOSS_MAP) && !has(SPECULAR_MAP) {
         s.rough = 1.0 - material.specular.w * textureSample(gloss_map, gloss_sampler, uv).r;
     }
+    // Blood: wounds lower the mesh's vertex alpha (1 clean); where it falls
+    // below the tiling speckle (the dirt map, read at UV×2, at UV×1 for
+    // hair) the amount da = clamp((a − α)/a·k, 0, 1) darkens the diffuse
+    // colour toward dark red and wets the surface. Meshes without a colour
+    // stream have never been wounded.
+@if(VERTEX_COLORS) {
+    if has(BLOOD) || has(BLOOD_SKIN) || has(BLOOD_HAIR) {
+        let hair = has(BLOOD_HAIR);
+        let a = textureSample(dirt_map, dirt_sampler, uv * select(2.0, 1.0, hair)).r;
+        var va = in.color.a;
+        var gain = 1.0;
+        if has(BLOOD_SKIN) {
+            va = max(va, SKIN_ALPHA_FLOOR);
+        } else if !hair {
+            gain = CLOTH_BLOOD_GAIN;
+        }
+        let da = clamp((a - va) / max(a, 1e-5) * gain, 0.0, 1.0);
+        let dark = 1.0 - 0.3 * da;
+        var bld: vec3<f32>;
+        if has(BLOOD_SKIN) {
+            s.rough = max(s.rough - da * (0.1 + 0.6 * a), 0.1);
+            bld = BLOOD_TINT * (1.0 - da * da * 0.5) * dark;
+        } else if hair {
+            s.rough = mix(s.rough, WET_ROUGHNESS, da * da * (0.7 * a + 0.3));
+            bld = HAIR_BLOOD_TINT * dark;
+        } else {
+            s.rough = mix(s.rough, WET_ROUGHNESS, da * da * (0.5 * a + 0.5));
+            bld = BLOOD_TINT * dark;
+        }
+        bld = clamp(bld + vec3(1.0 - da), vec3(0.0), vec3(1.0));
+        // Both the plain and the scattered share of the skin.
+        dif_col *= bld;
+        scatter_col *= bld;
+    }
+}
     s.rough = clamp(s.rough, 0.02, 1.0);
 
     var diffuse = vec3(0.0);

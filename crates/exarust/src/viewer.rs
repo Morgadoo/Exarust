@@ -157,6 +157,7 @@ fn setup(
                 commands.entity(root).insert((
                     exa_anim::Animator::new(moveset, action),
                     exa_character::Outfit::of_models(&options.outfit),
+                    exa_character::blood::DebugWoundTarget,
                 ));
                 if options.race.is_none_or(|r| r == exa_character::HUMAN) {
                     commands.entity(root).insert(exa_character::WearsUnderwear);
@@ -627,6 +628,7 @@ fn spawn_players(
         commands.entity(model).insert((
             exa_combat::Fighter::default(),
             exa_physics::body::Physical::default(),
+            exa_character::blood::DebugWoundTarget,
         ));
         // A lit torch, as the player carries one through the original's
         // dungeons; practice and arena take it away.

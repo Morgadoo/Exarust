@@ -35,6 +35,8 @@
 //!          --pause-on-stretch <cm>    pause the simulation when a link goes this far past its slack
 //!          --press key@frame,...      press keys or mouse buttons (LMB, RMB, MMB) at frames after loading (e.g. `.@400,P@500,LMB@600`)
 //!          --cursor x,y               play mode: the cursor stays at this window point (logical pixels), for unattended runs
+//!          --debug-wound b,r[,dx,dy,dz]  a test wound on the player's (or the character view's) body part b
+//!                                     (1–18 or chest, luarm, …), radius r cm, smeared along d cm; repeatable
 //! ```
 //!
 //! Controls: hold the right mouse button to look, WASD to move, Q/E down/up,
@@ -117,6 +119,8 @@ pub struct Options {
     pub press: Vec<(Press, u32)>,
     /// Play mode: a cursor fixed at this window point (logical pixels).
     pub cursor: Option<[f32; 2]>,
+    /// Test wounds on the player's or the character view's body.
+    pub debug_wounds: Vec<exa_character::blood::DebugWound>,
 }
 
 /// What a `--press` entry presses.
@@ -296,6 +300,18 @@ fn main() -> AppExit {
                     .filter(|s| !s.is_empty())
                     .collect();
             }
+            "--debug-wound" => {
+                let text = args.next().unwrap_or_default();
+                match exa_character::blood::DebugWound::parse(&text) {
+                    Some(w) => options.debug_wounds.push(w),
+                    None => {
+                        eprintln!(
+                            "--debug-wound: cannot read {text:?} (bone,radius_cm[,dx,dy,dz])"
+                        );
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
             "--ev" => options.ev100 = args.next().and_then(|v| v.parse().ok()).unwrap_or(6.0),
             "--frames" => options.frames = args.next().and_then(|v| v.parse().ok()).unwrap_or(90),
             "--camera" => {
@@ -399,6 +415,11 @@ fn main() -> AppExit {
     let mut app = App::new();
     if let Some(trace) = trace {
         app.insert_resource(trace);
+    }
+    if !options.debug_wounds.is_empty() {
+        app.insert_resource(exa_character::blood::DebugWounds(
+            options.debug_wounds.clone(),
+        ));
     }
     if let Some(trace) = joint_trace {
         app.insert_resource(trace);

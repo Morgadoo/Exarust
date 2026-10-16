@@ -26,6 +26,7 @@ entry. Layout:
 | offset | field |
 |---|---|
 | `+0x00` | name[32] |
+| `+0x18` | flags (u32, inside the name field after the short name): bit 0 bleeds. Human `0x0F`, Ogre `0x27`, Sir, harvester and demon `0x23`, Fael, both ghouls, Gobbler and Manipulator `0x03` bleed; Skeleton and Ancient 0, Wraith `0x300`, golems `0x1030`, `0x2030`, `0x20B8` do not. Other bits not decoded |
 | `+0x20` | body model stem[24]: `Skel` → `skelbase.rfc`, `GlmBsA` → `glmbsabase.rfc` |
 | `+0x38` | shared moveset[16] (`Default`) |
 | `+0x48` | the race's own moveset[16] (`Golem`, `Herath`, `Ogre`, `Demon A01`, …) |
@@ -60,7 +61,11 @@ from the routine that reads it (the support pins, the balance score and
 recovery steps, the stance factor of the body tick, the arms' anchor
 relaxation, the limbs' retention). When the id is missing, the original
 uses a built-in record instead: every factor 1.0 and an all-zero gait
-table, so a character on it cannot walk (`RaceBody::FALLBACK`). The values
+table, so a character on it cannot walk (`RaceBody::FALLBACK`). The
+character builder copies the flag word to the character; the damage
+routine's blood branch tests bit 0, and the race loader turns the blood
+dirt mode on for the race's body-model materials whose names start with
+`s` when it is set ([RENDERING.md](../RENDERING.md), Blood). The values
 per race are printed by `exa-tool races`; a corpus test checks every
 record.
 

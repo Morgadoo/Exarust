@@ -98,7 +98,7 @@ program.
 - `0x400000` **opacity** (its alpha; cobwebs use opacity · map²)
 - `0x800000` height
 - `0x1000000` gloss
-- `0x8000000` dirt (likely)
+- `0x8000000` dirt (the dirt modes' texture)
 
 **Lighting**:
 - GGX specular with r² = rough⁴, k = (rough + 1)²/8, rough = 1 −
@@ -127,7 +127,7 @@ program.
 - The specular colour is zero unless the flags carry `0x4`. It is tripled
   only for PBR materials (type 1) with a specular map.
 - Dirt maps only act through vertex colours, which level meshes do not
-  have.
+  have. Dirt mode 4 is wound blood ([Blood](#blood)).
 - Tangents are generated from the UVs, and the original's bitangent runs
   along −v (its tangent sign is the opposite of MikkTSpace's). Bevy flips
   the MikkTSpace sign too, so its bitangent also runs along −v and the
@@ -293,7 +293,84 @@ word it sets on the character, 0x200 for ancients) **[inf]**.
 
 Not yet: skin tones per character (the player's are in its save, which is
 not shipped), women's skin textures, the generated normal map's blend of
-the physique variants (`humannrmm0…5`), the dirt and blood layers.
+the physique variants (`humannrmm0…5`), the dirt layer. Blood: see
+[Blood](#blood).
+
+### Blood
+
+Wound blood is neither a texture nor a decal in the original: it is one
+byte per vertex, the alpha of the mesh's colour stream (255 clean),
+lowered around each wound and never raised, and a shader mode, **dirt
+mode 4**, that reads it against a shared tiling speckle texture.
+
+**Channel** (`exa_character::blood`): Exarust stores it as the colour
+stream in bytes (Unorm8x4, white, the blood in alpha). A mesh without one
+counts as white. A model's meshes are shared by every character wearing
+it; the first wound that lowers a value of one gives the struck character
+its own copy (`Bloodied`), which later wounds paint in place. A whole
+human body in braies costs 278 KiB (20 meshes, 2 989 vertices), the
+duellist's outfit 1.9 MiB (145 meshes, 20 668 vertices), on the CPU and the
+GPU each (76 bytes a vertex, 4 bytes an index); clean characters copy
+nothing.
+
+**Targets**: a character's skinned meshes (its body and every skinned
+garment, which the original merges into one skinned mesh) and every other
+mesh under its head part (hair, helmets). Never held items, rigid items on
+other parts, or body parts hidden under apparel.
+
+**Painter**, for a wound with contact point P, travel D (how the striking
+point moved on since the blow) and radius r (the original's 30·R + 10 cm),
+on the vertices' current skinned positions:
+- centre c = P − D/2; d = v − c;
+- e = |d|²·(1 − cos θ) when d points ahead along D (cos θ > 0), else |d|²:
+  a ball of radius r behind the centre, ahead a smear about √2·r wide that
+  runs on to the end of the mesh (e ≈ ρ²/2 at a distance ρ from its axis);
+- where e ≤ r²: f = 1 − e/r², u uniform in [0, 1), g = f + (1 − f)·u, value
+  255·(1 − f·g²), rounded to the nearest byte, written only when lower.
+  0 on the axis, 128–223 at f = ½, 191–251 at f = ¼.
+
+**Shading** (`exa_render::material::BloodProgram`, `exa.wesl`): a material
+with the mode binds `spatter01` (`Resource.rpk`, 1024², BC4, one channel)
+as its dirt map. With a the speckle at UV×2 (UV×1 on hair) and α the
+interpolated vertex alpha:
+- blood amount da = clamp((a − α)/a·k, 0, 1): k = 1.3 on cloth (the
+  original's apparel and item program), 1 on skin, where α is read no lower
+  than 0.02, and on hair. The speckle's texels at or above 0.5 cover 13 %,
+  at or above 0.25 46 %, at or above 0.125 83 %: a lightly painted vertex
+  shows separate bright droplets, and the mottled background fills in as α
+  falls toward 0;
+- the diffuse colour (both shares of the skin) is multiplied by, clamped
+  to [0, 1]:
+  - skin: (0.6, 0.03, 0)·(1 − da²/2)·(1 − 0.3·da) + (1 − da), (0.21,
+    0.0105, 0) at da = 1;
+  - cloth: (0.6, 0.03, 0)·(1 − 0.3·da) + (1 − da), (0.42, 0.021, 0);
+  - hair: (0.45, 0.03, 0.02)·(1 − 0.3·da) + (1 − da);
+- wet sheen (roughness): skin loses da·(0.1 + 0.6·a), no lower than 0.1;
+  cloth moves toward 0.2 by da²·(0.5·a + 0.5), hair by da²·(0.7·a + 0.3).
+- Meshes without a colour stream skip it all, so clean characters draw
+  exactly as before.
+
+**Materials with the mode**: the human skin (skin program; the ancient
+skin has none); every painted or run-time (`&`) apparel material and every
+factory item (cloth; the original's `_procmat1` and `_procmatr`); any
+record whose extra flags (`0x4C`) select dirt mode 4 (bits `0x7000` =
+`0x4000`) and that has a diffuse map, by its type (1 cloth, 3 hair, 4 skin;
+types 0 and 2 have no dirt modes); and the body-model materials whose names
+start with `s` of a race that bleeds (`races.rdb` flags bit 0: the race
+loader turns the mode on for `skinogre`, `sdemona01`, `shrtogra`,
+`sknhrtghoula` and the like, not the eyes). Exarust draws no hair yet.
+
+**Evidence**: reverse engineering of `Exanima.exe` 0.9.5 (the painter's
+constants and store, its targets, the white fill of meshes without
+colours, the race loader's `s` test), the game's shader sources (the skin,
+apparel, hair and translucent programs' dirt mode 4 blocks), the corpus
+(`races.rdb` flags, the race models' materials, `spatter01`'s histogram,
+pinned by tests), and retail screenshots: blood pixels median sRGB (54, 25,
+21) on skin of about (81, 68, 58), speckled edges, glossy thick coats.
+
+Not yet: wounds from hits (the bleed test, the delay after the blow, the
+radius from the damage), blood sprays, blade stains, the hair program,
+the translucent program's blood ((0.5, 0.03, 0)), and dirt modes 1–3.
 
 ## Voxel GI
 
@@ -657,7 +734,7 @@ The emissive scale of a fire's parent mesh by the fire, the emissive
 map's alpha on unlit surfaces without a fall-off, the jittered
 supersampling pattern, medium and large fire templates, the sun and
 terrain in the GI volume, several resident GI blocks, distance fog (the
-first fog mode), vertex dirt, glass refraction, effect programs (smoke,
+first fog mode), vertex dirt (dirt modes 1–3), glass refraction, effect programs (smoke,
 powers), the hair program, terrain parallax and wetness, and the outdoor
 environment cube.
 Software rendering here cannot afford the light shadows, so test frames use

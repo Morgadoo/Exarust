@@ -26,9 +26,11 @@
 //!   lit by a wrapped term on a blurred normal (mip 2), with the diffuse map
 //!   blurred too; the rest takes plain N·L. Lit skin stays as bright as plain
 //!   diffuse, with a red wrap into the shadow side.
+//! - **Blood**: the human skin shows wound blood through the skin program's
+//!   dirt mode 4 (`BloodProgram::Skin`); the ancient skin has none.
 
 use bevy::prelude::*;
-use exa_render::material::{ExaMaterial, ExaParams, flags, linear_rgb};
+use exa_render::material::{BloodProgram, ExaMaterial, ExaParams, flags, linear_rgb};
 
 use crate::model::{ModelLoader, is_body_model};
 use crate::texture::ColorSpace;
@@ -73,6 +75,12 @@ impl SkinKind {
             Self::Ancient => ANCIENT_SCATTER,
         }
     }
+
+    /// Whether wound blood shows on the skin: the human skin has the
+    /// original's blood dirt mode, the ancient skin none.
+    pub fn shows_blood(self) -> bool {
+        self == Self::Human
+    }
 }
 
 /// Whether a part of `entry` drawn with material `name` wears the skin.
@@ -107,8 +115,9 @@ pub fn skin_params(kind: SkinKind) -> ExaParams {
 /// race's textures.
 pub fn skin_material(loader: &mut ModelLoader, entry: &str) -> ExaMaterial {
     let stem = race_stem(entry);
+    let kind = SkinKind::of_stem(&stem);
     let mut mat = ExaMaterial {
-        params: skin_params(SkinKind::of_stem(&stem)),
+        params: skin_params(kind),
         environment: loader.environment_map(),
         ..default()
     };
@@ -118,6 +127,11 @@ pub fn skin_material(loader: &mut ModelLoader, entry: &str) -> ExaMaterial {
     mat.diffuse_map = loader.texture(&colour, ColorSpace::Linear).map(|t| t.0);
     mat.normal_map = loader.texture(&normal, ColorSpace::Linear).map(|t| t.0);
     mat.gloss_map = loader.texture(&gloss, ColorSpace::Linear).map(|t| t.0);
+    // Wounds show on the human skin through the skin program's blood.
+    if kind.shows_blood() && mat.diffuse_map.is_some() {
+        let spatter = loader.spatter();
+        mat = mat.with_blood(BloodProgram::Skin, spatter);
+    }
     mat.with_map_flags()
 }
 
@@ -142,6 +156,9 @@ mod tests {
         );
         assert_eq!(SkinKind::of_stem("human"), SkinKind::Human);
         assert_eq!(SkinKind::of_stem("Ancient"), SkinKind::Ancient);
+        // Only the human skin has the blood dirt mode.
+        assert!(SkinKind::Human.shows_blood());
+        assert!(!SkinKind::Ancient.shows_blood());
     }
 
     #[test]

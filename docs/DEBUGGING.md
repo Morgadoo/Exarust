@@ -36,6 +36,7 @@ exarust --debug-bodies --opponent --pause-on-stretch 1 \
 | `--camera x,y,z,yaw,pitch` | in play mode, a fixed camera there instead of the chase camera (metres, degrees), for unattended shots; with `--fov` |
 | `--cursor x,y` | in play mode, the cursor stays at this window point (logical pixels) instead of following the pointer; it needs the chase camera (not `--camera`) |
 | `--still-opponent` | `--opponent`, but the duellist stands its ground: it faces the player and takes its stance (by its distance, [PLAYER.md](PLAYER.md), The combat stance) but never walks or strikes; with `--at` it shows the stances at a chosen distance |
+| `--debug-wound bone,radius_cm[,dx,dy,dz]` | a test wound on the player's or the character view's body ([Wounds](#wounds)); repeatable |
 
 An unattended attack: `exarust --opponent --sim-speed 0.25 --camera
 4.2,1.4,0.6,90,-8 --press LMB@100 play arenao1` throws the unarmed
@@ -185,3 +186,38 @@ Off, the tools are within the runs' noise (under 0.1 ms). On, the readout
 costs most of the 0.9 ms; in the arena duel with supersampling and GI
 (GPU-bound, 59–66 FPS) no difference shows. The readout's rows are read ten
 times a second while the simulation runs.
+
+## Wounds
+
+`--debug-wound bone,radius_cm[,dx,dy,dz]` paints a wound on the player's
+body (play mode) or the character view's body, once it is dressed and its
+skin bound, three frames later, with the painter wounds from hits will use
+([RENDERING.md](RENDERING.md), Blood). The flag can be given several times.
+
+- `bone`: the body part, by bone number (1–18) or by name: `pelvis`,
+  `ruleg`, `rlleg`, `rfoot`, `luleg`, `llleg`, `lfoot`, `belly`, `chest`,
+  `head`, `rshld`, `ruarm`, `rfarm`, `lshld`, `luarm`, `lfarm`, `rhand`,
+  `lhand`.
+- The contact point is the front of that part: of its visible meshes (the
+  skin, or the garment over it), the vertex furthest along the way the body
+  faces.
+- `radius_cm`: the wound's radius (the original's is 30·R + 10 cm, R the
+  blow's lasting damage on the part: 11.5 cm at the bleeding threshold,
+  19 cm at R = 0.3).
+- `dx,dy,dz`: how far the striking point travelled on past the contact
+  point, in cm in the body's frame (+Y up, +Z the way it faces). Without
+  it the wound is a ball; with it, a smear that runs on along the travel to
+  the end of the mesh, as a blade's follow-through drags blood in the
+  original.
+
+```bash
+# A chest wound and a cut on the left upper arm, close up.
+exarust --debug-wound chest,20 --debug-wound luarm,12 \
+  --camera 0.15,1.35,1.05,0,-8 character
+# Blood running down from the belly over the braies and a thigh.
+exarust --debug-wound belly,15,0,-40,0 --debug-wound ruleg,14,0,-30,0 character
+```
+
+The log names each test wound's contact point and, for every wound, how
+many meshes it painted and copied and the copies' size. The tool costs
+nothing without the flag (its system waits behind a run condition).

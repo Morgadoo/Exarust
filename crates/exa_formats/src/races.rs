@@ -6,6 +6,9 @@
 //! names and the race's natural armour (`0x11C` protection, `0x21C`
 //! coverage).
 //!
+//! A word inside the name field (`0x18`, after the short name) holds the
+//! race's flags; bit 0 says its characters bleed ([`Race::bleeds`]).
+//!
 //! A character record's race byte is the race record's id minus one. The
 //! original reads a character's race from the loaded record itself, with the
 //! file's own layout, and falls back on built-in values ([`RaceBody::FALLBACK`])
@@ -19,6 +22,9 @@ use crate::{Error, Result};
 pub struct Race {
     pub id: u32,
     pub name: String,
+    /// The race's flags (`0x18`, inside the name field after the short
+    /// name); see [`Race::bleeds`].
+    pub flags: u32,
     /// Body model stem.
     pub stem: String,
     /// The shared and the race's own moveset.
@@ -132,6 +138,10 @@ pub struct Natural {
 }
 
 const NAME: usize = 0x00;
+const FLAGS: usize = 0x18;
+/// Race flag: its characters bleed (wounds paint blood, and its body
+/// model's skin materials show it).
+pub const BLEEDS: u32 = 0x1;
 const STEM: usize = 0x20;
 const MOVESETS: [usize; 2] = [0x38, 0x48];
 const PIN_FACTOR: usize = 0x60;
@@ -162,6 +172,13 @@ impl Race {
     pub fn moveset(&self) -> &str {
         &self.movesets[1]
     }
+
+    /// Whether the race's characters bleed: humans, ogres, the Herath
+    /// creatures and demons do; skeletons, ancients, wraiths and golems do
+    /// not.
+    pub fn bleeds(&self) -> bool {
+        self.flags & BLEEDS != 0
+    }
 }
 
 /// Every race in the database, in table order (duplicate ids keep the
@@ -188,6 +205,7 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Race>> {
         races.push(Race {
             id: r.id,
             name: text(b, NAME, 0x20),
+            flags: u32::from_le_bytes(b[FLAGS..FLAGS + 4].try_into().expect("4 bytes")),
             stem: text(b, STEM, 0x18),
             movesets: MOVESETS.map(|at| text(b, at, 0x10)),
             health: f32::from_le_bytes(b[HEALTH..HEALTH + 4].try_into().expect("4 bytes")),
@@ -222,6 +240,9 @@ mod tests {
     fn record(name: &str, stem: &str, own: &str) -> Vec<u8> {
         let mut b = vec![0u8; RECORD];
         b[NAME..NAME + name.len()].copy_from_slice(name.as_bytes());
+        if name == "Human" {
+            b[FLAGS..FLAGS + 4].copy_from_slice(&0x0Fu32.to_le_bytes());
+        }
         b[STEM..STEM + stem.len()].copy_from_slice(stem.as_bytes());
         b[MOVESETS[0]..MOVESETS[0] + 7].copy_from_slice(b"Default");
         b[MOVESETS[1]..MOVESETS[1] + own.len()].copy_from_slice(own.as_bytes());
@@ -256,7 +277,12 @@ mod tests {
         assert_eq!(golem.health, 2.0);
         assert_eq!(golem.natural.coverage[9], 100);
         assert_eq!(golem.natural.slash, 130);
-        assert_eq!(of_character(&races, 0).unwrap().name, "Human");
+        let human = of_character(&races, 0).unwrap();
+        assert_eq!(human.name, "Human");
+        // The flags sit inside the name field, after the short name.
+        assert_eq!(human.flags, 0x0F);
+        assert!(human.bleeds());
+        assert!(!golem.bleeds());
         assert!(of_character(&races, 1).is_none());
     }
 
@@ -373,6 +399,39 @@ mod tests {
         }
         let skeleton = of_character(&races, 1).unwrap().body;
         assert_eq!((skeleton.stance, skeleton.arm_relaxation), (0.75, 0.5));
+        // Who bleeds, and the flag words as stored.
+        let flags = |name: &str| {
+            races
+                .iter()
+                .find(|r| r.name == name)
+                .map(|r| (r.flags, r.bleeds()))
+        };
+        for (name, word) in [
+            ("Human", 0x0F),
+            ("Ogre", 0x27),
+            ("Sir", 0x23),
+            ("Fael", 0x03),
+            ("Ghoul", 0x03),
+            ("Ghoul H", 0x03),
+            ("Gobbler", 0x03),
+            ("Manipulator", 0x03),
+            ("HrtA Harvester", 0x23),
+            ("DemonA01", 0x23),
+        ] {
+            assert_eq!(flags(name), Some((word, true)), "{name}");
+        }
+        for (name, word) in [
+            ("Skeleton", 0),
+            ("Ancient", 0),
+            ("Wraith", 0x300),
+            ("Golem Guard", 0x1030),
+            ("Golem Boss", 0x2030),
+            ("Golem Suit", 0x20B8),
+            ("Golem BAM", 0x1030),
+            ("Golem BAF", 0x1030),
+        ] {
+            assert_eq!(flags(name), Some((word, false)), "{name}");
+        }
         for r in &races {
             let b = r.body;
             for v in [b.pin_factor, b.balance_bonus, b.stance, b.arm_relaxation] {

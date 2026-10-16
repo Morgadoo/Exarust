@@ -9,7 +9,7 @@
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | crate layers, schedules, asset data flow, determinism rules |
 | [`PERFORMANCE.md`](PERFORMANCE.md) | how the frame rate is kept without changing the picture: measurements, techniques, order of work |
 | [`PLAYER.md`](PLAYER.md) | player control, the chase camera and the carried torch, as the original does them |
-| [`DEBUGGING.md`](DEBUGGING.md) | debug tools for bodies: the body overlay and joint readout, the joint trace, pausing, stepping and slowing the simulation |
+| [`DEBUGGING.md`](DEBUGGING.md) | debug tools for bodies: the body overlay and joint readout, the joint trace, pausing, stepping and slowing the simulation, test wounds |
 | [`UI.md`](UI.md) | the interface: the game's bitmap font, the frame-rate readout |
 | [`BUILD.md`](BUILD.md) | toolchain and system packages, building and running |
 | [`formats/`](formats/README.md) | every retail data format: layout, status, evidence |

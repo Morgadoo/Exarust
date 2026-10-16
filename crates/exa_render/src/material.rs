@@ -91,7 +91,7 @@ pub mod flags {
     pub const TWO_SIDED: u32 = 128;
     /// The environment cube lights and reflects the surface.
     pub const ENVIRONMENT: u32 = 256;
-    /// A dirt map roughens the surface where it deviates from mid-grey.
+    /// A dirt texture is bound (the blood speckle, [`super::BloodProgram`]).
     pub const DIRT_MAP: u32 = 512;
     /// A gloss map scales the glossiness.
     pub const GLOSS_MAP: u32 = 1024;
@@ -124,6 +124,121 @@ pub mod flags {
     /// ([`super::ExaParams::opacity_falloff`]); unlit surfaces only with an
     /// emissive map.
     pub const OPACITY_FALLOFF: u32 = 1048576;
+    /// Blood, as the original's apparel and item program shows it (dirt
+    /// mode 4, [`super::BloodProgram::Cloth`]).
+    pub const BLOOD: u32 = 2097152;
+    /// Blood, as the original's skin program shows it
+    /// ([`super::BloodProgram::Skin`]).
+    pub const BLOOD_SKIN: u32 = 4194304;
+    /// Blood, as the original's hair program shows it
+    /// ([`super::BloodProgram::Hair`]).
+    pub const BLOOD_HAIR: u32 = 8388608;
+}
+
+/// How a surface shows the blood that wounds paint into its mesh's vertex
+/// alpha: the original's dirt mode 4, in one of the three programs that
+/// have it. The vertex alpha α (1 clean, lowered around wounds) is compared
+/// with the tiling speckle texture [`SPATTER`] (value a, read at UV×2, at
+/// UV×1 for hair): the blood amount is da = clamp((a − α)/a·k, 0, 1), so a
+/// lightly painted vertex shows only the speckle's bright droplets and a
+/// thoroughly painted one solid blood. Blood darkens the diffuse colour
+/// toward a dark red ([`BloodProgram::tint`]) and wets the surface
+/// ([`BloodProgram::roughness`]). Meshes without a vertex colour stream are
+/// clean. `exa.wesl` evaluates the same formulas. Rules:
+/// `docs/RENDERING.md` (Blood).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BloodProgram {
+    /// Apparel, factory items and bleeding races' skins (the original's
+    /// `shadeopt` program): k = 1.3.
+    Cloth,
+    /// The human skin (`shadesss`): k = 1, the vertex alpha floored at
+    /// 0.02.
+    Skin,
+    /// Hair (`shadehar`): k = 1, the speckle at UV×1.
+    Hair,
+}
+
+/// The dark red blood tints toward, in linear light (skin and cloth).
+pub const BLOOD_TINT: Vec3 = Vec3::new(0.6, 0.03, 0.0);
+/// The hair program's blood colour (its dirt colour in mode 4).
+pub const HAIR_BLOOD_TINT: Vec3 = Vec3::new(0.45, 0.03, 0.02);
+/// The skin program reads the vertex alpha no lower than this.
+pub const SKIN_ALPHA_FLOOR: f32 = 0.02;
+/// The cloth program's gain on the blood amount.
+pub const CLOTH_BLOOD_GAIN: f32 = 1.3;
+/// The texture whose speckle shows blood (`Resource.rpk`).
+pub const SPATTER: &str = "spatter01";
+/// The roughness thick blood brings cloth and hair to.
+const WET_ROUGHNESS: f32 = 0.2;
+
+impl BloodProgram {
+    /// The program of a material record's type, when it has dirt modes:
+    /// type 1 (PBR, the `shadeopt` program), 3 (hair) and 4 (skin). Types
+    /// 0 (legacy) and 2 (unlit) have none.
+    pub fn of_type(kind: u32) -> Option<Self> {
+        match kind {
+            1 => Some(Self::Cloth),
+            3 => Some(Self::Hair),
+            4 => Some(Self::Skin),
+            _ => None,
+        }
+    }
+
+    /// The material flag that selects the program in the shader.
+    pub fn flag(self) -> u32 {
+        match self {
+            Self::Cloth => flags::BLOOD,
+            Self::Skin => flags::BLOOD_SKIN,
+            Self::Hair => flags::BLOOD_HAIR,
+        }
+    }
+
+    /// How many times the speckle tiles over the texture coordinates.
+    pub fn spatter_scale(self) -> f32 {
+        match self {
+            Self::Hair => 1.0,
+            _ => 2.0,
+        }
+    }
+
+    /// The blood amount da of a pixel with speckle value `spatter` (a) and
+    /// interpolated vertex alpha `alpha` (α, 0..1).
+    pub fn amount(self, spatter: f32, alpha: f32) -> f32 {
+        let (alpha, gain) = match self {
+            Self::Cloth => (alpha, CLOTH_BLOOD_GAIN),
+            Self::Skin => (alpha.max(SKIN_ALPHA_FLOOR), 1.0),
+            Self::Hair => (alpha, 1.0),
+        };
+        ((spatter - alpha) / spatter.max(1e-5) * gain).clamp(0.0, 1.0)
+    }
+
+    /// The factor the diffuse colour takes at blood amount `da`, clamped to
+    /// [0, 1]: skin (0.6, 0.03, 0)·(1 − da²/2)·(1 − 0.3·da) + (1 − da),
+    /// cloth (0.6, 0.03, 0)·(1 − 0.3·da) + (1 − da), hair the same with
+    /// (0.45, 0.03, 0.02). Thick blood (da = 1) is (0.21, 0.0105, 0) on
+    /// skin and (0.42, 0.021, 0) on cloth.
+    pub fn tint(self, da: f32) -> Vec3 {
+        let dark = 1.0 - 0.3 * da;
+        let colour = match self {
+            Self::Skin => BLOOD_TINT * (1.0 - da * da * 0.5) * dark,
+            Self::Cloth => BLOOD_TINT * dark,
+            Self::Hair => HAIR_BLOOD_TINT * dark,
+        };
+        (colour + Vec3::splat(1.0 - da)).clamp(Vec3::ZERO, Vec3::ONE)
+    }
+
+    /// The roughness of a surface of roughness `rough` under blood amount
+    /// `da` with speckle value `spatter` (a): skin loses da·(0.1 + 0.6·a)
+    /// down to 0.1; cloth moves toward 0.2 by da²·(0.5·a + 0.5), hair by
+    /// da²·(0.7·a + 0.3). Thick blood is wet, and brighter speckles wetter.
+    pub fn roughness(self, rough: f32, da: f32, spatter: f32) -> f32 {
+        let toward = |w: f32| rough + (WET_ROUGHNESS - rough) * w;
+        match self {
+            Self::Skin => (rough - da * (0.1 + 0.6 * spatter)).max(0.1),
+            Self::Cloth => toward(da * da * (0.5 * spatter + 0.5)),
+            Self::Hair => toward(da * da * (0.7 * spatter + 0.3)),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, ShaderType)]
@@ -283,6 +398,24 @@ impl ExaMaterial {
         self.cut_shadow || matches!(self.alpha_mode, AlphaMode::Mask(_))
     }
 
+    /// The surface shows wound blood with `program`, the speckle texture
+    /// `spatter` bound as its dirt map. Without the speckle it shows none.
+    pub fn with_blood(mut self, program: BloodProgram, spatter: Option<Handle<Image>>) -> Self {
+        self.params.flags &= !(flags::BLOOD | flags::BLOOD_SKIN | flags::BLOOD_HAIR);
+        if spatter.is_some() {
+            self.params.flags |= program.flag();
+        }
+        self.dirt_map = spatter;
+        self.with_map_flags()
+    }
+
+    /// The blood program the surface shows wounds with, if any.
+    pub fn blood(&self) -> Option<BloodProgram> {
+        [BloodProgram::Cloth, BloodProgram::Skin, BloodProgram::Hair]
+            .into_iter()
+            .find(|p| self.params.flags & p.flag() != 0)
+    }
+
     /// Sets the flags of the maps present, keeping the shading flags.
     pub fn with_map_flags(mut self) -> Self {
         let f = &mut self.params.flags;
@@ -399,6 +532,99 @@ mod tests {
         let rim = ExaParams::falloff(1.0, 2.0, false);
         assert!((falloff_alpha(0.0, rim, 0.0) - 1.0825).abs() < 1e-4);
         assert!(falloff_alpha(0.0, rim, 1.0) < 0.09);
+    }
+
+    /// The original's blood colours at full blood (its skin, apparel and
+    /// hair programs): skin (0.21, 0.0105, 0), cloth (0.42, 0.021, 0), hair
+    /// (0.315, 0.021, 0.014); a clean pixel keeps its colour.
+    #[test]
+    fn thick_blood_is_dark_red() {
+        let close = |a: Vec3, b: Vec3| (a - b).abs().max_element() < 1e-6;
+        assert!(close(
+            BloodProgram::Skin.tint(1.0),
+            Vec3::new(0.21, 0.0105, 0.0)
+        ));
+        assert!(close(
+            BloodProgram::Cloth.tint(1.0),
+            Vec3::new(0.42, 0.021, 0.0)
+        ));
+        assert!(close(
+            BloodProgram::Hair.tint(1.0),
+            Vec3::new(0.315, 0.021, 0.014)
+        ));
+        for p in [BloodProgram::Skin, BloodProgram::Cloth, BloodProgram::Hair] {
+            assert_eq!(p.tint(0.0), Vec3::ONE);
+        }
+        // Half blood on skin: (0.6, 0.03, 0)·0.875·0.85 + 0.5.
+        assert!(close(
+            BloodProgram::Skin.tint(0.5),
+            Vec3::new(0.94625, 0.5223125, 0.5)
+        ));
+    }
+
+    /// The blood amount: (a − α)/a·k, k 1.3 for cloth, the skin's alpha no
+    /// lower than 0.02, and a black speckle texel showing nothing.
+    #[test]
+    fn blood_shows_where_the_alpha_falls_below_the_speckle() {
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-6;
+        // A vertex painted to 128 (α 0.502) shows blood only on speckle
+        // texels above it: bright droplets first.
+        let alpha = 128.0 / 255.0;
+        assert_eq!(BloodProgram::Skin.amount(0.4, alpha), 0.0);
+        assert!(close(BloodProgram::Skin.amount(1.0, alpha), 1.0 - alpha));
+        assert!(close(
+            BloodProgram::Cloth.amount(1.0, alpha),
+            (1.0 - alpha) * 1.3
+        ));
+        assert!(close(BloodProgram::Hair.amount(1.0, alpha), 1.0 - alpha));
+        // At α 0 the whole speckle fills in: solid blood on cloth and hair;
+        // on skin the floor keeps the faintest texels clean.
+        assert_eq!(BloodProgram::Cloth.amount(0.05, 0.0), 1.0);
+        assert_eq!(BloodProgram::Skin.amount(0.02, 0.0), 0.0);
+        assert!(close(BloodProgram::Skin.amount(0.5, 0.0), 0.96));
+        // Clean (α 1) shows none anywhere, and a black texel never bleeds.
+        for p in [BloodProgram::Skin, BloodProgram::Cloth, BloodProgram::Hair] {
+            assert_eq!(p.amount(1.0, 1.0), 0.0);
+            assert_eq!(p.amount(0.0, 0.0), 0.0);
+        }
+        assert_eq!(BloodProgram::Hair.spatter_scale(), 1.0);
+        assert_eq!(BloodProgram::Skin.spatter_scale(), 2.0);
+        assert_eq!(BloodProgram::Cloth.spatter_scale(), 2.0);
+    }
+
+    /// Thick blood is wet: skin loses da·(0.1 + 0.6·a) down to 0.1, cloth
+    /// and hair move toward 0.2.
+    #[test]
+    fn blood_wets_the_surface() {
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-6;
+        assert!(close(BloodProgram::Skin.roughness(0.6, 1.0, 0.5), 0.2));
+        assert!(close(BloodProgram::Skin.roughness(0.6, 1.0, 1.0), 0.1));
+        assert!(close(BloodProgram::Skin.roughness(0.6, 0.0, 1.0), 0.6));
+        assert!(close(BloodProgram::Cloth.roughness(0.8, 1.0, 1.0), 0.2));
+        // da 1, a 0: half way for cloth, 0.3 of the way for hair.
+        assert!(close(BloodProgram::Cloth.roughness(0.8, 1.0, 0.0), 0.5));
+        assert!(close(BloodProgram::Hair.roughness(0.8, 1.0, 0.0), 0.62));
+        assert!(close(BloodProgram::Hair.roughness(0.8, 0.0, 1.0), 0.8));
+    }
+
+    #[test]
+    fn blood_programs_follow_the_record_type() {
+        assert_eq!(BloodProgram::of_type(1), Some(BloodProgram::Cloth));
+        assert_eq!(BloodProgram::of_type(3), Some(BloodProgram::Hair));
+        assert_eq!(BloodProgram::of_type(4), Some(BloodProgram::Skin));
+        assert_eq!(BloodProgram::of_type(0), None);
+        assert_eq!(BloodProgram::of_type(2), None);
+        let spatter = Some(Handle::<Image>::default());
+        let m = ExaMaterial::default().with_blood(BloodProgram::Skin, spatter.clone());
+        assert_eq!(m.blood(), Some(BloodProgram::Skin));
+        assert_ne!(m.params.flags & flags::DIRT_MAP, 0);
+        let m = m.with_blood(BloodProgram::Cloth, spatter);
+        assert_eq!(m.blood(), Some(BloodProgram::Cloth));
+        assert_eq!(m.params.flags & flags::BLOOD_SKIN, 0);
+        // Without the speckle there is no blood.
+        let m = ExaMaterial::default().with_blood(BloodProgram::Cloth, None);
+        assert_eq!(m.blood(), None);
+        assert_eq!(m.params.flags & flags::DIRT_MAP, 0);
     }
 
     #[test]
