@@ -16,6 +16,7 @@ use crate::level::{self, LevelGrid, Prop};
 use crate::material::Material;
 use crate::objdb::Item;
 use crate::rdb::Database;
+use crate::rigid_body::RigidBody;
 use crate::{Error, Result, read_u32};
 
 const SANITY: u16 = 0xAFCF;
@@ -111,10 +112,27 @@ pub struct Node {
     pub bounds_centre: [f32; 3],
     pub bounds_half_extents: [f32; 3],
     pub bounds_radius: f32,
-    /// The node carries a collision body (sub-chunk [`RIGID_BODY`] after a
-    /// mesh body): the original makes it a rigid body.
-    pub rigid_body: bool,
+    /// The node's collision body (sub-chunk [`RIGID_BODY`] after a mesh
+    /// body): the original makes the node a rigid body. A body that does
+    /// not decode keeps its error.
+    pub rigid_body: Option<std::result::Result<RigidBody, String>>,
+    /// The node carries the cloth marker (sub-chunk [`CLOTH`] after a mesh
+    /// body): the original simulates the mesh as cloth when it is loaded
+    /// into the game's scene (long hair, banners, the wraith's robe).
+    pub cloth_marker: bool,
     pub body: NodeBody,
+}
+
+impl Node {
+    /// Whether a collision body follows the mesh body, decoded or not.
+    pub fn has_rigid_body(&self) -> bool {
+        self.rigid_body.is_some()
+    }
+
+    /// The decoded collision body.
+    pub fn rigid(&self) -> Option<&RigidBody> {
+        self.rigid_body.as_ref().and_then(|b| b.as_ref().ok())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -409,20 +427,33 @@ fn read_materials(
 /// u32 count, count × f32[3]` object-space points (cm).
 pub const GI_POINTS: u32 = 0x3D0C_EC05;
 /// Sub-chunk of a collision body after a mesh body: the node is a rigid
-/// body (1 163 of the 1 253 models of `Objects.rpk` have one).
+/// body (`rigid_body::RigidBody`).
 pub const RIGID_BODY: u32 = 0x3DD0_B001;
+/// Sub-chunk marking a mesh node as cloth (one word, 0 in every shipped
+/// file).
+pub const CLOTH: u32 = 0x3DD0_C001;
 
-/// The GI sample points among the sub-chunks after a mesh body (none when
-/// the chunk is absent or malformed), and whether a collision body follows.
-fn read_sub_chunks(c: &mut Cursor<'_>) -> (Vec<[f32; 3]>, bool) {
+/// What the sub-chunks after a mesh body hold.
+#[derive(Default)]
+struct SubChunks {
+    /// GI sample points (none when the chunk is absent or malformed).
+    gi_points: Vec<[f32; 3]>,
+    rigid_body: Option<std::result::Result<RigidBody, String>>,
+    cloth_marker: bool,
+}
+
+fn read_sub_chunks(c: &mut Cursor<'_>) -> SubChunks {
+    let mut out = SubChunks::default();
     let mut points = None;
-    let mut rigid_body = false;
     while c.remaining() >= 8 {
         let Ok((tag, mut sub)) = c.chunk() else {
             break;
         };
-        if tag == RIGID_BODY {
-            rigid_body = true;
+        if tag == RIGID_BODY && out.rigid_body.is_none() {
+            out.rigid_body = Some(RigidBody::parse(sub.b).map_err(|e| e.to_string()));
+        }
+        if tag == CLOTH {
+            out.cloth_marker = true;
         }
         if tag != GI_POINTS || points.is_some() {
             continue;
@@ -443,7 +474,8 @@ fn read_sub_chunks(c: &mut Cursor<'_>) -> (Vec<[f32; 3]>, bool) {
                 .collect(),
         );
     }
-    (points.unwrap_or_default(), rigid_body)
+    out.gi_points = points.unwrap_or_default();
+    out
 }
 
 /// Emitter records end a plain node's body: `u32 type, u32 4, f32 size`.
@@ -480,13 +512,15 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
     let bounds_centre = [c.f32()?, c.f32()?, c.f32()?].map(|v| v * CENTIMETRES_TO_METRES);
     let bounds_radius = c.f32()? * CENTIMETRES_TO_METRES;
     c.skip(4)?;
-    let mut rigid_body = false;
+    let (mut rigid_body, mut cloth_marker) = (None, false);
     let body = if instance != 0 {
         NodeBody::Instance(instance)
     } else if kind == NODE_MESH {
         match read_mesh(&mut c, version) {
             Ok(mut m) => {
-                (m.gi_points, rigid_body) = read_sub_chunks(&mut c);
+                let sub = read_sub_chunks(&mut c);
+                (m.gi_points, rigid_body, cloth_marker) =
+                    (sub.gi_points, sub.rigid_body, sub.cloth_marker);
                 NodeBody::Mesh(Box::new(m))
             }
             Err(e) => NodeBody::Invalid(e.to_string()),
@@ -515,6 +549,7 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
         bounds_half_extents,
         bounds_radius,
         rigid_body,
+        cloth_marker,
         body,
     })
 }
@@ -1017,20 +1052,35 @@ mod tests {
         let node = &scene.nodes[0];
         assert_eq!(node.bounds_half_extents, [0.5, 0.0, 0.5]);
         assert_eq!(node.bounds_centre, [0.5, 0.0, -0.5]);
-        assert!(!node.rigid_body);
-        // GI points, then a collision body, after the mesh body.
+        assert!(!node.has_rigid_body() && !node.cloth_marker);
+        // GI points, then a collision body and the cloth marker, after the
+        // mesh body.
         let mut body = quad_body(None);
         let mut gi = u32s(&[40, 1]);
         gi.extend(f32s(&[100.0, 200.0, 300.0]));
         body.extend(chunk(GI_POINTS, &gi));
-        body.extend(chunk(RIGID_BODY, &[0; 8]));
+        let mut rigid = u32s(&[0x1000_0000]);
+        rigid.extend(f32s(&[2.5]));
+        rigid.extend(vec![0; 84]);
+        body.extend(chunk(RIGID_BODY, &rigid));
+        body.extend(chunk(CLOTH, &[0; 4]));
         let scene = Scene::parse(&file_of(&body)).unwrap();
         let node = &scene.nodes[0];
-        assert!(node.rigid_body);
+        assert!(node.has_rigid_body() && node.cloth_marker);
+        let rigid = node.rigid().unwrap();
+        assert_eq!((rigid.class, rigid.mobility), (0x1000_0000, 2.5));
         let NodeBody::Mesh(mesh) = &node.body else {
             panic!("not a mesh");
         };
         assert_eq!(mesh.gi_points, [[1.0, 2.0, 3.0]]);
+        // A body too short to decode keeps its error; the node still has
+        // one.
+        let mut body = quad_body(None);
+        body.extend(chunk(RIGID_BODY, &[0; 8]));
+        let scene = Scene::parse(&file_of(&body)).unwrap();
+        let node = &scene.nodes[0];
+        assert!(node.has_rigid_body() && node.rigid().is_none());
+        assert!(matches!(&node.rigid_body, Some(Err(e)) if e.contains("truncated")));
     }
 
     #[test]
@@ -1090,6 +1140,53 @@ mod tests {
         let mut f = quad_file(None);
         f.truncate(f.len() - 10);
         assert!(Scene::parse(&f).is_err());
+    }
+
+    /// The cloth markers of the installed packs (skipped without the
+    /// game): the long hair, four banners and the wraith's robe.
+    #[test]
+    fn shipped_cloth_markers() {
+        use exa_rpk::PackKind;
+        let Some(dir) = exa_rpk::locate_install(None) else {
+            return;
+        };
+        let game = exa_rpk::GameData::open(&dir).unwrap();
+        let marked = |kind: PackKind| -> Vec<(String, usize)> {
+            let pack = game.pack(kind).unwrap();
+            pack.entries()
+                .iter()
+                .filter(|e| crate::FileKind::detect(pack.bytes(e)) == crate::FileKind::ChunkTree)
+                .filter_map(|e| {
+                    let scene = Scene::parse(pack.bytes(e)).ok()?;
+                    let n = scene.nodes.iter().filter(|n| n.cloth_marker).count();
+                    (n > 0).then(|| (e.name.clone(), n))
+                })
+                .collect()
+        };
+        let hair = marked(PackKind::CharExt);
+        assert_eq!(hair.len(), 6);
+        assert!(
+            hair.iter()
+                .all(|(name, n)| name.starts_with("hair hu") && *n == 2)
+        );
+        let banners: Vec<_> = marked(PackKind::Objlib)
+            .into_iter()
+            .map(|(m, _)| m)
+            .collect();
+        assert_eq!(
+            banners,
+            [
+                "bannerubma01",
+                "mawbanner01",
+                "uw01_banner01",
+                "uw01_banner02"
+            ]
+        );
+        assert_eq!(
+            marked(PackKind::Resource),
+            [("wraithhabase.rfc".to_string(), 1)]
+        );
+        assert!(marked(PackKind::Objects).is_empty());
     }
 
     #[test]

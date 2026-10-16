@@ -710,6 +710,8 @@ mod tests {
             weapon: None,
             armour: None,
             shield: None,
+            door: None,
+            operative: None,
         }
     }
 

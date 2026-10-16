@@ -8,7 +8,9 @@
 //! holds the display name, `0x00100000` the ground model's name, `0x1000`
 //! the item body, which starts with the worn model's name, holds the
 //! per-bone occupancy table at `0x10` and the appearance block at bytes
-//! `0x1B0..0x214`; `0x4000` a weapon's section and `0x8000` a shield's.
+//! `0x1B0..0x214`; `0x4000` a weapon's section and `0x8000` a shield's;
+//! `0x40000` a door's and `0x10000` an operative object's (levers,
+//! buttons, pressure plates, keys, signal jobs and relays).
 
 use crate::rdb::Database;
 use crate::weapon_record::ShieldRecord;
@@ -20,6 +22,8 @@ const MODEL: u32 = 0x0010_0000;
 const BODY: u32 = 0x1000;
 const WEAPON: u32 = 0x4000;
 const SHIELD: u32 = 0x8000;
+const OPERATIVE: u32 = 0x1_0000;
+const DOOR: u32 = 0x4_0000;
 /// Model flag: the item's voxel lights are scaled by (1 − c/255)², with c
 /// the condition byte of its placement (a salve's charge).
 pub const CONDITION_SCALED: u32 = 1;
@@ -75,6 +79,146 @@ pub struct Item {
     pub armour: Option<Armour>,
     /// What the item blocks with when held as a shield.
     pub shield: Option<ShieldRecord>,
+    /// How the object works as a door.
+    pub door: Option<Door>,
+    /// What the object signals or does when operated.
+    pub operative: Option<Operative>,
+}
+
+/// Door flags (the door section's first word).
+pub mod door {
+    /// Bars itself shut when it closes (secret doors).
+    pub const LATCHES: u32 = 0x2;
+    pub const LOCKED: u32 = 0x4;
+    /// Not a door to the hand's click.
+    pub const NOT_CLICKABLE: u32 = 0x8;
+    /// Opens and closes by itself when signalled.
+    pub const MOTORISED: u32 = 0x10;
+    /// A fast motor, toggling in 60 ticks.
+    pub const FAST: u32 = 0x40;
+    /// Signals 0 and 1 swap meaning.
+    pub const INVERTED: u32 = 0x80;
+    /// A sliding door held at its file position.
+    pub const FROZEN: u32 = 0x100;
+    /// Sets a scene-node flag (`0x80`) on the door's node; its meaning is
+    /// not established.
+    pub const NODE_MARK: u32 = 0x200;
+}
+
+/// The door section of an object (`0x40000`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Door {
+    /// [`door`] flags.
+    pub flags: u32,
+    /// The object the door is linked to: the key that unlocks it, and the
+    /// relay whose broadcast moves it. Ids carry the database tag bits
+    /// ([`crate::rfc::PlacedObject`]); 0 for none.
+    pub key: u32,
+    /// Sound letters (`a` + letter in the sound's name, see [`door_sound`]):
+    /// unlock and locked (`LkO`, `LkT`), slam (`slm`), hinge creak loop
+    /// (`hng`) and unlatch (`opn`).
+    pub lock_sound: u8,
+    pub slam_sound: u8,
+    pub hinge_sound: u8,
+    pub unlatch_sound: u8,
+}
+
+impl Door {
+    fn parse(b: &[u8]) -> Option<Self> {
+        let b = b.get(..12)?;
+        Some(Self {
+            flags: u32::from_le_bytes(b[0..4].try_into().expect("4 bytes")),
+            key: u32::from_le_bytes(b[4..8].try_into().expect("4 bytes")),
+            lock_sound: b[8],
+            slam_sound: b[9],
+            hinge_sound: b[10],
+            unlatch_sound: b[11],
+        })
+    }
+
+    pub fn has(&self, flag: u32) -> bool {
+        self.flags & flag != 0
+    }
+}
+
+/// The name of a door sound: `door`, the letter as `a` + letter, `_` and
+/// the suffix (`doora_slm`).
+pub fn door_sound(letter: u8, suffix: &str) -> String {
+    format!("door{}_{suffix}", letter.wrapping_add(b'a') as char)
+}
+
+/// Operative classes and kinds (the operative section's first two bytes).
+pub mod operative {
+    pub const KEY: u8 = 1;
+    pub const LEVER: u8 = 3;
+    /// Buttons and pressure plates.
+    pub const PUSH_SURFACE: u8 = 5;
+    /// A deferred job run on a signal: kind [`FIRE`] or [`LIGHT`].
+    pub const JOB: u8 = 6;
+    /// Forwards signals: kind 0 and 3 combine inputs into a code, 1
+    /// broadcasts to every object linked to it, 2 signals both targets, 5
+    /// counts a sequence.
+    pub const RELAY: u8 = 7;
+    /// Job kind: lights a fire of the stored size.
+    pub const FIRE: u8 = 0xC;
+    /// Job kind: turns a light on or off.
+    pub const LIGHT: u8 = 0xD;
+    /// Lever kind: the lever fades a light under its node instead of
+    /// signalling.
+    pub const LEVER_LIGHT: u8 = 6;
+    /// Push-surface kind: the signals are inverted.
+    pub const PUSH_INVERTED: u8 = 2;
+}
+
+/// The operative section of an object (`0x10000`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Operative {
+    /// [`operative`] class.
+    pub class: u8,
+    /// Kind within the class.
+    pub kind: u8,
+    /// Class-specific flags (a lever's starting value and forced detent, a
+    /// push surface's one-shot and second target, a relay's inversion).
+    pub flags: u16,
+    /// A job's fire size, a relay's state or a source's bit.
+    pub value: u16,
+    /// A lever's auto-return time in units of 100 ms (0: stays).
+    pub time: u16,
+    /// The object signalled first.
+    pub target: u32,
+    /// The second target, or a relay's code.
+    pub second: u32,
+}
+
+impl Operative {
+    fn parse(b: &[u8]) -> Option<Self> {
+        let b = b.get(..16)?;
+        let u16_at = |o: usize| u16::from_le_bytes(b[o..o + 2].try_into().expect("2 bytes"));
+        let u32_at = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().expect("4 bytes"));
+        Some(Self {
+            class: b[0],
+            kind: b[1],
+            flags: u16_at(2),
+            value: u16_at(4),
+            time: u16_at(6),
+            target: u32_at(8),
+            second: u32_at(12),
+        })
+    }
+
+    /// A lever's auto-return time in milliseconds.
+    pub fn return_ms(&self) -> u32 {
+        u32::from(self.time) * 100
+    }
+}
+
+/// The body class an object's model is given: what the original makes of
+/// the rigid body of its model's root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Mechanism {
+    Door,
+    Lever,
+    PushSurface,
 }
 
 /// Protection of a worn item.
@@ -180,6 +324,22 @@ impl Item {
     pub fn covers_groin(&self) -> bool {
         self.occupancy[0] as u8 & GROIN != 0
     }
+
+    /// The mechanism its model's rigid body becomes: a lever or push
+    /// surface by its operative class, else a door when it has a door
+    /// section. An operative object of another class stays a plain body
+    /// even with a door section.
+    pub fn mechanism(&self) -> Option<Mechanism> {
+        match (self.operative, self.door) {
+            (Some(o), _) => match o.class {
+                operative::LEVER => Some(Mechanism::Lever),
+                operative::PUSH_SURFACE => Some(Mechanism::PushSurface),
+                _ => None,
+            },
+            (None, Some(_)) => Some(Mechanism::Door),
+            (None, None) => None,
+        }
+    }
 }
 
 /// How an item is painted: condition and up to eight material layers, each
@@ -254,6 +414,8 @@ impl Item {
             weapon: None,
             armour: None,
             shield: None,
+            door: None,
+            operative: None,
         };
         let mut pos = 0;
         while pos + 8 <= payload.len() {
@@ -293,6 +455,8 @@ impl Item {
                 }
                 WEAPON => item.weapon = Weapon::parse(body),
                 SHIELD => item.shield = ShieldRecord::from_section(body),
+                DOOR => item.door = Door::parse(body),
+                OPERATIVE => item.operative = Operative::parse(body),
                 _ => {}
             }
             pos += size;
@@ -480,6 +644,172 @@ mod tests {
         // Too short for the three bytes: no shield.
         let short = Item::parse(80, &section(SHIELD, &[0; 6])).unwrap();
         assert!(short.shield.is_none());
+    }
+
+    /// A prison portcullis: locked, motorised, fast, sound letter 5.
+    #[test]
+    fn door_section() {
+        let mut body = 0x254u32.to_le_bytes().to_vec();
+        body.extend(0x8000_0069u32.to_le_bytes());
+        body.extend([5, 5, 5, 5]);
+        body.extend([0; 8]);
+        let mut p = section(NAME, &padded("PortCullis UWA", 0x20));
+        p.extend(section(DOOR, &body));
+        let item = Item::parse(0x64, &p).unwrap();
+        let door = item.door.unwrap();
+        assert!(door.has(door::LOCKED) && door.has(door::MOTORISED) && door.has(door::FAST));
+        assert!(door.has(door::NODE_MARK) && !door.has(door::LATCHES));
+        assert_eq!(door.key, 0x8000_0069);
+        assert_eq!(door_sound(door.slam_sound, "slm"), "doorf_slm");
+        assert_eq!(door_sound(0, "LkO"), "doora_LkO");
+        assert_eq!(item.mechanism(), Some(Mechanism::Door));
+        // Too short for the four sound letters: no door.
+        let short = Item::parse(1, &section(DOOR, &[0; 11])).unwrap();
+        assert!(short.door.is_none() && short.mechanism().is_none());
+    }
+
+    /// A lever returning after 5 s, a combination relay and an inverted
+    /// button.
+    #[test]
+    fn operative_section() {
+        let operative = |bytes: [u8; 8], target: u32, second: u32| {
+            let mut body = bytes.to_vec();
+            body.extend(target.to_le_bytes());
+            body.extend(second.to_le_bytes());
+            body.resize(60, 0);
+            Item::parse(1, &section(OPERATIVE, &body)).unwrap()
+        };
+        let lever = operative([3, 1, 2, 0, 0, 0, 50, 0], 0x8000_00D0, 0);
+        let o = lever.operative.unwrap();
+        assert_eq!(
+            (o.class, o.kind, o.flags, o.time),
+            (operative::LEVER, 1, 2, 50)
+        );
+        assert_eq!(o.return_ms(), 5000);
+        assert_eq!(o.target, 0x8000_00D0);
+        assert_eq!(lever.mechanism(), Some(Mechanism::Lever));
+        let relay = operative([7, 0, 8, 0, 0, 0, 0, 0], 0x8000_00AF, 3);
+        let o = relay.operative.unwrap();
+        assert_eq!((o.class, o.flags, o.second), (operative::RELAY, 8, 3));
+        assert_eq!(relay.mechanism(), None);
+        let button = operative([5, 2, 2, 0, 0, 0, 0, 0], 0x8000_00B4, 0);
+        let o = button.operative.unwrap();
+        assert_eq!(
+            (o.class, o.kind),
+            (operative::PUSH_SURFACE, operative::PUSH_INVERTED)
+        );
+        assert_eq!(button.mechanism(), Some(Mechanism::PushSurface));
+        let fire = operative([6, 12, 0, 0, 176, 0, 0, 0], 0, 0);
+        let o = fire.operative.unwrap();
+        assert_eq!(
+            (o.class, o.kind, o.value),
+            (operative::JOB, operative::FIRE, 176)
+        );
+        // Too short for the second target: none.
+        let short = Item::parse(
+            1,
+            &section(OPERATIVE, &[3, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+        )
+        .unwrap();
+        assert!(short.operative.is_none());
+    }
+
+    /// The operative class decides before the door section: a lever with a
+    /// door section is a lever, a key with one a plain body.
+    #[test]
+    fn operative_class_decides_the_mechanism() {
+        let mut door = 0u32.to_le_bytes().to_vec();
+        door.resize(20, 0);
+        let with = |class: u8| {
+            let mut op = vec![class, 1];
+            op.resize(60, 0);
+            let mut p = section(OPERATIVE, &op);
+            p.extend(section(DOOR, &door));
+            Item::parse(1, &p).unwrap().mechanism()
+        };
+        assert_eq!(with(operative::LEVER), Some(Mechanism::Lever));
+        assert_eq!(with(operative::PUSH_SURFACE), Some(Mechanism::PushSurface));
+        assert_eq!(with(operative::KEY), None);
+    }
+
+    /// The door and operative records of the installed `objdb.rdb` and of
+    /// the first level's own database (skipped without the game).
+    #[test]
+    fn shipped_mechanism_records() {
+        use crate::rfc::PlacedObject;
+        use std::collections::BTreeMap;
+        let Some(dir) = exa_rpk::locate_install(None) else {
+            return;
+        };
+        let game = exa_rpk::GameData::open(&dir).unwrap();
+        let resource = game.pack(exa_rpk::PackKind::Resource).unwrap();
+        let tally = |items: &[Item]| {
+            let mut kinds: BTreeMap<(u8, u8), usize> = BTreeMap::new();
+            let mut mechanisms: BTreeMap<String, usize> = BTreeMap::new();
+            for item in items {
+                assert!(item.door.is_none() || item.operative.is_none());
+                if let Some(o) = item.operative {
+                    *kinds.entry((o.class, o.kind)).or_default() += 1;
+                }
+                if let Some(m) = item.mechanism() {
+                    *mechanisms.entry(format!("{m:?}")).or_default() += 1;
+                }
+            }
+            let doors = items.iter().filter(|i| i.door.is_some()).count();
+            (doors, kinds, mechanisms)
+        };
+        let db = Database::parse(resource.get("objdb.rdb").unwrap()).unwrap();
+        let (doors, kinds, mechanisms) = tally(&items(&db));
+        assert_eq!(doors, 47);
+        assert_eq!(kinds.values().sum::<usize>(), 49);
+        assert_eq!(kinds[&(operative::KEY, 0)], 15);
+        assert_eq!(
+            (
+                mechanisms["Door"],
+                mechanisms["Lever"],
+                mechanisms["PushSurface"]
+            ),
+            (47, 6, 5)
+        );
+        let level = crate::rfc::Scene::parse(resource.get("exanima01.rfc").unwrap()).unwrap();
+        let local = &level.local_items;
+        let (doors, kinds, mechanisms) = tally(local);
+        assert_eq!(doors, 43);
+        assert_eq!(kinds.values().sum::<usize>(), 72);
+        let count = |class: u8, kind: u8| kinds.get(&(class, kind)).copied().unwrap_or(0);
+        assert_eq!((count(3, 1), count(3, 12)), (39, 1));
+        assert_eq!((count(5, 1), count(5, 2)), (11, 1));
+        assert_eq!(count(operative::JOB, operative::FIRE), 6);
+        let relays: usize = (0..8).map(|k| count(operative::RELAY, k)).sum();
+        assert_eq!(relays, 8);
+        assert_eq!(count(1, 0) + count(1, 1), 6);
+        assert_eq!(
+            (
+                mechanisms["Door"],
+                mechanisms["Lever"],
+                mechanisms["PushSurface"]
+            ),
+            (43, 40, 12)
+        );
+        // The objects doors link to are keys, levers and relays of the
+        // level's own database; one door names an id the database lacks.
+        let by_id: BTreeMap<u32, &Item> = local.iter().map(|i| (i.id, i)).collect();
+        let (mut linked, mut dangling): (BTreeMap<u8, usize>, usize) = (BTreeMap::new(), 0);
+        for door in local.iter().filter_map(|i| i.door).filter(|d| d.key != 0) {
+            assert_eq!(door.key & 0xC000_0000, 0x8000_0000);
+            match by_id.get(&(door.key & PlacedObject::ID_MASK)) {
+                Some(other) => *linked.entry(other.operative.unwrap().class).or_default() += 1,
+                None => dangling += 1,
+            }
+        }
+        assert_eq!(
+            linked.into_iter().collect::<Vec<_>>(),
+            [(1, 6), (3, 4), (7, 7)]
+        );
+        assert_eq!(dangling, 1);
+        // The first fire job lights a fire of size 200.
+        let fire = by_id[&0x15].operative.unwrap();
+        assert_eq!((fire.class, fire.kind, fire.value), (6, 12, 200));
     }
 
     #[test]

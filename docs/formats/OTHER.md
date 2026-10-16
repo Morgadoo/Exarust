@@ -133,6 +133,8 @@ name and body only.
 | `0x1000` | item body: the worn model name[16] (`Characters.rpk`), the occupancy table at `0x10`, the slot table at `0xA8`, coverage and protection at `0x150`/`0x1A0`, the appearance block at `0x1B0..0x214` |
 | `0x4000` | weapon section (208 items): flags, factory seeds and choices, stat bytes `0x30..0x42` (Weapon stats) |
 | `0x8000` | shield section (22 items, 80 bytes): weight, block and bulk bytes at 4, 5, 6 (Weapon record) |
+| `0x10000` | operative section (68 bytes; levers, buttons and plates, keys, signal jobs, relays, other usable objects): class, kind, flags, targets (Door and operative sections) |
+| `0x40000` | door section (28 bytes): flags, linked object, sound letters (Door and operative sections) |
 
 **Worn and ground model.** A character is dressed in the model the body
 names, never the `0x00100000` one: REA on the apparel model loader shows it
@@ -288,6 +290,56 @@ scuffs. Exarust paints it for fabrics and hides; metals keep the item normal.
 Not yet painted: wood, bronze, gemstone and resin finishes
 (drawn plain), pattern opacity textures, and per-instance appearances
 (randomised items, wear on characters).
+
+## Door and operative sections
+
+Status: **verified** for the fields below (REA on the original's door,
+lever and push-surface set-up, its signal dispatch, relays and jobs, and the
+object factory that picks the body class; counts from the installed
+databases). Offsets are from the section body (after the 8-byte header).
+Exarust reads both into `objdb::Item` (`door`, `operative`).
+
+**Door section `0x40000`** (20-byte body):
+
+| offset | field |
+|---|---|
+| 0 | u32 flags: `0x2` latches (bars itself shut when it closes), `0x4` locked, `0x8` not a door to the hand's click, `0x10` motorised (moves by itself when signalled), `0x40` fast motor, `0x80` signals inverted, `0x100` a sliding door held at its file position, `0x200` sets scene-node flag `0x80` (meaning not established) |
+| 4 | u32 linked object (database tag bits as placed objects): the key that unlocks the door, compared with the held key; relays of kind 1 signal every door linked to them; some doors name the lever that moves them |
+| 8..11 | sound letters: lock (`LkO`, `LkT`), slam (`slm`), hinge creak loop (`hng`), unlatch (`opn`); the sound is `door`, `a` + letter, `_` and the suffix (`doorf_slm` → `doorf_slm01…06` in `Sound.rpk`) |
+| 12..19 | zero in every record |
+
+Flags seen across the databases: 0 (plain), `0x2` (secret door), `0x12`
+(city gate), `0x52`, `0x108`, `0x200` and `0x204` (prison gates,
+portcullises), `0x214`, `0x216`, `0x254`, `0x256`, `0x2d4`, `0x5c` and `0xdc`
+(pit doors: locked, not clickable, motorised and fast; `0xdc` also
+inverted). In `exanima01` the linked objects are 6 keys, 4 levers and 7
+kind-1 relays; one door names an id its database lacks.
+
+**Operative section `0x10000`** (60-byte body):
+
+| offset | field |
+|---|---|
+| 0 | u8 class: 1 key, 3 lever, 5 push surface (buttons, pressure plates), 6 job, 7 relay; 0, 2, 4 and 8 are other usable objects not decoded here |
+| 1 | u8 kind: a lever's 6 fades a light under its node instead of signalling; a push surface's 2 inverts its signals; a job's `0xC` lights a fire, `0xD` turns a light on or off; a relay's 0 and 3 combine their inputs' bits into a code, 1 signals every object linked to it, 2 signals both targets, 5 counts a sequence |
+| 2 | u16 flags (a lever's starting value and forced detent, a push surface's one-shot and second-target bits, a relay's inversion and quiet bits) |
+| 4 | u16 value: a fire's size, a relay's state, the bit an input sets in a relay |
+| 6 | u16 a lever's auto-return time in 100 ms (0: it stays) |
+| 8 | u32 the object signalled |
+| 12 | u32 the second target, or a relay's code |
+| 16.. | a name (`StnSwtch01`, `DeviceCmbA01`) and further words in some records of the other classes, a script line in one; not decoded |
+
+**Body class.** When the original loads an object's model, a record with an
+operative section makes the model's root rigid body a lever (class 3) or a
+push surface (class 5), and none of the others; a record with a door section
+and no operative section makes it a door. No shipped record has both
+(`Item::mechanism`).
+
+Corpus: `objdb.rdb` 47 door and 49 operative sections (15 keys of kind 0;
+47 doors, 6 levers and 5 push surfaces as bodies). `exanima01`: 43 doors and
+72 operative records: 40 levers (39 of kind 1, one of kind 12), 12 push
+surfaces (11 of kind 1, one inverted), 6 fire jobs (sizes 200, 176 and one 0), 8
+relays (kinds 0, 1, 3, 5) and 6 keys. The other story levels have 2 to 8
+doors each. `exa-tool mechanisms [level]` prints them.
 
 ## Saves (`.rsg`, `.rcp`)
 

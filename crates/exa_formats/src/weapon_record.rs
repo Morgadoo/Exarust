@@ -168,7 +168,7 @@ pub fn chain(nodes: &[Node], root: usize) -> Vec<ChainNode> {
         let Some(node) = nodes.get(i) else { break };
         out.push(ChainNode {
             top: (node.bounds_centre[1] + node.bounds_half_extents[1]) * CM_PER_M,
-            rigid: node.rigid_body,
+            rigid: node.has_rigid_body(),
         });
         // Node lists put a parent before its children.
         at = nodes

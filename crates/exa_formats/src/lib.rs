@@ -17,6 +17,7 @@ pub mod races;
 pub mod rdb;
 pub mod rfc;
 pub mod rfi;
+pub mod rigid_body;
 pub mod rsq;
 pub mod terrain;
 pub mod weapon_record;

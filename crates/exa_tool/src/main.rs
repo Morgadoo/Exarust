@@ -14,9 +14,13 @@
 //! exa-tool races                      races with their flags, body parameters, stats, gaits
 //! exa-tool characters exanima01       a level's character records, read whole, and placements
 //! exa-tool characters actors          the arena's actors in actors.rpk
+//! exa-tool bodies Objects "lever a01"  rigid bodies, links and cloth markers
+//! exa-tool mechanisms [exanima01]     door and operative records
+//! exa-tool corpus bodies              bodies, links and cloth markers per pack
 //! exa-tool export-gltf Objlib afr_cornflag_a01 out.glb
 //! ```
 
+mod bodies;
 mod characters;
 mod corpus;
 mod gltf;
@@ -89,6 +93,12 @@ enum Cmd {
     /// places them, or of the arena's actors (`actors`): looks, feral level,
     /// saved pools, skills with their techniques, perks, roles and powers.
     Characters { source: String },
+    /// The rigid bodies (class, mobility, rest points, spheres, links,
+    /// sound slots) and cloth markers of a chunk-tree entry's nodes.
+    Bodies { pack: String, entry: String },
+    /// Door and operative records of `objdb.rdb`, or of a level's own
+    /// database (e.g. `exanima01`).
+    Mechanisms { level: Option<String> },
     /// Decode every entry of a format and report coverage.
     Corpus {
         #[arg(value_enum)]
@@ -121,6 +131,8 @@ enum CorpusKind {
     Images,
     /// Near-horizontal level faces up or down, and mirrored nodes.
     Winding,
+    /// Rigid bodies, links, sliders and cloth markers per model pack.
+    Bodies,
 }
 
 fn main() -> Result<()> {
@@ -220,6 +232,8 @@ fn main() -> Result<()> {
         }
         Cmd::Races => races(&game),
         Cmd::Characters { source } => characters::characters(&game, &source),
+        Cmd::Bodies { pack, entry } => bodies::bodies(&game, &pack, &entry),
+        Cmd::Mechanisms { level } => bodies::mechanisms(&game, level.as_deref()),
         Cmd::Corpus {
             what: CorpusKind::Meshes,
         } => corpus::meshes(&game),
@@ -238,6 +252,9 @@ fn main() -> Result<()> {
         Cmd::Corpus {
             what: CorpusKind::Winding,
         } => corpus::winding(&game),
+        Cmd::Corpus {
+            what: CorpusKind::Bodies,
+        } => bodies::corpus(&game),
         Cmd::ExportGltf { pack, entry, out } => {
             let scene = exa_formats::rfc::Scene::parse(entry_bytes(&game, &pack, &entry)?)
                 .with_context(|| format!("decoding {pack}/{entry}"))?;

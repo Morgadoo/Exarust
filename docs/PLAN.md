@@ -111,7 +111,8 @@ checked outside the engine through exporters.
 | ✅ Level grid (`3DED`), level sections (`3DE10000`, `DBC0`, …), placed objects and characters, starts | `exa_formats::{level,characters}` | wall/floor sets `gews_*` / `gefs_*` |
 | ✅ Terrain (`.rft`) and terrain tables (`.ftb`) | `exa_formats::terrain` | heightfield, layers, grass and plants |
 | ~~Packed `.rfi` storage~~ | `exa_formats::rfi` | done in Phase 0 (RLE) |
-| Databases: ✅ `races`, `objdb` (apparel, weapons, layer table, worn model, occupancy), `locales` (level list); `charroles` and `objstrings` still open | `exa_formats::{rdb,races,objdb}` | record schemas |
+| Databases: ✅ `races`, `objdb` (apparel, weapons, shields, doors, operative objects, layer table, worn model, occupancy), `locales` (level list); `charroles` and `objstrings` still open | `exa_formats::{rdb,races,objdb}` | record schemas |
+| ✅ Rigid bodies of models (`3DD0B001`: spheres, links, sound slots) and the cloth marker (`3DD0C001`) | `exa_formats::{rigid_body,rfc}` | every body of every pack decodes |
 | Factories ✅ (`add-weapon-factories`); actors, powers, dialogue (`.rcd`) still open | `exa_formats::{factory,actor,power,dialogue}` | |
 | Shader libraries (`.flb`) | `exa_formats::flb` | optional: capturing the running game with RenderDoc/apitrace gives the plain GLSL directly |
 | Exporters: ✅ glTF for static meshes with textures; skinned characters and assembled levels open; PNG ✅; WAV | `exa_tool` | check results in Blender |
@@ -314,6 +315,19 @@ arena walk's target is the same every tick). C13 and C19 remove it.
 Still to do: the frame anchor and support pins, the original's falls and
 get-ups, recovery steps, foot planting, clip blending, collisions between
 bodies (and their wake of a sleeper).
+
+Done (change `decode-object-bodies-and-mechanisms`, data only): models'
+rigid bodies are decoded as the original stores them (class, mobility,
+rest tetrahedron, point masses, collision spheres, links with the
+slider's travel stored squared, scrape and roll sound slots; 1 163 of the
+1 253 `Objects.rpk` models, 65 of them hung from the world by links), with
+the cloth marker of the long hair, four banners and the wraith's robe
+([formats/RFC.md](formats/RFC.md), Rigid body); the object databases' door
+and operative sections (keys, levers, buttons and plates, fire and light
+jobs, relays) and the body class a record gives its model
+([formats/OTHER.md](formats/OTHER.md)). `exa-tool bodies`, `mechanisms` and
+`corpus bodies` print them. Next: props as bodies in the solver (M32), then
+world links, the hand's drag, doors, levers and plates (M33–M35).
 
 This phase carries the most risk and defines how the game feels.
 

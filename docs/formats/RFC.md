@@ -90,11 +90,11 @@ models of `Objects.rpk`, centre.y + extent.y is the highest vertex to
 measures weapons by them (`OTHER.md`, Weapon record).
 
 The body depends on the kind; after it come optional sub-chunks
-(`0x3AC1`, `0x3D0CEC05` GI points, `0x3DD0B001` collision body,
-`0xEDC0C589`). Exarust reads the GI points and whether a collision body
-follows (`Node::rigid_body`: the original makes the node a rigid body;
-1 163 of the 1 253 `Objects.rpk` models have one, all on mesh nodes); the
-others are skipped for now.
+(`0x3AC1`, `0x3D0CEC05` GI points, `0x3DD0B001` rigid body, `0x3DD0C001`
+cloth marker, `0xEDC0C589`). Exarust reads the GI points, the rigid body
+(`Node::rigid_body`, below) and the cloth marker (`Node::cloth_marker`);
+the others are skipped for now. Every rigid body and cloth marker of the
+shipped data sits on a mesh node.
 
 ## Mesh body (`3D03`)
 
@@ -158,6 +158,79 @@ drawn nor built.
 
 Textures pair with texture coordinates unchanged when images keep their
 stored (bottom-up) row order.
+
+## Rigid body (`3DD0B001`)
+
+Status: **verified** (REA on the original's reader and writer of the chunk;
+every body of every pack decodes). A mesh node carrying this sub-chunk
+becomes a four-particle rigid body in the original: a plain body, or a
+door, lever or push surface when the object database record that placed
+the model says so (`OTHER.md`, Door and operative sections). Exarust decodes
+it into `rigid_body::RigidBody` (lengths in metres).
+
+```
+u32  class          0x10000000 on every body; 0x400, 0x8000, 0x8 on some
+f32  mobility       how easily it moves (larger moves more)
+f32  rest[4][3]     the particles' rest points (cm, node space)
+f32  masses[4]      point masses: 4 / the centre of mass's barycentric weight
+f32  friction       0.75 in every shipped body; skipped by the reader
+f32  1.0, u32 0, u32 group mask, u32 ?   skipped by the reader
+then sub-chunks (u32 tag, u32 size, payload) to the end:
+  0xCD00  u32 0, u32 count, count × f32[4]  spheres: centre (cm), radius (cm)
+  0xDDB0  u32 count, count × link
+  0xDDB3  u32 count, count × sound slot
+link:  u32 flags, f32 on_body[3], f32 on_parent[3] (cm), f32 slack, f32 strength,
+       f32 smoothing, and f32 axis[3] (cm) when flags & 4 (a slider)
+sound slot: u32 id, f32 point[3] (cm), char sound[16], f32 volume, f32 pitch
+```
+
+The original ignores the stored friction (bodies keep 0.75) and forces the
+group mask to 0. It divides the mobility by a value from the node's first
+material's physical record when it registers the body (not decoded yet).
+
+**Links.** A root body's links hold it to its parent node (world links:
+hinges, axles, slider rails); a child body's links hold it to its parent's
+body (a chain's links, a knocker on a door). Slack is the free distance
+before the link pulls, 0 for a pin. **A slider stores its travel squared**:
+every one of the 33 slider links shipped (11 bodies: buttons 7 cm, pressure
+plates 4 cm, the portcullises 170 and 190 cm, a flood gate 252.4 cm, secret
+doors and shelves) has slack = |axis|², so `BodyLink::slack` holds the
+square root, the travel; the original divides a slider's projected offset
+by the stored value to get the fraction travelled. Flags 2 and `0x10000`
+also appear (54 and 45 links): when it registers the body the original
+clears `0x10000` on a root body's links and keeps only 8 (then sets
+`0x10000`) on a child body's.
+
+**Sound slots** are scrape and roll loops played while the slot's point
+moves; only the two flails of `Objects.rpk` carry one (`ChnAMov`,
+volume 0.5, pitch 1).
+
+Corpus (`exa-tool corpus bodies`): `Objects.rpk` 1 163 of 1 253 models carry
+a body (1 230 bodies: class words `0x10000000` 564, `0x10000400` 600,
+`0x10008000` 39, `0x10008400` 19, `0x10008408` 8; 1 to 7 839 spheres of
+0.96–41 cm; mobility 0.0053 to 316, median 1.83). 69 models carry links: 65
+hang from the world (doors, gates, portcullises, levers, buttons, plates,
+the hanging brazier, wall lamps, the resonance devices), and two flails and
+two scales only link child bodies. `Objlib.rpk` has 1 503 bodies in 1 293
+models (89 with links), `Characters.rpk` 12, `Resource.rpk` 37.
+
+Examples: `door uw01a` swings on a top hinge pin at 242.9 cm and a stop of
+134.04 cm slack (1 899 spheres, mobility 0.016), with a knocker as a child
+body; `lever a01` turns on two axle pins at x = ±15 cm, its arm point at
+40 cm held with 33.81 cm of slack; `brazierhang01` hangs by a chain of six
+links (6.84 cm of slack each, the first a world link).
+
+## Cloth marker (`3DD0C001`)
+
+One word (0 in every shipped file) after a mesh body. The original gives
+the node a cloth controller with its built-in cloth parameters when the
+scene the node is loaded into carries flag `0x10000`, which the game's
+scene gets when it is created (REA on the chunk's handler and the game
+scene's set-up); elsewhere the marker is ignored. Shipped: the two meshes
+of each of the six long hair models in `CharExt.rpk` (`hair hula01…05`,
+`hair husa02`), four banners in `Objlib.rpk` (`bannerubma01`, `mawbanner01`,
+`uw01_banner01`, `uw01_banner02`) and the wraith's robe in
+`wraithhabase.rfc`. Exarust reads the marker (`Node::cloth_marker`).
 
 ## Light node (`3D06`)
 
