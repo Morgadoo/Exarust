@@ -113,3 +113,7 @@ The left button attacks; the mouse's vertical motion picks the strike.
 
 `--autowalk` holds W and ignores every other key reaching the window, so a
 scripted run is not steered by typing elsewhere.
+
+`--trace <file.csv>` writes the player's body state after every 83 Hz tick,
+in the columns of the retail body probe (`docs/formats/RSQ.md`, Physical
+body). Steering already runs once per body tick, as the original runs it.

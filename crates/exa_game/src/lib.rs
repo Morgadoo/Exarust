@@ -6,6 +6,7 @@ pub mod balance;
 pub mod limp;
 pub mod player;
 pub mod torch;
+pub mod trace;
 
 use bevy::prelude::*;
 
@@ -28,6 +29,11 @@ impl Plugin for GamePlugin {
             exa_script::ScriptPlugin,
             exa_ui::UiPlugin,
         ))
-        .add_plugins((limp::LimpPlugin, balance::BalancePlugin, torch::TorchPlugin));
+        .add_plugins((
+            limp::LimpPlugin,
+            balance::BalancePlugin,
+            torch::TorchPlugin,
+            trace::TracePlugin,
+        ));
     }
 }

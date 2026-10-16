@@ -26,6 +26,7 @@
 //!          --outfit a,b,c             apparel for character/play (Characters.rpk entries), over the underwear
 //!          --weapon <name>            weapon in the right hand (Objects.rpk entry)
 //!          --opponent                 an armed duellist in play mode (F: combat mode, left click: attack)
+//!          --trace <file.csv>         the player's body (else every simulated body) after every 83 Hz tick, in cm
 //! ```
 //!
 //! Controls: hold the right mouse button to look, WASD to move, Q/E down/up,
@@ -89,6 +90,8 @@ pub struct Options {
     pub weapon: Option<String>,
     /// Spawn an armed opponent in play mode.
     pub opponent: bool,
+    /// Write the body state after every tick here (CSV).
+    pub trace: Option<PathBuf>,
 }
 
 fn usage() -> AppExit {
@@ -136,6 +139,7 @@ fn main() -> AppExit {
             "--autowalk" => options.autowalk = true,
             "--weapon" => options.weapon = args.next(),
             "--opponent" => options.opponent = true,
+            "--trace" => options.trace = args.next().map(PathBuf::from),
             "--outfit" => {
                 options.outfit = args
                     .next()
@@ -211,40 +215,55 @@ fn main() -> AppExit {
             return AppExit::from_code(2);
         }
     };
+    let trace = match options
+        .trace
+        .as_deref()
+        .map(exa_game::trace::BodyTrace::create)
+    {
+        Some(Err(e)) => {
+            eprintln!("cannot write the trace: {e}");
+            return AppExit::from_code(2);
+        }
+        Some(Ok(t)) => Some(t),
+        None => None,
+    };
 
-    App::new()
-        .add_plugins(
-            DefaultPlugins
-                .set(WindowPlugin {
-                    primary_window: Some(Window {
-                        title: "Exarust".into(),
-                        // The Wayland app id (X11 class): without one, GNOME
-                        // names the window "Unknown" in its dialogs.
-                        name: Some("exarust".into()),
-                        resolution: options.size.unwrap_or((1600, 900)).into(),
-                        present_mode: if options.no_vsync {
-                            bevy::window::PresentMode::AutoNoVsync
-                        } else {
-                            bevy::window::PresentMode::AutoVsync
-                        },
-                        ..default()
-                    }),
-                    ..default()
-                })
-                // A stalled frame breaks the ALSA stream, and rodio then
-                // reports the same error in a tight loop (gigabytes of log).
-                .set(bevy::log::LogPlugin {
-                    filter: format!("{},rodio::stream=off", bevy::log::DEFAULT_FILTER),
+    let mut app = App::new();
+    if let Some(trace) = trace {
+        app.insert_resource(trace);
+    }
+    app.add_plugins(
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "Exarust".into(),
+                    // The Wayland app id (X11 class): without one, GNOME
+                    // names the window "Unknown" in its dialogs.
+                    name: Some("exarust".into()),
+                    resolution: options.size.unwrap_or((1600, 900)).into(),
+                    present_mode: if options.no_vsync {
+                        bevy::window::PresentMode::AutoNoVsync
+                    } else {
+                        bevy::window::PresentMode::AutoVsync
+                    },
                     ..default()
                 }),
-        )
-        .add_plugins(exa_game::GamePlugin)
-        .insert_resource(Game(Arc::new(data)))
-        .insert_resource(view)
-        .insert_resource(options.gi)
-        .insert_resource(exa_ui::ShowFps(!options.no_fps))
-        .insert_resource(exa_render::cube_shadows::PointShadows(!options.no_shadows))
-        .insert_resource(options)
-        .add_plugins(viewer::ViewerPlugin)
-        .run()
+                ..default()
+            })
+            // A stalled frame breaks the ALSA stream, and rodio then
+            // reports the same error in a tight loop (gigabytes of log).
+            .set(bevy::log::LogPlugin {
+                filter: format!("{},rodio::stream=off", bevy::log::DEFAULT_FILTER),
+                ..default()
+            }),
+    )
+    .add_plugins(exa_game::GamePlugin)
+    .insert_resource(Game(Arc::new(data)))
+    .insert_resource(view)
+    .insert_resource(options.gi)
+    .insert_resource(exa_ui::ShowFps(!options.no_fps))
+    .insert_resource(exa_render::cube_shadows::PointShadows(!options.no_shadows))
+    .insert_resource(options)
+    .add_plugins(viewer::ViewerPlugin)
+    .run()
 }

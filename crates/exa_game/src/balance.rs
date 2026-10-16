@@ -14,7 +14,7 @@ use bevy::math::Affine3A;
 use bevy::prelude::*;
 use exa_anim::{Animator, Motions, in_place, sample};
 use exa_physics::CharacterBody;
-use exa_physics::body::{BODY_HZ, BodySystems, Fallen, Ragdoll};
+use exa_physics::body::{BODY_HZ, Fallen, Ragdoll};
 
 use crate::player::PlayerBody;
 
@@ -22,7 +22,8 @@ pub struct BalancePlugin;
 
 impl Plugin for BalancePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (keep_balance, get_up).chain().after(BodySystems));
+        // Once a frame, after the frame's body ticks, over the ticks they ran.
+        app.add_systems(Update, (keep_balance, get_up).chain());
     }
 }
 
@@ -40,6 +41,14 @@ impl Default for Balance {
             value: 1.0,
             counter: 0.0,
         }
+    }
+}
+
+impl Balance {
+    /// The instability counter: balance is set to the score when it
+    /// reaches 100.
+    pub fn counter(&self) -> f32 {
+        self.counter
     }
 }
 

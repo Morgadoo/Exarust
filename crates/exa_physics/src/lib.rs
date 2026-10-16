@@ -36,17 +36,20 @@ impl Plugin for PhysicsPlugin {
                 PostUpdate,
                 build_static_colliders.after(TransformSystems::Propagate),
             )
+            // Each tick moves the character controllers first; the bodies'
+            // character ticks then read where they are.
             .add_systems(
                 FixedUpdate,
-                (register_characters, move_characters, step_world).chain(),
+                (register_characters, move_characters, step_world)
+                    .chain()
+                    .before(body::CharacterTicks),
             )
             .add_systems(
                 RunFixedMainLoop,
                 show_characters.in_set(RunFixedMainLoopSystems::AfterFixedMainLoop),
             )
-            .add_message::<body::Shove>()
             .add_systems(Update, release_characters)
-            .add_systems(Update, body::step_ragdolls.in_set(body::BodySystems));
+            .add_plugins(body::BodyPlugin);
     }
 }
 
@@ -59,6 +62,13 @@ fn limit_backlog(mut time: ResMut<Time<Virtual>>) {
 
 #[derive(Resource)]
 pub struct Physics(pub PhysicsWorld);
+
+impl Default for Physics {
+    /// An empty world.
+    fn default() -> Self {
+        Self(PhysicsWorld::new())
+    }
+}
 
 impl Physics {
     /// How far along `direction` (unit) from `origin` the first fixed
@@ -131,7 +141,9 @@ pub struct CharacterBody {
     /// left them: the drawn position lies between the two.
     steps: Option<(Vec3, Vec3)>,
     /// The position last drawn; a transform moved elsewhere (a teleport)
-    /// replaces the simulated one.
+    /// replaces the simulated one. Inside the fixed step the transform holds
+    /// the simulated position, so that what is carried on the character
+    /// (its body) reads where it really is.
     shown: Vec3,
 }
 
@@ -353,7 +365,11 @@ pub struct PendingKinematics(pub Vec<(RigidBodyHandle, Vec3)>);
 fn move_characters(
     time: Res<Time>,
     physics: Res<Physics>,
-    mut bodies: Query<(&mut CharacterBody, &Transform, Option<&CharacterHandles>)>,
+    mut bodies: Query<(
+        &mut CharacterBody,
+        &mut Transform,
+        Option<&CharacterHandles>,
+    )>,
     mut moves: Local<Vec<(RigidBodyHandle, Vec3)>>,
     mut physics_mut: ResMut<PendingKinematics>,
 ) {
@@ -373,12 +389,13 @@ fn move_characters(
         ..Default::default()
     };
     moves.clear();
-    for (mut body, transform, handles) in &mut bodies {
-        let start = body.simulated(transform);
+    for (mut body, mut transform, handles) in &mut bodies {
+        let start = body.simulated(&transform);
         // A character standing still on the ground stays where it is: no
         // sweep needed.
         if body.grounded && body.desired_velocity == Vec3::ZERO {
             body.stepped(start, start);
+            transform.translation = start;
             continue;
         }
         let filter = match handles {
@@ -399,6 +416,7 @@ fn move_characters(
         let moved = controller.move_shape(dt, &queries, &shape, &pose, desired, |_| {});
         let end = start + moved.translation;
         body.stepped(start, end);
+        transform.translation = end;
         body.grounded = moved.grounded;
         if body.grounded {
             body.vertical_velocity = 0.0;

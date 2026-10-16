@@ -4,7 +4,8 @@
 //! bone index (`01Pelvis`, `09Chest`, …). A clip key stores one rotation per
 //! bone and the root (pelvis) position; sampling replaces each part's local
 //! rotation and the pelvis translation. Living physical bodies follow these
-//! poses with their muscles.
+//! poses with their muscles: their clips are advanced and sampled by their
+//! body's 83 Hz tick ([`TickedClips`]), every other body's once a frame.
 
 use std::sync::Arc;
 
@@ -136,6 +137,38 @@ impl Animator {
         self.then = Some(then.into());
     }
 
+    /// Advances the clip clock by `seconds` on `clip`, the current action's
+    /// clip: a looping clip wraps, a clip played once holds its last key and
+    /// then switches to its follow-up, which starts from its beginning.
+    /// Returns `false` when the clip has no keys or the clock switched to the
+    /// follow-up (whose clip the caller looks up afresh).
+    pub fn advance(&mut self, clip: &Clip, seconds: f32) -> bool {
+        let (Some(first), Some(last)) = (clip.keys.first(), clip.keys.last()) else {
+            return false;
+        };
+        self.time += seconds * FRAMES_PER_SECOND * self.speed;
+        let length = last.time - first.time;
+        if self.time > last.time {
+            if self.looping && length > 0.0 {
+                self.time = first.time + (self.time - first.time) % length;
+            } else {
+                self.time = last.time;
+                self.finished = true;
+                if let Some(next) = self.then.take() {
+                    self.action = next;
+                    self.time = 0.0;
+                    self.looping = true;
+                    self.finished = false;
+                    return false;
+                }
+            }
+        }
+        if self.time < first.time {
+            self.time = first.time;
+        }
+        true
+    }
+
     /// Progress through the current clip, 0..=1 (when the clip is known).
     pub fn progress(&self, motions: &MotionSet) -> Option<f32> {
         let clip = motions.clip(&self.moveset, &self.action)?;
@@ -144,6 +177,11 @@ impl Animator {
         Some(((self.time - first) / len).clamp(0.0, 1.0))
     }
 }
+
+/// On a body root whose clips its body's fixed tick advances and samples
+/// (a living physical body): frames leave its clips alone.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct TickedClips;
 
 /// A body-part node driven by bone `bone`.
 #[derive(Component, Clone, Copy, Debug)]
@@ -293,14 +331,52 @@ pub fn in_place(clip: &Clip, time: f32, root: Vec3) -> Vec3 {
     root - Vec3::new(travel.x, 0.0, travel.z) * progress
 }
 
+/// A clip's pose at one time: each bone's rotation, and the root position
+/// in place and scaled by the body's stature.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClipPose {
+    pub rotations: Vec<Quat>,
+    pub root: Vec3,
+}
+
+impl ClipPose {
+    /// The pose of `clip` at `time` frames for a body of `stature`.
+    pub fn at(clip: &Clip, time: f32, stature: f32) -> Option<Self> {
+        let (rotations, root) = sample(clip, time)?;
+        Some(Self {
+            rotations,
+            root: in_place(clip, time, root) * stature,
+        })
+    }
+
+    /// Poses a body part's local transform: its bone's rotation, and the
+    /// root position on the pelvis (the other parts keep their rest
+    /// offsets). Returns `false`, leaving it as it is, when the pose has no
+    /// rotation for the bone.
+    pub fn place(&self, part: &BodyPart, t: &mut Transform) -> bool {
+        let Some(r) = part.bone.checked_sub(1).and_then(|i| self.rotations.get(i)) else {
+            return false;
+        };
+        t.rotation = *r;
+        t.translation = if part.bone == 1 {
+            self.root
+        } else {
+            part.rest.translation
+        };
+        true
+    }
+}
+
 fn to_quat(r: [f32; 4]) -> Quat {
     Quat::from_xyzw(r[0], r[1], r[2], r[3]).normalize()
 }
 
+/// Advances and poses, once a frame, the clips of every body that its body
+/// does not tick.
 fn play_clips(
     time: Res<Time>,
     motions: Option<Res<Motions>>,
-    mut animators: Query<(Entity, &mut Animator, Option<&Stature>)>,
+    mut animators: Query<(Entity, &mut Animator, Option<&Stature>), Without<TickedClips>>,
     children: Query<&Children>,
     mut parts: Query<(&BodyPart, &mut Transform)>,
 ) {
@@ -309,43 +385,15 @@ fn play_clips(
         let Some(clip) = motions.0.clip(&anim.moveset, &anim.action) else {
             continue;
         };
-        let (Some(first), Some(last)) = (clip.keys.first(), clip.keys.last()) else {
+        if !anim.advance(clip, time.delta_secs()) {
+            continue;
+        }
+        let Some(pose) = ClipPose::at(clip, anim.time, stature.map_or(1.0, |s| s.0)) else {
             continue;
         };
-        anim.time += time.delta_secs() * FRAMES_PER_SECOND * anim.speed;
-        let length = last.time - first.time;
-        if anim.time > last.time {
-            if anim.looping && length > 0.0 {
-                anim.time = first.time + (anim.time - first.time) % length;
-            } else {
-                anim.time = last.time;
-                anim.finished = true;
-                if let Some(next) = anim.then.take() {
-                    anim.action = next;
-                    anim.time = 0.0;
-                    anim.looping = true;
-                    anim.finished = false;
-                    continue;
-                }
-            }
-        }
-        if anim.time < first.time {
-            anim.time = first.time;
-        }
-        let Some((rotations, root_pos)) = sample(clip, anim.time) else {
-            continue;
-        };
-        let root_pos = in_place(clip, anim.time, root_pos) * stature.map_or(1.0, |s| s.0);
         for e in children.iter_descendants(root) {
-            if let Ok((part, mut t)) = parts.get_mut(e)
-                && let Some(r) = part.bone.checked_sub(1).and_then(|i| rotations.get(i))
-            {
-                t.rotation = *r;
-                t.translation = if part.bone == 1 {
-                    root_pos
-                } else {
-                    part.rest.translation
-                };
+            if let Ok((part, mut t)) = parts.get_mut(e) {
+                pose.place(part, &mut t);
             }
         }
     }
@@ -390,5 +438,66 @@ mod tests {
         let (_, root) = sample(&clip, 5.0).unwrap();
         let fixed = in_place(&clip, 5.0, root);
         assert!(fixed.z.abs() < 1e-6 && (fixed.y - 1.1).abs() < 1e-6);
+    }
+
+    fn walk() -> Clip {
+        Clip {
+            mode: 3,
+            keys: vec![key(10.0, 0.0, 1.0), key(20.0, 1.0, 2.0)],
+        }
+    }
+
+    #[test]
+    fn the_clock_loops_and_hands_over_to_the_follow_up() {
+        let clip = walk();
+        let mut anim = Animator::new("Default", "Walk");
+        // 60 frames a second.
+        assert!(anim.advance(&clip, 0.2));
+        assert!((anim.time - 12.0).abs() < 1e-4);
+        assert!(anim.advance(&clip, 0.2));
+        assert!((anim.time - 14.0).abs() < 1e-4, "wrapped to {}", anim.time);
+        anim.play_once("Wave", "Walk");
+        assert!(anim.advance(&clip, 0.1));
+        assert!(!anim.finished);
+        // Past the end: the follow-up starts from its beginning.
+        assert!(!anim.advance(&clip, 0.5));
+        assert_eq!((anim.action.as_str(), anim.time), ("Walk", 0.0));
+        assert!(anim.looping && !anim.finished);
+    }
+
+    /// Frames leave alone the clips of bodies their body ticks.
+    #[test]
+    fn frames_leave_ticked_clips_alone() {
+        use bevy::time::TimeUpdateStrategy;
+        let set = MotionSet {
+            bone_count: 1,
+            actions: vec![exa_formats::rsq::Action {
+                name: "Walk".into(),
+                params: [0, 0],
+            }],
+            movesets: vec![exa_formats::rsq::Moveset {
+                name: "Default".into(),
+                parent: String::new(),
+                clips: vec![Some(walk())],
+            }],
+        };
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_millis(50),
+            ))
+            .insert_resource(Motions(Arc::new(set), Arc::default(), 0.0))
+            .add_systems(Update, play_clips);
+        let framed = app.world_mut().spawn(Animator::new("Default", "Walk")).id();
+        let ticked = app
+            .world_mut()
+            .spawn((Animator::new("Default", "Walk"), TickedClips))
+            .id();
+        for _ in 0..3 {
+            app.update();
+        }
+        let time = |e: Entity| app.world().get::<Animator>(e).unwrap().time;
+        assert!(time(framed) > 10.0);
+        assert_eq!(time(ticked), 0.0);
     }
 }

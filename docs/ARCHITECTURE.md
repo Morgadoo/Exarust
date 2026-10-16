@@ -37,9 +37,9 @@ Rules:
 | schedule | content |
 |---|---|
 | `Startup` / `OnEnter(state)` | open install, load level, spawn entities |
-| `FixedUpdate` (83 Hz, the original's 12 ms tick, deterministic) | input → control intents → AI intents → animation targets → physics step → contacts → combat resolution → injuries |
+| `FixedUpdate` (83 Hz, the original's 12 ms tick, deterministic) | input → control intents → AI intents → character controllers → character ticks (clips sampled, animation targets, player last; `CharacterTicks`) → body solver (blows, integration, iterations, contacts, friction; `BodySystems`) → combat resolution → injuries |
 | `Update` | camera, UI, audio triggers, streaming |
-| `PostUpdate` | transform propagation, skinning, visibility |
+| `PostUpdate` | body parts drawn between their last two ticks, transform propagation, skinning, visibility |
 | Render | Bevy render graph + custom nodes (shadow cubes, GI, post) |
 
 Player input and AI both produce the same `ControlIntent` component. The
@@ -65,8 +65,13 @@ with nested packs as `exanima://Resource/common.rml/bontile`.
 - Random numbers come from a seeded, per-match RNG resource.
 - A slow frame catches up at most 4 fixed steps (48 ms of game time); the
   rest of the backlog is dropped and game time slows, as the original drops
-  its time-critical thread's backlog. Characters are drawn between their
-  last two fixed steps, so they move smoothly at any frame rate.
+  its time-critical thread's backlog. Characters and their body parts are
+  drawn between their last two fixed steps, so they move smoothly at any
+  frame rate, and the same ticks give the same bodies at any frame rate.
+  Events sent from frames (blows) are queued for the next tick.
+- Today input steering, the character controllers and the bodies run in the
+  fixed step. AI, balance, combat and the clips of bodies that are not
+  physical still run once a frame.
 - Physics uses a fixed step with a fixed iteration count. Floating-point
   determinism is expected per build and per platform, not across platforms.
 

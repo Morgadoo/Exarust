@@ -16,18 +16,47 @@ pub(super) fn floor(at: Vec3) -> Physics {
     Physics(world)
 }
 
-/// An app stepping bodies with the game's `step_ragdolls`, `frame` seconds
-/// per update.
+/// A living body's pose for the tests' character tick, by tick number: its
+/// root's world transform and the targets it is aimed at.
+#[derive(Component)]
+pub(super) struct Aim(pub Box<dyn Fn(u64) -> (Affine3A, Vec<Affine3A>) + Send + Sync>);
+
+impl Aim {
+    /// The same pose every tick, the root at the origin.
+    pub(super) fn still(pose: Vec<Affine3A>) -> Self {
+        Self(Box::new(move |_| (Affine3A::IDENTITY, pose.clone())))
+    }
+}
+
+/// The tests' character tick: every body with an [`Aim`] is aimed at its
+/// pose for this tick.
+fn aim_bodies(clock: Res<BodyTicks>, mut bodies: Query<(&mut Ragdoll, &Aim)>) {
+    for (mut body, aim) in &mut bodies {
+        let (root, targets) = (aim.0)(clock.0);
+        body.aim(root, targets);
+    }
+}
+
+/// An app ticking bodies as the game does, at the game's fixed rate,
+/// `frame` seconds per update; bodies with an [`Aim`] are aimed every tick.
 pub(super) fn app(physics: Physics, frame: f32) -> App {
     let mut app = App::new();
-    app.add_plugins(MinimalPlugins)
+    app.add_plugins((MinimalPlugins, BodyPlugin))
+        .insert_resource(Time::<Fixed>::from_hz(crate::STEP_HZ))
         .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
             frame,
         )))
         .insert_resource(physics)
-        .add_message::<Shove>()
-        .add_systems(Update, step_ragdolls);
+        .add_systems(FixedUpdate, aim_bodies.in_set(CharacterTicks));
     app
+}
+
+/// Runs `app` until its bodies have ticked `ticks` more times.
+pub(super) fn run_ticks(app: &mut App, ticks: u64) {
+    let end = app.world().resource::<BodyTicks>().0 + ticks;
+    while app.world().resource::<BodyTicks>().0 < end {
+        app.update();
+    }
 }
 
 /// Height of the lowest sphere centre, and its bone.
@@ -150,7 +179,7 @@ fn a_shoved_body_does_not_sink_through_a_trimesh_floor() {
     let (setup, pose) = humanoid(at);
     let body = app
         .world_mut()
-        .spawn(Ragdoll::new(&setup).with_drive())
+        .spawn((Ragdoll::new(&setup).with_drive(), Aim::still(pose)))
         .id();
     let mut low = (f32::MAX, 0, 0);
     for f in 0..400 {
@@ -165,12 +194,11 @@ fn a_shoved_body_does_not_sink_through_a_trimesh_floor() {
                 });
             }
         }
-        let mut ragdoll = app.world_mut().get_mut::<Ragdoll>(body).unwrap();
         if f == 50 {
             // Balance lost, as `keep_balance` decides after the stagger.
+            let mut ragdoll = app.world_mut().get_mut::<Ragdoll>(body).unwrap();
             ragdoll.fall();
         }
-        ragdoll.aim(Affine3A::IDENTITY, pose.clone(), frame);
         app.update();
         let (y, bone) = lowest(app.world().get::<Ragdoll>(body).unwrap());
         if y < low.0 {
@@ -265,8 +293,7 @@ fn a_fallen_body_far_from_the_origin_is_not_flung() {
     let (setup, pose) = humanoid(at);
     let mut body = Ragdoll::new(&setup).with_drive();
     let none: &[[Vec3; 3]] = &[];
-    let frame = 2.0 / BODY_HZ;
-    body.aim(Affine3A::IDENTITY, pose.clone(), frame);
+    body.aim(Affine3A::IDENTITY, pose.clone());
     // Lying on its back: the body turned a quarter turn from the pose.
     let lie = Affine3A::from_translation(at + Vec3::Y * 0.2)
         * Affine3A::from_rotation_x(-std::f32::consts::FRAC_PI_2)
@@ -279,14 +306,12 @@ fn a_fallen_body_far_from_the_origin_is_not_flung() {
     }
     body.fall();
     let mut fastest = 0.0f32;
-    for _ in 0..20 {
-        body.aim(Affine3A::IDENTITY, pose.clone(), frame);
-        for _ in 0..2 {
-            body.tick(none);
-            for p in &body.parts {
-                for i in 0..4 {
-                    fastest = fastest.max((p.positions[i] - p.previous[i]).length() * BODY_HZ);
-                }
+    for _ in 0..40 {
+        body.aim(Affine3A::IDENTITY, pose.clone());
+        body.tick(none);
+        for p in &body.parts {
+            for i in 0..4 {
+                fastest = fastest.max((p.positions[i] - p.previous[i]).length() * BODY_HZ);
             }
         }
     }
@@ -297,39 +322,32 @@ fn a_fallen_body_far_from_the_origin_is_not_flung() {
 }
 
 /// A standing body far from the world's origin turning on the spot: each
-/// part's target turns about the part (the aim's step, its application and
-/// the drive's `before` must agree), so the muscles never ask for speeds of
-/// metres per tick.
+/// tick's targets turn about the body, and the pose's motion over a tick
+/// (this tick's targets against last tick's) is a turn about each part, so
+/// the muscles never ask for speeds of metres per tick.
 #[test]
 fn a_turning_pose_far_from_the_origin_is_followed_gently() {
     let at = Vec3::new(81.0, 0.0, 39.2);
     let (setup, pose) = humanoid(at);
     let mut body = Ragdoll::new(&setup).with_drive();
     let none: &[[Vec3; 3]] = &[];
-    let frame = 1.0 / 60.0;
     let turn = |a: f32| {
         Affine3A::from_translation(at)
             * Affine3A::from_rotation_y(a)
             * Affine3A::from_translation(-at)
     };
-    let mut clock = 0.0;
     let mut fastest = 0.0f32;
-    for f in 0..240 {
-        // 2 rad/s about the body's own vertical.
-        let yaw = f as f32 * frame * 2.0;
+    // Four seconds at 2 rad/s about the body's own vertical.
+    for tick in 0..332 {
+        let yaw = tick as f32 / BODY_HZ * 2.0;
         body.aim(
             Affine3A::IDENTITY,
             pose.iter().map(|t| turn(yaw) * *t).collect(),
-            frame,
         );
-        clock += frame;
-        while clock >= 1.0 / BODY_HZ {
-            clock -= 1.0 / BODY_HZ;
-            body.tick(none);
-            for p in &body.parts {
-                for i in 0..4 {
-                    fastest = fastest.max((p.positions[i] - p.previous[i]).length() * BODY_HZ);
-                }
+        body.tick(none);
+        for p in &body.parts {
+            for i in 0..4 {
+                fastest = fastest.max((p.positions[i] - p.previous[i]).length() * BODY_HZ);
             }
         }
     }
@@ -345,12 +363,12 @@ fn a_fallen_body_falls_as_fast_as_a_limp_one() {
     let (setup, pose) = humanoid(Vec3::new(0.0, 10.0, 0.0));
     let none: &[[Vec3; 3]] = &[];
     let mut living = Ragdoll::new(&setup).with_drive();
-    living.aim(Affine3A::IDENTITY, pose.clone(), 1.0 / BODY_HZ);
+    living.aim(Affine3A::IDENTITY, pose.clone());
     living.fall();
     let mut limp = Ragdoll::new(&setup);
     // Half a second.
     for _ in 0..41 {
-        living.aim(Affine3A::IDENTITY, pose.clone(), 1.0 / BODY_HZ);
+        living.aim(Affine3A::IDENTITY, pose.clone());
         living.tick(none);
         limp.tick(none);
     }
@@ -388,7 +406,7 @@ fn momenta(body: &Ragdoll) -> (Vec3, Vec3) {
 fn a_fallen_bodys_muscles_neither_push_nor_turn_it() {
     let (setup, pose) = humanoid(Vec3::new(5.0, 0.0, 3.0));
     let mut body = Ragdoll::new(&setup).with_drive();
-    body.aim(Affine3A::IDENTITY, pose.clone(), 1.0 / BODY_HZ);
+    body.aim(Affine3A::IDENTITY, pose.clone());
     body.fall();
     for (i, p) in body.parts.iter_mut().enumerate() {
         for k in 0..4 {
@@ -396,11 +414,7 @@ fn a_fallen_bodys_muscles_neither_push_nor_turn_it() {
         }
     }
     let bend = Affine3A::from_rotation_translation(Quat::from_rotation_z(0.7), Vec3::X * 0.1);
-    body.aim(
-        Affine3A::IDENTITY,
-        pose.iter().map(|t| bend * *t).collect(),
-        1.0 / BODY_HZ,
-    );
+    body.aim(Affine3A::IDENTITY, pose.iter().map(|t| bend * *t).collect());
     let (linear, angular) = momenta(&body);
     let Ragdoll { parts, drive, .. } = &mut body;
     drive_parts(parts, drive.as_mut().unwrap());
@@ -427,7 +441,7 @@ fn a_fallen_body_kicking_its_legs_stays_where_it_lies() {
     let mut app = app(floor(at), frame);
     let (setup, pose) = humanoid(at);
     let mut ragdoll = Ragdoll::new(&setup).with_drive();
-    ragdoll.aim(Affine3A::IDENTITY, pose.clone(), frame);
+    ragdoll.aim(Affine3A::IDENTITY, pose.clone());
     let lie = Affine3A::from_translation(at + Vec3::Y * 0.15)
         * Affine3A::from_rotation_x(-std::f32::consts::FRAC_PI_2)
         * Affine3A::from_translation(-(at + Vec3::Y * 1.1));
@@ -438,22 +452,20 @@ fn a_fallen_body_kicking_its_legs_stays_where_it_lies() {
         }
     }
     ragdoll.fall();
-    let body = app.world_mut().spawn(ragdoll).id();
     let about = |c: Vec3, r: Quat| {
         Affine3A::from_translation(c) * Affine3A::from_quat(r) * Affine3A::from_translation(-c)
     };
     let (hip, shoulder) = (at + Vec3::Y * 1.0, at + Vec3::Y * 1.65);
-    let start = app.world().get::<Ragdoll>(body).unwrap().centre_of_mass().0;
-    let mut furthest = 0.0f32;
-    // Six seconds, a 1.2 s cycle.
-    for f in 0..250 {
-        let phase = std::f32::consts::TAU * f as f32 * frame / 1.2;
+    let bones: Vec<usize> = setup.iter().map(|s| s.bone).collect();
+    // A 1.2 s cycle.
+    let kicking = move |tick: u64| {
+        let phase = std::f32::consts::TAU * tick as f32 / BODY_HZ / 1.2;
         let kick = 0.45 * (1.0 - phase.cos());
         let swing = 1.2 * phase.sin();
-        let kicking: Vec<Affine3A> = setup
+        let targets = bones
             .iter()
             .zip(&pose)
-            .map(|(s, t)| match s.bone {
+            .map(|(bone, t)| match bone {
                 2 | 3 => about(hip, Quat::from_rotation_x(-kick)) * *t,
                 5 | 6 => about(hip, Quat::from_rotation_x(-0.6 * kick)) * *t,
                 13 => about(shoulder, Quat::from_rotation_x(swing)) * *t,
@@ -461,8 +473,16 @@ fn a_fallen_body_kicking_its_legs_stays_where_it_lies() {
                 _ => *t,
             })
             .collect();
-        let mut ragdoll = app.world_mut().get_mut::<Ragdoll>(body).unwrap();
-        ragdoll.aim(Affine3A::IDENTITY, kicking, frame);
+        (Affine3A::IDENTITY, targets)
+    };
+    let body = app
+        .world_mut()
+        .spawn((ragdoll, Aim(Box::new(kicking))))
+        .id();
+    let start = app.world().get::<Ragdoll>(body).unwrap().centre_of_mass().0;
+    let mut furthest = 0.0f32;
+    // Six seconds.
+    for _ in 0..250 {
         app.update();
         let centre = app.world().get::<Ragdoll>(body).unwrap().centre_of_mass().0;
         furthest = furthest.max((centre - start).xz().length());

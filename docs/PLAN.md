@@ -210,9 +210,14 @@ daze). Blows shove and daze; a body that loses its balance falls and gets
 up ([formats/RSQ.md](formats/RSQ.md)). Done (change
 `keep-bodies-out-of-level`): level contacts as the original makes them
 (one-sided faces, swept tests, four stored contacts per part held through
-the next tick, its friction), so shoved bodies stay on the floor. Still to
-do: link PD muscles, recovery steps, foot planting, collisions between
-bodies.
+the next tick, its friction), so shoved bodies stay on the floor. Done
+(change `step-bodies-in-the-fixed-tick`, C1 of the body-controller plan):
+bodies tick in the fixed step as one world in the original's order (every
+character tick, the player's last, then the solver over every body). Clips
+are sampled every tick, blows are queued for the next tick, parts are drawn
+between ticks, and `exarust --trace` writes the body state per tick in the
+retail probe's columns. Still to do: link PD muscles, recovery steps, foot
+planting, collisions between bodies.
 
 This phase carries the most risk and defines how the game feels.
 

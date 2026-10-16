@@ -101,16 +101,42 @@ How the original simulates a body (`exa_physics::body`):
     balance with recovery steps, foot planting, and hidden support forces
     on the pelvis and thorax pins.
 
+How a tick runs. The original steps every body of the world in one 83 Hz
+tick, in this order:
+
+1. Every character's body tick, from the last registered character to the
+   first, which is the player, so the player comes last. The body tick
+   runs the character's behaviour (the player's steering, once per tick),
+   samples its clip into each part's animated transform in character
+   space, and multiplies that by the character's frame into the world.
+2. The integration of every awake body.
+3. 20 iterations over all bodies.
+4. Contacts dropped and the bodies tested against the level.
+5. 8 friction passes over all bodies.
+6. The post-step.
+
+Exarust runs the same order in its fixed step. The character controllers
+move first. Then each living body's character tick (`CharacterTicks`,
+player last) advances its clip clock by one tick and samples the clip; its
+targets are the body root's world transform times the clip pose. Then the
+solver (`BodySystems`) deals the queued blows and runs steps 2–6 over every
+awake body. The same ticks give the same particles at any frame rate. Blows
+sent between ticks wait in a queue for the next one. Parts are drawn
+between where the tick before last and the last tick left them. Exarust
+keeps the clip clock at 60 frames a second until the original's rates are
+pinned. Balance still runs once a frame, over the ticks that frame ran.
+
 Exarust's muscles (`exa_physics::body::Drive`) are a pose drive with
 critical damping relative to the pose's own motion:
 
 - The pelvis drive is 2× stronger and stands in for the support forces.
-- The body is carried rigidly with its character controller's motion, so
-  muscles only work against the pose and outside forces. Where the last
-  tick left each part, and its level contacts, are carried with it.
-- A frame's pose change is spread over its ticks as a motion of each part
-  about itself. A fall restarts the targets, which are then measured from
-  the body's own pelvis. A fallen body's muscles act inside the body: its
+- The body is carried rigidly with its root's (its character controller's)
+  motion since the last tick, so muscles only work against the pose and
+  outside forces. Where the last tick left each part, its level contacts
+  and last tick's targets are carried with it.
+- The pose's own motion over a tick is this tick's targets against last
+  tick's. A fall restarts the targets, which are then measured from the
+  body's own pelvis. A fallen body's muscles act inside the body: its
   limbs are damped relative to its rigid motion (bulk velocity and spin),
   and the net shift and turn of the whole body that the pulls and damping
   add up to are taken back out, so muscles change its pose but not where it
@@ -138,6 +164,28 @@ critical damping relative to the pose's own motion:
     on the body.
   - While getting up, balance rises by 0.05 per tick.
 - Link PD muscles, recovery steps and foot planting are not reproduced yet.
+
+Per-tick trace. `exarust --trace <file.csv>` writes one row per traced body
+after every tick. It traces the player's body, or every simulated body when
+there is no player. The columns are those of the retail body probe, so a
+capture of the original and an Exarust run compare row by row. Lengths are
+in cm and the clock in clip frames. A column Exarust does not simulate yet
+is left empty.
+
+| columns | content |
+|---|---|
+| `tick`, `body` | tick number since the start; the body root's entity |
+| `pelvis_p{0..3}_{x,y,z}` | the pelvis's four particles (world) |
+| `pelvis_height` | the pelvis part's origin height |
+| `root_clip_height` | the clip root's height over the body root (the pelvis's clip pose) |
+| `frame_height` | the height of the frame the targets are placed in: the original's sits at the pelvis height, Exarust's body root at the feet |
+| `target_pelvis_height`, `stance`, `tone_target` | the lift servo's target, the stance factor, the tone target (empty) |
+| `tone`, `energy` | muscle tone and energy (daze) |
+| `support` | support S, grounded × balance (empty) |
+| `balance`, `balance_counter` | balance and its instability counter |
+| `target{1..18}_{x,y,z,qx,qy,qz,qw}` | each part's animated world transform this tick: place and rotation |
+| `foot_{r,l}_flags`, `foot_{r,l}_anchor_{x,y,z}` | foot contacts (empty) |
+| `motion`, `clock` | the action's index in the motion set, and the clip clock |
 
 ## Motion set (`3DAB`)
 

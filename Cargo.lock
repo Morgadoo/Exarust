@@ -2410,6 +2410,7 @@ dependencies = [
  "exa_audio",
  "exa_character",
  "exa_combat",
+ "exa_formats",
  "exa_items",
  "exa_physics",
  "exa_render",

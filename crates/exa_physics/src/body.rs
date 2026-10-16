@@ -8,7 +8,13 @@
 //! muscles: a [`Drive`] pulls every particle towards where the animated pose
 //! puts it, with damping, and compensates gravity by muscle tone. Blows shove
 //! parts and daze the body, which weakens its muscles until it recovers.
-//! Evidence: `docs/formats/RSQ.md` (Physical body).
+//!
+//! Bodies tick in the fixed step, as one world in the original's order:
+//! every living body's character tick (its clip sampled and its targets
+//! set, the player's last, [`CharacterTicks`]), then the solver over every
+//! awake body ([`BodySystems`]): blows, integration, 20 iterations, level
+//! detection, 8 friction passes, post-step. Parts are drawn between their
+//! last two ticks. Evidence: `docs/formats/RSQ.md` (Physical body).
 
 use bevy::math::{Affine3A, Mat3};
 use bevy::prelude::*;
@@ -25,8 +31,6 @@ const RETENTION: [f32; 3] = [0.2556, 0.15, 0.03];
 const RETENTION_SPEEDS: [f32; 2] = [0.4, 0.2];
 const LINK_ITERATIONS: usize = 20;
 const FRICTION_PASSES: usize = 8;
-/// Ticks run per frame at most.
-const MAX_TICKS: u32 = 4;
 /// The fastest a particle may move (m/s): well above any blow or fall.
 const MAX_SPEED: f32 = 25.0;
 /// A limp body whose particles all stay slower than this (m/s) ...
@@ -105,6 +109,9 @@ pub struct Part {
     start: [Vec3; 4],
     /// The part's transform where the last tick left it.
     settled: Affine3A,
+    /// Where the tick before last and the last tick left the part, untouched
+    /// by the carry: it is drawn between the two.
+    shown: (Affine3A, Affine3A),
     /// Level contacts found last tick, enforced in this tick's iterations.
     pub contacts: Vec<LevelContact>,
     /// Pushes and depths summed since the edges were last restored (or
@@ -174,16 +181,34 @@ impl Part {
             },
             start: positions,
             settled: Affine3A::IDENTITY,
+            shown: (Affine3A::IDENTITY, Affine3A::IDENTITY),
             contacts: Vec::new(),
             strain: 0.0,
         }
         .settle()
     }
 
-    /// Records where the tick leaves the part.
+    /// Records where the part is as where the last ticks left it.
     fn settle(mut self) -> Self {
         self.settled = self.transform();
+        self.shown = (self.settled, self.settled);
         self
+    }
+
+    /// The part's transform `alpha` of the way from where the tick before
+    /// last left it to where the last tick did.
+    pub fn drawn(&self, alpha: f32) -> Affine3A {
+        let (before, now) = self.shown;
+        if before == now {
+            return now;
+        }
+        let (_, from, start) = before.to_scale_rotation_translation();
+        let (scale, to, end) = now.to_scale_rotation_translation();
+        Affine3A::from_scale_rotation_translation(
+            scale,
+            from.slerp(to, alpha),
+            start.lerp(end, alpha),
+        )
     }
 
     fn point(&self, w: &[f32; 4]) -> Vec3 {
@@ -411,9 +436,8 @@ pub struct Ragdoll {
     pub parts: Vec<Part>,
     pub links: Vec<Link>,
     pub drive: Option<Drive>,
-    /// Ticks run in the last frame.
+    /// Ticks the body was solved since the frame began.
     pub ticks: u32,
-    accumulator: f32,
     /// Ticks a limp body has lain still.
     still: u32,
     /// A limp body at rest is not simulated until something shoves it.
@@ -423,12 +447,11 @@ pub struct Ragdoll {
 /// Muscles of a living body: the animated pose it follows.
 #[derive(Debug, Clone)]
 pub struct Drive {
-    /// Animated world transform of each part, as last aimed.
-    aimed: Vec<Affine3A>,
-    /// The same, advanced tick by tick towards the next aim.
+    /// Animated world transform of each part this tick.
     targets: Vec<Affine3A>,
-    /// How far each target moves per tick.
-    target_steps: Vec<Affine3A>,
+    /// The same last tick, carried with the root since: the pose's own
+    /// motion over the tick.
+    before: Vec<Affine3A>,
     /// The body root's world transform when last aimed.
     root: Option<Affine3A>,
     /// Muscle tone, 0..=1: drive strength and gravity compensation.
@@ -444,9 +467,8 @@ pub struct Drive {
 impl Default for Drive {
     fn default() -> Self {
         Self {
-            aimed: Vec::new(),
             targets: Vec::new(),
-            target_steps: Vec::new(),
+            before: Vec::new(),
             root: None,
             tone: 1.0,
             energy: 1.0,
@@ -455,7 +477,17 @@ impl Default for Drive {
     }
 }
 
+impl Drive {
+    /// Each part's animated world transform this tick (none before the
+    /// first aim, or after a fall or a get-up until the next).
+    pub fn targets(&self) -> &[Affine3A] {
+        &self.targets
+    }
+}
+
 /// A blow to a body part: a change of velocity (m/s) and how much it dazes.
+/// Blows are queued ([`ShoveQueue`]) and dealt by the next tick, whichever
+/// frame sends them.
 #[derive(Message, Debug, Clone, Copy)]
 pub struct Shove {
     /// The body model root.
@@ -465,9 +497,44 @@ pub struct Shove {
     pub daze: f32,
 }
 
-/// The systems stepping bodies; animation targets are set before them.
+/// Blows waiting for the next tick.
+#[derive(Resource, Debug, Default)]
+pub struct ShoveQueue(pub Vec<Shove>);
+
+/// Ticks the bodies have run since the start.
+#[derive(Resource, Debug, Default, Clone, Copy)]
+pub struct BodyTicks(pub u64);
+
+/// The character ticks: each living body's clip advanced and sampled, and
+/// its targets set (`Ragdoll::aim`), the player's last. In the fixed step,
+/// after the character controllers and before [`BodySystems`].
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CharacterTicks;
+
+/// The body solver: one tick of every awake body. In the fixed step.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BodySystems;
+
+/// Ticks bodies in the fixed step and draws them between ticks. The game
+/// adds it with [`crate::PhysicsPlugin`], which also sets the fixed rate.
+pub struct BodyPlugin;
+
+impl Plugin for BodyPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_message::<Shove>()
+            .init_resource::<ShoveQueue>()
+            .init_resource::<BodyTicks>()
+            .configure_sets(FixedUpdate, (CharacterTicks, BodySystems).chain())
+            .add_systems(FixedUpdate, step_bodies.in_set(BodySystems))
+            .add_systems(
+                RunFixedMainLoop,
+                begin_frame.in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop),
+            )
+            // After every frame system that moves a character or a body
+            // root (the drawn controller, turns, a get-up's teleport).
+            .add_systems(PostUpdate, draw_bodies.before(TransformSystems::Propagate));
+    }
+}
 
 /// What building a body needs for each part.
 #[derive(Debug, Clone)]
@@ -509,7 +576,6 @@ impl Ragdoll {
             links,
             drive: None,
             ticks: 0,
-            accumulator: 0.0,
             still: 0,
             asleep: false,
         }
@@ -529,6 +595,7 @@ impl Ragdoll {
             for p in &mut self.parts {
                 p.contacts.clear();
                 p.settled = p.transform();
+                p.shown = (p.settled, p.settled);
             }
         }
         self.asleep = false;
@@ -544,82 +611,81 @@ impl Ragdoll {
             * BODY_HZ
     }
 
-    /// Sets the animated pose to follow: the root's world transform and each
-    /// part's animated world transform, `frame` seconds after the last. The
-    /// body is carried along with the root's own motion, so the muscles
-    /// only work against the pose and outside forces.
-    pub fn aim(&mut self, root: Affine3A, targets: Vec<Affine3A>, frame: f32) {
-        let pelvis = self.parts.iter().position(|p| p.bone == 1);
-        let pelvis_world = pelvis.map(|i| self.parts[i].transform());
-        let Some(drive) = self.drive.as_mut() else {
+    /// Sets this tick's animated pose (the character tick does, every tick
+    /// before the solver): the root's world transform, and each part's
+    /// animated world transform, the root's times the clip's pose. The body
+    /// is carried along with the root's motion since the last aim, so the
+    /// muscles only work against the pose and outside forces.
+    pub fn aim(&mut self, root: Affine3A, targets: Vec<Affine3A>) {
+        let Some(supported) = self.drive.as_ref().map(|d| d.supported) else {
             return;
         };
+        let pelvis = self.parts.iter().position(|p| p.bone == 1);
         // A fallen body follows the pose relative to its own pelvis.
-        let targets = match (drive.supported, pelvis, pelvis_world) {
-            (false, Some(i), Some(world)) => {
+        let targets = match pelvis {
+            Some(i) if !supported && targets.len() == self.parts.len() => {
                 // The pelvis's place and turn only: its particles deform a
                 // little, and a scale carried into the targets would grow
                 // the body away from the world's origin.
+                let world = self.parts[i].transform();
                 let (_, turn, place) = world.to_scale_rotation_translation();
                 let align = Affine3A::from_rotation_translation(turn, place) * targets[i].inverse();
                 targets.iter().map(|t| align * *t).collect()
             }
             _ => targets,
         };
+        self.carry(root);
+        let Some(drive) = self.drive.as_mut() else {
+            return;
+        };
+        drive.before = if drive.targets.len() == targets.len() {
+            std::mem::replace(&mut drive.targets, targets)
+        } else {
+            // A new start, not motion.
+            drive.targets = targets;
+            drive.targets.clone()
+        };
+    }
+
+    /// Keeps last tick's pose, carried with the root, when this tick has
+    /// none to give.
+    pub fn hold(&mut self, root: Affine3A) {
+        self.carry(root);
+        if let Some(d) = self.drive.as_mut() {
+            d.before.clone_from(&d.targets);
+        }
+    }
+
+    /// Carries a standing body with its root's motion since the last aim:
+    /// its particles, where the last tick left each part, its level
+    /// contacts and its targets.
+    fn carry(&mut self, root: Affine3A) {
+        let Some(drive) = self.drive.as_mut() else {
+            return;
+        };
         if !drive.supported {
             drive.root = None;
         }
-        if let Some(previous) = drive.root {
-            let carry = root * previous.inverse();
-            for p in &mut self.parts {
-                for x in p.positions.iter_mut().chain(p.previous.iter_mut()) {
-                    *x = carry.transform_point3(*x);
-                }
-                // Where the last tick left it moves too, or the carry would
-                // read as a sweep; its contacts travel with it.
-                p.settled = carry * p.settled;
-                for c in &mut p.contacts {
-                    c.point = carry.transform_point3(c.point);
-                    c.normal = carry.transform_vector3(c.normal).normalize_or(c.normal);
-                    c.plane = c.normal.dot(c.point) - CONTACT_SLOP;
-                }
+        let Some(previous) = drive.root.replace(root) else {
+            return;
+        };
+        let carry = root * previous.inverse();
+        for p in &mut self.parts {
+            for x in p.positions.iter_mut().chain(p.previous.iter_mut()) {
+                *x = carry.transform_point3(*x);
             }
-            for t in &mut drive.aimed {
-                *t = carry * *t;
+            // Where the last tick left it moves too, or the carry would
+            // read as a sweep; its contacts travel with it.
+            p.settled = carry * p.settled;
+            for c in &mut p.contacts {
+                c.point = carry.transform_point3(c.point);
+                c.normal = carry.transform_vector3(c.normal).normalize_or(c.normal);
+                c.plane = c.normal.dot(c.point) - CONTACT_SLOP;
             }
         }
-        let ticks = (frame * BODY_HZ).max(1.0);
-        drive.target_steps = if drive.aimed.len() == targets.len() {
-            targets
-                .iter()
-                .zip(&drive.aimed)
-                .map(|(now, before)| {
-                    // In the part's own frame: a turn about the part, not
-                    // about the world's origin.
-                    let step = before.inverse() * *now;
-                    // A share of the frame's motion, per tick.
-                    let (scale, rotation, translation) = step.to_scale_rotation_translation();
-                    // The short way round.
-                    let rotation = if rotation.w < 0.0 {
-                        -rotation
-                    } else {
-                        rotation
-                    };
-                    let (axis, angle) = rotation.to_axis_angle();
-                    Affine3A::from_scale_rotation_translation(
-                        // Each tick takes its share of the scale too.
-                        scale.powf(1.0 / ticks),
-                        Quat::from_axis_angle(axis, angle / ticks),
-                        translation / ticks,
-                    )
-                })
-                .collect()
-        } else {
-            vec![Affine3A::IDENTITY; targets.len()]
-        };
-        drive.targets.clone_from(&targets);
-        drive.aimed = targets;
-        drive.root = Some(root);
+        for t in &mut drive.targets {
+            *t = carry * *t;
+        }
     }
 
     /// Loses the controller's support: the body falls with slack muscles.
@@ -630,7 +696,8 @@ impl Ragdoll {
             // The pose is measured from the pelvis from now on: a new start,
             // not motion.
             d.root = None;
-            d.aimed.clear();
+            d.targets.clear();
+            d.before.clear();
         }
     }
 
@@ -640,7 +707,8 @@ impl Ragdoll {
             d.supported = true;
             d.tone = 1.0;
             d.root = None;
-            d.aimed.clear();
+            d.targets.clear();
+            d.before.clear();
         }
     }
 
@@ -691,32 +759,51 @@ impl Ragdoll {
         }
     }
 
-    /// One tick of the simulation against the static `level`, in the
-    /// original's order: integrate and drive; 20 iterations of links, each
-    /// part's stored level contacts and its edges; level detection with an
-    /// immediate push, keeping the contacts for the next tick; 8 friction
-    /// passes on them.
+    /// One tick of this body alone against the static `level`: the world's
+    /// solver ([`solve`]) with one body.
     pub fn tick<L: Level + ?Sized>(&mut self, level: &L) {
+        solve(&mut [self], level);
+    }
+
+    /// The integration step: inertia and gravity, then the muscles' pull.
+    fn step(&mut self) {
         self.integrate();
         if let Some(drive) = self.drive.as_mut() {
             drive_parts(&mut self.parts, drive);
         }
-        for _ in 0..LINK_ITERATIONS {
-            self.iterate();
-        }
+    }
+
+    /// One friction pass over the level contacts found this tick.
+    fn rub(&mut self) {
         for p in &mut self.parts {
-            p.contacts.clear();
-        }
-        self.detect(level);
-        for _ in 0..FRICTION_PASSES {
-            for p in &mut self.parts {
-                if p.friction > 0.0 {
-                    p.rub_contacts();
-                }
+            if p.friction > 0.0 {
+                p.rub_contacts();
             }
         }
+    }
+
+    /// The post-step: where the tick leaves each part, and whether a limp
+    /// body has lain still long enough to sleep.
+    fn post_step(&mut self) {
         for p in &mut self.parts {
             p.settled = p.transform();
+            p.shown = (p.shown.1, p.settled);
+        }
+        if self.drive.is_none() {
+            self.still = if self.fastest() < SLEEP_SPEED {
+                self.still + 1
+            } else {
+                0
+            };
+            self.asleep = self.still >= SLEEP_TICKS;
+        }
+        self.ticks += 1;
+    }
+
+    /// A tick the body sleeps through: it is drawn where it lies.
+    fn rest(&mut self) {
+        for p in &mut self.parts {
+            p.shown.0 = p.shown.1;
         }
     }
 
@@ -843,6 +930,41 @@ impl Ragdoll {
     }
 }
 
+/// One tick of the world's solver over `bodies` against the static `level`,
+/// in the original's order (the character ticks have set every living
+/// body's targets): every body integrated (inertia, gravity and its
+/// muscles' pull); 20 iterations, in each of which every body takes its
+/// links, its stored level contacts and its edges; every body's contacts
+/// dropped and its spheres tested against the level (an immediate push,
+/// the contacts kept for the next tick); 8 friction passes over every body;
+/// the post-step.
+pub fn solve<L: Level + ?Sized>(bodies: &mut [&mut Ragdoll], level: &L) {
+    for b in bodies.iter_mut() {
+        b.step();
+    }
+    for _ in 0..LINK_ITERATIONS {
+        for b in bodies.iter_mut() {
+            b.iterate();
+        }
+    }
+    for b in bodies.iter_mut() {
+        for p in &mut b.parts {
+            p.contacts.clear();
+        }
+    }
+    for b in bodies.iter_mut() {
+        b.detect(level);
+    }
+    for _ in 0..FRICTION_PASSES {
+        for b in bodies.iter_mut() {
+            b.rub();
+        }
+    }
+    for b in bodies.iter_mut() {
+        b.post_step();
+    }
+}
+
 /// The rigid motion of a body's particles: centre of mass, velocity and
 /// spin (per tick), and the inverse of the inertia about the centre.
 struct Bulk {
@@ -916,7 +1038,7 @@ impl Bulk {
 /// Pulls every particle towards its place in the animated pose, damping its
 /// velocity relative to the pose's own motion (a PD muscle per particle).
 fn drive_parts(parts: &mut [Part], drive: &mut Drive) {
-    if drive.targets.len() != parts.len() {
+    if drive.targets.len() != parts.len() || drive.before.len() != parts.len() {
         return;
     }
     let strength = drive.tone * drive.tone * drive.energy.powi(4);
@@ -946,10 +1068,8 @@ fn drive_parts(parts: &mut [Part], drive: &mut Drive) {
         };
         let gain = (base * strength).min(1.0);
         let damping = (2.0 * gain.sqrt()).min(1.0);
-        // The target advances through the tick.
-        let before = drive.targets[i];
-        drive.targets[i] *= drive.target_steps[i];
-        let target = drive.targets[i];
+        // Where the pose put the part last tick and this tick.
+        let (before, target) = (drive.before[i], drive.targets[i]);
         for k in 0..4 {
             let goal = target.transform_point3(p.rest[k]);
             let goal_velocity = match &bulk {
@@ -976,6 +1096,8 @@ fn drive_parts(parts: &mut [Part], drive: &mut Drive) {
             p.previous[k] += brakes[i][k] - (slowed + unturned.cross(r));
         }
     }
+    // Without a new aim the pose stands still.
+    drive.before.clone_from(&drive.targets);
     drive.energy = (drive.energy + ENERGY_RECOVERY).min(1.0);
 }
 
@@ -998,63 +1120,93 @@ fn keep_rigid(p: &mut Part) {
 }
 
 /// World transform of `entity` from the local transforms up its ancestry
-/// (current this frame, unlike the propagated global transforms).
+/// (current, unlike the propagated global transforms: inside the fixed step
+/// a character controller holds its simulated position).
 pub fn world_of(
     entity: Entity,
     parents: &Query<&ChildOf>,
     transforms: &Query<&mut Transform>,
 ) -> Affine3A {
+    world_with(entity, parents, |e| {
+        transforms.get(e).ok().map(Transform::compute_affine)
+    })
+}
+
+/// World transform of `entity` from the local transforms `local` gives up
+/// its ancestry.
+pub fn world_with(
+    entity: Entity,
+    parents: &Query<&ChildOf>,
+    local: impl Fn(Entity) -> Option<Affine3A>,
+) -> Affine3A {
     let mut world = Affine3A::IDENTITY;
     let mut node = Some(entity);
     while let Some(e) = node {
-        if let Ok(t) = transforms.get(e) {
-            world = t.compute_affine() * world;
+        if let Some(t) = local(e) {
+            world = t * world;
         }
         node = parents.get(e).ok().map(ChildOf::parent);
     }
     world
 }
 
-/// Steps every ragdoll at the body rate and writes the parts' transforms.
-pub fn step_ragdolls(
-    time: Res<Time>,
-    physics: Res<Physics>,
+/// Before a frame's ticks: queues the blows sent since the last frame, and
+/// starts counting the frame's ticks afresh.
+fn begin_frame(
     mut shoves: MessageReader<Shove>,
-    mut bodies: Query<(Entity, &mut Ragdoll)>,
-    parents: Query<&ChildOf>,
-    mut transforms: Query<&mut Transform>,
+    mut queue: ResMut<ShoveQueue>,
+    mut bodies: Query<&mut Ragdoll>,
 ) {
-    for s in shoves.read() {
-        if let Ok((_, mut body)) = bodies.get_mut(s.body) {
+    queue.0.extend(shoves.read().copied());
+    for mut body in &mut bodies {
+        if body.ticks != 0 {
+            body.ticks = 0;
+        }
+    }
+}
+
+/// The solver's tick over every body (the character ticks ran before it):
+/// the queued blows, then one tick of the world's solver over the awake
+/// bodies.
+pub fn step_bodies(
+    physics: Res<Physics>,
+    mut queue: ResMut<ShoveQueue>,
+    mut clock: ResMut<BodyTicks>,
+    mut bodies: Query<&mut Ragdoll>,
+) {
+    for s in queue.0.drain(..) {
+        if let Ok(mut body) = bodies.get_mut(s.body) {
             body.shove(s.bone, s.velocity, s.daze);
         }
     }
-    let level = &physics.0;
-    for (_, mut body) in &mut bodies {
-        if body.asleep {
-            body.accumulator = 0.0;
-            body.ticks = 0;
-            continue;
+    let mut awake: Vec<Mut<Ragdoll>> = Vec::new();
+    for mut body in &mut bodies {
+        if !body.asleep {
+            awake.push(body);
+        } else if body.parts.iter().any(|p| p.shown.0 != p.shown.1) {
+            body.rest();
         }
-        body.accumulator += time.delta_secs();
-        let mut ticks = 0;
-        while body.accumulator >= 1.0 / BODY_HZ && ticks < MAX_TICKS {
-            body.tick(level);
-            body.accumulator -= 1.0 / BODY_HZ;
-            ticks += 1;
-        }
-        body.accumulator = body.accumulator.min(1.0 / BODY_HZ);
-        body.ticks = ticks;
-        if body.drive.is_none() && ticks > 0 {
-            body.still = if body.fastest() < SLEEP_SPEED {
-                body.still + ticks
-            } else {
-                0
-            };
-            body.asleep = body.still >= SLEEP_TICKS;
-        }
-        // Local transforms from the parts' world transforms.
-        let worlds: Vec<Affine3A> = body.parts.iter().map(Part::transform).collect();
+    }
+    let mut awake: Vec<&mut Ragdoll> = awake.iter_mut().map(|b| &mut **b).collect();
+    solve(&mut awake, &physics.0);
+    clock.0 += 1;
+}
+
+/// Draws every body's parts between their last two ticks, by the fraction
+/// of the next tick already elapsed: each part's local transform under its
+/// drawn parent part, or under its node's parent as the frame left it (the
+/// character controller is drawn between its steps after the fixed loop;
+/// turns and teleports of the frame come after). Runs before transforms
+/// propagate, so every part is drawn exactly at its interpolated place.
+pub fn draw_bodies(
+    time: Res<Time<Fixed>>,
+    bodies: Query<&Ragdoll>,
+    parents: Query<&ChildOf>,
+    mut transforms: Query<&mut Transform>,
+) {
+    let alpha = time.overstep_fraction();
+    for body in &bodies {
+        let worlds: Vec<Affine3A> = body.parts.iter().map(|p| p.drawn(alpha)).collect();
         for (i, p) in body.parts.iter().enumerate() {
             let parent = match p.parent {
                 Some(j) => worlds[j].inverse(),
@@ -1077,6 +1229,10 @@ mod floor_test;
 #[cfg(test)]
 #[path = "body_contact_test.rs"]
 mod contact_test;
+
+#[cfg(test)]
+#[path = "body_tick_test.rs"]
+mod tick_test;
 
 #[cfg(test)]
 mod tests {
@@ -1207,14 +1363,14 @@ mod tests {
                 Affine3A::from_rotation_translation(r, Vec3::new(0.0, 0.6, z)),
             ]
         };
-        for f in 0..300 {
-            let z = (f % 40) as f32 * 0.02;
-            body.aim(Affine3A::IDENTITY, targets(z), 1.0 / 60.0);
-            for _ in 0..if f % 3 == 0 { 2 } else { 1 } {
-                body.tick(NONE);
-            }
+        for tick in 0..415 {
+            // The clip's clock at 60 frames per second, sampled every tick.
+            let frame = (tick as f32 * 60.0 / BODY_HZ) as usize;
+            let z = (frame % 40) as f32 * 0.02;
+            body.aim(Affine3A::IDENTITY, targets(z));
+            body.tick(NONE);
             let c = body.parts[0].transform().translation;
-            assert!(c.is_finite() && c.length() < 3.0, "frame {f}: {c}");
+            assert!(c.is_finite() && c.length() < 3.0, "tick {tick}: {c}");
         }
     }
 
@@ -1227,7 +1383,7 @@ mod tests {
         ];
         let step = |body: &mut Ragdoll, ticks: usize| {
             for _ in 0..ticks {
-                body.aim(Affine3A::IDENTITY, pose.clone(), 1.0 / BODY_HZ);
+                body.aim(Affine3A::IDENTITY, pose.clone());
                 body.tick(NONE);
             }
             body.parts[0].transform().translation.x

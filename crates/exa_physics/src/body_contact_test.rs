@@ -276,7 +276,8 @@ fn a_part_keeps_its_four_most_spread_contacts() {
 }
 
 /// A body carried by its controller is not swept by the carry, and its
-/// contacts travel with it.
+/// contacts travel with it. Where it is drawn from stays: the carry is
+/// drawn as motion between ticks, as the controller is.
 #[test]
 fn a_carried_body_moves_its_last_pose_and_contacts() {
     // The feet 1 cm into the floor, so that the shins touch it.
@@ -284,31 +285,28 @@ fn a_carried_body_moves_its_last_pose_and_contacts() {
     let mut body = Ragdoll::new(&setup).with_drive();
     let floor = quad_floor(0.0);
     for _ in 0..10 {
-        body.aim(Affine3A::IDENTITY, pose.clone(), 1.0 / BODY_HZ);
+        body.aim(Affine3A::IDENTITY, pose.clone());
         body.tick(floor.as_slice());
     }
     let shift = Vec3::new(0.5, -0.3, 0.0);
     let down = Affine3A::from_translation(shift);
-    let before: Vec<(Affine3A, Vec<LevelContact>)> = body
+    let before: Vec<(Affine3A, Vec<LevelContact>, (Affine3A, Affine3A))> = body
         .parts
         .iter()
-        .map(|p| (p.settled, p.contacts.clone()))
+        .map(|p| (p.settled, p.contacts.clone(), p.shown))
         .collect();
     assert!(
-        before.iter().any(|(_, c)| !c.is_empty()),
+        before.iter().any(|(_, c, _)| !c.is_empty()),
         "no contacts to carry"
     );
-    body.aim(
-        down,
-        pose.iter().map(|t| down * *t).collect(),
-        1.0 / BODY_HZ,
-    );
-    for (p, (settled, contacts)) in body.parts.iter().zip(before) {
+    body.aim(down, pose.iter().map(|t| down * *t).collect());
+    for (p, (settled, contacts, shown)) in body.parts.iter().zip(before) {
         assert!(
             p.settled
                 .translation
                 .abs_diff_eq((down * settled).translation, 1e-5)
         );
+        assert_eq!(p.shown, shown);
         assert_eq!(p.contacts.len(), contacts.len());
         for (c, old) in p.contacts.iter().zip(contacts) {
             assert!(c.point.abs_diff_eq(old.point + shift, 1e-5));
