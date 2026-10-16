@@ -365,11 +365,7 @@ fn held_record(
 fn weapon_length(model: &model::Model, meshes: &Assets<Mesh>) -> f32 {
     let mut longest = 0.0f32;
     for (i, node) in model.nodes.iter().enumerate() {
-        let t = if node.parent.is_none() && i == 0 {
-            Transform::IDENTITY
-        } else {
-            node.transform
-        };
+        let t = blood::placement(model, i);
         for (mesh, _) in &node.parts {
             let Some(positions) = meshes
                 .get(mesh)
@@ -645,24 +641,29 @@ fn equip_outfits(
                     Visibility::default(),
                     ChildOf(hand),
                     exa_combat::Blade::new(body, length, record),
+                    exa_combat::wounds::BladeBlood::default(),
                 ))
                 .id();
             // Plain models drop their root node's placement; assembled
             // weapons keep each component's.
+            let mut spawned = HashMap::new();
             for (i, node) in weapon.nodes.iter().enumerate() {
-                let transform = if node.parent.is_none() && i == 0 {
-                    Transform::IDENTITY
-                } else {
-                    node.transform
-                };
-                for (mesh, material) in &node.parts {
-                    commands.spawn((
-                        Mesh3d(mesh.clone()),
-                        MeshMaterial3d(material.clone()),
-                        transform,
-                        ChildOf(holder),
-                    ));
+                let transform = blood::placement(&weapon, i);
+                for (k, (mesh, material)) in node.parts.iter().enumerate() {
+                    let part = commands
+                        .spawn((
+                            Mesh3d(mesh.clone()),
+                            MeshMaterial3d(material.clone()),
+                            transform,
+                            ChildOf(holder),
+                        ))
+                        .id();
+                    spawned.insert((i, k), part);
                 }
+            }
+            // The meshes its blood will stain.
+            if let Some(stain) = blood::WeaponStain::of(&weapon, loader.meshes, &spawned) {
+                commands.entity(holder).insert(stain);
             }
         }
         commands.entity(body).insert(Dressed);

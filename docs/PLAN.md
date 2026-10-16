@@ -479,7 +479,15 @@ race that bleeds, when the wound's size R (the lasting damage on the part
 before the red bar's 0.75) exceeds 0.05, the wound waits on the victim
 (seven at most) anchored to the striking blade and is painted seven body
 ticks later, smeared along the blade's follow-through, with radius
-30·R + 10 cm, on corpses too. Next: blade stains (L8) and sprays (L9).
+30·R + 10 cm, on corpses too.
+Done (change `stain-weapons-with-blood`): weapons stain as the original's
+do: the weapon that deals a bleeding blow draws half the wound's R of
+blood (up to 1, never washed off; fists none), and once it holds more
+than 0.01 a second, multiplying pass draws the blood gradient `BldGr02D`
+over its model's first mesh (every part of an assembled weapon), keyed on
+the height up the blade so that the stain runs down √(80·L·blood) cm from
+the tip, densest at the tip and speckled at its edge; `--weapon-blood`
+shows one without a fight. Next: sprays (L9).
 See `docs/RENDERING.md` and `docs/PERFORMANCE.md`.
 
 - Materials: one `ExaMaterial` whose parameters follow

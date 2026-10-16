@@ -15,6 +15,11 @@
 //! and how it moved on from the contact point sets the smear. The radius is
 //! 30·R + 10 cm. The fallen keep counting, so the killing blow bleeds on
 //! the corpse. Nothing bleeds on the striker: a fist stays clean.
+//!
+//! The weapon that deals a bleeding wound draws blood at once
+//! ([`BladeBlood`]): half the wound's size R, up to 1, never washed off.
+//! The blood stains the blade from its tip (`exa_character::blood`). Fists
+//! draw none.
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;
@@ -28,6 +33,24 @@ pub const BLEED_FROM: f64 = 0.05;
 pub const WOUND_SLOTS: usize = 7;
 /// Body ticks from the blow to the wound's bleeding (84 ms at 83 Hz).
 pub const WOUND_DELAY: i32 = 7;
+/// Blood a weapon draws from each bleeding wound it deals, as a share of
+/// the wound's size R.
+pub const BLADE_BLOOD_PER_WOUND: f32 = 0.5;
+
+/// The blood a held weapon has drawn, from 0 (clean) to 1, on the entity
+/// holding its model (the striker of its hits). Each bleeding wound it
+/// deals adds half the wound's size R at the blow ([`BladeBlood::draw`]);
+/// nothing washes it off. Fists have none, so a punch never bloodies them.
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq)]
+pub struct BladeBlood(pub f32);
+
+impl BladeBlood {
+    /// Draws the blood of a bleeding wound of size `size`: 0.5·R more, kept
+    /// within 0..=1.
+    pub fn draw(&mut self, size: f32) {
+        self.0 = (self.0 + BLADE_BLOOD_PER_WOUND * size).clamp(0.0, 1.0);
+    }
+}
 
 /// Whether a wound of size R bleeds: R above 0.05, R widened to double
 /// first (so the single-precision 0.05, a hair above it, bleeds).
@@ -210,6 +233,28 @@ mod tests {
         for (r, cm) in [(0.05, 11.5), (0.3, 19.0), (1.0, 40.0)] {
             assert!((wound_radius(r) * 100.0 - cm).abs() < 1e-4, "{r}");
         }
+    }
+
+    /// A blade draws half of each wound's R and holds at most 1: the chest
+    /// cut (R 0.457) leaves 0.2285, three of them 0.6855, a fifth soaks it.
+    #[test]
+    fn blades_draw_half_of_each_wound() {
+        let mut blood = BladeBlood::default();
+        blood.draw(0.457);
+        assert!((blood.0 - 0.2285).abs() < 1e-6);
+        blood.draw(0.457);
+        blood.draw(0.457);
+        assert!((blood.0 - 0.6855).abs() < 1e-6);
+        blood.draw(0.457);
+        assert!((blood.0 - 0.914).abs() < 1e-6);
+        blood.draw(0.457);
+        assert_eq!(blood.0, 1.0);
+        blood.draw(0.06);
+        assert_eq!(blood.0, 1.0);
+        // The smallest bleeding wound, just over 0.05, adds just over 0.025.
+        let mut faint = BladeBlood::default();
+        faint.draw(0.0501);
+        assert!((faint.0 - 0.025_05).abs() < 1e-7);
     }
 
     /// The weights follow the striker: a point of a blade turned and moved

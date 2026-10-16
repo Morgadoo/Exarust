@@ -30,19 +30,34 @@
 //! never spreads, fades or drips.
 //! [`DebugWounds`] paints test wounds on the player or the character view's
 //! body (`--debug-wound`, `docs/DEBUGGING.md`).
+//!
+//! **Blood on weapons**: a held weapon keeps the blood it has drawn
+//! (`exa_combat::wounds::BladeBlood`, half of each bleeding wound's R, up
+//! to 1). Once it holds more than 0.01, its stain is drawn over the meshes
+//! the original stains ([`WeaponStain`]): the first mesh of the model's
+//! root node, or every part of an assembled (factory) weapon, which the
+//! original merges into one mesh. The stain pass
+//! (`exa_render::stain::StainMaterial`) multiplies the frame by the blood
+//! gradient running down from the tip, further as the blood grows.
+//! [`DebugWeaponBlood`] gives the player's weapon blood from the start
+//! (`--weapon-blood`).
 
 use std::collections::{HashMap, HashSet};
 
+use bevy::image::{CompressedImageFormatSupport, ImageAddressMode, ImageSampler};
 use bevy::math::Affine3A;
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use bevy::mesh::{Indices, MeshVertexAttribute, VertexAttributeValues, VertexFormat};
 use bevy::prelude::*;
 use bevy::transform::TransformSystems;
 use exa_anim::BodyPart;
-use exa_assets::SkinnedPart;
-use exa_combat::CombatSystems;
-use exa_combat::wounds::Bleed;
+use exa_assets::model::Model;
+use exa_assets::texture::ColorSpace;
+use exa_assets::{Game, SkinnedPart};
+use exa_combat::wounds::{BladeBlood, Bleed};
+use exa_combat::{Blade, CombatSystems};
 use exa_render::material::ExaMaterial;
+use exa_render::stain::{STAIN_GRADIENT, StainMaterial, StainParams, stain_shows};
 
 use crate::Dressed;
 
@@ -59,6 +74,12 @@ impl Plugin for BloodPlugin {
                     paint_debug_wounds.run_if(resource_exists::<DebugWounds>),
                     bleed_wounds,
                     paint_wounds,
+                    bloody_debug_weapons.run_if(resource_exists::<DebugWeaponBlood>),
+                    load_stain_gradient
+                        .run_if(resource_exists::<Game>)
+                        .run_if(not(resource_exists::<StainGradient>))
+                        .run_if(any_with_component::<WeaponStain>),
+                    stain_weapons.run_if(any_with_component::<WeaponStain>),
                 )
                     .chain()
                     // Vertices are taken where this frame's pose puts them,
@@ -393,6 +414,214 @@ fn mesh_bytes(mesh: &Mesh) -> usize {
         None => 0,
     };
     mesh.get_vertex_size() as usize * mesh.count_vertices() + indices
+}
+
+/// Where node `index` of a held weapon model sits in the weapon's frame (the
+/// entity holding the model): a plain model's root node at the origin (its
+/// own placement dropped), every other node at its placement, as the
+/// assembled weapons place their parts.
+pub fn placement(model: &Model, index: usize) -> Transform {
+    match model.nodes.get(index) {
+        Some(node) if index == 0 && node.parent.is_none() => Transform::IDENTITY,
+        Some(node) => node.transform,
+        None => Transform::IDENTITY,
+    }
+}
+
+/// The meshes of a weapon model its blood stains, as (node, part) indices,
+/// and the height of its tip L (metres, in the weapon's frame).
+///
+/// A model whose root node has meshes stains that node's first mesh (the
+/// original stains its weapon node's first sub-object), and L is the top of
+/// the root's meshes (its bounding box). An assembled weapon, whose root is
+/// bare and whose parts the original merges into the weapon node's one
+/// mesh, stains every part, and L is the top of them all. `None` without a
+/// mesh to stain or a tip above the grip.
+pub fn stained_meshes(model: &Model, meshes: &Assets<Mesh>) -> Option<(f32, Vec<(usize, usize)>)> {
+    let root = model.nodes.first().filter(|n| n.parent.is_none())?;
+    let assembled = root.parts.is_empty();
+    let nodes: Vec<usize> = if assembled {
+        (0..model.nodes.len()).collect()
+    } else {
+        vec![0]
+    };
+    let mut tip = f32::NEG_INFINITY;
+    let mut stained = Vec::new();
+    for &i in &nodes {
+        let node = &model.nodes[i];
+        let t = placement(model, i);
+        for (k, (mesh, _)) in node.parts.iter().enumerate() {
+            let Some(positions) = meshes
+                .get(mesh)
+                .and_then(|m| m.attribute(Mesh::ATTRIBUTE_POSITION))
+                .and_then(|a| a.as_float3())
+            else {
+                continue;
+            };
+            for p in positions {
+                tip = tip.max(t.transform_point(Vec3::from(*p)).y);
+            }
+            if assembled || k == 0 {
+                stained.push((i, k));
+            }
+        }
+    }
+    (tip > 0.0 && !stained.is_empty()).then_some((tip, stained))
+}
+
+/// A held weapon's stain, on the entity holding its model beside its
+/// `BladeBlood`: the height of its tip and the meshes the stain covers.
+#[derive(Component, Debug, Clone)]
+pub struct WeaponStain {
+    /// The tip's height L up the weapon's frame (metres).
+    pub tip: f32,
+    /// The meshes the stain is drawn over, each with its placement in the
+    /// weapon's frame.
+    pub parts: Vec<(Entity, Mat4)>,
+    /// The stain pass's materials, one per mesh, once it is drawn.
+    pub materials: Vec<Handle<StainMaterial>>,
+}
+
+impl WeaponStain {
+    /// The stain of `model`, whose part (node, part) was spawned as
+    /// `spawned[(node, part)]` ([`stained_meshes`]).
+    pub fn of(
+        model: &Model,
+        meshes: &Assets<Mesh>,
+        spawned: &HashMap<(usize, usize), Entity>,
+    ) -> Option<Self> {
+        let (tip, stained) = stained_meshes(model, meshes)?;
+        let parts = stained
+            .into_iter()
+            .filter_map(|(i, k)| {
+                let part = *spawned.get(&(i, k))?;
+                Some((part, placement(model, i).to_matrix()))
+            })
+            .collect();
+        Some(Self {
+            tip,
+            parts,
+            materials: Vec::new(),
+        })
+    }
+}
+
+/// The blood gradient the stain pass reads ([`STAIN_GRADIENT`]).
+#[derive(Resource, Debug, Clone)]
+pub struct StainGradient(pub Handle<Image>);
+
+/// Loads the blood gradient once a weapon that can be stained exists: read
+/// as data, repeating across the blade and clamped along it (below the
+/// stain's edge the white first row, past the tip the last).
+fn load_stain_gradient(
+    mut commands: Commands,
+    game: Res<Game>,
+    support: Option<Res<CompressedImageFormatSupport>>,
+    mut images: ResMut<Assets<Image>>,
+    mut tried: Local<bool>,
+) {
+    if std::mem::replace(&mut *tried, true) {
+        return;
+    }
+    let mut image = match game.load_texture(STAIN_GRADIENT, ColorSpace::Linear, support.as_deref())
+    {
+        Ok(image) => image,
+        Err(e) => {
+            warn!("weapon blood: {e}");
+            return;
+        }
+    };
+    if let ImageSampler::Descriptor(sampler) = &mut image.sampler {
+        sampler.address_mode_v = ImageAddressMode::ClampToEdge;
+    }
+    commands.insert_resource(StainGradient(images.add(image)));
+}
+
+/// Draws the stain of every weapon whose blood shows (over 0.01): the first
+/// time, a stain pass over each of its stained meshes; then the pass
+/// follows the blood.
+#[allow(clippy::type_complexity)]
+fn stain_weapons(
+    mut commands: Commands,
+    mut weapons: Query<(Entity, Ref<BladeBlood>, &mut WeaponStain)>,
+    parts: Query<(&Mesh3d, &GlobalTransform)>,
+    gradient: Option<Res<StainGradient>>,
+    mut materials: ResMut<Assets<StainMaterial>>,
+) {
+    for (weapon, blood, mut stain) in &mut weapons {
+        if !stain_shows(blood.0) {
+            continue;
+        }
+        if !stain.materials.is_empty() {
+            if blood.is_changed() {
+                for (handle, &(_, placement)) in stain.materials.iter().zip(&stain.parts) {
+                    if let Some(mut m) = materials.get_mut(handle) {
+                        m.params = StainParams::new(blood.0, stain.tip, placement);
+                    }
+                }
+            }
+            continue;
+        }
+        let Some(gradient) = gradient.as_deref() else {
+            return;
+        };
+        let mut drawn = Vec::new();
+        for &(part, placement) in &stain.parts {
+            let Ok((mesh, at)) = parts.get(part) else {
+                continue;
+            };
+            let material = materials.add(StainMaterial {
+                params: StainParams::new(blood.0, stain.tip, placement),
+                gradient: gradient.0.clone(),
+            });
+            // Where its mesh is this frame, until the transforms propagate.
+            commands.spawn((
+                Mesh3d(mesh.0.clone()),
+                MeshMaterial3d(material.clone()),
+                Transform::IDENTITY,
+                *at,
+                ChildOf(part),
+            ));
+            drawn.push(material);
+        }
+        if drawn.is_empty() {
+            continue;
+        }
+        info!(
+            "weapon {weapon:?} stained: blood {:.3}, tip {:.0} cm, {} meshes",
+            blood.0,
+            stain.tip * 100.0,
+            drawn.len()
+        );
+        stain.materials = drawn;
+    }
+}
+
+/// Blood the player's weapon (or the character view's) holds from the
+/// start (`--weapon-blood`), 0 to 1.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq)]
+pub struct DebugWeaponBlood(pub f32);
+
+impl DebugWeaponBlood {
+    /// Reads the blood, a number from 0 to 1.
+    pub fn parse(text: &str) -> Option<Self> {
+        let blood: f32 = text.trim().parse().ok()?;
+        (0.0..=1.0).contains(&blood).then_some(Self(blood))
+    }
+}
+
+/// Gives a [`DebugWoundTarget`]'s new weapon its [`DebugWeaponBlood`].
+fn bloody_debug_weapons(
+    blood: Res<DebugWeaponBlood>,
+    mut weapons: Query<(Entity, &Blade, &mut BladeBlood), Added<BladeBlood>>,
+    targets: Query<(), With<DebugWoundTarget>>,
+) {
+    for (weapon, blade, mut held) in &mut weapons {
+        if targets.contains(blade.wielder) {
+            held.0 = blood.0.clamp(0.0, 1.0);
+            info!("debug weapon blood: {weapon:?} holds {:.3}", held.0);
+        }
+    }
 }
 
 /// Test wounds painted on every [`DebugWoundTarget`] body once it is
@@ -957,5 +1186,360 @@ mod tests {
                 .pending()
                 .is_empty()
         );
+    }
+
+    /// A mesh of two triangles' worth of vertices on the y axis at heights
+    /// `ys` (metres).
+    fn column(ys: &[f32]) -> Mesh {
+        let positions: Vec<[f32; 3]> = ys.iter().map(|&y| [0.0, y, 0.0]).collect();
+        Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        )
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    }
+
+    fn model_node(
+        parent: Option<usize>,
+        transform: Transform,
+        parts: &[Handle<Mesh>],
+    ) -> exa_assets::ModelNode {
+        exa_assets::ModelNode {
+            name: String::new(),
+            parent,
+            transform,
+            parts: parts
+                .iter()
+                .map(|m| (m.clone(), Handle::default()))
+                .collect(),
+            part_materials: vec![String::new(); parts.len()],
+            skin_bone: None,
+            light: None,
+            voxel_light: None,
+            fire: None,
+            bounds: (Vec3::ZERO, 1.0),
+            gi_points: Default::default(),
+        }
+    }
+
+    /// A model whose root has meshes stains the root's first mesh, its tip
+    /// the top of all the root's meshes (the short sword's 60.05 cm) and
+    /// not of its other nodes; an assembled weapon (its root bare) stains
+    /// every part, its tip the top of them all as placed.
+    #[test]
+    fn weapons_stain_their_root_mesh_or_every_assembled_part() {
+        let mut meshes = Assets::<Mesh>::default();
+        let blade = meshes.add(column(&[-0.1353, 0.6005, 0.3]));
+        let pommel = meshes.add(column(&[-0.15, 0.4, 0.0]));
+        let tassel = meshes.add(column(&[0.0, 0.9, 0.5]));
+        let plain = Model {
+            nodes: vec![
+                model_node(
+                    None,
+                    Transform::from_xyz(0.0, -0.0013, -7.8977),
+                    &[pommel.clone(), blade.clone()],
+                ),
+                model_node(Some(0), Transform::IDENTITY, std::slice::from_ref(&tassel)),
+            ],
+        };
+        let (tip, stained) = stained_meshes(&plain, &meshes).unwrap();
+        assert!(close(tip, 0.6005), "{tip}");
+        assert_eq!(stained, [(0, 0)]);
+        assert_eq!(placement(&plain, 0), Transform::IDENTITY);
+        assert_eq!(placement(&plain, 1), Transform::IDENTITY);
+
+        let up = Transform::from_xyz(0.0, 0.2, 0.0);
+        let turned = Transform::from_xyz(0.0, -0.1, 0.0)
+            .with_rotation(Quat::from_rotation_z(std::f32::consts::PI));
+        let assembled = Model {
+            nodes: vec![
+                model_node(None, Transform::IDENTITY, &[]),
+                model_node(Some(0), up, &[blade.clone(), pommel.clone()]),
+                model_node(Some(0), turned, std::slice::from_ref(&tassel)),
+            ],
+        };
+        let (tip, stained) = stained_meshes(&assembled, &meshes).unwrap();
+        assert!(close(tip, 0.8005), "{tip}");
+        assert_eq!(stained, [(1, 0), (1, 1), (2, 0)]);
+        assert_eq!(placement(&assembled, 1), up);
+        let mut spawned = HashMap::new();
+        for (i, k) in [(1, 0), (1, 1), (2, 0)] {
+            spawned.insert(
+                (i, k),
+                Entity::from_raw_u32(10 * i as u32 + k as u32 + 1).unwrap(),
+            );
+        }
+        let stain = WeaponStain::of(&assembled, &meshes, &spawned).unwrap();
+        assert_eq!(stain.parts.len(), 3);
+        assert_eq!(stain.parts[2].1, turned.to_matrix());
+        assert!(stain.materials.is_empty());
+
+        // Nothing to stain: a bare model, or one whose meshes stay below
+        // its grip.
+        let bare = Model {
+            nodes: vec![model_node(None, Transform::IDENTITY, &[])],
+        };
+        assert!(stained_meshes(&bare, &meshes).is_none());
+        let low = meshes.add(column(&[-0.3, -0.1, -0.2]));
+        let hilt = Model {
+            nodes: vec![model_node(None, Transform::IDENTITY, &[low])],
+        };
+        assert!(stained_meshes(&hilt, &meshes).is_none());
+    }
+
+    /// The stain passes over `part`: its children drawn with the stain
+    /// material.
+    fn stain_passes(app: &mut App, part: Entity) -> Vec<Entity> {
+        let mut q = app
+            .world_mut()
+            .query_filtered::<(Entity, &ChildOf), With<MeshMaterial3d<StainMaterial>>>();
+        q.iter(app.world())
+            .filter(|(_, c)| c.parent() == part)
+            .map(|(e, _)| e)
+            .collect()
+    }
+
+    fn stain_offset_of(app: &App, pass: Entity) -> f32 {
+        let handle = &app
+            .world()
+            .get::<MeshMaterial3d<StainMaterial>>(pass)
+            .unwrap()
+            .0;
+        app.world()
+            .resource::<Assets<StainMaterial>>()
+            .get(handle)
+            .unwrap()
+            .params
+            .coords
+            .w
+    }
+
+    /// A stain app: the blood plugin with the stain's assets and a gradient.
+    fn staining() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<SkinnedMeshInverseBindposes>>()
+            .init_resource::<Assets<StainMaterial>>()
+            .insert_resource(StainGradient(Handle::default()));
+        app
+    }
+
+    /// A weapon's stain is drawn once its blood passes 0.01: one pass on
+    /// its stained mesh, where that mesh is, with the gradient's offset for
+    /// the blood; more blood moves the same pass's offset.
+    #[test]
+    fn blood_over_a_hundredth_stains_the_weapon() {
+        use exa_render::stain::stain_offset;
+        let mut app = staining();
+        app.add_plugins(BloodPlugin);
+        let rigid = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(strip(false));
+        let at = GlobalTransform::from_xyz(1.0, 1.2, -0.4);
+        let part = app.world_mut().spawn((Mesh3d(rigid.clone()), at)).id();
+        let weapon = app
+            .world_mut()
+            .spawn((
+                BladeBlood::default(),
+                WeaponStain {
+                    tip: 0.6005,
+                    parts: vec![(part, Mat4::IDENTITY)],
+                    materials: Vec::new(),
+                },
+            ))
+            .id();
+        app.update();
+        assert!(stain_passes(&mut app, part).is_empty());
+        let bleed = |app: &mut App, blood: f32| {
+            app.world_mut().get_mut::<BladeBlood>(weapon).unwrap().0 = blood;
+            app.update();
+        };
+        bleed(&mut app, 0.01);
+        assert!(stain_passes(&mut app, part).is_empty());
+        bleed(&mut app, 0.2285);
+        let passes = stain_passes(&mut app, part);
+        assert_eq!(passes.len(), 1);
+        let pass = passes[0];
+        assert_eq!(app.world().get::<Mesh3d>(pass).unwrap().0, rigid);
+        assert_eq!(*app.world().get::<GlobalTransform>(pass).unwrap(), at);
+        assert_eq!(stain_offset_of(&app, pass), stain_offset(0.2285, 0.6005));
+        let materials = app.world().resource::<Assets<StainMaterial>>().len();
+        bleed(&mut app, 0.5);
+        assert_eq!(stain_passes(&mut app, part), [pass]);
+        assert_eq!(stain_offset_of(&app, pass), stain_offset(0.5, 0.6005));
+        assert_eq!(
+            app.world().resource::<Assets<StainMaterial>>().len(),
+            materials
+        );
+    }
+
+    /// A bleeding cut stains the blade that dealt it in the frame of the
+    /// blow (half the wound's R 0.457); a fist that bleeds a fighter has no
+    /// stain.
+    #[test]
+    fn a_bleeding_cut_stains_the_blade() {
+        use exa_combat::Fighter;
+        use exa_physics::body::{BodyTicks, Shove};
+        let mut app = staining();
+        app.init_resource::<BodyTicks>()
+            .add_message::<Shove>()
+            .add_plugins((exa_combat::CombatPlugin, BloodPlugin));
+        let rigid = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(strip(false));
+        let struck = app
+            .world_mut()
+            .spawn((
+                Fighter::default(),
+                exa_anim::Animator::new("Default", "Idle"),
+            ))
+            .id();
+        let part = app
+            .world_mut()
+            .spawn((Mesh3d(rigid), GlobalTransform::IDENTITY))
+            .id();
+        let blade = app
+            .world_mut()
+            .spawn((
+                GlobalTransform::IDENTITY,
+                BladeBlood::default(),
+                WeaponStain {
+                    tip: 0.9,
+                    parts: vec![(part, Mat4::IDENTITY)],
+                    materials: Vec::new(),
+                },
+            ))
+            .id();
+        let fist = app.world_mut().spawn(GlobalTransform::IDENTITY).id();
+        app.update();
+        let (weapon, strike) = sword_cut();
+        for striker in [blade, fist] {
+            app.world_mut().write_message(exa_combat::Hit {
+                attacker: Entity::PLACEHOLDER,
+                striker,
+                target: struck,
+                bone: 9,
+                point: Vec3::ZERO,
+                velocity: Vec3::new(3.0, 0.0, 0.0),
+                weapon,
+                strike,
+            });
+        }
+        app.update();
+        let blood = app.world().get::<BladeBlood>(blade).unwrap().0;
+        assert!((blood - 0.2285).abs() < 1e-3, "{blood}");
+        assert_eq!(stain_passes(&mut app, part).len(), 1);
+        assert!(app.world().get::<BladeBlood>(fist).is_none());
+    }
+
+    /// The installed blood gradient (skipped without the game): 256 × 512,
+    /// white on its first rows, red on 14 % of row 64, 33 % of row 128,
+    /// 79 % of row 256 and 87 % of row 448; it repeats across (the file's
+    /// flag for its width) and clamps along its height (no flag).
+    #[test]
+    fn shipped_stain_gradient() {
+        use exa_formats::rfi::Rfi;
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let rfi = Rfi::parse(game.texture(STAIN_GRADIENT).expect("bldgr02d")).unwrap();
+        assert_eq!((rfi.header.width, rfi.header.height), (256, 512));
+        assert_eq!(rfi.header.flags & 0x7_0000, 0x1_0000);
+        let rgba = rfi.decode_rgba8().unwrap();
+        let row = |y: usize| &rgba[y * 256 * 4..(y + 1) * 256 * 4];
+        assert!(row(0).iter().all(|&c| c == 255));
+        assert!(row(1).iter().all(|&c| c == 255));
+        let red = |y: usize| {
+            row(y)
+                .chunks(4)
+                .filter(|p| i32::from(p[0]) - i32::from(p[1]) > 40)
+                .count() as f32
+                / 256.0
+        };
+        for (y, share) in [(64, 0.14), (128, 0.33), (256, 0.79), (448, 0.87)] {
+            assert!((red(y) - share).abs() < 0.015, "row {y}: {}", red(y));
+        }
+    }
+
+    /// Every weapon item of the installed object database (skipped without
+    /// the game) whose model is a plain one has a root mesh standing above
+    /// its grip, which its blood stains; the rest are assembled.
+    #[test]
+    fn shipped_weapons_stain_their_root_mesh() {
+        use exa_formats::rfc::{NodeBody, Scene};
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let objects = game.pack(exa_assets::PackKind::Objects).unwrap();
+        let mut plain = std::collections::BTreeSet::new();
+        let mut assembled = std::collections::BTreeSet::new();
+        for item in crate::objdb_items(&game) {
+            if item.weapon.is_none() {
+                continue;
+            }
+            let model = item.model.to_ascii_lowercase();
+            if model.starts_with('@') {
+                assembled.insert(model);
+            } else {
+                plain.insert(model);
+            }
+        }
+        let (mut grouped, mut lowest, mut highest) = (0, f32::MAX, 0.0f32);
+        let mut missing = Vec::new();
+        for model in &plain {
+            let Some(bytes) = objects.get(model) else {
+                missing.push(model.clone());
+                continue;
+            };
+            let scene = Scene::parse(bytes).unwrap();
+            let root = &scene.nodes[0];
+            assert!(root.parent.is_none(), "{model}");
+            let NodeBody::Mesh(mesh) = &root.body else {
+                panic!("{model}: the root is not a mesh");
+            };
+            let tip = mesh.positions.iter().map(|p| p[1]).fold(f32::MIN, f32::max);
+            assert!(tip > 0.0, "{model}");
+            (lowest, highest) = (lowest.min(tip), highest.max(tip));
+            grouped += usize::from(mesh.groups.len() > 1);
+        }
+        // Seven items name a model the pack lacks; the 36 with several
+        // meshes (stained on the first) are tools and props (brooms,
+        // chisels, a crutch), not swords.
+        assert_eq!((plain.len(), missing.len(), assembled.len()), (110, 7, 98));
+        assert_eq!(grouped, 36);
+        assert!((lowest - 0.0932).abs() < 1e-3 && (highest - 2.0339).abs() < 1e-3);
+    }
+
+    /// `--weapon-blood` gives the debug body's new weapon its blood, kept
+    /// within 0..=1, and no other weapon.
+    #[test]
+    fn the_debug_weapon_starts_bloody() {
+        let mut app = staining();
+        app.insert_resource(DebugWeaponBlood(2.0))
+            .add_plugins(BloodPlugin);
+        let player = app.world_mut().spawn(DebugWoundTarget).id();
+        let foe = app.world_mut().spawn_empty().id();
+        let record = sword_cut().0;
+        let mine = app
+            .world_mut()
+            .spawn((Blade::new(player, 0.9, record), BladeBlood::default()))
+            .id();
+        let theirs = app
+            .world_mut()
+            .spawn((Blade::new(foe, 0.9, record), BladeBlood::default()))
+            .id();
+        app.update();
+        assert_eq!(app.world().get::<BladeBlood>(mine).unwrap().0, 1.0);
+        assert_eq!(app.world().get::<BladeBlood>(theirs).unwrap().0, 0.0);
+        assert_eq!(DebugWeaponBlood::parse(" 0.4"), Some(DebugWeaponBlood(0.4)));
+        assert_eq!(DebugWeaponBlood::parse("1"), Some(DebugWeaponBlood(1.0)));
+        for bad in ["", "x", "-0.1", "1.5", "nan"] {
+            assert_eq!(DebugWeaponBlood::parse(bad), None, "{bad}");
+        }
     }
 }

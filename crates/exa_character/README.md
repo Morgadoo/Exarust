@@ -62,3 +62,12 @@ Characters: races, body morphs, appearance, apparel fitting, stats/attributes/sk
   dressed.
 - Wounds from hits: each `exa_combat::wounds::Bleed` (a blow's wound whose
   seven ticks are up) is painted as a `PaintWound`, on corpses too.
+- Blood on weapons: a wielded weapon's holder carries its
+  `exa_combat::wounds::BladeBlood` and a `blood::WeaponStain` (its tip's
+  height and the meshes the original stains: the first mesh of the model's
+  root node, or every part of an assembled weapon). Once the blood passes
+  0.01, `stain_weapons` adds a stain pass (`exa_render::stain`) over each
+  of those meshes and keeps its offset with the blood; the gradient
+  `BldGr02D` loads the first time a weapon that can be stained exists.
+  `blood::DebugWeaponBlood` (`--weapon-blood`) gives the player's weapon
+  blood from the start.

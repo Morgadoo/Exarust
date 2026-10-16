@@ -9,6 +9,7 @@ pub mod lights;
 pub mod material;
 pub mod post;
 pub mod shell;
+pub mod stain;
 pub mod supersample;
 
 use bevy::prelude::*;
@@ -35,6 +36,7 @@ impl Plugin for RenderPlugin {
             material::MaterialsPlugin,
             gi::GiPlugin,
             flame::FlamePlugin,
+            stain::StainPlugin,
             supersample::SupersamplePlugin,
             lights::LightsPlugin,
             cube_shadows::CubeShadowsPlugin,

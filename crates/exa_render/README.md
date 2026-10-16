@@ -24,3 +24,11 @@ by wounds) against the tiling speckle `spatter01` bound as the dirt map,
 with the original's tints and wet roughness. `exa.wesl` runs it only for
 meshes with a colour stream, so clean characters draw as before. Rules:
 [`docs/RENDERING.md`](../../docs/RENDERING.md) (Blood).
+
+`stain::StainMaterial` is the original's weapon-stain pass: a second draw
+of a bloodied weapon's mesh that multiplies the frame by the blood
+gradient `BldGr02D` (read as data, repeating across, clamped along), keyed
+on the mesh's position in the weapon's frame so that it runs down from
+the tip as far as the weapon's blood takes it (`stain.wesl`; depth writes
+off, the depth nudged toward the camera, no shadows). Rules:
+[`docs/RENDERING.md`](../../docs/RENDERING.md) (Blood on weapons).

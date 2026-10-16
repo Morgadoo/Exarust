@@ -9,8 +9,8 @@
 //! starts no clip on the target; a target struck while attacking stops its
 //! attack and returns to its stance. A fighter's stance and combat
 //! readiness are kept by [`stance`]. A blow whose wound is deep enough
-//! bleeds on a victim whose race bleeds, seven body ticks later
-//! ([`wounds`]).
+//! bleeds on a victim whose race bleeds, seven body ticks later, and the
+//! weapon that dealt it draws blood ([`wounds`]).
 
 pub mod damage;
 pub mod stance;
@@ -25,7 +25,7 @@ use exa_formats::races::{Natural, Race};
 use exa_physics::body::BODY_HZ;
 use exa_physics::body::{BodyTicks, GoLimp, Shove};
 use exa_world::PartBounds;
-use wounds::{WoundQueue, frame_tetra, tetra_weights};
+use wounds::{BladeBlood, WoundQueue, frame_tetra, tetra_weights};
 
 pub struct CombatPlugin;
 
@@ -306,7 +306,7 @@ fn stance_of(anim: &Animator) -> String {
     }
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn react_to_hits(
     mut commands: Commands,
     mut hits: MessageReader<Hit>,
@@ -319,6 +319,7 @@ fn react_to_hits(
         Option<&mut WoundQueue>,
     )>,
     strikers: Query<&GlobalTransform>,
+    mut blades: Query<&mut BladeBlood>,
     ticks: Option<Res<BodyTicks>>,
     mut roll: Local<Roll>,
 ) {
@@ -343,21 +344,28 @@ fn react_to_hits(
         };
         let killed = f.health.take(&outcome);
         // A deep enough wound on a race that bleeds waits on the victim to
-        // bleed, anchored to the striker; the killing blow too.
-        if f.bleeds
-            && wounds::bleeds(outcome.wound)
-            && let Some(mut queue) = queue
-        {
-            let weights = strikers
-                .get(hit.striker)
-                .ok()
-                .and_then(|g| tetra_weights(hit.point, &frame_tetra(&g.affine())));
-            if queue.push(hit.striker, weights, hit.point, outcome.wound) {
-                debug!("wound R {:.3} queued on {:?}", outcome.wound, hit.target);
-            } else {
+        // bleed, anchored to the striker; the killing blow too. The weapon
+        // that dealt it draws blood at once, even when the wound is dropped.
+        if f.bleeds && wounds::bleeds(outcome.wound) {
+            if let Some(mut queue) = queue {
+                let weights = strikers
+                    .get(hit.striker)
+                    .ok()
+                    .and_then(|g| tetra_weights(hit.point, &frame_tetra(&g.affine())));
+                if queue.push(hit.striker, weights, hit.point, outcome.wound) {
+                    debug!("wound R {:.3} queued on {:?}", outcome.wound, hit.target);
+                } else {
+                    info!(
+                        "wound R {:.3} dropped: {:?} has seven waiting",
+                        outcome.wound, hit.target
+                    );
+                }
+            }
+            if let Ok(mut blood) = blades.get_mut(hit.striker) {
+                blood.draw(outcome.wound);
                 info!(
-                    "wound R {:.3} dropped: {:?} has seven waiting",
-                    outcome.wound, hit.target
+                    "blade {:?} draws blood from wound R {:.3}: {:.3}",
+                    hit.striker, outcome.wound, blood.0
                 );
             }
         }
@@ -801,6 +809,84 @@ mod tests {
                 _ => assert!(contacts.is_empty()),
             }
         }
+    }
+
+    /// The blade that deals a bleeding wound draws half its R at the blow:
+    /// 0.2285 from the chest cut (R 0.457), again when the wound is dropped
+    /// from a full queue; nothing from a wound that does not bleed (a
+    /// skeleton's, or R 0.045 on a hand), and a fist has no blood to draw.
+    #[test]
+    fn blades_draw_blood_from_bleeding_wounds() {
+        let mut app = bleeding();
+        let human = app
+            .world_mut()
+            .spawn((
+                Fighter::of_race(100.0, None),
+                Animator::new("Default", "Idle"),
+            ))
+            .id();
+        let sword = app
+            .world_mut()
+            .spawn((GlobalTransform::IDENTITY, BladeBlood::default()))
+            .id();
+        let blood = |app: &App| app.world().get::<BladeBlood>(sword).unwrap().0;
+        cut_by(&mut app, sword, human, 9, Vec3::ZERO);
+        app.update();
+        // At the blow, before the wound bleeds seven ticks later.
+        assert_eq!(waiting(&app, human), 1);
+        assert!((blood(&app) - 0.5 * outcome(9).wound).abs() < 1e-6);
+        assert!((blood(&app) - 0.2285).abs() < 1e-3);
+        // Seven more in one frame: six wait (one is waiting already), two
+        // are dropped, and every one adds its blood, up to 1.
+        for _ in 0..7 {
+            cut_by(&mut app, sword, human, 9, Vec3::ZERO);
+        }
+        app.update();
+        assert_eq!(waiting(&app, human), 7);
+        assert_eq!(blood(&app), 1.0);
+
+        let mut app = bleeding();
+        let skeleton = app
+            .world_mut()
+            .spawn((
+                Fighter {
+                    bleeds: false,
+                    ..Fighter::default()
+                },
+                Animator::new("Default", "Idle"),
+            ))
+            .id();
+        let human = app
+            .world_mut()
+            .spawn((Fighter::default(), Animator::new("Default", "Idle")))
+            .id();
+        let sword = app
+            .world_mut()
+            .spawn((GlobalTransform::IDENTITY, BladeBlood::default()))
+            .id();
+        cut_by(&mut app, sword, skeleton, 9, Vec3::ZERO);
+        app.world_mut().write_message(Hit {
+            attacker: Entity::PLACEHOLDER,
+            striker: sword,
+            target: human,
+            bone: 17,
+            point: Vec3::ZERO,
+            velocity: Vec3::X,
+            weapon: damage::sword_a(),
+            strike: Strike {
+                speed: 4.0,
+                ..cut()
+            },
+        });
+        app.update();
+        assert_eq!(app.world().get::<BladeBlood>(sword).unwrap().0, 0.0);
+        assert!(app.world().get::<Fighter>(human).unwrap().health.red < 0.25);
+        // A fist: the struck bleeds, the hand draws nothing.
+        let fist = app.world_mut().spawn(GlobalTransform::IDENTITY).id();
+        cut_by(&mut app, fist, human, 9, Vec3::ZERO);
+        app.update();
+        assert_eq!(waiting(&app, human), 1);
+        assert!(app.world().get::<BladeBlood>(fist).is_none());
     }
 
     /// A punch bleeds on the one struck, never on the puncher's own fist or

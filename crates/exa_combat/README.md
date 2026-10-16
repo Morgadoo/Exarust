@@ -31,3 +31,9 @@ wounds down; seven ticks after the blow the first is sent as a `Bleed`
 (one a tick, corpses too) with how the striker's struck point moved on
 since and the radius 30·R + 10 cm; `exa_character::blood` paints it. See
 [`docs/RENDERING.md`](../../docs/RENDERING.md) (Blood).
+
+The weapon that deals a bleeding blow draws blood at the blow
+(`wounds::BladeBlood` on the entity holding its model): half the wound's
+R, up to 1, never washed off, even when the wound itself is dropped from a
+full queue. Fists have none. `exa_character::blood` draws its stain
+([`docs/RENDERING.md`](../../docs/RENDERING.md), Blood on weapons).

@@ -41,6 +41,7 @@ exarust --debug-bodies --opponent --pause-on-stretch 1 \
 | `--still-opponent` | `--opponent`, but the duellist stands its ground: it faces the player and takes its stance (by its distance, [PLAYER.md](PLAYER.md), The combat stance) but never walks or strikes; with `--at` it shows the stances at a chosen distance |
 | `--debug-wound bone,radius_cm[,dx,dy,dz]` | a test wound on the player's or the character view's body ([Wounds](#wounds)); repeatable |
 | `--debug-nav` | start with the navigation grid drawn ([Navigation grid](#navigation-grid)) |
+| `--weapon-blood <a>` | the player's or the character view's held weapon holds blood a (0 to 1) from the start, so its stain shows without a fight ([Wounds](#wounds)) |
 
 An unattended attack: `exarust --opponent --sim-speed 0.25 --camera
 4.2,1.4,0.6,90,-8 --press LMB@100 play arenao1` throws the unarmed
@@ -268,6 +269,18 @@ hit's line names the struck body, the body tick and the wound's size R
 exarust --opponent --weapon ub05ssworda \
   --click $(seq -s, 100 25 1400) --camera 1.3,1.7,3.4,135,-14 \
   --pause-at-tick 760 --screenshot hits.png --frames 20 play arena1
+```
+
+Each bleeding blow also names the blade that dealt it and the blood it
+holds now ("blade … draws blood from wound R …: …"), and the first time a
+weapon's blood passes 0.01 the log says how many of its meshes the stain
+covers and the tip's height. `--weapon-blood` shows a stain without a
+fight:
+
+```bash
+# The short sword soaked (blood 1): stained from the tip to below the
+# guard; at 0.25 the stain ends 35 cm below the tip.
+exarust --weapon ub05ssworda --weapon-blood 1 character
 ```
 
 ## Navigation grid

@@ -14,9 +14,17 @@ was established by reverse engineering (below).
 | 8 | height | non-square common (2048x256) |
 | 12 | depth | 1; 0 on a handful of entries (treated as 1) |
 | 16 | format word | bit fields, below |
-| 20 | flags | e.g. `0x20AB0000`, `0x24AF0000`, `0x40A80000`; sampler/usage bits, not decoded |
+| 20 | flags | e.g. `0x20AB0000`, `0x24AF0000`, `0x40A80000`; sampler/usage bits, partly decoded (below) |
 | 24 | storage | `0x10000000` raw, `0x50000000` packed (RLE; bit 30 is the test) |
 | 28 | data size | bytes of the unpacked mip chain |
+
+Flags: the original's texture loader keeps the word's bits from `0x10000`
+up and adds its own. Bits `0x10000`, `0x20000` and `0x40000` repeat the
+image across its width, height and depth; without them it clamps to its
+edge (established by reverse engineering of the loader and its wrap
+setup). `BldGr02D`, the weapon blood gradient, has `0x20A90000`: it
+repeats across and clamps along its height (pinned by a corpus test in
+`exa_character`). The other bits are not decoded.
 
 Raw images store the mip chain largest-first right after the header; the
 chain is either complete (down to 1x1) or only the base level. The mip count

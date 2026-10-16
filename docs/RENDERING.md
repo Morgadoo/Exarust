@@ -387,11 +387,77 @@ In the arena duel the struck fighters' blood pixels have a median sRGB of
 (64, 31, 26) on the living player and (51, 25, 22) on its corpse, against
 the original's (54, 25, 21) and (47, 24, 20).
 
-Not yet: blood sprays, blade stains, the attacker's own blood when it
-strikes with a body part of its own (creatures), the hair program, the
-translucent program's blood ((0.5, 0.03, 0)), and dirt modes 1–3. Exarust
-never re-dresses a character, so the original's clean meshes after an
-equipment change do not arise yet.
+Not yet: blood sprays, the attacker's own blood when it strikes with a
+body part of its own (creatures), the hair program, the translucent
+program's blood ((0.5, 0.03, 0)), and dirt modes 1–3. Exarust never
+re-dresses a character, so the original's clean meshes after an equipment
+change do not arise yet.
+
+### Blood on weapons
+
+A weapon that deals a bleeding blow keeps the blood it draws, and a
+second pass draws it over the weapon as a stain that runs down from the
+tip, further as the weapon draws more.
+
+**Blood** (`exa_combat::wounds::BladeBlood`, on the entity holding the
+weapon's model): each bleeding blow it deals adds 0.5·R at the blow (R the
+wound's size, [Blood](#blood)), kept within 0 to 1, whether or not the
+wound itself waits or is dropped from a full queue. Nothing washes it off.
+Each held weapon keeps its own; fists have none, so punches never bloody
+them. The original frees a weapon's blood when its body leaves the
+simulation and clears all of it at the end of a session or a respawn;
+Exarust despawns the weapon with its holder and has no session end yet.
+
+**Which meshes** (`exa_character::blood::WeaponStain`): the original
+stains its weapon node's first sub-object. For a model whose root node
+has meshes that is the root's first mesh (weapon items name 110 such
+models, 103 of them in `Objects.rpk`; each has a root mesh standing above
+its grip, 9 cm to 2.03 m, and the top of its stored bounding box is the
+top of that mesh; 36 have more than one mesh, all tools and props such as
+brooms and chisels, stained on their first); an assembled (factory)
+weapon is merged by the original into one mesh, so every part is stained,
+in the weapon's frame.
+
+**Coordinates**, from the mesh's position in the weapon's frame in cm
+(the frame the blade runs up, +Y from the grip), with L the tip's height
+(the top of the stained node's meshes, or of the whole assembled weapon)
+and a the blood:
+- u = 0.025·x − 0.5: the blade's centre line at the gradient's middle
+  column, repeating every 40 cm across;
+- v = 0.0125·y + o, o = −(L/80)·(1 − √a·√(80/L)), so v = (y − L)/80 +
+  √(a·L/80): v = 0 lies √(80·L·a) cm below the tip (34.7 cm of the
+  60.05 cm short sword at a = 0.25, 69.3 cm at a = 1), and below that the
+  gradient clamps to its white first row (no stain); past v = 1 its last.
+
+**Gradient** `BldGr02D` (`Textures.rpk`, 256 × 512, BC1), loaded as data
+(not sRGB, the original's loader flag), repeating across (its file flag)
+and clamped along its height (no flag; [formats/RFI.md](formats/RFI.md)),
+with the colour textures' LOD bias: white on its first rows, red on 14 %
+of row 64, 33 % of row 128, 79 % of row 256 and 87 % of row 448, mostly
+solid dark red (about sRGB (170, 55, 50)) toward the end. So the stain is
+densest at the tip and breaks into separate specks toward its edge.
+
+**Pass** (`exa_render::stain`, `stain.wesl`): drawn only while the weapon
+holds more than 0.01; the texel faded to white by the object's fade (no
+Exarust object fades: 0), written opaque and multiplied into the frame
+(white leaves the weapon unchanged); depth writes off, the depth nudged
+toward the camera by 0.000 005 of the depth range (the original's 0.000 01
+on its −1…1 depth) so the overlay passes the test against its own weapon;
+back faces culled; no shadows. Exarust draws it as a Bevy material with
+the multiply blend, one material per stained mesh (no mesh is copied).
+
+**Difference**: the original multiplies its 8-bit frame, in which a lit
+value above 1 has already clamped; Exarust's float frame keeps it until
+the post-processing clamps, so a specular highlight on a stained blade
+can stay brighter (redder) than the original's.
+
+**Evidence**: reverse engineering of `Exanima.exe` 0.9.5 (the add routine
+and its 0.5, the clamp to 0…1, the registration's k1 = L/80 and k2 =
+√(80/L) from the node's bounding box, the draw routine's threshold 0.01,
+its uniforms (0.025, −0.5, 0.0125, o) and the node's first sub-object, the
+depth nudge, the gradient's loader flags and the wrap and linear-upload
+rules, the two GLSL sources), and the corpus (`BldGr02D`'s rows and flags,
+the weapon models, pinned by tests).
 
 ## Voxel GI
 

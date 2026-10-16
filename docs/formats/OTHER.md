@@ -699,6 +699,11 @@ calls)
   striker is then; D, how it moved on from the contact point, smears the
   wound, of radius 30·R + 10 cm ([RENDERING.md](../RENDERING.md), Blood).
   A punch bleeds on the struck only: hands never take blood themselves.
+- The weapon that deals a bleeding blow draws 0.5·R of blood at once, kept
+  within 0 to 1 and never washed off, whether the wound waits or is
+  dropped (REA on the same branch: the striking item's blood slot, the add
+  routine's 0.5 and clamp); hands have none. It stains the weapon from
+  its tip ([RENDERING.md](../RENDERING.md), Blood on weapons).
 
 Not yet: the bite (weapons sticking in), blocking and parrying, shields,
 encumbrance's effect on swings, and the state that knocks a character

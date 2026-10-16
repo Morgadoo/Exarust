@@ -40,6 +40,7 @@
 //!          --click frame,...          click the left mouse button at frames after loading
 //!          --debug-wound b,r[,dx,dy,dz]  a test wound on the player's (or the character view's) body part b
 //!                                     (1–18 or chest, luarm, …), radius r cm, smeared along d cm; repeatable
+//!          --weapon-blood <a>         the player's (or the character view's) weapon holds blood a (0–1) from the start
 //!          --health yellow,red        play mode: the player's starting health (a human's full health is 0.25)
 //!          --heartbeat                play mode: the low-health heartbeat in any level (the original: story mode only)
 //! ```
@@ -138,6 +139,8 @@ pub struct Options {
     pub clicks: Vec<u32>,
     /// Test wounds on the player's or the character view's body.
     pub debug_wounds: Vec<exa_character::blood::DebugWound>,
+    /// Blood the player's or the character view's weapon starts with.
+    pub weapon_blood: Option<exa_character::blood::DebugWeaponBlood>,
     /// The player's starting yellow and red health.
     pub health: Option<[f32; 2]>,
     /// Let the low-health heartbeat play in any level.
@@ -376,6 +379,16 @@ fn main() -> AppExit {
                     }
                 }
             }
+            "--weapon-blood" => {
+                let text = args.next().unwrap_or_default();
+                match exa_character::blood::DebugWeaponBlood::parse(&text) {
+                    Some(b) => options.weapon_blood = Some(b),
+                    None => {
+                        eprintln!("--weapon-blood: cannot read {text:?} (a number from 0 to 1)");
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
             "--ev" => options.ev100 = args.next().and_then(|v| v.parse().ok()).unwrap_or(6.0),
             "--frames" => options.frames = args.next().and_then(|v| v.parse().ok()).unwrap_or(90),
             "--camera" => {
@@ -475,6 +488,9 @@ fn main() -> AppExit {
         app.insert_resource(exa_character::blood::DebugWounds(
             options.debug_wounds.clone(),
         ));
+    }
+    if let Some(blood) = options.weapon_blood {
+        app.insert_resource(blood);
     }
     if let Some(trace) = joint_trace {
         app.insert_resource(trace);
