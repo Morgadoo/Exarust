@@ -18,9 +18,12 @@ link is a link muscle that turns its joint toward the clip's angle, with
 the gains the character tick sets from what the character does
 (`body::Bearing`) and its race (`body::RaceMuscles`) (`src/body_muscle.rs`);
 a pose drive turns the pelvis, spine, head and feet toward the clip's
-orientation about each part's own origin, scaled by the support S², and
-the controller holds a standing body's pelvis until the body carries
-itself (`body::Drive`).
+orientation about each part's own origin, scaled by the support S²
+(`body::Drive`); and the carry holds the body up in place of gravity, with
+a lift servo holding its pelvis at a target height over the ground under
+its feet (`src/body_lift.rs`). The controller carries a standing body only
+across the ground and turns it, and holds its pelvis horizontally until the
+original's support pins do.
 Each character tick measures a living body's balance at its chest against
 its ankles and asks the level for the ground under each foot
 (`contact::Level::height_below`, the original's Height Query), which give

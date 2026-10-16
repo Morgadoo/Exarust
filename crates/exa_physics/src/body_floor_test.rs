@@ -89,6 +89,32 @@ pub(super) fn humanoid(at: Vec3) -> (Vec<PartSetup>, Vec<Affine3A>) {
     (setup, pose)
 }
 
+/// The humanoid standing with its feet at `at`, its balance measured: each
+/// lower leg stands on a contact at its foot, 50 cm under the knee, and the
+/// torso carries two shoulder pins, the chest. Its soles are 3.3 cm deep,
+/// so that the lift's target (its legs' 1 m plus the sole, plus 5 cm) puts
+/// the balance point of the lift, 1.7 cm over it, where its legs are
+/// straight, its pelvis 1.1 m over its feet.
+pub(super) fn standing_at(at: Vec3) -> (Ragdoll, Vec<Affine3A>) {
+    let (mut setup, pose) = humanoid(at);
+    for s in &mut setup {
+        match s.bone {
+            3 | 6 => s.foot = Some(Vec3::new(0.0, -0.5, 0.0)),
+            8 => s.pins = vec![Vec3::new(0.15, 0.4, 0.0), Vec3::new(-0.15, 0.4, 0.0)],
+            _ => {}
+        }
+    }
+    let mut body = Ragdoll::new(&setup).with_drive();
+    body.sole = STANDING_SOLE;
+    for leg in &mut body.legs {
+        leg.offset = STANDING_SOLE;
+    }
+    (body, pose)
+}
+
+/// The standing humanoid's sole height (m): 1.1 − (1.0 + 0.05 + 1/60).
+pub(super) const STANDING_SOLE: f32 = 1.0 / 30.0;
+
 /// The same humanoid with every joint a hinge and nothing more: limp, it
 /// has no joint left free to swing (a limp joint is not damped inside its
 /// slack yet).
@@ -353,9 +379,8 @@ fn a_fallen_body_far_from_the_origin_is_not_flung() {
 #[test]
 fn a_turning_pose_far_from_the_origin_is_followed_gently() {
     let at = Vec3::new(81.0, 0.0, 39.2);
-    let (setup, pose) = humanoid(at);
-    let mut body = Ragdoll::new(&setup).with_drive();
-    let none: &[[Vec3; 3]] = &[];
+    let (mut body, pose) = standing_at(at);
+    let floor = super::tests::floor_quad(0.0, 100.0);
     let turn = |a: f32| {
         Affine3A::from_translation(at)
             * Affine3A::from_rotation_y(a)
@@ -365,11 +390,12 @@ fn a_turning_pose_far_from_the_origin_is_followed_gently() {
     // Four seconds at 2 rad/s about the body's own vertical.
     for tick in 0..332 {
         let yaw = tick as f32 / BODY_HZ * 2.0;
+        body.measure_balance(floor.as_slice());
         body.aim(
             Affine3A::IDENTITY,
             pose.iter().map(|t| turn(yaw) * *t).collect(),
         );
-        body.tick(none);
+        body.tick(floor.as_slice());
         for p in &body.parts {
             for i in 0..4 {
                 fastest = fastest.max((p.positions[i] - p.previous[i]).length() * BODY_HZ);

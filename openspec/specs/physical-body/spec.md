@@ -44,7 +44,7 @@ The system SHALL turn a posed body asked to go limp into a ragdoll from its curr
 - **THEN** the body drops to the floor in a sprawl with its parts joined
 
 ### Requirement: Muscles
-The system SHALL drive a living physical body toward its animated pose: its link muscles turn every joint, and a pose drive turns the pelvis, lumbar, thorax and feet (gain 0.03·K, K = 19200/83²) and the head (0.01·K) toward their animated orientation about where each part's origin is, with no position target. Thighs, shins, arms and hands SHALL have no pose drive. Gravity is compensated by tone times energy.
+The system SHALL drive a living physical body toward its animated pose: its link muscles turn every joint, and a pose drive turns the pelvis, lumbar, thorax and feet (gain 0.03·K, K = 19200/83²) and the head (0.01·K) toward their animated orientation about where each part's origin is, with no position target. Thighs, shins, arms and hands SHALL have no pose drive. The carry holds the body up in place of gravity.
 
 #### Scenario: Driven walk
 - **WHEN** `exarust character` plays the walk on a physical body
@@ -67,19 +67,19 @@ The system SHALL drive a living physical body toward its animated pose: its link
 - **THEN** one tick turns it back by G of the angle, about its origin, which stays where it is
 
 ### Requirement: Living bodies in motion
-The system SHALL give a living physical body the animated pose of each tick: its targets are the body root's world transform times the clip pose. A standing body SHALL be carried with its root's motion since the last tick, together with where the last tick left it, its level contacts and last tick's targets, and its pelvis's origin held toward the pose's pelvis by 0.168 × tone² × energy⁴ a tick, critically damped (Exarust's own). Links and contacts SHALL be solved from the hands and feet in.
+The system SHALL give a living physical body the animated pose of each tick: its targets are the body root's world transform times the clip pose. A standing body SHALL be carried with its root's motion since the last tick across the ground and about the vertical only, together with where the last tick left it, its level contacts and last tick's targets, and its pelvis's origin held over the pose's pelvis by 0.168 × tone² × energy⁴ a tick, critically damped (Exarust's own).
 
 #### Scenario: Turning far from the origin
 - **WHEN** a living body 80 m from the world's origin turns with its pose
 - **THEN** its particles move no faster than the pose's own motion
 
 #### Scenario: Carried by the controller
-- **WHEN** the root of a body standing on a floor moves
-- **THEN** its particles, where the last tick left each part and its level contacts move with the root, while where it is drawn from stays
+- **WHEN** the root of a body standing on a floor moves across it and down
+- **THEN** its particles, where the last tick left each part and its level contacts move with the root across the floor but not down, while where it is drawn from stays
 
 #### Scenario: Held on the controller
-- **WHEN** the floor pushes a standing body's feet up by 1 cm
-- **THEN** its pelvis rises less than 2 cm and comes to rest within 1 cm of its pose
+- **WHEN** a standing body's pelvis is off where the controller carries the pose's pelvis
+- **THEN** it is pulled back across the ground, and the hold never moves it up or down
 
 ### Requirement: Blows and daze
 The system SHALL let a blow change the velocity of the struck part and take a share of the body's energy (at most 90 %, never below 0.05), which recovers by 0.005 per tick up to the body's most energy, 1 for a human. Blows SHALL be queued and dealt by the next tick, whichever frame sends them.
@@ -116,7 +116,7 @@ The system SHALL make a standing body whose balance was below 0.6 last tick fall
 
 #### Scenario: Knocked over
 - **WHEN** `exarust --shove 60 play arena` deals the player a body blow
-- **THEN** the player falls onto its back, lies a moment, gets up with `Get Up 2`, and stands where it fell
+- **THEN** the player falls onto its back, lies a moment, gets up with `Get Up 2` without a hop, and stands where it fell
 
 ### Requirement: Fixed simulation rate
 The system SHALL step the simulation, character controllers and bodies alike, at the original's 83 Hz in the fixed step, so that the same ticks give the same result at any frame rate. A slow frame SHALL catch up at most 4 steps; the rest of the backlog SHALL be dropped, as the original drops it.
@@ -271,11 +271,11 @@ The system SHALL advance a living physical body's clip clock by one tick, at 60 
 - **THEN** only its ticks advance the clock
 
 ### Requirement: Body trace
-`exarust --trace <file.csv>` SHALL write one row per traced body (the player's, or without a player every simulated body) after every tick, with the retail body probe's columns: the pelvis particles; the body's heights, tone, energy, support and balance; every part's target; the foot contacts; the motion and its clock; then the body's sleep countdown and state. Lengths SHALL be in cm and the clock in clip frames; columns not simulated yet SHALL stay empty.
+`exarust --trace <file.csv>` SHALL write one row per traced body (the player's, or else every simulated body) after every tick, with the retail body probe's columns: the pelvis particles; its heights (the lift's target included), tone, energy, support, balance, counter; every part's target; the foot contacts; the motion and clock; then its sleep countdown and state. Lengths in cm, the clock in clip frames; columns not simulated yet stay empty.
 
 #### Scenario: Standing in the arena
 - **WHEN** `exarust --trace t.csv play arena` runs for a minute
-- **THEN** `t.csv` has one row per tick for the player's body, its clock advancing 60/83 of a frame per row, and its pelvis at the clip root's height above the floor
+- **THEN** `t.csv` has one row per tick for the player's body, its clock advancing 60/83 of a frame per row, and its pelvis 1.7 cm over its target pelvis height
 
 ### Requirement: Race body parameters
 The system SHALL decode, for every record of the installed `races.rdb`, the body parameters the original reads: the support-pin factor, the balance bonus, the stance factor, the arm relaxation factor, the limb damping ratio, and four gait rows (walk, jog, sprint, backpedal) of thrust, push scale, clip rate and boost speed. A race the database lacks SHALL get the original's fallback: every factor 1.0 and an all-zero gait table.
@@ -457,7 +457,7 @@ The level SHALL answer the original's Height Query: a sphere whose lowest point 
 - **THEN** the first is passed through, and nothing is found
 
 ### Requirement: Support
-Each tick each leg of a living body SHALL query the ground 5 cm ahead of its ankle, a 10 cm sphere from 70 cm above it (a 5 cm one from it while down or getting up). Ground over half the leg under the pelvis is out of reach, except getting up. A foot is grounded within 20 cm (30 moving) of its ground plus its sole. S SHALL be grounded × balance; a standing body without a grounded foot loses its balance unless its controller stands on the ground. The trace SHALL write S, balance and counter.
+Each tick each leg of a living body SHALL query the ground 5 cm ahead of its ankle, a 10 cm sphere from 70 cm above it (a 5 cm one from it while down or getting up). Ground over half the leg under the pelvis is out of reach, except getting up. A foot is grounded within 20 cm (30 moving) of its ground plus its ground offset. S SHALL be grounded × balance; a standing body without a grounded foot loses its balance unless its controller stands on the ground.
 
 #### Scenario: Standing in the arena
 - **WHEN** `exarust --trace t.csv play arena` runs for a minute
@@ -523,3 +523,64 @@ After inertia each particle of a pose-driven part SHALL be pushed by G·o·(1 �
 #### Scenario: Chest shove
 - **WHEN** a standing body is shoved at the chest at 1.5 m/s
 - **THEN** its torso sways and turns back to its pose, its balance stays at 0.6 or more, and it comes to rest
+
+### Requirement: Carry
+After its inertia each particle of a living part over half its tone t SHALL move by g(1 − a) + carry·a, any other by g: a = t × its support share (pelvis and thighs 1, lower legs 0.5, feet 0.25) or t × E (the upper body). Each character tick SHALL set the carry to gravity, then, with support, take the lift g·f·S off it.
+
+#### Scenario: Shares
+- **WHEN** a part of tone 0.9 takes the carry at energy 0.6
+- **THEN** a is 0.9 on the pelvis and thighs, 0.45 on the lower legs, 0.225 on the feet and 0.54 above the legs, and nothing at a tone of 0.5
+
+#### Scenario: No support
+- **WHEN** a body at full tone and energy has no ground under its feet
+- **THEN** its carry is gravity and every particle falls at g
+
+#### Scenario: Fallen
+- **WHEN** a fallen body lies on the floor
+- **THEN** its feet have no ground within reach and nothing lifts it
+
+#### Scenario: Dazed
+- **WHEN** a body hovering on its lift, its feet off the floor, is held at energy 1, 0.75 and 0.5
+- **THEN** its pelvis settles 0.3 cm over its target, 1.2 cm and 3.0 cm under it, where its weight balances the lift
+
+### Requirement: Lift
+With support the lift SHALL be f = 0.075(h + 15), at most 1.5, standing (a negative f lifts nothing, unless crouched past 0.9: down to −10), or f = (0.4·run + 0.2)(h + 5), at most 2, moving (none when negative); h = target − pelvis height, in cm. Then f −= (1 − |f|/(|f| + 2))·E²·v, v the pelvis's vertical displacement over the last tick, and f ×= 2(t − 0.5) over a tone of a half.
+
+#### Scenario: Balance point
+- **WHEN** an alert body stands on its legs, its pelvis 1.7 cm over its target
+- **THEN** f is 1 and it stays there; set down 1 cm into the floor it rises less than 2 cm over where it comes to rest
+
+#### Scenario: Gains
+- **WHEN** the pelvis is 5 cm under its target standing, at the target walking, 3.3 cm over it running
+- **THEN** f is 1.5, 1 and 1; falling 1 cm a tick at f = 1 adds 2/3 × E²
+
+#### Scenario: Tone
+- **WHEN** a standing body's tone is 0.75, then 0.5
+- **THEN** its lift is half, then nothing
+
+#### Scenario: Get-up
+- **WHEN** `exarust --trace t.csv --shove 60 play arena` gets the player up with `Get Up 2` into Idle
+- **THEN** its pelvis rises to its standing height, overshoots it by less than 6 cm (10.7 cm under the old vertical hold) and is back within a centimetre in under 100 ticks
+
+### Requirement: Target pelvis height
+Each leg's height SHALL be its ground + crouch·60 + (1 − crouch)·(the clip root's height over its animated ankle + its ground offset: the sole height, moving also the ankle's lift over the walk's lowest). The target SHALL be the lowest foot's, blended by half toward the other's while that one's contact height over its ground plus the lowest's is under 40 cm (less up to 60); standing, capped at ground + sole + leg length, plus 5 cm.
+
+#### Scenario: Idle human
+- **WHEN** a human's clip root is 91.4 cm over its ankles on flat ground, its sole 9.68 cm and its legs 85.15 cm
+- **THEN** its target is capped at 99.83 cm and it stands with its pelvis 101.5 cm over the ground
+
+#### Scenario: Step
+- **WHEN** both feet stand on a 30 cm step, or the platform under a standing body is taken away
+- **THEN** its target rises by 30 cm, or drops by 30 cm and its pelvis settles 30 cm lower without losing its balance
+
+#### Scenario: One foot up
+- **WHEN** one foot stands on a 30 cm step
+- **THEN** standing the lower foot caps the target, and moving it is the mean of the two feet's, uncapped
+
+#### Scenario: Blend
+- **WHEN** the other foot's spread is 35, 55 or 60 cm, or it has no ground
+- **THEN** it is blended in by 0.5, 0.125 or not at all, or not at all
+
+#### Scenario: No ground
+- **WHEN** no foot has ground
+- **THEN** the target is −1000 m and nothing lifts the body

@@ -264,12 +264,22 @@ C7): the pose drive is the original's: it turns the pelvis, spine, head
 and feet toward the clip's orientation about each part's own origin, with
 no position target, by G·o·(1 − c) (a one-sided damper of the particle's
 velocity), G scaled by t²·T·E⁴·(0.5T + 0.5)·S², only with support; a fall
-keeps the tone and a fallen body is left to its link muscles; until the
-body carries itself (C8, C9, C14) the controller holds a standing body's
-pelvis (Exarust's own), so blows now sway the struck body
-([formats/RSQ.md](formats/RSQ.md)). Still to do: the original's lift, its
-falls and get-ups, recovery steps, foot planting, clip blending,
-collisions between bodies (and their wake of a sleeper).
+keeps the tone and a fallen body is left to its link muscles
+([formats/RSQ.md](formats/RSQ.md)). Done (change
+`carry-the-body-on-its-feet`, C8): the body stands on its feet through the
+original's carry: every limb particle falls by g(1 − a) + carry·a (a the
+tone times its support share, or times its energy above the legs), and a
+lift servo takes g·f·S off the carry to hold the pelvis at a target height
+over the ground under the feet, from the clip root's height over each
+ankle, capped at the leg's reach (an idle human's pelvis at 101.5 cm); the
+capsule carries the body only across the ground and turns it, and holds
+its pelvis horizontally (Exarust's own until the support pins, C14). A
+get-up no longer hops (the end of `Get Up 2` overshoots 3–5 cm and settles
+in 45–100 ticks, from 10.7 cm ringing 90). Stairs regress until the
+original's walking feet and leg IK (C13, C19): a walking body catches its
+feet on the risers. Still to do: the frame anchor and support pins, the
+original's falls and get-ups, recovery steps, foot planting, clip
+blending, collisions between bodies (and their wake of a sleeper).
 
 This phase carries the most risk and defines how the game feels.
 
@@ -431,8 +441,9 @@ holds the runtime and the documentation of formats and behaviour.
 [`COMPONENT-MAP.md`](COMPONENT-MAP.md) sets every component of the original
 against Exarust and lists the largest missing ones. In order:
 
-1. The original's lift, its falls and get-ups, recovery steps, foot
-   planting, clip blending and collisions between bodies (Phase 3).
+1. The frame anchor and support pins, the original's falls and get-ups,
+   recovery steps, foot planting and leg IK (stairs), clip blending and
+   collisions between bodies (Phase 3).
 2. Inventory, equipment and containers, then blocking and parrying
    (Phase 4).
 3. The original's NPC brain: perception, targets and the combat state that

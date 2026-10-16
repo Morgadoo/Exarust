@@ -197,7 +197,48 @@ How the original simulates a body (`exa_physics::body`):
     going limp wakes it to 256; bodies do not touch each other yet.
 - Dead characters (condition `0xA00`) are plain ragdolls without muscles.
 - Living bodies have muscles:
-  - Gravity is compensated by muscle tone.
+  - **The carry** holds the body up in place of gravity (`exa_physics`,
+    `body_lift.rs`; REA on the limb step, the body tick, the muscle setup,
+    the feet routine and its lift servo, with their constants read from
+    the executable). Each tick the character tick sets the carry to
+    gravity (−0.142 cm/tick²), then, with support only (a grounded foot),
+    the **lift** takes g·f·S off it, in cm:
+    1. h = target pelvis height − the pelvis origin's height;
+    2. standing, f = 0.075(h + 15), at most 1.5; a negative f lifts
+       nothing (crouched deeper than 0.9 it may go down to −10). Moving,
+       f = (0.4·run + 0.2)(h + 5), nothing when negative, at most 2;
+    3. f −= (1 − |f|/(|f| + 2))·E²·v, v the pelvis origin's vertical
+       displacement over the last tick;
+    4. over a tone t of a half f ×= 2(t − 0.5) and the carry is
+       g(1 − f·S); at a half or less it stays gravity.
+
+    After its inertia each particle of a part over half its tone moves by
+    g(1 − a) + carry·a, any other by g: a = t × the part's support share
+    for the pelvis and thighs (1), lower legs (0.5) and feet (0.25), and
+    t × E for the upper body. A standing body floats on its legs at f = 1,
+    its pelvis 1.7 cm over its target; well under it, f = 1.5 lifts the
+    pelvis and thighs at half g. A dazed body's upper body takes less of
+    the lift, so it sags; a body without support falls at g. The original
+    zeroes the shares of the legs and pelvis on bodies of scale over 1.3,
+    and multiplies f by t² while collapsing; neither applies yet.
+  - The **target pelvis height** comes from the feet, each tick, in cm.
+    Each leg's is its ground + crouch·60 + (1 − crouch)·(the clip root's
+    height over the leg's animated ankle + its ground offset). The ground
+    offset is the sole height standing; moving, the ankle's height over the
+    lowest ankle of the moveset's walk in its first pose, plus the sole
+    (the original keeps that lowest ankle for walking, jogging and
+    sprinting blends; Exarust's moving bodies use the walk's). The target
+    is the lowest foot's, blended by half toward the other's while the
+    other's contact height over its ground plus the lowest foot's contact
+    height is under 40 cm, by 0.05 a cm less up to 60 (the original's test
+    as read: on a floor high in the world nothing is blended), and not when
+    the other foot has no ground. Standing, it is capped at that ground +
+    sole + leg length and raised 5 cm; moving, neither. With no ground under
+    any foot it is −1000 m: no lift. An idle human (the clip root 91.4 cm
+    over the ankle, sole 9.68 cm) is capped at ground + 99.83 cm and stands
+    with its pelvis at ground + 101.5 cm. Not reproduced: the stepping
+    (h + 10, 70 cm crouched) and resting (h + 20) variants, the walking
+    blend weights and swing flags, and the gait-smoothed ground (C19).
   - **Link muscles** turn every joint (`exa_physics`, `body_muscle.rs`). Each
     slack link (slack over 0.01 cm) pulls its point on the part toward its
     anchor: where the clip's joint angle puts that point, given where the
@@ -270,15 +311,15 @@ How the original simulates a body (`exa_physics::body`):
     The original's v is the particle's world velocity, the body's travel
     included, so a walking body (|c| ≫ 1) is not pushed along its motion
     and pushed harder against it. While Exarust's capsule carries a body
-    (until C18), the carry is not velocity: v is the velocity in the
-    carried frame. The original also multiplies a lean into the spine's
-    rotation and keeps only the vertical push for the unconscious; neither
-    is reproduced.
+    across the ground (until C18), that carry is not velocity: v is the
+    velocity in the carried frame (its vertical is the world's). The
+    original also multiplies a lean into the spine's rotation and keeps
+    only the vertical push for the unconscious; neither is reproduced.
   - Energy is the daze level. A blow takes up to 90 % of it, with a floor
     of 0.05. It recovers 0.005 per tick up to the most energy (1 for a
     human).
-  - The original also runs recovery steps, foot planting, a lift servo
-    and hidden support forces on the pelvis and thorax pins.
+  - The original also runs recovery steps, foot planting and support
+    forces on the pelvis and thorax pins.
   - Several of these read the character's race record in `races.rdb`: the
     stance factor, the support-pin factor, the balance bonus, the arms'
     relaxation, the limb damping ratio and the gait table
@@ -305,7 +346,8 @@ Exarust runs the same order in its fixed step. The character controllers
 move first. Then each living body's character tick (`CharacterTicks`,
 player last) measures its balance and the ground under its feet (below),
 advances its clip clock by one tick and samples the clip; its targets are
-the body root's world transform times the clip pose. Then the
+the body root's world transform times the clip pose, and its carry is set
+from the lift. Then the
 solver (`BodySystems`) deals the queued blows and runs steps 2–6 over every
 awake body. The same ticks give the same particles at any frame rate. Blows
 sent between ticks wait in a queue for the next one. Parts are drawn
@@ -366,37 +408,43 @@ tick and muscle setup). Every rule is in the original's cm and ticks:
   it to 5 cm; Exarust leaves these for the gait (C19).
 - Ground higher than half the leg (42.6 cm) under the pelvis is out of reach
   (the foot is lifted over it), except getting up. A foot is grounded when
-  its ankle is within 20 cm (30 cm moving) of its ground plus the sole
-  height. With a grounded foot the body has support (regaining it sets the
+  its ankle is within 20 cm (30 cm moving) of its ground plus its ground
+  offset (the sole height standing; moving, also its ankle's lift in the
+  walk, set by the lift each tick, so Exarust reads last tick's). With a
+  grounded foot the body has support (regaining it sets the
   landing weight to 5); without, it counts the ticks it is airborne, and a
   standing body loses its balance. S = grounded × balance. A body getting up
   with no foot grounded and its pelvis within 30 cm of the ground under it
   has support at half its balance.
-- Exarust's own, until the body stands on its own feet: its controller's
-  capsule (28 cm radius) carries it and may perch on a stone the feet hang
-  beside, so a standing body whose controller stands on the ground keeps
-  its balance when no foot is grounded (S is still 0).
+- Exarust's own, while a capsule leads the body: its controller's capsule
+  (28 cm radius) may stand where the feet do not (perched on a stone the
+  feet hang beside, or spawned over the floor), so a standing body whose
+  controller stands on the ground keeps its balance while no foot is
+  grounded (S is still 0, so it drops onto its feet).
 - Measuring costs about 15 µs a body a tick in exanima01 (two queries; the
   query tries a 2 m column before the whole depth, with an exact drop onto
   each face, edge and corner).
 
-Exarust's own, while a character controller (a capsule) still carries
-the body instead of the original's lift servo, frame anchor and support
-pins (C8, C9, C14):
+Exarust's own, while a character controller (a capsule) still moves the
+body across the ground instead of the original's locomotion, frame anchor
+and support pins (C9, C14, C18):
 
-- The body is carried rigidly with its root's (its character controller's)
-  motion since the last tick. Where the last tick left each part, its level
+- The body is carried with its root's (its character controller's) motion
+  since the last tick across the ground and about the vertical only: its
+  height is the lift's. Where the last tick left each part, its level
   contacts and last tick's targets are carried with it.
-- The controller holds a standing body's pelvis: its origin is pulled
-  toward where the controller carries the pose's pelvis by 0.168 a tick ×
-  tone² × E⁴, critically damped (2√g) against its velocity in the carried
-  frame, the same push on all four of its particles, so it never turns the
-  pelvis. Gravity is compensated by tone × energy, so a standing body has
-  no weight: without the hold a body whose feet the floor pushes up 1 cm
-  floats 30 cm up, and a get-up never rises. On the pelvis alone (an eighth
-  of the mass) it holds the whole body like a spring of about 0.02 a tick,
-  and the spine and head sway freely: a duellist's blows (energy down to
-  0.6) move the struck player's pelvis 11–14 cm and its balance to 0.7–0.9.
+- The controller holds a standing body's pelvis over where it carries the
+  pose's pelvis: its origin is pulled across the ground by 0.168 a tick ×
+  tone² × E⁴, critically damped (2√g) against its horizontal velocity in
+  the carried frame, the same push on all four of its particles, so it
+  never turns the pelvis.
+- Stairs: the capsule steps up before the feet do, and nothing yet lifts a
+  walking foot onto a step (the original's swing flags, ground probe ahead
+  and leg IK, C13 and C19), so a walking body catches its feet on the
+  risers: in exanima01 it climbed one or two steps and fell forward.
+- A duellist's blows (energy down to 0.62) sag the struck player's pelvis
+  by under 1 cm and leave its balance at 1: the lift and the legs carry the
+  dazed upper body.
 - Animation clips play in place: the root's horizontal travel over a clip
   is removed, since the controller moves the body.
 - Falling is still Exarust's (`exa_game::balance`; the original's
@@ -415,7 +463,9 @@ pins (C8, C9, C14):
     on the body, and settles on the ground there (it is marked airborne, so
     the next tick sweeps it down).
   - While its get-up clip plays the body's balance rises (above).
-- Recovery steps, foot planting and the lift servo are not reproduced yet.
+- Recovery steps and foot planting are not reproduced yet. After a get-up
+  the feet stay where the clip left them (they bear weight now), so the
+  body may stand leaning over them (balance 0.97 after `--shove 60`).
 - The duellist's strike range is Exarust's own (1.2 m): link-muscle arms
   reach 10–15 cm less far than the clip's pose.
 
@@ -433,7 +483,7 @@ is left empty.
 | `pelvis_height` | the pelvis part's origin height |
 | `root_clip_height` | the clip root's height over the body root (the pelvis's clip pose) |
 | `frame_height` | the height of the frame the targets are placed in: the original's sits at the pelvis height, Exarust's body root at the feet |
-| `target_pelvis_height`, `stance`, `tone_target` | the lift servo's target (empty), the stance factor s, the tone target T = tone·s |
+| `target_pelvis_height`, `stance`, `tone_target` | the lift's target pelvis height (−100000 with no ground under the feet; empty for a body whose balance is not measured), the stance factor s, the tone target T = tone·s |
 | `tone`, `energy` | muscle tone and energy (daze) |
 | `support` | support S = grounded × balance |
 | `balance`, `balance_counter` | balance and its instability counter |

@@ -1,0 +1,382 @@
+//! The carry and the lift: the original's rules, each pinned to its numbers
+//! (`docs/formats/RSQ.md`, Physical body).
+//! (Included from body_lift.rs: `#[path = "body_lift_test.rs"] mod tests;`)
+use super::super::floor_test::{STANDING_SOLE, standing_at};
+use super::super::tests::floor_quad;
+use super::super::{Drive, ENERGY_RECOVERY};
+use super::*;
+
+const NONE: &[[Vec3; 3]] = &[];
+
+fn close(a: f32, b: f32, tolerance: f32) -> bool {
+    (a - b).abs() <= tolerance
+}
+
+fn drive(body: &Ragdoll) -> &Drive {
+    body.drive.as_ref().unwrap()
+}
+
+/// The pelvis's height (m): its origin's.
+fn pelvis(body: &Ragdoll) -> f32 {
+    body.part_of(1).unwrap().transform().translation.y
+}
+
+/// One character tick and one solver tick of a body standing in its pose
+/// on `level`.
+fn stand(body: &mut Ragdoll, pose: &[Affine3A], level: &[[Vec3; 3]]) {
+    body.measure_balance(level);
+    body.aim(Affine3A::IDENTITY, pose.to_vec());
+    body.tick(level);
+}
+
+/// Standing, f = 0.075(h + 15), h the target less the pelvis height (cm):
+/// 1 when the pelvis is 1.7 cm over its target, 1.5 at most (5 cm under
+/// it), none once the pelvis is 15 cm over it, but down to −10 crouched
+/// deeper than 0.9. Moving, f = (0.4·run + 0.2)(h + 5): 1 at the target
+/// walking, 3.3 cm over it running, 2 at most, none 5 cm over it. Falling
+/// a cm a tick at f = 1 adds (1 − 1/3)·E², rising takes it off.
+#[test]
+fn the_lift_is_the_originals() {
+    let standing = Bearing::default();
+    let lift = |h: f32, rise: f32, energy: f32, b: &Bearing| lift_factor(h, rise, energy, b);
+    let near = |f: Option<f32>, want: f32| f.is_some_and(|f| close(f, want, 1e-5));
+    assert!(near(lift(-15.0, 0.0, 1.0, &standing), 0.0));
+    assert!(near(lift(-5.0 / 3.0, 0.0, 1.0, &standing), 1.0));
+    assert!(near(lift(5.0, 0.0, 1.0, &standing), 1.5));
+    assert!(near(lift(30.0, 0.0, 1.0, &standing), 1.5));
+    assert_eq!(lift(-15.5, 0.0, 1.0, &standing), None);
+    let crouched = Bearing {
+        crouch: 0.95,
+        ..standing
+    };
+    assert!(near(lift(-15.5, 0.0, 1.0, &crouched), -0.0375));
+    assert!(near(lift(-200.0, 0.0, 1.0, &crouched), -10.0));
+    let walking = Bearing {
+        moving: true,
+        ..standing
+    };
+    let running = Bearing {
+        run: 1.0,
+        ..walking
+    };
+    assert!(near(lift(0.0, 0.0, 1.0, &walking), 1.0));
+    assert!(near(lift(-10.0 / 3.0, 0.0, 1.0, &running), 1.0));
+    assert!(near(lift(10.0, 0.0, 1.0, &walking), 2.0));
+    assert_eq!(lift(-5.5, 0.0, 1.0, &walking), None);
+    let at_one = -5.0 / 3.0;
+    assert!(near(lift(at_one, -1.0, 1.0, &standing), 1.0 + 2.0 / 3.0));
+    assert!(near(lift(at_one, -1.0, 0.5, &standing), 1.0 + 2.0 / 12.0));
+    assert!(near(lift(at_one, 1.0, 1.0, &standing), 1.0 - 2.0 / 3.0));
+    // At the clamp the damping is (1 − 1.5/3.5) of the speed.
+    assert!(near(lift(30.0, 2.0, 1.0, &standing), 1.5 - 2.0 * 4.0 / 7.0));
+}
+
+/// A part takes the carry by its tone times its support share: the pelvis
+/// and thighs 1, the lower legs 0.5, the feet 0.25; the upper body by its
+/// tone times its energy; nothing at a tone of a half or less.
+#[test]
+fn carry_shares_are_the_originals() {
+    for (bone, want) in [
+        (1, 1.0),
+        (2, 1.0),
+        (5, 1.0),
+        (3, 0.5),
+        (6, 0.5),
+        (4, 0.25),
+        (7, 0.25),
+    ] {
+        assert_eq!(carry_share(bone, 1.0, 0.6), Some(want), "bone {bone}");
+        assert!(close(
+            carry_share(bone, 0.9, 0.6).unwrap(),
+            0.9 * want,
+            1e-6
+        ));
+    }
+    for bone in [8, 9, 10, 11, 13, 17] {
+        assert!(close(carry_share(bone, 0.9, 0.6).unwrap(), 0.54, 1e-6));
+    }
+    assert_eq!(carry_share(1, 0.5, 1.0), None);
+    assert_eq!(carry_share(9, 0.3, 1.0), None);
+}
+
+/// The leg of a standing human as the arena's Idle gives it (cm): the clip
+/// root 91.4 over its ankle, the foot's sole 9.68, the leg 85.15.
+fn idle_leg(ground: f32) -> LegHeight {
+    LegHeight {
+        ground: Some(ground),
+        contact: ground + 10.0,
+        stance: 91.4 + SOLE,
+        length: 85.15,
+    }
+}
+
+const SOLE: f32 = 9.68;
+
+/// The target pelvis height: a standing human's (the clip root 91.4 cm
+/// over its ankle, its sole 9.68 cm) is capped at its ground + sole + leg
+/// length (85.15 cm) and raised 5 cm: 99.83 cm. It follows a 30 cm step
+/// under both feet by 30 cm; with one foot on the step it stays capped by
+/// the lower. Moving, it is neither capped nor raised; without ground there
+/// is none.
+#[test]
+fn the_target_height_is_the_originals() {
+    let flat = [idle_leg(0.0), idle_leg(0.0)];
+    assert!(close(
+        target_height(&flat, SOLE, 0.0, 101.5, false),
+        99.83,
+        1e-3
+    ));
+    let step = [idle_leg(30.0), idle_leg(30.0)];
+    assert!(close(
+        target_height(&step, SOLE, 0.0, 131.5, false),
+        129.83,
+        1e-3
+    ));
+    let one = [idle_leg(0.0), idle_leg(30.0)];
+    assert!(close(
+        target_height(&one, SOLE, 0.0, 101.5, false),
+        99.83,
+        1e-3
+    ));
+    // Moving: the mean of the two feet's, uncapped.
+    assert!(close(
+        target_height(&one, SOLE, 0.0, 101.5, true),
+        116.08,
+        1e-3
+    ));
+    assert!(close(
+        target_height(&flat, SOLE, 0.0, 101.5, true),
+        101.08,
+        1e-3
+    ));
+    let none = [LegHeight {
+        ground: None,
+        ..idle_leg(0.0)
+    }; 2];
+    assert_eq!(target_height(&none, SOLE, 0.0, 101.5, false), NO_TARGET);
+}
+
+/// The other foot is blended in by half while its contact's height over
+/// its ground plus the lower foot's contact height is under 40 cm, by
+/// 0.05 a cm less up to 60, not at all from 60 (the original's test, as
+/// read: on a floor 50 cm up nothing is blended), and not when it has no
+/// ground.
+#[test]
+fn the_other_foot_is_blended_in() {
+    let crouched = |ground: f32, contact: f32| LegHeight {
+        ground: Some(ground),
+        contact,
+        stance: 40.0,
+        length: 85.15,
+    };
+    // Uncapped, 40 cm over each foot's ground, the other foot's ground
+    // 10 cm higher, its contact 10 cm over it: the spread is the lower
+    // contact's height plus 10. Weights 0.5, 0.5, 0.125 and 0, plus 5 cm.
+    for (contact, want) in [(25.0, 50.0), (30.0, 50.0), (45.0, 46.25), (50.0, 45.0)] {
+        let legs = [crouched(0.0, contact), crouched(10.0, 20.0)];
+        let got = target_height(&legs, SOLE, 0.0, 100.0, false);
+        assert!(
+            close(got, want, 1e-3),
+            "contact {contact}: {got}, not {want}"
+        );
+    }
+    let high = [crouched(50.0, 60.0), crouched(50.0, 60.0)];
+    assert!(close(
+        target_height(&high, SOLE, 0.0, 150.0, false),
+        95.0,
+        1e-3
+    ));
+    let lifted = [
+        crouched(0.0, 10.0),
+        LegHeight {
+            ground: None,
+            ..crouched(10.0, 20.0)
+        },
+    ];
+    assert!(close(
+        target_height(&lifted, SOLE, 0.0, 100.0, false),
+        45.0,
+        1e-3
+    ));
+    // A foot whose ground is over a metre above the pelvis is not the
+    // lowest: the other is, and caps the target at its reach.
+    let above = [crouched(160.0, 170.0), crouched(0.0, 10.0)];
+    assert!(close(
+        target_height(&above, SOLE, 0.0, 50.0, false),
+        99.83,
+        1e-3
+    ));
+}
+
+/// Standing on its legs the lift holds a body up where f = 1, its pelvis
+/// 1.7 cm over its target; set down 1 cm into the floor, it is pushed up
+/// out of it, rises less than 2 cm over where it comes to rest, and rests.
+#[test]
+fn the_pelvis_settles_1_7_cm_over_its_target() {
+    let (mut body, pose) = standing_at(Vec3::new(0.0, -0.01, 0.0));
+    let floor = floor_quad(0.0, 5.0);
+    let mut highest = 0.0f32;
+    for _ in 0..600 {
+        stand(&mut body, &pose, &floor);
+        highest = highest.max(pelvis(&body));
+    }
+    let target = drive(&body).lift_target().unwrap();
+    assert!(close(target, 1.0 + STANDING_SOLE + 0.05, 1e-5), "{target}");
+    let over = pelvis(&body) - target;
+    let (_, velocity) = body.centre_of_mass();
+    assert!(
+        close(over, 1.0 / 60.0, 0.002),
+        "{:.2} cm over",
+        over * 100.0
+    );
+    assert!(
+        close(drive(&body).lift(), 1.0, 0.03),
+        "f {}",
+        drive(&body).lift()
+    );
+    assert!(highest - pelvis(&body) < 0.02);
+    assert!(velocity.length() < 0.005, "still moving at {velocity}");
+}
+
+/// Without support the carry is gravity: a body with no ground under its
+/// feet, at full tone and energy, falls at g, every part of it.
+#[test]
+fn no_support_gives_full_gravity() {
+    let (mut body, pose) = standing_at(Vec3::ZERO);
+    body.measure_balance(NONE);
+    body.aim(Affine3A::IDENTITY, pose);
+    assert!(!drive(&body).balance().has_support());
+    assert_eq!(drive(&body).carry(), gravity_per_tick());
+    assert_eq!(drive(&body).lift(), 0.0);
+    let before: Vec<[Vec3; 4]> = body.parts.iter().map(|p| p.positions).collect();
+    body.integrate();
+    for (p, b) in body.parts.iter().zip(&before) {
+        for (x, was) in p.positions.iter().zip(b) {
+            let fell = *x - *was;
+            assert!(
+                fell.abs_diff_eq(gravity_per_tick(), 2e-7),
+                "bone {}: {fell}",
+                p.bone
+            );
+        }
+    }
+}
+
+/// A fallen body lying on the floor is not lifted: its feet have no ground
+/// within reach, so it has no support and its carry is gravity.
+#[test]
+fn a_fallen_body_is_not_lifted() {
+    let (mut body, pose) = standing_at(Vec3::ZERO);
+    let lie = Affine3A::from_translation(Vec3::Y * 0.15)
+        * Affine3A::from_rotation_x(-std::f32::consts::FRAC_PI_2)
+        * Affine3A::from_translation(Vec3::NEG_Y * 1.1);
+    for p in &mut body.parts {
+        p.positions = p.positions.map(|x| lie.transform_point3(x));
+        p.previous = p.positions;
+    }
+    body.fall();
+    let floor = floor_quad(0.0, 5.0);
+    for _ in 0..20 {
+        stand(&mut body, &pose, &floor);
+        assert!(!drive(&body).balance().has_support());
+        assert_eq!(drive(&body).carry(), gravity_per_tick());
+        assert_eq!(drive(&body).lift(), 0.0);
+    }
+}
+
+/// The lift scales by twice the tone over a half: at tone 0.75 the carry
+/// takes off half of what it does at full tone, at 0.5 none, and the parts
+/// then fall by gravity alone.
+#[test]
+fn the_lift_scales_with_the_tone() {
+    let floor = floor_quad(0.0, 5.0);
+    let lifted = |tone: f32| {
+        let (mut body, pose) = standing_at(Vec3::new(0.0, -0.05, 0.0));
+        body.drive.as_mut().unwrap().tone = tone;
+        body.measure_balance(floor.as_slice());
+        body.aim(Affine3A::IDENTITY, pose);
+        let d = drive(&body);
+        (
+            d.lift(),
+            (d.carry() - gravity_per_tick()).y / gravity_per_tick().y,
+        )
+    };
+    let (full, taken) = lifted(1.0);
+    assert!(full > 0.5 && close(taken, -full, 1e-5), "{full} {taken}");
+    let (half, taken) = lifted(0.75);
+    assert!(close(half, full / 2.0, 1e-5) && close(taken, -half, 1e-5));
+    assert_eq!(lifted(0.5), (0.0, 0.0));
+}
+
+/// A dazed body sags: its upper body takes the carry by its energy. Its
+/// soles 25 cm deep, the lift's target is over where its legs reach, so it
+/// hovers with its feet off the floor where its weight balances the lift,
+/// f = Σm/Σam (a its parts' shares): its pelvis 0.3 cm over its target at
+/// full energy, 1.2 cm under it at 0.75 and 3.0 cm under at 0.5.
+#[test]
+fn a_dazed_body_sags_in_proportion_to_its_energy() {
+    let floor = floor_quad(0.0, 5.0);
+    let hover = |energy: f32| {
+        let (mut body, pose) = standing_at(Vec3::new(0.0, 0.2, 0.0));
+        body.sole = 0.25;
+        for _ in 0..800 {
+            // The tick recovers 0.005 before the parts take the carry.
+            body.drive.as_mut().unwrap().energy = energy - ENERGY_RECOVERY;
+            stand(&mut body, &pose, &floor);
+        }
+        let lowest = body
+            .parts
+            .iter()
+            .flat_map(|p| p.positions)
+            .fold(f32::MAX, |low, x| low.min(x.y));
+        assert!(
+            lowest > 0.05,
+            "a foot touches the floor at {energy}: {lowest}"
+        );
+        let (mass, carried) = body.parts.iter().fold((0.0, 0.0), |(m, am), p| {
+            let a = carry_share(p.bone, 1.0, energy).unwrap();
+            (m + 1.0 / p.inverse_mass, am + a / p.inverse_mass)
+        });
+        let f: f32 = mass / carried;
+        let want = -(f / 0.075 - 15.0);
+        let over = (pelvis(&body) - drive(&body).lift_target().unwrap()) * 100.0;
+        assert!(
+            close(over, want, 0.05),
+            "energy {energy}: {over} cm, not {want}"
+        );
+        over
+    };
+    let overs = [1.0, 0.75, 0.5].map(hover);
+    for (over, want) in overs.iter().zip([0.28, -1.21, -3.05]) {
+        assert!(close(*over, want, 0.02), "{overs:?}");
+    }
+}
+
+/// The target follows the ground: a body standing on a 30 cm platform that
+/// is taken away drops onto the floor (carried by its controller, it keeps
+/// its balance in the air), and its target and pelvis settle 30 cm lower.
+#[test]
+fn the_target_follows_a_30_cm_step() {
+    let (mut body, pose) = standing_at(Vec3::new(0.0, 0.3, 0.0));
+    let (high, low) = (floor_quad(0.3, 5.0), floor_quad(0.0, 5.0));
+    for _ in 0..300 {
+        stand(&mut body, &pose, &high);
+    }
+    let (target, standing) = (drive(&body).lift_target().unwrap(), pelvis(&body));
+    let mut lowest = f32::MAX;
+    for _ in 0..500 {
+        stand(&mut body, &pose, &low);
+        lowest = lowest.min(pelvis(&body));
+        assert!(drive(&body).balance().value > 0.6);
+    }
+    let dropped = target - drive(&body).lift_target().unwrap();
+    assert!(close(dropped, 0.3, 1e-4), "the target dropped {dropped}");
+    let settled = pelvis(&body);
+    assert!(
+        close(standing - settled, 0.3, 0.005),
+        "{}",
+        standing - settled
+    );
+    // Landing, it sinks no more than 2 cm under where it settles.
+    assert!(settled - lowest < 0.02, "{}", settled - lowest);
+}

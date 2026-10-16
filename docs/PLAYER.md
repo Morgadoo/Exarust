@@ -36,11 +36,18 @@ The original has no camera-relative keyboard movement. Outside combat:
   In the walk and run cycles the arms hang loosely (stiffness 0.2); while
   the body turns toward its heading they stiffen with the turn left (0.4
   per rad, at most 0.4) ([formats/RSQ.md](formats/RSQ.md), Physical body).
-- The pose drive only turns the body's parts; it holds no position. Until
-  the body carries itself on its feet, the controller holds the player's
-  pelvis where it carries it (Exarust's own), and the spine and head sway
-  under blows: a duellist's hits move the pelvis 11–14 cm and take the
-  balance down to 0.7–0.9 without knocking the player over.
+- The body stands on its feet, as the original's does: a lift holds its
+  pelvis at a height over the ground under its feet (1.7 cm over the
+  target, 101.5 cm for an idle human), its height comes from the clip
+  root's over each ankle, and it falls by gravity once its feet have no
+  ground. The controller only moves it across the ground and turns it,
+  and holds its pelvis over where it carries it (Exarust's own). Walking,
+  the pelvis bobs with the walk's root (about 2.5 cm). A duellist's hits
+  daze the player without swaying its balance: the lift and the legs carry
+  it ([formats/RSQ.md](formats/RSQ.md), Physical body).
+- Stairs: the capsule climbs a step before the feet do, and nothing lifts a
+  walking foot onto it yet (the original's walking feet and leg IK come
+  later), so the player catches its feet on the risers and may fall.
 
 ## Combat mode
 
@@ -138,8 +145,8 @@ against its ankles, and the ground under each foot. Standing still it never
 falls; standing with no ground under its feet (dropped, or walked off a
 ledge and stopped) it loses its balance and falls, then gets up once
 settled. A standing player whose capsule perches on a stone its feet hang
-beside keeps its balance (Exarust's own, until the body stands on its
-feet).
+beside keeps its balance and drops onto its feet (Exarust's own, while the
+capsule leads the body).
 
 `--press key@frame,...` presses keys at frames after the load, and in play
 mode `--camera x,y,z,yaw,pitch` puts a fixed camera there instead of the

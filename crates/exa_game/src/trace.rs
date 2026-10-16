@@ -226,8 +226,7 @@ fn row(
             * CM
     }));
     row.value(Some(root_world.translation.y * CM));
-    // The lift servo's target is not simulated yet.
-    row.empty(1);
+    row.value(drive.and_then(|d| d.lift_target()).map(|h| h * CM));
     row.value(drive.map(|d| d.stance()));
     row.value(drive.map(|d| d.tone_target()));
     row.value(drive.map(|d| d.tone));

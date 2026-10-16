@@ -135,14 +135,18 @@ pub struct Bearing {
     /// full crouch.
     pub crouch: f32,
     /// Its character controller stands on the ground (a body without one
-    /// counts as carried). Exarust's own: until the body stands on its own
-    /// feet, the controller's capsule carries a standing body and may hold
-    /// its feet off the ground (perched on a stone), so a carried standing
-    /// body keeps its balance when no foot is grounded; a fallen one is not
-    /// carried.
+    /// counts as carried). Exarust's own: the controller's capsule carries
+    /// a standing body across the ground and may stand where its feet do
+    /// not (perched on a stone), so a carried standing body keeps its
+    /// balance while no foot is grounded, dropping onto its feet; a fallen
+    /// one is not carried.
     pub carried: bool,
     /// What is left of its turn toward its heading (rad).
     pub turn: f32,
+    /// How high (m) its lowest ankle sits over its floor in the first pose
+    /// of its walk: a moving body's feet are grounded, and its pelvis held,
+    /// from there.
+    pub gait_floor: Option<f32>,
 }
 
 impl Default for Bearing {
@@ -156,6 +160,7 @@ impl Default for Bearing {
             crouch: 0.0,
             carried: true,
             turn: 0.0,
+            gait_floor: None,
         }
     }
 }

@@ -13,7 +13,8 @@
 //!
 //! Then each leg asks the level how high the ground is under its foot (the
 //! Height Query) and is grounded when its contact is within 20 cm of it
-//! (30 cm moving), its sole height included. Support S is grounded ×
+//! (30 cm moving), its ground offset included (its sole height standing;
+//! moving, its ankle's lift in the walk as well). Support S is grounded ×
 //! balance, and a standing body with no foot on the ground has no balance.
 //!
 //! The rules are the original's, in its centimetres and ticks (evidence:
@@ -103,7 +104,7 @@ const SOLE_INSET: f32 = 0.5;
 
 /// Metres (or metres per tick) in the original's centimetres: every rule
 /// below is written in cm.
-fn cm<T: Mul<f32, Output = T>>(x: T) -> T {
+pub(super) fn cm<T: Mul<f32, Output = T>>(x: T) -> T {
     x * CM
 }
 
@@ -118,9 +119,13 @@ pub struct Leg {
     /// The foot contact in the lower leg's space (m): its foot's origin,
     /// the ankle, when the leg has a foot part.
     pub point: Vec3,
-    contact: [f32; 4],
+    pub(super) contact: [f32; 4],
     /// Hip to knee plus knee to contact (m).
     pub length: f32,
+    /// How high (m) its contact stands over its ground when the foot is
+    /// down: the feet's sole height standing; moving, also its animated
+    /// ankle's height over the walk's lowest (set by the lift).
+    pub offset: f32,
     /// The ground under the foot this tick (m), or none while it is not
     /// within reach.
     pub ground: Option<f32>,
@@ -297,7 +302,7 @@ pub(super) fn within_reach(ground: f32, pelvis: f32, length: f32, getting_up: bo
 }
 
 /// Whether a foot whose contact stands `height` (cm) above its ground and
-/// sole height is grounded: within 20 cm standing, 30 cm moving.
+/// ground offset is grounded: within 20 cm standing, 30 cm moving.
 pub(super) fn foot_grounded(height: f32, moving: bool) -> bool {
     height
         <= if moving {
@@ -353,9 +358,13 @@ pub(super) fn build(setup: &[PartSetup], parts: &mut [Part]) -> (Vec<Pin>, Vec<L
             point,
             contact: weights(&parts[i], point),
             length: s.origin.length() + point.length(),
+            offset: 0.0,
             ground: None,
             grounded: true,
         });
+    }
+    for leg in &mut legs {
+        leg.offset = sole;
     }
     (chest, legs, sole)
 }
@@ -419,9 +428,7 @@ impl Ragdoll {
             .iter()
             .map(|l| self.parts[l.shin].transform().matrix3.z_axis.into())
             .collect();
-        let Ragdoll {
-            legs, drive, sole, ..
-        } = self;
+        let Ragdoll { legs, drive, .. } = self;
         let Some(drive) = drive.as_mut() else {
             return;
         };
@@ -491,7 +498,7 @@ impl Ragdoll {
                 .then_some(ground / CM);
             leg.grounded = leg
                 .ground
-                .is_some_and(|g| foot_grounded(cm(c.y - g - *sole), bearing.moving));
+                .is_some_and(|g| foot_grounded(cm(c.y - g - leg.offset), bearing.moving));
             grounded += usize::from(leg.grounded);
         }
         if grounded > 0 {

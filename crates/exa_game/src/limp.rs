@@ -6,8 +6,9 @@
 //! Each fixed tick runs every living body's character tick before the body
 //! solver, the player's last, as the original orders them: the body
 //! measures its balance and the ground under its feet, its clip clock
-//! advances by one tick and its clip is sampled, and its targets are the
-//! body root's world transform times the clip's pose.
+//! advances by one tick and its clip is sampled, its targets are the body
+//! root's world transform times the clip's pose, and its lift holds its
+//! pelvis over the ground under its feet.
 
 use std::collections::HashMap;
 
@@ -230,11 +231,17 @@ fn tick_characters(
         let controller = parents
             .iter_ancestors(root)
             .find_map(|a| controllers.get(a).ok());
-        body.set_bearing(bearing(controller, player, &anim, fallen));
+        let stature = stature.map_or(1.0, |s| s.0);
+        let mut bearing = bearing(controller, player, &anim, fallen);
+        if bearing.moving {
+            bearing.gait_floor =
+                gait_floor(&motions, &anim, stature, &body, root, &parents, &nodes);
+        }
+        body.set_bearing(bearing);
         if let Some(physics) = &physics {
             body.measure_balance(&physics.0);
         }
-        let pose = clip_tick(&motions, &mut anim, stature.map_or(1.0, |s| s.0));
+        let pose = clip_tick(&motions, &mut anim, stature);
         let root_world = world_with(root, &parents, |e| {
             nodes.get(e).ok().map(|(t, _)| t.compute_affine())
         });
@@ -257,7 +264,8 @@ fn tick_characters(
 /// strides in the walk and run cycles, is off balance from its fall until
 /// it has got up, gets up while its get-up clip plays, never crouches (no
 /// crouch yet), is carried while its controller stands on the ground (or
-/// it has none), and turns by what is left of the player's turn.
+/// it has none), and turns by what is left of the player's turn. Its gait
+/// floor is measured by the character tick while it moves.
 fn bearing(
     controller: Option<&CharacterBody>,
     player: Option<&PlayerBody>,
@@ -273,7 +281,31 @@ fn bearing(
         crouch: 0.0,
         carried: controller.is_none_or(|c| c.grounded),
         turn: player.map_or(0.0, PlayerBody::turn_left),
+        gait_floor: None,
     }
+}
+
+/// How high (m) the lowest ankle of `body` sits over its floor in the first
+/// pose of its moveset's walk, as the original measures a moving body's
+/// gait from the first key of its walk.
+fn gait_floor(
+    motions: &Motions,
+    anim: &Animator,
+    stature: f32,
+    body: &Ragdoll,
+    root: Entity,
+    parents: &Query<&ChildOf>,
+    nodes: &Query<(&Transform, Option<&BodyPart>)>,
+) -> Option<f32> {
+    let walk = motions.0.clip(&anim.moveset, "Walk")?;
+    let pose = ClipPose::at(walk, walk.keys.first()?.time, stature)?;
+    body.legs()
+        .iter()
+        .map(|leg| {
+            let shin = clip_pose(body.parts[leg.shin].entity, root, &pose, parents, nodes);
+            shin.transform_point3(leg.point).y
+        })
+        .reduce(f32::min)
 }
 
 /// Puts the player's body (flagged `true`) after every other, which keep

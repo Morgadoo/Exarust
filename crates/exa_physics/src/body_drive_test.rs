@@ -1,23 +1,13 @@
 //! The pose drive: the original's law and gains, each pinned to its numbers
 //! (`docs/formats/RSQ.md`, Physical body).
 //! (Included from body.rs: `#[cfg(test)] #[path = "body_drive_test.rs"] mod drive_test;`)
-use super::floor_test::humanoid;
+use super::floor_test::{humanoid, standing_at};
 use super::tests::floor_quad;
 use super::*;
 
-/// The tests' humanoid standing with its feet at the origin, its balance
-/// measured: each lower leg stands on a contact at its foot, 50 cm under
-/// the knee, and the torso carries two shoulder pins, the chest.
+/// The tests' standing humanoid with its feet at the origin.
 fn standing() -> (Ragdoll, Vec<Affine3A>) {
-    let (mut setup, pose) = humanoid(Vec3::ZERO);
-    for s in &mut setup {
-        match s.bone {
-            3 | 6 => s.foot = Some(Vec3::new(0.0, -0.5, 0.0)),
-            8 => s.pins = vec![Vec3::new(0.15, 0.4, 0.0), Vec3::new(-0.15, 0.4, 0.0)],
-            _ => {}
-        }
-    }
-    (Ragdoll::new(&setup).with_drive(), pose)
+    standing_at(Vec3::ZERO)
 }
 
 /// The yaw (about the vertical) and the tilt (from the vertical) of a part.
@@ -298,7 +288,7 @@ fn a_standing_body_recovers_from_a_chest_shove() {
     let tilt = turn_of(&body.parts[torso]).1 - rest;
     let (_, velocity) = body.centre_of_mass();
     assert!(
-        swayed.to_degrees() > 3.0,
+        swayed.to_degrees() > 2.5,
         "the torso swayed {:.1}°",
         swayed.to_degrees()
     );
@@ -311,30 +301,30 @@ fn a_standing_body_recovers_from_a_chest_shove() {
     assert!(velocity.length() < 0.01, "still moving at {velocity}");
 }
 
-/// Exarust's own until the body carries itself: its controller holds a
-/// standing body's pelvis where it carries the pose's pelvis. With its
-/// gravity compensated by its tone, a body whose feet the floor pushes up
-/// 1 cm would otherwise float 30 cm up; held, it rises less than 2 cm and
-/// comes to rest on its feet, within a centimetre of its pose (whose feet
-/// are in the floor).
+/// Exarust's own until the support pins: the controller holds a standing
+/// body's pelvis over where it carries the pose's pelvis, across the ground
+/// only. A pelvis off its target and moving is pulled back and braked
+/// across the ground, never up or down: its height is the lift's.
 #[test]
-fn the_controller_holds_a_standing_body() {
-    let (setup, pose) = humanoid(Vec3::new(0.0, -0.01, 0.0));
-    let mut body = Ragdoll::new(&setup).with_drive();
-    let floor = floor_quad(0.0, 5.0);
-    let pelvis = body.parts.iter().position(|p| p.bone == 1).unwrap();
-    let goal = Vec3::from(pose[pelvis].translation);
-    let mut highest = 0.0f32;
-    for _ in 0..400 {
-        body.aim(Affine3A::IDENTITY, pose.clone());
-        body.tick(floor.as_slice());
-        let p = &body.parts[pelvis];
-        highest = highest.max(p.point(&p.own_origin).y - goal.y);
+fn the_controller_holds_the_pelvis_across_the_ground_only() {
+    let (mut body, pose) = standing();
+    body.aim(Affine3A::IDENTITY, pose);
+    let i = body.parts.iter().position(|p| p.bone == 1).unwrap();
+    let p = &mut body.parts[i];
+    for k in 0..4 {
+        p.positions[k] += Vec3::new(0.05, 0.04, -0.03);
+        p.previous[k] = p.positions[k] - Vec3::new(0.002, -0.003, 0.001);
     }
-    let p = &body.parts[pelvis];
-    let off = p.point(&p.own_origin) - goal;
-    let (_, velocity) = body.centre_of_mass();
-    assert!(highest < 0.02, "the pelvis rose {:.1} cm", highest * 100.0);
-    assert!(off.length() < 0.01, "the pelvis ended {off} off");
-    assert!(velocity.length() < 0.005, "still moving at {velocity}");
+    let (before, was) = (p.positions, p.previous);
+    let Ragdoll { parts, drive, .. } = &mut body;
+    hold_on_controller(parts, drive.as_ref().unwrap());
+    let p = &body.parts[i];
+    for k in 0..4 {
+        let pulled = p.positions[k] - before[k];
+        let braked = p.previous[k] - was[k];
+        assert!(pulled.x < 0.0 && pulled.z > 0.0, "{pulled}");
+        assert_eq!((pulled.y, braked.y), (0.0, 0.0));
+        // Its previous place follows its motion: its velocity shrinks.
+        assert!(braked.x > 0.0 && braked.z > 0.0, "{braked}");
+    }
 }

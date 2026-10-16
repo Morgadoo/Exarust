@@ -305,22 +305,24 @@ fn a_part_keeps_its_four_most_spread_contacts() {
 }
 
 /// A body carried by its controller is not swept by the carry, and its
-/// contacts travel with it. Where it is drawn from stays: the carry is
-/// drawn as motion between ticks, as the controller is.
+/// contacts travel with it, across the ground only: the root's rise is the
+/// lift's to follow. Where it is drawn from stays: the carry is drawn as
+/// motion between ticks, as the controller is.
 #[test]
 fn a_carried_body_moves_its_last_pose_and_contacts() {
     // The feet 1 cm into the floor, so that the shins touch it.
     let (setup, pose) = humanoid(Vec3::new(0.0, -0.01, 0.0));
     let mut body = Ragdoll::new(&setup).with_drive();
     let floor = quad_floor(0.0);
-    // A few ticks: the floor pushes the body up out of it, and its
-    // controller's hold takes it back down only slowly.
+    // A few ticks: the floor pushes the body up out of it and it falls
+    // back (a legless body has no lift).
     for _ in 0..3 {
         body.aim(Affine3A::IDENTITY, pose.clone());
         body.tick(floor.as_slice());
     }
-    let shift = Vec3::new(0.5, -0.3, 0.0);
-    let down = Affine3A::from_translation(shift);
+    let down = Affine3A::from_translation(Vec3::new(0.5, -0.3, 0.0));
+    let shift = Vec3::new(0.5, 0.0, 0.0);
+    let across = Affine3A::from_translation(shift);
     let before: Vec<(Affine3A, Vec<LevelContact>, (Affine3A, Affine3A))> = body
         .parts
         .iter()
@@ -335,7 +337,7 @@ fn a_carried_body_moves_its_last_pose_and_contacts() {
         assert!(
             p.settled
                 .translation
-                .abs_diff_eq((down * settled).translation, 1e-5)
+                .abs_diff_eq((across * settled).translation, 1e-5)
         );
         assert_eq!(p.shown, shown);
         assert_eq!(p.contacts.len(), contacts.len());
