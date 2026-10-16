@@ -16,6 +16,10 @@
 //! Raw images store the mip chain, largest level first, right after the
 //! header. Packed images run-length encode that same chain (see [`unpack`]);
 //! only uncompressed pixel formats are packed.
+//!
+//! Uncompressed colour pixels are stored red first (R, G, B and R, G, B, A),
+//! in both storage modes: the original copies unpacked pixels byte for byte
+//! and uploads both formats as RGB/RGBA, never BGR/BGRA.
 
 use std::borrow::Cow;
 
@@ -35,9 +39,9 @@ pub enum PixelFormat {
     Bc4,
     /// Two channels (normal map X/Y), 16 bytes per block.
     Bc5,
-    /// Stored as B, G, R.
+    /// Stored as R, G, B.
     Rgb8,
-    /// Stored as B, G, R, A.
+    /// Stored as R, G, B, A.
     Rgba8,
     L8,
     La8,
@@ -249,8 +253,8 @@ impl<'a> Rfi<'a> {
             PixelFormat::Bc1 | PixelFormat::Bc3 | PixelFormat::Bc4 | PixelFormat::Bc5 => {
                 decode_blocks(self.format, src, w, h, &mut out)
             }
-            PixelFormat::Rgb8 => expand(src, &mut out, 3, |p| [p[2], p[1], p[0], 255]),
-            PixelFormat::Rgba8 => expand(src, &mut out, 4, |p| [p[2], p[1], p[0], p[3]]),
+            PixelFormat::Rgb8 => expand(src, &mut out, 3, |p| [p[0], p[1], p[2], 255]),
+            PixelFormat::Rgba8 => expand(src, &mut out, 4, |p| [p[0], p[1], p[2], p[3]]),
             PixelFormat::L8 => expand(src, &mut out, 1, |p| [p[0], p[0], p[0], 255]),
             PixelFormat::La8 => expand(src, &mut out, 2, |p| [p[0], p[0], p[0], p[1]]),
             PixelFormat::A8 => expand(src, &mut out, 1, |p| [255, 255, 255, p[0]]),
@@ -347,6 +351,8 @@ mod tests {
         assert_eq!(PixelFormat::from_word(0x813B_4200), PixelFormat::Bc4);
         assert_eq!(PixelFormat::from_word(0x927B_8400), PixelFormat::Bc5);
         assert_eq!(PixelFormat::from_word(0x817B_E608), PixelFormat::Bc3);
+        assert_eq!(PixelFormat::from_word(0x0100_C600), PixelFormat::Rgb8);
+        assert_eq!(PixelFormat::from_word(0x1111_C600), PixelFormat::Rgb8);
         assert_eq!(PixelFormat::from_word(0x0100_E608), PixelFormat::Rgba8);
         assert_eq!(PixelFormat::from_word(0x0100_6208), PixelFormat::La8);
         assert_eq!(PixelFormat::from_word(0x0100_2008), PixelFormat::A8);
@@ -359,6 +365,68 @@ mod tests {
         // 2 bytes/pixel: threshold 63, run of 2.
         assert_eq!(unpack(&[63, 1, 2], 2, 4).unwrap(), [1, 2, 1, 2]);
         assert!(unpack(&[5, 1], 1, 6).is_err());
+    }
+
+    /// A 32-byte header followed by `body`.
+    fn image(w: u32, h: u32, word: u32, storage: u32, size: u32, body: &[u8]) -> Vec<u8> {
+        let mut b = Vec::new();
+        for v in [RFI_MAGIC, w, h, 1, word, 0, storage, size] {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        b.extend_from_slice(body);
+        b
+    }
+
+    #[test]
+    fn uncompressed_colour_is_stored_red_first() {
+        // An ember orange and a sky blue, raw.
+        let raw = image(
+            2,
+            1,
+            0x0100_C600,
+            0x1000_0000,
+            6,
+            &[200, 90, 20, 30, 120, 220],
+        );
+        let rfi = Rfi::parse(&raw).unwrap();
+        assert_eq!(
+            rfi.decode_rgba8().unwrap(),
+            [200, 90, 20, 255, 30, 120, 220, 255]
+        );
+        // The same pixels packed: a literal of two, then a run of three.
+        let packed = image(
+            5,
+            1,
+            0x0100_C600,
+            0x5000_0000,
+            15,
+            &[1, 200, 90, 20, 30, 120, 220, 64, 1, 2, 3],
+        );
+        let rfi = Rfi::parse(&packed).unwrap();
+        assert!(rfi.is_packed());
+        assert_eq!(
+            rfi.decode_rgba8().unwrap(),
+            [
+                200, 90, 20, 255, 30, 120, 220, 255, 1, 2, 3, 255, 1, 2, 3, 255, 1, 2, 3, 255
+            ]
+        );
+        // RGBA keeps its bytes, raw and packed (a run of two).
+        let raw = image(1, 1, 0x0100_E608, 0x1000_0000, 4, &[200, 90, 20, 128]);
+        assert_eq!(
+            Rfi::parse(&raw).unwrap().decode_rgba8().unwrap(),
+            [200, 90, 20, 128]
+        );
+        let packed = image(2, 1, 0x0100_E608, 0x5000_0000, 8, &[63, 200, 90, 20, 128]);
+        assert_eq!(
+            Rfi::parse(&packed).unwrap().decode_rgba8().unwrap(),
+            [200, 90, 20, 128, 200, 90, 20, 128]
+        );
+        // A data-flagged RGB8 normal map (z in the third byte) stays x, y, z.
+        let normal = image(1, 1, 0x1111_C600, 0x1000_0000, 3, &[128, 128, 255]);
+        assert_eq!(
+            Rfi::parse(&normal).unwrap().decode_rgba8().unwrap(),
+            [128, 128, 255, 255]
+        );
     }
 
     #[test]

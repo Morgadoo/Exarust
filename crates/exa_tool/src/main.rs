@@ -9,6 +9,7 @@
 //! exa-tool png Textures afcrnflg_01d out.png
 //! exa-tool extract Sound out/ [--filter msc_]
 //! exa-tool corpus meshes              decode every chunk tree, report coverage
+//! exa-tool corpus images              images by format; RGB8 normals z in blue
 //! exa-tool corpus winding             which way level faces point, floors up?
 //! exa-tool export-gltf Objlib afr_cornflag_a01 out.glb
 //! ```
@@ -105,6 +106,8 @@ enum CorpusKind {
     Levels,
     Terrain,
     Factories,
+    /// Images by format word and storage; RGB8 normal maps hold z in blue.
+    Images,
     /// Near-horizontal level faces up or down, and mirrored nodes.
     Winding,
 }
@@ -216,6 +219,9 @@ fn main() -> Result<()> {
         Cmd::Corpus {
             what: CorpusKind::Factories,
         } => corpus::factories(&game),
+        Cmd::Corpus {
+            what: CorpusKind::Images,
+        } => corpus::images(&game),
         Cmd::Corpus {
             what: CorpusKind::Winding,
         } => corpus::winding(&game),

@@ -2,7 +2,8 @@
 
 Status: **verified**. Raw storage (BC1/BC3/BC4/BC5 and uncompressed) and
 packed (RLE) storage are decoded by `exa_formats::rfi`, written to PNG with
-`exa-tool png` and checked by eye.
+`exa-tool png` and checked by eye; the channel order of uncompressed images
+was established by reverse engineering (below).
 
 ## Header (32 bytes)
 
@@ -42,13 +43,26 @@ bits 0..7     0x08 when alpha present
 | `0x823BC600` | 187 | BC1 | specular (`*s`) |
 | `0x817BE608` | 110 | BC3 | diffuse with alpha (foliage) |
 | `0x827BA408` | 4 | BC3 (guess) | |
-| `0x0100C600`, `0x1111C600` | ~40 | RGB8 | reflection maps, small normals |
-| `0x0100E608` | ~25 | RGBA8 | |
+| `0x0100C600`, `0x0111C600`, `0x1111C600` | 63 | RGB8 | reflection cubes, glow maps, a few diffuse maps and UI icons (`0100`); packed specular (`0111`); normal maps and one packed specular (`1111`) |
+| `0x0100E608` | 23 | RGBA8 | foliage, fire particles, UI pictures |
 | `0x01004200`, `0x01114200` | ~25 | L8 | height maps (`*h`) |
 | `0x01006208` | 85 | LA8 | emblems |
 | `0x01002008` | ~25 | A8 | cobwebs, font |
 
-Uncompressed formats store channels in **B, G, R(, A)** order.
+Uncompressed formats store channels in **R, G, B(, A)** order, in both
+storage modes. Established by reverse engineering of the original's texture
+upload (REA): its format table uploads `0x0100C600` as `GL_RGB` and
+`0x0100E608` as `GL_RGBA`, both unsigned bytes; words with bit 20 set and
+bit 31 clear (`0x0111C600`, `0x1111C600`) are looked up under the mask
+`0x800CFFFF` and so share the RGB8 entry; and the packed-storage unpacker
+copies each pixel byte for byte. The corpus agrees (`exa-tool corpus
+images`): all 42 RGB8 normal maps hold z (about 255 on flat areas) in their
+third byte, and foliage, fire particles, the tutorial pictures and the
+embers' glow map (`embersael`) have natural colours only in this order. So
+does a capture of the original's main menu: its title (`maintitle01`,
+packed RGBA8) is steel blue, blue above green above red, as it decodes red
+first. The community notes call these formats BGR and BGRA; that is wrong
+for 0.9.5.
 
 ## Packed storage (`0x50000000`)
 

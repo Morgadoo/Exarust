@@ -88,7 +88,7 @@ dependency chain: data → world → bodies → combat → everything else.
   `Exanima.rfp` parser, `GameData` over an installation. Verified on every
   retail pack.
 - `exa_formats`: format detection by magic, chunk-tree framing, `.rdb`
-  index, `.rfi` decoding of every texture format (BC1/3/4/5, BGR8, BGRA8,
+  index, `.rfi` decoding of every texture format (BC1/3/4/5, RGB8, RGBA8,
   L8, LA8, A8, raw and RLE-packed storage), checked visually.
 - `exa-tool`: `info`, `ls`, `stats`, `chunks`, `rfi`, `png`, `extract`.
 - `exarust`: a Bevy window that opens the install, lists packs and shows a
@@ -274,9 +274,11 @@ Hits land where the weapon actually touched, and armour visibly matters.
 Done: the original's render pipeline (legacy and PBR programs, the
 environment cube, parallax, supersampling without MSAA, sharpening),
 voxel GI with the voxel lights of glowing items, emissive surfaces drawn
-as the original's (additive glows, opacity fall-off), fires and their
-particles, point lights that stop at walls with cached cube shadows, and
-basic audio (music, ambience, impacts, footsteps).
+as the original's (additive glows, opacity fall-off), uncompressed
+textures in the original's channel order (red embers, green foliage, RGB8
+normal maps), fires and their particles, point lights that stop at walls
+with cached cube shadows, and basic audio (music, ambience, impacts,
+footsteps).
 See `docs/RENDERING.md` and `docs/PERFORMANCE.md`.
 
 - Materials: one `ExaMaterial` whose parameters follow

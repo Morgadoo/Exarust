@@ -290,8 +290,8 @@ Sources: EMTK book and `emtk_asset/src/rfi.rs`; Structs.txt; Turkish `rfi_codec.
 
 | Value | Meaning (best consensus) | Bytes/px |
 |---|---|---|
-| `0x0100E608` | 32-bit **BGRA** (Mod-Launcher says BGRA; Structs.txt says "RGBA") | 4 |
-| `0x0100C600` | 24-bit **BGR** | 3 |
+| `0x0100E608` | 32-bit **BGRA** (Mod-Launcher says BGRA; Structs.txt says "RGBA"). Exarust: **RGBA**, see `../formats/RFI.md` | 4 |
+| `0x0100C600` | 24-bit **BGR**. Exarust: **RGB**, see `../formats/RFI.md` | 3 |
 | `0x01006208` | 16-bit grey+alpha (L8A8) | 2 |
 | `0x01004200` | 8-bit L8 | 1 |
 | `0x01002008` | 8-bit A8 (fonts, GUI skin, cursors). EMTK guessed BC4U, which is **wrong**; the Turkish/zh-CN/Structs sources show it is raw 1 byte per pixel | 1 |

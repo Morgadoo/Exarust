@@ -196,6 +196,11 @@ quality (`TextureQuality = 5`) and 4× supersampling:
   normal, gloss or packed specular maps. wgpu samplers have no bias, so the
   shader applies it.
 
+Uncompressed RGB8 and RGBA8 textures reach the shaders red first, as
+stored, raw or packed (`formats/RFI.md`). The original uploads them as RGB
+and RGBA, so the embers' glow map is orange, foliage green and RGB8 normal
+maps keep x and y in red and green.
+
 Floor UVs are generated per cell (see `formats/RFC.md`, tile grids): one
 square repeat per 6 m cell.
 

@@ -1,5 +1,6 @@
 //! `exa-tool corpus …`: decode every entry of a kind and report coverage;
-//! `corpus winding` checks which way the level geometry faces.
+//! `corpus images` checks the channel order of uncompressed images and
+//! `corpus winding` which way the level geometry faces.
 
 use std::collections::BTreeMap;
 
@@ -428,6 +429,97 @@ pub fn factories(game: &GameData) -> Result<()> {
             );
         }
     }
+    Ok(())
+}
+
+// `exa-tool corpus images` --------------------------------------------------
+
+/// Share of an RGB8 normal map's texels whose blue (z) must be its largest
+/// channel. Shipped maps reach 0.81 or more read red first and 0.13 or less
+/// with red and blue swapped.
+const Z_IN_BLUE: f64 = 0.5;
+
+/// `exa-tool corpus images`: every image in every pack, tallied by format
+/// word and storage. Uncompressed images are decoded; uncompressed RGB8
+/// normal maps (names ending in `n`) must hold z in blue, which pins the
+/// channel order of uncompressed images.
+pub fn images(game: &GameData) -> Result<()> {
+    use exa_formats::rfi::{PixelFormat, Rfi};
+    #[derive(Default)]
+    struct Tally {
+        raw: usize,
+        packed: usize,
+        failed: usize,
+    }
+    let mut words: BTreeMap<u32, Tally> = BTreeMap::new();
+    let (mut normals, mut sideways) = (0, 0);
+    let mut visit = |name: &str, b: &[u8]| {
+        let Ok(rfi) = Rfi::parse(b) else { return };
+        let tally = words.entry(rfi.header.format_word).or_default();
+        if rfi.is_packed() {
+            tally.packed += 1;
+        } else {
+            tally.raw += 1;
+        }
+        if rfi.format.bytes_per_pixel().is_none() {
+            return;
+        }
+        let rgba = match rfi.decode_rgba8() {
+            Ok(rgba) => rgba,
+            Err(err) => {
+                tally.failed += 1;
+                println!("  {name}: {err}");
+                return;
+            }
+        };
+        let stem = name.to_ascii_lowercase();
+        if rfi.format == PixelFormat::Rgb8 && stem.trim_end_matches(".rfi").ends_with('n') {
+            normals += 1;
+            let texels = rgba.as_chunks::<4>().0;
+            let blue = texels
+                .iter()
+                .filter(|p| p[2] >= p[0] && p[2] >= p[1])
+                .count();
+            let share = blue as f64 / texels.len().max(1) as f64;
+            if share < Z_IN_BLUE {
+                sideways += 1;
+                println!("  {name}: z in blue on {:.0}% of texels", share * 100.0);
+            }
+        }
+    };
+    for (kind, pack) in game.packs() {
+        if kind == exa_rpk::PackKind::Sound {
+            continue;
+        }
+        for e in pack.entries() {
+            let b = pack.bytes(e);
+            match FileKind::detect(b) {
+                FileKind::Image => visit(&e.name, b),
+                FileKind::Pack => {
+                    if let Ok(inner) = exa_rpk::Archive::parse(b) {
+                        for ie in inner.entries() {
+                            visit(&format!("{}/{}", e.name, ie.name), inner.bytes(ie));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    println!(
+        "{:<12} {:<9} {:>6} {:>6} {:>6}",
+        "word", "format", "raw", "packed", "failed"
+    );
+    for (word, t) in &words {
+        println!(
+            "{word:#010x}   {:<9} {:>6} {:>6} {:>6}",
+            format!("{:?}", PixelFormat::from_word(*word)),
+            t.raw,
+            t.packed,
+            t.failed
+        );
+    }
+    println!("\n{normals} RGB8 normal maps, {sideways} without z in blue");
     Ok(())
 }
 
