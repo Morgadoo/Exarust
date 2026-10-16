@@ -298,7 +298,9 @@ get 0.5/0.5, and at x = −20.3 cm the weights are 0.563 own, 0.403 forearm and
 0.033 shoulder.
 
 Exarust skins each part as a Bevy `SkinnedMesh` whose joint j is the part of
-bone j. The inverse bind pose is relative to the part's rest pose. Apparel
+bone j. The inverse bind pose is relative to the part's rest pose. A skinned
+part gets its mesh only when it is bound, since Bevy cannot draw a mesh with
+skin attributes and no skin. Apparel
 takes each vertex's weights from the nearest body vertex of its bone. The
 original runs a similar builder for apparel; it also hides covered body slots
 (per-slot coverage bits of equipped items) and culls apparel triangles by the

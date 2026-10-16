@@ -23,9 +23,13 @@ pub use texture::ColorSpace;
 
 /// A mesh whose vertices carry skin weights over a character's bones, in
 /// the space of body part `bone`; bound to the skeleton once it is known.
-#[derive(bevy::prelude::Component, Debug, Clone, Copy)]
+///
+/// The entity gets its `Mesh3d` only when it is bound: drawn before then,
+/// its skinned vertex layout would meet Bevy's unskinned bind group.
+#[derive(bevy::prelude::Component, Debug, Clone)]
 pub struct SkinnedPart {
     pub bone: u16,
+    pub mesh: Handle<Mesh>,
 }
 
 pub struct AssetsPlugin;

@@ -48,7 +48,7 @@ fn build_bodies(
     parents: Query<&ChildOf>,
     parts: Query<(&BodyPart, &GlobalTransform)>,
     locals: Query<&Transform>,
-    skinned: Query<(&SkinnedPart, &Mesh3d)>,
+    skinned: Query<&SkinnedPart>,
     meshes: Res<Assets<Mesh>>,
 ) {
     let Some(motions) = motions else { return };
@@ -303,19 +303,19 @@ fn part_box(
     part: Entity,
     bone: usize,
     children: &Query<&Children>,
-    skinned: &Query<(&SkinnedPart, &Mesh3d)>,
+    skinned: &Query<&SkinnedPart>,
     meshes: &Assets<Mesh>,
 ) -> (Vec3, Vec3) {
     let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
     for child in children.get(part).into_iter().flat_map(|c| c.iter()) {
-        let Ok((s, mesh)) = skinned.get(child) else {
+        let Ok(s) = skinned.get(child) else {
             continue;
         };
         if s.bone as usize != bone {
             continue;
         }
         let Some(positions) = meshes
-            .get(&mesh.0)
+            .get(&s.mesh)
             .and_then(|m| m.attribute(Mesh::ATTRIBUTE_POSITION))
             .and_then(|a| a.as_float3())
         else {

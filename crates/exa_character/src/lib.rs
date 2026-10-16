@@ -435,7 +435,7 @@ fn equip_outfits(
     mut infos: Local<Option<HashMap<String, ItemInfo>>>,
     mut painting: ResMut<Painting>,
     mut fitting: ResMut<Fitting>,
-    meshes_of: Query<(), With<Mesh3d>>,
+    meshes_of: Query<(), Or<(With<Mesh3d>, With<exa_assets::SkinnedPart>)>>,
     mut bodies: Query<
         (
             Entity,
@@ -535,17 +535,18 @@ fn equip_outfits(
                     };
                     let part = commands
                         .spawn((
-                            Mesh3d(mesh.clone()),
                             MeshMaterial3d(material),
                             Transform::IDENTITY,
                             ChildOf(parent),
                         ))
                         .id();
-                    if let Some(bone) = node.skin_bone {
-                        commands
-                            .entity(part)
-                            .insert(exa_assets::SkinnedPart { bone });
-                    }
+                    match node.skin_bone {
+                        Some(bone) => commands.entity(part).insert(exa_assets::SkinnedPart {
+                            bone,
+                            mesh: mesh.clone(),
+                        }),
+                        None => commands.entity(part).insert(Mesh3d(mesh.clone())),
+                    };
                 }
             }
         }

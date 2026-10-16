@@ -340,17 +340,15 @@ pub fn spawn_model(commands: &mut Commands, model: &Model, placement: Option<Tra
         let mut parts = Vec::with_capacity(node.parts.len());
         for (mesh, material) in &node.parts {
             let part = commands
-                .spawn((
-                    Mesh3d(mesh.clone()),
-                    MeshMaterial3d(material.clone()),
-                    ChildOf(e),
-                ))
+                .spawn((MeshMaterial3d(material.clone()), ChildOf(e)))
                 .id();
-            if let Some(bone) = node.skin_bone {
-                commands
-                    .entity(part)
-                    .insert(exa_assets::SkinnedPart { bone });
-            }
+            match node.skin_bone {
+                Some(bone) => commands.entity(part).insert(exa_assets::SkinnedPart {
+                    bone,
+                    mesh: mesh.clone(),
+                }),
+                None => commands.entity(part).insert(Mesh3d(mesh.clone())),
+            };
             parts.push(part);
         }
         parts_of.push(parts);

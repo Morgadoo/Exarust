@@ -280,7 +280,9 @@ fn bind_skins(
             ));
         }
         let (inverse_bindposes, joints) = bound[&key].clone();
+        // The mesh is drawn from here on, with its skin.
         commands.entity(mesh).insert((
+            Mesh3d(skinned.mesh.clone()),
             SkinnedMesh {
                 inverse_bindposes,
                 joints,
