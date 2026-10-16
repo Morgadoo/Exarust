@@ -37,10 +37,14 @@ Evidence:
   placement (follow node interpolated through its body, backward vector
   and zoom lerped and renormalised, fixed 2000 cm distance, FOV from the
   zoom every frame, shake offset lerped and added to the eye above
-  1e-5), start of play setting the follow object to the player's
+  1e-5), the camera tick carrying the shake offset on and the shake call
+  that kicks it, start of play setting the follow object to the player's
   `01Pelvis` (`context/re/master-movement.md` §11, `player-control.md` §2,
-  the new notes `context/re/master-movement-19-nav-grid.md`).
-- Exarust in game through `gpu_run.sh` (light run in the arena).
+  `master-movement.md` §19).
+- Exarust in game through `gpu_run.sh` (light run, `--autowalk --trace` in
+  the arena): the camera's focus is the drawn pelvis in every frame, its
+  height the traced pelvis height between the frame's two ticks within
+  0.0003 cm, rising and falling 99.7–102.1 cm with the walk.
 
 Out of scope:
 - the wall tilt and the occluder fade (M9, render work);

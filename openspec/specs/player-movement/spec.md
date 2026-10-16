@@ -114,7 +114,7 @@ The system SHALL start the player in play mode as the original's new character w
 - **THEN** the player wears the trousers and the shirt and no braies
 
 ### Requirement: Camera ticks
-The camera SHALL tick every 17 ms of real time, a tick running once the frame passes its start, at most nine a frame with the rest of a backlog dropped. Each frame SHALL show the backward vector (renormalised), the zoom and a shake offset between the last two ticks, by how far the frame is into the last tick; the shake offset SHALL move the eye only, and only while the last tick's squared exceeds 1e-5 cm².
+The camera SHALL tick every 17 ms of real time, a tick running once the frame passes its start, at most nine a frame with the rest of a backlog dropped. Each frame SHALL show the backward vector (renormalised), the zoom and a shake offset between the last two ticks, by how far the frame is into the last tick; the shake offset SHALL move the eye only, and only while the present offset, squared, exceeds 1e-5 cm².
 
 #### Scenario: A stalled frame
 - **WHEN** a frame comes a second after the last

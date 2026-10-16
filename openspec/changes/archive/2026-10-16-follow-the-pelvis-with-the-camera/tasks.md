@@ -6,9 +6,9 @@
 
 ## 2. Verification
 
-- [x] 2.1 REA: the frame driver (17 ms steps, 9 at most, snap, t), the placement (follow node via its body's interpolation, lerped and renormalised backward vector, zoom lerp, FOV, shake lerp added to the eye while the last tick's is above 1e-5); notes in `context/re/master-movement-19-nav-grid.md`
+- [x] 2.1 REA: the frame driver (17 ms steps, 9 at most, snap, t), the placement (follow node via its body's interpolation, lerped and renormalised backward vector, zoom lerp, FOV, shake lerp added to the eye while the last tick's is above 1e-5); notes in `context/re/master-movement.md` §19
 - [x] 2.2 Corpus: not applicable (no data read); the camera's tests run without the game
-- [ ] 2.3 In game through `gpu_run.sh --gpu 4000` (light run, `play arena`): not run: the RTX 4000 had 892 MiB free against the light run's 1200 MiB (gnome-shell 15 GB, the retail game 2 GB); the rule is covered by the unit tests
+- [x] 2.3 In game through `gpu_run.sh --gpu 4000` (light run, `--autowalk --trace` in `play arena`, a temporary probe logging the camera's look point each frame): over 438 frames with a body the look point is the drawn pelvis within 0.0003 cm and its height the traced pelvis height lerped between the frame's two ticks by the overstep within 0.0003 cm; it rises and falls 99.7–102.1 cm over the last 200 walking ticks; the pelvis sits at the centre of the frame (first verification run: not run, 892 MiB free)
 - [x] 2.4 Remove the probes from the tracked tree
 
 ## 3. Documentation
