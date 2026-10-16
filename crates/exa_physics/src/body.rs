@@ -19,7 +19,11 @@
 //! set, the player's last, [`CharacterTicks`]), then the solver over every
 //! awake body ([`BodySystems`]): blows, integration, 20 iterations, level
 //! detection, 8 friction passes, post-step. Parts are drawn between their
-//! last two ticks. Evidence: `docs/formats/RSQ.md` (Physical body).
+//! last two ticks. A limp body sleeps by the original's countdown: 256
+//! ticks, two off each tick its parts move under 20 cm/s, held at 30–32
+//! between 20 and 40 cm/s and back to 256 above; a blow wakes it, and a
+//! living body never sleeps. Evidence: `docs/formats/RSQ.md` (Physical
+//! body).
 
 use bevy::math::{Affine3A, Mat3};
 use bevy::prelude::*;
@@ -47,11 +51,15 @@ const LINK_ITERATIONS: usize = 20;
 const FRICTION_PASSES: usize = 8;
 /// The fastest a particle may move (m/s): well above any blow or fall.
 const MAX_SPEED: f32 = 25.0;
-/// A limp body whose particles all stay slower than this (m/s) ...
-const SLEEP_SPEED: f32 = 0.01;
-/// ... for this many ticks (2 s) falls asleep. Its contacts are with fixed
-/// geometry only, so it stays exactly as it is until shoved.
-const SLEEP_TICKS: u32 = 166;
+/// The sleep countdown a woken body starts from, and a living body's every
+/// tick: at rest it falls asleep 128 ticks (1.54 s) later.
+pub const WAKE_COUNT: i32 = 256;
+/// While its fastest part moves between 20 and 40 cm/s, a body's countdown
+/// is lifted to this from below and falls by one a tick from above, so it
+/// is held at 30–32 and never runs out.
+const SLOW_COUNT: i32 = 32;
+/// The post-step puts a body to sleep once its countdown is down to this.
+const SLEEP_COUNT: i32 = 1;
 /// Relative inverse mass per part (bone − 1): pelvis, legs, torso, head,
 /// arms, hands.
 const INVERSE_MASS: [f32; 18] = [
@@ -604,18 +612,63 @@ fn per_tick(r: f32) -> f32 {
     if r <= 0.0 { 0.0 } else { r.powf(1.0 / BODY_HZ) }
 }
 
+/// How fast a part moved in the last tick: the band its retention and the
+/// sleep countdown go by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Speed {
+    Resting,
+    Slow,
+    Fast,
+}
+
+/// The band of a part whose farthest particle moved `moved` cm in the last
+/// tick: fast strictly over 40/83 cm, slow strictly over 20/83 cm, else
+/// resting.
+fn speed_band(moved: f32) -> Speed {
+    if moved > RETENTION_SPEEDS[0] / BODY_HZ {
+        Speed::Fast
+    } else if moved > RETENTION_SPEEDS[1] / BODY_HZ {
+        Speed::Slow
+    } else {
+        Speed::Resting
+    }
+}
+
 /// The velocity a limp part keeps this tick, by the farthest one of its
 /// particles moved in the last tick (`moved`, cm): the fast retention above
 /// 40/83 cm, the slow one above 20/83 cm, else the resting one.
 fn limp_retention(moved: f32) -> f32 {
-    let band = if moved > RETENTION_SPEEDS[0] / BODY_HZ {
-        0
-    } else if moved > RETENTION_SPEEDS[1] / BODY_HZ {
-        1
-    } else {
-        2
+    let band = match speed_band(moved) {
+        Speed::Fast => 0,
+        Speed::Slow => 1,
+        Speed::Resting => 2,
     };
     per_tick(RETENTION[band])
+}
+
+/// A limp body's sleep countdown after a tick whose fastest part moved in
+/// `band` last tick: fast wakes it to 256; slow lifts it to 32 from below,
+/// takes one off above 32 and two at 32, so it is held at 30–32; resting
+/// takes two off. It never falls below 1.
+fn count_down(countdown: i32, band: Speed) -> i32 {
+    match band {
+        Speed::Fast => countdown.max(WAKE_COUNT),
+        Speed::Slow if countdown < SLOW_COUNT => SLOW_COUNT,
+        Speed::Slow if countdown > SLOW_COUNT => (countdown - 1).max(SLEEP_COUNT),
+        _ => (countdown - 2).max(SLEEP_COUNT),
+    }
+}
+
+/// Whether a body is simulated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Sleep {
+    #[default]
+    Awake,
+    /// Fell asleep in its last post-step: its next tick only takes its
+    /// velocity away (its positions become its previous ones).
+    Asleep,
+    /// Asleep for over a tick: nothing is done until something wakes it.
+    Deep,
 }
 
 /// The velocity a living body's limbs keep each tick, whatever their
@@ -649,10 +702,12 @@ pub struct Ragdoll {
     pub drive: Option<Drive>,
     /// Ticks the body was solved since the frame began.
     pub ticks: u32,
-    /// Ticks a limp body has lain still.
-    still: u32,
-    /// A limp body at rest is not simulated until something shoves it.
-    pub asleep: bool,
+    /// The sleep countdown of the whole body: held at 256 while it lives,
+    /// counted down by its speed once limp ([`count_down`]); the post-step
+    /// puts it to sleep at 1.
+    countdown: i32,
+    /// A sleeping body is not simulated until something wakes it.
+    pub sleep: Sleep,
 }
 
 /// Muscles of a living body: the animated pose it follows.
@@ -888,12 +943,16 @@ impl Ragdoll {
             inward,
             drive: None,
             ticks: 0,
-            still: 0,
-            asleep: false,
+            // Built woken. The original registers a body at 0, asleep after
+            // its first tick, and wakes a living one to 256 at once; placed
+            // corpses still collapse from standing in Exarust.
+            countdown: WAKE_COUNT,
+            sleep: Sleep::Awake,
         }
     }
 
-    /// Gives the body muscles following its animation.
+    /// Gives the body muscles following its animation. A living body never
+    /// sleeps: its countdown is held at 256.
     pub fn with_drive(mut self) -> Self {
         self.drive = Some(Drive::default());
         self.wake();
@@ -921,9 +980,11 @@ impl Ragdoll {
     /// the pelvis out. As the original's death does, its leg limit links
     /// pull at full strength again and each slack link's smoothed length
     /// starts where the link is, within its slack, so the joints neither
-    /// jolt nor spring back.
+    /// jolt nor spring back. It is awake with the living body's countdown
+    /// (256) and sleeps by its speed from then on.
     pub fn go_limp(&mut self) {
         self.drive = None;
+        self.wake();
         for p in &self.parts {
             if let Some(k) = p.leg_limit {
                 self.links[k].strength = 1.0;
@@ -935,27 +996,50 @@ impl Ragdoll {
         }
     }
 
-    /// Simulates the body again.
+    /// Whether the body sleeps (and is not simulated).
+    pub fn asleep(&self) -> bool {
+        self.sleep != Sleep::Awake
+    }
+
+    /// The body's sleep countdown, in ticks: 256 woken or alive, 0 asleep.
+    pub fn countdown(&self) -> i32 {
+        self.countdown
+    }
+
+    /// Wakes the body to 256 (see [`Ragdoll::wake_to`]).
     pub fn wake(&mut self) {
-        if self.asleep {
-            // A sleeping body kept no contacts; it starts afresh where it lies.
+        self.wake_to(WAKE_COUNT);
+    }
+
+    /// Raises the sleep countdown to `count` if it is lower. A sleeping body
+    /// wakes and is simulated from the next tick where it lies (from rest
+    /// once its first sleeping tick has run), keeping the level contacts it
+    /// had: it has not moved, so they still hold.
+    pub fn wake_to(&mut self, count: i32) {
+        if self.countdown >= count {
+            return;
+        }
+        self.countdown = count;
+        if self.asleep() {
+            self.sleep = Sleep::Awake;
             for p in &mut self.parts {
-                p.contacts.clear();
                 p.settled = p.transform();
                 p.shown = (p.settled, p.settled);
             }
         }
-        self.asleep = false;
-        self.still = 0;
     }
 
-    /// The fastest particle's speed in the last tick (m/s).
-    fn fastest(&self) -> f32 {
-        self.parts
-            .iter()
-            .flat_map(|p| (0..4).map(move |i| (p.positions[i] - p.previous[i]).length()))
-            .fold(0.0, f32::max)
-            * BODY_HZ
+    /// A touch from a body whose countdown is `count` (a blow, which is the
+    /// weapon's contact in the original): wakes the body as
+    /// [`Ragdoll::wake_to`] does, but a sleeper also drops its stored level
+    /// contacts and is tested afresh where it lies.
+    pub fn touch(&mut self, count: i32) {
+        if self.countdown < count && self.asleep() {
+            for p in &mut self.parts {
+                p.contacts.clear();
+            }
+        }
+        self.wake_to(count);
     }
 
     /// Sets this tick's animated pose (the character tick does, every tick
@@ -1101,9 +1185,10 @@ impl Ragdoll {
         (centre / mass, velocity / mass * BODY_HZ)
     }
 
-    /// Applies a blow to the part of `bone`.
+    /// Applies a blow to the part of `bone`. It wakes the body as a touch
+    /// from a living body (countdown 256) does.
     pub fn shove(&mut self, bone: usize, velocity: Vec3, daze: f32) {
-        self.wake();
+        self.touch(WAKE_COUNT);
         let step = velocity / BODY_HZ;
         if let Some(p) = self.parts.iter_mut().find(|p| p.bone == bone) {
             for prev in &mut p.previous {
@@ -1127,14 +1212,20 @@ impl Ragdoll {
     }
 
     /// One tick of this body alone against the static `level`: the world's
-    /// solver ([`solve`]) with one body.
+    /// solver ([`solve`]) with one body, or a tick it sleeps through.
     pub fn tick<L: Level + ?Sized>(&mut self, level: &L) {
-        solve(&mut [self], level);
+        if self.asleep() {
+            self.sleep_tick();
+        } else {
+            solve(&mut [self], level);
+        }
     }
 
-    /// The integration step: inertia and gravity, then the pose drive's
-    /// pull; a living body's link muscles remember where the tick began.
+    /// The integration step: the sleep countdown, inertia and gravity, then
+    /// the pose drive's pull; a living body's link muscles remember where
+    /// the tick began.
     fn step(&mut self) {
+        self.tick_countdown();
         self.integrate();
         if self.drive.is_some() {
             self.remember_anchors();
@@ -1153,26 +1244,57 @@ impl Ragdoll {
         }
     }
 
-    /// The post-step: where the tick leaves each part, and whether a limp
-    /// body has lain still long enough to sleep.
+    /// This tick's sleep countdown, from the last tick's motion, before the
+    /// body is integrated. A living body's is held at 256 (the original's
+    /// living never sleep, save dormant statues). A limp body's follows the
+    /// band of its fastest part, by the farthest one of that part's
+    /// particles moved ([`count_down`]).
+    fn tick_countdown(&mut self) {
+        if self.drive.is_some() {
+            self.countdown = self.countdown.max(WAKE_COUNT);
+            return;
+        }
+        let band = self
+            .parts
+            .iter()
+            .map(|p| {
+                let moved = (0..4)
+                    .map(|i| (p.positions[i] - p.previous[i]).length())
+                    .fold(0.0, f32::max);
+                speed_band(moved * CM)
+            })
+            .max()
+            .unwrap_or(Speed::Resting);
+        self.countdown = count_down(self.countdown, band);
+    }
+
+    /// The post-step: where the tick leaves each part, and sleep once the
+    /// countdown is down to 1 (a living body's never is).
     fn post_step(&mut self) {
         for p in &mut self.parts {
             p.settled = p.transform();
             p.shown = (p.shown.1, p.settled);
         }
-        if self.drive.is_none() {
-            self.still = if self.fastest() < SLEEP_SPEED {
-                self.still + 1
-            } else {
-                0
-            };
-            self.asleep = self.still >= SLEEP_TICKS;
+        if self.countdown <= SLEEP_COUNT {
+            self.countdown = 0;
+            self.sleep = Sleep::Asleep;
         }
         self.ticks += 1;
     }
 
-    /// A tick the body sleeps through: it is drawn where it lies.
-    fn rest(&mut self) {
+    /// A tick the body sleeps through. The first one takes its velocity
+    /// away (its positions become its previous ones) and puts it in deep
+    /// sleep, where nothing is done. It is drawn where it lies, its level
+    /// contacts are neither tested nor enforced, and its countdown stays 0
+    /// (the original counts down one left on a sleeper first; nothing in
+    /// Exarust leaves one).
+    fn sleep_tick(&mut self) {
+        if self.sleep == Sleep::Asleep {
+            for p in &mut self.parts {
+                p.previous = p.positions;
+            }
+            self.sleep = Sleep::Deep;
+        }
         for p in &mut self.parts {
             p.shown.0 = p.shown.1;
         }
@@ -1375,6 +1497,20 @@ pub fn solve<L: Level + ?Sized>(bodies: &mut [&mut Ragdoll], level: &L) {
     }
     for b in bodies.iter_mut() {
         b.post_step();
+    }
+}
+
+/// The wake of a contact between two bodies, as the original's pair
+/// contacts do once a pair's contacts are found: the body with the lower
+/// sleep countdown takes the other's, as a touch ([`Ragdoll::touch`]). So a
+/// living body (256) that touches a sleeper wakes it for at least 1.5 s.
+/// Bodies do not collide with each other yet; their contacts will call it.
+pub fn equalise_sleep(a: &mut Ragdoll, b: &mut Ragdoll) {
+    let (ca, cb) = (a.countdown, b.countdown);
+    if ca < cb {
+        a.touch(cb);
+    } else if cb < ca {
+        b.touch(ca);
     }
 }
 
@@ -1597,10 +1733,11 @@ pub fn step_bodies(
     }
     let mut awake: Vec<Mut<Ragdoll>> = Vec::new();
     for mut body in &mut bodies {
-        if !body.asleep {
-            awake.push(body);
-        } else if body.parts.iter().any(|p| p.shown.0 != p.shown.1) {
-            body.rest();
+        match body.sleep {
+            Sleep::Awake => awake.push(body),
+            Sleep::Asleep => body.sleep_tick(),
+            // Untouched, so a deep sleeper is not marked changed.
+            Sleep::Deep => {}
         }
     }
     let mut awake: Vec<&mut Ragdoll> = awake.iter_mut().map(|b| &mut **b).collect();
@@ -1655,6 +1792,10 @@ mod tick_test;
 mod joint_test;
 
 #[cfg(test)]
+#[path = "body_sleep_test.rs"]
+mod sleep_test;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1698,16 +1839,6 @@ mod tests {
                 foot: None,
             },
         ])
-    }
-
-    #[test]
-    fn resting_limp_bodies_sleep_until_shoved() {
-        let mut body = two_parts(0.0);
-        body.still = SLEEP_TICKS;
-        body.asleep = true;
-        body.shove(1, Vec3::X, 0.0);
-        assert!(!body.asleep);
-        assert_eq!(body.still, 0);
     }
 
     #[test]

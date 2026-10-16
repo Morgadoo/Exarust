@@ -144,7 +144,34 @@ How the original simulates a body (`exa_physics::body`):
     by only 0.01·T of itself. Friction runs in 8 passes after detection and
     again in the next tick's iterations. Walls are nearly frictionless.
     There is no restitution.
-  - A sleeping body is not tested, and no contact wakes a body.
+  - A sleeping body is not tested, and a level contact never wakes one.
+- Sleep (`Ragdoll::countdown`; REA on the plain step, the post-step, the
+  sector step and every wake helper). Each body tree keeps one countdown,
+  in ticks. Before each tick's integration a limp body takes the band of
+  its fastest part, by the last tick's motion (the bands of its velocity
+  retention): over 40 cm/s the countdown goes back to 256; between 20 and
+  40 cm/s it is lifted to 32 from below, falls by one above 32 and by two
+  at 32, so it is held at 30–32; under 20 cm/s it falls by two; never
+  below 1. At 1 the post-step puts the body to sleep. A body at rest so
+  sleeps 128 ticks (1.54 s) after its last fast tick, one that crept at
+  20–40 cm/s about 16 ticks after it slows, and one that keeps creeping
+  never. Its first tick asleep rolls its particle history without moving
+  it, so its velocity is gone; from then on (deep sleep) nothing is done.
+  A sleeper is not integrated, solved, tested against the level or
+  rubbed; its stored level contacts are kept, unused.
+  - A living body never sleeps: the original wakes its tree to 256 every
+    tick, standing, fallen or getting up (only dormant statues and golems
+    count down; Exarust has none). Death leaves the countdown as it is
+    (256). Registration sets it to 0, so a placed corpse sleeps after its
+    first tick, and the living builder wakes its body to 256. Exarust
+    builds every body at 256, since its corpses still collapse from a
+    standing pose.
+  - Wakes: a contact between bodies raises the lower countdown to the
+    higher one and drops the sleeper's level contacts; the explicit wakes
+    (knock-out, revive, statues, grabs) raise it and keep them. Level
+    contacts never wake a body or keep it awake. In Exarust a blow (so
+    every hit) wakes a body as a living body's touch (256) does, and
+    going limp wakes it to 256; bodies do not touch each other yet.
 - Dead characters (condition `0xA00`) are plain ragdolls without muscles.
 - Living bodies have muscles:
   - Gravity is compensated by muscle tone.

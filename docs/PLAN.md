@@ -234,17 +234,21 @@ length, set from the pose the body is built in and reset when it goes
 limp, so the limp character lies curled on its side instead of kneeling;
 velocity retention is the original's default environment (0.426 / 0.25 /
 0.05 per second, banded by each limp part's speed; living limbs keep the
-fast value). Its weaker resting damping leaves some corpses jittering at a
-few cm/s, above Exarust's 1 cm/s sleep rule, until the original's sleep
-countdown (S1) lands. Done (change `add-link-muscles`, C5): every slack
-link is a link muscle that turns its joint toward the clip's angle (damped
-by the joint's own motion, saturated, relaxed toward a held pose), with the
-gains the original's character tick sets: the race's stance factor rising
-with the gait, part factors, arm stiffness states and the leg limit's
-blend; the pose drive is left only on the pelvis, spine, head and feet
-([formats/RSQ.md](formats/RSQ.md)). Still to do: the sleep countdown,
-balance and support, the original's pose drive and lift, recovery steps,
-foot planting, clip blending, collisions between bodies.
+fast value). Done (change `add-link-muscles`, C5): every slack link is a
+link muscle that turns its joint toward the clip's angle (damped by the
+joint's own motion, saturated, relaxed toward a held pose), with the gains
+the original's character tick sets: the race's stance factor rising with
+the gait, part factors, arm stiffness states and the leg limit's blend; the
+pose drive is left only on the pelvis, spine, head and feet
+([formats/RSQ.md](formats/RSQ.md)). Done (change `sleep-by-countdown`, S1):
+a limp body sleeps by the original's countdown (256 ticks, two off each
+tick its parts move under 20 cm/s, held at 30–32 between 20 and 40 cm/s,
+back to 256 above), its first tick asleep takes its velocity away and then
+it lies in deep sleep; blows and going limp wake a body, and living bodies
+never sleep. All seven exanima01 corpses now sleep 3–5 s after going limp
+(3 of 7 before). Still to do: balance and support, the original's pose
+drive and lift, recovery steps, foot planting, clip blending, collisions
+between bodies (and their wake of a sleeper).
 
 This phase carries the most risk and defines how the game feels.
 

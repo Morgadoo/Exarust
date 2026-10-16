@@ -19,7 +19,10 @@ the gains the character tick sets from what the character does
 (`body::Bearing`) and its race (`body::RaceMuscles`); a pose drive holds
 the pelvis, spine, head and feet (`src/body_muscle.rs`, `body::Drive`).
 Velocity retention is the original's default environment: banded by speed
-for limp parts, the fast value for living limbs.
+for limp parts, the fast value for living limbs. A limp body sleeps by the
+original's countdown (`body::Ragdoll::countdown`: 256, two off each tick
+under 20 cm/s, held at 30–32 between 20 and 40 cm/s, back to 256 above)
+and is woken by a blow or by going limp; a living body never sleeps.
 
 ## Scope
 

@@ -170,7 +170,7 @@ fn a_limp_body_rests_on_the_floor_and_sleeps() {
         app.update();
     }
     let ragdoll = app.world().get::<Ragdoll>(body).unwrap();
-    assert!(ragdoll.asleep, "still awake after 8 s");
+    assert!(ragdoll.asleep(), "still awake after 8 s");
     assert!(
         pelvis(&app).distance(settled) < 0.01,
         "crept {:.3} m",
@@ -206,7 +206,7 @@ fn a_limp_body_rests_on_the_floor_and_sleeps() {
         app.update();
     }
     let ragdoll = app.world().get::<Ragdoll>(body).unwrap();
-    assert!(ragdoll.asleep);
+    assert!(ragdoll.asleep());
     assert_eq!(ragdoll.parts[0].positions, still[0].positions);
     // A shove wakes it with no contacts carried over from before the sleep.
     let mut ragdoll = app.world_mut().get_mut::<Ragdoll>(body).unwrap();

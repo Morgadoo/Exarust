@@ -80,7 +80,7 @@ or the original does not do it).
 | Texture streaming | later | The original decodes textures on a loader thread with a placeholder until ready. That shortens loads, not frames. |
 | Fixed-step simulation | done | Physics, AI and particles tick at 83 Hz, as in the original. A slow frame catches up at most 4 steps, as the original drops its backlog; the fixed schedule no longer spirals (play mode 6 → 35 FPS). Characters are drawn between steps. |
 | Settled characters | done | A grounded character not trying to move is not swept by the character controller. |
-| Physics sleeping | done | A limp body still for 2 s sleeps until shoved; its contacts are with fixed geometry only, so it would not have moved. |
+| Physics sleeping | done | A limp body sleeps by the original's countdown (128 ticks, 1.54 s, after its last fast motion once its parts move under 20 cm/s) and is not simulated until a blow wakes it; living bodies never sleep. |
 | AI throttling | later | The original picks targets for one AI per tick. |
 
 ## Order of work

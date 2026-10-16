@@ -121,15 +121,27 @@ The system SHALL draw characters and their body parts between their last two fix
 - **THEN** each part is still drawn where its last two ticks put it, with no one-frame jump
 
 ### Requirement: Sleeping limp bodies
-The system SHALL stop simulating a limp body whose particles all stayed slower than 1 cm/s for 2 s, until it is shoved. A sleeping body SHALL NOT be tested against the level. Level contacts SHALL neither wake a body nor keep it awake. A woken body SHALL start without the contacts it had before it slept.
+The system SHALL sleep a limp body by the original's countdown: 256 when woken, then each tick, by its fastest part's last motion, back to 256 over 40 cm/s, held at 30–32 between 20 and 40 cm/s, and two off under 20 cm/s; at 1 it sleeps. Its first tick asleep SHALL take its velocity away; later ticks SHALL do nothing. A living body SHALL never sleep. A blow or going limp SHALL wake a body; level contacts SHALL NOT. A body woken by a blow SHALL start without its earlier contacts.
 
 #### Scenario: Corpse at rest
-- **WHEN** a corpse has lain still for 2 s
-- **THEN** it is not simulated until a blow lands on it
+- **WHEN** a limp body's parts have moved under 20 cm/s in every tick for 128 ticks since it was woken
+- **THEN** it falls asleep in that tick and is not simulated until a blow lands on it
 
 #### Scenario: Woken corpse
 - **WHEN** a sleeping corpse on the floor is shoved
 - **THEN** it wakes with none of its earlier contacts and is tested afresh where it lies
+
+#### Scenario: Creeping body
+- **WHEN** a limp body's fastest part keeps moving between 20 and 40 cm/s
+- **THEN** it never falls asleep
+
+#### Scenario: Deep sleep
+- **WHEN** a body has slept through one tick
+- **THEN** it has no velocity and its particles stay exactly where they are in every later tick
+
+#### Scenario: Living body
+- **WHEN** a living body stands, lies fallen or gets up for any time
+- **THEN** it stays awake, and it sleeps by its speed only once it goes limp
 
 ### Requirement: Ragdoll stability
 The system SHALL keep bodies stable under blows: a particle SHALL move at most 25 m/s; a fallen body SHALL align its targets to its pelvis's position and rotation only, without scale; and the switch to those targets SHALL NOT count as motion.
