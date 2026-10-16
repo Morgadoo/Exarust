@@ -106,10 +106,22 @@ fn setup(
                     .id();
                 exa_world::fire::spawn_fire(&mut commands, node, 0.2);
             }
-            if begin_level(&mut commands, &mut loader, name, &options) {
+            if begin_level(&mut commands, &mut loader, name) {
                 // The camera is there from the start, behind the loading
                 // screen; it moves to the level's view when the load ends.
-                spawn_fly_camera(&mut commands, pose, fov, &options);
+                let camera = spawn_fly_camera(&mut commands, pose, fov, &options);
+                // The rooms follow the camera's target as the original's
+                // do: its camera looks at a point 20 m ahead. The overview
+                // (no `--camera`) shows every room.
+                commands.spawn((
+                    Transform::from_xyz(0.0, 0.0, -ROOM_ANCHOR_DISTANCE),
+                    Visibility::default(),
+                    exa_world::room_view::RoomAnchor,
+                    ChildOf(camera),
+                ));
+                commands.insert_resource(exa_world::room_view::RoomView {
+                    all: options.all_rooms || options.camera.is_none(),
+                });
                 return;
             }
             error!("level {name} not found in Resource.rpk");
@@ -217,7 +229,10 @@ fn setup(
             }
             let camera = spawn_chase_camera(&mut commands, &options);
             commands.insert_resource(PlayCamera(camera));
-            if !begin_level(&mut commands, &mut loader, name, &options) {
+            commands.insert_resource(exa_world::room_view::RoomView {
+                all: options.all_rooms,
+            });
+            if !begin_level(&mut commands, &mut loader, name) {
                 let start = PlayStart {
                     position: Vec3::ZERO,
                     yaw: 0.0,
@@ -255,6 +270,10 @@ fn setup(
     spawn_fly_camera(&mut commands, pose, fov, &options);
 }
 
+/// How far ahead of the fly camera the rooms' anchor is (metres): the
+/// original camera's distance to its target.
+const ROOM_ANCHOR_DISTANCE: f32 = 20.0;
+
 /// How long one frame may spend building the level while it loads. The rest
 /// of the frame draws the loading screen and answers the window system.
 const LOAD_STEP_BUDGET: std::time::Duration = std::time::Duration::from_millis(25);
@@ -280,13 +299,8 @@ struct PendingLevel {
 
 /// Starts loading `name` behind the loading screen; `false` when the level
 /// is not there.
-fn begin_level(
-    commands: &mut Commands,
-    loader: &mut ModelLoader,
-    name: &str,
-    options: &Options,
-) -> bool {
-    let Some(load) = exa_world::LevelLoad::begin(commands, loader, name, options.ceilings) else {
+fn begin_level(commands: &mut Commands, loader: &mut ModelLoader, name: &str) -> bool {
+    let Some(load) = exa_world::LevelLoad::begin(commands, loader, name) else {
         return false;
     };
     commands.insert_resource(exa_ui::LoadingStatus {
@@ -614,6 +628,10 @@ fn spawn_players(
             Visibility::default(),
             exa_physics::CharacterBody::default(),
             exa_game::player::Player,
+            // The rooms follow the player, as the original's follow its
+            // camera's target.
+            exa_world::room_view::RoomAnchor,
+            exa_world::room_view::RoomTracked,
         ))
         .id();
     if let Some(body) = loader.model(PackKind::Resource, "humanbase.rfc") {
@@ -653,6 +671,7 @@ fn spawn_players(
                     Transform::from_translation(foe_at + Vec3::Y * 0.2),
                     Visibility::default(),
                     exa_physics::CharacterBody::default(),
+                    exa_world::room_view::RoomTracked,
                 ))
                 .id();
             let foe = exa_world::spawn_model(commands, &body, None);
@@ -1035,6 +1054,7 @@ fn spawn_placed_characters(
             Transform::from_translation(c.position + Vec3::Y * 0.05),
             Visibility::default(),
             Name::new(c.name.clone()),
+            exa_world::room_view::RoomTracked,
         ));
         if !c.dead {
             root.insert(exa_physics::CharacterBody::default());

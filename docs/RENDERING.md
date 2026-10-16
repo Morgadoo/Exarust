@@ -722,6 +722,56 @@ lengths in cm, and the simulation runs at the 83 Hz tick):
 - The fire's density follows 0.8·density + 0.2·live/full each tick; it
   settles a little above 1.
 
+## Rooms and black fill
+
+The original paints nothing black: it clears the frame to the
+environment's background, (0, 0, 0) in every tile-grid level, and leaves
+undrawn whatever the player should not see (`exa_world::rooms`,
+`exa_world::room_view`, `exa_render::shell`).
+
+- **Rooms.** The grid's open cells are flood-filled into rooms at load
+  ([formats/RFC.md](formats/RFC.md), Grid building). Each frame the
+  active rooms follow the anchor: the player, or in the level view placed
+  with `--camera` the point 20 m ahead of the camera (the original's
+  camera distance to its target). Active are the anchor's room and each
+  room behind a door of the anchor's cell whose point, 1.5 m inside the
+  cell towards the door, is within 2 m of the anchor (every door counts as
+  open). Door neighbours of active rooms are adjacent; the other rooms are
+  hidden. A room stays in the active list, in order, while it fades: in
+  over 1000 ms when it becomes wanted, out over 1000 ms when it no longer
+  is; a fade that turns around keeps its alpha. States only drop when a
+  room leaves the list (its door neighbours become hidden), so a room left
+  next to no active room keeps its last state, as in the original. The
+  fade clock is real time [guess: the original's clock was not traced].
+- **Shells.** Every placed piece's `[…` children (boxes from the floor to
+  2.7 m behind the facade: most reach the cell edge, as `gews_swa01`'s
+  fill the 55 cm behind its 20 cm facades, but the plain walls and inner
+  corners of `gews_tsa01`, `gews_uwa01` and `gews_UwA01p` stop 2.6 m from
+  the cell centre, 40 cm short of the edge) are merged per room into an
+  occluder; its `+R…` children and the sets' ceiling slot pieces into a
+  lid (flat at 4 m, ramping to 2.64 m at the cell edge). The original writes them into depth before anything else,
+  colour writes off, so what lies under them keeps the black clear colour.
+  Exarust draws them as opaque, unlit pure black: the same image over a
+  black clear, without depending on draw order. They cast no shadows,
+  receive no light, fill no GI and have no collision.
+- **What each state draws.** Hidden: nothing of the room (its meshes are
+  hidden; its lights, GI emitters, shadow links and colliders stay).
+  Adjacent: the room with its occluder and its lid, so from above it is a
+  black block with the lid's silhouette. Active: the room and its
+  occluder, so every wall hollow is black with a crisp top. Content in no
+  room is always drawn.
+- **Fades.** A room fading in or out has its lid drawn last, after the
+  particles, black at alpha 1 − (now − t)/1000 ms entering (the fade ends
+  below 0.01) or (now − t)/1000 ms leaving, blended (SRC_ALPHA,
+  ONE_MINUS_SRC_ALPHA) without depth test or depth write.
+- **Rooms of the level's content.** Grid pieces and terrain blocks take
+  their cell's room; props under the level root, placed objects and each
+  top node of the level's own model take the room of their meshes' world
+  bounds' centre; props under props and meshes added later (flames) take
+  their root's room; characters are hidden by the room of their position.
+- **Debug.** `--all-rooms` and the level overview (no `--camera`) show
+  every room active, without lids or fades.
+
 ## Cameras
 
 - Vertical field of view in degrees.
@@ -757,6 +807,14 @@ supersampling pattern, medium and large fire templates, the sun and
 terrain in the GI volume, several resident GI blocks, distance fog (the
 first fog mode), vertex dirt (dirt modes 1–3), glass refraction, effect programs (smoke,
 powers), the hair program, terrain parallax and wetness, and the outdoor
-environment cube.
+environment cube. Rooms: adjacent rooms are not clipped to their door
+portals (an oblique view can show a sliver of one past its lid's edge, and
+the 40 cm band between a short occluder and the cell edge can show from a
+hidden room's side; in a terrain-floored cell of `exanima01` the band
+shows ground when seen from above a neighbour that draws no lid, such as
+solid rock [whether the original shows it too is not checked]), the lid
+is not drawn into the lights' cube faces, light does not pass through the
+rooms' portals (the wall flood of [Lights](#lights) bounds it), and doors
+have no open state.
 Software rendering here cannot afford the light shadows, so test frames use
 `--no-shadows`.

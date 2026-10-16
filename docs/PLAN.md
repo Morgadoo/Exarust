@@ -143,10 +143,17 @@ decoded).
 Done (change `load-behind-a-loading-screen`): levels and play mode load over
 frames behind a loading screen, the long parts on the async compute pool,
 so the window keeps answering the desktop ([UI.md](UI.md)).
-Remaining: ceiling caps of terrain cells, per-room mesh merging, rooms and
-portals, terrain gloss textures, fine displacement, the original's sky
-shader, time of day and weather of the outdoor arenas,
-sectors/portals (the room flood fill is understood),
+Done (change `add-room-visibility`): the grid's rooms and door links (the
+original's flood fill), each room's black occluder and lid merged from the
+pieces' `[…` and `+R…` strips, ceiling caps, the original's active,
+adjacent and hidden rooms around the player with their 1 s fades, and
+terrain limited to the grid's terrain cells: the space between and inside
+walls, the rooms the player cannot see and the rock between rooms are
+black as in the original ([RENDERING.md](RENDERING.md), Rooms and black
+fill).
+Remaining: portal clipping of adjacent rooms, doors' open state, the lid in
+the lights' cube faces, terrain gloss textures, fine displacement, the
+original's sky shader, time of day and weather of the outdoor arenas,
 `exanima://` asset source, streaming.
 
 - `exa_assets`: `exanima://<pack>/<entry>` Bevy asset source, asset loaders
@@ -510,6 +517,7 @@ against Exarust and lists the largest missing ones. In order:
    (Phase 4).
 3. The original's NPC brain: perception, targets and the combat state that
    drives the same inputs as the player (Phase 6).
-4. Rooms and portals, and level transitions (Phase 2).
+4. Portal clipping and doors' open state, and level transitions
+   (Phase 2).
 5. `add-static-mesh-decoding` is still open, waiting on a visual mirroring
    check against the running game.

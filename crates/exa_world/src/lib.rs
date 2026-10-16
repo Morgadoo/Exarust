@@ -1,6 +1,7 @@
 //! Levels: placing models, props and lights of the original levels in the
 //! Bevy world. Walls and floors come from the tile grid (`grid`), outdoor
-//! ground from the terrain heightfields (`terrain`).
+//! ground from the terrain heightfields (`terrain`); the grid's rooms decide
+//! what shows (`rooms`, `room_view`).
 
 pub mod environment;
 pub mod fire;
@@ -8,6 +9,8 @@ pub mod flame;
 pub mod gi_volume;
 pub mod grid;
 pub mod light_flood;
+pub mod room_view;
+pub mod rooms;
 pub mod shadow_links;
 pub mod start;
 pub mod terrain;
@@ -29,6 +32,7 @@ impl Plugin for WorldPlugin {
             flame::FlamePlugin,
             gi_volume::GiVolumePlugin,
             shadow_links::ShadowLinksPlugin,
+            room_view::RoomViewPlugin,
         ));
     }
 }
@@ -229,6 +233,7 @@ fn spawn_placed_object(
         commands.entity(e).insert((
             transform_from_rows(&object.transform),
             Name::new(item.name.clone()),
+            room_view::PendingRoom::default(),
             ChildOf(parent),
         ));
         return Some(PlacedSpawn::Placed { lights: 0 });
@@ -253,9 +258,11 @@ fn spawn_placed_object(
         model,
         Some(transform_from_rows(&object.transform)),
     );
-    commands
-        .entity(e)
-        .insert((Name::new(item.name.clone()), ChildOf(parent)));
+    commands.entity(e).insert((
+        Name::new(item.name.clone()),
+        room_view::PendingRoom::default(),
+        ChildOf(parent),
+    ));
     Some(PlacedSpawn::Placed {
         lights: model.nodes.iter().filter(|n| n.light.is_some()).count(),
     })
@@ -506,9 +513,8 @@ pub fn spawn_level(
     commands: &mut Commands,
     loader: &mut ModelLoader<'_>,
     name: &str,
-    ceilings: bool,
 ) -> Option<(Entity, LevelInfo)> {
-    let mut load = LevelLoad::begin(commands, loader, name, ceilings)?;
+    let mut load = LevelLoad::begin(commands, loader, name)?;
     loop {
         if let LoadProgress::Finished(root, info) =
             load.step(commands, loader, std::time::Duration::MAX)
@@ -546,7 +552,6 @@ enum Stage {
 /// last the lighting.
 pub struct LevelLoad {
     entry: String,
-    ceilings: bool,
     scene: Scene,
     root: Entity,
     stage: Stage,
@@ -574,7 +579,6 @@ impl LevelLoad {
         commands: &mut Commands,
         loader: &mut ModelLoader<'_>,
         name: &str,
-        ceilings: bool,
     ) -> Option<Self> {
         let entry = if name.ends_with(".rfc") {
             name.to_string()
@@ -604,7 +608,6 @@ impl LevelLoad {
         let props = scene.props.len();
         Some(Self {
             entry,
-            ceilings,
             scene,
             root,
             stage: Stage::Grid,
@@ -642,14 +645,23 @@ impl LevelLoad {
             Stage::Grid => {
                 let done = match &self.scene.grid {
                     Some(g) => {
-                        let build = self
-                            .grid
-                            .get_or_insert_with(|| grid::GridBuild::new(self.root, self.ceilings));
+                        let build = self.grid.get_or_insert_with(|| {
+                            // The rooms first: the grid gives each its
+                            // shells, and the rest of the level is sorted
+                            // into them.
+                            let rooms = std::sync::Arc::new(rooms::Rooms::flood(g));
+                            commands.insert_resource(room_view::LevelRooms::new(rooms.clone()));
+                            grid::GridBuild::new(self.root, Some(rooms))
+                        });
                         build.step(commands, loader, g, budget)
                     }
-                    None => true,
+                    None => {
+                        commands.remove_resource::<room_view::LevelRooms>();
+                        true
+                    }
                 };
                 if done {
+                    let rooms = self.grid.as_ref().and_then(|b| b.rooms());
                     self.grid_stats = self.grid.take().map(|b| b.stats());
                     // Lights stop at the grid's walls.
                     match self
@@ -661,7 +673,12 @@ impl LevelLoad {
                         Some(walls) => commands.insert_resource(walls),
                         None => commands.remove_resource::<shadow_links::LevelWalls>(),
                     }
-                    self.terrain = terrain::TerrainBuild::begin(loader, &self.entry, self.root);
+                    self.terrain = terrain::TerrainBuild::begin(
+                        loader,
+                        &self.entry,
+                        self.root,
+                        self.scene.grid.as_ref().zip(rooms),
+                    );
                     self.stage = Stage::Terrain;
                 }
             }
@@ -685,7 +702,14 @@ impl LevelLoad {
                 if let Some(own) = loader.model(PackKind::Resource, &self.entry) {
                     self.lights += own.nodes.iter().filter(|n| n.light.is_some()).count();
                     let e = spawn_model(commands, &own, None);
-                    commands.entity(e).insert(ChildOf(self.root));
+                    // Each of its top nodes goes to its own room.
+                    commands.entity(e).insert((
+                        ChildOf(self.root),
+                        room_view::PendingRoom {
+                            split: true,
+                            ..default()
+                        },
+                    ));
                 }
                 self.stage = Stage::Props;
             }
@@ -775,7 +799,9 @@ impl LevelLoad {
         }
     }
 
-    /// Parents each prop to the prop it names, else to the level root.
+    /// Parents each prop to the prop it names, else to the level root; a
+    /// prop under the root goes to the room of its bounds' centre, a prop
+    /// under a prop to its parent's.
     fn link_props(&self, commands: &mut Commands) {
         for (i, prop) in self.scene.props.iter().enumerate() {
             let parent = match prop.parent {
@@ -784,9 +810,11 @@ impl LevelLoad {
                 }
                 _ => self.root,
             };
-            commands
-                .entity(self.prop_entities[i])
-                .insert(ChildOf(parent));
+            let mut e = commands.entity(self.prop_entities[i]);
+            e.insert(ChildOf(parent));
+            if parent == self.root {
+                e.insert(room_view::PendingRoom::default());
+            }
         }
     }
 
@@ -893,10 +921,10 @@ mod tests {
         let info = {
             let mut commands = Commands::new(&mut queue, &world);
             match budget {
-                None => spawn_level(&mut commands, &mut loader, name, false).map(|r| r.1),
+                None => spawn_level(&mut commands, &mut loader, name).map(|r| r.1),
                 Some(budget) => {
-                    let mut load = LevelLoad::begin(&mut commands, &mut loader, name, false)
-                        .expect("level parses");
+                    let mut load =
+                        LevelLoad::begin(&mut commands, &mut loader, name).expect("level parses");
                     let mut steps = 0;
                     loop {
                         steps += 1;
@@ -929,6 +957,143 @@ mod tests {
         ];
         out.extend(names);
         out
+    }
+
+    /// A level's rooms, its grid and its shells' triangles (world metres).
+    type LevelShells = (
+        std::sync::Arc<rooms::Rooms>,
+        exa_formats::level::LevelGrid,
+        Vec<(room_view::RoomShell, Vec<[Vec3; 3]>)>,
+    );
+
+    fn level_shells(game: &GameData, name: &str) -> LevelShells {
+        let mut world = World::new();
+        let mut queue = CommandQueue::default();
+        let mut cache = ModelCache::default();
+        let mut meshes = Assets::<Mesh>::default();
+        let mut materials = Assets::<exa_render::material::ExaMaterial>::default();
+        let mut images = Assets::<Image>::default();
+        let mut loader = ModelLoader {
+            game,
+            cache: &mut cache,
+            meshes: &mut meshes,
+            materials: &mut materials,
+            images: &mut images,
+            bc_supported: true,
+        };
+        {
+            let mut commands = Commands::new(&mut queue, &world);
+            spawn_level(&mut commands, &mut loader, name).expect("level spawns");
+        }
+        queue.apply(&mut world);
+        let rooms = world.resource::<room_view::LevelRooms>().rooms.clone();
+        let bytes = game
+            .pack(PackKind::Resource)
+            .and_then(|p| p.get(&format!("{name}.rfc")))
+            .unwrap();
+        let grid = Scene::parse(bytes).unwrap().grid.unwrap();
+        let mut q = world.query::<(&room_view::RoomShell, &Mesh3d)>();
+        let shells = q
+            .iter(&world)
+            .map(|(shell, mesh)| {
+                let mesh = meshes.get(&mesh.0).unwrap();
+                let p = mesh
+                    .attribute(Mesh::ATTRIBUTE_POSITION)
+                    .and_then(|a| a.as_float3())
+                    .unwrap();
+                let i: Vec<usize> = mesh.indices().unwrap().iter().collect();
+                let tris = i
+                    .chunks(3)
+                    .map(|t| [0, 1, 2].map(|k| Vec3::from(p[t[k]])))
+                    .collect();
+                (*shell, tris)
+            })
+            .collect();
+        (rooms, grid, shells)
+    }
+
+    /// From above, every built cell of a room (special tiles aside) is
+    /// covered by the room's shells with up-facing triangles: an adjacent
+    /// room shows no floor through its lid (skipped without the game).
+    #[test]
+    fn room_lids_cover_their_cells() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(&dir).unwrap();
+        for name in ["arenahub", "exanima01"] {
+            let (rooms, grid, shells) = level_shells(&game, name);
+            let (w, h) = (grid.width as i64, grid.height as i64);
+            let mut report = Vec::new();
+            for (room, _) in rooms.rooms().iter().enumerate() {
+                let lid: Vec<&[Vec3; 3]> = shells
+                    .iter()
+                    .filter(|(s, _)| {
+                        s.room == room as u16 && s.kind != room_view::ShellKind::Overlay
+                    })
+                    .flat_map(|(_, t)| t.iter())
+                    .collect();
+                let (mut holes, mut down) = (0, 0);
+                for y in 1..h - 1 {
+                    for x in 1..w - 1 {
+                        let c = (y * w + x) as usize;
+                        let open = grid.edges[c] & rooms::CELL_OPEN != 0;
+                        let built = grid.plane_c[c] & 0xF != 0xF
+                            || grid.edges[c] & rooms::CELL_TERRAIN != 0;
+                        // A special tile's walls can close part of its cell
+                        // with their own black tops.
+                        let special = (grid.plane_c[c] >> 16) & 0x1F != 0;
+                        if rooms.room_of_cell(x, y) != Some(room as u16)
+                            || !open
+                            || !built
+                            || special
+                        {
+                            continue;
+                        }
+                        let centre = Vec2::new(
+                            ((x - w / 2) as f32 + 0.5) * 6.0,
+                            ((y - h / 2) as f32 + 0.5) * 6.0,
+                        );
+                        for j in 0..15 {
+                            for i in 0..15 {
+                                // Off the pieces' 1.5 m seams, where
+                                // strips meet edge to edge.
+                                let p = centre
+                                    + Vec2::new(i as f32 - 7.0, j as f32 - 7.0) * 0.4
+                                    + Vec2::splat(0.07);
+                                let mut best: Option<(f32, bool)> = None;
+                                for t in &lid {
+                                    let [a, b, c] = t.map(|v| Vec2::new(v.x, v.z));
+                                    let side = |u: Vec2, v: Vec2| (v - u).perp_dot(p - u);
+                                    let (s0, s1, s2) = (side(a, b), side(b, c), side(c, a));
+                                    let inside = (s0 >= 0.0 && s1 >= 0.0 && s2 >= 0.0)
+                                        || (s0 <= 0.0 && s1 <= 0.0 && s2 <= 0.0);
+                                    if !inside {
+                                        continue;
+                                    }
+                                    let n = (t[1] - t[0]).cross(t[2] - t[0]);
+                                    let top = t[0].y.max(t[1].y).max(t[2].y);
+                                    if best.is_none_or(|(y, _)| top > y) {
+                                        best = Some((top, n.y > 0.0));
+                                    }
+                                }
+                                match best {
+                                    None => holes += 1,
+                                    Some((_, false)) => down += 1,
+                                    Some(_) => {}
+                                }
+                            }
+                        }
+                    }
+                }
+                if holes + down > 0 {
+                    report.push(format!(
+                        "room {room}: {holes} uncovered, {down} down-facing"
+                    ));
+                }
+            }
+            assert!(report.is_empty(), "{name}: {report:#?}");
+        }
     }
 
     /// A level built a step at a time is the level built at once (run with

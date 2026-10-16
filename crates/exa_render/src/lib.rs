@@ -8,6 +8,7 @@ pub mod gi;
 pub mod lights;
 pub mod material;
 pub mod post;
+pub mod shell;
 pub mod supersample;
 
 use bevy::prelude::*;
@@ -37,6 +38,7 @@ impl Plugin for RenderPlugin {
             supersample::SupersamplePlugin,
             lights::LightsPlugin,
             cube_shadows::CubeShadowsPlugin,
+            shell::ShellPlugin,
         ))
             // The original's shadow maps at its top shadow detail: 512² cubes
             // for lights and fires, 4096² for the sun.

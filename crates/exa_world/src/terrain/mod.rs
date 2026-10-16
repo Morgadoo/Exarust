@@ -28,6 +28,10 @@ use exa_formats::terrain::{
 };
 
 use blend::{NoiseMaps, RuleTree, over_alphas};
+use exa_formats::level::LevelGrid;
+
+use crate::room_view::InRoom;
+use crate::rooms::{CELL_TERRAIN, Rooms};
 use height::{HeightLayer, Plane, displacement, vegetation as vegetation_density};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -207,22 +211,36 @@ impl Material for TerrainSplat {
     }
 }
 
-/// A tile mesh waiting for its material, added by [`apply_splats`] which has
-/// access to the material assets.
+/// A tile waiting for its material, added by [`apply_splats`] which has
+/// access to the material assets: to the tile's mesh, or to its
+/// [`TerrainPart`]s in a grid level.
 #[derive(Component)]
 pub struct PendingSplat(pub TerrainSplat);
 
+/// One room's share of a terrain tile in a grid level, under the tile's
+/// entity.
+#[derive(Component)]
+pub struct TerrainPart;
+
 fn apply_splats(
     mut commands: Commands,
-    pending: Query<(Entity, &PendingSplat)>,
+    pending: Query<(Entity, &PendingSplat, Option<&Children>, Has<Mesh3d>)>,
+    parts: Query<(), With<TerrainPart>>,
     mut materials: ResMut<Assets<TerrainMaterial>>,
 ) {
-    for (e, splat) in &pending {
+    for (e, splat, children, mesh) in &pending {
         let material = materials.add(splat.0.clone());
-        commands
-            .entity(e)
-            .insert(MeshMaterial3d(material))
-            .remove::<PendingSplat>();
+        if mesh {
+            commands.entity(e).insert(MeshMaterial3d(material.clone()));
+        }
+        for &part in children.into_iter().flatten() {
+            if parts.contains(part) {
+                commands
+                    .entity(part)
+                    .insert(MeshMaterial3d(material.clone()));
+            }
+        }
+        commands.entity(e).remove::<PendingSplat>();
     }
 }
 
@@ -349,7 +367,9 @@ impl Plants {
     }
 
     /// Grows a tile's plants as chunk meshes under `tile_entity`; returns
-    /// how many grew.
+    /// how many grew. None grow in absent blocks (as in holes); a chunk
+    /// goes to the room of its plants' block.
+    #[allow(clippy::too_many_arguments)]
     fn spawn(
         &self,
         commands: &mut Commands,
@@ -357,13 +377,27 @@ impl Plants {
         terrain: &Terrain,
         tile: &TerrainTile,
         built: &BuiltTile,
+        blocks: Option<&TileBlocks>,
         tile_entity: Entity,
     ) -> usize {
         let n = TILE_VERTICES;
         let last = (n - 2) as f32;
+        let block = |p: bevy::math::Vec2| {
+            TileBlocks::of(
+                (p.x.round().max(0.0) as usize).min(n - 1),
+                (p.y.round().max(0.0) as usize).min(n - 1),
+                n,
+            )
+        };
         let density = |p: bevy::math::Vec2| {
             if tile.is_hole(p.x.round() as usize, p.y.round() as usize) {
                 return -1.0;
+            }
+            if let Some(b) = blocks {
+                let (bx, by) = block(p);
+                if !b.has(bx, by) {
+                    return -1.0;
+                }
             }
             let i = (p.x * last / (n - 1) as f32).round() as usize;
             let j = (p.y * last / (n - 1) as f32).round() as usize;
@@ -414,14 +448,23 @@ impl Plants {
             mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, baked.uvs);
             mesh.insert_indices(Indices::U32(baked.indices));
             let _ = mesh.generate_tangents();
-            commands.spawn((
-                Name::new(format!("plants {}", k)),
-                Mesh3d(loader.meshes.add(mesh)),
-                MeshMaterial3d(self.material.clone()),
-                Transform::IDENTITY,
-                Visibility::default(),
-                ChildOf(tile_entity),
-            ));
+            let e = commands
+                .spawn((
+                    Name::new(format!("plants {}", k)),
+                    Mesh3d(loader.meshes.add(mesh)),
+                    MeshMaterial3d(self.material.clone()),
+                    Transform::IDENTITY,
+                    Visibility::default(),
+                    ChildOf(tile_entity),
+                ))
+                .id();
+            if let Some(b) = blocks {
+                let mid = chunk.iter().map(|g| g.at).sum::<bevy::math::Vec2>() / chunk.len() as f32;
+                let (bx, by) = block(mid);
+                if let Some(room) = b.room(bx, by) {
+                    commands.entity(e).insert(InRoom(room));
+                }
+            }
         }
         grown
     }
@@ -461,7 +504,7 @@ pub fn spawn_terrain(
     level: &str,
     parent: Entity,
 ) -> Option<TerrainStats> {
-    let mut build = TerrainBuild::begin(loader, level, parent)?;
+    let mut build = TerrainBuild::begin(loader, level, parent, None)?;
     while !build.step(commands, loader, std::time::Duration::MAX) {
         std::thread::yield_now();
     }
@@ -489,6 +532,8 @@ pub struct TerrainBuild {
     uploaded: usize,
     /// The tile being built, once its heightfield is.
     built: Option<BuiltTile>,
+    /// In a tile-grid level, which blocks of each tile exist.
+    blocks: Option<Vec<TileBlocks>>,
     next: usize,
     parent: Entity,
     stats: TerrainStats,
@@ -544,8 +589,14 @@ type MaterialTextures = (
 
 impl TerrainBuild {
     /// Reads the terrain beside `level` and its palette; `None` when the
-    /// level has no terrain or it does not parse.
-    pub fn begin(loader: &mut ModelLoader<'_>, level: &str, parent: Entity) -> Option<Self> {
+    /// level has no terrain or it does not parse. In a level with a tile
+    /// grid only the blocks the grid flags are built, each in its room.
+    pub fn begin(
+        loader: &mut ModelLoader<'_>,
+        level: &str,
+        parent: Entity,
+        grid: Option<(&LevelGrid, Arc<Rooms>)>,
+    ) -> Option<Self> {
         let stem = level.strip_suffix(".rfc").unwrap_or(level);
         let resource = loader.game.pack(PackKind::Resource)?;
         let bytes = resource.get(&format!("{stem}.rft"))?;
@@ -571,6 +622,7 @@ impl TerrainBuild {
             }
         };
         let tree = RuleTree::new(&palette);
+        let blocks = grid.map(|(grid, rooms)| grid_blocks(&terrain, grid, &rooms));
         let environment = loader.environment_map();
         let plants = Plants::load(loader, &palette);
         Some(Self {
@@ -585,6 +637,7 @@ impl TerrainBuild {
             surfaces: HashMap::new(),
             uploaded: 0,
             built: None,
+            blocks,
             next: 0,
             parent,
             stats: TerrainStats::default(),
@@ -623,6 +676,12 @@ impl TerrainBuild {
     /// or the tile itself; `false` when it waits for a surface map.
     fn part(&mut self, commands: &mut Commands, loader: &mut ModelLoader<'_>) -> bool {
         let tile = &self.terrain.tiles[self.next];
+        let blocks = self.blocks.as_ref().map(|b| &b[self.next]);
+        // A tile without a block in a grid level is not built at all.
+        if blocks.is_some_and(|b| !b.any()) {
+            self.next += 1;
+            return true;
+        }
         let Some(built) = &mut self.built else {
             let game = loader.game;
             let (planes, palette) = (&mut self.planes, &self.palette);
@@ -634,6 +693,7 @@ impl TerrainBuild {
                 &self.tree,
                 &self.noise,
                 &mut height_layers,
+                blocks,
             );
             self.stats.unresolved_layers += built.unresolved;
             self.stats.truncated_tiles += usize::from(built.truncated);
@@ -728,19 +788,53 @@ impl TerrainBuild {
         let tile_entity = commands
             .spawn((
                 Name::new(format!("terrain {} {}", tile.x, tile.y)),
-                Mesh3d(loader.meshes.add(built.mesh.take().expect("built once"))),
                 PendingSplat(splat),
-                crate::gi_volume::GiTerrain,
-                crate::shadow_links::Unwalled,
-                exa_render::lights::ShadowBias(exa_render::shadow_bias::FLOOR),
                 Transform::from_xyz(centre[0], 0.0, centre[1]),
                 Visibility::default(),
                 ChildOf(self.parent),
             ))
             .id();
+        let surface = (
+            crate::gi_volume::GiTerrain,
+            crate::shadow_links::Unwalled,
+            exa_render::lights::ShadowBias(exa_render::shadow_bias::FLOOR),
+        );
+        let parts = std::mem::take(&mut built.parts);
+        if blocks.is_none() {
+            // Without a grid the tile is one mesh, on the tile's entity.
+            if let Some((_, mesh)) = parts.into_iter().next() {
+                commands
+                    .entity(tile_entity)
+                    .insert((Mesh3d(loader.meshes.add(mesh)), surface));
+            }
+        } else {
+            for (room, mesh) in parts {
+                let part = commands
+                    .spawn((
+                        Name::new(format!("terrain {} {} room {room:?}", tile.x, tile.y)),
+                        Mesh3d(loader.meshes.add(mesh)),
+                        TerrainPart,
+                        surface,
+                        Transform::IDENTITY,
+                        Visibility::default(),
+                        ChildOf(tile_entity),
+                    ))
+                    .id();
+                if let Some(room) = room {
+                    commands.entity(part).insert(InRoom(room));
+                }
+            }
+        }
         if let Some(plants) = &self.plants {
-            self.stats.plants +=
-                plants.spawn(commands, loader, &self.terrain, tile, built, tile_entity);
+            self.stats.plants += plants.spawn(
+                commands,
+                loader,
+                &self.terrain,
+                tile,
+                built,
+                blocks,
+                tile_entity,
+            );
         }
         self.stats.tiles += 1;
         self.built = None;
@@ -903,8 +997,9 @@ impl Look {
 }
 
 struct BuiltTile {
-    /// Taken when the tile spawns.
-    mesh: Option<Mesh>,
+    /// The tile's meshes, each with its room (one, roomless, without a
+    /// grid); taken when the tile spawns.
+    parts: Vec<(Option<u16>, Mesh)>,
     /// Displaced vertex heights (metres) and vegetation density per vertex.
     heights: Vec<f32>,
     density: Vec<f32>,
@@ -921,6 +1016,7 @@ fn build_tile(
     tree: &RuleTree,
     noise: &NoiseMaps,
     height_layers: &mut dyn FnMut(&[usize]) -> Vec<HeightLayer>,
+    blocks: Option<&TileBlocks>,
 ) -> BuiltTile {
     let n = TILE_VERTICES;
     let s = terrain.spacing;
@@ -1005,17 +1101,39 @@ fn build_tile(
     let normals = grid_normals(&positions, n);
     let heights: Vec<f32> = positions.iter().map(|p| p[1]).collect();
 
-    let mut indices = Vec::with_capacity((n - 1) * (n - 1) * 6);
+    // Quads (and, at the tile's edge, the skirt below them) go to the mesh
+    // of their block's room; quads of absent blocks are not built.
+    type Groups = Vec<(Option<u16>, Vec<u32>)>;
+    fn group_of(room: Option<u16>, groups: &mut Groups) -> usize {
+        match groups.iter().position(|g| g.0 == room) {
+            Some(k) => k,
+            None => {
+                groups.push((room, Vec::new()));
+                groups.len() - 1
+            }
+        }
+    }
+    let mut groups: Groups = Vec::new();
+    let block_group = |i: usize, j: usize, groups: &mut Groups| match blocks {
+        None => Some(group_of(None, groups)),
+        Some(b) => {
+            let (bx, by) = TileBlocks::of(i, j, n);
+            b.has(bx, by).then(|| group_of(b.room(bx, by), groups))
+        }
+    };
     for j in 0..n - 1 {
         for i in 0..n - 1 {
             if tile.is_hole(i, j) {
                 continue;
             }
+            let Some(g) = block_group(i, j, &mut groups) else {
+                continue;
+            };
             let a = (j * n + i) as u32;
             let b = a + 1;
             let c = a + n as u32;
             let d = c + 1;
-            indices.extend_from_slice(&[a, c, b, b, c, d]);
+            groups[g].1.extend_from_slice(&[a, c, b, b, c, d]);
         }
     }
     // A skirt hanging from the tile's edge hides cracks where neighbouring
@@ -1038,30 +1156,176 @@ fn build_tile(
     }
     for k in 0..edge.len() {
         let (a, b) = (edge[k] as u32, edge[(k + 1) % edge.len()] as u32);
+        // The segment's block: the one holding its lower-left vertex.
+        let (i, j) = (
+            (a as usize % n).min(b as usize % n),
+            (a as usize / n).min(b as usize / n),
+        );
+        let Some(g) = block_group(i, j, &mut groups) else {
+            continue;
+        };
         let (c, d) = (
             first_skirt + k as u32,
             first_skirt + ((k + 1) % edge.len()) as u32,
         );
-        indices.extend_from_slice(&[a, b, c, b, d, c, a, c, b, b, c, d]);
+        groups[g]
+            .1
+            .extend_from_slice(&[a, b, c, b, d, c, a, c, b, b, c, d]);
     }
 
-    let mut mesh = Mesh::new(
-        PrimitiveTopology::TriangleList,
-        RenderAssetUsages::default(),
-    );
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colours);
-    mesh.insert_indices(Indices::U32(indices));
+    let vertices = TileVertices {
+        positions,
+        normals,
+        uvs,
+        colours,
+    };
+    let parts = match blocks {
+        // Without a grid the whole tile is one mesh, as built.
+        None => groups
+            .pop()
+            .map(|(room, indices)| (room, vertices.mesh(indices)))
+            .into_iter()
+            .collect(),
+        Some(_) => groups
+            .into_iter()
+            .map(|(room, indices)| (room, vertices.part(&indices)))
+            .collect(),
+    };
     BuiltTile {
-        mesh: Some(mesh),
+        parts,
         heights,
         density,
         materials: used,
         unresolved,
         truncated,
     }
+}
+
+/// A tile's vertex arrays, its skirt included.
+struct TileVertices {
+    positions: Vec<[f32; 3]>,
+    normals: Vec<[f32; 3]>,
+    uvs: Vec<[f32; 2]>,
+    colours: Vec<[f32; 4]>,
+}
+
+impl TileVertices {
+    /// A mesh of all the vertices and these triangles.
+    fn mesh(self, indices: Vec<u32>) -> Mesh {
+        let mut mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        );
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, self.positions);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, self.normals);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, self.uvs);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, self.colours);
+        mesh.insert_indices(Indices::U32(indices));
+        mesh
+    }
+
+    /// A mesh of these triangles and only the vertices they use.
+    fn part(&self, indices: &[u32]) -> Mesh {
+        let mut remap = vec![u32::MAX; self.positions.len()];
+        let mut kept = TileVertices {
+            positions: Vec::new(),
+            normals: Vec::new(),
+            uvs: Vec::new(),
+            colours: Vec::new(),
+        };
+        let indices = indices
+            .iter()
+            .map(|&v| {
+                let v = v as usize;
+                if remap[v] == u32::MAX {
+                    remap[v] = kept.positions.len() as u32;
+                    kept.positions.push(self.positions[v]);
+                    kept.normals.push(self.normals[v]);
+                    kept.uvs.push(self.uvs[v]);
+                    kept.colours.push(self.colours[v]);
+                }
+                remap[v]
+            })
+            .collect();
+        kept.mesh(indices)
+    }
+}
+
+/// Which of a terrain tile's 8 × 8 blocks of 6 m exist in a tile-grid
+/// level, and each block's room.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TileBlocks {
+    /// Bit `bx` of row `by` (along X and Z).
+    pub present: [u8; 8],
+    pub rooms: [[Option<u16>; 8]; 8],
+}
+
+impl TileBlocks {
+    /// Blocks along a tile's side.
+    pub const SIDE: usize = 8;
+
+    pub fn has(&self, bx: usize, by: usize) -> bool {
+        self.present[by] & (1 << bx) != 0
+    }
+
+    pub fn room(&self, bx: usize, by: usize) -> Option<u16> {
+        self.rooms[by][bx]
+    }
+
+    /// Whether any block of the tile exists.
+    pub fn any(&self) -> bool {
+        self.present.iter().any(|&row| row != 0)
+    }
+
+    /// The block holding vertex or quad (`i`, `j`) of a tile `n` vertices
+    /// a side.
+    fn of(i: usize, j: usize, n: usize) -> (usize, usize) {
+        let per = ((n - 1) / Self::SIDE).max(1);
+        ((i / per).min(Self::SIDE - 1), (j / per).min(Self::SIDE - 1))
+    }
+}
+
+/// The blocks of each of `terrain`'s tiles in a level with tile grid
+/// `grid`, as the original builds a terrain in a grid level: a block exists
+/// only where its grid cell carries the terrain flag. Block (bx, by) of tile
+/// (tx, ty) is cell (x0 + 8·tx + bx, y0 + 8·ty + by), with x0 = (grid width −
+/// 8 × tiles across) / 2 and y0 likewise, each halved towards zero. A block
+/// belongs to the room of its centre.
+pub fn grid_blocks(terrain: &Terrain, grid: &LevelGrid, rooms: &Rooms) -> Vec<TileBlocks> {
+    let side = TileBlocks::SIDE as i64;
+    let x0 = (grid.width as i64 - side * terrain.width as i64) / 2;
+    let y0 = (grid.height as i64 - side * terrain.height as i64) / 2;
+    let tile_m = terrain.spacing * (TILE_VERTICES - 1) as f32;
+    let block_m = tile_m / TileBlocks::SIDE as f32;
+    terrain
+        .tiles
+        .iter()
+        .map(|tile| {
+            let mut blocks = TileBlocks::default();
+            let centre = terrain.tile_centre(tile);
+            for by in 0..TileBlocks::SIDE {
+                for bx in 0..TileBlocks::SIDE {
+                    let x = x0 + side * tile.x as i64 + bx as i64;
+                    let y = y0 + side * tile.y as i64 + by as i64;
+                    let flagged = x >= 0
+                        && y >= 0
+                        && grid
+                            .cell(x as u32, y as u32)
+                            .is_some_and(|c| grid.edges[c] & CELL_TERRAIN != 0);
+                    if !flagged {
+                        continue;
+                    }
+                    blocks.present[by] |= 1 << bx;
+                    let at = Vec2::new(
+                        centre[0] - tile_m / 2.0 + (bx as f32 + 0.5) * block_m,
+                        centre[1] - tile_m / 2.0 + (by as f32 + 0.5) * block_m,
+                    );
+                    blocks.rooms[by][bx] = rooms.room_at(at);
+                }
+            }
+            blocks
+        })
+        .collect()
 }
 
 /// Normals of a displaced `n` × `n` vertex grid from central differences
@@ -1111,5 +1375,129 @@ mod tests {
         assert_eq!(look.sharpness, [3.0, 1.0]);
         assert_eq!(look.normal_strength, 0.0);
         assert!((look.tiling - 2.0 / 12.0).abs() < 1e-6);
+    }
+
+    /// A flat terrain of `w` × `h` tiles, all present.
+    fn flat_terrain(w: u32, h: u32) -> Terrain {
+        let u32s = |v: &[u32]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
+        let mut b = u32s(&[exa_formats::terrain::TERRAIN_MAGIC, 0]);
+        b.extend([0u8; 16]);
+        b.extend(20f32.to_le_bytes());
+        b.extend(u32s(&[w, h, w * h]));
+        for y in 0..h {
+            for x in 0..w {
+                let mut t = u32s(&[0, x, y, 0]);
+                t.extend(vec![0u8; 244 * 244 * 4]);
+                b.extend(u32s(&[exa_formats::terrain::TILE, t.len() as u32]));
+                b.extend(t);
+            }
+        }
+        Terrain::parse(&b).unwrap()
+    }
+
+    fn grid(w: u32, h: u32) -> LevelGrid {
+        let n = (w * h) as usize;
+        LevelGrid {
+            wall_sets: Vec::new(),
+            floor_sets: Vec::new(),
+            width: w,
+            height: h,
+            edges: vec![0; n],
+            plane_b: vec![0; n],
+            plane_c: vec![0xF; n],
+        }
+    }
+
+    #[test]
+    fn grid_levels_build_only_flagged_blocks() {
+        // A grid two cells wider and taller than one tile: the tile's
+        // block (0, 0) is cell (1, 1), block (7, 7) cell (8, 8).
+        let terrain = flat_terrain(1, 1);
+        let mut g = grid(10, 10);
+        let open_walled = crate::rooms::CELL_OPEN | 0x7777;
+        g.edges[11] = open_walled | CELL_TERRAIN;
+        g.edges[88] = CELL_TERRAIN;
+        g.edges[0] = CELL_TERRAIN;
+        let rooms = Rooms::flood(&g);
+        let blocks = grid_blocks(&terrain, &g, &rooms);
+        assert_eq!(blocks.len(), 1);
+        let b = &blocks[0];
+        assert!(b.has(0, 0) && b.has(7, 7));
+        assert_eq!(b.present.iter().map(|r| r.count_ones()).sum::<u32>(), 2);
+        assert_eq!((b.room(0, 0), b.room(7, 7)), (Some(0), None));
+        // Narrower than the tile: the offset halves towards zero, so cell
+        // (0, 0) is block (0, 0), not block (1, 1).
+        let mut g = grid(7, 7);
+        g.edges[0] = CELL_TERRAIN;
+        let blocks = grid_blocks(&terrain, &g, &Rooms::flood(&g));
+        assert!(blocks[0].has(0, 0));
+        assert!(!blocks[0].has(1, 1));
+        assert!(!grid_blocks(&terrain, &grid(8, 8), &Rooms::default())[0].any());
+    }
+
+    #[test]
+    fn blocks_cover_thirty_quads_and_parts_keep_their_vertices() {
+        let n = TILE_VERTICES;
+        assert_eq!(TileBlocks::of(0, 29, n), (0, 0));
+        assert_eq!(TileBlocks::of(30, 239, n), (1, 7));
+        assert_eq!(TileBlocks::of(240, 240, n), (7, 7));
+        let v = TileVertices {
+            positions: (0..4).map(|i| [i as f32, 0.0, 0.0]).collect(),
+            normals: vec![[0.0, 1.0, 0.0]; 4],
+            uvs: vec![[0.0; 2]; 4],
+            colours: vec![[1.0; 4]; 4],
+        };
+        let part = v.part(&[3, 1, 2, 2, 1, 3]);
+        let p = part
+            .attribute(Mesh::ATTRIBUTE_POSITION)
+            .and_then(|a| a.as_float3())
+            .unwrap();
+        assert_eq!(p, [[3.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]]);
+        let i: Vec<usize> = part.indices().unwrap().iter().collect();
+        assert_eq!(i, [0, 1, 2, 2, 1, 0]);
+    }
+
+    /// The installed story level and outdoor arena keep terrain only on
+    /// their flagged cells (skipped without the game).
+    #[test]
+    fn shipped_terrain_blocks() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let pack = game.pack(PackKind::Resource).unwrap();
+        for (level, flagged) in [("exanima01", 682), ("arenao3", 240)] {
+            let terrain = Terrain::parse(pack.get(&format!("{level}.rft")).unwrap()).unwrap();
+            let scene =
+                exa_formats::rfc::Scene::parse(pack.get(&format!("{level}.rfc")).unwrap()).unwrap();
+            let g = scene.grid.unwrap();
+            let rooms = Rooms::flood(&g);
+            let blocks = grid_blocks(&terrain, &g, &rooms);
+            let present: u32 = blocks
+                .iter()
+                .flat_map(|b| b.present.iter())
+                .map(|r| r.count_ones())
+                .sum();
+            assert_eq!(present, flagged, "{level}");
+            // No block on a closed cell (the rock between rooms).
+            let x0 = (g.width as i64 - 8 * terrain.width as i64) / 2;
+            let y0 = (g.height as i64 - 8 * terrain.height as i64) / 2;
+            for (tile, b) in terrain.tiles.iter().zip(&blocks) {
+                for by in 0..8 {
+                    for bx in 0..8 {
+                        if !b.has(bx, by) {
+                            continue;
+                        }
+                        let x = x0 + 8 * tile.x as i64 + bx as i64;
+                        let y = y0 + 8 * tile.y as i64 + by as i64;
+                        let c = (y * g.width as i64 + x) as usize;
+                        assert!(
+                            g.edges[c] & crate::rooms::CELL_OPEN != 0,
+                            "{level} ({x}, {y})"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

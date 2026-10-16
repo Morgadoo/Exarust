@@ -27,6 +27,23 @@ Tiles are 48 m squares (240 × 20 cm). The tile at grid (x, y) is centred at
 `((x − (w−1)/2) · 48, (y − (h−1)/2) · 48)` metres, on the X/Z plane, with
 x along +X and y along +Z.
 
+### Blocks in grid levels
+
+A tile is 8 × 8 blocks of 6 m (30 × 30 quads), one per grid cell. In a
+level with a tile grid (every level with a grid chunk, the outdoor arenas
+included) the original builds a block only where its grid cell has plane
+A's terrain flag `0x800000`: block (bx, by) of tile (tx, ty) is cell
+(x0 + 8·tx + bx, y0 + 8·ty + by), with x0 = (grid width − 8 × tiles
+across)/2 and y0 likewise, each halved towards zero. Each block goes to the
+room of its centre ([RFC.md](RFC.md), Grid building), else to the default
+sector. Without a grid every block is built. Evidence: REA on the
+terrain's frame hook and the grid loader; corpus: `exanima01` flags 682
+cells, all open (its 441 closed cells, the rock between rooms, get no
+ground), `arenao3` a 16 × 15 rectangle around the arena, `arenao1` and
+`arena7` their arena floors. Exarust drops the plants of absent blocks as
+it drops those of holes [guess: the original's grass chunks were not
+traced].
+
 ### Tile (`0xBDAD`)
 
 | type | field |

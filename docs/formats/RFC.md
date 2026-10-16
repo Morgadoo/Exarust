@@ -233,7 +233,9 @@ Exarust match the original look).
   special tile type, 21–22 its rotation, 23–27 which matching trim to use.
 - Plane A: side `i` (0 back/−Z, 1 left/−X, 2 front, 3 right) has edge code
   `(A >> 4i) & 0xF` and corner code `(A >> (16 + 4i)) & 7`; bit 3 of the
-  corner nibbles are flags (`0x80000` open cell, `0x800000` alternate builder).
+  corner nibbles are flags (`0x80000` open cell, `0x800000` terrain cell:
+  its floor is terrain, see the cap below and
+  [TERRAIN.md](TERRAIN.md), Blocks in grid levels).
 - Plane B: the matching 4-bit variant of every edge and corner.
 - Pieces are authored for side 0 and rotated by `i × 90°` about +Y (rows
   `[cos, 0, −sin]`, `[0, 1, 0]`, `[sin, 0, cos]`), positioned at the cell
@@ -241,7 +243,13 @@ Exarust match the original look).
 - Wall sets index pieces `+W?nn` (`C` straight, `D` door, `L`/`R` ends),
   `+C?nn` (`L`, `R`, `I`, `O` for corner codes 1–4), `+R?` ceilings (`M`, `L`,
   `R`, `B`, `C` → slots 0–4) and `+T??nn` special tiles; a fourth character
-  `B` marks an alternate piece used on sides 2 and 3. Floor sets index `+FM`
+  `B` marks an alternate piece used on sides 2 and 3. Only top-level nodes
+  are pieces: `+R…` and `+F…` nodes under a piece are its own strips
+  [inferred from the data: all 35 `gews_*` sets hold every piece and slot
+  piece at the top level; the only piece-named nodes below are the pieces'
+  own `+R…` strips, one `+RBA02` under an occluder in `gews_ubb01`, and a
+  `+WCA00` inside a special tile in `gews_usa01` and `gews_uwb06pb`, which
+  must not replace the set's straight wall]. Floor sets index `+FM`
   centre variants and `L`, `R`, `B`, `C` edge slots 1–4.
 - Per cell: centre floor variant and ceiling slot 0; per side, edge code 0 →
   floor and ceiling slot 3; 7 → straight wall; `B` → door; 1 → left end plus
@@ -251,8 +259,11 @@ Exarust match the original look).
 - Special tiles: a mask per type removes the regular pieces they cover:
   `7777FFFF`, `7070FFFF`, `7077FFFF`, `7777FFFF`, `7777FFFF`, `7007000F`
   (types 6–9), `00770FFF`; types 5–8 keep the centre floor.
-- Floors and ceilings are merged into `+Floor` and `+Ceiling` meshes per cell
-  in the original; walls stay separate objects.
+- Floors are merged into a `+Floor` mesh per cell in the original; walls
+  stay separate objects. The ceiling strips also make a per-cell
+  `+Ceiling` mesh that is never drawn (its node is marked externally drawn;
+  its purpose is not known); what shows of the ceilings is the room's lid
+  below.
 - Every `+`-material triangle of a cell's floor (the centre variant, the edge
   strips and the pieces' `+F…` strips) gets planar UVs `u = x/600 + 0.5`,
   `v = 0.5 − z/600` in cell-local cm, after the piece's side rotation: one
@@ -263,15 +274,44 @@ Exarust match the original look).
   that edge (slot 3, or 4 for corners). Its `+` materials take the floor
   set's own `+` material. `+R…` is its ceiling strip and replaces the
   ceiling slot.
-  `[…` are occluders and are never drawn.
-- Plane A flag `0x800000` applies only to open cells without a wall set
-  (nibble `F`). The original then adds a ceiling cap from the first wall set
-  (no floor, no walls) so the room stays closed. It appears only in levels
-  with terrain, whose ground and props provide those cells. Levels without
-  wall sets build nothing from the grid.
-- Rooms and portals: open cells are flood-filled up to walls. Doors (`B`)
-  start new rooms joined by portals, sized from plane B's side nibble
+- Shells: for a cell in a room, every placed piece's direct `[…` children
+  (the occluders: `_black` boxes from the floor to 2.7 m behind the
+  facade, more for corners and special tiles; most reach the cell edge,
+  but the plain walls and inner corners of `gews_tsa01`, `gews_uwa01` and
+  `gews_UwA01p` stop 2.6 m from the cell centre, 40 cm short of it, where
+  those sets' floor strips do not reach either) go to the room's occluder
+  strips, and its `+R…` children plus the ceiling slot pieces the cell
+  selects (flat `_black` at 4 m; a wall's own strip ramps from 4 m 1.5 m
+  inside the cell down to 2.64 m at its edge) to the room's ceiling
+  strips, in world space. After the grid each room
+  has one position-only occluder shell and one ceiling shell (its lid),
+  drawn by the room manager ([RENDERING.md](../RENDERING.md), Rooms and
+  black fill), never as scene nodes. Some other sets give occluders
+  textured materials (`gews_ubb01`) or nest them deeper (`gews_uwb06b`)
+  [not checked against the original's builder].
+- Ceiling cap: an open cell without a wall set (nibble `F`) whose plane A
+  has `0x800000` adds ceiling strips from the first wall set to its room
+  (the middle slot; per side, edge 0 → slot 3, walls → the wall piece's own
+  `+R…` or slot 3; per corner, 0 → slot 4, 1–4 → the corner piece's own
+  `+R…` or slot 3) and builds no wall, floor or occluder. `exanima01` has
+  104 such cells; the flag's other 578 cells there have a wall set and
+  terrain for floor. Levels without wall sets build nothing from the grid.
+- Rooms (the original's flood fill, reproduced exactly for the live
+  arena hub: 10 rooms, 18 links, the same room per cell): the seed is the
+  first open cell (inside the border) of the last row that has one. Cells
+  behind doors wait on a stack of door seeds, last in first out, each
+  starting a new room unless a room reached it meanwhile. A room spreads
+  over every edge but walls (7) and doors (`B`); a closed cell reached that
+  way joins the room without spreading. A door edge records a link (the
+  cell, the cell behind it) when the cell behind is open and does not face
+  the door with a wall; links into the room itself are dropped after its
+  flood. Open cells no door path reaches get no room. `exanima01`: 153
+  rooms, 356 links, every open cell in a room.
+- Portals: each door link is a portal sized from plane B's side nibble
   (0: 82 × 245 cm, otherwise 115 × 290 cm, special tiles 200 × 340 cm).
+- Every level with a grid chunk, the outdoor arenas' (no wall sets)
+  included, puts the scene in grid mode, which limits its terrain to the
+  terrain cells ([TERRAIN.md](TERRAIN.md)).
 - The marker and skip words are 0 and 600 in every level; the builder reads
   only width, height and the planes.
 

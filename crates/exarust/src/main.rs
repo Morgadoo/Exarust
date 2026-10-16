@@ -19,7 +19,7 @@
 //!          --screenshot <file.png>    save a frame and exit
 //!          --frames <n>               frames to wait before the screenshot, after loading (default 90)
 //!          --ev <ev100>               camera exposure (default 6, lower is brighter)
-//!          --ceilings                 build ceilings of tile-grid levels
+//!          --all-rooms                tile-grid levels: show every room (no black for rooms the player cannot see)
 //!          --limp                     character view: the body goes limp and falls
 //!          --race <n>                 character view: the body of race n (a character record's race byte)
 //!          --shove <frame>            a body blow to every simulated body at that frame after loading
@@ -42,6 +42,13 @@
 //!          --health yellow,red        play mode: the player's starting health (a human's full health is 0.25)
 //!          --heartbeat                play mode: the low-health heartbeat in any level (the original: story mode only)
 //! ```
+//!
+//! In tile-grid levels only the rooms the player can see are drawn, as in
+//! the original: the player's room and those behind a door within 2 m; the
+//! rooms behind their doors are covered by black lids and the rest is black.
+//! In `level` mode with `--camera` the rooms follow the point 20 m in front
+//! of the camera (the original camera's target); `level` without
+//! `--camera` (the overview) and `--all-rooms` show every room.
 //!
 //! Controls: hold the right mouse button to look, WASD to move, Q/E down/up,
 //! Shift to go faster. Debug keys (`docs/DEBUGGING.md`): F3 body overlay, F4
@@ -91,8 +98,8 @@ pub struct Options {
     pub frames: u32,
     /// Camera exposure; dungeon interiors need far less than daylight.
     pub ev100: f32,
-    /// Build ceiling pieces of tile-grid levels.
-    pub ceilings: bool,
+    /// Show every room of a tile-grid level, as if all were active.
+    pub all_rooms: bool,
     /// Hold "forward" in play mode (for unattended checks).
     pub autowalk: bool,
     /// Character view: let the body go limp and fall.
@@ -268,7 +275,7 @@ fn main() -> AppExit {
         match a.as_str() {
             "--game" => game_dir = args.next().map(PathBuf::from),
             "--screenshot" => options.screenshot = args.next().map(PathBuf::from),
-            "--ceilings" => options.ceilings = true,
+            "--all-rooms" => options.all_rooms = true,
             "--limp" => options.limp = true,
             "--no-shadows" => options.no_shadows = true,
             "--no-gi" => options.gi.enabled = false,
