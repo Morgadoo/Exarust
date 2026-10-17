@@ -15,6 +15,7 @@ use crate::environment::{ENVIRONMENT, Environment};
 use crate::key_track::KeyTrack;
 use crate::level::{self, LevelGrid, Prop};
 use crate::material::Material;
+use crate::morph::MorphSet;
 use crate::objdb::Item;
 use crate::rdb::Database;
 use crate::rigid_body::RigidBody;
@@ -126,6 +127,10 @@ pub struct Node {
     /// on the node's translation when the object is used. A track that
     /// does not decode keeps its error.
     pub key_tracks: Vec<std::result::Result<KeyTrack, String>>,
+    /// The node's morph set (sub-chunk [`MORPH`] after a mesh body): the
+    /// body of a race's `<stem>morph.rfc` carries the physique targets
+    /// (`crate::morph`). A set that does not decode keeps its error.
+    pub morph: Option<std::result::Result<MorphSet, String>>,
     pub body: NodeBody,
 }
 
@@ -244,6 +249,41 @@ pub struct Mesh {
     pub gi_points: Vec<[f32; 3]>,
     /// The word before the streams in newer files: skinning mode flags.
     pub skin_flags: u32,
+    /// Elements of the position stream: [`Mesh::position_ids`] index it,
+    /// and a morph set holds one offset per element.
+    pub position_count: usize,
+    /// Smoothing key of each vertex: vertices sharing a key share a normal
+    /// ([`Mesh::recompute_normals`]).
+    pub smoothing: Vec<u32>,
+}
+
+impl Mesh {
+    /// Works the normals out again from the positions, as at load: the
+    /// area-weighted face normals summed over the vertices sharing a
+    /// smoothing key. A morphed mesh takes its normals from its new shape.
+    pub fn recompute_normals(&mut self) {
+        let n = self.positions.len();
+        let own: Vec<u32>;
+        let keys = if self.smoothing.len() == n {
+            &self.smoothing
+        } else if self.position_ids.len() == n {
+            &self.position_ids
+        } else {
+            own = (0..n as u32).collect();
+            &own
+        };
+        // Triangles naming a missing vertex are left out.
+        let indices: Vec<u32> = self
+            .indices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .filter(|t| t.iter().all(|&i| (i as usize) < n))
+            .flatten()
+            .copied()
+            .collect();
+        self.normals = smooth_normals(&self.positions, &indices, keys);
+    }
 }
 
 /// A level's local database: sub-chunks for its objects, strings and
@@ -458,6 +498,9 @@ pub const CLOTH: u32 = 0x3DD0_C001;
 /// Sub-chunk of a keyframe track (`key_track::KeyTrack`), which may follow
 /// any stored node's body.
 pub const KEY_TRACK: u32 = 0x3AC1;
+/// Sub-chunk of a morph set (`morph::MorphSet`) after a mesh body: the
+/// physique targets of a race's morph body.
+pub const MORPH: u32 = 0xEDC0_C589;
 /// Light body flags under which the body ends with four more words (one
 /// skipped, then three values the original keeps for the flicker and the
 /// fade; not decoded).
@@ -476,6 +519,9 @@ struct SubChunks {
     rigid_body: Option<std::result::Result<RigidBody, String>>,
     cloth_marker: bool,
     key_tracks: Vec<std::result::Result<KeyTrack, String>>,
+    /// The first morph set's payload, decoded once the mesh's position
+    /// count is known.
+    morph: Option<Vec<u8>>,
 }
 
 fn read_sub_chunks(c: &mut Cursor<'_>) -> SubChunks {
@@ -494,6 +540,9 @@ fn read_sub_chunks(c: &mut Cursor<'_>) -> SubChunks {
         if tag == KEY_TRACK {
             out.key_tracks
                 .push(KeyTrack::parse(sub.b).map_err(|e| e.to_string()));
+        }
+        if tag == MORPH && out.morph.is_none() {
+            out.morph = Some(sub.b.to_vec());
         }
         if tag != GI_POINTS || points.is_some() {
             continue;
@@ -555,6 +604,7 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
     // The sub-chunks follow the body of every stored node, whatever its
     // kind; an instance stores nothing more.
     let mut sub = SubChunks::default();
+    let mut morph = None;
     let body = if instance != 0 {
         NodeBody::Instance(instance)
     } else if kind == NODE_MESH {
@@ -562,6 +612,10 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
             Ok(mut m) => {
                 sub = read_sub_chunks(&mut c);
                 m.gi_points = std::mem::take(&mut sub.gi_points);
+                morph = sub
+                    .morph
+                    .take()
+                    .map(|b| MorphSet::parse(&b, m.position_count).map_err(|e| e.to_string()));
                 NodeBody::Mesh(Box::new(m))
             }
             Err(e) => NodeBody::Invalid(e.to_string()),
@@ -605,6 +659,7 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
         rigid_body: sub.rigid_body,
         cloth_marker: sub.cloth_marker,
         key_tracks: sub.key_tracks,
+        morph,
         body,
     })
 }
@@ -808,6 +863,7 @@ fn read_mesh(c: &mut Cursor<'_>, version: u16) -> Result<Mesh> {
         None => pos_idx.iter().map(|&i| i as u32).collect(),
     };
     let normals = smooth_normals(&positions, &indices, &smoothing);
+    let position_count = pos_stream.count;
 
     let tri_count = indices.len() / 3;
     let mut groups = Vec::with_capacity(group_count);
@@ -840,6 +896,8 @@ fn read_mesh(c: &mut Cursor<'_>, version: u16) -> Result<Mesh> {
         triangle_flags,
         gi_points: Vec::new(),
         skin_flags,
+        position_count,
+        smoothing,
     })
 }
 

@@ -14,6 +14,7 @@ use exa_formats::rfi::Rfi;
 use exa_formats::rsq::bone_index;
 use exa_rpk::{Archive, GameData, PackKind};
 
+use crate::morph::{BuiltMorph, JobMorph, MorphCache, model_key};
 use crate::paint::{
     Encoding, PaintLayer, Painted, Texels, layer_material, library, normal_library, paint,
 };
@@ -133,6 +134,9 @@ pub struct ModelCache {
     bleeding_stems: Option<HashSet<String>>,
     /// Mobility divisors by material cache key ([`ModelLoader::mobility_divisor`]).
     divisors: HashMap<String, f32>,
+    /// Morph bodies and the shares of the morphs models take
+    /// ([`crate::morph`]).
+    pub(crate) morph: MorphCache,
     warned: HashSet<String>,
 }
 
@@ -167,7 +171,7 @@ impl ModelLoader<'_> {
     }
 
     pub fn model(&mut self, pack: PackKind, entry: &str) -> Option<Arc<Model>> {
-        let key = format!("{}/{}", pack.file_stem(), entry.to_ascii_lowercase());
+        let key = model_key(pack, entry);
         if let Some(cached) = self.cache.models.get(&key) {
             return cached.clone();
         }
@@ -269,35 +273,42 @@ impl ModelLoader<'_> {
             entry: entry.to_string(),
             scene,
             body,
+            morph: None,
         })
     }
 
     /// The model a [`ModelJob`] built, its meshes and materials added and
     /// cached as [`ModelLoader::model`] caches it.
     pub fn finish_model(&mut self, built: BuiltModel) -> Option<Arc<Model>> {
-        let key = format!(
-            "{}/{}",
-            built.pack.file_stem(),
-            built.entry.to_ascii_lowercase()
-        );
+        let key = match &built.morph {
+            Some(m) => m.key.clone(),
+            None => model_key(built.pack, &built.entry),
+        };
         let model = Some(Arc::new(self.assemble(built)));
         self.cache.models.insert(key, model.clone());
         model
     }
 
-    /// Adds a built model's meshes and materials. Remembers the human body's
-    /// weights, which apparel is fitted to.
+    /// Adds a built model's meshes and materials. Remembers the unmorphed
+    /// human body's weights, which apparel is fitted to, and the shares of
+    /// the morphs a morphed variant used.
     fn assemble(&mut self, built: BuiltModel) -> Model {
         let BuiltModel {
             pack,
             entry,
             scene,
             nodes: built_nodes,
+            morph,
         } = built;
+        let morphed = morph.is_some();
+        if let Some(m) = morph {
+            self.cache.morph.parts.insert(m.parts_key, m.parts);
+        }
         let mut nodes = Vec::with_capacity(scene.nodes.len());
         for (node, built) in scene.nodes.iter().zip(built_nodes) {
             let skin_bone = built.skin.as_ref().map(|(bone, _)| *bone);
             if let (NodeBody::Mesh(mesh), Some((bone, skin))) = (&node.body, &built.skin)
+                && !morphed
                 && pack == PackKind::Resource
                 && entry.eq_ignore_ascii_case(BODY_MODEL)
             {
@@ -841,13 +852,15 @@ impl ModelLoader<'_> {
     }
 }
 
-/// A model to build: its parsed file and, for apparel, the body's weights
-/// by bone ([`ModelLoader::model_job`]).
+/// A model to build: its parsed file, for apparel the body's weights by
+/// bone ([`ModelLoader::model_job`]), and for a character's variant what
+/// morphing it takes ([`ModelLoader::morphed_job`]).
 pub struct ModelJob {
     pack: PackKind,
     entry: String,
     scene: Scene,
     body: HashMap<u16, Arc<Vec<(Vec3, VertexSkin)>>>,
+    pub(crate) morph: Option<JobMorph>,
 }
 
 /// A model's meshes, built and not yet added as assets
@@ -857,6 +870,7 @@ pub struct BuiltModel {
     entry: String,
     scene: Scene,
     nodes: Vec<BuiltNode>,
+    morph: Option<BuiltMorph>,
 }
 
 /// A node's skin weights (with the bone whose space they are in) and its
@@ -872,35 +886,57 @@ impl ModelJob {
     /// model's meshes, their tangents most of all, took hundreds of
     /// milliseconds).
     pub fn build(self, pool: Option<&bevy::tasks::ComputeTaskPool>) -> BuiltModel {
-        let (pack, entry) = (self.pack, self.entry.as_str());
-        let nodes = self
-            .scene
+        let ModelJob {
+            pack,
+            entry,
+            mut scene,
+            body,
+            morph,
+        } = self;
+        let body_model = pack == PackKind::Resource && is_body_model(&entry);
+        let skinned = pack == PackKind::Characters || body_model;
+        let skins_of = |scene: &Scene| -> Vec<Option<(u16, Vec<VertexSkin>)>> {
+            scene
+                .nodes
+                .iter()
+                .enumerate()
+                .map(|(index, node)| match &node.body {
+                    NodeBody::Mesh(mesh) if skinned => node_skin(scene, index, mesh, pack, &body),
+                    _ => None,
+                })
+                .collect()
+        };
+        // A garment takes its weights from the unmorphed body before it is
+        // morphed; the body's parts are skinned on their morphed shape and
+        // joints.
+        let unmorphed = (morph.is_none() || !body_model).then(|| skins_of(&scene));
+        let morph = morph.map(|m| {
+            let parts = m.parts(&scene, body_model);
+            m.apply(&mut scene, &parts);
+            m.built(parts)
+        });
+        let skins = unmorphed.unwrap_or_else(|| skins_of(&scene));
+        let nodes = scene
             .nodes
             .iter()
-            .enumerate()
-            .map(|(index, node)| {
+            .zip(skins)
+            .map(|(node, skin)| {
                 let NodeBody::Mesh(mesh) = &node.body else {
                     return BuiltNode {
                         skin: None,
                         meshes: Vec::new(),
                     };
                 };
-                let skin = if pack == PackKind::Characters
-                    || (pack == PackKind::Resource && is_body_model(entry))
-                {
-                    node_skin(&self.scene, index, mesh, pack, &self.body)
-                } else {
-                    None
-                };
                 let meshes = group_meshes(mesh, skin.as_ref().map(|(_, s)| s.as_slice()), pool);
                 BuiltNode { skin, meshes }
             })
             .collect();
         BuiltModel {
-            pack: self.pack,
-            entry: self.entry,
-            scene: self.scene,
+            pack,
+            entry,
+            scene,
             nodes,
+            morph,
         }
     }
 }

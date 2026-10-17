@@ -106,7 +106,7 @@ checked outside the engine through exporters.
 |---|---|---|
 | ✅ Static mesh (`3D03`): vertex streams, index maps, triangles, material groups, node transforms | `exa_formats::rfc` | done: 23 065/23 065 retail meshes decode; cm → m, right-handed Y-up confirmed |
 | Materials (`BA01`, `.rml` libraries): ✅ texture layers and slots; ✅ parameter block colours, opacity, gloss, specular level, render class, flags, kind and displacement shadows; subsurface colour, opacity fall-off and refraction still open | `exa_formats::material` | map the rest of the 184-byte block to the plug-in classes seen in the binary (`TMaterialPlugIn`, `TRTMatPlugIn`, `TProcMaterial`) |
-| ✅ Skinned meshes: weights from seams (`add-skinning`), every race's body (`add-race-bodies`); morph targets (`*morph.rfc`) still open | `exa_formats::rfc`, `exa_assets::skin` | |
+| ✅ Skinned meshes: weights from seams (`add-skinning`), every race's body (`add-race-bodies`), morph sets (`*morph.rfc`, `morph-the-physique`) | `exa_formats::{rfc,morph}`, `exa_assets::{skin,morph}` | |
 | ✅ Skeleton and motions (`.rsq`) | `exa_formats::rsq` | 18 bones, 48 clips |
 | ✅ Node keyframe tracks (`3AC1`) | `exa_formats::key_track` | one track ships (the secret switch's brick); played by `exa_anim::tracks` |
 | ✅ Level grid (`3DED`), level sections (`3DE10000`, `DBC0`, …), placed objects and characters, starts | `exa_formats::{level,characters}` | wall/floor sets `gews_*` / `gefs_*` |
@@ -212,6 +212,21 @@ the carried torch is raised in the right hand with the "Torch" moveset by
 the original's grip, and practice and arena levels start without it
 ([PLAYER.md](PLAYER.md), The carried torch). Skin tones per character
 remain.
+
+Done (change `morph-the-physique`, M18 of the master plan): a race's
+morph set (`humanmorph.rfc`, `ancientmorph.rfc`: 18 landmarks, 2 286
+positions, 11 targets) is decoded and every character's record weighs
+its targets as the original's builder does (physique picker, height, age,
+feral level, the female bit); its body parts and the apparel fitted to
+them follow the body's surface (the transfer, cached per race and model),
+are morphed before skinning with normals and boxes refitted, and the parts'
+origins move with their landmarks, so the skeleton, the skin weights and
+the physical body's joints follow the physique (a height of 1 drops the
+pelvis 11.2 cm). Placed characters take their records' physique; the
+player, the duellist and the character view keep the model's body unless
+`--physique` sets one; races without a morph body (skeletons, golems, …)
+keep theirs ([formats/RFC.md](formats/RFC.md), Morph sets). The limb
+spheres are still not refitted to the morphed meshes (C20).
 
 Done (change `add-motion-playback`): skeleton and motion set decoded;
 clips play on the human body (`exarust character Default/Walk`).
@@ -480,9 +495,9 @@ This phase carries the most risk and defines how the game feels.
   - Decision: **rapier3d** for level colliders, props and the player
     capsule. The character solver is in-house behind `exa_physics` (done,
     see above), so it can be tuned to match the original.
-- `exa_character`: race body plus morphs, skinning, hair, apparel meshes fitted
-  to the body (the original uses skin pivots and edge splitting, see
-  `TSkinBuilder` and `TEdgSplt`).
+- `exa_character`: race body plus morphs (done, `morph-the-physique`),
+  skinning, hair, apparel meshes fitted to the body (the original uses skin
+  pivots and edge splitting, see `TSkinBuilder` and `TEdgSplt`).
 - Player control matching the original (done, `original-controls-and-torch`,
   see `docs/PLAYER.md`): W walks the heading and A/D steer it, the right
   button walks to the cursor, Tab toggles combat mode (on at every

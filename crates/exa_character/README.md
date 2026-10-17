@@ -20,6 +20,12 @@ Characters: races, body morphs, appearance, apparel fitting, stats/attributes/sk
   32 MiB of painted textures are made a frame; a body is dressed, 8 ms of
   dressing a frame, once everything it wears is in, before the animation
   systems bind the skinned parts in the same frame.
+- Physique: a body root's `exa_assets::BodyMorph` (a placed character's
+  record, `--physique` for the character view and the player) fits each
+  garment as a variant morphed with the body (`ModelLoader::morphed_job`,
+  built on the async pool and cached by the physique), weighted from the
+  unmorphed body. See [`docs/formats/RFC.md`](../../docs/formats/RFC.md)
+  (Morph sets).
 - Underwear: humans marked `WearsUnderwear` (the player, the character
   view's human body) wear the object database's braies (item 8) beneath
   their outfit whenever nothing in it covers the groin on the innermost

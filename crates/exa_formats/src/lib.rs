@@ -15,6 +15,7 @@ pub mod key_track;
 pub mod kind;
 pub mod level;
 pub mod material;
+pub mod morph;
 pub mod objdb;
 pub mod races;
 pub mod rdb;

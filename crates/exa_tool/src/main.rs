@@ -18,6 +18,7 @@
 //! exa-tool characters actors          the arena's actors in actors.rpk
 //! exa-tool bodies Objects "lever a01"  rigid bodies, links and cloth markers
 //! exa-tool mechanisms [exanima01]     door and operative records
+//! exa-tool morphs [--records]         physique morph sets; weights of every placed record
 //! exa-tool corpus bodies              bodies, links and cloth markers per pack
 //! exa-tool corpus tracks              every node keyframe track of every chunk tree
 //! exa-tool export-gltf Objlib afr_cornflag_a01 out.glb
@@ -28,6 +29,7 @@ mod bodies;
 mod characters;
 mod corpus;
 mod gltf;
+mod morphs;
 mod nav;
 
 use std::collections::BTreeMap;
@@ -113,6 +115,13 @@ enum Cmd {
     /// Door and operative records of `objdb.rdb`, or of a level's own
     /// database (e.g. `exanima01`).
     Mechanisms { level: Option<String> },
+    /// The physique morph sets of the races' `*morph.rfc` (landmarks, each
+    /// target's reach); with `--records`, the weights every placed
+    /// character's record gives them.
+    Morphs {
+        #[arg(long)]
+        records: bool,
+    },
     /// Decode every entry of a format and report coverage.
     Corpus {
         #[arg(value_enum)]
@@ -278,6 +287,7 @@ fn main() -> Result<()> {
         Cmd::Characters { source } => characters::characters(&game, &source),
         Cmd::Bodies { pack, entry } => bodies::bodies(&game, &pack, &entry),
         Cmd::Mechanisms { level } => bodies::mechanisms(&game, level.as_deref()),
+        Cmd::Morphs { records } => morphs::morphs(&game, records),
         Cmd::Corpus {
             what: CorpusKind::Meshes,
         } => corpus::meshes(&game),

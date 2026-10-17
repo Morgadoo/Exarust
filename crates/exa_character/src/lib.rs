@@ -279,9 +279,10 @@ fn keep_underwear(
 #[derive(Resource, Default)]
 struct Painting(HashMap<(String, Appearance), Task<PaintedSet>>);
 
-/// Apparel models being built on the async compute pool, by entry (lower
-/// case): fitting a garment's weights to the body and building its meshes
-/// took a frame up to a few hundred milliseconds.
+/// Apparel models being built on the async compute pool, by their cache key
+/// (the entry, then the physique a morphed variant is fitted to): fitting a
+/// garment's weights to the body and building its meshes took a frame up to
+/// a few hundred milliseconds.
 #[derive(Resource, Default)]
 struct Fitting(HashMap<String, Task<model::BuiltModel>>);
 
@@ -454,14 +455,15 @@ fn garment_appearance(garment: &Garment, infos: &HashMap<String, ItemInfo>) -> O
     })
 }
 
-/// Loads the models of `outfit` and starts painting what it needs and is
-/// not painted yet; `true` when all of it is loaded and painted. A
-/// garment's materials and the textures its painting reads take tens of
-/// milliseconds each to load: they are loaded one at a time, and past
-/// `deadline` the rest waits for the next frame. Its model is built on the
-/// async compute pool meanwhile.
+/// Loads the models of `outfit` (morphed by `morph`, the wearer's
+/// physique) and starts painting what it needs and is not painted yet;
+/// `true` when all of it is loaded and painted. A garment's materials and
+/// the textures its painting reads take tens of milliseconds each to load:
+/// they are loaded one at a time, and past `deadline` the rest waits for
+/// the next frame. Its model is built on the async compute pool meanwhile.
 fn outfit_painted(
     outfit: &Outfit,
+    morph: Option<&exa_assets::BodyMorph>,
     infos: &HashMap<String, ItemInfo>,
     loader: &mut ModelLoader,
     painting: &mut Painting,
@@ -475,7 +477,7 @@ fn outfit_painted(
         {
             return false;
         }
-        let Some(apparel) = fitted_model(&garment.model, loader, fitting) else {
+        let Some(apparel) = fitted_model(&garment.model, morph, loader, fitting) else {
             ready = false;
             continue;
         };
@@ -507,31 +509,32 @@ fn outfit_painted(
     ready
 }
 
-/// An apparel model once it is built (`Some(None)` when it cannot be):
-/// starts building it on the async compute pool, or takes the finished
-/// build.
+/// An apparel model, morphed by the wearer's physique `morph`, once it is
+/// built (`Some(None)` when it cannot be): starts building it on the async
+/// compute pool, or takes the finished build.
 fn fitted_model(
     entry: &str,
+    morph: Option<&exa_assets::BodyMorph>,
     loader: &mut ModelLoader,
     fitting: &mut Fitting,
 ) -> Option<Option<std::sync::Arc<model::Model>>> {
-    if let Some(model) = loader.loaded_model(PackKind::Characters, entry) {
+    if let Some(model) = loader.loaded_morphed_model(PackKind::Characters, entry, morph) {
         return Some(model);
     }
-    let key = entry.to_ascii_lowercase();
+    let key = loader.morphed_key(PackKind::Characters, entry, morph);
     if let Some(task) = fitting.0.get_mut(&key) {
         let built = block_on(poll_once(task))?;
         fitting.0.remove(&key);
         return Some(loader.finish_model(built));
     }
-    match loader.model_job(PackKind::Characters, entry) {
+    match loader.morphed_job(PackKind::Characters, entry, morph) {
         Some(job) => {
             let task = AsyncComputeTaskPool::get().spawn(async move { job.build(None) });
             fitting.0.insert(key, task);
             None
         }
         // Missing or unreadable: remembered as such.
-        None => Some(loader.model(PackKind::Characters, entry)),
+        None => Some(loader.morphed_model(PackKind::Characters, entry, morph)),
     }
 }
 
@@ -552,6 +555,7 @@ fn equip_outfits(
             Option<&mut held::Hands>,
             Option<&RaceWeaponry>,
             Option<&mut Attacker>,
+            Option<&exa_assets::BodyMorph>,
         ),
         Without<Dressed>,
     >,
@@ -597,7 +601,7 @@ fn equip_outfits(
     // one frame stalled the window for seconds.
     let started = std::time::Instant::now();
     let deadline = started + DRESS_BUDGET;
-    for (body, outfit, wielded, fighter, hands, race, attacker) in &mut bodies {
+    for (body, outfit, wielded, fighter, hands, race, attacker, morph) in &mut bodies {
         if started.elapsed() >= DRESS_BUDGET {
             break;
         }
@@ -611,6 +615,7 @@ fn equip_outfits(
         }
         if !outfit_painted(
             outfit,
+            morph,
             infos,
             &mut loader,
             &mut painting,
@@ -622,7 +627,8 @@ fn equip_outfits(
         let mut hidden = 0u32;
         let mut protection = Vec::new();
         for garment in &outfit.0 {
-            let Some(apparel) = loader.model(PackKind::Characters, &garment.model) else {
+            let Some(apparel) = loader.morphed_model(PackKind::Characters, &garment.model, morph)
+            else {
                 continue;
             };
             let known = infos

@@ -23,6 +23,8 @@
 //!          --all-rooms                tile-grid levels: show every room (no black for rooms the player cannot see)
 //!          --limp                     character view: the body goes limp and falls
 //!          --race <n>                 character view: the body of race n (a character record's race byte)
+//!          --physique x,y[,h,a,f,w]   character view and the player: the body (and its apparel) morphed by this
+//!                                     physique (two physique values, height, age, feral level, female if w ≠ 0)
 //!          --shove <frame>            a body blow to every simulated character body at that frame after loading
 //!          --shove-props <frame>      play mode: a blow to every prop body within 3 m of the player at that frame
 //!                                     after loading, away from the player and up; logs how far each moved once
@@ -122,6 +124,9 @@ pub struct Options {
     pub limp: bool,
     /// Character view: the body of this race (character race byte).
     pub race: Option<u8>,
+    /// Character view and the player: the physique the body (and its
+    /// apparel) is morphed by; none leaves it as its model stores it.
+    pub physique: Option<exa_formats::morph::Physique>,
     /// Deal every simulated character body a blow at this frame.
     pub shove: Option<u32>,
     /// Deal every prop body near the player a blow at this frame.
@@ -332,6 +337,18 @@ fn main() -> AppExit {
             }
             "--fov" => options.fov = args.next().and_then(|v| v.parse().ok()),
             "--race" => options.race = args.next().and_then(|v| v.parse().ok()),
+            "--physique" => {
+                let text = args.next().unwrap_or_default();
+                match exa_assets::morph::parse_physique(&text) {
+                    Some(p) => options.physique = Some(p),
+                    None => {
+                        eprintln!(
+                            "--physique: cannot read {text:?} (x,y[,height,age,feral,female])"
+                        );
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
             "--shove" => options.shove = args.next().and_then(|v| v.parse().ok()),
             "--shove-props" => options.shove_props = args.next().and_then(|v| v.parse().ok()),
             "--autowalk" => options.autowalk = true,

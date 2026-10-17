@@ -166,13 +166,21 @@ fn setup(
                 Some(r) => (r.model(), moveset),
                 None => (model::BODY_MODEL.to_string(), moveset),
             };
-            if let Some(body) = loader.model(PackKind::Resource, &body_name) {
+            // Morphed by `--physique`, else as the model stores it.
+            let morph = options
+                .physique
+                .map(|p| exa_assets::BodyMorph::of_model(&body_name, p));
+            if let Some(body) = loader.morphed_model(PackKind::Resource, &body_name, morph.as_ref())
+            {
                 let root = exa_world::spawn_model(&mut commands, &body, None);
                 commands.entity(root).insert((
                     exa_anim::Animator::new(moveset, action),
                     exa_character::Outfit::of_models(&options.outfit),
                     exa_character::blood::DebugWoundTarget,
                 ));
+                if let Some(m) = morph {
+                    commands.entity(root).insert(m);
+                }
                 if options.race.is_none_or(|r| r == exa_character::HUMAN) {
                     commands.entity(root).insert(exa_character::WearsUnderwear);
                 }
@@ -677,8 +685,16 @@ fn spawn_players(
             exa_world::room_view::RoomTracked,
         ))
         .id();
-    if let Some(body) = loader.model(PackKind::Resource, "humanbase.rfc") {
-        let model = exa_world::spawn_model(commands, &body, None);
+    // The player has no record of its own: its body is as the model stores
+    // it, or morphed by `--physique`.
+    let morph = options
+        .physique
+        .map(|p| exa_assets::BodyMorph::of_model(model::BODY_MODEL, p));
+    let player_body = loader.morphed_model(PackKind::Resource, model::BODY_MODEL, morph.as_ref());
+    // The duellist, without a record either, keeps the model's body.
+    let duellist_body = loader.model(PackKind::Resource, model::BODY_MODEL);
+    if let (Some(player_body), Some(body)) = (player_body, duellist_body) {
+        let model = exa_world::spawn_model(commands, &player_body, None);
         commands.entity(model).insert((
             Transform::from_rotation(Quat::from_rotation_y(yaw)),
             exa_anim::Animator::new("Default", "Idle"),
@@ -686,6 +702,9 @@ fn spawn_players(
             exa_character::Outfit::of_models(&options.outfit),
             ChildOf(player),
         ));
+        if let Some(m) = morph {
+            commands.entity(model).insert(m);
+        }
         let stats = new_human().with_encumbrance(outfit_encumbrance(&options.outfit));
         log_encumbrance("player", &stats);
         let mut fighter = exa_combat::Fighter::of_stats(None, stats);
@@ -1221,11 +1240,18 @@ fn spawn_placed_characters(
     story: bool,
 ) -> (usize, usize) {
     let (mut spawned, mut missing) = (0, 0);
+    let started = std::time::Instant::now();
     for c in placed {
         let race = exa_formats::races::of_character(races, c.race);
         let model_name = race.map_or_else(|| model::BODY_MODEL.to_string(), |r| r.model());
         let moveset = race.map_or("Default", |r| r.moveset()).to_string();
-        let Some(body) = loader.model(PackKind::Resource, &model_name) else {
+        // The body takes the record's physique, as the original's builder
+        // morphs it (races without a morph body keep the model's).
+        let morph = exa_assets::BodyMorph::of_model(
+            &model_name,
+            exa_formats::morph::Physique::of_record(&c.record),
+        );
+        let Some(body) = loader.morphed_model(PackKind::Resource, &model_name, Some(&morph)) else {
             missing += 1;
             continue;
         };
@@ -1292,6 +1318,7 @@ fn spawn_placed_characters(
                 exa_character::RaceWeaponry::default,
                 exa_character::RaceWeaponry::of_race,
             ),
+            morph,
             ChildOf(root),
         ));
         if let Some((model_name, weapon)) = &c.held {
@@ -1302,5 +1329,9 @@ fn spawn_placed_characters(
         }
         spawned += 1;
     }
+    info!(
+        "{spawned} characters' bodies built in {:.0} ms",
+        started.elapsed().as_secs_f32() * 1000.0
+    );
     (spawned, missing)
 }

@@ -6,6 +6,7 @@
 
 pub mod human_skin;
 pub mod model;
+pub mod morph;
 pub mod paint;
 pub mod skin;
 pub mod texture;
@@ -19,6 +20,7 @@ use exa_formats::rfi::Rfi;
 pub use exa_rpk::{GameData, PackKind, locate_install};
 
 pub use model::{Model, ModelCache, ModelLoader, ModelNode, NodeRigidBody, transform_from_rows};
+pub use morph::BodyMorph;
 pub use texture::ColorSpace;
 
 /// A mesh whose vertices carry skin weights over a character's bones, in

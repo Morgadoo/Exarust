@@ -15,3 +15,14 @@ skin, painted and run-time apparel and factory items, any record selecting
 dirt mode 4 with a diffuse map, and a bleeding race's body-model materials
 whose names start with `s`; each binds the speckle texture `spatter01`
 (`ModelLoader::spatter`).
+
+Physique (`morph`): `ModelLoader::morphed_model` / `morphed_job` build a
+character's variant of a race body or garment at its `BodyMorph` (race
+stem and record physique): each node's share of the race's morph set is
+transferred once per race and model (a garment piece from the frame of the
+base body part its node names), then the meshes are morphed (normals and
+boxes refitted) and the body parts' translations moved with their joints
+before skinning; the body's parts are skinned on the morphed shape, a
+garment from the unmorphed body. Weights that change nothing, and races
+without a morph body, return the shared model. See
+[`docs/formats/RFC.md`](../../docs/formats/RFC.md) (Morph sets).

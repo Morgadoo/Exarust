@@ -288,6 +288,8 @@ mod tests {
             triangle_flags: Some(flags),
             skin_flags: 0,
             gi_points: vec![],
+            position_count: 8,
+            smoothing: vec![],
         }
     }
 

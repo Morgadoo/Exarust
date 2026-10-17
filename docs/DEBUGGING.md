@@ -65,6 +65,7 @@ it takes the ring's other slot.
 | `--debug-nav` | start with the navigation grid drawn ([Navigation grid](#navigation-grid)) |
 | `--weapon-blood <a>` | the player's or the character view's held weapon holds blood a (0 to 1) from the start, so its stain shows without a fight ([Wounds](#wounds)) |
 | `--debug-spray bone,R[,dx,dy,dz]` | a blood jet from the player's or the character view's body part every second, as a bleeding blow of size R swinging along d would spray ([Wounds](#wounds)); repeatable |
+| `--physique x,y[,h,a,f,w]` | the character view's body (or the player's) and its apparel morphed by this physique: the two physique values, then height, age and feral level (0 when left out) and female when w is not 0 ([Physique](#physique)) |
 
 An unattended attack: `exarust --opponent --sim-speed 0.25 --camera
 4.2,1.4,0.6,90,-8 --press LMB@100 play arenao1` throws the unarmed
@@ -455,3 +456,24 @@ exarust --no-gi --no-supersample --size 960x540 --all-rooms \
   --screenshot sunk.png --frames 620 level exanima03
 ```
 
+## Physique
+
+Placed characters take their records' physique; the bodies Exarust makes
+without a record (the player, the duellist, the character view) keep the
+model's body, which every weight at 0 leaves as stored
+([formats/RFC.md](formats/RFC.md), Morph sets). `--physique` morphs the
+character view's body, or the player's in play mode, and whatever they
+wear. `exa-tool morphs` prints the shipped morph sets (landmarks, how far
+each target reaches); `exa-tool morphs --records` the weights every placed
+character's record gives them, with each weight's range.
+`RUST_LOG=info,exa_assets::morph=debug` logs every morphed model built and
+how long it took; play mode logs how long the level's characters' bodies
+took.
+
+```bash
+# The default body, a tall slight one and a short broad one, dressed.
+exarust --no-gi --no-supersample --size 960x540 --screenshot neutral.png character
+exarust --no-gi --no-supersample --size 960x540 --physique 0,1,-1 --screenshot thin.png character
+exarust --no-gi --no-supersample --size 960x540 --physique 1,1,1 \
+  --outfit leathjac_a,trouser_a,boots_b --screenshot heavy.png character
+```

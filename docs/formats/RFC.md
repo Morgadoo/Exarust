@@ -118,8 +118,8 @@ kind (REA on the node reader); walking them after every kind's body ends
 exactly at each node's end in every chunk tree of the installed packs.
 Exarust reads the GI points of meshes, the rigid body
 (`Node::rigid_body`, below), the cloth marker (`Node::cloth_marker`) and
-the keyframe tracks (`Node::key_tracks`) after any kind's body; the others
-are skipped for now. Shipped, by node kind: on meshes 10 729 GI point
+the keyframe tracks (`Node::key_tracks`) after any kind's body, and a
+mesh's morph set (`Node::morph`, below); the others are skipped for now. Shipped, by node kind: on meshes 10 729 GI point
 sets, 874 `0x3D0CEC04`, 2 782 rigid bodies, 17 cloth markers, 2 morph
 blobs and one keyframe track; on plain nodes 28 fires and one
 `0x3DD0E004`; nothing after lights and voxel lights. Every rigid body and
@@ -362,6 +362,74 @@ positions) is never built. Exarust decodes the tracks
 (`exa_formats::key_track`, `Node::key_tracks`), and `exa_anim::tracks`
 plays them on the node entities `exa_world` spawns; nothing uses objects
 yet, so F7 starts every track of the level (`docs/DEBUGGING.md`).
+
+## Morph sets (`EDC0C589`)
+
+Status: **verified** (REA on the race loader, the set's reader, the
+character builder's physique pass and the transfer to parts and apparel;
+both shipped sets decode). A race's `<stem>morph.rfc` (`humanmorph.rfc`,
+and an identical `ancientmorph.rfc`; no other race has one) holds a body
+mesh `/00Male_Ba` (2 286 position elements, placed at (0, 102.98, 0) cm,
+unturned: where `humanbase.rfc` puts its pelvis) and 18 plain nodes; the
+mesh carries the set after its body:
+
+```
+i32  n                    landmarks (18)
+f32  landmark[n][3]       cm, the body's space: bone k + 1's origin (pelvis at 0)
+f32  base[V][3]           cm: each element of the mesh's position stream
+i32  t                    targets (11)
+target × t:
+  f32 landmark[n][3]      cm: how far each landmark moves at weight 1
+  f32 position[V][3]      cm: how far each position moves at weight 1
+```
+
+V is the mesh's position-stream count; the chunk ends with the last
+target. Target roles from their offsets: 0, 2, 3 and 1 the physique
+picker's corners (1 broadens hips and shoulders by up to 11.6 cm), 4 age
+(a stoop), 5 female (narrower shoulders), 6 its feral extra, 10 height
+(the body comes down onto its feet: pelvis 11.20 cm, knees 6.21, head
+13.59, feet 0; the standing pelvis's 11.25 cm per unit of height), 7–9
+unweighed by a record. `exa-tool morphs` prints both sets.
+
+**Weights** (the builder's physique pass, every target first 0; the
+record's height h is kept in −1…1, age a and feral level m in 0…1): x, y
+= the two physique values kept in 0…1 (NaN, which the original lets
+through, reads 0 in Exarust); x > ½ → ½ + 0.8·(x
+− ½); x > 0 → 0.9·x + 0.05·(1 − h); f = 1.5, or 2x + ½ below ½; x −=
+¼·m². The picker (only into a set of more than three), y′ = 1 − y: x > ½
+→ u = 2x − 1, w1 = (1 − ¼y′)·u, w2 = (1 − ½u)·y′, w0 = w3 = 0; else u =
+2x, w0 = (1 − y′)(1 − u), w2 = u·y′, w3 = (1 − u)·y′. Female: w5 = 1, w6
++= ½·m²·f. Then w4 = (1 − 0.3·(w6 + w0))·a, w0 and w4 × (1 − 0.3a), w4 +=
+½·m², w10 = h. Physique (½, 1) with h, a, m 0 weighs nothing; a new
+record's (0, 0) weighs w3 = 1; past the corner (feral, x near 0) weights
+reach 1.5. Over the 126 placed humans and ancients no record weighs
+nothing (`exa-tool morphs --records`).
+
+**Applying.** The race's base body parts, and each garment piece when a
+character first wears it, get a set of their own from the body (the
+transfer): each position element, taken into the body's space, finds the
+nearest point of the body's surface within 10 cm and its barycentric
+coordinates; its offset per target is that point's blend of the
+triangle's offsets, less the offset of the landmark nearest the piece's
+origin, turned into the piece's frame. Elements with no surface within
+10 cm take, pass after pass, the inverse-distance mean of their
+neighbours (each triangle corner's next corner) set before the pass;
+those never reached keep minus the landmark's offset. A garment's
+pieces sit on the base body part of the bone their node names before
+the transfer (their own file frames are the artist's layout). Every
+`humanbase.rfc` element finds the surface; each part's nearest landmark
+is its own bone's. Per character, positions = base + Σ wₜ·offsetₜ over
+targets weighed at least ≈1.2e-7, the piece's box and sphere refitted
+(half extents at least 0.001 cm), and each morphed body part's origin
+moved by its landmark's Σ wₜ·offsetₜ, its translation recomputed in its
+parent's moved frame (rotations kept; a node without a set ends the
+walk). This runs before the limb bodies and the motion binder read the
+nodes, so physique moves the joints and the links; the dressed mesh is
+then skinned on the morphed shape with the morphed joints. Exarust
+(`exa_formats::morph`, `exa_assets::morph`) does the same, recomputing
+normals from the morphed shape, and skins garments on the unmorphed body
+(its own nearest-vertex rule); the original also hands the body's skin
+weights to garments through the same mapping (not ported).
 
 ## Light node (`3D06`)
 
