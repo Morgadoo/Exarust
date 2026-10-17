@@ -17,6 +17,8 @@
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 use exa_anim::{Animator, Ease, Motions, sample};
+use exa_combat::Condition;
+use exa_combat::condition::PostureTick;
 use exa_combat::stance::{Stance, StanceTick};
 use exa_physics::CharacterBody;
 use exa_physics::body::{BODY_HZ, CharacterTicks, Fallen, Ragdoll};
@@ -28,12 +30,16 @@ pub struct BalancePlugin;
 impl Plugin for BalancePlugin {
     fn build(&self, app: &mut App) {
         // Falls are decided in the fixed step from last tick's balance,
-        // after the daze's part of the body tick (as the original's posture
-        // block follows its daze block) and before the character ticks;
-        // getting up once a frame.
+        // after the daze's part of the body tick and the condition's
+        // posture stage (the original's posture block follows its daze
+        // block, and decides the condition and the fall together) and
+        // before the character ticks; getting up once a frame.
         app.add_systems(
             FixedUpdate,
-            fall_off_balance.after(StanceTick).before(CharacterTicks),
+            fall_off_balance
+                .after(StanceTick)
+                .after(PostureTick)
+                .before(CharacterTicks),
         )
         .add_systems(Update, get_up);
     }
@@ -102,11 +108,14 @@ fn get_up(
         &ChildOf,
         Option<&mut PlayerBody>,
         Option<&Stance>,
+        Option<&mut Condition>,
     )>,
     mut characters: Query<&mut CharacterBody, Without<Ragdoll>>,
 ) {
     let Some(motions) = motions else { return };
-    for (root, mut body, mut anim, mut fallen, mut t, parent, player, stance) in &mut bodies {
+    for (root, mut body, mut anim, mut fallen, mut t, parent, player, stance, condition) in
+        &mut bodies
+    {
         let ticks = body.ticks as f32;
         // Body time, which may run slower than the clock.
         fallen.time += ticks / BODY_HZ;
@@ -174,6 +183,10 @@ fn get_up(
         anim.play_once(action, stance);
         anim.blended(GET_UP_BLEND, Ease::Linear).capture_whole();
         fallen.getting_up = true;
+        // The get-up's writer: getting up until its clip ends.
+        if let Some(mut c) = condition {
+            c.get_up();
+        }
         info!("{root:?} gets up ({action})");
     }
 }
@@ -181,6 +194,32 @@ fn get_up(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The actions the condition's posture decision tells apart sit at
+    /// the installed motion set's indices: the walk and the run, the combat
+    /// idle, the eight attacks, the kick, the weapon switch and the seven
+    /// powers (skipped without `EXANIMA_DIR`).
+    #[test]
+    fn the_condition_reads_the_installed_actions() {
+        use exa_combat::condition::action;
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let data = exa_assets::GameData::open(&dir).unwrap();
+        let game = exa_assets::Game(std::sync::Arc::new(data));
+        let motions = Motions::load(&game).unwrap();
+        let at = |name: &str| motions.0.action_index(name);
+        assert_eq!(at("Walk"), Some(action::WALK));
+        assert_eq!(at("Run"), Some(action::RUN));
+        assert_eq!(at("Cmbt - Idle"), Some(action::COMBAT_IDLE));
+        assert_eq!(at("Attack Mid"), Some(*action::ATTACKS.start()));
+        assert_eq!(at("Overhead Swing"), Some(*action::ATTACKS.end()));
+        assert_eq!(at("Kick"), Some(action::KICK));
+        assert_eq!(at("Switch Weapons"), Some(action::SWITCH_WEAPONS));
+        assert_eq!(at("Force Blast"), Some(*action::POWERS.start()));
+        assert_eq!(at("Disp Form"), Some(*action::POWERS.end()));
+        assert_eq!(at("Rebalance"), Some(0x21));
+    }
 
     /// A body falls the way its chest leans from its support point: forward
     /// when the lean is ahead of where it faces, backward otherwise (and

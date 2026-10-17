@@ -7,7 +7,7 @@ use bevy::prelude::*;
 use exa_assets::Game;
 use exa_audio::SoundBank;
 use exa_combat::Fighter;
-use exa_combat::damage::DEATH;
+use exa_combat::fighter::DEATH;
 use exa_ui::{Heartbeat, HudBars};
 
 use crate::player::{Player, PlayerBody};
@@ -89,7 +89,7 @@ fn pick_hud(
         Some((body, fighter)) => {
             let health = fighter
                 .map(|f| f.health)
-                .unwrap_or_else(|| exa_combat::damage::Health::of_race(1.0));
+                .unwrap_or_else(|| exa_combat::Health::of_race(1.0));
             HudBars {
                 active: true,
                 combat: body.combat,

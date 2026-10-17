@@ -1453,6 +1453,21 @@ impl Ragdoll {
         (centre / mass, velocity / mass * BODY_HZ)
     }
 
+    /// The summed limb motion of the last tick (cm), which the posture stage
+    /// reads to tell a body lying still from one still falling: for each
+    /// part, how far its farthest particle moved, summed over the parts.
+    pub fn exertion(&self) -> f32 {
+        self.parts
+            .iter()
+            .map(|p| {
+                (0..4)
+                    .map(|i| (p.positions[i] - p.previous[i]).length())
+                    .fold(0.0, f32::max)
+            })
+            .sum::<f32>()
+            * CM
+    }
+
     /// Applies a blow to the part of `bone`. It wakes the body as a touch
     /// from a living body (countdown 256) does.
     pub fn shove(&mut self, bone: usize, velocity: Vec3, daze: f32) {

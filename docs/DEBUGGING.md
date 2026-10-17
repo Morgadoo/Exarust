@@ -39,7 +39,7 @@ it takes the ring's other slot.
 |---|---|
 | `--debug-bodies` | start with the overlay and the readout shown |
 | `--joint-trace <file.csv>` | write every joint of every simulated character body after every 83 Hz tick ([columns](#joint-trace)) |
-| `--trace <file.csv>` | the body trace in the retail probe's columns ([formats/RSQ.md](formats/RSQ.md)), now ending with the sleep countdown and state; character bodies only |
+| `--trace <file.csv>` | the body trace in the retail probe's columns ([formats/RSQ.md](formats/RSQ.md)), then Exarust's own (the sleep countdown and state, the frame, the blend and hold) and last the condition word in hex (`0x300` getting up); character bodies only |
 | `--shove <frame>` | a body blow to every simulated character body at that frame after the load |
 | `--shove-props <frame>` | in play mode, at that frame after the load, a blow to every prop body within 3 m of the player (1.5 m/s away from it and 1.5 m/s up); the log counts them and, once all sleep again, says after how many ticks and how far each moved (a body that fell out of the world counts as settled). Props meet only the level for now: one shoved off a table that is itself a body (exanima01's tables) falls through it |
 | `--sim-speed <f>` | run the simulation at this speed (0.25 is a quarter as fast), from the end of the load |

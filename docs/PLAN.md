@@ -410,6 +410,19 @@ shows its own 17 ms ticks blended by how far the frame is into the last
 (nine ticks a frame at most), and rings a kick of the camera down as the
 original's shake does ([PLAYER.md](PLAYER.md), Camera).
 
+Done (change `track-character-condition`, M38 of the master plan): every
+fighter keeps the original's condition word (normal, walking, attacking,
+combat idle, weak, down, getting up, dormant, collapsing, dead, shocked,
+kicking, switching weapons), written once a fixed tick by a posture stage
+in the original's order (the daze first, then the off-balance test at 0.6
+and 0.3, the attack, tone 0.85, the clip), and by the get-up's start, its
+clip's end, a killing blow and a level's corpses; the cursor, the player's
+steering and attacks, the duellist, the daze's stance and hit detection
+read it by the original's masks instead of a separate down flag;
+`--trace` logs it (`--shove 60`: normal while falling, down under 0.3,
+getting up, normal) ([formats/RSQ.md](formats/RSQ.md), Condition). Next:
+the collapse before death (L5), the falls and get-ups' own rules (C11).
+
 This phase carries the most risk and defines how the game feels.
 
 - `exa_anim`: skeleton, clip sampling and blending, procedural layers

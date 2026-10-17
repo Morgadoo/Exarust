@@ -1240,10 +1240,12 @@ fn spawn_placed_characters(
         let model = exa_world::spawn_model(commands, &body, None);
         let anim = exa_anim::Animator::new(&moveset, "Idle");
         if c.dead {
-            // The dead fall where they lie.
-            commands
-                .entity(model)
-                .insert(exa_physics::body::GoLimp::default());
+            // The dead fall where they lie: their condition is dead, as
+            // the original's corpse placement writes it.
+            commands.entity(model).insert((
+                exa_physics::body::GoLimp::default(),
+                exa_combat::Condition::DEAD,
+            ));
         } else if physical {
             let body = exa_formats::races::body_of_character(races, c.race);
             commands.entity(model).insert(exa_physics::body::Physical {

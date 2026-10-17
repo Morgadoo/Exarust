@@ -97,6 +97,11 @@ Exarust (`exa_ui::cursor` draws, `exa_game::cursor` picks the shape):
   down); the original's test also has a 245 cm term not yet understood;
 - Exarust's player walks to the cursor only outside combat mode for now, so
   chevrons show in combat mode only once it does there as the original;
+- the state comes from the player's condition word
+  ([formats/RSQ.md](formats/RSQ.md), Condition): dead (`0xA00`), collapsing
+  (`0x800`), down for bit `0x200` (down, getting up, dormant), else
+  standing; Exarust's fall shows the standing shapes until its balance is
+  under 0.3, as the original's (its word is still normal then);
 - nothing collapses yet: a killing blow kills at once, so the arrowhead
   takes the ring's place at the blow, where the original keeps the ring
   through the 3 s collapse; the crosshair has no use until interaction;

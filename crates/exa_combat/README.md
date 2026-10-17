@@ -30,6 +30,26 @@ attack starts eased smoothly, the other side with round((20 − W19) × 0.6)
 frames of blend (`attack::start_blend`)
 ([`docs/formats/RSQ.md`](../../docs/formats/RSQ.md), Motion playback).
 
+## Fighters and their condition
+
+`fighter`: a `Fighter` (health bars, natural armour and armour layers,
+readiness, whether it bleeds, its spawn stats) and `Health` (yellow, red,
+maximum; a blow's `take`, death under 0.01; also re-exported from
+`damage`). Every fighter keeps the original's condition word and state
+flags (`condition`): `Condition` with the original's values (0 normal, 1
+walking, 2 attacking, 8 combat idle, 0x20 casting, 0xC0 shocked, 0x100
+weak, 0x200 down, 0x300 getting up, 0x600 dormant, 0x800 collapsing, 0xA00
+dead, 0x8000 kicking, 0x10000/0x10004 switching weapons) and the masks its
+readers test (`helpless` 0xAC0, `fallen_or_dying` 0xA00, `off_feet` 0x200,
+`dying` 0x800, `busy` 0x10203). The posture stage (`PostureTick`, after
+the daze's stance, before the character ticks) writes it once a fixed
+tick: the daze's writer, then `posture`, the original's decision from the
+clip playing, last tick's balance (0.6, 0.3 in double), summed limb
+motion (25 cm) and tone (0.85), which also names the branch the original
+takes next. The get-up's start and its clip's end (`exa_game`), the
+killing blow and placed corpses write it too. Rules:
+[`docs/formats/RSQ.md`](../../docs/formats/RSQ.md) (Condition).
+
 ## Scope
 
 - Hit detection from physics contacts (edge, point, blunt surfaces of a weapon).

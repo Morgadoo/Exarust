@@ -17,7 +17,9 @@
 //! ([`wounds`]).
 
 pub mod attack;
+pub mod condition;
 pub mod damage;
+pub mod fighter;
 pub mod stance;
 pub mod swing;
 pub mod wounds;
@@ -26,13 +28,13 @@ use std::collections::HashSet;
 
 use attack::{AttackMotion, Attacker, Slot};
 use bevy::prelude::*;
-use damage::{Health, PartArmour, Strike, WeaponRecord};
+pub use condition::{Condition, StateFlags};
+use damage::{Strike, WeaponRecord};
 use exa_anim::{Animator, BodyPart, Ease, Motions};
-use exa_formats::character_stats::CharacterStats;
-use exa_formats::races::{Natural, Race};
 use exa_physics::body::BODY_HZ;
 use exa_physics::body::{BodyTicks, CharacterTicks, GoLimp, Shove};
 use exa_world::PartBounds;
+pub use fighter::{Fighter, Health};
 use wounds::{BladeBlood, WoundQueue, frame_tetra, tetra_weights};
 
 pub struct CombatPlugin;
@@ -40,7 +42,7 @@ pub struct CombatPlugin;
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<Hit>()
-            .add_plugins(stance::StancePlugin)
+            .add_plugins((stance::StancePlugin, condition::ConditionPlugin))
             .add_message::<wounds::Bleed>()
             .add_message::<wounds::Spray>()
             // The attack branch of the body tick, before the clips advance.
@@ -68,57 +70,6 @@ impl Plugin for CombatPlugin {
 /// found and dealt. In `PostUpdate`, after transforms propagate.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CombatSystems;
-
-/// A character that can fight and be hurt (on the body model root).
-#[derive(Component, Debug, Clone)]
-#[require(WoundQueue, Attacker)]
-pub struct Fighter {
-    pub health: Health,
-    /// The race's natural armour, under worn items.
-    pub natural: Option<Natural>,
-    /// Armour layers per body part (bones 1..18), set when dressed.
-    pub armour: [PartArmour; 18],
-    /// Dead.
-    pub down: bool,
-    /// Combat readiness, 0..=1: it rises standing in the combat idle and
-    /// halves the wounds a blow deals at 1 ([`stance::readiness_step`]).
-    pub readiness: f32,
-    /// Its race bleeds: its wounds paint blood (`races.rdb` flag bit 0).
-    pub bleeds: bool,
-    /// What its record and race gave it when it spawned (maximum health,
-    /// scale, size, reach, rule bits, …).
-    pub stats: CharacterStats,
-}
-
-impl Default for Fighter {
-    /// A new record of no known race: a human's health (0.25), no natural
-    /// armour, bleeding.
-    fn default() -> Self {
-        Self::of_stats(None, CharacterStats::default())
-    }
-}
-
-impl Fighter {
-    /// A fighter of `race` (none: the original's built-in race) with the
-    /// stats its record spawned with: its health from them, its race's
-    /// natural armour and whether it bleeds.
-    pub fn of_stats(race: Option<&Race>, stats: CharacterStats) -> Self {
-        let natural = race.map(|r| r.natural);
-        Self {
-            health: Health {
-                yellow: stats.yellow,
-                red: stats.red,
-                max: stats.max_health,
-            },
-            natural,
-            armour: damage::armour_layers(natural.as_ref(), &[], stats.deflection),
-            down: false,
-            readiness: 0.0,
-            bleeds: race.is_none_or(Race::bleeds),
-            stats,
-        }
-    }
-}
 
 /// A striker's segment along its entity's local +Y: a held weapon's, on the
 /// entity holding the weapon model, or a fist's, across the hand.
@@ -272,7 +223,7 @@ fn detect_hits(
     motions: Option<Res<Motions>>,
     blades: Query<(Entity, &Blade, &GlobalTransform)>,
     mut attackers: Query<(&Animator, &mut Attacking)>,
-    fighters: Query<(Entity, &Fighter)>,
+    fighters: Query<(Entity, &Condition), With<Fighter>>,
     children: Query<&Children>,
     parts: Query<(&BodyPart, &GlobalTransform, Option<&PartBounds>)>,
     mut hits: MessageWriter<Hit>,
@@ -297,8 +248,8 @@ fn detect_hits(
         let a = gt.translation();
         let b = gt.transform_point(Vec3::Y * blade.length);
         let (a0, b0) = blade.swept_from.unwrap_or((a, b));
-        for (target, fighter) in &fighters {
-            if target == blade.wielder || fighter.down || attack.struck.contains(&target) {
+        for (target, condition) in &fighters {
+            if target == blade.wielder || condition.is_dead() || attack.struck.contains(&target) {
                 continue;
             }
             let spheres: Vec<(usize, Vec3, f32)> = children
@@ -395,6 +346,7 @@ fn react_to_hits(
     mut fighters: Query<(
         Entity,
         &mut Fighter,
+        &mut Condition,
         &mut Animator,
         Has<Attacking>,
         Option<&mut WoundQueue>,
@@ -406,7 +358,9 @@ fn react_to_hits(
 ) {
     let tick = ticks.map_or(0, |t| t.0);
     for hit in hits.read() {
-        let Ok((_, mut f, mut anim, attacking, queue)) = fighters.get_mut(hit.target) else {
+        let Ok((_, mut f, mut condition, mut anim, attacking, queue)) =
+            fighters.get_mut(hit.target)
+        else {
             continue;
         };
         let Some(armour) = hit.bone.checked_sub(1).and_then(|i| f.armour.get(i)) else {
@@ -494,8 +448,8 @@ fn react_to_hits(
             f.health.red,
             f.health.max
         );
-        if killed && !f.down {
-            f.down = true;
+        if killed && !condition.dying() {
+            condition.die();
             info!("fighter {:?} is down", hit.target);
             // The body goes limp and falls under the blow.
             commands.entity(hit.target).insert(GoLimp {
@@ -510,14 +464,14 @@ fn react_to_hits(
             // strength exists: there the daze drains a struck attacker's
             // swing and returns it to its stance within the swing's time;
             // here the attack stops at once and deals no further hit.
-            if !f.down {
+            if !condition.dying() {
                 let stance = stance_of(&anim);
                 anim.play_loop(&stance);
             }
             commands.entity(hit.target).remove::<Attacking>();
         }
     }
-    for (e, _, anim, attacking, _) in &fighters {
+    for (e, _, _, anim, attacking, _) in &fighters {
         if attacking && anim.looping {
             commands.entity(e).remove::<Attacking>();
         }
@@ -534,7 +488,9 @@ fn closest_on_segment(a: Vec3, b: Vec3, p: Vec3) -> Vec3 {
 mod tests {
     use super::*;
     use bevy::ecs::message::Messages;
-    use damage::{DEATH, Outcome};
+    use damage::{DEATH, Outcome, PartArmour};
+    use exa_formats::character_stats::CharacterStats;
+    use exa_formats::races::{Natural, Race};
 
     #[test]
     fn segment_projection() {
@@ -597,6 +553,10 @@ mod tests {
         app.update();
     }
 
+    fn condition(app: &App, fighter: Entity) -> Condition {
+        *app.world().get::<Condition>(fighter).unwrap()
+    }
+
     fn shoves(app: &App) -> Vec<Shove> {
         let messages = app.world().resource::<Messages<Shove>>();
         messages.get_cursor().read(messages).copied().collect()
@@ -629,7 +589,8 @@ mod tests {
             assert_eq!(anim.time, 0.0, "bone {bone}");
             let f = app.world().get::<Fighter>(fighter).unwrap();
             assert!(f.health.yellow < 0.25, "bone {bone}: {:?}", f.health);
-            assert!(f.health.yellow >= DEATH && !f.down, "bone {bone}");
+            assert!(f.health.yellow >= DEATH, "bone {bone}");
+            assert_eq!(condition(&app, fighter), Condition::NORMAL, "bone {bone}");
             assert_eq!(f.health, health, "bone {bone}");
             let s = shoves(&app);
             assert_eq!(s.len(), 1, "bone {bone}");
@@ -670,8 +631,7 @@ mod tests {
             ("Cmbt - Idle", true, None)
         );
         assert_eq!(anim.time, 0.0);
-        let f = app.world().get::<Fighter>(fighter).unwrap();
-        assert!(!f.down);
+        assert_eq!(condition(&app, fighter), Condition::NORMAL);
         assert_eq!(shoves(&app).len(), 1);
     }
 
@@ -694,7 +654,8 @@ mod tests {
             };
             strike(&mut app, id, 9);
             let f = app.world().get::<Fighter>(id).unwrap();
-            assert!(f.down && f.health.yellow == 0.0, "{:?}", f.health);
+            assert_eq!(f.health.yellow, 0.0, "{:?}", f.health);
+            assert_eq!(condition(&app, id), Condition::DEAD);
             assert!(app.world().get::<GoLimp>(id).is_some());
             assert!(app.world().get::<Attacking>(id).is_none());
             assert_eq!(shoves(&app).len(), 1);
@@ -878,7 +839,7 @@ mod tests {
             .id();
         cut_by(&mut app, Entity::PLACEHOLDER, id, 9, Vec3::ZERO);
         app.update();
-        assert!(app.world().get::<Fighter>(id).unwrap().down);
+        assert_eq!(condition(&app, id), Condition::DEAD);
         let bled: Vec<_> = (0..7).flat_map(|_| tick(&mut app)).collect();
         assert_eq!(bled.len(), 1);
         assert_eq!((bled[0].body, bled[0].travel), (id, Vec3::ZERO));

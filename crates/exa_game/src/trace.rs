@@ -6,8 +6,8 @@
 //! Exarust's own columns follow the probe's: the body's sleep countdown and
 //! state, its character frame's origin and its body root (where its
 //! controller stands) across the ground, its clip's blend and how far its
-//! pose is held. Columns: `docs/formats/RSQ.md` (Physical body, per-tick
-//! trace).
+//! pose is held, and its character's condition word. Columns:
+//! `docs/formats/RSQ.md` (Physical body, per-tick trace).
 
 use std::fmt::Write as _;
 use std::fs::File;
@@ -16,6 +16,7 @@ use std::path::Path;
 
 use bevy::prelude::*;
 use exa_anim::{Animator, BodyPart, Motions, Stature};
+use exa_combat::Condition;
 use exa_physics::body::{BodySystems, BodyTicks, Ragdoll, world_with};
 use exa_physics::prop::PropBody;
 
@@ -45,9 +46,12 @@ const SCALARS: [&str; 11] = [
 /// Exarust's own place columns, after its sleep columns (cm): the character
 /// frame's origin and the body root across the ground.
 const OWN: [&str; 4] = ["frame_x", "frame_z", "root_x", "root_z"];
-/// Exarust's own clip columns, last: the blend from the clip's capture
-/// (frames, 0 once its first key is reached) and the hold weight.
+/// Exarust's own clip columns: the blend from the clip's capture (frames,
+/// 0 once its first key is reached) and the hold weight.
 const CLIP: [&str; 2] = ["blend", "hold"];
+/// Last, the character's condition word, in hex as the retail watcher logs
+/// it (`0x300`); empty for a body without one.
+const CONDITION: &str = "condition";
 /// A part target's columns: its place (cm) and its rotation.
 const TARGET: [&str; 7] = ["x", "y", "z", "qx", "qy", "qz", "qw"];
 
@@ -113,6 +117,7 @@ pub fn header() -> String {
     columns.push("sleep".into());
     columns.extend(OWN.iter().map(|s| s.to_string()));
     columns.extend(CLIP.iter().map(|s| s.to_string()));
+    columns.push(CONDITION.into());
     columns.join(",")
 }
 
@@ -157,6 +162,7 @@ fn trace_bodies(
             &Ragdoll,
             Option<&Animator>,
             Option<&Stature>,
+            Option<&Condition>,
             Has<PlayerBody>,
         ),
         Without<PropBody>,
@@ -169,7 +175,7 @@ fn trace_bodies(
     }
     let player = bodies.iter().any(|(.., p)| p);
     let mut text = String::new();
-    for (root, body, anim, stature, is_player) in &bodies {
+    for (root, body, anim, stature, condition, is_player) in &bodies {
         if player && !is_player {
             continue;
         }
@@ -183,6 +189,10 @@ fn trace_bodies(
             &parents,
             &nodes,
         ));
+        text.push(',');
+        if let Some(c) = condition {
+            let _ = write!(text, "{:#x}", c.0);
+        }
         text.push('\n');
     }
     let ticks = trace.ticks + 1;
@@ -297,9 +307,12 @@ mod tests {
     #[test]
     fn the_trace_has_a_row_per_tick() {
         let path = std::env::temp_dir().join(format!("exarust-trace-{}.csv", std::process::id()));
-        let (mut app, _) = crate::limp::tests::app(1.0 / 60.0);
+        let (mut app, root) = crate::limp::tests::app(1.0 / 60.0);
         app.insert_resource(BodyTrace::create(&path).unwrap())
             .add_plugins(TracePlugin);
+        app.world_mut()
+            .entity_mut(root)
+            .insert(Condition::GETTING_UP);
         while app.world().resource::<BodyTicks>().0 < 20 {
             app.update();
         }
@@ -312,8 +325,9 @@ mod tests {
         let columns: Vec<&str> = lines.next().unwrap().split(',').collect();
         assert_eq!(
             columns.len(),
-            2 + 12 + SCALARS.len() + BONES * TARGET.len() + 8 + 2 + 2 + OWN.len() + CLIP.len()
+            2 + 12 + SCALARS.len() + BONES * TARGET.len() + 8 + 2 + 2 + OWN.len() + CLIP.len() + 1
         );
+        assert_eq!(columns.last(), Some(&CONDITION));
         let rows: Vec<Vec<&str>> = lines.map(|l| l.split(',').collect()).collect();
         assert_eq!(rows.len() as u64, ticks);
         let at = |name: &str| columns.iter().position(|c| *c == name).unwrap();
@@ -332,6 +346,7 @@ mod tests {
             assert_eq!(number(row, "balance"), 1.0);
             assert_eq!(number(row, "balance_counter"), 0.0);
             assert_eq!((row[at("countdown")], row[at("sleep")]), ("256", "awake"));
+            assert_eq!(row[at(CONDITION)], "0x300");
             assert!(number(row, "pelvis_p3_z").is_finite());
             let lifted = number(row, "frame_height") + number(row, "root_clip_height");
             assert!((number(row, "target1_y") - lifted).abs() < 1e-2);

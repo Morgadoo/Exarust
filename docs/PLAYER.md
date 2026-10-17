@@ -86,7 +86,10 @@ original's footwork steps the feet and never changes the clip; Exarust's
 interim one plays "Combat Walk" while a key is held and gives back the
 clip it replaced (the guard stays the guard) when they are released. A
 walk or run still playing when Tab turns combat mode on ends in the stance
-once the body stands, as the original's walk does.
+once the body stands, as the original's walk does. While its condition
+word is helpless (down, getting up, collapsing, dead) the player is not
+steered, its body does not turn and it engages no attack, as the
+original's player behaviour and body tick skip them for mask `0xAC0`.
 
 - **Facing.** The heading turns to the cursor's direction once it is more
   than 30° off it, and follows it exactly while an attack is requested
@@ -214,7 +217,9 @@ also leaves its interim backpedal and combat walk alone).
   3.92 m.
 - **The daze.** While a fighter's energy is more than 0.05 under its most
   its body tick makes its stance the Defence stance, and, unless it is
-  down or attacking, starts the Defence stance when another clip plays,
+  down or attacking (its condition word helpless or attacking,
+  [formats/RSQ.md](formats/RSQ.md), Condition; or in Exarust's fall),
+  starts the Defence stance when another clip plays,
   blending round((1.05 − E) × 300) frames (129 at the 0.62 a duellist's
   blow leaves), eased smoothly. Its body meanwhile holds the pose it is
   physically in (standing on its feet, in full), so the guard does not

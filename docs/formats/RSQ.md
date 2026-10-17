@@ -566,6 +566,75 @@ pins (C14, C18):
   reach 15–20 cm less far than the clip's pose at the original's swing
   speed.
 
+### Condition
+
+The original keeps one condition word on every character, and most of its
+systems test it rather than their own flags (`exa_combat::condition`; REA
+on the body tick's posture block, the swing routine, the get-up, the
+collapse, death and the masks its readers test, constants read from the
+executable):
+
+| value | meaning | written when |
+|---|---|---|
+| `0` | normal | standing in a stance or any other clip; the daze; a get-up's clip ends; a walk stops |
+| `1` | walking | the walk or the run plays |
+| `2` | attacking | an attack (actions 0x05–0x0C) plays: its swing writes it every tick |
+| `8` | combat idle | `Cmbt - Idle` plays, or the character parries |
+| `0x20` | casting | a power's clip (0x22–0x28) plays |
+| `0x100` | weak | its tone is under 0.85 |
+| `0x200` | down | off balance under 0.3; a knock-out |
+| `0x300` | getting up | a get-up starts (a stagger plays one partway) |
+| `0x600` | dormant | an AI lies as a corpse until it sees a target |
+| `0x800` | collapsing | a lethal wound, until death |
+| `0xA00` | dead | death; a corpse placed by its level |
+| `0xC0` | shocked | a golem stunned by electricity, until its timer runs out |
+| `0x8000`, `0x10000`, `0x10004` | kicking; switching weapons before and after the swap at 60 % of the clip | their clips play |
+
+The readers test masks: `0xAC0` (down, getting up, dormant, collapsing,
+dead, shocked: no daze stance, no turning, no attack engaged), `0xA00` (the
+same but shocked: the exploration cursor's cross, the blow sag zeroed),
+`0x200` (down, getting up, dormant, dead), `0x800` (collapsing or dead),
+`0x10203` (no queued motion starts). State flags sit beside the word
+(dormant `0x10`, waking `0x20`, a scripted hold `0x40`, the shock's stagger
+`0x100`, a potion `0x800000`).
+
+The body tick writes the word once, in this order: the daze block makes a
+dazed character normal unless the word holds `0xAC0` or is 2; then the
+posture block, skipped for the collapsing (their dying tick runs instead)
+and the dead, and for the shocked until their timer runs out:
+1. balance under 0.6 (the float compared in double, so 0.6f stands) or
+   getting up: getting up stays; under 0.3 the word becomes down, whether
+   the body lies still (its summed limb motion, every limb's farthest
+   particle over the step, under 25 cm: the get-up decision follows) or
+   still moves (a fall, a stagger); else it stays;
+2. an attack playing: 2 (the attack routine);
+3. a tone under 0.85: weak (with the Defence stance, blend 0);
+4. by the clip: the kick 0x8000; a parry or the combat idle 8; a power
+   0x20; the walk or the run 1; a weapon switch 0x10000, 0x10004 past 60 %
+   (compared in double, so 0.6f is past);
+   anything else 0 (with the posture switch to the stance).
+
+Exarust (`exa_combat::condition`, its `PostureTick` after the daze's
+stance and before the character ticks; every `Fighter` keeps the word):
+- the decision, as above, from last tick's balance, summed limb motion
+  and tone and the clip playing; it also names the branch the original
+  takes next (falls, lying still, getting up, attack, weak, standing,
+  collapse), for the changes that add those actions;
+- Exarust's get-up writes getting up when it starts, and the character
+  tick normal when the get-up's clip ends into the stance (the same tick);
+  a killing blow writes dead and a level's corpse is placed dead (the
+  collapse comes with L5); a walk's stop needs no writer, since the
+  player's steering starts the stance before the posture stage;
+- not yet: the posture block's actions (Rebalance, the Defence stance,
+  staggers and the get-up decision: C11; nothing lowers tone yet), the
+  kick, weapon switch and powers, knock-outs, dormancy, shocks, the
+  collision layer the original restores on leaving a state of 0x100 or
+  more; Exarust's backpedal and combat walk stand in for the walk played
+  backwards and the footwork, so they give 0.
+- `--shove 60 play arena`: 0 in Idle and in the daze's Defence stance, 0
+  while it falls (balance 0.53), `0x200` from balance 0.25 on, `0x300` at
+  the get-up's start, 0 when `Get Up 2` ends into Idle.
+
 Per-tick trace. `exarust --trace <file.csv>` writes one row per traced body
 after every tick. It traces the player's body, or every simulated body when
 there is no player. The columns are those of the retail body probe, so a
@@ -590,6 +659,7 @@ is left empty.
 | `countdown`, `sleep` | Exarust's own, after the probe's: the body's sleep countdown and state (`awake`, `asleep`, `deep`) |
 | `frame_x`, `frame_z`, `root_x`, `root_z` | Exarust's own: the character frame's origin, and the body root (where the character controller stands), across the ground |
 | `blend`, `hold` | Exarust's own: the blend (frames) the clip still has from its start's capture (0 once its first key is reached), and how far the sample was pulled toward the pose the body holds |
+| `condition` | the character's condition word in hex (`0x300`), as the retail watcher logs it ([Condition](#condition)); empty for a body without one |
 
 The joint trace (`--joint-trace`), one row per body part, and the body
 overlay are described in [`docs/DEBUGGING.md`](../DEBUGGING.md).

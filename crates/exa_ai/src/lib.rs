@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use exa_anim::Animator;
 use exa_combat::attack::{self, AttackMotion, Attacker};
 use exa_combat::stance::{self, Stance};
-use exa_combat::{Attacking, Blade, Fighter};
+use exa_combat::{Attacking, Blade, Condition, Fighter};
 use exa_physics::CharacterBody;
 use exa_physics::body::{BodyTicks, Fallen, MAX_ENERGY, Ragdoll};
 
@@ -102,7 +102,7 @@ fn duellist(
     time: Res<Time>,
     ticks: Option<Res<BodyTicks>>,
     targets: Query<&GlobalTransform>,
-    bodies: Query<(&Fighter, &GlobalTransform, Option<&Ragdoll>)>,
+    bodies: Query<(&Condition, &GlobalTransform, Option<&Ragdoll>), With<Fighter>>,
     children: Query<&Children>,
     blades: Query<&Blade>,
     mut npcs: Query<(
@@ -126,10 +126,12 @@ fn duellist(
             continue;
         };
         body.desired_velocity = Vec3::ZERO;
-        let Ok((fighter, gt, ragdoll)) = bodies.get(entity) else {
+        let Ok((condition, gt, ragdoll)) = bodies.get(entity) else {
             continue;
         };
-        if fighter.down || fallen || !ai.engaged {
+        // Down, getting up, collapsing or dead (or Exarust's fall), it does
+        // nothing.
+        if condition.fallen_or_dying() || fallen || !ai.engaged {
             continue;
         }
         let Ok(target) = targets.get(ai.target) else {
@@ -162,8 +164,8 @@ fn duellist(
         let primary_blend = attacker
             .primary_record(entity, blades.iter())
             .map(|r| r.blend);
-        // Leave a downed target alone.
-        if target_body.is_some_and(|(f, ..)| f.down) {
+        // Leave a collapsing or dead target alone.
+        if target_body.is_some_and(|(c, ..)| c.dying()) {
             if anim.looping {
                 stance::take_ai_stance(&mut anim, *stance, primary_blend);
             }

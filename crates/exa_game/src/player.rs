@@ -24,7 +24,7 @@ use exa_anim::Stature;
 use exa_character::held::{Hands, HeldMoveset, class};
 use exa_combat::attack::{self, AttackKind, AttackMotion, Attacker, Request, Slot};
 use exa_combat::stance::{self, Stance};
-use exa_combat::{Attacking, Blade, Fighter};
+use exa_combat::{Attacking, Blade, Condition, Fighter};
 use exa_formats::encumbrance::run_cap;
 use exa_physics::body::{BodyTicks, Fallen, GoLimp, MAX_ENERGY, Ragdoll};
 use exa_physics::{CharacterBody, Physics};
@@ -408,17 +408,21 @@ fn steer_player(
         &mut Animator,
         &Stance,
         Option<&Fighter>,
+        Option<&Condition>,
         Has<Fallen>,
     )>,
 ) {
     let dt = 1.0 / TICK_HZ;
     for (mut body, at, children) in &mut players {
         for child in children.iter() {
-            let Ok((mut pb, mut t, mut anim, &stance, fighter, fallen)) = bodies.get_mut(child)
+            let Ok((mut pb, mut t, mut anim, &stance, fighter, condition, fallen)) =
+                bodies.get_mut(child)
             else {
                 continue;
             };
-            if fallen || fighter.is_some_and(|f| f.down) {
+            // Not steered while it falls (Exarust's own) or its condition is
+            // helpless: down, getting up, collapsing, dead.
+            if fallen || condition.is_some_and(|c| c.helpless()) {
                 body.desired_velocity = Vec3::ZERO;
                 continue;
             }
@@ -602,6 +606,7 @@ fn take_player_stance(
         &mut Stance,
         &mut Animator,
         &Fighter,
+        &Condition,
         &GlobalTransform,
         Option<&Ragdoll>,
         Has<Attacking>,
@@ -609,17 +614,17 @@ fn take_player_stance(
     others: Query<
         (
             Entity,
-            &Fighter,
+            &Condition,
             &GlobalTransform,
             Option<&Ragdoll>,
             Option<&Stature>,
         ),
-        Without<GoLimp>,
+        (With<Fighter>, Without<GoLimp>),
     >,
 ) {
     let now = time.elapsed_secs();
-    for (me, mut pb, mut stance, mut anim, fighter, gt, body, attacking) in &mut bodies {
-        if fighter.down {
+    for (me, mut pb, mut stance, mut anim, fighter, condition, gt, body, attacking) in &mut bodies {
+        if condition.dying() {
             continue;
         }
         if attacking {
@@ -640,8 +645,8 @@ fn take_player_stance(
                 .iter()
                 // Living: not dead, and with its muscles (the dead a level
                 // places lie limp).
-                .filter(|(e, f, _, b, _)| {
-                    *e != me && !f.down && b.is_none_or(|b| b.drive.is_some())
+                .filter(|(e, c, _, b, _)| {
+                    *e != me && !c.is_dead() && b.is_none_or(|b| b.drive.is_some())
                 })
                 .map(|(e, _, gt, b, scale)| {
                     ((e, scale.map_or(1.0, |s| s.0)), stance::chest_point(gt, b))
@@ -689,13 +694,13 @@ fn toggle_combat(keys: Res<ButtonInput<KeyCode>>, mut bodies: Query<&mut PlayerB
 fn player_combat(
     cursor: Res<CursorGround>,
     players: Query<&GlobalTransform, With<Player>>,
-    mut bodies: Query<(&mut PlayerBody, Option<&Fighter>, Has<Fallen>)>,
+    mut bodies: Query<(&mut PlayerBody, Option<&Condition>, Has<Fallen>)>,
 ) {
     let Some(player) = players.iter().next() else {
         return;
     };
-    for (mut pb, fighter, fallen) in &mut bodies {
-        if fallen || fighter.is_some_and(|f| f.down) || !pb.combat {
+    for (mut pb, condition, fallen) in &mut bodies {
+        if fallen || condition.is_some_and(|c| c.helpless()) || !pb.combat {
             continue;
         }
         let aim = cursor
@@ -735,7 +740,7 @@ fn request_attacks(
         &mut Attacker,
         &Stance,
         Option<&HeldMoveset>,
-        Option<&Fighter>,
+        Option<&Condition>,
         Option<&Ragdoll>,
         Option<&Attacking>,
         Has<Fallen>,
@@ -744,10 +749,21 @@ fn request_attacks(
     let now = ticks.map_or(0, |t| t.millis());
     let down = buttons.pressed(MouseButton::Left) || latch.pressed_since_tick;
     latch.pressed_since_tick = false;
-    for (entity, mut pb, mut anim, mut attacker, stance, held, fighter, body, attacking, fallen) in
-        &mut bodies
+    for (
+        entity,
+        mut pb,
+        mut anim,
+        mut attacker,
+        stance,
+        held,
+        condition,
+        body,
+        attacking,
+        fallen,
+    ) in &mut bodies
     {
-        if fallen || fighter.is_some_and(|f| f.down) || !pb.combat {
+        // A helpless condition engages no attack (the original's 0xAC0).
+        if fallen || condition.is_some_and(|c| c.helpless()) || !pb.combat {
             pb.attack.tick(false, now, false);
             continue;
         }
@@ -1170,11 +1186,11 @@ mod tests {
         app.update();
         assert_eq!(stance_of(&app, player), Stance::Defence);
         place(&mut app, foe, Vec3::new(0.0, 0.0, 2.0));
-        app.world_mut().get_mut::<Fighter>(foe).unwrap().down = true;
+        *app.world_mut().get_mut::<Condition>(foe).unwrap() = Condition::DEAD;
         app.update();
         assert_eq!(stance_of(&app, player), Stance::Defence);
         // A limp body (a corpse the level placed) is no target either.
-        app.world_mut().get_mut::<Fighter>(foe).unwrap().down = false;
+        *app.world_mut().get_mut::<Condition>(foe).unwrap() = Condition::NORMAL;
         app.update();
         assert_eq!(stance_of(&app, player), Stance::CombatIdle);
         app.world_mut().entity_mut(foe).insert(GoLimp::default());

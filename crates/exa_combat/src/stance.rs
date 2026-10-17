@@ -21,8 +21,8 @@ use bevy::prelude::*;
 use exa_anim::{Animator, Ease};
 use exa_physics::body::{CharacterTicks, Fallen, Ragdoll};
 
-use crate::damage::DEATH;
-use crate::{Attacking, Fighter, attack};
+use crate::fighter::DEATH;
+use crate::{Attacking, Condition, Fighter, attack};
 
 /// The looping clip a fighter returns to.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -212,9 +212,10 @@ pub fn daze_blend(energy: f32) -> u32 {
 
 /// The daze's part in the body tick, for a fighter whose energy is more
 /// than 0.05 under its most: its stance becomes the Defence stance, and
-/// unless it is down (`fallen`) or attacking, the Defence stance starts if
-/// it does not play already, blending [`daze_blend`] frames, and the blend
-/// from the start's capture is eased smoothly either way.
+/// unless it is down (`fallen`: Exarust's fall, or a helpless condition)
+/// or attacking, the Defence stance starts if it does not play already,
+/// blending [`daze_blend`] frames, and the blend from the start's capture
+/// is eased smoothly either way.
 pub fn take_daze(
     stance: &mut Stance,
     anim: &mut Animator,
@@ -273,16 +274,19 @@ fn take_stance(
         &mut Stance,
         &mut Animator,
         Option<&mut Fighter>,
+        Option<&Condition>,
         Option<&Ragdoll>,
         Option<&Attacking>,
         Has<Fallen>,
     )>,
 ) {
-    for (mut stance, mut anim, fighter, body, attacking, fallen) in &mut bodies {
+    for (mut stance, mut anim, fighter, condition, body, attacking, fallen) in &mut bodies {
+        let condition = condition.copied().unwrap_or_default();
+        // A collapsing or dead fighter keeps nothing of its stance.
+        if condition.dying() {
+            continue;
+        }
         if let Some(mut f) = fighter {
-            if f.down {
-                continue;
-            }
             let g = readiness_step(f.readiness, *stance, &anim.action);
             if f.readiness != g {
                 f.readiness = g;
@@ -291,9 +295,13 @@ fn take_stance(
         if let Some(drive) = body.and_then(|b| b.drive.as_ref())
             && drive.dazed()
         {
-            let attacking = attack::playing(attacking, &anim).is_some();
+            // The daze leaves a helpless or attacking fighter's clip alone
+            // (by its condition), and Exarust's fallen one.
+            let down = fallen || condition.helpless();
+            let attacking =
+                attack::playing(attacking, &anim).is_some() || condition == Condition::ATTACKING;
             let was = *stance;
-            take_daze(&mut stance, &mut anim, drive.energy, fallen, attacking);
+            take_daze(&mut stance, &mut anim, drive.energy, down, attacking);
             if was != *stance {
                 debug!("dazed at {:.2}: {:?}", drive.energy, *stance);
             }
@@ -688,7 +696,7 @@ mod tests {
         }
         let g = app.world().get::<Fighter>(id).unwrap().readiness;
         assert!((g - 0.04).abs() < 1e-5, "{g}");
-        app.world_mut().get_mut::<Fighter>(id).unwrap().down = true;
+        *app.world_mut().get_mut::<Condition>(id).unwrap() = Condition::DEAD;
         *app.world_mut().get_mut::<Stance>(id).unwrap() = Stance::Defence;
         app.update();
         let f = app.world().get::<Fighter>(id).unwrap();

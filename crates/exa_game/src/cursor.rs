@@ -4,9 +4,7 @@
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use exa_combat::Fighter;
 use exa_physics::Physics;
-use exa_physics::body::Fallen;
 use exa_ui::{CursorShape, ScriptedPointer, WorldCursor};
 
 use crate::player::{
@@ -26,11 +24,28 @@ const PICK_RANGE: f32 = 200.0;
 pub enum Condition {
     #[default]
     Standing,
-    /// Lying after a fall, before getting up.
+    /// Lying after a fall, getting up, or dormant.
     Down,
     /// A lethal wound's collapse, before death.
     Collapsing,
     Dead,
+}
+
+impl Condition {
+    /// The cursor's view of the player's condition word, by the masks the
+    /// original tests: dead, collapsing, down (bit 0x200: down, getting up,
+    /// dormant), else standing.
+    pub fn of(word: exa_combat::Condition) -> Self {
+        if word.is_dead() {
+            Condition::Dead
+        } else if word.dying() {
+            Condition::Collapsing
+        } else if word.off_feet() {
+            Condition::Down
+        } else {
+            Condition::Standing
+        }
+    }
 }
 
 /// What the cursor's shape depends on.
@@ -111,7 +126,7 @@ fn pick_cursor(
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ChaseCamera>>,
     players: Query<(&GlobalTransform, &Children), With<Player>>,
-    bodies: Query<(&PlayerBody, Option<&Fighter>, Has<Fallen>)>,
+    bodies: Query<(&PlayerBody, Option<&exa_combat::Condition>)>,
     mut cursor: ResMut<WorldCursor>,
 ) {
     let found = players.iter().find_map(|(at, children)| {
@@ -120,7 +135,7 @@ fn pick_cursor(
             .find_map(|c| bodies.get(c).ok())
             .map(|body| (at.translation(), body))
     });
-    let (Ok(window), Ok((camera, eye)), Some((feet, (pb, fighter, fallen)))) =
+    let (Ok(window), Ok((camera, eye)), Some((feet, (pb, word)))) =
         (windows.single(), cameras.single(), found)
     else {
         if cursor.active {
@@ -128,13 +143,7 @@ fn pick_cursor(
         }
         return;
     };
-    let condition = if fighter.is_some_and(|f| f.down) {
-        Condition::Dead
-    } else if fallen {
-        Condition::Down
-    } else {
-        Condition::Standing
-    };
+    let condition = Condition::of(word.copied().unwrap_or_default());
     let aim = feet + Vec3::Y * AIM_HEIGHT;
     // Exarust walks to the cursor only outside combat mode for now; the
     // original also does in combat mode, and the chevrons follow it there.
@@ -251,6 +260,27 @@ mod tests {
                 ..default()
             };
             assert_eq!(shape(state), CursorShape::Cross, "{condition:?}");
+        }
+    }
+
+    /// The cursor reads the player's condition word: dead (0xA00), the
+    /// collapse (0x800), down for bit 0x200 (down, getting up, dormant),
+    /// else standing (attacking, walking, weak, shocked included).
+    #[test]
+    fn the_condition_word_picks_the_cursors_condition() {
+        use exa_combat::Condition as Word;
+        for (word, want) in [
+            (Word::DEAD, Condition::Dead),
+            (Word::COLLAPSING, Condition::Collapsing),
+            (Word::DOWN, Condition::Down),
+            (Word::GETTING_UP, Condition::Down),
+            (Word::DORMANT, Condition::Down),
+            (Word::NORMAL, Condition::Standing),
+            (Word::ATTACKING, Condition::Standing),
+            (Word::WEAK, Condition::Standing),
+            (Word::SHOCKED, Condition::Standing),
+        ] {
+            assert_eq!(Condition::of(word), want, "{word:?}");
         }
     }
 

@@ -40,6 +40,8 @@ Each character tick measures a living body's balance at its chest against
 its ankles and asks the level for the ground under each foot
 (`contact::Level::height_below`, the original's Height Query), which give
 its support S (`src/body_balance.rs`, `body::Ragdoll::measure_balance`).
+`body::Ragdoll::exertion` sums each part's farthest particle over the last
+tick (cm), the summed limb motion `exa_combat`'s posture stage reads.
 Velocity retention is the original's default environment: banded by speed
 for limp parts, the fast value for living limbs. A limp body sleeps by the
 original's countdown (`body::Ragdoll::countdown`: 256, two off each tick

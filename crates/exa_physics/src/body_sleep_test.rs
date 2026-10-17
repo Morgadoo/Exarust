@@ -225,3 +225,33 @@ fn a_touch_wakes_the_lower_countdown_afresh() {
     );
     assert!(!b.asleep());
 }
+
+/// The summed limb motion the posture stage reads: each part's farthest
+/// particle over the last tick, in cm, summed over the parts. Two parts
+/// drifting 1 cm a tick sum 2 cm; one particle of the second moved 2 cm
+/// up as well makes that part's √5 = 2.236 cm, 3.236 in all.
+#[test]
+fn exertion_sums_each_parts_farthest_particle() {
+    let part = |parent: Option<usize>, at: Vec3| PartSetup {
+        bone: if parent.is_some() { 12 } else { 11 },
+        entity: Entity::PLACEHOLDER,
+        parent,
+        world: Affine3A::from_translation(at),
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.06),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot: None,
+        pins: Vec::new(),
+    };
+    let mut body = Ragdoll::new(&[part(None, Vec3::ZERO), part(Some(0), Vec3::Y * 0.3)]);
+    assert_eq!(body.exertion(), 0.0);
+    body.set_velocity(Vec3::X * 0.01 * BODY_HZ);
+    assert!((body.exertion() - 2.0).abs() < 1e-4, "{}", body.exertion());
+    body.parts[1].previous[2] -= Vec3::Y * 0.02;
+    assert!(
+        (body.exertion() - (1.0 + 5f32.sqrt())).abs() < 1e-4,
+        "{}",
+        body.exertion()
+    );
+}

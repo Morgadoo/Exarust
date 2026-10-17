@@ -14,6 +14,10 @@ use exa_formats::weapon_stats::{StatBytes, at};
 /// The record a held weapon fights with, and its flags.
 pub use exa_formats::weapon_record::{WeaponRecord, flags};
 
+/// The health bars a blow takes from, kept with the fighter
+/// ([`crate::fighter`]).
+pub use crate::fighter::{DEATH, Health};
+
 /// One armour layer of a body part.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Layer {
@@ -403,48 +407,6 @@ fn zones(w: &WeaponRecord, p: f32, clock: f32, draw: &mut f32) -> (f32, f32, boo
     (z, zeta, haft)
 }
 
-/// The health bars of a character.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Health {
-    /// Current (yellow) and lasting (red) health; both start at `max`.
-    pub yellow: f32,
-    pub red: f32,
-    pub max: f32,
-}
-
-/// Yellow health below this is death.
-pub const DEATH: f32 = 0.01;
-
-impl Health {
-    /// Health of a race with health factor `factor` (human 1).
-    pub fn of_race(factor: f32) -> Self {
-        let max = 0.25 * factor;
-        Self {
-            yellow: max,
-            red: max,
-            max,
-        }
-    }
-
-    /// Takes a blow's damage; returns whether it kills.
-    pub fn take(&mut self, outcome: &Outcome) -> bool {
-        self.yellow -= 0.1 * outcome.yellow;
-        let before = self.red;
-        self.red -= 0.2 * outcome.red;
-        if self.red > 0.0 && before > 0.0 {
-            self.yellow *= self.red / before;
-        } else {
-            self.yellow = 0.0;
-        }
-        if self.yellow < DEATH {
-            self.yellow = 0.0;
-            true
-        } else {
-            false
-        }
-    }
-}
-
 /// A one-handed sword's record, 90 cm long: the tests' worked example.
 #[cfg(test)]
 pub(crate) fn sword_a() -> WeaponRecord {
@@ -634,25 +596,5 @@ mod tests {
         let outer = armour_layers(None, &[trousers], false)[1].outer.unwrap();
         assert!((outer.padding - 0.085).abs() < 1e-7);
         assert!((outer.slash - 17.0 / 140.0).abs() < 1e-7);
-    }
-
-    #[test]
-    fn health_and_death() {
-        let mut h = Health::of_race(1.0);
-        assert_eq!(h.max, 0.25);
-        let light = Outcome {
-            red: 0.1,
-            yellow: 0.5,
-            ..Outcome::default()
-        };
-        assert!(!h.take(&light));
-        assert!(h.yellow < 0.25 && h.red < 0.25);
-        let heavy = Outcome {
-            red: 2.0,
-            yellow: 5.0,
-            ..Outcome::default()
-        };
-        assert!(h.take(&heavy));
-        assert_eq!(h.yellow, 0.0);
     }
 }

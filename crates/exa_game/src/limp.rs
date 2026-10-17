@@ -23,6 +23,7 @@ use exa_anim::{
     follow_up_blend, in_place,
 };
 use exa_assets::SkinnedPart;
+use exa_combat::Condition;
 use exa_combat::swing::{Swing, pace_swings};
 use exa_formats::rsq::BoneBody;
 use exa_physics::body::{
@@ -220,6 +221,7 @@ fn tick_characters(
             Option<&PlayerBody>,
             Option<&Fallen>,
             Option<&Swing>,
+            Option<&mut Condition>,
         ),
         With<TickedClips>,
     >,
@@ -242,7 +244,8 @@ fn tick_characters(
         })
     };
     for &(_, root) in order.iter() {
-        let Ok((_, mut body, mut anim, stature, player, fallen, swing)) = bodies.get_mut(root)
+        let Ok((_, mut body, mut anim, stature, player, fallen, swing, mut condition)) =
+            bodies.get_mut(root)
         else {
             continue;
         };
@@ -254,7 +257,8 @@ fn tick_characters(
             .find(|&a| controllers.contains(a));
         let controller = character.and_then(|c| controllers.get(c).ok());
         let stature = stature.map_or(1.0, |s| s.0);
-        let mut bearing = bearing(controller, player, &anim, fallen);
+        let state = condition.as_deref().copied().unwrap_or_default();
+        let mut bearing = bearing(controller, player, &anim, fallen, state);
         bearing.rising = rising(&motions, &anim, fallen);
         if bearing.moving {
             bearing.gait_floor =
@@ -274,6 +278,7 @@ fn tick_characters(
             run: player.map_or(0.0, PlayerBody::run),
             swing: swing.copied().unwrap_or(Swing::FISTS),
         };
+        let once = !anim.looping;
         let pose = clip_tick(&motions, &mut anim, &body, &pace, |body| {
             physical_turns(
                 body,
@@ -284,6 +289,14 @@ fn tick_characters(
                 &nodes,
             )
         });
+        // A clip played once that ended into its stance this tick: a
+        // get-up is over (the condition's clip-end writer).
+        if once
+            && anim.looping
+            && let Some(c) = condition.as_deref_mut()
+        {
+            c.clip_ended();
+        }
         match pose {
             Some(pose) => {
                 let pose = pose.scaled(stature);
@@ -490,13 +503,16 @@ fn rising(motions: &Motions, anim: &Animator, fallen: Option<&Fallen>) -> bool {
 /// strides in the walk and run cycles, is off balance from its fall until
 /// it has got up, gets up while its get-up clip plays, never crouches (no
 /// crouch yet), is carried while its controller stands on the ground (or
-/// it has none), and turns by what is left of the player's turn. Its gait
-/// floor is measured by the character tick while it moves.
+/// it has none), and turns by what is left of the player's turn, unless
+/// its condition is helpless (the original's turn is skipped then, its
+/// error zeroed). Its gait floor is measured by the character tick while
+/// it moves.
 fn bearing(
     controller: Option<&CharacterBody>,
     player: Option<&PlayerBody>,
     anim: &Animator,
     fallen: Option<&Fallen>,
+    condition: Condition,
 ) -> Bearing {
     Bearing {
         moving: controller.is_some_and(|c| c.desired_velocity != Vec3::ZERO),
@@ -507,7 +523,10 @@ fn bearing(
         rising: false,
         crouch: 0.0,
         carried: controller.is_none_or(|c| c.grounded),
-        turn: player.map_or(0.0, PlayerBody::turn_left),
+        turn: match player {
+            Some(p) if !condition.helpless() => p.turn_left(),
+            _ => 0.0,
+        },
         gait_floor: None,
     }
 }
