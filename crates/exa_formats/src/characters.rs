@@ -500,6 +500,32 @@ fn sections(b: &[u8]) -> Result<(usize, Vec<Section<'_>>)> {
     Ok((count, out))
 }
 
+/// Tag of the item database an actor's record is followed by.
+const ACTOR_ITEMS: u32 = 0xDBDB;
+
+/// The items of the database that follows an actor's record (tag, size,
+/// then an RDB of item records like `objdb.rdb`'s): what its
+/// [`LOCAL_ITEM`] ids name. None when the record ends the entry (the
+/// demon's); an error when something else follows.
+pub fn actor_items(b: &[u8]) -> Result<Vec<crate::objdb::Item>> {
+    let mut r = Reader { b, pos: 0 };
+    r.u32()?;
+    let size = r.u32()? as usize;
+    r.bytes(size)?;
+    if r.remaining() == 0 {
+        return Ok(Vec::new());
+    }
+    let tag = r.u32()?;
+    if tag != ACTOR_ITEMS {
+        return Err(Error::BadMagic {
+            found: tag,
+            expected: ACTOR_ITEMS,
+        });
+    }
+    let size = r.u32()? as usize;
+    Ok(crate::objdb::items(&Database::parse(r.bytes(size)?)?))
+}
+
 fn read_database(b: &[u8]) -> Result<Vec<(u32, Result<CharacterRecord>)>> {
     let db = Database::parse(b)?;
     Ok(db

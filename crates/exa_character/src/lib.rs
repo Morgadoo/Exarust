@@ -34,7 +34,7 @@ use exa_formats::rdb::Database;
 use exa_formats::rfc::Scene;
 use exa_formats::rsq::bone_index;
 use exa_formats::weapon_record::{self, Holder, Lengths, RaceWeapons, Section, WeaponRecord};
-use exa_formats::weapon_stats::{StatBytes, at, condition_factor};
+use exa_formats::weapon_stats::{StatBytes, at};
 use exa_world::PartBounds;
 
 pub struct CharacterPlugin;
@@ -635,9 +635,10 @@ fn equip_outfits(
                 .and_then(|i| i.apparel);
             let appearance = garment_appearance(garment, infos);
             hidden |= garment.hides.or(known.map(|k| k.1)).unwrap_or(0);
+            // The armour pass reads the protection an item stores: an
+            // item made from a template stores it scaled by its condition.
             if let Some(armour) = garment.armour.or(known.and_then(|k| k.2)) {
-                let condition = appearance.map_or(1.0, |a| condition_factor(a.quality, a.damage));
-                protection.push((armour, condition));
+                protection.push(armour);
             }
             for node in &apparel.nodes {
                 let parent = bone_index(&node.name)
@@ -678,7 +679,11 @@ fn equip_outfits(
         }
         let fights = fighter.is_some();
         if let Some(mut f) = fighter {
-            f.armour = exa_combat::damage::armour_layers(f.natural.as_ref(), &protection);
+            f.armour = exa_combat::damage::armour_layers(
+                f.natural.as_ref(),
+                &protection,
+                f.stats.deflection,
+            );
         }
         if wielded.is_none() && fights {
             // Empty hands: the fists strike. Equipping them leaves the
@@ -814,6 +819,7 @@ mod tests {
             shield: None,
             door: None,
             operative: None,
+            burden: None,
         }
     }
 

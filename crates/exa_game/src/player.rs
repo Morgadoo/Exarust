@@ -25,6 +25,7 @@ use exa_character::held::{Hands, HeldMoveset, class};
 use exa_combat::attack::{self, AttackKind, AttackMotion, Attacker, Request, Slot};
 use exa_combat::stance::{self, Stance};
 use exa_combat::{Attacking, Blade, Fighter};
+use exa_formats::encumbrance::run_cap;
 use exa_physics::body::{BodyTicks, Fallen, GoLimp, MAX_ENERGY, Ragdoll};
 use exa_physics::{CharacterBody, Physics};
 
@@ -305,6 +306,16 @@ fn forward(yaw: f32) -> Vec3 {
     Vec3::new(yaw.sin(), 0.0, yaw.cos())
 }
 
+/// One tick of the run blend: rising by 0.05 while running, at most to
+/// `cap` (the encumbrance's run cap), else falling by 0.015.
+fn run_blend(run: f32, running: bool, cap: f32) -> f32 {
+    if running {
+        (run + RUN_RISE).min(cap)
+    } else {
+        (run - RUN_FALL).max(0.0)
+    }
+}
+
 /// The signed shortest turn from `from` to `to` (rad).
 fn turn_between(from: f32, to: f32) -> f32 {
     (to - from + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
@@ -443,11 +454,9 @@ fn steer_player(
                 pb.heading += steer as f32 * std::f32::consts::FRAC_PI_2;
                 pb.quarter_wait = QUARTER_TURN_EVERY;
             }
-            pb.run = if running && ahead {
-                (pb.run + RUN_RISE).min(1.0)
-            } else {
-                (pb.run - RUN_FALL).max(0.0)
-            };
+            // What it wears weighs the run down.
+            let cap = fighter.map_or(1.0, |f| run_cap(f.stats.encumbrance, false));
+            pb.run = run_blend(pb.run, running && ahead, cap);
             pb.yaw = body_turn(pb.yaw, pb.heading, !mouse, speed);
             t.rotation = Quat::from_rotation_y(pb.yaw);
             // A reversal of more than 120° turns before walking.
@@ -1051,6 +1060,17 @@ mod tests {
         // 0.025 rad per tick at walking speed: a circle of v / ω.
         let radius = (WALK_SPEED / TICK_HZ) / STEER;
         assert!((radius - 0.67).abs() < 0.05, "{radius}");
+    }
+
+    /// Unencumbered the run blend reaches 1 in 20 ticks; at encumbrance 0.5
+    /// it tops at 0.85; released it falls 0.015 a tick.
+    #[test]
+    fn armour_weighs_the_run_down() {
+        let run = |cap: f32| (0..40).fold(0.0, |r, _| run_blend(r, true, cap));
+        assert_eq!(run(run_cap(0.0, false)), 1.0);
+        let worn = run(run_cap(0.5, false));
+        assert_eq!(worn, 0.85);
+        assert!((run_blend(worn, false, 0.85) - 0.835).abs() < 1e-6);
     }
 
     #[test]

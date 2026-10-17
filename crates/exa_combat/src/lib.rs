@@ -111,7 +111,7 @@ impl Fighter {
                 max: stats.max_health,
             },
             natural,
-            armour: damage::armour_layers(natural.as_ref(), &[]),
+            armour: damage::armour_layers(natural.as_ref(), &[], stats.deflection),
             down: false,
             readiness: 0.0,
             bleeds: race.is_none_or(Race::bleeds),

@@ -518,7 +518,8 @@ Abstraction, Clarity, Volition. Close Combat 5–8 (Draw, Impel, Brace, Dual
 Wield) give none (the first three are marked unavailable; 37 level records
 learn Dual Wield). Armour 1–3 are the Manoeuvring in Armour tiers: the
 armour builder takes the highest learnt and lowers encumbrance by 0.3 per
-tier; Armour 4 is Deflection (worn coverage up). The name table has a
+tier; Armour 4 is Deflection (worn coverage up: OTHER.md, Armour and
+Encumbrance). The name table has a
 seventh skill, Meditation, without a slot or techniques.
 
 **Saving.** The save writes yellow and red as round(value / max × 65535)
@@ -540,8 +541,8 @@ living placement stores full pools, and every living human is feral (0.4,
 
 **Stats derived at spawn** (`exa_formats::character_stats`). The spawn
 runs the character builder, then registers the body (its last call is the
-character's init), then the armour pass, the reach pass and the load of
-the pools. From the record (h its height, kept within −1…1; f its feral
+character's init), then the armour pass (which sums the encumbrance:
+OTHER.md, Encumbrance), the reach pass and the load of the pools. From the record (h its height, kept within −1…1; f its feral
 level, kept within 0…1) and its race (or the built-in record):
 
 | stat | rule |
@@ -552,7 +553,7 @@ level, kept within 0…1) and its race (or the built-in record):
 | leg reach | 107.2 − 11.1·h cm (the init's, written after the builder's 108.5 − 11.25·h) |
 | locomotion clock | × 1/(1 − 0.1·h) |
 | most energy | 1, or 1 − 0.1·f |
-| step reach | 80 cm·√scale·(1 − 0.3·f)·(1 − 0.2·encumbrance) |
+| step reach | 80 cm·√scale·(1 − 0.3·f)·(1 − 0.2·encumbrance), with the armour pass's encumbrance (the reach pass runs after it) |
 | support pins' factor | race `0x60`, less 0.25·f² when feral (every earlier race-byte value is overwritten) |
 | head | pose gain × (1 − f), muscle factor × (1 − 0.8·f) |
 | walking arms | 0.2 − 0.15·f, at least 0.05 (the arms in the walk and run cycles) |

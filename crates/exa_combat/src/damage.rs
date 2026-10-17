@@ -55,9 +55,31 @@ fn effective(c: f32) -> f32 {
     }
 }
 
+/// A resistance byte's share: 1/140.
+const PER_RESISTANCE: f32 = 1.0 / 140.0;
+
+/// The share of a part an item covering `percent` of it covers: 0.01 per
+/// percent; with Deflection learnt c + 0.1 up to half, else c + 0.1·(1 − c)
+/// + 0.05; at most all of it.
+pub fn coverage(percent: u8, deflection: bool) -> f32 {
+    let c = (f64::from(percent) * 0.01) as f32;
+    let c = match (deflection, c > 0.5) {
+        (false, _) => c,
+        (true, false) => (f64::from(c) + 0.1) as f32,
+        (true, true) => (f64::from(1.0 - c) * 0.1 + (f64::from(c) + 0.05)) as f32,
+    };
+    c.min(1.0)
+}
+
 /// Armour of every body part (bones 1..18) from the race's natural layer and
-/// the worn items in order, each with its condition factor.
-pub fn armour_layers(natural: Option<&Natural>, worn: &[(Armour, f32)]) -> [PartArmour; 18] {
+/// the worn items in order, their protection as the items store it (an item
+/// made from a template stores it scaled by its condition already), with
+/// Deflection when it is learnt.
+pub fn armour_layers(
+    natural: Option<&Natural>,
+    worn: &[Armour],
+    deflection: bool,
+) -> [PartArmour; 18] {
     let mut parts = [PartArmour::default(); 18];
     if let Some(n) = natural {
         for (part, &c) in parts.iter_mut().zip(&n.coverage) {
@@ -68,15 +90,15 @@ pub fn armour_layers(natural: Option<&Natural>, worn: &[(Armour, f32)]) -> [Part
             part.inner.pierce = c * n.pierce as f32 / 140.0;
         }
     }
-    for (item, condition) in worn {
-        // Condition scales the bytes, rounded and capped like the original.
-        let scaled = |b: u8| (b as f32 * condition).round_ties_even().min(160.0);
-        let layer = |coverage: u8| Layer {
-            coverage: coverage as f32 / 100.0,
-            padding: scaled(item.padding) * 0.005,
-            slash: scaled(item.slash) / 140.0,
-            crush: scaled(item.crush) / 140.0,
-            pierce: scaled(item.pierce) / 140.0,
+    for item in worn {
+        // Padding × 0.005 in double, resistances × 1/140 in float.
+        let resist = |b: u8| f32::from(b) * PER_RESISTANCE;
+        let layer = |c: u8| Layer {
+            coverage: coverage(c, deflection),
+            padding: (f64::from(item.padding) * 0.005) as f32,
+            slash: resist(item.slash),
+            crush: resist(item.crush),
+            pierce: resist(item.pierce),
             material: item.material,
         };
         for (part, &c) in parts.iter_mut().zip(&item.coverage) {
@@ -479,7 +501,7 @@ mod tests {
             encumbrance: 10,
             material: 4,
         };
-        let layers = armour_layers(None, &[(plate, 1.0)]);
+        let layers = armour_layers(None, &[plate], false);
         let armoured = cut(&layers[8], 0.5);
         assert!(
             armoured.penetration < bare.penetration * 0.3,
@@ -564,13 +586,54 @@ mod tests {
             encumbrance: 5,
             material: 3,
         };
-        let parts = armour_layers(None, &[(shirt, 1.0), (shirt, 1.0)]);
+        let parts = armour_layers(None, &[shirt, shirt], false);
         let p = parts[0];
         assert_eq!(p.inner.coverage, 1.0);
         assert_eq!(p.inner.material, 3);
         // The first shirt folds in at its effective coverage 0.905.
         assert!((p.inner.slash - 0.905 * 0.5).abs() < 1e-5);
         assert!(p.outer.is_some());
+    }
+
+    /// Deflection: 30 % covers 0.4, 75 % covers 0.825 and 95 % all of it;
+    /// without it the percentages as they are.
+    #[test]
+    fn deflection_covers_more() {
+        assert_eq!(coverage(30, false), 0.3);
+        assert!((coverage(30, true) - 0.4).abs() < 1e-6);
+        assert!((coverage(75, true) - 0.825).abs() < 1e-6);
+        assert_eq!(coverage(95, true), 1.0);
+        assert_eq!(coverage(100, false), 1.0);
+        let shirt = Armour {
+            coverage: [75; 18],
+            padding: 10,
+            slash: 70,
+            crush: 10,
+            pierce: 30,
+            encumbrance: 5,
+            material: 3,
+        };
+        let outer = armour_layers(None, &[shirt], true)[8].outer.unwrap();
+        assert!((outer.coverage - 0.825).abs() < 1e-6);
+    }
+
+    /// The armour pass reads what an item stores: trousers made at quality
+    /// 160 and damage 160 store padding 17 (their template's 20 scaled by
+    /// their condition) and keep 17 × 0.005.
+    #[test]
+    fn stored_protection_is_not_scaled_again() {
+        let trousers = Armour {
+            coverage: [50; 18],
+            padding: 17,
+            slash: 17,
+            crush: 17,
+            pierce: 17,
+            encumbrance: 11,
+            material: 1,
+        };
+        let outer = armour_layers(None, &[trousers], false)[1].outer.unwrap();
+        assert!((outer.padding - 0.085).abs() < 1e-7);
+        assert!((outer.slash - 17.0 / 140.0).abs() < 1e-7);
     }
 
     #[test]

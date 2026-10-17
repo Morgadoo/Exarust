@@ -81,6 +81,11 @@ their guard 8 m apart, `--at 0,0,1.7` the duellist in its combat idle
 while the player still guards (3.7 m), `--at 0,0,1` both in the combat
 idle.
 
+The log names the player's and the duellist's encumbrance at spawn, with
+the run blend it allows and the step reach it leaves; `--outfit` gives the
+player armour to weigh (`--outfit fptdhrnsa,fptdhelma,fptdlegsa`, a tourney
+plate set: 0.625, run blend at most 0.8125; formats/OTHER.md, Encumbrance).
+
 The world cursor's shape changes are logged at debug level
 (`RUST_LOG=info,exa_game::cursor=debug`), and its size once it is drawn:
 

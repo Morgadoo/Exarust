@@ -687,12 +687,14 @@ pub struct ShieldFactors {
 
 impl ShieldRecord {
     /// The record of a shield section body; `None` when it is too short.
+    /// Each byte is scaled in double precision, as the original builds it.
     pub fn from_section(body: &[u8]) -> Option<Self> {
         let b = body.get(4..7)?;
+        let share = |byte: u8| (f64::from(byte) * 0.01) as f32;
         Some(Self {
-            weight: f32::from(b[0]) * 0.01,
-            block: f32::from(b[1]) * 0.01,
-            bulk: f32::from(b[2]) * 0.01,
+            weight: share(b[0]),
+            block: share(b[1]),
+            bulk: share(b[2]),
         })
     }
 

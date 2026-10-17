@@ -130,9 +130,9 @@ name and body only.
 |---|---|
 | `0x10000000` | display name[16], a word (0, 1 or 2, else noise; [guess] editor state), the parent id: the editor folder for global items (`+Apparel/+Misc`, `+Clothes/+Legs`, …), the source item for level-local copies |
 | `0x00100000` | ground or icon model name[16] (`Objects.rpk` or `Objlib.rpk`, or `@` and a factory), then a flags word: bit 0 dims the model's voxel lights and glow meshes by the placement's condition byte (salves `0x51`/`0x1`, power crystals `0x1031`, Diviner's Deck, Repair Sphere, PedestalHand; see `RFC.md`, placed objects), …; absent in "Braies_A" |
-| `0x1000` | item body: the worn model name[16] (`Characters.rpk`), the occupancy table at `0x10`, the slot table at `0xA8`, coverage and protection at `0x150`/`0x1A0`, the appearance block at `0x1B0..0x214` |
+| `0x1000` | item body: the worn model name[16] (`Characters.rpk`), the occupancy table at `0x10`, the slot table at `0xA8`, coverage and protection at `0x150`/`0x1A0`, encumbrance at `0x1A5`, the appearance block at `0x1B0..0x214`, the special kind, power flags and articulated set at `0x214`/`0x218`/`0x220` ([Armour](#armour)) |
 | `0x4000` | weapon section (208 items): flags, factory seeds and choices, stat bytes `0x30..0x42` (Weapon stats) |
-| `0x8000` | shield section (22 items, 80 bytes): weight, block and bulk bytes at 4, 5, 6 (Weapon record) |
+| `0x8000` | shield section (22 items, 80 bytes): weight, block and bulk bytes at 4, 5, 6 (× 0.01 in double precision; Weapon record); the bulk adds to its holder's encumbrance ([Encumbrance](#encumbrance)) |
 | `0x10000` | operative section (68 bytes; levers, buttons and plates, keys, signal jobs, relays, other usable objects): class, kind, flags, targets (Door and operative sections) |
 | `0x40000` | door section (28 bytes): flags, linked object, sound letters (Door and operative sections) |
 
@@ -615,14 +615,30 @@ Apparel item body (`0x1000`) fields:
 - `0x150 + 4·(bone − 1)`: coverage percent (u32) per bone;
 - `0x1A0`: padding ×0.005;
 - `0x1A1..0x1A3`: slash, crush and pierce ×1/140;
-- `0x1A5`: encumbrance ×0.0025;
+- `0x1A5`: encumbrance ×0.0025 ([Encumbrance](#encumbrance));
 - `0x1A6`: hit sound class (0 flesh, 1 cloth, 2 leather, 3 mail, 4 plate,
-  6 golem).
+  6 golem);
+- `0x214`: special kind (4 the golem suit, 6 gauntlets that lighten a held
+  shield; 1, 2, 3, 5, 7 other item effects);
+- `0x218` bit 0 and `0x219`: a power crystal is in and its charge (0xFF
+  spent): the special item is powered;
+- `0x220`: the articulated set a piece belongs to, the item id of the set's
+  central piece (14 sets, e.g. 445 for the "UBE" plate), 0 for none.
 
-Instances scale padding and resistances by their condition c (the
-appearance block's quality and damage). Races add a natural inner layer:
-`races.rdb` coverage at `0x21C`, protection at `0x11C`. Skeletons, golems,
-demons and the Fael head have one.
+An item made from a template takes the template's bytes scaled by its own
+condition, c = (1 − 0.4·d/255)·(0.8 + 0.5·q/255) with q and d the
+appearance block's quality and damage: padding and resistances × c,
+rounded (half to even), at most 160; the coverage display byte × (0.3c +
+0.7); encumbrance ÷ ((1 − 0.15·d/255)·(0.85 + 0.3·q/255)), rounded. The
+armour pass then reads the bytes as the item stores them: the level
+databases' instances store them scaled already (of those whose condition
+changes their encumbrance byte, 381 store it scaled and 1 as the template;
+of their protection bytes 2200 against 4), and a record wearing a game
+template's id reads the template's bytes. Exarust reads what each item
+stores and scales nothing again (`exa_combat::damage::armour_layers`).
+Races add a natural inner layer: `races.rdb` coverage at `0x21C`,
+protection at `0x11C`. Skeletons, golems, demons and the Fael head have
+one.
 
 Each body part keeps two layers, filled in equipment order. A new item
 folds the old outer layer into the inner one:
@@ -632,7 +648,66 @@ folds the old outer layer into the inner one:
 - resistances combine as s0′ + (1 − s0′)·γ1·s1, with s0′ = γ0·s0;
 - the inner layer's coverage becomes 1.
 
+An item's coverage of a part is its percent × 0.01 (in double, stored as a
+float); with the Deflection technique learnt it is c + 0.1 up to ½, else c
++ 0.1·(1 − c) + 0.05, at most 1 (30 % covers 0.4, 75 % 0.825, 95 % all).
+
 The 19×8 slot table at `0xA8` is not read for armour.
+
+## Encumbrance
+
+A character's one weight stat, implemented in `exa_formats::encumbrance`.
+The original's armour pass sums it at spawn, after the character's init and
+before the reach pass (the held items, a shield among them, are attached
+before both), and again on every equipment change. Each step runs in double
+and is stored as a float:
+1. for each worn item in the record's order whose id finds an item with a
+   body (an actor's local ids name its own database, a level's its own, the
+   rest the game's): an unpowered golem suit adds 2.0, powered gauntlets of
+   kind 6 make the held shield weightless (unpowered ones make it count
+   again), then + encumbrance byte × 0.0025;
+2. each articulated piece (set word ≠ 0) whose covered bones touch another
+   articulated piece's takes 0.025 off, once: piece A touches piece B when
+   A's bones meet the bones B's bones neighbour, or the other way round. The
+   set ids are not compared, so pieces of different sets count too. The
+   neighbours of each bone 1–18 include the bone itself (pelvis: femurs and
+   lumbar; thorax: lumbar and head; …); the table gives the left humerus
+   (15) the right shoulder (11) instead of the left one (14);
+3. − 0.3 × the highest Manoeuvring in Armour tier learnt (0–3);
+4. below 0.001 (negative included) it is 0;
+5. with a shield held: (2 − weightless) × bulk / 4 (the shield section's
+   byte 6 × 0.01), less 0.3 with the Mobility shield technique, is added
+   when positive. The shield is the last of the first two held items that
+   has a shield section and no weapon section (the left hand's light
+   section would be taken first; none of the 22 shields has one);
+6. at most 1.
+
+Shipped values: the duellist's leather jacket (10) and full helm (60) give
+0.175; a tourney plate harness, helm and leggings of one set (120, 80, 80,
+all touching) 0.625. Of the story levels' 451 living characters 386 weigh
+nothing (many learnt Manoeuvring III), 27 hold a shield, Elestan weighs
+0.77 (0.47 of armour and a round shield's 0.3) and Demian 0.67; the arena's
+opponent07 0.475 and opponent13 0.07 (Manoeuvring II takes its armour off,
+its buckler's 0.07 stays).
+
+What it slows, by encumbrance e (the readers' own precision):
+- the step reach: 80 cm·√scale·(1 − 0.3·feral)·(1 − 0.2·e)
+  ([RFC.md](RFC.md), Stats derived at spawn);
+- the run blend: at most 1 − 0.3·e, 1 − 0.4·e with the sprint latch (Exarust
+  applies the first to the player's run, [PLAYER.md](../PLAYER.md));
+- the sprint gait's clip clock: × (1 − 0.1·e);
+- the body's turn toward its heading (out of the free walk): × (1 − 0.6·e);
+- the alignment a standing body settles to: 1 − e;
+- a long step: (1.5 − 0.3·e) step reaches (the player's held step keys, the
+  feet's long steps); the AI's long footwork step (1.6 − 0.3·e);
+- the get-up clip clock: (1.5 − 0.5·e) × the clip-rate base;
+- the held weapon's record: the holding pass takes e as its grip input
+  (recovery, swing clock), and so does the unarmed hands' set-up.
+
+Exarust sums it at spawn for every placed character (`exa_world`) and for
+the player's and the duellist's outfits (the first painted item worn as
+each model); `exa-tool characters` prints it. The other readers take it when
+they are ported.
 
 ## Damage
 

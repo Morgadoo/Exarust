@@ -22,7 +22,12 @@ The original has no camera-relative keyboard movement. Outside combat:
   before walking. The point is found through the scene camera's own
   viewport: with supersampling the scene is drawn into an image twice the
   window's size, and window positions are scaled to it.
-- **Shift** runs: a run blend rises 0.05 per tick and falls 0.015.
+- **Shift** runs: a run blend rises 0.05 per tick, at most to 1 − 0.3 ×
+  the character's encumbrance (what it wears and the shield it holds,
+  [formats/OTHER.md](formats/OTHER.md), Encumbrance), and falls 0.015. A
+  new character in braies runs at the full blend; in a tourney plate
+  harness, helm and leggings (encumbrance 0.625) the blend stops at 0.8125
+  and the run at about 3.2 m/s instead of 3.6.
 - **The clips.** The steering starts the walk, run or backpedal when the
   character moves, from whatever looping clip plays, and ends it in Idle
   when the character stops. It starts no other clip: what a standing

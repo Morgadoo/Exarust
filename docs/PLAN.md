@@ -504,6 +504,20 @@ back instead of jumping to the clip when its energy returns; the other
 side's attacks start with round((20 − W19) × 0.6) frames
 ([PLAYER.md](PLAYER.md), The combat stance;
 [formats/RSQ.md](formats/RSQ.md), Motion playback).
+Done (change `sum-armour-encumbrance`, M42 of the master plan): armour
+weighs. Every character spawns with the original's encumbrance, summed as
+its armour pass does from what it wears (0.0025 per unit of each item's
+byte, less 0.025 for each articulated plate piece touching another, less
+0.3 per Manoeuvring in Armour tier, an unpowered golem suit 1) and the
+shield it holds (its bulk, less with Mobility), at most 1: the duellist's
+jacket and helm 0.175, a tourney plate set 0.625, Elestan of the story
+0.77; its step reach shrinks 20 % per unit and the player's run blend tops
+at 1 − 0.3 × it (3.2 m/s in the plate set instead of 3.6). The armour
+layers read each item's protection as stored (made items store it scaled
+by their condition; Exarust scaled it twice) and Deflection widens
+coverage. The turn, sprint, steps, get-up clock and the weapon record
+read the same value when they land; `exa-tool characters` prints it
+([formats/OTHER.md](formats/OTHER.md), Armour and Encumbrance).
 Still to do: inventory and containers, injuries beyond damage, blocking,
 parrying, grabs, practice mode, the knockback step, the swing stall and
 the striker's recoil, a lethal wound's fall and collapse, the stab's and

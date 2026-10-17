@@ -4,10 +4,14 @@
 use anyhow::{Context, Result, anyhow};
 use exa_formats::character_stats::{CharacterStats, Spawn};
 use exa_formats::characters::{
-    CharacterRecord, LevelCharacters, Placement, SAVED_HEAL_POOL, SAVED_POTION, SKILL_NAMES,
-    technique_name,
+    CharacterRecord, ID_MASK, LOCAL_ITEM, LevelCharacters, Placement, SAVED_HEAL_POOL,
+    SAVED_POTION, SKILL_NAMES, technique_name,
 };
+use exa_formats::encumbrance;
+use exa_formats::objdb::{self, Item};
 use exa_formats::races::{self, Race};
+use exa_formats::rdb::Database;
+use exa_formats::rfc::Scene;
 use exa_rpk::{Archive, GameData, PackKind};
 
 /// `source` is a level of `Resource.rpk` (`exanima01` or `exanima01.rfc`)
@@ -21,6 +25,12 @@ pub fn characters(game: &GameData, source: &str) -> Result<()> {
         .map(races::parse)
         .transpose()?
         .unwrap_or_default();
+    let global = resource
+        .get("objdb.rdb")
+        .map(Database::parse)
+        .transpose()?
+        .map(|db| objdb::items(&db))
+        .unwrap_or_default();
     if source == "actors" {
         let actors = Archive::parse(
             resource
@@ -29,8 +39,14 @@ pub fn characters(game: &GameData, source: &str) -> Result<()> {
         )?;
         println!("actors.rpk: {} actors", actors.entries().len());
         for e in actors.entries() {
-            match CharacterRecord::parse(0, actors.bytes(e)) {
-                Ok(r) => print_record(&e.name, &r, &races, &[], false),
+            let bytes = actors.bytes(e);
+            match CharacterRecord::parse(0, bytes) {
+                Ok(r) => {
+                    // The actor's ids name its own items, then the game's.
+                    let own = exa_formats::characters::actor_items(bytes)?;
+                    let encumbrance = encumbrance::of_record(&r, |id| find(&own, &global, id));
+                    print_record(&e.name, &r, &races, &[], false, encumbrance);
+                }
                 Err(err) => println!("{}: not a record ({err})", e.name),
             }
         }
@@ -49,6 +65,14 @@ pub fn characters(game: &GameData, source: &str) -> Result<()> {
         .find(|c| c.tag == exa_formats::characters::CHARACTERS)
         .ok_or_else(|| anyhow!("{entry} places no characters"))?;
     let level = LevelCharacters::parse(section.data)?;
+    // The level's own items, which its records' local ids name.
+    let local = match Scene::parse(bytes) {
+        Ok(scene) => scene.local_items,
+        Err(err) => {
+            println!("{entry}: own items not read ({err}); local ids weigh nothing");
+            Vec::new()
+        }
+    };
     let story = entry.to_ascii_lowercase().starts_with("exanima");
     let entries = LevelCharacters::read_database(section.data)?;
     let unread = entries.iter().filter(|(_, r)| r.is_err()).count();
@@ -64,19 +88,29 @@ pub fn characters(game: &GameData, source: &str) -> Result<()> {
                 .iter()
                 .filter(|p| p.record() == *id)
                 .collect();
-            print_record(&format!("{id:#x}"), r, &races, &placed, story);
+            let encumbrance = encumbrance::of_record(r, |id| find(&local, &global, id));
+            print_record(&format!("{id:#x}"), r, &races, &placed, story, encumbrance);
         }
     }
     Ok(())
 }
 
-/// `story`: the record is placed in a story level (else the arena).
+/// The item `id` names: one of `local` (the level's or the actor's own
+/// database) or of the game's.
+fn find<'a>(local: &'a [Item], global: &'a [Item], id: u32) -> Option<&'a Item> {
+    let items = if id & LOCAL_ITEM != 0 { local } else { global };
+    items.iter().find(|i| i.id == id & ID_MASK)
+}
+
+/// `story`: the record is placed in a story level (else the arena);
+/// `encumbrance`: what it wears and holds weighs.
 fn print_record(
     label: &str,
     r: &CharacterRecord,
     races: &[Race],
     placed: &[&Placement],
     story: bool,
+    encumbrance: f32,
 ) {
     let race = races::of_character(races, r.race).map_or("?", |race| race.name.as_str());
     println!(
@@ -118,15 +152,17 @@ fn print_record(
         println!("    {} {}: {learnt}", SKILL_NAMES[slot], skill.points);
     }
     let dead = placed.first().is_some_and(|p| p.is_dead());
-    let s = CharacterStats::derive(r, races::of_character(races, r.race), Spawn { story, dead });
+    let s = CharacterStats::derive(r, races::of_character(races, r.race), Spawn { story, dead })
+        .with_encumbrance(encumbrance);
     println!(
-        "    spawns with scale {:.4}  size {:.4}  pelvis {:.4} m  leg reach {:.4} m  most energy {:.4}  step reach {:.4} m  pins {:.4}  head gain {:.4} factor {:.4}  walking arms {:.4}  sprint {:.1}/s",
+        "    spawns with scale {:.4}  size {:.4}  pelvis {:.4} m  leg reach {:.4} m  most energy {:.4}  encumbrance {:.4}  step reach {:.4} m  pins {:.4}  head gain {:.4} factor {:.4}  walking arms {:.4}  sprint {:.1}/s",
         s.scale,
         s.size,
         s.standing_height,
         s.leg_reach,
         s.max_energy,
-        s.step_reach(0.0),
+        s.encumbrance,
+        s.step_reach(s.encumbrance),
         s.pin_factor,
         s.head_gain,
         s.head_factor,

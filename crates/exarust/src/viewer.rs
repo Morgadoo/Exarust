@@ -643,6 +643,22 @@ fn spawn_players(
         let record = exa_formats::characters::CharacterRecord::default();
         CharacterStats::derive(&record, human, Spawn { story, dead: false })
     };
+    // What an outfit given by its models weighs: the first painted item
+    // worn as each, without skills or a shield.
+    let items = game
+        .0
+        .pack(PackKind::Resource)
+        .and_then(|p| p.get("objdb.rdb"))
+        .and_then(|b| exa_formats::rdb::Database::parse(b).ok())
+        .map(|db| exa_formats::objdb::items(&db))
+        .unwrap_or_default();
+    let outfit_encumbrance = |models: &[String]| {
+        let worn: Vec<_> = models
+            .iter()
+            .filter_map(|m| exa_formats::objdb::worn_as(&items, m)?.burden)
+            .collect();
+        exa_formats::encumbrance::encumbrance(&worn, None, Default::default())
+    };
     let player = commands
         .spawn((
             Transform::from_translation(position + Vec3::Y * 0.2),
@@ -664,7 +680,8 @@ fn spawn_players(
             exa_character::Outfit::of_models(&options.outfit),
             ChildOf(player),
         ));
-        let stats = new_human();
+        let stats = new_human().with_encumbrance(outfit_encumbrance(&options.outfit));
+        log_encumbrance("player", &stats);
         let mut fighter = exa_combat::Fighter::of_stats(None, stats);
         if let Some([yellow, red]) = options.health {
             fighter.health.yellow = yellow;
@@ -705,24 +722,22 @@ fn spawn_players(
             let anim = exa_anim::Animator::new(exa_character::held::DEFAULT_MOVESET, "Idle");
             let mut duellist = exa_ai::Duellist::new(player);
             duellist.holds_ground = options.still_opponent;
+            let outfit = ["leathjac_a", "trouser_a", "boots_b", "helm_b"].map(String::from);
+            let stats = new_human().with_encumbrance(outfit_encumbrance(&outfit));
+            log_encumbrance("duellist", &stats);
             commands.entity(foe).insert((
                 anim,
                 exa_character::held::Hands::default(),
-                exa_character::Outfit::of_models(&[
-                    "leathjac_a".into(),
-                    "trouser_a".into(),
-                    "boots_b".into(),
-                    "helm_b".into(),
-                ]),
+                exa_character::Outfit::of_models(&outfit),
                 exa_character::Wielded::model(
                     options
                         .weapon
                         .clone()
                         .unwrap_or_else(|| "ub05ssworda".into()),
                 ),
-                exa_combat::Fighter::of_stats(None, new_human()),
+                exa_combat::Fighter::of_stats(None, stats),
                 exa_physics::body::Physical {
-                    stats: body_stats(&new_human()),
+                    stats: body_stats(&stats),
                     ..default()
                 },
                 duellist,
@@ -743,6 +758,16 @@ fn spawn_players(
         stage: "dressing characters".into(),
         fraction: COLLIDED_AT,
     });
+}
+
+/// Logs what `who` wears weighs and what that slows.
+fn log_encumbrance(who: &str, stats: &CharacterStats) {
+    let enc = stats.encumbrance;
+    info!(
+        "{who}: encumbrance {enc:.3}, run blend at most {:.3}, step reach {:.3} m",
+        exa_formats::encumbrance::run_cap(enc, false),
+        stats.step_reach(enc)
+    );
 }
 
 /// Play mode waiting for its characters to be dressed, behind the loading
@@ -1084,6 +1109,7 @@ fn spawn_placed_characters(
             continue;
         };
         let physical = human_frame(c.race);
+        // The init, then the armour pass's encumbrance.
         let stats = CharacterStats::derive(
             &c.record,
             race,
@@ -1091,7 +1117,8 @@ fn spawn_placed_characters(
                 story,
                 dead: c.dead,
             },
-        );
+        )
+        .with_encumbrance(c.encumbrance);
         // Bodies of other frames have no physical links to lie down with.
         if c.dead && !physical {
             missing += 1;

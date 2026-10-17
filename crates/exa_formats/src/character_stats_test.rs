@@ -131,6 +131,23 @@ fn reach_follows_scale_and_encumbrance() {
     assert!(close(ogre.step_reach(0.0), 0.8 * 1.5f32.sqrt()));
 }
 
+/// The init leaves the encumbrance at 0 for the armour pass to sum; the
+/// stats keep it and whether Deflection is learnt.
+#[test]
+fn encumbrance_after_the_init() {
+    let mut r = record(0, 0.0, 0.0);
+    let plain = CharacterStats::derive(&r, Some(&human()), ALIVE);
+    assert_eq!((plain.encumbrance, plain.deflection), (0.0, false));
+    let worn = plain.with_encumbrance(0.5);
+    assert_eq!(worn.encumbrance, 0.5);
+    assert!(close(worn.step_reach(worn.encumbrance), 0.72));
+    r.skills[crate::characters::ARMOUR] = crate::characters::Skill {
+        points: 5000,
+        techniques: [4, 0, 0, 0, 0, 0],
+    };
+    assert!(CharacterStats::derive(&r, Some(&human()), ALIVE).deflection);
+}
+
 /// Maximum health is 0.25 times the race's factor, but for the race bytes
 /// the init rules: the ogre 1.5 and Sir 1.0 whatever their factor, golems
 /// 0.5 and the golem boss 1.0, and the ancient, the Fael, the ghouls, the

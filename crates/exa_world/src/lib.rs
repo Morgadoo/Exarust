@@ -95,6 +95,9 @@ pub struct PlacedCharacter {
     /// The character's whole record, from which its spawn derives its
     /// stats.
     pub record: exa_formats::characters::CharacterRecord,
+    /// What it wears and the shield it holds weigh, as the spawn's armour
+    /// pass sums them.
+    pub encumbrance: f32,
 }
 
 /// An item a placed character wears.
@@ -160,6 +163,7 @@ fn placed_characters(scene: &Scene, global: &[Item]) -> Vec<PlacedCharacter> {
                 worn,
                 held,
                 record: record.clone(),
+                encumbrance: exa_formats::encumbrance::of_record(record, find),
             })
         })
         .collect()
@@ -1253,6 +1257,7 @@ mod tests {
             shield: None,
             door: None,
             operative: None,
+            burden: None,
         }
     }
 
@@ -1291,12 +1296,20 @@ mod tests {
                 records: vec![record(1, vec![8, LOCAL_ITEM | 3]), record(2, Vec::new())],
                 placements: vec![placement(1), placement(2)],
             }),
-            local_items: vec![item(3, "Trouser_At", "Trouser_A", 5)],
+            // The trousers weigh 10 × 0.0025.
+            local_items: vec![Item {
+                burden: Some(exa_formats::objdb::Burden {
+                    encumbrance: 10,
+                    ..Default::default()
+                }),
+                ..item(3, "Trouser_At", "Trouser_A", 5)
+            }],
             placed_objects: Vec::new(),
             level_errors: Vec::new(),
         };
         let placed = placed_characters(&scene, &global);
         assert_eq!(placed.len(), 2);
+        assert_eq!((placed[0].encumbrance, placed[1].encumbrance), (0.025, 0.0));
         let worn: Vec<&str> = placed[0].worn.iter().map(|w| w.model.as_str()).collect();
         assert_eq!(worn, ["Braies_A", "Trouser_A"]);
         let braies = placed[0].worn[0].appearance.unwrap();

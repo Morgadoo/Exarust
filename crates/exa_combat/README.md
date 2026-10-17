@@ -12,7 +12,10 @@ on the 12 ms game clock, 400 ms or round(300 × the primary's recoil) +
 [`docs/PLAYER.md`](../../docs/PLAYER.md), Combat mode), and resolves the
 contacts of blades and fists by the original's damage model
 (`damage`, with the weapon record of `exa_formats::weapon_record`
-re-exported as `damage::WeaponRecord`) and keeps each fighter's combat stance and readiness (`stance`:
+re-exported as `damage::WeaponRecord`; two armour layers per part, filled
+from the protection each worn item stores, coverage widened by Deflection;
+rules in [`docs/formats/OTHER.md`](../../docs/formats/OTHER.md), Armour)
+and keeps each fighter's combat stance and readiness (`stance`:
 the looping clip it returns to, the body tick's switch to it that skips
 Cmbt - Idle, the player's and a duellist's rules, the daze's Defence
 stance, the original's blend and ease for every stance start, readiness
@@ -38,7 +41,8 @@ frames of blend (`attack::start_blend`)
 `wounds`: a blow bleeds when the struck fighter's race bleeds
 (`Fighter::bleeds`, from `races.rdb` flag bit 0 through
 `Fighter::of_stats`, which also takes the fighter's health from the stats
-its record spawned with, kept as `Fighter::stats`) and its wound's size R (`Outcome::wound`, the lasting
+its record spawned with, kept as `Fighter::stats`, with its encumbrance and
+whether Deflection widens its armour's coverage) and its wound's size R (`Outcome::wound`, the lasting
 damage on the part before the red bar's 0.75) exceeds 0.05. The wound waits
 on the victim (`WoundQueue`, seven at most, a new one dropped when full)
 with the striking body (`Hit::striker`), the contact point as weights in

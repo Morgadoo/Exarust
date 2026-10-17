@@ -7,10 +7,12 @@
 //! counts the 8-byte header): `0x10000000`
 //! holds the display name, `0x00100000` the ground model's name, `0x1000`
 //! the item body, which starts with the worn model's name, holds the
-//! per-bone occupancy table at `0x10` and the appearance block at bytes
-//! `0x1B0..0x214`; `0x4000` a weapon's section and `0x8000` a shield's;
-//! `0x40000` a door's and `0x10000` an operative object's (levers,
-//! buttons, pressure plates, keys, signal jobs and relays).
+//! per-bone occupancy table at `0x10`, the protection and encumbrance at
+//! `0x150..0x1A7`, the appearance block at bytes `0x1B0..0x214` and the
+//! special kind, power flags and articulated set after it; `0x4000` a
+//! weapon's section and `0x8000` a shield's; `0x40000` a door's and
+//! `0x10000` an operative object's (levers, buttons, pressure plates, keys,
+//! signal jobs and relays).
 
 use crate::rdb::Database;
 use crate::weapon_record::ShieldRecord;
@@ -48,6 +50,17 @@ const APPEARANCE_LEN: usize = 4 + LAYERS * LAYER_LEN;
 const COVERAGE_OFFSET: usize = 0x150;
 const PROTECTION_OFFSET: usize = 0x1A0;
 pub const BONES: usize = 18;
+/// What a worn item weighs: its encumbrance byte, its special kind, the
+/// powered flag word and charge byte, and the articulated set it belongs to.
+const ENCUMBRANCE_OFFSET: usize = 0x1A5;
+const SPECIAL_OFFSET: usize = 0x214;
+const POWER_FLAGS_OFFSET: usize = 0x218;
+const CHARGE_OFFSET: usize = 0x219;
+const SET_OFFSET: usize = 0x220;
+/// The powered flag (bit 0 of the flag byte) and the charge of a spent
+/// crystal.
+const POWERED: u8 = 1;
+const SPENT: u8 = 0xFF;
 const LAYERS: usize = 8;
 const LAYER_LEN: usize = 12;
 
@@ -83,6 +96,54 @@ pub struct Item {
     pub door: Option<Door>,
     /// What the object signals or does when operated.
     pub operative: Option<Operative>,
+    /// What the item weighs on its wearer: every item with a body.
+    pub burden: Option<Burden>,
+}
+
+/// What a worn item weighs on its wearer, as the original's armour pass
+/// reads the item body: its encumbrance, the bones it covers and the
+/// articulated set it belongs to, and its special kind.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct Burden {
+    /// ×0.0025 of the wearer's encumbrance. An item made from a template
+    /// stores it divided by its condition already.
+    pub encumbrance: u8,
+    /// Bones 1..18 the item covers at all, bit `bone − 1`.
+    pub bones: u32,
+    /// The articulated set the piece belongs to (the item id of the set's
+    /// central piece); 0 for an ordinary item.
+    pub set: u32,
+    /// Special kind: [`Burden::GOLEM_SUIT`], [`Burden::LIGHT_SHIELD`], …
+    pub special: u8,
+    /// Its power crystal is in and not spent (flag word bit 0 set, charge
+    /// byte not 0xFF): a golem suit runs, the gauntlets lighten the shield.
+    pub powered: bool,
+}
+
+impl Burden {
+    /// The golem suit: unpowered, it adds 2 to its wearer's encumbrance.
+    pub const GOLEM_SUIT: u8 = 4;
+    /// Gauntlets that make a held shield weightless while powered.
+    pub const LIGHT_SHIELD: u8 = 6;
+
+    /// The burden of an item body; bytes past its end read as zero.
+    fn parse(body: &[u8]) -> Self {
+        let byte = |o: usize| body.get(o).copied().unwrap_or(0);
+        let word = |o: usize| {
+            body.get(o..o + 4)
+                .map_or(0, |w| u32::from_le_bytes(w.try_into().expect("4 bytes")))
+        };
+        let bones = (0..BONES)
+            .filter(|&i| word(COVERAGE_OFFSET + 4 * i) != 0)
+            .fold(0, |m, i| m | 1 << i);
+        Self {
+            encumbrance: byte(ENCUMBRANCE_OFFSET),
+            bones,
+            set: word(SET_OFFSET),
+            special: byte(SPECIAL_OFFSET),
+            powered: byte(POWER_FLAGS_OFFSET) & POWERED != 0 && byte(CHARGE_OFFSET) != SPENT,
+        }
+    }
 }
 
 /// Door flags (the door section's first word).
@@ -416,6 +477,7 @@ impl Item {
             shield: None,
             door: None,
             operative: None,
+            burden: None,
         };
         let mut pos = 0;
         while pos + 8 <= payload.len() {
@@ -452,6 +514,7 @@ impl Item {
                         item.slot_layers = std::array::from_fn(|s| t[s * 8]);
                     }
                     item.armour = Armour::parse(body);
+                    item.burden = Some(Burden::parse(body));
                 }
                 WEAPON => item.weapon = Weapon::parse(body),
                 SHIELD => item.shield = ShieldRecord::from_section(body),
@@ -477,6 +540,14 @@ pub fn items(db: &Database<'_>) -> Vec<Item> {
         .iter()
         .filter_map(|r| Item::parse(r.id, db.payload(r)).ok())
         .collect()
+}
+
+/// The first painted item of `items` worn as the `Characters.rpk` entry
+/// `model` (case ignored): what a garment given only by its model is.
+pub fn worn_as<'a>(items: &'a [Item], model: &str) -> Option<&'a Item> {
+    items
+        .iter()
+        .find(|i| i.appearance.is_some() && i.worn_model.eq_ignore_ascii_case(model))
 }
 
 #[cfg(test)]
@@ -537,6 +608,50 @@ mod tests {
         // Nothing covered: no armour.
         let bare = Item::parse(1, &section(BODY, &vec![0u8; APPEARANCE_OFFSET])).unwrap();
         assert!(bare.armour.is_none());
+    }
+
+    /// A plate cuirass of an articulated set (its central piece item 445),
+    /// and the same body cut short before the set word.
+    #[test]
+    fn burden_of_an_articulated_piece() {
+        let mut body = vec![0u8; SET_OFFSET + 4];
+        for bone in [8usize, 9, 11, 14] {
+            let at = COVERAGE_OFFSET + 4 * (bone - 1);
+            body[at..at + 4].copy_from_slice(&50u32.to_le_bytes());
+        }
+        body[ENCUMBRANCE_OFFSET] = 80;
+        body[SET_OFFSET..SET_OFFSET + 4].copy_from_slice(&445u32.to_le_bytes());
+        let item = Item::parse(446, &section(BODY, &body)).unwrap();
+        let b = item.burden.unwrap();
+        assert_eq!((b.encumbrance, b.set, b.special), (80, 445, 0));
+        assert_eq!(b.bones, 1 << 7 | 1 << 8 | 1 << 10 | 1 << 13);
+        assert!(!b.powered);
+        // Bytes past a short body read as zero.
+        let short = Item::parse(446, &section(BODY, &body[..SPECIAL_OFFSET])).unwrap();
+        assert_eq!(short.burden.unwrap().set, 0);
+        // No body, no burden.
+        let name = Item::parse(1, &section(NAME, &padded("Book", 0x20))).unwrap();
+        assert!(name.burden.is_none());
+    }
+
+    /// A golem suit as the database stores it (flag byte 0x80: unpowered),
+    /// powered with a charge, and with a spent crystal.
+    #[test]
+    fn powered_specials() {
+        let suit = |flags: u8, charge: u8| {
+            let mut body = vec![0u8; SET_OFFSET + 4];
+            body[SPECIAL_OFFSET] = Burden::GOLEM_SUIT;
+            body[POWER_FLAGS_OFFSET] = flags;
+            body[CHARGE_OFFSET] = charge;
+            Item::parse(498, &section(BODY, &body))
+                .unwrap()
+                .burden
+                .unwrap()
+        };
+        assert_eq!(suit(0x80, 0).special, Burden::GOLEM_SUIT);
+        assert!(!suit(0x80, 0).powered);
+        assert!(suit(0x81, 0x40).powered);
+        assert!(!suit(0x81, 0xFF).powered);
     }
 
     /// An apparel body worn as `worn`, with per-bone occupancy entries
@@ -636,11 +751,19 @@ mod tests {
         body[4..7].copy_from_slice(&[15, 50, 8]);
         let mut p = section(NAME, &padded("Buckler A", 0x20));
         p.extend(section(SHIELD, &body));
-        let shield = Item::parse(80, &p).unwrap().shield.unwrap();
+        let item = Item::parse(80, &p).unwrap();
+        // Scaled in double precision, as the original builds the record
+        // (15 × 0.01f would be 0.14999999).
+        let shield = item.shield.unwrap();
         assert_eq!(
             (shield.weight, shield.block, shield.bulk),
-            (15.0 * 0.01, 0.5, 8.0 * 0.01)
+            (0.15, 0.5, 0.08)
         );
+        assert!(item.burden.is_none());
+        // A round shield's bulk 60 is 0.6 (0.59999996 in single precision).
+        body[4..7].copy_from_slice(&[50, 58, 60]);
+        let round = Item::parse(15, &section(SHIELD, &body)).unwrap();
+        assert_eq!(round.shield.unwrap().bulk, 0.6);
         // Too short for the three bytes: no shield.
         let short = Item::parse(80, &section(SHIELD, &[0; 6])).unwrap();
         assert!(short.shield.is_none());

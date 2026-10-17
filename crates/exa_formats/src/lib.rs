@@ -8,6 +8,7 @@
 pub mod character_stats;
 pub mod characters;
 pub mod chunk;
+pub mod encumbrance;
 pub mod environment;
 pub mod factory;
 pub mod kind;

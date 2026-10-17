@@ -190,6 +190,12 @@ pub struct CharacterStats {
     pub yellow: f32,
     pub red: f32,
     pub rules: BodyRules,
+    /// Deflection is learnt: worn armour covers more of each part.
+    pub deflection: bool,
+    /// Encumbrance (0…1) from what it wears and the shield it holds, which
+    /// the spawn's armour pass sums after the init
+    /// ([`CharacterStats::with_encumbrance`]); 0 until then.
+    pub encumbrance: f32,
 }
 
 impl Default for CharacterStats {
@@ -275,6 +281,17 @@ impl CharacterStats {
             yellow: max_health * f32::from(pools.yellow) * POOL_UNIT,
             red: max_health * f32::from(pools.red) * POOL_UNIT,
             rules: rules(byte, f, flags, stats.flags2, spawn.story, &record.worn),
+            deflection: record.deflection(),
+            encumbrance: 0.0,
+        }
+    }
+
+    /// These stats with the encumbrance the armour pass summed
+    /// ([`crate::encumbrance`]).
+    pub fn with_encumbrance(self, encumbrance: f32) -> Self {
+        Self {
+            encumbrance,
+            ..self
         }
     }
 
