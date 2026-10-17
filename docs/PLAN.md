@@ -451,8 +451,8 @@ post-step), so pairs, props' mechanisms, world links and cloth join
 without editing its loop ([formats/RSQ.md](formats/RSQ.md), how a tick
 runs). `exarust --fixed-frames` makes runs repeat tick for tick so traces
 compare between builds ([DEBUGGING.md](DEBUGGING.md)). The stance, the
-condition and the collapse's dying tick (M38, L5), falls, attack stamp and
-player input still run ahead of the character ticks, over every body, and
+condition and the collapse's dying tick (M38, L5), falls, the swing routine
+(M22) and player input still run ahead of the character ticks, over every body, and
 the AI once a frame; each joins its stage with the change that rewrites
 it. The condition's clip-end writer runs in the sampler stage.
 
