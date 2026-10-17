@@ -1,4 +1,5 @@
-//! `--joint-trace <csv>`: every joint of every simulated body at the end of
+//! `--joint-trace <csv>`: every joint of every simulated character body
+//! (props' bodies are left out) at the end of
 //! every 83 Hz tick, one row per body part: its turn from its rest (total,
 //! and split into a swing of the bone axis and a twist about it), the
 //! clip's turn split the same way and how far the two are apart (a living
@@ -17,6 +18,7 @@ use bevy::prelude::*;
 use exa_anim::Animator;
 use exa_physics::body::inspect::{JointAngles, JointReport, LinkReport};
 use exa_physics::body::{BodySystems, BodyTicks, DealtShoves, Ragdoll, Sleep};
+use exa_physics::prop::PropBody;
 
 use crate::player::PlayerBody;
 
@@ -189,11 +191,12 @@ impl Plugin for JointTracePlugin {
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn trace_joints(
     mut trace: ResMut<JointTrace>,
     clock: Res<BodyTicks>,
     dealt: Option<Res<DealtShoves>>,
-    bodies: Query<(Entity, &Ragdoll, Option<&Animator>, Has<PlayerBody>)>,
+    bodies: Query<(Entity, &Ragdoll, Option<&Animator>, Has<PlayerBody>), Without<PropBody>>,
     mut text: Local<String>,
 ) {
     if trace.failed {

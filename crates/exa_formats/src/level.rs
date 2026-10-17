@@ -45,12 +45,26 @@ impl LevelGrid {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Prop {
     pub object: String,
+    /// Placement flags; the original copies `0xB8_0000` of them onto the
+    /// object's root node ([`Prop::STATIC`]).
     pub flags: u32,
     /// Row-major 3×4: three rotation rows, then the translation (metres).
     pub transform: [[f32; 3]; 4],
     /// 1-based index of the parent prop, if any.
     pub parent: Option<usize>,
     pub extra: u32,
+}
+
+impl Prop {
+    /// Placement flag: the whole object is level geometry. The original
+    /// marks every node under it, so none of its rigid bodies is
+    /// registered and its meshes stay static colliders.
+    pub const STATIC: u32 = 0x8_0000;
+
+    /// Whether the prop is placed as static level geometry ([`Prop::STATIC`]).
+    pub fn is_static(&self) -> bool {
+        self.flags & Self::STATIC != 0
+    }
 }
 
 pub(crate) fn read_grid(b: &[u8]) -> Result<LevelGrid> {
@@ -236,5 +250,23 @@ mod tests {
         assert_eq!(props[0].object, "chair a");
         assert_eq!(props[0].transform[3], [2.5, 0.0, -1.0]);
         assert_eq!(props[0].parent, None);
+        assert!(!props[0].is_static());
+    }
+
+    /// Placement flag `0x80000` makes the whole object level geometry
+    /// (3 883 of the 79 935 shipped props); `0x100000` and `0x200000` do
+    /// not.
+    #[test]
+    fn static_props() {
+        let prop = |flags| Prop {
+            object: "barrel wdo1 a01".into(),
+            flags,
+            transform: [[0.0; 3]; 4],
+            parent: None,
+            extra: 0,
+        };
+        assert!(prop(0x8_0000).is_static());
+        assert!(prop(0x18_0000).is_static());
+        assert!(!prop(0x10_0000).is_static() && !prop(0x20_0000).is_static());
     }
 }

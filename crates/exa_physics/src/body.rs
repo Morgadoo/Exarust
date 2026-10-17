@@ -20,7 +20,9 @@
 //! which give its support (`balance`), and puts its animated pose on its
 //! character frame, which follows its pelvis by the original's rules
 //! (`frame`). Blows shove parts and daze the body, which weakens its
-//! muscles until it recovers.
+//! muscles until it recovers. A prop's or an item's rigid body is a body of
+//! the same kind, built from its model's stored rest points, spheres and
+//! links and registered asleep (`rigid`).
 //!
 //! Bodies tick in the fixed step, as one world in the original's order:
 //! every living body's character tick (its clip sampled and its targets
@@ -54,6 +56,9 @@ mod frame;
 pub mod inspect;
 #[path = "body_lift.rs"]
 mod lift;
+#[path = "body_rigid.rs"]
+mod rigid;
+pub use rigid::{FALL_OUT_HEIGHT, RigidLink, RigidPart};
 
 /// Simulation rate of the body.
 pub const BODY_HZ: f32 = 83.0;
@@ -183,7 +188,12 @@ pub struct Part {
     pub rest: [Vec3; 4],
     pub positions: [Vec3; 4],
     pub previous: [Vec3; 4],
+    /// A limb's relative inverse mass; a rigid body's mobility (larger
+    /// moves more).
     pub inverse_mass: f32,
+    /// Each particle's share of gravity: 1 on a limb; on a rigid body,
+    /// shares summing to 4 that put gravity at its centre of mass.
+    pub gravity: [f32; 4],
     /// Collision spheres in the part's space: centre, radius.
     pub spheres: Vec<(Vec3, f32)>,
     rest_inverse: Mat3,
@@ -288,6 +298,7 @@ impl Part {
                 .get(bone.wrapping_sub(1))
                 .copied()
                 .unwrap_or(1.0),
+            gravity: [1.0; 4],
             spheres,
             rest_inverse,
             friction: if matches!(bone, 4 | 7) {
@@ -771,6 +782,17 @@ pub struct Ragdoll {
     countdown: i32,
     /// A sleeping body is not simulated until something wakes it.
     pub sleep: Sleep,
+    /// Whether the body has been simulated since it was built: a body
+    /// registered asleep is drawn where its nodes already are.
+    simulated: bool,
+    /// Whether its spheres meet the level's movable pieces (the stand-ins
+    /// of rigid bodies, [`crate::contact::Level::movable`]): a character's
+    /// do, a rigid body's meet only the level itself until bodies collide
+    /// with each other.
+    meets_movable: bool,
+    /// Its root part fell below [`FALL_OUT_HEIGHT`], where the original
+    /// removes a body's node.
+    fell_out: bool,
 }
 
 /// Muscles of a living body: the animated pose it follows.
@@ -1174,6 +1196,9 @@ impl Ragdoll {
             // corpses still collapse from standing in Exarust.
             countdown: WAKE_COUNT,
             sleep: Sleep::Awake,
+            simulated: false,
+            meets_movable: true,
+            fell_out: false,
         }
     }
 
@@ -1471,6 +1496,7 @@ impl Ragdoll {
     /// stance hold; a living body's link muscles remember where the
     /// tick began.
     fn step(&mut self) {
+        self.simulated = true;
         self.tick_countdown();
         if let Some(drive) = self.drive.as_mut() {
             drive.energy = (drive.energy + ENERGY_RECOVERY).min(drive.stats.max_energy);
@@ -1534,7 +1560,18 @@ impl Ragdoll {
             self.countdown = 0;
             self.sleep = Sleep::Asleep;
         }
+        if let Some(&root) = self.outward.first()
+            && self.parts[root].positions[0].y < FALL_OUT_HEIGHT
+        {
+            self.fell_out = true;
+        }
         self.ticks += 1;
+    }
+
+    /// Whether the body's root part fell below [`FALL_OUT_HEIGHT`] (the
+    /// original removes the body's node then).
+    pub fn fell_out(&self) -> bool {
+        self.fell_out
     }
 
     /// A tick the body sleeps through. The first one takes its velocity
@@ -1587,7 +1624,7 @@ impl Ragdoll {
                 let v = (p.positions[i] - p.previous[i]).clamp_length_max(MAX_SPEED / BODY_HZ);
                 p.moved[i] = v;
                 p.previous[i] = p.positions[i];
-                p.positions[i] += v * keep + pull;
+                p.positions[i] += v * keep + pull * p.gravity[i];
             }
         }
     }
@@ -1648,6 +1685,9 @@ impl Ragdoll {
             }
             pieces.clear();
             level.pieces(lo, hi, &mut pieces);
+            if !self.meets_movable {
+                pieces.retain(|&piece| !level.movable(piece));
+            }
             for &piece in &pieces {
                 for k in 0..p.spheres.len() {
                     let (centre, r) = p.spheres[k];
@@ -1975,12 +2015,18 @@ pub fn step_bodies(
 /// propagate, so every part is drawn exactly at its interpolated place.
 pub fn draw_bodies(
     time: Res<Time<Fixed>>,
-    bodies: Query<&Ragdoll>,
+    bodies: Query<Ref<Ragdoll>>,
     parents: Query<&ChildOf>,
     mut transforms: Query<&mut Transform>,
 ) {
     let alpha = time.overstep_fraction();
     for body in &bodies {
+        // A deep sleeper stays where it was last drawn, and one registered
+        // asleep where its nodes are: only awake bodies are drawn between
+        // ticks, as the original's are.
+        if body.sleep == Sleep::Deep && (!body.simulated || !body.is_changed()) {
+            continue;
+        }
         let worlds: Vec<Affine3A> = body.parts.iter().map(|p| p.drawn(alpha)).collect();
         for (i, p) in body.parts.iter().enumerate() {
             let parent = match p.parent {

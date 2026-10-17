@@ -15,6 +15,7 @@
 use bevy::prelude::*;
 use exa_character::spray::BloodSprays;
 use exa_physics::body::{BodySystems, BodyTicks, Ragdoll, inspect};
+use exa_physics::prop::PropBody;
 
 /// Pauses and resumes the simulation.
 pub const PAUSE_KEY: KeyCode = KeyCode::KeyP;
@@ -251,7 +252,7 @@ fn scripted_pause(
     mut control: ResMut<SimControl>,
     clock: Res<BodyTicks>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
-    bodies: Query<(Entity, &Ragdoll)>,
+    bodies: Query<(Entity, &Ragdoll), Without<PropBody>>,
     sprays: Option<Res<BloodSprays>>,
     mut virt: ResMut<Time<Virtual>>,
     mut fixed: ResMut<Time<Fixed>>,

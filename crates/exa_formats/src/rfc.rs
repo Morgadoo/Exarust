@@ -124,6 +124,18 @@ pub struct Node {
 }
 
 impl Node {
+    /// Node flag: the node is level geometry. The original never registers
+    /// the rigid body of a node marked so (its meshes stay static
+    /// colliders): a level's own nodes can carry it in the file (the tavern
+    /// table of `arenao1`), and a prop placed static
+    /// ([`crate::level::Prop::STATIC`]) sets it on every node of the prop.
+    pub const STATIC: u32 = 0x8_0000;
+
+    /// Whether the node is marked as level geometry ([`Node::STATIC`]).
+    pub fn is_static(&self) -> bool {
+        self.flags & Self::STATIC != 0
+    }
+
     /// Whether a collision body follows the mesh body, decoded or not.
     pub fn has_rigid_body(&self) -> bool {
         self.rigid_body.is_some()
@@ -1044,6 +1056,18 @@ mod tests {
         for n in &mesh.normals {
             assert!((n[1] - 1.0).abs() < 1e-6, "quad faces +Y: {n:?}");
         }
+    }
+
+    /// Node flag `0x80000` marks level geometry (`arenao1`'s tavern table
+    /// stores flags `0x8090089`; the level's other bodies `0x8010089`).
+    #[test]
+    fn reads_the_static_node_flag() {
+        let mut node = Scene::parse(&quad_file(None)).unwrap().nodes.remove(0);
+        assert!(!node.is_static());
+        node.flags = 0x0809_0089;
+        assert!(node.is_static());
+        node.flags = 0x0801_0089;
+        assert!(!node.is_static());
     }
 
     #[test]

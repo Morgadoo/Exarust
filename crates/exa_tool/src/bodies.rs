@@ -4,11 +4,13 @@
 
 use anyhow::{Context, Result};
 use exa_formats::FileKind;
+use exa_formats::material::Material;
 use exa_formats::objdb::{self, Item, door_sound};
 use exa_formats::rdb::Database;
+use exa_formats::rfc::NodeBody;
 use exa_formats::rfc::Scene;
 use exa_formats::rigid_body::RigidBody;
-use exa_rpk::{GameData, PackKind};
+use exa_rpk::{Archive, GameData, PackKind};
 
 const CM: f32 = 100.0;
 
@@ -37,6 +39,7 @@ pub fn bodies(game: &GameData, pack: &str, entry: &str) -> Result<()> {
                 let parent = node.parent.and_then(|p| scene.nodes.get(p - 1));
                 let child = parent.is_some_and(|p| p.has_rigid_body());
                 print_body(i + 1, &node.name, child, body);
+                print_material(game, &scene, node, body);
             }
         }
     }
@@ -94,6 +97,38 @@ fn print_body(index: usize, name: &str, child: bool, b: &RigidBody) {
             s.volume,
             s.pitch
         );
+    }
+}
+
+/// A material by name: the file's own record, else the libraries'.
+fn find_material(game: &GameData, scene: &Scene, name: &str) -> Option<Material> {
+    scene.material(name).cloned().or_else(|| {
+        let libs = game.project().material_libraries.iter().map(String::as_str);
+        libs.chain(["humanbase.rml"]).find_map(|lib| {
+            let archive = Archive::parse(game.resource_file(lib)?).ok()?;
+            Material::parse(archive.get(name)?).ok()
+        })
+    })
+}
+
+/// The material of the body node's first mesh part, what the body's
+/// mobility is divided by when it registers, and its impact sound set.
+fn print_material(game: &GameData, scene: &Scene, node: &exa_formats::rfc::Node, b: &RigidBody) {
+    let NodeBody::Mesh(mesh) = &node.body else {
+        return;
+    };
+    let Some(name) = mesh.groups.first().map(|g| g.material.as_str()) else {
+        return;
+    };
+    match find_material(game, scene, name) {
+        Some(m) => println!(
+            "  material {name:?}: divisor {} (stored {}), registered mobility {}, impact sounds {}",
+            m.mobility_divisor(),
+            m.physical_divisor,
+            b.mobility / m.mobility_divisor(),
+            m.collision_sound_set(name)
+        ),
+        None => println!("  material {name:?} not found: divisor 1"),
     }
 }
 

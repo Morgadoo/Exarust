@@ -56,6 +56,27 @@ pub struct ModelNode {
     /// The mesh's GI sample points in the node's space (metres), which mark
     /// the voxels it fills.
     pub gi_points: Arc<Vec<Vec3>>,
+    /// The node's rigid body, when it carries one that decodes and the
+    /// node is not marked as level geometry
+    /// ([`exa_formats::rfc::Node::is_static`]).
+    pub rigid: Option<NodeRigidBody>,
+}
+
+/// A model node's rigid body and what its mobility is divided by when the
+/// body is registered: the physical divisor of the material of the node's
+/// first mesh part ([`Material::mobility_divisor`], 1 without a material).
+#[derive(Debug, Clone)]
+pub struct NodeRigidBody {
+    pub body: Arc<exa_formats::rigid_body::RigidBody>,
+    pub mobility_divisor: f32,
+}
+
+impl NodeRigidBody {
+    /// The body's mobility as the original registers it: the stored value
+    /// over the divisor.
+    pub fn mobility(&self) -> f32 {
+        self.body.mobility / self.mobility_divisor
+    }
 }
 
 impl Model {
@@ -107,6 +128,8 @@ pub struct ModelCache {
     body_skin: HashMap<u16, Arc<Vec<(Vec3, VertexSkin)>>>,
     /// Body model stems (lower case) of the races that bleed, once read.
     bleeding_stems: Option<HashSet<String>>,
+    /// Mobility divisors by material cache key ([`ModelLoader::mobility_divisor`]).
+    divisors: HashMap<String, f32>,
     warned: HashSet<String>,
 }
 
@@ -285,6 +308,19 @@ impl ModelLoader<'_> {
                     .entry(*bone)
                     .or_insert_with(|| Arc::new(reference.collect()));
             }
+            // A node marked as level geometry never registers its body.
+            let rigid =
+                node.rigid()
+                    .filter(|_| !node.is_static())
+                    .map(|body| NodeRigidBody {
+                        body: Arc::new(body.clone()),
+                        mobility_divisor: match &node.body {
+                            NodeBody::Mesh(mesh) => mesh.groups.first().map_or(1.0, |g| {
+                                self.mobility_divisor(&entry, &scene, &g.material)
+                            }),
+                            _ => 1.0,
+                        },
+                    });
             let (parts, part_materials) = match &node.body {
                 NodeBody::Mesh(mesh) => built
                     .meshes
@@ -329,6 +365,7 @@ impl ModelLoader<'_> {
                     NodeBody::VoxelLight(l) => Some(*l),
                     _ => None,
                 },
+                rigid,
             });
         }
         Model { nodes }
@@ -345,6 +382,23 @@ impl ModelLoader<'_> {
         } else {
             format!("lib#{}", name.to_ascii_lowercase())
         }
+    }
+
+    /// What a rigid body's stored mobility is divided by when its node's
+    /// first mesh part has the material `name`: the material's physical
+    /// divisor (its own record, else the libraries'), 1 when it has none.
+    fn mobility_divisor(&mut self, entry: &str, scene: &Scene, name: &str) -> f32 {
+        let key = Self::material_key(entry, scene, name);
+        if let Some(&d) = self.cache.divisors.get(&key) {
+            return d;
+        }
+        let d = scene
+            .material(name)
+            .cloned()
+            .or_else(|| library_material(self.game, name))
+            .map_or(1.0, |m| m.mobility_divisor());
+        self.cache.divisors.insert(key, d);
+        d
     }
 
     fn material(&mut self, entry: &str, scene: &Scene, name: &str) -> Handle<ExaMaterial> {
@@ -1541,6 +1595,89 @@ mod tests {
             "Skin",
         ] {
             assert!(!takes_race_blood(other), "{other}");
+        }
+    }
+
+    /// What the shipped rigid bodies' mobility is divided by (skipped
+    /// without the game): the physical divisor of each body node's first
+    /// material, most of them 1 (stored 0), iron 2 and 3, wicker 0.6; and
+    /// the loaded models carry it.
+    #[test]
+    fn shipped_mobility_divisors() {
+        use std::collections::BTreeMap;
+        let Some(dir) = crate::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(dir).unwrap();
+        for (kind, bodies, want) in [
+            (
+                PackKind::Objects,
+                1230,
+                &[("0.5", 21), ("1", 1144), ("2", 33), ("3", 32)][..],
+            ),
+            (
+                PackKind::Objlib,
+                1503,
+                &[
+                    ("0.6", 11),
+                    ("0.8", 2),
+                    ("1", 1297),
+                    ("10", 15),
+                    ("2", 76),
+                    ("3", 102),
+                ][..],
+            ),
+        ] {
+            let pack = game.pack(kind).unwrap();
+            let mut divisors: BTreeMap<String, usize> = BTreeMap::new();
+            let mut count = 0;
+            for e in pack.entries() {
+                let Ok(scene) = Scene::parse(pack.bytes(e)) else {
+                    continue;
+                };
+                for n in scene.nodes.iter().filter(|n| n.rigid().is_some()) {
+                    count += 1;
+                    let NodeBody::Mesh(mesh) = &n.body else {
+                        panic!("{}: a body off a mesh", e.name);
+                    };
+                    let name = &mesh.groups[0].material;
+                    let m = scene
+                        .material(name)
+                        .cloned()
+                        .or_else(|| library_material(&game, name))
+                        .unwrap_or_else(|| panic!("{}: no material {name}", e.name));
+                    *divisors
+                        .entry(m.mobility_divisor().to_string())
+                        .or_default() += 1;
+                }
+            }
+            assert_eq!(count, bodies, "{kind:?}");
+            let got: Vec<(&str, usize)> = divisors.iter().map(|(k, &v)| (k.as_str(), v)).collect();
+            assert_eq!(got, want, "{kind:?}");
+        }
+        let mut cache = ModelCache::default();
+        let mut meshes = Assets::<Mesh>::default();
+        let mut materials = Assets::<ExaMaterial>::default();
+        let mut images = Assets::<Image>::default();
+        let mut loader = ModelLoader {
+            game: &game,
+            cache: &mut cache,
+            meshes: &mut meshes,
+            materials: &mut materials,
+            images: &mut images,
+            bc_supported: false,
+        };
+        // An iron anvil (`mtliron03`), a wicker basket (`wkrtl01`), a
+        // terracotta amphora (stored 0).
+        for (entry, divisor) in [
+            ("anvil", 2.0),
+            ("basket_wkr a", 0.6),
+            ("amph trcb a01", 1.0),
+        ] {
+            let model = loader.model(PackKind::Objlib, entry).unwrap();
+            let rigid = model.nodes.iter().find_map(|n| n.rigid.as_ref()).unwrap();
+            assert_eq!(rigid.mobility_divisor, divisor, "{entry}");
+            assert_eq!(rigid.mobility(), rigid.body.mobility / divisor, "{entry}");
         }
     }
 

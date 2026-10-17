@@ -2,7 +2,8 @@
 
 Tools that show and measure what the body solver does
 ([formats/RSQ.md](formats/RSQ.md), Physical body): an overlay of every
-simulated body, a readout of one body's joints, a per-joint trace, and
+simulated character body and every awake prop body, a readout of one
+body's joints, a per-joint trace, a shove for the props near the player, and
 controls to pause, step and slow down the simulation. They cost nothing
 measurable while off: their systems wait behind run conditions, and the
 only per-frame work is a check of their keys.
@@ -16,6 +17,12 @@ exarust --debug-bodies --opponent play arena
 exarust --debug-bodies --limp --sim-speed 0.25 character
 # Every joint of both fighters for a minute, in a CSV.
 exarust --opponent --joint-trace joints.csv play arena
+# Shove the tableware on arenao1's tavern table (the table itself is level
+# geometry), seen beside the table: the log says how far each moved once
+# all sleep again.
+exarust --no-gi --no-supersample --size 960x540 --at 11.2,4.5,12.8 \
+  --camera 10.2,8.2,12.2,-135,-32 --shove-props 60 --frames 450 \
+  --screenshot shoved.png play arenao1
 # Freeze the duel the moment a link opens 1 cm past its slack, and keep a
 # picture of it from the side.
 exarust --debug-bodies --opponent --pause-on-stretch 1 \
@@ -31,8 +38,10 @@ it takes the ring's other slot.
 | flag | effect |
 |---|---|
 | `--debug-bodies` | start with the overlay and the readout shown |
-| `--joint-trace <file.csv>` | write every joint of every simulated body after every 83 Hz tick ([columns](#joint-trace)) |
-| `--trace <file.csv>` | the body trace in the retail probe's columns ([formats/RSQ.md](formats/RSQ.md)), now ending with the sleep countdown and state |
+| `--joint-trace <file.csv>` | write every joint of every simulated character body after every 83 Hz tick ([columns](#joint-trace)) |
+| `--trace <file.csv>` | the body trace in the retail probe's columns ([formats/RSQ.md](formats/RSQ.md)), now ending with the sleep countdown and state; character bodies only |
+| `--shove <frame>` | a body blow to every simulated character body at that frame after the load |
+| `--shove-props <frame>` | in play mode, at that frame after the load, a blow to every prop body within 3 m of the player (1.5 m/s away from it and 1.5 m/s up); the log counts them and, once all sleep again, says after how many ticks and how far each moved (a body that fell out of the world counts as settled). Props meet only the level for now: one shoved off a table that is itself a body (exanima01's tables) falls through it |
 | `--sim-speed <f>` | run the simulation at this speed (0.25 is a quarter as fast), from the end of the load |
 | `--pause-at-tick <n>` | pause at the end of body tick `n` (the `tick` column of both traces, counted from the start, the load included; see below) |
 | `--pause-on-stretch <cm>` | pause at the end of the tick in which a link of a body first goes this far past its slack; the log and the readout name the body, the part and the link |
@@ -153,7 +162,9 @@ bodies stay drawn where they were, between their last two ticks.
 
 ## The overlay
 
-Drawn over everything, between the last two ticks as the meshes are:
+Drawn over everything, between the last two ticks as the meshes are, for
+every character body and every awake prop body (the thousands of sleeping
+props a level holds are left out; F5 picks only character bodies):
 
 - each part's four particles (small crosses) and the six edges of its
   tetrahedron, thin and pale;

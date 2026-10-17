@@ -6,6 +6,7 @@
 
 pub mod body;
 pub mod contact;
+pub mod prop;
 
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
@@ -49,7 +50,7 @@ impl Plugin for PhysicsPlugin {
                 show_characters.in_set(RunFixedMainLoopSystems::AfterFixedMainLoop),
             )
             .add_systems(Update, release_characters)
-            .add_plugins(body::BodyPlugin);
+            .add_plugins((body::BodyPlugin, prop::PropPlugin));
     }
 }
 
@@ -83,7 +84,9 @@ impl Physics {
 
 /// Marks a subtree whose meshes become static triangle-mesh colliders once
 /// their world transforms are known. Removed after the colliders are built,
-/// which for a large level takes several frames ([`StaticBuild`]).
+/// which for a large level takes several frames ([`StaticBuild`]). The
+/// meshes a rigid body moves (under a [`prop::BodyNode`]) become its
+/// stand-ins instead ([`prop::StandIns`]).
 #[derive(Component)]
 pub struct StaticGeometry;
 
@@ -105,8 +108,12 @@ struct RootBuild {
     root: Entity,
     parts: Vec<Entity>,
     handed: usize,
-    tasks: Vec<(usize, Task<Vec<Collider>>)>,
+    tasks: Vec<(usize, Task<Vec<BuiltCollider>>)>,
 }
+
+/// A built collider and, for a rigid body's stand-in, the body's root node
+/// and the part it follows.
+type BuiltCollider = (Collider, Option<(Entity, usize)>);
 
 impl StaticBuild {
     /// The share of the meshes queued since the last idle moment that are
@@ -257,12 +264,16 @@ fn release_characters(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_static_colliders(
     mut commands: Commands,
     mut physics: ResMut<Physics>,
     mut build: ResMut<StaticBuild>,
+    mut stand_ins: ResMut<prop::StandIns>,
     roots: Query<Entity, With<StaticGeometry>>,
     children: Query<&Children>,
+    parents: Query<&ChildOf>,
+    body_nodes: Query<&prop::BodyNode>,
     shapes: Query<(&Mesh3d, &GlobalTransform)>,
     meshes: Res<Assets<Mesh>>,
 ) {
@@ -290,8 +301,14 @@ fn build_static_colliders(
             let Some(colliders) = block_on(poll_once(task)) else {
                 return true;
             };
-            for collider in colliders {
-                physics.0.insert_collider(collider, None);
+            for (mut collider, owner) in colliders {
+                if owner.is_some() {
+                    collider.user_data = prop::STAND_IN;
+                }
+                let handle = physics.0.insert_collider(collider, None);
+                if let Some((body, part)) = owner {
+                    stand_ins.0.entry(body).or_default().push((handle, part));
+                }
             }
             build.built += *count;
             false
@@ -314,15 +331,24 @@ fn build_static_colliders(
                 let e = root.parts[root.handed];
                 root.handed += 1;
                 if let Ok((mesh, global)) = shapes.get(e)
-                    && let Some(copy) = meshes.get(&mesh.0).and_then(|m| MeshCopy::of(m, global))
+                    && let Some(mut copy) =
+                        meshes.get(&mesh.0).and_then(|m| MeshCopy::of(m, global))
                 {
+                    copy.owner = moved_by(e, root.root, &parents, &body_nodes);
                     triangles += copy.indices.len() / 3;
                     batch.push(copy);
                 }
             }
             let count = root.handed - first;
-            let task = pool
-                .spawn(async move { batch.into_iter().filter_map(MeshCopy::collider).collect() });
+            let task = pool.spawn(async move {
+                batch
+                    .into_iter()
+                    .filter_map(|copy| {
+                        let owner = copy.owner;
+                        copy.collider().map(|c| (c, owner))
+                    })
+                    .collect()
+            });
             root.tasks.push((count, task));
             in_flight += 1;
         }
@@ -343,12 +369,32 @@ fn build_static_colliders(
     }
 }
 
+/// The rigid body (root node and part) that moves the mesh `e`: the
+/// nearest node over it, up to the static root, that a rigid body moves.
+fn moved_by(
+    e: Entity,
+    root: Entity,
+    parents: &Query<&ChildOf>,
+    body_nodes: &Query<&prop::BodyNode>,
+) -> Option<(Entity, usize)> {
+    let mut node = Some(e);
+    while let Some(n) = node.filter(|&n| n != root) {
+        if let Ok(b) = body_nodes.get(n) {
+            return Some((b.body, b.part));
+        }
+        node = parents.get(n).ok().map(ChildOf::parent);
+    }
+    None
+}
+
 /// A mesh's positions and triangles with its world transform, owned so a
-/// collider can be built from it on another thread.
+/// collider can be built from it on another thread, and the rigid body
+/// that moves it, if any.
 struct MeshCopy {
     positions: Vec<[f32; 3]>,
     indices: Vec<u32>,
     transform: Mat4,
+    owner: Option<(Entity, usize)>,
 }
 
 impl MeshCopy {
@@ -359,6 +405,7 @@ impl MeshCopy {
             positions: positions.to_vec(),
             indices,
             transform: global.to_matrix(),
+            owner: None,
         })
     }
 
@@ -539,6 +586,7 @@ mod tests {
         app.add_plugins(TaskPoolPlugin::default())
             .insert_resource(Physics(PhysicsWorld::new()))
             .init_resource::<StaticBuild>()
+            .init_resource::<prop::StandIns>()
             .init_resource::<Assets<Mesh>>()
             .add_systems(Update, build_static_colliders);
         let mesh = app
@@ -650,6 +698,64 @@ mod tests {
             world.get::<CharacterBody>(character).unwrap().followed(),
             Vec3::ZERO
         );
+    }
+
+    /// The meshes under a node a rigid body moves are built as its
+    /// stand-ins: tagged movable and listed for the body; the level's own
+    /// stay static.
+    #[test]
+    fn meshes_of_rigid_bodies_become_stand_ins() {
+        use crate::contact::Level;
+        let mut app = App::new();
+        app.add_plugins(TaskPoolPlugin::default())
+            .insert_resource(Physics(PhysicsWorld::new()))
+            .init_resource::<StaticBuild>()
+            .init_resource::<prop::StandIns>()
+            .init_resource::<Assets<Mesh>>()
+            .add_systems(Update, build_static_colliders);
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Plane3d::default().mesh().size(2.0, 2.0));
+        let root = app
+            .world_mut()
+            .spawn((StaticGeometry, Transform::default()))
+            .id();
+        app.world_mut().spawn((
+            Mesh3d(mesh.clone()),
+            GlobalTransform::IDENTITY,
+            ChildOf(root),
+        ));
+        let node = app.world_mut().spawn(ChildOf(root)).id();
+        app.world_mut().entity_mut(node).insert(prop::BodyNode {
+            body: node,
+            part: 0,
+        });
+        app.world_mut().spawn((
+            Mesh3d(mesh),
+            GlobalTransform::from_xyz(0.0, 1.0, 0.0),
+            ChildOf(node),
+        ));
+        for _ in 0..2000 {
+            if !app.world().entity(root).contains::<StaticGeometry>() {
+                break;
+            }
+            app.update();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let world = &app.world().resource::<Physics>().0;
+        assert_eq!(world.colliders.len(), 2);
+        let stand_ins = &app.world().resource::<prop::StandIns>().0;
+        assert_eq!(stand_ins.len(), 1);
+        let (handle, part) = stand_ins[&node][0];
+        assert_eq!(part, 0);
+        assert!(world.movable(handle.into_raw_parts().0));
+        let static_count = world
+            .colliders
+            .iter()
+            .filter(|(h, _)| !world.movable(h.into_raw_parts().0))
+            .count();
+        assert_eq!(static_count, 1);
     }
 
     #[test]

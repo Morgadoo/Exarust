@@ -100,3 +100,10 @@ Every command SHALL exit with a non-zero status and a message naming the missing
 #### Scenario: exanima01
 - **WHEN** `exa-tool nav exanima01 --png nav.png` runs against a retail installation
 - **THEN** it prints 640 × 800 cells with 219292 lower floors and writes a 1284 × 800 picture of the dungeon's rooms, black over the rock between them
+
+### Requirement: Body material inspection
+`exa-tool bodies` SHALL print, for each rigid body, the material of its node's first mesh part, the divisor its mobility is divided by when it registers, the mobility it registers with and its impact sound set.
+
+#### Scenario: An iron-banded barrel
+- **WHEN** `exa-tool bodies Objlib "barrel ubm a01"` runs
+- **THEN** its body shows material `mtliron04`, divisor 3, registered mobility 0.00353 and impact sounds `mtlcol`

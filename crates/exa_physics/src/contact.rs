@@ -33,6 +33,13 @@ pub trait Level {
     /// Triangles of `piece` meeting the box `lo..hi`, in world space.
     fn triangles(&self, piece: u32, lo: Vec3, hi: Vec3, out: &mut Vec<[Vec3; 3]>);
 
+    /// Whether `piece` is the stand-in of a rigid body's meshes, moved with
+    /// it (characters still meet it; rigid bodies meet only the level
+    /// until bodies collide with each other). None by default.
+    fn movable(&self, _piece: u32) -> bool {
+        false
+    }
+
     /// The original's Height Query: a sphere of `radius` whose lowest point
     /// starts at `at` is swept straight down by at most `depth`. Returns
     /// the height of its lowest point where it first meets the front of an
@@ -191,6 +198,12 @@ impl Level for rapier3d::prelude::PhysicsWorld {
                 .filter(|(_, c)| c.shape().as_trimesh().is_some())
                 .map(|(h, _)| h.into_raw_parts().0),
         );
+    }
+
+    fn movable(&self, piece: u32) -> bool {
+        self.colliders
+            .get_unknown_gen(piece)
+            .is_some_and(|(c, _)| c.user_data == crate::prop::STAND_IN)
     }
 
     fn triangles(&self, piece: u32, lo: Vec3, hi: Vec3, out: &mut Vec<[Vec3; 3]>) {

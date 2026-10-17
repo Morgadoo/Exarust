@@ -32,8 +32,25 @@ count; counts inside a mesh store **count − 1**.
 `u32 count`, then `count` chunks (`BA01`): `name[16]` followed by a material
 payload. The same payload is the value of an entry in an `.rml` library.
 
-Payload: a 184-byte block of shading parameters (not decoded yet), then
-56-byte texture layer records:
+Payload: a 184-byte block of shading parameters, then 56-byte texture
+layer records. Of the block, the colours, opacity, gloss, specular level,
+render class, flags, kind, extra flags, displacement and opacity fall-off
+are read for shading (`docs/RENDERING.md`), and two fields for physics
+(REA on the original's material constructor and loader; corpus below):
+
+| off | field |
+|---|---|
+| `0xA4` | `f32` physical divisor: a rigid body on a node whose first mesh part has this material registers with its stored mobility divided by it; the loader reads 0 as 1 (the constructor's default) |
+| `0xAC` | `char[4]` impact sound prefix (zero-padded); empty, the material name's first 3 characters stand in. The impact sound set is the prefix followed by `col` (`mtliron04` → `mtlcol`) |
+
+Divisors of the first material of every body node: `Objects.rpk` 1 230
+bodies, 1 (stored 0 or 1) ×1 144, 0.5 ×21 (cushions), 2 ×33 (`mtliron03`),
+3 ×32 (`mtliron04`); `Objlib.rpk` 1 503 bodies, 1 ×1 297, 0.6 ×11 (wicker
+`wkrtl01`), 0.8 ×2, 2 ×76, 3 ×102, 10 ×15 (`xaresdevbrass`): iron moves two
+to three times less than wood. Most prefixes are empty; the others are
+`stn`, `wdl`, `mth`, `MtlM`, `cer`, `clt`, `fls`, `wod`, `wkr`, ….
+
+Texture layer records:
 
 | off | field |
 |---|---|
@@ -185,8 +202,39 @@ sound slot: u32 id, f32 point[3] (cm), char sound[16], f32 volume, f32 pitch
 ```
 
 The original ignores the stored friction (bodies keep 0.75) and forces the
-group mask to 0. It divides the mobility by a value from the node's first
-material's physical record when it registers the body (not decoded yet).
+group mask to 0. It divides the mobility by the physical divisor of the
+node's first mesh part's material when it registers the body (Material
+list, `0xA4`).
+
+**Registration** (REA on the original's registration, its sector walk and
+the body set-up; Exarust: `exa_physics::body::Ragdoll::rigid`,
+`exa_world::bodies`). A node whose body is not marked static (node flag
+`0x80000`: a level's own node can store it, as `arenao1`'s tavern table
+does with flags `0x8090089`; a prop placed static sets it on all its
+nodes; `rfc::Node::is_static`) registers when its level loads, with its
+body children (a body under a plain node under a body never registers),
+and its whole subtree stops being level collision. It registers **asleep** (sleep countdown 0) with its four
+particles at the node's world matrix × the rest points, at rest. Gravity
+acts on particle i by the share wᵢ = 4/mᵢ, scaled so the shares sum to 4
+(mᵢ the stored point masses): gravity acts at the centre of mass. The
+spheres meet the level with friction 0.75. A body whose parent node has a
+body is an articulated child: its links join it to the parent's body (the
+parent point plus the node's local translation; only flag 8 kept, so a
+slider becomes plain slack of its stored value), then a pivot from its
+origin to that translation (slack 0, strength 1), every correction shared
+m/(m + m_parent) by the two mobilities. A root body with links hangs from
+the world and never meets the level. The body scale stays 1: body props
+are placed with unit matrices (to 1 %). A body below −50 m is removed with
+its node. Node flag `0x800000` would freeze a body (mobility 0); no
+shipped body carries it.
+
+Level counts (`exa_world::bodies` corpus test): `exanima01` registers
+4 591 body trees of 5 000 bodies (props, placed objects, its own model);
+122 hang from the world, 198 are doors, levers and plates, 492 belong to
+props placed static. `arenao1`: 17 register, 3 hang, 68 are static props,
+and its own model's tavern table is a node marked static (exanima01's six
+tables are not). Exarust registers only the free trees for now (no world links, no
+mechanisms yet).
 
 **Links.** A root body's links hold it to its parent node (world links:
 hinges, axles, slider rails); a child body's links hold it to its parent's
@@ -633,6 +681,15 @@ sub-chunks            0x3DE0EC00, 0x3DE0ECAC, 0x3DE0ECDB (not decoded)
 ```
 
 All 79 935 props in the 29 retail levels name existing Objlib objects.
+
+**Flags** (REA on the original's prop reader): `flags & 0xB80000` is copied
+onto the object's root node. **`0x80000` places the prop static**: every
+node under it is marked too, so none of its rigid bodies registers and its
+meshes are level collision (`Prop::STATIC`). Shipped: 0 ×76 045, `0x80000`
+×3 883, `0x100000` ×2, `0x180000` ×1, `0x200000` ×4 (lanterns; meaning not
+traced); never `0x800000`. `0x3DE0EC00` holds, per child node, a name and
+a matrix that replaces the child's local transform (an articulated prop
+posed in the editor).
 
 ## Level and set naming
 

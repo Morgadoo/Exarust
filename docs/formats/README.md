@@ -13,7 +13,7 @@ extension; the format is identified by its leading magic
 |---|---|---|---|---|
 | pack `.rpk` (also `.rml`, `.flb`, `.fds`, `actors.rpk`) | `01 0C BF AF` | every pack | verified | [RPK.md](RPK.md) |
 | project `.rfp` | `10 BD DF AF` | `Exanima.rfp` | verified | [RPK.md](RPK.md#project-file-rfp) |
-| chunk tree `.rfc` (meshes, materials, levels) | `CF AF 23 3D` (`CF AF 21 3D` on 3 meshes) | Objlib, Objects, Characters, CharExt, Components, Resource | verified (nodes, static meshes, lights, rigid bodies, cloth markers, material texture layers, level grid header, props); grid planes B/C observed | [RFC.md](RFC.md) |
+| chunk tree `.rfc` (meshes, materials, levels) | `CF AF 23 3D` (`CF AF 21 3D` on 3 meshes) | Objlib, Objects, Characters, CharExt, Components, Resource | verified (nodes, static meshes, lights, rigid bodies, cloth markers, material texture layers and physical divisor, level grid header, props and their static flag); grid planes B/C observed | [RFC.md](RFC.md) |
 | image `.rfi` | `C6 3D 2D 1D` | Textures, Apparel, ComponentTex, Emblems, Resource | verified | [RFI.md](RFI.md) |
 | skeleton + motions `.rsq` | `00 00 00 3D` | `Resource/humanoid.rsq` | framing | [RSQ.md](RSQ.md) |
 | database `.rdb` | `xx 0D xx DB` (strings: `02 0C BF AF`) | `Resource/*.rdb` | framing | [OTHER.md](OTHER.md#databases-rdb) |

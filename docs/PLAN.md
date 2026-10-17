@@ -375,6 +375,25 @@ jobs, relays) and the body class a record gives its model
 `corpus bodies` print them. Next: props as bodies in the solver (M32), then
 world links, the hand's drag, doors, levers and plates (M33–M35).
 
+Done (change `simulate-props-as-bodies`, M32): the free rigid bodies of a
+level's props, placed objects and own model are bodies in the 83 Hz
+solver, registered as the original registers them: asleep (countdown 0)
+where the level placed them, mobility over their first material's physical
+divisor (decoded: iron 2–3, wicker 0.6, most 1), gravity at the centre of
+mass, the stored spheres against the level with friction 0.75, articulated
+children joined by their links and an origin pivot; a blow wakes them and
+they fall, settle and sleep again; below −50 m they are removed. Props
+placed static (flag `0x80000`, 3 883 of 79 935) and level nodes marked
+static (the same node flag: `arenao1`'s tavern table) stay level geometry. Their
+meshes stay as stand-ins moved with them, so capsules and character bodies
+meet props as before ([formats/RFC.md](formats/RFC.md), Rigid body,
+Materials, Props). `exanima01` registers 4 591 trees of 5 000 bodies.
+`--shove-props` shoves the props near the player. Not yet: body–body
+contact (C17; a woken prop falls through other props, and only a blow
+wakes props in play), world links (M33: lamps, chains and hanging
+braziers stay static), doors, levers and plates (M12, M35), the drag
+(M34), impact sounds (C22).
+
 Done (change `follow-the-pelvis-with-the-camera`, M3 of the movement plan): the
 chase camera looks at the pelvis as it is drawn between body ticks, and
 shows its own 17 ms ticks blended by how far the frame is into the last

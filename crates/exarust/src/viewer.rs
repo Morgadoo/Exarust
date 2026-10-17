@@ -56,6 +56,7 @@ impl Plugin for ViewerPlugin {
                     fly_camera,
                     screenshot_after_frames,
                     shove_at_frame,
+                    shove_props_at_frame,
                     start_fight,
                 ),
             );
@@ -367,12 +368,17 @@ fn continue_level(
     commands.remove_resource::<PendingLevel>();
     let name = pending.name.clone();
     info!(
-        "level {name}: {} props ({} missing), {} placed objects ({} missing), {} lights, grid {:?}, terrain {:?}, loaded in {:.1?}",
+        "level {name}: {} props ({} missing), {} placed objects ({} missing), {} lights, {} bodies asleep in the solver ({} parts; static: {} hung, {} mechanisms, {} of static props), grid {:?}, terrain {:?}, loaded in {:.1?}",
         info.props,
         info.missing_props,
         info.placed_objects,
         info.missing_objects,
         info.lights,
+        info.bodies.registered,
+        info.bodies.parts,
+        info.bodies.hung,
+        info.bodies.mechanisms,
+        info.bodies.static_props,
         info.grid,
         info.terrain,
         pending.started.elapsed()
@@ -934,13 +940,20 @@ fn screenshot_after_frames(
     }
 }
 
-/// A body blow, from the front, to every simulated body at the `--shove`
-/// frame, counted from the end of the loading screen.
+/// A body blow, from the front, to every simulated character body at the
+/// `--shove` frame, counted from the end of the loading screen.
+#[allow(clippy::type_complexity)]
 fn shove_at_frame(
     options: Res<Options>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     mut frames: Local<u32>,
-    bodies: Query<(Entity, &GlobalTransform), With<exa_physics::body::Ragdoll>>,
+    bodies: Query<
+        (Entity, &GlobalTransform),
+        (
+            With<exa_physics::body::Ragdoll>,
+            Without<exa_physics::prop::PropBody>,
+        ),
+    >,
     mut shoves: MessageWriter<exa_physics::body::Shove>,
 ) {
     let Some(at) = options.shove else { return };
@@ -963,6 +976,94 @@ fn shove_at_frame(
             }
         }
     }
+}
+
+/// How far from the player `--shove-props` reaches (m), and the blow it
+/// deals: 1.5 m/s away from the player and 1.5 m/s up.
+const SHOVE_PROPS_REACH: f32 = 3.0;
+const SHOVE_PROPS_SPEED: f32 = 1.5;
+
+/// `--shove-props`: at that frame after loading, a blow to every prop body
+/// within [`SHOVE_PROPS_REACH`] of the player, away from it and up; then,
+/// once every one of them sleeps again, how far each moved and how long it
+/// took.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+fn shove_props_at_frame(
+    options: Res<Options>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    clock: Res<exa_physics::body::BodyTicks>,
+    mut frames: Local<u32>,
+    mut shoved: Local<Vec<(Entity, Vec3)>>,
+    mut since: Local<u64>,
+    players: Query<&GlobalTransform, With<exa_game::player::Player>>,
+    bodies: Query<(Entity, &exa_physics::body::Ragdoll), With<exa_physics::prop::PropBody>>,
+    mut shoves: MessageWriter<exa_physics::body::Shove>,
+) {
+    let Some(at) = options.shove_props else {
+        return;
+    };
+    if loading.is_some() {
+        return;
+    }
+    *frames += 1;
+    let centre =
+        |body: &exa_physics::body::Ragdoll| Vec3::from(body.parts[0].transform().translation);
+    if *frames == at {
+        let Some(player) = players.iter().next().map(GlobalTransform::translation) else {
+            warn!("--shove-props: no player");
+            return;
+        };
+        for (e, body) in &bodies {
+            let c = centre(body);
+            let away = (c - player).with_y(0.0);
+            if away.length() > SHOVE_PROPS_REACH {
+                continue;
+            }
+            let velocity = (away.normalize_or(Vec3::X) + Vec3::Y) * SHOVE_PROPS_SPEED;
+            for bone in 0..body.parts.len() {
+                shoves.write(exa_physics::body::Shove {
+                    body: e,
+                    bone,
+                    velocity,
+                    daze: 0.0,
+                });
+            }
+            shoved.push((e, c));
+        }
+        *since = clock.0;
+        info!(
+            "--shove-props: shoved {} prop bodies near {player}",
+            shoved.len()
+        );
+        return;
+    }
+    if *frames <= at + 1 || shoved.is_empty() {
+        return;
+    }
+    // A body removed below the world counts as settled.
+    let all_asleep = shoved
+        .iter()
+        .all(|(e, _)| bodies.get(*e).map_or(true, |(_, b)| b.asleep()));
+    if !all_asleep {
+        return;
+    }
+    let moved: Vec<String> = shoved
+        .iter()
+        .map(|(e, from)| match bodies.get(*e) {
+            Ok((_, b)) => {
+                let d = centre(b) - *from;
+                format!("{:.0} cm ({:+.0} up)", d.length() * 100.0, d.y * 100.0)
+            }
+            Err(_) => "removed".into(),
+        })
+        .collect();
+    info!(
+        "--shove-props: all {} asleep again after {} ticks; moved {}",
+        shoved.len(),
+        clock.0 - *since,
+        moved.join(", ")
+    );
+    shoved.clear();
 }
 
 /// The fight starts when the level shows: every duellist enters combat,

@@ -69,6 +69,9 @@ with nested packs as `exanima://Resource/common.rml/bontile`.
   drawn between their last two fixed steps, so they move smoothly at any
   frame rate, and the same ticks give the same bodies at any frame rate.
   Events sent from frames (blows) are queued for the next tick.
+- Props and items with a rigid body are bodies in the same solver, asleep
+  where the level placed them until something wakes them; only awake
+  bodies are redrawn.
 - Today input steering, the character controllers and the bodies run in the
   fixed step. AI, balance, combat and the clips of bodies that are not
   physical still run once a frame.

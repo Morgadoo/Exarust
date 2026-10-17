@@ -3,7 +3,8 @@
 Rigid-body and articulated-body simulation: the core of Exanima's feel (physically driven characters, momentum-based combat, cloth).
 
 **Phase:** Phase 3 (see [`docs/PLAN.md`](../../docs/PLAN.md)). Status: started — the original's
-body solver (`body`), its level contacts (`contact`) and the character controller (`lib`).
+body solver (`body`), its level contacts (`contact`), props and items as bodies (`prop`) and the
+character controller (`lib`).
 
 Each fixed tick (83 Hz) moves the character controllers, then runs the
 character ticks (`body::CharacterTicks`, filled by `exa_game`: clips sampled
@@ -48,6 +49,20 @@ A dazed or unsteady body's targets give way to the pose it holds by the
 original's weight (`body::Drive::hold_weight`), which the character tick
 hands to the sampler; the race's clip rates (`body::RaceMuscles`) set its
 clip clock.
+
+Props and items with a rigid body are bodies in the same solver
+(`src/body_rigid.rs`, `body::Ragdoll::rigid`): built as the original
+registers them, asleep (countdown 0) where the level placed them, with
+their stored mobility over their material's divisor, gravity shared by
+the point masses so it acts at the centre of mass (`Part::gravity`, 1 on
+limbs), the stored spheres against the level (friction 0.75), articulated
+children joined by their stored links and an origin pivot. `prop` registers
+them from what the level loader gives (`prop::PendingProp`, `prop::BodyNode`)
+once transforms propagate; the static build keeps their meshes as
+stand-ins moved with them (`prop::StandIns`; `contact::Level::movable`), so
+capsules and character bodies meet props as before while a prop body meets
+only the level, until bodies collide with each other; a body below −50 m is
+removed. Only awake bodies are redrawn between ticks.
 
 The debug tools' measures are in `body::inspect` (`src/body_inspect.rs`):
 each joint's turn from its rest turn (stored when the body is built,

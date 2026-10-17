@@ -3,6 +3,7 @@
 //! ground from the terrain heightfields (`terrain`); the grid's rooms decide
 //! what shows (`rooms`, `room_view`).
 
+pub mod bodies;
 pub mod environment;
 pub mod fire;
 pub mod flame;
@@ -69,6 +70,9 @@ pub struct LevelInfo {
     /// was not found.
     pub placed_objects: usize,
     pub missing_objects: usize,
+    /// The rigid bodies of its props, placed objects and own model:
+    /// registered in the solver, and left static.
+    pub bodies: bodies::BodyCounts,
     /// A floored cell to start in (stand-in for the level's start marker).
     pub spawn: Option<Vec3>,
     pub bounds_min: Vec3,
@@ -218,8 +222,12 @@ fn placed_object_model(
 /// What spawning a placed object came to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlacedSpawn {
-    /// Placed, bringing this many lights.
-    Placed { lights: usize },
+    /// Placed, bringing this many lights, its bodies registered or left
+    /// static.
+    Placed {
+        lights: usize,
+        bodies: bodies::BodyCounts,
+    },
     /// Its model is missing.
     Missing,
 }
@@ -248,7 +256,10 @@ fn spawn_placed_object(
             room_view::PendingRoom::default(),
             ChildOf(parent),
         ));
-        return Some(PlacedSpawn::Placed { lights: 0 });
+        return Some(PlacedSpawn::Placed {
+            lights: 0,
+            bodies: bodies::BodyCounts::default(),
+        });
     }
     let model = placed_object_model(loader, scene, global, object)
         .and_then(|(kind, entry)| loader.model(kind, &entry));
@@ -265,7 +276,7 @@ fn spawn_placed_object(
         scaled = m;
         &scaled
     };
-    let e = spawn_model(
+    let (e, nodes) = spawn_model_nodes(
         commands,
         model,
         Some(transform_from_rows(&object.transform)),
@@ -275,8 +286,15 @@ fn spawn_placed_object(
         room_view::PendingRoom::default(),
         ChildOf(parent),
     ));
+    // A door, lever or push surface keeps its body for its mechanism.
+    let placement = if item.mechanism().is_some() {
+        bodies::Placement::Mechanism
+    } else {
+        bodies::Placement::Loose
+    };
     Some(PlacedSpawn::Placed {
         lights: model.nodes.iter().filter(|n| n.light.is_some()).count(),
+        bodies: bodies::register_bodies(commands, model, &nodes, placement),
     })
 }
 
@@ -330,6 +348,16 @@ fn dim_child_glows(
 /// the place of the model's root transform, the way a level places an object;
 /// without one the stored node transforms are used.
 pub fn spawn_model(commands: &mut Commands, model: &Model, placement: Option<Transform>) -> Entity {
+    spawn_model_nodes(commands, model, placement).0
+}
+
+/// [`spawn_model`], also returning each node's entity (in the model's node
+/// order).
+pub fn spawn_model_nodes(
+    commands: &mut Commands,
+    model: &Model,
+    placement: Option<Transform>,
+) -> (Entity, Vec<Entity>) {
     let root = commands
         .spawn((placement.unwrap_or_default(), Visibility::default()))
         .id();
@@ -409,7 +437,7 @@ pub fn spawn_model(commands: &mut Commands, model: &Model, placement: Option<Tra
                 .insert(shadow_links::ShadowExclude(anchors.clone()));
         }
     }
-    root
+    (root, entities)
 }
 
 /// Nodes whose meshes a light of the same model leaves out of its shadow
@@ -583,6 +611,7 @@ pub struct LevelLoad {
     objects_done: usize,
     placed_objects: usize,
     missing_objects: usize,
+    bodies: bodies::BodyCounts,
 }
 
 impl LevelLoad {
@@ -637,6 +666,7 @@ impl LevelLoad {
             objects_done: 0,
             placed_objects: 0,
             missing_objects: 0,
+            bodies: bodies::BodyCounts::default(),
         })
     }
 
@@ -714,7 +744,13 @@ impl LevelLoad {
                 }
                 if let Some(own) = loader.model(PackKind::Resource, &self.entry) {
                     self.lights += own.nodes.iter().filter(|n| n.light.is_some()).count();
-                    let e = spawn_model(commands, &own, None);
+                    let (e, nodes) = spawn_model_nodes(commands, &own, None);
+                    self.bodies.add(bodies::register_bodies(
+                        commands,
+                        &own,
+                        &nodes,
+                        bodies::Placement::Loose,
+                    ));
                     // Each of its top nodes goes to its own room.
                     commands.entity(e).insert((
                         ChildOf(self.root),
@@ -741,7 +777,16 @@ impl LevelLoad {
                     let e = match loader.model(PackKind::Objlib, &prop.object) {
                         Some(model) => {
                             self.lights += model.nodes.iter().filter(|n| n.light.is_some()).count();
-                            spawn_model(commands, &model, Some(placement))
+                            let (e, nodes) = spawn_model_nodes(commands, &model, Some(placement));
+                            // A prop placed static is level geometry.
+                            let placement = if prop.is_static() {
+                                bodies::Placement::Static
+                            } else {
+                                bodies::Placement::Loose
+                            };
+                            self.bodies
+                                .add(bodies::register_bodies(commands, &model, &nodes, placement));
+                            e
                         }
                         None => {
                             self.missing += 1;
@@ -783,9 +828,10 @@ impl LevelLoad {
                         self.root,
                         object,
                     ) {
-                        Some(PlacedSpawn::Placed { lights }) => {
+                        Some(PlacedSpawn::Placed { lights, bodies }) => {
                             self.placed_objects += 1;
                             self.lights += lights;
+                            self.bodies.add(bodies);
                         }
                         Some(PlacedSpawn::Missing) => self.missing_objects += 1,
                         None => {}
@@ -869,6 +915,7 @@ impl LevelLoad {
                 characters: placed_characters(&self.scene, &self.global_items),
                 placed_objects: self.placed_objects,
                 missing_objects: self.missing_objects,
+                bodies: self.bodies,
                 spawn: self.scene.grid.as_ref().and_then(grid::spawn_point),
                 bounds_min: min,
                 bounds_max: max,
@@ -1155,6 +1202,7 @@ mod tests {
             bounds: (Vec3::ZERO, 1.0),
             half_extents: Vec3::ZERO,
             gi_points: Default::default(),
+            rigid: None,
         }
     }
 

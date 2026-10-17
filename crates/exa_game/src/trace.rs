@@ -1,6 +1,6 @@
 //! `--trace <csv>`: the body state at the end of every 83 Hz tick, one row
 //! per traced body (the player's, or, without a player, every simulated
-//! body). Lengths are in the original's centimetres and the clip clock in
+//! character body; props' bodies are left out). Lengths are in the original's centimetres and the clip clock in
 //! frames, in the columns of the retail body probe, so that the two can be
 //! compared row by row. What Exarust does not simulate yet is left empty.
 //! Exarust's own columns follow the probe's: the body's sleep countdown and
@@ -17,6 +17,7 @@ use std::path::Path;
 use bevy::prelude::*;
 use exa_anim::{Animator, BodyPart, Motions, Stature};
 use exa_physics::body::{BodySystems, BodyTicks, Ragdoll, world_with};
+use exa_physics::prop::PropBody;
 
 use crate::limp::clip_pose;
 use crate::player::PlayerBody;
@@ -150,13 +151,16 @@ fn trace_bodies(
     mut trace: ResMut<BodyTrace>,
     clock: Res<BodyTicks>,
     motions: Option<Res<Motions>>,
-    bodies: Query<(
-        Entity,
-        &Ragdoll,
-        Option<&Animator>,
-        Option<&Stature>,
-        Has<PlayerBody>,
-    )>,
+    bodies: Query<
+        (
+            Entity,
+            &Ragdoll,
+            Option<&Animator>,
+            Option<&Stature>,
+            Has<PlayerBody>,
+        ),
+        Without<PropBody>,
+    >,
     parents: Query<&ChildOf>,
     nodes: Query<(&Transform, Option<&BodyPart>)>,
 ) {

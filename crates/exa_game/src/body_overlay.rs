@@ -1,6 +1,6 @@
 //! The body overlay (`--debug-bodies`, or F3 in any mode): every simulated
-//! body drawn over its mesh as the solver sees it, and a readout of one
-//! body's joints.
+//! character body, and every awake prop body, drawn over its mesh as the
+//! solver sees it, and a readout of one character body's joints.
 //!
 //! - Each part's four particles and the edges of its tetrahedron.
 //! - Each link from its point on the part to its point on the parent,
@@ -26,6 +26,7 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use exa_physics::body::inspect::{self, Stretch};
 use exa_physics::body::{BodyTicks, Ragdoll};
+use exa_physics::prop::PropBody;
 use exa_render::supersample::SceneCamera;
 
 use crate::player::PlayerBody;
@@ -138,9 +139,10 @@ fn overlay_keys(keys: Option<Res<ButtonInput<KeyCode>>>, mut overlay: ResMut<Bod
 
 /// Inspects the player's body, or the first body, while none is chosen or
 /// the chosen one is gone.
+#[allow(clippy::type_complexity)]
 fn keep_inspected(
     mut inspected: ResMut<InspectedBody>,
-    bodies: Query<(Entity, Has<PlayerBody>), With<Ragdoll>>,
+    bodies: Query<(Entity, Has<PlayerBody>), (With<Ragdoll>, Without<PropBody>)>,
 ) {
     if inspected.0.is_some_and(|e| bodies.contains(e)) {
         return;
@@ -161,7 +163,7 @@ fn pick_body(
     mut inspected: ResMut<InspectedBody>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), SceneCamera>,
-    bodies: Query<(Entity, &Ragdoll)>,
+    bodies: Query<(Entity, &Ragdoll), Without<PropBody>>,
 ) {
     if !keys.is_some_and(|k| k.just_pressed(PICK_KEY)) {
         return;
@@ -209,14 +211,15 @@ fn draw_overlay(
     overlay: Res<BodyOverlay>,
     inspected: Res<InspectedBody>,
     time: Res<Time<Fixed>>,
-    bodies: Query<(Entity, &Ragdoll)>,
+    bodies: Query<(Entity, &Ragdoll, Has<PropBody>)>,
     mut gizmos: Gizmos<BodyGizmos>,
     mut frames: Gizmos<BodyFrameGizmos>,
 ) {
     let alpha = time.overstep_fraction();
-    for (entity, body) in &bodies {
+    for (entity, body, prop) in &bodies {
         let chosen = inspected.0 == Some(entity);
-        if overlay.only_inspected && !chosen {
+        // Of the thousands of props' bodies, only the awake ones.
+        if overlay.only_inspected && !chosen || prop && body.asleep() {
             continue;
         }
         for i in 0..body.parts.len() {
@@ -387,7 +390,7 @@ fn update_panel(
     virt: Res<Time<Virtual>>,
     real: Res<Time<Real>>,
     control: Option<Res<SimControl>>,
-    bodies: Query<(&Ragdoll, Has<PlayerBody>)>,
+    bodies: Query<(&Ragdoll, Has<PlayerBody>), Without<PropBody>>,
     mut rows: Query<(&PanelRow, &mut TextSpan, &mut TextColor)>,
     mut read_at: Local<Option<f32>>,
 ) {

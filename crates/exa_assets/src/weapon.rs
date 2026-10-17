@@ -81,6 +81,7 @@ impl ModelLoader<'_> {
             bounds: (Vec3::ZERO, 1.0),
             half_extents: Vec3::ZERO,
             gi_points: Default::default(),
+            rigid: None,
         }];
         for placed in factory.place(&generated) {
             let part = &factory.parts[placed.part];
@@ -146,6 +147,7 @@ impl ModelLoader<'_> {
                 bounds: (Vec3::ZERO, 0.5),
                 half_extents: Vec3::ZERO,
                 gi_points: Default::default(),
+                rigid: None,
             });
         }
         Some(Model { nodes })

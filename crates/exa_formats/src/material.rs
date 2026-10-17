@@ -4,9 +4,10 @@
 //! The payload is a 184-byte block of shading parameters followed by 56-byte
 //! texture layer records. Of the block, the emissive, diffuse and specular
 //! colours, opacity, glossiness, specular level, render class, shading flags,
-//! material kind, extra flags, the displacement-shadow step and bias and the
-//! opacity fall-off are decoded; the rest (among it the subsurface colour and
-//! the refraction parameters) is not yet. Each layer names a texture and
+//! material kind, extra flags, the displacement-shadow step and bias, the
+//! opacity fall-off, the physical divisor and the collision sound prefix are
+//! decoded; the rest (among it the subsurface colour and the refraction
+//! parameters) is not yet. Each layer names a texture and
 //! the slot it fills. Slot roles were assigned from the suffixes of the
 //! texture names that use them across the retail data (`d` diffuse, `n`
 //! normal, …).
@@ -89,6 +90,15 @@ pub struct Material {
     /// fade with the view angle when the amount exceeds 0.01.
     pub falloff_amount: f32,
     pub falloff_exponent: f32,
+    /// Physical divisor (`0xA4`): a rigid body on a node whose first mesh
+    /// part has this material moves by its stored mobility over it. The
+    /// original loads 0 as 1 ([`Material::mobility_divisor`]).
+    pub physical_divisor: f32,
+    /// Collision sound prefix (`0xAC`, up to 4 characters, empty in most
+    /// records): the original's impact sound set is this prefix, or the
+    /// material name's first three characters when empty, followed by
+    /// `col`.
+    pub collision_sound: String,
     pub layers: Vec<TextureLayer>,
 }
 
@@ -163,8 +173,36 @@ impl Material {
             displacement_bias: f32_at(0x60),
             falloff_amount: f32_at(0x64),
             falloff_exponent: f32_at(0x68),
+            physical_divisor: f32_at(0xA4),
+            collision_sound: {
+                let raw = &payload[0xAC..0xB0];
+                let end = raw.iter().position(|&c| c == 0).unwrap_or(raw.len());
+                raw[..end].iter().map(|&c| c as char).collect()
+            },
             layers,
         })
+    }
+
+    /// What a rigid body's stored mobility is divided by when the body is
+    /// registered: the physical divisor, 1 when it is stored as 0 (as the
+    /// original's material loader does).
+    pub fn mobility_divisor(&self) -> f32 {
+        if self.physical_divisor == 0.0 {
+            1.0
+        } else {
+            self.physical_divisor
+        }
+    }
+
+    /// The impact sound set of the material named `name`: the collision
+    /// sound prefix, or the name's first three characters, then `col`.
+    pub fn collision_sound_set(&self, name: &str) -> String {
+        let prefix: String = if self.collision_sound.is_empty() {
+            name.chars().take(3).collect()
+        } else {
+            self.collision_sound.clone()
+        };
+        format!("{prefix}col")
     }
 
     pub fn layer(&self, slot: TextureSlot) -> Option<&TextureLayer> {
@@ -231,6 +269,26 @@ mod tests {
         assert_eq!(m.extra, 0x0010_0100);
         assert_eq!((m.displacement_step, m.displacement_bias), (0.5, 0.25));
         assert_eq!((m.falloff_amount, m.falloff_exponent), (1.0, 2.0));
+    }
+
+    /// The physical divisor at `0xA4`, 1 when stored as 0 (`mtliron04` 3,
+    /// most records 0), and the collision sound prefix at `0xAC`, else the
+    /// name's first three characters, followed by `col`.
+    #[test]
+    fn reads_the_physical_divisor_and_the_collision_sound() {
+        let mut p = vec![0u8; PARAMETER_BLOCK];
+        let m = Material::parse(&p).unwrap();
+        assert_eq!((m.physical_divisor, m.mobility_divisor()), (0.0, 1.0));
+        assert_eq!(m.collision_sound, "");
+        assert_eq!(m.collision_sound_set("mtliron04"), "mtlcol");
+        p[0xA4..0xA8].copy_from_slice(&3.0f32.to_le_bytes());
+        p[0xAC..0xAF].copy_from_slice(b"wdl");
+        let m = Material::parse(&p).unwrap();
+        assert_eq!((m.physical_divisor, m.mobility_divisor()), (3.0, 3.0));
+        assert_eq!(m.collision_sound_set("barrelwood"), "wdlcol");
+        // Four characters fill the field.
+        p[0xAC..0xB0].copy_from_slice(b"MtlM");
+        assert_eq!(Material::parse(&p).unwrap().collision_sound, "MtlM");
     }
 
     #[test]

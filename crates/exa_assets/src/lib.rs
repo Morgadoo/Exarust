@@ -18,7 +18,7 @@ use bevy::prelude::*;
 use exa_formats::rfi::Rfi;
 pub use exa_rpk::{GameData, PackKind, locate_install};
 
-pub use model::{Model, ModelCache, ModelLoader, ModelNode, transform_from_rows};
+pub use model::{Model, ModelCache, ModelLoader, ModelNode, NodeRigidBody, transform_from_rows};
 pub use texture::ColorSpace;
 
 /// A mesh whose vertices carry skin weights over a character's bones, in

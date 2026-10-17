@@ -22,7 +22,10 @@
 //!          --all-rooms                tile-grid levels: show every room (no black for rooms the player cannot see)
 //!          --limp                     character view: the body goes limp and falls
 //!          --race <n>                 character view: the body of race n (a character record's race byte)
-//!          --shove <frame>            a body blow to every simulated body at that frame after loading
+//!          --shove <frame>            a body blow to every simulated character body at that frame after loading
+//!          --shove-props <frame>      play mode: a blow to every prop body within 3 m of the player at that frame
+//!                                     after loading, away from the player and up; logs how far each moved once
+//!                                     they all sleep again
 //!          --outfit a,b,c             apparel for character/play (Characters.rpk entries), over the underwear
 //!          --weapon <name>            weapon in the right hand (Objects.rpk entry)
 //!          --opponent                 an armed duellist in play mode; practice and arena fights start in combat mode (Tab toggles it, left click attacks)
@@ -112,8 +115,10 @@ pub struct Options {
     pub limp: bool,
     /// Character view: the body of this race (character race byte).
     pub race: Option<u8>,
-    /// Deal every simulated body a blow at this frame.
+    /// Deal every simulated character body a blow at this frame.
     pub shove: Option<u32>,
+    /// Deal every prop body near the player a blow at this frame.
+    pub shove_props: Option<u32>,
     /// Apparel for the character (`Characters.rpk` entries).
     pub outfit: Vec<String>,
     /// Weapon in the right hand (`Objects.rpk` entry).
@@ -313,6 +318,7 @@ fn main() -> AppExit {
             "--fov" => options.fov = args.next().and_then(|v| v.parse().ok()),
             "--race" => options.race = args.next().and_then(|v| v.parse().ok()),
             "--shove" => options.shove = args.next().and_then(|v| v.parse().ok()),
+            "--shove-props" => options.shove_props = args.next().and_then(|v| v.parse().ok()),
             "--autowalk" => options.autowalk = true,
             "--weapon" => options.weapon = args.next(),
             "--opponent" => options.opponent = true,
