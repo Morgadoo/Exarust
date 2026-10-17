@@ -755,15 +755,57 @@ Implemented in `exa_combat::damage`.
 - Maximum health is 0.25 × the race's factor (`races.rdb` `0xE4`: human 1,
   ogre 6, golem 2, …) with the init's race-byte rules, and health starts at
   the record's saved pools ([RFC.md](RFC.md), Stats derived at spawn).
-- Applying a blow: yellow −= 0.1·Y; red −= 0.2·R; yellow is rescaled by
-  how much red is left. Yellow under 0.01 is death. It also sets the
-  regeneration rate to 0 (below).
+- Applying a blow: see Applying damage below.
 - Daze = √(0.75P + 1.25J)·stun·0.5·0.25/max health.
 - Readiness: before the outcome, P, J and T are scaled by 1 − 0.5g, g the
   victim's combat readiness (0..1; it rises 0.004 a tick while the victim
   stands in its combat idle, [PLAYER.md](../PLAYER.md), The combat stance).
   The knockback step takes J before it, so a ready fighter is shoved as
   far but wounded half as much.
+
+**Applying damage** (REA on the damage call, its two callers and the
+low-health check, constants read from the executable; `Health::take` in
+`exa_combat::fighter`)
+- The call takes yellow and red amounts Y and R (a weapon blow's yellow
+  and red above, already × 0.75; an impact's 0.5·d and 0) and whether the
+  damage is vital (a weapon blow always; an impact once its accumulated
+  strength passes 0.6). In order:
+  1. the regeneration rate is set to 0 (below);
+  2. yellow −= 0.1·Y, or 0.05·Y while a potion works (state flag
+     0x800000);
+  3. with no lasting wounds (rule bit 0x8: feral humans, skeletons and
+     ancients, [RFC.md](RFC.md), Stats derived at spawn) yellow −= 0.2·R
+     and red is untouched; otherwise red −= 0.2·R and yellow ×=
+     red_new/red_old, or yellow = 0 when no red is left (red may go below
+     0);
+  4. yellow still 0.05 or more: done. Otherwise, unless yellow is under
+     0.01 **and** the damage is vital, the character lives and the
+     low-health check runs (yellow is set to 0 if it was under 0.01): a
+     second wind for one wearing the armour that grants it, else, for the
+     player, the heartbeat ([UI.md](../UI.md), Heartbeat). A vital one
+     under 0.01 kills: yellow 0, in the story red −= 0.1 × the maximum,
+     and the collapse starts ([RSQ.md](RSQ.md), The collapse).
+- Precision: each subtraction in double precision on the single-precision
+  values (0.1, 0.05 and 0.2 are doubles), the red ratio in single, the
+  0.05 test in single, the 0.01 test in double, so a yellow of exactly
+  0.01 in single precision (0.0099999998) dies.
+- Worked numbers: from full health (0.25), Y 1 and R 0.5 leave red 0.15
+  and yellow 0.09; Y 0.5 and R 0.3 leave a human 0.152 / 0.19, a feral
+  human 0.14 / 0.25, a human under a potion 0.171 / 0.19; a killing blow
+  in the story takes a red of 0.2 to 0.175. In the installed story levels
+  248 of the 451 living characters keep their red under every blow: the
+  97 feral humans, 128 skeletons and 23 ancients (corpus test in
+  `exa_combat::fighter`).
+- The call also spares a character whose "no death" byte is set and calls
+  a player hook on a killing blow; nothing in the executable ever sets
+  either, so Exarust has neither. Story mode is the game mode of the story
+  levels (practice and the arena clear it).
+- Yellow under 0.01 on a living character (in double precision): the
+  player's combat stance is the Defence stance ([PLAYER.md](../PLAYER.md),
+  The combat stance); the stance by energy (the swing stall's, a cleared
+  parry's, the AI's other branch) gives the Defence stance; the
+  auto-parry clears any parry and starts none. Only `--health` makes it
+  happen in Exarust today: the weapon blow is always vital.
 
 **Regeneration** (REA on the body tick's prologue and health bookkeeping,
 the damage call and the weapon damage routine, constants read from the

@@ -60,6 +60,7 @@ it takes the ring's other slot.
 | `--cursor x,y` | in play mode, the cursor stays at this window point (logical pixels, from the top left) whatever the mouse does: the world cursor, walking to the cursor and combat facing use it ([UI.md](UI.md), World cursor) |
 | `--health yellow,red` | in play mode, the player starts with this yellow and red health (a human's full health is 0.25), e.g. `0.176,0.226` for the retail reference shot of the health bar ([UI.md](UI.md), Health bars) |
 | `--heartbeat` | in play mode, the low-health heartbeat may play in any level (the original plays it in story mode only, so never in the arenas) |
+| `--feral <f>` | in play mode, the player's record has feral level f (0 to 1): it spawns with a feral character's stats and rule bits (logged: "player: feral …, rule bits …, most energy …"), so blows take nothing from its red health and their red share comes off yellow ([formats/OTHER.md](formats/OTHER.md), Applying damage); its most energy is 1 − 0.1 f, its head loose |
 | `--still-opponent` | `--opponent`, but the duellist stands its ground: it faces the player and takes its stance (by its distance, [PLAYER.md](PLAYER.md), The combat stance) but never walks or strikes; with `--at` it shows the stances at a chosen distance |
 | `--debug-wound bone,radius_cm[,dx,dy,dz]` | a test wound on the player's or the character view's body ([Wounds](#wounds)); repeatable |
 | `--debug-nav` | start with the navigation grid drawn ([Navigation grid](#navigation-grid)) |
@@ -143,6 +144,9 @@ exarust --at 0,0,1 --press Tab@50,Tab@300 --screenshot fade.png --frames 372 pla
 # every 800 ms, so a shot can need a second try: the log says when it
 # started.
 exarust --heartbeat --opponent --health 0.06,0.25 --screenshot beat.png --frames 200 play arena
+# A feral player in a duel: every hit's log line keeps red at 0.250 while
+# yellow falls by both shares; the killing blow collapses it as usual.
+RUST_LOG=info exarust --feral 0.5 --opponent play arena
 ```
 
 With `--pause-at-tick`, `--pause-on-stretch`, `--pause-after-jet`,

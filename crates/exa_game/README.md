@@ -27,7 +27,9 @@ original's attack request each behaviour tick (press, hold, release, the
 double click and Alt) through the attack executor, with the clips of the
 moveset its hands pick),
 the world cursor's shape from the player's condition word (`cursor`), the health
-bars' values and the low-health heartbeat with its sound (`hud`), the
+bars' values and the low-health heartbeat with its sound, started by a
+blow's low-health check on the player's body (`exa_combat::Weakened`;
+`hud`), the
 held torch (`torch`, which fills its hand; its tests pin the "Torch"
 clips' arm on the body model), the per-tick body trace
 (`trace`, ending with the condition word), and the debug tools ([`docs/DEBUGGING.md`](../../docs/DEBUGGING.md)):

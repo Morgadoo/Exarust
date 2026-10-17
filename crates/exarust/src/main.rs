@@ -56,6 +56,8 @@
 //!                                     second, as a bleeding blow of size R swinging along d would spray; repeatable
 //!          --health yellow,red        play mode: the player's starting health (a human's full health is 0.25)
 //!          --heartbeat                play mode: the low-health heartbeat in any level (the original: story mode only)
+//!          --feral <f>                play mode: the player's record has feral level f (0–1): its blows' red damage
+//!                                     goes to yellow, and it spawns with a feral character's stats
 //! ```
 //!
 //! In tile-grid levels only the rooms the player can see are drawn, as in
@@ -181,6 +183,8 @@ pub struct Options {
     pub health: Option<[f32; 2]>,
     /// Let the low-health heartbeat play in any level.
     pub heartbeat: bool,
+    /// Play mode: the player's record's feral level (0..=1).
+    pub feral: Option<f32>,
 }
 
 /// What a `--press` entry presses.
@@ -406,6 +410,12 @@ fn main() -> AppExit {
                 }
             }
             "--heartbeat" => options.heartbeat = true,
+            "--feral" => {
+                options.feral = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .filter(|f: &f32| f.is_finite())
+            }
             "--outfit" => {
                 options.outfit = args
                     .next()

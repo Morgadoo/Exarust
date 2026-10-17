@@ -39,7 +39,7 @@ use exa_anim::{Animator, BodyPart, Ease, Motions};
 use exa_physics::body::BODY_HZ;
 use exa_physics::body::{BodyTicks, CharacterTicks, Fallen, GoLimp, Ragdoll, Shove, daze_energy};
 use exa_world::PartBounds;
-pub use fighter::{Fighter, Health};
+pub use fighter::{Damage, Fighter, Health, StoryMode, Taken, Weakened};
 use wounds::{BladeBlood, WoundQueue, frame_tetra, tetra_weights};
 
 pub struct CombatPlugin;
@@ -47,6 +47,7 @@ pub struct CombatPlugin;
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<Hit>()
+            .add_message::<Weakened>()
             .add_plugins((
                 stance::StancePlugin,
                 condition::ConditionPlugin,
@@ -353,6 +354,7 @@ fn react_to_hits(
     mut hits: MessageReader<Hit>,
     mut shoves: MessageWriter<Shove>,
     mut sprays: MessageWriter<wounds::Spray>,
+    mut weakened: MessageWriter<Weakened>,
     mut fighters: Query<(
         Entity,
         &mut Fighter,
@@ -366,9 +368,11 @@ fn react_to_hits(
     strikers: Query<&GlobalTransform>,
     mut blades: Query<&mut BladeBlood>,
     ticks: Option<Res<BodyTicks>>,
+    story: Option<Res<StoryMode>>,
     mut roll: Local<Roll>,
 ) {
     let tick = ticks.map_or(0, |t| t.0);
+    let story = story.is_some_and(|s| s.0);
     for hit in hits.read() {
         let Ok((_, mut f, mut condition, mut flags, mut anim, attacking, queue, mut body)) =
             fighters.get_mut(hit.target)
@@ -392,7 +396,17 @@ fn react_to_hits(
         ) else {
             continue;
         };
-        let killed = f.health.take(&outcome);
+        // The original's damage call, by the victim's rule bits and state
+        // flags; a blow that leaves it low but alive runs the low-health
+        // check.
+        let rules = f.stats.rules;
+        let taken = f.health.take(Damage::blow(&outcome), rules, *flags, story);
+        if taken == Taken::Weakened {
+            weakened.write(Weakened {
+                fighter: hit.target,
+            });
+        }
+        let killed = taken == Taken::Killed;
         // A deep enough wound on a race that bleeds sprays a jet at once
         // and waits on the victim to bleed, anchored to the striker; the
         // killing blow too. The weapon that dealt it draws blood at once,
@@ -525,9 +539,10 @@ fn closest_on_segment(a: Vec3, b: Vec3, p: Vec3) -> Vec3 {
 mod tests {
     use super::*;
     use bevy::ecs::message::Messages;
-    use damage::{DEATH, Outcome, PartArmour};
+    use damage::{Outcome, PartArmour};
     use exa_formats::character_stats::CharacterStats;
     use exa_formats::races::{Natural, Race};
+    use fighter::failing;
 
     #[test]
     fn segment_projection() {
@@ -543,6 +558,7 @@ mod tests {
         app.add_message::<Hit>()
             .add_message::<Shove>()
             .add_message::<wounds::Spray>()
+            .add_message::<Weakened>()
             .add_systems(Update, react_to_hits);
         app
     }
@@ -610,7 +626,9 @@ mod tests {
             let o = outcome(bone);
             assert!(o.penetration + o.impact > 0.2, "bone {bone}: {o:?}");
             let mut health = Health::of_race(1.0);
-            assert!(!health.take(&o), "bone {bone}: the cut kills");
+            let rules = Fighter::default().stats.rules;
+            let taken = health.take(Damage::blow(&o), rules, StateFlags::NONE, false);
+            assert_ne!(taken, Taken::Killed, "bone {bone}: the cut kills");
             let mut app = reactions();
             let fighter = app
                 .world_mut()
@@ -626,7 +644,7 @@ mod tests {
             assert_eq!(anim.time, 0.0, "bone {bone}");
             let f = app.world().get::<Fighter>(fighter).unwrap();
             assert!(f.health.yellow < 0.25, "bone {bone}: {:?}", f.health);
-            assert!(f.health.yellow >= DEATH, "bone {bone}");
+            assert!(!failing(f.health.yellow), "bone {bone}");
             assert_eq!(condition(&app, fighter), Condition::NORMAL, "bone {bone}");
             assert_eq!(f.health, health, "bone {bone}");
             let s = shoves(&app);
@@ -748,6 +766,109 @@ mod tests {
         }
     }
 
+    fn weakened(app: &App) -> Vec<Entity> {
+        let messages = app.world().resource::<Messages<Weakened>>();
+        messages
+            .get_cursor()
+            .read(messages)
+            .map(|w| w.fighter)
+            .collect()
+    }
+
+    /// The cut deals its damage by the victim's rule bits: a feral human's
+    /// red health is untouched and its yellow takes the red share too, as
+    /// `Health::take` gives it; a human's red drops.
+    #[test]
+    fn the_victims_rule_bits_decide_the_damage() {
+        let o = outcome(9);
+        for feral in [0.0, 0.5] {
+            let record = exa_formats::characters::CharacterRecord {
+                feral,
+                ..Default::default()
+            };
+            let spawn = exa_formats::character_stats::Spawn::default();
+            let stats = CharacterStats::derive(&record, None, spawn);
+            let mut expected = Fighter::of_stats(None, stats).health;
+            expected.take(Damage::blow(&o), stats.rules, StateFlags::NONE, false);
+            let mut app = reactions();
+            let id = app
+                .world_mut()
+                .spawn((
+                    Fighter::of_stats(None, stats),
+                    Animator::new("Default", "Idle"),
+                ))
+                .id();
+            strike(&mut app, id, 9);
+            let f = app.world().get::<Fighter>(id).unwrap();
+            assert_eq!(f.health, expected, "feral {feral}");
+            if feral > 0.0 {
+                assert_eq!(stats.rules.0, 0x8);
+                assert_eq!(f.health.red, 0.25);
+            } else {
+                assert!(f.health.red < 0.25);
+            }
+        }
+    }
+
+    /// A cut that leaves a fighter's yellow under 0.05 without killing it
+    /// reports the low-health check; one that leaves more, or kills, does
+    /// not.
+    #[test]
+    fn a_low_blow_weakens_the_fighter() {
+        let o = outcome(13);
+        let after = |yellow: f32| {
+            let mut h = Health {
+                yellow,
+                ..Health::of_race(1.0)
+            };
+            let rules = Fighter::default().stats.rules;
+            (h.take(Damage::blow(&o), rules, StateFlags::NONE, false), h)
+        };
+        // Yellow chosen so the cut leaves 0.03: weakened.
+        let low = 0.1 * o.yellow + 0.03 * 0.25 / (0.25 - 0.2 * o.red);
+        assert_eq!(after(low).0, Taken::Weakened, "{:?}", after(low).1);
+        for (yellow, weakens) in [(0.25, false), (low, true), (0.011, false)] {
+            let mut app = reactions();
+            let mut fighter = Fighter::default();
+            fighter.health.yellow = yellow;
+            let id = app
+                .world_mut()
+                .spawn((fighter, Animator::new("Default", "Idle")))
+                .id();
+            strike(&mut app, id, 13);
+            let expected = if weakens { vec![id] } else { vec![] };
+            assert_eq!(weakened(&app), expected, "yellow {yellow}");
+        }
+    }
+
+    /// In the story a killing cut also takes a tenth of the maximum from
+    /// red health; without the story mode it does not.
+    #[test]
+    fn a_killing_cut_in_the_story_costs_red() {
+        let o = outcome(9);
+        for story in [false, true] {
+            let mut app = reactions();
+            app.insert_resource(StoryMode(story));
+            let mut fighter = Fighter::default();
+            fighter.health.yellow = 0.011;
+            let id = app
+                .world_mut()
+                .spawn((fighter, Animator::new("Default", "Idle")))
+                .id();
+            strike(&mut app, id, 9);
+            let f = app.world().get::<Fighter>(id).unwrap();
+            let cut = ((0.25f64 - f64::from(o.red) * 0.2) as f32) as f64;
+            let red = if story {
+                (cut - 0.025) as f32
+            } else {
+                cut as f32
+            };
+            assert_eq!((f.health.yellow, f.health.red), (0.0, red), "story {story}");
+            assert_eq!(condition(&app, id), Condition::DEAD);
+            assert!(weakened(&app).is_empty());
+        }
+    }
+
     /// An app running the wound countdown and the blow reactions, with a
     /// body tick clock.
     fn bleeding() -> App {
@@ -756,6 +877,7 @@ mod tests {
             .add_message::<Shove>()
             .add_message::<wounds::Bleed>()
             .add_message::<wounds::Spray>()
+            .add_message::<Weakened>()
             .init_resource::<exa_physics::body::BodyTicks>()
             .add_systems(Update, (wounds::count_down_wounds, react_to_hits).chain());
         app.update();

@@ -650,11 +650,17 @@ fn spawn_players(
         .and_then(|b| exa_formats::races::parse(b).ok())
         .unwrap_or_default();
     let story = exa_world::start::mode(name) == Some(exa_world::start::Mode::Story);
+    // In the story a killing blow also costs red health.
+    commands.insert_resource(exa_combat::StoryMode(story));
     // The player and the duellist have no record of their own yet: a new
-    // human record (height 0, not feral), without a natural armour layer.
-    let new_human = || {
+    // human record (height 0, of feral level `feral`), without a natural
+    // armour layer.
+    let new_human = |feral: f32| {
         let human = exa_formats::races::of_character(&races, exa_character::HUMAN);
-        let record = exa_formats::characters::CharacterRecord::default();
+        let record = exa_formats::characters::CharacterRecord {
+            feral,
+            ..Default::default()
+        };
         CharacterStats::derive(&record, human, Spawn { story, dead: false })
     };
     // What an outfit given by its models weighs: the first painted item
@@ -705,8 +711,15 @@ fn spawn_players(
         if let Some(m) = morph {
             commands.entity(model).insert(m);
         }
-        let stats = new_human().with_encumbrance(outfit_encumbrance(&options.outfit));
+        let feral = options.feral.unwrap_or(0.0);
+        let stats = new_human(feral).with_encumbrance(outfit_encumbrance(&options.outfit));
         log_encumbrance("player", &stats);
+        if feral != 0.0 {
+            info!(
+                "player: feral {:.2}, rule bits {:#x}, most energy {:.3}",
+                stats.feral, stats.rules.0, stats.max_energy
+            );
+        }
         let mut fighter = exa_combat::Fighter::of_stats(None, stats);
         if let Some([yellow, red]) = options.health {
             fighter.health.yellow = yellow;
@@ -749,7 +762,7 @@ fn spawn_players(
             let mut duellist = exa_ai::Duellist::new(player);
             duellist.holds_ground = options.still_opponent;
             let outfit = ["leathjac_a", "trouser_a", "boots_b", "helm_b"].map(String::from);
-            let stats = new_human().with_encumbrance(outfit_encumbrance(&outfit));
+            let stats = new_human(0.0).with_encumbrance(outfit_encumbrance(&outfit));
             log_encumbrance("duellist", &stats);
             commands.entity(foe).insert((
                 Transform::from_rotation(Quat::from_rotation_y(foe_at.yaw)),

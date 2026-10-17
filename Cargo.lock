@@ -2391,6 +2391,7 @@ dependencies = [
  "exa_anim",
  "exa_formats",
  "exa_physics",
+ "exa_rpk",
  "exa_world",
 ]
 

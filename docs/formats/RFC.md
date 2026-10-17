@@ -779,7 +779,7 @@ The init's rule bits (the body's rule word):
 | `0x1` | creatures (race bytes 3–9), race second word bit 0 | the held-item pass (no fist sphere), the AI |
 | `0x2` | living humans not feral, creatures | bandages and potions |
 | `0x4` | over half feral, creatures, second word bit 1 | the AI only |
-| `0x8` | feral humans, skeletons, ancients | damage: blows take no red health |
+| `0x8` | feral humans, skeletons, ancients | damage: blows take no red health, their red share comes off yellow (OTHER.md, Applying damage) |
 | `0x10` | living humans not feral and first word bit 3, in the story | the AI manager's revival |
 | `0x20` | ogre and Sir, first word bit 7, second word bit 2 | red regeneration, when `0x100` is clear (OTHER.md, Regeneration) |
 | `0x40` | ogre and Sir, first word bit 5 | damage: a quarter of the daze, no swing stall |

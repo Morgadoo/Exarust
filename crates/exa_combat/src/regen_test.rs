@@ -7,7 +7,9 @@ use exa_formats::character_stats::CharacterStats;
 use exa_formats::rsq::{Action, Clip, Key, MotionSet, Moveset};
 
 use super::*;
+use crate::condition::StateFlags;
 use crate::damage::Outcome;
+use crate::fighter::{Damage, Taken};
 
 fn health(yellow: f32, red: f32, max: f32) -> Health {
     Health {
@@ -123,8 +125,9 @@ fn a_blow_restarts_the_ramp() {
         rate: RATE_CAP,
         ..health(0.2, 0.25, 0.25)
     };
-    assert!(!h.take(&Outcome::default()));
-    assert_eq!(h.rate, 0.0);
+    let nothing = Damage::blow(&Outcome::default());
+    let taken = h.take(nothing, BodyRules::default(), StateFlags::NONE, false);
+    assert_eq!((taken, h.rate), (Taken::Hurt, 0.0));
 }
 
 /// Yellow stays within red and red within the maximum, in that order (so

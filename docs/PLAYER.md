@@ -177,7 +177,7 @@ also leaves its interim backpedal and combat walk alone).
 | who | stance |
 |---|---|
 | the player out of combat mode | Idle (the clip follows at once when it was the old stance's) |
-| the player in combat mode, dying (yellow health under 0.01) | Defence stance |
+| the player in combat mode, dying (yellow health under 0.01, compared in double precision; alive there only after non-vital damage, [formats/OTHER.md](formats/OTHER.md), Applying damage) | Defence stance |
 | the player in combat mode, not dazed, its target nearer than 3.5 m × the target's body scale (chest to chest), or within 3 s of its last attack's last tick | Cmbt - Idle |
 | the player in combat mode otherwise | Defence stance |
 | a duellist entering combat (at the fight start) | Defence stance |

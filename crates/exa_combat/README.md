@@ -34,9 +34,19 @@ frames of blend (`attack::start_blend`)
 
 `fighter`: a `Fighter` (health bars, natural armour and armour layers,
 readiness, whether it bleeds, its spawn stats) and `Health` (yellow, red,
-maximum, the regeneration rate and the heal pool; a blow's `take`, which
-also sets the rate to 0, death under 0.01; also re-exported from
-`damage`). Every fighter keeps the original's condition word and state
+maximum, the regeneration rate and the heal pool; also re-exported from
+`damage`). `Health::take` is the original's damage call: a `Damage`
+(yellow, red, `vital`; `Damage::blow` for a weapon blow, always vital),
+the victim's rule bits and state flags and whether the game plays the
+story (`StoryMode`, a resource) give the rate 0, yellow −0.1·Y (−0.05·Y
+with a potion), red −0.2·R with yellow scaled by the red left, or, with
+no lasting wounds (rule bit 0x8), yellow −0.2·R and red untouched, in
+double precision; it returns `Taken`: `Hurt`, `Weakened` (yellow under
+0.05 and alive: the hit reaction writes the `Weakened` message, the
+low-health check the HUD's heartbeat reads) or `Killed` (vital, yellow
+under 0.01 in double precision, `failing`; in the story red also loses
+0.1 × the maximum). Rules: [`docs/formats/OTHER.md`](../../docs/formats/OTHER.md)
+(Applying damage). Every fighter keeps the original's condition word and state
 flags (`condition`): `Condition` with the original's values (0 normal, 1
 walking, 2 attacking, 8 combat idle, 0x20 casting, 0xC0 shocked, 0x100
 weak, 0x200 down, 0x300 getting up, 0x600 dormant, 0x800 collapsing, 0xA00

@@ -12,5 +12,8 @@ exa_anim.workspace = true
 exa_world.workspace = true
 exa_formats.workspace = true
 
+[dev-dependencies]
+exa_rpk.workspace = true
+
 [lints]
 workspace = true

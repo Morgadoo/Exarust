@@ -102,7 +102,7 @@ The system SHALL show the bars while combat mode is on and in a frame where the 
 - **THEN** the bars show while the yellow segment refills over the brown, and fade out (200 ms, then 2 s) once it reaches the red health
 
 ### Requirement: Low-health heartbeat
-In story levels the system SHALL start the heartbeat when a blow leaves the player's yellow health at or above 0.01 and below 0.05, at most once a minute: for 7 s a dark red (80, 0, 0) border from the window's edges to a fifth of its height in, pulsing to alpha 96 every 800 ms, with the `heartbeat` sound looping at gain 0.3. Arena levels SHALL have no heartbeat.
+In story levels the system SHALL start the heartbeat when a blow leaves the player's yellow health below 0.05 without killing it (the damage's low-health check), at most once a minute: for 7 s a dark red (80, 0, 0) border from the window's edges to a fifth of its height in, pulsing to alpha 96 every 800 ms, with the `heartbeat` sound looping at gain 0.3. Arena levels SHALL have no heartbeat.
 
 #### Scenario: Low blow in a story level
 - **WHEN** a blow leaves the player's yellow health at 0.03 in a story level
@@ -111,6 +111,10 @@ In story levels the system SHALL start the heartbeat when a blow leaves the play
 #### Scenario: Arena
 - **WHEN** the same blow lands in the arena
 - **THEN** no border shows
+
+#### Scenario: Already low
+- **WHEN** a blow that deals nothing lands on the player at yellow 0.04 in a story level, a minute after the last heartbeat
+- **THEN** the heartbeat starts again
 
 ### Requirement: Interface compositing
 The system SHALL lay the interface over the game's view so that a translucent interface pixel blends once by its opacity: the interface camera's texture, drawn over transparent black, SHALL be composited premultiplied.

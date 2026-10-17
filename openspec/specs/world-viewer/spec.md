@@ -234,3 +234,10 @@ In play mode, `exarust --corpse x,y,z` SHALL lay a dead human of a new record do
 #### Scenario: A corpse walked into
 - **WHEN** `exarust --corpse 0,0,3.4 --press W@150-420 play arena` runs
 - **THEN** a limp body falls and counts down to sleep where it was laid, and the player's lower legs meet it and wake it
+
+### Requirement: Feral player
+In play mode `--feral f` SHALL give the player's record the feral level f (0 to 1), so the player spawns with a feral character's stats and rule bits.
+
+#### Scenario: Feral duel
+- **WHEN** `exarust --feral 0.5 --opponent play arena` runs and the duellist's blows land
+- **THEN** the player's red health stays 0.25 while its yellow falls, and its energy recovers to at most 0.95

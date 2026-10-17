@@ -671,6 +671,22 @@ player's yellow refills on the HUD once combat mode is off, the bars
 showing while it rises ([formats/OTHER.md](formats/OTHER.md),
 Regeneration; [UI.md](UI.md), Health bars). Not yet: bandages, potions
 and the second wind (M46), burning (M45), the saved heal pool (M47).
+Done (change `apply-damage-as-the-original`, M29 of the master plan):
+blows take health by the original's damage call, its order and its
+double-precision arithmetic: yellow −0.1·Y (half that under a potion),
+then red −0.2·R with yellow scaled by the red left, except that feral
+humans, skeletons and ancients (rule bit 0x8: 248 of the story levels'
+451 living characters) keep their red and lose the red share from
+yellow; only vital damage (every weapon blow; impacts once C22 lands)
+kills, when it leaves yellow under 0.01 in double precision
+(so 0.01 in single precision dies), costing red 0.1 × the maximum in the
+story levels; anything else that leaves yellow under 0.05 runs the
+low-health check, which now starts the player's heartbeat (and later the
+second wind, M46). The "no death" byte and the player hook the original
+also tests are never set in its executable (RB48), so Exarust has
+neither. `--feral f` makes the player feral, for a duel in which its red
+stays full ([formats/OTHER.md](formats/OTHER.md), Applying damage;
+[UI.md](UI.md), Heartbeat).
 Still to do: inventory and containers, injuries beyond damage, blocking,
 parrying, grabs, practice mode, the knockback step, the swing stall and
 the striker's recoil, the collapse's stagger steps, the stab's and

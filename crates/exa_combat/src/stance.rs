@@ -21,7 +21,7 @@ use bevy::prelude::*;
 use exa_anim::{Animator, Ease};
 use exa_physics::body::{CharacterTicks, Fallen, Ragdoll};
 
-use crate::fighter::DEATH;
+use crate::fighter::failing;
 use crate::{Attacking, Condition, Fighter, attack};
 
 /// The looping clip a fighter returns to.
@@ -111,7 +111,7 @@ impl Plugin for StancePlugin {
 
 /// The player's stance, chosen every behaviour tick: Idle out of combat
 /// mode; in combat mode the Defence stance while dying (yellow health
-/// under 0.01), the combat idle with its target nearer than 3.5 m times
+/// under 0.01, [`failing`]), the combat idle with its target nearer than 3.5 m times
 /// the target's body scale or within 3 s of its last attack's last tick,
 /// unless it is `dazed` (its energy more than 0.05 under its most), else
 /// the Defence stance. `target` is the target's distance (m) and body
@@ -127,7 +127,7 @@ pub fn player_stance(
 ) -> Stance {
     if !combat {
         Stance::Idle
-    } else if yellow < DEATH {
+    } else if failing(yellow) {
         Stance::Defence
     } else if !dazed
         && (target.is_some_and(|(d, scale)| d < CLOSE * scale)
@@ -377,8 +377,9 @@ mod tests {
     }
 
     /// Within 3 s of its last attack's last tick the player stays in the
-    /// combat idle, wherever the target is; dying (yellow under 0.01) it
-    /// takes the Defence stance even with the target close.
+    /// combat idle, wherever the target is; dying (yellow under 0.01, in
+    /// double precision, so 0.01 in single precision too) it takes the
+    /// Defence stance even with the target close.
     #[test]
     fn three_seconds_after_an_attack_and_dying() {
         for t in [0.0, 1.5, 2.99] {
@@ -391,10 +392,12 @@ mod tests {
             player_stance(true, 0.25, false, None, Some(3.0)),
             Stance::Defence
         );
-        assert_eq!(
-            player_stance(true, 0.009, false, Some((1.0, 1.0)), Some(0.0)),
-            Stance::Defence
-        );
+        for yellow in [0.009, 0.01] {
+            assert_eq!(
+                player_stance(true, yellow, false, Some((1.0, 1.0)), Some(0.0)),
+                Stance::Defence
+            );
+        }
         assert_eq!(
             player_stance(true, 0.011, false, Some((1.0, 1.0)), None),
             Stance::CombatIdle

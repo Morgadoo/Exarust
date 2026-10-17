@@ -4,7 +4,7 @@
 //! dead, is [`crate::condition`]'s.
 
 use bevy::prelude::*;
-use exa_formats::character_stats::CharacterStats;
+use exa_formats::character_stats::{BodyRules, CharacterStats};
 use exa_formats::races::{Natural, Race};
 
 use crate::attack::Attacker;
@@ -80,8 +80,84 @@ pub struct Health {
     pub heal_pool: f32,
 }
 
-/// Yellow health below this is death.
-pub const DEATH: f32 = 0.01;
+/// Vital damage that leaves yellow health below this (compared in double
+/// precision, [`failing`]) kills.
+pub const DEATH: f64 = 0.01;
+/// Damage that leaves yellow health below this without killing runs the
+/// low-health check ([`Weakened`]).
+pub const LOW_HEALTH: f32 = 0.05;
+/// The shares of the damage taken from the bars: a tenth of the yellow
+/// amount (a twentieth with a potion) and a fifth of the red (in double
+/// precision); in the story a killing blow takes a tenth of the maximum
+/// from red too.
+const YELLOW_SHARE: f64 = 0.1;
+const POTION_YELLOW_SHARE: f64 = 0.05;
+const RED_SHARE: f64 = 0.2;
+const STORY_RED_LOSS: f64 = 0.1;
+
+/// Whether `yellow` health is below [`DEATH`], as the original tests it
+/// (in double precision): a fighter alive with it takes the Defence stance
+/// in combat mode and never parries.
+pub fn failing(yellow: f32) -> bool {
+    f64::from(yellow) < DEATH
+}
+
+/// `value` less `amount` × `share`, in double precision.
+fn less(value: f32, amount: f32, share: f64) -> f32 {
+    (f64::from(value) - f64::from(amount) * share) as f32
+}
+
+/// Damage to a character's health bars, as the original's damage call
+/// takes it.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Damage {
+    /// Yellow and red amounts, before their shares.
+    pub yellow: f32,
+    pub red: f32,
+    /// Vital damage kills when it leaves yellow under [`DEATH`]; any other
+    /// leaves the character alive at yellow 0. A weapon blow is vital; an
+    /// impact only once its accumulated strength passes 0.6.
+    pub vital: bool,
+}
+
+impl Damage {
+    /// A weapon blow's damage: always vital.
+    pub fn blow(outcome: &Outcome) -> Self {
+        Self {
+            yellow: outcome.yellow,
+            red: outcome.red,
+            vital: true,
+        }
+    }
+}
+
+/// Which way taking damage ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Taken {
+    /// Yellow health is still [`LOW_HEALTH`] or more: nothing else happens.
+    Hurt,
+    /// Yellow health is under [`LOW_HEALTH`] and the character lives: the
+    /// low-health check runs ([`Weakened`]).
+    Weakened,
+    /// Vital damage left yellow under [`DEATH`]: yellow is 0 and the
+    /// character's collapse starts.
+    Killed,
+}
+
+/// Damage left a fighter's yellow health under 0.05 without killing it:
+/// the original's low-health check, which gives a second wind to one
+/// wearing the armour that grants it (not yet) and, else, starts the
+/// player's heartbeat (`exa_game::hud`).
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Weakened {
+    pub fighter: Entity,
+}
+
+/// The game plays the story, not practice or the arena: there a killing
+/// blow also takes a tenth of the maximum from red health. Absent: not the
+/// story.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StoryMode(pub bool);
 
 impl Health {
     /// Health of a race with health factor `factor` (human 1).
@@ -95,58 +171,59 @@ impl Health {
         }
     }
 
-    /// Takes a blow's damage; returns whether it kills. Its regeneration
-    /// starts its ramp again.
-    pub fn take(&mut self, outcome: &Outcome) -> bool {
+    /// Takes `damage` as the original's damage call does, on a body with
+    /// `rules` and state `flags`, `story` when the game plays the story. In
+    /// order: the regeneration rate starts its ramp again; yellow loses a
+    /// tenth of the yellow amount (a twentieth with a potion); with no
+    /// lasting wounds (rule bit 0x8) yellow also loses a fifth of the red
+    /// amount and red is untouched, else red loses it and yellow is scaled
+    /// by the share of red left (0 when none is). Under [`LOW_HEALTH`] the
+    /// damage weakens, unless it is vital and leaves yellow under
+    /// [`DEATH`]: then yellow is 0, in the story red loses a tenth of the
+    /// maximum, and it kills. Non-vital damage under [`DEATH`] leaves
+    /// yellow 0 and weakens. The subtractions are in double precision.
+    pub fn take(
+        &mut self,
+        damage: Damage,
+        rules: BodyRules,
+        flags: StateFlags,
+        story: bool,
+    ) -> Taken {
         self.rate = 0.0;
-        self.yellow -= 0.1 * outcome.yellow;
-        let before = self.red;
-        self.red -= 0.2 * outcome.red;
-        if self.red > 0.0 && before > 0.0 {
-            self.yellow *= self.red / before;
+        let share = if flags.has(StateFlags::POTION) {
+            POTION_YELLOW_SHARE
         } else {
-            self.yellow = 0.0;
-        }
-        if self.yellow < DEATH {
-            self.yellow = 0.0;
-            true
+            YELLOW_SHARE
+        };
+        self.yellow = less(self.yellow, damage.yellow, share);
+        if rules.has(BodyRules::NO_LASTING_WOUNDS) {
+            self.yellow = less(self.yellow, damage.red, RED_SHARE);
         } else {
-            false
+            let before = self.red;
+            self.red = less(self.red, damage.red, RED_SHARE);
+            self.yellow = if self.red > 0.0 {
+                self.red / before * self.yellow
+            } else {
+                0.0
+            };
         }
+        if self.yellow >= LOW_HEALTH {
+            return Taken::Hurt;
+        }
+        if !failing(self.yellow) {
+            return Taken::Weakened;
+        }
+        self.yellow = 0.0;
+        if !damage.vital {
+            return Taken::Weakened;
+        }
+        if story {
+            self.red = less(self.red, self.max, STORY_RED_LOSS);
+        }
+        Taken::Killed
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn health_and_death() {
-        let mut h = Health::of_race(1.0);
-        assert_eq!(h.max, 0.25);
-        let light = Outcome {
-            red: 0.1,
-            yellow: 0.5,
-            ..Outcome::default()
-        };
-        assert!(!h.take(&light));
-        assert!(h.yellow < 0.25 && h.red < 0.25);
-        let heavy = Outcome {
-            red: 2.0,
-            yellow: 5.0,
-            ..Outcome::default()
-        };
-        assert!(h.take(&heavy));
-        assert_eq!(h.yellow, 0.0);
-    }
-
-    /// Every fighter keeps a condition word, normal when it spawns, and
-    /// empty state flags.
-    #[test]
-    fn a_fighter_keeps_a_condition() {
-        let mut app = App::new();
-        let id = app.world_mut().spawn(Fighter::default()).id();
-        assert_eq!(app.world().get::<Condition>(id), Some(&Condition::NORMAL));
-        assert_eq!(app.world().get::<StateFlags>(id), Some(&StateFlags::NONE));
-    }
-}
+#[path = "fighter_test.rs"]
+mod tests;
