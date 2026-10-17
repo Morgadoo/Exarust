@@ -75,7 +75,7 @@ The system SHALL drive a living physical body toward its animated pose: its link
 - **THEN** their heads' pose gain is 0.0052 and none, their trunks' still 0.0314
 
 ### Requirement: Living bodies in motion
-The system SHALL give a living physical body the animated pose of each tick on its character frame. A standing body SHALL be carried with its root's motion since the last tick, less its controller's follow, across the ground and about the vertical only, with where the last tick left it, its level contacts, its feet's anchors, last tick's targets and its frame, and its pelvis held over the frame's by 0.168 × tone² × energy⁴ a tick, critically damped, only damped while it moves (Exarust's own).
+The system SHALL give a living physical body the animated pose of each tick on its character frame. A standing body SHALL be carried with its root's motion since last tick, less its controller's follow, across the ground and about the vertical only, with where the last tick left it, its level contacts, its feet's anchors, last tick's targets and its frame, and its pelvis held over the frame's by 0.168 × tone² × energy⁴ a tick, critically damped, only damped while it moves (Exarust's own).
 
 #### Scenario: Turning far from the origin
 - **WHEN** a living body 80 m from the world's origin turns with its pose

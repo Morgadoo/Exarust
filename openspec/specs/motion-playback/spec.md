@@ -75,7 +75,7 @@ The system SHALL draw a skinned body or apparel mesh only once it is bound to it
 - **THEN** that body part stays hidden after binding
 
 ### Requirement: Clip clocks
-A clip's clock SHALL gain frames each body tick, from the race's clip-rate base: 0.6 × base standing, × 1.25 off balance; tone × (1.5 − 0.5 × encumbrance) × base × 0.6 getting up above half tone (tone × 0.75 × base on the tick it starts); the swing rate attacking; the gait's clip rate ÷ 83 × (0.8 × speed + 1) walking. A clip SHALL end when its clock less its blend reaches its last key; a looping one SHALL then wrap by that key's time, its frames before the first key blending from the last.
+A clip's clock SHALL gain frames each body tick from the race's clip-rate base: 0.6 × base standing, × 1.25 off balance; tone × (1.5 − 0.5 × encumbrance) × base × 0.6 getting up above half tone (tone × 0.75 × base on its first tick); the swing rate attacking; the gait's clip rate ÷ 83 × (0.8 × speed + 1) walking. A clip SHALL end when its clock less its blend reaches its last key; a looping one SHALL then wrap by that key's time, frames before the first key blending from the last.
 
 #### Scenario: Standing human
 - **WHEN** a human stands in Idle

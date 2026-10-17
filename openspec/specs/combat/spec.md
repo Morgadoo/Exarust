@@ -207,7 +207,7 @@ The system SHALL read a shield item's record from its section `0x8000` (weight, 
 - **THEN** its weight is 0.15 (not the 0.14999999 of single-precision scaling), its block 0.5 and its bulk 0.08
 
 ### Requirement: Attack executor
-The system SHALL start a requested attack (player's or AI's) only with at least 80 % of the fighter's most energy and, unless a released swing allows it (Released swing), while no swing stalls and once its cooldown has passed since its last attack tick on the game clock (12 ms a tick): 400 ms with no primary striker, else round(300 × recoil) + 300 ms. No overhead over a stab or an overhead, stab over a stab, side attack over a side attack; a stab needs the weapon's long axis forward of −0.367.
+The system SHALL start a requested attack (player or AI) only with at least 80 % of the fighter's most energy and, unless a released swing allows it (Released swing), while no swing stalls and once its cooldown has passed since its last attack tick on the game clock (12 ms a tick): 400 ms with no primary striker, else round(300 × recoil) + 300 ms. No overhead over a stab or an overhead, stab over a stab, side attack over a side attack; a stab needs the weapon's long axis forward of −0.367.
 
 #### Scenario: Fist cooldown
 - **WHEN** the unarmed player holds the left button while its punch plays and after it ends
