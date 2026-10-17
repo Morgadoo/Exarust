@@ -303,6 +303,11 @@ fn body_rule_bits() {
     let r = BodyRules(0x170);
     assert!(r.has(BodyRules::REGENERATES_RED) && r.has(BodyRules::NO_RED_REGENERATION));
     assert!(!r.has(BodyRules::TAKES_REMEDIES));
+    // Red health regenerates with 0x20 and without 0x100: the ogre and the
+    // cored suit, not the coreless suit, a guard or a human.
+    let regenerates = |bits: u32| BodyRules(bits).regenerates_red();
+    assert!(regenerates(0x67) && regenerates(0x70));
+    assert!(!regenerates(0x170) && !regenerates(0x140) && !regenerates(0x12));
 }
 
 /// The voice: the record's pitch kept within 0.9…1.07 (the hulking ghoul
@@ -489,6 +494,15 @@ fn shipped_level_characters() {
             (20, (10, 0.5, 0x40)),
         ]
     );
+    // Red health regenerates for four of them: Sir (race byte 4) and the
+    // three harvesters (race byte 10); the cored golems' bits hold no 0x20.
+    let mut red: Vec<u8> = living
+        .iter()
+        .filter(|(_, _, s)| s.rules.regenerates_red())
+        .map(|(_, r, _)| r.race)
+        .collect();
+    red.sort_unstable();
+    assert_eq!(red, [4, 10, 10, 10]);
 }
 
 /// The arena's actors (skipped without the game).
@@ -528,6 +542,13 @@ fn shipped_arena_actors() {
     let demon = actor("demon a01");
     assert_eq!((demon.max_health, demon.scale), (1.25, 1.5));
     assert_eq!((demon.pin_factor, demon.rules.0), (1.3, 0x65));
+    // Of the arena's actors only the demon regenerates red health.
+    let red: Vec<&str> = derived
+        .iter()
+        .filter(|(_, _, s)| s.rules.regenerates_red())
+        .map(|(n, ..)| n.as_str())
+        .collect();
+    assert_eq!(red, ["demon a01"]);
     // The tallest opponent (height −1) and the shortest (0.84).
     let tall = actor("opponent04");
     assert_eq!(tall.scale, 1.05);

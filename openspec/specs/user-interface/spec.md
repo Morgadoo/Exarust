@@ -97,6 +97,10 @@ The system SHALL show the bars while combat mode is on and in a frame where the 
 - **WHEN** the player walks outside combat mode, unhurt
 - **THEN** no bars are drawn
 
+#### Scenario: Healing
+- **WHEN** the player, wounded, turns combat mode off and its yellow health regenerates
+- **THEN** the bars show while the yellow segment refills over the brown, and fade out (200 ms, then 2 s) once it reaches the red health
+
 ### Requirement: Low-health heartbeat
 In story levels the system SHALL start the heartbeat when a blow leaves the player's yellow health at or above 0.01 and below 0.05, at most once a minute: for 7 s a dark red (80, 0, 0) border from the window's edges to a fifth of its height in, pulsing to alpha 96 every 800 ms, with the `heartbeat` sound looping at gain 0.3. Arena levels SHALL have no heartbeat.
 

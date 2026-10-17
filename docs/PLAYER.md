@@ -241,6 +241,13 @@ also leaves its interim backpedal and combat walk alone).
   A blow's wound (penetration, impact, stab energy) is scaled by 1 − 0.5 ×
   readiness, so a fighter ready for 3 s takes half the wound; the shove is
   not lessened ([formats/OTHER.md](formats/OTHER.md), Damage).
+- **Healing.** Yellow health regenerates only while Cmbt - Idle does not
+  play and the fighter does not attack: the regeneration rate ramps up
+  over 40 s and every blow sets it back to 0, so a fighter that stays in
+  its fighting stance (the quirk above included) never heals, and the
+  player heals once it leaves combat mode and its clip is no longer Cmbt -
+  Idle, or stands in the guard; in the daze's Defence stance too
+  ([formats/OTHER.md](formats/OTHER.md), Regeneration).
 
 Not yet, with the change that brings each:
 - the walk's end in the stance (Exarust's interim footwork and gaits

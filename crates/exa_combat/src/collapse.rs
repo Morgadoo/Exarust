@@ -10,8 +10,9 @@
 //! gain 0.0003; its body meanwhile follows its pelvis with its frame
 //! exactly, its lift fades by its tone squared and its arms' stiffness is
 //! 0.2 (`exa_physics::body::Bearing::collapsing`). At a tone of 0.25,
-//! 250 ticks (3.0 s) after the blow, it dies: dead (0xA00), a plain ragdoll
-//! that keeps the motion it has. Rules: `docs/formats/RSQ.md` (Condition,
+//! 250 ticks (3.0 s) after the blow, it dies: dead (0xA00), its yellow
+//! health 0 (it regenerates while collapsing), a plain ragdoll that keeps
+//! the motion it has. Rules: `docs/formats/RSQ.md` (Condition,
 //! The collapse).
 
 use bevy::prelude::*;
@@ -166,8 +167,9 @@ impl Plugin for CollapsePlugin {
 /// drifts by two draws of the original's generator; under balance 0.8 a
 /// body under size 1.2 starts Rebalance (once: the start does nothing
 /// while it plays); its tone falls 0.003 and its pins' gain 0.0003. At a
-/// tone of 0.25 it dies there and then: dead, its muscles gone, keeping
-/// its motion; the frame strips its clip and controller.
+/// tone of 0.25 it dies there and then: dead, its yellow health 0, its
+/// muscles gone, keeping its motion; the frame strips its clip and
+/// controller.
 #[allow(clippy::type_complexity)]
 pub(crate) fn dying_tick(
     mut commands: Commands,
@@ -178,11 +180,11 @@ pub(crate) fn dying_tick(
         &mut Collapse,
         &mut Ragdoll,
         &mut Animator,
-        &Fighter,
+        &mut Fighter,
         &GlobalTransform,
     )>,
 ) {
-    for (entity, mut condition, mut collapse, mut body, mut anim, fighter, gt) in &mut bodies {
+    for (entity, mut condition, mut collapse, mut body, mut anim, mut fighter, gt) in &mut bodies {
         if !condition.is_collapsing() {
             continue;
         }
@@ -209,6 +211,8 @@ pub(crate) fn dying_tick(
         collapse.ticks += 1;
         if dies {
             condition.die();
+            // Death empties the yellow bar the collapse regenerated.
+            fighter.health.yellow = 0.0;
             body.go_limp();
             commands
                 .entity(entity)

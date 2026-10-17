@@ -292,8 +292,8 @@ new human record; `exa-tool characters` prints each record's stats
 ([formats/RFC.md](formats/RFC.md), Stats derived at spawn).
 Held weapons and fists are held by the character's size, scale and
 encumbrance (M21's holder), and the step reach is the weapon record's
-one rule; the support pins, gait, damage bits and regeneration read the
-stats when they land. Done (change
+one rule; red regeneration reads the rule bits (M43, Phase 4); the
+support pins, gait and damage bits read the stats when they land. Done (change
 `join-parts-at-their-origins`, C3): every part is pinned at its origin to
 its place in the parent, as the original registers it, so joints are ball
 joints and the knee a hinge; the skeleton's links meet the parent at the
@@ -658,6 +658,19 @@ as the original's (on its back, arms out, a knee up), but the body
 squats on its feet longer before it falls (Rebalance 1.6–1.9 s after the
 blow; live 0.9–1.4 s at like energies). Still missing from it: the
 stagger steps (C15/C16), the dropped weapon (L13).
+Done (change `regenerate-health`, M43 of the master plan): wounds heal as
+in the original. Each fixed tick yellow health regains √red × a rate that
+ramps up over 40 s to 0.01/83 a tick (0.005 a second for a human with
+full red), held at 0 while the fighter attacks or Cmbt - Idle plays and
+set back to 0 by every blow and weapon contact; a heal pool (nothing
+fills it yet) and, for the ogre, Sir, the harvester, the demon and a
+cored golem suit, red regeneration (1.25e-5 a tick, dead or alive) refill
+red; yellow stays within red, red within the maximum, and death empties
+yellow. The rule fits a retail trace to 0.0012 over 46 s; in game, the
+player's yellow refills on the HUD once combat mode is off, the bars
+showing while it rises ([formats/OTHER.md](formats/OTHER.md),
+Regeneration; [UI.md](UI.md), Health bars). Not yet: bandages, potions
+and the second wind (M46), burning (M45), the saved heal pool (M47).
 Still to do: inventory and containers, injuries beyond damage, blocking,
 parrying, grabs, practice mode, the knockback step, the swing stall and
 the striker's recoil, the collapse's stagger steps, the stab's and

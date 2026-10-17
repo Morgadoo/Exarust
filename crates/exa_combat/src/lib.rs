@@ -13,7 +13,8 @@
 //! the target; a target struck while attacking stops its attack and
 //! returns to its stance. A fighter's condition word ([`condition`]),
 //! stance and combat readiness ([`stance`]) are kept with it
-//! ([`fighter`]). A blow whose wound is deep enough
+//! ([`fighter`]); its yellow health heals back towards red out of its
+//! fighting stance, and some races' red too ([`regen`]). A blow whose wound is deep enough
 //! bleeds on a victim whose race bleeds, seven body ticks later; at the
 //! blow it sprays a jet of blood and the weapon that dealt it draws blood
 //! ([`wounds`]).
@@ -23,6 +24,7 @@ pub mod collapse;
 pub mod condition;
 pub mod damage;
 pub mod fighter;
+pub mod regen;
 pub mod stance;
 pub mod swing;
 pub mod wounds;
@@ -49,6 +51,7 @@ impl Plugin for CombatPlugin {
                 stance::StancePlugin,
                 condition::ConditionPlugin,
                 collapse::CollapsePlugin,
+                regen::RegenerationPlugin,
             ))
             .add_message::<wounds::Bleed>()
             .add_message::<wounds::Spray>()
@@ -372,6 +375,9 @@ fn react_to_hits(
         else {
             continue;
         };
+        // Every weapon contact on a fighter starts its regeneration's ramp
+        // again, whatever it deals.
+        f.health.rate = 0.0;
         let Some(armour) = hit.bone.checked_sub(1).and_then(|i| f.armour.get(i)) else {
             continue;
         };

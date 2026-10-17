@@ -129,6 +129,12 @@ impl BodyRules {
     pub fn has(self, bits: u32) -> bool {
         self.0 & bits == bits
     }
+
+    /// Its red health regenerates: the regeneration bit without the bit
+    /// that blocks it (a golem suit without its core has both).
+    pub fn regenerates_red(self) -> bool {
+        self.0 & (Self::REGENERATES_RED | Self::NO_RED_REGENERATION) == Self::REGENERATES_RED
+    }
 }
 
 /// The stats a character spawns with.

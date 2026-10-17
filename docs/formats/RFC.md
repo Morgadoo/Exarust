@@ -781,7 +781,7 @@ The init's rule bits (the body's rule word):
 | `0x4` | over half feral, creatures, second word bit 1 | the AI only |
 | `0x8` | feral humans, skeletons, ancients | damage: blows take no red health |
 | `0x10` | living humans not feral and first word bit 3, in the story | the AI manager's revival |
-| `0x20` | ogre and Sir, first word bit 7, second word bit 2 | red regeneration |
+| `0x20` | ogre and Sir, first word bit 7, second word bit 2 | red regeneration, when `0x100` is clear (OTHER.md, Regeneration) |
 | `0x40` | ogre and Sir, first word bit 5 | damage: a quarter of the daze, no swing stall |
 | `0x100` | golems (first word `0x3000`, by the armour pass) unless they wear their kind's core (item 500 for `0x2000`, 431 for `0x1000`; every placed golem does) | blocks red regeneration |
 

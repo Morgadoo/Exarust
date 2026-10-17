@@ -192,16 +192,27 @@ fn a_lethal_wound_starts_the_collapse() {
 
 /// The dying tick on a collapsing fighter, a tick at a time: its tone
 /// falls 0.003 and its pins' gain 0.0003 (from 0.08), its heading drifts,
-/// a steady body does not Rebalance; on the 250th tick it is dead, its
-/// muscles gone, asked to go limp keeping its motion, its collapse over.
+/// a steady body does not Rebalance, its yellow health regenerates from 0;
+/// on the 250th tick it is dead, its yellow 0 again, its muscles gone,
+/// asked to go limp keeping its motion, its collapse over.
 #[test]
 fn the_body_dies_250_ticks_after_the_blow() {
     let mut app = App::new();
-    app.add_systems(Update, dying_tick);
+    app.add_systems(
+        Update,
+        (dying_tick, crate::regen::regenerate_health).chain(),
+    );
+    let killed = Fighter {
+        health: crate::Health {
+            yellow: 0.0,
+            ..crate::Health::of_race(1.0)
+        },
+        ..Fighter::default()
+    };
     let id = app
         .world_mut()
         .spawn((
-            Fighter::default(),
+            killed,
             Condition::COLLAPSING,
             Collapse::default(),
             Ragdoll::new(&[]).with_drive(),
@@ -228,10 +239,19 @@ fn the_body_dies_250_ticks_after_the_blow() {
         *app.world().get::<Condition>(id).unwrap(),
         Condition::COLLAPSING
     );
+    let yellow = |app: &App| app.world().get::<Fighter>(id).unwrap().health.yellow;
+    assert!(
+        (yellow(&app) - 5.625_008e-4).abs() < 1e-9,
+        "{}",
+        yellow(&app)
+    );
     app.update();
     assert_eq!(*app.world().get::<Condition>(id).unwrap(), Condition::DEAD);
+    assert_eq!(yellow(&app), 0.0);
     assert!(app.world().get::<Ragdoll>(id).unwrap().drive.is_none());
     let limp = app.world().get::<GoLimp>(id).unwrap();
     assert_eq!((limp.velocity, limp.delay), (None, 0));
     assert!(app.world().get::<Collapse>(id).is_none());
+    app.update();
+    assert_eq!(yellow(&app), 0.0);
 }

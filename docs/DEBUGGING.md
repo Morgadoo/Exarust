@@ -122,12 +122,19 @@ exarust --press RMB@60-400 --cursor 800,120 --screenshot run.png --frames 200 pl
 The player's health changes are logged at debug level
 (`RUST_LOG=info,exa_game::hud=debug`, "player health: yellow …, red …"),
 as is every repaint of the health bars with its fade
-(`exa_ui::hud=debug`); a heartbeat's start is logged at info level:
+(`exa_ui::hud=debug`) and the tick a fighter's regeneration reaches its
+full rate, 40 s after it was last held or hit (`exa_combat::regen=debug`,
+"regenerates at its full rate"); a heartbeat's start is logged at info
+level:
 
 ```bash
 # The health bar as in the retail reference (yellow 0.176, red 0.226), the
 # player stood so that the floor lies under the bars.
 exarust --at 0,0,1 --health 0.176,0.226 --press Tab@50 --screenshot bars.png --frames 200 play arena
+# The yellow refilling out of combat mode: wounded (0.085 of red 0.203),
+# combat mode off at frame 50; about 40 s later the bar is yellow to 0.18.
+exarust --still-opponent --at 0,0,1 --health 0.085,0.203 --press Tab@50 \
+  --screenshot heal.png --frames 2500 play arenao1
 # The bars fading out: combat mode off at frame 300, 1.2 s later at 60
 # frames per second (frames, not seconds: a slower run shoots later).
 exarust --at 0,0,1 --press Tab@50,Tab@300 --screenshot fade.png --frames 372 play arena

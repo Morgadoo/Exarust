@@ -163,9 +163,13 @@ in over 500 ms; once no longer shown they stay 200 ms and fade out over
 2 s (game time; from a partial fade they rise or fall from where they
 are). The fills blend at the fade squared, the frames and shadows at the
 fade. A single frame of change shows nothing: what brings the bars up out
-of combat mode is a change frame after frame, such as the original's
-yellow health regenerating after a blow. Exarust's yellow health does not
-regenerate yet, so out of combat mode a blow alone shows no bars.
+of combat mode is a change frame after frame, such as yellow health
+regenerating after a blow ([formats/OTHER.md](formats/OTHER.md),
+Regeneration): out of combat mode, a wounded player's bars show while
+the yellow refills over the brown, up to 50 s and more, and fade once it
+reaches the red. (The original draws yellow interpolated between body
+ticks; Exarust draws the tick's, so above 83 frames a second some frames
+repeat it, which the 200 ms hold covers.)
 
 **Stamina gauge.** With a shield in combat mode a thinner bar shows above
 the others, 48·g wide and centred, 2·g tall at y = H − 9·g, with its own

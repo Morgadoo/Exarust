@@ -747,6 +747,9 @@ each character's posture stage; every `Fighter` keeps the word):
   without muscles) and a level's corpse is placed dead; a walk's stop
   needs no writer, since the player's steering starts the stance before
   the posture stage;
+- the health tick, after the posture stage, holds yellow regeneration
+  while the word is 2 or Cmbt - Idle plays, and skips it for the dead
+  ([OTHER.md](OTHER.md), Regeneration);
 - not yet: the posture block's actions (Rebalance, the Defence stance,
   staggers and the get-up decision: C11; nothing lowers tone yet), the
   kick, weapon switch and powers, knock-outs, dormancy, shocks, the

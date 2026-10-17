@@ -34,7 +34,8 @@ frames of blend (`attack::start_blend`)
 
 `fighter`: a `Fighter` (health bars, natural armour and armour layers,
 readiness, whether it bleeds, its spawn stats) and `Health` (yellow, red,
-maximum; a blow's `take`, death under 0.01; also re-exported from
+maximum, the regeneration rate and the heal pool; a blow's `take`, which
+also sets the rate to 0, death under 0.01; also re-exported from
 `damage`). Every fighter keeps the original's condition word and state
 flags (`condition`): `Condition` with the original's values (0 normal, 1
 walking, 2 attacking, 8 combat idle, 0x20 casting, 0xC0 shocked, 0x100
@@ -63,6 +64,19 @@ at a tone of 0.25 (250 ticks) it dies there and then, limp with the motion
 it has. A body without muscles dies at
 once. Rules: [`docs/formats/RSQ.md`](../../docs/formats/RSQ.md) (The
 collapse).
+
+Health regenerates (`regen`): the health tick (`HealthTick`, after the
+posture stage, before the character ticks) runs `regenerate_health` once
+a fixed tick on every fighter: red regeneration for rule bits holding 0x20
+without 0x100 (`BodyRules::regenerates_red`; `Health::regenerate_red`,
+1.25e-5 a tick, dead or alive), then, unless dead, `Health::regenerate`:
+the heal pool's 1.25e-5 a tick to red, the yellow regeneration (the rate 0
+while held, `holds_regeneration`: attacking or Cmbt - Idle playing; else
++0.0003 × `RATE_CAP` a tick to `RATE_CAP` = 0.01/83, yellow += √red ×
+rate above `RED_FLOOR`) and the clamps. Every hit on a fighter sets its
+rate to 0 in the hit reaction, and the collapse's death sets yellow to 0.
+Rules: [`docs/formats/OTHER.md`](../../docs/formats/OTHER.md)
+(Regeneration).
 
 ## Scope
 

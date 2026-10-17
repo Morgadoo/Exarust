@@ -51,6 +51,7 @@ impl Fighter {
                 yellow: stats.yellow,
                 red: stats.red,
                 max: stats.max_health,
+                ..Health::default()
             },
             natural,
             armour: damage::armour_layers(natural.as_ref(), &[], stats.deflection),
@@ -61,13 +62,22 @@ impl Fighter {
     }
 }
 
-/// The health bars of a character.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// The health bars of a character, and what regenerates them
+/// ([`crate::regen`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Health {
     /// Current (yellow) and lasting (red) health; both start at `max`.
+    /// Yellow heals back towards red; red heals only for the races whose
+    /// rule bits say so, or from the heal pool.
     pub yellow: f32,
     pub red: f32,
     pub max: f32,
+    /// Yellow health regained a tick per unit of √red: it ramps up from 0
+    /// to [`crate::regen::RATE_CAP`] and every blow sets it back to 0.
+    pub rate: f32,
+    /// Red health still to heal (bandages), moved to red a little a tick.
+    /// Nothing fills it yet.
+    pub heal_pool: f32,
 }
 
 /// Yellow health below this is death.
@@ -81,11 +91,14 @@ impl Health {
             yellow: max,
             red: max,
             max,
+            ..Self::default()
         }
     }
 
-    /// Takes a blow's damage; returns whether it kills.
+    /// Takes a blow's damage; returns whether it kills. Its regeneration
+    /// starts its ramp again.
     pub fn take(&mut self, outcome: &Outcome) -> bool {
+        self.rate = 0.0;
         self.yellow -= 0.1 * outcome.yellow;
         let before = self.red;
         self.red -= 0.2 * outcome.red;

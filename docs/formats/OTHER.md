@@ -756,13 +756,53 @@ Implemented in `exa_combat::damage`.
   ogre 6, golem 2, …) with the init's race-byte rules, and health starts at
   the record's saved pools ([RFC.md](RFC.md), Stats derived at spawn).
 - Applying a blow: yellow −= 0.1·Y; red −= 0.2·R; yellow is rescaled by
-  how much red is left. Yellow under 0.01 is death.
+  how much red is left. Yellow under 0.01 is death. It also sets the
+  regeneration rate to 0 (below).
 - Daze = √(0.75P + 1.25J)·stun·0.5·0.25/max health.
 - Readiness: before the outcome, P, J and T are scaled by 1 − 0.5g, g the
   victim's combat readiness (0..1; it rises 0.004 a tick while the victim
   stands in its combat idle, [PLAYER.md](../PLAYER.md), The combat stance).
   The knockback step takes J before it, so a ready fighter is shoved as
   far but wounded half as much.
+
+**Regeneration** (REA on the body tick's prologue and health bookkeeping,
+the damage call and the weapon damage routine, constants read from the
+executable; a retail trace; `exa_combat::regen`)
+- Each tick of a character not dead (a collapsing one included), after
+  its posture and attack and before its clip advances: its rate r is 0
+  while it attacks (condition 2) or while Cmbt - Idle plays (whatever the
+  condition, so a weak fighter in it too); otherwise r rises by
+  0.0003 × C a tick (in double precision), at most C = 0.01/83 (a float
+  in the image, never written), and yellow gains √red × r (in float) while
+  red is above 1.19209e-7. The ramp takes 3,334 ticks (40.2 s); at the cap
+  a human with full red heals 0.005 a second, the whole bar in 50 s.
+- r is set to 0 by every blow that deals health and by every weapon
+  contact on a character, before the damage routine decides what the
+  contact does; burning resets it too (not ported).
+- Red heals only from the heal pool (bandages fill it; nothing does in
+  Exarust yet): 0.25 × 5e-5 = 1.25e-5 a tick moves from the pool to red
+  (a pool of 0.2 drains in 15,999 ticks, 193 s), and, dead or alive (the
+  test comes before the dead test), for bodies whose rule bits hold 0x20
+  without 0x100 ([RFC.md](RFC.md), Stats derived at spawn): 1.25e-5 a
+  tick, 0.00104 a second. The ogre, Sir, the harvester and the demon have
+  it; a golem suit has it only while it wears its core. In the installed
+  story levels Sir and the three harvesters regenerate red; in the arena
+  the demon.
+- Then yellow is kept within red, and after it red within the maximum
+  (so yellow follows a red cut to the maximum a tick later); at the end
+  of the tick yellow is at least 0. Death sets yellow to 0 (the collapse
+  regenerates about 0.0006 of it over its 250 ticks).
+- The retail trace of the player after a fight: yellow 0.085, held for
+  7.5 s in Cmbt - Idle, then in Idle 0.086, 0.090, 0.100, 0.110 and 0.121
+  at 5.0, 9.6, 16.2, 21.1 and 25.3 s, 0.202 at 45.8 s; the rule with red
+  0.203 gives 0.0864, 0.0902, 0.0997, 0.1100, 0.1209 and 0.2009. The
+  Defence stance heals; Cmbt - Idle held yellow for 66 s in the same
+  trace.
+- Exarust: a light `--still-opponent --at 0,0,1 --health 0.085,0.203
+  --press Tab@50 play arenao1` run, combat mode off at frame 50, logs
+  yellow 0.086 at 4.4 s, 0.101 at 16.9 s, 0.118 at 24.4 s and 0.172 at
+  39.4 s (the rule to the log's three decimals) and the full rate 40.16 s
+  after the Tab.
 
 **What the struck character does** (REA on the damage routine and what it
 calls)
