@@ -37,13 +37,13 @@ impl Plugin for PhysicsPlugin {
                 PostUpdate,
                 build_static_colliders.after(TransformSystems::Propagate),
             )
-            // Each tick moves the character controllers first; the bodies'
-            // character ticks then read where they are.
+            // Each tick moves the character controllers first, before the
+            // pre-step; the bodies' character ticks then read where they are.
             .add_systems(
                 FixedUpdate,
                 (register_characters, move_characters, step_world)
                     .chain()
-                    .before(body::CharacterTicks),
+                    .before(body::BodyPreStep),
             )
             .add_systems(
                 RunFixedMainLoop,

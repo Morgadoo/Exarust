@@ -4,35 +4,36 @@
 //! animated and steered.
 //!
 //! Each fixed tick runs every living body's character tick before the body
-//! solver, the player's last, as the original orders them: the body
-//! measures its balance and the ground under its feet; a clip started
-//! since its last tick captures where the body is; its clip clock advances
-//! at the original's rate for what the body does and its clip is sampled,
-//! blending from that capture and held toward its physical pose while it
-//! is dazed or unsteady; its targets are the body root's world transform
-//! times the clip's pose put on its character frame (which its character's
-//! controller follows), and its lift holds its pelvis over the ground under
-//! its feet.
+//! solver, the player's last, as the original orders them, in the stages
+//! of `crate::stages` (this module keeps the rules they call): the body
+//! learns what its character does and measures its balance and the ground
+//! under its feet; a clip started since its last tick captures where the
+//! body is; its clip clock advances at the original's rate for what the
+//! body does and its clip is sampled, blending from that capture and held
+//! toward its physical pose while it is dazed or unsteady; its targets are
+//! the body root's world transform times the clip's pose put on its
+//! character frame (which its character's controller follows), and its
+//! lift holds its pelvis over the ground under its feet.
 
 use std::collections::HashMap;
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 use exa_anim::{
-    ATTACKS, AnimSystems, Animator, BodyPart, ClipPose, LOCOMOTION, Motions, Stature, TickedClips,
+    ATTACKS, AnimSystems, Animator, BodyPart, ClipPose, LOCOMOTION, Motions, TickedClips,
     follow_up_blend, in_place,
 };
 use exa_assets::SkinnedPart;
 use exa_combat::Condition;
 use exa_combat::swing::{Swing, pace_swings};
 use exa_formats::rsq::BoneBody;
+use exa_physics::CharacterBody;
 use exa_physics::body::{
-    BODY_HZ, Bearing, BodyStats, CharacterTicks, Drive, Fallen, GoLimp, PartSetup, Physical,
-    RaceMuscles, Ragdoll, world_with,
+    BODY_HZ, Bearing, BodyStats, Drive, Fallen, GoLimp, PartSetup, Physical, RaceMuscles, Ragdoll,
 };
-use exa_physics::{CharacterBody, Physics};
 
 use crate::player::PlayerBody;
+use crate::stages::CharacterTickPlugin;
 
 pub struct LimpPlugin;
 
@@ -40,7 +41,7 @@ impl Plugin for LimpPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, (build_bodies, go_limp).chain().after(AnimSystems))
             .add_systems(Update, pace_swings)
-            .add_systems(FixedUpdate, tick_characters.in_set(CharacterTicks));
+            .add_plugins(CharacterTickPlugin);
     }
 }
 
@@ -205,138 +206,16 @@ fn go_limp(
     }
 }
 
-/// The character tick of every living physical body, the player's last:
-/// the body learns what its character does ([`Bearing`]) and measures its
-/// balance and the ground under its feet against the level; a clip started
-/// since its last tick captures where it is, its clip clock advances at its
-/// rate ([`clip_frames`]) and its clip is sampled ([`Animator::sample`]),
-/// and its targets are set to the body root's world transform times the
-/// clip's pose (the body is carried with the root's motion since the last
-/// tick, less its controller's follow), then put on its character frame.
-/// Its controller is told to follow the frame.
-#[allow(clippy::type_complexity)]
-fn tick_characters(
-    motions: Option<Res<Motions>>,
-    physics: Option<Res<Physics>>,
-    mut bodies: Query<
-        (
-            Entity,
-            &mut Ragdoll,
-            &mut Animator,
-            Option<&Stature>,
-            Option<&PlayerBody>,
-            Option<&Fallen>,
-            Option<&Swing>,
-            Option<&mut Condition>,
-        ),
-        With<TickedClips>,
-    >,
-    parents: Query<&ChildOf>,
-    nodes: Query<(&Transform, Option<&BodyPart>)>,
-    mut controllers: Query<&mut CharacterBody>,
-    mut order: Local<Vec<(bool, Entity)>>,
-) {
-    let Some(motions) = motions else { return };
-    order.clear();
-    order.extend(
-        bodies
-            .iter()
-            .map(|(e, _, _, _, player, ..)| (player.is_some(), e)),
-    );
-    player_last(&mut order);
-    let world = |e: Entity| {
-        world_with(e, &parents, |n| {
-            nodes.get(n).ok().map(|(t, _)| t.compute_affine())
-        })
-    };
-    for &(_, root) in order.iter() {
-        let Ok((_, mut body, mut anim, stature, player, fallen, swing, mut condition)) =
-            bodies.get_mut(root)
-        else {
-            continue;
-        };
-        if body.drive.is_none() {
-            continue;
-        }
-        let character = parents
-            .iter_ancestors(root)
-            .find(|&a| controllers.contains(a));
-        let controller = character.and_then(|c| controllers.get(c).ok());
-        let stature = stature.map_or(1.0, |s| s.0);
-        let state = condition.as_deref().copied().unwrap_or_default();
-        let mut bearing = bearing(controller, player, &anim, fallen, state);
-        bearing.rising = rising(&motions, &anim, fallen);
-        if bearing.moving {
-            bearing.gait_floor =
-                gait_floor(&motions, &anim, stature, &body, root, &parents, &nodes);
-        }
-        let walked = controller.map_or(0.0, |c| c.walked().with_y(0.0).length() * CM);
-        if let Some(c) = controller {
-            body.followed(c.followed());
-        }
-        body.set_bearing(bearing);
-        if let Some(physics) = &physics {
-            body.measure_balance(&physics.0);
-        }
-        let root_world = world(root);
-        let pace = Pace {
-            walked,
-            run: player.map_or(0.0, PlayerBody::run),
-            swing: swing.copied().unwrap_or(Swing::FISTS),
-        };
-        let once = !anim.looping;
-        let pose = clip_tick(&motions, &mut anim, &body, &pace, |body| {
-            physical_turns(
-                body,
-                root,
-                root_world,
-                motions.0.bone_count,
-                &parents,
-                &nodes,
-            )
-        });
-        // A clip played once that ended into its stance this tick: a
-        // get-up is over (the condition's clip-end writer).
-        if once
-            && anim.looping
-            && let Some(c) = condition.as_deref_mut()
-        {
-            c.clip_ended();
-        }
-        match pose {
-            Some(pose) => {
-                let pose = pose.scaled(stature);
-                let targets: Vec<Affine3A> = body
-                    .parts
-                    .iter()
-                    .map(|p| root_world * clip_pose(p.entity, root, &pose, &parents, &nodes))
-                    .collect();
-                body.aim(root_world, targets);
-            }
-            None => body.hold(root_world),
-        }
-        // The character follows its body's frame: its feet go where the
-        // frame's origin puts the body root.
-        let anchor = body.drive.as_ref().and_then(|d| d.anchor());
-        if let (Some(c), Some(anchor)) = (character, anchor)
-            && let Ok(mut controller) = controllers.get_mut(c)
-        {
-            let lead = Vec3::from(root_world.translation - world(c).translation);
-            controller.follow = Some(anchor - lead);
-        }
-    }
-}
-
 /// Centimetres per metre: the clocks' speeds are the original's, in cm a
 /// tick.
-const CM: f32 = 100.0;
+pub(crate) const CM: f32 = 100.0;
 
 /// What a body's clip clock reads besides its drive: how far its character
 /// walked in the last step (cm), the player's run blend, and its swing.
-struct Pace {
-    walked: f32,
-    run: f32,
-    swing: Swing,
+pub(crate) struct Pace {
+    pub(crate) walked: f32,
+    pub(crate) run: f32,
+    pub(crate) swing: Swing,
 }
 
 /// One tick of a living body's clip: a start since the last tick captures
@@ -345,7 +224,7 @@ struct Pace {
 /// may end into its follow-up (which captures at once); the clip is
 /// sampled, held toward the body's physical pose by its drive's hold
 /// weight while it is dazed or unsteady.
-fn clip_tick(
+pub(crate) fn clip_tick(
     motions: &Motions,
     anim: &mut Animator,
     body: &Ragdoll,
@@ -439,7 +318,7 @@ fn clip_frames(playing: Option<usize>, progress: f32, drive: &Drive, pace: &Pace
 /// relative to its parent part's (through any plain node between them),
 /// the pelvis's relative to the character frame (last tick's, or the body
 /// root's before the first).
-fn physical_turns(
+pub(crate) fn physical_turns(
     body: &Ragdoll,
     root: Entity,
     root_world: Affine3A,
@@ -496,7 +375,7 @@ const RISING_SHARE: f32 = 0.25;
 /// Whether a body gets up and its get-up clip (the one `anim` plays) is in
 /// its first quarter, by last tick's clock: its progress, (clock − blend)
 /// over its last key's time, is under a quarter.
-fn rising(motions: &Motions, anim: &Animator, fallen: Option<&Fallen>) -> bool {
+pub(crate) fn rising(motions: &Motions, anim: &Animator, fallen: Option<&Fallen>) -> bool {
     fallen.is_some_and(|f| f.getting_up)
         && !anim.looping
         && motions
@@ -513,7 +392,7 @@ fn rising(motions: &Motions, anim: &Animator, fallen: Option<&Fallen>) -> bool {
 /// its condition is helpless (the original's turn is skipped then, its
 /// error zeroed). Its gait floor is measured by the character tick while
 /// it moves.
-fn bearing(
+pub(crate) fn bearing(
     controller: Option<&CharacterBody>,
     player: Option<&PlayerBody>,
     anim: &Animator,
@@ -541,7 +420,7 @@ fn bearing(
 /// How high (m) the lowest ankle of `body` sits over its floor in the first
 /// pose of its moveset's walk, as the original measures a moving body's
 /// gait from the first key of its walk.
-fn gait_floor(
+pub(crate) fn gait_floor(
     motions: &Motions,
     anim: &Animator,
     stature: f32,
@@ -559,13 +438,6 @@ fn gait_floor(
             shin.transform_point3(leg.point).y
         })
         .reduce(f32::min)
-}
-
-/// Puts the player's body (flagged `true`) after every other, which keep
-/// their order: the original ticks its characters from the last registered
-/// to the first, the player.
-fn player_last(order: &mut [(bool, Entity)]) {
-    order.sort_by_key(|&(player, _)| player);
 }
 
 /// Where `pose` puts `part` in the space of its body root `root`: the
@@ -741,7 +613,7 @@ pub(crate) mod tests {
             .insert_resource(Physics::default())
             .insert_resource(motions())
             .add_systems(FixedPreUpdate, walk)
-            .add_systems(FixedUpdate, tick_characters.in_set(CharacterTicks));
+            .add_plugins(CharacterTickPlugin);
         let world = app.world_mut();
         let character = world
             .spawn((Transform::from_translation(START), Walker))
@@ -1168,15 +1040,6 @@ pub(crate) mod tests {
         assert!((under.angle_between(unturned) - 0.4).abs() < 0.01);
     }
 
-    #[test]
-    fn the_player_is_ticked_last() {
-        let e = |i: u32| Entity::from_raw_u32(i).unwrap();
-        let mut order = vec![(false, e(3)), (true, e(1)), (false, e(7)), (false, e(2))];
-        player_last(&mut order);
-        let ticked: Vec<Entity> = order.iter().map(|&(_, x)| x).collect();
-        assert_eq!(ticked, [e(3), e(7), e(2), e(1)]);
-    }
-
     /// Each tick's clip clock and targets.
     #[derive(Resource, Default)]
     struct Ticks(Vec<(f32, Vec<Affine3A>)>);
@@ -1284,7 +1147,7 @@ pub(crate) mod tests {
             .insert_resource(motions())
             .init_resource::<Walked>()
             .add_systems(FixedPreUpdate, steer)
-            .add_systems(FixedUpdate, tick_characters.in_set(CharacterTicks))
+            .add_plugins(CharacterTickPlugin)
             .add_systems(FixedUpdate, record_walk.after(BodySystems));
         // The floor joins the level before the character arrives.
         let floor = Plane3d::default().mesh().size(40.0, 40.0);

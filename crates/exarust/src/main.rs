@@ -34,6 +34,7 @@
 //!          --debug-bodies             start with the body overlay and joint readout shown (F3 toggles it)
 //!          --debug-nav                draw the level's navigation grid around the view (F6 toggles it)
 //!          --joint-trace <file.csv>   every joint of every simulated body after every 83 Hz tick (degrees, cm)
+//!          --fixed-frames             every frame advances game time by exactly 1/60 s, so runs repeat tick for tick
 //!          --sim-speed <f>            run the simulation at this speed (e.g. 0.25)
 //!          --pause-at-tick <n>        pause the simulation at the end of body tick n
 //!          --pause-on-stretch <cm>    pause the simulation when a link goes this far past its slack
@@ -137,6 +138,9 @@ pub struct Options {
     pub debug_nav: bool,
     /// Write every joint after every tick here (CSV).
     pub joint_trace: Option<PathBuf>,
+    /// Every frame advances game time by exactly 1/60 s, so that runs
+    /// repeat tick for tick.
+    pub fixed_frames: bool,
     /// The simulation's speed, its scripted pauses (tick; cm past a slack).
     pub sim_speed: Option<f32>,
     pub pause_at_tick: Option<u64>,
@@ -335,6 +339,7 @@ fn main() -> AppExit {
             "--debug-bodies" => options.debug_bodies = true,
             "--debug-nav" => options.debug_nav = true,
             "--joint-trace" => options.joint_trace = args.next().map(PathBuf::from),
+            "--fixed-frames" => options.fixed_frames = true,
             "--sim-speed" => {
                 options.sim_speed = args
                     .next()
@@ -519,6 +524,7 @@ fn main() -> AppExit {
         None => None,
     };
 
+    let fixed_frames = options.fixed_frames;
     let mut app = App::new();
     if let Some(trace) = trace {
         app.insert_resource(trace);
@@ -590,8 +596,15 @@ fn main() -> AppExit {
         .with_pause_after_collapse(options.pause_after_collapse),
     )
     .insert_resource(options)
-    .add_plugins(viewer::ViewerPlugin)
-    .run()
+    .add_plugins(viewer::ViewerPlugin);
+    if fixed_frames {
+        // Whatever a frame took, it advances game time by 1/60 s: the frames'
+        // clocks and the ticks they run repeat from run to run.
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs_f64(1.0 / 60.0),
+        ));
+    }
+    app.run()
 }
 
 #[cfg(test)]

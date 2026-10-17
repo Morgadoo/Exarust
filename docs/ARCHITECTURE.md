@@ -37,7 +37,7 @@ Rules:
 | schedule | content |
 |---|---|
 | `Startup` / `OnEnter(state)` | open install, load level, spawn entities |
-| `FixedUpdate` (83 Hz, the original's 12 ms tick, deterministic) | input → control intents → AI intents → character controllers → character ticks (clips sampled, animation targets, player last; `CharacterTicks`) → body solver (blows, integration, iterations, contacts, friction; `BodySystems`) → combat resolution → injuries |
+| `FixedUpdate` (83 Hz, the original's 12 ms tick, deterministic) | input → control intents → AI intents → character controllers → pre-step (`BodyPreStep`) → character ticks (`CharacterTicks`: each living character, the player last, runs the nine stages of the `CharacterTick` schedule before the next one starts: upkeep, readiness, anchor, behaviour, posture, attack, movement, sampler, carry) → body solver (blows, integration, iterations, contacts, friction, post-step, with the registered `SolverStages` at the original's points; `BodySystems`) → per-character post-step (`BodyPostStep`: combat resolution, injuries) |
 | `Update` | camera, UI, audio triggers, streaming |
 | `PostUpdate` | body parts drawn between their last two ticks, transform propagation, skinning, visibility |
 | Render | Bevy render graph + custom nodes (shadow cubes, GI, post) |

@@ -10,6 +10,7 @@ pub mod joint_trace;
 pub mod limp;
 pub mod player;
 pub mod sim_control;
+pub mod stages;
 pub mod torch;
 pub mod trace;
 

@@ -23,6 +23,9 @@ exarust --opponent --joint-trace joints.csv play arena
 exarust --no-gi --no-supersample --size 960x540 --at 11.2,4.5,12.8 \
   --camera 10.2,8.2,12.2,-135,-32 --shove-props 60 --frames 450 \
   --screenshot shoved.png play arenao1
+# A blow and the get-up, repeatable tick for tick: run two builds and
+# compare the traces whose first tick and blow row match.
+exarust --fixed-frames --shove 60 --trace t.csv play arena
 # Freeze the duel the moment a link opens 1 cm past its slack, and keep a
 # picture of it from the side.
 exarust --debug-bodies --opponent --pause-on-stretch 1 \
@@ -43,6 +46,7 @@ it takes the ring's other slot.
 | `--shove <frame>` | a body blow to every simulated character body at that frame after the load |
 | `--shove-props <frame>` | in play mode, at that frame after the load, a blow to every prop body within 3 m of the player (1.5 m/s away from it and 1.5 m/s up); the log counts them and, once all sleep again, says after how many ticks and how far each moved (a body that fell out of the world counts as settled). Props meet only the level for now: one shoved off a table that is itself a body (exanima01's tables) falls through it |
 | `--sim-speed <f>` | run the simulation at this speed (0.25 is a quarter as fast), from the end of the load |
+| `--fixed-frames` | every frame advances game time by exactly 1/60 s, whatever it took, so the clips played by frames, the frame counts of `--shove`, `--press` and `--click`, and the ticks each frame runs repeat from run to run. Loading still takes a real time, so the tick a body is built and the frame the load ends can move by a few: two runs whose `--trace` starts on the same tick and whose blow lands on the same row give the same rows, and two builds compare row by row (only the `body` column, an entity id, may differ) |
 | `--pause-at-tick <n>` | pause at the end of body tick `n` (the `tick` column of both traces, counted from the start, the load included; see below) |
 | `--pause-on-stretch <cm>` | pause at the end of the tick in which a link of a body first goes this far past its slack; the log and the readout name the body, the part and the link |
 | `--pause-after-jet <n>` | pause at the end of the `n`th body tick after the tick that first finds a blood jet started (a bleeding blow's, or `--debug-spray`'s), to catch a jet in flight ([Wounds](#wounds)) |

@@ -423,6 +423,25 @@ read it by the original's masks instead of a separate down flag;
 getting up, normal) ([formats/RSQ.md](formats/RSQ.md), Condition). Next:
 the collapse before death (L5), the falls and get-ups' own rules (C11).
 
+Done (change `stage-the-character-tick`, M0 of the master plan, no
+behaviour change): the fixed step's tick is named in the original's order
+(pre-step, character ticks, solver, post-step). Each living character's
+tick runs nine stages (upkeep, readiness, anchor, behaviour, posture,
+attack, movement, sampler, carry) before the next character's, the player
+last; Exarust's work sits in posture, movement, sampler and carry, one
+module each (`exa_game::stages`). The solver calls registered stages at
+the original's points (after integration, the pair pass and links between
+bodies in each of the 20 iterations, sim objects, body–body detection,
+sim-object contacts, the pair friction of each of the 8 passes, after the
+post-step), so pairs, props' mechanisms, world links and cloth join
+without editing its loop ([formats/RSQ.md](formats/RSQ.md), how a tick
+runs). `exarust --fixed-frames` makes runs repeat tick for tick so traces
+compare between builds ([DEBUGGING.md](DEBUGGING.md)). The stance, the
+condition and the collapse's dying tick (M38, L5), falls, attack stamp and
+player input still run ahead of the character ticks, over every body, and
+the AI once a frame; each joins its stage with the change that rewrites
+it. The condition's clip-end writer runs in the sampler stage.
+
 This phase carries the most risk and defines how the game feels.
 
 - `exa_anim`: skeleton, clip sampling and blending, procedural layers
@@ -681,7 +700,10 @@ See `docs/RENDERING.md` and `docs/PERFORMANCE.md`.
 - Cloth on capes, tabards and padded armour (simplified, physics-driven).
 - `exa_audio`: positional playback of `Sound.rpk`, reverb environments
   per area, sound sets per material and event (impact, footstep, voice), and
-  music.
+  music. Its modules (`bank` with the one sound-set picker every event
+  uses, `music`, `hits`, `footsteps`) take each lane's new sounds as their
+  own module; the original's set probing (01 to 16, no repeat) and its
+  audio environment are still to do.
 
 **M5 "looks and sounds like Exanima":** reference shots taken from matching
 camera positions in the original and in Exarust are hard to tell apart.

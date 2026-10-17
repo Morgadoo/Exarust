@@ -7,10 +7,18 @@ body solver (`body`), its level contacts (`contact`), props and items as bodies 
 character controller (`lib`).
 
 Each fixed tick (83 Hz) moves the character controllers, then runs the
-character ticks (`body::CharacterTicks`, filled by `exa_game`: clips sampled
-and targets set, player last), then the body solver over every awake body
-(`body::BodySystems`). Blows are queued for the next tick, and parts are
-drawn between their last two ticks (`body::BodyPlugin`). Every part is
+pre-step (`body::BodyPreStep`), the character ticks (`body::CharacterTicks`:
+each living character, player last, runs the nine stages of the
+`body::CharacterTick` schedule, `body::CharacterStage`, before the next one
+starts; `exa_game` fills them: clips sampled and targets set), the body
+solver over every awake body (`body::BodySystems`) and the per-character
+post-step (`body::BodyPostStep`). The solver calls the registered
+`body::SolverStages` at the original's points: after integration, the pair
+pass and links between bodies in each of the 20 iterations, sim objects,
+body–body detection, sim-object contacts, the pair friction of each of the
+8 passes, after the post-step (`src/body_stages.rs`, `body::solve_with`).
+Blows are queued for the next tick, and parts are drawn between their last
+two ticks (`body::BodyPlugin`). Every part is
 pinned at its origin to its parent, and the skeleton's links bound each
 joint's range (`body::Ragdoll::new`); a limp body's links also damp each
 joint inside its range through their smoothed lengths, reset when the

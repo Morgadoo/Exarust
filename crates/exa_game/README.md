@@ -4,15 +4,18 @@ Game modes and session flow: Story, Arena (company management, matches, seasons)
 
 **Phase:** Phase 4–7 (see [`docs/PLAN.md`](../../docs/PLAN.md)). Status: skeleton.
 
-It already runs the character ticks of physical bodies (`limp`: each body's
-bearing (with its walk's lowest ankle while it moves, and its get-up's
-first quarter), balance against the level, clip (the capture of a start
+It already runs the character ticks of physical bodies, the player's last,
+each body's whole tick before the next, in the original's stages
+(`stages`: the driver and one module a stage; the rules in `limp`): its
+bearing with its get-up's first quarter, a collapsing body's bearing
+saying so (posture); its walk's lowest ankle while it moves and its
+balance against the level (movement); its clip (the capture of a start
 from the body's physical turns, the original's clock rate for what the
-body does, the pose it holds while dazed), targets on its character frame
-and lift, the player's last; its controller is told to follow the frame;
-a get-up's clip ending into the stance writes the condition word normal;
-a collapsing body's bearing says so; a body asked to go limp keeps its
-motion unless given a velocity),
+body does, the pose it holds while dazed; a get-up's clip ending into the
+stance writes the condition word normal; sampler); its targets on its
+character frame and lift, its controller told to follow the frame
+(carry); a body asked to go limp keeps its motion unless given a
+velocity (`limp`),
 Exarust's falls and get-ups from the measured balance (`balance`; a fall
 stops the controller carrying and holding the body and keeps its tone; a
 get-up turns the body, starts its clip from the whole lying body, lets

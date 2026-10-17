@@ -349,28 +349,49 @@ How the original simulates a body (`exa_physics::body`):
     [RFC.md](RFC.md), Stats derived at spawn).
 
 How a tick runs. The original steps every body of the world in one 83 Hz
-tick, in this order:
+tick, in this order (REA and `exe.asm` of its sector step and body tick):
 
-1. Every character's body tick, from the last registered character to the
-   first, which is the player, so the player comes last. The body tick
-   runs the character's behaviour (the player's steering, once per tick),
-   samples its clip into each part's animated transform in character
-   space, and multiplies that by the character's frame into the world.
-2. The integration of every awake body.
-3. 20 iterations over all bodies.
-4. Contacts dropped and the bodies tested against the level.
-5. 8 friction passes over all bodies.
-6. The post-step.
+1. Sim objects against the bodies near them.
+2. Every character's body tick, from the last registered character to the
+   first, which is the player, so the player comes last. Each character's
+   body tick runs in stages, all of them before the next character's:
+   upkeep (wounds, red regeneration, impacts, burning; a dead character
+   stops here), readiness (stepping, energy, the daze block and its
+   capture), anchor (chest velocities, the standing anchor), behaviour
+   (the player's steering or the AI, once per tick), posture (falls and
+   get-ups), attack (the swing, focus, health), movement (the movement
+   decision, the turn, the locomotion, the clip clock), sampler (each
+   part's animated transform in character space, multiplied by the
+   character's frame into the world), carry (pins, balance, feet, lift,
+   leg IK).
+3. The integration of every awake body.
+4. 20 iterations, each the pair contact pass, then every body's links
+   (with its stored level contacts and edges).
+5. Pair and level contacts dropped; sim objects stepped; the bodies tested
+   against each other, the sim objects against the bodies and the level,
+   then the bodies against the level.
+6. 8 friction passes, each the pairs' friction, then every body's against
+   the level.
+7. The post-step (for a character: its pending hit and its damage first).
 
-Exarust runs the same order in its fixed step. The character controllers
-move first. Then each living body's character tick (`CharacterTicks`,
-player last) measures its balance and the ground under its feet (below),
-takes the capture of a clip started since its last tick, advances its
-clip clock by the original's rate and samples the clip ([Motion
-playback](#motion-playback)); its targets are the body root's world
-transform times the clip pose, put on its character frame (below), and its
-carry is set from the lift. Then the solver (`BodySystems`) deals the
-queued blows and runs steps 2–6 over every awake body. The same ticks give
+Exarust runs the same order in its fixed step: `BodyPreStep`, then
+`CharacterTicks`, `BodySystems` and `BodyPostStep`. The character
+controllers move first. Then each living body's character tick runs the
+`CharacterTick` schedule's nine stages (`CharacterStage`), player last,
+one body's whole tick before the next: posture says what the body does
+(the condition, the collapse's dying tick and the falls are still decided
+over every body just before the character ticks, in that order);
+movement measures the walk's lowest ankle while it moves, leaves its
+controller's step out of the carry and measures its balance and the
+ground under its feet (below; the original measures them in its carry
+stage, after the sampler); the sampler takes the capture of a clip started
+since its last tick, advances its clip clock by the original's rate and
+samples the clip ([Motion playback](#motion-playback)); the carry puts the
+clip pose on the body root's world transform and its character frame
+(below), sets its carry from the lift and has the controller follow the
+frame. Then the solver (`BodySystems`) deals the queued blows and runs
+steps 3–7 over every awake body; its stages (`SolverStage`) are where
+pairs, sim objects and links between bodies join it. The same ticks give
 the same particles at any frame rate. Blows sent between ticks wait in a
 queue for the next one. Parts are drawn between where the tick before last
 and the last tick left them.
@@ -617,13 +638,15 @@ and the dead, and for the shocked until their timer runs out:
    anything else 0 (with the posture switch to the stance).
 
 Exarust (`exa_combat::condition`, its `PostureTick` after the daze's
-stance and before the character ticks; every `Fighter` keeps the word):
+stance and before the character ticks, over every body rather than in
+each character's posture stage; every `Fighter` keeps the word):
 - the decision, as above, from last tick's balance, summed limb motion
   and tone and the clip playing; it also names the branch the original
   takes next (falls, lying still, getting up, attack, weak, standing,
   collapse), for the changes that add those actions;
 - Exarust's get-up writes getting up when it starts, and the character
-  tick normal when the get-up's clip ends into the stance (the same tick);
+  tick's sampler stage normal when the get-up's clip ends into the stance
+  (the same tick);
   a killing blow starts the collapse (below; dead at once for a body
   without muscles) and a level's corpse is placed dead; a walk's stop
   needs no writer, since the player's steering starts the stance before

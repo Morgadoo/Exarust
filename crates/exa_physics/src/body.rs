@@ -50,6 +50,12 @@ mod balance;
 pub use balance::{Balance, Leg};
 #[path = "body_climb.rs"]
 mod climb;
+#[path = "body_stages.rs"]
+pub mod stages;
+pub use stages::{
+    BodyPostStep, BodyPreStep, CharacterStage, CharacterTick, SolverStage, SolverStages,
+    TickedCharacter, run_character_ticks, solve_with,
+};
 #[path = "body_frame.rs"]
 mod frame;
 #[path = "body_inspect.rs"]
@@ -1077,13 +1083,16 @@ impl BodyTicks {
     }
 }
 
-/// The character ticks: each living body's clip advanced and sampled, and
-/// its targets set (`Ragdoll::aim`), the player's last. In the fixed step,
-/// after the character controllers and before [`BodySystems`].
+/// The character ticks: every living character's tick, the player's last,
+/// each character running every stage of [`CharacterTick`] before the next
+/// one starts ([`stages`]): its clip advanced and sampled, and its targets
+/// set (`Ragdoll::aim`). In the fixed step, after the character controllers
+/// and [`BodyPreStep`], before [`BodySystems`].
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CharacterTicks;
 
-/// The body solver: one tick of every awake body. In the fixed step.
+/// The body solver: one tick of every awake body, with the
+/// [`SolverStages`]. In the fixed step, before [`BodyPostStep`].
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BodySystems;
 
@@ -1093,11 +1102,11 @@ pub struct BodyPlugin;
 
 impl Plugin for BodyPlugin {
     fn build(&self, app: &mut App) {
+        stages::configure(app);
         app.add_message::<Shove>()
             .init_resource::<ShoveQueue>()
             .init_resource::<DealtShoves>()
             .init_resource::<BodyTicks>()
-            .configure_sets(FixedUpdate, (CharacterTicks, BodySystems).chain())
             .add_systems(FixedUpdate, step_bodies.in_set(BodySystems))
             .add_systems(
                 RunFixedMainLoop,
@@ -1810,38 +1819,9 @@ fn tree_orders(parts: &[Part]) -> (Vec<usize>, Vec<usize>) {
 }
 
 /// One tick of the world's solver over `bodies` against the static `level`,
-/// in the original's order (the character ticks have set every living
-/// body's targets): every body integrated (inertia, gravity and its
-/// muscles' pull); 20 iterations, in each of which every body takes its
-/// links, its stored level contacts and its edges; every body's contacts
-/// dropped and its spheres tested against the level (an immediate push,
-/// the contacts kept for the next tick); 8 friction passes over every body;
-/// the post-step.
+/// in the original's order, without solver stages ([`solve_with`]).
 pub fn solve<L: Level + ?Sized>(bodies: &mut [&mut Ragdoll], level: &L) {
-    for b in bodies.iter_mut() {
-        b.step();
-    }
-    for _ in 0..LINK_ITERATIONS {
-        for b in bodies.iter_mut() {
-            b.iterate();
-        }
-    }
-    for b in bodies.iter_mut() {
-        for p in &mut b.parts {
-            p.contacts.clear();
-        }
-    }
-    for b in bodies.iter_mut() {
-        b.detect(level);
-    }
-    for _ in 0..FRICTION_PASSES {
-        for b in bodies.iter_mut() {
-            b.rub();
-        }
-    }
-    for b in bodies.iter_mut() {
-        b.post_step();
-    }
+    solve_with(bodies, level, &mut []);
 }
 
 /// The wake of a contact between two bodies, as the original's pair
@@ -2024,12 +2004,13 @@ fn begin_frame(
 
 /// The solver's tick over every body (the character ticks ran before it):
 /// the queued blows, then one tick of the world's solver over the awake
-/// bodies.
+/// bodies, with the solver stages.
 pub fn step_bodies(
     physics: Res<Physics>,
     mut queue: ResMut<ShoveQueue>,
     mut dealt: ResMut<DealtShoves>,
     mut clock: ResMut<BodyTicks>,
+    mut stages: ResMut<SolverStages>,
     mut bodies: Query<&mut Ragdoll>,
 ) {
     dealt.0.clear();
@@ -2049,7 +2030,7 @@ pub fn step_bodies(
         }
     }
     let mut awake: Vec<&mut Ragdoll> = awake.iter_mut().map(|b| &mut **b).collect();
-    solve(&mut awake, &physics.0);
+    solve_with(&mut awake, &physics.0, stages.all());
     clock.0 += 1;
 }
 
