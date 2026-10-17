@@ -521,8 +521,9 @@ layers per part with the coverage roll, impact, crush, slash and pierce.
 Done (change `start-no-clip-on-a-wound`): a blow that does not kill starts
 no clip on the struck fighter, as in the original (Exarust used to play
 Head Pain, a story clip, for any wound to the chest, head or arms, and
-Rebalance below); a fighter struck mid-attack stops it and returns to its
-stance at once, Exarust's stand-in for the original's swing stall; the
+Rebalance below); a fighter struck mid-attack stopped it and returned to
+its stance at once, Exarust's stand-in until the swing stall
+(`run-the-swing-clock`); the
 shipped elbows and knees are shown to be hinges bounded by their links
 (elbow straight to 120°, knee 10° to 130°)
 ([formats/OTHER.md](formats/OTHER.md), Damage;
@@ -702,12 +703,30 @@ after the body loses its balance, the pit 84 ticks later, gone 334 ticks
 after the loss. Not yet: the pause and a death menu at the fade's end,
 the voice sets (the scream picks a human voice), the retail chasm
 capture (RR18).
+Done (change `run-the-swing-clock`, M22 of the master plan): every
+attack tick runs the original's swing routine. The clip clock runs at the
+primary striker's rate (now with the feral level's ramp); a swing
+strength scales it while the swing stalls, and the stance returns when
+the stall ends: a dropped request releases the swing (a click checks a
+punch in 5 ticks, a held button swings through: 67 ticks for a punch), and
+a blow dazing an attacker stalls its swing, replacing the stop-at-once
+stand-in. The strike window opens at 0.3 of the clip (stab 0.4, overhead
+0.5) with the motion's hand, the overhead's and stab's close late; a
+released swing's next press within 300 ms throws the overhead at once;
+the record's perks reach the fighters: Remise chains a held side attack
+past 0.8 (a punch after 55 ticks, a greatsword's Attack Mid after 78: the
+same rule gives the live trace's two-hander its 828 ms within its weapon's
+spread), Feint renews a released swing; the stab's and overhead's start
+blends; the attack turn by the weapon's handling. `--perks` and the
+trace's swing columns ([PLAYER.md](PLAYER.md), Combat mode;
+[formats/RSQ.md](formats/RSQ.md), Motion playback). Still missing from
+it: the swinging arm's stiffness (needs per-arm stiffness in the body
+controller), the swing sounds, the AI's own release.
 Still to do: inventory and containers, injuries beyond damage, blocking,
-parrying, grabs, practice mode, the knockback step, the swing stall and
-the striker's recoil, the collapse's stagger steps, the stab's and
-overhead's start blends, the balance's Defence stance and Rebalance
-(C11); next in the combat timing: the release and stall (M22), then the
-unarmed parries (L10).
+parrying, grabs, practice mode, the knockback step, the striker's recoil
+and follow-through (C21, M26), the collapse's stagger steps, the
+balance's Defence stance and Rebalance (C11); next in the combat timing:
+the unarmed parries (L10).
 
 - `exa_items`: item database, item instances, inventory and containers,
   equip and wield, weapon assembly from factories, mass and centre of

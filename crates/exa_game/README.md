@@ -25,7 +25,9 @@ player (`player`: tank controls whose steering starts only the gaits, the
 chase camera on the drawn pelvis, combat facing, its combat stance and the
 original's attack request each behaviour tick (press, hold, release, the
 double click and Alt) through the attack executor, with the clips of the
-moveset its hands pick),
+moveset its hands pick; a dropped request releases the swing, a released
+main-side attack returns to the stance once its stall is over, and the
+body turns at the swing's rate while it attacks),
 falls to death and the kill plane (`fall`: the fall check of every living
 body in the falls branch, its scream and the player's pit sound, the
 death fade's start, death and removal from the world; dead bodies below
@@ -36,7 +38,8 @@ blow's low-health check on the player's body (`exa_combat::Weakened`;
 `hud`), the
 held torch (`torch`, which fills its hand; its tests pin the "Torch"
 clips' arm on the body model), the per-tick body trace
-(`trace`, ending with the condition word), and the debug tools ([`docs/DEBUGGING.md`](../../docs/DEBUGGING.md)):
+(`trace`, ending with the condition word and the swing's rate, strength
+and state word), and the debug tools ([`docs/DEBUGGING.md`](../../docs/DEBUGGING.md)):
 the body overlay and joint readout (`body_overlay`), the joint trace
 (`joint_trace`), the trace of contacts between body parts (`pair_trace`)
 and the simulation controls (`sim_control`, with the scripted pauses at a

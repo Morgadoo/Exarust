@@ -2,13 +2,15 @@
 //! combat in its guard, faces the target, closes to striking distance and
 //! attacks at intervals with varied strikes, guarding while the target is
 //! far and standing in its combat idle near it. NPCs act through the same
-//! pieces as the player (body velocity, animator, stance, attacks).
+//! pieces as the player (body velocity, animator, stance, attacks); the
+//! duellist holds every swing through (it never releases one).
 
 use bevy::prelude::*;
 use exa_anim::Animator;
-use exa_combat::attack::{self, AttackMotion, Attacker};
+use exa_combat::attack::{self, AttackMotion, Attacker, Busy};
 use exa_combat::stance::{self, Stance};
-use exa_combat::{Attacking, Blade, Condition, Fighter};
+use exa_combat::swing::{self, SwingState};
+use exa_combat::{AttackStart, Attacking, Blade, Condition, Fighter};
 use exa_physics::CharacterBody;
 use exa_physics::body::{BodyTicks, Fallen, MAX_ENERGY, Ragdoll};
 
@@ -102,7 +104,7 @@ fn duellist(
     time: Res<Time>,
     ticks: Option<Res<BodyTicks>>,
     targets: Query<&GlobalTransform>,
-    bodies: Query<(&Condition, &GlobalTransform, Option<&Ragdoll>), With<Fighter>>,
+    bodies: Query<(&Condition, &GlobalTransform, Option<&Ragdoll>, &Fighter)>,
     children: Query<&Children>,
     blades: Query<&Blade>,
     mut npcs: Query<(
@@ -111,7 +113,7 @@ fn duellist(
         &mut Stance,
         &mut Transform,
         &mut Animator,
-        &mut Attacker,
+        (&mut Attacker, &mut SwingState),
         &ChildOf,
         Option<&Attacking>,
         Has<Fallen>,
@@ -119,14 +121,23 @@ fn duellist(
     mut roots: Query<(&mut CharacterBody, &GlobalTransform)>,
 ) {
     let now = ticks.map_or(0, |t| t.millis());
-    for (entity, mut ai, mut stance, mut t, mut anim, mut attacker, parent, attacking, fallen) in
-        &mut npcs
+    for (
+        entity,
+        mut ai,
+        mut stance,
+        mut t,
+        mut anim,
+        (mut attacker, mut swinging),
+        parent,
+        attacking,
+        fallen,
+    ) in &mut npcs
     {
         let Ok((mut body, root_gt)) = roots.get_mut(parent.parent()) else {
             continue;
         };
         body.desired_velocity = Vec3::ZERO;
-        let Ok((condition, gt, ragdoll)) = bodies.get(entity) else {
+        let Ok((condition, gt, ragdoll, fighter)) = bodies.get(entity) else {
             continue;
         };
         // Down, getting up, collapsing or dead (or Exarust's fall), it does
@@ -150,7 +161,7 @@ fn duellist(
             .find_map(|e| bodies.get(e).ok());
         // Its stance by the distance between the chests: the guard at four
         // reaches or more, the combat idle within.
-        if let Some((_, tgt, tgt_body)) = target_body {
+        if let Some((_, tgt, tgt_body, _)) = target_body {
             let d = stance::chest_point(gt, ragdoll).distance(stance::chest_point(tgt, tgt_body));
             let reach = reach_of(entity, &blades);
             let chosen = stance::duellist_stance(d, reach);
@@ -190,19 +201,25 @@ fn duellist(
         // it whenever it is free.
         stance::take_ai_stance(&mut anim, *stance, primary_blend);
         // Its request goes through the original's executor: enough energy
-        // and the cooldown since its last attack's last tick.
+        // and the cooldown since its last attack's last tick (it never
+        // releases a swing, so neither the overhead after a release nor
+        // Feint).
         let (energy, most) = ragdoll
             .and_then(|r| r.drive.as_ref())
             .map_or((MAX_ENERGY, MAX_ENERGY), |d| (d.energy, d.max_energy()));
+        let busy = Busy {
+            now_ms: now,
+            last_tick_ms: attacker.last_tick_ms,
+            cooldown_ms: attacker.cooldown_ms(entity, blades.iter()),
+            playing: None,
+            released: swinging.has(swing::flags::RELEASED),
+            stall_until_ms: swinging.end_ms,
+            renew_ms: swinging.renew_ms,
+            side_started_ms: attacker.side_started_ms,
+            feint: fighter.feint(),
+        };
         let ready = attack::has_energy(energy, most)
-            && attack::execute(
-                attack::Request::default(),
-                now,
-                attacker.last_tick_ms,
-                attacker.cooldown_ms(entity, blades.iter()),
-                None,
-            )
-            .is_some();
+            && attack::execute(attack::Request::default(), busy).is_some();
         if dist <= STRIKE_RANGE && !ai.holds_ground && ai.cooldown <= 0.0 && ready {
             let strike = STRIKES[ai.next_strike % STRIKES.len()];
             ai.next_strike += 1;
@@ -212,9 +229,12 @@ fn duellist(
                 entity,
                 &mut anim,
                 &mut attacker,
+                &mut swinging,
                 blades.iter(),
-                strike,
-                weapon_class_of(entity, &blades),
+                AttackStart {
+                    remise: fighter.remise(),
+                    ..AttackStart::of(strike, weapon_class_of(entity, &blades), now)
+                },
                 stance.action(),
             );
         }

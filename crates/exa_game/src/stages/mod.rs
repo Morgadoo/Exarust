@@ -10,7 +10,7 @@
 //! - Posture: the condition and the collapse's dying tick
 //!   (`exa_combat::condition::PostureTick`), falls (`balance`), and what
 //!   the body does this tick ([`posture`]);
-//! - Attack: the attack ticks' stamp (`exa_combat::attack`);
+//! - Attack: the swing routine (`exa_combat::swing`);
 //! - Movement: the walk's lowest ankle, the controller's step left out of
 //!   the carry, the balance and the ground under the feet ([`movement`]);
 //! - Sampler: the clip's clock, capture and sample, and the condition's

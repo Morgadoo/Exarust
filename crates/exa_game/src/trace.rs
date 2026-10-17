@@ -6,8 +6,9 @@
 //! Exarust's own columns follow the probe's: the body's sleep countdown and
 //! state, its character frame's origin and its body root (where its
 //! controller stands) across the ground, its clip's blend and how far its
-//! pose is held, and its character's condition word. Columns:
-//! `docs/formats/RSQ.md` (Physical body, per-tick trace).
+//! pose is held, its character's condition word, and its swing: the rate
+//! its attack's clip clock ran this tick, its strength and its state word.
+//! Columns: `docs/formats/RSQ.md` (Physical body, per-tick trace).
 
 use std::fmt::Write as _;
 use std::fs::File;
@@ -17,6 +18,7 @@ use std::path::Path;
 use bevy::prelude::*;
 use exa_anim::{Animator, BodyPart, Motions, Stature};
 use exa_combat::Condition;
+use exa_combat::swing::SwingState;
 use exa_physics::body::{BodySystems, BodyTicks, Ragdoll, world_with};
 use exa_physics::prop::PropBody;
 
@@ -49,9 +51,13 @@ const OWN: [&str; 4] = ["frame_x", "frame_z", "root_x", "root_z"];
 /// Exarust's own clip columns: the blend from the clip's capture (frames,
 /// 0 once its first key is reached) and the hold weight.
 const CLIP: [&str; 2] = ["blend", "hold"];
-/// Last, the character's condition word, in hex as the retail watcher logs
+/// Then the character's condition word, in hex as the retail watcher logs
 /// it (`0x300`); empty for a body without one.
 const CONDITION: &str = "condition";
+/// Last, its swing (empty for a body that does not fight): the attack
+/// clock's rate this tick (frames), the swing strength and the state word
+/// (hex), the retail probe's.
+const SWING: [&str; 3] = ["swing_rate", "strength", "attack_flags"];
 /// A part target's columns: its place (cm) and its rotation.
 const TARGET: [&str; 7] = ["x", "y", "z", "qx", "qy", "qz", "qw"];
 
@@ -118,6 +124,7 @@ pub fn header() -> String {
     columns.extend(OWN.iter().map(|s| s.to_string()));
     columns.extend(CLIP.iter().map(|s| s.to_string()));
     columns.push(CONDITION.into());
+    columns.extend(SWING.iter().map(|s| s.to_string()));
     columns.join(",")
 }
 
@@ -163,6 +170,7 @@ fn trace_bodies(
             Option<&Animator>,
             Option<&Stature>,
             Option<&Condition>,
+            Option<&SwingState>,
             Has<PlayerBody>,
         ),
         Without<PropBody>,
@@ -175,7 +183,7 @@ fn trace_bodies(
     }
     let player = bodies.iter().any(|(.., p)| p);
     let mut text = String::new();
-    for (root, body, anim, stature, condition, is_player) in &bodies {
+    for (root, body, anim, stature, condition, swing, is_player) in &bodies {
         if player && !is_player {
             continue;
         }
@@ -192,6 +200,12 @@ fn trace_bodies(
         text.push(',');
         if let Some(c) = condition {
             let _ = write!(text, "{:#x}", c.0);
+        }
+        match swing {
+            Some(s) => {
+                let _ = write!(text, ",{},{},{:#x}", s.rate, s.strength, s.flags);
+            }
+            None => text.push_str(",,,"),
         }
         text.push('\n');
     }
@@ -325,9 +339,18 @@ mod tests {
         let columns: Vec<&str> = lines.next().unwrap().split(',').collect();
         assert_eq!(
             columns.len(),
-            2 + 12 + SCALARS.len() + BONES * TARGET.len() + 8 + 2 + 2 + OWN.len() + CLIP.len() + 1
+            2 + 12
+                + SCALARS.len()
+                + BONES * TARGET.len()
+                + 8
+                + 2
+                + 2
+                + OWN.len()
+                + CLIP.len()
+                + 1
+                + SWING.len()
         );
-        assert_eq!(columns.last(), Some(&CONDITION));
+        assert_eq!(columns.last(), Some(&SWING[2]));
         let rows: Vec<Vec<&str>> = lines.map(|l| l.split(',').collect()).collect();
         assert_eq!(rows.len() as u64, ticks);
         let at = |name: &str| columns.iter().position(|c| *c == name).unwrap();
@@ -347,6 +370,8 @@ mod tests {
             assert_eq!(number(row, "balance_counter"), 0.0);
             assert_eq!((row[at("countdown")], row[at("sleep")]), ("256", "awake"));
             assert_eq!(row[at(CONDITION)], "0x300");
+            // Not a fighter: no swing.
+            assert!(row[at("swing_rate")].is_empty() && row[at("attack_flags")].is_empty());
             assert!(number(row, "pelvis_p3_z").is_finite());
             let lifted = number(row, "frame_height") + number(row, "root_clip_height");
             assert!((number(row, "target1_y") - lifted).abs() < 1e-2);

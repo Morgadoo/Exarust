@@ -5,19 +5,29 @@
 
 use bevy::prelude::*;
 use exa_formats::character_stats::{BodyRules, CharacterStats};
+use exa_formats::characters::{Perk, Perks};
 use exa_formats::races::{Natural, Race};
 
 use crate::attack::Attacker;
 use crate::condition::{Condition, PostureBranch, StateFlags};
 use crate::damage::{self, Outcome, PartArmour};
 use crate::fall::FallDeath;
+use crate::swing::SwingState;
 use crate::wounds::WoundQueue;
 
 /// A character that can fight and be hurt (on the body model root). It
 /// keeps the original's condition word and state flags beside it, the
 /// posture stage's branch and its fall.
 #[derive(Component, Debug, Clone)]
-#[require(WoundQueue, Attacker, Condition, StateFlags, PostureBranch, FallDeath)]
+#[require(
+    WoundQueue,
+    Attacker,
+    SwingState,
+    Condition,
+    StateFlags,
+    PostureBranch,
+    FallDeath
+)]
 pub struct Fighter {
     pub health: Health,
     /// The race's natural armour, under worn items.
@@ -32,6 +42,9 @@ pub struct Fighter {
     /// What its record and race gave it when it spawned (maximum health,
     /// scale, size, reach, rule bits, …).
     pub stats: CharacterStats,
+    /// Its record's perks (Remise chains a held swing, Feint renews a
+    /// released one).
+    pub perks: Perks,
 }
 
 impl Default for Fighter {
@@ -60,7 +73,24 @@ impl Fighter {
             readiness: 0.0,
             bleeds: race.is_none_or(Race::bleeds),
             stats,
+            perks: Perks::default(),
         }
+    }
+
+    /// The same fighter with its record's `perks`.
+    pub fn with_perks(self, perks: Perks) -> Self {
+        Self { perks, ..self }
+    }
+
+    /// It has Remise: holding a side attack through 80 % of its clip
+    /// chains the other side's.
+    pub fn remise(&self) -> bool {
+        self.perks.has(Perk::Remise)
+    }
+
+    /// It has Feint: a released swing may be renewed.
+    pub fn feint(&self) -> bool {
+        self.perks.has(Perk::Feint)
     }
 }
 

@@ -10,7 +10,7 @@
 use bevy::prelude::*;
 use exa_anim::{Animator, BodyPart, ClipPose, Motions, Stature};
 use exa_combat::Condition;
-use exa_combat::swing::Swing;
+use exa_combat::swing::{Swing, SwingState};
 use exa_physics::CharacterBody;
 use exa_physics::body::{Ragdoll, TickedCharacter, world_with};
 
@@ -24,7 +24,8 @@ use crate::player::PlayerBody;
 pub(crate) struct SampledPose(pub(crate) Option<ClipPose>);
 
 /// Advances and samples the ticked body's clip, by how far its character
-/// walked in the last step (cm), the player's run blend and its swing.
+/// walked in the last step (cm), the player's run blend, its swing and the
+/// rate its swing routine set this tick for an attack's clip.
 #[allow(clippy::type_complexity)]
 pub(crate) fn sample_clip(
     ticked: Res<TickedCharacter>,
@@ -36,6 +37,7 @@ pub(crate) fn sample_clip(
         Option<&Stature>,
         Option<&PlayerBody>,
         Option<&Swing>,
+        Option<&SwingState>,
         Option<&mut Condition>,
     )>,
     parents: Query<&ChildOf>,
@@ -45,7 +47,9 @@ pub(crate) fn sample_clip(
     sampled.0 = None;
     let Some(motions) = motions else { return };
     let root = ticked.body;
-    let Ok((body, mut anim, stature, player, swing, mut condition)) = bodies.get_mut(root) else {
+    let Ok((body, mut anim, stature, player, swing, swinging, mut condition)) =
+        bodies.get_mut(root)
+    else {
         return;
     };
     let controller = ticked.character.and_then(|c| controllers.get(c).ok());
@@ -57,6 +61,7 @@ pub(crate) fn sample_clip(
         walked: controller.map_or(0.0, |c| c.walked().with_y(0.0).length() * CM),
         run: player.map_or(0.0, PlayerBody::run),
         swing: swing.copied().unwrap_or(Swing::FISTS),
+        attack: swinging.map(|s| s.rate),
     };
     let once = !anim.looping;
     let pose = clip_tick(&motions, &mut anim, body, &pace, |body| {

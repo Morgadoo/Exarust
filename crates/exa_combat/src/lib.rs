@@ -2,16 +2,17 @@
 //!
 //! A held weapon is a segment from its grip to its tip, an empty hand's fist
 //! one across the hand. While its wielder is attacking, the segments of the
-//! strikers its attack strikes with ([`attack::strikes`]) are tested
-//! against the body parts of other fighters. When a fighter may attack, and
-//! with what, is the original's attack executor ([`attack`]).
+//! strikers whose strike window is open ([`swing`]) are tested against the
+//! body parts of other fighters. When a fighter may attack, and with what,
+//! is the original's attack executor ([`attack`]); how the swing runs,
+//! stalls, chains and returns to the stance, its swing clock ([`swing`]).
 //! A contact is resolved by the original's damage model ([`damage`]): the
 //! weapon's stats, where along it the blow lands and how fast, against the
 //! struck part's armour layers. It takes health, shoves and dazes the target,
 //! and when its yellow health runs out starts its collapse, which kills it
 //! 3 s later ([`collapse`]). A blow that does not kill starts no clip on
-//! the target; a target struck while attacking stops its attack and
-//! returns to its stance. A fighter's condition word ([`condition`]),
+//! the target; a target struck while attacking has its swing stalled by
+//! the daze. A fighter's condition word ([`condition`]),
 //! stance and combat readiness ([`stance`]) are kept with it
 //! ([`fighter`]); its yellow health heals back towards red out of its
 //! fighting stance, and some races' red too ([`regen`]). A body that falls with no ground
@@ -40,9 +41,12 @@ pub use condition::{Condition, StateFlags};
 use damage::{Strike, WeaponRecord};
 use exa_anim::{Animator, BodyPart, Ease, Motions};
 use exa_physics::body::BODY_HZ;
-use exa_physics::body::{BodyTicks, CharacterTicks, Fallen, GoLimp, Ragdoll, Shove, daze_energy};
+use exa_physics::body::{
+    BodyTicks, CharacterTicks, Fallen, GoLimp, MAX_DAZE, Ragdoll, Shove, daze_energy,
+};
 use exa_world::PartBounds;
 pub use fighter::{Damage, Fighter, Health, StoryMode, Taken, Weakened};
+use swing::{Swing, SwingAt, SwingState};
 use wounds::{BladeBlood, WoundQueue, frame_tetra, tetra_weights};
 
 pub struct CombatPlugin;
@@ -59,10 +63,14 @@ impl Plugin for CombatPlugin {
             ))
             .add_message::<wounds::Bleed>()
             .add_message::<wounds::Spray>()
-            // The attack branch of the body tick, before the clips advance.
+            // The attack branch of the body tick, after the posture decision
+            // and before the health bookkeeping and the clips' advance.
             .add_systems(
                 FixedUpdate,
-                attack::stamp_attack_ticks.before(CharacterTicks),
+                swing::run_swings
+                    .after(condition::PostureTick)
+                    .before(regen::HealthTick)
+                    .before(CharacterTicks),
             )
             .add_systems(
                 PostUpdate,
@@ -178,9 +186,6 @@ pub struct Hit {
 
 const PART_RADIUS: f32 = 0.16;
 const MIN_HIT_SPEED: f32 = 1.5;
-/// Attack window, as clip progress.
-const ACTIVE_FROM: f32 = 0.35;
-const ACTIVE_TO: f32 = 0.85;
 /// Share of the blade's velocity a struck part takes on contact.
 const CONTACT_SHARE: f32 = 0.1;
 /// Impact above which a blow shoves the victim, and the shove per unit of
@@ -195,30 +200,66 @@ const CM_PER_M: f32 = 100.0;
 /// striker's far end).
 const KNUCKLES_INSIDE: f32 = 0.1;
 
-/// Starts an attack on a fighter of weapon class `weapon_class`: its clip,
-/// ending in `stance`, and its primary striker, the held item in the
-/// motion's slot ([`attack::primary_slot`]) among `blades`. The clip starts
-/// from where the body is, eased smoothly, with the original's blend
+/// What starts an attack: its motion, the blend the executor gives a stab
+/// or an overhead, the fighter's weapon class, whether it has Remise, and
+/// the game clock (ms).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AttackStart {
+    pub motion: AttackMotion,
+    pub blend: u32,
+    pub weapon_class: u8,
+    pub remise: bool,
+    pub now_ms: u64,
+}
+
+impl AttackStart {
+    /// `motion` from rest (no given blend) for a fighter of weapon class
+    /// `weapon_class` without Remise.
+    pub fn of(motion: AttackMotion, weapon_class: u8, now_ms: u64) -> Self {
+        Self {
+            motion,
+            blend: 0,
+            weapon_class,
+            remise: false,
+            now_ms,
+        }
+    }
+}
+
+/// Starts an attack on a fighter: its clip, ending in `stance`, and its
+/// primary striker, the held item in the motion's slot
+/// ([`attack::primary_slot`]) among `blades`. The clip starts from where
+/// the body is, eased smoothly, with the original's blend
 /// ([`attack::start_blend`]: none on the main side, round((20 − W19) × 0.6)
-/// on the other).
+/// on the other, the executor's for a stab or an overhead). The swing
+/// starts at full strength with its window shut ([`SwingState::start`]); a
+/// side attack stamps its start.
 #[allow(clippy::too_many_arguments)]
 pub fn start_attack<'a>(
     commands: &mut Commands,
     fighter: Entity,
     anim: &mut Animator,
     attacker: &mut Attacker,
+    swing: &mut SwingState,
     blades: impl IntoIterator<Item = &'a Blade>,
-    motion: AttackMotion,
-    weapon_class: u8,
+    start: AttackStart,
     stance: &str,
 ) {
-    attacker.primary = Some(attack::primary_slot(weapon_class, motion));
+    let motion = start.motion;
+    attacker.primary = Some(attack::primary_slot(start.weapon_class, motion));
     let primary_blend = attacker.primary_record(fighter, blades).map(|r| r.blend);
     anim.play_once(motion.action(), stance);
-    anim.blended(attack::start_blend(motion, primary_blend), Ease::Smooth);
+    anim.blended(
+        attack::start_blend(motion, primary_blend, start.blend),
+        Ease::Smooth,
+    );
+    swing.start(motion.is_side(), start.remise);
+    if motion.is_side() {
+        attacker.side_started_ms = Some(start.now_ms);
+    }
     commands
         .entity(fighter)
-        .insert(Attacking::new(motion, weapon_class));
+        .insert(Attacking::new(motion, start.weapon_class));
 }
 
 fn track_blades(time: Res<Time>, mut blades: Query<(&mut Blade, &GlobalTransform)>) {
@@ -236,7 +277,7 @@ fn track_blades(time: Res<Time>, mut blades: Query<(&mut Blade, &GlobalTransform
 fn detect_hits(
     motions: Option<Res<Motions>>,
     blades: Query<(Entity, &Blade, &GlobalTransform)>,
-    mut attackers: Query<(&Animator, &mut Attacking)>,
+    mut attackers: Query<(&Animator, &mut Attacking, &SwingState)>,
     fighters: Query<(Entity, &Condition), With<Fighter>>,
     children: Query<&Children>,
     parts: Query<(&BodyPart, &GlobalTransform, Option<&PartBounds>)>,
@@ -244,21 +285,21 @@ fn detect_hits(
 ) {
     let Some(motions) = motions else { return };
     for (striker, blade, gt) in &blades {
-        let Ok((anim, mut attack)) = attackers.get_mut(blade.wielder) else {
+        let Ok((anim, mut attack, swing)) = attackers.get_mut(blade.wielder) else {
             continue;
         };
-        if !attack::strikes(
-            blade.slot,
-            blade.record.armed(),
-            attack.weapon_class,
-            attack.motion,
-        ) {
+        // A striker whose window is open: the held items (the fists only
+        // when they are what is held).
+        if !attack::is_striker(blade.record.armed(), attack.weapon_class)
+            || !swing.open[blade.slot.index()]
+            || blade.tip_speed < MIN_HIT_SPEED
+        {
             continue;
         }
-        let progress = anim.progress(&motions).unwrap_or(0.0);
-        if !(ACTIVE_FROM..=ACTIVE_TO).contains(&progress) || blade.tip_speed < MIN_HIT_SPEED {
-            continue;
-        }
+        // The swing clock: the clip's progress as the original measures it.
+        let progress = motions
+            .clip(anim, &anim.action)
+            .map_or(0.0, |c| anim.clip_progress(c));
         let a = gt.translation();
         let b = gt.transform_point(Vec3::Y * blade.length);
         let (a0, b0) = blade.swept_from.unwrap_or((a, b));
@@ -346,7 +387,7 @@ impl Roll {
 
 /// The looping stance a fighter returns to: the follow-up of the clip it is
 /// playing once, else its moveset's idle.
-fn stance_of(anim: &Animator) -> String {
+pub(crate) fn stance_of(anim: &Animator) -> String {
     match &anim.then {
         Some(then) => then.clone(),
         None if anim.plays_default_alone() => "Idle".into(),
@@ -370,18 +411,32 @@ fn react_to_hits(
         Has<Attacking>,
         Option<&mut WoundQueue>,
         Option<&mut Ragdoll>,
+        Option<&mut SwingState>,
+        Option<&Swing>,
     )>,
     strikers: Query<&GlobalTransform>,
     mut blades: Query<&mut BladeBlood>,
     ticks: Option<Res<BodyTicks>>,
     story: Option<Res<StoryMode>>,
+    motions: Option<Res<Motions>>,
     mut roll: Local<Roll>,
 ) {
-    let tick = ticks.map_or(0, |t| t.0);
+    let tick = ticks.as_ref().map_or(0, |t| t.0);
+    let now = ticks.as_ref().map_or(0, |t| t.millis());
     let story = story.is_some_and(|s| s.0);
     for hit in hits.read() {
-        let Ok((_, mut f, mut condition, mut flags, mut anim, attacking, queue, mut body)) =
-            fighters.get_mut(hit.target)
+        let Ok((
+            _,
+            mut f,
+            mut condition,
+            mut flags,
+            mut anim,
+            attacking,
+            queue,
+            mut body,
+            state,
+            swing,
+        )) = fighters.get_mut(hit.target)
         else {
             continue;
         };
@@ -402,6 +457,29 @@ fn react_to_hits(
         ) else {
             continue;
         };
+        // A fighter struck mid-swing (attacking) has its swing stalled by
+        // the daze, before the blow's damage as the original's daze runs
+        // first: its stance returns when the stall ends.
+        if *condition == Condition::ATTACKING
+            && let (Some(mut state), Some(motions)) = (state, motions.as_deref())
+        {
+            let base = body
+                .as_deref()
+                .and_then(|b| b.drive.as_ref())
+                .map_or(1.0, |d| d.race.clip_rate);
+            if let Some(at) = SwingAt::of(now, &anim, motions, base) {
+                let swing = swing.copied().unwrap_or(Swing::FISTS);
+                let daze = outcome.daze.min(MAX_DAZE);
+                let factor = swing::daze_factor(f.health.max, flags.has(StateFlags::POTION));
+                if let Some(r) = state.daze_stall(&swing, &at, daze, factor) {
+                    info!(
+                        "{:?} struck mid-swing at {:.2} of its clip: stall {r:.3} a tick \
+                         (now {:.3}), strength {:.2}, stance at {} ms",
+                        hit.target, at.progress, state.stall, state.strength, state.end_ms
+                    );
+                }
+            }
+        }
         // The original's damage call, by the victim's rule bits and state
         // flags; a blow that leaves it low but alive runs the low-health
         // check.
@@ -515,20 +593,13 @@ fn react_to_hits(
             }
         }
         // A blow that does not kill starts no clip on the struck fighter:
-        // its stance changes come from its balance, not from the blow.
-        if attacking {
-            // Stand-in for the original's swing stall until the swing
-            // strength exists: there the daze drains a struck attacker's
-            // swing and returns it to its stance within the swing's time;
-            // here the attack stops at once and deals no further hit.
-            if !condition.dying() {
-                let stance = stance_of(&anim);
-                anim.play_loop(&stance);
-            }
+        // its stance changes come from its balance, not from the blow. A
+        // killing blow ends its attack.
+        if attacking && killed {
             commands.entity(hit.target).remove::<Attacking>();
         }
     }
-    for (e, _, _, _, anim, attacking, _, _) in &fighters {
+    for (e, _, _, _, anim, attacking, ..) in &fighters {
         if attacking && anim.looping {
             commands.entity(e).remove::<Attacking>();
         }
@@ -671,29 +742,54 @@ mod tests {
         );
     }
 
-    /// A fighter cut on the forearm in the middle of its attack stops it:
-    /// it no longer counts as attacking, so its blade deals no further hit,
-    /// and it is back in its combat stance.
+    /// A fighter cut on the forearm early in its attack (12 of 100 frames)
+    /// plays on: its attack and clip stay, and the daze stalls its swing
+    /// by 4·D (its striker still, f = 1 for a human), its stance due back
+    /// round(80/stall) ms later, within the swing's expected time.
     #[test]
-    fn a_wound_stops_a_swing() {
+    fn a_wound_stalls_a_swing() {
         let mut app = reactions();
-        let mut anim = Animator::new("One Handed", "Cmbt - Idle");
+        app.insert_resource(punches());
+        let mut anim = Animator::new("Default", "Cmbt - Idle");
         anim.play_once("Attack Mid", "Cmbt - Idle");
         anim.time = 12.0;
+        let fighter = app
+            .world_mut()
+            .spawn((
+                Fighter::default(),
+                anim,
+                Attacking::default(),
+                Condition::ATTACKING,
+            ))
+            .id();
+        strike(&mut app, fighter, 13);
+        assert!(app.world().get::<Attacking>(fighter).is_some());
+        let anim = app.world().get::<Animator>(fighter).unwrap();
+        assert_eq!(
+            (anim.action.as_str(), anim.looping, anim.time),
+            ("Attack Mid", false, 12.0)
+        );
+        let daze = outcome(13).daze;
+        assert!((daze - 0.428_3).abs() < 1e-3, "{daze}");
+        let state = app.world().get::<SwingState>(fighter).unwrap();
+        assert!(state.has(swing::flags::STALLING) && !state.has(swing::flags::RELEASED));
+        assert!((state.stall - 4.0 * daze).abs() < 1e-6);
+        assert_eq!(state.end_ms, (80.0 / state.stall).round_ties_even() as u64);
+        assert_eq!(state.end_ms, 47);
+        assert_eq!(condition(&app, fighter), Condition::ATTACKING);
+        assert_eq!(shoves(&app).len(), 1);
+        // Not attacking (its condition otherwise), a cut stalls nothing.
+        let mut app = reactions();
+        app.insert_resource(punches());
+        let mut anim = Animator::new("Default", "Cmbt - Idle");
+        anim.play_once("Attack Mid", "Cmbt - Idle");
         let fighter = app
             .world_mut()
             .spawn((Fighter::default(), anim, Attacking::default()))
             .id();
         strike(&mut app, fighter, 13);
-        assert!(app.world().get::<Attacking>(fighter).is_none());
-        let anim = app.world().get::<Animator>(fighter).unwrap();
-        assert_eq!(
-            (anim.action.as_str(), anim.looping, anim.then.as_deref()),
-            ("Cmbt - Idle", true, None)
-        );
-        assert_eq!(anim.time, 0.0);
-        assert_eq!(condition(&app, fighter), Condition::NORMAL);
-        assert_eq!(shoves(&app).len(), 1);
+        let state = app.world().get::<SwingState>(fighter).unwrap();
+        assert!(!state.has(swing::flags::STALLING));
     }
 
     /// A cut that takes yellow health under 0.01 starts a living body's
@@ -1259,7 +1355,12 @@ mod tests {
             mode: 0,
             keys: vec![key(0.0), key(100.0)],
         };
-        let actions = ["Attack Mid", "Attack Combo 1", "Overhead Swing"];
+        let actions = [
+            "Attack Mid",
+            "Attack Combo 1",
+            "Overhead Swing",
+            "Cmbt - Idle",
+        ];
         let set = MotionSet {
             bone_count: 0,
             actions: actions
@@ -1300,6 +1401,25 @@ mod tests {
         let mut anim = Animator::new("Default", "Cmbt - Idle");
         anim.play_once(motion.action(), "Cmbt - Idle");
         anim.time = 50.0;
+        // Its window open half way through, as the swing routine opens it.
+        let mut window = SwingState::default();
+        let mut primary = None;
+        let tick = swing::SwingTick {
+            at: SwingAt {
+                now_ms: 0,
+                motion: Some(motion),
+                progress: 0.6,
+                last_key: 100.0,
+                base: 1.0,
+            },
+            motion,
+            feral: 0.0,
+            energy: 1.0,
+            weapon_class,
+            strikers: [None; 2],
+            aim: Vec3::Z,
+        };
+        window.tick(&Swing::FISTS, &tick, &mut primary);
         let puncher = app
             .world_mut()
             .spawn((
@@ -1308,6 +1428,7 @@ mod tests {
                 Attacking::new(motion, weapon_class),
             ))
             .id();
+        *app.world_mut().get_mut::<SwingState>(puncher).unwrap() = window;
         let chest = Vec3::new(0.0, 1.4, 1.0);
         let target = app.world_mut().spawn(Fighter::default()).id();
         app.world_mut().spawn((

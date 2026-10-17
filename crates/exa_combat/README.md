@@ -8,7 +8,9 @@ It already decides when a fighter may attack and which of its strikers
 strike, by the original's attack executor shared by the player and the AI
 (`attack`: 80 % of the most energy, the cooldown from the last attack tick
 on the 12 ms game clock, 400 ms or round(300 × the primary's recoil) +
-300 ms, the choice of attack, the motion's hand with the fists; rules in
+300 ms, nothing while a swing stalls but a released swing's overhead
+within 300 ms or Feint's renewal, the choice of attack and the side's
+pick without repeat, the motion's hand with the fists; rules in
 [`docs/PLAYER.md`](../../docs/PLAYER.md), Combat mode), and resolves the
 contacts of blades and fists by the original's damage model
 (`damage`, with the weapon record of `exa_formats::weapon_record`
@@ -22,18 +24,29 @@ stance, the original's blend and ease for every stance start, readiness
 halving the wound after 3 s in Cmbt - Idle; rules in
 [`docs/PLAYER.md`](../../docs/PLAYER.md), The combat stance).
 
-A fighter's swing (`swing`) paces its attacks as the original's attack
-routine does: the clip clock runs at its primary striker's swing speed
-(the record's W15, slower at the ends of the swing by its shaping W18),
-and the attack ends into the stance with twice its stance blend W19; an
-attack starts eased smoothly, the other side with round((20 − W19) × 0.6)
-frames of blend (`attack::start_blend`)
-([`docs/formats/RSQ.md`](../../docs/formats/RSQ.md), Motion playback).
+A fighter's swing (`swing`) is run every attack tick by the original's
+swing routine (`SwingState`, `run_swings`: after the posture stage,
+before the health tick and the clips' advance): the clip clock runs at its primary striker's swing speed (the
+record's W15, slower at the ends of the swing by its shaping W18, ramped
+by the feral level), tired (E/Emax)², and the attack ends into the stance
+with twice its stance blend W19; a swing strength P scales it while the
+swing stalls — released (its request dropped: by max(1 − 0.05·|v|,
+0.1)/W17 × 0.03 a tick) or struck (the daze's 4·D·f − (1 − D)·
+min(0.005·s, 1)·W17) — until the stance returns within the swing's
+expected rest; the strike window opens at 0.3 of the clip (stab 0.4,
+overhead 0.5) and the overhead's and stab's close late; Remise chains a
+held side attack past 0.8; the body's attack turn rate comes from the
+handling W16. An attack starts eased smoothly, the other side with
+round((20 − W19) × 0.6) frames of blend, the stab and the overhead with
+the executor's (`attack::start_blend`)
+([`docs/formats/RSQ.md`](../../docs/formats/RSQ.md), Motion playback;
+[`docs/PLAYER.md`](../../docs/PLAYER.md), Combat mode).
 
 ## Fighters and their condition
 
 `fighter`: a `Fighter` (health bars, natural armour and armour layers,
-readiness, whether it bleeds, its spawn stats) and `Health` (yellow, red,
+readiness, whether it bleeds, its spawn stats, its record's perks, of
+which Remise and Feint change its swings) and `Health` (yellow, red,
 maximum, the regeneration rate and the heal pool; also re-exported from
 `damage`). `Health::take` is the original's damage call: a `Damage`
 (yellow, red, `vital`; `Damage::blow` for a weapon blow, always vital),
@@ -76,7 +89,7 @@ once. Rules: [`docs/formats/RSQ.md`](../../docs/formats/RSQ.md) (The
 collapse).
 
 Health regenerates (`regen`): the health tick (`HealthTick`, after the
-posture stage, before the character ticks) runs `regenerate_health` once
+posture stage and the swing routine, before the character ticks) runs `regenerate_health` once
 a fixed tick on every fighter: red regeneration for rule bits holding 0x20
 without 0x100 (`BodyRules::regenerates_red`; `Health::regenerate_red`,
 1.25e-5 a tick, dead or alive), then, unless dead, `Health::regenerate`:

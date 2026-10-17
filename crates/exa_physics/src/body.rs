@@ -147,7 +147,7 @@ const MIN_ENERGY: f32 = 0.05;
 /// [`BodyStats::max_energy`]).
 pub const MAX_ENERGY: f32 = 1.0;
 /// Most of its energy a single blow takes.
-const MAX_DAZE: f32 = 0.9;
+pub const MAX_DAZE: f32 = 0.9;
 /// The support pins' gain factor a living body starts with, and below
 /// which it recovers 0.001 a tick unless it collapses. The start is the
 /// float 0.08, compared with the double 0.08, so a living body's first

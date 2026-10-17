@@ -720,7 +720,11 @@ fn spawn_players(
                 stats.feral, stats.rules.0, stats.max_energy
             );
         }
-        let mut fighter = exa_combat::Fighter::of_stats(None, stats);
+        let mut fighter = exa_combat::Fighter::of_stats(None, stats).with_perks(options.perks);
+        if !options.perks.is_empty() {
+            let names: Vec<&str> = options.perks.iter().map(|p| p.name()).collect();
+            info!("player perks: {}", names.join(", "));
+        }
         if let Some([yellow, red]) = options.health {
             fighter.health.yellow = yellow;
             fighter.health.red = red;
@@ -1326,7 +1330,7 @@ fn spawn_placed_characters(
                     })
                     .collect(),
             ),
-            exa_combat::Fighter::of_stats(race, stats),
+            exa_combat::Fighter::of_stats(race, stats).with_perks(c.record.perks()),
             race.map_or_else(
                 exa_character::RaceWeaponry::default,
                 exa_character::RaceWeaponry::of_race,

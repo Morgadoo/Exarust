@@ -258,8 +258,8 @@ pub struct WeaponRecord {
     pub thrust: f32,
     /// Swing speed factor (W15): the attack clip clock's rate scale.
     pub swing_speed: f32,
-    /// 0.8 − (w + 1 − b)/8 at the first build (W16); its readers were not
-    /// found.
+    /// 0.8 − (w + 1 − b)/8 at the first build (W16): the body's turn
+    /// while it attacks scales with it.
     pub handling: f32,
     /// Recoil (W17): a blocked striker recoils by v·W17; the recovery
     /// after a released swing and the attack cooldown scale with it.

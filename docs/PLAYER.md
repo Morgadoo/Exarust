@@ -102,12 +102,18 @@ original's player behaviour and body tick skip them for mask `0xAC0`.
 - **Facing.** The heading turns to the cursor's direction once it is more
   than 30° off it, and follows it exactly while an attack is requested
   (the left button held). The body turns toward the heading as in
-  exploration: up to 240°/s, eased over the last 0.6 rad. A cursor moved
-  less than 30° leaves the character facing where it faced.
+  exploration: up to 240°/s, eased over the last 0.6 rad; while it
+  attacks, at (1 − 0.6·enc)·(1 − 0.25·progress)·B·W16·P / scale a tick
+  (B = 240°/s, W16 the primary striker's handling, P the swing strength,
+  the step ÷ √scale): 192°/s at the start of a punch, 168°/s half way,
+  slower with a heavier weapon and none once a stall has spent the swing.
+  A cursor moved less than 30° leaves the character facing where it
+  faced.
 - **The attack request**, kept each behaviour tick (83 Hz) as the
   original keeps it: a left press requests an attack, holding the button
-  keeps the request standing, releasing it drops the request. A press
-  asks for:
+  keeps the request standing, releasing it drops the request and
+  **releases** the swing in progress (below): a click checks its swing at
+  once, a held button swings through. A press asks for:
   - **the main side**: Attack Mid, Down or Up, picked at random and never
     the one picked last;
   - **the other side**, when the cursor lies more than 20° to the left of
@@ -140,6 +146,15 @@ original's player behaviour and body tick skip them for mask `0xAC0`.
     426 ms for the arena sword. Times are on the game clock, 12 ms a tick
     (so 330 ms is the 28th tick), which stops while the simulation is
     paused;
+  - while a swing stalls (released or struck) nothing starts, except
+    after a **released** swing: a request within 300 ms of the side
+    attack's start throws the overhead at once with no blend (whatever
+    it asks, before any cooldown, also once the stall is over), and with
+    **Feint** (a perk), from (2f + 1) × (round(100·W17) + 100) ms after
+    the release (f = smoothstep(progress/0.7), 1 past 0.7: 110–330 ms for
+    the fists), the next attack starts despite the stall or the cooldown
+    (a stab or an overhead with a blend of 10, a side attack with its
+    own);
   - an overhead unless a stab or an overhead plays; a stab unless a stab
     plays, and only with the weapon's long axis forward of −0.367 (its
     forward component in the body's frame); a side attack only when no
@@ -147,14 +162,19 @@ original's player behaviour and body tick skip them for mask `0xAC0`.
 
   So a held button repeats the attack after each cooldown, on the main
   side (every attack clears the side of the press). The cooldown never
-  passes while an attack plays (every attack tick restarts it), so a
-  double click's overhead follows the first attack once it has ended and
-  its cooldown has passed, if the second press is still held. The
-  duellist's strikes (Exarust's own choice, every 2.2 s within 1.15 m,
-  until the original's AI) pass the same energy test and cooldown.
+  passes while an attack plays (every attack tick restarts it), but a
+  double click releases the first attack (its button came up) and its
+  second press throws the overhead at once. The duellist's strikes
+  (Exarust's own choice, every 2.2 s within 1.15 m, until the original's
+  AI) pass the same energy test and cooldown, and it holds every swing
+  through.
 - **What strikes.** Empty hands are the fists (or claws), each a striker
   built from the race's fist or claw record across its hand's box
-  ([formats/OTHER.md](formats/OTHER.md), Weapon record). With the fists
+  ([formats/OTHER.md](formats/OTHER.md), Weapon record). A striker strikes
+  only while its swing's **strike window** is open: from 0.3 of the clip
+  (stab 0.4, overhead 0.5) until the clip ends, or for the overhead past
+  0.9–0.95 (or at once past 0.85 when it no longer falls 3 cm a tick),
+  for the stab past 0.8 (0.95 while it still drives on). With the fists
   only the motion's hand strikes: the right fist in the main side and the
   overhead, the left in the other side (both claws in a clawed overhead).
   A held weapon strikes in every attack and the fists then never do. Each
@@ -164,13 +184,37 @@ original's player behaviour and body tick skip them for mask `0xAC0`.
   blends to its first key, eased smoothly: the main side with no blend
   past the first key, the other side with round((20 − W19) × 0.6) frames,
   W19 the stance blend of the striker it made primary (12 frames with the
-  fists, 8 with the arena sword). Its clock runs at the swing's rate and
-  it ends into the stance with twice the primary's stance blend
-  ([formats/RSQ.md](formats/RSQ.md), Motion playback).
-- Not yet: the stab's and the overhead's blends (the original's executor
-  passes them in from callers not traced; Exarust starts both with none),
-  the released swing's stall, the overhead or feint a released swing
-  allows and Remise (a perk) (M22); parries (L10).
+  fists, 8 with the arena sword), the stab and the overhead with the
+  executor's blend (10 for Feint's, else none). It ends into the stance
+  with twice the primary's stance blend.
+- **The swing** (the original's swing routine, every attack tick;
+  [formats/RSQ.md](formats/RSQ.md), Motion playback). Its clock runs at
+  the weapon's rate, slower at the ends (1.62 frames a tick for the
+  fists: a 110-frame punch plays 67 ticks), (E/Emax)² when tired, none
+  under 80 % of the energy. A swing strength P scales it while the swing
+  stalls:
+  - **released** (the button up mid-swing): P drains by max(1 −
+    0.05·|v|, 0.1)/W17 × 0.03 a tick (|v| the fist's or blade's tracked
+    speed): a still punch in 4 ticks (0.3 a tick), a fast late swing
+    slowly (0.01 a tick); the stance returns after 1000/(80 × that) ms,
+    at most the swing's expected rest — a clicked punch is back in its
+    stance after 5 ticks;
+  - **struck** (a blow dazes the attacker by D): r = 4·D·f − (1 − D)·
+    min(0.005·s, 1)·W17 a tick, f = 0.25 over its most health; a hard
+    blow stops the swing in a tick and the stance returns 80·P/stall ms
+    later (47 ms for a forearm cut on a punch), a fast swing shrugs off a
+    light daze.
+  - **Remise** (a perk): holding a side attack through 0.8 of its clip
+    chains one of the other side's, with round(6·W18) + 2 frames of blend
+    (2 for the fists): a held punch chains the left straight after 55
+    ticks; the chained swing does not chain again.
+- Perks come from the character's record (placed characters); the player
+  and the duellist are new records, with none (`--perks` gives the player
+  some, [DEBUGGING.md](DEBUGGING.md)).
+- Not yet: the swinging arm's stiffness (W20·L(p)), swing sounds, the
+  AI's own release and attack choice (L11), recoil and the
+  follow-through after a wound (C21, M26), the aim nudges (M23), parries
+  (L10).
 
 ## The combat stance
 

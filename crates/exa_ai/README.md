@@ -9,7 +9,9 @@ combat in its guard, guards at four reaches or more from its target and
 stands in Cmbt - Idle within, walks in with Exarust's interim combat walk
 and strikes at intervals, each strike through the original's attack
 executor (`exa_combat::attack`: enough energy, the cooldown since its last
-attack); it can be told to hold its ground (a debug aid).
+attack), holding every swing through (it never releases one, so its
+swings stall only when struck); it can be told to hold its ground (a
+debug aid).
 
 ## Scope
 

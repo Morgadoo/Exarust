@@ -126,7 +126,7 @@ P SHALL pause and resume the fixed step (character controllers, character ticks 
 - **THEN** `j.png` shows the duel stopped 12 ticks after that blow, with the jet's droplets flying off the struck part
 
 #### Scenario: Freeze a punch
-- **WHEN** `exarust --still-opponent --at 0,0,-1.1 --press LMB@120 --pause-on-hit 3 --screenshot p.png --frames 10 play arenao1` runs
+- **WHEN** `exarust --still-opponent --at 0,0,-1.1 --press LMB@120-200 --pause-on-hit 3 --screenshot p.png --frames 10 play arenao1` runs (the button held)
 - **THEN** `p.png` shows the player's right fist on the duellist three ticks after the punch landed
 
 ### Requirement: Scripted input and camera
@@ -241,3 +241,14 @@ In play mode `--feral f` SHALL give the player's record the feral level f (0 to 
 #### Scenario: Feral duel
 - **WHEN** `exarust --feral 0.5 --opponent play arena` runs and the duellist's blows land
 - **THEN** the player's red health stays 0.25 while its yellow falls, and its energy recovers to at most 0.95
+
+### Requirement: Scripted perks
+In play mode `--perks a,b,...` SHALL give the player those perks by name, case aside (e.g. `remise,feint`); an unknown name SHALL stop the launch with an error. Placed characters SHALL keep their records' perks.
+
+#### Scenario: Remise
+- **WHEN** `exarust --opponent --perks remise --press LMB@200-600 play arenao1` runs
+- **THEN** the log names the player's perks and each held main-side attack chains the other side's
+
+#### Scenario: Unknown perk
+- **WHEN** `exarust --perks remise,parry play arena` runs
+- **THEN** it stops with an error naming the list

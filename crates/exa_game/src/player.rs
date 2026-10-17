@@ -10,21 +10,23 @@
 //! the middle mouse button orbits it and the wheel zooms by field of view.
 //! Combat mode (Tab, or the start of a fight) turns toward the cursor and
 //! steps relative to it; the left button requests attacks (held, it
-//! repeats them) with the clips of the moveset the held items pick
-//! (`exa_character::held`), started by the original's attack executor
-//! (`exa_combat::attack`). In combat mode the
+//! repeats them; released, the swing checks) with the clips of the moveset
+//! the held items pick (`exa_character::held`), started by the original's
+//! attack executor (`exa_combat::attack`) and run by its swing clock
+//! (`exa_combat::swing`). In combat mode the
 //! player stands in its guard until a target comes close or it attacks
 //! (`exa_combat::stance`).
 
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use exa_anim::Animator;
 use exa_anim::Stature;
+use exa_anim::{Animator, Ease, Motions};
 use exa_character::held::{Hands, HeldMoveset, class};
-use exa_combat::attack::{self, AttackKind, AttackMotion, Attacker, Request, Slot};
+use exa_combat::attack::{self, AttackKind, AttackMotion, Attacker, Busy, Request, Side, Slot};
 use exa_combat::stance::{self, Stance};
-use exa_combat::{Attacking, Blade, Condition, Fighter};
+use exa_combat::swing::{self, Swing, SwingAt, SwingState};
+use exa_combat::{AttackStart, Attacking, Blade, Condition, Fighter};
 use exa_formats::encumbrance::run_cap;
 use exa_physics::body::{BodyTicks, Fallen, GoLimp, MAX_ENERGY, Ragdoll};
 use exa_physics::{CharacterBody, Physics};
@@ -73,6 +75,10 @@ const DOUBLE_CLICK_MS: u64 = 300;
 /// other side: 20°, or 15° for weapon class 0.
 const OTHER_SIDE: f32 = 20.0 * std::f32::consts::PI / 180.0;
 const OTHER_SIDE_EMPTY: f32 = 15.0 * std::f32::consts::PI / 180.0;
+/// A released main-side attack returns to the stance with this blend
+/// (frames) when the fighter has no primary striker, else twice its stance
+/// blend.
+const RETURN_BLEND: u32 = 30;
 
 /// The player's physics root (origin at the feet).
 #[derive(Component)]
@@ -153,7 +159,7 @@ impl PlayerBody {
 /// each behaviour tick: a press asks for an attack (an overhead when it
 /// comes within 300 ms of the press before, the other side when the cursor
 /// lies left of the facing), holding the button keeps the request standing
-/// and releasing it drops it; and each side's attack picks.
+/// and releasing it drops it.
 #[derive(Debug, Default)]
 struct AttackInput {
     /// The button was down last tick.
@@ -172,10 +178,6 @@ struct AttackInput {
     last_press: Option<u64>,
     /// The standing request waits for the energy to come back (logged once).
     dazed: bool,
-    seed: u32,
-    /// The last pick of each side, 0 until the first (as the original's
-    /// zeroed fields, so the first pick of a side is never its first clip).
-    last: [usize; 2],
 }
 
 impl AttackInput {
@@ -189,8 +191,6 @@ impl AttackInput {
         if !down {
             *self = Self {
                 last_press: self.last_press,
-                seed: self.seed,
-                last: self.last,
                 ..Self::default()
             };
             return;
@@ -211,24 +211,6 @@ impl AttackInput {
             overhead: self.double,
             thrust: self.thrust,
             other_side: self.other_side,
-        }
-    }
-
-    /// One of a side's three attacks at random, never the one it picked
-    /// last, by the original's 32-bit generator; crouched, always the first
-    /// (Attack Mid), which then counts as the side's last pick.
-    fn pick(&mut self, side: usize, crouched: bool) -> usize {
-        if crouched {
-            self.last[side] = 0;
-            return 0;
-        }
-        loop {
-            self.seed = self.seed.wrapping_mul(0x0808_8405).wrapping_add(1);
-            let i = ((self.seed as u64 * 3) >> 32) as usize;
-            if i != self.last[side] {
-                self.last[side] = i;
-                return i;
-            }
         }
     }
 }
@@ -321,6 +303,15 @@ fn turn_between(from: f32, to: f32) -> f32 {
     (to - from + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
 }
 
+/// One tick of the body's turn toward the heading while it attacks, at
+/// `rate` (rad a tick, its swing's [`Swing::turn_rate`]) for a body of
+/// `scale`: slower over the last 0.6 rad, the step rate/√scale.
+fn attack_turn(yaw: f32, heading: f32, rate: f32, scale: f32) -> f32 {
+    let error = turn_between(yaw, heading);
+    let rate = rate * (error.abs() / TURN_EASE).min(1.0) / scale.max(f32::EPSILON).sqrt();
+    yaw + error.clamp(-rate, rate)
+}
+
 /// One tick of the body's turn toward the heading.
 fn body_turn(yaw: f32, heading: f32, keyboard: bool, speed: f32) -> f32 {
     let error = turn_between(yaw, heading);
@@ -401,6 +392,7 @@ fn steer_player(
     buttons: Res<ButtonInput<MouseButton>>,
     cursor: Res<CursorGround>,
     physics: Res<Physics>,
+    motions: Option<Res<Motions>>,
     mut players: Query<(&mut CharacterBody, &GlobalTransform, &Children), With<Player>>,
     mut bodies: Query<(
         &mut PlayerBody,
@@ -410,12 +402,13 @@ fn steer_player(
         Option<&Fighter>,
         Option<&Condition>,
         Has<Fallen>,
+        Option<(&SwingState, &Swing)>,
     )>,
 ) {
     let dt = 1.0 / TICK_HZ;
     for (mut body, at, children) in &mut players {
         for child in children.iter() {
-            let Ok((mut pb, mut t, mut anim, &stance, fighter, condition, fallen)) =
+            let Ok((mut pb, mut t, mut anim, &stance, fighter, condition, fallen, swinging)) =
                 bodies.get_mut(child)
             else {
                 continue;
@@ -429,8 +422,21 @@ fn steer_player(
             let feet = at.translation();
             let speed = body.desired_velocity.length();
             if pb.combat {
-                // The body turns toward the heading, which the cursor sets.
-                pb.yaw = body_turn(pb.yaw, pb.heading, false, speed);
+                // The body turns toward the heading, which the cursor sets;
+                // while it attacks at its swing's rate.
+                let attacking = condition.is_some_and(|c| *c == Condition::ATTACKING);
+                let progress = motions
+                    .as_deref()
+                    .and_then(|m| m.clip(&anim, &anim.action))
+                    .map(|c| anim.clip_progress(c));
+                pb.yaw = match (attacking, swinging, fighter, progress) {
+                    (true, Some((state, swing)), Some(f), Some(p)) => {
+                        let rate =
+                            swing.turn_rate(p, state.strength, f.stats.encumbrance, f.stats.scale);
+                        attack_turn(pb.yaw, pb.heading, rate, f.stats.scale)
+                    }
+                    _ => body_turn(pb.yaw, pb.heading, false, speed),
+                };
                 t.rotation = Quat::from_rotation_y(pb.yaw);
                 combat_steps(&keys, &mut body, &mut pb, &mut anim, stance, dt);
                 continue;
@@ -715,20 +721,21 @@ fn player_combat(
     }
 }
 
-/// The player's attack request, each behaviour tick in combat mode, as the
-/// original's: a left press requests an attack (on the main side, the
+/// The player's attack request, each behaviour tick, as the original's: in
+/// combat mode a left press requests an attack (on the main side, the
 /// other side with the cursor far enough left of the facing, or overhead
 /// on a double click; Alt with a held weapon a stab), holding the button
 /// keeps it standing (so the attacks repeat) and releasing drops it. While
 /// it stands the heading is the cursor's direction, and with at least 80 %
-/// of its energy the fighter's executor starts what it asks once the
-/// cooldown since the last attack's last tick has passed
-/// ([`exa_combat::attack`]). Not yet: the released swing's stall and the
-/// overhead or feint it allows (the swing clock, M22), Remise (a perk).
-#[allow(clippy::type_complexity)]
+/// of its energy the fighter's executor starts what it asks
+/// ([`exa_combat::attack::execute`]). Without a request ([`leave_swing`]),
+/// an attack playing is released (its swing stalls) and a released
+/// main-side attack returns to the stance once its stall is over.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn request_attacks(
     mut commands: Commands,
     ticks: Option<Res<BodyTicks>>,
+    motions: Option<Res<Motions>>,
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     mut latch: ResMut<AttackButton>,
@@ -737,10 +744,11 @@ fn request_attacks(
         Entity,
         &mut PlayerBody,
         &mut Animator,
-        &mut Attacker,
+        (&mut Attacker, &mut SwingState, Option<&Swing>),
         &Stance,
+        Option<&Fighter>,
         Option<&HeldMoveset>,
-        Option<&Condition>,
+        Option<&mut Condition>,
         Option<&Ragdoll>,
         Option<&Attacking>,
         Has<Fallen>,
@@ -753,24 +761,50 @@ fn request_attacks(
         entity,
         mut pb,
         mut anim,
-        mut attacker,
+        (mut attacker, mut state, swing),
         stance,
+        fighter,
         held,
-        condition,
+        mut condition,
         body,
         attacking,
         fallen,
     ) in &mut bodies
     {
+        let state_now = condition.as_deref().copied().unwrap_or_default();
         // A helpless condition engages no attack (the original's 0xAC0).
-        if fallen || condition.is_some_and(|c| c.helpless()) || !pb.combat {
-            pb.attack.tick(false, now, false);
-            continue;
-        }
+        let able = !fallen && !state_now.helpless() && pb.combat;
         let weapon_class = held.map_or(class::FISTS, |h| h.weapon_class);
         let other = other_side(pb.aim, pb.yaw, weapon_class);
-        pb.attack.tick(down, now, other);
+        pb.attack.tick(able && down, now, other);
+        let swing = swing.copied().unwrap_or(Swing::FISTS);
+        let base = body
+            .and_then(|b| b.drive.as_ref())
+            .map_or(1.0, |d| d.race.clip_rate);
         if !pb.attack.requested {
+            if state_now != Condition::GETTING_UP {
+                let primary_blend = attacker
+                    .primary_record(entity, blades.iter().map(|(b, _)| b))
+                    .map(|r| r.blend);
+                let at = motions
+                    .as_deref()
+                    .and_then(|m| SwingAt::of(now, &anim, m, base));
+                let left = leave_swing(
+                    &mut state,
+                    &mut anim,
+                    &swing,
+                    at,
+                    state_now,
+                    primary_blend,
+                    stance.action(),
+                );
+                if left {
+                    if let Some(c) = condition.as_deref_mut() {
+                        *c = Condition::NORMAL;
+                    }
+                    commands.entity(entity).remove::<Attacking>();
+                }
+            }
             continue;
         }
         pb.attack.thrust = attack::may_thrust(weapon_class)
@@ -790,19 +824,23 @@ fn request_attacks(
             continue;
         }
         let cooldown = attacker.cooldown_ms(entity, blades.iter().map(|(b, _)| b));
-        let playing = attack::playing(attacking, &anim);
-        let Some(kind) = attack::execute(
-            pb.attack.request(),
-            now,
-            attacker.last_tick_ms,
-            cooldown,
-            playing,
-        ) else {
+        let busy = Busy {
+            now_ms: now,
+            last_tick_ms: attacker.last_tick_ms,
+            cooldown_ms: cooldown,
+            playing: attack::playing(attacking, &anim),
+            released: state.has(swing::flags::RELEASED),
+            stall_until_ms: state.end_ms,
+            renew_ms: state.renew_ms,
+            side_started_ms: attacker.side_started_ms,
+            feint: fighter.is_some_and(Fighter::feint),
+        };
+        let Some(start) = attack::execute(pb.attack.request(), busy) else {
             continue;
         };
-        let motion = match kind {
-            AttackKind::Main => AttackMotion::Main(pb.attack.pick(0, false)),
-            AttackKind::Other => AttackMotion::Other(pb.attack.pick(1, false)),
+        let motion = match start.kind {
+            AttackKind::Main => Side::Main.motion(attacker.pick(Side::Main, false)),
+            AttackKind::Other => Side::Other.motion(attacker.pick(Side::Other, false)),
             AttackKind::Overhead => AttackMotion::Overhead,
             AttackKind::Stab => {
                 // The held weapon's long axis, forward or not far back.
@@ -818,7 +856,7 @@ fn request_attacks(
         };
         info!(
             "attack: {} in {} with {} at {now} ms (cursor {:.0}° left of the facing, \
-             energy {energy:.2}; last attack tick {}, cooldown {cooldown} ms)",
+             energy {energy:.2}; last attack tick {}, cooldown {cooldown} ms{})",
             motion.action(),
             anim.moveset,
             anim.config,
@@ -826,6 +864,11 @@ fn request_attacks(
             attacker
                 .last_tick_ms
                 .map_or("none".into(), |t| format!("at {t} ms")),
+            if busy.released {
+                format!(", after a release, stall until {} ms", state.end_ms)
+            } else {
+                String::new()
+            },
         );
         pb.attack.other_side = false;
         // It ends in the stance the player holds by then.
@@ -834,12 +877,63 @@ fn request_attacks(
             entity,
             &mut anim,
             &mut attacker,
+            &mut state,
             blades.iter().map(|(b, _)| b),
-            motion,
-            weapon_class,
+            AttackStart {
+                motion,
+                blend: start.blend,
+                weapon_class,
+                remise: fighter.is_some_and(Fighter::remise),
+                now_ms: now,
+            },
             stance.action(),
         );
     }
+}
+
+/// The original's behaviour tick without an attack request, for a fighter
+/// whose condition is `condition`, its clip where `at` says: an attack
+/// playing (attacking) is released unless it recoiled, landed a cleaving
+/// blow or was released already ([`SwingState::release`]); not attacking,
+/// its state keeps only the released, recoiled and 0x40000 bits. A
+/// main-side attack whose stall is over returns to `stance` with twice
+/// its primary's stance blend (`primary_blend`, W19; 30 frames without a
+/// primary), eased smoothly. Returns whether it did (the caller makes the
+/// condition normal).
+fn leave_swing(
+    state: &mut SwingState,
+    anim: &mut Animator,
+    swing: &Swing,
+    at: Option<SwingAt>,
+    condition: Condition,
+    primary_blend: Option<i32>,
+    stance: &str,
+) -> bool {
+    if condition == Condition::ATTACKING {
+        if !state.has(swing::flags::NO_RELEASE)
+            && let Some(at) = at
+        {
+            state.release(swing, &at);
+            info!(
+                "attack released at {:.2} of its clip ({} ms): stall {:.3} a tick, stance at {} ms, \
+                 renewal at {} ms",
+                at.progress, at.now_ms, state.stall, state.end_ms, state.renew_ms
+            );
+        }
+    } else {
+        state.flags &= swing::flags::KEPT_IDLE;
+    }
+    let main_side = matches!(at.and_then(|a| a.motion), Some(AttackMotion::Main(_)));
+    let now = at.map_or(0, |a| a.now_ms);
+    if !main_side || state.end_ms >= now {
+        return false;
+    }
+    let blend = primary_blend.map_or(RETURN_BLEND, |w| 2 * w.max(0) as u32);
+    anim.start(stance, true, None, blend, Ease::Smooth);
+    // The stance's start shuts the window, as every clip start.
+    state.open = [false; 2];
+    info!("released attack back to {stance} at {now} ms (blend {blend})");
+    true
 }
 
 // ---- Camera ---------------------------------------------------------------
@@ -1477,12 +1571,55 @@ mod tests {
         assert!(!input.requested);
     }
 
+    /// A synthetic motion set: the "Default" moveset's attacks and combat
+    /// idle, 100 frames each.
+    fn attack_clips() -> Motions {
+        use exa_formats::rsq::{Action, Clip, Key, MotionSet, Moveset};
+        let key = |time| Key {
+            time,
+            root: [0.0; 3],
+            rotations: Vec::new(),
+            flags: Vec::new(),
+        };
+        let clip = Clip {
+            mode: 0,
+            keys: vec![key(0.0), key(100.0)],
+        };
+        let actions = [
+            "Attack Mid",
+            "Attack Down",
+            "Attack Up",
+            "Attack Combo 1",
+            "Attack Combo 2",
+            "Attack Combo 3",
+            "Overhead Swing",
+            "Cmbt - Idle",
+        ];
+        let set = MotionSet {
+            bone_count: 0,
+            actions: actions
+                .iter()
+                .map(|n| exa_formats::rsq::Action {
+                    name: (*n).into(),
+                    params: [0; 2],
+                })
+                .collect::<Vec<Action>>(),
+            movesets: vec![Moveset {
+                name: "Default".into(),
+                parent: String::new(),
+                clips: vec![Some(clip); actions.len()],
+            }],
+        };
+        Motions::new(std::sync::Arc::new(set), std::sync::Arc::default(), 0.0)
+    }
+
     /// The unarmed player in combat mode, its two fists its strikers, at
     /// body tick 1000 (12 000 ms of the game clock); [`request_tick`] runs
     /// one behaviour tick of the attack request.
     fn attack_app() -> (App, Entity) {
         let mut app = App::new();
         app.insert_resource(BodyTicks(1000))
+            .insert_resource(attack_clips())
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<AttackButton>()
@@ -1579,6 +1716,139 @@ mod tests {
         app.world_mut().resource_mut::<BodyTicks>().0 = 1300;
         for _ in 0..10 {
             assert_eq!(request_tick(&mut app, body, false).0, "Cmbt - Idle");
+        }
+    }
+
+    /// Its condition as the posture stage would write it this tick.
+    fn set_condition(app: &mut App, body: Entity, c: Condition) {
+        *app.world_mut().get_mut::<Condition>(body).unwrap() = c;
+    }
+
+    fn swing_of(app: &App, body: Entity) -> SwingState {
+        *app.world().get::<SwingState>(body).unwrap()
+    }
+
+    /// A click (pressed one tick) checks the punch: the next tick, the
+    /// button up, releases its swing (stall 0.3 a tick, the stance due at
+    /// 12 054 ms, Feint's renewal at 12 122); the punch plays on while the
+    /// stall lasts and returns to the stance (the fists' blend 0) on the
+    /// first tick after it, its condition normal, no longer attacking.
+    #[test]
+    fn a_click_checks_the_swing() {
+        let (mut app, body) = attack_app();
+        assert_eq!(
+            request_tick(&mut app, body, true),
+            ("Attack Up".into(), false)
+        );
+        set_condition(&mut app, body, Condition::ATTACKING);
+        request_tick(&mut app, body, false);
+        let s = swing_of(&app, body);
+        assert!(s.has(swing::flags::STALLING) && s.has(swing::flags::RELEASED));
+        assert!((s.stall - 0.3).abs() < 1e-6);
+        assert_eq!((s.end_ms, s.renew_ms), (12_054, 12_122));
+        for _ in 0..3 {
+            assert_eq!(request_tick(&mut app, body, false).0, "Attack Up");
+        }
+        // 12 060 ms: past the stall's end.
+        assert_eq!(
+            request_tick(&mut app, body, false),
+            ("Cmbt - Idle".into(), true)
+        );
+        let anim = app.world().get::<Animator>(body).unwrap();
+        assert_eq!((anim.blend, anim.ease), (0.0, Ease::Smooth));
+        assert_eq!(
+            *app.world().get::<Condition>(body).unwrap(),
+            Condition::NORMAL
+        );
+        app.update();
+        assert!(app.world().get::<Attacking>(body).is_none());
+        // Not attacking, its state keeps the release.
+        request_tick(&mut app, body, false);
+        assert_eq!(swing_of(&app, body).flags, swing::flags::RELEASED);
+    }
+
+    /// Held, the punch is never released: its swing does not stall.
+    #[test]
+    fn a_held_button_keeps_the_swing() {
+        let (mut app, body) = attack_app();
+        request_tick(&mut app, body, true);
+        set_condition(&mut app, body, Condition::ATTACKING);
+        for _ in 0..10 {
+            assert_eq!(request_tick(&mut app, body, true).0, "Attack Up");
+        }
+        assert!(!swing_of(&app, body).has(swing::flags::STALLING));
+    }
+
+    /// A tap that releases the punch, then a new press 216 ms after the
+    /// punch's start (324 ms after the press before: no double click)
+    /// throws the overhead with no blend, though the cooldown since the
+    /// last attack tick has not passed; without the release the press
+    /// would wait for it.
+    #[test]
+    fn a_press_soon_after_a_released_punch_throws_the_overhead() {
+        let (mut app, body) = attack_app();
+        app.world_mut()
+            .get_mut::<Attacker>(body)
+            .unwrap()
+            .last_tick_ms = Some(11_700);
+        // Pressed at 12 000, the punch waits 400 ms from 11 700: 12 108.
+        assert_eq!(request_tick(&mut app, body, true).0, "Cmbt - Idle");
+        app.world_mut().resource_mut::<BodyTicks>().0 = 1009;
+        assert!(request_tick(&mut app, body, true).0.starts_with("Attack"));
+        assert_eq!(
+            app.world().get::<Attacker>(body).unwrap().side_started_ms,
+            Some(12_108)
+        );
+        set_condition(&mut app, body, Condition::ATTACKING);
+        app.world_mut()
+            .get_mut::<Attacker>(body)
+            .unwrap()
+            .last_tick_ms = Some(12_108);
+        request_tick(&mut app, body, false);
+        assert!(swing_of(&app, body).has(swing::flags::RELEASED));
+        // 12 324 ms: the cooldown (330 ms from 12 108) has not passed.
+        app.world_mut().resource_mut::<BodyTicks>().0 = 1027;
+        assert_eq!(
+            request_tick(&mut app, body, true),
+            ("Overhead Swing".into(), false)
+        );
+        let anim = app.world().get::<Animator>(body).unwrap();
+        assert_eq!(anim.blend, 0.0);
+        assert_eq!(
+            app.world().get::<Attacking>(body).unwrap().motion,
+            AttackMotion::Overhead
+        );
+    }
+
+    /// Feint: after a released punch has returned to its stance, a new
+    /// press past its renewal time (12 122 ms) and past the overhead's
+    /// 300 ms starts the next punch at once, the cooldown waived; without
+    /// the perk it waits for the cooldown.
+    #[test]
+    fn feint_renews_a_released_punch() {
+        for feint in [true, false] {
+            let (mut app, body) = attack_app();
+            if feint {
+                let mut perks = exa_formats::characters::Perks::default();
+                perks.insert(exa_formats::characters::Perk::Feint);
+                let f = app.world().get::<Fighter>(body).unwrap().clone();
+                app.world_mut().entity_mut(body).insert(f.with_perks(perks));
+            }
+            request_tick(&mut app, body, true);
+            set_condition(&mut app, body, Condition::ATTACKING);
+            request_tick(&mut app, body, false);
+            for _ in 0..4 {
+                request_tick(&mut app, body, false);
+            }
+            set_condition(&mut app, body, Condition::COMBAT_IDLE);
+            // Its last attack tick at 12 300: the cooldown lasts to 12 630.
+            app.world_mut()
+                .get_mut::<Attacker>(body)
+                .unwrap()
+                .last_tick_ms = Some(12_300);
+            app.world_mut().resource_mut::<BodyTicks>().0 = 1034; // 12 408
+            let (action, looping) = request_tick(&mut app, body, true);
+            assert_eq!(!looping, feint, "{action}");
         }
     }
 
@@ -1710,35 +1980,6 @@ mod tests {
                 assert_eq!(combat_heading(heading, aim, false), aim);
             }
         }
-    }
-
-    #[test]
-    fn the_picks_follow_the_original_generator() {
-        // × 0x08088405 + 1 from 0, clip = state × 3 >> 32, redrawn while
-        // it equals the last pick (0 at first).
-        let mut choice = AttackInput::default();
-        let picks: Vec<usize> = (0..8).map(|_| choice.pick(0, false)).collect();
-        assert_eq!(picks, [2, 0, 2, 0, 1, 0, 1, 0]);
-        assert_eq!(choice.seed, 303_092_965);
-        // Crouched: Attack Mid, which then is the side's last pick.
-        assert_eq!(choice.pick(0, true), 0);
-        assert_eq!(choice.last[0], 0);
-        assert_eq!(choice.seed, 303_092_965);
-    }
-
-    #[test]
-    fn a_side_never_repeats_its_last_attack() {
-        let mut choice = AttackInput::default();
-        let picks: Vec<usize> = (0..200).map(|_| choice.pick(0, false)).collect();
-        // The first pick is never the first clip: the last pick starts at 0.
-        assert_ne!(picks[0], 0);
-        assert!(picks.windows(2).all(|w| w[0] != w[1]));
-        for i in 0..3 {
-            let n = picks.iter().filter(|&&p| p == i).count();
-            assert!((50..=84).contains(&n), "clip {i}: {n} of 200");
-        }
-        // Each side keeps its own last pick.
-        assert_ne!(choice.pick(1, false), 0);
     }
 
     #[test]

@@ -13,6 +13,7 @@ exa_world.workspace = true
 exa_formats.workspace = true
 
 [dev-dependencies]
+# Corpus tests read the installed packs (and skip without them).
 exa_rpk.workspace = true
 
 [lints]

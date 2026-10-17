@@ -55,6 +55,8 @@
 //!          --debug-spray b,R[,dx,dy,dz]  a blood jet from the player's (or the character view's) body part b every
 //!                                     second, as a bleeding blow of size R swinging along d would spray; repeatable
 //!          --health yellow,red        play mode: the player's starting health (a human's full health is 0.25)
+//!          --perks a,b,...            play mode: the player's perks (e.g. `remise,feint`: hold to chain the other
+//!                                     side's attack, renew a released swing)
 //!          --heartbeat                play mode: the low-health heartbeat in any level (the original: story mode only)
 //!          --feral <f>                play mode: the player's record has feral level f (0–1): its blows' red damage
 //!                                     goes to yellow, and it spawns with a feral character's stats
@@ -181,6 +183,8 @@ pub struct Options {
     pub weapon_blood: Option<exa_character::blood::DebugWeaponBlood>,
     /// The player's starting yellow and red health.
     pub health: Option<[f32; 2]>,
+    /// The player's perks.
+    pub perks: exa_formats::characters::Perks,
     /// Let the low-health heartbeat play in any level.
     pub heartbeat: bool,
     /// Play mode: the player's record's feral level (0..=1).
@@ -266,6 +270,20 @@ fn key_named(name: &str) -> Option<KeyCode> {
             }
         }
     }
+}
+
+/// The perks a `--perks` list names (case does not matter), none for an
+/// empty list; `None` when a name is not a perk.
+fn parse_perks(list: &str) -> Option<exa_formats::characters::Perks> {
+    use exa_formats::characters::{Perk, Perks};
+    let mut perks = Perks::default();
+    for name in list.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+        let perk = Perk::ALL
+            .into_iter()
+            .find(|p| p.name().eq_ignore_ascii_case(name))?;
+        perks.insert(perk);
+    }
+    Some(perks)
 }
 
 /// The mouse button a `--press` entry names: `LMB`, `RMB` or `MMB`.
@@ -415,6 +433,16 @@ fn main() -> AppExit {
                     .next()
                     .and_then(|v| v.parse().ok())
                     .filter(|f: &f32| f.is_finite())
+            }
+            "--perks" => {
+                let list = args.next().unwrap_or_default();
+                match parse_perks(&list) {
+                    Some(p) => options.perks = p,
+                    None => {
+                        eprintln!("--perks: cannot read {list:?} (remise,feint,...)");
+                        return AppExit::from_code(2);
+                    }
+                }
             }
             "--outfit" => {
                 options.outfit = args
@@ -671,6 +699,18 @@ fn main() -> AppExit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn perks_are_read_by_name() {
+        use exa_formats::characters::Perk;
+        let perks = parse_perks("Remise, feint").unwrap();
+        assert_eq!(
+            perks.iter().collect::<Vec<_>>(),
+            [Perk::Remise, Perk::Feint]
+        );
+        assert!(parse_perks("").unwrap().is_empty());
+        assert_eq!(parse_perks("remise,parry"), None);
+    }
 
     #[test]
     fn scripted_presses_are_read() {

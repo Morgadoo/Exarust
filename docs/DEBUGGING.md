@@ -44,7 +44,7 @@ it takes the ring's other slot.
 | `--joint-trace <file.csv>` | write every joint of every simulated character body after every 83 Hz tick ([columns](#joint-trace)) |
 | `--pair-trace <file.csv>` | write every contact between two body parts that each 83 Hz tick's body–body detection found ([columns](#pair-trace)) |
 | `--corpse x,y,z` | in play mode, a dead human (a new record, in underwear) lies down here as a level's placed dead do (metres); repeatable. For contacts with corpses outside the story levels, e.g. `--corpse 0,0,3.4 --press W@150-420 play arena` walks the player over one |
-| `--trace <file.csv>` | the body trace in the retail probe's columns ([formats/RSQ.md](formats/RSQ.md)), then Exarust's own (the sleep countdown and state, the frame, the blend and hold) and last the condition word in hex (`0x300` getting up); character bodies only |
+| `--trace <file.csv>` | the body trace in the retail probe's columns ([formats/RSQ.md](formats/RSQ.md)), then Exarust's own (the sleep countdown and state, the frame, the blend and hold), the condition word in hex (`0x300` getting up) and last the swing: `swing_rate` (frames the attack's clip ran this tick), `strength` (P) and `attack_flags` (the state word in hex: `0x2` stalling, `0x10` released, `0x10000` chained, `0x80000` no Remise); character bodies only |
 | `--shove <frame>` | a body blow to every simulated character body at that frame after the load |
 | `--shove-props <frame>` | in play mode, at that frame after the load, a blow to every prop body within 3 m of the player (1.5 m/s away from it and 1.5 m/s up); the log counts them and, once all sleep again, says after how many ticks and how far each moved (a body that fell out of the world counts as settled). Props meet the level and, through the pairs, every other body: they knock into each other, and one landing on a table that is itself a body (exanima01's tables) rests on it |
 | `--sim-speed <f>` | run the simulation at this speed (0.25 is a quarter as fast), from the end of the load |
@@ -61,6 +61,7 @@ it takes the ring's other slot.
 | `--health yellow,red` | in play mode, the player starts with this yellow and red health (a human's full health is 0.25), e.g. `0.176,0.226` for the retail reference shot of the health bar ([UI.md](UI.md), Health bars) |
 | `--heartbeat` | in play mode, the low-health heartbeat may play in any level (the original plays it in story mode only, so never in the arenas) |
 | `--feral <f>` | in play mode, the player's record has feral level f (0 to 1): it spawns with a feral character's stats and rule bits (logged: "player: feral …, rule bits …, most energy …"), so blows take nothing from its red health and their red share comes off yellow ([formats/OTHER.md](formats/OTHER.md), Applying damage); its most energy is 1 − 0.1 f, its head loose |
+| `--perks a,b,...` | in play mode, the player has these perks (names as the character records give them, case aside: `remise`, `feint`, `fend`, …; an unknown name stops the launch): Remise chains a held side attack into the other side's past 0.8 of its clip, Feint renews a released swing ([PLAYER.md](PLAYER.md), Combat mode); the log names them |
 | `--still-opponent` | `--opponent`, but the duellist stands its ground: it faces the player and takes its stance (by its distance, [PLAYER.md](PLAYER.md), The combat stance) but never walks or strikes; with `--at` it shows the stances at a chosen distance |
 | `--debug-wound bone,radius_cm[,dx,dy,dz]` | a test wound on the player's or the character view's body ([Wounds](#wounds)); repeatable |
 | `--debug-nav` | start with the navigation grid drawn ([Navigation grid](#navigation-grid)) |
@@ -69,8 +70,9 @@ it takes the ring's other slot.
 | `--physique x,y[,h,a,f,w]` | the character view's body (or the player's) and its apparel morphed by this physique: the two physique values, then height, age and feral level (0 when left out) and female when w is not 0 ([Physique](#physique)) |
 
 An unattended attack: `exarust --opponent --sim-speed 0.25 --camera
-4.2,1.4,0.6,90,-8 --press LMB@100 play arenao1` throws the unarmed
-player's right straight at the duellist, seen from the side (an arena
+4.2,1.4,0.6,90,-8 --press LMB@100-300 play arenao1` throws the unarmed
+player's right straight at the duellist (held through the swing: a
+one-frame press is a click, which checks it), seen from the side (an arena
 fight starts in combat mode: Tab would turn it off). The log names each
 attack: its moveset, the game time (ms, 12 a tick), how far left of the
 facing the cursor was, the energy, the last attack tick and the cooldown
@@ -78,9 +80,18 @@ it waited; and "attack waits: energy …" when a standing request waits for
 the energy to come back. With the chase camera and `--cursor` left of the
 player (e.g. `--cursor 650,280 --press LMB@2`, before the body has turned
 to the cursor) it is a left straight. A held button repeats the attacks,
-330 ms after each one's last tick unarmed: `--press LMB@150-1500`. A double
-click's overhead follows the first attack once it ended and the cooldown
-passed, with the second press still held: `LMB@200,LMB@206-400`.
+330 ms after each one's last tick unarmed: `--press LMB@150-1500`. A press
+of one frame (`LMB@100`) is a click: the button is up by the next tick, so
+the swing is released and checked at once (the log: "attack released at
+0.01 of its clip …: stall 0.300 a tick, stance at … ms", then "released
+attack back to Cmbt - Idle"); hold the button to swing through. A double
+click (`LMB@200,LMB@212`) releases the first attack and throws the
+overhead at once ("… after a release"). With `--perks remise` a held side
+attack chains the other side's past 0.8 of its clip (a punch after 55
+ticks); a fighter struck mid-swing logs "struck mid-swing at … of its
+clip: stall … a tick, … stance at … ms". The `--trace` columns
+`motion`, `swing_rate`, `strength` and `attack_flags` give each attack's
+length in ticks and its stalls.
 
 Punches land from close: the duellist strikes from 1.2 m, where the
 straight falls short, so step in (`W@100-1500,LMB@150-1500`), or stand a
@@ -89,9 +100,13 @@ struck:
 
 ```bash
 # A right straight landing on a still duellist 0.86 m away (chest to
-# chest), paused three ticks after it landed, from the player's right.
+# chest), paused three ticks after it landed, from the player's right
+# (the button held, so the punch is not released).
 exarust --still-opponent --at 0,0,-1.1 --camera 4.2,1.4,-1.0,90,-8 \
-  --press LMB@120 --pause-on-hit 3 --screenshot punch.png --frames 10 play arenao1
+  --press LMB@120-200 --pause-on-hit 3 --screenshot punch.png --frames 10 play arenao1
+# Held punches, a click, a double click and Remise's chains, traced.
+exarust --no-gi --no-supersample --size 960x540 --opponent --perks remise \
+  --trace t.csv --press LMB@200-600,LMB@700,LMB@760,LMB@772 play arenao1
 ```
 
 The stances: the log names every change of the player's stance (with its

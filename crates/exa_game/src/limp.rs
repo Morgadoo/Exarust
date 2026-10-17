@@ -211,11 +211,14 @@ fn go_limp(
 pub(crate) const CM: f32 = 100.0;
 
 /// What a body's clip clock reads besides its drive: how far its character
-/// walked in the last step (cm), the player's run blend, and its swing.
+/// walked in the last step (cm), the player's run blend, its swing, and
+/// the rate its swing routine set this tick for an attack's clip (a
+/// fighter's).
 pub(crate) struct Pace {
     pub(crate) walked: f32,
     pub(crate) run: f32,
     pub(crate) swing: Swing,
+    pub(crate) attack: Option<f32>,
 }
 
 /// One tick of a living body's clip: a start since the last tick captures
@@ -280,8 +283,9 @@ const BACKPEDAL_ACTION: usize = 2;
 /// full tone in brackets: walking or running in its locomotion clip, the
 /// gait's clip rate (walk to jog by √run, or the backpedal's) ×
 /// (0.8·speed + 1) (0.76 at 1.69 cm a tick); getting up, tone × 1.5 × base
-/// × 0.6 above half tone (0.9); attacking, its swing's rate (about 1.1);
-/// otherwise 0.6 × base, × 1.25 off balance (0.6, 0.75).
+/// × 0.6 above half tone (0.9); attacking, the rate its swing routine set
+/// (about 1.1; without one its swing's unstalled rate); otherwise 0.6 ×
+/// base, × 1.25 off balance (0.6, 0.75).
 fn clip_frames(playing: Option<usize>, progress: f32, drive: &Drive, pace: &Pace) -> f32 {
     let race = &drive.race;
     let base = race.clip_rate;
@@ -304,10 +308,10 @@ fn clip_frames(playing: Option<usize>, progress: f32, drive: &Drive, pace: &Pace
                 0.0
             }
         }
-        Some(a) if ATTACKS.contains(&a) => {
+        Some(a) if ATTACKS.contains(&a) => pace.attack.unwrap_or_else(|| {
             pace.swing
                 .frames(playing, progress, base, drive.energy_share())
-        }
+        }),
         _ if bearing.off_balance => STANDING_PACE * OFF_BALANCE_RATE * base,
         _ => STANDING_PACE * base,
     }
@@ -929,6 +933,7 @@ pub(crate) mod tests {
             walked: 0.0,
             run: 0.0,
             swing: Swing::FISTS,
+            attack: None,
         };
         let still = Bearing::default();
         let frames = |a: usize, d: &Drive, p: &Pace| clip_frames(Some(a), 0.3, d, p);
@@ -977,6 +982,14 @@ pub(crate) mod tests {
         let mut ghoul = doing(still, 1.0);
         ghoul.race.clip_rate = 1.5;
         assert!(close(frames(0x13, &ghoul, &pace), 0.9));
+        // An attack's clip runs at the rate its swing routine set (a
+        // stalled swing's 0.4), whatever its energy.
+        let stalled = Pace {
+            attack: Some(0.4),
+            ..pace
+        };
+        assert_eq!(frames(5, &zombie, &stalled), 0.4);
+        assert!(close(frames(0x13, &doing(still, 1.0), &stalled), 0.6));
         // Collapsing (its fall and get-up over), Fall Backward and
         // Rebalance run at 0.6 a tick, whatever its tone.
         let collapsing = Bearing {

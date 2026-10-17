@@ -1,15 +1,15 @@
 //! The original's attack executor, which the player and the AI both go
 //! through: when a fighter may start an attack (enough energy, the cooldown
-//! since its last attack's last tick), which attack a standing request
-//! starts, and which of the fighter's held strikers strike in it. Rules and
-//! constants: `docs/PLAYER.md` (Combat mode).
+//! since its last attack's last tick, or a released swing's overhead and
+//! Feint while it stalls), which attack a standing request starts, which
+//! clip a side's attack picks, and which of the fighter's held strikers
+//! strike in it. Rules and constants: `docs/PLAYER.md` (Combat mode).
 //!
 //! Times are milliseconds of the game clock (12 ms a body tick,
-//! [`BodyTicks::millis`]).
+//! [`exa_physics::body::BodyTicks::millis`]).
 
 use bevy::prelude::*;
 use exa_anim::Animator;
-use exa_physics::body::BodyTicks;
 
 use crate::damage::WeaponRecord;
 use crate::{Attacking, Blade};
@@ -38,6 +38,18 @@ const ONE_HAND_STRIKES: u8 = 0x80;
 const CLAWS: u8 = 0xC0;
 /// The hands bits of a weapon class: a thrusting (held) weapon.
 const HANDS: u8 = 0x30;
+/// A released swing's request turns into an overhead within this long (ms)
+/// of the side attack's start.
+const OVERHEAD_AFTER_RELEASE_MS: u64 = 300;
+/// Feint's renewal of a released swing: an overhead or a stab starts with
+/// this blend (frames); a side attack with its own.
+const FEINT_BLEND: u32 = 10;
+/// The attack clips' action indices: the main side's from 5, the other
+/// side's from 8, the stab's and the overhead's.
+const MAIN_FROM: usize = 5;
+const OTHER_FROM: usize = 8;
+const STAB: usize = 0x0B;
+const OVERHEAD: usize = 0x0C;
 
 /// The cooldown (ms) between attacks: [`FIRST_COOLDOWN_MS`] without a
 /// primary striker, else from its recoil `primary_recoil` (W17).
@@ -118,6 +130,41 @@ impl AttackMotion {
     pub fn is_side(self) -> bool {
         matches!(self, Self::Main(_) | Self::Other(_))
     }
+
+    /// The motion's action index (the original's motion number, 5–12).
+    pub fn index(self) -> usize {
+        match self {
+            Self::Main(i) => MAIN_FROM + i.min(2),
+            Self::Other(i) => OTHER_FROM + i.min(2),
+            Self::Stab => STAB,
+            Self::Overhead => OVERHEAD,
+        }
+    }
+}
+
+/// An attack's side: the main one (Attack Mid, Down, Up) or the other
+/// (Attack Combo 1–3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Main,
+    Other,
+}
+
+impl Side {
+    /// The side's attack with pick `i` (0–2).
+    pub fn motion(self, i: usize) -> AttackMotion {
+        match self {
+            Side::Main => AttackMotion::Main(i),
+            Side::Other => AttackMotion::Other(i),
+        }
+    }
+
+    fn index(self) -> usize {
+        match self {
+            Side::Main => 0,
+            Side::Other => 1,
+        }
+    }
 }
 
 /// Which held item a striker is: the first (the main hand's weapon, or the
@@ -127,6 +174,16 @@ pub enum Slot {
     #[default]
     First,
     Second,
+}
+
+impl Slot {
+    /// 0 for the first, 1 for the second.
+    pub fn index(self) -> usize {
+        match self {
+            Slot::First => 0,
+            Slot::Second => 1,
+        }
+    }
 }
 
 /// Whether a striker in held slot `slot` (`armed`: a weapon, not a fist or
@@ -145,6 +202,14 @@ pub fn strikes(slot: Slot, armed: bool, weapon_class: u8, motion: AttackMotion) 
         AttackMotion::Main(_) | AttackMotion::Stab => slot == Slot::First,
         AttackMotion::Other(_) => slot == Slot::Second,
     }
+}
+
+/// Whether a striker (`armed`: a weapon, not a fist or claw) of a fighter
+/// of weapon class `weapon_class` is one of its held items, which strike
+/// when their window opens: every weapon, and the fists or claws only when
+/// they are what it holds (class bit 0x80).
+pub fn is_striker(armed: bool, weapon_class: u8) -> bool {
+    armed || weapon_class & ONE_HAND_STRIKES != 0
 }
 
 /// The held slot an attack `motion` makes the primary striker (whose recoil
@@ -180,38 +245,118 @@ pub enum AttackKind {
     Stab,
 }
 
-/// The executor: the attack a standing `request` starts at `now_ms`, given
-/// the game clock of the fighter's last attack tick, its cooldown and the
-/// attack it plays (`None` when it plays none). Nothing until the cooldown
-/// has passed since the last attack tick; then an overhead unless a stab
-/// or an overhead plays, a stab unless a stab plays, else a side attack
-/// unless a side attack plays. A stab still has to pass the facing gate
+/// What the executor reads of a fighter besides its request.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Busy {
+    /// The game clock (ms).
+    pub now_ms: u64,
+    /// The game clock of its last attack tick; `None` before its first.
+    pub last_tick_ms: Option<u64>,
+    /// Its cooldown ([`cooldown_ms`]).
+    pub cooldown_ms: u64,
+    /// The attack it plays, if any.
+    pub playing: Option<AttackMotion>,
+    /// Its swing was released (its request dropped mid-swing).
+    pub released: bool,
+    /// The game clock until which its released swing stalls.
+    pub stall_until_ms: u64,
+    /// The game clock from which Feint may renew its released swing.
+    pub renew_ms: u64,
+    /// The game clock its last side attack started at.
+    pub side_started_ms: Option<u64>,
+    /// It has Feint.
+    pub feint: bool,
+}
+
+/// What the executor starts: the attack and, for a stab or an overhead,
+/// its blend (frames; a side attack's is its own, [`start_blend`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Start {
+    pub kind: AttackKind,
+    pub blend: u32,
+}
+
+impl Start {
+    fn of(kind: AttackKind, blend: u32) -> Option<Self> {
+        Some(Self { kind, blend })
+    }
+}
+
+/// The executor: the attack a standing `request` starts, given the
+/// fighter's state `at`. While a swing stalls only a released swing's
+/// request starts anything: the overhead (no blend) within 300 ms of the
+/// side attack's start, else, with Feint once its renewal time has come,
+/// a stab, an overhead (both with a blend of 10) or a side attack. Free, a
+/// released swing's request gives the overhead within those 300 ms too,
+/// and Feint waives the cooldown once its renewal time has come (before
+/// it nothing starts); otherwise nothing until the cooldown has passed
+/// since the last attack tick, then an overhead unless a stab or an
+/// overhead plays, a stab unless a stab plays, else a side attack unless a
+/// side attack plays. A stab still has to pass the facing gate
 /// ([`stab_faces`]).
-pub fn execute(
-    request: Request,
-    now_ms: u64,
-    last_tick_ms: Option<u64>,
-    cooldown_ms: u64,
-    playing: Option<AttackMotion>,
-) -> Option<AttackKind> {
-    if last_tick_ms.is_some_and(|last| last + cooldown_ms > now_ms) {
+pub fn execute(request: Request, at: Busy) -> Option<Start> {
+    let soon_after_side = at
+        .side_started_ms
+        .is_some_and(|t| at.now_ms < t + OVERHEAD_AFTER_RELEASE_MS);
+    if at.now_ms < at.stall_until_ms {
+        if !at.released {
+            return None;
+        }
+        if soon_after_side {
+            return Start::of(AttackKind::Overhead, 0);
+        }
+        if !at.feint || at.renew_ms > at.now_ms {
+            return None;
+        }
+        return if request.thrust {
+            Start::of(AttackKind::Stab, FEINT_BLEND)
+        } else if request.overhead {
+            Start::of(AttackKind::Overhead, FEINT_BLEND)
+        } else if request.other_side {
+            Start::of(AttackKind::Other, 0)
+        } else {
+            Start::of(AttackKind::Main, 0)
+        };
+    }
+    let mut cooldown = at.cooldown_ms;
+    if at.released {
+        if soon_after_side {
+            return Start::of(AttackKind::Overhead, 0);
+        }
+        if at.feint {
+            if at.now_ms < at.renew_ms {
+                return None;
+            }
+            cooldown = 0;
+        }
+    }
+    if at
+        .last_tick_ms
+        .is_some_and(|last| last + cooldown > at.now_ms)
+    {
         return None;
     }
-    if request.overhead {
-        return (!matches!(playing, Some(AttackMotion::Stab | AttackMotion::Overhead)))
-            .then_some(AttackKind::Overhead);
-    }
-    if request.thrust {
-        return (playing != Some(AttackMotion::Stab)).then_some(AttackKind::Stab);
-    }
-    if playing.is_some_and(AttackMotion::is_side) {
+    let kind = if request.overhead {
+        if matches!(
+            at.playing,
+            Some(AttackMotion::Stab | AttackMotion::Overhead)
+        ) {
+            return None;
+        }
+        AttackKind::Overhead
+    } else if request.thrust {
+        if at.playing == Some(AttackMotion::Stab) {
+            return None;
+        }
+        AttackKind::Stab
+    } else if at.playing.is_some_and(AttackMotion::is_side) {
         return None;
-    }
-    Some(if request.other_side {
+    } else if request.other_side {
         AttackKind::Other
     } else {
         AttackKind::Main
-    })
+    };
+    Start::of(kind, 0)
 }
 
 /// A fighter's executor state (on the body model root).
@@ -223,9 +368,36 @@ pub struct Attacker {
     /// The held slot of its primary striker: set by every attack, and by
     /// equipping a weapon; none since its hands were emptied.
     pub primary: Option<Slot>,
+    /// The game clock (ms) its last side attack started at.
+    pub side_started_ms: Option<u64>,
+    /// Its generator for the attack picks (Exarust's own instance of the
+    /// original's 32-bit generator).
+    seed: u32,
+    /// Each side's last pick, 0 until the first (as the original's zeroed
+    /// fields, so a side's first pick is never its first clip).
+    last_picks: [usize; 2],
 }
 
 impl Attacker {
+    /// One of `side`'s three attacks at random, never the one it picked
+    /// last, by the original's 32-bit generator; `crouched`, always the
+    /// first (Attack Mid or Combo 1), which then counts as its last pick.
+    pub fn pick(&mut self, side: Side, crouched: bool) -> usize {
+        let last = &mut self.last_picks[side.index()];
+        if crouched {
+            *last = 0;
+            return 0;
+        }
+        loop {
+            self.seed = self.seed.wrapping_mul(0x0808_8405).wrapping_add(1);
+            let i = ((u64::from(self.seed) * 3) >> 32) as usize;
+            if i != *last {
+                *last = i;
+                return i;
+            }
+        }
+    }
+
     /// The record of its primary striker among `blades`: its own blade in
     /// its primary slot; none without a primary.
     pub fn primary_record<'a>(
@@ -257,11 +429,11 @@ const OTHER_SIDE_BLEND_FROM: i32 = 20;
 const OTHER_SIDE_BLEND_SCALE: f64 = 0.6;
 
 /// The blend (frames) an attack `motion` starts with, eased smoothly: the
-/// main side's (and Exarust's stab and overhead, whose blends the original
-/// passes in from callers not yet traced) none; the other side's
-/// round((20 − W19) × 0.6), ties to even, `primary_blend` the stance blend
-/// W19 of the striker the attack made primary (12 frames for the fists).
-pub fn start_blend(motion: AttackMotion, primary_blend: Option<i32>) -> u32 {
+/// main side's none; the other side's round((20 − W19) × 0.6), ties to
+/// even, `primary_blend` the stance blend W19 of the striker the attack
+/// made primary (12 frames for the fists); the stab's and the overhead's
+/// `given` by the executor (10 for Feint's, else none).
+pub fn start_blend(motion: AttackMotion, primary_blend: Option<i32>, given: u32) -> u32 {
     match motion {
         AttackMotion::Other(_) => {
             let w = OTHER_SIDE_BLEND_FROM - primary_blend.unwrap_or(0);
@@ -269,7 +441,8 @@ pub fn start_blend(motion: AttackMotion, primary_blend: Option<i32>) -> u32 {
                 .round_ties_even()
                 .max(0.0) as u32
         }
-        _ => 0,
+        AttackMotion::Main(_) => 0,
+        AttackMotion::Stab | AttackMotion::Overhead => given,
     }
 }
 
@@ -279,25 +452,11 @@ pub fn playing(attacking: Option<&Attacking>, anim: &Animator) -> Option<AttackM
     attacking.filter(|_| !anim.looping).map(|a| a.motion)
 }
 
-/// Each body tick, before the character ticks: every fighter whose attack
-/// plays stamps the game clock as its last attack tick, which its
-/// cooldown counts from.
-pub(crate) fn stamp_attack_ticks(
-    ticks: Res<BodyTicks>,
-    mut fighters: Query<(&Animator, &mut Attacker), With<Attacking>>,
-) {
-    let now = ticks.millis();
-    for (anim, mut attacker) in &mut fighters {
-        if !anim.looping {
-            attacker.last_tick_ms = Some(now);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use exa_formats::weapon_record::{Holder, Lengths, Section, WeaponRecord};
+    use exa_physics::body::BodyTicks;
 
     /// The human fist's record: 17.66 cm across the hand.
     fn fist() -> WeaponRecord {
@@ -351,9 +510,27 @@ mod tests {
         assert!(!may_thrust(0x80) && !may_thrust(0xC0) && !may_thrust(0));
     }
 
+    /// A free fighter (nothing stalling, nothing released) at `now_ms`
+    /// whose last attack ticked at `last` with cooldown `cooldown`, playing
+    /// `playing`.
+    fn free(now_ms: u64, last: Option<u64>, cooldown: u64, playing: Option<AttackMotion>) -> Busy {
+        Busy {
+            now_ms,
+            last_tick_ms: last,
+            cooldown_ms: cooldown,
+            playing,
+            ..Busy::default()
+        }
+    }
+
+    fn kind(start: Option<Start>) -> Option<AttackKind> {
+        start.map(|s| s.kind)
+    }
+
     /// Nothing within the cooldown since the last attack tick; at it a side
     /// attack, never over another side attack; an overhead over a side
     /// attack but not over a stab or an overhead; a stab not over a stab.
+    /// None of them with a blend.
     #[test]
     fn the_executor_waits_out_the_cooldown() {
         let main = Request::default();
@@ -361,44 +538,237 @@ mod tests {
             other_side: true,
             ..main
         };
-        assert_eq!(execute(main, 1000, None, 400, None), Some(AttackKind::Main));
         assert_eq!(
-            execute(other, 1000, None, 400, None),
+            execute(main, free(1000, None, 400, None)),
+            Some(Start {
+                kind: AttackKind::Main,
+                blend: 0
+            })
+        );
+        assert_eq!(
+            kind(execute(other, free(1000, None, 400, None))),
             Some(AttackKind::Other)
         );
-        assert_eq!(execute(main, 1329, Some(1000), 330, None), None);
+        assert_eq!(execute(main, free(1329, Some(1000), 330, None)), None);
         assert_eq!(
-            execute(main, 1330, Some(1000), 330, None),
+            kind(execute(main, free(1330, Some(1000), 330, None))),
             Some(AttackKind::Main)
         );
         let mid = Some(AttackMotion::Main(0));
-        assert_eq!(execute(main, 5000, Some(1000), 330, mid), None);
-        assert_eq!(execute(other, 5000, Some(1000), 330, mid), None);
+        assert_eq!(execute(main, free(5000, Some(1000), 330, mid)), None);
+        assert_eq!(execute(other, free(5000, Some(1000), 330, mid)), None);
         let overhead = Request {
             overhead: true,
             ..main
         };
         assert_eq!(
-            execute(overhead, 5000, Some(1000), 330, mid),
-            Some(AttackKind::Overhead)
+            execute(overhead, free(5000, Some(1000), 330, mid)),
+            Some(Start {
+                kind: AttackKind::Overhead,
+                blend: 0
+            })
         );
         for busy in [AttackMotion::Stab, AttackMotion::Overhead] {
-            assert_eq!(execute(overhead, 5000, Some(1000), 330, Some(busy)), None);
+            assert_eq!(
+                execute(overhead, free(5000, Some(1000), 330, Some(busy))),
+                None
+            );
         }
         // The overhead waits for the cooldown too.
-        assert_eq!(execute(overhead, 1200, Some(1000), 330, None), None);
+        assert_eq!(execute(overhead, free(1200, Some(1000), 330, None)), None);
         let thrust = Request {
             thrust: true,
             ..main
         };
         assert_eq!(
-            execute(thrust, 5000, Some(1000), 330, mid),
+            kind(execute(thrust, free(5000, Some(1000), 330, mid))),
             Some(AttackKind::Stab)
         );
         assert_eq!(
-            execute(thrust, 5000, Some(1000), 330, Some(AttackMotion::Stab)),
+            execute(
+                thrust,
+                free(5000, Some(1000), 330, Some(AttackMotion::Stab))
+            ),
             None
         );
+    }
+
+    /// While a released swing stalls (until 2000 ms), a new press within
+    /// 300 ms of the side attack's start (at 1000 ms) gives the overhead
+    /// with no blend, whatever it asks; later nothing without Feint, and
+    /// with Feint nothing before its renewal (1500 ms), then a stab or an
+    /// overhead with a blend of 10, or a side attack with its own. A swing
+    /// that stalls unreleased (a struck one) keeps the executor busy.
+    #[test]
+    fn a_released_swing_gives_the_overhead_and_feint() {
+        let stalling = Busy {
+            now_ms: 1299,
+            last_tick_ms: Some(1296),
+            cooldown_ms: 330,
+            playing: Some(AttackMotion::Main(1)),
+            released: true,
+            stall_until_ms: 2000,
+            renew_ms: 1500,
+            side_started_ms: Some(1000),
+            feint: false,
+        };
+        let main = Request::default();
+        assert_eq!(
+            execute(main, stalling),
+            Some(Start {
+                kind: AttackKind::Overhead,
+                blend: 0
+            })
+        );
+        let late = Busy {
+            now_ms: 1300,
+            ..stalling
+        };
+        assert_eq!(execute(main, late), None);
+        let feint = Busy {
+            feint: true,
+            ..late
+        };
+        assert_eq!(execute(main, feint), None);
+        let renewed = Busy {
+            now_ms: 1500,
+            ..feint
+        };
+        let overhead = Request {
+            overhead: true,
+            ..main
+        };
+        let thrust = Request {
+            thrust: true,
+            ..main
+        };
+        let other = Request {
+            other_side: true,
+            ..main
+        };
+        assert_eq!(
+            execute(overhead, renewed),
+            Some(Start {
+                kind: AttackKind::Overhead,
+                blend: 10
+            })
+        );
+        assert_eq!(
+            execute(thrust, renewed),
+            Some(Start {
+                kind: AttackKind::Stab,
+                blend: 10
+            })
+        );
+        assert_eq!(
+            execute(other, renewed),
+            Some(Start {
+                kind: AttackKind::Other,
+                blend: 0
+            })
+        );
+        assert_eq!(kind(execute(main, renewed)), Some(AttackKind::Main));
+        // Struck mid-swing (a stall without the release): busy.
+        let struck = Busy {
+            released: false,
+            ..renewed
+        };
+        assert_eq!(execute(main, struck), None);
+        assert_eq!(
+            execute(
+                overhead,
+                Busy {
+                    now_ms: 1100,
+                    ..struck
+                }
+            ),
+            None
+        );
+    }
+
+    /// Once the released swing's stall is over: within 300 ms of the side
+    /// attack's start a press still gives the overhead (before the
+    /// cooldown); after them Feint waives the cooldown from its renewal
+    /// time on (nothing before it), without Feint the cooldown holds.
+    #[test]
+    fn feint_waives_the_cooldown_after_a_release() {
+        let released = Busy {
+            now_ms: 1250,
+            last_tick_ms: Some(1200),
+            cooldown_ms: 330,
+            playing: None,
+            released: true,
+            stall_until_ms: 1200,
+            renew_ms: 1400,
+            side_started_ms: Some(1000),
+            feint: false,
+        };
+        let main = Request::default();
+        assert_eq!(kind(execute(main, released)), Some(AttackKind::Overhead));
+        let later = Busy {
+            now_ms: 1400,
+            ..released
+        };
+        assert_eq!(execute(main, later), None);
+        assert_eq!(
+            kind(execute(
+                main,
+                Busy {
+                    now_ms: 1530,
+                    ..later
+                }
+            )),
+            Some(AttackKind::Main)
+        );
+        let feint = Busy {
+            feint: true,
+            ..later
+        };
+        assert_eq!(kind(execute(main, feint)), Some(AttackKind::Main));
+        assert_eq!(
+            execute(
+                main,
+                Busy {
+                    now_ms: 1399,
+                    ..feint
+                }
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn the_picks_follow_the_original_generator() {
+        // × 0x08088405 + 1 from 0, clip = state × 3 >> 32, drawn again
+        // while it equals the last pick (0 at first).
+        let mut a = Attacker::default();
+        let picks: Vec<usize> = (0..8).map(|_| a.pick(Side::Main, false)).collect();
+        assert_eq!(picks, [2, 0, 2, 0, 1, 0, 1, 0]);
+        assert_eq!(a.seed, 303_092_965);
+        // Crouched: Attack Mid, which then is the side's last pick.
+        assert_eq!(a.pick(Side::Main, true), 0);
+        assert_eq!(a.last_picks[0], 0);
+        assert_eq!(a.seed, 303_092_965);
+        assert_eq!(Side::Other.motion(2), AttackMotion::Other(2));
+        assert_eq!(AttackMotion::Main(2).index(), 7);
+        assert_eq!(AttackMotion::Other(0).index(), 8);
+        assert_eq!(AttackMotion::Stab.index(), 0x0B);
+        assert_eq!(AttackMotion::Overhead.index(), 0x0C);
+    }
+
+    #[test]
+    fn a_side_never_repeats_its_last_attack() {
+        let mut a = Attacker::default();
+        let picks: Vec<usize> = (0..200).map(|_| a.pick(Side::Main, false)).collect();
+        // The first pick is never the first clip: the last pick starts at 0.
+        assert_ne!(picks[0], 0);
+        assert!(picks.windows(2).all(|w| w[0] != w[1]));
+        for i in 0..3 {
+            let n = picks.iter().filter(|&&p| p == i).count();
+            assert!((50..=84).contains(&n), "clip {i}: {n} of 200");
+        }
+        // Each side keeps its own last pick.
+        assert_ne!(a.pick(Side::Other, false), 0);
     }
 
     /// Fists strike with the motion's hand: the right in the main side,
@@ -458,34 +828,6 @@ mod tests {
         assert_eq!(AttackMotion::of_action("Cmbt - Idle"), None);
     }
 
-    /// While its attack clip plays, each tick stamps the game clock; once
-    /// the clip is back in its stance the stamp stays at its last tick.
-    #[test]
-    fn the_last_attack_tick_is_stamped_every_attack_tick() {
-        let mut app = App::new();
-        app.insert_resource(BodyTicks(100))
-            .add_systems(Update, stamp_attack_ticks);
-        let mut anim = Animator::new("Default", "Cmbt - Idle");
-        anim.play_once("Attack Mid", "Cmbt - Idle");
-        let fighter = app
-            .world_mut()
-            .spawn((anim, Attacker::default(), Attacking::default()))
-            .id();
-        app.update();
-        let stamp = |app: &App| app.world().get::<Attacker>(fighter).unwrap().last_tick_ms;
-        assert_eq!(stamp(&app), Some(1200));
-        app.world_mut().resource_mut::<BodyTicks>().0 = 130;
-        app.update();
-        assert_eq!(stamp(&app), Some(1560));
-        app.world_mut()
-            .get_mut::<Animator>(fighter)
-            .unwrap()
-            .play_loop("Cmbt - Idle");
-        app.world_mut().resource_mut::<BodyTicks>().0 = 140;
-        app.update();
-        assert_eq!(stamp(&app), Some(1560));
-    }
-
     /// The cooldown reads the recoil of the fighter's own blade in its
     /// primary slot; with none, 400 ms.
     #[test]
@@ -509,17 +851,21 @@ mod tests {
 
     /// The main side starts with no blend; the other side with
     /// round((20 − W19) × 0.6): 12 frames with the fists (W19 0), 8 with a
-    /// sword of W19 7 (7.8), 12 with none.
+    /// sword of W19 7 (7.8), 12 with none; the stab and the overhead with
+    /// the executor's (10 from Feint), the side attacks never with it.
     #[test]
     fn the_other_side_starts_with_a_blend() {
         use AttackMotion::*;
         assert_eq!(fist().blend, 0);
         for m in [Main(0), Main(2), Stab, Overhead] {
-            assert_eq!(start_blend(m, Some(7)), 0, "{m:?}");
+            assert_eq!(start_blend(m, Some(7), 0), 0, "{m:?}");
         }
-        assert_eq!(start_blend(Other(1), Some(fist().blend)), 12);
-        assert_eq!(start_blend(Other(0), Some(7)), 8);
-        assert_eq!(start_blend(Other(2), None), 12);
-        assert_eq!(start_blend(Other(0), Some(20)), 0);
+        assert_eq!(start_blend(Other(1), Some(fist().blend), 10), 12);
+        assert_eq!(start_blend(Other(0), Some(7), 0), 8);
+        assert_eq!(start_blend(Other(2), None, 0), 12);
+        assert_eq!(start_blend(Other(0), Some(20), 0), 0);
+        assert_eq!(start_blend(Main(1), Some(7), 10), 0);
+        assert_eq!(start_blend(Stab, Some(7), 10), 10);
+        assert_eq!(start_blend(Overhead, None, 10), 10);
     }
 }

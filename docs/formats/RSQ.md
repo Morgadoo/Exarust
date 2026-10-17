@@ -901,6 +901,7 @@ is left empty.
 | `frame_x`, `frame_z`, `root_x`, `root_z` | Exarust's own: the character frame's origin, and the body root (where the character controller stands), across the ground |
 | `blend`, `hold` | Exarust's own: the blend (frames) the clip still has from its start's capture (0 once its first key is reached), and how far the sample was pulled toward the pose the body holds |
 | `condition` | the character's condition word in hex (`0x300`), as the retail watcher logs it ([Condition](#condition)); empty for a body without one |
+| `swing_rate`, `strength`, `attack_flags` | the fighter's swing (empty for a body that does not fight): the frames its swing routine last set for an attack's clip, the swing strength P, and its attack state word in hex ([Swing](#motion-playback)), the retail probe's rate, strength and state columns |
 
 The joint trace (`--joint-trace`), one row per body part, and the body
 overlay are described in [`docs/DEBUGGING.md`](../DEBUGGING.md).
@@ -1096,19 +1097,106 @@ full: the clip has no say until its energy recovers. The root is not held.
 The original lerps the quaternions' components without a sign check;
 Exarust takes the short way.
 
-**Swing.** An attack's clock runs speed × g × 1.125 × base frames a tick,
-g = 1 − 0.833·m·(d + d²), d = |progress − 0.5| (at progress 0, 1 − 0.833·m);
-a stab ×1.2, and below 40 % also × (1.2·progress + 0.5). Under 0.8 of its
-most energy the swing stops; under its most the rate is (E/Emax)². Speed,
-m and the recovery are the primary striker's weapon record (W15, W18, W19,
-[OTHER.md](OTHER.md), Weapon record, held by the character's own
-encumbrance and size); with no armour encumbrance speed = (1 − weight)·0.15 + 1.05 (×1.2 unarmed), m = 1 − balance, recovery
-= round((weight + 1 − balance)·10) frames; fists 1.44, 0, 0. Attacks start
-eased smoothly: the main side with no blend, the other side with
-round((20 − W19)·0.6) frames (W19 the striker it makes primary: 12 for the
-fists), as the original's two side starters do. The original's stab and
-overhead starters take their blend from their callers, not traced:
-Exarust starts both with none.
+**Swing.** Every tick of an attack's clip (actions 5–12), with the
+fighter's condition attacking (balanced, not getting up), the original's
+swing routine runs after the posture decision and before the clock
+advances (`exa_combat::swing`; evidence: REA and `exe.asm` of the swing
+routine, the release, the daze and its stall, the expected swing time,
+the executor and its wrappers, the side starters and the clip start,
+constants read from `Exanima.exe`). In order:
+
+1. The game clock is stamped as the fighter's last attack tick (the
+   executor's cooldown counts from it).
+2. The window region: past 0.3 of the clip (double precision), or within
+   the first 0.25 of a chained clip. In it the swing is late past 0.7 and
+   each striker's tracker takes its tip's velocity (cm a tick; Exarust's
+   from the striker's per-frame tip velocity): capped at 50 up to 0.8 of
+   the clip, after it at the slot's best, which then only shrinks; the
+   slot moves a quarter of the way a tick, its squared speed at most the
+   latest's and 1000. Outside the region the trackers clear.
+3. The rate: speed × g × 1.125 × base, g = 1 − 0.833·m·(d + d²), d =
+   |progress − 0.5| (at or before the first key 1 − 0.833·m); a stab
+   ×1.2, below 0.4 also × (1.2·progress + 0.5); a feral record (level
+   f > 0, 0..1) × ((1 − f)/2 + f·S(progress) + 1/2), S(x) = (3 − 2x)x²
+   (1 − f/2 at or before the first key). Speed, m and the recovery are
+   the primary striker's weapon record (W15, W18, W19,
+   [OTHER.md](OTHER.md), Weapon record, held by the character's own
+   encumbrance and size); with no armour encumbrance speed = (1 −
+   weight)·0.15 + 1.05 (×1.2 unarmed), m = 1 − balance, recovery =
+   round((weight + 1 − balance)·10) frames; fists 1.44, 0, 0. The
+   original's ×0.64 under a byte no code writes is left out.
+4. A chained clip past 0.25: its state word becomes the continued bit
+   (0x20000) alone and every striker's window shuts.
+5. The strike window: the overhead's shuts past 0.9 with weapon class 0,
+   else past 0.95, or at once past 0.85 when the swing falls slower than
+   3 cm a tick; the stab's past 0.8 unless its thrust still drives on
+   along the aim at 2.5 cm a tick or more, then past 0.95. It opens past
+   0.3 (stab 0.4, overhead 0.5) once a swing: with weapon class bit 0x80
+   (fists, claws, two weapons) only the motion's hand (the overhead's
+   first held item, both with claws; the main side's and the stab's
+   first; the combos' second), which becomes the primary striker;
+   otherwise every held item. Every clip start shuts it.
+6. Remise: a fighter with the perk, its swing neither released,
+   stalling, continued nor started without Remise (0x80000), chains the
+   other side's attack past 0.8 of a side attack: one of that side's
+   three clips without repeat, with round(6·W18) + 2 frames of blend
+   (smooth), its primary kept and its strikers' windows carried.
+7. The stall: the swing strength P loses the stall rate (floor 0); once
+   the game clock is past the stall's end the stance starts (blend
+   2·W19, smooth) and the state word clears. The rate × P.
+8. Tiredness: under 0.8 of its most energy (double precision) the rate is
+   0; under its most it is (E/Emax)² in place of the rate.
+
+Off its balance (under 0.6, double precision) the body tick takes its
+falls branch instead of the attack branch: no routine runs, and an
+attack's clip runs 1.25 × base a tick (the clock skips the 0.6 for
+attacks), also an attack started off balance, whose condition is not
+attacking yet.
+
+A swing stalls three ways. **Released**: when the attack request drops
+during the attack (the player's button up; the AI's choice), unless it
+recoiled, cleaved or was released already, P = 1 drains by max(1 −
+0.05·|v|, 0.1)/W17 × 0.03 a tick (at least 0.01, |v| the first striker's
+tracked speed), the stance due round(1000/(80 × stall)) ms later, at most
+the expected rest of the swing; a released main-side attack also returns
+to the stance from the behaviour once that time has passed (2·W19, 30
+frames without a primary striker), condition normal. Feint may renew it
+after round((2f + 1) × (round(100·W17) + 100)) ms, f = S(progress/0.7) up
+to 0.7 (1 after, out of an attack, or in a continuation past its carried
+window). **Struck**: a daze D (capped at 0.9) on an attacking fighter
+with P not spent adds r = 4·D·f − (1 − D)·min(0.005·s, 1)·W17 (f = 0.25
+over its most health, ×0.5 under a potion; s the strikers' larger tracked
+speed squared) when r ≥ 0.001: the first stall is r, a further one adds
+up to 1; the stance due round(80·P/stall) ms later (the original's 80),
+at most the expected rest. (Recoil and the follow-through after a wound
+come with C21/M26.) The expected rest is (1 − progress) × T_last / (80 ×
+W15 × ḡ × 1.125 × base) × 1000 ms, ḡ the mean of g over what is left
+((g + g_end)/2 past 0.5, else ((0.5 − p)(g + 1) + (g_end + 1)/2)/(1 −
+p)/2, g_end = 1 − 0.62475·W18): 849 ms for a 110-frame punch from its
+start. The clip start does not change the condition, so the behaviour
+tick after a stall's stance releases once more, as the original's.
+
+Attacks start eased smoothly: the main side with no blend, the other side
+with round((20 − W19)·0.6) frames (W19 the striker it makes primary: 12
+for the fists), the stab and the overhead with the executor's blend (10
+for Feint's renewal, else none); every start sets P = 1, no stall and a
+shut window, and a fresh side attack without Remise the state word
+0x80000.
+
+| state word bit | meaning |
+|---|---|
+| `0x1` | the window opened this swing |
+| `0x2` | stalling |
+| `0x4` | a landed blow cleaves on (C21) |
+| `0x10` | released |
+| `0x20` | recoiled (M26) |
+| `0x80` | past 0.7 in the window region |
+| `0x10000` | a chained swing, its window carried |
+| `0x20000` | a chained swing past 0.25: no further chain |
+| `0x80000` | started without Remise: no chain |
+
+Outside attacks the behaviour keeps only the released, recoiled and
+`0x40000` bits.
 
 **Stance starts.** Evidence: `exe.asm` of the set-stance helper, the body
 tick's posture and daze blocks and the AI's combat state, constants read
@@ -1131,10 +1219,9 @@ one tick.
 
 Not reproduced yet: the locomotion clock's stride modulation, its start
 key and the run overlay (C18); the stagger, Defence and Rebalance starts
-and the get-up re-pick (C11); the stab's and the overhead's start blends;
-the Remise chain's blend round(W18·6) + 2 (no chaining yet); the blow
-sag's writer, the
-swing's alignment wait, skill, recoil and slow state (C21); the torso
+and the get-up re-pick (C11); the blow sag's writer, the swing's
+weapon-in-hand wait (weapons are bodies with M24), recoil and the
+follow-through (C21, M26); the attack arm stiffness; the torso
 twist in the captures (identity without it); the femur posture flag; the
 foot contacts' flag in the capture; the armour encumbrance; the creature
 classes' own clock bases.
