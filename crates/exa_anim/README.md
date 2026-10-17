@@ -23,5 +23,12 @@ rate and the capture (`exa_game::limp`); other bodies play once a frame
   from them (`exa_formats::rsq::MotionSet::assemble`), built once per base
   and config and shared ([`docs/formats/RSQ.md`](../../docs/formats/RSQ.md),
   A character's clip table).
-- Keyframe controllers (linear / Catmull-Rom), pose sampling and blending.
+- Node keyframe tracks (`tracks`): `NodeTracks` on a scene node,
+  `StartTracks` starts the tracks of a node and the nodes under it as
+  using an object does (once and reverse swap at each start), and every
+  frame each playing track sets its node's translation from the original's
+  Catmull-Rom curve at its clock's time; F7 starts every track of the
+  level ([`docs/formats/RFC.md`](../../docs/formats/RFC.md), Keyframe
+  tracks).
+- Pose sampling and blending.
 - Procedural layers: stance, aim of the weapon from mouse input, look-at, idle noise.

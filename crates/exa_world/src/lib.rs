@@ -417,6 +417,11 @@ pub fn spawn_model_nodes(
                 .entity(e)
                 .insert(gi_volume::GiPoints(node.gi_points.clone()));
         }
+        if !node.tracks.is_empty() {
+            commands
+                .entity(e)
+                .insert(exa_anim::tracks::NodeTracks(node.tracks.clone()));
+        }
         entities.push(e);
     }
     for (i, node) in model.nodes.iter().enumerate() {
@@ -1203,6 +1208,7 @@ mod tests {
             half_extents: Vec3::ZERO,
             gi_points: Default::default(),
             rigid: None,
+            tracks: Vec::new(),
         }
     }
 
@@ -1363,5 +1369,62 @@ mod tests {
         let braies = placed[0].worn[0].appearance.unwrap();
         assert_eq!(braies.layers[0].colour, 1);
         assert!(placed[1].worn.is_empty());
+    }
+
+    /// A placed object's node with a keyframe track (the secret switch's
+    /// brick, under the model's root) plays it when the object is started:
+    /// the brick sinks along its parent's −z while the placement stays.
+    #[test]
+    fn placed_models_play_their_node_tracks() {
+        use bevy::time::TimeUpdateStrategy;
+        use exa_anim::tracks::{NodeTracks, StartTracks, TracksPlugin};
+        use exa_formats::key_track::{KeyTrack, PlayMode, PositionKey};
+        let key = |time, z: f32| PositionKey {
+            time,
+            position: [0.0, 0.0, z * 0.01],
+        };
+        let mut brick = node("Box001", Some(0), None);
+        brick.tracks = vec![KeyTrack {
+            mode: PlayMode::Once,
+            duration: 3.0,
+            keys: vec![key(0.0, 0.0), key(1.0, -5.0), key(2.0, -5.0), key(3.0, 0.0)],
+        }];
+        let model = Model {
+            nodes: vec![node("Plane001", None, None), brick],
+        };
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, TracksPlugin))
+            .insert_resource(TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_millis(250),
+            ));
+        app.update();
+        let placement = Transform::from_xyz(4.0, 1.0, -2.0);
+        let mut queue = CommandQueue::default();
+        let root = spawn_model(
+            &mut Commands::new(&mut queue, app.world()),
+            &model,
+            Some(placement),
+        );
+        queue.apply(app.world_mut());
+        let mut named = app.world_mut().query::<(Entity, &Name, Has<NodeTracks>)>();
+        let nodes: Vec<(String, bool)> = named
+            .iter(app.world())
+            .map(|(_, n, tracks)| (n.to_string(), tracks))
+            .collect();
+        assert!(nodes.contains(&("Box001".into(), true)), "{nodes:?}");
+        assert!(nodes.contains(&("Plane001".into(), false)), "{nodes:?}");
+        let box001 = named
+            .iter(app.world())
+            .find(|(_, n, _)| n.as_str() == "Box001")
+            .unwrap()
+            .0;
+        app.world_mut().write_message(StartTracks(root));
+        for _ in 0..3 {
+            app.update();
+        }
+        // 0.5 s into the first (reversed) play: the curve at 2.5 s.
+        let z = app.world().get::<Transform>(box001).unwrap().translation.z;
+        assert!((z - -0.028125).abs() < 1e-6, "{z}");
+        assert_eq!(app.world().get::<Transform>(root), Some(&placement));
     }
 }

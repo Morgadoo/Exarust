@@ -106,12 +106,24 @@ models of `Objects.rpk`, centre.y + extent.y is the highest vertex to
 0.05 cm. The original keeps centre and half extents on the node and
 measures weapons by them (`OTHER.md`, Weapon record).
 
-The body depends on the kind; after it come optional sub-chunks
-(`0x3AC1`, `0x3D0CEC05` GI points, `0x3DD0B001` rigid body, `0x3DD0C001`
-cloth marker, `0xEDC0C589`). Exarust reads the GI points, the rigid body
-(`Node::rigid_body`, below) and the cloth marker (`Node::cloth_marker`);
-the others are skipped for now. Every rigid body and cloth marker of the
-shipped data sits on a mesh node.
+The body depends on the kind (a mesh's below; a light's 40 bytes, 8 more
+for a spot and 16 more under its body flags `0x30000`; a voxel light's 32;
+`0x3D08`'s 8; none for the others); after it come optional sub-chunks, for
+every node that stores data, whatever its kind (an instance stores none):
+`0x3AC1` keyframe track, `0x3D0CEC04`, `0x3D0CEC05` GI points,
+`0x3DD0B001` rigid body, `0x3DD0C001` cloth marker, `0xEDC0C589` morph
+blob, and on plain nodes the emitter records (`0x3DD0E002` fire,
+`0x3DD0E004`). The original reads them in one loop after the body of any
+kind (REA on the node reader); walking them after every kind's body ends
+exactly at each node's end in every chunk tree of the installed packs.
+Exarust reads the GI points of meshes, the rigid body
+(`Node::rigid_body`, below), the cloth marker (`Node::cloth_marker`) and
+the keyframe tracks (`Node::key_tracks`) after any kind's body; the others
+are skipped for now. Shipped, by node kind: on meshes 10 729 GI point
+sets, 874 `0x3D0CEC04`, 2 782 rigid bodies, 17 cloth markers, 2 morph
+blobs and one keyframe track; on plain nodes 28 fires and one
+`0x3DD0E004`; nothing after lights and voxel lights. Every rigid body and
+cloth marker sits on a mesh node.
 
 ## Mesh body (`3D03`)
 
@@ -279,6 +291,73 @@ of each of the six long hair models in `CharExt.rpk` (`hair hula01…05`,
 `hair husa02`), four banners in `Objlib.rpk` (`bannerubma01`, `mawbanner01`,
 `uw01_banner01`, `uw01_banner02`) and the wraith's robe in
 `wraithhabase.rfc`. Exarust reads the marker (`Node::cloth_marker`).
+
+## Keyframe tracks (`3AC1`)
+
+Status: **verified** (REA on the node reader, the track's clock and curve,
+the scene's playing list and the object use that starts it; every chunk
+tree of every pack, nested packs included, parses). A position track the
+original plays on the node's translation:
+
+```
+u32  ?              0x3AE2 in the one shipped track; skipped
+u32  mode           0 free, 1 once, 2 reverse, 3 loop (any other: free)
+f32  duration       seconds
+u32  last           index of the last key
+key × (last + 1):
+  f32 time          seconds
+  f32 position[3]   cm: the node's translation in its parent's space
+```
+
+Bytes after the keys are skipped with the chunk. A node may carry several
+(the original appends each to the node's list).
+
+**Playing.** Nothing plays a track until it is started. The original
+starts every track of an object's nodes (the object's root and every
+node under it) when the player uses the object: the use of an operative
+object of class 0 (the secret switch's class) whose state allows it
+starts them, plays its sound and signals its target (after 2.1 s for
+kind 1). A start adds each track that is not already playing to the
+scene's playing list with the frame clock's time (ms), then swaps its
+mode between once and reverse, so a second use plays it back the other
+way; a start while it plays does nothing. Every frame each playing track
+turns `t = (now − start)/1000` s into a curve time: free as it is; once
+min(t, duration), ending at the duration; reverse duration − t, ending
+at 0; loop t − ⌊t/duration⌋·duration (a zero duration runs on as free).
+The node's translation is set to the curve's position there; a track
+that ends leaves the list and its node where it stopped. The clock is
+the engine's frame clock (ms of the system timer less the time it skips),
+not the 12 ms body-tick clock.
+
+**Curve.** Up to the first key's time the first key's position, from the
+last key's time on the last key's; in between, with keys i − 1 and i the
+first key at or past t and the one before it, s = (t − tᵢ₋₁)/(tᵢ − tᵢ₋₁)
+and the cubic Hermite basis:
+
+```
+p = pᵢ₋₁·(2s³ − 3s² + 1) + pᵢ·(3s² − 2s³) + m₀·(s³ − 2s² + s) + m₁·(s³ − s²)
+m₀ = 0                                             first segment (i = 1)
+m₀ = (pᵢ − pᵢ₋₂)·(tᵢ − tᵢ₋₁)/(tᵢ − tᵢ₋₂)           otherwise
+m₁ = (pᵢ₊₁ − pᵢ₋₁)·(tᵢ − tᵢ₋₁)/(tᵢ₊₁ − tᵢ₋₁)       before the last key
+m₁ = pᵢ − pᵢ₋₁                                     last segment
+```
+
+So the curve leaves its first key with no slope and arrives at its last
+along the last chord: not symmetric.
+
+**Shipped.** One track in all the data (`exa-tool corpus tracks`): the
+brick of the secret switch (`Objects.rpk` `uwa01 brkswtch`, node `Box001`
+under the root `Plane001`, both at the origin; the "Secret Swt Brk"
+object, operative class 0 kind 1), mode once, 3 s, keys (0 s, 0 cm),
+(1 s, z −5 cm), (2 s, z −5 cm), (3 s, 0 cm): used, the brick sinks 5 cm
+into the wall and comes back out over 3 s (−2.19 cm at 0.5 s, −5.63 cm at
+1.5 s, −2.81 cm at 2.5 s). The first use plays it in reverse, which the
+symmetric keys hide. `exanima03` places the switch in its own database at
+(−40.65, 1.93, 83.29) m. The original's other key controller (linear
+positions) is never built. Exarust decodes the tracks
+(`exa_formats::key_track`, `Node::key_tracks`), and `exa_anim::tracks`
+plays them on the node entities `exa_world` spawns; nothing uses objects
+yet, so F7 starts every track of the level (`docs/DEBUGGING.md`).
 
 ## Light node (`3D06`)
 

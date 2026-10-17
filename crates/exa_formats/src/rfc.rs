@@ -12,6 +12,7 @@
 
 use crate::characters::{CHARACTERS, LevelCharacters};
 use crate::environment::{ENVIRONMENT, Environment};
+use crate::key_track::KeyTrack;
 use crate::level::{self, LevelGrid, Prop};
 use crate::material::Material;
 use crate::objdb::Item;
@@ -120,6 +121,11 @@ pub struct Node {
     /// body): the original simulates the mesh as cloth when it is loaded
     /// into the game's scene (long hair, banners, the wraith's robe).
     pub cloth_marker: bool,
+    /// The node's keyframe tracks (sub-chunks [`KEY_TRACK`] after any
+    /// stored node's body), in the file's order: curves the original plays
+    /// on the node's translation when the object is used. A track that
+    /// does not decode keeps its error.
+    pub key_tracks: Vec<std::result::Result<KeyTrack, String>>,
     pub body: NodeBody,
 }
 
@@ -144,6 +150,11 @@ impl Node {
     /// The decoded collision body.
     pub fn rigid(&self) -> Option<&RigidBody> {
         self.rigid_body.as_ref().and_then(|b| b.as_ref().ok())
+    }
+
+    /// The decoded keyframe tracks.
+    pub fn tracks(&self) -> impl Iterator<Item = &KeyTrack> {
+        self.key_tracks.iter().filter_map(|t| t.as_ref().ok())
     }
 }
 
@@ -444,14 +455,27 @@ pub const RIGID_BODY: u32 = 0x3DD0_B001;
 /// Sub-chunk marking a mesh node as cloth (one word, 0 in every shipped
 /// file).
 pub const CLOTH: u32 = 0x3DD0_C001;
+/// Sub-chunk of a keyframe track (`key_track::KeyTrack`), which may follow
+/// any stored node's body.
+pub const KEY_TRACK: u32 = 0x3AC1;
+/// Light body flags under which the body ends with four more words (one
+/// skipped, then three values the original keeps for the flicker and the
+/// fade; not decoded).
+const LIGHT_EXTRA_FLAGS: u32 = 0x3_0000;
+/// Bytes of those words.
+const LIGHT_EXTRA_LEN: usize = 16;
+/// Bytes of the body of node kind `0x3D08`: two words, not decoded.
+const NODE_3D08_BODY_LEN: usize = 8;
+const NODE_3D08: u32 = 0x3D08;
 
-/// What the sub-chunks after a mesh body hold.
+/// What the sub-chunks after a node's body hold.
 #[derive(Default)]
 struct SubChunks {
     /// GI sample points (none when the chunk is absent or malformed).
     gi_points: Vec<[f32; 3]>,
     rigid_body: Option<std::result::Result<RigidBody, String>>,
     cloth_marker: bool,
+    key_tracks: Vec<std::result::Result<KeyTrack, String>>,
 }
 
 fn read_sub_chunks(c: &mut Cursor<'_>) -> SubChunks {
@@ -466,6 +490,10 @@ fn read_sub_chunks(c: &mut Cursor<'_>) -> SubChunks {
         }
         if tag == CLOTH {
             out.cloth_marker = true;
+        }
+        if tag == KEY_TRACK {
+            out.key_tracks
+                .push(KeyTrack::parse(sub.b).map_err(|e| e.to_string()));
         }
         if tag != GI_POINTS || points.is_some() {
             continue;
@@ -524,30 +552,44 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
     let bounds_centre = [c.f32()?, c.f32()?, c.f32()?].map(|v| v * CENTIMETRES_TO_METRES);
     let bounds_radius = c.f32()? * CENTIMETRES_TO_METRES;
     c.skip(4)?;
-    let (mut rigid_body, mut cloth_marker) = (None, false);
+    // The sub-chunks follow the body of every stored node, whatever its
+    // kind; an instance stores nothing more.
+    let mut sub = SubChunks::default();
     let body = if instance != 0 {
         NodeBody::Instance(instance)
     } else if kind == NODE_MESH {
         match read_mesh(&mut c, version) {
             Ok(mut m) => {
-                let sub = read_sub_chunks(&mut c);
-                (m.gi_points, rigid_body, cloth_marker) =
-                    (sub.gi_points, sub.rigid_body, sub.cloth_marker);
+                sub = read_sub_chunks(&mut c);
+                m.gi_points = std::mem::take(&mut sub.gi_points);
                 NodeBody::Mesh(Box::new(m))
             }
             Err(e) => NodeBody::Invalid(e.to_string()),
         }
     } else if kind == NODE_LIGHT {
         match read_light(&mut c, flags2) {
-            Ok(l) => NodeBody::Light(l),
+            Ok(l) => {
+                if l.flags & LIGHT_EXTRA_FLAGS == 0 || c.skip(LIGHT_EXTRA_LEN).is_ok() {
+                    sub = read_sub_chunks(&mut c);
+                }
+                NodeBody::Light(l)
+            }
             Err(e) => NodeBody::Invalid(e.to_string()),
         }
     } else if kind == NODE_VOXEL_LIGHT {
         match read_voxel_light(&mut c) {
-            Ok(l) => NodeBody::VoxelLight(l),
+            Ok(l) => {
+                sub = read_sub_chunks(&mut c);
+                NodeBody::VoxelLight(l)
+            }
             Err(e) => NodeBody::Invalid(e.to_string()),
         }
     } else {
+        let mut chunks = Cursor::new(c.b);
+        chunks.pos = c.pos;
+        if kind != NODE_3D08 || chunks.skip(NODE_3D08_BODY_LEN).is_ok() {
+            sub = read_sub_chunks(&mut chunks);
+        }
         emitter(c.bytes(c.remaining())?).unwrap_or(NodeBody::NotMesh)
     };
     Ok(Node {
@@ -560,8 +602,9 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
         bounds_centre,
         bounds_half_extents,
         bounds_radius,
-        rigid_body,
-        cloth_marker,
+        rigid_body: sub.rigid_body,
+        cloth_marker: sub.cloth_marker,
+        key_tracks: sub.key_tracks,
         body,
     })
 }
@@ -1164,6 +1207,100 @@ mod tests {
         let mut f = quad_file(None);
         f.truncate(f.len() - 10);
         assert!(Scene::parse(&f).is_err());
+    }
+
+    /// A file of `nodes` (kind, chunk body).
+    fn file_of_nodes(nodes: &[(u32, Vec<u8>)]) -> Vec<u8> {
+        let mut list = u32s(&[nodes.len() as u32]);
+        for (kind, body) in nodes {
+            list.extend(chunk(*kind, body));
+        }
+        let mut file = vec![0xCF, 0xAF, 0x23, 0x3D];
+        file.extend(chunk(NODE_LIST, &list));
+        file
+    }
+
+    /// A stored node's chunk body: the header (identity transform, empty
+    /// bounds) with node flags 2 `flags2`, then `body`.
+    fn node_with(node: &str, flags2: u32, body: &[u8]) -> Vec<u8> {
+        let mut b = name(node);
+        b.extend(u32s(&[0, flags2, 0, 0]));
+        b.extend(f32s(&[
+            1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+        ]));
+        b.extend(f32s(&[0.0; 7]));
+        b.extend(u32s(&[0]));
+        b.extend_from_slice(body);
+        b
+    }
+
+    /// Keyframe tracks follow the body of any stored node: a light's 40
+    /// bytes, 8 more for a spot (node flags 2 `0x200`) and 16 more under
+    /// its body flags `0x30000`; kind `0x3D08`'s 8; nothing for a plain
+    /// node; a mesh's body. A truncated track keeps its error and the rest
+    /// of the file decodes.
+    #[test]
+    fn reads_key_tracks_after_any_node_body() {
+        let mut payload = u32s(&[0x3AE2, 1]);
+        payload.extend(f32s(&[3.0]));
+        payload.extend(u32s(&[0]));
+        payload.extend(f32s(&[0.0, 100.0, 200.0, 300.0]));
+        let track = chunk(KEY_TRACK, &payload);
+        let light = |flags: u32, spot: bool| {
+            let mut b = u32s(&[flags]);
+            b.extend(f32s(&[1.0, 0.5, 0.25]));
+            b.extend(u32s(&[0]));
+            b.extend(f32s(&[1.0, 2.0, 500.0, 0.0, 0.5]));
+            if spot {
+                b.extend(f32s(&[30.0, 45.0]));
+            }
+            if flags & LIGHT_EXTRA_FLAGS != 0 {
+                b.extend(u32s(&[0]));
+                b.extend(f32s(&[0.25, 0.5, 0.75]));
+            }
+            b.extend(&track);
+            b
+        };
+        let mut odd = u32s(&[7, 9]);
+        odd.extend(&track);
+        let mut plain = track.clone();
+        plain.extend(u32s(&[FIRE, 4]));
+        plain.extend(f32s(&[20.0]));
+        let mut mesh = quad_body(None);
+        mesh.extend(chunk(KEY_TRACK, &payload[..payload.len() - 1]));
+        mesh.extend(chunk(CLOTH, &[0; 4]));
+        let file = file_of_nodes(&[
+            (NODE_LIGHT, node_with("Omni", 0, &light(0, false))),
+            (NODE_LIGHT, node_with("Spot", SPOT, &light(0, true))),
+            (NODE_LIGHT, node_with("Fade", 0, &light(0x1_0000, false))),
+            (NODE_LIGHT, node_with("Both", SPOT, &light(0x2_0000, true))),
+            (NODE_3D08, node_with("Odd", 0, &odd)),
+            (0x3D01, node_with("Fire", 0, &plain)),
+            (NODE_MESH, quad_body(None)),
+            (NODE_MESH, mesh),
+        ]);
+        let scene = Scene::parse(&file).unwrap();
+        assert_eq!(scene.nodes.len(), 8);
+        for node in &scene.nodes[..6] {
+            let tracks: Vec<_> = node.tracks().collect();
+            assert_eq!(tracks.len(), 1, "{}", node.name);
+            assert_eq!(tracks[0].keys[0].position, [1.0, 2.0, 3.0]);
+        }
+        assert!(matches!(
+            scene.nodes[1].body,
+            NodeBody::Light(Light { spot: Some(_), .. })
+        ));
+        assert!(matches!(
+            scene.nodes[5].body,
+            NodeBody::Emitter {
+                kind: FIRE,
+                size: 20.0
+            }
+        ));
+        assert!(scene.nodes[6].key_tracks.is_empty());
+        let truncated = &scene.nodes[7];
+        assert!(matches!(&truncated.key_tracks[..], [Err(e)] if e.contains("truncated")));
+        assert!(truncated.cloth_marker && matches!(truncated.body, NodeBody::Mesh(_)));
     }
 
     /// The cloth markers of the installed packs (skipped without the

@@ -19,6 +19,7 @@
 //! exa-tool bodies Objects "lever a01"  rigid bodies, links and cloth markers
 //! exa-tool mechanisms [exanima01]     door and operative records
 //! exa-tool corpus bodies              bodies, links and cloth markers per pack
+//! exa-tool corpus tracks              every node keyframe track of every chunk tree
 //! exa-tool export-gltf Objlib afr_cornflag_a01 out.glb
 //! exa-tool nav exanima01 [--png nav.png]  the level's navigation grid
 //! ```
@@ -153,6 +154,8 @@ enum CorpusKind {
     Winding,
     /// Rigid bodies, links, sliders and cloth markers per model pack.
     Bodies,
+    /// Every keyframe track of every chunk tree, nested packs included.
+    Tracks,
 }
 
 fn main() -> Result<()> {
@@ -296,6 +299,9 @@ fn main() -> Result<()> {
         Cmd::Corpus {
             what: CorpusKind::Bodies,
         } => bodies::corpus(&game),
+        Cmd::Corpus {
+            what: CorpusKind::Tracks,
+        } => corpus::tracks(&game),
         Cmd::Nav { level, png } => nav::nav(&game, &level, png.as_deref()),
         Cmd::ExportGltf { pack, entry, out } => {
             let scene = exa_formats::rfc::Scene::parse(entry_bytes(&game, &pack, &entry)?)

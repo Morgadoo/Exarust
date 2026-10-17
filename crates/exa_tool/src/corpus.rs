@@ -1,6 +1,7 @@
 //! `exa-tool corpus …`: decode every entry of a kind and report coverage;
-//! `corpus images` checks the channel order of uncompressed images and
-//! `corpus winding` which way the level geometry faces.
+//! `corpus images` checks the channel order of uncompressed images,
+//! `corpus winding` which way the level geometry faces and `corpus tracks`
+//! lists the nodes' keyframe tracks.
 
 use std::collections::BTreeMap;
 
@@ -1397,6 +1398,77 @@ pub fn winding(game: &GameData) -> Result<()> {
         &prop_sources,
         open_area,
     );
+    Ok(())
+}
+
+/// Every keyframe track of every chunk tree, the packs nested in a pack
+/// included: the file, the node and its parent, the play mode, the
+/// duration and the keys (seconds, cm).
+pub fn tracks(game: &GameData) -> Result<()> {
+    let is_tree = |b: &[u8]| {
+        matches!(
+            FileKind::detect(b),
+            FileKind::ChunkTree | FileKind::ChunkTreeAlt
+        )
+    };
+    let mut trees: Vec<(String, &[u8])> = Vec::new();
+    for (kind, pack) in game.packs() {
+        for e in pack.entries() {
+            let b = pack.bytes(e);
+            if is_tree(b) {
+                trees.push((format!("{}/{}", kind.file_stem(), e.name), b));
+            } else if FileKind::detect(b) == FileKind::Pack {
+                let Ok(inner) = exa_rpk::Archive::parse(b) else {
+                    continue;
+                };
+                for f in inner.entries() {
+                    let b = inner.bytes(f);
+                    if is_tree(b) {
+                        trees.push((format!("{}/{}/{}", kind.file_stem(), e.name, f.name), b));
+                    }
+                }
+            }
+        }
+    }
+    let (mut files, mut found, mut bad) = (0, 0, 0);
+    for (name, b) in &trees {
+        let Ok(scene) = Scene::parse(b) else {
+            continue;
+        };
+        files += 1;
+        for node in &scene.nodes {
+            for track in &node.key_tracks {
+                let track = match track {
+                    Ok(t) => t,
+                    Err(e) => {
+                        bad += 1;
+                        println!("{name} [{}]: undecodable track: {e}", node.name);
+                        continue;
+                    }
+                };
+                found += 1;
+                let parent = node
+                    .parent
+                    .and_then(|p| scene.nodes.get(p - 1))
+                    .map_or("(root)", |p| p.name.as_str());
+                println!(
+                    "{name} [{}] under {parent}: {:?}, {} s, {} keys",
+                    node.name,
+                    track.mode,
+                    track.duration,
+                    track.keys.len()
+                );
+                for k in &track.keys {
+                    let cm = k.position.map(|v| v * 100.0);
+                    println!(
+                        "  {:>7.3} s  ({:.2}, {:.2}, {:.2}) cm",
+                        k.time, cm[0], cm[1], cm[2]
+                    );
+                }
+            }
+        }
+    }
+    println!("{files} chunk trees, {found} keyframe tracks, {bad} undecodable");
     Ok(())
 }
 

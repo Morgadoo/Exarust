@@ -107,7 +107,8 @@ checked outside the engine through exporters.
 | ✅ Static mesh (`3D03`): vertex streams, index maps, triangles, material groups, node transforms | `exa_formats::rfc` | done: 23 065/23 065 retail meshes decode; cm → m, right-handed Y-up confirmed |
 | Materials (`BA01`, `.rml` libraries): ✅ texture layers and slots; ✅ parameter block colours, opacity, gloss, specular level, render class, flags, kind and displacement shadows; subsurface colour, opacity fall-off and refraction still open | `exa_formats::material` | map the rest of the 184-byte block to the plug-in classes seen in the binary (`TMaterialPlugIn`, `TRTMatPlugIn`, `TProcMaterial`) |
 | ✅ Skinned meshes: weights from seams (`add-skinning`), every race's body (`add-race-bodies`); morph targets (`*morph.rfc`) still open | `exa_formats::rfc`, `exa_assets::skin` | |
-| ✅ Skeleton and motions (`.rsq`) | `exa_formats::rsq` | 18 bones, 48 clips, keyframe controllers (linear, Catmull-Rom) |
+| ✅ Skeleton and motions (`.rsq`) | `exa_formats::rsq` | 18 bones, 48 clips |
+| ✅ Node keyframe tracks (`3AC1`) | `exa_formats::key_track` | one track ships (the secret switch's brick); played by `exa_anim::tracks` |
 | ✅ Level grid (`3DED`), level sections (`3DE10000`, `DBC0`, …), placed objects and characters, starts | `exa_formats::{level,characters}` | wall/floor sets `gews_*` / `gefs_*` |
 | ✅ Terrain (`.rft`) and terrain tables (`.ftb`) | `exa_formats::terrain` | heightfield, layers, grass and plants |
 | ~~Packed `.rfi` storage~~ | `exa_formats::rfi` | done in Phase 0 (RLE) |
@@ -152,6 +153,15 @@ terrain limited to the grid's terrain cells: the space between and inside
 walls, the rooms the player cannot see and the rock between rooms are
 black as in the original ([RENDERING.md](RENDERING.md), Rooms and black
 fill).
+Done (change `play-node-keyframe-tracks`): the scene nodes' keyframe tracks
+decoded after any node kind's body and played as the original plays them:
+a start (using the object, in the original) swaps once and reverse and
+puts the tracks on the playing list; every frame the node's translation
+follows the original's Catmull-Rom curve at its clock's time until once
+or reverse ends. The one shipped track is the brick of the secret switch
+in `exanima03`, which sinks 5 cm and comes back in 3 s; until objects can
+be used, F7 starts every track ([formats/RFC.md](formats/RFC.md),
+Keyframe tracks).
 Remaining: portal clipping of adjacent rooms, doors' open state, the lid in
 the lights' cube faces, terrain gloss textures, fine displacement, the
 original's sky shader, time of day and weather of the outdoor arenas,

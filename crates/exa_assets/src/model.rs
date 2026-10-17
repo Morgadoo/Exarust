@@ -60,6 +60,9 @@ pub struct ModelNode {
     /// node is not marked as level geometry
     /// ([`exa_formats::rfc::Node::is_static`]).
     pub rigid: Option<NodeRigidBody>,
+    /// The node's keyframe tracks (curves of its translation, played when
+    /// they are started).
+    pub tracks: Vec<exa_formats::key_track::KeyTrack>,
 }
 
 /// A model node's rigid body and what its mobility is divided by when the
@@ -366,6 +369,7 @@ impl ModelLoader<'_> {
                     _ => None,
                 },
                 rigid,
+                tracks: node.tracks().cloned().collect(),
             });
         }
         Model { nodes }

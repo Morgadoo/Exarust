@@ -20,6 +20,7 @@
 | `bodies <pack> <entry>` | the rigid bodies of a model's nodes (root or child, class, mobility, rest points, point masses, spheres, links with slider travel, sound slots, the first material with the divisor, registered mobility and impact sound set) and its cloth markers, in cm (`bodies Objects "lever a01"`) |
 | `mechanisms [level]` | the door and operative records of `objdb.rdb`, or of a level's own database (`mechanisms exanima01`), with the body class each gives its model |
 | `corpus bodies` | per model pack: models with bodies, undecodable bodies, models with links and hung from the world, slider bodies, cloth markers |
+| `corpus tracks` | every node keyframe track of every chunk tree, nested packs included: file, node and parent, mode, duration and keys (s, cm) |
 | `corpus meshes` | decode every chunk tree; per-pack table and reasons for unsupported records |
 | `corpus levels` | grids, props and placed characters of every level; placed humans covered at the groin and their worn items with a `Characters.rpk` model |
 | `corpus images` | every image by format word and storage; decodes the uncompressed ones and checks that RGB8 normal maps hold z in blue |

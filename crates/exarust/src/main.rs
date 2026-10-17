@@ -62,7 +62,8 @@
 //! Controls: hold the right mouse button to look, WASD to move, Q/E down/up,
 //! Shift to go faster. Debug keys (`docs/DEBUGGING.md`): F3 body overlay, F4
 //! only the inspected body, F5 inspect the body under the cursor, F6 the
-//! navigation grid, P pause, `.` step one tick, `[` / `]` slower / faster.
+//! navigation grid, F7 start every keyframe track of the level, P pause,
+//! `.` step one tick, `[` / `]` slower / faster.
 
 mod viewer;
 

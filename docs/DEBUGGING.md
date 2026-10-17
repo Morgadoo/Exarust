@@ -149,6 +149,7 @@ timeout passes; the log warns of it. Pick a tick after the load.
 | F4 | draw every body, or only the inspected one |
 | F5 | inspect the body under the cursor, or the next body when none is under it |
 | F6 | show or hide the navigation grid |
+| F7 | start every keyframe track of the level ([Keyframe tracks](#keyframe-tracks)) |
 | P | pause or resume the simulation |
 | `.` | step one tick (pausing first if running) |
 | `[` / `]` | slower / faster: ×0.1, ×0.25, ×0.5, ×1, ×2 |
@@ -390,3 +391,28 @@ columns by spans (0–3): [190963, 320141, 896, 0]
 Lower: 219292 floors, 219225 passable (size class 0), 101745 open sky
 Upper: 792 floors, 792 passable (size class 0), 104 open sky
 ```
+
+## Keyframe tracks
+
+Scene nodes can carry keyframe tracks that move them
+([formats/RFC.md](formats/RFC.md), Keyframe tracks); the original starts
+an object's tracks when the player uses it, and Exarust cannot use
+objects yet. F7, in any view, starts every track of the level as a use
+would: each start is logged at info level with the node, the mode it
+plays in (the first start of a once track plays it in reverse) and the
+node's position; `RUST_LOG=info,exa_anim::tracks=debug` also logs where
+each ends. `exa-tool corpus tracks` lists the tracks of every pack (one
+ships: the secret switch's brick in `exanima03`).
+
+```bash
+# The secret switch's brick seen from beside it, at rest, then sunk into
+# the wall (slowed four times so the shot lands mid-press; the log says
+# when it started and, with debug logging, when it ended 3 s of game
+# clock later).
+exarust --no-gi --no-supersample --size 960x540 --all-rooms \
+  --camera -40.15,1.93,82.6,144,0 --screenshot rest.png --frames 110 level exanima03
+exarust --no-gi --no-supersample --size 960x540 --all-rooms \
+  --camera -40.15,1.93,82.6,144,0 --sim-speed 0.25 --press F7@20 \
+  --screenshot sunk.png --frames 620 level exanima03
+```
+
