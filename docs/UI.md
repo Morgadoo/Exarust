@@ -102,9 +102,10 @@ Exarust (`exa_ui::cursor` draws, `exa_game::cursor` picks the shape):
   (`0x800`), down for bit `0x200` (down, getting up, dormant), else
   standing; Exarust's fall shows the standing shapes until its balance is
   under 0.3, as the original's (its word is still normal then);
-- nothing collapses yet: a killing blow kills at once, so the arrowhead
-  takes the ring's place at the blow, where the original keeps the ring
-  through the 3 s collapse; the crosshair has no use until interaction;
+- a killing blow starts the 3 s collapse ([formats/RSQ.md](formats/RSQ.md),
+  The collapse), so in combat mode the ring stays through it and the
+  arrowhead comes at death, as in the original; the crosshair has no use
+  until interaction;
 - `--cursor x,y` holds the pointer at a window position for unattended
   runs ([DEBUGGING.md](DEBUGGING.md)).
 

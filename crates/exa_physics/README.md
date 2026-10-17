@@ -42,6 +42,12 @@ its ankles and asks the level for the ground under each foot
 its support S (`src/body_balance.rs`, `body::Ragdoll::measure_balance`).
 `body::Ragdoll::exertion` sums each part's farthest particle over the last
 tick (cm), the summed limb motion `exa_combat`'s posture stage reads.
+A collapsing body (`body::Bearing::collapsing`, from its condition word)
+has its frame follow its pelvis exactly, its lift multiplied by its tone
+squared, its arms at 0.2 and its feet probed standing; its support pins'
+gain (`body::Drive::pin_gain`, 0.081 living) does not recover. A body
+asked to go limp keeps its motion unless the request gives a velocity
+(`body::GoLimp::velocity`); `body::daze_energy` is a blow's daze.
 Velocity retention is the original's default environment: banded by speed
 for limp parts, the fast value for living limbs. A limp body sleeps by the
 original's countdown (`body::Ragdoll::countdown`: 256, two off each tick

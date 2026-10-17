@@ -39,6 +39,7 @@
 //!          --pause-on-stretch <cm>    pause the simulation when a link goes this far past its slack
 //!          --pause-after-jet <n>      pause the simulation n body ticks after the first blood jet
 //!          --pause-on-hit <n>         pause the simulation n ticks after the player's first blow lands
+//!          --pause-after-collapse <n> pause the simulation n ticks after the first killing blow starts a collapse
 //!          --press key@frame,...      press keys (Ctrl among them) or mouse buttons (LMB, RMB, MMB) at frames after
 //!                                     loading (e.g. `.@400,P@500,LMB@600`); `key@a-b` holds it from frame a to b
 //!          --cursor x,y               play mode: the cursor stays at this window point (logical pixels), for unattended runs
@@ -145,6 +146,9 @@ pub struct Options {
     /// Pause the simulation this many ticks after the player's first blow
     /// lands.
     pub pause_on_hit: Option<u64>,
+    /// Pause the simulation this many ticks after the first body starts
+    /// its collapse.
+    pub pause_after_collapse: Option<u64>,
     /// Keys and buttons pressed at frames after the load (for unattended
     /// checks): each is held over its frames and let go at the range's end.
     pub press: Vec<(Press, Range<u32>)>,
@@ -345,6 +349,9 @@ fn main() -> AppExit {
                 options.pause_on_stretch = args.next().and_then(|v| v.parse().ok())
             }
             "--pause-on-hit" => options.pause_on_hit = args.next().and_then(|v| v.parse().ok()),
+            "--pause-after-collapse" => {
+                options.pause_after_collapse = args.next().and_then(|v| v.parse().ok())
+            }
             "--press" => {
                 let list = args.next().unwrap_or_default();
                 match parse_presses(&list) {
@@ -579,7 +586,8 @@ fn main() -> AppExit {
             options.pause_on_stretch.map(|cm| cm / 100.0),
         )
         .after_jet(options.pause_after_jet)
-        .with_pause_on_hit(options.pause_on_hit),
+        .with_pause_on_hit(options.pause_on_hit)
+        .with_pause_after_collapse(options.pause_after_collapse),
     )
     .insert_resource(options)
     .add_plugins(viewer::ViewerPlugin)

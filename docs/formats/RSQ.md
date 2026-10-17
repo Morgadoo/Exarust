@@ -219,8 +219,9 @@ How the original simulates a body (`exa_physics::body`):
     its pelvis 1.7 cm over its target; well under it, f = 1.5 lifts the
     pelvis and thighs at half g. A dazed body's upper body takes less of
     the lift, so it sags; a body without support falls at g. The original
-    zeroes the shares of the legs and pelvis on bodies of scale over 1.3,
-    and multiplies f by t² while collapsing; neither applies yet.
+    zeroes the shares of the legs and pelvis on bodies of scale over 1.3
+    (not yet in Exarust), and multiplies f by t² while collapsing (the
+    word's bit 0x800: [The collapse](#the-collapse)).
   - The **target pelvis height** comes from the feet, each tick, in cm.
     Each leg's is its ground + crouch·60 + (1 − crouch)·(the clip root's
     height over the leg's animated ankle + its ground offset). The ground
@@ -455,7 +456,8 @@ follows the pelvis:
 
 - while the body moves, onto the pelvis origin itself, every tick (the
   original also while stepping);
-- without support, to the pelvis less the root offset, every tick;
+- without support, or collapsing, to the pelvis less the root offset,
+  every tick;
 - standing on its feet, only while its support is under 0.95 (the
   original compares with a double, so a support of exactly 0.95f is under
   it), and then once that place is more than 5 cm away; at 0.95 or more it
@@ -471,7 +473,7 @@ follows the pelvis:
   the root offset of that blend.
 
 It is placed at once the first time. Not reproduced yet: the jolt that
-moves the stance toward the feet (C15) and the collapse (every tick, C23).
+moves the stance toward the feet (C15).
 Only the targets' rotations drive the muscles; their places matter to the
 stance hold (below), and later to the support pins and the foot targets
 (C12, C14).
@@ -622,9 +624,10 @@ stance and before the character ticks; every `Fighter` keeps the word):
   collapse), for the changes that add those actions;
 - Exarust's get-up writes getting up when it starts, and the character
   tick normal when the get-up's clip ends into the stance (the same tick);
-  a killing blow writes dead and a level's corpse is placed dead (the
-  collapse comes with L5); a walk's stop needs no writer, since the
-  player's steering starts the stance before the posture stage;
+  a killing blow starts the collapse (below; dead at once for a body
+  without muscles) and a level's corpse is placed dead; a walk's stop
+  needs no writer, since the player's steering starts the stance before
+  the posture stage;
 - not yet: the posture block's actions (Rebalance, the Defence stance,
   staggers and the get-up decision: C11; nothing lowers tone yet), the
   kick, weapon switch and powers, knock-outs, dormancy, shocks, the
@@ -634,6 +637,67 @@ stance and before the character ticks; every `Fighter` keeps the word):
 - `--shove 60 play arena`: 0 in Idle and in the daze's Defence stance, 0
   while it falls (balance 0.53), `0x200` from balance 0.25 on, `0x300` at
   the get-up's start, 0 when `Get Up 2` ends into Idle.
+
+### The collapse
+
+A lethal wound never kills at once (`exa_combat::collapse`; REA on the
+collapse start, the dying tick, the body tick's collapsing branch and
+death, constants read from the executable; six live retail collapses):
+- **Start**, once (not while the word holds 0x800): the waking flag is
+  cleared, the word becomes `0x800`, the stance and the clip Fall Backward
+  (a looping held pose, its hands up at the head) with a blend of
+  round((1.2 − E) × 300) frames, in double precision, E the energy after
+  the blow's daze: 60 at full energy, 345 at the floor of 0.05; eased
+  smoothly. A clip start does nothing when its clip already plays. (Not
+  yet: the held items dropped (L13), a grab released, the lower legs'
+  collision layers, the death voice.)
+- **Each tick**, in place of the posture block: the frame re-anchors on
+  the pelvis with no reach; the arms' stiffness is 0.2; the dying tick
+  moves the heading's x and z each by (random − 0.5) × 0.5 (the original's
+  generator) and renormalises it (the stance facing follows), starts
+  Rebalance (20 frames, linear: the arms flung wide) once the balance is
+  under 0.8 in double precision, unless the character's size is 1.2 or
+  more, takes 0.003 off the tone and 0.0003 off the support pins' gain (in
+  double; the gain is set to 0.01 only if it goes under 0), and when not
+  stepping starts a stagger step toward chest + unit(fast chest velocity)
+  × (tone + 0.5)² × reach × max(balance, 0.4) × √scale (not yet: Exarust
+  has no steps, C15). T = tone × stance factor. The clip clock, balance,
+  feet and lift run on; the lift is multiplied by t² as well as
+  2(t − 0.5), so it is gone at half tone; the pose drive is t²·T·…, the
+  link muscles √E·T.
+- **Death** at a tone of 0.25 or less (0.5 × the image's 0.5): 250 ticks,
+  3.0 s from full tone. Muscles off, tone 0.01, the word `0xA00`; a plain
+  ragdoll from that tick, its motion kept (Exarust gave it a made-up
+  velocity before).
+- Exarust starts it in its hit reaction, with the energy the blow's
+  queued daze leaves, takes the body off its controller (no carry, no
+  stance hold) while its balance and feet are still measured standing,
+  drops its own fall and any attack, and runs the dying tick in the
+  posture stage; a further blow shoves and bleeds a collapsing body but
+  leaves its collapse. Its living support pins' gain starts at 0.08f and
+  recovers 0.001 a tick under the double 0.08, so it settles at 0.081
+  (nothing reads it before the support pins, C14).
+- `--opponent play arena`, the duellist's seventh blow: E 0.668, Fall
+  Backward with 160 frames of blend; the body sinks with its chest over
+  its feet (balance 1) until its feet lose the ground 130 ticks later
+  (1.57 s; the live collapses: 0.58–1.44 s, always at balance 0), when
+  Rebalance starts; dead on the 250th tick, limp, partly on its back with
+  the left arm out. Without the stagger steps it sinks where it stands
+  instead of stumbling back.
+- The player killed by the duellist's first blow (`--health 0.05,0.05`,
+  `--pause-after-collapse`, eight runs): E 0.61–0.63, 171–178 frames of
+  blend. At 0.4 s a slight crouch, the arms low; at 1 s and 1.2 s a squat,
+  the knees at 86°, the chest upright over the feet; the feet lose the
+  ground and Rebalance starts 133–158 ticks (1.6–1.9 s) after the blow, at
+  tone 0.53–0.60; the body sits, then tips onto its back, the pelvis down
+  at about 2.5 s. Dead on the 250th tick; settled it lies on its back and
+  side, the upper arms turned 68° and 72° at the shoulders, one knee up
+  (thigh 108°), the other leg out (20°), as the original's corpses lie.
+  The live collapses at like energies threw their arms wide sooner: 0.88 s
+  (E 0.645) and 1.42 s (E 0.613); the reference frames' player (E 0.36, a
+  heavier daze) was in a deep crouch at 0.4 s and on its back by 1.2 s
+  (Rebalance at 0.73 s). The lag is most likely the missing stagger
+  steps' (C15).
 
 Per-tick trace. `exarust --trace <file.csv>` writes one row per traced body
 after every tick. It traces the player's body, or every simulated body when

@@ -176,8 +176,10 @@ pub(crate) fn part_setup(
     }
 }
 
-/// Takes the muscles of bodies asked to go limp; they stop being animated
-/// and their character stops being steered.
+/// Takes the muscles of bodies asked to go limp (unless a death took them
+/// in its tick already); they keep the motion they have unless the request
+/// gives them a velocity, stop being animated and their character stops
+/// being steered.
 fn go_limp(
     mut commands: Commands,
     mut bodies: Query<(Entity, &GoLimp, &mut Ragdoll)>,
@@ -185,8 +187,12 @@ fn go_limp(
     controlled: Query<(), With<CharacterBody>>,
 ) {
     for (root, limp, mut body) in &mut bodies {
-        body.go_limp();
-        body.set_velocity(limp.velocity);
+        if body.drive.is_some() {
+            body.go_limp();
+        }
+        if let Some(velocity) = limp.velocity {
+            body.set_velocity(velocity);
+        }
         commands
             .entity(root)
             .remove::<(GoLimp, Physical, Animator, TickedClips)>();
@@ -528,6 +534,7 @@ fn bearing(
             _ => 0.0,
         },
         gait_floor: None,
+        collapsing: condition.is_collapsing(),
     }
 }
 
@@ -1043,7 +1050,7 @@ pub(crate) mod tests {
     /// backpedalling 1.476 cm a tick 0.736; a walk clip held still runs
     /// the standing clock; fists swing 1.62, a zombie (most energy 0.9)
     /// at full energy too, and at 0.81 by its share squared, 0.81; a
-    /// ghoul's base of 1.5 stands at 0.9.
+    /// ghoul's base of 1.5 stands at 0.9; collapsing 0.6.
     #[test]
     fn clocks_run_at_the_originals_rates() {
         let pace = Pace {
@@ -1098,6 +1105,15 @@ pub(crate) mod tests {
         let mut ghoul = doing(still, 1.0);
         ghoul.race.clip_rate = 1.5;
         assert!(close(frames(0x13, &ghoul, &pace), 0.9));
+        // Collapsing (its fall and get-up over), Fall Backward and
+        // Rebalance run at 0.6 a tick, whatever its tone.
+        let collapsing = Bearing {
+            collapsing: true,
+            ..still
+        };
+        for (motion, tone) in [(0x11, 1.0), (0x21, 0.6), (0x21, 0.26)] {
+            assert!(close(frames(motion, &doing(collapsing, tone), &pace), 0.6));
+        }
     }
 
     /// A get-up from the floor starts from the lying body: after the tick

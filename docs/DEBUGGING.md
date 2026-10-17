@@ -47,6 +47,7 @@ it takes the ring's other slot.
 | `--pause-on-stretch <cm>` | pause at the end of the tick in which a link of a body first goes this far past its slack; the log and the readout name the body, the part and the link |
 | `--pause-after-jet <n>` | pause at the end of the `n`th body tick after the tick that first finds a blood jet started (a bleeding blow's, or `--debug-spray`'s), to catch a jet in flight ([Wounds](#wounds)) |
 | `--pause-on-hit <n>` | pause n ticks (at least 1) after the tick in which the player's first blow lands, for a picture of a landed punch or cut; the log names the tick and the struck bone |
+| `--pause-after-collapse <n>` | pause n ticks (at least 1) after the tick in which a killing blow first starts a body's collapse (its condition `0x800`), for a picture of the collapse that long after the blow (83 ticks is 1 s; death comes on the 250th); the log names the body and the tick ([formats/RSQ.md](formats/RSQ.md), The collapse) |
 | `--press key@frame,...` | press keys or mouse buttons at frames counted from the end of the load (`.`, `[`, `]`, `Tab`, `Ctrl`, `F1`–`F12`, a letter, or `LMB`, `RMB`, `MMB`), e.g. `.@400,.@401,P@500`; each is released the frame after; `key@a-b` holds it from frame a and lets it go at frame b, e.g. `RMB@60-400` |
 | `--click frame,...` | click the left mouse button at frames counted from the end of the load (the same as `LMB@frame` in `--press`): with `--weapon` in an arena fight, which starts in combat mode, the player attacks unattended |
 | `--camera x,y,z,yaw,pitch` | in play mode, a fixed camera there instead of the chase camera (metres, degrees), for unattended shots; with `--fov` |
@@ -130,10 +131,18 @@ exarust --at 0,0,1 --press Tab@50,Tab@300 --screenshot fade.png --frames 372 pla
 exarust --heartbeat --opponent --health 0.06,0.25 --screenshot beat.png --frames 200 play arena
 ```
 
-With `--pause-at-tick`, `--pause-on-stretch`, `--pause-after-jet` or
-`--pause-on-hit`,
+With `--pause-at-tick`, `--pause-on-stretch`, `--pause-after-jet`,
+`--pause-on-hit` or `--pause-after-collapse`,
 `--screenshot` counts its `--frames` from the pause, so the picture shows
-the paused body.
+the paused body:
+
+```bash
+# The player one second into its collapse, from behind it: with a fifth
+# of a human's health (0.05 of 0.25) the duellist's first blow kills it.
+exarust --no-gi --no-supersample --size 960x540 --opponent --health 0.05,0.05 \
+  --camera -0.25,2.4,7.0,0,-42 --pause-after-collapse 83 \
+  --screenshot collapse.png --frames 10 play arena
+```
 
 The traces start while the loading screen is still up (bodies tick from
 the moment they are built; the log's `loading took` line marks its end). A

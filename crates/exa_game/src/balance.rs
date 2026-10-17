@@ -72,9 +72,22 @@ fn fall_toward(lean: Vec3, forward: Vec3) -> &'static str {
 #[allow(clippy::type_complexity)]
 fn fall_off_balance(
     mut commands: Commands,
-    mut bodies: Query<(Entity, &mut Ragdoll, &mut Animator, &GlobalTransform), Without<Fallen>>,
+    mut bodies: Query<
+        (
+            Entity,
+            &mut Ragdoll,
+            &mut Animator,
+            &GlobalTransform,
+            Option<&Condition>,
+        ),
+        Without<Fallen>,
+    >,
 ) {
-    for (root, mut body, mut anim, root_gt) in &mut bodies {
+    for (root, mut body, mut anim, root_gt, condition) in &mut bodies {
+        // The collapse skips the falls.
+        if condition.is_some_and(|c| c.dying()) {
+            continue;
+        }
         let Some(lean) = body
             .drive
             .as_ref()
@@ -116,6 +129,10 @@ fn get_up(
     for (root, mut body, mut anim, mut fallen, mut t, parent, player, stance, condition) in
         &mut bodies
     {
+        // A collapsing or dead body never gets up.
+        if condition.as_deref().is_some_and(|c| c.dying()) {
+            continue;
+        }
         let ticks = body.ticks as f32;
         // Body time, which may run slower than the clock.
         fallen.time += ticks / BODY_HZ;
@@ -219,6 +236,20 @@ mod tests {
         assert_eq!(at("Force Blast"), Some(*action::POWERS.start()));
         assert_eq!(at("Disp Form"), Some(*action::POWERS.end()));
         assert_eq!(at("Rebalance"), Some(0x21));
+        // The collapse's clips are looping held poses (mode bit 0), as its
+        // start plays them; the get-ups are played once.
+        let loops = |name: &str| {
+            motions
+                .0
+                .clip("Default", exa_anim::MovesetConfig::NONE, name)
+                .unwrap()
+                .mode
+                & 1
+                == 1
+        };
+        assert!(loops(exa_combat::collapse::FALL_BACKWARD));
+        assert!(loops(exa_combat::collapse::REBALANCE));
+        assert!(!loops("Get up") && !loops("Get Up 2"));
     }
 
     /// A body falls the way its chest leans from its support point: forward

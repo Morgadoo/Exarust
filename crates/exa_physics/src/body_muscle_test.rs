@@ -543,3 +543,22 @@ fn the_pose_drive_leaves_the_limbs_to_their_muscles() {
         assert_eq!(moved, driven, "bone {}", p.bone);
     }
 }
+
+/// A collapsing body's arms are 0.2, off balance or not, at any tone, and
+/// whatever they were (the original's collapse branch sets 0.2 every tick;
+/// its turn error is 0 then).
+#[test]
+fn collapsing_arms_are_0_2() {
+    let human = RaceMuscles::HUMAN;
+    let collapsing = Bearing {
+        collapsing: true,
+        off_balance: true,
+        ..Bearing::default()
+    };
+    for (x, tone) in [(0.5, 1.0), (0.4, 0.6), (0.05, 0.26)] {
+        assert_eq!(
+            arm_stiffness(x, &collapsing, tone, &human, &BodyStats::HUMAN),
+            0.2
+        );
+    }
+}

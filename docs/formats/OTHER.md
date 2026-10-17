@@ -786,8 +786,8 @@ calls)
 - Rebalance, Defence stance, staggers and falls come from balance, not
   from the blow. Head Pain is a story clip ([RSQ.md](RSQ.md), Motion set).
   Defence stance with a step also answers electricity and energy effects.
-- A lethal wound plays Fall Backward and collapses the character; Exarust
-  sends the body limp at once.
+- A lethal wound plays Fall Backward and collapses the character for 3 s
+  before it dies ([RSQ.md](RSQ.md), The collapse), as Exarust does now.
 - It bleeds (REA on the damage routine's blood branch, the wound queue and
   its consumer in the body tick) when its race bleeds (`races.rdb` flag
   bit 0) and the wound's size R = P/(P + 1)·m, before the 0.75 of red,

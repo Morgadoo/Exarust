@@ -308,6 +308,29 @@ fn the_lift_scales_with_the_tone() {
     assert_eq!(lifted(0.5), (0.0, 0.0));
 }
 
+/// A collapsing body's lift is the standing one's times its tone squared as
+/// well: at tone 0.9 it lifts 0.8·0.81 = 0.648 of the full lift (0.8 a
+/// standing body's), at 0.75 half of 0.5625, and none at 0.5.
+#[test]
+fn a_collapsing_lift_fades_by_the_tone_squared() {
+    let floor = floor_quad(0.0, 5.0);
+    let lifted = |tone: f32, collapsing: bool| {
+        let (mut body, pose) = standing_at(Vec3::new(0.0, -0.05, 0.0));
+        let d = body.drive.as_mut().unwrap();
+        d.tone = tone;
+        d.bearing.collapsing = collapsing;
+        body.measure_balance(floor.as_slice());
+        body.aim(Affine3A::IDENTITY, pose);
+        drive(&body).lift()
+    };
+    let full = lifted(1.0, false);
+    assert!(close(lifted(1.0, true), full, 1e-6));
+    assert!(close(lifted(0.9, false), 0.8 * full, 1e-5));
+    assert!(close(lifted(0.9, true), 0.648 * full, 1e-5));
+    assert!(close(lifted(0.75, true), 0.5 * 0.5625 * full, 1e-5));
+    assert_eq!(lifted(0.5, true), 0.0);
+}
+
 /// A dazed body sags: its upper body takes the carry by its energy. Its
 /// soles 25 cm deep, the lift's target is over where its legs reach, so it
 /// hovers with its feet off the floor where its weight balances the lift,

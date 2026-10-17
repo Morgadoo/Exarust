@@ -434,8 +434,9 @@ impl Ragdoll {
         };
         let bearing = drive.bearing;
         let bonus = drive.race.balance_bonus;
-        // Down: lying, or getting up.
-        let down = !drive.supported || bearing.getting_up;
+        // Down: lying, or getting up (a collapsing body, unsupported as it
+        // is, still probes its feet standing).
+        let down = (!drive.supported && !bearing.collapsing) || bearing.getting_up;
         // Only a standing body rides its controller.
         let carried = bearing.carried && drive.supported;
         let forward = drive.root.map_or(Vec3::Z, |r| {

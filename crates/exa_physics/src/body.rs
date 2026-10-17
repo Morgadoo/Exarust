@@ -139,6 +139,13 @@ const MIN_ENERGY: f32 = 0.05;
 pub const MAX_ENERGY: f32 = 1.0;
 /// Most of its energy a single blow takes.
 const MAX_DAZE: f32 = 0.9;
+/// The support pins' gain factor a living body starts with, and below
+/// which it recovers 0.001 a tick unless it collapses. The start is the
+/// float 0.08, compared with the double 0.08, so a living body's first
+/// tick lifts it to 0.081, where it stays.
+pub const PIN_GAIN: f32 = 0.08;
+const PIN_GAIN_BELOW: f64 = 0.08;
+const PIN_RECOVERY: f64 = 0.001;
 /// A body is dazed while its energy is more than this under its most,
 /// compared in double precision as the original does (so an energy of
 /// 0.95f is dazed).
@@ -535,8 +542,9 @@ pub struct Fallen {
 /// its parts become a [`Ragdoll`] from their current pose.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct GoLimp {
-    /// Initial velocity of the whole body, m/s.
-    pub velocity: Vec3,
+    /// A velocity given to the whole body, m/s; none keeps the motion it
+    /// has (a death).
+    pub velocity: Option<Vec3>,
     /// Frames to wait first (a body spawned this frame is not posed yet).
     pub delay: u32,
 }
@@ -566,7 +574,7 @@ impl Default for Physical {
 impl Default for GoLimp {
     fn default() -> Self {
         Self {
-            velocity: Vec3::ZERO,
+            velocity: None,
             delay: 3,
         }
     }
@@ -852,6 +860,27 @@ pub struct Drive {
     /// it, which Exarust's does not yet); it fades 0.01 a tick, and is 0
     /// while the body is down.
     pub sag: f32,
+    /// The support pins' gain factor (the original's 0.08 of the pins'
+    /// gain S²·0.08·P): it recovers toward 0.08 every tick while the body
+    /// lives ([`recover_pins`]) and fades while it collapses. The support
+    /// pins that read it come later (C14).
+    pub pin_gain: f32,
+}
+
+/// One tick of the support pins' gain factor: under 0.08 (in double
+/// precision) it gains 0.001, unless the body collapses.
+pub fn recover_pins(gain: f32, collapsing: bool) -> f32 {
+    if !collapsing && f64::from(gain) < PIN_GAIN_BELOW {
+        (f64::from(gain) + PIN_RECOVERY) as f32
+    } else {
+        gain
+    }
+}
+
+/// A body's energy after a blow that dazes it by `daze`: it loses that
+/// share of its energy (at most 0.9 of it), never going under 0.05.
+pub fn daze_energy(energy: f32, daze: f32) -> f32 {
+    (energy * (1.0 - daze.clamp(0.0, MAX_DAZE))).max(MIN_ENERGY)
 }
 
 impl Default for Drive {
@@ -875,6 +904,7 @@ impl Default for Drive {
             lift_target: None,
             lift: 0.0,
             sag: 0.0,
+            pin_gain: PIN_GAIN,
         }
     }
 }
@@ -1479,7 +1509,7 @@ impl Ragdoll {
             }
         }
         if let Some(d) = self.drive.as_mut() {
-            d.energy = (d.energy * (1.0 - daze.clamp(0.0, MAX_DAZE))).max(MIN_ENERGY);
+            d.energy = daze_energy(d.energy, daze);
         }
     }
 
@@ -1504,16 +1534,17 @@ impl Ragdoll {
         }
     }
 
-    /// The integration step: the sleep countdown and a living body's energy
-    /// recovery (the original's character tick, before the body moves, so
-    /// the pose drive and the link muscles read the same energy), inertia
-    /// and gravity or the carry, then the pose drive's push and the
-    /// stance hold; a living body's link muscles remember where the
-    /// tick began.
+    /// The integration step: the sleep countdown and a living body's pin
+    /// gain and energy recovery (the original's character tick, before the
+    /// body moves, so the pose drive and the link muscles read the same
+    /// energy), inertia and gravity or the carry, then the pose drive's
+    /// push and the stance hold; a living body's link muscles remember
+    /// where the tick began.
     fn step(&mut self) {
         self.simulated = true;
         self.tick_countdown();
         if let Some(drive) = self.drive.as_mut() {
+            drive.pin_gain = recover_pins(drive.pin_gain, drive.bearing.collapsing);
             drive.energy = (drive.energy + ENERGY_RECOVERY).min(drive.stats.max_energy);
             drive.sag = if drive.supported {
                 (drive.sag - SAG_FADE).max(0.0)

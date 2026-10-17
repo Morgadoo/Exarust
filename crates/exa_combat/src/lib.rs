@@ -8,15 +8,18 @@
 //! A contact is resolved by the original's damage model ([`damage`]): the
 //! weapon's stats, where along it the blow lands and how fast, against the
 //! struck part's armour layers. It takes health, shoves and dazes the target,
-//! and kills it when its yellow health runs out. A blow that does not kill
-//! starts no clip on the target; a target struck while attacking stops its
-//! attack and returns to its stance. A fighter's stance and combat
-//! readiness are kept by [`stance`]. A blow whose wound is deep enough
+//! and when its yellow health runs out starts its collapse, which kills it
+//! 3 s later ([`collapse`]). A blow that does not kill starts no clip on
+//! the target; a target struck while attacking stops its attack and
+//! returns to its stance. A fighter's condition word ([`condition`]),
+//! stance and combat readiness ([`stance`]) are kept with it
+//! ([`fighter`]). A blow whose wound is deep enough
 //! bleeds on a victim whose race bleeds, seven body ticks later; at the
 //! blow it sprays a jet of blood and the weapon that dealt it draws blood
 //! ([`wounds`]).
 
 pub mod attack;
+pub mod collapse;
 pub mod condition;
 pub mod damage;
 pub mod fighter;
@@ -32,7 +35,7 @@ pub use condition::{Condition, StateFlags};
 use damage::{Strike, WeaponRecord};
 use exa_anim::{Animator, BodyPart, Ease, Motions};
 use exa_physics::body::BODY_HZ;
-use exa_physics::body::{BodyTicks, CharacterTicks, GoLimp, Shove};
+use exa_physics::body::{BodyTicks, CharacterTicks, Fallen, GoLimp, Ragdoll, Shove, daze_energy};
 use exa_world::PartBounds;
 pub use fighter::{Fighter, Health};
 use wounds::{BladeBlood, WoundQueue, frame_tetra, tetra_weights};
@@ -42,7 +45,11 @@ pub struct CombatPlugin;
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<Hit>()
-            .add_plugins((stance::StancePlugin, condition::ConditionPlugin))
+            .add_plugins((
+                stance::StancePlugin,
+                condition::ConditionPlugin,
+                collapse::CollapsePlugin,
+            ))
             .add_message::<wounds::Bleed>()
             .add_message::<wounds::Spray>()
             // The attack branch of the body tick, before the clips advance.
@@ -347,9 +354,11 @@ fn react_to_hits(
         Entity,
         &mut Fighter,
         &mut Condition,
+        &mut StateFlags,
         &mut Animator,
         Has<Attacking>,
         Option<&mut WoundQueue>,
+        Option<&mut Ragdoll>,
     )>,
     strikers: Query<&GlobalTransform>,
     mut blades: Query<&mut BladeBlood>,
@@ -358,7 +367,7 @@ fn react_to_hits(
 ) {
     let tick = ticks.map_or(0, |t| t.0);
     for hit in hits.read() {
-        let Ok((_, mut f, mut condition, mut anim, attacking, queue)) =
+        let Ok((_, mut f, mut condition, mut flags, mut anim, attacking, queue, mut body)) =
             fighters.get_mut(hit.target)
         else {
             continue;
@@ -449,13 +458,35 @@ fn react_to_hits(
             f.health.max
         );
         if killed && !condition.dying() {
-            condition.die();
-            info!("fighter {:?} is down", hit.target);
-            // The body goes limp and falls under the blow.
-            commands.entity(hit.target).insert(GoLimp {
-                velocity: velocity * 0.5 + Vec3::Y * 0.3,
-                delay: 0,
-            });
+            // A lethal wound starts the collapse on a living body, with the
+            // energy the blow's daze leaves it (dealt at the next tick);
+            // one without muscles dies at once.
+            let living = body.as_deref().and_then(|b| b.drive.as_ref());
+            if let Some(energy) = living.map(|d| daze_energy(d.energy, outcome.daze)) {
+                collapse::start_collapse(
+                    &mut condition,
+                    &mut flags,
+                    &mut anim,
+                    body.as_deref_mut(),
+                    energy,
+                );
+                commands
+                    .entity(hit.target)
+                    .insert(collapse::Collapse::default())
+                    .remove::<Fallen>();
+                info!(
+                    "fighter {:?} collapses at energy {energy:.3}: Fall Backward, {} frames of blend",
+                    hit.target,
+                    collapse::collapse_blend(energy)
+                );
+            } else {
+                condition.die();
+                info!("fighter {:?} is down", hit.target);
+                commands.entity(hit.target).insert(GoLimp {
+                    velocity: None,
+                    delay: 0,
+                });
+            }
         }
         // A blow that does not kill starts no clip on the struck fighter:
         // its stance changes come from its balance, not from the blow.
@@ -471,7 +502,7 @@ fn react_to_hits(
             commands.entity(hit.target).remove::<Attacking>();
         }
     }
-    for (e, _, _, anim, attacking, _) in &fighters {
+    for (e, _, _, _, anim, attacking, _, _) in &fighters {
         if attacking && anim.looping {
             commands.entity(e).remove::<Attacking>();
         }
@@ -635,10 +666,58 @@ mod tests {
         assert_eq!(shoves(&app).len(), 1);
     }
 
-    /// A cut that takes yellow health under 0.01 still sends the body limp
-    /// under the blow, and ends an attack it was making.
+    /// A cut that takes yellow health under 0.01 starts a living body's
+    /// collapse: collapsing, Fall Backward blending round((1.2 − E) × 300)
+    /// frames from the energy the blow's daze leaves, its attack ended, its
+    /// fall (and get-up) over, no longer on its controller, not limp yet.
     #[test]
-    fn a_killing_wound_still_goes_limp() {
+    fn a_killing_wound_starts_the_collapse() {
+        for attacking in [false, true] {
+            let mut app = reactions();
+            let mut fighter = Fighter::default();
+            fighter.health.yellow = 0.011;
+            let mut anim = Animator::new("One Handed", "Cmbt - Idle");
+            let body = Ragdoll::new(&[]).with_drive();
+            let id = app
+                .world_mut()
+                .spawn((fighter, body, Fallen::default()))
+                .id();
+            if attacking {
+                anim.play_once("Attack Mid", "Cmbt - Idle");
+                app.world_mut().entity_mut(id).insert(Attacking::default());
+            }
+            app.world_mut().entity_mut(id).insert(anim);
+            strike(&mut app, id, 9);
+            assert_eq!(condition(&app, id), Condition::COLLAPSING);
+            let daze = shoves(&app)[0].daze;
+            let left = daze_energy(1.0, daze);
+            assert!(left < 1.0, "the cut dazes: {daze}");
+            let anim = app.world().get::<Animator>(id).unwrap();
+            assert_eq!(
+                (anim.action.as_str(), anim.looping, anim.ease),
+                (collapse::FALL_BACKWARD, true, Ease::Smooth)
+            );
+            assert_eq!(anim.blend, collapse::collapse_blend(left) as f32);
+            assert!(anim.blend > 60.0);
+            assert!(app.world().get::<collapse::Collapse>(id).is_some());
+            assert!(app.world().get::<GoLimp>(id).is_none());
+            assert!(app.world().get::<Attacking>(id).is_none());
+            assert!(app.world().get::<Fallen>(id).is_none());
+            let body = app.world().get::<Ragdoll>(id).unwrap();
+            assert!(!body.drive.as_ref().unwrap().supported);
+            // A second cut on the collapsing body changes nothing of it.
+            strike(&mut app, id, 9);
+            let again = app.world().get::<Animator>(id).unwrap();
+            assert_eq!(again.blend, collapse::collapse_blend(left) as f32);
+            assert_eq!(condition(&app, id), Condition::COLLAPSING);
+        }
+    }
+
+    /// A killing cut on a fighter without muscles (no living body) kills
+    /// it at once: dead, asked to go limp keeping its motion, its attack
+    /// ended.
+    #[test]
+    fn a_killing_wound_without_muscles_kills_at_once() {
         for attacking in [false, true] {
             let mut app = reactions();
             let mut fighter = Fighter::default();
@@ -656,7 +735,8 @@ mod tests {
             let f = app.world().get::<Fighter>(id).unwrap();
             assert_eq!(f.health.yellow, 0.0, "{:?}", f.health);
             assert_eq!(condition(&app, id), Condition::DEAD);
-            assert!(app.world().get::<GoLimp>(id).is_some());
+            let limp = app.world().get::<GoLimp>(id).unwrap();
+            assert_eq!((limp.velocity, limp.delay), (None, 0));
             assert!(app.world().get::<Attacking>(id).is_none());
             assert_eq!(shoves(&app).len(), 1);
         }

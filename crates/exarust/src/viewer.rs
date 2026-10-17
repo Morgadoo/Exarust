@@ -204,7 +204,7 @@ fn setup(
                 }
                 if options.limp {
                     commands.entity(root).insert(exa_physics::body::GoLimp {
-                        velocity: Vec3::new(0.0, 0.5, -0.8),
+                        velocity: Some(Vec3::new(0.0, 0.5, -0.8)),
                         delay: 20,
                     });
                 }

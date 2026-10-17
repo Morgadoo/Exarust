@@ -33,7 +33,7 @@ The system SHALL solve a body in the original's order each tick: 20 iterations i
 - **THEN** a limp body takes each chain from the pelvis out, one chain after the other, and a living body takes every part after all of its children
 
 ### Requirement: Going limp
-The system SHALL turn a posed body asked to go limp into a ragdoll from its current pose, stop animating it and remove its character controller.
+The system SHALL turn a posed body asked to go limp into a ragdoll from its current pose, stop animating it and remove its character controller. It SHALL keep the motion it has unless the request gives it a velocity.
 
 #### Scenario: Corpses
 - **WHEN** a level places a dead character
@@ -42,6 +42,10 @@ The system SHALL turn a posed body asked to go limp into a ragdoll from its curr
 #### Scenario: Character view
 - **WHEN** `exarust --limp character` runs
 - **THEN** the body drops to the floor in a sprawl with its parts joined
+
+#### Scenario: Death
+- **WHEN** a collapsing body dies at a tone of 0.25
+- **THEN** it goes limp the same tick with the velocity its parts have, none added
 
 ### Requirement: Muscles
 The system SHALL drive a living physical body toward its animated pose: its link muscles turn every joint, and a pose drive turns the pelvis, lumbar, thorax and feet (gain 0.03·K, K = 19200/83²) and the head (0.01·K times its character's head gain) toward their animated orientation about where each part's origin is, with no position target. Thighs, shins, arms and hands SHALL have no pose drive. The carry holds the body up in place of gravity.
@@ -426,7 +430,7 @@ Each tick the character tick SHALL set: the stance factor s, the race's standing
 - **THEN** their head factors are 0.025 and 0.075, and the short human's arms pull with σ = 0.297 off balance
 
 ### Requirement: Arm stiffness
-The arms' stiffness SHALL be 0.5 off balance (balance under 0.6, falling, lying or getting up), 0.2 at tone under 0.85, the character's walking arms (0.2 unless feral) in the walk and run cycles, and otherwise x ← 0.8x + 0.08·(0.5 + 0.5·race arm relaxation), never under min(0.4·|turn left in rad|, 0.4). An arm part's anchor relaxation SHALL be capped at 0.6 − (x − 0.1)·0.8.
+The arms' stiffness SHALL be 0.2 while the body collapses, 0.5 off balance (balance under 0.6, falling, lying or getting up), 0.2 at tone under 0.85, the character's walking arms (0.2 unless feral) in the walk and run cycles, and otherwise x ← 0.8x + 0.08·(0.5 + 0.5·race arm relaxation), never under min(0.4·|turn left in rad|, 0.4). An arm part's anchor relaxation SHALL be capped at 0.6 − (x − 0.1)·0.8.
 
 #### Scenario: Idle human arms
 - **WHEN** an alert human stands still
@@ -439,6 +443,10 @@ The arms' stiffness SHALL be 0.5 off balance (balance under 0.6, falling, lying 
 #### Scenario: Zombie arms
 - **WHEN** a fully feral human walks, and is then dazed to tone 0.8
 - **THEN** its arms' stiffness is 0.05 walking and 0.2 dazed
+
+#### Scenario: Collapsing arms
+- **WHEN** a body collapses, off balance, at tone 0.6
+- **THEN** its arms' stiffness is 0.2
 
 ### Requirement: Anchor relaxation
 Each tick a part with link muscles SHALL move its relaxation λ toward 0.6 − 32|Δa|² (cm², the most one of its anchors moved since the last tick) × the race's arm relaxation, capped by the part: up by 0.015 a tick, down at once, and not at all for a negative target. A supported lower leg and its thigh SHALL instead take clamp(0.6 − 0.001·| |hip − foot contact|² − (2r)² |, 0, 0.2), r the contact's (the ankle's) distance from the knee, rising 0.01.
@@ -730,3 +738,14 @@ The system SHALL draw only awake bodies between their last two ticks: a body in 
 #### Scenario: Falls asleep
 - **WHEN** a limp body falls into deep sleep
 - **THEN** it is drawn once where its last tick left it and not redrawn until it wakes
+
+### Requirement: Collapsing body
+While a living body collapses its frame SHALL follow its pelvis exactly every tick, its lift SHALL be multiplied by its tone squared (beside 2(t − 0.5)), its feet SHALL be probed as standing, its support pins' gain SHALL not recover, and its clip SHALL run at 0.6 of the base rate a tick. A living body's pins' gain SHALL start at 0.08 and recover 0.001 a tick while under the double 0.08, settling at 0.081.
+
+#### Scenario: Lift
+- **WHEN** a standing body's lift at full tone is f, and it collapses at tone 0.9 and 0.75
+- **THEN** its lift is 0.648·f, then 0.28125·f, and none at tone 0.5
+
+#### Scenario: Frame
+- **WHEN** a collapsing body's pelvis moves
+- **THEN** its frame's origin follows it the same tick, at any balance and support

@@ -581,9 +581,25 @@ golem's, the ogre's, the demon's "One Handed") now resolve; a human's
 clips are unchanged. Tables are built once per race moveset and config;
 `exa-tool clips` prints one ([formats/RSQ.md](formats/RSQ.md), A
 character's clip table; [PLAYER.md](PLAYER.md), Moveset from held items).
+
+Done (change `collapse-before-death`, L5 of the master plan): a lethal
+wound no longer kills at once. The fighter collapses as in the original:
+its condition collapsing, Fall Backward from where it is with
+round((1.2 − E) × 300) frames of blend, off its controller; each tick its
+heading wanders, its tone falls 0.003 and its pins' gain 0.0003, its frame
+follows its pelvis, its lift fades by the tone squared and its arms go
+loose (0.2); it throws its arms wide with Rebalance once its balance is
+under 0.8; at a tone of 0.25, 250 ticks (3.0 s) after the blow, it dies a
+plain ragdoll that keeps its motion (no invented velocity). The cursor
+keeps the ring through it ([formats/RSQ.md](formats/RSQ.md), The
+collapse); `--pause-after-collapse` for pictures of it. The corpse lies
+as the original's (on its back, arms out, a knee up), but the body
+squats on its feet longer before it falls (Rebalance 1.6–1.9 s after the
+blow; live 0.9–1.4 s at like energies). Still missing from it: the
+stagger steps (C15/C16), the dropped weapon (L13).
 Still to do: inventory and containers, injuries beyond damage, blocking,
 parrying, grabs, practice mode, the knockback step, the swing stall and
-the striker's recoil, a lethal wound's fall and collapse, the stab's and
+the striker's recoil, the collapse's stagger steps, the stab's and
 overhead's start blends, the balance's Defence stance and Rebalance
 (C11); next in the combat timing: the release and stall (M22), then the
 unarmed parries (L10).

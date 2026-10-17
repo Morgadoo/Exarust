@@ -207,6 +207,11 @@ pub struct Bearing {
     /// of its walk: a moving body's feet are grounded, and its pelvis held,
     /// from there.
     pub gait_floor: Option<f32>,
+    /// It collapses from a lethal wound: its frame follows its pelvis
+    /// exactly, its lift fades by its tone squared, its arms' stiffness is
+    /// 0.2, its feet are probed standing, and its support pins' gain does
+    /// not recover.
+    pub collapsing: bool,
 }
 
 impl Default for Bearing {
@@ -222,6 +227,7 @@ impl Default for Bearing {
             carried: true,
             turn: 0.0,
             gait_floor: None,
+            collapsing: false,
         }
     }
 }
@@ -282,11 +288,11 @@ pub(super) fn stance_factor(s: f32, bearing: &Bearing, race: &RaceMuscles) -> f3
     }
 }
 
-/// The arms' stiffness after one tick, `x` last tick's: 0.5 off balance;
-/// 0.2 dazed (tone under 0.85); striding, the character's walking arms
-/// (0.2, looser for the feral); else easing to 0.4·(0.5 + 0.5·race arm
-/// relaxation). While the body turns it is at least min(0.4·|turn left|,
-/// 0.4).
+/// The arms' stiffness after one tick, `x` last tick's: 0.2 collapsing;
+/// 0.5 off balance; 0.2 dazed (tone under 0.85); striding, the
+/// character's walking arms (0.2, looser for the feral); else easing to
+/// 0.4·(0.5 + 0.5·race arm relaxation). While the body turns it is at
+/// least min(0.4·|turn left|, 0.4).
 pub(super) fn arm_stiffness(
     x: f32,
     bearing: &Bearing,
@@ -294,7 +300,9 @@ pub(super) fn arm_stiffness(
     race: &RaceMuscles,
     stats: &BodyStats,
 ) -> f32 {
-    let x = if bearing.off_balance {
+    let x = if bearing.collapsing {
+        ARM_LOOSE
+    } else if bearing.off_balance {
         ARM_OFF_BALANCE
     } else if tone < ARM_DAZED_TONE {
         ARM_LOOSE

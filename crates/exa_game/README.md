@@ -10,7 +10,9 @@ first quarter), balance against the level, clip (the capture of a start
 from the body's physical turns, the original's clock rate for what the
 body does, the pose it holds while dazed), targets on its character frame
 and lift, the player's last; its controller is told to follow the frame;
-a get-up's clip ending into the stance writes the condition word normal),
+a get-up's clip ending into the stance writes the condition word normal;
+a collapsing body's bearing says so; a body asked to go limp keeps its
+motion unless given a velocity),
 Exarust's falls and get-ups from the measured balance (`balance`; a fall
 stops the controller carrying and holding the body and keeps its tone; a
 get-up turns the body, starts its clip from the whole lying body, lets
@@ -28,8 +30,8 @@ clips' arm on the body model), the per-tick body trace
 (`trace`, ending with the condition word), and the debug tools ([`docs/DEBUGGING.md`](../../docs/DEBUGGING.md)):
 the body overlay and joint readout (`body_overlay`), the joint trace
 (`joint_trace`) and the simulation controls (`sim_control`, with the
-scripted pauses at a tick, a stretched link or the player's first landed
-blow).
+scripted pauses at a tick, a stretched link, the first blood jet, the
+player's first landed blow or the first collapse).
 
 ## Scope
 

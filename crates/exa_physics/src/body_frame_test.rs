@@ -317,3 +317,24 @@ fn a_steady_frame_far_from_the_origin_stays_put() {
     }
     assert_eq!(far, 0.0, "the frame crept {} mm", far * 1000.0);
 }
+
+/// A collapsing body's frame follows its pelvis exactly every tick (the
+/// original re-anchors it with no reach), whatever its balance and support.
+#[test]
+fn a_collapsing_frame_follows_the_pelvis_exactly() {
+    let collapsing = Bearing {
+        collapsing: true,
+        ..Bearing::default()
+    };
+    for (balance, support) in [(1.0, Some(1.0)), (0.29, None), (0.7, Some(0.5))] {
+        assert_eq!(
+            follow(
+                &collapsing,
+                balance,
+                support.is_some(),
+                support.unwrap_or(0.0)
+            ),
+            (Follow::Within(0.0), false)
+        );
+    }
+}

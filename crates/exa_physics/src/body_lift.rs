@@ -261,7 +261,12 @@ impl Ragdoll {
             return;
         };
         if drive.tone > TONE_FLOOR {
-            let f = 2.0 * (drive.tone - TONE_FLOOR) * f;
+            let mut f = 2.0 * (drive.tone - TONE_FLOOR) * f;
+            // A collapsing body's lift fades by its tone squared too: gone
+            // at half its tone.
+            if bearing.collapsing {
+                f *= drive.tone * drive.tone;
+            }
             drive.lift = f;
             drive.carry -= gravity * (f * drive.support);
         }

@@ -50,6 +50,18 @@ takes next. The get-up's start and its clip's end (`exa_game`), the
 killing blow and placed corpses write it too. Rules:
 [`docs/formats/RSQ.md`](../../docs/formats/RSQ.md) (Condition).
 
+A killing blow on a living body starts its collapse (`collapse`):
+collapsing, Fall Backward with round((1.2 − E) × 300) frames of blend from
+the energy the blow leaves (`collapse_blend`), off its controller; its
+dying tick, the posture stage's collapsing branch, drifts its heading
+(`jitter_heading`), starts Rebalance (20 frames, linear) once under
+balance 0.8 below size 1.2 (`rebalances`, `throw_arms_wide`), takes 0.003
+off its tone and 0.0003 off its pins' gain (`lose_tone`, `fade_pins`), and
+at a tone of 0.25 (250 ticks) it dies there and then, limp with the motion
+it has. A body without muscles dies at
+once. Rules: [`docs/formats/RSQ.md`](../../docs/formats/RSQ.md) (The
+collapse).
+
 ## Scope
 
 - Hit detection from physics contacts (edge, point, blunt surfaces of a weapon).

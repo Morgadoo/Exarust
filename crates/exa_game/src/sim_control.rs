@@ -4,10 +4,11 @@
 //! faster through Bevy's virtual time. Scripted runs can start slowed
 //! (`--sim-speed`), pause at a tick (`--pause-at-tick`), pause the moment
 //! a link stretches past its slack (`--pause-on-stretch`), pause a number
-//! of ticks after the first blood jet (`--pause-after-jet`) or after the
-//! player's first blow lands (`--pause-on-hit`). Rendering and
-//! the cameras keep running on real time, so a paused body can be looked
-//! at from every side. The starting speed and the scripted pauses wait
+//! of ticks after the first blood jet (`--pause-after-jet`), after the
+//! player's first blow lands (`--pause-on-hit`) or after the first
+//! killing blow starts a body's collapse (`--pause-after-collapse`).
+//! Rendering and the cameras keep running on real time, so a paused body
+//! can be looked at from every side. The starting speed and the scripted pauses wait
 //! for the loading screen's end where they can: the load waits on things
 //! that run on the game clock (the fires the lighting settles on). Keys and
 //! flags: `docs/DEBUGGING.md`.
@@ -41,6 +42,9 @@ pub struct SimControl {
     pub pause_after_jet: Option<u64>,
     /// Pause this many ticks after the player's first blow lands.
     pub pause_on_hit: Option<u64>,
+    /// Pause this many ticks after the first body starts its collapse (a
+    /// killing blow).
+    pub pause_after_collapse: Option<u64>,
     /// Ticks asked for while paused, run one a frame.
     steps: u32,
     /// The starting speed is set (once the loading screen is gone).
@@ -57,6 +61,7 @@ impl Default for SimControl {
             pause_on_stretch: None,
             pause_after_jet: None,
             pause_on_hit: None,
+            pause_after_collapse: None,
             steps: 0,
             started: false,
             reason: None,
@@ -91,12 +96,22 @@ impl SimControl {
         }
     }
 
+    /// The same run, pausing `ticks` ticks after the first body starts
+    /// its collapse.
+    pub fn with_pause_after_collapse(self, ticks: Option<u64>) -> Self {
+        Self {
+            pause_after_collapse: ticks,
+            ..self
+        }
+    }
+
     /// Whether a scripted pause is armed: a screenshot then waits for it.
     pub fn waits_for_pause(&self) -> bool {
         self.pause_at_tick.is_some()
             || self.pause_on_stretch.is_some()
             || self.pause_after_jet.is_some()
             || self.pause_on_hit.is_some()
+            || self.pause_after_collapse.is_some()
     }
 }
 
@@ -129,9 +144,12 @@ impl Plugin for SimControlPlugin {
             .add_systems(Update, start_speed.run_if(|c: Res<SimControl>| !c.started))
             .add_systems(
                 PostUpdate,
-                arm_pause_on_hit
-                    .after(exa_combat::CombatSystems)
-                    .run_if(|c: Res<SimControl>| c.pause_on_hit.is_some()),
+                (
+                    arm_pause_on_hit.run_if(|c: Res<SimControl>| c.pause_on_hit.is_some()),
+                    arm_pause_after_collapse
+                        .run_if(|c: Res<SimControl>| c.pause_after_collapse.is_some()),
+                )
+                    .after(exa_combat::CombatSystems),
             )
             .add_systems(Update, sim_keys)
             .add_systems(
@@ -239,6 +257,36 @@ fn arm_pause_on_hit(
             clock.0, hit.bone
         );
         control.pause_on_hit = None;
+        control.pause_at_tick = Some(clock.0 + after.max(1));
+    }
+}
+
+/// `--pause-after-collapse`: the first body whose condition becomes
+/// collapsing (a killing blow, dealt in the frame's combat systems) sets the
+/// pause that many ticks after the current tick, so a shot shows the
+/// collapse that long after the blow.
+fn arm_pause_after_collapse(
+    mut control: ResMut<SimControl>,
+    clock: Res<BodyTicks>,
+    bodies: Query<
+        (
+            Entity,
+            &exa_combat::Condition,
+            Has<crate::player::PlayerBody>,
+        ),
+        Changed<exa_combat::Condition>,
+    >,
+) {
+    let Some(after) = control.pause_after_collapse else {
+        return;
+    };
+    if let Some((entity, _, player)) = bodies.iter().find(|(_, c, _)| c.is_collapsing()) {
+        info!(
+            "{} {entity:?} collapses at tick {}: pausing {after} ticks later",
+            if player { "the player" } else { "body" },
+            clock.0
+        );
+        control.pause_after_collapse = None;
         control.pause_at_tick = Some(clock.0 + after.max(1));
     }
 }
@@ -502,6 +550,34 @@ mod tests {
             app.update();
         }
         assert_eq!(ticks(&app), landed + 3);
+        assert!(app.world().resource::<Time<Virtual>>().is_paused());
+    }
+
+    /// `--pause-after-collapse 83`: a living fighter arms nothing; the
+    /// first body to start collapsing pauses the run 83 ticks (1 s) after
+    /// the tick it started in, and a later collapse no longer moves it.
+    #[test]
+    fn pause_a_second_after_a_collapse() {
+        use exa_combat::Condition;
+        let mut app = app(SimControl::default().with_pause_after_collapse(Some(83)));
+        let fighter = app.world_mut().spawn(Condition::default()).id();
+        let other = app.world_mut().spawn(Condition::default()).id();
+        for _ in 0..10 {
+            app.update();
+        }
+        assert_eq!(app.world().resource::<SimControl>().pause_at_tick, None);
+        *app.world_mut().get_mut::<Condition>(fighter).unwrap() = Condition::COLLAPSING;
+        app.update();
+        let collapsed = ticks(&app);
+        assert_eq!(
+            app.world().resource::<SimControl>().pause_at_tick,
+            Some(collapsed + 83)
+        );
+        *app.world_mut().get_mut::<Condition>(other).unwrap() = Condition::COLLAPSING;
+        for _ in 0..60 {
+            app.update();
+        }
+        assert_eq!(ticks(&app), collapsed + 83);
         assert!(app.world().resource::<Time<Virtual>>().is_paused());
     }
 

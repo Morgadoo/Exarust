@@ -44,18 +44,21 @@ pub(super) enum Follow {
 }
 
 /// How a body's frame follows its pelvis this tick, by what the body does
-/// (`bearing`), its balance and its support: a get-up within 10 cm in its
-/// clip's first quarter, then not at all; down (off balance, balance under
-/// 0.3) within 5 cm; moving onto the pelvis; without support exactly;
-/// standing within 5 cm under a support of 0.95, else not at all. The
-/// second value is whether the body stands on its feet, its frame's height
-/// kept at the pelvis's every tick.
+/// (`bearing`), its balance and its support: collapsing exactly, every
+/// tick; a get-up within 10 cm in its clip's first quarter, then not at
+/// all; down (off balance, balance under 0.3) within 5 cm; moving onto the
+/// pelvis; without support exactly; standing within 5 cm under a support
+/// of 0.95, else not at all. The second value is whether the body stands
+/// on its feet, its frame's height kept at the pelvis's every tick.
 pub(super) fn follow(
     bearing: &Bearing,
     balance: f32,
     has_support: bool,
     support: f32,
 ) -> (Follow, bool) {
+    if bearing.collapsing {
+        return (Follow::Within(0.0), false);
+    }
     if bearing.getting_up {
         let follow = if bearing.rising {
             Follow::Within(RISING_REACH)
