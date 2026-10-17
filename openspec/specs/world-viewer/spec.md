@@ -219,7 +219,7 @@ In play mode `--health yellow,red` SHALL give the player that starting yellow an
 
 #### Scenario: Arena tavern table
 - **WHEN** `exarust --at 11.2,4.5,12.8 --shove-props 120 play arenao1` runs
-- **THEN** 8 prop bodies are shoved (the cups, bowls, tankards and spoons on the tavern table, which is level geometry) and all sleep again 236 ticks later, seven on the table and one 0.8 m lower on the floor
+- **THEN** 8 prop bodies are shoved (the cups, bowls, tankards and spoons on the tavern table, which is level geometry) and all sleep again about 320 ticks later, six back on the table and two 0.8–0.9 m lower on the floor
 
 ### Requirement: Pause after a collapse
 `--pause-after-collapse <n>` SHALL pause the simulation n ticks (at least 1) after the tick in which a killing blow first starts a body's collapse, logging the body and the tick; `--screenshot` SHALL count its frames from the pause.
@@ -227,3 +227,10 @@ In play mode `--health yellow,red` SHALL give the player that starting yellow an
 #### Scenario: One second into the player's collapse
 - **WHEN** `exarust --opponent --health 0.05,0.05 --pause-after-collapse 83 --screenshot c.png --frames 10 play arena` runs until the duellist's blow kills the player
 - **THEN** `c.png` shows the player 83 ticks (1 s) into its collapse, still on its feet in Fall Backward's lead-in
+
+### Requirement: Debug corpses
+In play mode, `exarust --corpse x,y,z` SHALL lay a dead human of a new record down at that point (metres), as a level's placed dead lie down; the flag MAY be given more than once.
+
+#### Scenario: A corpse walked into
+- **WHEN** `exarust --corpse 0,0,3.4 --press W@150-420 play arena` runs
+- **THEN** a limp body falls and counts down to sleep where it was laid, and the player's lower legs meet it and wake it

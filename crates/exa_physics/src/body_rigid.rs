@@ -15,7 +15,9 @@
 use bevy::math::{Affine3A, Mat3};
 use bevy::prelude::*;
 
-use super::{LIMP_PIVOT_SLACK, Link, Part, Ragdoll, Sleep, setup_smoothing, tree_orders};
+use super::{
+    LIMP_PIVOT_SLACK, Link, Pairing, Part, Ragdoll, Sleep, pairs, setup_smoothing, tree_orders,
+};
 
 /// Friction of a rigid body against the level: its constructor's, whatever
 /// the file stores.
@@ -119,6 +121,7 @@ impl Part {
             inverse_mass: s.mobility,
             gravity: gravity_shares(s.point_masses),
             spheres: s.spheres.clone(),
+            pairing: Pairing::new(&rest, &rest_inverse, &s.spheres, s.mobility),
             rest_inverse,
             friction: RIGID_FRICTION,
             start: positions,
@@ -147,14 +150,17 @@ impl Ragdoll {
     /// rest; each child joined to its parent by its stored links, then a
     /// pivot from its origin to where its node sits in the parent (slack 0,
     /// strength 1), every correction shared by the two mobilities. The body
-    /// is registered asleep (countdown 0) and meets only the level. A part's
-    /// `bone` is its index. Parts must be solid ([`RigidPart::is_solid`]).
+    /// is registered asleep (countdown 0); it meets the level, and other
+    /// bodies' parts through the pairs by its mobility and the group masks
+    /// of its tree (a child never meets its parent). A part's `bone` is its
+    /// index. Parts must be solid ([`RigidPart::is_solid`]).
     pub fn rigid(setup: &[RigidPart]) -> Self {
-        let parts: Vec<Part> = setup
+        let mut parts: Vec<Part> = setup
             .iter()
             .enumerate()
             .map(|(i, s)| Part::rigid(s, i))
             .collect();
+        pairs::mask_groups(&mut parts);
         let mut links = Vec::new();
         let mut links_of = Vec::with_capacity(setup.len());
         for (i, s) in setup.iter().enumerate() {
@@ -211,7 +217,6 @@ impl Ragdoll {
             countdown: 0,
             sleep: Sleep::Deep,
             simulated: false,
-            meets_movable: false,
             fell_out: false,
         }
     }

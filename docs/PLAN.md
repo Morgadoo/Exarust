@@ -398,9 +398,8 @@ static (the same node flag: `arenao1`'s tavern table) stay level geometry. Their
 meshes stay as stand-ins moved with them, so capsules and character bodies
 meet props as before ([formats/RFC.md](formats/RFC.md), Rigid body,
 Materials, Props). `exanima01` registers 4 591 trees of 5 000 bodies.
-`--shove-props` shoves the props near the player. Not yet: body–body
-contact (C17; a woken prop falls through other props, and only a blow
-wakes props in play), world links (M33: lamps, chains and hanging
+`--shove-props` shoves the props near the player. Body–body contact came
+with C17 (below). Not yet: world links (M33: lamps, chains and hanging
 braziers stay static), doors, levers and plates (M12, M35), the drag
 (M34), impact sounds (C22).
 
@@ -441,6 +440,34 @@ condition and the collapse's dying tick (M38, L5), falls, attack stamp and
 player input still run ahead of the character ticks, over every body, and
 the AI once a frame; each joins its stage with the change that rewrites
 it. The condition's clip-end writer runs in the sampler stage.
+
+Done (change `collide-bodies`, C17 of the master plan): body parts collide
+with each other as the original's pairs do, for every body (characters,
+corpses and props). After the iterations every
+awake part meets the parts near it, awake or asleep; two parts of one body
+skip each other by the original's group masks (legs, pelvis, spine and
+head never meet; arms meet the lower body; hands meet almost everything
+but their own arm), parts of two bodies by its layer masks (two
+characters' living lower legs pass through each other until one collapses
+or dies), and a character's feet never meet other bodies. The more mobile
+part brings its spheres
+against the other's (spheres against spheres until the parts' spheres are
+fitted to their meshes, C20): each hit pushes both at once by their
+mobility shares and how concentrated the contact is on each one's
+particles, keeping their momentum, and is kept (up to four points per
+pair) for the next tick's iterations, where a point over 0.01 cm deep is
+corrected with the original's reversed pair friction, and a pair needing
+nothing is dropped; the pairs rub before the level in the 8 friction
+passes. A contact wakes a sleeper with the toucher's countdown, so a
+corpse walked into wakes. Props meet bodies through the pairs (their
+mobility, the group masks of their tree), so a cup rests on a table that
+is a body and a character pushes a prop; their stand-ins in the physics
+world are the character capsules' only. `--pair-trace` writes every
+contact and `--corpse` lays a dead body down in play mode
+([DEBUGGING.md](DEBUGGING.md)).
+Weapons, shields and torches as parts with their hit events (C21), impacts
+(C22), the placed state and the AI's overlap queries remain
+([formats/RSQ.md](formats/RSQ.md), Contacts between bodies).
 
 This phase carries the most risk and defines how the game feels.
 
@@ -786,8 +813,8 @@ holds the runtime and the documentation of formats and behaviour.
 against Exarust and lists the largest missing ones. In order:
 
 1. The support pins, the original's falls and get-ups,
-   recovery steps, foot planting and leg IK (stairs), clip blending and
-   collisions between bodies (Phase 3).
+   recovery steps, foot planting and leg IK (stairs), clip blending, and
+   parts' spheres fitted to their meshes (Phase 3).
 2. Inventory, equipment and containers, then blocking and parrying
    (Phase 4).
 3. The original's NPC brain: perception, targets and the combat state that

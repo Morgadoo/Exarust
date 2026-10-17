@@ -133,8 +133,11 @@ pub(super) fn configure(app: &mut App) {
 
 /// Work a lane adds to the solver's stages (pairs, props' mechanisms, world
 /// links, cloth), each method one stage of the original's sector step.
-/// `bodies` are the awake bodies the tick solves, in the solver's order.
-/// Every method does nothing unless a stage has work there.
+/// `bodies` are the awake bodies the tick solves, in the solver's order;
+/// body–body detection and the friction passes also see the `sleeping`
+/// ones (a contact wakes a sleeper, which then rubs as well, though it is
+/// solved only from the next tick). Every method does nothing unless a
+/// stage has work there.
 pub trait SolverStage: Any + Send + Sync {
     /// After every body is integrated (where the original's doors, levers
     /// and plates run their own step).
@@ -151,12 +154,12 @@ pub trait SolverStage: Any + Send + Sync {
     /// The sim objects' step (cloth), after every contact is dropped.
     fn sim_objects(&mut self, _bodies: &mut [&mut Ragdoll]) {}
     /// Body–body detection, before the level's.
-    fn detect(&mut self, _bodies: &mut [&mut Ragdoll]) {}
+    fn detect(&mut self, _bodies: &mut [&mut Ragdoll], _sleeping: &mut [&mut Ragdoll]) {}
     /// Sim objects against each other, the bodies and the level.
     fn sim_object_contacts(&mut self, _bodies: &mut [&mut Ragdoll]) {}
     /// Each of the 8 friction passes, before the bodies' level friction
     /// (the pair friction).
-    fn friction(&mut self, _bodies: &mut [&mut Ragdoll]) {}
+    fn friction(&mut self, _bodies: &mut [&mut Ragdoll], _sleeping: &mut [&mut Ragdoll]) {}
     /// After every body's post-step.
     fn post_step(&mut self, _bodies: &mut [&mut Ragdoll]) {}
 }
@@ -192,18 +195,30 @@ impl SolverStages {
     }
 }
 
-/// One tick of the world's solver over `bodies` against the static `level`
-/// with `stages`, in the original's order (the character ticks have set
-/// every living body's targets): every body integrated (inertia, gravity
-/// and its muscles' pull); 20 iterations, each the stages' pair pass, then
-/// every body's links, stored level contacts and edges, then the stages'
-/// links between bodies; the stages' and every body's contacts dropped;
-/// the sim objects; body–body detection; sim-object contacts; every body's
-/// spheres tested against the level (an immediate push, the contacts kept
-/// for the next tick); 8 friction passes, each the stages' pair friction
-/// then every body's level friction; the post-step.
+/// One tick of the world's solver over the awake `bodies` against the
+/// static `level` with `stages`, no body asleep ([`solve_among`]).
 pub fn solve_with<L: Level + ?Sized>(
     bodies: &mut [&mut Ragdoll],
+    level: &L,
+    stages: &mut [Box<dyn SolverStage>],
+) {
+    solve_among(bodies, &mut [], level, stages);
+}
+
+/// One tick of the world's solver over the awake `bodies` against the
+/// static `level` with `stages`, in the original's order (the character
+/// ticks have set every living body's targets): every body integrated
+/// (inertia, gravity and its muscles' pull); 20 iterations, each the
+/// stages' pair pass, then every body's links, stored level contacts and
+/// edges, then the stages' links between bodies; the stages' and every
+/// body's contacts dropped; the sim objects; body–body detection (which
+/// also sees the `sleeping` bodies); sim-object contacts; every awake
+/// body's spheres tested against the level (an immediate push, the
+/// contacts kept for the next tick); 8 friction passes, each the stages'
+/// pair friction then every awake body's level friction; the post-step.
+pub fn solve_among<L: Level + ?Sized>(
+    bodies: &mut [&mut Ragdoll],
+    sleeping: &mut [&mut Ragdoll],
     level: &L,
     stages: &mut [Box<dyn SolverStage>],
 ) {
@@ -236,7 +251,7 @@ pub fn solve_with<L: Level + ?Sized>(
         s.sim_objects(bodies);
     }
     for s in stages.iter_mut() {
-        s.detect(bodies);
+        s.detect(bodies, sleeping);
     }
     for s in stages.iter_mut() {
         s.sim_object_contacts(bodies);
@@ -246,7 +261,7 @@ pub fn solve_with<L: Level + ?Sized>(
     }
     for _ in 0..FRICTION_PASSES {
         for s in stages.iter_mut() {
-            s.friction(bodies);
+            s.friction(bodies, sleeping);
         }
         for b in bodies.iter_mut() {
             b.rub();

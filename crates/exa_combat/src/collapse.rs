@@ -2,7 +2,8 @@
 //! the original, the fighter's condition becomes collapsing (0x800) and it
 //! starts Fall Backward with a blend of round((1.2 − E) × 300) frames, E
 //! its energy after the blow, eased smoothly; it no longer stands on its
-//! controller. Each tick its dying tick runs in place of the posture
+//! controller, and its lower legs leave the living lower legs' collision
+//! layer. Each tick its dying tick runs in place of the posture
 //! decision ([`dying_tick`]): its heading wanders, it throws its arms wide
 //! with Rebalance (20 frames, linear) once its balance is under 0.8 (not a
 //! body of size 1.2 or more), its tone falls 0.003 and its support pins'
@@ -15,7 +16,7 @@
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Ease};
-use exa_physics::body::{GoLimp, Ragdoll};
+use exa_physics::body::{GoLimp, Ragdoll, pairs};
 
 use crate::condition::{Condition, PostureTick, StateFlags, track_condition};
 use crate::{Fighter, Roll};
@@ -118,7 +119,9 @@ pub struct Collapse {
 /// (a looping held pose) starting from where the body is with
 /// [`collapse_blend`] frames at `energy` (the clip start does nothing when
 /// it already plays), eased smoothly either way; its body no longer stands
-/// on its controller. Returns whether it started.
+/// on its controller, and its lower legs leave the living lower legs'
+/// layer, so they meet other characters' again. Returns whether it
+/// started.
 pub fn start_collapse(
     condition: &mut Condition,
     flags: &mut StateFlags,
@@ -141,6 +144,7 @@ pub fn start_collapse(
     anim.ease = Ease::Smooth;
     if let Some(body) = body {
         body.fall();
+        pairs::set_leg_layers(&mut body.parts, 0);
     }
     true
 }

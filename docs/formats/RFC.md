@@ -229,7 +229,11 @@ and its whole subtree stops being level collision. It registers **asleep** (slee
 particles at the node's world matrix × the rest points, at rest. Gravity
 acts on particle i by the share wᵢ = 4/mᵢ, scaled so the shares sum to 4
 (mᵢ the stored point masses): gravity acts at the centre of mass. The
-spheres meet the level with friction 0.75. A body whose parent node has a
+spheres meet the level with friction 0.75, and other bodies' parts through
+the pairs ([RSQ.md](RSQ.md), contacts between bodies): its contact mobility
+is its mobility, its group masks come from its tree (a child never meets
+its parent), it is in no layer. Exarust keeps its meshes as stand-ins for
+the character capsules, which no body meets. A body whose parent node has a
 body is an articulated child: its links join it to the parent's body (the
 parent point plus the node's local translation; only flag 8 kept, so a
 slider becomes plain slack of its stored value), then a pivot from its

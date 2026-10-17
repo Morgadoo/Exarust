@@ -1,8 +1,39 @@
 //! The collapse before death: its start, the dying tick's rules and the
 //! death 250 ticks later.
-use exa_physics::body::PIN_GAIN;
+use bevy::math::Affine3A;
+use exa_physics::body::pairs::{FOOT_LAYER, LIVING_SHIN_LAYER};
+use exa_physics::body::{PIN_GAIN, PartSetup};
 
 use super::*;
+
+/// A living body of a pelvis, a lower leg with its foot contact and the
+/// foot under it.
+fn legs() -> Ragdoll {
+    let part = |bone, parent, y: f32, half: Vec3, foot| PartSetup {
+        bone,
+        entity: Entity::from_raw_u32(bone as u32 + 1).unwrap(),
+        parent,
+        world: Affine3A::from_translation(Vec3::new(0.0, y, 0.0)),
+        centre: Vec3::ZERO,
+        half,
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot,
+        pins: Vec::new(),
+    };
+    Ragdoll::new(&[
+        part(1, None, 1.0, Vec3::splat(0.1), None),
+        part(
+            3,
+            Some(0),
+            0.5,
+            Vec3::new(0.06, 0.2, 0.06),
+            Some(Vec3::new(0.0, -0.3, 0.0)),
+        ),
+        part(4, Some(1), 0.05, Vec3::new(0.06, 0.05, 0.12), None),
+    ])
+    .with_drive()
+}
 
 /// Fall Backward's blend: round((1.2 − E) × 300) in double precision, ties
 /// to even: 60 at full energy, 90 at 0.9, 174 at 0.62, 345 at the daze's
@@ -107,14 +138,16 @@ fn the_heading_wanders() {
 
 /// The start: collapsing, no longer waking, Fall Backward looping with 60
 /// frames of blend at full energy, smooth, the body no longer on its
-/// controller; a fighter collapsing or dead already is left alone; one
-/// playing Fall Backward keeps its clock and holds the pose.
+/// controller and its lower legs out of the living lower legs' layer (the
+/// feet keep theirs); a fighter collapsing or dead already is left alone;
+/// one playing Fall Backward keeps its clock and holds the pose.
 #[test]
 fn a_lethal_wound_starts_the_collapse() {
     let mut condition = Condition::COMBAT_IDLE;
     let mut flags = StateFlags(StateFlags::WAKING | StateFlags::DORMANT);
     let mut anim = Animator::new("Default", "Cmbt - Idle");
-    let mut body = Ragdoll::new(&[]).with_drive();
+    let mut body = legs();
+    assert_eq!(body.parts[1].pairing.layer, LIVING_SHIN_LAYER);
     assert!(start_collapse(
         &mut condition,
         &mut flags,
@@ -129,6 +162,8 @@ fn a_lethal_wound_starts_the_collapse() {
         (FALL_BACKWARD, true, 60.0, Ease::Smooth)
     );
     assert!(!body.drive.as_ref().unwrap().supported);
+    assert_eq!(body.parts[1].pairing.layer, 0);
+    assert_eq!(body.parts[2].pairing.layer, FOOT_LAYER);
     // A second lethal wound changes nothing.
     anim.time = 12.0;
     assert!(!start_collapse(

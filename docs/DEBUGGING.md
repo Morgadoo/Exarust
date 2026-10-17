@@ -42,9 +42,11 @@ it takes the ring's other slot.
 |---|---|
 | `--debug-bodies` | start with the overlay and the readout shown |
 | `--joint-trace <file.csv>` | write every joint of every simulated character body after every 83 Hz tick ([columns](#joint-trace)) |
+| `--pair-trace <file.csv>` | write every contact between two body parts that each 83 Hz tick's body–body detection found ([columns](#pair-trace)) |
+| `--corpse x,y,z` | in play mode, a dead human (a new record, in underwear) lies down here as a level's placed dead do (metres); repeatable. For contacts with corpses outside the story levels, e.g. `--corpse 0,0,3.4 --press W@150-420 play arena` walks the player over one |
 | `--trace <file.csv>` | the body trace in the retail probe's columns ([formats/RSQ.md](formats/RSQ.md)), then Exarust's own (the sleep countdown and state, the frame, the blend and hold) and last the condition word in hex (`0x300` getting up); character bodies only |
 | `--shove <frame>` | a body blow to every simulated character body at that frame after the load |
-| `--shove-props <frame>` | in play mode, at that frame after the load, a blow to every prop body within 3 m of the player (1.5 m/s away from it and 1.5 m/s up); the log counts them and, once all sleep again, says after how many ticks and how far each moved (a body that fell out of the world counts as settled). Props meet only the level for now: one shoved off a table that is itself a body (exanima01's tables) falls through it |
+| `--shove-props <frame>` | in play mode, at that frame after the load, a blow to every prop body within 3 m of the player (1.5 m/s away from it and 1.5 m/s up); the log counts them and, once all sleep again, says after how many ticks and how far each moved (a body that fell out of the world counts as settled). Props meet the level and, through the pairs, every other body: they knock into each other, and one landing on a table that is itself a body (exanima01's tables) rests on it |
 | `--sim-speed <f>` | run the simulation at this speed (0.25 is a quarter as fast), from the end of the load |
 | `--fixed-frames` | every frame advances game time by exactly 1/60 s, whatever it took, so the clips played by frames, the frame counts of `--shove`, `--press` and `--click`, and the ticks each frame runs repeat from run to run. Loading still takes a real time, so the tick a body is built and the frame the load ends can move by a few: two runs whose `--trace` starts on the same tick and whose blow lands on the same row give the same rows, and two builds compare row by row (only the `body` column, an entity id, may differ) |
 | `--pause-at-tick <n>` | pause at the end of body tick `n` (the `tick` column of both traces, counted from the start, the load included; see below) |
@@ -259,6 +261,30 @@ are in degrees, lengths in cm unless named otherwise.
 | `action`, `clock` | the body's clip and its clock (frames) |
 
 A duel writes about 0.4 MB a second (36 rows a tick).
+
+## Pair trace
+
+`--pair-trace <file.csv>` writes one row per pair of body parts in contact
+per tick, as the tick's body–body detection found them
+([formats/RSQ.md](formats/RSQ.md), Contacts between bodies), after the
+solver. A tick without contacts writes nothing.
+
+| column | content |
+|---|---|
+| `tick` | body tick since the start |
+| `body_a`, `bone_a`, `living_a` | the side that brought its spheres (the more mobile part): its body model root's entity bits, its part's bone (a prop's part index), 1 while its body has muscles |
+| `body_b`, `bone_b`, `living_b` | the touched side, the same way |
+| `own` | 1 when both parts belong to one body (a limp body's arm on its thigh) |
+| `hits` | how many of A's spheres hit B's |
+| `push_cm`, `deepest_cm` | the length of the hits' pushes summed, and the longest push |
+| `x`, `y`, `z` | the mean touched point (cm) |
+
+In `play arena --opponent` (the practice duel) the only contacts are a
+body's own: the duellist's right hand on its thigh at the start (under
+2 mm), the dead player's arms on its trunk and thighs after the kill (at
+most 1 cm). With `--corpse 0,0,3.4 --press W@150-420 play arena` the
+player's lower legs meet the corpse's thighs, chest and arms for 45 ticks
+and wake it.
 
 ## Cost
 

@@ -127,12 +127,20 @@ The system SHALL join a body whose parent node has a body to the parent's body b
 - **WHEN** a child body's link stores a 7 cm slider travel (49)
 - **THEN** it becomes a link with 49 cm of slack
 
-### Requirement: Props meet only the level
-The system SHALL test a prop body's spheres against the level only, not against other bodies or their meshes, until bodies collide with each other. The meshes a body moves SHALL stay in the physics world as its stand-ins, moved with it, so character capsules and character bodies keep meeting it.
+### Requirement: Props meet bodies
+The system SHALL test a prop body's spheres against the level and meet other bodies' parts (characters', corpses', other props') through the contacts between bodies, by its mobility, the group masks of its tree (a child never meets its parent) and no layer. The meshes a body moves SHALL stay in the physics world as its stand-ins, moved with it, for the character capsules; no body's spheres SHALL meet a stand-in.
 
-#### Scenario: Over another prop
-- **WHEN** a prop body is woken 20 cm over another body's stand-in that lies 1 m over the ground
-- **THEN** it falls through the stand-in to the ground, while a character's part lands on the stand-in
+#### Scenario: A cup on a table body
+- **WHEN** a cup body (mobility 0.5) drops onto a sleeping table body (mobility 0.05) standing on the floor
+- **THEN** it wakes the table, comes to rest on its top, and both sleep again with the table where it stood
+
+#### Scenario: Pushed by a limb
+- **WHEN** a character's limb thrown at 2 m/s meets a prop resting on the floor
+- **THEN** the prop wakes and is pushed away
+
+#### Scenario: Over a stand-in
+- **WHEN** a prop body and a character's limb are woken over another body's stand-in lying 1 m over the ground
+- **THEN** both fall through the stand-in to the ground
 
 #### Scenario: Stand-in
 - **WHEN** a body registered at the origin moves 1 m along x

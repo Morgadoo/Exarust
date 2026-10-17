@@ -193,8 +193,9 @@ How the original simulates a body (`exa_physics::body`):
     higher one and drops the sleeper's level contacts; the explicit wakes
     (knock-out, revive, statues, grabs) raise it and keep them. Level
     contacts never wake a body or keep it awake. In Exarust a blow (so
-    every hit) wakes a body as a living body's touch (256) does, and
-    going limp wakes it to 256; bodies do not touch each other yet.
+    every hit) wakes a body as a living body's touch (256) does, going
+    limp wakes it to 256, and a contact between bodies equalises their
+    countdowns as the original's does (below).
 - Dead characters (condition `0xA00`) are plain ragdolls without muscles.
 - Living bodies have muscles:
   - **The carry** holds the body up in place of gravity (`exa_physics`,
@@ -395,6 +396,101 @@ pairs, sim objects and links between bodies join it. The same ticks give
 the same particles at any frame rate. Blows sent between ticks wait in a
 queue for the next one. Parts are drawn between where the tick before last
 and the last tick left them.
+
+Contacts between bodies (`exa_physics::body::Pairs`, the solver's pair
+stage; REA and `exe.asm` of the original's sector step, its contact
+generator, per-hit push, pair manifold, pair pass and pair friction, its
+group-mask builder and layer test, constants read from the PE). In the
+original every part is a body; two parts of one character are two bodies
+of one tree. Characters, corpses and props meet alike: a prop's contact
+mobility is its mobility, its group masks come from its tree, its layer is
+0 (so a cup rests on a table that is a body, and a character pushes a
+prop). Rules in cm and ticks:
+
+- **When.** Body–body detection runs after the 20 iterations and before
+  the level's, so the level has the last word. The pairs found are
+  enforced in the next tick's 20 iterations, each pass before any body's
+  links, then dropped; they rub in this tick's 8 friction passes, before
+  the level does.
+- **Who meets whom.** Every awake part meets the parts in the 3 × 3 cells
+  (600 cm) around it that it has not met yet this tick, awake or asleep,
+  so a sleeper is touched but two sleepers never meet. The spheres around
+  each part's spheres must overlap. A character's feet never meet other
+  parts (the original puts a foot out of body–body contacts when it is
+  registered and every tick its leg finds the ground; nothing takes it
+  back).
+- **Group masks** (two parts of one tree). From the root, with a bit
+  counter from 0 (wrapping at 32), a part with children takes the next
+  bit, its parent's bit and the two bits its parent was given; a leaf takes
+  its parent's bit; every child then also takes its parent's two given
+  bits. Two parts skip each other when their masks share a bit, so a part
+  never meets anything within three generations of it. A character's two
+  feet share the union of their masks. For a human (13 bits): legs,
+  pelvis, spine and head never meet each other; the lower body meets the
+  humeri, forearms and hands; the lumbar the forearms and hands; the
+  thorax and head the hands; a shoulder, humerus or forearm only the other
+  hand; the two humeri and the two forearms skip each other; the hands meet.
+- **Layer masks** (parts of two trees). Bits pair up from bit 4: channel k
+  is membership bit 2k and exclusive bit 2k + 1 (the members are
+  `0x55555550`). Two parts skip each other when both are members of a
+  channel and either is exclusive there. A living character's lower legs
+  are `0x300`, so two characters' lower legs pass through each other; at
+  the collapse's start or on death they become 0 and meet everything.
+  Feet are `0x30`.
+- **Sides.** A part's order key is round(100 / mobility) (half to even,
+  16 bits). The part with the smaller key, the more mobile one, brings its
+  spheres; the other is touched (on a tie the awake one brings them). In
+  the original the touched side is its mesh; Exarust tests sphere against
+  sphere until the parts' spheres are fitted to their meshes. A limb's
+  mobility is its part factor (pelvis 0.45 … hand 2.5) × n / ((20·size³ +
+  V/10⁴)·d) with n parts, V the body's volume in cm³ and d the race's mass
+  divisor: about 2/3 for a human (Exarust uses 2/3 until the parts'
+  volumes are measured), so a pelvis is 0.3 (key 333) and a hand 1.67 (key
+  60).
+- **Each sphere** of the sphere side, where it is in the other part's
+  frame, or swept from where the last tick left both parts when it moved
+  over 0.1 cm² relative to the other part, against each sphere of the
+  other. A hit gives the touched point and the push that takes the sphere
+  off (pushes under 10⁻⁵ cm² are ignored; over 160 cm they are reported,
+  not clamped). The contact's weights on the sphere side are those of its
+  sphere's deepest point (or of the sphere's centre when that point lies
+  far outside the tetrahedron, a weight past 1); on the other side those of
+  the touched point in its rest frame.
+- **Immediate push.** Each side's weights, negatives dropped, normalised
+  to sum 1, give φ = 1 / (largest weight): 1 when the contact sits on one
+  particle, 4 at the centroid; the weights are then divided by the largest.
+  With f = 2φ_A / (φ_A + φ_B), the sphere side moves by its mobility share
+  m_A/(m_A + m_B) × (2 − f) of the push and the other side back by its
+  share × f, so the side whose contact sits on fewer particles moves more
+  and the two parts' momentum is kept. Each push counts toward the part's
+  0.1 cm edge restore. Later spheres see where the push left both parts.
+- **Points.** A pair keeps at most four points (the weights on each side
+  and the push's direction), the four spread widest in the sphere side's
+  weights, as a part's level contacts are kept.
+- **Pair pass** (each of the next tick's iterations). Each point still more
+  than 0.01 cm deep along its normal is taken back to 0.01 cm, minus a
+  friction term from the sphere side's travel relative to the other this
+  tick across the normal: with L = (0.01 + 0.99·n_y²)·μ_A·μ_B (cm² a
+  tick²), a travel whose square is at most L loses only 0.01·L of itself
+  and a larger one is cancelled: the reverse of every other friction rule
+  of the engine, copied as observed (limbs side by side: L = 0.0625 cm²,
+  0.25 cm a tick). Each side moves by its share over its non-negative
+  weights, and both restore their edges. A pair whose points need nothing
+  in a pass is dropped for the rest of the tick.
+- **Pair friction** (each of the 8 passes). Each point's slip across its
+  normal relative to the other side this tick is cancelled under L and
+  kept, less 0.01·L of itself, over it (the plain rule), each side moving
+  toward the other's slip by its share over its raw weights; pairs with
+  μ_A·μ_B under 1.19·10⁻⁷ do not rub.
+- **Wake.** After a pair's hits, the body with the lower sleep countdown
+  takes the other's (a sleeper also drops its level contacts), so a living
+  body (256) that touches a corpse wakes it for at least 1.5 s.
+- Not yet in Exarust: spheres against the touched side's mesh and the
+  parts' spheres fitted to their meshes (C20); held weapons, shields and
+  torches as parts, the hit events between a striking weapon and what it
+  struck, and impacts with their sounds and damage (C21, C22); the placed
+  state's one-sided pushes; the overlap-only queries of the AI and of
+  placement; Break Tangle and the two-handed grip bits.
 
 Balance and support (`exa_physics::body::Balance`, `Ragdoll::measure_balance`;
 REA on the original's balance and feet routines, its Height Query, its body
@@ -671,9 +767,10 @@ death, constants read from the executable; six live retail collapses):
   (a looping held pose, its hands up at the head) with a blend of
   round((1.2 − E) × 300) frames, in double precision, E the energy after
   the blow's daze: 60 at full energy, 345 at the floor of 0.05; eased
-  smoothly. A clip start does nothing when its clip already plays. (Not
-  yet: the held items dropped (L13), a grab released, the lower legs'
-  collision layers, the death voice.)
+  smoothly. A clip start does nothing when its clip already plays. The
+  lower legs leave the living lower legs' layer (0; Contacts between
+  bodies, above). (Not yet: the held items dropped (L13), a grab released,
+  the death voice.)
 - **Each tick**, in place of the posture block: the frame re-anchors on
   the pelvis with no reach; the arms' stiffness is 0.2; the dying tick
   moves the heading's x and z each by (random − 0.5) × 0.5 (the original's

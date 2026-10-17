@@ -39,7 +39,7 @@ use bevy::math::{Affine3A, Mat3};
 use bevy::prelude::*;
 
 use crate::Physics;
-use crate::contact::{CONTACT_SLOP, Level, LevelContact, rub, sphere_hit, swept_hit};
+use crate::contact::{CONTACT_SLOP, Level, LevelContact, evicted, rub, sphere_hit, swept_hit};
 
 #[path = "body_muscle.rs"]
 mod muscle;
@@ -54,7 +54,7 @@ mod climb;
 pub mod stages;
 pub use stages::{
     BodyPostStep, BodyPreStep, CharacterStage, CharacterTick, SolverStage, SolverStages,
-    TickedCharacter, run_character_ticks, solve_with,
+    TickedCharacter, run_character_ticks, solve_among, solve_with,
 };
 #[path = "body_frame.rs"]
 mod frame;
@@ -62,6 +62,9 @@ mod frame;
 pub mod inspect;
 #[path = "body_lift.rs"]
 mod lift;
+#[path = "body_pairs.rs"]
+pub mod pairs;
+pub use pairs::{Pairing, Pairs, Touch};
 #[path = "body_rigid.rs"]
 mod rigid;
 pub use rigid::{FALL_OUT_HEIGHT, RigidLink, RigidPart};
@@ -209,6 +212,8 @@ pub struct Part {
     pub gravity: [f32; 4],
     /// Collision spheres in the part's space: centre, radius.
     pub spheres: Vec<(Vec3, f32)>,
+    /// How it meets other parts, of other bodies and of its own.
+    pub pairing: Pairing,
     rest_inverse: Mat3,
     /// Friction against the level.
     pub friction: f32,
@@ -299,7 +304,17 @@ impl Part {
                 };
                 (centre + axis * span * t, thick)
             })
-            .collect();
+            .collect::<Vec<_>>();
+        let inverse_mass = INVERSE_MASS
+            .get(bone.wrapping_sub(1))
+            .copied()
+            .unwrap_or(1.0);
+        let pairing = Pairing::new(
+            &rest,
+            &rest_inverse,
+            &spheres,
+            inverse_mass * pairs::LIMB_CONTACT_SCALE,
+        );
         Self {
             bone,
             entity,
@@ -307,12 +322,10 @@ impl Part {
             rest,
             positions,
             previous: positions,
-            inverse_mass: INVERSE_MASS
-                .get(bone.wrapping_sub(1))
-                .copied()
-                .unwrap_or(1.0),
+            inverse_mass,
             gravity: [1.0; 4],
             spheres,
+            pairing,
             rest_inverse,
             friction: if matches!(bone, 4 | 7) {
                 FOOT_FRICTION
@@ -455,26 +468,7 @@ impl Part {
         for (w, c) in all.iter_mut().zip(&self.contacts) {
             *w = c.weights;
         }
-        let gap =
-            |a: usize, b: usize| -> f32 { (0..4).map(|k| (all[a][k] - all[b][k]).powi(2)).sum() };
-        let mut pair = (0, 1, f32::MAX);
-        for a in 0..all.len() {
-            for b in a + 1..all.len() {
-                let d = gap(a, b);
-                if d < pair.2 {
-                    pair = (a, b, d);
-                }
-            }
-        }
-        // Of the closest pair, the one nearer to the rest goes.
-        let nearest = |i: usize, partner: usize| {
-            (0..all.len())
-                .filter(|&j| j != i && j != partner)
-                .map(|j| gap(i, j))
-                .fold(f32::MAX, f32::min)
-        };
-        let (a, b, _) = pair;
-        let out = if nearest(a, b) < nearest(b, a) { a } else { b };
+        let out = evicted(&all);
         if out < MAX_CONTACTS {
             self.contacts.swap_remove(out);
             self.contacts.push(contact);
@@ -799,11 +793,6 @@ pub struct Ragdoll {
     /// Whether the body has been simulated since it was built: a body
     /// registered asleep is drawn where its nodes already are.
     simulated: bool,
-    /// Whether its spheres meet the level's movable pieces (the stand-ins
-    /// of rigid bodies, [`crate::contact::Level::movable`]): a character's
-    /// do, a rigid body's meet only the level itself until bodies collide
-    /// with each other.
-    meets_movable: bool,
     /// Its root part fell below [`FALL_OUT_HEIGHT`], where the original
     /// removes a body's node.
     fell_out: bool,
@@ -1103,6 +1092,9 @@ pub struct BodyPlugin;
 impl Plugin for BodyPlugin {
     fn build(&self, app: &mut App) {
         stages::configure(app);
+        app.world_mut()
+            .resource_mut::<SolverStages>()
+            .add(Pairs::default());
         app.add_message::<Shove>()
             .init_resource::<ShoveQueue>()
             .init_resource::<DealtShoves>()
@@ -1217,6 +1209,8 @@ impl Ragdoll {
             }
         }
         muscle::set_part_factors(&mut parts, BodyStats::HUMAN.head_factor);
+        pairs::mask_groups(&mut parts);
+        pairs::register_legs(&mut parts);
         let (outward, inward) = tree_orders(&parts);
         let (chest, legs, sole) = balance::build(setup, &mut parts);
         Self {
@@ -1236,7 +1230,6 @@ impl Ragdoll {
             countdown: WAKE_COUNT,
             sleep: Sleep::Awake,
             simulated: false,
-            meets_movable: true,
             fell_out: false,
         }
     }
@@ -1279,13 +1272,16 @@ impl Ragdoll {
 
     /// Takes the body's muscles: it becomes a plain ragdoll, solved from
     /// the pelvis out. As the original's death does, its leg limit links
-    /// pull at full strength again and each slack link's smoothed length
+    /// pull at full strength again, each slack link's smoothed length
     /// starts where the link is, within its slack, so the joints neither
-    /// jolt nor spring back. It is awake with the living body's countdown
-    /// (256) and sleeps by its speed from then on.
+    /// jolt nor spring back, and its lower legs leave the living lower
+    /// legs' layer (they meet other characters' again). It is awake with
+    /// the living body's countdown (256) and sleeps by its speed from then
+    /// on.
     pub fn go_limp(&mut self) {
         self.drive = None;
         self.wake();
+        pairs::set_leg_layers(&mut self.parts, 0);
         for p in &self.parts {
             if let Some(k) = p.leg_limit {
                 self.links[k].strength = 1.0;
@@ -1740,9 +1736,9 @@ impl Ragdoll {
             }
             pieces.clear();
             level.pieces(lo, hi, &mut pieces);
-            if !self.meets_movable {
-                pieces.retain(|&piece| !level.movable(piece));
-            }
+            // A rigid body's stand-ins are the character capsules': bodies
+            // meet the rigid body itself through their pairs.
+            pieces.retain(|&piece| !level.movable(piece));
             for &piece in &pieces {
                 for k in 0..p.spheres.len() {
                     let (centre, r) = p.spheres[k];
@@ -1825,10 +1821,10 @@ pub fn solve<L: Level + ?Sized>(bodies: &mut [&mut Ragdoll], level: &L) {
 }
 
 /// The wake of a contact between two bodies, as the original's pair
-/// contacts do once a pair's contacts are found: the body with the lower
-/// sleep countdown takes the other's, as a touch ([`Ragdoll::touch`]). So a
-/// living body (256) that touches a sleeper wakes it for at least 1.5 s.
-/// Bodies do not collide with each other yet; their contacts will call it.
+/// contacts do once a pair's contacts are found ([`Pairs`]): the body with
+/// the lower sleep countdown takes the other's, as a touch
+/// ([`Ragdoll::touch`]). So a living body (256) that touches a sleeper
+/// wakes it for at least 1.5 s.
 pub fn equalise_sleep(a: &mut Ragdoll, b: &mut Ragdoll) {
     let (ca, cb) = (a.countdown, b.countdown);
     if ca < cb {
@@ -2004,7 +2000,9 @@ fn begin_frame(
 
 /// The solver's tick over every body (the character ticks ran before it):
 /// the queued blows, then one tick of the world's solver over the awake
-/// bodies, with the solver stages.
+/// bodies, with the solver stages, which see the sleeping bodies too (a
+/// contact wakes them). A sleeper is marked changed only once something
+/// woke it.
 pub fn step_bodies(
     physics: Res<Physics>,
     mut queue: ResMut<ShoveQueue>,
@@ -2020,17 +2018,32 @@ pub fn step_bodies(
             dealt.0.push(s);
         }
     }
-    let mut awake: Vec<Mut<Ragdoll>> = Vec::new();
+    let (mut awake, mut sleeping): (Vec<Mut<Ragdoll>>, Vec<Mut<Ragdoll>>) =
+        (Vec::new(), Vec::new());
     for mut body in &mut bodies {
         match body.sleep {
             Sleep::Awake => awake.push(body),
-            Sleep::Asleep => body.sleep_tick(),
-            // Untouched, so a deep sleeper is not marked changed.
-            Sleep::Deep => {}
+            Sleep::Asleep => {
+                body.sleep_tick();
+                sleeping.push(body);
+            }
+            Sleep::Deep => sleeping.push(body),
         }
     }
-    let mut awake: Vec<&mut Ragdoll> = awake.iter_mut().map(|b| &mut **b).collect();
-    solve_with(&mut awake, &physics.0, stages.all());
+    {
+        let mut awake: Vec<&mut Ragdoll> = awake.iter_mut().map(|b| &mut **b).collect();
+        // Untouched, so a deep sleeper is not marked changed.
+        let mut sleeping: Vec<&mut Ragdoll> = sleeping
+            .iter_mut()
+            .map(|b| b.bypass_change_detection())
+            .collect();
+        solve_among(&mut awake, &mut sleeping, &physics.0, stages.all());
+    }
+    for body in &mut sleeping {
+        if body.sleep == Sleep::Awake {
+            body.set_changed();
+        }
+    }
     clock.0 += 1;
 }
 

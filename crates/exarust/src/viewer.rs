@@ -753,6 +753,24 @@ fn spawn_players(
             ));
         }
     }
+    // `--corpse`: dead humans of a new record, as a level places its dead.
+    let corpses: Vec<exa_world::PlacedCharacter> = options
+        .corpses
+        .iter()
+        .map(|&at| exa_world::PlacedCharacter {
+            name: "corpse".into(),
+            position: Vec3::from_array(at),
+            yaw: 0.0,
+            dead: true,
+            race: 0,
+            female: false,
+            worn: Vec::new(),
+            held: None,
+            record: exa_formats::characters::CharacterRecord::default(),
+            encumbrance: 0.0,
+        })
+        .collect();
+    spawn_placed_characters(commands, loader, &races, &corpses, story);
     let (spawned, missing) =
         spawn_placed_characters(commands, loader, &races, &start.characters, story);
     info!("level {name}: {spawned} characters placed, {missing} without a body");

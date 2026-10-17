@@ -8,6 +8,7 @@ pub mod cursor;
 pub mod hud;
 pub mod joint_trace;
 pub mod limp;
+pub mod pair_trace;
 pub mod player;
 pub mod sim_control;
 pub mod stages;
@@ -47,6 +48,7 @@ impl Plugin for GamePlugin {
         .add_plugins((
             body_overlay::BodyOverlayPlugin,
             joint_trace::JointTracePlugin,
+            pair_trace::PairTracePlugin,
             sim_control::SimControlPlugin,
         ));
     }

@@ -1,4 +1,5 @@
 use super::super::tests::floor_quad;
+use super::super::{PartSetup, SolverStage};
 use super::*;
 use crate::contact::Level;
 
@@ -82,7 +83,11 @@ fn a_registered_body_is_asleep_where_its_node_is() {
     assert_eq!(p.previous, p.positions);
     assert_eq!((p.friction, p.inverse_mass), (0.75, 0.5));
     assert!(p.transform().translation.distance(at.into()) < 1e-5);
-    assert!(!body.meets_movable && !body.fell_out());
+    assert!(!body.fell_out());
+    // It meets other bodies by its mobility (order key 200), in no layer.
+    let pairing = p.pairing;
+    assert_eq!((pairing.mobility, pairing.key()), (0.5, 200));
+    assert_eq!((pairing.group, pairing.layer, pairing.out), (0, 0, false));
 }
 
 /// A registered body stays exactly where the level put it, even in the
@@ -164,6 +169,8 @@ fn articulated_children_pivot_on_their_parent() {
         ..crate_at(Vec3::ZERO)
     };
     let mut body = Ragdoll::rigid(&[parent, child]);
+    // The child never meets its parent: their group masks share a bit.
+    assert_ne!(body.parts[0].pairing.group & body.parts[1].pairing.group, 0);
     let links = body.links_of(1);
     assert_eq!(links.len(), 2);
     let (stored, pivot) = (&links[0], &links[1]);
@@ -213,30 +220,141 @@ impl Level for TwoFloors {
     }
 }
 
-/// A rigid body meets only the level: woken over another body's stand-in
-/// it falls through it to the ground, while a character's part lands on
-/// the stand-in.
+/// A character's limp forearm (bone 11, a 24 cm limb) centred at `at`.
+fn limb_at(at: Vec3) -> PartSetup {
+    PartSetup {
+        bone: 11,
+        entity: Entity::PLACEHOLDER,
+        parent: None,
+        world: Affine3A::from_translation(at),
+        centre: Vec3::ZERO,
+        half: Vec3::new(0.05, 0.12, 0.05),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot: None,
+        pins: Vec::new(),
+    }
+}
+
+/// Bodies skip a rigid body's stand-ins (they are the character capsules'):
+/// woken over one, a prop and a character's limb both fall through it to
+/// the ground; they meet the rigid body itself through their pairs.
 #[test]
-fn rigid_bodies_meet_only_the_level() {
+fn bodies_skip_the_stand_ins() {
     let level = TwoFloors {
         ground: floor_quad(0.0, 5.0),
         stand_in: floor_quad(1.0, 5.0),
     };
     let mut prop = Ragdoll::rigid(&[crate_at(Vec3::new(0.0, 1.2, 0.0))]);
     prop.wake();
-    let mut limb = Ragdoll::rigid(&[crate_at(Vec3::new(0.0, 1.2, 0.0))]);
-    limb.meets_movable = true;
-    limb.wake();
+    let mut limb = Ragdoll::new(&[limb_at(Vec3::new(1.0, 1.3, 0.0))]);
     for _ in 0..300 {
         prop.tick(&level);
         limb.tick(&level);
     }
     assert!(lowest(&prop).abs() < 0.01, "prop at {}", lowest(&prop));
-    assert!(
-        (lowest(&limb) - 1.0).abs() < 0.01,
-        "limb at {}",
-        lowest(&limb)
-    );
+    assert!(lowest(&limb).abs() < 0.01, "limb at {}", lowest(&limb));
+}
+
+/// One tick of `bodies` as the game's solver runs it with the pairs: the
+/// awake ones solved, the sleepers (a first sleeping tick taken) seen by
+/// the pairs.
+fn step(bodies: &mut [&mut Ragdoll], level: &[[Vec3; 3]], stages: &mut [Box<dyn SolverStage>]) {
+    let (mut awake, mut sleeping): (Vec<&mut Ragdoll>, Vec<&mut Ragdoll>) =
+        (Vec::new(), Vec::new());
+    for b in bodies.iter_mut() {
+        match b.sleep {
+            Sleep::Awake => awake.push(&mut **b),
+            Sleep::Asleep => {
+                b.sleep_tick();
+                sleeping.push(&mut **b);
+            }
+            Sleep::Deep => sleeping.push(&mut **b),
+        }
+    }
+    super::super::solve_among(&mut awake, &mut sleeping, level, stages);
+}
+
+fn pairs() -> Vec<Box<dyn SolverStage>> {
+    vec![Box::new(super::super::Pairs::default())]
+}
+
+/// A 60 cm table of mobility 0.05 on the floor: four leg spheres and a
+/// top of 5 × 5 spheres 12 cm across, 10 cm apart, its node at the origin.
+fn table() -> RigidPart {
+    let mut spheres: Vec<(Vec3, f32)> =
+        [(-0.25, -0.25), (0.25, -0.25), (-0.25, 0.25), (0.25, 0.25)]
+            .map(|(x, z)| (Vec3::new(x, 0.05, z), 0.05))
+            .to_vec();
+    spheres.extend((-2..=2).flat_map(|i| {
+        (-2..=2).map(move |k| (Vec3::new(0.1 * i as f32, 0.54, 0.1 * k as f32), 0.06))
+    }));
+    RigidPart {
+        rest: [
+            Vec3::new(-0.3, 0.0, -0.3),
+            Vec3::new(0.3, 0.0, -0.3),
+            Vec3::new(0.0, 0.0, 0.3),
+            Vec3::new(0.0, 0.6, 0.0),
+        ],
+        mobility: 0.05,
+        spheres,
+        ..crate_at(Vec3::ZERO)
+    }
+}
+
+/// A 10 cm cup of mobility 0.5 (one 5 cm sphere), its node at `at`.
+fn cup_at(at: Vec3) -> RigidPart {
+    let mut cup = crate_at(at);
+    cup.rest = cup.rest.map(|r| r * 0.25);
+    cup.spheres = vec![(Vec3::new(0.0, 0.05, 0.0), 0.05)];
+    cup
+}
+
+/// A cup dropped on a table that is a prop body, both registered asleep:
+/// the cup (the more mobile, key 200 to the table's 2 000) wakes the table
+/// at its first contact, comes to rest on its top through their pairs, and
+/// both sleep again with the table where it stood.
+#[test]
+fn props_rest_on_prop_bodies() {
+    let floor = floor_quad(0.0, 5.0);
+    let mut table = Ragdoll::rigid(&[table()]);
+    let stood = table.parts[0].transform().translation;
+    let mut cup = Ragdoll::rigid(&[cup_at(Vec3::new(0.03, 0.75, 0.02))]);
+    cup.wake();
+    let mut stages = pairs();
+    let mut woke = false;
+    for _ in 0..1000 {
+        step(&mut [&mut cup, &mut table], floor.as_slice(), &mut stages);
+        woke |= table.sleep == Sleep::Awake;
+        if cup.asleep() && table.asleep() {
+            break;
+        }
+    }
+    assert!(woke, "the table never woke");
+    assert!(cup.asleep() && table.asleep());
+    assert!(lowest(&cup) > 0.55, "cup at {}", lowest(&cup));
+    let moved = table.parts[0].transform().translation.distance(stood);
+    assert!(moved < 0.01, "the table moved {moved} m");
+}
+
+/// A character's limb thrown at 2 m/s against a prop resting on the floor
+/// wakes it and pushes it away through their pairs.
+#[test]
+fn a_limb_pushes_a_prop() {
+    let floor = floor_quad(0.0, 5.0);
+    let mut prop = Ragdoll::rigid(&[crate_at(Vec3::ZERO)]);
+    let mut limb = Ragdoll::new(&[limb_at(Vec3::new(-0.45, 0.2, 0.0))]);
+    limb.set_velocity(Vec3::new(2.0, 0.0, 0.0));
+    let mut stages = pairs();
+    let mut woke = false;
+    for _ in 0..60 {
+        step(&mut [&mut limb, &mut prop], floor.as_slice(), &mut stages);
+        woke |= prop.sleep == Sleep::Awake;
+    }
+    assert!(woke, "the prop never woke");
+    let pushed = prop.parts[0].transform().translation.x;
+    assert!(pushed > 0.02, "pushed {pushed} m");
+    assert!(limb.parts[0].transform().translation.x < pushed);
 }
 
 /// A body that falls below −50 m has fallen out of the world (the original

@@ -34,8 +34,8 @@ pub trait Level {
     fn triangles(&self, piece: u32, lo: Vec3, hi: Vec3, out: &mut Vec<[Vec3; 3]>);
 
     /// Whether `piece` is the stand-in of a rigid body's meshes, moved with
-    /// it (characters still meet it; rigid bodies meet only the level
-    /// until bodies collide with each other). None by default.
+    /// it: the character capsules meet it, bodies skip it (they meet the
+    /// rigid body through their pairs). None by default.
     fn movable(&self, _piece: u32) -> bool {
         false
     }
@@ -323,6 +323,32 @@ pub(crate) fn swept_hit(t: &[Vec3; 3], start: Vec3, end: Vec3, r: f32) -> Option
         }
         Some((q, delta))
     }
+}
+
+/// Of five contacts' weights on a part's particles (four kept, the newcomer
+/// last), the one a four-point manifold drops, as the original's level and
+/// pair manifolds do: of the two closest in weight space, the one whose own
+/// nearest other is closer (the second on a tie). The newcomer (4) may be
+/// the one.
+pub(crate) fn evicted(all: &[[f32; 4]; 5]) -> usize {
+    let gap = |a: usize, b: usize| -> f32 { (0..4).map(|k| (all[a][k] - all[b][k]).powi(2)).sum() };
+    let mut pair = (0, 1, f32::MAX);
+    for a in 0..all.len() {
+        for b in a + 1..all.len() {
+            let d = gap(a, b);
+            if d < pair.2 {
+                pair = (a, b, d);
+            }
+        }
+    }
+    let nearest = |i: usize, partner: usize| {
+        (0..all.len())
+            .filter(|&j| j != i && j != partner)
+            .map(|j| gap(i, j))
+            .fold(f32::MAX, f32::min)
+    };
+    let (a, b, _) = pair;
+    if nearest(a, b) < nearest(b, a) { a } else { b }
 }
 
 /// Friction against the level for a contact point that slipped `slip` this

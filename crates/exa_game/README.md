@@ -32,9 +32,10 @@ held torch (`torch`, which fills its hand; its tests pin the "Torch"
 clips' arm on the body model), the per-tick body trace
 (`trace`, ending with the condition word), and the debug tools ([`docs/DEBUGGING.md`](../../docs/DEBUGGING.md)):
 the body overlay and joint readout (`body_overlay`), the joint trace
-(`joint_trace`) and the simulation controls (`sim_control`, with the
-scripted pauses at a tick, a stretched link, the first blood jet, the
-player's first landed blow or the first collapse).
+(`joint_trace`), the trace of contacts between body parts (`pair_trace`)
+and the simulation controls (`sim_control`, with the scripted pauses at a
+tick, a stretched link, the first blood jet, the player's first landed
+blow or the first collapse).
 
 ## Scope
 

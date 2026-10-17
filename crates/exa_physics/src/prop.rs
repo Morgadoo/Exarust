@@ -1,10 +1,11 @@
 //! Props and items as bodies in the solver: a model node's rigid body (and
 //! its articulated children) becomes a [`Ragdoll`] built by
 //! [`Ragdoll::rigid`], registered asleep where the level placed it and
-//! woken by a blow or a drag (a contact once bodies collide with each
-//! other). Its meshes stay in the physics world as stand-ins moved with
-//! it, so character capsules and character bodies keep meeting it as
-//! before; the body itself meets only the level. A body that falls below
+//! woken by a blow, a drag or a contact with another body. Its meshes stay
+//! in the physics world as stand-ins moved with it, for the character
+//! capsules; bodies (characters' parts, corpses, other props) skip them and
+//! meet the body itself through their pairs (`crate::body::Pairs`), and
+//! the body meets the level. A body that falls below
 //! [`crate::body::FALL_OUT_HEIGHT`] is removed with its node, as the
 //! original removes it.
 //!

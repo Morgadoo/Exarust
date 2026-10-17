@@ -9,6 +9,7 @@
 //!
 //! options: --camera x,y,z,yaw,pitch   start pose (metres, degrees)
 //!          --at x,y,z                 play mode: start here (metres)
+//!          --corpse x,y,z             play mode: a dead human lies here (metres); repeatable
 //!          --torch x,y,z              a burning torch fire here (metres), e.g. to stand in for a held one
 //!          --fov <degrees>            vertical field of view (default 45)
 //!          --no-shadows               lights cast no shadows (for software rendering)
@@ -34,6 +35,7 @@
 //!          --debug-bodies             start with the body overlay and joint readout shown (F3 toggles it)
 //!          --debug-nav                draw the level's navigation grid around the view (F6 toggles it)
 //!          --joint-trace <file.csv>   every joint of every simulated body after every 83 Hz tick (degrees, cm)
+//!          --pair-trace <file.csv>    every contact between two body parts found in each 83 Hz tick (cm)
 //!          --fixed-frames             every frame advances game time by exactly 1/60 s, so runs repeat tick for tick
 //!          --sim-speed <f>            run the simulation at this speed (e.g. 0.25)
 //!          --pause-at-tick <n>        pause the simulation at the end of body tick n
@@ -106,6 +108,8 @@ pub struct Options {
     pub at: Option<[f32; 3]>,
     /// A torch fire at this point (metres).
     pub torch: Option<[f32; 3]>,
+    /// Play mode: dead humans lying at these points (metres).
+    pub corpses: Vec<[f32; 3]>,
     pub screenshot: Option<PathBuf>,
     pub frames: u32,
     /// Camera exposure; dungeon interiors need far less than daylight.
@@ -138,6 +142,8 @@ pub struct Options {
     pub debug_nav: bool,
     /// Write every joint after every tick here (CSV).
     pub joint_trace: Option<PathBuf>,
+    /// Write every contact between body parts after every tick here (CSV).
+    pub pair_trace: Option<PathBuf>,
     /// Every frame advances game time by exactly 1/60 s, so that runs
     /// repeat tick for tick.
     pub fixed_frames: bool,
@@ -339,6 +345,7 @@ fn main() -> AppExit {
             "--debug-bodies" => options.debug_bodies = true,
             "--debug-nav" => options.debug_nav = true,
             "--joint-trace" => options.joint_trace = args.next().map(PathBuf::from),
+            "--pair-trace" => options.pair_trace = args.next().map(PathBuf::from),
             "--fixed-frames" => options.fixed_frames = true,
             "--sim-speed" => {
                 options.sim_speed = args
@@ -446,6 +453,18 @@ fn main() -> AppExit {
                     options.camera = Some(pose);
                 }
             }
+            "--corpse" => {
+                let v: Vec<f32> = args
+                    .next()
+                    .unwrap_or_default()
+                    .split(',')
+                    .filter_map(|x| x.trim().parse().ok())
+                    .collect();
+                match <[f32; 3]>::try_from(v.as_slice()) {
+                    Ok(at) => options.corpses.push(at),
+                    Err(_) => eprintln!("--corpse: cannot read {v:?} (x,y,z)"),
+                }
+            }
             "--at" | "--torch" => {
                 let v: Vec<f32> = args
                     .next()
@@ -523,6 +542,18 @@ fn main() -> AppExit {
         Some(Ok(t)) => Some(t),
         None => None,
     };
+    let pair_trace = match options
+        .pair_trace
+        .as_deref()
+        .map(exa_game::pair_trace::PairTrace::create)
+    {
+        Some(Err(e)) => {
+            eprintln!("cannot write the pair trace: {e}");
+            return AppExit::from_code(2);
+        }
+        Some(Ok(t)) => Some(t),
+        None => None,
+    };
 
     let fixed_frames = options.fixed_frames;
     let mut app = App::new();
@@ -543,6 +574,9 @@ fn main() -> AppExit {
         app.insert_resource(blood);
     }
     if let Some(trace) = joint_trace {
+        app.insert_resource(trace);
+    }
+    if let Some(trace) = pair_trace {
         app.insert_resource(trace);
     }
     app.add_plugins(

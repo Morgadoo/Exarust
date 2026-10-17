@@ -16,7 +16,18 @@ post-step (`body::BodyPostStep`). The solver calls the registered
 `body::SolverStages` at the original's points: after integration, the pair
 pass and links between bodies in each of the 20 iterations, sim objects,
 body–body detection, sim-object contacts, the pair friction of each of the
-8 passes, after the post-step (`src/body_stages.rs`, `body::solve_with`).
+8 passes, after the post-step (`src/body_stages.rs`, `body::solve_with`,
+`body::solve_among`, whose detection and friction also see the sleeping
+bodies). The pair stage (`body::Pairs`, `src/body_pairs.rs`, registered by
+the plugin) keeps body parts out of each other as the original's pairs
+do: after the iterations every awake part meets the parts near it (awake
+or asleep) by the original's group masks within a body and layer masks
+between bodies (`body::Pairing` on each part), the more mobile one's
+spheres against the other's, with an immediate push by mobility shares
+and φ; up to four points per pair are solved in the next tick's
+iterations before the links (0.01 cm slop, the reversed pair friction,
+dropped once satisfied) and rub in the friction passes; a contact
+equalises the two bodies' sleep countdowns (`body::equalise_sleep`).
 Blows are queued for the next tick, and parts are drawn between their last
 two ticks (`body::BodyPlugin`). Every part is
 pinned at its origin to its parent, and the skeleton's links bound each
@@ -60,7 +71,8 @@ Velocity retention is the original's default environment: banded by speed
 for limp parts, the fast value for living limbs. A limp body sleeps by the
 original's countdown (`body::Ragdoll::countdown`: 256, two off each tick
 under 20 cm/s, held at 30–32 between 20 and 40 cm/s, back to 256 above)
-and is woken by a blow or by going limp; a living body never sleeps.
+and is woken by a blow, by going limp or by a contact with an awake body;
+a living body never sleeps.
 A dazed or unsteady body's targets give way to the pose it holds by the
 original's weight (`body::Drive::hold_weight`), which the character tick
 hands to the sampler; the race's clip rates (`body::RaceMuscles`) set its
@@ -75,10 +87,11 @@ limbs), the stored spheres against the level (friction 0.75), articulated
 children joined by their stored links and an origin pivot. `prop` registers
 them from what the level loader gives (`prop::PendingProp`, `prop::BodyNode`)
 once transforms propagate; the static build keeps their meshes as
-stand-ins moved with them (`prop::StandIns`; `contact::Level::movable`), so
-capsules and character bodies meet props as before while a prop body meets
-only the level, until bodies collide with each other; a body below −50 m is
-removed. Only awake bodies are redrawn between ticks.
+stand-ins moved with them (`prop::StandIns`; `contact::Level::movable`) for
+the character capsules, which bodies skip: a prop body meets the level, and
+characters' parts, corpses and other props through the pairs, by its
+mobility and the group masks of its tree (`Part::rigid`'s pairing,
+`pairs::mask_groups`); a body below −50 m is removed. Only awake bodies are redrawn between ticks.
 
 The debug tools' measures are in `body::inspect` (`src/body_inspect.rs`):
 each joint's turn from its rest turn (stored when the body is built,

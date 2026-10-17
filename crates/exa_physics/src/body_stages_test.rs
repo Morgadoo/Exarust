@@ -120,13 +120,13 @@ impl SolverStage for Record {
     fn sim_objects(&mut self, bodies: &mut [&mut Ragdoll]) {
         self.note("sim_objects", 0, bodies);
     }
-    fn detect(&mut self, bodies: &mut [&mut Ragdoll]) {
+    fn detect(&mut self, bodies: &mut [&mut Ragdoll], _: &mut [&mut Ragdoll]) {
         self.note("detect", 0, bodies);
     }
     fn sim_object_contacts(&mut self, bodies: &mut [&mut Ragdoll]) {
         self.note("sim_object_contacts", 0, bodies);
     }
-    fn friction(&mut self, bodies: &mut [&mut Ragdoll]) {
+    fn friction(&mut self, bodies: &mut [&mut Ragdoll], _: &mut [&mut Ragdoll]) {
         self.note("friction", 0, bodies);
     }
     fn post_step(&mut self, bodies: &mut [&mut Ragdoll]) {

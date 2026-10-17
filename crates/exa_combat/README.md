@@ -52,7 +52,9 @@ killing blow and placed corpses write it too. Rules:
 
 A killing blow on a living body starts its collapse (`collapse`):
 collapsing, Fall Backward with round((1.2 − E) × 300) frames of blend from
-the energy the blow leaves (`collapse_blend`), off its controller; its
+the energy the blow leaves (`collapse_blend`), off its controller, its
+lower legs out of the living lower legs' collision layer
+(`exa_physics::body::pairs::set_leg_layers`); its
 dying tick, the posture stage's collapsing branch, drifts its heading
 (`jitter_heading`), starts Rebalance (20 frames, linear) once under
 balance 0.8 below size 1.2 (`rebalances`, `throw_arms_wide`), takes 0.003
