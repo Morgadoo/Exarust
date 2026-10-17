@@ -624,16 +624,95 @@ reaction to a wound (REA: its only writer is the game-script handler that
 also shows `XU_Memory` and plays `XAU_Memory`; player input is blocked
 while it plays).
 
-Movesets (parent): Default; One Handed (Default); 1H & Shield, 1H & Torch,
-2W Light, Torch, 1H Heavy (One Handed); Shield C1/C2 (1H & Shield); Two
-Handed (Default); 2H Light, Greatsword (Two Handed); 2H Flame (2H Light);
-Polearm (Default); Golem, Golem B; Herath, Gobbler, Fael, Demon A01,
-Harvester, Herath Ogre, Ogre, Ogre old, UnarmClaw; and creature variants of
-One Handed / 1H & Shield / Polearm.
+### The moveset tree
 
-A moveset lacking an action takes its parent's clip whole: the original's
-motion constructor copies every clip pointer a moveset defines over its
-parent's table, with no per-bone mask (REA). The per-bone word of a key is
+A moveset's parent is the **nearest moveset before it** whose name is
+exactly its parent name; one without a parent name, or with none of that
+name before it (its own name included), is a root. Children keep the
+file's order. So a name used twice resolves to the nearer copy: the
+creature variants hang under their own creature (REA: the motion
+library's tree pass after loading, comparing the 16 stored name bytes;
+every name in the installed file is zero after its terminator, so comparing
+the names as strings is the same). The installed tree (`exa-tool rsq`
+numbers it):
+
+| # | moveset | parent | | # | moveset | parent |
+|---|---|---|---|---|---|---|
+| 0 | Default | — | | 16 | 1H & Shield | 15 |
+| 1 | One Handed | 0 | | 17 | Polearm | 14 |
+| 2 | 1H & Shield | 1 | | 18 | Golem B | 14 |
+| 3, 4 | Shield C1, Shield C2 | 2 | | 19 | Polearm | 18 |
+| 5–8 | 1H & Torch, 2W Light, Torch, 1H Heavy | 1 | | 20 | Herath | 0 |
+| 9 | Two Handed | 0 | | 21, 22, 25 | Gobbler, Fael, Harvester | 20 |
+| 10 | 2H Light | 9 | | 23 | Demon A01 | 22 |
+| 11, 12 | 2H Flame, Greatsword | 10 | | 24 | One Handed | 23 |
+| 13 | Polearm | 0 | | 26, 27, 31 | Herath Ogre, Ogre, UnarmClaw | 0 |
+| 14 | Golem | 0 | | 28, 30 | One Handed, Ogre old | 27 |
+| 15 | One Handed | 14 | | 29 | 1H & Shield | 28 |
+
+### A character's clip table
+
+The original builds each character's table (one clip per action) from a
+**base moveset**, the race's own (`races.rdb`: `Default` for the human,
+skeleton, ancient and golem suit; `Ogre`, `Herath Ogre`, `Fael`,
+`Herath`, `Gobbler`, `Harvester`, `Demon A01`, `Golem`), and a **config
+word** from the held items ([PLAYER.md](../PLAYER.md), Moveset from held
+items), after every equip change (REA, the motion constructor):
+
+1. The base is the first moveset of that name, ASCII case ignored. Its
+   ancestors are overlaid from the root down: every clip a moveset defines
+   (keys > 0) replaces the table's, whole, with no per-bone mask.
+2. The config's low 16 bits name a weapon moveset:
+
+   | code | moveset | | code | moveset |
+   |---|---|---|---|---|
+   | `0x1` | One Handed | | `0x10` | Two Handed |
+   | `0x3` | 1H & Torch | | `0x20` | 2H Light |
+   | `0x4` | 2W Light | | `0x30` | Greatsword |
+   | `0x100` | 1H & Shield | | `0x40` | Polearm |
+   | `0x200` | Shield C1 | | | |
+   | `0x300` | Shield C2 | | | |
+
+   It is searched under **each ancestor** of the base, from the root down
+   to the base: the ancestor's children in order first, then each child's
+   descendants the same way. Each one found is overlaid with its own
+   ancestors below the ancestor it was found under, from the top down.
+3. The overlays "Torch" (mask `0x10010000`) and "Flaming"
+   (`0x10020000`), in that order, each when the config shares any bit with
+   its mask: the two masks share `0x10000000`, so either asks for both. Each
+   is searched among the children of the last weapon moveset found, of its
+   parent, and so on up to (not including) the ancestor it was found under,
+   then the same for the earlier ones; the first found is overlaid alone.
+   No "Flaming" moveset ships.
+
+A base no moveset is named after gives no table (the original logs "Base
+motions not found" and goes on with a pointer that is no table). Tables
+are cached by base and config. The constructor keeps at most four
+movesets in the base's chain (the base and three ancestors), four weapon
+hits and four path steps; the deepest base chain in the data is four
+(Demon A01, Shield C1).
+
+What the installed tree gives (`exa-tool clips <base> [config]`, pinned by
+a corpus test over the 9 race bases and 26 configs):
+- A human's table is the chosen moveset's own chain (One Handed over
+  Default, Greatsword over 2H Light over Two Handed over Default, …); the
+  Torch overlay lies over a shield moveset or a flaming weapon too (Walk,
+  Cmbt - Idle, Attack Mid and Idle from #7).
+- An armed creature takes the human weapon moveset, then its own over it:
+  a golem with a sword draws on #0, #1, #14 and #15; an ogre on #0, #1,
+  #27 and #28; a golem with a shield on #0, #2, #15 and #16.
+- Any Herath creature with a one-handed weapon finds #24 below Fael and
+  Demon A01, which come with it: a Fael, Herath, Gobbler or Harvester with
+  a sword walks as the demon.
+
+Exarust before this used the first moveset of a name and walked parents
+by first name match: the creature variants were unreachable. 162 of the
+234 race-and-config tables differ from that lookup, for a human only the
+nine with the Torch overlay over a shield or a flaming weapon.
+
+### Keys
+
+The per-bone word of a key is
 no mask either: it is 0, or 1 on the lower legs (bones 3 and 6, a foot
 flag), in every key but some keys of 16 clips, where it holds float bit
 patterns: Default Backpedal; "Torch" Walk (the last four of its eight

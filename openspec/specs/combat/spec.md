@@ -90,7 +90,7 @@ The system SHALL give each body part two armour layers: the race's natural layer
 - **THEN** their layer's padding is 17 × 0.005, not scaled again
 
 ### Requirement: Moveset from held items
-The system SHALL pick a fighter's moveset from what it holds, in and out of combat mode, as the original: empty hands the race's own moveset (weapon class 0x80); one one-handed weapon "One Handed", two "2W Light"; a two-hander "Greatsword" for flags 0x521, "2H Light" with kind bit 0, else "Two Handed"; a polearm "Polearm"; a shield a shield moveset; an off-hand light "1H & Torch"; a main-hand light "Torch". A clip playing SHALL go on in the new moveset.
+The system SHALL pick a fighter's moveset config from what it holds, in and out of combat mode, as the original: empty hands none (weapon class 0x80); one one-handed weapon "One Handed", two "2W Light"; a two-hander "Greatsword" for flags 0x521, "2H Light" with kind bit 0, else "Two Handed"; a polearm "Polearm"; a shield a shield moveset (plus Torch beside a light); an off-hand light "1H & Torch"; a main-hand light "One Handed" plus Torch. A clip playing SHALL go on in the new table.
 
 #### Scenario: Unarmed player
 - **WHEN** `exarust --opponent play arena` runs without `--weapon`
@@ -103,6 +103,10 @@ The system SHALL pick a fighter's moveset from what it holds, in and out of comb
 #### Scenario: Torch beside a sword
 - **WHEN** the player carries the torch with `--weapon ub05ssworda` in a story level
 - **THEN** the torch is in the left hand and the player moves with "1H & Torch", stance class 4
+
+#### Scenario: Race kept
+- **WHEN** an ogre's hands change from empty to a one-handed weapon
+- **THEN** its base moveset stays "Ogre" and its config becomes One Handed (0x1)
 
 ### Requirement: Player attacks
 The system SHALL turn the left button in combat mode into an attack request: a press requests one (Attack Mid, Down or Up at random, never the side's last pick; Attack Combo 1–3 the same way with the cursor more than 20° left of the facing, 15° for weapon class 0; Overhead Swing for a press within 300 ms of the press before; a Stab with Alt and a held weapon); holding keeps it standing, so attacks repeat; releasing drops it.

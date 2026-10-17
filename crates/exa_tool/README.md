@@ -13,6 +13,8 @@
 | `png <pack> <entry> <out.png>` | decode an image's base level |
 | `extract <pack> <dir> [--filter s] [--inner e]` | write entries with guessed extensions |
 | `paint <model> <stem> <out.png>` | paint an apparel texture set with the appearance of the first item worn as the model (`paint braies_a braies__aa b.png`) |
+| `rsq [entry]` | the skeleton with its body links, the actions, and the movesets numbered with the moveset each parent resolves to |
+| `clips <base> [config]` | the clip table a character with this base moveset (its race's own, `Default` for a human) and held-item config (`0x1` One Handed, `0x10010001` with the torch; hex or decimal) plays: every action with the moveset its clip comes from (`clips Ogre 0x1`) |
 | `races` | every race of `races.rdb`: names, model, movesets, health, flag words, the body scalars and the body controller's factors, the stats (reach, weapon factors, AI, footsteps, voice) and the gait table with brake distances |
 | `characters <level\|actors>` | every character record of a level (`exanima01`) with where it is placed, or of the arena's actors: looks, feral level, pools, combat skill, experience, traits, voice, skills with their learnt techniques, perks, Manoeuvring tier, Deflection, roles, saved state, powers, and the stats each record spawns with (scale, most energy, encumbrance, reach, pins, head, health, rule bits) |
 | `bodies <pack> <entry>` | the rigid bodies of a model's nodes (root or child, class, mobility, rest points, point masses, spheres, links with slider travel, sound slots, the first material with the divisor, registered mobility and impact sound set) and its cloth markers, in cm (`bodies Objects "lever a01"`) |

@@ -32,11 +32,13 @@ Characters: races, body morphs, appearance, apparel fitting, stats/attributes/sk
 - `held::Hands` says what a body holds as the original's moveset rule reads
   it (the main item's weapon flags and whether it is a light, a second
   weapon, a shield, an off-hand light); `held::choose` turns it into a
-  `HeldMoveset`: the moveset, the stance class and the weapon class (the
-  fists `0x80`). Dressing puts a wielded weapon in the main hand, the game
-  crate puts a lit torch in its hand, and a system after dressing writes
-  the chosen moveset into the body's `Animator` whenever the hands change.
-  Only bodies with `Hands` follow it (the player and the duellist). See
+  `HeldMoveset`: the original's moveset config (the weapon moveset and the
+  Torch overlay, looked up under the race's own moveset), the stance class
+  and the weapon class (the fists `0x80`). Dressing puts a wielded weapon
+  in the main hand, the game crate puts a lit torch in its hand, and a
+  system after dressing writes the config into the body's `Animator`
+  (whose base stays the race's moveset) whenever the hands change. Only
+  bodies with `Hands` follow it (the player and the duellist). See
   [`docs/PLAYER.md`](../../docs/PLAYER.md) (Moveset from held items).
 - A wielded weapon's `Blade` carries its record as the original builds it
   (`exa_formats::weapon_record`): a plain model measured along its

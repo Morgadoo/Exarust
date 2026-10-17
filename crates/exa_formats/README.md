@@ -21,4 +21,5 @@ bytes and returns plain data or an error. No Bevy dependency.
 | `objdb` | object database items: names, models, occupancy, appearance, protection, what a worn item weighs (encumbrance, covered bones, articulated set, special kind, powered), weapon, shield, door and operative sections, and the mechanism a record makes of its model |
 | `weapon_stats` | weapon stat bytes and how a factory recipe and the item's condition produce them |
 | `weapon_record` | the record a held weapon fights with (all 28 elements, the holding pass and the equip refresh), its length along the model's rigid parts, the built-in fists and claws by race, the race's weapon fields from its decoded stats, the mass table, the shield record and the step reach |
-| levels, `rsq`, terrain, factories, actors, powers | Phase 1 |
+| `rsq` | skeleton, bodies and motion set of `humanoid.rsq`; the moveset tree (parents are the nearest earlier moveset of their name) and a character's clip table from a base moveset and the held items' config word (`MotionSet::assemble`, `MovesetConfig`: the weapon moveset under each ancestor, then the Torch and Flaming overlays) |
+| levels, terrain, factories, actors, powers | Phase 1 |

@@ -11,6 +11,8 @@
 //! exa-tool corpus meshes              decode every chunk tree, report coverage
 //! exa-tool corpus images              images by format; RGB8 normals z in blue
 //! exa-tool corpus winding             which way level faces point, floors up?
+//! exa-tool rsq                        skeleton, actions and the moveset tree of humanoid.rsq
+//! exa-tool clips Ogre 0x1             a character's clip table: base moveset, held-item config
 //! exa-tool races                      races with their flags, body parameters, stats, gaits
 //! exa-tool characters exanima01       a level's character records, read whole, and placements
 //! exa-tool characters actors          the arena's actors in actors.rpk
@@ -87,6 +89,15 @@ enum Cmd {
     Rsq {
         #[arg(default_value = "humanoid.rsq")]
         entry: String,
+    },
+    /// The clip table of `humanoid.rsq` a character plays with this base
+    /// moveset (its race's own, `Default` for a human) and held-item config
+    /// (`0x1` One Handed, `0x10010001` with the torch, …): every action with
+    /// the moveset its clip comes from.
+    Clips {
+        base: String,
+        #[arg(default_value = "0", value_parser = parse_config)]
+        config: u32,
     },
     /// Every race of `races.rdb` with its flags, body parameters, stats and
     /// gait table.
@@ -229,13 +240,34 @@ fn main() -> Result<()> {
             for (i, a) in m.actions.iter().enumerate() {
                 println!("  action {i:#04x} {:<20} params {:?}", a.name, a.params);
             }
-            for ms in &m.movesets {
+            for (i, ms) in m.movesets.iter().enumerate() {
                 let defined = ms.clips.iter().filter(|c| c.is_some()).count();
                 let keys: usize = ms.clips.iter().flatten().map(|c| c.keys.len()).sum();
+                let parent = m
+                    .parent_of(i)
+                    .map_or(String::new(), |p| format!("{} #{p}", ms.parent));
                 println!(
-                    "  {:<14} <- {:<12} {defined:>2} actions, {keys:>3} keys",
-                    ms.name, ms.parent
+                    "  #{i:<2} {:<14} <- {parent:<16} {defined:>2} actions, {keys:>3} keys",
+                    ms.name
                 );
+            }
+            Ok(())
+        }
+        Cmd::Clips { base, config } => {
+            let seq = exa_formats::rsq::Sequences::parse(entry_bytes(
+                &game,
+                "Resource",
+                "humanoid.rsq",
+            )?)?;
+            let m = &seq.motions;
+            let config = exa_formats::rsq::MovesetConfig(config);
+            let table = m
+                .assemble(&base, config)
+                .ok_or_else(|| anyhow!("no moveset named {base:?}"))?;
+            println!("{base} with {config} ({:#x}):", config.0);
+            for (a, (action, from)) in m.actions.iter().zip(&table.0).enumerate() {
+                let from = from.map_or("-".into(), |i| format!("{} #{i}", m.movesets[i].name));
+                println!("  action {a:#04x} {:<20} {from}", action.name);
             }
             Ok(())
         }
@@ -350,6 +382,15 @@ fn locate(explicit: Option<&Path>) -> Result<PathBuf> {
     exa_rpk::locate_install(explicit).ok_or_else(|| {
         anyhow!("no installation: pass --game or set EXANIMA_DIR (see .env.example)")
     })
+}
+
+/// A moveset config word, in hex (`0x10010001`) or decimal.
+fn parse_config(s: &str) -> Result<u32, String> {
+    let parsed = match s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        Some(hex) => u32::from_str_radix(&hex.replace('_', ""), 16),
+        None => s.parse(),
+    };
+    parsed.map_err(|e| format!("{s:?}: {e}"))
 }
 
 fn pack_kind(name: &str) -> Result<PackKind> {
@@ -548,4 +589,15 @@ fn extract(a: &Archive<'_>, out: &Path, filter: Option<&str>) -> Result<()> {
     }
     println!("extracted {n} entries to {}", out.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn configs_parse_in_hex_or_decimal() {
+        assert_eq!(super::parse_config("0x10010001"), Ok(0x1001_0001));
+        assert_eq!(super::parse_config("0X1001_0100"), Ok(0x1001_0100));
+        assert_eq!(super::parse_config("64"), Ok(0x40));
+        assert!(super::parse_config("0xz").is_err());
+    }
 }

@@ -290,7 +290,7 @@ fn detect_hits(
         ) {
             continue;
         }
-        let progress = anim.progress(&motions.0).unwrap_or(0.0);
+        let progress = anim.progress(&motions).unwrap_or(0.0);
         if !(ACTIVE_FROM..=ACTIVE_TO).contains(&progress) || blade.tip_speed < MIN_HIT_SPEED {
             continue;
         }
@@ -381,7 +381,7 @@ impl Roll {
 fn stance_of(anim: &Animator) -> String {
     match &anim.then {
         Some(then) => then.clone(),
-        None if anim.moveset == "Default" => "Idle".into(),
+        None if anim.plays_default_alone() => "Idle".into(),
         None => "Cmbt - Idle".into(),
     }
 }
@@ -1100,7 +1100,7 @@ mod tests {
                 clips: vec![Some(clip); actions.len()],
             }],
         };
-        Motions(std::sync::Arc::new(set), std::sync::Arc::default(), 0.0)
+        Motions::new(std::sync::Arc::new(set), std::sync::Arc::default(), 0.0)
     }
 
     /// The human fist's record, 17.66 cm across the hand.

@@ -256,37 +256,46 @@ Not yet, with the change that brings each:
 
 What a character holds picks the moveset its clips come from, after every
 equip change and in or out of combat mode, as the original picks it. The
-same choice gives a stance class (what the other arm does while one
-swings) and a weapon class (the held weapon's hands bits, `0x80` for the
-fists). A moveset lacking a clip falls back to its parent ("One Handed" to
-"Default").
+choice is a config word: the weapon moveset to look up under the race's
+own moveset (`Default` for a human), plus the "Torch" overlay. The
+character's clip table is the race's moveset chain with the weapon
+moveset and the overlay laid over it ([formats/RSQ.md](formats/RSQ.md),
+A character's clip table): a moveset lacking a clip takes its parent's
+("One Handed" from "Default"), and an ogre or a golem with a sword plays
+its own "One Handed" over the human one. The same choice gives a stance
+class (what the other arm does while one swings) and a weapon class (the
+held weapon's hands bits, `0x80` for the fists).
 
-| held | moveset | stance class | weapon class |
+| held | config: moveset | stance class | weapon class |
 |---|---|---|---|
-| empty hands (the fists) | the race's own ("Default") | 5 | `0x80` (`0xC0` for a clawed race) |
-| one one-handed weapon | "One Handed" | 1 | `0x10` |
-| two one-handed weapons | "2W Light" | 6 | `0x90` |
-| a two-hander with flags `0x521` | "Greatsword" | 2 | `0x20` |
-| another two-hander, kind bit 0 set (bladed, stick) | "2H Light" | 2 | `0x20` |
-| another two-hander | "Two Handed" | 2 | `0x20` |
-| a polearm | "Polearm" | 2 | `0x30` |
-| a shield (beside anything) | "1H & Shield", or "Shield C1" / "Shield C2" by two character flags | 3 | the main item's |
-| a light in the off hand | "1H & Torch" | 4 | the main item's (`0` beside the fists) |
-| a light in the main hand | "One Handed" with the "Torch" overlay (Exarust's "Torch" moveset) | 5 | the light's (`0x10` for the torch) |
+| empty hands (the fists) | `0`: the race's own alone | 5 | `0x80` (`0xC0` for a clawed race) |
+| one one-handed weapon | `0x1` "One Handed" | 1 | `0x10` |
+| two one-handed weapons | `0x4` "2W Light" | 6 | `0x90` |
+| a two-hander with flags `0x521` | `0x30` "Greatsword" | 2 | `0x20` |
+| another two-hander, kind bit 0 set (bladed, stick) | `0x20` "2H Light" | 2 | `0x20` |
+| another two-hander | `0x10` "Two Handed" | 2 | `0x20` |
+| a polearm | `0x40` "Polearm" | 2 | `0x30` |
+| a shield (beside anything) | `0x100` "1H & Shield", or `0x200` "Shield C1" / `0x300` "Shield C2" by two character flags; plus `0x10010000` (the "Torch" overlay) when the main item is a light | 3 | the main item's |
+| a light in the off hand | `0x3` "1H & Torch" | 4 | the main item's (`0` beside the fists) |
+| a light in the main hand | `0x10010001`: "One Handed" with the "Torch" overlay | 5 | the light's (`0x10` for the torch) |
 
 The rows are tried top to bottom from the shield down; the weapon flags
 are the low 16 bits of the item's weapon section's first word
 ([formats/OTHER.md](formats/OTHER.md), Weapon stats). The torch item is a
-one-handed stick (flags `0x13`).
+one-handed stick (flags `0x13`). A human holding the torch in the main
+hand plays the same clips as Exarust's "Torch" moveset on its own
+(`exarust character Torch/Idle`).
 
 In Exarust the player and the duellist follow this rule: the player
 unarmed fights with the "Default" guard and punches, armed with "One
-Handed" (also idling with it out of combat), and with a torch as below. The character
-view keeps the moveset its command line names, and level characters keep
-their race's moveset until they have equipment. Not yet: shields and a
-second weapon (no Exarust item holds them), the "Torch" overlay over a
-shield moveset, and the armed movesets of other races, which the original
-looks up under the race's own moveset.
+Handed" (also idling with it out of combat), and with a torch as below.
+Their animators keep the race's moveset as the base and take the config.
+The character view plays the moveset its command line names, and level
+characters keep their race's moveset with no config until they have
+equipment. `exa-tool clips <base> [config]` prints any table. Not yet:
+shields and a second weapon (no Exarust item holds them), held items on
+creatures, and the flaming weapon (its config adds `0x10020000`, whose
+shared bit also lays the Torch overlay on a one-handed weapon).
 
 The cursor is the game's own world cursor ([UI.md](UI.md), World cursor):
 a red ring in combat mode, and outside it an amber arrowhead over ground

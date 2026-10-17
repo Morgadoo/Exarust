@@ -9,14 +9,15 @@
 //! body's once a frame. A clip starts from where the body is and blends to
 //! its first key ([`clock`]).
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use bevy::prelude::*;
 use std::collections::HashMap;
 
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use exa_assets::{Game, PackKind, SkinnedPart};
-use exa_formats::rsq::{BoneBody, Clip, MotionSet, Sequences, bone_index};
+pub use exa_formats::rsq::MovesetConfig;
+use exa_formats::rsq::{BoneBody, Clip, ClipTable, MotionSet, Sequences, bone_index};
 
 mod clock;
 pub use clock::{ATTACKS, Capture, Ease, FOOTWORK, LOCOMOTION, follow_up_blend, in_place};
@@ -44,19 +45,68 @@ pub struct AnimSystems;
 
 /// The decoded motion set, the skeleton's physical body data by bone
 /// index, and the leg length (metres, thigh plus shin) of the human body the
-/// clips fit, loaded on demand.
+/// clips fit, loaded on demand; with the clip tables assembled so far.
 #[derive(Resource, Clone)]
 pub struct Motions(
     pub Arc<MotionSet>,
     pub Arc<HashMap<usize, BoneBody>>,
     pub f32,
+    ClipTables,
 );
+
+/// The shared moveset of the human and every race without its own.
+pub const DEFAULT_MOVESET: &str = "Default";
+
+/// The clip tables assembled so far, by base moveset and held-item config,
+/// as the original caches them: each pair is assembled once (`None` when
+/// the motion set has no such base moveset).
+#[derive(Clone, Default)]
+struct ClipTables(Arc<RwLock<Vec<TableEntry>>>);
+
+type TableEntry = (String, MovesetConfig, Option<Arc<ClipTable>>);
 
 /// Bones whose offsets from their parents make up the leg: lower leg (from
 /// the hip) and foot (from the knee).
 const LEG_BONES: [usize; 2] = [3, 4];
 
 impl Motions {
+    pub fn new(set: Arc<MotionSet>, bodies: Arc<HashMap<usize, BoneBody>>, leg: f32) -> Self {
+        Self(set, bodies, leg, ClipTables::default())
+    }
+
+    /// The clip table of a character whose base moveset is `base` and whose
+    /// held items ask for `config` (`MotionSet::assemble`), assembled once.
+    pub fn table(&self, base: &str, config: MovesetConfig) -> Option<Arc<ClipTable>> {
+        let find = |tables: &[TableEntry]| {
+            tables
+                .iter()
+                .find(|(b, c, _)| *c == config && b == base)
+                .map(|(_, _, t)| t.clone())
+        };
+        if let Some(t) = self.3.0.read().ok().and_then(|t| find(&t)) {
+            return t;
+        }
+        let Ok(mut tables) = self.3.0.write() else {
+            return self.0.assemble(base, config).map(Arc::new);
+        };
+        if let Some(t) = find(&tables) {
+            return t;
+        }
+        let table = self.0.assemble(base, config).map(Arc::new);
+        if table.is_none() {
+            warn!("base motions not found: {base}");
+        }
+        tables.push((base.into(), config, table.clone()));
+        table
+    }
+
+    /// The clip `anim` plays for `action`: its base moveset's table for its
+    /// held-item config.
+    pub fn clip(&self, anim: &Animator, action: &str) -> Option<&Clip> {
+        let table = self.table(&anim.moveset, anim.config)?;
+        self.0.table_clip(&table, action)
+    }
+
     pub fn load(game: &Game) -> Option<Self> {
         let bytes = game.0.pack(PackKind::Resource)?.get("humanoid.rsq")?;
         match Sequences::parse(bytes) {
@@ -69,7 +119,7 @@ impl Motions {
                     .zip(seq.bodies)
                     .filter_map(|(n, b)| Some((bone_index(&n.name)?, b)))
                     .collect();
-                Some(Self(Arc::new(seq.motions), Arc::new(bodies), leg))
+                Some(Self::new(Arc::new(seq.motions), Arc::new(bodies), leg))
             }
             Err(e) => {
                 error!("humanoid.rsq: {e}");
@@ -96,10 +146,16 @@ fn human_leg(game: &Game) -> Option<f32> {
     )
 }
 
-/// Plays `action` from `moveset` on the character this is attached to.
+/// Plays `action` on the character this is attached to, from the clip
+/// table of its base moveset and held-item config ([`Motions::clip`]).
 #[derive(Component, Clone, Debug)]
 pub struct Animator {
+    /// The base moveset: the race's own ([`DEFAULT_MOVESET`] for a human),
+    /// whose chain of parents gives every clip the held items leave alone.
     pub moveset: String,
+    /// What the held items ask of the clip table: the weapon moveset found
+    /// under the base's chain, and overlays (`exa_character::held`).
+    pub config: MovesetConfig,
     pub action: String,
     /// The clip clock, in frames.
     pub time: f32,
@@ -135,6 +191,7 @@ impl Animator {
     pub fn new(moveset: &str, action: &str) -> Self {
         Self {
             moveset: moveset.into(),
+            config: MovesetConfig::NONE,
             action: action.into(),
             time: 0.0,
             speed: 1.0,
@@ -165,10 +222,16 @@ impl Animator {
         self.start(action, false, Some(then.into()), 0, Ease::Linear);
     }
 
+    /// Whether the clips come from the shared [`DEFAULT_MOVESET`] alone: no
+    /// race moveset and no held item's moveset.
+    pub fn plays_default_alone(&self) -> bool {
+        self.moveset == DEFAULT_MOVESET && self.config.weapon_moveset().is_none()
+    }
+
     /// Progress through the current clip, 0..=1, from its first key to its
     /// last (Exarust's measure, which the combat's strike window reads).
-    pub fn progress(&self, motions: &MotionSet) -> Option<f32> {
-        let clip = motions.clip(&self.moveset, &self.action)?;
+    pub fn progress(&self, motions: &Motions) -> Option<f32> {
+        let clip = motions.clip(self, &self.action)?;
         let (first, last) = (clip.keys.first()?.time, clip.keys.last()?.time);
         let len = (last - first).max(f32::EPSILON);
         Some(((self.time - self.blend - first) / len).clamp(0.0, 1.0))
@@ -380,7 +443,7 @@ fn play_clips(
     let set = &*motions.0;
     for (root, mut anim, stature) in &mut animators {
         anim.take_capture(&[]);
-        let Some(clip) = set.clip(&anim.moveset, &anim.action) else {
+        let Some(clip) = motions.clip(&anim, &anim.action) else {
             continue;
         };
         let ending = set.action_index(&anim.action);
@@ -388,7 +451,7 @@ fn play_clips(
         if anim.tick(clip, frames, follow_up_blend(ending, 0)) {
             anim.take_capture(&[]);
         }
-        let Some(clip) = set.clip(&anim.moveset, &anim.action) else {
+        let Some(clip) = motions.clip(&anim, &anim.action) else {
             continue;
         };
         let still = in_place(set.action_index(&anim.action));
@@ -475,7 +538,7 @@ mod tests {
             .insert_resource(TimeUpdateStrategy::ManualDuration(
                 std::time::Duration::from_millis(50),
             ))
-            .insert_resource(Motions(Arc::new(set), Arc::default(), 0.0))
+            .insert_resource(Motions::new(Arc::new(set), Arc::default(), 0.0))
             .add_systems(Update, play_clips);
         let framed = app.world_mut().spawn(Animator::new("Default", "Walk")).id();
         let ticked = app
@@ -489,5 +552,56 @@ mod tests {
         // 50 ms frames at 60 frames a second (the first has no time).
         assert!((time(framed) - 6.0).abs() < 1e-4, "{}", time(framed));
         assert_eq!(time(ticked), 0.0);
+    }
+
+    /// A body's clips come from the table of its base moveset and its
+    /// held-item config, assembled once and shared.
+    #[test]
+    fn clips_come_from_the_table_of_base_and_config() {
+        use exa_formats::rsq::{Action, Moveset};
+        let clip = |time| Clip {
+            mode: 3,
+            keys: vec![key(time, 0.0, 1.0)],
+        };
+        let set = MotionSet {
+            bone_count: 1,
+            actions: vec![Action {
+                name: "Walk".into(),
+                params: [0, 0],
+            }],
+            movesets: vec![
+                Moveset {
+                    name: "Default".into(),
+                    parent: String::new(),
+                    clips: vec![Some(clip(1.0))],
+                },
+                Moveset {
+                    name: "One Handed".into(),
+                    parent: "Default".into(),
+                    clips: vec![Some(clip(2.0))],
+                },
+            ],
+        };
+        let motions = Motions::new(Arc::new(set), Arc::default(), 0.0);
+        let mut anim = Animator::new(DEFAULT_MOVESET, "Walk");
+        let first_key = |m: &Motions, a: &Animator| m.clip(a, "Walk").map(|c| c.keys[0].time);
+        assert_eq!(first_key(&motions, &anim), Some(1.0));
+        assert!(anim.plays_default_alone());
+        anim.config = MovesetConfig::ONE_HANDED;
+        assert_eq!(first_key(&motions, &anim), Some(2.0));
+        assert!(!anim.plays_default_alone());
+        let one = MovesetConfig::ONE_HANDED;
+        let table = motions.table(DEFAULT_MOVESET, one).unwrap();
+        assert!(Arc::ptr_eq(
+            &table,
+            &motions.table(DEFAULT_MOVESET, one).unwrap()
+        ));
+        assert!(Arc::ptr_eq(
+            &table,
+            &motions.clone().table(DEFAULT_MOVESET, one).unwrap()
+        ));
+        // A base the motion set lacks plays nothing.
+        anim.moveset = "Golem".into();
+        assert_eq!(first_key(&motions, &anim), None);
     }
 }

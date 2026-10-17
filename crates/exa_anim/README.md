@@ -17,5 +17,11 @@ rate and the capture (`exa_game::limp`); other bodies play once a frame
 ## Scope
 
 - Parse `humanoid.rsq`: bone hierarchy (18 bones for humans) and motion sequences.
+- Clip tables: an `Animator` names its base moveset (the race's own,
+  `Default` for a human) and the held items' `MovesetConfig`;
+  `Motions::clip` looks every clip up in the table the original assembles
+  from them (`exa_formats::rsq::MotionSet::assemble`), built once per base
+  and config and shared ([`docs/formats/RSQ.md`](../../docs/formats/RSQ.md),
+  A character's clip table).
 - Keyframe controllers (linear / Catmull-Rom), pose sampling and blending.
 - Procedural layers: stance, aim of the weapon from mouse input, look-at, idle noise.

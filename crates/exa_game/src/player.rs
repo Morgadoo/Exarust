@@ -801,10 +801,11 @@ fn request_attacks(
             }
         };
         info!(
-            "attack: {} in {} at {now} ms (cursor {:.0}° left of the facing, energy \
-             {energy:.2}; last attack tick {}, cooldown {cooldown} ms)",
+            "attack: {} in {} with {} at {now} ms (cursor {:.0}° left of the facing, \
+             energy {energy:.2}; last attack tick {}, cooldown {cooldown} ms)",
             motion.action(),
             anim.moveset,
+            anim.config,
             turn_between(pb.yaw, pb.aim).to_degrees(),
             attacker
                 .last_tick_ms
@@ -1109,8 +1110,8 @@ mod tests {
         let body = world.spawn(PlayerBody::new(0.0)).id();
         let held = world.entity(body).get::<HeldMoveset>().unwrap();
         assert_eq!(
-            (held.moveset.as_str(), held.weapon_class),
-            ("Default", class::FISTS)
+            (held.config, held.weapon_class),
+            (exa_anim::MovesetConfig::NONE, class::FISTS)
         );
     }
 

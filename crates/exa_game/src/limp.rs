@@ -340,7 +340,7 @@ fn clip_tick(
     let physical = physical.as_deref().unwrap_or(&[]);
     anim.take_capture(physical);
     let playing = set.action_index(&anim.action);
-    if let Some(clip) = set.clip(&anim.moveset, &anim.action) {
+    if let Some(clip) = motions.clip(anim, &anim.action) {
         let frames = clip_frames(playing, anim.clip_progress(clip), drive, pace);
         if anim.tick(clip, frames, follow_up_blend(playing, pace.swing.recovery)) {
             if physical.is_empty() {
@@ -352,7 +352,7 @@ fn clip_tick(
     }
     let hold = holding.then(|| anim.hold_pose(physical)).flatten();
     let weight = drive.hold_weight();
-    let clip = set.clip(&anim.moveset, &anim.action)?;
+    let clip = motions.clip(anim, &anim.action)?;
     let still = in_place(set.action_index(&anim.action));
     anim.sample(clip, still, hold.as_deref().map(|h| (h, weight)))
 }
@@ -481,8 +481,7 @@ fn rising(motions: &Motions, anim: &Animator, fallen: Option<&Fallen>) -> bool {
     fallen.is_some_and(|f| f.getting_up)
         && !anim.looping
         && motions
-            .0
-            .clip(&anim.moveset, &anim.action)
+            .clip(anim, &anim.action)
             .is_some_and(|c| anim.clip_progress(c) < RISING_SHARE)
 }
 
@@ -525,7 +524,7 @@ fn gait_floor(
     parents: &Query<&ChildOf>,
     nodes: &Query<(&Transform, Option<&BodyPart>)>,
 ) -> Option<f32> {
-    let walk = motions.0.clip(&anim.moveset, "Walk")?;
+    let walk = motions.clip(anim, "Walk")?;
     let pose = ClipPose::at(walk, walk.keys.first()?.time, stature, true)?;
     body.legs()
         .iter()
@@ -691,7 +690,7 @@ pub(crate) mod tests {
                 clips: vec![Some(idle)],
             }],
         };
-        Motions(Arc::new(set), Arc::new(HashMap::new()), 0.0)
+        Motions::new(Arc::new(set), Arc::new(HashMap::new()), 0.0)
     }
 
     /// Moves the character as its controller would, once a tick.

@@ -547,6 +547,17 @@ it, instead of behind it, where its blows fell 15–21 cm short of the
 player's back and none landed. A duellist behind a player who turns away
 still falls short: its striking distance (1.15 m between the characters)
 stands in for the original's reach and footwork (C16, L11).
+Done (change `assemble-movesets-by-the-tree`): every clip comes from the
+character's clip table as the original builds it from `humanoid.rsq`'s
+moveset tree (parents are the nearest earlier moveset of their name): the
+race's own moveset chain from the root, the weapon moveset the held items
+ask for found under each of its ancestors, then the "Torch" overlay. The
+held items give the original's config word instead of a moveset name, so
+a torch beside a shield and the creatures' own weapon movesets (the
+golem's, the ogre's, the demon's "One Handed") now resolve; a human's
+clips are unchanged. Tables are built once per race moveset and config;
+`exa-tool clips` prints one ([formats/RSQ.md](formats/RSQ.md), A
+character's clip table; [PLAYER.md](PLAYER.md), Moveset from held items).
 Still to do: inventory and containers, injuries beyond damage, blocking,
 parrying, grabs, practice mode, the knockback step, the swing stall and
 the striker's recoil, a lethal wound's fall and collapse, the stab's and

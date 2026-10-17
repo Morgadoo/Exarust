@@ -118,7 +118,7 @@ fn get_up(
         // the clip ends, `exa_combat::stance`), else its moveset's idle.
         let stance = match stance {
             Some(s) => s.action(),
-            None if anim.moveset == "Default" => "Idle",
+            None if anim.plays_default_alone() => "Idle",
             None => "Cmbt - Idle",
         };
         if fallen.getting_up {
@@ -142,7 +142,7 @@ fn get_up(
         let Some((action, start)) = ["Get up", "Get Up 2"]
             .iter()
             .filter_map(|&a| {
-                let clip = motions.0.clip(&anim.moveset, a)?;
+                let clip = motions.clip(&anim, a)?;
                 let time = clip.keys.first()?.time;
                 let (rotations, root_pos) = sample(clip, time)?;
                 let pose = Affine3A::from_rotation_translation(*rotations.first()?, root_pos);

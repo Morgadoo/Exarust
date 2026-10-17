@@ -13,7 +13,7 @@
 use bevy::image::CompressedImageFormatSupport;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
-use exa_anim::BodyPart;
+use exa_anim::{BodyPart, MovesetConfig};
 use exa_assets::{Game, ModelCache, ModelLoader, PackKind, model};
 use exa_character::held::{Hands, HeldItem};
 use exa_character::{RIGHT_HAND, Wielded};
@@ -103,13 +103,23 @@ impl TorchHand {
     }
 
     /// The moveset a body carrying the torch in this hand moves with, in
-    /// and out of combat: the one-handed moveset with the "Torch" overlay
-    /// (the right hand held up at the shoulder), or "1H & Torch" (the left),
-    /// as the held items pick it (`exa_character::held`).
+    /// and out of combat: "Torch" (the one-handed moveset with its overlay,
+    /// the right hand held up at the shoulder), or "1H & Torch" (the left).
+    /// A human holding the torch plays this moveset's chain ([`Self::config`]).
     pub fn moveset(self) -> &'static str {
         match self {
             Self::Main => "Torch",
             Self::Off => "1H & Torch",
+        }
+    }
+
+    /// What the torch in this hand asks of the clip table, as the held
+    /// items pick it (`exa_character::held`): "One Handed" with the "Torch"
+    /// overlay, or "1H & Torch".
+    pub fn config(self) -> MovesetConfig {
+        match self {
+            Self::Main => MovesetConfig::ONE_HANDED.with(MovesetConfig::TORCH),
+            Self::Off => MovesetConfig::ONE_HANDED_TORCH,
         }
     }
 
@@ -204,7 +214,7 @@ mod tests {
 
     #[test]
     fn the_held_torch_picks_the_torch_hand_moveset() {
-        use exa_character::held::{DEFAULT_MOVESET, choose};
+        use exa_character::held::choose;
         let main = Hands {
             main: Some(HeldItem {
                 flags: TORCH_FLAGS,
@@ -218,11 +228,10 @@ mod tests {
             ..default()
         };
         for (hands, hand) in [(main, TorchHand::Main), (beside_sword, TorchHand::Off)] {
-            assert_eq!(
-                choose(&hands, DEFAULT_MOVESET, false).moveset,
-                hand.moveset()
-            );
+            assert_eq!(choose(&hands, false).config, hand.config());
         }
+        assert_eq!(TorchHand::Main.config(), MovesetConfig(0x1001_0001));
+        assert_eq!(TorchHand::Off.config(), MovesetConfig(0x3));
     }
 
     /// The installed torch item is a one-handed stick.
@@ -309,7 +318,9 @@ mod tests {
         moveset: &str,
         action: &str,
     ) -> RightArm {
-        let clip = motions.clip(moveset, action).expect("clip");
+        let clip = motions
+            .clip(moveset, MovesetConfig::NONE, action)
+            .expect("clip");
         let key = &clip.keys[0];
         let mut world: HashMap<usize, (Quat, Vec3)> = HashMap::default();
         // Every bone's parent has a lower number.
@@ -372,10 +383,18 @@ mod tests {
             .map(|(a, _)| a.name.as_str())
             .collect();
         assert_eq!(defined, ["Walk", "Cmbt - Idle", "Attack Mid", "Idle"]);
+        let none = MovesetConfig::NONE;
         assert_eq!(
-            set.clip("Torch", "Defence stance"),
-            set.clip("One Handed", "Defence stance")
+            set.clip("Torch", none, "Defence stance"),
+            set.clip("One Handed", none, "Defence stance")
         );
+        // A human holding the torch plays the torch moveset's own chain.
+        for hand in [TorchHand::Main, TorchHand::Off] {
+            assert_eq!(
+                set.assemble(exa_anim::DEFAULT_MOVESET, hand.config()),
+                set.assemble(hand.moveset(), none)
+            );
+        }
 
         let near = |got: f32, want: f32, what: &str| {
             assert!((got - want).abs() < 0.1, "{what}: {got:.2}, not {want}");
