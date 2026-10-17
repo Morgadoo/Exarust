@@ -706,11 +706,12 @@ fn spawn_players(
                 .insert(exa_character::Wielded::model(w.clone()));
         }
         if options.opponent {
-            let foe_at = exa_world::start::opponent_start(name)
-                .map_or(position + Vec3::new(0.0, 0.0, 2.5), |s| s.position);
+            // Its ring slot, else in front of the player, facing it.
+            let foe_at =
+                exa_world::start::duel_opponent(name, exa_world::start::Start { position, yaw });
             let foe_root = commands
                 .spawn((
-                    Transform::from_translation(foe_at + Vec3::Y * 0.2),
+                    Transform::from_translation(foe_at.position + Vec3::Y * 0.2),
                     Visibility::default(),
                     exa_physics::CharacterBody::default(),
                     exa_world::room_view::RoomTracked,
@@ -726,6 +727,7 @@ fn spawn_players(
             let stats = new_human().with_encumbrance(outfit_encumbrance(&outfit));
             log_encumbrance("duellist", &stats);
             commands.entity(foe).insert((
+                Transform::from_rotation(Quat::from_rotation_y(foe_at.yaw)),
                 anim,
                 exa_character::held::Hands::default(),
                 exa_character::Outfit::of_models(&outfit),

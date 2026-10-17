@@ -137,7 +137,7 @@ P SHALL pause and resume the fixed step (character controllers, character ticks 
 - **THEN** the simulation stops at tick 303
 
 #### Scenario: Side view of a duel
-- **WHEN** `exarust --opponent --camera 5.5,1.3,6.3,90,-6 play arena` runs
+- **WHEN** `exarust --opponent --camera 5.5,1.3,4.5,90,-6 play arena` runs
 - **THEN** the camera stays at that pose, looking at the duel from its side
 
 #### Scenario: Scripted punch

@@ -137,6 +137,24 @@ pub fn opponent_start(level: &str) -> Option<Start> {
     arena_centre(level).map(|c| arena_ring(c, 2, 1)[1][0])
 }
 
+/// How far in front of the player a duellist stands where the original
+/// fixes no opponent's start (m). Exarust's choice, for debugging duels.
+const DUEL_DISTANCE: f32 = 2.5;
+
+/// Where a duellist of the player starting at `player` stands in `level`:
+/// the second ring slot of an arena match, else [`DUEL_DISTANCE`] in front
+/// of the player, facing it, so the fight starts face to face as the
+/// original's duels do.
+pub fn duel_opponent(level: &str, player: Start) -> Start {
+    opponent_start(level).unwrap_or_else(|| {
+        let ahead = Vec3::new(player.yaw.sin(), 0.0, player.yaw.cos());
+        Start {
+            position: player.position + ahead * DUEL_DISTANCE,
+            yaw: (-ahead.x).atan2(-ahead.z),
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,6 +205,36 @@ mod tests {
         ] {
             assert!(!keeps_torch(level), "{level}");
         }
+    }
+
+    /// In the practice arena, which has no opponent's start, the duellist
+    /// stands 2.5 m in front of the player (at (0, 0, 5) facing −Z), facing
+    /// it, so its blows meet the player's front; wherever `--at` puts the
+    /// player too. An arena match keeps its ring slot.
+    #[test]
+    fn a_duel_starts_face_to_face() {
+        let look = |s: Start| Vec3::new(s.yaw.sin(), 0.0, s.yaw.cos());
+        let player = player_start("arena").unwrap();
+        for player in [
+            player,
+            Start {
+                position: Vec3::new(1.0, 0.0, -2.0),
+                ..player
+            },
+            Start { yaw: 0.7, ..player },
+        ] {
+            let foe = duel_opponent("arena", player);
+            let to_foe = foe.position - player.position;
+            assert!((to_foe.length() - 2.5).abs() < 1e-5, "{to_foe}");
+            assert!(look(player).dot(to_foe.normalize()) > 0.9999, "{player:?}");
+            assert!(look(foe).dot(-to_foe.normalize()) > 0.9999, "{foe:?}");
+        }
+        let foe = duel_opponent("arena", player);
+        assert!(foe.position.distance(Vec3::new(0.0, 0.0, 2.5)) < 1e-5);
+        assert_eq!(
+            duel_opponent("arenao3", player_start("arenao3").unwrap()),
+            opponent_start("arenao3").unwrap()
+        );
     }
 
     #[test]

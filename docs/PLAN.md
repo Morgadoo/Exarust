@@ -522,6 +522,12 @@ set a sword's recoil and swing shaping rise, its blend by a frame); the
 turn, sprint, steps and get-up clock read the same value when they land;
 `exa-tool characters` prints it ([formats/OTHER.md](formats/OTHER.md),
 Armour and Encumbrance).
+Done (change `face-the-practice-duellist`): in `play arena`, which has no
+opponent's start, the duellist stands 2.5 m in front of the player, facing
+it, instead of behind it, where its blows fell 15–21 cm short of the
+player's back and none landed. A duellist behind a player who turns away
+still falls short: its striking distance (1.15 m between the characters)
+stands in for the original's reach and footwork (C16, L11).
 Still to do: inventory and containers, injuries beyond damage, blocking,
 parrying, grabs, practice mode, the knockback step, the swing stall and
 the striker's recoil, a lethal wound's fall and collapse, the stab's and

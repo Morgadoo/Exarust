@@ -19,8 +19,12 @@ exarust --opponent --joint-trace joints.csv play arena
 # Freeze the duel the moment a link opens 1 cm past its slack, and keep a
 # picture of it from the side.
 exarust --debug-bodies --opponent --pause-on-stretch 1 \
-  --camera 5.5,1.3,6.3,90,-6 --screenshot fold.png --frames 30 play arena
+  --camera 5.5,1.3,4.5,90,-6 --screenshot fold.png --frames 30 play arena
 ```
+
+In `play arena`, which has no opponent's start, the duellist stands 2.5 m
+in front of the player, facing it (`--at` moves both); in an arena match
+it takes the ring's other slot.
 
 ## Flags
 
@@ -110,7 +114,7 @@ exarust --at 0,0,1 --health 0.176,0.226 --press Tab@50 --screenshot bars.png --f
 # The bars fading out: combat mode off at frame 300, 1.2 s later at 60
 # frames per second (frames, not seconds: a slower run shoots later).
 exarust --at 0,0,1 --press Tab@50,Tab@300 --screenshot fade.png --frames 372 play arena
-# The heartbeat after the duellist's first blow (about 2 s after the fight
+# The heartbeat after the duellist's first blow (about 2.7 s after the fight
 # starts, in combat mode); its border pulses for 7 s, faint at the start of
 # every 800 ms, so a shot can need a second try: the log says when it
 # started.
