@@ -844,7 +844,12 @@ executable; a retail trace; `exa_combat::regen`)
   --press Tab@50 play arenao1` run, combat mode off at frame 50, logs
   yellow 0.086 at 4.4 s, 0.101 at 16.9 s, 0.118 at 24.4 s and 0.172 at
   39.4 s (the rule to the log's three decimals) and the full rate 40.16 s
-  after the Tab.
+  after the Tab. Since the health bookkeeping moved into each living
+  character's tick (red regeneration in its upkeep stage, the rest in its
+  attack stage after its posture; the dead and any character without a
+  living body still once a fixed tick before the character ticks), the
+  same run in the arena reaches the full rate at yellow 0.1755, the rule's
+  value.
 
 **What the struck character does** (REA on the damage routine and what it
 calls)
@@ -866,7 +871,7 @@ calls)
   strength yet: a struck attacker returns to its stance at once and its
   blade deals no further hit.
 - Rebalance, Defence stance, staggers and falls come from balance, not
-  from the blow. Head Pain is a story clip ([RSQ.md](RSQ.md), Motion set).
+  from the blow ([RSQ.md](RSQ.md), Falls and get-ups). Head Pain is a story clip ([RSQ.md](RSQ.md), Motion set).
   Defence stance with a step also answers electricity and energy effects.
 - A lethal wound plays Fall Backward and collapses the character for 3 s
   before it dies ([RSQ.md](RSQ.md), The collapse), as Exarust does now.

@@ -190,17 +190,21 @@ fn a_lethal_wound_starts_the_collapse() {
     assert_eq!(falling.ease, Ease::Smooth);
 }
 
-/// The dying tick on a collapsing fighter, a tick at a time: its tone
-/// falls 0.003 and its pins' gain 0.0003 (from 0.08), its heading drifts,
-/// a steady body does not Rebalance, its yellow health regenerates from 0;
-/// on the 250th tick it is dead, its yellow 0 again, its muscles gone,
-/// asked to go limp keeping its motion, its collapse over.
+/// The dying tick on a collapsing fighter, a tick of its character at a
+/// time (upkeep, posture, then the attack stage's health while it lives):
+/// its tone falls 0.003 and its pins' gain 0.0003 (from 0.08), its heading
+/// drifts, a steady body does not Rebalance, its yellow health regenerates
+/// from 0; on the 250th tick it is dead, its yellow 0 again (the rest of
+/// that tick does not run), its muscles gone, asked to go limp keeping its
+/// motion, its collapse over.
 #[test]
 fn the_body_dies_250_ticks_after_the_blow() {
+    use crate::condition::ticked_lives;
+    use crate::regen::{keep_health, regenerate_red};
     let mut app = App::new();
     app.add_systems(
         Update,
-        (dying_tick, crate::regen::regenerate_health).chain(),
+        (regenerate_red, dying_tick, keep_health.run_if(ticked_lives)).chain(),
     );
     let killed = Fighter {
         health: crate::Health {
@@ -220,6 +224,10 @@ fn the_body_dies_250_ticks_after_the_blow() {
             GlobalTransform::default(),
         ))
         .id();
+    app.insert_resource(TickedCharacter {
+        body: id,
+        character: None,
+    });
     for _ in 0..249 {
         app.update();
     }

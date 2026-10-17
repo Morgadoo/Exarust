@@ -64,6 +64,10 @@ without support it also asks for the ground under its pelvis
 check).
 `body::Ragdoll::exertion` sums each part's farthest particle over the last
 tick (cm), the summed limb motion `exa_combat`'s posture stage reads.
+`body::Fallen` marks a body off its feet while its posture stage takes an
+off-balance branch; `body::Drive::posture_wait` is the Rebalance's hold on
+the posture switch; `body::Ragdoll::turned` turns a body's frame with a
+new heading without carrying the body through the turn.
 A collapsing body (`body::Bearing::collapsing`, from its condition word)
 has its frame follow its pelvis exactly, its lift multiplied by its tone
 squared, its arms at 0.2 and its feet probed standing; its support pins'

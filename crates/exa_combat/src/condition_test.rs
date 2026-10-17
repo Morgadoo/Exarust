@@ -321,7 +321,8 @@ fn motions() -> Motions {
     Motions::new(Arc::new(set), Arc::new(HashMap::new()), 0.0)
 }
 
-/// The posture stage on a living fighter, a fixed tick at a time: it walks
+/// The posture stage on a living fighter, a tick of its character at a
+/// time: it walks
 /// (1), stands in the combat idle (8), attacks (2), and dazed mid-attack
 /// it keeps attacking (the daze leaves an attacker alone); in the Defence
 /// stance it is normal; a dead fighter, or one without muscles, is left
@@ -336,6 +337,10 @@ fn the_posture_stage_writes_once_a_tick() {
         .world_mut()
         .spawn((Fighter::default(), Animator::new("Default", "Walk"), body))
         .id();
+    app.insert_resource(TickedCharacter {
+        body: id,
+        character: None,
+    });
     let condition = |app: &App| *app.world().get::<Condition>(id).unwrap();
     let play = |app: &mut App, action: &str| {
         app.world_mut().get_mut::<Animator>(id).unwrap().action = action.into();

@@ -124,8 +124,24 @@ impl Animator {
         self.blend = blend as f32;
         self.ease = ease;
         self.leading = true;
+        self.capture_key = 0;
         self.capture = None;
         self.pending = Some(Capture::Plain);
+    }
+
+    /// Puts the clip just started `key` keys in, as the original's stagger
+    /// starts its get-up: its capture is meant for that key and its clock
+    /// is set to the time of the key before it. Its first sample, still
+    /// aiming at the first key (the blend holds the clock back), finds the
+    /// capture meant for another key: the clip loses its blend there and
+    /// then and holds its first key until its clock reaches it. Nothing
+    /// changes for key 0 or a key past the clip's.
+    pub fn jump_in(&mut self, clip: &Clip, key: usize) {
+        let Some(before) = key.checked_sub(1).and_then(|k| clip.keys.get(k)) else {
+            return;
+        };
+        self.capture_key = key;
+        self.time = before.time;
     }
 
     /// Sets the blend (frames) and the ease of the clip just started.
@@ -266,9 +282,10 @@ impl Animator {
             };
             (k - 1, k, f)
         };
-        // The blend from the capture lasts while the clip aims at its first
-        // key; aiming past it ends the blend for good.
-        let from_capture = if self.leading && dst == 0 {
+        // The blend from the capture lasts while the clip aims at the key
+        // the capture is meant for (its first, but after a jump in); aiming
+        // at another ends the blend for good.
+        let from_capture = if self.leading && dst == self.capture_key {
             self.capture.as_ref()
         } else {
             if self.leading {

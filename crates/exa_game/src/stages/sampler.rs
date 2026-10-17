@@ -9,8 +9,9 @@
 
 use bevy::prelude::*;
 use exa_anim::{Animator, BodyPart, ClipPose, Motions, Stature};
-use exa_combat::Condition;
+use exa_combat::condition::{Branch, PostureBranch};
 use exa_combat::swing::{Swing, SwingState};
+use exa_combat::{Condition, Fighter};
 use exa_physics::CharacterBody;
 use exa_physics::body::{Ragdoll, TickedCharacter, world_with};
 
@@ -24,8 +25,9 @@ use crate::player::PlayerBody;
 pub(crate) struct SampledPose(pub(crate) Option<ClipPose>);
 
 /// Advances and samples the ticked body's clip, by how far its character
-/// walked in the last step (cm), the player's run blend, its swing and the
-/// rate its swing routine set this tick for an attack's clip.
+/// walked in the last step (cm), the player's run blend, its swing, the
+/// rate its swing routine set this tick for an attack's clip, its armour
+/// encumbrance and whether its posture stage found it getting up.
 #[allow(clippy::type_complexity)]
 pub(crate) fn sample_clip(
     ticked: Res<TickedCharacter>,
@@ -39,6 +41,8 @@ pub(crate) fn sample_clip(
         Option<&Swing>,
         Option<&SwingState>,
         Option<&mut Condition>,
+        Option<&Fighter>,
+        Option<&PostureBranch>,
     )>,
     parents: Query<&ChildOf>,
     nodes: Query<(&Transform, Option<&BodyPart>)>,
@@ -47,7 +51,7 @@ pub(crate) fn sample_clip(
     sampled.0 = None;
     let Some(motions) = motions else { return };
     let root = ticked.body;
-    let Ok((body, mut anim, stature, player, swing, swinging, mut condition)) =
+    let Ok((body, mut anim, stature, player, swing, swinging, mut condition, fighter, branch)) =
         bodies.get_mut(root)
     else {
         return;
@@ -62,6 +66,8 @@ pub(crate) fn sample_clip(
         run: player.map_or(0.0, PlayerBody::run),
         swing: swing.copied().unwrap_or(Swing::FISTS),
         attack: swinging.map(|s| s.rate),
+        encumbrance: fighter.map_or(0.0, |f| f.stats.encumbrance),
+        rose: branch.is_some_and(|b| b.0 == Branch::GettingUp),
     };
     let once = !anim.looping;
     let pose = clip_tick(&motions, &mut anim, body, &pace, |body| {

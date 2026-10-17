@@ -43,7 +43,7 @@ use damage::{Strike, WeaponRecord};
 use exa_anim::{Animator, BodyPart, Ease, Motions};
 use exa_physics::body::BODY_HZ;
 use exa_physics::body::{
-    BodyTicks, CharacterTicks, Fallen, GoLimp, MAX_DAZE, Ragdoll, Shove, daze_energy,
+    BodyTicks, CharacterStage, CharacterTick, Fallen, GoLimp, MAX_DAZE, Ragdoll, Shove, daze_energy,
 };
 use exa_world::PartBounds;
 pub use fighter::{Damage, Fighter, Health, StoryMode, Taken, Weakened};
@@ -64,14 +64,15 @@ impl Plugin for CombatPlugin {
             ))
             .add_message::<wounds::Bleed>()
             .add_message::<wounds::Spray>()
-            // The attack branch of the body tick, after the posture decision
-            // and before the health bookkeeping and the clips' advance.
+            // The attack branch of each character's tick: its attack stage,
+            // after its posture stage (this tick's posture decision), before
+            // its health bookkeeping and its clip's advance.
             .add_systems(
-                FixedUpdate,
+                CharacterTick,
                 swing::run_swings
-                    .after(condition::PostureTick)
-                    .before(regen::HealthTick)
-                    .before(CharacterTicks),
+                    .in_set(CharacterStage::Attack)
+                    .run_if(condition::ticked_lives)
+                    .before(regen::keep_health),
             )
             .add_systems(
                 PostUpdate,
@@ -805,10 +806,7 @@ mod tests {
             fighter.health.yellow = 0.011;
             let mut anim = Animator::new("One Handed", "Cmbt - Idle");
             let body = Ragdoll::new(&[]).with_drive();
-            let id = app
-                .world_mut()
-                .spawn((fighter, body, Fallen::default()))
-                .id();
+            let id = app.world_mut().spawn((fighter, body, Fallen)).id();
             if attacking {
                 anim.play_once("Attack Mid", "Cmbt - Idle");
                 app.world_mut().entity_mut(id).insert(Attacking::default());

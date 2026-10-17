@@ -658,37 +658,118 @@ pins (C14, C18):
   left out since the body's own motion makes it ([Motion
   playback](#motion-playback)). A get-up's travel moves its targets, and
   the stance hold pulls the pelvis along.
-- Falling is still Exarust's (`exa_game::balance`; the original's
-  Rebalance, Defence stance, staggers and down state come with C11). In the
-  fixed step, before the character ticks, a standing body whose balance was
-  below 0.6 last tick falls: it is no longer carried or held, its tone
-  stays (as in the original), and it plays Fall Forward when its lean
-  (support point to chest) points ahead of it, else Fall Backward (started
-  as the original's posture block starts a fall: no blend, the fast ease),
-  into Unconcious 1. Once it lies its support is 0, so only its link
-  muscles act, inside the body: it falls as fast as a limp body.
-- Getting up:
-  - Once settled (2.5 s, energy ≥ 0.9), the body plays whichever of
-    `Get up` / `Get Up 2` has a first pose lying the same way, judged by the
-    pelvis's front axis facing up or down.
-  - The body is first turned so that clip's first pose lies the way the
-    body does; its frame then re-anchors to the pelvis (above), and the
-    controller follows the frame there.
-  - The clip starts as the original's get-up from the floor: a blend of
-    20 frames from a whole capture of the lying body (each part's
-    physical turn, the pelvis's on the frame), so its targets go from the
-    lying body to the clip's first key over (first key + 20) frames, 44
-    ticks for `Get up` and 39 for `Get Up 2` at the get-up clock.
-  - It ends into the stance with no blend and the smooth ease, from the
-    get-up's last root (`Get Up 2`: (6.1, 81.7, −1.8) cm) to Idle's first
-    key over 20 frames (33 ticks): no jump (36 cm in one tick before).
-  - While its get-up clip plays the body's balance rises (above).
+- Falls, staggers and get-ups are the original's ([Falls and
+  get-ups](#falls-and-get-ups), below). A falling or lying body is no
+  longer carried or held by its controller (Exarust's own, until the body
+  stands on its feet) and keeps its tone, as in the original: once it lies
+  its support is 0, so only its link muscles act, inside the body.
 - Recovery steps and foot planting are not reproduced yet. After a get-up
   the feet stay where the clip left them (they bear weight now), so the
-  body may stand leaning over them (balance 0.97 after `--shove 60`).
+  body may stand leaning over them.
 - The duellist's strike range is Exarust's own (1.15 m): link-muscle arms
   reach 15–20 cm less far than the clip's pose at the original's swing
   speed.
+
+### Falls and get-ups
+
+What a living body's posture stage starts from last tick's balance, as the
+original's posture block does (`exa_game::balance`; REA and `exe.asm` on
+the posture block, the get-up start, the heading toward a fall and the
+clip start, every constant read from the executable). The condition and
+the branch come first ([Condition](#condition)). Thresholds marked
+(double) compare the float in double precision, so the floats 0.8, 0.4,
+0.3 and 0.1 pass them.
+
+- **Off balance** (under 0.6, double) and not lying still, the clip rate is
+  1.25 × the base (0.75 frames a tick), the arms' stiffness 0.5, no
+  locomotion. With the lean u (unit, support point to chest), the frame's
+  forward axis and the chest's slow velocity:
+  - upright (u_y over 0.8, double): the Defence stance (blend 40) with a
+    slow speed² of at most 0.3 cm²/tick² (double), else Rebalance (blend
+    20), which holds the posture switch off for 41 ticks;
+  - leaning further: a **stagger** when |u · forward| is over 0.4
+    (double), the slow speed² under 8, the balance over 0.1 (double) and
+    the chest under 80 cm off its support point: Get up leaning ahead
+    (u · forward over 0), else Get Up 2, with a blend of 50 and the whole
+    capture; when the clip changes it starts at the time of its key before
+    the fourth (Get up, frame 55) or the third (Get Up 2, frame 40). Its
+    first sample aims at the first key while its capture is meant for that
+    later key, so it drops the blend there and then (clock 5.75 or −9.25
+    at full tone, its start's tick running at the off-balance 0.75) and
+    holds the first key exactly until its clock reaches it: 16 ticks for
+    Get up, 27 for Get Up 2, at 0.9 a tick. The condition becomes getting
+    up;
+  - otherwise a **fall**: Fall Forward when u · forward is over 0, else
+    Fall Backward, no blend, both looping held poses.
+
+  Each is started only when its clip does not play already, and eased
+  fast (1 + 0.11f − 1/(1 + 8f)) every tick. Under 0.3 (double) the
+  condition is down meanwhile.
+- **The daze in a fall.** A dazed body still falling (balance 0.3–0.6, its
+  condition not helpless) gets the Defence stance from the daze every
+  tick, and the posture stage starts its fall, stagger or Rebalance again
+  after it: the clip restarts every tick (its clock 0.6 or 0.75, a new
+  plain capture each time) until the condition turns helpless (down under
+  0.3, or getting up), as the original's does.
+- **Lying still** (under 0.3, double, its summed limb motion under 25 cm a
+  tick): down, and the **get-up start**. With no get-up playing it waits
+  until a foot gives support or it has gone 100 ticks (1.2 s) without.
+  It picks Get up when its pelvis's front axis points down (its height at
+  most 0, 0.2 while Get up plays, −0.2 while Get Up 2 plays), else Get Up
+  2. Past the first quarter of the clip it picks (unchanged) nothing
+  happens; else the condition is getting up, the heading (body yaw and
+  stance facing) turns to the direction from the pelvis to the chest
+  across the ground (the other way for Get Up 2) when its cosine to the
+  heading is under 0.95 (double: more than 18.2° off), the frame
+  re-anchors to the pelvis within 10 cm, and a changed pick starts with a
+  blend of 20 from the whole physical pose. (The original also clears the
+  feet's contact states there; Exarust's feet keep none yet. A held body,
+  state flag 0x40, does not get up; a dormant one, 0x10, loses its tone
+  and energy instead.)
+- **Getting up**, the clip clock runs tone × (1.5 − 0.5 × the armour
+  encumbrance) × base × 0.6 a tick while the tone is over 0.5 (0.9
+  unencumbered at full tone, 0.7125 in the 0.625 plate set), but tone ×
+  1.25 × base × 0.6 (0.75) on the tick the posture stage starts the
+  get-up, from the floor or a stagger: the original sets the rate before
+  the start, by the condition the stage began with; the movement
+  stage starts the get-up again while it is under 40 % (double), so a body
+  that rolls over changes clip with the same blend and capture, and one
+  still in its first quarter re-anchors; the balance rises 0.05 a tick
+  (above); the energy gains 0.01 × (1 − progress) more a tick (double, by
+  last tick's progress); the clip ends into the stance with no blend and
+  the condition normal.
+- **Unsteady on its feet** (balance 0.6–0.8, double, at full tone, playing
+  a plain clip: not an attack, the combat idle, the walk or run, the kick,
+  a weapon switch or a power): the Defence stance (no blend) with the
+  chest's fast speed² at most 0.3 (double), else Rebalance (blend 20, 27
+  ticks of wait), eased fast. Weak (tone under 0.85): the Defence stance,
+  no blend. At 0.8 or more the posture switch starts the stance (30
+  frames, linear) once the Rebalance's wait, which every posture stage
+  lowers by one, is under 1.
+- **Toward a fall**: under balance 0.8 (double) and not getting up, when
+  the pelvis's front axis has turned more than 45° from its clip's
+  (cosine at most 0.7, double), the heading turns to the direction from
+  the chest to the pelvis (front axis height over 0.4, double), from the
+  pelvis to the chest (under −0.4) or along the front axis, across the
+  ground, when it is more than 37° off (cosine at most 0.8, double).
+- Exarust's own: a fall, or lying still, takes the body off its controller
+  (no carry, no hold); a stagger, a get-up or standing again puts it back.
+  While its posture stage takes an off-balance branch (falling, lying,
+  getting up) the body is marked off its feet: it is not steered, engages
+  no attack and its stance does not switch (the original turns its
+  locomotion off there).
+- In game (light runs, `--fixed-frames play arena`): `--shove 30` and
+  `--shove 60` daze the player to 0.13; the daze's Defence stance, then at
+  balance 0.61 Rebalance (unsteady), restarted every tick while it falls,
+  down at 0.26 (31 ticks after the blow), Fall Backward at 0.19 (34
+  ticks), Get Up 2 109 ticks later (its feet out of reach since the fall),
+  Idle 155 ticks after that (its clock 0.75 on the get-up's first tick,
+  then 0.9), standing at balance 1 with the pelvis 101.6 cm up;
+  `--shove 90` the same 43 ticks later. One `--shove 90` run with stray
+  walk input before the blow staggered at balance 0.25: Get Up 2 jumped
+  in (its clock −9.1 then, when the first tick still ran at 0.9; −9.25
+  now), held its first key 27 ticks while the pelvis sank to 23 cm, and
+  ended into Idle 144 ticks later.
 
 ### Condition
 
@@ -738,34 +819,36 @@ and the dead, and for the shocked until their timer runs out:
    (compared in double, so 0.6f is past);
    anything else 0 (with the posture switch to the stance).
 
-Exarust (`exa_combat::condition`, its `PostureTick` after the daze's
-stance and before the character ticks, over every body rather than in
-each character's posture stage; every `Fighter` keeps the word):
+Exarust (`exa_combat::condition`, in each living character's posture
+stage, after the daze's stance; every `Fighter` keeps the word):
 - the decision, as above, from last tick's balance, summed limb motion
   and tone and the clip playing; it also names the branch the original
   takes next (falls, lying still, getting up, attack, weak, standing,
-  collapse), kept on the fighter (`PostureBranch`) for the actions that
-  run in it: the fall check runs in the falls branch
-  ([Falling to death](#falling-to-death));
-- Exarust's get-up writes getting up when it starts, and the character
+  collapse), kept on the fighter (`PostureBranch`): the posture stage then
+  runs the dying tick ([The collapse](#the-collapse)), the falls,
+  staggers and get-ups ([Falls and get-ups](#falls-and-get-ups)) and, in
+  the falls branch, the fall check ([Falling to
+  death](#falling-to-death)). A body that dies there (its collapse ends)
+  runs none of the stages after it, as the original's leave the body
+  tick;
+- the get-up's start and the stagger write getting up, and the character
   tick's sampler stage normal when the get-up's clip ends into the stance
   (the same tick);
   a killing blow starts the collapse (below; dead at once for a body
   without muscles) and a level's corpse is placed dead; a walk's stop
   needs no writer, since the player's steering starts the stance before
   the posture stage;
-- the health tick, after the posture stage, holds yellow regeneration
-  while the word is 2 or Cmbt - Idle plays, and skips it for the dead
-  ([OTHER.md](OTHER.md), Regeneration);
-- not yet: the posture block's actions (Rebalance, the Defence stance,
-  staggers and the get-up decision: C11; nothing lowers tone yet), the
-  kick, weapon switch and powers, knock-outs, dormancy, shocks, the
-  collision layer the original restores on leaving a state of 0x100 or
-  more; Exarust's backpedal and combat walk stand in for the walk played
-  backwards and the footwork, so they give 0.
-- `--shove 60 play arena`: 0 in Idle and in the daze's Defence stance, 0
-  while it falls (balance 0.53), `0x200` from balance 0.25 on, `0x300` at
-  the get-up's start, 0 when `Get Up 2` ends into Idle.
+- the health bookkeeping, in the attack stage after the posture stage,
+  holds yellow regeneration while the word is 2 or Cmbt - Idle plays, and
+  skips it for the dead ([OTHER.md](OTHER.md), Regeneration);
+- not yet: the kick, weapon switch and powers, knock-outs, dormancy,
+  shocks (nothing lowers tone yet), the collision layer the original
+  restores on leaving a state of 0x100 or more; Exarust's backpedal and
+  combat walk stand in for the walk played backwards and the footwork, so
+  they give 0.
+- `--shove 60 play arena`: 0 in Idle, in the daze's Defence stance and in
+  Rebalance while it falls, `0x200` from balance 0.26 on, `0x300` at the
+  get-up's start, 0 when `Get Up 2` ends into Idle.
 
 ### The collapse
 
@@ -1055,7 +1138,8 @@ character init first stores (80/83)/scale, then overwrites it). Per tick:
 | state | frames a tick | a human, full tone |
 |---|---|---|
 | walking or running in the walk, run or backpedal clip | the gait's clip rate ÷ 83 (walk → jog by √run, or the backpedal's) × (0.8 × speed + 1), speed in cm a tick | 0.76 walking (1.69 cm), 0.89 running, 0.74 backpedalling |
-| getting up | tone × 1.5 × base × 0.6, only above half tone | 0.9 |
+| getting up | tone × (1.5 − 0.5 × encumbrance) × base × 0.6, only above half tone | 0.9 |
+| a get-up's first tick (its posture stage starts it) | tone × 1.25 × base × 0.6, only above half tone | 0.75 |
 | an attack (actions 5–12) | the swing's rate (below) | ≈ 1.0–1.3 |
 | off balance (falling, lying) | 0.6 × 1.25 × base | 0.75 |
 | otherwise (stances, idle) | 0.6 × base | 0.6 (49.8 frames a second) |
@@ -1081,6 +1165,11 @@ from its capture to the first key by clock / (first key + blend), eased
 (smooth f²(3 − 2f), or fast 1 + 0.11f − 1/(1 + 8f) after falls); without
 a capture, from its first key (from its last when looping). Once t′ aims
 past the first key the blend ends for good: the clock loses the blend.
+A capture is meant for the key the start named, the first but after a
+stagger's jump in (a few keys in, its clock set to the key before): a
+sample aiming at any other key drops the blend at once, and a clip not
+looping then holds its first key until its clock reaches it ([Falls and
+get-ups](#falls-and-get-ups)).
 Keys are slerped, the root lerped. The root keeps the clip's travel, but
 the walk's, run's and backpedal's z (Exarust also drops its interim
 `Combat Walk`'s). A body that has not sampled a clip yet has no capture
@@ -1218,8 +1307,7 @@ from where the body is, so its targets do not jump back to the clip in
 one tick.
 
 Not reproduced yet: the locomotion clock's stride modulation, its start
-key and the run overlay (C18); the stagger, Defence and Rebalance starts
-and the get-up re-pick (C11); the blow sag's writer, the swing's
+key and the run overlay (C18); the blow sag's writer, the swing's
 weapon-in-hand wait (weapons are bodies with M24), recoil and the
 follow-through (C21, M26); the attack arm stiffness; the torso
 twist in the captures (identity without it); the femur posture flag; the

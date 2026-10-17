@@ -208,6 +208,11 @@ impl Balance {
         self.slow
     }
 
+    /// The chest's fast smoothed velocity (m a tick).
+    pub fn fast_velocity(&self) -> Vec3 {
+        self.fast
+    }
+
     /// A foot stands on the ground.
     pub fn has_support(&self) -> bool {
         self.has_support

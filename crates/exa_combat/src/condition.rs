@@ -14,7 +14,7 @@
 
 use bevy::prelude::*;
 use exa_anim::Motions;
-use exa_physics::body::{CharacterTicks, Ragdoll};
+use exa_physics::body::{CharacterStage, CharacterTick, CharacterTicks, Ragdoll, TickedCharacter};
 
 use crate::stance::StanceTick;
 
@@ -317,9 +317,12 @@ pub fn posture(condition: Condition, p: &Posture) -> (Condition, Branch) {
     (next, Branch::Standing)
 }
 
-/// The posture stage of the character tick: the condition written once a
-/// tick, after the daze's stance and before each living body's clip
-/// advances ([`CharacterTicks`]).
+/// The posture work that still runs over every character, after the daze's
+/// stance and before the character ticks ([`CharacterTicks`]). The
+/// condition, the collapse's dying tick, the falls and get-ups and the
+/// fall check run in each character's own posture stage
+/// ([`CharacterStage::Posture`]); the set stays for work ordered against
+/// it.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PostureTick;
 
@@ -331,19 +334,37 @@ impl Plugin for ConditionPlugin {
             FixedUpdate,
             PostureTick.after(StanceTick).before(CharacterTicks),
         )
-        .add_systems(FixedUpdate, track_condition.in_set(PostureTick));
+        .add_systems(
+            CharacterTick,
+            track_condition.in_set(CharacterStage::Posture),
+        );
     }
 }
 
-/// Each living body's condition, once a tick: the daze's writer while its
-/// energy is more than 0.05 under its most (not in a shock's stagger),
-/// then the posture decision from the clip it plays, last tick's balance,
-/// summed limb motion and tone; the branch it takes is kept beside it.
+/// Whether the ticked character still lives once its posture stage has
+/// run: its body keeps its muscles and its condition is not dead. A body
+/// that dies in its posture stage (its collapse ends, or it falls to its
+/// death) skips the rest of its tick, as the original's dead leave the
+/// body tick; the later stages of the character tick run on this.
+pub fn ticked_lives(
+    ticked: Option<Res<TickedCharacter>>,
+    bodies: Query<(&Ragdoll, Option<&Condition>)>,
+) -> bool {
+    ticked
+        .and_then(|t| bodies.get(t.body).ok())
+        .is_some_and(|(body, c)| body.drive.is_some() && !c.is_some_and(|c| c.is_dead()))
+}
+
+/// The ticked living body's condition, in its posture stage: the daze's
+/// writer while its energy is more than 0.05 under its most (not in a
+/// shock's stagger), then the posture decision from the clip it plays,
+/// last tick's balance, summed limb motion and tone; the branch it takes
+/// is kept beside it.
 #[allow(clippy::type_complexity)]
 pub fn track_condition(
+    ticked: Res<TickedCharacter>,
     motions: Option<Res<Motions>>,
     mut bodies: Query<(
-        Entity,
         &mut Condition,
         &StateFlags,
         &Ragdoll,
@@ -353,38 +374,40 @@ pub fn track_condition(
 ) {
     let Some(motions) = motions else { return };
     let set = &*motions.0;
-    for (entity, mut condition, flags, body, anim, taken) in &mut bodies {
-        let Some(drive) = body.drive.as_ref() else {
-            continue;
-        };
-        let mut next = *condition;
-        if drive.dazed() && !flags.has(StateFlags::SHOCK_STAGGER) {
-            next.daze();
-        }
-        let p = Posture {
-            motion: set.action_index(&anim.action),
-            progress: motions
-                .clip(anim, &anim.action)
-                .map_or(0.0, |c| anim.clip_progress(c)),
-            balance: drive.balance().value,
-            exertion: body.exertion(),
-            tone: drive.tone,
-            parrying: false,
-            shock_over: false,
-        };
-        let (next, branch) = posture(next, &p);
-        if let Some(mut taken) = taken
-            && taken.0 != branch
-        {
-            taken.0 = branch;
-        }
-        if next != *condition {
-            debug!(
-                "{entity:?} condition {:#x} -> {:#x} ({}, {branch:?})",
-                condition.0, next.0, anim.action
-            );
-            *condition = next;
-        }
+    let entity = ticked.body;
+    let Ok((mut condition, flags, body, anim, taken)) = bodies.get_mut(entity) else {
+        return;
+    };
+    let Some(drive) = body.drive.as_ref() else {
+        return;
+    };
+    let mut next = *condition;
+    if drive.dazed() && !flags.has(StateFlags::SHOCK_STAGGER) {
+        next.daze();
+    }
+    let p = Posture {
+        motion: set.action_index(&anim.action),
+        progress: motions
+            .clip(anim, &anim.action)
+            .map_or(0.0, |c| anim.clip_progress(c)),
+        balance: drive.balance().value,
+        exertion: body.exertion(),
+        tone: drive.tone,
+        parrying: false,
+        shock_over: false,
+    };
+    let (next, branch) = posture(next, &p);
+    if let Some(mut taken) = taken
+        && taken.0 != branch
+    {
+        taken.0 = branch;
+    }
+    if next != *condition {
+        debug!(
+            "{entity:?} condition {:#x} -> {:#x} ({}, {branch:?})",
+            condition.0, next.0, anim.action
+        );
+        *condition = next;
     }
 }
 

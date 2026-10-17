@@ -270,8 +270,9 @@ also leaves its interim backpedal and combat walk alone).
 - **The daze.** While a fighter's energy is more than 0.05 under its most
   its body tick makes its stance the Defence stance, and, unless it is
   down or attacking (its condition word helpless or attacking,
-  [formats/RSQ.md](formats/RSQ.md), Condition; or in Exarust's fall),
-  starts the Defence stance when another clip plays,
+  [formats/RSQ.md](formats/RSQ.md), Condition), starts the Defence stance
+  when another clip plays (so a dazed player still falling restarts its
+  fall every tick until it is down, as the original does),
   blending round((1.05 − E) × 300) frames (129 at the 0.62 a duellist's
   blow leaves), eased smoothly. Its body meanwhile holds the pose it is
   physically in (standing on its feet, in full), so the guard does not
@@ -563,8 +564,14 @@ tick, as the original runs it.
 The body keeps its own balance, as the original measures it: its chest
 against its ankles, and the ground under each foot. Standing still it never
 falls; standing with no ground under its feet (dropped, or walked off a
-ledge and stopped) it loses its balance and falls, then gets up once
-settled. A standing player whose capsule perches on a stone its feet hang
+ledge and stopped) it loses its balance and falls. Off its balance (under
+0.6) it is not steered: upright it takes the Defence stance or Rebalance,
+leaning it staggers (a get-up played partway) or falls forward or
+backward; lying still under 0.3 it gets up once its feet give support or
+1.2 s after they lost it, with Get up from its front or Get Up 2 from its
+back, turned the way it rises; unsteady on its feet (0.6–0.8) it takes the
+Defence stance or Rebalance ([formats/RSQ.md](formats/RSQ.md), Falls and
+get-ups). A standing player whose capsule perches on a stone its feet hang
 beside keeps its balance and drops onto its feet (Exarust's own, while the
 capsule leads the body).
 

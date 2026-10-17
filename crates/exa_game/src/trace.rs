@@ -326,7 +326,7 @@ mod tests {
             .add_plugins(TracePlugin);
         app.world_mut()
             .entity_mut(root)
-            .insert(Condition::GETTING_UP);
+            .insert(Condition::COMBAT_IDLE);
         while app.world().resource::<BodyTicks>().0 < 20 {
             app.update();
         }
@@ -369,7 +369,7 @@ mod tests {
             assert_eq!(number(row, "balance"), 1.0);
             assert_eq!(number(row, "balance_counter"), 0.0);
             assert_eq!((row[at("countdown")], row[at("sleep")]), ("256", "awake"));
-            assert_eq!(row[at(CONDITION)], "0x300");
+            assert_eq!(row[at(CONDITION)], "0x8");
             // Not a fighter: no swing.
             assert!(row[at("swing_rate")].is_empty() && row[at("attack_flags")].is_empty());
             assert!(number(row, "pelvis_p3_z").is_finite());

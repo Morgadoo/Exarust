@@ -450,11 +450,12 @@ sim-object contacts, the pair friction of each of the 8 passes, after the
 post-step), so pairs, props' mechanisms, world links and cloth join
 without editing its loop ([formats/RSQ.md](formats/RSQ.md), how a tick
 runs). `exarust --fixed-frames` makes runs repeat tick for tick so traces
-compare between builds ([DEBUGGING.md](DEBUGGING.md)). The stance, the
-condition and the collapse's dying tick (M38, L5), falls, the swing routine
-(M22) and player input still run ahead of the character ticks, over every body, and
-the AI once a frame; each joins its stage with the change that rewrites
-it. The condition's clip-end writer runs in the sampler stage.
+compare between builds ([DEBUGGING.md](DEBUGGING.md)). The stance (M38)
+and player input still run ahead of the character ticks, over every body,
+and the AI once a frame; each joins its stage with the change that
+rewrites it. The condition, the collapse's dying tick and the falls (C11)
+run in each character's posture stage, the swing routine (M22) in its
+attack stage, and the condition's clip-end writer in its sampler stage.
 
 Done (change `collide-bodies`, C17 of the master plan): body parts collide
 with each other as the original's pairs do, for every body (characters,
@@ -483,6 +484,32 @@ contact and `--corpse` lays a dead body down in play mode
 Weapons, shields and torches as parts with their hit events (C21), impacts
 (C22), the placed state and the AI's overlap queries remain
 ([formats/RSQ.md](formats/RSQ.md), Contacts between bodies).
+
+Done (change `fall-and-get-up-as-the-original`, C11 of the master plan):
+bodies lose and regain their footing by the original's posture block, from
+last tick's balance. Off balance (under 0.6) an upright body takes the
+Defence stance (still) or Rebalance (moving); leaning further it staggers
+(a get-up started partway, which holds the clip's first lying key until
+its clock reaches it, as the original's does) or falls forward or
+backward when the lean is sideways, fast, lost or far; under 0.3 it is
+down, and lying still it gets up once its feet give support or 100 ticks
+after they lost it, with Get up from its front or Get Up 2 from its back
+(by its pelvis's front axis, with ±0.2 of hysteresis, picked again while
+the get-up is under 40 %), turned the way it rises when more than 18° off,
+blending 20 frames from its whole physical pose; getting up its clip runs
+(1.5 − 0.5·encumbrance)·0.6 a tick and its energy recovers faster. Unsteady
+on its feet (0.6–0.8) it takes the Defence stance or Rebalance, whose wait
+holds the posture switch off; under 0.8 it turns toward its fall. Exarust's
+always-fall into Unconcious 1, its 2.5 s, energy and speed gates and its
+first-pose matching are gone. The condition, the collapse's dying tick,
+the falls and get-ups and the fall check now run in each character's
+posture stage, the health bookkeeping in its upkeep and attack stages, and
+a body that dies in its posture stage skips the rest of its tick
+([formats/RSQ.md](formats/RSQ.md), Falls and get-ups). `--shove 60`: the
+dazed player Rebalances, falls on its back, gets up with Get Up 2 1.3 s
+later and stands 1.9 s after that; `--shove 90` staggers into Get Up 2.
+Not yet: the recovery steps (C15), the feet's contact states the get-up
+clears (C12), the pins it lowers (C14).
 
 This phase carries the most risk and defines how the game feels.
 
@@ -738,9 +765,8 @@ and their grips). Still missing from it: the grip links and modes (with
 weapons as bodies, M24/M25), the record's flip bit, second weapons.
 Still to do: inventory and containers, injuries beyond damage, blocking,
 parrying, grabs, practice mode, the knockback step, the striker's recoil
-and follow-through (C21, M26), the collapse's stagger steps, the
-balance's Defence stance and Rebalance (C11); next in the combat timing:
-the unarmed parries (L10).
+and follow-through (C21, M26), the collapse's stagger steps; next in the
+combat timing: the unarmed parries (L10).
 
 - `exa_items`: item database, item instances, inventory and containers,
   equip and wield, weapon assembly from factories, mass and centre of
@@ -904,9 +930,8 @@ holds the runtime and the documentation of formats and behaviour.
 [`COMPONENT-MAP.md`](COMPONENT-MAP.md) sets every component of the original
 against Exarust and lists the largest missing ones. In order:
 
-1. The support pins, the original's falls and get-ups,
-   recovery steps, foot planting and leg IK (stairs), clip blending, and
-   parts' spheres fitted to their meshes (Phase 3).
+1. The support pins, recovery steps, foot planting and leg IK (stairs),
+   clip blending, and parts' spheres fitted to their meshes (Phase 3).
 2. Inventory, equipment and containers, then blocking and parrying
    (Phase 4).
 3. The original's NPC brain: perception, targets and the combat state that

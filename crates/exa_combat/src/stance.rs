@@ -13,9 +13,10 @@
 //! Defence stance ([`daze_blend`]). Rules: `docs/PLAYER.md` (The combat
 //! stance).
 //!
-//! Not yet: the Defence stance and Rebalance a fighter takes from its
-//! balance or its tone (C11); parries, whose clips are stances while they
-//! last (L10).
+//! The Defence stance and Rebalance a fighter takes from its balance or its
+//! tone are its posture stage's (`exa_game::balance`); a Rebalance holds
+//! the posture switch off for a while (`Drive::posture_wait`). Not yet:
+//! parries, whose clips are stances while they last (L10).
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Ease};
@@ -212,8 +213,8 @@ pub fn daze_blend(energy: f32) -> u32 {
 
 /// The daze's part in the body tick, for a fighter whose energy is more
 /// than 0.05 under its most: its stance becomes the Defence stance, and
-/// unless it is down (`fallen`: Exarust's fall, or a helpless condition)
-/// or attacking, the Defence stance starts if it does not play already,
+/// unless it is down (`fallen`: its condition is helpless) or attacking,
+/// the Defence stance starts if it does not play already,
 /// blending [`daze_blend`] frames, and the blend from the start's capture
 /// is eased smoothly either way.
 pub fn take_daze(
@@ -295,9 +296,12 @@ fn take_stance(
         if let Some(drive) = body.and_then(|b| b.drive.as_ref())
             && drive.dazed()
         {
-            // The daze leaves a helpless or attacking fighter's clip alone
-            // (by its condition), and Exarust's fallen one.
-            let down = fallen || condition.helpless();
+            // The daze leaves a helpless or attacking fighter's clip alone,
+            // by its condition only: a dazed body still falling (balance
+            // 0.3–0.6) starts the Defence stance every tick, and its
+            // posture stage starts its fall again after it, as the
+            // original's do.
+            let down = condition.helpless();
             let attacking =
                 attack::playing(attacking, &anim).is_some() || condition == Condition::ATTACKING;
             let was = *stance;
@@ -318,18 +322,20 @@ fn take_stance(
         {
             anim.then = Some(stance.action().into());
         }
+        // Off its balance the posture stage's own branches decide.
         if fallen {
             continue;
         }
-        let (balance, tone) = match body {
+        let (balance, tone, wait) = match body {
             Some(b) => match &b.drive {
-                Some(d) => (d.balance().value, d.tone),
+                Some(d) => (d.balance().value, d.tone, d.posture_wait),
                 // Limp: no muscles, no posture.
                 None => continue,
             },
-            None => (1.0, 1.0),
+            None => (1.0, 1.0, 0),
         };
-        if switches_posture(&anim, stance, balance, tone) {
+        // A Rebalance holds the switch off until its wait runs out.
+        if wait < 1 && switches_posture(&anim, stance, balance, tone) {
             debug!("{} -> {}", anim.action, stance.action());
             anim.start(stance.action(), true, None, POSTURE_BLEND, Ease::Linear);
         }
@@ -708,5 +714,27 @@ mod tests {
             app.world().get::<Animator>(id).unwrap().action,
             "Cmbt - Idle"
         );
+    }
+
+    /// A Rebalance's wait holds the posture switch off: at a wait of 1 a
+    /// balanced body in Idle with the Defence stance keeps Idle, at 0 the
+    /// guard starts (30 frames, linear).
+    #[test]
+    fn a_rebalance_holds_the_switch_off() {
+        let mut app = ticked();
+        let mut body = Ragdoll::new(&[]).with_drive();
+        body.drive.as_mut().unwrap().posture_wait = 1;
+        let id = app
+            .world_mut()
+            .spawn((Stance::Defence, Animator::new("Default", "Idle"), body))
+            .id();
+        app.update();
+        assert_eq!(app.world().get::<Animator>(id).unwrap().action, "Idle");
+        let mut body = app.world_mut().get_mut::<Ragdoll>(id).unwrap();
+        body.drive.as_mut().unwrap().posture_wait = 0;
+        app.update();
+        let anim = app.world().get::<Animator>(id).unwrap();
+        assert_eq!((anim.action.as_str(), anim.blend), ("Defence stance", 30.0));
+        assert_eq!(anim.ease, Ease::Linear);
     }
 }

@@ -101,6 +101,11 @@ fn falling(branch: Branch, player: bool) -> (World, Entity, Entity) {
     if player {
         world.entity_mut(body).insert(PlayerBody::new(0.0));
     }
+    // Its own character tick runs the check.
+    world.insert_resource(TickedCharacter {
+        body,
+        character: None,
+    });
     (world, root, body)
 }
 

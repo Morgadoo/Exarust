@@ -25,8 +25,9 @@ halving the wound after 3 s in Cmbt - Idle; rules in
 [`docs/PLAYER.md`](../../docs/PLAYER.md), The combat stance).
 
 A fighter's swing (`swing`) is run every attack tick by the original's
-swing routine (`SwingState`, `run_swings`: after the posture stage,
-before the health tick and the clips' advance): the clip clock runs at its primary striker's swing speed (the
+swing routine (`SwingState`, `run_swings`: in the character's attack
+stage, after its posture stage and before its health bookkeeping and its
+clip's advance): the clip clock runs at its primary striker's swing speed (the
 record's W15, slower at the ends of the swing by its shaping W18, ramped
 by the feral level), tired (E/Emax)², and the attack ends into the stance
 with twice its stance blend W19; a swing strength P scales it while the
@@ -79,13 +80,16 @@ walking, 2 attacking, 8 combat idle, 0x20 casting, 0xC0 shocked, 0x100
 weak, 0x200 down, 0x300 getting up, 0x600 dormant, 0x800 collapsing, 0xA00
 dead, 0x8000 kicking, 0x10000/0x10004 switching weapons) and the masks its
 readers test (`helpless` 0xAC0, `fallen_or_dying` 0xA00, `off_feet` 0x200,
-`dying` 0x800, `busy` 0x10203). The posture stage (`PostureTick`, after
-the daze's stance, before the character ticks) writes it once a fixed
-tick: the daze's writer, then `posture`, the original's decision from the
+`dying` 0x800, `busy` 0x10203). Each living character's posture stage
+(`track_condition` in `exa_physics::body::CharacterStage::Posture`, after
+the daze's stance) writes it once a tick: the daze's writer, then
+`posture`, the original's decision from the
 clip playing, last tick's balance (0.6, 0.3 in double), summed limb
 motion (25 cm) and tone (0.85), which also names the branch the original
-takes next. The get-up's start and its clip's end (`exa_game`), the
-killing blow and placed corpses write it too. Rules:
+takes next (`PostureBranch`). The get-up's start, the stagger and the
+get-up clip's end (`exa_game`), the killing blow and placed corpses write
+it too. `ticked_lives` tells the later stages of a character's tick that
+it did not die in its posture stage. Rules:
 [`docs/formats/RSQ.md`](../../docs/formats/RSQ.md) (Condition).
 
 A killing blow on a living body starts its collapse (`collapse`):
@@ -93,7 +97,9 @@ collapsing, Fall Backward with round((1.2 − E) × 300) frames of blend from
 the energy the blow leaves (`collapse_blend`), off its controller, its
 lower legs out of the living lower legs' collision layer
 (`exa_physics::body::pairs::set_leg_layers`); its
-dying tick, the posture stage's collapsing branch, drifts its heading
+dying tick, the posture stage's collapsing branch (in the character's
+tick, so its heading's draws follow the characters' tick order), drifts
+its heading
 (`jitter_heading`), starts Rebalance (20 frames, linear) once under
 balance 0.8 below size 1.2 (`rebalances`, `throw_arms_wide`), takes 0.003
 off its tone and 0.0003 off its pins' gain (`lose_tone`, `fade_pins`), and
@@ -102,9 +108,12 @@ it has. A body without muscles dies at
 once. Rules: [`docs/formats/RSQ.md`](../../docs/formats/RSQ.md) (The
 collapse).
 
-Health regenerates (`regen`): the health tick (`HealthTick`, after the
-posture stage and the swing routine, before the character ticks) runs `regenerate_health` once
-a fixed tick on every fighter: red regeneration for rule bits holding 0x20
+Health regenerates (`regen`): a living character's tick keeps it
+(`regenerate_red` in its upkeep stage, `keep_health` in its attack stage
+after its posture and its swing routine); the health tick (`HealthTick`,
+before the character ticks) runs `regenerate_health` once a fixed tick on
+every other fighter (the dead, any without a living body): red
+regeneration for rule bits holding 0x20
 without 0x100 (`BodyRules::regenerates_red`; `Health::regenerate_red`,
 1.25e-5 a tick, dead or alive), then, unless dead, `Health::regenerate`:
 the heal pool's 1.25e-5 a tick to red, the yellow regeneration (the rate 0

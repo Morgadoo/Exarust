@@ -351,3 +351,71 @@ fn progress_counts_from_the_clocks_zero() {
     anim.time = 20.0 + 20.0 + 4.5;
     assert!((anim.clip_progress(&attack) - 24.5 / 110.0).abs() < 1e-6);
 }
+
+/// Ticks a jumped-in get-up, 0.75 frames on its first tick (the
+/// off-balance rate, as its start's tick runs) and 0.9 a tick after, until
+/// its clock passes its first key, checking that it holds its first key
+/// exactly until then; returns the ticks after the first and the clock
+/// after the first.
+fn hold_first_key(anim: &mut Animator, rise: &Clip) -> (usize, f32) {
+    assert!(!anim.tick(rise, 0.75, 0));
+    let pose = anim.sample(rise, false, None).unwrap();
+    let rebased = anim.time;
+    assert_eq!(anim.blend, 0.0);
+    assert!(!anim.leading && anim.capture.is_none());
+    for (i, r) in pose.rotations.iter().enumerate() {
+        assert!(close(*r, turn(0, i)), "bone {i}");
+    }
+    let first = rise.keys[0].time;
+    let mut ticks = 0;
+    while anim.time <= first {
+        anim.tick(rise, 0.9, 0);
+        let held = anim.sample(rise, false, None).unwrap();
+        if anim.time <= first {
+            assert!(close(held.rotations[4], turn(0, 4)));
+        }
+        ticks += 1;
+    }
+    (ticks, rebased)
+}
+
+/// The stagger's jump in, as the original's runs: Get up (keys 20, 40, 55,
+/// 70, 80) started with a blend of 50 three keys in sets its clock to 55;
+/// after its first tick at 0.75 its first sample finds the capture meant
+/// for key 3 while it aims at the first, so it rebases at once (clock
+/// 5.75, no blend) and samples the first key exactly, which it holds until
+/// its clock passes 20, 16 ticks later at 0.9. Get Up 2 (15, 40, …) two
+/// keys in starts at 40 and rebases to −9.25, 27 ticks before its first
+/// key.
+#[test]
+fn a_stagger_jumps_in_and_holds_the_first_key() {
+    let at = |n: usize| vec![Vec3::new(-2.1, 51.0, 26.0); n];
+    let rise = clip(&[20.0, 40.0, 55.0, 70.0, 80.0], &at(5), false);
+    let mut anim = sampled("Idle", &idle());
+    anim.start("Get up", false, Some("Idle".into()), 50, Ease::Linear);
+    anim.capture_whole();
+    anim.jump_in(&rise, 3);
+    assert_eq!((anim.time, anim.capture_key), (55.0, 3));
+    anim.take_capture(&vec![Some(Quat::from_rotation_x(1.2)); BONES]);
+    let (ticks, rebased) = hold_first_key(&mut anim, &rise);
+    assert!((rebased - 5.75).abs() < 1e-4, "{rebased}");
+    assert_eq!(ticks, 16);
+
+    let times = [15.0, 40.0, 63.0, 82.0, 98.0, 110.0, 120.0];
+    let rise = clip(&times, &at(7), false);
+    let mut anim = sampled("Idle", &idle());
+    anim.start("Get Up 2", false, Some("Idle".into()), 50, Ease::Linear);
+    anim.jump_in(&rise, 2);
+    assert_eq!(anim.time, 40.0);
+    anim.take_capture(&[]);
+    let (ticks, rebased) = hold_first_key(&mut anim, &rise);
+    assert!((rebased + 9.25).abs() < 1e-4, "{rebased}");
+    assert_eq!(ticks, 27);
+
+    // Key 0, or one past the clip's, leaves the start as it was.
+    let mut plain = sampled("Idle", &idle());
+    plain.start("Get up", false, None, 20, Ease::Linear);
+    plain.jump_in(&rise, 0);
+    plain.jump_in(&rise, 9);
+    assert_eq!((plain.time, plain.capture_key), (0.0, 0));
+}

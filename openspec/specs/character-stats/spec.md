@@ -208,7 +208,7 @@ The system SHALL keep on every fighter the original's condition word: 0 normal, 
 - **THEN** each corpse's condition is dead
 
 ### Requirement: Posture decision
-Once each fixed tick, before the clips advance, the system SHALL write a living body's condition: a dazed one normal unless helpless or attacking; then collapsing, dead and shocked kept; getting up kept; under a balance of 0.6 (double precision) down below 0.3, else kept; an attack clip attacking; a tone under 0.85 weak; else by its clip: the kick, the combat idle (or a parry), a power, the walk or the run, a weapon switch (switched after 60 %), else normal.
+In each living character's posture stage, before its clip advances, the system SHALL write its condition: a dazed one normal unless helpless or attacking; then collapsing, dead and shocked kept; getting up kept; under a balance of 0.6 (double precision) down below 0.3, else kept; an attack clip attacking; a tone under 0.85 weak; else by its clip: the kick, the combat idle (or a parry), a power, the walk or the run, a weapon switch (switched after 60 %), else normal.
 
 #### Scenario: Thresholds
 - **WHEN** a body in the combat idle has a balance of 0.6, 0.599 and 0.299 in turn
@@ -221,6 +221,10 @@ Once each fixed tick, before the clips advance, the system SHALL write a living 
 #### Scenario: Knocked over
 - **WHEN** `exarust --shove 60 --trace t.csv play arena` deals the player a body blow
 - **THEN** the trace's condition reads normal while it falls, 0x200 once its balance is under 0.3, 0x300 from the get-up's start and normal again when the get-up clip ends
+
+#### Scenario: Stagger
+- **WHEN** a body off balance staggers
+- **THEN** its condition is 0x300 from the stagger's start until its get-up clip ends
 
 ### Requirement: Condition events and readers
 A get-up's start SHALL write getting up and the end of its clip normal; a killing blow SHALL write collapsing (dead without muscles). Hit detection SHALL skip the dead; the daze SHALL leave a helpless or attacking fighter's clip alone; the player SHALL not be steered nor engage an attack while helpless; the duellist SHALL idle for 0xA00 and leave a dying target; the world cursor SHALL read dead, collapsing and bit 0x200 from the word.

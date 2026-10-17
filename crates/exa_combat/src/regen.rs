@@ -15,12 +15,12 @@
 //! maximum. Rules: `docs/formats/OTHER.md` (Regeneration).
 
 use bevy::prelude::*;
-use exa_anim::{Animator, Motions};
+use exa_anim::{Animator, Motions, TickedClips};
 use exa_formats::character_stats::BodyRules;
-use exa_physics::body::CharacterTicks;
+use exa_physics::body::{CharacterStage, CharacterTick, CharacterTicks, Ragdoll, TickedCharacter};
 
 use crate::Fighter;
-use crate::condition::{Condition, PostureTick, action};
+use crate::condition::{Condition, PostureTick, action, ticked_lives};
 use crate::fighter::Health;
 
 /// The regeneration rate's cap, yellow health per unit of √red a tick: 0.01
@@ -84,8 +84,12 @@ pub fn holds_regeneration(condition: Condition, motion: Option<usize>) -> bool {
     condition == Condition::ATTACKING || motion == Some(action::COMBAT_IDLE)
 }
 
-/// The health bookkeeping of the character tick: after the posture stage
-/// (and the attack's), before the clips advance ([`CharacterTicks`]).
+/// The health bookkeeping of the fighters the character tick does not
+/// tick (the dead, and any without a living physical body), once a fixed
+/// tick after the posture work and before the character ticks
+/// ([`CharacterTicks`]). A ticked living body keeps its health in its own
+/// tick: red regeneration in its upkeep stage, the rest in its attack
+/// stage, after its posture.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HealthTick;
 
@@ -97,35 +101,109 @@ impl Plugin for RegenerationPlugin {
             FixedUpdate,
             HealthTick.after(PostureTick).before(CharacterTicks),
         )
-        .add_systems(FixedUpdate, regenerate_health.in_set(HealthTick));
+        .add_systems(FixedUpdate, regenerate_health.in_set(HealthTick))
+        .add_systems(
+            CharacterTick,
+            (
+                regenerate_red.in_set(CharacterStage::Upkeep),
+                keep_health
+                    .in_set(CharacterStage::Attack)
+                    .run_if(ticked_lives),
+            ),
+        );
     }
 }
 
-/// Every fighter's regeneration, once a fixed tick: red regeneration by its
-/// rule bits, dead or alive; then, unless dead, the heal pool and the
-/// yellow regeneration, held while it attacks or plays the combat idle,
-/// and the clamps.
+/// Whether the character tick ticks a fighter's body this fixed tick (and
+/// so keeps its health): a body with muscles whose clips its ticks advance
+/// (`clips`: it has its clips and their ticked marker), once the motion set
+/// is loaded (`motions`), as the character tick's driver picks them.
+pub fn ticked_by_its_character(motions: bool, body: Option<&Ragdoll>, clips: bool) -> bool {
+    motions && clips && body.is_some_and(|b| b.drive.is_some())
+}
+
+/// One tick of a fighter's yellow bookkeeping, logging when its rate
+/// reaches its cap: the heal pool, the yellow regeneration, held while it
+/// attacks or plays the combat idle (`motion`, the action index of its
+/// clip), and the clamps.
+fn keep(entity: Entity, health: &mut Health, condition: Condition, motion: Option<usize>) {
+    let before = health.rate;
+    health.regenerate(holds_regeneration(condition, motion));
+    if health.rate == RATE_CAP && before < RATE_CAP {
+        debug!(
+            "{entity:?} regenerates at its full rate: yellow {:.4} of red {:.4}",
+            health.yellow, health.red
+        );
+    }
+}
+
+/// The regeneration of every fighter the character tick does not tick,
+/// once a fixed tick: red regeneration by its rule bits, dead or alive;
+/// then, unless dead, the heal pool, the yellow regeneration and the
+/// clamps.
+#[allow(clippy::type_complexity)]
 pub fn regenerate_health(
     motions: Option<Res<Motions>>,
-    mut fighters: Query<(Entity, &mut Fighter, &Condition, Option<&Animator>)>,
+    mut fighters: Query<(
+        Entity,
+        &mut Fighter,
+        &Condition,
+        Option<&Animator>,
+        Option<&Ragdoll>,
+        Has<TickedClips>,
+    )>,
 ) {
     let set = motions.as_deref().map(|m| &*m.0);
-    for (entity, mut fighter, condition, anim) in &mut fighters {
+    for (entity, mut fighter, condition, anim, body, clips) in &mut fighters {
+        if ticked_by_its_character(set.is_some(), body, clips && anim.is_some()) {
+            continue;
+        }
         let mut health = fighter.health;
         health.regenerate_red(fighter.stats.rules);
         if !condition.is_dead() {
             let motion = anim.zip(set).and_then(|(a, s)| s.action_index(&a.action));
-            health.regenerate(holds_regeneration(*condition, motion));
-            if health.rate == RATE_CAP && fighter.health.rate < RATE_CAP {
-                debug!(
-                    "{entity:?} regenerates at its full rate: yellow {:.4} of red {:.4}",
-                    health.yellow, health.red
-                );
-            }
+            keep(entity, &mut health, *condition, motion);
         }
         if health != fighter.health {
             fighter.health = health;
         }
+    }
+}
+
+/// The ticked body's red regeneration, in its upkeep stage (before the
+/// original's body tick leaves a dead body), by its rule bits.
+pub fn regenerate_red(ticked: Res<TickedCharacter>, mut fighters: Query<&mut Fighter>) {
+    let Ok(mut fighter) = fighters.get_mut(ticked.body) else {
+        return;
+    };
+    let mut health = fighter.health;
+    health.regenerate_red(fighter.stats.rules);
+    if health != fighter.health {
+        fighter.health = health;
+    }
+}
+
+/// The ticked living body's health bookkeeping, in its attack stage after
+/// its posture: the heal pool, the yellow regeneration (held while it
+/// attacks or plays the combat idle) and the clamps.
+pub fn keep_health(
+    ticked: Res<TickedCharacter>,
+    motions: Option<Res<Motions>>,
+    mut fighters: Query<(&mut Fighter, &Condition, Option<&Animator>)>,
+) {
+    let entity = ticked.body;
+    let Ok((mut fighter, condition, anim)) = fighters.get_mut(entity) else {
+        return;
+    };
+    if condition.is_dead() {
+        return;
+    }
+    let set = motions.as_deref().map(|m| &*m.0);
+    let motion = anim.zip(set).and_then(|(a, s)| s.action_index(&a.action));
+    let mut health = fighter.health;
+    keep(entity, &mut health, *condition, motion);
+    if health != fighter.health {
+        fighter.health = health;
     }
 }
 

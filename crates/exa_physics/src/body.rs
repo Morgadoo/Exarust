@@ -528,15 +528,14 @@ impl Part {
     }
 }
 
-/// On a living body model root that lost its balance: it lies on the ground
-/// and is not steered until it has got up.
-#[derive(Component, Debug, Clone, Default)]
-pub struct Fallen {
-    /// Seconds since the fall.
-    pub time: f32,
-    /// The get-up clip is playing.
-    pub getting_up: bool,
-}
+/// On a living body model root off its balance: from the tick its posture
+/// stage takes one of its off-balance branches (balance under 0.6: a fall,
+/// a stagger, the Defence stance or Rebalance; lying; getting up) until it
+/// stands again. Meanwhile it is not steered (the original turns its
+/// locomotion off there), engages no attack, and its stance does not
+/// switch.
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Fallen;
 
 /// Asks for the body under this entity (a body model root) to go limp:
 /// its parts become a [`Ragdoll`] from their current pose.
@@ -860,6 +859,11 @@ pub struct Drive {
     /// lives ([`recover_pins`]) and fades while it collapses. The support
     /// pins that read it come later (C14).
     pub pin_gain: f32,
+    /// Ticks the posture switch waits before it starts the body's stance
+    /// again (it starts it only under 1): a Rebalance started off balance
+    /// sets 41, one started unsteady 27, and every posture stage takes one
+    /// off.
+    pub posture_wait: i32,
 }
 
 /// One tick of the support pins' gain factor: under 0.08 (in double
@@ -900,6 +904,7 @@ impl Default for Drive {
             lift: 0.0,
             sag: 0.0,
             pin_gain: PIN_GAIN,
+            posture_wait: 0,
         }
     }
 }
@@ -1444,6 +1449,15 @@ impl Ragdoll {
     pub fn stand(&mut self) {
         if let Some(d) = self.drive.as_mut() {
             d.supported = true;
+            d.root = None;
+        }
+    }
+
+    /// Its character turned the body root to a new heading (toward a fall,
+    /// or for a get-up), not its controller: the next aim takes the turn
+    /// into the frame without carrying the body through it.
+    pub fn turned(&mut self) {
+        if let Some(d) = self.drive.as_mut() {
             d.root = None;
         }
     }

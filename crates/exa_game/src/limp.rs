@@ -25,11 +25,12 @@ use exa_anim::{
 };
 use exa_assets::SkinnedPart;
 use exa_combat::Condition;
+use exa_combat::condition::Branch;
 use exa_combat::swing::{Swing, pace_swings};
 use exa_formats::rsq::BoneBody;
 use exa_physics::CharacterBody;
 use exa_physics::body::{
-    BODY_HZ, Bearing, BodyStats, Drive, Fallen, GoLimp, PartSetup, Physical, RaceMuscles, Ragdoll,
+    BODY_HZ, Bearing, BodyStats, Drive, GoLimp, PartSetup, Physical, RaceMuscles, Ragdoll,
 };
 
 use crate::player::PlayerBody;
@@ -211,14 +212,21 @@ fn go_limp(
 pub(crate) const CM: f32 = 100.0;
 
 /// What a body's clip clock reads besides its drive: how far its character
-/// walked in the last step (cm), the player's run blend, its swing, and
-/// the rate its swing routine set this tick for an attack's clip (a
-/// fighter's).
+/// walked in the last step (cm), the player's run blend, its swing, the
+/// rate its swing routine set this tick for an attack's clip (a
+/// fighter's), its character's armour encumbrance, and whether it was
+/// getting up already when its posture stage began.
 pub(crate) struct Pace {
     pub(crate) walked: f32,
     pub(crate) run: f32,
     pub(crate) swing: Swing,
     pub(crate) attack: Option<f32>,
+    pub(crate) encumbrance: f32,
+    /// Its posture stage took the getting-up branch: the get-up's own rate.
+    /// A get-up that stage started this tick (from the floor, or a
+    /// stagger) runs at the off-balance rate for that tick, as the
+    /// original's rate is set before the start.
+    pub(crate) rose: bool,
 }
 
 /// One tick of a living body's clip: a start since the last tick captures
@@ -262,10 +270,11 @@ pub(crate) fn clip_tick(
 const STANDING_PACE: f32 = 0.6;
 /// Off balance (falling, lying) its rate is 1.25 times the base.
 const OFF_BALANCE_RATE: f32 = 1.25;
-/// Getting up its rate is 1.5 times the base (less half the armour
-/// encumbrance, which Exarust does not have yet), the clock running
-/// tone × rate × 0.6 a tick, and only above half tone.
+/// Getting up its rate is (1.5 − 0.5 × the armour encumbrance) times the
+/// base (the off-balance rate on the tick its get-up starts), the clock
+/// running tone × rate × 0.6 a tick, and only above half tone.
 const RISING_RATE: f32 = 1.5;
+const RISING_ARMOUR: f32 = 0.5;
 const RISING_TONE: f32 = 0.5;
 /// Walking, the clock runs the gait's clip rate × (0.8·speed + 1), the
 /// speed in cm a tick.
@@ -282,10 +291,12 @@ const BACKPEDAL_ACTION: usize = 2;
 /// `progress` by last tick's clock, its drive and its pace, a human's at
 /// full tone in brackets: walking or running in its locomotion clip, the
 /// gait's clip rate (walk to jog by √run, or the backpedal's) ×
-/// (0.8·speed + 1) (0.76 at 1.69 cm a tick); getting up, tone × 1.5 × base
-/// × 0.6 above half tone (0.9); attacking, the rate its swing routine set
-/// (about 1.1; without one its swing's unstalled rate); otherwise 0.6 ×
-/// base, × 1.25 off balance (0.6, 0.75).
+/// (0.8·speed + 1) (0.76 at 1.69 cm a tick); getting up, tone × (1.5 −
+/// 0.5 × encumbrance) × base × 0.6 above half tone (0.9 unencumbered),
+/// tone × 1.25 × base × 0.6 on the tick its posture stage starts the
+/// get-up (0.75); attacking, the rate its swing routine set (about 1.1;
+/// without one its swing's unstalled rate); otherwise 0.6 × base, × 1.25
+/// off balance (0.6, 0.75).
 fn clip_frames(playing: Option<usize>, progress: f32, drive: &Drive, pace: &Pace) -> f32 {
     let race = &drive.race;
     let base = race.clip_rate;
@@ -303,7 +314,12 @@ fn clip_frames(playing: Option<usize>, progress: f32, drive: &Drive, pace: &Pace
         }
         _ if bearing.getting_up => {
             if drive.tone > RISING_TONE {
-                drive.tone * RISING_RATE * base * STANDING_PACE
+                let rate = if pace.rose {
+                    RISING_RATE - RISING_ARMOUR * pace.encumbrance
+                } else {
+                    OFF_BALANCE_RATE
+                };
+                drive.tone * rate * base * STANDING_PACE
             } else {
                 0.0
             }
@@ -376,12 +392,11 @@ fn plain_turn(
 /// get-up's progress is under a quarter.
 const RISING_SHARE: f32 = 0.25;
 
-/// Whether a body gets up and its get-up clip (the one `anim` plays) is in
-/// its first quarter, by last tick's clock: its progress, (clock − blend)
-/// over its last key's time, is under a quarter.
-pub(crate) fn rising(motions: &Motions, anim: &Animator, fallen: Option<&Fallen>) -> bool {
-    fallen.is_some_and(|f| f.getting_up)
-        && !anim.looping
+/// Whether a body gets up (its `condition`) and its get-up clip (the one
+/// `anim` plays) is in its first quarter, by last tick's clock: its
+/// progress, (clock − blend) over its last key's time, is under a quarter.
+pub(crate) fn rising(motions: &Motions, anim: &Animator, condition: Condition) -> bool {
+    condition == Condition::GETTING_UP
         && motions
             .clip(anim, &anim.action)
             .is_some_and(|c| anim.clip_progress(c) < RISING_SHARE)
@@ -389,26 +404,27 @@ pub(crate) fn rising(motions: &Motions, anim: &Animator, fallen: Option<&Fallen>
 
 /// What a body's character does this tick, for its muscles and balance: it
 /// moves while its controller is asked to, runs by the player's run blend,
-/// strides in the walk and run cycles, is off balance from its fall until
-/// it has got up, gets up while its get-up clip plays, never crouches (no
-/// crouch yet), is carried while its controller stands on the ground (or
-/// it has none), and turns by what is left of the player's turn, unless
-/// its condition is helpless (the original's turn is skipped then, its
-/// error zeroed). Its gait floor is measured by the character tick while
-/// it moves.
+/// strides in the walk and run cycles, is off balance while its posture
+/// stage takes an off-balance `branch` (falling, lying or getting up), gets
+/// up while its condition says so, never crouches (no crouch yet), is
+/// carried while its controller stands on the ground (or it has none), and
+/// turns by what is left of the player's turn, unless its condition is
+/// helpless (the original's turn is skipped then, its error zeroed). Its
+/// gait floor is measured by the character tick while it moves.
 pub(crate) fn bearing(
     controller: Option<&CharacterBody>,
     player: Option<&PlayerBody>,
     anim: &Animator,
-    fallen: Option<&Fallen>,
+    branch: Branch,
     condition: Condition,
 ) -> Bearing {
+    let getting_up = condition == Condition::GETTING_UP;
     Bearing {
         moving: controller.is_some_and(|c| c.desired_velocity != Vec3::ZERO),
         run: player.map_or(0.0, PlayerBody::run),
         striding: matches!(anim.action.as_str(), "Walk" | "Run"),
-        off_balance: fallen.is_some(),
-        getting_up: fallen.is_some_and(|f| f.getting_up),
+        off_balance: getting_up || matches!(branch, Branch::Falling | Branch::LyingStill),
+        getting_up,
         rising: false,
         crouch: 0.0,
         carried: controller.is_none_or(|c| c.grounded),
@@ -888,27 +904,49 @@ pub(crate) mod tests {
     }
 
     /// A get-up rises while its clip's clock is in the first quarter of the
-    /// clip (whose last key is at frame 30 here): its frame then follows
-    /// its pelvis within 10 cm. Not once the clip is past it, nor for a body
-    /// lying or standing, nor once the stance loops.
+    /// clip (whose last key is at frame 30 here; a stagger's clock before
+    /// its zero is too): its frame then follows its pelvis within 10 cm.
+    /// Not once the clip is past it, nor for a body down or standing.
     #[test]
     fn get_ups_rise_in_their_first_quarter() {
         let motions = motions();
-        let up = Fallen {
-            time: 3.0,
-            getting_up: true,
-        };
+        let up = Condition::GETTING_UP;
         let mut anim = Animator::new("Default", "Idle");
         anim.play_once("Idle", "Idle");
         anim.time = 7.49;
-        assert!(rising(&motions, &anim, Some(&up)));
-        assert!(!rising(&motions, &anim, Some(&Fallen::default())));
-        assert!(!rising(&motions, &anim, None));
+        assert!(rising(&motions, &anim, up));
+        assert!(!rising(&motions, &anim, Condition::DOWN));
+        assert!(!rising(&motions, &anim, Condition::NORMAL));
         anim.time = 7.5;
-        assert!(!rising(&motions, &anim, Some(&up)));
-        anim.time = 1.0;
-        anim.looping = true;
-        assert!(!rising(&motions, &anim, Some(&up)));
+        assert!(!rising(&motions, &anim, up));
+        anim.time = -9.25;
+        assert!(rising(&motions, &anim, up));
+    }
+
+    /// Off balance is the posture stage's: falling, lying still or getting
+    /// up (a stagger written this tick too), not standing, attacking or
+    /// collapsing; getting up is the condition's.
+    #[test]
+    fn the_bearing_reads_the_posture_stage() {
+        let anim = Animator::new("Default", "Idle");
+        let of = |branch, condition| bearing(None, None, &anim, branch, condition);
+        for branch in [Branch::Falling, Branch::LyingStill] {
+            let b = of(branch, Condition::DOWN);
+            assert!(b.off_balance && !b.getting_up, "{branch:?}");
+        }
+        let b = of(Branch::Falling, Condition::GETTING_UP);
+        assert!(b.off_balance && b.getting_up);
+        let b = of(Branch::GettingUp, Condition::GETTING_UP);
+        assert!(b.off_balance && b.getting_up);
+        for (branch, condition) in [
+            (Branch::Standing, Condition::NORMAL),
+            (Branch::Attack, Condition::ATTACKING),
+            (Branch::Collapse, Condition::COLLAPSING),
+        ] {
+            let b = of(branch, condition);
+            assert!(!b.off_balance && !b.getting_up, "{branch:?}");
+        }
+        assert!(of(Branch::Collapse, Condition::COLLAPSING).collapsing);
     }
 
     /// A drive whose body does what `bearing` says, at `tone`.
@@ -921,7 +959,9 @@ pub(crate) mod tests {
 
     /// A human's clip clocks, as the original's: standing 0.6 frames a
     /// tick, off balance 0.75, getting up 0.9 at full tone (0.72 at 0.8,
-    /// none at half tone); walking 1.687 cm a tick 0.764 (27/83 × (0.8 ×
+    /// none at half tone; in the 0.625 plate set (1.5 − 0.3125) × 0.6 =
+    /// 0.7125), on the tick its posture stage starts the get-up 0.75 (0.6
+    /// at 0.8, none at half tone); walking 1.687 cm a tick 0.764 (27/83 × (0.8 ×
     /// 1.687 + 1)), running 4.337 cm a tick on the jog row 0.894,
     /// backpedalling 1.476 cm a tick 0.736; a walk clip held still runs
     /// the standing clock; fists swing 1.62, a zombie (most energy 0.9)
@@ -934,6 +974,8 @@ pub(crate) mod tests {
             run: 0.0,
             swing: Swing::FISTS,
             attack: None,
+            encumbrance: 0.0,
+            rose: true,
         };
         let still = Bearing::default();
         let frames = |a: usize, d: &Drive, p: &Pace| clip_frames(Some(a), 0.3, d, p);
@@ -951,6 +993,20 @@ pub(crate) mod tests {
         assert!(close(frames(0x0F, &doing(rising, 1.0), &pace), 0.9));
         assert!(close(frames(0x0F, &doing(rising, 0.8), &pace), 0.72));
         assert_eq!(frames(0x0F, &doing(rising, 0.5), &pace), 0.0);
+        let plate = Pace {
+            encumbrance: 0.625,
+            ..pace
+        };
+        assert!(close(frames(0x0F, &doing(rising, 1.0), &plate), 0.7125));
+        // A get-up its posture stage starts this tick (from the floor, or
+        // a stagger's) runs at the off-balance rate, whatever the armour.
+        let starting = Pace {
+            rose: false,
+            ..plate
+        };
+        assert!(close(frames(0x0E, &doing(rising, 1.0), &starting), 0.75));
+        assert!(close(frames(0x0F, &doing(rising, 0.8), &starting), 0.6));
+        assert_eq!(frames(0x0F, &doing(rising, 0.5), &starting), 0.0);
         let moving = Bearing {
             moving: true,
             ..still

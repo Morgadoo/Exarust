@@ -18,7 +18,7 @@
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Ease, Motions};
-use exa_physics::body::{BODY_HZ, BodyTicks, Ragdoll};
+use exa_physics::body::{BODY_HZ, BodyTicks, Ragdoll, TickedCharacter};
 
 use crate::attack::{AttackMotion, Attacker, Side, Slot};
 use crate::condition::OFF_BALANCE_BELOW;
@@ -701,22 +701,23 @@ fn chained_side(motion: AttackMotion) -> Side {
     }
 }
 
-/// Each body tick, the attack branch of every attacking fighter (its
-/// condition attacking, its attack's clip playing, on its balance), before
-/// its clip clock advances: the last attack tick stamped, then the swing
-/// routine ([`SwingState::tick`]) with its strikers' tip velocities; a
-/// Remise chain starts the other side's attack, a stall's end its stance
-/// as it is now. Off its balance (under 0.6, double precision) the falls
-/// branch runs instead, also for an attack started there under another
-/// condition, and the clip runs 1.25 × base.
+/// Each body tick, in the ticked character's attack stage (after its
+/// posture stage, before its health bookkeeping and its clip's advance),
+/// the attack branch of an attacking fighter (its condition attacking, its
+/// attack's clip playing, on its balance): the last attack tick stamped,
+/// then the swing routine ([`SwingState::tick`]) with its strikers' tip
+/// velocities; a Remise chain starts the other side's attack, a stall's
+/// end its stance as it is now. Off its balance (under 0.6, double
+/// precision) the falls branch runs instead, also for an attack started
+/// there under another condition, and the clip runs 1.25 × base.
 #[allow(clippy::type_complexity)]
 pub(crate) fn run_swings(
     mut commands: Commands,
+    ticked: Res<TickedCharacter>,
     ticks: Res<BodyTicks>,
     motions: Option<Res<Motions>>,
     blades: Query<&Blade>,
     mut fighters: Query<(
-        Entity,
         &mut Animator,
         &mut Attacker,
         &mut SwingState,
@@ -731,8 +732,8 @@ pub(crate) fn run_swings(
 ) {
     let Some(motions) = motions else { return };
     let now = ticks.millis();
-    for (
-        entity,
+    let entity = ticked.body;
+    let Ok((
         mut anim,
         mut attacker,
         mut state,
@@ -743,69 +744,69 @@ pub(crate) fn run_swings(
         body,
         gt,
         stance,
-    ) in &mut fighters
+    )) = fighters.get_mut(entity)
+    else {
+        return;
+    };
+    if anim.looping || AttackMotion::of_action(&anim.action).is_none() {
+        return;
+    }
+    let drive = body.and_then(|b| b.drive.as_ref());
+    let base = drive.map_or(1.0, |d| d.race.clip_rate);
+    // The falls branch sets the clip's rate whatever the condition (an
+    // attack started off balance is not attacking yet), so the clip never
+    // runs at a rate left from an earlier swing.
+    if falls_off_balance(*condition)
+        && let Some(rate) = drive.and_then(|d| off_balance_rate(d.balance().value, base))
     {
-        if anim.looping || AttackMotion::of_action(&anim.action).is_none() {
-            continue;
+        state.rate = rate;
+        return;
+    }
+    if *condition != Condition::ATTACKING {
+        return;
+    }
+    let Some(at) = SwingAt::of(now, &anim, &motions, base) else {
+        return;
+    };
+    attacker.last_tick_ms = Some(now);
+    let swing = swing.copied().unwrap_or(Swing::FISTS);
+    let mut strikers = [None; 2];
+    for blade in blades.iter().filter(|b| b.wielder == entity) {
+        strikers[blade.slot.index()] = Some(blade.tip_velocity * CM / BODY_HZ);
+    }
+    let facing = gt.rotation() * Vec3::Z;
+    let t = SwingTick {
+        at,
+        motion: attacking.motion,
+        feral: fighter.stats.feral,
+        energy: drive.map_or(1.0, |d| d.energy_share()),
+        weapon_class: attacking.weapon_class,
+        strikers,
+        aim: facing.with_y(0.0).normalize_or_zero(),
+    };
+    match state.tick(&swing, &t, &mut attacker.primary) {
+        SwingEvent::Plays => {}
+        SwingEvent::Chains => {
+            let side = chained_side(attacking.motion);
+            let motion = side.motion(attacker.pick(side, false));
+            let stance = crate::stance_of(&anim);
+            anim.play_once(motion.action(), &stance);
+            anim.blended(swing.chain_blend(), Ease::Smooth);
+            state.chain();
+            attacking.motion = motion;
+            attacking.struck.clear();
+            debug!(
+                "{entity:?} chains {} at {now} ms (blend {})",
+                motion.action(),
+                swing.chain_blend()
+            );
         }
-        let drive = body.and_then(|b| b.drive.as_ref());
-        let base = drive.map_or(1.0, |d| d.race.clip_rate);
-        // The falls branch sets the clip's rate whatever the condition
-        // (an attack started off balance is not attacking yet), so the
-        // clip never runs at a rate left from an earlier swing.
-        if falls_off_balance(*condition)
-            && let Some(rate) = drive.and_then(|d| off_balance_rate(d.balance().value, base))
-        {
-            state.rate = rate;
-            continue;
-        }
-        if *condition != Condition::ATTACKING {
-            continue;
-        }
-        let Some(at) = SwingAt::of(now, &anim, &motions, base) else {
-            continue;
-        };
-        attacker.last_tick_ms = Some(now);
-        let swing = swing.copied().unwrap_or(Swing::FISTS);
-        let mut strikers = [None; 2];
-        for blade in blades.iter().filter(|b| b.wielder == entity) {
-            strikers[blade.slot.index()] = Some(blade.tip_velocity * CM / BODY_HZ);
-        }
-        let facing = gt.rotation() * Vec3::Z;
-        let t = SwingTick {
-            at,
-            motion: attacking.motion,
-            feral: fighter.stats.feral,
-            energy: drive.map_or(1.0, |d| d.energy_share()),
-            weapon_class: attacking.weapon_class,
-            strikers,
-            aim: facing.with_y(0.0).normalize_or_zero(),
-        };
-        match state.tick(&swing, &t, &mut attacker.primary) {
-            SwingEvent::Plays => {}
-            SwingEvent::Chains => {
-                let side = chained_side(attacking.motion);
-                let motion = side.motion(attacker.pick(side, false));
-                let stance = crate::stance_of(&anim);
-                anim.play_once(motion.action(), &stance);
-                anim.blended(swing.chain_blend(), Ease::Smooth);
-                state.chain();
-                attacking.motion = motion;
-                attacking.struck.clear();
-                debug!(
-                    "{entity:?} chains {} at {now} ms (blend {})",
-                    motion.action(),
-                    swing.chain_blend()
-                );
-            }
-            SwingEvent::Ends => {
-                // Its stance as it is now (the clip's follow-up without one).
-                let stance =
-                    stance.map_or_else(|| crate::stance_of(&anim), |s| s.action().to_string());
-                anim.start(&stance, true, None, 2 * swing.recovery, Ease::Smooth);
-                commands.entity(entity).remove::<Attacking>();
-                debug!("{entity:?} stall over at {now} ms: {stance}");
-            }
+        SwingEvent::Ends => {
+            // Its stance as it is now (the clip's follow-up without one).
+            let stance = stance.map_or_else(|| crate::stance_of(&anim), |s| s.action().to_string());
+            anim.start(&stance, true, None, 2 * swing.recovery, Ease::Smooth);
+            commands.entity(entity).remove::<Attacking>();
+            debug!("{entity:?} stall over at {now} ms: {stance}");
         }
     }
 }

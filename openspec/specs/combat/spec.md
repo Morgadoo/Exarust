@@ -276,7 +276,7 @@ An attack's clock SHALL gain speed × g × 1.125 × base frames a tick, g = 1 �
 - **THEN** each uninterrupted punch (110 frames) plays 67 ticks and ends into its stance on the 68th
 
 ### Requirement: Dazed stance
-While a fighter's energy is more than 0.05 under its most (in double precision), its stance SHALL be the Defence stance every body tick, and the player's stance rule SHALL not give Cmbt - Idle. Unless it is down or attacking, its clip SHALL start the Defence stance when another clip plays, with a blend of round((1.05 − E) × 300) frames, eased smoothly. A daze SHALL be decided before a fall in the same tick, so the fall's clip wins.
+While a fighter's energy is more than 0.05 under its most (in double precision), its stance SHALL be the Defence stance every body tick, and the player's stance rule SHALL not give Cmbt - Idle. Unless its condition is helpless or attacking, its clip SHALL start the Defence stance when another clip plays, with a blend of round((1.05 − E) × 300) frames, eased smoothly. A daze SHALL be decided before the posture stage in the same tick, so a fall's clip wins.
 
 #### Scenario: Struck in the combat idle
 - **WHEN** the player in combat mode, in Cmbt - Idle, is dazed to energy 0.62
@@ -287,7 +287,7 @@ While a fighter's energy is more than 0.05 under its most (in double precision),
 - **THEN** its stance turns to Cmbt - Idle and the posture switch starts it with a blend of 30 frames
 
 #### Scenario: Down or attacking
-- **WHEN** a fallen or attacking fighter is dazed
+- **WHEN** a fighter down, getting up or attacking is dazed
 - **THEN** its stance turns to the Defence stance and its clip plays on
 
 #### Scenario: Duel
@@ -296,10 +296,10 @@ While a fighter's energy is more than 0.05 under its most (in double precision),
 
 #### Scenario: Shoved over
 - **WHEN** `exarust --shove 60 --trace t.csv play arena` dazes the player to energy 0.13 and it falls
-- **THEN** the Defence stance starts (blend 276), the fall replaces it, and the get-up ends in Idle without a jump
+- **THEN** the Defence stance starts (blend 276), Rebalance and then the fall replace it each tick until the player is down, and the get-up ends in Idle without a jump
 
 ### Requirement: Stance blends
-Each stance start SHALL blend from where the body is to the stance's first key: the set-stance helper (Tab, a duellist entering combat) 30 frames, smooth; the posture switch 30 frames, linear; a duellist's stance 40 frames without a primary striker, else twice its primary's stance blend, smooth, its ease set smooth on every pass even when nothing starts.
+Each stance start SHALL blend from where the body is to the stance's first key: the set-stance helper (Tab, a duellist entering combat) 30 frames, smooth; the posture switch 30 frames, linear, once a Rebalance's wait has run out; a duellist's stance 40 frames without a primary striker, else twice its primary's stance blend, smooth, its ease set smooth on every pass even when nothing starts.
 
 #### Scenario: Tab
 - **WHEN** Tab turns combat mode off while the player plays the Defence stance
@@ -312,6 +312,10 @@ Each stance start SHALL blend from where the body is to the stance's first key: 
 #### Scenario: Duellist
 - **WHEN** a duellist holding a sword of stance blend 7, or with no primary striker, takes its stance from its combat walk
 - **THEN** the stance starts with a blend of 14 frames, or 40, eased smoothly
+
+#### Scenario: After a Rebalance
+- **WHEN** a balanced fighter plays a Rebalance started off balance, its wait 41
+- **THEN** the posture switch starts its stance on the 41st tick after it, not before
 
 ### Requirement: Attack starts
 An attack's clip SHALL start from where the body is, eased smoothly: the main side with no blend past the first key, the other side with round((20 − W19) × 0.6) frames, W19 the stance blend of the striker it makes primary; the stab and the overhead with the executor's blend (10 for Feint's, else none).

@@ -567,7 +567,7 @@ fn motions() -> Motions {
 
 /// An unarmed fighter attacking with Attack Mid at clock `time` (of 100
 /// frames), its condition attacking, at body tick 1000 (12 000 ms), the
-/// swing routine running once per update.
+/// swing routine running once per update on it as the ticked character.
 fn attacking(time: f32, state: SwingState) -> (App, Entity) {
     let mut app = App::new();
     app.insert_resource(BodyTicks(1000))
@@ -588,6 +588,10 @@ fn attacking(time: f32, state: SwingState) -> (App, Entity) {
         ))
         .id();
     *app.world_mut().get_mut::<SwingState>(fighter).unwrap() = state;
+    app.insert_resource(TickedCharacter {
+        body: fighter,
+        character: None,
+    });
     (app, fighter)
 }
 

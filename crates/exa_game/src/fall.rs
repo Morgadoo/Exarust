@@ -1,8 +1,9 @@
 //! Falling to death and the kill plane, as the original runs them
 //! (`exa_combat::fall` holds the rules).
 //!
-//! Each fixed tick, in the posture stage after the condition is written,
-//! every living body that takes the falls branch runs its fall check: the
+//! In its character tick's posture stage, after the condition is written
+//! and the falls branch has started its clip, every living body that takes
+//! the falls branch runs its fall check: the
 //! scream (a heavy groan, at the body), being lost over nothing, then the
 //! player's pit sound with the start of its fade to black
 //! (`exa_ui::DeathFade`) and its death 4 s after it was lost, or another
@@ -16,10 +17,12 @@ use bevy::audio::Volume;
 use bevy::prelude::*;
 use exa_assets::Game;
 use exa_audio::SoundBank;
-use exa_combat::condition::{Branch, PostureBranch, PostureTick, track_condition};
+use exa_combat::condition::{Branch, PostureBranch};
 use exa_combat::fall::{FallDeath, FallReading, scream_voice};
 use exa_combat::{Condition, Fighter, Roll};
-use exa_physics::body::{BodySystems, BodyTicks, Ragdoll};
+use exa_physics::body::{
+    BodySystems, BodyTicks, CharacterStage, CharacterTick, Ragdoll, TickedCharacter,
+};
 use exa_ui::DeathFade;
 
 use crate::player::PlayerBody;
@@ -29,12 +32,12 @@ pub struct FallPlugin;
 impl Plugin for FallPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
-            FixedUpdate,
-            (
-                fall_to_death.in_set(PostureTick).after(track_condition),
-                fall_out_of_world.after(BodySystems),
-            ),
-        );
+            CharacterTick,
+            fall_to_death
+                .in_set(CharacterStage::Posture)
+                .after(crate::balance::take_posture),
+        )
+        .add_systems(FixedUpdate, fall_out_of_world.after(BodySystems));
     }
 }
 
@@ -102,10 +105,11 @@ impl Sounds<'_> {
     }
 }
 
-/// The fall check of every living body in the falls branch, once a fixed
-/// tick on the game clock.
+/// The ticked living body's fall check while it takes the falls branch, in
+/// its posture stage, on the game clock.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
-fn fall_to_death(
+pub(crate) fn fall_to_death(
+    ticked: Res<TickedCharacter>,
     mut commands: Commands,
     ticks: Res<BodyTicks>,
     time: Option<Res<Time<Virtual>>>,
@@ -124,16 +128,17 @@ fn fall_to_death(
     )>,
 ) {
     let now = ticks.millis();
-    for (entity, branch, mut fall, mut condition, mut fighter, body, player, parent) in &mut bodies
+    if let Ok((entity, branch, mut fall, mut condition, mut fighter, body, player, parent)) =
+        bodies.get_mut(ticked.body)
     {
         let Some(drive) = body.drive.as_ref() else {
-            continue;
+            return;
         };
         if branch.0 != Branch::Falling {
-            continue;
+            return;
         }
         let Some(pelvis) = body.parts.iter().find(|p| p.parent.is_none()) else {
-            continue;
+            return;
         };
         let balance = drive.balance();
         let feet: Vec<Option<f32>> = body.legs().iter().map(|l| l.ground).collect();

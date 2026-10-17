@@ -4,15 +4,22 @@
 //! and Exarust's work in each stage, one module a stage.
 //!
 //! Exarust's parts of the original's body tick, by stage:
-//! - Readiness: the daze's stance and readiness (`exa_combat::stance`);
+//! - Upkeep: red regeneration (`exa_combat::regen`);
+//! - Readiness: the daze's stance and readiness (`exa_combat::stance`, over
+//!   every character before the ticks), a get-up's extra energy
+//!   (`balance`);
 //! - Behaviour: the player's input (`player`, in `FixedPreUpdate`) and the
 //!   duellist (`exa_ai`, once a frame);
-//! - Posture: the condition and the collapse's dying tick
-//!   (`exa_combat::condition::PostureTick`), falls (`balance`), and what
-//!   the body does this tick ([`posture`]);
-//! - Attack: the swing routine (`exa_combat::swing`);
-//! - Movement: the walk's lowest ankle, the controller's step left out of
-//!   the carry, the balance and the ground under the feet ([`movement`]);
+//! - Posture: the condition (`exa_combat::condition`), the collapse's dying
+//!   tick (`exa_combat::collapse`), the falls, staggers and get-ups
+//!   (`balance`), the fall check (`fall`), and what the body does this tick
+//!   ([`posture`]); a body that dies here skips the stages after it;
+//! - Attack: the swing routine (`exa_combat::swing`), then the health
+//!   bookkeeping (`exa_combat::regen`);
+//! - Movement: a get-up picked again and the turn toward a fall
+//!   (`balance`); the walk's lowest ankle, the controller's step left out
+//!   of the carry, the balance and the ground under the feet
+//!   ([`movement`]);
 //! - Sampler: the clip's clock, capture and sample, and the condition's
 //!   clip-end writer ([`sampler`]);
 //! - Carry: the targets on the character frame, the lift, the controller's
@@ -29,6 +36,7 @@ pub mod sampler;
 
 use bevy::prelude::*;
 use exa_anim::{Animator, TickedClips};
+use exa_combat::condition::ticked_lives;
 use exa_physics::CharacterBody;
 use exa_physics::body::{
     CharacterStage, CharacterTick, CharacterTicks, Ragdoll, TickedCharacter, run_character_ticks,
@@ -43,15 +51,24 @@ pub struct CharacterTickPlugin;
 
 impl Plugin for CharacterTickPlugin {
     fn build(&self, app: &mut App) {
+        use CharacterStage::*;
         app.init_resource::<sampler::SampledPose>()
             .add_systems(FixedUpdate, tick_characters.in_set(CharacterTicks))
+            // A body that dies in its posture stage leaves its tick there.
+            .configure_sets(
+                CharacterTick,
+                (Attack, Movement, Sampler, Carry).run_if(ticked_lives),
+            )
             .add_systems(
                 CharacterTick,
                 (
-                    posture::take_bearing.in_set(CharacterStage::Posture),
-                    movement::measure_ground.in_set(CharacterStage::Movement),
-                    sampler::sample_clip.in_set(CharacterStage::Sampler),
-                    carry::aim_body.in_set(CharacterStage::Carry),
+                    posture::take_bearing
+                        .in_set(Posture)
+                        .after(crate::balance::take_posture)
+                        .after(crate::fall::fall_to_death),
+                    movement::measure_ground.in_set(Movement),
+                    sampler::sample_clip.in_set(Sampler),
+                    carry::aim_body.in_set(Carry),
                 ),
             );
     }
@@ -190,6 +207,53 @@ mod tests {
             },
         ];
         assert!(others.iter().all(|t| ticked[..2].contains(t)), "{ticked:?}");
+    }
+
+    /// A body whose collapse ends in its posture stage (its tone reaches a
+    /// quarter there) is dead and limp at once and runs none of the stages
+    /// after it (attack, movement, sampler, carry); the other body runs
+    /// them all.
+    #[test]
+    fn a_body_killed_in_its_posture_stage_leaves_its_tick() {
+        use exa_combat::collapse::{Collapse, CollapsePlugin};
+        use exa_combat::{Condition, Fighter};
+        let mut app = App::new();
+        app.add_plugins((BodyPlugin, CharacterTickPlugin, CollapsePlugin))
+            .insert_resource(exa_physics::Physics::default())
+            .insert_resource(crate::limp::tests::motions())
+            .init_resource::<Ticked>()
+            .add_systems(
+                CharacterTick,
+                (
+                    note.in_set(CharacterStage::Attack),
+                    note.in_set(CharacterStage::Carry),
+                ),
+            );
+        let world = app.world_mut();
+        let clips = || (Animator::new("Default", "Idle"), TickedClips);
+        let mut dying = body(true);
+        dying.drive.as_mut().unwrap().tone = 0.252;
+        let dying = world
+            .spawn((
+                dying,
+                clips(),
+                Fighter::default(),
+                Condition::COLLAPSING,
+                Collapse::default(),
+                GlobalTransform::default(),
+            ))
+            .id();
+        let standing = world.spawn((body(true), clips())).id();
+        world.run_schedule(FixedUpdate);
+        assert_eq!(*world.get::<Condition>(dying).unwrap(), Condition::DEAD);
+        assert!(world.get::<Ragdoll>(dying).unwrap().drive.is_none());
+        let ticked: Vec<Entity> = world
+            .resource::<Ticked>()
+            .0
+            .iter()
+            .map(|t| t.body)
+            .collect();
+        assert_eq!(ticked, [standing, standing]);
     }
 
     #[test]

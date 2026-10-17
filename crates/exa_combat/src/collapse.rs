@@ -17,9 +17,9 @@
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Ease};
-use exa_physics::body::{GoLimp, Ragdoll, pairs};
+use exa_physics::body::{CharacterStage, CharacterTick, GoLimp, Ragdoll, TickedCharacter, pairs};
 
-use crate::condition::{Condition, PostureTick, StateFlags, track_condition};
+use crate::condition::{Condition, StateFlags, track_condition};
 use crate::{Fighter, Roll};
 
 /// The clip a lethal wound starts.
@@ -157,25 +157,29 @@ impl Plugin for CollapsePlugin {
         // The collapsing branch of the posture stage, in place of the
         // posture decision (which leaves the collapsing alone).
         app.add_systems(
-            FixedUpdate,
-            dying_tick.in_set(PostureTick).after(track_condition),
+            CharacterTick,
+            dying_tick
+                .in_set(CharacterStage::Posture)
+                .after(track_condition),
         );
     }
 }
 
-/// The dying tick of every collapsing body, once a fixed tick: its heading
-/// drifts by two draws of the original's generator; under balance 0.8 a
-/// body under size 1.2 starts Rebalance (once: the start does nothing
-/// while it plays); its tone falls 0.003 and its pins' gain 0.0003. At a
-/// tone of 0.25 it dies there and then: dead, its yellow health 0, its
-/// muscles gone, keeping its motion; the frame strips its clip and
+/// The ticked body's dying tick, in its posture stage while it collapses:
+/// its heading drifts by two draws of the original's generator (drawn in
+/// the characters' tick order); under balance 0.8 a body under size 1.2
+/// starts Rebalance (once: the start does nothing while it plays); its
+/// tone falls 0.003 and its pins' gain 0.0003. At a tone of 0.25 it dies
+/// there and then: dead, its yellow health 0, its muscles gone, keeping
+/// its motion, and the rest of its tick does not run
+/// ([`crate::condition::ticked_lives`]); the frame strips its clip and
 /// controller.
 #[allow(clippy::type_complexity)]
-pub(crate) fn dying_tick(
+pub fn dying_tick(
+    ticked: Res<TickedCharacter>,
     mut commands: Commands,
     mut roll: Local<Roll>,
     mut bodies: Query<(
-        Entity,
         &mut Condition,
         &mut Collapse,
         &mut Ragdoll,
@@ -184,12 +188,15 @@ pub(crate) fn dying_tick(
         &GlobalTransform,
     )>,
 ) {
-    for (entity, mut condition, mut collapse, mut body, mut anim, mut fighter, gt) in &mut bodies {
+    let entity = ticked.body;
+    if let Ok((mut condition, mut collapse, mut body, mut anim, mut fighter, gt)) =
+        bodies.get_mut(entity)
+    {
         if !condition.is_collapsing() {
-            continue;
+            return;
         }
         let Some(drive) = body.drive.as_mut() else {
-            continue;
+            return;
         };
         let heading = collapse.heading.unwrap_or_else(|| {
             (gt.rotation() * Vec3::Z)

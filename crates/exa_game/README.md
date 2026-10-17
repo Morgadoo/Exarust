@@ -7,20 +7,27 @@ Game modes and session flow: Story, Arena (company management, matches, seasons)
 It already runs the character ticks of physical bodies, the player's last,
 each body's whole tick before the next, in the original's stages
 (`stages`: the driver and one module a stage; the rules in `limp`): its
-bearing with its get-up's first quarter, a collapsing body's bearing
-saying so (posture); its walk's lowest ankle while it moves and its
-balance against the level (movement); its clip (the capture of a start
+condition, dying tick, falls and get-ups, fall check, then its bearing
+with its get-up's first quarter, a collapsing body's bearing saying so
+(posture; a body that dies there skips the later stages); its walk's
+lowest ankle while it moves and its balance against the level
+(movement); its clip (the capture of a start
 from the body's physical turns, the original's clock rate for what the
 body does, the pose it holds while dazed; a get-up's clip ending into the
 stance writes the condition word normal; sampler); its targets on its
 character frame and lift, its controller told to follow the frame
 (carry); a body asked to go limp keeps its motion unless given a
 velocity (`limp`),
-Exarust's falls and get-ups from the measured balance (`balance`; a fall
-stops the controller carrying and holding the body and keeps its tone; a
-get-up turns the body, starts its clip from the whole lying body, lets
-its frame re-anchor, writes the condition word getting up and ends in the
-fighter's stance; falls start after the condition's posture stage), the
+the original's falls, staggers and get-ups from last tick's balance
+(`balance`, in the posture stage after the condition: upright the Defence
+stance or Rebalance, leaning a stagger (a get-up jumped in a few keys) or
+Fall Forward/Backward, lying still a get-up by the pelvis's front axis
+with ±0.2 of hysteresis once its feet give support or 100 ticks after,
+turned the way it rises, from the whole lying body; unsteady (0.6–0.8)
+the Defence stance or Rebalance; in the movement stage the get-up picked
+again under 40 % and the turn toward a fall; a get-up's extra energy in
+the readiness stage; a fall leaves the controller, and
+`exa_physics::body::Fallen` marks a body off its feet), the
 player (`player`: tank controls whose steering starts only the gaits, the
 chase camera on the drawn pelvis, combat facing, its combat stance and the
 original's attack request each behaviour tick (press, hold, release, the
@@ -28,8 +35,8 @@ double click and Alt) through the attack executor, with the clips of the
 moveset its hands pick; a dropped request releases the swing, a released
 main-side attack returns to the stance once its stall is over, and the
 body turns at the swing's rate while it attacks),
-falls to death and the kill plane (`fall`: the fall check of every living
-body in the falls branch, its scream and the player's pit sound, the
+falls to death and the kill plane (`fall`: the fall check of a living
+body in the falls branch, in its posture stage, its scream and the player's pit sound, the
 death fade's start, death and removal from the world; dead bodies below
 −50 m taken once, the player's kept),
 the world cursor's shape from the player's condition word (`cursor`), the health

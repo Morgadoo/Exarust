@@ -7,7 +7,8 @@ Skeletons and motion sequences from `.rsq`, keyframe controllers, pose blending;
 It loads `humanoid.rsq`, attaches body parts and skins, and plays clips as
 the original's living sampler does (`Animator`, `src/clock.rs`): a clip
 starts from a capture of where the body is and blends to its first key,
-eased; loops wrap by their last key; a clip played once ends into its
+eased (a stagger's get-up jumps in a few keys, `Animator::jump_in`, and
+holds its first key); loops wrap by their last key; a clip played once ends into its
 follow-up with the original's blend table; the walk, run and backpedal
 play in place, every other clip keeps its root's travel; a pose the body
 holds pulls the sample by a weight. A physical body's tick sets the clock

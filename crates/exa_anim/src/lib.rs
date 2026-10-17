@@ -176,6 +176,11 @@ pub struct Animator {
     /// The clip still blends from its start's capture (it has not aimed
     /// past its first key since it started).
     pub leading: bool,
+    /// The key the capture blends to: the first (0) after a start; a
+    /// stagger's get-up, started a few keys in, names a later one, so its
+    /// first sample, aiming at the first key, drops the capture
+    /// ([`Animator::jump_in`]).
+    pub capture_key: usize,
     /// Where the body was when the clip started: each bone's turn and the
     /// root (unscaled), once its tick has taken it.
     pub capture: Option<ClipPose>,
@@ -203,6 +208,7 @@ impl Animator {
             blend: 0.0,
             ease: Ease::Linear,
             leading: true,
+            capture_key: 0,
             capture: None,
             pending: None,
             pose: None,
