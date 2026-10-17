@@ -41,14 +41,16 @@ Characters: races, body morphs, appearance, apparel fitting, stats/attributes/sk
 - A wielded weapon's `Blade` carries its record as the original builds it
   (`exa_formats::weapon_record`): a plain model measured along its
   first-child chain of rigid parts, a factory weapon up to its assembled
-  top, held by an average holder of the character's race (`RaceWeaponry`:
-  the race index and `races.rdb` weapon fields, the human's by default)
-  until characters have sizes and encumbrance. See
+  top, held by the character's own size, scale and encumbrance (its
+  fighter's stats, `CharacterStats::holder`; an average human without a
+  fighter) and its race (`RaceWeaponry`: the race index and `races.rdb`
+  weapon fields, the human's by default). See
   [`docs/formats/OTHER.md`](../../docs/formats/OTHER.md) (Weapon record).
 - An unarmed fighter's hands are its fists: dressing gives each hand a
   `Blade` (the right the first held item, the left the second) from the
-  race's fist or claw records, a segment from the hand's origin across its
-  box (17.66 cm for a human), and leaves the fighter without a primary
+  race's fist or claw records, held as its weapons are, a segment from the
+  hand's origin across its box (17.66 cm for a human), and leaves the
+  fighter without a primary
   striker; a wielded weapon is the primary from the start. See
   [`docs/PLAYER.md`](../../docs/PLAYER.md) (Combat mode).
 

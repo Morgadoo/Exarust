@@ -359,17 +359,17 @@ const CM_PER_M: f32 = 100.0;
 
 /// The record a wielded weapon fights with, built as the original builds it
 /// ([`weapon_record`]): from its flags and stat bytes, its lengths along its
-/// parts and its holder of race `race`. A plain model (`name` in
-/// `Objects.rpk`) is measured along its first-child chain of rigid parts;
-/// an assembled factory weapon, one merged part in the original, up to its
-/// highest point, `top` (cm). Exarust's characters are of average height in
-/// no armour until characters have sizes and encumbrance.
+/// parts and its `holder` (the character's size, scale and encumbrance) of
+/// race `race`. A plain model (`name` in `Objects.rpk`) is measured along
+/// its first-child chain of rigid parts; an assembled factory weapon, one
+/// merged part in the original, up to its highest point, `top` (cm).
 fn held_record(
     game: &exa_assets::GameData,
     name: &str,
     top: impl FnOnce() -> f32,
     flags: u32,
     stats: StatBytes,
+    holder: &Holder,
     race: &RaceWeaponry,
 ) -> WeaponRecord {
     let start = f32::from(stats.get(at::START)) * 0.005;
@@ -385,10 +385,10 @@ fn held_record(
         None => Lengths::one_part(top(), start, end),
     };
     let section = Section { flags, stats };
-    let mut record = WeaponRecord::build(&section, false, lengths, &Holder::AVERAGE);
+    let mut record = WeaponRecord::build(&section, false, lengths, holder);
     weapon_record::equip(
         std::slice::from_mut(&mut record),
-        &Holder::AVERAGE,
+        holder,
         &race.weapons,
         race.index,
     );
@@ -399,22 +399,17 @@ fn held_record(
 /// from its race's unarmed sections (the right by the race index, the left
 /// by its clawed-hands word), each measured across its hand's box (`hands`:
 /// the box's centre and half extents along the hand's x, cm), then held by
-/// an average holder of the race ([`weapon_record::equip`]).
-fn fist_records(race: &RaceWeaponry, hands: [(f32, f32); 2]) -> [WeaponRecord; 2] {
+/// `holder` of the race ([`weapon_record::equip`]).
+fn fist_records(race: &RaceWeaponry, hands: [(f32, f32); 2], holder: &Holder) -> [WeaponRecord; 2] {
     let sections = weapon_record::unarmed(race.index, race.weapons.claws);
     let build = |section: &Section, (centre, half): (f32, f32)| {
-        WeaponRecord::build(
-            section,
-            false,
-            Lengths::hand(centre, half),
-            &Holder::AVERAGE,
-        )
+        WeaponRecord::build(section, false, Lengths::hand(centre, half), holder)
     };
     let mut records = [
         build(&sections.right, hands[0]),
         build(&sections.left, hands[1]),
     ];
-    weapon_record::equip(&mut records, &Holder::AVERAGE, &race.weapons, race.index);
+    weapon_record::equip(&mut records, holder, &race.weapons, race.index);
     records
 }
 
@@ -678,6 +673,11 @@ fn equip_outfits(
             }
         }
         let fights = fighter.is_some();
+        // Its weapons and fists are held by its own size, scale and
+        // encumbrance.
+        let holder = fighter
+            .as_ref()
+            .map_or(Holder::AVERAGE, |f| f.stats.holder());
         if let Some(mut f) = fighter {
             f.armour = exa_combat::damage::armour_layers(
                 f.natural.as_ref(),
@@ -695,7 +695,7 @@ fn equip_outfits(
             };
             if let (Some(right), Some(left)) = (hand(RIGHT_HAND), hand(LEFT_HAND)) {
                 let across = |b: &PartBounds| (b.centre.x * CM_PER_M, b.half_extents.x * CM_PER_M);
-                let records = fist_records(&race, [across(&right.1), across(&left.1)]);
+                let records = fist_records(&race, [across(&right.1), across(&left.1)], &holder);
                 for (((part, bounds), record), slot) in [right, left]
                     .into_iter()
                     .zip(records)
@@ -735,7 +735,15 @@ fn equip_outfits(
                 hands.main = Some(held::HeldItem::weapon(item.flags));
             }
             let top = || weapon_length(&weapon, loader.meshes) * CM_PER_M;
-            let record = held_record(loader.game, &held.model, top, item.flags, stats, &race);
+            let record = held_record(
+                loader.game,
+                &held.model,
+                top,
+                item.flags,
+                stats,
+                &holder,
+                &race,
+            );
             // The one held weapon is the primary striker from the equip.
             if let Some(mut attacker) = attacker {
                 attacker.primary = Some(Slot::First);
@@ -941,6 +949,7 @@ mod tests {
         let game = exa_assets::GameData::open(&dir).unwrap();
         let items = objdb_items(&game);
         let human = RaceWeaponry::default();
+        let average = &Holder::AVERAGE;
         let mut plain = 0;
         for item in &items {
             let Some(w) = item.weapon else { continue };
@@ -954,7 +963,7 @@ mod tests {
                 continue;
             }
             let top = || panic!("{} is measured along its chain", item.model);
-            let r = held_record(&game, &item.model, top, w.flags, w.stats, &human);
+            let r = held_record(&game, &item.model, top, w.flags, w.stats, average, &human);
             assert!(r.length > 5.0 && r.length < 300.0, "{} {r:?}", item.name);
             assert!((r.reach - 60.0 - r.sweet_spot).abs() < 1e-3);
             plain += 1;
@@ -962,7 +971,15 @@ mod tests {
         assert_eq!(plain, 103);
         let torch = items.iter().find(|i| i.name == "Torch A01").unwrap();
         let w = torch.weapon.unwrap();
-        let r = held_record(&game, &torch.model, || 0.0, w.flags, w.stats, &human);
+        let r = held_record(
+            &game,
+            &torch.model,
+            || 0.0,
+            w.flags,
+            w.stats,
+            average,
+            &human,
+        );
         assert!((r.length - 58.3).abs() < 0.05, "{r:?}");
         // Factory weapons: their assembled top, as the original's one
         // merged part.
@@ -985,7 +1002,15 @@ mod tests {
             let model = loader.factory_weapon(factory, Some(&w)).unwrap();
             let stats = loader.factory_weapon_stats(factory, Some(&w)).unwrap();
             let top = weapon_length(&model, loader.meshes) * CM_PER_M;
-            let r = held_record(loader.game, &item.model, || top, w.flags, stats, &human);
+            let r = held_record(
+                loader.game,
+                &item.model,
+                || top,
+                w.flags,
+                stats,
+                average,
+                &human,
+            );
             assert_eq!(r.length, top, "{name}");
             assert!(r.length > 50.0 && r.length < 300.0, "{name} {r:?}");
             // Swords strike from 10 % of their length to the tip.
@@ -1000,17 +1025,32 @@ mod tests {
 
     /// A human's fists across hands whose boxes lie 8 cm to either side
     /// of their origins, 9.66 cm half wide: 17.66 cm each, recoil 0.1 (a
-    /// 330 ms cooldown), swing speed 1.44, blend 0. Each striker runs from
-    /// the hand's origin toward its box.
+    /// 330 ms cooldown), swing speed 1.44, blend 0, held by an average
+    /// holder; a tall holder in armour (size 1.05, encumbrance 0.5) holds
+    /// them looser (arm stiffness 0.476) and with more recoil (0.35). Each
+    /// striker runs from the hand's origin toward its box.
     #[test]
     fn the_fists_strike_across_the_hands() {
-        let [right, left] = fist_records(&RaceWeaponry::default(), [(-8.0, 9.66), (8.0, 9.66)]);
+        let hands = [(-8.0, 9.66), (8.0, 9.66)];
+        let [right, left] = fist_records(&RaceWeaponry::default(), hands, &Holder::AVERAGE);
         for fist in [right, left] {
             assert!((fist.length - 17.66).abs() < 1e-4, "{fist:?}");
             assert!((fist.recoil - 0.1).abs() < 1e-6);
             assert!((fist.swing_speed - 1.44).abs() < 1e-6);
             assert_eq!(fist.blend, 0);
             assert!(!fist.armed());
+        }
+        // Arm stiffness 0.5 / size, recoil 0.1 + encumbrance / 2.
+        let tall = Holder {
+            encumbrance: 0.5,
+            size: 1.05,
+            scale: 1.05,
+            ..Holder::AVERAGE
+        };
+        for fist in fist_records(&RaceWeaponry::default(), hands, &tall) {
+            assert!((fist.arm_stiffness - 0.5 / 1.05).abs() < 1e-6, "{fist:?}");
+            assert!((fist.recoil - 0.35).abs() < 1e-6);
+            assert!((fist.length - 17.66).abs() < 1e-4);
         }
         let along = |x: f32| fist_transform(x).rotation * Vec3::Y;
         assert!(along(-8.0).abs_diff_eq(-Vec3::X, 1e-6));
@@ -1024,7 +1064,7 @@ mod tests {
                 ..RaceWeapons::HUMAN
             },
         };
-        let [right, left] = fist_records(&harvester, [(-8.0, 9.66), (8.0, 9.66)]);
+        let [right, left] = fist_records(&harvester, hands, &Holder::AVERAGE);
         assert_eq!(right.flags & weapon_record::flags::CLAWS, 0);
         assert_eq!(
             left.flags & weapon_record::flags::CLAWS,
@@ -1066,7 +1106,7 @@ mod tests {
         };
         let (right, left) = (hand("17"), hand("18"));
         assert!(right.0 < 0.0 && left.0 > 0.0, "{right:?} {left:?}");
-        let fists = fist_records(&RaceWeaponry::default(), [right, left]);
+        let fists = fist_records(&RaceWeaponry::default(), [right, left], &Holder::AVERAGE);
         for fist in fists {
             assert!((fist.length - 17.66).abs() < 0.01, "{fist:?}");
         }

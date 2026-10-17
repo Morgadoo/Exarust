@@ -711,8 +711,8 @@ g = 1 − 0.833·m·(d + d²), d = |progress − 0.5| (at progress 0, 1 − 0.83
 a stab ×1.2, and below 40 % also × (1.2·progress + 0.5). Under 0.8 of its
 most energy the swing stops; under its most the rate is (E/Emax)². Speed,
 m and the recovery are the primary striker's weapon record (W15, W18, W19,
-[OTHER.md](OTHER.md), Weapon record); with no armour encumbrance
-speed = (1 − weight)·0.15 + 1.05 (×1.2 unarmed), m = 1 − balance, recovery
+[OTHER.md](OTHER.md), Weapon record, held by the character's own
+encumbrance and size); with no armour encumbrance speed = (1 − weight)·0.15 + 1.05 (×1.2 unarmed), m = 1 − balance, recovery
 = round((weight + 1 − balance)·10) frames; fists 1.44, 0, 0. Attacks start
 eased smoothly: the main side with no blend, the other side with
 round((20 − W19)·0.6) frames (W19 the striker it makes primary: 12 for the

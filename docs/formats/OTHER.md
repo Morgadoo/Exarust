@@ -593,17 +593,26 @@ original's hand body is met within it ([PLAYER.md](../PLAYER.md), Combat
 mode).
 
 **Shield record**, item section `0x8000` (22 items): weight, block and
-bulk = bytes 4, 5, 6 × 0.01 (a round shield 0.5, 0.58, 0.6). In the off
+bulk = bytes 4, 5, 6 × 0.01, each in double precision then stored as a
+float (a round shield 0.5, 0.58, 0.6; a buckler's weight 15 is 0.15, where
+single precision gives 0.14999999). In the off
 hand it gives parry effectiveness 0.5 + 1.5·(1 − weight)² (weight/2 with
 the Mobility technique), a block leak of 1 − block/2, a stamina cost per
 block of the leak (× 2/3 with Endure), and adds (2 − u)·bulk/4 to the
 encumbrance.
 
-**Step reach**: 80·√scale·(1 − 0.3·feral, when the feral level is not
-negative)·(1 − 0.2·g); the long steps and the footwork are measured in it.
+**Step reach**: 80·√scale·(1 − 0.3·feral, when the feral level is over
+0)·(1 − 0.2·g), in double precision (a feral level of 0.84 gives 59.84 cm,
+single precision 59.840004); the long steps and the footwork are measured
+in it. Exarust has one implementation (`weapon_record::step_reach`), which
+a character's stats read in metres.
 
-In Exarust, every holder is of average height in no armour (g 0, s 1)
-until characters have sizes and encumbrance. The race fields come from
+In Exarust every held weapon and fist is held by its character's own
+stats (`CharacterStats::holder`, [RFC.md](RFC.md), Stats derived at
+spawn): s its size (0.95 to 1.05 for a human by height), the scale its
+body scale and g its encumbrance ([Encumbrance](#encumbrance)); no worn
+item makes held weapons weightless yet (u 0: the shield-lightening
+gauntlets are unpowered in every shipped record). The race fields come from
 the race's decoded stats (`races.rdb`, `+0x58`, `+0x84`, `+0x88`, `+0x90`,
 above), kept with the race index on each placed character's body; the
 player and the duellist are human. A duellist guards beyond four reaches
@@ -706,8 +715,9 @@ What it slows, by encumbrance e (the readers' own precision):
 
 Exarust sums it at spawn for every placed character (`exa_world`) and for
 the player's and the duellist's outfits (the first painted item worn as
-each model); `exa-tool characters` prints it. The other readers take it when
-they are ported.
+each model); `exa-tool characters` prints it. The step reach, the player's
+run blend and the held weapons' and fists' records read it; the other
+readers take it when they are ported.
 
 ## Damage
 

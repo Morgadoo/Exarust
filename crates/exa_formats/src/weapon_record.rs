@@ -612,12 +612,26 @@ pub fn thrust_preference(primary: &WeaponRecord) -> u8 {
     p.clamp(1, 9) as u8
 }
 
-/// A character's step reach, cm: 80·√scale, shortened by its feral level
-/// (when not negative) and its encumbrance. Its long steps and footwork
-/// are measured in it.
+/// Step reach, cm: 80·√scale, shortened 30 % per unit of feral level and
+/// 20 % per unit of encumbrance.
+const STEP_REACH: f32 = 80.0;
+const FERAL_REACH: f64 = 0.3;
+const ENCUMBERED_REACH: f64 = 0.2;
+
+/// A character's step reach, cm: 80·√scale, shortened 30 % per unit of its
+/// feral level (when over 0) and 20 % per unit of its encumbrance, in
+/// double precision as the original's init computes it. Its long steps,
+/// footwork and knockback step are measured in it; a character's stats
+/// give it in metres (`CharacterStats::step_reach`).
 pub fn step_reach(scale: f32, feral: f32, encumbrance: f32) -> f32 {
-    let feral = if feral >= 0.0 { 1.0 - feral * 0.3 } else { 1.0 };
-    scale.sqrt() * feral * (1.0 - encumbrance * 0.2) * 80.0
+    let full = f64::from(STEP_REACH * scale.sqrt());
+    let encumbered = 1.0 - f64::from(encumbrance) * ENCUMBERED_REACH;
+    let feral = if feral > 0.0 {
+        1.0 - f64::from(feral) * FERAL_REACH
+    } else {
+        1.0
+    };
+    (feral * encumbered * full) as f32
 }
 
 /// The light and heavy ends of the weapon mass table by hands (one-handed,
@@ -1069,6 +1083,9 @@ mod tests {
         assert!(close(step_reach(1.21, 0.5, 0.5), 1.1 * 0.85 * 0.9 * 80.0));
         // A negative level is ignored.
         assert_eq!(step_reach(1.0, -1.0, 0.0), 80.0);
+        // In double precision: exanima01's zombies of feral level 0.84
+        // reach 59.84 cm, not single precision's 59.840004.
+        assert_eq!(step_reach(1.0, 0.84, 0.0), 59.84);
     }
 
     #[test]

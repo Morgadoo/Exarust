@@ -262,11 +262,13 @@ and the body rule bits. The body now reads the most energy, the head, the
 walking arms and the scale: exanima01's zombies recover only to 0.9, are
 dazed under 0.85 and hold their heads by their weakened muscles alone (the
 daze, its pose hold, the swing clock and the attack gate measure energy
-against the character's most); the player and the
-duellist spawn from a new human record; `exa-tool characters` prints each
-record's stats ([formats/RFC.md](formats/RFC.md), Stats derived at spawn).
-The support pins, gait, weapon record, damage bits and regeneration read
-them when they land. Done (change
+against the character's most); the player and the duellist spawn from a
+new human record; `exa-tool characters` prints each record's stats
+([formats/RFC.md](formats/RFC.md), Stats derived at spawn).
+Held weapons and fists are held by the character's size, scale and
+encumbrance (M21's holder), and the step reach is the weapon record's
+one rule; the support pins, gait, damage bits and regeneration read the
+stats when they land. Done (change
 `join-parts-at-their-origins`, C3): every part is pinned at its origin to
 its place in the parent, as the original registers it, so joints are ball
 joints and the knee a hinge; the skeleton's links meet the parent at the
@@ -515,9 +517,11 @@ jacket and helm 0.175, a tourney plate set 0.625, Elestan of the story
 at 1 − 0.3 × it (3.2 m/s in the plate set instead of 3.6). The armour
 layers read each item's protection as stored (made items store it scaled
 by their condition; Exarust scaled it twice) and Deflection widens
-coverage. The turn, sprint, steps, get-up clock and the weapon record
-read the same value when they land; `exa-tool characters` prints it
-([formats/OTHER.md](formats/OTHER.md), Armour and Encumbrance).
+coverage. The weapon record's holding pass reads it too (in the plate
+set a sword's recoil and swing shaping rise, its blend by a frame); the
+turn, sprint, steps and get-up clock read the same value when they land;
+`exa-tool characters` prints it ([formats/OTHER.md](formats/OTHER.md),
+Armour and Encumbrance).
 Still to do: inventory and containers, injuries beyond damage, blocking,
 parrying, grabs, practice mode, the knockback step, the swing stall and
 the striker's recoil, a lethal wound's fall and collapse, the stab's and

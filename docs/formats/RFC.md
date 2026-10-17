@@ -548,7 +548,7 @@ level, kept within 0…1) and its race (or the built-in record):
 | stat | rule |
 |---|---|
 | body scale | min(race scale, 1.5) × (1 − 0.05·h): a dynamics factor (limbs' muscles 1.25 × it, √scale in turns and reach), not a mesh scale |
-| size | race size × (1 − 0.05·h) |
+| size | race size × (1 − 0.05·h): held weapons' reach and the unarmed hands' stiffness (OTHER.md, Weapon record) |
 | standing pelvis | 109.5 − 11.25·h cm over the floor (the spawn places the body at it less 8 cm) |
 | leg reach | 107.2 − 11.1·h cm (the init's, written after the builder's 108.5 − 11.25·h) |
 | locomotion clock | × 1/(1 − 0.1·h) |
@@ -592,7 +592,9 @@ Feral levels clear `0x2` and `0x10` and set `0x8`. In the story levels the
 47 at f = 1, and rule bits `0xC` (×68) or `0x8`; every one of the 451 living
 characters spawns at full health. Exarust's body reads the most energy, the
 head's gain and factor, the walking arms and the scale (RSQ.md, Physical
-body); the player and the duellist spawn from a new human record.
+body); its held weapons and fists are held by its size, scale and
+encumbrance (OTHER.md, Weapon record); the player and the duellist spawn
+from a new human record.
 
 Evidence: REA and `exe.asm` on the builder, the init, its head setup, the
 body tick's walking arms and energy cap, the spawn's call order, the

@@ -1,6 +1,7 @@
 use super::*;
 use crate::characters::{CHARACTERS, LevelCharacters};
 use crate::races::{self, Natural, RaceBody, RaceStats};
+use crate::weapon_stats::at;
 
 fn race(byte: u8, health: f32) -> Race {
     Race {
@@ -146,6 +147,51 @@ fn encumbrance_after_the_init() {
         techniques: [4, 0, 0, 0, 0, 0],
     };
     assert!(CharacterStats::derive(&r, Some(&human()), ALIVE).deflection);
+}
+
+/// The weapons a character holds are held by its size, scale and
+/// encumbrance: a new human by the average holder, a tall one (height −1)
+/// in armour of 0.5 by size and scale 1.05 at 0.5; the step reach is the
+/// weapon record's, in metres.
+#[test]
+fn weapons_are_held_by_the_character() {
+    let plain = CharacterStats::derive(&record(0, 0.0, 0.0), Some(&human()), ALIVE);
+    assert_eq!(plain.holder(), Holder::AVERAGE);
+    let tall =
+        CharacterStats::derive(&record(0, -1.0, 0.0), Some(&human()), ALIVE).with_encumbrance(0.5);
+    let h = tall.holder();
+    assert!(close(h.size, 1.05) && close(h.scale, 1.05));
+    assert_eq!(
+        (h.encumbrance, h.weightless, h.half_sword),
+        (0.5, 0.0, false)
+    );
+    assert_eq!(
+        tall.step_reach(0.5),
+        weapon_record::step_reach(tall.scale, tall.feral, 0.5) / 100.0
+    );
+    // The arena's 90 cm sword (weight 50, balance 80, striking 20 to 200)
+    // in the tall armoured hand: reach 60 × 1.05 + 57.6 cm, recoil 0.67,
+    // swing shaping 0.275, blend 8.
+    let mut bytes = crate::weapon_stats::StatBytes::default();
+    for (off, v) in [
+        (at::WEIGHT, 50),
+        (at::BALANCE, 80),
+        (at::KIND, 2),
+        (at::START, 20),
+        (at::END, 200),
+        (at::SLASH, 72),
+    ] {
+        bytes.set(off, v);
+    }
+    let sword = weapon_record::Section {
+        flags: 0x11,
+        stats: bytes,
+    };
+    let lengths = weapon_record::Lengths::one_part(90.0, 0.1, 1.0);
+    let w = weapon_record::WeaponRecord::build(&sword, false, lengths, &h);
+    assert!(close(w.reach, 120.6) && close(w.recoil, 0.67), "{w:?}");
+    assert!(close(w.swing_shaping, 0.275));
+    assert_eq!(w.blend, 8);
 }
 
 /// Maximum health is 0.25 times the race's factor, but for the race bytes

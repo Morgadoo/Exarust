@@ -154,7 +154,7 @@ The system SHALL raise a fighter's readiness by 0.004 per tick, up to 1, while i
 - **THEN** the cut's penetration is half what it would be on a fighter in the Defence stance, and the shove is the same
 
 ### Requirement: Weapon record
-The system SHALL build a held weapon's record as the original does: from its section's bytes, its length along its model's first-child chain of rigid parts (an assembled factory weapon's top) and its holder's encumbrance and size, giving held weight and balance, swing speed, recoil, swing shaping, stance blend, arm stiffness, sweet spot, reach, second-hand place, swing sound and AI turn factors and mass. It SHALL hold for every weapon item of the installed `objdb.rdb`.
+The system SHALL build a held weapon's record as the original does: from its section's bytes, its length along its model's first-child chain of rigid parts (an assembled factory weapon's top) and its holder's own encumbrance and size, giving held weight and balance, swing speed, recoil, swing shaping, stance blend, arm stiffness, sweet spot, reach, second-hand place, swing sound and AI turn factors and mass. It SHALL hold for every weapon item of the installed `objdb.rdb`.
 
 #### Scenario: One-handed sword
 - **WHEN** an average human holds a 90 cm sword of weight 50, balance 80, striking from 20 to 200
@@ -168,8 +168,12 @@ The system SHALL build a held weapon's record as the original does: from its sec
 - **WHEN** the installed "Torch A01" and "Flail A" are measured
 - **THEN** the torch is 58.3 cm long, its flame and shadow nodes not counted, and the flail 84.4 cm, its four rigid links added to the handle
 
+#### Scenario: Held by its character
+- **WHEN** a tall human (size 1.05) in armour of encumbrance 0.5 holds the same sword
+- **THEN** its reach is 120.6 cm, its recoil 0.67, its swing shaping 0.275 and its blend 8
+
 ### Requirement: Unarmed records
-The system SHALL give unarmed hands the original's built-in fist and claw records: the right hand's by race index, the left hand's by the race's clawed-hands word, measured across the hand's box, held like a weapon; an unarmed character's reach SHALL be its race's unarmed reach. It SHALL hold for the hands of all 18 races of the installed `races.rdb`.
+The system SHALL give unarmed hands the original's built-in fist and claw records: the right hand's by race index, the left hand's by the race's clawed-hands word, measured across the hand's box, held like a weapon by the character's own size and encumbrance; an unarmed character's reach SHALL be its race's unarmed reach. It SHALL hold for the hands of all 18 races of the installed `races.rdb`.
 
 #### Scenario: Human fists
 - **WHEN** an average human fights unarmed
@@ -178,6 +182,10 @@ The system SHALL give unarmed hands the original's built-in fist and claw record
 #### Scenario: Harvester
 - **WHEN** a Harvester fights unarmed
 - **THEN** it strikes with a right fist and a left heavy claw, and its hands weigh four times their part's mass
+
+#### Scenario: A tall human in armour
+- **WHEN** a tall human (size 1.05) in armour of encumbrance 0.5 fights unarmed
+- **THEN** its fists' arm stiffness is 0.476 and their recoil 0.35
 
 ### Requirement: Shield record
 The system SHALL read a shield item's record from its section `0x8000` (weight, block and bulk, bytes 4 to 6 × 0.01 in double precision) and derive what it gives its holder: parry effectiveness 0.5 + 1.5·(1 − weight)², block leak 1 − block/2, stamina cost equal to the leak, and an encumbrance share of bulk/2, as changed by the Mobility and Endure techniques. It SHALL hold for the 22 shield sections of the installed `objdb.rdb`.

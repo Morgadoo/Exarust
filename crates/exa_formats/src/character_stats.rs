@@ -12,6 +12,7 @@
 
 use crate::characters::{CharacterRecord, FULL_POOL, Pools};
 use crate::races::{Gait, Race, RaceBody, RaceStats, SCALE_CAP};
+use crate::weapon_record::{self, Holder};
 
 /// Per unit of the record's height (−1…1), the body scale and size shrink
 /// by this share: a tall character (−1) is 1.05 times the race's, a short
@@ -28,11 +29,6 @@ const LEG_REACH_PER_HEIGHT: f64 = 11.1;
 const GAIT_CLOCK_PER_HEIGHT: f64 = 0.1;
 /// Each unit of the feral level takes this much off the most energy.
 const FERAL_ENERGY: f64 = 0.1;
-/// Step reach, cm: 80·√scale, shortened 30 % per unit of feral level and
-/// 20 % per unit of encumbrance.
-const STEP_REACH: f32 = 80.0;
-const FERAL_REACH: f64 = 0.3;
-const ENCUMBERED_REACH: f64 = 0.2;
 /// The support pins' factor loses 0.25·f² (a human's 1.25 is 1.0 at f = 1).
 const FERAL_PINS: f32 = 0.25;
 /// The head's muscle factor loses 80 % per unit of feral level.
@@ -297,17 +293,23 @@ impl CharacterStats {
 
     /// The step reach, metres, at `encumbrance` (0…1): 0.8 m·√scale,
     /// shortened 30 % per unit of feral level and 20 % per unit of
-    /// encumbrance. The feet's long steps, the footwork and the knockback
-    /// step are measured in it.
+    /// encumbrance ([`weapon_record::step_reach`]). The feet's long steps,
+    /// the footwork and the knockback step are measured in it.
     pub fn step_reach(&self, encumbrance: f32) -> f32 {
-        let full = f64::from(STEP_REACH * self.scale.sqrt());
-        let encumbered = 1.0 - f64::from(encumbrance) * ENCUMBERED_REACH;
-        let feral = if self.feral > 0.0 {
-            1.0 - f64::from(self.feral) * FERAL_REACH
-        } else {
-            1.0
-        };
-        (feral * encumbered * full) as f32 / CM
+        weapon_record::step_reach(self.scale, self.feral, encumbrance) / CM
+    }
+
+    /// What the character brings to the weapons it holds: its size, its
+    /// scale and its encumbrance. No worn item makes its weapons weightless
+    /// yet (the shield-lightening gauntlets, unpowered in every shipped
+    /// record).
+    pub fn holder(&self) -> Holder {
+        Holder {
+            encumbrance: self.encumbrance,
+            size: self.size,
+            scale: self.scale,
+            ..Holder::AVERAGE
+        }
     }
 }
 
