@@ -50,6 +50,9 @@ mod balance;
 pub use balance::{Balance, Leg};
 #[path = "body_climb.rs"]
 mod climb;
+#[path = "body_feet.rs"]
+mod feet;
+pub use feet::FootState;
 #[path = "body_stages.rs"]
 pub mod stages;
 pub use stages::{
@@ -163,7 +166,9 @@ const DAZED_BELOW_MAX: f64 = 0.05;
 const SAG_FADE: f32 = 0.01;
 /// Friction of a limb against the level.
 const LIMB_FRICTION: f32 = 2.5;
-/// Friction of a foot (bones 4 and 7).
+/// Friction of a foot (bones 4 and 7) as a body is built; a living body's
+/// lower legs and feet take theirs from their foot's state every tick
+/// (`feet`).
 const FOOT_FRICTION: f32 = 0.5;
 const MIN_EXTENT: f32 = 0.06;
 /// Level contacts a part keeps between ticks.
@@ -1263,8 +1268,21 @@ impl Ragdoll {
         if let Some(d) = self.drive.as_mut() {
             d.stats = stats;
             muscle::set_part_factors(&mut self.parts, stats.head_factor);
+            for leg in &mut self.legs {
+                if let Some(f) = leg.foot {
+                    leg.toe = weights(&self.parts[f], feet::toe(self.sole, stats.scale));
+                }
+            }
         }
         self
+    }
+
+    /// Clears every foot contact's state, as a get-up's start does: no foot
+    /// touches until it is planted again.
+    pub fn clear_feet(&mut self) {
+        for leg in &mut self.legs {
+            leg.state = FootState::default();
+        }
     }
 
     /// Tells a living body what its character does this tick (before it is
@@ -1419,6 +1437,13 @@ impl Ragdoll {
                 c.normal = carry.transform_vector3(c.normal).normalize_or(c.normal);
                 c.plane = c.normal.dot(c.point) - CONTACT_SLOP;
             }
+        }
+        // The feet's anchors and points ride along (until the body walks
+        // by its carry, C18).
+        for leg in &mut self.legs {
+            leg.anchor = carry.transform_point3(leg.anchor);
+            leg.at = carry.transform_point3(leg.at);
+            leg.before = carry.transform_point3(leg.before);
         }
         for t in &mut drive.targets {
             *t = carry * *t;
@@ -1704,6 +1729,12 @@ impl Ragdoll {
     /// change by equal and opposite amounts.
     fn iterate(&mut self) {
         let gains = self.drive.as_ref().map(Drive::muscle_gains);
+        let feet = self
+            .drive
+            .as_ref()
+            .filter(|_| self.measures_balance())
+            .map(feet::FootDrive::of);
+        let mut landed = 0;
         for k in 0..self.parts.len() {
             let i = if gains.is_some() {
                 self.inward[k]
@@ -1727,9 +1758,27 @@ impl Ragdoll {
                 self.parts[l.part].push(&l.on_part, c * l.shares.0);
                 self.parts[l.parent].push(&l.on_parent, -c * l.shares.1);
             }
+            // A lower leg's foot contact, then a foot's sole.
+            if let Some(fd) = &feet {
+                for leg in &mut self.legs {
+                    if leg.shin == i && feet::drive_contact(&mut self.parts[i], leg, fd) {
+                        landed += 1;
+                    }
+                    if leg.foot == Some(i) {
+                        feet::push_sole(&mut self.parts[i], leg, fd);
+                    }
+                }
+            }
             let p = &mut self.parts[i];
             p.hold_contacts();
             keep_rigid(p);
+        }
+        if landed > 0
+            && let Some(d) = self.drive.as_mut()
+        {
+            for _ in 0..landed {
+                d.balance.land();
+            }
         }
     }
 

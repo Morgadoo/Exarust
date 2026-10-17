@@ -69,6 +69,15 @@ The original has no camera-relative keyboard movement. Outside combat:
   controller follows the frame, a tenth of the way a tick and at most
   2 cm (Exarust's own), so the player's position stays with the body when
   it is shoved, falls or gets up, gliding instead of jumping.
+- The feet are planted, as the original's are: standing, each foot grips
+  the floor where it landed (within half a centimetre while it stands,
+  its lower leg and foot rubbing at 2.0), and a foot whose spot in the
+  stance drifts 5 cm off steps there, one foot at a time, as after a walk
+  stops; walking, the feet do not grip (until the walk's own plants). A
+  standing turn still carries the planted feet round with the body
+  (Exarust's own, while the controller turns it). A heavily dazed player
+  sinks onto its planted feet rather than toppling
+  ([formats/RSQ.md](formats/RSQ.md), Feet).
 - Stairs: the capsule climbs a step before the feet do, and nothing lifts a
   walking foot onto it yet (the original's walking feet and leg IK come
   later). Until then the body is held no lower than 6 cm under the

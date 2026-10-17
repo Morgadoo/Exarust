@@ -6,9 +6,10 @@
 //! Exarust's own columns follow the probe's: the body's sleep countdown and
 //! state, its character frame's origin and its body root (where its
 //! controller stands) across the ground, its clip's blend and how far its
-//! pose is held, its character's condition word, and its swing: the rate
-//! its attack's clip clock ran this tick, its strength and its state word.
-//! Columns: `docs/formats/RSQ.md` (Physical body, per-tick trace).
+//! pose is held, its feet's ankles, its character's condition word, and
+//! its swing: the rate its attack's clip clock ran this tick, its strength
+//! and its state word. Columns: `docs/formats/RSQ.md` (Physical body,
+//! per-tick trace).
 
 use std::fmt::Write as _;
 use std::fs::File;
@@ -51,6 +52,16 @@ const OWN: [&str; 4] = ["frame_x", "frame_z", "root_x", "root_z"];
 /// Exarust's own clip columns: the blend from the clip's capture (frames,
 /// 0 once its first key is reached) and the hold weight.
 const CLIP: [&str; 2] = ["blend", "hold"];
+/// Exarust's own foot columns: each foot contact's ankle where the tick
+/// left it (cm), in leg order, so a foot's slide from its anchor shows.
+const ANKLES: [&str; 6] = [
+    "ankle_r_x",
+    "ankle_r_y",
+    "ankle_r_z",
+    "ankle_l_x",
+    "ankle_l_y",
+    "ankle_l_z",
+];
 /// Then the character's condition word, in hex as the retail watcher logs
 /// it (`0x300`); empty for a body without one.
 const CONDITION: &str = "condition";
@@ -123,6 +134,7 @@ pub fn header() -> String {
     columns.push("sleep".into());
     columns.extend(OWN.iter().map(|s| s.to_string()));
     columns.extend(CLIP.iter().map(|s| s.to_string()));
+    columns.extend(ANKLES.iter().map(|s| s.to_string()));
     columns.push(CONDITION.into());
     columns.extend(SWING.iter().map(|s| s.to_string()));
     columns.join(",")
@@ -285,8 +297,20 @@ fn row(
             None => row.empty(TARGET.len()),
         }
     }
-    // Foot contacts are not simulated yet.
-    row.empty(8);
+    // The foot contacts, in leg order (lower legs 03 and 06): the state in
+    // hex and the anchor in cm.
+    for k in 0..2 {
+        match body.legs().get(k).filter(|_| drive.is_some()) {
+            Some(leg) => {
+                let _ = write!(row.0, ",{:#x}", leg.state.0);
+                let a = leg.anchor * CM;
+                for v in [a.x, a.y, a.z] {
+                    row.value(Some(v));
+                }
+            }
+            None => row.empty(4),
+        }
+    }
     row.whole(
         anim.zip(motions)
             .and_then(|(a, m)| m.0.action_index(&a.action)),
@@ -303,6 +327,17 @@ fn row(
     row.value(Some(at.z));
     row.value(anim.map(|a| a.blend));
     row.value(anim.map(|a| a.held));
+    for k in 0..2 {
+        match body.ankle(k).filter(|_| drive.is_some()) {
+            Some(at) => {
+                let at = at * CM;
+                for v in [at.x, at.y, at.z] {
+                    row.value(Some(v));
+                }
+            }
+            None => row.empty(3),
+        }
+    }
     row.0
 }
 
@@ -347,6 +382,7 @@ mod tests {
                 + 2
                 + OWN.len()
                 + CLIP.len()
+                + ANKLES.len()
                 + 1
                 + SWING.len()
         );
@@ -383,6 +419,9 @@ mod tests {
             };
             assert!((off("x") + 1.0).abs() < 1e-2 && off("z").abs() < 1e-2);
             assert!(row[at("target3_x")].is_empty() && row[at("target_pelvis_height")].is_empty());
+            // No legs, no foot contacts.
+            assert!(row[at("foot_r_flags")].is_empty() && row[at("foot_l_anchor_z")].is_empty());
+            assert!(row[at("ankle_r_x")].is_empty() && row[at("ankle_l_z")].is_empty());
         }
     }
 }

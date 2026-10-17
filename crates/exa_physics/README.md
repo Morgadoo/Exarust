@@ -61,7 +61,19 @@ its ankles and asks the level for the ground under each foot
 its support S (`src/body_balance.rs`, `body::Ragdoll::measure_balance`);
 without support it also asks for the ground under its pelvis
 (`body::Balance::ground`, read by the get-up's support and the fall
-check).
+check). Its feet are planted as the original's are (`src/body_feet.rs`):
+each leg's foot contact (`body::Leg`: `state`, a `body::FootState` of the
+original's bits, `anchor`, `grip`, `ramp`) is planted where its foot meets
+the floor, stood on its stance spot getting up or unsupported, cleared
+lying, and steps to its stance spot when that drifts 5 cm off (one foot at
+a time, Exarust's stand-in for the footwork's scores until C15); its lower
+leg's and foot's friction follow its state; in each iteration a standing
+foot is gripped at its anchor (the PD grip, a walking one the velocity
+servo, a lifted one only pushed up) and its toe held over the floor
+(`body::Ragdoll::clear_feet`, `body::Ragdoll::ankle`,
+`body::Balance::level`/`extension`/`landings`; the overlay's
+`body::Ragdoll::drawn_foot`). The controller's carry moves the anchors
+with the body.
 `body::Ragdoll::exertion` sums each part's farthest particle over the last
 tick (cm), the summed limb motion `exa_combat`'s posture stage reads.
 `body::Fallen` marks a body off its feet while its posture stage takes an

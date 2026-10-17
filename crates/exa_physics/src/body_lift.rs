@@ -29,6 +29,7 @@ use bevy::prelude::*;
 
 use super::balance::cm;
 use super::climb::climbing_ground;
+use super::feet;
 use super::{BODY_HZ, Bearing, CM, GRAVITY, Ragdoll};
 
 /// Standing, f = 0.075 per cm of h + 15, at most 1.5.
@@ -248,6 +249,18 @@ impl Ragdoll {
             .collect();
         let pelvis = &parts[root];
         let height = cm(pelvis.transform().translation.y);
+        // The legs' extension: the pelvis over the highest anchor, against
+        // the pose's pelvis over its mean ankle.
+        if let Some(p) = pelvis_target {
+            let ankles: f32 = legs
+                .iter()
+                .map(|l| drive.targets[l.shin].transform_point3(l.point).y)
+                .sum();
+            let reach = cm(p.y - ankles / legs.len() as f32);
+            let highest = legs.iter().map(|l| l.anchor.y).fold(f32::MIN, f32::max);
+            let b = &mut drive.balance;
+            b.extension = feet::extension(b.level, height - cm(highest), reach);
+        }
         let target = target_height(&heights, cm(*sole), bearing.crouch, height, bearing.moving);
         drive.lift_target = Some(target / CM);
         if !drive.balance.has_support() {

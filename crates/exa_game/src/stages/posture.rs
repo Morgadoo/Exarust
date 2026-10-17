@@ -7,7 +7,8 @@
 //! striding, off balance while its posture stage takes an off-balance
 //! branch, getting up and rising through its get-up's first quarter,
 //! carried by its controller, turning unless its condition is helpless,
-//! collapsing.
+//! collapsing, walking and off its feet by its condition, its clip's
+//! progress.
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Motions};
@@ -43,5 +44,8 @@ pub(crate) fn take_bearing(
     let branch = branch.map_or_else(Default::default, |b| b.0);
     let mut bearing: Bearing = bearing(controller, player, anim, branch, state);
     bearing.rising = rising(&motions, anim, state);
+    bearing.progress = motions
+        .clip(anim, &anim.action)
+        .map_or(0.0, |c| anim.clip_progress(c));
     body.set_bearing(bearing);
 }

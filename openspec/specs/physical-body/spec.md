@@ -75,7 +75,7 @@ The system SHALL drive a living physical body toward its animated pose: its link
 - **THEN** their heads' pose gain is 0.0052 and none, their trunks' still 0.0314
 
 ### Requirement: Living bodies in motion
-The system SHALL give a living physical body the animated pose of each tick on its character frame. A standing body SHALL be carried with its root's motion since the last tick, less its controller's follow, across the ground and about the vertical only, with where the last tick left it, its level contacts, last tick's targets and its frame, and its pelvis held over the frame's by 0.168 × tone² × energy⁴ a tick, critically damped, only damped while it moves (Exarust's own).
+The system SHALL give a living physical body the animated pose of each tick on its character frame. A standing body SHALL be carried with its root's motion since the last tick, less its controller's follow, across the ground and about the vertical only, with where the last tick left it, its level contacts, its feet's anchors, last tick's targets and its frame, and its pelvis held over the frame's by 0.168 × tone² × energy⁴ a tick, critically damped, only damped while it moves (Exarust's own).
 
 #### Scenario: Turning far from the origin
 - **WHEN** a living body 80 m from the world's origin turns with its pose
@@ -88,6 +88,10 @@ The system SHALL give a living physical body the animated pose of each tick on i
 #### Scenario: Held on the controller
 - **WHEN** a standing body's pelvis is off where its frame puts the pose's pelvis
 - **THEN** it is pulled back across the ground, and the hold never moves it up or down; while the body moves it is only braked
+
+#### Scenario: A standing turn
+- **WHEN** the player turns a quarter standing in the arena
+- **THEN** its planted feet are carried round with it, within 0.1 cm of their anchors
 
 ### Requirement: Blows and daze
 The system SHALL let a blow change the velocity of the struck part and take a share of the body's energy (at most 90 %, never below 0.05), which recovers by 0.005 per tick up to the body's most energy: its character's, 1 for a human that is not feral. Blows SHALL be queued and dealt by the next tick, whichever frame sends them.
@@ -270,7 +274,7 @@ The system SHALL keep each level push as a contact of its part, at most four per
 - **THEN** it falls without any sphere centre passing below the floor and lies within 10 m of where it stood
 
 ### Requirement: Level friction
-The system SHALL apply friction at level contacts from the part's own coefficient μ (2.5 for limbs, 0.5 for feet) and the contact normal n, with the limit 0.5·μ·(0.01 + 0.99·n_y²) in cm² per tick². A contact point's slide this tick whose square is under the limit is cancelled; a larger slide is reduced by 0.01 times the limit of itself. Friction SHALL run in 8 passes after detection and again in each of the next tick's 20 link iterations.
+The system SHALL apply friction at level contacts from the part's own coefficient μ (limbs 2.5, feet 0.5 as built; a living body's lower legs and feet by their foot's state) and the contact normal n, with the limit 0.5·μ·(0.01 + 0.99·n_y²) in cm² per tick². A slide this tick whose square is under the limit is cancelled; a larger one is reduced by 0.01 times the limit of itself. Friction SHALL run in 8 passes after detection and in each of the next tick's 20 link iterations.
 
 #### Scenario: Floor and wall
 - **WHEN** a limb's contact point slides 1.1 cm in a tick on a floor, or 0.1 cm on a vertical wall
@@ -307,7 +311,7 @@ The system SHALL advance a living physical body's clip clock by the original's r
 - **THEN** only its ticks advance the clock
 
 ### Requirement: Body trace
-`exarust --trace <file.csv>` SHALL write one row per traced body (the player's, else every simulated character body, never a prop's) after each tick, with the retail probe's columns: pelvis particles; heights, tone, energy, support, balance, counter; part targets; foot contacts; motion and clock; then sleep countdown and state, frame origin, body root, clip blend, hold weight, condition word (hex); swing rate, strength and state word (hex). Lengths in cm, clock in frames; empty if not simulated.
+`exarust --trace <file.csv>` SHALL write one row per traced body (the player's, else every simulated character body, never a prop's) a tick, in the retail probe's columns: pelvis particles; heights, tone, energy, support, balance, counter; part targets; foot contacts (state hex, anchor); motion, clock; then sleep countdown and state, frame origin, body root, clip blend, hold, ankles, condition word (hex); swing rate, strength, state word (hex). Lengths cm, clock frames; empty if unsimulated.
 
 #### Scenario: Standing in the arena
 - **WHEN** `exarust --trace t.csv play arena` runs for a minute
@@ -316,6 +320,10 @@ The system SHALL advance a living physical body's clip clock by the original's r
 #### Scenario: A released punch
 - **WHEN** `exarust --opponent --trace t.csv --press LMB@200 play arenao1` runs
 - **THEN** the punch's rows show the rate 1.62, then P falling by 0.3 a row with the state word's stalling and released bits, and the stance from the punch's sixth row
+
+#### Scenario: Planted feet
+- **WHEN** the player stands in the arena
+- **THEN** both foot contacts read `0x2`, their anchors 9.7 cm up, and its ankles within 0.5 cm of them
 
 ### Requirement: Race body parameters
 The system SHALL decode, for every record of the installed `races.rdb`, the body parameters the original reads: the clip-rate base, support-pin factor, size, scale, mass divisor, balance bonus, stance factor, arm relaxation, limb damping ratio, and four gait rows (walk, jog, sprint, backpedal) of thrust, push scale, brake distance (the loader's 0.5, 2, 2.5, 0.5 m), clip rate and boost speed. A missing race SHALL get the original's fallback: every factor 1.0 and gaits with no push.
@@ -521,7 +529,7 @@ The level SHALL answer the original's Height Query: a sphere whose lowest point 
 - **THEN** the first is passed through, and nothing is found
 
 ### Requirement: Support
-Each tick each leg of a living body SHALL query the ground 5 cm ahead of its ankle, a 10 cm sphere from 70 cm above it (a 5 cm one from it while down or getting up). Ground over half the leg under the pelvis is out of reach, except getting up. A foot is grounded within 20 cm (30 moving) of its ground plus its ground offset. S SHALL be grounded × balance; a standing body without a grounded foot loses its balance unless its controller stands on the ground.
+Each tick each leg of a living body SHALL query the ground 5 cm ahead of its ankle from 70 cm above it (from it down or getting up) with a 10 cm sphere walking, else 5 cm + 10 cm × an anchored foot's share. Ground over half the leg under the pelvis is out of reach, but getting up. A foot is grounded within 20 cm (30 moving) of its ground plus its ground offset. S SHALL be grounded × balance; a standing body without a grounded foot loses its balance unless its controller stands on the ground.
 
 #### Scenario: Standing in the arena
 - **WHEN** `exarust --trace t.csv play arena` runs for a minute
@@ -545,7 +553,7 @@ Each tick each leg of a living body SHALL query the ground 5 cm ahead of its ank
 
 #### Scenario: Down
 - **WHEN** a body lying or getting up has a shelf 40 cm over its ankle, and a 5 cm step's edge 7 cm beside its probe
-- **THEN** its leg finds the floor under both, where a standing body finds the shelf and the step's edge
+- **THEN** its leg finds the floor under both, where a standing body finds the shelf and the floor, and a walking body the shelf and the step's edge (2.14 cm)
 
 ### Requirement: Joint measurements
 The system SHALL measure each joint of a simulated body where the last tick left it: its turn from the model's rest pose relative to its parent, split into a twist about the part's bone axis and a swing of that axis (with the swing's axis); in a living body, the angle to the clip's turn; and each link's gap against its slack, the largest share of slack a slack link uses, and the pivot's gap. A joint in its rest pose SHALL measure 0.
@@ -896,7 +904,7 @@ A stagger SHALL start Get up (lean ahead) or Get Up 2 with a blend of 50 from th
 - **THEN** Get Up 2's clock reads −9.25 after its first tick (0.75 frames on it), its first key holds for 27 ticks, and its clip ends into the stance 144 ticks after the start
 
 ### Requirement: Getting up from the floor
-A body lying still (balance under 0.3, limb motion under 25 cm a tick) SHALL get up once a foot gives support or 100 ticks after support was lost: Get up when its pelvis's front axis height is at most 0 (0.2 while Get up plays, −0.2 while Get Up 2 does), else Get Up 2; past a quarter of the clip an unchanged pick does nothing. It SHALL turn to pelvis → chest (reversed for Get Up 2) when over 18.2° off and start with a blend of 20.
+A body lying still (balance under 0.3, limb motion under 25 cm a tick) SHALL get up once a foot gives support or 100 ticks after support was lost: Get up when its pelvis's front axis height is at most 0 (0.2 while Get up plays, −0.2 while Get Up 2 does), else Get Up 2; past a quarter of the clip an unchanged pick does nothing. It SHALL turn to pelvis → chest (reversed for Get Up 2) when over 18.2° off, clear its feet's states and start with a blend of 20.
 
 #### Scenario: Waiting
 - **WHEN** a body lies still without support for 99 ticks, then 100
@@ -926,7 +934,7 @@ A standing body at full tone playing a plain clip (no attack, combat idle, walk,
 
 #### Scenario: Shoved
 - **WHEN** `exarust --fixed-frames --shove 60 play arena` dazes the player
-- **THEN** it Rebalances at balance 0.61 before it falls
+- **THEN** it Rebalances at balance 0.64 and sinks onto its planted feet before it is down
 
 ### Requirement: Turning toward a fall
 Under balance 0.8 (double) and not getting up, a body whose pelvis's front axis has turned more than 45° from its clip's SHALL turn its heading across the ground to chest → pelvis (front axis height over 0.4), pelvis → chest (under −0.4) or the front axis, when that is more than 37° off.
@@ -934,3 +942,70 @@ Under balance 0.8 (double) and not getting up, a body whose pelvis's front axis 
 #### Scenario: Twisted
 - **WHEN** a body's pelvis faces up while its clip's faces ahead, with its heading 90° off its fall
 - **THEN** its heading turns to the direction from its chest to its pelvis
+
+### Requirement: Foot contacts
+Each leg of a living body SHALL keep a foot contact at its ankle with the original's state bits (2 touching, 4 anchored, 8 reached, 0x10 lifted, 0x20 no ground, 0x100 stalled) and an anchor. Not walking, a foot that does not touch SHALL be planted where it is once it meets the level; walking, no foot touches. Standing still: lying, none touches; getting up (to 0.9 of its clip) or unsupported, each touches on its stance spot; else one at a time steps to a spot 5 cm off.
+
+#### Scenario: Standing
+- **WHEN** a body stands on a floor for 120 ticks
+- **THEN** both feet touch (state 0x2), anchored where they landed at the floor plus the sole height, their grips full
+
+#### Scenario: Walking and stopping
+- **WHEN** a standing body walks, then stops
+- **THEN** walking no foot touches; stopped, each foot is planted where it meets the floor and steps onto its stance spot, both standing again within 45 ticks in the arena
+
+#### Scenario: Getting up
+- **WHEN** a body gets up
+- **THEN** its start clears every foot's state; in the first fifth of the clip no foot touches, then each touches on its stance spot until nine tenths
+
+#### Scenario: Lying
+- **WHEN** a body lies down
+- **THEN** no foot touches and its lower legs and feet have no friction
+
+#### Scenario: A step
+- **WHEN** a standing foot's stance spot is 4.9 cm, then 5 cm from its anchor
+- **THEN** it stays, then steps (anchored, its anchor the spot); the other foot does not step until it has landed, and a stalled step lands where it is
+
+### Requirement: Foot grip
+In each iteration, after its lower leg's links, a foot of a body over half its tone with support, more than 10 cm under the pelvis, SHALL be driven to its anchor: touching and not lifted, by the PD grip d·(0.1p + 0.004g(1 − p)) less its motion across the ground × (p + 0.03g(1 − p)), or walking by the velocity servo (never down); an anchored foot reaches it within 5 cm; a foot not touching or lifted only up. Its anchor SHALL sit on its ground plus the sole height.
+
+#### Scenario: A quarter turn in place
+- **WHEN** a standing body's pose turns 90° about the vertical over 60 ticks
+- **THEN** its feet step to their new spots one at a time, and a foot planted with its grip full stays within 1 cm of where it stands
+
+#### Scenario: A lifted foot
+- **WHEN** a lifted foot, or one that does not touch, is 3 cm under its anchor and 5 cm aside
+- **THEN** it moves only up, and an anchor under it moves it not at all
+
+#### Scenario: The grip
+- **WHEN** a foot touches for 250, then 1000 iterations
+- **THEN** its grip is 0.25, then 1, and a full grip pulls 2 cm of gap by 0.2 cm and takes back its motion across the ground; 5 cm over its anchor the hold is halved, past 9 cm gone
+
+#### Scenario: A light shove
+- **WHEN** a standing body's torso takes a 2 m/s sideways blow
+- **THEN** its chest sways 4 cm and its feet stay within 1 cm of their anchors
+
+#### Scenario: A step's reach
+- **WHEN** a stepping foot comes 4.9 cm from its anchor
+- **THEN** it has reached it, counts a landing, and its anchor moves halfway to it
+
+### Requirement: Foot friction
+Each tick a living body's lower legs and their feet SHALL take their friction from their foot's state: 0 while it does not touch, 2.0 touching, 0 anchored.
+
+#### Scenario: By state
+- **WHEN** a standing body's feet touch, then it walks
+- **THEN** its lower legs and feet have friction 2.0, then 0
+
+### Requirement: Sole floor
+In each iteration, after its foot's links, a body with support and on its feet SHALL push its toe (the sole's point 20 cm × scale ahead of the ankle along the foot) straight up toward its floor (its ground, never over the lower leg's origin) by the gap × S, at most 0.5 cm while the foot stands (touching, not anchored, not lifted), else 0.1 cm.
+
+#### Scenario: Under the floor
+- **WHEN** a standing foot's toe is 3 cm, 0.3 cm, then 0.4 cm at S = 0.5 under its floor
+- **THEN** it is pushed 0.5, 0.3, then 0.2 cm (0.1 cm when the foot does not stand), and not at all off its feet or without support
+
+### Requirement: Stance level and leg extension
+With support, a body's stance level SHALL follow 1 − v² by a tenth a tick (v the share of its feet's ground difference in their squared distance), and its legs' extension SHALL be the level × (pelvis over the highest anchor ÷ the pose's pelvis over its mean ankle)², at most 1; the grip's gain g is scale × the support pins' factor × the extension.
+
+#### Scenario: A step under one foot
+- **WHEN** a body stands with one foot on a 15 cm block and the other on the floor, its feet 11.4 cm apart
+- **THEN** its anchors sit 24.5 and 9.5 cm up and its level settles at 0.60, where on level ground it is 1

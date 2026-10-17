@@ -537,12 +537,12 @@ fn ground_above_half_a_leg_is_out_of_reach() {
     assert_eq!(drive(&body).support(), 1.0);
 }
 
-/// Down, lying or getting up, each leg's query starts at its ankle with a
-/// 5 cm sphere instead of 70 cm above it with a 10 cm one: under a shelf
-/// 40 cm up it finds the floor where a standing body finds the shelf, and
-/// beside a 5 cm step whose edge runs 7 cm from the probe it finds the
-/// floor where a 10 cm sphere meets the edge at 5 + √(10² − 7²) − 10 =
-/// 2.14 cm.
+/// Down, lying or getting up, each leg's query starts at its ankle instead
+/// of 70 cm above it, with a 5 cm sphere as a standing body's: under a shelf
+/// 40 cm up it finds the floor where a standing body finds the shelf. A
+/// walking body's sphere is 10 cm: beside a 5 cm step whose edge runs 7 cm
+/// from the probe it meets the edge at 5 + √(10² − 7²) − 10 = 2.14 cm,
+/// where the 5 cm sphere of a standing or a down body finds the floor.
 #[test]
 fn down_the_query_starts_at_the_ankle_5_cm_wide() {
     // The right leg's probe: 5 cm ahead of its ankle at (−7.8, 9.4, 1.2) cm.
@@ -569,8 +569,19 @@ fn down_the_query_starts_at_the_ankle_5_cm_wide() {
             },
         )
     };
+    let walking = |body: &mut Ragdoll| {
+        bearing(
+            body,
+            Bearing {
+                walking: true,
+                ..Bearing::default()
+            },
+        )
+    };
     assert!((ground(&shelf, &standing) - 0.4).abs() < 1e-5);
-    assert!((ground(&step, &standing) - 0.0214).abs() < 1e-4);
+    assert!((ground(&shelf, &walking) - 0.4).abs() < 1e-5);
+    assert!((ground(&step, &walking) - 0.0214).abs() < 1e-4);
+    assert!(ground(&step, &standing).abs() < 1e-5);
     for down in [&lying as &dyn Fn(&mut Ragdoll), &getting_up] {
         assert!(ground(&shelf, down).abs() < 1e-5);
         assert!(ground(&step, down).abs() < 1e-5);

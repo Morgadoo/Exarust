@@ -148,8 +148,8 @@ pub struct BodyStats {
     /// × its feral level, at least 0.05.
     pub walking_arms: f32,
     /// Its support pins' factor (its race's, less 0.25 × its feral
-    /// level²). Nothing reads it until the support pins hold a standing
-    /// body.
+    /// level²): it scales its feet's grip (and its support pins, once they
+    /// hold a standing body).
     pub pin_factor: f32,
 }
 
@@ -212,6 +212,18 @@ pub struct Bearing {
     /// 0.2, its feet are probed standing, and its support pins' gain does
     /// not recover.
     pub collapsing: bool,
+    /// Its condition is walking (the walk or the run cycle plays at full
+    /// tone): its feet's contacts are pushed by the velocity servo, not
+    /// gripped, and are probed as a walking foot's.
+    pub walking: bool,
+    /// Its condition is off its feet: down, getting up, dormant or dead
+    /// (the condition's bit 0x200). Its feet are probed from their ankles
+    /// and their soles are not held over the floor.
+    pub off_feet: bool,
+    /// How far its clip has played, 0 to 1 (by last tick's clock): a
+    /// get-up's feet do not touch in its first fifth, and stand on their
+    /// stance spots until nine tenths.
+    pub progress: f32,
 }
 
 impl Default for Bearing {
@@ -228,6 +240,9 @@ impl Default for Bearing {
             turn: 0.0,
             gait_floor: None,
             collapsing: false,
+            walking: false,
+            off_feet: false,
+            progress: 0.0,
         }
     }
 }

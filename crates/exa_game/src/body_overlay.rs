@@ -9,12 +9,16 @@
 //!   cross in the same colours.
 //! - A living body's link muscle anchors, faint: where the clip's joint
 //!   turn wants each link's point.
+//! - A living body's foot contacts: a line from each ankle to the anchor
+//!   its foot is held at, and a cross on the anchor, cyan while the foot
+//!   touches (it grips there), orange while it is anchored (a step), grey
+//!   while it does not touch.
 //! - The readout (top left): for the inspected body (the player's, or the
 //!   one picked with F5), each joint's turn from its rest, its swing and
 //!   twist about the bone axis, how far it is from the clip's turn, and its
 //!   link furthest past its slack, the rows coloured as their links are;
-//!   the body's sleep state, support, balance, energy and tone; and the
-//!   simulation's speed and pause.
+//!   the body's sleep state, support, balance, energy and tone, each foot's
+//!   state (hex) and grip; and the simulation's speed and pause.
 //!
 //! The parts are drawn between their last two ticks, as their meshes are.
 //! Off, nothing runs but the key check. Keys: `docs/DEBUGGING.md`.
@@ -25,7 +29,7 @@ use bevy::color::palettes::css;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use exa_physics::body::inspect::{self, Stretch};
-use exa_physics::body::{BodyTicks, Ragdoll};
+use exa_physics::body::{BodyTicks, FootState, Ragdoll};
 use exa_physics::prop::PropBody;
 use exa_render::supersample::SceneCamera;
 
@@ -67,6 +71,7 @@ const FRAME_WIDTH: f32 = 1.5;
 const PARTICLE_MARK: f32 = 0.008;
 const PIVOT_MARK: f32 = 0.015;
 const ANCHOR_MARK: f32 = 0.01;
+const FOOT_MARK: f32 = 0.03;
 /// How near (m) the cursor's ray must pass a part to pick its body.
 const PICK_REACH: f32 = 0.3;
 /// Rows of the readout: the body, the simulation, the columns, the parts.
@@ -80,6 +85,18 @@ const PANEL_PERIOD: f32 = 0.1;
 const EDGE: Color = Color::srgba(0.75, 0.8, 0.95, 0.4);
 const ANCHOR: Color = Color::srgba(0.3, 0.85, 1.0, 0.35);
 const TEXT: Color = Color::srgb(0.85, 0.85, 0.85);
+
+/// The colour of a foot contact's anchor: anchored (stepping), touching,
+/// or neither.
+fn foot_colour(state: FootState) -> Color {
+    if state.has(FootState::ANCHORED) {
+        css::ORANGE.into()
+    } else if state.has(FootState::TOUCHING) {
+        css::AQUA.into()
+    } else {
+        css::GRAY.into()
+    }
+}
 
 /// The colour of a link in the overlay and of its row in the readout.
 fn stretch_colour(band: Stretch) -> Color {
@@ -260,6 +277,13 @@ fn draw_overlay(
                 gizmos.cross(Isometry3d::from_translation(anchor), ANCHOR_MARK, ANCHOR);
             }
         }
+        for k in 0..2 {
+            if let Some((at, anchor, state)) = body.drawn_foot(k, alpha) {
+                let colour = foot_colour(state);
+                gizmos.line(at, anchor, colour);
+                gizmos.cross(Isometry3d::from_translation(anchor), FOOT_MARK, colour);
+            }
+        }
         // A dot over the inspected body's head.
         if chosen && let Some(head) = body.parts.iter().position(|p| p.bone == 10) {
             let top = body.drawn_particles(head, alpha);
@@ -429,6 +453,14 @@ fn update_panel(
             if let Some(d) = &body.drive {
                 let b = d.balance();
                 let _ = write!(head, "  balance {:.2} ({})", b.value, b.counter());
+                let feet: Vec<String> = body
+                    .legs()
+                    .iter()
+                    .map(|l| format!("{:#x} {:.2}", l.state.0, l.grip))
+                    .collect();
+                if !feet.is_empty() {
+                    let _ = write!(head, "  feet {}", feet.join(", "));
+                }
             }
             head.push('\n');
             text[0].0 = head;

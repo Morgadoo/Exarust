@@ -11,13 +11,17 @@
 //! bonus. An instability counter grows while q ≤ 0.99 and sets the balance
 //! to q once it reaches 100; below 100 balance recovers slowly.
 //!
-//! Then each leg asks the level how high the ground is under its foot (the
-//! Height Query) and is grounded when its contact is within 20 cm of it
-//! (30 cm moving), its ground offset included (its sole height standing;
-//! moving, its ankle's lift in the walk as well). Support S is grounded ×
-//! balance, and a standing body with no foot on the ground has no balance.
-//! Without support it asks for the ground under its pelvis (the fall check
-//! reads it, and a body getting up near it has support).
+//! Then the feet's states are set (`feet`), and each leg takes its
+//! friction from its foot's state, asks the level how high the ground is
+//! under its foot (the Height Query: a 10 cm sphere walking, 5 cm standing),
+//! anchors its foot at that ground plus the sole height, and is grounded
+//! when its contact is within 20 cm of it (30 cm moving), its ground offset
+//! included (its sole height standing; moving, its ankle's lift in the walk
+//! as well). Support S is grounded × balance, and a standing body with no
+//! foot on the ground has no balance. The stance's level follows how much
+//! higher one foot stands than the other. Without support it asks for the
+//! ground under its pelvis (the fall check reads it, and a body getting up
+//! near it has support).
 //!
 //! The rules are the original's, in its centimetres and ticks (evidence:
 //! `docs/formats/RSQ.md`, Physical body).
@@ -27,6 +31,7 @@ use std::ops::Mul;
 
 use bevy::prelude::*;
 
+use super::feet::{self, FootState};
 use super::{CM, Part, PartSetup, Ragdoll, weights};
 use crate::contact::Level;
 
@@ -75,15 +80,17 @@ const AT_REST2: f32 = 1.192_09e-7;
 /// while above 2.
 const GET_UP_RISE: f32 = 0.05;
 const GET_UP_EASE_ABOVE: i32 = 2;
-/// Each leg's Height Query (cm): 5 cm along the lower leg's forward axis
-/// from its contact, starting 70 cm above the contact, a 10 cm sphere swept
-/// 2000 cm down. While the body is down, lying or getting up, it starts at
-/// the contact and the sphere is 5 cm.
+/// Each leg's Height Query (cm): 5 cm (× scale) along the lower leg's
+/// forward axis from its contact, starting 70 cm above the contact, a
+/// sphere (`feet::probe_radius`: 10 cm walking, 5 cm and more otherwise)
+/// swept 2000 cm down. While the body is down, lying or getting up, it
+/// starts at the contact.
 const PROBE_AHEAD: f32 = 5.0;
 const PROBE_ABOVE: f32 = 70.0;
-const PROBE_RADIUS: f32 = 10.0;
-const DOWN_RADIUS: f32 = 5.0;
 const PROBE_DEPTH: f32 = 2000.0;
+/// With support the character's ground is the lowest foot's, from the
+/// pelvis plus this (cm) down.
+const LOWEST_ABOVE: f32 = 100.0;
 /// The ground a query that meets nothing gives (cm).
 const NO_GROUND: f32 = -10000.0;
 /// Ground is within reach at least this share of the leg's length under
@@ -128,11 +135,40 @@ pub struct Leg {
     /// down: the feet's sole height standing; moving, also its animated
     /// ankle's height over the walk's lowest (set by the lift).
     pub offset: f32,
-    /// The ground under the foot this tick (m), or none while it is not
-    /// within reach.
+    /// The ground under the foot this tick (m), smoothed (it rises at once
+    /// and falls by the gait's share, at once outside the walk), or none
+    /// while it is not within reach.
     pub ground: Option<f32>,
     /// The foot stands on its ground.
     pub grounded: bool,
+    /// The foot contact's state: touching, anchored, lifted, …
+    pub state: FootState,
+    /// Where the foot is held (m, world): across the ground where it was
+    /// planted, its height its ground plus the sole height.
+    pub anchor: Vec3,
+    /// The contact's world point in the solver's last iteration, and in
+    /// the one before.
+    pub(super) at: Vec3,
+    pub(super) before: Vec3,
+    /// An anchored foot's smoothed approach to its anchor (cm an
+    /// iteration; 1 while it stands).
+    pub approach: f32,
+    /// How firmly a standing foot grips its anchor, 0 to 1: it rises 0.001
+    /// an iteration while the foot touches, and is 0 while it is anchored.
+    pub grip: f32,
+    /// The lower leg's grip ramp, 0 to 0.25: the walking servo's gain.
+    pub ramp: f32,
+    /// How far an anchored foot's ground probe has moved toward its anchor.
+    pub(super) blend: f32,
+    /// The smoothed ground (m), kept while the ground is out of reach.
+    pub(super) smoothed: f32,
+    /// The leg's foot part, if it has one.
+    pub foot: Option<usize>,
+    /// The toe: the foot's sole point 20 cm ahead of the ankle, as weights
+    /// on the foot part.
+    pub(super) toe: [f32; 4],
+    /// The floor the toe is held over (m).
+    pub floor: f32,
 }
 
 /// A living body's balance, kept from tick to tick.
@@ -160,6 +196,21 @@ pub struct Balance {
     airborne: u32,
     /// The ground under the pelvis (m), asked while no foot gives support.
     ground: Option<f32>,
+    /// The character's ground (m): with support the lowest foot's (their
+    /// mean while walking), without it the ground under the pelvis. A foot
+    /// with no ground in reach is anchored at its height.
+    under: f32,
+    /// The pelvis's height (m) when the feet were last measured.
+    pub(super) pelvis: f32,
+    /// The stance's level, 1 on level ground: less while one foot stands
+    /// higher than the other.
+    pub(super) level: f32,
+    /// The legs' extension factor: the level times how far the pelvis
+    /// stands over the highest anchor, as a share of how far the pose's
+    /// stands over its mean ankle, squared (at most 1).
+    pub(super) extension: f32,
+    /// Feet that reached their anchors.
+    landings: u32,
 }
 
 impl Default for Balance {
@@ -178,6 +229,11 @@ impl Default for Balance {
             has_support: true,
             airborne: 0,
             ground: None,
+            under: 0.0,
+            pelvis: 0.0,
+            level: 1.0,
+            extension: 1.0,
+            landings: 0,
         }
     }
 }
@@ -228,6 +284,28 @@ impl Balance {
     /// none while a foot gives it.
     pub fn ground(&self) -> Option<f32> {
         self.ground
+    }
+
+    /// The stance's level: 1 on level ground, less while one foot stands
+    /// higher than the other.
+    pub fn level(&self) -> f32 {
+        self.level
+    }
+
+    /// The legs' extension factor, which scales the feet's grip: 1 with
+    /// the legs as straight as the pose's.
+    pub fn extension(&self) -> f32 {
+        self.extension
+    }
+
+    /// How many feet have reached their anchors.
+    pub fn landings(&self) -> u32 {
+        self.landings
+    }
+
+    /// Counts a foot that reached its anchor.
+    pub(super) fn land(&mut self) {
+        self.landings += 1;
     }
 
     /// One tick of the counter and the balance for score `q`, at a slow
@@ -365,19 +443,35 @@ pub(super) fn build(setup: &[PartSetup], parts: &mut [Part]) -> (Vec<Pin>, Vec<L
             .iter()
             .position(|f| f.parent == Some(i) && matches!(f.bone, 4 | 7));
         let point = foot.map_or(stored, |j| setup[j].origin);
+        let mut toe = [0.0; 4];
         if let Some(j) = foot {
             let f = &setup[j];
             sole = f.half.y - f.centre.y - SOLE_INSET / CM;
+            toe = weights(&parts[j], feet::toe(sole, 1.0));
         }
         parts[i].foot = Some(point);
+        let contact = weights(&parts[i], point);
+        let at = parts[i].point(&contact);
         legs.push(Leg {
             shin: i,
             point,
-            contact: weights(&parts[i], point),
+            contact,
             length: s.origin.length() + point.length(),
             offset: 0.0,
             ground: None,
             grounded: true,
+            state: FootState::default(),
+            anchor: at,
+            at,
+            before: at,
+            approach: 0.0,
+            grip: 0.0,
+            ramp: 0.0,
+            blend: 0.0,
+            smoothed: 0.0,
+            foot,
+            toe,
+            floor: 0.0,
         });
     }
     for leg in &mut legs {
@@ -403,6 +497,12 @@ impl Ragdoll {
         self.sole
     }
 
+    /// Leg `leg`'s foot contact (its ankle) where the particles are now.
+    pub fn ankle(&self, leg: usize) -> Option<Vec3> {
+        let l = self.legs.get(leg)?;
+        Some(self.parts[l.shin].point(&l.contact))
+    }
+
     /// The chest point on the body's particles: the mean of its thorax
     /// pins, or its root part's origin without pins.
     pub fn chest_point(&self) -> Option<Vec3> {
@@ -421,10 +521,13 @@ impl Ragdoll {
     /// The balance and the feet in the character tick, before the body is
     /// aimed, as the original measures them: the chest's velocity from its
     /// last two points, the chest point, the lean against the support point,
-    /// the score, counter and balance (or a get-up's rise); then each leg's
-    /// ground from a Height Query against `level`, the grounded feet,
-    /// support and balance without ground, and S = grounded × balance;
-    /// without support, the ground under the pelvis.
+    /// the score, counter and balance (or a get-up's rise); then the feet's
+    /// states (planted, lifted, on their stance spots: `feet::plant`), and
+    /// for each leg its friction by its foot's state, its ground from a
+    /// Height Query against `level`, smoothed, its foot's anchor height and
+    /// its toe's floor; the grounded feet, support and balance without
+    /// ground, S = grounded × balance, the stance's level, and without
+    /// support the ground under the pelvis.
     pub fn measure_balance<L: Level + ?Sized>(&mut self, level: &L) {
         if !self.measures_balance() {
             return;
@@ -446,12 +549,16 @@ impl Ragdoll {
             .iter()
             .map(|l| self.parts[l.shin].transform().matrix3.z_axis.into())
             .collect();
-        let Ragdoll { legs, drive, .. } = self;
+        let sole = self.sole;
+        let Ragdoll {
+            parts, legs, drive, ..
+        } = self;
         let Some(drive) = drive.as_mut() else {
             return;
         };
         let bearing = drive.bearing;
         let bonus = drive.race.balance_bonus;
+        let scale = drive.stats.scale;
         // Down: lying, or getting up (a collapsing body, unsupported as it
         // is, still probes its feet standing).
         let down = (!drive.supported && !bearing.collapsing) || bearing.getting_up;
@@ -462,6 +569,12 @@ impl Ragdoll {
                 .with_y(0.0)
                 .normalize_or(Vec3::Z)
         });
+        // Where last tick's pose put each ankle: its stance spot.
+        let posed = drive.targets.len() == parts.len();
+        let spots: Vec<Option<Vec3>> = legs
+            .iter()
+            .map(|l| posed.then(|| drive.targets[l.shin].transform_point3(l.point)))
+            .collect();
         let b = &mut drive.balance;
         b.follow_chest(chest);
 
@@ -500,21 +613,66 @@ impl Ragdoll {
             b.settle(q, cm(b.slow).length_squared(), !bearing.moving);
         }
 
+        // The feet's states, from last tick's support.
+        let met: Vec<bool> = legs
+            .iter()
+            .map(|l| !parts[l.foot.unwrap_or(l.shin)].contacts.is_empty())
+            .collect();
+        feet::plant(
+            legs,
+            &contacts,
+            &spots,
+            &bearing,
+            b.has_support,
+            &met,
+            scale,
+        );
+
         // The feet.
+        b.pelvis = pelvis.y;
+        let under = b.under;
         let mut grounded = 0;
         for ((leg, &c), &axis) in legs.iter_mut().zip(&contacts).zip(&ahead) {
-            let mut probe = c + axis * (PROBE_AHEAD / CM);
-            let (above, radius) = if down {
-                (0.0, DOWN_RADIUS)
+            let friction = feet::leg_friction(leg.state);
+            parts[leg.shin].friction = friction;
+            if let Some(f) = leg.foot {
+                parts[f].friction = friction;
+            }
+            // A walking foot's probe is at its ankle with a 10 cm sphere (its
+            // gait's bump not ported); any other's at its ankle, or toward
+            // its anchor while anchored, 5 cm wide and more so.
+            leg.blend = feet::probe_blend(leg);
+            let mut probe = if bearing.walking {
+                c
             } else {
-                (PROBE_ABOVE, PROBE_RADIUS)
+                c.lerp(leg.anchor, leg.blend)
             };
-            probe.y = c.y + above / CM;
-            let ground = level
+            probe += axis * (PROBE_AHEAD * scale / CM);
+            let radius = feet::probe_radius(bearing.walking && !down, leg.blend);
+            probe.y = c.y + if down { 0.0 } else { PROBE_ABOVE / CM };
+            let found = level
                 .height_below(probe, radius / CM, PROBE_DEPTH / CM)
                 .map_or(NO_GROUND, cm);
-            leg.ground = within_reach(ground, cm(pelvis.y), cm(leg.length), bearing.getting_up)
-                .then_some(ground / CM);
+            if within_reach(found, cm(pelvis.y), cm(leg.length), bearing.getting_up) {
+                leg.state.0 &= !FootState::NO_GROUND;
+                // The walk's share is its gait's (not ported): at once.
+                let ground = feet::smooth_ground(cm(leg.smoothed), found, 1.0);
+                leg.smoothed = ground / CM;
+                leg.ground = Some(leg.smoothed);
+                leg.anchor.y = feet::anchor_height(ground, cm(sole), cm(c.y)) / CM;
+                // No level face is a foot's floor alone (the original's
+                // Ground Query meets only those), so the floor is the
+                // ground, never over the lower leg's origin.
+                let knee = parts[leg.shin].transform().translation.y;
+                leg.floor = leg.smoothed.min(knee);
+                // Standing, no foot is lifted (a walking foot's swing comes
+                // with its gait).
+                leg.state.0 &= !FootState::LIFTED;
+            } else {
+                leg.state.0 |= FootState::LIFTED | FootState::NO_GROUND;
+                leg.anchor.y = under;
+                leg.ground = None;
+            }
             leg.grounded = leg
                 .ground
                 .is_some_and(|g| foot_grounded(cm(c.y - g - leg.offset), bearing.moving));
@@ -538,20 +696,35 @@ impl Ragdoll {
             b.value = 0.0;
         }
         drive.support = if b.grounded { b.value } else { 0.0 };
+        let b = &mut drive.balance;
+        if b.has_support {
+            let height = |l: &Leg| l.ground.unwrap_or(under);
+            let (h0, h1) = (height(&legs[0]), height(&legs[1]));
+            let d = contacts[0] - contacts[1];
+            b.level = feet::level(b.level, cm(h0 - h1), cm(d.x), cm(d.z));
+        }
         b.ground = None;
         if !b.has_support {
-            let under = level
+            let found = level
                 .height_below(
                     pelvis + Vec3::Y * (PELVIS_ABOVE / CM),
                     PELVIS_RADIUS / CM,
                     PROBE_DEPTH / CM,
                 )
                 .map_or(NO_GROUND, cm);
-            b.ground = Some(under / CM);
-            if bearing.getting_up && cm(pelvis.y) < under + GET_UP_HEIGHT {
+            b.ground = Some(found / CM);
+            b.under = found / CM;
+            if bearing.getting_up && cm(pelvis.y) < found + GET_UP_HEIGHT {
                 b.has_support = true;
                 drive.support = GET_UP_SUPPORT * b.value;
             }
+        } else if !bearing.off_feet && !bearing.getting_up {
+            let grounds = legs.iter().map(|l| l.ground.unwrap_or(under));
+            b.under = if bearing.walking {
+                grounds.sum::<f32>() / legs.len() as f32
+            } else {
+                grounds.fold(pelvis.y + LOWEST_ABOVE / CM, f32::min)
+            };
         }
     }
 }

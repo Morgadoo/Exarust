@@ -4,7 +4,7 @@
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 
-use super::super::floor_test::{STANDING_SOLE, standing_at};
+use super::super::floor_test::{STANDING_LEG, STANDING_SOLE, standing_at};
 use super::super::tests::floor_quad;
 use super::super::{BODY_HZ, Bearing, Ragdoll};
 use super::*;
@@ -78,11 +78,13 @@ fn capsule_floor(z: f32) -> f32 {
 }
 
 /// A walking body's bearing, its controller on the ground or not, its
-/// lowest ankle `gait_floor` over its floor.
+/// lowest ankle `gait_floor` over its floor (its feet do not touch, as a
+/// walking body's do not without its gait's plants).
 fn walking(carried: bool, gait_floor: f32) -> Bearing {
     Bearing {
         moving: true,
         striding: true,
+        walking: true,
         carried,
         gait_floor: Some(gait_floor),
         ..Bearing::default()
@@ -179,7 +181,7 @@ fn level_ground_keeps_the_originals_target() {
     };
     let standing = Bearing::default();
     let walks = 1.1 + STANDING_SOLE;
-    let stands = 1.0 + STANDING_SOLE + 0.05;
+    let stands = STANDING_LEG + STANDING_SOLE + 0.05;
     for float in [0.0, 0.02, 0.05] {
         all_at(&targets(float, walking(true, 0.0)), walks);
         all_at(&targets(float, standing), stands);
@@ -282,8 +284,10 @@ fn climb(carried: bool) -> Climb {
 /// landing, its pelvis 72 cm higher than walking on the floor (give or take
 /// 3 cm), its feet on the landing. Without the stopgap (its controller off
 /// the ground, so the lift keeps the original's target, on the lowest foot)
-/// its trailing foot catches a riser and it loses its balance, as C8's
-/// walkers did in exanima01.
+/// its trailing foot catches a riser and it sinks onto it: its pelvis ends
+/// 5 cm lower (6.8) and its balance dips under 0.9 (0.84; it toppled, as
+/// C8's walkers did in exanima01, until its feet were planted while it
+/// stops).
 #[test]
 fn a_walker_climbs_four_18_cm_steps() {
     let landing = STEPS as f32 * RISE;
@@ -298,8 +302,9 @@ fn a_walker_climbs_four_18_cm_steps() {
     assert!(up.feet > landing - 0.02, "feet at {}", up.feet);
     let caught = climb(false);
     assert!(
-        caught.balance < 0.6,
-        "kept its balance without the stopgap: {}",
-        caught.balance
+        caught.balance < 0.9 && caught.pelvis < up.pelvis - 0.05,
+        "climbed without the stopgap: balance {}, pelvis {}",
+        caught.balance,
+        caught.pelvis
     );
 }

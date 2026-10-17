@@ -7,7 +7,7 @@
 
 use bevy::prelude::*;
 
-use super::{Link, PIVOT_SLACK, Ragdoll, Sleep};
+use super::{FootState, Link, PIVOT_SLACK, Ragdoll, Sleep};
 
 /// The six edges of a part's tetrahedron, by particle.
 pub const TETRA_EDGES: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
@@ -330,6 +330,18 @@ impl Ragdoll {
                 .drawn(alpha)
                 .transform_point3(parent.rest_point(&anchor)),
         )
+    }
+
+    /// A living body's foot contact `leg` as its lower leg is drawn: the
+    /// contact (world), its anchor and its state.
+    pub fn drawn_foot(&self, leg: usize, alpha: f32) -> Option<(Vec3, Vec3, FootState)> {
+        self.drive.as_ref()?;
+        let leg = self.legs.get(leg)?;
+        let shin = &self.parts[leg.shin];
+        let at = shin
+            .drawn(alpha)
+            .transform_point3(shin.rest_point(&leg.contact));
+        Some((at, leg.anchor, leg.state))
     }
 }
 

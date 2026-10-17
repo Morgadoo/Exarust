@@ -8,8 +8,9 @@ It already runs the character ticks of physical bodies, the player's last,
 each body's whole tick before the next, in the original's stages
 (`stages`: the driver and one module a stage; the rules in `limp`): its
 condition, dying tick, falls and get-ups, fall check, then its bearing
-with its get-up's first quarter, a collapsing body's bearing saying so
-(posture; a body that dies there skips the later stages); its walk's
+with its get-up's first quarter, its clip's progress, walking and off its
+feet by its condition (its feet read them), a collapsing body's bearing
+saying so (posture; a body that dies there skips the later stages); its walk's
 lowest ankle while it moves and its balance against the level
 (movement); its clip (the capture of a start
 from the body's physical turns, the original's clock rate for what the
@@ -23,7 +24,8 @@ the original's falls, staggers and get-ups from last tick's balance
 stance or Rebalance, leaning a stagger (a get-up jumped in a few keys) or
 Fall Forward/Backward, lying still a get-up by the pelvis's front axis
 with ±0.2 of hysteresis once its feet give support or 100 ticks after,
-turned the way it rises, from the whole lying body; unsteady (0.6–0.8)
+turned the way it rises, from the whole lying body, its feet's contact
+states cleared; unsteady (0.6–0.8)
 the Defence stance or Rebalance; in the movement stage the get-up picked
 again under 40 % and the turn toward a fall; a get-up's extra energy in
 the readiness stage; a fall leaves the controller, and
@@ -46,9 +48,11 @@ blow's low-health check on the player's body (`exa_combat::Weakened`;
 held torch (`torch`, which fills its hand and holds it by the grip
 table's one-handed or off-hand grip for the holder's size and race; its
 tests pin the "Torch" clips' arm on the body model), the per-tick body trace
-(`trace`, ending with the condition word and the swing's rate, strength
-and state word), and the debug tools ([`docs/DEBUGGING.md`](../../docs/DEBUGGING.md)):
-the body overlay and joint readout (`body_overlay`), the joint trace
+(`trace`, with the foot contacts' states and anchors and the ankles,
+ending with the condition word and the swing's rate, strength and state
+word), and the debug tools ([`docs/DEBUGGING.md`](../../docs/DEBUGGING.md)):
+the body overlay and joint readout (`body_overlay`, with the feet's
+anchors and states), the joint trace
 (`joint_trace`), the trace of contacts between body parts (`pair_trace`)
 and the simulation controls (`sim_control`, with the scripted pauses at a
 tick, a stretched link, the first blood jet, the player's first landed

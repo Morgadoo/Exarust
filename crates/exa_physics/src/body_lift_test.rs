@@ -1,7 +1,7 @@
 //! The carry and the lift: the original's rules, each pinned to its numbers
 //! (`docs/formats/RSQ.md`, Physical body).
 //! (Included from body_lift.rs: `#[path = "body_lift_test.rs"] mod tests;`)
-use super::super::floor_test::{STANDING_SOLE, standing_at};
+use super::super::floor_test::{STANDING_LEG, STANDING_SOLE, standing_at};
 use super::super::tests::floor_quad;
 use super::super::{Drive, ENERGY_RECOVERY};
 use super::*;
@@ -221,7 +221,10 @@ fn the_pelvis_settles_1_7_cm_over_its_target() {
         highest = highest.max(pelvis(&body));
     }
     let target = drive(&body).lift_target().unwrap();
-    assert!(close(target, 1.0 + STANDING_SOLE + 0.05, 1e-5), "{target}");
+    assert!(
+        close(target, STANDING_LEG + STANDING_SOLE + 0.05, 1e-5),
+        "{target}"
+    );
     let over = pelvis(&body) - target;
     let (_, velocity) = body.centre_of_mass();
     assert!(
@@ -342,6 +345,9 @@ fn a_dazed_body_sags_in_proportion_to_its_energy() {
     let hover = |energy: f32| {
         let (mut body, pose) = standing_at(Vec3::new(0.0, 0.2, 0.0));
         body.sole = 0.25;
+        // Its feet do not touch (as a walking body's), so that only the
+        // lift holds it.
+        body.drive.as_mut().unwrap().bearing.walking = true;
         for _ in 0..800 {
             // The tick recovers 0.005 before the parts take the carry.
             body.drive.as_mut().unwrap().energy = energy - ENERGY_RECOVERY;

@@ -44,7 +44,7 @@ it takes the ring's other slot.
 | `--joint-trace <file.csv>` | write every joint of every simulated character body after every 83 Hz tick ([columns](#joint-trace)) |
 | `--pair-trace <file.csv>` | write every contact between two body parts that each 83 Hz tick's body–body detection found ([columns](#pair-trace)) |
 | `--corpse x,y,z` | in play mode, a dead human (a new record, in underwear) lies down here as a level's placed dead do (metres); repeatable. For contacts with corpses outside the story levels, e.g. `--corpse 0,0,3.4 --press W@150-420 play arena` walks the player over one |
-| `--trace <file.csv>` | the body trace in the retail probe's columns ([formats/RSQ.md](formats/RSQ.md)), then Exarust's own (the sleep countdown and state, the frame, the blend and hold), the condition word in hex (`0x300` getting up) and last the swing: `swing_rate` (frames the attack's clip ran this tick), `strength` (P) and `attack_flags` (the state word in hex: `0x2` stalling, `0x10` released, `0x10000` chained, `0x80000` no Remise); character bodies only |
+| `--trace <file.csv>` | the body trace in the retail probe's columns ([formats/RSQ.md](formats/RSQ.md), the foot contacts' states and anchors among them), then Exarust's own (the sleep countdown and state, the frame, the blend and hold, the ankles), the condition word in hex (`0x300` getting up) and last the swing: `swing_rate` (frames the attack's clip ran this tick), `strength` (P) and `attack_flags` (the state word in hex: `0x2` stalling, `0x10` released, `0x10000` chained, `0x80000` no Remise); character bodies only |
 | `--shove <frame>` | a body blow to every simulated character body at that frame after the load |
 | `--shove-props <frame>` | in play mode, at that frame after the load, a blow to every prop body within 3 m of the player (1.5 m/s away from it and 1.5 m/s up); the log counts them and, once all sleep again, says after how many ticks and how far each moved (a body that fell out of the world counts as settled). Props meet the level and, through the pairs, every other body: they knock into each other, and one landing on a table that is itself a body (exanima01's tables) rests on it |
 | `--sim-speed <f>` | run the simulation at this speed (0.25 is a quarter as fast), from the end of the load |
@@ -235,6 +235,11 @@ props a level holds are left out; F5 picks only character bodies):
   the same colours, with a segment when it has opened;
 - a living body's link muscle anchors, faint cyan: where the clip's joint
   turn wants each link's point, with a line from the point to it;
+- a living body's foot contacts: a line from each ankle to the anchor its
+  foot is held at and a cross on the anchor, **aqua** while the foot
+  touches (it grips there), **orange** while it is anchored (stepping to its
+  stance spot), **grey** while it does not touch (walking, lying, or not
+  yet on the floor) ([formats/RSQ.md](formats/RSQ.md), Feet);
 - a white dot over the inspected body's head.
 
 ## The readout
@@ -243,7 +248,8 @@ The top-left panel shows the inspected body: the player's, or the one
 picked with F5.
 
 - The body: its `id` (the traces' `body` column), living or limp, its
-  sleep state and countdown, support, energy, tone and balance.
+  sleep state and countdown, support, energy, tone and balance, and each
+  foot's state (hex, as the trace's `foot_*_flags`) and grip.
 - The simulation: the tick, the speed, and whether and why it is paused.
 - A row per part, by bone:
 

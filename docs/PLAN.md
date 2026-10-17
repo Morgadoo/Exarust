@@ -508,8 +508,27 @@ a body that dies in its posture stage skips the rest of its tick
 ([formats/RSQ.md](formats/RSQ.md), Falls and get-ups). `--shove 60`: the
 dazed player Rebalances, falls on its back, gets up with Get Up 2 1.3 s
 later and stands 1.9 s after that; `--shove 90` staggers into Get Up 2.
-Not yet: the recovery steps (C15), the feet's contact states the get-up
-clears (C12), the pins it lowers (C14).
+Not yet: the recovery steps (C15), the pins it lowers (C14).
+
+Done (change `plant-the-feet`, C12 of the master plan): the feet stand on
+the ground as the original's do. Each leg's foot contact (its ankle) has a
+state (touching, anchored for a step, reached, lifted, no ground), an
+anchor on its ground plus the sole height, a grip that rises to full over
+0.6 s and its lower leg's ramp; a standing body's feet are planted where
+they meet the floor and gripped there by the original's PD grip in each
+iteration (a walking body's by a velocity servo; a lifted foot is only
+pushed up), the toe held over the floor, the lower legs' and feet's
+friction set by state (0, 2.0, 0), and a foot whose stance spot drifts
+5 cm off steps there, one at a time. Getting up or unsupported the feet
+stand on their stance spots, lying no foot touches, and the get-up's start
+clears them. Corrections to the notes: condition 1 is walking, so standing
+and combat feet take the PD grip and a standing probe's sphere is 5 cm.
+`--trace` fills the foot contacts' columns and adds the ankles; the body
+overlay draws the anchors ([formats/RSQ.md](formats/RSQ.md), Feet). Not
+yet: the footwork's stance scores and timers (C15), the walking gait's
+plants and the closing step (M16, C19), the leg IK (C13), the sole's
+orientation drive. Standing feet keep within 0.5 cm of their anchors; a
+heavily dazed body now sinks onto its planted feet instead of toppling.
 
 This phase carries the most risk and defines how the game feels.
 
@@ -930,8 +949,8 @@ holds the runtime and the documentation of formats and behaviour.
 [`COMPONENT-MAP.md`](COMPONENT-MAP.md) sets every component of the original
 against Exarust and lists the largest missing ones. In order:
 
-1. The support pins, recovery steps, foot planting and leg IK (stairs),
-   clip blending, and parts' spheres fitted to their meshes (Phase 3).
+1. The support pins, recovery steps and leg IK (stairs), clip blending,
+   and parts' spheres fitted to their meshes (Phase 3).
 2. Inventory, equipment and containers, then blocking and parrying
    (Phase 4).
 3. The original's NPC brain: perception, targets and the combat state that

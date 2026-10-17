@@ -409,8 +409,10 @@ pub(crate) fn rising(motions: &Motions, anim: &Animator, condition: Condition) -
 /// up while its condition says so, never crouches (no crouch yet), is
 /// carried while its controller stands on the ground (or it has none), and
 /// turns by what is left of the player's turn, unless its condition is
-/// helpless (the original's turn is skipped then, its error zeroed). Its
-/// gait floor is measured by the character tick while it moves.
+/// helpless (the original's turn is skipped then, its error zeroed); it
+/// walks and is off its feet as its condition says. Its gait floor is
+/// measured by the character tick while it moves, its clip's progress by
+/// the posture stage.
 pub(crate) fn bearing(
     controller: Option<&CharacterBody>,
     player: Option<&PlayerBody>,
@@ -434,6 +436,9 @@ pub(crate) fn bearing(
         },
         gait_floor: None,
         collapsing: condition.is_collapsing(),
+        walking: condition == Condition::WALKING,
+        off_feet: condition.off_feet(),
+        progress: 0.0,
     }
 }
 
@@ -925,7 +930,8 @@ pub(crate) mod tests {
 
     /// Off balance is the posture stage's: falling, lying still or getting
     /// up (a stagger written this tick too), not standing, attacking or
-    /// collapsing; getting up is the condition's.
+    /// collapsing; getting up, walking and off its feet are the
+    /// condition's.
     #[test]
     fn the_bearing_reads_the_posture_stage() {
         let anim = Animator::new("Default", "Idle");
@@ -947,6 +953,16 @@ pub(crate) mod tests {
             assert!(!b.off_balance && !b.getting_up, "{branch:?}");
         }
         assert!(of(Branch::Collapse, Condition::COLLAPSING).collapsing);
+        // Walking and off its feet, as its condition says (the feet read
+        // them).
+        let b = of(Branch::Standing, Condition::WALKING);
+        assert!(b.walking && !b.off_feet);
+        for condition in [Condition::DOWN, Condition::GETTING_UP, Condition::DORMANT] {
+            let b = of(Branch::LyingStill, condition);
+            assert!(b.off_feet && !b.walking, "{condition:?}");
+        }
+        let b = of(Branch::Standing, Condition::COMBAT_IDLE);
+        assert!(!b.walking && !b.off_feet);
     }
 
     /// A drive whose body does what `bearing` says, at `tone`.

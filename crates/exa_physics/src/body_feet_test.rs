@@ -1,0 +1,697 @@
+//! The feet: the original's rules, each pinned to its numbers
+//! (`docs/formats/RSQ.md`, Physical body, Feet).
+//! (Included from body_feet.rs: `#[path = "body_feet_test.rs"] mod tests;`)
+use bevy::math::Affine3A;
+
+use super::super::floor_test::humanoid;
+use super::super::tests::floor_quad;
+use super::super::{Drive, PartSetup, Ragdoll};
+use super::*;
+
+fn close(a: f32, b: f32, tolerance: f32) -> bool {
+    (a - b).abs() <= tolerance
+}
+
+fn drive(body: &Ragdoll) -> &Drive {
+    body.drive.as_ref().unwrap()
+}
+
+/// The feet's sole height (m): their boxes reach 10 cm under the ankles,
+/// less 0.5 cm.
+const SOLE: f32 = 0.095;
+
+/// The standing humanoid on feet: each lower leg ends at an ankle 10 cm
+/// over `at`, where a foot hangs whose box (24 cm long, 10 cm deep, its
+/// toe ahead along +z) stands on `at`. Its lift reads its legs 3.8 cm
+/// longer than hip to ankle, so that its balance point puts its pelvis
+/// 1.2 m over `at` with its legs straight and its ankles 0.5 cm over their
+/// anchors.
+fn footed(at: Vec3) -> (Ragdoll, Vec<Affine3A>) {
+    let raised = at + Vec3::Y * 0.1;
+    let (mut setup, mut pose) = humanoid(raised);
+    for (shin, x) in [(2, 0.1), (4, -0.1)] {
+        let world = Affine3A::from_translation(raised + Vec3::new(x, 0.0, 0.0));
+        let along = Vec3::new(0.0, -0.05, 0.05).normalize() * 0.12;
+        setup.push(PartSetup {
+            bone: if shin == 2 { 4 } else { 7 },
+            entity: Entity::PLACEHOLDER,
+            parent: Some(shin),
+            world,
+            centre: Vec3::new(0.0, -0.05, 0.05),
+            half: Vec3::new(0.05, 0.05, 0.12),
+            origin: Vec3::new(0.0, -0.5, 0.0),
+            links: vec![(Vec3::X * 0.04, Vec3::X * 0.04, 0.0), (along, along, 0.12)],
+            foot: None,
+            pins: Vec::new(),
+        });
+        pose.push(world);
+        setup[shin].foot = Some(Vec3::new(0.0, -0.5, 0.0));
+    }
+    for s in &mut setup {
+        if s.bone == 8 {
+            s.pins = vec![Vec3::new(0.15, 0.4, 0.0), Vec3::new(-0.15, 0.4, 0.0)];
+        }
+    }
+    let mut body = Ragdoll::new(&setup).with_drive();
+    for leg in &mut body.legs {
+        leg.length = 1.0 + 0.0383;
+    }
+    (body, pose)
+}
+
+/// One character tick and one solver tick of a body in `pose`, its root at
+/// `root`, on `level`.
+fn stand(body: &mut Ragdoll, root: Affine3A, pose: &[Affine3A], level: &[[Vec3; 3]]) {
+    body.measure_balance(level);
+    body.aim(root, pose.to_vec());
+    body.tick(level);
+}
+
+/// What the feet take from a standing human at full strength.
+fn full() -> FootDrive {
+    FootDrive {
+        driven: true,
+        support: 1.0,
+        off_feet: false,
+        has_support: true,
+        walking: false,
+        moving: false,
+        run: 0.0,
+        scale: 1.0,
+        gain: 1.25,
+        pelvis: 1.2,
+    }
+}
+
+/// The contact's point now, and Σw² of its weights (a push moves the point
+/// by that share of itself).
+fn ankle(body: &Ragdoll, leg: usize) -> (Vec3, f32) {
+    let l = &body.legs[leg];
+    let w2 = l.contact.iter().map(|w| w * w).sum();
+    (body.parts[l.shin].point(&l.contact), w2)
+}
+
+/// A leg's friction (its lower leg's and its foot's) is 0 while its foot
+/// does not touch, 2.0 touching, 0 anchored; lifted, it is still 2.0.
+#[test]
+fn legs_take_their_friction_from_their_feet() {
+    let f = |bits: u32| leg_friction(FootState(bits));
+    assert_eq!(f(0), 0.0);
+    assert_eq!(f(FootState::TOUCHING), 2.0);
+    assert_eq!(f(FootState::TOUCHING | FootState::ANCHORED), 0.0);
+    assert_eq!(f(FootState::ANCHORED), 0.0);
+    assert_eq!(f(FootState::TOUCHING | FootState::LIFTED), 2.0);
+    // Standing on a floor: both feet touch, the lower legs and feet take
+    // 2.0; walking, none touches and they take 0.
+    let floor = floor_quad(0.0, 5.0);
+    let (mut body, pose) = footed(Vec3::ZERO);
+    // Planted once their feet have met the floor.
+    for _ in 0..2 {
+        stand(&mut body, Affine3A::IDENTITY, &pose, &floor);
+    }
+    let friction = |body: &Ragdoll| {
+        body.legs
+            .iter()
+            .flat_map(|l| {
+                [
+                    body.parts[l.shin].friction,
+                    body.parts[l.foot.unwrap()].friction,
+                ]
+            })
+            .collect::<Vec<f32>>()
+    };
+    assert_eq!(friction(&body), [2.0; 4]);
+    body.drive.as_mut().unwrap().bearing.walking = true;
+    stand(&mut body, Affine3A::IDENTITY, &pose, &floor);
+    assert_eq!(friction(&body), [0.0; 4]);
+    assert!(body.legs.iter().all(|l| l.state == FootState(0)));
+}
+
+/// The servo pushes a still point d·rate·gain (10 cm off at rate 0.2 and
+/// gain 0.05: 0.1 cm); one already closing 4 % of its gap a tick is pushed
+/// d·(0.2 − 0.04)·gain, one closing 5 % or more not at all.
+#[test]
+fn the_servo_closes_its_rate_of_the_gap() {
+    let d = Vec3::new(10.0, 0.0, 0.0);
+    let push = |moved: f32| servo(d, Vec3::X * moved, 0.05, 0.2);
+    assert!(push(0.0).is_some_and(|p| close(p.x, 0.1, 1e-6) && p.y == 0.0));
+    assert!(push(0.4).is_some_and(|p| close(p.x, 0.08, 1e-6)));
+    assert_eq!(push(0.5), None);
+    assert_eq!(servo(Vec3::ZERO, Vec3::ZERO, 1.0, 0.2), None);
+}
+
+/// A full grip pulls a tenth of the gap and takes back the point's whole
+/// motion across the ground; with none, gain 1.25, a spring of 0.005 and a
+/// damping of 0.0375. Over its anchor the hold is kept within 1 cm, halved
+/// at 5 cm (0.5·(9 − 5)·0.125), gone past 9 cm, and the anchor is not
+/// pulled down to.
+#[test]
+fn the_grip_holds_and_lets_go_over_the_anchor() {
+    let moved = Vec3::new(0.5, 0.3, 0.0);
+    let p = grip(Vec3::new(2.0, 1.0, 0.0), moved, 1.25, 1.0).unwrap();
+    assert!(close(p.x, 0.2 - 0.5, 1e-6) && close(p.y, 0.1, 1e-6) && p.z == 0.0);
+    let p = grip(Vec3::new(2.0, 0.0, 0.0), moved, 1.25, 0.0).unwrap();
+    assert!(close(p.x, 2.0 * 0.005 - 0.5 * 0.0375, 1e-6) && p.y == 0.0);
+    // Over the anchor: the height gap is dropped and the hold fades.
+    let held = |above: f32| grip(Vec3::new(2.0, -above, 0.0), Vec3::ZERO, 0.0, 1.0).unwrap();
+    assert!(close(held(1.0).x, 0.2, 1e-6) && held(1.0).y == 0.0);
+    assert!(close(held(5.0).x, 0.2 * 0.5, 1e-6));
+    assert_eq!(held(9.5).x, 0.0);
+}
+
+/// Standing, a foot's grip rises 0.001 an iteration to 1 (1000 iterations,
+/// 50 ticks), its leg's ramp 0.001 to 0.25 (250 iterations); held, the ramp
+/// is 0.25 at once; rising slowly, 0.0001 an iteration until it passes
+/// 0.25, which ends the slow rise.
+#[test]
+fn the_grip_rises_over_1000_iterations() {
+    let (mut body, _) = footed(Vec3::ZERO);
+    let fd = full();
+    let at = ankle(&body, 0).0;
+    let run = |body: &mut Ragdoll, n: usize| {
+        let Ragdoll { parts, legs, .. } = body;
+        for _ in 0..n {
+            drive_contact(&mut parts[legs[0].shin], &mut legs[0], &fd);
+        }
+    };
+    {
+        let leg = &mut body.legs[0];
+        leg.state = FootState(FootState::TOUCHING);
+        leg.anchor = at;
+    }
+    run(&mut body, 250);
+    assert!(close(body.legs[0].ramp, 0.25, 1e-6) && close(body.legs[0].grip, 0.25, 1e-4));
+    run(&mut body, 750);
+    assert!(close(body.legs[0].grip, 1.0, 1e-4), "{}", body.legs[0].grip);
+    assert_eq!(body.legs[0].approach, 1.0);
+    run(&mut body, 10);
+    assert_eq!(body.legs[0].grip, 1.0);
+    // Held.
+    body.legs[0].ramp = 0.0;
+    body.legs[0].state = FootState(FootState::TOUCHING | FootState::RAMP_HELD);
+    run(&mut body, 1);
+    assert_eq!(body.legs[0].ramp, 0.25);
+    // Rising slowly.
+    body.legs[0].ramp = 0.2;
+    body.legs[0].state = FootState(FootState::TOUCHING | FootState::RAMP_SLOW);
+    run(&mut body, 499);
+    assert!(body.legs[0].state.has(FootState::RAMP_SLOW));
+    assert!(close(body.legs[0].ramp, 0.2499, 1e-4));
+    run(&mut body, 3);
+    assert!(!body.legs[0].state.has(FootState::RAMP_SLOW));
+    assert_eq!(body.legs[0].ramp, 0.25);
+}
+
+/// A step's foot reaches its anchor within 5 cm: 4.9 cm off it is reached
+/// (flag 8, a landing), its anchor moves halfway to it across the ground,
+/// its approach is 0.95 of what it was plus 0.05; 5.1 cm off its approach
+/// follows how fast it closes. Either way it has no grip and its leg's
+/// ramp rises 0.01.
+#[test]
+fn a_step_reaches_its_anchor_within_5_cm() {
+    let (mut body, _) = footed(Vec3::ZERO);
+    let fd = full();
+    let at = ankle(&body, 0).0;
+    let Ragdoll { parts, legs, .. } = &mut body;
+    let leg = &mut legs[0];
+    leg.state = FootState(FootState::TOUCHING | FootState::ANCHORED);
+    leg.approach = 1.0;
+    leg.grip = 0.7;
+    leg.anchor = at + Vec3::new(0.051, 0.0, 0.0);
+    assert!(!drive_contact(&mut parts[leg.shin], leg, &fd));
+    assert!(!leg.state.has(FootState::REACHED));
+    // Still, it closes nothing: 0.95 of its approach.
+    assert!(close(leg.approach, 0.95, 1e-6), "{}", leg.approach);
+    assert_eq!((leg.grip, leg.ramp), (0.0, 0.01));
+    let now = leg.at;
+    leg.anchor = now + Vec3::new(0.049, 0.0, 0.0);
+    let anchor = leg.anchor;
+    assert!(drive_contact(&mut parts[leg.shin], leg, &fd));
+    assert!(leg.state.has(FootState::REACHED));
+    assert!(close(leg.approach, 0.95 * 0.95 + 0.05, 1e-6));
+    let halfway = (leg.at + anchor) * 0.5;
+    assert!(close(leg.anchor.x, halfway.x, 1e-6) && close(leg.anchor.z, halfway.z, 1e-6));
+}
+
+/// A lifted foot, or one that does not touch, is only pushed up toward its
+/// anchor: never across the ground and never down.
+#[test]
+fn a_lifted_foot_moves_only_up() {
+    for bits in [FootState::TOUCHING | FootState::LIFTED, 0] {
+        for walking in [false, true] {
+            let (mut body, _) = footed(Vec3::ZERO);
+            let fd = FootDrive { walking, ..full() };
+            let (start, _) = ankle(&body, 0);
+            let Ragdoll { parts, legs, .. } = &mut body;
+            let leg = &mut legs[0];
+            leg.state = FootState(bits);
+            leg.grip = 1.0;
+            leg.anchor = start + Vec3::new(0.05, 0.03, 0.04);
+            for _ in 0..20 {
+                drive_contact(&mut parts[leg.shin], leg, &fd);
+            }
+            let now = parts[leg.shin].point(&leg.contact);
+            assert!(close(now.x, start.x, 1e-6) && close(now.z, start.z, 1e-6));
+            assert!(
+                now.y > start.y + 0.001,
+                "{bits:#x} walking {walking}: {now}"
+            );
+            assert_eq!(leg.ramp, 0.0);
+            // An anchor under it pushes nothing.
+            leg.anchor = now - Vec3::new(0.05, 0.03, 0.04);
+            for _ in 0..20 {
+                drive_contact(&mut parts[leg.shin], leg, &fd);
+            }
+            assert_eq!(parts[leg.shin].point(&leg.contact), now);
+        }
+    }
+}
+
+/// The drive leaves a foot alone in a body at half its tone or less or
+/// without support, and a foot less than 10 cm under the pelvis (a body
+/// lying down); its point is still refreshed.
+#[test]
+fn the_drive_needs_tone_support_and_a_foot_under_the_pelvis() {
+    for fd in [
+        FootDrive {
+            driven: false,
+            ..full()
+        },
+        FootDrive {
+            pelvis: 0.19,
+            ..full()
+        },
+    ] {
+        let (mut body, _) = footed(Vec3::ZERO);
+        let (start, _) = ankle(&body, 0);
+        let Ragdoll { parts, legs, .. } = &mut body;
+        let leg = &mut legs[0];
+        leg.state = FootState(FootState::TOUCHING);
+        leg.grip = 1.0;
+        leg.anchor = start + Vec3::new(0.05, 0.0, 0.0);
+        leg.at = Vec3::ZERO;
+        drive_contact(&mut parts[leg.shin], leg, &fd);
+        assert_eq!(parts[leg.shin].point(&leg.contact), start);
+        assert_eq!((leg.at, leg.grip), (start, 1.0));
+    }
+    // An unsupported body's FootDrive is not driven, nor one at half tone.
+    let (mut body, _) = footed(Vec3::ZERO);
+    body.drive.as_mut().unwrap().tone = 0.5;
+    assert!(!FootDrive::of(drive(&body)).driven);
+    body.drive.as_mut().unwrap().tone = 0.51;
+    assert!(FootDrive::of(drive(&body)).driven);
+    // No ground under its feet: no support.
+    let nothing: Vec<[Vec3; 3]> = Vec::new();
+    body.measure_balance(nothing.as_slice());
+    assert!(!drive(&body).balance().has_support());
+    assert!(!FootDrive::of(drive(&body)).driven);
+}
+
+/// The toe (the sole's point 20 cm ahead of the ankle) is pushed straight
+/// up to its floor by the gap × S, at most 0.5 cm an iteration while its
+/// foot stands, 0.1 cm otherwise; not at all off its feet or without
+/// support.
+#[test]
+fn the_toe_is_held_over_its_floor() {
+    let rise = |bits: u32, support: f32, gap: f32, fd: FootDrive| {
+        let (mut body, _) = footed(Vec3::ZERO);
+        let Ragdoll { parts, legs, .. } = &mut body;
+        let leg = &mut legs[0];
+        let foot = &mut parts[leg.foot.unwrap()];
+        let toe = foot.point(&leg.toe);
+        assert!(close(toe.y, 0.005, 1e-5), "the toe stands at {}", toe.y);
+        leg.state = FootState(bits);
+        leg.floor = toe.y + gap;
+        let w2: f32 = leg.toe.iter().map(|w| w * w).sum();
+        push_sole(foot, leg, &FootDrive { support, ..fd });
+        let now = foot.point(&leg.toe);
+        assert!(close(now.x, toe.x, 1e-6) && close(now.z, toe.z, 1e-6));
+        (now.y - toe.y) / w2 * CM
+    };
+    let standing = FootState::TOUCHING;
+    assert!(close(rise(standing, 1.0, 0.03, full()), 0.5, 1e-3));
+    assert!(close(rise(standing, 1.0, 0.003, full()), 0.3, 1e-3));
+    assert!(close(rise(standing, 0.5, 0.004, full()), 0.2, 1e-3));
+    assert!(close(rise(0, 1.0, 0.03, full()), 0.1, 1e-3));
+    assert!(close(
+        rise(standing | FootState::LIFTED, 1.0, 0.03, full()),
+        0.1,
+        1e-3
+    ));
+    assert!(close(
+        rise(standing | FootState::ANCHORED, 1.0, 0.03, full()),
+        0.1,
+        1e-3
+    ));
+    assert!(close(rise(standing, 1.0, -0.01, full()), 0.0, 1e-6));
+    let off_feet = FootDrive {
+        off_feet: true,
+        ..full()
+    };
+    assert_eq!(rise(standing, 1.0, 0.03, off_feet), 0.0);
+    let unsupported = FootDrive {
+        has_support: false,
+        ..full()
+    };
+    assert_eq!(rise(standing, 1.0, 0.03, unsupported), 0.0);
+}
+
+/// Before the feet are measured: a body that is not walking plants a foot
+/// that does not touch where it is, once it meets the level; walking, no
+/// foot touches. Standing, lying down no foot touches; getting up its feet
+/// stand on their stance spots (not touching in the first fifth of the
+/// clip) until nine tenths, and so do they without support; a body
+/// standing with support keeps its feet as they are, but lets go of one
+/// whose stance spot is 5 cm or more from its anchor (4.9 cm: kept).
+#[test]
+fn feet_are_planted_lifted_or_stood_on_their_stance_spots() {
+    let (mut body, _) = footed(Vec3::ZERO);
+    let ankles = [Vec3::new(0.1, 0.1, 0.0), Vec3::new(-0.1, 0.1, 0.0)];
+    // Stance spots near the ankles, and 30 cm ahead of them.
+    let near = ankles.map(|a| Some(a + Vec3::new(0.0, 0.0, 0.049)));
+    let far = ankles.map(|a| Some(a + Vec3::new(0.0, 0.0, 0.3)));
+    let touching = FootState(FootState::TOUCHING);
+    let legs = &mut body.legs;
+    let plant_in = |legs: &mut [Leg],
+                    spots: &[Option<Vec3>; 2],
+                    bearing: Bearing,
+                    had_support: bool,
+                    down: [bool; 2]| {
+        plant(legs, &ankles, spots, &bearing, had_support, &down, 1.0);
+        legs.iter().map(|l| (l.state, l.anchor)).collect::<Vec<_>>()
+    };
+    let standing = Bearing::default();
+    let reset = |legs: &mut [Leg]| {
+        for leg in legs.iter_mut() {
+            leg.state = FootState(FootState::ANCHORED);
+            leg.anchor = Vec3::splat(9.0);
+            leg.approach = 1.0;
+        }
+    };
+    // Anchored is not touching: planted where they are, once on the level.
+    reset(legs);
+    let planted = plant_in(legs, &near, standing, true, [true, false]);
+    assert_eq!(planted[0], (touching, ankles[0]));
+    assert_eq!(
+        planted[1],
+        (FootState(FootState::ANCHORED), Vec3::splat(9.0))
+    );
+    let planted = plant_in(legs, &near, standing, true, [true; 2]);
+    assert_eq!(planted, [(touching, ankles[0]), (touching, ankles[1])]);
+    // Touching, they keep their anchors; a foot whose spot is 5 cm off its
+    // anchor is let go.
+    legs[0].anchor = ankles[0] + Vec3::new(0.0, 0.0, -0.002);
+    let kept = plant_in(legs, &near, standing, true, [true; 2]);
+    let anchored = FootState(FootState::TOUCHING | FootState::ANCHORED);
+    assert_eq!(kept[0], (anchored, near[0].unwrap()));
+    assert_eq!(kept[1], (touching, ankles[1]));
+    // One foot at a time: the stepping one keeps stepping, re-targeted.
+    legs[1].anchor = ankles[1] + Vec3::new(0.0, 0.0, -0.1);
+    let kept = plant_in(legs, &far, standing, true, [true; 2]);
+    assert_eq!(kept[0], (anchored, far[0].unwrap()));
+    assert_eq!(kept[1].0, touching);
+    // Reached, it lands; then the other steps.
+    legs[0].state.0 |= FootState::REACHED;
+    let kept = plant_in(legs, &far, standing, true, [true; 2]);
+    assert_eq!(kept[0].0, touching);
+    assert_eq!(kept[1], (anchored, far[1].unwrap()));
+    // Stalled, it lands where it is, and steps again only 10 cm off.
+    legs[1].approach = 0.0;
+    let kept = plant_in(legs, &near, standing, true, [true; 2]);
+    let stalled = FootState(FootState::TOUCHING | FootState::STALLED);
+    assert_eq!(kept[1], (stalled, ankles[1]));
+    legs[0].anchor = near[0].unwrap();
+    let walking = Bearing {
+        walking: true,
+        moving: true,
+        ..standing
+    };
+    let lifted = plant_in(legs, &far, walking, true, [true; 2]);
+    assert!(lifted.iter().all(|f| f.0 == FootState(0)));
+    let lying = Bearing {
+        off_feet: true,
+        ..standing
+    };
+    let lying = plant_in(legs, &far, lying, true, [true; 2]);
+    assert!(lying.iter().all(|f| f.0 == FootState(0)));
+    let rising = |progress: f32| Bearing {
+        off_feet: true,
+        getting_up: true,
+        progress,
+        ..standing
+    };
+    let on_spots = plant_in(legs, &far, rising(0.1), true, [true; 2]);
+    assert_eq!(on_spots[1], (FootState(0), far[1].unwrap()));
+    let on_spots = plant_in(legs, &far, rising(0.5), true, [true; 2]);
+    assert_eq!(on_spots[0], (touching, far[0].unwrap()));
+    // Past nine tenths the get-up's feet are a standing body's.
+    let kept = plant_in(legs, &far, rising(0.95), true, [true; 2]);
+    assert_eq!(kept[0], (touching, far[0].unwrap()));
+    reset(legs);
+    let on_spots = plant_in(legs, &far, standing, false, [true; 2]);
+    assert_eq!(on_spots[0], (touching, far[0].unwrap()));
+    // Moving (not walking), the footwork leaves them be.
+    legs[0].anchor = Vec3::splat(5.0);
+    let moving = Bearing {
+        moving: true,
+        ..standing
+    };
+    let kept = plant_in(legs, &far, moving, false, [true; 2]);
+    assert_eq!(kept[0], (touching, Vec3::splat(5.0)));
+}
+
+/// The smoothed ground rises at once and falls by its share (at once
+/// outside the walk); an anchor sits on it plus the sole height, at most
+/// 1 m over the ankle; an anchored foot's probe moves 0.05 a tick toward
+/// its anchor up to 0.5, its sphere 5 cm plus 10 times that (10 cm
+/// walking).
+#[test]
+fn anchors_sit_on_the_smoothed_ground() {
+    assert_eq!(smooth_ground(0.0, 5.0, 0.05), 5.0);
+    assert_eq!(smooth_ground(10.0, 5.0, 1.0), 5.0);
+    assert!(close(smooth_ground(10.0, 5.0, 0.05), 9.75, 1e-5));
+    assert!(close(anchor_height(0.0, 9.68, 10.0), 9.68, 1e-6));
+    assert!(close(anchor_height(0.0, 9.68, -95.0), 5.0, 1e-6));
+    let (mut body, _) = footed(Vec3::ZERO);
+    let leg = &mut body.legs[0];
+    assert_eq!(probe_blend(leg), 0.0);
+    leg.state = FootState(FootState::TOUCHING | FootState::ANCHORED);
+    leg.blend = 0.48;
+    assert_eq!(probe_blend(leg), 0.5);
+    leg.blend = 0.1;
+    assert!(close(probe_blend(leg), 0.15, 1e-6));
+    assert_eq!(probe_radius(false, 0.0), 5.0);
+    assert_eq!(probe_radius(false, 0.5), 10.0);
+    assert_eq!(probe_radius(true, 0.5), 10.0);
+}
+
+/// The stance's level keeps 0.9 of itself and takes 0.1 of 1 − v², v the
+/// share of the feet's height difference in their squared distance: 1 on
+/// level ground, 0.975 a tick after feet 30 cm apart stand 30 cm apart in
+/// height (v = 0.5). The legs' extension is the level times (pelvis over
+/// the highest anchor over the pose's pelvis over its mean ankle)², at
+/// most 1: a quarter with the pelvis half as high.
+#[test]
+fn the_stance_levels_and_the_legs_extend() {
+    assert_eq!(level(1.0, 0.0, 30.0, 0.0), 1.0);
+    assert!(close(level(1.0, 30.0, 30.0, 0.0), 0.975, 1e-6));
+    assert!(close(level(0.5, 0.0, 0.0, 30.0), 0.55, 1e-6));
+    assert_eq!(level(1.0, 0.0, 0.0, 0.0), 1.0);
+    assert_eq!(extension(1.0, 85.0, 85.0), 1.0);
+    assert_eq!(extension(1.0, 90.0, 85.0), 1.0);
+    assert!(close(extension(1.0, 42.5, 85.0), 0.25, 1e-6));
+    assert!(close(extension(0.9, 42.5, 85.0), 0.225, 1e-6));
+    // A standing body on level ground: its level 1, its legs extended.
+    let floor = floor_quad(0.0, 5.0);
+    let (mut body, pose) = footed(Vec3::ZERO);
+    for _ in 0..100 {
+        stand(&mut body, Affine3A::IDENTITY, &pose, &floor);
+    }
+    let b = drive(&body).balance();
+    assert_eq!(b.level(), 1.0);
+    assert!(b.extension() > 0.95, "{}", b.extension());
+}
+
+/// A body standing on a floor plants its feet where they stand: both
+/// touch, anchored at the floor plus the sole height, gripped in full after
+/// 50 ticks, their ankles within 1 cm of their anchors and their toes on
+/// the floor. Walking, they do not touch; stopping, they are planted where
+/// they are.
+#[test]
+fn a_standing_body_plants_its_feet() {
+    let floor = floor_quad(0.0, 5.0);
+    let (mut body, pose) = footed(Vec3::ZERO);
+    for _ in 0..120 {
+        stand(&mut body, Affine3A::IDENTITY, &pose, &floor);
+    }
+    for (k, leg) in body.legs.iter().enumerate() {
+        assert_eq!(leg.state, FootState(FootState::TOUCHING));
+        assert!(close(leg.anchor.y, SOLE, 1e-5), "{}", leg.anchor.y);
+        assert_eq!(leg.grip, 1.0);
+        let (at, _) = ankle(&body, k);
+        assert!(
+            (at - leg.anchor).with_y(0.0).length() < 0.01,
+            "leg {k}: {at} from {}",
+            leg.anchor
+        );
+        assert!(close(leg.floor, 0.0, 1e-6));
+    }
+    body.drive.as_mut().unwrap().bearing.walking = true;
+    stand(&mut body, Affine3A::IDENTITY, &pose, &floor);
+    assert!(body.legs.iter().all(|l| l.state == FootState(0)));
+    body.drive.as_mut().unwrap().bearing.walking = false;
+    let ankles = [ankle(&body, 0).0, ankle(&body, 1).0];
+    body.measure_balance(floor.as_slice());
+    for (leg, at) in body.legs.iter().zip(ankles) {
+        assert_eq!(leg.state, FootState(FootState::TOUCHING));
+        assert!(close(leg.anchor.x, at.x, 1e-6) && close(leg.anchor.z, at.z, 1e-6));
+        assert!(close(leg.anchor.y, SOLE, 1e-5));
+    }
+}
+
+/// A quarter turn in place keeps the planted feet within 1 cm of where
+/// they were planted: the pose turns 90° about the vertical over 60 ticks
+/// and holds; the pelvis turns with it, and its feet step to their new
+/// stance spots one at a time (six steps, each reaching its spot), while a
+/// foot planted with its grip full stays within 1 cm of its anchor (0.6 cm)
+/// and of where its grip became full. (A foot that just landed settles
+/// onto its anchor, moved halfway to it, while its grip rises.)
+#[test]
+fn a_quarter_turn_in_place_keeps_planted_feet_within_a_cm() {
+    let floor = floor_quad(0.0, 5.0);
+    let (mut body, pose) = footed(Vec3::ZERO);
+    for _ in 0..120 {
+        stand(&mut body, Affine3A::IDENTITY, &pose, &floor);
+    }
+    assert_eq!(drive(&body).balance().landings(), 0);
+    let mut farthest = 0.0f32;
+    let mut stepped = [false; 2];
+    // Where each foot's ankle was when it last stood on a new anchor.
+    let mut stood_at: [Option<(Vec3, Vec3)>; 2] = [None; 2];
+    for tick in 0..300 {
+        let angle = std::f32::consts::FRAC_PI_2 * (tick as f32 / 60.0).min(1.0);
+        let turn = Affine3A::from_rotation_y(angle);
+        let turned: Vec<Affine3A> = pose.iter().map(|t| turn * *t).collect();
+        let before: Vec<(FootState, Vec3)> =
+            body.legs.iter().map(|l| (l.state, l.anchor)).collect();
+        stand(&mut body, Affine3A::IDENTITY, &turned, &floor);
+        let feet = body.legs.iter().zip(&before).enumerate();
+        for (k, (leg, &(state, anchor))) in feet {
+            stepped[k] |= leg.state.has(FootState::ANCHORED);
+            // A foot standing on one anchor with its grip full: how far its
+            // ankle is from the anchor, and has moved since the grip filled.
+            let stood = |s: FootState| s.stands() && !s.has(FootState::ANCHORED);
+            let (at, _) = ankle(&body, k);
+            let held = leg.grip == 1.0 && leg.anchor.xz() == anchor.xz();
+            if stood(state) && stood(leg.state) && held {
+                let start = match stood_at[k] {
+                    Some((on, start)) if on.xz() == anchor.xz() => start,
+                    _ => at,
+                };
+                stood_at[k] = Some((anchor, start));
+                farthest = farthest
+                    .max((at - start).with_y(0.0).length())
+                    .max((at - anchor).with_y(0.0).length());
+            }
+        }
+        let anchored = body
+            .legs
+            .iter()
+            .filter(|l| l.state.has(FootState::ANCHORED));
+        assert!(anchored.count() < 2, "both feet step at tick {tick}");
+    }
+    assert!(
+        farthest < 0.01,
+        "a planted foot slid {:.2} cm",
+        farthest * 100.0
+    );
+    assert_eq!(stepped, [true; 2]);
+    assert!(drive(&body).balance().landings() >= 2);
+    for (k, leg) in body.legs.iter().enumerate() {
+        assert!(
+            leg.state.stands() && !leg.state.has(FootState::ANCHORED),
+            "{k}: {:?}",
+            leg.state
+        );
+    }
+    let facing = body.part_of(1).unwrap().transform().matrix3.z_axis;
+    let turned = Vec3::from(facing).with_y(0.0).normalize();
+    assert!(turned.x > 0.7, "the pelvis faces {turned}");
+}
+
+/// Standing feet grip through a light shove: a 2 m/s sideways blow to the
+/// torso sways the chest 4 cm, and the feet stay within 1 cm of their
+/// anchors (0.1 cm).
+#[test]
+fn standing_feet_grip_through_a_light_shove() {
+    let floor = floor_quad(0.0, 5.0);
+    let (mut body, pose) = footed(Vec3::ZERO);
+    for _ in 0..120 {
+        stand(&mut body, Affine3A::IDENTITY, &pose, &floor);
+    }
+    let planted: Vec<Vec3> = body.legs.iter().map(|l| l.anchor).collect();
+    let chest = body.chest_point().unwrap();
+    body.shove(8, Vec3::X * 2.0, 0.0);
+    let (mut farthest, mut swayed) = (0.0f32, 0.0f32);
+    for _ in 0..200 {
+        stand(&mut body, Affine3A::IDENTITY, &pose, &floor);
+        for (k, planted) in planted.iter().enumerate() {
+            let (at, _) = ankle(&body, k);
+            farthest = farthest.max((at - *planted).with_y(0.0).length());
+        }
+        swayed = swayed.max((body.chest_point().unwrap() - chest).with_y(0.0).length());
+    }
+    assert!(swayed > 0.03, "the chest swayed {swayed}");
+    assert!(farthest < 0.01, "a foot slid {:.2} cm", farthest * 100.0);
+}
+
+/// On a step: a body standing with its right foot on a 15 cm block and its
+/// left on the floor anchors each foot on its own ground plus the sole
+/// height (24.5 and 9.5 cm), and its stance's level follows 1 − v², v =
+/// 15²/(15² + d²) for its feet d cm apart across the ground (0.60 with its
+/// feet 11.4 cm apart).
+#[test]
+fn feet_on_a_step_anchor_on_their_own_ground() {
+    let mut level = floor_quad(0.0, 5.0);
+    // The block's top over the floor, under the right foot only.
+    let at = |x: f32, z: f32| Vec3::new(0.1 + x * 0.08, 0.15 + 1e-4, z * 0.2);
+    level.push([at(-1.0, -1.0), at(-1.0, 1.0), at(1.0, 1.0)]);
+    level.push([at(-1.0, -1.0), at(1.0, 1.0), at(1.0, -1.0)]);
+    let (mut body, pose) = footed(Vec3::ZERO);
+    // The right foot set on the block: its lower leg and foot raised 15 cm.
+    for leg in body.legs.iter().take(1) {
+        for part in [leg.shin, leg.foot.unwrap()] {
+            let p = &mut body.parts[part];
+            for x in p.positions.iter_mut().chain(p.previous.iter_mut()) {
+                x.y += 0.15;
+            }
+        }
+    }
+    let mut lifted = pose.clone();
+    for (i, p) in body.parts.iter().enumerate() {
+        if matches!(p.bone, 3 | 4) {
+            lifted[i].translation.y += 0.15;
+        }
+    }
+    for _ in 0..200 {
+        stand(&mut body, Affine3A::IDENTITY, &lifted, &level);
+    }
+    let legs = &body.legs;
+    assert!(
+        legs.iter().all(|l| l.state.stands()),
+        "{:?}",
+        legs.iter().map(|l| l.state).collect::<Vec<_>>()
+    );
+    assert!(
+        close(legs[0].anchor.y, 0.15 + SOLE, 2e-3),
+        "{}",
+        legs[0].anchor.y
+    );
+    assert!(close(legs[1].anchor.y, SOLE, 2e-3), "{}", legs[1].anchor.y);
+    let (a, b) = (ankle(&body, 0).0, ankle(&body, 1).0);
+    let d2 = cm(a - b).with_y(0.0).length_squared();
+    let v = 225.0 / (225.0 + d2);
+    let level = drive(&body).balance().level();
+    assert!(close(level, 1.0 - v * v, 0.01), "level {level}, v {v}");
+    assert!(level < 0.95);
+}

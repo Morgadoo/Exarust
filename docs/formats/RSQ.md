@@ -160,8 +160,9 @@ How the original simulates a body (`exa_physics::body`):
     plane 0.1 cm under the surface. A part keeps at most four, the four
     spread widest over its particles. They are enforced in the next tick's
     20 iterations (the point lifted onto its plane), then dropped.
-  - Friction uses the part's own coefficient μ (limbs 2.5; Exarust gives
-    feet 0.5 until foot planting is ported). With the limit
+  - Friction uses the part's own coefficient μ (limbs 2.5, feet 0.5 as a
+    body is built; a living body's lower legs and feet take theirs from
+    their foot contact's state every tick, [Feet](#feet)). With the limit
     T = 0.5·μ·(0.01 + 0.99·n_y²) in cm² per tick², a contact point's slide
     this tick whose square is under T is cancelled; a larger slide is cut
     by only 0.01·T of itself. Friction runs in 8 passes after detection and
@@ -334,8 +335,9 @@ How the original simulates a body (`exa_physics::body`):
     body tick clamps it. The daze (energy more than 0.05 under the most:
     a zombie under 0.85), the pose hold, the swing clock and the attack
     gate all measure the energy against this most.
-  - The original also runs recovery steps, foot planting and support
-    forces on the pelvis and thorax pins.
+  - The original also runs recovery steps (its footwork's scores) and
+    support forces on the pelvis and thorax pins; its feet are planted
+    ([Feet](#feet)).
   - Several of these read the character's race record in `races.rdb`: the
     stance factor, the support-pin factor, the balance bonus, the arms'
     relaxation, the limb damping ratio and the gait table
@@ -535,14 +537,17 @@ tick and muscle setup). Every rule is in the original's cm and ticks:
   **Height Query**: a sphere whose lowest point starts at a point is swept
   straight down, and the answer is the height of its lowest point where it
   first meets the front of an upward face (where it starts, if it starts
-  against one; a miss is −10000 cm). The probe is 5 cm along the lower
-  leg's forward axis from the ankle, 70 cm above it, a 10 cm sphere,
-  2000 cm down; while the body is down (lying or getting up) it starts at
-  the ankle and the sphere is 5 cm. Living bodies are not part of the level
-  (Exarust's level is its static colliders, so dead bodies and loose props
-  are not either). The original's normal condition also sways the probe
-  forward by the gait phase and widens it to 20 cm, and in combat shrinks
-  it to 5 cm; Exarust leaves these for the gait (C19).
+  against one; a miss is −10000 cm). The probe is 5 cm (× scale) along
+  the lower leg's forward axis from the ankle (an anchored foot's moved
+  toward its anchor by a share that grows 0.05 a tick to 0.5), 70 cm above
+  it, 2000 cm down; while the body is down (lying or getting up) it starts
+  at the ankle. Its sphere is 10 cm while the body walks (its condition 1,
+  the walk or the run playing), else 5 cm plus 10 cm × that share. Living
+  bodies are not part of the level (Exarust's level is its static
+  colliders, so dead bodies and loose props are not either). A walking
+  body's probe also sways forward by the gait phase and widens to 20 cm,
+  and its ground falls by a share of the gait; Exarust leaves these for the
+  gait (C19).
 - Ground higher than half the leg (42.6 cm) under the pelvis is out of reach
   (the foot is lifted over it), except getting up. A foot is grounded when
   its ankle is within 20 cm (30 cm moving) of its ground plus its ground
@@ -597,8 +602,8 @@ follows the pelvis:
 It is placed at once the first time. Not reproduced yet: the jolt that
 moves the stance toward the feet (C15).
 Only the targets' rotations drive the muscles; their places matter to the
-stance hold (below), and later to the support pins and the foot targets
-(C12, C14).
+stance hold (below), the feet's stance spots ([Feet](#feet)), and later to
+the support pins (C14).
 
 Exarust's own, while a character controller (a capsule) still moves the
 body across the ground instead of the original's locomotion and support
@@ -607,7 +612,8 @@ pins (C14, C18):
 - The body is carried with its root's (its character controller's) motion
   since the last tick across the ground and about the vertical only, its
   frame with it: its height is the lift's. Where the last tick left each
-  part, its level contacts and last tick's targets are carried with it.
+  part, its level contacts, its feet's anchors and last tick's targets are
+  carried with it.
   The controller's moves to follow the frame are left out (the body made
   them already).
 - The controller follows the frame. Each fixed step moves its feet a
@@ -625,8 +631,8 @@ pins (C14, C18):
   tone² × E⁴, critically damped (2√g) against its horizontal velocity in
   the carried frame, the same push on all four of its particles, so it
   never turns the pelvis. While the frame stays put it holds a steady body
-  on its stance spot, as the original's support pins and planted feet do
-  (C12, C14); while the frame follows, an unsteady body stays about where
+  on its stance spot, as the original's support pins do with the planted
+  feet (C14); while the frame follows, an unsteady body stays about where
   it is pushed. While the body moves its frame rides on its pelvis and
   only the damping acts.
 - Stairs (`exa_physics::body` `climb`, a stopgap that C13 and C19
@@ -663,12 +669,102 @@ pins (C14, C18):
   longer carried or held by its controller (Exarust's own, until the body
   stands on its feet) and keeps its tone, as in the original: once it lies
   its support is 0, so only its link muscles act, inside the body.
-- Recovery steps and foot planting are not reproduced yet. After a get-up
-  the feet stay where the clip left them (they bear weight now), so the
-  body may stand leaning over them.
+- Recovery steps are not reproduced yet (the footwork's scores and the
+  chest's lead, C15); the feet are planted and step to their stance spots
+  ([Feet](#feet)).
 - The duellist's strike range is Exarust's own (1.15 m): link-muscle arms
   reach 15–20 cm less far than the clip's pose at the original's swing
   speed.
+
+### Feet
+
+The feet of a living body (`exa_physics::body`, `body_feet.rs`; REA on
+the original's limb link iteration and its servo and grip helpers, its
+feet routine, its balance routine's footwork, its standing sampler and the
+callers of its contact clearer, constants read from the executable). Each
+leg's foot contact (its ankle) has a state, an anchor where it is held, a
+grip and its lower leg's grip ramp. Every rule is in the original's cm and
+ticks.
+
+- **States** (the original's bits): 2 touching, 4 anchored (moving to a
+  new anchor: a step), 8 anchor reached, 0x10 lifted, 0x20 no ground within
+  reach, 0x40/0x80 the ramp held at full / rising slowly, 0x100 a stalled
+  step. Condition 1 is walking (the walk or the run playing), not the
+  normal standing condition 0.
+- **Planting** (the sampler, before the feet are measured): a body that is
+  not walking plants each foot that does not touch where it is (touching,
+  its anchor its ankle). Exarust plants it only once its foot meets the
+  level (Exarust's own until the leg IK lowers a planted foot onto its
+  anchor, C13). A walking body's feet do not touch (Exarust's own until its
+  gait plants them, M16/C19: the original lifts and plants them by the
+  walk's phase).
+- **Footwork** (standing, not moving): lying down (down, dormant, dead) no
+  foot touches; getting up until nine tenths of its clip, or without
+  support (last tick's), each foot touches on its stance spot, where the
+  clip puts the ankle on the frame (not touching in a get-up's first
+  fifth). Standing with support a foot that reached its anchor lands (a
+  support foot again), one whose smoothed approach fell under 1e-5 lands
+  where it is (stalled), and at most one foot steps to its stance spot
+  (anchored, its anchor re-taken every tick at its height), pulled there by
+  the drive. Which foot steps is Exarust's stand-in for the footwork's
+  stance scores (C15): a foot already stepping, else the standing foot
+  farthest from its stance spot once that is 5 cm (× scale; 10 cm after a
+  stalled step) or more, as the original's score bias steps it. A get-up's
+  start, the walk's stop and a queued clip switch clear every state (the
+  last two are implied in Exarust: a walking body's feet do not touch, and
+  it has no queued switch).
+- **Friction** each tick, on the lower leg and copied to its foot: 0 not
+  touching, 2.0 touching, 0 anchored (stick below 1 cm a tick on a floor).
+- **Anchor height**: the smoothed ground (it rises at once and falls by the
+  walk's share, at once otherwise) plus the sole height, at most 100 cm
+  over the ankle; with no ground within reach the character's ground (the
+  lowest foot's with support, their mean walking, the pelvis's query
+  without) and flags 0x30. The toe's floor is the ground (the original's
+  sole query meets only level faces the feet skip; Exarust has none),
+  never over the lower leg's origin.
+- **The drive**, in each of the 20 iterations after the lower leg's links,
+  for a body over half its tone with support and a contact more than 10 cm
+  under the pelvis (the point refreshed every iteration): a touching foot
+  (not lifted) with gap d to its anchor: anchored, within 5 cm (× scale;
+  in 3-D when the anchor is above, else across the ground) it has reached
+  it (flag 8, a landing, the anchor halfway to it across the ground), else
+  its approach follows how fast it closes (0.95/0.05); its grip is 0 and
+  the ramp rises 0.01 an iteration (to 0.25). Not anchored, the grip rises
+  0.001 an iteration to 1 (1000 iterations, 0.6 s) and the ramp 0.001
+  (0.25 at once while held, 0.0001 while rising slowly); while moving the
+  anchor follows the ankle by 1 − 4 × the ramp. Then walking, a velocity
+  servo (never down): a point closing q = moved·d/|d|² of its gap a tick
+  is pushed d·(0.2·scale − q)·(0.3·run + 0.2)·ramp unless q ≥ 0.05;
+  otherwise a PD grip: d·(0.1p + 0.004g(1 − p)) less the point's motion
+  across the ground × (p + 0.03g(1 − p)), p the grip (kept up to 1 cm over
+  the anchor, fading to nothing at 9 cm, the anchor not pulled down to) and
+  g = scale × the support pins' factor (a human's 1.25) × the leg
+  extension. A full grip pulls a tenth of the gap and stops the point
+  across the ground. A foot not touching or lifted is only pushed up:
+  the servo on the gap's upward part, gain S·(0.3·run + 0.2)·grip at rate
+  0.1·scale walking, grip·S at 0.4·scale otherwise.
+- **The sole**, in each iteration after the foot's links, on its feet and
+  with support: the toe (the sole's point 20 cm × scale ahead of the ankle
+  along the foot) under its floor is pushed straight up by the gap × S, at
+  most 0.5 cm while the foot stands (touching, not anchored, not lifted),
+  else 0.1 cm. The original also turns the sole toward its planted
+  orientation (not ported; the pose drive turns the feet).
+- **Level and extension**: with support the stance's level follows 1 − v²
+  by a tenth a tick, v the share of the feet's ground difference in their
+  squared distance (1 on level ground, 0.6 for feet 11 cm apart on a 15 cm
+  step); the legs' extension is the level × (pelvis over the highest
+  anchor ÷ the pose's pelvis over its mean ankle)², at most 1.
+- Exarust's own, while its controller carries a standing body: the carry
+  moves the feet's anchors with the body, so a standing turn carries the
+  planted feet round (C18 removes the carry).
+- Measured: an idle human's feet touch (0x2) on anchors 9.7 cm up, their
+  ankles 0.1 cm off them (0.4 cm after a walk's closing steps; 0.004 cm of
+  drift over 200 ticks); a
+  synthetic body's quarter turn in place steps its feet six times while
+  the foot planted at full grip stays within 0.64 cm (10 cm of slide
+  without the drive); a 2 m/s shove sways its chest 4 cm while its feet
+  move 0.1 cm. After a walk stops the feet step onto their stance spots in
+  about 45 ticks.
 
 ### Falls and get-ups
 
@@ -722,10 +818,9 @@ the branch come first ([Condition](#condition)). Thresholds marked
   across the ground (the other way for Get Up 2) when its cosine to the
   heading is under 0.95 (double: more than 18.2° off), the frame
   re-anchors to the pelvis within 10 cm, and a changed pick starts with a
-  blend of 20 from the whole physical pose. (The original also clears the
-  feet's contact states there; Exarust's feet keep none yet. A held body,
-  state flag 0x40, does not get up; a dormant one, 0x10, loses its tone
-  and energy instead.)
+  blend of 20 from the whole physical pose; the feet's contact states are
+  cleared. (A held body, state flag 0x40, does not get up; a dormant one,
+  0x10, loses its tone and energy instead.)
 - **Getting up**, the clip clock runs tone × (1.5 − 0.5 × the armour
   encumbrance) × base × 0.6 a tick while the tone is over 0.5 (0.9
   unencumbered at full tone, 0.7125 in the 0.625 plate set), but tone ×
@@ -978,11 +1073,12 @@ is left empty.
 | `support` | support S = grounded × balance |
 | `balance`, `balance_counter` | balance and its instability counter |
 | `target{1..18}_{x,y,z,qx,qy,qz,qw}` | each part's animated world transform this tick, on the character frame: place and rotation |
-| `foot_{r,l}_flags`, `foot_{r,l}_anchor_{x,y,z}` | foot contacts (empty) |
+| `foot_{r,l}_flags`, `foot_{r,l}_anchor_{x,y,z}` | the foot contacts in leg order (`r` the lower leg 03, `l` 06): the state in hex ([Feet](#feet)) and the anchor |
 | `motion`, `clock` | the action's index in the motion set, and the clip clock |
 | `countdown`, `sleep` | Exarust's own, after the probe's: the body's sleep countdown and state (`awake`, `asleep`, `deep`) |
 | `frame_x`, `frame_z`, `root_x`, `root_z` | Exarust's own: the character frame's origin, and the body root (where the character controller stands), across the ground |
 | `blend`, `hold` | Exarust's own: the blend (frames) the clip still has from its start's capture (0 once its first key is reached), and how far the sample was pulled toward the pose the body holds |
+| `ankle_{r,l}_{x,y,z}` | Exarust's own: each foot contact's ankle where the tick left it, so a foot's slide from its anchor shows |
 | `condition` | the character's condition word in hex (`0x300`), as the retail watcher logs it ([Condition](#condition)); empty for a body without one |
 | `swing_rate`, `strength`, `attack_flags` | the fighter's swing (empty for a body that does not fight): the frames its swing routine last set for an attack's clip, the swing strength P, and its attack state word in hex ([Swing](#motion-playback)), the retail probe's rate, strength and state columns |
 

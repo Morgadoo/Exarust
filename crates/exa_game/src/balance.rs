@@ -384,8 +384,7 @@ pub enum Rising {
 /// changes nothing; else the condition is getting up, the body turns to
 /// its rising direction ([`rise_heading`]) when more than 18° off, stands
 /// on its controller, and a new pick starts with a blend of 20 from the
-/// whole physical pose. (The original also clears the feet's contact
-/// states here; Exarust's feet keep none yet.)
+/// whole physical pose; the feet's contact states are cleared.
 #[allow(clippy::too_many_arguments)]
 fn start_getting_up(
     body: &mut Ragdoll,
@@ -422,6 +421,8 @@ fn start_getting_up(
         return Rising::Keeps;
     }
     condition.get_up();
+    // The get-up's start clears the feet's states.
+    body.clear_feet();
     let at = Vec3::from(pelvis.translation);
     let heading = (root.rotation * Vec3::Z).with_y(0.0).normalize_or(Vec3::Z);
     if let Some(d) = chest.and_then(|c| rise_heading(c, at, rise))

@@ -91,10 +91,11 @@ pub(super) fn humanoid(at: Vec3) -> (Vec<PartSetup>, Vec<Affine3A>) {
 
 /// The humanoid standing with its feet at `at`, its balance measured: each
 /// lower leg stands on a contact at its foot, 50 cm under the knee, and the
-/// torso carries two shoulder pins, the chest. Its soles are 3.3 cm deep,
-/// so that the lift's target (its legs' 1 m plus the sole, plus 5 cm) puts
-/// the balance point of the lift, 1.7 cm over it, where its legs are
-/// straight, its pelvis 1.1 m over its feet.
+/// torso carries two shoulder pins, the chest. Its ankles stand on the
+/// floor (no sole), where its feet are anchored, and the lift reads its
+/// legs 3.3 cm longer than hip to ankle, so that its target (its legs plus
+/// 5 cm) puts the balance point of the lift, 1.7 cm over it, where its legs
+/// are straight, its pelvis 1.1 m over its feet.
 pub(super) fn standing_at(at: Vec3) -> (Ragdoll, Vec<Affine3A>) {
     let (mut setup, pose) = humanoid(at);
     for s in &mut setup {
@@ -108,12 +109,15 @@ pub(super) fn standing_at(at: Vec3) -> (Ragdoll, Vec<Affine3A>) {
     body.sole = STANDING_SOLE;
     for leg in &mut body.legs {
         leg.offset = STANDING_SOLE;
+        leg.length = STANDING_LEG;
     }
     (body, pose)
 }
 
-/// The standing humanoid's sole height (m): 1.1 − (1.0 + 0.05 + 1/60).
-pub(super) const STANDING_SOLE: f32 = 1.0 / 30.0;
+/// The standing humanoid's sole height (m): its ankles stand on the floor.
+pub(super) const STANDING_SOLE: f32 = 0.0;
+/// The leg length (m) its lift reads: 1.1 − (0.05 + 1/60).
+pub(super) const STANDING_LEG: f32 = 1.0 + 1.0 / 30.0;
 
 /// The same humanoid with every joint a hinge and nothing more: limp, it
 /// has no joint left free to swing (a limp joint is not damped inside its
