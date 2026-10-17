@@ -149,6 +149,21 @@ exarust --heartbeat --opponent --health 0.06,0.25 --screenshot beat.png --frames
 RUST_LOG=info exarust --feral 0.5 --opponent play arena
 ```
 
+A fall to death logs each step at info level with its body tick
+(`exa_game::fall`: "screams as it falls", "is lost", "hears the pit",
+"falls to its death"), and the kill plane "fell out of the world":
+
+```bash
+# The player dropped 200 m over the arena: lost about 45 ticks after it
+# loses its balance, the pit and the fade 84 ticks later, gone 334 ticks
+# after the loss (the trace ends there).
+RUST_LOG=info exarust --no-gi --no-supersample --size 960x540 --at 0,200,0 \
+  --trace drop.csv play arena
+# Halfway through the fade (1.5 s of game time after the pit), paused.
+exarust --no-gi --no-supersample --size 960x540 --at 0,200,0 \
+  --pause-at-tick 300 --screenshot fade.png --frames 30 play arena
+```
+
 With `--pause-at-tick`, `--pause-on-stretch`, `--pause-after-jet`,
 `--pause-on-hit` or `--pause-after-collapse`,
 `--screenshot` counts its `--frames` from the pause, so the picture shows

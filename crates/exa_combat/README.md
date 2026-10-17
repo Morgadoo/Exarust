@@ -88,6 +88,21 @@ rate to 0 in the hit reaction, and the collapse's death sets yellow to 0.
 Rules: [`docs/formats/OTHER.md`](../../docs/formats/OTHER.md)
 (Regeneration).
 
+A fall to death (`fall`) is kept on every fighter (`FallDeath`: its stage,
+the game-clock time it was lost, whether it has left the world) and
+checked by `FallDeath::check` from a `FallReading` (the chest's slow
+vertical velocity, the pelvis, the ground under the body without support,
+each foot's ground; metres, compared in cm): steady at −5 cm a tick or
+slower (`FALLING_BELOW`), a scream the first tick faster (not when dead;
+`scream_voice` gives its gain and pitch from two draws of `Roll`, the
+original's generator), lost at `LETHAL_DROP` (2500 cm) over every ground;
+then the player's pit after `PIT_AFTER` (1000 ms) and death after
+`PLAYER_DIES_AFTER` (4000 ms), anyone else's death after `DIES_AFTER`
+(3000 ms). `FallDeath::fall_out` is the kill plane's once-only test.
+`exa_game::fall` runs it in the falls branch (`condition::PostureBranch`,
+which `track_condition` writes each tick). Rules:
+[`docs/formats/RSQ.md`](../../docs/formats/RSQ.md) (Falling to death).
+
 ## Scope
 
 - Hit detection from physics contacts (edge, point, blunt surfaces of a weapon).

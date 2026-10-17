@@ -75,6 +75,14 @@ The original has no camera-relative keyboard movement. Outside combat:
   capsule's floor (Exarust's own), so it climbs with the capsule, its feet
   dragging behind, and stands on the stairs; on level ground nothing
   changes ([formats/RSQ.md](formats/RSQ.md), Physical body).
+- Falling: a player off its feet that sinks faster than 5 cm a tick
+  screams once; with no ground within reach under it (25 m) it is lost:
+  1 s later the pit sounds and the screen fades to black over 3 s, and 4 s
+  after the loss the player dies and leaves the world, wherever its body
+  is by then. The clock runs only while the body still falls or tumbles
+  off its balance, as the original's; slowing down does not save it
+  ([formats/RSQ.md](formats/RSQ.md), Falling to death; [UI.md](UI.md),
+  Death fade). `--at x,200,z` drops it from 200 m.
 
 ## Combat mode
 

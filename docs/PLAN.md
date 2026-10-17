@@ -687,6 +687,21 @@ also tests are never set in its executable (RB48), so Exarust has
 neither. `--feral f` makes the player feral, for a duel in which its red
 stays full ([formats/OTHER.md](formats/OTHER.md), Applying damage;
 [UI.md](UI.md), Heartbeat).
+Done (change `fall-to-death`, M44 of the master plan): a character that
+falls into a pit dies as in the original. Each tick a living body off its
+balance and still moving checks its fall: sinking faster than 5 cm a tick
+it screams once (a heavy groan); with no ground within reach under its
+pelvis and its feet (25 m) it is lost; the player hears the pit 1 s later,
+its screen fades to black over 3 s and it dies at 4 s, anyone else at 3 s,
+and the character leaves the world with what it carries. Unsupported
+bodies now measure the ground under their pelvis for it. Dead bodies that
+fall below −50 m are taken out, the player's kept
+([formats/RSQ.md](formats/RSQ.md), Falling to death; [UI.md](UI.md),
+Death fade). A drop from 200 m in the arena: lost about half a second
+after the body loses its balance, the pit 84 ticks later, gone 334 ticks
+after the loss. Not yet: the pause and a death menu at the fade's end,
+the voice sets (the scream picks a human voice), the retail chasm
+capture (RR18).
 Still to do: inventory and containers, injuries beyond damage, blocking,
 parrying, grabs, practice mode, the knockback step, the swing stall and
 the striker's recoil, the collapse's stagger steps, the stab's and

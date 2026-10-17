@@ -257,8 +257,10 @@ fn balance_is_0_without_ground() {
         assert_eq!(b.airborne(), tick);
         assert!(!b.has_support());
         assert_eq!(drive(&body).support(), 0.0);
-        // A query that meets nothing finds ground 100 m down.
+        // A query that meets nothing finds ground 100 m down, under the
+        // feet and under the pelvis.
         assert_eq!(body.legs()[0].ground, Some(-100.0));
+        assert_eq!(b.ground(), Some(-100.0));
     }
     let moving = Bearing {
         moving: true,
@@ -278,6 +280,35 @@ fn balance_is_0_without_ground() {
     body.fall();
     body.measure_balance(NONE);
     assert_eq!(drive(&body).balance().value, 0.0);
+}
+
+/// Without support the body asks for the ground under its pelvis: from
+/// 20 cm above it (1.23 m), a 20 cm sphere swept 20 m down, to 18.77 m
+/// under the floor it stood on (100 m down when it meets nothing); with
+/// support it does not.
+#[test]
+fn without_support_the_ground_under_the_pelvis() {
+    let unsupported = Bearing {
+        carried: false,
+        ..Bearing::default()
+    };
+    let mut standing = biped();
+    standing.measure_balance(floor().as_slice());
+    assert!(drive(&standing).balance().has_support());
+    assert_eq!(drive(&standing).balance().ground(), None);
+    for (depth, found) in [(15.0, Some(-15.0)), (18.5, Some(-18.5)), (19.0, None)] {
+        let mut body = biped();
+        bearing(&mut body, unsupported);
+        let level = square(Vec2::ZERO, -depth, 10.0);
+        body.measure_balance(level.as_slice());
+        let b = drive(&body).balance();
+        assert!(!b.has_support(), "{depth} m");
+        let ground = b.ground().unwrap();
+        match found {
+            Some(g) => assert!((ground - g).abs() < 1e-4, "{depth} m: {ground}"),
+            None => assert_eq!(ground, -100.0, "{depth} m"),
+        }
+    }
 }
 
 /// Landing again after a time in the air gives the chest a landing

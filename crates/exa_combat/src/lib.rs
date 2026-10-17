@@ -14,7 +14,9 @@
 //! returns to its stance. A fighter's condition word ([`condition`]),
 //! stance and combat readiness ([`stance`]) are kept with it
 //! ([`fighter`]); its yellow health heals back towards red out of its
-//! fighting stance, and some races' red too ([`regen`]). A blow whose wound is deep enough
+//! fighting stance, and some races' red too ([`regen`]). A body that falls with no ground
+//! within 25 m under it screams, and dies out of the world 3 s later (the
+//! player 4 s, after the pit's sound at 1 s, [`fall`]). A blow whose wound is deep enough
 //! bleeds on a victim whose race bleeds, seven body ticks later; at the
 //! blow it sprays a jet of blood and the weapon that dealt it draws blood
 //! ([`wounds`]).
@@ -23,6 +25,7 @@ pub mod attack;
 pub mod collapse;
 pub mod condition;
 pub mod damage;
+pub mod fall;
 pub mod fighter;
 pub mod regen;
 pub mod stance;
@@ -327,12 +330,15 @@ fn detect_hits(
     }
 }
 
-/// The original's 32-bit generator, for armour coverage rolls.
+/// The original's 32-bit generator (armour coverage rolls, the dying
+/// tick's heading, the fall scream): x ← x·0x8088405 + 1, a draw x·2⁻³².
 #[derive(Default)]
-struct Roll(u32);
+pub struct Roll(u32);
 
 impl Roll {
-    fn next(&mut self) -> f32 {
+    /// The next draw, 0 ≤ x < 1.
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> f32 {
         self.0 = self.0.wrapping_mul(0x0808_8405).wrapping_add(1);
         (self.0 as f64 * 2f64.powi(-32)) as f32
     }

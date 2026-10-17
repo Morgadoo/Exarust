@@ -58,7 +58,10 @@ its capsule climbs (`src/body_climb.rs`).
 Each character tick measures a living body's balance at its chest against
 its ankles and asks the level for the ground under each foot
 (`contact::Level::height_below`, the original's Height Query), which give
-its support S (`src/body_balance.rs`, `body::Ragdoll::measure_balance`).
+its support S (`src/body_balance.rs`, `body::Ragdoll::measure_balance`);
+without support it also asks for the ground under its pelvis
+(`body::Balance::ground`, read by the get-up's support and the fall
+check).
 `body::Ragdoll::exertion` sums each part's farthest particle over the last
 tick (cm), the summed limb motion `exa_combat`'s posture stage reads.
 A collapsing body (`body::Bearing::collapsing`, from its condition word)

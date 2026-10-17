@@ -217,7 +217,7 @@ pub mod action {
 /// original's body tick goes on to do (the falls, the get-up decision, the
 /// attack routine, the stance switch, the dying tick), by the same tests
 /// that write the condition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Branch {
     /// Collapsing: the dying tick runs instead of the posture block.
     Collapse,
@@ -238,8 +238,16 @@ pub enum Branch {
     /// Its tone is under 0.85: the Defence stance.
     Weak,
     /// Standing at full tone: the stance branches, by its clip.
+    #[default]
     Standing,
 }
+
+/// The branch a living body took in this tick's posture stage, for what
+/// runs on in it (the fall check runs in the falls branch,
+/// [`crate::fall`]). Kept as the last one written once the body has no
+/// muscles.
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PostureBranch(pub Branch);
 
 /// The posture decision, once a tick after the daze, from `condition` (as
 /// the tick has it so far) and the body (`p`), in the original's order:
@@ -330,7 +338,8 @@ impl Plugin for ConditionPlugin {
 /// Each living body's condition, once a tick: the daze's writer while its
 /// energy is more than 0.05 under its most (not in a shock's stagger),
 /// then the posture decision from the clip it plays, last tick's balance,
-/// summed limb motion and tone.
+/// summed limb motion and tone; the branch it takes is kept beside it.
+#[allow(clippy::type_complexity)]
 pub fn track_condition(
     motions: Option<Res<Motions>>,
     mut bodies: Query<(
@@ -339,11 +348,12 @@ pub fn track_condition(
         &StateFlags,
         &Ragdoll,
         &exa_anim::Animator,
+        Option<&mut PostureBranch>,
     )>,
 ) {
     let Some(motions) = motions else { return };
     let set = &*motions.0;
-    for (entity, mut condition, flags, body, anim) in &mut bodies {
+    for (entity, mut condition, flags, body, anim, taken) in &mut bodies {
         let Some(drive) = body.drive.as_ref() else {
             continue;
         };
@@ -363,6 +373,11 @@ pub fn track_condition(
             shock_over: false,
         };
         let (next, branch) = posture(next, &p);
+        if let Some(mut taken) = taken
+            && taken.0 != branch
+        {
+            taken.0 = branch;
+        }
         if next != *condition {
             debug!(
                 "{entity:?} condition {:#x} -> {:#x} ({}, {branch:?})",

@@ -16,6 +16,8 @@
 //! (30 cm moving), its ground offset included (its sole height standing;
 //! moving, its ankle's lift in the walk as well). Support S is grounded ×
 //! balance, and a standing body with no foot on the ground has no balance.
+//! Without support it asks for the ground under its pelvis (the fall check
+//! reads it, and a body getting up near it has support).
 //!
 //! The rules are the original's, in its centimetres and ticks (evidence:
 //! `docs/formats/RSQ.md`, Physical body).
@@ -91,9 +93,9 @@ const REACH_SHARE: f32 = 0.5;
 /// ground and sole height, standing and moving.
 const GROUNDED_STANDING: f32 = 20.0;
 const GROUNDED_MOVING: f32 = 30.0;
-/// Without support the ground under the pelvis is asked from 20 cm above
-/// it with a 20 cm sphere; a body getting up within 30 cm of it has
-/// support at half its balance.
+/// Without support the ground under the pelvis (the character's ground)
+/// is asked from 20 cm above it with a 20 cm sphere; a body getting up
+/// within 30 cm of it has support at half its balance.
 const PELVIS_ABOVE: f32 = 20.0;
 const PELVIS_RADIUS: f32 = 20.0;
 const GET_UP_HEIGHT: f32 = 30.0;
@@ -156,6 +158,8 @@ pub struct Balance {
     has_support: bool,
     /// Ticks without support.
     airborne: u32,
+    /// The ground under the pelvis (m), asked while no foot gives support.
+    ground: Option<f32>,
 }
 
 impl Default for Balance {
@@ -173,6 +177,7 @@ impl Default for Balance {
             grounded: true,
             has_support: true,
             airborne: 0,
+            ground: None,
         }
     }
 }
@@ -211,6 +216,13 @@ impl Balance {
     /// Ticks the body has gone without support.
     pub fn airborne(&self) -> u32 {
         self.airborne
+    }
+
+    /// The ground under the pelvis (m; 100 m down when the query meets
+    /// nothing within its 20 m), as last asked without the feet's support;
+    /// none while a foot gives it.
+    pub fn ground(&self) -> Option<f32> {
+        self.ground
     }
 
     /// One tick of the counter and the balance for score `q`, at a slow
@@ -406,7 +418,8 @@ impl Ragdoll {
     /// last two points, the chest point, the lean against the support point,
     /// the score, counter and balance (or a get-up's rise); then each leg's
     /// ground from a Height Query against `level`, the grounded feet,
-    /// support and balance without ground, and S = grounded × balance.
+    /// support and balance without ground, and S = grounded × balance;
+    /// without support, the ground under the pelvis.
     pub fn measure_balance<L: Level + ?Sized>(&mut self, level: &L) {
         if !self.measures_balance() {
             return;
@@ -520,7 +533,8 @@ impl Ragdoll {
             b.value = 0.0;
         }
         drive.support = if b.grounded { b.value } else { 0.0 };
-        if !b.has_support && bearing.getting_up {
+        b.ground = None;
+        if !b.has_support {
             let under = level
                 .height_below(
                     pelvis + Vec3::Y * (PELVIS_ABOVE / CM),
@@ -528,7 +542,8 @@ impl Ragdoll {
                     PROBE_DEPTH / CM,
                 )
                 .map_or(NO_GROUND, cm);
-            if cm(pelvis.y) < under + GET_UP_HEIGHT {
+            b.ground = Some(under / CM);
+            if bearing.getting_up && cm(pelvis.y) < under + GET_UP_HEIGHT {
                 b.has_support = true;
                 drive.support = GET_UP_SUPPORT * b.value;
             }

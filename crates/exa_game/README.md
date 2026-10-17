@@ -26,6 +26,10 @@ chase camera on the drawn pelvis, combat facing, its combat stance and the
 original's attack request each behaviour tick (press, hold, release, the
 double click and Alt) through the attack executor, with the clips of the
 moveset its hands pick),
+falls to death and the kill plane (`fall`: the fall check of every living
+body in the falls branch, its scream and the player's pit sound, the
+death fade's start, death and removal from the world; dead bodies below
+−50 m taken once, the player's kept),
 the world cursor's shape from the player's condition word (`cursor`), the health
 bars' values and the low-health heartbeat with its sound, started by a
 blow's low-health check on the player's body (`exa_combat::Weakened`;

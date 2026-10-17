@@ -217,6 +217,23 @@ sound): every level but the arenas counts as story mode; `--heartbeat`
 allows it anywhere. The border is drawn from an image an eighth of the
 window's size, linearly stretched.
 
+## Death fade
+
+When the player falls to its death ([formats/RSQ.md](formats/RSQ.md),
+Falling to death), the original's session starts a fade to black at the
+pit's sound, 1 s after the player is lost: a black rectangle over the
+whole window, drawn before the health bars (so they stay over it), its
+opacity round(t × 255) with t the share of 3 s of game time gone (the
+clock that stops while the game is paused), at most 1. The world's sounds
+fade with it (1 − t), and when it is complete the game pauses (about 4 s
+after the loss, when the player dies and leaves the world).
+
+Exarust (`exa_ui::fade` draws `DeathFade`, `exa_game::fall` starts it):
+the black layer lies over the heartbeat's border and under the bars (Z
+895), its opacity on Bevy's virtual time, remapped for the original's
+gamma-space blend; hidden while a level loads. Not yet: the world sounds'
+fade and the pause at the end (Exarust has no death menu to show then).
+
 ## Compositing
 
 The original's interface blends sRGB values; Bevy blends in linear light.

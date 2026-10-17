@@ -550,9 +550,14 @@ tick and muscle setup). Every rule is in the original's cm and ticks:
   walk, set by the lift each tick, so Exarust reads last tick's). With a
   grounded foot the body has support (regaining it sets the
   landing weight to 5); without, it counts the ticks it is airborne, and a
-  standing body loses its balance. S = grounded × balance. A body getting up
-  with no foot grounded and its pelvis within 30 cm of the ground under it
-  has support at half its balance.
+  standing body loses its balance. S = grounded × balance. Without
+  support the body also asks for the ground under its pelvis (the
+  character's ground): a 20 cm sphere from 20 cm above the pelvis, 2000 cm
+  down, −10000 cm on a miss (`Balance::ground`; with support the original
+  takes it from the feet, which nothing in Exarust reads yet). A body
+  getting up with no foot grounded and its pelvis within 30 cm of that
+  ground has support at half its balance; the fall check reads it too
+  ([Falling to death](#falling-to-death)).
 - Exarust's own, while a capsule leads the body: its controller's capsule
   (28 cm radius) may stand where the feet do not (perched on a stone the
   feet hang beside, or spawned over the floor), so a standing body whose
@@ -739,7 +744,9 @@ each character's posture stage; every `Fighter` keeps the word):
 - the decision, as above, from last tick's balance, summed limb motion
   and tone and the clip playing; it also names the branch the original
   takes next (falls, lying still, getting up, attack, weak, standing,
-  collapse), for the changes that add those actions;
+  collapse), kept on the fighter (`PostureBranch`) for the actions that
+  run in it: the fall check runs in the falls branch
+  ([Falling to death](#falling-to-death));
 - Exarust's get-up writes getting up when it starts, and the character
   tick's sampler stage normal when the get-up's clip ends into the stance
   (the same tick);
@@ -821,6 +828,53 @@ death, constants read from the executable; six live retail collapses):
   heavier daze) was in a deep crouch at 0.4 s and on its back by 1.2 s
   (Rebalance at 0.73 s). The lag is most likely the missing stagger
   steps' (C15).
+
+### Falling to death
+
+The original checks a fall on every living body that takes the posture
+block's falls branch (off its balance and still moving, whatever it plays
+there: the Defence stance or Rebalance upright, a stagger, a fall clip),
+at the branch's end (`exa_combat::fall`, `exa_game::fall`; REA on the
+check, its callers, the pit sound, the voices, the session's death hook,
+the kill plane, constants read from the executable):
+- **Steady** while its chest's slow smoothed vertical velocity (the
+  balance's, lerp 0.1) is −5 cm a tick or slower (a NaN too): the fall
+  starts over.
+- **Falling**: faster, the first tick it screams (not if dead): the heavy
+  groan of its voice (the voice set's `_GroanH`; the original's voice kind
+  2) at gain 0.2 + 0.15 × a draw and pitch 0.95 + 0.1 × the draw before it
+  (double precision), times the voice's volume and pitch.
+- **Lost**, in the same tick or a later one, when its pelvis is 2500 cm or
+  more over the ground under it (asked without support, above) and over
+  every foot's ground: since a query reaches 2000 cm and a miss is
+  −10000 cm, that means no ground within reach under the pelvis or any
+  foot. Its time is stamped on the game clock (12 ms a tick); from then on
+  only the clock counts, compared strictly, and only while the body stays
+  in the falls branch.
+- The **player** hears the pit (`pitdeath01`, gain 0.1, on the interface)
+  more than 1000 ms after (the 84th tick), when its screen starts to fade
+  to black ([UI.md](../UI.md), Death fade); more than 4000 ms after (the
+  334th tick) it dies: dead, yellow and red 0, out of the world. Anyone
+  else dies so more than 3000 ms after (the 251st tick), without a sound.
+- **Out of the world**: the character, its body and everything it carries
+  are gone (the original takes its node out of the scene and frees its
+  items). The original's death here leaves its muscles flag on, but the
+  body leaves with it, so no corpse keeps the living link rules.
+- The **kill plane**: a body integrated by the plain step (for a character,
+  only a dead one) whose root's first particle goes below −5000 cm is taken,
+  once: a character loses its health and, unless it is the player, leaves
+  the world the same way. A body lost to its fall is never taken again.
+- Not in Exarust: the original also nudges its camera's wall tilt 0.0075
+  rad a tick (overwritten at once by the camera), ends a possession or the
+  status effects at the pit, holds a voice 500 ms after the last, and
+  checks a body that became dead within its tick (which never happens).
+  Exarust has no voice sets yet: the scream is a random `vhm01`–`vhm09`
+  heavy groan, as the hit sounds pick a random grunt.
+- `--at 0,200,0 play arena` (light): the player loses its balance on its
+  first ticks over nothing, screams and is lost on tick 89 (its pelvis
+  1.9 m lower, sinking 6.1 cm a tick), hears the pit on tick 173 and is
+  gone on tick 423. (Exarust's fallen body sinks up to about 14 cm a tick,
+  where the original's off-balance retention allows about 8.6.)
 
 Per-tick trace. `exarust --trace <file.csv>` writes one row per traced body
 after every tick. It traces the player's body, or every simulated body when

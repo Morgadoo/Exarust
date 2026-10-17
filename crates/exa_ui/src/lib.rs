@@ -4,11 +4,13 @@
 //! So far: the game's bitmap font ([`font`]), the interface scale
 //! ([`scale`]), the frame-rate readout ([`fps`]), the loading screen
 //! ([`loading`]), the in-game world cursor ([`cursor`]), the health and
-//! focus bars ([`hud`]) and the low-health heartbeat's border
-//! ([`heartbeat`]), painted with gamma-space blending ([`blend`]).
+//! focus bars ([`hud`]), the low-health heartbeat's border
+//! ([`heartbeat`]) and the fade to black of a fall to death ([`fade`]),
+//! painted with gamma-space blending ([`blend`]).
 
 pub mod blend;
 pub mod cursor;
+pub mod fade;
 pub mod font;
 pub mod fps;
 pub mod heartbeat;
@@ -19,6 +21,7 @@ pub mod scale;
 use bevy::prelude::*;
 
 pub use cursor::{CursorShape, DrawWorldCursor, ScriptedPointer, WorldCursor};
+pub use fade::DeathFade;
 pub use fps::ShowFps;
 pub use heartbeat::Heartbeat;
 pub use hud::{DrawHud, HudBars};
@@ -36,6 +39,7 @@ impl Plugin for UiPlugin {
             cursor::plugin,
             hud::plugin,
             heartbeat::plugin,
+            fade::plugin,
         ));
     }
 }

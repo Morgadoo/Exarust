@@ -8,14 +8,16 @@ use exa_formats::character_stats::{BodyRules, CharacterStats};
 use exa_formats::races::{Natural, Race};
 
 use crate::attack::Attacker;
-use crate::condition::{Condition, StateFlags};
+use crate::condition::{Condition, PostureBranch, StateFlags};
 use crate::damage::{self, Outcome, PartArmour};
+use crate::fall::FallDeath;
 use crate::wounds::WoundQueue;
 
 /// A character that can fight and be hurt (on the body model root). It
-/// keeps the original's condition word and state flags beside it.
+/// keeps the original's condition word and state flags beside it, the
+/// posture stage's branch and its fall.
 #[derive(Component, Debug, Clone)]
-#[require(WoundQueue, Attacker, Condition, StateFlags)]
+#[require(WoundQueue, Attacker, Condition, StateFlags, PostureBranch, FallDeath)]
 pub struct Fighter {
     pub health: Health,
     /// The race's natural armour, under worn items.
