@@ -524,7 +524,7 @@ flame nodes are not rigid), "Flail A" 84.4 cm and "Ogre Flail" 172.0 cm
 |---|---|
 | W8, W9 held weight and balance | w, b; with the half-sword hold (2 − w)·w and 0.7·b (what sets it is not found); W8 × (1 − u) |
 | h | (1 − W9)·0.6 + 0.4·W8 + 0.1 (0.4·W8 + 0.1 above balance 1) |
-| W17 recoil | g/2 + h: a blocked striker recoils by v·W17; the recovery after a released swing and the attack cooldown follow it |
+| W17 recoil | g/2 + h: a blocked striker recoils by v·W17; the recovery after a released swing follows it, and the attack cooldown is round(300·W17) + 300 ms of the primary striker (400 ms with none) |
 | k | ((1 − g) + W9)·g/2 + W9·(1 − g) |
 | W18 swing shaping | 1 − k (the swing clock slows away from its middle by it) |
 | W19 blend | round((W8 + 1 − k)·10), an integer: attacks end into the stance over 2·W19 frames |
@@ -577,6 +577,21 @@ word `0x20100`) strikes with a right fist and a left heavy claw.
 A human fist is 17.66 cm (the hand node's box), with impact 0.43, W15
 1.44, W17 0.1, W18 0, W19 0, W20 0.5, W24 0.80032.
 
+The hands themselves strike with these records: a fist's contact is
+measured along the hand's x axis toward its box (negated for the right
+hand, whose box lies on −x), and one at or past W21 is ignored. With the
+fists, claws or two weapons (weapon class bit `0x80`) an attack strikes
+with the motion's hand only: the right (first held) in the main side, the
+stab and the overhead (both hands in a clawed overhead, class `0xC0`), the
+left (second held) in the other side, which then becomes the primary
+striker. Equipping the fists leaves the character without a primary
+striker until its first attack (a 400 ms cooldown); equipping a single
+weapon makes it the primary. In Exarust each hand gets a striker segment
+from its origin across its box, as long as W21; a contact at its far end
+counts 0.1 cm inside it, since the segment ends on the box's face where the
+original's hand body is met within it ([PLAYER.md](../PLAYER.md), Combat
+mode).
+
 **Shield record**, item section `0x8000` (22 items): weight, block and
 bulk = bytes 4, 5, 6 × 0.01 (a round shield 0.5, 0.58, 0.6). In the off
 hand it gives parry effectiveness 0.5 + 1.5·(1 − weight)² (weight/2 with
@@ -587,9 +602,11 @@ encumbrance.
 **Step reach**: 80·√scale·(1 − 0.3·feral, when the feral level is not
 negative)·(1 − 0.2·g); the long steps and the footwork are measured in it.
 
-In Exarust, every holder is a human of average height in no armour (g 0,
-s 1) until characters have sizes and encumbrance. The race fields are
-read from the `races.rdb` payload. A duellist guards beyond four reaches
+In Exarust, every holder is of average height in no armour (g 0, s 1)
+until characters have sizes and encumbrance. The race fields come from
+the race's decoded stats (`races.rdb`, `+0x58`, `+0x84`, `+0x88`, `+0x90`,
+above), kept with the race index on each placed character's body; the
+player and the duellist are human. A duellist guards beyond four reaches
 ([PLAYER.md](../PLAYER.md), The combat stance).
 
 ## Armour

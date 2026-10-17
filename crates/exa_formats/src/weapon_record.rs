@@ -9,6 +9,7 @@
 //! Units follow the original: lengths in cm. Masses are the simulation's
 //! own units.
 
+use crate::races::RaceStats;
 use crate::rfc::Node;
 use crate::weapon_stats::{StatBytes, at};
 
@@ -487,21 +488,16 @@ impl RaceWeapons {
         claws: 1,
     };
 
-    /// The fields of a `races.rdb` record payload; `None` when it is too
-    /// short.
-    pub fn of_race_record(payload: &[u8]) -> Option<Self> {
-        let word = |at: usize| {
-            Some(u32::from_le_bytes(
-                payload.get(at..at + 4)?.try_into().ok()?,
-            ))
-        };
-        let float = |at: usize| word(at).map(f32::from_bits);
-        Some(Self {
-            unarmed_reach: float(0x84)?,
-            swing_turn: float(0x88)?,
-            blend: float(0x90)?,
-            claws: word(0x58)?,
-        })
+    /// The fields of a race's stats (`races.rdb`, read by
+    /// [`crate::races`]): its unarmed reach (stored in metres, here in cm),
+    /// its swing-turn and recovery factors and its kind word.
+    pub fn of_stats(stats: &RaceStats) -> Self {
+        Self {
+            unarmed_reach: stats.unarmed_reach * CM_PER_M,
+            swing_turn: stats.swing_turn,
+            blend: stats.recovery,
+            claws: stats.kind,
+        }
     }
 }
 
@@ -1235,25 +1231,17 @@ mod tests {
         ));
 
         // Fists and claws of every race, from its body model's hands.
-        let races = crate::rdb::Database::parse(resource.get("races.rdb").unwrap()).unwrap();
+        let races = crate::races::parse(resource.get("races.rdb").unwrap()).unwrap();
         let mut seen = 0;
-        for rec in &races.records {
-            let payload = races.payload(rec);
-            let Some(race) = RaceWeapons::of_race_record(payload) else {
-                continue;
-            };
-            let stem: String = payload[0x20..0x38]
-                .iter()
-                .take_while(|&&c| c != 0)
-                .map(|&c| c as char)
-                .collect();
-            let model = format!("{}base.rfc", stem.to_ascii_lowercase());
+        for record in &races {
+            let race = RaceWeapons::of_stats(&record.stats);
+            let model = record.model();
             let scene = Scene::parse(resource.get(&model).unwrap()).unwrap();
             let hand = |prefix: &str| {
                 let node = scene.nodes.iter().find(|n| n.name.starts_with(prefix));
                 hand_lengths(node.unwrap())
             };
-            let index = (rec.id - 1) as u8;
+            let index = (record.id - 1) as u8;
             let hands = unarmed(index, race.claws);
             let mut held = [
                 WeaponRecord::build(&hands.right, false, hand("17"), &Holder::AVERAGE),
@@ -1300,16 +1288,19 @@ mod tests {
         assert!(near(f.parry, 0.875, 1e-6) && near(f.leak, 0.71, 1e-6));
     }
 
+    /// A race's stats give its weapon fields: Sir's 1.5 m of unarmed reach
+    /// is 150 cm, its swing turn 0, its recovery 1 and its heavy-claws word.
     #[test]
     fn race_weapon_fields() {
-        let mut b = vec![0u8; 0x270];
-        b[0x58..0x5C].copy_from_slice(&0x20100u32.to_le_bytes());
-        for (at, v) in [(0x84, 150.0f32), (0x88, 0.0), (0x90, 1.0)] {
-            b[at..at + 4].copy_from_slice(&v.to_le_bytes());
-        }
-        let r = RaceWeapons::of_race_record(&b).unwrap();
+        let stats = RaceStats {
+            kind: 0x20100,
+            unarmed_reach: 1.5,
+            swing_turn: 0.0,
+            recovery: 1.0,
+            ..RaceStats::FALLBACK
+        };
         assert_eq!(
-            r,
+            RaceWeapons::of_stats(&stats),
             RaceWeapons {
                 unarmed_reach: 150.0,
                 swing_turn: 0.0,
@@ -1317,6 +1308,11 @@ mod tests {
                 claws: 0x20100
             }
         );
-        assert!(RaceWeapons::of_race_record(&b[..0x90]).is_none());
+        let golem = RaceStats {
+            recovery: 0.5,
+            ..RaceStats::FALLBACK
+        };
+        let r = RaceWeapons::of_stats(&golem);
+        assert_eq!((r.unarmed_reach, r.blend, r.claws), (100.0, 0.5, 0));
     }
 }

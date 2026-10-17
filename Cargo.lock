@@ -2380,6 +2380,7 @@ dependencies = [
  "exa_formats",
  "exa_physics",
  "exa_render",
+ "exa_world",
 ]
 
 [[package]]

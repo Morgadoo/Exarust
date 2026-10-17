@@ -33,6 +33,7 @@ exarust --debug-bodies --opponent --pause-on-stretch 1 \
 | `--pause-at-tick <n>` | pause at the end of body tick `n` (the `tick` column of both traces, counted from the start, the load included; see below) |
 | `--pause-on-stretch <cm>` | pause at the end of the tick in which a link of a body first goes this far past its slack; the log and the readout name the body, the part and the link |
 | `--pause-after-jet <n>` | pause at the end of the `n`th body tick after the tick that first finds a blood jet started (a bleeding blow's, or `--debug-spray`'s), to catch a jet in flight ([Wounds](#wounds)) |
+| `--pause-on-hit <n>` | pause n ticks (at least 1) after the tick in which the player's first blow lands, for a picture of a landed punch or cut; the log names the tick and the struck bone |
 | `--press key@frame,...` | press keys or mouse buttons at frames counted from the end of the load (`.`, `[`, `]`, `Tab`, `Ctrl`, `F1`–`F12`, a letter, or `LMB`, `RMB`, `MMB`), e.g. `.@400,.@401,P@500`; each is released the frame after; `key@a-b` holds it from frame a and lets it go at frame b, e.g. `RMB@60-400` |
 | `--click frame,...` | click the left mouse button at frames counted from the end of the load (the same as `LMB@frame` in `--press`): with `--weapon` in an arena fight, which starts in combat mode, the player attacks unattended |
 | `--camera x,y,z,yaw,pitch` | in play mode, a fixed camera there instead of the chase camera (metres, degrees), for unattended shots; with `--fov` |
@@ -48,11 +49,28 @@ exarust --debug-bodies --opponent --pause-on-stretch 1 \
 An unattended attack: `exarust --opponent --sim-speed 0.25 --camera
 4.2,1.4,0.6,90,-8 --press LMB@100 play arenao1` throws the unarmed
 player's right straight at the duellist, seen from the side (an arena
-fight starts in combat mode: Tab would turn it off); the log names each
-attack, its moveset and how far left of the facing the cursor was. With
-the chase camera and `--cursor` left of the player (e.g. `--cursor
-650,280 --press LMB@2`, before the body has turned to the cursor) it is a
-left straight; `LMB@200,LMB@206` is a double click, an overhead.
+fight starts in combat mode: Tab would turn it off). The log names each
+attack: its moveset, the game time (ms, 12 a tick), how far left of the
+facing the cursor was, the energy, the last attack tick and the cooldown
+it waited; and "attack waits: energy …" when a standing request waits for
+the energy to come back. With the chase camera and `--cursor` left of the
+player (e.g. `--cursor 650,280 --press LMB@2`, before the body has turned
+to the cursor) it is a left straight. A held button repeats the attacks,
+330 ms after each one's last tick unarmed: `--press LMB@150-1500`. A double
+click's overhead follows the first attack once it ended and the cooldown
+passed, with the second press still held: `LMB@200,LMB@206-400`.
+
+Punches land from close: the duellist strikes from 1.2 m, where the
+straight falls short, so step in (`W@100-1500,LMB@150-1500`), or stand a
+still duellist close. Each hit's log line says whether a fist or a weapon
+struck:
+
+```bash
+# A right straight landing on a still duellist 0.86 m away (chest to
+# chest), paused three ticks after it landed, from the player's right.
+exarust --still-opponent --at 0,0,-1.1 --camera 4.2,1.4,-1.0,90,-8 \
+  --press LMB@120 --pause-on-hit 3 --screenshot punch.png --frames 10 play arenao1
+```
 
 The stances: the log names every change of the player's stance (with its
 target's distance and the time since its last attack) and the duellist's
@@ -94,7 +112,8 @@ exarust --at 0,0,1 --press Tab@50,Tab@300 --screenshot fade.png --frames 372 pla
 exarust --heartbeat --opponent --health 0.06,0.25 --screenshot beat.png --frames 200 play arena
 ```
 
-With `--pause-at-tick`, `--pause-on-stretch` or `--pause-after-jet`,
+With `--pause-at-tick`, `--pause-on-stretch`, `--pause-after-jet` or
+`--pause-on-hit`,
 `--screenshot` counts its `--frames` from the pause, so the picture shows
 the paused body.
 
@@ -267,10 +286,11 @@ hit's line names the struck body, the body tick and the wound's size R
 (it bleeds above 0.05). An unattended duel in which both fighters strike:
 
 ```bash
-# The armed player (in combat mode from the fight start) attacks every
-# 25 frames; paused after the duellist's second blow, from the player's front.
+# The armed player (in combat mode from the fight start) holds the button,
+# attacking again 426 ms after each attack's last tick; paused after the
+# duellist's second blow, from the player's front.
 exarust --opponent --weapon ub05ssworda \
-  --click $(seq -s, 100 25 1400) --camera 1.3,1.7,3.4,135,-14 \
+  --press LMB@100-1400 --camera 1.3,1.7,3.4,135,-14 \
   --pause-at-tick 760 --screenshot hits.png --frames 20 play arena1
 ```
 

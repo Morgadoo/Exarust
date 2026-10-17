@@ -3,8 +3,9 @@
 //! solver), step exactly one 83 Hz tick while paused, and run it slower or
 //! faster through Bevy's virtual time. Scripted runs can start slowed
 //! (`--sim-speed`), pause at a tick (`--pause-at-tick`), pause the moment
-//! a link stretches past its slack (`--pause-on-stretch`) or pause a number
-//! of ticks after the first blood jet (`--pause-after-jet`). Rendering and
+//! a link stretches past its slack (`--pause-on-stretch`), pause a number
+//! of ticks after the first blood jet (`--pause-after-jet`) or after the
+//! player's first blow lands (`--pause-on-hit`). Rendering and
 //! the cameras keep running on real time, so a paused body can be looked
 //! at from every side. The starting speed and the scripted pauses wait
 //! for the loading screen's end where they can: the load waits on things
@@ -37,6 +38,8 @@ pub struct SimControl {
     /// Pause this many ticks after the tick that first finds a blood jet
     /// started (`exa_character::spray`).
     pub pause_after_jet: Option<u64>,
+    /// Pause this many ticks after the player's first blow lands.
+    pub pause_on_hit: Option<u64>,
     /// Ticks asked for while paused, run one a frame.
     steps: u32,
     /// The starting speed is set (once the loading screen is gone).
@@ -52,6 +55,7 @@ impl Default for SimControl {
             pause_at_tick: None,
             pause_on_stretch: None,
             pause_after_jet: None,
+            pause_on_hit: None,
             steps: 0,
             started: false,
             reason: None,
@@ -77,11 +81,21 @@ impl SimControl {
         self
     }
 
+    /// The same run, pausing `ticks` ticks after the player's first blow
+    /// lands.
+    pub fn with_pause_on_hit(self, ticks: Option<u64>) -> Self {
+        Self {
+            pause_on_hit: ticks,
+            ..self
+        }
+    }
+
     /// Whether a scripted pause is armed: a screenshot then waits for it.
     pub fn waits_for_pause(&self) -> bool {
         self.pause_at_tick.is_some()
             || self.pause_on_stretch.is_some()
             || self.pause_after_jet.is_some()
+            || self.pause_on_hit.is_some()
     }
 }
 
@@ -110,7 +124,14 @@ pub struct SimControlPlugin;
 impl Plugin for SimControlPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SimControl>()
+            .add_message::<exa_combat::Hit>()
             .add_systems(Update, start_speed.run_if(|c: Res<SimControl>| !c.started))
+            .add_systems(
+                PostUpdate,
+                arm_pause_on_hit
+                    .after(exa_combat::CombatSystems)
+                    .run_if(|c: Res<SimControl>| c.pause_on_hit.is_some()),
+            )
             .add_systems(Update, sim_keys)
             .add_systems(
                 RunFixedMainLoop,
@@ -198,6 +219,27 @@ fn step_once(
     control.steps -= 1;
     let step = fixed.timestep();
     fixed.accumulate_overstep(step);
+}
+
+/// `--pause-on-hit`: the player's first blow that lands sets the pause
+/// that many ticks after the tick it landed in.
+fn arm_pause_on_hit(
+    mut control: ResMut<SimControl>,
+    clock: Res<BodyTicks>,
+    mut hits: MessageReader<exa_combat::Hit>,
+    players: Query<(), With<crate::player::PlayerBody>>,
+) {
+    let Some(after) = control.pause_on_hit else {
+        return;
+    };
+    if let Some(hit) = hits.read().find(|h| players.contains(h.attacker)) {
+        info!(
+            "the player's blow landed at tick {} on bone {}: pausing {after} ticks later",
+            clock.0, hit.bone
+        );
+        control.pause_on_hit = None;
+        control.pause_at_tick = Some(clock.0 + after.max(1));
+    }
 }
 
 /// Pauses at `--pause-at-tick`, when a link first goes further past its
@@ -406,6 +448,60 @@ mod tests {
         // The first tick after the jet sees it; 12 more.
         assert_eq!(ticks(&app), first + 1 + 12);
         assert!(app.world().resource::<SimControl>().waits_for_pause());
+    }
+
+    /// `--pause-on-hit 3`: the duellist's blow arms nothing; the player's
+    /// first blow pauses the run three ticks after the tick it landed in,
+    /// and a later blow no longer moves the pause.
+    #[test]
+    fn pause_three_ticks_after_the_players_blow() {
+        use exa_formats::weapon_record::{Holder, Lengths, Section, WeaponRecord};
+        let mut app = app(SimControl::default().with_pause_on_hit(Some(3)));
+        let player = app
+            .world_mut()
+            .spawn(crate::player::PlayerBody::new(0.0))
+            .id();
+        let foe = app.world_mut().spawn_empty().id();
+        let blow = |attacker| exa_combat::Hit {
+            attacker,
+            striker: attacker,
+            target: if attacker == player { foe } else { player },
+            bone: 9,
+            point: Vec3::ZERO,
+            velocity: Vec3::Z,
+            weapon: WeaponRecord::build(
+                &Section::FISTS,
+                false,
+                Lengths::hand(-8.0, 9.66),
+                &Holder::AVERAGE,
+            ),
+            strike: exa_combat::damage::Strike {
+                speed: 3.0,
+                stab: false,
+                overhead: false,
+                clock: 0.5,
+                along: 17.0,
+            },
+        };
+        for _ in 0..10 {
+            app.update();
+        }
+        app.world_mut().write_message(blow(foe));
+        app.update();
+        assert_eq!(app.world().resource::<SimControl>().pause_at_tick, None);
+        app.world_mut().write_message(blow(player));
+        app.update();
+        let landed = ticks(&app);
+        assert_eq!(
+            app.world().resource::<SimControl>().pause_at_tick,
+            Some(landed + 3)
+        );
+        app.world_mut().write_message(blow(player));
+        for _ in 0..30 {
+            app.update();
+        }
+        assert_eq!(ticks(&app), landed + 3);
+        assert!(app.world().resource::<Time<Virtual>>().is_paused());
     }
 
     /// The starting speed waits for the loading screen to go.

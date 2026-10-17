@@ -79,6 +79,7 @@ impl ModelLoader<'_> {
             voxel_light: None,
             fire: None,
             bounds: (Vec3::ZERO, 1.0),
+            half_extents: Vec3::ZERO,
             gi_points: Default::default(),
         }];
         for placed in factory.place(&generated) {
@@ -143,6 +144,7 @@ impl ModelLoader<'_> {
                 voxel_light: None,
                 fire: None,
                 bounds: (Vec3::ZERO, 0.5),
+                half_extents: Vec3::ZERO,
                 gi_points: Default::default(),
             });
         }

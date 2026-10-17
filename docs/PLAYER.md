@@ -75,34 +75,69 @@ walk or run still playing when Tab turns combat mode on ends in the stance
 once the body stands, as the original's walk does.
 
 - **Facing.** The heading turns to the cursor's direction once it is more
-  than 30° off it, and follows it exactly while the left button is held
-  (every attack request sets it). The body turns toward the heading as in
+  than 30° off it, and follows it exactly while an attack is requested
+  (the left button held). The body turns toward the heading as in
   exploration: up to 240°/s, eased over the last 0.6 rad. A cursor moved
   less than 30° leaves the character facing where it faced.
-- **Attacks.** A left click asks for an attack from the moveset the held
-  items pick (below):
+- **The attack request**, kept each behaviour tick (83 Hz) as the
+  original keeps it: a left press requests an attack, holding the button
+  keeps the request standing, releasing it drops the request. A press
+  asks for:
   - **the main side**: Attack Mid, Down or Up, picked at random and never
     the one picked last;
   - **the other side**, when the cursor lies more than 20° to the left of
-    the body's facing (15° for weapon class 0: a body holding nothing at
-    all, which a human never is since the fists count as held, or a shield
-    or an off-hand light beside the fists): Attack Combo 1, 2 or 3, the
-    same way;
-  - **an overhead** (Overhead Swing) on a click within 300 ms of the one
-    before; that click no longer counts for the next double click. It cuts
-    a side's attack short, but never a Stab or another overhead.
+    the body's facing at the press (15° for weapon class 0: a body holding
+    nothing at all, which a human never is since the fists count as held,
+    or a shield or an off-hand light beside the fists): Attack Combo 1, 2
+    or 3, the same way;
+  - **an overhead** (Overhead Swing) when it comes within 300 ms of the
+    press before (that press then no longer counts for the next double
+    click), for as long as the button stays down;
+  - **a stab** with Alt held, only with a held weapon (never the fists).
 
   The picks use the original's 32-bit generator (× 0x08088405 + 1, clip =
   state × 3 >> 32), redrawn while equal to the side's last pick; a side's
-  last pick starts at 0, so its first attack is never its first clip.
+  last pick starts at 0, so its first attack is never its first clip
+  (crouched it would always be Attack Mid; Exarust has no crouch yet).
   Unarmed, the three clips of each side are one clip: the main side is
   the right straight (the right arm out, the body twisted into it, the
   left fist pulled back), the other side the left straight, and the
   overhead a right overhand.
-- Not yet: fists that land, the cooldown between attacks (400 ms before
-  the first, then 300 ms × the weapon's recovery + 300 ms) and the energy
-  needed to attack (80 %); holding the button to repeat or chain attacks;
-  Alt thrusts; parries. Unarmed attacks play but never hit.
+- **When an attack starts.** While the request stands, the original's
+  attack executor, which the AI uses too, starts what it asks:
+  - only with at least 80 % of the fighter's most energy (1 for a human):
+    a blow's daze holds the request until the energy has recovered
+    (0.005 a tick);
+  - only once the **cooldown** has passed since the last tick of the
+    fighter's last attack: 400 ms while it has no primary striker (after
+    its hands were emptied, until its first attack), else 300 ms × its
+    primary striker's recoil, rounded, + 300 ms: 330 ms for the fists,
+    426 ms for the arena sword. Times are on the game clock, 12 ms a tick
+    (so 330 ms is the 28th tick), which stops while the simulation is
+    paused;
+  - an overhead unless a stab or an overhead plays; a stab unless a stab
+    plays, and only with the weapon's long axis forward of −0.367 (its
+    forward component in the body's frame); a side attack only when no
+    side attack plays.
+
+  So a held button repeats the attack after each cooldown, on the main
+  side (every attack clears the side of the press). The cooldown never
+  passes while an attack plays (every attack tick restarts it), so a
+  double click's overhead follows the first attack once it has ended and
+  its cooldown has passed, if the second press is still held. The
+  duellist's strikes (Exarust's own choice, every 2.2 s within 1.2 m,
+  until the original's AI) pass the same energy test and cooldown.
+- **What strikes.** Empty hands are the fists (or claws), each a striker
+  built from the race's fist or claw record across its hand's box
+  ([formats/OTHER.md](formats/OTHER.md), Weapon record). With the fists
+  only the motion's hand strikes: the right fist in the main side and the
+  overhead, the left in the other side (both claws in a clawed overhead).
+  A held weapon strikes in every attack and the fists then never do. Each
+  attack makes the striking hand its primary striker; equipping a weapon
+  makes the weapon the primary at once.
+- Not yet: the swing clock (attacks run at 60 frames a second), the
+  released swing's stall, the overhead or feint a released swing allows
+  and Remise (a perk) (M22); parries (L10).
 
 ## The combat stance
 

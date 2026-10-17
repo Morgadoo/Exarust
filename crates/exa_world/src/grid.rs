@@ -1038,6 +1038,7 @@ mod tests {
             voxel_light: None,
             fire: None,
             bounds: (Vec3::ZERO, 1.0),
+            half_extents: Vec3::ZERO,
             gi_points: Default::default(),
         }
     }

@@ -115,7 +115,7 @@ P SHALL pause and resume the fixed step (character controllers, character ticks 
 - **THEN** the camera orbits the frozen bodies
 
 ### Requirement: Scripted pauses
-`--pause-at-tick <n>` SHALL pause the simulation at the end of body tick n, `--pause-on-stretch <cm>` at the end of the tick in which a body's link first goes that far past its slack, logging the body, part and link, and `--pause-after-jet <n>` at the end of the nth tick after the tick that first finds a blood jet started. With any of them, `--screenshot` SHALL count its frames from the pause.
+`--pause-at-tick <n>` SHALL pause the simulation at the end of body tick n, `--pause-on-stretch <cm>` at the end of the tick in which a body's link first goes that far past its slack, logging the body, part and link, `--pause-after-jet <n>` at the end of the nth tick after the tick that first finds a blood jet started, and `--pause-on-hit <n>` n ticks after the tick in which the player's first blow lands, logging it. With any of them, `--screenshot` SHALL count its frames from the pause.
 
 #### Scenario: Freeze a fold
 - **WHEN** `exarust --debug-bodies --opponent --pause-on-stretch 1 --screenshot s.png --frames 30 play arena` runs
@@ -124,6 +124,10 @@ P SHALL pause and resume the fixed step (character controllers, character ticks 
 #### Scenario: Freeze a jet
 - **WHEN** `exarust --opponent --weapon ub05ssworda --click 100,125,150,175,200 --pause-after-jet 12 --screenshot j.png --frames 20 play arena1` runs until a blow bleeds
 - **THEN** `j.png` shows the duel stopped 12 ticks after that blow, with the jet's droplets flying off the struck part
+
+#### Scenario: Freeze a punch
+- **WHEN** `exarust --still-opponent --at 0,0,-1.1 --press LMB@120 --pause-on-hit 3 --screenshot p.png --frames 10 play arenao1` runs
+- **THEN** `p.png` shows the player's right fist on the duellist three ticks after the punch landed
 
 ### Requirement: Scripted input and camera
 `--press key@frame,...` SHALL press each key (`Ctrl` among them) or mouse button (`LMB`, `RMB`, `MMB`) at its frame counted from the end of the load and release it the frame after; `key@a-b` SHALL hold it from frame a and release it at frame b. `--click frame,...` SHALL click the left mouse button the same way. In play mode, `--camera x,y,z,yaw,pitch` SHALL place a fixed camera there instead of the chase camera, and `--cursor x,y` SHALL hold the cursor at that window point (logical pixels).
@@ -152,8 +156,8 @@ P SHALL pause and resume the fixed step (character controllers, character ticks 
 - **THEN** the duellist stays 8 m from the player, facing it in the Defence stance
 
 #### Scenario: Unattended attacks
-- **WHEN** `exarust --opponent --weapon ub05ssworda --click 100,125,150 play arena1` runs
-- **THEN** the player, in combat mode from the fight start, swings its sword at those frames
+- **WHEN** `exarust --opponent --weapon ub05ssworda --press LMB@100-1400 play arena1` runs
+- **THEN** the player, in combat mode from the fight start, swings its sword from frame 100, and again 426 ms after each swing's last tick while the button is held
 
 ### Requirement: Debug wounds
 `--debug-wound bone,radius_cm[,dx,dy,dz]`, repeatable, SHALL paint a test wound on the player's body or the character view's body once it is dressed and bound: at its body part's front (the part's visible vertex furthest along the body's facing), of that radius, smeared along d (cm, in the body's frame, +Y up, +Z forward). A bone SHALL be given by number (1–18) or by part name (`chest`, `luarm`, …).

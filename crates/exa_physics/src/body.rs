@@ -125,7 +125,7 @@ const CONTROLLER_HOLD: f32 = 0.168;
 /// human's most energy).
 const ENERGY_RECOVERY: f32 = 0.005;
 const MIN_ENERGY: f32 = 0.05;
-const MAX_ENERGY: f32 = 1.0;
+pub const MAX_ENERGY: f32 = 1.0;
 /// Most of its energy a single blow takes.
 const MAX_DAZE: f32 = 0.9;
 /// Friction of a limb against the level.
@@ -920,6 +920,19 @@ pub struct DealtShoves(pub Vec<Shove>);
 /// Ticks the bodies have run since the start.
 #[derive(Resource, Debug, Default, Clone, Copy)]
 pub struct BodyTicks(pub u64);
+
+/// The original's game clock advances this many milliseconds a body tick
+/// (12 ms, the 83 Hz tick rounded), however long the tick took: its timers
+/// in milliseconds (attack cooldowns, the double click) run on it, so they
+/// stop while the simulation is paused and slow with it.
+pub const GAME_MS_PER_TICK: u64 = 12;
+
+impl BodyTicks {
+    /// The game clock: milliseconds of game time the ticks so far make.
+    pub fn millis(&self) -> u64 {
+        self.0 * GAME_MS_PER_TICK
+    }
+}
 
 /// The character ticks: each living body's clip advanced and sampled, and
 /// its targets set (`Ragdoll::aim`), the player's last. In the fixed step,

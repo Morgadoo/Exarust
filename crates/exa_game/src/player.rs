@@ -9,8 +9,10 @@
 //! camera follows the character's pelvis only: it never turns by itself,
 //! the middle mouse button orbits it and the wheel zooms by field of view.
 //! Combat mode (Tab, or the start of a fight) turns toward the cursor and
-//! steps relative to it; the left button attacks with the clips of the
-//! moveset the held items pick (`exa_character::held`). In combat mode the
+//! steps relative to it; the left button requests attacks (held, it
+//! repeats them) with the clips of the moveset the held items pick
+//! (`exa_character::held`), started by the original's attack executor
+//! (`exa_combat::attack`). In combat mode the
 //! player stands in its guard until a target comes close or it attacks
 //! (`exa_combat::stance`).
 
@@ -20,9 +22,10 @@ use bevy::window::PrimaryWindow;
 use exa_anim::Animator;
 use exa_anim::Stature;
 use exa_character::held::{Hands, HeldMoveset, class};
+use exa_combat::attack::{self, AttackKind, AttackMotion, Attacker, Request, Slot};
 use exa_combat::stance::{self, Stance};
-use exa_combat::{Attacking, Fighter};
-use exa_physics::body::{Fallen, GoLimp, Ragdoll};
+use exa_combat::{Attacking, Blade, Fighter};
+use exa_physics::body::{BodyTicks, Fallen, GoLimp, MAX_ENERGY, Ragdoll};
 use exa_physics::{CharacterBody, Physics};
 
 /// Walking speed (m/s): where the original's walk drive settles.
@@ -62,15 +65,13 @@ const STEP_HOLD: f32 = 0.2;
 /// In combat mode the heading turns to the cursor once it is further off
 /// than this (rad, 30°).
 const FACE_CURSOR_BEYOND: f32 = std::f32::consts::FRAC_PI_6;
-/// A click this soon (s) after the one before is a double click.
-const DOUBLE_CLICK: f32 = 0.3;
+/// A press this soon (ms of the game clock) after the one before is a
+/// double click.
+const DOUBLE_CLICK_MS: u64 = 300;
 /// A cursor further left of the facing than this (rad) attacks on the
 /// other side: 20°, or 15° for weapon class 0.
 const OTHER_SIDE: f32 = 20.0 * std::f32::consts::PI / 180.0;
 const OTHER_SIDE_EMPTY: f32 = 15.0 * std::f32::consts::PI / 180.0;
-/// The attacks of each side, picked among at random.
-const MAIN_SIDE: [&str; 3] = ["Attack Mid", "Attack Down", "Attack Up"];
-const OTHER_SIDE_ATTACKS: [&str; 3] = ["Attack Combo 1", "Attack Combo 2", "Attack Combo 3"];
 
 /// The player's physics root (origin at the feet).
 #[derive(Component)]
@@ -90,8 +91,8 @@ pub struct PlayerBody {
     /// In combat mode, the cursor's direction from the player (a yaw): the
     /// footwork steps along and across it.
     pub aim: f32,
-    /// The last click and attack picks, for the attack choice.
-    attack: AttackChoice,
+    /// The attack request from the left button, and the attack picks.
+    attack: AttackInput,
     /// 0 walks, 1 runs.
     run: f32,
     /// Seconds until A or D may turn a quarter again.
@@ -112,7 +113,7 @@ impl PlayerBody {
             heading: yaw,
             combat: false,
             aim: yaw,
-            attack: AttackChoice::default(),
+            attack: AttackInput::default(),
             run: 0.0,
             quarter_wait: 0.0,
             held: 0.0,
@@ -147,46 +148,79 @@ impl PlayerBody {
     }
 }
 
-/// What a left click in combat mode asks for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Strike {
-    /// One of the main side's attacks (the right fist, the weapon's
-    /// forehand).
-    Main,
-    /// One of the other side's (the left fist for the fists).
-    Other,
-    /// The overhead swing of a double click.
-    Overhead,
-}
-
-/// The original's attack choice: the time of the last click (for double
-/// clicks), and each side's last pick with the generator that picks.
+/// The original's attack request from the left button in combat mode, kept
+/// each behaviour tick: a press asks for an attack (an overhead when it
+/// comes within 300 ms of the press before, the other side when the cursor
+/// lies left of the facing), holding the button keeps the request standing
+/// and releasing it drops it; and each side's attack picks.
 #[derive(Debug, Default)]
-struct AttackChoice {
-    last_click: Option<f32>,
+struct AttackInput {
+    /// The button was down last tick.
+    down: bool,
+    /// An attack is requested: pressed in combat mode and still held.
+    requested: bool,
+    /// The request is a double click's (an overhead) while it stands.
+    double: bool,
+    /// Alt asks for a thrust (only with a held weapon).
+    thrust: bool,
+    /// The other side, as the cursor lay at the press; every attack
+    /// started clears it.
+    other_side: bool,
+    /// The game clock (ms) of the last press that was not a double click's
+    /// second.
+    last_press: Option<u64>,
+    /// The standing request waits for the energy to come back (logged once).
+    dazed: bool,
     seed: u32,
     /// The last pick of each side, 0 until the first (as the original's
     /// zeroed fields, so the first pick of a side is never its first clip).
     last: [usize; 2],
 }
 
-impl AttackChoice {
-    /// A click at `now` (s): an overhead when it comes within 300 ms of the
-    /// click before (which then no longer counts), else the side the cursor
-    /// gives.
-    fn click(&mut self, now: f32, other_side: bool) -> Strike {
-        let double = self.last_click.is_some_and(|t| now < t + DOUBLE_CLICK);
-        self.last_click = if double { None } else { Some(now) };
-        match (double, other_side) {
-            (true, _) => Strike::Overhead,
-            (false, false) => Strike::Main,
-            (false, true) => Strike::Other,
+impl AttackInput {
+    /// One behaviour tick of the button, down or not (`down`), at `now`
+    /// (ms of the game clock); `other_side` is where the cursor lies
+    /// against the facing. A new press requests an attack and, within
+    /// 300 ms of the press before (which then no longer counts), an
+    /// overhead; the side is taken at the press; a release drops the
+    /// request.
+    fn tick(&mut self, down: bool, now: u64, other_side: bool) {
+        if !down {
+            *self = Self {
+                last_press: self.last_press,
+                seed: self.seed,
+                last: self.last,
+                ..Self::default()
+            };
+            return;
+        }
+        if !self.down {
+            let double = self.last_press.is_some_and(|t| now < t + DOUBLE_CLICK_MS);
+            self.last_press = if double { None } else { Some(now) };
+            self.double |= double;
+            self.other_side = other_side;
+            self.requested = true;
+        }
+        self.down = true;
+    }
+
+    /// What the standing request asks of the executor.
+    fn request(&self) -> Request {
+        Request {
+            overhead: self.double,
+            thrust: self.thrust,
+            other_side: self.other_side,
         }
     }
 
     /// One of a side's three attacks at random, never the one it picked
-    /// last, by the original's 32-bit generator.
-    fn pick(&mut self, side: usize) -> usize {
+    /// last, by the original's 32-bit generator; crouched, always the first
+    /// (Attack Mid), which then counts as the side's last pick.
+    fn pick(&mut self, side: usize, crouched: bool) -> usize {
+        if crouched {
+            self.last[side] = 0;
+            return 0;
+        }
         loop {
             self.seed = self.seed.wrapping_mul(0x0808_8405).wrapping_add(1);
             let i = ((self.seed as u64 * 3) >> 32) as usize;
@@ -196,6 +230,19 @@ impl AttackChoice {
             }
         }
     }
+}
+
+/// The left button as the behaviour ticks see it: a press since the last
+/// tick counts even when it was let go before a tick ran (a click within a
+/// frame that ran no tick).
+#[derive(Resource, Default)]
+struct AttackButton {
+    pressed_since_tick: bool,
+}
+
+/// Before the frame's ticks: remembers a press for the next tick.
+fn latch_attack_button(buttons: Res<ButtonInput<MouseButton>>, mut latch: ResMut<AttackButton>) {
+    latch.pressed_since_tick |= buttons.just_pressed(MouseButton::Left);
 }
 
 /// The combat-mode heading toward a cursor at yaw `aim`: the cursor's
@@ -232,7 +279,15 @@ pub struct PlayerPlugin;
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CursorGround>()
-            .add_systems(FixedPreUpdate, (steer_player, take_player_stance).chain())
+            .init_resource::<AttackButton>()
+            .add_systems(
+                RunFixedMainLoop,
+                latch_attack_button.in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop),
+            )
+            .add_systems(
+                FixedPreUpdate,
+                (request_attacks, steer_player, take_player_stance).chain(),
+            )
             .add_systems(
                 Update,
                 (cursor_ground, toggle_combat, player_combat, chase_camera).chain(),
@@ -614,32 +669,18 @@ fn toggle_combat(keys: Res<ButtonInput<KeyCode>>, mut bodies: Query<&mut PlayerB
     }
 }
 
-/// Combat mode (Tab): the heading turns to the cursor once it is more than
-/// 30° off, and follows it while the left button is held. A left click
-/// attacks: on the main side, or on the other side when the cursor is far
-/// enough left of the body's facing, or overhead on a double click.
-#[allow(clippy::type_complexity)]
+/// Combat mode (Tab), each frame: the cursor's direction is the aim, and
+/// the heading turns to it once it is more than 30° off, or follows it
+/// while an attack is requested.
 fn player_combat(
-    mut commands: Commands,
-    time: Res<Time>,
-    buttons: Res<ButtonInput<MouseButton>>,
     cursor: Res<CursorGround>,
     players: Query<&GlobalTransform, With<Player>>,
-    mut bodies: Query<(
-        Entity,
-        &mut PlayerBody,
-        &mut Animator,
-        &Stance,
-        Option<&HeldMoveset>,
-        Option<&Fighter>,
-        Option<&Attacking>,
-        Has<Fallen>,
-    )>,
+    mut bodies: Query<(&mut PlayerBody, Option<&Fighter>, Has<Fallen>)>,
 ) {
     let Some(player) = players.iter().next() else {
         return;
     };
-    for (entity, mut pb, mut anim, stance, held, fighter, attacking, fallen) in &mut bodies {
+    for (mut pb, fighter, fallen) in &mut bodies {
         if fallen || fighter.is_some_and(|f| f.down) || !pb.combat {
             continue;
         }
@@ -650,33 +691,122 @@ fn player_combat(
             .map(yaw_of);
         if let Some(aim) = aim {
             pb.aim = aim;
-            pb.heading = combat_heading(pb.heading, aim, buttons.pressed(MouseButton::Left));
+            pb.heading = combat_heading(pb.heading, aim, pb.attack.requested);
         }
-        if !buttons.just_pressed(MouseButton::Left) {
+    }
+}
+
+/// The player's attack request, each behaviour tick in combat mode, as the
+/// original's: a left press requests an attack (on the main side, the
+/// other side with the cursor far enough left of the facing, or overhead
+/// on a double click; Alt with a held weapon a stab), holding the button
+/// keeps it standing (so the attacks repeat) and releasing drops it. While
+/// it stands the heading is the cursor's direction, and with at least 80 %
+/// of its energy the fighter's executor starts what it asks once the
+/// cooldown since the last attack's last tick has passed
+/// ([`exa_combat::attack`]). Not yet: the released swing's stall and the
+/// overhead or feint it allows (the swing clock, M22), Remise (a perk).
+#[allow(clippy::type_complexity)]
+fn request_attacks(
+    mut commands: Commands,
+    ticks: Option<Res<BodyTicks>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    mut latch: ResMut<AttackButton>,
+    blades: Query<(&Blade, &GlobalTransform)>,
+    mut bodies: Query<(
+        Entity,
+        &mut PlayerBody,
+        &mut Animator,
+        &mut Attacker,
+        &Stance,
+        Option<&HeldMoveset>,
+        Option<&Fighter>,
+        Option<&Ragdoll>,
+        Option<&Attacking>,
+        Has<Fallen>,
+    )>,
+) {
+    let now = ticks.map_or(0, |t| t.millis());
+    let down = buttons.pressed(MouseButton::Left) || latch.pressed_since_tick;
+    latch.pressed_since_tick = false;
+    for (entity, mut pb, mut anim, mut attacker, stance, held, fighter, body, attacking, fallen) in
+        &mut bodies
+    {
+        if fallen || fighter.is_some_and(|f| f.down) || !pb.combat {
+            pb.attack.tick(false, now, false);
             continue;
         }
         let weapon_class = held.map_or(class::FISTS, |h| h.weapon_class);
-        let other = aim.is_some_and(|a| other_side(a, pb.yaw, weapon_class));
-        let strike = pb.attack.click(time.elapsed_secs(), other);
-        let resting = attacking.is_none() && anim.looping;
-        let action = match strike {
-            // An overhead cuts a side's attack short, but not a stab or
-            // another overhead.
-            Strike::Overhead => (!matches!(anim.action.as_str(), "Stab" | "Overhead Swing"))
-                .then_some("Overhead Swing"),
-            _ if !resting => None,
-            Strike::Main => Some(MAIN_SIDE[pb.attack.pick(0)]),
-            Strike::Other => Some(OTHER_SIDE_ATTACKS[pb.attack.pick(1)]),
-        };
-        if let Some(action) = action {
-            info!(
-                "attack: {action} in {} (cursor {:.0}° left of the facing)",
-                anim.moveset,
-                aim.map_or(0.0, |a| turn_between(pb.yaw, a).to_degrees())
-            );
-            // It ends in the stance the player holds by then.
-            exa_combat::start_attack(&mut commands, entity, &mut anim, action, stance.action());
+        let other = other_side(pb.aim, pb.yaw, weapon_class);
+        pb.attack.tick(down, now, other);
+        if !pb.attack.requested {
+            continue;
         }
+        pb.attack.thrust = attack::may_thrust(weapon_class)
+            && (keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight));
+        pb.heading = pb.aim;
+        let energy = body
+            .and_then(|b| b.drive.as_ref())
+            .map_or(MAX_ENERGY, |d| d.energy);
+        let dazed = !attack::has_energy(energy, MAX_ENERGY);
+        if dazed != pb.attack.dazed {
+            pb.attack.dazed = dazed;
+            if dazed {
+                info!("attack waits: energy {energy:.2}, under 80 % of {MAX_ENERGY:.2}");
+            }
+        }
+        if dazed {
+            continue;
+        }
+        let cooldown = attacker.cooldown_ms(entity, blades.iter().map(|(b, _)| b));
+        let playing = attack::playing(attacking, &anim);
+        let Some(kind) = attack::execute(
+            pb.attack.request(),
+            now,
+            attacker.last_tick_ms,
+            cooldown,
+            playing,
+        ) else {
+            continue;
+        };
+        let motion = match kind {
+            AttackKind::Main => AttackMotion::Main(pb.attack.pick(0, false)),
+            AttackKind::Other => AttackMotion::Other(pb.attack.pick(1, false)),
+            AttackKind::Overhead => AttackMotion::Overhead,
+            AttackKind::Stab => {
+                // The held weapon's long axis, forward or not far back.
+                let ahead = blades
+                    .iter()
+                    .find(|(b, _)| b.wielder == entity && b.slot == Slot::First)
+                    .map(|(_, gt)| gt.up().dot(forward(pb.yaw)));
+                if !ahead.is_some_and(attack::stab_faces) {
+                    continue;
+                }
+                AttackMotion::Stab
+            }
+        };
+        info!(
+            "attack: {} in {} at {now} ms (cursor {:.0}° left of the facing, energy \
+             {energy:.2}; last attack tick {}, cooldown {cooldown} ms)",
+            motion.action(),
+            anim.moveset,
+            turn_between(pb.yaw, pb.aim).to_degrees(),
+            attacker
+                .last_tick_ms
+                .map_or("none".into(), |t| format!("at {t} ms")),
+        );
+        pb.attack.other_side = false;
+        // It ends in the stance the player holds by then.
+        exa_combat::start_attack(
+            &mut commands,
+            entity,
+            &mut anim,
+            &mut attacker,
+            motion,
+            weapon_class,
+            stance.action(),
+        );
     }
 }
 
@@ -1274,15 +1404,216 @@ mod tests {
         }
     }
 
+    /// A press requests an attack, held it stands, released it is gone; a
+    /// second press within 300 ms (of the game clock) of the one before
+    /// asks for the overhead while it is held, and uses both presses up.
     #[test]
-    fn a_second_click_within_300_ms_is_an_overhead() {
-        let mut choice = AttackChoice::default();
-        assert_eq!(choice.click(10.0, false), Strike::Main);
-        assert_eq!(choice.click(10.29, false), Strike::Overhead);
-        // The double click used both clicks up.
-        assert_eq!(choice.click(10.4, true), Strike::Other);
-        assert_eq!(choice.click(10.75, false), Strike::Main);
-        assert_eq!(choice.click(11.1, false), Strike::Main);
+    fn a_second_press_within_300_ms_asks_for_an_overhead() {
+        let mut input = AttackInput::default();
+        let press = |input: &mut AttackInput, at: u64, other: bool| {
+            input.tick(true, at, other);
+            let request = input.request();
+            input.tick(false, at + 12, false);
+            (input.requested, request)
+        };
+        input.tick(true, 10_000, false);
+        assert!(input.requested && input.request() == Request::default());
+        input.tick(true, 10_500, true);
+        // Held: still the same request, its side taken at the press.
+        assert!(input.requested && !input.request().other_side);
+        input.tick(false, 10_512, false);
+        assert!(!input.requested);
+        let overhead = |r: Request| r.overhead;
+        // 299 ms after the press at 10 000.
+        assert!(overhead(press(&mut input, 10_299, false).1));
+        // The double click used both presses up.
+        let (_, r) = press(&mut input, 10_400, true);
+        assert!(!r.overhead && r.other_side);
+        assert!(!overhead(press(&mut input, 10_750, false).1));
+        assert!(overhead(press(&mut input, 11_049, false).1));
+        assert!(!input.requested);
+    }
+
+    /// The unarmed player in combat mode, its two fists its strikers, at
+    /// body tick 1000 (12 000 ms of the game clock); [`request_tick`] runs
+    /// one behaviour tick of the attack request.
+    fn attack_app() -> (App, Entity) {
+        let mut app = App::new();
+        app.insert_resource(BodyTicks(1000))
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<AttackButton>()
+            .add_systems(FixedPreUpdate, request_attacks);
+        let mut pb = PlayerBody::new(0.0);
+        pb.set_combat(true);
+        let body = app
+            .world_mut()
+            .spawn((
+                pb,
+                Animator::new("Default", "Cmbt - Idle"),
+                Stance::CombatIdle,
+                Fighter::default(),
+            ))
+            .id();
+        use exa_formats::weapon_record::{Holder, Lengths, Section, WeaponRecord};
+        let fist = WeaponRecord::build(
+            &Section::FISTS,
+            false,
+            Lengths::hand(-8.0, 9.66),
+            &Holder::AVERAGE,
+        );
+        for slot in [Slot::First, Slot::Second] {
+            app.world_mut().spawn((
+                Blade::new(body, 0.1766, fist).in_slot(slot),
+                GlobalTransform::IDENTITY,
+            ));
+        }
+        (app, body)
+    }
+
+    /// One behaviour tick with the left button down or up, the game clock
+    /// one tick on; the clip it plays after.
+    fn request_tick(app: &mut App, body: Entity, down: bool) -> (String, bool) {
+        {
+            let mut buttons = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+            if down {
+                buttons.press(MouseButton::Left);
+            } else {
+                buttons.release(MouseButton::Left);
+            }
+        }
+        app.world_mut().run_schedule(FixedPreUpdate);
+        app.world_mut().resource_mut::<BodyTicks>().0 += 1;
+        let anim = app.world().get::<Animator>(body).unwrap();
+        (anim.action.clone(), anim.looping)
+    }
+
+    /// Ends the attack playing in its stance at the game clock's `ms`, as
+    /// its last tick.
+    fn end_attack(app: &mut App, body: Entity, ms: u64) {
+        let mut e = app.world_mut().entity_mut(body);
+        e.get_mut::<Animator>().unwrap().play_loop("Cmbt - Idle");
+        e.get_mut::<Attacker>().unwrap().last_tick_ms = Some(ms);
+        e.remove::<Attacking>();
+    }
+
+    /// A press throws a right straight at once with the right fist as its
+    /// primary striker. Held, the request stands: nothing while the attack
+    /// plays, nothing until 330 ms (the fist's 300 × 0.1 + 300) after its
+    /// last tick, then the next main-side attack, never the same pick.
+    /// Released, nothing more.
+    #[test]
+    fn holding_the_button_repeats_the_attack_after_its_cooldown() {
+        let (mut app, body) = attack_app();
+        assert_eq!(
+            request_tick(&mut app, body, true),
+            ("Attack Up".into(), false)
+        );
+        let first = app.world().get::<Attacking>(body).unwrap().motion;
+        assert_eq!(first, AttackMotion::Main(2));
+        let attacker = *app.world().get::<Attacker>(body).unwrap();
+        assert_eq!(attacker.primary, Some(Slot::First));
+        for _ in 0..50 {
+            request_tick(&mut app, body, true);
+        }
+        assert_eq!(app.world().get::<Attacking>(body).unwrap().motion, first);
+        // The attack's last tick at 13 000 ms: the cooldown ends at 13 330.
+        end_attack(&mut app, body, 13_000);
+        app.world_mut().resource_mut::<BodyTicks>().0 = 1110; // 13 320 ms
+        assert_eq!(
+            request_tick(&mut app, body, true),
+            ("Cmbt - Idle".into(), true)
+        );
+        // 1111 ticks: 13 332 ms.
+        let (action, looping) = request_tick(&mut app, body, true);
+        assert!(!looping && action != "Attack Up", "{action}");
+        assert!(matches!(
+            app.world().get::<Attacking>(body).unwrap().motion,
+            AttackMotion::Main(_)
+        ));
+        end_attack(&mut app, body, 14_000);
+        request_tick(&mut app, body, false);
+        app.world_mut().resource_mut::<BodyTicks>().0 = 1300;
+        for _ in 0..10 {
+            assert_eq!(request_tick(&mut app, body, false).0, "Cmbt - Idle");
+        }
+    }
+
+    /// The first unarmed attack waits 400 ms after an earlier attack's last
+    /// tick (no primary striker yet); the cursor 25° to the left at the
+    /// press throws the other side's attack with the left fist as primary.
+    #[test]
+    fn the_cursor_left_throws_the_left_fist() {
+        let (mut app, body) = attack_app();
+        app.world_mut()
+            .get_mut::<Attacker>(body)
+            .unwrap()
+            .last_tick_ms = Some(11_700);
+        app.world_mut().get_mut::<PlayerBody>(body).unwrap().aim = 25f32.to_radians();
+        // 12 000 ms: 300 after the last tick.
+        assert_eq!(request_tick(&mut app, body, true).0, "Cmbt - Idle");
+        app.world_mut().resource_mut::<BodyTicks>().0 = 1009; // 12 108 ms
+        assert_eq!(request_tick(&mut app, body, true).0, "Attack Combo 3");
+        let a = app.world().get::<Attacker>(body).unwrap();
+        assert_eq!(a.primary, Some(Slot::Second));
+        let pb = app.world().get::<PlayerBody>(body).unwrap();
+        assert_eq!(pb.heading, 25f32.to_radians());
+    }
+
+    /// Below 80 % of its energy (dazed) the player's request stands but
+    /// starts nothing; at 80 % it attacks.
+    #[test]
+    fn no_attack_below_80_percent_energy() {
+        let (mut app, body) = attack_app();
+        let part = exa_physics::body::PartSetup {
+            bone: 1,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: bevy::math::Affine3A::IDENTITY,
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.08),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+        };
+        let mut ragdoll = Ragdoll::new(&[part]).with_drive();
+        ragdoll.drive.as_mut().unwrap().energy = 0.79;
+        app.world_mut().entity_mut(body).insert(ragdoll);
+        for _ in 0..5 {
+            assert_eq!(request_tick(&mut app, body, true).0, "Cmbt - Idle");
+        }
+        assert!(
+            app.world()
+                .get::<PlayerBody>(body)
+                .unwrap()
+                .attack
+                .requested
+        );
+        let mut e = app.world_mut().entity_mut(body);
+        e.get_mut::<Ragdoll>()
+            .unwrap()
+            .drive
+            .as_mut()
+            .unwrap()
+            .energy = 0.8;
+        assert!(request_tick(&mut app, body, true).0.starts_with("Attack"));
+    }
+
+    /// A click that came and went within a frame that ran no tick still
+    /// reaches the next tick as a press.
+    #[test]
+    fn a_click_between_ticks_still_attacks() {
+        let (mut app, body) = attack_app();
+        app.add_systems(PreUpdate, latch_attack_button);
+        let mut buttons = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+        buttons.press(MouseButton::Left);
+        app.world_mut().run_schedule(PreUpdate);
+        let mut buttons = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+        buttons.clear();
+        buttons.release(MouseButton::Left);
+        app.world_mut().run_schedule(FixedPreUpdate);
+        assert!(!app.world().get::<Animator>(body).unwrap().looping);
     }
 
     #[test]
@@ -1307,16 +1638,20 @@ mod tests {
     fn the_picks_follow_the_original_generator() {
         // × 0x08088405 + 1 from 0, clip = state × 3 >> 32, redrawn while
         // it equals the last pick (0 at first).
-        let mut choice = AttackChoice::default();
-        let picks: Vec<usize> = (0..8).map(|_| choice.pick(0)).collect();
+        let mut choice = AttackInput::default();
+        let picks: Vec<usize> = (0..8).map(|_| choice.pick(0, false)).collect();
         assert_eq!(picks, [2, 0, 2, 0, 1, 0, 1, 0]);
+        assert_eq!(choice.seed, 303_092_965);
+        // Crouched: Attack Mid, which then is the side's last pick.
+        assert_eq!(choice.pick(0, true), 0);
+        assert_eq!(choice.last[0], 0);
         assert_eq!(choice.seed, 303_092_965);
     }
 
     #[test]
     fn a_side_never_repeats_its_last_attack() {
-        let mut choice = AttackChoice::default();
-        let picks: Vec<usize> = (0..200).map(|_| choice.pick(0)).collect();
+        let mut choice = AttackInput::default();
+        let picks: Vec<usize> = (0..200).map(|_| choice.pick(0, false)).collect();
         // The first pick is never the first clip: the last pick starts at 0.
         assert_ne!(picks[0], 0);
         assert!(picks.windows(2).all(|w| w[0] != w[1]));
@@ -1325,7 +1660,7 @@ mod tests {
             assert!((50..=84).contains(&n), "clip {i}: {n} of 200");
         }
         // Each side keeps its own last pick.
-        assert_ne!(choice.pick(1), 0);
+        assert_ne!(choice.pick(1, false), 0);
     }
 
     #[test]

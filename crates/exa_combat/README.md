@@ -4,7 +4,13 @@ Combat resolution: contacts between weapons and bodies, impact energy, armour co
 
 **Phase:** Phase 4 (see [`docs/PLAN.md`](../../docs/PLAN.md)). Status: skeleton.
 
-It already resolves blade contacts by the original's damage model
+It already decides when a fighter may attack and which of its strikers
+strike, by the original's attack executor shared by the player and the AI
+(`attack`: 80 % of the most energy, the cooldown from the last attack tick
+on the 12 ms game clock, 400 ms or round(300 × the primary's recoil) +
+300 ms, the choice of attack, the motion's hand with the fists; rules in
+[`docs/PLAYER.md`](../../docs/PLAYER.md), Combat mode), and resolves the
+contacts of blades and fists by the original's damage model
 (`damage`, with the weapon record of `exa_formats::weapon_record`
 re-exported as `damage::WeaponRecord`) and keeps each fighter's combat stance and readiness (`stance`:
 the looping clip it returns to, the body tick's switch to it that skips

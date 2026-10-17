@@ -50,6 +50,9 @@ pub struct ModelNode {
     pub fire: Option<f32>,
     /// Bounding sphere in the node's space (metres).
     pub bounds: (Vec3, f32),
+    /// Half extents of the node's bounding box about the sphere's centre
+    /// (metres): a fist's length runs across the hand's box.
+    pub half_extents: Vec3,
     /// The mesh's GI sample points in the node's space (metres), which mark
     /// the voxels it fills.
     pub gi_points: Arc<Vec<Vec3>>,
@@ -305,6 +308,7 @@ impl ModelLoader<'_> {
                 part_materials,
                 skin_bone,
                 bounds: (Vec3::from(node.bounds_centre), node.bounds_radius),
+                half_extents: Vec3::from(node.bounds_half_extents),
                 gi_points: Arc::new(match &node.body {
                     NodeBody::Mesh(mesh) if skin_bone.is_none() => {
                         mesh.gi_points.iter().map(|&p| Vec3::from(p)).collect()

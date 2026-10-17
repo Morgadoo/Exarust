@@ -35,6 +35,7 @@
 //!          --pause-at-tick <n>        pause the simulation at the end of body tick n
 //!          --pause-on-stretch <cm>    pause the simulation when a link goes this far past its slack
 //!          --pause-after-jet <n>      pause the simulation n body ticks after the first blood jet
+//!          --pause-on-hit <n>         pause the simulation n ticks after the player's first blow lands
 //!          --press key@frame,...      press keys (Ctrl among them) or mouse buttons (LMB, RMB, MMB) at frames after
 //!                                     loading (e.g. `.@400,P@500,LMB@600`); `key@a-b` holds it from frame a to b
 //!          --cursor x,y               play mode: the cursor stays at this window point (logical pixels), for unattended runs
@@ -135,6 +136,9 @@ pub struct Options {
     pub pause_on_stretch: Option<f32>,
     /// Pause the simulation this many ticks after the first blood jet.
     pub pause_after_jet: Option<u64>,
+    /// Pause the simulation this many ticks after the player's first blow
+    /// lands.
+    pub pause_on_hit: Option<u64>,
     /// Keys and buttons pressed at frames after the load (for unattended
     /// checks): each is held over its frames and let go at the range's end.
     pub press: Vec<(Press, Range<u32>)>,
@@ -333,6 +337,7 @@ fn main() -> AppExit {
             "--pause-on-stretch" => {
                 options.pause_on_stretch = args.next().and_then(|v| v.parse().ok())
             }
+            "--pause-on-hit" => options.pause_on_hit = args.next().and_then(|v| v.parse().ok()),
             "--press" => {
                 let list = args.next().unwrap_or_default();
                 match parse_presses(&list) {
@@ -566,7 +571,8 @@ fn main() -> AppExit {
             // Centimetres on the command line.
             options.pause_on_stretch.map(|cm| cm / 100.0),
         )
-        .after_jet(options.pause_after_jet),
+        .after_jet(options.pause_after_jet)
+        .with_pause_on_hit(options.pause_on_hit),
     )
     .insert_resource(options)
     .add_plugins(viewer::ViewerPlugin)

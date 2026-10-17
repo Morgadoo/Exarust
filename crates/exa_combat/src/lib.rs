@@ -1,7 +1,10 @@
 //! Combat resolution.
 //!
-//! A held weapon is a segment from its grip to its tip. While its wielder is
-//! attacking, the segment is tested against the body parts of other fighters.
+//! A held weapon is a segment from its grip to its tip, an empty hand's fist
+//! one across the hand. While its wielder is attacking, the segments of the
+//! strikers its attack strikes with ([`attack::strikes`]) are tested
+//! against the body parts of other fighters. When a fighter may attack, and
+//! with what, is the original's attack executor ([`attack`]).
 //! A contact is resolved by the original's damage model ([`damage`]): the
 //! weapon's stats, where along it the blow lands and how fast, against the
 //! struck part's armour layers. It takes health, shoves and dazes the target,
@@ -13,18 +16,20 @@
 //! blow it sprays a jet of blood and the weapon that dealt it draws blood
 //! ([`wounds`]).
 
+pub mod attack;
 pub mod damage;
 pub mod stance;
 pub mod wounds;
 
 use std::collections::HashSet;
 
+use attack::{AttackMotion, Attacker, Slot};
 use bevy::prelude::*;
 use damage::{Health, PartArmour, Strike, WeaponRecord};
 use exa_anim::{Animator, BodyPart, Motions};
 use exa_formats::races::{Natural, Race};
 use exa_physics::body::BODY_HZ;
-use exa_physics::body::{BodyTicks, GoLimp, Shove};
+use exa_physics::body::{BodyTicks, CharacterTicks, GoLimp, Shove};
 use exa_world::PartBounds;
 use wounds::{BladeBlood, WoundQueue, frame_tetra, tetra_weights};
 
@@ -36,6 +41,11 @@ impl Plugin for CombatPlugin {
             .add_plugins(stance::StancePlugin)
             .add_message::<wounds::Bleed>()
             .add_message::<wounds::Spray>()
+            // The attack branch of the body tick, before the clips advance.
+            .add_systems(
+                FixedUpdate,
+                attack::stamp_attack_ticks.before(CharacterTicks),
+            )
             .add_systems(
                 PostUpdate,
                 // Wounds struck this frame wait from the next tick on.
@@ -59,7 +69,7 @@ pub struct CombatSystems;
 
 /// A character that can fight and be hurt (on the body model root).
 #[derive(Component, Debug, Clone)]
-#[require(WoundQueue)]
+#[require(WoundQueue, Attacker)]
 pub struct Fighter {
     pub health: Health,
     /// The race's natural armour, under worn items.
@@ -104,11 +114,15 @@ impl Fighter {
     }
 }
 
-/// A weapon segment, on the entity holding the weapon model (local +Y).
+/// A striker's segment along its entity's local +Y: a held weapon's, on the
+/// entity holding the weapon model, or a fist's, across the hand.
 #[derive(Component, Debug, Clone)]
 pub struct Blade {
     /// Fighter (body model root) wielding it.
     pub wielder: Entity,
+    /// The held item it is: the first (a weapon, the right fist) or the
+    /// second (the left fist).
+    pub slot: Slot,
     /// Tip distance along local +Y (metres).
     pub length: f32,
     /// The weapon's stats.
@@ -124,10 +138,11 @@ pub struct Blade {
 }
 
 impl Blade {
-    /// A blade at rest in a fighter's hand.
+    /// A blade at rest in a fighter's hand, its first held item.
     pub fn new(wielder: Entity, length: f32, record: WeaponRecord) -> Self {
         Self {
             wielder,
+            slot: Slot::First,
             length,
             record,
             tip_last: None,
@@ -137,15 +152,41 @@ impl Blade {
             grip_last: Vec3::ZERO,
         }
     }
+
+    /// The same striker as the held item in `slot`.
+    pub fn in_slot(self, slot: Slot) -> Self {
+        Self { slot, ..self }
+    }
 }
 
 /// Positions a blade sweep is tested at between two frames.
 const SWEEP_STEPS: usize = 6;
 
-/// Attack in progress on a fighter: which targets it has already struck.
-#[derive(Component, Debug, Default)]
+/// Attack in progress on a fighter: its motion, the fighter's weapon class
+/// (which picks the hand that strikes) and which targets it has already
+/// struck.
+#[derive(Component, Debug)]
 pub struct Attacking {
+    pub motion: AttackMotion,
+    pub weapon_class: u8,
     pub struck: HashSet<Entity>,
+}
+
+impl Attacking {
+    pub fn new(motion: AttackMotion, weapon_class: u8) -> Self {
+        Self {
+            motion,
+            weapon_class,
+            struck: HashSet::new(),
+        }
+    }
+}
+
+impl Default for Attacking {
+    /// A main-side attack with a one-handed weapon.
+    fn default() -> Self {
+        Self::new(AttackMotion::Main(0), 0x10)
+    }
 }
 
 /// A weapon contact.
@@ -177,16 +218,29 @@ const PUSH_FROM: f32 = 0.5;
 const PUSH_PER_IMPACT: f32 = 10.0 * BODY_HZ / 100.0;
 const CM_PER_M: f32 = 100.0;
 
-/// Starts an attack clip on a fighter.
+/// A fist meets a part with its knuckles, which lie inside the hand's box;
+/// its segment ends on the box's far face, so a contact there is measured
+/// this far (cm) inside it (the original ignores contacts at or past a
+/// striker's far end).
+const KNUCKLES_INSIDE: f32 = 0.1;
+
+/// Starts an attack on a fighter of weapon class `weapon_class`: its clip,
+/// ending in `stance`, and its primary striker, the held item in the
+/// motion's slot ([`attack::primary_slot`]).
 pub fn start_attack(
     commands: &mut Commands,
     fighter: Entity,
     anim: &mut Animator,
-    action: &str,
+    attacker: &mut Attacker,
+    motion: AttackMotion,
+    weapon_class: u8,
     stance: &str,
 ) {
-    anim.play_once(action, stance);
-    commands.entity(fighter).insert(Attacking::default());
+    anim.play_once(motion.action(), stance);
+    attacker.primary = Some(attack::primary_slot(weapon_class, motion));
+    commands
+        .entity(fighter)
+        .insert(Attacking::new(motion, weapon_class));
 }
 
 fn track_blades(time: Res<Time>, mut blades: Query<(&mut Blade, &GlobalTransform)>) {
@@ -215,6 +269,14 @@ fn detect_hits(
         let Ok((anim, mut attack)) = attackers.get_mut(blade.wielder) else {
             continue;
         };
+        if !attack::strikes(
+            blade.slot,
+            blade.record.armed(),
+            attack.weapon_class,
+            attack.motion,
+        ) {
+            continue;
+        }
         let progress = anim.progress(&motions.0).unwrap_or(0.0);
         if !(ACTIVE_FROM..=ACTIVE_TO).contains(&progress) || blade.tip_speed < MIN_HIT_SPEED {
             continue;
@@ -263,12 +325,15 @@ fn detect_hits(
                 attack.struck.insert(target);
                 // Where along the weapon it landed, and how fast that point
                 // moved (the weapon turns about the grip).
-                let along = gt.affine().inverse().transform_point3(point).y * CM_PER_M;
+                let mut along = gt.affine().inverse().transform_point3(point).y * CM_PER_M;
+                if !blade.record.armed() {
+                    along = along.min(blade.length * CM_PER_M - KNUCKLES_INSIDE);
+                }
                 let share = (along / (blade.length * CM_PER_M)).clamp(0.0, 1.0);
                 let strike = Strike {
                     speed: blade.tip_speed * share * CM_PER_M / BODY_HZ,
-                    stab: anim.action == "Stab",
-                    overhead: anim.action == "Overhead Swing",
+                    stab: attack.motion == AttackMotion::Stab,
+                    overhead: attack.motion == AttackMotion::Overhead,
                     clock: progress,
                     along,
                 };
@@ -397,10 +462,15 @@ fn react_to_hits(
             daze: outcome.daze,
         });
         info!(
-            "hit on {:?} bone {} at tick {tick}, {:.0} cm, {:.1} cm/tick: impact {:.2}, \
+            "hit on {:?} bone {} at tick {tick} by {}, {:.0} cm, {:.1} cm/tick: impact {:.2}, \
              penetration {:.2} at readiness {:.2}, wound {:.3} (yellow {:.3}, red {:.3} of {:.2})",
             hit.target,
             hit.bone,
+            if hit.weapon.armed() {
+                "a weapon"
+            } else {
+                "a fist"
+            },
             hit.strike.along,
             hit.strike.speed,
             outcome.impact,
@@ -975,6 +1045,144 @@ mod tests {
         });
         app.update();
         assert!(sprays(&app).is_empty());
+    }
+
+    /// A synthetic motion set: the "Default" moveset's main-side and
+    /// other-side attacks, 100 frames each.
+    fn punches() -> Motions {
+        use exa_formats::rsq::{Action, Clip, Key, MotionSet, Moveset};
+        let key = |time| Key {
+            time,
+            root: [0.0; 3],
+            rotations: Vec::new(),
+            flags: Vec::new(),
+        };
+        let clip = Clip {
+            mode: 0,
+            keys: vec![key(0.0), key(100.0)],
+        };
+        let actions = ["Attack Mid", "Attack Combo 1", "Overhead Swing"];
+        let set = MotionSet {
+            bone_count: 0,
+            actions: actions
+                .iter()
+                .map(|n| Action {
+                    name: (*n).into(),
+                    params: [0; 2],
+                })
+                .collect(),
+            movesets: vec![Moveset {
+                name: "Default".into(),
+                parent: String::new(),
+                clips: vec![Some(clip); actions.len()],
+            }],
+        };
+        Motions(std::sync::Arc::new(set), std::sync::Arc::default(), 0.0)
+    }
+
+    /// The human fist's record, 17.66 cm across the hand.
+    fn fist() -> WeaponRecord {
+        use exa_formats::weapon_record::{Holder, Lengths, Section};
+        WeaponRecord::build(
+            &Section::FISTS,
+            false,
+            Lengths::hand(-8.0, 9.66),
+            &Holder::AVERAGE,
+        )
+    }
+
+    /// An unarmed puncher halfway through `motion` with both fists driven
+    /// into a target's chest (a 20 cm sphere 1 m ahead, at chest height),
+    /// knuckles first at 4 m/s; the hits detected.
+    fn punch(motion: AttackMotion, weapon_class: u8) -> (Vec<Hit>, [Entity; 2]) {
+        let mut app = App::new();
+        app.add_message::<Hit>()
+            .insert_resource(punches())
+            .add_systems(Update, detect_hits);
+        let mut anim = Animator::new("Default", "Cmbt - Idle");
+        anim.play_once(motion.action(), "Cmbt - Idle");
+        anim.time = 50.0;
+        let puncher = app
+            .world_mut()
+            .spawn((
+                Fighter::default(),
+                anim,
+                Attacking::new(motion, weapon_class),
+            ))
+            .id();
+        let chest = Vec3::new(0.0, 1.4, 1.0);
+        let target = app.world_mut().spawn(Fighter::default()).id();
+        app.world_mut().spawn((
+            BodyPart {
+                bone: 9,
+                rest: Transform::IDENTITY,
+            },
+            GlobalTransform::from_translation(chest),
+            PartBounds {
+                centre: Vec3::ZERO,
+                radius: 0.2 / 0.75,
+                half_extents: Vec3::splat(0.15),
+            },
+            ChildOf(target),
+        ));
+        // Each fist's segment runs from the wrist along +Z (local +Y turned
+        // forward), its knuckles 5 cm into the chest's sphere.
+        let length = fist().length / CM_PER_M;
+        let fists = [(Slot::First, -0.05), (Slot::Second, 0.05)].map(|(slot, x)| {
+            let wrist = Vec3::new(x, 1.4, 1.0 - 0.2 + 0.05 - length);
+            let at = Transform::from_translation(wrist)
+                .with_rotation(Quat::from_rotation_arc(Vec3::Y, Vec3::Z));
+            let mut blade = Blade::new(puncher, length, fist()).in_slot(slot);
+            blade.tip_speed = 4.0;
+            blade.tip_velocity = Vec3::Z * 4.0;
+            app.world_mut()
+                .spawn((blade, GlobalTransform::from(at)))
+                .id()
+        });
+        app.update();
+        let messages = app.world().resource::<Messages<Hit>>();
+        (
+            messages.iter_current_update_messages().cloned().collect(),
+            fists,
+        )
+    }
+
+    /// Unarmed, the main side and the overhead strike with the right fist
+    /// only, the other side with the left; the struck point is the
+    /// knuckles, 0.1 cm inside the hand's 17.66 cm, so the blow counts. A
+    /// held weapon's class makes the fists no strikers at all.
+    #[test]
+    fn fists_strike_with_the_motions_hand() {
+        for (motion, hand) in [
+            (AttackMotion::Main(0), 0),
+            (AttackMotion::Overhead, 0),
+            (AttackMotion::Other(0), 1),
+        ] {
+            let (hits, fists) = punch(motion, 0x80);
+            assert_eq!(hits.len(), 1, "{motion:?}");
+            let hit = &hits[0];
+            assert_eq!(hit.striker, fists[hand], "{motion:?}");
+            assert_eq!(hit.bone, 9);
+            assert!(!hit.weapon.armed());
+            assert!(
+                (hit.strike.along - (17.66 - 0.1)).abs() < 1e-3,
+                "{:?}",
+                hit.strike
+            );
+            assert_eq!(hit.strike.overhead, motion == AttackMotion::Overhead);
+            let o = damage::resolve(
+                &hit.weapon,
+                &hit.strike,
+                &PartArmour::default(),
+                hit.bone,
+                0.25,
+                0.0,
+                0.5,
+            );
+            assert!(o.is_some_and(|o| o.yellow > 0.0), "{o:?}");
+        }
+        let (hits, _) = punch(AttackMotion::Main(0), 0x10);
+        assert!(hits.is_empty());
     }
 
     /// A punch bleeds on the one struck, never on the puncher's own fist or

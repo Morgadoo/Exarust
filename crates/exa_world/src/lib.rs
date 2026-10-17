@@ -39,11 +39,13 @@ impl Plugin for WorldPlugin {
     }
 }
 
-/// Bounding sphere of a model node, in its local space.
+/// Bounding sphere of a model node, in its local space, and the half
+/// extents of its bounding box about the same centre.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct PartBounds {
     pub centre: Vec3,
     pub radius: f32,
+    pub half_extents: Vec3,
 }
 
 /// Marks the root entity of a spawned level.
@@ -343,6 +345,7 @@ pub fn spawn_model(commands: &mut Commands, model: &Model, placement: Option<Tra
                 PartBounds {
                     centre: node.bounds.0,
                     radius: node.bounds.1,
+                    half_extents: node.half_extents,
                 },
             ))
             .id();
@@ -1142,6 +1145,7 @@ mod tests {
             }),
             fire: None,
             bounds: (Vec3::ZERO, 1.0),
+            half_extents: Vec3::ZERO,
             gi_points: Default::default(),
         }
     }

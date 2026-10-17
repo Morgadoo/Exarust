@@ -187,6 +187,12 @@ fn setup(
                         .entity(root)
                         .insert(exa_character::Wielded::model(w.clone()));
                 }
+                // A weapon is held as the race holds it.
+                if let Some(r) = &race {
+                    commands
+                        .entity(root)
+                        .insert(exa_character::RaceWeaponry::of_race(r));
+                }
                 // A torch moveset shows the body holding the lit torch in
                 // the hand that moveset raises.
                 if let Some(hand) = exa_game::torch::TorchHand::of_moveset(moveset) {
@@ -1090,6 +1096,10 @@ fn spawn_placed_characters(
                     .collect(),
             ),
             race.map_or_else(exa_combat::Fighter::default, exa_combat::Fighter::of_record),
+            race.map_or_else(
+                exa_character::RaceWeaponry::default,
+                exa_character::RaceWeaponry::of_race,
+            ),
             ChildOf(root),
         ));
         if let Some((model_name, weapon)) = &c.held {

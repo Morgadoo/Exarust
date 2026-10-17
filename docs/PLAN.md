@@ -435,11 +435,25 @@ turns combat mode off in Cmbt - Idle keeps that carry until it walks;
 tests pin both carries to the installed clips ([PLAYER.md](PLAYER.md), The
 carried torch). Next for the torch's look: the torso twist and head look
 toward the cursor (M8) and the open hand.
+Done (change `strike-with-fists`): the fists strike, as the original's
+empty hands are held items with the race's fist or claw records, each a
+striker across its hand's box, the motion's hand striking (the right
+straight, the left straight, the right overhand); the original's attack
+executor for the player and the duellist: 80 % of the most energy, the
+cooldown from the last attack tick on the 12 ms game clock (400 ms with no
+primary striker, else 300 ms × its recoil + 300 ms: 330 ms for the fists);
+the player's left button kept as a standing request each behaviour tick,
+so holding it repeats the attacks, a held double click's overhead follows
+the attack, and Alt stabs with a held weapon; the race's weapon fields
+from its decoded stats; `--pause-on-hit` for pictures of a landed blow
+([PLAYER.md](PLAYER.md), Combat mode; [formats/OTHER.md](formats/OTHER.md),
+Weapon record).
 Still to do: inventory and containers, injuries beyond damage, blocking,
 parrying, grabs, practice mode, the knockback step, the swing stall and
 the striker's recoil, a lethal wound's fall and collapse, the daze's guard
 and pose hold and the stance blends (C10), the balance's Defence stance
-and Rebalance (C11); next in the combat look: fists that strike.
+and Rebalance (C11); next in the combat timing: the swing clock with the
+release and stall (M22), then the unarmed parries (L10).
 
 - `exa_items`: item database, item instances, inventory and containers,
   equip and wield, weapon assembly from factories, mass and centre of
