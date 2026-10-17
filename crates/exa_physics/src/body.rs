@@ -132,8 +132,10 @@ const MIN_ENERGY: f32 = 0.05;
 pub const MAX_ENERGY: f32 = 1.0;
 /// Most of its energy a single blow takes.
 const MAX_DAZE: f32 = 0.9;
-/// A body is dazed while its energy is more than this under its most.
-const DAZED_BELOW_MAX: f32 = 0.05;
+/// A body is dazed while its energy is more than this under its most,
+/// compared in double precision as the original does (so an energy of
+/// 0.95f is dazed).
+const DAZED_BELOW_MAX: f64 = 0.05;
 /// The blow sag fades by this a tick.
 const SAG_FADE: f32 = 0.01;
 /// Friction of a limb against the level.
@@ -934,9 +936,10 @@ impl Drive {
         self.lift
     }
 
-    /// Dazed: its energy is more than 0.05 under its most.
+    /// Dazed: its energy is more than 0.05 under its most (in double
+    /// precision: 0.95f, a hair under the double 0.95, is dazed).
     pub fn dazed(&self) -> bool {
-        self.energy < MAX_ENERGY - DAZED_BELOW_MAX
+        f64::from(self.energy) < f64::from(MAX_ENERGY) - DAZED_BELOW_MAX
     }
 
     /// How far its targets give way to the pose it holds this tick (its

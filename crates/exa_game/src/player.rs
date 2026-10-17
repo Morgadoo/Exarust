@@ -639,9 +639,14 @@ fn take_player_stance(
                 }),
         )
         .map(|((_, scale), d)| (d, scale));
+        // Dazed, its energy more than 0.05 under its most, it guards.
+        let dazed = body
+            .and_then(|b| b.drive.as_ref())
+            .is_some_and(|d| d.dazed());
         let chosen = stance::player_stance(
             true,
             fighter.health.yellow,
+            dazed,
             target,
             pb.last_attack.map(|t| now - t),
         );
@@ -803,6 +808,7 @@ fn request_attacks(
             entity,
             &mut anim,
             &mut attacker,
+            blades.iter().map(|(b, _)| b),
             motion,
             weapon_class,
             stance.action(),

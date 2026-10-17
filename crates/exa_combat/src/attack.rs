@@ -11,6 +11,7 @@ use bevy::prelude::*;
 use exa_anim::Animator;
 use exa_physics::body::BodyTicks;
 
+use crate::damage::WeaponRecord;
 use crate::{Attacking, Blade};
 
 /// The cooldown (ms) while the fighter has no primary striker: since its
@@ -225,6 +226,20 @@ pub struct Attacker {
 }
 
 impl Attacker {
+    /// The record of its primary striker among `blades`: its own blade in
+    /// its primary slot; none without a primary.
+    pub fn primary_record<'a>(
+        &self,
+        fighter: Entity,
+        blades: impl IntoIterator<Item = &'a Blade>,
+    ) -> Option<&'a WeaponRecord> {
+        let slot = self.primary?;
+        blades
+            .into_iter()
+            .find(|b| b.wielder == fighter && b.slot == slot)
+            .map(|b| &b.record)
+    }
+
     /// Its cooldown (ms), from the recoil of its primary striker among
     /// `blades` (those it wields).
     pub fn cooldown_ms<'a>(
@@ -232,13 +247,29 @@ impl Attacker {
         fighter: Entity,
         blades: impl IntoIterator<Item = &'a Blade>,
     ) -> u64 {
-        let recoil = self.primary.and_then(|slot| {
-            blades
-                .into_iter()
-                .find(|b| b.wielder == fighter && b.slot == slot)
-                .map(|b| b.record.recoil)
-        });
-        cooldown_ms(recoil)
+        cooldown_ms(self.primary_record(fighter, blades).map(|r| r.recoil))
+    }
+}
+
+/// The other side's attacks start with a blend of round((20 − W19) × 0.6)
+/// frames, W19 the new primary striker's stance blend.
+const OTHER_SIDE_BLEND_FROM: i32 = 20;
+const OTHER_SIDE_BLEND_SCALE: f64 = 0.6;
+
+/// The blend (frames) an attack `motion` starts with, eased smoothly: the
+/// main side's (and Exarust's stab and overhead, whose blends the original
+/// passes in from callers not yet traced) none; the other side's
+/// round((20 − W19) × 0.6), ties to even, `primary_blend` the stance blend
+/// W19 of the striker the attack made primary (12 frames for the fists).
+pub fn start_blend(motion: AttackMotion, primary_blend: Option<i32>) -> u32 {
+    match motion {
+        AttackMotion::Other(_) => {
+            let w = OTHER_SIDE_BLEND_FROM - primary_blend.unwrap_or(0);
+            (f64::from(w) * OTHER_SIDE_BLEND_SCALE)
+                .round_ties_even()
+                .max(0.0) as u32
+        }
+        _ => 0,
     }
 }
 
@@ -474,5 +505,21 @@ mod tests {
         a.primary = Some(Slot::First);
         assert_eq!(a.cooldown_ms(me, &blades), 400);
         assert_eq!(a.cooldown_ms(other, &blades), 426);
+    }
+
+    /// The main side starts with no blend; the other side with
+    /// round((20 − W19) × 0.6): 12 frames with the fists (W19 0), 8 with a
+    /// sword of W19 7 (7.8), 12 with none.
+    #[test]
+    fn the_other_side_starts_with_a_blend() {
+        use AttackMotion::*;
+        assert_eq!(fist().blend, 0);
+        for m in [Main(0), Main(2), Stab, Overhead] {
+            assert_eq!(start_blend(m, Some(7)), 0, "{m:?}");
+        }
+        assert_eq!(start_blend(Other(1), Some(fist().blend)), 12);
+        assert_eq!(start_blend(Other(0), Some(7)), 8);
+        assert_eq!(start_blend(Other(2), None), 12);
+        assert_eq!(start_blend(Other(0), Some(20)), 0);
     }
 }

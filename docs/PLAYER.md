@@ -134,7 +134,7 @@ once the body stands, as the original's walk does.
   passes while an attack plays (every attack tick restarts it), so a
   double click's overhead follows the first attack once it has ended and
   its cooldown has passed, if the second press is still held. The
-  duellist's strikes (Exarust's own choice, every 2.2 s within 1.2 m,
+  duellist's strikes (Exarust's own choice, every 2.2 s within 1.15 m,
   until the original's AI) pass the same energy test and cooldown.
 - **What strikes.** Empty hands are the fists (or claws), each a striker
   built from the race's fist or claw record across its hand's box
@@ -144,9 +144,17 @@ once the body stands, as the original's walk does.
   A held weapon strikes in every attack and the fists then never do. Each
   attack makes the striking hand its primary striker; equipping a weapon
   makes the weapon the primary at once.
-- Not yet: the swing clock (attacks run at 60 frames a second), the
-  released swing's stall, the overhead or feint a released swing allows
-  and Remise (a perk) (M22); parries (L10).
+- **How an attack starts.** Its clip starts from where the body is and
+  blends to its first key, eased smoothly: the main side with no blend
+  past the first key, the other side with round((20 − W19) × 0.6) frames,
+  W19 the stance blend of the striker it made primary (12 frames with the
+  fists, 8 with the arena sword). Its clock runs at the swing's rate and
+  it ends into the stance with twice the primary's stance blend
+  ([formats/RSQ.md](formats/RSQ.md), Motion playback).
+- Not yet: the stab's and the overhead's blends (the original's executor
+  passes them in from callers not traced; Exarust starts both with none),
+  the released swing's stall, the overhead or feint a released swing
+  allows and Remise (a perk) (M22); parries (L10).
 
 ## The combat stance
 
@@ -162,10 +170,11 @@ also leaves its interim backpedal and combat walk alone).
 |---|---|
 | the player out of combat mode | Idle (the clip follows at once when it was the old stance's) |
 | the player in combat mode, dying (yellow health under 0.01) | Defence stance |
-| the player in combat mode, its target nearer than 3.5 m × the target's body scale (chest to chest), or within 3 s of its last attack's last tick | Cmbt - Idle |
+| the player in combat mode, not dazed, its target nearer than 3.5 m × the target's body scale (chest to chest), or within 3 s of its last attack's last tick | Cmbt - Idle |
 | the player in combat mode otherwise | Defence stance |
 | a duellist entering combat (at the fight start) | Defence stance |
 | a duellist in combat | Defence stance at 4 reaches or more from its target, Cmbt - Idle within |
+| any fighter, dazed (its energy more than 0.05 under its most, compared in double precision), every body tick | Defence stance |
 
 - **The player's target** is picked every tick among the other living
   fighters within 5 m: the best (5 − d)·(cos + 0.5), the angle measured
@@ -198,6 +207,25 @@ also leaves its interim backpedal and combat walk alone).
   weapon's sweet spot ([formats/OTHER.md](formats/OTHER.md), Weapon
   record), 50 cm unarmed: the arena sword's 98 cm makes it guard beyond
   3.92 m.
+- **The daze.** While a fighter's energy is more than 0.05 under its most
+  its body tick makes its stance the Defence stance, and, unless it is
+  down or attacking, starts the Defence stance when another clip plays,
+  blending round((1.05 − E) × 300) frames (129 at the 0.62 a duellist's
+  blow leaves), eased smoothly. Its body meanwhile holds the pose it is
+  physically in (standing on its feet, in full), so the guard does not
+  rise; when its energy is back the player's stance turns to Cmbt - Idle
+  again (with its target near) and the posture switch blends back.
+- **The blends.** Every stance change starts the stance's clip from
+  where the body is (the root and the legs' last targets, the upper
+  body's physical turns) and blends it to the clip's first key over
+  (first key + blend) frames: the set-stance helper (Tab, a duellist
+  entering combat) 30 frames, smooth; the posture switch 30, linear; a
+  duellist's stance 40 frames without a primary striker, else twice its
+  primary's stance blend (14 with the arena sword, none after a punch),
+  smooth, and on every pass it keeps the blend's ease smooth; the end of
+  a clip played once the original's table (twice the primary's stance
+  blend after an attack, none after a get-up), smooth
+  ([formats/RSQ.md](formats/RSQ.md), Motion playback).
 - **Readiness.** Standing in Cmbt - Idle, with that stance, a fighter's
   readiness rises 0.004 a tick (0 to 1 in 3 s); anything else resets it.
   A blow's wound (penetration, impact, stab energy) is scaled by 1 − 0.5 ×
@@ -205,13 +233,9 @@ also leaves its interim backpedal and combat walk alone).
   not lessened ([formats/OTHER.md](formats/OTHER.md), Damage).
 
 Not yet, with the change that brings each:
-- the daze: a dazed fighter (energy more than 0.05 under its cap) takes
-  the Defence stance, and its body holds the pose it is physically in
-  (C10, which lands both: without the pose hold the guard would rise at
-  every dazing blow, which the original never shows);
-- the blends of every stance change (30 frames for the switch, 2 × the
-  weapon's recovery time at an attack's end, …), C10: Exarust's stance
-  changes snap and the muscles smooth them;
+- the walk's end in the stance (Exarust's interim footwork and gaits
+  start their clips with no blend; the original's locomotion starts come
+  with C18);
 - the Defence stance and Rebalance a fighter takes from its balance
   (below 0.8) or its tone (below 0.85), C11;
 - parries, whose clips are stances while they last, and readiness while

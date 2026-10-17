@@ -17,7 +17,7 @@
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 use exa_anim::{Animator, Ease, Motions, sample};
-use exa_combat::stance::Stance;
+use exa_combat::stance::{Stance, StanceTick};
 use exa_physics::CharacterBody;
 use exa_physics::body::{BODY_HZ, CharacterTicks, Fallen, Ragdoll};
 
@@ -28,9 +28,14 @@ pub struct BalancePlugin;
 impl Plugin for BalancePlugin {
     fn build(&self, app: &mut App) {
         // Falls are decided in the fixed step from last tick's balance,
-        // before the character ticks; getting up once a frame.
-        app.add_systems(FixedUpdate, fall_off_balance.before(CharacterTicks))
-            .add_systems(Update, get_up);
+        // after the daze's part of the body tick (as the original's posture
+        // block follows its daze block) and before the character ticks;
+        // getting up once a frame.
+        app.add_systems(
+            FixedUpdate,
+            fall_off_balance.after(StanceTick).before(CharacterTicks),
+        )
+        .add_systems(Update, get_up);
     }
 }
 

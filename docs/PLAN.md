@@ -341,9 +341,8 @@ overshoots its target height by about 4.7 cm while the lift catches up;
 attacks take about 1 s (1.4 before)
 ([formats/RSQ.md](formats/RSQ.md), Motion playback). Still to do: the
 support pins, the original's falls and get-ups, recovery steps, foot
-planting, the locomotion clock's stride terms and the run overlay, the
-daze's Defence stance, collisions between bodies (and their wake of a
-sleeper).
+planting, the locomotion clock's stride terms and the run overlay,
+collisions between bodies (and their wake of a sleeper).
 
 Done (change `decode-object-bodies-and-mechanisms`, data only): models'
 rigid bodies are decoded as the original stores them (class, mobility,
@@ -477,12 +476,24 @@ the attack, and Alt stabs with a held weapon; the race's weapon fields
 from its decoded stats; `--pause-on-hit` for pictures of a landed blow
 ([PLAYER.md](PLAYER.md), Combat mode; [formats/OTHER.md](formats/OTHER.md),
 Weapon record).
+Done (change `blend-stance-and-daze-starts`, after C10 and L2/L3 met):
+every stance change starts its clip with the original's blend and ease
+(the set-stance helper 30 frames smooth, the posture switch 30 linear, a
+duellist's stance 40 or twice its primary's stance blend smooth); a dazed
+fighter (energy more than 0.05 under its most, in double precision) takes
+the Defence stance, its clip starting with round((1.05 − E) × 300) frames
+of blend unless it is down or attacking, and the player's stance rule
+gives Cmbt - Idle only out of the daze, so a dazed body's targets blend
+back instead of jumping to the clip when its energy returns; the other
+side's attacks start with round((20 − W19) × 0.6) frames
+([PLAYER.md](PLAYER.md), The combat stance;
+[formats/RSQ.md](formats/RSQ.md), Motion playback).
 Still to do: inventory and containers, injuries beyond damage, blocking,
 parrying, grabs, practice mode, the knockback step, the swing stall and
-the striker's recoil, a lethal wound's fall and collapse, the daze's guard
-and pose hold and the stance blends (C10), the balance's Defence stance
-and Rebalance (C11); next in the combat timing: the swing clock with the
-release and stall (M22), then the unarmed parries (L10).
+the striker's recoil, a lethal wound's fall and collapse, the stab's and
+overhead's start blends, the balance's Defence stance and Rebalance
+(C11); next in the combat timing: the release and stall (M22), then the
+unarmed parries (L10).
 
 - `exa_items`: item database, item instances, inventory and containers,
   equip and wield, weapon assembly from factories, mass and centre of

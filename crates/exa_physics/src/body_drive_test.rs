@@ -355,6 +355,12 @@ fn a_dazed_body_holds_its_pose() {
     d.support = 0.5;
     d.sag = 0.5;
     assert!(close(d.hold_weight(), 1.0 - 0.25 * 0.5 * 0.0625, 1e-6));
+    // The threshold is the double 0.95: 0.95f is under it, the next float
+    // up is not.
+    d.energy = 0.95;
+    assert!(d.dazed());
+    d.energy = 0.95f32.next_up();
+    assert!(!d.dazed());
     d.energy = 0.951;
     assert!(!d.dazed());
     assert!(close(d.hold_weight(), 0.25, 1e-6));

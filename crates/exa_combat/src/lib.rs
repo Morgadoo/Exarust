@@ -227,21 +227,25 @@ const KNUCKLES_INSIDE: f32 = 0.1;
 
 /// Starts an attack on a fighter of weapon class `weapon_class`: its clip,
 /// ending in `stance`, and its primary striker, the held item in the
-/// motion's slot ([`attack::primary_slot`]).
-pub fn start_attack(
+/// motion's slot ([`attack::primary_slot`]) among `blades`. The clip starts
+/// from where the body is, eased smoothly, with the original's blend
+/// ([`attack::start_blend`]: none on the main side, round((20 − W19) × 0.6)
+/// on the other).
+#[allow(clippy::too_many_arguments)]
+pub fn start_attack<'a>(
     commands: &mut Commands,
     fighter: Entity,
     anim: &mut Animator,
     attacker: &mut Attacker,
+    blades: impl IntoIterator<Item = &'a Blade>,
     motion: AttackMotion,
     weapon_class: u8,
     stance: &str,
 ) {
-    anim.play_once(motion.action(), stance);
-    // The original's first-side attacks start with no blend, eased
-    // smoothly from where the body is to the clip's first key.
-    anim.blended(0, Ease::Smooth);
     attacker.primary = Some(attack::primary_slot(weapon_class, motion));
+    let primary_blend = attacker.primary_record(fighter, blades).map(|r| r.blend);
+    anim.play_once(motion.action(), stance);
+    anim.blended(attack::start_blend(motion, primary_blend), Ease::Smooth);
     commands
         .entity(fighter)
         .insert(Attacking::new(motion, weapon_class));

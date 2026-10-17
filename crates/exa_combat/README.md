@@ -14,14 +14,17 @@ contacts of blades and fists by the original's damage model
 (`damage`, with the weapon record of `exa_formats::weapon_record`
 re-exported as `damage::WeaponRecord`) and keeps each fighter's combat stance and readiness (`stance`:
 the looping clip it returns to, the body tick's switch to it that skips
-Cmbt - Idle, the player's and a duellist's rules, readiness halving the
-wound after 3 s in Cmbt - Idle; rules in
+Cmbt - Idle, the player's and a duellist's rules, the daze's Defence
+stance, the original's blend and ease for every stance start, readiness
+halving the wound after 3 s in Cmbt - Idle; rules in
 [`docs/PLAYER.md`](../../docs/PLAYER.md), The combat stance).
 
 A fighter's swing (`swing`) paces its attacks as the original's attack
-routine does: the clip clock runs at its weapon's swing speed (the
-record's W15, slower at the ends of the swing by its shaping W18), and the
-attack ends into the stance with twice the weapon's stance blend W19
+routine does: the clip clock runs at its primary striker's swing speed
+(the record's W15, slower at the ends of the swing by its shaping W18),
+and the attack ends into the stance with twice its stance blend W19; an
+attack starts eased smoothly, the other side with round((20 − W19) × 0.6)
+frames of blend (`attack::start_blend`)
 ([`docs/formats/RSQ.md`](../../docs/formats/RSQ.md), Motion playback).
 
 ## Scope

@@ -157,10 +157,15 @@ fn duellist(
                 *stance = chosen;
             }
         }
+        // Its stance starts with 40 frames of blend without a primary
+        // striker, else twice the primary's stance blend, eased smoothly.
+        let primary_blend = attacker
+            .primary_record(entity, blades.iter())
+            .map(|r| r.blend);
         // Leave a downed target alone.
         if target_body.is_some_and(|(f, ..)| f.down) {
             if anim.looping {
-                anim.play_loop(stance.action());
+                stance::take_ai_stance(&mut anim, *stance, primary_blend);
             }
             continue;
         }
@@ -181,7 +186,7 @@ fn duellist(
         }
         // Standing: its stance starts at once, as the original's AI starts
         // it whenever it is free.
-        anim.play_loop(stance.action());
+        stance::take_ai_stance(&mut anim, *stance, primary_blend);
         // Its request goes through the original's executor: enough energy
         // and the cooldown since its last attack's last tick.
         let energy = ragdoll
@@ -205,6 +210,7 @@ fn duellist(
                 entity,
                 &mut anim,
                 &mut attacker,
+                blades.iter(),
                 strike,
                 weapon_class_of(entity, &blades),
                 stance.action(),

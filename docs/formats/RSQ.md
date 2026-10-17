@@ -696,15 +696,39 @@ g = 1 − 0.833·m·(d + d²), d = |progress − 0.5| (at progress 0, 1 − 0.83
 a stab ×1.2, and below 40 % also × (1.2·progress + 0.5). Under 0.8 of its
 most energy the swing stops; under its most the rate is (E/Emax)². Speed,
 m and the recovery are the primary striker's weapon record (W15, W18, W19,
-[formats/OTHER.md](OTHER.md), Weapon record); with no armour encumbrance
+[OTHER.md](OTHER.md), Weapon record); with no armour encumbrance
 speed = (1 − weight)·0.15 + 1.05 (×1.2 unarmed), m = 1 − balance, recovery
 = round((weight + 1 − balance)·10) frames; fists 1.44, 0, 0. Attacks start
-with no blend, eased smoothly.
+eased smoothly: the main side with no blend, the other side with
+round((20 − W19)·0.6) frames (W19 the striker it makes primary: 12 for the
+fists), as the original's two side starters do. The original's stab and
+overhead starters take their blend from their callers, not traced:
+Exarust starts both with none.
+
+**Stance starts.** Evidence: `exe.asm` of the set-stance helper, the body
+tick's posture and daze blocks and the AI's combat state, constants read
+from `Exanima.exe`. Each starts the stance's clip as above:
+
+| start | blend (frames) | ease |
+|---|---|---|
+| the set-stance helper (Tab, an AI entering combat), only when the old stance's clip plays | 30 | smooth |
+| the posture switch (a balanced body in another looping clip) | 30 | linear (the start's own) |
+| the AI's stance, on every pass while it is free | 40 without a primary striker, else 2·W19 of the primary | smooth, written every pass even when nothing starts |
+| the daze, every tick the energy is more than 0.05 under its most (double precision), unless down or attacking | round((1.05 − E)·300), ties to even (129 at E = 0.62) | smooth, written every such tick |
+
+The daze also makes the stance the Defence stance every dazed tick (down
+or attacking too), and the player's stance rule gives Cmbt - Idle only
+when the energy is within 0.05 of its most. So a dazed body's clip is
+the guard, whose blend the pose hold (above) hides while it stands; once
+its energy is back the stance turns again and the posture switch blends
+from where the body is, so its targets do not jump back to the clip in
+one tick.
 
 Not reproduced yet: the locomotion clock's stride modulation, its start
 key and the run overlay (C18); the stagger, Defence and Rebalance starts
-and the get-up re-pick (C11); the daze's Defence stance and its blend
-round((1.05 − E)·300) (with the combat stance); the blow sag's writer, the
+and the get-up re-pick (C11); the stab's and the overhead's start blends;
+the Remise chain's blend round(W18·6) + 2 (no chaining yet); the blow
+sag's writer, the
 swing's alignment wait, skill, recoil and slow state (C21); the torso
 twist in the captures (identity without it); the femur posture flag; the
 foot contacts' flag in the capture; the armour encumbrance; the creature
