@@ -29,6 +29,7 @@ use exa_anim::BodyPart;
 use exa_assets::model::{Paint, PaintedSet};
 use exa_assets::{Game, ModelCache, ModelLoader, PackKind, model};
 use exa_combat::attack::{Attacker, Slot};
+use exa_combat::grip::{self, GripHand, GripHolder};
 use exa_formats::objdb::{self, Appearance, Armour, Item};
 use exa_formats::rdb::Database;
 use exa_formats::rfc::Scene;
@@ -124,12 +125,14 @@ pub const RIGHT_HAND: usize = 17;
 pub const LEFT_HAND: usize = 18;
 
 /// What a character's race gives its hands and its held weapons (on the
-/// body model root): the race index (a character record's race byte) and
-/// the race's weapon fields. A body without it is a human's.
+/// body model root): the race index (a character record's race byte), the
+/// race's weapon fields and the offset of its held items (metres). A body
+/// without it is a human's.
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
 pub struct RaceWeaponry {
     pub index: u8,
     pub weapons: RaceWeapons,
+    pub held_offset: Vec3,
 }
 
 impl Default for RaceWeaponry {
@@ -137,6 +140,7 @@ impl Default for RaceWeaponry {
         Self {
             index: HUMAN,
             weapons: RaceWeapons::HUMAN,
+            held_offset: Vec3::ZERO,
         }
     }
 }
@@ -147,16 +151,27 @@ impl RaceWeaponry {
         Self {
             index: race.id.saturating_sub(1).min(u32::from(u8::MAX)) as u8,
             weapons: RaceWeapons::of_stats(&race.stats),
+            held_offset: Vec3::from(race.stats.held_offset),
+        }
+    }
+
+    /// What places the held items of a character of this race and size
+    /// (`exa_combat::grip`).
+    pub fn grip_holder(&self, size: f32) -> GripHolder {
+        GripHolder {
+            size,
+            race: self.index,
+            held_offset: self.held_offset,
         }
     }
 }
 
-/// Grip of a held item relative to the hand part: weapon models have their
-/// handle at the origin and the blade along +Y; the fist closes around the
-/// hand's local Z axis.
-pub fn grip_transform() -> Transform {
-    Transform::from_xyz(-0.085, -0.01, 0.0)
-        .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2))
+/// The hand bone a grip puts its item in.
+pub fn grip_bone(hand: GripHand) -> usize {
+    match hand {
+        GripHand::Right => RIGHT_HAND,
+        GripHand::Left => LEFT_HAND,
+    }
 }
 
 /// Marks a body whose outfit has been attached.
@@ -719,17 +734,19 @@ fn equip_outfits(
                 attacker.primary = None;
             }
         } else if let Some(held) = wielded
-            && let Some(hand) = by_bone.get(&RIGHT_HAND).copied()
+            // The weapon's item: given, or the first showing its model.
+            && let item = held
+                .weapon
+                .or_else(|| infos.get(&held.model.to_ascii_lowercase())?.weapon)
+                .unwrap_or_else(plain_sword)
+            // The first held item's grip, by its weapon class.
+            && let Some(grip) = grip::grip(item.flags & 0xFFFF, Slot::First)
+            && let Some(hand) = by_bone.get(&grip_bone(grip.hand)).copied()
             && let Some(weapon) = match held.model.strip_prefix('@') {
                 Some(factory) => loader.factory_weapon(factory, held.weapon.as_ref()),
                 None => loader.model(PackKind::Objects, &held.model),
             }
         {
-            // The weapon's item: given, or the first showing its model.
-            let item = held
-                .weapon
-                .or_else(|| infos.get(&held.model.to_ascii_lowercase())?.weapon)
-                .unwrap_or_else(plain_sword);
             let stats = match held.model.strip_prefix('@') {
                 Some(factory) => loader
                     .factory_weapon_stats(factory, Some(&item))
@@ -755,9 +772,12 @@ fn equip_outfits(
                 attacker.primary = Some(Slot::First);
             }
             let length = (record.length / CM_PER_M).max(0.1);
+            // Placed by its grip for the character's size and race; no
+            // weapon starts flipped yet.
+            let placement = grip.placement(&race.grip_holder(holder.size), false);
             let holder = commands
                 .spawn((
-                    grip_transform(),
+                    placement,
                     Visibility::default(),
                     ChildOf(hand),
                     exa_combat::Blade::new(body, length, record),
@@ -945,8 +965,8 @@ mod tests {
 
     /// The weapon items of the installed object database are held with
     /// their records: a plain model measured along its chain (no model to
-    /// assemble), a factory weapon up to its assembled top (skipped without
-    /// the game).
+    /// assemble), a factory weapon up to its assembled top, each by its
+    /// hand class's grip (skipped without the game).
     #[test]
     fn shipped_weapons_are_held_with_their_records() {
         let Some(dir) = exa_assets::locate_install(None) else {
@@ -1019,6 +1039,16 @@ mod tests {
             );
             assert_eq!(r.length, top, "{name}");
             assert!(r.length > 50.0 && r.length < 300.0, "{name} {r:?}");
+            // Each is held by its hand class's grip: the halberd, a
+            // polearm, in the left hand.
+            let (class, bone) = match name {
+                "Sword 2hA" => (2, RIGHT_HAND),
+                "Halberd A" => (3, LEFT_HAND),
+                _ => (1, RIGHT_HAND),
+            };
+            let held = grip::grip(w.flags & 0xFFFF, Slot::First).unwrap();
+            assert_eq!(held, &grip::GRIPS[class], "{name}");
+            assert_eq!(grip_bone(held.hand), bone, "{name}");
             // Swords strike from 10 % of their length to the tip.
             if name != "Halberd A" {
                 assert!(
@@ -1069,6 +1099,7 @@ mod tests {
                 claws: 0x20100,
                 ..RaceWeapons::HUMAN
             },
+            held_offset: Vec3::ZERO,
         };
         let [right, left] = fist_records(&harvester, hands, &Holder::AVERAGE);
         assert_eq!(right.flags & weapon_record::flags::CLAWS, 0);
@@ -1123,5 +1154,24 @@ mod tests {
         assert_eq!(weaponry[0], RaceWeaponry::default());
         assert_eq!(weaponry[4].index, 4);
         assert!((weaponry[4].weapons.unarmed_reach - 150.0).abs() < 1e-3);
+        // The ogre (race byte 3) holds by the grips' own ogre offsets; the
+        // demon (byte 11) holds every item 9 cm off its grip, no other race.
+        let ogre = races.iter().position(|r| r.name == "Ogre").unwrap();
+        assert_eq!(weaponry[ogre].index, exa_combat::grip::OGRE);
+        for (race, weaponry) in races.iter().zip(&weaponry) {
+            let offset = if race.name == "DemonA01" {
+                assert_eq!(weaponry.index, 11);
+                Vec3::new(0.09, 0.0, 0.0)
+            } else {
+                Vec3::ZERO
+            };
+            assert!(
+                weaponry.held_offset.abs_diff_eq(offset, 1e-6),
+                "{}",
+                race.name
+            );
+            let held = weaponry.grip_holder(1.5);
+            assert_eq!((held.size, held.race), (1.5, weaponry.index));
+        }
     }
 }

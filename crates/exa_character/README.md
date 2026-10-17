@@ -52,8 +52,13 @@ Characters: races, body morphs, appearance, apparel fitting, stats/attributes/sk
   top, held by the character's own size, scale and encumbrance (its
   fighter's stats, `CharacterStats::holder`; an average human without a
   fighter) and its race (`RaceWeaponry`: the race index and `races.rdb`
-  weapon fields, the human's by default). See
+  weapon fields and held offset, the human's by default). See
   [`docs/formats/OTHER.md`](../../docs/formats/OTHER.md) (Weapon record).
+- A wielded weapon sits under the hand its grip names
+  (`exa_combat::grip`, by its weapon class as the first held item: a
+  polearm in the left hand), placed for the character's size and race
+  (`RaceWeaponry::grip_holder`, `grip_bone`). See
+  [`docs/PLAYER.md`](../../docs/PLAYER.md) (Held items and their grips).
 - An unarmed fighter's hands are its fists: dressing gives each hand a
   `Blade` (the right the first held item, the left the second) from the
   race's fist or claw records, held as its weapons are, a segment from the

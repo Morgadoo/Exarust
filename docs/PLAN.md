@@ -722,6 +722,20 @@ trace's swing columns ([PLAYER.md](PLAYER.md), Combat mode;
 [formats/RSQ.md](formats/RSQ.md), Motion playback). Still missing from
 it: the swinging arm's stiffness (needs per-arm stiffness in the body
 controller), the swing sounds, the AI's own release.
+Done (change `hold-weapons-by-the-grip-table`, L12 of the master plan):
+every held item sits under its hand by the original's grip table,
+replacing Exarust's invented 90° turn: the hand class from the held slot
+and the weapon class (fists, one-handed and the first of two weapons,
+two-handed, polearm, claws, the off-hand item and the second of two
+weapons), the grip's hand (a polearm in the left), its offset times the
+character's size (the ogre's own, unscaled) and the race's held offset
+(the demon's 9 cm), its Euler angles (about X, then Z, then Y of the
+hand) and a flipped item's half turn; all 208 shipped weapons have a
+grip. The one-handed sword is held low, forward and across the hips; the
+two-hander upright before the chest as in the live retail capture; the
+torch keeps its grips (now shared) ([PLAYER.md](PLAYER.md), Held items
+and their grips). Still missing from it: the grip links and modes (with
+weapons as bodies, M24/M25), the record's flip bit, second weapons.
 Still to do: inventory and containers, injuries beyond damage, blocking,
 parrying, grabs, practice mode, the knockback step, the striker's recoil
 and follow-through (C21, M26), the collapse's stagger steps, the

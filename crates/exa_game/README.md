@@ -36,8 +36,9 @@ the world cursor's shape from the player's condition word (`cursor`), the health
 bars' values and the low-health heartbeat with its sound, started by a
 blow's low-health check on the player's body (`exa_combat::Weakened`;
 `hud`), the
-held torch (`torch`, which fills its hand; its tests pin the "Torch"
-clips' arm on the body model), the per-tick body trace
+held torch (`torch`, which fills its hand and holds it by the grip
+table's one-handed or off-hand grip for the holder's size and race; its
+tests pin the "Torch" clips' arm on the body model), the per-tick body trace
 (`trace`, ending with the condition word and the swing's rate, strength
 and state word), and the debug tools ([`docs/DEBUGGING.md`](../../docs/DEBUGGING.md)):
 the body overlay and joint readout (`body_overlay`), the joint trace

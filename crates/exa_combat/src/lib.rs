@@ -28,6 +28,7 @@ pub mod condition;
 pub mod damage;
 pub mod fall;
 pub mod fighter;
+pub mod grip;
 pub mod regen;
 pub mod stance;
 pub mod swing;

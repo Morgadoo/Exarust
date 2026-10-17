@@ -243,8 +243,8 @@ also leaves its interim backpedal and combat walk alone).
   the fists-up guard: hunched, the fists before the chest and chin, knees
   bent (reference shots 1 and 2). Armed with "One Handed" it holds the
   sword hand at mid-chest; Cmbt - Idle holds the hands, or the weapon, low
-  before the hips (reference shot 6; the blade's angle is the grip's,
-  L12).
+  before the hips (reference shot 6; the blade's angle is the one-handed
+  grip's, [Held items and their grips](#held-items-and-their-grips)).
 - **The original's quirk.** The switch never runs while Cmbt - Idle plays,
   so a player who dropped to Cmbt - Idle stays there when the target walks
   away or dies, or 3 s after its attack: its stance turns back to the
@@ -367,6 +367,63 @@ within reach, a cross beyond it and chevrons while walking to it. Not yet
 in Exarust: the original's right button also walks to the cursor in
 combat mode.
 
+## Held items and their grips
+
+Every held item sits under its hand as the original's grip table places
+it, at the equip (by the item's own weapon class) and again whenever the
+held items change (by the character's), both giving the same grip
+(`exa_combat::grip`):
+
+- **Hand class.** The second held item (a light or a second weapon in the
+  off hand) takes the off-hand grip, 5. Otherwise the weapon class (the
+  low 16 bits of the weapon flags): two weapons (its high nibble 9) the
+  one-handed grip, 1, so the first of two weapons takes the one-handed
+  grip and the second the off-hand grip; else its bits 4–6: 0 fists, 1
+  one-handed, 2 two-handed, 3 polearm, 4 claws. Of the 208 weapon items
+  of the shipped object database, 136 take the one-handed grip (the torch
+  among them), 40 the two-handed and 32 the polearm's.
+- **The grips** (offsets in cm in the hand's space, Euler angles in
+  degrees about the hand's X, Y and Z):
+
+  | grip | hand | offset | the ogre's offset | angles | links to the hand (point, slack) |
+  |---|---|---|---|---|---|
+  | 0 fists, 4 claws | — | — | — | — | none: the hands strike |
+  | 1 one-handed, the first of two weapons | right | (−12, −1.5, 6) | (−27.5, −7, 9) | (70, −15, 20) | (0, 20, 0) 0; (15, 0, 0) 0 |
+  | 2 two-handed | right | (−13, −2, 6) | (−30, −2, 14) | (70, −15, 20) | (15, 0, 0) 5; (0, −20, 0) 0 |
+  | 3 polearm | **left** | (11, −2, 2) | the same | (110, 15, −170) | (0, 0, 15) 0; (0, 20, 0) 0 |
+  | 5 off-hand item, the second of two weapons | left | (11, −0.5, 6) | (30, −4, 14) | (110, 15, 160) | (0, −20, 0) 0; (15, 0, 0) 0 |
+
+  The two-hander also ties the item's (0, −30, 0) to the left hand's
+  (11, −3, 0) and its (0, 20, 0) to the right arm's (−12, 3, 6), and a
+  stab its (0, 25, 0) to the left hand's (8, −5, 0); the polearm ties its
+  (0, −40, 0) to the right hand's (−10, −2, 0) and its (0, 20, 0) to the
+  left arm's (11, 3, 6). The points along the haft (−30, −40) scale with
+  the weapon's second-hand factor. Weapon models hold their grip at the
+  origin with the blade along +Y, so the second hand holds the haft below
+  the first.
+- **Placement.** The offset times the character's size (its race's size
+  × (1 − 0.05 × height)); an ogre (race byte 3) takes the grip's own ogre
+  offset, not scaled. Then the race's held offset (`races.rdb`, three
+  signed bytes × 0.1 cm; 9 cm along x for the demon alone): its x taken
+  off in the right hand and added in the left, its y and z added. The
+  turn: the item about the hand's X first, then Z, then Y (the rotation
+  builder puts the item's X axis on (cos z·cos y, sin z, −cos z·sin y));
+  a flipped item has its X and Z axes negated, half a turn about its
+  blade. The one-handed grip points the blade along (−0.36, 0.32, 0.88)
+  of the hand: mostly along the axis the fist closes around, tilted up
+  and toward the thumb.
+- **What shows.** The one-handed sword in "One Handed" Cmbt - Idle is held
+  low in the right hand, pointing forward about 25° up and across the
+  front of the hips; the two-hander in "Greatsword" Cmbt - Idle stands
+  upright, tip up, before the chest, as in the live retail capture of the
+  player's two-hander; a polearm is held in the left hand at the chest,
+  its haft running down to the right hand at the hip.
+- **Not yet in Exarust.** The links (held items are scene children of the
+  hand until they become bodies), the grip modes that switch them by the
+  motion (the two-hander's second hand, the polearm's sliding grip), the
+  flip (no weapon starts flipped; the character records' held-item words
+  carry a flip bit, not read yet) and second weapons.
+
 ## Camera
 
 - The camera follows the player's **pelvis** only, at a fixed **20 m**: the
@@ -464,19 +521,19 @@ combat mode.
   career (`arenahub`, the match arenas such as `arenao1`) start without it:
   before those sessions the original clears the torch from both hands, and
   the arena keeps only its starter clothes and weapons.
-- Each hand holds the item by the original's grip table, offset (cm) and
-  Euler angles (degrees) in the hand's space:
-  - right hand: (−12, −1.5, 6), (70°, −15°, 20°);
-  - left hand: (11, −0.5, 6), (110°, 15°, 160°).
-
-  The rotation builder puts the item's X axis on (cos z·cos y, sin z,
-  −cos z·sin y) and its Y axis on (sin x·sin y − cos x·sin z·cos y,
-  cos x·cos z, sin x·cos y + cos x·sin z·sin y): applied to the item, the
-  turn about X first, then Z, then Y, all about the hand's axes. Not yet:
-  the offset's scaling by character size and its per-race correction, and
-  the hand: the original's lies open under the torch, the handle in its
-  palm, where Exarust's looks curled (a skinning or hand-mesh question,
-  not looked into yet).
+- Each hand holds the item by the original's grip table
+  ([Held items and their grips](#held-items-and-their-grips)): in the
+  right hand as the first held item, a one-handed stick, (−12, −1.5, 6) cm
+  and (70°, −15°, 20°); in the left as the second, the off-hand grip,
+  (11, −0.5, 6) cm and (110°, 15°, 160°). The offset scales with the
+  holder's size and moves by its race's held offset (a human of average
+  height holds it exactly there). The rotation builder puts the item's X
+  axis on (cos z·cos y, sin z, −cos z·sin y) and its Y axis on
+  (sin x·sin y − cos x·sin z·cos y, cos x·cos z, sin x·cos y +
+  cos x·sin z·sin y): applied to the item, the turn about X first, then
+  Z, then Y, all about the hand's axes. Not yet: the hand: the original's
+  lies open under the torch, the handle in its palm, where Exarust's looks
+  curled (a skinning or hand-mesh question, not looked into yet).
 - Not yet: the original's torso twist and head look toward the cursor. In
   Cmbt - Idle it turns the belly about 8°, the chest 15° and the head 19°
   about a near-vertical axis, while the arms keep the clip's turn relative

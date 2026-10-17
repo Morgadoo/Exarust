@@ -42,6 +42,20 @@ the executor's (`attack::start_blend`)
 ([`docs/formats/RSQ.md`](../../docs/formats/RSQ.md), Motion playback;
 [`docs/PLAYER.md`](../../docs/PLAYER.md), Combat mode).
 
+## Grips
+
+`grip`: the original's grip table (`GRIPS`, six entries by hand class:
+fists, one-handed and the first of two weapons, two-handed, polearm,
+claws, the off-hand item and the second of two weapons), the hand class of
+a held item from its held slot and weapon class (`hand_class`, `grip`),
+and each grip's hand (the left for a polearm), offset (times the
+character's size; the ogre's own, unscaled), Euler angles (about the
+hand's X, then Z, then Y) and links (to the hand, the second hand and the
+arm, and the stab's; used once weapons are bodies). `Grip::placement`
+places an item for a `GripHolder` (size, race byte, the race's held
+offset) and a flip. Rules: [`docs/PLAYER.md`](../../docs/PLAYER.md) (Held
+items and their grips).
+
 ## Fighters and their condition
 
 `fighter`: a `Fighter` (health bars, natural armour and armour layers,
