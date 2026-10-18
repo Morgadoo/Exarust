@@ -224,9 +224,10 @@ Exarust (`exa_character`) applies the rule to the humans it makes at run
 time: the player in play mode and the character view's human body. The
 underwear goes on beneath the given outfit, painted with item 8's own
 appearance, when nothing in the outfit covers the groin. Placed characters
-are dressed as stored. Not done until equipping exists: the rule on
-unequip, braies vanishing when displaced, wear conflicts between garments
-given on the command line.
+are dressed as stored. Equipping (`exa_items::carry`) takes off every
+worn item whose occupancy overlaps the new one: braies are dropped, other
+items return to the pack, and a human left bare at the groin wears braies
+again. The inventory windows are not in.
 
 The game never draws an apparel item's own textures. It paints a colour
 texture per item from the shade map `<stem>d` (cavities dark), stacking each
@@ -896,7 +897,10 @@ calls)
   routine's 0.5 and clamp); hands have none. It stains the weapon from
   its tip ([RENDERING.md](../RENDERING.md), Blood on weapons).
 
-Not yet: the bite (weapons sticking in), blocking and parrying, shields,
+A parry stops the blow. A shield that is not parrying lets through yellow
+0.05·(1 − stamina)·(0.4 + 0.4·impact)·(1 − block/2) and no lasting wound
+(`damage::guard_outcome`). Not yet: the bite (weapons sticking in), the
+parry clips, grabs, shields as bodies,
 encumbrance's effect on swings, and the state that knocks a character
 unconscious.
 

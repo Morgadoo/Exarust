@@ -161,6 +161,41 @@ pub struct Strike {
     pub along: f32,
 }
 
+/// How the victim meets a blow. Open takes the flesh wound. A parry stops
+/// it. A shield lets a leak of yellow through and no lasting wound.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum Guard {
+    #[default]
+    Open,
+    Parry,
+    /// `leak` is 1 − block/2. `stamina` is the shield arm, 0..=1.
+    Shield {
+        leak: f32,
+        stamina: f32,
+    },
+}
+
+/// The blow a guard lets through. A parry deals none. A shield that is not
+/// itself parrying deals yellow 0.05·Q and daze (0.3 − 0.2·stamina)·Q, with
+/// Q = (1 − stamina)·(0.4 + 0.4·impact)·leak, and no lasting wound.
+pub fn guard_outcome(blow: Outcome, guard: Guard) -> Outcome {
+    match guard {
+        Guard::Open => blow,
+        Guard::Parry => Outcome::default(),
+        Guard::Shield { leak, stamina } => {
+            let leak = leak.clamp(0.0, 1.0);
+            let stamina = stamina.clamp(0.0, 1.0);
+            let q = (1.0 - stamina) * (0.4 + 0.4 * blow.impact) * leak;
+            Outcome {
+                yellow: 0.05 * q,
+                daze: (0.3 - 0.2 * stamina).max(0.0) * q,
+                material: blow.material,
+                ..Outcome::default()
+            }
+        }
+    }
+}
+
 /// What a blow does.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Outcome {
@@ -470,6 +505,64 @@ mod tests {
             "{armoured:?}"
         );
         assert_eq!(armoured.material, 4);
+    }
+
+    /// A slower blow penetrates less, and a resisting layer less than bare flesh.
+    #[test]
+    fn speed_and_a_layer_change_the_wound() {
+        let bare = PartArmour::default();
+        let at = |speed: f32| {
+            resolve(
+                &sword_a(),
+                &Strike {
+                    speed,
+                    stab: false,
+                    overhead: false,
+                    clock: 0.8,
+                    along: 70.0,
+                },
+                &bare,
+                9,
+                0.25,
+                0.0,
+                0.5,
+            )
+            .unwrap()
+        };
+        let slow = at(5.0);
+        let fast = at(20.0);
+        assert!(slow.impact < fast.impact, "{slow:?} {fast:?}");
+        assert!(slow.penetration < fast.penetration, "{slow:?} {fast:?}");
+        let plate = armour_layers(
+            None,
+            &[Armour {
+                coverage: [100; 18],
+                padding: 60,
+                slash: 140,
+                crush: 60,
+                pierce: 80,
+                encumbrance: 10,
+                material: 4,
+            }],
+            false,
+        );
+        let armoured = resolve(
+            &sword_a(),
+            &Strike {
+                speed: 20.0,
+                stab: false,
+                overhead: false,
+                clock: 0.8,
+                along: 70.0,
+            },
+            &plate[8],
+            9,
+            0.25,
+            0.0,
+            0.5,
+        )
+        .unwrap();
+        assert!(armoured.penetration < fast.penetration, "{armoured:?}");
     }
 
     /// Readiness 1 halves the wound (penetration, the red and yellow bars,

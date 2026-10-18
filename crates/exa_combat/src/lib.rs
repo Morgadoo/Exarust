@@ -475,7 +475,7 @@ fn react_to_hits(
         let Some(armour) = hit.bone.checked_sub(1).and_then(|i| f.armour.get(i)) else {
             continue;
         };
-        let Some(outcome) = damage::resolve(
+        let Some(mut outcome) = damage::resolve(
             &hit.weapon,
             &hit.strike,
             armour,
@@ -486,6 +486,7 @@ fn react_to_hits(
         ) else {
             continue;
         };
+        outcome = damage::guard_outcome(outcome, f.guard);
         // A fighter struck mid-swing (attacking) has its swing stalled by
         // the daze, before the blow's damage as the original's daze runs
         // first: its stance returns when the stall ends.
@@ -751,6 +752,39 @@ mod tests {
         assert!((capped.length() - 0.8).abs() < 1e-5, "{capped}");
         let light = knockback_offset(0.4, 0.0, Vec3::Z, Vec3::ZERO, 80.0);
         assert!(light.is_none());
+    }
+
+    /// The same cut that wounds bare flesh deals nothing through a parry, and
+    /// only the shield's yellow leak when the shield arm is tired.
+    #[test]
+    fn a_parry_or_a_block_changes_the_blow() {
+        let open = outcome(9);
+        assert!(open.wound > 0.0 && open.yellow > 0.0, "{open:?}");
+        let parried = damage::guard_outcome(open, damage::Guard::Parry);
+        assert_eq!(
+            (parried.wound, parried.yellow, parried.red),
+            (0.0, 0.0, 0.0)
+        );
+        let leak = 1.0 - 0.5 * 0.58;
+        let blocked = damage::guard_outcome(open, damage::Guard::Shield { leak, stamina: 0.0 });
+        let q = (0.4 + 0.4 * open.impact) * leak;
+        assert!((blocked.yellow - 0.05 * q).abs() < 1e-5, "{blocked:?}");
+        assert_eq!(blocked.wound, 0.0);
+        assert!(blocked.yellow < open.yellow, "{blocked:?} {open:?}");
+
+        let mut app = reactions();
+        let guarding = Fighter {
+            guard: damage::Guard::Parry,
+            ..Fighter::default()
+        };
+        let id = app
+            .world_mut()
+            .spawn((guarding, Animator::new("Default", "Idle")))
+            .id();
+        strike(&mut app, id, 9);
+        let health = app.world().get::<Fighter>(id).unwrap().health;
+        assert_eq!(health.yellow, 0.25);
+        assert_eq!(health.red, 0.25);
     }
 
     /// A sword cut that wounds but does not kill starts no clip: a bare

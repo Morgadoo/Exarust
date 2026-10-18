@@ -10,7 +10,7 @@ use exa_formats::races::{Natural, Race};
 
 use crate::attack::Attacker;
 use crate::condition::{Condition, PostureBranch, StateFlags};
-use crate::damage::{self, Outcome, PartArmour};
+use crate::damage::{self, Guard, Outcome, PartArmour};
 use crate::fall::FallDeath;
 use crate::swing::SwingState;
 use crate::wounds::WoundQueue;
@@ -45,6 +45,8 @@ pub struct Fighter {
     /// Its record's perks (Remise chains a held swing, Feint renews a
     /// released one).
     pub perks: Perks,
+    /// How it meets a blow: open, a parry, or a shield block.
+    pub guard: Guard,
 }
 
 impl Default for Fighter {
@@ -74,6 +76,7 @@ impl Fighter {
             bleeds: race.is_none_or(Race::bleeds),
             stats,
             perks: Perks::default(),
+            guard: Guard::Open,
         }
     }
 

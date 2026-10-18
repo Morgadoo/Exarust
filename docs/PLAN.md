@@ -814,8 +814,13 @@ two-hander upright before the chest as in the live retail capture; the
 torch keeps its grips (now shared) ([PLAYER.md](PLAYER.md), Held items
 and their grips). Still missing from it: the grip links and modes (with
 weapons as bodies, M24/M25), the record's flip bit, second weapons.
-Still to do: inventory and containers, injuries beyond damage, blocking,
-parrying, grabs, practice mode, the striker's recoil
+Done (change `equip-and-block`): a worn item takes off whatever overlaps
+its occupancy; displaced braies are dropped and return when the groin is
+bare; a container and a pack exchange an item by moving its id. A parry
+stops the blow. A shield that is not parrying deals yellow
+0.05·(1 − stamina)·(0.4 + 0.4·impact)·leak and no lasting wound. Still to
+do: the inventory windows, injuries beyond damage, grabs, practice mode,
+the striker's recoil
 and follow-through (C21, M26), the collapse's stagger steps; next in the
 combat timing: the unarmed parries (L10).
 
@@ -987,7 +992,9 @@ against Exarust and lists the largest missing ones. In order:
    weight, the sprint clock, the sprint row's thrust, gait plants,
    the backpedal (Walk played backwards) and knockback steps are in.
 2. Inventory, equipment and containers, then blocking and parrying
-   (Phase 4).
+   (Phase 4). Equipping by occupancy, container transfers, a parry that
+   stops a blow and a shield's yellow leak are in. The inventory windows
+   are not.
 3. The original's NPC brain: perception, targets and the combat state that
    drives the same inputs as the player (Phase 6).
 4. Portal clipping and doors' open state, and level transitions
