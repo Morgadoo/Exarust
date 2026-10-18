@@ -283,9 +283,9 @@ fn climb(carried: bool) -> Climb {
 /// stops on the way and keeps its balance throughout: it ends on the
 /// landing, its pelvis 72 cm higher than walking on the floor (give or take
 /// 3 cm), its feet on the landing. Without the stopgap (its controller off
-/// the ground, so the lift keeps the original's target, on the lowest foot)
-/// its trailing foot catches a riser and its pelvis ends more than 5 cm
-/// lower. The support pins keep its balance: it no longer topples.
+/// the ground, so the lift keeps the original's target) the recovery step
+/// during the stand puts the feet on the landing too, and the pelvis stays
+/// more than 5 cm lower. Balance stays up either way.
 #[test]
 fn a_walker_climbs_four_18_cm_steps() {
     let landing = STEPS as f32 * RISE;
@@ -300,10 +300,15 @@ fn a_walker_climbs_four_18_cm_steps() {
     assert!(up.feet > landing - 0.02, "feet at {}", up.feet);
     let caught = climb(false);
     assert!(
-        caught.pelvis < up.pelvis - 0.05 && caught.feet < up.feet - 0.02,
-        "reached the landing without the stopgap: pelvis {} feet {}",
-        caught.pelvis,
+        caught.feet > landing - 0.02,
+        "feet left the landing: {}",
         caught.feet
+    );
+    assert!(
+        caught.pelvis < up.pelvis - 0.05,
+        "pelvis caught the stopgap: {} vs {}",
+        caught.pelvis,
+        up.pelvis
     );
     assert!(
         caught.balance >= 0.9,

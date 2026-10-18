@@ -377,7 +377,15 @@ fn feet_are_planted_lifted_or_stood_on_their_stance_spots() {
                     bearing: Bearing,
                     had_support: bool,
                     down: [bool; 2]| {
-        plant(legs, &ankles, spots, &bearing, had_support, &down, 1.0);
+        plant(
+            legs,
+            &ankles,
+            spots,
+            &bearing,
+            had_support,
+            &down,
+            &super::super::steps::Work::plain(1.0),
+        );
         legs.iter().map(|l| (l.state, l.anchor)).collect::<Vec<_>>()
     };
     let standing = Bearing::default();
@@ -388,13 +396,15 @@ fn feet_are_planted_lifted_or_stood_on_their_stance_spots() {
             leg.approach = 1.0;
         }
     };
-    // Anchored is not touching: planted where they are, once on the level.
+    // Anchored is not touching. On the level it is planted where it is.
+    // Off the level it keeps its flags, and the footwork re-targets that
+    // anchored foot onto its stance spot.
     reset(legs);
     let planted = plant_in(legs, &near, standing, true, [true, false]);
     assert_eq!(planted[0], (touching, ankles[0]));
     assert_eq!(
         planted[1],
-        (FootState(FootState::ANCHORED), Vec3::splat(9.0))
+        (FootState(FootState::ANCHORED), near[1].unwrap())
     );
     let planted = plant_in(legs, &near, standing, true, [true; 2]);
     assert_eq!(planted, [(touching, ankles[0]), (touching, ankles[1])]);

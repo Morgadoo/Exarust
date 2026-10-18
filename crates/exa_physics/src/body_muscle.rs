@@ -223,6 +223,9 @@ pub struct Bearing {
     /// get-up's feet do not touch in its first fifth, and stand on their
     /// stance spots until nine tenths.
     pub progress: f32,
+    /// It plays its Idle clip: the thorax lead's clip share is 0.4 then,
+    /// and 0.7 otherwise.
+    pub idle: bool,
 }
 
 impl Default for Bearing {
@@ -242,6 +245,7 @@ impl Default for Bearing {
             walking: false,
             off_feet: false,
             progress: 0.0,
+            idle: false,
         }
     }
 }

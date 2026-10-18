@@ -509,7 +509,14 @@ a body that dies in its posture stage skips the rest of its tick
 ([formats/RSQ.md](formats/RSQ.md), Falls and get-ups). `--shove 60`: the
 dazed player Rebalances, falls on its back, gets up with Get Up 2 1.3 s
 later and stands 1.9 s after that; `--shove 90` staggers into Get Up 2.
-Not yet: the recovery steps (C15). The support pins (C14) are in.
+The recovery step (C15) starts when the chest leaves the feet, moves one
+foot by the stance score, and ends by its own rules. The thorax lead follows the horizontal error from the pin to the posed
+target plus the step offset: 0.7 (0.4 while Idle plays) times
+(direction + 0.5) times (2 − 25·s) times 1.2 times the square root of
+body scale times the stance level, with direction
+(h²/60 + 0.25)·0.36·forwardness. A still 40 cm sideways error moves the
+target 33.6 cm. Leg IK and gait walking are not in yet. The support
+pins (C14) are in.
 
 Done (change `plant-the-feet`, C12 of the master plan): the feet stand on
 the ground as the original's do. Each leg's foot contact (its ankle) has a
@@ -525,10 +532,10 @@ stand on their stance spots, lying no foot touches, and the get-up's start
 clears them. Corrections to the notes: condition 1 is walking, so standing
 and combat feet take the PD grip and a standing probe's sphere is 5 cm.
 `--trace` fills the foot contacts' columns and adds the ankles; the body
-overlay draws the anchors ([formats/RSQ.md](formats/RSQ.md), Feet). Not
-yet: the footwork's stance scores and timers (C15), the walking gait's
-plants and the closing step (M16, C19), the leg IK (C13), the sole's
-orientation drive. Standing feet keep within 0.5 cm of their anchors; a
+overlay draws the anchors ([formats/RSQ.md](formats/RSQ.md), Feet). The
+footwork's stance scores and timers (C15) choose the foot. Not yet: the
+walking gait's plants and the closing step (M16, C19), the leg IK (C13),
+the sole's orientation drive. Standing feet keep within 0.5 cm of their anchors; a
 heavily dazed body now sinks onto its planted feet instead of toppling.
 
 This phase carries the most risk and defines how the game feels.
@@ -950,9 +957,10 @@ holds the runtime and the documentation of formats and behaviour.
 [`COMPONENT-MAP.md`](COMPONENT-MAP.md) sets every component of the original
 against Exarust and lists the largest missing ones. In order:
 
-1. Recovery steps, leg IK (stairs) and gait walking, clip blending,
-   and parts' spheres fitted to their meshes (Phase 3). The support
-   pins are in.
+1. Leg IK (stairs) and gait walking, clip blending, and parts' spheres
+   fitted to their meshes (Phase 3). Recovery steps and the support pins
+   are in, including the thorax lead's direction term. Knockback steps
+   are not.
 2. Inventory, equipment and containers, then blocking and parrying
    (Phase 4).
 3. The original's NPC brain: perception, targets and the combat state that

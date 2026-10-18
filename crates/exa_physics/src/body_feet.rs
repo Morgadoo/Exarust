@@ -27,16 +27,16 @@
 //! an iteration (0.1 unless it stands), times S.
 //!
 //! The rules are the original's, in its centimetres and ticks (evidence:
-//! `docs/formats/RSQ.md`, Physical body, Feet). Exarust has no footwork
-//! scores, no walking gait plants and no leg IK yet: which foot steps is
-//! its own stand-in (the farthest from its spot, 5 cm or more off), a foot
-//! is planted only once it meets the level, and a walking body's feet do
-//! not touch.
+//! `docs/formats/RSQ.md`, Physical body, Feet). The footwork chooses by
+//! the stance score. Exarust has no walking gait plants and no leg IK yet:
+//! a foot is planted only once it meets the level, and a walking body's
+//! feet do not touch.
 //! (Included from body.rs: `#[path = "body_feet.rs"] mod feet;`)
 
 use bevy::prelude::*;
 
 use super::balance::{Leg, cm};
+use super::steps::{self, FootView, ScoreCtx, Work};
 use super::{Bearing, CM, Drive, Part};
 
 /// A foot contact's state, as the original's bits.
@@ -86,11 +86,7 @@ const GET_UP_UNTOUCHED: f64 = 0.2;
 const GET_UP_FOOTWORK: f64 = 0.9;
 /// An anchor is at most this high (cm) over its ankle.
 const ANCHOR_ABOVE: f32 = 100.0;
-/// The footwork steps a foot whose stance spot is this far (cm, × scale)
-/// from its anchor, or farther (the second after a stalled step); a step
-/// whose smoothed approach falls under the third has stalled.
-const STEP_FROM: f32 = 5.0;
-const STALLED_STEP_FROM: f32 = 10.0;
+/// A step whose smoothed approach falls under this has stalled.
 const STALLED_BELOW: f64 = 1e-5;
 /// An anchored foot's probe moves this share a tick toward its anchor, up
 /// to the second; the probe's sphere is 5 cm plus 10 cm times that share
@@ -387,10 +383,11 @@ pub(super) fn push_sole(foot: &mut Part, leg: &Leg, fd: &FootDrive) {
 /// that reached its anchor lands (a support foot again), one whose step
 /// stalled lands where it is; then one foot at a time steps to its stance
 /// spot (anchored, its anchor re-taken every tick at its height), which
-/// the drive pulls it to. Which foot steps is Exarust's stand-in for the
-/// footwork's scores (C15): a foot already stepping, else the standing foot
-/// farthest from its stance spot, once 5 cm (× `scale`; 10 cm after a
-/// stalled step) or more.
+/// the drive pulls it to. Which foot steps is the footwork's stance score
+/// ([`steps::pick`]): stay, foot 0 or foot 1, the highest, and a foot
+/// under 5 cm of its spot (10 cm after a stall, outside a recovery step)
+/// scores as staying. Returns whether the other foot landing ended the
+/// recovery step.
 pub(super) fn plant(
     legs: &mut [Leg],
     ankles: &[Vec3],
@@ -398,8 +395,8 @@ pub(super) fn plant(
     bearing: &Bearing,
     had_support: bool,
     down: &[bool],
-    scale: f32,
-) {
+    work: &Work,
+) -> bool {
     for ((leg, &at), &down) in legs.iter_mut().zip(ankles).zip(down) {
         if bearing.walking {
             leg.state = FootState(0);
@@ -409,14 +406,14 @@ pub(super) fn plant(
         }
     }
     if bearing.moving {
-        return;
+        return false;
     }
     let off_feet = bearing.off_feet || bearing.getting_up;
     if off_feet && !bearing.getting_up {
         for leg in legs.iter_mut() {
             leg.state = FootState(0);
         }
-        return;
+        return false;
     }
     let progress = f64::from(bearing.progress);
     let bad = off_feet && !(bearing.getting_up && progress > GET_UP_FOOTWORK);
@@ -432,58 +429,109 @@ pub(super) fn plant(
                 leg.state.0 &= !FootState::TOUCHING;
             }
         }
+        false
     } else {
-        footwork(legs, ankles, spots, scale);
+        footwork(legs, ankles, spots, work)
     }
 }
 
-/// The footwork of a body standing with support: the landing pass, then at
-/// most one foot steps to its stance spot ([`plant`]).
-fn footwork(legs: &mut [Leg], ankles: &[Vec3], spots: &[Option<Vec3>], scale: f32) {
+/// The footwork of a body standing with support: the landing pass, then the
+/// stance score moves at most one foot ([`plant`]). A reached foot lands
+/// at once. Returns whether the other foot's landing ended the recovery
+/// step (it had run for more than 200 ms and the chest was within 20·scale
+/// cm of the target).
+fn footwork(legs: &mut [Leg], ankles: &[Vec3], spots: &[Option<Vec3>], work: &Work) -> bool {
     for (leg, &at) in legs.iter_mut().zip(ankles) {
         if leg.state.has(FootState::REACHED) {
             leg.state.0 &= !(FootState::ANCHORED | FootState::REACHED);
+            leg.changed_ms = work.now_ms;
         } else if leg.state.has(FootState::ANCHORED) && f64::from(leg.approach) < STALLED_BELOW {
             leg.state.0 =
                 leg.state.0 & FootState::RAMP_SLOW | FootState::TOUCHING | FootState::STALLED;
             leg.anchor = at;
+            leg.landed_ms = work.now_ms;
+            leg.changed_ms = work.now_ms;
         }
     }
-    // How far each foot's stance spot is from its anchor (cm), if it may
-    // step: standing on its anchor, 5 cm off (10 after a stall).
-    let off = |leg: &Leg, spot: &Option<Vec3>| {
-        let off = spot.map(|s| cm(s - leg.anchor).with_y(0.0).length())?;
-        let reach = if leg.state.has(FootState::STALLED) {
-            STALLED_STEP_FROM
-        } else {
-            STEP_FROM
-        } * scale;
-        (leg.state.stands() && off >= reach).then_some(off)
+    if legs.len() != 2 {
+        return false;
+    }
+    let Some(pair) = two_spots(spots) else {
+        return false;
     };
-    let stepping = legs
-        .iter()
-        .position(|l| l.state.has(FootState::ANCHORED) && l.state.stands());
-    let chosen = stepping.or_else(|| {
-        legs.iter()
-            .zip(spots)
-            .enumerate()
-            .filter_map(|(k, (leg, spot))| Some((k, off(leg, spot)?)))
-            .max_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(k, _)| k)
-    });
+    let side = (pair[1] - pair[0]).with_y(0.0).normalize_or(Vec3::X);
+    let views = [
+        foot_view(&legs[0], ankles[0]),
+        foot_view(&legs[1], ankles[1]),
+    ];
+    let spots_cm = pair.map(cm);
+    let chosen = steps::pick(
+        &views,
+        &spots_cm,
+        &ScoreCtx {
+            now_ms: work.now_ms,
+            scale: work.scale,
+            crouch: work.crouch,
+            reference: cm(work.reference),
+            side,
+            root: cm(work.root),
+            origin: cm(work.origin),
+            step: work.step_cm,
+            episode: work.episode,
+            size: work.size,
+        },
+    );
     let Some(k) = chosen else {
-        return;
+        return false;
     };
     let Some(spot) = spots.get(k).copied().flatten() else {
-        return;
+        return false;
     };
-    let leg = &mut legs[k];
-    if !leg.state.has(FootState::ANCHORED) {
-        leg.state.0 =
-            leg.state.0 & !(FootState::REACHED | FootState::RAMP_HELD) | FootState::ANCHORED;
-        leg.approach = 1.0;
+    let other = 1 - k;
+    let mut ended = false;
+    if legs[other].state.has(FootState::ANCHORED) {
+        legs[other].landed_ms = work.now_ms + 100.0;
+        legs[other].changed_ms = work.now_ms;
+        if !legs[other].state.has(FootState::REACHED) {
+            legs[other].anchor = ankles[other];
+        }
+        let keep = legs[other].state.0 & (FootState::RAMP_HELD | FootState::RAMP_SLOW);
+        legs[other].state = FootState(FootState::TOUCHING | keep);
+        ended =
+            work.episode && work.episode_ms > 200.0 && work.chest_to_target_cm <= 20.0 * work.scale;
     }
-    leg.anchor = Vec3::new(spot.x, ankles[k].y, spot.z);
+    let mut anchor = Vec3::new(spot.x, ankles[k].y, spot.z);
+    anchor = steps::clamp_anchor(anchor, ankles[other], work.step_cm);
+    if !legs[k].state.has(FootState::ANCHORED) {
+        legs[k].state.0 =
+            legs[k].state.0 & !(FootState::REACHED | FootState::RAMP_HELD) | FootState::ANCHORED;
+        legs[k].approach = 1.0;
+        legs[k].started_ms = work.now_ms;
+    }
+    legs[k].anchor = anchor;
+    ended
+}
+
+/// The two stance spots, when both feet have one.
+fn two_spots(spots: &[Option<Vec3>]) -> Option<[Vec3; 2]> {
+    Some([
+        spots.first().copied().flatten()?,
+        spots.get(1).copied().flatten()?,
+    ])
+}
+
+/// One foot in centimetres, for the stance score.
+fn foot_view(leg: &Leg, ankle: Vec3) -> FootView {
+    FootView {
+        anchored: leg.state.has(FootState::ANCHORED),
+        stalled: leg.state.has(FootState::STALLED),
+        anchor: cm(leg.anchor),
+        point: cm(ankle),
+        leg: cm(leg.length),
+        changed_ms: leg.changed_ms,
+        landed_ms: leg.landed_ms,
+        started_ms: leg.started_ms,
+    }
 }
 
 /// An anchored foot's probe blend this tick: +0.05 up to 0.5; none for a

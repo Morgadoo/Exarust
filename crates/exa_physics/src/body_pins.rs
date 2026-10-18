@@ -15,6 +15,7 @@
 use bevy::prelude::*;
 
 use super::balance::{Leg, cm};
+use super::steps;
 use super::{CM, Drive, Part, Ragdoll};
 
 /// The spring's length (cm) below which it is 0.2·e·|e|/60, and the
@@ -155,6 +156,19 @@ fn facing(drive: &Drive) -> Vec3 {
         .unwrap_or(Vec3::Z)
 }
 
+/// The frame's horizontal side axis: the yaw frame's first axis.
+fn side_axis(drive: &Drive) -> Vec3 {
+    drive
+        .frame
+        .or(drive.root)
+        .map(|t| {
+            Vec3::from(t.matrix3.x_axis)
+                .with_y(0.0)
+                .normalize_or(Vec3::X)
+        })
+        .unwrap_or(Vec3::X)
+}
+
 impl Ragdoll {
     /// One pass of the support pins: the two thorax pins and the pelvis
     /// pin, each by [`pull`] toward [`target`].
@@ -175,6 +189,19 @@ impl Ragdoll {
         let factor = drive.stats.pin_factor;
         let scale = drive.stats.scale;
         let getting_up = drive.bearing.getting_up;
+        let lead = (drive.steps.stepping && !drive.steps.out_of_balance).then(|| {
+            (
+                drive.steps.target,
+                drive.steps.standing,
+                steps::ChestLead {
+                    idle: drive.bearing.idle,
+                    level: drive.balance.level(),
+                    scale,
+                    fast: drive.balance.fast_velocity(),
+                    side: side_axis(drive),
+                },
+            )
+        });
         let reach = thorax_reach(
             drive.bearing.crouch,
             self.legs.iter().any(|l| l.state.stepping()),
@@ -183,24 +210,27 @@ impl Ragdoll {
         let pelvis = pelvis_reach(scale);
         let forward = facing(drive);
         let targets = drive.targets.clone();
-        let mut pins: Vec<(usize, [f32; 4], f32)> = self
+        let mut pins: Vec<(usize, [f32; 4], f32, bool)> = self
             .chest
             .iter()
             .copied()
-            .map(|(i, w)| (i, w, reach))
+            .map(|(i, w)| (i, w, reach, true))
             .collect();
         if let Some(i) = self.parts.iter().position(|p| p.bone == 1) {
-            pins.push((i, self.parts[i].own_origin, pelvis));
+            pins.push((i, self.parts[i].own_origin, pelvis, false));
         }
         // Read every pin before any push, so each application sees the
         // same tick and not a sibling pin's correction.
         let planned: Vec<(usize, [f32; 4], Vec3)> = pins
             .into_iter()
-            .filter(|(i, _, _)| *i < targets.len())
-            .map(|(i, w, radius)| {
-                let posed = targets[i].transform_point3(self.parts[i].rest_point(&w));
-                let goal = target(posed, centre, radius, has_support, forward, scale);
+            .filter(|(i, _, _, _)| *i < targets.len())
+            .map(|(i, w, radius, thorax)| {
                 let at = self.parts[i].point(&w);
+                let mut posed = targets[i].transform_point3(self.parts[i].rest_point(&w));
+                if thorax && let Some((step_at, standing, chest)) = &lead {
+                    posed = steps::lead_pose(posed, *step_at, *standing, at, chest);
+                }
+                let goal = target(posed, centre, radius, has_support, forward, scale);
                 let disp = self.parts[i].slip(&w);
                 let corr = pull(
                     cm((goal - at).with_y(0.0)),

@@ -32,6 +32,7 @@ use std::ops::Mul;
 use bevy::prelude::*;
 
 use super::feet::{self, FootState};
+use super::steps::{self, Plan};
 use super::{CM, Part, PartSetup, Ragdoll, weights};
 use crate::contact::Level;
 
@@ -169,6 +170,11 @@ pub struct Leg {
     pub(super) toe: [f32; 4],
     /// The floor the toe is held over (m).
     pub floor: f32,
+    /// When the footwork last changed this foot's state, it landed, and
+    /// its step started (ms). Not a number until it has happened.
+    pub(super) changed_ms: f32,
+    pub(super) landed_ms: f32,
+    pub(super) started_ms: f32,
 }
 
 /// A living body's balance, kept from tick to tick.
@@ -472,6 +478,9 @@ pub(super) fn build(setup: &[PartSetup], parts: &mut [Part]) -> (Vec<Pin>, Vec<L
             foot,
             toe,
             floor: 0.0,
+            changed_ms: f32::NAN,
+            landed_ms: f32::NAN,
+            started_ms: f32::NAN,
         });
     }
     for leg in &mut legs {
@@ -551,7 +560,11 @@ impl Ragdoll {
             .collect();
         let sole = self.sole;
         let Ragdoll {
-            parts, legs, drive, ..
+            parts,
+            legs,
+            drive,
+            chest: chest_pins,
+            ..
         } = self;
         let Some(drive) = drive.as_mut() else {
             return;
@@ -571,7 +584,7 @@ impl Ragdoll {
         });
         // Where last tick's pose put each ankle: its stance spot.
         let posed = drive.targets.len() == parts.len();
-        let spots: Vec<Option<Vec3>> = legs
+        let mut spots: Vec<Option<Vec3>> = legs
             .iter()
             .map(|l| posed.then(|| drive.targets[l.shin].transform_point3(l.point)))
             .collect();
@@ -600,6 +613,8 @@ impl Ragdoll {
         if b.offset > 0.0 {
             b.lean = o / b.offset;
         }
+        let h_cm = cm(o.with_y(0.0)).length();
+        let was_stepping = drive.steps.stepping;
         if bearing.getting_up {
             b.get_up();
         } else {
@@ -609,24 +624,135 @@ impl Ragdoll {
                 q = vertical_cut(q, v, b.grounded);
                 b.counter = COUNTER_FULL;
             }
-            // No recovery steps yet: a still body is one that does not move.
-            b.settle(q, cm(b.slow).length_squared(), !bearing.moving);
+            // Standing still is not moving and not already stepping.
+            b.settle(
+                q,
+                cm(b.slow).length_squared(),
+                !bearing.moving && !was_stepping,
+            );
         }
 
+        // The recovery step, from this tick's balance and last tick's
+        // support, before the feet are moved.
+        let fast = b.fast;
+        let frame = drive.anchor.unwrap_or(centre);
+        let trigger = steps::Trigger {
+            balance: b.value,
+            supported: b.has_support,
+            getting_up: bearing.getting_up,
+            locomoting: bearing.moving || bearing.walking,
+            down: bearing.off_feet || !b.has_support,
+            h_cm,
+            chest,
+            fast,
+            energy: drive.energy,
+            support: drive.support,
+            scale,
+            bonus,
+            extension: b.extension,
+            frame,
+            landings: b.landings,
+        };
+        let posed_spots = spots.clone();
+        let plan = steps::consider(&mut drive.steps, &trigger);
+        let origin = match plan {
+            Plan::Stepping(origin) => Some(origin),
+            Plan::Ended => {
+                end_step(
+                    &mut drive.steps,
+                    legs,
+                    &posed_spots,
+                    &contacts,
+                    frame,
+                    chest,
+                    fast,
+                );
+                None
+            }
+            Plan::Idle => None,
+        };
+        if let Some(origin) = origin {
+            for spot in spots.iter_mut().flatten() {
+                let local = *spot - frame;
+                *spot = Vec3::new(origin.x + local.x, spot.y, origin.z + local.z);
+            }
+        }
+        let pin_mean = (posed && !chest_pins.is_empty()).then(|| {
+            let n = chest_pins.len() as f32;
+            chest_pins
+                .iter()
+                .map(|(i, w)| drive.targets[*i].transform_point3(parts[*i].rest_point(w)))
+                .sum::<Vec3>()
+                / n
+        });
+        let stance_origin = origin.unwrap_or(frame);
+        let work = steps::Work {
+            now_ms: drive.steps.clock as f32 * steps::MS_PER_TICK,
+            scale,
+            crouch: bearing.crouch,
+            reference: steps::score_reference(
+                chest,
+                pin_mean,
+                drive.steps.stepping,
+                fast,
+                forward,
+                bearing.crouch,
+            ),
+            root: frame,
+            origin: stance_origin,
+            step_cm: steps::step_length(scale, trigger.extension),
+            episode: drive.steps.stepping,
+            episode_ms: if drive.steps.stepping {
+                steps::elapsed_ms(&drive.steps)
+            } else {
+                0.0
+            },
+            chest_to_target_cm: cm((chest - drive.steps.target).with_y(0.0)).length(),
+            size: 1.0,
+        };
         // The feet's states, from last tick's support.
         let met: Vec<bool> = legs
             .iter()
             .map(|l| !parts[l.foot.unwrap_or(l.shin)].contacts.is_empty())
             .collect();
-        feet::plant(
+        let foot_ended = feet::plant(
             legs,
             &contacts,
             &spots,
             &bearing,
-            b.has_support,
+            trigger.supported,
             &met,
-            scale,
+            &work,
         );
+        if drive.steps.stepping {
+            let dist = cm((chest - drive.steps.target).with_y(0.0)).length();
+            let toward = cm(fast.with_y(0.0))
+                .dot((drive.steps.target - chest).with_y(0.0).normalize_or_zero());
+            let any = legs.iter().any(|l| l.state.has(FootState::ANCHORED));
+            drive.steps.near = steps::note_near(drive.steps.near, dist, scale);
+            let landed = b.landings.saturating_sub(drive.steps.landed_from);
+            if foot_ended
+                || steps::episode_over(
+                    steps::elapsed_ms(&drive.steps),
+                    any,
+                    dist,
+                    toward,
+                    drive.steps.near,
+                    landed,
+                    scale,
+                )
+            {
+                end_step(
+                    &mut drive.steps,
+                    legs,
+                    &posed_spots,
+                    &contacts,
+                    frame,
+                    chest,
+                    fast,
+                );
+            }
+        }
 
         // The feet.
         b.pelvis = pelvis.y;
@@ -726,6 +852,48 @@ impl Ragdoll {
                 grounds.fold(pelvis.y + LOWEST_ABOVE / CM, f32::min)
             };
         }
+    }
+}
+
+/// The episode ended: one support foot is put on its spot and the standing
+/// position moves so that spot is where the foot is. `spots` are the pose's
+/// ankles, not the step's shifted ones.
+fn end_step(
+    steps: &mut steps::Steps,
+    legs: &mut [Leg],
+    spots: &[Option<Vec3>],
+    ankles: &[Vec3],
+    frame: Vec3,
+    chest: Vec3,
+    fast: Vec3,
+) {
+    steps.stepping = false;
+    steps.out_of_balance = false;
+    steps.near = 0;
+    let q = steps::end_query(chest, fast);
+    let mut best: Option<(usize, f32)> = None;
+    for (i, leg) in legs.iter().enumerate() {
+        if leg.state.has(FootState::ANCHORED) {
+            continue;
+        }
+        let Some(spot) = spots.get(i).copied().flatten() else {
+            continue;
+        };
+        let want = q + (spot - frame).with_y(0.0);
+        let d = (ankles[i] - want).with_y(0.0).length_squared();
+        if best.as_ref().is_none_or(|(_, b)| d < *b) {
+            best = Some((i, d));
+        }
+    }
+    if let Some((i, _)) = best {
+        let local = (spots[i].unwrap() - frame).with_y(0.0);
+        if !legs[i].state.has(FootState::REACHED) {
+            legs[i].anchor = ankles[i];
+        }
+        let keep = legs[i].state.0 & (FootState::RAMP_HELD | FootState::RAMP_SLOW);
+        legs[i].state = FootState(FootState::TOUCHING | keep);
+        steps.standing = ankles[i] - local;
+        steps.placed = true;
     }
 }
 

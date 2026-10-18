@@ -439,6 +439,7 @@ pub(crate) fn bearing(
         walking: condition == Condition::WALKING,
         off_feet: condition.off_feet(),
         progress: 0.0,
+        idle: anim.action == "Idle",
     }
 }
 

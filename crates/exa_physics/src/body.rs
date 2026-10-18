@@ -57,6 +57,8 @@ pub use feet::FootState;
 mod pins;
 #[path = "body_stages.rs"]
 pub mod stages;
+#[path = "body_steps.rs"]
+mod steps;
 pub use stages::{
     BodyPostStep, BodyPreStep, CharacterStage, CharacterTick, SolverStage, SolverStages,
     TickedCharacter, run_character_ticks, solve_among, solve_with,
@@ -864,6 +866,8 @@ pub struct Drive {
     /// sets 41, one started unsteady 27, and every posture stage takes one
     /// off.
     pub posture_wait: i32,
+    /// Its recovery step, if the chest has left the feet.
+    steps: steps::Steps,
 }
 
 /// One tick of the support pins' gain factor: under 0.08 (in double
@@ -905,6 +909,7 @@ impl Default for Drive {
             sag: 0.0,
             pin_gain: PIN_GAIN,
             posture_wait: 0,
+            steps: steps::Steps::default(),
         }
     }
 }

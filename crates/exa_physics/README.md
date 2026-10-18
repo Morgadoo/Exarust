@@ -67,9 +67,16 @@ check). Its feet are planted as the original's are (`src/body_feet.rs`):
 each leg's foot contact (`body::Leg`: `state`, a `body::FootState` of the
 original's bits, `anchor`, `grip`, `ramp`) is planted where its foot meets
 the floor, stood on its stance spot getting up or unsupported, cleared
-lying, and steps to its stance spot when that drifts 5 cm off (one foot at
-a time, Exarust's stand-in for the footwork's scores until C15); its lower
-leg's and foot's friction follow its state; in each iteration a standing
+lying, and steps to its stance spot by the footwork's stance score, one
+foot at a time (a free foot within 5 cm stays). A recovery step starts
+when the chest is past 1.5 · R · E⁴ · S (45 cm for a settled human).
+While it runs and the chest is not past the trigger, the thorax pins
+lead by the horizontal error from the pin to the posed target plus the
+step offset: 0.7, or 0.4 while Idle, times (direction + 0.5) times
+(2 − 25·s) times 1.2 times the square root of body scale times the
+stance level. A still 40 cm sideways error moves the target 33.6 cm.
+The lower leg's and foot's friction follow its
+state; in each iteration a standing
 foot is gripped at its anchor (the PD grip, a walking one the velocity
 servo, a lifted one only pushed up) and its toe held over the floor
 (`body::Ragdoll::clear_feet`, `body::Ragdoll::ankle`,

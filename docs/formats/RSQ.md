@@ -335,9 +335,16 @@ How the original simulates a body (`exa_physics::body`):
     body tick clamps it. The daze (energy more than 0.05 under the most:
     a zombie under 0.85), the pose hold, the swing clock and the attack
     gate all measure the energy against this most.
-  - Recovery steps are not reproduced yet (its footwork's scores, C15).
-    The support pins pull the thorax and the pelvis (below); its feet are planted
-    ([Feet](#feet)).
+  - A recovery step starts when the chest leaves the feet (1.5 · R · E⁴ · S;
+    a settled human, balance bonus 1, at 45 cm), leads the target by the
+    chest's velocity, and the footwork's stance score moves one foot. The
+    episode ends by its timeouts and landings. The thorax pins then lead
+    by the horizontal error from the pin to the posed target plus the
+    step offset, times 0.7 (0.4 while Idle plays), (direction + 0.5),
+    (2 − 25·s), 1.2, the square root of body scale and the stance level.
+    Direction is (h²/60 + 0.25)·0.36·forwardness. The support pins pull
+    the thorax and the pelvis (below); its feet
+    are planted ([Feet](#feet)).
   - Several of these read the character's race record in `races.rdb`: the
     stance factor, the support-pin factor, the balance bonus, the arms'
     relaxation, the limb damping ratio and the gait table
@@ -634,8 +641,16 @@ body across the ground instead of the original's locomotion (C18):
   0.2·e·|e|/60 when |e| is under 60 cm and 12 cm along the error otherwise,
   less the point's horizontal displacement this tick, capped at 8 cm,
   times S²·pin-gain·P·the spawned pin factor, and times 0.3 while getting
-  up. P is √E·T·E⁴. Pin-gain starts at 0.08 and recovers 0.001 a tick
-  while it is under that and the body is not collapsing. With no support
+  up. While a recovery step runs and the chest is not past the trigger,
+  each thorax target is first shifted by the horizontal error from the
+  pin's world point to the posed target plus the step offset. The shift
+  is that error times 0.7 (0.4 while Idle plays), times (direction + 0.5),
+  times (2 − 25·s), times 1.2, times the square root of body scale and
+  times the stance level. Direction is (h²/60 + 0.25)·0.36·forwardness,
+  with h in centimetres. A still 40 cm sideways error moves the target
+  33.6 cm. P is √E·T·E⁴. Pin-gain starts at 0.08 and
+  recovers 0.001 a tick while it is under that and the body is not
+  collapsing. With no support
   the pull is zero and the target only shifts 5·scale cm forward. While
   the body moves the frame already follows the pelvis, so the pins do not
   hold it on one world spot. The capsule does not pull the pelvis
@@ -647,7 +662,9 @@ body across the ground instead of the original's locomotion (C18):
   With the original's target alone the pelvis stayed on the lowest foot, a
   step under the capsule: walkers caught their feet on the risers (in
   exanima01's stair room 4–5 times in 50 s from one start, once from the
-  other) and a body stopping on the stairs sank onto its trailing foot. So,
+  other). A body that stops on the third step, with the original's target
+  alone, keeps its balance: the recovery step puts its feet on the landing
+  and its pelvis stays more than 5 cm below the stopgap climb. So,
   while a body that has not fallen has its controller on the ground,
   standing or moving, the lift reads no foot's ground lower than the
   controller's floor less 6 cm (a fallen body's capsule lifts nothing).
@@ -675,10 +692,10 @@ body across the ground instead of the original's locomotion (C18):
   longer carried or held by its controller (Exarust's own, until the body
   stands on its feet) and keeps its tone, as in the original: once it lies
   its support is 0, so only its link muscles act, inside the body.
-- Recovery steps are not reproduced yet (the footwork's scores and the
-  chest's lead, C15); leg IK and gait walking are not reproduced yet
-  either (C13, C19). The feet are planted and step to their stance spots
-  ([Feet](#feet)).
+- Recovery steps are in: the trigger, the stance score and timers, the
+  episode, and the thorax lead's direction term (C15). Leg IK and
+  gait walking are not reproduced yet (C13, C19). The feet are planted
+  and step to their stance spots ([Feet](#feet)).
 - The duellist's strike range is Exarust's own (1.15 m): link-muscle arms
   reach 15–20 cm less far than the clip's pose at the original's swing
   speed.
@@ -713,10 +730,10 @@ ticks.
   support foot again), one whose smoothed approach fell under 1e-5 lands
   where it is (stalled), and at most one foot steps to its stance spot
   (anchored, its anchor re-taken every tick at its height), pulled there by
-  the drive. Which foot steps is Exarust's stand-in for the footwork's
-  stance scores (C15): a foot already stepping, else the standing foot
-  farthest from its stance spot once that is 5 cm (× scale; 10 cm after a
-  stalled step) or more, as the original's score bias steps it. A get-up's
+  the drive. Which foot steps is the footwork's stance score: stay, or
+  either foot, the highest, ties keeping the earlier. A free foot within
+  5 cm of its spot (10 cm after a stall, outside a recovery step) scores
+  as staying. A get-up's
   start, the walk's stop and a queued clip switch clear every state (the
   last two are implied in Exarust: a walking body's feet do not touch, and
   it has no queued switch).
