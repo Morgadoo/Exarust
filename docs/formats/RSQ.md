@@ -719,9 +719,10 @@ ticks.
   not walking plants each foot that does not touch where it is (touching,
   its anchor its ankle). Exarust plants it only once its foot meets the
   level. The standing leg bend folds the leg onto its bend target; it
-  does not change this plant. A walking body's feet do not touch (Exarust's own until its
-  gait plants them, M16/C19: the original lifts and plants them by the
-  walk's phase).
+  does not change this plant. A walking body's feet plant and lift by the
+  walk's phase: frac(progress + 1.2 − 0.5×leg), planted while not touching
+  and the phase is 0.2 to 0.4, lifted while touching and the phase is 0 or
+  at least 0.55.
 - **Footwork** (standing, not moving): lying down (down, dormant, dead) no
   foot touches; getting up until nine tenths of its clip, or without
   support (last tick's), each foot touches on its stance spot, where the

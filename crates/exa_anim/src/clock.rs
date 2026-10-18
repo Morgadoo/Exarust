@@ -226,6 +226,9 @@ impl Animator {
             return false;
         };
         self.time += frames;
+        if self.looping && last > 0.0 && self.time < 0.0 {
+            self.time = self.time.rem_euclid(last);
+        }
         if last > self.time - self.blend {
             return false;
         }

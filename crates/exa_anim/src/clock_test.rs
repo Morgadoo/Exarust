@@ -291,6 +291,9 @@ fn loops_wrap_by_their_last_key() {
     assert!((pose.root.z - 0.035).abs() < 1e-6);
     let still = anim.sample(&walk, true, None).unwrap();
     assert_eq!(still.root.z, 0.0);
+    anim.time = 0.3;
+    assert!(!anim.tick(&walk, -0.8, 0));
+    assert!((anim.time - 79.5).abs() < 1e-4, "{}", anim.time);
 }
 
 /// A clip played once without a follow-up holds its last key.

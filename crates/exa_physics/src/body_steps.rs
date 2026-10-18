@@ -86,9 +86,10 @@ const ROOT_BLEND: f32 = 0.75;
 /// Thorax lead's clip share: Idle, and every other clip.
 pub(super) const LEAD_IDLE: f32 = 0.4;
 pub(super) const LEAD_GAIN: f32 = 0.7;
-/// A recovery step's kind factor. A knockback step uses 1, and that step
-/// is not taken here.
-const LEAD_KIND: f32 = 1.2;
+/// A recovery step's kind factor. A knockback step uses 1.
+pub(super) const LEAD_KIND: f32 = 1.2;
+/// A knockback step's kind factor.
+pub(super) const KNOCKBACK_KIND: f32 = 1.0;
 /// Direction: (h²/60 + 0.25) · 0.36 · how forward the error is.
 const LEAD_DIR_OVER: f32 = 60.0;
 const LEAD_DIR_BIAS: f32 = 0.25;
@@ -133,6 +134,9 @@ pub(super) struct Steps {
     pub near: u32,
     /// The landing count when the episode started.
     pub landed_from: u32,
+    /// A blow started this step. It is not the balance trigger, and walking
+    /// does not clear it.
+    pub knockback: bool,
 }
 
 impl Default for Steps {
@@ -148,8 +152,23 @@ impl Default for Steps {
             started: 0,
             near: 0,
             landed_from: 0,
+            knockback: false,
         }
     }
+}
+
+/// Starts a knockback step whose target is already the chest plus the push.
+pub(super) fn begin_knockback(steps: &mut Steps, target: Vec3) {
+    steps.knockback = true;
+    steps.stepping = true;
+    steps.out_of_balance = false;
+    steps.target = target;
+    if !steps.placed {
+        steps.standing = target;
+        steps.placed = true;
+    }
+    steps.started = steps.clock;
+    steps.near = 0;
 }
 
 /// What the trigger reads this tick.
@@ -175,6 +194,7 @@ pub(super) struct Trigger {
 }
 
 /// Where the stance goes this tick.
+#[derive(Debug)]
 pub(super) enum Plan {
     /// No episode. The feet use the frame.
     Idle,
@@ -209,7 +229,7 @@ pub(super) fn trigger_distance(
 }
 
 /// The step length (cm): 80 · √scale · the leg extension.
-pub(super) fn step_length(scale: f32, extension: f32) -> f32 {
+pub fn step_length(scale: f32, extension: f32) -> f32 {
     STEP_LENGTH * scale.max(0.0).sqrt() * extension.max(0.0)
 }
 
@@ -241,6 +261,15 @@ pub(super) fn next_base(base: f32, down: bool) -> f32 {
 pub(super) fn consider(steps: &mut Steps, t: &Trigger) -> Plan {
     steps.clock = steps.clock.saturating_add(1);
     steps.radius_base = next_base(steps.radius_base, t.down || t.getting_up);
+    if steps.knockback {
+        if t.balance < BALANCE_FLOOR || t.getting_up {
+            steps.knockback = false;
+            steps.stepping = false;
+            return Plan::Ended;
+        }
+        let length = step_length(t.scale, t.extension);
+        return Plan::Stepping(stance_origin(steps.target, t.frame, length, t.scale));
+    }
     steps.out_of_balance = false;
     if !steps.placed {
         steps.standing = t.frame;
@@ -500,6 +529,8 @@ pub(super) struct ChestLead {
     pub scale: f32,
     pub fast: Vec3,
     pub side: Vec3,
+    /// 1.2 for a recovery step, 1 for a knockback step.
+    pub kind: f32,
 }
 
 /// A thorax pin's posed target while a step leads it. The shift is the
@@ -531,7 +562,7 @@ pub(super) fn lead_pose(
     let factor = g
         * (direction + LEAD_DIR_LIFT)
         * (LEAD_SPEED_BASE - LEAD_SPEED * s)
-        * LEAD_KIND
+        * lead.kind
         * LEAD_POOL
         * lead.scale.max(0.0).sqrt()
         * lead.level;

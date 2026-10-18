@@ -188,6 +188,33 @@ pub struct Hit {
 
 const PART_RADIUS: f32 = 0.16;
 const MIN_HIT_SPEED: f32 = 1.5;
+/// Horizontal knockback (m) when `impact` is over 0.5: 2·(20·strikes + 10)·impact
+/// centimetres along the swing, flattened, plus 20 ticks of the chest's fast
+/// velocity (m a tick), capped at `step_cm`. Strikes is 0 until that power exists.
+pub fn knockback_offset(
+    impact: f32,
+    strikes: f32,
+    swing: Vec3,
+    chest_fast: Vec3,
+    step_cm: f32,
+) -> Option<Vec3> {
+    if !impact.is_finite() || !step_cm.is_finite() || step_cm <= 0.0 || impact <= 0.5 {
+        return None;
+    }
+    let along = swing.with_y(0.0);
+    let dir = along.normalize_or_zero();
+    let base = 2.0 * (20.0 * strikes.max(0.0) + 10.0) * impact;
+    let mut push = dir * base + chest_fast.with_y(0.0) * (100.0 * 20.0);
+    if !push.is_finite() {
+        return None;
+    }
+    let len = push.length();
+    if len > step_cm {
+        push *= step_cm / len;
+    }
+    Some(push / 100.0)
+}
+
 /// Share of the blade's velocity a struck part takes on contact.
 const CONTACT_SHARE: f32 = 0.1;
 /// Impact above which a blow shoves the victim, and the shove per unit of
@@ -531,7 +558,20 @@ fn react_to_hits(
         // The blow pushes the struck part, shoves the body when heavy, and
         // dazes it.
         let along = hit.velocity.normalize_or_zero();
-        let push = if outcome.impact > PUSH_FROM {
+        let (fast, step_cm) = body
+            .as_ref()
+            .and_then(|b| b.drive.as_ref())
+            .map(|d| {
+                (
+                    d.balance().fast_velocity(),
+                    exa_physics::body::step_length(d.stats.scale, d.balance().extension()),
+                )
+            })
+            .unwrap_or((Vec3::ZERO, exa_physics::body::step_length(1.0, 1.0)));
+        let step = knockback_offset(outcome.impact, 0.0, hit.velocity, fast, step_cm);
+        let push = if step.is_some() {
+            0.0
+        } else if outcome.impact > PUSH_FROM {
             PUSH_PER_IMPACT * outcome.impact
         } else {
             0.0
@@ -542,6 +582,7 @@ fn react_to_hits(
             bone: hit.bone,
             velocity,
             daze: outcome.daze,
+            step,
         });
         info!(
             "hit on {:?} bone {} at tick {tick} by {}, {:.0} cm, {:.1} cm/tick: impact {:.2}, \
@@ -694,6 +735,24 @@ mod tests {
         messages.get_cursor().read(messages).copied().collect()
     }
 
+    /// Impact over one half steps 2·(20·strikes + 10)·J cm along the swing,
+    /// plus 20 ticks of chest velocity, capped at the step length. Half
+    /// does not. Strikes 0 is 20·J cm.
+    #[test]
+    fn a_heavy_blow_steps_back_by_its_impact() {
+        assert!(knockback_offset(0.5, 0.0, Vec3::Z, Vec3::ZERO, 80.0).is_none());
+        let plain = knockback_offset(1.0, 0.0, Vec3::Z, Vec3::ZERO, 80.0).unwrap();
+        assert!((plain - Vec3::Z * 0.2).length() < 1e-5, "{plain}");
+        let struck = knockback_offset(1.0, 1.0, Vec3::Z, Vec3::ZERO, 80.0).unwrap();
+        assert!((struck - Vec3::Z * 0.6).length() < 1e-5, "{struck}");
+        let moving = knockback_offset(1.0, 0.0, Vec3::Z, Vec3::Z * 0.01, 80.0).unwrap();
+        assert!((moving - Vec3::Z * 0.4).length() < 1e-5, "{moving}");
+        let capped = knockback_offset(1.0, 0.0, Vec3::Z, Vec3::Z, 80.0).unwrap();
+        assert!((capped.length() - 0.8).abs() < 1e-5, "{capped}");
+        let light = knockback_offset(0.4, 0.0, Vec3::Z, Vec3::ZERO, 80.0);
+        assert!(light.is_none());
+    }
+
     /// A sword cut that wounds but does not kill starts no clip: a bare
     /// forearm (13), chest (9), head (10) or foot (4) of a human in its
     /// stance, each over the 0.2 of penetration and impact that used to
@@ -730,6 +789,15 @@ mod tests {
             assert_eq!(s.len(), 1, "bone {bone}");
             assert_eq!((s[0].body, s[0].bone), (fighter, bone));
             assert_eq!(s[0].daze, o.daze, "bone {bone}");
+            let expect = knockback_offset(
+                o.impact,
+                0.0,
+                Vec3::new(3.0, 0.0, 0.0),
+                Vec3::ZERO,
+                exa_physics::body::step_length(1.0, 1.0),
+            );
+            assert!(o.impact > 0.5, "bone {bone}: impact {}", o.impact);
+            assert_eq!(s[0].step, expect, "bone {bone}");
             assert!(app.world().get::<GoLimp>(fighter).is_none());
         }
         let mut app = reactions();

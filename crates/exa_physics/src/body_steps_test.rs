@@ -62,6 +62,25 @@ fn the_trigger_is_one_and_a_half_radii() {
     assert!(close(step_length(1.0, 1.0), 80.0));
 }
 
+/// A knockback step keeps the target the blow set, including while the body
+/// is walking. Balance under 0.2 ends it.
+#[test]
+fn a_knockback_step_keeps_the_blow_target() {
+    let mut steps = Steps::default();
+    begin_knockback(&mut steps, Vec3::new(0.2, 1.0, 0.0));
+    let mut walk = trigger(1.0, true, 0.0);
+    walk.locomoting = true;
+    match consider(&mut steps, &walk) {
+        Plan::Stepping(origin) => assert!(close(origin.x, 0.2), "{origin}"),
+        other => panic!("expected the knockback step, got {other:?}"),
+    }
+    assert!(steps.knockback);
+    let mut down = trigger(0.1, true, 0.0);
+    down.locomoting = true;
+    assert!(matches!(consider(&mut steps, &down), Plan::Ended));
+    assert!(!steps.knockback);
+}
+
 fn trigger(balance: f32, supported: bool, h_cm: f32) -> Trigger {
     Trigger {
         balance,
@@ -191,6 +210,7 @@ fn still_lead(idle: bool, side: Vec3) -> ChestLead {
         scale: 1.0,
         fast: Vec3::ZERO,
         side,
+        kind: LEAD_KIND,
     }
 }
 

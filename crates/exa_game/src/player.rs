@@ -35,9 +35,29 @@ use exa_physics::{CharacterBody, Physics};
 const WALK_SPEED: f32 = 1.4;
 /// Running speed (m/s) at a full run blend.
 const RUN_SPEED: f32 = 3.6;
+/// Human gait thrusts, per second (walk, jog, sprint).
+const WALK_THRUST: f32 = 88.9;
+const JOG_THRUST: f32 = 350.0;
+const SPRINT_THRUST: f32 = 472.2;
+const BACK_THRUST: f32 = 77.8;
 /// Backpedalling speed (m/s): the walk scaled by the gait table's thrusts
 /// (77.8 against 88.9).
-const BACK_SPEED: f32 = WALK_SPEED * 77.8 / 88.9;
+const BACK_SPEED: f32 = WALK_SPEED * BACK_THRUST / WALK_THRUST;
+
+/// Capsule speed (m/s) along the heading. The walk and the jog keep their
+/// measured speeds. While sprinting, the jog end is that speed times the
+/// feral sprint row's thrust over the jog thrust.
+pub(crate) fn forward_speed(run: f32, sprinting: bool, feral: f32) -> f32 {
+    let run = run.clamp(0.0, 1.0);
+    let f = feral.clamp(0.0, 1.0);
+    let sprint = SPRINT_THRUST * (1.0 - f) + JOG_THRUST * f;
+    let end = if sprinting {
+        RUN_SPEED * sprint / JOG_THRUST
+    } else {
+        RUN_SPEED
+    };
+    WALK_SPEED + (end - WALK_SPEED) * run
+}
 /// The behaviour tick (the fixed step), per second.
 const TICK_HZ: f32 = exa_physics::STEP_HZ as f32;
 /// A and D turn the heading this much per tick while moving (rad).
@@ -104,6 +124,8 @@ pub struct PlayerBody {
     run: f32,
     /// Shift with the cursor further than 3 m. The walk keys spend it.
     sprint_latch: bool,
+    /// S is carrying it backwards. The walk clip's clock runs negative.
+    backing: bool,
     /// Seconds until A or D may turn a quarter again.
     quarter_wait: f32,
     /// Seconds the combat footwork keys have been held.
@@ -125,6 +147,7 @@ impl PlayerBody {
             attack: AttackInput::default(),
             run: 0.0,
             sprint_latch: false,
+            backing: false,
             quarter_wait: 0.0,
             held: 0.0,
             walk_from: None,
@@ -140,6 +163,11 @@ impl PlayerBody {
     /// Whether Shift kept the sprint latch this tick.
     pub fn sprint_latch(&self) -> bool {
         self.sprint_latch
+    }
+
+    /// Whether the last steer carried it backwards.
+    pub(crate) fn backing(&self) -> bool {
+        self.backing
     }
 
     /// What is left of the body's turn toward its heading (rad).
@@ -411,13 +439,23 @@ fn steer_player(
         Option<&Condition>,
         Has<Fallen>,
         Option<(&SwingState, &Swing)>,
+        Option<&Ragdoll>,
     )>,
 ) {
     let dt = 1.0 / TICK_HZ;
     for (mut body, at, children) in &mut players {
         for child in children.iter() {
-            let Ok((mut pb, mut t, mut anim, &stance, fighter, condition, fallen, swinging)) =
-                bodies.get_mut(child)
+            let Ok((
+                mut pb,
+                mut t,
+                mut anim,
+                &stance,
+                fighter,
+                condition,
+                fallen,
+                swinging,
+                ragdoll,
+            )) = bodies.get_mut(child)
             else {
                 continue;
             };
@@ -426,12 +464,14 @@ fn steer_player(
             if fallen || condition.is_some_and(|c| c.helpless()) {
                 body.desired_velocity = Vec3::ZERO;
                 pb.sprint_latch = false;
+                pb.backing = false;
                 continue;
             }
             let feet = at.translation();
             let speed = body.desired_velocity.length();
             if pb.combat {
                 pb.sprint_latch = false;
+                pb.backing = false;
                 // The body turns toward the heading, which the cursor sets;
                 // while it attacks at its swing's rate.
                 let attacking = condition.is_some_and(|c| *c == Condition::ATTACKING);
@@ -481,6 +521,12 @@ fn steer_player(
             let cap = fighter.map_or(1.0, |f| run_cap(f.stats.encumbrance, false));
             pb.run = run_blend(pb.run, running && ahead, cap);
             pb.sprint_latch = keeps_sprint_latch(shift, cursor_far);
+            let level = ragdoll
+                .and_then(|b| b.drive.as_ref())
+                .map(|d| d.balance().level())
+                .unwrap_or(0.0);
+            let feral = fighter.map_or(0.0, |f| f.stats.feral);
+            let sprinting = crate::limp::sprinting(pb.sprint_latch, level, speed * 100.0 / TICK_HZ);
             pb.yaw = body_turn(pb.yaw, pb.heading, !mouse, speed);
             t.rotation = Quat::from_rotation_y(pb.yaw);
             // A reversal of more than 120° turns before walking.
@@ -488,7 +534,7 @@ fn steer_player(
                 turn_between(pb.yaw, pb.heading).abs() > 2.0 * std::f32::consts::FRAC_PI_3;
             let heading = forward(pb.heading);
             let mut velocity = if ahead && !facing_away {
-                heading * (WALK_SPEED + (RUN_SPEED - WALK_SPEED) * pb.run)
+                heading * forward_speed(pb.run, sprinting, feral)
             } else if back {
                 if speed > BRAKE_ABOVE && body.desired_velocity.dot(heading) > 0.0 {
                     Vec3::ZERO
@@ -512,7 +558,8 @@ fn steer_player(
                 }
             }
             body.desired_velocity = velocity;
-            explore_clip(&mut anim, exploration_gait(velocity != Vec3::ZERO, back));
+            pb.backing = velocity.dot(heading) < 0.0;
+            explore_clip(&mut anim, exploration_gait(velocity != Vec3::ZERO));
         }
     }
 }
@@ -523,16 +570,10 @@ fn keeps_sprint_latch(shift: bool, cursor_far: bool) -> bool {
     shift && cursor_far
 }
 
-/// Forward locomotion plays Walk. The run is an overlay on that clip.
-/// Backpedal still plays its own clip.
-fn exploration_gait(moving: bool, back: bool) -> Option<&'static str> {
-    if !moving {
-        None
-    } else if back {
-        Some("Backpedal")
-    } else {
-        Some("Walk")
-    }
+/// Forward and back both play Walk. Backing runs that clip's clock
+/// backwards. The run is an overlay on the walk.
+fn exploration_gait(moving: bool) -> Option<&'static str> {
+    if moving { Some("Walk") } else { None }
 }
 
 /// The exploration steering's part in the clip, as the original's: moving,
@@ -1539,9 +1580,12 @@ mod tests {
             explore_clip(&mut anim, Some("Run"));
             assert_eq!(anim.action, "Run", "{kept}");
         }
-        assert_eq!(exploration_gait(true, false), Some("Walk"));
-        assert_eq!(exploration_gait(true, true), Some("Backpedal"));
-        assert_eq!(exploration_gait(false, false), None);
+        assert_eq!(exploration_gait(true), Some("Walk"));
+        assert_eq!(exploration_gait(false), None);
+        assert!((forward_speed(1.0, true, 0.0) - RUN_SPEED * 472.2 / 350.0).abs() < 1e-3);
+        assert!((forward_speed(1.0, true, 1.0) - RUN_SPEED).abs() < 1e-3);
+        assert!((forward_speed(0.0, true, 0.0) - WALK_SPEED).abs() < 1e-3);
+        assert!((forward_speed(1.0, false, 0.0) - RUN_SPEED).abs() < 1e-3);
         assert!(keeps_sprint_latch(true, true));
         assert!(!keeps_sprint_latch(true, false));
         assert!(!keeps_sprint_latch(false, true));

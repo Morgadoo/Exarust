@@ -402,10 +402,14 @@ blends from the walk rate toward the feral sprint row by √run, then
 multiplies by 1 − 0.1 × encumbrance. A feral level of 0 at run blend 1
 and 4.337 cm a tick gains 0.727 frames; feral 1 gains the jog's 0.894;
 encumbrance 0.5 gains 0.691. The capsule still moves at the jog speed.
-Still to do: the sprint row's thrust, the tighter run cap,
-playing Walk backwards instead of the Backpedal clip, the locomotion
-clock's stride terms, gait plants, and collisions between bodies (and
-their wake of a sleeper).
+Done (change `step-the-gait`): the capsule's sprint speed is the jog
+speed times the feral sprint row's thrust over the jog thrust; backing
+plays Walk with the negated backpedal clock; a walking foot plants when
+its phase is 0.2 to 0.4 and lifts at 0.55; a blow whose impact is over
+0.5 starts a knockback step of 2·(20·strikes + 10)·J cm along the swing
+plus 20 ticks of chest velocity, capped at the step length. Still to do:
+the tighter run cap, the locomotion clock's stride terms, and collisions
+between bodies (and their wake of a sleeper).
 
 Done (change `decode-object-bodies-and-mechanisms`, data only): models'
 rigid bodies are decoded as the original stores them (class, mobility,
@@ -811,7 +815,7 @@ torch keeps its grips (now shared) ([PLAYER.md](PLAYER.md), Held items
 and their grips). Still missing from it: the grip links and modes (with
 weapons as bodies, M24/M25), the record's flip bit, second weapons.
 Still to do: inventory and containers, injuries beyond damage, blocking,
-parrying, grabs, practice mode, the knockback step, the striker's recoil
+parrying, grabs, practice mode, the striker's recoil
 and follow-through (C21, M26), the collapse's stagger steps; next in the
 combat timing: the unarmed parries (L10).
 
@@ -980,8 +984,8 @@ against Exarust and lists the largest missing ones. In order:
 1. Gait walking, clip blending, and parts' spheres fitted to their
    meshes (Phase 3). The standing leg bend, recovery steps, the
    support pins, the run overlay on the walk, the sprint overlay
-   weight and the sprint clock are in. Knockback steps, gait plants,
-   the sprint row's thrust and the backpedal clip are not.
+   weight, the sprint clock, the sprint row's thrust, gait plants,
+   the backpedal (Walk played backwards) and knockback steps are in.
 2. Inventory, equipment and containers, then blocking and parrying
    (Phase 4).
 3. The original's NPC brain: perception, targets and the combat state that

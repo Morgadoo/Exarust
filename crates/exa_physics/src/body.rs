@@ -58,10 +58,12 @@ mod pins;
 pub mod stages;
 #[path = "body_steps.rs"]
 mod steps;
+
 pub use stages::{
     BodyPostStep, BodyPreStep, CharacterStage, CharacterTick, SolverStage, SolverStages,
     TickedCharacter, run_character_ticks, solve_among, solve_with,
 };
+pub use steps::step_length;
 #[path = "body_frame.rs"]
 mod frame;
 #[path = "body_inspect.rs"]
@@ -1059,6 +1061,9 @@ pub struct Shove {
     pub bone: usize,
     pub velocity: Vec3,
     pub daze: f32,
+    /// Horizontal knockback from the chest (m), when the blow's impact is
+    /// over one half. None keeps the velocity shove.
+    pub step: Option<Vec3>,
 }
 
 /// Blows waiting for the next tick.
@@ -1563,6 +1568,15 @@ impl Ragdoll {
         }
     }
 
+    /// Starts a knockback step at the chest plus `offset` (m, horizontal).
+    pub fn begin_knockback(&mut self, offset: Vec3) {
+        let Some(drive) = self.drive.as_mut() else {
+            return;
+        };
+        let chest = drive.balance.chest().unwrap_or(Vec3::ZERO);
+        steps::begin_knockback(&mut drive.steps, chest + offset);
+    }
+
     /// Gives every particle a velocity (m/s) by placing its previous
     /// position behind it.
     pub fn set_velocity(&mut self, velocity: Vec3) {
@@ -2050,6 +2064,9 @@ pub fn step_bodies(
     for s in queue.0.drain(..) {
         if let Ok(mut body) = bodies.get_mut(s.body) {
             body.shove(s.bone, s.velocity, s.daze);
+            if let Some(offset) = s.step {
+                body.begin_knockback(offset);
+            }
             dealt.0.push(s);
         }
     }

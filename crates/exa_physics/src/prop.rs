@@ -238,6 +238,7 @@ mod tests {
             bone: 0,
             velocity: Vec3::X,
             daze: 0.0,
+            step: None,
         });
         for _ in 0..30 {
             app.update();

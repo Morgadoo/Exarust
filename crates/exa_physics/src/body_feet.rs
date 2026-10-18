@@ -28,9 +28,9 @@
 //!
 //! The rules are the original's, in its centimetres and ticks (evidence:
 //! `docs/formats/RSQ.md`, Physical body, Feet). The footwork chooses by
-//! the stance score. Exarust has no walking gait plants and no leg IK yet:
-//! a foot is planted only once it meets the level, and a walking body's
-//! feet do not touch.
+//! the stance score. A walking body's feet plant and lift by the walk's
+//! phase. A foot is planted only once it meets the level when it is not
+//! walking.
 //! (Included from body.rs: `#[path = "body_feet.rs"] mod feet;`)
 
 use bevy::prelude::*;
@@ -370,12 +370,41 @@ pub(super) fn push_sole(foot: &mut Part, leg: &Leg, fd: &FootDrive) {
     foot.push(&leg.toe, Vec3::Y * (up / CM));
 }
 
+/// What one walk phase does to a foot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GaitPlant {
+    /// Not touching, and the phase is in the plant window: touch, anchor
+    /// across the ground on the ankle.
+    Plant,
+    /// Touching, and the phase is in the swing: clear the state.
+    Lift,
+    /// Leave the state as it is.
+    Hold,
+}
+
+/// The leg's phase in the walk: the fraction of progress + 1.2 − 0.5×leg.
+pub(super) fn gait_phase(progress: f32, leg: usize) -> f32 {
+    (progress + 1.2 - 0.5 * leg as f32).rem_euclid(1.0)
+}
+
+/// Plant in [0.2, 0.4] while the foot does not touch. Lift at phase 0 or
+/// at least 0.55 while it does.
+pub(super) fn gait_plant(phase: f32, touching: bool) -> GaitPlant {
+    if !touching && (0.2..=0.4).contains(&phase) {
+        GaitPlant::Plant
+    } else if touching && (phase <= 0.0 || phase >= 0.55) {
+        GaitPlant::Lift
+    } else {
+        GaitPlant::Hold
+    }
+}
+
 /// The feet's states before they are measured, as the original's sampler
 /// and footwork leave them. A body that is not walking plants each foot
 /// that does not touch where it is (`ankles`), but only once the foot
 /// meets the level (`down`: its part has level contacts; Exarust's own
-/// until the leg IK lowers a planted foot onto its anchor); a walking
-/// body's feet do not touch (Exarust's own until its gait plants them).
+/// until the leg IK lowers a planted foot onto its anchor). A walking
+/// body's feet plant and lift by [`gait_plant`].
 /// Standing (not moving): lying down, no foot touches; getting up (until
 /// nine tenths of its clip) or without support (`had_support`, last
 /// tick's), each foot touches on its stance spot (`spots`), not touching in
@@ -397,15 +426,26 @@ pub(super) fn plant(
     down: &[bool],
     work: &Work,
 ) -> bool {
-    for ((leg, &at), &down) in legs.iter_mut().zip(ankles).zip(down) {
+    for (i, ((leg, &at), &down)) in legs.iter_mut().zip(ankles).zip(down).enumerate() {
         if bearing.walking {
-            leg.state = FootState(0);
+            match gait_plant(
+                gait_phase(bearing.progress, i),
+                leg.state.has(FootState::TOUCHING),
+            ) {
+                GaitPlant::Plant => {
+                    leg.anchor.x = at.x;
+                    leg.anchor.z = at.z;
+                    leg.state = FootState(FootState::TOUCHING);
+                }
+                GaitPlant::Lift => leg.state = FootState(0),
+                GaitPlant::Hold => {}
+            }
         } else if !leg.state.has(FootState::TOUCHING) && down {
             leg.anchor = at;
             leg.state = FootState(FootState::TOUCHING);
         }
     }
-    if bearing.moving {
+    if bearing.walking || bearing.moving {
         return false;
     }
     let off_feet = bearing.off_feet || bearing.getting_up;

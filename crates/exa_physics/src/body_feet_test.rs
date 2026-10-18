@@ -102,7 +102,8 @@ fn legs_take_their_friction_from_their_feet() {
     assert_eq!(f(FootState::ANCHORED), 0.0);
     assert_eq!(f(FootState::TOUCHING | FootState::LIFTED), 2.0);
     // Standing on a floor: both feet touch, the lower legs and feet take
-    // 2.0; walking, none touches and they take 0.
+    // 2.0. Walking at progress 0, the near foot (phase 0.2) stays and the
+    // far foot (phase 0.7) lifts.
     let floor = floor_quad(0.0, 5.0);
     let (mut body, pose) = footed(Vec3::ZERO);
     // Planted once their feet have met the floor.
@@ -122,9 +123,24 @@ fn legs_take_their_friction_from_their_feet() {
     };
     assert_eq!(friction(&body), [2.0; 4]);
     body.drive.as_mut().unwrap().bearing.walking = true;
+    body.drive.as_mut().unwrap().bearing.progress = 0.0;
     stand(&mut body, Affine3A::IDENTITY, &pose, &floor);
-    assert_eq!(friction(&body), [0.0; 4]);
-    assert!(body.legs.iter().all(|l| l.state == FootState(0)));
+    assert_eq!(friction(&body), [2.0, 2.0, 0.0, 0.0]);
+    assert_eq!(body.legs[0].state, FootState(FootState::TOUCHING));
+    assert_eq!(body.legs[1].state, FootState(0));
+}
+
+/// Walk phase 0 plants the free near foot and lifts the touching far foot.
+#[test]
+fn a_walk_plants_and_lifts_by_its_phase() {
+    assert!(close(gait_phase(0.0, 0), 0.2, 1e-6));
+    assert!(close(gait_phase(0.0, 1), 0.7, 1e-6));
+    assert_eq!(gait_plant(gait_phase(0.0, 0), false), GaitPlant::Plant);
+    assert_eq!(gait_plant(gait_phase(0.0, 0), true), GaitPlant::Hold);
+    assert_eq!(gait_plant(gait_phase(0.0, 1), true), GaitPlant::Lift);
+    assert_eq!(gait_plant(gait_phase(0.0, 1), false), GaitPlant::Hold);
+    assert_eq!(gait_plant(0.0, true), GaitPlant::Lift);
+    assert_eq!(gait_plant(0.41, false), GaitPlant::Hold);
 }
 
 /// The servo pushes a still point d·rate·gain (10 cm off at rate 0.2 and
@@ -357,8 +373,8 @@ fn the_toe_is_held_over_its_floor() {
 }
 
 /// Before the feet are measured: a body that is not walking plants a foot
-/// that does not touch where it is, once it meets the level; walking, no
-/// foot touches. Standing, lying down no foot touches; getting up its feet
+/// that does not touch where it is, once it meets the level. Walking, each
+/// foot plants or lifts by its phase. Standing, lying down no foot touches; getting up its feet
 /// stand on their stance spots (not touching in the first fifth of the
 /// clip) until nine tenths, and so do they without support; a body
 /// standing with support keeps its feet as they are, but lets go of one
@@ -434,10 +450,23 @@ fn feet_are_planted_lifted_or_stood_on_their_stance_spots() {
     let walking = Bearing {
         walking: true,
         moving: true,
+        progress: 0.0,
         ..standing
     };
-    let lifted = plant_in(legs, &far, walking, true, [true; 2]);
-    assert!(lifted.iter().all(|f| f.0 == FootState(0)));
+    reset(legs);
+    let planted = plant_in(legs, &far, walking, true, [true; 2]);
+    // Phase 0.2 plants the free near foot. Phase 0.7 leaves the free far foot.
+    assert_eq!(planted[0].0, touching);
+    assert!(close(planted[0].1.x, ankles[0].x, 1e-6));
+    assert!(close(planted[0].1.z, ankles[0].z, 1e-6));
+    assert_eq!(planted[1].0, FootState(FootState::ANCHORED));
+    // Both touching: the far foot's phase lifts it, the near foot stays.
+    for leg in legs.iter_mut() {
+        leg.state = touching;
+    }
+    let mixed = plant_in(legs, &far, walking, true, [true; 2]);
+    assert_eq!(mixed[0].0, touching);
+    assert_eq!(mixed[1].0, FootState(0));
     let lying = Bearing {
         off_feet: true,
         ..standing
@@ -525,8 +554,9 @@ fn the_stance_levels_and_the_legs_extend() {
 /// A body standing on a floor plants its feet where they stand: both
 /// touch, anchored at the floor plus the sole height, gripped in full after
 /// 50 ticks, their ankles within 1 cm of their anchors and their toes on
-/// the floor. Walking, they do not touch; stopping, they are planted where
-/// they are.
+/// the floor. Walking at progress 0, the near foot stays and the far foot
+/// lifts; stopping plants the lifted foot where it is and leaves the
+/// touching foot's anchor.
 #[test]
 fn a_standing_body_plants_its_feet() {
     let floor = floor_quad(0.0, 5.0);
@@ -547,16 +577,20 @@ fn a_standing_body_plants_its_feet() {
         assert!(close(leg.floor, 0.0, 1e-6));
     }
     body.drive.as_mut().unwrap().bearing.walking = true;
+    body.drive.as_mut().unwrap().bearing.progress = 0.0;
     stand(&mut body, Affine3A::IDENTITY, &pose, &floor);
-    assert!(body.legs.iter().all(|l| l.state == FootState(0)));
+    assert_eq!(body.legs[0].state, FootState(FootState::TOUCHING));
+    assert_eq!(body.legs[1].state, FootState(0));
+    let kept = body.legs[0].anchor;
     body.drive.as_mut().unwrap().bearing.walking = false;
-    let ankles = [ankle(&body, 0).0, ankle(&body, 1).0];
+    let far = ankle(&body, 1).0;
     body.measure_balance(floor.as_slice());
-    for (leg, at) in body.legs.iter().zip(ankles) {
-        assert_eq!(leg.state, FootState(FootState::TOUCHING));
-        assert!(close(leg.anchor.x, at.x, 1e-6) && close(leg.anchor.z, at.z, 1e-6));
-        assert!(close(leg.anchor.y, SOLE, 1e-5));
-    }
+    assert_eq!(body.legs[0].state, FootState(FootState::TOUCHING));
+    assert_eq!(body.legs[0].anchor, kept);
+    assert_eq!(body.legs[1].state, FootState(FootState::TOUCHING));
+    assert!(close(body.legs[1].anchor.x, far.x, 1e-6));
+    assert!(close(body.legs[1].anchor.z, far.z, 1e-6));
+    assert!(close(body.legs[1].anchor.y, SOLE, 1e-5));
 }
 
 /// A quarter turn in place keeps the planted feet within 1 cm of where

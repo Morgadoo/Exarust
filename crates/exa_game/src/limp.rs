@@ -238,6 +238,8 @@ pub(crate) struct Pace {
     /// stagger) runs at the off-balance rate for that tick, as the
     /// original's rate is set before the start.
     pub(crate) rose: bool,
+    /// It walks backwards. The walk clock uses the negated backpedal rate.
+    pub(crate) backing: bool,
 }
 
 /// One tick of a living body's clip: a start since the last tick captures
@@ -354,8 +356,8 @@ fn clip_frames(playing: Option<usize>, progress: f32, drive: &Drive, pace: &Pace
     match playing {
         Some(a) if bearing.moving && LOCOMOTION.contains(&a) => {
             let per_tick = |row: usize| race.gait_rates[row] / BODY_HZ;
-            let gait = if a == BACKPEDAL_ACTION {
-                per_tick(BACKPEDAL)
+            let gait = if pace.backing || a == BACKPEDAL_ACTION {
+                -per_tick(BACKPEDAL)
             } else {
                 let run = pace.run.clamp(0.0, 1.0).sqrt();
                 let row = if pace.sprinting {
@@ -1084,6 +1086,7 @@ pub(crate) mod tests {
                 sprinting: sprinting(latch, level, speed),
                 feral: 0.0,
                 rose: false,
+                backing: false,
             };
             clip_tick(&motions, &mut anim, &body, &pace, |_| Vec::new()).unwrap()
         };
@@ -1127,6 +1130,7 @@ pub(crate) mod tests {
             sprinting: false,
             feral: 0.0,
             rose: true,
+            backing: false,
         };
         let still = Bearing::default();
         let frames = |a: usize, d: &Drive, p: &Pace| clip_frames(Some(a), 0.3, d, p);
@@ -1177,9 +1181,11 @@ pub(crate) mod tests {
         assert!(close(frames(0, &doing(moving, 1.0), &run), 0.8939));
         let back = Pace {
             walked: 1.476,
+            backing: true,
             ..pace
         };
-        assert!(close(frames(2, &doing(moving, 1.0), &back), 0.7357));
+        assert!(close(frames(0, &doing(moving, 1.0), &back), -0.7357));
+        assert!(close(frames(2, &doing(moving, 1.0), &back), -0.7357));
         // A sprint plays the feral sprint row. Feral 0 is the sprint
         // rate; feral 1 is the jog rate, then 1 − 0.1·encumbrance. Below
         // the gates it stays the jog. The backpedal is not the sprint row.
@@ -1232,7 +1238,8 @@ pub(crate) mod tests {
             feral: 0.0,
             ..back
         };
-        assert!(close(frames(2, &doing(moving, 1.0), &back_sprint), 0.7357));
+        assert!(close(frames(2, &doing(moving, 1.0), &back_sprint), -0.7357));
+        assert!(close(frames(0, &doing(moving, 1.0), &back_sprint), -0.7357));
         assert!(close(frames(0, &doing(still, 1.0), &walk), 0.6));
         assert!(close(frames(5, &doing(still, 1.0), &pace), 1.62));
         let mut zombie = doing(still, 1.0);

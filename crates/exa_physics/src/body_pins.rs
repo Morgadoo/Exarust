@@ -199,6 +199,11 @@ impl Ragdoll {
                     scale,
                     fast: drive.balance.fast_velocity(),
                     side: side_axis(drive),
+                    kind: if drive.steps.knockback {
+                        steps::KNOCKBACK_KIND
+                    } else {
+                        steps::LEAD_KIND
+                    },
                 },
             )
         });

@@ -57,6 +57,7 @@ fn run_at(fps: f32, ticks: usize) -> Vec<Vec<[Vec3; 4]>> {
         bone: 8,
         velocity: Vec3::new(1.0, 0.0, -1.5),
         daze: 0.3,
+        step: None,
     });
     while app.world().resource::<History>().0.len() < ticks {
         app.update();
@@ -144,6 +145,7 @@ fn a_shove_in_a_frame_without_a_tick_is_dealt_by_the_next_tick() {
         bone: 8,
         velocity: Vec3::X * 2.0,
         daze: 0.5,
+        step: None,
     });
     app.update();
     assert_eq!(ticks(&app), before, "the frame ran a tick");

@@ -348,6 +348,8 @@ fn a_dazed_body_sags_in_proportion_to_its_energy() {
         // Its feet do not touch (as a walking body's), so that only the
         // lift holds it.
         body.drive.as_mut().unwrap().bearing.walking = true;
+        // Outside both plant windows, so the lift is what holds the feet up.
+        body.drive.as_mut().unwrap().bearing.progress = 0.85;
         for _ in 0..800 {
             // The tick recovers 0.005 before the parts take the carry.
             body.drive.as_mut().unwrap().energy = energy - ENERGY_RECOVERY;

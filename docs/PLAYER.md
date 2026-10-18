@@ -33,11 +33,12 @@ The original has no camera-relative keyboard movement. Outside combat:
   is above 0.9 and the step is faster than 3.5 cm a tick the pose uses
   the run blend itself, and the walk clip's clock blends toward the
   feral sprint row (the sprint rate, toward the jog rate by the feral
-  level) and then slows by 1 − 0.1 × encumbrance. The capsule still
-  moves at the jog speed.
-- **The clips.** The steering starts the walk or backpedal when the
-  character moves, from whatever looping clip plays, and ends it in Idle
-  when the character stops. It starts no other clip: what a standing
+  level) and then slows by 1 − 0.1 × encumbrance. The capsule then moves
+  at the jog speed times the feral sprint thrust over the jog thrust.
+- **The clips.** The steering starts the walk when the character moves,
+  forwards or back, from whatever looping clip plays, and ends it in Idle
+  when the character stops. Backing runs that walk's clock backwards at
+  the backpedal rate. It starts no other clip: what a standing
   character plays is its stance's ([The combat stance](#the-combat-stance)),
   so a player that turned combat mode off in Cmbt - Idle keeps it, also
   while turning in place, until it walks. (REA: the original's exploration

@@ -271,6 +271,7 @@ fn the_hips_stay_in_their_sockets_under_a_shove() {
                 bone: 8,
                 velocity: Vec3::NEG_Z * 4.0,
                 daze: 0.5,
+                step: None,
             });
             limp.shove(8, Vec3::NEG_Z * 4.0, 0.0);
         }

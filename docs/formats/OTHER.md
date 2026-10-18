@@ -859,8 +859,9 @@ calls)
   voices, and on J > 0.5 a knockback step: 2·(20·s + 10)·J cm along the
   swing flattened to the horizontal, s the Force Strikes level (0 without
   the power), plus 20 ticks of its chest's smoothed velocity, capped at
-  its step length. Exarust shoves the struck part by 10J cm/tick plus a
-  tenth of the blade's velocity until the step exists.
+  its step length. Exarust starts that step when impact is over 0.5, and
+  shoves the struck part by 10J cm/tick plus a tenth of the blade's
+  velocity only when it is not.
 - A character struck while swinging has its swing stalled. With D the daze
   (at most 0.9), f a factor of the blow (1 for a human in most blows),
   reach its attack reach (cm) and w its weapon's recoil factor,

@@ -1026,6 +1026,7 @@ fn shove_at_frame(
                     bone,
                     velocity: gt.rotation() * Vec3::NEG_Z * 4.0,
                     daze: 0.5,
+                    step: None,
                 });
             }
         }
@@ -1080,6 +1081,7 @@ fn shove_props_at_frame(
                     bone,
                     velocity,
                     daze: 0.0,
+                    step: None,
                 });
             }
             shoved.push((e, c));
