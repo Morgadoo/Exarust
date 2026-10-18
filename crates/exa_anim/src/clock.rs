@@ -13,7 +13,8 @@
 //! depends on the clip that ended. While a body is dazed or unsteady its
 //! targets are pulled toward the pose it holds (`hold`). While Walk plays,
 //! each bone is first slerped toward the Run sample at the same keys by
-//! 0.7 times the run blend; the root stays the walk's. Evidence:
+//! the caller's weight (0.7 times the run blend, or the blend itself
+//! while sprinting); the root stays the walk's. Evidence:
 //! `docs/formats/RSQ.md` (Motion playback).
 //! (Included from lib.rs: `mod clock;`)
 

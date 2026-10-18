@@ -15,7 +15,7 @@ use exa_combat::{Condition, Fighter};
 use exa_physics::CharacterBody;
 use exa_physics::body::{Ragdoll, TickedCharacter, world_with};
 
-use crate::limp::{CM, Pace, clip_tick, physical_turns};
+use crate::limp::{CM, Pace, clip_tick, physical_turns, sprinting};
 use crate::player::PlayerBody;
 
 /// The pose the sampler gave the ticked body this tick, scaled by its
@@ -61,12 +61,15 @@ pub(crate) fn sample_clip(
     let root_world = world_with(root, &parents, |n| {
         nodes.get(n).ok().map(|(t, _)| t.compute_affine())
     });
+    let walked = controller.map_or(0.0, |c| c.walked().with_y(0.0).length() * CM);
+    let level = body.drive.as_ref().map_or(0.0, |d| d.balance().level());
     let pace = Pace {
-        walked: controller.map_or(0.0, |c| c.walked().with_y(0.0).length() * CM),
+        walked,
         run: player.map_or(0.0, PlayerBody::run),
         swing: swing.copied().unwrap_or(Swing::FISTS),
         attack: swinging.map(|s| s.rate),
         encumbrance: fighter.map_or(0.0, |f| f.stats.encumbrance),
+        sprinting: sprinting(player.is_some_and(PlayerBody::sprint_latch), level, walked),
         rose: branch.is_some_and(|b| b.0 == Branch::GettingUp),
     };
     let once = !anim.looping;

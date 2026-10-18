@@ -28,6 +28,17 @@ The system SHALL play the walk clip whenever the player moves forward, walking o
 - **WHEN** the player runs forward
 - **THEN** the clip is the walk
 
+### Requirement: Sprint latch
+Shift with the cursor further than 3 m SHALL keep the sprint latch. Shift without that far cursor SHALL NOT keep it.
+
+#### Scenario: Cursor beyond 3 m
+- **WHEN** Shift is held and the cursor is further than 3 m
+- **THEN** the sprint latch is kept
+
+#### Scenario: Walk key
+- **WHEN** Shift is held and the cursor is not that far
+- **THEN** the sprint latch is not kept
+
 ### Requirement: Chase camera
 The system SHALL keep the camera 20 m from the player's pelvis, drawn between its last two body ticks as its mesh is (the player's feet while it has no body), and SHALL zoom by field of view (zoom / 2000 × 45° × √(1.6 / aspect), six wheel stops from 800 to 2000). The pitch SHALL follow the zoom (0.8 to 0.925 rad below the horizon) unless the middle-mouse orbit drag raises it, up to 1.5 rad. The camera SHALL never turn by itself in exploration.
 

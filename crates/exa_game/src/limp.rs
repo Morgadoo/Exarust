@@ -11,7 +11,8 @@
 //! body is; its clip clock advances at the original's rate for what the
 //! body does and its clip is sampled, blending from that capture. While
 //! Walk plays, each bone is slerped toward the Run sample by 0.7 times
-//! the run blend, then held toward its physical pose while it is dazed
+//! the run blend, or by the blend itself while sprinting, then held
+//! toward its physical pose while it is dazed
 //! or unsteady; its targets are
 //! the body root's world transform times the clip's pose put on its
 //! character frame (which its character's controller follows), and its
@@ -224,6 +225,10 @@ pub(crate) struct Pace {
     pub(crate) swing: Swing,
     pub(crate) attack: Option<f32>,
     pub(crate) encumbrance: f32,
+    /// The sprint latch is kept, the stance level is above 0.9 and the
+    /// last step was faster than 3.5 cm. The overlay then uses the run
+    /// blend itself.
+    pub(crate) sprinting: bool,
     /// Its posture stage took the getting-up branch: the get-up's own rate.
     /// A get-up that stage started this tick (from the floor, or a
     /// stagger) runs at the off-balance rate for that tick, as the
@@ -269,22 +274,40 @@ pub(crate) fn clip_tick(
     anim.sample_layered(clip, still, hold.as_deref().map(|h| (h, weight)), overlay)
 }
 
-/// Share of the way from the walk pose to the run pose at a full run.
+/// Share of the way from the walk pose to the run pose at a full jog.
 const RUN_SHARE: f32 = 0.7;
+/// The stance level must be above this, in double precision, to sprint.
+const SPRINT_LEVEL: f64 = 0.9;
+/// The last step must be faster than this (cm a tick) to sprint.
+const SPRINT_SPEED: f32 = 3.5;
 
-/// While Walk plays, the Run clip at [`RUN_SHARE`] times the run blend.
-/// None on a walk, and none when the table has no Run clip. The sprint
-/// weight (the blend itself) waits until sprint exists.
+/// The latch, a stance level above 0.9 and a speed above 3.5 cm a tick.
+pub(crate) fn sprinting(latch: bool, level: f32, speed_cm: f32) -> bool {
+    latch && f64::from(level) > SPRINT_LEVEL && speed_cm > SPRINT_SPEED
+}
+
+/// The run pose's share of the walk: the run blend while sprinting, else
+/// 0.7 times it. Zero when the blend is zero.
+pub(crate) fn overlay_share(run: f32, sprinting: bool) -> f32 {
+    let run = run.clamp(0.0, 1.0);
+    if run <= 0.0 {
+        return 0.0;
+    }
+    if sprinting { run } else { RUN_SHARE * run }
+}
+
+/// While Walk plays, the Run clip at [`overlay_share`]. None on a walk,
+/// and none when the table has no Run clip.
 fn run_overlay<'a>(motions: &'a Motions, anim: &Animator, pace: &Pace) -> Option<(&'a Clip, f32)> {
     if anim.action != "Walk" {
         return None;
     }
-    let run = pace.run.clamp(0.0, 1.0);
-    if run <= 0.0 {
+    let weight = overlay_share(pace.run, pace.sprinting);
+    if weight <= 0.0 {
         return None;
     }
     let clip = motions.clip(anim, "Run")?;
-    Some((clip, RUN_SHARE * run))
+    Some((clip, weight))
 }
 
 /// A standing body's clip clock runs this share of its rate a tick.
@@ -995,6 +1018,76 @@ pub(crate) mod tests {
         drive
     }
 
+    /// A sprint uses the run blend itself. A jog stays at 0.7 of it. The
+    /// latch at stance level 0.9, or at 3.5 cm a tick, stays a jog. The
+    /// root stays the walk's. The pose comes from the clip tick, which
+    /// picks the overlay.
+    #[test]
+    fn the_sprint_overlay_uses_the_run_blend() {
+        let flat = Quat::IDENTITY;
+        let right = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        let key = |time: f32, turn: Quat, root: Vec3| Key {
+            time,
+            root: (root * 0.01).to_array(),
+            rotations: vec![[turn.x, turn.y, turn.z, turn.w]],
+            flags: vec![0],
+        };
+        let clip = |turn: Quat, root: Vec3| Clip {
+            mode: 1,
+            keys: vec![key(10.0, turn, root), key(80.0, turn, root)],
+        };
+        let action = |name: &str| Action {
+            name: name.into(),
+            params: [0, 0],
+        };
+        let walk_root = Vec3::new(1.0, 2.0, 3.0);
+        let set = MotionSet {
+            bone_count: 1,
+            actions: vec![action("Walk"), action("Run")],
+            movesets: vec![Moveset {
+                name: "Default".into(),
+                parent: String::new(),
+                clips: vec![
+                    Some(clip(flat, walk_root)),
+                    Some(clip(right, Vec3::new(9.0, 9.0, 9.0))),
+                ],
+            }],
+        };
+        let motions = Motions::new(Arc::new(set), Arc::new(HashMap::new()), 0.0);
+        let body = Ragdoll::new(&[]).with_drive();
+        let pose = |latch: bool, level: f32, speed: f32, blend: f32| {
+            let mut anim = Animator::new("Default", "Walk");
+            anim.time = 45.0;
+            let pace = Pace {
+                walked: speed,
+                run: blend,
+                swing: Swing::FISTS,
+                attack: None,
+                encumbrance: 0.0,
+                sprinting: sprinting(latch, level, speed),
+                rose: false,
+            };
+            clip_tick(&motions, &mut anim, &body, &pace, |_| Vec::new()).unwrap()
+        };
+        let close = |a: Quat, b: Quat| a.dot(b).abs() > 1.0 - 1e-5;
+        // Walk is played in place, so the sampled root leaves its z out.
+        let walk_placed = Vec3::new(walk_root.x, walk_root.y, 0.0) * 0.01;
+        let jog = pose(false, 1.0, 4.0, 1.0);
+        assert!(close(jog.rotations[0], flat.slerp(right, 0.7)));
+        assert!((jog.root - walk_placed).length() < 1e-5);
+        let full = pose(true, 1.0, 4.0, 1.0);
+        assert!(close(full.rotations[0], right));
+        assert!((full.root - walk_placed).length() < 1e-5);
+        let half = pose(true, 1.0, 4.0, 0.5);
+        assert!(close(half.rotations[0], flat.slerp(right, 0.5)));
+        let low = pose(true, 0.9, 4.0, 1.0);
+        assert!(close(low.rotations[0], flat.slerp(right, 0.7)));
+        let slow = pose(true, 1.0, 3.5, 1.0);
+        assert!(close(slow.rotations[0], flat.slerp(right, 0.7)));
+        let still = pose(true, 1.0, 4.0, 0.0);
+        assert!(close(still.rotations[0], flat));
+    }
+
     /// A human's clip clocks, as the original's: standing 0.6 frames a
     /// tick, off balance 0.75, getting up 0.9 at full tone (0.72 at 0.8,
     /// none at half tone; in the 0.625 plate set (1.5 − 0.3125) × 0.6 =
@@ -1013,6 +1106,7 @@ pub(crate) mod tests {
             swing: Swing::FISTS,
             attack: None,
             encumbrance: 0.0,
+            sprinting: false,
             rose: true,
         };
         let still = Bearing::default();

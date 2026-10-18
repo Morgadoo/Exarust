@@ -27,8 +27,12 @@ The original has no camera-relative keyboard movement. Outside combat:
   [formats/OTHER.md](formats/OTHER.md), Encumbrance), and falls 0.015. A
   new character in braies runs at the full blend; in a tourney plate
   harness, helm and leggings (encumbrance 0.625) the blend stops at 0.8125
-  and the run at about 3.2 m/s instead of 3.6.
-- **The clips.** The steering starts the walk, run or backpedal when the
+  and the run at about 3.2 m/s instead of 3.6. With the walk keys the
+  latch is spent, so the pose stays 0.7 of the way to the run. With the
+  cursor further than 3 m the latch is kept, and once the stance level
+  is above 0.9 and the step is faster than 3.5 cm a tick the pose uses
+  the run blend itself. The capsule still moves at the jog speed.
+- **The clips.** The steering starts the walk or backpedal when the
   character moves, from whatever looping clip plays, and ends it in Idle
   when the character stops. It starts no other clip: what a standing
   character plays is its stance's ([The combat stance](#the-combat-stance)),

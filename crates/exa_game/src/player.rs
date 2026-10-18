@@ -102,6 +102,8 @@ pub struct PlayerBody {
     attack: AttackInput,
     /// 0 walks, 1 runs.
     run: f32,
+    /// Shift with the cursor further than 3 m. The walk keys spend it.
+    sprint_latch: bool,
     /// Seconds until A or D may turn a quarter again.
     quarter_wait: f32,
     /// Seconds the combat footwork keys have been held.
@@ -122,6 +124,7 @@ impl PlayerBody {
             aim: yaw,
             attack: AttackInput::default(),
             run: 0.0,
+            sprint_latch: false,
             quarter_wait: 0.0,
             held: 0.0,
             walk_from: None,
@@ -132,6 +135,11 @@ impl PlayerBody {
     /// The run blend: 0 walks, 1 runs.
     pub fn run(&self) -> f32 {
         self.run
+    }
+
+    /// Whether Shift kept the sprint latch this tick.
+    pub fn sprint_latch(&self) -> bool {
+        self.sprint_latch
     }
 
     /// What is left of the body's turn toward its heading (rad).
@@ -417,11 +425,13 @@ fn steer_player(
             // helpless: down, getting up, collapsing, dead.
             if fallen || condition.is_some_and(|c| c.helpless()) {
                 body.desired_velocity = Vec3::ZERO;
+                pb.sprint_latch = false;
                 continue;
             }
             let feet = at.translation();
             let speed = body.desired_velocity.length();
             if pb.combat {
+                pb.sprint_latch = false;
                 // The body turns toward the heading, which the cursor sets;
                 // while it attacks at its swing's rate.
                 let attacking = condition.is_some_and(|c| *c == Condition::ATTACKING);
@@ -452,10 +462,13 @@ fn steer_player(
             let back = held(KeyCode::KeyS) && !mouse;
             let steer = held(KeyCode::KeyA) as i32 - held(KeyCode::KeyD) as i32;
             pb.quarter_wait = (pb.quarter_wait - dt).max(0.0);
-            let mut running = held(KeyCode::ShiftLeft);
+            let shift = held(KeyCode::ShiftLeft);
+            let mut running = shift;
+            let mut cursor_far = false;
             if mouse && let Some(d) = to_cursor {
                 pb.heading = yaw_of(d);
-                running |= d.xz().length() > CURSOR_RUN_FROM;
+                cursor_far = d.xz().length() > CURSOR_RUN_FROM;
+                running |= cursor_far;
             } else if ahead || back {
                 // W walks the heading; A and D steer it.
                 pb.heading += steer as f32 * STEER;
@@ -467,6 +480,7 @@ fn steer_player(
             // What it wears weighs the run down.
             let cap = fighter.map_or(1.0, |f| run_cap(f.stats.encumbrance, false));
             pb.run = run_blend(pb.run, running && ahead, cap);
+            pb.sprint_latch = keeps_sprint_latch(shift, cursor_far);
             pb.yaw = body_turn(pb.yaw, pb.heading, !mouse, speed);
             t.rotation = Quat::from_rotation_y(pb.yaw);
             // A reversal of more than 120° turns before walking.
@@ -503,14 +517,12 @@ fn steer_player(
     }
 }
 
-/// The exploration steering's part in the clip, as the original's: moving,
-/// the gait starts from any looping clip; standing, a gait (or the interim
-/// combat walk left over from combat mode) ends in Idle, the exploration
-/// stance. The steering starts no other clip: the stance does, through the
-/// helper that sets it ([`stance::set_stance`]) and the body tick's
-/// posture switch, which never leaves Cmbt - Idle. So a player that turns
-/// combat mode off in the combat idle with the Defence stance keeps it
-/// until it walks.
+/// Shift keeps the sprint latch only with the cursor further than 3 m.
+/// The walk keys spend it on a jog.
+fn keeps_sprint_latch(shift: bool, cursor_far: bool) -> bool {
+    shift && cursor_far
+}
+
 /// Forward locomotion plays Walk. The run is an overlay on that clip.
 /// Backpedal still plays its own clip.
 fn exploration_gait(moving: bool, back: bool) -> Option<&'static str> {
@@ -523,6 +535,14 @@ fn exploration_gait(moving: bool, back: bool) -> Option<&'static str> {
     }
 }
 
+/// The exploration steering's part in the clip, as the original's: moving,
+/// the gait starts from any looping clip; standing, a gait (or the interim
+/// combat walk left over from combat mode) ends in Idle, the exploration
+/// stance. The steering starts no other clip: the stance does, through the
+/// helper that sets it ([`stance::set_stance`]) and the body tick's
+/// posture switch, which never leaves Cmbt - Idle. So a player that turns
+/// combat mode off in the combat idle with the Defence stance keeps it
+/// until it walks.
 fn explore_clip(anim: &mut Animator, gait: Option<&str>) {
     if !anim.looping {
         return;
@@ -1522,6 +1542,9 @@ mod tests {
         assert_eq!(exploration_gait(true, false), Some("Walk"));
         assert_eq!(exploration_gait(true, true), Some("Backpedal"));
         assert_eq!(exploration_gait(false, false), None);
+        assert!(keeps_sprint_latch(true, true));
+        assert!(!keeps_sprint_latch(true, false));
+        assert!(!keeps_sprint_latch(false, true));
         let mut anim = Animator::new("Torch", "Cmbt - Idle");
         anim.play_once("Attack Mid", "Cmbt - Idle");
         explore_clip(&mut anim, Some("Walk"));

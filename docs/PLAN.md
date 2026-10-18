@@ -392,10 +392,15 @@ attacks take about 1 s (1.4 before)
 `blend-the-run-over-the-walk`): forward locomotion plays Walk, and each
 bone is slerped toward the Run sample at the same keys by 0.7 times the
 run blend before the pose hold. The root stays the walk's, and the jog
-clock rate is unchanged. Still to do: the sprint overlay weight, playing
-Walk backwards instead of the Backpedal clip, the locomotion clock's
-stride terms, gait plants, and collisions between bodies (and their
-wake of a sleeper).
+clock rate is unchanged. Done (change `weight-the-sprint-overlay`):
+Shift with the cursor further than 3 m keeps the sprint latch, and the
+overlay uses the run blend itself when that latch is kept, the stance
+level is above 0.9 and the speed is above 3.5 cm a tick. A full sprint
+meets the run bone; level 0.9 and 3.5 cm a tick stay at the jog weight.
+Still to do: the sprint gait row and its clock, the tighter run cap,
+playing Walk backwards instead of the Backpedal clip, the locomotion
+clock's stride terms, gait plants, and collisions between bodies (and
+their wake of a sleeper).
 
 Done (change `decode-object-bodies-and-mechanisms`, data only): models'
 rigid bodies are decoded as the original stores them (class, mobility,
@@ -969,8 +974,9 @@ against Exarust and lists the largest missing ones. In order:
 
 1. Gait walking, clip blending, and parts' spheres fitted to their
    meshes (Phase 3). The standing leg bend, recovery steps, the
-   support pins and the run overlay on the walk are in. Knockback
-   steps, gait plants and the backpedal clip are not.
+   support pins, the run overlay on the walk and the sprint overlay
+   weight are in. Knockback steps, gait plants, the sprint row and
+   the backpedal clip are not.
 2. Inventory, equipment and containers, then blocking and parrying
    (Phase 4).
 3. The original's NPC brain: perception, targets and the combat state that
