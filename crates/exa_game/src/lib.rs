@@ -4,6 +4,7 @@
 
 pub mod balance;
 pub mod body_overlay;
+pub mod career;
 pub mod cursor;
 pub mod fall;
 pub mod hud;
@@ -11,8 +12,10 @@ pub mod joint_trace;
 pub mod limp;
 pub mod pair_trace;
 pub mod player;
+pub mod session;
 pub mod sim_control;
 pub mod stages;
+pub mod thaum;
 pub mod torch;
 pub mod trace;
 

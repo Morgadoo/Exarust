@@ -939,14 +939,26 @@ the original's.
 
 ### Phase 7 — Game modes and content
 
-- **Arena:** company creation, roster, hiring, training, skills and
-  experience, matches (1v1, team), seasons and rewards, shop, emblems.
-- **Story:** level progression `exanima01 → 08` with variants, scripted
-  encounters, dialogue (topics, choices, phrases), journal, map discovery,
-  portals, thaumaturgy powers (displacement, energy, force, mind).
+Done (change `run-an-arena-career`): a new company starts with 343 copper
+(2 gold, 4 silver, 7 copper). It hires seven combatants and one of each
+specialist. A standard match takes its fee; a win pays the prize;
+experience is the template amount times the damage share, plus half with
+a trainer.
+Done (change `advance-the-story`): a story loads `exanima01` and advances
+through `exanima08`. A topic can be chosen once. The journal opens on
+"New Entry" and stores the written text.
+Done (change `cast-the-four-domains`): long door places the body, shock
+takes yellow health, blast knocks 60 along the aim, and calm lowers
+concerns. Each spends its focus and does nothing without it.
+Done (change `save-the-session`): an `EXRS` file restores that session.
+The original's save packages are not read.
+
+Still open:
+
+- Arena training, seasons, the shop and emblems. The hire price was not read.
+- Story side levels, scripted encounters, the role interpreter, map discovery.
+- The other powers, their charge-up and their meshes.
 - Character creation (race, body, face, hair, colours, class, skills).
-- Saves in an Exarust format. The original's save files are not a
-  compatibility goal.
 - Full UI using the original GUI skin, icons and manual pages.
 
 **M7 "arena season", M8 "story act 1", M9 "full story".**

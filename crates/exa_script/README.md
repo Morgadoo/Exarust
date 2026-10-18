@@ -2,7 +2,7 @@
 
 Story scripting and dialogue: actors, roles, topics, utterances, journal, triggers.
 
-**Phase:** Phase 7 (see [`docs/PLAN.md`](../../docs/PLAN.md)). Status: skeleton.
+**Phase:** Phase 7 (see [`docs/PLAN.md`](../../docs/PLAN.md)). Status: the campaign order, one dialogue choice and the journal page (`story`). The role interpreter is still open.
 
 ## Scope
 

@@ -2,6 +2,8 @@
 //!
 //! Planned in Phase 7; see `README.md` next to this crate and `docs/PLAN.md`.
 
+pub mod story;
+
 use bevy::prelude::*;
 
 pub struct ScriptPlugin;
