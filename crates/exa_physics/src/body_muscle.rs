@@ -148,8 +148,7 @@ pub struct BodyStats {
     /// × its feral level, at least 0.05.
     pub walking_arms: f32,
     /// Its support pins' factor (its race's, less 0.25 × its feral
-    /// level²): it scales its feet's grip (and its support pins, once they
-    /// hold a standing body).
+    /// level²): it scales its feet's grip and its support pins.
     pub pin_factor: f32,
 }
 

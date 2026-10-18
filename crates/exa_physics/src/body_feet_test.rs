@@ -620,8 +620,8 @@ fn a_quarter_turn_in_place_keeps_planted_feet_within_a_cm() {
 }
 
 /// Standing feet grip through a light shove: a 2 m/s sideways blow to the
-/// torso sways the chest 4 cm, and the feet stay within 1 cm of their
-/// anchors (0.1 cm).
+/// torso sways the chest about 2 cm (the support pins hold it), and the
+/// feet stay within 1 cm of their anchors (0.1 cm).
 #[test]
 fn standing_feet_grip_through_a_light_shove() {
     let floor = floor_quad(0.0, 5.0);
@@ -641,7 +641,7 @@ fn standing_feet_grip_through_a_light_shove() {
         }
         swayed = swayed.max((body.chest_point().unwrap() - chest).with_y(0.0).length());
     }
-    assert!(swayed > 0.03, "the chest swayed {swayed}");
+    assert!((0.015..0.03).contains(&swayed), "the chest swayed {swayed}");
     assert!(farthest < 0.01, "a foot slid {:.2} cm", farthest * 100.0);
 }
 

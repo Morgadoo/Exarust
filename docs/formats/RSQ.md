@@ -335,8 +335,8 @@ How the original simulates a body (`exa_physics::body`):
     body tick clamps it. The daze (energy more than 0.05 under the most:
     a zombie under 0.85), the pose hold, the swing clock and the attack
     gate all measure the energy against this most.
-  - The original also runs recovery steps (its footwork's scores) and
-    support forces on the pelvis and thorax pins; its feet are planted
+  - Recovery steps are not reproduced yet (its footwork's scores, C15).
+    The support pins pull the thorax and the pelvis (below); its feet are planted
     ([Feet](#feet)).
   - Several of these read the character's race record in `races.rdb`: the
     stance factor, the support-pin factor, the balance bonus, the arms'
@@ -347,7 +347,7 @@ How the original simulates a body (`exa_physics::body`):
     stance factor and the arm relaxation (Skeleton 0.75 and 0.5), the
     balance the balance bonus (1 in every record). What the body takes
     from its own character (most energy, head gain and factor, walking
-    arms, scale, the pins' factor for the support pins to come) is derived
+    arms, scale, the pins' factor the support pins scale by) is derived
     from its record when it spawns (`exa_physics::body::BodyStats`;
     [RFC.md](RFC.md), Stats derived at spawn).
 
@@ -602,12 +602,10 @@ follows the pelvis:
 It is placed at once the first time. Not reproduced yet: the jolt that
 moves the stance toward the feet (C15).
 Only the targets' rotations drive the muscles; their places matter to the
-stance hold (below), the feet's stance spots ([Feet](#feet)), and later to
-the support pins (C14).
+support pins (below) and the feet's stance spots ([Feet](#feet)).
 
 Exarust's own, while a character controller (a capsule) still moves the
-body across the ground instead of the original's locomotion and support
-pins (C14, C18):
+body across the ground instead of the original's locomotion (C18):
 
 - The body is carried with its root's (its character controller's) motion
   since the last tick across the ground and about the vertical only, its
@@ -626,15 +624,22 @@ pins (C14, C18):
   lying clip (Unconcious 1, until C11) keeps its pelvis 57 cm off its
   root, and the controller stands at the frame's origin while the body
   lies.
-- The stance hold: a standing body's pelvis origin is pulled across the
-  ground toward where its frame puts the pose's pelvis by 0.168 a tick ×
-  tone² × E⁴, critically damped (2√g) against its horizontal velocity in
-  the carried frame, the same push on all four of its particles, so it
-  never turns the pelvis. While the frame stays put it holds a steady body
-  on its stance spot, as the original's support pins do with the planted
-  feet (C14); while the frame follows, an unsteady body stays about where
-  it is pushed. While the body moves its frame rides on its pelvis and
-  only the damping acts.
+- The support pins, in each solver iteration: the two thorax pins and the
+  pelvis pin (its origin) are pulled horizontally toward their points on
+  the frame. With support the target stays near the feet centre, the mean
+  of the ankles: a thorax target within (60 − 60·crouch)·0.6·scale cm, or
+  (60 − 30·crouch)·0.6·scale cm while a foot is stepping, and the pelvis
+  within 60·scale cm. Crouch stays 0 until a crouch exists, so a standing
+  thorax reach is 36·scale cm. One application, in centimetres: raw is
+  0.2·e·|e|/60 when |e| is under 60 cm and 12 cm along the error otherwise,
+  less the point's horizontal displacement this tick, capped at 8 cm,
+  times S²·pin-gain·P·the spawned pin factor, and times 0.3 while getting
+  up. P is √E·T·E⁴. Pin-gain starts at 0.08 and recovers 0.001 a tick
+  while it is under that and the body is not collapsing. With no support
+  the pull is zero and the target only shifts 5·scale cm forward. While
+  the body moves the frame already follows the pelvis, so the pins do not
+  hold it on one world spot. The capsule does not pull the pelvis
+  horizontally; the planted feet and these pins do.
 - Stairs (`exa_physics::body` `climb`, a stopgap that C13 and C19
   remove): the capsule steps up before the feet do, and nothing yet lifts
   a walking foot onto a step or brings the trailing foot up (the
@@ -663,14 +668,16 @@ pins (C14, C18):
   backpedal (and Exarust's interim `Combat Walk`), whose travel along z is
   left out since the body's own motion makes it ([Motion
   playback](#motion-playback)). A get-up's travel moves its targets, and
-  the stance hold pulls the pelvis along.
+  the support pins pull at 0.3 of the standing pull while the body is
+  getting up.
 - Falls, staggers and get-ups are the original's ([Falls and
   get-ups](#falls-and-get-ups), below). A falling or lying body is no
   longer carried or held by its controller (Exarust's own, until the body
   stands on its feet) and keeps its tone, as in the original: once it lies
   its support is 0, so only its link muscles act, inside the body.
 - Recovery steps are not reproduced yet (the footwork's scores and the
-  chest's lead, C15); the feet are planted and step to their stance spots
+  chest's lead, C15); leg IK and gait walking are not reproduced yet
+  either (C13, C19). The feet are planted and step to their stance spots
   ([Feet](#feet)).
 - The duellist's strike range is Exarust's own (1.15 m): link-muscle arms
   reach 15–20 cm less far than the clip's pose at the original's swing
@@ -978,13 +985,13 @@ death, constants read from the executable; six live retail collapses):
   ragdoll from that tick, its motion kept (Exarust gave it a made-up
   velocity before).
 - Exarust starts it in its hit reaction, with the energy the blow's
-  queued daze leaves, takes the body off its controller (no carry, no
-  stance hold) while its balance and feet are still measured standing,
+  queued daze leaves, takes the body off its controller (no carry) while
+  its balance and feet are still measured standing,
   drops its own fall and any attack, and runs the dying tick in the
   posture stage; a further blow shoves and bleeds a collapsing body but
   leaves its collapse. Its living support pins' gain starts at 0.08f and
-  recovers 0.001 a tick under the double 0.08, so it settles at 0.081
-  (nothing reads it before the support pins, C14).
+  recovers 0.001 a tick under the double 0.08, so it settles at 0.081.
+  The support pins read it each iteration.
 - `--opponent play arena`, the duellist's seventh blow: E 0.668, Fall
   Backward with 160 frames of blend; the body sinks with its chest over
   its feet (balance 1) until its feet lose the ground 130 ticks later

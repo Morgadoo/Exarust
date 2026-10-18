@@ -344,8 +344,9 @@ tone times its support share, or times its energy above the legs), and a
 lift servo takes g·f·S off the carry to hold the pelvis at a target height
 over the ground under the feet, from the clip root's height over each
 ankle, capped at the leg's reach (an idle human's pelvis at 101.5 cm); the
-capsule carries the body only across the ground and turns it, and holds
-its pelvis horizontally (Exarust's own until the support pins, C14). A
+capsule carries the body only across the ground and turns it. The
+support pins (change `pull-the-support-pins`, C14) pull the two thorax
+pins and the pelvis pin toward the frame in each iteration. A
 get-up no longer hops (the end of `Get Up 2` overshoots 3–5 cm and settles
 in 45–100 ticks, from 10.7 cm ringing 90). Done (change
 `climb-steps-until-feet-step`, Exarust's own stopgap): until the
@@ -360,10 +361,10 @@ pose is put on the original's character frame, whose origin is the pelvis
 less the clip root's offset across the ground: it rides on the pelvis
 while the body moves, follows it exactly without support, within 5 cm
 while a standing body's support is under 0.95 and not at all from 0.95,
-within 5 cm while down and 10 cm as a get-up starts. The capsule's
-horizontal hold now pulls toward the frame's pelvis (Exarust's own until
-the support pins, C14), so a steady body keeps its stance spot and an
-unsteady one stays where it is pushed; the capsule follows the frame
+within 5 cm while down and 10 cm as a get-up starts. The support pins,
+not a pelvis spring, hold a steady body on its stance spot; an unsteady
+one stays about where it is pushed, within 2 cm of where the frame puts
+its pelvis. The capsule follows the frame
 through the controller (a tenth of the way a tick, at most 2 cm), so it
 stays with a shoved, falling or rising body, and a get-up no longer moves
 the capsule in one go. Done (change
@@ -383,9 +384,9 @@ its pelvis target now moves under 1 cm a tick), though the pelvis still
 overshoots its target height by about 4.7 cm while the lift catches up;
 attacks take about 1 s (1.4 before)
 ([formats/RSQ.md](formats/RSQ.md), Motion playback). Still to do: the
-support pins, the original's falls and get-ups, recovery steps, foot
-planting, the locomotion clock's stride terms and the run overlay,
-collisions between bodies (and their wake of a sleeper).
+original's falls and get-ups, recovery steps, the locomotion clock's
+stride terms and the run overlay, collisions between bodies (and their
+wake of a sleeper).
 
 Done (change `decode-object-bodies-and-mechanisms`, data only): models'
 rigid bodies are decoded as the original stores them (class, mobility,
@@ -508,7 +509,7 @@ a body that dies in its posture stage skips the rest of its tick
 ([formats/RSQ.md](formats/RSQ.md), Falls and get-ups). `--shove 60`: the
 dazed player Rebalances, falls on its back, gets up with Get Up 2 1.3 s
 later and stands 1.9 s after that; `--shove 90` staggers into Get Up 2.
-Not yet: the recovery steps (C15), the pins it lowers (C14).
+Not yet: the recovery steps (C15). The support pins (C14) are in.
 
 Done (change `plant-the-feet`, C12 of the master plan): the feet stand on
 the ground as the original's do. Each leg's foot contact (its ankle) has a
@@ -949,8 +950,9 @@ holds the runtime and the documentation of formats and behaviour.
 [`COMPONENT-MAP.md`](COMPONENT-MAP.md) sets every component of the original
 against Exarust and lists the largest missing ones. In order:
 
-1. The support pins, recovery steps and leg IK (stairs), clip blending,
-   and parts' spheres fitted to their meshes (Phase 3).
+1. Recovery steps, leg IK (stairs) and gait walking, clip blending,
+   and parts' spheres fitted to their meshes (Phase 3). The support
+   pins are in.
 2. Inventory, equipment and containers, then blocking and parrying
    (Phase 4).
 3. The original's NPC brain: perception, targets and the combat state that

@@ -53,6 +53,8 @@ mod climb;
 #[path = "body_feet.rs"]
 mod feet;
 pub use feet::FootState;
+#[path = "body_pins.rs"]
+mod pins;
 #[path = "body_stages.rs"]
 pub mod stages;
 pub use stages::{
@@ -137,11 +139,6 @@ const TRUNK_GAIN: f32 = 0.03;
 const HEAD_GAIN: f32 = 0.01;
 /// The share of a pose push's vertical component that is kept.
 const VERTICAL_PUSH: f32 = 0.1;
-/// Exarust's own, until the original's support pins hold a standing body
-/// over its feet: the share of the horizontal gap to where its frame puts
-/// the pose's pelvis that a standing body's pelvis closes per tick at full
-/// strength.
-const STANCE_HOLD: f32 = 0.168;
 /// Energy regained per tick after a daze, up to the body's most energy
 /// ([`BodyStats::max_energy`]), and its floor.
 const ENERGY_RECOVERY: f32 = 0.005;
@@ -807,8 +804,8 @@ pub struct Ragdoll {
 pub struct Drive {
     /// Animated world transform of each part this tick, the clip's pose on
     /// the character frame: the pose drive reads its rotation, the link
-    /// muscles each part's turn relative to its parent's, the stance hold
-    /// the pelvis's place.
+    /// muscles each part's turn relative to its parent's, the support pins
+    /// the thorax pins' and the pelvis's place.
     targets: Vec<Affine3A>,
     /// The body root's world transform when last aimed, less the moves its
     /// controller made to follow the body since.
@@ -827,10 +824,8 @@ pub struct Drive {
     /// pose drive follows its fourth power, the link muscles its root.
     pub energy: f32,
     /// Standing on its controller, which carries it across the ground and
-    /// turns it, while its pelvis is held over where its frame puts the
-    /// pose's (Exarust's own, until the body walks and stands by the
-    /// original's carry and pins). A fallen body is neither carried nor
-    /// held, and its balance is measured lying.
+    /// turns it. The support pins hold it over its feet. A fallen body is
+    /// not carried, and its balance is measured lying.
     pub supported: bool,
     /// The race's factors the muscles read.
     pub race: RaceMuscles,
@@ -859,10 +854,10 @@ pub struct Drive {
     /// it, which Exarust's does not yet); it fades 0.01 a tick, and is 0
     /// while the body is down.
     pub sag: f32,
-    /// The support pins' gain factor (the original's 0.08 of the pins'
-    /// gain S²·0.08·P): it recovers toward 0.08 every tick while the body
-    /// lives ([`recover_pins`]) and fades while it collapses. The support
-    /// pins that read it come later (C14).
+    /// The support pins' gain factor (the 0.08 of the pins' gain
+    /// S²·pin-gain·P·pin factor): it recovers toward 0.08 every tick while
+    /// the body lives ([`recover_pins`]) and fades while it collapses. The
+    /// support pins read it each iteration.
     pub pin_gain: f32,
     /// Ticks the posture switch waits before it starts the body's stance
     /// again (it starts it only under 1): a Rebalance started off balance
@@ -1372,8 +1367,8 @@ impl Ragdoll {
     /// ground by the frame's offset from the root. Only the targets'
     /// rotations are followed by the muscles: the pose drive turns parts
     /// about where they are, the link muscles turn joints; the lift reads
-    /// the clip root's height over the ankles, the stance hold the pelvis's
-    /// place.
+    /// the clip root's height over the ankles, the support pins the thorax
+    /// pins' and the pelvis's place.
     pub fn aim(&mut self, root: Affine3A, targets: Vec<Affine3A>) {
         if self.drive.is_none() {
             return;
@@ -1582,7 +1577,7 @@ impl Ragdoll {
     /// gain and energy recovery (the original's character tick, before the
     /// body moves, so the pose drive and the link muscles read the same
     /// energy), inertia and gravity or the carry, then the pose drive's
-    /// push and the stance hold; a living body's link muscles remember
+    /// push; a living body's link muscles remember
     /// where the tick began.
     fn step(&mut self) {
         self.simulated = true;
@@ -1602,7 +1597,6 @@ impl Ragdoll {
         }
         if let Some(drive) = self.drive.as_mut() {
             drive_parts(&mut self.parts, drive);
-            hold_on_frame(&mut self.parts, drive);
         }
     }
 
@@ -1728,6 +1722,7 @@ impl Ragdoll {
     /// each part's particles by the point's weights, so the parts' momenta
     /// change by equal and opposite amounts.
     fn iterate(&mut self) {
+        self.pull_support_pins();
         let gains = self.drive.as_ref().map(Drive::muscle_gains);
         let feet = self
             .drive
@@ -1961,42 +1956,6 @@ fn drive_parts(parts: &mut [Part], drive: &Drive) {
     }
 }
 
-/// Exarust's own, until the original's support pins and planted feet hold
-/// a standing body over its stance: while a body stands on its controller,
-/// its pelvis is held over where its character frame puts the pose's
-/// pelvis, by a critically damped spring on the pelvis's origin across the
-/// ground ([`STANCE_HOLD`] × tone² × E⁴, damping its horizontal velocity in
-/// the carried frame). A steady standing body's frame stays put, so it is
-/// held on its stance spot; an unsteady one's follows its pelvis, which
-/// stays about where it is pushed. While the body moves its frame rides on
-/// its pelvis, and only the damping acts. The same push moves each of its
-/// particles, so it never turns the pelvis: its orientation is the pose
-/// drive's. Its height is the lift's.
-fn hold_on_frame(parts: &mut [Part], drive: &Drive) {
-    if !drive.supported || drive.targets.len() != parts.len() {
-        return;
-    }
-    let gain = (STANCE_HOLD * drive.tone * drive.tone * drive.energy.powi(4)).min(1.0);
-    let damping = (2.0 * gain.sqrt()).min(1.0);
-    let pulled = if drive.bearing.moving { 0.0 } else { gain };
-    for (p, target) in parts.iter_mut().zip(&drive.targets) {
-        if p.bone != 1 {
-            continue;
-        }
-        let w = p.own_origin;
-        let pull = (Vec3::from(target.translation) - p.point(&w)).with_y(0.0) * pulled;
-        let brake: Vec3 = (0..4)
-            .map(|k| (p.positions[k] - p.previous[k]) * w[k])
-            .sum::<Vec3>()
-            .with_y(0.0)
-            * damping;
-        for k in 0..4 {
-            p.positions[k] += pull;
-            p.previous[k] += brake;
-        }
-    }
-}
-
 /// Restores a part's six edge lengths.
 fn keep_rigid(p: &mut Part) {
     const EDGES: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
@@ -2169,6 +2128,10 @@ mod sleep_test;
 #[cfg(test)]
 #[path = "body_drive_test.rs"]
 mod drive_test;
+
+#[cfg(test)]
+#[path = "body_pins_test.rs"]
+mod pins_test;
 
 #[cfg(test)]
 mod tests {
@@ -2370,8 +2333,10 @@ mod tests {
         }
     }
 
+    /// A two-part body has no feet, so the support pins do not run and
+    /// nothing pulls a shove back to the origin. Its energy still recovers.
     #[test]
-    fn a_shove_staggers_and_the_body_recovers() {
+    fn a_footless_shove_is_not_pulled_back() {
         let mut body = two_parts(0.0).with_drive();
         let pose = vec![
             Affine3A::from_translation(Vec3::new(0.0, 1.0, 0.0)),
@@ -2389,7 +2354,9 @@ mod tests {
         let pushed = step(&mut body, 10);
         assert!(pushed > 0.05, "barely moved: {pushed}");
         let back = step(&mut body, 400);
-        assert!(back.abs() < 0.02, "did not recover: {back}");
+        // No feet, so no support pins, and the pelvis spring is gone: the
+        // shove is not pulled back to the origin. The energy still recovers.
+        assert!(back.abs() > 0.2, "pulled back to {back}");
         assert_eq!(body.drive.as_ref().unwrap().energy, 1.0);
     }
 }

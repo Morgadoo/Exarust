@@ -1,0 +1,306 @@
+//! The support pins, pinned to the law (`docs/formats/RSQ.md`, Physical body).
+//! (Included from body.rs: `#[cfg(test)] #[path = "body_pins_test.rs"] mod pins_test;`)
+use super::floor_test::standing_at;
+use super::pins::{Factors, pelvis_reach, pull, target, thorax_reach};
+use super::tests::floor_quad;
+use super::*;
+
+/// The law, written out here and not taken from [`pull`]: raw is
+/// 0.2·e·|e|/60 under 60 cm and 12 cm along the error otherwise, less the
+/// horizontal displacement, capped at 8 cm, times S²·pin-gain·P·pin factor,
+/// and times 0.3 while getting up. An alert human is S = 1, pin-gain 0.08,
+/// P = 0.5, pin factor 1.25, so the scale is 0.05.
+fn law(error: Vec3, displacement: Vec3, has_support: bool, getting_up: bool) -> Vec3 {
+    if !has_support {
+        return Vec3::ZERO;
+    }
+    let e = error.with_y(0.0);
+    let len = e.length();
+    let raw = if len < 60.0 {
+        e * (0.2 * len / 60.0)
+    } else {
+        e * (12.0 / len)
+    };
+    let mut corr = raw - displacement.with_y(0.0);
+    let clen = corr.length();
+    if clen > 8.0 {
+        corr *= 8.0 / clen;
+    }
+    let mut scale = 0.08 * 0.5 * 1.25;
+    if getting_up {
+        scale *= 0.3;
+    }
+    corr * scale
+}
+
+fn human(error: Vec3, displacement: Vec3, has_support: bool, getting_up: bool) -> Vec3 {
+    pull(
+        error,
+        displacement,
+        Factors {
+            has_support,
+            support: 1.0,
+            pin_gain: 0.08,
+            power: 0.5,
+            pin_factor: 1.25,
+            getting_up,
+        },
+    )
+}
+
+/// One application equals the law: 10 cm off with 1 cm of displacement
+/// along the error is −0.0333 cm; 80 cm with none is 0.4 cm; getting up is
+/// 0.3 of the standing pull; no support is zero.
+#[test]
+fn one_application_is_the_law() {
+    let near = Vec3::X * 10.0;
+    let along = Vec3::X;
+    let got = human(near, along, true, false);
+    assert!(
+        got.abs_diff_eq(law(near, along, true, false), 1e-6),
+        "{got}"
+    );
+    assert!((got.x + 0.0333333).abs() < 1e-4, "{got}");
+    assert_eq!((got.y, got.z), (0.0, 0.0));
+
+    let far = Vec3::new(48.0, 9.0, 64.0);
+    assert!(far.length() > 60.0);
+    let got = human(far, Vec3::ZERO, true, false);
+    let want = law(far, Vec3::ZERO, true, false);
+    assert!(got.abs_diff_eq(want, 1e-5), "{got} vs {want}");
+    assert!((got.length() - 0.4).abs() < 1e-5, "{got}");
+
+    let along_x = Vec3::X * 80.0;
+    let got = human(along_x, Vec3::ZERO, true, false);
+    assert!(
+        (got.x - 0.4).abs() < 1e-5 && got.y == 0.0 && got.z == 0.0,
+        "{got}"
+    );
+
+    let standing = human(near, Vec3::ZERO, true, false);
+    let rising = human(near, Vec3::ZERO, true, true);
+    assert!(
+        (rising.x / standing.x - 0.3).abs() < 1e-5,
+        "{rising} / {standing}"
+    );
+    assert!(rising.abs_diff_eq(law(near, Vec3::ZERO, true, true), 1e-6));
+
+    assert_eq!(human(near, along, false, false), Vec3::ZERO);
+    assert_eq!(human(near, along, false, true), Vec3::ZERO);
+}
+
+/// Thorax targets stay within 36·scale cm of the feet centre standing
+/// (crouch 0), 18 cm at a full crouch while stepping, and the pelvis pin
+/// within 60·scale cm. With no support the target only shifts 5·scale cm
+/// forward.
+#[test]
+fn targets_stay_near_the_feet_and_shift_forward_without_support() {
+    let centre = Vec3::new(1.0, 0.2, -2.0);
+    let posed = centre + Vec3::new(0.40, 1.2, 0.0);
+    let standing = thorax_reach(0.0, false, 1.0);
+    assert!((standing - 36.0).abs() < 1e-5, "{standing}");
+    let t = target(posed, centre, standing, true, Vec3::Z, 1.0);
+    assert!((t.x - (centre.x + 0.36)).abs() < 1e-5, "{t}");
+    assert_eq!(t.y, posed.y);
+
+    let pelvis = target(
+        centre + Vec3::new(0.0, 1.1, 0.80),
+        centre,
+        pelvis_reach(1.0),
+        true,
+        Vec3::Z,
+        1.0,
+    );
+    assert!((pelvis.z - (centre.z + 0.60)).abs() < 1e-5, "{pelvis}");
+
+    let stepping = thorax_reach(1.0, true, 1.0);
+    assert!((stepping - 18.0).abs() < 1e-5, "{stepping}");
+    let wide = centre + Vec3::X * 0.40;
+    let t = target(wide, centre, stepping, true, Vec3::Z, 1.0);
+    assert!((t.x - (centre.x + 0.18)).abs() < 1e-5, "{t}");
+
+    let ahead = target(posed, centre, standing, false, Vec3::Z, 1.0);
+    assert!(ahead.abs_diff_eq(posed + Vec3::Z * 0.05, 1e-6), "{ahead}");
+    let tall = target(posed, centre, standing, false, Vec3::Z, 2.0);
+    assert!(tall.abs_diff_eq(posed + Vec3::Z * 0.10, 1e-6), "{tall}");
+}
+
+fn shift(part: &mut Part, by: Vec3) {
+    for x in part
+        .positions
+        .iter_mut()
+        .chain(part.previous.iter_mut())
+        .chain(part.start.iter_mut())
+    {
+        *x += by;
+    }
+}
+
+fn feet_centre(body: &Ragdoll) -> Vec3 {
+    let n = body.legs().len() as f32;
+    (0..body.legs().len())
+        .map(|i| body.ankle(i).unwrap())
+        .sum::<Vec3>()
+        / n
+}
+
+/// The clamp the spec states, not [`target`].
+fn clamped(posed: Vec3, centre: Vec3, radius_cm: f32) -> Vec3 {
+    let mut d = (posed - centre).with_y(0.0);
+    let len = d.length() * 100.0;
+    if radius_cm <= 0.0 {
+        d = Vec3::ZERO;
+    } else if len > radius_cm {
+        d *= radius_cm / len;
+    }
+    Vec3::new(centre.x + d.x, posed.y, centre.z + d.z)
+}
+
+/// One pass on a real body moves each pin's particles by the law and
+/// nothing else. The thorax is 10 cm off its pose, so each thorax pin's
+/// error is 10 cm and its displacement is zero.
+#[test]
+fn one_pass_on_a_body_applies_the_law() {
+    let (mut body, pose) = standing_at(Vec3::ZERO);
+    body.aim(Affine3A::IDENTITY, pose);
+    let thorax = body.parts.iter().position(|p| p.bone == 8).unwrap();
+    shift(&mut body.parts[thorax], Vec3::X * 0.10);
+    let centre = feet_centre(&body);
+    let targets = body.drive.as_ref().unwrap().targets().to_vec();
+    let mut pins: Vec<(usize, [f32; 4], f32)> = body
+        .chest
+        .iter()
+        .copied()
+        .map(|(i, w)| (i, w, 36.0))
+        .collect();
+    let pelvis = body.parts.iter().position(|p| p.bone == 1).unwrap();
+    pins.push((pelvis, body.parts[pelvis].own_origin, 60.0));
+    let mut expected = vec![[Vec3::ZERO; 4]; body.parts.len()];
+    for (i, w, radius) in pins {
+        let posed = targets[i].transform_point3(body.parts[i].rest_point(&w));
+        let goal = clamped(posed, centre, radius);
+        let at = body.parts[i].point(&w);
+        let disp = (0..4)
+            .map(|k| (body.parts[i].positions[k] - body.parts[i].start[k]) * w[k])
+            .sum::<Vec3>();
+        let corr = law(
+            ((goal - at).with_y(0.0)) * 100.0,
+            disp.with_y(0.0) * 100.0,
+            true,
+            false,
+        );
+        for k in 0..4 {
+            expected[i][k] += corr / 100.0 * w[k];
+        }
+    }
+    let before: Vec<[Vec3; 4]> = body.parts.iter().map(|p| p.positions).collect();
+    body.pull_support_pins();
+    for (i, p) in body.parts.iter().enumerate() {
+        for k in 0..4 {
+            let delta = p.positions[k] - before[i][k];
+            assert!(
+                delta.abs_diff_eq(expected[i][k], 1e-6),
+                "part {i} particle {k}: {delta} vs {}",
+                expected[i][k]
+            );
+        }
+    }
+}
+
+fn stand(body: &mut Ragdoll, pose: &[Affine3A], level: &[[Vec3; 3]]) {
+    body.measure_balance(level);
+    body.aim(Affine3A::IDENTITY, pose.to_vec());
+    body.tick(level);
+}
+
+fn chest_off_feet(body: &Ragdoll) -> f32 {
+    let chest = body.chest_point().unwrap();
+    (chest - feet_centre(body)).with_y(0.0).length() * 100.0
+}
+
+/// A supported chest held about 10 cm off the feet centre is brought back
+/// toward the feet over later ticks of the real step. The same offset with
+/// no support is not pulled back by the pins.
+#[test]
+fn a_chest_ten_cm_off_the_feet_comes_back() {
+    let floor = floor_quad(0.0, 5.0);
+    let (mut body, pose) = standing_at(Vec3::ZERO);
+    for _ in 0..30 {
+        stand(&mut body, &pose, &floor);
+    }
+    let thorax = body.parts.iter().position(|p| p.bone == 8).unwrap();
+    let by = Vec3::X * 0.10;
+    for k in 0..4 {
+        body.parts[thorax].positions[k] += by;
+        body.parts[thorax].previous[k] += by;
+    }
+    let held = chest_off_feet(&body);
+    assert!(held > 8.0 && held < 12.0, "held {held} cm off");
+    for _ in 0..80 {
+        stand(&mut body, &pose, &floor);
+    }
+    let back = chest_off_feet(&body);
+    assert!(
+        back < held - 1.0,
+        "the chest closed only {} cm ({held} to {back})",
+        held - back
+    );
+
+    let (mut loose, pose) = standing_at(Vec3::ZERO);
+    loose.aim(Affine3A::IDENTITY, pose);
+    loose.drive.as_mut().unwrap().support = 0.0;
+    // No floor under it: the balance measure leaves it without support.
+    loose.measure_balance(&[] as &[[Vec3; 3]]);
+    assert!(!loose.drive.as_ref().unwrap().balance().has_support());
+    let thorax = loose.parts.iter().position(|p| p.bone == 8).unwrap();
+    shift(&mut loose.parts[thorax], by);
+    let before: Vec<[Vec3; 4]> = loose.parts.iter().map(|p| p.positions).collect();
+    loose.pull_support_pins();
+    for (i, p) in loose.parts.iter().enumerate() {
+        assert_eq!(p.positions, before[i], "part {i} moved without support");
+    }
+}
+
+/// While the body moves, the frame follows the pelvis, so the pins do not
+/// nail it to the world spot it started on.
+#[test]
+fn a_moving_body_is_not_nailed_to_its_spot() {
+    let floor = floor_quad(0.0, 5.0);
+    let (mut body, pose) = standing_at(Vec3::ZERO);
+    for _ in 0..20 {
+        stand(&mut body, &pose, &floor);
+    }
+    let start = Vec3::from(body.part_of(1).unwrap().transform().translation);
+    let anchor0 = body.drive.as_ref().unwrap().anchor().unwrap();
+    body.set_bearing(Bearing {
+        moving: true,
+        ..Bearing::default()
+    });
+    body.set_velocity(Vec3::X * 1.5);
+    let (mut far, mut frame_far) = (0.0f32, 0.0f32);
+    for _ in 0..40 {
+        body.set_bearing(Bearing {
+            moving: true,
+            ..Bearing::default()
+        });
+        stand(&mut body, &pose, &floor);
+        let end = Vec3::from(body.part_of(1).unwrap().transform().translation);
+        far = far.max((end - start).with_y(0.0).length() * 100.0);
+        let frame = (body.drive.as_ref().unwrap().anchor().unwrap() - anchor0)
+            .with_y(0.0)
+            .length()
+            * 100.0;
+        frame_far = frame_far.max(frame);
+    }
+    // The planted feet still grip, so the body does not coast at 1.5 m/s.
+    // It does leave its spot, and the frame goes with the pelvis, so the
+    // pin targets are not left on the world spot it started on.
+    assert!(
+        far > 3.0,
+        "the pelvis stayed within {far} cm of where it started"
+    );
+    assert!(
+        frame_far > 2.0,
+        "the frame stayed within {frame_far} cm, so the pins still aimed at the start"
+    );
+}

@@ -48,10 +48,12 @@ its feet (`src/body_lift.rs`). The pose is put on the original's character
 frame, whose origin follows the pelvis by its rules: on the pelvis while
 moving, frozen while standing steady, behind dead-bands of 5 and 10 cm
 otherwise (`src/body_frame.rs`, `body::Drive::anchor`). The controller
-carries a standing body only across the ground and turns it, holds its
-pelvis horizontally over the frame's until the original's support pins do,
-and follows the frame (`CharacterBody::follow`, a tenth of the way a step,
-at most 2 cm), leaving its follow out of the carry. Until the feet step and
+carries a standing body only across the ground and turns it, and follows
+the frame (`CharacterBody::follow`, a tenth of the way a step,
+at most 2 cm), leaving its follow out of the carry. In each solver
+iteration the support pins (`src/body_pins.rs`) pull the two thorax pins
+and the pelvis pin horizontally toward the frame's targets, clamped near
+the feet centre. Until the feet step and
 the legs bend, a stopgap of Exarust's own reads each foot's ground no lower
 than the grounded controller's floor less 6 cm, so a body climbs the steps
 its capsule climbs (`src/body_climb.rs`).
@@ -83,7 +85,8 @@ new heading without carrying the body through the turn.
 A collapsing body (`body::Bearing::collapsing`, from its condition word)
 has its frame follow its pelvis exactly, its lift multiplied by its tone
 squared, its arms at 0.2 and its feet probed standing; its support pins'
-gain (`body::Drive::pin_gain`, 0.081 living) does not recover. A body
+gain (`body::Drive::pin_gain`, 0.081 living) does not recover, and the
+pins read that gain each iteration. A body
 asked to go limp keeps its motion unless the request gives a velocity
 (`body::GoLimp::velocity`); `body::daze_energy` is a blow's daze.
 Velocity retention is the original's default environment: banded by speed

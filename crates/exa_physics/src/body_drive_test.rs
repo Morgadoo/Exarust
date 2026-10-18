@@ -307,8 +307,10 @@ fn a_standing_body_recovers_from_a_chest_shove() {
     }
     let tilt = turn_of(&body.parts[torso]).1 - rest;
     let (_, velocity) = body.centre_of_mass();
+    // The support pins keep the sway to about half a degree; it still
+    // turns off the pose and turns back.
     assert!(
-        swayed.to_degrees() > 2.5,
+        swayed.to_degrees() > 0.4,
         "the torso swayed {:.1}°",
         swayed.to_degrees()
     );
@@ -321,39 +323,38 @@ fn a_standing_body_recovers_from_a_chest_shove() {
     assert!(velocity.length() < 0.01, "still moving at {velocity}");
 }
 
-/// Exarust's own until the support pins: a standing body's pelvis is held
-/// over where its frame puts the pose's pelvis, across the ground only. A
-/// pelvis off its target and moving is pulled back and braked across the
-/// ground, never up or down: its height is the lift's. While the body
-/// moves its frame rides on its pelvis, and it is only braked.
+/// The old horizontal stance hold does not run. A pelvis set 5 cm and 3 cm
+/// off its frame, still or moving, is not pulled by 0.168 × tone² × E⁴ and
+/// its previous place is not braked by twice the square root of that gain.
+/// The integration step only keeps the velocity it already had.
 #[test]
-fn the_stance_hold_pulls_the_pelvis_across_the_ground_only() {
+fn the_horizontal_stance_hold_does_not_run() {
     for moving in [false, true] {
         let (mut body, pose) = standing();
         body.aim(Affine3A::IDENTITY, pose);
         body.drive.as_mut().unwrap().bearing.moving = moving;
         let i = body.parts.iter().position(|p| p.bone == 1).unwrap();
+        let gap = Vec3::new(0.05, 0.04, -0.03);
         let p = &mut body.parts[i];
         for k in 0..4 {
-            p.positions[k] += Vec3::new(0.05, 0.04, -0.03);
-            p.previous[k] = p.positions[k] - Vec3::new(0.002, -0.003, 0.001);
+            p.positions[k] += gap;
+            p.previous[k] = p.positions[k];
         }
-        let (before, was) = (p.positions, p.previous);
-        let Ragdoll { parts, drive, .. } = &mut body;
-        hold_on_frame(parts, drive.as_ref().unwrap());
+        let before = p.positions;
+        body.step();
         let p = &body.parts[i];
-        for k in 0..4 {
-            let pulled = p.positions[k] - before[k];
-            let braked = p.previous[k] - was[k];
-            if moving {
-                assert_eq!(pulled, Vec3::ZERO);
-            } else {
-                assert!(pulled.x < 0.0 && pulled.z > 0.0, "{pulled}");
-            }
-            assert_eq!((pulled.y, braked.y), (0.0, 0.0));
-            // Its previous place follows its motion: its velocity shrinks.
-            assert!(braked.x > 0.0 && braked.z > 0.0, "{braked}");
+        // 0.168 of the horizontal gap, the old spring at full tone and energy.
+        let old = Vec3::new(-0.05, 0.0, 0.03) * 0.168;
+        for (at, was) in p.positions.iter().zip(before) {
+            let delta = *at - was;
+            assert!(
+                (delta.x - old.x).abs() > 1e-3 && (delta.z - old.z).abs() > 1e-3,
+                "moving {moving}: {delta} matches the old hold {old}"
+            );
+            assert!(delta.x.abs() < 1e-4 && delta.z.abs() < 1e-4, "{delta}");
         }
+        // Integration stores the pre-step place; the old brake is absent.
+        assert_eq!(p.previous, before);
     }
 }
 

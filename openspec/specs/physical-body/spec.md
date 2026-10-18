@@ -75,7 +75,7 @@ The system SHALL drive a living physical body toward its animated pose: its link
 - **THEN** their heads' pose gain is 0.0052 and none, their trunks' still 0.0314
 
 ### Requirement: Living bodies in motion
-The system SHALL give a living physical body the animated pose of each tick on its character frame. A standing body SHALL be carried with its root's motion since last tick, less its controller's follow, across the ground and about the vertical only, with where the last tick left it, its level contacts, its feet's anchors, last tick's targets and its frame, and its pelvis held over the frame's by 0.168 × tone² × energy⁴ a tick, critically damped, only damped while it moves (Exarust's own).
+The system SHALL give a living physical body the animated pose of each tick on its character frame. A standing body SHALL be carried with its root's motion since last tick, less its controller's follow, across the ground and about the vertical only, with where the last tick left it, its level contacts, its feet's anchors, last tick's targets and its frame. No spring of 0.168 × tone² × energy⁴ SHALL pull or brake its pelvis toward that frame.
 
 #### Scenario: Turning far from the origin
 - **WHEN** a living body 80 m from the world's origin turns with its pose
@@ -86,8 +86,8 @@ The system SHALL give a living physical body the animated pose of each tick on i
 - **THEN** its particles, where the last tick left each part and its level contacts move with the root across the floor but not down, while where it is drawn from stays
 
 #### Scenario: Held on the controller
-- **WHEN** a standing body's pelvis is off where its frame puts the pose's pelvis
-- **THEN** it is pulled back across the ground, and the hold never moves it up or down; while the body moves it is only braked
+- **WHEN** a standing body's pelvis, still or moving, sits off where its frame puts the pose's pelvis
+- **THEN** the step does not pull it across the ground by 0.168 × tone² × energy⁴, and does not brake its horizontal velocity by twice the square root of that gain
 
 #### Scenario: A standing turn
 - **WHEN** the player turns a quarter standing in the arena
@@ -666,7 +666,7 @@ Until the feet step and the legs bend (Exarust's own), while a living body that 
 
 #### Scenario: Stairs
 - **WHEN** a body walks up four 18 cm steps with its controller, stopping on the third
-- **THEN** it keeps its balance and ends on the landing, its pelvis 72 cm higher; with the original's target alone it loses its balance
+- **THEN** it keeps its balance and ends on the landing, its pelvis 72 cm higher; with the original's target alone the support pins keep its balance and its pelvis ends short of the landing
 
 #### Scenario: Stair room
 - **WHEN** `exarust --autowalk --at 7.5,-0.95,64.4 play exanima01` or `--at 7.6,-1.3,66.2` walks the player up the stairs to the door
@@ -700,7 +700,7 @@ A living body's targets SHALL be its clip pose on a frame that turns with the bo
 
 #### Scenario: Unsteady body
 - **WHEN** a standing body at support 0.95 is pushed 14 cm across the floor
-- **THEN** its frame follows it, and it comes to rest no more than 5 cm back from the farthest it went, where its frame puts its pelvis
+- **THEN** its frame follows it, and it comes to rest no more than 5 cm back from the farthest it went, within 2 cm of where its frame puts its pelvis
 
 #### Scenario: Support threshold
 - **WHEN** a standing body's support is 0.95 as a float, which is under the double 0.95, or the next float up
@@ -983,7 +983,7 @@ In each iteration, after its lower leg's links, a foot of a body over half its t
 
 #### Scenario: A light shove
 - **WHEN** a standing body's torso takes a 2 m/s sideways blow
-- **THEN** its chest sways 4 cm and its feet stay within 1 cm of their anchors
+- **THEN** its chest sways about 2 cm and its feet stay within 1 cm of their anchors
 
 #### Scenario: A step's reach
 - **WHEN** a stepping foot comes 4.9 cm from its anchor
@@ -1009,3 +1009,47 @@ With support, a body's stance level SHALL follow 1 − v² by a tenth a tick (v 
 #### Scenario: A step under one foot
 - **WHEN** a body stands with one foot on a 15 cm block and the other on the floor, its feet 11.4 cm apart
 - **THEN** its anchors sit 24.5 and 9.5 cm up and its level settles at 0.60, where on level ground it is 1
+
+### Requirement: Support pin pull
+In each iteration a supported living body SHALL pull its two thorax pins and its pelvis pin horizontally, in centimetres: raw is 0.2·e·|e|/60 when |e| < 60 and 12 along e otherwise, less this tick's horizontal displacement, capped at 8, times S²·pin-gain·P·pin factor, and times 0.3 while getting up. P is √E·T·E⁴. Pin-gain starts at 0.08.
+
+#### Scenario: One application inside 60 cm
+- **WHEN** a supported pin is 10 cm from its clamped target, its horizontal displacement this tick is 1 cm along that error, and the body is an alert human (S = 1, pin-gain 0.08, T = 0.5, E = 1, pin factor 1.25) that is not getting up
+- **THEN** one application is (0.2·10·10/60 − 1) cm along the error, times 0.05, which is −0.0333 cm
+
+#### Scenario: One application past 60 cm
+- **WHEN** the same pin is 80 cm from its target and has not moved this tick
+- **THEN** one application is 12 cm along the error, capped at 8 cm, times 0.05, which is 0.4 cm
+
+#### Scenario: Getting up
+- **WHEN** the same 10 cm pin with no displacement is on a body that is getting up
+- **THEN** one application is 0.3 of the standing pull
+
+#### Scenario: Chest returns
+- **WHEN** a supported standing body's chest is held about 10 cm off the feet centre
+- **THEN** later ticks of the real step bring the chest back toward the feet centre
+
+### Requirement: Support pin targets
+With support, each thorax pin's target SHALL stay within (60 − 60·crouch)·0.6·scale cm of the feet centre, or within (60 − 30·crouch)·0.6·scale cm while a foot is stepping, and the pelvis pin's target within 60·scale cm. Crouch is 0 until a crouch exists, so a standing thorax reach is 36·scale cm.
+
+#### Scenario: Standing reach
+- **WHEN** a supported body of scale 1 is not crouching and no foot is stepping, and a thorax target lies 40 cm from the feet centre
+- **THEN** the target used by the pull is 36 cm from the feet centre, and a pelvis target 80 cm out is brought in to 60 cm
+
+#### Scenario: Stepping reach
+- **WHEN** the same body crouches fully and a foot is stepping
+- **THEN** a thorax target is kept within 18 cm of the feet centre
+
+### Requirement: Unsupported pin targets
+With no support the pins SHALL apply no restoring pull, and their targets SHALL only shift 5·scale cm forward.
+
+#### Scenario: No pull
+- **WHEN** a body has no support and a pin is 10 cm off its target
+- **THEN** one application is zero, and the target is the frame's point shifted 5·scale cm forward
+
+### Requirement: Pins on a moving body
+While a living body moves, its frame SHALL follow its pelvis, and the pins SHALL not hold the body on one world spot.
+
+#### Scenario: Not nailed down
+- **WHEN** a supported body is moving and is given a horizontal velocity
+- **THEN** over later ticks its pelvis leaves the world spot it started on, and its frame's origin leaves that spot with it

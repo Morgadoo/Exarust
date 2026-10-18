@@ -284,10 +284,8 @@ fn climb(carried: bool) -> Climb {
 /// landing, its pelvis 72 cm higher than walking on the floor (give or take
 /// 3 cm), its feet on the landing. Without the stopgap (its controller off
 /// the ground, so the lift keeps the original's target, on the lowest foot)
-/// its trailing foot catches a riser and it sinks onto it: its pelvis ends
-/// 5 cm lower (6.8) and its balance dips under 0.9 (0.84; it toppled, as
-/// C8's walkers did in exanima01, until its feet were planted while it
-/// stops).
+/// its trailing foot catches a riser and its pelvis ends more than 5 cm
+/// lower. The support pins keep its balance: it no longer topples.
 #[test]
 fn a_walker_climbs_four_18_cm_steps() {
     let landing = STEPS as f32 * RISE;
@@ -302,9 +300,14 @@ fn a_walker_climbs_four_18_cm_steps() {
     assert!(up.feet > landing - 0.02, "feet at {}", up.feet);
     let caught = climb(false);
     assert!(
-        caught.balance < 0.9 && caught.pelvis < up.pelvis - 0.05,
-        "climbed without the stopgap: balance {}, pelvis {}",
-        caught.balance,
-        caught.pelvis
+        caught.pelvis < up.pelvis - 0.05 && caught.feet < up.feet - 0.02,
+        "reached the landing without the stopgap: pelvis {} feet {}",
+        caught.pelvis,
+        caught.feet
+    );
+    assert!(
+        caught.balance >= 0.9,
+        "lost its balance without the stopgap: {}",
+        caught.balance
     );
 }

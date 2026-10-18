@@ -2,7 +2,7 @@
 //! skeleton's links meet the parent, the parts' shares of a correction,
 //! leg limits, smoothing, the pivot and limit laws and the solving order.
 //! (Included from body.rs: `#[cfg(test)] #[path = "body_joint_test.rs"] mod joint_test;`)
-use super::floor_test::{Aim, app, floor, humanoid};
+use super::floor_test::{Aim, app, floor, humanoid, standing_at};
 use super::*;
 
 const NONE: &[[Vec3; 3]] = &[];
@@ -252,18 +252,16 @@ fn hip_gaps(body: &Ragdoll) -> f32 {
     .fold(0.0, f32::max)
 }
 
-/// The hips stay in their sockets: a 4 m/s blow to the torso of a standing
-/// body leaves each femur's origin within 2 mm of its place on the pelvis
-/// after every tick, as it does when the body lies limp.
+/// The hips stay in their sockets: a 4 m/s blow to the torso of a body
+/// standing on its feet leaves each femur's origin within 2 mm of its
+/// place on the pelvis after every tick, as it does when the body lies limp.
 #[test]
 fn the_hips_stay_in_their_sockets_under_a_shove() {
     let at = Vec3::new(30.0, 0.0, -12.0);
     let mut app = app(floor(at), 1.0 / BODY_HZ);
-    let (setup, pose) = humanoid(at);
-    let body = app
-        .world_mut()
-        .spawn((Ragdoll::new(&setup).with_drive(), Aim::still(pose)))
-        .id();
+    let (setup, _) = humanoid(at);
+    let (standing, pose) = standing_at(at);
+    let body = app.world_mut().spawn((standing, Aim::still(pose))).id();
     let mut limp = Ragdoll::new(&setup);
     let mut worst = (0.0f32, 0.0f32);
     for f in 0..250 {

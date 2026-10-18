@@ -1303,6 +1303,8 @@ pub(crate) mod tests {
     /// the character and every particle of its body land, tick after tick,
     /// exactly where they do at any other frame rate (a drawn, interpolated
     /// position read inside the tick would differ with the frame rate).
+    /// The body has no feet, so the support pins do not pull it back onto
+    /// the controller once the walk stops.
     #[test]
     fn a_walking_controller_ticks_the_same_at_any_frame_rate() {
         let count = 120;
@@ -1310,11 +1312,16 @@ pub(crate) mod tests {
         let (start, end) = (reference[0].0, reference[count - 1].0);
         assert!(end.x - start.x > 0.8, "walked from {start} to {end}");
         assert!(end.y.abs() < 0.05, "on the floor: {end}");
-        // The body stays with the character it is carried by.
-        let pelvis = reference[count - 1].1[0][0];
+        // No feet, so the support pins do not run, and nothing springs the
+        // pelvis back onto the controller after the walk stops. While the
+        // controller is moving, the carry keeps the pelvis with it.
+        let mut carried = 0.0f32;
+        for (feet, parts) in reference.iter().take(80) {
+            carried = carried.max((parts[0][0] - *feet).xz().length());
+        }
         assert!(
-            (pelvis - end).xz().length() < 0.4,
-            "pelvis {pelvis}, feet {end}"
+            carried < 0.35,
+            "while carried, the pelvis was {carried} m off the controller"
         );
         for fps in [30.0, 144.0, 240.0] {
             let other = walk_at(fps, count);

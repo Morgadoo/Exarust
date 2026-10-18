@@ -71,8 +71,9 @@ impl FootState {
         self.0 & (Self::TOUCHING | Self::LIFTED) == Self::TOUCHING
     }
 
-    /// Anchored and its anchor not yet reached.
-    fn stepping(self) -> bool {
+    /// Anchored and its anchor not yet reached: a step, which widens the
+    /// thorax pins' reach.
+    pub(super) fn stepping(self) -> bool {
         self.0 & (Self::ANCHORED | Self::REACHED) == Self::ANCHORED
     }
 }
