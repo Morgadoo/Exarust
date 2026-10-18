@@ -120,6 +120,27 @@ impl Company {
         }
     }
 
+    /// Confirm a shop basket. Empty baskets are refused. The copper still
+    /// to pay is the buy total minus the sell total; a larger sell is received.
+    pub fn trade(&mut self, buy: u32, sell: u32) -> bool {
+        if buy == 0 && sell == 0 {
+            return false;
+        }
+        let due = buy.saturating_sub(sell);
+        if self.copper < due {
+            return false;
+        }
+        if buy > sell {
+            self.copper -= due;
+            self.spent = self.spent.saturating_add(due);
+        } else {
+            let got = sell - buy;
+            self.copper = self.copper.saturating_add(got);
+            self.earned = self.earned.saturating_add(got);
+        }
+        true
+    }
+
     /// Gold, silver, then copper, at 12 to 1.
     pub fn coins(&self) -> (u32, u32, u32) {
         let gold = self.copper / (COIN * COIN);
@@ -274,5 +295,22 @@ mod tests {
         assert_eq!(company.won, 1);
         assert_eq!(company.earned, 256);
         assert_eq!(company.roster[0].xp, 1000 + 750);
+    }
+
+    #[test]
+    fn the_shop_confirms_only_what_the_company_can_pay() {
+        let mut company = Company::new("Ash");
+        assert!(!company.trade(0, 0));
+        assert_eq!(company.copper, 343);
+        assert!(!company.trade(400, 0));
+        assert_eq!(company.copper, 343);
+        assert!(company.trade(40, 0));
+        assert_eq!(company.copper, 303);
+        assert_eq!(company.spent, 40);
+        assert!(company.trade(10, 25));
+        assert_eq!(company.copper, 318);
+        assert_eq!(company.earned, 15);
+        assert!(company.trade(5, 5));
+        assert_eq!(company.copper, 318);
     }
 }

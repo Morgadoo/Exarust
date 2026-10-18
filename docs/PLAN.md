@@ -959,9 +959,11 @@ concerns. Each spends its focus and does nothing without it.
 Done (change `save-the-session`): an `EXRS` file restores that session.
 The original's save packages are not read.
 
+Done (change `confirm-a-shop-trade`): the shop refuses two empty baskets, and refuses a buy the company's copper cannot cover. A larger sell is received.
+
 Still open:
 
-- Arena training, seasons, the shop and emblems. The hire price was not read.
+- Arena training, seasons, item prices and emblems. The hire price was not read.
 - Story side levels, scripted encounters, the role interpreter, map discovery.
 - The other powers, their charge-up and their meshes.
 - Character creation (race, body, face, hair, colours, class, skills).
