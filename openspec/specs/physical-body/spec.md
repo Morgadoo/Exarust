@@ -992,15 +992,15 @@ Under balance 0.8 (double) and not getting up, a body whose pelvis's front axis 
 - **THEN** its heading turns to the direction from its chest to its pelvis
 
 ### Requirement: Foot contacts
-Each leg of a living body SHALL keep a foot contact at its ankle with the original's state bits (2 touching, 4 anchored, 8 reached, 0x10 lifted, 0x20 no ground, 0x100 stalled) and an anchor. Not walking, a foot that does not touch SHALL be planted where it is once it meets the level; walking, no foot touches. Standing still: lying, none touches; getting up (to 0.9 of its clip) or unsupported, each touches on its stance spot; else one at a time steps to a spot 5 cm off.
+Each leg of a living body SHALL keep a foot contact at its ankle with the original's state bits (2 touching, 4 anchored, 8 reached, 0x10 lifted, 0x20 no ground, 0x100 stalled) and an anchor. Not walking, a foot that does not touch SHALL be planted where it is once it meets the level. Walking, each foot plants or lifts by its phase. Standing still: lying, none touches; getting up (to 0.9 of its clip) or unsupported, each touches on its stance spot; else one at a time steps to a spot 5 cm off.
 
 #### Scenario: Standing
 - **WHEN** a body stands on a floor for 120 ticks
 - **THEN** both feet touch (state 0x2), anchored where they landed at the floor plus the sole height, their grips full
 
 #### Scenario: Walking and stopping
-- **WHEN** a standing body walks, then stops
-- **THEN** walking no foot touches; stopped, each foot is planted where it meets the floor and steps onto its stance spot, both standing again within 45 ticks in the arena
+- **WHEN** a standing body walks at progress 0, then stops
+- **THEN** the near foot stays touching and the far foot lifts; stopped, the lifted foot is planted where it is and the touching foot keeps its anchor
 
 #### Scenario: Getting up
 - **WHEN** a body gets up
@@ -1013,6 +1013,13 @@ Each leg of a living body SHALL keep a foot contact at its ankle with the origin
 #### Scenario: A step
 - **WHEN** a standing foot's stance spot is 4.9 cm, then 5 cm from its anchor
 - **THEN** it stays, then steps (anchored, its anchor the spot); the other foot does not step until it has landed, and a stalled step lands where it is
+
+### Requirement: Gait plant phase
+A walking foot's phase SHALL be the fraction of clip progress + 1.2 − 0.5×leg. A foot that does not touch SHALL plant when the phase is 0.2 to 0.4. A touching foot SHALL lift when the phase is 0 or at least 0.55. Any other foot SHALL keep its state.
+
+#### Scenario: Progress zero
+- **WHEN** the walk's progress is 0
+- **THEN** leg 0 is at phase 0.2 and leg 1 at phase 0.7; a free leg 0 plants and a touching leg 1 lifts
 
 ### Requirement: Foot grip
 In each iteration, after its lower leg's links, a foot of a body over half its tone with support, more than 10 cm under the pelvis, SHALL be driven to its anchor: touching and not lifted, by the PD grip d·(0.1p + 0.004g(1 − p)) less its motion across the ground × (p + 0.03g(1 − p)), or walking by the velocity servo (never down); an anchored foot reaches it within 5 cm; a foot not touching or lifted only up. Its anchor SHALL sit on its ground plus the sole height.
@@ -1041,8 +1048,8 @@ In each iteration, after its lower leg's links, a foot of a body over half its t
 Each tick a living body's lower legs and their feet SHALL take their friction from their foot's state: 0 while it does not touch, 2.0 touching, 0 anchored.
 
 #### Scenario: By state
-- **WHEN** a standing body's feet touch, then it walks
-- **THEN** its lower legs and feet have friction 2.0, then 0
+- **WHEN** a standing body's feet touch, then it walks at progress 0
+- **THEN** its lower legs and feet have friction 2.0, then 2.0 on the near foot and 0 on the far foot
 
 ### Requirement: Sole floor
 In each iteration, after its foot's links, a body with support and on its feet SHALL push its toe (the sole's point 20 cm × scale ahead of the ankle along the foot) straight up toward its floor (its ground, never over the lower leg's origin) by the gap × S, at most 0.5 cm while the foot stands (touching, not anchored, not lifted), else 0.1 cm.
@@ -1212,3 +1219,14 @@ A stepping chest inside the trigger SHALL shift each thorax pin target, before t
 #### Scenario: Out of balance
 - **WHEN** a step is running and the chest is still past the trigger
 - **THEN** the pin pass does not lead the thorax
+
+### Requirement: Knockback step target
+A knockback step SHALL keep the target the blow set, including while the body walks, until balance is under 0.2 or it is getting up.
+
+#### Scenario: Walking through it
+- **WHEN** a knockback target is 20 cm ahead and the body is walking with balance 1
+- **THEN** the step stays on that target
+
+#### Scenario: Balance gone
+- **WHEN** that step's balance falls under 0.2
+- **THEN** the step ends

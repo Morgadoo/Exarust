@@ -97,6 +97,17 @@ A clip's clock SHALL gain frames each body tick from the race's clip-rate base: 
 - **WHEN** a human at full tone starts getting up, from the floor or staggering
 - **THEN** its clock gains 0.75 frames on that tick and 0.9 a tick after
 
+### Requirement: Backwards walk
+Backing up SHALL play Walk and advance its clock by the negated backpedal rate. A looping clock below 0 SHALL wrap by the last key's time.
+
+#### Scenario: Backing up
+- **WHEN** a human backs up at 1.476 cm a tick playing Walk
+- **THEN** its clock loses 0.736 frames a tick
+
+#### Scenario: Negative wrap
+- **WHEN** a looping clip's clock is 0.3 and the tick subtracts 0.8, and the last key is at 80
+- **THEN** the clock is 79.5
+
 ### Requirement: Run overlay
 While Walk plays and the run blend is above zero, each bone SHALL be the Walk sample slerped toward the Run sample at the same keys, before any pose hold, by 0.7 times the run blend, or by the run blend itself while sprinting. Sprinting SHALL require the sprint latch, a stance level above 0.9 and a speed above 3.5 cm a tick. The root SHALL stay the Walk sample.
 
