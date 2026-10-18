@@ -8,10 +8,11 @@ footwork and every NPC path go through it.
 
 Exarust builds the grid as the original does (`exa_world::nav`, changes
 `build-the-navigation-grid` and `build-nav-terrain-only-where-blocks-are`).
-The queries and the planner (line walks, straight walks, nearest walkable
-point, A\*, character footprints) come next. Until a level's grid is built, and for anything without one, they
-answer as the original's fallback does: no path, no obstacle, no cost,
-the point unchanged.
+The planner searches that grid (`nav::find_path`) and the look-ahead is
+`nav::look_ahead` (75 + 6·v² cm, 45 + 6·v² in combat, 70 cm back). An NPC
+follows the path by the same heading and desired velocity the player
+writes. Line walks, the nearest walkable point and footprints are not in
+yet. With no grid there is no path.
 
 Evidence: reverse engineering of `Exanima.exe` 0.9.5 (the grid build, its
 span, layer and cost passes, the scene fields it reads, the level loader),

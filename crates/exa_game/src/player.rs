@@ -549,9 +549,14 @@ fn steer_player(
             if velocity != Vec3::ZERO {
                 let dir = velocity.normalize();
                 let v = velocity.length() * 100.0 / TICK_HZ;
-                let reach = 0.75 + 0.06 * v * v;
+                let look = if back {
+                    exa_world::nav::Look::Back
+                } else {
+                    exa_world::nav::Look::Walk
+                };
+                let reach = exa_world::nav::look_ahead(v, look).abs().min(1.0);
                 if physics
-                    .fixed_hit(feet + Vec3::Y * HIP, dir, reach.min(1.0))
+                    .fixed_hit(feet + Vec3::Y * HIP, dir, reach)
                     .is_some()
                 {
                     velocity = Vec3::ZERO;

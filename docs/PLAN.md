@@ -996,7 +996,9 @@ against Exarust and lists the largest missing ones. In order:
    stops a blow and a shield's yellow leak are in. The inventory windows
    are not.
 3. The original's NPC brain: perception, targets and the combat state that
-   drives the same inputs as the player (Phase 6).
+   drives the same inputs as the player (Phase 6). A path on the grid, the
+   look-ahead, and an order that writes the player's heading and velocity
+   are in. Perception and the combat choice are not.
 4. Portal clipping and doors' open state, and level transitions
    (Phase 2).
 5. `add-static-mesh-decoding` is still open, waiting on a visual mirroring

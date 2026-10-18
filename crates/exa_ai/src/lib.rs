@@ -14,6 +14,10 @@ use exa_combat::{AttackStart, Attacking, Blade, Condition, Fighter};
 use exa_physics::CharacterBody;
 use exa_physics::body::{BodyTicks, Fallen, MAX_ENERGY, Ragdoll};
 
+pub mod order;
+
+pub use order::{Order, follow};
+
 pub struct AiPlugin;
 
 impl Plugin for AiPlugin {
@@ -61,7 +65,6 @@ impl Duellist {
 /// than the clip's pose at the original's swing speed), and the strike
 /// lands only from this close.
 const STRIKE_RANGE: f32 = 1.15;
-const APPROACH_SPEED: f32 = 1.2;
 const STRIKE_INTERVAL: f32 = 2.2;
 const STRIKES: [AttackMotion; 3] = [
     AttackMotion::Main(0),
@@ -185,15 +188,23 @@ fn duellist(
         let to = target.translation() - root_gt.translation();
         let flat = Vec3::new(to.x, 0.0, to.z);
         let dist = flat.length();
+        let facing = t.rotation * Vec3::Z;
+        let heading = facing.x.atan2(facing.z);
+        let order = follow(
+            &[root_gt.translation(), target.translation()],
+            root_gt.translation(),
+            heading,
+            0,
+        );
         if dist > 0.05 {
-            t.rotation = Quat::from_rotation_y(flat.x.atan2(flat.z));
+            t.rotation = Quat::from_rotation_y(order.heading);
         }
         ai.cooldown -= time.delta_secs();
         if attacking.is_some() || !anim.looping {
             continue;
         }
         if dist > STRIKE_RANGE && !ai.holds_ground {
-            body.desired_velocity = flat / dist * APPROACH_SPEED;
+            body.desired_velocity = order.velocity;
             anim.play_loop(COMBAT_WALK);
             continue;
         }
@@ -307,7 +318,13 @@ mod tests {
             .get::<CharacterBody>(root)
             .unwrap()
             .desired_velocity;
-        assert!((v - Vec3::Z * APPROACH_SPEED).length() < 1e-5, "{v}");
+        let order = follow(&[Vec3::ZERO, Vec3::new(0.0, 0.0, 8.0)], Vec3::ZERO, 0.0, 0);
+        assert!(order.velocity.length() > 1.0, "{}", order.velocity);
+        assert!(
+            (v - order.velocity).length() < 1e-4,
+            "{v} vs {}",
+            order.velocity
+        );
     }
 
     /// Standing its ground it shows its stance: the guard at 8 m, the

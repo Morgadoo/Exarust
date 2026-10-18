@@ -25,17 +25,16 @@
 //!    clearance byte the planner tests (180/(size class + 1) passes).
 //!
 //! Evidence (reverse engineering of `Exanima.exe` 0.9.5, the corpus) and
-//! the rules in full: `docs/NAVIGATION.md`. The planner and the
-//! queries (`find-paths-on-the-grid`, `walk-grid-lines`) come next; with
-//! no grid they answer as the original's fallback does: no obstacle, no
-//! cost.
+//! the rules in full: `docs/NAVIGATION.md`. The planner is [`path`].
 
 pub mod headless;
+pub mod path;
 pub mod source;
 pub mod view;
 
 use bevy::math::{DVec3, Vec2, Vec3};
 
+pub use path::{Look, Path, find_path, look_ahead};
 pub use source::{GroundTile, NavSource};
 pub use view::{NavOverlay, NavPlugin, NavState, PendingNav};
 
@@ -492,6 +491,21 @@ impl NavGrid {
             (x as f32 - (self.width / 2) as f32 + 0.5) * CELL,
             (z as f32 - (self.depth / 2) as f32 + 0.5) * CELL,
         )
+    }
+
+    /// Writes what cell (`x`, `z`) holds on `layer`. Outside the grid, nothing.
+    pub fn set_cell(&mut self, x: usize, z: usize, layer: Layer, cell: NavCell) {
+        if x >= self.width || z >= self.depth {
+            return;
+        }
+        let i = z * self.width + x;
+        let l = &mut self.layers[layer as usize];
+        l.floor[i] = cell.floor;
+        l.underside[i] = cell.underside;
+        l.roughness[i] = cell.roughness;
+        l.blurred[i] = cell.blurred;
+        l.clearance[i] = cell.clearance;
+        l.penalty[i] = cell.penalty;
     }
 
     /// What cell (`x`, `z`) holds on `layer` (nothing outside the grid).
