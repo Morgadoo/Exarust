@@ -498,16 +498,7 @@ fn steer_player(
                 }
             }
             body.desired_velocity = velocity;
-            let gait = if velocity == Vec3::ZERO {
-                None
-            } else if back {
-                Some("Backpedal")
-            } else if pb.run > 0.5 {
-                Some("Run")
-            } else {
-                Some("Walk")
-            };
-            explore_clip(&mut anim, gait);
+            explore_clip(&mut anim, exploration_gait(velocity != Vec3::ZERO, back));
         }
     }
 }
@@ -520,6 +511,18 @@ fn steer_player(
 /// posture switch, which never leaves Cmbt - Idle. So a player that turns
 /// combat mode off in the combat idle with the Defence stance keeps it
 /// until it walks.
+/// Forward locomotion plays Walk. The run is an overlay on that clip.
+/// Backpedal still plays its own clip.
+fn exploration_gait(moving: bool, back: bool) -> Option<&'static str> {
+    if !moving {
+        None
+    } else if back {
+        Some("Backpedal")
+    } else {
+        Some("Walk")
+    }
+}
+
 fn explore_clip(anim: &mut Animator, gait: Option<&str>) {
     if !anim.looping {
         return;
@@ -1516,6 +1519,9 @@ mod tests {
             explore_clip(&mut anim, Some("Run"));
             assert_eq!(anim.action, "Run", "{kept}");
         }
+        assert_eq!(exploration_gait(true, false), Some("Walk"));
+        assert_eq!(exploration_gait(true, true), Some("Backpedal"));
+        assert_eq!(exploration_gait(false, false), None);
         let mut anim = Animator::new("Torch", "Cmbt - Idle");
         anim.play_once("Attack Mid", "Cmbt - Idle");
         explore_clip(&mut anim, Some("Walk"));

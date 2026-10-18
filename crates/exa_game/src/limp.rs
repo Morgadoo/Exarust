@@ -9,8 +9,10 @@
 //! learns what its character does and measures its balance and the ground
 //! under its feet; a clip started since its last tick captures where the
 //! body is; its clip clock advances at the original's rate for what the
-//! body does and its clip is sampled, blending from that capture and held
-//! toward its physical pose while it is dazed or unsteady; its targets are
+//! body does and its clip is sampled, blending from that capture. While
+//! Walk plays, each bone is slerped toward the Run sample by 0.7 times
+//! the run blend, then held toward its physical pose while it is dazed
+//! or unsteady; its targets are
 //! the body root's world transform times the clip's pose put on its
 //! character frame (which its character's controller follows), and its
 //! lift holds its pelvis over the ground under its feet.
@@ -27,7 +29,7 @@ use exa_assets::SkinnedPart;
 use exa_combat::Condition;
 use exa_combat::condition::Branch;
 use exa_combat::swing::{Swing, pace_swings};
-use exa_formats::rsq::BoneBody;
+use exa_formats::rsq::{BoneBody, Clip};
 use exa_physics::CharacterBody;
 use exa_physics::body::{
     BODY_HZ, Bearing, BodyStats, Drive, GoLimp, PartSetup, Physical, RaceMuscles, Ragdoll,
@@ -263,7 +265,26 @@ pub(crate) fn clip_tick(
     let weight = drive.hold_weight();
     let clip = motions.clip(anim, &anim.action)?;
     let still = in_place(set.action_index(&anim.action));
-    anim.sample(clip, still, hold.as_deref().map(|h| (h, weight)))
+    let overlay = run_overlay(motions, anim, pace);
+    anim.sample_layered(clip, still, hold.as_deref().map(|h| (h, weight)), overlay)
+}
+
+/// Share of the way from the walk pose to the run pose at a full run.
+const RUN_SHARE: f32 = 0.7;
+
+/// While Walk plays, the Run clip at [`RUN_SHARE`] times the run blend.
+/// None on a walk, and none when the table has no Run clip. The sprint
+/// weight (the blend itself) waits until sprint exists.
+fn run_overlay<'a>(motions: &'a Motions, anim: &Animator, pace: &Pace) -> Option<(&'a Clip, f32)> {
+    if anim.action != "Walk" {
+        return None;
+    }
+    let run = pace.run.clamp(0.0, 1.0);
+    if run <= 0.0 {
+        return None;
+    }
+    let clip = motions.clip(anim, "Run")?;
+    Some((clip, RUN_SHARE * run))
 }
 
 /// A standing body's clip clock runs this share of its rate a tick.
@@ -1039,6 +1060,8 @@ pub(crate) mod tests {
             ..pace
         };
         assert!(close(frames(1, &doing(moving, 1.0), &run), 0.8939));
+        // Running plays Walk. Its clock is the jog rate, same as the run clip's.
+        assert!(close(frames(0, &doing(moving, 1.0), &run), 0.8939));
         let back = Pace {
             walked: 1.476,
             ..pace

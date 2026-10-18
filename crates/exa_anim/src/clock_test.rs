@@ -66,6 +66,60 @@ fn close(a: Quat, b: Quat) -> bool {
     a.dot(b).abs() > 1.0 - 1e-6
 }
 
+/// Walk and Run 90° apart. At a full run the bone is 63° toward Run, the
+/// root stays Walk's, and a full pose hold replaces the overlay.
+#[test]
+fn the_run_overlays_the_walk_by_seven_tenths() {
+    let flat = Quat::IDENTITY;
+    let right = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+    let bone = |q: Quat| -> Vec<[f32; 4]> {
+        (0..BONES)
+            .map(|i| if i == 0 { q } else { flat })
+            .map(|q| [q.x, q.y, q.z, q.w])
+            .collect()
+    };
+    let key = |time: f32, q: Quat, root: Vec3| Key {
+        time,
+        root: (root * 0.01).to_array(),
+        rotations: bone(q),
+        flags: vec![0; BONES],
+    };
+    let walk_root = Vec3::new(1.0, 2.0, 3.0);
+    let walk = Clip {
+        mode: 1,
+        keys: vec![key(10.0, flat, walk_root), key(80.0, flat, walk_root)],
+    };
+    let run = Clip {
+        mode: 1,
+        keys: vec![
+            key(10.0, right, Vec3::new(9.0, 9.0, 9.0)),
+            key(80.0, right, Vec3::new(9.0, 9.0, 9.0)),
+        ],
+    };
+    let mut anim = Animator::new("Default", "Walk");
+    anim.time = 45.0;
+    let pose = anim
+        .sample_layered(&walk, false, None, Some((&run, 0.7)))
+        .unwrap();
+    assert!(close(pose.rotations[0], flat.slerp(right, 0.7)));
+    assert!(close(pose.rotations[1], flat));
+    assert!((pose.root - walk_root * 0.01).length() < 1e-5);
+
+    let mut plain = Animator::new("Default", "Walk");
+    plain.time = 45.0;
+    let alone = plain.sample(&walk, false, None).unwrap();
+    assert!(close(alone.rotations[0], flat));
+
+    let held = Quat::from_rotation_x(0.2);
+    let hold: Vec<Quat> = (0..BONES).map(|_| held).collect();
+    let mut over = Animator::new("Default", "Walk");
+    over.time = 45.0;
+    let posed = over
+        .sample_layered(&walk, false, Some((&hold, 1.0)), Some((&run, 0.7)))
+        .unwrap();
+    assert!(close(posed.rotations[0], held));
+}
+
 #[test]
 fn eases_as_the_original() {
     assert_eq!(Ease::Linear.apply(0.3), 0.3);

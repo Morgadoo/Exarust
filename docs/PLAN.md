@@ -388,9 +388,13 @@ weight. The end of `Get Up 2` no longer jumps (36 cm in one tick before;
 its pelvis target now moves under 1 cm a tick), though the pelvis still
 overshoots its target height by about 4.7 cm while the lift catches up;
 attacks take about 1 s (1.4 before)
-([formats/RSQ.md](formats/RSQ.md), Motion playback). Still to do: the
-original's falls and get-ups, recovery steps, the locomotion clock's
-stride terms and the run overlay, collisions between bodies (and their
+([formats/RSQ.md](formats/RSQ.md), Motion playback). Done (change
+`blend-the-run-over-the-walk`): forward locomotion plays Walk, and each
+bone is slerped toward the Run sample at the same keys by 0.7 times the
+run blend before the pose hold. The root stays the walk's, and the jog
+clock rate is unchanged. Still to do: the sprint overlay weight, playing
+Walk backwards instead of the Backpedal clip, the locomotion clock's
+stride terms, gait plants, and collisions between bodies (and their
 wake of a sleeper).
 
 Done (change `decode-object-bodies-and-mechanisms`, data only): models'
@@ -964,8 +968,9 @@ holds the runtime and the documentation of formats and behaviour.
 against Exarust and lists the largest missing ones. In order:
 
 1. Gait walking, clip blending, and parts' spheres fitted to their
-   meshes (Phase 3). The standing leg bend, recovery steps and the
-   support pins are in. Knockback steps are not.
+   meshes (Phase 3). The standing leg bend, recovery steps, the
+   support pins and the run overlay on the walk are in. Knockback
+   steps, gait plants and the backpedal clip are not.
 2. Inventory, equipment and containers, then blocking and parrying
    (Phase 4).
 3. The original's NPC brain: perception, targets and the combat state that

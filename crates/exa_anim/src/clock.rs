@@ -11,7 +11,9 @@
 //! by its last key's time, its first frames blending from its last key back
 //! to its first; one played once starts its follow-up with a blend that
 //! depends on the clip that ended. While a body is dazed or unsteady its
-//! targets are pulled toward the pose it holds (`hold`). Evidence:
+//! targets are pulled toward the pose it holds (`hold`). While Walk plays,
+//! each bone is first slerped toward the Run sample at the same keys by
+//! 0.7 times the run blend; the root stays the walk's. Evidence:
 //! `docs/formats/RSQ.md` (Motion playback).
 //! (Included from lib.rs: `mod clock;`)
 
@@ -238,6 +240,16 @@ impl Animator {
         false
     }
 
+    /// Samples `clip` at the clock. See [`Animator::sample_layered`].
+    pub fn sample(
+        &mut self,
+        clip: &Clip,
+        in_place: bool,
+        hold: Option<(&[Quat], f32)>,
+    ) -> Option<ClipPose> {
+        self.sample_layered(clip, in_place, hold, None)
+    }
+
     /// Samples `clip` at the clock, as the original's living sampler: with
     /// t′ = clock − blend, before the first key the clip blends to it from
     /// its capture (by clock / (first key + blend), eased) or, without one,
@@ -245,14 +257,17 @@ impl Animator {
     /// the keys around t′, the first of which ends the blend (the clock
     /// loses the blend). A looping clip blends from its last key back to
     /// its first; one played once holds its last. Rotations are slerped,
-    /// the root lerped, its z left out `in_place`; then each bone is pulled
-    /// toward `hold` by its weight. The pose is kept as the bones' current
-    /// targets.
-    pub fn sample(
+    /// the root lerped, its z left out `in_place`. `overlay` is a second
+    /// clip and a weight: each bone is then slerped toward that clip at
+    /// the same key indices by the weight. The root is not. Each bone is
+    /// then pulled toward `hold` by its weight. The pose is kept as the
+    /// bones' current targets.
+    pub fn sample_layered(
         &mut self,
         clip: &Clip,
         in_place: bool,
         hold: Option<(&[Quat], f32)>,
+        overlay: Option<(&Clip, f32)>,
     ) -> Option<ClipPose> {
         let keys = &clip.keys;
         let n = keys.len();
@@ -310,12 +325,26 @@ impl Animator {
             ),
         };
         let weight = hold.map_or(0.0, |(_, w)| w);
+        // The run sample uses the same key indices. A short clip, or a
+        // weight of 0, leaves the walk bone as it is. The root is not overlaid.
+        let layered = overlay.and_then(|(over, w)| {
+            let w = w.clamp(0.0, 1.0);
+            if w <= EPSILON {
+                return None;
+            }
+            Some((over.keys.get(src)?, over.keys.get(dst)?, w))
+        });
         let rotations = sources
             .iter()
             .zip(&target.rotations)
             .enumerate()
             .map(|(i, (&a, &b))| {
-                let q = a.slerp(to_quat(b), f);
+                let mut q = a.slerp(to_quat(b), f);
+                if let Some((from, to, w)) = layered
+                    && let (Some(&from), Some(&to)) = (from.rotations.get(i), to.rotations.get(i))
+                {
+                    q = q.slerp(to_quat(from).slerp(to_quat(to), f), w);
+                }
                 match hold.and_then(|(h, _)| h.get(i)) {
                     Some(&h) if weight > EPSILON => q.lerp(h, weight.min(1.0)),
                     _ => q,

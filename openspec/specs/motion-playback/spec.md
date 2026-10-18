@@ -97,6 +97,17 @@ A clip's clock SHALL gain frames each body tick from the race's clip-rate base: 
 - **WHEN** a human at full tone starts getting up, from the floor or staggering
 - **THEN** its clock gains 0.75 frames on that tick and 0.9 a tick after
 
+### Requirement: Run overlay
+While Walk plays and the run blend is above zero, each bone SHALL be the Walk sample slerped toward the Run sample at the same keys by 0.7 times the run blend, before any pose hold. The root SHALL stay the Walk sample.
+
+#### Scenario: Full run
+- **WHEN** the two clips differ by 90° about one axis and the run blend is 1
+- **THEN** that bone is 63° from the walk toward the run, and the root is the walk's
+
+#### Scenario: No run
+- **WHEN** the run blend is 0
+- **THEN** the pose is the walk sample
+
 ### Requirement: Clip starts from the body
 Starting a clip SHALL capture the root, the pelvis's and legs' last targets and the upper body's physical turns (a get-up from the floor: every part's, the pelvis's on the frame), which become the targets. The clip SHALL blend from the capture to its first key by clock / (first key + blend), linear, smooth f²(3 − 2f) or fast 1 + 0.11f − 1/(1 + 8f); once it aims past its first key the blend SHALL end and the clock lose it.
 

@@ -1290,7 +1290,11 @@ stagger's jump in (a few keys in, its clock set to the key before): a
 sample aiming at any other key drops the blend at once, and a clip not
 looping then holds its first key until its clock reaches it ([Falls and
 get-ups](#falls-and-get-ups)).
-Keys are slerped, the root lerped. The root keeps the clip's travel, but
+Keys are slerped, the root lerped. While Walk plays and the run blend is
+above zero, each bone is then slerped toward the Run sample at the same
+keys by 0.7 times that blend; the root stays the walk's. A full run is
+63° of the way from a walk bone to a run bone 90° away. Sprint, whose
+weight is the blend itself, is not in yet. The root keeps the clip's travel, but
 the walk's, run's and backpedal's z (Exarust also drops its interim
 `Combat Walk`'s). A body that has not sampled a clip yet has no capture
 and starts from the keys, with no blend.

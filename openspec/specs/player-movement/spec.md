@@ -14,7 +14,7 @@ The system SHALL turn the meshes of a level shown in play mode into static colli
 - **THEN** the player stands on the floor instead of falling through it
 
 ### Requirement: Clips follow movement
-The system SHALL play the walk clip when the player walks and the run clip when it runs, starting them from any looping clip, and SHALL end them in the idle clip when the player stops out of combat mode. Standing still out of combat mode, the steering SHALL start no other clip: the stance decides, so the combat idle stays until the player walks.
+The system SHALL play the walk clip whenever the player moves forward, walking or running, starting it from any looping clip, and SHALL end it in the idle clip when the player stops out of combat mode. Standing still out of combat mode, the steering SHALL start no other clip: the stance decides, so the combat idle stays until the player walks.
 
 #### Scenario: Start and stop
 - **WHEN** the player starts walking and then stops
@@ -23,6 +23,10 @@ The system SHALL play the walk clip when the player walks and the run clip when 
 #### Scenario: Combat idle after combat mode
 - **WHEN** Tab turns combat mode off while the player stands in Cmbt - Idle with the Defence stance, and it then turns in place, walks and stops
 - **THEN** it keeps Cmbt - Idle while standing and turning, plays the walk, and stops in idle
+
+#### Scenario: Running plays the walk
+- **WHEN** the player runs forward
+- **THEN** the clip is the walk
 
 ### Requirement: Chase camera
 The system SHALL keep the camera 20 m from the player's pelvis, drawn between its last two body ticks as its mesh is (the player's feet while it has no body), and SHALL zoom by field of view (zoom / 2000 × 45° × √(1.6 / aspect), six wheel stops from 800 to 2000). The pitch SHALL follow the zoom (0.8 to 0.925 rad below the horizon) unless the middle-mouse orbit drag raises it, up to 1.5 rad. The camera SHALL never turn by itself in exploration.
