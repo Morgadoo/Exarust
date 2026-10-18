@@ -13,9 +13,8 @@
 //! their animated orientation about where each part is (it has no position
 //! target), and a carry holds it up on its feet: its limb particles fall by
 //! gravity less a lift that holds its pelvis at a target height over the
-//! ground under its feet (`lift`; until its feet step and its legs bend,
-//! that ground is read no lower than its controller's floor less 6 cm,
-//! Exarust's own: `climb`).
+//! ground under its feet (`lift`). Its legs bend onto that ground on the
+//! next tick (`bend`).
 //! Its character tick measures its balance and the ground under its feet,
 //! which give its support (`balance`), and puts its animated pose on its
 //! character frame, which follows its pelvis by the original's rules
@@ -48,8 +47,8 @@ pub use muscle::{Bearing, BodyStats, RaceMuscles};
 #[path = "body_balance.rs"]
 mod balance;
 pub use balance::{Balance, Leg};
-#[path = "body_climb.rs"]
-mod climb;
+#[path = "body_bend.rs"]
+mod bend;
 #[path = "body_feet.rs"]
 mod feet;
 pub use feet::FootState;
@@ -851,6 +850,10 @@ pub struct Drive {
     lift_target: Option<f32>,
     /// The lift's factor f this tick, tone included (0 without support).
     lift: f32,
+    /// The lift term before clamping: standing, 0.075(h + 15). The leg
+    /// bend reads it as centimetres and lowers an unanchored target by
+    /// twice it. 0 until the servo runs.
+    lift_raw: f32,
     /// Blow sag s, 0..=1: how much an unsteady body's targets give way to
     /// the pose it holds after a blow (the original's damage routine sets
     /// it, which Exarust's does not yet); it fades 0.01 a tick, and is 0
@@ -906,6 +909,7 @@ impl Default for Drive {
             carry: lift::gravity_per_tick(),
             lift_target: None,
             lift: 0.0,
+            lift_raw: 0.0,
             sag: 0.0,
             pin_gain: PIN_GAIN,
             posture_wait: 0,
@@ -1383,6 +1387,8 @@ impl Ragdoll {
             drive.targets = targets;
         }
         self.anchor_frame(root);
+        // Last tick's bend, so this tick's muscles follow it.
+        self.pose_leg_bend();
         self.tune_muscles();
         self.lift();
     }
@@ -1655,6 +1661,8 @@ impl Ragdoll {
             self.fell_out = true;
         }
         self.ticks += 1;
+        // Next tick's bend. The pose this tick's muscles followed stays.
+        self.bend_legs();
     }
 
     /// Whether the body's root part fell below [`FALL_OUT_HEIGHT`] (the

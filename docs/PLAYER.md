@@ -78,12 +78,11 @@ The original has no camera-relative keyboard movement. Outside combat:
   (Exarust's own, while the controller turns it). A heavily dazed player
   sinks onto its planted feet rather than toppling
   ([formats/RSQ.md](formats/RSQ.md), Feet).
-- Stairs: the capsule climbs a step before the feet do, and nothing lifts a
-  walking foot onto it yet (the original's walking feet and leg IK come
-  later). Until then the body is held no lower than 6 cm under the
-  capsule's floor (Exarust's own), so it climbs with the capsule, its feet
-  dragging behind, and stands on the stairs; on level ground nothing
-  changes ([formats/RSQ.md](formats/RSQ.md), Physical body).
+- Stairs: the lift reads each foot's own ground. The controller's floor
+  does not raise the pelvis. A standing leg bends onto a step under its
+  foot. A walking foot still does not swing onto the step ahead (the
+  gait's plants come later), so a fall in the stair room is that missing
+  probe ([formats/RSQ.md](formats/RSQ.md), Physical body).
 - Falling: a player off its feet that sinks faster than 5 cm a tick
   screams once; with no ground within reach under it (25 m) it is lost:
   1 s later the pit sounds and the screen fades to black over 3 s, and 4 s

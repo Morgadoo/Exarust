@@ -53,10 +53,13 @@ the frame (`CharacterBody::follow`, a tenth of the way a step,
 at most 2 cm), leaving its follow out of the carry. In each solver
 iteration the support pins (`src/body_pins.rs`) pull the two thorax pins
 and the pelvis pin horizontally toward the frame's targets, clamped near
-the feet centre. Until the feet step and
-the legs bend, a stopgap of Exarust's own reads each foot's ground no lower
-than the grounded controller's floor less 6 cm, so a body climbs the steps
-its capsule climbs (`src/body_climb.rs`).
+the feet centre. Each foot's ground is its own: the controller's floor
+does not raise the lift (`src/body_lift.rs`). A standing leg bends onto
+its target by the law of cosines, at most 0.02 rad a tick (0.2 while a
+recovery step is on), and the muscles follow that bend on the next tick
+(`src/body_bend.rs`). While stepping the thigh turns 75% of the
+hip-to-target angle and an anchored foot takes the step lift. Gait
+plants are not in yet.
 Each character tick measures a living body's balance at its chest against
 its ankles and asks the level for the ground under each foot
 (`contact::Level::height_below`, the original's Height Query), which give

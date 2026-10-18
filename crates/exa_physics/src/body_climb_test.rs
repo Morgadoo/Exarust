@@ -1,13 +1,12 @@
-//! The climbing stopgap: Exarust's own, until the feet step (C19) and the
-//! legs bend (C13).
-//! (Included from body_climb.rs: `#[path = "body_climb_test.rs"] mod tests;`)
+//! The lift reads each foot's own ground. The controller's floor does not
+//! raise the pelvis, on level ground or on the stairs.
+//! (Included from body_lift.rs: `#[path = "body_climb_test.rs"] mod climb_tests;`)
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 
 use super::super::floor_test::{STANDING_LEG, STANDING_SOLE, standing_at};
 use super::super::tests::floor_quad;
 use super::super::{BODY_HZ, Bearing, Ragdoll};
-use super::*;
 
 /// The game's walking speed (m/s), and its capsule's radius and float over
 /// the ground while it walks (m).
@@ -135,18 +134,6 @@ fn lowest_balance(body: &Ragdoll, so_far: f32) -> f32 {
     so_far.min(body.drive.as_ref().unwrap().balance().value)
 }
 
-/// The ground the lift reads is never lower than the controller's floor
-/// less 6 cm: a floor 2, 5 or 6 cm over the ground leaves it, one 20 cm
-/// over it raises it to 14 cm, and higher ground (a step down) is kept.
-#[test]
-fn the_ground_is_read_no_lower_than_the_floor_less_6_cm() {
-    for floor in [2.0, 5.0, 6.0] {
-        assert_eq!(climbing_ground(0.0, floor), 0.0);
-    }
-    assert_eq!(climbing_ground(0.0, 20.0), 14.0);
-    assert_eq!(climbing_ground(30.0, 20.0), 30.0);
-}
-
 /// Every one of `targets` is `want`.
 fn all_at(targets: &[f32], want: f32) {
     for (tick, t) in targets.iter().enumerate() {
@@ -154,13 +141,11 @@ fn all_at(targets: &[f32], want: f32) {
     }
 }
 
-/// On level ground the stopgap changes nothing: a body walking or standing
-/// with its controller floating 0, 2 or 5 cm over the floor keeps the
-/// original's target every tick: walking, its ground plus the clip root's
-/// height over its lowest ankle plus its sole (1.1 m + the sole here);
-/// standing, capped at its ground + sole + legs, + 5 cm. Perched 12 cm up
-/// (a stone) it is held 6 cm higher, but not once its controller leaves
-/// the ground.
+/// On level ground the target is the original's at a 0, 2 or 5 cm float,
+/// walking or standing: walking, the ground plus the clip root's height
+/// over its lowest ankle plus its sole (1.1 m + the sole here); standing,
+/// capped at its ground + sole + legs, + 5 cm. A controller 12 cm up,
+/// grounded or in the air, does not add to it.
 #[test]
 fn level_ground_keeps_the_originals_target() {
     let floor = floor_quad(0.0, RUN);
@@ -186,8 +171,8 @@ fn level_ground_keeps_the_originals_target() {
         all_at(&targets(float, walking(true, 0.0)), walks);
         all_at(&targets(float, standing), stands);
     }
-    all_at(&targets(0.12, walking(true, 0.0)), walks + 0.06);
-    all_at(&targets(0.12, standing), stands + 0.06);
+    all_at(&targets(0.12, walking(true, 0.0)), walks);
+    all_at(&targets(0.12, standing), stands);
     all_at(&targets(0.12, walking(false, 0.0)), walks);
 }
 
@@ -279,24 +264,14 @@ fn climb(carried: bool) -> Climb {
     }
 }
 
-/// A body walking up four 18 cm steps climbs them with its controller,
-/// stops on the way and keeps its balance throughout: it ends on the
-/// landing, its pelvis 72 cm higher than walking on the floor (give or take
-/// 3 cm), its feet on the landing. Without the stopgap (its controller off
-/// the ground, so the lift keeps the original's target) the recovery step
-/// during the stand puts the feet on the landing too, and the pelvis stays
-/// more than 5 cm lower. Balance stays up either way.
+/// A body walking up four 18 cm steps keeps its balance at or above 0.9
+/// and ends with its feet on the landing. The controller's floor does not
+/// raise the pelvis: carried or not, the two pelvis heights agree.
 #[test]
 fn a_walker_climbs_four_18_cm_steps() {
     let landing = STEPS as f32 * RISE;
     let up = climb(true);
-    assert!(up.balance >= 0.6, "lost its balance: {}", up.balance);
-    let walks = landing + 1.1 - striding(STRIDE).1 + STANDING_SOLE;
-    assert!(
-        (up.pelvis - walks).abs() < 0.03,
-        "pelvis at {}, not {walks}",
-        up.pelvis
-    );
+    assert!(up.balance >= 0.9, "lost its balance: {}", up.balance);
     assert!(up.feet > landing - 0.02, "feet at {}", up.feet);
     let caught = climb(false);
     assert!(
@@ -305,14 +280,14 @@ fn a_walker_climbs_four_18_cm_steps() {
         caught.feet
     );
     assert!(
-        caught.pelvis < up.pelvis - 0.05,
-        "pelvis caught the stopgap: {} vs {}",
-        caught.pelvis,
-        up.pelvis
+        (up.pelvis - caught.pelvis).abs() < 0.02,
+        "the controller floor raised the pelvis: {} vs {}",
+        up.pelvis,
+        caught.pelvis
     );
     assert!(
         caught.balance >= 0.9,
-        "lost its balance without the stopgap: {}",
+        "lost its balance: {}",
         caught.balance
     );
 }

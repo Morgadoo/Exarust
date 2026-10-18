@@ -17,18 +17,16 @@
 //! the ankle and the foot's ground offset (its sole height standing),
 //! blended with the other foot's, capped at the ground plus sole plus leg
 //! length, plus 5 cm. The rules are the original's, in its centimetres and
-//! ticks (evidence: `docs/formats/RSQ.md`, Physical body), but for one
-//! Exarust stopgap until the feet step and the legs bend: while a body
-//! that has not fallen has its controller on the ground, a foot's ground
-//! is read no lower than its floor less 6 cm, so a body climbs the steps
-//! its capsule climbs (`climb`).
+//! ticks (evidence: `docs/formats/RSQ.md`, Physical body). Each foot's
+//! ground is its own: the controller's floor does not raise it. The leg
+//! bend stores the lift term before clamping and lowers an unanchored
+//! target by twice that (`bend`).
 //! (Included from body.rs: `#[path = "body_lift.rs"] mod lift;`)
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 
 use super::balance::cm;
-use super::climb::climbing_ground;
 use super::feet;
 use super::{BODY_HZ, Bearing, CM, GRAVITY, Ragdoll};
 
@@ -93,6 +91,16 @@ pub(super) fn carry_share(bone: usize, tone: f32, energy: f32) -> Option<f32> {
     (tone > TONE_FLOOR).then(|| tone * support_share(bone).unwrap_or(energy))
 }
 
+/// The lift term before clamping: standing, 0.075(h + 15); moving,
+/// (0.4·run + 0.2)(h + 5). The leg bend reads this number as centimetres.
+pub(super) fn lift_unclamped(h: f32, bearing: &Bearing) -> f32 {
+    if bearing.moving {
+        (RUN_LIFT * bearing.run + WALK_LIFT) * (h + MOVING_LEAD)
+    } else {
+        LIFT_PER_CM * (h + STANDING_LEAD)
+    }
+}
+
 /// The lift f before the tone, in the original's cm and ticks: `h` the
 /// target less the pelvis height, `rise` the pelvis's vertical displacement
 /// over the last tick, `energy` E. Standing, f = 0.075(h + 15), none when
@@ -100,22 +108,19 @@ pub(super) fn carry_share(bone: usize, tone: f32, energy: f32) -> Option<f32> {
 /// f = (0.4·run + 0.2)(h + 5), none when negative, at most 2. Then f −=
 /// (1 − |f|/(|f| + 2))·E²·rise.
 pub(super) fn lift_factor(h: f32, rise: f32, energy: f32, bearing: &Bearing) -> Option<f32> {
+    let raw = lift_unclamped(h, bearing);
     let f = if bearing.moving {
-        let f = (RUN_LIFT * bearing.run + WALK_LIFT) * (h + MOVING_LEAD);
-        if f < 0.0 || f.is_nan() {
+        if raw < 0.0 || raw.is_nan() {
             return None;
         }
-        f.min(MAX_MOVING_LIFT)
+        raw.min(MAX_MOVING_LIFT)
+    } else if f64::from(bearing.crouch) <= DEEP_CROUCH {
+        if raw < 0.0 || raw.is_nan() {
+            return None;
+        }
+        raw.min(MAX_STANDING_LIFT)
     } else {
-        let f = LIFT_PER_CM * (h + STANDING_LEAD);
-        let f = if f64::from(bearing.crouch) <= DEEP_CROUCH {
-            if f < 0.0 || f.is_nan() {
-                return None;
-            }
-            f
-        } else {
-            f.max(MIN_CROUCHED_LIFT)
-        };
+        let f = raw.max(MIN_CROUCHED_LIFT);
         f.min(MAX_STANDING_LIFT)
     };
     let spread = f.abs() / (f.abs() + DAMPING_SPREAD);
@@ -193,9 +198,9 @@ impl Ragdoll {
     /// the lift. Each leg's ground offset is set (its sole height standing;
     /// moving, its animated ankle's height over the walk's lowest, plus the
     /// sole), then the target pelvis height from the ground under the feet
-    /// (read no lower than a grounded controller's floor less 6 cm,
-    /// Exarust's own: `climb`) and the clip root's height over each ankle,
-    /// then the lift servo, with support only.
+    /// (each foot's own; the controller's floor does not raise it) and the
+    /// clip root's height over each ankle, then the lift servo, with
+    /// support only. The pre-clamp term is kept for the leg bend.
     pub(super) fn lift(&mut self) {
         let measured = self.measures_balance();
         let root = self.parts.iter().position(|p| p.parent.is_none());
@@ -220,10 +225,6 @@ impl Ragdoll {
         let posed = drive.targets.len() == parts.len();
         let pelvis_target = posed.then(|| Vec3::from(drive.targets[root].translation));
         let floor = drive.root.map(|r: Affine3A| r.translation.y);
-        // Exarust's own, until the feet step and the legs bend: a standing
-        // body climbs with its grounded controller (`climb`); a fallen one
-        // does not ride it.
-        let climbing = floor.filter(|_| bearing.carried && drive.supported);
         let heights: Vec<LegHeight> = legs
             .iter_mut()
             .map(|leg| {
@@ -235,12 +236,8 @@ impl Ragdoll {
                     _ => *sole,
                 };
                 let over_ankle = pelvis_target.zip(ankle).map_or(0.0, |(p, a)| p.y - a.y);
-                let ground = leg.ground.map(cm);
                 LegHeight {
-                    ground: match climbing {
-                        Some(f) => ground.map(|g| climbing_ground(g, cm(f))),
-                        None => ground,
-                    },
+                    ground: leg.ground.map(cm),
                     contact: cm(parts[leg.shin].point(&leg.contact).y),
                     stance: cm(over_ankle + leg.offset),
                     length: cm(leg.length),
@@ -266,11 +263,14 @@ impl Ragdoll {
         if !drive.balance.has_support() {
             return;
         }
+        let h = target - height;
+        // Kept even when the clamped factor is none: the bend reads it.
+        drive.lift_raw = lift_unclamped(h, &bearing);
         let w = pelvis.own_origin;
         let rise: f32 = (0..4)
             .map(|k| (pelvis.positions[k].y - pelvis.previous[k].y) * w[k])
             .sum();
-        let Some(f) = lift_factor(target - height, cm(rise), drive.energy, &bearing) else {
+        let Some(f) = lift_factor(h, cm(rise), drive.energy, &bearing) else {
             return;
         };
         if drive.tone > TONE_FLOOR {
@@ -289,3 +289,7 @@ impl Ragdoll {
 #[cfg(test)]
 #[path = "body_lift_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "body_climb_test.rs"]
+mod climb_tests;

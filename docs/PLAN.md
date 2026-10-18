@@ -349,13 +349,18 @@ support pins (change `pull-the-support-pins`, C14) pull the two thorax
 pins and the pelvis pin toward the frame in each iteration. A
 get-up no longer hops (the end of `Get Up 2` overshoots 3–5 cm and settles
 in 45–100 ticks, from 10.7 cm ringing 90). Done (change
-`climb-steps-until-feet-step`, Exarust's own stopgap): until the
-original's walking feet and leg IK (C13, C19), the lift reads no foot's
-ground lower than the grounded controller's floor less 6 cm, so a body
-climbs the steps its capsule climbs and stands on them (both exanima01
-stair starts reach the landing without a fall; C8 alone fell 1–5 times),
-while level ground is unchanged (the capsule floats 2–5 cm there; the
-arena walk's target is the same every tick). C13 and C19 remove it.
+`bend-the-legs-to-the-ground`, C13): a standing leg bends onto its bend
+target by the law of cosines (30° when the cosine is above 0.866, 180°
+when it is below −1). The correction from the clip advances at most 0.02
+rad a tick (0.2 while a recovery step is on) plus its stored rate, and
+the muscles follow it on the next tick. An unanchored target is the
+anchor lowered by twice the lift term stored before clamping (2.25 cm
+when a standing body is at its target height). While stepping, the thigh
+turns 75% of the hip-to-target angle and an anchored foot takes the step
+lift. The controller-floor stair coupling is gone: the lift reads each
+foot's own ground, so a controller 12 cm up does not raise the target,
+and a synthetic walk up four 18 cm steps keeps balance at or above 0.9
+with its feet on the landing. Gait plants are not in yet (C19).
 Done (change `anchor-the-character-frame`, C9): the
 pose is put on the original's character frame, whose origin is the pelvis
 less the clip root's offset across the ground: it rides on the pelvis
@@ -515,8 +520,8 @@ target plus the step offset: 0.7 (0.4 while Idle plays) times
 (direction + 0.5) times (2 − 25·s) times 1.2 times the square root of
 body scale times the stance level, with direction
 (h²/60 + 0.25)·0.36·forwardness. A still 40 cm sideways error moves the
-target 33.6 cm. Leg IK and gait walking are not in yet. The support
-pins (C14) are in.
+target 33.6 cm. The standing leg bend is in (C13). Gait walking is not
+(C19). The support pins (C14) are in.
 
 Done (change `plant-the-feet`, C12 of the master plan): the feet stand on
 the ground as the original's do. Each leg's foot contact (its ankle) has a
@@ -533,9 +538,10 @@ clears them. Corrections to the notes: condition 1 is walking, so standing
 and combat feet take the PD grip and a standing probe's sphere is 5 cm.
 `--trace` fills the foot contacts' columns and adds the ankles; the body
 overlay draws the anchors ([formats/RSQ.md](formats/RSQ.md), Feet). The
-footwork's stance scores and timers (C15) choose the foot. Not yet: the
-walking gait's plants and the closing step (M16, C19), the leg IK (C13),
-the sole's orientation drive. Standing feet keep within 0.5 cm of their anchors; a
+footwork's stance scores and timers (C15) choose the foot. The standing
+leg bend is in (C13). Not yet: the walking gait's plants and the closing
+step (M16, C19), the locomoting bend, and the sole's orientation drive.
+Standing feet keep within 0.5 cm of their anchors; a
 heavily dazed body now sinks onto its planted feet instead of toppling.
 
 This phase carries the most risk and defines how the game feels.
@@ -957,10 +963,9 @@ holds the runtime and the documentation of formats and behaviour.
 [`COMPONENT-MAP.md`](COMPONENT-MAP.md) sets every component of the original
 against Exarust and lists the largest missing ones. In order:
 
-1. Leg IK (stairs) and gait walking, clip blending, and parts' spheres
-   fitted to their meshes (Phase 3). Recovery steps and the support pins
-   are in, including the thorax lead's direction term. Knockback steps
-   are not.
+1. Gait walking, clip blending, and parts' spheres fitted to their
+   meshes (Phase 3). The standing leg bend, recovery steps and the
+   support pins are in. Knockback steps are not.
 2. Inventory, equipment and containers, then blocking and parrying
    (Phase 4).
 3. The original's NPC brain: perception, targets and the combat state that

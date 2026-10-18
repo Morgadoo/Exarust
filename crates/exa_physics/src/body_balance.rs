@@ -175,6 +175,22 @@ pub struct Leg {
     pub(super) changed_ms: f32,
     pub(super) landed_ms: f32,
     pub(super) started_ms: f32,
+    /// The knee and hip corrections the next tick's pose takes (rad), and
+    /// the rates the smoother carries (rad a tick).
+    pub(super) knee: f32,
+    pub(super) knee_rate: f32,
+    pub(super) hip: f32,
+    pub(super) hip_rate: f32,
+    /// The thigh's extra turn toward a step. Identity when it is not swung.
+    pub(super) turn: Quat,
+    /// The step lift (m), added to the reach. Negative while a foot rises.
+    pub(super) lift: f32,
+    /// The clip's hip-to-ankle offset (m) before this tick's bend.
+    pub(super) posed_offset: Vec3,
+    /// The bend target last solved (m).
+    pub(super) goal: Vec3,
+    /// The unsmoothed knee of the reach triangle (rad).
+    pub(super) reach_knee: f32,
 }
 
 /// A living body's balance, kept from tick to tick.
@@ -481,6 +497,15 @@ pub(super) fn build(setup: &[PartSetup], parts: &mut [Part]) -> (Vec<Pin>, Vec<L
             changed_ms: f32::NAN,
             landed_ms: f32::NAN,
             started_ms: f32::NAN,
+            knee: 0.0,
+            knee_rate: 0.0,
+            hip: 0.0,
+            hip_rate: 0.0,
+            turn: Quat::IDENTITY,
+            lift: 0.0,
+            posed_offset: Vec3::ZERO,
+            goal: Vec3::ZERO,
+            reach_knee: 0.0,
         });
     }
     for leg in &mut legs {

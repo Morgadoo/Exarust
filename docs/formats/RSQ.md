@@ -242,9 +242,7 @@ How the original simulates a body (`exa_physics::body`):
     with its pelvis at ground + 101.5 cm. Not reproduced: the stepping
     (h + 10, 70 cm crouched) and resting (h + 20) variants, the walking
     blend weights and swing flags, and the gait-smoothed ground (C19).
-    Until the feet step and the legs bend, Exarust reads each foot's
-    ground no lower than its character controller's floor less 6 cm
-    (stairs, below: Exarust's own).
+    Each foot's ground is its own; the controller's floor does not raise it.
   - **Link muscles** turn every joint (`exa_physics`, `body_muscle.rs`). Each
     slack link (slack over 0.01 cm) pulls its point on the part toward its
     anchor: where the clip's joint angle puts that point, given where the
@@ -655,29 +653,30 @@ body across the ground instead of the original's locomotion (C18):
   the body moves the frame already follows the pelvis, so the pins do not
   hold it on one world spot. The capsule does not pull the pelvis
   horizontally; the planted feet and these pins do.
-- Stairs (`exa_physics::body` `climb`, a stopgap that C13 and C19
-  remove): the capsule steps up before the feet do, and nothing yet lifts
-  a walking foot onto a step or brings the trailing foot up (the
-  original's swing flags, ground probe ahead, closing step and leg IK).
-  With the original's target alone the pelvis stayed on the lowest foot, a
-  step under the capsule: walkers caught their feet on the risers (in
-  exanima01's stair room 4–5 times in 50 s from one start, once from the
-  other). A body that stops on the third step, with the original's target
-  alone, keeps its balance: the recovery step puts its feet on the landing
-  and its pelvis stays more than 5 cm below the stopgap climb. So,
-  while a body that has not fallen has its controller on the ground,
-  standing or moving, the lift reads no foot's ground lower than the
-  controller's floor less 6 cm (a fallen body's capsule lifts nothing).
-  Over level ground the capsule floats 2 cm walking and up to 5.05 cm
-  standing (the arena after spawning) over the ground the feet's Height
-  Query finds, so nothing changes: the arena walk's target is the same
-  every tick. On the stairs the target follows the capsule up: both exanima01
-  starts climb to the landing without a fall and stand there (balance
-  0.85–1). (At `--at 7.5,-0.95,64.4` the body may still fall once at spawn,
-  as before: its capsule is still in the air at its first tick, its feet
-  20 cm over the ground.) Perched on a stone, a standing body is held up
-  to the floor less 6 cm: at exanima01's start (the capsule 12.2 cm up)
-  the target rises 2.1 cm and the pelvis 0.9 cm.
+- Stairs: the controller-floor coupling is gone. The lift reads each
+  foot's own ground, so the controller's floor does not raise the pelvis
+  on level ground, perched, fallen or on the stairs. A 0, 2 or 5 cm float
+  keeps the original's target, and a controller 12 cm up adds nothing. A
+  synthetic body walking four 18 cm steps, stopping on the third, keeps
+  its balance at or above 0.9 and ends with its feet on the landing,
+  carried or not, and the two pelvis heights agree. The standing leg bend
+  is in (`exa_physics`, `body_bend.rs`): the knee is the law of cosines on
+  the two bones, 30° when the cosine is above 0.866 and 180° when it is
+  below −1. The correction from the clip advances at most 0.02 rad a tick
+  (0.2 while a recovery step is on) plus its stored rate, never past the
+  target, and the rate becomes half that sum, within ±0.1 rad. The
+  muscles follow it on the next tick. An unanchored bend target is the
+  anchor lowered by twice the lift term stored before clamping: 2.25 cm
+  when a standing body is at its target height and not stepping. While
+  stepping, the thigh turns 75% of the angle from its rest direction to
+  the hip-to-target direction in the character frame; otherwise that turn
+  loses 10% a tick. An anchored stepping foot lifts by
+  −(1 − crouch)·f·(1.5 − stance), with s = min(0.4·horizontal, 30 cm) and
+  f from r = D²/(3s)² (a human at 40 cm, crouch 0, stance 0.5:
+  −11.5185 cm). A free foot's lift keeps 0.8 of itself a tick. Not in
+  yet: the walking gait's plants, the probe ahead, the swing flags and
+  the locomoting bend (C19). A fall on exanima01's stair room is that
+  missing probe; the controller floor is not restored for it.
 - A duellist's blows (energy down to 0.62) sag the struck player's pelvis
   by under 1 cm and leave its balance at 1: the lift and the legs carry the
   dazed upper body.
@@ -693,8 +692,9 @@ body across the ground instead of the original's locomotion (C18):
   stands on its feet) and keeps its tone, as in the original: once it lies
   its support is 0, so only its link muscles act, inside the body.
 - Recovery steps are in: the trigger, the stance score and timers, the
-  episode, and the thorax lead's direction term (C15). Leg IK and
-  gait walking are not reproduced yet (C13, C19). The feet are planted
+  episode, and the thorax lead's direction term (C15). The standing leg
+  bend is in (C13): the law of cosines, the one-tick lag, the thigh turn
+  and the step lift. Gait walking is not (C19). The feet are planted
   and step to their stance spots ([Feet](#feet)).
 - The duellist's strike range is Exarust's own (1.15 m): link-muscle arms
   reach 15–20 cm less far than the clip's pose at the original's swing
@@ -718,8 +718,8 @@ ticks.
 - **Planting** (the sampler, before the feet are measured): a body that is
   not walking plants each foot that does not touch where it is (touching,
   its anchor its ankle). Exarust plants it only once its foot meets the
-  level (Exarust's own until the leg IK lowers a planted foot onto its
-  anchor, C13). A walking body's feet do not touch (Exarust's own until its
+  level. The standing leg bend folds the leg onto its bend target; it
+  does not change this plant. A walking body's feet do not touch (Exarust's own until its
   gait plants them, M16/C19: the original lifts and plants them by the
   walk's phase).
 - **Footwork** (standing, not moving): lying down (down, dormant, dead) no
