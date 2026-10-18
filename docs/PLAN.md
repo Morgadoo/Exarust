@@ -162,7 +162,10 @@ or reverse ends. The one shipped track is the brick of the secret switch
 in `exanima03`, which sinks 5 cm and comes back in 3 s; until objects can
 be used, F7 starts every track ([formats/RFC.md](formats/RFC.md),
 Keyframe tracks).
-Remaining: portal clipping of adjacent rooms, doors' open state, the lid in
+Done (change `clip-portals-and-cross-levels`): a shut door does not load
+the room behind it; an open doorway shows a point only when the view
+crosses its opening (82 × 245 cm, 115 × 290 cm, or 200 × 340 cm); a
+passage loads the named level. Remaining: the lid in
 the lights' cube faces, terrain gloss textures, fine displacement, the
 original's sky shader, time of day and weather of the outdoor arenas,
 `exanima://` asset source, streaming.
@@ -1000,6 +1003,6 @@ against Exarust and lists the largest missing ones. In order:
    look-ahead, and an order that writes the player's heading and velocity
    are in. Perception and the combat choice are not.
 4. Portal clipping and doors' open state, and level transitions
-   (Phase 2).
+   (Phase 2) are in. The lid in the lights' cube faces is not.
 5. `add-static-mesh-decoding` is still open, waiting on a visual mirroring
    check against the running game.

@@ -13,7 +13,7 @@
 //!
 //! Pure data and rules; the Bevy side is [`crate::room_view`].
 
-use bevy::math::Vec2;
+use bevy::math::{Vec2, Vec3};
 use exa_formats::level::LevelGrid;
 
 /// Plane A's open-cell flag.
@@ -209,6 +209,92 @@ impl Rooms {
     }
 }
 
+/// The rooms behind `room`'s open doors. A shut door, listed in `closed`,
+/// does not load the room it faces.
+fn far_rooms(rooms: &Rooms, room: u16, closed: &[DoorLink]) -> Vec<u16> {
+    let mut out = Vec::new();
+    let Some(here) = rooms.room(room) else {
+        return out;
+    };
+    for link in &here.links {
+        if closed.contains(link) {
+            continue;
+        }
+        if let Some(next) = rooms.room_of_index(link.to)
+            && !out.contains(&next)
+        {
+            out.push(next);
+        }
+    }
+    out
+}
+
+/// A doorway's opening, metres: width and height. A side nibble of 0 is
+/// the narrow door, 82 × 245 cm; any other nibble is 115 × 290 cm; a
+/// special tile is 200 × 340 cm.
+pub fn portal_size(side_nibble: u32, special: bool) -> Vec2 {
+    if special {
+        Vec2::new(2.00, 3.40)
+    } else if side_nibble == 0 {
+        Vec2::new(0.82, 2.45)
+    } else {
+        Vec2::new(1.15, 2.90)
+    }
+}
+
+/// Whether the segment from `eye` to `point` crosses the open doorway.
+/// The door stands on `origin` (its floor centre) facing `normal`, and
+/// its opening is `size` (width, height). A shut door crosses nothing.
+pub fn seen_through(
+    eye: Vec3,
+    point: Vec3,
+    origin: Vec3,
+    normal: Vec3,
+    size: Vec2,
+    open: bool,
+) -> bool {
+    if !open || size.x <= 0.0 || size.y <= 0.0 {
+        return false;
+    }
+    let n = normal.with_y(0.0);
+    let len = n.length();
+    if len < 1e-6 {
+        return false;
+    }
+    let n = n / len;
+    let centre = origin + Vec3::Y * (size.y * 0.5);
+    let denom = n.dot(point - eye);
+    if denom.abs() < 1e-8 {
+        return false;
+    }
+    let t = n.dot(centre - eye) / denom;
+    if !(0.0..=1.0).contains(&t) {
+        return false;
+    }
+    let hit = eye.lerp(point, t);
+    let right = Vec3::new(-n.z, 0.0, n.x);
+    let across = (hit - centre).dot(right);
+    let up = hit.y - centre.y;
+    across.abs() <= size.x * 0.5 && up.abs() <= size.y * 0.5
+}
+
+/// A passage into another level: the destination's id in the level list
+/// and the entrance it arrives at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Gate {
+    pub level: u32,
+    pub entrance: u32,
+}
+
+/// The level a passage loads. An id the list does not name keeps `current`.
+pub fn enter_level<'a>(current: &'a str, gate: Gate, names: &'a [(u32, &'a str)]) -> &'a str {
+    names
+        .iter()
+        .find(|(id, _)| *id == gate.level)
+        .map(|(_, name)| *name)
+        .unwrap_or(current)
+}
+
 /// How long a room takes to fade in or out, milliseconds.
 pub const FADE_MS: u64 = 1000;
 /// A door's room is wanted while its point is this close to the anchor
@@ -261,6 +347,8 @@ pub struct RoomTracker {
     since: Vec<u64>,
     /// The active list, in order.
     list: Vec<u16>,
+    /// Doors that are shut. A door not listed is open.
+    closed: Vec<DoorLink>,
 }
 
 impl RoomTracker {
@@ -272,6 +360,16 @@ impl RoomTracker {
             fade: vec![Fade::None; rooms],
             since: vec![0; rooms],
             list: Vec::new(),
+            closed: Vec::new(),
+        }
+    }
+
+    /// Shuts or opens the door `link`. A shut door does not load the room
+    /// behind it.
+    pub fn set_open(&mut self, link: DoorLink, open: bool) {
+        self.closed.retain(|door| *door != link);
+        if !open {
+            self.closed.push(link);
         }
     }
 
@@ -289,10 +387,14 @@ impl RoomTracker {
     }
 
     /// The rooms wanted for an anchor at `anchor` (metres, X/Z): its room,
-    /// then the rooms behind the doors of its cell whose door point is
-    /// within [`DOOR_REACH`]. Every door counts as open. Empty when the
-    /// anchor's cell has no room.
-    pub fn wanted(rooms: &Rooms, anchor: Vec2) -> Vec<u16> {
+    /// then the rooms behind the open doors of its cell whose door point is
+    /// within [`DOOR_REACH`]. `open` is false for a shut door, which does
+    /// not load the room behind it. Empty when the anchor's cell has no room.
+    pub fn wanted_through(
+        rooms: &Rooms,
+        anchor: Vec2,
+        open: impl Fn(DoorLink) -> bool,
+    ) -> Vec<u16> {
         let (x, y) = rooms.cell_of(anchor);
         let Some(room) = rooms.room_of_cell(x, y) else {
             return Vec::new();
@@ -300,7 +402,7 @@ impl RoomTracker {
         let cell = (y * rooms.width as i64 + x) as u32;
         let mut wanted = vec![room];
         for link in rooms.room(room).map_or(&[][..], |r| &r.links[..]) {
-            if link.from != cell {
+            if link.from != cell || !open(*link) {
                 continue;
             }
             let own = rooms.cell_centre(link.from);
@@ -317,10 +419,16 @@ impl RoomTracker {
         wanted
     }
 
+    /// The rooms wanted when every door is open.
+    pub fn wanted(rooms: &Rooms, anchor: Vec2) -> Vec<u16> {
+        Self::wanted_through(rooms, anchor, |_| true)
+    }
+
     /// One frame with the anchor at `anchor` (metres, X/Z) at time `now`
     /// (ms). Nothing changes while the anchor's cell has no room.
     pub fn update(&mut self, rooms: &Rooms, anchor: Vec2, now: u64) {
-        let mut wanted = Self::wanted(rooms, anchor);
+        let closed = self.closed.clone();
+        let mut wanted = Self::wanted_through(rooms, anchor, |link| !closed.contains(&link));
         if wanted.is_empty() {
             return;
         }
@@ -341,7 +449,7 @@ impl RoomTracker {
             } else if self.fade[ri] == Fade::Leaving {
                 if now >= self.since[ri] + FADE_MS {
                     self.list.swap_remove(i);
-                    for nb in rooms.neighbours(r) {
+                    for nb in far_rooms(rooms, r, &closed) {
                         if let Some(s) = self.next.get_mut(nb as usize) {
                             *s = RoomState::Hidden;
                         }
@@ -363,7 +471,7 @@ impl RoomTracker {
         self.list.extend(wanted);
         for &r in &self.list {
             let ri = r as usize;
-            for nb in rooms.neighbours(r) {
+            for nb in far_rooms(rooms, r, &closed) {
                 if let Some(s) = self.next.get_mut(nb as usize) {
                     *s = RoomState::Adjacent;
                 }
@@ -608,6 +716,56 @@ mod tests {
         assert_eq!(RoomTracker::wanted(&rooms, near_door(2.01)), [0]);
         // From the other side of the door, the other room's own door.
         assert_eq!(RoomTracker::wanted(&rooms, Vec2::new(0.5, 3.0)), [1, 0]);
+    }
+
+    /// A shut door leaves the room behind it unloaded. Opening it loads
+    /// that room. A passage replaces the loaded level.
+    #[test]
+    fn a_shut_door_and_a_passage_change_what_is_loaded() {
+        let g = two_rooms();
+        let rooms = Rooms::flood(&g.0);
+        let link = rooms.room(0).unwrap().links[0];
+        let inside = Vec2::new(-8.0, 3.0);
+        let mut shut = RoomTracker::new(rooms.len());
+        shut.set_open(link, false);
+        shut.update(&rooms, inside, 2_000);
+        assert_eq!(shut.state(0), RoomState::Active);
+        assert_eq!(shut.state(1), RoomState::Hidden);
+        let mut open = RoomTracker::new(rooms.len());
+        open.update(&rooms, inside, 2_000);
+        assert_eq!(open.state(1), RoomState::Adjacent);
+
+        let size = portal_size(1, false);
+        let eye = Vec3::new(-2.0, 1.5, 3.0);
+        let through = Vec3::new(2.0, 1.5, 3.0);
+        let aside = Vec3::new(2.0, 1.5, 6.0);
+        let door = Vec3::new(0.0, 0.0, 3.0);
+        assert!(seen_through(eye, through, door, Vec3::X, size, true));
+        assert!(!seen_through(eye, through, door, Vec3::X, size, false));
+        assert!(!seen_through(eye, aside, door, Vec3::X, size, true));
+        assert_eq!(portal_size(0, false), Vec2::new(0.82, 2.45));
+        assert_eq!(portal_size(0, true), Vec2::new(2.00, 3.40));
+
+        let names = [(1u32, "exanima01"), (2, "exanima02")];
+        let here = enter_level(
+            "exanima01",
+            Gate {
+                level: 9,
+                entrance: 0,
+            },
+            &names,
+        );
+        assert_eq!(here, "exanima01");
+        let next = enter_level(
+            here,
+            Gate {
+                level: 2,
+                entrance: 1,
+            },
+            &names,
+        );
+        assert_eq!(next, "exanima02");
+        assert_ne!(next, here);
         // A cell without a door wants its room only.
         assert_eq!(RoomTracker::wanted(&rooms, Vec2::new(-6.01, 3.0)), [0]);
         // No room: nothing wanted.

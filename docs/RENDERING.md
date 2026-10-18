@@ -958,14 +958,10 @@ supersampling pattern, medium and large fire templates, the sun and
 terrain in the GI volume, several resident GI blocks, distance fog (the
 first fog mode), vertex dirt (dirt modes 1–3), glass refraction, effect programs (smoke,
 powers), the hair program, terrain parallax and wetness, and the outdoor
-environment cube. Rooms: adjacent rooms are not clipped to their door
-portals (an oblique view can show a sliver of one past its lid's edge, and
-the 40 cm band between a short occluder and the cell edge can show from a
-hidden room's side; in a terrain-floored cell of `exanima01` the band
-shows ground when seen from above a neighbour that draws no lid, such as
-solid rock [whether the original shows it too is not checked]), the lid
-is not drawn into the lights' cube faces, light does not pass through the
-rooms' portals (the wall flood of [Lights](#lights) bounds it), and doors
-have no open state.
+environment cube. A shut door leaves the room behind it hidden. A point
+in the next room is shown only when the view crosses the doorway
+(`rooms::seen_through`). A passage loads the level its id names. The lid
+is not drawn into the lights' cube faces, and light does not yet pass
+through the portals (the wall flood of [Lights](#lights) bounds it).
 Software rendering here cannot afford the light shadows, so test frames use
 `--no-shadows`.
