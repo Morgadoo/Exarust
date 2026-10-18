@@ -15,8 +15,10 @@ use exa_physics::CharacterBody;
 use exa_physics::body::{BodyTicks, Fallen, MAX_ENERGY, Ragdoll};
 
 pub mod order;
+pub mod sense;
 
 pub use order::{Order, follow};
+pub use sense::{Decision, Mind, decide, noticeability, tick, view_weight};
 
 pub struct AiPlugin;
 
@@ -110,6 +112,7 @@ fn duellist(
     bodies: Query<(&Condition, &GlobalTransform, Option<&Ragdoll>, &Fighter)>,
     children: Query<&Children>,
     blades: Query<&Blade>,
+    mut minds: Query<&mut Mind>,
     mut npcs: Query<(
         Entity,
         &mut Duellist,
@@ -145,7 +148,28 @@ fn duellist(
         };
         // Down, getting up, collapsing or dead (or Exarust's fall), it does
         // nothing.
-        if condition.fallen_or_dying() || fallen || !ai.engaged {
+        if condition.fallen_or_dying() || fallen {
+            continue;
+        }
+        if !ai.engaged
+            && let Ok(mut mind) = minds.get_mut(entity)
+        {
+            if let Ok(target) = targets.get(ai.target) {
+                let to = target.translation() - root_gt.translation();
+                let flat = Vec3::new(to.x, 0.0, to.z);
+                let vertical_cm = to.y.abs() * 100.0;
+                mind.distance_cm = if vertical_cm < 150.0 {
+                    flat.length() * 100.0
+                } else {
+                    to.length() * 100.0
+                };
+            }
+            tick(&mut mind);
+            if decide(&mind) == Decision::Engage {
+                ai.engaged = true;
+            }
+        }
+        if !ai.engaged {
             continue;
         }
         let Ok(target) = targets.get(ai.target) else {
@@ -325,6 +349,21 @@ mod tests {
             "{v} vs {}",
             order.velocity
         );
+    }
+
+    /// A contact it has grown hostile to is a fight: the same guard the
+    /// engaged duellist takes, reached from the perception tick.
+    #[test]
+    fn a_hostile_contact_makes_the_duellist_fight() {
+        let (mut app, foe, _) = duel(8.0, false);
+        let mut mind = Mind::new(-100.0);
+        for _ in 0..20_000 {
+            tick(&mut mind);
+        }
+        assert_eq!(decide(&mind), Decision::Engage);
+        app.world_mut().entity_mut(foe).insert(mind);
+        app.update();
+        assert_eq!(state(&app, foe).0, Stance::Defence);
     }
 
     /// Standing its ground it shows its stance: the guard at 8 m, the
