@@ -31,7 +31,10 @@ The original has no camera-relative keyboard movement. Outside combat:
   latch is spent, so the pose stays 0.7 of the way to the run. With the
   cursor further than 3 m the latch is kept, and once the stance level
   is above 0.9 and the step is faster than 3.5 cm a tick the pose uses
-  the run blend itself. The capsule still moves at the jog speed.
+  the run blend itself, and the walk clip's clock blends toward the
+  feral sprint row (the sprint rate, toward the jog rate by the feral
+  level) and then slows by 1 − 0.1 × encumbrance. The capsule still
+  moves at the jog speed.
 - **The clips.** The steering starts the walk or backpedal when the
   character moves, from whatever looping clip plays, and ends it in Idle
   when the character stops. It starts no other clip: what a standing

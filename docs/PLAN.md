@@ -397,7 +397,12 @@ Shift with the cursor further than 3 m keeps the sprint latch, and the
 overlay uses the run blend itself when that latch is kept, the stance
 level is above 0.9 and the speed is above 3.5 cm a tick. A full sprint
 meets the run bone; level 0.9 and 3.5 cm a tick stay at the jog weight.
-Still to do: the sprint gait row and its clock, the tighter run cap,
+Done (change `clock-the-sprint`): while sprinting, the forward clock
+blends from the walk rate toward the feral sprint row by √run, then
+multiplies by 1 − 0.1 × encumbrance. A feral level of 0 at run blend 1
+and 4.337 cm a tick gains 0.727 frames; feral 1 gains the jog's 0.894;
+encumbrance 0.5 gains 0.691. The capsule still moves at the jog speed.
+Still to do: the sprint row's thrust, the tighter run cap,
 playing Walk backwards instead of the Backpedal clip, the locomotion
 clock's stride terms, gait plants, and collisions between bodies (and
 their wake of a sleeper).
@@ -974,9 +979,9 @@ against Exarust and lists the largest missing ones. In order:
 
 1. Gait walking, clip blending, and parts' spheres fitted to their
    meshes (Phase 3). The standing leg bend, recovery steps, the
-   support pins, the run overlay on the walk and the sprint overlay
-   weight are in. Knockback steps, gait plants, the sprint row and
-   the backpedal clip are not.
+   support pins, the run overlay on the walk, the sprint overlay
+   weight and the sprint clock are in. Knockback steps, gait plants,
+   the sprint row's thrust and the backpedal clip are not.
 2. Inventory, equipment and containers, then blocking and parrying
    (Phase 4).
 3. The original's NPC brain: perception, targets and the combat state that

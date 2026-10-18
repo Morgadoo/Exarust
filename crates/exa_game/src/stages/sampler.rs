@@ -70,6 +70,7 @@ pub(crate) fn sample_clip(
         attack: swinging.map(|s| s.rate),
         encumbrance: fighter.map_or(0.0, |f| f.stats.encumbrance),
         sprinting: sprinting(player.is_some_and(PlayerBody::sprint_latch), level, walked),
+        feral: fighter.map_or(0.0, |f| f.stats.feral),
         rose: branch.is_some_and(|b| b.0 == Branch::GettingUp),
     };
     let once = !anim.looping;

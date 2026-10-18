@@ -30,6 +30,7 @@ use exa_assets::SkinnedPart;
 use exa_combat::Condition;
 use exa_combat::condition::Branch;
 use exa_combat::swing::{Swing, pace_swings};
+use exa_formats::encumbrance::sprint_clock;
 use exa_formats::rsq::{BoneBody, Clip};
 use exa_physics::CharacterBody;
 use exa_physics::body::{
@@ -227,8 +228,11 @@ pub(crate) struct Pace {
     pub(crate) encumbrance: f32,
     /// The sprint latch is kept, the stance level is above 0.9 and the
     /// last step was faster than 3.5 cm. The overlay then uses the run
-    /// blend itself.
+    /// blend itself, and the forward clock uses the feral sprint row.
     pub(crate) sprinting: bool,
+    /// The character's feral level, 0..=1. While sprinting, the sprint
+    /// gait row is blended toward the jog row by this.
+    pub(crate) feral: f32,
     /// Its posture stage took the getting-up branch: the get-up's own rate.
     /// A get-up that stage started this tick (from the floor, or a
     /// stagger) runs at the off-balance rate for that tick, as the
@@ -323,9 +327,10 @@ const RISING_TONE: f32 = 0.5;
 /// Walking, the clock runs the gait's clip rate × (0.8·speed + 1), the
 /// speed in cm a tick.
 const STRIDE_PACE: f32 = 0.8;
-/// The gait rows: walk, jog and backpedal.
+/// The gait rows: walk, jog, sprint and backpedal.
 const WALK: usize = 0;
 const JOG: usize = 1;
+const SPRINT: usize = 2;
 const BACKPEDAL: usize = 3;
 /// The backpedal's action index.
 const BACKPEDAL_ACTION: usize = 2;
@@ -334,7 +339,8 @@ const BACKPEDAL_ACTION: usize = 2;
 /// body tick sets them, from the clip `playing` (its action index), its
 /// `progress` by last tick's clock, its drive and its pace, a human's at
 /// full tone in brackets: walking or running in its locomotion clip, the
-/// gait's clip rate (walk to jog by √run, or the backpedal's) ×
+/// gait's clip rate (walk to jog by √run, or, while sprinting, to the
+/// feral sprint row, then × (1 − 0.1·encumbrance); or the backpedal's) ×
 /// (0.8·speed + 1) (0.76 at 1.69 cm a tick); getting up, tone × (1.5 −
 /// 0.5 × encumbrance) × base × 0.6 above half tone (0.9 unencumbered),
 /// tone × 1.25 × base × 0.6 on the tick its posture stage starts the
@@ -352,7 +358,18 @@ fn clip_frames(playing: Option<usize>, progress: f32, drive: &Drive, pace: &Pace
                 per_tick(BACKPEDAL)
             } else {
                 let run = pace.run.clamp(0.0, 1.0).sqrt();
-                per_tick(WALK) + (per_tick(JOG) - per_tick(WALK)) * run
+                let row = if pace.sprinting {
+                    let f = pace.feral.clamp(0.0, 1.0);
+                    per_tick(SPRINT) * (1.0 - f) + per_tick(JOG) * f
+                } else {
+                    per_tick(JOG)
+                };
+                let blended = per_tick(WALK) + (row - per_tick(WALK)) * run;
+                if pace.sprinting {
+                    blended * sprint_clock(pace.encumbrance)
+                } else {
+                    blended
+                }
             };
             gait * (STRIDE_PACE * pace.walked + 1.0)
         }
@@ -1065,6 +1082,7 @@ pub(crate) mod tests {
                 attack: None,
                 encumbrance: 0.0,
                 sprinting: sprinting(latch, level, speed),
+                feral: 0.0,
                 rose: false,
             };
             clip_tick(&motions, &mut anim, &body, &pace, |_| Vec::new()).unwrap()
@@ -1107,6 +1125,7 @@ pub(crate) mod tests {
             attack: None,
             encumbrance: 0.0,
             sprinting: false,
+            feral: 0.0,
             rose: true,
         };
         let still = Bearing::default();
@@ -1161,6 +1180,59 @@ pub(crate) mod tests {
             ..pace
         };
         assert!(close(frames(2, &doing(moving, 1.0), &back), 0.7357));
+        // A sprint plays the feral sprint row. Feral 0 is the sprint
+        // rate; feral 1 is the jog rate, then 1 − 0.1·encumbrance. Below
+        // the gates it stays the jog. The backpedal is not the sprint row.
+        let sprint_at = |feral: f32, enc: f32, latch: bool, level: f32, speed: f32| Pace {
+            walked: speed,
+            run: 1.0,
+            encumbrance: enc,
+            sprinting: sprinting(latch, level, speed),
+            feral,
+            ..pace
+        };
+        assert!(close(
+            frames(
+                0,
+                &doing(moving, 1.0),
+                &sprint_at(0.0, 0.0, true, 1.0, 4.337)
+            ),
+            0.727
+        ));
+        assert!(close(
+            frames(
+                0,
+                &doing(moving, 1.0),
+                &sprint_at(1.0, 0.0, true, 1.0, 4.337)
+            ),
+            0.8939
+        ));
+        assert!(close(
+            frames(
+                0,
+                &doing(moving, 1.0),
+                &sprint_at(0.0, 0.5, true, 1.0, 4.337)
+            ),
+            0.691
+        ));
+        assert!(close(
+            frames(
+                0,
+                &doing(moving, 1.0),
+                &sprint_at(0.0, 0.5, true, 0.9, 4.337)
+            ),
+            0.8939
+        ));
+        assert!(close(
+            frames(0, &doing(moving, 1.0), &sprint_at(0.0, 0.0, true, 1.0, 3.5)),
+            0.76
+        ));
+        let back_sprint = Pace {
+            sprinting: true,
+            feral: 0.0,
+            ..back
+        };
+        assert!(close(frames(2, &doing(moving, 1.0), &back_sprint), 0.7357));
         assert!(close(frames(0, &doing(still, 1.0), &walk), 0.6));
         assert!(close(frames(5, &doing(still, 1.0), &pace), 1.62));
         let mut zombie = doing(still, 1.0);

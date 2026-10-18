@@ -1257,7 +1257,7 @@ character init first stores (80/83)/scale, then overwrites it). Per tick:
 
 | state | frames a tick | a human, full tone |
 |---|---|---|
-| walking or running in the walk, run or backpedal clip | the gait's clip rate ÷ 83 (walk → jog by √run, or the backpedal's) × (0.8 × speed + 1), speed in cm a tick | 0.76 walking (1.69 cm), 0.89 running, 0.74 backpedalling |
+| walking or running in the walk, run or backpedal clip | the gait's clip rate ÷ 83 (walk → jog by √run, or the backpedal's) × (0.8 × speed + 1), speed in cm a tick. While sprinting, the jog rate is the feral sprint row (sprint blended to jog by the feral level) and the rate is then × (1 − 0.1 × encumbrance) | 0.76 walking (1.69 cm), 0.89 running, 0.74 backpedalling; a sprint at feral 0, run blend 1 and 4.337 cm is 0.73, 0.69 at encumbrance 0.5, and the jog's 0.89 at feral 1 |
 | getting up | tone × (1.5 − 0.5 × encumbrance) × base × 0.6, only above half tone | 0.9 |
 | a get-up's first tick (its posture stage starts it) | tone × 1.25 × base × 0.6, only above half tone | 0.75 |
 | an attack (actions 5–12) | the swing's rate (below) | ≈ 1.0–1.3 |
