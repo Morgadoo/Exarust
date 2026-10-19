@@ -2477,12 +2477,8 @@ pub struct LineLabel {
 
 /// Places the label. The style word aligns it, and the state word chooses
 /// the ink and the one-pixel nudge.
-pub fn place_line_label(
-    place: LabelPlace,
-    metrics: LabelMetrics,
-    unit: i32,
-    inks: [[u8; 4]; 3],
-) -> LineLabel {
+/// Aligns a measured label from the style word.
+fn align_label(place: LabelPlace, metrics: LabelMetrics, unit: i32) -> (i32, i32) {
     let px = i32::from(place.x);
     let py = i32::from(place.y);
     let pw = i32::from(place.w);
@@ -2495,13 +2491,23 @@ pub fn place_line_label(
         0x4000 => px + pw + unit,
         _ => px + inset + (unit + 1) / 2,
     };
-    let mut y = match place.style & 0x700 {
+    let y = match place.style & 0x700 {
         0x100 => py - unit / 2,
         0x200 => py + (ph + metrics.line_height + 2) / 2,
         0x300 => py + ph + metrics.base - 1,
         0x400 => py + ph,
         _ => py + (unit + 1) / 2,
     };
+    (x, y)
+}
+
+pub fn place_line_label(
+    place: LabelPlace,
+    metrics: LabelMetrics,
+    unit: i32,
+    inks: [[u8; 4]; 3],
+) -> LineLabel {
+    let (x, mut y) = align_label(place, metrics, unit);
     let (ink_index, coloured, nudge) = if (place.state & 0x10) > 0 {
         (Some(0), false, 0)
     } else if (place.state & 0xf_0000) == 0x1_0000 {
@@ -2519,6 +2525,60 @@ pub fn place_line_label(
         colour: ink_index.map(|index| inks[index as usize]),
         coloured,
         text_calls: 1,
+    }
+}
+
+/// A parent-skin label: one call, or two for the shadow arm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkinLabel {
+    pub x: i32,
+    pub y: i32,
+    pub calls: Vec<([u8; 4], (i32, i32))>,
+    pub coloured: bool,
+    pub text_calls: u32,
+}
+
+/// Places the parent skin's label. Bit 0x40 draws the two-call drop shadow.
+pub fn place_skin_label(
+    place: LabelPlace,
+    metrics: LabelMetrics,
+    unit: i32,
+    inks: [[u8; 4]; 4],
+) -> SkinLabel {
+    let (x, y) = align_label(place, metrics, unit);
+    if (place.state & 0x10) > 0 {
+        SkinLabel {
+            x,
+            y,
+            calls: vec![(inks[0], (x, y))],
+            coloured: false,
+            text_calls: 1,
+        }
+    } else if (place.state & 0xf_0000) == 0x1_0000 {
+        let nudge = i32::from((place.state & 0x40) > 0);
+        SkinLabel {
+            x,
+            y: y + nudge,
+            calls: Vec::new(),
+            coloured: true,
+            text_calls: 1,
+        }
+    } else if (place.state & 0x40) > 0 {
+        SkinLabel {
+            x,
+            y,
+            calls: vec![(inks[1], (x - 1, y)), (inks[2], (x, y + 1))],
+            coloured: false,
+            text_calls: 2,
+        }
+    } else {
+        SkinLabel {
+            x,
+            y,
+            calls: vec![(inks[3], (x, y))],
+            coloured: false,
+            text_calls: 1,
+        }
     }
 }
 
@@ -5923,5 +5983,52 @@ mod tests {
         let double = scale_skin_alpha(0, 200, 1.0, 2.0);
         assert_eq!(double.first, [0; 14]);
         assert_eq!(double.second, [144; 48]);
+    }
+
+    #[test]
+    fn a_skin_label_draws_its_shadow_arm() {
+        let metrics = LabelMetrics {
+            width: 40,
+            line_height: 24,
+            base: 18,
+        };
+        let inks = [
+            [1, 2, 3, 4],
+            [5, 6, 7, 8],
+            [9, 10, 11, 12],
+            [13, 14, 15, 16],
+        ];
+        let place = |state: u32| LabelPlace {
+            x: 10,
+            y: 20,
+            w: 100,
+            h: 80,
+            inset: 0,
+            style: 0,
+            state,
+        };
+
+        let shadow = place_skin_label(place(0x40), metrics, 5, inks);
+        assert_eq!((shadow.x, shadow.y), (13, 23));
+        assert_eq!(shadow.text_calls, 2);
+        assert_eq!(
+            shadow.calls,
+            vec![([5, 6, 7, 8], (12, 23)), ([9, 10, 11, 12], (13, 24))]
+        );
+        assert!(!shadow.coloured);
+
+        let first = place_skin_label(place(0x10), metrics, 5, inks);
+        assert_eq!(first.calls, vec![([1, 2, 3, 4], (13, 23))]);
+        assert_eq!(first.text_calls, 1);
+
+        let plain = place_skin_label(place(0), metrics, 5, inks);
+        assert_eq!(plain.calls, vec![([13, 14, 15, 16], (13, 23))]);
+        assert_eq!(plain.text_calls, 1);
+
+        let coloured = place_skin_label(place(0x1_0040), metrics, 5, inks);
+        assert!(coloured.coloured);
+        assert!(coloured.calls.is_empty());
+        assert_eq!(coloured.y, 24);
+        assert_eq!(coloured.text_calls, 1);
     }
 }

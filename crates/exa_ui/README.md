@@ -140,7 +140,10 @@ units, -10 draws it below y0, and -8 draws a four-unit square; the tint is
 texture load once. The renderer preparation runs two setup calls with a clear
 guard and none with it set, returning 1 either way. The ramp alpha scales the
 first stored byte by the horizontal scale into 14 entries and the second by the
-vertical scale into 48.
+vertical scale into 48. The parent label aligns like the line label; bit 0x10
+draws once in the first ink, mode 0x10000 uses the coloured renderer, bit 0x40
+adds a one-pixel drop shadow in the second and third inks, and any other word
+uses the fourth.
 
 ## Scope
 
