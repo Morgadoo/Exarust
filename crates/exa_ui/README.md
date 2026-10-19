@@ -132,7 +132,8 @@ left limit return -8, -10 or -9 around the limits. The meaning of the codes is
 not established. A shade at unit 5, place 10, 20 of size 100 by 80 with side
 inset 15 draws cap, bar and cap quads from y 13 to 23 around edges 25 and 95,
 the same three from y 97 to 107, and an inner rectangle from 15, 25 to 105, 95.
-State band 0x10000 selects the special ink with alpha 255.
+State band 0x10000 selects the special ink with alpha 255. Opening a skin at
+unit 5 also stores a fifth extent of 20.
 
 ## Scope
 

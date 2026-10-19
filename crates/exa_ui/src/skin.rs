@@ -12,6 +12,7 @@ pub struct DrawSkin {
     pub span_b: i32,
     pub span_c: i32,
     pub span_d: i32,
+    pub span_e: i32,
     pub pad_a: i32,
     pub pad_b: i32,
     pub pad_c: i32,
@@ -43,6 +44,7 @@ pub fn open_skin(unit: i32, arg: i32, allocated: bool) -> Option<DrawSkin> {
         span_b: unit,
         span_c: doubled,
         span_d: doubled,
+        span_e: unit.wrapping_shl(2),
         pad_a: 8,
         pad_b: 4,
         pad_c: 8,
@@ -2837,6 +2839,7 @@ mod tests {
         assert_eq!(plain.span_b, 5);
         assert_eq!(plain.span_c, 10);
         assert_eq!(plain.span_d, 10);
+        assert_eq!(plain.span_e, 20);
         assert_eq!(
             [plain.pad_a, plain.pad_b, plain.pad_c, plain.pad_d],
             [8, 4, 8, 8]
