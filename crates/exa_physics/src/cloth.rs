@@ -768,6 +768,64 @@ pub fn submit_cloth_frame(pending: i32, frame: i32) -> ClothFrame {
     }
 }
 
+/// The cloth activation's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClothActivateInput {
+    pub flags_300: u32,
+    pub flags_8: u32,
+    pub flags_c: u32,
+    pub flags_188: u32,
+    pub has_handle: bool,
+    pub is_root: bool,
+    pub slow_global: bool,
+}
+
+/// The cloth activation's new words and calls.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClothActivate {
+    pub flags_300: u32,
+    pub flags_8: u32,
+    pub flags_c: u32,
+    pub flags_188: u32,
+    pub phase: i32,
+    pub scale: f32,
+    pub handle_written: bool,
+    pub origin_copied: bool,
+    pub slow_or: u32,
+}
+
+/// Sets the cloth's activation bits, phase and scale.
+pub fn activate_cloth(input: ClothActivateInput) -> ClothActivate {
+    ClothActivate {
+        flags_300: input.flags_300 | 0x2000_0000,
+        flags_8: input.flags_8 | 0x1_0000,
+        flags_c: input.flags_c | 0x20_4030,
+        flags_188: input.flags_188 | 0x6000,
+        phase: 2,
+        scale: 0.4,
+        handle_written: input.has_handle,
+        origin_copied: input.is_root,
+        slow_or: if input.slow_global { 0x8000 } else { 0 },
+    }
+}
+
+/// The cloth transform's call counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClothTransform {
+    pub particle_calls: u32,
+    pub origin_calls: u32,
+    pub extent_calls: u32,
+}
+
+/// Transforms all three particle buffers and the object's origin and extent.
+pub fn transform_cloth(count: i32, object_flags: u32) -> ClothTransform {
+    ClothTransform {
+        particle_calls: count.max(0) as u32 * 3,
+        origin_calls: u32::from((object_flags & 0x20) != 0),
+        extent_calls: 1,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1107,5 +1165,48 @@ mod tests {
         assert_eq!(rotating.pending, 2);
         assert_eq!(rotating.flags_or, 0);
         assert_eq!(rotating.frame, Some(9));
+    }
+
+    #[test]
+    fn the_cloth_activates_and_transforms() {
+        let active = activate_cloth(ClothActivateInput {
+            flags_300: 0,
+            flags_8: 0,
+            flags_c: 0,
+            flags_188: 0,
+            has_handle: true,
+            is_root: true,
+            slow_global: true,
+        });
+        assert_eq!(active.flags_300, 0x2000_0000);
+        assert_eq!(active.flags_8, 0x1_0000);
+        assert_eq!(active.flags_c, 0x20_4030);
+        assert_eq!(active.flags_188, 0x6000);
+        assert_eq!(active.phase, 2);
+        assert_eq!(active.scale.to_bits(), 0.4f32.to_bits());
+        assert!(active.handle_written);
+        assert!(active.origin_copied);
+        assert_eq!(active.slow_or, 0x8000);
+
+        let quiet = activate_cloth(ClothActivateInput {
+            flags_300: 1,
+            flags_8: 2,
+            flags_c: 4,
+            flags_188: 8,
+            has_handle: false,
+            is_root: false,
+            slow_global: false,
+        });
+        assert_eq!(quiet.flags_300, 1 | 0x2000_0000);
+        assert_eq!(quiet.slow_or, 0);
+        assert!(!quiet.handle_written);
+
+        let all = transform_cloth(3, 0x20);
+        assert_eq!(all.particle_calls, 9);
+        assert_eq!(all.origin_calls, 1);
+        assert_eq!(all.extent_calls, 1);
+        let plain = transform_cloth(3, 0);
+        assert_eq!(plain.origin_calls, 0);
+        assert_eq!(plain.extent_calls, 1);
     }
 }

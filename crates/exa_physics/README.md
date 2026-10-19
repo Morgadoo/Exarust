@@ -137,6 +137,7 @@ last tick dealt. Nothing calls them unless a tool is on
 ## Scope
 
 - The cloth's start seeds its fields, installs an identity matrix and derives its step from the particle count; its frame swap rotates three vertex buffers.
+- Activation sets the cloth's flag words, phase and 0.4 scale; the transform visits all three particle buffers plus the object's origin and extent.
 - Fixed-timestep deterministic simulation set, independent of frame rate.
 - Rigid bodies (props, doors, items), collision against level geometry and convex hulls.
 - Articulated character bodies driven by joint motors toward animation targets (active ragdoll / 'motile' dynamics).
