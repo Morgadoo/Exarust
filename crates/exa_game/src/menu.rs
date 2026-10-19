@@ -52,6 +52,14 @@ pub struct CursorShape {
     pub hook: bool,
 }
 
+/// One install record. Index 1 is the first record. The eight bytes after the
+/// hook are not read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstallRecord {
+    pub value: u64,
+    pub hook: bool,
+}
+
 /// A child window on one of the two lists a match begin walks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Window {
@@ -137,8 +145,31 @@ pub struct MatchGate {
     pub bank_active: [u64; BANK_WORDS],
     pub bank_first: [u64; BANK_WORDS],
     pub bank_second: [u64; BANK_WORDS],
-    /// Times the install after a bank select was counted. The body is not in.
+    /// Times the install after a bank select was counted.
     pub bank_installs: u32,
+    /// Index passed for side 0. Index 1 is the first record.
+    pub install_first: u32,
+    /// Index passed for any other side.
+    pub install_second: u32,
+    /// The install returns at once when this is 0.
+    pub install_ready: u8,
+    /// Index stored by the last install that changed it.
+    pub install_index: u32,
+    /// Shown when the index is below 1 and the current index is not 0.
+    pub install_fallback: u64,
+    /// Last value shown. The same value is not shown again.
+    pub install_shown: u64,
+    /// A non-zero word refuses the show.
+    pub install_blocked: u32,
+    /// Times a different non-zero value was handed to the platform call.
+    pub install_shows: u32,
+    /// Set when an index below 1 clears a current index.
+    pub install_armed: u8,
+    pub install_clock: u32,
+    pub install_stamp: u32,
+    pub install_records: Vec<InstallRecord>,
+    /// Times a record hook ran. The hook body is not in.
+    pub install_hooks: u32,
     /// A focus object is set, so the follow runs even with a mask of 0.
     pub focus: bool,
     /// Mask tested against argument 1.
@@ -204,6 +235,19 @@ impl MatchGate {
             bank_first: [0; BANK_WORDS],
             bank_second: [0; BANK_WORDS],
             bank_installs: 0,
+            install_first: 0,
+            install_second: 0,
+            install_ready: 0,
+            install_index: 0,
+            install_fallback: 0,
+            install_shown: 0,
+            install_blocked: 0,
+            install_shows: 0,
+            install_armed: 0,
+            install_clock: 0,
+            install_stamp: 0,
+            install_records: Vec::new(),
+            install_hooks: 0,
             focus: false,
             list_mask: 0,
             mode_word: 0,
@@ -466,8 +510,8 @@ fn follow_lists(gate: &mut MatchGate) {
     }
 }
 
-/// Copy sixteen words when the bank flag does not already match, then count
-/// the install. The install body is not in.
+/// Copy sixteen words when the bank flag does not already match, then run
+/// the install. The platform cursor call is counted.
 fn select_bank(gate: &mut MatchGate, mode: u8) {
     if mode == 1 {
         if gate.bank_flag != 0 {
@@ -478,7 +522,55 @@ fn select_bank(gate: &mut MatchGate, mode: u8) {
         gate.bank_flag = 1;
         gate.bank_active = gate.bank_second;
     }
+    let index = if mode == 2 {
+        gate.install_second
+    } else {
+        gate.install_first
+    };
+    install_index(gate, index);
     gate.bank_installs = gate.bank_installs.saturating_add(1);
+}
+
+/// Store a new index and show its record. Index 0 clears the current index.
+/// A matching sign-extended index returns. The platform call is counted.
+fn install_index(gate: &mut MatchGate, index: u32) {
+    if gate.install_ready == 0 {
+        return;
+    }
+    if index == 0 {
+        if gate.install_index == 0 {
+            return;
+        }
+        gate.install_index = 0;
+        let fallback = gate.install_fallback;
+        show_installed(gate, fallback);
+        gate.install_armed = 1;
+        gate.install_stamp = gate.install_clock;
+        return;
+    }
+    let wide = u64::from(index);
+    let current = i64::from(gate.install_index.cast_signed()) as u64;
+    if wide == current {
+        return;
+    }
+    gate.install_index = index;
+    let slot = (index as usize) - 1;
+    if slot >= gate.install_records.len() {
+        return;
+    }
+    let record = gate.install_records[slot].clone();
+    show_installed(gate, record.value);
+    if record.hook {
+        gate.install_hooks = gate.install_hooks.saturating_add(1);
+    }
+}
+
+fn show_installed(gate: &mut MatchGate, value: u64) {
+    if value == gate.install_shown || value == 0 || gate.install_blocked != 0 {
+        return;
+    }
+    gate.install_shows = gate.install_shows.saturating_add(1);
+    gate.install_shown = value;
 }
 
 fn close_named(owner: String, arg: u32, state: &mut CloseState) {
@@ -1064,5 +1156,127 @@ mod tests {
         assert_eq!(mask.session_mark, 1);
         assert_eq!(mask.bank_active, bank(5));
         assert_eq!(mask.bank_flag, 1);
+    }
+
+    fn installed(value: u64, hook: bool) -> InstallRecord {
+        InstallRecord { value, hook }
+    }
+
+    #[test]
+    fn an_install_shows_a_record_and_runs_its_hook() {
+        let mut gate = MatchGate::playing();
+        gate.focus = true;
+        gate.session_mark = 1;
+        gate.install_ready = 1;
+        gate.install_first = 1;
+        gate.install_records = vec![installed(42, true)];
+        let mut dying = hired_physician();
+        assert!(gate.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut dying));
+        assert_eq!(gate.install_index, 1);
+        assert_eq!(gate.install_shown, 42);
+        assert_eq!(gate.install_shows, 1);
+        assert_eq!(gate.install_hooks, 1);
+        assert_eq!(gate.bank_installs, 1);
+        assert_eq!(dying.deaths, 1);
+
+        gate.session_mark = 1;
+        let mut company = Company::new("Ash");
+        assert!(gate.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert_eq!(gate.install_shows, 1);
+        assert_eq!(gate.install_hooks, 1);
+        assert_eq!(gate.install_index, 1);
+
+        let mut zero = MatchGate::playing();
+        zero.focus = true;
+        zero.session_mark = 1;
+        zero.install_ready = 1;
+        zero.install_first = 2;
+        zero.install_records = vec![installed(1, false), installed(0, true)];
+        let mut company = Company::new("Ash");
+        assert!(zero.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert_eq!(zero.install_index, 2);
+        assert_eq!(zero.install_shows, 0);
+        assert_eq!(zero.install_shown, 0);
+        assert_eq!(zero.install_hooks, 1);
+
+        let mut blocked = MatchGate::playing();
+        blocked.focus = true;
+        blocked.session_mark = 1;
+        blocked.install_ready = 1;
+        blocked.install_first = 1;
+        blocked.install_blocked = 1;
+        blocked.install_shown = 3;
+        blocked.install_records = vec![installed(42, true)];
+        let mut company = Company::new("Ash");
+        assert!(blocked.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert_eq!(blocked.install_shows, 0);
+        assert_eq!(blocked.install_shown, 3);
+        assert_eq!(blocked.install_hooks, 1);
+        assert_eq!(blocked.install_index, 1);
+
+        let mut same = MatchGate::playing();
+        same.focus = true;
+        same.session_mark = 1;
+        same.install_ready = 1;
+        same.install_first = 1;
+        same.install_shown = 42;
+        same.install_records = vec![installed(42, true)];
+        let mut company = Company::new("Ash");
+        assert!(same.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert_eq!(same.install_shows, 0);
+        assert_eq!(same.install_shown, 42);
+        assert_eq!(same.install_hooks, 1);
+
+        let mut past = MatchGate::playing();
+        past.focus = true;
+        past.session_mark = 1;
+        past.install_ready = 1;
+        past.install_first = 4;
+        past.install_records = vec![installed(42, true)];
+        let mut company = Company::new("Ash");
+        assert!(past.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert_eq!(past.install_index, 4);
+        assert_eq!(past.install_shows, 0);
+        assert_eq!(past.install_hooks, 0);
+
+        let mut clear = MatchGate::playing();
+        clear.focus = true;
+        clear.session_mark = 1;
+        clear.install_ready = 1;
+        clear.install_index = 5;
+        clear.install_fallback = 9;
+        clear.install_clock = 12;
+        let mut company = Company::new("Ash");
+        assert!(clear.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert_eq!(clear.install_index, 0);
+        assert_eq!(clear.install_shown, 9);
+        assert_eq!(clear.install_shows, 1);
+        assert_eq!(clear.install_armed, 1);
+        assert_eq!(clear.install_stamp, 12);
+        assert_eq!(clear.install_hooks, 0);
+
+        let mut idle = MatchGate::playing();
+        idle.focus = true;
+        idle.session_mark = 1;
+        idle.install_ready = 1;
+        idle.install_fallback = 9;
+        let mut company = Company::new("Ash");
+        assert!(idle.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert_eq!(idle.install_index, 0);
+        assert_eq!(idle.install_armed, 0);
+        assert_eq!(idle.install_shows, 0);
+        assert_eq!(idle.bank_installs, 1);
+
+        let mut closed = MatchGate::playing();
+        closed.focus = true;
+        closed.session_mark = 1;
+        closed.install_first = 1;
+        closed.install_records = vec![installed(42, true)];
+        let mut company = Company::new("Ash");
+        assert!(closed.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert_eq!(closed.install_index, 0);
+        assert_eq!(closed.install_shows, 0);
+        assert_eq!(closed.install_hooks, 0);
+        assert_eq!(closed.bank_installs, 1);
     }
 }
