@@ -6,8 +6,9 @@
 //! is not withheld is the weapon page. An armour type from 1 through 6 is
 //! the apparel page. A shield that is not withheld is the shield page.
 //! Anything else is the plain page. A weapon row is shown only when its
-//! byte is above 5, and the bar is that byte times 0.05. The icon picture
-//! and the apparel rows are not drawn here.
+//! byte is above 5, and the bar is that byte times 0.05. An apparel row is
+//! shown only when that byte times 0.05 is above 0.25. Coverage is always
+//! that byte times 0.05. The icon picture is not drawn here.
 //!
 //! Evidence: the item-card page choice.
 
@@ -127,6 +128,49 @@ pub fn weapon_bars(slash: u8, crush: u8, pierce: u8, thrust: u8) -> WeaponBars {
     }
 }
 
+/// The apparel rows. Coverage is always present. The others are absent at 0.25 and below.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ApparelBars {
+    pub coverage: f32,
+    pub impact: Option<f32>,
+    pub slash: Option<f32>,
+    pub crush: Option<f32>,
+    pub pierce: Option<f32>,
+    pub encumbrance: Option<f32>,
+}
+
+fn apparel_amount(value: u8) -> f32 {
+    (f64::from(value) * 0.05) as f32
+}
+
+fn apparel_row(value: u8) -> Option<f32> {
+    let scaled = f64::from(value) * 0.05;
+    if scaled > 0.25 {
+        Some(scaled as f32)
+    } else {
+        None
+    }
+}
+
+/// Coverage, then impact, slash, crush, pierce, and encumbrance.
+pub fn apparel_bars(
+    coverage: u8,
+    impact: u8,
+    slash: u8,
+    crush: u8,
+    pierce: u8,
+    encumbrance: u8,
+) -> ApparelBars {
+    ApparelBars {
+        coverage: apparel_amount(coverage),
+        impact: apparel_row(impact),
+        slash: apparel_row(slash),
+        crush: apparel_row(crush),
+        pierce: apparel_row(pierce),
+        encumbrance: apparel_row(encumbrance),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,5 +271,16 @@ mod tests {
         assert_eq!(bars.pierce, None);
         assert_eq!(bars.crush.unwrap().to_bits(), 0x3e99_999a);
         assert_eq!(bars.thrust.unwrap().to_bits(), 0x3f80_0000);
+    }
+
+    #[test]
+    fn an_apparel_row_shows_only_above_a_quarter() {
+        let bars = apparel_bars(5, 5, 6, 0, 20, 5);
+        assert_eq!(bars.coverage.to_bits(), 0x3e80_0000);
+        assert_eq!(bars.impact, None);
+        assert_eq!(bars.crush, None);
+        assert_eq!(bars.encumbrance, None);
+        assert_eq!(bars.slash.unwrap().to_bits(), 0x3e99_999a);
+        assert_eq!(bars.pierce.unwrap().to_bits(), 0x3f80_0000);
     }
 }
