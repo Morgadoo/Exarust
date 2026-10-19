@@ -3366,6 +3366,104 @@ pub fn draw_skin_image(place: SkinImagePlace, inks: SkinImageInks) -> SkinImageD
     }
 }
 
+/// The fields the parent hit test reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkinHitPlace {
+    pub x0: i32,
+    pub y0: i32,
+    pub size: i32,
+    pub limit_right: i32,
+    pub limit_top: i32,
+    pub limit_bottom: i32,
+    pub word_5c: u32,
+    pub flags: u32,
+}
+
+/// Hits the parent skin. `rect_for` supplies each code's rectangle.
+pub fn hit_skin(
+    place: SkinHitPlace,
+    x: i32,
+    y: i32,
+    unit: i32,
+    rect_for: &dyn Fn(i32) -> Option<[i32; 4]>,
+) -> i32 {
+    let mut result = 0i32;
+    if (place.flags & 0x4000) != 0 {
+        if place.size >= x {
+            result = 0x8000_0011u32 as i32;
+        } else if x >= place.x0 - place.size - 1 {
+            result = 0x8000_0012u32 as i32;
+        }
+    }
+    if (place.flags & 0x8000) != 0 {
+        if place.size >= y {
+            result |= 0x8000_0014u32 as i32;
+        } else if y >= place.y0 - place.size - 1 {
+            result |= 0x8000_0018u32 as i32;
+        }
+    }
+    if result != 0 {
+        return result;
+    }
+
+    let probe = |code: i32| -> Option<i32> {
+        rect_for(code).and_then(|r| {
+            if x >= r[0] && x <= r[2] && y >= r[1] && y <= r[3] {
+                Some(code)
+            } else {
+                None
+            }
+        })
+    };
+
+    if (place.flags & 1) != 0 {
+        let threshold = if (place.flags & 0x80_0030) == 0x20 || (place.word_5c & 0x80) != 0 {
+            place.limit_top
+        } else {
+            place.limit_top.wrapping_add(unit)
+        };
+        let probe_if = |flag: u32, code: i32| -> Option<i32> {
+            if (place.flags & flag) != 0 {
+                probe(code)
+            } else {
+                None
+            }
+        };
+        let threshold_hit = threshold > y || y < place.limit_top;
+        if threshold_hit {
+            if let Some(code) = probe_if(2, -4) {
+                return code;
+            }
+            if let Some(code) = probe_if(4, -5) {
+                return code;
+            }
+            if let Some(code) = probe_if(8, -10) {
+                return code;
+            }
+            return -3;
+        }
+    }
+    if (place.flags & 0x200) != 0 && x >= place.limit_right {
+        if let Some(code) = probe(-9) {
+            return code;
+        }
+        if let Some(code) = probe(-10) {
+            return code;
+        }
+        return -8;
+    }
+    if (place.flags & 0x100) != 0 && y >= place.limit_bottom {
+        if let Some(code) = probe(-14) {
+            return code;
+        }
+        if let Some(code) = probe(-13) {
+            return code;
+        }
+        return -12;
+    }
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6595,5 +6693,47 @@ mod tests {
         let idle = draw_skin_bevel(place, false, false, &ink);
         assert_eq!(idle.fill[0].inks[0], [51; 4]);
         assert_eq!((idle.begins, idle.binds, idle.ends), (3, 12, 3));
+    }
+
+    #[test]
+    fn a_skin_hit_checks_edges_then_probes() {
+        let place = |flags: u32| SkinHitPlace {
+            x0: 100,
+            y0: 100,
+            size: 10,
+            limit_right: 90,
+            limit_top: 50,
+            limit_bottom: 90,
+            word_5c: 0,
+            flags,
+        };
+        let none = |_: i32| None;
+
+        let left = 0x8000_0011u32 as i32;
+        let right = 0x8000_0012u32 as i32;
+        let top = 0x8000_0014u32 as i32;
+        let bottom = 0x8000_0018u32 as i32;
+
+        assert_eq!(hit_skin(place(0x4000), 0, 0, 5, &none), left);
+        assert_eq!(hit_skin(place(0x4000), 95, 0, 5, &none), right);
+        assert_eq!(hit_skin(place(0x8000), 0, 95, 5, &none), bottom);
+        assert_eq!(hit_skin(place(0x4000 | 0x8000), 0, 0, 5, &none), left | top);
+
+        let four = |code: i32| (code == -4).then_some([0, 0, 200, 200]);
+        assert_eq!(hit_skin(place(0x3), 10, 40, 5, &four), -4);
+        assert_eq!(hit_skin(place(0x3), 10, 40, 5, &none), -3);
+        let five = |code: i32| (code == -5).then_some([0, 0, 200, 200]);
+        assert_eq!(hit_skin(place(0x5), 10, 40, 5, &five), -5);
+        let ten = |code: i32| (code == -10).then_some([0, 0, 200, 200]);
+        assert_eq!(hit_skin(place(0x9), 10, 40, 5, &ten), -10);
+        assert_eq!(hit_skin(place(0x21), 10, 50, 5, &four), 0);
+
+        let only_ten = |code: i32| (code == -10).then_some([0, 0, 200, 200]);
+        assert_eq!(hit_skin(place(0x200), 90, 10, 5, &only_ten), -10);
+        assert_eq!(hit_skin(place(0x200), 90, 10, 5, &none), -8);
+        assert_eq!(hit_skin(place(0x100), 10, 90, 5, &none), -12);
+
+        let edge = |code: i32| (code == -4).then_some([10, 20, 30, 40]);
+        assert_eq!(hit_skin(place(0x3), 30, 40, 5, &edge), -4);
     }
 }

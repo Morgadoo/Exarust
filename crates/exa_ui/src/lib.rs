@@ -35,12 +35,12 @@ pub use skin::{
     LINE_RAIL, LabelMetrics, LabelPlace, LineChip, LineLabel, LineOpen, LineRail, LineScale,
     LineShade, LineShadeInks, LineShadePlace, LineShadeQuad, LineShadeRect, RailPlace, SPAN_BAR,
     SPAN_CAP, SPAN_END, SPAN_SQUARE, SPAN_VIEW_UNSET, ScrollBar, ShadePlace, SkinAlpha, SkinCross,
-    SkinFrameDraw, SkinFramePlace, SkinImageDraw, SkinImageInks, SkinImagePlace, SkinLabel,
-    SkinMetrics, SkinPrepared, SkinShade, SliderDraw, SliderPlace, SliderQuad, SpanBar, SpanSquare,
-    SpanView, TitleDraw, control_rect, dispatch_form, draw_bevel, draw_capped_span,
+    SkinFrameDraw, SkinFramePlace, SkinHitPlace, SkinImageDraw, SkinImageInks, SkinImagePlace,
+    SkinLabel, SkinMetrics, SkinPrepared, SkinShade, SliderDraw, SliderPlace, SliderQuad, SpanBar,
+    SpanSquare, SpanView, TitleDraw, control_rect, dispatch_form, draw_bevel, draw_capped_span,
     draw_centred_icon, draw_flat_slider, draw_frame, draw_line_chip, draw_line_rail,
     draw_line_shade, draw_skin_bevel, draw_skin_cross, draw_skin_image, draw_skin_shade,
-    draw_span_bar, draw_span_square, hit_line, open_line, open_skin, place_line_label,
+    draw_span_bar, draw_span_square, hit_line, hit_skin, open_line, open_skin, place_line_label,
     place_skin_label, prepare_skin_renderer, scale_line, scale_skin_alpha, skin_frames,
 };
 
