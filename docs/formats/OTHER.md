@@ -359,8 +359,10 @@ Moved to [TERRAIN.md](TERRAIN.md) (verified).
 ## Powers (`.pwr`)
 
 Status: **the node layout, the text chunk, the link curve, the node
-pictures, the learned marks and the thick joint are verified**. Charge-up
-is not in. Exarust: `exa_formats::power_tree`.
+pictures, the learned marks and the thick joint are verified**. A blast
+charge, its growth and the chunk separation are in `exa_game::thaum`.
+Wave, torrent, barrier and shell meshes are not in. Exarust:
+`exa_formats::power_tree`.
 
 - **Header**: first word `0xAFCE01CE`. The node count is the signed word at
   byte 52. A negative count is an error. The bytes between the magic and
@@ -401,7 +403,15 @@ is not in. Exarust: `exa_formats::power_tree`.
   chord from the first point to the third, at the given width. A width of 2
   through 0, 10 and 20 sits at 10, −2 and 10, 2 with a join of zero. A
   zero-length chord stays on the point.
-- Four domains: displacement, energy, force, mind. Charge-up is not in.
+- **Blast charge**: the rate is the tick in milliseconds times 0.001, then
+  five sixths of that. Charging adds the rate. Passing 1 clears the amount,
+  sets the state to 1 and releases. An amount of exactly 1 keeps charging.
+  Fizzling subtracts twice the rate, and passing below 0 becomes 0 with
+  state −2. After release the amount rises by three times the rate. A chunk
+  grows by the tick times 0.7 of its speed plus 3, times 0.0006. Two chunks
+  closer than twice the first radius move apart by half the overlap.
+- Four domains: displacement, energy, force, mind. Wave, torrent, barrier
+  and shell meshes are not in.
 
 ## Weapon factories (`.fty`)
 

@@ -17,7 +17,13 @@
 //! halves the table cost. Blast and bolt spend 1.2 times the cost, barrier
 //! twice, a mind power 0.3 times, and vanish 80 times.
 //!
-//! Evidence: the power tables and the calm, blast and shock notes.
+//! A blast charge rises by five sixths of the tick in seconds. Passing 1
+//! releases it. Fizzling falls by twice the rate. A released chunk grows by
+//! 0.0006 of its speed term, and two chunks closer than twice the first
+//! radius move apart by half the overlap.
+//!
+//! Evidence: the power tables, the calm, blast and shock notes, and the blast
+//! charge step.
 
 use bevy::math::Vec3;
 
@@ -330,6 +336,86 @@ fn floor_sub(value: i32, by: i32) -> i32 {
     value.saturating_sub(by).max(0)
 }
 
+/// The charge after one tick: the amount, the state, and whether it released.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Charge {
+    pub amount: f32,
+    pub state: i32,
+    pub released: bool,
+}
+
+/// Five sixths of the tick in seconds.
+pub fn charge_rate(tick_ms: u32) -> f32 {
+    let step = (f64::from(tick_ms) * 0.001) as f32;
+    (f64::from(step) * (5.0 / 6.0)) as f32
+}
+
+/// Advance a blast charge. State 0 charges, a negative state fizzles, and a
+/// state of 1 or more has already released.
+pub fn step_charge(amount: f32, rate: f32, state: i32) -> Charge {
+    if state < 1 {
+        if state < 0 {
+            let mut amount = amount - rate * 2.0;
+            let mut state = state;
+            if amount < 0.0 {
+                amount = 0.0;
+                state = -2;
+            }
+            Charge {
+                amount,
+                state,
+                released: false,
+            }
+        } else {
+            let mut amount = amount + rate;
+            let mut state = state;
+            let mut released = false;
+            if amount > 1.0 {
+                amount = 0.0;
+                released = true;
+                if state == 0 {
+                    state = 1;
+                }
+            }
+            Charge {
+                amount,
+                state,
+                released,
+            }
+        }
+    } else {
+        Charge {
+            amount: amount + rate * 3.0,
+            state,
+            released: false,
+        }
+    }
+}
+
+/// The radius after one released tick. The speed term is 0.7 of the speed plus 3.
+pub fn grow_radius(radius: f32, speed: f32, tick: f32) -> f32 {
+    let term = speed * 0.7 + 3.0;
+    (f64::from(tick) * f64::from(term) * 0.0006 + f64::from(radius)) as f32
+}
+
+/// Push two chunks apart when they are closer than twice the first radius.
+/// A zero distance stays put.
+pub fn separate_chunks(a: [f32; 3], b: [f32; 3], radius: f32) -> ([f32; 3], [f32; 3]) {
+    let delta = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    let dist_sq = delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2];
+    let span = radius + radius;
+    if dist_sq == 0.0 || dist_sq >= span * span {
+        return (a, b);
+    }
+    let dist = dist_sq.sqrt();
+    let push = ((span - dist) / dist) * 0.5;
+    let scaled = [delta[0] * push, delta[1] * push, delta[2] * push];
+    (
+        [a[0] + scaled[0], a[1] + scaled[1], a[2] + scaled[2]],
+        [b[0] - scaled[0], b[1] - scaled[1], b[2] - scaled[2]],
+    )
+}
+
 /// Cast one domain's effect. Nothing changes when this returns an error.
 pub fn cast(domain: Domain, caster: &mut Caster, request: &Request) -> Result<Effect, CastError> {
     match domain {
@@ -464,6 +550,46 @@ mod tests {
         assert_eq!(
             cast(Domain::Mind, &mut calm, &request),
             Err(CastError::Focus)
+        );
+    }
+
+    #[test]
+    fn a_blast_charges_then_the_chunks_separate() {
+        assert_eq!(charge_rate(12), f32::from_bits(0x3c23_d70a));
+        assert_eq!(charge_rate(1000), f32::from_bits(0x3f55_5555));
+
+        let holding = step_charge(0.5, 0.5, 0);
+        assert_eq!(holding.amount, 1.0);
+        assert_eq!(holding.state, 0);
+        assert!(!holding.released);
+
+        let released = step_charge(0.6, 0.5, 0);
+        assert_eq!(released.amount, 0.0);
+        assert_eq!(released.state, 1);
+        assert!(released.released);
+
+        let fading = step_charge(0.5, 0.1, -1);
+        assert_eq!(fading.amount, 0.3);
+        assert_eq!(fading.state, -1);
+        let spent = step_charge(0.3, 0.2, -1);
+        assert_eq!(spent.amount, 0.0);
+        assert_eq!(spent.state, -2);
+
+        let after = step_charge(0.2, 0.1, 1);
+        assert_eq!(after.amount, 0.5);
+        assert!(!after.released);
+
+        assert_eq!(grow_radius(0.0, 0.0, 1.0), f32::from_bits(0x3aeb_edfa));
+        let (left, right) = separate_chunks([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 1.0);
+        assert_eq!(left, [-0.5, 0.0, 0.0]);
+        assert_eq!(right, [1.5, 0.0, 0.0]);
+        assert_eq!(
+            separate_chunks([0.0, 0.0, 0.0], [2.0, 0.0, 0.0], 1.0),
+            ([0.0, 0.0, 0.0], [2.0, 0.0, 0.0])
+        );
+        assert_eq!(
+            separate_chunks([1.0, 2.0, 3.0], [1.0, 2.0, 3.0], 1.0),
+            ([1.0, 2.0, 3.0], [1.0, 2.0, 3.0])
         );
     }
 
