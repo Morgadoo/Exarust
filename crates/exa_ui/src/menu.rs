@@ -232,6 +232,103 @@ pub fn skill_selector_key(
     }
 }
 
+const END_RESUME: u64 = 0x1_0018_bf80;
+const END_QUIT_FORM: u64 = 0x1_0012_43c0;
+const END_PAGE4_SPECIAL: u64 = 0x1_0012_4650;
+const END_PAGE4_NORMAL: u64 = 0x1_0012_4820;
+const END_PAGE8_FINAL: u64 = 0x1_0012_3d30;
+const END_PAGE8_FORM: u64 = 0x1_0012_4800;
+const END_PAGE8_A: u64 = 0x1_0013_2250;
+const END_PAGE8_B: u64 = 0x1_0017_b480;
+const END_PAGE8_C: u64 = 0x1_0012_c2c0;
+
+/// One dispatched end-session action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndSessionAction {
+    Call(u64),
+    Show { form: u64, flag: bool },
+    Registered(u64),
+}
+
+/// The end-session dispatch's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EndSessionInput {
+    pub page: i32,
+    pub action: i32,
+    pub form_page: i32,
+    pub final_round: bool,
+    pub handler: Option<u64>,
+}
+
+/// The dispatched actions and the cleared fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EndSessionDispatch {
+    pub actions: Vec<EndSessionAction>,
+    pub clears_action: bool,
+    pub clears_field_204: bool,
+    pub result: i32,
+}
+
+/// Resolves the end-session page and action into calls or forms.
+pub fn dispatch_end_session(input: EndSessionInput) -> EndSessionDispatch {
+    let mut actions = Vec::new();
+    match input.page {
+        2 => match input.action {
+            1 => actions.push(EndSessionAction::Call(END_RESUME)),
+            2 => actions.push(EndSessionAction::Show {
+                form: END_QUIT_FORM,
+                flag: true,
+            }),
+            _ => {}
+        },
+        4 => match input.action {
+            1 => {
+                actions.push(EndSessionAction::Call(if input.form_page == 4 {
+                    END_PAGE4_SPECIAL
+                } else {
+                    END_PAGE4_NORMAL
+                }));
+            }
+            2 => actions.push(EndSessionAction::Call(END_PAGE4_NORMAL)),
+            _ => {}
+        },
+        8 => match input.action {
+            1 => {
+                if input.form_page == 2 {
+                    actions.push(EndSessionAction::Call(END_PAGE8_A));
+                    actions.push(EndSessionAction::Call(END_PAGE8_B));
+                    actions.push(EndSessionAction::Call(END_PAGE8_C));
+                    actions.push(EndSessionAction::Show {
+                        form: END_PAGE8_FORM,
+                        flag: true,
+                    });
+                } else {
+                    actions.push(EndSessionAction::Show {
+                        form: END_PAGE8_FINAL,
+                        flag: input.final_round,
+                    });
+                }
+            }
+            2 => actions.push(EndSessionAction::Show {
+                form: END_QUIT_FORM,
+                flag: true,
+            }),
+            _ => {}
+        },
+        _ => {
+            if let Some(handler) = input.handler {
+                actions.push(EndSessionAction::Registered(handler));
+            }
+        }
+    }
+    EndSessionDispatch {
+        actions,
+        clears_action: true,
+        clears_field_204: true,
+        result: 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -401,5 +498,82 @@ mod tests {
 
         let page_one = skill_selector_key(3, 1, 4, 0, || 7);
         assert!(page_one.closed);
+    }
+
+    #[test]
+    fn the_end_session_dispatches_its_pages() {
+        let input = |page, action, form_page, final_round, handler| EndSessionInput {
+            page,
+            action,
+            form_page,
+            final_round,
+            handler,
+        };
+
+        let resume = dispatch_end_session(input(2, 1, 0, false, None));
+        assert_eq!(resume.actions, vec![EndSessionAction::Call(END_RESUME)]);
+        let quit = dispatch_end_session(input(2, 2, 0, false, None));
+        assert_eq!(
+            quit.actions,
+            vec![EndSessionAction::Show {
+                form: END_QUIT_FORM,
+                flag: true
+            }]
+        );
+
+        assert_eq!(
+            dispatch_end_session(input(4, 1, 4, false, None)).actions,
+            vec![EndSessionAction::Call(END_PAGE4_SPECIAL)]
+        );
+        assert_eq!(
+            dispatch_end_session(input(4, 1, 3, false, None)).actions,
+            vec![EndSessionAction::Call(END_PAGE4_NORMAL)]
+        );
+        assert_eq!(
+            dispatch_end_session(input(4, 2, 0, false, None)).actions,
+            vec![EndSessionAction::Call(END_PAGE4_NORMAL)]
+        );
+
+        assert_eq!(
+            dispatch_end_session(input(8, 1, 2, false, None)).actions,
+            vec![
+                EndSessionAction::Call(END_PAGE8_A),
+                EndSessionAction::Call(END_PAGE8_B),
+                EndSessionAction::Call(END_PAGE8_C),
+                EndSessionAction::Show {
+                    form: END_PAGE8_FORM,
+                    flag: true
+                }
+            ]
+        );
+        assert_eq!(
+            dispatch_end_session(input(8, 1, 3, true, None)).actions,
+            vec![EndSessionAction::Show {
+                form: END_PAGE8_FINAL,
+                flag: true
+            }]
+        );
+        assert_eq!(
+            dispatch_end_session(input(8, 1, 3, false, None)).actions,
+            vec![EndSessionAction::Show {
+                form: END_PAGE8_FINAL,
+                flag: false
+            }]
+        );
+
+        assert_eq!(
+            dispatch_end_session(input(3, 1, 0, false, Some(0xabc))).actions,
+            vec![EndSessionAction::Registered(0xabc)]
+        );
+        assert!(
+            dispatch_end_session(input(3, 1, 0, false, None))
+                .actions
+                .is_empty()
+        );
+
+        let done = dispatch_end_session(input(2, 1, 0, false, None));
+        assert!(done.clears_action);
+        assert!(done.clears_field_204);
+        assert_eq!(done.result, 0);
     }
 }

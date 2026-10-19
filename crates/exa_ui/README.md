@@ -180,7 +180,8 @@ clamps its low 16 bits to eight and toggles bits 0x110 on page 1. The inventory
 closes on the 0x2002 mask through its callback or the form close. The skill
 selector routes its key to the base handler while a positive selection is open
 on a page above one, or on word nine with a clear mode byte, and closes with
-0x40 otherwise.
+0x40 otherwise. The end-session menu resolves pages 2, 4 and 8 into their calls
+and forms, otherwise calls a registered handler, and always clears its action.
 
 ## Scope
 
