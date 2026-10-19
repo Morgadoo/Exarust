@@ -165,7 +165,9 @@ Keyframe tracks).
 Done (change `clip-portals-and-cross-levels`): a shut door does not load
 the room behind it; an open doorway shows a point only when the view
 crosses its opening (82 × 245 cm, 115 × 290 cm, or 200 × 340 cm); a
-passage loads the named level. Remaining: the lid in
+passage loads the named level.
+Done (change `pull-a-hinged-door`): a hinge creaks once its smoothed handle speed is past a squared 0.015. A velocity of 1 gives pitch 0.711. A shut door's pull count rises by 1 up to 20 and falls by 4 while it is held; from 20 the seventh pull unlatches it. Opening shoves the handle 3 cm along the facing. The motor and the sliding door are not in.
+Remaining: the lid in
 the lights' cube faces, terrain gloss textures, fine displacement, the
 original's sky shader, time of day and weather of the outdoor arenas,
 `exanima://` asset source, streaming.

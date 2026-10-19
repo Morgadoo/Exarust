@@ -7,6 +7,7 @@
 pub mod body;
 pub mod cloth;
 pub mod contact;
+pub mod door;
 pub mod prop;
 
 use bevy::prelude::*;
