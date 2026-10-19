@@ -475,6 +475,72 @@ pub(super) fn plant(
     }
 }
 
+/// Where one pass of the footwork left the feet after a stagger target.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WalkedStep {
+    /// The stance origin: the target, pulled back toward the frame.
+    pub origin: Vec3,
+    /// The foot that stepped, when one did.
+    pub foot: Option<usize>,
+    pub anchors: Vec<Vec3>,
+    pub states: Vec<u32>,
+    /// The other foot's landing ended the step.
+    pub ended: bool,
+}
+
+/// Walk the feet toward a collapse stagger's target. The stance origin is
+/// that target, pulled back to within 1.1 step lengths of `frame`, at the
+/// frame's height. Each stance spot moves with it. One footwork pass then
+/// anchors at most one foot on its spot, at the ankle's height.
+pub fn walk_stagger(
+    legs: &mut [Leg],
+    ankles: &[Vec3],
+    spots: &[Option<Vec3>],
+    target: Vec3,
+    frame: Vec3,
+    scale: f32,
+) -> WalkedStep {
+    let step_cm = steps::step_length(scale, 1.0);
+    let origin = steps::stance_origin(target, frame, step_cm, scale);
+    let shifted: Vec<Option<Vec3>> = spots
+        .iter()
+        .map(|spot| {
+            spot.map(|spot| {
+                let local = spot - frame;
+                Vec3::new(origin.x + local.x, spot.y, origin.z + local.z)
+            })
+        })
+        .collect();
+    let ended = footwork(
+        legs,
+        ankles,
+        &shifted,
+        &Work {
+            now_ms: 0.0,
+            scale,
+            crouch: 0.0,
+            reference: frame,
+            root: frame,
+            origin,
+            step_cm,
+            episode: true,
+            episode_ms: 0.0,
+            chest_to_target_cm: cm((target - frame).with_y(0.0)).length(),
+            size: 1.0,
+        },
+    );
+    let foot = legs
+        .iter()
+        .position(|leg| leg.state.has(FootState::ANCHORED));
+    WalkedStep {
+        origin,
+        foot,
+        anchors: legs.iter().map(|leg| leg.anchor).collect(),
+        states: legs.iter().map(|leg| leg.state.0).collect(),
+        ended,
+    }
+}
+
 /// The footwork of a body standing with support: the landing pass, then the
 /// stance score moves at most one foot ([`plant`]). A reached foot lands
 /// at once. Returns whether the other foot's landing ended the recovery

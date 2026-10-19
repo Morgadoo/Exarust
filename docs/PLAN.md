@@ -778,8 +778,9 @@ collapse); `--pause-after-collapse` for pictures of it. The corpse lies
 as the original's (on its back, arms out, a knee up), but the body
 squats on its feet longer before it falls (Rebalance 1.6–1.9 s after the
 blow; live 0.9–1.4 s at like energies). The stagger step's length and
-target are in. Still missing from it: the footwork that walks that
-target, the dropped weapon (L13).
+target are in. The footwork that walks that target is in. Still
+missing from it: the dying tick calling that walk, the dropped weapon
+(L13).
 Done (change `regenerate-health`, M43 of the master plan): wounds heal as
 in the original. Each fixed tick yellow health regains √red × a rate that
 ramps up over 40 s to 0.01/83 a tick (0.005 a second for a human with
@@ -882,7 +883,8 @@ Done (change `stick-a-weapon`): an unarmed bite sticks nothing, and a depth of 0
 Done (change `parry-unarmed`): a mid swing at clock 0.5, in front and within reach, is parried left-down with blend 20. Clock 0.2 is refused unless the combo flag is set. Yellow 0.009 is refused. Size 1.3 is refused unless the defender has a shield. A blow behind, and one past reach plus 150 cm, are refused. A down swing whose table height is at or below the chest difference is left-down, and one above it is left. A bite of 0.25 holds the two parts together in the solver. A bite of 0.1 opens no grab and the parts stay apart.
 Done (change `arm-a-parry-grip`): a cleave is refused. Handling 0.5 inside 80 cm has speed 0.5, blend 10, and strength bits 0x3ecf5c29. At 165 cm the strength bits are 0x3e4f5c29. At 250 cm and beyond the strength is 0. A passed blow has speed 0.25, blend 5, and flags 0x100000. A shield of weight 0.8 and stamina 0.5 has speed bits 0x3f4ccccd, blend 16, strength bits 0x3df5c290, and flags 0x800. Slot 1 is used only while attacking outside motions 8 to 10 with two weapons held.
 Done (change `recoil-a-striker`): a recoil sets strength and the stall rate to 0.5 and clears the released bit. A class word of 0x90 with the continuation bit, or with clock 0.4 and a counter, stops there. A released swing with the window bit and drive 1 sets flags 0x27, ends at 1240 from a clock of 1000, uses blend 40, and sets both arm stiffnesses to bits 0x3e4ccccd. Drive 0.013 ends at 1200. A follow-through with that same skip writes nothing. Gain, recoil and speed 1 at zone 0.25 set strength bits 0x3d99999a and end at 1060. An edge sets strength bits 0x3eb9999a. Strength caps at 1. A negative gain ends at the clock. Speed 0.009 ends at the clock.
-Done (change `stagger-a-collapse`): a body that is already stepping takes no stagger. Reach 80 at balance 1, tone 1 and scale root 1, with chest velocity 3 and 4, has length bits 0x42a00000 and target bits 0x42d7faf0, 0x42be0000 and 0x430ffca0. Reach 0.01 at balance 0.4 has length bits 0x3b83126f. The next lower balance has length bits 0x3b83126e. A zero velocity leaves the chest. Landings and the step kind are 0. Still to
+Done (change `stagger-a-collapse`): a body that is already stepping takes no stagger. Reach 80 at balance 1, tone 1 and scale root 1, with chest velocity 3 and 4, has length bits 0x42a00000 and target bits 0x42d7faf0, 0x42be0000 and 0x430ffca0. Reach 0.01 at balance 0.4 has length bits 0x3b83126f. The next lower balance has length bits 0x3b83126e. A zero velocity leaves the chest. Landings and the step kind are 0.
+Done (change `walk-a-stagger`): a target 2 m ahead pulls the stance origin to z bits 0x3f6147ae and anchors the first foot there, state 4. A target at 0.5 m stays at z bits 0x3f000000. A target on the frame moves no foot. The stagger target from reach 80, balance 1 and velocity 3 and 4 pulls the origin to bits 0x3f072b02 and 0x3f343958 and anchors the first foot at bits 0x3f53f7cf, 0xbe4ccccc and 0x3f343958. Still to
 do: injuries beyond damage, practice mode.
 
 - `exa_items`: item database, item instances, inventory and containers,

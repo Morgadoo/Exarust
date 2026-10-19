@@ -51,7 +51,7 @@ pub use balance::{Balance, Leg};
 mod bend;
 #[path = "body_feet.rs"]
 mod feet;
-pub use feet::FootState;
+pub use feet::{FootState, WalkedStep};
 #[path = "body_pins.rs"]
 mod pins;
 #[path = "body_stages.rs"]
@@ -1637,6 +1637,24 @@ impl Ragdoll {
         if let Some(d) = self.drive.as_mut() {
             d.energy = daze_energy(d.energy, daze);
         }
+    }
+
+    /// One footwork pass toward a collapse stagger's `target`. The feet
+    /// keep the state they have. `spots` are the clip's ankles under
+    /// `frame`. Returns the stance origin and where each foot is held.
+    pub fn walk_stagger(
+        &mut self,
+        target: Vec3,
+        frame: Vec3,
+        spots: &[Option<Vec3>],
+        scale: f32,
+    ) -> feet::WalkedStep {
+        let ankles: Vec<Vec3> = self
+            .legs
+            .iter()
+            .map(|leg| self.parts[leg.shin].point(&leg.contact))
+            .collect();
+        feet::walk_stagger(&mut self.legs, &ankles, spots, target, frame, scale)
     }
 
     /// Starts a knockback step at the chest plus `offset` (m, horizontal).

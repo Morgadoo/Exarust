@@ -739,3 +739,63 @@ fn feet_on_a_step_anchor_on_their_own_ground() {
     assert!(close(level, 1.0 - v * v, 0.01), "level {level}, v {v}");
     assert!(level < 0.95);
 }
+
+fn two_feet() -> (Ragdoll, [Vec3; 2]) {
+    let shin = |bone: usize, x: f32| PartSetup {
+        bone,
+        entity: Entity::from_raw_u32(bone as u32 + 1).unwrap(),
+        parent: Some(0),
+        world: Affine3A::from_translation(Vec3::new(x, 0.0, 0.0)),
+        centre: Vec3::ZERO,
+        half: Vec3::new(0.06, 0.2, 0.06),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot: Some(Vec3::new(0.0, -0.2, 0.0)),
+        pins: Vec::new(),
+    };
+    let pelvis = PartSetup {
+        bone: 1,
+        entity: Entity::from_raw_u32(1).unwrap(),
+        parent: None,
+        world: Affine3A::from_translation(Vec3::ZERO),
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.1),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot: None,
+        pins: Vec::new(),
+    };
+    let body = Ragdoll::new(&[pelvis, shin(3, 0.3), shin(5, -0.3)]).with_drive();
+    let ankles = [
+        body.parts[body.legs[0].shin].point(&body.legs[0].contact),
+        body.parts[body.legs[1].shin].point(&body.legs[1].contact),
+    ];
+    (body, ankles)
+}
+
+#[test]
+fn a_stagger_target_walks_one_foot() {
+    let (mut body, ankles) = two_feet();
+    let spots = [Some(ankles[0]), Some(ankles[1])];
+    let walked = body.walk_stagger(Vec3::new(0.0, 1.0, 2.0), Vec3::ZERO, &spots, 1.0);
+    assert_eq!(walked.origin.z.to_bits(), 0x3f61_47ae);
+    assert_eq!(walked.origin.x.to_bits(), 0);
+    assert_eq!(walked.foot, Some(0));
+    assert!(!walked.ended);
+    assert_eq!(walked.states, vec![FootState::ANCHORED, 0]);
+    assert_eq!(walked.anchors[0].x.to_bits(), 0x3e99_9999);
+    assert_eq!(walked.anchors[0].y.to_bits(), 0xbe4c_cccc);
+    assert_eq!(walked.anchors[0].z.to_bits(), 0x3f61_47ae);
+    assert_eq!(walked.anchors[1].x.to_bits(), 0xbe99_9999);
+    assert_eq!(walked.anchors[1].z.to_bits(), 0);
+    let (mut near, ankles) = two_feet();
+    let spots = [Some(ankles[0]), Some(ankles[1])];
+    let walked = near.walk_stagger(Vec3::new(0.0, 0.0, 0.5), Vec3::ZERO, &spots, 1.0);
+    assert_eq!(walked.origin.z.to_bits(), 0x3f00_0000);
+    assert_eq!(walked.anchors[0].z.to_bits(), 0x3f00_0000);
+    let (mut still, ankles) = two_feet();
+    let spots = [Some(ankles[0]), Some(ankles[1])];
+    let walked = still.walk_stagger(Vec3::ZERO, Vec3::ZERO, &spots, 1.0);
+    assert_eq!(walked.foot, None);
+    assert_eq!(walked.states, vec![0, 0]);
+}

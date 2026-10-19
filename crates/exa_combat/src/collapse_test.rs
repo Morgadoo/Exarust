@@ -2,7 +2,7 @@
 //! death 250 ticks later.
 use bevy::math::Affine3A;
 use exa_physics::body::pairs::{FOOT_LAYER, LIVING_SHIN_LAYER};
-use exa_physics::body::{PIN_GAIN, PartSetup};
+use exa_physics::body::{FootState, PIN_GAIN, PartSetup};
 
 use super::*;
 
@@ -325,4 +325,51 @@ fn a_collapse_starts_one_stagger_step() {
         })
         .is_none()
     );
+}
+
+fn two_feet() -> (Ragdoll, [Vec3; 2]) {
+    let shin = |bone: usize, x: f32| PartSetup {
+        bone,
+        entity: Entity::from_raw_u32(bone as u32 + 1).unwrap(),
+        parent: Some(0),
+        world: Affine3A::from_translation(Vec3::new(x, 0.0, 0.0)),
+        centre: Vec3::ZERO,
+        half: Vec3::new(0.06, 0.2, 0.06),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot: Some(Vec3::new(0.0, -0.2, 0.0)),
+        pins: Vec::new(),
+    };
+    let pelvis = PartSetup {
+        bone: 1,
+        entity: Entity::from_raw_u32(1).unwrap(),
+        parent: None,
+        world: Affine3A::from_translation(Vec3::ZERO),
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.1),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot: None,
+        pins: Vec::new(),
+    };
+    let body = Ragdoll::new(&[pelvis, shin(3, 0.3), shin(5, -0.3)]).with_drive();
+    let ankles = [Vec3::new(0.3, -0.2, 0.0), Vec3::new(-0.3, -0.2, 0.0)];
+    (body, ankles)
+}
+
+#[test]
+fn a_collapse_walks_the_stagger_it_starts() {
+    let step = stagger_step(&falling()).unwrap();
+    let (mut body, ankles) = two_feet();
+    let spots = [Some(ankles[0]), Some(ankles[1])];
+    let walked = body.walk_stagger(step.target, Vec3::ZERO, &spots, 1.0);
+    assert_eq!(walked.foot, Some(0));
+    assert!(!walked.ended);
+    assert_eq!(walked.states, vec![FootState::ANCHORED, 0]);
+    assert_eq!(walked.origin.x.to_bits(), 0x3f07_2b02);
+    assert_eq!(walked.origin.y.to_bits(), 0);
+    assert_eq!(walked.origin.z.to_bits(), 0x3f34_3958);
+    assert_eq!(walked.anchors[0].x.to_bits(), 0x3f53_f7cf);
+    assert_eq!(walked.anchors[0].y.to_bits(), 0xbe4c_cccc);
+    assert_eq!(walked.anchors[0].z.to_bits(), 0x3f34_3958);
 }

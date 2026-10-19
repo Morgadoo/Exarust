@@ -124,7 +124,10 @@ balance, and a lower balance scales the widened reach by 0.4. The span
 squares the tone plus one half and multiplies by that length and the
 stored square root of the scale. The target adds the velocity's
 reciprocal-square-root unit times the span to the chest, a zero velocity
-leaves the chest, and the landings and the step kind are 0. A body without muscles dies at
+leaves the chest, and the landings and the step kind are 0. The footwork
+walks that target (`Ragdoll::walk_stagger`): the stance origin is the
+target pulled back to 1.1 step lengths of the frame, and one foot is
+anchored on its shifted spot. A body without muscles dies at
 once. Rules: [`docs/formats/RSQ.md`](../../docs/formats/RSQ.md) (The
 collapse).
 

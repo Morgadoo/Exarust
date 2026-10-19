@@ -1279,3 +1279,10 @@ A body that is already stepping SHALL take no stagger. Otherwise a balance that 
 #### Scenario: A still chest, a balance of 0.4, and a step already running
 - **WHEN** reach 80 at balance 1, tone 1 and scale root 1 is staggered with velocity 3 and 4, reach 0.01 is staggered at balance 0.4 and at the next lower balance, a zero velocity is staggered, a scale root of the square root of 2 is staggered at balance 0.8 and tone 0.5, and a body that is already stepping is staggered
 - **THEN** the first step has length bits 0x42a00000 and target bits 0x42d7faf0, 0x42be0000 and 0x430ffca0, reach 0.01 at balance 0.4 has length bits 0x3b83126f, the next lower balance has length bits 0x3b83126e, the zero velocity leaves the chest, the rooted step has length bits 0x42800000 and target bits 0x41200000, 0x42b4f9a3 and 0xc0a00000, landings and the step kind are 0, and the body that is already stepping takes nothing
+
+### Requirement: Stagger walk
+A stagger target SHALL pull the stance origin back to within 1.1 step lengths of the frame, and one footwork pass SHALL anchor one foot on its shifted spot. A target inside that length SHALL stay where it is. A target on the frame SHALL move no foot.
+
+#### Scenario: A far target, a near target, and the frame
+- **WHEN** a target 2 m ahead is walked, a target half a metre ahead is walked, a target on the frame is walked, and the stagger from reach 80, balance 1 and velocity 3 and 4 is walked
+- **THEN** the far target pulls the origin to z bits 0x3f6147ae and anchors the first foot there with state 4, the near target stays at z bits 0x3f000000, the frame moves no foot, and the stagger pulls the origin to bits 0x3f072b02 and 0x3f343958 and anchors the first foot at bits 0x3f53f7cf, 0xbe4ccccc and 0x3f343958
