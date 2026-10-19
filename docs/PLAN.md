@@ -1045,6 +1045,7 @@ Done (change `copy-a-shell-index`): two visible ranges and a hidden range copy t
 Done (change `keep-a-skinned-section`): a section with bit 2 and a hidden section that also has bit 2 copy to 14, 15, 16, 11, 12, 10. A section without bit 2 is absent. The same hidden section copies nothing on the object path. A reversed triangle stays reversed. A range that ends early is empty. A short list is an error. A missing remap is an error. The compacted vertex map is not in.
 Done (change `compact-a-shell-vertex`): marks for a skinned range, a plain range, and a later skinned range are 0, 255, 2. Three vertices number as 0, absent, and 1. Indices 2, 0, 2 become 1, 0, 1. An absent index is an error. A short mark list is an error. The GPU buffers are not in.
 Done (change `record-a-shell-slot`): three vertices store section 0 local 1, nothing, and section 2 local 2. A later link is ignored. A base of -1 subtracted from 1 stores 2. A short corner list is an error. A missing base is an error. The GPU buffers are not in.
+Done (change `count-a-shell-index`): two skinned triangles, a hidden skinned triangle and a range that ends one early count as 3 triangles and 32 bytes for two kept vertices. A plain range adds nothing. A range that ends two early counts as -1 triangles and 16 bytes. The kind is 3 and the base is 0. The GPU upload is not in.
 Done (change `save-the-session`): an `EXRS` file restores that session.
 The original's save packages are not read.
 
@@ -1065,7 +1066,7 @@ Still open:
 
 - The other emblem controls. A candidate's listed price is the rank square plus four fifths of the gear. A swept season grants its four item ids, and day 134 repeats the first row. A shop line prices at 1, 12, 144 or 1440 copper, and a sale is a quarter of the basket. A tier multiplies a match stake by one more than the tier. A recruitment costs 12 copper. Overnight rest and a trainer's lesson are in.
 - Story side levels, scripted encounters, the role interpreter, map discovery.
-- The other powers and their meshes. A blast charge, a barrier ripple, a wave front, a shell ripple, a shell vertex, a shell index list, a skinned section filter, a compacted vertex map, a section slot, a torrent mix and a torrent stream are in. The GPU buffers are not in.
+- The other powers and their meshes. A blast charge, a barrier ripple, a wave front, a shell ripple, a shell vertex, a shell index list, a skinned section filter, a compacted vertex map, a section slot, an index room, a torrent mix and a torrent stream are in. The GPU upload is not in.
 - Character creation (race, body, face, hair, colours, class, skills).
 - Full UI using the original GUI skin, icons and manual pages.
 

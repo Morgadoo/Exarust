@@ -779,6 +779,42 @@ pub fn shell_slots(
     Ok(slots)
 }
 
+/// The index room a skinned shell counts before any upload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShellIndexRoom {
+    pub triangles: i32,
+    pub bytes: i32,
+    pub width: i32,
+    pub channels: i32,
+    pub kind: i32,
+    pub base: i32,
+    pub end: i32,
+    pub vertex_end: i32,
+}
+
+/// Count the index room. A section with bit 2 adds one per triangle. The upload is not done here.
+pub fn shell_index_room(spans: &[ShellSpan], kept: i32) -> ShellIndexRoom {
+    let mut triangles = 0i32;
+    for span in spans {
+        if span.flags & SHELL_SKINNED == 0 {
+            continue;
+        }
+        triangles = triangles.wrapping_add(span.end.wrapping_sub(span.start).wrapping_add(1));
+    }
+    let width = 4;
+    let channels = 1;
+    ShellIndexRoom {
+        triangles,
+        bytes: 12 + channels * 8 + triangles.wrapping_mul(width),
+        width,
+        channels,
+        kind: 3,
+        base: 0,
+        end: triangles.wrapping_sub(1),
+        vertex_end: kept.wrapping_sub(1),
+    }
+}
+
 /// Replace each index with its compacted id. An absent id is an error.
 pub fn shell_apply_compact(
     indices: &[u32],
@@ -1371,6 +1407,68 @@ mod tests {
                 &[10]
             ),
             Err(ShellIndexError::Short)
+        );
+    }
+
+    #[test]
+    fn a_shell_counts_its_index_room() {
+        let room = shell_index_room(
+            &[
+                ShellSpan {
+                    flags: SHELL_SKINNED,
+                    start: 0,
+                    end: 1,
+                },
+                ShellSpan {
+                    flags: 0,
+                    start: 5,
+                    end: 9,
+                },
+                ShellSpan {
+                    flags: SHELL_HIDDEN | SHELL_SKINNED,
+                    start: 2,
+                    end: 2,
+                },
+                ShellSpan {
+                    flags: SHELL_SKINNED,
+                    start: 5,
+                    end: 4,
+                },
+            ],
+            2,
+        );
+        assert_eq!(
+            room,
+            ShellIndexRoom {
+                triangles: 3,
+                bytes: 32,
+                width: 4,
+                channels: 1,
+                kind: 3,
+                base: 0,
+                end: 2,
+                vertex_end: 1,
+            }
+        );
+        assert_eq!(
+            shell_index_room(
+                &[ShellSpan {
+                    flags: SHELL_SKINNED,
+                    start: 5,
+                    end: 3,
+                }],
+                0
+            ),
+            ShellIndexRoom {
+                triangles: -1,
+                bytes: 16,
+                width: 4,
+                channels: 1,
+                kind: 3,
+                base: 0,
+                end: -2,
+                vertex_end: -1,
+            }
         );
     }
 
