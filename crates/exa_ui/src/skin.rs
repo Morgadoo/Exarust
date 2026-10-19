@@ -618,8 +618,9 @@ pub struct TitleDraw {
 
 /// The opening of a form: spans, an optional shade and backdrop, the scroll
 /// shift, the shown children, the title, the corners, the edge bars, the
-/// wide top, the left side, the bottom, the right side, and the ink copy
-/// that follows. The join after that copy is not in.
+/// wide top, the left side, the bottom, the right side, the ink copy,
+/// and the square drawn when the close mark is -4. The hold-bit edge
+/// test is not in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormDispatch {
     pub span_a: i32,
@@ -645,6 +646,7 @@ pub struct FormDispatch {
     pub wide_right: Vec<SliderQuad>,
     pub wide_calls: u32,
     pub mark_calls: u32,
+    pub late_close: Vec<SliderQuad>,
 }
 
 fn edge_reach(unit: i32) -> i32 {
@@ -970,6 +972,21 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         wide && (place.flags_d & FORM_BAND) == FORM_BAND_ON
             && (place.flags_a & FORM_MARK) == FORM_MARK,
     );
+    let late_close = if place.close_mark == -4 {
+        let span = unit.wrapping_shl(2);
+        let width = place.width;
+        vec![quad(
+            FORM_CLOSE_INK,
+            [
+                (width, 0),
+                (width.wrapping_sub(span), 0),
+                (width.wrapping_sub(span), span),
+                (width, span),
+            ],
+        )]
+    } else {
+        Vec::new()
+    };
     FormDispatch {
         span_a,
         span_b,
@@ -999,6 +1016,7 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         wide_right,
         wide_calls,
         mark_calls,
+        late_close,
     }
 }
 
@@ -1895,5 +1913,24 @@ mod tests {
         form.flags_b = 0;
         form.flags_d = 0x80;
         assert_eq!(dispatch_form(5, 0, form, &[]).mark_calls, 0);
+    }
+
+    #[test]
+    fn a_dispatch_draws_the_late_close() {
+        let mut form = place(0, 0, 0, 0, 0, 0);
+        form.close_mark = -4;
+        let drawn = dispatch_form(5, 0, form, &[]);
+        assert_eq!(drawn.late_close.len(), 1);
+        assert_eq!(drawn.late_close[0].sample, FORM_CLOSE_INK);
+        assert_eq!(
+            drawn.late_close[0].corners,
+            [(100, 0), (80, 0), (80, 20), (100, 20)]
+        );
+        assert!(drawn.corners.is_empty());
+
+        form.close_mark = 0;
+        assert!(dispatch_form(5, 0, form, &[]).late_close.is_empty());
+        form.close_mark = -3;
+        assert!(dispatch_form(5, 0, form, &[]).late_close.is_empty());
     }
 }
