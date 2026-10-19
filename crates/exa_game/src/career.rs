@@ -16,6 +16,9 @@
 //! or 1440 copper, and a sale is a quarter of that basket. A match stake is
 //! a coin dword, and a tier multiplies that copper by one more than the tier.
 //! A swept season grants four item ids, and day 134 repeats the first four.
+//! A candidate's listed price is the square of one more than half of six
+//! skill levels, that half stopping at 5, times 12, plus four fifths of the
+//! gear. A flat recruitment stays at 12 copper.
 //!
 //! Evidence: the arena career notes (money seed, coin rate, roster caps,
 //! the six standard matches and the seven specials, fee on entry, prize on
@@ -393,6 +396,68 @@ impl Company {
         }
         self.copper -= HIRE_PRICE;
         self.spent += HIRE_PRICE;
+        self.roster.push(Member {
+            name: name.into(),
+            profession,
+            xp: 0,
+            skills: [0; 6],
+            skill_xp: [0; 6],
+            techniques: [[0; 6]; 6],
+            health: u16::MAX,
+            in_entry: false,
+        });
+        Ok(())
+    }
+
+    /// Copper a hire-list candidate costs. Half of six skill levels stops at
+    /// 5. One more than that is squared and multiplied by 12. Four fifths of
+    /// the gear, the sum of the shop line prices, is added to the nearest copper.
+    pub fn listed_price(skills: &[u32], gear: &[u16]) -> u32 {
+        let sum = skills
+            .iter()
+            .take(6)
+            .fold(0u32, |sum, level| sum.saturating_add(*level));
+        let rank = (sum / 2).min(5);
+        let step = rank + 1;
+        let standing = step * step * COIN;
+        let gear_total = gear
+            .iter()
+            .fold(0u32, |sum, word| sum.wrapping_add(line_price(*word)));
+        let share = ((u64::from(gear_total) * 4 + 2) / 5) as u32;
+        standing + share
+    }
+
+    /// Hire a listed candidate. A short purse is refused before the roster
+    /// caps. A full roster or a second specialist does not spend.
+    pub fn hire_listed(
+        &mut self,
+        name: impl Into<String>,
+        profession: Profession,
+        skills: &[u32],
+        gear: &[u16],
+    ) -> Result<(), HireError> {
+        let price = Self::listed_price(skills, gear);
+        if self.copper < price {
+            return Err(HireError::Funds);
+        }
+        let combatants = self
+            .roster
+            .iter()
+            .filter(|member| member.profession == Profession::Combatant)
+            .count();
+        if profession == Profession::Combatant && combatants >= MAX_COMBATANTS {
+            return Err(HireError::Full);
+        }
+        if profession != Profession::Combatant
+            && self
+                .roster
+                .iter()
+                .any(|member| member.profession == profession)
+        {
+            return Err(HireError::Duplicate);
+        }
+        self.copper -= price;
+        self.spent += price;
         self.roster.push(Member {
             name: name.into(),
             profession,
@@ -1087,5 +1152,61 @@ mod tests {
         );
         assert_eq!(company.copper, 0);
         assert_eq!(company.spent, 24);
+    }
+
+    #[test]
+    fn a_listed_price_uses_rank_and_gear() {
+        assert_eq!(Company::listed_price(&[0; 6], &[]), 12);
+        assert_eq!(Company::listed_price(&[2, 0, 0, 0, 0, 0], &[]), 48);
+        assert_eq!(Company::listed_price(&[10, 0, 0, 0, 0, 0], &[]), 432);
+        assert_eq!(Company::listed_price(&[12, 0, 0, 0, 0, 0], &[]), 432);
+        assert_eq!(Company::listed_price(&[0; 6], &[7]), 18);
+        assert_eq!(Company::listed_price(&[0; 6], &[UNIT_SILVER | 2]), 31);
+        assert_eq!(Company::listed_price(&[0, 0, 0, 0, 0, 0, 100], &[]), 12);
+
+        let mut poor = Company::new("Ash");
+        poor.copper = 47;
+        assert_eq!(
+            poor.hire_listed("a", Profession::Combatant, &[2, 0, 0, 0, 0, 0], &[]),
+            Err(HireError::Funds)
+        );
+        assert!(poor.roster.is_empty());
+        assert_eq!(poor.copper, 47);
+        assert_eq!(poor.spent, 0);
+
+        let mut full = Company::new("Ash");
+        for n in 0..MAX_COMBATANTS {
+            full.hire(format!("f{n}"), Profession::Combatant).unwrap();
+        }
+        let spent = full.spent;
+        full.copper = 0;
+        assert_eq!(
+            full.hire_listed("extra", Profession::Combatant, &[0; 6], &[]),
+            Err(HireError::Funds)
+        );
+        assert_eq!(full.roster.len(), MAX_COMBATANTS);
+        assert_eq!(full.spent, spent);
+        full.copper = 100;
+        assert_eq!(
+            full.hire_listed("extra", Profession::Combatant, &[0; 6], &[]),
+            Err(HireError::Full)
+        );
+        assert_eq!(full.copper, 100);
+        assert_eq!(full.spent, spent);
+
+        let mut company = Company::new("Ash");
+        company
+            .hire_listed("a", Profession::Combatant, &[2, 0, 0, 0, 0, 0], &[])
+            .unwrap();
+        assert_eq!(company.copper, 295);
+        assert_eq!(company.spent, 48);
+        company
+            .hire_listed("med", Profession::Physician, &[0; 6], &[])
+            .unwrap();
+        assert_eq!(
+            company.hire_listed("med2", Profession::Physician, &[0; 6], &[]),
+            Err(HireError::Duplicate)
+        );
+        assert_eq!(company.spent, 60);
     }
 }
