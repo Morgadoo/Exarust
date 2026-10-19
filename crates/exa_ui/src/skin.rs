@@ -2629,6 +2629,203 @@ pub fn hit_line(place: HitPlace, x: i32, y: i32, unit: i32, wide: bool) -> i32 {
     0
 }
 
+/// A line-shade place. The state band 0x10000 selects the special ink.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineShadePlace {
+    pub x: i16,
+    pub y: i16,
+    pub w: i16,
+    pub h: i16,
+    pub state: u32,
+    pub inner_ink: [u8; 4],
+    pub side_inset: i32,
+}
+
+/// The normal and special outer inks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineShadeInks {
+    pub normal: [u8; 4],
+    pub special: [u8; 4],
+}
+
+/// One shade quad. The inner rectangle binds no sample.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LineShadeQuad {
+    pub sample: Option<[u32; 8]>,
+    pub corners: [(f32, f32); 4],
+    pub placed: [(f32, f32); 4],
+    pub ink: [u8; 4],
+}
+
+/// The inner rectangle's integer extent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineShadeRect {
+    pub left: i32,
+    pub top: i32,
+    pub width: i32,
+    pub height: i32,
+    pub right: i64,
+    pub bottom: i64,
+}
+
+/// Six outer quads and the solid inner rectangle.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LineShade {
+    pub modes: [i32; 3],
+    pub mode_calls: u32,
+    pub prepare_calls: u32,
+    pub outer_ink_bind_calls: u32,
+    pub inner_ink_bind_calls: u32,
+    pub sample_bind_calls: u32,
+    pub begin_calls: u32,
+    pub end_calls: u32,
+    pub vertex_calls: u32,
+    pub colour_writes: u32,
+    pub batch_count: u32,
+    pub outer: [LineShadeQuad; 6],
+    pub inner: LineShadeQuad,
+    pub inner_rect: LineShadeRect,
+    pub outer_ink: [u8; 4],
+    pub inner_ink: [u8; 4],
+    pub special_ink_used: bool,
+    pub place_inset_after: i16,
+}
+
+/// Draws the shade: six outer quads over a span, then a solid inner
+/// rectangle inset by the unit.
+pub fn draw_line_shade(
+    unit: i32,
+    place: LineShadePlace,
+    inks: LineShadeInks,
+    view: SpanView,
+) -> LineShade {
+    let x = i32::from(place.x);
+    let y = i32::from(place.y);
+    let w = i32::from(place.w);
+    let h = i32::from(place.h);
+    let half = ((unit as u32) >> 1) as i32;
+    let right = x.wrapping_add(w);
+    let top = y.wrapping_sub(half);
+    let bottom = y.wrapping_add(h).wrapping_add(half);
+    let side = place.side_inset;
+    let left_inset = (i64::from(x) + i64::from(side)) as f32;
+    let right_inset = (i64::from(right) - i64::from(side)) as f32;
+    let left = x as f32;
+    let right_f = right as f32;
+    let top_high = (i64::from(top) + i64::from(unit)) as f32;
+    let top_low = (i64::from(top) - i64::from(unit)) as f32;
+    let bottom_low = (i64::from(bottom) - i64::from(unit)) as f32;
+    let bottom_high = (i64::from(bottom) + i64::from(unit)) as f32;
+    let raw: [[(f32, f32); 4]; 6] = [
+        [
+            (left_inset, top_high),
+            (left_inset, top_low),
+            (left, top_low),
+            (left, top_high),
+        ],
+        [
+            (left_inset, top_high),
+            (left_inset, top_low),
+            (right_inset, top_low),
+            (right_inset, top_high),
+        ],
+        [
+            (right_inset, top_high),
+            (right_inset, top_low),
+            (right_f, top_low),
+            (right_f, top_high),
+        ],
+        [
+            (left_inset, bottom_low),
+            (left_inset, bottom_high),
+            (left, bottom_high),
+            (left, bottom_low),
+        ],
+        [
+            (left_inset, bottom_low),
+            (left_inset, bottom_high),
+            (right_inset, bottom_high),
+            (right_inset, bottom_low),
+        ],
+        [
+            (right_inset, bottom_low),
+            (right_inset, bottom_high),
+            (right_f, bottom_high),
+            (right_f, bottom_low),
+        ],
+    ];
+    let binds = [SPAN_CAP, SPAN_BAR, SPAN_CAP, SPAN_CAP, SPAN_BAR, SPAN_CAP];
+    let special = (place.state & 0xf_0000) == 0x1_0000;
+    let outer_ink = if special {
+        let mut ink = inks.special;
+        ink[3] = 0xff;
+        ink
+    } else {
+        inks.normal
+    };
+    let mut inner_ink = place.inner_ink;
+    inner_ink[3] = 0xff;
+    let inset = unit as i16;
+    let inner_left = x.wrapping_add(i32::from(inset));
+    let inner_top = y.wrapping_add(i32::from(inset));
+    let inner_width = w.wrapping_sub(i32::from(inset).wrapping_shl(1));
+    let inner_height = h.wrapping_sub(i32::from(inset).wrapping_shl(1));
+    let inner_right = i64::from(inner_left) + i64::from(inner_width);
+    let inner_bottom = i64::from(inner_top) + i64::from(inner_height);
+    let inner_corners = [
+        (inner_right as f32, inner_top as f32),
+        (inner_left as f32, inner_top as f32),
+        (inner_left as f32, inner_bottom as f32),
+        (inner_right as f32, inner_bottom as f32),
+    ];
+    let mut outer = [LineShadeQuad {
+        sample: None,
+        corners: [(0.0, 0.0); 4],
+        placed: [(0.0, 0.0); 4],
+        ink: outer_ink,
+    }; 6];
+    for (slot, quad) in outer.iter_mut().enumerate() {
+        *quad = LineShadeQuad {
+            sample: Some(binds[slot]),
+            corners: raw[slot],
+            placed: raw[slot].map(|(px, py)| place_corner(px, py, view)),
+            ink: outer_ink,
+        };
+    }
+    LineShade {
+        modes: [2, 1, 0x10],
+        mode_calls: 3,
+        prepare_calls: 1,
+        outer_ink_bind_calls: 1,
+        inner_ink_bind_calls: 1,
+        sample_bind_calls: 6,
+        begin_calls: 2,
+        end_calls: 2,
+        vertex_calls: 28,
+        colour_writes: 28,
+        batch_count: 2,
+        outer,
+        inner: LineShadeQuad {
+            sample: None,
+            corners: inner_corners,
+            placed: inner_corners.map(|(px, py)| place_corner(px, py, view)),
+            ink: inner_ink,
+        },
+        inner_rect: LineShadeRect {
+            left: inner_left,
+            top: inner_top,
+            width: inner_width,
+            height: inner_height,
+            right: inner_right,
+            bottom: inner_bottom,
+        },
+        outer_ink,
+        inner_ink,
+        special_ink_used: special,
+        place_inset_after: inset,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5451,5 +5648,97 @@ mod tests {
         assert_eq!(hit_line(strip, 50, -5, 5, false), 0);
         assert_eq!(hit_line(strip, 5, 30, 5, false), 0);
         assert_eq!(hit_line(strip, 50, 30, 5, true), -8);
+    }
+
+    #[test]
+    fn a_line_shade_draws_six_quads_and_an_inner_rect() {
+        let place = LineShadePlace {
+            x: 10,
+            y: 20,
+            w: 100,
+            h: 80,
+            state: 0,
+            inner_ink: [1, 2, 3, 4],
+            side_inset: 15,
+        };
+        let inks = LineShadeInks {
+            normal: [0x99, 0xaa, 0xbb, 0xcc],
+            special: [0xde, 0xad, 0xbe, 0xef],
+        };
+        let shade = draw_line_shade(5, place, inks, SPAN_VIEW_UNSET);
+        assert_eq!(shade.modes, [2, 1, 0x10]);
+        assert_eq!(shade.mode_calls, 3);
+        assert_eq!(shade.prepare_calls, 1);
+        assert_eq!(shade.outer_ink_bind_calls, 1);
+        assert_eq!(shade.inner_ink_bind_calls, 1);
+        assert_eq!(shade.sample_bind_calls, 6);
+        assert_eq!(shade.begin_calls, 2);
+        assert_eq!(shade.end_calls, 2);
+        assert_eq!(shade.vertex_calls, 28);
+        assert_eq!(shade.colour_writes, 28);
+        assert_eq!(shade.batch_count, 2);
+        assert_eq!(shade.place_inset_after, 5);
+        assert!(!shade.special_ink_used);
+        assert_eq!(shade.outer_ink, [0x99, 0xaa, 0xbb, 0xcc]);
+        assert_eq!(shade.inner_ink, [1, 2, 3, 0xff]);
+
+        let expect: [[(f32, f32); 4]; 6] = [
+            [(25.0, 23.0), (25.0, 13.0), (10.0, 13.0), (10.0, 23.0)],
+            [(25.0, 23.0), (25.0, 13.0), (95.0, 13.0), (95.0, 23.0)],
+            [(95.0, 23.0), (95.0, 13.0), (110.0, 13.0), (110.0, 23.0)],
+            [(25.0, 97.0), (25.0, 107.0), (10.0, 107.0), (10.0, 97.0)],
+            [(25.0, 97.0), (25.0, 107.0), (95.0, 107.0), (95.0, 97.0)],
+            [(95.0, 97.0), (95.0, 107.0), (110.0, 107.0), (110.0, 97.0)],
+        ];
+        let binds = [SPAN_CAP, SPAN_BAR, SPAN_CAP, SPAN_CAP, SPAN_BAR, SPAN_CAP];
+        for (slot, quad) in shade.outer.iter().enumerate() {
+            assert_eq!(quad.sample, Some(binds[slot]));
+            assert_eq!(quad.ink, [0x99, 0xaa, 0xbb, 0xcc]);
+            for ((gx, gy), (wx, wy)) in quad.corners.iter().zip(expect[slot]) {
+                assert_eq!(gx.to_bits(), wx.to_bits());
+                assert_eq!(gy.to_bits(), wy.to_bits());
+            }
+        }
+        assert_eq!(shade.inner.sample, None);
+        assert_eq!(shade.inner.ink, [1, 2, 3, 0xff]);
+        let inner: [(f32, f32); 4] = [(105.0, 25.0), (15.0, 25.0), (15.0, 95.0), (105.0, 95.0)];
+        for ((gx, gy), (wx, wy)) in shade.inner.corners.iter().zip(inner) {
+            assert_eq!(gx.to_bits(), wx.to_bits());
+            assert_eq!(gy.to_bits(), wy.to_bits());
+        }
+        assert_eq!(
+            shade.inner_rect,
+            LineShadeRect {
+                left: 15,
+                top: 25,
+                width: 90,
+                height: 70,
+                right: 105,
+                bottom: 95,
+            }
+        );
+
+        let special = draw_line_shade(
+            5,
+            LineShadePlace {
+                state: 0x1_0000,
+                ..place
+            },
+            inks,
+            SPAN_VIEW_UNSET,
+        );
+        assert!(special.special_ink_used);
+        assert_eq!(special.outer_ink, [0xde, 0xad, 0xbe, 0xff]);
+
+        let view = SpanView {
+            shift_x: 2.0,
+            shift_y: 100.0,
+            scale_x: 0.5,
+            scale_y: 2.0,
+            ..SPAN_VIEW_UNSET
+        };
+        let placed = draw_line_shade(5, place, inks, view);
+        assert_eq!(placed.outer[0].placed[0].0.to_bits(), 13.5_f32.to_bits());
+        assert_eq!(placed.outer[0].placed[0].1.to_bits(), 154.0_f32.to_bits());
     }
 }

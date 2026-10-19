@@ -32,11 +32,12 @@ pub use skin::{
     BEVEL_INK, BackdropCorner, BevelArm, BevelBox, BevelInk, BevelPlace, CappedSpan, CentredIcon,
     DispatchPlace, DrawSkin, FlatSlider, FormDispatch, FrameDraw, FramePlace, HitPlace, IconPlace,
     InkLine, InkQuad, LINE_CHIP, LINE_CHIP_ALT, LINE_HEIGHTS, LINE_RAIL, LabelMetrics, LabelPlace,
-    LineChip, LineLabel, LineRail, LineScale, RailPlace, SPAN_BAR, SPAN_CAP, SPAN_END, SPAN_SQUARE,
+    LineChip, LineLabel, LineRail, LineScale, LineShade, LineShadeInks, LineShadePlace,
+    LineShadeQuad, LineShadeRect, RailPlace, SPAN_BAR, SPAN_CAP, SPAN_END, SPAN_SQUARE,
     SPAN_VIEW_UNSET, ScrollBar, SliderDraw, SliderPlace, SliderQuad, SpanBar, SpanSquare, SpanView,
     TitleDraw, dispatch_form, draw_bevel, draw_capped_span, draw_centred_icon, draw_flat_slider,
-    draw_frame, draw_line_chip, draw_line_rail, draw_span_bar, draw_span_square, hit_line,
-    open_skin, place_line_label, scale_line,
+    draw_frame, draw_line_chip, draw_line_rail, draw_line_shade, draw_span_bar, draw_span_square,
+    hit_line, open_skin, place_line_label, scale_line,
 };
 
 pub struct UiPlugin;

@@ -129,7 +129,10 @@ vertical scale of 1 stores heights 80, 104 and 128; one half stores 40, 52 and
 six when wide: flags 0x30 equal 0x10 and a y at or above the span return -4
 on control bit 2 and -3 on bit 1; otherwise control bit 0x200 and x past the
 left limit return -8, -10 or -9 around the limits. The meaning of the codes is
-not established.
+not established. A shade at unit 5, place 10, 20 of size 100 by 80 with side
+inset 15 draws cap, bar and cap quads from y 13 to 23 around edges 25 and 95,
+the same three from y 97 to 107, and an inner rectangle from 15, 25 to 105, 95.
+State band 0x10000 selects the special ink with alpha 255.
 
 ## Scope
 
