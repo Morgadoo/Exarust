@@ -561,6 +561,58 @@ pub fn type_menu_name(buffer: [u8; 10], ch: u8, keymask: u32) -> MenuName {
     }
 }
 
+/// The splash screen's bounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SplashBounds {
+    pub screen: u32,
+    pub second: i32,
+    pub result: i32,
+}
+
+/// The splash bounds write the screen and two negative ones.
+pub fn splash_bounds(screen: u32) -> SplashBounds {
+    SplashBounds {
+        screen,
+        second: -1,
+        result: -1,
+    }
+}
+
+/// The splash destroy's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SplashDestroyInput {
+    pub free_flag: bool,
+    pub first: bool,
+    pub second: bool,
+    pub count: i32,
+}
+
+/// The splash destroy's calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SplashDestroy {
+    pub release_calls: u32,
+    pub global_cleared: bool,
+    pub first_freed: bool,
+    pub second_freed: bool,
+    pub list_calls: u32,
+    pub base_calls: u32,
+    pub final_calls: u32,
+}
+
+/// Releases the splash screen's resources in the observed order.
+pub fn destroy_splash(input: SplashDestroyInput) -> SplashDestroy {
+    let free = u32::from(input.free_flag);
+    SplashDestroy {
+        release_calls: free,
+        global_cleared: true,
+        first_freed: input.first,
+        second_freed: input.second,
+        list_calls: u32::from(input.count > 0),
+        base_calls: 1,
+        final_calls: free,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -974,5 +1026,41 @@ mod tests {
         assert!(base.base);
         assert_eq!(base.buffer, buffer);
         assert!(!base.matched);
+    }
+
+    #[test]
+    fn the_splash_bounds_are_negative() {
+        let bounds = splash_bounds(7);
+        assert_eq!(bounds.screen, 7);
+        assert_eq!(bounds.second, -1);
+        assert_eq!(bounds.result, -1);
+    }
+
+    #[test]
+    fn the_splash_destroy_frees_in_order() {
+        let freeing = destroy_splash(SplashDestroyInput {
+            free_flag: true,
+            first: true,
+            second: true,
+            count: 2,
+        });
+        assert_eq!(freeing.release_calls, 1);
+        assert!(freeing.global_cleared);
+        assert!(freeing.first_freed);
+        assert!(freeing.second_freed);
+        assert_eq!(freeing.list_calls, 1);
+        assert_eq!(freeing.base_calls, 1);
+        assert_eq!(freeing.final_calls, 1);
+
+        let quiet = destroy_splash(SplashDestroyInput {
+            free_flag: false,
+            first: false,
+            second: false,
+            count: 0,
+        });
+        assert_eq!(quiet.release_calls, 0);
+        assert_eq!(quiet.list_calls, 0);
+        assert_eq!(quiet.base_calls, 1);
+        assert_eq!(quiet.final_calls, 0);
     }
 }
