@@ -9,6 +9,7 @@ pub mod cloth;
 pub mod contact;
 pub mod door;
 pub mod lever;
+pub mod plate;
 pub mod prop;
 
 use bevy::prelude::*;
