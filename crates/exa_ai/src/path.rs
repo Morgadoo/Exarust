@@ -7,8 +7,8 @@
 //!
 //! Evidence: the path step that meets a door. A wait in that step gives up
 //! strictly after ten seconds. An approach within 250 cm of a span's
-//! midpoint starts that wait. The heading sway, the aim snap, and the
-//! other phases are not in this slice.
+//! midpoint starts that wait. The wander look eases toward the heading
+//! plus an offset. The aim snap and the other phases are not in this slice.
 
 use bevy::math::Vec2;
 use exa_physics::door::{self, SignalDrive, SignalLeaf};
@@ -29,6 +29,56 @@ pub const AT_DOOR: i32 = 4;
 /// Horizontal reach of a waypoint span, in centimetres.
 pub const SPAN_REACH_CM: f32 = 250.0;
 const SPAN_REACH_CM2: f32 = 62_500.0;
+/// The look sway runs in this mode.
+pub const LOOK_MODE: i32 = 1;
+const SWAY_PI: f32 = 3.1415927;
+const SWAY_TURN: f32 = SWAY_PI * 2.0;
+
+/// A walker's wandering look.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LookSway {
+    pub mode: i32,
+    pub heading: f32,
+    pub stored_heading: f32,
+    pub offset: f32,
+    pub look: f32,
+    pub timer_ms: u32,
+    pub roll: u32,
+}
+
+/// Ease the look toward the heading plus a wandering offset.
+///
+/// Only the wander mode runs. The stored heading copies the heading, and
+/// the look starts from the extracted angle. While the timer is still at
+/// the clock, the offset and the roll stay. Once the timer is behind, the
+/// offset is `unit * 3.6 - 1.8`, the roll steps by `roll * 0x8088405 + 1`,
+/// and the next timer is the high half of that step times 4000, plus the
+/// clock, plus 4000. The aim wraps once when it passes half a turn. The
+/// look then moves by `(0.09 - posture * 0.06)` of the remaining way.
+/// The flag call and the angle extract are not in this slice.
+pub fn sway_look(sway: &mut LookSway, extracted: f32, posture: f32, now_ms: u32, unit: f32) {
+    if sway.mode != LOOK_MODE {
+        return;
+    }
+    sway.stored_heading = sway.heading;
+    sway.look = extracted;
+    if sway.timer_ms < now_ms {
+        sway.offset = unit * 3.6 - 1.8;
+        sway.roll = sway.roll.wrapping_mul(0x808_8405).wrapping_add(1);
+        let gap = ((u64::from(sway.roll).wrapping_mul(4_000)) >> 32) as u32;
+        sway.timer_ms = gap.wrapping_add(now_ms).wrapping_add(4_000);
+    }
+    let mut aim = sway.heading + sway.offset;
+    if -SWAY_PI <= aim {
+        if SWAY_PI < aim {
+            aim -= SWAY_TURN;
+        }
+    } else {
+        aim += SWAY_TURN;
+    }
+    let gain = 0.09 - posture * 0.06;
+    sway.look = gain * (aim - sway.look) + sway.look;
+}
 /// The walker is seeking a waypoint again.
 pub const SEEKING: i32 = 2;
 /// The door let the walker through.
@@ -398,5 +448,56 @@ mod tests {
         assert_eq!(arrived.phase, AT_DOOR);
         assert_eq!(arrived.since_ms, 5_001);
         assert_eq!(arrived.skipped, 0);
+    }
+
+    fn sway() -> LookSway {
+        LookSway {
+            mode: LOOK_MODE,
+            heading: 0.0,
+            stored_heading: 4.0,
+            offset: 0.0,
+            look: 9.0,
+            timer_ms: 1_000,
+            roll: 1,
+        }
+    }
+
+    #[test]
+    fn a_wander_look_eases_toward_the_heading_and_draws_an_offset() {
+        let mut still = sway();
+        still.mode = 0;
+        still.timer_ms = 0;
+        sway_look(&mut still, 1.0, 0.0, 5_000, 1.0);
+        assert_eq!(still.stored_heading, 4.0);
+        assert_eq!(still.look, 9.0);
+        assert_eq!(still.offset, 0.0);
+        assert_eq!(still.roll, 1);
+
+        let mut held = sway();
+        sway_look(&mut held, 1.0, 0.0, 1_000, 1.0);
+        assert_eq!(held.stored_heading, 0.0);
+        assert_eq!(held.offset, 0.0);
+        assert_eq!(held.roll, 1);
+        assert_eq!(held.timer_ms, 1_000);
+        assert!((held.look - 0.91).abs() < 1e-5);
+
+        let mut drawn = sway();
+        sway_look(&mut drawn, 0.0, 0.0, 1_001, 1.0);
+        assert!((drawn.offset - 1.8).abs() < 1e-6);
+        assert_eq!(drawn.roll, 134_775_814);
+        assert_eq!(drawn.timer_ms, 5_126);
+        assert!((drawn.look - 0.162).abs() < 1e-5);
+
+        let mut wide = sway();
+        wide.heading = 4.0;
+        wide.timer_ms = 2_000;
+        sway_look(&mut wide, 0.0, 1.0, 2_000, 0.0);
+        assert!((wide.look - -0.06849556).abs() < 1e-5);
+
+        let mut edge = sway();
+        edge.heading = 3.1415927;
+        edge.timer_ms = 2_000;
+        sway_look(&mut edge, 0.0, 0.0, 2_000, 0.0);
+        assert!((edge.look - 0.09 * 3.1415927).abs() < 1e-5);
     }
 }
