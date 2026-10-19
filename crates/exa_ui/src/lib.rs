@@ -29,8 +29,9 @@ pub use hud::{DrawHud, HudBars};
 pub use loading::LoadingStatus;
 pub use scale::GuiScale;
 pub use skin::{
-    CentredIcon, DrawSkin, FlatSlider, FrameDraw, FramePlace, IconPlace, ScrollBar, SliderDraw,
-    SliderPlace, SliderQuad, draw_centred_icon, draw_flat_slider, draw_frame, open_skin,
+    BackdropCorner, CentredIcon, DispatchPlace, DrawSkin, FlatSlider, FormDispatch, FrameDraw,
+    FramePlace, IconPlace, ScrollBar, SliderDraw, SliderPlace, SliderQuad, dispatch_form,
+    draw_centred_icon, draw_flat_slider, draw_frame, open_skin,
 };
 
 pub struct UiPlugin;

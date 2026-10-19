@@ -93,6 +93,12 @@ const ICON_BAND: u32 = 0x60;
 const ICON_WIDE: u32 = 0x4000_0000;
 const ICON_DIM: u32 = 0x8000_0000;
 const ICON_SCALE: u32 = 0x3f80_0000;
+const FORM_SHADE: u32 = 0x40;
+const FORM_BACK: u32 = 0x2_0000;
+const FORM_HOLD: u32 = 0x4;
+const FORM_LOCK: u32 = 0x800;
+const FORM_PLAIN: u32 = 0x100;
+const FORM_ONE: u32 = 0x3f80_0000;
 
 /// A slider widget. `value_bits` are the bits of its 0..1 value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -530,6 +536,140 @@ pub fn draw_centred_icon(icon: i32, place: IconPlace) -> CentredIcon {
         x,
         y,
         scale_bits: 0,
+    }
+}
+
+/// A form the dispatcher opens. The words are the sizes and the scroll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DispatchPlace {
+    pub flags_a: u32,
+    pub flags_b: u32,
+    pub flags_c: u32,
+    pub width: i32,
+    pub height: i32,
+    pub at_x: i32,
+    pub at_y: i32,
+    pub view_x: i32,
+    pub view_y: i32,
+    pub span_x: i32,
+    pub span_y: i32,
+    pub limit_x: i32,
+    pub limit_y: i32,
+    pub along_x: u32,
+    pub along_y: u32,
+    pub count: i32,
+}
+
+/// One corner of the backdrop, with its sample bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BackdropCorner {
+    pub x: i32,
+    pub y: i32,
+    pub u: u32,
+    pub v: u32,
+}
+
+/// The opening of a form: spans, an optional shade and backdrop, the scroll
+/// shift, and which children are shown. The rest of the dispatcher is not in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormDispatch {
+    pub span_a: i32,
+    pub span_b: i32,
+    pub span_c: i32,
+    pub shadow: bool,
+    pub shade: u8,
+    pub backdrop: Option<[BackdropCorner; 4]>,
+    pub shift_x: i32,
+    pub shift_y: i32,
+    pub origin_x: i32,
+    pub origin_y: i32,
+    pub clip: [i32; 4],
+    pub shifted: bool,
+    pub pane_calls: u32,
+    pub shown: Vec<i32>,
+}
+
+fn round_even(span: i64, bits: u32) -> i32 {
+    ((span as f32) * f32::from_bits(bits)).round_ties_even() as i32
+}
+
+/// Open a form. `shade` is the byte passed with a shade. `shown` is each
+/// child's mark. A short list is not read past its end.
+pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -> FormDispatch {
+    let span_a = unit.wrapping_shl(1);
+    let span_b = unit.wrapping_mul(3);
+    let span_c = unit.wrapping_shl(2);
+    let shadow = (place.flags_b & FORM_SHADE) == FORM_SHADE;
+    let backdrop = if (place.flags_b & FORM_BACK) != 0 && (place.flags_a & FORM_HOLD) == 0 {
+        Some([
+            BackdropCorner {
+                x: 0,
+                y: 0,
+                u: 0,
+                v: 0,
+            },
+            BackdropCorner {
+                x: 0,
+                y: place.height,
+                u: 0,
+                v: FORM_ONE,
+            },
+            BackdropCorner {
+                x: place.width,
+                y: place.height,
+                u: FORM_ONE,
+                v: FORM_ONE,
+            },
+            BackdropCorner {
+                x: place.width,
+                y: 0,
+                u: FORM_ONE,
+                v: 0,
+            },
+        ])
+    } else {
+        None
+    };
+    let (shift_x, shift_y) = if (place.flags_b & FORM_LOCK) == FORM_LOCK {
+        (0, 0)
+    } else {
+        let spare_x = i64::from(place.limit_x) - i64::from(place.span_x) + i64::from(place.view_x);
+        let spare_y = i64::from(place.limit_y) - i64::from(place.span_y) + i64::from(place.view_y);
+        (
+            round_even(spare_x, place.along_x),
+            round_even(spare_y, place.along_y),
+        )
+    };
+    let origin_x = place.view_x.wrapping_sub(shift_x);
+    let origin_y = place.view_y.wrapping_sub(shift_y);
+    let mut visits = Vec::new();
+    let mut index = 0;
+    while index < place.count {
+        if shown.get(index as usize).is_some_and(|byte| *byte != 0) {
+            visits.push(index);
+        }
+        index += 1;
+    }
+    FormDispatch {
+        span_a,
+        span_b,
+        span_c,
+        shadow,
+        shade: if shadow { shade } else { 0 },
+        backdrop,
+        shift_x,
+        shift_y,
+        origin_x,
+        origin_y,
+        clip: [
+            place.at_x.wrapping_add(place.view_x),
+            place.at_y.wrapping_add(place.view_y),
+            place.span_x.wrapping_sub(place.view_x),
+            place.span_y.wrapping_sub(place.view_y),
+        ],
+        shifted: (place.flags_c & FORM_PLAIN) == 0,
+        pane_calls: 1,
+        shown: visits,
     }
 }
 
@@ -1069,5 +1209,87 @@ mod tests {
             },
         );
         assert_eq!(dim.ink, 4);
+    }
+
+    fn place(
+        flags_a: u32,
+        flags_b: u32,
+        flags_c: u32,
+        along_x: u32,
+        along_y: u32,
+        count: i32,
+    ) -> DispatchPlace {
+        DispatchPlace {
+            flags_a,
+            flags_b,
+            flags_c,
+            width: 100,
+            height: 80,
+            at_x: 3,
+            at_y: 4,
+            view_x: 10,
+            view_y: 6,
+            span_x: 30,
+            span_y: 8,
+            limit_x: 50,
+            limit_y: 20,
+            along_x,
+            along_y,
+            count,
+        }
+    }
+
+    #[test]
+    fn a_dispatch_stores_the_spans_and_the_shown_children() {
+        let open = dispatch_form(
+            5,
+            9,
+            place(0, 0x2_0040, 0, 0x3f80_0000, 0x3f00_0000, 4),
+            &[0, 1, 0, 1],
+        );
+        assert_eq!((open.span_a, open.span_b, open.span_c), (10, 15, 20));
+        assert!(open.shadow);
+        assert_eq!(open.shade, 9);
+        let back = open.backdrop.expect("a backdrop");
+        assert_eq!((back[0].x, back[0].y, back[0].u, back[0].v), (0, 0, 0, 0));
+        assert_eq!((back[1].x, back[1].y, back[1].v), (0, 80, 0x3f80_0000));
+        assert_eq!((back[2].x, back[2].y), (100, 80));
+        assert_eq!((back[3].u, back[3].v), (0x3f80_0000, 0));
+        assert_eq!((open.shift_x, open.shift_y), (30, 9));
+        assert_eq!((open.origin_x, open.origin_y), (-20, -3));
+        assert_eq!(open.clip, [13, 10, 20, 2]);
+        assert!(open.shifted);
+        assert_eq!(open.pane_calls, 1);
+        assert_eq!(open.shown, [1, 3]);
+
+        let held = dispatch_form(5, 9, place(4, 0x2_0000, 0x100, 0, 0, 0), &[]);
+        assert!(held.backdrop.is_none());
+        assert!(!held.shadow);
+        assert_eq!(held.shade, 0);
+        assert!(!held.shifted);
+        assert!(held.shown.is_empty());
+
+        let locked = dispatch_form(5, 1, place(0, 0x800, 0, 0x3f80_0000, 0x3f80_0000, 1), &[0]);
+        assert_eq!((locked.shift_x, locked.shift_y), (0, 0));
+        assert_eq!((locked.origin_x, locked.origin_y), (10, 6));
+        assert!(locked.shown.is_empty());
+
+        let tie = dispatch_form(
+            5,
+            1,
+            DispatchPlace {
+                limit_x: 1,
+                span_x: 0,
+                view_x: 0,
+                along_x: 0x3f00_0000,
+                limit_y: 3,
+                span_y: 0,
+                view_y: 0,
+                along_y: 0x3f00_0000,
+                ..place(0, 0, 0, 0, 0, 0)
+            },
+            &[],
+        );
+        assert_eq!((tie.shift_x, tie.shift_y), (0, 2));
     }
 }

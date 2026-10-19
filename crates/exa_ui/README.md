@@ -22,7 +22,9 @@ with height 80 and lip 4 stores twelve quads and a thumb of 10 at value 0,
 or 52 at one half. A frame at unit 5, place 10, 20 and size 100 by 20
 stores four corners and two edge bars. Height 80 adds the side bars.
 A centred icon of size 16 in a 100 by 80 widget at 10, 20 sits at 52, 52.
-A marked state with bit 0x40 sits at 52, 53. The widget dispatcher is not in.
+A marked state with bit 0x40 sits at 52, 53. A dispatch at unit 5
+stores spans 10, 15 and 20, and a spare of 30 at value 1 shifts by 30.
+The rest of the dispatcher is not in.
 
 ## Scope
 
