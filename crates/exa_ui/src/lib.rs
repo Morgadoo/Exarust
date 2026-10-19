@@ -16,6 +16,7 @@ pub mod fps;
 pub mod heartbeat;
 pub mod hud;
 pub mod loading;
+pub mod menu;
 pub mod scale;
 pub mod skin;
 
@@ -27,6 +28,7 @@ pub use fps::ShowFps;
 pub use heartbeat::Heartbeat;
 pub use hud::{DrawHud, HudBars};
 pub use loading::LoadingStatus;
+pub use menu::menu_clock_scale;
 pub use scale::GuiScale;
 pub use skin::{
     BEVEL_INK, BackdropCorner, BevelArm, BevelBox, BevelInk, BevelPlace, CappedSpan, CentredIcon,

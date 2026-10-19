@@ -169,7 +169,8 @@ program setup builds a solid, a textured and a rounded shader, setting `MPrj` to
 border, outline and corner detail on flag 0x40, or one virtual inset rectangle
 otherwise. The second slider draws its track at x + 1, y + 2 with its thumb one
 pixel lower, or a filled bar. The scroll region clips at the origin plus the
-inset and replays its quads, visible children and optional detail.
+inset and replays its quads, visible children and optional detail. The main
+menu quantises its clock to 1/135 and scales it by 1/8.
 
 ## Scope
 
