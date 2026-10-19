@@ -13,7 +13,7 @@
 //! units shifts it. A shield card shows weight, impact, and encumbrance.
 //! Arena turns rank and points on. Story and practice turn them off.
 //! A description phrase is drawn from the rows whose range holds the
-//! value. The full sentence around that phrase is not built here.
+//! value, and the card wraps that phrase into a sentence.
 //!
 //! Evidence: the item-card page choice.
 
@@ -354,6 +354,133 @@ pub fn pick_phrase(state: u32, value: u8, phrases: &[Phrase<'_>], so_far: &str) 
     }
 }
 
+/// The phrase tables a weapon sentence reads. The caller supplies the rows.
+#[derive(Debug, Clone, Copy)]
+pub struct PhraseTables<'a> {
+    pub made: &'a [Phrase<'a>],
+    pub high: &'a [Phrase<'a>],
+    pub flawless: &'a [Phrase<'a>],
+    pub perfect: &'a [Phrase<'a>],
+    pub great: &'a [Phrase<'a>],
+}
+
+/// The roll after the sentence, and the sentence itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemSentence {
+    pub state: u32,
+    pub text: String,
+}
+
+/// Wrap a weapon's name with its quality phrase and a condition phrase.
+///
+/// A name of two letters or fewer is unchanged. A longer name drops a trailing
+/// dot. A bracket ending loses its last four letters. A `c` before that
+/// bracket keeps the name plus "It is" and only a condition phrase. A leading
+/// dash is dropped and uses the high and great tables. Any other name uses
+/// the made table, then flawless, and perfect when flawless adds nothing.
+/// Quality and condition are that byte divided by the stored 2.55, dropping
+/// the fraction. A bracketed name is the name, "It is ", the quality phrase,
+/// then ", but" when both marks are at most 50 or both are above, and " and"
+/// otherwise. An unbracketed name is the quality phrase, a space, and the
+/// name, then "An " when it starts with a, e, i, o, or u, and "A " otherwise.
+pub fn item_sentence(
+    state: u32,
+    name: &str,
+    quality: u8,
+    condition: u8,
+    tables: &PhraseTables<'_>,
+) -> ItemSentence {
+    if name.len() < 3 {
+        return ItemSentence {
+            state,
+            text: name.to_string(),
+        };
+    }
+    let mut name = name.to_string();
+    if name.as_bytes().last() == Some(&b'.') {
+        name.pop();
+    }
+    let bracket = name.as_bytes().last() == Some(&b']');
+    let crafted = bracket && name.len() >= 2 && name.as_bytes()[name.len() - 2] == b'c';
+    if bracket && name.len() >= 4 {
+        name.truncate(name.len() - 4);
+    }
+    let condition_mark = scale_mark(condition);
+    let (state, quality_text, dashed) = if crafted {
+        (state, String::new(), false)
+    } else {
+        let dashed = name.as_bytes().first() == Some(&b'-');
+        if dashed {
+            name.remove(0);
+        }
+        let rows = if dashed { tables.high } else { tables.made };
+        let (state, chosen) = raw_phrase(state, scale_mark(quality), rows);
+        (state, chosen.unwrap_or_default(), dashed)
+    };
+    let mut text = if crafted {
+        format!("{name}It is")
+    } else if bracket {
+        let join = if (scale_mark(quality) <= 50) == (condition_mark <= 50) {
+            ", but"
+        } else {
+            " and"
+        };
+        format!("{name}It is {quality_text}{join}")
+    } else {
+        format!("{quality_text} {name}")
+    };
+    let picked = if dashed {
+        pick_phrase(state, condition_mark, tables.great, &quality_text)
+    } else {
+        let first = pick_phrase(state, condition_mark, tables.flawless, &quality_text);
+        if first.text.is_none() {
+            pick_phrase(first.state, condition_mark, tables.perfect, &quality_text)
+        } else {
+            first
+        }
+    };
+    if let Some(extra) = &picked.text {
+        text.push_str(extra);
+    }
+    if !bracket {
+        text = if takes_an(&text) {
+            format!("An {text}")
+        } else {
+            format!("A {text}")
+        };
+    }
+    ItemSentence {
+        state: picked.state,
+        text,
+    }
+}
+
+fn raw_phrase(state: u32, value: u8, phrases: &[Phrase<'_>]) -> (u32, Option<String>) {
+    let fits: Vec<&str> = phrases
+        .iter()
+        .filter(|phrase| phrase.low <= value && value <= phrase.high)
+        .map(|phrase| phrase.text)
+        .collect();
+    if fits.is_empty() {
+        return (state, None);
+    }
+    let state = state.wrapping_mul(0x0808_8405).wrapping_add(1);
+    let index = (u64::from(state).wrapping_mul(fits.len() as u64) >> 32) as usize;
+    (state, Some(fits[index].to_string()))
+}
+
+fn scale_mark(value: u8) -> u8 {
+    let divisor = f64::from_bits(0x4004_6666_6666_6666);
+    (f64::from(value) / divisor) as u8
+}
+
+fn takes_an(text: &str) -> bool {
+    matches!(
+        text.as_bytes().first(),
+        Some(b'a' | b'e' | b'i' | b'o' | b'u')
+    )
+}
+
 fn shares_long_word(so_far: &str, phrase: &str) -> bool {
     let prior = long_words(so_far);
     let next = long_words(phrase);
@@ -639,6 +766,89 @@ mod tests {
         assert_eq!(
             pick_phrase(0, 1, &[phrase("the item here", 0, 255)], "the x").text,
             Some(" the item here.".to_string())
+        );
+    }
+
+    fn tables<'a>(
+        made: &'a [Phrase<'a>],
+        high: &'a [Phrase<'a>],
+        flawless: &'a [Phrase<'a>],
+        perfect: &'a [Phrase<'a>],
+        great: &'a [Phrase<'a>],
+    ) -> PhraseTables<'a> {
+        PhraseTables {
+            made,
+            high,
+            flawless,
+            perfect,
+            great,
+        }
+    }
+
+    #[test]
+    fn a_weapon_sentence_wraps_the_phrase_it_picks() {
+        let made = [phrase("well", 0, 255)];
+        let high = [phrase("prime", 0, 255)];
+        let flawless = [phrase("sharp", 0, 255)];
+        let perfect = [phrase("ok", 0, 255)];
+        let great = [phrase("keen", 0, 255)];
+        let rows = tables(&made, &high, &flawless, &perfect, &great);
+        assert_eq!(
+            item_sentence(5, "ab", 0, 0, &rows),
+            ItemSentence {
+                state: 5,
+                text: "ab".to_string()
+            }
+        );
+        assert_eq!(
+            item_sentence(0, "sword", 0, 0, &rows),
+            ItemSentence {
+                state: 0x0808_8406,
+                text: "A well sword sharp.".to_string()
+            }
+        );
+        let edge = [phrase("edge", 0, 255)];
+        assert_eq!(
+            item_sentence(
+                0,
+                "edge.",
+                0,
+                0,
+                &tables(&edge, &high, &flawless, &perfect, &great)
+            )
+            .text,
+            "An edge edge sharp."
+        );
+        assert_eq!(
+            item_sentence(0, "Sword [x]", 0, 0, &rows).text,
+            "SwordIt is well, but sharp."
+        );
+        assert_eq!(
+            item_sentence(0, "Sword [x]", 131, 0, &rows).text,
+            "SwordIt is well and sharp."
+        );
+        assert_eq!(
+            item_sentence(0, "Blade [c]", 0, 0, &rows),
+            ItemSentence {
+                state: 1,
+                text: "BladeIt is sharp.".to_string()
+            }
+        );
+        assert_eq!(
+            item_sentence(0, "-blade", 0, 0, &rows).text,
+            "A prime blade keen."
+        );
+        let missed = [phrase("late", 200, 255)];
+        assert_eq!(
+            item_sentence(
+                0,
+                "sword",
+                0,
+                0,
+                &tables(&made, &high, &missed, &perfect, &great)
+            )
+            .text,
+            "A well sword ok."
         );
     }
 }
