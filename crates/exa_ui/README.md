@@ -184,7 +184,9 @@ on a page above one, or on word nine with a clear mode byte, and closes with
 and forms, otherwise calls a registered handler, and always clears its action.
 The main menu resolves its hover, returns 3 on a change, and rate-limits the
 sound to once per 200 units. Its key handler confirms a positive selection,
-forwards and backs, and moves within the limit.
+forwards and backs, and moves within the limit. The inventory detaches by
+marking its owner, placing a visible child, releasing its stack and copying the
+loot pane's origin, and maps an argument of -1 to page -3.
 
 ## Scope
 

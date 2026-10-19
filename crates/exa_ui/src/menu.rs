@@ -451,6 +451,82 @@ pub fn main_menu_key(input: MainMenuKeyInput) -> MainMenuKey {
     idle
 }
 
+/// The inventory detach's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InventoryDetachInput {
+    pub already_inactive: bool,
+    pub has_owner: bool,
+    pub has_child: bool,
+    pub child_visible: bool,
+    pub has_stack: bool,
+    pub stack_count: i32,
+    pub loot_pane: bool,
+    pub base_result: bool,
+}
+
+/// The inventory detach's work and result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InventoryDetach {
+    pub inactive: bool,
+    pub marked: bool,
+    pub placed: bool,
+    pub stack_count: i32,
+    pub freed: bool,
+    pub globals_copied: bool,
+    pub base_calls: u32,
+    pub result: bool,
+}
+
+/// Marks the owner, places the child and releases the stack before the base call.
+pub fn detach_inventory(input: InventoryDetachInput) -> InventoryDetach {
+    if input.already_inactive {
+        return InventoryDetach {
+            inactive: true,
+            marked: false,
+            placed: false,
+            stack_count: input.stack_count,
+            freed: false,
+            globals_copied: false,
+            base_calls: 0,
+            result: true,
+        };
+    }
+    let (count, freed) = if input.has_stack {
+        if input.stack_count > 1 {
+            (input.stack_count - 1, false)
+        } else {
+            (0, true)
+        }
+    } else {
+        (input.stack_count, false)
+    };
+    InventoryDetach {
+        inactive: false,
+        marked: input.has_owner,
+        placed: input.has_owner && input.has_child && input.child_visible,
+        stack_count: count,
+        freed,
+        globals_copied: input.loot_pane,
+        base_calls: 1,
+        result: input.base_result,
+    }
+}
+
+/// The inventory page override's field and result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InventoryPage {
+    pub field: i32,
+    pub result: i32,
+}
+
+/// Stores page −3 when the argument is −1.
+pub fn inventory_page(arg: i32, field: i32, base_result: i32) -> InventoryPage {
+    InventoryPage {
+        field: if arg == -1 { -3 } else { field },
+        result: base_result,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -779,6 +855,69 @@ mod tests {
         assert_eq!(
             main_menu_key(input(0x4001, 1, 10)).action,
             MainMenuKeyAction::None
+        );
+    }
+
+    #[test]
+    fn the_inventory_detach_releases_its_stack() {
+        let input = |already_inactive, has_owner, has_child, child_visible, has_stack, count| {
+            InventoryDetachInput {
+                already_inactive,
+                has_owner,
+                has_child,
+                child_visible,
+                has_stack,
+                stack_count: count,
+                loot_pane: false,
+                base_result: true,
+            }
+        };
+
+        let inactive = detach_inventory(input(true, true, true, true, true, 2));
+        assert!(inactive.inactive);
+        assert!(!inactive.marked);
+        assert_eq!(inactive.base_calls, 0);
+        assert!(inactive.result);
+
+        let active = detach_inventory(input(false, true, true, true, true, 2));
+        assert!(active.marked);
+        assert!(active.placed);
+        assert_eq!(active.stack_count, 1);
+        assert!(!active.freed);
+        assert_eq!(active.base_calls, 1);
+        assert!(active.result);
+
+        let last = detach_inventory(input(false, true, false, false, true, 1));
+        assert!(!last.placed);
+        assert_eq!(last.stack_count, 0);
+        assert!(last.freed);
+
+        let none = detach_inventory(input(false, false, false, false, false, 3));
+        assert!(!none.marked);
+        assert_eq!(none.stack_count, 3);
+
+        let loot = detach_inventory(InventoryDetachInput {
+            loot_pane: true,
+            ..input(false, true, true, true, false, 0)
+        });
+        assert!(loot.globals_copied);
+    }
+
+    #[test]
+    fn the_inventory_page_stores_its_sentinel() {
+        assert_eq!(
+            inventory_page(-1, 5, 9),
+            InventoryPage {
+                field: -3,
+                result: 9
+            }
+        );
+        assert_eq!(
+            inventory_page(4, 5, 9),
+            InventoryPage {
+                field: 5,
+                result: 9
+            }
         );
     }
 }
