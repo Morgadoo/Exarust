@@ -44,6 +44,7 @@ pub use skin::{
     draw_skin_image, draw_skin_rect, draw_skin_shade, draw_skin_slider, draw_skin_strip,
     draw_span_bar, draw_span_square, hit_line, hit_skin, open_line, open_skin, place_line_label,
     place_skin_label, prepare_skin_renderer, scale_line, scale_skin_alpha, skin_frames,
+    skin_measures,
 };
 
 pub struct UiPlugin;

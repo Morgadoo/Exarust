@@ -162,7 +162,8 @@ or vertical helper from the style and flag words. The rectangle dispatch draws
 one inset rectangle and, on flag 0x40, one cornered overlay at the same
 rectangle. The textured strip draws four two-vertex bands between its first and
 third floats around a middle y. The slider draws a plain track with a translated
-thumb, or a filled inset rectangle with a unit-wide bar.
+thumb, or a filled inset rectangle with a unit-wide bar. The measure setter
+copies three globals and four units plus four into fields 8 through 0x14.
 
 ## Scope
 

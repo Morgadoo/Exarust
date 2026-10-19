@@ -3682,6 +3682,11 @@ pub fn draw_skin_slider(place: SkinSliderPlace, unit: i32) -> Option<SkinSlider>
     }
 }
 
+/// The four measure fields the setter writes.
+pub fn skin_measures(first: i32, second: i32, third: i32, unit: i32) -> [i32; 4] {
+    [first, second, third, unit.wrapping_mul(4).wrapping_add(4)]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7084,5 +7089,11 @@ mod tests {
         );
 
         assert_eq!(draw_skin_slider(place(0x2000_0000, 0), 5), None);
+    }
+
+    #[test]
+    fn skin_measures_copy_the_three_globals() {
+        assert_eq!(skin_measures(2, 2, 24, 4), [2, 2, 24, 20]);
+        assert_eq!(skin_measures(2, 2, 24, 5), [2, 2, 24, 24]);
     }
 }
