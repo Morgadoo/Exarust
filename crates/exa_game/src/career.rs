@@ -15,6 +15,7 @@
 //! costs 12 copper. A shop line prices its low fourteen bits at 1, 12, 144
 //! or 1440 copper, and a sale is a quarter of that basket. A match stake is
 //! a coin dword, and a tier multiplies that copper by one more than the tier.
+//! A swept season grants four item ids, and day 134 repeats the first four.
 //!
 //! Evidence: the arena career notes (money seed, coin rate, roster caps,
 //! the six standard matches and the seven specials, fee on entry, prize on
@@ -32,6 +33,13 @@ pub const MERCHANT_WAGE: u32 = 2;
 pub const PHYSICIAN_WAGE: u32 = 12;
 /// Weeks in a season. The fourth week, index 3, can grant the season.
 pub const SEASON_WEEKS: u32 = 4;
+/// Four item ids for each of four seasons. Day 134 grants the first row again.
+pub const SEASON_REWARDS: [[u32; 4]; 4] = [
+    [1175, 1174, 1177, 1176],
+    [1167, 1165, 1168, 1169],
+    [1171, 1170, 1173, 1172],
+    [1178, 1179, 1180, 1181],
+];
 /// Health below this drops a fighter from a tournament entry.
 pub const INJURED: u16 = 0x0ccc;
 /// Overnight rest added to health. A hired physician uses the larger step.
@@ -276,6 +284,8 @@ pub struct Company {
     pub seasons_won: u32,
     /// Season reward items granted. Four when a season is swept.
     pub season_rewards: u32,
+    /// Item ids granted by swept seasons, four per season, in order.
+    pub reward_ids: Vec<u32>,
     /// Weeks the company won outright.
     pub tournaments_won: u32,
 }
@@ -315,6 +325,7 @@ impl Company {
             weeks: [false; 4],
             seasons_won: 0,
             season_rewards: 0,
+            reward_ids: Vec::new(),
             tournaments_won: 0,
         }
     }
@@ -413,6 +424,12 @@ impl Company {
         (day % (SEASON_WEEKS * 7)) / 7
     }
 
+    /// Which of the four reward rows a day that has already moved on uses.
+    /// Day 22 is row 0. Day 134 is row 0 again.
+    pub fn season_index(day: u32) -> u32 {
+        (day / (SEASON_WEEKS * 7)) % SEASON_WEEKS
+    }
+
     /// End the day. Rest every employee, pay every wage, then on a day
     /// whose number mod 7 is 1 resolve the six event winners, and on a
     /// multiple of 7 drop an entry whose health is still under 3276.
@@ -482,6 +499,8 @@ impl Company {
             if ours && self.weeks.iter().all(|won| *won) {
                 self.seasons_won = self.seasons_won.saturating_add(1);
                 self.season_rewards = self.season_rewards.saturating_add(4);
+                let row = SEASON_REWARDS[Self::season_index(self.day) as usize];
+                self.reward_ids.extend(row);
                 season = true;
             }
             self.weeks = [false; 4];
@@ -853,8 +872,48 @@ mod tests {
         assert!(closing.season);
         assert_eq!(company.seasons_won, 1);
         assert_eq!(company.season_rewards, 4);
+        assert_eq!(company.reward_ids.as_slice(), &SEASON_REWARDS[0]);
         assert_eq!(company.weeks, [false; 4]);
         assert_eq!(company.copper, 343 - 12 - 22);
+    }
+
+    #[test]
+    fn a_swept_season_grants_its_four_items() {
+        assert_eq!(SEASON_REWARDS[0], [1175, 1174, 1177, 1176]);
+        assert_eq!(SEASON_REWARDS[1], [1167, 1165, 1168, 1169]);
+        assert_eq!(SEASON_REWARDS[2], [1171, 1170, 1173, 1172]);
+        assert_eq!(SEASON_REWARDS[3], [1178, 1179, 1180, 1181]);
+
+        let mut missed = Company::new("Ash");
+        for _ in 0..22 {
+            missed.end_day([2; 6]);
+        }
+        assert!(missed.reward_ids.is_empty());
+        assert_eq!(missed.season_rewards, 0);
+
+        let mut company = Company::new("Ash");
+        let sweep = [OUR_COMPANY; 6];
+        for _ in 0..22 {
+            company.end_day(sweep);
+        }
+        assert_eq!(company.day, 22);
+        assert_eq!(Company::season_index(company.day), 0);
+        assert_eq!(company.reward_ids.as_slice(), &SEASON_REWARDS[0]);
+
+        for row in 1..5 {
+            for _ in 0..28 {
+                company.end_day(sweep);
+            }
+            let start = row * 4;
+            let expected = SEASON_REWARDS[row % 4];
+            assert_eq!(company.reward_ids[start..start + 4], expected);
+            assert_eq!(
+                Company::season_index(company.day),
+                (row as u32) % SEASON_WEEKS
+            );
+        }
+        assert_eq!(company.day, 134);
+        assert_eq!(company.season_rewards, 20);
     }
 
     #[test]

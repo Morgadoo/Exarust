@@ -164,6 +164,7 @@ pub fn read(bytes: &[u8]) -> Result<Session, SaveError> {
             weeks: [false; 4],
             seasons_won: 0,
             season_rewards: 0,
+            reward_ids: Vec::new(),
             tournaments_won: 0,
         },
         focus,
