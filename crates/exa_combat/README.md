@@ -142,7 +142,10 @@ mobility, friction 0.75, its spheres and its velocity. One solver tick
 moves it. A flat shape spawns nothing. A dropped weapon whose
 sphere starts on another body's sphere meets it in the shipped body
 step: one hit, and the weapon leaves the place one step alone would
-leave it. A body without muscles dies at
+leave it. A lasting wound is noticed when it times 0.75, widened,
+times 0.2, is greater than 0.25 widened times 0.05. Bits 0x3daaaaab
+are not noticed. The next float is. The hit path records that notice.
+A body without muscles dies at
 once. Rules: [`docs/formats/RSQ.md`](../../docs/formats/RSQ.md) (The
 collapse).
 

@@ -196,6 +196,25 @@ pub fn guard_outcome(blow: Outcome, guard: Guard) -> Outcome {
     }
 }
 
+/// The float 0.75 a lasting wound is weighed by before the notice.
+const NOTICE_WEIGH: f32 = 0.75;
+/// The double 0.2 that weighed wound is scaled by.
+const NOTICE_PART: f64 = 0.2;
+/// The health base the notice measures against.
+const NOTICE_BASE: f32 = 0.25;
+/// The double 0.05 of that base.
+const NOTICE_OF_BASE: f64 = 0.05;
+
+/// Whether a lasting wound, the size before the red bar's 0.75, is deep
+/// enough to be noticed. The wound times 0.75 is widened and times 0.2.
+/// That is greater than 0.25 widened times 0.05. An equal product, and a
+/// non-number, are not noticed.
+pub fn notices_damage(lasting: f32) -> bool {
+    let weighed = f64::from(lasting * NOTICE_WEIGH) * NOTICE_PART;
+    let line = f64::from(NOTICE_BASE) * NOTICE_OF_BASE;
+    weighed > line
+}
+
 /// What a blow does.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Outcome {

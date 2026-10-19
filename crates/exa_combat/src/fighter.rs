@@ -188,6 +188,13 @@ pub struct Weakened {
     pub fighter: Entity,
 }
 
+/// A blow's lasting wound was deep enough to be noticed: the weighed red
+/// is greater than a twentieth of the 0.25 health base.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DamageTaken {
+    pub fighter: Entity,
+}
+
 /// The game plays the story, not practice or the arena: there a killing
 /// blow also takes a tenth of the maximum from red health. Absent: not the
 /// story.

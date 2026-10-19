@@ -49,7 +49,7 @@ use exa_physics::body::{
     BodyTicks, CharacterStage, CharacterTick, Fallen, GoLimp, MAX_DAZE, Ragdoll, Shove, daze_energy,
 };
 use exa_world::PartBounds;
-pub use fighter::{Damage, Fighter, Health, StoryMode, Taken, Weakened};
+pub use fighter::{Damage, DamageTaken, Fighter, Health, StoryMode, Taken, Weakened};
 use swing::{Swing, SwingAt, SwingState};
 use wounds::{BladeBlood, WoundQueue, frame_tetra, tetra_weights};
 
@@ -59,6 +59,7 @@ impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<Hit>()
             .add_message::<Weakened>()
+            .add_message::<DamageTaken>()
             .add_plugins((
                 stance::StancePlugin,
                 condition::ConditionPlugin,
@@ -434,6 +435,7 @@ fn react_to_hits(
     mut shoves: MessageWriter<Shove>,
     mut sprays: MessageWriter<wounds::Spray>,
     mut weakened: MessageWriter<Weakened>,
+    mut noticed: MessageWriter<DamageTaken>,
     mut fighters: Query<(
         Entity,
         &mut Fighter,
@@ -518,6 +520,11 @@ fn react_to_hits(
         // check.
         let rules = f.stats.rules;
         let taken = f.health.take(Damage::blow(&outcome), rules, *flags, story);
+        if damage::notices_damage(outcome.wound) {
+            noticed.write(DamageTaken {
+                fighter: hit.target,
+            });
+        }
         if taken == Taken::Weakened {
             weakened.write(Weakened {
                 fighter: hit.target,
@@ -684,6 +691,7 @@ mod tests {
             .add_message::<Shove>()
             .add_message::<wounds::Spray>()
             .add_message::<Weakened>()
+            .add_message::<DamageTaken>()
             .add_systems(Update, react_to_hits);
         app
     }
@@ -756,6 +764,35 @@ mod tests {
         assert!((capped.length() - 0.8).abs() < 1e-5, "{capped}");
         let light = knockback_offset(0.4, 0.0, Vec3::Z, Vec3::ZERO, 80.0);
         assert!(light.is_none());
+    }
+
+    fn notices(app: &App) -> Vec<DamageTaken> {
+        let messages = app.world().resource::<Messages<DamageTaken>>();
+        messages.get_cursor().read(messages).copied().collect()
+    }
+
+    /// A lasting wound is noticed when it times 0.75, widened, times 0.2,
+    /// is greater than 0.25 widened times 0.05. The hit path records that
+    /// notice. Bits 0x3daaaaab are not noticed. The next float is.
+    #[test]
+    fn a_deep_wound_is_noticed() {
+        assert!(!damage::notices_damage(f32::from_bits(0x3daa_aaab)));
+        assert!(damage::notices_damage(f32::from_bits(0x3daa_aaac)));
+        assert!(!damage::notices_damage(f32::NAN));
+        let wound = outcome(9).wound;
+        let mut app = reactions();
+        let id = app
+            .world_mut()
+            .spawn((Fighter::default(), Animator::new("Default", "Idle")))
+            .id();
+        strike(&mut app, id, 9);
+        let found = notices(&app);
+        if damage::notices_damage(wound) {
+            assert_eq!(found, vec![DamageTaken { fighter: id }]);
+        } else {
+            assert!(found.is_empty());
+        }
+        assert!(damage::notices_damage(wound), "{:08x}", wound.to_bits());
     }
 
     /// The same cut that wounds bare flesh deals nothing through a parry, and
@@ -1085,6 +1122,7 @@ mod tests {
             .add_message::<wounds::Bleed>()
             .add_message::<wounds::Spray>()
             .add_message::<Weakened>()
+            .add_message::<DamageTaken>()
             .init_resource::<exa_physics::body::BodyTicks>()
             .add_systems(Update, (wounds::count_down_wounds, react_to_hits).chain());
         app.update();
