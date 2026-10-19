@@ -119,6 +119,61 @@ pub struct LevelTri {
     pub c: Vec3,
 }
 
+/// The 16×16 wind noise tile. A cell is 2 m, so a centimetre coordinate is
+/// multiplied by 0.005 before the fractional lookup.
+pub const NOISE_CELLS: usize = 16;
+const NOISE_SCALE: f32 = 0.005;
+
+/// Scene wind times 0.3, the strength the cloth's noise tile walks with.
+pub fn cloth_wind(environment: f32) -> f32 {
+    environment * 0.3
+}
+
+/// One frame of the noise tile. Inside −1 to 1 a sample walks by
+/// `(random − 0.5) · wind · 0.8`. Outside that, it is pushed back by half
+/// that stride times the random value.
+pub fn advance_tile(samples: &mut [f32; NOISE_CELLS * NOISE_CELLS], wind: f32, randoms: &[f32]) {
+    let stride = wind * 0.8;
+    for (index, sample) in samples.iter_mut().enumerate() {
+        let random = randoms.get(index).copied().unwrap_or(0.5);
+        if !sample.is_finite() || !random.is_finite() || !stride.is_finite() {
+            *sample = 0.0;
+            continue;
+        }
+        *sample = if *sample > 1.0 {
+            *sample - stride * 0.5 * random
+        } else if *sample < -1.0 {
+            *sample + stride * 0.5 * random
+        } else {
+            *sample + (random - 0.5) * stride
+        };
+    }
+}
+
+/// Bilinear sample of the tile at a world position in centimetres.
+pub fn sample_tile(samples: &[f32; NOISE_CELLS * NOISE_CELLS], x_cm: f32, z_cm: f32) -> f32 {
+    let (ix, fx) = tile_cell(x_cm);
+    let (iz, fz) = tile_cell(z_cm);
+    let at = |x: usize, z: usize| samples[z * NOISE_CELLS + x];
+    let x1 = (ix + 1) % NOISE_CELLS;
+    let z1 = (iz + 1) % NOISE_CELLS;
+    let i00 = at(ix, iz);
+    let i10 = at(x1, iz);
+    let i01 = at(ix, z1);
+    let i11 = at(x1, z1);
+    (1.0 - fz) * ((1.0 - fx) * i00 + fx * i10) + fz * ((1.0 - fx) * i01 + fx * i11)
+}
+
+fn tile_cell(cm: f32) -> (usize, f32) {
+    let mut unit = (cm * NOISE_SCALE).fract();
+    if unit < 0.0 {
+        unit += 1.0;
+    }
+    let scaled = unit * NOISE_CELLS as f32;
+    let index = (scaled.floor() as usize) % NOISE_CELLS;
+    (index, scaled - index as f32)
+}
+
 /// The cloth a step advances.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Cloth {
@@ -140,6 +195,12 @@ pub struct Cloth {
     pub swept: Vec<SweptSphere>,
     pub triangles: Vec<ClothTri>,
     pub level: Vec<LevelTri>,
+    /// Wind noise, when the cloth samples the tile instead of `noise`.
+    pub tile: Option<[f32; NOISE_CELLS * NOISE_CELLS]>,
+    /// Equal and opposite sum of this tick's collision pushes, for the body.
+    pub reaction: Vec3,
+    /// The shipped cloth draws both faces.
+    pub double_sided: bool,
     pub rustle: bool,
     pub rustle_volume: f32,
     pub rustle_pitch: f32,
@@ -164,11 +225,98 @@ impl Cloth {
             swept: Vec::new(),
             triangles: Vec::new(),
             level: Vec::new(),
+            tile: None,
+            reaction: Vec3::ZERO,
+            double_sided: true,
             rustle: false,
             rustle_volume: 0.0,
             rustle_pitch: 0.0,
             rustle_tail: 0.0,
         }
+    }
+
+    /// Build a cloth from a triangle mesh. Each vertex is a particle. Each
+    /// triangle edge is a structural link, and the two vertices opposite a
+    /// shared edge are a bend link. Pinned vertices are held at their
+    /// current point. The draw is double sided.
+    pub fn from_mesh(vertices: &[Vec3], triangles: &[[usize; 3]], pinned: &[usize]) -> Self {
+        let particles = vertices
+            .iter()
+            .copied()
+            .map(|position| Particle {
+                position,
+                previous: position,
+            })
+            .collect();
+        let mut cloth = Self::new(particles);
+        let mut seen = Vec::<(usize, usize)>::new();
+        let mut shared: Vec<((usize, usize), Vec<usize>)> = Vec::new();
+        for tri in triangles {
+            let corners = [tri[0], tri[1], tri[2]];
+            if corners.iter().any(|index| *index >= vertices.len()) {
+                continue;
+            }
+            cloth.triangles.push(ClothTri {
+                a: corners[0],
+                b: corners[1],
+                c: corners[2],
+            });
+            for (slot, opposite) in corners.iter().copied().enumerate() {
+                let start = corners[(slot + 1) % 3];
+                let end = corners[(slot + 2) % 3];
+                let key = ordered(start, end);
+                let length = vertices[start].distance(vertices[end]);
+                if !seen.contains(&key) {
+                    seen.push(key);
+                    cloth.edges.push(Edge {
+                        a: start,
+                        b: end,
+                        length,
+                    });
+                }
+                if let Some((_, opposites)) = shared.iter_mut().find(|(edge, _)| *edge == key) {
+                    opposites.push(opposite);
+                } else {
+                    shared.push((key, vec![opposite]));
+                }
+            }
+        }
+        for (_, opposites) in shared {
+            if opposites.len() >= 2 {
+                let (start, end) = (opposites[0], opposites[1]);
+                let key = ordered(start, end);
+                if !seen.contains(&key) && start < vertices.len() && end < vertices.len() {
+                    seen.push(key);
+                    cloth.edges.push(Edge {
+                        a: start,
+                        b: end,
+                        length: vertices[start].distance(vertices[end]),
+                    });
+                }
+            }
+        }
+        for index in pinned {
+            if let Some(vertex) = vertices.get(*index) {
+                cloth.pins.push(Pin {
+                    index: *index,
+                    rest: *vertex,
+                    weight: 1.0,
+                });
+            }
+        }
+        cloth
+    }
+
+    /// Triangle corners to draw. Both windings when the cloth is double sided.
+    pub fn faces(&self) -> Vec<(usize, usize, usize)> {
+        let mut faces = Vec::new();
+        for tri in &self.triangles {
+            faces.push((tri.a, tri.b, tri.c));
+            if self.double_sided {
+                faces.push((tri.a, tri.c, tri.b));
+            }
+        }
+        faces
     }
 
     /// Vertex positions the mesh draws, in centimetres.
@@ -195,6 +343,10 @@ pub fn step(cloth: &mut Cloth, gravity: Vec3) {
     if awake {
         let mean = cloth.mean_velocity;
         let keep = retention();
+        let wind = cloth.wind;
+        let wind_direction = cloth.wind_direction;
+        let tile = cloth.tile;
+        let noise = cloth.noise.clone();
         for (index, particle) in cloth.particles.iter_mut().enumerate() {
             if !particle.position.is_finite() || !particle.previous.is_finite() {
                 continue;
@@ -202,10 +354,14 @@ pub fn step(cloth: &mut Cloth, gravity: Vec3) {
             let velocity = particle.position - particle.previous;
             let retained = (velocity + (mean - velocity) * MEAN_DRAG) * keep;
             let mut next = particle.position + retained + gravity;
-            if cloth.wind > WIND_FLOOR {
-                let noise = cloth.noise.get(index).copied().unwrap_or(0.0);
-                if cloth.wind_direction.is_finite() && noise.is_finite() {
-                    next += cloth.wind_direction * (noise + 0.25) * cloth.wind;
+            if wind > WIND_FLOOR {
+                let sample = if let Some(tile) = tile {
+                    sample_tile(&tile, particle.position.x, particle.position.z)
+                } else {
+                    noise.get(index).copied().unwrap_or(0.0)
+                };
+                if wind_direction.is_finite() && sample.is_finite() {
+                    next += wind_direction * (sample + 0.25) * wind;
                 }
             }
             let step = next - particle.position;
@@ -221,6 +377,11 @@ pub fn step(cloth: &mut Cloth, gravity: Vec3) {
     if awake {
         apply_constraints(cloth);
     }
+    let before: Vec<Vec3> = cloth
+        .particles
+        .iter()
+        .map(|particle| particle.position)
+        .collect();
     let mut hit = false;
     for index in 0..cloth.spheres.len() {
         let sphere = cloth.spheres[index];
@@ -247,6 +408,10 @@ pub fn step(cloth: &mut Cloth, gravity: Vec3) {
             hit |= sweep_vertex(particle, tri);
         }
     }
+    cloth.reaction = Vec3::ZERO;
+    for (particle, old) in cloth.particles.iter().zip(before) {
+        cloth.reaction -= particle.position - old;
+    }
     if hit && cloth.sleep == 0 {
         cloth.sleep = 1.max(cloth.owner_sleep);
     } else if cloth.sleep == 0 {
@@ -254,6 +419,10 @@ pub fn step(cloth: &mut Cloth, gravity: Vec3) {
             particle.previous = particle.position;
         }
     }
+}
+
+fn ordered(a: usize, b: usize) -> (usize, usize) {
+    if a < b { (a, b) } else { (b, a) }
 }
 
 fn apply_constraints(cloth: &mut Cloth) {
@@ -671,5 +840,61 @@ mod tests {
         beside.level.push(floor);
         step(&mut beside, Vec3::ZERO);
         assert!((beside.particles[0].position.z + 8.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_mesh_builds_edges_and_the_wind_tile_pushes_the_body() {
+        let vertices = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+        ];
+        let cloth = Cloth::from_mesh(&vertices, &[[0, 1, 2], [1, 3, 2]], &[0]);
+        assert_eq!(cloth.particles.len(), 4);
+        assert_eq!(cloth.edges.len(), 6);
+        assert!(
+            cloth
+                .edges
+                .iter()
+                .any(|edge| ordered(edge.a, edge.b) == (0, 3))
+        );
+        assert_eq!(cloth.pins.len(), 1);
+        assert_eq!(cloth.pins[0].weight, 1.0);
+        assert_eq!(cloth.faces().len(), 4);
+        assert!(cloth.faces().contains(&(0, 2, 1)));
+
+        let mut samples = [0.0; NOISE_CELLS * NOISE_CELLS];
+        let randoms = [1.0; NOISE_CELLS * NOISE_CELLS];
+        advance_tile(&mut samples, cloth_wind(1.0 / 0.3), &randoms);
+        assert!((samples[0] - 0.4).abs() < 1e-4, "{}", samples[0]);
+        samples[0] = 1.5;
+        advance_tile(&mut samples, 1.0, &randoms);
+        assert!((samples[0] - 1.1).abs() < 1e-4, "{}", samples[0]);
+        let flat = [1.0; NOISE_CELLS * NOISE_CELLS];
+        assert!((sample_tile(&flat, 0.0, 0.0) - 1.0).abs() < 1e-5);
+
+        let mut blown = Cloth::new(vec![still(Vec3::ZERO)]);
+        blown.wind = 1.0;
+        blown.wind_direction = Vec3::X;
+        blown.tile = Some(flat);
+        step(&mut blown, Vec3::ZERO);
+        assert!((blown.particles[0].position.x - 1.25).abs() < 1e-3);
+
+        let mut cloth = Cloth::new(vec![still(Vec3::ZERO)]);
+        cloth.sleep = 0;
+        cloth.spheres.push(BodySphere {
+            center: Vec3::ZERO,
+            radius: 10.0,
+            friction: 0.0,
+        });
+        step(&mut cloth, Vec3::ZERO);
+        let push = cloth.particles[0].position;
+        assert!(
+            push.abs_diff_eq(-cloth.reaction, 1e-3),
+            "{:?} vs {:?}",
+            push,
+            cloth.reaction
+        );
     }
 }

@@ -423,7 +423,12 @@ sum exceeds 400, and the mesh vertices are the particle positions.
 Done (change `sweep-cloth-collisions`): a body sphere swept through a cloth
 triangle pushes the vertices it reaches, and a vertex swept through a level
 triangle stops 2 cm short of it. A sweep that misses leaves the cloth where
-it was. The reaction on the body and the render hooks are not in.
+it was.
+Done (change `build-a-cloth-mesh`): a triangle mesh becomes one particle a
+vertex, a link on each edge and a bend link across each shared edge, and
+both windings. The 16×16 wind tile is sampled in 2 m cells. A collision
+returns the opposite of the vertex pushes to the body. The geodesic pin
+distances and the draw into the renderer are not in.
 
 Done (change `decode-object-bodies-and-mechanisms`, data only): models'
 rigid bodies are decoded as the original stores them (class, mobility,
