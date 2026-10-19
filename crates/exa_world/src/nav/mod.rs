@@ -27,6 +27,7 @@
 //! Evidence (reverse engineering of `Exanima.exe` 0.9.5, the corpus) and
 //! the rules in full: `docs/NAVIGATION.md`. The planner is [`path`].
 
+pub mod footprint;
 pub mod headless;
 pub mod path;
 pub mod query;
@@ -35,6 +36,7 @@ pub mod view;
 
 use bevy::math::{DVec3, Vec2, Vec3};
 
+pub use footprint::{remove_footprint, stamp_footprint};
 pub use path::{Look, Path, find_path, look_ahead};
 pub use query::{LineHit, line_walk, nearest_walkable, obstacle, straight_walk};
 pub use source::{GroundTile, NavSource};

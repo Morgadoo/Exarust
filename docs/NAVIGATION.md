@@ -14,8 +14,9 @@ follows the path by the same heading and desired velocity the player
 writes. A line walk steps the longer axis and blocks on a floor more than
 four above the current height when its underside is within ten. A straight
 walk allows five and follows a floor down. A line of 40 cm or less is not
-an obstacle. A point on a cell cheaper than 80 keeps its place. Footprints
-are not in yet. With no grid there is no path.
+an obstacle. A point on a cell cheaper than 80 keeps its place. A footprint adds
+63 at its centre, 32 on the eight neighbours, and 16 on the twelve
+cells beyond. The mover refresh is not in yet. With no grid there is no path.
 
 Evidence: reverse engineering of `Exanima.exe` 0.9.5 (the grid build, its
 span, layer and cost passes, the scene fields it reads, the level loader),

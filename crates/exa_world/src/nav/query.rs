@@ -157,11 +157,11 @@ fn floors(grid: &NavGrid, x: i32, z: i32) -> ((u8, u8), (u8, u8)) {
     )
 }
 
-fn axis(metres: f32, n: usize) -> f32 {
+pub(crate) fn axis(metres: f32, n: usize) -> f32 {
     (super::centimetres_of(f64::from(metres)) / super::CELL_CM - 0.5 + (n / 2) as f64) as f32
 }
 
-fn voxels(y: f32, base: f32) -> i32 {
+pub(crate) fn voxels(y: f32, base: f32) -> i32 {
     (f64::from(y - base) / super::VOXEL_CM * 100.0).round_ties_even() as i32
 }
 
