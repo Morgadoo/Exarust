@@ -137,7 +137,8 @@ unit 5 also stores a fifth extent of 20. With the still bit set, close mark
 -9 draws a tab tint from x0 plus one to three units between y0 and y0 plus two
 units, -10 draws it below y0, and -8 draws a four-unit square; the tint is
 255, 204, 153, 255. Opening the line calls the parent's open once and the
-texture load once.
+texture load once. The renderer preparation runs two setup calls with a clear
+guard and none with it set, returning 1 either way.
 
 ## Scope
 

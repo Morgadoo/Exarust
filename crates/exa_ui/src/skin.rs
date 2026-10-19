@@ -2904,6 +2904,21 @@ pub fn open_line() -> LineOpen {
     }
 }
 
+/// The skin renderer's guarded preparation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkinPrepared {
+    pub calls: u32,
+    pub prepared: bool,
+}
+
+/// Prepares the renderer. The guard skips the two setup calls when it is set.
+pub fn prepare_skin_renderer(already: bool) -> SkinPrepared {
+    SkinPrepared {
+        calls: if already { 0 } else { 2 },
+        prepared: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5862,5 +5877,16 @@ mod tests {
         let open = open_line();
         assert_eq!(open.parent_calls, 1);
         assert_eq!(open.texture_calls, 1);
+    }
+
+    #[test]
+    fn a_skin_renderer_prepares_once() {
+        let first = prepare_skin_renderer(false);
+        assert_eq!(first.calls, 2);
+        assert!(first.prepared);
+
+        let again = prepare_skin_renderer(true);
+        assert_eq!(again.calls, 0);
+        assert!(again.prepared);
     }
 }

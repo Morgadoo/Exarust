@@ -689,3 +689,14 @@ Opening the line SHALL call the parent's open once and the texture load once.
 #### Scenario: The wrapper makes both calls
 - **WHEN** the line is opened
 - **THEN** the parent call count is 1 and the texture call count is 1
+
+### Requirement: Skin renderer preparation
+When the global guard is not 1, preparation SHALL make two setup calls and return 1. When the guard is already 1, it SHALL make no calls and return 1.
+
+#### Scenario: The first preparation calls setup
+- **WHEN** preparation runs with a clear guard
+- **THEN** the setup call count is 2 and the result is 1
+
+#### Scenario: A repeated preparation skips setup
+- **WHEN** preparation runs with the guard already set
+- **THEN** the setup call count is 0 and the result is 1
