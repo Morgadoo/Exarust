@@ -3853,6 +3853,48 @@ pub fn draw_inset_bevel(place: SkinInsetBevelPlace, unit: i32) -> SkinInsetBevel
     }
 }
 
+/// Draws the second parent slider, whose track sits one pixel in from the left.
+pub fn draw_skin_scroll(place: SkinSliderPlace, unit: i32) -> Option<SkinSlider> {
+    let x = i32::from(place.x);
+    let y = i32::from(place.y);
+    let w = i32::from(place.w);
+    let h = i32::from(place.h);
+    let i = i32::from(place.inset);
+    match place.style & 0x3000_0000 {
+        0 => {
+            let n = ((w - 2 * i - place.thumb) as f32 * place.fraction).round_ties_even() as i32;
+            Some(SkinSlider {
+                mode: SkinSliderMode::Plain,
+                rect: [x + 1, y + 2, w - 2, h - 4],
+                thumb: Some([x + i + n, y + 1 + i, place.thumb, h - 2 - 2 * i]),
+                thumb_first: (place.flags & 0x10) == 0x10,
+                thumb_second: false,
+                bar: None,
+                translate: n,
+                begin_calls: 0,
+                bind_calls: 0,
+                end_calls: 0,
+            })
+        }
+        0x1000_0000 => {
+            let n = ((w - 2 * i - unit) as f32 * place.fraction).round_ties_even() as i32;
+            Some(SkinSlider {
+                mode: SkinSliderMode::Filled,
+                rect: [x + i + 1, y + i + 1, w - 2 * i - 2, h - 2 * i - 2],
+                thumb: None,
+                thumb_first: false,
+                thumb_second: false,
+                bar: Some([x + i + n, y, unit, h]),
+                translate: 0,
+                begin_calls: 1,
+                bind_calls: 1,
+                end_calls: 1,
+            })
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7350,5 +7392,37 @@ mod tests {
         assert!(plain.first);
         assert!(!plain.second);
         assert_eq!(plain.extra_height, 70);
+    }
+
+    #[test]
+    fn a_second_skin_slider_offsets_its_track() {
+        let place = |style: u32, flags: u32| SkinSliderPlace {
+            x: 10,
+            y: 20,
+            w: 100,
+            h: 80,
+            inset: 5,
+            thumb: 10,
+            fraction: 0.5,
+            style,
+            flags,
+        };
+
+        let plain = draw_skin_scroll(place(0, 0x10), 5).expect("plain");
+        assert_eq!(plain.rect, [11, 22, 98, 76]);
+        assert_eq!(plain.thumb, Some([55, 26, 10, 68]));
+        assert_eq!(plain.translate, 40);
+        assert!(plain.thumb_first);
+        assert!(!plain.thumb_second);
+
+        let filled = draw_skin_scroll(place(0x1000_0000, 0), 5).expect("filled");
+        assert_eq!(filled.rect, [16, 26, 88, 68]);
+        assert_eq!(filled.bar, Some([57, 20, 5, 80]));
+        assert_eq!(
+            (filled.begin_calls, filled.bind_calls, filled.end_calls),
+            (1, 1, 1)
+        );
+
+        assert_eq!(draw_skin_scroll(place(0x2000_0000, 0), 5), None);
     }
 }

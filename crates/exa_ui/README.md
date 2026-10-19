@@ -167,7 +167,8 @@ copies three globals and four units plus four into fields 8 through 0x14. The
 program setup builds a solid, a textured and a rounded shader, setting `MPrj` to
 2 and looking up `Scale` and `TexCol`. The inset bevel adds an inset fill,
 border, outline and corner detail on flag 0x40, or one virtual inset rectangle
-otherwise.
+otherwise. The second slider draws its track at x + 1, y + 2 with its thumb one
+pixel lower, or a filled bar.
 
 ## Scope
 
