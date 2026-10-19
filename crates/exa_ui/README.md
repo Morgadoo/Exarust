@@ -48,7 +48,10 @@ draws a narrower cap from 90, 10 to 100, 30, then a shelf from 70, 0
 to 90, 10 unless bit 1 or the owner's bit 1 is set without bit 0x800000.
 When those mask bits are not both set, bit 0x200 draws a quad from 70, -10
 to 110, 30. A clear tab bit draws the same corners with the sign-flip sample,
-from 70, -10 to 110, 30. The drawing after that join is not in.
+from 70, -10 to 110, 30. A set tab bit then draws a strip from 80, 30 to 90, 50
+at unit 5, width 100 and height 80. A clear hold bit with that tab bit draws
+the wider strip, from 70, 40 to 80, 60 at height 100. The drawing after that
+strip is not in.
 
 ## Scope
 

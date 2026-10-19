@@ -336,3 +336,10 @@ When mask bits 1 and 4 are not both set, a clear bit 0x200 SHALL draw one quad. 
 #### Scenario: An edge of 5 sits at 70, -10
 - **WHEN** unit 5 dispatches a held form of width 100 that is not wide, with style bits 0x80, bit 0x200 clear, and an edge of 5, 5
 - **THEN** the quad runs from 70, -10 to 110, 30
+
+### Requirement: Held right
+Bit 0x200 SHALL then draw one strip. At unit 5, width 100 and height 80 it SHALL run from 80, 30 to 90, 50. A clear bit 0x200 SHALL draw none. A clear hold bit with that bit set SHALL draw the wider strip, from 70, 40 to 80, 60 at height 100. The drawing after that strip is not in.
+
+#### Scenario: Width 100 sits at 80, 30
+- **WHEN** unit 5 dispatches a held form of width 100 and height 80 that is not wide, with style bits 0x80 and bit 0x200
+- **THEN** the strip runs from 80, 30 to 90, 50
