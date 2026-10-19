@@ -627,6 +627,8 @@ pub enum SignalDrive {
     Pending,
     /// Driving open.
     Open,
+    /// A hinge aims at its fraction. A slider closes.
+    Toggle,
 }
 
 /// One door under a signalled open.
@@ -638,6 +640,9 @@ pub struct SignalLeaf {
     pub closed: bool,
     pub count: i32,
     pub fraction: f32,
+    pub angle: f32,
+    pub closed_angle: f32,
+    pub fast: bool,
     pub drive: SignalDrive,
     pub countdown: i32,
 }
@@ -698,6 +703,61 @@ pub fn begin_open(leaf: &mut SignalLeaf) -> Opened {
             shove: Vec3::ZERO,
             woke: true,
         }
+    }
+}
+
+/// How open a door looks to a toggle. A slider is 1 minus its travel. A
+/// hinge is `(angle − closed) · −0.7`.
+pub const TOGGLE_OPEN: f32 = 0.7;
+/// Scale from a hinge's angle gap to that openness.
+pub const TOGGLE_HINGE: f32 = -0.7;
+/// Ticks a slow hinge toggle runs.
+pub const TOGGLE_SLOW: i32 = 100;
+/// Ticks a fast hinge toggle runs, and every slider toggle.
+pub const TOGGLE_FAST: i32 = 60;
+/// Ticks a toggle wakes the door for.
+pub const TOGGLE_WAKE: i32 = 256;
+
+/// What a toggle did, after any latched open.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Toggled {
+    pub shove: Vec3,
+    pub wake_ticks: i32,
+}
+
+pub fn open_span(leaf: &SignalLeaf) -> f32 {
+    if leaf.sliding {
+        1.0 - leaf.fraction
+    } else {
+        (leaf.angle - leaf.closed_angle) * TOGGLE_HINGE
+    }
+}
+
+/// Toggle one door. A latched door is opened first, then the command is chosen
+/// from how open it is and the door is woken.
+pub fn toggle(leaf: &mut SignalLeaf) -> Toggled {
+    let mut shove = Vec3::ZERO;
+    if leaf.latched {
+        shove = begin_open(leaf).shove;
+    }
+    let span = open_span(leaf);
+    if leaf.sliding {
+        if span > TOGGLE_OPEN {
+            leaf.drive = SignalDrive::Toggle;
+            leaf.countdown = TOGGLE_FAST;
+        } else {
+            leaf.drive = SignalDrive::Open;
+            leaf.countdown = TOGGLE_FAST;
+            leaf.closed = false;
+        }
+    } else {
+        leaf.fraction = if span > TOGGLE_OPEN { 1.0 } else { 0.0 };
+        leaf.drive = SignalDrive::Toggle;
+        leaf.countdown = if leaf.fast { TOGGLE_FAST } else { TOGGLE_SLOW };
+    }
+    Toggled {
+        shove,
+        wake_ticks: TOGGLE_WAKE,
     }
 }
 
@@ -1112,6 +1172,9 @@ mod tests {
             closed: true,
             count: PULL_CAP,
             fraction: 1.0,
+            angle: 0.0,
+            closed_angle: 0.0,
+            fast: false,
             drive: SignalDrive::Idle,
             countdown: 0,
         }
@@ -1209,5 +1272,87 @@ mod tests {
         assert_eq!(motor_slide.countdown, SLIDE_MOTOR_TICKS);
         assert!(opened.woke);
         assert!(opened.shove.abs_diff_eq(Vec3::ZERO, 1e-6));
+    }
+
+    #[test]
+    fn a_toggle_opens_a_shut_hinge_and_closes_an_open_slider() {
+        let mut shut = signal_leaf();
+        shut.closed_angle = 1.0;
+        shut.angle = 1.0;
+        shut.fraction = 0.5;
+        let done = toggle(&mut shut);
+        assert!((shut.fraction - 0.0).abs() < 1e-6);
+        assert_eq!(shut.drive, SignalDrive::Toggle);
+        assert_eq!(shut.countdown, TOGGLE_SLOW);
+        assert_eq!(done.wake_ticks, TOGGLE_WAKE);
+        assert!(done.shove.abs_diff_eq(Vec3::ZERO, 1e-6));
+
+        let mut on_the_line = signal_leaf();
+        on_the_line.closed_angle = 1.0;
+        on_the_line.angle = 0.0;
+        let done = toggle(&mut on_the_line);
+        assert!((on_the_line.fraction - 0.0).abs() < 1e-6);
+        assert!(done.shove.abs_diff_eq(Vec3::ZERO, 1e-6));
+
+        let mut swung = signal_leaf();
+        swung.closed_angle = 1.0;
+        swung.angle = 1.0 - 1.1;
+        toggle(&mut swung);
+        assert!((swung.fraction - 1.0).abs() < 1e-6);
+        assert_eq!(swung.countdown, TOGGLE_SLOW);
+
+        let mut fast = signal_leaf();
+        fast.fast = true;
+        toggle(&mut fast);
+        assert_eq!(fast.countdown, TOGGLE_FAST);
+        assert!((fast.fraction - 0.0).abs() < 1e-6);
+
+        let mut open_slide = signal_leaf();
+        open_slide.sliding = true;
+        open_slide.fraction = 0.0;
+        open_slide.closed = true;
+        toggle(&mut open_slide);
+        assert_eq!(open_slide.drive, SignalDrive::Toggle);
+        assert_eq!(open_slide.countdown, TOGGLE_FAST);
+        assert!(open_slide.closed);
+
+        let mut shut_slide = signal_leaf();
+        shut_slide.sliding = true;
+        shut_slide.fraction = 0.3;
+        shut_slide.closed = true;
+        toggle(&mut shut_slide);
+        assert_eq!(shut_slide.drive, SignalDrive::Open);
+        assert_eq!(shut_slide.countdown, TOGGLE_FAST);
+        assert!(!shut_slide.closed);
+        assert!((shut_slide.fraction - 0.3).abs() < 1e-6);
+
+        let mut barred = signal_leaf();
+        barred.latched = true;
+        barred.fraction = 1.0;
+        barred.angle = 0.0;
+        barred.closed_angle = 0.0;
+        let done = toggle(&mut barred);
+        assert!(!barred.latched);
+        assert!(!barred.closed);
+        assert_eq!(barred.count, 0);
+        assert!((barred.fraction - 0.0).abs() < 1e-6);
+        assert_eq!(barred.drive, SignalDrive::Toggle);
+        assert_eq!(barred.countdown, TOGGLE_SLOW);
+        assert!(
+            done.shove
+                .abs_diff_eq(Vec3::new(0.0, 0.0, OPEN_PUSH_CM), 1e-4)
+        );
+
+        let mut barred_slide = signal_leaf();
+        barred_slide.sliding = true;
+        barred_slide.latched = true;
+        barred_slide.fraction = 1.0;
+        let done = toggle(&mut barred_slide);
+        assert!(!barred_slide.latched);
+        assert!((barred_slide.fraction - SLIDE_JUMP).abs() < 1e-6);
+        assert_eq!(barred_slide.drive, SignalDrive::Open);
+        assert_eq!(barred_slide.countdown, TOGGLE_FAST);
+        assert!(done.shove.abs_diff_eq(Vec3::ZERO, 1e-6));
+        assert_eq!(done.wake_ticks, TOGGLE_WAKE);
     }
 }
