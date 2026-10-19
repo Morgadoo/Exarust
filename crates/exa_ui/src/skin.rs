@@ -2999,6 +2999,74 @@ pub fn prepare_skin_renderer(already: bool) -> SkinPrepared {
     }
 }
 
+/// A parent-skin shade place: one inset rectangle in the place colour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShadePlace {
+    pub x: i16,
+    pub y: i16,
+    pub w: i16,
+    pub h: i16,
+    pub inset: i16,
+    pub ink: [u8; 4],
+}
+
+/// One inset rectangle and the calls around it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkinShade {
+    pub prepare_calls: u32,
+    pub modes: [i32; 2],
+    pub mode_calls: u32,
+    pub colour: [u8; 4],
+    pub corners: [(f32, f32); 4],
+    pub rect: LineShadeRect,
+    pub vertex_calls: u32,
+    pub colour_writes: u32,
+    pub begin_calls: u32,
+    pub end_calls: u32,
+}
+
+/// Draws the parent skin's inner shade.
+pub fn draw_skin_shade(place: ShadePlace) -> SkinShade {
+    let x = i32::from(place.x);
+    let y = i32::from(place.y);
+    let w = i32::from(place.w);
+    let h = i32::from(place.h);
+    let inset = i32::from(place.inset);
+    let left = x.wrapping_add(inset);
+    let top = y.wrapping_add(inset);
+    let width = w.wrapping_sub(inset.wrapping_shl(1));
+    let height = h.wrapping_sub(inset.wrapping_shl(1));
+    let right = i64::from(left) + i64::from(width);
+    let bottom = i64::from(top) + i64::from(height);
+    let corners = [
+        (right as f32, top as f32),
+        (left as f32, top as f32),
+        (left as f32, bottom as f32),
+        (right as f32, bottom as f32),
+    ];
+    let mut colour = place.ink;
+    colour[3] = 0xff;
+    SkinShade {
+        prepare_calls: 1,
+        modes: [1, 0x10],
+        mode_calls: 2,
+        colour,
+        corners,
+        rect: LineShadeRect {
+            left,
+            top,
+            width,
+            height,
+            right,
+            bottom,
+        },
+        vertex_calls: 4,
+        colour_writes: 4,
+        begin_calls: 1,
+        end_calls: 1,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6030,5 +6098,41 @@ mod tests {
         assert!(coloured.calls.is_empty());
         assert_eq!(coloured.y, 24);
         assert_eq!(coloured.text_calls, 1);
+    }
+
+    #[test]
+    fn a_skin_shade_draws_an_inset_rectangle() {
+        let shade = draw_skin_shade(ShadePlace {
+            x: 10,
+            y: 20,
+            w: 100,
+            h: 80,
+            inset: 5,
+            ink: [1, 2, 3, 4],
+        });
+        assert_eq!(shade.prepare_calls, 1);
+        assert_eq!(shade.modes, [1, 0x10]);
+        assert_eq!(shade.mode_calls, 2);
+        assert_eq!(shade.colour, [1, 2, 3, 255]);
+        assert_eq!(shade.vertex_calls, 4);
+        assert_eq!(shade.colour_writes, 4);
+        assert_eq!(shade.begin_calls, 1);
+        assert_eq!(shade.end_calls, 1);
+        let want: [(f32, f32); 4] = [(105.0, 25.0), (15.0, 25.0), (15.0, 95.0), (105.0, 95.0)];
+        for ((gx, gy), (wx, wy)) in shade.corners.iter().zip(want) {
+            assert_eq!(gx.to_bits(), wx.to_bits());
+            assert_eq!(gy.to_bits(), wy.to_bits());
+        }
+        assert_eq!(
+            shade.rect,
+            LineShadeRect {
+                left: 15,
+                top: 25,
+                width: 90,
+                height: 70,
+                right: 105,
+                bottom: 95,
+            }
+        );
     }
 }

@@ -143,7 +143,8 @@ first stored byte by the horizontal scale into 14 entries and the second by the
 vertical scale into 48. The parent label aligns like the line label; bit 0x10
 draws once in the first ink, mode 0x10000 uses the coloured renderer, bit 0x40
 adds a one-pixel drop shadow in the second and third inks, and any other word
-uses the fourth.
+uses the fourth. The parent shade draws one rectangle inset by the stored
+inset, from 15, 25 to 105, 95 at place 10, 20 of size 100 by 80.
 
 ## Scope
 
