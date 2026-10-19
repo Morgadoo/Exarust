@@ -252,6 +252,15 @@ fn low_strip(height: i32, slot: i32, band: i32, near: i32, down: i32) -> Vec<Sli
     )]
 }
 
+fn sole_quad(height: i32, slot: i32, band: i32, near: i32, down: i32) -> Vec<SliderQuad> {
+    let high = height.wrapping_sub(slot);
+    let low = height.wrapping_sub(band);
+    vec![quad(
+        HELD_CAP,
+        [(near, high), (near, low), (down, low), (down, high)],
+    )]
+}
+
 fn scroll_bar(unit: i32, place: SliderPlace) -> ScrollBar {
     let x = i32::from(place.x);
     let y = i32::from(place.y);
@@ -705,9 +714,10 @@ pub struct TitleDraw {
 /// strip when mask bit 4 is clear and the plain word's bit 0x200 is
 /// clear, and the two caps that finish that bar. A clear tab bit draws
 /// a strip on the right, and a lower strip when mask bits 2 and 8 are
-/// set. A clear hold bit on that same band draws the wider frame,
-/// including that strip, the wider right strip, and the wider lower
-/// strip, and not that bar. The helper body and the next quad are not in.
+/// set, and the ledge that follows it. A clear hold bit on that same
+/// band draws the wider frame, including that strip, the wider right
+/// strip, the wider lower strip, and the wider ledge, and not that bar.
+/// The helper body and the other arm are not in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormDispatch {
     pub span_a: i32,
@@ -753,6 +763,7 @@ pub struct FormDispatch {
     pub held_caps: Vec<SliderQuad>,
     pub held_trim: Vec<SliderQuad>,
     pub held_low: Vec<SliderQuad>,
+    pub held_sole: Vec<SliderQuad>,
     /// Mask forced when the hold bit is clear. The held mask stays separate.
     pub open_mask: u32,
     pub open_calls: u32,
@@ -765,6 +776,7 @@ pub struct FormDispatch {
     pub open_right: Vec<SliderQuad>,
     pub open_trim: Vec<SliderQuad>,
     pub open_low: Vec<SliderQuad>,
+    pub open_sole: Vec<SliderQuad>,
 }
 
 fn edge_mask(unit: i32, place: &DispatchPlace) -> u32 {
@@ -1488,6 +1500,21 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
     } else {
         Vec::new()
     };
+    let held_sole = if on_hold && (edge_mask & 0xa) == 0xa {
+        let band = unit.wrapping_shl(1);
+        let down = unit.wrapping_shl(2).wrapping_add(band);
+        sole_quad(place.height, 0, band, band, down)
+    } else {
+        Vec::new()
+    };
+    let open_sole = if on_open {
+        let slot = unit.wrapping_shl(1);
+        let band = unit.wrapping_shl(2);
+        let down = band.wrapping_shl(1);
+        sole_quad(place.height, slot, band, band, down)
+    } else {
+        Vec::new()
+    };
     FormDispatch {
         span_a,
         span_b,
@@ -1537,6 +1564,7 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         held_caps,
         held_trim,
         held_low,
+        held_sole,
         open_mask,
         open_calls,
         open_tab,
@@ -1548,6 +1576,7 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         open_right,
         open_trim,
         open_low,
+        open_sole,
     }
 }
 
@@ -3251,5 +3280,50 @@ mod tests {
 
         form.flags_d = 0x10;
         assert!(dispatch_form(5, 0, form, &[]).open_low.is_empty());
+    }
+
+    #[test]
+    fn a_dispatch_draws_the_held_sole() {
+        let mut form = place(FORM_HOLD, 0, 0, 0, 0, 0);
+        form.flags_d = 0x80;
+        form.edge_x = 4;
+        form.edge_y = 4;
+        form.room_far_x = 400;
+        form.room_far_y = 80;
+        let drawn = dispatch_form(5, 0, form, &[]);
+        assert_eq!(drawn.held_low.len(), 1);
+        assert!(drawn.open_sole.is_empty());
+        assert_eq!(drawn.held_sole.len(), 1);
+        assert_eq!(drawn.held_sole[0].sample, HELD_CAP);
+        assert_eq!(
+            drawn.held_sole[0].corners,
+            [(10, 80), (10, 70), (30, 70), (30, 80)]
+        );
+
+        form.flags_b = FORM_TAB;
+        assert_eq!(dispatch_form(5, 0, form, &[]).held_sole.len(), 1);
+
+        form.flags_b = 0;
+        form.room_far_y = 400;
+        assert!(dispatch_form(5, 0, form, &[]).held_sole.is_empty());
+
+        form.room_far_y = 80;
+        form.edge_x = 5;
+        assert!(dispatch_form(5, 0, form, &[]).held_sole.is_empty());
+
+        form.flags_a = 0;
+        form.edge_x = 4;
+        form.height = 100;
+        let open = dispatch_form(5, 0, form, &[]);
+        assert!(open.held_sole.is_empty());
+        assert_eq!(open.open_sole.len(), 1);
+        assert_eq!(open.open_sole[0].sample, HELD_CAP);
+        assert_eq!(
+            open.open_sole[0].corners,
+            [(20, 90), (20, 80), (40, 80), (40, 90)]
+        );
+
+        form.flags_d = 0x10;
+        assert!(dispatch_form(5, 0, form, &[]).open_sole.is_empty());
     }
 }

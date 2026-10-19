@@ -59,7 +59,9 @@ to 100, 50 at unit 5, width 100 and height 80. A clear hold bit with the tab
 bit clear draws the wider strip, from 80, 40 to 90, 60 at height 100. Mask
 bits 2 and 8 together then draw a strip from 0, 50 to 10, 70 at unit 5 and
 height 80. A set tab bit still draws it. A clear hold bit draws the wider
-strip, from 10, 60 to 20, 80 at height 100. The next quad is not in.
+strip, from 10, 60 to 20, 80 at height 100, then a ledge from 10, 70 to 30, 80.
+A set tab bit still draws it. A clear hold bit draws the wider ledge, from
+20, 80 to 40, 90 at height 100. The other arm is not in.
 
 ## Scope
 
