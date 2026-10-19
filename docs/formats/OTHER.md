@@ -365,7 +365,7 @@ A barrier ripple and the dome extent are in `exa_game::thaum`. A wave
 charge, its charging radius and the released front are in `exa_game::thaum`.
 A shell ripple is in `exa_game::thaum`. A torrent mix, its stream mesh counts and its push are in
 `exa_game::thaum`. A shell vertex, its hit strength and its copied index list are in
-`exa_game::thaum`. The skinned section filter is not in. Exarust:
+`exa_game::thaum`. The compacted vertex map is not in. Exarust:
 `exa_formats::power_tree`.
 
 - **Header**: first word `0xAFCE01CE`. The node count is the signed word at
@@ -432,7 +432,9 @@ A shell ripple is in `exa_game::thaum`. A torrent mix, its stream mesh counts an
   copies its triangles from the first through the last. Each triangle keeps
   its three indices in order, after the remap. A hidden section is skipped.
   A range that ends early copies nothing. A short list or a missing remap
-  is an error.
+  is an error. A skinned section is copied only when bit 2 is set. A
+  hidden section that also has bit 2 is still copied. A section without bit
+  2 is skipped.
 - **Torrent**: below phase 1 the level is (2 minus the charge) times the
   charge times 0.4. Otherwise the level falls by 0.01, and below 0.02 it
   stops. Phase 1 eases the two channels toward 0.5 and 0.6 by 0.06. Phase 2
@@ -443,8 +445,8 @@ A shell ripple is in `exa_game::thaum`. A torrent mix, its stream mesh counts an
   0.01 of the age over the sample count, until the second is no longer under
   1.8. A point inside the reach moves by 0.01 of one minus its distance
   squared over the reach squared.
-- Four domains: displacement, energy, force, mind. The skinned section
-  filter is not in.
+- Four domains: displacement, energy, force, mind. The compacted vertex
+  map is not in.
 
 ## Weapon factories (`.fty`)
 

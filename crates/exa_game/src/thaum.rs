@@ -614,6 +614,9 @@ pub struct ShellSpan {
 /// The section flag that keeps a triangle range off the shell.
 pub const SHELL_HIDDEN: u32 = 0x0008_0000;
 
+/// The section flag a skinned shell requires before it copies a range.
+pub const SHELL_SKINNED: u32 = 2;
+
 /// Why a shell index copy stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShellIndexError {
@@ -629,9 +632,27 @@ pub fn shell_indices(
     triangles: &[u32],
     remap: &[u32],
 ) -> Result<Vec<u32>, ShellIndexError> {
+    copy_shell_indices(spans, triangles, remap, |flags| flags & SHELL_HIDDEN == 0)
+}
+
+/// Copy the skinned triangles. A section is kept only when bit 2 is set.
+pub fn shell_skinned_indices(
+    spans: &[ShellSpan],
+    triangles: &[u32],
+    remap: &[u32],
+) -> Result<Vec<u32>, ShellIndexError> {
+    copy_shell_indices(spans, triangles, remap, |flags| flags & SHELL_SKINNED != 0)
+}
+
+fn copy_shell_indices(
+    spans: &[ShellSpan],
+    triangles: &[u32],
+    remap: &[u32],
+    keep: impl Fn(u32) -> bool,
+) -> Result<Vec<u32>, ShellIndexError> {
     let mut out = Vec::new();
     for span in spans {
-        if span.flags & SHELL_HIDDEN != 0 || span.end < span.start {
+        if !keep(span.flags) || span.end < span.start {
             continue;
         }
         for tri in span.start..=span.end {
@@ -1011,6 +1032,61 @@ mod tests {
         );
         assert_eq!(
             shell_indices(&[one], &[0, 1, 10], &remap),
+            Err(ShellIndexError::Remap)
+        );
+    }
+
+    #[test]
+    fn a_skinned_shell_keeps_only_the_marked_sections() {
+        let marked = ShellSpan {
+            flags: SHELL_SKINNED,
+            start: 0,
+            end: 0,
+        };
+        let plain = ShellSpan {
+            flags: 0,
+            start: 0,
+            end: 0,
+        };
+        let both = ShellSpan {
+            flags: SHELL_HIDDEN | SHELL_SKINNED,
+            start: 1,
+            end: 1,
+        };
+        let early = ShellSpan {
+            flags: SHELL_SKINNED,
+            start: 3,
+            end: 2,
+        };
+        let triangles = [4, 5, 6, 1, 2, 0];
+        let remap = [10, 11, 12, 13, 14, 15, 16];
+        let copied =
+            shell_skinned_indices(&[marked, plain, both, early], &triangles, &remap).unwrap();
+        assert_eq!(copied, vec![14, 15, 16, 11, 12, 10]);
+        assert_eq!(
+            shell_indices(&[both], &triangles, &remap).unwrap(),
+            Vec::<u32>::new()
+        );
+        assert_eq!(
+            shell_skinned_indices(&[marked], &[1, 0, 2], &[9, 8, 7]).unwrap(),
+            vec![8, 9, 7]
+        );
+        assert_eq!(
+            shell_skinned_indices(&[early], &triangles, &remap).unwrap(),
+            Vec::<u32>::new()
+        );
+        assert_eq!(
+            shell_skinned_indices(&[marked], &[4, 5], &remap),
+            Err(ShellIndexError::Short)
+        );
+        // The marked span covers one triangle, so three indices that run past the remap fail there.
+        let wide = ShellSpan {
+            flags: SHELL_SKINNED,
+            start: 0,
+            end: 0,
+        };
+        assert_eq!(
+            shell_skinned_indices(&[wide], &[0, 1, 10], &remap),
             Err(ShellIndexError::Remap)
         );
     }

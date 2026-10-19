@@ -1042,6 +1042,7 @@ Done (change `step-a-torrent`): a charge of 1 below phase 1 sets the level to 0.
 Done (change `place-a-torrent-stream`): spans of 1, 2 and 3 count as 1, 2 and 2 streams. A stream along height 1 is placed at height -6. Two streams ask for 10 records, 130 groups, 1560 bytes and 1040 indices. A radius of 2 at scale one half and margin 1 reaches 12. Age 1 of 2 samples raises channels at 0 to 0.0025 and 0.005. A second channel of 1.8 still rises, and the next float does not. A point at the origin inside a reach of 10 moves to 0.01. A point on the reach stays, and a point past it is missed. The index winding and the shell mesh are not in.
 Done (change `place-a-shell-vertex`): a position at 1, 2, 3 offset by a sum of 0, 3, 0 is raised on its height. A zero sum stays at 1, 2, 3. A hit of 0.1 stores about 3.333. A hit of 0.3 stores 6. An eighth hit is refused. The copied index list is not in.
 Done (change `copy-a-shell-index`): two visible ranges and a hidden range copy to 14, 15, 16, 11, 12, 10, 17, 18, 19. A reversed triangle stays reversed. A range that ends early is empty. A short list is an error. A missing remap is an error. The skinned section filter is not in.
+Done (change `keep-a-skinned-section`): a section with bit 2 and a hidden section that also has bit 2 copy to 14, 15, 16, 11, 12, 10. A section without bit 2 is absent. The same hidden section copies nothing on the object path. A reversed triangle stays reversed. A range that ends early is empty. A short list is an error. A missing remap is an error. The compacted vertex map is not in.
 Done (change `save-the-session`): an `EXRS` file restores that session.
 The original's save packages are not read.
 
@@ -1062,7 +1063,7 @@ Still open:
 
 - The other emblem controls. A candidate's listed price is the rank square plus four fifths of the gear. A swept season grants its four item ids, and day 134 repeats the first row. A shop line prices at 1, 12, 144 or 1440 copper, and a sale is a quarter of the basket. A tier multiplies a match stake by one more than the tier. A recruitment costs 12 copper. Overnight rest and a trainer's lesson are in.
 - Story side levels, scripted encounters, the role interpreter, map discovery.
-- The other powers and their meshes. A blast charge, a barrier ripple, a wave front, a shell ripple, a shell vertex, a shell index list, a torrent mix and a torrent stream are in. The skinned section filter is not in.
+- The other powers and their meshes. A blast charge, a barrier ripple, a wave front, a shell ripple, a shell vertex, a shell index list, a skinned section filter, a torrent mix and a torrent stream are in. The compacted vertex map is not in.
 - Character creation (race, body, face, hair, colours, class, skills).
 - Full UI using the original GUI skin, icons and manual pages.
 
