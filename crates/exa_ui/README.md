@@ -27,7 +27,8 @@ stores spans 10, 15 and 20, and a spare of 30 at value 1 shifts by 30.
 A title of width 40 sits at 30, and style 0x10 draws four corners of span 30,
 then edge bars whose reach is 33 at unit 5. A wide form whose style word
 has bits 0xc0 equal to 0x80 draws a top from 10, -5 to 90, 5, then a
-left side from -5, 10 to 5, 70. The bottom after that side is not in.
+left side from -5, 10 to 5, 70, then a bottom from 10, 75 to 90, 85.
+The right side is not in.
 
 ## Scope
 

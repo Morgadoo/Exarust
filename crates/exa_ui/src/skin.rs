@@ -617,7 +617,7 @@ pub struct TitleDraw {
 
 /// The opening of a form: spans, an optional shade and backdrop, the scroll
 /// shift, the shown children, the title, the corners, the edge bars, the
-/// wide top, and the left side. The bottom after that side is not in.
+/// wide top, the left side, and the bottom. The right side is not in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormDispatch {
     pub span_a: i32,
@@ -639,6 +639,7 @@ pub struct FormDispatch {
     pub edges: Vec<SliderQuad>,
     pub wide_top: Vec<SliderQuad>,
     pub wide_side: Vec<SliderQuad>,
+    pub wide_bottom: Vec<SliderQuad>,
     pub wide_calls: u32,
 }
 
@@ -862,7 +863,8 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
     } else {
         (Vec::new(), Vec::new(), 0)
     };
-    let (wide_top, wide_side) = if wide && (place.flags_d & FORM_BAND) == FORM_BAND_ON {
+    let (wide_top, wide_side, wide_bottom) = if wide && (place.flags_d & FORM_BAND) == FORM_BAND_ON
+    {
         let band = unit.wrapping_shl(1);
         let width = place.width;
         let height = place.height;
@@ -910,9 +912,32 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
                 ],
             ),
         ];
-        (top, side)
+        let low = height.wrapping_sub(unit);
+        let high = height.wrapping_add(unit);
+        let bottom = vec![
+            quad(WIDE_CAP, [(band, low), (band, high), (0, high), (0, low)]),
+            quad(
+                WIDE_BAR,
+                [
+                    (band, low),
+                    (band, high),
+                    (width.wrapping_sub(band), high),
+                    (width.wrapping_sub(band), low),
+                ],
+            ),
+            quad(
+                WIDE_CAP,
+                [
+                    (width.wrapping_sub(band), low),
+                    (width.wrapping_sub(band), high),
+                    (width, high),
+                    (width, low),
+                ],
+            ),
+        ];
+        (top, side, bottom)
     } else {
-        (Vec::new(), Vec::new())
+        (Vec::new(), Vec::new(), Vec::new())
     };
     FormDispatch {
         span_a,
@@ -939,6 +964,7 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         edges,
         wide_top,
         wide_side,
+        wide_bottom,
         wide_calls,
     }
 }
@@ -1756,5 +1782,35 @@ mod tests {
         form.flags_b = 0;
         form.flags_d = 0x80;
         assert!(dispatch_form(5, 0, form, &[]).wide_side.is_empty());
+    }
+
+    #[test]
+    fn a_dispatch_draws_the_wide_bottom() {
+        let mut form = place(0, 0x40_0000, 0, 0, 0, 0);
+        form.flags_d = 0x80;
+        let drawn = dispatch_form(5, 0, form, &[]);
+        assert_eq!(drawn.wide_side.len(), 3);
+        assert_eq!(drawn.wide_bottom.len(), 3);
+        assert_eq!(drawn.wide_bottom[0].sample, WIDE_CAP);
+        assert_eq!(
+            drawn.wide_bottom[0].corners,
+            [(10, 75), (10, 85), (0, 85), (0, 75)]
+        );
+        assert_eq!(drawn.wide_bottom[1].sample, WIDE_BAR);
+        assert_eq!(
+            drawn.wide_bottom[1].corners,
+            [(10, 75), (10, 85), (90, 85), (90, 75)]
+        );
+        assert_eq!(drawn.wide_bottom[2].sample, WIDE_CAP);
+        assert_eq!(
+            drawn.wide_bottom[2].corners,
+            [(90, 75), (90, 85), (100, 85), (100, 75)]
+        );
+
+        form.flags_d = 0x10;
+        assert!(dispatch_form(5, 0, form, &[]).wide_bottom.is_empty());
+        form.flags_b = 0;
+        form.flags_d = 0x80;
+        assert!(dispatch_form(5, 0, form, &[]).wide_bottom.is_empty());
     }
 }
