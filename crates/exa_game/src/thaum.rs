@@ -670,6 +670,79 @@ fn copy_shell_indices(
     Ok(out)
 }
 
+/// A vertex's half-open range of links. The end is one past the last link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShellLinks {
+    pub start: u32,
+    pub end: u32,
+}
+
+/// The mark bytes. A skinned section writes its index. Any other section writes 255.
+pub fn shell_marks(len: usize, spans: &[ShellSpan]) -> Result<Vec<u8>, ShellIndexError> {
+    let mut marks = vec![0xff; len];
+    for (index, span) in spans.iter().enumerate() {
+        if span.end < span.start {
+            continue;
+        }
+        let value = if span.flags & SHELL_SKINNED == 0 {
+            0xff
+        } else {
+            index as u8
+        };
+        for tri in span.start..=span.end {
+            let slot = usize::try_from(tri).map_err(|_| ShellIndexError::Short)?;
+            *marks.get_mut(slot).ok_or(ShellIndexError::Short)? = value;
+        }
+    }
+    Ok(marks)
+}
+
+/// Number the vertices a skinned shell keeps. The first mark other than 255 wins.
+pub fn shell_compact(
+    vertices: &[ShellLinks],
+    links: &[u16],
+    marks: &[u8],
+) -> Result<Vec<Option<u32>>, ShellIndexError> {
+    let mut next = 0u32;
+    let mut map = Vec::with_capacity(vertices.len());
+    for vertex in vertices {
+        let mut kept = None;
+        let mut link_at = vertex.start;
+        while link_at < vertex.end {
+            let link = *links
+                .get(usize::try_from(link_at).map_err(|_| ShellIndexError::Short)?)
+                .ok_or(ShellIndexError::Short)?;
+            let mark = *marks.get(usize::from(link)).ok_or(ShellIndexError::Short)?;
+            if mark != 0xff {
+                kept = Some(next);
+                next += 1;
+                break;
+            }
+            link_at += 1;
+        }
+        map.push(kept);
+    }
+    Ok(map)
+}
+
+/// Replace each index with its compacted id. An absent id is an error.
+pub fn shell_apply_compact(
+    indices: &[u32],
+    map: &[Option<u32>],
+) -> Result<Vec<u32>, ShellIndexError> {
+    let mut out = Vec::with_capacity(indices.len());
+    for &index in indices {
+        let slot = usize::try_from(index).map_err(|_| ShellIndexError::Remap)?;
+        out.push(
+            map.get(slot)
+                .copied()
+                .flatten()
+                .ok_or(ShellIndexError::Remap)?,
+        );
+    }
+    Ok(out)
+}
+
 /// A torrent's level and its two channels after one tick.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TorrentMix {
@@ -1088,6 +1161,56 @@ mod tests {
         assert_eq!(
             shell_skinned_indices(&[wide], &[0, 1, 10], &remap),
             Err(ShellIndexError::Remap)
+        );
+    }
+
+    #[test]
+    fn a_shell_numbers_the_vertices_it_keeps() {
+        let spans = [
+            ShellSpan {
+                flags: SHELL_SKINNED,
+                start: 0,
+                end: 1,
+            },
+            ShellSpan {
+                flags: 0,
+                start: 1,
+                end: 1,
+            },
+            ShellSpan {
+                flags: SHELL_SKINNED,
+                start: 2,
+                end: 2,
+            },
+        ];
+        let marks = shell_marks(3, &spans).unwrap();
+        assert_eq!(marks, vec![0, 0xff, 2]);
+        let vertices = [
+            ShellLinks { start: 0, end: 1 },
+            ShellLinks { start: 1, end: 2 },
+            ShellLinks { start: 1, end: 3 },
+        ];
+        let map = shell_compact(&vertices, &[0, 1, 2], &marks).unwrap();
+        assert_eq!(map, vec![Some(0), None, Some(1)]);
+        assert_eq!(
+            shell_apply_compact(&[2, 0, 2], &map).unwrap(),
+            vec![1, 0, 1]
+        );
+        assert_eq!(shell_apply_compact(&[1], &map), Err(ShellIndexError::Remap));
+        assert_eq!(
+            shell_compact(&[ShellLinks { start: 0, end: 1 }], &[], &marks),
+            Err(ShellIndexError::Short)
+        );
+        assert_eq!(
+            shell_marks(
+                2,
+                &[ShellSpan {
+                    flags: SHELL_SKINNED,
+                    start: 0,
+                    end: 2,
+                }]
+            ),
+            Err(ShellIndexError::Short)
         );
     }
 

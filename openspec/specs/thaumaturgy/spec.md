@@ -137,3 +137,10 @@ A skinned shell SHALL copy a section only when its flags include bit 2. Each cop
 #### Scenario: A marked section and a plain one
 - **WHEN** a section with bit 2, a section without it, and a hidden section that also has bit 2 are copied, a reversed triangle with bit 2 is copied, a range that ends early is copied, a short list is copied, and a missing remap is copied
 - **THEN** the kept list is 14, 15, 16, 11, 12, 10, the plain section is absent, the reversed triangle stays reversed, the early range is empty, the short list is an error, and the missing remap is an error
+
+### Requirement: Compacted shell vertices
+A shell mark list SHALL start at 255. A skinned section SHALL write its index over each triangle from the first through the last. Any other section SHALL write 255. A vertex SHALL take the next compacted id when a link in its half-open range names a mark other than 255, and stop at the first such mark. A vertex with none SHALL be absent. An index SHALL become that id. A short list or an absent id SHALL be an error.
+
+#### Scenario: Two kept vertices and a gap
+- **WHEN** marks are built for a skinned range, a plain range, and a later skinned range, three vertices are numbered, the kept indices are applied, an absent index is applied, and a short mark list is built
+- **THEN** the marks are 0, 255, 2, the vertices are 0, absent, and 1, the indices become 1, 0, 1, the absent index is an error, and the short mark list is an error
