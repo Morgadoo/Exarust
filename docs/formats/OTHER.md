@@ -369,8 +369,9 @@ A shell ripple is in `exa_game::thaum`. A torrent mix, its stream mesh counts an
 room are in `exa_game::thaum`. The stored size of 800 and the fade that
 divides by it are in `exa_game::thaum`. The light that follows the fade is
 in `exa_game::thaum`. The second light's two values and the index upload
-sizes are in `exa_game::thaum`. The play renderer does not issue the
-buffer calls. Exarust:
+sizes are in `exa_game::thaum`. A play draw submits that upload on
+the mesh when the flag is set. The Bevy render graph does not issue
+the original's GL calls. Exarust:
 `exa_formats::power_tree`.
 
 - **Header**: first word `0xAFCE01CE`. The node count is the signed word at
@@ -472,7 +473,10 @@ buffer calls. Exarust:
   is the shown value times 0.75. A hold keeps the pair. An index upload
   asks for 20 bytes plus 8 a channel, and a payload of the triangle count
   times the width. The target is 0x8893, the usage 0x88E4, and the access
-  0x88B9. A finish unmaps only when the buffer name is above 0.
+  0x88B9. A finish unmaps only when the buffer name is above 0. A
+  play draw of those spans, with the flag set, puts one index per
+  triangle of the payload on the mesh and unmaps a name above 0. A
+  clear flag keeps the counted room and does not unmap.
 - **Torrent**: below phase 1 the level is (2 minus the charge) times the
   charge times 0.4. Otherwise the level falls by 0.01, and below 0.02 it
   stops. Phase 1 eases the two channels toward 0.5 and 0.6 by 0.06. Phase 2
@@ -483,8 +487,8 @@ buffer calls. Exarust:
   0.01 of the age over the sample count, until the second is no longer under
   1.8. A point inside the reach moves by 0.01 of one minus its distance
   squared over the reach squared.
-- Four domains: displacement, energy, force, mind. The play renderer
-  does not issue the buffer calls.
+- Four domains: displacement, energy, force, mind. The Bevy render
+  graph does not issue the original's GL calls.
 
 ## Weapon factories (`.fty`)
 

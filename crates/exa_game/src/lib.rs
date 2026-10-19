@@ -16,6 +16,7 @@ pub mod pair_trace;
 pub mod pick;
 pub mod player;
 pub mod session;
+pub mod shell_draw;
 pub mod sim_control;
 pub mod stages;
 pub mod thaum;

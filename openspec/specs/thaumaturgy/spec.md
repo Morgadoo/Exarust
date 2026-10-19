@@ -186,3 +186,10 @@ A shell index upload SHALL ask for a header of 20 bytes plus 8 a channel, and a 
 #### Scenario: Three triangles and a name
 - **WHEN** an upload is asked for one channel, the triangle count of two skinned spans, and a width of 4, and a finish is asked for a name of 0 and a name of 1
 - **THEN** the header is 28 bytes, the payload is 12 bytes, the target is 0x8893, the usage is 0x88E4, the access is 0x88B9, the name of 0 stays, and the name of 1 unmaps
+
+### Requirement: Shell index submission
+A play draw of a skinned shell SHALL count its room and, when the upload flag is set, SHALL submit that upload. The mesh SHALL hold one index per triangle of the payload. A name above 0 SHALL unmap. A clear flag SHALL keep the counted room and SHALL not unmap.
+
+#### Scenario: Three triangles, uploaded and kept
+- **WHEN** two skinned spans are submitted with the flag set and a name of 1, and the same spans are submitted with the flag clear and a name of 1
+- **THEN** the upload has a header of 28, a payload of 12 and 3 indices, and it unmaps, and the clear draw keeps a room of 32 bytes and does not unmap
