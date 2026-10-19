@@ -548,6 +548,61 @@ pub fn step_shell(shown: f32, strength: f32, scale: f32) -> Option<ShellRipple> 
     }
 }
 
+/// A shell vertex and the direction it was pushed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShellVertex {
+    pub at: [f32; 3],
+    pub normal: [f32; 3],
+}
+
+fn reciprocal_sqrt(value: f32) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // The same approximate reciprocal square root the shell uses to unit a sum.
+        unsafe {
+            use std::arch::x86_64::{_mm_cvtss_f32, _mm_rsqrt_ss, _mm_set_ss};
+            _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(value)))
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        1.0 / value.sqrt()
+    }
+}
+
+/// Place a shell vertex: the position plus 2 times the normalized sum. A zero sum adds nothing.
+pub fn shell_vertex(position: [f32; 3], sum: [f32; 3]) -> ShellVertex {
+    let len = sum[0] * sum[0] + sum[1] * sum[1] + sum[2] * sum[2];
+    let normal = if len == 0.0 {
+        [0.0, 0.0, 0.0]
+    } else {
+        let scale = reciprocal_sqrt(len);
+        [sum[0] * scale, sum[1] * scale, sum[2] * scale]
+    };
+    ShellVertex {
+        at: [
+            position[0] + normal[0] * 2.0,
+            position[1] + normal[1] * 2.0,
+            position[2] + normal[2] * 2.0,
+        ],
+        normal,
+    }
+}
+
+/// The strength of one shell hit. Eight hits are the most it keeps.
+pub fn shell_hit(held: u32, amount: f32) -> Option<f32> {
+    if held >= 8 {
+        return None;
+    }
+    let strength = if f64::from(amount) <= 0.3 {
+        let scaled = (f64::from(amount) * 3.333) as f32;
+        (2.0 - scaled) * scaled * 6.0
+    } else {
+        6.0
+    };
+    Some(strength)
+}
+
 /// A torrent's level and its two channels after one tick.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TorrentMix {
@@ -847,6 +902,22 @@ mod tests {
         assert_eq!(edge.shown, f32::from_bits(0x3d4c_ccce));
         assert_eq!(edge.strength, f32::from_bits(0x3d4c_ccce));
         assert!(step_shell(0.05, 0.05, 1.0).is_none());
+    }
+
+    #[test]
+    fn a_shell_vertex_is_pushed_and_a_hit_caps() {
+        let pushed = shell_vertex([1.0, 2.0, 3.0], [0.0, 3.0, 0.0]);
+        assert_eq!(pushed.at[0], 1.0);
+        assert_eq!(pushed.at[1], f32::from_bits(0x407f_f800));
+        assert_eq!(pushed.at[2], 3.0);
+        assert_eq!(pushed.normal[1], f32::from_bits(0x3f7f_f000));
+        let still = shell_vertex([1.0, 2.0, 3.0], [0.0, 0.0, 0.0]);
+        assert_eq!(still.at, [1.0, 2.0, 3.0]);
+        assert_eq!(still.normal, [0.0, 0.0, 0.0]);
+
+        assert_eq!(shell_hit(0, 0.1), Some(f32::from_bits(0x4055_50f7)));
+        assert_eq!(shell_hit(7, 0.3), Some(6.0));
+        assert!(shell_hit(8, 0.1).is_none());
     }
 
     #[test]
