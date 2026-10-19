@@ -1,7 +1,10 @@
 //! The in-game menu command that begins an arena match.
 //!
-//! The method that runs on a dismissed child, the call after the two lists,
-//! writing a save package, and playing the transition are not part of this step.
+//! A dismissed child closes unless it is already closed. A pinned child
+//! raises a notice and still closes its own children, first to last.
+//! The capture release, the task's other children, detaching, redraw, the
+//! call after the two lists, writing a save package, and the transition
+//! are not part of this step.
 
 use crate::career::Company;
 
@@ -22,6 +25,15 @@ pub struct Window {
     pub name: String,
     pub flags: u32,
     pub dismissed: bool,
+    /// Already closed. Close returns without its callback or its children.
+    pub closed: bool,
+    /// Marked closed as the close starts, and a notice is raised.
+    pub pinned: bool,
+    pub on_close: bool,
+    pub close_ran: bool,
+    /// The argument recorded when close proceeds. Already closed stays unset.
+    pub seen_arg: Option<u32>,
+    pub children: Vec<Window>,
 }
 
 /// Which mode the menu command is running in.
@@ -48,6 +60,10 @@ pub struct MatchGate {
     pub second_count: i32,
     /// Names dismissed by the begin, last child first, first list then second.
     pub dismissed: Vec<String>,
+    /// Raised when a pinned child starts to close.
+    pub notice: bool,
+    /// Close callbacks, children before their parent.
+    pub close_log: Vec<String>,
 }
 
 impl MatchGate {
@@ -64,6 +80,8 @@ impl MatchGate {
             second: Vec::new(),
             second_count: 0,
             dismissed: Vec::new(),
+            notice: false,
+            close_log: Vec::new(),
         }
     }
 
@@ -80,8 +98,7 @@ impl MatchGate {
         if page != IN_GAME_PAGE || command != BEGIN_COMMAND || kind != PlayKind::Arena {
             return false;
         }
-        dismiss_list(&mut self.first, self.first_count, &mut self.dismissed);
-        dismiss_list(&mut self.second, self.second_count, &mut self.dismissed);
+        dismiss_open(self);
         let _ = company.leave_before_match();
         self.save_unconditional = true;
         self.hub_busy = true;
@@ -94,7 +111,36 @@ impl MatchGate {
 
 /// Visit `count` children from the last back to the first. A count of 0 or
 /// less does nothing. A count past the list stops at the list.
-fn dismiss_list(windows: &mut [Window], count: i32, order: &mut Vec<String>) {
+fn dismiss_open(gate: &mut MatchGate) {
+    let mut order = std::mem::take(&mut gate.dismissed);
+    let mut log = std::mem::take(&mut gate.close_log);
+    let mut notice = gate.notice;
+    dismiss_list(
+        &mut gate.first,
+        gate.first_count,
+        &mut order,
+        &mut notice,
+        &mut log,
+    );
+    dismiss_list(
+        &mut gate.second,
+        gate.second_count,
+        &mut order,
+        &mut notice,
+        &mut log,
+    );
+    gate.dismissed = order;
+    gate.close_log = log;
+    gate.notice = notice;
+}
+
+fn dismiss_list(
+    windows: &mut [Window],
+    count: i32,
+    order: &mut Vec<String>,
+    notice: &mut bool,
+    log: &mut Vec<String>,
+) {
     if count <= 0 {
         return;
     }
@@ -103,8 +149,34 @@ fn dismiss_list(windows: &mut [Window], count: i32, order: &mut Vec<String>) {
         if window.flags & DISMISS_MARK == DISMISS_MARK {
             window.dismissed = true;
             order.push(window.name.clone());
+            close_window(window, 0, notice, log);
         }
     }
+}
+
+/// Close one window. An already closed window returns. A pinned window is
+/// marked closed and raises the notice, then its children close from the
+/// first to the last. The callback runs after those children. The capture
+/// release, the task's other children, detaching, and redraw are not in.
+fn close_window(window: &mut Window, arg: u32, notice: &mut bool, log: &mut Vec<String>) {
+    if window.closed {
+        return;
+    }
+    if window.pinned {
+        window.closed = true;
+        *notice = true;
+    }
+    for child in &mut window.children {
+        if !child.closed {
+            close_window(child, arg, notice, log);
+        }
+    }
+    if window.on_close {
+        window.close_ran = true;
+        log.push(window.name.clone());
+    }
+    window.closed = true;
+    window.seen_arg = Some(arg);
 }
 
 #[cfg(test)]
@@ -178,6 +250,12 @@ mod tests {
             name: name.to_string(),
             flags,
             dismissed: false,
+            closed: false,
+            pinned: false,
+            on_close: false,
+            close_ran: false,
+            seen_arg: None,
+            children: Vec::new(),
         }
     }
 
@@ -225,5 +303,53 @@ mod tests {
         assert!(!none.first[0].dismissed);
         assert!(!none.second[0].dismissed);
         assert!(none.hub_busy);
+    }
+
+    #[test]
+    fn a_dismissed_child_closes_its_own_children() {
+        let mut gate = MatchGate::playing();
+        let mut shop = window("Shop", DISMISS_MARK);
+        shop.pinned = true;
+        shop.on_close = true;
+        let mut first = window("A", 0);
+        first.on_close = true;
+        let mut second = window("B", 0);
+        second.closed = true;
+        second.on_close = true;
+        shop.children = vec![first, second];
+        gate.first = vec![shop];
+        gate.first_count = 1;
+        let mut dying = hired_physician();
+        assert!(gate.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut dying));
+        assert_eq!(gate.dismissed, vec!["Shop".to_string()]);
+        assert!(gate.notice);
+        assert_eq!(gate.close_log, vec!["A".to_string(), "Shop".to_string()]);
+        assert!(gate.first[0].closed);
+        assert_eq!(gate.first[0].seen_arg, Some(0));
+        assert!(gate.first[0].children[0].close_ran);
+        assert_eq!(gate.first[0].children[0].seen_arg, Some(0));
+        assert!(gate.first[0].children[1].closed);
+        assert!(!gate.first[0].children[1].close_ran);
+        assert!(gate.first[0].children[1].seen_arg.is_none());
+        assert!(dying.roster.is_empty());
+        assert_eq!(dying.deaths, 1);
+
+        let mut gate = MatchGate::playing();
+        let mut board = window("Board", DISMISS_MARK);
+        board.closed = true;
+        board.on_close = true;
+        let mut child = window("C", 0);
+        child.on_close = true;
+        board.children = vec![child];
+        gate.first = vec![board];
+        gate.first_count = 1;
+        let mut company = Company::new("Ash");
+        assert!(gate.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert_eq!(gate.dismissed, vec!["Board".to_string()]);
+        assert!(gate.close_log.is_empty());
+        assert!(!gate.notice);
+        assert!(!gate.first[0].close_ran);
+        assert!(!gate.first[0].children[0].closed);
+        assert!(company.roster.is_empty());
     }
 }

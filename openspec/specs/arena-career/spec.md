@@ -172,3 +172,10 @@ A match begin SHALL walk two child lists from the last child to the first, befor
 #### Scenario: Marked children go before the physician leaves
 - **WHEN** in-game command 4 in arena walks a first list of an unmarked child, a child flagged 0xce100000 and a later marked child with count 2, then a second list of a fully flagged child and a child flagged 0xce000000, and the same lists are offered to story mode, and a marked child is offered with count 0
 - **THEN** the dismissed names are the 0xce100000 child and then the fully flagged child, the later marked child and the 0xce000000 child stay, the physician is removed, story dismisses nobody, and count 0 dismisses nobody
+
+### Requirement: Dismissed child close
+A dismissed child SHALL close with argument 0 unless it is already closed. An already closed child SHALL not run its close callback and SHALL not close its own children. A pinned child SHALL be marked closed and raise a notice, then still close its children. Children SHALL close from the first to the last before the parent's callback. The capture release, the task's other children, detaching, redraw, and the call after the two lists are not part of this step.
+
+#### Scenario: A pinned window closes its first child only
+- **WHEN** a match begin dismisses a pinned window whose first child has a callback and whose second child is already closed, and a second begin dismisses a window that is already closed and has an open child
+- **THEN** the callback order is the first child then the parent, the second child does not run, the notice is raised, argument 0 is stored, the already closed window runs no callback, and its child stays open
