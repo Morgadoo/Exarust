@@ -144,3 +144,10 @@ A shell mark list SHALL start at 255. A skinned section SHALL write its index ov
 #### Scenario: Two kept vertices and a gap
 - **WHEN** marks are built for a skinned range, a plain range, and a later skinned range, three vertices are numbered, the kept indices are applied, an absent index is applied, and a short mark list is built
 - **THEN** the marks are 0, 255, 2, the vertices are 0, absent, and 1, the indices become 1, 0, 1, the absent index is an error, and the short mark list is an error
+
+### Requirement: Shell section slots
+A kept shell vertex SHALL store its section and the corner index minus that section's base. The first link in its half-open range whose mark is not 255 supplies the section and the corner. A later link SHALL be ignored. A vertex with none SHALL be absent. A short list or a missing base SHALL be an error. A base of -1 subtracted from 1 SHALL store 2.
+
+#### Scenario: Two slots and a gap
+- **WHEN** three vertices are slotted, a later link is ignored, a base of -1 is subtracted from 1, a short corner list is slotted, and a missing base is slotted
+- **THEN** the slots are section 0 local 1, absent, and section 2 local 2, the later link is ignored, the local index is 2, the short corner list is an error, and the missing base is an error

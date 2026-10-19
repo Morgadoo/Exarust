@@ -725,6 +725,60 @@ pub fn shell_compact(
     Ok(map)
 }
 
+/// One link from a vertex to a triangle corner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShellLink {
+    pub triangle: u16,
+    pub corner: u16,
+}
+
+/// The section a kept vertex belongs to, and its index inside that section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShellSlot {
+    pub section: u32,
+    pub local: i32,
+}
+
+/// Store each kept vertex's section and its corner index minus that section's base.
+/// The first mark other than 255 wins. A later link is ignored.
+pub fn shell_slots(
+    vertices: &[ShellLinks],
+    links: &[ShellLink],
+    marks: &[u8],
+    indices: &[u32],
+    bases: &[i32],
+) -> Result<Vec<Option<ShellSlot>>, ShellIndexError> {
+    let mut slots = Vec::with_capacity(vertices.len());
+    for vertex in vertices {
+        let mut slot = None;
+        let mut link_at = vertex.start;
+        while link_at < vertex.end {
+            let link = *links
+                .get(usize::try_from(link_at).map_err(|_| ShellIndexError::Short)?)
+                .ok_or(ShellIndexError::Short)?;
+            let mark = *marks
+                .get(usize::from(link.triangle))
+                .ok_or(ShellIndexError::Short)?;
+            if mark != 0xff {
+                let at = usize::from(link.triangle)
+                    .checked_mul(3)
+                    .and_then(|n| n.checked_add(usize::from(link.corner)))
+                    .ok_or(ShellIndexError::Short)?;
+                let source = *indices.get(at).ok_or(ShellIndexError::Short)?;
+                let base = *bases.get(usize::from(mark)).ok_or(ShellIndexError::Short)?;
+                slot = Some(ShellSlot {
+                    section: u32::from(mark),
+                    local: source.wrapping_sub(base as u32) as i32,
+                });
+                break;
+            }
+            link_at += 1;
+        }
+        slots.push(slot);
+    }
+    Ok(slots)
+}
+
 /// Replace each index with its compacted id. An absent id is an error.
 pub fn shell_apply_compact(
     indices: &[u32],
@@ -1209,6 +1263,112 @@ mod tests {
                     start: 0,
                     end: 2,
                 }]
+            ),
+            Err(ShellIndexError::Short)
+        );
+    }
+
+    #[test]
+    fn a_shell_stores_the_section_and_the_local_index() {
+        let marks = [0, 0xff, 2];
+        let links = [
+            ShellLink {
+                triangle: 0,
+                corner: 1,
+            },
+            ShellLink {
+                triangle: 1,
+                corner: 0,
+            },
+            ShellLink {
+                triangle: 2,
+                corner: 0,
+            },
+        ];
+        let vertices = [
+            ShellLinks { start: 0, end: 1 },
+            ShellLinks { start: 1, end: 2 },
+            ShellLinks { start: 1, end: 3 },
+        ];
+        let indices = [10, 11, 12, 99, 99, 99, 16, 17, 18];
+        let slots = shell_slots(&vertices, &links, &marks, &indices, &[10, 0, 14]).unwrap();
+        assert_eq!(
+            slots,
+            vec![
+                Some(ShellSlot {
+                    section: 0,
+                    local: 1
+                }),
+                None,
+                Some(ShellSlot {
+                    section: 2,
+                    local: 2
+                }),
+            ]
+        );
+        assert_eq!(
+            shell_slots(
+                &[ShellLinks { start: 0, end: 2 }],
+                &[
+                    ShellLink {
+                        triangle: 0,
+                        corner: 1,
+                    },
+                    ShellLink {
+                        triangle: 9,
+                        corner: 0,
+                    },
+                ],
+                &marks,
+                &indices,
+                &[10, 0, 14]
+            )
+            .unwrap(),
+            vec![Some(ShellSlot {
+                section: 0,
+                local: 1
+            })]
+        );
+        assert_eq!(
+            shell_slots(
+                &[ShellLinks { start: 0, end: 1 }],
+                &[ShellLink {
+                    triangle: 0,
+                    corner: 0,
+                }],
+                &[0],
+                &[1, 0, 0],
+                &[-1]
+            )
+            .unwrap(),
+            vec![Some(ShellSlot {
+                section: 0,
+                local: 2
+            })]
+        );
+        assert_eq!(
+            shell_slots(
+                &[ShellLinks { start: 0, end: 1 }],
+                &[ShellLink {
+                    triangle: 0,
+                    corner: 1,
+                }],
+                &[0],
+                &[10],
+                &[10]
+            ),
+            Err(ShellIndexError::Short)
+        );
+        assert_eq!(
+            shell_slots(
+                &[ShellLinks { start: 0, end: 1 }],
+                &[ShellLink {
+                    triangle: 2,
+                    corner: 0,
+                }],
+                &marks,
+                &indices,
+                &[10]
             ),
             Err(ShellIndexError::Short)
         );
