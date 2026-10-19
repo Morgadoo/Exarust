@@ -46,7 +46,8 @@ to 30, 30 at unit 5. Mask bits 1 and 4 together, with bit 0x200, draw a
 cap from 70, 10 to 100, 30 at unit 5 and width 100. A clear tab bit
 draws a narrower cap from 90, 10 to 100, 30, then a shelf from 70, 0
 to 90, 10 unless bit 1 or the owner's bit 1 is set without bit 0x800000.
-The quad after that shelf is not in.
+When those mask bits are not both set, bit 0x200 draws a quad from 70, -10
+to 110, 30. The quad after a clear tab bit on that path is not in.
 
 ## Scope
 

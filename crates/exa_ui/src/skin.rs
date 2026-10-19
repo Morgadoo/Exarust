@@ -146,6 +146,9 @@ pub const HELD_FLIP: [u32; 4] = [0x3e19_999a, 0x3e4c_cccd, 0x3e19_999a, 0x3f19_9
 /// Right cap when mask bits 1 and 4 are set: 0.65, 0.7, 0.65, 0.9.
 pub const HELD_END: [u32; 4] = [0x3f26_6666, 0x3f33_3333, 0x3f26_6666, 0x3f66_6666];
 
+/// Quad past the right edge when those bits are not both set: 0.6, 0.2, 0.6, 0.6.
+pub const HELD_OVER: [u32; 4] = [0x3f19_999a, 0x3e4c_cccd, 0x3f19_999a, 0x3f19_999a];
+
 /// The double 6.6 used to place an edge.
 const EDGE_SCALE: u64 = 0x401a_6666_6666_6666;
 
@@ -658,9 +661,10 @@ pub struct TitleDraw {
 /// and the bar, the tab, the lower tab, the quad, the left strip, the cap,
 /// and the ledge that follow it, and the sign-flipped quad used when the
 /// edge bits are not both set, and the right cap drawn when mask bits 1
-/// and 4 are set, and the narrow cap drawn when that tab bit is clear.
+/// and 4 are set, and the narrow cap drawn when that tab bit is clear,
+/// and the quad past the right edge when those bits are not both set.
 /// A clear hold bit on that same band draws the wider frame. The helper
-/// body and the quad after that shelf are not in.
+/// body and the quad after a clear tab bit on that path are not in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormDispatch {
     pub span_a: i32,
@@ -699,6 +703,7 @@ pub struct FormDispatch {
     pub held_end: Vec<SliderQuad>,
     pub held_plain: Vec<SliderQuad>,
     pub held_shelf: Vec<SliderQuad>,
+    pub held_over: Vec<SliderQuad>,
     /// Mask forced when the hold bit is clear. The held mask stays separate.
     pub open_mask: u32,
     pub open_calls: u32,
@@ -1272,6 +1277,21 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
     } else {
         Vec::new()
     };
+    let held_over = if on_hold && (edge_mask & 0x5) != 0x5 && (place.flags_b & FORM_TAB) == FORM_TAB
+    {
+        let near = unit.wrapping_shl(1);
+        let far = unit.wrapping_shl(2).wrapping_add(near);
+        let width = place.width;
+        let outer = width.wrapping_add(near);
+        let inner = width.wrapping_sub(far);
+        let back = near.wrapping_neg();
+        vec![quad(
+            HELD_OVER,
+            [(outer, back), (outer, far), (inner, far), (inner, back)],
+        )]
+    } else {
+        Vec::new()
+    };
     let on_open = (place.flags_b & FORM_BOX) == 0
         && (place.flags_d & FORM_BAND) == FORM_BAND_ON
         && (place.flags_a & FORM_HOLD) == 0;
@@ -1359,6 +1379,7 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         held_end,
         held_plain,
         held_shelf,
+        held_over,
         open_mask,
         open_calls,
         open_tab,
@@ -2761,5 +2782,39 @@ mod tests {
         form.edge_y = 4;
         form.flags_a = 0;
         assert!(dispatch_form(5, 0, form, &[]).held_shelf.is_empty());
+    }
+
+    #[test]
+    fn a_dispatch_draws_the_held_over() {
+        let mut form = place(FORM_HOLD, FORM_TAB, 0, 0, 0, 0);
+        form.flags_d = 0x80;
+        form.edge_x = 5;
+        form.edge_y = 5;
+        form.room_far_x = 400;
+        form.room_far_y = 400;
+        let drawn = dispatch_form(5, 0, form, &[]);
+        assert_eq!(drawn.edge_mask & 0x5, 0);
+        assert!(drawn.held_end.is_empty());
+        assert_eq!(drawn.held_over.len(), 1);
+        assert_eq!(drawn.held_over[0].sample, HELD_OVER);
+        assert_eq!(
+            drawn.held_over[0].corners,
+            [(110, -10), (110, 30), (70, 30), (70, -10)]
+        );
+
+        form.flags_b = 0;
+        assert!(dispatch_form(5, 0, form, &[]).held_over.is_empty());
+
+        form.flags_b = FORM_TAB;
+        form.edge_x = 4;
+        form.edge_y = 4;
+        form.room_far_x = 100;
+        let clipped = dispatch_form(5, 0, form, &[]);
+        assert_eq!(clipped.edge_mask & 0x5, 0x5);
+        assert!(clipped.held_over.is_empty());
+        assert_eq!(clipped.held_end.len(), 1);
+
+        form.flags_a = 0;
+        assert!(dispatch_form(5, 0, form, &[]).held_over.is_empty());
     }
 }
