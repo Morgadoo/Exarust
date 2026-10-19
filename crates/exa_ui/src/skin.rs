@@ -660,7 +660,7 @@ pub struct TitleDraw {
 /// edge bits are not both set, and the right cap drawn when mask bits 1
 /// and 4 are set, and the narrow cap drawn when that tab bit is clear.
 /// A clear hold bit on that same band draws the wider frame. The helper
-/// body and the flag test after that narrow cap are not in.
+/// body and the quad after that shelf are not in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormDispatch {
     pub span_a: i32,
@@ -698,6 +698,7 @@ pub struct FormDispatch {
     pub held_flip: Vec<SliderQuad>,
     pub held_end: Vec<SliderQuad>,
     pub held_plain: Vec<SliderQuad>,
+    pub held_shelf: Vec<SliderQuad>,
     /// Mask forced when the hold bit is clear. The held mask stays separate.
     pub open_mask: u32,
     pub open_calls: u32,
@@ -1254,6 +1255,23 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         } else {
             Vec::new()
         };
+    let held_shelf = if on_hold
+        && (edge_mask & 0x5) == 0x5
+        && (place.flags_b & FORM_TAB) != FORM_TAB
+        && !skip_ledge
+    {
+        let near = unit.wrapping_shl(1);
+        let far = unit.wrapping_shl(2).wrapping_add(near);
+        let width = place.width;
+        let outer = width.wrapping_sub(near);
+        let inner = width.wrapping_sub(far);
+        vec![quad(
+            HELD_CAP,
+            [(outer, 0), (outer, near), (inner, near), (inner, 0)],
+        )]
+    } else {
+        Vec::new()
+    };
     let on_open = (place.flags_b & FORM_BOX) == 0
         && (place.flags_d & FORM_BAND) == FORM_BAND_ON
         && (place.flags_a & FORM_HOLD) == 0;
@@ -1340,6 +1358,7 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         held_flip,
         held_end,
         held_plain,
+        held_shelf,
         open_mask,
         open_calls,
         open_tab,
@@ -2699,5 +2718,48 @@ mod tests {
         form.edge_y = 4;
         form.flags_a = 0;
         assert!(dispatch_form(5, 0, form, &[]).held_plain.is_empty());
+    }
+
+    #[test]
+    fn a_dispatch_draws_the_held_shelf() {
+        let mut form = place(FORM_HOLD, 0, 0, 0, 0, 0);
+        form.flags_d = 0x80;
+        form.edge_x = 4;
+        form.edge_y = 4;
+        form.room_far_x = 100;
+        form.room_far_y = 400;
+        let drawn = dispatch_form(5, 0, form, &[]);
+        assert_eq!(drawn.held_plain.len(), 1);
+        assert_eq!(drawn.held_shelf.len(), 1);
+        assert_eq!(drawn.held_shelf[0].sample, HELD_CAP);
+        assert_eq!(
+            drawn.held_shelf[0].corners,
+            [(90, 0), (90, 10), (70, 10), (70, 0)]
+        );
+
+        form.flags_b = FORM_TITLE;
+        let titled = dispatch_form(5, 0, form, &[]);
+        assert_eq!(titled.held_plain.len(), 1);
+        assert!(titled.held_shelf.is_empty());
+        form.owner_flags = 0x80_0000;
+        assert_eq!(dispatch_form(5, 0, form, &[]).held_shelf.len(), 1);
+
+        form.flags_b = 0;
+        form.owner_flags = 1;
+        assert!(dispatch_form(5, 0, form, &[]).held_shelf.is_empty());
+        form.owner_flags = 1 | 0x80_0000;
+        assert_eq!(dispatch_form(5, 0, form, &[]).held_shelf.len(), 1);
+
+        form.owner_flags = 0;
+        form.flags_b = FORM_TAB;
+        assert!(dispatch_form(5, 0, form, &[]).held_shelf.is_empty());
+
+        form.flags_b = 0;
+        form.edge_y = 5;
+        assert!(dispatch_form(5, 0, form, &[]).held_shelf.is_empty());
+
+        form.edge_y = 4;
+        form.flags_a = 0;
+        assert!(dispatch_form(5, 0, form, &[]).held_shelf.is_empty());
     }
 }
