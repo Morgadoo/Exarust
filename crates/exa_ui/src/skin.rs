@@ -605,6 +605,8 @@ pub struct DispatchPlace {
     /// The two ends whose difference is the room on the bottom.
     pub room_far_y: i32,
     pub room_near_y: i32,
+    /// Flags of the owner checked before the held bar.
+    pub owner_flags: u32,
 }
 
 /// One corner of the backdrop, with its sample bits.
@@ -628,8 +630,8 @@ pub struct TitleDraw {
 /// The opening of a form: spans, an optional shade and backdrop, the scroll
 /// shift, the shown children, the title, the corners, the edge bars, the
 /// wide top, the left side, the bottom, the right side, the ink copy,
-/// the square drawn when the close mark is -4, and the hold-bit edge
-/// mask. The quads after that mask are not in.
+/// the square drawn when the close mark is -4, the hold-bit edge mask,
+/// and the bar that follows it. The drawing after that bar is not in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormDispatch {
     pub span_a: i32,
@@ -657,6 +659,7 @@ pub struct FormDispatch {
     pub mark_calls: u32,
     pub late_close: Vec<SliderQuad>,
     pub edge_mask: u32,
+    pub held_bar: Vec<SliderQuad>,
 }
 
 fn edge_mask(unit: i32, place: &DispatchPlace) -> u32 {
@@ -1024,6 +1027,29 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
     } else {
         Vec::new()
     };
+    let edge_mask = edge_mask(unit, &place);
+    let reach = unit.wrapping_shl(2).wrapping_add(unit.wrapping_shl(1));
+    let band = unit.wrapping_shl(1);
+    let skip_bar = (edge_mask & 1) != 0
+        && (place.owner_flags & 1) != 0
+        && (place.owner_flags & 0x80_0000) == 0;
+    let on_hold = (place.flags_b & FORM_BOX) == 0
+        && (place.flags_d & FORM_BAND) == FORM_BAND_ON
+        && (place.flags_a & FORM_HOLD) != 0;
+    let held_bar = if on_hold && !skip_bar {
+        let width = place.width;
+        vec![quad(
+            WIDE_BAR,
+            [
+                (reach, 0),
+                (reach, band),
+                (width.wrapping_sub(reach), band),
+                (width.wrapping_sub(reach), 0),
+            ],
+        )]
+    } else {
+        Vec::new()
+    };
     FormDispatch {
         span_a,
         span_b,
@@ -1054,7 +1080,8 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         wide_calls,
         mark_calls,
         late_close,
-        edge_mask: edge_mask(unit, &place),
+        edge_mask,
+        held_bar,
     }
 }
 
@@ -1633,6 +1660,7 @@ mod tests {
             room_near_x: 0,
             room_far_y: 0,
             room_near_y: 0,
+            owner_flags: 0,
         }
     }
 
@@ -2012,5 +2040,38 @@ mod tests {
         form.flags_b = 0;
         form.flags_d = 0x10;
         assert_eq!(dispatch_form(5, 0, form, &[]).edge_mask, 0);
+    }
+
+    #[test]
+    fn a_dispatch_draws_the_held_bar() {
+        let mut form = place(FORM_HOLD, 0, 0, 0, 0, 0);
+        form.flags_d = 0x80;
+        form.edge_y = 5;
+        form.edge_x = 5;
+        let drawn = dispatch_form(5, 0, form, &[]);
+        assert_eq!(drawn.edge_mask & 1, 0);
+        assert_eq!(drawn.held_bar.len(), 1);
+        assert_eq!(drawn.held_bar[0].sample, WIDE_BAR);
+        assert_eq!(
+            drawn.held_bar[0].corners,
+            [(30, 0), (30, 10), (70, 10), (70, 0)]
+        );
+
+        form.edge_y = 4;
+        form.owner_flags = 1;
+        let skipped = dispatch_form(5, 0, form, &[]);
+        assert_eq!(skipped.edge_mask & 1, 1);
+        assert!(skipped.held_bar.is_empty());
+
+        form.owner_flags = 1 | 0x80_0000;
+        assert_eq!(dispatch_form(5, 0, form, &[]).held_bar.len(), 1);
+        form.owner_flags = 0;
+        assert_eq!(dispatch_form(5, 0, form, &[]).held_bar.len(), 1);
+
+        form.flags_a = 0;
+        assert!(dispatch_form(5, 0, form, &[]).held_bar.is_empty());
+        form.flags_a = FORM_HOLD;
+        form.flags_b = 0x40_0000;
+        assert!(dispatch_form(5, 0, form, &[]).held_bar.is_empty());
     }
 }
