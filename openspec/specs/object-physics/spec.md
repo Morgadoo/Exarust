@@ -278,3 +278,10 @@ A motorised hinge SHALL set its fraction to 1 and drive toward shut for 300 tick
 #### Scenario: A motor, a plain hinge, and a fast slider
 - **WHEN** a motorised hinge at fraction 0.2 is closed, a fast motorised hinge is closed, a shut hinge that is not motorised is closed, an unlatched sliding leaf is closed, and a shut fast sliding leaf is closed
 - **THEN** the motorised hinge is at fraction 1 for 300 ticks and is not latched, the fast hinge drives for 100 ticks, the plain hinge stays idle and becomes latched, the sliding leaf plays the lock sound and stays unlatched, and the fast slider drives for 100 ticks and becomes latched
+
+### Requirement: Signalled open
+A signalled open SHALL play the unlock sound once when there is at least one door, and SHALL play nothing when there are none. A latched or motorised door SHALL wait 120 ticks. A door that is neither SHALL not wait. While the countdown is at least 2 it SHALL fall by 1. Below 2 the wait SHALL end.
+
+#### Scenario: One sound, then 120 ticks
+- **WHEN** there are no doors, a door that is neither latched nor motorised is signalled, and a latched door is signalled and then stepped until the wait ends
+- **THEN** the empty list plays nothing, the plain door plays the sound and does not wait, and the latched door ends its wait on the 120th tick

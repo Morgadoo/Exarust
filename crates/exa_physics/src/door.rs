@@ -44,6 +44,10 @@
 //! lock sound when it is not latched, and a fast one drives toward shut for
 //! 100 ticks. A leaf that is already shut becomes latched.
 //!
+//! A signalled open plays the unlock sound once for the doors under a node.
+//! A latched or motorised door waits 120 ticks. Below 2 the wait ends. A
+//! door that is neither latched nor motorised does not wait.
+//!
 //! Evidence: the hinged door step, the open shove, the sliding door step,
 //! the partner check, and the unlock wait. The slam's random pitch is not
 //! in this slice.
@@ -609,6 +613,56 @@ pub fn close_and_lock(leaf: &mut ShutLeaf) -> bool {
     sound
 }
 
+/// Ticks a signalled open waits before it opens.
+pub const SIGNAL_WAIT: i32 = 120;
+
+/// Whether a signalled open is waiting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignalDrive {
+    Idle,
+    /// Waiting to open.
+    Pending,
+}
+
+/// One door under a signalled open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignalLeaf {
+    pub latched: bool,
+    pub motorised: bool,
+    pub drive: SignalDrive,
+    pub countdown: i32,
+}
+
+/// Arm the doors under a node. The unlock sound plays once when there is
+/// at least one door. Only a latched or motorised door waits.
+pub fn signal_open(leaves: &mut [SignalLeaf]) -> bool {
+    if leaves.is_empty() {
+        return false;
+    }
+    for leaf in leaves.iter_mut() {
+        if leaf.latched || leaf.motorised {
+            leaf.drive = SignalDrive::Pending;
+            leaf.countdown = SIGNAL_WAIT;
+        }
+    }
+    true
+}
+
+/// One tick of a waiting open. Below 2 the wait ends and this returns true.
+pub fn signal_wait(leaf: &mut SignalLeaf) -> bool {
+    if leaf.drive != SignalDrive::Pending {
+        return false;
+    }
+    if leaf.countdown < 2 {
+        leaf.drive = SignalDrive::Idle;
+        leaf.countdown = 0;
+        true
+    } else {
+        leaf.countdown -= 1;
+        false
+    }
+}
+
 /// The 3 cm shove along the door's facing. A zero facing shoves nothing.
 pub fn open_push(facing: Vec3) -> Vec3 {
     let length = facing.length();
@@ -997,5 +1051,55 @@ mod tests {
         barred.latched = true;
         assert!(!close_and_lock(&mut barred));
         assert!(barred.latched);
+    }
+
+    fn signal_leaf() -> SignalLeaf {
+        SignalLeaf {
+            latched: false,
+            motorised: false,
+            drive: SignalDrive::Idle,
+            countdown: 0,
+        }
+    }
+
+    #[test]
+    fn a_signalled_open_waits_120_ticks_on_a_latched_door() {
+        assert!(!signal_open(&mut []));
+
+        let mut plain = signal_leaf();
+        assert!(signal_open(std::slice::from_mut(&mut plain)));
+        assert_eq!(plain.drive, SignalDrive::Idle);
+        assert!(!signal_wait(&mut plain));
+
+        let mut latched = signal_leaf();
+        latched.latched = true;
+        let mut motor = signal_leaf();
+        motor.motorised = true;
+        let mut leaves = [plain, latched, motor];
+        assert!(signal_open(&mut leaves));
+        assert_eq!(leaves[0].drive, SignalDrive::Idle);
+        assert_eq!(leaves[1].countdown, SIGNAL_WAIT);
+        assert_eq!(leaves[1].drive, SignalDrive::Pending);
+        assert_eq!(leaves[2].countdown, SIGNAL_WAIT);
+
+        let mut waiting = leaves[1];
+        assert!(!signal_wait(&mut waiting));
+        assert_eq!(waiting.countdown, SIGNAL_WAIT - 1);
+        assert_eq!(waiting.drive, SignalDrive::Pending);
+
+        let mut ticks = 0;
+        let mut armed = signal_leaf();
+        armed.latched = true;
+        signal_open(std::slice::from_mut(&mut armed));
+        loop {
+            ticks += 1;
+            if signal_wait(&mut armed) {
+                break;
+            }
+            assert!(ticks < SIGNAL_WAIT + 2);
+        }
+        assert_eq!(ticks, SIGNAL_WAIT);
+        assert_eq!(armed.drive, SignalDrive::Idle);
+        assert_eq!(armed.countdown, 0);
     }
 }
