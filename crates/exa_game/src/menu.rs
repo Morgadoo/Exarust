@@ -62,6 +62,11 @@ pub const PICK_SKIP: u32 = 0x800;
 /// Record kinds that open the parent when the link is the world.
 pub const ROW_OPEN: u32 = 0x10010a;
 pub const ROW_OPEN_ALT: u32 = 0x10010d;
+/// Mark a kind span must hold. The two high bits choose the table.
+pub const KIND_MARK: u32 = 0x20000;
+pub const KIND_HIGH: u32 = 0x8000_0000;
+pub const KIND_WIDE: u32 = 0x4000_0000;
+pub const KIND_MASK: u32 = 0x3fff_ffff;
 /// Flags a taken item ORs on, and the flags a hover stores.
 pub const PICK_FOLLOW: u32 = 5;
 pub const CLICK_MARK: u32 = 0x11;
@@ -131,6 +136,22 @@ pub struct Window {
 pub struct PickRow {
     pub kind: u32,
     pub link: u64,
+}
+
+/// One sorted kind row. The key is the first word. The span starts at `offset`
+/// in the table bytes and is `size` bytes long. A size of 0 is not read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KindEntry {
+    pub key: u32,
+    pub offset: u32,
+    pub size: u32,
+}
+
+/// One kind table. The rows are already in key order.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct KindTable {
+    pub entries: Vec<KindEntry>,
+    pub blob: Vec<u8>,
 }
 
 /// Which mode the menu command is running in.
@@ -265,7 +286,10 @@ pub struct MatchGate {
     pub pick_hit: u64,
     pub hit_flags: u32,
     pub hit_taken: u8,
-    pub hit_kind: u8,
+    pub hit_kind: u32,
+    pub kind_plain: KindTable,
+    pub kind_high: KindTable,
+    pub kind_wide: KindTable,
     pub kind_calls: u32,
     pub hit_parent: u64,
     pub world_id: u64,
@@ -433,6 +457,9 @@ impl MatchGate {
             hit_flags: 0,
             hit_taken: 0,
             hit_kind: 0,
+            kind_plain: KindTable::default(),
+            kind_high: KindTable::default(),
+            kind_wide: KindTable::default(),
             kind_calls: 0,
             hit_parent: 0,
             world_id: 0,
@@ -578,7 +605,7 @@ impl MatchGate {
                 self.gate_flags |= PICK_FOLLOW;
                 return self.gate_flags;
             }
-            if self.hit_kind != 0 {
+            if self.kind_marked(self.hit_kind) {
                 self.kind_calls = self.kind_calls.saturating_add(1);
                 return self.gate_flags;
             }
@@ -596,6 +623,27 @@ impl MatchGate {
             self.open_calls = self.open_calls.saturating_add(1);
         }
         self.gate_flags
+    }
+
+    /// An item id of 0 misses. Bit 0x80000000 searches the high table, else bit
+    /// 0x40000000 searches the wide table, else the plain table. A high or wide
+    /// id drops those bits. A row is a hit when its span holds the mark.
+    fn kind_marked(&self, id: u32) -> bool {
+        if id == 0 {
+            return false;
+        }
+        let (table, key) = if id & KIND_HIGH != 0 {
+            (&self.kind_high, id & KIND_MASK)
+        } else if id & KIND_WIDE != 0 {
+            (&self.kind_wide, id & KIND_MASK)
+        } else {
+            (&self.kind_plain, id)
+        };
+        let Some(index) = find_kind(&table.entries, key) else {
+            return false;
+        };
+        let entry = &table.entries[index];
+        entry.size != 0 && span_has_mark(&table.blob, entry.offset, entry.size)
     }
 
     /// The first record whose kind is one of the two open kinds and whose link
@@ -671,6 +719,59 @@ impl MatchGate {
         }
         1
     }
+}
+
+/// Signed binary search. The rows are 16 bytes apart and the key is the first
+/// word. A missing key, or a count that does not fit, is absent.
+fn find_kind(entries: &[KindEntry], key: u32) -> Option<usize> {
+    let len = i32::try_from(entries.len()).ok()?;
+    let mut low = 0i32;
+    let mut high = len - 1;
+    let wanted = key as i32;
+    while low <= high {
+        let diff = i64::from(high) - i64::from(low);
+        let sign = ((diff as u64) >> 63) as i64;
+        let mid = (i64::from(low) + ((diff + sign) >> 1)) as i32;
+        let stored = entries[mid as usize].key as i32;
+        if wanted < stored {
+            high = mid - 1;
+        } else if wanted > stored {
+            low = mid + 1;
+        } else {
+            return Some(mid as usize);
+        }
+    }
+    None
+}
+
+/// The span holds the mark when a record's first word matches. The next record
+/// starts `step` bytes later. A step of 0, or a read past the bytes, stops.
+fn span_has_mark(blob: &[u8], offset: u32, size: u32) -> bool {
+    let start = offset as usize;
+    let end = start.saturating_add(size as usize);
+    if end > blob.len() {
+        return false;
+    }
+    let mut cursor = start;
+    while end > cursor {
+        if cursor.saturating_add(8) > blob.len() {
+            return false;
+        }
+        let tag = read_u32(blob, cursor);
+        let step = read_u32(blob, cursor + 4);
+        if tag == KIND_MARK {
+            return true;
+        }
+        if step == 0 {
+            return false;
+        }
+        cursor = cursor.saturating_add(step as usize);
+    }
+    false
+}
+
+fn read_u32(blob: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes([blob[at], blob[at + 1], blob[at + 2], blob[at + 3]])
 }
 
 /// Visit `count` children from the last back to the first. A count of 0 or
@@ -1196,6 +1297,34 @@ mod tests {
         company.hire("Med", Profession::Physician).unwrap();
         company.roster[0].health = 699;
         company
+    }
+
+    fn le_pair(tag: u32, step: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&tag.to_le_bytes());
+        bytes.extend_from_slice(&step.to_le_bytes());
+        bytes
+    }
+
+    fn marked_kind(key: u32) -> KindTable {
+        let blob = le_pair(KIND_MARK, 8);
+        KindTable {
+            entries: vec![KindEntry {
+                key,
+                offset: 0,
+                size: blob.len() as u32,
+            }],
+            blob,
+        }
+    }
+
+    fn plain_item(id: u32) -> MatchGate {
+        let mut gate = MatchGate::playing();
+        gate.world_open = true;
+        gate.pick_hit = 1;
+        gate.hit_flags = PICK_ITEM;
+        gate.hit_kind = id;
+        gate
     }
 
     #[test]
@@ -2164,6 +2293,7 @@ mod tests {
         kind.pick_hit = 1;
         kind.hit_flags = PICK_ITEM;
         kind.hit_kind = 1;
+        kind.kind_plain = marked_kind(1);
         assert_eq!(kind.run_gate(), 1);
         assert_eq!(kind.kind_calls, 1);
         assert_eq!(kind.pick_calls, 1);
@@ -2294,5 +2424,160 @@ mod tests {
         named.pick_rows = vec![PickRow { kind: 1, link: 0 }];
         assert_eq!(named.run_gate(), 1);
         assert_eq!(named.open_calls, 1);
+    }
+
+    #[test]
+    fn a_kind_mark_is_found_in_the_chosen_table() {
+        let mut zero = plain_item(0);
+        zero.kind_plain = marked_kind(0);
+        assert_eq!(zero.run_gate(), 1);
+        assert_eq!(zero.kind_calls, 0);
+
+        let mut plain = plain_item(7);
+        plain.kind_plain = marked_kind(7);
+        assert_eq!(plain.run_gate(), 1);
+        assert_eq!(plain.kind_calls, 1);
+        assert_eq!(plain.gate_flags, 1);
+
+        let mut bare = plain_item(7);
+        bare.kind_plain = KindTable {
+            entries: vec![KindEntry {
+                key: 7,
+                offset: 0,
+                size: 8,
+            }],
+            blob: le_pair(1, 8),
+        };
+        assert_eq!(bare.run_gate(), 1);
+        assert_eq!(bare.kind_calls, 0);
+
+        let mut high = plain_item(KIND_HIGH | 5);
+        high.kind_plain = KindTable {
+            entries: vec![KindEntry {
+                key: 5,
+                offset: 0,
+                size: 8,
+            }],
+            blob: le_pair(1, 8),
+        };
+        high.kind_high = marked_kind(5);
+        assert_eq!(high.run_gate(), 1);
+        assert_eq!(high.kind_calls, 1);
+
+        let mut wide = plain_item(KIND_WIDE | 9);
+        wide.kind_plain = marked_kind(KIND_WIDE | 9);
+        wide.kind_wide = KindTable {
+            entries: vec![KindEntry {
+                key: 9,
+                offset: 0,
+                size: 8,
+            }],
+            blob: le_pair(1, 8),
+        };
+        assert_eq!(wide.run_gate(), 1);
+        assert_eq!(wide.kind_calls, 0);
+        wide.kind_wide = marked_kind(9);
+        wide.kind_calls = 0;
+        assert_eq!(wide.run_gate(), 1);
+        assert_eq!(wide.kind_calls, 1);
+
+        let mut both = plain_item(KIND_HIGH | KIND_WIDE | 5);
+        both.kind_high = KindTable {
+            entries: vec![KindEntry {
+                key: 5,
+                offset: 0,
+                size: 8,
+            }],
+            blob: le_pair(1, 8),
+        };
+        both.kind_wide = marked_kind(5);
+        assert_eq!(both.run_gate(), 1);
+        assert_eq!(both.kind_calls, 0);
+
+        let mut middle = plain_item(7);
+        let blob = le_pair(KIND_MARK, 8);
+        middle.kind_plain = KindTable {
+            entries: vec![
+                KindEntry {
+                    key: 2,
+                    offset: 0,
+                    size: 0,
+                },
+                KindEntry {
+                    key: 7,
+                    offset: 0,
+                    size: blob.len() as u32,
+                },
+                KindEntry {
+                    key: 9,
+                    offset: 0,
+                    size: 0,
+                },
+            ],
+            blob,
+        };
+        assert_eq!(middle.run_gate(), 1);
+        assert_eq!(middle.kind_calls, 1);
+        middle.hit_kind = 8;
+        middle.kind_calls = 0;
+        assert_eq!(middle.run_gate(), 1);
+        assert_eq!(middle.kind_calls, 0);
+
+        let mut later = plain_item(4);
+        let mut span = le_pair(3, 8);
+        span.extend_from_slice(&le_pair(KIND_MARK, 8));
+        later.kind_plain = KindTable {
+            entries: vec![KindEntry {
+                key: 4,
+                offset: 0,
+                size: span.len() as u32,
+            }],
+            blob: span,
+        };
+        assert_eq!(later.run_gate(), 1);
+        assert_eq!(later.kind_calls, 1);
+
+        let mut empty_size = plain_item(4);
+        empty_size.kind_plain = KindTable {
+            entries: vec![KindEntry {
+                key: 4,
+                offset: 0,
+                size: 0,
+            }],
+            blob: le_pair(KIND_MARK, 8),
+        };
+        assert_eq!(empty_size.run_gate(), 1);
+        assert_eq!(empty_size.kind_calls, 0);
+
+        let mut short = plain_item(4);
+        short.kind_plain = KindTable {
+            entries: vec![KindEntry {
+                key: 4,
+                offset: 0,
+                size: 8,
+            }],
+            blob: Vec::new(),
+        };
+        assert_eq!(short.run_gate(), 1);
+        assert_eq!(short.kind_calls, 0);
+
+        let mut stuck = plain_item(4);
+        stuck.kind_plain = KindTable {
+            entries: vec![KindEntry {
+                key: 4,
+                offset: 0,
+                size: 8,
+            }],
+            blob: le_pair(1, 0),
+        };
+        assert_eq!(stuck.run_gate(), 1);
+        assert_eq!(stuck.kind_calls, 0);
+
+        let mut taken = plain_item(7);
+        taken.hit_taken = 1;
+        taken.notice_owner = 6;
+        taken.kind_plain = marked_kind(7);
+        assert_eq!(taken.run_gate(), 1 | PICK_FOLLOW);
+        assert_eq!(taken.kind_calls, 0);
     }
 }
