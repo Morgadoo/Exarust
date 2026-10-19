@@ -8,8 +8,19 @@
 //! length word and that many bytes. A length below 1 is empty. No chunk
 //! leaves the texts empty. A chunk that ends early is an error.
 //!
+//! A drawn node sits at ten times its place times the zoom, plus the pan, and
+//! rounds to the nearest even integer unless the view is dragged. A factor
+//! then scales that point about the origin. A link with both marks at zero
+//! is not drawn. Otherwise each end leaves its node along the sine and cosine
+//! of its turn times a full circle. The reach is 0.514, or 0.295 when the
+//! power's high mark is set, minus 0.003 times the zoom, times the zoom
+//! rounded to an even 256. The samples are the cubic between those ends. A
+//! zero source mark dims the line.
+//!
 //! Evidence: the tree reader (magic check, the seek to the count, the node
-//! fields, the link bytes, and the shift against the first node).
+//! fields, the link bytes, and the shift against the first node), and the
+//! draw that places each node and builds each link. The fast sine polynomial
+//! is not reproduced: a turn of zero is straight up, which matches.
 
 use crate::{Error, Result, read_u32};
 
@@ -25,6 +36,14 @@ const NODES_AT: usize = 56;
 const LINK: usize = 16;
 /// Bytes in a node before its links.
 const NODE_HEAD: usize = 24;
+/// Power bits that use the shorter link reach.
+const SMALL_NODE: u32 = 0x0f00_0000;
+/// Reach of an ordinary node, before the zoom shrinks it.
+const LARGE_REACH: f64 = 0.514;
+/// Reach of a node whose high mark is set.
+const SMALL_REACH: f64 = 0.295;
+/// How much one zoom step shortens the reach.
+const REACH_SHRINK: f64 = 0.003;
 
 /// One node, with its place already relative to the first node.
 #[derive(Debug, Clone, PartialEq)]
@@ -216,6 +235,169 @@ fn take_f32(bytes: &[u8], offset: &mut usize) -> Result<f32> {
     Ok(f32::from_le_bytes(value.to_le_bytes()))
 }
 
+/// One end of a drawn link: its placed point, its power, and its mark.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LinkEnd {
+    pub at: [f32; 2],
+    pub power: u32,
+    pub mark: u32,
+}
+
+/// One drawn link: dim when its source mark is zero, and the curve between the nodes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TreeLink {
+    pub dim: bool,
+    pub points: Vec<[f32; 2]>,
+}
+
+/// Where a node sits before the view factor. Dragging leaves the point unrounded.
+pub fn node_pixels(x: f32, y: f32, zoom: f32, pan_x: f32, pan_y: f32, snap: bool) -> [f32; 2] {
+    let mut point = [x * 10.0 * zoom + pan_x, y * 10.0 * zoom + pan_y];
+    if snap {
+        point[0] = point[0].round_ties_even();
+        point[1] = point[1].round_ties_even();
+    }
+    point
+}
+
+/// Scale a placed node about the origin by the view factor.
+pub fn place_node(point: [f32; 2], origin_x: f32, origin_y: f32, factor: f32) -> [f32; 2] {
+    [
+        (point[0] - origin_x) * factor + origin_x,
+        (point[1] - origin_y) * factor + origin_y,
+    ]
+}
+
+/// The curve of one link. Both marks at zero draw nothing.
+///
+/// Each end is already placed. The link's first two words are the turns, as
+/// fractions of a circle.
+pub fn tree_link(source: LinkEnd, dest: LinkEnd, link: &[u8; 16], zoom: f32) -> Option<TreeLink> {
+    if source.mark == 0 && dest.mark == 0 {
+        return None;
+    }
+    let scale = (zoom * 256.0).round_ties_even();
+    let out_turn = direction(word_f32(link, 0));
+    let in_turn = direction(word_f32(link, 4));
+    let start = offset(source.at, out_turn, reach(source.power, zoom, scale));
+    let end = offset(dest.at, in_turn, reach(dest.power, zoom, scale));
+    let (out_dir, in_dir, steps) = tangents(start, end, out_turn, in_turn, zoom);
+    let mut points = Vec::with_capacity(steps + 1);
+    points.push(start);
+    for step in 1..=steps {
+        let t = step as f32 / steps as f32;
+        points.push(hermite(start, end, out_dir, in_dir, t));
+    }
+    Some(TreeLink {
+        dim: source.mark == 0,
+        points,
+    })
+}
+
+fn word_f32(link: &[u8; 16], at: usize) -> f32 {
+    let mut bytes = [0u8; 4];
+    bytes.copy_from_slice(&link[at..at + 4]);
+    f32::from_le_bytes(bytes)
+}
+
+fn reach(power: u32, zoom: f32, scale: f32) -> f32 {
+    let base = if power & SMALL_NODE == 0 {
+        LARGE_REACH
+    } else {
+        SMALL_REACH
+    };
+    ((base - f64::from(zoom) * REACH_SHRINK) * f64::from(scale)) as f32
+}
+
+fn direction(turn: f32) -> [f32; 2] {
+    let (sine, cosine) = (turn * std::f32::consts::TAU).sin_cos();
+    [sine, cosine]
+}
+
+fn offset(center: [f32; 2], dir: [f32; 2], reach: f32) -> [f32; 2] {
+    [center[0] + dir[0] * reach, center[1] + dir[1] * reach]
+}
+
+fn dot(a: [f32; 2], b: [f32; 2]) -> f32 {
+    a[0] * b[0] + a[1] * b[1]
+}
+
+fn scale(v: [f32; 2], by: f32) -> [f32; 2] {
+    [v[0] * by, v[1] * by]
+}
+
+fn tangents(
+    start: [f32; 2],
+    end: [f32; 2],
+    out_turn: [f32; 2],
+    in_turn: [f32; 2],
+    zoom: f32,
+) -> ([f32; 2], [f32; 2], usize) {
+    let delta = [end[0] - start[0], end[1] - start[1]];
+    let length_sq = delta[0] * delta[0] + delta[1] * delta[1];
+    let length = length_sq.sqrt();
+    let mut closeness = length / (zoom * 400.0);
+    if closeness < 1.0 {
+        closeness *= closeness;
+    }
+    let unit = if length_sq == 0.0 {
+        [0.0, 0.0]
+    } else {
+        scale(delta, reciprocal_sqrt(length_sq))
+    };
+    let out_dot = dot(out_turn, unit);
+    let mut out_scale = closeness;
+    if closeness < 1.0 {
+        out_scale = (1.0 - closeness) * (1.1 - out_dot) + closeness;
+    }
+    let in_dot = dot(in_turn, unit);
+    let mut in_scale = closeness;
+    if closeness < 1.0 {
+        in_scale = (1.0 - closeness) * (in_dot + 1.1) + closeness;
+    }
+    let span = ((1.1 - out_dot) + in_dot + 1.1) * 6.0 + closeness.sqrt() * 4.0;
+    let rounded = span.round_ties_even();
+    let steps = if rounded.is_finite() {
+        rounded as i32
+    } else {
+        30
+    };
+    let steps = steps.saturating_add(1).clamp(2, 30) as usize;
+    (
+        scale(out_turn, zoom * 400.0 * out_scale),
+        scale(in_turn, zoom * -400.0 * in_scale),
+        steps,
+    )
+}
+
+fn hermite(p0: [f32; 2], p1: [f32; 2], t0: [f32; 2], t1: [f32; 2], t: f32) -> [f32; 2] {
+    let t2 = t * t;
+    let t3 = t2 * t;
+    let h00 = (t3 * 2.0 - t2 * 3.0) + 1.0;
+    let h01 = t2 * 3.0 + t3 * -2.0;
+    let h10 = (t3 - t2 * 2.0) + t;
+    let h11 = t3 - t2;
+    [
+        p0[0] * h00 + p1[0] * h01 + t0[0] * h10 + t1[0] * h11,
+        p0[1] * h00 + p1[1] * h01 + t0[1] * h10 + t1[1] * h11,
+    ]
+}
+
+fn reciprocal_sqrt(value: f32) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // The same approximate reciprocal square root the line uses for its unit.
+        unsafe {
+            use std::arch::x86_64::{_mm_cvtss_f32, _mm_rsqrt_ss, _mm_set_ss};
+            _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(value)))
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        1.0 / value.sqrt()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,6 +486,48 @@ mod tests {
         let mut short = sample();
         put_u32(&mut short, TEXT_MAGIC);
         assert!(read_power_tree(&short).is_err());
+    }
+
+    #[test]
+    fn a_tree_line_leaves_each_node_by_its_reach() {
+        assert_eq!(node_pixels(2.0, -1.0, 1.0, 0.0, 0.0, true), [20.0, -10.0]);
+        assert_eq!(node_pixels(0.25, 0.0, 1.0, 0.0, 0.0, true), [2.0, 0.0]);
+        assert_eq!(node_pixels(0.25, 0.0, 1.0, 0.0, 0.0, false), [2.5, 0.0]);
+        assert_eq!(place_node([20.0, -10.0], 0.0, 0.0, 0.5), [10.0, -5.0]);
+
+        let link = [0u8; 16];
+        let origin = LinkEnd {
+            at: [0.0, 0.0],
+            power: 0,
+            mark: 0,
+        };
+        let small = LinkEnd {
+            at: [400.0, 0.0],
+            power: 0x0100_0000,
+            mark: 0,
+        };
+        assert!(tree_link(origin, small, &link, 1.0).is_none());
+
+        let line = tree_link(origin, LinkEnd { mark: 1, ..small }, &link, 1.0)
+            .expect("a marked end is drawn");
+        assert!(line.dim);
+        assert_eq!(line.points[0], [0.0, f32::from_bits(0x4302_d0e5)]);
+        assert_eq!(
+            *line.points.last().expect("the line has an end"),
+            [400.0, f32::from_bits(0x4295_8106)]
+        );
+        assert_eq!(line.points.len(), 19);
+
+        let bright = tree_link(
+            LinkEnd { mark: 1, ..origin },
+            LinkEnd { mark: 1, ..small },
+            &link,
+            1.0,
+        )
+        .expect("either mark draws the line");
+        assert!(!bright.dim);
+        assert_eq!(bright.points[0], line.points[0]);
+        assert_eq!(bright.points.last(), line.points.last());
     }
 
     #[test]

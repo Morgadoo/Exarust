@@ -358,8 +358,8 @@ Moved to [TERRAIN.md](TERRAIN.md) (verified).
 
 ## Powers (`.pwr`)
 
-Status: **the node layout and the text chunk are verified**. Drawing the
-tree is not in. Exarust: `exa_formats::power_tree`.
+Status: **the node layout, the text chunk, and the link curve are verified**.
+Icons, frames and glows are not drawn. Exarust: `exa_formats::power_tree`.
 
 - **Header**: first word `0xAFCE01CE`. The node count is the signed word at
   byte 52. A negative count is an error. The bytes between the magic and
@@ -373,7 +373,17 @@ tree is not in. Exarust: `exa_formats::power_tree`.
   follows, then a byte length and that many bytes. Each string is a length
   word at its offset and that many bytes. A length below 1 is empty. No
   chunk leaves the texts empty. A chunk that ends early is an error.
-- Four domains: displacement, energy, force, mind. Drawing the tree and
+- **On screen**: a node sits at ten times its place times the zoom, plus the
+  pan, and rounds to the nearest even integer unless the view is dragged. A
+  factor then scales that point about the origin. A link whose two marks are
+  zero is not drawn. Otherwise each end leaves its node along the sine and
+  cosine of its turn (the link's first two words, fractions of a circle)
+  times a full circle. The reach is 0.514, or 0.295 when the power's high
+  mark is set, minus 0.003 times the zoom, times the zoom rounded to an even
+  256. The samples are the cubic between those ends. A zero source mark dims
+  the line. The fast sine polynomial and the thick-line quads are not
+  reproduced. A turn of zero is straight up.
+- Four domains: displacement, energy, force, mind. Icons, frames, glows and
   learning a node are not in.
 
 ## Weapon factories (`.fty`)

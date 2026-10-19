@@ -1031,6 +1031,7 @@ Blast spends 1.2 times its cost, barrier twice, calm 0.3 times, the long
 door once, and vanish 80 times.
 Done (change `read-a-power-tree`): a tree whose first word is wrong is refused. The node count is the word at byte 52. A node at 10, 20 stays there. A node at 15, 25 becomes 5, 5. One 16-byte link is kept. A link count below 1 stores none. A file that ends after the magic is an error. Drawing the tree and the text library are not in.
 Done (change `read-the-tree-text`): a text chunk stores Blast and an empty string. A tree with no chunk has no strings. A chunk that ends after its first word is an error. The second node is still at 5, 5. Drawing the tree is not in.
+Done (change `draw-a-tree-line`): a node at 2, −1 with zoom 1 and no pan snaps to 20, −10. A node at 0.25 snaps to 2, 0 and stays at 2.5 while dragged. A factor of one half pulls 20, −10 to 10, −5. A link with both marks at zero draws nothing. A large node at the origin and a small node 400 to the right, both turns zero and zoom 1, starts at the large reach above the origin and ends at the small reach above 400, in 19 points, and is dim when the source mark is zero. Icons, frames, glows and the thick-line quads are not in.
 Done (change `save-the-session`): an `EXRS` file restores that session.
 The original's save packages are not read.
 
@@ -1051,7 +1052,7 @@ Still open:
 
 - The other emblem controls. A candidate's listed price is the rank square plus four fifths of the gear. A swept season grants its four item ids, and day 134 repeats the first row. A shop line prices at 1, 12, 144 or 1440 copper, and a sale is a quarter of the basket. A tier multiplies a match stake by one more than the tier. A recruitment costs 12 copper. Overnight rest and a trainer's lesson are in.
 - Story side levels, scripted encounters, the role interpreter, map discovery.
-- The other powers, their charge-up and their meshes.
+- The other powers, their charge-up and their meshes. A tree link is drawn as the cubic between the two reaches. Icons, frames, glows and the thick-line quads are not in.
 - Character creation (race, body, face, hair, colours, class, skills).
 - Full UI using the original GUI skin, icons and manual pages.
 
