@@ -588,6 +588,81 @@ pub fn step_torrent(phase: i32, charge: f32, level: f32, left: f32, right: f32) 
     }
 }
 
+/// How many streams a span asks for. Eight tenths, rounded to the nearest even integer.
+pub fn torrent_streams(span: i32) -> i32 {
+    (f64::from(span) * 0.8).round_ties_even() as i32
+}
+
+/// Place one stream: 16 times its direction, then the height times 1.5 minus 30.
+pub fn torrent_birth(dir: [f32; 3]) -> [f32; 3] {
+    let placed = [dir[0] * 16.0, dir[1] * 16.0, dir[2] * 16.0];
+    [placed[0], placed[1], placed[2] * 1.5 - 30.0]
+}
+
+/// The mesh a stream count asks for. Eight extra records, 13 groups each, 12 bytes and 8 indices a group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TorrentMesh {
+    pub records: i32,
+    pub groups: i32,
+    pub vertex_bytes: i32,
+    pub indices: i32,
+}
+
+/// The mesh allocation for a stream count.
+pub fn torrent_mesh(streams: i32) -> TorrentMesh {
+    let records = streams + 8;
+    let groups = 13 * records;
+    TorrentMesh {
+        records,
+        groups,
+        vertex_bytes: groups * 12,
+        indices: groups * 8,
+    }
+}
+
+/// The reach of one sample: the radius times the scale, plus the margin, plus 10.
+pub fn torrent_reach(radius: f32, scale: f32, margin: f32) -> f32 {
+    radius * scale + margin + 10.0
+}
+
+/// The two channels after a hit.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TorrentHit {
+    pub left: f32,
+    pub right: f32,
+}
+
+/// Raise the channels by the age over the sample count. The right channel stops once it is no longer under 1.8.
+pub fn torrent_hit(age: i32, samples: i32, left: f32, right: f32) -> TorrentHit {
+    let fraction = (f64::from(age) / f64::from(samples)) as f32;
+    let left = (f64::from(fraction) * 0.005 + f64::from(left)) as f32;
+    let right = if f64::from(right) < 1.8 {
+        (f64::from(fraction) * 0.01 + f64::from(right)) as f32
+    } else {
+        right
+    };
+    TorrentHit { left, right }
+}
+
+/// Push a point along a direction when it is inside the reach. On the reach it stays.
+pub fn push_torrent_point(
+    at: [f32; 3],
+    dir: [f32; 3],
+    dist_sq: f32,
+    reach: f32,
+) -> Option<[f32; 3]> {
+    let span = reach * reach;
+    if dist_sq > span {
+        return None;
+    }
+    let step = (1.0 - dist_sq / span) * 0.01;
+    Some([
+        at[0] + dir[0] * step,
+        at[1] + dir[1] * step,
+        at[2] + dir[2] * step,
+    ])
+}
+
 /// Reach grows by 0.6. Radius grows by 0.0006 of the speed. The trail is 0.07 of the speed plus 1.
 pub fn release_wave(reach: f32, radius: f32, speed: f32) -> WaveFront {
     WaveFront {
@@ -799,6 +874,38 @@ mod tests {
         let stopped = step_torrent(2, 0.0, 0.03, 1.0, 1.0);
         assert_eq!(stopped.level, f32::from_bits(0x3ca3_d70a));
         assert!(!stopped.playing);
+    }
+
+    #[test]
+    fn a_torrent_stream_is_placed_and_pushes() {
+        assert_eq!(torrent_streams(1), 1);
+        assert_eq!(torrent_streams(2), 2);
+        assert_eq!(torrent_streams(3), 2);
+        assert_eq!(torrent_birth([0.0, 0.0, 1.0]), [0.0, 0.0, -6.0]);
+        let mesh = torrent_mesh(2);
+        assert_eq!(mesh.records, 10);
+        assert_eq!(mesh.groups, 130);
+        assert_eq!(mesh.vertex_bytes, 1_560);
+        assert_eq!(mesh.indices, 1_040);
+
+        assert_eq!(torrent_reach(2.0, 0.5, 1.0), 12.0);
+        let hit = torrent_hit(1, 2, 0.0, 0.0);
+        assert_eq!(hit.left, f32::from_bits(0x3b23_d70a));
+        assert_eq!(hit.right, f32::from_bits(0x3ba3_d70a));
+        let still = torrent_hit(1, 2, 0.0, f32::from_bits(0x3fe6_6666));
+        assert_eq!(still.right, f32::from_bits(0x3fe7_0a3d));
+        let held = torrent_hit(1, 2, 0.0, f32::from_bits(0x3fe6_6667));
+        assert_eq!(held.right, f32::from_bits(0x3fe6_6667));
+
+        assert_eq!(
+            push_torrent_point([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 0.0, 10.0),
+            Some([0.01, 0.0, 0.0])
+        );
+        assert_eq!(
+            push_torrent_point([1.0, 2.0, 3.0], [4.0, 0.0, 0.0], 100.0, 10.0),
+            Some([1.0, 2.0, 3.0])
+        );
+        assert!(push_torrent_point([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 101.0, 10.0).is_none());
     }
 
     #[test]

@@ -363,8 +363,8 @@ pictures, the learned marks and the thick joint are verified**. A blast
 charge, its growth and the chunk separation are in `exa_game::thaum`.
 A barrier ripple and the dome extent are in `exa_game::thaum`. A wave
 charge, its charging radius and the released front are in `exa_game::thaum`.
-A shell ripple is in `exa_game::thaum`. A torrent mix is in
-`exa_game::thaum`. The stream mesh and the shell mesh are not in. Exarust:
+A shell ripple is in `exa_game::thaum`. A torrent mix, its stream mesh counts and its push are in
+`exa_game::thaum`. The index winding and the shell mesh are not in. Exarust:
 `exa_formats::power_tree`.
 
 - **Header**: first word `0xAFCE01CE`. The node count is the signed word at
@@ -429,8 +429,14 @@ A shell ripple is in `exa_game::thaum`. A torrent mix is in
 - **Torrent**: below phase 1 the level is (2 minus the charge) times the
   charge times 0.4. Otherwise the level falls by 0.01, and below 0.02 it
   stops. Phase 1 eases the two channels toward 0.5 and 0.6 by 0.06. Phase 2
-  multiplies both channels by 0.96.
-- Four domains: displacement, energy, force, mind. The stream mesh and the
+  multiplies both channels by 0.96. A span rounds to eight tenths. A
+  stream sits at 16 times its direction, then its height times 1.5 minus 30.
+  The mesh asks for 13 groups for each stream plus 8, 12 bytes a group and
+  8 indices a group. A reach adds 10. A hit raises the channels by 0.005 and
+  0.01 of the age over the sample count, until the second is no longer under
+  1.8. A point inside the reach moves by 0.01 of one minus its distance
+  squared over the reach squared.
+- Four domains: displacement, energy, force, mind. The index winding and the
   shell mesh are not in.
 
 ## Weapon factories (`.fty`)
