@@ -895,6 +895,42 @@ pub fn show_skill_selector(has_object: bool, selection: i32, word: i32) -> Skill
     }
 }
 
+/// The class-select confirm's work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClassConfirm {
+    pub selected: Option<i32>,
+    pub global_index: Option<i32>,
+    pub sound: bool,
+    pub page_copied: bool,
+    pub form: Option<u64>,
+    pub form_flag: bool,
+    pub result: i32,
+}
+
+/// Stores the class, plays its sound and opens the next form.
+pub fn confirm_class(selection: i32, sound_ready: bool) -> ClassConfirm {
+    if selection <= 0 {
+        return ClassConfirm {
+            selected: None,
+            global_index: None,
+            sound: false,
+            page_copied: false,
+            form: None,
+            form_flag: false,
+            result: 0x40,
+        };
+    }
+    ClassConfirm {
+        selected: Some(selection),
+        global_index: Some(selection - 1),
+        sound: sound_ready,
+        page_copied: true,
+        form: Some(0x1_0012_a870),
+        form_flag: false,
+        result: 7,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1507,5 +1543,26 @@ mod tests {
         assert_eq!(absent.applied, SkillSelectorApplied::None);
         assert!(!absent.flags_cleared);
         assert_eq!(absent.base_calls, 1);
+    }
+
+    #[test]
+    fn the_class_confirm_stores_and_opens() {
+        let picked = confirm_class(3, true);
+        assert_eq!(picked.selected, Some(3));
+        assert_eq!(picked.global_index, Some(2));
+        assert!(picked.sound);
+        assert!(picked.page_copied);
+        assert_eq!(picked.form, Some(0x1_0012_a870));
+        assert!(!picked.form_flag);
+        assert_eq!(picked.result, 7);
+
+        let quiet = confirm_class(3, false);
+        assert!(!quiet.sound);
+
+        let none = confirm_class(0, true);
+        assert_eq!(none.result, 0x40);
+        assert_eq!(none.selected, None);
+        assert_eq!(none.form, None);
+        assert!(!confirm_class(-1, true).page_copied);
     }
 }
