@@ -760,6 +760,65 @@ pub fn show_skill_tip(input: SkillTipShowInput) -> SkillTipShow {
     }
 }
 
+/// The char-loot show's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CharLootShowInput {
+    pub already_inactive: bool,
+    pub has_owner: bool,
+    pub has_child: bool,
+    pub child_visible: bool,
+    pub base_result: bool,
+}
+
+/// The char-loot show's work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CharLootShow {
+    pub inactive: bool,
+    pub marked: bool,
+    pub placed: bool,
+    pub base_calls: u32,
+    pub result: bool,
+}
+
+/// Marks the owner and places a visible child when the loot screen becomes active.
+pub fn show_char_loot(input: CharLootShowInput) -> CharLootShow {
+    if input.already_inactive {
+        return CharLootShow {
+            inactive: true,
+            marked: false,
+            placed: false,
+            base_calls: 0,
+            result: true,
+        };
+    }
+    CharLootShow {
+        inactive: false,
+        marked: input.has_owner,
+        placed: input.has_owner && input.has_child && input.child_visible,
+        base_calls: 1,
+        result: input.base_result,
+    }
+}
+
+/// The journal's origin, table slot and string assignment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JournalShow {
+    pub origin: [i32; 2],
+    pub table_offset: i32,
+    pub assigned: bool,
+    pub base_calls: u32,
+}
+
+/// Copies the journal's origin and assigns its page string.
+pub fn show_journal(x: i32, y: i32, page: i32) -> JournalShow {
+    JournalShow {
+        origin: [x, y],
+        table_offset: page.wrapping_mul(0x18).wrapping_add(0x10),
+        assigned: true,
+        base_calls: 1,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1278,5 +1337,42 @@ mod tests {
         assert!(!missing.shown);
         assert_eq!(missing.calls, 0);
         assert_eq!(missing.index, None);
+    }
+
+    #[test]
+    fn the_loot_show_marks_and_places() {
+        let input = |already_inactive| CharLootShowInput {
+            already_inactive,
+            has_owner: true,
+            has_child: true,
+            child_visible: true,
+            base_result: true,
+        };
+        let active = show_char_loot(input(false));
+        assert!(!active.inactive);
+        assert!(active.marked);
+        assert!(active.placed);
+        assert_eq!(active.base_calls, 1);
+        assert!(active.result);
+
+        let inactive = show_char_loot(input(true));
+        assert!(inactive.inactive);
+        assert!(!inactive.marked);
+        assert_eq!(inactive.base_calls, 0);
+
+        let hidden = show_char_loot(CharLootShowInput {
+            child_visible: false,
+            ..input(false)
+        });
+        assert!(!hidden.placed);
+    }
+
+    #[test]
+    fn the_journal_show_copies_and_assigns() {
+        let shown = show_journal(12, 34, 3);
+        assert_eq!(shown.origin, [12, 34]);
+        assert_eq!(shown.table_offset, 3 * 0x18 + 0x10);
+        assert!(shown.assigned);
+        assert_eq!(shown.base_calls, 1);
     }
 }

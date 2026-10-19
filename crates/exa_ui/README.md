@@ -192,7 +192,9 @@ splash screen's bounds are the screen and two -1 values, and its destroy
 releases, frees two pointers, releases a list and calls the base before the
 final free call. The skill selector draws a page-2 title or the measured icon
 and label of the selection. A found tooltip row stores the skill index and
-threshold, marks the tip, places it from the anchor and stamps the clock.
+threshold, marks the tip, places it from the anchor and stamps the clock. The
+loot screen marks its owner and places a visible child when it becomes active,
+and the journal copies its origin and assigns its page string.
 
 ## Scope
 

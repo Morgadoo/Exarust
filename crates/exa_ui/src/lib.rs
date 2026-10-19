@@ -29,16 +29,16 @@ pub use heartbeat::Heartbeat;
 pub use hud::{DrawHud, HudBars};
 pub use loading::LoadingStatus;
 pub use menu::{
-    ClassSelect, EndSessionAction, EndSessionDispatch, EndSessionInput, InventoryDetach,
-    InventoryDetachInput, InventoryKeyClose, InventoryPage, MENU_NAME_CODE, MainMenuKey,
-    MainMenuKeyAction, MainMenuKeyInput, MenuHover, MenuKeyClose, MenuName, SkillKey,
-    SkillSelection, SkillSelectorDraw, SkillSelectorDrawPlace, SkillSelectorMode, SkillTipDraw,
-    SkillTipPlace, SkillTipShow, SkillTipShowInput, SplashBounds, SplashDestroy,
-    SplashDestroyInput, TRANSITION_TEXT, TransitionFade, TransitionFadePlace, detach_inventory,
-    dispatch_end_session, draw_skill_selector, draw_skill_tip, draw_transition_fade,
-    inventory_key_close, inventory_page, main_menu_key, menu_clock_scale, menu_key_close,
-    select_menu_class, settle_skill_selection, show_skill_tip, skill_selector_key, splash_bounds,
-    type_menu_name, update_menu_hover,
+    CharLootShow, CharLootShowInput, ClassSelect, EndSessionAction, EndSessionDispatch,
+    EndSessionInput, InventoryDetach, InventoryDetachInput, InventoryKeyClose, InventoryPage,
+    JournalShow, MENU_NAME_CODE, MainMenuKey, MainMenuKeyAction, MainMenuKeyInput, MenuHover,
+    MenuKeyClose, MenuName, SkillKey, SkillSelection, SkillSelectorDraw, SkillSelectorDrawPlace,
+    SkillSelectorMode, SkillTipDraw, SkillTipPlace, SkillTipShow, SkillTipShowInput, SplashBounds,
+    SplashDestroy, SplashDestroyInput, TRANSITION_TEXT, TransitionFade, TransitionFadePlace,
+    detach_inventory, dispatch_end_session, draw_skill_selector, draw_skill_tip,
+    draw_transition_fade, inventory_key_close, inventory_page, main_menu_key, menu_clock_scale,
+    menu_key_close, select_menu_class, settle_skill_selection, show_char_loot, show_journal,
+    show_skill_tip, skill_selector_key, splash_bounds, type_menu_name, update_menu_hover,
 };
 pub use scale::GuiScale;
 pub use skin::{
