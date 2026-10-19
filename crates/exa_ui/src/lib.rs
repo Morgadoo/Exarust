@@ -28,7 +28,7 @@ pub use fps::ShowFps;
 pub use heartbeat::Heartbeat;
 pub use hud::{DrawHud, HudBars};
 pub use loading::LoadingStatus;
-pub use menu::menu_clock_scale;
+pub use menu::{MenuKeyClose, menu_clock_scale, menu_key_close};
 pub use scale::GuiScale;
 pub use skin::{
     BEVEL_INK, BackdropCorner, BevelArm, BevelBox, BevelInk, BevelPlace, CappedSpan, CentredIcon,
