@@ -383,9 +383,12 @@ pub struct ItemSentence {
 /// then ", but" when both marks are at most 50 or both are above, and " and"
 /// otherwise. An unbracketed name is the quality phrase, a space, and the
 /// name, then "An " when it starts with a, e, i, o, or u, and "A " otherwise.
+/// When `fixed` is set, the id word is -1: a 0x10 byte and the byte after it
+/// are deleted, and "An " or "A " is added only when the first byte is at least Z.
 pub fn item_sentence(
     state: u32,
     name: &str,
+    fixed: bool,
     quality: u8,
     condition: u8,
     tables: &PhraseTables<'_>,
@@ -394,6 +397,12 @@ pub fn item_sentence(
         return ItemSentence {
             state,
             text: name.to_string(),
+        };
+    }
+    if fixed {
+        return ItemSentence {
+            state,
+            text: fixed_name(name),
         };
     }
     let mut name = name.to_string();
@@ -479,6 +488,37 @@ fn takes_an(text: &str) -> bool {
         text.as_bytes().first(),
         Some(b'a' | b'e' | b'i' | b'o' | b'u')
     )
+}
+
+/// Delete the 0x10 pair, then add an article when the first byte is at least Z.
+fn fixed_name(name: &str) -> String {
+    let mut bytes = name.as_bytes().to_vec();
+    if let Some(pos) = bytes.iter().position(|&byte| byte == 0x10) {
+        let position = pos + 1;
+        let len = bytes.len();
+        let end = len - 2;
+        if end >= position {
+            let mut cursor = position - 1;
+            loop {
+                cursor += 1;
+                bytes[cursor - 1] = bytes[cursor + 1];
+                if end <= cursor {
+                    break;
+                }
+            }
+        }
+        bytes.truncate(len - 2);
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    if text.as_bytes().first().is_some_and(|byte| *byte >= b'Z') {
+        if takes_an(&text) {
+            format!("An {text}")
+        } else {
+            format!("A {text}")
+        }
+    } else {
+        text.into_owned()
+    }
 }
 
 fn shares_long_word(so_far: &str, phrase: &str) -> bool {
@@ -794,14 +834,14 @@ mod tests {
         let great = [phrase("keen", 0, 255)];
         let rows = tables(&made, &high, &flawless, &perfect, &great);
         assert_eq!(
-            item_sentence(5, "ab", 0, 0, &rows),
+            item_sentence(5, "ab", false, 0, 0, &rows),
             ItemSentence {
                 state: 5,
                 text: "ab".to_string()
             }
         );
         assert_eq!(
-            item_sentence(0, "sword", 0, 0, &rows),
+            item_sentence(0, "sword", false, 0, 0, &rows),
             ItemSentence {
                 state: 0x0808_8406,
                 text: "A well sword sharp.".to_string()
@@ -812,6 +852,7 @@ mod tests {
             item_sentence(
                 0,
                 "edge.",
+                false,
                 0,
                 0,
                 &tables(&edge, &high, &flawless, &perfect, &great)
@@ -820,22 +861,22 @@ mod tests {
             "An edge edge sharp."
         );
         assert_eq!(
-            item_sentence(0, "Sword [x]", 0, 0, &rows).text,
+            item_sentence(0, "Sword [x]", false, 0, 0, &rows).text,
             "SwordIt is well, but sharp."
         );
         assert_eq!(
-            item_sentence(0, "Sword [x]", 131, 0, &rows).text,
+            item_sentence(0, "Sword [x]", false, 131, 0, &rows).text,
             "SwordIt is well and sharp."
         );
         assert_eq!(
-            item_sentence(0, "Blade [c]", 0, 0, &rows),
+            item_sentence(0, "Blade [c]", false, 0, 0, &rows),
             ItemSentence {
                 state: 1,
                 text: "BladeIt is sharp.".to_string()
             }
         );
         assert_eq!(
-            item_sentence(0, "-blade", 0, 0, &rows).text,
+            item_sentence(0, "-blade", false, 0, 0, &rows).text,
             "A prime blade keen."
         );
         let missed = [phrase("late", 200, 255)];
@@ -843,12 +884,54 @@ mod tests {
             item_sentence(
                 0,
                 "sword",
+                false,
                 0,
                 0,
                 &tables(&made, &high, &missed, &perfect, &great)
             )
             .text,
             "A well sword ok."
+        );
+    }
+
+    #[test]
+    fn a_fixed_id_drops_the_mark_and_adds_an_article() {
+        let rows = tables(&[], &[], &[], &[], &[]);
+        assert_eq!(
+            item_sentence(4, "ab", true, 9, 9, &rows),
+            ItemSentence {
+                state: 4,
+                text: "ab".to_string()
+            }
+        );
+        assert_eq!(
+            item_sentence(7, "Sword", true, 131, 131, &rows),
+            ItemSentence {
+                state: 7,
+                text: "Sword".to_string()
+            }
+        );
+        assert_eq!(item_sentence(0, "axe", true, 0, 0, &rows).text, "An axe");
+        assert_eq!(item_sentence(0, "Zed", true, 0, 0, &rows).text, "A Zed");
+        assert_eq!(item_sentence(0, "zed", true, 0, 0, &rows).text, "A zed");
+        assert_eq!(
+            item_sentence(3, "ab\u{10}xy", true, 0, 0, &rows),
+            ItemSentence {
+                state: 3,
+                text: "An aby".to_string()
+            }
+        );
+        assert_eq!(
+            item_sentence(0, "ab\u{10}c", true, 0, 0, &rows).text,
+            "An ab"
+        );
+        assert_eq!(
+            item_sentence(0, "\u{10}cde", true, 0, 0, &rows).text,
+            "A de"
+        );
+        assert_eq!(
+            item_sentence(0, "Za\u{10}bc", true, 0, 0, &rows).text,
+            "A Zac"
         );
     }
 }

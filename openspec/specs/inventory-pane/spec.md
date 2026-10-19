@@ -88,3 +88,10 @@ A name shorter than three letters SHALL stay unchanged. A longer name SHALL drop
 #### Scenario: A sword, a bracket, and a dash
 - **WHEN** "ab" is wrapped, "sword" uses "well" and "sharp", "edge." uses "edge", "Sword [x]" uses quality 0 and then 131, "Blade [c]" is wrapped, "-blade" is wrapped, and flawless misses so perfect supplies "ok"
 - **THEN** "ab" stays "ab", "sword" is "A well sword sharp." at roll 0x08088406, "edge." is "An edge edge sharp.", the low bracket is "SwordIt is well, but sharp.", the high bracket is "SwordIt is well and sharp.", the marked blade is "BladeIt is sharp." at roll 1, the dash is "A prime blade keen.", and the miss is "A well sword ok."
+
+### Requirement: Fixed name
+When the id word is -1, a name shorter than three letters SHALL stay unchanged and the roll SHALL not step. A longer name SHALL delete a 0x10 byte and the byte after it, shortening by two. It SHALL add "An " or "A " only when the first byte is at least Z.
+
+#### Scenario: A mark comes out and an article goes on
+- **WHEN** "ab" is fixed, "Sword", "axe", "Zed", and "zed" are fixed, and the names "ab" plus a mark plus "xy", "ab" plus a mark plus "c", a mark plus "cde", and "Za" plus a mark plus "bc" are fixed
+- **THEN** "ab" stays "ab" at the same roll, "Sword" stays "Sword", "axe" is "An axe", "Zed" is "A Zed", "zed" is "A zed", the middle mark becomes "An aby", the end mark becomes "An ab", the leading mark becomes "A de", and "Za" becomes "A Zac"
