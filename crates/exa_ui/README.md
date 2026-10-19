@@ -66,7 +66,10 @@ to 30, 90 at unit 5 and height 80. Both bits set draw the ledge instead. A
 clear hold bit draws none of that quad. Both arms then draw a bar from 30, 70
 to 70, 80 at unit 5, width 100 and height 80. A set tab bit still draws it.
 A clear hold bit draws the wider bar, from 40, 80 to 60, 90 at height 100.
-The next mask test is not in.
+Mask bits 4 and 8 together, with the tab bit, then draw a strip from 80, 50
+to 100, 70 at unit 5, width 100 and height 80. A missing bit and a clear tab
+bit draw none. A clear hold bit with the tab bit draws the wider strip, from
+70, 60 to 90, 80 at height 100. The clear-tab arm is not in.
 
 ## Scope
 
