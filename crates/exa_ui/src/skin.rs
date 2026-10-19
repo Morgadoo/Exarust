@@ -3573,6 +3573,37 @@ pub fn draw_skin_rect(place: SkinRectPlace) -> SkinRect {
     }
 }
 
+/// A four-band textured strip.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SkinStrip {
+    pub vertices: [(f32, f32); 8],
+    pub binds: [u32; 4],
+    pub begin_calls: u32,
+    pub bind_calls: u32,
+    pub end_calls: u32,
+}
+
+/// Draws the strip between x = first/third and y = second/fourth.
+pub fn draw_skin_strip(first: f32, second: f32, third: f32, fourth: f32) -> SkinStrip {
+    let mid = (second - fourth) * 0.5 + fourth;
+    SkinStrip {
+        vertices: [
+            (third, second),
+            (first, second),
+            (third, mid),
+            (first, mid),
+            (third, mid),
+            (first, mid),
+            (first, fourth),
+            (third, fourth),
+        ],
+        binds: [0x12c, 0x134, 0x138, 0x130],
+        begin_calls: 1,
+        bind_calls: 4,
+        end_calls: 1,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6912,5 +6943,29 @@ mod tests {
         assert!(second.second);
         assert_eq!(second.cornered_calls, 1);
         assert_eq!(second.rect, [15, 25, 90, 70]);
+    }
+
+    #[test]
+    fn a_skin_strip_draws_four_bands() {
+        let strip = draw_skin_strip(10.0, 20.0, 30.0, 40.0);
+        let want: [(f32, f32); 8] = [
+            (30.0, 20.0),
+            (10.0, 20.0),
+            (30.0, 30.0),
+            (10.0, 30.0),
+            (30.0, 30.0),
+            (10.0, 30.0),
+            (10.0, 40.0),
+            (30.0, 40.0),
+        ];
+        for ((gx, gy), (wx, wy)) in strip.vertices.iter().zip(want) {
+            assert_eq!(gx.to_bits(), wx.to_bits());
+            assert_eq!(gy.to_bits(), wy.to_bits());
+        }
+        assert_eq!(strip.binds, [0x12c, 0x134, 0x138, 0x130]);
+        assert_eq!(
+            (strip.begin_calls, strip.bind_calls, strip.end_calls),
+            (1, 4, 1)
+        );
     }
 }

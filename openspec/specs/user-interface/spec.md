@@ -873,3 +873,12 @@ At place 10, 20 of size 100 by 80 with inset 5 the method SHALL draw one rectang
 - **THEN** the first boolean is true and the second is false
 - **WHEN** flag bit 0x40 is set
 - **THEN** the second boolean is true and one overlay call runs at 15, 25, 105, 95
+
+### Requirement: Skin textured strip
+With floats 10, 20, 30 and 40 the strip SHALL draw eight vertices: (30, 20), (10, 20), (30, 30), (10, 30), (30, 30), (10, 30), (10, 40), (30, 40). It SHALL count one begin, four binds in slot order 0x12c, 0x134, 0x138, 0x130, and one end.
+
+#### Scenario: The four bands
+- **WHEN** the strip is drawn with 10, 20, 30 and 40
+- **THEN** the middle y is 30
+- **AND** the eight vertices are those listed, in that order
+- **AND** the counts are one begin, four binds and one end
