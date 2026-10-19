@@ -28,7 +28,8 @@ A title of width 40 sits at 30, and style 0x10 draws four corners of span 30,
 then edge bars whose reach is 33 at unit 5. A wide form whose style word
 has bits 0xc0 equal to 0x80 draws a top from 10, -5 to 90, 5, then a
 left side from -5, 10 to 5, 70, then a bottom from 10, 75 to 90, 85, then a right side from 95, 10
-to 105, 70. The mark after that side is not in.
+to 105, 70. Bit 0x40 of the first flag word then counts one ink copy.
+The join after that copy is not in.
 
 ## Scope
 

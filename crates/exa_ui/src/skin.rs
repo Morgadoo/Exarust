@@ -106,6 +106,7 @@ const FORM_STYLE: u32 = 0x30;
 const FORM_STYLE_ON: u32 = 0x10;
 const FORM_BAND: u32 = 0xc0;
 const FORM_BAND_ON: u32 = 0x80;
+const FORM_MARK: u32 = 0x40;
 
 /// Corner sample after the child walk: 0, 0, 0, 0.3.
 pub const FORM_CORNER: [u32; 4] = [0, 0, 0, 0x3e99_999a];
@@ -617,8 +618,8 @@ pub struct TitleDraw {
 
 /// The opening of a form: spans, an optional shade and backdrop, the scroll
 /// shift, the shown children, the title, the corners, the edge bars, the
-/// wide top, the left side, the bottom, and the right side. The mark
-/// after that side is not in.
+/// wide top, the left side, the bottom, the right side, and the ink copy
+/// that follows. The join after that copy is not in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormDispatch {
     pub span_a: i32,
@@ -643,6 +644,7 @@ pub struct FormDispatch {
     pub wide_bottom: Vec<SliderQuad>,
     pub wide_right: Vec<SliderQuad>,
     pub wide_calls: u32,
+    pub mark_calls: u32,
 }
 
 fn edge_reach(unit: i32) -> i32 {
@@ -964,6 +966,10 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         } else {
             (Vec::new(), Vec::new(), Vec::new(), Vec::new())
         };
+    let mark_calls = u32::from(
+        wide && (place.flags_d & FORM_BAND) == FORM_BAND_ON
+            && (place.flags_a & FORM_MARK) == FORM_MARK,
+    );
     FormDispatch {
         span_a,
         span_b,
@@ -992,6 +998,7 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         wide_bottom,
         wide_right,
         wide_calls,
+        mark_calls,
     }
 }
 
@@ -1867,5 +1874,26 @@ mod tests {
         form.flags_b = 0;
         form.flags_d = 0x80;
         assert!(dispatch_form(5, 0, form, &[]).wide_right.is_empty());
+    }
+
+    #[test]
+    fn a_dispatch_copies_the_ink_after_the_right_side() {
+        let mut form = place(0x40, 0x40_0000, 0, 0, 0, 0);
+        form.flags_d = 0x80;
+        let drawn = dispatch_form(5, 0, form, &[]);
+        assert_eq!(drawn.wide_right.len(), 3);
+        assert_eq!(drawn.mark_calls, 1);
+
+        form.flags_a = 0;
+        let clear = dispatch_form(5, 0, form, &[]);
+        assert_eq!(clear.wide_right.len(), 3);
+        assert_eq!(clear.mark_calls, 0);
+
+        form.flags_a = 0x40;
+        form.flags_d = 0x10;
+        assert_eq!(dispatch_form(5, 0, form, &[]).mark_calls, 0);
+        form.flags_b = 0;
+        form.flags_d = 0x80;
+        assert_eq!(dispatch_form(5, 0, form, &[]).mark_calls, 0);
     }
 }
