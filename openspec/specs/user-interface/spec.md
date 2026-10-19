@@ -189,3 +189,10 @@ After the four corners, the same style SHALL draw edge bars. With no title, unit
 #### Scenario: A top bar runs from 33 to 67
 - **WHEN** unit 5 dispatches a form of width 100 and height 80 with style bits 0x10 and no title
 - **THEN** the top bar runs from 33, 0 to 67, 10, and a title of width 40 splits the top at gap 17
+
+### Requirement: Wide top
+A wide form whose style word has bits 0xc0 equal to 0x80 SHALL draw three top quads. At unit 5 and width 100 the left cap SHALL run from 0, -5 to 10, 5, the bar from 10, -5 to 90, 5, and the right cap from 90, 5 to 100, -5. Style 0x10 without those bits, and a form that is not wide, SHALL draw none. The side bars after that top are not in.
+
+#### Scenario: The bar runs from 10 to 90
+- **WHEN** unit 5 dispatches a wide form of width 100 whose style word is 0x80
+- **THEN** the bar runs from 10, -5 to 90, 5 and the two caps meet it

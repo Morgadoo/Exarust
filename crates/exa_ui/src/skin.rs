@@ -104,6 +104,8 @@ const FORM_CLOSE: u32 = 2;
 const FORM_BOX: u32 = 0x40_0000;
 const FORM_STYLE: u32 = 0x30;
 const FORM_STYLE_ON: u32 = 0x10;
+const FORM_BAND: u32 = 0xc0;
+const FORM_BAND_ON: u32 = 0x80;
 
 /// Corner sample after the child walk: 0, 0, 0, 0.3.
 pub const FORM_CORNER: [u32; 4] = [0, 0, 0, 0x3e99_999a];
@@ -119,6 +121,12 @@ pub const FORM_EDGE: [u32; 4] = [0x3e99_999a, 0, 0x3e99_999a, 0x3dcc_cccd];
 
 /// Cap beside a title: 0.7, 0, 0.7, 0.1.
 pub const FORM_CAP: [u32; 4] = [0x3f33_3333, 0, 0x3f33_3333, 0x3dcc_cccd];
+
+/// Wide top cap: 0.7, 0.1, 0.7, 0.2.
+pub const WIDE_CAP: [u32; 4] = [0x3f33_3333, 0x3dcc_cccd, 0x3f33_3333, 0x3e4c_cccd];
+
+/// Wide top bar: 0.3, 0.1, 0.3, 0.2.
+pub const WIDE_BAR: [u32; 4] = [0x3e99_999a, 0x3dcc_cccd, 0x3e99_999a, 0x3e4c_cccd];
 
 /// The double 6.6 used to place an edge.
 const EDGE_SCALE: u64 = 0x401a_6666_6666_6666;
@@ -608,8 +616,8 @@ pub struct TitleDraw {
 }
 
 /// The opening of a form: spans, an optional shade and backdrop, the scroll
-/// shift, the shown children, and the title and corner squares that follow.
-/// The later edge bars are not in.
+/// shift, the shown children, the title, the corners, the edge bars, and the
+/// wide top. The side bars after that top are not in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormDispatch {
     pub span_a: i32,
@@ -629,6 +637,7 @@ pub struct FormDispatch {
     pub title: Option<TitleDraw>,
     pub corners: Vec<SliderQuad>,
     pub edges: Vec<SliderQuad>,
+    pub wide_top: Vec<SliderQuad>,
     pub wide_calls: u32,
 }
 
@@ -852,6 +861,35 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
     } else {
         (Vec::new(), Vec::new(), 0)
     };
+    let wide_top = if wide && (place.flags_d & FORM_BAND) == FORM_BAND_ON {
+        let band = unit.wrapping_shl(1);
+        let width = place.width;
+        let down = unit;
+        let up = unit.wrapping_neg();
+        vec![
+            quad(WIDE_CAP, [(band, down), (band, up), (0, up), (0, down)]),
+            quad(
+                WIDE_BAR,
+                [
+                    (band, down),
+                    (band, up),
+                    (width.wrapping_sub(band), up),
+                    (width.wrapping_sub(band), down),
+                ],
+            ),
+            quad(
+                WIDE_CAP,
+                [
+                    (width.wrapping_sub(band), down),
+                    (width.wrapping_sub(band), up),
+                    (width, up),
+                    (width, down),
+                ],
+            ),
+        ]
+    } else {
+        Vec::new()
+    };
     FormDispatch {
         span_a,
         span_b,
@@ -875,6 +913,7 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         title,
         corners,
         edges,
+        wide_top,
         wide_calls,
     }
 }
@@ -1626,5 +1665,42 @@ mod tests {
         form.flags_d = 0x10;
         form.flags_b = 0x40_0000;
         assert!(dispatch_form(5, 0, form, &[]).edges.is_empty());
+    }
+
+    #[test]
+    fn a_dispatch_draws_the_wide_top() {
+        let mut form = place(0, 0x40_0000, 0, 0, 0, 0);
+        form.flags_d = 0x80;
+        let drawn = dispatch_form(5, 0, form, &[]);
+        assert!(drawn.corners.is_empty());
+        assert!(drawn.edges.is_empty());
+        assert_eq!(drawn.wide_calls, 0);
+        assert_eq!(drawn.wide_top.len(), 3);
+        assert_eq!(drawn.wide_top[0].sample, WIDE_CAP);
+        assert_eq!(
+            drawn.wide_top[0].corners,
+            [(10, 5), (10, -5), (0, -5), (0, 5)]
+        );
+        assert_eq!(drawn.wide_top[1].sample, WIDE_BAR);
+        assert_eq!(
+            drawn.wide_top[1].corners,
+            [(10, 5), (10, -5), (90, -5), (90, 5)]
+        );
+        assert_eq!(drawn.wide_top[2].sample, WIDE_CAP);
+        assert_eq!(
+            drawn.wide_top[2].corners,
+            [(90, 5), (90, -5), (100, -5), (100, 5)]
+        );
+
+        form.flags_d = 0x90;
+        let styled = dispatch_form(5, 0, form, &[]);
+        assert_eq!(styled.wide_top.len(), 3);
+        assert_eq!(styled.wide_calls, 1);
+        assert!(styled.corners.is_empty());
+        form.flags_d = 0x10;
+        assert!(dispatch_form(5, 0, form, &[]).wide_top.is_empty());
+        form.flags_b = 0;
+        form.flags_d = 0x80;
+        assert!(dispatch_form(5, 0, form, &[]).wide_top.is_empty());
     }
 }
