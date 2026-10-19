@@ -14,3 +14,4 @@
 
 # Agent working memory and RE scratch (see CONTEXT.md).
 /context/
+make-check.log
