@@ -1038,9 +1038,10 @@ Done (change `scale-match-experience`): a shared finish multiplies the template 
 Done (change `close-the-arena-day`): a merchant's wage is 2, a physician's 12, a trainer's the skill total, and a combatant's half of that, at most 5, plus 1. A new career is on day 0. Ending the day pays the bill. A day mod 7 of 1 gives the week to three or more of the six events with no tie. Day 7 drops an entry under health 3276. Four won weeks grant four rewards; from day 0 that lands on day 22.
 Done (change `rest-overnight`): a night adds 6553 to health, or 9830 when a physician is hired, and stops at 65535. A pool of 58981 becomes 65534. A pool of 58982 becomes 65535. Health 3275 across seven nights is 49146 and stays entered. Health 1000 with a physician becomes 10830. The trainer's lessons are not in.
 Done (change `teach-a-lesson`): with no trainer a technique of 7 stays at 0. A trainer who knows 7 adds 1000. A trainer who knows 3 adds nothing. A merchant and a physician stay at 0. A word of 4500 snaps to 5000. Five other skills at level 1 make the grant 166. A first skill at 25000 is left there and the next skill becomes 166. Item prices are not in.
+Done (change `price-a-hire`): 11 copper hires nobody and stays at 11. 12 copper hires a combatant and leaves 0, with 12 spent. A second physician is refused and the spent total stays 24. Item prices are not in.
 Still open:
 
-- Item prices and emblems. The hire price was not read. The reward item identities are not in. Overnight rest and a trainer's lesson are in.
+- Item prices and emblems. The reward item identities are not in. A recruitment costs 12 copper. Overnight rest and a trainer's lesson are in.
 - Story side levels, scripted encounters, the role interpreter, map discovery.
 - The other powers, their charge-up and their meshes.
 - Character creation (race, body, face, hair, colours, class, skills).

@@ -12,7 +12,7 @@
 //! physician, and stops at 65535. A hired trainer adds a lesson to each
 //! combatant whose current technique the trainer knows. A day mod 7 of 1
 //! resolves the week, and four won weeks grant the season. The hire price
-//! and the tier scaling of a fee were not read.
+//! and the tier scaling of a fee were not read. A recruitment costs 12 copper.
 //!
 //! Evidence: the arena career notes (money seed, coin rate, roster caps,
 //! the six standard matches and the seven specials, fee on entry, prize on
@@ -37,6 +37,8 @@ pub const REST: u16 = 0x1999;
 pub const REST_WITH_PHYSICIAN: u16 = 0x2666;
 /// A full health pool.
 pub const FULL_HEALTH: u16 = 0xffff;
+/// Copper a recruitment costs.
+pub const HIRE_PRICE: u32 = 12;
 /// Skill experience in one level.
 pub const SKILL_STEP: u16 = 5000;
 /// Experience a matching lesson divides by the fighter's rank.
@@ -298,7 +300,9 @@ impl Company {
         (gold, rest / COIN, rest % COIN)
     }
 
-    /// Hire onto the roster. The price of a hire was not read.
+    /// Hire onto the roster for 12 copper. A full roster or a second
+    /// specialist is refused without spending. Fewer than 12 copper is
+    /// refused and the roster stays as it is.
     pub fn hire(
         &mut self,
         name: impl Into<String>,
@@ -320,6 +324,11 @@ impl Company {
         {
             return Err(HireError::Duplicate);
         }
+        if self.copper < HIRE_PRICE {
+            return Err(HireError::Funds);
+        }
+        self.copper -= HIRE_PRICE;
+        self.spent += HIRE_PRICE;
         self.roster.push(Member {
             name: name.into(),
             profession,
@@ -616,6 +625,8 @@ pub enum HireError {
     Full,
     /// A merchant, physician or trainer is already hired.
     Duplicate,
+    /// Fewer than 12 copper.
+    Funds,
 }
 
 /// Why a match did not start.
@@ -654,16 +665,16 @@ mod tests {
         );
         let duel = standard_board()[0];
         let ongoing = company.enter(duel).unwrap();
-        assert_eq!(company.copper, 340);
-        assert_eq!(company.spent, 3);
+        assert_eq!(company.copper, 244);
+        assert_eq!(company.spent, 99);
         company.finish(ongoing, false, 1.0);
-        assert_eq!(company.copper, 340);
+        assert_eq!(company.copper, 244);
         assert_eq!(company.lost, 1);
         assert_eq!(company.roster[0].xp, 1000);
         let ongoing = company.enter(duel).unwrap();
         company.hire("coach", Profession::Trainer).unwrap();
         company.finish(ongoing, true, 0.5);
-        assert_eq!(company.copper, 340 - 3 + 256);
+        assert_eq!(company.copper, 485);
         assert_eq!(company.won, 1);
         assert_eq!(company.earned, 256);
         assert_eq!(company.roster[0].xp, 1000 + 750);
@@ -711,7 +722,7 @@ mod tests {
         let first = company.end_day(sweep);
         assert_eq!(company.day, 1);
         assert_eq!(first.wages, 1);
-        assert_eq!(company.copper, 342);
+        assert_eq!(company.copper, 330);
         assert_eq!(first.week_won, Some(true));
         assert!(!first.season);
 
@@ -763,7 +774,7 @@ mod tests {
         assert_eq!(company.seasons_won, 1);
         assert_eq!(company.season_rewards, 4);
         assert_eq!(company.weeks, [false; 4]);
-        assert_eq!(company.copper, 343 - 22);
+        assert_eq!(company.copper, 343 - 12 - 22);
     }
 
     #[test]
@@ -883,5 +894,33 @@ mod tests {
         later.end_day([0; 6]);
         assert_eq!(later.roster[0].skill_xp[0], 25_000);
         assert_eq!(later.roster[0].skill_xp[1], 166);
+    }
+
+    #[test]
+    fn a_hire_costs_twelve_and_a_short_purse_stays_empty() {
+        let mut company = Company::new("Ash");
+        company.copper = 11;
+        assert_eq!(
+            company.hire("a", Profession::Combatant),
+            Err(HireError::Funds)
+        );
+        assert!(company.roster.is_empty());
+        assert_eq!(company.copper, 11);
+        assert_eq!(company.spent, 0);
+
+        company.copper = 12;
+        company.hire("a", Profession::Combatant).unwrap();
+        assert_eq!(company.roster.len(), 1);
+        assert_eq!(company.copper, 0);
+        assert_eq!(company.spent, 12);
+
+        company.copper = 12;
+        company.hire("med", Profession::Physician).unwrap();
+        assert_eq!(
+            company.hire("med2", Profession::Physician),
+            Err(HireError::Duplicate)
+        );
+        assert_eq!(company.copper, 0);
+        assert_eq!(company.spent, 24);
     }
 }
