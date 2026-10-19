@@ -364,8 +364,8 @@ charge, its growth and the chunk separation are in `exa_game::thaum`.
 A barrier ripple and the dome extent are in `exa_game::thaum`. A wave
 charge, its charging radius and the released front are in `exa_game::thaum`.
 A shell ripple is in `exa_game::thaum`. A torrent mix, its stream mesh counts and its push are in
-`exa_game::thaum`. A shell vertex and its hit strength are in `exa_game::thaum`. The copied
-index list is not in. Exarust:
+`exa_game::thaum`. A shell vertex, its hit strength and its copied index list are in
+`exa_game::thaum`. The skinned section filter is not in. Exarust:
 `exa_formats::power_tree`.
 
 - **Header**: first word `0xAFCE01CE`. The node count is the signed word at
@@ -428,7 +428,11 @@ index list is not in. Exarust:
   times the scale downward. Both under 0.05 removes the ripple. The stored
   scale is 1. A vertex sits at its position plus 2 times the normalized
   bone sum, and a zero sum adds nothing. A hit of 0.1 stores about 3.333.
-  A hit of 0.3 stores 6. An eighth hit is refused.
+  A hit of 0.3 stores 6. An eighth hit is refused. A visible section
+  copies its triangles from the first through the last. Each triangle keeps
+  its three indices in order, after the remap. A hidden section is skipped.
+  A range that ends early copies nothing. A short list or a missing remap
+  is an error.
 - **Torrent**: below phase 1 the level is (2 minus the charge) times the
   charge times 0.4. Otherwise the level falls by 0.01, and below 0.02 it
   stops. Phase 1 eases the two channels toward 0.5 and 0.6 by 0.06. Phase 2
@@ -439,8 +443,8 @@ index list is not in. Exarust:
   0.01 of the age over the sample count, until the second is no longer under
   1.8. A point inside the reach moves by 0.01 of one minus its distance
   squared over the reach squared.
-- Four domains: displacement, energy, force, mind. The copied index list is
-  not in.
+- Four domains: displacement, energy, force, mind. The skinned section
+  filter is not in.
 
 ## Weapon factories (`.fty`)
 

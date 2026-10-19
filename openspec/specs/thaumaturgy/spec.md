@@ -123,3 +123,10 @@ A shell vertex SHALL sit at its position plus 2 times the normalized sum of its 
 #### Scenario: A raised vertex and a capped hit
 - **WHEN** a position at 1, 2, 3 is offset by a sum of 0, 3, 0 and by a zero sum, a hit of 0.1 is stored, a hit of 0.3 is stored while seven are held, and an eighth hit is offered
 - **THEN** the offset vertex is raised on its height, the zero sum stays at 1, 2, 3, the small hit is about 3.333, the 0.3 hit is 6, and the eighth hit is refused
+
+### Requirement: Shell indices
+A shell index list SHALL copy each section that is not hidden, from its first triangle through its last, inclusive. Each triangle SHALL keep its three indices in order, after the remap. A hidden section SHALL be skipped. A range that ends before it starts SHALL copy nothing. A short index list or a missing remap SHALL be an error.
+
+#### Scenario: A kept winding and a hidden section
+- **WHEN** two visible ranges and a hidden range are copied, a reversed triangle is copied, a range that ends early is copied, a short list is copied, and a missing remap is copied
+- **THEN** the kept list is 14, 15, 16, 11, 12, 10, 17, 18, 19, the reversed triangle stays reversed, the early range is empty, the short list is an error, and the missing remap is an error

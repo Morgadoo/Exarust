@@ -603,6 +603,52 @@ pub fn shell_hit(held: u32, amount: f32) -> Option<f32> {
     Some(strength)
 }
 
+/// A section of triangles. One with the hidden flag is left out of the shell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShellSpan {
+    pub flags: u32,
+    pub start: i32,
+    pub end: i32,
+}
+
+/// The section flag that keeps a triangle range off the shell.
+pub const SHELL_HIDDEN: u32 = 0x0008_0000;
+
+/// Why a shell index copy stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellIndexError {
+    /// A triangle runs past the index list, or its place is negative.
+    Short,
+    /// A source index has no remap entry.
+    Remap,
+}
+
+/// Copy the visible triangles. Each keeps its three indices, in order, after the remap.
+pub fn shell_indices(
+    spans: &[ShellSpan],
+    triangles: &[u32],
+    remap: &[u32],
+) -> Result<Vec<u32>, ShellIndexError> {
+    let mut out = Vec::new();
+    for span in spans {
+        if span.flags & SHELL_HIDDEN != 0 || span.end < span.start {
+            continue;
+        }
+        for tri in span.start..=span.end {
+            let base = usize::try_from(tri.checked_mul(3).ok_or(ShellIndexError::Short)?)
+                .map_err(|_| ShellIndexError::Short)?;
+            let tri_idx = triangles
+                .get(base..base + 3)
+                .ok_or(ShellIndexError::Short)?;
+            for &src in tri_idx {
+                let slot = usize::try_from(src).map_err(|_| ShellIndexError::Remap)?;
+                out.push(*remap.get(slot).ok_or(ShellIndexError::Remap)?);
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// A torrent's level and its two channels after one tick.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TorrentMix {
@@ -918,6 +964,55 @@ mod tests {
         assert_eq!(shell_hit(0, 0.1), Some(f32::from_bits(0x4055_50f7)));
         assert_eq!(shell_hit(7, 0.3), Some(6.0));
         assert!(shell_hit(8, 0.1).is_none());
+    }
+
+    #[test]
+    fn a_shell_copies_visible_triangles_in_order() {
+        let visible = ShellSpan {
+            flags: 0,
+            start: 0,
+            end: 1,
+        };
+        let hidden = ShellSpan {
+            flags: SHELL_HIDDEN,
+            start: 0,
+            end: 0,
+        };
+        let later = ShellSpan {
+            flags: 0,
+            start: 2,
+            end: 2,
+        };
+        let empty = ShellSpan {
+            flags: 0,
+            start: 3,
+            end: 2,
+        };
+        let triangles = [4, 5, 6, 1, 2, 0, 7, 8, 9];
+        let remap = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19];
+        let copied = shell_indices(&[visible, hidden, later, empty], &triangles, &remap).unwrap();
+        assert_eq!(copied, vec![14, 15, 16, 11, 12, 10, 17, 18, 19]);
+        let one = ShellSpan {
+            flags: 0,
+            start: 0,
+            end: 0,
+        };
+        assert_eq!(
+            shell_indices(&[one], &[1, 0, 2], &[9, 8, 7]).unwrap(),
+            vec![8, 9, 7]
+        );
+        assert_eq!(
+            shell_indices(&[empty], &triangles, &remap).unwrap(),
+            Vec::<u32>::new()
+        );
+        assert_eq!(
+            shell_indices(&[visible], &[4, 5], &remap),
+            Err(ShellIndexError::Short)
+        );
+        assert_eq!(
+            shell_indices(&[one], &[0, 1, 10], &remap),
+            Err(ShellIndexError::Remap)
+        );
     }
 
     #[test]
