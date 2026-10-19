@@ -649,8 +649,8 @@ pub struct TitleDraw {
 /// shift, the shown children, the title, the corners, the edge bars, the
 /// wide top, the left side, the bottom, the right side, the ink copy,
 /// the square drawn when the close mark is -4, the hold-bit edge mask,
-/// and the bar, the tab, the lower tab, the quad, the left strip, and the
-/// cap that follow it. The flag test after that cap is not in.
+/// and the bar, the tab, the lower tab, the quad, the left strip, the cap,
+/// and the ledge that follow it. The sign flip after that ledge is not in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormDispatch {
     pub span_a: i32,
@@ -684,6 +684,7 @@ pub struct FormDispatch {
     pub held_post: Vec<SliderQuad>,
     pub held_left: Vec<SliderQuad>,
     pub held_cap: Vec<SliderQuad>,
+    pub held_ledge: Vec<SliderQuad>,
 }
 
 fn edge_mask(unit: i32, place: &DispatchPlace) -> u32 {
@@ -1146,6 +1147,18 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
     } else {
         Vec::new()
     };
+    let skip_ledge = (place.owner_flags & 0x80_0000) == 0
+        && ((place.flags_b & FORM_TITLE) != 0 || (place.owner_flags & 1) != 0);
+    let held_ledge = if on_hold && (edge_mask & 0x3) == 0x3 && !skip_ledge {
+        let near = unit.wrapping_shl(1);
+        let far = unit.wrapping_shl(2).wrapping_add(near);
+        vec![quad(
+            HELD_CAP,
+            [(near, 0), (near, near), (far, near), (far, 0)],
+        )]
+    } else {
+        Vec::new()
+    };
     FormDispatch {
         span_a,
         span_b,
@@ -1183,6 +1196,7 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         held_post,
         held_left,
         held_cap,
+        held_ledge,
     }
 }
 
@@ -2325,5 +2339,44 @@ mod tests {
 
         form.flags_a = 0;
         assert!(dispatch_form(5, 0, form, &[]).held_cap.is_empty());
+    }
+
+    #[test]
+    fn a_dispatch_draws_the_held_ledge() {
+        let mut form = place(FORM_HOLD, 0, 0, 0, 0, 0);
+        form.flags_d = 0x80;
+        form.edge_x = 4;
+        form.edge_y = 4;
+        form.room_far_x = 400;
+        form.room_far_y = 400;
+        let drawn = dispatch_form(5, 0, form, &[]);
+        assert_eq!(drawn.held_cap.len(), 1);
+        assert_eq!(drawn.held_ledge.len(), 1);
+        assert_eq!(drawn.held_ledge[0].sample, HELD_CAP);
+        assert_eq!(
+            drawn.held_ledge[0].corners,
+            [(10, 0), (10, 10), (30, 10), (30, 0)]
+        );
+
+        form.flags_b = FORM_TITLE;
+        assert!(dispatch_form(5, 0, form, &[]).held_ledge.is_empty());
+        form.owner_flags = 0x80_0000;
+        assert_eq!(dispatch_form(5, 0, form, &[]).held_ledge.len(), 1);
+
+        form.flags_b = 0;
+        form.owner_flags = 1;
+        assert!(dispatch_form(5, 0, form, &[]).held_ledge.is_empty());
+        form.owner_flags = 1 | 0x80_0000;
+        assert_eq!(dispatch_form(5, 0, form, &[]).held_ledge.len(), 1);
+
+        form.owner_flags = 0;
+        form.edge_x = 5;
+        form.edge_y = 5;
+        let level = dispatch_form(5, 0, form, &[]);
+        assert_eq!(level.held_left.len(), 1);
+        assert!(level.held_ledge.is_empty());
+
+        form.flags_a = 0;
+        assert!(dispatch_form(5, 0, form, &[]).held_ledge.is_empty());
     }
 }

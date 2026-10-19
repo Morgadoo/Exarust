@@ -37,7 +37,9 @@ from 16, 60 to 26, 70 when the seat is 80, then a quad from 11, 35
 to 31, 55 when the grip is 10 and the post is 40. A held form
 then draws a left strip from 0, 30 to 10, 50 at unit 5 and height 80,
 even when bit 0x200 is clear. Mask bits 1 and 2 together add a cap
-from 0, 10 to 10, 30. The flag test after that cap is not in.
+from 0, 10 to 10, 30. Mask bits 1 and 2 together then draw a ledge
+from 10, 0 to 30, 10, unless bit 1 or the owner's bit 1 is set without
+bit 0x800000. The sign flip after that ledge is not in.
 
 ## Scope
 
