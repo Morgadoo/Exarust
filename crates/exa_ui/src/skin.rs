@@ -784,8 +784,10 @@ pub struct TitleDraw {
 /// bit draws a quad past that corner, and a clear tab bit draws the
 /// same corners. A clear hold bit draws none of either. On that band,
 /// a close mark of -4 draws one square, and the band then counts one
-/// call with argument 0. The helper body and the bytes the jump skips
-/// are not in.
+/// call with argument 0. Every dispatch then passes the frame to one
+/// call, restores the saved register, sets the stack to the frame, and
+/// pops the frame. The helper body and the bytes the jump skips are
+/// not in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormDispatch {
     pub span_a: i32,
@@ -841,6 +843,8 @@ pub struct FormDispatch {
     pub held_fold: Vec<SliderQuad>,
     pub band_close: Vec<SliderQuad>,
     pub band_calls: u32,
+    pub frame_calls: u32,
+    pub frame_restored: bool,
     /// Mask forced when the hold bit is clear. The held mask stays separate.
     pub open_mask: u32,
     pub open_calls: u32,
@@ -1705,6 +1709,8 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
     };
     let on_band = on_hold || on_open;
     let band_calls = u32::from(on_band);
+    let frame_calls = 1;
+    let frame_restored = true;
     let band_close = if on_band && place.close_mark == -4 {
         let span = unit.wrapping_shl(2);
         let width = place.width;
@@ -1779,6 +1785,8 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         held_fold,
         band_close,
         band_calls,
+        frame_calls,
+        frame_restored,
         open_mask,
         open_calls,
         open_tab,
@@ -3965,5 +3973,38 @@ mod tests {
         form.flags_d = 0x80;
         form.flags_b = FORM_BOX;
         assert_eq!(dispatch_form(5, 0, form, &[]).band_calls, 0);
+    }
+
+    #[test]
+    fn a_dispatch_restores_the_frame() {
+        let plain = dispatch_form(5, 0, place(0, 0, 0, 0, 0, 0), &[]);
+        assert_eq!(plain.band_calls, 0);
+        assert_eq!(plain.frame_calls, 1);
+        assert!(plain.frame_restored);
+
+        let mut form = place(FORM_HOLD, 0, 0, 0, 0, 0);
+        form.flags_d = 0x80;
+        form.edge_x = 4;
+        form.edge_y = 4;
+        form.room_far_x = 400;
+        form.room_far_y = 80;
+        let band = dispatch_form(5, 0, form, &[]);
+        assert_eq!(band.band_calls, 1);
+        assert_eq!(band.held_fold.len(), 1);
+        assert_eq!(band.frame_calls, 1);
+        assert!(band.frame_restored);
+
+        form.flags_d = 0x10;
+        let other = dispatch_form(5, 0, form, &[]);
+        assert_eq!(other.band_calls, 0);
+        assert_eq!(other.frame_calls, 1);
+        assert!(other.frame_restored);
+
+        form.flags_d = 0x80;
+        form.flags_b = FORM_BOX;
+        let wide = dispatch_form(5, 0, form, &[]);
+        assert_eq!(wide.band_calls, 0);
+        assert_eq!(wide.frame_calls, 1);
+        assert!(wide.frame_restored);
     }
 }

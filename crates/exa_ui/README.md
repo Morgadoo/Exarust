@@ -83,8 +83,10 @@ square from 80, 0 to 100, 20 at unit 5 and width 100. The earlier square
 remains. A mark of 0 or -3, a style that is not that band, and a wide bit
 draw none of this square. On that band the dispatcher counts one call
 with argument 0. A close mark of -4 still counts one, and the square
-remains. A style that is not that band, and a wide bit, count none. The
-bytes the jump skips are not in.
+remains. A style that is not that band, and a wide bit, count none. Every dispatch then passes the frame to one call, restores
+the saved register, sets the stack to the frame, and pops the frame. A held
+band, a wide form, and a style that is not that band each do so. The helper
+body is not in.
 
 ## Scope
 
