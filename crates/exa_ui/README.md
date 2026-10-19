@@ -16,7 +16,9 @@ player's fall to death (`fade`, `DeathFade`: 3 s of game time, under the
 bars; the game crate starts it), and gamma-space compositing for images
 painted on the CPU (`blend`). A draw skin (`skin`) opened with unit 5
 stores spans 10, 5, 10 and 10 and the colour 255, 250, 230, 100 three
-times. The slider, the frame, and the widget dispatcher are not in.
+times. A flat slider at unit 5, place 10, 20 and width 100 stores a thumb
+of 5 at value 0 and of 40 at one half, with pad 10. The scroll bar, the
+frame, and the widget dispatcher are not in.
 
 ## Scope
 
