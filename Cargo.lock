@@ -2337,6 +2337,7 @@ dependencies = [
  "bevy",
  "exa_anim",
  "exa_combat",
+ "exa_formats",
  "exa_physics",
 ]
 
