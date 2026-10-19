@@ -166,7 +166,8 @@ Done (change `clip-portals-and-cross-levels`): a shut door does not load
 the room behind it; an open doorway shows a point only when the view
 crosses its opening (82 × 245 cm, 115 × 290 cm, or 200 × 340 cm); a
 passage loads the named level.
-Done (change `pull-a-hinged-door`): a hinge creaks once its smoothed handle speed is past a squared 0.015. A velocity of 1 gives pitch 0.711. A shut door's pull count rises by 1 up to 20 and falls by 4 while it is held; from 20 the seventh pull unlatches it. Opening shoves the handle 3 cm along the facing. The motor and the sliding door are not in.
+Done (change `pull-a-hinged-door`): a hinge creaks once its smoothed handle speed is past a squared 0.015. A velocity of 1 gives pitch 0.711. A shut door's pull count rises by 1 up to 20 and falls by 4 while it is held; from 20 the seventh pull unlatches it. Opening shoves the handle 3 cm along the facing.
+Done (change `motor-a-hinged-door`): a toggle or an open command aims at (1 − fraction) · range · sign + closed. A plain step is 0.0013 rad when the error and the range are both 1. A fast motor steps 0.005. An open command 0.05 rad short of its aim arrives and ends. A countdown below 2 ends the command after that tick's drive. The sliding door is not in.
 Remaining: the lid in
 the lights' cube faces, terrain gloss textures, fine displacement, the
 original's sky shader, time of day and weather of the outdoor arenas,
