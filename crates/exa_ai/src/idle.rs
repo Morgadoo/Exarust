@@ -21,6 +21,7 @@
 
 use bevy::math::{Vec2, Vec3};
 use exa_combat::condition::{Condition, StateFlags};
+use exa_formats::weapon_record::{self, Holder, RaceWeapons, WeaponRecord};
 use exa_physics::body::{Drive, PIN_GAIN, Ragdoll, WAKE_COUNT};
 
 use crate::hear::{self, Attention};
@@ -554,6 +555,15 @@ pub struct HeldWeapon {
     pub thrust: f32,
 }
 
+/// A held weapon record and the body that holds it, refreshed when a wake finishes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeldSet {
+    pub records: Vec<WeaponRecord>,
+    pub holder: Holder,
+    pub race: RaceWeapons,
+    pub race_index: u8,
+}
+
 /// What the weapon refresh writes when a wake finishes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Hands {
@@ -565,9 +575,22 @@ pub struct Hands {
     pub negative_grip: bool,
     pub reach_cm: f32,
     pub thrust_pref: i32,
+    /// Present when the refresh should hold the weapon records again.
+    pub equip: Option<HeldSet>,
+    /// How many times an unarmed hand weighs its part. Absent when armed.
+    pub hand_mass: Option<f32>,
 }
 
 fn refresh_hands(hands: &mut Hands) {
+    if let Some(set) = hands.equip.as_mut() {
+        let equipped =
+            weapon_record::equip(&mut set.records, &set.holder, &set.race, set.race_index);
+        hands.reach_cm = equipped.reach;
+        hands.thrust_pref = i32::from(equipped.thrust_preference);
+        hands.hand_mass = equipped.hand_mass;
+        return;
+    }
+    hands.hand_mass = None;
     let mut reach = 0.0;
     for weapon in &hands.weapons {
         if weapon.reach_cm > reach {
@@ -740,7 +763,8 @@ fn add_step(value: f32, step: f64) -> f32 {
 /// gains 0.001, plus 0.001·(1 − phase)² while getting up, and the stored
 /// target stays. The dormant flag clears unless the body is held. After 8 s
 /// the clip base gains 0.01 a tick, and at 1 the tone is 1, the target is
-/// the stance factor, the weapons are refreshed, and the flags clear unless
+/// the stance factor, the weapons are refreshed (a held record is held
+/// again, and unarmed hands are weighed), and the flags clear unless
 /// held. The tick that drops the dormant flag tells every person who can
 /// see the body and updates that person's memory from `now_s`. Returns
 /// whether that tick fired.
@@ -1323,6 +1347,8 @@ mod tests {
             negative_grip: false,
             reach_cm: 0.0,
             thrust_pref: -1,
+            equip: None,
+            hand_mass: None,
         };
         rise(sleeper, drive, wake, now, &mut [], &mut hands)
     }
@@ -1510,6 +1536,8 @@ mod tests {
             negative_grip: false,
             reach_cm: 0.0,
             thrust_pref: -1,
+            equip: None,
+            hand_mass: None,
         };
         assert!(rise(
             &mut sleeper,
@@ -1562,6 +1590,8 @@ mod tests {
             negative_grip: false,
             reach_cm: 0.0,
             thrust_pref: -1,
+            equip: None,
+            hand_mass: None,
         };
         rise(
             &mut sleeper,
@@ -1597,6 +1627,8 @@ mod tests {
             negative_grip: false,
             reach_cm: 0.0,
             thrust_pref: -1,
+            equip: None,
+            hand_mass: None,
         };
         rise(
             &mut sleeper,
@@ -1657,6 +1689,8 @@ mod tests {
             negative_grip: false,
             reach_cm: 0.0,
             thrust_pref: -1,
+            equip: None,
+            hand_mass: None,
         };
         assert!(rise(
             &mut sleeper,
@@ -1734,5 +1768,89 @@ mod tests {
         let wide = remember(1 | MEMORY_OPEN, 1 << 20, u32::MAX, 0);
         assert!(wide.updated);
         assert_eq!(wide.word, u32::MAX | MEMORY_OPEN);
+    }
+
+    fn fists() -> WeaponRecord {
+        let mut record = WeaponRecord::build(
+            &weapon_record::Section::FISTS,
+            false,
+            weapon_record::Lengths::hand(-7.21, 10.45),
+            &Holder::AVERAGE,
+        );
+        record.held_balance = -1.0;
+        record.arm_stiffness = 0.0;
+        record
+    }
+
+    fn finishing(equip: HeldSet) -> (Sleeper, Drive, WakeRise, Hands) {
+        let (sleeper, drive) = knocked_out();
+        let wake = WakeRise {
+            clip: 0.995,
+            phase: 0.0,
+            target: 0.0,
+            heard: 0,
+            now_s: 0,
+        };
+        let hands = Hands {
+            bits: 0,
+            race_reach_cm: 1.0,
+            weapons: Vec::new(),
+            negative_grip: false,
+            reach_cm: 0.0,
+            thrust_pref: -1,
+            equip: Some(equip),
+            hand_mass: None,
+        };
+        (sleeper, drive, wake, hands)
+    }
+
+    #[test]
+    fn a_finished_wake_holds_the_weapon_and_weighs_the_hands() {
+        let mut ghoul = fists();
+        let (mut sleeper, mut drive, mut wake, mut hands) = finishing(HeldSet {
+            records: vec![ghoul],
+            holder: Holder::AVERAGE,
+            race: RaceWeapons::HUMAN,
+            race_index: weapon_record::race::GHOUL,
+        });
+        rise(
+            &mut sleeper,
+            &mut drive,
+            &mut wake,
+            8_001,
+            &mut [],
+            &mut hands,
+        );
+        ghoul = hands.equip.unwrap().records[0];
+        assert_eq!(ghoul.held_balance, 1.0);
+        assert_eq!(ghoul.arm_stiffness, 1.0);
+        assert_eq!(hands.hand_mass, Some(2.0));
+        assert_eq!(hands.reach_cm, 50.0);
+        assert_eq!(hands.thrust_pref, 10);
+
+        let (mut sleeper, mut drive, mut wake, mut hands) = finishing(HeldSet {
+            records: vec![fists()],
+            holder: Holder::AVERAGE,
+            race: RaceWeapons {
+                unarmed_reach: 150.0,
+                swing_turn: 1.0,
+                blend: 1.0,
+                claws: 1,
+            },
+            race_index: weapon_record::race::FAEL,
+        });
+        rise(
+            &mut sleeper,
+            &mut drive,
+            &mut wake,
+            8_001,
+            &mut [],
+            &mut hands,
+        );
+        let fael = hands.equip.unwrap().records[0];
+        assert_eq!(fael.arm_stiffness, 0.5);
+        assert_eq!(hands.hand_mass, Some(4.0));
+        assert_eq!(hands.reach_cm, 150.0);
+        assert_eq!(hands.thrust_pref, 10);
     }
 }

@@ -60,3 +60,10 @@ On the tick that drops the dormant flag, each seeing person SHALL update memory,
 #### Scenario: Who can see stores a word
 - **WHEN** a knocked-out body is ticked at 1501 ms at second 100 with a seeing person who needs two hits and whose word is 0, a seeing person already counting 1 with a 2 second delay, a seeing person already counting bit 1 who is witnessed as bit 2, a seeing person whose last use is second 1000, a person who cannot see, and a non-person who can, then ticked at 1502 ms, and a knocked-out body is ticked at second 1009 and another at second 1010 with a ten-second cooldown and a last use of 1000 that needs two hits, and the shipped update is asked for a never-again nibble, an activated stamp one second inside a ten-second window, that stamp at the window with a 2 second delay, a future activated stamp, the held-off flag, and a never-again window at the last second with a 2 second delay
 - **THEN** the short count is 1 and still counting, the met need stamps 102 with the high bit, the second bit stamps 100 with the high bit, the last use of 1000 stays, the person who cannot see and the non-person stay, the later tick leaves the count, second 1009 stays at 1000, second 1010 counts 1, never-again stays, the inside stamp refreshes to 109 with the high bit, the window re-arms at 112, the future stamp stays and reports updated, held-off stays, and the last second refreshes to itself with the high bit
+
+### Requirement: Hold and weigh
+When the clip base reaches 1 with a held record, that record SHALL be held again. A ghoul's arm stiffness SHALL be 1 and its hands SHALL weigh twice. A Fael's unarmed hands SHALL weigh four times, reach 150 cm, and set arm stiffness to one half.
+
+#### Scenario: A ghoul weighs twice and a Fael weighs four times
+- **WHEN** a knocked-out body whose clip base is 0.995 is ticked at 8001 ms holding fists as a ghoul, and another is ticked holding fists as a Fael whose unarmed reach is 150 cm
+- **THEN** the ghoul's held balance is 1, its arm stiffness is 1, its hands weigh twice, and its reach is 50 cm, and the Fael's hands weigh four times, its reach is 150 cm, and its arm stiffness is one half
