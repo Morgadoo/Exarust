@@ -11,7 +11,8 @@
 //! plus an offset. An aim snap copies the body's place, takes its heading's
 //! yaw, and asks for the idle stance. A searched path is followed when it
 //! has two points and is forced, or when its ends are more than 150 cm
-//! apart. The other phases are not in this slice.
+//! apart. In a scene, the goal is 100 cm past the ground point's
+//! projection on that path. The other phases are not in this slice.
 
 use bevy::math::Vec2;
 use bevy::math::Vec3;
@@ -258,6 +259,104 @@ pub fn start_follow(points: &[Vec3], forced: bool) -> bool {
         return false;
     }
     forced || (points[0] - points[points.len() - 1]).length() > 150.0
+}
+
+/// A point 100 cm past where the ground point projects onto a path.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PathCarrot {
+    /// End index of the nearest segment. Segments start at 1.
+    pub segment: u32,
+    /// Unclamped horizontal parameter of that segment.
+    pub fraction: f32,
+    /// The point 100 cm further along, or none when that step has no length.
+    pub goal: Option<Vec3>,
+}
+
+/// Horizontal length below this is not a segment.
+const SEGMENT_EPS: f32 = f32::from_bits(0x33ff_ffd7);
+const CARROT_CM: f32 = 100.0;
+
+/// Project `ground` onto `points` and step 100 cm ahead.
+///
+/// Fewer than two points has no goal. A segment with no horizontal length
+/// is skipped. The stored fraction is unclamped. The 100 cm is measured
+/// from that foot, and spills onto later segments. A step that lands on a
+/// joint has no goal. The cursor stays the projection.
+pub fn carrot(points: &[Vec3], ground: Vec3) -> PathCarrot {
+    if points.len() < 2 {
+        return PathCarrot {
+            segment: 0,
+            fraction: 0.0,
+            goal: None,
+        };
+    }
+    let mut best = f32::MAX;
+    let mut segment = 1u32;
+    let mut fraction = 0.0;
+    let mut chosen = 0.0;
+    let mut found = false;
+    for k in 1..points.len() {
+        let start = points[k - 1];
+        let v = points[k] - start;
+        let horizontal = v.x * v.x + v.z * v.z;
+        if horizontal < SEGMENT_EPS {
+            continue;
+        }
+        let t = (v.x * (ground.x - start.x) + v.z * (ground.z - start.z)) / horizontal;
+        let clamped = t.clamp(0.0, 1.0);
+        let projected = start + v * clamped;
+        let distance = (projected - ground).length_squared();
+        if distance < best {
+            best = distance;
+            segment = k as u32;
+            fraction = t;
+            chosen = horizontal;
+            found = true;
+        }
+    }
+    if !found || chosen < SEGMENT_EPS {
+        return PathCarrot {
+            segment,
+            fraction,
+            goal: None,
+        };
+    }
+    let length = chosen.sqrt();
+    let (end, step) = if length > fraction * length + CARROT_CM {
+        (segment as usize, (fraction * length + CARROT_CM) / length)
+    } else {
+        let mut left = CARROT_CM - (1.0 - fraction) * length;
+        let mut end = points.len() - 1;
+        let mut step = 1.0;
+        for k in (segment as usize + 1)..points.len() {
+            let v = points[k] - points[k - 1];
+            let horizontal = v.x * v.x + v.z * v.z;
+            if horizontal < SEGMENT_EPS {
+                continue;
+            }
+            let span = horizontal.sqrt();
+            if left < span {
+                step = left / span;
+                end = k;
+                break;
+            }
+            left -= span;
+        }
+        (end, step)
+    };
+    if step.abs() < SEGMENT_EPS {
+        return PathCarrot {
+            segment,
+            fraction,
+            goal: None,
+        };
+    }
+    let start = points[end - 1];
+    PathCarrot {
+        segment,
+        fraction,
+        goal: Some(start + (points[end] - start) * step),
+    }
 }
 
 #[cfg(test)]
@@ -674,5 +773,55 @@ mod tests {
             false
         ));
         assert!(start_follow(&[Vec3::ZERO, Vec3::ZERO], true));
+    }
+
+    #[test]
+    fn a_carrot_is_one_hundred_centimetres_past_the_projection() {
+        let behind = carrot(
+            &[Vec3::ZERO, Vec3::new(0.0, 0.0, 200.0)],
+            Vec3::new(0.0, 0.0, -50.0),
+        );
+        assert_eq!(behind.segment, 1);
+        assert_eq!(behind.fraction, -0.25);
+        assert_eq!(behind.goal, Some(Vec3::new(0.0, 0.0, 50.0)));
+
+        let corner = carrot(
+            &[
+                Vec3::ZERO,
+                Vec3::new(0.0, 0.0, 80.0),
+                Vec3::new(0.0, 40.0, 280.0),
+            ],
+            Vec3::new(0.0, 0.0, 80.0),
+        );
+        assert_eq!(corner.segment, 1);
+        assert_eq!(corner.fraction, 1.0);
+        assert_eq!(corner.goal, Some(Vec3::new(0.0, 20.0, 180.0)));
+
+        let raised = carrot(
+            &[
+                Vec3::ZERO,
+                Vec3::new(10.0, 0.0, 0.0),
+                Vec3::new(10.0, 100.0, 0.0),
+                Vec3::new(10.0, 100.0, 10.0),
+            ],
+            Vec3::new(10.0, 100.0, 0.0),
+        );
+        assert_eq!(raised.segment, 3);
+        assert_eq!(raised.fraction, 0.0);
+        assert_eq!(raised.goal, Some(Vec3::new(10.0, 100.0, 10.0)));
+
+        let joint = carrot(
+            &[
+                Vec3::ZERO,
+                Vec3::new(0.0, 0.0, 100.0),
+                Vec3::new(0.0, 0.0, 200.0),
+            ],
+            Vec3::ZERO,
+        );
+        assert_eq!(joint.segment, 1);
+        assert_eq!(joint.fraction, 0.0);
+        assert_eq!(joint.goal, None);
+
+        assert_eq!(carrot(&[Vec3::ZERO], Vec3::ZERO).goal, None);
     }
 }
