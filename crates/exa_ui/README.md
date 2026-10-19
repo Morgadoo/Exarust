@@ -149,7 +149,9 @@ cross draws four line segments around a point; at unit 5 and point 10, 20 its
 corners are (8, 15), (13, 15), (8, 25), (13, 25), (6, 18), (6, 23), (16, 18),
 (16, 23). The control-code switch returns the close band for -4, -6 and -5 and
 the rail squares for -9, -10, -13 and -14; at unit 5 and trim 2, code -4 at
-x 100 returns 74, 4, 95, 26.
+x 100 returns 74, 4, 95, 26. Style bits 0x30 and 0xc0 independently select two
+textured frames, the second inset by one; at place 10, 20 of size 100 by 80 they
+run to 110, 100 and 109, 99.
 
 ## Scope
 

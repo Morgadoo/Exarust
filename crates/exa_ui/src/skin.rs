@@ -3200,6 +3200,72 @@ pub fn control_rect(place: ControlPlace, code: i32, metrics: SkinMetrics) -> Opt
     }
 }
 
+/// The three texture slots the frames read, kept by their byte offsets.
+pub const SKIN_FRAME_A: u32 = 0x9c;
+pub const SKIN_FRAME_B: u32 = 0xb4;
+pub const SKIN_FRAME_C: u32 = 0xb8;
+
+/// A place for the two frame switches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkinFramePlace {
+    pub x: i16,
+    pub y: i16,
+    pub w: i16,
+    pub h: i16,
+    pub style: u32,
+}
+
+/// One textured frame: its rectangle and the two texture slots.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SkinFrameDraw {
+    pub rect: [f32; 4],
+    pub first: u32,
+    pub second: u32,
+}
+
+/// Selects the parent skin's two frames from the style word.
+pub fn skin_frames(place: SkinFramePlace) -> Vec<SkinFrameDraw> {
+    let x = i64::from(place.x);
+    let y = i64::from(place.y);
+    let w = i64::from(place.w);
+    let h = i64::from(place.h);
+    let outer = [(x) as f32, (y) as f32, (x + w) as f32, (y + h) as f32];
+    let inner = [
+        (x + 1) as f32,
+        (y + 1) as f32,
+        (x + w - 1) as f32,
+        (y + h - 1) as f32,
+    ];
+    let mut frames = Vec::new();
+    match place.style & 0x30 {
+        0x10 => frames.push(SkinFrameDraw {
+            rect: outer,
+            first: SKIN_FRAME_A,
+            second: SKIN_FRAME_C,
+        }),
+        0x20 => frames.push(SkinFrameDraw {
+            rect: outer,
+            first: SKIN_FRAME_B,
+            second: SKIN_FRAME_A,
+        }),
+        _ => {}
+    }
+    match place.style & 0xc0 {
+        0x40 => frames.push(SkinFrameDraw {
+            rect: inner,
+            first: SKIN_FRAME_A,
+            second: SKIN_FRAME_C,
+        }),
+        0x80 => frames.push(SkinFrameDraw {
+            rect: inner,
+            first: SKIN_FRAME_B,
+            second: SKIN_FRAME_A,
+        }),
+        _ => {}
+    }
+    frames
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6257,6 +6323,43 @@ mod tests {
         assert_eq!(control_rect(place, -14, metrics), Some([71, 11, 90, 30]));
         assert_eq!(control_rect(place, -1, metrics), None);
         assert_eq!(control_rect(place, 4, metrics), None);
+    }
+
+    #[test]
+    fn skin_frames_select_both_groups() {
+        let place = |style: u32| SkinFramePlace {
+            x: 10,
+            y: 20,
+            w: 100,
+            h: 80,
+            style,
+        };
+
+        let first = skin_frames(place(0x10));
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].rect, [10.0, 20.0, 110.0, 100.0]);
+        assert_eq!((first[0].first, first[0].second), (0x9c, 0xb8));
+
+        let swap = skin_frames(place(0x20));
+        assert_eq!(swap[0].rect, [10.0, 20.0, 110.0, 100.0]);
+        assert_eq!((swap[0].first, swap[0].second), (0xb4, 0x9c));
+
+        let inner = skin_frames(place(0x40));
+        assert_eq!(inner[0].rect, [11.0, 21.0, 109.0, 99.0]);
+        assert_eq!((inner[0].first, inner[0].second), (0x9c, 0xb8));
+
+        let inner_swap = skin_frames(place(0x80));
+        assert_eq!(inner_swap[0].rect, [11.0, 21.0, 109.0, 99.0]);
+        assert_eq!((inner_swap[0].first, inner_swap[0].second), (0xb4, 0x9c));
+
+        let both = skin_frames(place(0x50));
+        assert_eq!(both.len(), 2);
+        assert_eq!(both[0].rect, [10.0, 20.0, 110.0, 100.0]);
+        assert_eq!(both[1].rect, [11.0, 21.0, 109.0, 99.0]);
+
+        assert!(skin_frames(place(0)).is_empty());
+        assert!(skin_frames(place(0x30)).is_empty());
+        assert!(skin_frames(place(0xc0)).is_empty());
     }
 
     #[test]
