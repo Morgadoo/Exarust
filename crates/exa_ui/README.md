@@ -72,7 +72,10 @@ bit draw none. A clear hold bit with the tab bit draws the wider strip, from
 70, 60 to 90, 80 at height 100. A clear tab bit draws a narrower strip from 90, 50
 to 100, 70. A set tab bit draws the wider strip instead. A clear hold bit
 with a clear tab bit draws the wider clear strip, from 80, 60 to 90, 80 at
-height 100. The next quad is not in.
+height 100. Both tab arms then draw a quad from 70, 70 to 90, 80 at unit 5,
+width 100 and height 80. A set tab bit still draws it. A missing bit draws
+none. A clear hold bit draws the wider quad, from 60, 80 to 80, 90 at height
+100. The other arm is not in.
 
 ## Scope
 
