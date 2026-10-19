@@ -85,8 +85,10 @@ draw none of this square. On that band the dispatcher counts one call
 with argument 0. A close mark of -4 still counts one, and the square
 remains. A style that is not that band, and a wide bit, count none. Every dispatch then passes the frame to one call, restores
 the saved register, sets the stack to the frame, and pops the frame. A held
-band, a wide form, and a style that is not that band each do so. The helper
-body is not in.
+band, a wide form, and a style that is not that band each do so. The helper then releases one string slot that starts
+empty, and an empty slot is not freed. A held band, a wide form, and a
+style that is not that band each release it once. The bytes the jump skips
+do not run.
 
 ## Scope
 
