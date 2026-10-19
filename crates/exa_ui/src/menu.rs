@@ -45,6 +45,47 @@ pub fn select_menu_class(index: i32, sound_flag: i32) -> ClassSelect {
     }
 }
 
+/// The skill tooltip's table row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillTipPlace {
+    pub x: i32,
+    pub y: i32,
+    pub icon: u64,
+    pub text: u64,
+}
+
+/// The tooltip's icon position, label rectangle and counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillTipDraw {
+    pub icon_at: [i32; 2],
+    pub label: [i32; 4],
+    pub icon: u64,
+    pub text: u64,
+    pub begin_calls: u32,
+    pub bind_calls: u32,
+    pub setup_calls: u32,
+    pub draw_calls: u32,
+}
+
+/// Draws the skill tooltip's icon at two by five units and its label beneath.
+pub fn draw_skill_tip(place: SkillTipPlace, unit: i32) -> SkillTipDraw {
+    SkillTipDraw {
+        icon_at: [unit.wrapping_mul(2), unit.wrapping_mul(5)],
+        label: [
+            place.x.wrapping_sub(unit.wrapping_mul(4)),
+            place.y,
+            unit.wrapping_mul(6),
+            unit.wrapping_mul(2),
+        ],
+        icon: place.icon,
+        text: place.text,
+        begin_calls: 1,
+        bind_calls: 1,
+        setup_calls: 2,
+        draw_calls: 2,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,5 +136,30 @@ mod tests {
         assert!(!select_menu_class(-1, 10).played);
         assert!(!select_menu_class(4, 0).played);
         assert_eq!(select_menu_class(0, 0).result, 3);
+    }
+
+    #[test]
+    fn the_skill_tip_places_its_icon_and_label() {
+        let tip = draw_skill_tip(
+            SkillTipPlace {
+                x: 100,
+                y: 50,
+                icon: 7,
+                text: 9,
+            },
+            5,
+        );
+        assert_eq!(tip.icon_at, [10, 25]);
+        assert_eq!(tip.label, [80, 50, 30, 10]);
+        assert_eq!((tip.icon, tip.text), (7, 9));
+        assert_eq!(
+            (
+                tip.begin_calls,
+                tip.bind_calls,
+                tip.setup_calls,
+                tip.draw_calls
+            ),
+            (1, 1, 2, 2)
+        );
     }
 }
