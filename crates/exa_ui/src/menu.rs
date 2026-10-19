@@ -28,6 +28,23 @@ pub fn menu_key_close(mask: u16, base: impl FnOnce() -> i32) -> MenuKeyClose {
     }
 }
 
+/// The class-select result: the stored index, whether its sound played, and the return.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClassSelect {
+    pub index: i32,
+    pub played: bool,
+    pub result: i32,
+}
+
+/// Stores the class index and plays its sound when both it and the flag are positive.
+pub fn select_menu_class(index: i32, sound_flag: i32) -> ClassSelect {
+    ClassSelect {
+        index,
+        played: index > 0 && sound_flag > 0,
+        result: 3,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -65,5 +82,18 @@ mod tests {
         let wide = menu_key_close(0xffff, || 7);
         assert!(wide.closed);
         assert_eq!(wide.result, 1);
+    }
+
+    #[test]
+    fn the_class_select_guards_its_sound() {
+        let picked = select_menu_class(4, 10);
+        assert_eq!(picked.index, 4);
+        assert!(picked.played);
+        assert_eq!(picked.result, 3);
+
+        assert!(!select_menu_class(0, 10).played);
+        assert!(!select_menu_class(-1, 10).played);
+        assert!(!select_menu_class(4, 0).played);
+        assert_eq!(select_menu_class(0, 0).result, 3);
     }
 }

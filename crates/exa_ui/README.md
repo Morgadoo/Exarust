@@ -171,7 +171,9 @@ otherwise. The second slider draws its track at x + 1, y + 2 with its thumb one
 pixel lower, or a filled bar. The scroll region clips at the origin plus the
 inset and replays its quads, visible children and optional detail. The main
 menu quantises its clock to 1/135 and scales it by 1/8. The journal and
-character-loot close override closes on a mask carrying both 0x2000 and 0x2.
+character-loot close override closes on a mask carrying both 0x2000 and 0x2. The
+class-select screen stores its index and returns 3, playing a sound only when
+the index and flag are positive.
 
 ## Scope
 
