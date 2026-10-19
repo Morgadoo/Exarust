@@ -81,7 +81,10 @@ bottom quad instead. A clear tab bit draws the same corners, and a clear
 hold bit draws none of either. On that band, a close mark of -4 draws one
 square from 80, 0 to 100, 20 at unit 5 and width 100. The earlier square
 remains. A mark of 0 or -3, a style that is not that band, and a wide bit
-draw none of this square. The call after that square is not in.
+draw none of this square. On that band the dispatcher counts one call
+with argument 0. A close mark of -4 still counts one, and the square
+remains. A style that is not that band, and a wide bit, count none. The
+bytes the jump skips are not in.
 
 ## Scope
 
