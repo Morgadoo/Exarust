@@ -69,7 +69,10 @@ A clear hold bit draws the wider bar, from 40, 80 to 60, 90 at height 100.
 Mask bits 4 and 8 together, with the tab bit, then draw a strip from 80, 50
 to 100, 70 at unit 5, width 100 and height 80. A missing bit and a clear tab
 bit draw none. A clear hold bit with the tab bit draws the wider strip, from
-70, 60 to 90, 80 at height 100. The clear-tab arm is not in.
+70, 60 to 90, 80 at height 100. A clear tab bit draws a narrower strip from 90, 50
+to 100, 70. A set tab bit draws the wider strip instead. A clear hold bit
+with a clear tab bit draws the wider clear strip, from 80, 60 to 90, 80 at
+height 100. The next quad is not in.
 
 ## Scope
 
