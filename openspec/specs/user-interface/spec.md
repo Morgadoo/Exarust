@@ -252,3 +252,10 @@ Bit 0x200 on a held form that is not wide SHALL draw one tab. A grip of 10, 20 a
 #### Scenario: A grip of 10, 20 sits at 16, 30
 - **WHEN** unit 5 dispatches a held form that is not wide, with style bits 0x80, bit 0x200, and a grip of 10, 20
 - **THEN** the tab runs from 16, 30 to 26, 40
+
+### Requirement: Lower tab
+The same bit SHALL then draw a lower tab from the seat. A seat of 80 at unit 5 SHALL sit from 16, 60 to 26, 70. Mask bits 4 and 8 together SHALL raise it so the top is 65. A clear bit 0x200 and a clear hold bit SHALL draw none. The anchor after that lower tab is not in.
+
+#### Scenario: A seat of 80 sits at 16, 60
+- **WHEN** unit 5 dispatches a held form that is not wide, with style bits 0x80, bit 0x200, a grip of 10, and a seat of 80
+- **THEN** the lower tab runs from 16, 60 to 26, 70

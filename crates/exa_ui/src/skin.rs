@@ -615,6 +615,8 @@ pub struct DispatchPlace {
     /// The tab's own x and y, before the unit is added.
     pub grip_x: i32,
     pub grip_y: i32,
+    /// The y the lower tab hangs from.
+    pub seat_y: i32,
 }
 
 /// One corner of the backdrop, with its sample bits.
@@ -639,8 +641,8 @@ pub struct TitleDraw {
 /// shift, the shown children, the title, the corners, the edge bars, the
 /// wide top, the left side, the bottom, the right side, the ink copy,
 /// the square drawn when the close mark is -4, the hold-bit edge mask,
-/// and the bar and tab that follow it. The next anchor after that tab
-/// is not in.
+/// and the bar, the tab, and the lower tab that follow it. The anchor
+/// after that lower tab is not in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormDispatch {
     pub span_a: i32,
@@ -670,6 +672,7 @@ pub struct FormDispatch {
     pub edge_mask: u32,
     pub held_bar: Vec<SliderQuad>,
     pub held_tab: Vec<SliderQuad>,
+    pub held_lower: Vec<SliderQuad>,
 }
 
 fn edge_mask(unit: i32, place: &DispatchPlace) -> u32 {
@@ -1079,6 +1082,25 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
     } else {
         Vec::new()
     };
+    let held_lower = if on_hold && (place.flags_b & FORM_TAB) == FORM_TAB {
+        let extra = (f64::from(unit) * f64::from_bits(TAB_SCALE)).round_ties_even() as i32;
+        let base = place.grip_x.wrapping_add(extra);
+        let drop = if (edge_mask & 0xc) == 0xc {
+            unit.wrapping_mul(3)
+        } else {
+            unit.wrapping_shl(1)
+        };
+        let anchor = place.seat_y.wrapping_sub(drop);
+        let x0 = base.wrapping_add(unit);
+        let x1 = base.wrapping_add(unit.wrapping_mul(3));
+        let y0 = anchor.wrapping_sub(unit.wrapping_shl(1));
+        vec![quad(
+            HELD_TAB,
+            [(x0, y0), (x0, anchor), (x1, anchor), (x1, y0)],
+        )]
+    } else {
+        Vec::new()
+    };
     FormDispatch {
         span_a,
         span_b,
@@ -1112,6 +1134,7 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         edge_mask,
         held_bar,
         held_tab,
+        held_lower,
     }
 }
 
@@ -1693,6 +1716,7 @@ mod tests {
             owner_flags: 0,
             grip_x: 0,
             grip_y: 0,
+            seat_y: 0,
         }
     }
 
@@ -2141,5 +2165,42 @@ mod tests {
         form.flags_b = FORM_TAB;
         form.flags_a = 0;
         assert!(dispatch_form(5, 0, form, &[]).held_tab.is_empty());
+    }
+
+    #[test]
+    fn a_dispatch_draws_the_lower_tab() {
+        let mut form = place(FORM_HOLD, FORM_TAB, 0, 0, 0, 0);
+        form.flags_d = 0x80;
+        form.edge_x = 5;
+        form.edge_y = 5;
+        form.room_far_x = 400;
+        form.room_far_y = 400;
+        form.grip_x = 10;
+        form.seat_y = 80;
+        let drawn = dispatch_form(5, 0, form, &[]);
+        assert_eq!(drawn.held_tab.len(), 1);
+        assert_eq!(drawn.held_lower.len(), 1);
+        assert_eq!(drawn.held_lower[0].sample, HELD_TAB);
+        assert_eq!(
+            drawn.held_lower[0].corners,
+            [(16, 60), (16, 70), (26, 70), (26, 60)]
+        );
+
+        form.edge_x = 4;
+        form.edge_y = 4;
+        form.room_far_x = 100;
+        form.room_far_y = 80;
+        let raised = dispatch_form(5, 0, form, &[]);
+        assert_eq!(raised.edge_mask & 0xc, 0xc);
+        assert_eq!(
+            raised.held_lower[0].corners,
+            [(16, 55), (16, 65), (26, 65), (26, 55)]
+        );
+
+        form.flags_b = 0;
+        assert!(dispatch_form(5, 0, form, &[]).held_lower.is_empty());
+        form.flags_b = FORM_TAB;
+        form.flags_a = 0;
+        assert!(dispatch_form(5, 0, form, &[]).held_lower.is_empty());
     }
 }
