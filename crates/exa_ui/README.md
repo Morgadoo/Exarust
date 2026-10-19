@@ -105,7 +105,13 @@ place 10, 20, draws (10, 40), (10, 20), (30, 20), (30, 40) with the sample
 0.75, 0.8, 0.75, 1, then 0.85, 1, 0.85, 0.8. Flag 0x40 binds the second
 sample, 0.85, 0.8, 0.85, 1, then 0.95, 1, 0.95, 0.8, and draws the corners
 again. Flag 0x10 selects the first ink, mode 0x10000 the second with alpha
-255, and any other word the third.
+255, and any other word the third. A bevel at place 10, 20 of size 100 by 80
+fills 12, 22 to 108, 98 as two quads with a hard seam at 60, borders 11.5,
+21.5 to 108.5, 98.5 as six lines, and outlines 10.5, 20.5 to 109.5, 99.5 as
+four lines. Fill stops are 0.6 and 0.4, border stops 0.65 and 0.35, the left
+seam is 60.5 and the right 60. Bit 0x40 selects raised, else bit 0x10 pressed,
+else idle. Three begins, twelve binds and three ends are counted. The shipped
+inks make raised and idle transparent and pressed black at alpha 0xE0.
 
 ## Scope
 

@@ -2099,6 +2099,190 @@ pub fn draw_line_chip(unit: i32, x: i16, y: i16, flag: u32, inks: [[u8; 4]; 3]) 
     }
 }
 
+/// One arm of a bevel: two fill inks, two border inks and one outline ink.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BevelArm {
+    pub fill: [[u8; 4]; 2],
+    pub border: [[u8; 4]; 2],
+    pub outline: [u8; 4],
+}
+
+/// The raised, pressed and idle arms of a bevel box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BevelInk {
+    pub raised: BevelArm,
+    pub pressed: BevelArm,
+    pub idle: BevelArm,
+}
+
+/// The shipped line-class inks: only the pressed arm shades, black at alpha 0xE0.
+pub const BEVEL_INK: BevelInk = BevelInk {
+    raised: BevelArm {
+        fill: [[0, 0, 0, 0], [0, 0, 0, 0]],
+        border: [[0, 0, 0, 0], [0, 0, 0, 0]],
+        outline: [0, 0, 0, 0],
+    },
+    pressed: BevelArm {
+        fill: [[0, 0, 0, 0xe0], [0, 0, 0, 0xe0]],
+        border: [[0, 0, 0, 0xe0], [0, 0, 0, 0xe0]],
+        outline: [0, 0, 0, 0xe0],
+    },
+    idle: BevelArm {
+        fill: [[0, 0, 0, 0], [0, 0, 0, 0]],
+        border: [[0, 0, 0, 0], [0, 0, 0, 0]],
+        outline: [0, 0, 0, 0],
+    },
+};
+
+/// A bevel place. Bit 0x40 of the state selects raised, else bit 0x10 pressed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BevelPlace {
+    pub x: i16,
+    pub y: i16,
+    pub w: i16,
+    pub h: i16,
+    pub state: u32,
+}
+
+/// Four corners with their inks.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InkQuad {
+    pub corners: [(f32, f32); 4],
+    pub inks: [[u8; 4]; 4],
+}
+
+/// A segment with its end inks.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InkLine {
+    pub ends: [(f32, f32); 2],
+    pub inks: [[u8; 4]; 2],
+}
+
+/// Two fill quads, six border lines and four outline lines.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BevelBox {
+    pub fill: [InkQuad; 2],
+    pub border: [InkLine; 6],
+    pub outline: [InkLine; 4],
+    pub begins: u32,
+    pub binds: u32,
+    pub ends: u32,
+}
+
+fn mix_ink(a: [u8; 4], b: [u8; 4], t: f32) -> [u8; 4] {
+    let mut out = [0; 4];
+    for (slot, (from, to)) in out.iter_mut().zip(a.iter().zip(b.iter())) {
+        let value = f32::from(*from) + (f32::from(*to) - f32::from(*from)) * t;
+        *slot = value.round_ties_even().clamp(0.0, 255.0) as u8;
+    }
+    out
+}
+
+/// Draws the bevel box. The fill insets by two pixels, the border and the
+/// outline by one, then each line moves in by half a pixel.
+pub fn draw_bevel(place: BevelPlace, ink: &BevelInk) -> BevelBox {
+    let arm = if (place.state & 0x40) > 0 {
+        &ink.raised
+    } else if (place.state & 0x10) > 0 {
+        &ink.pressed
+    } else {
+        &ink.idle
+    };
+    let x = i64::from(place.x);
+    let y = i64::from(place.y);
+    let w = i64::from(place.w);
+    let h = i64::from(place.h);
+
+    let fx0 = (x + 2) as f32;
+    let fy0 = (y + 2) as f32;
+    let fx1 = (x + w - 2) as f32;
+    let fy1 = (y + h - 2) as f32;
+    let fmid = (fy0 - fy1) * 0.5 + fy1;
+    let fill_a = arm.fill[0];
+    let fill_b = arm.fill[1];
+    let m60 = mix_ink(fill_a, fill_b, 0.6);
+    let m40 = mix_ink(fill_a, fill_b, 0.4);
+    let fill = [
+        InkQuad {
+            corners: [(fx1, fy0), (fx0, fy0), (fx0, fmid), (fx1, fmid)],
+            inks: [fill_b, fill_b, m60, m60],
+        },
+        InkQuad {
+            corners: [(fx1, fmid), (fx0, fmid), (fx0, fy1), (fx1, fy1)],
+            inks: [fill_a, fill_a, m40, m40],
+        },
+    ];
+
+    let bx0 = (x + 1) as f32 + 0.5;
+    let by0 = (y + 1) as f32 + 0.5;
+    let bx1 = (x + w - 1) as f32 - 0.5;
+    let by1 = (y + h - 1) as f32 - 0.5;
+    let bmid = (by0 - by1) * 0.5 + by1;
+    let border_a = arm.border[0];
+    let border_b = arm.border[1];
+    let m65 = mix_ink(border_a, border_b, 0.65);
+    let m35 = mix_ink(border_a, border_b, 0.35);
+    let border = [
+        InkLine {
+            ends: [(bx1, by0), (bx0, by0)],
+            inks: [border_b, border_b],
+        },
+        InkLine {
+            ends: [(bx0, by0), (bx0, bmid + 0.5)],
+            inks: [border_b, m65],
+        },
+        InkLine {
+            ends: [(bx0, bmid + 0.5), (bx0, by1)],
+            inks: [m35, border_a],
+        },
+        InkLine {
+            ends: [(bx0, by1), (bx1, by1)],
+            inks: [border_a, border_a],
+        },
+        InkLine {
+            ends: [(bx1, by1), (bx1, bmid)],
+            inks: [border_a, m35],
+        },
+        InkLine {
+            ends: [(bx1, bmid), (bx1, by0)],
+            inks: [m65, border_b],
+        },
+    ];
+
+    let ox0 = x as f32 + 0.5;
+    let oy0 = y as f32 + 0.5;
+    let ox1 = (x + w) as f32 - 0.5;
+    let oy1 = (y + h) as f32 - 0.5;
+    let outline_ink = arm.outline;
+    let outline = [
+        InkLine {
+            ends: [(ox1, oy0), (ox0, oy0)],
+            inks: [outline_ink, outline_ink],
+        },
+        InkLine {
+            ends: [(ox0, oy0), (ox0, oy1)],
+            inks: [outline_ink, outline_ink],
+        },
+        InkLine {
+            ends: [(ox0, oy1), (ox1, oy1)],
+            inks: [outline_ink, outline_ink],
+        },
+        InkLine {
+            ends: [(ox1, oy1), (ox1, oy0)],
+            inks: [outline_ink, outline_ink],
+        },
+    ];
+
+    BevelBox {
+        fill,
+        border,
+        outline,
+        begins: 3,
+        binds: 12,
+        ends: 3,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4525,5 +4709,171 @@ mod tests {
         assert_eq!(both.ink_index, 1);
         assert_eq!(both.colour, [5, 6, 7, 255]);
         assert_eq!(both.draw_calls, 2);
+    }
+
+    fn bevel_arm(fill: [[u8; 4]; 2], border: [[u8; 4]; 2], outline: [u8; 4]) -> BevelArm {
+        BevelArm {
+            fill,
+            border,
+            outline,
+        }
+    }
+
+    #[test]
+    fn a_bevel_box_draws_two_fills_six_border_lines_and_four_outline_lines() {
+        let ink = BevelInk {
+            raised: bevel_arm([[200; 4], [201; 4]], [[210; 4], [211; 4]], [212; 4]),
+            pressed: bevel_arm([[100; 4], [101; 4]], [[110; 4], [111; 4]], [112; 4]),
+            idle: bevel_arm(
+                [[0, 0, 0, 0], [100, 100, 100, 100]],
+                [[10, 10, 10, 10], [110, 110, 110, 110]],
+                [7, 7, 7, 7],
+            ),
+        };
+        let bevel = draw_bevel(
+            BevelPlace {
+                x: 10,
+                y: 20,
+                w: 100,
+                h: 80,
+                state: 0,
+            },
+            &ink,
+        );
+        assert_eq!(bevel.begins, 3);
+        assert_eq!(bevel.binds, 12);
+        assert_eq!(bevel.ends, 3);
+
+        let fill0: [(f32, f32); 4] = [(108.0, 22.0), (12.0, 22.0), (12.0, 60.0), (108.0, 60.0)];
+        let fill1: [(f32, f32); 4] = [(108.0, 60.0), (12.0, 60.0), (12.0, 98.0), (108.0, 98.0)];
+        for ((gx, gy), (wx, wy)) in bevel.fill[0].corners.iter().zip(fill0) {
+            assert_eq!(gx.to_bits(), wx.to_bits());
+            assert_eq!(gy.to_bits(), wy.to_bits());
+        }
+        for ((gx, gy), (wx, wy)) in bevel.fill[1].corners.iter().zip(fill1) {
+            assert_eq!(gx.to_bits(), wx.to_bits());
+            assert_eq!(gy.to_bits(), wy.to_bits());
+        }
+        assert_eq!(bevel.fill[0].inks, [[100; 4], [100; 4], [60; 4], [60; 4]]);
+        assert_eq!(
+            bevel.fill[1].inks,
+            [[0, 0, 0, 0], [0, 0, 0, 0], [40; 4], [40; 4]]
+        );
+
+        let border: [(f32, f32); 12] = [
+            (108.5, 21.5),
+            (11.5, 21.5),
+            (11.5, 21.5),
+            (11.5, 60.5),
+            (11.5, 60.5),
+            (11.5, 98.5),
+            (11.5, 98.5),
+            (108.5, 98.5),
+            (108.5, 98.5),
+            (108.5, 60.0),
+            (108.5, 60.0),
+            (108.5, 21.5),
+        ];
+        for (line, pair) in bevel.border.iter().zip(border.chunks(2)) {
+            for ((gx, gy), (wx, wy)) in line.ends.iter().zip(pair) {
+                assert_eq!(gx.to_bits(), wx.to_bits());
+                assert_eq!(gy.to_bits(), wy.to_bits());
+            }
+        }
+        let border_inks = [
+            [110; 4], [110; 4], [110; 4], [75; 4], [45; 4], [10; 4], [10; 4], [10; 4], [10; 4],
+            [45; 4], [75; 4], [110; 4],
+        ];
+        let got: Vec<[u8; 4]> = bevel.border.iter().flat_map(|line| line.inks).collect();
+        assert_eq!(got, border_inks);
+
+        let outline: [(f32, f32); 8] = [
+            (109.5, 20.5),
+            (10.5, 20.5),
+            (10.5, 20.5),
+            (10.5, 99.5),
+            (10.5, 99.5),
+            (109.5, 99.5),
+            (109.5, 99.5),
+            (109.5, 20.5),
+        ];
+        for (line, pair) in bevel.outline.iter().zip(outline.chunks(2)) {
+            for ((gx, gy), (wx, wy)) in line.ends.iter().zip(pair) {
+                assert_eq!(gx.to_bits(), wx.to_bits());
+                assert_eq!(gy.to_bits(), wy.to_bits());
+            }
+            assert_eq!(line.inks, [[7; 4], [7; 4]]);
+        }
+
+        let raised = draw_bevel(
+            BevelPlace {
+                x: 10,
+                y: 20,
+                w: 100,
+                h: 80,
+                state: 0x40,
+            },
+            &ink,
+        );
+        assert_eq!(raised.fill[0].inks[0], [201; 4]);
+
+        let pressed = draw_bevel(
+            BevelPlace {
+                x: 10,
+                y: 20,
+                w: 100,
+                h: 80,
+                state: 0x10,
+            },
+            &ink,
+        );
+        assert_eq!(pressed.fill[0].inks[0], [101; 4]);
+
+        let both = draw_bevel(
+            BevelPlace {
+                x: 10,
+                y: 20,
+                w: 100,
+                h: 80,
+                state: 0x50,
+            },
+            &ink,
+        );
+        assert_eq!(both.fill[0].inks[0], [201; 4]);
+
+        let shipped = draw_bevel(
+            BevelPlace {
+                x: 10,
+                y: 20,
+                w: 100,
+                h: 80,
+                state: 0,
+            },
+            &BEVEL_INK,
+        );
+        assert!(
+            shipped
+                .fill
+                .iter()
+                .flat_map(|quad| quad.inks)
+                .all(|ink| ink == [0, 0, 0, 0])
+        );
+        let shaded = draw_bevel(
+            BevelPlace {
+                x: 10,
+                y: 20,
+                w: 100,
+                h: 80,
+                state: 0x10,
+            },
+            &BEVEL_INK,
+        );
+        assert!(
+            shaded
+                .border
+                .iter()
+                .flat_map(|line| line.inks)
+                .all(|ink| ink == [0, 0, 0, 0xe0])
+        );
     }
 }
