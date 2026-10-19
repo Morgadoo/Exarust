@@ -564,6 +564,66 @@ pub fn wake_combat_targets(wake: bool, body_word: u32, target_count: i32) -> Com
     }
 }
 
+/// The combat forget's inputs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CombatForgetInput {
+    pub entries: Vec<u64>,
+    pub target: u64,
+    pub slot_778: u64,
+    pub slot_770: u64,
+    pub hit: Option<u64>,
+    pub contact: Option<u64>,
+}
+
+/// The combat forget's results.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CombatForget {
+    pub entries: Vec<u64>,
+    pub count: i32,
+    pub removed: bool,
+    pub moves: u32,
+    pub slot_778: u64,
+    pub slot_770: u64,
+    pub hit: Option<u64>,
+    pub contact: Option<u64>,
+}
+
+/// Removes the target from the counted list and clears the matching slots.
+pub fn forget_combat_target(input: CombatForgetInput) -> CombatForget {
+    let mut entries = input.entries.clone();
+    let removed = if let Some(index) = entries.iter().position(|entry| *entry == input.target) {
+        let last = entries.pop().unwrap();
+        if index < entries.len() {
+            entries[index] = last;
+        }
+        true
+    } else {
+        false
+    };
+    CombatForget {
+        count: entries.len() as i32,
+        entries,
+        removed,
+        moves: u32::from(removed),
+        slot_778: if input.slot_778 == input.target {
+            0
+        } else {
+            input.slot_778
+        },
+        slot_770: if input.slot_770 == input.target {
+            0
+        } else {
+            input.slot_770
+        },
+        hit: input
+            .hit
+            .map(|value| if value == input.target { 0 } else { value }),
+        contact: input
+            .contact
+            .map(|value| if value == input.target { 0 } else { value }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -849,5 +909,38 @@ mod tests {
         assert_eq!(quiet.body_word, 0x7);
         assert_eq!(quiet.wake_calls, 0);
         assert_eq!(quiet.target_calls, 0);
+    }
+
+    #[test]
+    fn the_forget_swaps_and_clears() {
+        let input = |entries, target| CombatForgetInput {
+            entries,
+            target,
+            slot_778: target,
+            slot_770: 9,
+            hit: Some(target),
+            contact: Some(7),
+        };
+
+        let middle = forget_combat_target(input(vec![1, 2, 3], 2));
+        assert!(middle.removed);
+        assert_eq!(middle.entries, vec![1, 3]);
+        assert_eq!(middle.count, 2);
+        assert_eq!(middle.moves, 1);
+        assert_eq!(middle.slot_778, 0);
+        assert_eq!(middle.slot_770, 9);
+        assert_eq!(middle.hit, Some(0));
+        assert_eq!(middle.contact, Some(7));
+
+        let last = forget_combat_target(input(vec![1, 2, 3], 3));
+        assert_eq!(last.entries, vec![1, 2]);
+        assert_eq!(last.count, 2);
+
+        let absent = forget_combat_target(input(vec![1, 2, 3], 9));
+        assert!(!absent.removed);
+        assert_eq!(absent.entries, vec![1, 2, 3]);
+        assert_eq!(absent.count, 3);
+        assert_eq!(absent.moves, 0);
+        assert_eq!(absent.slot_778, 0);
     }
 }
