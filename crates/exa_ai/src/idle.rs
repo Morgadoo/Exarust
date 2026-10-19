@@ -14,11 +14,12 @@
 //! inside a facing-scaled 100 cm, and outside a 400 cm band it sets an
 //! urgency and replans when the leader has moved more than 100 cm. Sleep
 //! lies dormant: the dormant condition and flag, tone 0, a statue, and
-//! gait 2. The tick after that changes nothing.
+//! gait 2. The tick after that changes nothing. Seeing a contact, and only
+//! when the flags are exactly the dormant flag, knocks that sleeper out.
 
 use bevy::math::{Vec2, Vec3};
 use exa_combat::condition::{Condition, StateFlags};
-use exa_physics::body::Drive;
+use exa_physics::body::{Drive, PIN_GAIN, Ragdoll, WAKE_COUNT};
 
 use crate::hear::{self, Attention};
 
@@ -431,6 +432,8 @@ pub fn follow_leader(
 
 /// Gait a sleeper writes. The pelvis rest uses the taller offset at this value.
 pub const SLEEP_GAIT: i32 = 2;
+/// The sleep activity. Seeing a contact removes it.
+pub const SLEEP_ROLE: u16 = 44;
 
 /// Which tick is installed. Sleep's tick changes nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -447,6 +450,10 @@ pub struct Sleeper {
     pub statue: bool,
     pub gait: i32,
     pub tick: IdleTick,
+    /// Set when a contact wakes the sleeper.
+    pub sighted: u8,
+    /// The clock the knock-out wakes from.
+    pub wake_at: i32,
 }
 
 /// Lie dormant.
@@ -465,6 +472,38 @@ pub fn sleep(sleeper: &mut Sleeper, drive: &mut Drive) {
 
 /// The tick sleep installs. It does not write the sleeper or the tone.
 pub fn sleep_tick(_sleeper: &mut Sleeper, _drive: &mut Drive) {}
+
+/// Wake a dormant sleeper that has seen a contact.
+///
+/// The flags must be exactly the dormant flag, and a contact must have
+/// been seen. Otherwise nothing changes. The sleep role is removed, the
+/// body is knocked out at `now` (delay 0): it is down, the dormant flag
+/// stays and the waking flag is set, the statue mark clears, gait is 0,
+/// tone is 0, the pin gain is 0.08, and the sleep countdown is raised to
+/// 256. Waking's later tone rise is not in this slice.
+pub fn see_target(
+    sleeper: &mut Sleeper,
+    drive: &mut Drive,
+    body: &mut Ragdoll,
+    roles: &mut Vec<u16>,
+    seen: bool,
+    now: i32,
+) -> bool {
+    if sleeper.flags.0 != StateFlags::DORMANT || !seen {
+        return false;
+    }
+    roles.retain(|role| *role != SLEEP_ROLE);
+    sleeper.sighted = 1;
+    sleeper.wake_at = now;
+    sleeper.condition = Condition::DOWN;
+    sleeper.flags.0 = (sleeper.flags.0 & !0xF0) | (StateFlags::DORMANT | StateFlags::WAKING);
+    sleeper.statue = false;
+    sleeper.gait = 0;
+    drive.tone = 0.0;
+    drive.pin_gain = PIN_GAIN;
+    body.wake_to(WAKE_COUNT);
+    true
+}
 
 /// One idle tick. A sentry guards. A roam or a patrol stands, then walks.
 pub fn tick(routine: &mut Routine, moment: &Moment) -> Act {
@@ -816,6 +855,8 @@ mod tests {
             statue: false,
             gait: 0,
             tick: IdleTick::Active,
+            sighted: 0,
+            wake_at: 0,
         };
         let mut drive = Drive::default();
         assert!(drive.tone_target() > 0.0);
@@ -842,5 +883,104 @@ mod tests {
         sleep(&mut sleeper, &mut drive);
         assert_eq!(sleeper, kept);
         assert_eq!(drive.tone, 0.0);
+    }
+
+    fn limp() -> exa_physics::body::Ragdoll {
+        use bevy::math::Affine3A;
+        use bevy::prelude::Entity;
+        use exa_physics::body::{PartSetup, Ragdoll};
+        Ragdoll::new(&[PartSetup {
+            bone: 11,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: Affine3A::from_translation(Vec3::ZERO),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.06),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+        }])
+    }
+
+    #[test]
+    fn a_dormant_sleeper_wakes_when_it_sees_a_contact() {
+        use exa_physics::body::WAKE_COUNT;
+
+        let mut sleeper = Sleeper {
+            condition: Condition::WALKING,
+            flags: StateFlags(0),
+            statue: false,
+            gait: 0,
+            tick: IdleTick::Active,
+            sighted: 0,
+            wake_at: -1,
+        };
+        let mut drive = Drive::default();
+        drive.pin_gain = 0.02;
+        let mut roles = vec![SLEEP_ROLE, 3];
+        let mut body = limp();
+        body.tick(&[] as &[[Vec3; 3]]);
+        assert!(body.countdown() < WAKE_COUNT);
+        sleep(&mut sleeper, &mut drive);
+        assert_eq!(sleeper.flags.0, StateFlags::DORMANT);
+
+        assert!(!see_target(
+            &mut sleeper,
+            &mut drive,
+            &mut body,
+            &mut roles,
+            false,
+            2_500
+        ));
+        assert_eq!(sleeper.condition, Condition::DORMANT);
+        assert!(sleeper.statue);
+        assert_eq!(roles, vec![SLEEP_ROLE, 3]);
+        assert!(body.countdown() < WAKE_COUNT);
+
+        assert!(see_target(
+            &mut sleeper,
+            &mut drive,
+            &mut body,
+            &mut roles,
+            true,
+            2_500
+        ));
+        assert_eq!(sleeper.condition, Condition::DOWN);
+        assert_eq!(sleeper.flags.0, StateFlags::DORMANT | StateFlags::WAKING);
+        assert!(!sleeper.statue);
+        assert_eq!(sleeper.gait, 0);
+        assert_eq!(drive.tone, 0.0);
+        assert_eq!(drive.pin_gain, 0.08);
+        assert_eq!(sleeper.sighted, 1);
+        assert_eq!(sleeper.wake_at, 2_500);
+        assert_eq!(roles, vec![3]);
+        assert_eq!(body.countdown(), WAKE_COUNT);
+
+        let mut marked = Sleeper {
+            condition: Condition::WALKING,
+            flags: StateFlags(StateFlags::SHOCK_STAGGER),
+            statue: false,
+            gait: 0,
+            tick: IdleTick::Active,
+            sighted: 0,
+            wake_at: 0,
+        };
+        let mut marked_drive = Drive::default();
+        let mut marked_roles = vec![SLEEP_ROLE];
+        let mut marked_body = limp();
+        sleep(&mut marked, &mut marked_drive);
+        assert!(!see_target(
+            &mut marked,
+            &mut marked_drive,
+            &mut marked_body,
+            &mut marked_roles,
+            true,
+            9
+        ));
+        assert_eq!(marked.condition, Condition::DORMANT);
+        assert!(marked.statue);
+        assert_eq!(marked_roles, vec![SLEEP_ROLE]);
+        assert_eq!(marked.sighted, 0);
     }
 }
