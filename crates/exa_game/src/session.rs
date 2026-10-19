@@ -2,8 +2,8 @@
 //!
 //! The file starts with the four bytes `EXRS` and a version of 1. It stores
 //! the mode, the story level, the journal, the topics already chosen, the
-//! company and its roster, and the caster's focus. A short, mistyped or
-//! otherwise malformed file is an error.
+//! company and its roster, the day, the weeks, the reward ids, and the
+//! caster's focus. A short, mistyped or otherwise malformed file is an error.
 
 use exa_script::story::{Entry, Journal, Story};
 
@@ -71,6 +71,17 @@ pub fn write(session: &Session) -> Vec<u8> {
     out.extend_from_slice(&session.company.lost.to_le_bytes());
     out.extend_from_slice(&session.company.spent.to_le_bytes());
     out.extend_from_slice(&session.company.earned.to_le_bytes());
+    out.extend_from_slice(&session.company.day.to_le_bytes());
+    for won in session.company.weeks {
+        out.push(u8::from(won));
+    }
+    out.extend_from_slice(&session.company.seasons_won.to_le_bytes());
+    out.extend_from_slice(&session.company.season_rewards.to_le_bytes());
+    out.extend_from_slice(&session.company.tournaments_won.to_le_bytes());
+    put_count(&mut out, session.company.reward_ids.len());
+    for id in &session.company.reward_ids {
+        out.extend_from_slice(&id.to_le_bytes());
+    }
     put_count(&mut out, session.company.roster.len());
     for member in &session.company.roster {
         out.push(profession_byte(member.profession));
@@ -114,6 +125,23 @@ pub fn read(bytes: &[u8]) -> Result<Session, SaveError> {
     let lost = u32::from_le_bytes(take(&mut rest, 4)?.try_into().unwrap());
     let spent = u32::from_le_bytes(take(&mut rest, 4)?.try_into().unwrap());
     let earned = u32::from_le_bytes(take(&mut rest, 4)?.try_into().unwrap());
+    let day = u32::from_le_bytes(take(&mut rest, 4)?.try_into().unwrap());
+    let mut weeks = [false; 4];
+    for won in &mut weeks {
+        *won = match take(&mut rest, 1)?[0] {
+            0 => false,
+            1 => true,
+            _ => return Err(SaveError::Malformed),
+        };
+    }
+    let seasons_won = u32::from_le_bytes(take(&mut rest, 4)?.try_into().unwrap());
+    let season_rewards = u32::from_le_bytes(take(&mut rest, 4)?.try_into().unwrap());
+    let tournaments_won = u32::from_le_bytes(take(&mut rest, 4)?.try_into().unwrap());
+    let reward_len = take_count(&mut rest)?;
+    let mut reward_ids = Vec::with_capacity(reward_len);
+    for _ in 0..reward_len {
+        reward_ids.push(u32::from_le_bytes(take(&mut rest, 4)?.try_into().unwrap()));
+    }
     let roster_len = take_count(&mut rest)?;
     let mut roster = Vec::with_capacity(roster_len);
     for _ in 0..roster_len {
@@ -160,12 +188,12 @@ pub fn read(bytes: &[u8]) -> Result<Session, SaveError> {
             lost,
             spent,
             earned,
-            day: 0,
-            weeks: [false; 4],
-            seasons_won: 0,
-            season_rewards: 0,
-            reward_ids: Vec::new(),
-            tournaments_won: 0,
+            day,
+            weeks,
+            seasons_won,
+            season_rewards,
+            reward_ids,
+            tournaments_won,
         },
         focus,
     })
@@ -282,5 +310,36 @@ mod tests {
         let mut bad = bytes.clone();
         bad.pop();
         assert_eq!(read(&bad), Err(SaveError::Malformed));
+    }
+
+    #[test]
+    fn a_save_keeps_the_season_and_its_rewards() {
+        let mut session = Session::career("Ash");
+        let sweep = [crate::career::OUR_COMPANY; 6];
+        for _ in 0..8 {
+            session.company.end_day(sweep);
+        }
+        let loaded = read(&write(&session)).unwrap();
+        assert_eq!(loaded.company.day, 8);
+        assert_eq!(loaded.company.weeks, [true, true, false, false]);
+        assert!(loaded.company.reward_ids.is_empty());
+        assert_eq!(loaded.company.seasons_won, 0);
+        assert_eq!(loaded.company.season_rewards, 0);
+        assert_eq!(loaded.company.tournaments_won, 2);
+
+        let mut session = loaded;
+        for _ in 0..14 {
+            session.company.end_day(sweep);
+        }
+        let loaded = read(&write(&session)).unwrap();
+        assert_eq!(loaded.company.day, 22);
+        assert_eq!(loaded.company.weeks, [false; 4]);
+        assert_eq!(loaded.company.seasons_won, 1);
+        assert_eq!(loaded.company.season_rewards, 4);
+        assert_eq!(loaded.company.tournaments_won, 4);
+        assert_eq!(
+            loaded.company.reward_ids.as_slice(),
+            &[1175, 1174, 1177, 1176]
+        );
     }
 }
