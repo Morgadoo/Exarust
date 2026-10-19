@@ -364,6 +364,93 @@ pub fn update_menu_hover(
     }
 }
 
+/// One main-menu key dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MainMenuKeyAction {
+    Confirm { index: i32, arg: u64 },
+    Forward,
+    Back,
+    Move(i32),
+    None,
+}
+
+/// The main-menu key's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MainMenuKeyInput {
+    pub mask: u32,
+    pub selection: i32,
+    pub limit: i32,
+    pub confirm_arg: u64,
+    pub sub_result: i32,
+}
+
+/// The main-menu key's dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MainMenuKey {
+    pub action: MainMenuKeyAction,
+    pub selection: i32,
+    pub sound: bool,
+    pub result: i32,
+}
+
+/// Routes the main menu's confirm, forward, back and direction keys.
+pub fn main_menu_key(input: MainMenuKeyInput) -> MainMenuKey {
+    let idle = MainMenuKey {
+        action: MainMenuKeyAction::None,
+        selection: input.selection,
+        sound: false,
+        result: 0,
+    };
+    if (input.mask & 0x100) != 0 {
+        if input.selection > 0 {
+            return MainMenuKey {
+                action: MainMenuKeyAction::Confirm {
+                    index: input.selection,
+                    arg: input.confirm_arg,
+                },
+                selection: input.selection,
+                sound: true,
+                result: input.sub_result,
+            };
+        }
+        return idle;
+    }
+    if (input.mask & 0x200) != 0 {
+        return MainMenuKey {
+            action: MainMenuKeyAction::Forward,
+            result: input.sub_result,
+            ..idle
+        };
+    }
+    if (input.mask & 0x400) != 0 {
+        return MainMenuKey {
+            action: MainMenuKeyAction::Back,
+            result: input.sub_result,
+            ..idle
+        };
+    }
+    if (input.mask & 3) != 0 {
+        match input.mask & 0xf000 {
+            0x8000 if input.selection < input.limit => {
+                return MainMenuKey {
+                    action: MainMenuKeyAction::Move((input.selection + 1).max(1)),
+                    result: input.sub_result,
+                    ..idle
+                };
+            }
+            0x4000 if input.selection > 1 => {
+                return MainMenuKey {
+                    action: MainMenuKeyAction::Move(input.selection - 1),
+                    result: input.sub_result,
+                    ..idle
+                };
+            }
+            _ => {}
+        }
+    }
+    idle
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -636,5 +723,62 @@ mod tests {
         assert!(!limited.sound);
         assert_eq!(limited.stamp, 200);
         assert_eq!(limited.result, 3);
+    }
+
+    #[test]
+    fn the_main_menu_key_routes_its_masks() {
+        let input = |mask, selection, limit| MainMenuKeyInput {
+            mask,
+            selection,
+            limit,
+            confirm_arg: 0xabc,
+            sub_result: 7,
+        };
+
+        let confirm = main_menu_key(input(0x100, 5, 10));
+        assert_eq!(
+            confirm.action,
+            MainMenuKeyAction::Confirm {
+                index: 5,
+                arg: 0xabc
+            }
+        );
+        assert!(confirm.sound);
+        assert_eq!(confirm.result, 7);
+
+        let zero = main_menu_key(input(0x100, 0, 10));
+        assert_eq!(zero.action, MainMenuKeyAction::None);
+        assert!(!zero.sound);
+        assert_eq!(zero.result, 0);
+
+        assert_eq!(
+            main_menu_key(input(0x200, 5, 10)).action,
+            MainMenuKeyAction::Forward
+        );
+        assert_eq!(
+            main_menu_key(input(0x400, 5, 10)).action,
+            MainMenuKeyAction::Back
+        );
+
+        assert_eq!(
+            main_menu_key(input(0x8001, 2, 4)).action,
+            MainMenuKeyAction::Move(3)
+        );
+        assert_eq!(
+            main_menu_key(input(0x8001, 4, 4)).action,
+            MainMenuKeyAction::None
+        );
+        assert_eq!(
+            main_menu_key(input(0x8001, 0, 4)).action,
+            MainMenuKeyAction::Move(1)
+        );
+        assert_eq!(
+            main_menu_key(input(0x4001, 3, 10)).action,
+            MainMenuKeyAction::Move(2)
+        );
+        assert_eq!(
+            main_menu_key(input(0x4001, 1, 10)).action,
+            MainMenuKeyAction::None
+        );
     }
 }

@@ -183,7 +183,8 @@ on a page above one, or on word nine with a clear mode byte, and closes with
 0x40 otherwise. The end-session menu resolves pages 2, 4 and 8 into their calls
 and forms, otherwise calls a registered handler, and always clears its action.
 The main menu resolves its hover, returns 3 on a change, and rate-limits the
-sound to once per 200 units.
+sound to once per 200 units. Its key handler confirms a positive selection,
+forwards and backs, and moves within the limit.
 
 ## Scope
 
