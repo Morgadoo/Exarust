@@ -261,6 +261,16 @@ fn sole_quad(height: i32, slot: i32, band: i32, near: i32, down: i32) -> Vec<Sli
     )]
 }
 
+fn floor_bar(width: i32, height: i32, slot: i32, near: i32, down: i32) -> Vec<SliderQuad> {
+    let high = height.wrapping_sub(slot);
+    let low = height.wrapping_sub(near);
+    let right = width.wrapping_sub(down);
+    vec![quad(
+        WIDE_BAR,
+        [(down, high), (down, low), (right, low), (right, high)],
+    )]
+}
+
 fn scroll_bar(unit: i32, place: SliderPlace) -> ScrollBar {
     let x = i32::from(place.x);
     let y = i32::from(place.y);
@@ -717,8 +727,9 @@ pub struct TitleDraw {
 /// set, and the ledge that follows it. A clear hold bit on that same
 /// band draws the wider frame, including that strip, the wider right
 /// strip, the wider lower strip, and the wider ledge, and not that bar.
-/// When those bits differ, a quad hangs below the left edge. The helper
-/// body and the next quad are not in.
+/// When those bits differ, a quad hangs below the left edge. Both arms
+/// then draw a bar along the bottom. A clear hold bit draws the wider
+/// bar. The helper body and the next mask test are not in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormDispatch {
     pub span_a: i32,
@@ -766,6 +777,7 @@ pub struct FormDispatch {
     pub held_low: Vec<SliderQuad>,
     pub held_sole: Vec<SliderQuad>,
     pub held_skirt: Vec<SliderQuad>,
+    pub held_floor: Vec<SliderQuad>,
     /// Mask forced when the hold bit is clear. The held mask stays separate.
     pub open_mask: u32,
     pub open_calls: u32,
@@ -779,6 +791,7 @@ pub struct FormDispatch {
     pub open_trim: Vec<SliderQuad>,
     pub open_low: Vec<SliderQuad>,
     pub open_sole: Vec<SliderQuad>,
+    pub open_floor: Vec<SliderQuad>,
 }
 
 fn edge_mask(unit: i32, place: &DispatchPlace) -> u32 {
@@ -1530,6 +1543,21 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
     } else {
         Vec::new()
     };
+    let held_floor = if on_hold {
+        let near = unit.wrapping_shl(1);
+        let down = unit.wrapping_shl(2).wrapping_add(near);
+        floor_bar(place.width, place.height, 0, near, down)
+    } else {
+        Vec::new()
+    };
+    let open_floor = if on_open {
+        let slot = unit.wrapping_shl(1);
+        let near = unit.wrapping_shl(2);
+        let down = near.wrapping_shl(1);
+        floor_bar(place.width, place.height, slot, near, down)
+    } else {
+        Vec::new()
+    };
     FormDispatch {
         span_a,
         span_b,
@@ -1581,6 +1609,7 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         held_low,
         held_sole,
         held_skirt,
+        held_floor,
         open_mask,
         open_calls,
         open_tab,
@@ -1593,6 +1622,7 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         open_trim,
         open_low,
         open_sole,
+        open_floor,
     }
 }
 
@@ -3382,5 +3412,49 @@ mod tests {
         form.flags_a = FORM_HOLD;
         form.flags_d = 0x10;
         assert!(dispatch_form(5, 0, form, &[]).held_skirt.is_empty());
+    }
+
+    #[test]
+    fn a_dispatch_draws_the_held_floor() {
+        let mut form = place(FORM_HOLD, 0, 0, 0, 0, 0);
+        form.flags_d = 0x80;
+        form.edge_x = 5;
+        form.edge_y = 5;
+        form.room_far_x = 400;
+        form.room_far_y = 400;
+        let drawn = dispatch_form(5, 0, form, &[]);
+        assert!(drawn.open_floor.is_empty());
+        assert_eq!(drawn.held_floor.len(), 1);
+        assert_eq!(drawn.held_floor[0].sample, WIDE_BAR);
+        assert_eq!(
+            drawn.held_floor[0].corners,
+            [(30, 80), (30, 70), (70, 70), (70, 80)]
+        );
+
+        form.edge_x = 4;
+        form.edge_y = 4;
+        form.room_far_y = 80;
+        let both = dispatch_form(5, 0, form, &[]);
+        assert_eq!(both.held_sole.len(), 1);
+        assert_eq!(both.held_floor.len(), 1);
+
+        form.flags_b = FORM_TAB;
+        assert_eq!(dispatch_form(5, 0, form, &[]).held_floor.len(), 1);
+
+        form.flags_a = 0;
+        form.flags_b = 0;
+        form.height = 100;
+        form.room_far_y = 400;
+        let open = dispatch_form(5, 0, form, &[]);
+        assert!(open.held_floor.is_empty());
+        assert_eq!(open.open_floor.len(), 1);
+        assert_eq!(open.open_floor[0].sample, WIDE_BAR);
+        assert_eq!(
+            open.open_floor[0].corners,
+            [(40, 90), (40, 80), (60, 80), (60, 90)]
+        );
+
+        form.flags_d = 0x10;
+        assert!(dispatch_form(5, 0, form, &[]).open_floor.is_empty());
     }
 }

@@ -63,7 +63,10 @@ strip, from 10, 60 to 20, 80 at height 100, then a ledge from 10, 70 to 30, 80.
 A set tab bit still draws it. A clear hold bit draws the wider ledge, from
 20, 80 to 40, 90 at height 100. When those bits differ, a quad runs from -10, 50
 to 30, 90 at unit 5 and height 80. Both bits set draw the ledge instead. A
-clear hold bit draws none of that quad. The next quad is not in.
+clear hold bit draws none of that quad. Both arms then draw a bar from 30, 70
+to 70, 80 at unit 5, width 100 and height 80. A set tab bit still draws it.
+A clear hold bit draws the wider bar, from 40, 80 to 60, 90 at height 100.
+The next mask test is not in.
 
 ## Scope
 
