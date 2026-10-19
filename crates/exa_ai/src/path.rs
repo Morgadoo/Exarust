@@ -5,8 +5,9 @@
 //! No path, a cursor at the end, a missing door, or a door more than 0.7
 //! open lets the walker continue.
 //!
-//! Evidence: the path step that meets a door. The rest of the path is not
-//! in this slice.
+//! Evidence: the path step that meets a door. A wait in that step gives up
+//! strictly after ten seconds. The heading sway and the other phases are
+//! not in this slice.
 
 use exa_physics::door::{self, SignalDrive, SignalLeaf};
 
@@ -17,6 +18,51 @@ pub struct Walk {
     pub path: i32,
     pub cursor: i32,
     pub waypoints: i32,
+}
+
+/// The walker is waiting at a door.
+pub const AT_DOOR: i32 = 4;
+/// The walker is seeking a waypoint again.
+pub const SEEKING: i32 = 2;
+/// The door let the walker through.
+pub const PAST_DOOR: i32 = 5;
+/// A door wait gives up strictly after this many milliseconds.
+pub const DOOR_WAIT_MS: u32 = 10_000;
+
+/// A walker waiting on the door at its cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DoorWait {
+    pub phase: i32,
+    pub since_ms: u32,
+    /// Waypoints already skipped. Bit `n` is cursor `n` modulo 32.
+    pub skipped: u32,
+    /// Node the search avoids. `-1` avoids none.
+    pub avoid: i32,
+    /// Non-zero while the search must not run.
+    pub hold_search: u8,
+}
+
+/// Step a walker that is waiting at a door.
+///
+/// A door that lets the walker through moves it past the door and lets the
+/// search run. Strictly more than ten seconds after the wait started, the
+/// walker goes back to seeking, clears the avoided node, and marks the
+/// cursor skipped. That later rule wins the phase when both happen. Any
+/// other phase is left as it is. The heading sway that runs first is not
+/// in this slice.
+pub fn give_up_door(wait: &mut DoorWait, walk: &Walk, door: Option<&mut SignalLeaf>, now_ms: u32) {
+    if wait.phase != AT_DOOR {
+        return;
+    }
+    if pass_door(walk, door) {
+        wait.phase = PAST_DOOR;
+        wait.hold_search = 0;
+    }
+    if u64::from(wait.since_ms) + u64::from(DOOR_WAIT_MS) < u64::from(now_ms) {
+        wait.avoid = -1;
+        wait.phase = SEEKING;
+        wait.skipped |= 1u32 << (walk.cursor as u32 & 31);
+    }
 }
 
 /// True when the walker may continue. False when a door holds it.
@@ -116,5 +162,113 @@ mod tests {
         assert!((busy.fraction - 1.0).abs() < 1e-6);
         assert_eq!(busy.countdown, 40);
         assert_eq!(busy.drive, SignalDrive::Toggle);
+    }
+
+    fn waiting(since_ms: u32) -> DoorWait {
+        DoorWait {
+            phase: AT_DOOR,
+            since_ms,
+            skipped: 0,
+            avoid: 7,
+            hold_search: 1,
+        }
+    }
+
+    #[test]
+    fn a_door_wait_gives_up_after_ten_seconds() {
+        let mut early = DoorWait {
+            phase: SEEKING,
+            ..waiting(1_000)
+        };
+        let mut shut = hinge();
+        give_up_door(
+            &mut early,
+            &walk(),
+            Some(&mut shut),
+            1_000 + DOOR_WAIT_MS + 1,
+        );
+        assert_eq!(early.phase, SEEKING);
+        assert_eq!(early.avoid, 7);
+        assert_eq!(early.skipped, 0);
+        assert_eq!(early.hold_search, 1);
+        assert_eq!(shut.drive, SignalDrive::Idle);
+        assert!((shut.fraction - 1.0).abs() < 1e-6);
+
+        let mut wait = waiting(1_000);
+        let mut door = hinge();
+        let at = Walk {
+            cursor: 3,
+            waypoints: 8,
+            ..walk()
+        };
+        give_up_door(&mut wait, &at, Some(&mut door), 1_000 + DOOR_WAIT_MS);
+        assert_eq!(wait.phase, AT_DOOR);
+        assert_eq!(wait.avoid, 7);
+        assert_eq!(wait.skipped, 0);
+        assert_eq!(wait.hold_search, 1);
+        assert_eq!(door.drive, SignalDrive::Toggle);
+        assert_eq!(door.countdown, TOGGLE_SLOW);
+        assert!((door.fraction - 0.0).abs() < 1e-6);
+
+        give_up_door(&mut wait, &at, Some(&mut door), 1_000 + DOOR_WAIT_MS + 1);
+        assert_eq!(wait.phase, SEEKING);
+        assert_eq!(wait.avoid, -1);
+        assert_eq!(wait.skipped, 1 << 3);
+        assert_eq!(wait.hold_search, 1);
+        assert_eq!(door.drive, SignalDrive::Toggle);
+        assert_eq!(door.countdown, TOGGLE_SLOW);
+
+        let mut open = waiting(1_000);
+        let mut wide = hinge();
+        wide.sliding = true;
+        wide.fraction = 0.29;
+        give_up_door(&mut open, &walk(), Some(&mut wide), 1_000);
+        assert_eq!(open.phase, PAST_DOOR);
+        assert_eq!(open.hold_search, 0);
+        assert_eq!(open.avoid, 7);
+        assert_eq!(open.skipped, 0);
+        assert_eq!(wide.drive, SignalDrive::Idle);
+        assert!((wide.fraction - 0.29).abs() < 1e-6);
+
+        let mut late = waiting(1_000);
+        let mut still = hinge();
+        still.sliding = true;
+        still.fraction = 0.29;
+        let far = Walk {
+            cursor: 32,
+            waypoints: 40,
+            ..walk()
+        };
+        give_up_door(&mut late, &far, Some(&mut still), 1_000 + DOOR_WAIT_MS + 1);
+        assert_eq!(late.phase, SEEKING);
+        assert_eq!(late.hold_search, 0);
+        assert_eq!(late.avoid, -1);
+        assert_eq!(late.skipped, 1);
+        assert_eq!(still.drive, SignalDrive::Idle);
+
+        let mut wrapped = waiting(u32::MAX - 50);
+        let mut across = hinge();
+        across.sliding = true;
+        across.fraction = 0.29;
+        give_up_door(&mut wrapped, &walk(), Some(&mut across), 100);
+        assert_eq!(wrapped.phase, PAST_DOOR);
+        assert_eq!(wrapped.avoid, 7);
+        assert_eq!(wrapped.skipped, 0);
+
+        let mut negative = waiting(1_000);
+        let mut back_door = hinge();
+        let back = Walk {
+            cursor: -1,
+            waypoints: 8,
+            ..walk()
+        };
+        give_up_door(
+            &mut negative,
+            &back,
+            Some(&mut back_door),
+            1_000 + DOOR_WAIT_MS + 1,
+        );
+        assert_eq!(negative.phase, SEEKING);
+        assert_eq!(negative.skipped, 1 << 31);
     }
 }
