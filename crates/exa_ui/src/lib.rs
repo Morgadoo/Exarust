@@ -29,9 +29,10 @@ pub use heartbeat::Heartbeat;
 pub use hud::{DrawHud, HudBars};
 pub use loading::LoadingStatus;
 pub use menu::{
-    ClassSelect, MenuKeyClose, SkillSelection, SkillTipDraw, SkillTipPlace, TRANSITION_TEXT,
-    TransitionFade, TransitionFadePlace, draw_skill_tip, draw_transition_fade, menu_clock_scale,
-    menu_key_close, select_menu_class, settle_skill_selection,
+    ClassSelect, InventoryKeyClose, MenuKeyClose, SkillSelection, SkillTipDraw, SkillTipPlace,
+    TRANSITION_TEXT, TransitionFade, TransitionFadePlace, draw_skill_tip, draw_transition_fade,
+    inventory_key_close, menu_clock_scale, menu_key_close, select_menu_class,
+    settle_skill_selection,
 };
 pub use scale::GuiScale;
 pub use skin::{

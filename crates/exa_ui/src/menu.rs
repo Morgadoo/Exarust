@@ -174,6 +174,35 @@ pub fn settle_skill_selection(raw: i32, page: i32, flags: u32) -> SkillSelection
     SkillSelection { index, flags }
 }
 
+/// The inventory's close result and which path closed it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InventoryKeyClose {
+    pub closed: bool,
+    pub callback: bool,
+    pub result: i32,
+}
+
+/// Closes the inventory on the 0x2002 mask through its callback or the form close.
+pub fn inventory_key_close(
+    mask: u16,
+    has_callback: bool,
+    base: impl FnOnce() -> i32,
+) -> InventoryKeyClose {
+    if (mask & 0x2002) == 0x2002 {
+        InventoryKeyClose {
+            closed: true,
+            callback: has_callback,
+            result: 1,
+        }
+    } else {
+        InventoryKeyClose {
+            closed: false,
+            callback: false,
+            result: base(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,5 +331,28 @@ mod tests {
         let other = settle_skill_selection(4, 0, 0x20);
         assert_eq!(other.index, 4);
         assert_eq!(other.flags, 0x20);
+    }
+
+    #[test]
+    fn the_inventory_close_prefers_its_callback() {
+        let with = inventory_key_close(0x2002, true, || 7);
+        assert!(with.closed);
+        assert!(with.callback);
+        assert_eq!(with.result, 1);
+
+        let without = inventory_key_close(0x2002, false, || 7);
+        assert!(without.closed);
+        assert!(!without.callback);
+        assert_eq!(without.result, 1);
+
+        let mut ran = false;
+        let base = inventory_key_close(0x2000, true, || {
+            ran = true;
+            7
+        });
+        assert!(!base.closed);
+        assert!(!base.callback);
+        assert_eq!(base.result, 7);
+        assert!(ran);
     }
 }
