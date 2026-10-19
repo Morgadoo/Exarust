@@ -134,6 +134,9 @@ pub const WIDE_BAR: [u32; 4] = [0x3e99_999a, 0x3dcc_cccd, 0x3e99_999a, 0x3e4c_cc
 /// Tab after the held bar: 0.5, 0.8, 0.5, 0.9.
 pub const HELD_TAB: [u32; 4] = [0x3f00_0000, 0x3f4c_cccd, 0x3f00_0000, 0x3f66_6666];
 
+/// Quad after the lower tab: 0.4, 0.8, 0.4, 1.
+pub const HELD_POST: [u32; 4] = [0x3ecc_cccd, 0x3f4c_cccd, 0x3ecc_cccd, 0x3f80_0000];
+
 /// The double 6.6 used to place an edge.
 const EDGE_SCALE: u64 = 0x401a_6666_6666_6666;
 
@@ -617,6 +620,8 @@ pub struct DispatchPlace {
     pub grip_y: i32,
     /// The y the lower tab hangs from.
     pub seat_y: i32,
+    /// The y the quad after the lower tab measures. Its low edge sits one unit below.
+    pub post_y: i32,
 }
 
 /// One corner of the backdrop, with its sample bits.
@@ -641,8 +646,8 @@ pub struct TitleDraw {
 /// shift, the shown children, the title, the corners, the edge bars, the
 /// wide top, the left side, the bottom, the right side, the ink copy,
 /// the square drawn when the close mark is -4, the hold-bit edge mask,
-/// and the bar, the tab, and the lower tab that follow it. The anchor
-/// after that lower tab is not in.
+/// and the bar, the tab, the lower tab, and the quad that follow it. The
+/// compare after that quad is not in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormDispatch {
     pub span_a: i32,
@@ -673,6 +678,7 @@ pub struct FormDispatch {
     pub held_bar: Vec<SliderQuad>,
     pub held_tab: Vec<SliderQuad>,
     pub held_lower: Vec<SliderQuad>,
+    pub held_post: Vec<SliderQuad>,
 }
 
 fn edge_mask(unit: i32, place: &DispatchPlace) -> u32 {
@@ -1101,6 +1107,19 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
     } else {
         Vec::new()
     };
+    let held_post = if on_hold && (place.flags_b & FORM_TAB) == FORM_TAB {
+        let extra = (f64::from(unit) * f64::from_bits(TAB_SCALE)).round_ties_even() as i32;
+        let base = place.grip_x.wrapping_add(extra);
+        let low = place.post_y.wrapping_sub(unit);
+        let high = place.post_y.wrapping_add(unit.wrapping_mul(3));
+        let far = base.wrapping_add(unit.wrapping_shl(2));
+        vec![quad(
+            HELD_POST,
+            [(base, high), (base, low), (far, low), (far, high)],
+        )]
+    } else {
+        Vec::new()
+    };
     FormDispatch {
         span_a,
         span_b,
@@ -1135,6 +1154,7 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         held_bar,
         held_tab,
         held_lower,
+        held_post,
     }
 }
 
@@ -1717,6 +1737,7 @@ mod tests {
             grip_x: 0,
             grip_y: 0,
             seat_y: 0,
+            post_y: 0,
         }
     }
 
@@ -2202,5 +2223,31 @@ mod tests {
         form.flags_b = FORM_TAB;
         form.flags_a = 0;
         assert!(dispatch_form(5, 0, form, &[]).held_lower.is_empty());
+    }
+
+    #[test]
+    fn a_dispatch_draws_the_post_quad() {
+        let mut form = place(FORM_HOLD, FORM_TAB, 0, 0, 0, 0);
+        form.flags_d = 0x80;
+        form.edge_x = 5;
+        form.edge_y = 5;
+        form.room_far_x = 400;
+        form.room_far_y = 400;
+        form.grip_x = 10;
+        form.post_y = 40;
+        let drawn = dispatch_form(5, 0, form, &[]);
+        assert_eq!(drawn.held_lower.len(), 1);
+        assert_eq!(drawn.held_post.len(), 1);
+        assert_eq!(drawn.held_post[0].sample, HELD_POST);
+        assert_eq!(
+            drawn.held_post[0].corners,
+            [(11, 55), (11, 35), (31, 35), (31, 55)]
+        );
+
+        form.flags_b = 0;
+        assert!(dispatch_form(5, 0, form, &[]).held_post.is_empty());
+        form.flags_b = FORM_TAB;
+        form.flags_a = 0;
+        assert!(dispatch_form(5, 0, form, &[]).held_post.is_empty());
     }
 }
