@@ -3770,6 +3770,89 @@ pub fn prepare_skin_programs(already: bool) -> SkinPrograms {
     }
 }
 
+/// The inset bevel's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkinInsetBevelPlace {
+    pub x: i16,
+    pub y: i16,
+    pub w: i16,
+    pub h: i16,
+    pub inset: i16,
+    pub flags: u32,
+}
+
+/// The flag-0x40 arm: fill, border, outline and corner detail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkinInsetArm {
+    pub inner: [i32; 4],
+    pub inner_binds: [u32; 2],
+    pub border: [i32; 4],
+    pub border_binds: [u32; 2],
+    pub outline: [i32; 4],
+    pub outline_slot: u32,
+    pub detail: [i32; 4],
+    pub detail_mode: i32,
+    pub detail_unit: i32,
+}
+
+/// The other arm: one virtual inset rectangle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkinInsetPlain {
+    pub rect: [i32; 4],
+    pub first: bool,
+    pub second: bool,
+    pub extra_height: i32,
+}
+
+/// The inset bevel dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkinInsetBevel {
+    pub prepare_calls: u32,
+    pub arm: Option<SkinInsetArm>,
+    pub plain: Option<SkinInsetPlain>,
+}
+
+/// Draws the inset bevel or the plain inset rectangle.
+pub fn draw_inset_bevel(place: SkinInsetBevelPlace, unit: i32) -> SkinInsetBevel {
+    let i = i32::from(place.inset);
+    let x = i32::from(place.x);
+    let y = i32::from(place.y);
+    let w = i32::from(place.w);
+    let h = i32::from(place.h);
+    let left = x + i;
+    let top = y + i;
+    let width = w - 2 * i;
+    let height = h - 2 * i;
+    if (place.flags & 0x40) == 0x40 {
+        SkinInsetBevel {
+            prepare_calls: 1,
+            arm: Some(SkinInsetArm {
+                inner: [left + 2, top + 2, width - 4, height - 4],
+                inner_binds: [0x74, 0x80],
+                border: [left + 1, top + 1, width - 2, height - 2],
+                border_binds: [0x7c, 0x88],
+                outline: [left, top, width, height],
+                outline_slot: 0x6c,
+                detail: [left + 1, top + 1, width - 2, height - 2],
+                detail_mode: 0xa0,
+                detail_unit: unit,
+            }),
+            plain: None,
+        }
+    } else {
+        SkinInsetBevel {
+            prepare_calls: 1,
+            arm: None,
+            plain: Some(SkinInsetPlain {
+                rect: [left, top, width, height],
+                first: (place.flags & 0x10) == 0x10,
+                second: false,
+                extra_height: height,
+            }),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7233,5 +7316,39 @@ mod tests {
         assert!(built.programs[0].source.contains("FragColor = vrCol;"));
         assert!(built.programs[1].source.contains("uniform sampler2D Tex;"));
         assert!(built.programs[2].source.contains("uniform vec4 Scale;"));
+    }
+
+    #[test]
+    fn an_inset_bevel_selects_its_arm() {
+        let place = |flags: u32| SkinInsetBevelPlace {
+            x: 10,
+            y: 20,
+            w: 100,
+            h: 80,
+            inset: 5,
+            flags,
+        };
+
+        let arm = draw_inset_bevel(place(0x40), 5);
+        assert_eq!(arm.prepare_calls, 1);
+        assert!(arm.plain.is_none());
+        let arm = arm.arm.expect("arm");
+        assert_eq!(arm.inner, [17, 27, 86, 66]);
+        assert_eq!(arm.inner_binds, [0x74, 0x80]);
+        assert_eq!(arm.border, [16, 26, 88, 68]);
+        assert_eq!(arm.border_binds, [0x7c, 0x88]);
+        assert_eq!(arm.outline, [15, 25, 90, 70]);
+        assert_eq!(arm.outline_slot, 0x6c);
+        assert_eq!(arm.detail, [16, 26, 88, 68]);
+        assert_eq!(arm.detail_mode, 0xa0);
+        assert_eq!(arm.detail_unit, 5);
+
+        let plain = draw_inset_bevel(place(0x10), 5);
+        assert!(plain.arm.is_none());
+        let plain = plain.plain.expect("plain");
+        assert_eq!(plain.rect, [15, 25, 90, 70]);
+        assert!(plain.first);
+        assert!(!plain.second);
+        assert_eq!(plain.extra_height, 70);
     }
 }
