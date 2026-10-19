@@ -361,8 +361,9 @@ Moved to [TERRAIN.md](TERRAIN.md) (verified).
 Status: **the node layout, the text chunk, the link curve, the node
 pictures, the learned marks and the thick joint are verified**. A blast
 charge, its growth and the chunk separation are in `exa_game::thaum`.
-A barrier ripple and the dome extent are in `exa_game::thaum`. Wave,
-torrent and shell meshes are not in. Exarust:
+A barrier ripple and the dome extent are in `exa_game::thaum`. A wave
+charge, its charging radius and the released front are in `exa_game::thaum`.
+Torrent and shell meshes are not in. Exarust:
 `exa_formats::power_tree`.
 
 - **Header**: first word `0xAFCE01CE`. The node count is the signed word at
@@ -415,8 +416,13 @@ torrent and shell meshes are not in. Exarust:
   toward that strength by at most 0.04. Both under 0.07 removes the ripple.
   While it remains, its place eases 0.05 of the way toward the hit. The dome
   extent is 30 plus 1.25 times the ripple count.
-- Four domains: displacement, energy, force, mind. Wave, torrent and shell
-  meshes are not in.
+- **Wave**: the rate is the tick in seconds, then five thirds of that.
+  While charging or fizzling the radius grows by 0.0015. Once released the
+  reach grows by 0.6, the radius by 0.0006 of the speed, and the trail step
+  is 0.07 of the speed plus 1. An amount of 0.99 releases on a 12 ms wave
+  rate. The blast rate for that tick leaves the amount at 1.
+- Four domains: displacement, energy, force, mind. Torrent and shell meshes
+  are not in.
 
 ## Weapon factories (`.fty`)
 

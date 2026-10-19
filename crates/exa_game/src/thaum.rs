@@ -509,6 +509,34 @@ pub fn step_ripple(
     })
 }
 
+/// Five thirds of the tick in seconds.
+pub fn wave_rate(tick_ms: u32) -> f32 {
+    let step = (f64::from(tick_ms) * 0.001) as f32;
+    (f64::from(step) * (5.0 / 3.0)) as f32
+}
+
+/// The radius after one charging or fizzling tick.
+pub fn charge_wave_radius(radius: f32) -> f32 {
+    (f64::from(radius) + 0.0015) as f32
+}
+
+/// A released wave front after one tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WaveFront {
+    pub reach: f32,
+    pub radius: f32,
+    pub trail: f32,
+}
+
+/// Reach grows by 0.6. Radius grows by 0.0006 of the speed. The trail is 0.07 of the speed plus 1.
+pub fn release_wave(reach: f32, radius: f32, speed: f32) -> WaveFront {
+    WaveFront {
+        reach: (f64::from(reach) + 0.6) as f32,
+        radius: (f64::from(speed) * 0.0006 + f64::from(radius)) as f32,
+        trail: (f64::from(speed) * 0.07 + 1.0) as f32,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -645,6 +673,31 @@ mod tests {
         assert_eq!(ripple.at, [0.5, 0.0, 0.0]);
         assert!(step_ripple(0.06, 0.06, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]).is_none());
         assert!(step_ripple(0.07, 0.07, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]).is_none());
+    }
+
+    #[test]
+    fn a_wave_releases_sooner_and_the_front_steps() {
+        assert_eq!(wave_rate(12), f32::from_bits(0x3ca3_d70a));
+        assert_eq!(wave_rate(1000), f32::from_bits(0x3fd5_5555));
+
+        let wave = step_charge(0.99, wave_rate(12), 0);
+        assert!(wave.released);
+        assert_eq!(wave.state, 1);
+        assert_eq!(wave.amount, 0.0);
+        let blast = step_charge(0.99, charge_rate(12), 0);
+        assert!(!blast.released);
+        assert_eq!(blast.amount, 1.0);
+        assert_eq!(blast.state, 0);
+
+        assert_eq!(charge_wave_radius(0.0), f32::from_bits(0x3ac4_9ba6));
+
+        let still = release_wave(0.0, 0.0, 0.0);
+        assert_eq!(still.reach, f32::from_bits(0x3f19_999a));
+        assert_eq!(still.radius, 0.0);
+        assert_eq!(still.trail, 1.0);
+        let moving = release_wave(0.0, 0.0, 10.0);
+        assert_eq!(moving.radius, f32::from_bits(0x3bc4_9ba6));
+        assert_eq!(moving.trail, f32::from_bits(0x3fd9_999a));
     }
 
     #[test]

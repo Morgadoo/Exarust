@@ -1036,6 +1036,7 @@ Done (change `draw-a-node-picture`): an icon with no columns draws nothing. Powe
 Done (change `learn-and-thicken`): a lone node is marked 0x10000. A known id with bits 20 to 23 set still matches, and the later pair wins. A link to a closed node stays closed. A link to an opened node gains 0x10000. A top nibble of 7 does not. A mark of 0x5000 becomes 0x15000. A width of 2 through 0, 10 and 20 sits at 10, −2 and 10, 2. A zero-length chord stays on the point. The other effect meshes and charge-up are not in.
 Done (change `charge-a-blast`): a 12 ms tick rates the charge at 0.01, and 1000 ms at five sixths. An amount of 0.5 plus 0.5 stays at 1 and keeps charging. An amount of 0.6 plus 0.5 clears to 0, sets the state to 1 and releases. Fizzling 0.5 by 0.1 leaves 0.3. Fizzling 0.3 by 0.2 becomes 0 with state −2. After release, 0.2 rises by 0.3. A still chunk grows by 0.0018 in one tick. Chunks at 0 and 1 with radius 1 move to −0.5 and 1.5. A pair 2 apart stays, and a pair on the same point stays. The other effect meshes are not in.
 Done (change `fade-a-barrier-ripple`): no ripples leave the dome extent at 30, and four ripples make it 35. A ripple at shown 1 and strength 1 becomes about 0.96 and 0.95, and a hit 10 ahead eases the place to 0.5. Shown and strength of 0.06, and of 0.07, are gone. Wave, torrent and shell meshes are not in.
+Done (change `step-a-wave`): a 12 ms wave rate is about 0.02, and 1000 ms is five thirds. Charging 0.99 by that 12 ms rate releases. The blast rate for the same tick leaves the amount at 1. A charging radius grows by 0.0015. A released front of speed 0 has reach 0.6, radius 0 and trail 1. Speed 10 grows the radius by 0.006 and sets the trail to 1.7. Torrent and shell meshes are not in.
 Done (change `save-the-session`): an `EXRS` file restores that session.
 The original's save packages are not read.
 
@@ -1056,7 +1057,7 @@ Still open:
 
 - The other emblem controls. A candidate's listed price is the rank square plus four fifths of the gear. A swept season grants its four item ids, and day 134 repeats the first row. A shop line prices at 1, 12, 144 or 1440 copper, and a sale is a quarter of the basket. A tier multiplies a match stake by one more than the tier. A recruitment costs 12 copper. Overnight rest and a trainer's lesson are in.
 - Story side levels, scripted encounters, the role interpreter, map discovery.
-- The other powers and their meshes. A blast charge and a barrier ripple are in. Wave, torrent and shell meshes are not in.
+- The other powers and their meshes. A blast charge, a barrier ripple and a wave front are in. Torrent and shell meshes are not in.
 - Character creation (race, body, face, hair, colours, class, skills).
 - Full UI using the original GUI skin, icons and manual pages.
 
