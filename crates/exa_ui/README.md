@@ -61,7 +61,9 @@ bits 2 and 8 together then draw a strip from 0, 50 to 10, 70 at unit 5 and
 height 80. A set tab bit still draws it. A clear hold bit draws the wider
 strip, from 10, 60 to 20, 80 at height 100, then a ledge from 10, 70 to 30, 80.
 A set tab bit still draws it. A clear hold bit draws the wider ledge, from
-20, 80 to 40, 90 at height 100. The other arm is not in.
+20, 80 to 40, 90 at height 100. When those bits differ, a quad runs from -10, 50
+to 30, 90 at unit 5 and height 80. Both bits set draw the ledge instead. A
+clear hold bit draws none of that quad. The next quad is not in.
 
 ## Scope
 
