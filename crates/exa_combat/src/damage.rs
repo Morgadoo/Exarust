@@ -686,6 +686,65 @@ pub fn refresh_combat_measures(reach: f32, body_value: f32) -> CombatMeasures {
     }
 }
 
+/// The combat replace's inputs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CombatReplaceInput {
+    pub entries: Vec<u64>,
+    pub old: u64,
+    pub new: u64,
+    pub new_hit: u64,
+    pub slot_778: u64,
+    pub slot_770: u64,
+    pub hit: Option<u64>,
+    pub contact: Option<u64>,
+}
+
+/// The combat replace's results.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CombatReplace {
+    pub entries: Vec<u64>,
+    pub replaced: bool,
+    pub slot_778: u64,
+    pub slot_770: u64,
+    pub hit: Option<u64>,
+    pub contact: Option<u64>,
+}
+
+/// Swaps an old target for a new one in the list and the stored slots.
+pub fn replace_combat_target(input: CombatReplaceInput) -> CombatReplace {
+    let mut entries = input.entries.clone();
+    let replaced = if let Some(index) = entries.iter().position(|entry| *entry == input.old) {
+        entries[index] = input.new;
+        true
+    } else {
+        false
+    };
+    CombatReplace {
+        entries,
+        replaced,
+        slot_778: if input.slot_778 == input.old {
+            input.new
+        } else {
+            input.slot_778
+        },
+        slot_770: if input.slot_770 == input.old {
+            input.new
+        } else {
+            input.slot_770
+        },
+        hit: input.hit.map(|value| {
+            if value == input.old {
+                input.new_hit
+            } else {
+                value
+            }
+        }),
+        contact: input
+            .contact
+            .map(|value| if value == input.old { input.new } else { value }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1038,5 +1097,34 @@ mod tests {
         let measures = refresh_combat_measures(12.5, 0.75);
         assert_eq!(measures.reach, 12.5);
         assert_eq!(measures.scaled, 0.75);
+    }
+
+    #[test]
+    fn the_replace_swaps_the_target_everywhere() {
+        let input = |entries, old| CombatReplaceInput {
+            entries,
+            old,
+            new: 9,
+            new_hit: 0x99,
+            slot_778: old,
+            slot_770: 7,
+            hit: Some(old),
+            contact: Some(old),
+        };
+
+        let swapped = replace_combat_target(input(vec![1, 2, 3], 2));
+        assert!(swapped.replaced);
+        assert_eq!(swapped.entries, vec![1, 9, 3]);
+        assert_eq!(swapped.slot_778, 9);
+        assert_eq!(swapped.slot_770, 7);
+        assert_eq!(swapped.hit, Some(0x99));
+        assert_eq!(swapped.contact, Some(9));
+
+        let absent = replace_combat_target(input(vec![1, 2, 3], 4));
+        assert!(!absent.replaced);
+        assert_eq!(absent.entries, vec![1, 2, 3]);
+        assert_eq!(absent.slot_778, 9);
+        assert_eq!(absent.hit, Some(0x99));
+        assert_eq!(absent.contact, Some(9));
     }
 }
