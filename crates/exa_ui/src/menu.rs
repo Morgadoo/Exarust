@@ -86,6 +86,71 @@ pub fn draw_skill_tip(place: SkillTipPlace, unit: i32) -> SkillTipDraw {
     }
 }
 
+/// The transition screen's fixed text.
+pub const TRANSITION_TEXT: &str = "TO BE CONTINUED";
+
+/// The transition fade's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransitionFadePlace {
+    pub page: i32,
+    pub x: i32,
+    pub y: i32,
+    pub colour: [u8; 3],
+    pub alpha: u8,
+    pub glyph_width: i32,
+    pub glyph_height: i32,
+}
+
+/// The transition fade's draw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransitionFade {
+    pub active: bool,
+    pub blend_mode: i32,
+    pub colour: [u8; 4],
+    pub text: &'static str,
+    pub origin: [i32; 2],
+    pub begin_calls: u32,
+    pub draw_calls: u32,
+    pub font_calls: u32,
+    pub base_calls: u32,
+}
+
+/// Draws the transition screen's centred text on page 2.
+pub fn draw_transition_fade(place: TransitionFadePlace) -> TransitionFade {
+    if place.page != 2 {
+        return TransitionFade {
+            active: false,
+            blend_mode: 0,
+            colour: [0; 4],
+            text: TRANSITION_TEXT,
+            origin: [0, 0],
+            begin_calls: 0,
+            draw_calls: 0,
+            font_calls: 0,
+            base_calls: 1,
+        };
+    }
+    let width = 15i64 * i64::from(place.glyph_width);
+    let x = (((i64::from(place.x) - width) as u64) >> 1) as u32 as i32;
+    let y = (((i64::from(place.y) - i64::from(place.glyph_height)) as u64) >> 1) as u32 as i32;
+    TransitionFade {
+        active: true,
+        blend_mode: 0x203,
+        colour: [
+            place.colour[0],
+            place.colour[1],
+            place.colour[2],
+            place.alpha,
+        ],
+        text: TRANSITION_TEXT,
+        origin: [x, y],
+        begin_calls: 1,
+        draw_calls: 1,
+        font_calls: 1,
+        base_calls: 1,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,5 +226,39 @@ mod tests {
             ),
             (1, 1, 2, 2)
         );
+    }
+
+    #[test]
+    fn the_transition_fade_centres_its_text() {
+        let place = TransitionFadePlace {
+            page: 2,
+            x: 200,
+            y: 50,
+            colour: [10, 20, 30],
+            alpha: 255,
+            glyph_width: 8,
+            glyph_height: 16,
+        };
+        let fade = draw_transition_fade(place);
+        assert!(fade.active);
+        assert_eq!(fade.text, "TO BE CONTINUED");
+        assert_eq!(fade.origin, [40, 17]);
+        assert_eq!(fade.colour, [10, 20, 30, 255]);
+        assert_eq!(fade.blend_mode, 0x203);
+        assert_eq!(
+            (
+                fade.begin_calls,
+                fade.draw_calls,
+                fade.font_calls,
+                fade.base_calls
+            ),
+            (1, 1, 1, 1)
+        );
+
+        let other = draw_transition_fade(TransitionFadePlace { page: 1, ..place });
+        assert!(!other.active);
+        assert_eq!(other.begin_calls, 0);
+        assert_eq!(other.draw_calls, 0);
+        assert_eq!(other.base_calls, 1);
     }
 }
