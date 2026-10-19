@@ -363,8 +363,8 @@ pictures, the learned marks and the thick joint are verified**. A blast
 charge, its growth and the chunk separation are in `exa_game::thaum`.
 A barrier ripple and the dome extent are in `exa_game::thaum`. A wave
 charge, its charging radius and the released front are in `exa_game::thaum`.
-A shell ripple is in `exa_game::thaum`. The torrent mesh and the shell mesh
-are not in. Exarust:
+A shell ripple is in `exa_game::thaum`. A torrent mix is in
+`exa_game::thaum`. The stream mesh and the shell mesh are not in. Exarust:
 `exa_formats::power_tree`.
 
 - **Header**: first word `0xAFCE01CE`. The node count is the signed word at
@@ -426,7 +426,11 @@ are not in. Exarust:
   moves toward that strength by at most 0.06 times the scale upward and 0.04
   times the scale downward. Both under 0.05 removes the ripple. The stored
   scale is 1.
-- Four domains: displacement, energy, force, mind. The torrent mesh and the
+- **Torrent**: below phase 1 the level is (2 minus the charge) times the
+  charge times 0.4. Otherwise the level falls by 0.01, and below 0.02 it
+  stops. Phase 1 eases the two channels toward 0.5 and 0.6 by 0.06. Phase 2
+  multiplies both channels by 0.96.
+- Four domains: displacement, energy, force, mind. The stream mesh and the
   shell mesh are not in.
 
 ## Weapon factories (`.fty`)

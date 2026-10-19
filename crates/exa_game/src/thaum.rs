@@ -548,6 +548,46 @@ pub fn step_shell(shown: f32, strength: f32, scale: f32) -> Option<ShellRipple> 
     }
 }
 
+/// A torrent's level and its two channels after one tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TorrentMix {
+    pub level: f32,
+    pub left: f32,
+    pub right: f32,
+    pub playing: bool,
+}
+
+/// Step a torrent. Below phase 1 the level follows the charge. Later it falls, and the channels ease or dim.
+pub fn step_torrent(phase: i32, charge: f32, level: f32, left: f32, right: f32) -> TorrentMix {
+    let (level, playing) = if phase < 1 {
+        let product = (2.0 - charge) * charge;
+        ((f64::from(product) * 0.4) as f32, true)
+    } else {
+        let level = (f64::from(level) - 0.01) as f32;
+        (level, f64::from(level) >= 0.02)
+    };
+    let (left, right) = if phase == 1 {
+        let gap = 0.5 - left;
+        let left = (f64::from(gap) * 0.06 + f64::from(left)) as f32;
+        let gap = (0.6 - f64::from(right)) as f32;
+        let right = (f64::from(gap) * 0.06 + f64::from(right)) as f32;
+        (left, right)
+    } else if phase == 2 {
+        (
+            (f64::from(left) * 0.96) as f32,
+            (f64::from(right) * 0.96) as f32,
+        )
+    } else {
+        (left, right)
+    };
+    TorrentMix {
+        level,
+        left,
+        right,
+        playing,
+    }
+}
+
 /// Reach grows by 0.6. Radius grows by 0.0006 of the speed. The trail is 0.07 of the speed plus 1.
 pub fn release_wave(reach: f32, radius: f32, speed: f32) -> WaveFront {
     WaveFront {
@@ -732,6 +772,33 @@ mod tests {
         assert_eq!(edge.shown, f32::from_bits(0x3d4c_ccce));
         assert_eq!(edge.strength, f32::from_bits(0x3d4c_ccce));
         assert!(step_shell(0.05, 0.05, 1.0).is_none());
+    }
+
+    #[test]
+    fn a_torrent_follows_its_charge_then_dims() {
+        let full = step_torrent(0, 1.0, 9.0, 3.0, 4.0);
+        assert_eq!(full.level, f32::from_bits(0x3ecc_cccd));
+        assert_eq!(full.left, 3.0);
+        assert_eq!(full.right, 4.0);
+        assert!(full.playing);
+        let half = step_torrent(0, 0.5, 9.0, 0.0, 0.0);
+        assert_eq!(half.level, f32::from_bits(0x3e99_999a));
+
+        let eased = step_torrent(1, 0.4, 0.4, 0.0, 0.0);
+        assert_eq!(eased.level, f32::from_bits(0x3ec7_ae15));
+        assert_eq!(eased.left, f32::from_bits(0x3cf5_c28f));
+        assert_eq!(eased.right, f32::from_bits(0x3d13_74bd));
+        assert!(eased.playing);
+
+        let dimmed = step_torrent(2, 0.0, 0.4, 1.0, 1.0);
+        assert_eq!(dimmed.level, f32::from_bits(0x3ec7_ae15));
+        assert_eq!(dimmed.left, f32::from_bits(0x3f75_c28f));
+        assert_eq!(dimmed.right, f32::from_bits(0x3f75_c28f));
+        assert!(dimmed.playing);
+
+        let stopped = step_torrent(2, 0.0, 0.03, 1.0, 1.0);
+        assert_eq!(stopped.level, f32::from_bits(0x3ca3_d70a));
+        assert!(!stopped.playing);
     }
 
     #[test]
