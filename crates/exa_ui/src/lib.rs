@@ -30,8 +30,8 @@ pub use loading::LoadingStatus;
 pub use scale::GuiScale;
 pub use skin::{
     BackdropCorner, CentredIcon, DispatchPlace, DrawSkin, FlatSlider, FormDispatch, FrameDraw,
-    FramePlace, IconPlace, ScrollBar, SliderDraw, SliderPlace, SliderQuad, dispatch_form,
-    draw_centred_icon, draw_flat_slider, draw_frame, open_skin,
+    FramePlace, IconPlace, ScrollBar, SliderDraw, SliderPlace, SliderQuad, TitleDraw,
+    dispatch_form, draw_centred_icon, draw_flat_slider, draw_frame, open_skin,
 };
 
 pub struct UiPlugin;

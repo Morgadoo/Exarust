@@ -99,6 +99,20 @@ const FORM_HOLD: u32 = 0x4;
 const FORM_LOCK: u32 = 0x800;
 const FORM_PLAIN: u32 = 0x100;
 const FORM_ONE: u32 = 0x3f80_0000;
+const FORM_TITLE: u32 = 1;
+const FORM_CLOSE: u32 = 2;
+const FORM_BOX: u32 = 0x40_0000;
+const FORM_STYLE: u32 = 0x30;
+const FORM_STYLE_ON: u32 = 0x10;
+
+/// Corner sample after the child walk: 0, 0, 0, 0.3.
+pub const FORM_CORNER: [u32; 4] = [0, 0, 0, 0x3e99_999a];
+
+/// Sample used for the top corner when bit 2 is set: 0, 0.4, 0, 0.7.
+pub const FORM_ALT: [u32; 4] = [0, 0x3ecc_cccd, 0, 0x3f33_3333];
+
+/// Close square: 0, 0.8, 0, 1.
+pub const FORM_CLOSE_INK: [u32; 4] = [0, 0x3f4c_cccd, 0, 0x3f80_0000];
 
 /// A slider widget. `value_bits` are the bits of its 0..1 value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -545,6 +559,12 @@ pub struct DispatchPlace {
     pub flags_a: u32,
     pub flags_b: u32,
     pub flags_c: u32,
+    pub flags_d: u32,
+    pub title_width: i32,
+    pub title_byte: u8,
+    pub baseline: i32,
+    pub titled: bool,
+    pub close_mark: i32,
     pub width: i32,
     pub height: i32,
     pub at_x: i32,
@@ -569,8 +589,18 @@ pub struct BackdropCorner {
     pub v: u32,
 }
 
+/// A centred title. The glyph call is not in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TitleDraw {
+    pub x: i32,
+    pub baseline: i32,
+    pub width: i32,
+    pub tint: Option<u8>,
+}
+
 /// The opening of a form: spans, an optional shade and backdrop, the scroll
-/// shift, and which children are shown. The rest of the dispatcher is not in.
+/// shift, the shown children, and the title and corner squares that follow.
+/// The later edge bars are not in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormDispatch {
     pub span_a: i32,
@@ -587,6 +617,9 @@ pub struct FormDispatch {
     pub shifted: bool,
     pub pane_calls: u32,
     pub shown: Vec<i32>,
+    pub title: Option<TitleDraw>,
+    pub corners: Vec<SliderQuad>,
+    pub wide_calls: u32,
 }
 
 fn round_even(span: i64, bits: u32) -> i32 {
@@ -650,6 +683,86 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         }
         index += 1;
     }
+    let measured = if (place.flags_b & FORM_TITLE) == FORM_TITLE {
+        place.title_width
+    } else {
+        0
+    };
+    let title = if measured > 0 {
+        let spare = i64::from(place.width) - i64::from(measured);
+        Some(TitleDraw {
+            x: (spare / 2) as i32,
+            baseline: place.baseline,
+            width: place.width,
+            tint: if place.titled {
+                Some(round_even(i64::from(place.title_byte), FORM_ONE) as u8)
+            } else {
+                None
+            },
+        })
+    } else {
+        None
+    };
+    let styled = (place.flags_d & FORM_STYLE) == FORM_STYLE_ON;
+    let wide = (place.flags_b & FORM_BOX) != 0;
+    let (corners, wide_calls) = if styled && wide {
+        (Vec::new(), 1)
+    } else if styled {
+        let thick = unit.wrapping_mul(6);
+        let bar = unit.wrapping_shl(2);
+        let width = place.width;
+        let height = place.height;
+        let top = if (place.flags_b & FORM_CLOSE) == FORM_CLOSE {
+            FORM_ALT
+        } else {
+            FORM_CORNER
+        };
+        let mut quads = vec![quad(
+            FORM_CORNER,
+            [(0, 0), (0, thick), (thick, thick), (thick, 0)],
+        )];
+        if (place.flags_b & FORM_CLOSE) == FORM_CLOSE && place.close_mark != -4 {
+            quads.push(quad(
+                FORM_CLOSE_INK,
+                [
+                    (width, 0),
+                    (width.wrapping_sub(bar), 0),
+                    (width.wrapping_sub(bar), bar),
+                    (width, bar),
+                ],
+            ));
+        }
+        quads.push(quad(
+            top,
+            [
+                (width, 0),
+                (width.wrapping_sub(thick), 0),
+                (width.wrapping_sub(thick), thick),
+                (width, thick),
+            ],
+        ));
+        quads.push(quad(
+            FORM_CORNER,
+            [
+                (0, height),
+                (thick, height),
+                (thick, height.wrapping_sub(thick)),
+                (0, height.wrapping_sub(thick)),
+            ],
+        ));
+        quads.push(quad(
+            FORM_CORNER,
+            [
+                (width, height),
+                (width, height.wrapping_sub(thick)),
+                (width.wrapping_sub(thick), height.wrapping_sub(thick)),
+                (width.wrapping_sub(thick), height),
+            ],
+        ));
+        (quads, 0)
+    } else {
+        (Vec::new(), 0)
+    };
     FormDispatch {
         span_a,
         span_b,
@@ -670,6 +783,9 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         shifted: (place.flags_c & FORM_PLAIN) == 0,
         pane_calls: 1,
         shown: visits,
+        title,
+        corners,
+        wide_calls,
     }
 }
 
@@ -1223,6 +1339,12 @@ mod tests {
             flags_a,
             flags_b,
             flags_c,
+            flags_d: 0,
+            title_width: 0,
+            title_byte: 0,
+            baseline: 0,
+            titled: false,
+            close_mark: 0,
             width: 100,
             height: 80,
             at_x: 3,
@@ -1291,5 +1413,75 @@ mod tests {
             &[],
         );
         assert_eq!((tie.shift_x, tie.shift_y), (0, 2));
+    }
+
+    #[test]
+    fn a_dispatch_centres_the_title_and_draws_the_corners() {
+        let mut form = place(0, 0x11, 0, 0, 0, 0);
+        form.flags_d = 0x10;
+        form.title_width = 40;
+        form.baseline = 12;
+        form.titled = true;
+        form.title_byte = 200;
+        let drawn = dispatch_form(5, 0, form, &[]);
+        let title = drawn.title.expect("a title");
+        assert_eq!(title.x, 30);
+        assert_eq!(title.baseline, 12);
+        assert_eq!(title.width, 100);
+        assert_eq!(title.tint, Some(200));
+        assert_eq!(drawn.corners.len(), 4);
+        assert_eq!(drawn.corners[0].sample, FORM_CORNER);
+        assert_eq!(
+            drawn.corners[0].corners,
+            [(0, 0), (0, 30), (30, 30), (30, 0)]
+        );
+        assert_eq!(
+            drawn.corners[1].corners,
+            [(100, 0), (70, 0), (70, 30), (100, 30)]
+        );
+        assert_eq!(
+            drawn.corners[2].corners,
+            [(0, 80), (30, 80), (30, 50), (0, 50)]
+        );
+        assert_eq!(
+            drawn.corners[3].corners,
+            [(100, 80), (100, 50), (70, 50), (70, 80)]
+        );
+        assert_eq!(drawn.wide_calls, 0);
+
+        form.flags_b = 0x13;
+        form.close_mark = 0;
+        let closed = dispatch_form(5, 0, form, &[]);
+        assert_eq!(closed.corners.len(), 5);
+        assert_eq!(closed.corners[1].sample, FORM_CLOSE_INK);
+        assert_eq!(
+            closed.corners[1].corners,
+            [(100, 0), (80, 0), (80, 20), (100, 20)]
+        );
+        assert_eq!(closed.corners[2].sample, FORM_ALT);
+
+        form.close_mark = -4;
+        let bare = dispatch_form(5, 0, form, &[]);
+        assert_eq!(bare.corners.len(), 4);
+        assert_eq!(bare.corners[1].sample, FORM_ALT);
+
+        form.flags_b = 0x40_0011;
+        let wide = dispatch_form(5, 0, form, &[]);
+        assert!(wide.corners.is_empty());
+        assert_eq!(wide.wide_calls, 1);
+
+        form.flags_b = 1;
+        form.flags_d = 0;
+        form.title_width = 16;
+        form.width = 10;
+        form.titled = false;
+        let tight = dispatch_form(5, 0, form, &[]);
+        let title = tight.title.expect("a title");
+        assert_eq!(title.x, -3);
+        assert!(title.tint.is_none());
+        assert!(tight.corners.is_empty());
+
+        form.title_width = 0;
+        assert!(dispatch_form(5, 0, form, &[]).title.is_none());
     }
 }
