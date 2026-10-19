@@ -39,6 +39,15 @@ pub const ENTERED_CODE: u32 = 4;
 pub const VIEW_BIT: u32 = 0x10;
 /// Mask kept on the world flags when a non-zero side is stored.
 pub const WORLD_KEEP: u32 = 0xffff_fdbd;
+/// High nibble that keeps a hook code. A code without it gains the low bit.
+pub const HOOK_HIGH: u32 = 0xf000;
+pub const HOOK_LOW: u32 = 0x1000;
+/// Codes stored on the primary hook list.
+pub const HOOK_GATE: u32 = 0x8001;
+pub const HOOK_WIDE: u32 = 0x2001;
+pub const HOOK_SMALL: u32 = 2;
+/// Sort key of the ordered hook swapped when the mark changes.
+pub const HOOK_ORDER: i32 = 4;
 /// Words copied from one control bank. The bytes between them are not copied.
 pub const BANK_WORDS: usize = 16;
 
@@ -62,6 +71,15 @@ pub struct CursorShape {
 pub struct InstallRecord {
     pub value: u64,
     pub hook: bool,
+}
+
+/// One registered hook. The primary list stores a code. The ordered list stores
+/// a sort key in the same field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListedHook {
+    pub hook: u64,
+    pub owner: u64,
+    pub code: u32,
 }
 
 /// A child window on one of the two lists a match begin walks.
@@ -172,6 +190,22 @@ pub struct MatchGate {
     pub draw_owner_used: u64,
     pub draw_extra_used: u64,
     pub draw_value: u64,
+    /// Set when a show calls the resolved action-set target.
+    pub activates_action_set: bool,
+    /// Empty primary list. The first register stores index 0.
+    pub hook_high: i32,
+    pub primary: Vec<ListedHook>,
+    pub ordered_count: u32,
+    pub ordered: Vec<ListedHook>,
+    pub gate_hook: u64,
+    pub plain_hook: u64,
+    pub lab_hook: u64,
+    pub wide_hook: u64,
+    pub self_owner: u64,
+    pub watch_hook: u64,
+    pub watch_owner: u64,
+    pub play_hook: u64,
+    pub play_owner: u64,
     /// Cleared by the first bank and set by the second. A match leaves the words.
     pub bank_flag: u8,
     pub bank_active: [u64; BANK_WORDS],
@@ -280,6 +314,20 @@ impl MatchGate {
             draw_owner_used: 0,
             draw_extra_used: 0,
             draw_value: 0,
+            activates_action_set: false,
+            hook_high: -1,
+            primary: Vec::new(),
+            ordered_count: 0,
+            ordered: Vec::new(),
+            gate_hook: 0,
+            plain_hook: 0,
+            lab_hook: 0,
+            wide_hook: 0,
+            self_owner: 0,
+            watch_hook: 0,
+            watch_owner: 0,
+            play_hook: 0,
+            play_owner: 0,
             bank_flag: 0,
             bank_active: [0; BANK_WORDS],
             bank_first: [0; BANK_WORDS],
@@ -353,11 +401,21 @@ impl MatchGate {
             self.world_flags = 0;
             self.world_child_code = ENTERED_CODE;
         }
+        if self.bank_side == 0 {
+            drop_primary(self, self.plain_hook);
+            drop_primary(self, self.lab_hook);
+        } else {
+            drop_primary(self, self.wide_hook);
+            drop_primary(self, self.wide_hook);
+        }
+        drop_primary(self, self.gate_hook);
         self.side_notice = 0;
         self.side_mid = 0;
         self.side_tail = 0;
         self.entered_flag = 1;
         self.entered_code = 0;
+        drop_ordered(self, self.play_hook, self.play_owner);
+        insert_ordered(self, self.watch_hook, self.watch_owner, HOOK_ORDER);
         select_bank(self, 0);
         self.hold_byte = 0;
         self.view_flags |= VIEW_BIT;
@@ -579,17 +637,21 @@ fn follow_lists(gate: &mut MatchGate) {
             gate.bank_side = u8::from(gate.world_side == 0);
             apply_world_side(gate);
         }
+        if gate.hold_byte == 0 {
+            register_primary(gate, HOOK_GATE, gate.gate_hook, gate.self_owner);
+        }
         if gate.bank_side == 0 {
             select_bank(gate, 1);
         } else {
             gate.side_notice = 1;
             select_bank(gate, 2);
         }
+        drop_ordered(gate, gate.watch_hook, gate.watch_owner);
+        insert_ordered(gate, gate.play_hook, gate.play_owner, HOOK_ORDER);
     }
 }
 
 /// Store a world byte as the side when it differs, then select that bank.
-/// Callback registration is not in.
 fn apply_world_side(gate: &mut MatchGate) {
     if gate.side_lock != 0 {
         return;
@@ -605,12 +667,18 @@ fn apply_world_side(gate: &mut MatchGate) {
     if next == 0 {
         select_bank(gate, 1);
         gate.side_notice = 0;
+        register_primary(gate, HOOK_WIDE, gate.plain_hook, gate.self_owner);
+        register_primary(gate, HOOK_SMALL, gate.lab_hook, gate.self_owner);
     } else {
         select_bank(gate, 2);
         gate.side_notice = 1;
         gate.side_tail = 0;
         gate.world_child_span = 0;
         gate.world_flags &= WORLD_KEEP;
+        register_primary(gate, HOOK_WIDE, gate.wide_hook, gate.self_owner);
+        register_primary(gate, HOOK_SMALL, gate.wide_hook, gate.self_owner);
+        drop_primary(gate, gate.plain_hook);
+        drop_primary(gate, gate.lab_hook);
     }
     gate.world_side = gate.bank_side;
 }
@@ -684,8 +752,132 @@ fn show_installed(gate: &mut MatchGate, value: u64) {
     gate.draw_owner_used = owner;
     gate.draw_extra_used = extra;
     gate.draw_value = value;
+    gate.activates_action_set = true;
     gate.install_shows = gate.install_shows.saturating_add(1);
     gate.install_shown = value;
+}
+
+fn register_primary(gate: &mut MatchGate, code: u32, hook: u64, owner: u64) {
+    gate.hook_high = gate.hook_high.wrapping_add(1);
+    let stored = if code & HOOK_HIGH == 0 {
+        code | HOOK_LOW
+    } else {
+        code
+    };
+    let index = gate.hook_high as usize;
+    if gate.primary.len() <= index {
+        gate.primary.resize(
+            index + 1,
+            ListedHook {
+                hook: 0,
+                owner: 0,
+                code: 0,
+            },
+        );
+    }
+    gate.primary[index] = ListedHook {
+        hook,
+        owner,
+        code: stored,
+    };
+}
+
+fn drop_primary(gate: &mut MatchGate, hook: u64) {
+    let mut index = 0i32;
+    while index <= gate.hook_high {
+        let slot = index as usize;
+        let matched = gate.primary.get(slot).is_some_and(|row| row.hook == hook);
+        if !matched {
+            index += 1;
+            continue;
+        }
+        gate.hook_high -= 1;
+        if index <= gate.hook_high {
+            let mut cursor = index;
+            while cursor <= gate.hook_high {
+                let from = (cursor as usize) + 1;
+                gate.primary[cursor as usize] = gate.primary[from].clone();
+                cursor += 1;
+            }
+        }
+    }
+    let keep = (gate.hook_high + 1).max(0) as usize;
+    gate.primary.truncate(keep);
+}
+
+fn insert_ordered(gate: &mut MatchGate, hook: u64, owner: u64, key: i32) {
+    let count = gate.ordered_count;
+    let mut place = count;
+    gate.ordered.resize(
+        (count as usize) + 1,
+        ListedHook {
+            hook: 0,
+            owner: 0,
+            code: 0,
+        },
+    );
+    if count > 0 {
+        let mut index: i32 = -1;
+        let last = count as i32 - 1;
+        loop {
+            index += 1;
+            let existing = gate.ordered[index as usize].code.cast_signed();
+            if key < existing {
+                let stop = index + 1;
+                if stop <= count as i32 {
+                    let mut cursor = count as i32 + 1;
+                    loop {
+                        cursor -= 1;
+                        let from = (cursor as usize) - 1;
+                        gate.ordered[cursor as usize] = gate.ordered[from].clone();
+                        if stop >= cursor {
+                            break;
+                        }
+                    }
+                }
+                place = index as u32;
+                break;
+            }
+            if last <= index {
+                break;
+            }
+        }
+    }
+    gate.ordered[place as usize] = ListedHook {
+        hook,
+        owner,
+        code: key as u32,
+    };
+    gate.ordered_count = count + 1;
+}
+
+fn drop_ordered(gate: &mut MatchGate, hook: u64, owner: u64) {
+    let count = gate.ordered_count as i32;
+    if count < 1 {
+        return;
+    }
+    let mut index: i32 = -1;
+    loop {
+        index += 1;
+        let row = &gate.ordered[index as usize];
+        if row.hook == hook && row.owner == owner {
+            gate.ordered_count -= 1;
+            let new_count = gate.ordered_count as i32;
+            if index < new_count {
+                let mut cursor = index;
+                while cursor < new_count {
+                    let from = (cursor as usize) + 1;
+                    gate.ordered[cursor as usize] = gate.ordered[from].clone();
+                    cursor += 1;
+                }
+            }
+            gate.ordered.truncate(gate.ordered_count as usize);
+            return;
+        }
+        if index >= count - 1 {
+            return;
+        }
+    }
 }
 
 fn close_named(owner: String, arg: u32, state: &mut CloseState) {
@@ -1524,5 +1716,92 @@ mod tests {
         aside.set_session_aside();
         assert_eq!(aside.entered_code, 7);
         assert_eq!(aside.bank_installs, 1);
+    }
+
+    fn listed(hook: u64, owner: u64, code: u32) -> ListedHook {
+        ListedHook { hook, owner, code }
+    }
+
+    #[test]
+    fn a_cleared_mark_registers_hooks_and_activates_the_action_set() {
+        let mut gate = MatchGate::playing();
+        gate.focus = true;
+        gate.session_mark = 1;
+        gate.install_ready = 1;
+        gate.install_first = 1;
+        gate.install_records = vec![installed(42, false)];
+        gate.draw_owner = 7;
+        gate.draw_extra = 8;
+        gate.gate_hook = 11;
+        gate.self_owner = 3;
+        gate.play_hook = 21;
+        gate.play_owner = 4;
+        gate.watch_hook = 22;
+        gate.watch_owner = 5;
+        gate.ordered_count = 1;
+        gate.ordered = vec![listed(22, 5, HOOK_ORDER as u32)];
+        let mut dying = hired_physician();
+        assert!(gate.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut dying));
+        assert_eq!(gate.primary, vec![listed(11, 3, HOOK_GATE)]);
+        assert_eq!(gate.hook_high, 0);
+        assert_eq!(gate.ordered, vec![listed(21, 4, HOOK_ORDER as u32)]);
+        assert!(gate.activates_action_set);
+        assert_eq!(gate.draw_value, 42);
+        assert_eq!(dying.deaths, 1);
+
+        let mut held = MatchGate::playing();
+        held.focus = true;
+        held.session_mark = 1;
+        held.hold_byte = 1;
+        held.gate_hook = 11;
+        let mut company = Company::new("Ash");
+        assert!(held.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert!(held.primary.is_empty());
+        assert_eq!(held.hook_high, -1);
+
+        let mut side = MatchGate::playing();
+        side.focus = true;
+        side.session_mark = 1;
+        side.world_open = true;
+        side.world_side = 5;
+        side.wide_hook = 30;
+        side.plain_hook = 31;
+        side.lab_hook = 32;
+        side.self_owner = 3;
+        side.gate_hook = 11;
+        let mut company = Company::new("Ash");
+        assert!(side.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert_eq!(
+            side.primary,
+            vec![
+                listed(30, 3, HOOK_WIDE),
+                listed(30, 3, HOOK_SMALL | HOOK_LOW),
+                listed(11, 3, HOOK_GATE),
+            ]
+        );
+
+        let mut back = MatchGate::playing();
+        back.bank_side = 0;
+        back.plain_hook = 31;
+        back.lab_hook = 32;
+        back.gate_hook = 11;
+        back.self_owner = 3;
+        back.play_hook = 21;
+        back.play_owner = 4;
+        back.watch_hook = 22;
+        back.watch_owner = 5;
+        back.hook_high = 2;
+        back.primary = vec![
+            listed(31, 3, HOOK_WIDE),
+            listed(32, 3, HOOK_SMALL | HOOK_LOW),
+            listed(11, 3, HOOK_GATE),
+        ];
+        back.ordered_count = 1;
+        back.ordered = vec![listed(21, 4, HOOK_ORDER as u32)];
+        back.set_session_aside();
+        assert!(back.primary.is_empty());
+        assert_eq!(back.hook_high, -1);
+        assert_eq!(back.ordered, vec![listed(22, 5, HOOK_ORDER as u32)]);
+        assert!(!back.activates_action_set);
     }
 }
