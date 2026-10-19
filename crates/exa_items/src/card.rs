@@ -10,7 +10,8 @@
 //! shown only when that byte times 0.05 is above 0.25. Coverage is always
 //! that byte times 0.05. A plain card centres the icon in the span. A
 //! stats card places it from the unit, and a picture wider than eleven
-//! units shifts it. Description phrases are not drawn here.
+//! units shifts it. A shield card shows weight, impact, and encumbrance.
+//! Rank, points, and description phrases are not drawn here.
 //!
 //! Evidence: the item-card page choice.
 
@@ -205,6 +206,43 @@ pub fn card_icon(
     }
 }
 
+/// Either of these bits stores a shield's weight as 1 and its encumbrance as 8.
+const SHIELD_FIXED: u32 = 0x0600_0000;
+
+/// The three shield rows. Encumbrance is absent when its byte is 0 and the shield is not fixed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShieldBars {
+    pub weight: f32,
+    pub impact: f32,
+    pub encumbrance: Option<f32>,
+}
+
+fn shield_amount(value: u8, scale: f64) -> f32 {
+    (f64::from(value) * scale) as f32
+}
+
+/// Weight, impact, then encumbrance.
+pub fn shield_bars(flags: u32, weight: u8, impact: u8, encumbrance: u8) -> ShieldBars {
+    let impact = shield_amount(impact, 0.05);
+    if flags & SHIELD_FIXED != 0 {
+        ShieldBars {
+            weight: 1.0,
+            impact,
+            encumbrance: Some(8.0),
+        }
+    } else {
+        ShieldBars {
+            weight: shield_amount(weight, 0.01),
+            impact,
+            encumbrance: if encumbrance == 0 {
+                None
+            } else {
+                Some(shield_amount(encumbrance, 0.05))
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,5 +382,19 @@ mod tests {
             card_icon(true, 268, 160, 160, 160, 4),
             IconPlace { x: 88, y: 4 }
         );
+    }
+
+    #[test]
+    fn a_shield_row_scales_weight_and_hides_a_zero_burden() {
+        let open = shield_bars(0, 5, 20, 0);
+        assert_eq!(open.weight.to_bits(), 0x3d4c_cccd);
+        assert_eq!(open.impact.to_bits(), 0x3f80_0000);
+        assert_eq!(open.encumbrance, None);
+        let worn = shield_bars(0, 0, 0, 1);
+        assert_eq!(worn.encumbrance.unwrap().to_bits(), 0x3d4c_cccd);
+        let fixed = shield_bars(0x0200_0000, 5, 0, 0);
+        assert_eq!(fixed.weight.to_bits(), 0x3f80_0000);
+        assert_eq!(fixed.impact.to_bits(), 0);
+        assert_eq!(fixed.encumbrance.unwrap().to_bits(), 0x4100_0000);
     }
 }
