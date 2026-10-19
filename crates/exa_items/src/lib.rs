@@ -5,6 +5,7 @@
 use bevy::prelude::*;
 
 pub mod carry;
+pub mod pane;
 
 pub struct ItemsPlugin;
 

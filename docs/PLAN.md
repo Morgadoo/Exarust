@@ -821,8 +821,13 @@ Done (change `equip-and-block`): a worn item takes off whatever overlaps
 its occupancy; displaced braies are dropped and return when the groin is
 bare; a container and a pack exchange an item by moving its id. A parry
 stops the blow. A shield that is not parrying deals yellow
-0.05·(1 − stamina)·(0.4 + 0.4·impact)·leak and no lasting wound. Still to
-do: the inventory windows, injuries beyond damage, grabs, practice mode,
+0.05·(1 − stamina)·(0.4 + 0.4·impact)·leak and no lasting wound.
+Done (change `place-items-in-a-pane`): an inventory pane places icons at
+pixels. A drop from outside adds the icon and its bulk and clamps it; a
+drop from the same pane or the linked pane only moves it, and a linked
+move is not refused for capacity. Ending the drag removes the icon. The
+hit is the top-most rectangle. Still to
+do: the icon picture and the description card, injuries beyond damage, grabs, practice mode,
 the striker's recoil
 and follow-through (C21, M26), the collapse's stagger steps; next in the
 combat timing: the unarmed parries (L10).
@@ -1016,8 +1021,9 @@ against Exarust and lists the largest missing ones. In order:
    the backpedal (Walk played backwards) and knockback steps are in.
 2. Inventory, equipment and containers, then blocking and parrying
    (Phase 4). Equipping by occupancy, container transfers, a parry that
-   stops a blow and a shield's yellow leak are in. The inventory windows
-   are not.
+   stops a blow and a shield's yellow leak are in. An inventory pane places
+   icons, checks bulk and size, and hits the top-most one. The icon picture
+   and the description card are not.
 3. The original's NPC brain: perception, targets and the combat state that
    drives the same inputs as the player (Phase 6). A path on the grid, the
    look-ahead, and an order that writes the player's heading and velocity
