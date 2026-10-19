@@ -329,6 +329,41 @@ pub fn dispatch_end_session(input: EndSessionInput) -> EndSessionDispatch {
     }
 }
 
+/// The main menu's hover state after one update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MenuHover {
+    pub selection: i32,
+    pub sound: bool,
+    pub stamp: i32,
+    pub result: i32,
+}
+
+/// Updates the main menu's hover and rate-limits its sound to 200 units.
+pub fn update_menu_hover(
+    hover: i32,
+    field_204: i32,
+    previous: i32,
+    stamp: i32,
+    now: i32,
+) -> MenuHover {
+    let candidate = if hover == field_204 { field_204 } else { 0 };
+    if candidate == previous {
+        return MenuHover {
+            selection: candidate,
+            sound: false,
+            stamp,
+            result: 0,
+        };
+    }
+    let fresh = stamp.wrapping_add(0xc8) < now;
+    MenuHover {
+        selection: candidate,
+        sound: fresh && candidate != 0,
+        stamp: if fresh { now } else { stamp },
+        result: 3,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -575,5 +610,31 @@ mod tests {
         assert!(done.clears_action);
         assert!(done.clears_field_204);
         assert_eq!(done.result, 0);
+    }
+
+    #[test]
+    fn the_menu_hover_rate_limits_its_sound() {
+        let same = update_menu_hover(5, 5, 5, 0, 300);
+        assert_eq!(same.selection, 5);
+        assert!(!same.sound);
+        assert_eq!(same.result, 0);
+        assert_eq!(same.stamp, 0);
+
+        let changed = update_menu_hover(5, 5, 0, 0, 300);
+        assert_eq!(changed.selection, 5);
+        assert!(changed.sound);
+        assert_eq!(changed.stamp, 300);
+        assert_eq!(changed.result, 3);
+
+        let zero = update_menu_hover(3, 5, 4, 0, 300);
+        assert_eq!(zero.selection, 0);
+        assert!(!zero.sound);
+        assert_eq!(zero.stamp, 300);
+        assert_eq!(zero.result, 3);
+
+        let limited = update_menu_hover(5, 5, 0, 200, 300);
+        assert!(!limited.sound);
+        assert_eq!(limited.stamp, 200);
+        assert_eq!(limited.result, 3);
     }
 }

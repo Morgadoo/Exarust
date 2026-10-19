@@ -30,10 +30,10 @@ pub use hud::{DrawHud, HudBars};
 pub use loading::LoadingStatus;
 pub use menu::{
     ClassSelect, EndSessionAction, EndSessionDispatch, EndSessionInput, InventoryKeyClose,
-    MenuKeyClose, SkillKey, SkillSelection, SkillTipDraw, SkillTipPlace, TRANSITION_TEXT,
-    TransitionFade, TransitionFadePlace, dispatch_end_session, draw_skill_tip,
+    MenuHover, MenuKeyClose, SkillKey, SkillSelection, SkillTipDraw, SkillTipPlace,
+    TRANSITION_TEXT, TransitionFade, TransitionFadePlace, dispatch_end_session, draw_skill_tip,
     draw_transition_fade, inventory_key_close, menu_clock_scale, menu_key_close, select_menu_class,
-    settle_skill_selection, skill_selector_key,
+    settle_skill_selection, skill_selector_key, update_menu_hover,
 };
 pub use scale::GuiScale;
 pub use skin::{
