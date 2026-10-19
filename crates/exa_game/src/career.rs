@@ -11,8 +11,10 @@
 //! most 5, plus 1. The night adds 6553 to each health, or 9830 with a
 //! physician, and stops at 65535. A hired trainer adds a lesson to each
 //! combatant whose current technique the trainer knows. A day mod 7 of 1
-//! resolves the week, and four won weeks grant the season. The hire price
-//! and the tier scaling of a fee were not read. A recruitment costs 12 copper.
+//! resolves the week, and four won weeks grant the season. A recruitment
+//! costs 12 copper. A shop line prices its low fourteen bits at 1, 12, 144
+//! or 1440 copper, and a sale is a quarter of that basket. The tier scaling
+//! of a fee was not read.
 //!
 //! Evidence: the arena career notes (money seed, coin rate, roster caps,
 //! the six standard matches and the seven specials, fee on entry, prize on
@@ -39,6 +41,16 @@ pub const REST_WITH_PHYSICIAN: u16 = 0x2666;
 pub const FULL_HEALTH: u16 = 0xffff;
 /// Copper a recruitment costs.
 pub const HIRE_PRICE: u32 = 12;
+/// The two high bits of a shop line select its unit.
+pub const LINE_UNIT: u16 = 0xc000;
+/// The low fourteen bits of a shop line are how many of that unit it holds.
+pub const LINE_COUNT: u16 = 0x3fff;
+/// Both unit bits: each count is ten gold, 1440 copper.
+pub const UNIT_TEN_GOLD: u16 = 0xc000;
+/// The high unit bit alone: each count is one gold, 144 copper.
+pub const UNIT_GOLD: u16 = 0x8000;
+/// The low unit bit alone: each count is one silver, 12 copper.
+pub const UNIT_SILVER: u16 = 0x4000;
 /// Skill experience in one level.
 pub const SKILL_STEP: u16 = 5000;
 /// Experience a matching lesson divides by the fighter's rank.
@@ -253,6 +265,26 @@ pub struct Company {
     pub tournaments_won: u32,
 }
 
+/// Copper one shop line is worth, before a sale quarters the basket.
+pub fn line_price(word: u16) -> u32 {
+    let count = u32::from(word & LINE_COUNT);
+    let unit = match word & LINE_UNIT {
+        UNIT_TEN_GOLD => 10 * COIN * COIN,
+        UNIT_GOLD => COIN * COIN,
+        UNIT_SILVER => COIN,
+        _ => 1,
+    };
+    count * unit
+}
+
+/// Copper in a basket. A sale is the sum divided by 4, dropping the remainder.
+pub fn basket_total(lines: &[u16], sell: bool) -> u32 {
+    let sum = lines
+        .iter()
+        .fold(0u32, |sum, line| sum.wrapping_add(line_price(*line)));
+    if sell { sum >> 2 } else { sum }
+}
+
 impl Company {
     /// A new career: the name, 343 copper, and an empty roster.
     pub fn new(name: impl Into<String>) -> Self {
@@ -291,6 +323,12 @@ impl Company {
             self.earned = self.earned.saturating_add(got);
         }
         true
+    }
+
+    /// Confirm the two baskets. A buy is the sum of the line prices. A sale
+    /// is that sum divided by 4, dropping the remainder.
+    pub fn trade_lines(&mut self, buy: &[u16], sell: &[u16]) -> bool {
+        self.trade(basket_total(buy, false), basket_total(sell, true))
     }
 
     /// Gold, silver, then copper, at 12 to 1.
@@ -695,6 +733,25 @@ mod tests {
         assert_eq!(company.earned, 15);
         assert!(company.trade(5, 5));
         assert_eq!(company.copper, 318);
+    }
+
+    #[test]
+    fn a_shop_line_prices_by_its_marks() {
+        assert_eq!(basket_total(&[7], false), 7);
+        assert_eq!(basket_total(&[7], true), 1);
+        assert_eq!(basket_total(&[UNIT_SILVER | 2], false), 24);
+        assert_eq!(basket_total(&[UNIT_GOLD | 2], false), 288);
+        assert_eq!(basket_total(&[UNIT_TEN_GOLD | 2], false), 2880);
+        assert_eq!(basket_total(&[3, 3], true), 1);
+        assert_eq!(basket_total(&[u16::MAX], false), 23_591_520);
+
+        let mut company = Company::new("Ash");
+        assert!(company.trade_lines(&[40], &[]));
+        assert_eq!(company.copper, 303);
+        assert_eq!(company.spent, 40);
+        assert!(company.trade_lines(&[10], &[100]));
+        assert_eq!(company.copper, 318);
+        assert_eq!(company.earned, 15);
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 Game modes and session flow: Story, Arena (company management, matches, seasons), Practice; save games; ties all plugins together.
 
-**Phase:** Phase 4–7 (see [`docs/PLAN.md`](../../docs/PLAN.md)). Status: the arena career (`career`), one effect per thaumaturgy domain (`thaum`) and an Exarust session save (`session`) are in. The shop, seasons and the original's packages are not.
+**Phase:** Phase 4–7 (see [`docs/PLAN.md`](../../docs/PLAN.md)). Status: the arena career (`career`) has the company, the roster, matches, a shop line priced at 1, 12, 144 or 1440 copper with a quartered sale, wages, the season, overnight rest and a trainer's lesson. One effect per thaumaturgy domain (`thaum`) and an Exarust session save (`session`) are in. Menus, emblems and the original's packages are not.
 
 It already runs the character ticks of physical bodies, the player's last,
 each body's whole tick before the next, in the original's stages

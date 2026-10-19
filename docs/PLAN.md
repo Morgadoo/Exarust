@@ -1039,9 +1039,10 @@ Done (change `close-the-arena-day`): a merchant's wage is 2, a physician's 12, a
 Done (change `rest-overnight`): a night adds 6553 to health, or 9830 when a physician is hired, and stops at 65535. A pool of 58981 becomes 65534. A pool of 58982 becomes 65535. Health 3275 across seven nights is 49146 and stays entered. Health 1000 with a physician becomes 10830. The trainer's lessons are not in.
 Done (change `teach-a-lesson`): with no trainer a technique of 7 stays at 0. A trainer who knows 7 adds 1000. A trainer who knows 3 adds nothing. A merchant and a physician stay at 0. A word of 4500 snaps to 5000. Five other skills at level 1 make the grant 166. A first skill at 25000 is left there and the next skill becomes 166. Item prices are not in.
 Done (change `price-a-hire`): 11 copper hires nobody and stays at 11. 12 copper hires a combatant and leaves 0, with 12 spent. A second physician is refused and the spent total stays 24. Item prices are not in.
+Done (change `price-a-shop-line`): a line of 7 buys for 7 and sells for 1. A lower mark of 2 buys for 24, a higher mark of 2 for 288, and both marks of 2 for 2880. Two lines of 3 sell for 1. A line with every bit set buys for 23591520. Buying 40 then buying 10 against a sale of 100 leaves 318 copper and 15 earned. Emblems and the reward item identities are not in.
 Still open:
 
-- Item prices and emblems. The reward item identities are not in. A recruitment costs 12 copper. Overnight rest and a trainer's lesson are in.
+- Emblems. The reward item identities are not in. A shop line prices at 1, 12, 144 or 1440 copper, and a sale is a quarter of the basket. A recruitment costs 12 copper. Overnight rest and a trainer's lesson are in.
 - Story side levels, scripted encounters, the role interpreter, map discovery.
 - The other powers, their charge-up and their meshes.
 - Character creation (race, body, face, hair, colours, class, skills).
