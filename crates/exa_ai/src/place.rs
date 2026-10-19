@@ -15,8 +15,12 @@
 //! 1 inside its arc and 8 outside it, while the candidate is closer than
 //! (skill + 3) × 20 plus the opponent's reach. Skill and feral then scale
 //! that danger, and feral halves the close term at 1. A dull fighter
-//! scores no danger and skips that scale. The approach term and the
-//! recovering close tweak are not in.
+//! scores no danger and skips that scale. The approach term eases toward
+//! the strike ideal and is 0 past a band of 100 cm, or 150 cm when wide,
+//! plus (1 − skill) × 200 cm. A recovering swing subtracts 1 from the
+//! close term, not below 0, and multiplies the approach by 4 at skill 0.
+//! A weapon hand at phase 0.4 or later sets one arc edge. The facing
+//! scale and the idle-action clock are not in.
 
 /// The strike term is 0 at this distance (cm).
 pub const PLACE_FADE_CM: f32 = 600.0;
@@ -37,6 +41,12 @@ const SOON_MS: i64 = 901;
 const GONE_MS: i64 = 10_001;
 /// Arrival reported when the body is not sweeping, or the arc has no side.
 const NOT_SWEEPING_MS: i64 = 100_000;
+/// Degrees to radians, the f32 of pi over 180.
+const DEG: f32 = f32::from_bits(0x3c8efa35);
+/// Pi, used as the wrap bound and as a yaw that faces straight back.
+const PI: f32 = f32::from_bits(0x40490fdb);
+/// A flat offset shorter than this, squared, has yaw 0.
+const YAW_EPS: f32 = f32::from_bits(0x322bcc77);
 
 /// Who the score is measured against.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -63,6 +73,9 @@ pub struct Spot {
     pub dull: bool,
     /// The opponent's published swing. A quiet blow scores no danger.
     pub blow: Blow,
+    /// The observer's approach band is 150 cm instead of 100, and the
+    /// inside fraction is eased.
+    pub wide: bool,
 }
 
 /// The opponent's attack arc, as the position score reads it.
@@ -111,6 +124,7 @@ pub struct PlaceScore {
     pub close: f32,
     pub strike: f32,
     pub danger: f32,
+    pub approach: f32,
 }
 
 fn ideal(spot: Spot) -> f32 {
@@ -207,6 +221,163 @@ pub fn attack_danger(distance_cm: f32, reach_cm: f32, blow: Blow) -> f32 {
     }
 }
 
+fn approach_term(distance_cm: f32, ideal: f32, skill: f32, wide: bool) -> f32 {
+    let band = (if wide { 150.0 } else { 100.0 }) + (1.0 - skill) * 200.0;
+    let mut fraction = if ideal < distance_cm {
+        if ideal + band <= distance_cm {
+            0.0
+        } else {
+            (band - (ideal - distance_cm).abs()) / band
+        }
+    } else {
+        let mut fraction = (ideal - distance_cm).abs() / ideal;
+        if wide {
+            fraction *= 2.0 - fraction;
+        }
+        fraction
+    };
+    if fraction <= 0.1 {
+        0.0
+    } else {
+        fraction = (3.0 - fraction * 2.0) * fraction * fraction;
+        fraction * fraction * 1.5
+    }
+}
+
+/// A part point, its 12-float frame, and the body origin it is measured from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hand {
+    pub local: [f32; 4],
+    pub frame: [f32; 12],
+    pub origin: [f32; 3],
+}
+
+/// What the arc publisher reads off the swing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Swing {
+    /// Body action. 5 to 7 are one side, 8 to 10 the other, 11 and 12 thrusts.
+    pub action: i32,
+    pub phase: f32,
+    pub heading: f32,
+    pub facing: f32,
+    /// The class word has a side-weapon bit.
+    pub armed: bool,
+    /// A weapon record is held, which turns the look 20 degrees.
+    pub held: bool,
+    /// The swing is recovering.
+    pub recovering: bool,
+    /// The weapon hand. At phase 0.4 or later it sets one arc edge.
+    pub hand: Option<Hand>,
+}
+
+/// The published sector.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Arc {
+    pub kind: i32,
+    pub start: f32,
+    pub end: f32,
+    pub look: f32,
+}
+
+fn wrap(mut angle: f32) -> f32 {
+    if angle >= -PI {
+        if angle > PI {
+            angle -= FULL_TURN;
+        }
+    } else {
+        angle += FULL_TURN;
+    }
+    angle
+}
+
+fn hand_bearing(hand: Hand) -> f32 {
+    let q = hand.local;
+    let m = hand.frame;
+    let x = q[0] * m[0] + q[1] * m[3] + q[2] * m[6] + q[3] * m[9] - hand.origin[0];
+    let z = q[0] * m[2] + q[1] * m[5] + q[2] * m[8] + q[3] * m[11] - hand.origin[2];
+    let len2 = z * z + x * x;
+    if len2 < YAW_EPS {
+        return 0.0;
+    }
+    let cosine = z / len2.sqrt();
+    let mut angle = if cosine <= -1.0 {
+        PI
+    } else if cosine > 1.0 {
+        0.0
+    } else {
+        cosine.acos()
+    };
+    if x < 0.0 {
+        angle = f32::from_bits(angle.to_bits() ^ 0x8000_0000);
+    }
+    angle
+}
+
+fn arc_mid(start: f32, end: f32) -> f32 {
+    let span = if start <= PI {
+        end - start
+    } else {
+        end + FULL_TURN + start
+    };
+    let mut mid = span * 0.5 + start;
+    if FULL_TURN < mid {
+        mid -= FULL_TURN;
+    }
+    mid
+}
+
+/// Publish the attack arc. A hand at phase 0.4 or later replaces the far
+/// edge of a side swing, or the near edge of the other side. An action
+/// outside a swing keeps both edges on the heading. The idle clock that
+/// turns that action into a recovery is not in.
+pub fn publish_arc(swing: Swing) -> Arc {
+    let mut look = swing.facing;
+    if swing.held {
+        look = wrap(look + DEG * 20.0);
+    }
+    let offset = |degrees: f32| wrap(swing.heading + DEG * degrees);
+    let hand_edge = swing.hand.map(hand_bearing).unwrap_or(swing.heading);
+    let (kind, start, end, look) = if !swing.armed {
+        let kind = if swing.recovering { 4 } else { 3 };
+        (kind, offset(110.0), offset(-110.0), look)
+    } else if swing.action == 11 || swing.action == 12 {
+        let kind = if swing.recovering {
+            4
+        } else if swing.action != 11 || swing.phase >= 0.3 {
+            3
+        } else {
+            0
+        };
+        (kind, offset(50.0), offset(-50.0), look)
+    } else if (8..=10).contains(&swing.action) {
+        let kind = if swing.recovering { 4 } else { 2 };
+        let end = offset(-120.0);
+        let start = if swing.phase >= 0.4 {
+            hand_edge
+        } else {
+            offset(100.0)
+        };
+        (kind, start, end, arc_mid(start, end))
+    } else if (5..=7).contains(&swing.action) {
+        let kind = if swing.recovering { 4 } else { 1 };
+        let start = offset(100.0);
+        let end = if swing.phase >= 0.4 {
+            hand_edge
+        } else {
+            offset(-140.0)
+        };
+        (kind, start, end, arc_mid(start, end))
+    } else {
+        (0, swing.heading, swing.heading, look)
+    };
+    Arc {
+        kind,
+        start,
+        end,
+        look,
+    }
+}
+
 /// Score a candidate `distance_cm` from the other fighter.
 pub fn score_place(distance_cm: f32, spot: Spot) -> PlaceScore {
     let limit = spot.other_reach_cm + CLOSE_PAST;
@@ -231,9 +402,19 @@ pub fn score_place(distance_cm: f32, spot: Spot) -> PlaceScore {
     if spot.melee {
         strike *= 2.0;
     }
+    let mut approach = if spot.fight {
+        approach_term(distance_cm, ideal, spot.blow.skill, spot.wide)
+    } else {
+        0.0
+    };
+    if spot.blow.kind == 4 {
+        close = (close - 1.0).max(0.0);
+        approach *= (spot.blow.skill * 2.0 + 2.0) * 2.0;
+    }
     if !spot.fight {
         close *= 2.0;
         strike = 0.0;
+        approach = 0.0;
     }
     let mut danger = attack_danger(distance_cm, spot.other_reach_cm, spot.blow);
     if spot.dull {
@@ -247,6 +428,7 @@ pub fn score_place(distance_cm: f32, spot: Spot) -> PlaceScore {
         close,
         strike,
         danger,
+        approach,
     }
 }
 
@@ -272,6 +454,7 @@ mod tests {
             feral: 0.0,
             dull: false,
             blow: Blow::default(),
+            wide: false,
         }
     }
 
@@ -383,5 +566,75 @@ mod tests {
         let limit = 50.0 + 150.0;
         let t = (limit - 25.0) / limit;
         (2.0 - t) * t * 4.0
+    }
+
+    fn side_hand() -> Hand {
+        let mut frame = [0.0; 12];
+        frame[0] = 1.0;
+        Hand {
+            local: [1.0, 0.0, 0.0, 0.0],
+            frame,
+            origin: [0.0, 0.0, 0.0],
+        }
+    }
+
+    fn swing(action: i32, phase: f32) -> Swing {
+        Swing {
+            action,
+            phase,
+            heading: 0.0,
+            facing: 0.0,
+            armed: true,
+            held: false,
+            recovering: false,
+            hand: None,
+        }
+    }
+
+    #[test]
+    fn a_recovery_and_a_hand_set_the_place() {
+        let spot = fight(false, false);
+        assert_eq!(score_place(25.0, spot).approach.to_bits(), 0x3ec0_0000);
+        assert_eq!(score_place(200.0, spot).approach.to_bits(), 0x3ec0_0000);
+        assert_eq!(score_place(400.0, spot).approach, 0.0);
+        let mut wide = spot;
+        wide.wide = true;
+        assert_eq!(score_place(25.0, wide).approach.to_bits(), 0x3f88_b000);
+        assert_eq!(
+            score_place(
+                25.0,
+                Spot {
+                    fight: false,
+                    ..spot
+                }
+            )
+            .approach,
+            0.0
+        );
+
+        let mut recovering = spot;
+        recovering.blow.kind = 4;
+        let pulled = score_place(25.0, recovering);
+        assert_eq!(pulled.close.to_bits(), 0x403c_0000);
+        assert_eq!(pulled.approach.to_bits(), 0x3fc0_0000);
+
+        let early = publish_arc(swing(5, 0.0));
+        assert_eq!(early.kind, 1);
+        assert_eq!(early.start.to_bits(), 0x3fdf_66f3);
+        assert_eq!(early.end.to_bits(), 0xc01c_61aa);
+        assert_eq!(early.look.to_bits(), 0xbeb2_b8c4);
+        let late = publish_arc(Swing {
+            phase: 0.5,
+            hand: Some(side_hand()),
+            ..swing(5, 0.5)
+        });
+        assert_eq!(late.end.to_bits(), 0x3fc9_0fdb);
+        assert_eq!(late.start.to_bits(), early.start.to_bits());
+        let recovering_arc = publish_arc(Swing {
+            recovering: true,
+            ..swing(5, 0.0)
+        });
+        assert_eq!(recovering_arc.kind, 4);
+        assert_eq!(recovering_arc.end.to_bits(), early.end.to_bits());
     }
 }
