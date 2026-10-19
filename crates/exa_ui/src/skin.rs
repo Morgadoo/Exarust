@@ -87,6 +87,12 @@ const SLIDER_MODE: u32 = 0x3000_0000;
 const SCROLL_MODE: u32 = 0x1000_0000;
 const FRAME_WIDE: u32 = 0x80_0000;
 const FRAME_HOT: u32 = 0x60;
+const ICON_MARK: u32 = 0x1_0000;
+const ICON_NUDGE: u32 = 0x40;
+const ICON_BAND: u32 = 0x60;
+const ICON_WIDE: u32 = 0x4000_0000;
+const ICON_DIM: u32 = 0x8000_0000;
+const ICON_SCALE: u32 = 0x3f80_0000;
 
 /// A slider widget. `value_bits` are the bits of its 0..1 value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -444,6 +450,87 @@ pub fn draw_frame(unit: i32, place: FramePlace) -> FrameDraw {
         ));
     }
     FrameDraw { ink, quads }
+}
+
+/// A widget that centres an icon or a caption. `own` means the widget carries
+/// its own icon list. Otherwise the shared list is used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IconPlace {
+    pub x: i16,
+    pub y: i16,
+    pub w: i16,
+    pub h: i16,
+    pub mode: u32,
+    pub state: u32,
+    pub id: u32,
+    pub own: bool,
+}
+
+/// Where a centred icon is asked to draw. The glyph call itself is not in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CentredIcon {
+    pub own: bool,
+    pub marked: bool,
+    pub wide: bool,
+    pub ink: u8,
+    pub id: u32,
+    pub x: i32,
+    pub y: i32,
+    pub scale_bits: u32,
+}
+
+fn centre_spare(span: i16, icon: i32) -> i32 {
+    let spare = i64::from(span) - i64::from(icon);
+    (spare / 2) as i32
+}
+
+/// Place a centred icon. `icon` is the stored icon size. A marked state
+/// passes the scale bits of 1, and bit 0x40 inside the band 0x60 adds one
+/// to the height. Any other state picks an ink and does not pass that scale.
+pub fn draw_centred_icon(icon: i32, place: IconPlace) -> CentredIcon {
+    let x = i32::from(place.x).wrapping_add(centre_spare(place.w, icon));
+    let y = i32::from(place.y).wrapping_add(centre_spare(place.h, icon));
+    let wide = (place.mode & ICON_WIDE) != 0;
+    if (place.state & ICON_MARK) == ICON_MARK {
+        let nudged = if (place.state & ICON_BAND) == ICON_NUDGE {
+            y.wrapping_add(1)
+        } else {
+            y
+        };
+        return CentredIcon {
+            own: place.own,
+            marked: true,
+            wide,
+            ink: 0,
+            id: place.id,
+            x,
+            y: nudged,
+            scale_bits: ICON_SCALE,
+        };
+    }
+    let ink = if (place.state & SLIDER_PRESSED) == SLIDER_PRESSED {
+        0
+    } else if (place.mode & ICON_DIM) == 0 {
+        if (place.state & ICON_NUDGE) == ICON_NUDGE {
+            1
+        } else {
+            2
+        }
+    } else if (place.state & ICON_NUDGE) == ICON_NUDGE {
+        3
+    } else {
+        4
+    };
+    CentredIcon {
+        own: place.own,
+        marked: false,
+        wide,
+        ink,
+        id: place.id,
+        x,
+        y,
+        scale_bits: 0,
+    }
 }
 
 #[cfg(test)]
@@ -837,5 +924,150 @@ mod tests {
             },
         );
         assert_eq!(quiet.ink, 0);
+    }
+
+    #[test]
+    fn a_centred_icon_sits_on_half_the_spare() {
+        let plain = draw_centred_icon(
+            16,
+            IconPlace {
+                x: 10,
+                y: 20,
+                w: 100,
+                h: 80,
+                mode: 0,
+                state: 0,
+                id: 7,
+                own: false,
+            },
+        );
+        assert!(!plain.own);
+        assert!(!plain.marked);
+        assert!(!plain.wide);
+        assert_eq!(plain.ink, 2);
+        assert_eq!(plain.id, 7);
+        assert_eq!((plain.x, plain.y), (52, 52));
+        assert_eq!(plain.scale_bits, 0);
+
+        let marked = draw_centred_icon(
+            16,
+            IconPlace {
+                x: 10,
+                y: 20,
+                w: 100,
+                h: 80,
+                mode: 0,
+                state: 0x1_0000,
+                id: 7,
+                own: true,
+            },
+        );
+        assert!(marked.own);
+        assert!(marked.marked);
+        assert_eq!((marked.x, marked.y), (52, 52));
+        assert_eq!(marked.scale_bits, 0x3f80_0000);
+
+        let nudged = draw_centred_icon(
+            16,
+            IconPlace {
+                x: 10,
+                y: 20,
+                w: 100,
+                h: 80,
+                mode: 0x4000_0000,
+                state: 0x1_0040,
+                id: 3,
+                own: false,
+            },
+        );
+        assert!(nudged.wide);
+        assert_eq!((nudged.x, nudged.y), (52, 53));
+
+        let both = draw_centred_icon(
+            16,
+            IconPlace {
+                x: 10,
+                y: 20,
+                w: 100,
+                h: 80,
+                mode: 0,
+                state: 0x1_0060,
+                id: 3,
+                own: false,
+            },
+        );
+        assert_eq!(both.y, 52);
+
+        let tight = draw_centred_icon(
+            16,
+            IconPlace {
+                x: 10,
+                y: 20,
+                w: 10,
+                h: 8,
+                mode: 0,
+                state: 0,
+                id: 1,
+                own: false,
+            },
+        );
+        assert_eq!((tight.x, tight.y), (7, 16));
+
+        let pressed = draw_centred_icon(
+            16,
+            IconPlace {
+                x: 0,
+                y: 0,
+                w: 16,
+                h: 16,
+                mode: 0x8000_0000,
+                state: 0x10,
+                id: 1,
+                own: false,
+            },
+        );
+        assert_eq!(pressed.ink, 0);
+        let hot = draw_centred_icon(
+            16,
+            IconPlace {
+                x: 0,
+                y: 0,
+                w: 16,
+                h: 16,
+                mode: 0,
+                state: 0x40,
+                id: 1,
+                own: false,
+            },
+        );
+        assert_eq!(hot.ink, 1);
+        let dim_hot = draw_centred_icon(
+            16,
+            IconPlace {
+                x: 0,
+                y: 0,
+                w: 16,
+                h: 16,
+                mode: 0x8000_0000,
+                state: 0x40,
+                id: 1,
+                own: false,
+            },
+        );
+        assert_eq!(dim_hot.ink, 3);
+        let dim = draw_centred_icon(
+            16,
+            IconPlace {
+                x: 0,
+                y: 0,
+                w: 16,
+                h: 16,
+                mode: 0x8000_0000,
+                state: 0,
+                id: 1,
+                own: false,
+            },
+        );
+        assert_eq!(dim.ink, 4);
     }
 }

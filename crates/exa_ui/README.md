@@ -21,7 +21,8 @@ of 5 at value 0 and of 40 at one half, with pad 10. A scroll bar there
 with height 80 and lip 4 stores twelve quads and a thumb of 10 at value 0,
 or 52 at one half. A frame at unit 5, place 10, 20 and size 100 by 20
 stores four corners and two edge bars. Height 80 adds the side bars.
-The widget dispatcher is not in.
+A centred icon of size 16 in a 100 by 80 widget at 10, 20 sits at 52, 52.
+A marked state with bit 0x40 sits at 52, 53. The widget dispatcher is not in.
 
 ## Scope
 
