@@ -177,7 +177,10 @@ the index and flag are positive. The skill tooltip draws its icon at two by
 five units and its label at x less four units. The transition screen draws
 "TO BE CONTINUED" centred on page 2 with blend mode 0x203. The skill selector
 clamps its low 16 bits to eight and toggles bits 0x110 on page 1. The inventory
-closes on the 0x2002 mask through its callback or the form close.
+closes on the 0x2002 mask through its callback or the form close. The skill
+selector routes its key to the base handler while a positive selection is open
+on a page above one, or on word nine with a clear mode byte, and closes with
+0x40 otherwise.
 
 ## Scope
 

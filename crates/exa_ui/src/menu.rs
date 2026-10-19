@@ -203,6 +203,35 @@ pub fn inventory_key_close(
     }
 }
 
+/// The skill-selector key outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillKey {
+    pub closed: bool,
+    pub result: i32,
+}
+
+/// Routes a skill-selector key to the base handler or to the close with 0x40.
+pub fn skill_selector_key(
+    selection: i32,
+    page: i32,
+    word: i32,
+    mode_byte: u8,
+    base: impl FnOnce() -> i32,
+) -> SkillKey {
+    let base_path = (selection > 0 && page > 1) || ((word & 0xffff) == 9 && mode_byte == 0);
+    if base_path {
+        SkillKey {
+            closed: false,
+            result: base(),
+        }
+    } else {
+        SkillKey {
+            closed: true,
+            result: 0x40,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,5 +383,23 @@ mod tests {
         assert!(!base.callback);
         assert_eq!(base.result, 7);
         assert!(ran);
+    }
+
+    #[test]
+    fn the_skill_selector_routes_its_key() {
+        assert_eq!(skill_selector_key(3, 2, 4, 0, || 7).result, 7);
+        assert!(!skill_selector_key(3, 2, 4, 0, || 7).closed);
+        assert_eq!(skill_selector_key(0, 1, 9, 0, || 7).result, 7);
+
+        let closed = skill_selector_key(0, 1, 4, 0, || 7);
+        assert!(closed.closed);
+        assert_eq!(closed.result, 0x40);
+
+        let word_nine_mode_one = skill_selector_key(0, 1, 9, 1, || 7);
+        assert!(word_nine_mode_one.closed);
+        assert_eq!(word_nine_mode_one.result, 0x40);
+
+        let page_one = skill_selector_key(3, 1, 4, 0, || 7);
+        assert!(page_one.closed);
     }
 }
