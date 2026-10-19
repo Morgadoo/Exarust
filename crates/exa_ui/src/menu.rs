@@ -695,6 +695,71 @@ pub fn draw_skill_selector(place: SkillSelectorDrawPlace, unit: i32) -> SkillSel
     base
 }
 
+/// The skill tooltip show's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillTipShowInput {
+    pub found: bool,
+    pub anchor: [i32; 2],
+    pub object_b8: i32,
+    pub row_38: i32,
+    pub unit: i32,
+    pub global_2ad3c0: i32,
+    pub offset_120: i32,
+    pub stamp_base: i32,
+}
+
+/// The tooltip show's outputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillTipShow {
+    pub shown: bool,
+    pub index: Option<i32>,
+    pub threshold: Option<i32>,
+    pub flags_or: u32,
+    pub place: [i32; 2],
+    pub height: i32,
+    pub visible: bool,
+    pub calls: u32,
+    pub stamp: i32,
+}
+
+/// Places the skill tooltip from the found row.
+pub fn show_skill_tip(input: SkillTipShowInput) -> SkillTipShow {
+    if !input.found {
+        return SkillTipShow {
+            shown: false,
+            index: None,
+            threshold: None,
+            flags_or: 0,
+            place: [0, 0],
+            height: 0,
+            visible: false,
+            calls: 0,
+            stamp: 0,
+        };
+    }
+    SkillTipShow {
+        shown: true,
+        index: Some(input.object_b8 - 1),
+        threshold: Some(input.row_38 - 1),
+        flags_or: 0x10,
+        place: [
+            input.anchor[0],
+            input.unit.wrapping_mul(9).wrapping_add(input.anchor[1]),
+        ],
+        height: if input.global_2ad3c0 == 0 {
+            input.unit.wrapping_mul(24)
+        } else {
+            input.unit.wrapping_mul(18)
+        },
+        visible: true,
+        calls: 3,
+        stamp: input
+            .stamp_base
+            .wrapping_mul(3)
+            .wrapping_add(input.offset_120),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1175,5 +1240,43 @@ mod tests {
             draw_skill_selector(place(0, 1), 5).mode,
             SkillSelectorMode::Empty
         );
+    }
+
+    #[test]
+    fn the_skill_tip_show_places_and_stamps() {
+        let input = SkillTipShowInput {
+            found: true,
+            anchor: [7, 8],
+            object_b8: 5,
+            row_38: 4,
+            unit: 5,
+            global_2ad3c0: 0,
+            offset_120: 20,
+            stamp_base: 10,
+        };
+        let shown = show_skill_tip(input);
+        assert!(shown.shown);
+        assert_eq!(shown.index, Some(4));
+        assert_eq!(shown.threshold, Some(3));
+        assert_eq!(shown.flags_or, 0x10);
+        assert_eq!(shown.place, [7, 53]);
+        assert_eq!(shown.height, 120);
+        assert!(shown.visible);
+        assert_eq!(shown.calls, 3);
+        assert_eq!(shown.stamp, 50);
+
+        let short = show_skill_tip(SkillTipShowInput {
+            global_2ad3c0: 1,
+            ..input
+        });
+        assert_eq!(short.height, 90);
+
+        let missing = show_skill_tip(SkillTipShowInput {
+            found: false,
+            ..input
+        });
+        assert!(!missing.shown);
+        assert_eq!(missing.calls, 0);
+        assert_eq!(missing.index, None);
     }
 }
