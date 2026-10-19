@@ -123,7 +123,9 @@ first ink, mode 0x10000 the coloured renderer, bits 0x60 the third ink with a
 nudge, and any other word the second ink. A rail at unit 5, place 10, 20 of
 size 100 by 80 draws a left cap from 0, 85 to 30, 105, a right cap from 100, 85
 to 90, 105, a middle from 30, 95 to 90, 105, and a thumb from 105, 30 to
-95, 40. Its cap sample binds twice, the middle once and the thumb once.
+95, 40. Its cap sample binds twice, the middle once and the thumb once. A
+vertical scale of 1 stores heights 80, 104 and 128; one half stores 40, 52 and
+64; 2 stores 160, 208 and 0.
 
 ## Scope
 

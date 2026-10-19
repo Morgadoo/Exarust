@@ -2561,6 +2561,34 @@ pub fn draw_line_rail(unit: i32, place: RailPlace, inks: [[u8; 4]; 3], view: Spa
     }
 }
 
+/// The three row heights the line class scales: 80, 104 and 128.
+pub const LINE_HEIGHTS: [f32; 3] = [80.0, 104.0, 128.0];
+
+/// The scaled row heights and the parent's scale call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineScale {
+    pub scale_calls: u32,
+    pub heights: [u8; 3],
+}
+
+/// Scales the three heights. Each product rounds to nearest even and keeps
+/// the low byte; an out-of-range product stores 0.
+pub fn scale_line(scale_y: f32) -> LineScale {
+    let mut heights = [0u8; 3];
+    for (slot, base) in heights.iter_mut().zip(LINE_HEIGHTS) {
+        let value = (base * scale_y).round_ties_even();
+        *slot = if value >= 2_147_483_648.0 || value < -2_147_483_648.0 || value.is_nan() {
+            0
+        } else {
+            value as i32 as u8
+        };
+    }
+    LineScale {
+        scale_calls: 1,
+        heights,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5326,5 +5354,18 @@ mod tests {
         );
         assert_eq!(mode.track_ink, [5, 6, 7, 8]);
         assert_eq!(mode.thumb_ink, [9, 10, 11, 255]);
+    }
+
+    #[test]
+    fn a_line_scale_stores_three_heights() {
+        let one = scale_line(1.0);
+        assert_eq!(one.heights, [80, 104, 128]);
+        assert_eq!(one.scale_calls, 1);
+
+        let half = scale_line(0.5);
+        assert_eq!(half.heights, [40, 52, 64]);
+
+        let double = scale_line(2.0);
+        assert_eq!(double.heights, [160, 208, 0]);
     }
 }
