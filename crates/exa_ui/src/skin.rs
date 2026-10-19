@@ -114,6 +114,15 @@ pub const FORM_ALT: [u32; 4] = [0, 0x3ecc_cccd, 0, 0x3f33_3333];
 /// Close square: 0, 0.8, 0, 1.
 pub const FORM_CLOSE_INK: [u32; 4] = [0, 0x3f4c_cccd, 0, 0x3f80_0000];
 
+/// Edge bar: 0.3, 0, 0.3, 0.1.
+pub const FORM_EDGE: [u32; 4] = [0x3e99_999a, 0, 0x3e99_999a, 0x3dcc_cccd];
+
+/// Cap beside a title: 0.7, 0, 0.7, 0.1.
+pub const FORM_CAP: [u32; 4] = [0x3f33_3333, 0, 0x3f33_3333, 0x3dcc_cccd];
+
+/// The double 6.6 used to place an edge.
+const EDGE_SCALE: u64 = 0x401a_6666_6666_6666;
+
 /// A slider widget. `value_bits` are the bits of its 0..1 value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SliderPlace {
@@ -619,7 +628,12 @@ pub struct FormDispatch {
     pub shown: Vec<i32>,
     pub title: Option<TitleDraw>,
     pub corners: Vec<SliderQuad>,
+    pub edges: Vec<SliderQuad>,
     pub wide_calls: u32,
+}
+
+fn edge_reach(unit: i32) -> i32 {
+    (f64::from(unit) * f64::from_bits(EDGE_SCALE)).round_ties_even() as i32
 }
 
 fn round_even(span: i64, bits: u32) -> i32 {
@@ -705,8 +719,8 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
     };
     let styled = (place.flags_d & FORM_STYLE) == FORM_STYLE_ON;
     let wide = (place.flags_b & FORM_BOX) != 0;
-    let (corners, wide_calls) = if styled && wide {
-        (Vec::new(), 1)
+    let (corners, edges, wide_calls) = if styled && wide {
+        (Vec::new(), Vec::new(), 1)
     } else if styled {
         let thick = unit.wrapping_mul(6);
         let bar = unit.wrapping_shl(2);
@@ -759,9 +773,84 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
                 (width.wrapping_sub(thick), height),
             ],
         ));
-        (quads, 0)
+        let band = unit.wrapping_shl(1);
+        let reach = edge_reach(unit);
+        let mut bars = Vec::new();
+        if measured > 0 {
+            let spare = i64::from(width) - i64::from(measured) - i64::from(unit.wrapping_mul(5));
+            let gap = (spare / 2) as i32;
+            bars.push(quad(
+                FORM_EDGE,
+                [(reach, 0), (reach, band), (gap, band), (gap, 0)],
+            ));
+            bars.push(quad(
+                FORM_EDGE,
+                [
+                    (width.wrapping_sub(gap), 0),
+                    (width.wrapping_sub(gap), band),
+                    (width.wrapping_sub(reach), band),
+                    (width.wrapping_sub(reach), 0),
+                ],
+            ));
+            bars.push(quad(
+                FORM_CAP,
+                [
+                    (gap, 0),
+                    (gap, band),
+                    (gap.wrapping_add(band), band),
+                    (gap.wrapping_add(band), 0),
+                ],
+            ));
+            bars.push(quad(
+                FORM_CAP,
+                [
+                    (width.wrapping_sub(gap), 0),
+                    (width.wrapping_sub(gap), band),
+                    (width.wrapping_sub(gap).wrapping_sub(band), band),
+                    (width.wrapping_sub(gap).wrapping_sub(band), 0),
+                ],
+            ));
+        } else {
+            bars.push(quad(
+                FORM_EDGE,
+                [
+                    (reach, 0),
+                    (reach, band),
+                    (width.wrapping_sub(reach), band),
+                    (width.wrapping_sub(reach), 0),
+                ],
+            ));
+        }
+        bars.push(quad(
+            FORM_EDGE,
+            [
+                (0, height.wrapping_sub(reach)),
+                (band, height.wrapping_sub(reach)),
+                (band, reach),
+                (0, reach),
+            ],
+        ));
+        bars.push(quad(
+            FORM_EDGE,
+            [
+                (reach, height),
+                (reach, height.wrapping_sub(band)),
+                (width.wrapping_sub(reach), height.wrapping_sub(band)),
+                (width.wrapping_sub(reach), height),
+            ],
+        ));
+        bars.push(quad(
+            FORM_EDGE,
+            [
+                (width, height.wrapping_sub(reach)),
+                (width.wrapping_sub(band), height.wrapping_sub(reach)),
+                (width.wrapping_sub(band), reach),
+                (width, reach),
+            ],
+        ));
+        (quads, bars, 0)
     } else {
-        (Vec::new(), 0)
+        (Vec::new(), Vec::new(), 0)
     };
     FormDispatch {
         span_a,
@@ -785,6 +874,7 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         shown: visits,
         title,
         corners,
+        edges,
         wide_calls,
     }
 }
@@ -1483,5 +1573,58 @@ mod tests {
 
         form.title_width = 0;
         assert!(dispatch_form(5, 0, form, &[]).title.is_none());
+    }
+
+    #[test]
+    fn a_dispatch_draws_the_edge_bars() {
+        let mut form = place(0, 0, 0, 0, 0, 0);
+        form.flags_d = 0x10;
+        let plain = dispatch_form(5, 0, form, &[]);
+        assert_eq!(plain.edges.len(), 4);
+        assert_eq!(plain.edges[0].sample, FORM_EDGE);
+        assert_eq!(
+            plain.edges[0].corners,
+            [(33, 0), (33, 10), (67, 10), (67, 0)]
+        );
+        assert_eq!(
+            plain.edges[1].corners,
+            [(0, 47), (10, 47), (10, 33), (0, 33)]
+        );
+        assert_eq!(
+            plain.edges[2].corners,
+            [(33, 80), (33, 70), (67, 70), (67, 80)]
+        );
+        assert_eq!(
+            plain.edges[3].corners,
+            [(100, 47), (90, 47), (90, 33), (100, 33)]
+        );
+
+        form.flags_b = 1;
+        form.title_width = 40;
+        let split = dispatch_form(5, 0, form, &[]);
+        assert_eq!(split.edges.len(), 7);
+        assert_eq!(
+            split.edges[0].corners,
+            [(33, 0), (33, 10), (17, 10), (17, 0)]
+        );
+        assert_eq!(
+            split.edges[1].corners,
+            [(83, 0), (83, 10), (67, 10), (67, 0)]
+        );
+        assert_eq!(split.edges[2].sample, FORM_CAP);
+        assert_eq!(
+            split.edges[2].corners,
+            [(17, 0), (17, 10), (27, 10), (27, 0)]
+        );
+        assert_eq!(
+            split.edges[3].corners,
+            [(83, 0), (83, 10), (73, 10), (73, 0)]
+        );
+
+        form.flags_d = 0;
+        assert!(dispatch_form(5, 0, form, &[]).edges.is_empty());
+        form.flags_d = 0x10;
+        form.flags_b = 0x40_0000;
+        assert!(dispatch_form(5, 0, form, &[]).edges.is_empty());
     }
 }

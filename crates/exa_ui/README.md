@@ -24,8 +24,9 @@ stores four corners and two edge bars. Height 80 adds the side bars.
 A centred icon of size 16 in a 100 by 80 widget at 10, 20 sits at 52, 52.
 A marked state with bit 0x40 sits at 52, 53. A dispatch at unit 5
 stores spans 10, 15 and 20, and a spare of 30 at value 1 shifts by 30.
-A title of width 40 sits at 30, and style 0x10 draws four corners of span 30.
-The later edge bars are not in.
+A title of width 40 sits at 30, and style 0x10 draws four corners of span 30,
+then edge bars whose reach is 33 at unit 5. The drawing after those bars
+is not in.
 
 ## Scope
 
