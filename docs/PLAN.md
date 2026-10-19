@@ -1030,6 +1030,7 @@ sustain technique. Repeating blast with the repeat technique costs 0.05.
 Blast spends 1.2 times its cost, barrier twice, calm 0.3 times, the long
 door once, and vanish 80 times.
 Done (change `read-a-power-tree`): a tree whose first word is wrong is refused. The node count is the word at byte 52. A node at 10, 20 stays there. A node at 15, 25 becomes 5, 5. One 16-byte link is kept. A link count below 1 stores none. A file that ends after the magic is an error. Drawing the tree and the text library are not in.
+Done (change `read-the-tree-text`): a text chunk stores Blast and an empty string. A tree with no chunk has no strings. A chunk that ends after its first word is an error. The second node is still at 5, 5. Drawing the tree is not in.
 Done (change `save-the-session`): an `EXRS` file restores that session.
 The original's save packages are not read.
 

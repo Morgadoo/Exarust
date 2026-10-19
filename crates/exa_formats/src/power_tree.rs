@@ -4,7 +4,9 @@
 //! byte 52. Each node is a power id, two more words, an x, a y, a link count,
 //! and that many 16-byte links. A link count below 1 stores none. Every node
 //! after the first subtracts the first node's x and y. A short file or a
-//! negative count is an error. The text library after the nodes is not read.
+//! negative count is an error. A following text chunk stores each string as a
+//! length word and that many bytes. A length below 1 is empty. No chunk
+//! leaves the texts empty. A chunk that ends early is an error.
 //!
 //! Evidence: the tree reader (magic check, the seek to the count, the node
 //! fields, the link bytes, and the shift against the first node).
@@ -13,6 +15,8 @@ use crate::{Error, Result, read_u32};
 
 /// First word of a power tree.
 pub const MAGIC: u32 = 0xAFCE_01CE;
+/// First word of the text chunk after the nodes.
+pub const TEXT_MAGIC: u32 = 0xABCD_0000;
 /// The node count sits here.
 const COUNT_AT: usize = 52;
 /// The first node starts here.
@@ -33,10 +37,11 @@ pub struct PowerNode {
     pub links: Vec<[u8; LINK]>,
 }
 
-/// The nodes of one domain's tree.
+/// The nodes of one domain's tree, and the texts that follow them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PowerTree {
     pub nodes: Vec<PowerNode>,
+    pub texts: Vec<Vec<u8>>,
 }
 
 /// Read a power tree. Malformed input is an error.
@@ -102,7 +107,102 @@ pub fn read_power_tree(bytes: &[u8]) -> Result<PowerTree> {
             node.y -= oy;
         }
     }
-    Ok(PowerTree { nodes })
+    let texts = read_texts(bytes, offset)?;
+    Ok(PowerTree { nodes, texts })
+}
+
+/// The text chunk, when its first word matches. Anything else leaves no texts.
+fn read_texts(bytes: &[u8], mut offset: usize) -> Result<Vec<Vec<u8>>> {
+    if offset == bytes.len() {
+        return Ok(Vec::new());
+    }
+    let magic = take_u32(bytes, &mut offset)?;
+    if magic != TEXT_MAGIC {
+        return Ok(Vec::new());
+    }
+    // One skipped word before the check, then two skipped words around the
+    // two size words the caller reads and does not use.
+    skip(bytes, &mut offset, 4)?;
+    skip(bytes, &mut offset, 4)?;
+    let _kept = take_u32(bytes, &mut offset)?;
+    skip(bytes, &mut offset, 4)?;
+    let _other = take_u32(bytes, &mut offset)?;
+    if bytes.len().saturating_sub(offset) < 16 {
+        return Err(Error::Truncated {
+            offset,
+            needed: 16,
+            len: bytes.len().saturating_sub(offset),
+        });
+    }
+    let count = i32::from_le_bytes(
+        bytes[offset + 12..offset + 16]
+            .try_into()
+            .expect("16 bytes"),
+    );
+    offset += 16;
+    if count < 0 {
+        return Err(Error::Malformed("negative text count".into()));
+    }
+    let count = count as usize;
+    let table = count.saturating_add(1).saturating_mul(4);
+    if table > bytes.len().saturating_sub(offset) {
+        return Err(Error::Truncated {
+            offset,
+            needed: table,
+            len: bytes.len().saturating_sub(offset),
+        });
+    }
+    let mut offsets = Vec::with_capacity(count + 1);
+    for _ in 0..count + 1 {
+        offsets.push(take_u32(bytes, &mut offset)?);
+    }
+    let size = take_u32(bytes, &mut offset)? as usize;
+    if size > bytes.len().saturating_sub(offset) {
+        return Err(Error::Truncated {
+            offset,
+            needed: size,
+            len: bytes.len().saturating_sub(offset),
+        });
+    }
+    let blob = &bytes[offset..offset + size];
+    let mut texts = Vec::with_capacity(count);
+    for at in offsets.iter().take(count).map(|at| *at as usize) {
+        if blob.len().saturating_sub(at) < 4 {
+            return Err(Error::Truncated {
+                offset: at,
+                needed: 4,
+                len: blob.len().saturating_sub(at),
+            });
+        }
+        let len = i32::from_le_bytes(blob[at..at + 4].try_into().expect("4 bytes"));
+        if len < 1 {
+            texts.push(Vec::new());
+            continue;
+        }
+        let len = len as usize;
+        let start = at + 4;
+        if blob.len().saturating_sub(start) < len {
+            return Err(Error::Truncated {
+                offset: start,
+                needed: len,
+                len: blob.len().saturating_sub(start),
+            });
+        }
+        texts.push(blob[start..start + len].to_vec());
+    }
+    Ok(texts)
+}
+
+fn skip(bytes: &[u8], offset: &mut usize, n: usize) -> Result<()> {
+    if bytes.len().saturating_sub(*offset) < n {
+        return Err(Error::Truncated {
+            offset: *offset,
+            needed: n,
+            len: bytes.len().saturating_sub(*offset),
+        });
+    }
+    *offset += n;
+    Ok(())
 }
 
 fn take_u32(bytes: &[u8], offset: &mut usize) -> Result<u32> {
@@ -157,6 +257,7 @@ mod tests {
         assert_eq!(tree.nodes[0].x, 10.0);
         assert_eq!(tree.nodes[0].y, 20.0);
         assert!(tree.nodes[0].links.is_empty());
+        assert!(tree.texts.is_empty());
         assert_eq!(tree.nodes[1].power, 9);
         assert_eq!(tree.nodes[1].x, 5.0);
         assert_eq!(tree.nodes[1].y, 5.0);
@@ -175,6 +276,34 @@ mod tests {
 
         assert!(read_power_tree(&[0, 0, 0, 0]).is_err());
         assert!(read_power_tree(&MAGIC.to_le_bytes()).is_err());
+    }
+
+    #[test]
+    fn a_text_chunk_keeps_its_strings() {
+        let mut bytes = sample();
+        put_u32(&mut bytes, TEXT_MAGIC);
+        put_u32(&mut bytes, 0);
+        put_u32(&mut bytes, 0);
+        put_u32(&mut bytes, 0);
+        put_u32(&mut bytes, 0);
+        put_u32(&mut bytes, 0);
+        bytes.extend_from_slice(&[0; 12]);
+        put_u32(&mut bytes, 2);
+        put_u32(&mut bytes, 0);
+        put_u32(&mut bytes, 9);
+        put_u32(&mut bytes, 13);
+        put_u32(&mut bytes, 13);
+        put_u32(&mut bytes, 5);
+        bytes.extend_from_slice(b"Blast");
+        put_u32(&mut bytes, 0);
+
+        let tree = read_power_tree(&bytes).unwrap();
+        assert_eq!(tree.nodes[1].x, 5.0);
+        assert_eq!(tree.texts, [b"Blast".to_vec(), Vec::new()]);
+
+        let mut short = sample();
+        put_u32(&mut short, TEXT_MAGIC);
+        assert!(read_power_tree(&short).is_err());
     }
 
     #[test]

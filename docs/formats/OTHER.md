@@ -358,8 +358,8 @@ Moved to [TERRAIN.md](TERRAIN.md) (verified).
 
 ## Powers (`.pwr`)
 
-Status: **the node layout is verified**. The text library after the nodes
-is not read. Exarust: `exa_formats::power_tree`.
+Status: **the node layout and the text chunk are verified**. Drawing the
+tree is not in. Exarust: `exa_formats::power_tree`.
 
 - **Header**: first word `0xAFCE01CE`. The node count is the signed word at
   byte 52. A negative count is an error. The bytes between the magic and
@@ -368,6 +368,11 @@ is not read. Exarust: `exa_formats::power_tree`.
   link count. A count below 1 stores no links. Otherwise that many 16-byte
   links follow. After every node is read, each node but the first subtracts
   the first node's x and y.
+- **Text chunk**: first word `0xABCD0000`, then five words, then a 16-byte
+  head whose last word is the string count. One more offset than that count
+  follows, then a byte length and that many bytes. Each string is a length
+  word at its offset and that many bytes. A length below 1 is empty. No
+  chunk leaves the texts empty. A chunk that ends early is an error.
 - Four domains: displacement, energy, force, mind. Drawing the tree and
   learning a node are not in.
 
