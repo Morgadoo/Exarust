@@ -826,6 +826,42 @@ pub fn transform_cloth(count: i32, object_flags: u32) -> ClothTransform {
     }
 }
 
+/// The cloth rebuild's work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClothRebuild {
+    pub origin_copied: bool,
+    pub transformed: i32,
+    pub submitted: bool,
+}
+
+/// Copies the origin, transforms every point and submits the buffer.
+pub fn rebuild_cloth(
+    is_root: bool,
+    has_override: bool,
+    override_matches: bool,
+    count: i32,
+) -> ClothRebuild {
+    if !is_root {
+        return ClothRebuild {
+            origin_copied: false,
+            transformed: 0,
+            submitted: false,
+        };
+    }
+    if has_override && !override_matches {
+        return ClothRebuild {
+            origin_copied: true,
+            transformed: 0,
+            submitted: false,
+        };
+    }
+    ClothRebuild {
+        origin_copied: true,
+        transformed: count.max(0),
+        submitted: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1208,5 +1244,27 @@ mod tests {
         let plain = transform_cloth(3, 0);
         assert_eq!(plain.origin_calls, 0);
         assert_eq!(plain.extent_calls, 1);
+    }
+
+    #[test]
+    fn the_cloth_rebuilds_only_from_its_root() {
+        let rebuilt = rebuild_cloth(true, false, false, 3);
+        assert!(rebuilt.origin_copied);
+        assert_eq!(rebuilt.transformed, 3);
+        assert!(rebuilt.submitted);
+
+        let other = rebuild_cloth(false, false, false, 3);
+        assert!(!other.origin_copied);
+        assert_eq!(other.transformed, 0);
+        assert!(!other.submitted);
+
+        let mismatch = rebuild_cloth(true, true, false, 3);
+        assert!(mismatch.origin_copied);
+        assert_eq!(mismatch.transformed, 0);
+        assert!(!mismatch.submitted);
+
+        let matched = rebuild_cloth(true, true, true, 3);
+        assert_eq!(matched.transformed, 3);
+        assert!(matched.submitted);
     }
 }

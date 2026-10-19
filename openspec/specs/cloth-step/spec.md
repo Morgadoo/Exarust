@@ -141,3 +141,14 @@ The transform SHALL make three calls per particle, then the object origin on fla
 - **THEN** nine particle calls, one origin call and one extent call run
 - **WHEN** the flags lack 0x20
 - **THEN** no origin call runs and the extent still does
+
+### Requirement: Cloth rebuild
+A non-root cloth SHALL return without work. A root SHALL copy its origin pointer. A present override that differs SHALL stop the rebuild. Otherwise the rebuild SHALL transform each particle point into a fresh buffer and submit it.
+
+#### Scenario: The rebuild
+- **WHEN** the cloth is its root, has no override and has 3 particles
+- **THEN** the origin is copied, 3 points are transformed and the buffer is submitted
+- **WHEN** the cloth is not its root
+- **THEN** nothing is copied or submitted
+- **WHEN** the override differs from the origin
+- **THEN** nothing is transformed or submitted
