@@ -67,6 +67,9 @@ pub const KIND_MARK: u32 = 0x20000;
 pub const KIND_HIGH: u32 = 0x8000_0000;
 pub const KIND_WIDE: u32 = 0x4000_0000;
 pub const KIND_MASK: u32 = 0x3fff_ffff;
+/// Tag of a pane that already shows an item. A held byte of 1 closes.
+pub const PANE_TAG: u32 = 0xce1c_2013;
+pub const HELD_READY: u8 = 1;
 /// Flags a taken item ORs on, and the flags a hover stores.
 pub const PICK_FOLLOW: u32 = 5;
 pub const CLICK_MARK: u32 = 0x11;
@@ -152,6 +155,14 @@ pub struct KindEntry {
 pub struct KindTable {
     pub entries: Vec<KindEntry>,
     pub blob: Vec<u8>,
+}
+
+/// One open pane. The first match of the tag and the item is shown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KindPane {
+    pub tag: u32,
+    pub item: u32,
+    pub id: u64,
 }
 
 /// Which mode the menu command is running in.
@@ -291,6 +302,19 @@ pub struct MatchGate {
     pub kind_high: KindTable,
     pub kind_wide: KindTable,
     pub kind_calls: u32,
+    pub held_count: i32,
+    pub held_ptr: u64,
+    pub held_byte: u8,
+    pub held_drops: u32,
+    pub held_closes: u32,
+    pub cursor_x: i32,
+    pub cursor_y: i32,
+    pub view_w: i32,
+    pub view_h: i32,
+    pub panes: Vec<KindPane>,
+    pub pane_shows: u32,
+    pub pane_builds: u32,
+    pub shown_pane: u64,
     pub hit_parent: u64,
     pub world_id: u64,
     pub hit_class: u32,
@@ -461,6 +485,19 @@ impl MatchGate {
             kind_high: KindTable::default(),
             kind_wide: KindTable::default(),
             kind_calls: 0,
+            held_count: 0,
+            held_ptr: 0,
+            held_byte: 0,
+            held_drops: 0,
+            held_closes: 0,
+            cursor_x: 0,
+            cursor_y: 0,
+            view_w: 1,
+            view_h: 1,
+            panes: Vec::new(),
+            pane_shows: 0,
+            pane_builds: 0,
+            shown_pane: 0,
             hit_parent: 0,
             world_id: 0,
             hit_class: 0,
@@ -595,6 +632,10 @@ impl MatchGate {
             return self.gate_flags;
         }
         self.pick_calls = self.pick_calls.saturating_add(1);
+        if !self.point_inside() {
+            self.pick_hit = 0;
+            return self.gate_flags;
+        }
         if self.pick_hit == 0 {
             return self.gate_flags;
         }
@@ -607,6 +648,8 @@ impl MatchGate {
             }
             if self.kind_marked(self.hit_kind) {
                 self.kind_calls = self.kind_calls.saturating_add(1);
+                self.release_held();
+                self.open_marked(self.hit_kind);
                 return self.gate_flags;
             }
         }
@@ -623,6 +666,53 @@ impl MatchGate {
             self.open_calls = self.open_calls.saturating_add(1);
         }
         self.gate_flags
+    }
+
+    /// A cursor inside the view keeps a supplied hit. Outside, the hit is cleared.
+    /// The scene walk is not in.
+    fn point_inside(&self) -> bool {
+        self.cursor_x >= 0
+            && self.cursor_y >= 0
+            && self.cursor_x < self.view_w
+            && self.cursor_y < self.view_h
+    }
+
+    /// A count above 0 drops and becomes 0. A count of 0 or less clears a
+    /// pointer, and a ready byte counts a close first.
+    fn release_held(&mut self) {
+        if self.held_count > 0 {
+            self.held_drops = self.held_drops.saturating_add(1);
+            self.held_count = 0;
+            return;
+        }
+        if self.held_ptr == 0 {
+            return;
+        }
+        if self.held_byte == HELD_READY {
+            self.held_closes = self.held_closes.saturating_add(1);
+        }
+        self.held_ptr = 0;
+    }
+
+    /// The first pane with the tag and this item is shown. An id of 0 does
+    /// nothing. With no pane, a marked span counts a build. The builder is not in.
+    fn open_marked(&mut self, id: u32) {
+        if id == 0 {
+            return;
+        }
+        let shown = self
+            .panes
+            .iter()
+            .find(|pane| pane.tag == PANE_TAG && pane.item == id)
+            .map(|pane| pane.id);
+        if let Some(shown) = shown {
+            self.pane_shows = self.pane_shows.saturating_add(1);
+            self.shown_pane = shown;
+            return;
+        }
+        if self.kind_marked(id) {
+            self.pane_builds = self.pane_builds.saturating_add(1);
+        }
     }
 
     /// An item id of 0 misses. Bit 0x80000000 searches the high table, else bit
@@ -2579,5 +2669,89 @@ mod tests {
         taken.kind_plain = marked_kind(7);
         assert_eq!(taken.run_gate(), 1 | PICK_FOLLOW);
         assert_eq!(taken.kind_calls, 0);
+    }
+
+    #[test]
+    fn a_point_outside_misses_and_a_hit_releases_then_opens() {
+        let mut miss = plain_item(7);
+        miss.view_w = 8;
+        miss.view_h = 8;
+        miss.cursor_x = 8;
+        miss.kind_plain = marked_kind(7);
+        miss.held_count = 2;
+        assert_eq!(miss.run_gate(), 1);
+        assert_eq!(miss.pick_calls, 1);
+        assert_eq!(miss.pick_hit, 0);
+        assert_eq!(miss.kind_calls, 0);
+        assert_eq!(miss.held_count, 2);
+        assert_eq!(miss.held_drops, 0);
+
+        let mut above = plain_item(7);
+        above.view_w = 8;
+        above.view_h = 8;
+        above.cursor_y = -1;
+        above.kind_plain = marked_kind(7);
+        assert_eq!(above.run_gate(), 1);
+        assert_eq!(above.kind_calls, 0);
+
+        let mut drop = plain_item(7);
+        drop.kind_plain = marked_kind(7);
+        drop.held_count = 3;
+        drop.held_ptr = 9;
+        assert_eq!(drop.run_gate(), 1);
+        assert_eq!(drop.kind_calls, 1);
+        assert_eq!(drop.held_count, 0);
+        assert_eq!(drop.held_drops, 1);
+        assert_eq!(drop.held_ptr, 9);
+        assert_eq!(drop.pane_builds, 1);
+        assert_eq!(drop.pane_shows, 0);
+
+        let mut close = plain_item(7);
+        close.kind_plain = marked_kind(7);
+        close.held_count = 0;
+        close.held_ptr = 4;
+        close.held_byte = HELD_READY;
+        assert_eq!(close.run_gate(), 1);
+        assert_eq!(close.held_closes, 1);
+        assert_eq!(close.held_ptr, 0);
+        assert_eq!(close.held_drops, 0);
+
+        let mut quiet = plain_item(7);
+        quiet.kind_plain = marked_kind(7);
+        quiet.held_count = -1;
+        quiet.held_ptr = 4;
+        quiet.held_byte = 2;
+        assert_eq!(quiet.run_gate(), 1);
+        assert_eq!(quiet.held_closes, 0);
+        assert_eq!(quiet.held_ptr, 0);
+
+        let mut shown = plain_item(7);
+        shown.view_w = 8;
+        shown.view_h = 8;
+        shown.cursor_x = 7;
+        shown.cursor_y = 7;
+        shown.kind_plain = marked_kind(7);
+        shown.panes = vec![
+            KindPane {
+                tag: 1,
+                item: 7,
+                id: 2,
+            },
+            KindPane {
+                tag: PANE_TAG,
+                item: 7,
+                id: 11,
+            },
+            KindPane {
+                tag: PANE_TAG,
+                item: 7,
+                id: 12,
+            },
+        ];
+        assert_eq!(shown.run_gate(), 1);
+        assert_eq!(shown.kind_calls, 1);
+        assert_eq!(shown.pane_shows, 1);
+        assert_eq!(shown.shown_pane, 11);
+        assert_eq!(shown.pane_builds, 0);
     }
 }
