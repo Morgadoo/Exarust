@@ -113,6 +113,8 @@ const FORM_BAND_ON: u32 = 0x80;
 const FORM_MARK: u32 = 0x40;
 const FORM_TAB: u32 = 0x200;
 const TAB_SCALE: u64 = 0x3fc3_3333_3333_3333;
+/// The double 0.15 that slants the close-edge tint.
+const CLOSE_SLANT: u64 = 0x3fc3_3333_3333_3333;
 
 /// Corner sample after the child walk: 0, 0, 0, 0.3.
 pub const FORM_CORNER: [u32; 4] = [0, 0, 0, 0x3e99_999a];
@@ -823,6 +825,9 @@ pub struct DispatchPlace {
     pub seat_y: i32,
     /// The y the quad after the lower tab measures. Its low edge sits one unit below.
     pub post_y: i32,
+    /// The close square's x and y.
+    pub close_x: i32,
+    pub close_y: i32,
 }
 
 /// One corner of the backdrop, with its sample bits.
@@ -841,6 +846,14 @@ pub struct TitleDraw {
     pub baseline: i32,
     pub width: i32,
     pub tint: Option<u8>,
+}
+
+/// One close-edge tint: its sample, integer corners and colour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CloseEdge {
+    pub sample: [u32; 8],
+    pub corners: [(i32, i32); 4],
+    pub ink: [u8; 4],
 }
 
 /// The opening of a form: spans, an optional shade and backdrop, the scroll
@@ -894,6 +907,7 @@ pub struct FormDispatch {
     pub title: Option<TitleDraw>,
     pub corners: Vec<SliderQuad>,
     pub edges: Vec<SliderQuad>,
+    pub close_edges: Vec<CloseEdge>,
     pub wide_top: Vec<SliderQuad>,
     pub wide_side: Vec<SliderQuad>,
     pub wide_bottom: Vec<SliderQuad>,
@@ -1357,6 +1371,52 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         Vec::new()
     };
     let edge_mask = edge_mask(unit, &place);
+    let close_edges = if (place.flags_c & FORM_STILL) != 0 {
+        let x0 = i64::from(place.close_x)
+            + (f64::from(unit) * f64::from_bits(CLOSE_SLANT)).round_ties_even() as i64;
+        let lift = if (edge_mask & 5) == 5 {
+            unit.wrapping_mul(3)
+        } else {
+            unit.wrapping_shl(1)
+        };
+        let y0 = i64::from(place.close_y) + i64::from(lift);
+        let u = i64::from(unit);
+        let corners = match place.close_mark {
+            -9 => Some([
+                (x0 + u, y0 + 2 * u),
+                (x0 + u, y0),
+                (x0 + 3 * u, y0),
+                (x0 + 3 * u, y0 + 2 * u),
+            ]),
+            -10 => Some([
+                (x0 + u, y0 - 2 * u),
+                (x0 + u, y0),
+                (x0 + 3 * u, y0),
+                (x0 + 3 * u, y0 - 2 * u),
+            ]),
+            -8 => Some([
+                (x0, y0 + 4 * u),
+                (x0, y0),
+                (x0 + 4 * u, y0),
+                (x0 + 4 * u, y0 + 4 * u),
+            ]),
+            _ => None,
+        };
+        corners
+            .map(|corners| {
+                vec![CloseEdge {
+                    sample: LINE_RAIL,
+                    corners: std::array::from_fn(|i| {
+                        let (x, y) = corners[i];
+                        (x as i32, y as i32)
+                    }),
+                    ink: [0xff, 0xcc, 0x99, 0xff],
+                }]
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let reach = unit.wrapping_shl(2).wrapping_add(unit.wrapping_shl(1));
     let band = unit.wrapping_shl(1);
     let skip_bar = (edge_mask & 1) != 0
@@ -1844,6 +1904,7 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         title,
         corners,
         edges,
+        close_edges,
         wide_top,
         wide_side,
         wide_bottom,
@@ -3409,6 +3470,8 @@ mod tests {
             grip_y: 0,
             seat_y: 0,
             post_y: 0,
+            close_x: 0,
+            close_y: 0,
         }
     }
 
@@ -5743,5 +5806,39 @@ mod tests {
         let placed = draw_line_shade(5, place, inks, view);
         assert_eq!(placed.outer[0].placed[0].0.to_bits(), 13.5_f32.to_bits());
         assert_eq!(placed.outer[0].placed[0].1.to_bits(), 154.0_f32.to_bits());
+    }
+
+    #[test]
+    fn a_dispatch_tints_the_close_edges() {
+        let mut form = place(0, 0, FORM_STILL, 0, 0, 0);
+        form.close_x = 10;
+        form.close_y = 20;
+        form.close_mark = -9;
+        let nine = dispatch_form(5, 0, form, &[]);
+        assert_eq!(nine.close_edges.len(), 1);
+        assert_eq!(nine.close_edges[0].sample, LINE_RAIL);
+        assert_eq!(nine.close_edges[0].ink, [0xff, 0xcc, 0x99, 0xff]);
+        assert_eq!(
+            nine.close_edges[0].corners,
+            [(16, 40), (16, 30), (26, 30), (26, 40)]
+        );
+
+        form.close_mark = -10;
+        let ten = dispatch_form(5, 0, form, &[]);
+        assert_eq!(
+            ten.close_edges[0].corners,
+            [(16, 20), (16, 30), (26, 30), (26, 20)]
+        );
+
+        form.close_mark = -8;
+        let eight = dispatch_form(5, 0, form, &[]);
+        assert_eq!(
+            eight.close_edges[0].corners,
+            [(11, 50), (11, 30), (31, 30), (31, 50)]
+        );
+
+        form.close_mark = -4;
+        let none = dispatch_form(5, 0, form, &[]);
+        assert!(none.close_edges.is_empty());
     }
 }
