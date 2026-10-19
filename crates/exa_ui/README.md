@@ -50,8 +50,10 @@ When those mask bits are not both set, bit 0x200 draws a quad from 70, -10
 to 110, 30. A clear tab bit draws the same corners with the sign-flip sample,
 from 70, -10 to 110, 30. A set tab bit then draws a strip from 80, 30 to 90, 50
 at unit 5, width 100 and height 80. A clear hold bit with that tab bit draws
-the wider strip, from 70, 40 to 80, 60 at height 100. The drawing after that
-strip is not in.
+the wider strip, from 70, 40 to 80, 60 at height 100. With mask bit 4 clear,
+the plain word's bit 0x200 clear then draws a bar from 96, 20 to 106, 60
+at unit 5, width 100 and height 80. That plain bit, mask bit 4, a clear tab
+bit, and a clear hold bit draw none. The drawing after that bar is not in.
 
 ## Scope
 

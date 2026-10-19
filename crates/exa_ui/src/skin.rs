@@ -98,6 +98,8 @@ const FORM_BACK: u32 = 0x2_0000;
 const FORM_HOLD: u32 = 0x4;
 const FORM_LOCK: u32 = 0x800;
 const FORM_PLAIN: u32 = 0x100;
+/// Bit of the plain word. A set bit skips the bar after the right strip.
+const FORM_STILL: u32 = 0x200;
 const FORM_ONE: u32 = 0x3f80_0000;
 const FORM_TITLE: u32 = 1;
 const FORM_CLOSE: u32 = 2;
@@ -151,6 +153,9 @@ pub const HELD_OVER: [u32; 4] = [0x3f19_999a, 0x3e4c_cccd, 0x3f19_999a, 0x3f19_9
 
 /// Right strip when the tab bit is set: 0.7, 0.5, 0.7, 0.7.
 pub const HELD_RIGHT: [u32; 4] = [0x3f33_3333, 0x3f00_0000, 0x3f33_3333, 0x3f33_3333];
+
+/// The double 0.2 used to place the bar after the right strip.
+const BEAM_SCALE: u64 = 0x3fc9_9999_9999_999a;
 
 /// The double 6.6 used to place an edge.
 const EDGE_SCALE: u64 = 0x401a_6666_6666_6666;
@@ -677,9 +682,11 @@ pub struct TitleDraw {
 /// and 4 are set, and the narrow cap drawn when that tab bit is clear,
 /// and the quad past the right edge when those bits are not both set,
 /// including the same corners when the tab bit is clear, and the right
-/// strip drawn when the tab bit is set. A clear hold bit on that same
-/// band draws the wider frame, including that strip. The helper body and
-/// the drawing after that strip are not in.
+/// strip drawn when the tab bit is set, and the bar drawn after that
+/// strip when mask bit 4 is clear and the plain word's bit 0x200 is
+/// clear. A clear hold bit on that same band draws the wider frame,
+/// including that strip, and not that bar. The helper body and the
+/// drawing after that bar are not in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormDispatch {
     pub span_a: i32,
@@ -721,6 +728,7 @@ pub struct FormDispatch {
     pub held_over: Vec<SliderQuad>,
     pub held_bare: Vec<SliderQuad>,
     pub held_right: Vec<SliderQuad>,
+    pub held_beam: Vec<SliderQuad>,
     /// Mask forced when the hold bit is clear. The held mask stays separate.
     pub open_mask: u32,
     pub open_calls: u32,
@@ -1384,6 +1392,32 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
     } else {
         Vec::new()
     };
+    let on_band = (place.flags_b & FORM_BOX) == 0 && (place.flags_d & FORM_BAND) == FORM_BAND_ON;
+    let live_mask = if on_hold {
+        edge_mask
+    } else if on_open {
+        0xf
+    } else {
+        0
+    };
+    let held_beam = if on_band
+        && (place.flags_b & FORM_TAB) == FORM_TAB
+        && (live_mask & 4) == 0
+        && (place.flags_c & FORM_STILL) == 0
+    {
+        let extra = (f64::from(unit) * f64::from_bits(BEAM_SCALE)).round_ties_even() as i32;
+        let base = place.width.wrapping_add(extra);
+        let down = unit.wrapping_shl(2);
+        let left = base.wrapping_sub(unit);
+        let right = base.wrapping_add(unit);
+        let low = place.height.wrapping_sub(down);
+        vec![quad(
+            WIDE_BAR,
+            [(right, low), (left, low), (left, down), (right, down)],
+        )]
+    } else {
+        Vec::new()
+    };
     FormDispatch {
         span_a,
         span_b,
@@ -1429,6 +1463,7 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         held_over,
         held_bare,
         held_right,
+        held_beam,
         open_mask,
         open_calls,
         open_tab,
@@ -2954,5 +2989,56 @@ mod tests {
         form.flags_b = FORM_TAB | FORM_BOX;
         form.flags_d = 0x80;
         assert!(dispatch_form(5, 0, form, &[]).held_right.is_empty());
+    }
+
+    #[test]
+    fn a_dispatch_draws_the_held_beam() {
+        let mut form = place(FORM_HOLD, FORM_TAB, 0, 0, 0, 0);
+        form.flags_d = 0x80;
+        form.edge_x = 5;
+        form.edge_y = 5;
+        form.room_far_x = 400;
+        form.room_far_y = 400;
+        let drawn = dispatch_form(5, 0, form, &[]);
+        assert_eq!(drawn.edge_mask & 4, 0);
+        assert_eq!(drawn.held_right.len(), 1);
+        assert_eq!(drawn.held_beam.len(), 1);
+        assert_eq!(drawn.held_beam[0].sample, WIDE_BAR);
+        assert_eq!(
+            drawn.held_beam[0].corners,
+            [(106, 60), (96, 60), (96, 20), (106, 20)]
+        );
+
+        form.flags_c = FORM_STILL;
+        let still = dispatch_form(5, 0, form, &[]);
+        assert!(still.shifted);
+        assert_eq!(still.held_right.len(), 1);
+        assert!(still.held_beam.is_empty());
+
+        form.flags_c = FORM_PLAIN;
+        let plain = dispatch_form(5, 0, form, &[]);
+        assert!(!plain.shifted);
+        assert_eq!(plain.held_beam.len(), 1);
+
+        form.flags_c = 0;
+        form.edge_x = 4;
+        form.edge_y = 4;
+        form.room_far_x = 100;
+        let clipped = dispatch_form(5, 0, form, &[]);
+        assert_eq!(clipped.edge_mask & 4, 4);
+        assert!(clipped.held_beam.is_empty());
+        assert_eq!(clipped.held_end.len(), 1);
+
+        form.edge_x = 5;
+        form.edge_y = 5;
+        form.room_far_x = 400;
+        form.flags_b = 0;
+        assert!(dispatch_form(5, 0, form, &[]).held_beam.is_empty());
+
+        form.flags_b = FORM_TAB;
+        form.flags_a = 0;
+        let open = dispatch_form(5, 0, form, &[]);
+        assert_eq!(open.open_mask, 0xf);
+        assert!(open.held_beam.is_empty());
     }
 }
