@@ -31,8 +31,9 @@ left side from -5, 10 to 5, 70, then a bottom from 10, 75 to 90, 85, then a righ
 to 105, 70. Bit 0x40 of the first flag word then counts one ink copy.
 A close mark of -4 then draws a square from 100, 0 to 80, 20.
 With the hold bit and without the wide bit, a y of 4 sets mask bit 1
-and an x of 4 sets bit 2, then a bar runs from 30, 0 to 70, 10.
-The drawing after that bar is not in.
+and an x of 4 sets bit 2, then a bar runs from 30, 0 to 70, 10. Bit 0x200 draws a tab
+from 16, 30 to 26, 40 when the grip is 10, 20. The next anchor
+after that tab is not in.
 
 ## Scope
 
