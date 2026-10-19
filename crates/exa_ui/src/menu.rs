@@ -858,6 +858,43 @@ pub fn clear_character_view(has_view: bool, base_result: bool) -> ViewClear {
     }
 }
 
+/// The skill selector's applied value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillSelectorApplied {
+    Selected(i32),
+    None,
+}
+
+/// The skill selector show's work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillSelectorShow {
+    pub applied: SkillSelectorApplied,
+    pub flags_cleared: bool,
+    pub base_calls: u32,
+}
+
+/// Clears the selector's flags and applies its selection or the special −1.
+pub fn show_skill_selector(has_object: bool, selection: i32, word: i32) -> SkillSelectorShow {
+    let mut applied = SkillSelectorApplied::None;
+    let mut flags_cleared = false;
+    if has_object {
+        flags_cleared = true;
+        if selection > 0 {
+            applied = SkillSelectorApplied::Selected(selection);
+        } else {
+            let low = word & 0xffff;
+            if low == 9 || low == 10 {
+                applied = SkillSelectorApplied::Selected(-1);
+            }
+        }
+    }
+    SkillSelectorShow {
+        applied,
+        flags_cleared,
+        base_calls: 1,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1444,5 +1481,31 @@ mod tests {
         assert_eq!(empty.release_calls, 0);
         assert_eq!(empty.base_calls, 1);
         assert!(!empty.result);
+    }
+
+    #[test]
+    fn the_skill_selector_show_applies_its_word() {
+        let picked = show_skill_selector(true, 3, 4);
+        assert_eq!(picked.applied, SkillSelectorApplied::Selected(3));
+        assert!(picked.flags_cleared);
+        assert_eq!(picked.base_calls, 1);
+
+        assert_eq!(
+            show_skill_selector(true, 0, 9).applied,
+            SkillSelectorApplied::Selected(-1)
+        );
+        assert_eq!(
+            show_skill_selector(true, 0, 10).applied,
+            SkillSelectorApplied::Selected(-1)
+        );
+        assert_eq!(
+            show_skill_selector(true, 0, 4).applied,
+            SkillSelectorApplied::None
+        );
+
+        let absent = show_skill_selector(false, 3, 4);
+        assert_eq!(absent.applied, SkillSelectorApplied::None);
+        assert!(!absent.flags_cleared);
+        assert_eq!(absent.base_calls, 1);
     }
 }

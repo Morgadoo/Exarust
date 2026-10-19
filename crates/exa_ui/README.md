@@ -196,6 +196,8 @@ threshold, marks the tip, places it from the anchor and stamps the clock. The
 loot screen marks its owner and places a visible child when it becomes active,
 and the journal copies its origin and assigns its page string. The character
 view releases on a free flag, and its clear drops the view and the owner's slot.
+The skill selector's show clears bits 0x60 and applies its selection or -1 for
+words nine and ten.
 
 ## Scope
 
