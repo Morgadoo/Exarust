@@ -26,7 +26,10 @@
 //! bracket clears every losing id. The first group keeps a forced id and
 //! does not step the roll. A later group keeps the first team whose rounded
 //! weights pass the high half of the weight total times the stepped roll. A
-//! tournament field draws 16 of the 19 companies, numbered 1 through 19.
+//! tournament field draws 16 of the 19 companies, numbered 1 through 19. A
+//! day chooses six of seven match templates. A template already at its
+//! limit, a slot before its earliest slot, or a mask that shares a bit
+//! with the roll's top three bits is refused.
 //!
 //! Evidence: the arena career notes (money seed, coin rate, roster caps,
 //! the six standard matches and the seven specials, fee on entry, prize on
@@ -1042,6 +1045,52 @@ pub fn draw_rival_field(roll: &mut u32) -> [i32; RIVAL_FIELD] {
     drawn
 }
 
+/// How soon a daily template may appear, how many times, and which top
+/// roll bits refuse it. The seven rows are earliest slot, limit, mask.
+const DAILY_GATES: [(i32, i32, i32); 7] = [
+    (0, 2, 0),
+    (0, 2, 0),
+    (1, 2, 0),
+    (2, 2, 0),
+    (2, 2, 0),
+    (0, 1, 3),
+    (2, 1, 0),
+];
+
+/// Choose the seven-template index for each of the six daily matches.
+///
+/// The roll is the value already stored for the day. Each try steps it by
+/// `× 0x08088405 + 1` and takes the high half of that word times 7. A limit
+/// above 0 that has already been reached refuses the template. So does a
+/// slot before the earliest slot. A second step refuses it when the mask
+/// shares a bit with the top three bits of the roll (`roll >> 29`).
+pub fn choose_daily_matches(roll: &mut u32) -> [i32; 6] {
+    let mut times = [0i32; 7];
+    let mut chosen = [0i32; 6];
+    for (slot, choice) in chosen.iter_mut().enumerate() {
+        loop {
+            *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
+            let pick = ((u64::from(*roll).wrapping_mul(7)) >> 32) as usize;
+            let (earliest, limit, mask) = DAILY_GATES[pick];
+            if limit > 0 && limit <= times[pick] {
+                continue;
+            }
+            if (slot as i32) < earliest {
+                continue;
+            }
+            *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
+            let top = (*roll >> 29) as i32;
+            if top & mask > 0 {
+                continue;
+            }
+            *choice = pick as i32;
+            times[pick] += 1;
+            break;
+        }
+    }
+    chosen
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1643,5 +1692,18 @@ mod tests {
             [1, 17, 5, 7, 14, 8, 4, 10, 11, 2, 13, 3, 18, 6, 12, 19]
         );
         assert_eq!(roll, 0xead3_2bb1);
+    }
+
+    #[test]
+    fn a_day_chooses_six_matches() {
+        let mut roll = 0u32;
+        assert_eq!(choose_daily_matches(&mut roll), [0, 1, 4, 1, 2, 3]);
+        assert_eq!(roll, 0x1210_d4e5);
+        roll = 1;
+        assert_eq!(choose_daily_matches(&mut roll), [0, 1, 4, 1, 2, 3]);
+        assert_eq!(roll, 0x1210_d4e5);
+        roll = 4;
+        assert_eq!(choose_daily_matches(&mut roll), [0, 1, 6, 4, 4, 1]);
+        assert_eq!(roll, 0xb761_a41e);
     }
 }

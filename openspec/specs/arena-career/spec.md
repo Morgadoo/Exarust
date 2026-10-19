@@ -116,3 +116,10 @@ A tournament field SHALL take 16 companies from the 19, numbered 1 through 19, a
 #### Scenario: Roll 0 and roll 1 leave three companies out
 - **WHEN** a field is drawn from roll 0 and another from roll 1
 - **THEN** roll 0 yields 1, 2, 17, 6, 8, 14, 9, 4, 11, 12, 3, 13, 5, 19, 7, 15 and ends at 0x4b157bf0, and roll 1 yields 1, 17, 5, 7, 14, 8, 4, 10, 11, 2, 13, 3, 18, 6, 12, 19 and ends at 0xead32bb1
+
+### Requirement: Daily match choice
+Six daily matches SHALL be chosen from seven templates. Each try SHALL step the roll by multiplying by 0x08088405 and adding 1, and the high half of that word times 7 SHALL choose. A limit above 0 that is already reached SHALL refuse it. A slot before the template's earliest slot SHALL refuse it. A second step SHALL refuse it when the mask shares a bit with the roll's top three bits.
+
+#### Scenario: Rolls 0 and 1 agree, and roll 4 does not
+- **WHEN** the daily board is filled from rolls 0, 1 and 4
+- **THEN** rolls 0 and 1 both choose 0, 1, 4, 1, 2, 3 and end at 0x1210d4e5, and roll 4 chooses 0, 1, 6, 4, 4, 1 and ends at 0xb761a41e
