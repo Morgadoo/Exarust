@@ -3,7 +3,7 @@
 Rigid-body and articulated-body simulation: the core of Exanima's feel (physically driven characters, momentum-based combat, cloth).
 
 **Phase:** Phase 3 (see [`docs/PLAN.md`](../../docs/PLAN.md)). Status: started — the original's
-body solver (`body`), its level contacts (`contact`), props and items as bodies (`prop`) and the
+body solver (`body`), its level contacts (`contact`), props and items as bodies (`prop`), a cloth step (`cloth`) and the
 character controller (`lib`).
 
 Each fixed tick (83 Hz) moves the character controllers, then runs the

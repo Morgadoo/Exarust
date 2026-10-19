@@ -413,6 +413,10 @@ its phase is 0.2 to 0.4 and lifts at 0.55; a blow whose impact is over
 plus 20 ticks of chest velocity, capped at the step length. Still to do:
 the tighter run cap, the locomotion clock's stride terms, and collisions
 between bodies (and their wake of a sleeper).
+Done (change `step-the-cloth`): a cloth particle keeps 0.98977 × 0.5^(1/83)
+of its velocity, dragged 5% toward the mean, then falls by the body's
+gravity. Wind, a pin and one edge pass follow. Collisions, sleep and
+rustle do not.
 
 Done (change `decode-object-bodies-and-mechanisms`, data only): models'
 rigid bodies are decoded as the original stores them (class, mobility,

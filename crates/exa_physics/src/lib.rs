@@ -5,6 +5,7 @@
 //! body of the original (`docs/PLAN.md`, Phase 3) builds on it.
 
 pub mod body;
+pub mod cloth;
 pub mod contact;
 pub mod prop;
 
