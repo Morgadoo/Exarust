@@ -613,6 +613,88 @@ pub fn destroy_splash(input: SplashDestroyInput) -> SplashDestroy {
     }
 }
 
+/// The skill selector's two draw modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillSelectorMode {
+    Title,
+    Skill,
+    Empty,
+}
+
+/// The skill selector's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillSelectorDrawPlace {
+    pub raw: i32,
+    pub page: i32,
+    pub x0: i32,
+    pub x1: i32,
+    pub y1: i32,
+    pub icon_width: i32,
+}
+
+/// The selector's title, icon and label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillSelectorDraw {
+    pub mode: SkillSelectorMode,
+    pub title: Option<[i32; 5]>,
+    pub icon: Option<[i32; 3]>,
+    pub label: Option<[i32; 5]>,
+    pub begin_calls: u32,
+    pub bind_calls: u32,
+    pub font_calls: u32,
+    pub draw_calls: u32,
+}
+
+/// Draws the skill selector's title or selected skill.
+pub fn draw_skill_selector(place: SkillSelectorDrawPlace, unit: i32) -> SkillSelectorDraw {
+    let width = place
+        .x1
+        .wrapping_sub(place.x0)
+        .wrapping_sub(unit.wrapping_mul(2));
+    let base = SkillSelectorDraw {
+        mode: SkillSelectorMode::Empty,
+        title: None,
+        icon: None,
+        label: None,
+        begin_calls: 1,
+        bind_calls: 1,
+        font_calls: 0,
+        draw_calls: 0,
+    };
+    if place.page == 2 {
+        return SkillSelectorDraw {
+            mode: SkillSelectorMode::Title,
+            title: Some([unit.wrapping_mul(12), width, 0, unit.wrapping_mul(20), 1]),
+            font_calls: 1,
+            draw_calls: 1,
+            ..base
+        };
+    }
+    let index = (place.raw & 0xffff).wrapping_sub(1);
+    if (0..8).contains(&index) {
+        let icon_x = place
+            .x1
+            .wrapping_sub(place.x0)
+            .wrapping_sub(place.icon_width)
+            / 2;
+        return SkillSelectorDraw {
+            mode: SkillSelectorMode::Skill,
+            icon: Some([icon_x, unit.wrapping_mul(16), place.icon_width]),
+            label: Some([
+                unit.wrapping_mul(18),
+                width,
+                0,
+                place.y1.wrapping_sub(unit.wrapping_mul(20)),
+                1,
+            ]),
+            font_calls: 2,
+            draw_calls: 2,
+            ..base
+        };
+    }
+    base
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1062,5 +1144,36 @@ mod tests {
         assert_eq!(quiet.list_calls, 0);
         assert_eq!(quiet.base_calls, 1);
         assert_eq!(quiet.final_calls, 0);
+    }
+
+    #[test]
+    fn the_skill_selector_draws_its_two_modes() {
+        let place = |raw, page| SkillSelectorDrawPlace {
+            raw,
+            page,
+            x0: 10,
+            x1: 110,
+            y1: 180,
+            icon_width: 20,
+        };
+
+        let title = draw_skill_selector(place(4, 2), 5);
+        assert_eq!(title.mode, SkillSelectorMode::Title);
+        assert_eq!(title.title, Some([60, 90, 0, 100, 1]));
+        assert_eq!((title.font_calls, title.draw_calls), (1, 1));
+
+        let skill = draw_skill_selector(place(4, 1), 5);
+        assert_eq!(skill.mode, SkillSelectorMode::Skill);
+        assert_eq!(skill.icon, Some([40, 80, 20]));
+        assert_eq!(skill.label, Some([90, 90, 0, 80, 1]));
+        assert_eq!((skill.font_calls, skill.draw_calls), (2, 2));
+
+        let empty = draw_skill_selector(place(9, 1), 5);
+        assert_eq!(empty.mode, SkillSelectorMode::Empty);
+        assert_eq!((empty.font_calls, empty.draw_calls), (0, 0));
+        assert_eq!(
+            draw_skill_selector(place(0, 1), 5).mode,
+            SkillSelectorMode::Empty
+        );
     }
 }

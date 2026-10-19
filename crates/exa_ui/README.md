@@ -190,7 +190,8 @@ loot pane's origin, and maps an argument of -1 to page -3. The main-menu name
 entry shifts a ten-byte buffer, lowers A-Z and submits on "barechoons". The
 splash screen's bounds are the screen and two -1 values, and its destroy
 releases, frees two pointers, releases a list and calls the base before the
-final free call.
+final free call. The skill selector draws a page-2 title or the measured icon
+and label of the selection.
 
 ## Scope
 
