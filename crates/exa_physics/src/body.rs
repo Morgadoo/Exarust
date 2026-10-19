@@ -1060,6 +1060,16 @@ impl Drive {
         &self.balance
     }
 
+    /// The body's balance, to record a chest point.
+    pub fn balance_mut(&mut self) -> &mut Balance {
+        &mut self.balance
+    }
+
+    /// A recovery or stagger step is already running.
+    pub fn stepping(&self) -> bool {
+        self.steps.stepping
+    }
+
     /// The arms' stiffness (their link muscle factor is 1.25 times it).
     pub fn arm_stiffness(&self) -> f32 {
         self.arm
@@ -1654,7 +1664,13 @@ impl Ragdoll {
             .iter()
             .map(|leg| self.parts[leg.shin].point(&leg.contact))
             .collect();
-        feet::walk_stagger(&mut self.legs, &ankles, spots, target, frame, scale)
+        let walked = feet::walk_stagger(&mut self.legs, &ankles, spots, target, frame, scale);
+        if let Some(drive) = self.drive.as_mut() {
+            drive.steps.stepping = true;
+            drive.steps.target = target;
+            drive.steps.knockback = false;
+        }
+        walked
     }
 
     /// Starts a knockback step at the chest plus `offset` (m, horizontal).

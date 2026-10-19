@@ -373,3 +373,44 @@ fn a_collapse_walks_the_stagger_it_starts() {
     assert_eq!(walked.anchors[0].y.to_bits(), 0xbe4c_cccc);
     assert_eq!(walked.anchors[0].z.to_bits(), 0x3f34_3958);
 }
+
+/// The dying tick walks the stagger from the chest it has already measured.
+/// A chest that moves a metre along z, recorded three times so the fast
+/// velocity is that move, anchors one foot. Without the walk the feet stay
+/// unanchored.
+#[test]
+fn the_dying_tick_walks_the_stagger() {
+    let (mut body, _) = two_feet();
+    {
+        let drive = body.drive.as_mut().unwrap();
+        drive.balance_mut().record_chest(Vec3::ZERO);
+        drive.balance_mut().record_chest(Vec3::Z);
+        drive.balance_mut().record_chest(Vec3::Z);
+    }
+    let mut app = App::new();
+    app.add_systems(Update, dying_tick);
+    let id = app
+        .world_mut()
+        .spawn((
+            Fighter::default(),
+            Condition::COLLAPSING,
+            Collapse::default(),
+            body,
+            Animator::new("Default", FALL_BACKWARD),
+            GlobalTransform::default(),
+        ))
+        .id();
+    app.insert_resource(TickedCharacter {
+        body: id,
+        character: None,
+    });
+    app.update();
+    let ragdoll = app.world().get::<Ragdoll>(id).unwrap();
+    let states: Vec<u32> = ragdoll.legs().iter().map(|leg| leg.state.0).collect();
+    assert_eq!(states, vec![FootState::ANCHORED, 0]);
+    assert!(ragdoll.drive.as_ref().unwrap().stepping());
+    app.update();
+    let ragdoll = app.world().get::<Ragdoll>(id).unwrap();
+    let again: Vec<u32> = ragdoll.legs().iter().map(|leg| leg.state.0).collect();
+    assert_eq!(again, vec![FootState::ANCHORED, 0]);
+}

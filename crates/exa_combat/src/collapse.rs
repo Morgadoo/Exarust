@@ -17,7 +17,9 @@
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Ease};
-use exa_physics::body::{CharacterStage, CharacterTick, GoLimp, Ragdoll, TickedCharacter, pairs};
+use exa_physics::body::{
+    CharacterStage, CharacterTick, GoLimp, Ragdoll, TickedCharacter, pairs, step_length,
+};
 
 use crate::condition::{Condition, StateFlags, track_condition};
 use crate::{Fighter, Roll};
@@ -235,6 +237,37 @@ pub fn start_collapse(
     true
 }
 
+/// The dying tick's stagger walk, in centimetres inside [`stagger_step`]
+/// and metres for [`Ragdoll::walk_stagger`]. A step that is already running
+/// writes nothing. Without a measured chest there is nothing to walk.
+fn walk_collapse(body: &mut Ragdoll) {
+    let ready = {
+        let Some(drive) = body.drive.as_ref() else {
+            return;
+        };
+        let Some(chest) = drive.balance().chest() else {
+            return;
+        };
+        let scale = drive.stats.scale;
+        let frame = drive.anchor().unwrap_or(Vec3::new(chest.x, 0.0, chest.z));
+        let step = CollapseStep {
+            stepping: drive.stepping(),
+            reach: step_length(scale, drive.balance().extension()),
+            balance: drive.balance().value,
+            scale_root: scale.max(0.0).sqrt(),
+            tone: drive.tone,
+            chest: chest * 100.0,
+            velocity: drive.balance().fast_velocity() * 100.0,
+        };
+        (step, frame, scale)
+    };
+    let Some(step) = stagger_step(&ready.0) else {
+        return;
+    };
+    let spots: Vec<Option<Vec3>> = (0..body.legs().len()).map(|i| body.ankle(i)).collect();
+    let _walked = body.walk_stagger(step.target / 100.0, ready.1, &spots, ready.2);
+}
+
 pub struct CollapsePlugin;
 
 impl Plugin for CollapsePlugin {
@@ -254,7 +287,9 @@ impl Plugin for CollapsePlugin {
 /// its heading drifts by two draws of the original's generator (drawn in
 /// the characters' tick order); under balance 0.8 a body under size 1.2
 /// starts Rebalance (once: the start does nothing while it plays); its
-/// tone falls 0.003 and its pins' gain 0.0003. At a tone of 0.25 it dies
+/// tone falls 0.003 and its pins' gain 0.0003. Unless a step is already
+/// running, it walks the stagger from the chest and its fast velocity.
+/// At a tone of 0.25 it dies
 /// there and then: dead, its yellow health 0, its muscles gone, keeping
 /// its motion, and the rest of its tick does not run
 /// ([`crate::condition::ticked_lives`]); the frame strips its clip and
@@ -280,27 +315,31 @@ pub fn dying_tick(
         if !condition.is_collapsing() {
             return;
         }
-        let Some(drive) = body.drive.as_mut() else {
-            return;
+        let dies = {
+            let Some(drive) = body.drive.as_mut() else {
+                return;
+            };
+            let heading = collapse.heading.unwrap_or_else(|| {
+                (gt.rotation() * Vec3::Z)
+                    .xz()
+                    .try_normalize()
+                    .unwrap_or(Vec2::Y)
+            });
+            let (a, b) = (roll.next(), roll.next());
+            collapse.heading = Some(jitter_heading(heading, a, b));
+            if throw_arms_wide(&mut anim, fighter.stats.size, drive.balance().value) {
+                info!(
+                    "{entity:?} rebalances {} ticks into its collapse",
+                    collapse.ticks
+                );
+            }
+            let (tone, dies) = lose_tone(drive.tone);
+            drive.tone = tone;
+            drive.pin_gain = fade_pins(drive.pin_gain);
+            collapse.ticks += 1;
+            dies
         };
-        let heading = collapse.heading.unwrap_or_else(|| {
-            (gt.rotation() * Vec3::Z)
-                .xz()
-                .try_normalize()
-                .unwrap_or(Vec2::Y)
-        });
-        let (a, b) = (roll.next(), roll.next());
-        collapse.heading = Some(jitter_heading(heading, a, b));
-        if throw_arms_wide(&mut anim, fighter.stats.size, drive.balance().value) {
-            info!(
-                "{entity:?} rebalances {} ticks into its collapse",
-                collapse.ticks
-            );
-        }
-        let (tone, dies) = lose_tone(drive.tone);
-        drive.tone = tone;
-        drive.pin_gain = fade_pins(drive.pin_gain);
-        collapse.ticks += 1;
+        walk_collapse(&mut body);
         if dies {
             condition.die();
             // Death empties the yellow bar the collapse regenerated.

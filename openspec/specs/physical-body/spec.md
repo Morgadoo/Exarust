@@ -1286,3 +1286,10 @@ A stagger target SHALL pull the stance origin back to within 1.1 step lengths of
 #### Scenario: A far target, a near target, and the frame
 - **WHEN** a target 2 m ahead is walked, a target half a metre ahead is walked, a target on the frame is walked, and the stagger from reach 80, balance 1 and velocity 3 and 4 is walked
 - **THEN** the far target pulls the origin to z bits 0x3f6147ae and anchors the first foot there with state 4, the near target stays at z bits 0x3f000000, the frame moves no foot, and the stagger pulls the origin to bits 0x3f072b02 and 0x3f343958 and anchors the first foot at bits 0x3f53f7cf, 0xbe4ccccc and 0x3f343958
+
+### Requirement: Dying tick walk
+A collapsing body's dying tick SHALL walk its stagger from the measured chest and the fast velocity when no step is running. A chest recorded at the origin, then a metre along z, then there again, SHALL anchor one foot on the first tick and leave that foot on the second.
+
+#### Scenario: A measured chest anchors one foot
+- **WHEN** a collapsing body records its chest at the origin, then a metre along z, then there again, and its dying tick runs twice
+- **THEN** the first tick anchors the first foot and leaves the second, and the second tick leaves that same pair

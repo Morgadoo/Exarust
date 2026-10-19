@@ -127,7 +127,8 @@ reciprocal-square-root unit times the span to the chest, a zero velocity
 leaves the chest, and the landings and the step kind are 0. The footwork
 walks that target (`Ragdoll::walk_stagger`): the stance origin is the
 target pulled back to 1.1 step lengths of the frame, and one foot is
-anchored on its shifted spot. A body without muscles dies at
+anchored on its shifted spot. The dying tick calls that walk from the
+measured chest and its fast velocity when no step is running. A body without muscles dies at
 once. Rules: [`docs/formats/RSQ.md`](../../docs/formats/RSQ.md) (The
 collapse).
 

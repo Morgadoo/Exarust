@@ -281,6 +281,12 @@ impl Balance {
         self.chest
     }
 
+    /// Keeps the chest point and smooths its fast and slow velocity from
+    /// where it was last tick and the tick before.
+    pub fn record_chest(&mut self, now: Vec3) {
+        self.follow_chest(now);
+    }
+
     /// The chest's slow smoothed velocity (m a tick).
     pub fn slow_velocity(&self) -> Vec3 {
         self.slow
