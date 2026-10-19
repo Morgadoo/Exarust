@@ -11,6 +11,7 @@ pub mod door;
 pub mod lever;
 pub mod plate;
 pub mod prop;
+pub mod relay;
 pub mod signal;
 
 use bevy::prelude::*;

@@ -11,8 +11,8 @@
 //! exactly when the value is not 0.
 //!
 //! Evidence: the signal dispatch, the deferred job, and the toggle of the
-//! doors under a node. The relay bodies and the close itself are not in
-//! this slice.
+//! doors under a node. Kinds 0, 2, 3 and 5 run in the relay module. The
+//! close itself is not in this slice.
 
 /// Operative class of a deferred fire or light.
 const JOB: u8 = 6;
@@ -59,7 +59,7 @@ pub enum Order {
     Light {
         on: bool,
     },
-    /// A relay of this kind. Its body is not run here.
+    /// A relay of this kind. Kinds 0, 2, 3 and 5 are run by the relay module.
     Relay {
         kind: u8,
     },
