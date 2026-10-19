@@ -364,6 +364,9 @@ pub struct ExaMaterial {
     /// opacity flag with an opacity above 0.75 (see
     /// [`ExaMaterial::cuts_shadow`]).
     pub cut_shadow: bool,
+    /// When set, this pass culls that face. Cloth submits one material per
+    /// pass: front, then back.
+    pub cloth_cull: Option<bevy::render::render_resource::Face>,
 }
 
 impl Default for ExaMaterial {
@@ -385,6 +388,7 @@ impl Default for ExaMaterial {
             alpha_mode: AlphaMode::default(),
             no_shadows: false,
             cut_shadow: false,
+            cloth_cull: None,
         }
     }
 }
@@ -396,6 +400,20 @@ impl ExaMaterial {
     /// surfaces and those marked [`ExaMaterial::cut_shadow`] (cobwebs).
     pub fn cuts_shadow(&self) -> bool {
         self.cut_shadow || matches!(self.alpha_mode, AlphaMode::Mask(_))
+    }
+
+    /// One material per cloth draw. Each pass culls the face the pass names,
+    /// so the pipeline submits the front and the back separately.
+    pub fn cloth_draws(&self, culls: &[bevy::render::render_resource::Face]) -> Vec<Self> {
+        culls
+            .iter()
+            .copied()
+            .map(|face| {
+                let mut pass = self.clone();
+                pass.cloth_cull = Some(face);
+                pass
+            })
+            .collect()
     }
 
     /// The surface shows wound blood with `program`, the speckle texture
@@ -457,13 +475,22 @@ impl From<Color> for ExaMaterial {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ExaMaterialKey {
     two_sided: bool,
+    cloth_cull: Option<bevy::render::render_resource::Face>,
 }
 
 impl From<&ExaMaterial> for ExaMaterialKey {
     fn from(m: &ExaMaterial) -> Self {
         Self {
             two_sided: m.params.flags & flags::TWO_SIDED != 0,
+            cloth_cull: m.cloth_cull,
         }
+    }
+}
+
+impl ExaMaterialKey {
+    /// The face this pass culls, when the material is one cloth draw.
+    pub fn cloth_cull(self) -> Option<bevy::render::render_resource::Face> {
+        self.cloth_cull
     }
 }
 
@@ -490,7 +517,9 @@ impl Material for ExaMaterial {
         _layout: &MeshVertexBufferLayoutRef,
         key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
-        if key.bind_group_data.two_sided {
+        if let Some(face) = key.bind_group_data.cloth_cull {
+            descriptor.primitive.cull_mode = Some(face);
+        } else if key.bind_group_data.two_sided {
             descriptor.primitive.cull_mode = None;
         }
         Ok(())
@@ -639,5 +668,22 @@ mod tests {
         let g = ExaParams::falloff(-1.0, 1.0, true);
         assert_eq!((g.x, g.y), (0.0, -1.8));
         assert_eq!(g.z, f.z);
+    }
+
+    #[test]
+    fn a_cloth_draw_culls_the_face_it_submits() {
+        use bevy::render::render_resource::Face;
+        let draws = ExaMaterial::default().cloth_draws(&[Face::Front, Face::Back]);
+        assert_eq!(draws.len(), 2);
+        assert_eq!(
+            ExaMaterialKey::from(&draws[0]).cloth_cull,
+            Some(Face::Front)
+        );
+        assert_eq!(ExaMaterialKey::from(&draws[1]).cloth_cull, Some(Face::Back));
+        assert!(
+            ExaMaterialKey::from(&ExaMaterial::default())
+                .cloth_cull
+                .is_none()
+        );
     }
 }

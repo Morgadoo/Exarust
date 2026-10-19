@@ -430,8 +430,11 @@ both windings. The 16×16 wind tile is sampled in 2 m cells. A collision
 returns the opposite of the vertex pushes to the body.
 Done (change `rank-cloth-pins`): each vertex stores its distance along the
 mesh from the nearest pin, and the draw hook culls the front and then the
-back. The distance is not the straight line. Submitting those passes to
-the GPU is not in.
+back. The distance is not the straight line.
+Done (change `submit-cloth-draws`): each submitted pass becomes a material
+whose pipeline culls that face, the front and then the back. A single-sided
+cloth submits one material that culls the back. Spawning a mesh for every
+cloth marker is not in.
 
 Done (change `decode-object-bodies-and-mechanisms`, data only): models'
 rigid bodies are decoded as the original stores them (class, mobility,

@@ -19,6 +19,7 @@
 //! and a vertex swept through a level triangle).
 
 use bevy::math::Vec3;
+use bevy::render::render_resource::Face;
 
 use crate::body::BODY_HZ;
 
@@ -310,6 +311,18 @@ impl Cloth {
         }
         cloth.distances = geodesic(vertices, triangles, pinned);
         cloth
+    }
+
+    /// The GPU cull face of each submitted pass. Front is culled first, then
+    /// back, so both sides of the cloth are drawn.
+    pub fn submitted_culls(&self) -> Vec<Face> {
+        self.draw_passes()
+            .into_iter()
+            .map(|pass| match pass {
+                DrawPass::CullFront => Face::Front,
+                DrawPass::CullBack => Face::Back,
+            })
+            .collect()
     }
 
     /// The double-sided draw hook: cull front faces and draw, then cull back
@@ -995,8 +1008,10 @@ mod tests {
             cloth.draw_passes(),
             vec![DrawPass::CullFront, DrawPass::CullBack]
         );
+        assert_eq!(cloth.submitted_culls(), vec![Face::Front, Face::Back]);
         let mut single = cloth.clone();
         single.double_sided = false;
         assert_eq!(single.draw_passes(), vec![DrawPass::CullBack]);
+        assert_eq!(single.submitted_culls(), vec![Face::Back]);
     }
 }

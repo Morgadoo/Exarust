@@ -4,6 +4,7 @@
 //! what shows (`rooms`, `room_view`).
 
 pub mod bodies;
+pub mod cloth_draw;
 pub mod environment;
 pub mod fire;
 pub mod flame;

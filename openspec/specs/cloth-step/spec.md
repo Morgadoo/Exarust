@@ -95,3 +95,10 @@ A double-sided cloth SHALL draw in two passes, culling the front and then the ba
 #### Scenario: Both faces
 - **WHEN** a mesh cloth is asked for its passes, then marked single sided
 - **THEN** the first list culls the front and the back, and the second list culls only the back
+
+### Requirement: Draw submission
+A double-sided cloth's submitted passes SHALL become two draw materials, the first culling the front and the second the back. A single-sided cloth SHALL become one material that culls the back.
+
+#### Scenario: Front then back
+- **WHEN** a mesh cloth is built and its draw materials are taken from a plain surface, then the cloth is marked single sided and the materials are taken again
+- **THEN** the first pair culls the front and then the back, and the second list is one material that culls the back
