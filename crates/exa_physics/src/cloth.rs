@@ -890,6 +890,91 @@ pub fn sync_cloth(meta_flags: u32) -> ClothSync {
     }
 }
 
+/// One particle for the pressure pass.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClothPressureParticle {
+    pub normal: Vec3,
+    pub d8: Vec3,
+    pub e0: Vec3,
+}
+
+/// The pressure pass's inputs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClothPressureInput {
+    pub gate: u32,
+    pub coupled: i32,
+    pub particles: Vec<ClothPressureParticle>,
+}
+
+/// The pressure pass's outputs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClothPressure {
+    pub skipped: bool,
+    pub normals: Vec<Vec3>,
+    pub ws: Vec<f32>,
+    pub d8: Vec<Vec3>,
+    pub coupled_calls: i32,
+    pub zeroed: bool,
+    pub flag_cleared: bool,
+}
+
+/// Normalizes the normals, projects each edge and couples the result.
+pub fn apply_cloth_pressure(input: ClothPressureInput) -> ClothPressure {
+    if (input.gate & 0xf00) == 0x100 {
+        return ClothPressure {
+            skipped: true,
+            normals: Vec::new(),
+            ws: Vec::new(),
+            d8: Vec::new(),
+            coupled_calls: 0,
+            zeroed: false,
+            flag_cleared: false,
+        };
+    }
+    let count = input.particles.len();
+    let mut normals = Vec::with_capacity(count);
+    let mut ws = Vec::with_capacity(count);
+    let mut d8s = Vec::with_capacity(count);
+    for particle in &input.particles {
+        let len2 = particle.normal.length_squared();
+        if len2 < 1e-6 {
+            normals.push(Vec3::ZERO);
+            ws.push(-1.0);
+            d8s.push(particle.d8);
+            continue;
+        }
+        let len = len2.sqrt();
+        let unit = particle.normal / len;
+        let w = unit.dot(particle.d8) + len;
+        let mut d8 = particle.d8;
+        let mut local = particle.e0 - d8;
+        local -= unit * local.dot(unit);
+        let local2 = local.length_squared();
+        if f64::from(local2) > 0.2 {
+            let scale = -(0.1f64 / f64::from(local2)).sqrt() as f32;
+            d8 += local * scale;
+        } else {
+            d8 -= local;
+        }
+        normals.push(unit + d8 * -len);
+        ws.push(w);
+        d8s.push(d8);
+    }
+    ClothPressure {
+        skipped: false,
+        normals,
+        ws,
+        d8: d8s,
+        coupled_calls: if input.coupled >= 2 {
+            input.coupled - 1
+        } else {
+            0
+        },
+        zeroed: true,
+        flag_cleared: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1306,5 +1391,48 @@ mod tests {
         let skipped = sync_cloth(0x10);
         assert!(!skipped.applied);
         assert_eq!((skipped.transform_calls, skipped.pose_calls), (0, 0));
+    }
+
+    #[test]
+    fn the_cloth_pressure_normalizes_and_corrects() {
+        let result = apply_cloth_pressure(ClothPressureInput {
+            gate: 0,
+            coupled: 3,
+            particles: vec![
+                ClothPressureParticle {
+                    normal: Vec3::ZERO,
+                    d8: Vec3::new(1.0, 1.0, 1.0),
+                    e0: Vec3::new(2.0, 2.0, 2.0),
+                },
+                ClothPressureParticle {
+                    normal: Vec3::new(3.0, 0.0, 0.0),
+                    d8: Vec3::new(0.0, 2.0, 0.0),
+                    e0: Vec3::new(0.0, 2.0, 5.0),
+                },
+            ],
+        });
+        assert!(!result.skipped);
+        assert_eq!(result.normals[0], Vec3::ZERO);
+        assert_eq!(result.ws[0], -1.0);
+        assert_eq!(result.d8[0], Vec3::new(1.0, 1.0, 1.0));
+        assert!((result.ws[1] - 3.0).abs() < 1e-5);
+        assert!((result.normals[1].x - 1.0).abs() < 1e-5);
+        assert!((result.normals[1].y + 6.0).abs() < 1e-5);
+        assert!((result.normals[1].z - 0.948_683_3).abs() < 1e-5);
+        assert!(result.d8[1].x.abs() < 1e-5);
+        assert!((result.d8[1].y - 2.0).abs() < 1e-5);
+        assert!((result.d8[1].z + 0.316_227_77).abs() < 1e-5);
+        assert_eq!(result.coupled_calls, 2);
+        assert!(result.zeroed);
+        assert!(result.flag_cleared);
+
+        let gated = apply_cloth_pressure(ClothPressureInput {
+            gate: 0x100,
+            coupled: 3,
+            particles: vec![],
+        });
+        assert!(gated.skipped);
+        assert_eq!(gated.coupled_calls, 0);
+        assert!(!gated.zeroed);
     }
 }
