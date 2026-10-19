@@ -3266,6 +3266,94 @@ pub fn skin_frames(place: SkinFramePlace) -> Vec<SkinFrameDraw> {
     frames
 }
 
+/// The image draw's inputs: the place, the image word and its side, and the two words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkinImagePlace {
+    pub x: i16,
+    pub y: i16,
+    pub w: i16,
+    pub h: i16,
+    pub image: i32,
+    pub size: i32,
+    pub style: u32,
+    pub flags: u32,
+    pub default_image: bool,
+}
+
+/// The three colour bytes the ink binds read, plus the shared alpha.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkinImageInks {
+    pub plain: [u8; 3],
+    pub raised: [u8; 3],
+    pub alpha: u8,
+}
+
+/// What the image draw selects.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SkinImageDraw {
+    pub x: i64,
+    pub y: i64,
+    pub image: i32,
+    pub default_image: bool,
+    pub frame: Option<u32>,
+    pub scale: Option<f32>,
+    pub ink: Option<u32>,
+    pub colour: Option<[u8; 4]>,
+}
+
+/// Centres a control's image and selects its ink and frame.
+pub fn draw_skin_image(place: SkinImagePlace, inks: SkinImageInks) -> SkinImageDraw {
+    let size = i64::from(place.size);
+    let half_x = (i64::from(place.w) - size) / 2;
+    let half_y = (i64::from(place.h) - size) / 2;
+    let nudge = i64::from((place.flags & 0x60) == 0x40);
+    let x = i64::from(place.x) + half_x;
+    let y = i64::from(place.y) + half_y + nudge;
+    let frame = if (place.style & 0x7000_0000) > 0 {
+        Some((place.style >> 28) & 7)
+    } else {
+        None
+    };
+
+    let mode_10000 = (place.flags & 0xf_0000) == 0x1_0000;
+    let (ink, colour, scale) = if mode_10000 {
+        (None, None, Some(1.0))
+    } else if (place.style & 0x100_0000) != 0 {
+        if (place.flags & 0x10) != 0 {
+            (Some(0xd8), None, None)
+        } else if (place.flags & 0x40) == 0x40 {
+            (
+                Some(0xf4),
+                Some([inks.raised[0], inks.raised[1], inks.raised[2], inks.alpha]),
+                None,
+            )
+        } else {
+            (
+                Some(0xe4),
+                Some([inks.plain[0], inks.plain[1], inks.plain[2], inks.alpha]),
+                None,
+            )
+        }
+    } else if (place.flags & 0x11) != 0 {
+        (Some(0xd8), None, None)
+    } else if (place.flags & 0x40) == 0x40 {
+        (Some(0xf4), None, None)
+    } else {
+        (Some(0xe4), None, None)
+    };
+
+    SkinImageDraw {
+        x,
+        y,
+        image: place.image,
+        default_image: place.default_image,
+        frame,
+        scale,
+        ink,
+        colour,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6360,6 +6448,59 @@ mod tests {
         assert!(skin_frames(place(0)).is_empty());
         assert!(skin_frames(place(0x30)).is_empty());
         assert!(skin_frames(place(0xc0)).is_empty());
+    }
+
+    #[test]
+    fn a_skin_image_centres_and_selects_its_ink() {
+        let inks = SkinImageInks {
+            plain: [1, 2, 3],
+            raised: [4, 5, 6],
+            alpha: 255,
+        };
+        let place = |style: u32, flags: u32| SkinImagePlace {
+            x: 10,
+            y: 20,
+            w: 100,
+            h: 80,
+            image: 42,
+            size: 16,
+            style,
+            flags,
+            default_image: false,
+        };
+
+        let centred = draw_skin_image(place(0, 0), inks);
+        assert_eq!((centred.x, centred.y), (52, 52));
+        assert_eq!(centred.ink, Some(0xe4));
+        assert_eq!(centred.colour, None);
+        assert_eq!(centred.frame, None);
+        assert_eq!(centred.scale, None);
+
+        let marked = draw_skin_image(place(0, 0x40), inks);
+        assert_eq!((marked.x, marked.y), (52, 53));
+
+        let scaled = draw_skin_image(place(0, 0x10000), inks);
+        assert_eq!(scaled.ink, None);
+        assert_eq!(scaled.scale, Some(1.0));
+
+        let framed = draw_skin_image(place(0x3000_0000, 0x10000), inks);
+        assert_eq!(framed.frame, Some(3));
+
+        let texture = draw_skin_image(place(0x100_0000, 0x10), inks);
+        assert_eq!(texture.ink, Some(0xd8));
+        assert_eq!(texture.colour, None);
+
+        let raised = draw_skin_image(place(0x100_0000, 0x40), inks);
+        assert_eq!(raised.ink, Some(0xf4));
+        assert_eq!(raised.colour, Some([4, 5, 6, 255]));
+
+        let plain = draw_skin_image(place(0x100_0000, 0), inks);
+        assert_eq!(plain.ink, Some(0xe4));
+        assert_eq!(plain.colour, Some([1, 2, 3, 255]));
+
+        let plain_slot = draw_skin_image(place(0, 0x40), inks);
+        assert_eq!(plain_slot.ink, Some(0xf4));
+        assert_eq!(plain_slot.colour, None);
     }
 
     #[test]
