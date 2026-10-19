@@ -77,8 +77,8 @@ width 100 and height 80. A set tab bit still draws it. A missing bit draws
 none. A clear hold bit draws the wider quad, from 60, 80 to 80, 90 at height
 100. When mask bits 4 and 8 are not both set, the tab bit draws a quad from
 70, 50 to 110, 90 at unit 5, width 100 and height 80. Both bits set draw the
-bottom quad instead. A clear tab bit and a clear hold bit draw none. The
-clear-tab arm is not in.
+bottom quad instead. A clear tab bit draws the same corners, and a clear
+hold bit draws none of either. The join after that quad is not in.
 
 ## Scope
 
