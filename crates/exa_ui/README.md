@@ -47,7 +47,8 @@ cap from 70, 10 to 100, 30 at unit 5 and width 100. A clear tab bit
 draws a narrower cap from 90, 10 to 100, 30, then a shelf from 70, 0
 to 90, 10 unless bit 1 or the owner's bit 1 is set without bit 0x800000.
 When those mask bits are not both set, bit 0x200 draws a quad from 70, -10
-to 110, 30. The quad after a clear tab bit on that path is not in.
+to 110, 30. A clear tab bit draws the same corners with the sign-flip sample,
+from 70, -10 to 110, 30. The drawing after that join is not in.
 
 ## Scope
 
