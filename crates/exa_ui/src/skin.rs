@@ -596,6 +596,15 @@ pub struct DispatchPlace {
     pub along_x: u32,
     pub along_y: u32,
     pub count: i32,
+    /// The form's x and y that the hold-bit test compares with the unit.
+    pub edge_x: i32,
+    pub edge_y: i32,
+    /// The two ends whose difference is the room on the right.
+    pub room_far_x: i32,
+    pub room_near_x: i32,
+    /// The two ends whose difference is the room on the bottom.
+    pub room_far_y: i32,
+    pub room_near_y: i32,
 }
 
 /// One corner of the backdrop, with its sample bits.
@@ -619,8 +628,8 @@ pub struct TitleDraw {
 /// The opening of a form: spans, an optional shade and backdrop, the scroll
 /// shift, the shown children, the title, the corners, the edge bars, the
 /// wide top, the left side, the bottom, the right side, the ink copy,
-/// and the square drawn when the close mark is -4. The hold-bit edge
-/// test is not in.
+/// the square drawn when the close mark is -4, and the hold-bit edge
+/// mask. The quads after that mask are not in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormDispatch {
     pub span_a: i32,
@@ -647,6 +656,34 @@ pub struct FormDispatch {
     pub wide_calls: u32,
     pub mark_calls: u32,
     pub late_close: Vec<SliderQuad>,
+    pub edge_mask: u32,
+}
+
+fn edge_mask(unit: i32, place: &DispatchPlace) -> u32 {
+    let wide = (place.flags_b & FORM_BOX) != 0;
+    let band = (place.flags_d & FORM_BAND) == FORM_BAND_ON;
+    let held = (place.flags_a & FORM_HOLD) != 0;
+    if wide || !band || !held {
+        return 0;
+    }
+    let mut mask = 0;
+    if place.edge_y < unit {
+        mask |= 1;
+    }
+    if place.edge_x < unit {
+        mask |= 2;
+    }
+    let sum_x = i64::from(unit) + i64::from(place.edge_x) + i64::from(place.width);
+    let room_x = i64::from(place.room_far_x) - i64::from(place.room_near_x);
+    if sum_x > room_x {
+        mask |= 4;
+    }
+    let sum_y = i64::from(unit) + i64::from(place.edge_y) + i64::from(place.height);
+    let room_y = i64::from(place.room_far_y) - i64::from(place.room_near_y);
+    if sum_y > room_y {
+        mask |= 8;
+    }
+    mask
 }
 
 fn edge_reach(unit: i32) -> i32 {
@@ -1017,6 +1054,7 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         wide_calls,
         mark_calls,
         late_close,
+        edge_mask: edge_mask(unit, &place),
     }
 }
 
@@ -1589,6 +1627,12 @@ mod tests {
             along_x,
             along_y,
             count,
+            edge_x: 0,
+            edge_y: 0,
+            room_far_x: 0,
+            room_near_x: 0,
+            room_far_y: 0,
+            room_near_y: 0,
         }
     }
 
@@ -1932,5 +1976,41 @@ mod tests {
         assert!(dispatch_form(5, 0, form, &[]).late_close.is_empty());
         form.close_mark = -3;
         assert!(dispatch_form(5, 0, form, &[]).late_close.is_empty());
+    }
+
+    #[test]
+    fn a_dispatch_marks_the_held_edges() {
+        let mut form = place(FORM_HOLD, 0, 0, 0, 0, 0);
+        form.flags_d = 0x80;
+        form.edge_x = 4;
+        form.edge_y = 4;
+        form.room_far_x = 100;
+        form.room_near_x = 0;
+        form.room_far_y = 200;
+        form.room_near_y = 0;
+        let drawn = dispatch_form(5, 0, form, &[]);
+        assert_eq!(drawn.edge_mask, 7);
+        assert!(drawn.wide_top.is_empty());
+
+        form.edge_x = 5;
+        form.edge_y = 5;
+        form.room_far_x = 200;
+        form.room_far_y = 200;
+        assert_eq!(dispatch_form(5, 0, form, &[]).edge_mask, 0);
+
+        form.edge_x = 4;
+        form.edge_y = 4;
+        form.room_far_x = 109;
+        form.room_far_y = 89;
+        assert_eq!(dispatch_form(5, 0, form, &[]).edge_mask, 3);
+
+        form.flags_a = 0;
+        assert_eq!(dispatch_form(5, 0, form, &[]).edge_mask, 0);
+        form.flags_a = FORM_HOLD;
+        form.flags_b = 0x40_0000;
+        assert_eq!(dispatch_form(5, 0, form, &[]).edge_mask, 0);
+        form.flags_b = 0;
+        form.flags_d = 0x10;
+        assert_eq!(dispatch_form(5, 0, form, &[]).edge_mask, 0);
     }
 }

@@ -30,7 +30,8 @@ has bits 0xc0 equal to 0x80 draws a top from 10, -5 to 90, 5, then a
 left side from -5, 10 to 5, 70, then a bottom from 10, 75 to 90, 85, then a right side from 95, 10
 to 105, 70. Bit 0x40 of the first flag word then counts one ink copy.
 A close mark of -4 then draws a square from 100, 0 to 80, 20.
-The hold-bit edge test is not in.
+With the hold bit and without the wide bit, a y of 4 sets mask bit 1
+and an x of 4 sets bit 2. The quads after that mask are not in.
 
 ## Scope
 
