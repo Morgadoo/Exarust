@@ -100,7 +100,12 @@ draws (3, 29), (3, 13), (19, 13), (19, 29); word 6 draws (-1, 33), (-1, 9),
 (23, 9), (23, 33), and word -1 places the first corner at bits 0xdf000000,
 0xdf000000. Its cursor starts at 0, so flag 4 and mark 9 store indexes 0
 through 3 and finish at 4, and flag 0 stores none and still finishes at 4.
-Colour 17 is stored four times.
+Colour 17 is stored four times. The chip after that square, at unit 5 and
+place 10, 20, draws (10, 40), (10, 20), (30, 20), (30, 40) with the sample
+0.75, 0.8, 0.75, 1, then 0.85, 1, 0.85, 0.8. Flag 0x40 binds the second
+sample, 0.85, 0.8, 0.85, 1, then 0.95, 1, 0.95, 0.8, and draws the corners
+again. Flag 0x10 selects the first ink, mode 0x10000 the second with alpha
+255, and any other word the third.
 
 ## Scope
 

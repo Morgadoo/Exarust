@@ -178,6 +178,30 @@ pub const SPAN_SQUARE: [u32; 8] = [
     0x3f4c_cccd,
 ];
 
+/// Chip of the line class: 0.75, 0.8, 0.75, 1, then 0.85, 1, 0.85, 0.8.
+pub const LINE_CHIP: [u32; 8] = [
+    0x3f40_0000,
+    0x3f4c_cccd,
+    0x3f40_0000,
+    0x3f80_0000,
+    0x3f59_999a,
+    0x3f80_0000,
+    0x3f59_999a,
+    0x3f4c_cccd,
+];
+
+/// Second pass of the line chip: 0.85, 0.8, 0.85, 1, then 0.95, 1, 0.95, 0.8.
+pub const LINE_CHIP_ALT: [u32; 8] = [
+    0x3f59_999a,
+    0x3f4c_cccd,
+    0x3f59_999a,
+    0x3f80_0000,
+    0x3f73_3333,
+    0x3f80_0000,
+    0x3f73_3333,
+    0x3f4c_cccd,
+];
+
 /// Cap of a span bar: 0.7, 0.1, 0.7, 0.2, then 0.75, 0.2, 0.75, 0.1.
 pub const SPAN_CAP: [u32; 8] = [
     0x3f33_3333,
@@ -2020,6 +2044,58 @@ pub fn draw_span_square(origin_x: f32, origin_y: f32, word: i32, view: SpanView)
         mark_indexes,
         mark_count: if marked { 4 } else { 0 },
         cursor_after: 4,
+    }
+}
+
+/// A four-unit chip on the line class: one quad, or two when bit 0x40 is set.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LineChip {
+    pub mode_calls: u32,
+    pub mode: i32,
+    pub begin_calls: u32,
+    pub prep_calls: u32,
+    pub bind_calls: u32,
+    pub samples: [[u32; 8]; 2],
+    pub quads: [[(f32, f32); 4]; 2],
+    pub draw_calls: u32,
+    pub ink_index: u32,
+    pub colour: [u8; 4],
+    pub colour_writes: u32,
+    pub end_calls: u32,
+}
+
+/// Draws the chip. Bit 0x10 selects the first ink, mode 0x10000 the second
+/// with alpha 255, and any other word the third. Bit 0x40 repeats the quad
+/// with the second sample.
+pub fn draw_line_chip(unit: i32, x: i16, y: i16, flag: u32, inks: [[u8; 4]; 3]) -> LineChip {
+    let side = unit.wrapping_shl(2) as f32;
+    let x = f32::from(x);
+    let y = f32::from(y);
+    let corners = [(x, y + side), (x, y), (x + side, y), (x + side, y + side)];
+    let (ink_index, mut colour) = if (flag & 0x10) > 0 {
+        (0, inks[0])
+    } else if (flag & 0xf_0000) == 0x1_0000 {
+        (1, inks[1])
+    } else {
+        (2, inks[2])
+    };
+    if ink_index == 1 {
+        colour[3] = 0xff;
+    }
+    let second = (flag & 0x40) > 0;
+    LineChip {
+        mode_calls: 1,
+        mode: 2,
+        begin_calls: 1,
+        prep_calls: 1,
+        bind_calls: 1 + u32::from(second),
+        samples: [LINE_CHIP, if second { LINE_CHIP_ALT } else { [0; 8] }],
+        quads: [corners, if second { corners } else { [(0.0, 0.0); 4] }],
+        draw_calls: 1 + u32::from(second),
+        ink_index,
+        colour,
+        colour_writes: 4 * (1 + u32::from(second)),
+        end_calls: 1,
     }
 }
 
@@ -4405,5 +4481,49 @@ mod tests {
         assert_eq!(clear.marks, [0; 4]);
         assert_eq!(clear.mark_indexes, [0; 4]);
         assert_eq!(clear.cursor_after, 4);
+    }
+
+    #[test]
+    fn a_line_chip_draws_four_units() {
+        let inks = [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]];
+        let chip = draw_line_chip(5, 10, 20, 0, inks);
+        assert_eq!(chip.mode_calls, 1);
+        assert_eq!(chip.mode, 2);
+        assert_eq!(chip.begin_calls, 1);
+        assert_eq!(chip.prep_calls, 1);
+        assert_eq!(chip.bind_calls, 1);
+        assert_eq!(chip.samples[0], LINE_CHIP);
+        assert_eq!(chip.draw_calls, 1);
+        assert_eq!(chip.ink_index, 2);
+        assert_eq!(chip.colour, [9, 10, 11, 12]);
+        assert_eq!(chip.colour_writes, 4);
+        assert_eq!(chip.end_calls, 1);
+        let expect: [(f32, f32); 4] = [(10.0, 40.0), (10.0, 20.0), (30.0, 20.0), (30.0, 40.0)];
+        for ((gx, gy), (wx, wy)) in chip.quads[0].iter().zip(expect) {
+            assert_eq!(gx.to_bits(), wx.to_bits());
+            assert_eq!(gy.to_bits(), wy.to_bits());
+        }
+        assert_eq!(chip.quads[1], [(0.0, 0.0); 4]);
+
+        let alt = draw_line_chip(5, 10, 20, 0x40, inks);
+        assert_eq!(alt.bind_calls, 2);
+        assert_eq!(alt.samples[0], LINE_CHIP);
+        assert_eq!(alt.samples[1], LINE_CHIP_ALT);
+        assert_eq!(alt.draw_calls, 2);
+        assert_eq!(alt.colour_writes, 8);
+        assert_eq!(alt.quads[1], alt.quads[0]);
+
+        let first = draw_line_chip(5, 10, 20, 0x10, inks);
+        assert_eq!(first.ink_index, 0);
+        assert_eq!(first.colour, [1, 2, 3, 4]);
+
+        let mode = draw_line_chip(5, 10, 20, 0x1_0000, inks);
+        assert_eq!(mode.ink_index, 1);
+        assert_eq!(mode.colour, [5, 6, 7, 255]);
+
+        let both = draw_line_chip(5, 10, 20, 0x1_0040, inks);
+        assert_eq!(both.ink_index, 1);
+        assert_eq!(both.colour, [5, 6, 7, 255]);
+        assert_eq!(both.draw_calls, 2);
     }
 }
