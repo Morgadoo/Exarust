@@ -41,7 +41,8 @@ from 0, 10 to 10, 30. Mask bits 1 and 2 together then draw a ledge
 from 10, 0 to 30, 10, unless bit 1 or the owner's bit 1 is set without
 bit 0x800000. A clear hold bit on that band forces mask 15 and a strip
 from 10, 40 to 20, 60 at unit 5 and height 100, and a clear bit 1 counts
-one call. The helper body and the sign flip are not in.
+one call. When the edge bits are not both set, a quad runs from -10, -10
+to 30, 30 at unit 5. The helper body and the next mask test are not in.
 
 ## Scope
 
