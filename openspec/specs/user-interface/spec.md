@@ -301,3 +301,10 @@ When the edge bits are not both set, a held form SHALL draw one quad. At unit 5 
 #### Scenario: An edge of 5 sits at -10, -10
 - **WHEN** unit 5 dispatches a held form that is not wide, with style bits 0x80 and an edge of 5, 5
 - **THEN** the quad runs from -10, -10 to 30, 30
+
+### Requirement: Held end
+Mask bits 1 and 4 together, with bit 0x200, SHALL draw one cap. At unit 5 and width 100 it SHALL run from 70, 10 to 100, 30. A clear bit 0x200 SHALL draw none. An edge that misses either bit, and a clear hold bit, SHALL draw none. The quad after a clear tab bit is not in.
+
+#### Scenario: Width 100 sits at 70, 10
+- **WHEN** unit 5 dispatches a held form of width 100 that is not wide, with style bits 0x80, bit 0x200, an edge of 4, 4, and a right room of 100
+- **THEN** the cap runs from 70, 10 to 100, 30
