@@ -56,8 +56,10 @@ at unit 5, width 100 and height 80, then two caps from 96, 0 to 106, 20 and
 from 96, 60 to 106, 80. That plain bit, mask bit 4, a clear tab bit, and a
 clear hold bit draw none of them. A clear tab bit draws a strip from 90, 30
 to 100, 50 at unit 5, width 100 and height 80. A clear hold bit with the tab
-bit clear draws the wider strip, from 80, 40 to 90, 60 at height 100. The
-next mask test is not in.
+bit clear draws the wider strip, from 80, 40 to 90, 60 at height 100. Mask
+bits 2 and 8 together then draw a strip from 0, 50 to 10, 70 at unit 5 and
+height 80. A set tab bit still draws it. A clear hold bit draws the wider
+strip, from 10, 60 to 20, 80 at height 100. The next quad is not in.
 
 ## Scope
 
