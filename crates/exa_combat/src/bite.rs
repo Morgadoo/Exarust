@@ -31,6 +31,8 @@ pub struct Stick {
     pub count: i32,
     pub span: f32,
     pub weapon_layer: u32,
+    /// The strength the solver divides. The image stores 1 here.
+    pub pull: f32,
 }
 
 /// The layers after bit 0x40 is added to the struck bodies.
@@ -58,7 +60,36 @@ pub fn stick(armed: bool, depth: f32, smoothing: f32, unit: i32) -> Option<Stick
         count: (scaled as i32).wrapping_mul(3),
         span: scaled * 2.0,
         weapon_layer: WEAPON_LAYER,
+        pull: 1.0,
     })
+}
+
+/// The grab the body solver pulls, opened from a stick link.
+pub fn grab_of(link: &Stick) -> exa_physics::body::GrabPull {
+    exa_physics::body::GrabPull {
+        strain: link.span,
+        flags: link.flags,
+        strength: link.pull,
+        axis: bevy::math::Vec3::ZERO,
+        on_weapon: [1.0, 0.0, 0.0, 0.0],
+        on_struck: [1.0, 0.0, 0.0, 0.0],
+    }
+}
+
+/// Holds one bite inside the body solver's link passes.
+pub struct BiteHold {
+    pub grab: Option<exa_physics::body::GrabPull>,
+}
+
+impl exa_physics::body::SolverStage for BiteHold {
+    fn links(&mut self, bodies: &mut [&mut exa_physics::body::Ragdoll], _: usize) {
+        let Some(grab) = self.grab.as_mut() else {
+            return;
+        };
+        if let Some(body) = bodies.first_mut() {
+            body.pull_grab(0, 1, grab);
+        }
+    }
 }
 
 /// Add bit 0x40 to the struck part, its parent when it has one, and each child.
@@ -110,5 +141,70 @@ mod tests {
         assert_eq!(marked.part, 0x43);
         assert_eq!(marked.children, vec![0x41, 0x40]);
         assert!(stuck_layers(None, 0, &[]).parent.is_none());
+    }
+
+    fn pair(gap: f32) -> exa_physics::body::Ragdoll {
+        let at =
+            |x: f32| bevy::math::Affine3A::from_translation(bevy::math::Vec3::new(x, 1.0, 0.0));
+        exa_physics::body::Ragdoll::new(&[
+            exa_physics::body::PartSetup {
+                bone: 1,
+                entity: bevy::prelude::Entity::PLACEHOLDER,
+                parent: None,
+                world: at(0.0),
+                centre: bevy::math::Vec3::ZERO,
+                half: bevy::math::Vec3::splat(0.05),
+                origin: bevy::math::Vec3::ZERO,
+                links: vec![],
+                foot: None,
+                pins: Vec::new(),
+            },
+            exa_physics::body::PartSetup {
+                bone: 2,
+                entity: bevy::prelude::Entity::PLACEHOLDER,
+                parent: None,
+                world: at(gap),
+                centre: bevy::math::Vec3::ZERO,
+                half: bevy::math::Vec3::splat(0.05),
+                origin: bevy::math::Vec3::ZERO,
+                links: vec![],
+                foot: None,
+                pins: Vec::new(),
+            },
+        ])
+    }
+
+    fn gap_of(body: &exa_physics::body::Ragdoll) -> f32 {
+        (body.parts[0].positions[0] - body.parts[1].positions[0]).length()
+    }
+
+    #[test]
+    fn a_bite_above_a_tenth_is_held_by_the_solver() {
+        let mut held = pair(0.08);
+        let before = gap_of(&held);
+        let link = stick(true, 0.25, 0.1, 1).expect("a depth past a tenth sticks");
+        let mut stages: Vec<Box<dyn exa_physics::body::SolverStage>> = vec![Box::new(BiteHold {
+            grab: Some(grab_of(&link)),
+        })];
+        exa_physics::body::solve_with(
+            &mut [&mut held],
+            &[] as &[[bevy::math::Vec3; 3]],
+            &mut stages,
+        );
+        let after = gap_of(&held);
+        assert!(after < before * 0.25, "{after} stayed near {before}");
+
+        let mut free = pair(0.08);
+        let open = gap_of(&free);
+        assert!(stick(true, 0.1, 0.1, 1).is_none());
+        let mut stages: Vec<Box<dyn exa_physics::body::SolverStage>> =
+            vec![Box::new(BiteHold { grab: None })];
+        exa_physics::body::solve_with(
+            &mut [&mut free],
+            &[] as &[[bevy::math::Vec3; 3]],
+            &mut stages,
+        );
+        let still = gap_of(&free);
+        assert!((still - open).abs() < 0.001, "{still} moved from {open}");
     }
 }

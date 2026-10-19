@@ -584,6 +584,77 @@ impl Default for GoLimp {
     }
 }
 
+/// One pass of a breakable grab between a weapon part and the part it bit.
+///
+/// The pull is the stored strength divided by 1 plus 0.001 times the gap in
+/// centimetres, shared equally and oppositely. The strain falls by
+/// 1 + 2q/|d| when q is above 0, and by 1 otherwise. Below 0 the grab
+/// lets go. Flag 0x200000 moves the struck point onto the weapon point
+/// once and pulls on the passes after that.
+#[derive(Debug, Clone)]
+pub struct GrabPull {
+    pub strain: f32,
+    pub flags: u32,
+    pub strength: f32,
+    pub axis: Vec3,
+    pub on_weapon: [f32; 4],
+    pub on_struck: [f32; 4],
+}
+
+impl Ragdoll {
+    /// Pulls part `weapon` and part `struck` through one grab pass.
+    pub fn pull_grab(&mut self, weapon: usize, struck: usize, grab: &mut GrabPull) {
+        if weapon == struck || weapon >= self.parts.len() || struck >= self.parts.len() {
+            return;
+        }
+        let (weapon_part, struck_part) = if weapon < struck {
+            let (left, right) = self.parts.split_at_mut(struck);
+            (&mut left[weapon], &mut right[0])
+        } else {
+            let (left, right) = self.parts.split_at_mut(weapon);
+            (&mut right[0], &mut left[struck])
+        };
+        pull_grab(weapon_part, struck_part, grab);
+    }
+}
+
+fn pull_grab(weapon: &mut Part, struck: &mut Part, grab: &mut GrabPull) {
+    if grab.flags & 0x100000 != 0 {
+        return;
+    }
+    if grab.flags & 0x200000 != 0 {
+        grab.flags &= !0x200000;
+        let at = weapon.point(&grab.on_weapon);
+        if let Some(weights) = struck.weights_now(at) {
+            grab.on_struck = weights;
+        }
+        return;
+    }
+    let gap = struck.point(&grab.on_struck) - weapon.point(&grab.on_weapon);
+    let len2 = gap.length_squared();
+    if len2 <= LINK_EPSILON2 {
+        return;
+    }
+    let len_cm = len2.sqrt() * CM;
+    let local = weapon
+        .transform()
+        .to_scale_rotation_translation()
+        .1
+        .inverse()
+        * gap;
+    let q = 1.0 + local.dot(grab.axis);
+    let drop = if q > 0.0 { 1.0 + 2.0 * q / len_cm } else { 1.0 };
+    grab.strain -= drop;
+    if grab.strain < 0.0 {
+        grab.flags |= 0x100000;
+        return;
+    }
+    let factor = grab.strength / (1.0 + PIVOT_SOFTENING * len_cm);
+    let share = 0.5 * factor;
+    weapon.push(&grab.on_weapon, gap * share);
+    struck.push(&grab.on_struck, gap * -share);
+}
+
 /// A link between a part and its parent part: a point on each, allowed to
 /// drift apart by a slack. A link with no slack is a pivot.
 #[derive(Debug, Clone)]
