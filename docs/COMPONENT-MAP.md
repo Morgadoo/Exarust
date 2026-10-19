@@ -63,10 +63,10 @@ Ordered by code size; these are where most of the original still has no counterp
 | XA_SaveGames | Game modes, arena & session | 96 | 27 | 4% |
 | TGUIItemContainer | Items, materials & crafting | 44 | 26 | 26% |
 | TGSLines | UI | 23 | 24 | 87% |
-| SG_GameGUI | UI | 62 | 22 | 1% |
+| SG_GameGUI | UI | 62 | 22 | 4% |
 | SG_Thaum_Mind | Thaumaturgy & effects | 45 | 21 | 0% |
 | TGUIForm | UI | 77 | 20 | 4% |
-| SG_GameMain | Game modes, arena & session | 59 | 20 | 3% |
+| SG_GameMain | Game modes, arena & session | 59 | 20 | 5% |
 | SG_Character_Data | Characters, motion & animation | 76 | 20 | 9% |
 | SG_ObjectDB2 | Data, assets & I/O | 116 | 19 | 11% |
 | RFG_Dialogue | Script, dialogue & story | 62 | 18 | 0% |
