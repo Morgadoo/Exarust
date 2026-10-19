@@ -3604,6 +3604,84 @@ pub fn draw_skin_strip(first: f32, second: f32, third: f32, fourth: f32) -> Skin
     }
 }
 
+/// The two slider styles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkinSliderMode {
+    Plain,
+    Filled,
+}
+
+/// The parent slider's inputs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SkinSliderPlace {
+    pub x: i16,
+    pub y: i16,
+    pub w: i16,
+    pub h: i16,
+    pub inset: i16,
+    pub thumb: i32,
+    pub fraction: f32,
+    pub style: u32,
+    pub flags: u32,
+}
+
+/// The selected slider draw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkinSlider {
+    pub mode: SkinSliderMode,
+    pub rect: [i32; 4],
+    pub thumb: Option<[i32; 4]>,
+    pub thumb_first: bool,
+    pub thumb_second: bool,
+    pub bar: Option<[i32; 4]>,
+    pub translate: i32,
+    pub begin_calls: u32,
+    pub bind_calls: u32,
+    pub end_calls: u32,
+}
+
+/// Draws the parent slider in its plain or filled style.
+pub fn draw_skin_slider(place: SkinSliderPlace, unit: i32) -> Option<SkinSlider> {
+    let x = i32::from(place.x);
+    let y = i32::from(place.y);
+    let w = i32::from(place.w);
+    let h = i32::from(place.h);
+    let i = i32::from(place.inset);
+    match place.style & 0x3000_0000 {
+        0 => {
+            let n = ((w - 2 * i - place.thumb) as f32 * place.fraction).round_ties_even() as i32;
+            Some(SkinSlider {
+                mode: SkinSliderMode::Plain,
+                rect: [x + 2, y + 2, w - 4, h - 4],
+                thumb: Some([x + i + n, y + i, place.thumb, h - 2 * i]),
+                thumb_first: (place.flags & 0x10) == 0x10,
+                thumb_second: false,
+                bar: None,
+                translate: n,
+                begin_calls: 0,
+                bind_calls: 0,
+                end_calls: 0,
+            })
+        }
+        0x1000_0000 => {
+            let n = ((w - 2 * i - unit) as f32 * place.fraction).round_ties_even() as i32;
+            Some(SkinSlider {
+                mode: SkinSliderMode::Filled,
+                rect: [x + i + 1, y + i + 1, w - 2 * i - 2, h - 2 * i - 2],
+                thumb: None,
+                thumb_first: false,
+                thumb_second: false,
+                bar: Some([x + i + n, y, unit, h]),
+                translate: 0,
+                begin_calls: 1,
+                bind_calls: 1,
+                end_calls: 1,
+            })
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6967,5 +7045,44 @@ mod tests {
             (strip.begin_calls, strip.bind_calls, strip.end_calls),
             (1, 4, 1)
         );
+    }
+
+    #[test]
+    fn a_skin_slider_draws_both_styles() {
+        let place = |style: u32, flags: u32| SkinSliderPlace {
+            x: 10,
+            y: 20,
+            w: 100,
+            h: 80,
+            inset: 5,
+            thumb: 10,
+            fraction: 0.5,
+            style,
+            flags,
+        };
+
+        let plain = draw_skin_slider(place(0, 0), 5).expect("plain");
+        assert_eq!(plain.mode, SkinSliderMode::Plain);
+        assert_eq!(plain.rect, [12, 22, 96, 76]);
+        assert_eq!(plain.thumb, Some([55, 25, 10, 70]));
+        assert_eq!(plain.translate, 40);
+        assert!(!plain.thumb_first);
+        assert!(!plain.thumb_second);
+        assert_eq!(plain.bar, None);
+
+        let first = draw_skin_slider(place(0, 0x10), 5).expect("plain");
+        assert!(first.thumb_first);
+
+        let filled = draw_skin_slider(place(0x1000_0000, 0), 5).expect("filled");
+        assert_eq!(filled.mode, SkinSliderMode::Filled);
+        assert_eq!(filled.rect, [16, 26, 88, 68]);
+        assert_eq!(filled.bar, Some([57, 20, 5, 80]));
+        assert_eq!(filled.thumb, None);
+        assert_eq!(
+            (filled.begin_calls, filled.bind_calls, filled.end_calls),
+            (1, 1, 1)
+        );
+
+        assert_eq!(draw_skin_slider(place(0x2000_0000, 0), 5), None);
     }
 }

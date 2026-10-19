@@ -161,7 +161,8 @@ fallbacks. The detail dispatch draws one inset rectangle and adds a horizontal
 or vertical helper from the style and flag words. The rectangle dispatch draws
 one inset rectangle and, on flag 0x40, one cornered overlay at the same
 rectangle. The textured strip draws four two-vertex bands between its first and
-third floats around a middle y.
+third floats around a middle y. The slider draws a plain track with a translated
+thumb, or a filled inset rectangle with a unit-wide bar.
 
 ## Scope
 
