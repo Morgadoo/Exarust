@@ -70,6 +70,14 @@ pub const KIND_MASK: u32 = 0x3fff_ffff;
 /// Tag of a pane that already shows an item. A held byte of 1 closes.
 pub const PANE_TAG: u32 = 0xce1c_2013;
 pub const HELD_READY: u8 = 1;
+/// A body is visited when these bits are all set, and skipped when this bit is set.
+pub const BODY_SOLID: u32 = 0x89;
+pub const BODY_SKIP: u32 = 0x0400_0000;
+/// Bits of 0.1 and of 5. The probe chooses one.
+pub const PAD_NEAR: u32 = 0x3dcc_cccd;
+pub const PAD_FAR: u32 = 0x40a0_0000;
+/// A set bit chooses the wide slot.
+pub const SPAN_WIDE: u32 = 0x1000;
 /// Flags a taken item ORs on, and the flags a hover stores.
 pub const PICK_FOLLOW: u32 = 5;
 pub const CLICK_MARK: u32 = 0x11;
@@ -163,6 +171,23 @@ pub struct KindPane {
     pub tag: u32,
     pub item: u32,
     pub id: u64,
+}
+
+/// One body in a sector. `hits` is the triangle count the ray test supplies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SceneBody {
+    pub flags: u32,
+    pub mask: u32,
+    pub id: u64,
+    pub hits: i32,
+    pub probe: u8,
+}
+
+/// One sector. A mask that shares no bit with the camera is skipped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SceneSector {
+    pub mask: u32,
+    pub bodies: Vec<SceneBody>,
 }
 
 /// Which mode the menu command is running in.
@@ -315,6 +340,32 @@ pub struct MatchGate {
     pub pane_shows: u32,
     pub pane_builds: u32,
     pub shown_pane: u64,
+    pub sectors: Vec<SceneSector>,
+    pub camera_mask: u32,
+    pub scene_index: i32,
+    pub scene_pads: Vec<u32>,
+    pub span_w: u16,
+    pub span_h: u16,
+    pub span_flags: u32,
+    pub slot_plain: u32,
+    pub slot_wide: u32,
+    pub row_spans: Vec<i32>,
+    pub row_cap: i32,
+    pub unit: i32,
+    pub margin: i32,
+    pub pane_pad: i32,
+    pub screen_w: i32,
+    pub order_base: i32,
+    pub built_rows: i32,
+    pub built_a: i32,
+    pub built_b: i32,
+    pub built_c: i32,
+    pub built_w: i32,
+    pub built_h: i32,
+    pub built_x: i32,
+    pub built_y: i32,
+    pub built_order: i32,
+    pub built_item: u32,
     pub hit_parent: u64,
     pub world_id: u64,
     pub hit_class: u32,
@@ -498,6 +549,32 @@ impl MatchGate {
             pane_shows: 0,
             pane_builds: 0,
             shown_pane: 0,
+            sectors: Vec::new(),
+            camera_mask: 0,
+            scene_index: 0,
+            scene_pads: Vec::new(),
+            span_w: 0,
+            span_h: 0,
+            span_flags: 0,
+            slot_plain: 0,
+            slot_wide: 0,
+            row_spans: Vec::new(),
+            row_cap: 0,
+            unit: 0,
+            margin: 0,
+            pane_pad: 0,
+            screen_w: 0,
+            order_base: 0,
+            built_rows: 0,
+            built_a: 0,
+            built_b: 0,
+            built_c: 0,
+            built_w: 0,
+            built_h: 0,
+            built_x: 0,
+            built_y: 0,
+            built_order: 0,
+            built_item: 0,
             hit_parent: 0,
             world_id: 0,
             hit_class: 0,
@@ -636,6 +713,9 @@ impl MatchGate {
             self.pick_hit = 0;
             return self.gate_flags;
         }
+        if !self.sectors.is_empty() {
+            self.walk_scene();
+        }
         if self.pick_hit == 0 {
             return self.gate_flags;
         }
@@ -711,8 +791,104 @@ impl MatchGate {
             return;
         }
         if self.kind_marked(id) {
-            self.pane_builds = self.pane_builds.saturating_add(1);
+            self.build_pane(id);
         }
+    }
+
+    /// Sectors that share a camera bit, then bodies that are solid, unskipped,
+    /// and in that mask. A positive hit count replaces the hit. An empty scene
+    /// leaves the supplied hit. The ray distance is not in.
+    fn walk_scene(&mut self) {
+        self.pick_hit = 0;
+        self.scene_index = 0;
+        self.scene_pads.clear();
+        let sectors = self.sectors.clone();
+        for sector in &sectors {
+            if self.camera_mask & sector.mask == 0 {
+                continue;
+            }
+            for body in &sector.bodies {
+                if (body.flags & BODY_SOLID) != BODY_SOLID {
+                    continue;
+                }
+                if self.camera_mask & body.mask == 0 {
+                    continue;
+                }
+                if body.flags & BODY_SKIP == BODY_SKIP {
+                    continue;
+                }
+                let pad = if body.probe == 0 { PAD_NEAR } else { PAD_FAR };
+                self.scene_pads.push(pad);
+                if body.hits > 0 {
+                    self.pick_hit = body.id;
+                    self.scene_index = body.hits - 1;
+                }
+            }
+        }
+    }
+
+    /// The doubled row is capped. The inner sizes use the unit, the margin, and
+    /// the two span words. An empty pane stores the outer width and height, and
+    /// the place is clamped. Child layout is not in.
+    fn build_pane(&mut self, id: u32) {
+        self.pane_builds = self.pane_builds.saturating_add(1);
+        let slot = if self.span_flags & SPAN_WIDE != 0 {
+            self.slot_wide
+        } else {
+            self.slot_plain
+        };
+        let span = self.row_span(slot);
+        let mut rows = span.wrapping_shl(1);
+        if rows > self.row_cap {
+            rows = self.row_cap;
+        }
+        let inner_a = self.unit.wrapping_mul(6).wrapping_add(rows);
+        let inner_b = self
+            .margin
+            .wrapping_shl(1)
+            .wrapping_add(i32::from(self.span_w).wrapping_mul(self.unit));
+        let inner_c = self
+            .margin
+            .wrapping_shl(1)
+            .wrapping_add(i32::from(self.span_h).wrapping_mul(self.unit));
+        let width = self.pane_pad.wrapping_shl(1).wrapping_add(inner_b);
+        let height = self
+            .unit
+            .wrapping_shl(1)
+            .wrapping_add(inner_a)
+            .wrapping_add(self.pane_pad)
+            .wrapping_add(inner_c);
+        let half = (width as u32 >> 1) as i32;
+        let mut place_x = self.cursor_x.wrapping_sub(half);
+        if place_x < 0 {
+            place_x = 0;
+        } else if i64::from(width) + i64::from(place_x) > i64::from(self.screen_w) {
+            place_x = self.screen_w.wrapping_sub(width);
+        }
+        let mut place_y = self
+            .cursor_y
+            .wrapping_sub(height)
+            .wrapping_add(self.unit.wrapping_shl(3));
+        if place_y < self.unit {
+            place_y = self.unit;
+        }
+        self.built_rows = rows;
+        self.built_a = inner_a;
+        self.built_b = inner_b;
+        self.built_c = inner_c;
+        self.built_w = width;
+        self.built_h = height;
+        self.built_x = place_x;
+        self.built_y = place_y;
+        self.built_order = self.order_base.wrapping_add(0x100);
+        self.built_item = id;
+    }
+
+    fn row_span(&self, index: u32) -> i32 {
+        let Some(place) = index.checked_sub(1) else {
+            return 0;
+        };
+        self.row_spans.get(place as usize).copied().unwrap_or(0)
     }
 
     /// An item id of 0 misses. Bit 0x80000000 searches the high table, else bit
@@ -2753,5 +2929,127 @@ mod tests {
         assert_eq!(shown.pane_shows, 1);
         assert_eq!(shown.shown_pane, 11);
         assert_eq!(shown.pane_builds, 0);
+    }
+
+    #[test]
+    fn a_scene_walk_picks_the_last_body_and_a_pane_is_sized() {
+        let mut scene = plain_item(7);
+        scene.view_w = 8;
+        scene.view_h = 8;
+        scene.camera_mask = 1;
+        scene.pick_hit = 99;
+        scene.sectors = vec![
+            SceneSector {
+                mask: 2,
+                bodies: vec![SceneBody {
+                    flags: BODY_SOLID,
+                    mask: 2,
+                    id: 4,
+                    hits: 5,
+                    probe: 0,
+                }],
+            },
+            SceneSector {
+                mask: 1,
+                bodies: vec![
+                    SceneBody {
+                        flags: BODY_SOLID | BODY_SKIP,
+                        mask: 1,
+                        id: 5,
+                        hits: 4,
+                        probe: 0,
+                    },
+                    SceneBody {
+                        flags: BODY_SOLID,
+                        mask: 1,
+                        id: 8,
+                        hits: 3,
+                        probe: 1,
+                    },
+                    SceneBody {
+                        flags: 0x01,
+                        mask: 1,
+                        id: 9,
+                        hits: 9,
+                        probe: 0,
+                    },
+                    SceneBody {
+                        flags: BODY_SOLID,
+                        mask: 1,
+                        id: 15,
+                        hits: 2,
+                        probe: 0,
+                    },
+                ],
+            },
+        ];
+        assert_eq!(scene.run_gate(), 1);
+        assert_eq!(scene.pick_hit, 15);
+        assert_eq!(scene.scene_index, 1);
+        assert_eq!(scene.scene_pads, vec![PAD_FAR, PAD_NEAR]);
+
+        let mut built = plain_item(7);
+        built.kind_plain = marked_kind(7);
+        built.view_w = 400;
+        built.view_h = 400;
+        built.cursor_x = 100;
+        built.cursor_y = 80;
+        built.span_w = 3;
+        built.span_h = 4;
+        built.unit = 2;
+        built.margin = 5;
+        built.pane_pad = 6;
+        built.row_spans = vec![9];
+        built.row_cap = 100;
+        built.slot_plain = 1;
+        built.screen_w = 200;
+        built.order_base = 10;
+        assert_eq!(built.run_gate(), 1);
+        assert_eq!(built.pane_builds, 1);
+        assert_eq!(built.built_rows, 18);
+        assert_eq!(built.built_a, 30);
+        assert_eq!(built.built_b, 16);
+        assert_eq!(built.built_c, 18);
+        assert_eq!(built.built_w, 28);
+        assert_eq!(built.built_h, 58);
+        assert_eq!(built.built_x, 86);
+        assert_eq!(built.built_y, 38);
+        assert_eq!(built.built_order, 0x10a);
+        assert_eq!(built.built_item, 7);
+
+        let mut wide = plain_item(7);
+        wide.kind_plain = marked_kind(7);
+        wide.view_w = 400;
+        wide.view_h = 400;
+        wide.cursor_x = 0;
+        wide.span_flags = SPAN_WIDE;
+        wide.slot_plain = 1;
+        wide.slot_wide = 2;
+        wide.row_spans = vec![9, 4];
+        wide.row_cap = 10;
+        wide.unit = 2;
+        wide.screen_w = 20;
+        assert_eq!(wide.run_gate(), 1);
+        assert_eq!(wide.built_rows, 8);
+        assert_eq!(wide.built_x, 0);
+        assert_eq!(wide.built_y, 2);
+
+        let mut edge = plain_item(7);
+        edge.kind_plain = marked_kind(7);
+        edge.view_w = 400;
+        edge.view_h = 400;
+        edge.cursor_x = 30;
+        edge.span_w = 3;
+        edge.span_h = 4;
+        edge.unit = 2;
+        edge.margin = 5;
+        edge.pane_pad = 6;
+        edge.row_spans = vec![9];
+        edge.row_cap = 100;
+        edge.slot_plain = 1;
+        edge.screen_w = 20;
+        assert_eq!(edge.run_gate(), 1);
+        assert_eq!(edge.built_w, 28);
+        assert_eq!(edge.built_x, -8);
     }
 }
