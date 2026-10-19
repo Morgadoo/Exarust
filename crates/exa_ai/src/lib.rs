@@ -7,13 +7,14 @@
 
 use bevy::prelude::*;
 use exa_anim::Animator;
-use exa_combat::attack::{self, AttackMotion, Attacker, Busy};
+use exa_combat::attack::{self, Attacker, Busy};
 use exa_combat::stance::{self, Stance};
 use exa_combat::swing::{self, SwingState};
 use exa_combat::{AttackStart, Attacking, Blade, Condition, Fighter};
 use exa_physics::CharacterBody;
 use exa_physics::body::{BodyTicks, Fallen, MAX_ENERGY, Ragdoll};
 
+pub mod fight;
 pub mod order;
 pub mod sense;
 
@@ -37,6 +38,8 @@ pub struct Duellist {
     pub target: Entity,
     pub cooldown: f32,
     pub next_strike: usize,
+    /// The attack choice's generator.
+    pub roll: u32,
     /// The fight has started: until then the duellist stands idle.
     pub engaged: bool,
     /// It stands its ground: it faces its target and takes its stance, but
@@ -54,6 +57,7 @@ impl Duellist {
             target,
             cooldown: 2.0,
             next_strike: 0,
+            roll: 0,
             engaged: false,
             holds_ground: false,
             in_combat: false,
@@ -68,11 +72,6 @@ impl Duellist {
 /// lands only from this close.
 const STRIKE_RANGE: f32 = 1.15;
 const STRIKE_INTERVAL: f32 = 2.2;
-const STRIKES: [AttackMotion; 3] = [
-    AttackMotion::Main(0),
-    AttackMotion::Main(2),
-    AttackMotion::Main(1),
-];
 /// Exarust's interim footwork clip (the original's AI steps in its stance).
 const COMBAT_WALK: &str = "Combat Walk";
 
@@ -256,7 +255,24 @@ fn duellist(
         let ready = attack::has_energy(energy, most)
             && attack::execute(attack::Request::default(), busy).is_some();
         if dist <= STRIKE_RANGE && !ai.holds_ground && ai.cooldown <= 0.0 && ready {
-            let strike = STRIKES[ai.next_strike % STRIKES.len()];
+            let reach_cm = reach_of(entity, &blades) * 100.0;
+            let class = weapon_class_of(entity, &blades);
+            let choice = fight::choose_attack(
+                &fight::Situation {
+                    unarmed: class == 0x80,
+                    open_hands: class & 0x30 == 0,
+                    distance_cm: dist * 100.0,
+                    reach_cm,
+                    energy,
+                    energy_max: most,
+                    ..fight::Situation::default()
+                },
+                &mut ai.roll,
+            );
+            let Some(choice) = choice else {
+                continue;
+            };
+            let strike = choice.motion;
             ai.next_strike += 1;
             ai.cooldown = STRIKE_INTERVAL;
             exa_combat::start_attack(
@@ -408,7 +424,18 @@ mod tests {
         app.world_mut().get_mut::<Duellist>(foe).unwrap().cooldown = 0.0;
         app.update();
         let anim = app.world().get::<Animator>(foe).unwrap();
-        assert_eq!(anim.action, "Attack Mid");
+        let mut roll = 0;
+        let choice = fight::choose_attack(
+            &fight::Situation {
+                unarmed: true,
+                distance_cm: 100.0,
+                reach_cm: stance::UNARMED_REACH * 100.0,
+                ..fight::Situation::default()
+            },
+            &mut roll,
+        )
+        .unwrap();
+        assert_eq!(anim.action, choice.motion.action());
         assert_eq!(anim.then.as_deref(), Some("Cmbt - Idle"));
         assert!(app.world().get::<Attacking>(foe).is_some());
     }

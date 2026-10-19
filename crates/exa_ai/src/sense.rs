@@ -11,8 +11,8 @@
 //! product used minus signs, which invert that result, so the signs here
 //! follow the stated weights.
 //!
-//! Evidence: the perception and target-selection notes. The attack chosen
-//! once a fight has started was not read.
+//! Evidence: the perception and target-selection notes. The blow chosen
+//! once a fight has started is [`crate::fight`].
 
 use bevy::prelude::*;
 

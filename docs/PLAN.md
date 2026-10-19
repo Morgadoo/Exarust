@@ -956,7 +956,8 @@ Done (change `sense-a-contact`): a contact is seen out to 12 m (18 m once
 tracked, 6 m asleep). Hostility with neutral traits settles near
 0.0375 times the size of a negative attitude, and that heat chooses
 notice, watch, engage or flee. A duellist that engages takes the guard.
-Still open: hearing, activities, and the attack chosen inside the fight.
+Done (change `choose-the-fight-blow`): once the fight has started, an unarmed fighter inside eight tenths of reach can swing overhead and outside it can take the other side. An armed fighter stepping forward thrusts when its preference wins, and takes the overhead at age one half. A facing score above 4 takes the other side. Energy under eight tenths of the maximum refuses the swing. The duellist starts that blow.
+Still open: hearing and idle activities.
 
 - Perception (sight, hearing), navigation on tile grids and terrain
   (the original's 30 cm two-layer grid and its A\*, no navigation mesh),
@@ -1056,8 +1057,9 @@ against Exarust and lists the largest missing ones. In order:
    drives the same inputs as the player (Phase 6). A path on the grid, the
    look-ahead, and an order that writes the player's heading and velocity
    are in. A contact's closeness, hostility and the notice, watch, engage
-   or flee choice are in. The attack chosen once the fight has started
-   was not read.
+   or flee choice are in. Once the fight has started, the blow is an
+   overhead, a thrust or a side, and energy under eight tenths of the
+   maximum refuses it. Hearing and idle activities are not.
 4. Portal clipping and doors' open state, and level transitions
    (Phase 2) are in. The lid in the lights' cube faces is not.
 5. `add-static-mesh-decoding` is still open, waiting on a visual mirroring
