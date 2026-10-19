@@ -15,8 +15,14 @@
 //! with 1. Fewer steps, or a wrong order, signal the second target with 1.
 //! Either finish resets the count and the flag.
 //!
-//! Evidence: the relay steps. The broadcast across every sector is not in
-//! this slice.
+//! A broadcast walks the listeners in order. A tagged object with a door
+//! link equal to the relay is signalled, including the source. A door link
+//! that does not match is skipped, even when the operative target matches.
+//! Without a door link, an operative is signalled when its target equals
+//! the relay, except the source itself. An untagged id is skipped.
+//!
+//! Evidence: the relay steps and the broadcast. Carrying out the close is
+//! not in this slice.
 
 /// Match sends 0 instead of 1.
 pub const INVERT: u16 = 1;
@@ -30,6 +36,50 @@ pub const WRONG: u16 = 0x100;
 pub const LISTENER_MASK: u32 = 0x7000;
 /// The class-bit value a cleared listener has.
 pub const LISTENER_CLASS: u32 = 0x4000;
+/// High bits that mark an object id a broadcast will consider.
+pub const OBJECT_TAG_MASK: u32 = 0xC000_0000;
+/// The tag value a broadcast considers.
+pub const OBJECT_TAG: u32 = 0x8000_0000;
+
+/// One object a broadcast may reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Listener {
+    pub id: u32,
+    /// Set when the object has a door record. That link wins.
+    pub door_link: Option<u32>,
+    /// The operative's first target, used only when there is no door record.
+    pub listens_to: Option<u32>,
+}
+
+/// Forward `value` to every listener of `relay_id`, in list order.
+pub fn broadcast(
+    relay_id: u32,
+    source_id: u32,
+    value: i32,
+    listeners: &[Listener],
+) -> Vec<Forward> {
+    let mut sent = Vec::new();
+    for listener in listeners {
+        if listener.id & OBJECT_TAG_MASK != OBJECT_TAG {
+            continue;
+        }
+        let hit = if let Some(link) = listener.door_link {
+            link == relay_id
+        } else if let Some(to) = listener.listens_to {
+            to == relay_id && listener.id != source_id
+        } else {
+            false
+        };
+        if hit {
+            sent.push(Forward {
+                target: listener.id,
+                source: relay_id,
+                value,
+            });
+        }
+    }
+    sent
+}
 
 /// One signal a relay sends on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -344,5 +394,61 @@ mod tests {
         sequence(&mut seq, 8, Some(1), 1);
         sequence(&mut seq, 8, Some(1), 1);
         assert!(seq.wrong);
+    }
+
+    #[test]
+    fn a_broadcast_reaches_every_listener_but_not_its_source() {
+        let relay = 4;
+        let source = OBJECT_TAG | 1;
+        let other = OBJECT_TAG | 2;
+        let third = OBJECT_TAG | 3;
+        let listeners = [
+            Listener {
+                id: 1,
+                door_link: None,
+                listens_to: Some(relay),
+            },
+            Listener {
+                id: source,
+                door_link: Some(relay),
+                listens_to: None,
+            },
+            Listener {
+                id: other,
+                door_link: Some(9),
+                listens_to: Some(relay),
+            },
+            Listener {
+                id: source,
+                door_link: None,
+                listens_to: Some(relay),
+            },
+            Listener {
+                id: third,
+                door_link: None,
+                listens_to: Some(relay),
+            },
+            Listener {
+                id: OBJECT_TAG | 4,
+                door_link: None,
+                listens_to: Some(8),
+            },
+        ];
+        let sent = broadcast(relay, source, 5, &listeners);
+        assert_eq!(
+            sent,
+            vec![
+                Forward {
+                    target: source,
+                    source: relay,
+                    value: 5,
+                },
+                Forward {
+                    target: third,
+                    source: relay,
+                    value: 5,
+                },
+            ]
+        );
     }
 }
