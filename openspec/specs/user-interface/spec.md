@@ -266,3 +266,10 @@ The same bit SHALL then draw one quad from the grip and a post. A grip of 10 and
 #### Scenario: A post of 40 sits at 11, 35
 - **WHEN** unit 5 dispatches a held form that is not wide, with style bits 0x80, bit 0x200, a grip of 10, and a post of 40
 - **THEN** the quad runs from 11, 35 to 31, 55
+
+### Requirement: Held left
+A held form that is not wide SHALL then draw a left strip. At unit 5 and height 80 it SHALL run from 0, 30 to 10, 50. A clear bit 0x200 SHALL still draw it. A clear hold bit and a wide bit SHALL draw none. The mask compare after that strip is not in.
+
+#### Scenario: Height 80 sits at 0, 30
+- **WHEN** unit 5 dispatches a held form of height 80 that is not wide, with style bits 0x80 and bit 0x200 clear
+- **THEN** the strip runs from 0, 30 to 10, 50

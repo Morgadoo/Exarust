@@ -34,8 +34,9 @@ With the hold bit and without the wide bit, a y of 4 sets mask bit 1
 and an x of 4 sets bit 2, then a bar runs from 30, 0 to 70, 10. Bit 0x200 draws a tab
 from 16, 30 to 26, 40 when the grip is 10, 20, and a lower tab
 from 16, 60 to 26, 70 when the seat is 80, then a quad from 11, 35
-to 31, 55 when the grip is 10 and the post is 40. The compare after
-that quad is not in.
+to 31, 55 when the grip is 10 and the post is 40. A held form
+then draws a left strip from 0, 30 to 10, 50 at unit 5 and height 80,
+even when bit 0x200 is clear. The mask compare after that strip is not in.
 
 ## Scope
 

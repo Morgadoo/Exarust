@@ -646,8 +646,8 @@ pub struct TitleDraw {
 /// shift, the shown children, the title, the corners, the edge bars, the
 /// wide top, the left side, the bottom, the right side, the ink copy,
 /// the square drawn when the close mark is -4, the hold-bit edge mask,
-/// and the bar, the tab, the lower tab, and the quad that follow it. The
-/// compare after that quad is not in.
+/// and the bar, the tab, the lower tab, the quad, and the left strip that
+/// follow it. The mask compare after that strip is not in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormDispatch {
     pub span_a: i32,
@@ -679,6 +679,7 @@ pub struct FormDispatch {
     pub held_tab: Vec<SliderQuad>,
     pub held_lower: Vec<SliderQuad>,
     pub held_post: Vec<SliderQuad>,
+    pub held_left: Vec<SliderQuad>,
 }
 
 fn edge_mask(unit: i32, place: &DispatchPlace) -> u32 {
@@ -1120,6 +1121,17 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
     } else {
         Vec::new()
     };
+    let held_left = if on_hold {
+        let reach = unit.wrapping_shl(2).wrapping_add(unit.wrapping_shl(1));
+        let band = unit.wrapping_shl(1);
+        let top = place.height.wrapping_sub(reach);
+        vec![quad(
+            WIDE_BAR,
+            [(0, top), (band, top), (band, reach), (0, reach)],
+        )]
+    } else {
+        Vec::new()
+    };
     FormDispatch {
         span_a,
         span_b,
@@ -1155,6 +1167,7 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         held_tab,
         held_lower,
         held_post,
+        held_left,
     }
 }
 
@@ -2249,5 +2262,25 @@ mod tests {
         form.flags_b = FORM_TAB;
         form.flags_a = 0;
         assert!(dispatch_form(5, 0, form, &[]).held_post.is_empty());
+    }
+
+    #[test]
+    fn a_dispatch_draws_the_held_left() {
+        let mut form = place(FORM_HOLD, 0, 0, 0, 0, 0);
+        form.flags_d = 0x80;
+        let drawn = dispatch_form(5, 0, form, &[]);
+        assert!(drawn.held_post.is_empty());
+        assert_eq!(drawn.held_left.len(), 1);
+        assert_eq!(drawn.held_left[0].sample, WIDE_BAR);
+        assert_eq!(
+            drawn.held_left[0].corners,
+            [(0, 50), (10, 50), (10, 30), (0, 30)]
+        );
+
+        form.flags_a = 0;
+        assert!(dispatch_form(5, 0, form, &[]).held_left.is_empty());
+        form.flags_a = FORM_HOLD;
+        form.flags_b = 0x40_0000;
+        assert!(dispatch_form(5, 0, form, &[]).held_left.is_empty());
     }
 }
