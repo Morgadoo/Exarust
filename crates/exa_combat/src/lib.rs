@@ -20,9 +20,11 @@
 //! player 4 s, after the pit's sound at 1 s, [`fall`]). A blow whose wound is deep enough
 //! bleeds on a victim whose race bleeds, seven body ticks later; at the
 //! blow it sprays a jet of blood and the weapon that dealt it draws blood
-//! ([`wounds`]).
+//! ([`wounds`]). An armed bite above 0.1 sticks the weapon in the part
+//! ([`bite`]).
 
 pub mod attack;
+pub mod bite;
 pub mod collapse;
 pub mod condition;
 pub mod damage;

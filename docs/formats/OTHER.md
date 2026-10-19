@@ -1027,8 +1027,12 @@ calls)
 
 A parry stops the blow. A shield that is not parrying lets through yellow
 0.05·(1 − stamina)·(0.4 + 0.4·impact)·(1 − block/2) and no lasting wound
-(`damage::guard_outcome`). Not yet: the bite (weapons sticking in), the
-parry clips, grabs, shields as bodies,
+(`damage::guard_outcome`). An armed bite above 0.1 sticks the weapon
+(`bite::stick`): the depth is capped at 1, flags are 0x11000 or 0x211000
+around the widened 0.4, strength is 12 times the depth, smoothing adds
+0.5, and the count is 3 times the truncated 83·unit·depth. The weapon
+layer becomes 0xC0, and the struck part, its parent and its children gain
+bit 0x40. Not yet: the parry clips, shields as bodies,
 encumbrance's effect on swings, and the state that knocks a character
 unconscious.
 
