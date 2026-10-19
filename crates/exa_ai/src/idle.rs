@@ -546,6 +546,76 @@ pub struct DeadLink {
     pub bits: i32,
 }
 
+/// Which hand pose a race class selects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandPose {
+    None,
+    Firm,
+    Open,
+}
+
+/// The race setup and the three calls after the part loops.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DeadTail {
+    /// High byte of the race class, in the low 16 bits (`0x800` and so on).
+    pub race_class: u32,
+    /// Body kind word that replaces the second hand's pose.
+    pub body_kind: u32,
+    /// Both must be 0 before the race setup runs.
+    pub pair_a: i32,
+    pub pair_b: i32,
+    /// Rules bit 1. A large body is not bare.
+    pub large: bool,
+    pub feral: f32,
+    pub encumbrance: f32,
+    /// Centimetres before the step scale of 80.
+    pub reach_base: f32,
+    /// Written step reach, centimetres.
+    pub reach_cm: f32,
+    pub hand_pose: [HandPose; 2],
+    pub marked: bool,
+    pub bare: bool,
+    pub bare_copy: bool,
+    pub class_word: u32,
+    pub primary: i32,
+    pub hand_count: i32,
+    pub slots: [bool; 2],
+    pub pair_filled: bool,
+    pub extras: [bool; 2],
+    pub from: [f32; 3],
+    pub toward: [f32; 3],
+    pub facing: [f32; 3],
+}
+
+impl Default for DeadTail {
+    fn default() -> Self {
+        Self {
+            race_class: 0,
+            body_kind: 0,
+            pair_a: 1,
+            pair_b: 0,
+            large: false,
+            feral: 0.0,
+            encumbrance: 0.0,
+            reach_base: 0.0,
+            reach_cm: 0.0,
+            hand_pose: [HandPose::None; 2],
+            marked: false,
+            bare: false,
+            bare_copy: false,
+            class_word: 1,
+            primary: 3,
+            hand_count: 0,
+            slots: [false; 2],
+            pair_filled: true,
+            extras: [false; 2],
+            from: [0.0; 3],
+            toward: [0.0; 3],
+            facing: [0.0; 3],
+        }
+    }
+}
+
 /// The small words the dead entry writes around the part loops.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DeadMarks {
@@ -557,6 +627,90 @@ pub struct DeadMarks {
     pub step_base: f32,
     pub step: f32,
     pub behaviour: u8,
+    pub tail: DeadTail,
+}
+
+/// Step reach scale, the f32 80.
+const DEAD_REACH_SCALE: f32 = f32::from_bits(0x42a0_0000);
+
+fn class_pose(class: u32) -> (HandPose, bool) {
+    match class & 0xff00 {
+        0x800 => (HandPose::Firm, false),
+        0x600 | 0x700 => (HandPose::Open, false),
+        0x500 | 0x400 => (HandPose::Firm, true),
+        _ => (HandPose::None, false),
+    }
+}
+
+fn kind_pose(kind: u32, marked: bool) -> (HandPose, bool) {
+    if kind == 0x100 {
+        (HandPose::Open, marked)
+    } else if kind == 0x2_0100 {
+        (HandPose::Firm, true)
+    } else {
+        (HandPose::None, marked)
+    }
+}
+
+fn setup_race(tail: &mut DeadTail) {
+    if tail.pair_a != 0 || tail.pair_b != 0 {
+        return;
+    }
+    tail.hand_count = 2;
+    let (pose, mut marked) = class_pose(tail.race_class);
+    tail.hand_pose = [pose, pose];
+    let (second, next) = kind_pose(tail.body_kind, marked);
+    tail.hand_pose[1] = second;
+    marked = next;
+    tail.marked = marked;
+    tail.bare = !marked && !tail.large;
+    tail.bare_copy = tail.bare;
+    tail.class_word = 0;
+    tail.primary = -1;
+}
+
+fn fill_slots(tail: &mut DeadTail) {
+    let count = usize::try_from(tail.hand_count)
+        .unwrap_or(0)
+        .min(tail.slots.len());
+    for slot in tail.slots.iter_mut().take(count) {
+        if !*slot {
+            *slot = true;
+        }
+    }
+    if !tail.pair_filled {
+        tail.extras = [true, true];
+    }
+}
+
+fn normalize(v: &mut [f32; 3]) {
+    let len2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+    let inv = if len2 == 0.0 { 0.0 } else { 1.0 / len2.sqrt() };
+    v[0] *= inv;
+    v[1] *= inv;
+    v[2] *= inv;
+}
+
+fn flat_facing(from: [f32; 3], toward: [f32; 3]) -> [f32; 3] {
+    let mut delta = [
+        from[0] - toward[0],
+        from[1] - toward[1],
+        from[2] - toward[2],
+    ];
+    normalize(&mut delta);
+    delta[1] = 0.0;
+    normalize(&mut delta);
+    delta
+}
+
+fn dead_reach(base: f32, feral: f32, encumbrance: f32) -> f32 {
+    let enc_scale = 1.0 - encumbrance * 0.2;
+    let scaled = if feral >= 0.0 {
+        base * (1.0 - feral * 0.3) * enc_scale
+    } else {
+        base * enc_scale
+    };
+    scaled * DEAD_REACH_SCALE
 }
 
 fn turn_from_basis(basis: [f32; 9]) -> [f32; 4] {
@@ -608,7 +762,15 @@ fn rewrite_dead_parts(parts: &mut [DeadPart], links: &mut [DeadLink], marks: &mu
         }
     }
     marks.posed = 1;
+    setup_race(&mut marks.tail);
     marks.step = marks.step_base * DEAD_STEP_SCALE;
+    fill_slots(&mut marks.tail);
+    marks.tail.facing = flat_facing(marks.tail.from, marks.tail.toward);
+    marks.tail.reach_cm = dead_reach(
+        marks.tail.reach_base,
+        marks.tail.feral,
+        marks.tail.encumbrance,
+    );
     marks.behaviour = 1;
 }
 
@@ -616,8 +778,10 @@ fn rewrite_dead_parts(parts: &mut [DeadPart], links: &mut [DeadLink], marks: &mu
 /// with no delay.
 ///
 /// A body that is not dead is left as it is, parts included. A blow does
-/// not call this. The race setup, the virtual call and the three following
-/// calls are not in.
+/// not call this. When both pair words are 0 the race setup chooses the
+/// hand poses. Empty slots are filled, the facing is flattened, and the
+/// step reach is scaled by 80. The virtual call and the weapon pass inside
+/// the step are not in.
 pub fn knock_out_dead(
     sleeper: &mut Sleeper,
     drive: &mut Drive,
@@ -1525,6 +1689,7 @@ mod tests {
             step_base: 0.0,
             step: 3.0,
             behaviour: 0,
+            tail: DeadTail::default(),
         };
         assert!(knock_out_dead(
             &mut dead,
@@ -1624,6 +1789,7 @@ mod tests {
             step_base: 4.0,
             step: 0.0,
             behaviour: 0,
+            tail: DeadTail::default(),
         };
         assert!(knock_out_dead(
             &mut dead, &mut drive, &mut body, &mut parts, &mut links, &mut marks, 50
@@ -1669,6 +1835,132 @@ mod tests {
         assert_eq!(parts, kept_parts);
         assert_eq!(links, kept_links);
         assert_eq!(marks, kept_marks);
+    }
+
+    fn dead_sleeper() -> Sleeper {
+        Sleeper {
+            condition: Condition::DEAD,
+            flags: StateFlags(0),
+            statue: false,
+            gait: 0,
+            tick: IdleTick::Active,
+            sighted: 0,
+            wake_at: 0,
+        }
+    }
+
+    fn bare_marks(tail: DeadTail) -> DeadMarks {
+        DeadMarks {
+            marker: 0,
+            loose: 0.0,
+            factor: 0.0,
+            product: 0.0,
+            posed: 0,
+            step_base: 0.0,
+            step: 0.0,
+            behaviour: 0,
+            tail,
+        }
+    }
+
+    /// Both pair words at 0 choose the hand poses, empty slots fill, the
+    /// facing flattens, and the step reach is scaled by 80.
+    #[test]
+    fn a_dead_entry_sets_the_race_hands_and_the_step() {
+        let mut sleeper = dead_sleeper();
+        let mut drive = Drive::default();
+        let mut body = limp();
+        let mut marks = bare_marks(DeadTail {
+            pair_a: 0,
+            pair_b: 0,
+            race_class: 0x800,
+            body_kind: 0x100,
+            reach_base: 1.0,
+            from: [3.0, 4.0, 0.0],
+            slots: [false, true],
+            pair_filled: false,
+            ..DeadTail::default()
+        });
+        assert!(knock_out_dead(
+            &mut sleeper,
+            &mut drive,
+            &mut body,
+            &mut [],
+            &mut [],
+            &mut marks,
+            50
+        ));
+        assert_eq!(marks.tail.hand_pose, [HandPose::Firm, HandPose::Open]);
+        assert!(marks.tail.bare);
+        assert!(marks.tail.bare_copy);
+        assert!(!marks.tail.marked);
+        assert_eq!(marks.tail.class_word, 0);
+        assert_eq!(marks.tail.primary, -1);
+        assert_eq!(marks.tail.hand_count, 2);
+        assert_eq!(marks.tail.slots, [true, true]);
+        assert_eq!(marks.tail.extras, [true, true]);
+        assert_eq!(marks.tail.facing, [1.0, 0.0, 0.0]);
+        assert_eq!(marks.tail.reach_cm.to_bits(), 0x42a0_0000);
+        assert_eq!(sleeper.condition, Condition::DOWN);
+
+        sleeper = dead_sleeper();
+        marks = bare_marks(DeadTail {
+            pair_a: 0,
+            race_class: 0x500,
+            reach_base: 1.0,
+            feral: 1.0,
+            ..DeadTail::default()
+        });
+        assert!(knock_out_dead(
+            &mut sleeper,
+            &mut drive,
+            &mut body,
+            &mut [],
+            &mut [],
+            &mut marks,
+            50
+        ));
+        assert_eq!(marks.tail.hand_pose, [HandPose::Firm, HandPose::None]);
+        assert!(marks.tail.marked);
+        assert!(!marks.tail.bare);
+        assert_eq!(marks.tail.reach_cm.to_bits(), 0x4260_0000);
+
+        sleeper = dead_sleeper();
+        marks = bare_marks(DeadTail {
+            pair_a: 1,
+            reach_base: 1.0,
+            feral: -1.0,
+            hand_pose: [HandPose::Open, HandPose::Open],
+            class_word: 7,
+            ..DeadTail::default()
+        });
+        assert!(knock_out_dead(
+            &mut sleeper,
+            &mut drive,
+            &mut body,
+            &mut [],
+            &mut [],
+            &mut marks,
+            50
+        ));
+        assert_eq!(marks.tail.hand_pose, [HandPose::Open, HandPose::Open]);
+        assert_eq!(marks.tail.class_word, 7);
+        assert_eq!(marks.tail.reach_cm.to_bits(), 0x42a0_0000);
+
+        let mut walking = dead_sleeper();
+        walking.condition = Condition::WALKING;
+        let before = marks;
+        assert!(!knock_out_dead(
+            &mut walking,
+            &mut drive,
+            &mut body,
+            &mut [],
+            &mut [],
+            &mut marks,
+            90
+        ));
+        assert_eq!(marks, before);
+        assert_eq!(walking.condition, Condition::WALKING);
     }
 
     fn knocked_out() -> (Sleeper, Drive) {
