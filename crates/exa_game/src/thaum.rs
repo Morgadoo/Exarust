@@ -601,6 +601,35 @@ pub fn step_shell_fade(fade: ShellFade, now: u32, size: f32, hold: bool) -> Shel
     }
 }
 
+/// The light that follows a shell fade, and the gain a close stores.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShellLight {
+    pub level: f32,
+    pub gain: f32,
+}
+
+/// The shell light. Opening bends toward 0.75 until the shown value passes 0.666, then holds at one half. The result is one tenth of that.
+pub fn shell_light(state: i32, shown: f32, gain: f32) -> ShellLight {
+    let level = if state == 1 {
+        if f64::from(shown) > 0.666 {
+            0.5
+        } else {
+            0.75 - (0.75 - shown * 1.5).abs()
+        }
+    } else {
+        shown * 0.5
+    };
+    let gain = if state == 3 {
+        (f64::from(shown) * 2.8) as f32
+    } else {
+        gain
+    };
+    ShellLight {
+        level: (f64::from(level) * 0.1) as f32,
+        gain,
+    }
+}
+
 /// One step of a shell ripple. `None` means it has faded off the aura.
 pub fn step_shell(shown: f32, strength: f32, scale: f32) -> Option<ShellRipple> {
     let strength = (f64::from(strength) - f64::from(scale) * 0.04) as f32;
@@ -1257,6 +1286,31 @@ mod tests {
             gain: 1.0,
         };
         assert_eq!(step_shell_fade(resting, 50, size, true), resting);
+    }
+
+    #[test]
+    fn a_shell_light_follows_the_fade() {
+        assert_eq!(shell_light(1, 0.0, 4.0).level.to_bits(), 0);
+        assert_eq!(shell_light(1, 0.5, 4.0).level.to_bits(), 0x3d99_999a);
+        assert_eq!(shell_light(1, 0.5, 4.0).gain, 4.0);
+        assert_eq!(
+            shell_light(1, f32::from_bits(0x3f2a_7ef9), 4.0)
+                .level
+                .to_bits(),
+            0x3d4d_35aa
+        );
+        assert_eq!(
+            shell_light(1, f32::from_bits(0x3f2a_7efa), 4.0)
+                .level
+                .to_bits(),
+            0x3d4c_cccd
+        );
+        let resting = shell_light(0, 1.0, 4.0);
+        assert_eq!(resting.level.to_bits(), 0x3d4c_cccd);
+        assert_eq!(resting.gain, 4.0);
+        let closing = shell_light(3, 0.5, 4.0);
+        assert_eq!(closing.level.to_bits(), 0x3ccc_cccd);
+        assert_eq!(closing.gain.to_bits(), 0x3fb3_3333);
     }
 
     #[test]
