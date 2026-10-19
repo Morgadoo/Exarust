@@ -2635,19 +2635,39 @@ pub struct LineScale {
 }
 /// Scales the three heights. Each product rounds to nearest even and keeps
 /// the low byte; an out-of-range product stores 0.
+/// Rounds to nearest even and keeps the low byte; an out-of-range product is 0.
+fn low_byte(value: f32) -> u8 {
+    let value = value.round_ties_even();
+    if value >= 2_147_483_648.0 || value < -2_147_483_648.0 || value.is_nan() {
+        0
+    } else {
+        value as i32 as u8
+    }
+}
+
 pub fn scale_line(scale_y: f32) -> LineScale {
     let mut heights = [0u8; 3];
     for (slot, base) in heights.iter_mut().zip(LINE_HEIGHTS) {
-        let value = (base * scale_y).round_ties_even();
-        *slot = if value >= 2_147_483_648.0 || value < -2_147_483_648.0 || value.is_nan() {
-            0
-        } else {
-            value as i32 as u8
-        };
+        *slot = low_byte(base * scale_y);
     }
     LineScale {
         scale_calls: 1,
         heights,
+    }
+}
+
+/// The two ramp-alpha groups: fourteen entries, then forty-eight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkinAlpha {
+    pub first: [u8; 14],
+    pub second: [u8; 48],
+}
+
+/// Scales the two stored alpha bytes into their ramp entries.
+pub fn scale_skin_alpha(first: u8, second: u8, scale_x: f32, scale_y: f32) -> SkinAlpha {
+    SkinAlpha {
+        first: [low_byte(f32::from(first) * scale_x); 14],
+        second: [low_byte(f32::from(second) * scale_y); 48],
     }
 }
 
@@ -5888,5 +5908,20 @@ mod tests {
         let again = prepare_skin_renderer(true);
         assert_eq!(again.calls, 0);
         assert!(again.prepared);
+    }
+
+    #[test]
+    fn a_skin_alpha_scales_its_two_groups() {
+        let unit = scale_skin_alpha(255, 255, 1.0, 1.0);
+        assert_eq!(unit.first, [255; 14]);
+        assert_eq!(unit.second, [255; 48]);
+
+        let half = scale_skin_alpha(100, 200, 0.5, 0.5);
+        assert_eq!(half.first, [50; 14]);
+        assert_eq!(half.second, [100; 48]);
+
+        let double = scale_skin_alpha(0, 200, 1.0, 2.0);
+        assert_eq!(double.first, [0; 14]);
+        assert_eq!(double.second, [144; 48]);
     }
 }
