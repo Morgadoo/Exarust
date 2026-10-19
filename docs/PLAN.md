@@ -892,8 +892,9 @@ Done (change `step-a-dropped-weapon`): the dying tick puts a solid weapon of mob
 Done (change `meet-a-dropped-weapon`): that weapon's sphere, starting on another body's sphere, meets it in one shipped body step. The contact names both bodies, has one hit, and its deepest bits are 0x3ec39cd9. The weapon's first particle is at bits 0xbda3ae15, 0x3f7e43be and 0xbe492d0c, not the place one step alone leaves.
 Done (change `notice-a-deep-wound`): a lasting wound of bits 0x3daaaaab is not noticed. The next float is. A non-number is not. A chest cut through the hit path records the notice.
 Done (change `grant-a-second-wind`): a granted wind whose ready clock is 11, at game clock 12, fires, waits until 180012, and writes no heartbeat message. Volume bits are 0x3dcccccd and pitch bits are 0x3f800000. Ready clock 12 waits, and the heartbeat message is written.
-Done (change `heal-a-second-wind`): an attacking fighter with yellow bits 0x3d000000 and an active wind ready at 180012 gains yellow bits 0x3d013a93 at game clock 12 and at 3012, and stays active. At 3024 it gains the same bits and the wind ends. A quiet wind and a dead fighter keep bits 0x3d000000. Still to
-do: limb impairment, unconsciousness, practice mode.
+Done (change `heal-a-second-wind`): an attacking fighter with yellow bits 0x3d000000 and an active wind ready at 180012 gains yellow bits 0x3d013a93 at game clock 12 and at 3012, and stays active. At 3024 it gains the same bits and the wind ends. A quiet wind and a dead fighter keep bits 0x3d000000.
+Done (change `name-a-practice-partner`): a novice fight at count 0 becomes count 1 named opponent01 and is not last. Red bits 0x3e4ccccd with maximum 0.25 become 0x3e666667, and yellow copies them. Count 7 becomes 8, named opponent08, and is last. Count 8 stays. An expert count 0 is named opponent09. An expert count 7 is count 8, named opponent16, and is last, and red bits 0x3e75c28f become 0x3e800000. Still to
+do: limb impairment, unconsciousness, spawning the partner.
 
 - `exa_items`: item database, item instances, inventory and containers,
   equip and wield, weapon assembly from factories, mass and centre of

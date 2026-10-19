@@ -1043,6 +1043,17 @@ bit 0x40. The solver pulls that grab while its strain lasts. An unarmed parry an
 encumbrance's effect on swings, and the state that knocks a character
 unconscious.
 
+## Practice ladder
+
+The next fight advances the count by one and stops at 8
+(`exa_game::practice::next_practice`). Novice count 1 is `opponent01` and
+count 8 is `opponent08`. Expert adds 8, so count 1 is `opponent09` and
+count 8 is `opponent16`. Count 8 is the last fight, and a count already
+there stays. Red gains the double 0.1 times the maximum and is kept within
+it. Yellow copies red. Red bits 0x3e4ccccd with maximum 0.25 become
+0x3e666667. Red bits 0x3e75c28f become 0x3e800000. The partner is not
+spawned.
+
 ## Actors
 
 `actors.rpk` inside Resource: 21 entries, each a character record (the
