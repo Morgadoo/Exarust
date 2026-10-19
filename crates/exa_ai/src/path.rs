@@ -13,7 +13,8 @@
 //! has two points and is forced, or when its ends are more than 150 cm
 //! apart. In a scene, the goal is 100 cm past the ground point's
 //! projection on that path. Out of the scene, the body slides 2 cm along
-//! the path. The other phases are not in this slice.
+//! the path. Near the end, the run bit clears and a close body soft-stops.
+//! The other phases are not in this slice.
 
 use bevy::math::Vec2;
 use bevy::math::Vec3;
@@ -457,6 +458,107 @@ pub fn follow_path(
     match slide(points, segment, fraction, pelvis) {
         Some(moved) => PathPace::Slide(moved),
         None => PathPace::Stopped,
+    }
+}
+
+/// Run is bit 2 of the locomotion flags. Stopping is bit 5.
+const LOCO_RUN: u32 = 4;
+const LOCO_STOP: u32 = 0x20;
+/// The carrot fraction is promoted before it is compared with this.
+const RUN_UNTIL: f64 = 0.99;
+const STOP_AT_CARROT: f32 = 900.0;
+const STOP_AT_END: f32 = 10_000.0;
+
+/// What a body is doing as it nears the end of a path.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Approach {
+    pub flags: u32,
+    pub urgency: i32,
+    /// The carrot lies on the last segment.
+    pub on_last: bool,
+    pub carrot_fraction: f32,
+    /// The ground point.
+    pub ground: Vec3,
+    /// The point 100 cm ahead.
+    pub carrot: Vec3,
+    /// The last point of the path.
+    pub last: Vec3,
+    /// The standing point. The soft stop measures the carrot from here.
+    pub standing: Vec3,
+    /// Frame forward. A far carrot is pulled back along it.
+    pub forward: Vec3,
+    /// Speed along the heading, cm per tick.
+    pub speed: f32,
+    pub free_walk: bool,
+    pub following: bool,
+}
+
+/// Flags, the carrot, and whether a soft stop fired.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Arrival {
+    pub flags: u32,
+    pub free_walk: bool,
+    pub following: bool,
+    pub carrot: Vec3,
+    pub stopped: bool,
+}
+
+fn soft_stop(approach: &Approach, flags: u32) -> Arrival {
+    let limit = approach.speed * 8.0 + 20.0;
+    let carrot = if limit * limit < approach.standing.distance_squared(approach.carrot) {
+        approach.standing + approach.forward * limit
+    } else {
+        approach.carrot
+    };
+    Arrival {
+        flags: flags & !LOCO_RUN | LOCO_STOP,
+        free_walk: false,
+        following: false,
+        carrot,
+        stopped: true,
+    }
+}
+
+/// Set or clear the run bit, and soft-stop when the body is close enough.
+///
+/// Urgency of 0 or less keeps the run bit until the carrot fraction, promoted
+/// to a double, is past 0.99 on the last segment. Past that, the run bit
+/// clears, and a 3-D squared distance under 900 from the ground to the carrot
+/// soft-stops. Urgency of 1 or more clears the run bit and soft-stops when
+/// the ground is under 100 cm of the last point, also in 3-D. A soft stop
+/// sets the stopping bit, clears free walk and following, and pulls a carrot
+/// farther than 8·speed + 20 back along the facing.
+pub fn arrive(approach: Approach) -> Arrival {
+    let keep = Arrival {
+        flags: approach.flags,
+        free_walk: approach.free_walk,
+        following: approach.following,
+        carrot: approach.carrot,
+        stopped: false,
+    };
+    if approach.urgency <= 0 {
+        let past =
+            approach.carrot_fraction.is_finite() && f64::from(approach.carrot_fraction) > RUN_UNTIL;
+        if approach.on_last && past {
+            let flags = approach.flags & !LOCO_RUN;
+            if approach.ground.distance_squared(approach.carrot) < STOP_AT_CARROT {
+                soft_stop(&approach, flags)
+            } else {
+                Arrival { flags, ..keep }
+            }
+        } else {
+            Arrival {
+                flags: approach.flags | LOCO_RUN,
+                ..keep
+            }
+        }
+    } else {
+        let flags = approach.flags & !LOCO_RUN;
+        if approach.ground.distance_squared(approach.last) < STOP_AT_END {
+            soft_stop(&approach, flags)
+        } else {
+            Arrival { flags, ..keep }
+        }
     }
 }
 
@@ -998,5 +1100,77 @@ mod tests {
             follow_path(&[], 1, 0.0, 0.0, 0),
             PathPace::Stopped
         ));
+    }
+
+    fn approach(urgency: i32, on_last: bool, fraction: f32) -> Approach {
+        Approach {
+            flags: 1,
+            urgency,
+            on_last,
+            carrot_fraction: fraction,
+            ground: Vec3::ZERO,
+            carrot: Vec3::ZERO,
+            last: Vec3::new(0.0, 0.0, 200.0),
+            standing: Vec3::ZERO,
+            forward: Vec3::Z,
+            speed: 0.0,
+            free_walk: true,
+            following: true,
+        }
+    }
+
+    #[test]
+    fn a_run_clears_past_the_end_and_a_close_body_soft_stops() {
+        let early = arrive(approach(0, false, 0.0));
+        assert_eq!(early.flags, 1 | LOCO_RUN);
+        assert!(!early.stopped);
+        assert!(early.following);
+
+        let under = arrive(approach(0, true, f32::from_bits(0x3f7d_70a3)));
+        assert_eq!(under.flags, 1 | LOCO_RUN);
+        assert!(!under.stopped);
+
+        let mut at = approach(0, true, 0.99);
+        at.carrot = Vec3::new(0.0, 0.0, 10.0);
+        let close = arrive(at);
+        assert!(close.stopped);
+        assert_eq!(close.flags & LOCO_RUN, 0);
+        assert_eq!(close.flags & LOCO_STOP, LOCO_STOP);
+        assert!(!close.free_walk);
+        assert!(!close.following);
+        assert_eq!(close.carrot, Vec3::new(0.0, 0.0, 10.0));
+
+        let mut exact = approach(0, true, 1.0);
+        exact.carrot = Vec3::new(30.0, 0.0, 0.0);
+        let held = arrive(exact);
+        assert!(!held.stopped);
+        assert_eq!(held.flags, 1);
+        assert!(held.following);
+
+        let mut high = approach(0, true, 1.0);
+        high.carrot = Vec3::new(0.0, 40.0, 0.0);
+        assert!(!arrive(high).stopped);
+
+        let mut raised = approach(0, true, 1.0);
+        raised.standing = Vec3::new(0.0, 100.0, 0.0);
+        let pulled = arrive(raised);
+        assert!(pulled.stopped);
+        assert_eq!(pulled.carrot, Vec3::new(0.0, 100.0, 20.0));
+
+        let mut near_end = approach(1, false, 0.0);
+        near_end.last = Vec3::new(99.0, 0.0, 0.0);
+        let sprint = arrive(near_end);
+        assert!(sprint.stopped);
+        assert_eq!(sprint.flags & LOCO_RUN, 0);
+
+        let mut far_end = approach(1, false, 0.0);
+        far_end.last = Vec3::new(100.0, 0.0, 0.0);
+        let jogging = arrive(far_end);
+        assert!(!jogging.stopped);
+        assert_eq!(jogging.flags, 1);
+
+        let back = arrive(approach(-1, false, 0.0));
+        assert_eq!(back.flags, 1 | LOCO_RUN);
+        assert!(!back.stopped);
     }
 }
