@@ -29,7 +29,9 @@
 //! tournament field draws 16 of the 19 companies, numbered 1 through 19. A
 //! day chooses six of seven match templates. A template already at its
 //! limit, a slot before its earliest slot, or a mask that shares a bit
-//! with the roll's top three bits is refused.
+//! with the roll's top three bits is refused. A performance counter
+//! replaces that roll: its low 32 bits are byte-reversed. A copied match
+//! then multiplies its fee and prize by one more than the slot.
 //!
 //! Evidence: the arena career notes (money seed, coin rate, roster caps,
 //! the six standard matches and the seven specials, fee on entry, prize on
@@ -1091,6 +1093,92 @@ pub fn choose_daily_matches(roll: &mut u32) -> [i32; 6] {
     chosen
 }
 
+/// The roll a performance counter stores. Only the low 32 bits are kept,
+/// and their bytes are reversed.
+pub fn roll_from_counter(counter: u64) -> u32 {
+    (counter as u32).swap_bytes()
+}
+
+/// Replace `roll` from a performance counter, then choose the six templates.
+pub fn choose_daily_matches_from_counter(counter: u64, roll: &mut u32) -> [i32; 6] {
+    *roll = roll_from_counter(counter);
+    choose_daily_matches(roll)
+}
+
+/// A match template the day copies and then scales.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DailyMatch {
+    pub kind: i32,
+    pub flags: u32,
+    pub shown_slot: i32,
+    pub shown_tier: i32,
+    pub slot: i32,
+    pub tier: i32,
+    pub fee: u32,
+    pub prize: u32,
+    pub extra: i32,
+}
+
+/// How many faces the extra draw has, one count for each daily slot.
+const SLOT_SPANS: [i32; 6] = [8, 11, 10, 14, 4, 4];
+
+fn pack_coins(total: u32) -> u32 {
+    let gold = (total / 144) as u16;
+    let rest = total.wrapping_sub(u32::from(gold).wrapping_mul(144));
+    let silver = ((rest / 12) as u8) as u32;
+    let copper = rest.wrapping_sub((rest / 12).wrapping_mul(12)) as u8;
+    u32::from(copper) | (silver << 8) | (u32::from(gold) << 16)
+}
+
+fn scale_coins(packed: u32, factor: u32) -> u32 {
+    let total = (coin_total(packed) as i32).wrapping_mul(factor as i32) as u32;
+    pack_coins(total)
+}
+
+/// Copy `template` onto the day's match and scale it for `slot`.
+///
+/// The fee and the prize are multiplied by one more than the slot. Bit 2
+/// keeps the slot as the tier. Otherwise the tier is the slot times one
+/// minus the fourth power of `unit`, rounded to the nearest even integer.
+/// A negative tier becomes -1. Kind 8 shows 0 and 5. Bit 4 steps the roll
+/// and stores one more than the high half of that word times the slot's
+/// span.
+pub fn place_daily_match(
+    template: &DailyMatch,
+    slot: u32,
+    unit: f64,
+    roll: &mut u32,
+) -> DailyMatch {
+    let mut placed = *template;
+    placed.slot = slot as i32;
+    if placed.tier < 0 {
+        placed.tier = -1;
+    } else if placed.flags & 2 == 0 {
+        let curved = 1.0 - unit * unit * unit * unit;
+        let scaled = f64::from(slot) * curved;
+        placed.tier = scaled.round_ties_even() as i32;
+    } else {
+        placed.tier = placed.slot;
+    }
+    if placed.kind == 8 {
+        placed.shown_slot = 0;
+        placed.shown_tier = 5;
+    } else {
+        placed.shown_slot = placed.slot;
+        placed.shown_tier = placed.tier;
+    }
+    if placed.flags & 4 != 0 {
+        *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
+        let span = SLOT_SPANS.get(slot as usize).copied().unwrap_or(0);
+        let pick = ((i64::from(*roll).wrapping_mul(i64::from(span)) as u64) >> 32) as i32;
+        placed.extra = pick + 1;
+    }
+    let factor = slot.wrapping_add(1);
+    placed.fee = scale_coins(placed.fee, factor);
+    placed.prize = scale_coins(placed.prize, factor);
+    placed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1705,5 +1793,76 @@ mod tests {
         roll = 4;
         assert_eq!(choose_daily_matches(&mut roll), [0, 1, 6, 4, 4, 1]);
         assert_eq!(roll, 0xb761_a41e);
+    }
+
+    #[test]
+    fn a_counter_replaces_the_roll_and_a_slot_scales_the_fee() {
+        let mut roll = 99u32;
+        assert_eq!(
+            choose_daily_matches_from_counter(0x0400_0000, &mut roll),
+            [0, 1, 6, 4, 4, 1]
+        );
+        assert_eq!(roll, 0xb761_a41e);
+        roll = 99;
+        assert_eq!(
+            choose_daily_matches_from_counter(0, &mut roll),
+            [0, 1, 4, 1, 2, 3]
+        );
+        assert_eq!(roll, 0x1210_d4e5);
+        roll = 99;
+        assert_eq!(
+            choose_daily_matches_from_counter(0x1_0400_0000, &mut roll),
+            [0, 1, 6, 4, 4, 1]
+        );
+        assert_eq!(roll, 0xb761_a41e);
+
+        let template = DailyMatch {
+            kind: 0,
+            flags: 2,
+            shown_slot: 0,
+            shown_tier: 0,
+            slot: 0,
+            tier: 0,
+            fee: 3,
+            prize: 12,
+            extra: 0,
+        };
+        roll = 7;
+        let placed = place_daily_match(&template, 3, 0.0, &mut roll);
+        assert_eq!(template.fee, 3);
+        assert_eq!(template.prize, 12);
+        assert_eq!(placed.fee, 0x100);
+        assert_eq!(placed.prize, 0x400);
+        assert_eq!(placed.tier, 3);
+        assert_eq!((placed.shown_slot, placed.shown_tier), (3, 3));
+        assert_eq!(roll, 7);
+
+        let mut kind = template;
+        kind.kind = 8;
+        let placed = place_daily_match(&kind, 3, 0.0, &mut roll);
+        assert_eq!(placed.tier, 3);
+        assert_eq!((placed.shown_slot, placed.shown_tier), (0, 5));
+        assert_eq!(placed.fee, 0x100);
+
+        let mut negative = template;
+        negative.tier = -4;
+        let placed = place_daily_match(&negative, 2, 0.0, &mut roll);
+        assert_eq!(placed.tier, -1);
+        assert_eq!(placed.shown_tier, -1);
+
+        let mut open = template;
+        open.flags = 0;
+        let placed = place_daily_match(&open, 4, 0.0, &mut roll);
+        assert_eq!(placed.tier, 4);
+        let placed = place_daily_match(&open, 4, 1.0, &mut roll);
+        assert_eq!(placed.tier, 0);
+
+        let mut marked = template;
+        marked.flags = 4;
+        roll = 0x1000_0000;
+        let placed = place_daily_match(&marked, 0, 0.0, &mut roll);
+        assert_eq!(placed.extra, 3);
+        assert_eq!(roll, 0x5000_0001);
+        assert_eq!(placed.fee, 3);
     }
 }
