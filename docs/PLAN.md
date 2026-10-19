@@ -997,9 +997,10 @@ The original's save packages are not read.
 Done (change `confirm-a-shop-trade`): the shop refuses two empty baskets, and refuses a buy the company's copper cannot cover. A larger sell is received.
 Done (change `scale-match-experience`): a shared finish multiplies the template by 1 + tier/4 and splits it by contribution. Tier 0 with shares 1 and 3 credits 250 and 750; tier 4 with a trainer and equal shares adds 1500 to each. The special board lists Challenger through The Beast. How a tier scales a fee was not read.
 
+Done (change `close-the-arena-day`): a merchant's wage is 2, a physician's 12, a trainer's the skill total, and a combatant's half of that, at most 5, plus 1. A new career is on day 0. Ending the day pays the bill. A day mod 7 of 1 gives the week to three or more of the six events with no tie. Day 7 drops an entry under health 3276. Four won weeks grant four rewards; from day 0 that lands on day 22.
 Still open:
 
-- Arena training, seasons, item prices and emblems. The hire price was not read. Wages and the day calendar are not in.
+- Arena training, item prices and emblems. The hire price was not read. Overnight healing and the reward item identities are not in.
 - Story side levels, scripted encounters, the role interpreter, map discovery.
 - The other powers, their charge-up and their meshes.
 - Character creation (race, body, face, hair, colours, class, skills).

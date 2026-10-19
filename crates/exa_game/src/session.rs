@@ -123,6 +123,9 @@ pub fn read(bytes: &[u8]) -> Result<Session, SaveError> {
             name: take_str(&mut rest)?.to_string(),
             profession,
             xp,
+            skills: [0; 6],
+            health: u16::MAX,
+            in_entry: false,
         });
     }
     let pages = take_count(&mut rest)?;
@@ -155,6 +158,11 @@ pub fn read(bytes: &[u8]) -> Result<Session, SaveError> {
             lost,
             spent,
             earned,
+            day: 0,
+            weeks: [false; 4],
+            seasons_won: 0,
+            season_rewards: 0,
+            tournaments_won: 0,
         },
         focus,
     })

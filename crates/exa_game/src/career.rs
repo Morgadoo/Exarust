@@ -6,8 +6,10 @@
 //! A win pays the prize. Experience at tier 0, credited to the first
 //! combatant, is the template amount times the damage share, plus half with
 //! a trainer. A shared finish multiplies by 1 + tier/4 and splits that pool
-//! by each combatant's contribution. The hire price and the tier scaling of
-//! a fee were not read.
+//! by each combatant's contribution. Ending a day pays wages: a merchant 2,
+//! a physician 12, a trainer the skill total, a combatant half of that, at
+//! most 5, plus 1. A day mod 7 of 1 resolves the week, and four won weeks
+//! grant the season. The hire price and the tier scaling of a fee were not read.
 //!
 //! Evidence: the arena career notes (money seed, coin rate, roster caps,
 //! the six standard matches and the seven specials, fee on entry, prize on
@@ -19,6 +21,18 @@ pub const COIN: u32 = 12;
 pub const STARTING_COPPER: u32 = 343;
 /// Combatants a company can hire. The manager holds the eighth place.
 pub const MAX_COMBATANTS: usize = 7;
+/// A merchant's daily wage, in copper.
+pub const MERCHANT_WAGE: u32 = 2;
+/// A physician's daily wage, in copper.
+pub const PHYSICIAN_WAGE: u32 = 12;
+/// Weeks in a season. The fourth week, index 3, can grant the season.
+pub const SEASON_WEEKS: u32 = 4;
+/// Health below this drops a fighter from a tournament entry.
+pub const INJURED: u16 = 0x0ccc;
+/// The company's id in a tournament result.
+pub const OUR_COMPANY: u32 = 1;
+/// Wins of six events that take the week, when nobody else matches them.
+pub const WEEK_WINS: u32 = 3;
 
 /// A job on the roster.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +50,12 @@ pub struct Member {
     pub profession: Profession,
     /// Experience credited from matches.
     pub xp: u32,
+    /// Six skill levels. A stored skill word divided by 5000.
+    pub skills: [u32; 6],
+    /// Health, 0 to 65535. A full pool is 65535.
+    pub health: u16,
+    /// Still named in a tournament entry.
+    pub in_entry: bool,
 }
 
 /// One of the six matches the board offers every day.
@@ -202,6 +222,15 @@ pub struct Company {
     pub lost: u32,
     pub spent: u32,
     pub earned: u32,
+    /// Days ended. A new career is on day 0.
+    pub day: u32,
+    /// Whether the company took each week of the current season.
+    pub weeks: [bool; 4],
+    pub seasons_won: u32,
+    /// Season reward items granted. Four when a season is swept.
+    pub season_rewards: u32,
+    /// Weeks the company won outright.
+    pub tournaments_won: u32,
 }
 
 impl Company {
@@ -215,6 +244,11 @@ impl Company {
             lost: 0,
             spent: 0,
             earned: 0,
+            day: 0,
+            weeks: [false; 4],
+            seasons_won: 0,
+            season_rewards: 0,
+            tournaments_won: 0,
         }
     }
 
@@ -272,8 +306,85 @@ impl Company {
             name: name.into(),
             profession,
             xp: 0,
+            skills: [0; 6],
+            health: u16::MAX,
+            in_entry: false,
         });
         Ok(())
+    }
+
+    /// Daily wage. A merchant is 2, a physician 12, a trainer the sum of
+    /// six skill levels, and a combatant half that sum, at most 5, plus 1.
+    pub fn wage(profession: Profession, skills: &[u32]) -> u32 {
+        let rank: u32 = skills.iter().take(6).sum();
+        match profession {
+            Profession::Merchant => MERCHANT_WAGE,
+            Profession::Physician => PHYSICIAN_WAGE,
+            Profession::Trainer => rank,
+            Profession::Combatant => (rank / 2).min(5) + 1,
+        }
+    }
+
+    /// The week inside the season, 0 to 3, for a day counter that has
+    /// already moved on.
+    pub fn season_week(day: u32) -> u32 {
+        (day % (SEASON_WEEKS * 7)) / 7
+    }
+
+    /// End the day. Pay every wage, then on a day whose number mod 7 is 1
+    /// resolve the six event winners, and on a multiple of 7 drop an entry
+    /// whose health is under 3276. Winning all four weeks grants four rewards.
+    pub fn end_day(&mut self, events: [u32; 6]) -> Night {
+        self.day = self.day.saturating_add(1);
+        let wages = self
+            .roster
+            .iter()
+            .map(|member| Self::wage(member.profession, &member.skills))
+            .sum();
+        self.copper = self.copper.saturating_sub(wages);
+        self.spent = self.spent.saturating_add(wages);
+        let mut night = Night {
+            wages,
+            week_won: None,
+            dropped: 0,
+            season: false,
+        };
+        if self.day % 7 == 1 {
+            let (won, season) = self.resolve_week(&events);
+            night.week_won = Some(won);
+            night.season = season;
+        } else if self.day.is_multiple_of(7) {
+            for member in &mut self.roster {
+                if member.in_entry && member.health < INJURED {
+                    member.in_entry = false;
+                    night.dropped += 1;
+                }
+            }
+        }
+        night
+    }
+
+    /// Who took the week, and whether the season was swept.
+    fn resolve_week(&mut self, events: &[u32; 6]) -> (bool, bool) {
+        let (leader, count, tie) = tally(events);
+        let week = Self::season_week(self.day) as usize;
+        let ours = leader == OUR_COMPANY && count >= WEEK_WINS && !tie;
+        if count >= WEEK_WINS && !tie {
+            self.weeks[week] = ours;
+            if ours {
+                self.tournaments_won = self.tournaments_won.saturating_add(1);
+            }
+        }
+        let mut season = false;
+        if Self::season_week(self.day) == SEASON_WEEKS - 1 {
+            if ours && self.weeks.iter().all(|won| *won) {
+                self.seasons_won = self.seasons_won.saturating_add(1);
+                self.season_rewards = self.season_rewards.saturating_add(4);
+                season = true;
+            }
+            self.weeks = [false; 4];
+        }
+        (ours, season)
     }
 
     /// Take the entry fee and remember the prize and the experience.
@@ -363,6 +474,42 @@ impl Company {
     }
 }
 
+/// What ending the day changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Night {
+    pub wages: u32,
+    /// Set when this day resolves a week: whether the company took it.
+    pub week_won: Option<bool>,
+    /// Entries dropped because their health is under [`INJURED`].
+    pub dropped: usize,
+    /// This night granted the four season rewards.
+    pub season: bool,
+}
+
+fn tally(events: &[u32; 6]) -> (u32, u32, bool) {
+    let mut ids = Vec::new();
+    let mut counts = Vec::new();
+    for &id in events {
+        if let Some(index) = ids.iter().position(|known| *known == id) {
+            counts[index] += 1;
+        } else {
+            ids.push(id);
+            counts.push(1u32);
+        }
+    }
+    let mut leader = 0;
+    let mut tie = false;
+    for index in 1..ids.len() {
+        if counts[leader] < counts[index] {
+            leader = index;
+            tie = false;
+        } else if counts[index] == counts[leader] {
+            tie = true;
+        }
+    }
+    (ids[leader], counts[leader], tie)
+}
+
 /// A match the fee has already paid for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ongoing {
@@ -445,6 +592,62 @@ mod tests {
         assert_eq!(company.earned, 15);
         assert!(company.trade(5, 5));
         assert_eq!(company.copper, 318);
+    }
+
+    #[test]
+    fn a_day_pays_wages_and_four_weeks_make_a_season() {
+        assert_eq!(Company::wage(Profession::Merchant, &[9, 9, 9, 9, 9, 9]), 2);
+        assert_eq!(Company::wage(Profession::Physician, &[]), 12);
+        assert_eq!(Company::wage(Profession::Trainer, &[3, 1, 0, 0, 0, 0]), 4);
+        assert_eq!(Company::wage(Profession::Combatant, &[0; 6]), 1);
+        assert_eq!(
+            Company::wage(Profession::Combatant, &[12, 0, 0, 0, 0, 0]),
+            6
+        );
+
+        let mut tied = Company::new("Ash");
+        tied.hire("a", Profession::Combatant).unwrap();
+        let night = tied.end_day([1, 1, 1, 2, 2, 2]);
+        assert_eq!(night.week_won, Some(false));
+        assert_eq!(tied.tournaments_won, 0);
+
+        let mut company = Company::new("Ash");
+        company.hire("a", Profession::Combatant).unwrap();
+        company.roster[0].in_entry = true;
+        company.roster[0].health = INJURED - 1;
+        let sweep = [OUR_COMPANY; 6];
+        let first = company.end_day(sweep);
+        assert_eq!(company.day, 1);
+        assert_eq!(first.wages, 1);
+        assert_eq!(company.copper, 342);
+        assert_eq!(first.week_won, Some(true));
+        assert!(!first.season);
+
+        for _ in 0..5 {
+            company.end_day([0; 6]);
+        }
+        assert_eq!(company.day, 6);
+        let dropped = company.end_day([0; 6]);
+        assert_eq!(company.day, 7);
+        assert_eq!(dropped.dropped, 1);
+        assert!(!company.roster[0].in_entry);
+
+        let mut closing = Night {
+            wages: 0,
+            week_won: None,
+            dropped: 0,
+            season: false,
+        };
+        for _ in 0..15 {
+            closing = company.end_day(sweep);
+        }
+        assert_eq!(company.day, 22);
+        assert_eq!(closing.week_won, Some(true));
+        assert!(closing.season);
+        assert_eq!(company.seasons_won, 1);
+        assert_eq!(company.season_rewards, 4);
+        assert_eq!(company.weeks, [false; 4]);
+        assert_eq!(company.copper, 343 - 22);
     }
 
     #[test]
