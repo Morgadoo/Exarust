@@ -36,7 +36,7 @@ pub mod view;
 use bevy::math::{DVec3, Vec2, Vec3};
 
 pub use path::{Look, Path, find_path, look_ahead};
-pub use query::{LineHit, line_walk};
+pub use query::{LineHit, line_walk, nearest_walkable, obstacle, straight_walk};
 pub use source::{GroundTile, NavSource};
 pub use view::{NavOverlay, NavPlugin, NavState, PendingNav};
 

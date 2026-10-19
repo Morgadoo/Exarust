@@ -1,10 +1,13 @@
-//! The pathfinder's line walk.
+//! The pathfinder's grid queries.
 //!
-//! It steps from the cell after the start along the longer axis. A floor
-//! more than four above the current height blocks when its underside is
-//! within ten. The first blocked step keeps the start. A later one stops
-//! on the previous cell and keeps the asked height. Evidence: the movement
-//! notes' line walk.
+//! The line walk steps from the cell after the start along the longer axis.
+//! A floor more than four above the current height blocks when its underside
+//! is within ten. The straight walk uses five and fifteen, and follows a
+//! floor down. A line of 40 cm or less is not an obstacle; a longer one is
+//! when a floor is more than seven too high or an early cell's penalty is
+//! above 60. A point on a cell whose clearance and penalty sum to less than
+//! 80 keeps its place and takes that floor's height. Evidence: the movement
+//! notes' grid queries.
 
 use bevy::math::Vec3;
 
@@ -166,6 +169,366 @@ fn place(g: f32, n: usize) -> f32 {
     ((g + 0.5) - (n / 2) as f32) * super::CELL
 }
 
+struct Raster {
+    x_major: bool,
+    step: i32,
+    slope: f32,
+    intercept: f32,
+    major: i32,
+    count: u32,
+}
+
+fn raster(grid: &NavGrid, start: Vec3, end: Vec3, sign_bit: bool) -> Option<Raster> {
+    let (width, depth) = grid.size();
+    let gx0 = axis(start.x, width);
+    let gz0 = axis(start.z, depth);
+    let dx = axis(end.x, width) - gx0;
+    let dz = axis(end.z, depth) - gz0;
+    let x_major = dx.abs() >= dz.abs();
+    let (d_major, d_minor, g_major, g_minor) = if x_major {
+        (dx, dz, gx0, gz0)
+    } else {
+        (dz, dx, gz0, gx0)
+    };
+    if d_major == 0.0 {
+        return None;
+    }
+    let start_i = g_major.round_ties_even() as i32;
+    let end_i = (g_major + d_major).round_ties_even() as i32;
+    let count = (end_i - start_i).unsigned_abs();
+    if count == 0 {
+        return None;
+    }
+    let slope = d_minor / d_major;
+    let step = if sign_bit {
+        if d_major.is_sign_negative() { -1 } else { 1 }
+    } else if d_major < 0.0 {
+        -1
+    } else {
+        1
+    };
+    Some(Raster {
+        x_major,
+        step,
+        slope,
+        intercept: g_minor - g_major * slope,
+        major: start_i,
+        count,
+    })
+}
+
+/// Walk a straight line. A rise of five stays walkable. The height becomes
+/// the floor just stood on, so a later rise is measured from there.
+pub fn straight_walk(grid: &NavGrid, start: Vec3, end: Vec3) -> LineHit {
+    let Some(mut walk) = raster(grid, start, end, true) else {
+        return LineHit {
+            blocked: false,
+            end,
+        };
+    };
+    let mut height = straight_height(grid, start);
+    for k in 0..walk.count {
+        let Some((x, z)) = walk.advance() else {
+            break;
+        };
+        match straight_cell(grid, x, z, height) {
+            Step::Next => {}
+            Step::Blocked => return walk.clamp(grid, k, start, end),
+            Step::Stand { height: next, .. } => height = next,
+        }
+    }
+    LineHit {
+        blocked: false,
+        end,
+    }
+}
+
+/// Whether the line meets an obstacle. Forty centimetres or less does not.
+/// A longer line does when a floor is more than seven too high, or when a
+/// cell before the last two has a penalty above 60.
+pub fn obstacle(grid: &NavGrid, start: Vec3, end: Vec3) -> bool {
+    let dx = (end.x - start.x) * 100.0;
+    let dz = (end.z - start.z) * 100.0;
+    if dx * dx + dz * dz <= 1_600.0 {
+        return false;
+    }
+    let Some(mut walk) = raster(grid, start, end, true) else {
+        return false;
+    };
+    let mut height = voxels(start.y, grid.base());
+    for k in 0..walk.count {
+        let Some((x, z)) = walk.advance() else {
+            break;
+        };
+        match obstacle_cell(grid, x, z, height, k + 2 < walk.count) {
+            Step::Next => {}
+            Step::Blocked => return true,
+            Step::Stand { height: next, .. } => height = next,
+        }
+    }
+    false
+}
+
+/// The nearest walkable place. A cheap cell keeps the point and takes the
+/// floor's height. A costly cell yields a neighbour's centre.
+pub fn nearest_walkable(grid: &NavGrid, point: Vec3) -> Vec3 {
+    let (width, depth) = grid.size();
+    let x = axis(point.x, width).round_ties_even() as i32;
+    let z = axis(point.z, depth).round_ties_even() as i32;
+    let height = voxels(point.y, grid.base());
+    let layer = pick_layer(grid, x, z, height);
+    if layer >= 0
+        && let Some(cell) = cell_at(grid, x, z, layer)
+        && cell.clearance != 255
+        && u32::from(cell.clearance) + u32::from(cell.penalty) < 80
+    {
+        return Vec3::new(point.x, grid.floor_height(cell.floor), point.z);
+    }
+    let start_floor = cell_at(grid, x, z, layer.max(0))
+        .map(|cell| i32::from(cell.floor))
+        .unwrap_or(height);
+    let mut best: Option<(i32, i32, i32, u32)> = None;
+    for (dz, dx) in NEIGHBOURS {
+        let nx = x + dx;
+        let nz = z + dz;
+        let Some((floor, cost)) = neighbour_floor(grid, nx, nz, start_floor) else {
+            continue;
+        };
+        let better = best.is_none_or(|(_, _, _, had)| cost < had);
+        if better {
+            best = Some((nx, nz, floor, cost));
+        }
+    }
+    let Some((nx, nz, floor, cost)) = best else {
+        return point;
+    };
+    if cost >= 80 || nx < 0 || nz < 0 {
+        return point;
+    }
+    let centre = grid.cell_centre(nx as usize, nz as usize);
+    Vec3::new(centre.x, grid.floor_height(floor as u8), centre.y)
+}
+
+const NEIGHBOURS: [(i32, i32); 8] = [
+    (-1, -1),
+    (-1, 0),
+    (-1, 1),
+    (0, -1),
+    (0, 1),
+    (1, -1),
+    (1, 0),
+    (1, 1),
+];
+
+impl Raster {
+    fn advance(&mut self) -> Option<(i32, i32)> {
+        self.major += self.step;
+        let minor = (self.major as f32 * self.slope + self.intercept).round_ties_even() as i32;
+        Some(if self.x_major {
+            (self.major, minor)
+        } else {
+            (minor, self.major)
+        })
+    }
+
+    fn clamp(&mut self, grid: &NavGrid, k: u32, start: Vec3, end: Vec3) -> LineHit {
+        if k == 0 {
+            return LineHit {
+                blocked: true,
+                end: start,
+            };
+        }
+        let back = self.major - self.step;
+        let minor = back as f32 * self.slope + self.intercept;
+        let (x, z) = if self.x_major {
+            (back as f32, minor)
+        } else {
+            (minor, back as f32)
+        };
+        let (width, depth) = grid.size();
+        LineHit {
+            blocked: true,
+            end: Vec3::new(place(x, width), end.y, place(z, depth)),
+        }
+    }
+}
+
+fn straight_height(grid: &NavGrid, start: Vec3) -> i32 {
+    let (width, depth) = grid.size();
+    let x = axis(start.x, width).round_ties_even() as i32;
+    let z = axis(start.z, depth).round_ties_even() as i32;
+    let h0 = voxels(start.y, grid.base());
+    let (lower, upper) = floors(grid, x, z);
+    if upper.0 != 0 {
+        let underside = i32::from(upper.1);
+        let floor = i32::from(upper.0);
+        if underside - 3 < h0 && h0 < floor + 15 {
+            return floor;
+        }
+    }
+    i32::from(lower.0)
+}
+
+fn straight_cell(grid: &NavGrid, x: i32, z: i32, height: i32) -> Step {
+    let (lower, upper) = floors(grid, x, z);
+    if lower.0 == 0 {
+        return Step::Next;
+    }
+    let fl = i32::from(lower.0);
+    let ul = i32::from(lower.1);
+    let fu = i32::from(upper.0);
+    let uu = i32::from(upper.1);
+    let (reached, mut offered) = if fl > height + 5 {
+        if ul < height + 15 {
+            return Step::Blocked;
+        }
+        (-1, 0)
+    } else {
+        (0, fl)
+    };
+    if upper.0 == 0 {
+        if reached < 0 {
+            return Step::Next;
+        }
+    } else if fu > height + 5 {
+        if uu < height + 15 {
+            return Step::Blocked;
+        } else if reached < 0 {
+            return Step::Next;
+        }
+    } else {
+        offered = offered.max(fu);
+    }
+    Step::Stand {
+        height: offered,
+        offered,
+    }
+}
+
+fn obstacle_cell(grid: &NavGrid, x: i32, z: i32, height: i32, penalise: bool) -> Step {
+    let (lower, upper) = floors(grid, x, z);
+    if lower.0 == 0 {
+        return Step::Next;
+    }
+    let fl = i32::from(lower.0);
+    let ul = i32::from(lower.1);
+    let fu = i32::from(upper.0);
+    let uu = i32::from(upper.1);
+    let (mut layer, mut floor) = if fl > height + 7 {
+        if ul < height + 15 {
+            return Step::Blocked;
+        }
+        (-1, fl)
+    } else {
+        (0, fl)
+    };
+    if upper.0 == 0 {
+        if layer < 0 {
+            return Step::Next;
+        }
+    } else if fu > height + 7 {
+        if uu < height + 15 && (uu != 0 || fu < fl) {
+            return Step::Blocked;
+        } else if layer < 0 {
+            return Step::Next;
+        }
+    } else if fu > fl {
+        layer = 1;
+        floor = fu;
+    }
+    if penalise
+        && layer >= 0
+        && let Some(cell) = cell_at(grid, x, z, layer)
+        && cell.penalty > 60
+    {
+        return Step::Blocked;
+    }
+    Step::Stand {
+        height: floor,
+        offered: floor,
+    }
+}
+
+fn pick_layer(grid: &NavGrid, x: i32, z: i32, height: i32) -> i32 {
+    let (lower, upper) = floors(grid, x, z);
+    if lower.0 == 0 {
+        return -1;
+    }
+    if upper.0 == 0 || upper.0 == 255 {
+        return if lower.0 == 255 { -1 } else { 0 };
+    }
+    let fl = i32::from(lower.0);
+    let fu = i32::from(upper.0);
+    let ul = i32::from(lower.1);
+    let uu = i32::from(upper.1);
+    if fl < fu {
+        if uu - fl < 11 {
+            return 1;
+        }
+    } else if ul - fu < 11 {
+        return 0;
+    }
+    if (height - fu).abs() < (height - fl).abs() {
+        1
+    } else {
+        0
+    }
+}
+
+fn neighbour_floor(grid: &NavGrid, x: i32, z: i32, stood: i32) -> Option<(i32, u32)> {
+    let (lower, upper) = floors(grid, x, z);
+    if lower.0 == 0 {
+        return None;
+    }
+    let fl = i32::from(lower.0);
+    let ul = i32::from(lower.1);
+    let fu = i32::from(upper.0);
+    let uu = i32::from(upper.1);
+    let mut out_of_reach = false;
+    let mut floor = fl;
+    if fl > stood + 4 {
+        if ul < stood + 10 {
+            return None;
+        }
+        out_of_reach = true;
+    }
+    if upper.0 == 0 {
+        if out_of_reach {
+            return None;
+        }
+    } else if fu > stood + 4 {
+        if uu < stood + 10 && (uu != 0 || fu < fl) || out_of_reach {
+            return None;
+        }
+    } else if fu <= fl {
+        if out_of_reach {
+            return None;
+        }
+    } else {
+        floor = fu;
+    }
+    let rise = floor - stood;
+    if !(-21 < rise && rise < 5) {
+        return None;
+    }
+    let layer = if floor == fu && upper.0 != 0 { 1 } else { 0 };
+    let cell = cell_at(grid, x, z, layer)?;
+    Some((floor, u32::from(cell.clearance) + u32::from(cell.penalty)))
+}
+
+fn cell_at(grid: &NavGrid, x: i32, z: i32, layer: i32) -> Option<super::NavCell> {
+    let (width, depth) = grid.size();
+    if x < 0 || z < 0 || x as usize >= width || z as usize >= depth || !(0..=1).contains(&layer) {
+        return None;
+    }
+    let which = if layer == 0 {
+        Layer::Lower
+    } else {
+        Layer::Upper
+    };
+    Some(grid.cell(x as usize, z as usize, which))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,5 +587,133 @@ mod tests {
         let first = line_walk(&walled, face, end);
         assert!(first.blocked);
         assert_eq!(first.end, face);
+    }
+
+    #[test]
+    fn a_straight_walk_allows_five_and_follows_the_floor_down() {
+        let mut rise = flat(8, 8);
+        rise.set_cell(
+            3,
+            3,
+            Layer::Lower,
+            NavCell {
+                floor: 15,
+                ..NavCell::default()
+            },
+        );
+        let start = at(&rise, 1, 3);
+        let end = at(&rise, 5, 3);
+        assert!(line_walk(&rise, start, end).blocked);
+        assert!(!straight_walk(&rise, start, end).blocked);
+
+        rise.set_cell(
+            3,
+            3,
+            Layer::Lower,
+            NavCell {
+                floor: 16,
+                ..NavCell::default()
+            },
+        );
+        assert!(straight_walk(&rise, start, end).blocked);
+
+        let mut down = flat(8, 8);
+        down.set_cell(
+            3,
+            3,
+            Layer::Lower,
+            NavCell {
+                floor: 6,
+                ..NavCell::default()
+            },
+        );
+        down.set_cell(
+            4,
+            3,
+            Layer::Lower,
+            NavCell {
+                floor: 12,
+                ..NavCell::default()
+            },
+        );
+        assert!(straight_walk(&down, at(&down, 1, 3), at(&down, 6, 3)).blocked);
+    }
+
+    #[test]
+    fn forty_centimetres_is_not_an_obstacle_and_a_penalty_above_sixty_is() {
+        let mut grid = flat(8, 8);
+        let start = at(&grid, 1, 3);
+        let next = at(&grid, 2, 3);
+        grid.set_cell(
+            2,
+            3,
+            Layer::Lower,
+            NavCell {
+                floor: 40,
+                ..NavCell::default()
+            },
+        );
+        assert!(!obstacle(&grid, start, next));
+        assert!(obstacle(&grid, start, at(&grid, 3, 3)));
+
+        let mut costly = flat(8, 8);
+        costly.set_cell(
+            2,
+            3,
+            Layer::Lower,
+            NavCell {
+                floor: 10,
+                penalty: 61,
+                ..NavCell::default()
+            },
+        );
+        assert!(obstacle(&costly, at(&costly, 1, 3), at(&costly, 5, 3)));
+        costly.set_cell(
+            2,
+            3,
+            Layer::Lower,
+            NavCell {
+                floor: 10,
+                penalty: 60,
+                ..NavCell::default()
+            },
+        );
+        costly.set_cell(
+            5,
+            3,
+            Layer::Lower,
+            NavCell {
+                floor: 10,
+                penalty: 61,
+                ..NavCell::default()
+            },
+        );
+        assert!(!obstacle(&costly, at(&costly, 1, 3), at(&costly, 5, 3)));
+    }
+
+    #[test]
+    fn a_cheap_cell_keeps_its_place_and_a_costly_one_steps_aside() {
+        let grid = flat(8, 8);
+        let centre = grid.cell_centre(3, 3);
+        let point = Vec3::new(centre.x + 0.05, 2.0, centre.y - 0.04);
+        let kept = nearest_walkable(&grid, point);
+        assert_eq!(kept.x, point.x);
+        assert_eq!(kept.z, point.z);
+        assert_eq!(kept.y, 1.0);
+
+        let mut costly = flat(8, 8);
+        costly.set_cell(
+            3,
+            3,
+            Layer::Lower,
+            NavCell {
+                floor: 10,
+                penalty: 80,
+                ..NavCell::default()
+            },
+        );
+        let aside = nearest_walkable(&costly, Vec3::new(centre.x, 1.0, centre.y));
+        let neighbour = costly.cell_centre(2, 2);
+        assert_eq!(aside, Vec3::new(neighbour.x, 1.0, neighbour.y));
     }
 }

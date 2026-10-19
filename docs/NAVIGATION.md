@@ -12,8 +12,10 @@ The planner searches that grid (`nav::find_path`) and the look-ahead is
 `nav::look_ahead` (75 + 6·v² cm, 45 + 6·v² in combat, 70 cm back). An NPC
 follows the path by the same heading and desired velocity the player
 writes. A line walk steps the longer axis and blocks on a floor more than
-four above the current height when its underside is within ten. The nearest
-walkable point and footprints are not in yet. With no grid there is no path.
+four above the current height when its underside is within ten. A straight
+walk allows five and follows a floor down. A line of 40 cm or less is not
+an obstacle. A point on a cell cheaper than 80 keeps its place. Footprints
+are not in yet. With no grid there is no path.
 
 Evidence: reverse engineering of `Exanima.exe` 0.9.5 (the grid build, its
 span, layer and cost passes, the scene fields it reads, the level loader),
