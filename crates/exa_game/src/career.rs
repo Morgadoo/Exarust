@@ -9,9 +9,10 @@
 //! by each combatant's contribution. Ending a day pays wages: a merchant 2,
 //! a physician 12, a trainer the skill total, a combatant half of that, at
 //! most 5, plus 1. The night adds 6553 to each health, or 9830 with a
-//! physician, and stops at 65535. A day mod 7 of 1 resolves the week, and
-//! four won weeks grant the season. The hire price and the tier scaling of
-//! a fee were not read. A trainer's lessons are not in.
+//! physician, and stops at 65535. A hired trainer adds a lesson to each
+//! combatant whose current technique the trainer knows. A day mod 7 of 1
+//! resolves the week, and four won weeks grant the season. The hire price
+//! and the tier scaling of a fee were not read.
 //!
 //! Evidence: the arena career notes (money seed, coin rate, roster caps,
 //! the six standard matches and the seven specials, fee on entry, prize on
@@ -36,6 +37,12 @@ pub const REST: u16 = 0x1999;
 pub const REST_WITH_PHYSICIAN: u16 = 0x2666;
 /// A full health pool.
 pub const FULL_HEALTH: u16 = 0xffff;
+/// Skill experience in one level.
+pub const SKILL_STEP: u16 = 5000;
+/// Experience a matching lesson divides by the fighter's rank.
+pub const LESSON: u32 = 1000;
+/// A skill at this level is no longer the one being trained.
+pub const TRAINED_LEVEL: u32 = 5;
 /// The company's id in a tournament result.
 pub const OUR_COMPANY: u32 = 1;
 /// Wins of six events that take the week, when nobody else matches them.
@@ -57,8 +64,12 @@ pub struct Member {
     pub profession: Profession,
     /// Experience credited from matches.
     pub xp: u32,
-    /// Six skill levels. A stored skill word divided by 5000.
+    /// Six skill levels. A stored skill word divided by 5000. Wages read this.
     pub skills: [u32; 6],
+    /// Raw skill experience. A level is this divided by 5000.
+    pub skill_xp: [u16; 6],
+    /// Technique ids, six skills by six slots. Slot `level` is in training.
+    pub techniques: [[u8; 6]; 6],
     /// Health, 0 to 65535. A full pool is 65535.
     pub health: u16,
     /// Still named in a tournament entry.
@@ -314,6 +325,8 @@ impl Company {
             profession,
             xp: 0,
             skills: [0; 6],
+            skill_xp: [0; 6],
+            techniques: [[0; 6]; 6],
             health: u16::MAX,
             in_entry: false,
         });
@@ -350,6 +363,18 @@ impl Company {
             .any(|member| member.profession == Profession::Physician);
         for member in &mut self.roster {
             member.health = rested(member.health, physician);
+        }
+        if let Some(index) = self
+            .roster
+            .iter()
+            .position(|member| member.profession == Profession::Trainer)
+        {
+            let trainer = self.roster[index].clone();
+            for member in &mut self.roster {
+                if member.profession == Profession::Combatant {
+                    teach(member, &trainer);
+                }
+            }
         }
         let wages = self
             .roster
@@ -503,6 +528,46 @@ pub struct Night {
 
 /// Health after one night. The step is 6553, or 9830 with a physician,
 /// and the pool stops at 65535.
+fn skill_level(word: u16) -> u32 {
+    u32::from(word) / u32::from(SKILL_STEP)
+}
+
+/// One lesson. The first skill under level 5 whose technique at that level
+/// the trainer knows gains 1000 divided by one plus the six levels. A sum
+/// that reaches a new multiple of 5000 snaps to it.
+fn teach(student: &mut Member, trainer: &Member) {
+    let Some(skill) = (0..student.skill_xp.len()).find(|&index| {
+        let level = skill_level(student.skill_xp[index]);
+        level < TRAINED_LEVEL && student.techniques[index][level as usize] != 0
+    }) else {
+        return;
+    };
+    let level = skill_level(student.skill_xp[skill]);
+    let technique = student.techniques[skill][level as usize];
+    let known = skill_level(trainer.skill_xp[skill]) as usize;
+    if known == 0 || !trainer.techniques[skill][..known.min(6)].contains(&technique) {
+        return;
+    }
+    let rank = 1 + student
+        .skill_xp
+        .iter()
+        .copied()
+        .map(skill_level)
+        .sum::<u32>();
+    if rank > LESSON {
+        return;
+    }
+    let grant = (LESSON / rank).min(u32::from(SKILL_STEP));
+    let before = skill_level(student.skill_xp[skill]);
+    let summed = student.skill_xp[skill].wrapping_add(grant as u16);
+    let after = skill_level(summed);
+    student.skill_xp[skill] = if before < after {
+        (after * u32::from(SKILL_STEP)) as u16
+    } else {
+        summed
+    };
+}
+
 fn rested(health: u16, physician: bool) -> u16 {
     let step = if physician { REST_WITH_PHYSICIAN } else { REST };
     let sum = u32::from(health) + u32::from(step);
@@ -740,5 +805,83 @@ mod tests {
             ),
             ("The Beast", 512, 196_608, 3, 10_000)
         );
+    }
+
+    #[test]
+    fn a_trainer_teaches_a_known_technique() {
+        let mut alone = Company::new("Ash");
+        alone.hire("a", Profession::Combatant).unwrap();
+        alone.roster[0].techniques[0][0] = 7;
+        alone.end_day([0; 6]);
+        assert_eq!(alone.roster[0].skill_xp[0], 0);
+
+        let mut taught = Company::new("Ash");
+        taught.hire("a", Profession::Combatant).unwrap();
+        taught.hire("coach", Profession::Trainer).unwrap();
+        taught.roster[0].techniques[0][0] = 7;
+        taught.roster[1].skill_xp[0] = 5_000;
+        taught.roster[1].techniques[0][0] = 7;
+        taught.end_day([0; 6]);
+        assert_eq!(taught.roster[0].skill_xp[0], 1_000);
+        assert_eq!(taught.roster[1].skill_xp[0], 5_000);
+
+        let mut other = Company::new("Ash");
+        other.hire("a", Profession::Combatant).unwrap();
+        other.hire("coach", Profession::Trainer).unwrap();
+        other.roster[0].techniques[0][0] = 7;
+        other.roster[1].skill_xp[0] = 5_000;
+        other.roster[1].techniques[0][0] = 3;
+        other.end_day([0; 6]);
+        assert_eq!(other.roster[0].skill_xp[0], 0);
+
+        let mut shop = Company::new("Ash");
+        shop.hire("sell", Profession::Merchant).unwrap();
+        shop.hire("coach", Profession::Trainer).unwrap();
+        shop.roster[0].techniques[0][0] = 7;
+        shop.roster[1].skill_xp[0] = 5_000;
+        shop.roster[1].techniques[0][0] = 7;
+        shop.end_day([0; 6]);
+        assert_eq!(shop.roster[0].skill_xp[0], 0);
+
+        let mut medic = Company::new("Ash");
+        medic.hire("med", Profession::Physician).unwrap();
+        medic.hire("coach", Profession::Trainer).unwrap();
+        medic.roster[0].techniques[0][0] = 7;
+        medic.roster[1].skill_xp[0] = 5_000;
+        medic.roster[1].techniques[0][0] = 7;
+        medic.end_day([0; 6]);
+        assert_eq!(medic.roster[0].skill_xp[0], 0);
+
+        let mut rising = Company::new("Ash");
+        rising.hire("a", Profession::Combatant).unwrap();
+        rising.hire("coach", Profession::Trainer).unwrap();
+        rising.roster[0].skill_xp[0] = 4_500;
+        rising.roster[0].techniques[0][0] = 7;
+        rising.roster[1].skill_xp[0] = 5_000;
+        rising.roster[1].techniques[0][0] = 7;
+        rising.end_day([0; 6]);
+        assert_eq!(rising.roster[0].skill_xp[0], 5_000);
+
+        let mut ranked = Company::new("Ash");
+        ranked.hire("a", Profession::Combatant).unwrap();
+        ranked.hire("coach", Profession::Trainer).unwrap();
+        ranked.roster[0].skill_xp = [0, 5_000, 5_000, 5_000, 5_000, 5_000];
+        ranked.roster[0].techniques[0][0] = 4;
+        ranked.roster[1].skill_xp[0] = 5_000;
+        ranked.roster[1].techniques[0][0] = 4;
+        ranked.end_day([0; 6]);
+        assert_eq!(ranked.roster[0].skill_xp[0], 166);
+
+        let mut later = Company::new("Ash");
+        later.hire("a", Profession::Combatant).unwrap();
+        later.hire("coach", Profession::Trainer).unwrap();
+        later.roster[0].skill_xp[0] = 25_000;
+        later.roster[0].techniques[0][0] = 7;
+        later.roster[0].techniques[1][0] = 9;
+        later.roster[1].skill_xp[1] = 5_000;
+        later.roster[1].techniques[1][0] = 9;
+        later.end_day([0; 6]);
+        assert_eq!(later.roster[0].skill_xp[0], 25_000);
+        assert_eq!(later.roster[0].skill_xp[1], 166);
     }
 }

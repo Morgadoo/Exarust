@@ -124,6 +124,8 @@ pub fn read(bytes: &[u8]) -> Result<Session, SaveError> {
             profession,
             xp,
             skills: [0; 6],
+            skill_xp: [0; 6],
+            techniques: [[0; 6]; 6],
             health: u16::MAX,
             in_entry: false,
         });
