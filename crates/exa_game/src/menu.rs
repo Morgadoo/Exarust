@@ -41,6 +41,13 @@ pub struct Capture {
     pub code: u32,
 }
 
+/// One runtime cursor-shape record. Shape 1 is index 0.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CursorShape {
+    pub image: u64,
+    pub hook: bool,
+}
+
 /// A child window on one of the two lists a match begin walks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Window {
@@ -99,6 +106,20 @@ pub struct MatchGate {
     /// Shape argument. 0 marks the default unless the code has bit 0x8000.
     pub cursor_shape: u8,
     pub cursor_default: bool,
+    /// Shape records. Index 0 is shape 1.
+    pub shapes: Vec<CursorShape>,
+    pub default_image: u64,
+    pub current_image: u64,
+    pub shape_mark: bool,
+    pub shape_stamp: u32,
+    pub shape_clock: u32,
+    /// Times a different non-zero image was shown.
+    pub shown: u32,
+    pub shape_hooks: u32,
+    /// Times a focus was invoked. The method body is not in.
+    pub focus_calls: u32,
+    /// Session mark cleared to 0 when it was not already 0.
+    pub session_mark: u8,
     /// A focus object is set, so the follow runs even with a mask of 0.
     pub focus: bool,
     /// Mask tested against argument 1.
@@ -145,6 +166,16 @@ impl MatchGate {
             cursor_holder: None,
             cursor_shape: 0,
             cursor_default: false,
+            shapes: Vec::new(),
+            default_image: 0,
+            current_image: 0,
+            shape_mark: false,
+            shape_stamp: 0,
+            shape_clock: 0,
+            shown: 0,
+            shape_hooks: 0,
+            focus_calls: 0,
+            session_mark: 0,
             focus: false,
             list_mask: 0,
             mode_word: 0,
@@ -199,6 +230,14 @@ struct CloseState {
     cursor_holder: Option<String>,
     cursor_shape: u8,
     cursor_default: bool,
+    shapes: Vec<CursorShape>,
+    default_image: u64,
+    current_image: u64,
+    shape_mark: bool,
+    shape_stamp: u32,
+    shape_clock: u32,
+    shown: u32,
+    shape_hooks: u32,
     active: Option<String>,
     hover: Option<String>,
     siblings: Vec<Window>,
@@ -216,6 +255,14 @@ fn dismiss_open(gate: &mut MatchGate) {
         cursor_holder: gate.cursor_holder.clone(),
         cursor_shape: gate.cursor_shape,
         cursor_default: gate.cursor_default,
+        shapes: gate.shapes.clone(),
+        default_image: gate.default_image,
+        current_image: gate.current_image,
+        shape_mark: gate.shape_mark,
+        shape_stamp: gate.shape_stamp,
+        shape_clock: gate.shape_clock,
+        shown: gate.shown,
+        shape_hooks: gate.shape_hooks,
         active: gate.active.clone(),
         hover: gate.hover.clone(),
         siblings: std::mem::take(&mut gate.siblings),
@@ -232,6 +279,14 @@ fn dismiss_open(gate: &mut MatchGate) {
     gate.cursor_holder = state.cursor_holder;
     gate.cursor_shape = state.cursor_shape;
     gate.cursor_default = state.cursor_default;
+    gate.shapes = state.shapes;
+    gate.default_image = state.default_image;
+    gate.current_image = state.current_image;
+    gate.shape_mark = state.shape_mark;
+    gate.shape_stamp = state.shape_stamp;
+    gate.shape_clock = state.shape_clock;
+    gate.shown = state.shown;
+    gate.shape_hooks = state.shape_hooks;
     gate.active = state.active;
     gate.hover = state.hover;
     gate.siblings = state.siblings;
@@ -319,16 +374,48 @@ fn release_capture(window: &mut Window, state: &mut CloseState) {
     if shape == 0 {
         state.cursor_default = true;
     }
+    apply_shape(state, shape);
+}
+
+fn apply_shape(state: &mut CloseState, shape: u8) {
+    if shape == 0 {
+        let image = state.default_image;
+        show_image(state, image);
+        state.shape_mark = true;
+        state.shape_stamp = state.shape_clock;
+        return;
+    }
+    let index = (shape as usize) - 1;
+    if index >= state.shapes.len() {
+        return;
+    }
+    let slot = state.shapes[index].clone();
+    show_image(state, slot.image);
+    if slot.hook {
+        state.shape_hooks = state.shape_hooks.saturating_add(1);
+    }
+}
+
+fn show_image(state: &mut CloseState, image: u64) {
+    if image == state.current_image {
+        return;
+    }
+    if image != 0 {
+        state.shown = state.shown.saturating_add(1);
+    }
+    state.current_image = image;
 }
 
 /// The call after the two lists. Argument 1 runs for a focus, or when the
-/// mask shares bit 0. The virtual call is not in.
+/// mask shares bit 0. A focus is counted before the hands. The method body
+/// is not in.
 fn follow_lists(gate: &mut MatchGate) {
     let run = gate.focus || gate.list_mask & FOLLOW_ARG != 0;
     if !run {
         return;
     }
     if gate.focus {
+        gate.focus_calls = gate.focus_calls.saturating_add(1);
         gate.latched = true;
         gate.pending = false;
     }
@@ -337,6 +424,9 @@ fn follow_lists(gate: &mut MatchGate) {
     if gate.hands_ready {
         gate.hands = HAND_WORDS;
         gate.hands_set = true;
+    }
+    if gate.focus && gate.session_mark != 0 {
+        gate.session_mark = 0;
     }
 }
 
@@ -764,5 +854,85 @@ mod tests {
         assert!(gate.hands_set);
         assert_eq!(gate.stamp, 4);
         assert_eq!(gate.mode_word, 1);
+    }
+
+    fn shape(image: u64, hook: bool) -> CursorShape {
+        CursorShape { image, hook }
+    }
+
+    #[test]
+    fn a_shape_is_shown_and_a_focus_is_invoked_before_the_hands() {
+        let mut gate = MatchGate::playing();
+        gate.first = vec![marked("Shop")];
+        gate.first_count = 1;
+        gate.captures = vec![capture("Lower", 0x8007), capture("Shop", 1)];
+        gate.shapes = vec![shape(0, false); 6];
+        gate.shapes.push(shape(42, true));
+        let mut company = Company::new("Ash");
+        assert!(gate.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert_eq!(gate.current_image, 42);
+        assert_eq!(gate.shown, 1);
+        assert_eq!(gate.shape_hooks, 1);
+        assert!(!gate.shape_mark);
+
+        let mut again = MatchGate::playing();
+        again.first = vec![marked("Shop")];
+        again.first_count = 1;
+        again.captures = vec![capture("Lower", 0x8007), capture("Shop", 1)];
+        again.shapes = vec![shape(0, false); 6];
+        again.shapes.push(shape(42, true));
+        again.current_image = 42;
+        let mut company = Company::new("Ash");
+        assert!(again.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert_eq!(again.shown, 0);
+        assert_eq!(again.shape_hooks, 1);
+        assert_eq!(again.current_image, 42);
+
+        let mut plain = MatchGate::playing();
+        plain.first = vec![marked("Shop")];
+        plain.first_count = 1;
+        plain.captures = vec![capture("Lower", 0x15), capture("Shop", 1)];
+        plain.default_image = 9;
+        plain.shape_clock = 12;
+        let mut company = Company::new("Ash");
+        assert!(plain.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert_eq!(plain.current_image, 9);
+        assert_eq!(plain.shown, 1);
+        assert!(plain.shape_mark);
+        assert_eq!(plain.shape_stamp, 12);
+        assert!(plain.cursor_default);
+
+        let mut empty = MatchGate::playing();
+        empty.first = vec![marked("Shop")];
+        empty.first_count = 1;
+        empty.captures = vec![capture("Lower", 0x8007), capture("Shop", 1)];
+        empty.current_image = 3;
+        let mut company = Company::new("Ash");
+        assert!(empty.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert_eq!(empty.current_image, 3);
+        assert_eq!(empty.shown, 0);
+        assert_eq!(empty.cursor_shape, 7);
+
+        let mut focus = MatchGate::playing();
+        focus.focus = true;
+        focus.session_mark = 1;
+        focus.hands_ready = true;
+        focus.clock = 5;
+        let mut dying = hired_physician();
+        assert!(focus.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut dying));
+        assert_eq!(focus.focus_calls, 1);
+        assert!(focus.hands_set);
+        assert_eq!(focus.session_mark, 0);
+        assert_eq!(dying.deaths, 1);
+
+        let mut mask = MatchGate::playing();
+        mask.list_mask = 1;
+        mask.session_mark = 1;
+        mask.hands_ready = true;
+        let mut company = Company::new("Ash");
+        assert!(mask.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert_eq!(mask.focus_calls, 0);
+        assert_eq!(mask.session_mark, 1);
+        assert!(mask.hands_set);
     }
 }
