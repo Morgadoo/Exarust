@@ -983,6 +983,11 @@ through `exanima08`. A topic can be chosen once. The journal opens on
 Done (change `cast-the-four-domains`): long door places the body, shock
 takes yellow health, blast knocks 60 along the aim, and calm lowers
 concerns. Each spends its focus and does nothing without it.
+Done (change `price-the-power-table`): the table holds the 33 recorded
+rows. Barrier at 0.07 for a 500 ms tick costs 0.035, and 0.0175 with the
+sustain technique. Repeating blast with the repeat technique costs 0.05.
+Blast spends 1.2 times its cost, barrier twice, calm 0.3 times, the long
+door once, and vanish 80 times. The tree layout is not in.
 Done (change `save-the-session`): an `EXRS` file restores that session.
 The original's save packages are not read.
 

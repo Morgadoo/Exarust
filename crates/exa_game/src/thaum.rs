@@ -11,6 +11,12 @@
 //! 0.20, shock 0.10, blast 0.10, calm 0.14. The long-door factor is the
 //! shared instant factor; vanish's 80× factor is a different power.
 //!
+//! The power table records each id and its focus cost. A sustained cost is
+//! that cost times the tick in seconds, halved again with the sustain
+//! technique. Repeating the same instant power with the repeat technique
+//! halves the table cost. Blast and bolt spend 1.2 times the cost, barrier
+//! twice, a mind power 0.3 times, and vanish 80 times.
+//!
 //! Evidence: the power tables and the calm, blast and shock notes.
 
 use bevy::math::Vec3;
@@ -34,6 +40,210 @@ pub const CALM_FACTOR: f32 = 0.3;
 pub const SHOCK_GAP_MS: u32 = 150;
 /// The blast knock cap, then doubled.
 pub const BLAST_KNOCK: f32 = 30.0;
+/// The id bit of a power whose cost is per second.
+pub const SUSTAINED: u32 = 0x0001_0000;
+/// The id bit of a power that stays in a slot until cast again.
+pub const PERSISTENT: u32 = 0x0002_0000;
+
+/// One row of the power table: its id and its focus cost.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Power {
+    pub id: u32,
+    pub cost: f32,
+}
+
+/// The recorded power rows. A sustained id costs per second. A persistent
+/// id occupies a slot.
+pub fn catalog() -> &'static [Power] {
+    &[
+        Power {
+            id: 0x101,
+            cost: 0.13,
+        },
+        Power {
+            id: 0x20101,
+            cost: 0.27,
+        },
+        Power {
+            id: 0x102,
+            cost: 0.12,
+        },
+        Power {
+            id: 0x20102,
+            cost: 0.24,
+        },
+        Power {
+            id: 0x10106,
+            cost: 0.025,
+        },
+        Power {
+            id: 0x103,
+            cost: 0.14,
+        },
+        Power {
+            id: 0x104,
+            cost: 0.16,
+        },
+        Power {
+            id: 0x105,
+            cost: 0.17,
+        },
+        Power {
+            id: 0x107,
+            cost: 0.18,
+        },
+        Power {
+            id: 0x108,
+            cost: 0.18,
+        },
+        Power {
+            id: 0x109,
+            cost: 0.19,
+        },
+        Power {
+            id: 0x2010A,
+            cost: 0.29,
+        },
+        Power {
+            id: 0x10B,
+            cost: 0.19,
+        },
+        Power {
+            id: 0x2010C,
+            cost: 0.35,
+        },
+        Power {
+            id: 0x2010D,
+            cost: 0.25,
+        },
+        Power {
+            id: 0x10F,
+            cost: 0.30,
+        },
+        Power {
+            id: 0x201,
+            cost: 0.10,
+        },
+        Power {
+            id: 0x202,
+            cost: 0.10,
+        },
+        Power {
+            id: 0x10203,
+            cost: 0.10,
+        },
+        Power {
+            id: 0x204,
+            cost: 0.20,
+        },
+        Power {
+            id: 0x10205,
+            cost: 0.07,
+        },
+        Power {
+            id: 0x20206,
+            cost: 0.25,
+        },
+        Power {
+            id: 0x20207,
+            cost: 0.25,
+        },
+        Power {
+            id: 0x20208,
+            cost: 0.35,
+        },
+        Power {
+            id: 0x10209,
+            cost: 0.02,
+        },
+        Power {
+            id: 0x20A,
+            cost: 0.10,
+        },
+        Power {
+            id: 0x2020B,
+            cost: 0.30,
+        },
+        Power {
+            id: 0x10601,
+            cost: 0.10,
+        },
+        Power {
+            id: 0x602,
+            cost: 0.20,
+        },
+        Power {
+            id: 0x20603,
+            cost: 0.35,
+        },
+        Power {
+            id: 0x604,
+            cost: 0.35,
+        },
+        Power {
+            id: 0x401,
+            cost: 0.10,
+        },
+        Power {
+            id: 0x2040B,
+            cost: 0.30,
+        },
+    ]
+}
+
+/// Whether this id is paid per second.
+pub fn is_sustained(id: u32) -> bool {
+    id & SUSTAINED != 0
+}
+
+/// Whether this id occupies a power slot.
+pub fn is_persistent(id: u32) -> bool {
+    id & PERSISTENT != 0
+}
+
+/// What the cost is multiplied by before it is spent. Blast and bolt use
+/// 1.2, barrier 2, a mind power 0.3, and vanish 80. The long door stays at 1.
+pub fn spend_factor(id: u32) -> f32 {
+    let kind = id & 0xFFFF;
+    if kind == 0x0201 || kind == 0x0202 {
+        return 1.2;
+    }
+    if kind == 0x0205 {
+        return 2.0;
+    }
+    if kind == 0x0601 {
+        return 80.0;
+    }
+    if id & 0xFF00 == 0x0100 {
+        return 0.3;
+    }
+    1.0
+}
+
+/// The cost a cast actually asks for. A sustained power uses the tick length
+/// in milliseconds, and the sustain technique halves that. Repeating the
+/// same instant power with the repeat technique halves the table cost.
+pub fn adjusted_cost(
+    cost: f32,
+    id: u32,
+    tick_ms: f32,
+    repeat_same: bool,
+    repeat_skill: bool,
+    sustain_skill: bool,
+) -> f32 {
+    if is_sustained(id) {
+        let per_tick = cost * tick_ms / 1000.0;
+        if sustain_skill {
+            per_tick * 0.5
+        } else {
+            per_tick
+        }
+    } else if repeat_same && repeat_skill {
+        cost * 0.5
+    } else {
+        cost
+    }
+}
 
 /// Focus the caster still has, and when shock last landed.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -255,5 +465,28 @@ mod tests {
             cast(Domain::Mind, &mut calm, &request),
             Err(CastError::Focus)
         );
+    }
+
+    #[test]
+    fn the_table_prices_a_cast_and_a_sustained_tick() {
+        let cost = |id: u32| catalog().iter().find(|power| power.id == id).unwrap().cost;
+        assert!((cost(0x602) - LONG_DOOR_COST).abs() < 1e-6);
+        assert!((cost(0x401) - SHOCK_COST).abs() < 1e-6);
+        assert!((cost(0x201) - BLAST_COST).abs() < 1e-6);
+        assert!((cost(0x103) - CALM_COST).abs() < 1e-6);
+        assert_eq!(catalog().len(), 33);
+        assert!(is_sustained(0x10205));
+        assert!(is_persistent(0x2020B));
+        assert!(!is_sustained(0x201));
+        let barrier = cost(0x10205);
+        assert!((adjusted_cost(barrier, 0x10205, 500.0, false, false, false) - 0.035).abs() < 1e-6);
+        assert!((adjusted_cost(barrier, 0x10205, 500.0, false, false, true) - 0.0175).abs() < 1e-6);
+        assert!((adjusted_cost(BLAST_COST, 0x201, 0.0, true, true, false) - 0.05).abs() < 1e-6);
+        assert!((adjusted_cost(BLAST_COST, 0x201, 0.0, true, false, false) - 0.10).abs() < 1e-6);
+        assert!((spend_factor(0x201) - BLAST_FACTOR).abs() < 1e-6);
+        assert!((spend_factor(0x103) - CALM_FACTOR).abs() < 1e-6);
+        assert!((spend_factor(0x10205) - 2.0).abs() < 1e-6);
+        assert!((spend_factor(0x602) - 1.0).abs() < 1e-6);
+        assert!((spend_factor(0x10601) - 80.0).abs() < 1e-6);
     }
 }
