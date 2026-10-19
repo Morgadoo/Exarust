@@ -194,7 +194,8 @@ final free call. The skill selector draws a page-2 title or the measured icon
 and label of the selection. A found tooltip row stores the skill index and
 threshold, marks the tip, places it from the anchor and stamps the clock. The
 loot screen marks its owner and places a visible child when it becomes active,
-and the journal copies its origin and assigns its page string.
+and the journal copies its origin and assigns its page string. The character
+view releases on a free flag, and its clear drops the view and the owner's slot.
 
 ## Scope
 

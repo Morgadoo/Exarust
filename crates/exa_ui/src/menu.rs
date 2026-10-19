@@ -819,6 +819,45 @@ pub fn show_journal(x: i32, y: i32, page: i32) -> JournalShow {
     }
 }
 
+/// The character view destroy's calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ViewDestroy {
+    pub release_calls: u32,
+    pub base_calls: u32,
+    pub final_calls: u32,
+}
+
+/// Releases the view on a set free flag and always runs the base destructor.
+pub fn destroy_character_view(free_flag: bool) -> ViewDestroy {
+    let free = u32::from(free_flag);
+    ViewDestroy {
+        release_calls: free,
+        base_calls: 1,
+        final_calls: free,
+    }
+}
+
+/// The character view clear's work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ViewClear {
+    pub had_view: bool,
+    pub release_calls: u32,
+    pub slot_cleared: bool,
+    pub base_calls: u32,
+    pub result: bool,
+}
+
+/// Releases the view and clears its owner slot before the base call.
+pub fn clear_character_view(has_view: bool, base_result: bool) -> ViewClear {
+    ViewClear {
+        had_view: has_view,
+        release_calls: u32::from(has_view),
+        slot_cleared: has_view,
+        base_calls: 1,
+        result: base_result,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1374,5 +1413,36 @@ mod tests {
         assert_eq!(shown.table_offset, 3 * 0x18 + 0x10);
         assert!(shown.assigned);
         assert_eq!(shown.base_calls, 1);
+    }
+
+    #[test]
+    fn the_character_view_clears_and_destroys() {
+        let freeing = destroy_character_view(true);
+        assert_eq!(
+            (
+                freeing.release_calls,
+                freeing.base_calls,
+                freeing.final_calls
+            ),
+            (1, 1, 1)
+        );
+        let quiet = destroy_character_view(false);
+        assert_eq!(
+            (quiet.release_calls, quiet.base_calls, quiet.final_calls),
+            (0, 1, 0)
+        );
+
+        let clear = clear_character_view(true, true);
+        assert!(clear.had_view);
+        assert_eq!(clear.release_calls, 1);
+        assert!(clear.slot_cleared);
+        assert_eq!(clear.base_calls, 1);
+        assert!(clear.result);
+
+        let empty = clear_character_view(false, false);
+        assert!(!empty.had_view);
+        assert_eq!(empty.release_calls, 0);
+        assert_eq!(empty.base_calls, 1);
+        assert!(!empty.result);
     }
 }
