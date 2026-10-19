@@ -517,6 +517,8 @@ pub struct WakeRise {
     pub target: f32,
     /// How many witnesses heard "Awaken" on this tick.
     pub heard: u32,
+    /// World time in seconds for a memory word. Not the wake clock.
+    pub now_s: u32,
 }
 
 const WAKE_STILL_MS: u32 = 1_500;
@@ -534,6 +536,12 @@ pub struct Witness {
     pub person: bool,
     /// Line of sight to the sleeper.
     pub sees: bool,
+    /// Topic memory word. Written when an update reports a change.
+    pub memory: u32,
+    /// Node flags: cooldown, need, delay, witness mask, and held-off.
+    pub node: u32,
+    /// Bits mixed in when the node counts distinct witnesses.
+    pub bits: u32,
 }
 
 /// One held weapon's reach and the four damage weights.
@@ -596,6 +604,126 @@ fn heard_awaken(witnesses: &[Witness]) -> u32 {
         .count() as u32
 }
 
+/// Topic memory after one update. `updated` can be set when `word` is unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemoryWord {
+    pub word: u32,
+    pub updated: bool,
+}
+
+/// High bit: the topic is open, and the low bits are its stamp.
+const MEMORY_OPEN: u32 = 0x8000_0000;
+/// Next-to-high bit: the low bits are a count, or a mask of witnesses.
+const MEMORY_COUNT: u32 = 0x4000_0000;
+const MEMORY_LOW: u32 = 0x3fff_ffff;
+const MEMORY_MARKS: u32 = MEMORY_OPEN | MEMORY_COUNT;
+const NODE_WITNESSES: u32 = 0x2000;
+const NODE_HELD_OFF: u32 = 0x4000;
+
+/// Re-use cooldown in seconds. Index 0 is never again. The last two are zero.
+const REUSE_S: [u32; 16] = [
+    u32::MAX,
+    31_536_000,
+    2_592_000,
+    604_800,
+    259_200,
+    86_400,
+    10_800,
+    3_600,
+    1_800,
+    600,
+    300,
+    60,
+    30,
+    10,
+    0,
+    0,
+];
+
+/// Seconds added when a topic opens. The index is node bits 20–22.
+const OPEN_DELAY_S: [u32; 8] = [0, 2, 5, 10, 30, 300, 1_800, 0];
+
+fn open_delay(node: u32) -> u32 {
+    OPEN_DELAY_S[((node >> 20) & 7) as usize]
+}
+
+fn low_bits(word: u32) -> u32 {
+    (word & MEMORY_LOW).count_ones()
+}
+
+/// Update one topic-memory word.
+///
+/// An open word refreshes its stamp, or re-arms with the delay once its
+/// window has passed. A plain last use waits out its cooldown, and a
+/// never-again nibble stays. A short count adds one. The hit that meets
+/// the need stamps `now_s` plus the delay and sets the high bit. Witness
+/// nodes mix in `bits` and count only the low 30 bits. `now_s` is world
+/// time in seconds.
+pub fn remember(word: u32, node: u32, now_s: u32, bits: u32) -> MemoryWord {
+    if word & MEMORY_OPEN != 0 {
+        if node & NODE_HELD_OFF != 0 {
+            return MemoryWord {
+                word,
+                updated: false,
+            };
+        }
+        let stamp = word & MEMORY_LOW;
+        if now_s < stamp {
+            return MemoryWord {
+                word,
+                updated: true,
+            };
+        }
+        let window = u64::from(REUSE_S[((node >> 16) & 0xF) as usize]);
+        let word = if u64::from(stamp) + window <= u64::from(now_s) {
+            now_s.wrapping_add(open_delay(node)) | MEMORY_OPEN
+        } else {
+            now_s | MEMORY_OPEN
+        };
+        return MemoryWord {
+            word,
+            updated: true,
+        };
+    }
+    let mut word = word;
+    if word != 0 && word & MEMORY_MARKS == 0 {
+        if node & 0xF == 0 || now_s < word {
+            return MemoryWord {
+                word,
+                updated: false,
+            };
+        }
+        let cool = u64::from(REUSE_S[(node & 0xF) as usize]);
+        if u64::from(now_s) - u64::from(word) < cool {
+            return MemoryWord {
+                word,
+                updated: false,
+            };
+        }
+        word = 0;
+    }
+    let need = (node >> 8) & 0x1F;
+    if node & NODE_WITNESSES == 0 {
+        word = word.wrapping_add(1);
+        if word & MEMORY_LOW < need {
+            word |= MEMORY_COUNT;
+        } else {
+            word = now_s.wrapping_add(open_delay(node)) | MEMORY_OPEN;
+        }
+    } else {
+        word |= bits;
+        if u64::from(low_bits(word)) < u64::from(need) {
+            word |= MEMORY_COUNT;
+        } else {
+            word = now_s.wrapping_add(open_delay(node)) | MEMORY_OPEN;
+        }
+    }
+    MemoryWord {
+        word,
+        updated: true,
+    }
+}
+
 fn wake_past(since: i32, wait: u32, now: u32) -> bool {
     u64::from(since as u32) + u64::from(wait) < u64::from(now)
 }
@@ -614,13 +742,14 @@ fn add_step(value: f32, step: f64) -> f32 {
 /// the clip base gains 0.01 a tick, and at 1 the tone is 1, the target is
 /// the stance factor, the weapons are refreshed, and the flags clear unless
 /// held. The tick that drops the dormant flag tells every person who can
-/// see the body. Returns whether that tick fired.
+/// see the body and updates that person's memory from `now_s`. Returns
+/// whether that tick fired.
 pub fn rise(
     sleeper: &mut Sleeper,
     drive: &mut Drive,
     wake: &mut WakeRise,
     now: u32,
-    witnesses: &[Witness],
+    witnesses: &mut [Witness],
     hands: &mut Hands,
 ) -> bool {
     if !sleeper.flags.has(StateFlags::WAKING) {
@@ -664,7 +793,20 @@ pub fn rise(
         return false;
     }
     let awaken = sleeper.flags.has(StateFlags::DORMANT);
-    wake.heard = if awaken { heard_awaken(witnesses) } else { 0 };
+    if awaken {
+        wake.heard = heard_awaken(witnesses);
+        let now_s = wake.now_s;
+        for witness in witnesses.iter_mut() {
+            if witness.person && witness.sees {
+                let update = remember(witness.memory, witness.node, now_s, witness.bits);
+                if update.updated {
+                    witness.memory = update.word;
+                }
+            }
+        }
+    } else {
+        wake.heard = 0;
+    }
     sleeper.flags.0 = (sleeper.flags.0 & !WAKE_NIBBLE) | StateFlags::WAKING;
     awaken
 }
@@ -1182,7 +1324,7 @@ mod tests {
             reach_cm: 0.0,
             thrust_pref: -1,
         };
-        rise(sleeper, drive, wake, now, &[], &mut hands)
+        rise(sleeper, drive, wake, now, &mut [], &mut hands)
     }
 
     #[test]
@@ -1193,6 +1335,7 @@ mod tests {
             phase: 0.0,
             target: 4.0,
             heard: 0,
+            now_s: 0,
         };
         assert!(!tick_wake(&mut sleeper, &mut drive, &mut wake, 1_500));
         assert_eq!(drive.tone, 0.0);
@@ -1217,6 +1360,7 @@ mod tests {
             phase: 0.0,
             target: 0.0,
             heard: 0,
+            now_s: 0,
         };
         tick_wake(&mut sleeper, &mut drive, &mut wake, 1_500);
         sleeper.condition = Condition::GETTING_UP;
@@ -1232,6 +1376,7 @@ mod tests {
             phase: 1.0,
             target: 0.0,
             heard: 0,
+            now_s: 0,
         };
         tick_wake(&mut sleeper, &mut drive, &mut wake, 1_500);
         sleeper.condition = Condition::GETTING_UP;
@@ -1245,6 +1390,7 @@ mod tests {
             phase: 0.0,
             target: 0.0,
             heard: 0,
+            now_s: 0,
         };
         assert!(!tick_wake(&mut sleeper, &mut drive, &mut wake, 1_501));
         assert_eq!(
@@ -1258,6 +1404,7 @@ mod tests {
             phase: 0.0,
             target: 0.0,
             heard: 0,
+            now_s: 0,
         };
         tick_wake(&mut sleeper, &mut drive, &mut wake, 8_000);
         assert_eq!(wake.clip, 0.4);
@@ -1269,6 +1416,7 @@ mod tests {
             phase: 0.0,
             target: 4.0,
             heard: 0,
+            now_s: 0,
         };
         tick_wake(&mut sleeper, &mut drive, &mut wake, 8_001);
         assert_eq!(wake.clip, 1.0);
@@ -1284,6 +1432,7 @@ mod tests {
             phase: 0.0,
             target: 4.0,
             heard: 0,
+            now_s: 0,
         };
         tick_wake(&mut sleeper, &mut drive, &mut wake, 8_001);
         assert_eq!(drive.tone, 1.0);
@@ -1307,6 +1456,7 @@ mod tests {
             phase: 0.0,
             target: 3.0,
             heard: 0,
+            now_s: 0,
         };
         assert!(!tick_wake(&mut sleeper, &mut drive, &mut wake, 9_000));
         assert_eq!(drive.tone, 0.5);
@@ -1322,19 +1472,29 @@ mod tests {
             phase: 0.0,
             target: 0.0,
             heard: 0,
+            now_s: 0,
         };
-        let witnesses = [
+        let mut witnesses = [
             Witness {
                 person: true,
                 sees: true,
+                memory: 0,
+                node: 0,
+                bits: 0,
             },
             Witness {
                 person: true,
                 sees: false,
+                memory: 0,
+                node: 0,
+                bits: 0,
             },
             Witness {
                 person: false,
                 sees: true,
+                memory: 0,
+                node: 0,
+                bits: 0,
             },
         ];
         let mut hands = Hands {
@@ -1356,7 +1516,7 @@ mod tests {
             &mut drive,
             &mut wake,
             1_501,
-            &witnesses,
+            &mut witnesses,
             &mut hands
         ));
         assert_eq!(wake.heard, 1);
@@ -1367,7 +1527,7 @@ mod tests {
             &mut drive,
             &mut wake,
             1_502,
-            &witnesses,
+            &mut witnesses,
             &mut hands
         ));
         assert_eq!(wake.heard, 0);
@@ -1378,6 +1538,7 @@ mod tests {
             phase: 0.0,
             target: 0.0,
             heard: 9,
+            now_s: 0,
         };
         let mut hands = Hands {
             bits: 0x10,
@@ -1402,7 +1563,14 @@ mod tests {
             reach_cm: 0.0,
             thrust_pref: -1,
         };
-        rise(&mut sleeper, &mut drive, &mut wake, 8_001, &[], &mut hands);
+        rise(
+            &mut sleeper,
+            &mut drive,
+            &mut wake,
+            8_001,
+            &mut [],
+            &mut hands,
+        );
         assert_eq!(hands.reach_cm, 80.0);
         assert_eq!(hands.thrust_pref, 6);
         assert_eq!(wake.heard, 0);
@@ -1414,6 +1582,7 @@ mod tests {
             phase: 0.0,
             target: 0.0,
             heard: 0,
+            now_s: 0,
         };
         let mut bare = Hands {
             bits: 0,
@@ -1429,8 +1598,141 @@ mod tests {
             reach_cm: 0.0,
             thrust_pref: -1,
         };
-        rise(&mut sleeper, &mut drive, &mut wake, 8_001, &[], &mut bare);
+        rise(
+            &mut sleeper,
+            &mut drive,
+            &mut wake,
+            8_001,
+            &mut [],
+            &mut bare,
+        );
         assert_eq!(bare.reach_cm, 50.0);
         assert_eq!(bare.thrust_pref, 10);
+    }
+
+    fn seen(memory: u32, node: u32, bits: u32) -> Witness {
+        Witness {
+            person: true,
+            sees: true,
+            memory,
+            node,
+            bits,
+        }
+    }
+
+    #[test]
+    fn an_awakening_updates_the_memory_of_who_can_see() {
+        let (mut sleeper, mut drive) = knocked_out();
+        let mut wake = WakeRise {
+            clip: 0.4,
+            phase: 0.0,
+            target: 0.0,
+            heard: 0,
+            now_s: 100,
+        };
+        let mut witnesses = [
+            seen(0, 2 << 8, 0),
+            seen(MEMORY_COUNT | 1, (2 << 8) | (1 << 20), 0),
+            seen(MEMORY_COUNT | 1, NODE_WITNESSES | (2 << 8), 2),
+            seen(1_000, 13, 0),
+            Witness {
+                person: true,
+                sees: false,
+                memory: 7,
+                node: 2 << 8,
+                bits: 0,
+            },
+            Witness {
+                person: false,
+                sees: true,
+                memory: 9,
+                node: 2 << 8,
+                bits: 0,
+            },
+        ];
+        let mut hands = Hands {
+            bits: 0,
+            race_reach_cm: 50.0,
+            weapons: Vec::new(),
+            negative_grip: false,
+            reach_cm: 0.0,
+            thrust_pref: -1,
+        };
+        assert!(rise(
+            &mut sleeper,
+            &mut drive,
+            &mut wake,
+            1_501,
+            &mut witnesses,
+            &mut hands
+        ));
+        assert_eq!(wake.heard, 4);
+        assert_eq!(witnesses[0].memory, MEMORY_COUNT | 1);
+        assert_eq!(witnesses[1].memory, 102 | MEMORY_OPEN);
+        assert_eq!(witnesses[2].memory, 100 | MEMORY_OPEN);
+        assert_eq!(witnesses[3].memory, 1_000);
+        assert_eq!(witnesses[4].memory, 7);
+        assert_eq!(witnesses[5].memory, 9);
+
+        assert!(!rise(
+            &mut sleeper,
+            &mut drive,
+            &mut wake,
+            1_502,
+            &mut witnesses,
+            &mut hands
+        ));
+        assert_eq!(wake.heard, 0);
+        assert_eq!(witnesses[0].memory, MEMORY_COUNT | 1);
+
+        let (mut sleeper, mut drive) = knocked_out();
+        wake.now_s = 1_009;
+        let mut cooled = [seen(1_000, 13, 0)];
+        assert!(rise(
+            &mut sleeper,
+            &mut drive,
+            &mut wake,
+            1_501,
+            &mut cooled,
+            &mut hands
+        ));
+        assert_eq!(cooled[0].memory, 1_000);
+
+        let (mut sleeper, mut drive) = knocked_out();
+        wake.now_s = 1_010;
+        let mut due = [seen(1_000, 13 | (2 << 8), 0)];
+        assert!(rise(
+            &mut sleeper,
+            &mut drive,
+            &mut wake,
+            1_501,
+            &mut due,
+            &mut hands
+        ));
+        assert_eq!(due[0].memory, MEMORY_COUNT | 1);
+
+        let stayed = remember(50, 0, 99_999, 0);
+        assert!(!stayed.updated);
+        assert_eq!(stayed.word, 50);
+
+        let inside = remember(100 | MEMORY_OPEN, 13 << 16, 109, 0);
+        assert!(inside.updated);
+        assert_eq!(inside.word, 109 | MEMORY_OPEN);
+
+        let rearm = remember(100 | MEMORY_OPEN, (13 << 16) | (1 << 20), 110, 0);
+        assert!(rearm.updated);
+        assert_eq!(rearm.word, 112 | MEMORY_OPEN);
+
+        let future = remember(200 | MEMORY_OPEN, 13 << 16, 100, 0);
+        assert!(future.updated);
+        assert_eq!(future.word, 200 | MEMORY_OPEN);
+
+        let held = remember(100 | MEMORY_OPEN, (13 << 16) | NODE_HELD_OFF, 200, 0);
+        assert!(!held.updated);
+        assert_eq!(held.word, 100 | MEMORY_OPEN);
+
+        let wide = remember(1 | MEMORY_OPEN, 1 << 20, u32::MAX, 0);
+        assert!(wide.updated);
+        assert_eq!(wide.word, u32::MAX | MEMORY_OPEN);
     }
 }
