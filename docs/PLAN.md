@@ -425,8 +425,9 @@ speed times the feral sprint row's thrust over the jog thrust; backing
 plays Walk with the negated backpedal clock; a walking foot plants when
 its phase is 0.2 to 0.4 and lifts at 0.55; a blow whose impact is over
 0.5 starts a knockback step of 2·(20·strikes + 10)·J cm along the swing
-plus 20 ticks of chest velocity, capped at the step length. Still to do:
-the tighter run cap, the locomotion clock's stride terms, and collisions
+plus 20 ticks of chest velocity, capped at the step length.
+Done (change `tighten-the-run-cap`): encumbrance 0.5 with Shift and the cursor 4 m ahead tops the run blend at 0.8 and keeps the sprint latch. Shift with the walk key and no cursor tops it at 0.85 and spends the latch. Still to do:
+the locomotion clock's stride terms, and collisions
 between bodies (and their wake of a sleeper).
 Done (change `step-the-cloth`): a cloth particle keeps 0.98977 × 0.5^(1/83)
 of its velocity, dragged 5% toward the mean, then falls by the body's
@@ -1144,7 +1145,9 @@ against Exarust and lists the largest missing ones. In order:
    meshes (Phase 3). The standing leg bend, recovery steps, the
    support pins, the run overlay on the walk, the sprint overlay
    weight, the sprint clock, the sprint row's thrust, gait plants,
-   the backpedal (Walk played backwards) and knockback steps are in.
+   the backpedal (Walk played backwards), knockback steps, and the
+   tighter run cap (1 − 0.4·encumbrance while the sprint latch is kept,
+   1 − 0.3·encumbrance on the walk keys) are in.
 2. Inventory, equipment and containers, then blocking and parrying
    (Phase 4). Equipping by occupancy, container transfers, a parry that
    stops a blow and a shield's yellow leak are in. An inventory pane places

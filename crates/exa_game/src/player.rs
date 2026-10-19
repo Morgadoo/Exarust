@@ -517,10 +517,12 @@ fn steer_player(
                 pb.heading += steer as f32 * std::f32::consts::FRAC_PI_2;
                 pb.quarter_wait = QUARTER_TURN_EVERY;
             }
-            // What it wears weighs the run down.
-            let cap = fighter.map_or(1.0, |f| run_cap(f.stats.encumbrance, false));
+            // What it wears weighs the run down. The sprint latch, kept
+            // only with the cursor further than 3 m, uses the tighter cap.
+            let sprint_latch = keeps_sprint_latch(shift, cursor_far);
+            let cap = fighter.map_or(1.0, |f| run_cap(f.stats.encumbrance, sprint_latch));
             pb.run = run_blend(pb.run, running && ahead, cap);
-            pb.sprint_latch = keeps_sprint_latch(shift, cursor_far);
+            pb.sprint_latch = sprint_latch;
             let level = ragdoll
                 .and_then(|b| b.drive.as_ref())
                 .map(|d| d.balance().level())
@@ -1240,6 +1242,68 @@ mod tests {
         // 0.025 rad per tick at walking speed: a circle of v / ω.
         let radius = (WALK_SPEED / TICK_HZ) / STEER;
         assert!((radius - 0.67).abs() < 0.05, "{radius}");
+    }
+
+    /// The sprint latch uses the tighter run cap. Encumbrance 0.5 with the
+    /// cursor further than 3 m tops the blend at 0.8. The walk keys, Shift
+    /// included, stay at 0.85.
+    #[test]
+    fn a_far_cursor_tightens_the_run_cap() {
+        let mut app = App::new();
+        app.init_resource::<Time>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<CursorGround>()
+            .init_resource::<Physics>()
+            .add_systems(FixedPreUpdate, steer_player);
+        let mut fighter = Fighter::default();
+        fighter.stats.encumbrance = 0.5;
+        let mut pb = PlayerBody::new(0.0);
+        pb.set_combat(false);
+        let body = app
+            .world_mut()
+            .spawn((
+                pb,
+                Transform::default(),
+                GlobalTransform::IDENTITY,
+                Animator::new("Default", "Idle"),
+                Stance::Idle,
+                fighter,
+            ))
+            .id();
+        app.world_mut()
+            .spawn((Player, CharacterBody::default(), GlobalTransform::IDENTITY))
+            .add_child(body);
+        let tick = |app: &mut App| {
+            app.world_mut().run_schedule(FixedPreUpdate);
+        };
+        app.world_mut().resource_mut::<CursorGround>().0 = Some(Vec3::new(0.0, AIM_HEIGHT, 4.0));
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::ShiftLeft);
+            let mut buttons = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+            buttons.press(MouseButton::Right);
+        }
+        for _ in 0..40 {
+            tick(&mut app);
+        }
+        let far = app.world().get::<PlayerBody>(body).unwrap();
+        assert!(far.sprint_latch);
+        assert_eq!(far.run, 0.8);
+        {
+            let mut buttons = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+            buttons.release(MouseButton::Right);
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::KeyW);
+            keys.press(KeyCode::ShiftLeft);
+        }
+        app.world_mut().resource_mut::<CursorGround>().0 = None;
+        for _ in 0..40 {
+            tick(&mut app);
+        }
+        let jog = app.world().get::<PlayerBody>(body).unwrap();
+        assert!(!jog.sprint_latch);
+        assert_eq!(jog.run, 0.85);
     }
 
     /// Unencumbered the run blend reaches 1 in 20 ticks; at encumbrance 0.5
