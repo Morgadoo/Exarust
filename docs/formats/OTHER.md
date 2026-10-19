@@ -358,8 +358,9 @@ Moved to [TERRAIN.md](TERRAIN.md) (verified).
 
 ## Powers (`.pwr`)
 
-Status: **the node layout, the text chunk, and the link curve are verified**.
-Icons, frames and glows are not drawn. Exarust: `exa_formats::power_tree`.
+Status: **the node layout, the text chunk, the link curve, and the node
+pictures are verified**. Thick-line quads are not drawn. Exarust:
+`exa_formats::power_tree`.
 
 - **Header**: first word `0xAFCE01CE`. The node count is the signed word at
   byte 52. A negative count is an error. The bytes between the magic and
@@ -383,8 +384,15 @@ Icons, frames and glows are not drawn. Exarust: `exa_formats::power_tree`.
   256. The samples are the cubic between those ends. A zero source mark dims
   the line. The fast sine polynomial and the thick-line quads are not
   reproduced. A turn of zero is straight up.
-- Four domains: displacement, energy, force, mind. Icons, frames, glows and
-  learning a node are not in.
+- **Pictures**: an icon with no columns is not drawn. Otherwise the cell is
+  the power's low byte, one less, across the sheet, and the square is
+  centred on the node. A second byte of 1 uses a bias of 1; any other uses
+  the other bias. A frame uses the slot one less on a four-by-two sheet, at
+  four fifths of the size. A wide picture drops the fraction of the view; a
+  narrow one uses half. A glow is 32 spokes on a ring of 0.84 of the width
+  plus the outer size, starting straight up.
+- Four domains: displacement, energy, force, mind. Learning a node and the
+  thick-line quads are not in.
 
 ## Weapon factories (`.fty`)
 

@@ -15,7 +15,10 @@
 //! of its turn times a full circle. The reach is 0.514, or 0.295 when the
 //! power's high mark is set, minus 0.003 times the zoom, times the zoom
 //! rounded to an even 256. The samples are the cubic between those ends. A
-//! zero source mark dims the line.
+//! zero source mark dims the line. An icon uses the sheet cell of the power's
+//! low byte. A frame uses a four-by-two sheet and four fifths of the size. A
+//! wide picture drops the fraction of the view; a narrow one uses half. A glow
+//! is 32 spokes on a ring.
 //!
 //! Evidence: the tree reader (magic check, the seek to the count, the node
 //! fields, the link bytes, and the shift against the first node), and the
@@ -398,6 +401,119 @@ fn reciprocal_sqrt(value: f32) -> f32 {
     }
 }
 
+/// The square drawn for one icon. No columns means the sheet is not ready.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IconSquare {
+    pub origin: [f32; 2],
+    pub size: f32,
+    pub uv: [f32; 2],
+    pub cell: [f32; 2],
+    pub bias: f32,
+    pub pad: f32,
+}
+
+/// The square drawn for one frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FrameSquare {
+    pub origin: [f32; 2],
+    pub size: f32,
+    pub uv: [f32; 2],
+    pub cell: [f32; 2],
+    pub shrink: [f32; 2],
+}
+
+/// Inner points of a glow, starting straight up and closing the circle.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GlowRing {
+    pub inner: f32,
+    pub outer: f32,
+    pub spokes: Vec<[f32; 2]>,
+}
+
+const ICON_BIAS: f32 = f32::from_bits(0x3f91_eb85);
+const ICON_MARK: u32 = 0x0100;
+const FRAME_NARROW: f32 = f32::from_bits(0x39cc_cccd);
+const GLOW_SHARE: f32 = 0.84;
+const GLOW_SPOKES: u32 = 32;
+
+/// A wide node drops the fraction of the view. A narrow node uses half of it.
+pub fn picture_span(power: u32, view: f32) -> f32 {
+    if power & SMALL_NODE == 0 {
+        view.trunc()
+    } else {
+        view * 0.5
+    }
+}
+
+/// The icon square. `columns` and `rows` are the sheet the texture names.
+pub fn icon_square(
+    power: u32,
+    x: f32,
+    y: f32,
+    size: f32,
+    columns: u32,
+    rows: u32,
+) -> Option<IconSquare> {
+    if columns == 0 {
+        return None;
+    }
+    let index = i64::from((power & 0xff) as i32 - 1);
+    let columns_i = i64::from(columns);
+    let column = index - (index / columns_i) * columns_i;
+    let row = index / columns_i;
+    let cell = [1.0 / columns as f32, 1.0 / rows as f32];
+    let uv = [column as f32 * cell[0], 1.0 - (row as f32 + 1.0) * cell[1]];
+    let bias = if power & 0xff00 == ICON_MARK {
+        1.0
+    } else {
+        ICON_BIAS
+    };
+    Some(IconSquare {
+        origin: [x - size * 0.5, y - size * 0.5],
+        size,
+        uv,
+        cell,
+        bias,
+        pad: size * 0.05 + 8.0,
+    })
+}
+
+/// The frame square. `slot` is the one-based picture on the four-by-two sheet.
+pub fn frame_square(slot: i32, x: f32, y: f32, size: f32) -> FrameSquare {
+    let index = i64::from(slot) - 1;
+    let adjust = (index >> 63) & 3;
+    let column = index - ((index + adjust) & !3);
+    let row = (index + adjust) >> 2;
+    let gap = 1.0 - size * FRAME_NARROW;
+    let drawn = (f64::from(size) * 0.8) as f32;
+    FrameSquare {
+        origin: [x - drawn * 0.5, y - drawn * 0.5],
+        size: drawn,
+        uv: [column as f32 * 0.25, 1.0 - (row as f32 + 1.0) * 0.5],
+        cell: [0.25, 0.5],
+        shrink: [
+            (f64::from(gap) * 0.005) as f32,
+            (f64::from(gap) * 0.01) as f32,
+        ],
+    }
+}
+
+/// Thirty-two spokes. The ring starts straight up and returns there.
+pub fn glow_ring(x: f32, y: f32, across: f32, out: f32) -> GlowRing {
+    let inner = across * GLOW_SHARE;
+    let outer = inner + out;
+    let mut spokes = Vec::with_capacity(GLOW_SPOKES as usize + 1);
+    for step in 0..=GLOW_SPOKES {
+        let (sine, cosine) = (step as f32 * std::f32::consts::TAU / GLOW_SPOKES as f32).sin_cos();
+        spokes.push([x + sine * inner, y + cosine * inner]);
+    }
+    GlowRing {
+        inner,
+        outer,
+        spokes,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -528,6 +644,42 @@ mod tests {
         assert!(!bright.dim);
         assert_eq!(bright.points[0], line.points[0]);
         assert_eq!(bright.points.last(), line.points.last());
+    }
+
+    #[test]
+    fn a_node_picture_uses_its_cell() {
+        assert!(icon_square(6, 100.0, 50.0, 10.0, 0, 2).is_none());
+        let icon = icon_square(6, 100.0, 50.0, 10.0, 4, 2).expect("a sheet draws");
+        assert_eq!(icon.origin, [95.0, 45.0]);
+        assert_eq!(icon.size, 10.0);
+        assert_eq!(icon.uv, [0.25, 0.0]);
+        assert_eq!(icon.cell, [0.25, 0.5]);
+        assert_eq!(icon.bias, f32::from_bits(0x3f91_eb85));
+        assert_eq!(icon.pad, f32::from_bits(0x4108_0000));
+        assert_eq!(
+            icon_square(0x106, 100.0, 50.0, 10.0, 4, 2)
+                .expect("a marked icon")
+                .bias,
+            1.0
+        );
+
+        assert_eq!(picture_span(0, 10.5), 10.0);
+        assert_eq!(picture_span(0x0100_0000, 10.5), f32::from_bits(0x40a8_0000));
+
+        let frame = frame_square(5, 0.0, 0.0, 10.0);
+        assert_eq!(frame.size, 8.0);
+        assert_eq!(frame.origin, [-4.0, -4.0]);
+        assert_eq!(frame.uv, [0.0, 0.0]);
+        assert_eq!(frame.cell, [0.25, 0.5]);
+        assert_eq!(frame.shrink[0], f32::from_bits(0x3ba3_3333));
+        assert_eq!(frame.shrink[1], f32::from_bits(0x3c23_3333));
+        assert_eq!(frame_square(1, 0.0, 0.0, 10.0).uv, [0.0, 0.5]);
+
+        let glow = glow_ring(0.0, 0.0, 10.0, 4.0);
+        assert_eq!(glow.inner, f32::from_bits(0x4106_6666));
+        assert_eq!(glow.outer, f32::from_bits(0x4146_6666));
+        assert_eq!(glow.spokes.len(), 33);
+        assert_eq!(glow.spokes[0], [0.0, glow.inner]);
     }
 
     #[test]
