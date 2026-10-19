@@ -158,3 +158,10 @@ Before a match the company SHALL walk the roster from the start and skip every c
 #### Scenario: The first unhealthy specialist leaves
 - **WHEN** an empty company is asked, a hired physician at health 699 is asked, a hired merchant at 700 is asked, a hired trainer at 65000 is asked, a hired combatant at 0 stands before a hired physician at 699, and a hired physician at 100 stands before a hired merchant at 100
 - **THEN** the empty company removes nobody, the physician at 699 is gone and the death count is 1, the merchant at 700 is gone and the death count stays 0, the trainer at 65000 stays, the combatant at 0 stays while that physician is removed, and only the physician of the pair is removed
+
+### Requirement: Arena match begin
+In-game menu command 4, while the mode is arena, SHALL remove the first unhealthy specialist, ask for a save that does not abort on low health, mark the hub busy, clear the world click hook, and set the session phase to transitioning. An empty roster SHALL still do that. Story mode, practice mode, another command, and another page SHALL leave the company and those flags unchanged. Closing windows, writing a save package, and the transition are not part of this step.
+
+#### Scenario: Arena command 4 leaves the physician and arms the match
+- **WHEN** an empty company is begun from in-game command 4 in arena, a hired physician at 699 is begun the same way, and that physician is offered to story mode, to practice mode, to command 1, and to another page
+- **THEN** the empty company still marks the hub busy, clears the click hook, asks for the save, and sets the phase to transitioning, the physician is removed and the death count is 1, and the other four offers leave the physician and the flags unchanged
