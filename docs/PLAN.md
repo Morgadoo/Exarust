@@ -1040,9 +1040,10 @@ Done (change `rest-overnight`): a night adds 6553 to health, or 9830 when a phys
 Done (change `teach-a-lesson`): with no trainer a technique of 7 stays at 0. A trainer who knows 7 adds 1000. A trainer who knows 3 adds nothing. A merchant and a physician stay at 0. A word of 4500 snaps to 5000. Five other skills at level 1 make the grant 166. A first skill at 25000 is left there and the next skill becomes 166. Item prices are not in.
 Done (change `price-a-hire`): 11 copper hires nobody and stays at 11. 12 copper hires a combatant and leaves 0, with 12 spent. A second physician is refused and the spent total stays 24. Item prices are not in.
 Done (change `price-a-shop-line`): a line of 7 buys for 7 and sells for 1. A lower mark of 2 buys for 24, a higher mark of 2 for 288, and both marks of 2 for 2880. Two lines of 3 sell for 1. A line with every bit set buys for 23591520. Buying 40 then buying 10 against a sale of 100 leaves 318 copper and 15 earned. Emblems and the reward item identities are not in.
+Done (change `scale-a-match-stake`): a stake dword is copper, silver times 12, and gold times 144. Challenger asks 12 for a prize of 36. The Beast asks 24 for a prize of 432. A duel prize is 12. Tier 1 doubles both. Hiring one combatant and winning Challenger at tier 1 leaves 379 copper, with 72 earned. Emblems and the reward item identities are not in.
 Still open:
 
-- Emblems. The reward item identities are not in. A shop line prices at 1, 12, 144 or 1440 copper, and a sale is a quarter of the basket. A recruitment costs 12 copper. Overnight rest and a trainer's lesson are in.
+- Emblems. The reward item identities are not in. A shop line prices at 1, 12, 144 or 1440 copper, and a sale is a quarter of the basket. A tier multiplies a match stake by one more than the tier. A recruitment costs 12 copper. Overnight rest and a trainer's lesson are in.
 - Story side levels, scripted encounters, the role interpreter, map discovery.
 - The other powers, their charge-up and their meshes.
 - Character creation (race, body, face, hair, colours, class, skills).

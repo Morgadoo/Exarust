@@ -13,8 +13,8 @@
 //! combatant whose current technique the trainer knows. A day mod 7 of 1
 //! resolves the week, and four won weeks grant the season. A recruitment
 //! costs 12 copper. A shop line prices its low fourteen bits at 1, 12, 144
-//! or 1440 copper, and a sale is a quarter of that basket. The tier scaling
-//! of a fee was not read.
+//! or 1440 copper, and a sale is a quarter of that basket. A match stake is
+//! a coin dword, and a tier multiplies that copper by one more than the tier.
 //!
 //! Evidence: the arena career notes (money seed, coin rate, roster caps,
 //! the six standard matches and the seven specials, fee on entry, prize on
@@ -100,41 +100,56 @@ pub struct BoardMatch {
     pub xp: u32,
 }
 
+/// Copper in a coin dword. The first byte is copper, the next is silver,
+/// and the high 16 bits are gold, at 12 to 1.
+pub fn coin_total(packed: u32) -> u32 {
+    let copper = packed & 0xff;
+    let silver = (packed >> 8) & 0xff;
+    let gold = packed >> 16;
+    copper + silver * COIN + gold * COIN * COIN
+}
+
+/// A tier multiplies a stake by one more than the tier. Tier 0 keeps it.
+pub fn scaled_stake(copper: u32, tier: u32) -> u32 {
+    copper.saturating_mul(tier.saturating_add(1))
+}
+
 /// Duel, Doubles, Skirmish, Fray, Reserve, Pugilism.
+/// Fees and prizes are tier-0 copper, read from the coin dword.
 pub fn standard_board() -> [BoardMatch; 6] {
     [
         BoardMatch {
             name: "Duel",
             fee: 3,
-            prize: 256,
+            prize: 12,
             per_side: 1,
             xp: 1000,
         },
         BoardMatch {
             name: "Doubles",
             fee: 6,
-            prize: 1024,
+            prize: 48,
             per_side: 2,
             xp: 2400,
         },
         BoardMatch {
             name: "Skirmish",
             fee: 9,
-            prize: 1536,
+            prize: 72,
             per_side: 3,
             xp: 3900,
         },
         BoardMatch {
             name: "Fray",
             fee: 3,
-            prize: 512,
+            prize: 24,
             per_side: 1,
             xp: 5000,
         },
         BoardMatch {
             name: "Reserve",
             fee: 3,
-            prize: 1024,
+            prize: 48,
             per_side: 3,
             xp: 1000,
         },
@@ -149,56 +164,56 @@ pub fn standard_board() -> [BoardMatch; 6] {
 }
 
 /// Challenger, Elimination, Valiance, Valour, Captain, Brawl, The Beast.
-/// These are the tournament and special templates. Their fees and prizes
-/// are the tier-0 record; how a higher tier scales a fee was not read.
+/// Fees and prizes are tier-0 copper. A higher tier multiplies both by one
+/// more than the tier.
 pub fn special_board() -> [BoardMatch; 7] {
     [
         BoardMatch {
             name: "Challenger",
-            fee: 256,
-            prize: 768,
+            fee: 12,
+            prize: 36,
             per_side: 1,
             xp: 1000,
         },
         BoardMatch {
             name: "Elimination",
             fee: 3,
-            prize: 2048,
+            prize: 96,
             per_side: 1,
             xp: 1200,
         },
         BoardMatch {
             name: "Valiance",
             fee: 4,
-            prize: 768,
+            prize: 36,
             per_side: 1,
             xp: 2000,
         },
         BoardMatch {
             name: "Valour",
             fee: 6,
-            prize: 1536,
+            prize: 72,
             per_side: 1,
             xp: 3000,
         },
         BoardMatch {
             name: "Captain",
             fee: 6,
-            prize: 1536,
+            prize: 72,
             per_side: 3,
             xp: 4500,
         },
         BoardMatch {
             name: "Brawl",
             fee: 2,
-            prize: 512,
+            prize: 24,
             per_side: 1,
             xp: 2500,
         },
         BoardMatch {
             name: "The Beast",
-            fee: 512,
-            prize: 196_608,
+            fee: 24,
+            prize: 432,
             per_side: 3,
             xp: 10_000,
         },
@@ -475,7 +490,14 @@ impl Company {
     }
 
     /// Take the entry fee and remember the prize and the experience.
+    /// Tier 0 charges the recorded copper.
     pub fn enter(&mut self, board: BoardMatch) -> Result<Ongoing, EnterError> {
+        self.enter_at(board, 0)
+    }
+
+    /// Take the fee for `tier`. The fee and the prize are the recorded
+    /// copper times one more than the tier.
+    pub fn enter_at(&mut self, board: BoardMatch, tier: u32) -> Result<Ongoing, EnterError> {
         if !self
             .roster
             .iter()
@@ -483,13 +505,14 @@ impl Company {
         {
             return Err(EnterError::NoFighter);
         }
-        if self.copper < board.fee {
+        let fee = scaled_stake(board.fee, tier);
+        if self.copper < fee {
             return Err(EnterError::Fee);
         }
-        self.copper -= board.fee;
-        self.spent += board.fee;
+        self.copper -= fee;
+        self.spent += fee;
         Ok(Ongoing {
-            prize: board.prize,
+            prize: scaled_stake(board.prize, tier),
             xp: board.xp,
         })
     }
@@ -712,9 +735,9 @@ mod tests {
         let ongoing = company.enter(duel).unwrap();
         company.hire("coach", Profession::Trainer).unwrap();
         company.finish(ongoing, true, 0.5);
-        assert_eq!(company.copper, 485);
+        assert_eq!(company.copper, 241);
         assert_eq!(company.won, 1);
-        assert_eq!(company.earned, 256);
+        assert_eq!(company.earned, 12);
         assert_eq!(company.roster[0].xp, 1000 + 750);
     }
 
@@ -861,7 +884,7 @@ mod tests {
                 specials[0].per_side,
                 specials[0].xp
             ),
-            ("Challenger", 256, 768, 1, 1000)
+            ("Challenger", 12, 36, 1, 1000)
         );
         assert_eq!(
             (
@@ -871,8 +894,34 @@ mod tests {
                 specials[6].per_side,
                 specials[6].xp
             ),
-            ("The Beast", 512, 196_608, 3, 10_000)
+            ("The Beast", 24, 432, 3, 10_000)
         );
+    }
+
+    #[test]
+    fn a_tier_doubles_the_stake() {
+        assert_eq!(coin_total(0x100), 12);
+        assert_eq!(coin_total(0x300), 36);
+        assert_eq!(coin_total(0x200), 24);
+        assert_eq!(coin_total(0x0003_0000), 432);
+        assert_eq!(standard_board()[0].prize, coin_total(0x100));
+        assert_eq!(special_board()[0].fee, coin_total(0x100));
+        assert_eq!(special_board()[0].prize, coin_total(0x300));
+        assert_eq!(special_board()[6].fee, coin_total(0x200));
+        assert_eq!(special_board()[6].prize, coin_total(0x0003_0000));
+
+        let mut company = Company::new("Ash");
+        company.hire("a", Profession::Combatant).unwrap();
+        let fee = scaled_stake(special_board()[0].fee, 1);
+        let prize = scaled_stake(special_board()[0].prize, 1);
+        assert_eq!(fee, 24);
+        assert_eq!(prize, 72);
+        let ongoing = company.enter_at(special_board()[0], 1).unwrap();
+        assert_eq!(company.copper, 343 - 12 - fee);
+        assert_eq!(company.spent, 12 + fee);
+        company.finish(ongoing, true, 0.0);
+        assert_eq!(company.copper, 379);
+        assert_eq!(company.earned, prize);
     }
 
     #[test]

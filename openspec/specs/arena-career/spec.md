@@ -45,7 +45,7 @@ The board SHALL offer Challenger, Elimination, Valiance, Valour, Captain, Brawl 
 
 #### Scenario: The Beast
 - **WHEN** the special board is read
-- **THEN** Challenger asks 256 copper for a prize of 768 and 1000 experience, and The Beast asks 512 copper for a prize of 196608, three a side, and 10000 experience
+- **THEN** Challenger asks 12 copper for a prize of 36 and 1000 experience, and The Beast asks 24 copper for a prize of 432, three a side, and 10000 experience
 
 ### Requirement: Day and season
 Ending a day SHALL add 1 from 0, pay each wage, and rest every employee. Wages SHALL be 2 for a merchant, 12 for a physician, the six-skill sum for a trainer, and half that sum, at most 5, plus 1 for a combatant. Rest SHALL add 6553, or 9830 with a physician, and stop at 65535. Day mod 7 of 1 SHALL give the week to id 1 with at least 3 of 6 events and no tie. A multiple of 7 SHALL drop an entry still under 3276. Four won weeks SHALL grant four rewards.
@@ -74,3 +74,10 @@ A shop line's low fourteen bits SHALL be its count. Both high marks SHALL price 
 #### Scenario: Marks, a quartered sale, and the trade
 - **WHEN** a line of 7 is bought and sold, a lower-mark count of 2, a higher-mark count of 2, and a both-mark count of 2 are bought, two lines of 3 are sold, a line with every bit set is bought, and a company with 343 copper buys a line of 40 and then buys a line of 10 against a sold line of 100
 - **THEN** 7 buys for 7 and sells for 1, the marked buys are 24, 288 and 2880, the two lines of 3 sell for 1, the full line buys for 23591520, the line of 40 leaves 303 copper and 40 spent, and the last trade leaves 318 copper and 15 earned
+
+### Requirement: Tier scale
+A tier SHALL multiply a match's fee and its prize by one more than the tier. Tier 0 SHALL charge the recorded copper.
+
+#### Scenario: A higher tier doubles the stake
+- **WHEN** a company hires one combatant and enters Challenger at tier 1, then wins
+- **THEN** it has paid 24 and holds 379 copper, with 72 earned

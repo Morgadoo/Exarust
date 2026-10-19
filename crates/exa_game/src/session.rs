@@ -257,7 +257,7 @@ mod tests {
             loaded.story.pick(GATE, 0),
             Err(exa_script::story::TalkError::Used)
         );
-        assert_eq!(loaded.company.copper, 343 - 12 - 3 + 256);
+        assert_eq!(loaded.company.copper, 343 - 12 - 3 + 12);
         assert_eq!(loaded.company.roster[0].xp, 1000);
         assert_eq!(loaded.focus, 0.5);
 
