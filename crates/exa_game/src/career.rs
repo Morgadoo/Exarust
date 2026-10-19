@@ -18,7 +18,11 @@
 //! A swept season grants four item ids, and day 134 repeats the first four.
 //! A candidate's listed price is the square of one more than half of six
 //! skill levels, that half stopping at 5, times 12, plus four fifths of the
-//! gear. A flat recruitment stays at 12 copper.
+//! gear. A flat recruitment stays at 12 copper. An unwatched match scores
+//! each counted team as `(count × 0.5 + 0.5) × strength sum`, leaves an
+//! aside fighter out, and in mode 16 leaves the player's team out. The roll
+//! steps by `× 0x08088405 + 1` and the high half of that word times one more
+//! than the weight total picks the first team whose weights reach it.
 //!
 //! Evidence: the arena career notes (money seed, coin rate, roster caps,
 //! the six standard matches and the seven specials, fee on entry, prize on
@@ -783,6 +787,101 @@ pub enum EnterError {
     NoFighter,
 }
 
+/// Mode that leaves the player's team out of an unwatched draw.
+pub const FORFEIT_DRAW: i32 = 0x10;
+
+/// One fighter an unwatched match may count.
+#[derive(Clone, Copy, Debug)]
+pub struct SideFighter {
+    pub team: i32,
+    pub strength: f32,
+    /// Left out. The original does this when mark bit `0x800` is set.
+    pub aside: bool,
+}
+
+struct SideScore {
+    team: i32,
+    count: i32,
+    sum: f32,
+    score: f32,
+}
+
+/// Draw the winning team of a match nobody is watching.
+///
+/// Fighters are grouped in first-seen order. A team scores
+/// `(count × 0.5 + 0.5) × strength sum`. The largest score starts at 0 and
+/// moves only when a score is greater. Each weight is the square of score
+/// over that largest, times 100, rounded to the nearest even integer. The
+/// roll steps by `roll × 0x08088405 + 1`. The high half of that word times
+/// one more than the weight total picks the first team whose running
+/// weights are not below it. No counted fighter still steps the roll and
+/// returns no team.
+pub fn draw_unwatched(
+    fighters: &[SideFighter],
+    player_team: i32,
+    mode: i32,
+    roll: &mut u32,
+) -> Option<i32> {
+    let mut sides: Vec<SideScore> = Vec::new();
+    let mut largest = 0.0f32;
+    for fighter in fighters {
+        if fighter.aside || (fighter.team == player_team && mode == FORFEIT_DRAW) {
+            continue;
+        }
+        let found = sides.iter().position(|side| side.team == fighter.team);
+        let index = match found {
+            Some(index) => index,
+            None => {
+                sides.push(SideScore {
+                    team: fighter.team,
+                    count: 0,
+                    sum: 0.0,
+                    score: 0.0,
+                });
+                sides.len() - 1
+            }
+        };
+        let side = &mut sides[index];
+        side.count += 1;
+        side.sum += fighter.strength;
+        let count = side.count as f32;
+        side.score = (count * 0.5 + 0.5) * side.sum;
+        if largest < side.score {
+            largest = side.score;
+        }
+    }
+    let mut total = 0i32;
+    let mut weights = Vec::with_capacity(sides.len());
+    if !sides.is_empty() {
+        for side in &mut sides {
+            let ratio = side.score / largest;
+            let weight = ratio * ratio * 100.0;
+            side.score = weight;
+            let rounded = weight.round_ties_even() as i32;
+            weights.push(rounded);
+            total = total.wrapping_add(rounded);
+        }
+    }
+    *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
+    if sides.is_empty() {
+        return None;
+    }
+    let span = i64::from(total.wrapping_add(1));
+    let product = i64::from(*roll).wrapping_mul(span);
+    let pick = ((product as u64) >> 32) as i32;
+    let mut reached = 0i32;
+    let mut winner = 0usize;
+    for (index, weight) in weights.iter().enumerate() {
+        reached = reached.wrapping_add(*weight);
+        if reached < pick {
+            continue;
+        }
+        winner = index;
+        break;
+    }
+    Some(sides[winner].team)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1208,5 +1307,71 @@ mod tests {
             Err(HireError::Duplicate)
         );
         assert_eq!(company.spent, 60);
+    }
+
+    #[test]
+    fn an_unwatched_match_draws_a_team() {
+        let sides = [
+            SideFighter {
+                team: 1,
+                strength: 4.0,
+                aside: false,
+            },
+            SideFighter {
+                team: 2,
+                strength: 2.0,
+                aside: false,
+            },
+            SideFighter {
+                team: 2,
+                strength: 2.0,
+                aside: false,
+            },
+            SideFighter {
+                team: 3,
+                strength: 10.0,
+                aside: false,
+            },
+        ];
+        let mut roll = 1u32;
+        assert_eq!(draw_unwatched(&sides, 1, 0, &mut roll), Some(1));
+        assert_eq!(roll, 0x0808_8406);
+        roll = 4;
+        assert_eq!(draw_unwatched(&sides, 1, 0, &mut roll), Some(2));
+        assert_eq!(roll, 0x2022_1015);
+        roll = 12;
+        assert_eq!(draw_unwatched(&sides, 1, 0, &mut roll), Some(3));
+        assert_eq!(roll, 0x6066_303d);
+        roll = 1;
+        assert_eq!(draw_unwatched(&sides, 1, FORFEIT_DRAW, &mut roll), Some(2));
+        assert_eq!(roll, 0x0808_8406);
+        let aside = [
+            SideFighter {
+                team: 1,
+                strength: 4.0,
+                aside: false,
+            },
+            SideFighter {
+                team: 2,
+                strength: 2.0,
+                aside: false,
+            },
+            SideFighter {
+                team: 2,
+                strength: 2.0,
+                aside: false,
+            },
+            SideFighter {
+                team: 3,
+                strength: 100.0,
+                aside: true,
+            },
+        ];
+        roll = 1;
+        assert_eq!(draw_unwatched(&aside, 9, 0, &mut roll), Some(1));
+        assert_eq!(roll, 0x0808_8406);
+        roll = 1;
+        assert_eq!(draw_unwatched(&[], 1, 0, &mut roll), None);
+        assert_eq!(roll, 0x0808_8406);
     }
 }
