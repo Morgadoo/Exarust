@@ -890,7 +890,8 @@ Done (change `drop-weapons-at-death`): the dying tick drops both held weapons. M
 Done (change `own-a-dropped-weapon`): the dying tick makes weapon 3 its own owner and copies that owner onto child 7 and grandchild 8. The parent list 5, 3, 8 becomes 5, 8. Roots are 3, iterations are 4, links are 0, grip 4 becomes -1, and the awake byte is 0. Child 7's mark is -2. The child's iterations stay 11. Weapon 4 keeps grip -3, mark 4, parent list 9 and iterations 2.
 Done (change `step-a-dropped-weapon`): the dying tick puts a solid weapon of mobility 1.25 into the solver, awake at 256, with friction bits 0x3f400000 and its sphere. Velocity 1.5 is kept. One solver tick leaves the first particle at bits 0xbe3a7bb7, 0x3f7fa2b5 and 0xbe4ccccd. A flat shape spawns nothing. A second tick adds no body.
 Done (change `meet-a-dropped-weapon`): that weapon's sphere, starting on another body's sphere, meets it in one shipped body step. The contact names both bodies, has one hit, and its deepest bits are 0x3ec39cd9. The weapon's first particle is at bits 0xbda3ae15, 0x3f7e43be and 0xbe492d0c, not the place one step alone leaves.
-Done (change `notice-a-deep-wound`): a lasting wound of bits 0x3daaaaab is not noticed. The next float is. A non-number is not. A chest cut through the hit path records the notice. Still to
+Done (change `notice-a-deep-wound`): a lasting wound of bits 0x3daaaaab is not noticed. The next float is. A non-number is not. A chest cut through the hit path records the notice.
+Done (change `grant-a-second-wind`): a granted wind whose ready clock is 11, at game clock 12, fires, waits until 180012, and writes no heartbeat message. Volume bits are 0x3dcccccd and pitch bits are 0x3f800000. Ready clock 12 waits, and the heartbeat message is written. Still to
 do: limb impairment, unconsciousness, practice mode.
 
 - `exa_items`: item database, item instances, inventory and containers,

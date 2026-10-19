@@ -47,6 +47,8 @@ pub struct Fighter {
     pub perks: Perks,
     /// How it meets a blow: open, a parry, or a shield block.
     pub guard: Guard,
+    /// The armour that grants a second wind, and when it may fire again.
+    pub second_wind: SecondWind,
 }
 
 impl Default for Fighter {
@@ -77,6 +79,7 @@ impl Fighter {
             stats,
             perks: Perks::default(),
             guard: Guard::Open,
+            second_wind: SecondWind::default(),
         }
     }
 
@@ -177,6 +180,59 @@ pub enum Taken {
     /// Vital damage left yellow under [`DEATH`]: yellow is 0 and the
     /// character's collapse starts.
     Killed,
+}
+
+/// The armour that grants a second wind, and the clock before which it
+/// will not fire again.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SecondWind {
+    pub granted: bool,
+    /// Milliseconds of game time. A wind whose clock is still at or after
+    /// this waits.
+    pub ready_at: u32,
+    /// Set when the wind fires.
+    pub active: bool,
+}
+
+/// How long a second wind waits before it can fire again.
+pub const SECOND_WIND_MS: u32 = 180_000;
+/// The heal sound's volume, the float 0.1.
+pub const HEAL_VOLUME_BITS: u32 = 0x3dcc_cccd;
+/// The heal sound's pitch, the float 1.
+pub const HEAL_PITCH_BITS: u32 = 0x3f80_0000;
+
+/// What the low-health check does when the fighter lives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LowAnswer {
+    /// The armour's wind fires. The heartbeat does not.
+    SecondWind { volume_bits: u32, pitch_bits: u32 },
+    /// No wind. The caller may start the heartbeat.
+    Quiet,
+}
+
+/// The low-health check after a blow that leaves the fighter alive. A
+/// granted wind fires when the clock is past `ready_at`, waits 180000 ms,
+/// and plays the heal sound at volume 0.1 and pitch 1. At the ready clock,
+/// and without the armour, it does not fire.
+pub fn answer_low_health(now: u32, wind: &mut SecondWind) -> LowAnswer {
+    if !wind.granted || now <= wind.ready_at {
+        LowAnswer::Quiet
+    } else {
+        wind.active = true;
+        wind.ready_at = now.wrapping_add(SECOND_WIND_MS);
+        LowAnswer::SecondWind {
+            volume_bits: HEAL_VOLUME_BITS,
+            pitch_bits: HEAL_PITCH_BITS,
+        }
+    }
+}
+
+/// A second wind fired instead of the heartbeat.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SecondWindFired {
+    pub fighter: Entity,
+    pub volume_bits: u32,
+    pub pitch_bits: u32,
 }
 
 /// Damage left a fighter's yellow health under 0.05 without killing it:

@@ -204,7 +204,7 @@ sides too, measured by the height), pulsing every 800 ms from 0 to an
 opacity of 96 at the pulse's middle (opacity (1 − |400 − t mod 800| /
 400)² × 96, t in ms of real time). Meanwhile the `heartbeat` sound loops at
 gain 0.3. Both stop after 7 s (menus and level changes fade them over 1 s).
-An item's "second wind", when ready, fires instead.
+An item's second wind, when the game clock is past its ready clock, fires instead: it waits 180000 ms, and the heal sound uses volume bits 0x3dcccccd and pitch bits 0x3f800000. At that ready clock the heartbeat starts.
 
 The trigger is the damage call's low-health check
 ([formats/OTHER.md](formats/OTHER.md), Applying damage), not a yellow

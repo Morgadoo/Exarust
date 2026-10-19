@@ -49,7 +49,10 @@ use exa_physics::body::{
     BodyTicks, CharacterStage, CharacterTick, Fallen, GoLimp, MAX_DAZE, Ragdoll, Shove, daze_energy,
 };
 use exa_world::PartBounds;
-pub use fighter::{Damage, DamageTaken, Fighter, Health, StoryMode, Taken, Weakened};
+pub use fighter::{
+    Damage, DamageTaken, Fighter, Health, LowAnswer, SecondWind, SecondWindFired, StoryMode, Taken,
+    Weakened, answer_low_health,
+};
 use swing::{Swing, SwingAt, SwingState};
 use wounds::{BladeBlood, WoundQueue, frame_tetra, tetra_weights};
 
@@ -60,6 +63,7 @@ impl Plugin for CombatPlugin {
         app.add_message::<Hit>()
             .add_message::<Weakened>()
             .add_message::<DamageTaken>()
+            .add_message::<SecondWindFired>()
             .add_plugins((
                 stance::StancePlugin,
                 condition::ConditionPlugin,
@@ -436,6 +440,7 @@ fn react_to_hits(
     mut sprays: MessageWriter<wounds::Spray>,
     mut weakened: MessageWriter<Weakened>,
     mut noticed: MessageWriter<DamageTaken>,
+    mut winds: MessageWriter<SecondWindFired>,
     mut fighters: Query<(
         Entity,
         &mut Fighter,
@@ -526,9 +531,22 @@ fn react_to_hits(
             });
         }
         if taken == Taken::Weakened {
-            weakened.write(Weakened {
-                fighter: hit.target,
-            });
+            let now = ticks.as_ref().map_or(0, |t| t.millis() as u32);
+            if let LowAnswer::SecondWind {
+                volume_bits,
+                pitch_bits,
+            } = answer_low_health(now, &mut f.second_wind)
+            {
+                winds.write(SecondWindFired {
+                    fighter: hit.target,
+                    volume_bits,
+                    pitch_bits,
+                });
+            } else {
+                weakened.write(Weakened {
+                    fighter: hit.target,
+                });
+            }
         }
         let killed = taken == Taken::Killed;
         // A deep enough wound on a race that bleeds sprays a jet at once
@@ -692,6 +710,7 @@ mod tests {
             .add_message::<wounds::Spray>()
             .add_message::<Weakened>()
             .add_message::<DamageTaken>()
+            .add_message::<SecondWindFired>()
             .add_systems(Update, react_to_hits);
         app
     }
@@ -766,6 +785,11 @@ mod tests {
         assert!(light.is_none());
     }
 
+    fn winds(app: &App) -> Vec<SecondWindFired> {
+        let messages = app.world().resource::<Messages<SecondWindFired>>();
+        messages.get_cursor().read(messages).copied().collect()
+    }
+
     fn notices(app: &App) -> Vec<DamageTaken> {
         let messages = app.world().resource::<Messages<DamageTaken>>();
         messages.get_cursor().read(messages).copied().collect()
@@ -793,6 +817,46 @@ mod tests {
             assert!(found.is_empty());
         }
         assert!(damage::notices_damage(wound), "{:08x}", wound.to_bits());
+    }
+
+    /// A granted second wind fires when the clock is past its ready time,
+    /// waits 180000 ms, and does not write the heartbeat's low-health
+    /// message. At that ready clock it waits, and the heartbeat message
+    /// is written instead.
+    #[test]
+    fn a_second_wind_fires_instead_of_the_heartbeat() {
+        let yellow = f32::from_bits(0.05f32.to_bits() - 1);
+        let spawn = |ready_at: u32| {
+            let mut app = reactions();
+            app.insert_resource(exa_physics::body::BodyTicks(1));
+            let mut fighter = Fighter::default();
+            fighter.health.yellow = yellow;
+            fighter.guard = damage::Guard::Parry;
+            fighter.second_wind.granted = true;
+            fighter.second_wind.ready_at = ready_at;
+            let id = app
+                .world_mut()
+                .spawn((fighter, Animator::new("Default", "Idle")))
+                .id();
+            strike(&mut app, id, 9);
+            (app, id)
+        };
+        let (waiting, id) = spawn(12);
+        assert!(winds(&waiting).is_empty());
+        assert_eq!(weakened(&waiting), vec![id]);
+        let (fired, id) = spawn(11);
+        assert_eq!(
+            winds(&fired),
+            vec![SecondWindFired {
+                fighter: id,
+                volume_bits: 0x3dcc_cccd,
+                pitch_bits: 0x3f80_0000,
+            }]
+        );
+        assert!(weakened(&fired).is_empty());
+        let fighter = fired.world().get::<Fighter>(id).unwrap();
+        assert!(fighter.second_wind.active);
+        assert_eq!(fighter.second_wind.ready_at, 180_012);
     }
 
     /// The same cut that wounds bare flesh deals nothing through a parry, and
@@ -1123,6 +1187,7 @@ mod tests {
             .add_message::<wounds::Spray>()
             .add_message::<Weakened>()
             .add_message::<DamageTaken>()
+            .add_message::<SecondWindFired>()
             .init_resource::<exa_physics::body::BodyTicks>()
             .add_systems(Update, (wounds::count_down_wounds, react_to_hits).chain());
         app.update();
