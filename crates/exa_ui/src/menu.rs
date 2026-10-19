@@ -931,6 +931,111 @@ pub fn confirm_class(selection: i32, sound_ready: bool) -> ClassConfirm {
     }
 }
 
+/// One class-navigation action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClassNavAction {
+    Confirm,
+    Forward,
+    Move(i32),
+    None,
+}
+
+/// The class navigation's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClassNavInput {
+    pub mask: u32,
+    pub selection: i32,
+    pub available: u32,
+    pub sound_ready: bool,
+}
+
+/// The class navigation's action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClassNav {
+    pub action: ClassNavAction,
+    pub sound: bool,
+    pub form: Option<u64>,
+    pub result: i32,
+}
+
+/// Confirms, forwards, backs or moves the class selection.
+pub fn navigate_class(input: ClassNavInput) -> ClassNav {
+    let idle = ClassNav {
+        action: ClassNavAction::None,
+        sound: false,
+        form: None,
+        result: 0,
+    };
+    if (input.mask & 0x100) != 0 {
+        if input.selection <= 0 {
+            return idle;
+        }
+        return ClassNav {
+            action: ClassNavAction::Confirm,
+            sound: input.sound_ready,
+            form: Some(0x1_0012_a870),
+            result: 7,
+        };
+    }
+    if (input.mask & 0x200) != 0 || (input.mask & 0x400) != 0 {
+        return ClassNav {
+            action: ClassNavAction::Forward,
+            ..idle
+        };
+    }
+    if (input.mask & 3) == 0 {
+        return idle;
+    }
+    let avail = (input.available << 1) | 1;
+    let target = match input.mask & 0xf000 {
+        0x8000 => {
+            let mut target = input.selection.max(0);
+            if target <= 3 {
+                let mut index = target;
+                loop {
+                    if ((avail >> index) & 1) != 0 {
+                        target = index + 1;
+                        break;
+                    }
+                    if index >= 3 {
+                        break;
+                    }
+                    index += 1;
+                }
+            }
+            target
+        }
+        0x4000 => {
+            if input.selection <= 2 {
+                1
+            } else {
+                let mut index = input.selection - 2;
+                let mut target = input.selection;
+                loop {
+                    if ((avail >> index) & 1) != 0 {
+                        target = index + 1;
+                        break;
+                    }
+                    if index <= 0 {
+                        break;
+                    }
+                    index -= 1;
+                }
+                target
+            }
+        }
+        _ => input.selection,
+    };
+    if target != input.selection {
+        ClassNav {
+            action: ClassNavAction::Move(target),
+            ..idle
+        }
+    } else {
+        idle
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1564,5 +1669,52 @@ mod tests {
         assert_eq!(none.selected, None);
         assert_eq!(none.form, None);
         assert!(!confirm_class(-1, true).page_copied);
+    }
+
+    #[test]
+    fn the_class_navigation_scans_available_bits() {
+        let input = |mask, selection| ClassNavInput {
+            mask,
+            selection,
+            available: 0b1010,
+            sound_ready: true,
+        };
+
+        let confirm = navigate_class(input(0x100, 3));
+        assert_eq!(confirm.action, ClassNavAction::Confirm);
+        assert_eq!(confirm.result, 7);
+        assert_eq!(confirm.form, Some(0x1_0012_a870));
+        assert!(confirm.sound);
+        assert_eq!(navigate_class(input(0x100, 0)).result, 0);
+
+        assert_eq!(
+            navigate_class(input(0x200, 1)).action,
+            ClassNavAction::Forward
+        );
+        assert_eq!(
+            navigate_class(input(0x400, 1)).action,
+            ClassNavAction::Forward
+        );
+
+        assert_eq!(
+            navigate_class(input(0x8001, 1)).action,
+            ClassNavAction::Move(3)
+        );
+        assert_eq!(
+            navigate_class(input(0x4001, 4)).action,
+            ClassNavAction::Move(3)
+        );
+        assert_eq!(
+            navigate_class(input(0x4001, 2)).action,
+            ClassNavAction::Move(1)
+        );
+        assert_eq!(
+            navigate_class(input(0x8001, 4)).action,
+            ClassNavAction::None
+        );
+        assert_eq!(
+            navigate_class(input(0x8001, 0)).action,
+            ClassNavAction::Move(1)
+        );
     }
 }
