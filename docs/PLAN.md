@@ -167,7 +167,8 @@ the room behind it; an open doorway shows a point only when the view
 crosses its opening (82 × 245 cm, 115 × 290 cm, or 200 × 340 cm); a
 passage loads the named level.
 Done (change `pull-a-hinged-door`): a hinge creaks once its smoothed handle speed is past a squared 0.015. A velocity of 1 gives pitch 0.711. A shut door's pull count rises by 1 up to 20 and falls by 4 while it is held; from 20 the seventh pull unlatches it. Opening shoves the handle 3 cm along the facing.
-Done (change `motor-a-hinged-door`): a toggle or an open command aims at (1 − fraction) · range · sign + closed. A plain step is 0.0013 rad when the error and the range are both 1. A fast motor steps 0.005. An open command 0.05 rad short of its aim arrives and ends. A countdown below 2 ends the command after that tick's drive. The sliding door is not in.
+Done (change `motor-a-hinged-door`): a toggle or an open command aims at (1 − fraction) · range · sign + closed. A plain step is 0.0013 rad when the error and the range are both 1. A fast motor steps 0.005. An open command 0.05 rad short of its aim arrives and ends. A countdown below 2 ends the command after that tick's drive.
+Done (change `slide-a-door`): a sliding creak at stored energy 0.25 has volume 0.1 and pitch 0.75. A motorised open at fraction 0.015 drops to 0 with smoothing 0.1. A close at 0.95 latches at 1. Shut and not held, the fraction stays 1 with smoothing 0.5. Held at 0.9, the seventh pull from 20 unlatches. A plain open jumps to 0.6 for 80 ticks. A frozen door keeps its parked fraction. A hand point at 100 cm is pulled back to 60. The partner door is not in.
 Remaining: the lid in
 the lights' cube faces, terrain gloss textures, fine displacement, the
 original's sky shader, time of day and weather of the outdoor arenas,
