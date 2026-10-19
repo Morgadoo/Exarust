@@ -194,6 +194,7 @@ pub fn read(bytes: &[u8]) -> Result<Session, SaveError> {
             season_rewards,
             reward_ids,
             tournaments_won,
+            deaths: 0,
         },
         focus,
     })

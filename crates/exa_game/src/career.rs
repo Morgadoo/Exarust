@@ -60,6 +60,10 @@ pub const SEASON_REWARDS: [[u32; 4]; 4] = [
 ];
 /// Health below this drops a fighter from a tournament entry.
 pub const INJURED: u16 = 0x0ccc;
+/// A specialist under this health dies before a match.
+pub const DIED_BELOW: u16 = 700;
+/// A specialist under this health, and not under the death line, leaves.
+pub const LEFT_BELOW: u16 = 65_000;
 /// Overnight rest added to health. A hired physician uses the larger step.
 pub const REST: u16 = 0x1999;
 pub const REST_WITH_PHYSICIAN: u16 = 0x2666;
@@ -95,6 +99,15 @@ pub enum Profession {
     Merchant,
     Physician,
     Trainer,
+}
+
+/// Why the first unhealthy specialist left before a match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Departure {
+    /// Health was under 700. The death count rose by one.
+    Died(String),
+    /// Health was from 700 through 64999. The death count stayed.
+    Left(String),
 }
 
 /// Someone the company employs.
@@ -306,6 +319,8 @@ pub struct Company {
     pub reward_ids: Vec<u32>,
     /// Weeks the company won outright.
     pub tournaments_won: u32,
+    /// Specialists who died before a match. The session save does not store this.
+    pub deaths: u32,
 }
 
 /// Copper one shop line is worth, before a sale quarters the basket.
@@ -345,6 +360,7 @@ impl Company {
             season_rewards: 0,
             reward_ids: Vec::new(),
             tournaments_won: 0,
+            deaths: 0,
         }
     }
 
@@ -508,6 +524,24 @@ impl Company {
     /// Day 22 is row 0. Day 134 is row 0 again.
     pub fn season_index(day: u32) -> u32 {
         (day / (SEASON_WEEKS * 7)) % SEASON_WEEKS
+    }
+
+    /// Before a match, the first specialist who is not well enough leaves.
+    /// A combatant stays, even at no health. Health under 700 counts a death.
+    /// Health from 700 through 64999 leaves without that count. Health of
+    /// 65000 or more stays. A later specialist stays until the next pass.
+    /// Releasing a kit and unlinking a world character are not part of this step.
+    pub fn leave_before_match(&mut self) -> Option<Departure> {
+        let index = self.roster.iter().position(|member| {
+            member.profession != Profession::Combatant && member.health < LEFT_BELOW
+        })?;
+        let member = self.roster.remove(index);
+        if member.health < DIED_BELOW {
+            self.deaths = self.deaths.wrapping_add(1);
+            Some(Departure::Died(member.name))
+        } else {
+            Some(Departure::Left(member.name))
+        }
     }
 
     /// End the day. Rest every employee, pay every wage, then on a day
@@ -2065,5 +2099,69 @@ mod tests {
             copy_record(&source, &mut dest, 8, &backwards),
             Err(RecordCopyError::Field)
         );
+    }
+
+    #[test]
+    fn a_specialist_leaves_before_a_match() {
+        let mut empty = Company::new("Ash");
+        assert_eq!(empty.leave_before_match(), None);
+        assert_eq!(empty.deaths, 0);
+        assert!(empty.roster.is_empty());
+
+        let mut dying = Company::new("Ash");
+        dying.hire("Med", Profession::Physician).unwrap();
+        dying.roster[0].health = 699;
+        assert_eq!(
+            dying.leave_before_match(),
+            Some(Departure::Died("Med".to_string()))
+        );
+        assert!(dying.roster.is_empty());
+        assert_eq!(dying.deaths, 1);
+
+        let mut leaving = Company::new("Ash");
+        leaving.hire("Shop", Profession::Merchant).unwrap();
+        leaving.roster[0].health = 700;
+        assert_eq!(
+            leaving.leave_before_match(),
+            Some(Departure::Left("Shop".to_string()))
+        );
+        assert!(leaving.roster.is_empty());
+        assert_eq!(leaving.deaths, 0);
+
+        let mut fit = Company::new("Ash");
+        fit.hire("Teach", Profession::Trainer).unwrap();
+        fit.roster[0].health = 65_000;
+        assert_eq!(fit.leave_before_match(), None);
+        assert_eq!(fit.roster.len(), 1);
+        assert_eq!(fit.roster[0].name, "Teach");
+        assert_eq!(fit.deaths, 0);
+
+        let mut skipped = Company::new("Ash");
+        skipped.hire("Blade", Profession::Combatant).unwrap();
+        skipped.roster[0].health = 0;
+        skipped.hire("Med", Profession::Physician).unwrap();
+        skipped.roster[1].health = 699;
+        assert_eq!(
+            skipped.leave_before_match(),
+            Some(Departure::Died("Med".to_string()))
+        );
+        assert_eq!(skipped.roster.len(), 1);
+        assert_eq!(skipped.roster[0].name, "Blade");
+        assert_eq!(skipped.roster[0].health, 0);
+        assert_eq!(skipped.deaths, 1);
+
+        let mut pair = Company::new("Ash");
+        pair.hire("Med", Profession::Physician).unwrap();
+        pair.roster[0].health = 100;
+        pair.hire("Shop", Profession::Merchant).unwrap();
+        pair.roster[1].health = 100;
+        assert_eq!(
+            pair.leave_before_match(),
+            Some(Departure::Died("Med".to_string()))
+        );
+        assert_eq!(pair.roster.len(), 1);
+        assert_eq!(pair.roster[0].name, "Shop");
+        assert_eq!(pair.roster[0].health, 100);
+        assert_eq!(pair.deaths, 1);
     }
 }
