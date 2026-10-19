@@ -8,8 +8,10 @@
 //! a trainer. A shared finish multiplies by 1 + tier/4 and splits that pool
 //! by each combatant's contribution. Ending a day pays wages: a merchant 2,
 //! a physician 12, a trainer the skill total, a combatant half of that, at
-//! most 5, plus 1. A day mod 7 of 1 resolves the week, and four won weeks
-//! grant the season. The hire price and the tier scaling of a fee were not read.
+//! most 5, plus 1. The night adds 6553 to each health, or 9830 with a
+//! physician, and stops at 65535. A day mod 7 of 1 resolves the week, and
+//! four won weeks grant the season. The hire price and the tier scaling of
+//! a fee were not read. A trainer's lessons are not in.
 //!
 //! Evidence: the arena career notes (money seed, coin rate, roster caps,
 //! the six standard matches and the seven specials, fee on entry, prize on
@@ -29,6 +31,11 @@ pub const PHYSICIAN_WAGE: u32 = 12;
 pub const SEASON_WEEKS: u32 = 4;
 /// Health below this drops a fighter from a tournament entry.
 pub const INJURED: u16 = 0x0ccc;
+/// Overnight rest added to health. A hired physician uses the larger step.
+pub const REST: u16 = 0x1999;
+pub const REST_WITH_PHYSICIAN: u16 = 0x2666;
+/// A full health pool.
+pub const FULL_HEALTH: u16 = 0xffff;
 /// The company's id in a tournament result.
 pub const OUR_COMPANY: u32 = 1;
 /// Wins of six events that take the week, when nobody else matches them.
@@ -331,11 +338,19 @@ impl Company {
         (day % (SEASON_WEEKS * 7)) / 7
     }
 
-    /// End the day. Pay every wage, then on a day whose number mod 7 is 1
-    /// resolve the six event winners, and on a multiple of 7 drop an entry
-    /// whose health is under 3276. Winning all four weeks grants four rewards.
+    /// End the day. Rest every employee, pay every wage, then on a day
+    /// whose number mod 7 is 1 resolve the six event winners, and on a
+    /// multiple of 7 drop an entry whose health is still under 3276.
+    /// Winning all four weeks grants four rewards.
     pub fn end_day(&mut self, events: [u32; 6]) -> Night {
         self.day = self.day.saturating_add(1);
+        let physician = self
+            .roster
+            .iter()
+            .any(|member| member.profession == Profession::Physician);
+        for member in &mut self.roster {
+            member.health = rested(member.health, physician);
+        }
         let wages = self
             .roster
             .iter()
@@ -486,6 +501,18 @@ pub struct Night {
     pub season: bool,
 }
 
+/// Health after one night. The step is 6553, or 9830 with a physician,
+/// and the pool stops at 65535.
+fn rested(health: u16, physician: bool) -> u16 {
+    let step = if physician { REST_WITH_PHYSICIAN } else { REST };
+    let sum = u32::from(health) + u32::from(step);
+    if sum < u32::from(FULL_HEALTH) {
+        sum as u16
+    } else {
+        FULL_HEALTH
+    }
+}
+
 fn tally(events: &[u32; 6]) -> (u32, u32, bool) {
     let mut ids = Vec::new();
     let mut counts = Vec::new();
@@ -629,8 +656,32 @@ mod tests {
         assert_eq!(company.day, 6);
         let dropped = company.end_day([0; 6]);
         assert_eq!(company.day, 7);
-        assert_eq!(dropped.dropped, 1);
-        assert!(!company.roster[0].in_entry);
+        assert_eq!(dropped.dropped, 0);
+        assert!(company.roster[0].in_entry);
+        assert_eq!(company.roster[0].health, 49_146);
+
+        let mut plain = Company::new("Ash");
+        plain.hire("a", Profession::Combatant).unwrap();
+        plain.roster[0].health = 1000;
+        plain.end_day([0; 6]);
+        assert_eq!(plain.roster[0].health, 7_553);
+        plain.roster[0].health = 60_000;
+        plain.end_day([0; 6]);
+        assert_eq!(plain.roster[0].health, 65_535);
+        plain.roster[0].health = 58_981;
+        plain.end_day([0; 6]);
+        assert_eq!(plain.roster[0].health, 65_534);
+        plain.roster[0].health = 58_982;
+        plain.end_day([0; 6]);
+        assert_eq!(plain.roster[0].health, 65_535);
+
+        let mut tended = Company::new("Ash");
+        tended.hire("a", Profession::Combatant).unwrap();
+        tended.hire("med", Profession::Physician).unwrap();
+        tended.roster[0].health = 1000;
+        tended.end_day([0; 6]);
+        assert_eq!(tended.roster[0].health, 10_830);
+        assert_eq!(tended.roster[1].health, u16::MAX);
 
         let mut closing = Night {
             wages: 0,
