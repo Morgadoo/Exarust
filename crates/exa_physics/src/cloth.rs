@@ -862,6 +862,34 @@ pub fn rebuild_cloth(
     }
 }
 
+/// The cloth sync's work.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClothSync {
+    pub applied: bool,
+    pub transform_calls: u32,
+    pub pose_calls: u32,
+    pub scale: f32,
+}
+
+/// Transforms and poses the cloth unless the meta bit 0x10 is set.
+pub fn sync_cloth(meta_flags: u32) -> ClothSync {
+    if (meta_flags & 0x10) != 0 {
+        ClothSync {
+            applied: false,
+            transform_calls: 0,
+            pose_calls: 0,
+            scale: 0.0,
+        }
+    } else {
+        ClothSync {
+            applied: true,
+            transform_calls: 1,
+            pose_calls: 1,
+            scale: 1.0,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1266,5 +1294,17 @@ mod tests {
         let matched = rebuild_cloth(true, true, true, 3);
         assert_eq!(matched.transformed, 3);
         assert!(matched.submitted);
+    }
+
+    #[test]
+    fn the_cloth_sync_skips_on_the_meta_bit() {
+        let ran = sync_cloth(0);
+        assert!(ran.applied);
+        assert_eq!((ran.transform_calls, ran.pose_calls), (1, 1));
+        assert_eq!(ran.scale.to_bits(), 1.0f32.to_bits());
+
+        let skipped = sync_cloth(0x10);
+        assert!(!skipped.applied);
+        assert_eq!((skipped.transform_calls, skipped.pose_calls), (0, 0));
     }
 }

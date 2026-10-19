@@ -152,3 +152,12 @@ A non-root cloth SHALL return without work. A root SHALL copy its origin pointer
 - **THEN** nothing is copied or submitted
 - **WHEN** the override differs from the origin
 - **THEN** nothing is transformed or submitted
+
+### Requirement: Cloth sync
+The sync SHALL skip its transform and pose when the object's meta flags carry 0x10. Otherwise it SHALL transform once and call the pose with 1.0 twice.
+
+#### Scenario: The sync
+- **WHEN** the meta flags lack 0x10
+- **THEN** one transform and one pose call run with scale 1.0
+- **WHEN** the meta flags carry 0x10
+- **THEN** nothing runs
