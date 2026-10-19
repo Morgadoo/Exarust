@@ -91,6 +91,9 @@ style that is not that band each release it once. The bytes the jump skips
 do not run. A span bar at unit 5 from 10, 20 with span 100 and stored word 4
 draws a middle from 15, 20 to 105, 28, a left cap from 10, 20 to 15, 28, and
 a right cap from 105, 20 to 110, 28. Stored word -3 uses thickness -6.
+Shifts 2 and 100 with scales one half and 2 place the first corner at 8.5, 160
+and store colour 17 twelve times. An unset view places that corner at positive
+zero and negative zero and stores colour 0.
 
 ## Scope
 

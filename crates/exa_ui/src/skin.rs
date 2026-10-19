@@ -1843,12 +1843,43 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
     }
 }
 
-/// Three quads of a span bar. The view scale and the colour word are not in.
+/// Shifts, scales, and the colour word applied to each span-bar corner.
+/// An unset view is all zeros: the image does not store the shifts or the scales,
+/// and the colour word starts at 0.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpanView {
+    pub shift_x: f32,
+    pub shift_y: f32,
+    pub scale_x: f32,
+    pub scale_y: f32,
+    pub colour: u32,
+}
+
+/// The image start. Shifts and scales read as 0, and the colour word is 0.
+pub const SPAN_VIEW_UNSET: SpanView = SpanView {
+    shift_x: 0.0,
+    shift_y: 0.0,
+    scale_x: 0.0,
+    scale_y: 0.0,
+    colour: 0,
+};
+
+/// Three quads of a span bar. The mark written when bit 4 is set is not in.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SpanBar {
     pub prep_calls: u32,
     pub binds: [[u32; 8]; 3],
     pub quads: [[(f32, f32); 4]; 3],
+    pub placed: [[(f32, f32); 4]; 3],
+    pub colour: u32,
+    pub colour_writes: u32,
+}
+
+fn place_corner(x: f32, y: f32, view: SpanView) -> (f32, f32) {
+    (
+        (x + view.shift_x) * view.scale_x,
+        (view.shift_y - y) * view.scale_y,
+    )
 }
 
 /// Draws the span bar. `band_word` is the stored count, doubled for the thickness.
@@ -1858,6 +1889,7 @@ pub fn draw_span_bar(
     origin_y: f32,
     span: f32,
     band_word: i32,
+    view: SpanView,
 ) -> SpanBar {
     let unit_f = unit as f32;
     let thick = (i64::from(band_word) << 1) as f32;
@@ -1866,29 +1898,34 @@ pub fn draw_span_bar(
     let inset_l = origin_x + unit_f;
     let inset_r = origin_x + span - unit_f;
     let right = origin_x + span;
+    let quads = [
+        [
+            (inset_l, top),
+            (inset_l, bottom),
+            (inset_r, bottom),
+            (inset_r, top),
+        ],
+        [
+            (inset_l, top),
+            (inset_l, bottom),
+            (origin_x, bottom),
+            (origin_x, top),
+        ],
+        [
+            (inset_r, top),
+            (inset_r, bottom),
+            (right, bottom),
+            (right, top),
+        ],
+    ];
+    let placed = quads.map(|quad| quad.map(|(x, y)| place_corner(x, y, view)));
     SpanBar {
         prep_calls: 1,
         binds: [SPAN_BAR, SPAN_CAP, SPAN_CAP],
-        quads: [
-            [
-                (inset_l, top),
-                (inset_l, bottom),
-                (inset_r, bottom),
-                (inset_r, top),
-            ],
-            [
-                (inset_l, top),
-                (inset_l, bottom),
-                (origin_x, bottom),
-                (origin_x, top),
-            ],
-            [
-                (inset_r, top),
-                (inset_r, bottom),
-                (right, bottom),
-                (right, top),
-            ],
-        ],
+        quads,
+        placed,
+        colour: view.colour,
+        colour_writes: 12,
     }
 }
 
@@ -4135,7 +4172,7 @@ mod tests {
 
     #[test]
     fn a_span_bar_draws_three_quads() {
-        let bar = draw_span_bar(5, 10.0, 20.0, 100.0, 4);
+        let bar = draw_span_bar(5, 10.0, 20.0, 100.0, 4, SPAN_VIEW_UNSET);
         assert_eq!(bar.prep_calls, 1);
         assert_eq!(bar.binds, [SPAN_BAR, SPAN_CAP, SPAN_CAP]);
         let expect: [[(f32, f32); 4]; 3] = [
@@ -4150,10 +4187,34 @@ mod tests {
             }
         }
 
-        let neg = draw_span_bar(5, 10.0, 20.0, 100.0, -3);
+        let neg = draw_span_bar(5, 10.0, 20.0, 100.0, -3, SPAN_VIEW_UNSET);
         let thick = neg.quads[0][1].1 - neg.quads[0][0].1;
         assert_eq!(thick.to_bits(), (-6.0_f32).to_bits());
         let left = neg.quads[1][1].1 - neg.quads[1][0].1;
         assert_eq!(left.to_bits(), (-6.0_f32).to_bits());
+    }
+
+    #[test]
+    fn a_span_bar_places_the_view() {
+        let view = SpanView {
+            shift_x: 2.0,
+            shift_y: 100.0,
+            scale_x: 0.5,
+            scale_y: 2.0,
+            colour: 17,
+        };
+        let bar = draw_span_bar(5, 10.0, 20.0, 100.0, 4, view);
+        assert_eq!(bar.quads[0][0].0.to_bits(), 15.0_f32.to_bits());
+        assert_eq!(bar.quads[0][0].1.to_bits(), 20.0_f32.to_bits());
+        assert_eq!(bar.placed[0][0].0.to_bits(), 8.5_f32.to_bits());
+        assert_eq!(bar.placed[0][0].1.to_bits(), 160.0_f32.to_bits());
+        assert_eq!(bar.colour, 17);
+        assert_eq!(bar.colour_writes, 12);
+
+        let cold = draw_span_bar(5, 10.0, 20.0, 100.0, 4, SPAN_VIEW_UNSET);
+        assert_eq!(cold.placed[0][0].0.to_bits(), 0.0_f32.to_bits());
+        assert_eq!(cold.placed[0][0].1.to_bits(), (-0.0_f32).to_bits());
+        assert_eq!(cold.colour, 0);
+        assert_eq!(cold.colour_writes, 12);
     }
 }
