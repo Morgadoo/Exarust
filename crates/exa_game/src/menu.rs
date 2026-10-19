@@ -73,6 +73,15 @@ pub const HELD_READY: u8 = 1;
 /// A body is visited when these bits are all set, and skipped when this bit is set.
 pub const BODY_SOLID: u32 = 0x89;
 pub const BODY_SKIP: u32 = 0x0400_0000;
+/// The ray starts this long. A closer hit shortens it.
+pub const RAY_REACH: i32 = 4000;
+/// Child flags used when a pane stores its size.
+pub const CHILD_STRETCH_X: u32 = 0x30000;
+pub const CHILD_ANCHOR_X: u32 = 0x20000;
+pub const CHILD_STRETCH_Y: u32 = 0xc0000;
+pub const CHILD_ANCHOR_Y: u32 = 0x80000;
+pub const CHILD_CENTER_X: u32 = 0x800;
+pub const CHILD_CENTER_Y: u32 = 0x8000;
 /// Bits of 0.1 and of 5. The probe chooses one.
 pub const PAD_NEAR: u32 = 0x3dcc_cccd;
 pub const PAD_FAR: u32 = 0x40a0_0000;
@@ -181,6 +190,19 @@ pub struct SceneBody {
     pub id: u64,
     pub hits: i32,
     pub probe: u8,
+    /// Centre and radius. The ray runs from the origin along z.
+    pub place: [i32; 3],
+    pub radius: i32,
+}
+
+/// One child of a pane. The flags choose stretch, anchor, or centre.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneChild {
+    pub flags: u32,
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
 }
 
 /// One sector. A mask that shares no bit with the camera is skipped.
@@ -343,6 +365,8 @@ pub struct MatchGate {
     pub sectors: Vec<SceneSector>,
     pub camera_mask: u32,
     pub scene_index: i32,
+    pub scene_reach: i32,
+    pub children: Vec<PaneChild>,
     pub scene_pads: Vec<u32>,
     pub span_w: u16,
     pub span_h: u16,
@@ -552,6 +576,8 @@ impl MatchGate {
             sectors: Vec::new(),
             camera_mask: 0,
             scene_index: 0,
+            scene_reach: 0,
+            children: Vec::new(),
             scene_pads: Vec::new(),
             span_w: 0,
             span_h: 0,
@@ -796,11 +822,13 @@ impl MatchGate {
     }
 
     /// Sectors that share a camera bit, then bodies that are solid, unskipped,
-    /// and in that mask. A positive hit count replaces the hit. An empty scene
-    /// leaves the supplied hit. The ray distance is not in.
+    /// and in that mask. The ray starts at length 4000 along z. A body past
+    /// that length is not taken. A closer hit shortens the ray. An empty scene
+    /// leaves the supplied hit.
     fn walk_scene(&mut self) {
         self.pick_hit = 0;
         self.scene_index = 0;
+        self.scene_reach = RAY_REACH;
         self.scene_pads.clear();
         let sectors = self.sectors.clone();
         for sector in &sectors {
@@ -814,14 +842,16 @@ impl MatchGate {
                 if self.camera_mask & body.mask == 0 {
                     continue;
                 }
-                if body.flags & BODY_SKIP == BODY_SKIP {
+                if (body.flags & BODY_SKIP) == BODY_SKIP {
                     continue;
                 }
                 let pad = if body.probe == 0 { PAD_NEAR } else { PAD_FAR };
                 self.scene_pads.push(pad);
-                if body.hits > 0 {
+                let reach = self.scene_reach as f32;
+                if body.hits > 0 && segment_meets(reach, body.place, body.radius) {
                     self.pick_hit = body.id;
                     self.scene_index = body.hits - 1;
+                    self.scene_reach = along_z(reach, body.place) as i32;
                 }
             }
         }
@@ -872,6 +902,7 @@ impl MatchGate {
         if place_y < self.unit {
             place_y = self.unit;
         }
+        self.lay_out(width, height);
         self.built_rows = rows;
         self.built_a = inner_a;
         self.built_b = inner_b;
@@ -882,6 +913,34 @@ impl MatchGate {
         self.built_y = place_y;
         self.built_order = self.order_base.wrapping_add(0x100);
         self.built_item = id;
+    }
+
+    /// A stretch child grows by the change in the pane. An anchor moves by that
+    /// change. A centre child is placed in the spare half. Nested children are
+    /// not visited.
+    fn lay_out(&mut self, width: i32, height: i32) {
+        let old_w = self.built_w;
+        let old_h = self.built_h;
+        for child in &mut self.children {
+            let stretch_x = (child.flags & CHILD_STRETCH_X) == CHILD_STRETCH_X;
+            let stretch_y = (child.flags & CHILD_STRETCH_Y) == CHILD_STRETCH_Y;
+            if stretch_x {
+                child.w = child.w.wrapping_add(width).wrapping_sub(old_w);
+            } else if (child.flags & CHILD_ANCHOR_X) == CHILD_ANCHOR_X {
+                child.x = child.x.wrapping_add(width).wrapping_sub(old_w);
+            }
+            if stretch_y {
+                child.h = child.h.wrapping_add(height).wrapping_sub(old_h);
+            } else if (child.flags & CHILD_ANCHOR_Y) == CHILD_ANCHOR_Y {
+                child.y = child.y.wrapping_add(height).wrapping_sub(old_h);
+            }
+            if !stretch_x && (child.flags & CHILD_CENTER_X) == CHILD_CENTER_X {
+                child.x = ((i64::from(width) - i64::from(child.w)) / 2) as i32;
+            }
+            if !stretch_y && (child.flags & CHILD_CENTER_Y) == CHILD_CENTER_Y {
+                child.y = ((i64::from(height) - i64::from(child.h)) / 2) as i32;
+            }
+        }
     }
 
     fn row_span(&self, index: u32) -> i32 {
@@ -1034,6 +1093,37 @@ fn span_has_mark(blob: &[u8], offset: u32, size: u32) -> bool {
         cursor = cursor.saturating_add(step as usize);
     }
     false
+}
+
+/// The ray is `(0, 0, reach)`. A centre past that end is rejected unless the
+/// end still lies in the radius.
+fn segment_meets(reach: f32, place: [i32; 3], radius: i32) -> bool {
+    let delta = [place[0] as f32, place[1] as f32, place[2] as f32];
+    let dir = [0.0, 0.0, reach];
+    let dot = dir[2] * delta[2];
+    let radius2 = (radius as f32) * (radius as f32);
+    if dot <= 0.0 {
+        return delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2] <= radius2;
+    }
+    let dir2 = dir[2] * dir[2];
+    if dir2 <= dot {
+        let end = delta[2] - reach;
+        return delta[0] * delta[0] + delta[1] * delta[1] + end * end <= radius2;
+    }
+    let nearest =
+        delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2] - (dot * dot) / dir2;
+    nearest <= radius2
+}
+
+fn along_z(reach: f32, place: [i32; 3]) -> f32 {
+    let z = place[2] as f32;
+    if z <= 0.0 {
+        0.0
+    } else if z >= reach {
+        reach
+    } else {
+        z
+    }
 }
 
 fn read_u32(blob: &[u8], at: usize) -> u32 {
@@ -2947,6 +3037,8 @@ mod tests {
                     id: 4,
                     hits: 5,
                     probe: 0,
+                    place: [0, 0, 0],
+                    radius: 0,
                 }],
             },
             SceneSector {
@@ -2958,6 +3050,8 @@ mod tests {
                         id: 5,
                         hits: 4,
                         probe: 0,
+                        place: [0, 0, 0],
+                        radius: 0,
                     },
                     SceneBody {
                         flags: BODY_SOLID,
@@ -2965,6 +3059,8 @@ mod tests {
                         id: 8,
                         hits: 3,
                         probe: 1,
+                        place: [0, 0, 0],
+                        radius: 0,
                     },
                     SceneBody {
                         flags: 0x01,
@@ -2972,6 +3068,8 @@ mod tests {
                         id: 9,
                         hits: 9,
                         probe: 0,
+                        place: [0, 0, 0],
+                        radius: 0,
                     },
                     SceneBody {
                         flags: BODY_SOLID,
@@ -2979,6 +3077,8 @@ mod tests {
                         id: 15,
                         hits: 2,
                         probe: 0,
+                        place: [0, 0, 0],
+                        radius: 0,
                     },
                 ],
             },
@@ -3051,5 +3151,105 @@ mod tests {
         assert_eq!(edge.run_gate(), 1);
         assert_eq!(edge.built_w, 28);
         assert_eq!(edge.built_x, -8);
+    }
+
+    #[test]
+    fn a_farther_body_is_rejected_and_a_child_is_laid_out() {
+        let mut near = plain_item(7);
+        near.view_w = 8;
+        near.view_h = 8;
+        near.camera_mask = 1;
+        near.sectors = vec![SceneSector {
+            mask: 1,
+            bodies: vec![
+                SceneBody {
+                    flags: BODY_SOLID,
+                    mask: 1,
+                    id: 3,
+                    hits: 2,
+                    probe: 0,
+                    place: [0, 0, 100],
+                    radius: 1,
+                },
+                SceneBody {
+                    flags: BODY_SOLID,
+                    mask: 1,
+                    id: 4,
+                    hits: 2,
+                    probe: 0,
+                    place: [0, 0, 500],
+                    radius: 1,
+                },
+            ],
+        }];
+        assert_eq!(near.run_gate(), 1);
+        assert_eq!(near.pick_hit, 3);
+        assert_eq!(near.scene_index, 1);
+        assert_eq!(near.scene_reach, 100);
+
+        let mut beyond = plain_item(7);
+        beyond.view_w = 8;
+        beyond.view_h = 8;
+        beyond.camera_mask = 1;
+        beyond.pick_hit = 9;
+        beyond.sectors = vec![SceneSector {
+            mask: 1,
+            bodies: vec![SceneBody {
+                flags: BODY_SOLID,
+                mask: 1,
+                id: 5,
+                hits: 3,
+                probe: 0,
+                place: [0, 0, 5000],
+                radius: 1,
+            }],
+        }];
+        assert_eq!(beyond.run_gate(), 1);
+        assert_eq!(beyond.pick_hit, 0);
+        assert_eq!(beyond.scene_reach, RAY_REACH);
+
+        let mut laid = plain_item(7);
+        laid.kind_plain = marked_kind(7);
+        laid.view_w = 400;
+        laid.view_h = 400;
+        laid.cursor_x = 100;
+        laid.cursor_y = 80;
+        laid.span_w = 3;
+        laid.span_h = 4;
+        laid.unit = 2;
+        laid.margin = 5;
+        laid.pane_pad = 6;
+        laid.row_spans = vec![9];
+        laid.row_cap = 100;
+        laid.slot_plain = 1;
+        laid.screen_w = 200;
+        laid.children = vec![
+            PaneChild {
+                flags: CHILD_CENTER_X | CHILD_CENTER_Y,
+                x: 1,
+                y: 1,
+                w: 10,
+                h: 4,
+            },
+            PaneChild {
+                flags: CHILD_ANCHOR_X,
+                x: 4,
+                y: 2,
+                w: 6,
+                h: 6,
+            },
+            PaneChild {
+                flags: CHILD_STRETCH_X,
+                x: 0,
+                y: 0,
+                w: 10,
+                h: 8,
+            },
+        ];
+        assert_eq!(laid.run_gate(), 1);
+        assert_eq!(laid.children[0].x, 9);
+        assert_eq!(laid.children[0].y, 27);
+        assert_eq!(laid.children[1].x, 32);
+        assert_eq!(laid.children[2].w, 38);
     }
 }
