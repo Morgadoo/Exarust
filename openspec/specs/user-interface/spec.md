@@ -740,3 +740,11 @@ At place 10, 20 of size 100 by 80 and inset 5 the shade SHALL draw one rectangle
 - **THEN** the corners are (105, 25), (15, 25), (15, 95), (105, 95)
 - **AND** the colour is 1, 2, 3, 255
 - **AND** the counts are one prepare, modes 1 and 0x10, four vertices and four colour writes
+
+### Requirement: Skin cross
+At unit 5 and point 10, 20 the cross SHALL draw eight corners: (8, 15), (13, 15), (8, 25), (13, 25), (6, 18), (6, 23), (16, 18), (16, 23). It SHALL count one begin, eight vertices and one line end, and SHALL bind no colour.
+
+#### Scenario: The cross draws four segments
+- **WHEN** the cross is drawn at unit 5 and point 10, 20
+- **THEN** the eight corners are those listed, in that order
+- **AND** the counts are one begin, eight vertices and one end

@@ -3067,6 +3067,40 @@ pub fn draw_skin_shade(place: ShadePlace) -> SkinShade {
     }
 }
 
+/// The parent skin's cross: eight vertices as four line segments.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SkinCross {
+    pub corners: [(f32, f32); 8],
+    pub begin_calls: u32,
+    pub end_calls: u32,
+    pub vertex_calls: u32,
+}
+
+/// Draws the cross at a point.
+pub fn draw_skin_cross(unit: i32, x: i32, y: i32) -> SkinCross {
+    let half = unit.wrapping_add(1) / 2 + 1;
+    let x = i64::from(x);
+    let y = i64::from(y);
+    let u = i64::from(unit);
+    let h = i64::from(half);
+    let corners = [
+        ((x - h + 2) as f32, (y - u) as f32),
+        ((x + h - 1) as f32, (y - u) as f32),
+        ((x - h + 2) as f32, (y + u) as f32),
+        ((x + h - 1) as f32, (y + u) as f32),
+        ((x - u + 1) as f32, (y - h + 2) as f32),
+        ((x - u + 1) as f32, (y + h - 1) as f32),
+        ((x + u + 1) as f32, (y - h + 2) as f32),
+        ((x + u + 1) as f32, (y + h - 1) as f32),
+    ];
+    SkinCross {
+        corners,
+        begin_calls: 1,
+        end_calls: 1,
+        vertex_calls: 8,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6134,5 +6168,27 @@ mod tests {
                 bottom: 95,
             }
         );
+    }
+
+    #[test]
+    fn a_skin_cross_draws_eight_corners() {
+        let cross = draw_skin_cross(5, 10, 20);
+        assert_eq!(cross.begin_calls, 1);
+        assert_eq!(cross.end_calls, 1);
+        assert_eq!(cross.vertex_calls, 8);
+        let want: [(f32, f32); 8] = [
+            (8.0, 15.0),
+            (13.0, 15.0),
+            (8.0, 25.0),
+            (13.0, 25.0),
+            (6.0, 18.0),
+            (6.0, 23.0),
+            (16.0, 18.0),
+            (16.0, 23.0),
+        ];
+        for ((gx, gy), (wx, wy)) in cross.corners.iter().zip(want) {
+            assert_eq!(gx.to_bits(), wx.to_bits());
+            assert_eq!(gy.to_bits(), wy.to_bits());
+        }
     }
 }
