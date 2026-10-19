@@ -18,6 +18,7 @@ pub mod fight;
 pub mod hear;
 pub mod idle;
 pub mod order;
+pub mod path;
 pub mod sense;
 
 pub use order::{Order, follow};
