@@ -4,8 +4,10 @@
 //! raises a notice and still closes its own children, first to last.
 //! A capture is released first. The task's other children that name this
 //! one close before its own, a hover clears, and a shown child hides.
-//! Cursor restore, the call after the two lists, writing a save package,
-//! and the transition are not part of this step.
+//! Releasing a capture publishes the one underneath it. After the two
+//! lists, argument 1 copies ten hand words when a focus is set or the
+//! mask shares bit 0. The shape table, the virtual call, writing a save
+//! package, and the transition are not part of this step.
 
 use crate::career::Company;
 
@@ -23,6 +25,21 @@ pub const DISMISS_MARK: u32 = 0xce10_0000;
 pub const CAPTURE_BIT: u32 = 0x20;
 /// Bits a redraw ask sets. Each ask ORs them on.
 pub const REDRAW_BITS: u32 = 0x3;
+/// Bit on a capture code that passes the low byte as the shape.
+pub const CURSOR_MARK: u32 = 0x8000;
+/// Argument passed after the two window lists.
+pub const FOLLOW_ARG: u8 = 1;
+/// Ten words copied into a ready hand list.
+pub const HAND_WORDS: [u32; 10] = [
+    0x101, 0x2_0101, 0x102, 0x105, 0x1_0106, 0x107, 0x2_010b, 0, 0, 0,
+];
+
+/// One held capture. The code is what a later release publishes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Capture {
+    pub name: String,
+    pub code: u32,
+}
 
 /// A child window on one of the two lists a match begin walks.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,8 +90,28 @@ pub struct MatchGate {
     pub notice: bool,
     /// Close callbacks, children before their parent.
     pub close_log: Vec<String>,
-    /// Names that currently hold a capture, oldest first.
-    pub captures: Vec<String>,
+    /// Captures, oldest first. The last one is the top.
+    pub captures: Vec<Capture>,
+    /// Code published by the latest release. 0 when the list is empty.
+    pub cursor_code: u32,
+    /// Name published by the latest release.
+    pub cursor_holder: Option<String>,
+    /// Shape argument. 0 marks the default unless the code has bit 0x8000.
+    pub cursor_shape: u8,
+    pub cursor_default: bool,
+    /// A focus object is set, so the follow runs even with a mask of 0.
+    pub focus: bool,
+    /// Mask tested against argument 1.
+    pub list_mask: u8,
+    pub mode_word: u32,
+    pub clock: u32,
+    pub stamp: u32,
+    pub hands_ready: bool,
+    pub hands: [u32; 10],
+    pub hands_set: bool,
+    pub latched: bool,
+    /// Cleared on the focus path. Starts set so the clear is visible.
+    pub pending: bool,
     /// The task's active form, when one is set.
     pub active: Option<String>,
     /// The task's hover, when one is set.
@@ -104,6 +141,20 @@ impl MatchGate {
             notice: false,
             close_log: Vec::new(),
             captures: Vec::new(),
+            cursor_code: 0,
+            cursor_holder: None,
+            cursor_shape: 0,
+            cursor_default: false,
+            focus: false,
+            list_mask: 0,
+            mode_word: 0,
+            clock: 0,
+            stamp: 0,
+            hands_ready: false,
+            hands: [0; 10],
+            hands_set: false,
+            latched: false,
+            pending: true,
             active: None,
             hover: None,
             siblings: Vec::new(),
@@ -126,6 +177,7 @@ impl MatchGate {
             return false;
         }
         dismiss_open(self);
+        follow_lists(self);
         let _ = company.leave_before_match();
         self.save_unconditional = true;
         self.hub_busy = true;
@@ -142,7 +194,11 @@ struct CloseState {
     order: Vec<String>,
     log: Vec<String>,
     notice: bool,
-    captures: Vec<String>,
+    captures: Vec<Capture>,
+    cursor_code: u32,
+    cursor_holder: Option<String>,
+    cursor_shape: u8,
+    cursor_default: bool,
     active: Option<String>,
     hover: Option<String>,
     siblings: Vec<Window>,
@@ -156,6 +212,10 @@ fn dismiss_open(gate: &mut MatchGate) {
         log: std::mem::take(&mut gate.close_log),
         notice: gate.notice,
         captures: std::mem::take(&mut gate.captures),
+        cursor_code: gate.cursor_code,
+        cursor_holder: gate.cursor_holder.clone(),
+        cursor_shape: gate.cursor_shape,
+        cursor_default: gate.cursor_default,
         active: gate.active.clone(),
         hover: gate.hover.clone(),
         siblings: std::mem::take(&mut gate.siblings),
@@ -168,6 +228,10 @@ fn dismiss_open(gate: &mut MatchGate) {
     gate.close_log = state.log;
     gate.notice = state.notice;
     gate.captures = state.captures;
+    gate.cursor_code = state.cursor_code;
+    gate.cursor_holder = state.cursor_holder;
+    gate.cursor_shape = state.cursor_shape;
+    gate.cursor_default = state.cursor_default;
     gate.active = state.active;
     gate.hover = state.hover;
     gate.siblings = state.siblings;
@@ -230,11 +294,50 @@ fn release_capture(window: &mut Window, state: &mut CloseState) {
     if window.flags & CAPTURE_BIT == 0 {
         return;
     }
-    let Some(index) = state.captures.iter().rposition(|name| name == &window.name) else {
+    let Some(index) = state
+        .captures
+        .iter()
+        .rposition(|capture| capture.name == window.name)
+    else {
         return;
     };
     state.captures.remove(index);
     window.flags &= !CAPTURE_BIT;
+    let Some(top) = state.captures.last() else {
+        state.cursor_code = 0;
+        state.cursor_holder = None;
+        return;
+    };
+    state.cursor_code = top.code;
+    state.cursor_holder = Some(top.name.clone());
+    let shape = if top.code & CURSOR_MARK == 0 {
+        0
+    } else {
+        top.code as u8
+    };
+    state.cursor_shape = shape;
+    if shape == 0 {
+        state.cursor_default = true;
+    }
+}
+
+/// The call after the two lists. Argument 1 runs for a focus, or when the
+/// mask shares bit 0. The virtual call is not in.
+fn follow_lists(gate: &mut MatchGate) {
+    let run = gate.focus || gate.list_mask & FOLLOW_ARG != 0;
+    if !run {
+        return;
+    }
+    if gate.focus {
+        gate.latched = true;
+        gate.pending = false;
+    }
+    gate.mode_word = (gate.mode_word & 2) | 1;
+    gate.stamp = gate.clock;
+    if gate.hands_ready {
+        gate.hands = HAND_WORDS;
+        gate.hands_set = true;
+    }
 }
 
 fn close_named(owner: String, arg: u32, state: &mut CloseState) {
@@ -475,7 +578,10 @@ mod tests {
         shop.children = vec![child];
         gate.first = vec![shop];
         gate.first_count = 1;
-        gate.captures = vec!["Shop".to_string()];
+        gate.captures = vec![Capture {
+            name: "Shop".to_string(),
+            code: 0,
+        }];
         gate.hover = Some("Shop".to_string());
         let mut side = window("Side", 0);
         side.owner = Some("Shop".to_string());
@@ -514,7 +620,10 @@ mod tests {
         board.visible = true;
         gate.first = vec![board];
         gate.first_count = 1;
-        gate.captures = vec!["Board".to_string()];
+        gate.captures = vec![Capture {
+            name: "Board".to_string(),
+            code: 0,
+        }];
         gate.hover = Some("Board".to_string());
         let mut company = Company::new("Ash");
         assert!(gate.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
@@ -548,11 +657,112 @@ mod tests {
         let held = window("Held", DISMISS_MARK | CAPTURE_BIT);
         gate.first = vec![held];
         gate.first_count = 1;
-        gate.captures = vec!["Someone".to_string()];
+        gate.captures = vec![Capture {
+            name: "Someone".to_string(),
+            code: 0,
+        }];
         let mut company = Company::new("Ash");
         assert!(gate.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
-        assert_eq!(gate.captures, vec!["Someone".to_string()]);
+        assert_eq!(
+            gate.captures,
+            vec![Capture {
+                name: "Someone".to_string(),
+                code: 0,
+            }]
+        );
         assert_eq!(gate.first[0].flags & CAPTURE_BIT, CAPTURE_BIT);
         assert!(gate.first[0].closed);
+    }
+
+    fn capture(name: &str, code: u32) -> Capture {
+        Capture {
+            name: name.to_string(),
+            code,
+        }
+    }
+
+    fn marked(name: &str) -> Window {
+        let mut window = window(name, DISMISS_MARK | CAPTURE_BIT);
+        window.on_close = true;
+        window
+    }
+
+    #[test]
+    fn a_release_restores_the_lower_capture_and_the_lists_are_followed() {
+        let mut gate = MatchGate::playing();
+        gate.first = vec![marked("Shop")];
+        gate.first_count = 1;
+        gate.captures = vec![capture("Lower", 0x15), capture("Shop", 0x15)];
+        let mut dying = hired_physician();
+        assert!(gate.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut dying));
+        assert_eq!(gate.cursor_code, 0x15);
+        assert_eq!(gate.cursor_holder.as_deref(), Some("Lower"));
+        assert_eq!(gate.cursor_shape, 0);
+        assert!(gate.cursor_default);
+        assert_eq!(dying.deaths, 1);
+
+        let mut gate = MatchGate::playing();
+        gate.first = vec![marked("Shop")];
+        gate.first_count = 1;
+        gate.captures = vec![capture("Lower", 0x8007), capture("Shop", 1)];
+        let mut company = Company::new("Ash");
+        assert!(gate.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert_eq!(gate.cursor_code, 0x8007);
+        assert_eq!(gate.cursor_holder.as_deref(), Some("Lower"));
+        assert_eq!(gate.cursor_shape, 7);
+        assert!(!gate.cursor_default);
+
+        let mut gate = MatchGate::playing();
+        gate.first = vec![marked("Shop")];
+        gate.first_count = 1;
+        gate.captures = vec![capture("Shop", 0x15)];
+        gate.cursor_default = false;
+        let mut company = Company::new("Ash");
+        assert!(gate.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert!(gate.captures.is_empty());
+        assert_eq!(gate.cursor_code, 0);
+        assert!(gate.cursor_holder.is_none());
+        assert!(!gate.cursor_default);
+
+        let mut gate = MatchGate::playing();
+        gate.list_mask = 1;
+        gate.clock = 99;
+        gate.mode_word = 6;
+        gate.hands_ready = true;
+        let mut company = Company::new("Ash");
+        company.hire("Med", Profession::Physician).unwrap();
+        company.roster[0].health = 699;
+        assert!(gate.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert!(gate.hands_set);
+        assert_eq!(gate.hands, HAND_WORDS);
+        assert_eq!(gate.mode_word, 3);
+        assert_eq!(gate.stamp, 99);
+        assert!(!gate.latched);
+        assert!(gate.pending);
+        assert!(company.roster.is_empty());
+
+        let mut gate = MatchGate::playing();
+        gate.list_mask = 0;
+        gate.focus = false;
+        gate.hands_ready = true;
+        gate.mode_word = 6;
+        let mut company = Company::new("Ash");
+        assert!(gate.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert!(!gate.hands_set);
+        assert_eq!(gate.mode_word, 6);
+        assert_eq!(gate.stamp, 0);
+
+        let mut gate = MatchGate::playing();
+        gate.focus = true;
+        gate.list_mask = 0;
+        gate.hands_ready = true;
+        gate.clock = 4;
+        let mut company = Company::new("Ash");
+        assert!(gate.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert!(gate.latched);
+        assert!(!gate.pending);
+        assert!(gate.hands_set);
+        assert_eq!(gate.stamp, 4);
+        assert_eq!(gate.mode_word, 1);
     }
 }
