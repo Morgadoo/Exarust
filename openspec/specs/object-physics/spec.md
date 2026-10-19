@@ -271,3 +271,10 @@ A broadcast SHALL signal every tagged object whose door link equals the relay, i
 #### Scenario: The source door and one other operative
 - **WHEN** the list holds an untagged listener, a source door linked to the relay, a door linked elsewhere that also listens, the source as an operative listener, another operative listener, and an operative listening elsewhere, and the value is 5
 - **THEN** only the source door and the other operative are signalled, in that order, with the relay as the source and the value 5
+
+### Requirement: Close and lock
+A motorised hinge SHALL set its fraction to 1 and drive toward shut for 300 ticks, or 100 when fast. A hinge that is not motorised SHALL not start that drive. A sliding leaf that is not latched SHALL play the lock sound, and a fast one SHALL drive toward shut for 100 ticks. A leaf that is already shut SHALL become latched.
+
+#### Scenario: A motor, a plain hinge, and a fast slider
+- **WHEN** a motorised hinge at fraction 0.2 is closed, a fast motorised hinge is closed, a shut hinge that is not motorised is closed, an unlatched sliding leaf is closed, and a shut fast sliding leaf is closed
+- **THEN** the motorised hinge is at fraction 1 for 300 ticks and is not latched, the fast hinge drives for 100 ticks, the plain hinge stays idle and becomes latched, the sliding leaf plays the lock sound and stays unlatched, and the fast slider drives for 100 ticks and becomes latched

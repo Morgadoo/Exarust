@@ -39,6 +39,11 @@
 //! the door is still latched. One millisecond later both leaves open. Which
 //! key fits the door is not in this slice.
 //!
+//! Close-and-lock on a motorised hinge sets the fraction to 1 and drives
+//! toward shut for 300 ticks, or 100 when fast. A sliding leaf plays the
+//! lock sound when it is not latched, and a fast one drives toward shut for
+//! 100 ticks. A leaf that is already shut becomes latched.
+//!
 //! Evidence: the hinged door step, the open shove, the sliding door step,
 //! the partner check, and the unlock wait. The slam's random pitch is not
 //! in this slice.
@@ -554,6 +559,56 @@ pub fn unlock_due(door: &mut Latch, partner: Option<&mut Latch>, now_ms: i32) ->
     true
 }
 
+/// How a close-and-lock drives the leaf.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShutDrive {
+    Idle,
+    /// Aim at the shut fraction.
+    TowardShut,
+}
+
+/// One leaf under a close-and-lock.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShutLeaf {
+    pub sliding: bool,
+    pub motorised: bool,
+    pub fast: bool,
+    pub latched: bool,
+    pub closed: bool,
+    pub fraction: f32,
+    pub drive: ShutDrive,
+    pub countdown: i32,
+}
+
+/// Ticks a slow motorised hinge spends driving shut.
+pub const SHUT_SLOW: i32 = 300;
+/// Ticks a fast leaf spends driving shut.
+pub const SHUT_FAST: i32 = 100;
+
+/// Close and lock one leaf. Returns whether the lock sound plays.
+pub fn close_and_lock(leaf: &mut ShutLeaf) -> bool {
+    let mut sound = false;
+    if !leaf.sliding {
+        if leaf.motorised {
+            leaf.fraction = 1.0;
+            leaf.drive = ShutDrive::TowardShut;
+            leaf.countdown = if leaf.fast { SHUT_FAST } else { SHUT_SLOW };
+        }
+    } else {
+        if !leaf.latched {
+            sound = true;
+        }
+        if leaf.fast {
+            leaf.drive = ShutDrive::TowardShut;
+            leaf.countdown = SHUT_FAST;
+        }
+    }
+    if leaf.closed {
+        leaf.latched = true;
+    }
+    sound
+}
+
 /// The 3 cm shove along the door's facing. A zero facing shoves nothing.
 pub fn open_push(facing: Vec3) -> Vec3 {
     let length = facing.length();
@@ -884,5 +939,63 @@ mod tests {
         assert!(!door.saved);
         assert!(!partner.latched);
         assert!(partner.pending);
+    }
+
+    fn shut_leaf() -> ShutLeaf {
+        ShutLeaf {
+            sliding: false,
+            motorised: false,
+            fast: false,
+            latched: false,
+            closed: false,
+            fraction: 0.0,
+            drive: ShutDrive::Idle,
+            countdown: 0,
+        }
+    }
+
+    #[test]
+    fn a_close_and_lock_drives_a_motor_shut_and_bars_a_shut_leaf() {
+        let mut hinge = shut_leaf();
+        hinge.motorised = true;
+        hinge.fraction = 0.2;
+        assert!(!close_and_lock(&mut hinge));
+        assert!((hinge.fraction - 1.0).abs() < 1e-6);
+        assert_eq!(hinge.drive, ShutDrive::TowardShut);
+        assert_eq!(hinge.countdown, SHUT_SLOW);
+        assert!(!hinge.latched);
+
+        let mut fast = shut_leaf();
+        fast.motorised = true;
+        fast.fast = true;
+        close_and_lock(&mut fast);
+        assert_eq!(fast.countdown, SHUT_FAST);
+
+        let mut plain = shut_leaf();
+        plain.closed = true;
+        assert!(!close_and_lock(&mut plain));
+        assert_eq!(plain.drive, ShutDrive::Idle);
+        assert!(plain.latched);
+
+        let mut slide = shut_leaf();
+        slide.sliding = true;
+        assert!(close_and_lock(&mut slide));
+        assert_eq!(slide.drive, ShutDrive::Idle);
+        assert!(!slide.latched);
+
+        let mut quick = shut_leaf();
+        quick.sliding = true;
+        quick.fast = true;
+        quick.closed = true;
+        assert!(close_and_lock(&mut quick));
+        assert_eq!(quick.drive, ShutDrive::TowardShut);
+        assert_eq!(quick.countdown, SHUT_FAST);
+        assert!(quick.latched);
+
+        let mut barred = shut_leaf();
+        barred.sliding = true;
+        barred.latched = true;
+        assert!(!close_and_lock(&mut barred));
+        assert!(barred.latched);
     }
 }
