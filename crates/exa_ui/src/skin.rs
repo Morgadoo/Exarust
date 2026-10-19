@@ -650,7 +650,8 @@ pub struct TitleDraw {
 /// wide top, the left side, the bottom, the right side, the ink copy,
 /// the square drawn when the close mark is -4, the hold-bit edge mask,
 /// and the bar, the tab, the lower tab, the quad, the left strip, the cap,
-/// and the ledge that follow it. The sign flip after that ledge is not in.
+/// and the ledge that follow it. A clear hold bit on that same band draws
+/// the wider frame. The helper body and the sign flip are not in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormDispatch {
     pub span_a: i32,
@@ -685,6 +686,15 @@ pub struct FormDispatch {
     pub held_left: Vec<SliderQuad>,
     pub held_cap: Vec<SliderQuad>,
     pub held_ledge: Vec<SliderQuad>,
+    /// Mask forced when the hold bit is clear. The held mask stays separate.
+    pub open_mask: u32,
+    pub open_calls: u32,
+    pub open_tab: Vec<SliderQuad>,
+    pub open_lower: Vec<SliderQuad>,
+    pub open_post: Vec<SliderQuad>,
+    pub open_left: Vec<SliderQuad>,
+    pub open_cap: Vec<SliderQuad>,
+    pub open_ledge: Vec<SliderQuad>,
 }
 
 fn edge_mask(unit: i32, place: &DispatchPlace) -> u32 {
@@ -712,6 +722,42 @@ fn edge_mask(unit: i32, place: &DispatchPlace) -> u32 {
         mask |= 8;
     }
     mask
+}
+
+fn raised_tabs(
+    unit: i32,
+    place: &DispatchPlace,
+) -> (Vec<SliderQuad>, Vec<SliderQuad>, Vec<SliderQuad>) {
+    let extra = (f64::from(unit) * f64::from_bits(TAB_SCALE)).round_ties_even() as i32;
+    let base = place.grip_x.wrapping_add(extra);
+    let x0 = base.wrapping_add(unit);
+    let x1 = base.wrapping_add(unit.wrapping_mul(3));
+    let lift = unit.wrapping_mul(3);
+    let upper = place.grip_y.wrapping_add(lift);
+    let high = upper.wrapping_add(unit.wrapping_shl(1));
+    let tab = vec![quad(
+        HELD_TAB,
+        [(x0, high), (x0, upper), (x1, upper), (x1, high)],
+    )];
+    let lower_at = place.seat_y.wrapping_sub(lift);
+    let low = lower_at.wrapping_sub(unit.wrapping_shl(1));
+    let lower = vec![quad(
+        HELD_TAB,
+        [(x0, low), (x0, lower_at), (x1, lower_at), (x1, low)],
+    )];
+    let post_low = place.post_y.wrapping_sub(unit);
+    let post_high = place.post_y.wrapping_add(lift);
+    let far = base.wrapping_add(unit.wrapping_shl(2));
+    let post = vec![quad(
+        HELD_POST,
+        [
+            (base, post_high),
+            (base, post_low),
+            (far, post_low),
+            (far, post_high),
+        ],
+    )];
+    (tab, lower, post)
 }
 
 fn edge_reach(unit: i32) -> i32 {
@@ -1159,6 +1205,51 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
     } else {
         Vec::new()
     };
+    let on_open = (place.flags_b & FORM_BOX) == 0
+        && (place.flags_d & FORM_BAND) == FORM_BAND_ON
+        && (place.flags_a & FORM_HOLD) == 0;
+    let open_mask = if on_open { 0xf } else { 0 };
+    let open_calls = u32::from(on_open && (place.flags_b & FORM_TITLE) == 0);
+    let (open_tab, open_lower, open_post) = if on_open && (place.flags_b & FORM_TAB) == FORM_TAB {
+        raised_tabs(unit, &place)
+    } else {
+        (Vec::new(), Vec::new(), Vec::new())
+    };
+    let (open_left, open_cap, open_ledge) = if on_open {
+        let across = unit.wrapping_shl(2);
+        let down = across.wrapping_shl(1);
+        let slot = unit.wrapping_shl(1);
+        let top = place.height.wrapping_sub(down);
+        let left = vec![quad(
+            WIDE_BAR,
+            [(slot, top), (across, top), (across, down), (slot, down)],
+        )];
+        let cap = vec![quad(
+            HELD_CAP,
+            [
+                (slot, across),
+                (across, across),
+                (across, down),
+                (slot, down),
+            ],
+        )];
+        let ledge = if skip_ledge {
+            Vec::new()
+        } else {
+            vec![quad(
+                HELD_CAP,
+                [
+                    (across, slot),
+                    (across, across),
+                    (down, across),
+                    (down, slot),
+                ],
+            )]
+        };
+        (left, cap, ledge)
+    } else {
+        (Vec::new(), Vec::new(), Vec::new())
+    };
     FormDispatch {
         span_a,
         span_b,
@@ -1197,6 +1288,14 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         held_left,
         held_cap,
         held_ledge,
+        open_mask,
+        open_calls,
+        open_tab,
+        open_lower,
+        open_post,
+        open_left,
+        open_cap,
+        open_ledge,
     }
 }
 
@@ -2378,5 +2477,75 @@ mod tests {
 
         form.flags_a = 0;
         assert!(dispatch_form(5, 0, form, &[]).held_ledge.is_empty());
+    }
+
+    #[test]
+    fn a_dispatch_draws_the_open_frame() {
+        let mut form = place(0, 0, 0, 0, 0, 0);
+        form.flags_d = 0x80;
+        form.height = 100;
+        form.grip_x = 10;
+        form.grip_y = 20;
+        form.seat_y = 80;
+        form.post_y = 40;
+        let drawn = dispatch_form(5, 0, form, &[]);
+        assert_eq!(drawn.edge_mask, 0);
+        assert!(drawn.held_left.is_empty());
+        assert_eq!(drawn.open_mask, 0xf);
+        assert_eq!(drawn.open_calls, 1);
+        assert!(drawn.open_tab.is_empty());
+        assert_eq!(drawn.open_left[0].sample, WIDE_BAR);
+        assert_eq!(
+            drawn.open_left[0].corners,
+            [(10, 60), (20, 60), (20, 40), (10, 40)]
+        );
+        assert_eq!(
+            drawn.open_cap[0].corners,
+            [(10, 20), (20, 20), (20, 40), (10, 40)]
+        );
+        assert_eq!(
+            drawn.open_ledge[0].corners,
+            [(20, 10), (20, 20), (40, 20), (40, 10)]
+        );
+
+        form.flags_b = FORM_TAB;
+        let tabbed = dispatch_form(5, 0, form, &[]);
+        assert_eq!(tabbed.open_calls, 1);
+        assert!(tabbed.held_tab.is_empty());
+        assert_eq!(
+            tabbed.open_tab[0].corners,
+            [(16, 45), (16, 35), (26, 35), (26, 45)]
+        );
+        assert_eq!(
+            tabbed.open_lower[0].corners,
+            [(16, 55), (16, 65), (26, 65), (26, 55)]
+        );
+        assert_eq!(
+            tabbed.open_post[0].corners,
+            [(11, 55), (11, 35), (31, 35), (31, 55)]
+        );
+
+        form.flags_b = FORM_TITLE;
+        let titled = dispatch_form(5, 0, form, &[]);
+        assert_eq!(titled.open_calls, 0);
+        assert_eq!(titled.open_left.len(), 1);
+        assert!(titled.open_ledge.is_empty());
+
+        form.flags_b = 0x40_0000;
+        let wide = dispatch_form(5, 0, form, &[]);
+        assert_eq!(wide.open_mask, 0);
+        assert_eq!(wide.open_calls, 0);
+        assert!(wide.open_left.is_empty());
+
+        form.flags_b = 0;
+        form.flags_d = 0x10;
+        assert_eq!(dispatch_form(5, 0, form, &[]).open_mask, 0);
+
+        form.flags_a = FORM_HOLD;
+        form.flags_d = 0x80;
+        let held = dispatch_form(5, 0, form, &[]);
+        assert_eq!(held.open_mask, 0);
+        assert!(held.open_left.is_empty());
+        assert_eq!(held.held_left.len(), 1);
     }
 }
