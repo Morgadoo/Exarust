@@ -22,7 +22,7 @@
 use bevy::math::{Vec2, Vec3};
 use exa_combat::condition::{Condition, StateFlags};
 use exa_formats::weapon_record::{self, Holder, RaceWeapons, WeaponRecord};
-use exa_physics::body::{Drive, PIN_GAIN, Ragdoll, WAKE_COUNT};
+use exa_physics::body::{Drive, Ragdoll};
 
 use crate::hear::{self, Attention};
 
@@ -476,14 +476,44 @@ pub fn sleep(sleeper: &mut Sleeper, drive: &mut Drive) {
 /// The tick sleep installs. It does not write the sleeper or the tone.
 pub fn sleep_tick(_sleeper: &mut Sleeper, _drive: &mut Drive) {}
 
+/// Pin gain a knock-out writes, the float 0.08.
+pub const KNOCK_OUT_PIN_BITS: u32 = 0x3da3_d70a;
+/// Sleep countdown a knock-out raises the body to, when the countdown is lower.
+pub const KNOCK_OUT_SLEEP: i32 = 256;
+/// Flags a knock-out clears before it sets dormant and waking.
+const KNOCK_OUT_FLAG_CLEAR: u32 = 0xffff_ff0f;
+/// Dormant and waking, set by a knock-out.
+const KNOCK_OUT_FLAGS: u32 = StateFlags::DORMANT | StateFlags::WAKING;
+
+/// Knock a character out. This is the unconscious state. A blow does not
+/// call it.
+///
+/// The wake clock is `now` plus `delay`. The condition is down. Flags lose
+/// bits 0xF0 and gain the dormant and waking flags. The statue mark
+/// clears, gait is 0, tone is 0, and the pin gain is the float 0.08. The
+/// body's sleep countdown rises to 256 when it is lower.
+pub fn knock_out(
+    sleeper: &mut Sleeper,
+    drive: &mut Drive,
+    body: &mut Ragdoll,
+    now: i32,
+    delay: i32,
+) {
+    sleeper.wake_at = now.wrapping_add(delay);
+    sleeper.condition = Condition::DOWN;
+    sleeper.flags.0 = (sleeper.flags.0 & KNOCK_OUT_FLAG_CLEAR) | KNOCK_OUT_FLAGS;
+    sleeper.statue = false;
+    sleeper.gait = 0;
+    drive.tone = 0.0;
+    drive.pin_gain = f32::from_bits(KNOCK_OUT_PIN_BITS);
+    body.wake_to(KNOCK_OUT_SLEEP);
+}
+
 /// Wake a dormant sleeper that has seen a contact.
 ///
 /// The flags must be exactly the dormant flag, and a contact must have
-/// been seen. Otherwise nothing changes. The sleep role is removed, the
-/// body is knocked out at `now` (delay 0): it is down, the dormant flag
-/// stays and the waking flag is set, the statue mark clears, gait is 0,
-/// tone is 0, the pin gain is 0.08, and the sleep countdown is raised to
-/// 256. Waking's later tone rise is not in this slice.
+/// been seen. Otherwise nothing changes. The sleep role is removed, and
+/// [`knock_out`] runs at `now` with no delay.
 pub fn see_target(
     sleeper: &mut Sleeper,
     drive: &mut Drive,
@@ -497,14 +527,7 @@ pub fn see_target(
     }
     roles.retain(|role| *role != SLEEP_ROLE);
     sleeper.sighted = 1;
-    sleeper.wake_at = now;
-    sleeper.condition = Condition::DOWN;
-    sleeper.flags.0 = (sleeper.flags.0 & !0xF0) | (StateFlags::DORMANT | StateFlags::WAKING);
-    sleeper.statue = false;
-    sleeper.gait = 0;
-    drive.tone = 0.0;
-    drive.pin_gain = PIN_GAIN;
-    body.wake_to(WAKE_COUNT);
+    knock_out(sleeper, drive, body, now, 0);
     true
 }
 
@@ -1312,6 +1335,43 @@ mod tests {
         assert!(marked.statue);
         assert_eq!(marked_roles, vec![SLEEP_ROLE]);
         assert_eq!(marked.sighted, 0);
+    }
+
+    /// A knock-out is the unconscious state. The wake clock is the current
+    /// clock plus the delay. Flags lose bits 0xF0 and gain dormant and
+    /// waking. A countdown already at 300 stays. A lower one rises to 256.
+    #[test]
+    fn a_knock_out_is_the_unconscious_state() {
+        let mut sleeper = Sleeper {
+            condition: Condition::WALKING,
+            flags: StateFlags(0x8000_0150),
+            statue: true,
+            gait: SLEEP_GAIT,
+            tick: IdleTick::Sleep,
+            sighted: 0,
+            wake_at: 0,
+        };
+        let mut drive = Drive::default();
+        drive.tone = 1.0;
+        drive.pin_gain = 0.02;
+        let mut held = limp();
+        held.wake_to(300);
+        knock_out(&mut sleeper, &mut drive, &mut held, 1_000, 40);
+        assert_eq!(sleeper.wake_at, 1_040);
+        assert_eq!(sleeper.condition, Condition::DOWN);
+        assert_eq!(sleeper.flags.0, 0x8000_0130);
+        assert!(!sleeper.statue);
+        assert_eq!(sleeper.gait, 0);
+        assert_eq!(drive.tone, 0.0);
+        assert_eq!(drive.pin_gain.to_bits(), KNOCK_OUT_PIN_BITS);
+        assert_eq!(held.countdown(), 300);
+
+        let mut low = limp();
+        low.tick(&[] as &[[Vec3; 3]]);
+        assert!(low.countdown() < KNOCK_OUT_SLEEP);
+        knock_out(&mut sleeper, &mut drive, &mut low, i32::MAX, 1);
+        assert_eq!(sleeper.wake_at, i32::MIN);
+        assert_eq!(low.countdown(), KNOCK_OUT_SLEEP);
     }
 
     fn knocked_out() -> (Sleeper, Drive) {
