@@ -950,6 +950,13 @@ executable; a retail trace; `exa_combat::regen`)
 - r is set to 0 by every blow that deals health and by every weapon
   contact on a character, before the damage routine decides what the
   contact does; burning resets it too (not ported).
+- An active second wind, after the heal pool and before the rate ramp,
+  adds the double 0.0003 to yellow and stores the float, whether or not
+  the fighter attacks. The wind stays while the game clock is at or before
+  its ready clock minus 180000 ms plus 3000 ms. The tick past that clock
+  still adds, then the wind ends. Yellow bits 0x3d000000 become
+  0x3d013a93. A quiet wind adds nothing. A dead fighter does not take
+  this tick.
 - Red heals only from the heal pool (bandages fill it; nothing does in
   Exarust yet): 0.25 × 5e-5 = 1.25e-5 a tick moves from the pool to red
   (a pool of 0.2 drains in 15,999 ticks, 193 s), and, dead or alive (the

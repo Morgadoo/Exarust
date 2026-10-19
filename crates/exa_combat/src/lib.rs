@@ -51,7 +51,7 @@ use exa_physics::body::{
 use exa_world::PartBounds;
 pub use fighter::{
     Damage, DamageTaken, Fighter, Health, LowAnswer, SecondWind, SecondWindFired, StoryMode, Taken,
-    Weakened, answer_low_health,
+    Weakened, answer_low_health, heal_second_wind,
 };
 use swing::{Swing, SwingAt, SwingState};
 use wounds::{BladeBlood, WoundQueue, frame_tetra, tetra_weights};

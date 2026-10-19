@@ -17,11 +17,13 @@
 use bevy::prelude::*;
 use exa_anim::{Animator, Motions, TickedClips};
 use exa_formats::character_stats::BodyRules;
-use exa_physics::body::{CharacterStage, CharacterTick, CharacterTicks, Ragdoll, TickedCharacter};
+use exa_physics::body::{
+    BodyTicks, CharacterStage, CharacterTick, CharacterTicks, Ragdoll, TickedCharacter,
+};
 
 use crate::Fighter;
 use crate::condition::{Condition, PostureTick, action, ticked_lives};
-use crate::fighter::Health;
+use crate::fighter::{Health, SecondWind, heal_second_wind};
 
 /// The regeneration rate's cap, yellow health per unit of √red a tick: 0.01
 /// a second over the original's 83 ticks.
@@ -50,18 +52,26 @@ impl Health {
         }
     }
 
+    /// One tick of a living body's health bookkeeping with no second wind.
+    pub fn regenerate(&mut self, held: bool) {
+        let mut wind = SecondWind::default();
+        self.bookkeep(held, 0, &mut wind);
+    }
+
     /// One tick of a living body's health bookkeeping, in the original's
     /// order: the heal pool moves [`RED_PER_TICK`] to red (red at most the
-    /// maximum, the pool at least 0); the regeneration rate is 0 while
+    /// maximum, the pool at least 0); an active second wind adds its gain
+    /// to yellow ([`heal_second_wind`]); the regeneration rate is 0 while
     /// `held` (attacking or in the combat idle), else it rises by
     /// [`RAMP`] × [`RATE_CAP`] to the cap and, above a red of [`RED_FLOOR`],
     /// yellow gains √red × rate; then yellow is kept within red, red within
     /// the maximum, and yellow at least 0.
-    pub fn regenerate(&mut self, held: bool) {
+    pub fn bookkeep(&mut self, held: bool, now: u32, wind: &mut SecondWind) {
         if self.heal_pool > 0.0 {
             self.red = at_most((f64::from(self.red) + RED_PER_TICK) as f32, self.max);
             self.heal_pool = ((f64::from(self.heal_pool) - RED_PER_TICK) as f32).max(0.0);
         }
+        self.yellow = heal_second_wind(self.yellow, now, wind);
         if held {
             self.rate = 0.0;
         } else {
@@ -126,9 +136,16 @@ pub fn ticked_by_its_character(motions: bool, body: Option<&Ragdoll>, clips: boo
 /// reaches its cap: the heal pool, the yellow regeneration, held while it
 /// attacks or plays the combat idle (`motion`, the action index of its
 /// clip), and the clamps.
-fn keep(entity: Entity, health: &mut Health, condition: Condition, motion: Option<usize>) {
+fn keep(
+    entity: Entity,
+    health: &mut Health,
+    condition: Condition,
+    motion: Option<usize>,
+    now: u32,
+    wind: &mut SecondWind,
+) {
     let before = health.rate;
-    health.regenerate(holds_regeneration(condition, motion));
+    health.bookkeep(holds_regeneration(condition, motion), now, wind);
     if health.rate == RATE_CAP && before < RATE_CAP {
         debug!(
             "{entity:?} regenerates at its full rate: yellow {:.4} of red {:.4}",
@@ -143,6 +160,7 @@ fn keep(entity: Entity, health: &mut Health, condition: Condition, motion: Optio
 /// clamps.
 #[allow(clippy::type_complexity)]
 pub fn regenerate_health(
+    ticks: Option<Res<BodyTicks>>,
     motions: Option<Res<Motions>>,
     mut fighters: Query<(
         Entity,
@@ -153,19 +171,24 @@ pub fn regenerate_health(
         Has<TickedClips>,
     )>,
 ) {
+    let now = ticks.as_ref().map_or(0, |t| t.millis() as u32);
     let set = motions.as_deref().map(|m| &*m.0);
     for (entity, mut fighter, condition, anim, body, clips) in &mut fighters {
         if ticked_by_its_character(set.is_some(), body, clips && anim.is_some()) {
             continue;
         }
         let mut health = fighter.health;
+        let mut wind = fighter.second_wind;
         health.regenerate_red(fighter.stats.rules);
         if !condition.is_dead() {
             let motion = anim.zip(set).and_then(|(a, s)| s.action_index(&a.action));
-            keep(entity, &mut health, *condition, motion);
+            keep(entity, &mut health, *condition, motion, now, &mut wind);
         }
         if health != fighter.health {
             fighter.health = health;
+        }
+        if wind != fighter.second_wind {
+            fighter.second_wind = wind;
         }
     }
 }
@@ -188,6 +211,7 @@ pub fn regenerate_red(ticked: Res<TickedCharacter>, mut fighters: Query<&mut Fig
 /// attacks or plays the combat idle) and the clamps.
 pub fn keep_health(
     ticked: Res<TickedCharacter>,
+    ticks: Option<Res<BodyTicks>>,
     motions: Option<Res<Motions>>,
     mut fighters: Query<(&mut Fighter, &Condition, Option<&Animator>)>,
 ) {
@@ -201,9 +225,14 @@ pub fn keep_health(
     let set = motions.as_deref().map(|m| &*m.0);
     let motion = anim.zip(set).and_then(|(a, s)| s.action_index(&a.action));
     let mut health = fighter.health;
-    keep(entity, &mut health, *condition, motion);
+    let mut wind = fighter.second_wind;
+    let now = ticks.as_ref().map_or(0, |t| t.millis() as u32);
+    keep(entity, &mut health, *condition, motion, now, &mut wind);
     if health != fighter.health {
         fighter.health = health;
+    }
+    if wind != fighter.second_wind {
+        fighter.second_wind = wind;
     }
 }
 

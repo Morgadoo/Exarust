@@ -210,6 +210,12 @@ pub enum LowAnswer {
     Quiet,
 }
 
+/// How long an active second wind keeps adding yellow, measured from the
+/// clock that fired it: the ready clock minus 180000 ms, plus this.
+pub const SECOND_WIND_HEAL_MS: u32 = 3_000;
+/// Yellow gained a tick while a second wind is active, the double 0.0003.
+pub const SECOND_WIND_GAIN_BITS: u64 = 0x3f33_a92a_3055_3261;
+
 /// The low-health check after a blow that leaves the fighter alive. A
 /// granted wind fires when the clock is past `ready_at`, waits 180000 ms,
 /// and plays the heal sound at volume 0.1 and pitch 1. At the ready clock,
@@ -225,6 +231,24 @@ pub fn answer_low_health(now: u32, wind: &mut SecondWind) -> LowAnswer {
             pitch_bits: HEAL_PITCH_BITS,
         }
     }
+}
+
+/// One tick of an active second wind. Yellow gains the double 0.0003 and
+/// is stored as a float. The wind ends once the game clock is past the
+/// ready clock minus 180000 ms plus 3000 ms, and the tick that ends it
+/// still gains. A quiet wind leaves yellow as it is.
+pub fn heal_second_wind(yellow: f32, now: u32, wind: &mut SecondWind) -> f32 {
+    if !wind.active {
+        return yellow;
+    }
+    let yellow = (f64::from(yellow) + f64::from_bits(SECOND_WIND_GAIN_BITS)) as f32;
+    let end = u64::from(wind.ready_at)
+        .wrapping_sub(u64::from(SECOND_WIND_MS))
+        .wrapping_add(u64::from(SECOND_WIND_HEAL_MS));
+    if (end as i64) < i64::from(now) {
+        wind.active = false;
+    }
+    yellow
 }
 
 /// A second wind fired instead of the heartbeat.

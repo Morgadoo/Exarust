@@ -282,3 +282,35 @@ fn the_health_tick() {
     assert_eq!(dead.yellow, h.yellow);
     assert!(dead.red > red, "{dead:?}");
 }
+
+/// An active second wind adds the double 0.0003 to yellow on the health
+/// tick, including while attacking. Ready clock 180012 stays active at
+/// game clock 3012 and ends at 3024, and that ending tick still adds.
+/// A quiet wind and a dead fighter add nothing.
+#[test]
+fn an_active_second_wind_heals_yellow() {
+    use bevy::ecs::system::RunSystemOnce;
+
+    let tick = |ticks: u64, active: bool, dead: bool| {
+        let mut app = App::new();
+        app.insert_resource(BodyTicks(ticks));
+        let mut fighter = Fighter::default();
+        fighter.health.yellow = f32::from_bits(0x3d00_0000);
+        fighter.second_wind.active = active;
+        fighter.second_wind.ready_at = 180_012;
+        let condition = if dead {
+            Condition::DEAD
+        } else {
+            Condition::ATTACKING
+        };
+        let id = app.world_mut().spawn((fighter, condition)).id();
+        app.world_mut().run_system_once(regenerate_health).unwrap();
+        let fighter = app.world().get::<Fighter>(id).unwrap();
+        (fighter.health.yellow.to_bits(), fighter.second_wind.active)
+    };
+    assert_eq!(tick(1, true, false), (0x3d01_3a93, true));
+    assert_eq!(tick(251, true, false), (0x3d01_3a93, true));
+    assert_eq!(tick(252, true, false), (0x3d01_3a93, false));
+    assert_eq!(tick(252, false, false), (0x3d00_0000, false));
+    assert_eq!(tick(1, true, true), (0x3d00_0000, true));
+}

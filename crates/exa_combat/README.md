@@ -156,8 +156,11 @@ before the character ticks) runs `regenerate_health` once a fixed tick on
 every other fighter (the dead, any without a living body): red
 regeneration for rule bits holding 0x20
 without 0x100 (`BodyRules::regenerates_red`; `Health::regenerate_red`,
-1.25e-5 a tick, dead or alive), then, unless dead, `Health::regenerate`:
-the heal pool's 1.25e-5 a tick to red, the yellow regeneration (the rate 0
+1.25e-5 a tick, dead or alive), then, unless dead, `Health::bookkeep`:
+the heal pool's 1.25e-5 a tick to red, an active second wind's double
+0.0003 added to yellow (`heal_second_wind`; it ends once the game clock
+passes the ready clock minus 180000 ms plus 3000 ms, and that tick still
+adds), the yellow regeneration (the rate 0
 while held, `holds_regeneration`: attacking or Cmbt - Idle playing; else
 +0.0003 × `RATE_CAP` a tick to `RATE_CAP` = 0.01/83, yellow += √red ×
 rate above `RED_FLOOR`) and the clamps. Every hit on a fighter sets its

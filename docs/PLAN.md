@@ -891,7 +891,8 @@ Done (change `own-a-dropped-weapon`): the dying tick makes weapon 3 its own owne
 Done (change `step-a-dropped-weapon`): the dying tick puts a solid weapon of mobility 1.25 into the solver, awake at 256, with friction bits 0x3f400000 and its sphere. Velocity 1.5 is kept. One solver tick leaves the first particle at bits 0xbe3a7bb7, 0x3f7fa2b5 and 0xbe4ccccd. A flat shape spawns nothing. A second tick adds no body.
 Done (change `meet-a-dropped-weapon`): that weapon's sphere, starting on another body's sphere, meets it in one shipped body step. The contact names both bodies, has one hit, and its deepest bits are 0x3ec39cd9. The weapon's first particle is at bits 0xbda3ae15, 0x3f7e43be and 0xbe492d0c, not the place one step alone leaves.
 Done (change `notice-a-deep-wound`): a lasting wound of bits 0x3daaaaab is not noticed. The next float is. A non-number is not. A chest cut through the hit path records the notice.
-Done (change `grant-a-second-wind`): a granted wind whose ready clock is 11, at game clock 12, fires, waits until 180012, and writes no heartbeat message. Volume bits are 0x3dcccccd and pitch bits are 0x3f800000. Ready clock 12 waits, and the heartbeat message is written. Still to
+Done (change `grant-a-second-wind`): a granted wind whose ready clock is 11, at game clock 12, fires, waits until 180012, and writes no heartbeat message. Volume bits are 0x3dcccccd and pitch bits are 0x3f800000. Ready clock 12 waits, and the heartbeat message is written.
+Done (change `heal-a-second-wind`): an attacking fighter with yellow bits 0x3d000000 and an active wind ready at 180012 gains yellow bits 0x3d013a93 at game clock 12 and at 3012, and stays active. At 3024 it gains the same bits and the wind ends. A quiet wind and a dead fighter keep bits 0x3d000000. Still to
 do: limb impairment, unconsciousness, practice mode.
 
 - `exa_items`: item database, item instances, inventory and containers,
