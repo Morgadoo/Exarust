@@ -3,13 +3,15 @@
 //! A new career holds 343 copper. Copper, silver and gold convert at 12 to 1.
 //! The manager counts toward the eight fighters, so seven combatants fit, and
 //! only one merchant, physician or trainer. Entering a match takes its fee.
-//! A win pays the prize. Experience is the template amount times the share of
-//! opponent health the company dealt, plus half again when a trainer is hired.
-//! The hire price and the tier scaling of a fee were not read.
+//! A win pays the prize. Experience at tier 0, credited to the first
+//! combatant, is the template amount times the damage share, plus half with
+//! a trainer. A shared finish multiplies by 1 + tier/4 and splits that pool
+//! by each combatant's contribution. The hire price and the tier scaling of
+//! a fee were not read.
 //!
 //! Evidence: the arena career notes (money seed, coin rate, roster caps,
-//! the six standard matches, fee on entry, prize on a win, the experience
-//! pool at tier 0).
+//! the six standard matches and the seven specials, fee on entry, prize on
+//! a win, the experience pool `(tier/4 + 1) · template · damage share`).
 
 /// Copper in one silver, and silver in one gold.
 pub const COIN: u32 = 12;
@@ -92,6 +94,102 @@ pub fn standard_board() -> [BoardMatch; 6] {
             xp: 500,
         },
     ]
+}
+
+/// Challenger, Elimination, Valiance, Valour, Captain, Brawl, The Beast.
+/// These are the tournament and special templates. Their fees and prizes
+/// are the tier-0 record; how a higher tier scales a fee was not read.
+pub fn special_board() -> [BoardMatch; 7] {
+    [
+        BoardMatch {
+            name: "Challenger",
+            fee: 256,
+            prize: 768,
+            per_side: 1,
+            xp: 1000,
+        },
+        BoardMatch {
+            name: "Elimination",
+            fee: 3,
+            prize: 2048,
+            per_side: 1,
+            xp: 1200,
+        },
+        BoardMatch {
+            name: "Valiance",
+            fee: 4,
+            prize: 768,
+            per_side: 1,
+            xp: 2000,
+        },
+        BoardMatch {
+            name: "Valour",
+            fee: 6,
+            prize: 1536,
+            per_side: 1,
+            xp: 3000,
+        },
+        BoardMatch {
+            name: "Captain",
+            fee: 6,
+            prize: 1536,
+            per_side: 3,
+            xp: 4500,
+        },
+        BoardMatch {
+            name: "Brawl",
+            fee: 2,
+            prize: 512,
+            per_side: 1,
+            xp: 2500,
+        },
+        BoardMatch {
+            name: "The Beast",
+            fee: 512,
+            prize: 196_608,
+            per_side: 3,
+            xp: 10_000,
+        },
+    ]
+}
+
+/// Experience scale for a match tier. Tier 0 is the template. Each further
+/// tier adds a quarter.
+pub fn xp_scale(tier: u32) -> f32 {
+    1.0 + tier as f32 * 0.25
+}
+
+/// Split a pool by contribution counts. A zero total leaves every share at
+/// 0. Integer division's remainder goes to the earliest largest remainder.
+pub fn split_experience(pool: u32, shares: &[u32]) -> Vec<u32> {
+    let total: u64 = shares.iter().map(|&share| u64::from(share)).sum();
+    if total == 0 {
+        return vec![0; shares.len()];
+    }
+    let pool = u64::from(pool);
+    let mut out = vec![0u32; shares.len()];
+    let mut given = 0u64;
+    let mut remainders = Vec::with_capacity(shares.len());
+    for (index, &share) in shares.iter().enumerate() {
+        let share = u64::from(share);
+        let base = pool * share / total;
+        out[index] = base as u32;
+        given += base;
+        remainders.push((pool * share % total, index));
+    }
+    remainders.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let mut left = pool - given;
+    for (_, index) in remainders {
+        if left == 0 {
+            break;
+        }
+        if shares[index] == 0 {
+            continue;
+        }
+        out[index] = out[index].saturating_add(1);
+        left -= 1;
+    }
+    out
 }
 
 /// The company the player manages.
@@ -198,8 +296,23 @@ impl Company {
         })
     }
 
-    /// Pay the prize on a win, and credit experience from the damage dealt.
+    /// Pay the prize on a win, and credit tier-0 experience to the first combatant.
     pub fn finish(&mut self, ongoing: Ongoing, won: bool, damage_ratio: f32) {
+        self.finish_shared(ongoing, won, damage_ratio, 0, &[]);
+    }
+
+    /// Pay the prize on a win. Experience is the template times
+    /// `1 + tier / 4` times the damage share, plus half when a trainer is
+    /// hired, then split across combatants by `shares`. An empty share list
+    /// credits the whole pool to the first combatant.
+    pub fn finish_shared(
+        &mut self,
+        ongoing: Ongoing,
+        won: bool,
+        damage_ratio: f32,
+        tier: u32,
+        shares: &[u32],
+    ) {
         if won {
             self.copper = self.copper.saturating_add(ongoing.prize);
             self.earned = self.earned.saturating_add(ongoing.prize);
@@ -212,7 +325,12 @@ impl Company {
         } else {
             0.0
         };
-        let mut xp = (ongoing.xp as f32 * ratio).round() as u32;
+        let scaled = ongoing.xp as f32 * xp_scale(tier) * ratio;
+        let mut xp = if scaled.is_finite() {
+            scaled.round() as u32
+        } else {
+            0
+        };
         if self
             .roster
             .iter()
@@ -220,12 +338,27 @@ impl Company {
         {
             xp = xp.saturating_add(xp / 2);
         }
-        if let Some(fighter) = self
+        let fighters: Vec<usize> = self
             .roster
-            .iter_mut()
-            .find(|member| member.profession == Profession::Combatant)
-        {
-            fighter.xp = fighter.xp.saturating_add(xp);
+            .iter()
+            .enumerate()
+            .filter(|(_, member)| member.profession == Profession::Combatant)
+            .map(|(index, _)| index)
+            .collect();
+        if shares.is_empty() {
+            if let Some(&index) = fighters.first() {
+                self.roster[index].xp = self.roster[index].xp.saturating_add(xp);
+            }
+            return;
+        }
+        let mut padded = shares
+            .iter()
+            .copied()
+            .take(fighters.len())
+            .collect::<Vec<_>>();
+        padded.resize(fighters.len(), 0);
+        for (index, part) in fighters.into_iter().zip(split_experience(xp, &padded)) {
+            self.roster[index].xp = self.roster[index].xp.saturating_add(part);
         }
     }
 }
@@ -312,5 +445,46 @@ mod tests {
         assert_eq!(company.earned, 15);
         assert!(company.trade(5, 5));
         assert_eq!(company.copper, 318);
+    }
+
+    #[test]
+    fn tier_scales_the_pool_and_the_fighters_share_it() {
+        let mut company = Company::new("Ash");
+        company.hire("a", Profession::Combatant).unwrap();
+        company.hire("b", Profession::Combatant).unwrap();
+        let duel = standard_board()[0];
+        let ongoing = company.enter(duel).unwrap();
+        company.finish_shared(ongoing, true, 1.0, 0, &[1, 3]);
+        assert_eq!(company.roster[0].xp, 250);
+        assert_eq!(company.roster[1].xp, 750);
+
+        let ongoing = company.enter(duel).unwrap();
+        company.hire("coach", Profession::Trainer).unwrap();
+        company.finish_shared(ongoing, true, 1.0, 4, &[1, 1]);
+        assert_eq!(company.roster[0].xp, 250 + 1500);
+        assert_eq!(company.roster[1].xp, 750 + 1500);
+        assert_eq!(split_experience(5, &[1, 1, 1]), vec![2, 2, 1]);
+
+        let specials = special_board();
+        assert_eq!(
+            (
+                specials[0].name,
+                specials[0].fee,
+                specials[0].prize,
+                specials[0].per_side,
+                specials[0].xp
+            ),
+            ("Challenger", 256, 768, 1, 1000)
+        );
+        assert_eq!(
+            (
+                specials[6].name,
+                specials[6].fee,
+                specials[6].prize,
+                specials[6].per_side,
+                specials[6].xp
+            ),
+            ("The Beast", 512, 196_608, 3, 10_000)
+        );
     }
 }

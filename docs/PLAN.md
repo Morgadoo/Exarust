@@ -987,10 +987,11 @@ Done (change `save-the-session`): an `EXRS` file restores that session.
 The original's save packages are not read.
 
 Done (change `confirm-a-shop-trade`): the shop refuses two empty baskets, and refuses a buy the company's copper cannot cover. A larger sell is received.
+Done (change `scale-match-experience`): a shared finish multiplies the template by 1 + tier/4 and splits it by contribution. Tier 0 with shares 1 and 3 credits 250 and 750; tier 4 with a trainer and equal shares adds 1500 to each. The special board lists Challenger through The Beast. How a tier scales a fee was not read.
 
 Still open:
 
-- Arena training, seasons, item prices and emblems. The hire price was not read.
+- Arena training, seasons, item prices and emblems. The hire price was not read. Wages and the day calendar are not in.
 - Story side levels, scripted encounters, the role interpreter, map discovery.
 - The other powers, their charge-up and their meshes.
 - Character creation (race, body, face, hair, colours, class, skills).
