@@ -14,7 +14,9 @@ its shape), the health and focus bars with their fade and the stamina gauge
 (`heartbeat`; the game crate starts it), the fade to black of the
 player's fall to death (`fade`, `DeathFade`: 3 s of game time, under the
 bars; the game crate starts it), and gamma-space compositing for images
-painted on the CPU (`blend`).
+painted on the CPU (`blend`). A draw skin (`skin`) opened with unit 5
+stores spans 10, 5, 10 and 10 and the colour 255, 250, 230, 100 three
+times. The slider, the frame, and the widget dispatcher are not in.
 
 ## Scope
 

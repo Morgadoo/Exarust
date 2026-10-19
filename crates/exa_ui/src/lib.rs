@@ -17,6 +17,7 @@ pub mod heartbeat;
 pub mod hud;
 pub mod loading;
 pub mod scale;
+pub mod skin;
 
 use bevy::prelude::*;
 
@@ -27,6 +28,7 @@ pub use heartbeat::Heartbeat;
 pub use hud::{DrawHud, HudBars};
 pub use loading::LoadingStatus;
 pub use scale::GuiScale;
+pub use skin::{DrawSkin, open_skin};
 
 pub struct UiPlugin;
 
