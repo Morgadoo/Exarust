@@ -29,9 +29,15 @@
 //! ticks. A frozen door keeps its stored fraction and stays passable. A
 //! held hand point farther than 60 cm is pulled back to 60 cm.
 //!
-//! Evidence: the hinged door step, the open shove, and the sliding door
-//! step. The partner door, the lock, and the slam's random pitch are not
-//! in this slice.
+//! A paired leaf is not held shut while its partner is more than 0.1 rad
+//! short of closed, and it leaves the shut state when its own angle is
+//! short of closed. A single door leaves the shut state only once it is
+//! more than 0.05 rad short, and it is still held. A paired door adds the
+//! pass-through bits to its layer.
+//!
+//! Evidence: the hinged door step, the open shove, the sliding door step,
+//! and the partner check. The lock and the slam's random pitch are not in
+//! this slice.
 
 use bevy::math::Vec3;
 
@@ -438,6 +444,72 @@ pub fn slide_step(slide: &mut Slide) -> SlideTick {
     }
 }
 
+/// A single shut door leaves once it is this far short of closed, in radians.
+pub const SINGLE_LEAVE: f32 = 0.05;
+/// A leaf counts as near closed within this many radians.
+pub const NEAR_CLOSED: f32 = 0.1;
+/// Layer bits a paired leaf sets so the two leaves pass through each other.
+pub const PAIR_LAYER: u32 = 0x3000;
+
+/// One shut leaf, and whether its partner is near closed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pair {
+    pub paired: bool,
+    pub partner_near: bool,
+    pub angle: f32,
+    pub closed: f32,
+    pub latched: bool,
+}
+
+/// Whether the leaf stays shut, and whether it is driven toward closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PairTick {
+    pub shut: bool,
+    pub hold: bool,
+}
+
+/// Near closed: within 0.1 rad while at or short of it, and always once past it.
+/// A non-finite angle is not near.
+pub fn near_shut(angle: f32, closed: f32) -> bool {
+    if !angle.is_finite() || !closed.is_finite() {
+        return false;
+    }
+    if angle <= closed {
+        closed - NEAR_CLOSED < angle
+    } else {
+        true
+    }
+}
+
+/// The shut check for one leaf. A single door still holds. A paired door
+/// does not hold while its partner is away, and it leaves when its own
+/// angle is short of closed.
+pub fn pair_shut(door: &Pair) -> PairTick {
+    if !door.paired {
+        let leave = door.angle < door.closed - SINGLE_LEAVE && !door.latched;
+        PairTick {
+            shut: !leave,
+            hold: true,
+        }
+    } else if !door.partner_near {
+        let short = door.angle < door.closed;
+        PairTick {
+            shut: !short,
+            hold: false,
+        }
+    } else {
+        PairTick {
+            shut: true,
+            hold: true,
+        }
+    }
+}
+
+/// Add the pass-through bits when this leaf has a partner.
+pub fn pair_layer(layer: u32, paired: bool) -> u32 {
+    if paired { layer | PAIR_LAYER } else { layer }
+}
+
 /// The 3 cm shove along the door's facing. A zero facing shoves nothing.
 pub fn open_push(facing: Vec3) -> Vec3 {
     let length = facing.length();
@@ -677,5 +749,57 @@ mod tests {
         wide.fraction = SLIDE_PASS - 0.01;
         wide.closed = false;
         assert!(!slide_step(&mut wide).passable);
+    }
+
+    fn pair(angle: f32) -> Pair {
+        Pair {
+            paired: false,
+            partner_near: false,
+            angle,
+            closed: 1.0,
+            latched: false,
+        }
+    }
+
+    #[test]
+    fn a_partner_is_not_held_while_the_other_leaf_is_open() {
+        let on_the_line = pair_shut(&pair(1.0 - SINGLE_LEAVE));
+        assert!(on_the_line.shut);
+        assert!(on_the_line.hold);
+
+        let mut single = pair(1.0 - SINGLE_LEAVE - 0.01);
+        let left = pair_shut(&single);
+        assert!(!left.shut);
+        assert!(left.hold);
+        single.latched = true;
+        let barred = pair_shut(&single);
+        assert!(barred.shut);
+        assert!(barred.hold);
+
+        let mut open_partner = pair(1.0 - 0.01);
+        open_partner.paired = true;
+        let released = pair_shut(&open_partner);
+        assert!(!released.shut);
+        assert!(!released.hold);
+        open_partner.angle = 1.0;
+        let level = pair_shut(&open_partner);
+        assert!(level.shut);
+        assert!(!level.hold);
+
+        let mut near = pair(1.0 - 0.2);
+        near.paired = true;
+        near.partner_near = true;
+        let held = pair_shut(&near);
+        assert!(held.shut);
+        assert!(held.hold);
+
+        assert!(!near_shut(1.0 - NEAR_CLOSED, 1.0));
+        assert!(near_shut(1.0 - NEAR_CLOSED + 0.01, 1.0));
+        assert!(near_shut(1.0 + 0.2, 1.0));
+        assert!(!near_shut(f32::NAN, 1.0));
+
+        assert_eq!(pair_layer(0, true), PAIR_LAYER);
+        assert_eq!(pair_layer(PAIR_LAYER, true), PAIR_LAYER);
+        assert_eq!(pair_layer(1, false), 1);
     }
 }
