@@ -88,3 +88,10 @@ A wave's rate SHALL be the tick in seconds, then five thirds of that. While char
 #### Scenario: A 12 ms wave and a still front
 - **WHEN** 0.99 is charged by a 12 ms wave rate and by the blast rate, a radius grows while charging, and a released front of speed 0 and of speed 10 is stepped
 - **THEN** the wave releases, the blast amount stays at 1, the charging radius is 0.0015, the still front has reach 0.6 and trail 1, and speed 10 grows the radius by 0.006 with trail 1.7
+
+### Requirement: Shell ripple
+A shell ripple SHALL lose 0.04 times its scale from the strength. The shown value SHALL then move toward that strength by at most 0.06 times the scale upward and 0.04 times the scale downward. Below 0.05 on both it SHALL be gone.
+
+#### Scenario: A held shell and a faint one
+- **WHEN** shown 1 and strength 1 are stepped at scale 1 and at scale 2, shown 0.09 and strength 0.09 are stepped at scale 1, and shown 0.05 and strength 0.05 are stepped at scale 1
+- **THEN** scale 1 is 0.96, scale 2 is 0.92, the 0.09 pair stays at 0.05, and the 0.05 pair is gone

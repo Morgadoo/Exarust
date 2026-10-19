@@ -528,6 +528,26 @@ pub struct WaveFront {
     pub trail: f32,
 }
 
+/// One shell ripple still on the aura.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShellRipple {
+    pub shown: f32,
+    pub strength: f32,
+}
+
+/// One step of a shell ripple. `None` means it has faded off the aura.
+pub fn step_shell(shown: f32, strength: f32, scale: f32) -> Option<ShellRipple> {
+    let strength = (f64::from(strength) - f64::from(scale) * 0.04) as f32;
+    let hi = (f64::from(scale) * 0.06) as f32;
+    let lo = (f64::from(scale) * -0.04) as f32;
+    let shown = shown + (strength - shown).clamp(lo, hi);
+    if shown < 0.05 && strength < 0.05 {
+        None
+    } else {
+        Some(ShellRipple { shown, strength })
+    }
+}
+
 /// Reach grows by 0.6. Radius grows by 0.0006 of the speed. The trail is 0.07 of the speed plus 1.
 pub fn release_wave(reach: f32, radius: f32, speed: f32) -> WaveFront {
     WaveFront {
@@ -698,6 +718,20 @@ mod tests {
         let moving = release_wave(0.0, 0.0, 10.0);
         assert_eq!(moving.radius, f32::from_bits(0x3bc4_9ba6));
         assert_eq!(moving.trail, f32::from_bits(0x3fd9_999a));
+    }
+
+    #[test]
+    fn a_shell_ripple_fades_by_its_scale() {
+        let held = step_shell(1.0, 1.0, 1.0).expect("it holds");
+        assert_eq!(held.shown, f32::from_bits(0x3f75_c28f));
+        assert_eq!(held.strength, f32::from_bits(0x3f75_c28f));
+        let wide = step_shell(1.0, 1.0, 2.0).expect("it holds");
+        assert_eq!(wide.shown, f32::from_bits(0x3f6b_851f));
+        assert_eq!(wide.strength, f32::from_bits(0x3f6b_851f));
+        let edge = step_shell(0.09, 0.09, 1.0).expect("0.05 stays");
+        assert_eq!(edge.shown, f32::from_bits(0x3d4c_ccce));
+        assert_eq!(edge.strength, f32::from_bits(0x3d4c_ccce));
+        assert!(step_shell(0.05, 0.05, 1.0).is_none());
     }
 
     #[test]
