@@ -31,7 +31,9 @@
 //! limit, a slot before its earliest slot, or a mask that shares a bit
 //! with the roll's top three bits is refused. A performance counter
 //! replaces that roll: its low 32 bits are byte-reversed. A copied match
-//! then multiplies its fee and prize by one more than the slot.
+//! then multiplies its fee and prize by one more than the slot. That unit
+//! is a tempered word from a 624-word generator. A record copy writes the
+//! gaps, the plain fields, and the tail.
 //!
 //! Evidence: the arena career notes (money seed, coin rate, roster caps,
 //! the six standard matches and the seven specials, fee on entry, prize on
@@ -1179,6 +1181,136 @@ pub fn place_daily_match(
     placed
 }
 
+/// Words in the unit generator, and the index that means they must be mixed.
+const UNIT_WORDS: usize = 624;
+const UNIT_TWIST: u32 = 0x270;
+/// The stored scale, 2 to the power -32.
+const UNIT_SCALE: f64 = f64::from_bits(0x3df0_0000_0000_0000);
+
+/// A 624-word unit generator.
+#[derive(Clone, Debug)]
+pub struct UnitGen {
+    pub state: [u32; UNIT_WORDS],
+    pub index: u32,
+    pub mark: u32,
+    pub stamp: u32,
+}
+
+impl UnitGen {
+    /// Fill the words from `seed`. The mark and the stamp match, and the
+    /// index is 624, so the first draw mixes the words.
+    pub fn seed(seed: u32) -> Self {
+        let mut generator = Self {
+            state: [0; UNIT_WORDS],
+            index: UNIT_TWIST,
+            mark: 0,
+            stamp: 0,
+        };
+        generator.fill(seed);
+        generator
+    }
+
+    fn fill(&mut self, seed: u32) {
+        self.state[0] = seed;
+        for index in 1..UNIT_WORDS {
+            let prev = self.state[index - 1];
+            let mixed = prev ^ (prev >> 30);
+            self.state[index] = (index as u32).wrapping_add(mixed.wrapping_mul(0x6c07_8965));
+        }
+        self.index = UNIT_TWIST;
+    }
+
+    fn twist(&mut self) {
+        for index in 0..UNIT_WORDS {
+            let next = self.state[(index + 1) % UNIT_WORDS];
+            let ahead = self.state[(index + 397) % UNIT_WORDS];
+            let mixed = (self.state[index] & 0x8000_0000) | (next & 0x7fff_ffff);
+            let mut shifted = mixed >> 1;
+            if next & 1 != 0 {
+                shifted ^= 0x9908_b0df;
+            }
+            self.state[index] = ahead ^ shifted;
+        }
+    }
+
+    /// The next tempered word. Index 624 mixes the words first. A mark that
+    /// differs from the stamp seeds from the mark and reverses it.
+    pub fn next_word(&mut self) -> u32 {
+        let mut saved = self.index;
+        self.index = self.index.wrapping_add(1);
+        if self.mark != self.stamp || saved > UNIT_TWIST {
+            self.fill(self.mark);
+            self.mark = !self.mark;
+            self.stamp = self.mark;
+            saved = UNIT_TWIST;
+        }
+        if saved == UNIT_TWIST {
+            self.twist();
+            saved = 0;
+            self.index = 1;
+        }
+        let mut word = self.state[saved as usize];
+        word ^= word >> 11;
+        word ^= (word << 7) & 0x9d2c_5680;
+        word ^= (word << 15) & 0xefc6_0000;
+        word ^= word >> 18;
+        word
+    }
+
+    /// The next word times 2 to the power -32.
+    pub fn next_unit(&mut self) -> f64 {
+        f64::from(self.next_word()) * UNIT_SCALE
+    }
+}
+
+/// Why a record copy stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordCopyError {
+    /// The source or the destination is shorter than the record.
+    Short,
+    /// A field starts before the bytes already copied, or runs past the size.
+    Field,
+}
+
+/// One plain field: where it sits, and how many bytes it owns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlainField {
+    pub offset: usize,
+    pub width: usize,
+}
+
+/// Copy a record's gaps, plain fields, and tail.
+///
+/// Each field is raw bytes. The bytes before it are copied first, then the
+/// field, and after the last field the tail through `size`. A short buffer
+/// or a field out of order or past `size` is an error.
+pub fn copy_record(
+    source: &[u8],
+    dest: &mut [u8],
+    size: usize,
+    fields: &[PlainField],
+) -> Result<(), RecordCopyError> {
+    if source.len() < size || dest.len() < size {
+        return Err(RecordCopyError::Short);
+    }
+    let mut copied = 0usize;
+    for field in fields {
+        let end = field.offset.saturating_add(field.width);
+        if field.offset < copied || end > size {
+            return Err(RecordCopyError::Field);
+        }
+        if copied < field.offset {
+            dest[copied..field.offset].copy_from_slice(&source[copied..field.offset]);
+        }
+        dest[field.offset..end].copy_from_slice(&source[field.offset..end]);
+        copied = end;
+    }
+    if copied < size {
+        dest[copied..size].copy_from_slice(&source[copied..size]);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1864,5 +1996,74 @@ mod tests {
         assert_eq!(placed.extra, 3);
         assert_eq!(roll, 0x5000_0001);
         assert_eq!(placed.fee, 3);
+    }
+
+    #[test]
+    fn a_seeded_unit_scales_a_slot_and_a_record_copies_its_fields() {
+        let mut generator = UnitGen::seed(5489);
+        assert_eq!(generator.next_word(), 0xd091_bb5c);
+        assert_eq!(generator.next_word(), 0x22ae_9ef6);
+        assert_eq!(generator.index, 2);
+        let mut generator = UnitGen::seed(5489);
+        assert_eq!(generator.next_unit().to_bits(), 0x3fea_1237_6b80_0000);
+
+        let mut other = UnitGen::seed(99);
+        other.mark = 5489;
+        other.stamp = 0;
+        assert_eq!(other.next_word(), 0xd091_bb5c);
+        assert_eq!(other.mark, !5489);
+        assert_eq!(other.stamp, !5489);
+
+        let mut scaled = UnitGen::seed(1);
+        let unit = scaled.next_unit();
+        assert_eq!(unit.to_bits(), 0x3fda_b07d_0940_0000);
+        let open = DailyMatch {
+            kind: 0,
+            flags: 0,
+            shown_slot: 0,
+            shown_tier: 0,
+            slot: 0,
+            tier: 0,
+            fee: 3,
+            prize: 12,
+            extra: 0,
+        };
+        let mut roll = 0u32;
+        let placed = place_daily_match(&open, 4, unit, &mut roll);
+        assert_eq!(placed.tier, 4);
+
+        let source = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+        let mut dest = [0u8; 8];
+        let fields = [
+            PlainField {
+                offset: 1,
+                width: 2,
+            },
+            PlainField {
+                offset: 5,
+                width: 1,
+            },
+        ];
+        assert_eq!(copy_record(&source, &mut dest, 8, &fields), Ok(()));
+        assert_eq!(dest, source);
+        assert_eq!(source[0], 0x11);
+        assert_eq!(
+            copy_record(&source[..3], &mut dest, 8, &fields),
+            Err(RecordCopyError::Short)
+        );
+        let backwards = [
+            PlainField {
+                offset: 1,
+                width: 1,
+            },
+            PlainField {
+                offset: 0,
+                width: 1,
+            },
+        ];
+        assert_eq!(
+            copy_record(&source, &mut dest, 8, &backwards),
+            Err(RecordCopyError::Field)
+        );
     }
 }

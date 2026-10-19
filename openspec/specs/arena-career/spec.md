@@ -137,3 +137,17 @@ A placed match SHALL copy the template, then multiply the fee and the prize by o
 #### Scenario: Slot 3 quadruples the coins and kind 8 shows 5
 - **WHEN** a fee of 3 and a prize of 12 are placed at slot 3 with bit 2, the same template of kind 8 is placed at slot 3, a tier of -4 is placed at slot 2 with bit 2, a clear flag at slot 4 is placed with units 0 and 1, and bit 4 at slot 0 is placed from roll 0x10000000
 - **THEN** the fee is 12 and the prize is 48, the tier is 3, kind 8 shows 0 and 5, the negative tier is -1, unit 0 leaves tier 4, unit 1 leaves tier 0, and the extra is 3 at roll 0x50000001
+
+### Requirement: Unit draw
+A unit generator SHALL fill 624 words from a seed, then twist before the first word. Mixing shifts by 11, 7, 15 and 18. Seed 5489 SHALL yield words 0xd091bb5c and 0x22ae9ef6. The unit SHALL be that word times 2 to the power -32. A mark that differs from the stamp SHALL seed from the mark and reverse the mark.
+
+#### Scenario: Seed 5489 and a mark that does not match
+- **WHEN** a generator is seeded with 5489 and two words are drawn, and another seeded with 99 has its mark set to 5489 and its stamp left at 0
+- **THEN** the words are 0xd091bb5c and 0x22ae9ef6, the first unit's bits are 0x3fea12376b800000, the index is 2, and the mismatched draw yields 0xd091bb5c with the mark and the stamp reversed
+
+### Requirement: Plain field copy
+A record copy SHALL copy the bytes before each plain field, the field itself, and the tail through the record size. A short buffer, a field that starts before the previous end, or a field past the size SHALL be an error. The source SHALL stay unchanged.
+
+#### Scenario: Gaps, a field, and the tail
+- **WHEN** eight bytes 0x11 through 0x88 are copied with a field at 1 of width 2 and a field at 5 of width 1, a three-byte buffer is copied as size 8, and a field at 0 follows a field at 1
+- **THEN** the copy is 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, the source is unchanged, and both bad copies are errors
