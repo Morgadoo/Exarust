@@ -22,7 +22,10 @@
 //! each counted team as `(count × 0.5 + 0.5) × strength sum`, leaves an
 //! aside fighter out, and in mode 16 leaves the player's team out. The roll
 //! steps by `× 0x08088405 + 1` and the high half of that word times one more
-//! than the weight total picks the first team whose weights reach it.
+//! than the weight total picks the first team whose weights reach it. A
+//! bracket clears every losing id. The first group keeps a forced id and
+//! does not step the roll. A later group keeps the first team whose rounded
+//! weights pass the high half of the weight total times the stepped roll.
 //!
 //! Evidence: the arena career notes (money seed, coin rate, roster caps,
 //! the six standard matches and the seven specials, fee on entry, prize on
@@ -882,6 +885,127 @@ pub fn draw_unwatched(
     Some(sides[winner].team)
 }
 
+/// One slot in a bracket group.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BracketSlot {
+    pub id: i32,
+    pub strength: f32,
+}
+
+struct BracketTeam {
+    id: i32,
+    members: Vec<usize>,
+    score: f32,
+}
+
+/// Clear every losing record in a bracket.
+///
+/// Slots are taken in groups of `teams_in_group`, each team `per_team`
+/// slots wide. An id of exactly 0 is skipped. An id above 0 adds its
+/// strength. The team scores `(count × 0.5 + 0.5) × strength sum`. The
+/// first group keeps `forced` when that id is above 0, and does not step
+/// the roll. Any other group steps the roll by `× 0x08088405 + 1` and keeps
+/// the first team whose rounded weights are strictly above the high half of
+/// the weight total times that word. Every other counted id becomes 0. The
+/// result is whether more than one group was resolved.
+pub fn clear_losing_bracket(
+    slots: &mut [BracketSlot],
+    per_team: i32,
+    teams_in_group: i32,
+    forced: i32,
+    roll: &mut u32,
+) -> bool {
+    if per_team <= 0 || teams_in_group <= 0 {
+        return false;
+    }
+    let len = slots.len() as i32;
+    let mut cursor = 0i32;
+    let mut groups = 0i32;
+    while cursor < len {
+        if slots[cursor as usize].id == 0 {
+            cursor += 1;
+            continue;
+        }
+        let mut teams: Vec<BracketTeam> = Vec::new();
+        let mut largest = 0.0f32;
+        while cursor < len && (teams.len() as i32) < teams_in_group {
+            if slots[cursor as usize].id == 0 {
+                cursor += 1;
+                continue;
+            }
+            let team_id = slots[cursor as usize].id;
+            let base = (cursor / per_team) * per_team;
+            let mut members = Vec::new();
+            let mut sum = 0.0f32;
+            for offset in 0..per_team {
+                let index = base + offset;
+                if !(0..len).contains(&index) {
+                    continue;
+                }
+                let slot = slots[index as usize];
+                if slot.id > 0 {
+                    members.push(index as usize);
+                    sum += slot.strength;
+                }
+            }
+            cursor = base + per_team;
+            let count = members.len() as f32;
+            let score = (count * 0.5 + 0.5) * sum;
+            if largest < score {
+                largest = score;
+            }
+            teams.push(BracketTeam {
+                id: team_id,
+                members,
+                score,
+            });
+            if cursor >= len {
+                break;
+            }
+        }
+        if teams.is_empty() {
+            break;
+        }
+        groups += 1;
+        let winner = if forced > 0 && groups == 1 {
+            teams.iter().position(|team| team.id == forced)
+        } else {
+            let mut total = 0i32;
+            let mut weights = Vec::with_capacity(teams.len());
+            for team in &teams {
+                let ratio = team.score / largest;
+                let weight = ratio * ratio * 100.0;
+                let rounded = weight.round_ties_even() as i32;
+                weights.push(rounded);
+                total = total.wrapping_add(rounded);
+            }
+            *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
+            let product = i64::from(total).wrapping_mul(i64::from(*roll));
+            let pick = ((product as u64) >> 32) as i32;
+            let mut reached = 0i32;
+            let mut found = None;
+            for (index, weight) in weights.iter().enumerate() {
+                reached = reached.wrapping_add(*weight);
+                if reached <= pick {
+                    continue;
+                }
+                found = Some(index);
+                break;
+            }
+            found
+        };
+        for (index, team) in teams.iter().enumerate() {
+            if Some(index) == winner {
+                continue;
+            }
+            for &member in &team.members {
+                slots[member].id = 0;
+            }
+        }
+    }
+    groups > 1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1373,5 +1497,97 @@ mod tests {
         roll = 1;
         assert_eq!(draw_unwatched(&[], 1, 0, &mut roll), None);
         assert_eq!(roll, 0x0808_8406);
+    }
+
+    #[test]
+    fn a_bracket_clears_the_losing_records() {
+        let mut paired = [
+            BracketSlot {
+                id: 5,
+                strength: 4.0,
+            },
+            BracketSlot {
+                id: 9,
+                strength: 10.0,
+            },
+            BracketSlot {
+                id: 3,
+                strength: 4.0,
+            },
+            BracketSlot {
+                id: 7,
+                strength: 2.0,
+            },
+        ];
+        let mut roll = 1u32;
+        assert!(clear_losing_bracket(&mut paired, 1, 2, 5, &mut roll));
+        assert_eq!(roll, 0x0808_8406);
+        assert_eq!(paired.map(|slot| slot.id), [5, 0, 3, 0]);
+        assert_eq!(paired[1].strength, 10.0);
+
+        let mut one = [
+            BracketSlot {
+                id: 1,
+                strength: 4.0,
+            },
+            BracketSlot {
+                id: 9,
+                strength: 10.0,
+            },
+        ];
+        roll = 1;
+        assert!(!clear_losing_bracket(&mut one, 1, 2, 0, &mut roll));
+        assert_eq!(roll, 0x0808_8406);
+        assert_eq!(one.map(|slot| slot.id), [1, 0]);
+        assert_eq!(one[1].strength, 10.0);
+        roll = 100;
+        one[0].id = 1;
+        one[1].id = 9;
+        assert!(!clear_losing_bracket(&mut one, 1, 2, 0, &mut roll));
+        assert_eq!(roll, 0x2353_91f5);
+        assert_eq!(one.map(|slot| slot.id), [0, 9]);
+
+        let mut wide = [
+            BracketSlot {
+                id: 1,
+                strength: 2.0,
+            },
+            BracketSlot {
+                id: 0,
+                strength: 100.0,
+            },
+            BracketSlot {
+                id: 3,
+                strength: 2.0,
+            },
+            BracketSlot {
+                id: 3,
+                strength: 2.0,
+            },
+        ];
+        roll = 4;
+        assert!(!clear_losing_bracket(&mut wide, 2, 2, 0, &mut roll));
+        assert_eq!(roll, 0x2022_1015);
+        assert_eq!(wide.map(|slot| slot.id), [0, 0, 3, 3]);
+        assert_eq!(wide[1].strength, 100.0);
+
+        let mut forced = [
+            BracketSlot {
+                id: 5,
+                strength: 4.0,
+            },
+            BracketSlot {
+                id: 9,
+                strength: 10.0,
+            },
+        ];
+        roll = 4;
+        assert!(!clear_losing_bracket(&mut forced, 1, 2, 5, &mut roll));
+        assert_eq!(roll, 4);
+        assert_eq!(forced.map(|slot| slot.id), [5, 0]);
+
+        roll = 7;
+        assert!(!clear_losing_bracket(&mut [], 1, 2, 0, &mut roll));
+        assert_eq!(roll, 7);
     }
 }
