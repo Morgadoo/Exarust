@@ -46,3 +46,10 @@ While not waking, a tick SHALL change nothing. Through 1500 ms tone and target S
 #### Scenario: Tone stays 0 for 1500 ms, then rises
 - **WHEN** a knocked-out body is ticked at 1500 ms, at 1501 ms, and at 1502 ms, a getting-up body at phase 0 is ticked at 1501 ms, one at phase 1 is ticked at 1501 ms, a held body is ticked at 1501 ms, a body is ticked at 8000 ms, a body whose clip base is 0.995 is ticked at 8001 ms, a held body at that clip base is ticked at 8001 ms, and a body that is not waking is ticked at 9000 ms
 - **THEN** 1500 ms stays at tone 0 with clip base 0.4 and both flags, 1501 ms is tone 0.001 with the dormant flag cleared and the target still 0, 1502 ms is tone 0.002, phase 0 is tone 0.002, phase 1 is tone 0.001, the held body keeps the dormant flag, 8000 ms does not move the clip base, 0.995 finishes at tone 1 with the stance factor as the target and the flags cleared, the held finish keeps the waking flag, and the body that is not waking is unchanged
+
+### Requirement: Awaken and refresh
+The tick that drops the dormant flag SHALL tell each person who can see the body, and nobody else. A later tick SHALL tell nobody. When the clip base reaches 1 the reach SHALL be the greatest weapon reach, or the race reach when no hand bit is set. No weapon SHALL prefer thrust 0. A zero slash, crush and pierce sum SHALL prefer 10. Otherwise the preference SHALL be the rounded thrust share times 5, plus 1, and at most 9.
+
+#### Scenario: One witness hears, then the weapons refresh
+- **WHEN** a knocked-out body is ticked at 1501 ms with one person who can see, one person who cannot, and one non-person who can, then ticked again at 1502 ms, and a body whose clip base is 0.995 is ticked at 8001 ms with a 40 cm weapon of equal slash and thrust and an 80 cm weapon, and another such body is ticked with no hand bit and a weapon whose slash, crush and pierce are 0
+- **THEN** one witness hears at 1501 ms and none at 1502 ms, the armed finish reaches 80 cm and prefers thrust 6, and the empty-handed finish uses the race reach of 50 cm and prefers 10

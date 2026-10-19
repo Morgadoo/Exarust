@@ -515,6 +515,8 @@ pub struct WakeRise {
     pub phase: f32,
     /// The stored tone target. It stays 0 until the clip base reaches 1.
     pub target: f32,
+    /// How many witnesses heard "Awaken" on this tick.
+    pub heard: u32,
 }
 
 const WAKE_STILL_MS: u32 = 1_500;
@@ -523,6 +525,76 @@ const TONE_STEP: f64 = 0.001;
 const CLIP_STEP: f64 = 0.01;
 const CLIP_LIE: f32 = 0.4;
 const WAKE_NIBBLE: u32 = 0xF0;
+const HANDS_HELD: u32 = 0x30;
+
+/// Someone who might witness the sleeper waking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Witness {
+    /// A person record. Other records are skipped.
+    pub person: bool,
+    /// Line of sight to the sleeper.
+    pub sees: bool,
+}
+
+/// One held weapon's reach and the four damage weights.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HeldWeapon {
+    pub reach_cm: f32,
+    pub slash: f32,
+    pub crush: f32,
+    pub pierce: f32,
+    pub thrust: f32,
+}
+
+/// What the weapon refresh writes when a wake finishes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Hands {
+    /// Hand bits. Neither `0x10` nor `0x20` means the race reach is used.
+    pub bits: u32,
+    pub race_reach_cm: f32,
+    pub weapons: Vec<HeldWeapon>,
+    /// Negative when the short-grip mark is set.
+    pub negative_grip: bool,
+    pub reach_cm: f32,
+    pub thrust_pref: i32,
+}
+
+fn refresh_hands(hands: &mut Hands) {
+    let mut reach = 0.0;
+    for weapon in &hands.weapons {
+        if weapon.reach_cm > reach {
+            reach = weapon.reach_cm;
+        }
+    }
+    hands.thrust_pref = if let Some(weapon) = hands.weapons.first() {
+        let sum = weapon.slash + weapon.crush + weapon.pierce;
+        if sum == 0.0 {
+            10
+        } else {
+            let n = (weapon.thrust / sum * 5.0).round() as i32 + 1;
+            if n >= 10 {
+                9
+            } else if n < 1 && hands.negative_grip {
+                1
+            } else {
+                n
+            }
+        }
+    } else {
+        0
+    };
+    if hands.bits & HANDS_HELD == 0 {
+        reach = hands.race_reach_cm;
+    }
+    hands.reach_cm = reach;
+}
+
+fn heard_awaken(witnesses: &[Witness]) -> u32 {
+    witnesses
+        .iter()
+        .filter(|witness| witness.person && witness.sees)
+        .count() as u32
+}
 
 fn wake_past(since: i32, wait: u32, now: u32) -> bool {
     u64::from(since as u32) + u64::from(wait) < u64::from(now)
@@ -540,13 +612,21 @@ fn add_step(value: f32, step: f64) -> f32 {
 /// gains 0.001, plus 0.001·(1 − phase)² while getting up, and the stored
 /// target stays. The dormant flag clears unless the body is held. After 8 s
 /// the clip base gains 0.01 a tick, and at 1 the tone is 1, the target is
-/// the stance factor, and the flags clear unless held. The awaken script
-/// and the weapon refresh are not in this slice. Returns whether this tick
-/// is the one that drops the dormant flag.
-pub fn rise(sleeper: &mut Sleeper, drive: &mut Drive, wake: &mut WakeRise, now: u32) -> bool {
+/// the stance factor, the weapons are refreshed, and the flags clear unless
+/// held. The tick that drops the dormant flag tells every person who can
+/// see the body. Returns whether that tick fired.
+pub fn rise(
+    sleeper: &mut Sleeper,
+    drive: &mut Drive,
+    wake: &mut WakeRise,
+    now: u32,
+    witnesses: &[Witness],
+    hands: &mut Hands,
+) -> bool {
     if !sleeper.flags.has(StateFlags::WAKING) {
         return false;
     }
+    wake.heard = 0;
     if !wake_past(sleeper.wake_at, WAKE_STILL_MS, now) {
         wake.target = 0.0;
         drive.tone = 0.0;
@@ -574,7 +654,9 @@ pub fn rise(sleeper: &mut Sleeper, drive: &mut Drive, wake: &mut WakeRise, now: 
             if !sleeper.flags.has(StateFlags::HELD) {
                 sleeper.flags.0 &= !WAKE_NIBBLE;
             }
+            refresh_hands(hands);
         }
+        wake.heard = 0;
         return false;
     }
     if sleeper.flags.has(StateFlags::HELD) {
@@ -582,6 +664,7 @@ pub fn rise(sleeper: &mut Sleeper, drive: &mut Drive, wake: &mut WakeRise, now: 
         return false;
     }
     let awaken = sleeper.flags.has(StateFlags::DORMANT);
+    wake.heard = if awaken { heard_awaken(witnesses) } else { 0 };
     sleeper.flags.0 = (sleeper.flags.0 & !WAKE_NIBBLE) | StateFlags::WAKING;
     awaken
 }
@@ -1090,6 +1173,18 @@ mod tests {
         (sleeper, drive)
     }
 
+    fn tick_wake(sleeper: &mut Sleeper, drive: &mut Drive, wake: &mut WakeRise, now: u32) -> bool {
+        let mut hands = Hands {
+            bits: 0,
+            race_reach_cm: 50.0,
+            weapons: Vec::new(),
+            negative_grip: false,
+            reach_cm: 0.0,
+            thrust_pref: -1,
+        };
+        rise(sleeper, drive, wake, now, &[], &mut hands)
+    }
+
     #[test]
     fn a_knock_out_keeps_tone_at_zero_then_rises_by_a_thousandth() {
         let (mut sleeper, mut drive) = knocked_out();
@@ -1097,21 +1192,22 @@ mod tests {
             clip: 0.0,
             phase: 0.0,
             target: 4.0,
+            heard: 0,
         };
-        assert!(!rise(&mut sleeper, &mut drive, &mut wake, 1_500));
+        assert!(!tick_wake(&mut sleeper, &mut drive, &mut wake, 1_500));
         assert_eq!(drive.tone, 0.0);
         assert_eq!(wake.target, 0.0);
         assert_eq!(wake.clip, 0.4);
         assert_eq!(sleeper.condition, Condition::DOWN);
         assert_eq!(sleeper.flags.0, StateFlags::DORMANT | StateFlags::WAKING);
 
-        assert!(rise(&mut sleeper, &mut drive, &mut wake, 1_501));
+        assert!(tick_wake(&mut sleeper, &mut drive, &mut wake, 1_501));
         assert!((drive.tone - 0.001).abs() < 1e-6);
         assert_eq!(wake.target, 0.0);
         assert_eq!(sleeper.flags.0, StateFlags::WAKING);
         assert_eq!(sleeper.condition, Condition::DOWN);
 
-        assert!(!rise(&mut sleeper, &mut drive, &mut wake, 1_502));
+        assert!(!tick_wake(&mut sleeper, &mut drive, &mut wake, 1_502));
         assert!((drive.tone - 0.002).abs() < 1e-6);
         assert_eq!(sleeper.flags.0, StateFlags::WAKING);
 
@@ -1120,11 +1216,12 @@ mod tests {
             clip: 0.4,
             phase: 0.0,
             target: 0.0,
+            heard: 0,
         };
-        rise(&mut sleeper, &mut drive, &mut wake, 1_500);
+        tick_wake(&mut sleeper, &mut drive, &mut wake, 1_500);
         sleeper.condition = Condition::GETTING_UP;
         wake.phase = 0.0;
-        rise(&mut sleeper, &mut drive, &mut wake, 1_501);
+        tick_wake(&mut sleeper, &mut drive, &mut wake, 1_501);
         assert!((drive.tone - 0.002).abs() < 1e-6);
         assert_eq!(wake.target, 0.0);
         assert_eq!(sleeper.condition, Condition::GETTING_UP);
@@ -1134,10 +1231,11 @@ mod tests {
             clip: 0.4,
             phase: 1.0,
             target: 0.0,
+            heard: 0,
         };
-        rise(&mut sleeper, &mut drive, &mut wake, 1_500);
+        tick_wake(&mut sleeper, &mut drive, &mut wake, 1_500);
         sleeper.condition = Condition::GETTING_UP;
-        rise(&mut sleeper, &mut drive, &mut wake, 1_501);
+        tick_wake(&mut sleeper, &mut drive, &mut wake, 1_501);
         assert!((drive.tone - 0.001).abs() < 1e-6);
 
         let (mut sleeper, mut drive) = knocked_out();
@@ -1146,8 +1244,9 @@ mod tests {
             clip: 0.4,
             phase: 0.0,
             target: 0.0,
+            heard: 0,
         };
-        assert!(!rise(&mut sleeper, &mut drive, &mut wake, 1_501));
+        assert!(!tick_wake(&mut sleeper, &mut drive, &mut wake, 1_501));
         assert_eq!(
             sleeper.flags.0,
             StateFlags::DORMANT | StateFlags::WAKING | StateFlags::HELD
@@ -1158,8 +1257,9 @@ mod tests {
             clip: 0.4,
             phase: 0.0,
             target: 0.0,
+            heard: 0,
         };
-        rise(&mut sleeper, &mut drive, &mut wake, 8_000);
+        tick_wake(&mut sleeper, &mut drive, &mut wake, 8_000);
         assert_eq!(wake.clip, 0.4);
         assert!((drive.tone - 0.001).abs() < 1e-6);
 
@@ -1168,8 +1268,9 @@ mod tests {
             clip: 0.995,
             phase: 0.0,
             target: 4.0,
+            heard: 0,
         };
-        rise(&mut sleeper, &mut drive, &mut wake, 8_001);
+        tick_wake(&mut sleeper, &mut drive, &mut wake, 8_001);
         assert_eq!(wake.clip, 1.0);
         assert_eq!(drive.tone, 1.0);
         assert_eq!(wake.target, drive.stance());
@@ -1182,8 +1283,9 @@ mod tests {
             clip: 0.995,
             phase: 0.0,
             target: 4.0,
+            heard: 0,
         };
-        rise(&mut sleeper, &mut drive, &mut wake, 8_001);
+        tick_wake(&mut sleeper, &mut drive, &mut wake, 8_001);
         assert_eq!(drive.tone, 1.0);
         assert_eq!(wake.target, drive.stance());
         assert!(sleeper.flags.has(StateFlags::HELD));
@@ -1204,10 +1306,131 @@ mod tests {
             clip: 0.9,
             phase: 0.0,
             target: 3.0,
+            heard: 0,
         };
-        assert!(!rise(&mut sleeper, &mut drive, &mut wake, 9_000));
+        assert!(!tick_wake(&mut sleeper, &mut drive, &mut wake, 9_000));
         assert_eq!(drive.tone, 0.5);
         assert_eq!(wake.clip, 0.9);
         assert_eq!(sleeper.condition, Condition::DORMANT);
+    }
+
+    #[test]
+    fn an_awaken_is_heard_by_who_can_see_and_the_weapons_refresh_at_full_clip() {
+        let (mut sleeper, mut drive) = knocked_out();
+        let mut wake = WakeRise {
+            clip: 0.4,
+            phase: 0.0,
+            target: 0.0,
+            heard: 0,
+        };
+        let witnesses = [
+            Witness {
+                person: true,
+                sees: true,
+            },
+            Witness {
+                person: true,
+                sees: false,
+            },
+            Witness {
+                person: false,
+                sees: true,
+            },
+        ];
+        let mut hands = Hands {
+            bits: 0x10,
+            race_reach_cm: 50.0,
+            weapons: vec![HeldWeapon {
+                reach_cm: 40.0,
+                slash: 1.0,
+                crush: 0.0,
+                pierce: 0.0,
+                thrust: 1.0,
+            }],
+            negative_grip: false,
+            reach_cm: 0.0,
+            thrust_pref: -1,
+        };
+        assert!(rise(
+            &mut sleeper,
+            &mut drive,
+            &mut wake,
+            1_501,
+            &witnesses,
+            &mut hands
+        ));
+        assert_eq!(wake.heard, 1);
+        assert_eq!(hands.thrust_pref, -1);
+
+        assert!(!rise(
+            &mut sleeper,
+            &mut drive,
+            &mut wake,
+            1_502,
+            &witnesses,
+            &mut hands
+        ));
+        assert_eq!(wake.heard, 0);
+
+        let (mut sleeper, mut drive) = knocked_out();
+        let mut wake = WakeRise {
+            clip: 0.995,
+            phase: 0.0,
+            target: 0.0,
+            heard: 9,
+        };
+        let mut hands = Hands {
+            bits: 0x10,
+            race_reach_cm: 50.0,
+            weapons: vec![
+                HeldWeapon {
+                    reach_cm: 40.0,
+                    slash: 1.0,
+                    crush: 0.0,
+                    pierce: 0.0,
+                    thrust: 1.0,
+                },
+                HeldWeapon {
+                    reach_cm: 80.0,
+                    slash: 0.0,
+                    crush: 0.0,
+                    pierce: 0.0,
+                    thrust: 0.0,
+                },
+            ],
+            negative_grip: false,
+            reach_cm: 0.0,
+            thrust_pref: -1,
+        };
+        rise(&mut sleeper, &mut drive, &mut wake, 8_001, &[], &mut hands);
+        assert_eq!(hands.reach_cm, 80.0);
+        assert_eq!(hands.thrust_pref, 6);
+        assert_eq!(wake.heard, 0);
+        assert_eq!(drive.tone, 1.0);
+
+        let (mut sleeper, mut drive) = knocked_out();
+        let mut wake = WakeRise {
+            clip: 0.995,
+            phase: 0.0,
+            target: 0.0,
+            heard: 0,
+        };
+        let mut bare = Hands {
+            bits: 0,
+            race_reach_cm: 50.0,
+            weapons: vec![HeldWeapon {
+                reach_cm: 80.0,
+                slash: 0.0,
+                crush: 0.0,
+                pierce: 0.0,
+                thrust: 1.0,
+            }],
+            negative_grip: false,
+            reach_cm: 0.0,
+            thrust_pref: -1,
+        };
+        rise(&mut sleeper, &mut drive, &mut wake, 8_001, &[], &mut bare);
+        assert_eq!(bare.reach_cm, 50.0);
+        assert_eq!(bare.thrust_pref, 10);
     }
 }
