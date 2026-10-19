@@ -975,6 +975,49 @@ pub fn apply_cloth_pressure(input: ClothPressureInput) -> ClothPressure {
     }
 }
 
+/// The cloth destroy's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClothDestroyInput {
+    pub free_flag: bool,
+    pub pointers: [bool; 4],
+    pub is_self_root: bool,
+    pub has_origin: bool,
+    pub has_list: bool,
+    pub list_count: i32,
+}
+
+/// The cloth destroy's calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClothDestroy {
+    pub release_calls: u32,
+    pub pointer_frees: u32,
+    pub origin_freed: bool,
+    pub field_calls: u32,
+    pub list_frees: i32,
+    pub list_free: bool,
+    pub base_calls: u32,
+    pub final_calls: u32,
+}
+
+/// Releases the cloth's pointers, fields and list.
+pub fn destroy_cloth(input: ClothDestroyInput) -> ClothDestroy {
+    let free = u32::from(input.free_flag);
+    ClothDestroy {
+        release_calls: free,
+        pointer_frees: input.pointers.iter().filter(|present| **present).count() as u32,
+        origin_freed: input.is_self_root && input.has_origin,
+        field_calls: 3,
+        list_frees: if input.has_list {
+            input.list_count.max(0)
+        } else {
+            0
+        },
+        list_free: input.has_list,
+        base_calls: 1,
+        final_calls: free,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1434,5 +1477,42 @@ mod tests {
         assert!(gated.skipped);
         assert_eq!(gated.coupled_calls, 0);
         assert!(!gated.zeroed);
+    }
+
+    #[test]
+    fn the_cloth_destroys_its_owned_parts() {
+        let freeing = destroy_cloth(ClothDestroyInput {
+            free_flag: true,
+            pointers: [true; 4],
+            is_self_root: true,
+            has_origin: true,
+            has_list: true,
+            list_count: 3,
+        });
+        assert_eq!(freeing.release_calls, 1);
+        assert_eq!(freeing.pointer_frees, 4);
+        assert!(freeing.origin_freed);
+        assert_eq!(freeing.field_calls, 3);
+        assert_eq!(freeing.list_frees, 3);
+        assert!(freeing.list_free);
+        assert_eq!(freeing.base_calls, 1);
+        assert_eq!(freeing.final_calls, 1);
+
+        let quiet = destroy_cloth(ClothDestroyInput {
+            free_flag: false,
+            pointers: [false; 4],
+            is_self_root: false,
+            has_origin: false,
+            has_list: false,
+            list_count: 0,
+        });
+        assert_eq!(quiet.release_calls, 0);
+        assert_eq!(quiet.pointer_frees, 0);
+        assert!(!quiet.origin_freed);
+        assert_eq!(quiet.field_calls, 3);
+        assert_eq!(quiet.list_frees, 0);
+        assert!(!quiet.list_free);
+        assert_eq!(quiet.base_calls, 1);
+        assert_eq!(quiet.final_calls, 0);
     }
 }

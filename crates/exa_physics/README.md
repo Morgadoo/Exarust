@@ -141,6 +141,7 @@ last tick dealt. Nothing calls them unless a tool is on
 - The rebuild copies the origin, rejects a mismatched override and transforms every particle point into a fresh submitted buffer.
 - The sync skips its transform and pose on the meta bit 0x10.
 - The pressure pass normalizes the normals, projects each edge, couples the result and zeroes the normals.
+- The destructor frees four pointers, the root origin, three managed fields and the list before the base and final calls.
 - Fixed-timestep deterministic simulation set, independent of frame rate.
 - Rigid bodies (props, doors, items), collision against level geometry and convex hulls.
 - Articulated character bodies driven by joint motors toward animation targets (active ragdoll / 'motile' dynamics).
