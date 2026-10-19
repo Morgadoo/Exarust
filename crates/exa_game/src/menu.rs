@@ -35,6 +35,10 @@ pub const HAND_WORDS: [u32; 10] = [
 ];
 /// Code stored when a session mark changes to 0.
 pub const ENTERED_CODE: u32 = 4;
+/// Bit set on the view word when the session mark is raised to 1.
+pub const VIEW_BIT: u32 = 0x10;
+/// Mask kept on the world flags when a non-zero side is stored.
+pub const WORLD_KEEP: u32 = 0xffff_fdbd;
 /// Words copied from one control bank. The bytes between them are not copied.
 pub const BANK_WORDS: usize = 16;
 
@@ -140,6 +144,34 @@ pub struct MatchGate {
     pub bank_side: u8,
     /// Raised when the side is not 0.
     pub side_notice: u8,
+    /// Cleared when the session mark is raised to 1.
+    pub side_mid: u8,
+    /// Cleared when a non-zero side is stored, and when the mark is raised.
+    pub side_tail: u8,
+    /// When this is not 0, a world byte does not replace the side.
+    pub side_lock: u8,
+    /// A world is present, so a cleared mark updates the side from its byte.
+    pub world_open: bool,
+    /// World byte the side is taken from, then written back.
+    pub world_side: u8,
+    /// When this is not 0, that byte is forced to 0.
+    pub world_force: u8,
+    /// Cleared when the mark is raised and a world is open.
+    pub world_child_quiet: u8,
+    pub world_flags: u32,
+    pub world_child_code: u32,
+    /// Cleared when a non-zero side is stored.
+    pub world_child_span: u32,
+    /// Cleared when the session mark is raised to 1.
+    pub hold_byte: u8,
+    pub view_flags: u32,
+    pub view_code: u32,
+    /// The two words passed with a shown value. Filled at run time.
+    pub draw_owner: u64,
+    pub draw_extra: u64,
+    pub draw_owner_used: u64,
+    pub draw_extra_used: u64,
+    pub draw_value: u64,
     /// Cleared by the first bank and set by the second. A match leaves the words.
     pub bank_flag: u8,
     pub bank_active: [u64; BANK_WORDS],
@@ -230,6 +262,24 @@ impl MatchGate {
             entered_code: 0,
             bank_side: 0,
             side_notice: 0,
+            side_mid: 0,
+            side_tail: 0,
+            side_lock: 0,
+            world_open: false,
+            world_side: 0,
+            world_force: 0,
+            world_child_quiet: 0,
+            world_flags: 0,
+            world_child_code: 0,
+            world_child_span: 0,
+            hold_byte: 0,
+            view_flags: 0,
+            view_code: 0,
+            draw_owner: 0,
+            draw_extra: 0,
+            draw_owner_used: 0,
+            draw_extra_used: 0,
+            draw_value: 0,
             bank_flag: 0,
             bank_active: [0; BANK_WORDS],
             bank_first: [0; BANK_WORDS],
@@ -288,6 +338,30 @@ impl MatchGate {
         self.held = false;
         self.phase = PHASE_TRANSITIONING;
         true
+    }
+
+    /// Raise the session mark to 1. A mark that is already 1 changes nothing.
+    pub fn set_session_aside(&mut self) {
+        if self.session_mark == 1 {
+            return;
+        }
+        self.session_mark = 1;
+        self.entered_flag = 1;
+        self.entered_code = 0;
+        if self.world_open {
+            self.world_child_quiet = 0;
+            self.world_flags = 0;
+            self.world_child_code = ENTERED_CODE;
+        }
+        self.side_notice = 0;
+        self.side_mid = 0;
+        self.side_tail = 0;
+        self.entered_flag = 1;
+        self.entered_code = 0;
+        select_bank(self, 0);
+        self.hold_byte = 0;
+        self.view_flags |= VIEW_BIT;
+        self.view_code = 0;
     }
 }
 
@@ -501,6 +575,10 @@ fn follow_lists(gate: &mut MatchGate) {
         gate.session_mark = 0;
         gate.entered_flag = 0;
         gate.entered_code = ENTERED_CODE;
+        if gate.world_open {
+            gate.bank_side = u8::from(gate.world_side == 0);
+            apply_world_side(gate);
+        }
         if gate.bank_side == 0 {
             select_bank(gate, 1);
         } else {
@@ -510,9 +588,41 @@ fn follow_lists(gate: &mut MatchGate) {
     }
 }
 
+/// Store a world byte as the side when it differs, then select that bank.
+/// Callback registration is not in.
+fn apply_world_side(gate: &mut MatchGate) {
+    if gate.side_lock != 0 {
+        return;
+    }
+    let mut next = gate.world_side;
+    if gate.world_force != 0 {
+        next = 0;
+    }
+    if next == gate.bank_side {
+        return;
+    }
+    gate.bank_side = next;
+    if next == 0 {
+        select_bank(gate, 1);
+        gate.side_notice = 0;
+    } else {
+        select_bank(gate, 2);
+        gate.side_notice = 1;
+        gate.side_tail = 0;
+        gate.world_child_span = 0;
+        gate.world_flags &= WORLD_KEEP;
+    }
+    gate.world_side = gate.bank_side;
+}
+
 /// Copy sixteen words when the bank flag does not already match, then run
 /// the install. The platform cursor call is counted.
 fn select_bank(gate: &mut MatchGate, mode: u8) {
+    if mode == 0 {
+        install_index(gate, 0);
+        gate.bank_installs = gate.bank_installs.saturating_add(1);
+        return;
+    }
     if mode == 1 {
         if gate.bank_flag != 0 {
             gate.bank_flag = 0;
@@ -569,6 +679,11 @@ fn show_installed(gate: &mut MatchGate, value: u64) {
     if value == gate.install_shown || value == 0 || gate.install_blocked != 0 {
         return;
     }
+    let owner = gate.draw_owner;
+    let extra = gate.draw_extra;
+    gate.draw_owner_used = owner;
+    gate.draw_extra_used = extra;
+    gate.draw_value = value;
     gate.install_shows = gate.install_shows.saturating_add(1);
     gate.install_shown = value;
 }
@@ -1278,5 +1393,136 @@ mod tests {
         assert_eq!(closed.install_shows, 0);
         assert_eq!(closed.install_hooks, 0);
         assert_eq!(closed.bank_installs, 1);
+    }
+
+    #[test]
+    fn a_shown_value_is_drawn_and_a_world_byte_sets_the_side() {
+        let mut drawn = MatchGate::playing();
+        drawn.focus = true;
+        drawn.session_mark = 1;
+        drawn.install_ready = 1;
+        drawn.install_first = 1;
+        drawn.install_records = vec![installed(42, true)];
+        drawn.draw_owner = 7;
+        drawn.draw_extra = 8;
+        let mut dying = hired_physician();
+        assert!(drawn.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut dying));
+        assert_eq!(drawn.draw_owner_used, 7);
+        assert_eq!(drawn.draw_extra_used, 8);
+        assert_eq!(drawn.draw_value, 42);
+        assert_eq!(drawn.install_shows, 1);
+        assert_eq!(dying.deaths, 1);
+
+        let mut clear = MatchGate::playing();
+        clear.focus = true;
+        clear.session_mark = 1;
+        clear.world_open = true;
+        clear.bank_flag = 1;
+        clear.bank_first = bank(11);
+        let mut company = Company::new("Ash");
+        assert!(clear.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert_eq!(clear.bank_side, 0);
+        assert_eq!(clear.world_side, 0);
+        assert_eq!(clear.bank_active, bank(11));
+        assert_eq!(clear.bank_flag, 0);
+        assert_eq!(clear.bank_installs, 2);
+        assert_eq!(clear.side_notice, 0);
+
+        let mut other = MatchGate::playing();
+        other.focus = true;
+        other.session_mark = 1;
+        other.world_open = true;
+        other.world_side = 5;
+        other.world_flags = u32::MAX;
+        other.world_child_span = 9;
+        other.side_tail = 3;
+        other.bank_second = bank(22);
+        let mut company = Company::new("Ash");
+        assert!(other.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert_eq!(other.bank_side, 5);
+        assert_eq!(other.world_side, 5);
+        assert_eq!(other.bank_active, bank(22));
+        assert_eq!(other.bank_flag, 1);
+        assert_eq!(other.side_notice, 1);
+        assert_eq!(other.side_tail, 0);
+        assert_eq!(other.world_child_span, 0);
+        assert_eq!(other.world_flags, WORLD_KEEP);
+        assert_eq!(other.bank_installs, 2);
+
+        let mut forced = MatchGate::playing();
+        forced.focus = true;
+        forced.session_mark = 1;
+        forced.world_open = true;
+        forced.world_side = 5;
+        forced.world_force = 1;
+        forced.world_flags = 0x11;
+        forced.bank_active = bank(7);
+        let mut company = Company::new("Ash");
+        assert!(forced.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert_eq!(forced.bank_side, 0);
+        assert_eq!(forced.world_side, 5);
+        assert_eq!(forced.world_flags, 0x11);
+        assert_eq!(forced.bank_active, bank(7));
+        assert_eq!(forced.bank_flag, 0);
+        assert_eq!(forced.bank_installs, 1);
+
+        let mut locked = MatchGate::playing();
+        locked.focus = true;
+        locked.session_mark = 1;
+        locked.world_open = true;
+        locked.side_lock = 1;
+        locked.bank_flag = 1;
+        locked.side_tail = 3;
+        locked.bank_active = bank(7);
+        let mut company = Company::new("Ash");
+        assert!(locked.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert_eq!(locked.bank_side, 1);
+        assert_eq!(locked.world_side, 0);
+        assert_eq!(locked.side_notice, 1);
+        assert_eq!(locked.side_tail, 3);
+        assert_eq!(locked.bank_flag, 1);
+        assert_eq!(locked.bank_active, bank(7));
+        assert_eq!(locked.bank_installs, 1);
+
+        let mut aside = MatchGate::playing();
+        aside.world_open = true;
+        aside.world_child_quiet = 3;
+        aside.world_flags = 0xff;
+        aside.world_child_code = 9;
+        aside.side_notice = 1;
+        aside.side_mid = 1;
+        aside.side_tail = 1;
+        aside.hold_byte = 1;
+        aside.view_code = 6;
+        aside.install_ready = 1;
+        aside.install_index = 5;
+        aside.install_fallback = 9;
+        aside.bank_flag = 1;
+        aside.bank_active = bank(7);
+        aside.set_session_aside();
+        assert_eq!(aside.session_mark, 1);
+        assert_eq!(aside.entered_flag, 1);
+        assert_eq!(aside.entered_code, 0);
+        assert_eq!(aside.world_child_quiet, 0);
+        assert_eq!(aside.world_flags, 0);
+        assert_eq!(aside.world_child_code, ENTERED_CODE);
+        assert_eq!(aside.side_notice, 0);
+        assert_eq!(aside.side_mid, 0);
+        assert_eq!(aside.side_tail, 0);
+        assert_eq!(aside.install_index, 0);
+        assert_eq!(aside.install_shown, 9);
+        assert_eq!(aside.install_armed, 1);
+        assert_eq!(aside.draw_value, 9);
+        assert_eq!(aside.bank_active, bank(7));
+        assert_eq!(aside.bank_flag, 1);
+        assert_eq!(aside.hold_byte, 0);
+        assert_eq!(aside.view_flags, VIEW_BIT);
+        assert_eq!(aside.view_code, 0);
+        assert_eq!(aside.bank_installs, 1);
+
+        aside.entered_code = 7;
+        aside.set_session_aside();
+        assert_eq!(aside.entered_code, 7);
+        assert_eq!(aside.bank_installs, 1);
     }
 }
