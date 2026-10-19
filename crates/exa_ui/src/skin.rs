@@ -2369,6 +2369,84 @@ pub fn draw_capped_span(
     }
 }
 
+/// A label place. The style bits 0x7000 align horizontally and 0x700 vertically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LabelPlace {
+    pub x: i16,
+    pub y: i16,
+    pub w: i16,
+    pub h: i16,
+    pub inset: i16,
+    pub style: u32,
+    pub state: u32,
+}
+
+/// The measured text and the font's line height and base.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LabelMetrics {
+    pub width: i32,
+    pub line_height: i32,
+    pub base: i32,
+}
+
+/// Where the label lands, its ink, and the renderer it calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineLabel {
+    pub x: i32,
+    pub y: i32,
+    pub ink_index: Option<u32>,
+    pub colour: Option<[u8; 4]>,
+    pub coloured: bool,
+    pub text_calls: u32,
+}
+
+/// Places the label. The style word aligns it, and the state word chooses
+/// the ink and the one-pixel nudge.
+pub fn place_line_label(
+    place: LabelPlace,
+    metrics: LabelMetrics,
+    unit: i32,
+    inks: [[u8; 4]; 3],
+) -> LineLabel {
+    let px = i32::from(place.x);
+    let py = i32::from(place.y);
+    let pw = i32::from(place.w);
+    let ph = i32::from(place.h);
+    let inset = i32::from(place.inset);
+    let x = match place.style & 0x7000 {
+        0x1000 => px - metrics.width - unit,
+        0x2000 => px + (pw - 1 - metrics.width) / 2,
+        0x3000 => px + pw - metrics.width - unit,
+        0x4000 => px + pw + unit,
+        _ => px + inset + (unit + 1) / 2,
+    };
+    let mut y = match place.style & 0x700 {
+        0x100 => py - unit / 2,
+        0x200 => py + (ph + metrics.line_height + 2) / 2,
+        0x300 => py + ph + metrics.base - 1,
+        0x400 => py + ph,
+        _ => py + (unit + 1) / 2,
+    };
+    let (ink_index, coloured, nudge) = if (place.state & 0x10) > 0 {
+        (Some(0), false, 0)
+    } else if (place.state & 0xf_0000) == 0x1_0000 {
+        (None, true, i32::from((place.state & 0x40) > 0))
+    } else if (place.state & 0x60) > 0 {
+        (Some(2), false, 1)
+    } else {
+        (Some(1), false, 0)
+    };
+    y += nudge;
+    LineLabel {
+        x,
+        y,
+        ink_index,
+        colour: ink_index.map(|index| inks[index as usize]),
+        coloured,
+        text_calls: 1,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5004,5 +5082,67 @@ mod tests {
         let zero = draw_capped_span(5, 0.0, 0.0, 0.0, 0, SPAN_VIEW_UNSET);
         assert_eq!(zero.quads[0][0].1.to_bits(), (-10.0_f32).to_bits());
         assert_eq!(zero.quads[0][1].1.to_bits(), 10.0_f32.to_bits());
+    }
+
+    #[test]
+    fn a_line_label_aligns_its_text() {
+        let metrics = LabelMetrics {
+            width: 40,
+            line_height: 24,
+            base: 18,
+        };
+        let inks = [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]];
+        let place = |style: u32, state: u32, inset: i16| LabelPlace {
+            x: 10,
+            y: 20,
+            w: 100,
+            h: 80,
+            inset,
+            style,
+            state,
+        };
+
+        let left = place_line_label(place(0x1000, 0, 0), metrics, 5, inks);
+        assert_eq!((left.x, left.y), (-35, 23));
+        let centred = place_line_label(place(0x2000, 0, 0), metrics, 5, inks);
+        assert_eq!(centred.x, 39);
+        let inside = place_line_label(place(0x3000, 0, 0), metrics, 5, inks);
+        assert_eq!(inside.x, 65);
+        let outside = place_line_label(place(0x4000, 0, 0), metrics, 5, inks);
+        assert_eq!(outside.x, 115);
+        let plain = place_line_label(place(0, 0, 0), metrics, 5, inks);
+        assert_eq!((plain.x, plain.y), (13, 23));
+        let inset = place_line_label(place(0, 0, 7), metrics, 5, inks);
+        assert_eq!(inset.x, 20);
+
+        let up = place_line_label(place(0x100, 0, 0), metrics, 5, inks);
+        assert_eq!(up.y, 18);
+        let middle = place_line_label(place(0x200, 0, 0), metrics, 5, inks);
+        assert_eq!(middle.y, 73);
+        let base = place_line_label(place(0x300, 0, 0), metrics, 5, inks);
+        assert_eq!(base.y, 117);
+        let bottom = place_line_label(place(0x400, 0, 0), metrics, 5, inks);
+        assert_eq!(bottom.y, 100);
+
+        let first = place_line_label(place(0, 0x10, 0), metrics, 5, inks);
+        assert_eq!(first.ink_index, Some(0));
+        assert_eq!(first.colour, Some([1, 2, 3, 4]));
+        assert!(!first.coloured);
+        assert_eq!(first.text_calls, 1);
+
+        let coloured = place_line_label(place(0, 0x1_0040, 0), metrics, 5, inks);
+        assert!(coloured.coloured);
+        assert_eq!(coloured.ink_index, None);
+        assert_eq!(coloured.colour, None);
+        assert_eq!(coloured.y, 24);
+
+        let third = place_line_label(place(0, 0x60, 0), metrics, 5, inks);
+        assert_eq!(third.ink_index, Some(2));
+        assert_eq!(third.colour, Some([9, 10, 11, 12]));
+        assert_eq!(third.y, 24);
+
+        let second = place_line_label(place(0, 0, 0), metrics, 5, inks);
+        assert_eq!(second.ink_index, Some(1));
+        assert_eq!(second.colour, Some([5, 6, 7, 8]));
     }
 }
