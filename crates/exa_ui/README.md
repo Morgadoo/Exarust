@@ -125,7 +125,11 @@ size 100 by 80 draws a left cap from 0, 85 to 30, 105, a right cap from 100, 85
 to 90, 105, a middle from 30, 95 to 90, 105, and a thumb from 105, 30 to
 95, 40. Its cap sample binds twice, the middle once and the thumb once. A
 vertical scale of 1 stores heights 80, 104 and 128; one half stores 40, 52 and
-64; 2 stores 160, 208 and 0.
+64; 2 stores 160, 208 and 0. The rail hit test uses a span of four units, or
+six when wide: flags 0x30 equal 0x10 and a y at or above the span return -4
+on control bit 2 and -3 on bit 1; otherwise control bit 0x200 and x past the
+left limit return -8, -10 or -9 around the limits. The meaning of the codes is
+not established.
 
 ## Scope
 

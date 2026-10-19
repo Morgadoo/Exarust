@@ -2570,7 +2570,6 @@ pub struct LineScale {
     pub scale_calls: u32,
     pub heights: [u8; 3],
 }
-
 /// Scales the three heights. Each product rounds to nearest even and keeps
 /// the low byte; an out-of-range product stores 0.
 pub fn scale_line(scale_y: f32) -> LineScale {
@@ -2587,6 +2586,47 @@ pub fn scale_line(scale_y: f32) -> LineScale {
         scale_calls: 1,
         heights,
     }
+}
+
+/// A place for the rail hit test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HitPlace {
+    pub flags: u32,
+    pub control: u32,
+    pub right: i32,
+    pub left: i32,
+    pub top: i32,
+    pub bottom: i32,
+}
+
+/// Returns the original's hit code: 0, -3, -4, -8, -9 or -10. The meaning
+/// of each code is not established.
+pub fn hit_line(place: HitPlace, x: i32, y: i32, unit: i32, wide: bool) -> i32 {
+    let span = if wide {
+        unit.wrapping_mul(6)
+    } else {
+        unit.wrapping_shl(2)
+    };
+    if (place.flags & 0x30) == 0x10 && span >= y {
+        if (place.control & 2) != 0 && place.right.wrapping_sub(span) <= x {
+            return -4;
+        }
+        if (place.control & 1) != 0 {
+            return -3;
+        }
+    } else if (place.control & 0x200) != 0 && x > place.left {
+        if y > place.top {
+            if y < place.bottom {
+                return -8;
+            }
+            if place.bottom.wrapping_add(span) > y {
+                return -10;
+            }
+        } else if place.top.wrapping_sub(span) < y {
+            return -9;
+        }
+    }
+    0
 }
 
 #[cfg(test)]
@@ -5367,5 +5407,49 @@ mod tests {
 
         let double = scale_line(2.0);
         assert_eq!(double.heights, [160, 208, 0]);
+    }
+
+    #[test]
+    fn a_line_hit_returns_the_original_codes() {
+        let place = HitPlace {
+            flags: 0x10,
+            control: 2,
+            right: 100,
+            left: 10,
+            top: 20,
+            bottom: 60,
+        };
+        assert_eq!(hit_line(place, 90, 10, 5, false), -4);
+        assert_eq!(hit_line(place, 50, 10, 5, false), 0);
+        assert_eq!(
+            hit_line(
+                HitPlace {
+                    control: 1,
+                    ..place
+                },
+                10,
+                10,
+                5,
+                false
+            ),
+            -3
+        );
+        assert_eq!(hit_line(place, 90, 25, 5, true), -4);
+
+        let strip = HitPlace {
+            flags: 0,
+            control: 0x200,
+            right: 100,
+            left: 10,
+            top: 20,
+            bottom: 60,
+        };
+        assert_eq!(hit_line(strip, 50, 30, 5, false), -8);
+        assert_eq!(hit_line(strip, 50, 70, 5, false), -10);
+        assert_eq!(hit_line(strip, 50, 90, 5, false), 0);
+        assert_eq!(hit_line(strip, 50, 15, 5, false), -9);
+        assert_eq!(hit_line(strip, 50, -5, 5, false), 0);
+        assert_eq!(hit_line(strip, 5, 30, 5, false), 0);
+        assert_eq!(hit_line(strip, 50, 30, 5, true), -8);
     }
 }
