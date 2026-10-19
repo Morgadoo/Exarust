@@ -624,6 +624,68 @@ pub fn forget_combat_target(input: CombatForgetInput) -> CombatForget {
     }
 }
 
+/// The combatant reset's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CombatResetInput {
+    pub has_marker: bool,
+    pub has_reference: bool,
+    pub reference_count: i32,
+}
+
+/// The combatant reset's fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CombatReset {
+    pub count: i32,
+    pub slot_770: u64,
+    pub slot_7a0: i32,
+    pub field_200: i32,
+    pub slot_788: u64,
+    pub slot_798: u64,
+    pub body_e38: u64,
+    pub body_e50: u64,
+    pub field_158: i32,
+    pub byte_87e: u8,
+    pub marker_cleared: bool,
+    pub reference_count: i32,
+}
+
+/// Zeroes the combatant's transient state and its stored targets.
+pub fn reset_combatant(input: CombatResetInput) -> CombatReset {
+    CombatReset {
+        count: 0,
+        slot_770: 0,
+        slot_7a0: -1,
+        field_200: 0,
+        slot_788: 0,
+        slot_798: 0,
+        body_e38: 0,
+        body_e50: 0,
+        field_158: 0,
+        byte_87e: 0,
+        marker_cleared: input.has_marker,
+        reference_count: if input.has_reference {
+            input.reference_count - 1
+        } else {
+            input.reference_count
+        },
+    }
+}
+
+/// The combatant's two measures.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CombatMeasures {
+    pub reach: f32,
+    pub scaled: f32,
+}
+
+/// Stores the reach and the body value times 1.0.
+pub fn refresh_combat_measures(reach: f32, body_value: f32) -> CombatMeasures {
+    CombatMeasures {
+        reach,
+        scaled: body_value * 1.0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -942,5 +1004,39 @@ mod tests {
         assert_eq!(absent.count, 3);
         assert_eq!(absent.moves, 0);
         assert_eq!(absent.slot_778, 0);
+    }
+
+    #[test]
+    fn the_combatant_resets_and_measures() {
+        let reset = reset_combatant(CombatResetInput {
+            has_marker: true,
+            has_reference: true,
+            reference_count: 3,
+        });
+        assert_eq!(reset.count, 0);
+        assert_eq!(reset.slot_770, 0);
+        assert_eq!(reset.slot_7a0, -1);
+        assert_eq!(reset.field_200, 0);
+        assert_eq!(reset.slot_788, 0);
+        assert_eq!(reset.slot_798, 0);
+        assert_eq!(reset.body_e38, 0);
+        assert_eq!(reset.body_e50, 0);
+        assert_eq!(reset.field_158, 0);
+        assert_eq!(reset.byte_87e, 0);
+        assert!(reset.marker_cleared);
+        assert_eq!(reset.reference_count, 2);
+
+        let quiet = reset_combatant(CombatResetInput {
+            has_marker: false,
+            has_reference: false,
+            reference_count: 3,
+        });
+        assert!(!quiet.marker_cleared);
+        assert_eq!(quiet.reference_count, 3);
+        assert_eq!(quiet.slot_7a0, -1);
+
+        let measures = refresh_combat_measures(12.5, 0.75);
+        assert_eq!(measures.reach, 12.5);
+        assert_eq!(measures.scaled, 0.75);
     }
 }
