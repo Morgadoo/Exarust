@@ -3464,6 +3464,76 @@ pub fn hit_skin(
     0
 }
 
+/// The parent detail dispatch's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkinDetailPlace {
+    pub x: i16,
+    pub y: i16,
+    pub w: i16,
+    pub h: i16,
+    pub inset: i16,
+    pub style: u32,
+    pub flags: u32,
+}
+
+/// The inset rectangle and the optional detail helpers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkinDetail {
+    pub prepare_calls: u32,
+    pub rect_calls: u32,
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    pub first: bool,
+    pub second: bool,
+    pub horizontal: Option<[i32; 4]>,
+    pub horizontal_offset: i32,
+    pub horizontal_mode: i32,
+    pub vertical: Option<[i32; 4]>,
+}
+
+/// Draws the inset rectangle and dispatches the horizontal or vertical helper.
+pub fn draw_skin_detail(place: SkinDetailPlace, unit: i32) -> SkinDetail {
+    let i = i32::from(place.inset);
+    let x = i32::from(place.x);
+    let y = i32::from(place.y);
+    let w = i32::from(place.w);
+    let h = i32::from(place.h);
+    let x1 = x.wrapping_add(i);
+    let y1 = y.wrapping_add(i);
+    let w1 = w.wrapping_sub(i.wrapping_mul(2));
+    let h1 = h.wrapping_sub(i.wrapping_mul(2));
+    let first = (place.flags & 0x10) == 0x10;
+    let second = (place.flags & 0x40) == 0x40;
+
+    let horizontal = if (place.style & 0x2000_0000) != 0 && !second {
+        Some([x, y, w, h])
+    } else {
+        None
+    };
+    let vertical = if ((place.style & 0x4000_0000) != 0 && second) || (place.flags & 0x80) != 0 {
+        Some([x1, y1, w1, h1])
+    } else {
+        None
+    };
+
+    SkinDetail {
+        prepare_calls: 1,
+        rect_calls: 1,
+        x: x1,
+        y: y1,
+        w: w1,
+        h: h1,
+        first,
+        second,
+        horizontal,
+        horizontal_offset: unit.wrapping_neg() / 2,
+        horizontal_mode: 0x50,
+        vertical,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6735,5 +6805,44 @@ mod tests {
 
         let edge = |code: i32| (code == -4).then_some([10, 20, 30, 40]);
         assert_eq!(hit_skin(place(0x3), 30, 40, 5, &edge), -4);
+    }
+
+    #[test]
+    fn a_skin_detail_dispatches_its_two_helpers() {
+        let place = |style: u32, flags: u32| SkinDetailPlace {
+            x: 10,
+            y: 20,
+            w: 100,
+            h: 80,
+            inset: 5,
+            style,
+            flags,
+        };
+
+        let plain = draw_skin_detail(place(0, 0), 5);
+        assert_eq!((plain.prepare_calls, plain.rect_calls), (1, 1));
+        assert_eq!((plain.x, plain.y, plain.w, plain.h), (15, 25, 90, 70));
+        assert!(!plain.first);
+        assert!(!plain.second);
+        assert_eq!(plain.horizontal, None);
+        assert_eq!(plain.vertical, None);
+
+        let horizontal = draw_skin_detail(place(0x2000_0000, 0), 5);
+        assert_eq!(horizontal.horizontal, Some([10, 20, 100, 80]));
+        assert_eq!(horizontal.horizontal_offset, -2);
+        assert_eq!(horizontal.horizontal_mode, 0x50);
+        assert_eq!(horizontal.vertical, None);
+        assert_eq!(
+            draw_skin_detail(place(0x2000_0000, 0x40), 5).horizontal,
+            None
+        );
+
+        let vertical = draw_skin_detail(place(0x4000_0000, 0x40), 5);
+        assert_eq!(vertical.vertical, Some([15, 25, 90, 70]));
+        assert_eq!(draw_skin_detail(place(0x4000_0000, 0), 5).vertical, None);
+        assert_eq!(
+            draw_skin_detail(place(0, 0x80), 5).vertical,
+            Some([15, 25, 90, 70])
+        );
     }
 }

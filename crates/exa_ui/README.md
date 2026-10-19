@@ -157,7 +157,8 @@ choose slot 0xd8, 0xf4 or 0xe4, with the style adding a colour to the last two.
 The inherited bevel takes two booleans, the first winning, else the second, else
 idle, and counts under the parent. The parent hit test returns the edge codes
 before probing the six small codes around its limits, with -3, -8 and -12 as
-fallbacks.
+fallbacks. The detail dispatch draws one inset rectangle and adds a horizontal
+or vertical helper from the style and flag words.
 
 ## Scope
 
