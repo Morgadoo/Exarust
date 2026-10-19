@@ -187,3 +187,10 @@ A click SHALL name a free hinge as a door, a dead character as a corpse and a li
 #### Scenario: A door, a light prop, and the reach
 - **WHEN** a free hinge, a blocked hinge, a prop of mass 0.07, a prop of mass 0.08, a usable prop, that usable prop with its body removed, a point 70 cm away and a point 70.1 cm away are read, and the reach is tried at 245 cm high and 300 cm away, then 0.1 cm farther, then as a door at 350 cm
 - **THEN** the names are a door, nothing, nothing, a loose prop, usable, nothing; 70 cm does not turn and 70.1 cm does; the first reach holds, the farther one does not, and the door does
+
+### Requirement: Drag reach
+A drag SHALL pull along the cursor direction by the nearest accepted hit, starting from 1000 cm. A hit at or beyond 1000 cm SHALL leave that reach. The grabbed box SHALL be refused when any placed corner is higher than 280 cm or lower than 1000 cm, and a corner on either limit SHALL be kept.
+
+#### Scenario: A near hit and a high box
+- **WHEN** hits at 1200 cm and 400 cm are taken along +X, and a box centred at 270 cm with 10 cm of half-height is tested, then the same centre with 20 cm of half-height
+- **THEN** the pull is 400 cm along +X, the first box is held, and the second is refused

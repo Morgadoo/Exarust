@@ -102,7 +102,7 @@ The original has no camera-relative keyboard movement. Outside combat:
 
 ## Using what the cursor is over
 
-A click names the object. A free hinge is a door or a lever, and a blocked one is left alone. A dead character is a corpse and a living one a person. A loose prop lighter than 0.08 is ignored. A heavy prop is ignored when strength is under 0.9. A usable item on a prop stays usable; with no body it is nothing. A point farther than 70 cm is turned toward before it is used. It is already within reach at 245 cm of height and 300 cm away, or 300 cm high and 350 cm away when it is a door.
+A click names the object. A free hinge is a door or a lever, and a blocked one is left alone. A dead character is a corpse and a living one a person. A loose prop lighter than 0.08 is ignored. A heavy prop is ignored when strength is under 0.9. A usable item on a prop stays usable; with no body it is nothing. A point farther than 70 cm is turned toward before it is used. It is already within reach at 245 cm of height and 300 cm away, or 300 cm high and 350 cm away when it is a door. A drag pulls along the cursor direction by the nearest accepted hit, and that reach starts at 1000 cm. The grabbed box is refused when any placed corner is higher than 280 cm or lower than 1000 cm.
 
 ## Combat mode
 
