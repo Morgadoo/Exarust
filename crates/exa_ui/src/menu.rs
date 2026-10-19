@@ -527,6 +527,40 @@ pub fn inventory_page(arg: i32, field: i32, base_result: i32) -> InventoryPage {
     }
 }
 
+/// The special name the buffer submits.
+pub const MENU_NAME_CODE: &[u8; 10] = b"barechoons";
+
+/// The name buffer after one character.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MenuName {
+    pub buffer: [u8; 10],
+    pub base: bool,
+    pub matched: bool,
+}
+
+/// Shifts the name buffer and appends a lowered character.
+pub fn type_menu_name(buffer: [u8; 10], ch: u8, keymask: u32) -> MenuName {
+    if (keymask & 2) == 0 {
+        return MenuName {
+            buffer,
+            base: true,
+            matched: false,
+        };
+    }
+    let mut out = [0u8; 10];
+    out[..9].copy_from_slice(&buffer[1..10]);
+    out[9] = if (0x41..=0x5a).contains(&ch) {
+        ch.wrapping_add(0x20)
+    } else {
+        ch
+    };
+    MenuName {
+        buffer: out,
+        base: false,
+        matched: &out == MENU_NAME_CODE,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -919,5 +953,26 @@ mod tests {
                 result: 9
             }
         );
+    }
+
+    #[test]
+    fn the_menu_name_shifts_and_lowers() {
+        let buffer = *b"?barechoon";
+        let typed = type_menu_name(buffer, b'S', 2);
+        assert!(!typed.base);
+        assert_eq!(&typed.buffer, b"barechoons");
+        assert!(typed.matched);
+
+        let lowered = type_menu_name([0; 10], b'A', 2);
+        assert_eq!(lowered.buffer[9], b'a');
+        assert!(!lowered.matched);
+
+        let kept = type_menu_name([0; 10], b'0', 2);
+        assert_eq!(kept.buffer[9], b'0');
+
+        let base = type_menu_name(buffer, b'X', 0);
+        assert!(base.base);
+        assert_eq!(base.buffer, buffer);
+        assert!(!base.matched);
     }
 }
