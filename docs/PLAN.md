@@ -415,8 +415,12 @@ the tighter run cap, the locomotion clock's stride terms, and collisions
 between bodies (and their wake of a sleeper).
 Done (change `step-the-cloth`): a cloth particle keeps 0.98977 × 0.5^(1/83)
 of its velocity, dragged 5% toward the mean, then falls by the body's
-gravity. Wind, a pin and one edge pass follow. Collisions, sleep and
-rustle do not.
+gravity. Wind, a pin and one edge pass follow.
+Done (change `collide-and-sleep-the-cloth`): a sphere or a level plane
+pushes a vertex out to 2 cm of padding, sleep counts down while the cloth
+is still and never below its owner, rustle plays when the squared speed
+sum exceeds 400, and the mesh vertices are the particle positions. Swept
+triangle tests are not in.
 
 Done (change `decode-object-bodies-and-mechanisms`, data only): models'
 rigid bodies are decoded as the original stores them (class, mobility,
