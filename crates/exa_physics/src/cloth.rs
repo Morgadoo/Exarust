@@ -1018,6 +1018,78 @@ pub fn destroy_cloth(input: ClothDestroyInput) -> ClothDestroy {
     }
 }
 
+/// One particle for the body-collision pass.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClothCollideParticle {
+    pub d8: Vec3,
+    pub e0: Vec3,
+    pub hit: bool,
+    pub accepted: bool,
+    pub side: bool,
+    pub resolved: bool,
+}
+
+/// The body-collision pass's inputs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClothCollideInput {
+    pub same_body: bool,
+    pub radius: f32,
+    pub particles: Vec<ClothCollideParticle>,
+}
+
+/// The body-collision pass's outputs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClothCollide {
+    pub particles: Vec<Vec3>,
+    pub callback_calls: u32,
+    pub indices: Vec<i32>,
+    pub sides: Vec<bool>,
+}
+
+/// Pushes the hitting particles out to the body's radius.
+pub fn collide_cloth(input: ClothCollideInput) -> ClothCollide {
+    if input.same_body {
+        return ClothCollide {
+            particles: input.particles.iter().map(|particle| particle.d8).collect(),
+            callback_calls: 0,
+            indices: Vec::new(),
+            sides: Vec::new(),
+        };
+    }
+    let mut particles = Vec::with_capacity(input.particles.len());
+    let mut callback_calls = 0;
+    let mut indices = Vec::new();
+    let mut sides = Vec::new();
+    for (index, particle) in input.particles.iter().enumerate() {
+        if !particle.hit || !particle.accepted {
+            particles.push(particle.d8);
+            continue;
+        }
+        callback_calls += 1;
+        indices.push(index as i32);
+        sides.push(particle.side);
+        if !particle.resolved {
+            particles.push(particle.d8);
+            continue;
+        }
+        let edge = particle.e0 - particle.d8;
+        let len2 = edge.length_squared();
+        let corrected = if len2 <= input.radius * input.radius {
+            particle.e0
+        } else {
+            let len = len2.sqrt();
+            particle.e0 + edge * ((len - input.radius) / len)
+        };
+        particles.push(corrected);
+    }
+    ClothCollide {
+        particles,
+        callback_calls,
+        indices,
+        sides,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1514,5 +1586,79 @@ mod tests {
         assert!(!quiet.list_free);
         assert_eq!(quiet.base_calls, 1);
         assert_eq!(quiet.final_calls, 0);
+    }
+
+    #[test]
+    fn the_cloth_collision_pushes_to_the_radius() {
+        let particle = |d8, e0, hit, accepted, side, resolved| ClothCollideParticle {
+            d8,
+            e0,
+            hit,
+            accepted,
+            side,
+            resolved,
+        };
+        let pushed = collide_cloth(ClothCollideInput {
+            same_body: false,
+            radius: 1.0,
+            particles: vec![
+                particle(Vec3::new(0.0, 2.0, 0.0), Vec3::ZERO, true, true, true, true),
+                particle(
+                    Vec3::new(0.5, 0.0, 0.0),
+                    Vec3::ZERO,
+                    true,
+                    true,
+                    false,
+                    true,
+                ),
+                particle(
+                    Vec3::new(3.0, 3.0, 3.0),
+                    Vec3::ZERO,
+                    false,
+                    true,
+                    false,
+                    true,
+                ),
+                particle(
+                    Vec3::new(4.0, 4.0, 4.0),
+                    Vec3::ZERO,
+                    true,
+                    false,
+                    false,
+                    true,
+                ),
+                particle(
+                    Vec3::new(5.0, 5.0, 5.0),
+                    Vec3::ZERO,
+                    true,
+                    true,
+                    true,
+                    false,
+                ),
+            ],
+        });
+        assert!((pushed.particles[0].y + 1.0).abs() < 1e-5);
+        assert_eq!(pushed.particles[1], Vec3::ZERO);
+        assert_eq!(pushed.particles[2], Vec3::new(3.0, 3.0, 3.0));
+        assert_eq!(pushed.particles[3], Vec3::new(4.0, 4.0, 4.0));
+        assert_eq!(pushed.particles[4], Vec3::new(5.0, 5.0, 5.0));
+        assert_eq!(pushed.callback_calls, 3);
+        assert_eq!(pushed.indices, vec![0, 1, 4]);
+        assert_eq!(pushed.sides, vec![true, false, true]);
+
+        let own = collide_cloth(ClothCollideInput {
+            same_body: true,
+            radius: 1.0,
+            particles: vec![particle(
+                Vec3::new(0.0, 2.0, 0.0),
+                Vec3::ZERO,
+                true,
+                true,
+                true,
+                true,
+            )],
+        });
+        assert_eq!(own.callback_calls, 0);
+        assert_eq!(own.particles[0], Vec3::new(0.0, 2.0, 0.0));
     }
 }
