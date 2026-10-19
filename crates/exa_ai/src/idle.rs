@@ -10,7 +10,9 @@
 //! `500 + draw(2000)` ms after a wander arrival and `1000 + draw(4000)` ms
 //! after a home arrival. A deadline equal to the clock does not end the wait.
 //! A wander point is a quarter of the way from a drawn exit toward the room
-//! point. The draw retries once when that exit leads back.
+//! point. The draw retries once when that exit leads back. A follower stops
+//! inside a facing-scaled 100 cm, and outside a 400 cm band it sets an
+//! urgency and replans when the leader has moved more than 100 cm.
 
 use bevy::math::{Vec2, Vec3};
 
@@ -265,6 +267,164 @@ pub fn pick_wander(
     })
 }
 
+/// Personal stop is this many centimetres, scaled by how the leader faces the follower.
+pub const FOLLOW_PERSONAL_CM: f32 = 100.0;
+/// Follow band, in centimetres. Already following uses 0.7 of it. Busy uses 3.
+pub const FOLLOW_BAND_CM: f32 = 400.0;
+/// A chase plans to stop this many centimetres short of the leader.
+pub const FOLLOW_PLAN_CM: i32 = 50;
+/// Replan when the leader is farther than this, squared, from the planned spot.
+const REPLAN_CM2: f32 = 10_000.0;
+/// Already walking a follow path.
+pub const FOLLOWING: i32 = 4;
+/// Closing the last gap of a follow.
+pub const CLOSING: i32 = 6;
+
+/// What one follow step decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FollowAct {
+    /// Stand. No chase.
+    Stand,
+    /// The idle activity runs.
+    Activity,
+    /// Inside the personal stop, and the plan was accepted.
+    ClosePlanned,
+    /// Inside the personal stop, then stood.
+    CloseStood,
+    /// Mode is closing, the leader is still outside the stop of the goal, and the follower is walking.
+    Keep,
+    /// Outside the band. Urgency and replan are on the follower.
+    Pursue,
+}
+
+/// The follower's follow fields.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Follower {
+    pub place: Vec3,
+    pub mode: i32,
+    pub walking: bool,
+    pub busy: bool,
+    pub panic: f32,
+    pub has_activity: bool,
+    pub goal: Vec3,
+    pub planned: Vec3,
+    pub urgency: i32,
+    pub replan: bool,
+    pub stop_cm: i32,
+    pub hold_search: bool,
+}
+
+/// The leader, when there is one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Leader {
+    pub place: Vec3,
+    /// The point a chase paths to.
+    pub aim: Vec3,
+    pub facing: Vec3,
+    pub sprinting: bool,
+}
+
+fn personal_stop(follower: Vec3, leader: &Leader) -> f32 {
+    let delta = follower - leader.place;
+    let distance = delta.length();
+    if distance == 0.0 {
+        return FOLLOW_PERSONAL_CM;
+    }
+    let facing = leader.facing.dot(delta) / distance;
+    (1.0 + facing * 0.5) * FOLLOW_PERSONAL_CM
+}
+
+/// One follow step.
+///
+/// No leader stands when there is no activity or panic is at least 1, and
+/// otherwise runs the activity. Not walking, inside the personal stop,
+/// closes. The band is 400 cm, 280 while already following, and 1200 while
+/// busy. Outside it the urgency is 0 up to 800 cm, 1 up to 1600 cm, and 2
+/// past 1600 cm or when the leader sprints. Already following, a walk
+/// replans only when the leader is more than 100 cm from the planned spot.
+/// A chase that replans aims at the leader and stops 50 cm short. The
+/// obstacle nudge inside the band is not in this slice.
+pub fn follow_leader(
+    follower: &mut Follower,
+    leader: Option<&Leader>,
+    visible: bool,
+    plan_accepted: bool,
+) -> FollowAct {
+    let Some(leader) = leader else {
+        if !follower.has_activity || follower.panic >= 1.0 {
+            follower.busy = false;
+            return FollowAct::Stand;
+        }
+        return FollowAct::Activity;
+    };
+    let distance = (follower.place - leader.place).length();
+    let stop = personal_stop(follower.place, leader);
+    if (distance < stop && !follower.walking) || follower.mode == CLOSING {
+        follower.urgency = 0;
+        follower.busy = false;
+        if follower.mode == CLOSING {
+            let gap = (follower.goal - leader.place).length_squared();
+            if stop * stop <= gap {
+                if follower.walking {
+                    return FollowAct::Keep;
+                }
+            } else {
+                follower.replan = true;
+            }
+        } else {
+            follower.replan = true;
+        }
+        if follower.replan && plan_accepted {
+            return FollowAct::ClosePlanned;
+        }
+        return FollowAct::CloseStood;
+    }
+    let band = if follower.mode == FOLLOWING {
+        FOLLOW_BAND_CM * 0.7
+    } else if follower.busy {
+        FOLLOW_BAND_CM * 3.0
+    } else {
+        FOLLOW_BAND_CM
+    };
+    if distance < band {
+        if !follower.has_activity {
+            follower.busy = false;
+            return FollowAct::Stand;
+        }
+        return FollowAct::Activity;
+    }
+    follower.busy = false;
+    if leader.sprinting || FOLLOW_BAND_CM * 4.0 < distance {
+        follower.urgency = 2;
+    } else if distance <= FOLLOW_BAND_CM * 2.0 {
+        follower.urgency = 0;
+    } else {
+        follower.urgency = 1;
+    }
+    if follower.mode == FOLLOWING {
+        if !follower.walking {
+            if !visible {
+                return FollowAct::Stand;
+            }
+            follower.replan = true;
+        } else if REPLAN_CM2 < (follower.planned - leader.place).length_squared() {
+            follower.replan = true;
+        }
+    } else {
+        follower.replan = true;
+    }
+    if follower.replan {
+        follower.goal = leader.aim;
+        follower.stop_cm = FOLLOW_PLAN_CM;
+        follower.hold_search = false;
+        if plan_accepted {
+            follower.mode = FOLLOWING;
+            follower.planned = leader.place;
+        }
+    }
+    FollowAct::Pursue
+}
+
 /// One idle tick. A sentry guards. A roam or a patrol stands, then walks.
 pub fn tick(routine: &mut Routine, moment: &Moment) -> Act {
     if routine.kind == Kind::Sentry {
@@ -453,5 +613,157 @@ mod tests {
         assert_eq!(picked.node, 5);
         assert_eq!(picked.goal, Vec3::new(25.0, 0.0, 0.0));
         assert_eq!(same, 3_698_175_007);
+    }
+
+    fn follower_at(z: f32) -> Follower {
+        Follower {
+            place: Vec3::new(0.0, 0.0, z),
+            mode: 0,
+            walking: false,
+            busy: false,
+            panic: 0.0,
+            has_activity: true,
+            goal: Vec3::ZERO,
+            planned: Vec3::ZERO,
+            urgency: 9,
+            replan: false,
+            stop_cm: 0,
+            hold_search: true,
+        }
+    }
+
+    fn leader_facing_ahead() -> Leader {
+        Leader {
+            place: Vec3::ZERO,
+            aim: Vec3::new(1.0, 2.0, 3.0),
+            facing: Vec3::Z,
+            sprinting: false,
+        }
+    }
+
+    #[test]
+    fn a_follower_stops_by_facing_and_replans_past_one_hundred_centimetres() {
+        let leader = leader_facing_ahead();
+        let mut none = follower_at(0.0);
+        none.has_activity = false;
+        assert_eq!(
+            follow_leader(&mut none, None, true, false),
+            FollowAct::Stand
+        );
+        assert!(!none.busy);
+
+        let mut panicked = follower_at(0.0);
+        panicked.panic = 1.0;
+        assert_eq!(
+            follow_leader(&mut panicked, None, true, false),
+            FollowAct::Stand
+        );
+
+        let mut calm = follower_at(0.0);
+        calm.panic = 0.99;
+        assert_eq!(
+            follow_leader(&mut calm, None, true, false),
+            FollowAct::Activity
+        );
+
+        let mut close = follower_at(149.0);
+        assert_eq!(
+            follow_leader(&mut close, Some(&leader), true, false),
+            FollowAct::CloseStood
+        );
+        assert_eq!(close.urgency, 0);
+        assert!(close.replan);
+        assert!(!close.busy);
+
+        let mut edge = follower_at(150.0);
+        assert_eq!(
+            follow_leader(&mut edge, Some(&leader), true, false),
+            FollowAct::Activity
+        );
+        assert_eq!(edge.urgency, 9);
+
+        let mut walk = follower_at(500.0);
+        assert_eq!(
+            follow_leader(&mut walk, Some(&leader), true, true),
+            FollowAct::Pursue
+        );
+        assert_eq!(walk.urgency, 0);
+        assert_eq!(walk.stop_cm, 50);
+        assert_eq!(walk.goal, leader.aim);
+        assert_eq!(walk.mode, FOLLOWING);
+        assert_eq!(walk.planned, leader.place);
+        assert!(!walk.hold_search);
+
+        let mut jog = follower_at(801.0);
+        assert_eq!(
+            follow_leader(&mut jog, Some(&leader), true, false),
+            FollowAct::Pursue
+        );
+        assert_eq!(jog.urgency, 1);
+        assert_eq!(jog.mode, 0);
+
+        let mut run = follower_at(1_601.0);
+        assert_eq!(
+            follow_leader(&mut run, Some(&leader), true, false),
+            FollowAct::Pursue
+        );
+        assert_eq!(run.urgency, 2);
+
+        let mut sprint = follower_at(500.0);
+        let mut sprinting = leader;
+        sprinting.sprinting = true;
+        assert_eq!(
+            follow_leader(&mut sprint, Some(&sprinting), true, false),
+            FollowAct::Pursue
+        );
+        assert_eq!(sprint.urgency, 2);
+
+        let mut busy = follower_at(1_000.0);
+        busy.busy = true;
+        assert_eq!(
+            follow_leader(&mut busy, Some(&leader), true, false),
+            FollowAct::Activity
+        );
+
+        let mut alongside = follower_at(300.0);
+        alongside.mode = FOLLOWING;
+        alongside.busy = true;
+        assert_eq!(
+            follow_leader(&mut alongside, Some(&leader), true, false),
+            FollowAct::Pursue
+        );
+        assert_eq!(alongside.urgency, 0);
+
+        let mut held = follower_at(500.0);
+        held.mode = FOLLOWING;
+        held.walking = true;
+        held.planned = Vec3::new(100.0, 0.0, 0.0);
+        assert_eq!(
+            follow_leader(&mut held, Some(&leader), true, true),
+            FollowAct::Pursue
+        );
+        assert!(!held.replan);
+        assert_eq!(held.mode, FOLLOWING);
+        assert_eq!(held.planned, Vec3::new(100.0, 0.0, 0.0));
+
+        let mut moved = follower_at(500.0);
+        moved.mode = FOLLOWING;
+        moved.walking = true;
+        moved.planned = Vec3::new(101.0, 0.0, 0.0);
+        assert_eq!(
+            follow_leader(&mut moved, Some(&leader), true, true),
+            FollowAct::Pursue
+        );
+        assert!(moved.replan);
+        assert_eq!(moved.planned, leader.place);
+        assert_eq!(moved.stop_cm, 50);
+
+        let mut hidden = follower_at(500.0);
+        hidden.mode = FOLLOWING;
+        assert_eq!(
+            follow_leader(&mut hidden, Some(&leader), false, true),
+            FollowAct::Stand
+        );
+        assert!(!hidden.replan);
     }
 }
