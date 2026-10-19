@@ -8,9 +8,13 @@
 //! Evidence: the path step that meets a door. A wait in that step gives up
 //! strictly after ten seconds. An approach within 250 cm of a span's
 //! midpoint starts that wait. The wander look eases toward the heading
-//! plus an offset. The aim snap and the other phases are not in this slice.
+//! plus an offset. An aim snap copies the body's place, takes its heading's
+//! yaw, and asks for the idle stance. The other phases are not in this slice.
 
 use bevy::math::Vec2;
+use bevy::math::Vec3;
+use exa_anim::Animator;
+use exa_combat::stance::{self, Stance};
 use exa_physics::door::{self, SignalDrive, SignalLeaf};
 
 /// Where the walker is on its path.
@@ -79,6 +83,56 @@ pub fn sway_look(sway: &mut LookSway, extracted: f32, posture: f32, now_ms: u32,
     let gain = 0.09 - posture * 0.06;
     sway.look = gain * (aim - sway.look) + sway.look;
 }
+
+/// Where an aim snap writes the body's place and a cleared pace.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Aim {
+    pub place: Vec3,
+    /// The heading's yaw, also written beside the stored heading.
+    pub base_heading: f32,
+    /// Cleared to 0. What else reads this word was not established.
+    pub pace: i32,
+}
+
+/// The body an aim snap reads: its frame origin and its heading vector.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BodyFrame {
+    pub place: Vec3,
+    /// Heading vector. Its height is not part of the yaw.
+    pub heading: Vec3,
+    /// Cleared to 0. What the byte means was not established.
+    pub marker: u8,
+}
+
+/// Copy the body's place, take the yaw of its heading, and ask for idle.
+///
+/// The heading, the stored heading and the base heading all become that
+/// yaw. The roll steps by `roll * 0x8088405 + 1`. The timer, the same word
+/// the wander look reads, becomes the high half of that step times 3000,
+/// plus the clock, plus 1000. The pace word and the body's marker are
+/// cleared. The stance becomes idle through the stance helper: the old
+/// stance's clip starts Idle over 30 frames, and any other clip stays.
+pub fn snap_aim(
+    aim: &mut Aim,
+    sway: &mut LookSway,
+    body: &mut BodyFrame,
+    stance: &mut Stance,
+    anim: &mut Animator,
+    now_ms: u32,
+) {
+    aim.place = body.place;
+    let yaw = body.heading.x.atan2(body.heading.z);
+    sway.heading = yaw;
+    sway.stored_heading = yaw;
+    aim.base_heading = yaw;
+    sway.roll = sway.roll.wrapping_mul(0x808_8405).wrapping_add(1);
+    let gap = ((u64::from(sway.roll).wrapping_mul(3_000)) >> 32) as u32;
+    sway.timer_ms = gap.wrapping_add(now_ms).wrapping_add(1_000);
+    aim.pace = 0;
+    body.marker = 0;
+    stance::set_stance(stance, anim, Stance::Idle);
+}
+
 /// The walker is seeking a waypoint again.
 pub const SEEKING: i32 = 2;
 /// The door let the walker through.
@@ -195,7 +249,9 @@ pub fn pass_door(walk: &Walk, door: Option<&mut SignalLeaf>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy::math::Vec2;
+    use bevy::math::{Vec2, Vec3};
+    use exa_anim::{Animator, Ease};
+    use exa_combat::stance::Stance;
     use exa_physics::door::{SignalDrive, SignalLeaf, TOGGLE_FAST, TOGGLE_SLOW};
 
     fn walk() -> Walk {
@@ -499,5 +555,95 @@ mod tests {
         edge.timer_ms = 2_000;
         sway_look(&mut edge, 0.0, 0.0, 2_000, 0.0);
         assert!((edge.look - 0.09 * 3.1415927).abs() < 1e-5);
+    }
+
+    fn frame(heading: Vec3) -> BodyFrame {
+        BodyFrame {
+            place: Vec3::new(10.0, 20.0, 30.0),
+            heading,
+            marker: 1,
+        }
+    }
+
+    fn fresh_aim() -> Aim {
+        Aim {
+            place: Vec3::ZERO,
+            base_heading: 4.0,
+            pace: 7,
+        }
+    }
+
+    #[test]
+    fn an_aim_snap_takes_the_bodys_yaw_and_asks_for_idle() {
+        let mut aim = fresh_aim();
+        let mut look = sway();
+        look.offset = 0.4;
+        let mut body = frame(Vec3::new(0.0, 9.0, 1.0));
+        let mut stance = Stance::Defence;
+        let mut anim = Animator::new("Default", "Defence stance");
+        snap_aim(
+            &mut aim,
+            &mut look,
+            &mut body,
+            &mut stance,
+            &mut anim,
+            2_000,
+        );
+        assert_eq!(aim.place, Vec3::new(10.0, 20.0, 30.0));
+        assert!(look.heading.abs() < 1e-6);
+        assert!(look.stored_heading.abs() < 1e-6);
+        assert!(aim.base_heading.abs() < 1e-6);
+        assert_eq!(look.roll, 134_775_814);
+        assert_eq!(look.timer_ms, 3_094);
+        assert_eq!(aim.pace, 0);
+        assert_eq!(body.marker, 0);
+        assert_eq!(stance, Stance::Idle);
+        assert_eq!(anim.action, "Idle");
+        assert_eq!((anim.blend, anim.ease), (30.0, Ease::Smooth));
+
+        sway_look(&mut look, 0.0, 0.0, 2_000, 1.0);
+        assert!((look.offset - 0.4).abs() < 1e-6);
+        assert_eq!(look.roll, 134_775_814);
+        assert_eq!(look.timer_ms, 3_094);
+
+        let mut aim = fresh_aim();
+        let mut look = sway();
+        let mut body = frame(Vec3::X);
+        let mut stance = Stance::Defence;
+        let mut anim = Animator::new("Default", "Walk");
+        snap_aim(
+            &mut aim,
+            &mut look,
+            &mut body,
+            &mut stance,
+            &mut anim,
+            2_000,
+        );
+        assert!((look.heading - 1.5707964).abs() < 1e-5);
+        assert!((aim.base_heading - look.heading).abs() < 1e-6);
+        assert_eq!(stance, Stance::Idle);
+        assert_eq!(anim.action, "Walk");
+        assert_eq!(anim.blend, 0.0);
+        assert_eq!(body.marker, 0);
+        assert_eq!(aim.pace, 0);
+
+        let mut aim = fresh_aim();
+        let mut look = sway();
+        let mut body = frame(Vec3::new(0.0, 0.0, -1.0));
+        let mut stance = Stance::Idle;
+        let mut anim = Animator::new("Default", "Idle");
+        snap_aim(
+            &mut aim,
+            &mut look,
+            &mut body,
+            &mut stance,
+            &mut anim,
+            2_000,
+        );
+        assert!((look.heading - 3.1415927).abs() < 1e-5);
+        assert_eq!(anim.action, "Idle");
+        assert_eq!(anim.blend, 0.0);
+        assert_eq!(anim.ease, Ease::Linear);
+        assert_eq!(stance, Stance::Idle);
     }
 }
