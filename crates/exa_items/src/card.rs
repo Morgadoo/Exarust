@@ -5,8 +5,9 @@
 //! word is divided by 4, unless the caller sets the high bit. A weapon that
 //! is not withheld is the weapon page. An armour type from 1 through 6 is
 //! the apparel page. A shield that is not withheld is the shield page.
-//! Anything else is the plain page. The icon picture and the stat bars are
-//! not drawn here.
+//! Anything else is the plain page. A weapon row is shown only when its
+//! byte is above 5, and the bar is that byte times 0.05. The icon picture
+//! and the apparel rows are not drawn here.
 //!
 //! Evidence: the item-card page choice.
 
@@ -96,6 +97,33 @@ pub fn item_card(item: &CardItem) -> ItemCard {
     ItemCard {
         page,
         value: Some(value),
+    }
+}
+
+/// The four weapon rows. `None` means the byte was not above 5.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WeaponBars {
+    pub slash: Option<f32>,
+    pub crush: Option<f32>,
+    pub pierce: Option<f32>,
+    pub thrust: Option<f32>,
+}
+
+fn weapon_bar(value: u8) -> Option<f32> {
+    if value <= 5 {
+        None
+    } else {
+        Some((f64::from(value) * 0.05) as f32)
+    }
+}
+
+/// Slash, crush, pierce, then thrust. A byte of 5 or less is absent.
+pub fn weapon_bars(slash: u8, crush: u8, pierce: u8, thrust: u8) -> WeaponBars {
+    WeaponBars {
+        slash: weapon_bar(slash),
+        crush: weapon_bar(crush),
+        pierce: weapon_bar(pierce),
+        thrust: weapon_bar(thrust),
     }
 }
 
@@ -190,5 +218,14 @@ mod tests {
                 value: Some(0)
             }
         );
+    }
+
+    #[test]
+    fn a_weapon_row_shows_only_above_five() {
+        let bars = weapon_bars(5, 6, 0, 20);
+        assert_eq!(bars.slash, None);
+        assert_eq!(bars.pierce, None);
+        assert_eq!(bars.crush.unwrap().to_bits(), 0x3e99_999a);
+        assert_eq!(bars.thrust.unwrap().to_bits(), 0x3f80_0000);
     }
 }

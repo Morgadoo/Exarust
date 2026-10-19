@@ -39,3 +39,10 @@ An item card SHALL be absent for an id below 1, a container, a missing model, an
 #### Scenario: A weapon, a coat, a shield, and a map
 - **WHEN** an id of 0, a container, a map, a missing model, and a mark of 0 are chosen, a weapon of 7 coins is chosen, the same weapon keeps its full word, a withheld weapon of armour 6, 0, and 7 is chosen, and a plain item of 3 coins is chosen
 - **THEN** the first five have no stats value, the map is a map, the weapon value is 1 and then 7, armour 6 is apparel, armour 0 is a shield, armour 7 is plain, and 3 coins print 0
+
+### Requirement: Weapon bars
+A weapon card SHALL show a slash, crush, pierce, or thrust row only when that byte is above 5. The shown bar SHALL be that byte times 0.05.
+
+#### Scenario: Five stays hidden and six is shown
+- **WHEN** slash is 5, crush is 6, pierce is 0, and thrust is 20
+- **THEN** slash and pierce are absent, crush is 0.3, and thrust is 1
