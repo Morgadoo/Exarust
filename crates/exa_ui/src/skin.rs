@@ -1844,8 +1844,8 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
 }
 
 /// Shifts, scales, and the colour word applied to each span-bar corner.
-/// An unset view is all zeros: the image does not store the shifts or the scales,
-/// and the colour word starts at 0.
+/// An unset view is all zeros: the image does not store the shifts, the scales,
+/// the flag, or the mark, and the colour word starts at 0.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SpanView {
     pub shift_x: f32,
@@ -1853,18 +1853,24 @@ pub struct SpanView {
     pub scale_x: f32,
     pub scale_y: f32,
     pub colour: u32,
+    pub flag: u32,
+    pub mark: u32,
+    pub cursor: u32,
 }
 
-/// The image start. Shifts and scales read as 0, and the colour word is 0.
+/// The image start. Shifts, scales, the flag and the mark read as 0, and the colour word is 0.
 pub const SPAN_VIEW_UNSET: SpanView = SpanView {
     shift_x: 0.0,
     shift_y: 0.0,
     scale_x: 0.0,
     scale_y: 0.0,
     colour: 0,
+    flag: 0,
+    mark: 0,
+    cursor: 0,
 };
 
-/// Three quads of a span bar. The mark written when bit 4 is set is not in.
+/// Three quads of a span bar. The other line-class methods are not in.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SpanBar {
     pub prep_calls: u32,
@@ -1873,6 +1879,10 @@ pub struct SpanBar {
     pub placed: [[(f32, f32); 4]; 3],
     pub colour: u32,
     pub colour_writes: u32,
+    pub marks: [u32; 12],
+    pub mark_indexes: [u32; 12],
+    pub mark_count: u32,
+    pub cursor_after: u32,
 }
 
 fn place_corner(x: f32, y: f32, view: SpanView) -> (f32, f32) {
@@ -1919,6 +1929,17 @@ pub fn draw_span_bar(
         ],
     ];
     let placed = quads.map(|quad| quad.map(|(x, y)| place_corner(x, y, view)));
+    let marked = (view.flag & 4) > 0;
+    let mut cursor = view.cursor;
+    let mut marks = [0; 12];
+    let mut mark_indexes = [0; 12];
+    for slot in 0..12 {
+        if marked {
+            marks[slot] = view.mark;
+            mark_indexes[slot] = cursor;
+        }
+        cursor = cursor.wrapping_add(1);
+    }
     SpanBar {
         prep_calls: 1,
         binds: [SPAN_BAR, SPAN_CAP, SPAN_CAP],
@@ -1926,6 +1947,10 @@ pub fn draw_span_bar(
         placed,
         colour: view.colour,
         colour_writes: 12,
+        marks,
+        mark_indexes,
+        mark_count: if marked { 12 } else { 0 },
+        cursor_after: cursor,
     }
 }
 
@@ -4202,6 +4227,9 @@ mod tests {
             scale_x: 0.5,
             scale_y: 2.0,
             colour: 17,
+            flag: 0,
+            mark: 0,
+            cursor: 0,
         };
         let bar = draw_span_bar(5, 10.0, 20.0, 100.0, 4, view);
         assert_eq!(bar.quads[0][0].0.to_bits(), 15.0_f32.to_bits());
@@ -4216,5 +4244,50 @@ mod tests {
         assert_eq!(cold.placed[0][0].1.to_bits(), (-0.0_f32).to_bits());
         assert_eq!(cold.colour, 0);
         assert_eq!(cold.colour_writes, 12);
+    }
+
+    #[test]
+    fn a_span_bar_stores_the_mark_when_bit_4_is_set() {
+        let mut view = SPAN_VIEW_UNSET;
+        view.flag = 4;
+        view.mark = 9;
+        view.cursor = 3;
+        let bar = draw_span_bar(5, 10.0, 20.0, 100.0, 4, view);
+        assert_eq!(bar.mark_count, 12);
+        assert_eq!(bar.cursor_after, 15);
+        for index in 0..12 {
+            assert_eq!(bar.mark_indexes[index], 3 + index as u32);
+            assert_eq!(bar.marks[index], 9);
+        }
+
+        view.flag = 5;
+        let either = draw_span_bar(5, 10.0, 20.0, 100.0, 4, view);
+        assert_eq!(either.mark_count, 12);
+        assert_eq!(either.marks[0], 9);
+
+        view.flag = 0x8000_0004;
+        let high = draw_span_bar(5, 10.0, 20.0, 100.0, 4, view);
+        assert_eq!(high.mark_count, 12);
+        assert_eq!(high.mark_indexes[0], 3);
+
+        view.flag = 0;
+        let clear = draw_span_bar(5, 10.0, 20.0, 100.0, 4, view);
+        assert_eq!(clear.mark_count, 0);
+        assert_eq!(clear.cursor_after, 15);
+        assert_eq!(clear.marks, [0; 12]);
+
+        view.flag = 1;
+        let other = draw_span_bar(5, 10.0, 20.0, 100.0, 4, view);
+        assert_eq!(other.mark_count, 0);
+        assert_eq!(other.cursor_after, 15);
+
+        view.flag = 4;
+        view.cursor = 0xffff_fffe;
+        let wrapped = draw_span_bar(5, 10.0, 20.0, 100.0, 4, view);
+        assert_eq!(wrapped.mark_indexes[0], 0xffff_fffe);
+        assert_eq!(wrapped.mark_indexes[1], 0xffff_ffff);
+        assert_eq!(wrapped.mark_indexes[2], 0);
+        assert_eq!(wrapped.marks[2], 9);
+        assert_eq!(wrapped.cursor_after, 10);
     }
 }

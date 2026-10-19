@@ -93,7 +93,9 @@ draws a middle from 15, 20 to 105, 28, a left cap from 10, 20 to 15, 28, and
 a right cap from 105, 20 to 110, 28. Stored word -3 uses thickness -6.
 Shifts 2 and 100 with scales one half and 2 place the first corner at 8.5, 160
 and store colour 17 twelve times. An unset view places that corner at positive
-zero and negative zero and stores colour 0.
+zero and negative zero and stores colour 0. Cursor 3 and mark 9 with flag 4
+store indexes 3 through 14 and finish at 15. Flag 0 stores none and still
+finishes 12 ahead.
 
 ## Scope
 
