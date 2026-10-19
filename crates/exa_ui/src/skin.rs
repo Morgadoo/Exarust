@@ -2370,6 +2370,18 @@ pub fn draw_bevel(place: BevelPlace, ink: &BevelInk) -> BevelBox {
     }
 }
 
+/// The parent bevel's two boolean arms: the first wins, else the second, else idle.
+pub fn draw_skin_bevel(place: BevelPlace, raised: bool, pressed: bool, ink: &BevelInk) -> BevelBox {
+    let state = if raised {
+        0x40
+    } else if pressed {
+        0x10
+    } else {
+        0
+    };
+    draw_bevel(BevelPlace { state, ..place }, ink)
+}
+
 /// Two end caps and the middle bar between their inner edges.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CappedSpan {
@@ -6559,5 +6571,29 @@ mod tests {
             assert_eq!(gx.to_bits(), wx.to_bits());
             assert_eq!(gy.to_bits(), wy.to_bits());
         }
+    }
+
+    #[test]
+    fn a_parent_bevel_takes_its_two_boolean_arms() {
+        let ink = BevelInk {
+            raised: bevel_arm([[200; 4], [201; 4]], [[210; 4], [211; 4]], [212; 4]),
+            pressed: bevel_arm([[100; 4], [101; 4]], [[110; 4], [111; 4]], [112; 4]),
+            idle: bevel_arm([[50; 4], [51; 4]], [[60; 4], [61; 4]], [62; 4]),
+        };
+        let place = BevelPlace {
+            x: 10,
+            y: 20,
+            w: 100,
+            h: 80,
+            state: 0,
+        };
+
+        let raised = draw_skin_bevel(place, true, true, &ink);
+        assert_eq!(raised.fill[0].inks[0], [201; 4]);
+        let pressed = draw_skin_bevel(place, false, true, &ink);
+        assert_eq!(pressed.fill[0].inks[0], [101; 4]);
+        let idle = draw_skin_bevel(place, false, false, &ink);
+        assert_eq!(idle.fill[0].inks[0], [51; 4]);
+        assert_eq!((idle.begins, idle.binds, idle.ends), (3, 12, 3));
     }
 }

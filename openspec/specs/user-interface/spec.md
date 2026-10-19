@@ -805,3 +805,14 @@ An image of size 16 in a place at 10, 20 of size 100 by 80 SHALL be centred at 5
 - **THEN** slot 0xe4 is bound with the plain colour
 - **WHEN** the style is 0x30000000
 - **THEN** the frame index is 3
+
+### Requirement: Parent bevel arms
+`draw_skin_bevel` SHALL take two booleans and select the raised arm when the first is true, the pressed arm when the first is false and the second true, and the idle arm otherwise. It SHALL delegate the fills, six border lines and four outline lines to the shared bevel implementation.
+
+#### Scenario: The first arm wins
+- **WHEN** the first boolean is true and the second is true
+- **THEN** the raised arm is used
+- **WHEN** the first boolean is false and the second is true
+- **THEN** the pressed arm is used
+- **WHEN** both are false
+- **THEN** the idle arm is used

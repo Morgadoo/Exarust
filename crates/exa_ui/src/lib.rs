@@ -39,9 +39,9 @@ pub use skin::{
     SkinMetrics, SkinPrepared, SkinShade, SliderDraw, SliderPlace, SliderQuad, SpanBar, SpanSquare,
     SpanView, TitleDraw, control_rect, dispatch_form, draw_bevel, draw_capped_span,
     draw_centred_icon, draw_flat_slider, draw_frame, draw_line_chip, draw_line_rail,
-    draw_line_shade, draw_skin_cross, draw_skin_image, draw_skin_shade, draw_span_bar,
-    draw_span_square, hit_line, open_line, open_skin, place_line_label, place_skin_label,
-    prepare_skin_renderer, scale_line, scale_skin_alpha, skin_frames,
+    draw_line_shade, draw_skin_bevel, draw_skin_cross, draw_skin_image, draw_skin_shade,
+    draw_span_bar, draw_span_square, hit_line, open_line, open_skin, place_line_label,
+    place_skin_label, prepare_skin_renderer, scale_line, scale_skin_alpha, skin_frames,
 };
 
 pub struct UiPlugin;

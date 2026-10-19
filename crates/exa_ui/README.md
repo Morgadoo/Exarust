@@ -154,6 +154,8 @@ textured frames, the second inset by one; at place 10, 20 of size 100 by 80 they
 run to 110, 100 and 109, 99. The control image centres its square at 52, 52, or
 52, 53 when marked; mode 0x10000 draws with scale 1, and otherwise the flags
 choose slot 0xd8, 0xf4 or 0xe4, with the style adding a colour to the last two.
+The inherited bevel takes two booleans, the first winning, else the second, else
+idle, and counts under the parent.
 
 ## Scope
 
