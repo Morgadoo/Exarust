@@ -18,7 +18,9 @@
 //! zero source mark dims the line. An icon uses the sheet cell of the power's
 //! low byte. A frame uses a four-by-two sheet and four fifths of the size. A
 //! wide picture drops the fraction of the view; a narrow one uses half. A glow
-//! is 32 spokes on a ring.
+//! is 32 spokes on a ring. A learned mark is copied from the known list, and
+//! a node opens when every link's end is already open. A thick joint is the
+//! two edge points around the middle of three.
 //!
 //! Evidence: the tree reader (magic check, the seek to the count, the node
 //! fields, the link bytes, and the shift against the first node), and the
@@ -435,6 +437,18 @@ const ICON_MARK: u32 = 0x0100;
 const FRAME_NARROW: f32 = f32::from_bits(0x39cc_cccd);
 const GLOW_SHARE: f32 = 0.84;
 const GLOW_SPOKES: u32 = 32;
+/// Bits 20 to 23 are ignored when a known id is matched to a node.
+const KNOWN_MASK: u32 = 0xff0f_ffff;
+/// A mark copied from a known record that already opened the node.
+const OPENED: u32 = 0x1000;
+/// The bit a node gains once it can be shown.
+const SHOWN: u32 = 0x10000;
+/// Cleared on a node that is not already open.
+const HELD: u32 = 0x4000;
+/// A power whose top nibble is 7 does not open from its links.
+const UNOPENED: u32 = 0x7000_0000;
+/// The thick joint's join scale, applied in double precision.
+const JOIN_SCALE: f64 = -0.09;
 
 /// A wide node drops the fraction of the view. A narrow node uses half of it.
 pub fn picture_span(power: u32, view: f32) -> f32 {
@@ -495,6 +509,79 @@ pub fn frame_square(slot: i32, x: f32, y: f32, size: f32) -> FrameSquare {
             (f64::from(gap) * 0.005) as f32,
             (f64::from(gap) * 0.01) as f32,
         ],
+    }
+}
+
+/// One joint of a thick line: the two edge points and the join factor.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ThickJoint {
+    pub left: [f32; 2],
+    pub right: [f32; 2],
+    pub join: f32,
+}
+
+/// The marks after known powers are copied and links are opened.
+///
+/// Each known pair is an id and a mark. The id matches a node when bits 20 to
+/// 23 are cleared. The link's third word is a one-based end. An end that is
+/// not a node is not open.
+pub fn learn_marks(nodes: &[PowerNode], known: &[(u32, u32)]) -> Vec<u32> {
+    if nodes.is_empty() {
+        return Vec::new();
+    }
+    let mut marks = vec![0u32; nodes.len()];
+    for (index, node) in nodes.iter().enumerate() {
+        for (id, mark) in known {
+            if id & KNOWN_MASK == node.power {
+                marks[index] = *mark;
+            }
+        }
+    }
+    marks[0] |= SHOWN;
+    for index in 0..nodes.len() {
+        if marks[index] & OPENED == 0 {
+            marks[index] &= !HELD;
+            if nodes[index].power & 0xf000_0000 != UNOPENED && links_open(&nodes[index], &marks) {
+                marks[index] |= SHOWN;
+            }
+        } else {
+            marks[index] |= SHOWN;
+        }
+    }
+    marks
+}
+
+fn links_open(node: &PowerNode, marks: &[u32]) -> bool {
+    node.links.iter().all(|link| {
+        let end = u32::from_le_bytes(link[8..12].try_into().expect("four bytes")) as usize;
+        end > 0 && end <= marks.len() && marks[end - 1] & OPENED != 0
+    })
+}
+
+/// The two edge points around `at`, using the chord from `prev` to `next`.
+///
+/// A zero-length chord stays on the point.
+pub fn thick_joint(prev: [f32; 2], at: [f32; 2], next: [f32; 2], width: f32) -> ThickJoint {
+    let chord = [next[0] - prev[0], next[1] - prev[1]];
+    let length = (chord[0] * chord[0] + chord[1] * chord[1]).sqrt();
+    let offset = if length == 0.0 || width == 0.0 {
+        [0.0, 0.0]
+    } else {
+        let scale = width / length;
+        [-chord[1] * scale, chord[0] * scale]
+    };
+    let incoming = [at[0] - prev[0], at[1] - prev[1]];
+    let outgoing = [next[0] - at[0], next[1] - at[1]];
+    let diff = dot(offset, incoming) - dot(offset, outgoing);
+    let join = if width == 0.0 {
+        0.0
+    } else {
+        (f64::from(diff) * JOIN_SCALE / f64::from(width * width)) as f32
+    };
+    ThickJoint {
+        left: [at[0] - offset[0], at[1] - offset[1]],
+        right: [at[0] + offset[0], at[1] + offset[1]],
+        join,
     }
 }
 
@@ -680,6 +767,82 @@ mod tests {
         assert_eq!(glow.outer, f32::from_bits(0x4146_6666));
         assert_eq!(glow.spokes.len(), 33);
         assert_eq!(glow.spokes[0], [0.0, glow.inner]);
+    }
+
+    fn node(power: u32, links: Vec<[u8; 16]>) -> PowerNode {
+        PowerNode {
+            power,
+            extra: 0,
+            flags: 0,
+            x: 0.0,
+            y: 0.0,
+            links,
+        }
+    }
+
+    fn link_to(end: u32) -> [u8; 16] {
+        let mut link = [0u8; 16];
+        link[8..12].copy_from_slice(&end.to_le_bytes());
+        link
+    }
+
+    #[test]
+    fn a_known_power_opens_the_nodes_it_reaches() {
+        assert!(learn_marks(&[], &[]).is_empty());
+        assert_eq!(learn_marks(&[node(7, vec![])], &[]), vec![0x10000]);
+        assert_eq!(
+            learn_marks(&[node(7, vec![])], &[(0x00f0_0007, 5), (7, 2)]),
+            vec![0x10002]
+        );
+        assert_eq!(
+            learn_marks(&[node(0x7000_0000, vec![])], &[]),
+            vec![0x10000]
+        );
+
+        let closed = learn_marks(&[node(7, vec![]), node(9, vec![link_to(1)])], &[]);
+        assert_eq!(closed, vec![0x10000, 0]);
+
+        let opened = learn_marks(
+            &[node(7, vec![]), node(9, vec![link_to(1)])],
+            &[(7, 0x1000)],
+        );
+        assert_eq!(opened, vec![0x11000, 0x10000]);
+
+        let skipped = learn_marks(
+            &[node(7, vec![]), node(0x7000_0000, vec![link_to(1)])],
+            &[(7, 0x1000)],
+        );
+        assert_eq!(skipped, vec![0x11000, 0]);
+
+        let held = learn_marks(
+            &[node(7, vec![]), node(9, vec![link_to(0)])],
+            &[(9, 0x5000)],
+        );
+        assert_eq!(held, vec![0x10000, 0x15000]);
+    }
+
+    #[test]
+    fn a_thick_joint_sits_across_the_chord() {
+        let straight = thick_joint([0.0, 0.0], [10.0, 0.0], [20.0, 0.0], 2.0);
+        assert_eq!(straight.left, [10.0, -2.0]);
+        assert_eq!(straight.right, [10.0, 2.0]);
+        assert_eq!(straight.join, 0.0);
+
+        let turned = thick_joint([0.0, 0.0], [10.0, 0.0], [10.0, 10.0], 2.0);
+        assert_eq!(
+            turned.left,
+            [f32::from_bits(0x4136_a09e), f32::from_bits(0xbfb5_04f4)]
+        );
+        assert_eq!(
+            turned.right,
+            [f32::from_bits(0x4109_5f62), f32::from_bits(0x3fb5_04f4)]
+        );
+        assert_eq!(turned.join, f32::from_bits(0x3f22_eadc));
+
+        let still = thick_joint([1.0, 2.0], [1.0, 2.0], [1.0, 2.0], 2.0);
+        assert_eq!(still.left, [1.0, 2.0]);
+        assert_eq!(still.right, [1.0, 2.0]);
+        assert_eq!(still.join, 0.0);
     }
 
     #[test]

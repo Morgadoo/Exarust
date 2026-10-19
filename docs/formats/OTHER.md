@@ -358,9 +358,9 @@ Moved to [TERRAIN.md](TERRAIN.md) (verified).
 
 ## Powers (`.pwr`)
 
-Status: **the node layout, the text chunk, the link curve, and the node
-pictures are verified**. Thick-line quads are not drawn. Exarust:
-`exa_formats::power_tree`.
+Status: **the node layout, the text chunk, the link curve, the node
+pictures, the learned marks and the thick joint are verified**. Charge-up
+is not in. Exarust: `exa_formats::power_tree`.
 
 - **Header**: first word `0xAFCE01CE`. The node count is the signed word at
   byte 52. A negative count is an error. The bytes between the magic and
@@ -391,8 +391,17 @@ pictures are verified**. Thick-line quads are not drawn. Exarust:
   four fifths of the size. A wide picture drops the fraction of the view; a
   narrow one uses half. A glow is 32 spokes on a ring of 0.84 of the width
   plus the outer size, starting straight up.
-- Four domains: displacement, energy, force, mind. Learning a node and the
-  thick-line quads are not in.
+- **Learning**: a node's mark is the last known pair whose id, with bits 20
+  to 23 cleared, equals the power. The first node sets bit 0x10000. A mark
+  that already has bit 0x1000 keeps bit 0x4000 and sets bit 0x10000. Any
+  other mark clears bit 0x4000, and sets bit 0x10000 when the top nibble is
+  not 7 and every link's one-based end has bit 0x1000. A missing end does
+  not.
+- **Thick joint**: two points sit around the middle, one to each side of the
+  chord from the first point to the third, at the given width. A width of 2
+  through 0, 10 and 20 sits at 10, −2 and 10, 2 with a join of zero. A
+  zero-length chord stays on the point.
+- Four domains: displacement, energy, force, mind. Charge-up is not in.
 
 ## Weapon factories (`.fty`)
 
