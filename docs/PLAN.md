@@ -1028,7 +1028,8 @@ Done (change `price-the-power-table`): the table holds the 33 recorded
 rows. Barrier at 0.07 for a 500 ms tick costs 0.035, and 0.0175 with the
 sustain technique. Repeating blast with the repeat technique costs 0.05.
 Blast spends 1.2 times its cost, barrier twice, calm 0.3 times, the long
-door once, and vanish 80 times. The tree layout is not in.
+door once, and vanish 80 times.
+Done (change `read-a-power-tree`): a tree whose first word is wrong is refused. The node count is the word at byte 52. A node at 10, 20 stays there. A node at 15, 25 becomes 5, 5. One 16-byte link is kept. A link count below 1 stores none. A file that ends after the magic is an error. Drawing the tree and the text library are not in.
 Done (change `save-the-session`): an `EXRS` file restores that session.
 The original's save packages are not read.
 

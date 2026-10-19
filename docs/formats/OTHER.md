@@ -358,9 +358,18 @@ Moved to [TERRAIN.md](TERRAIN.md) (verified).
 
 ## Powers (`.pwr`)
 
-`CE 01 CE AF`, `00 CD 01 FE`, then a node graph (`TPwrNode`, `TPwrCnct`)
-referencing icon images (`thmmndico1`). Four domains: displacement, energy,
-force, mind — the thaumaturgy skill trees.
+Status: **the node layout is verified**. The text library after the nodes
+is not read. Exarust: `exa_formats::power_tree`.
+
+- **Header**: first word `0xAFCE01CE`. The node count is the signed word at
+  byte 52. A negative count is an error. The bytes between the magic and
+  the count are skipped.
+- **Nodes**: power id, two further words, x and y as floats, then a signed
+  link count. A count below 1 stores no links. Otherwise that many 16-byte
+  links follow. After every node is read, each node but the first subtracts
+  the first node's x and y.
+- Four domains: displacement, energy, force, mind. Drawing the tree and
+  learning a node are not in.
 
 ## Weapon factories (`.fty`)
 
