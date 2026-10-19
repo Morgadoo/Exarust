@@ -137,6 +137,9 @@ pub const HELD_TAB: [u32; 4] = [0x3f00_0000, 0x3f4c_cccd, 0x3f00_0000, 0x3f66_66
 /// Quad after the lower tab: 0.4, 0.8, 0.4, 1.
 pub const HELD_POST: [u32; 4] = [0x3ecc_cccd, 0x3f4c_cccd, 0x3ecc_cccd, 0x3f80_0000];
 
+/// Cap under the held left strip: 0.2, 0.1, 0.2, 0.2.
+pub const HELD_CAP: [u32; 4] = [0x3e4c_cccd, 0x3dcc_cccd, 0x3e4c_cccd, 0x3e4c_cccd];
+
 /// The double 6.6 used to place an edge.
 const EDGE_SCALE: u64 = 0x401a_6666_6666_6666;
 
@@ -646,8 +649,8 @@ pub struct TitleDraw {
 /// shift, the shown children, the title, the corners, the edge bars, the
 /// wide top, the left side, the bottom, the right side, the ink copy,
 /// the square drawn when the close mark is -4, the hold-bit edge mask,
-/// and the bar, the tab, the lower tab, the quad, and the left strip that
-/// follow it. The mask compare after that strip is not in.
+/// and the bar, the tab, the lower tab, the quad, the left strip, and the
+/// cap that follow it. The flag test after that cap is not in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormDispatch {
     pub span_a: i32,
@@ -680,6 +683,7 @@ pub struct FormDispatch {
     pub held_lower: Vec<SliderQuad>,
     pub held_post: Vec<SliderQuad>,
     pub held_left: Vec<SliderQuad>,
+    pub held_cap: Vec<SliderQuad>,
 }
 
 fn edge_mask(unit: i32, place: &DispatchPlace) -> u32 {
@@ -1132,6 +1136,16 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
     } else {
         Vec::new()
     };
+    let held_cap = if on_hold && (edge_mask & 0x3) == 0x3 {
+        let near = unit.wrapping_shl(1);
+        let far = unit.wrapping_shl(2).wrapping_add(near);
+        vec![quad(
+            HELD_CAP,
+            [(0, near), (near, near), (near, far), (0, far)],
+        )]
+    } else {
+        Vec::new()
+    };
     FormDispatch {
         span_a,
         span_b,
@@ -1168,6 +1182,7 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         held_lower,
         held_post,
         held_left,
+        held_cap,
     }
 }
 
@@ -2282,5 +2297,33 @@ mod tests {
         form.flags_a = FORM_HOLD;
         form.flags_b = 0x40_0000;
         assert!(dispatch_form(5, 0, form, &[]).held_left.is_empty());
+    }
+
+    #[test]
+    fn a_dispatch_draws_the_held_cap() {
+        let mut form = place(FORM_HOLD, 0, 0, 0, 0, 0);
+        form.flags_d = 0x80;
+        form.edge_x = 4;
+        form.edge_y = 4;
+        form.room_far_x = 400;
+        form.room_far_y = 400;
+        let drawn = dispatch_form(5, 0, form, &[]);
+        assert_eq!(drawn.edge_mask & 0x3, 0x3);
+        assert_eq!(drawn.held_left.len(), 1);
+        assert_eq!(drawn.held_cap.len(), 1);
+        assert_eq!(drawn.held_cap[0].sample, HELD_CAP);
+        assert_eq!(
+            drawn.held_cap[0].corners,
+            [(0, 10), (10, 10), (10, 30), (0, 30)]
+        );
+
+        form.edge_x = 5;
+        form.edge_y = 5;
+        let level = dispatch_form(5, 0, form, &[]);
+        assert_eq!(level.held_left.len(), 1);
+        assert!(level.held_cap.is_empty());
+
+        form.flags_a = 0;
+        assert!(dispatch_form(5, 0, form, &[]).held_cap.is_empty());
     }
 }

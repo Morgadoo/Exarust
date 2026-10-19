@@ -273,3 +273,10 @@ A held form that is not wide SHALL then draw a left strip. At unit 5 and height 
 #### Scenario: Height 80 sits at 0, 30
 - **WHEN** unit 5 dispatches a held form of height 80 that is not wide, with style bits 0x80 and bit 0x200 clear
 - **THEN** the strip runs from 0, 30 to 10, 50
+
+### Requirement: Held cap
+Mask bits 1 and 2 together SHALL then draw a cap under that strip. At unit 5 it SHALL run from 0, 10 to 10, 30. An edge of 5, 5 SHALL draw none. A clear hold bit SHALL draw none. The flag test after that cap is not in.
+
+#### Scenario: An edge of 4 draws the cap
+- **WHEN** unit 5 dispatches a held form that is not wide, with style bits 0x80 and an edge of 4, 4
+- **THEN** the cap runs from 0, 10 to 10, 30
