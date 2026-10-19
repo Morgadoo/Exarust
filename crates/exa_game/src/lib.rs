@@ -7,6 +7,7 @@ pub mod body_overlay;
 pub mod career;
 pub mod cursor;
 pub mod drag;
+pub mod emblem;
 pub mod fall;
 pub mod hud;
 pub mod joint_trace;

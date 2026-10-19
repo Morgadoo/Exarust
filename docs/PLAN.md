@@ -1043,9 +1043,10 @@ Done (change `price-a-shop-line`): a line of 7 buys for 7 and sells for 1. A low
 Done (change `scale-a-match-stake`): a stake dword is copper, silver times 12, and gold times 144. Challenger asks 12 for a prize of 36. The Beast asks 24 for a prize of 432. A duel prize is 12. Tier 1 doubles both. Hiring one combatant and winning Challenger at tier 1 leaves 379 copper, with 72 earned. Emblems and the reward item identities are not in.
 Done (change `grant-season-rewards`): a swept season grants four item ids. Season 0 is 1175, 1174, 1177, 1176. Season 1 is 1167, 1165, 1168, 1169. Season 2 is 1171, 1170, 1173, 1172. Season 3 is 1178, 1179, 1180, 1181. Day 134 grants season 0 again. A lost season grants none. Emblems are not in.
 Done (change `keep-the-season`): a save on day 8 with the first two weeks won loads those weeks and no reward ids. Sweeping the loaded career through day 22, then saving again, restores day 22, one season, four rewards, and the ids 1175, 1174, 1177, 1176. The original's packages are not read.
+Done (change `select-the-klean-emblem`): the name klean selects background 52 and design 81, with layer bytes 7, 0, 0, 6. The pictures are emblembkg052 and emblemdes081. Any other name selects nothing. A candidate's listed price was not read.
 Still open:
 
-- Emblems. A swept season grants its four item ids, and day 134 repeats the first row. A shop line prices at 1, 12, 144 or 1440 copper, and a sale is a quarter of the basket. A tier multiplies a match stake by one more than the tier. A recruitment costs 12 copper. Overnight rest and a trainer's lesson are in.
+- The other emblem controls, and a candidate's listed price. That price is a coin dword passed into the hire; the code that writes it was not read. A swept season grants its four item ids, and day 134 repeats the first row. A shop line prices at 1, 12, 144 or 1440 copper, and a sale is a quarter of the basket. A tier multiplies a match stake by one more than the tier. A recruitment costs 12 copper. Overnight rest and a trainer's lesson are in.
 - Story side levels, scripted encounters, the role interpreter, map discovery.
 - The other powers, their charge-up and their meshes.
 - Character creation (race, body, face, hair, colours, class, skills).
