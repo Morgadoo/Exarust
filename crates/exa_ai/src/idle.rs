@@ -509,19 +509,128 @@ pub fn knock_out(
     body.wake_to(KNOCK_OUT_SLEEP);
 }
 
-/// The dead-state entry knocks the body out at `now` with no delay.
+/// A span copied on a dead part is multiplied by this. It is 1.
+const DEAD_SPAN_SCALE: f32 = f32::from_bits(0x3f80_0000);
+/// A stored step is multiplied by this on the dead entry. It is one half.
+const DEAD_STEP_SCALE: f32 = f32::from_bits(0x3f00_0000);
+/// Set on a held part's mark.
+const DEAD_MARK: u32 = 0x2000;
+/// Gate bits kept. Bits 0 and 3 are cleared.
+const DEAD_GATE_KEEP: u32 = 0xffff_fff6;
+/// A counted link's kind and bits.
+const DEAD_LINK_KIND: i32 = 4;
+const DEAD_LINK_BITS: i32 = 0x30;
+/// Next basis axis when the trace is not positive: 1, 2, 0.
+const NEXT_AXIS: [usize; 3] = [1, 2, 0];
+
+/// One body part the dead entry rewrites before the knock-out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DeadPart {
+    /// Above 0, the mark, span and turn are written.
+    pub hold: i32,
+    pub mark: u32,
+    pub gate: u32,
+    pub span: f32,
+    pub kept: f32,
+    /// Nine basis floats, row by row.
+    pub basis: [f32; 9],
+    /// The turn taken from the basis. x, y, z, w.
+    pub turn: [f32; 4],
+}
+
+/// A counted link the dead entry rewrites.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DeadLink {
+    pub count: i32,
+    pub kind: i32,
+    pub bits: i32,
+}
+
+/// The small words the dead entry writes around the part loops.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DeadMarks {
+    pub marker: u8,
+    pub loose: f32,
+    pub factor: f32,
+    pub product: f32,
+    pub posed: u8,
+    pub step_base: f32,
+    pub step: f32,
+    pub behaviour: u8,
+}
+
+fn turn_from_basis(basis: [f32; 9]) -> [f32; 4] {
+    let mut turn = [0.0; 4];
+    let trace = basis[0] + basis[4] + basis[8];
+    if trace > 0.0 {
+        let mut scale = (trace + 1.0).sqrt();
+        turn[3] = scale * 0.5;
+        scale = 0.5 / scale;
+        turn[0] = (basis[5] - basis[7]) * scale;
+        turn[1] = (basis[6] - basis[2]) * scale;
+        turn[2] = (basis[1] - basis[3]) * scale;
+        return turn;
+    }
+    let mut axis = usize::from(basis[0] <= basis[4] && basis[4] != basis[0]);
+    if basis[axis * 3 + axis] < basis[8] {
+        axis = 2;
+    }
+    let first = NEXT_AXIS[axis];
+    let second = NEXT_AXIS[first];
+    let mut scale =
+        (basis[axis * 3 + axis] - (basis[first * 3 + first] + basis[second * 3 + second]) + 1.0)
+            .sqrt();
+    turn[axis] = scale * 0.5;
+    if scale != 0.0 {
+        scale = 0.5 / scale;
+    }
+    turn[3] = (basis[first * 3 + second] - basis[second * 3 + first]) * scale;
+    turn[first] = (basis[axis * 3 + first] + basis[first * 3 + axis]) * scale;
+    turn[second] = (basis[axis * 3 + second] + basis[second * 3 + axis]) * scale;
+    turn
+}
+
+fn rewrite_dead_parts(parts: &mut [DeadPart], links: &mut [DeadLink], marks: &mut DeadMarks) {
+    marks.marker = 0;
+    marks.product = marks.loose * marks.factor;
+    for part in parts.iter_mut() {
+        if part.hold > 0 {
+            part.mark |= DEAD_MARK;
+            part.kept = part.span * DEAD_SPAN_SCALE;
+            part.turn = turn_from_basis(part.basis);
+        }
+        part.gate &= DEAD_GATE_KEEP;
+    }
+    for link in links.iter_mut() {
+        if link.count > 0 {
+            link.kind = DEAD_LINK_KIND;
+            link.bits = DEAD_LINK_BITS;
+        }
+    }
+    marks.posed = 1;
+    marks.step = marks.step_base * DEAD_STEP_SCALE;
+    marks.behaviour = 1;
+}
+
+/// The dead-state entry rewrites parts, then knocks the body out at `now`
+/// with no delay.
 ///
-/// A body that is not dead is left as it is. A blow does not call this.
-/// The part rewrites that precede the call are not in.
+/// A body that is not dead is left as it is, parts included. A blow does
+/// not call this. The race setup, the virtual call and the three following
+/// calls are not in.
 pub fn knock_out_dead(
     sleeper: &mut Sleeper,
     drive: &mut Drive,
     body: &mut Ragdoll,
+    parts: &mut [DeadPart],
+    links: &mut [DeadLink],
+    marks: &mut DeadMarks,
     now: i32,
 ) -> bool {
     if sleeper.condition != Condition::DEAD {
         return false;
     }
+    rewrite_dead_parts(parts, links, marks);
     knock_out(sleeper, drive, body, now, 0);
     true
 }
@@ -1407,7 +1516,25 @@ mod tests {
         let mut drive = Drive::default();
         drive.tone = 1.0;
         let mut body = limp();
-        assert!(knock_out_dead(&mut dead, &mut drive, &mut body, 50));
+        let mut marks = DeadMarks {
+            marker: 1,
+            loose: 0.0,
+            factor: 0.0,
+            product: 4.0,
+            posed: 0,
+            step_base: 0.0,
+            step: 3.0,
+            behaviour: 0,
+        };
+        assert!(knock_out_dead(
+            &mut dead,
+            &mut drive,
+            &mut body,
+            &mut [],
+            &mut [],
+            &mut marks,
+            50
+        ));
         assert_eq!(dead.wake_at, 50);
         assert_eq!(dead.condition, Condition::DOWN);
         assert_eq!(dead.flags.0, StateFlags::DORMANT | StateFlags::WAKING);
@@ -1419,9 +1546,129 @@ mod tests {
         walking.condition = Condition::WALKING;
         walking.wake_at = 7;
         let before = walking;
-        assert!(!knock_out_dead(&mut walking, &mut drive, &mut body, 90));
+        assert!(!knock_out_dead(
+            &mut walking,
+            &mut drive,
+            &mut body,
+            &mut [],
+            &mut [],
+            &mut marks,
+            90
+        ));
         assert_eq!(walking.condition, before.condition);
         assert_eq!(walking.wake_at, before.wake_at);
+    }
+
+    /// The dead entry rewrites parts, then knocks the body out. A walking
+    /// body keeps its parts.
+    #[test]
+    fn a_dead_entry_rewrites_parts_before_the_knock_out() {
+        let mut dead = Sleeper {
+            condition: Condition::DEAD,
+            flags: StateFlags(0),
+            statue: true,
+            gait: 2,
+            tick: IdleTick::Active,
+            sighted: 0,
+            wake_at: -1,
+        };
+        let mut drive = Drive::default();
+        let mut body = limp();
+        let mut parts = [
+            DeadPart {
+                hold: 1,
+                mark: 1,
+                gate: 0xf,
+                span: 2.0,
+                kept: 0.0,
+                basis: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                turn: [1.0, 1.0, 1.0, 1.0],
+            },
+            DeadPart {
+                hold: 0,
+                mark: 3,
+                gate: 0xf,
+                span: 9.0,
+                kept: 9.0,
+                basis: [0.0; 9],
+                turn: [4.0, 4.0, 4.0, 4.0],
+            },
+            DeadPart {
+                hold: 2,
+                mark: 0,
+                gate: 0,
+                span: 1.0,
+                kept: 0.0,
+                basis: [-1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0],
+                turn: [0.0; 4],
+            },
+        ];
+        let mut links = [
+            DeadLink {
+                count: 1,
+                kind: 9,
+                bits: 1,
+            },
+            DeadLink {
+                count: 0,
+                kind: 7,
+                bits: 2,
+            },
+        ];
+        let mut marks = DeadMarks {
+            marker: 5,
+            loose: 2.0,
+            factor: 0.5,
+            product: 0.0,
+            posed: 0,
+            step_base: 4.0,
+            step: 0.0,
+            behaviour: 0,
+        };
+        assert!(knock_out_dead(
+            &mut dead, &mut drive, &mut body, &mut parts, &mut links, &mut marks, 50
+        ));
+        assert_eq!(parts[0].mark, 0x2001);
+        assert_eq!(parts[0].gate, 6);
+        assert_eq!(parts[0].kept.to_bits(), 0x4000_0000);
+        assert_eq!(parts[0].turn, [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(parts[1].mark, 3);
+        assert_eq!(parts[1].kept, 9.0);
+        assert_eq!(parts[1].turn, [4.0, 4.0, 4.0, 4.0]);
+        assert_eq!(parts[1].gate, 6);
+        assert_eq!(parts[2].turn, [0.0, 0.0, 1.0, 0.0]);
+        assert_eq!(links[0].kind, 4);
+        assert_eq!(links[0].bits, 0x30);
+        assert_eq!(links[1].kind, 7);
+        assert_eq!(links[1].bits, 2);
+        assert_eq!(marks.marker, 0);
+        assert_eq!(marks.product.to_bits(), 0x3f80_0000);
+        assert_eq!(marks.posed, 1);
+        assert_eq!(marks.step, 2.0);
+        assert_eq!(marks.behaviour, 1);
+        assert_eq!(dead.condition, Condition::DOWN);
+        assert_eq!(dead.wake_at, 50);
+
+        let mut walking = Sleeper {
+            condition: Condition::WALKING,
+            ..dead
+        };
+        let kept_parts = parts;
+        let kept_links = links;
+        let kept_marks = marks;
+        assert!(!knock_out_dead(
+            &mut walking,
+            &mut drive,
+            &mut body,
+            &mut parts,
+            &mut links,
+            &mut marks,
+            90
+        ));
+        assert_eq!(walking.condition, Condition::WALKING);
+        assert_eq!(parts, kept_parts);
+        assert_eq!(links, kept_links);
+        assert_eq!(marks, kept_marks);
     }
 
     fn knocked_out() -> (Sleeper, Drive) {
