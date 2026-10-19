@@ -3,8 +3,11 @@
 //! A drop from outside adds the icon at the cursor minus the grab, adds its
 //! bulk, and clamps the icon inside the pane. A drop from this pane or from
 //! the pane linked to it only moves the icon; a linked move is not refused
-//! for capacity. An item bigger than the pane's limit is refused, and so is
-//! dropping a container onto the pane that shows it. Ending a drag on another
+//! for capacity. A limit of 0 does not refuse for size, and a capacity of 0
+//! does not refuse for bulk. An item bigger than a positive limit is refused,
+//! and so is dropping a container onto the pane that shows it. A shared reject
+//! bit is refused. A required mask must match. An own-only pane takes only an
+//! id it already lists with the low bit set. Ending a drag on another
 //! pane removes the icon. The hit is the top-most icon whose rectangle holds
 //! the cursor. The icon's opaque pixels are not tested.
 //!
@@ -22,6 +25,8 @@ pub struct Icon {
     pub item_size: u32,
     /// Icon width and height, in pixels.
     pub extent: (i32, i32),
+    /// Item flags. The low bit marks an entry the pane already lists.
+    pub flags: u32,
 }
 
 /// Where the drag started.
@@ -46,6 +51,12 @@ pub enum Reject {
     IntoItself,
     /// A move of an icon this pane is not holding.
     NotHeld,
+    /// Shares a bit with the pane's reject mask.
+    Marked,
+    /// The required mask does not match the required value.
+    Unwanted,
+    /// The pane only takes an id it already lists with the low bit set.
+    NotListed,
 }
 
 /// A free-form item pane.
@@ -57,6 +68,13 @@ pub struct Pane {
     pub max_item: u32,
     /// The container this pane is showing, which cannot be dropped into it.
     pub container: Option<u32>,
+    /// Any shared bit with an item's flags refuses the drop.
+    pub reject_flags: u32,
+    /// `(flags & required_mask)` must equal `required_value`.
+    pub required_mask: u32,
+    pub required_value: u32,
+    /// Only an id already listed with its low flag bit set may land.
+    pub only_own: bool,
     icons: Vec<Icon>,
 }
 
@@ -68,6 +86,10 @@ impl Pane {
             capacity,
             max_item,
             container: None,
+            reject_flags: 0,
+            required_mask: 0,
+            required_value: 0,
+            only_own: false,
             icons: Vec::new(),
         }
     }
@@ -83,14 +105,31 @@ impl Pane {
 
     /// Whether this drop may land.
     pub fn accept(&self, icon: &Icon, source: Source) -> Result<(), Reject> {
+        if icon.flags & self.reject_flags != 0 {
+            return Err(Reject::Marked);
+        }
         if self.container == Some(icon.id) {
             return Err(Reject::IntoItself);
         }
-        if icon.item_size > self.max_item {
+        if self.max_item > 0 && icon.item_size > self.max_item {
             return Err(Reject::TooBig);
         }
-        if source == Source::Other && self.used().saturating_add(icon.bulk) > self.capacity {
+        if source == Source::Other
+            && self.capacity > 0
+            && self.used().saturating_add(icon.bulk) > self.capacity
+        {
             return Err(Reject::Full);
+        }
+        if icon.flags & self.required_mask != self.required_value {
+            return Err(Reject::Unwanted);
+        }
+        if self.only_own
+            && !self
+                .icons
+                .iter()
+                .any(|held| held.flags & 1 != 0 && held.id == icon.id)
+        {
+            return Err(Reject::NotListed);
         }
         Ok(())
     }
@@ -161,7 +200,48 @@ mod tests {
             bulk,
             item_size: 1,
             extent: (32, 32),
+            flags: 0,
         }
+    }
+
+    #[test]
+    fn a_pane_refuses_a_marked_item_and_keeps_a_listed_one() {
+        let mut pane = Pane::new(100, 80, 10, 4);
+        pane.reject_flags = 0x4;
+        let mut marked = icon(1, 1);
+        marked.flags = 0x4;
+        assert_eq!(
+            pane.drop_icon(marked, (4, 4), (0, 0), Source::Other),
+            Err(Reject::Marked)
+        );
+        pane.reject_flags = 0;
+        pane.required_mask = 0x2;
+        pane.required_value = 0x2;
+        assert_eq!(
+            pane.drop_icon(icon(2, 1), (4, 4), (0, 0), Source::Other),
+            Err(Reject::Unwanted)
+        );
+        let mut wanted = icon(2, 1);
+        wanted.flags = 0x3;
+        pane.drop_icon(wanted, (4, 4), (0, 0), Source::Other)
+            .unwrap();
+        pane.only_own = true;
+        let mut stranger = icon(3, 1);
+        stranger.flags = 0x2;
+        assert_eq!(
+            pane.drop_icon(stranger, (4, 4), (0, 0), Source::Other),
+            Err(Reject::NotListed)
+        );
+        let mut listed = icon(2, 1);
+        listed.flags = 0x2;
+        pane.drop_icon(listed, (8, 8), (0, 0), Source::Other)
+            .unwrap();
+        assert_eq!(pane.icons().len(), 2);
+        let mut open = Pane::new(100, 80, 0, 0);
+        let mut big = icon(8, 9);
+        big.item_size = 5;
+        open.drop_icon(big, (4, 4), (0, 0), Source::Other).unwrap();
+        assert_eq!(open.used(), 9);
     }
 
     #[test]
