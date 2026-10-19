@@ -427,8 +427,11 @@ it was.
 Done (change `build-a-cloth-mesh`): a triangle mesh becomes one particle a
 vertex, a link on each edge and a bend link across each shared edge, and
 both windings. The 16×16 wind tile is sampled in 2 m cells. A collision
-returns the opposite of the vertex pushes to the body. The geodesic pin
-distances and the draw into the renderer are not in.
+returns the opposite of the vertex pushes to the body.
+Done (change `rank-cloth-pins`): each vertex stores its distance along the
+mesh from the nearest pin, and the draw hook culls the front and then the
+back. The distance is not the straight line. Submitting those passes to
+the GPU is not in.
 
 Done (change `decode-object-bodies-and-mechanisms`, data only): models'
 rigid bodies are decoded as the original stores them (class, mobility,

@@ -201,6 +201,9 @@ pub struct Cloth {
     pub reaction: Vec3,
     /// The shipped cloth draws both faces.
     pub double_sided: bool,
+    /// Distance along the mesh from the nearest pin, in centimetres.
+    /// Unreachable vertices stay infinite. With no pins, vertex 0 is the source.
+    pub distances: Vec<f32>,
     pub rustle: bool,
     pub rustle_volume: f32,
     pub rustle_pitch: f32,
@@ -228,6 +231,7 @@ impl Cloth {
             tile: None,
             reaction: Vec3::ZERO,
             double_sided: true,
+            distances: Vec::new(),
             rustle: false,
             rustle_volume: 0.0,
             rustle_pitch: 0.0,
@@ -304,7 +308,18 @@ impl Cloth {
                 });
             }
         }
+        cloth.distances = geodesic(vertices, triangles, pinned);
         cloth
+    }
+
+    /// The double-sided draw hook: cull front faces and draw, then cull back
+    /// faces and draw. A single-sided cloth only draws its front.
+    pub fn draw_passes(&self) -> Vec<DrawPass> {
+        if self.double_sided {
+            vec![DrawPass::CullFront, DrawPass::CullBack]
+        } else {
+            vec![DrawPass::CullBack]
+        }
     }
 
     /// Triangle corners to draw. Both windings when the cloth is double sided.
@@ -419,6 +434,67 @@ pub fn step(cloth: &mut Cloth, gravity: Vec3) {
             particle.previous = particle.position;
         }
     }
+}
+
+/// One pass of the double-sided cloth draw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrawPass {
+    /// Cull the front, so the back of the cloth is drawn.
+    CullFront,
+    /// Cull the back, so the front of the cloth is drawn.
+    CullBack,
+}
+
+/// Distance along triangle edges from the nearest pin. No pins means vertex 0.
+fn geodesic(vertices: &[Vec3], triangles: &[[usize; 3]], pinned: &[usize]) -> Vec<f32> {
+    let count = vertices.len();
+    let mut distance = vec![f32::INFINITY; count];
+    let sources: Vec<usize> = if pinned.is_empty() {
+        vec![0]
+    } else {
+        pinned.to_vec()
+    };
+    for source in sources {
+        if source < count {
+            distance[source] = 0.0;
+        }
+    }
+    let mut neighbors = vec![Vec::<(usize, f32)>::new(); count];
+    for tri in triangles {
+        let corners = [tri[0], tri[1], tri[2]];
+        if corners.iter().any(|index| *index >= count) {
+            continue;
+        }
+        for slot in 0..3 {
+            let start = corners[slot];
+            let end = corners[(slot + 1) % 3];
+            let length = vertices[start].distance(vertices[end]);
+            neighbors[start].push((end, length));
+            neighbors[end].push((start, length));
+        }
+    }
+    let mut settled = vec![false; count];
+    for _ in 0..count {
+        let mut next = None;
+        let mut best = f32::INFINITY;
+        for (index, &so_far) in distance.iter().enumerate() {
+            if !settled[index] && so_far < best {
+                best = so_far;
+                next = Some(index);
+            }
+        }
+        let Some(current) = next else {
+            break;
+        };
+        settled[current] = true;
+        for &(neighbor, length) in &neighbors[current] {
+            let along = distance[current] + length;
+            if along < distance[neighbor] {
+                distance[neighbor] = along;
+            }
+        }
+    }
+    distance
 }
 
 fn ordered(a: usize, b: usize) -> (usize, usize) {
@@ -896,5 +972,31 @@ mod tests {
             push,
             cloth.reaction
         );
+    }
+
+    #[test]
+    fn pin_distance_follows_the_mesh_and_the_draw_uses_both_faces() {
+        let vertices = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        ];
+        let cloth = Cloth::from_mesh(&vertices, &[[0, 1, 3], [1, 2, 3]], &[0]);
+        assert!(cloth.distances[0].abs() < 1e-4);
+        assert!((cloth.distances[1] - 1.0).abs() < 1e-4);
+        assert!((cloth.distances[3] - 1.0).abs() < 1e-4);
+        assert!(
+            (cloth.distances[2] - 2.0).abs() < 1e-4,
+            "along the edges, not the straight {}",
+            cloth.distances[2]
+        );
+        assert_eq!(
+            cloth.draw_passes(),
+            vec![DrawPass::CullFront, DrawPass::CullBack]
+        );
+        let mut single = cloth.clone();
+        single.double_sided = false;
+        assert_eq!(single.draw_passes(), vec![DrawPass::CullBack]);
     }
 }
