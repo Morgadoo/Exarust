@@ -1048,6 +1048,7 @@ Done (change `record-a-shell-slot`): three vertices store section 0 local 1, not
 Done (change `count-a-shell-index`): two skinned triangles, a hidden skinned triangle and a range that ends one early count as 3 triangles and 32 bytes for two kept vertices. A plain range adds nothing. A range that ends two early counts as -1 triangles and 16 bytes. The kind is 3 and the base is 0. The GPU upload is not in.
 Done (change `fade-a-shell-by-its-size`): the stored size is 800. Opening for 0 stays at 0, opening for 1200 stays at 1, and opening for 1201 finishes at 1. A held open enters the hold state. A hold at 0 stamps 200, and a half rounds to a stamp of 10. A close of 400 is one half, and a close of 800 finishes at 0. A held close shows 1 with a gain of 1.5. A resting fade stays. The GPU upload is not in.
 Done (change `light-a-shell`): an opening light at 0 is 0, and at one half it is a tenth of 0.75. The float just under 0.666 stays on the bend, and the next float is a twentieth. A resting light at 1 is a twentieth and keeps its gain. A closing light at one half stores a gain of 1.4. The GPU upload is not in.
+Done (change `pair-a-shell-light`): a resting pair is 0.1 and 0.75. An open at 0 is 0 and 1. The float just under 0.25 is just under 0.1 and 0.75. An open at 0.25 is 0.1 and 0.75. A hold keeps its pair. A close at 0 is 0.1 and 0, and a close at 1 is 0 and 0.75. Three triangles ask for 28 header bytes and 12 payload bytes. A name of 0 stays, and a name of 1 unmaps. The play renderer does not issue the buffer calls.
 Done (change `save-the-session`): an `EXRS` file restores that session.
 The original's save packages are not read.
 
@@ -1068,7 +1069,7 @@ Still open:
 
 - The other emblem controls. A candidate's listed price is the rank square plus four fifths of the gear. A swept season grants its four item ids, and day 134 repeats the first row. A shop line prices at 1, 12, 144 or 1440 copper, and a sale is a quarter of the basket. A tier multiplies a match stake by one more than the tier. A recruitment costs 12 copper. Overnight rest and a trainer's lesson are in.
 - Story side levels, scripted encounters, the role interpreter, map discovery.
-- The other powers and their meshes. A blast charge, a barrier ripple, a wave front, a shell ripple, a shell vertex, a shell index list, a skinned section filter, a compacted vertex map, a section slot, an index room, a fade by the stored size of 800, a light that follows that fade, a torrent mix and a torrent stream are in. The GPU upload is not in.
+- The other powers and their meshes. A blast charge, a barrier ripple, a wave front, a shell ripple, a shell vertex, a shell index list, a skinned section filter, a compacted vertex map, a section slot, an index room, a fade by the stored size of 800, a light that follows that fade, a second light pair, an index upload, a torrent mix and a torrent stream are in. The play renderer does not issue the buffer calls.
 - Character creation (race, body, face, hair, colours, class, skills).
 - Full UI using the original GUI skin, icons and manual pages.
 

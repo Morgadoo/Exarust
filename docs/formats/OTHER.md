@@ -368,7 +368,9 @@ A shell ripple is in `exa_game::thaum`. A torrent mix, its stream mesh counts an
 `exa_game::thaum`. The compacted vertex map, the section slot and the index
 room are in `exa_game::thaum`. The stored size of 800 and the fade that
 divides by it are in `exa_game::thaum`. The light that follows the fade is
-in `exa_game::thaum`. The GPU upload is not in. Exarust:
+in `exa_game::thaum`. The second light's two values and the index upload
+sizes are in `exa_game::thaum`. The play renderer does not issue the
+buffer calls. Exarust:
 `exa_formats::power_tree`.
 
 - **Header**: first word `0xAFCE01CE`. The node count is the signed word at
@@ -461,7 +463,16 @@ in `exa_game::thaum`. The GPU upload is not in. Exarust:
   0.666, and otherwise 0.75 minus the absolute gap from 0.75 to the shown
   value times 1.5. Any other state takes half the shown value. The light
   is one tenth of that. While closing, the gain becomes the shown value
-  times 2.8. Any other state keeps its gain.
+  times 2.8. Any other state keeps its gain. The second light stores
+  0.1 and 0.75 at rest. While opening, a shown value under 0.25 stores
+  one tenth of its times-4 product with 2 minus that product, and 1
+  minus that product times 0.25. A shown value of 0.25 or more stores
+  0.1 and 0.75. While closing, the first value is one fifth of 2 minus
+  the absolute gap from 1.5 to the shown value times 3.5, and the second
+  is the shown value times 0.75. A hold keeps the pair. An index upload
+  asks for 20 bytes plus 8 a channel, and a payload of the triangle count
+  times the width. The target is 0x8893, the usage 0x88E4, and the access
+  0x88B9. A finish unmaps only when the buffer name is above 0.
 - **Torrent**: below phase 1 the level is (2 minus the charge) times the
   charge times 0.4. Otherwise the level falls by 0.01, and below 0.02 it
   stops. Phase 1 eases the two channels toward 0.5 and 0.6 by 0.06. Phase 2
@@ -472,8 +483,8 @@ in `exa_game::thaum`. The GPU upload is not in. Exarust:
   0.01 of the age over the sample count, until the second is no longer under
   1.8. A point inside the reach moves by 0.01 of one minus its distance
   squared over the reach squared.
-- Four domains: displacement, energy, force, mind. The GPU upload is
-  not in.
+- Four domains: displacement, energy, force, mind. The play renderer
+  does not issue the buffer calls.
 
 ## Weapon factories (`.fty`)
 

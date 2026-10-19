@@ -630,6 +630,46 @@ pub fn shell_light(state: i32, shown: f32, gain: f32) -> ShellLight {
     }
 }
 
+/// The two values of the second shell light.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShellPair {
+    pub first: f32,
+    pub second: f32,
+}
+
+/// The second shell light. A hold keeps the pair it was given.
+pub fn shell_pair(state: i32, shown: f32, pair: ShellPair) -> ShellPair {
+    if state == 0 {
+        ShellPair {
+            first: 0.1,
+            second: 0.75,
+        }
+    } else if state < 3 {
+        if state == 1 && shown < 0.25 {
+            let product = shown * 4.0;
+            let curve = product * (2.0 - product);
+            ShellPair {
+                first: (f64::from(curve) * 0.1) as f32,
+                second: 1.0 - curve * 0.25,
+            }
+        } else if state == 1 {
+            ShellPair {
+                first: 0.1,
+                second: 0.75,
+            }
+        } else {
+            pair
+        }
+    } else {
+        let gap = (1.5 - shown * 3.5).abs();
+        let raw = 2.0 - gap;
+        ShellPair {
+            first: (f64::from(raw) * 0.2) as f32,
+            second: shown * 0.75,
+        }
+    }
+}
+
 /// One step of a shell ripple. `None` means it has faded off the aura.
 pub fn step_shell(shown: f32, strength: f32, scale: f32) -> Option<ShellRipple> {
     let strength = (f64::from(strength) - f64::from(scale) * 0.04) as f32;
@@ -908,6 +948,32 @@ pub fn shell_index_room(spans: &[ShellSpan], kept: i32) -> ShellIndexRoom {
         end: triangles.wrapping_sub(1),
         vertex_end: kept.wrapping_sub(1),
     }
+}
+
+/// The element upload taken when the index flag is set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShellUpload {
+    pub header_bytes: i32,
+    pub payload_bytes: i32,
+    pub target: u32,
+    pub usage: u32,
+    pub access: u32,
+}
+
+/// The sizes and the buffer targets of an index upload. The play renderer does not issue the calls.
+pub fn shell_index_upload(channels: i32, count: i32, width: i32) -> ShellUpload {
+    ShellUpload {
+        header_bytes: channels.wrapping_mul(8).wrapping_add(0x14),
+        payload_bytes: count.wrapping_mul(width),
+        target: 0x8893,
+        usage: 0x88e4,
+        access: 0x88b9,
+    }
+}
+
+/// A finish unmaps the element buffer only when its name is above 0.
+pub fn shell_index_unmap(name: u32) -> bool {
+    name > 0
 }
 
 /// Replace each index with its compacted id. An absent id is an error.
@@ -1311,6 +1377,73 @@ mod tests {
         let closing = shell_light(3, 0.5, 4.0);
         assert_eq!(closing.level.to_bits(), 0x3ccc_cccd);
         assert_eq!(closing.gain.to_bits(), 0x3fb3_3333);
+    }
+
+    #[test]
+    fn a_shell_pairs_its_second_light_and_uploads() {
+        let kept = ShellPair {
+            first: 4.0,
+            second: 5.0,
+        };
+        assert_eq!(
+            shell_pair(0, 1.0, kept),
+            ShellPair {
+                first: f32::from_bits(0x3dcc_cccd),
+                second: 0.75,
+            }
+        );
+        assert_eq!(
+            shell_pair(1, 0.0, kept),
+            ShellPair {
+                first: 0.0,
+                second: 1.0,
+            }
+        );
+        let under = shell_pair(1, f32::from_bits(0x3e7f_ffff), kept);
+        assert_eq!(under.first.to_bits(), 0x3dcc_cccc);
+        assert_eq!(under.second.to_bits(), 0x3f40_0000);
+        assert_eq!(
+            shell_pair(1, 0.25, kept),
+            ShellPair {
+                first: f32::from_bits(0x3dcc_cccd),
+                second: 0.75,
+            }
+        );
+        assert_eq!(shell_pair(2, 0.5, kept), kept);
+        let shut = shell_pair(3, 0.0, kept);
+        assert_eq!(shut.first.to_bits(), 0x3dcc_cccd);
+        assert_eq!(shut.second.to_bits(), 0);
+        let full = shell_pair(3, 1.0, kept);
+        assert_eq!(full.first.to_bits(), 0);
+        assert_eq!(full.second, 0.75);
+        let room = shell_index_room(
+            &[
+                ShellSpan {
+                    flags: SHELL_SKINNED,
+                    start: 0,
+                    end: 1,
+                },
+                ShellSpan {
+                    flags: SHELL_HIDDEN | SHELL_SKINNED,
+                    start: 2,
+                    end: 2,
+                },
+            ],
+            2,
+        );
+        let upload = shell_index_upload(room.channels, room.triangles, room.width);
+        assert_eq!(
+            upload,
+            ShellUpload {
+                header_bytes: 28,
+                payload_bytes: 12,
+                target: 0x8893,
+                usage: 0x88e4,
+                access: 0x88b9,
+            }
+        );
+        assert!(!shell_index_unmap(0));
+        assert!(shell_index_unmap(1));
     }
 
     #[test]
