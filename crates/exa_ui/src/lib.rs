@@ -29,12 +29,12 @@ pub use hud::{DrawHud, HudBars};
 pub use loading::LoadingStatus;
 pub use scale::GuiScale;
 pub use skin::{
-    BEVEL_INK, BackdropCorner, BevelArm, BevelBox, BevelInk, BevelPlace, CentredIcon,
+    BEVEL_INK, BackdropCorner, BevelArm, BevelBox, BevelInk, BevelPlace, CappedSpan, CentredIcon,
     DispatchPlace, DrawSkin, FlatSlider, FormDispatch, FrameDraw, FramePlace, IconPlace, InkLine,
-    InkQuad, LINE_CHIP, LINE_CHIP_ALT, LineChip, SPAN_BAR, SPAN_CAP, SPAN_SQUARE, SPAN_VIEW_UNSET,
-    ScrollBar, SliderDraw, SliderPlace, SliderQuad, SpanBar, SpanSquare, SpanView, TitleDraw,
-    dispatch_form, draw_bevel, draw_centred_icon, draw_flat_slider, draw_frame, draw_line_chip,
-    draw_span_bar, draw_span_square, open_skin,
+    InkQuad, LINE_CHIP, LINE_CHIP_ALT, LineChip, SPAN_BAR, SPAN_CAP, SPAN_END, SPAN_SQUARE,
+    SPAN_VIEW_UNSET, ScrollBar, SliderDraw, SliderPlace, SliderQuad, SpanBar, SpanSquare, SpanView,
+    TitleDraw, dispatch_form, draw_bevel, draw_capped_span, draw_centred_icon, draw_flat_slider,
+    draw_frame, draw_line_chip, draw_span_bar, draw_span_square, open_skin,
 };
 
 pub struct UiPlugin;

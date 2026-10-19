@@ -111,7 +111,11 @@ fills 12, 22 to 108, 98 as two quads with a hard seam at 60, borders 11.5,
 four lines. Fill stops are 0.6 and 0.4, border stops 0.65 and 0.35, the left
 seam is 60.5 and the right 60. Bit 0x40 selects raised, else bit 0x10 pressed,
 else idle. Three begins, twelve binds and three ends are counted. The shipped
-inks make raised and idle transparent and pressed black at alpha 0xE0.
+inks make raised and idle transparent and pressed black at alpha 0xE0. A
+capped span at unit 5 with left 10, right 110 and centre 28 draws a left cap
+from 0, 18 to 30, 38, a right cap from 120, 18 to 90, 38, and a middle from
+30, 28 to 90, 38. Its cap sample binds twice and the middle once, with twelve
+colour writes.
 
 ## Scope
 

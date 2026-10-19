@@ -202,6 +202,18 @@ pub const LINE_CHIP_ALT: [u32; 8] = [
     0x3f4c_cccd,
 ];
 
+/// End cap of a capped span: 0.15, 0.2, 0.15, 0.4, then 0.3, 0.4, 0.3, 0.2.
+pub const SPAN_END: [u32; 8] = [
+    0x3e19_999a,
+    0x3e4c_cccd,
+    0x3e19_999a,
+    0x3ecc_cccd,
+    0x3e99_999a,
+    0x3ecc_cccd,
+    0x3e99_999a,
+    0x3e4c_cccd,
+];
+
 /// Cap of a span bar: 0.7, 0.1, 0.7, 0.2, then 0.75, 0.2, 0.75, 0.1.
 pub const SPAN_CAP: [u32; 8] = [
     0x3f33_3333,
@@ -2280,6 +2292,80 @@ pub fn draw_bevel(place: BevelPlace, ink: &BevelInk) -> BevelBox {
         begins: 3,
         binds: 12,
         ends: 3,
+    }
+}
+
+/// Two end caps and the middle bar between their inner edges.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CappedSpan {
+    pub mode_calls: u32,
+    pub mode: i32,
+    pub begin_calls: u32,
+    pub prep_calls: u32,
+    pub ink_binds: u32,
+    pub bind_calls: u32,
+    /// Two cap binds, then the middle bind.
+    pub binds: [[u32; 8]; 3],
+    pub quads: [[(f32, f32); 4]; 3],
+    pub placed: [[(f32, f32); 4]; 3],
+    pub colour: u32,
+    pub colour_writes: u32,
+    pub end_calls: u32,
+}
+
+/// Draws the capped span. The retail method's second positional float is
+/// dead, so it is not taken. `centre` is the vertical middle.
+pub fn draw_capped_span(
+    unit: i32,
+    left: f32,
+    right: f32,
+    centre: f32,
+    ink: u32,
+    view: SpanView,
+) -> CappedSpan {
+    let doubled = unit.wrapping_shl(1) as f32;
+    let quadrupled = unit.wrapping_shl(2) as f32;
+    let back = -doubled;
+    let top = centre + back;
+    let bottom = quadrupled + top;
+    let left_out = left + back;
+    let left_in = left + quadrupled;
+    let right_out = right - back;
+    let right_in = right - quadrupled;
+    let quads = [
+        [
+            (left_out, top),
+            (left_out, bottom),
+            (left_in, bottom),
+            (left_in, top),
+        ],
+        [
+            (right_out, top),
+            (right_out, bottom),
+            (right_in, bottom),
+            (right_in, top),
+        ],
+        [
+            (left_in, centre),
+            (left_in, bottom),
+            (right_in, bottom),
+            (right_in, centre),
+        ],
+    ];
+    let placed = quads.map(|quad| quad.map(|(x, y)| place_corner(x, y, view)));
+    CappedSpan {
+        mode_calls: 1,
+        mode: 2,
+        begin_calls: 1,
+        prep_calls: 1,
+        ink_binds: 1,
+        bind_calls: 3,
+        binds: [SPAN_END, SPAN_END, SPAN_BAR],
+        quads,
+        placed,
+        colour: ink,
+        colour_writes: 12,
+        end_calls: 1,
     }
 }
 
@@ -4875,5 +4961,48 @@ mod tests {
                 .flat_map(|line| line.inks)
                 .all(|ink| ink == [0, 0, 0, 0xe0])
         );
+    }
+
+    #[test]
+    fn a_capped_span_draws_two_caps_and_a_middle() {
+        let span = draw_capped_span(5, 10.0, 110.0, 28.0, 17, SPAN_VIEW_UNSET);
+        assert_eq!(span.mode_calls, 1);
+        assert_eq!(span.mode, 2);
+        assert_eq!(span.begin_calls, 1);
+        assert_eq!(span.prep_calls, 1);
+        assert_eq!(span.ink_binds, 1);
+        assert_eq!(span.bind_calls, 3);
+        assert_eq!(span.binds, [SPAN_END, SPAN_END, SPAN_BAR]);
+        assert_eq!(span.colour, 17);
+        assert_eq!(span.colour_writes, 12);
+        assert_eq!(span.end_calls, 1);
+        let expect: [[(f32, f32); 4]; 3] = [
+            [(0.0, 18.0), (0.0, 38.0), (30.0, 38.0), (30.0, 18.0)],
+            [(120.0, 18.0), (120.0, 38.0), (90.0, 38.0), (90.0, 18.0)],
+            [(30.0, 28.0), (30.0, 38.0), (90.0, 38.0), (90.0, 28.0)],
+        ];
+        for (quad, want) in span.quads.iter().zip(expect) {
+            for ((gx, gy), (wx, wy)) in quad.iter().zip(want) {
+                assert_eq!(gx.to_bits(), wx.to_bits());
+                assert_eq!(gy.to_bits(), wy.to_bits());
+            }
+        }
+
+        let view = SpanView {
+            shift_x: 2.0,
+            shift_y: 100.0,
+            scale_x: 0.5,
+            scale_y: 2.0,
+            ..SPAN_VIEW_UNSET
+        };
+        let placed = draw_capped_span(5, 10.0, 110.0, 28.0, 17, view);
+        assert_eq!(placed.quads[0][0].0.to_bits(), 0.0_f32.to_bits());
+        assert_eq!(placed.quads[0][0].1.to_bits(), 18.0_f32.to_bits());
+        assert_eq!(placed.placed[0][0].0.to_bits(), 1.0_f32.to_bits());
+        assert_eq!(placed.placed[0][0].1.to_bits(), 164.0_f32.to_bits());
+
+        let zero = draw_capped_span(5, 0.0, 0.0, 0.0, 0, SPAN_VIEW_UNSET);
+        assert_eq!(zero.quads[0][0].1.to_bits(), (-10.0_f32).to_bits());
+        assert_eq!(zero.quads[0][1].1.to_bits(), 10.0_f32.to_bits());
     }
 }
