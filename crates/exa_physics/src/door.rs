@@ -35,9 +35,13 @@
 //! more than 0.05 rad short, and it is still held. A paired door adds the
 //! pass-through bits to its layer.
 //!
+//! An unlock clears the saved latch and waits 1000 ms. At that exact time
+//! the door is still latched. One millisecond later both leaves open. Which
+//! key fits the door is not in this slice.
+//!
 //! Evidence: the hinged door step, the open shove, the sliding door step,
-//! and the partner check. The lock and the slam's random pitch are not in
-//! this slice.
+//! the partner check, and the unlock wait. The slam's random pitch is not
+//! in this slice.
 
 use bevy::math::Vec3;
 
@@ -510,6 +514,46 @@ pub fn pair_layer(layer: u32, paired: bool) -> u32 {
     if paired { layer | PAIR_LAYER } else { layer }
 }
 
+/// How long a door stays latched after an unlock, in milliseconds.
+pub const UNLOCK_WAIT_MS: i32 = 1000;
+
+/// A door's latch and the wait before it opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Latch {
+    pub latched: bool,
+    /// The bit stored with the node.
+    pub saved: bool,
+    pub pending: bool,
+    pub ready_at_ms: i32,
+}
+
+/// Clear the saved latch and start the wait. The door stays latched.
+/// A partner gets the same wait and keeps its own saved bit.
+pub fn begin_unlock(door: &mut Latch, partner: Option<&mut Latch>, now_ms: i32) {
+    door.saved = false;
+    door.pending = true;
+    door.ready_at_ms = now_ms.saturating_add(UNLOCK_WAIT_MS);
+    if let Some(partner) = partner {
+        partner.pending = true;
+        partner.ready_at_ms = now_ms.saturating_add(UNLOCK_WAIT_MS);
+    }
+}
+
+/// Open the latch once the clock is strictly past the wait. The partner's
+/// latch opens in the same tick. At the exact wait, nothing changes.
+pub fn unlock_due(door: &mut Latch, partner: Option<&mut Latch>, now_ms: i32) -> bool {
+    if !door.pending || door.ready_at_ms >= now_ms {
+        return false;
+    }
+    door.saved = false;
+    door.latched = false;
+    door.pending = false;
+    if let Some(partner) = partner {
+        partner.latched = false;
+    }
+    true
+}
+
 /// The 3 cm shove along the door's facing. A zero facing shoves nothing.
 pub fn open_push(facing: Vec3) -> Vec3 {
     let length = facing.length();
@@ -801,5 +845,44 @@ mod tests {
         assert_eq!(pair_layer(0, true), PAIR_LAYER);
         assert_eq!(pair_layer(PAIR_LAYER, true), PAIR_LAYER);
         assert_eq!(pair_layer(1, false), 1);
+    }
+
+    fn latch() -> Latch {
+        Latch {
+            latched: true,
+            saved: true,
+            pending: false,
+            ready_at_ms: 0,
+        }
+    }
+
+    #[test]
+    fn an_unlock_waits_a_second_then_opens_both_leaves() {
+        let mut door = latch();
+        let mut partner = latch();
+        begin_unlock(&mut door, Some(&mut partner), 0);
+        assert!(!door.saved);
+        assert!(door.latched);
+        assert!(door.pending);
+        assert_eq!(door.ready_at_ms, UNLOCK_WAIT_MS);
+        assert!(partner.saved);
+        assert!(partner.latched);
+        assert!(partner.pending);
+        assert_eq!(partner.ready_at_ms, UNLOCK_WAIT_MS);
+
+        assert!(!unlock_due(&mut door, Some(&mut partner), UNLOCK_WAIT_MS));
+        assert!(door.latched);
+        assert!(partner.latched);
+
+        assert!(unlock_due(
+            &mut door,
+            Some(&mut partner),
+            UNLOCK_WAIT_MS + 1
+        ));
+        assert!(!door.latched);
+        assert!(!door.pending);
+        assert!(!door.saved);
+        assert!(!partner.latched);
+        assert!(partner.pending);
     }
 }

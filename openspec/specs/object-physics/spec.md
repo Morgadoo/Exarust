@@ -187,3 +187,10 @@ A single shut door SHALL stay shut at exactly 0.05 rad short of closed, and SHAL
 #### Scenario: One leaf open, the other not held
 - **WHEN** a single door is exactly 0.05 rad short and then 0.06 rad short and unlatched, a paired door 0.01 rad short has a partner that is not near, a paired door has a near partner, an angle is exactly 0.1 rad short and another is past closed, and a paired layer starts at 0
 - **THEN** the single door stays shut on the line and leaves past it while still held, the open partner's leaf leaves the shut state and is not held, the near partner's leaf stays shut and held, exactly 0.1 rad short is not near, past closed is near, and the layer is the pair bits
+
+### Requirement: Door unlock
+An unlock SHALL clear the saved latch and start a wait of 1000 ms on the door and on its partner, while both stay latched. The partner SHALL keep its own saved latch. At the exact wait both SHALL stay latched. Once the clock is strictly past the wait, both latches SHALL open.
+
+#### Scenario: A one second wait, then both leaves
+- **WHEN** an unlock starts at time 0 on a latched door with a latched partner, the clock is then 1000, and then 1001
+- **THEN** the saved latch is clear, the partner's saved latch remains, both stay latched through time 1000, and at time 1001 both latches are open
