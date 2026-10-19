@@ -52,6 +52,21 @@ pub const HOOK_ORDER: i32 = 4;
 pub const WATCH_BIT: u32 = 0x2000;
 /// Bit a watch code of 1 clears and a code of 2 sets.
 pub const WATCH_MARK: u32 = 0x800000;
+/// Mask and value that mark a picked item.
+pub const PICK_CLASS: u32 = 0x7000;
+pub const PICK_ITEM: u32 = 0x4000;
+/// High byte of an actor, and the kind word of a container.
+pub const PICK_ACTOR: u32 = 0x1a00_0000;
+pub const PICK_KIND: u32 = 0xa00;
+pub const PICK_SKIP: u32 = 0x800;
+/// Flags a taken item ORs on, and the flags a hover stores.
+pub const PICK_FOLLOW: u32 = 5;
+pub const CLICK_MARK: u32 = 0x11;
+pub const HOVER_FLAGS: u32 = 0x15;
+/// Bits of 70. A faster positive aim copies its place.
+pub const AIM_SPEED: u32 = 0x428c_0000;
+/// Bits of 80.
+pub const AIM_FASTER: u32 = 0x42a0_0000;
 /// Words copied from one control bank. The bytes between them are not copied.
 pub const BANK_WORDS: usize = 16;
 
@@ -214,7 +229,7 @@ pub struct MatchGate {
     pub gate_hook_out: u64,
     pub gate_owner_out: u64,
     pub gate_flags: u32,
-    /// Counted when the mid byte is set. The pick under the cursor is not in.
+    /// Counted when the mid byte is set. A clear mid byte may pick.
     pub gate_alt: u64,
     pub gate_alt_calls: u32,
     pub watch_flags: u32,
@@ -231,6 +246,34 @@ pub struct MatchGate {
     pub watch_refreshes: u32,
     pub watch_leave: u32,
     pub watch_focus: u64,
+    /// A set byte refuses the pick. A clear world also refuses it.
+    pub pick_busy: u8,
+    /// Child byte that lets a non-zero side still pick.
+    pub world_aim: u8,
+    pub pick_calls: u32,
+    pub pick_hit: u64,
+    pub hit_flags: u32,
+    pub hit_taken: u8,
+    pub hit_kind: u8,
+    pub kind_calls: u32,
+    pub hit_parent: u64,
+    pub world_id: u64,
+    pub hit_class: u32,
+    pub hit_kind_word: u32,
+    pub pick_extra: u64,
+    pub hit_named: u8,
+    pub hit_row: u8,
+    pub open_calls: u32,
+    pub chest_calls: u32,
+    pub notice_owner: u64,
+    pub aim_speed: u32,
+    pub aim_place: u64,
+    pub aim_source: u64,
+    pub aim_copied: bool,
+    pub aimed: u64,
+    pub click_flags: u32,
+    pub hover_byte: u8,
+    pub hover_mark: u32,
     /// Cleared by the first bank and set by the second. A match leaves the words.
     pub bank_flag: u8,
     pub bank_active: [u64; BANK_WORDS],
@@ -372,6 +415,32 @@ impl MatchGate {
             watch_refreshes: 0,
             watch_leave: 0,
             watch_focus: 0,
+            pick_busy: 0,
+            world_aim: 0,
+            pick_calls: 0,
+            pick_hit: 0,
+            hit_flags: 0,
+            hit_taken: 0,
+            hit_kind: 0,
+            kind_calls: 0,
+            hit_parent: 0,
+            world_id: 0,
+            hit_class: 0,
+            hit_kind_word: 0,
+            pick_extra: 0,
+            hit_named: 0,
+            hit_row: 0,
+            open_calls: 0,
+            chest_calls: 0,
+            notice_owner: 0,
+            aim_speed: 0,
+            aim_place: 0,
+            aim_source: 0,
+            aim_copied: false,
+            aimed: 0,
+            click_flags: 0,
+            hover_byte: 0,
+            hover_mark: 0,
             bank_flag: 0,
             bank_active: [0; BANK_WORDS],
             bank_first: [0; BANK_WORDS],
@@ -467,14 +536,87 @@ impl MatchGate {
     }
 
     /// The gate hook. It clears two words and sets the flags to 1. A set mid
-    /// byte counts the alternate hook. The pick under the cursor is not in.
+    /// byte counts the alternate hook and does not pick.
     pub fn run_gate(&mut self) -> u32 {
         self.gate_hook_out = 0;
         self.gate_owner_out = 0;
         self.gate_flags = 1;
-        if self.side_mid != 0 && self.gate_alt != 0 {
-            self.gate_alt_calls = self.gate_alt_calls.saturating_add(1);
+        if self.side_mid != 0 {
+            if self.gate_alt != 0 {
+                self.gate_alt_calls = self.gate_alt_calls.saturating_add(1);
+            }
+            return self.gate_flags;
         }
+        let side_blocks = self.bank_side != 0 && self.world_aim == 0;
+        if self.pick_busy != 0
+            || self.gate_alt != 0
+            || self.hold_byte != 0
+            || !self.world_open
+            || side_blocks
+        {
+            return self.gate_flags;
+        }
+        self.pick_calls = self.pick_calls.saturating_add(1);
+        if self.pick_hit == 0 {
+            return self.gate_flags;
+        }
+        if (self.hit_flags & PICK_CLASS) == PICK_ITEM {
+            if self.hit_taken != 0 {
+                self.gate_hook_out = 1;
+                self.gate_owner_out = self.notice_owner;
+                self.gate_flags |= PICK_FOLLOW;
+                return self.gate_flags;
+            }
+            if self.hit_kind != 0 {
+                self.kind_calls = self.kind_calls.saturating_add(1);
+                return self.gate_flags;
+            }
+        }
+        let actor = self.hit_parent != 0 && (self.hit_class & 0xff00_0000) == PICK_ACTOR;
+        if actor && self.hit_parent == self.world_id {
+            self.open_calls = self.open_calls.saturating_add(1);
+        } else if actor && self.hit_kind_word == PICK_KIND {
+            self.chest_calls = self.chest_calls.saturating_add(1);
+        } else if actor
+            && (self.hit_kind_word & PICK_SKIP) == 0
+            && self.pick_extra == 0
+            && (self.hit_named != 0 || self.hit_row != 0)
+        {
+            self.open_calls = self.open_calls.saturating_add(1);
+        }
+        self.gate_flags
+    }
+
+    /// The click hook. A fast world aim copies its place. A miss with the hold
+    /// byte set clears the aimed word.
+    pub fn run_click(&mut self) -> u32 {
+        self.gate_hook_out = 0;
+        self.gate_owner_out = 0;
+        self.click_flags = 0;
+        if self.world_open && self.aim_speed > AIM_SPEED {
+            self.aim_place = self.aim_source;
+            self.aim_copied = true;
+        }
+        if self.pick_hit == 0 {
+            if self.hold_byte != 0 {
+                self.aimed = 0;
+            }
+            return self.click_flags;
+        }
+        if (self.hit_flags & PICK_CLASS) == PICK_ITEM && self.hit_taken != 0 {
+            self.click_flags |= CLICK_MARK;
+        }
+        self.click_flags
+    }
+
+    /// The hover hook. It publishes a follow hook, clears a byte and a mark,
+    /// and stores the flags 0x15.
+    pub fn run_hover(&mut self) -> u32 {
+        self.gate_hook_out = 1;
+        self.gate_owner_out = self.self_owner;
+        self.hover_byte = 0;
+        self.hover_mark = 0;
+        self.gate_flags = HOVER_FLAGS;
         self.gate_flags
     }
 
@@ -1960,5 +2102,129 @@ mod tests {
         assert_eq!(leave.session_mark, 0);
         assert_eq!(leave.entered_code, ENTERED_CODE);
         assert_eq!(leave.primary, vec![listed(11, 3, HOOK_GATE)]);
+    }
+
+    #[test]
+    fn a_clear_gate_picks_and_a_click_and_hover_publish() {
+        let mut taken = MatchGate::playing();
+        taken.world_open = true;
+        taken.pick_hit = 1;
+        taken.hit_flags = PICK_ITEM;
+        taken.hit_taken = 1;
+        taken.notice_owner = 6;
+        assert_eq!(taken.run_gate(), 1 | PICK_FOLLOW);
+        assert_eq!(taken.pick_calls, 1);
+        assert_eq!(taken.gate_hook_out, 1);
+        assert_eq!(taken.gate_owner_out, 6);
+
+        let mut held = MatchGate::playing();
+        held.world_open = true;
+        held.hold_byte = 1;
+        held.pick_hit = 1;
+        assert_eq!(held.run_gate(), 1);
+        assert_eq!(held.pick_calls, 0);
+
+        let mut actor = MatchGate::playing();
+        actor.world_open = true;
+        actor.world_id = 4;
+        actor.pick_hit = 1;
+        actor.hit_parent = 4;
+        actor.hit_class = PICK_ACTOR;
+        assert_eq!(actor.run_gate(), 1);
+        assert_eq!(actor.open_calls, 1);
+
+        let mut busy = MatchGate::playing();
+        busy.world_open = true;
+        busy.pick_busy = 1;
+        busy.pick_hit = 1;
+        assert_eq!(busy.run_gate(), 1);
+        assert_eq!(busy.pick_calls, 0);
+
+        let mut kind = MatchGate::playing();
+        kind.world_open = true;
+        kind.pick_hit = 1;
+        kind.hit_flags = PICK_ITEM;
+        kind.hit_kind = 1;
+        assert_eq!(kind.run_gate(), 1);
+        assert_eq!(kind.kind_calls, 1);
+        assert_eq!(kind.pick_calls, 1);
+
+        let mut chest = MatchGate::playing();
+        chest.world_open = true;
+        chest.pick_hit = 1;
+        chest.hit_parent = 2;
+        chest.world_id = 4;
+        chest.hit_class = PICK_ACTOR;
+        chest.hit_kind_word = PICK_KIND;
+        assert_eq!(chest.run_gate(), 1);
+        assert_eq!(chest.chest_calls, 1);
+
+        let mut named = MatchGate::playing();
+        named.world_open = true;
+        named.pick_hit = 1;
+        named.hit_parent = 2;
+        named.hit_class = PICK_ACTOR;
+        named.hit_named = 1;
+        assert_eq!(named.run_gate(), 1);
+        assert_eq!(named.open_calls, 1);
+
+        let mut skipped = MatchGate::playing();
+        skipped.world_open = true;
+        skipped.pick_hit = 1;
+        skipped.hit_parent = 2;
+        skipped.hit_class = PICK_ACTOR;
+        skipped.hit_kind_word = PICK_SKIP;
+        skipped.hit_named = 1;
+        assert_eq!(skipped.run_gate(), 1);
+        assert_eq!(skipped.open_calls, 0);
+
+        let mut sided = MatchGate::playing();
+        sided.world_open = true;
+        sided.bank_side = 1;
+        sided.pick_hit = 1;
+        assert_eq!(sided.run_gate(), 1);
+        assert_eq!(sided.pick_calls, 0);
+        sided.world_aim = 1;
+        assert_eq!(sided.run_gate(), 1);
+        assert_eq!(sided.pick_calls, 1);
+
+        let mut click = MatchGate::playing();
+        click.world_open = true;
+        click.aim_speed = AIM_FASTER;
+        click.aim_source = 9;
+        click.hold_byte = 1;
+        click.aimed = 3;
+        assert_eq!(click.run_click(), 0);
+        assert!(click.aim_copied);
+        assert_eq!(click.aim_place, 9);
+        assert_eq!(click.aimed, 0);
+
+        click.aim_copied = false;
+        click.aim_speed = AIM_SPEED;
+        click.pick_hit = 1;
+        click.hit_flags = PICK_ITEM;
+        click.hit_taken = 1;
+        assert_eq!(click.run_click(), CLICK_MARK);
+        assert!(!click.aim_copied);
+
+        let mut hover = MatchGate::playing();
+        hover.self_owner = 3;
+        hover.hover_byte = 4;
+        hover.hover_mark = 6;
+        assert_eq!(hover.run_hover(), HOVER_FLAGS);
+        assert_eq!(hover.gate_hook_out, 1);
+        assert_eq!(hover.gate_owner_out, 3);
+        assert_eq!(hover.hover_byte, 0);
+        assert_eq!(hover.hover_mark, 0);
+
+        let mut focus = MatchGate::playing();
+        focus.focus = true;
+        focus.hands_ready = true;
+        focus.clock = 5;
+        let mut company = Company::new("Ash");
+        assert!(focus.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert_eq!(focus.focus_calls, 1);
+        assert!(focus.hands_set);
+        assert_eq!(focus.stamp, 5);
     }
 }
