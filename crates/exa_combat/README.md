@@ -136,7 +136,10 @@ that owner. It leaves its parent's list. The weapon and each descendant
 take the weapon as their root. Iterations are 2 plus the parts visited,
 minus 1. Links are 0 and the awake byte is 0. A grip at or above 0
 becomes -1. A part with a child, an object type whose low twelve bits are
-0x89, and object bit 0x400000, sets its mark to -2. A body without muscles dies at
+0x89, and object bit 0x400000, sets its mark to -2. A solid dropped
+weapon enters the solver (`free_body`), awake at 256, with its own
+mobility, friction 0.75, its spheres and its velocity. One solver tick
+moves it. A flat shape spawns nothing. A body without muscles dies at
 once. Rules: [`docs/formats/RSQ.md`](../../docs/formats/RSQ.md) (The
 collapse).
 

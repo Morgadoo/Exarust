@@ -18,7 +18,7 @@
 use bevy::prelude::*;
 use exa_anim::{Animator, Ease};
 use exa_physics::body::{
-    CharacterStage, CharacterTick, GoLimp, Ragdoll, TickedCharacter, pairs, step_length,
+    CharacterStage, CharacterTick, GoLimp, Ragdoll, RigidPart, TickedCharacter, pairs, step_length,
 };
 
 use crate::condition::{Condition, StateFlags, track_condition};
@@ -234,6 +234,8 @@ pub struct HeldWeapon {
     pub links: i32,
     pub grip: i32,
     pub awake: u8,
+    /// The weapon's rigid shape, when it can enter the solver.
+    pub shape: Option<RigidPart>,
 }
 
 /// A weapon that has left the hand: its own mobility, friction 0.75, no
@@ -251,6 +253,9 @@ pub struct LooseWeapon {
     pub links: i32,
     pub grip: i32,
     pub awake: u8,
+    pub shape: Option<RigidPart>,
+    /// Set once the dying tick has put this weapon into the solver.
+    pub embodied: bool,
 }
 
 /// The two hands. `count` is how many slots are filled. `class_word` is
@@ -309,7 +314,22 @@ fn loosen(held: HeldWeapon) -> LooseWeapon {
         links: 0,
         grip,
         awake: 0,
+        shape: held.shape,
+        embodied: false,
     }
+}
+
+/// A solid dropped weapon as one free body: its own mobility, the rigid
+/// bodies' friction, its spheres, and the velocity it already had. It is
+/// awake, so the solver steps it. A missing or flat shape stays out.
+pub fn free_body(loose: &LooseWeapon) -> Option<Ragdoll> {
+    let shape = loose.shape.as_ref().filter(|shape| shape.is_solid())?;
+    let mut shape = shape.clone();
+    shape.mobility = loose.mobility;
+    let mut body = Ragdoll::rigid(std::slice::from_ref(&shape));
+    body.set_velocity(loose.velocity);
+    body.wake();
+    Some(body)
 }
 
 /// Copies the part's owner onto every child. A part with a child, an
@@ -493,6 +513,16 @@ pub fn dying_tick(
             && !collapse.released
         {
             release_hands(&mut hands);
+            for loose in &mut hands.loose {
+                if loose.embodied {
+                    continue;
+                }
+                let Some(body) = free_body(loose) else {
+                    continue;
+                };
+                commands.spawn(body);
+                loose.embodied = true;
+            }
             collapse.released = true;
         }
         walk_collapse(&mut body);

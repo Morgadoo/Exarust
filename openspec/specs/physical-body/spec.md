@@ -1307,3 +1307,10 @@ A collapsing body's dying tick SHALL give a dropped weapon itself as owner and c
 #### Scenario: A held weapon returns to itself
 - **WHEN** a collapsing body holds weapon 3, parent list 5 then 3 then 8, grip 4, child 7 of object type 0x1089 with flags 0x400001 and grandchild 8, and weapon 4 with grip -3, mark 4, parent list 9 and no child, and the dying tick runs
 - **THEN** weapon 3, child 7 and grandchild 8 have owner 3 and root 3, iterations are 4, the child's iterations stay 11, links are 0, grip is -1, the awake byte is 0, the parent list is 5 then 8, child 7's mark is -2, weapon 3's mark stays, and weapon 4 keeps grip -3, mark 4, parent list 9 and iterations 2
+
+### Requirement: Dropped weapon enters the solver
+A collapsing body's dying tick SHALL put a dropped weapon that has a solid shape into the body solver, awake at 256, with its own mobility, friction 0.75, its spheres, and the velocity it had. One solver tick moves it. A weapon with no solid shape spawns nothing. A second dying tick adds no body.
+
+#### Scenario: A solid weapon falls free
+- **WHEN** a collapsing body holds a solid weapon of mobility 1.25 at height 1 with velocity 1.5 and one sphere, and a flat weapon, the dying tick runs twice, and the free body is stepped once against no level
+- **THEN** the solid weapon is awake at 256 with friction bits 0x3f400000, mobility bits 0x3fa00000 and that sphere, the flat weapon spawns nothing, the second tick adds no body, and the first particle is at bits 0xbe3a7bb7, 0x3f7fa2b5 and 0xbe4ccccd

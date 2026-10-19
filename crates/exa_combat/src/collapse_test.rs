@@ -448,6 +448,7 @@ fn sword(id: u32, velocity: Vec3) -> HeldWeapon {
         links: 1,
         grip: -1,
         awake: 1,
+        shape: None,
     }
 }
 
@@ -612,4 +613,93 @@ fn the_dying_tick_returns_the_weapon_to_itself() {
     assert_eq!(again.loose.len(), 2);
     assert_eq!(again.loose[0].part.owner, 3);
     assert_eq!(again.loose[0].parent.as_deref(), Some(&[5, 8][..]));
+}
+
+fn blade(at: Vec3) -> RigidPart {
+    RigidPart {
+        entity: Entity::PLACEHOLDER,
+        parent: None,
+        world: Affine3A::from_translation(at),
+        rest: [
+            Vec3::new(-0.2, 0.0, -0.2),
+            Vec3::new(0.2, 0.0, -0.2),
+            Vec3::new(0.0, 0.0, 0.2),
+            Vec3::new(0.0, 0.4, 0.0),
+        ],
+        point_masses: [4.0; 4],
+        mobility: 0.2,
+        spheres: vec![(Vec3::new(0.0, 0.2, 0.0), 0.2)],
+        origin: Vec3::ZERO,
+        links: Vec::new(),
+    }
+}
+
+fn free_bodies(app: &mut App) -> Vec<Entity> {
+    let mut query = app
+        .world_mut()
+        .query_filtered::<Entity, (With<Ragdoll>, Without<Fighter>)>();
+    query.iter(app.world()).collect()
+}
+
+/// The dying tick puts a solid dropped weapon into the solver. It is awake,
+/// keeps mobility 1.25, friction 0.75, its sphere and its velocity. One
+/// solver tick moves it. A flat shape spawns nothing, and a second dying
+/// tick adds no body.
+#[test]
+fn the_dying_tick_steps_the_dropped_weapon() {
+    let mut solid = sword(3, Vec3::X * 1.5);
+    solid.shape = Some(blade(Vec3::Y));
+    let mut flat = sword(4, Vec3::ZERO);
+    flat.shape = Some(blade(Vec3::ZERO));
+    if let Some(shape) = flat.shape.as_mut() {
+        shape.rest[3] = Vec3::new(0.1, 0.0, 0.0);
+    }
+    let mut app = App::new();
+    app.add_systems(Update, dying_tick);
+    let id = app
+        .world_mut()
+        .spawn((
+            Fighter::default(),
+            Condition::COLLAPSING,
+            Collapse::default(),
+            Ragdoll::new(&[]).with_drive(),
+            Animator::new("Default", FALL_BACKWARD),
+            GlobalTransform::default(),
+            Hands {
+                count: 2,
+                slots: [Some(solid), Some(flat)],
+                class_word: 0,
+                primary: 0,
+                loose: Vec::new(),
+            },
+        ))
+        .id();
+    app.insert_resource(TickedCharacter {
+        body: id,
+        character: None,
+    });
+    app.update();
+    let hands = app.world().get::<Hands>(id).unwrap();
+    assert!(hands.loose[0].embodied);
+    assert!(!hands.loose[1].embodied);
+    let bodies = free_bodies(&mut app);
+    assert_eq!(bodies.len(), 1);
+    let weapon = app.world().get::<Ragdoll>(bodies[0]).unwrap();
+    assert!(!weapon.asleep());
+    assert_eq!(weapon.countdown(), 256);
+    let part = &weapon.parts[0];
+    assert_eq!(part.friction.to_bits(), 0x3f40_0000);
+    assert_eq!(part.inverse_mass.to_bits(), 0x3fa0_0000);
+    assert_eq!(part.spheres, vec![(Vec3::new(0.0, 0.2, 0.0), 0.2)]);
+    let back = 1.5 / 83.0;
+    assert_eq!(part.previous[0].x, part.positions[0].x - back);
+    assert_eq!(part.positions[3], Vec3::new(0.0, 1.4, 0.0));
+    app.update();
+    assert_eq!(free_bodies(&mut app).len(), 1);
+    let mut weapon = app.world_mut().get_mut::<Ragdoll>(bodies[0]).unwrap();
+    weapon.tick(&[] as &[[Vec3; 3]]);
+    let p = weapon.parts[0].positions[0];
+    assert_eq!(p.x.to_bits(), 0xbe3a_7bb7);
+    assert_eq!(p.y.to_bits(), 0x3f7f_a2b5);
+    assert_eq!(p.z.to_bits(), 0xbe4c_cccd);
 }

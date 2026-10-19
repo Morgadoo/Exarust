@@ -31,7 +31,7 @@ const MIN_REST_VOLUME: f32 = 1e-12;
 
 /// One rigid body of a model, as registration needs it (metres, the node's
 /// frame).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RigidPart {
     /// The node the body moves.
     pub entity: Entity,
