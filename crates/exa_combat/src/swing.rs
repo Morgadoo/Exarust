@@ -811,6 +811,177 @@ pub(crate) fn run_swings(
     }
 }
 
+/// A class word of exactly this value is two weapons. A recoil and a
+/// follow-through compare the whole word, and skip the rest of the write
+/// when it matches and a continuation is already set, or the clock widens
+/// above 0.4 and a counter starts.
+const DUAL_WIELD: u32 = 0x90;
+/// The clock compare is a double. A float 0.4 widens to slightly more.
+const COUNTER_FROM: f64 = 0.4;
+/// Both arm stiffnesses a recoil writes, and the held scale passed with them.
+const ARM_STIFFNESS: f32 = 0.2;
+const HELD_SCALE: f32 = 1.0;
+const RECOIL_BLEND: u32 = 40;
+const RECOIL_TAIL_MS: i32 = 200;
+/// Drive is widened, multiplied by this double, narrowed, then by 400.
+const DRIVE_SHARE: f64 = 0.1;
+const END_SCALE: f32 = 400.0;
+/// Gain, recoil and speed are widened, then multiplied by this double.
+const FOLLOW_SHARE: f64 = 0.15;
+/// One minus the strength is widened, then multiplied by this double.
+const STALL_SHARE: f64 = 0.05;
+/// A body zone that is not strictly above this sets the strength to 0.
+const ZONE_FLOOR: f32 = f32::from_bits(0x33ff_ffd7);
+
+/// What a blocked striker brings to a recoil.
+#[derive(Clone, Copy, Debug)]
+pub struct RecoilStrike {
+    /// The weapon class word. Two weapons are [`DUAL_WIELD`].
+    pub class_word: u32,
+    pub flags: u32,
+    /// The attack clock, 0 to 1.
+    pub clock: f32,
+    /// An immediate counter is starting.
+    pub counter: bool,
+    /// Strike speed times the weapon's recoil.
+    pub drive: f32,
+    /// The game clock, in milliseconds.
+    pub now_ms: i32,
+}
+
+/// The stall end, the stance blend and the arm stiffness a recoil writes
+/// when the dual-wield skip does not take it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RecoilRest {
+    pub end_ms: i32,
+    pub blend: u32,
+    /// Both arms.
+    pub stiffness: f32,
+    /// The held scale passed with the two stiffnesses.
+    pub held: f32,
+}
+
+/// Strength and stall rate are always one half, and the released bit is
+/// always cleared. [`RecoilRest`] is absent when two weapons skip the rest.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Recoil {
+    pub strength: f32,
+    pub stall: f32,
+    pub flags: u32,
+    pub rest: Option<RecoilRest>,
+}
+
+/// A blocked striker recoils. Strength and the stall rate become 0.5 and
+/// the released bit clears. Two weapons that are already continuing, or
+/// whose clock widens above 0.4 while a counter starts, stop there. Any
+/// other swing sets stalling, cleaving and recoiled, and the stance returns
+/// after the truncated widened drive times 0.1 times 400, plus 200 ms.
+pub fn recoil(strike: &RecoilStrike) -> Recoil {
+    let cleared = strike.flags & !flags::RELEASED;
+    if dual_wield_holds(
+        strike.class_word,
+        strike.flags,
+        strike.clock,
+        strike.counter,
+    ) {
+        return Recoil {
+            strength: 0.5,
+            stall: 0.5,
+            flags: cleared,
+            rest: None,
+        };
+    }
+    let scaled = (f64::from(strike.drive) * DRIVE_SHARE) as f32;
+    Recoil {
+        strength: 0.5,
+        stall: 0.5,
+        flags: cleared | flags::STALLING | flags::CLEAVING | flags::RECOILED,
+        rest: Some(RecoilRest {
+            end_ms: (scaled * END_SCALE) as i32 + strike.now_ms + RECOIL_TAIL_MS,
+            blend: RECOIL_BLEND,
+            stiffness: ARM_STIFFNESS,
+            held: HELD_SCALE,
+        }),
+    }
+}
+
+/// What a wound brings to the striker's follow-through.
+#[derive(Clone, Copy, Debug)]
+pub struct FollowStrike {
+    pub class_word: u32,
+    pub flags: u32,
+    pub clock: f32,
+    pub counter: bool,
+    /// The caller's gain. A hard blow and a light one choose different values.
+    pub gain: f32,
+    /// The weapon's recoil.
+    pub recoil: f32,
+    /// Strike speed, centimetres a tick.
+    pub speed: f32,
+    /// Body zone, or how far into the tip the edge sits.
+    pub zone: f32,
+    /// The blow landed on the edge.
+    pub edge: bool,
+    pub now_ms: i32,
+}
+
+/// The strength, stall, flags and end a follow-through writes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FollowThrough {
+    pub strength: f32,
+    pub stall: f32,
+    pub flags: u32,
+    pub end_ms: i32,
+}
+
+/// The striker follows a wound through. Two weapons that are continuing, or
+/// whose clock widens above 0.4 while a counter starts, write nothing.
+/// Otherwise the scale is the widened gain times recoil times speed times
+/// 0.15, floored at 0. A body zone at or under the floor sets strength 0,
+/// and a larger zone uses its square root times the scale. An edge uses
+/// one minus the zone, times the scale, plus the zone. Strength caps at 1.
+/// The stall is the widened one minus strength times 0.05. Stalling and
+/// cleaving are set. The end truncates the scale times 400 and adds now.
+pub fn follow_through(strike: &FollowStrike) -> Option<FollowThrough> {
+    if dual_wield_holds(
+        strike.class_word,
+        strike.flags,
+        strike.clock,
+        strike.counter,
+    ) {
+        return None;
+    }
+    let scaled = follow_scale(strike.gain, strike.recoil, strike.speed);
+    let mut strength = if strike.edge {
+        (1.0_f32 - strike.zone) * scaled + strike.zone
+    } else if strike.zone > ZONE_FLOOR {
+        strike.zone.sqrt() * scaled
+    } else {
+        0.0
+    };
+    if strength > 1.0 {
+        strength = 1.0;
+    }
+    Some(FollowThrough {
+        strength,
+        stall: (f64::from(1.0_f32 - strength) * STALL_SHARE) as f32,
+        flags: strike.flags | flags::STALLING | flags::CLEAVING,
+        end_ms: (scaled * END_SCALE) as i32 + strike.now_ms,
+    })
+}
+
+fn dual_wield_holds(class_word: u32, flags: u32, clock: f32, counter: bool) -> bool {
+    class_word == DUAL_WIELD
+        && ((flags & flags::CONTINUATION) != 0 || f64::from(clock) > COUNTER_FROM && counter)
+}
+
+fn follow_scale(gain: f32, recoil: f32, speed: f32) -> f32 {
+    let speed_scaled = f64::from(speed) * FOLLOW_SHARE;
+    let shaped = f64::from(recoil) * speed_scaled;
+    let scaled = (f64::from(gain) * shaped) as f32;
+    if scaled < 0.0 { 0.0 } else { scaled }
+}
+
 /// Gives each wielder the swing of its primary striker (once a frame; the
 /// game adds it beside the character ticks that read it): the blade in
 /// the held slot its last attack or its equip made primary, the first

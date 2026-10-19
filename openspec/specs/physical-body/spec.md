@@ -1258,3 +1258,17 @@ A cleave SHALL be refused. Inside 80 cm the falloff SHALL be 1, at 165 cm one ha
 #### Scenario: A close weapon, a passed blow, and a shield
 - **WHEN** a cleave is gripped, handling 0.5 is gripped at 40 cm, at 165 cm, at 250 cm, and at 251 cm, a passed blow is gripped, a shield of weight 0.8 and stamina 0.5 is gripped, and an attack of motion 5 with two weapons, motion 9 with two weapons, and motion 5 with one weapon are gripped
 - **THEN** the cleave is refused, 40 cm has speed 0.5, blend 10, and strength bits 0x3ecf5c29, 165 cm has strength bits 0x3e4f5c29, 250 cm and 251 cm have strength 0, the passed blow has speed 0.25, blend 5, and flags 0x100000, the shield has speed bits 0x3f4ccccd, blend 16, strength bits 0x3df5c290, and flags 0x800, and the slots are 1, 0, and 0
+
+### Requirement: Striker recoil
+A recoil SHALL set strength and the stall rate to 0.5 and SHALL clear the released bit. A class word of 0x90 with the continuation bit, or with a clock whose widening exceeds 0.4 and a counter, SHALL stop there. Any other swing SHALL set stalling, cleaving and recoiled, end at the truncated widened drive times 0.1 times 400 plus now plus 200, use blend 40, and set both arm stiffnesses to 0.2.
+
+#### Scenario: A blocked swing recoils unless two weapons hold it
+- **WHEN** a released swing with the window bit and drive 1 is recoiled, drive 0.013 is recoiled, a class word of 0x90 with the continuation bit is recoiled, clock 0.4 with a counter is recoiled, clock 0.4 without a counter is recoiled, and the next lower clock with a counter is recoiled
+- **THEN** drive 1 has strength and stall bits 0x3f000000, flags 0x27, end 1240, blend 40 and stiffness bits 0x3e4ccccd, drive 0.013 ends at 1200, the continuation and clock 0.4 with a counter leave no end, and clock 0.4 without a counter and the next lower clock end at 1240
+
+### Requirement: Follow-through
+A class word of 0x90 continuing, or a clock widened past 0.4 with a counter, SHALL write nothing. The scale SHALL be gain times recoil times speed times 0.15, floored at 0. A body zone at or under the epsilon SHALL set strength 0, else the square root times the scale. An edge SHALL use one minus the zone times the scale plus the zone. Strength SHALL cap at 1. Stall SHALL be one minus strength times 0.05, widened. Flags SHALL gain 6. The end SHALL be the truncated scale times 400 plus now.
+
+#### Scenario: A wound slows the swing and a continuation does not
+- **WHEN** gain, recoil and speed 1 meet zone 0.25, zone 0, the epsilon, an edge at 0.25, gain 100 at zone 1, gain -1, and speed 0.009 at zone 0, and a class word of 0x90 with the continuation bit is followed through
+- **THEN** zone 0.25 has strength bits 0x3d99999a, stall bits 0x3d3d70a4, flags 0x7 and end 1060, zone 0 and the epsilon have strength 0, the edge has strength bits 0x3eb9999a, gain 100 has strength 1 and end 7000, gain -1 and speed 0.009 end at 1000, and the continuation writes nothing

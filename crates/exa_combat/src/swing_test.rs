@@ -764,3 +764,137 @@ fn the_installed_attack_clips() {
     assert_eq!((ticks, ticks * 12, chain_at), (68, 816, Some(55)));
     assert_eq!(fists.expected_ms(0.0, punch, 1.0), 849);
 }
+
+fn blocked() -> RecoilStrike {
+    RecoilStrike {
+        class_word: 0,
+        flags: flags::WINDOW_OPENED | flags::RELEASED,
+        clock: 0.0,
+        counter: false,
+        drive: 1.0,
+        now_ms: 1000,
+    }
+}
+
+fn wound() -> FollowStrike {
+    FollowStrike {
+        class_word: 0,
+        flags: flags::WINDOW_OPENED,
+        clock: 0.0,
+        counter: false,
+        gain: 1.0,
+        recoil: 1.0,
+        speed: 1.0,
+        zone: 0.25,
+        edge: false,
+        now_ms: 1000,
+    }
+}
+
+#[test]
+fn a_striker_recoils_and_follows_through() {
+    let hit = recoil(&blocked());
+    assert_eq!(hit.strength.to_bits(), 0x3f00_0000);
+    assert_eq!(hit.stall.to_bits(), 0x3f00_0000);
+    assert_eq!(hit.flags, 0x27);
+    let rest = hit.rest.unwrap();
+    assert_eq!(rest.end_ms, 1240);
+    assert_eq!(rest.blend, 40);
+    assert_eq!(rest.stiffness.to_bits(), 0x3e4c_cccd);
+    assert_eq!(rest.held.to_bits(), 0x3f80_0000);
+    let short = recoil(&RecoilStrike {
+        drive: 13.0 * 0.001,
+        ..blocked()
+    });
+    assert_eq!(short.rest.unwrap().end_ms, 1200);
+    let continued = recoil(&RecoilStrike {
+        class_word: 0x90,
+        flags: flags::CONTINUATION | flags::RELEASED,
+        ..blocked()
+    });
+    assert_eq!(continued.strength.to_bits(), 0x3f00_0000);
+    assert_eq!(continued.stall.to_bits(), 0x3f00_0000);
+    assert_eq!(continued.flags, flags::CONTINUATION);
+    assert!(continued.rest.is_none());
+    let late = recoil(&RecoilStrike {
+        class_word: 0x90,
+        flags: flags::RELEASED,
+        clock: 0.4,
+        counter: true,
+        ..blocked()
+    });
+    assert_eq!(late.flags, 0);
+    assert!(late.rest.is_none());
+    let open = recoil(&RecoilStrike {
+        class_word: 0x90,
+        clock: 0.4,
+        counter: false,
+        ..blocked()
+    });
+    assert_eq!(open.flags, 0x27);
+    assert_eq!(open.rest.unwrap().end_ms, 1240);
+    let earlier = recoil(&RecoilStrike {
+        class_word: 0x90,
+        clock: f32::from_bits(0x3ecc_cccc),
+        counter: true,
+        ..blocked()
+    });
+    assert_eq!(earlier.rest.unwrap().end_ms, 1240);
+
+    let body = follow_through(&wound()).unwrap();
+    assert_eq!(body.strength.to_bits(), 0x3d99_999a);
+    assert_eq!(body.stall.to_bits(), 0x3d3d_70a4);
+    assert_eq!(body.flags, 0x7);
+    assert_eq!(body.end_ms, 1060);
+    let empty = follow_through(&FollowStrike {
+        zone: 0.0,
+        ..wound()
+    })
+    .unwrap();
+    assert_eq!(empty.strength.to_bits(), 0);
+    assert_eq!(empty.stall.to_bits(), 0x3d4c_cccd);
+    let floor = follow_through(&FollowStrike {
+        zone: f32::from_bits(0x33ff_ffd7),
+        ..wound()
+    })
+    .unwrap();
+    assert_eq!(floor.strength.to_bits(), 0);
+    let edge = follow_through(&FollowStrike {
+        edge: true,
+        ..wound()
+    })
+    .unwrap();
+    assert_eq!(edge.strength.to_bits(), 0x3eb9_999a);
+    assert_eq!(edge.stall.to_bits(), 0x3d02_8f5c);
+    let capped = follow_through(&FollowStrike {
+        gain: 100.0,
+        zone: 1.0,
+        ..wound()
+    })
+    .unwrap();
+    assert_eq!(capped.strength.to_bits(), 0x3f80_0000);
+    assert_eq!(capped.stall.to_bits(), 0);
+    assert_eq!(capped.end_ms, 7000);
+    let dropped = follow_through(&FollowStrike {
+        gain: -1.0,
+        ..wound()
+    })
+    .unwrap();
+    assert_eq!(dropped.strength.to_bits(), 0);
+    assert_eq!(dropped.end_ms, 1000);
+    let glancing = follow_through(&FollowStrike {
+        speed: 9.0 * 0.001,
+        zone: 0.0,
+        ..wound()
+    })
+    .unwrap();
+    assert_eq!(glancing.end_ms, 1000);
+    assert!(
+        follow_through(&FollowStrike {
+            class_word: 0x90,
+            flags: flags::CONTINUATION,
+            ..wound()
+        })
+        .is_none()
+    );
+}
