@@ -10,7 +10,7 @@
 //! for 8 through 10, the down clip when the table height is at or below the
 //! chest difference.
 //!
-//! Evidence: the unarmed parry decision and the height table.
+//! Evidence: the unarmed parry decision, the height table, and the armed grip.
 
 use std::f32::consts::PI;
 
@@ -66,6 +66,112 @@ pub struct Parry {
     pub clip: u8,
     pub blend: u32,
     pub speed: f32,
+}
+
+/// What an armed defender brings to the grip.
+#[derive(Debug, Clone, Copy)]
+pub struct Arm {
+    pub handling: f32,
+    pub horizontal_cm: f32,
+    pub passed: bool,
+    pub cleaving: bool,
+    pub shield: bool,
+    pub shield_weight: f32,
+    pub stamina: f32,
+    pub attacking: bool,
+    pub motion: u8,
+    pub held: u8,
+    pub has_grip: bool,
+    pub other_held: bool,
+}
+
+/// The grip a parry enables, and the speed the clip blends by.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Grip {
+    pub speed: f32,
+    pub blend: u32,
+    pub strength: f32,
+    pub slot: u8,
+    pub flags: u32,
+    pub enabled: bool,
+    pub other_disabled: bool,
+}
+
+/// The armed parry's grip. A cleaving attacker is refused. A blow that has
+/// passed sets the speed to the handling squared, or the shield weight times
+/// stamina, and disables the grips. Otherwise the falloff is 1 inside 80 cm,
+/// falls to 0 at 250 cm, and stays 0 past that. A weapon's strength is
+/// (1.4 − handling) times that falloff times 0.75 times 0.6, and its speed is
+/// the handling. A shield's speed is 1 minus half the weight times stamina,
+/// and its strength is stamina times weight times the falloff times 0.75
+/// times 0.4, with flags 0x800. The off hand is slot 1 only while attacking
+/// with a motion outside 8 through 10 and two weapons are held.
+pub fn armed_grip(arm: &Arm) -> Option<Grip> {
+    if arm.cleaving {
+        return None;
+    }
+    let falloff = parry_falloff(arm.horizontal_cm);
+    let slot = grip_slot(arm);
+    if arm.passed {
+        let speed = if arm.shield {
+            arm.shield_weight * arm.stamina
+        } else {
+            arm.handling * arm.handling
+        };
+        return Some(grip(speed, 0.0, slot, 0x100000, false, true));
+    }
+    if arm.shield {
+        let speed = 1.0 - arm.shield_weight * arm.stamina * 0.5_f32;
+        if !arm.has_grip {
+            return Some(grip(speed, 0.0, slot, 0, false, false));
+        }
+        let strength = arm.stamina * arm.shield_weight * falloff * 0.75_f32 * 0.4_f32;
+        return Some(grip(speed, strength, slot, 0x800, true, arm.other_held));
+    }
+    let speed = arm.handling;
+    if !arm.has_grip {
+        return Some(grip(speed, 0.0, slot, 0, false, false));
+    }
+    let strength = (1.4_f32 - arm.handling) * falloff * 0.75_f32 * 0.6_f32;
+    Some(grip(speed, strength, slot, 0, true, arm.other_held))
+}
+
+fn grip(
+    speed: f32,
+    strength: f32,
+    slot: u8,
+    flags: u32,
+    enabled: bool,
+    other_disabled: bool,
+) -> Grip {
+    Grip {
+        speed,
+        blend: (20.0 * speed).round() as u32,
+        strength,
+        slot,
+        flags,
+        enabled,
+        other_disabled,
+    }
+}
+
+fn parry_falloff(distance: f32) -> f32 {
+    if distance < 80.0 {
+        1.0
+    } else if distance <= 250.0 {
+        1.0 - (distance - 80.0) * (1.0_f32 / 170.0)
+    } else {
+        0.0
+    }
+}
+
+fn grip_slot(arm: &Arm) -> u8 {
+    let slot = if arm.attacking && !(8..=10).contains(&arm.motion) {
+        1
+    } else {
+        0
+    };
+    if arm.held < slot + 1 { 0 } else { slot }
 }
 
 /// The unarmed parry for `threat`, or nothing when the blow is not one an
@@ -190,5 +296,103 @@ mod tests {
         assert_eq!(unarmed_parry(&down).unwrap().clip, LEFT_DN);
         down.defender_chest_cm = 100.0;
         assert_eq!(unarmed_parry(&down).unwrap().clip, LEFT);
+    }
+
+    fn arm() -> Arm {
+        Arm {
+            handling: 0.5,
+            horizontal_cm: 40.0,
+            passed: false,
+            cleaving: false,
+            shield: false,
+            shield_weight: 0.8,
+            stamina: 0.5,
+            attacking: false,
+            motion: 5,
+            held: 1,
+            has_grip: true,
+            other_held: false,
+        }
+    }
+
+    #[test]
+    fn an_armed_parry_sets_the_grip() {
+        assert!(
+            armed_grip(&Arm {
+                cleaving: true,
+                ..arm()
+            })
+            .is_none()
+        );
+        let near = armed_grip(&arm()).unwrap();
+        assert_eq!(near.speed.to_bits(), 0x3f00_0000);
+        assert_eq!(near.blend, 10);
+        assert_eq!(near.strength.to_bits(), 0x3ecf_5c29);
+        assert_eq!(near.slot, 0);
+        assert_eq!(near.flags, 0);
+        assert!(near.enabled);
+        assert!(!near.other_disabled);
+        let mid = armed_grip(&Arm {
+            horizontal_cm: 165.0,
+            ..arm()
+        })
+        .unwrap();
+        assert_eq!(mid.strength.to_bits(), 0x3e4f_5c29);
+        let edge = armed_grip(&Arm {
+            horizontal_cm: 250.0,
+            ..arm()
+        })
+        .unwrap();
+        assert_eq!(edge.strength.to_bits(), 0);
+        let past = armed_grip(&Arm {
+            horizontal_cm: 251.0,
+            ..arm()
+        })
+        .unwrap();
+        assert_eq!(past.strength.to_bits(), 0);
+        let passed = armed_grip(&Arm {
+            passed: true,
+            ..arm()
+        })
+        .unwrap();
+        assert_eq!(passed.speed.to_bits(), 0x3e80_0000);
+        assert_eq!(passed.blend, 5);
+        assert_eq!(passed.flags, 0x100000);
+        assert!(!passed.enabled);
+        assert!(passed.other_disabled);
+        let shield = armed_grip(&Arm {
+            shield: true,
+            other_held: true,
+            ..arm()
+        })
+        .unwrap();
+        assert_eq!(shield.speed.to_bits(), 0x3f4c_cccd);
+        assert_eq!(shield.blend, 16);
+        assert_eq!(shield.strength.to_bits(), 0x3df5_c290);
+        assert_eq!(shield.flags, 0x800);
+        assert!(shield.other_disabled);
+        let off = armed_grip(&Arm {
+            attacking: true,
+            held: 2,
+            other_held: true,
+            ..arm()
+        })
+        .unwrap();
+        assert_eq!(off.slot, 1);
+        let combo = armed_grip(&Arm {
+            attacking: true,
+            motion: 9,
+            held: 2,
+            ..arm()
+        })
+        .unwrap();
+        assert_eq!(combo.slot, 0);
+        let one = armed_grip(&Arm {
+            attacking: true,
+            held: 1,
+            ..arm()
+        })
+        .unwrap();
+        assert_eq!(one.slot, 0);
     }
 }

@@ -1032,7 +1032,7 @@ A parry stops the blow. A shield that is not parrying lets through yellow
 around the widened 0.4, strength is 12 times the depth, smoothing adds
 0.5, and the count is 3 times the truncated 83·unit·depth. The weapon
 layer becomes 0xC0, and the struck part, its parent and its children gain
-bit 0x40. The solver pulls that grab while its strain lasts. An unarmed parry answers a swing already in its window and picks the height-table clip. Not yet: armed parry grips, shields as bodies,
+bit 0x40. The solver pulls that grab while its strain lasts. An unarmed parry answers a swing already in its window and picks the height-table clip. An armed grip uses (1.4 − handling) times the 80-to-250 cm falloff times 0.75 times 0.6, and a shield uses stamina times weight times that falloff times 0.75 times 0.4 with flags 0x800. Not yet: shields as bodies,
 encumbrance's effect on swings, and the state that knocks a character
 unconscious.
 
