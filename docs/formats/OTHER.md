@@ -366,7 +366,8 @@ charge, its charging radius and the released front are in `exa_game::thaum`.
 A shell ripple is in `exa_game::thaum`. A torrent mix, its stream mesh counts and its push are in
 `exa_game::thaum`. A shell vertex, its hit strength and its copied index list are in
 `exa_game::thaum`. The compacted vertex map, the section slot and the index
-room are in `exa_game::thaum`. The GPU upload is not in. Exarust:
+room are in `exa_game::thaum`. The stored size of 800 and the fade that
+divides by it are in `exa_game::thaum`. The GPU upload is not in. Exarust:
 `exa_formats::power_tree`.
 
 - **Header**: first word `0xAFCE01CE`. The node count is the signed word at
@@ -447,7 +448,14 @@ room are in `exa_game::thaum`. The GPU upload is not in. Exarust:
   plus 4 bytes a triangle. The kind is 3, the base is 0, the end is one
   less than the count, and the vertex end is one less than the kept
   count. A range that ends one early adds nothing. A range that ends
-  two early subtracts one.
+  two early subtracts one. The stored size is 800. While opening, the
+  shown value is the elapsed time divided by that size times 1.5. Above 1
+  it becomes 1 and leaves opening, or enters the hold state when held.
+  The hold state moves on, and its stamp subtracts the size times the
+  remainder, rounded to the nearest even integer. While closing, the shown
+  value is 1 minus the elapsed time divided by the size. A value that is
+  not above 0 becomes 0 and finishes. A held close stores 3 times that
+  value and then shows 1. Any other state stays as it is.
 - **Torrent**: below phase 1 the level is (2 minus the charge) times the
   charge times 0.4. Otherwise the level falls by 0.01, and below 0.02 it
   stops. Phase 1 eases the two channels toward 0.5 and 0.6 by 0.06. Phase 2

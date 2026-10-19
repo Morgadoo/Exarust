@@ -535,6 +535,72 @@ pub struct ShellRipple {
     pub strength: f32,
 }
 
+/// The stored shell size, 800.
+pub fn shell_size() -> f32 {
+    f32::from_bits(0x4448_0000)
+}
+
+/// A shell fade: its state, the shown amount, the clock stamp, and the held gain.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShellFade {
+    pub state: i32,
+    pub shown: f32,
+    pub stamp: u32,
+    pub gain: f32,
+}
+
+/// Step a shell fade by its stored size. States other than opening, hold and closing stay as they are.
+pub fn step_shell_fade(fade: ShellFade, now: u32, size: f32, hold: bool) -> ShellFade {
+    let elapsed = (i64::from(now) - i64::from(fade.stamp)) as f32;
+    if fade.state == 1 {
+        let shown = elapsed / (size * 1.5);
+        if shown > 1.0 {
+            ShellFade {
+                state: if hold { 2 } else { 0 },
+                shown: 1.0,
+                stamp: fade.stamp,
+                gain: fade.gain,
+            }
+        } else {
+            ShellFade {
+                state: 1,
+                shown,
+                ..fade
+            }
+        }
+    } else if fade.state == 2 {
+        let rounded = ((1.0 - fade.shown) * size).round_ties_even();
+        ShellFade {
+            state: 3,
+            stamp: (i64::from(now).wrapping_sub(rounded as i64)) as u32,
+            ..fade
+        }
+    } else if fade.state == 3 {
+        let mut shown = 1.0 - elapsed / size;
+        let mut state = 3;
+        if !shown.is_nan() && shown <= 0.0 {
+            state = 4;
+            shown = 0.0;
+        }
+        if hold {
+            ShellFade {
+                state,
+                shown: 1.0,
+                gain: shown * 3.0,
+                stamp: fade.stamp,
+            }
+        } else {
+            ShellFade {
+                state,
+                shown,
+                ..fade
+            }
+        }
+    } else {
+        fade
+    }
+}
+
 /// One step of a shell ripple. `None` means it has faded off the aura.
 pub fn step_shell(shown: f32, strength: f32, scale: f32) -> Option<ShellRipple> {
     let strength = (f64::from(strength) - f64::from(scale) * 0.04) as f32;
@@ -1118,6 +1184,79 @@ mod tests {
         let moving = release_wave(0.0, 0.0, 10.0);
         assert_eq!(moving.radius, f32::from_bits(0x3bc4_9ba6));
         assert_eq!(moving.trail, f32::from_bits(0x3fd9_999a));
+    }
+
+    #[test]
+    fn a_shell_fades_by_its_stored_size() {
+        let size = shell_size();
+        assert_eq!(size.to_bits(), 0x4448_0000);
+        let opening = ShellFade {
+            state: 1,
+            shown: 0.0,
+            stamp: 0,
+            gain: 1.0,
+        };
+        let at_zero = step_shell_fade(opening, 0, size, false);
+        assert_eq!(at_zero.state, 1);
+        assert_eq!(at_zero.shown.to_bits(), 0);
+        let at_one = step_shell_fade(opening, 1_200, size, false);
+        assert_eq!(at_one.state, 1);
+        assert_eq!(at_one.shown.to_bits(), 0x3f80_0000);
+        let finished = step_shell_fade(opening, 1_201, size, false);
+        assert_eq!(finished.state, 0);
+        assert_eq!(finished.shown.to_bits(), 0x3f80_0000);
+        assert_eq!(step_shell_fade(opening, 1_201, size, true).state, 2);
+        let held = step_shell_fade(
+            ShellFade {
+                state: 2,
+                shown: 0.0,
+                stamp: 0,
+                gain: 1.0,
+            },
+            1_000,
+            size,
+            false,
+        );
+        assert_eq!(held.state, 3);
+        assert_eq!(held.stamp, 200);
+        assert_eq!(
+            step_shell_fade(
+                ShellFade {
+                    state: 2,
+                    shown: 0.5,
+                    stamp: 0,
+                    gain: 1.0,
+                },
+                10,
+                1.0,
+                false,
+            )
+            .stamp,
+            10
+        );
+        let closing = ShellFade {
+            state: 3,
+            shown: 0.0,
+            stamp: 0,
+            gain: 1.0,
+        };
+        let half = step_shell_fade(closing, 400, size, false);
+        assert_eq!(half.state, 3);
+        assert_eq!(half.shown.to_bits(), 0x3f00_0000);
+        let gone = step_shell_fade(closing, 800, size, false);
+        assert_eq!(gone.state, 4);
+        assert_eq!(gone.shown.to_bits(), 0);
+        let held_close = step_shell_fade(closing, 400, size, true);
+        assert_eq!(held_close.state, 3);
+        assert_eq!(held_close.shown.to_bits(), 0x3f80_0000);
+        assert_eq!(held_close.gain.to_bits(), 0x3fc0_0000);
+        let resting = ShellFade {
+            state: 0,
+            shown: 0.25,
+            stamp: 7,
+            gain: 1.0,
+        };
+        assert_eq!(step_shell_fade(resting, 50, size, true), resting);
     }
 
     #[test]

@@ -158,3 +158,10 @@ A skinned shell index room SHALL add one for each triangle of a section with bit
 #### Scenario: Three triangles and a short range
 - **WHEN** a skinned range of two triangles, a plain range, a hidden skinned triangle, and a range that ends one early are counted for two kept vertices, and a range that ends two early is counted for none
 - **THEN** the room has 3 triangles, 32 bytes, width 4, one channel, kind 3, base 0, end 2 and vertex end 1, and the short range has -1 triangles, 16 bytes and vertex end -1
+
+### Requirement: Shell size fade
+A shell SHALL store a size of 800. Opening SHALL divide the elapsed time by that size times 1.5. Above 1 it SHALL become 1 and leave, or enter the hold state when held. The hold state SHALL move on and stamp the size times the remainder, rounded to the nearest even integer. Closing SHALL store 1 minus the elapsed time divided by the size. A value not above 0 SHALL become 0 and finish. A held close SHALL store 3 times that value, then show 1. Any other state SHALL stay.
+
+#### Scenario: Open, hold, and close
+- **WHEN** the stored size opens for 0, for 1200 and for 1201, a held open of 1201 is stepped, a hold at 0 and a half are stamped, a close of 400 and of 800 are stepped, a held close of 400 is stepped, and a resting fade is stepped
+- **THEN** the size is 800, the opens stay at 0, stay at 1, and finish at 1, the held open enters the hold state, the stamps are 200 and 10, the closes are one half and finished at 0, the held close shows 1 with a gain of 1.5, and the resting fade stays
