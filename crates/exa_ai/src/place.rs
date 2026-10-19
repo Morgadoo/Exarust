@@ -19,8 +19,12 @@
 //! the strike ideal and is 0 past a band of 100 cm, or 150 cm when wide,
 //! plus (1 − skill) × 200 cm. A recovering swing subtracts 1 from the
 //! close term, not below 0, and multiplies the approach by 4 at skill 0.
-//! A weapon hand at phase 0.4 or later sets one arc edge. The facing
-//! scale and the idle-action clock are not in.
+//! A weapon hand at phase 0.4 or later sets one arc edge. When the
+//! observer is not attacking, the approach is multiplied by one more than
+//! how far the candidate is from straight ahead. A press multiplies the
+//! strike and the approach by one plus ten times how far the opponent
+//! faces away. An action outside a swing recovers while the body's idle
+//! stamp is above the clock. A blow does not knock a fighter out.
 
 /// The strike term is 0 at this distance (cm).
 pub const PLACE_FADE_CM: f32 = 600.0;
@@ -76,6 +80,14 @@ pub struct Spot {
     /// The observer's approach band is 150 cm instead of 100, and the
     /// inside fraction is eased.
     pub wide: bool,
+    /// Cosine of the candidate off the observer's facing. 1 is straight ahead.
+    pub observer_ahead: f32,
+    /// Cosine of the candidate off the opponent's facing.
+    pub other_ahead: f32,
+    /// The observer's body is in the attack state, which skips the ahead scale.
+    pub in_attack: bool,
+    /// Flag bit 4. Scales the strike and the approach by the opponent's facing.
+    pub presses: bool,
 }
 
 /// The opponent's attack arc, as the position score reads it.
@@ -268,6 +280,10 @@ pub struct Swing {
     pub recovering: bool,
     /// The weapon hand. At phase 0.4 or later it sets one arc edge.
     pub hand: Option<Hand>,
+    /// The idle clock an action outside a swing is compared with.
+    pub idle_clock: u32,
+    /// The body's idle stamp. Above the clock, that action recovers.
+    pub idle_stamp: u32,
 }
 
 /// The published sector.
@@ -328,8 +344,8 @@ fn arc_mid(start: f32, end: f32) -> f32 {
 
 /// Publish the attack arc. A hand at phase 0.4 or later replaces the far
 /// edge of a side swing, or the near edge of the other side. An action
-/// outside a swing keeps both edges on the heading. The idle clock that
-/// turns that action into a recovery is not in.
+/// outside a swing keeps both edges on the heading, and recovers while
+/// the body's idle stamp is strictly above the clock.
 pub fn publish_arc(swing: Swing) -> Arc {
     let mut look = swing.facing;
     if swing.held {
@@ -368,7 +384,12 @@ pub fn publish_arc(swing: Swing) -> Arc {
         };
         (kind, start, end, arc_mid(start, end))
     } else {
-        (0, swing.heading, swing.heading, look)
+        let kind = if swing.idle_stamp > swing.idle_clock {
+            4
+        } else {
+            0
+        };
+        (kind, swing.heading, swing.heading, look)
     };
     Arc {
         kind,
@@ -410,6 +431,13 @@ pub fn score_place(distance_cm: f32, spot: Spot) -> PlaceScore {
     if spot.blow.kind == 4 {
         close = (close - 1.0).max(0.0);
         approach *= (spot.blow.skill * 2.0 + 2.0) * 2.0;
+    }
+    if spot.presses {
+        let scale = (1.0 - spot.other_ahead) * 10.0 + 1.0;
+        strike *= scale;
+        approach *= scale;
+    } else if !spot.in_attack {
+        approach *= (1.0 - spot.observer_ahead) + 1.0;
     }
     if !spot.fight {
         close *= 2.0;
@@ -455,6 +483,10 @@ mod tests {
             dull: false,
             blow: Blow::default(),
             wide: false,
+            observer_ahead: 1.0,
+            other_ahead: 0.0,
+            in_attack: true,
+            presses: false,
         }
     }
 
@@ -588,6 +620,8 @@ mod tests {
             held: false,
             recovering: false,
             hand: None,
+            idle_clock: 0,
+            idle_stamp: 0,
         }
     }
 
@@ -636,5 +670,45 @@ mod tests {
         });
         assert_eq!(recovering_arc.kind, 4);
         assert_eq!(recovering_arc.end.to_bits(), early.end.to_bits());
+    }
+
+    #[test]
+    fn a_facing_scales_the_place_and_an_idle_stamp_recovers() {
+        let mut spot = fight(false, false);
+        spot.in_attack = false;
+        spot.observer_ahead = 0.0;
+        assert_eq!(score_place(25.0, spot).approach.to_bits(), 0x3f40_0000);
+        spot.observer_ahead = 1.0;
+        assert_eq!(score_place(25.0, spot).approach.to_bits(), 0x3ec0_0000);
+        spot.in_attack = true;
+        spot.presses = true;
+        spot.other_ahead = 0.0;
+        let pressed = score_place(25.0, spot);
+        assert_eq!(pressed.strike.to_bits(), 0x4030_0000);
+        assert_eq!(pressed.approach.to_bits(), 0x4084_0000);
+
+        let idle = publish_arc(Swing {
+            action: 0,
+            idle_stamp: 5,
+            idle_clock: 4,
+            ..swing(0, 0.0)
+        });
+        assert_eq!(idle.kind, 4);
+        assert_eq!(idle.start, 0.0);
+        assert_eq!(idle.end, 0.0);
+        let held = publish_arc(Swing {
+            action: 0,
+            idle_stamp: 4,
+            idle_clock: 4,
+            ..swing(0, 0.0)
+        });
+        assert_eq!(held.kind, 0);
+        let wrapped = publish_arc(Swing {
+            action: 0,
+            idle_stamp: 0,
+            idle_clock: u32::MAX,
+            ..swing(0, 0.0)
+        });
+        assert_eq!(wrapped.kind, 0);
     }
 }

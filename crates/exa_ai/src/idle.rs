@@ -509,6 +509,23 @@ pub fn knock_out(
     body.wake_to(KNOCK_OUT_SLEEP);
 }
 
+/// The dead-state entry knocks the body out at `now` with no delay.
+///
+/// A body that is not dead is left as it is. A blow does not call this.
+/// The part rewrites that precede the call are not in.
+pub fn knock_out_dead(
+    sleeper: &mut Sleeper,
+    drive: &mut Drive,
+    body: &mut Ragdoll,
+    now: i32,
+) -> bool {
+    if sleeper.condition != Condition::DEAD {
+        return false;
+    }
+    knock_out(sleeper, drive, body, now, 0);
+    true
+}
+
 /// Wake a dormant sleeper that has seen a contact.
 ///
 /// The flags must be exactly the dormant flag, and a contact must have
@@ -1372,6 +1389,39 @@ mod tests {
         knock_out(&mut sleeper, &mut drive, &mut low, i32::MAX, 1);
         assert_eq!(sleeper.wake_at, i32::MIN);
         assert_eq!(low.countdown(), KNOCK_OUT_SLEEP);
+    }
+
+    /// The dead-state entry knocks the body out with no delay. A walking
+    /// body is left alone. A blow does not call this entry.
+    #[test]
+    fn a_dead_body_is_knocked_out() {
+        let mut dead = Sleeper {
+            condition: Condition::DEAD,
+            flags: StateFlags(0),
+            statue: true,
+            gait: 2,
+            tick: IdleTick::Active,
+            sighted: 0,
+            wake_at: -1,
+        };
+        let mut drive = Drive::default();
+        drive.tone = 1.0;
+        let mut body = limp();
+        assert!(knock_out_dead(&mut dead, &mut drive, &mut body, 50));
+        assert_eq!(dead.wake_at, 50);
+        assert_eq!(dead.condition, Condition::DOWN);
+        assert_eq!(dead.flags.0, StateFlags::DORMANT | StateFlags::WAKING);
+        assert!(!dead.statue);
+        assert_eq!(dead.gait, 0);
+        assert_eq!(drive.tone, 0.0);
+
+        let mut walking = dead;
+        walking.condition = Condition::WALKING;
+        walking.wake_at = 7;
+        let before = walking;
+        assert!(!knock_out_dead(&mut walking, &mut drive, &mut body, 90));
+        assert_eq!(walking.condition, before.condition);
+        assert_eq!(walking.wake_at, before.wake_at);
     }
 
     fn knocked_out() -> (Sleeper, Drive) {

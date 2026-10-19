@@ -74,3 +74,10 @@ A knock-out SHALL set the wake clock to the current clock plus the delay, wrappi
 #### Scenario: Delay 40 at clock 1000
 - **WHEN** a statue with gait 2, tone 1, flags 0x80000150 and a sleep countdown of 300 is knocked out at clock 1000 with delay 40, and the same body with a lower countdown is knocked out at the maximum clock with delay 1
 - **THEN** the first wakes at 1040, is down, has flags 0x80000130, is not a statue, has gait 0 and tone 0, has pin bits 0x3da3d70a, and keeps countdown 300, and the second wakes at the minimum clock with countdown 256
+
+### Requirement: A dead body is knocked out
+A dead body SHALL be knocked out at the current clock with no delay, down, with the dormant and waking flags. A walking body SHALL stay walking.
+
+#### Scenario: Dead at clock 50, walking stays
+- **WHEN** a dead body is entered at clock 50, and a walking body is entered at clock 90
+- **THEN** the dead body wakes at 50, is down, and has the dormant and waking flags, and the walking body stays walking
