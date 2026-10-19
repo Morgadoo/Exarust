@@ -154,6 +154,30 @@ pub const HELD_OVER: [u32; 4] = [0x3f19_999a, 0x3e4c_cccd, 0x3f19_999a, 0x3f19_9
 /// Right strip when the tab bit is set: 0.7, 0.5, 0.7, 0.7.
 pub const HELD_RIGHT: [u32; 4] = [0x3f33_3333, 0x3f00_0000, 0x3f33_3333, 0x3f33_3333];
 
+/// Middle of a span bar: 0.3, 0.1, 0.3, 0.2, then 0.5, 0.2, 0.5, 0.1.
+pub const SPAN_BAR: [u32; 8] = [
+    0x3e99_999a,
+    0x3dcc_cccd,
+    0x3e99_999a,
+    0x3e4c_cccd,
+    0x3f00_0000,
+    0x3e4c_cccd,
+    0x3f00_0000,
+    0x3dcc_cccd,
+];
+
+/// Cap of a span bar: 0.7, 0.1, 0.7, 0.2, then 0.75, 0.2, 0.75, 0.1.
+pub const SPAN_CAP: [u32; 8] = [
+    0x3f33_3333,
+    0x3dcc_cccd,
+    0x3f33_3333,
+    0x3e4c_cccd,
+    0x3f40_0000,
+    0x3e4c_cccd,
+    0x3f40_0000,
+    0x3dcc_cccd,
+];
+
 /// The double 0.2 used to place the bar after the right strip.
 const BEAM_SCALE: u64 = 0x3fc9_9999_9999_999a;
 
@@ -1816,6 +1840,55 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         open_rear,
         open_lip,
         open_sill,
+    }
+}
+
+/// Three quads of a span bar. The view scale and the colour word are not in.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpanBar {
+    pub prep_calls: u32,
+    pub binds: [[u32; 8]; 3],
+    pub quads: [[(f32, f32); 4]; 3],
+}
+
+/// Draws the span bar. `band_word` is the stored count, doubled for the thickness.
+pub fn draw_span_bar(
+    unit: i32,
+    origin_x: f32,
+    origin_y: f32,
+    span: f32,
+    band_word: i32,
+) -> SpanBar {
+    let unit_f = unit as f32;
+    let thick = (i64::from(band_word) << 1) as f32;
+    let top = origin_y;
+    let bottom = origin_y + thick;
+    let inset_l = origin_x + unit_f;
+    let inset_r = origin_x + span - unit_f;
+    let right = origin_x + span;
+    SpanBar {
+        prep_calls: 1,
+        binds: [SPAN_BAR, SPAN_CAP, SPAN_CAP],
+        quads: [
+            [
+                (inset_l, top),
+                (inset_l, bottom),
+                (inset_r, bottom),
+                (inset_r, top),
+            ],
+            [
+                (inset_l, top),
+                (inset_l, bottom),
+                (origin_x, bottom),
+                (origin_x, top),
+            ],
+            [
+                (inset_r, top),
+                (inset_r, bottom),
+                (right, bottom),
+                (right, top),
+            ],
+        ],
     }
 }
 
@@ -4058,5 +4131,29 @@ mod tests {
         assert_eq!(wide.frame_release, 1);
         assert!(!wide.frame_freed);
         assert!(!wide.fault_taken);
+    }
+
+    #[test]
+    fn a_span_bar_draws_three_quads() {
+        let bar = draw_span_bar(5, 10.0, 20.0, 100.0, 4);
+        assert_eq!(bar.prep_calls, 1);
+        assert_eq!(bar.binds, [SPAN_BAR, SPAN_CAP, SPAN_CAP]);
+        let expect: [[(f32, f32); 4]; 3] = [
+            [(15.0_f32, 20.0), (15.0, 28.0), (105.0, 28.0), (105.0, 20.0)],
+            [(15.0, 20.0), (15.0, 28.0), (10.0, 28.0), (10.0, 20.0)],
+            [(105.0, 20.0), (105.0, 28.0), (110.0, 28.0), (110.0, 20.0)],
+        ];
+        for (got, want) in bar.quads.iter().zip(expect) {
+            for ((gx, gy), (wx, wy)) in got.iter().zip(want) {
+                assert_eq!(gx.to_bits(), wx.to_bits());
+                assert_eq!(gy.to_bits(), wy.to_bits());
+            }
+        }
+
+        let neg = draw_span_bar(5, 10.0, 20.0, 100.0, -3);
+        let thick = neg.quads[0][1].1 - neg.quads[0][0].1;
+        assert_eq!(thick.to_bits(), (-6.0_f32).to_bits());
+        let left = neg.quads[1][1].1 - neg.quads[1][0].1;
+        assert_eq!(left.to_bits(), (-6.0_f32).to_bits());
     }
 }
