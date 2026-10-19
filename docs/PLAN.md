@@ -958,7 +958,8 @@ tracked, 6 m asleep). Hostility with neutral traits settles near
 notice, watch, engage or flee. A duellist that engages takes the guard.
 Done (change `choose-the-fight-blow`): once the fight has started, an unarmed fighter inside eight tenths of reach can swing overhead and outside it can take the other side. An armed fighter stepping forward thrusts when its preference wins, and takes the overhead at age one half. A facing score above 4 takes the other side. Energy under eight tenths of the maximum refuses the swing. The duellist starts that blow.
 Done (change `hear-a-disturbance`): a disturbance above 0.3 is walked to. An alert of 0.2 or more faces a target more than 45° off, and otherwise looks around after 0.7 to 3 seconds. A quiet cell stays on the idle.
-Still open: the idle activities themselves.
+Done (change `idle-roam-patrol-sentry`): a roam waits, walks to a wander point, waits 500 ms plus a draw of 2000 ms, walks toward home, then waits 1000 ms plus a draw of 4000 ms. From a generator at 0, an arrival at 2000 ms waits until 2500 ms and a home arrival at 3000 ms waits until 4125 ms. A patrol only repeats the wander. A sentry holds the guard pose. A disturbance during a wait is walked to and the phase stays.
+Still open: follow, sleep, and where the wander point is picked.
 
 - Perception (sight, hearing), navigation on tile grids and terrain
   (the original's 30 cm two-layer grid and its A\*, no navigation mesh),
@@ -1062,7 +1063,8 @@ against Exarust and lists the largest missing ones. In order:
    overhead, a thrust or a side, and energy under eight tenths of the
    maximum refuses it. A disturbance above 0.3 is walked to, and an
    alert of 0.2 looks around or faces a target more than 45° off. The
-   idle activities themselves are not.
+   roam, patrol and sentry cycles are in. Follow, sleep, and the
+   wander-point picker are not.
 4. Portal clipping and doors' open state, and level transitions
    (Phase 2) are in. The lid in the lights' cube faces is not.
 5. `add-static-mesh-decoding` is still open, waiting on a visual mirroring

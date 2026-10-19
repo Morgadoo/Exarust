@@ -16,6 +16,7 @@ use exa_physics::body::{BodyTicks, Fallen, MAX_ENERGY, Ragdoll};
 
 pub mod fight;
 pub mod hear;
+pub mod idle;
 pub mod order;
 pub mod sense;
 
