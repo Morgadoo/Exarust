@@ -866,8 +866,9 @@ pixels. A drop from outside adds the icon and its bulk and clamps it; a
 drop from the same pane or the linked pane only moves it, and a linked
 move is not refused for capacity. Ending the drag removes the icon. The
 hit is the top-most rectangle.
-Done (change `mark-a-container-drop`): a shared reject bit is refused. A required mask must match. An own-only pane takes only an id it already lists with the low bit set. A limit of 0 does not refuse for size, and a capacity of 0 does not refuse for bulk. Still to
-do: the icon picture and the description card, injuries beyond damage, grabs, practice mode,
+Done (change `mark-a-container-drop`): a shared reject bit is refused. A required mask must match. An own-only pane takes only an id it already lists with the low bit set. A limit of 0 does not refuse for size, and a capacity of 0 does not refuse for bulk.
+Done (change `choose-a-card-page`): an id below 1, a container, a missing model, and a mark of 0 have no card. A map has no stats page. Seven coins print 1, and the high bit keeps 7. A withheld weapon of armour 6 is apparel, armour 0 is a shield, and armour 7 is plain. Three coins print 0. Still to
+do: the icon picture and the stat bars, injuries beyond damage, grabs, practice mode,
 the striker's recoil
 and follow-through (C21, M26), the collapse's stagger steps; next in the
 combat timing: the unarmed parries (L10).
@@ -1125,7 +1126,9 @@ against Exarust and lists the largest missing ones. In order:
    stops a blow and a shield's yellow leak are in. An inventory pane places
    icons, checks bulk and size, and hits the top-most one. A marked flag, a
    missing required mark, and an unlisted id are refused. A limit of 0
-   does not refuse. The icon picture and the description card are not.
+   does not refuse. An item card chooses a weapon, apparel, shield, or plain
+   page and quarters its coin word. The icon picture and the stat bars
+   are not.
 3. The original's NPC brain: perception, targets and the combat state that
    drives the same inputs as the player (Phase 6). A path on the grid, the
    look-ahead, and an order that writes the player's heading and velocity

@@ -4,6 +4,7 @@
 
 use bevy::prelude::*;
 
+pub mod card;
 pub mod carry;
 pub mod pane;
 
