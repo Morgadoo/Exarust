@@ -88,6 +88,91 @@ pub fn fade_pins(gain: f32) -> f32 {
     if gain < 0.0 { PIN_RESET } else { gain }
 }
 
+/// A balance that widens above this double scales the reach by itself. A
+/// float 0.4 widens above it, so it takes that path.
+const STEP_BALANCE: f64 = 0.4;
+/// Below that double the reach is widened and multiplied by this double.
+const STEP_SHARE: f64 = 0.4;
+/// The tone is lifted by this before it is squared.
+const TONE_LIFT: f32 = 0.5;
+
+/// What a collapsing body brings to one stagger step.
+#[derive(Clone, Copy, Debug)]
+pub struct CollapseStep {
+    /// A step is already running.
+    pub stepping: bool,
+    /// The body's step length.
+    pub reach: f32,
+    pub balance: f32,
+    /// The stored square root of the body scale.
+    pub scale_root: f32,
+    pub tone: f32,
+    pub chest: Vec3,
+    /// The chest's fast velocity, in the same units as the chest.
+    pub velocity: Vec3,
+}
+
+/// The step a collapse starts: its scaled length, the chest target, and
+/// the landing count and step kind, both cleared.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StaggerStep {
+    pub length: f32,
+    pub target: Vec3,
+    pub landings: u32,
+    pub kind: u32,
+}
+
+/// One stagger step while a body collapses, unless it is already stepping.
+/// A balance that widens above 0.4 scales the reach by the balance. A
+/// lower one widens the reach and multiplies by 0.4. The span squares the
+/// tone plus one half and multiplies by that length and the scale root.
+/// The target is the chest plus the velocity's reciprocal-square-root unit
+/// times the span. A zero velocity leaves the chest. Landings and the step
+/// kind are 0.
+pub fn stagger_step(step: &CollapseStep) -> Option<StaggerStep> {
+    if step.stepping {
+        return None;
+    }
+    let length = if f64::from(step.balance) > STEP_BALANCE {
+        step.reach * step.balance
+    } else {
+        (f64::from(step.reach) * STEP_SHARE) as f32
+    };
+    let rise = step.tone + TONE_LIFT;
+    let span = rise * rise * (length * step.scale_root);
+    let direction = unit_velocity(step.velocity);
+    Some(StaggerStep {
+        length,
+        target: step.chest + direction * span,
+        landings: 0,
+        kind: 0,
+    })
+}
+
+fn unit_velocity(velocity: Vec3) -> Vec3 {
+    let sum = (velocity.x * velocity.x + velocity.z * velocity.z) + velocity.y * velocity.y;
+    if sum == 0.0 {
+        return Vec3::ZERO;
+    }
+    let scale = reciprocal_sqrt(sum);
+    Vec3::new(velocity.x * scale, velocity.y * scale, velocity.z * scale)
+}
+
+fn reciprocal_sqrt(value: f32) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // The same approximate reciprocal square root the step uses to unit a velocity.
+        unsafe {
+            use std::arch::x86_64::{_mm_cvtss_f32, _mm_rsqrt_ss, _mm_set_ss};
+            _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(value)))
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        1.0 / value.sqrt()
+    }
+}
+
 /// Whether a collapsing body of `size` with `balance` throws its arms wide
 /// (Rebalance): under size 1.2 and balance 0.8, both in double precision.
 pub fn rebalances(size: f32, balance: f32) -> bool {

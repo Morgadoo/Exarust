@@ -118,7 +118,13 @@ its heading
 balance 0.8 below size 1.2 (`rebalances`, `throw_arms_wide`), takes 0.003
 off its tone and 0.0003 off its pins' gain (`lose_tone`, `fade_pins`), and
 at a tone of 0.25 (250 ticks) it dies there and then, limp with the motion
-it has. A body without muscles dies at
+it has. While it is not already stepping it starts one stagger
+(`stagger_step`): a balance that widens above 0.4 scales the reach by the
+balance, and a lower balance scales the widened reach by 0.4. The span
+squares the tone plus one half and multiplies by that length and the
+stored square root of the scale. The target adds the velocity's
+reciprocal-square-root unit times the span to the chest, a zero velocity
+leaves the chest, and the landings and the step kind are 0. A body without muscles dies at
 once. Rules: [`docs/formats/RSQ.md`](../../docs/formats/RSQ.md) (The
 collapse).
 

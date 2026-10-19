@@ -263,3 +263,66 @@ fn the_body_dies_250_ticks_after_the_blow() {
     app.update();
     assert_eq!(yellow(&app), 0.0);
 }
+
+fn falling() -> CollapseStep {
+    CollapseStep {
+        stepping: false,
+        reach: 80.0,
+        balance: 1.0,
+        scale_root: 1.0,
+        tone: 1.0,
+        chest: Vec3::new(0.0, 95.0, 0.0),
+        velocity: Vec3::new(3.0, 0.0, 4.0),
+    }
+}
+
+#[test]
+fn a_collapse_starts_one_stagger_step() {
+    let step = stagger_step(&falling()).unwrap();
+    assert_eq!(step.length.to_bits(), 0x42a0_0000);
+    assert_eq!(step.target.x.to_bits(), 0x42d7_faf0);
+    assert_eq!(step.target.y.to_bits(), 0x42be_0000);
+    assert_eq!(step.target.z.to_bits(), 0x430f_fca0);
+    assert_eq!((step.landings, step.kind), (0, 0));
+    let edge = stagger_step(&CollapseStep {
+        reach: 0.01,
+        balance: 0.4,
+        ..falling()
+    })
+    .unwrap();
+    assert_eq!(edge.length.to_bits(), 0x3b83_126f);
+    let under = stagger_step(&CollapseStep {
+        reach: 0.01,
+        balance: f32::from_bits(0x3ecc_cccc),
+        ..falling()
+    })
+    .unwrap();
+    assert_eq!(under.length.to_bits(), 0x3b83_126e);
+    let still = stagger_step(&CollapseStep {
+        velocity: Vec3::ZERO,
+        chest: Vec3::new(1.0, 2.0, 3.0),
+        ..falling()
+    })
+    .unwrap();
+    assert_eq!(still.target, Vec3::new(1.0, 2.0, 3.0));
+    let rooted = stagger_step(&CollapseStep {
+        balance: 0.8,
+        scale_root: 2.0_f32.sqrt(),
+        tone: 0.5,
+        chest: Vec3::new(10.0, 0.0, -5.0),
+        velocity: Vec3::new(0.0, 1.0, 0.0),
+        ..falling()
+    })
+    .unwrap();
+    assert_eq!(rooted.length.to_bits(), 0x4280_0000);
+    assert_eq!(rooted.target.x.to_bits(), 0x4120_0000);
+    assert_eq!(rooted.target.y.to_bits(), 0x42b4_f9a3);
+    assert_eq!(rooted.target.z.to_bits(), 0xc0a0_0000);
+    assert!(
+        stagger_step(&CollapseStep {
+            stepping: true,
+            ..falling()
+        })
+        .is_none()
+    );
+}

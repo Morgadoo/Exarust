@@ -1272,3 +1272,10 @@ A class word of 0x90 continuing, or a clock widened past 0.4 with a counter, SHA
 #### Scenario: A wound slows the swing and a continuation does not
 - **WHEN** gain, recoil and speed 1 meet zone 0.25, zone 0, the epsilon, an edge at 0.25, gain 100 at zone 1, gain -1, and speed 0.009 at zone 0, and a class word of 0x90 with the continuation bit is followed through
 - **THEN** zone 0.25 has strength bits 0x3d99999a, stall bits 0x3d3d70a4, flags 0x7 and end 1060, zone 0 and the epsilon have strength 0, the edge has strength bits 0x3eb9999a, gain 100 has strength 1 and end 7000, gain -1 and speed 0.009 end at 1000, and the continuation writes nothing
+
+### Requirement: Collapse stagger
+A body that is already stepping SHALL take no stagger. Otherwise a balance that widens above 0.4 SHALL scale the reach by the balance, and any lower balance SHALL scale the widened reach by 0.4. The span SHALL square the tone plus one half and multiply by that length and the scale root. The target SHALL add the velocity's reciprocal-square-root unit times the span to the chest. A zero velocity SHALL leave the chest. Landings and the step kind SHALL be 0.
+
+#### Scenario: A still chest, a balance of 0.4, and a step already running
+- **WHEN** reach 80 at balance 1, tone 1 and scale root 1 is staggered with velocity 3 and 4, reach 0.01 is staggered at balance 0.4 and at the next lower balance, a zero velocity is staggered, a scale root of the square root of 2 is staggered at balance 0.8 and tone 0.5, and a body that is already stepping is staggered
+- **THEN** the first step has length bits 0x42a00000 and target bits 0x42d7faf0, 0x42be0000 and 0x430ffca0, reach 0.01 at balance 0.4 has length bits 0x3b83126f, the next lower balance has length bits 0x3b83126e, the zero velocity leaves the chest, the rooted step has length bits 0x42800000 and target bits 0x41200000, 0x42b4f9a3 and 0xc0a00000, landings and the step kind are 0, and the body that is already stepping takes nothing
