@@ -12,7 +12,8 @@
 //! yaw, and asks for the idle stance. A searched path is followed when it
 //! has two points and is forced, or when its ends are more than 150 cm
 //! apart. In a scene, the goal is 100 cm past the ground point's
-//! projection on that path. The other phases are not in this slice.
+//! projection on that path. Out of the scene, the body slides 2 cm along
+//! the path. The other phases are not in this slice.
 
 use bevy::math::Vec2;
 use bevy::math::Vec3;
@@ -356,6 +357,106 @@ pub fn carrot(points: &[Vec3], ground: Vec3) -> PathCarrot {
         segment,
         fraction,
         goal: Some(start + (points[end] - start) * step),
+    }
+}
+
+/// Where a body stands after one out-of-scene slide.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PathSlide {
+    /// End index of the segment the body is on. Segments start at 1.
+    pub segment: u32,
+    /// Unclamped parameter on that segment. It can be negative.
+    pub fraction: f32,
+    /// The path point. Its height is the path height.
+    pub ground: Vec3,
+    /// The standing point. Its height is the path height plus the pelvis base.
+    pub standing: Vec3,
+}
+
+/// One step of path following.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PathPace {
+    /// Fewer than two points, or a segment index with no span.
+    Stopped,
+    /// A low scene bit is set, so the slide does not run.
+    InScene,
+    /// The body moved 2 cm along the path.
+    Slide(PathSlide),
+}
+
+const SLIDE_CM: f32 = 2.0;
+/// Stand-in length when a segment has no horizontal span.
+const SHORT_SPAN: f32 = 0.1;
+
+fn place(points: &[Vec3], segment: u32, fraction: f32, pelvis: f32) -> PathSlide {
+    let start = points[segment as usize - 1];
+    let end = points[segment as usize];
+    let ground = start + (end - start) * fraction;
+    let mut standing = ground;
+    standing.y += pelvis;
+    PathSlide {
+        segment,
+        fraction,
+        ground,
+        standing,
+    }
+}
+
+/// Slide 2 cm along `points` from `segment` and `fraction`.
+///
+/// The low two scene bits are not read here. A horizontal length at or
+/// below the tiny epsilon counts as 0.1. The step stays on this segment
+/// only when that length is strictly past the fraction times the length
+/// plus 2 cm. Otherwise it crosses one segment, and the new fraction is
+/// `(1 − (1 − fraction) · length) · (1 − fraction) − 2`, divided by the
+/// next length. On the last segment that step stops at the end.
+pub fn slide(points: &[Vec3], segment: u32, fraction: f32, pelvis: f32) -> Option<PathSlide> {
+    if points.len() < 2 || segment < 1 || segment as usize >= points.len() {
+        return None;
+    }
+    let here = points[segment as usize] - points[segment as usize - 1];
+    let horizontal = here.x * here.x + here.z * here.z;
+    let length = if horizontal <= SEGMENT_EPS {
+        SHORT_SPAN
+    } else {
+        horizontal.sqrt()
+    };
+    if length <= fraction * length + SLIDE_CM {
+        let next = segment as usize + 1;
+        if next >= points.len() {
+            return Some(place(points, segment, 1.0, pelvis));
+        }
+        let ahead = 1.0 - (1.0 - fraction) * length;
+        let onward = points[next] - points[segment as usize];
+        let span = (onward.x * onward.x + onward.z * onward.z).sqrt();
+        if span == 0.0 {
+            return Some(place(points, segment, 1.0, pelvis));
+        }
+        let fraction = (ahead * (1.0 - fraction) - SLIDE_CM) / span;
+        Some(place(points, segment + 1, fraction, pelvis))
+    } else {
+        let fraction = (fraction * length + SLIDE_CM) / length;
+        Some(place(points, segment, fraction, pelvis))
+    }
+}
+
+/// Follow one step. The slide runs only when the low two scene bits are clear.
+pub fn follow_path(
+    points: &[Vec3],
+    segment: u32,
+    fraction: f32,
+    pelvis: f32,
+    scene: u32,
+) -> PathPace {
+    if points.len() < 2 {
+        return PathPace::Stopped;
+    }
+    if scene & 3 != 0 {
+        return PathPace::InScene;
+    }
+    match slide(points, segment, fraction, pelvis) {
+        Some(moved) => PathPace::Slide(moved),
+        None => PathPace::Stopped,
     }
 }
 
@@ -823,5 +924,79 @@ mod tests {
         assert_eq!(joint.goal, None);
 
         assert_eq!(carrot(&[Vec3::ZERO], Vec3::ZERO).goal, None);
+    }
+
+    #[test]
+    fn an_out_of_scene_body_slides_two_centimetres() {
+        let line = [Vec3::ZERO, Vec3::new(0.0, 0.0, 100.0)];
+        let moved = follow_path(&line, 1, 0.0, 90.0, 0);
+        assert_eq!(
+            moved,
+            PathPace::Slide(PathSlide {
+                segment: 1,
+                fraction: 0.02,
+                ground: Vec3::new(0.0, 0.0, 2.0),
+                standing: Vec3::new(0.0, 90.0, 2.0),
+            })
+        );
+        assert!(matches!(
+            follow_path(&line, 1, 0.0, 90.0, 1),
+            PathPace::InScene
+        ));
+        assert!(matches!(
+            follow_path(&line, 1, 0.0, 90.0, 3),
+            PathPace::InScene
+        ));
+        assert!(matches!(
+            follow_path(&line, 1, 0.0, 90.0, 4),
+            PathPace::Slide(_)
+        ));
+
+        let bend = [
+            Vec3::ZERO,
+            Vec3::new(0.0, 0.0, 8.0),
+            Vec3::new(0.0, 0.0, 16.0),
+        ];
+        let crossed = follow_path(&bend, 1, 0.75, 0.0, 0);
+        assert_eq!(
+            crossed,
+            PathPace::Slide(PathSlide {
+                segment: 2,
+                fraction: -0.28125,
+                ground: Vec3::new(0.0, 0.0, 5.75),
+                standing: Vec3::new(0.0, 0.0, 5.75),
+            })
+        );
+
+        let risen = [
+            Vec3::ZERO,
+            Vec3::new(0.0, 10.0, 0.0),
+            Vec3::new(0.0, 10.0, 20.0),
+        ];
+        let vertical = follow_path(&risen, 1, 0.0, 4.0, 0);
+        assert_eq!(
+            vertical,
+            PathPace::Slide(PathSlide {
+                segment: 2,
+                fraction: f32::from_bits(0xbd61_47ae),
+                ground: Vec3::new(0.0, 10.0, f32::from_bits(0xbf8c_cccd)),
+                standing: Vec3::new(0.0, 14.0, f32::from_bits(0xbf8c_cccd)),
+            })
+        );
+
+        let end = follow_path(&line, 1, 0.99, 0.0, 0);
+        assert_eq!(
+            end,
+            PathPace::Slide(PathSlide {
+                segment: 1,
+                fraction: 1.0,
+                ground: Vec3::new(0.0, 0.0, 100.0),
+                standing: Vec3::new(0.0, 0.0, 100.0),
+            })
+        );
+        assert!(matches!(
+            follow_path(&[], 1, 0.0, 0.0, 0),
+            PathPace::Stopped
+        ));
     }
 }
