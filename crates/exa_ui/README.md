@@ -120,7 +120,10 @@ size 100 by 80 at unit 5 puts x at -35 for style 0x1000, 39 for 0x2000, 65
 for 0x3000, 115 for 0x4000, and 13 otherwise; y is 18 for 0x100, 73 for 0x200,
 117 for 0x300, 100 for 0x400, and 23 otherwise. State bit 0x10 selects the
 first ink, mode 0x10000 the coloured renderer, bits 0x60 the third ink with a
-nudge, and any other word the second ink.
+nudge, and any other word the second ink. A rail at unit 5, place 10, 20 of
+size 100 by 80 draws a left cap from 0, 85 to 30, 105, a right cap from 100, 85
+to 90, 105, a middle from 30, 95 to 90, 105, and a thumb from 105, 30 to
+95, 40. Its cap sample binds twice, the middle once and the thumb once.
 
 ## Scope
 

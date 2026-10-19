@@ -178,6 +178,18 @@ pub const SPAN_SQUARE: [u32; 8] = [
     0x3f4c_cccd,
 ];
 
+/// Thumb of the line rail: 0.5, 0.8, 0.5, 0.9, then 0.55, 0.9, 0.55, 0.8.
+pub const LINE_RAIL: [u32; 8] = [
+    0x3f00_0000,
+    0x3f4c_cccd,
+    0x3f00_0000,
+    0x3f66_6666,
+    0x3f0c_cccd,
+    0x3f66_6666,
+    0x3f0c_cccd,
+    0x3f4c_cccd,
+];
+
 /// Chip of the line class: 0.75, 0.8, 0.75, 1, then 0.85, 1, 0.85, 0.8.
 pub const LINE_CHIP: [u32; 8] = [
     0x3f40_0000,
@@ -2444,6 +2456,108 @@ pub fn place_line_label(
         colour: ink_index.map(|index| inks[index as usize]),
         coloured,
         text_calls: 1,
+    }
+}
+
+/// A rail place: a track at the bottom and a thumb at the right.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RailPlace {
+    pub x: i16,
+    pub y: i16,
+    pub w: i16,
+    pub h: i16,
+    pub state: u32,
+}
+
+/// Three track quads and the thumb.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LineRail {
+    pub mode_calls: u32,
+    pub mode: i32,
+    pub begin_calls: u32,
+    pub prep_calls: u32,
+    pub bind_calls: u32,
+    pub binds: [[u32; 8]; 4],
+    pub quads: [[(f32, f32); 4]; 4],
+    pub placed: [[(f32, f32); 4]; 4],
+    pub track_ink: [u8; 4],
+    pub thumb_ink: [u8; 4],
+    pub colour_writes: u32,
+    pub end_calls: u32,
+}
+
+/// Draws the rail. Bit 0x10 selects the first ink; mode 0x10000 gives the
+/// thumb the third ink with alpha 255.
+pub fn draw_line_rail(unit: i32, place: RailPlace, inks: [[u8; 4]; 3], view: SpanView) -> LineRail {
+    let x = i64::from(place.x);
+    let y = i64::from(place.y);
+    let w = i64::from(place.w);
+    let h = i64::from(place.h);
+    let doubled = i64::from(unit.wrapping_shl(1));
+    let quadrupled = i64::from(unit.wrapping_shl(2));
+    let triple = i64::from(unit.wrapping_mul(3));
+    let bottom = y + h - triple;
+    let right = x + w;
+    let left_out = x - doubled;
+    let left_in = x + quadrupled;
+    let right_out = right - doubled;
+    let right_in = right - quadrupled;
+    let top_thumb = y + doubled;
+    let bottom_thumb = y + quadrupled;
+    let thumb_right = right - i64::from(unit);
+    let thumb_left = right - triple;
+    let quads = [
+        [
+            (left_out as f32, bottom as f32),
+            (left_out as f32, (bottom + quadrupled) as f32),
+            (left_in as f32, (bottom + quadrupled) as f32),
+            (left_in as f32, bottom as f32),
+        ],
+        [
+            (right_out as f32, bottom as f32),
+            (right_out as f32, (bottom + quadrupled) as f32),
+            (right_in as f32, (bottom + quadrupled) as f32),
+            (right_in as f32, bottom as f32),
+        ],
+        [
+            (left_in as f32, (bottom + doubled) as f32),
+            (left_in as f32, (bottom + quadrupled) as f32),
+            (right_in as f32, (bottom + quadrupled) as f32),
+            (right_in as f32, (bottom + doubled) as f32),
+        ],
+        [
+            (thumb_right as f32, top_thumb as f32),
+            (thumb_right as f32, bottom_thumb as f32),
+            (thumb_left as f32, bottom_thumb as f32),
+            (thumb_left as f32, top_thumb as f32),
+        ],
+    ];
+    let placed = quads.map(|quad| quad.map(|(x, y)| place_corner(x, y, view)));
+    let track_ink = if (place.state & 0x10) > 0 {
+        inks[0]
+    } else {
+        inks[1]
+    };
+    let thumb_ink = if (place.state & 0xf_0000) == 0x1_0000 {
+        let mut ink = inks[2];
+        ink[3] = 0xff;
+        ink
+    } else {
+        track_ink
+    };
+    LineRail {
+        mode_calls: 1,
+        mode: 2,
+        begin_calls: 1,
+        prep_calls: 1,
+        bind_calls: 4,
+        binds: [SPAN_END, SPAN_END, SPAN_BAR, LINE_RAIL],
+        quads,
+        placed,
+        track_ink,
+        thumb_ink,
+        colour_writes: 16,
+        end_calls: 1,
     }
 }
 
@@ -5144,5 +5258,73 @@ mod tests {
         let second = place_line_label(place(0, 0, 0), metrics, 5, inks);
         assert_eq!(second.ink_index, Some(1));
         assert_eq!(second.colour, Some([5, 6, 7, 8]));
+    }
+
+    #[test]
+    fn a_line_rail_draws_a_track_and_a_thumb() {
+        let inks = [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]];
+        let rail = draw_line_rail(
+            5,
+            RailPlace {
+                x: 10,
+                y: 20,
+                w: 100,
+                h: 80,
+                state: 0,
+            },
+            inks,
+            SPAN_VIEW_UNSET,
+        );
+        assert_eq!(rail.mode_calls, 1);
+        assert_eq!(rail.mode, 2);
+        assert_eq!(rail.begin_calls, 1);
+        assert_eq!(rail.prep_calls, 1);
+        assert_eq!(rail.bind_calls, 4);
+        assert_eq!(rail.binds, [SPAN_END, SPAN_END, SPAN_BAR, LINE_RAIL]);
+        assert_eq!(rail.colour_writes, 16);
+        assert_eq!(rail.end_calls, 1);
+        assert_eq!(rail.track_ink, [5, 6, 7, 8]);
+        assert_eq!(rail.thumb_ink, [5, 6, 7, 8]);
+        let expect: [[(f32, f32); 4]; 4] = [
+            [(0.0, 85.0), (0.0, 105.0), (30.0, 105.0), (30.0, 85.0)],
+            [(100.0, 85.0), (100.0, 105.0), (90.0, 105.0), (90.0, 85.0)],
+            [(30.0, 95.0), (30.0, 105.0), (90.0, 105.0), (90.0, 95.0)],
+            [(105.0, 30.0), (105.0, 40.0), (95.0, 40.0), (95.0, 30.0)],
+        ];
+        for (quad, want) in rail.quads.iter().zip(expect) {
+            for ((gx, gy), (wx, wy)) in quad.iter().zip(want) {
+                assert_eq!(gx.to_bits(), wx.to_bits());
+                assert_eq!(gy.to_bits(), wy.to_bits());
+            }
+        }
+
+        let first = draw_line_rail(
+            5,
+            RailPlace {
+                x: 10,
+                y: 20,
+                w: 100,
+                h: 80,
+                state: 0x10,
+            },
+            inks,
+            SPAN_VIEW_UNSET,
+        );
+        assert_eq!(first.track_ink, [1, 2, 3, 4]);
+
+        let mode = draw_line_rail(
+            5,
+            RailPlace {
+                x: 10,
+                y: 20,
+                w: 100,
+                h: 80,
+                state: 0x1_0000,
+            },
+            inks,
+            SPAN_VIEW_UNSET,
+        );
+        assert_eq!(mode.track_ink, [5, 6, 7, 8]);
+        assert_eq!(mode.thumb_ink, [9, 10, 11, 255]);
     }
 }
