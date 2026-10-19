@@ -29,6 +29,7 @@
 
 pub mod footprint;
 pub mod headless;
+pub mod mover;
 pub mod path;
 pub mod query;
 pub mod source;
@@ -37,6 +38,9 @@ pub mod view;
 use bevy::math::{DVec3, Vec2, Vec3};
 
 pub use footprint::{remove_footprint, stamp_footprint};
+pub use mover::{
+    CellRect, Movers, plan_around, queue_moved, queued_moves, rect_around, refresh_movers,
+};
 pub use path::{Look, Path, find_path, look_ahead};
 pub use query::{LineHit, line_walk, nearest_walkable, obstacle, straight_walk};
 pub use source::{GroundTile, NavSource};
@@ -568,8 +572,8 @@ impl NavGrid {
 
     /// Roughness, blur and clearance over the rectangle `x0..=x1` ×
     /// `z0..=z1` (each pass one cell further in, as the original runs
-    /// them).
-    fn derive_costs(&mut self, x0: usize, z0: usize, x1: usize, z1: usize) {
+    /// them). A rectangle too small for a pass is left alone.
+    pub(crate) fn derive_costs(&mut self, x0: usize, z0: usize, x1: usize, z1: usize) {
         let w = self.width;
         let neighbours = |i: usize| {
             NEIGHBOURS.map(|(dx, dz, wt)| {
@@ -582,84 +586,92 @@ impl NavGrid {
         let inner = |k: usize| (x0 + k, z0 + k, x1.saturating_sub(k), z1.saturating_sub(k));
         // Roughness.
         let (ax, az, bx, bz) = inner(1);
-        for z in az..=bz.min(self.depth.saturating_sub(1)) {
-            for x in ax..=bx.min(w.saturating_sub(1)) {
-                let i = z * w + x;
-                for layer in Layer::BOTH {
-                    let own = self.layers[layer as usize].floor[i];
-                    let value = match own {
-                        0 => NO_FLOOR_ROUGHNESS,
-                        SKY => SKY_ROUGHNESS,
-                        _ => neighbours(i)
-                            .iter()
-                            .map(|&(n, wt)| {
-                                let m = step_measure(
-                                    own,
-                                    self.span(n, Layer::Lower),
-                                    self.span(n, Layer::Upper),
-                                );
-                                (m * wt) >> 6
-                            })
-                            .max()
-                            .unwrap_or(0) as u8,
-                    };
-                    self.layers[layer as usize].roughness[i] = value;
+        let bx = bx.min(w.saturating_sub(1));
+        let bz = bz.min(self.depth.saturating_sub(1));
+        if ax <= bx && az <= bz {
+            for z in az..=bz {
+                for x in ax..=bx {
+                    let i = z * w + x;
+                    for layer in Layer::BOTH {
+                        let own = self.layers[layer as usize].floor[i];
+                        let value = match own {
+                            0 => NO_FLOOR_ROUGHNESS,
+                            SKY => SKY_ROUGHNESS,
+                            _ => neighbours(i)
+                                .iter()
+                                .map(|&(n, wt)| {
+                                    let m = step_measure(
+                                        own,
+                                        self.span(n, Layer::Lower),
+                                        self.span(n, Layer::Upper),
+                                    );
+                                    (m * wt) >> 6
+                                })
+                                .max()
+                                .unwrap_or(0) as u8,
+                        };
+                        self.layers[layer as usize].roughness[i] = value;
+                    }
                 }
             }
         }
         // Blur.
         let (ax, az, bx, bz) = inner(2);
-        for z in az..=bz {
-            for x in ax..=bx {
-                let i = z * w + x;
-                for layer in Layer::BOTH {
-                    let own = self.layers[layer as usize].floor[i];
-                    let value = match own {
-                        0 => NO_FLOOR_ROUGHNESS,
-                        SKY => SKY_ROUGHNESS,
-                        _ => {
-                            let mut sum = u32::from(self.layers[layer as usize].roughness[i]);
-                            for (n, wt) in neighbours(i) {
-                                let met = met_layer(
-                                    own,
-                                    self.span(n, Layer::Lower),
-                                    self.span(n, Layer::Upper),
-                                );
-                                let r = u32::from(self.layers[met as usize].roughness[n]);
-                                sum += (r * wt) >> 9;
+        if ax <= bx && az <= bz {
+            for z in az..=bz {
+                for x in ax..=bx {
+                    let i = z * w + x;
+                    for layer in Layer::BOTH {
+                        let own = self.layers[layer as usize].floor[i];
+                        let value = match own {
+                            0 => NO_FLOOR_ROUGHNESS,
+                            SKY => SKY_ROUGHNESS,
+                            _ => {
+                                let mut sum = u32::from(self.layers[layer as usize].roughness[i]);
+                                for (n, wt) in neighbours(i) {
+                                    let met = met_layer(
+                                        own,
+                                        self.span(n, Layer::Lower),
+                                        self.span(n, Layer::Upper),
+                                    );
+                                    let r = u32::from(self.layers[met as usize].roughness[n]);
+                                    sum += (r * wt) >> 9;
+                                }
+                                (sum >> 1) as u8
                             }
-                            (sum >> 1) as u8
-                        }
-                    };
-                    self.layers[layer as usize].blurred[i] = value;
+                        };
+                        self.layers[layer as usize].blurred[i] = value;
+                    }
                 }
             }
         }
         // Dilation into the clearance.
         let (ax, az, bx, bz) = inner(3);
-        for z in az..=bz {
-            for x in ax..=bx {
-                let i = z * w + x;
-                for layer in Layer::BOTH {
-                    let own = self.layers[layer as usize].floor[i];
-                    let value = match own {
-                        0 | SKY => NO_FLOOR_CLEARANCE,
-                        _ => {
-                            let mut c = u32::from(self.layers[layer as usize].blurred[i]);
-                            for (n, wt) in neighbours(i) {
-                                let met = met_layer(
-                                    own,
-                                    self.span(n, Layer::Lower),
-                                    self.span(n, Layer::Upper),
-                                );
-                                let b = u32::from(self.layers[met as usize].blurred[n])
-                                    .min(DILATION_CAP);
-                                c = c.max((b * wt) >> 9);
+        if ax <= bx && az <= bz {
+            for z in az..=bz {
+                for x in ax..=bx {
+                    let i = z * w + x;
+                    for layer in Layer::BOTH {
+                        let own = self.layers[layer as usize].floor[i];
+                        let value = match own {
+                            0 | SKY => NO_FLOOR_CLEARANCE,
+                            _ => {
+                                let mut c = u32::from(self.layers[layer as usize].blurred[i]);
+                                for (n, wt) in neighbours(i) {
+                                    let met = met_layer(
+                                        own,
+                                        self.span(n, Layer::Lower),
+                                        self.span(n, Layer::Upper),
+                                    );
+                                    let b = u32::from(self.layers[met as usize].blurred[n])
+                                        .min(DILATION_CAP);
+                                    c = c.max((b * wt) >> 9);
+                                }
+                                c.min(255) as u8
                             }
-                            c.min(255) as u8
-                        }
-                    };
-                    self.layers[layer as usize].clearance[i] = value;
+                        };
+                        self.layers[layer as usize].clearance[i] = value;
+                    }
                 }
             }
         }

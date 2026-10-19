@@ -45,6 +45,9 @@ pub fn look_ahead(speed_cm: f32, look: Look) -> f32 {
 pub struct Path {
     pub points: Vec<Vec3>,
     pub reached: bool,
+    /// Search cost of the goal cell, including the penalty of each cell
+    /// entered. Zero when the search does not start.
+    pub cost: i64,
 }
 
 /// Searches `grid` from `from` to `to` for a walker of `size` class.
@@ -55,18 +58,21 @@ pub fn find_path(grid: &NavGrid, from: Vec3, to: Vec3, size: u8) -> Path {
         return Path {
             points: Vec::new(),
             reached: false,
+            cost: 0,
         };
     };
     let Some((gx, gz)) = grid.cell_at(to) else {
         return Path {
             points: Vec::new(),
             reached: false,
+            cost: 0,
         };
     };
     if sx.abs_diff(gx) > 253 || sz.abs_diff(gz) > 253 {
         return Path {
             points: Vec::new(),
             reached: false,
+            cost: 0,
         };
     }
     let limit = PASSABLE / (u32::from(size) + 1);
@@ -76,12 +82,14 @@ pub fn find_path(grid: &NavGrid, from: Vec3, to: Vec3, size: u8) -> Path {
         return Path {
             points: Vec::new(),
             reached: false,
+            cost: 0,
         };
     };
     if (sx, sz) == (gx, gz) {
         return Path {
             points: vec![at(grid, sx, sz, start)],
             reached: true,
+            cost: 0,
         };
     }
     search(grid, (sx, sz, start), (gx, gz, goal_layer), limit)
@@ -218,6 +226,7 @@ fn search(
         return Path {
             points: Vec::new(),
             reached: false,
+            cost: 0,
         };
     }
     let mut chain = Vec::new();
@@ -238,6 +247,7 @@ fn search(
     Path {
         points: corners(chain),
         reached: found,
+        cost: best_g[index(goal.0, goal.1) as usize],
     }
 }
 

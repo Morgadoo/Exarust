@@ -16,7 +16,10 @@ four above the current height when its underside is within ten. A straight
 walk allows five and follows a floor down. A line of 40 cm or less is not
 an obstacle. A point on a cell cheaper than 80 keeps its place. A footprint adds
 63 at its centre, 32 on the eight neighbours, and 16 on the twelve
-cells beyond. The mover refresh is not in yet. With no grid there is no path.
+cells beyond. A plan lifts that footprint and stamps it again. A dirty
+rectangle joins another when the padded union is smaller, keeps sixteen,
+grows by three cells, and raises a floor. The scene-wide countdown is not
+in yet. With no grid there is no path.
 
 Evidence: reverse engineering of `Exanima.exe` 0.9.5 (the grid build, its
 span, layer and cost passes, the scene fields it reads, the level loader),
