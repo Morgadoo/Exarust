@@ -3101,6 +3101,105 @@ pub fn draw_skin_cross(unit: i32, x: i32, y: i32) -> SkinCross {
     }
 }
 
+/// The four metrics the unit and trim derive for control rectangles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkinMetrics {
+    pub unit: i32,
+    pub trim: i32,
+}
+
+impl SkinMetrics {
+    /// Four units plus one: the close band's width.
+    pub fn close(self) -> i32 {
+        self.unit.wrapping_mul(4).wrapping_add(1)
+    }
+
+    /// Four units less one: the rail and tab square.
+    pub fn rail(self) -> i32 {
+        self.unit.wrapping_mul(4).wrapping_sub(1)
+    }
+
+    /// Six units less the trim: the close band's height base.
+    pub fn base(self) -> i32 {
+        self.unit.wrapping_mul(6).wrapping_sub(self.trim)
+    }
+
+    /// Half the unit plus the close width: the tab's left shift.
+    pub fn tab(self) -> i32 {
+        (((self.unit as u32) >> 1) as i32).wrapping_add(self.close())
+    }
+}
+
+/// The control fields the rectangle switch reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControlPlace {
+    pub x: i32,
+    pub y: i32,
+    pub size: i32,
+    pub field_a: i32,
+    pub field_b: i32,
+    pub flags: u32,
+}
+
+fn close_band(place: ControlPlace, metrics: SkinMetrics, extra: i32) -> [i32; 4] {
+    let left = place
+        .x
+        .wrapping_sub(metrics.close())
+        .wrapping_sub(metrics.unit)
+        .wrapping_sub(extra);
+    let top = metrics.unit.wrapping_sub(1);
+    let right = left.wrapping_add(metrics.close());
+    let bottom = metrics.base().wrapping_sub(metrics.unit).wrapping_add(3);
+    [left, top, right, bottom]
+}
+
+fn rail_square(left: i32, top: i32, rail: i32) -> [i32; 4] {
+    [left, top, left.wrapping_add(rail), top.wrapping_add(rail)]
+}
+
+/// Places the rectangle a control code names. An unknown code returns nothing.
+pub fn control_rect(place: ControlPlace, code: i32, metrics: SkinMetrics) -> Option<[i32; 4]> {
+    let rail = metrics.rail();
+    match code {
+        -4 => Some(close_band(place, metrics, 0)),
+        -6 => {
+            let extra = if (place.flags & 2) != 0 {
+                metrics.tab()
+            } else {
+                0
+            };
+            Some(close_band(place, metrics, extra))
+        }
+        -5 => {
+            let extra = match place.flags & 0xa {
+                0xa => metrics.tab().wrapping_mul(2),
+                0 => 0,
+                _ => metrics.tab(),
+            };
+            Some(close_band(place, metrics, extra))
+        }
+        -9 => {
+            let left = place.x.wrapping_sub(place.size).wrapping_sub(rail);
+            Some(rail_square(left, place.field_a, rail))
+        }
+        -10 => {
+            let left = place.x.wrapping_sub(place.size).wrapping_sub(rail);
+            let top = place.y.wrapping_sub(place.size).wrapping_sub(rail);
+            Some(rail_square(left, top, rail))
+        }
+        -13 => {
+            let top = place.y.wrapping_sub(place.size).wrapping_sub(rail);
+            Some(rail_square(place.size, top, rail))
+        }
+        -14 => {
+            let top = place.y.wrapping_sub(place.size).wrapping_sub(rail);
+            let left = place.field_b.wrapping_sub(rail);
+            Some(rail_square(left, top, rail))
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6132,6 +6231,32 @@ mod tests {
         assert!(coloured.calls.is_empty());
         assert_eq!(coloured.y, 24);
         assert_eq!(coloured.text_calls, 1);
+    }
+
+    #[test]
+    fn a_control_rect_switches_on_its_code() {
+        let metrics = SkinMetrics { unit: 5, trim: 2 };
+        assert_eq!((metrics.close(), metrics.rail()), (21, 19));
+        assert_eq!((metrics.base(), metrics.tab()), (28, 23));
+
+        let place = ControlPlace {
+            x: 100,
+            y: 50,
+            size: 20,
+            field_a: 7,
+            field_b: 90,
+            flags: 0xa,
+        };
+
+        assert_eq!(control_rect(place, -4, metrics), Some([74, 4, 95, 26]));
+        assert_eq!(control_rect(place, -6, metrics), Some([51, 4, 72, 26]));
+        assert_eq!(control_rect(place, -5, metrics), Some([28, 4, 49, 26]));
+        assert_eq!(control_rect(place, -9, metrics), Some([61, 7, 80, 26]));
+        assert_eq!(control_rect(place, -10, metrics), Some([61, 11, 80, 30]));
+        assert_eq!(control_rect(place, -13, metrics), Some([20, 11, 39, 30]));
+        assert_eq!(control_rect(place, -14, metrics), Some([71, 11, 90, 30]));
+        assert_eq!(control_rect(place, -1, metrics), None);
+        assert_eq!(control_rect(place, 4, metrics), None);
     }
 
     #[test]
