@@ -45,8 +45,11 @@
 //! 100 ticks. A leaf that is already shut becomes latched.
 //!
 //! A signalled open plays the unlock sound once for the doors under a node.
-//! A latched or motorised door waits 120 ticks. Below 2 the wait ends. A
-//! door that is neither latched nor motorised does not wait.
+//! A latched or motorised door waits 120 ticks. Below 2 the wait ends by
+//! opening: the latch, the shut flag and the pull count clear. A plain
+//! hinge is shoved 3 cm and goes idle. A motorised hinge aims open for 100
+//! ticks. A plain slider jumps to 0.6 for 80 ticks. A motorised slider
+//! drives open for 300 ticks.
 //!
 //! Evidence: the hinged door step, the open shove, the sliding door step,
 //! the partner check, and the unlock wait. The slam's random pitch is not
@@ -622,16 +625,32 @@ pub enum SignalDrive {
     Idle,
     /// Waiting to open.
     Pending,
+    /// Driving open.
+    Open,
 }
 
 /// One door under a signalled open.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SignalLeaf {
+    pub sliding: bool,
     pub latched: bool,
     pub motorised: bool,
+    pub closed: bool,
+    pub count: i32,
+    pub fraction: f32,
     pub drive: SignalDrive,
     pub countdown: i32,
 }
+
+/// What the open command did. The shove is in the door's local frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Opened {
+    pub shove: Vec3,
+    pub woke: bool,
+}
+
+/// Ticks a motorised hinge spends driving open.
+pub const HINGE_OPEN_TICKS: i32 = 100;
 
 /// Arm the doors under a node. The unlock sound plays once when there is
 /// at least one door. Only a latched or motorised door waits.
@@ -648,18 +667,50 @@ pub fn signal_open(leaves: &mut [SignalLeaf]) -> bool {
     true
 }
 
-/// One tick of a waiting open. Below 2 the wait ends and this returns true.
-pub fn signal_wait(leaf: &mut SignalLeaf) -> bool {
+/// The open a finished wait calls. The latch, the shut flag and the pull
+/// count clear. A hinge is shoved 3 cm along local Z. A slider wakes.
+pub fn begin_open(leaf: &mut SignalLeaf) -> Opened {
+    leaf.latched = false;
+    leaf.closed = false;
+    leaf.count = 0;
+    if !leaf.sliding {
+        if leaf.motorised {
+            leaf.fraction = 0.0;
+            leaf.drive = SignalDrive::Open;
+            leaf.countdown = HINGE_OPEN_TICKS;
+        } else {
+            leaf.drive = SignalDrive::Idle;
+            leaf.countdown = 0;
+        }
+        Opened {
+            shove: open_push(Vec3::Z),
+            woke: false,
+        }
+    } else {
+        leaf.drive = SignalDrive::Open;
+        if leaf.motorised {
+            leaf.countdown = SLIDE_MOTOR_TICKS;
+        } else {
+            leaf.fraction = SLIDE_JUMP;
+            leaf.countdown = SLIDE_OPEN_TICKS;
+        }
+        Opened {
+            shove: Vec3::ZERO,
+            woke: true,
+        }
+    }
+}
+
+/// One tick of a waiting open. Below 2 the wait ends by opening.
+pub fn signal_wait(leaf: &mut SignalLeaf) -> Option<Opened> {
     if leaf.drive != SignalDrive::Pending {
-        return false;
+        return None;
     }
     if leaf.countdown < 2 {
-        leaf.drive = SignalDrive::Idle;
-        leaf.countdown = 0;
-        true
+        Some(begin_open(leaf))
     } else {
         leaf.countdown -= 1;
-        false
+        None
     }
 }
 
@@ -1055,11 +1106,27 @@ mod tests {
 
     fn signal_leaf() -> SignalLeaf {
         SignalLeaf {
+            sliding: false,
             latched: false,
             motorised: false,
+            closed: true,
+            count: PULL_CAP,
+            fraction: 1.0,
             drive: SignalDrive::Idle,
             countdown: 0,
         }
+    }
+
+    fn wait_out(leaf: &mut SignalLeaf) -> Opened {
+        signal_open(std::slice::from_mut(leaf));
+        let mut opened = None;
+        for _ in 0..SIGNAL_WAIT {
+            opened = signal_wait(leaf);
+            if opened.is_some() {
+                break;
+            }
+        }
+        opened.expect("the wait opens")
     }
 
     #[test]
@@ -1069,7 +1136,7 @@ mod tests {
         let mut plain = signal_leaf();
         assert!(signal_open(std::slice::from_mut(&mut plain)));
         assert_eq!(plain.drive, SignalDrive::Idle);
-        assert!(!signal_wait(&mut plain));
+        assert!(signal_wait(&mut plain).is_none());
 
         let mut latched = signal_leaf();
         latched.latched = true;
@@ -1083,7 +1150,7 @@ mod tests {
         assert_eq!(leaves[2].countdown, SIGNAL_WAIT);
 
         let mut waiting = leaves[1];
-        assert!(!signal_wait(&mut waiting));
+        assert!(signal_wait(&mut waiting).is_none());
         assert_eq!(waiting.countdown, SIGNAL_WAIT - 1);
         assert_eq!(waiting.drive, SignalDrive::Pending);
 
@@ -1093,7 +1160,7 @@ mod tests {
         signal_open(std::slice::from_mut(&mut armed));
         loop {
             ticks += 1;
-            if signal_wait(&mut armed) {
+            if signal_wait(&mut armed).is_some() {
                 break;
             }
             assert!(ticks < SIGNAL_WAIT + 2);
@@ -1101,5 +1168,46 @@ mod tests {
         assert_eq!(ticks, SIGNAL_WAIT);
         assert_eq!(armed.drive, SignalDrive::Idle);
         assert_eq!(armed.countdown, 0);
+        assert!(!armed.latched);
+        assert!(!armed.closed);
+        assert_eq!(armed.count, 0);
+
+        let mut hinge = signal_leaf();
+        hinge.latched = true;
+        hinge.motorised = true;
+        hinge.fraction = 0.4;
+        let opened = wait_out(&mut hinge);
+        assert!((hinge.fraction - 0.0).abs() < 1e-6);
+        assert_eq!(hinge.drive, SignalDrive::Open);
+        assert_eq!(hinge.countdown, HINGE_OPEN_TICKS);
+        assert!(
+            opened
+                .shove
+                .abs_diff_eq(Vec3::new(0.0, 0.0, OPEN_PUSH_CM), 1e-4)
+        );
+        assert!(!opened.woke);
+        assert!(!hinge.latched);
+
+        let mut slider = signal_leaf();
+        slider.sliding = true;
+        slider.latched = true;
+        slider.fraction = 1.0;
+        let opened = wait_out(&mut slider);
+        assert!((slider.fraction - SLIDE_JUMP).abs() < 1e-6);
+        assert_eq!(slider.countdown, SLIDE_OPEN_TICKS);
+        assert_eq!(slider.drive, SignalDrive::Open);
+        assert!(opened.shove.abs_diff_eq(Vec3::ZERO, 1e-6));
+        assert!(opened.woke);
+
+        let mut motor_slide = signal_leaf();
+        motor_slide.sliding = true;
+        motor_slide.motorised = true;
+        motor_slide.latched = true;
+        motor_slide.fraction = 0.4;
+        let opened = wait_out(&mut motor_slide);
+        assert!((motor_slide.fraction - 0.4).abs() < 1e-6);
+        assert_eq!(motor_slide.countdown, SLIDE_MOTOR_TICKS);
+        assert!(opened.woke);
+        assert!(opened.shove.abs_diff_eq(Vec3::ZERO, 1e-6));
     }
 }
