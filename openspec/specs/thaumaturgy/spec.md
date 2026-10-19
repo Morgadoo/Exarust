@@ -74,3 +74,10 @@ A chunk SHALL grow by the tick times 0.7 of its speed plus 3, times 0.0006. Two 
 #### Scenario: A still chunk and a close pair
 - **WHEN** a chunk of radius 0 and speed 0 grows for one tick, chunks at 0 and 1 with radius 1 are separated, a pair 2 apart is separated, and a pair on the same point is separated
 - **THEN** the still chunk is 0.0018, the close pair is at -0.5 and 1.5, and the other two pairs stay
+
+### Requirement: Barrier ripple
+A barrier ripple SHALL lose 0.05 of strength each step, and the shown value SHALL move toward that strength by at most 0.04. Below 0.07 on both it SHALL be gone. While it remains, its place SHALL ease 0.05 of the way toward the hit. The dome extent SHALL be 30 plus 1.25 times the ripple count.
+
+#### Scenario: A held ripple and an empty dome
+- **WHEN** a ripple at shown 1 and strength 1 is stepped toward a hit 10 ahead, ripples at 0.06 and at 0.07 are stepped, and the extent of no ripples and of four ripples is read
+- **THEN** the held ripple eases to 0.5, the two faint ripples are gone, the empty dome is 30 and four ripples make 35

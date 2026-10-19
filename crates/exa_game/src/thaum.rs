@@ -22,8 +22,13 @@
 //! 0.0006 of its speed term, and two chunks closer than twice the first
 //! radius move apart by half the overlap.
 //!
-//! Evidence: the power tables, the calm, blast and shock notes, and the blast
-//! charge step.
+//! A barrier ripple loses 0.05 of strength each step. The shown value moves
+//! toward that strength by at most 0.04, and both below 0.07 removes it.
+//! While it remains, its place eases 0.05 of the way toward the hit. The dome
+//! extent is 30 plus 1.25 times the ripple count.
+//!
+//! Evidence: the power tables, the calm, blast and shock notes, the blast
+//! charge step, and the dome ripple step.
 
 use bevy::math::Vec3;
 
@@ -467,6 +472,43 @@ pub fn cast(domain: Domain, caster: &mut Caster, request: &Request) -> Result<Ef
     }
 }
 
+/// One ripple still on the dome.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DomeRipple {
+    pub shown: f32,
+    pub strength: f32,
+    pub at: [f32; 3],
+}
+
+/// 30 plus 1.25 for each ripple.
+pub fn dome_extent(ripples: u32) -> f32 {
+    ripples as f32 * 1.25 + 30.0
+}
+
+/// One step of a barrier ripple. `None` means it has faded off the dome.
+pub fn step_ripple(
+    shown: f32,
+    strength: f32,
+    at: [f32; 3],
+    toward: [f32; 3],
+) -> Option<DomeRipple> {
+    let strength = strength - 0.05;
+    let gap = (strength - shown).clamp(-0.04, 0.04);
+    let shown = shown + gap;
+    if shown < 0.07 && strength < 0.07 {
+        return None;
+    }
+    Some(DomeRipple {
+        shown,
+        strength,
+        at: [
+            at[0] + (toward[0] - at[0]) * 0.05,
+            at[1] + (toward[1] - at[1]) * 0.05,
+            at[2] + (toward[2] - at[2]) * 0.05,
+        ],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -591,6 +633,18 @@ mod tests {
             separate_chunks([1.0, 2.0, 3.0], [1.0, 2.0, 3.0], 1.0),
             ([1.0, 2.0, 3.0], [1.0, 2.0, 3.0])
         );
+    }
+
+    #[test]
+    fn a_barrier_ripple_fades_toward_the_hit() {
+        assert_eq!(dome_extent(0), 30.0);
+        assert_eq!(dome_extent(4), 35.0);
+        let ripple = step_ripple(1.0, 1.0, [0.0, 0.0, 0.0], [10.0, 0.0, 0.0]).expect("it holds");
+        assert_eq!(ripple.shown, f32::from_bits(0x3f75_c28f));
+        assert_eq!(ripple.strength, f32::from_bits(0x3f73_3333));
+        assert_eq!(ripple.at, [0.5, 0.0, 0.0]);
+        assert!(step_ripple(0.06, 0.06, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]).is_none());
+        assert!(step_ripple(0.07, 0.07, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]).is_none());
     }
 
     #[test]
