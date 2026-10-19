@@ -12,7 +12,8 @@
 //! stats card places it from the unit, and a picture wider than eleven
 //! units shifts it. A shield card shows weight, impact, and encumbrance.
 //! Arena turns rank and points on. Story and practice turn them off.
-//! Description phrases are not drawn here.
+//! A description phrase is drawn from the rows whose range holds the
+//! value. The full sentence around that phrase is not built here.
 //!
 //! Evidence: the item-card page choice.
 
@@ -303,6 +304,87 @@ pub fn shield_points(show: bool, skill: u8) -> Option<f32> {
     }
 }
 
+/// One description phrase and the inclusive byte range that may use it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Phrase<'a> {
+    pub text: &'a str,
+    pub low: u8,
+    pub high: u8,
+}
+
+/// The roll after a pick, and the text to add. `None` adds nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhrasePick {
+    pub state: u32,
+    pub text: Option<String>,
+}
+
+/// Choose one phrase whose range holds `value`.
+///
+/// No row in range leaves the roll unchanged. Otherwise the roll steps by
+/// `state * 0x08088405 + 1`, and the high half of that times the candidate
+/// count chooses one. A candidate that repeats a word longer than three
+/// letters from `so_far` adds nothing. Each string's last character is
+/// ignored, and letter case does not count. A phrase that starts with a
+/// comma is kept as itself plus a dot. Any other phrase gains a leading space
+/// and a trailing dot.
+pub fn pick_phrase(state: u32, value: u8, phrases: &[Phrase<'_>], so_far: &str) -> PhrasePick {
+    let fits: Vec<&str> = phrases
+        .iter()
+        .filter(|phrase| phrase.low <= value && value <= phrase.high)
+        .map(|phrase| phrase.text)
+        .collect();
+    if fits.is_empty() {
+        return PhrasePick { state, text: None };
+    }
+    let state = state.wrapping_mul(0x0808_8405).wrapping_add(1);
+    let index = (u64::from(state).wrapping_mul(fits.len() as u64) >> 32) as usize;
+    let chosen = fits[index];
+    if shares_long_word(so_far, chosen) {
+        return PhrasePick { state, text: None };
+    }
+    let text = if chosen.as_bytes().first() == Some(&b',') {
+        format!("{chosen}.")
+    } else {
+        format!(" {chosen}.")
+    };
+    PhrasePick {
+        state,
+        text: Some(text),
+    }
+}
+
+fn shares_long_word(so_far: &str, phrase: &str) -> bool {
+    let prior = long_words(so_far);
+    let next = long_words(phrase);
+    prior
+        .iter()
+        .any(|word| next.iter().any(|other| same_word(word, other)))
+}
+
+/// Words longer than three letters that end before the string's last character.
+fn long_words(text: &str) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    if bytes.len() < 2 {
+        return Vec::new();
+    }
+    let mut words = Vec::new();
+    let mut start = 0;
+    for (index, &byte) in bytes[..bytes.len() - 1].iter().enumerate() {
+        if byte == b' ' {
+            if index - start > 3 {
+                words.push(&text[start..index]);
+            }
+            start = index + 1;
+        }
+    }
+    words
+}
+
+fn same_word(left: &str, right: &str) -> bool {
+    left.eq_ignore_ascii_case(right)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -493,5 +575,70 @@ mod tests {
         assert_eq!(shield_points(true, 0x1f).unwrap().to_bits(), 0x4178_0000);
         assert_eq!(shield_rank(false, 0xdf), None);
         assert_eq!(shield_points(false, 0xdf), None);
+    }
+
+    fn phrase(text: &str, low: u8, high: u8) -> Phrase<'_> {
+        Phrase { text, low, high }
+    }
+
+    #[test]
+    fn a_phrase_keeps_its_range_and_skips_a_repeated_word() {
+        let rows = [phrase("fine", 0, 10)];
+        assert_eq!(
+            pick_phrase(7, 11, &rows, ""),
+            PhrasePick {
+                state: 7,
+                text: None
+            }
+        );
+        assert_eq!(
+            pick_phrase(0, 5, &rows, ""),
+            PhrasePick {
+                state: 1,
+                text: Some(" fine.".to_string())
+            }
+        );
+        assert_eq!(
+            pick_phrase(0, 5, &[phrase("edge", 5, 5)], "").text,
+            Some(" edge.".to_string())
+        );
+        let pair = [phrase("alpha", 0, 255), phrase("beta", 0, 255)];
+        assert_eq!(
+            pick_phrase(16, 1, &pair, ""),
+            PhrasePick {
+                state: 0x8088_4051,
+                text: Some(" beta.".to_string())
+            }
+        );
+        assert_eq!(
+            pick_phrase(0, 1, &[phrase("fine work", 0, 255)], "fine x"),
+            PhrasePick {
+                state: 1,
+                text: None
+            }
+        );
+        assert_eq!(
+            pick_phrase(0, 1, &[phrase("fine work", 0, 255)], "Fine x"),
+            PhrasePick {
+                state: 1,
+                text: None
+            }
+        );
+        assert_eq!(
+            pick_phrase(0, 1, &[phrase("fine work", 0, 255)], "fin x").text,
+            Some(" fine work.".to_string())
+        );
+        assert_eq!(
+            pick_phrase(0, 1, &[phrase("fine work", 0, 255)], "fine").text,
+            Some(" fine work.".to_string())
+        );
+        assert_eq!(
+            pick_phrase(0, 1, &[phrase(", but torn", 0, 255)], "").text,
+            Some(", but torn.".to_string())
+        );
+        assert_eq!(
+            pick_phrase(0, 1, &[phrase("the item here", 0, 255)], "the x").text,
+            Some(" the item here.".to_string())
+        );
     }
 }
