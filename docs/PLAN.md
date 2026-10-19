@@ -871,8 +871,9 @@ Done (change `choose-a-card-page`): an id below 1, a container, a missing model,
 Done (change `show-a-weapon-bar`): slash 5 and pierce 0 are absent. Crush 6 is 0.3. Thrust 20 is 1.
 Done (change `show-an-apparel-bar`): coverage 5 is 0.25. Impact 5, crush 0, and encumbrance 5 are absent. Slash 6 is 0.3. Pierce 20 is 1.
 Done (change `place-a-card-icon`): a plain card of span 268 and content 160 places an icon of 160 at 54, 16 with a unit of 4. Content 100 on a span of 269 places it at 54, −14. A stats picture of 40 or 44 stays at −28, 4. A picture of 45 is −27, 4. A picture of 160 is 88, 4.
-Done (change `show-a-shield-bar`): weight 5 is 0.05 and impact 20 is 1. Encumbrance 0 is absent. Encumbrance 1 is 0.05. Flags 0x02000000 store weight 1, impact 0, and encumbrance 8. Still to
-do: rank, points, description phrases, injuries beyond damage, grabs, practice mode,
+Done (change `show-a-shield-bar`): weight 5 is 0.05 and impact 20 is 1. Encumbrance 0 is absent. Encumbrance 1 is 0.05. Flags 0x02000000 store weight 1, impact 0, and encumbrance 8.
+Done (change `show-rank-in-the-arena`): menu 0 entering arena 8 turns rank and points on. Arena entering story turns them off. Story entering practice turns them off. Staying in practice, leaving mode 6 for practice, and leaving arena for mode 1 keep them on. Skill 0x21 is Aspirant and 0.5. Skill 0xc0 is a dash. Skill 0xe0 has no name. Skill 0x1f is 15.5. A closed gate shows neither. Still to
+do: description phrases, injuries beyond damage, grabs, practice mode,
 the striker's recoil
 and follow-through (C21, M26), the collapse's stagger steps; next in the
 combat timing: the unarmed parries (L10).
@@ -1139,7 +1140,9 @@ against Exarust and lists the largest missing ones. In order:
    it. A shield's weight is that byte times 0.01 and its impact is that
    byte times 0.05. Encumbrance uses that scale unless the byte is 0.
    Flags sharing a bit with 0x06000000 store weight as 1 and encumbrance
-   as 8. Rank, points, and description phrases are not.
+   as 8. Arena turns rank and points on. Story and a fresh practice
+   turn them off. A shown rank reads the top three skill bits, and points
+   are the low five bits times one half. Description phrases are not.
 3. The original's NPC brain: perception, targets and the combat state that
    drives the same inputs as the player (Phase 6). A path on the grid, the
    look-ahead, and an order that writes the player's heading and velocity

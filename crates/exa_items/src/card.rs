@@ -11,7 +11,8 @@
 //! that byte times 0.05. A plain card centres the icon in the span. A
 //! stats card places it from the unit, and a picture wider than eleven
 //! units shifts it. A shield card shows weight, impact, and encumbrance.
-//! Rank, points, and description phrases are not drawn here.
+//! Arena turns rank and points on. Story and practice turn them off.
+//! Description phrases are not drawn here.
 //!
 //! Evidence: the item-card page choice.
 
@@ -243,6 +244,65 @@ pub fn shield_bars(flags: u32, weight: u8, impact: u8, encumbrance: u8) -> Shiel
     }
 }
 
+/// Whether a card may show a rank and a points row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CardGates {
+    pub rank: bool,
+    pub points: bool,
+}
+
+/// Practice is 2, story is 4, and arena is 8.
+///
+/// Arena turns both rows on. Story turns them off. Practice turns them off
+/// unless the mode being left already has bit 2. The same mode, and any other
+/// mode, leaves the rows as they were.
+pub fn card_gates(current: u32, next: u32, gates: CardGates) -> CardGates {
+    if next == current {
+        return gates;
+    }
+    if next == 2 && current & 2 == 0 {
+        return CardGates {
+            rank: false,
+            points: false,
+        };
+    }
+    if next == 4 {
+        return CardGates {
+            rank: false,
+            points: false,
+        };
+    }
+    if next == 8 {
+        return CardGates {
+            rank: true,
+            points: true,
+        };
+    }
+    gates
+}
+
+const RANKS: [&str; 7] = [
+    "Inept", "Aspirant", "Novice", "Adept", "Expert", "Master", "-",
+];
+
+/// The rank named by the skill byte's top three bits, when the row is allowed.
+pub fn shield_rank(show: bool, skill: u8) -> Option<&'static str> {
+    if !show || skill & 0xe0 == 0 {
+        return None;
+    }
+    RANKS.get(usize::from(skill >> 5)).copied()
+}
+
+/// The low five bits times one half, when the row is allowed and the bits are not zero.
+pub fn shield_points(show: bool, skill: u8) -> Option<f32> {
+    let points = skill & 0x1f;
+    if !show || points == 0 {
+        None
+    } else {
+        Some(f32::from(points) * 0.5)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,5 +456,42 @@ mod tests {
         assert_eq!(fixed.weight.to_bits(), 0x3f80_0000);
         assert_eq!(fixed.impact.to_bits(), 0);
         assert_eq!(fixed.encumbrance.unwrap().to_bits(), 0x4100_0000);
+    }
+
+    #[test]
+    fn arena_opens_rank_and_points_and_a_zero_field_stays_hidden() {
+        let off = CardGates {
+            rank: false,
+            points: false,
+        };
+        let on = card_gates(0, 8, off);
+        assert_eq!(
+            on,
+            CardGates {
+                rank: true,
+                points: true
+            }
+        );
+        assert_eq!(
+            card_gates(8, 4, on),
+            CardGates {
+                rank: false,
+                points: false
+            }
+        );
+        assert_eq!(card_gates(4, 2, on), off);
+        assert_eq!(card_gates(2, 2, on), on);
+        assert_eq!(card_gates(6, 2, on), on);
+        assert_eq!(card_gates(8, 1, on), on);
+
+        assert_eq!(shield_rank(true, 0), None);
+        assert_eq!(shield_points(true, 0), None);
+        assert_eq!(shield_rank(true, 0x20), Some("Aspirant"));
+        assert_eq!(shield_points(true, 0x21).unwrap().to_bits(), 0x3f00_0000);
+        assert_eq!(shield_rank(true, 0xc0), Some("-"));
+        assert_eq!(shield_rank(true, 0xe0), None);
+        assert_eq!(shield_points(true, 0x1f).unwrap().to_bits(), 0x4178_0000);
+        assert_eq!(shield_rank(false, 0xdf), None);
+        assert_eq!(shield_points(false, 0xdf), None);
     }
 }
