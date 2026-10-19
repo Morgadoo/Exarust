@@ -12,9 +12,13 @@
 //! A wander point is a quarter of the way from a drawn exit toward the room
 //! point. The draw retries once when that exit leads back. A follower stops
 //! inside a facing-scaled 100 cm, and outside a 400 cm band it sets an
-//! urgency and replans when the leader has moved more than 100 cm.
+//! urgency and replans when the leader has moved more than 100 cm. Sleep
+//! lies dormant: the dormant condition and flag, tone 0, a statue, and
+//! gait 2. The tick after that changes nothing.
 
 use bevy::math::{Vec2, Vec3};
+use exa_combat::condition::{Condition, StateFlags};
+use exa_physics::body::Drive;
 
 use crate::hear::{self, Attention};
 
@@ -425,6 +429,43 @@ pub fn follow_leader(
     FollowAct::Pursue
 }
 
+/// Gait a sleeper writes. The pelvis rest uses the taller offset at this value.
+pub const SLEEP_GAIT: i32 = 2;
+
+/// Which tick is installed. Sleep's tick changes nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdleTick {
+    Active,
+    Sleep,
+}
+
+/// The character fields sleep writes, beside the body's tone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sleeper {
+    pub condition: Condition,
+    pub flags: StateFlags,
+    pub statue: bool,
+    pub gait: i32,
+    pub tick: IdleTick,
+}
+
+/// Lie dormant.
+///
+/// The condition becomes dormant. The dormant flag is set and the other
+/// flags stay. Tone becomes 0, so the tone target does too. The body is a
+/// statue and its gait is 2. The tick installed afterwards changes nothing.
+pub fn sleep(sleeper: &mut Sleeper, drive: &mut Drive) {
+    sleeper.flags.0 |= StateFlags::DORMANT;
+    sleeper.condition = Condition::DORMANT;
+    drive.tone = 0.0;
+    sleeper.statue = true;
+    sleeper.gait = SLEEP_GAIT;
+    sleeper.tick = IdleTick::Sleep;
+}
+
+/// The tick sleep installs. It does not write the sleeper or the tone.
+pub fn sleep_tick(_sleeper: &mut Sleeper, _drive: &mut Drive) {}
+
 /// One idle tick. A sentry guards. A roam or a patrol stands, then walks.
 pub fn tick(routine: &mut Routine, moment: &Moment) -> Act {
     if routine.kind == Kind::Sentry {
@@ -765,5 +806,41 @@ mod tests {
             FollowAct::Stand
         );
         assert!(!hidden.replan);
+    }
+
+    #[test]
+    fn a_sleeper_lies_dormant_and_its_tick_changes_nothing() {
+        let mut sleeper = Sleeper {
+            condition: Condition::WALKING,
+            flags: StateFlags(StateFlags::SHOCK_STAGGER),
+            statue: false,
+            gait: 0,
+            tick: IdleTick::Active,
+        };
+        let mut drive = Drive::default();
+        assert!(drive.tone_target() > 0.0);
+
+        sleep(&mut sleeper, &mut drive);
+        assert_eq!(sleeper.condition, Condition::DORMANT);
+        assert_eq!(
+            sleeper.flags.0,
+            StateFlags::SHOCK_STAGGER | StateFlags::DORMANT
+        );
+        assert_eq!(drive.tone, 0.0);
+        assert_eq!(drive.tone_target(), 0.0);
+        assert!(sleeper.statue);
+        assert_eq!(sleeper.gait, 2);
+        assert_eq!(sleeper.tick, IdleTick::Sleep);
+
+        let kept = sleeper;
+        let tone = drive.tone;
+        sleep_tick(&mut sleeper, &mut drive);
+        assert_eq!(sleeper, kept);
+        assert_eq!(drive.tone, tone);
+        assert_eq!(drive.tone_target(), 0.0);
+
+        sleep(&mut sleeper, &mut drive);
+        assert_eq!(sleeper, kept);
+        assert_eq!(drive.tone, 0.0);
     }
 }

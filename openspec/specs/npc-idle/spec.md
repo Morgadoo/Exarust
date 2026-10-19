@@ -25,3 +25,10 @@ No leader: stand if there is no activity or panic is at least 1, otherwise run t
 #### Scenario: Facing sets the stop, distance sets the urgency
 - **WHEN** a follower with no leader has no activity, another has panic 1, a third has panic 0.99 and an activity, a follower 149 cm in front of a leader facing it is not walking, one at 150 cm is not walking, one at 500 cm accepts a plan, one at 801 cm does not, one at 1601 cm does not, one at 500 cm whose leader sprints does not, a busy follower at 1000 cm is not following, an already-following busy follower at 300 cm is not walking, an already-following walker whose planned spot is 100 cm aside stays, one whose planned spot is 101 cm aside accepts a plan, and a hidden already-following follower is not walking
 - **THEN** the first two stand, the third runs the activity, 149 cm closes, 150 cm runs the activity, 500 cm pursues at urgency 0 and stops the plan at 50 cm, 801 cm is urgency 1, 1601 cm and the sprint are urgency 2, the busy follower at 1000 cm runs the activity, the follower at 300 cm pursues at urgency 0, 100 cm does not replan, 101 cm does and remembers the leader, and the hidden follower stands
+
+### Requirement: Sleep
+A sleeper SHALL become dormant and set the dormant flag without clearing the others. Its tone and tone target SHALL become 0, it SHALL be a statue, and its gait SHALL be 2. The tick installed afterwards SHALL change nothing. A second sleep SHALL keep that flag and the dormant condition.
+
+#### Scenario: A walking body lies dormant
+- **WHEN** a walker whose condition is walking, whose flags are the shock stagger, whose tone is 1 and whose gait is 0 sleeps, its tick runs, and it sleeps again
+- **THEN** the condition is dormant, the flags are the stagger and the dormant flag, the tone and the tone target are 0, it is a statue with gait 2, the tick leaves all of that as it was, and the second sleep keeps it
