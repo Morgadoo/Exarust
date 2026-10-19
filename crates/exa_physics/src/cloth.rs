@@ -1090,6 +1090,27 @@ pub fn collide_cloth(input: ClothCollideInput) -> ClothCollide {
     }
 }
 
+/// The cloth clone's copied fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClothClone {
+    pub created: bool,
+    pub field_20: u64,
+    pub field_140: u32,
+    pub field_144: u32,
+    pub field_148: u64,
+}
+
+/// Creates a new cloth and copies its four fields.
+pub fn clone_cloth(field_20: u64, field_140: u32, field_144: u32, field_148: u64) -> ClothClone {
+    ClothClone {
+        created: true,
+        field_20,
+        field_140,
+        field_144,
+        field_148,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1660,5 +1681,15 @@ mod tests {
         });
         assert_eq!(own.callback_calls, 0);
         assert_eq!(own.particles[0], Vec3::new(0.0, 2.0, 0.0));
+    }
+
+    #[test]
+    fn the_cloth_clone_copies_its_fields() {
+        let cloned = clone_cloth(0x1122, 0x33, 0x44, 0x55);
+        assert!(cloned.created);
+        assert_eq!(cloned.field_20, 0x1122);
+        assert_eq!(cloned.field_140, 0x33);
+        assert_eq!(cloned.field_144, 0x44);
+        assert_eq!(cloned.field_148, 0x55);
     }
 }
