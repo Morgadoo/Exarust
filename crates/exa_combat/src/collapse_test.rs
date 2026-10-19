@@ -434,6 +434,20 @@ fn sword(id: u32, velocity: Vec3) -> HeldWeapon {
         friction: 0.1,
         striker: 0x40,
         velocity,
+        part: WeaponPart {
+            id: u64::from(id),
+            owner: 9,
+            root: 1,
+            children: Vec::new(),
+            object_type: 0,
+            object_flags: 0,
+            mark: 0,
+            iterations: 0,
+        },
+        parent: None,
+        links: 1,
+        grip: -1,
+        awake: 1,
     }
 }
 
@@ -505,4 +519,97 @@ fn the_dying_tick_drops_the_held_weapons() {
         Some(&mut bare)
     ));
     assert_eq!((bare.count, bare.class_word, bare.loose.len()), (0, 0, 0));
+}
+
+fn part(id: u64, mark: i32, iterations: i32, children: Vec<WeaponPart>) -> WeaponPart {
+    WeaponPart {
+        id,
+        owner: 9,
+        root: id.wrapping_sub(2),
+        children,
+        object_type: 0,
+        object_flags: 0,
+        mark,
+        iterations,
+    }
+}
+
+/// The dying tick makes the dropped weapon its own owner. A child and a
+/// grandchild copy that owner and take the weapon as their root. The
+/// parent list loses the weapon. A child of type 0x1089 with bit
+/// 0x400000 takes mark -2. A childless weapon keeps a negative grip.
+#[test]
+fn the_dying_tick_returns_the_weapon_to_itself() {
+    let mut child = part(7, 1, 11, vec![part(8, 8, 12, Vec::new())]);
+    child.object_type = 0x1089;
+    child.object_flags = 0x400001;
+    let mut armed = sword(3, Vec3::ZERO);
+    armed.part = part(3, 6, 99, vec![child]);
+    armed.parent = Some(vec![5, 3, 8]);
+    armed.grip = 4;
+    armed.links = 6;
+    armed.awake = 9;
+    let mut other = sword(4, Vec3::ZERO);
+    other.part.mark = 4;
+    other.part.object_type = 0x89;
+    other.part.object_flags = 0x400000;
+    other.parent = Some(vec![9]);
+    other.grip = -3;
+    let mut app = App::new();
+    app.add_systems(Update, dying_tick);
+    let id = app
+        .world_mut()
+        .spawn((
+            Fighter::default(),
+            Condition::COLLAPSING,
+            Collapse::default(),
+            Ragdoll::new(&[]).with_drive(),
+            Animator::new("Default", FALL_BACKWARD),
+            GlobalTransform::default(),
+            Hands {
+                count: 2,
+                slots: [Some(armed), Some(other)],
+                class_word: 0,
+                primary: 9,
+                loose: Vec::new(),
+            },
+        ))
+        .id();
+    app.insert_resource(TickedCharacter {
+        body: id,
+        character: None,
+    });
+    app.update();
+    let hands = app.world().get::<Hands>(id).unwrap();
+    let first = &hands.loose[0];
+    assert_eq!(first.part.owner, 3);
+    assert_eq!(first.part.children[0].owner, 3);
+    assert_eq!(first.part.children[0].children[0].owner, 3);
+    assert_eq!(first.part.root, 3);
+    assert_eq!(first.part.children[0].root, 3);
+    assert_eq!(first.part.children[0].children[0].root, 3);
+    assert_eq!(first.part.iterations, 4);
+    assert_eq!(first.part.children[0].iterations, 11);
+    assert_eq!(first.part.children[0].children[0].iterations, 12);
+    assert_eq!(first.links, 0);
+    assert_eq!(first.grip, -1);
+    assert_eq!(first.awake, 0);
+    assert_eq!(first.parent.as_deref(), Some(&[5, 8][..]));
+    assert_eq!(first.part.mark, 6);
+    assert_eq!(first.part.children[0].mark, -2);
+    assert_eq!(first.part.children[0].children[0].mark, 8);
+    let second = &hands.loose[1];
+    assert_eq!(second.part.owner, 4);
+    assert_eq!(second.part.root, 4);
+    assert_eq!(second.part.iterations, 2);
+    assert_eq!(second.grip, -3);
+    assert_eq!(second.part.mark, 4);
+    assert_eq!(second.parent.as_deref(), Some(&[9][..]));
+    assert_eq!(second.links, 0);
+    assert_eq!(second.awake, 0);
+    app.update();
+    let again = app.world().get::<Hands>(id).unwrap();
+    assert_eq!(again.loose.len(), 2);
+    assert_eq!(again.loose[0].part.owner, 3);
+    assert_eq!(again.loose[0].parent.as_deref(), Some(&[5, 8][..]));
 }

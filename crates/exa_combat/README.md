@@ -131,7 +131,12 @@ anchored on its shifted spot. The dying tick calls that walk from the
 measured chest and its fast velocity when no step is running. The same
 tick drops every held weapon (`release_hands`): friction 0.75, its own
 mobility, a drag of that mobility times 0.175, no striker flags, and the
-velocity it had. A body without muscles dies at
+velocity it had. The weapon becomes its own owner, and each child copies
+that owner. It leaves its parent's list. The weapon and each descendant
+take the weapon as their root. Iterations are 2 plus the parts visited,
+minus 1. Links are 0 and the awake byte is 0. A grip at or above 0
+becomes -1. A part with a child, an object type whose low twelve bits are
+0x89, and object bit 0x400000, sets its mark to -2. A body without muscles dies at
 once. Rules: [`docs/formats/RSQ.md`](../../docs/formats/RSQ.md) (The
 collapse).
 

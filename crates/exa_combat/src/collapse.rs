@@ -204,8 +204,22 @@ pub struct Collapse {
     pub released: bool,
 }
 
+/// One part of a held weapon. The drop copies the weapon's owner down this
+/// tree and stamps the weapon as every part's root.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WeaponPart {
+    pub id: u64,
+    pub owner: u64,
+    pub root: u64,
+    pub children: Vec<WeaponPart>,
+    pub object_type: u32,
+    pub object_flags: u32,
+    pub mark: i32,
+    pub iterations: i32,
+}
+
 /// A weapon in a hand. The collapse drops it and keeps its velocity.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct HeldWeapon {
     pub id: u32,
     /// The item's own mobility, restored when it leaves the hand.
@@ -214,11 +228,17 @@ pub struct HeldWeapon {
     pub friction: f32,
     pub striker: u32,
     pub velocity: Vec3,
+    pub part: WeaponPart,
+    /// The parent's child ids, when the weapon has a parent.
+    pub parent: Option<Vec<u64>>,
+    pub links: i32,
+    pub grip: i32,
+    pub awake: u8,
 }
 
 /// A weapon that has left the hand: its own mobility, friction 0.75, no
-/// striker flags, and the velocity it already had.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// striker flags, the velocity it already had, and itself as owner.
+#[derive(Clone, Debug, PartialEq)]
 pub struct LooseWeapon {
     pub id: u32,
     pub mobility: f32,
@@ -226,6 +246,11 @@ pub struct LooseWeapon {
     pub friction: f32,
     pub striker: u32,
     pub velocity: Vec3,
+    pub part: WeaponPart,
+    pub parent: Option<Vec<u64>>,
+    pub links: i32,
+    pub grip: i32,
+    pub awake: u8,
 }
 
 /// The two hands. `count` is how many slots are filled. `class_word` is
@@ -241,28 +266,85 @@ pub struct Hands {
 
 const DROP_FRICTION: f32 = 0.75;
 const DROP_DRAG: f64 = 0.175;
+/// The iteration base added to the number of parts the root walk visits.
+const PART_BASE: i32 = 2;
+const LOOSE_MARK: i32 = -2;
+const LOOSE_TYPE: u32 = 0x89;
+const LOOSE_BIT: u32 = 0x400000;
 
 /// Drops every held weapon. Each keeps its velocity, takes its own
 /// mobility, friction 0.75 and a drag of that mobility times 0.175. The
-/// striker flags clear. The hands, the class word and the primary are
-/// empty afterwards. An empty pair stays empty.
+/// striker flags clear. The weapon becomes its own owner, and that owner
+/// is copied onto every child. The hands, the class word and the primary
+/// are empty afterwards. An empty pair stays empty.
 pub fn release_hands(hands: &mut Hands) {
     for slot in &mut hands.slots {
         let Some(held) = slot.take() else {
             continue;
         };
-        hands.loose.push(LooseWeapon {
-            id: held.id,
-            mobility: held.own_mobility,
-            drag: (f64::from(held.own_mobility) * DROP_DRAG) as f32,
-            friction: DROP_FRICTION,
-            striker: 0,
-            velocity: held.velocity,
-        });
+        hands.loose.push(loosen(held));
     }
     hands.count = 0;
     hands.class_word = 0;
     hands.primary = 0;
+}
+
+fn loosen(held: HeldWeapon) -> LooseWeapon {
+    let id = held.part.id;
+    let mut part = held.part;
+    part.owner = id;
+    own_children(&mut part);
+    let visited = stamp_root(&mut part, id);
+    part.iterations = PART_BASE + visited - 1;
+    let grip = if held.grip >= 0 { -1 } else { held.grip };
+    LooseWeapon {
+        id: held.id,
+        mobility: held.own_mobility,
+        drag: (f64::from(held.own_mobility) * DROP_DRAG) as f32,
+        friction: DROP_FRICTION,
+        striker: 0,
+        velocity: held.velocity,
+        part,
+        parent: without_child(held.parent, id),
+        links: 0,
+        grip,
+        awake: 0,
+    }
+}
+
+/// Copies the part's owner onto every child. A part with a child, an
+/// object type whose low twelve bits are 0x89, and object bit 0x400000,
+/// sets its mark to -2.
+fn own_children(part: &mut WeaponPart) {
+    if part.children.is_empty() {
+        return;
+    }
+    for child in &mut part.children {
+        child.owner = part.owner;
+        own_children(child);
+    }
+    if (part.object_type & 0xfff) == LOOSE_TYPE && (part.object_flags & LOOSE_BIT) != 0 {
+        part.mark = LOOSE_MARK;
+    }
+}
+
+/// Writes `root` onto this part and every descendant. Returns how many
+/// parts that visit counted.
+fn stamp_root(part: &mut WeaponPart, root: u64) -> i32 {
+    part.root = root;
+    let mut visited = 1;
+    for child in &mut part.children {
+        visited += stamp_root(child, root);
+    }
+    visited
+}
+
+fn without_child(parent: Option<Vec<u64>>, id: u64) -> Option<Vec<u64>> {
+    let mut list = parent?;
+    if let Some(index) = list.iter().position(|child| *child == id) {
+        list.remove(index);
+    }
+    Some(list)
 }
 
 /// Starts a lethal wound's collapse, unless the fighter collapses or is
