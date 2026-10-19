@@ -59,6 +59,9 @@ pub const PICK_ITEM: u32 = 0x4000;
 pub const PICK_ACTOR: u32 = 0x1a00_0000;
 pub const PICK_KIND: u32 = 0xa00;
 pub const PICK_SKIP: u32 = 0x800;
+/// Record kinds that open the parent when the link is the world.
+pub const ROW_OPEN: u32 = 0x10010a;
+pub const ROW_OPEN_ALT: u32 = 0x10010d;
 /// Flags a taken item ORs on, and the flags a hover stores.
 pub const PICK_FOLLOW: u32 = 5;
 pub const CLICK_MARK: u32 = 0x11;
@@ -120,6 +123,14 @@ pub struct Window {
     pub owner: Option<String>,
     /// Shown. Hiding a shown child asks for a redraw.
     pub visible: bool,
+}
+
+/// One record on the actor the cursor hit. The bytes between the kind and the
+/// link are not read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PickRow {
+    pub kind: u32,
+    pub link: u64,
 }
 
 /// Which mode the menu command is running in.
@@ -262,7 +273,7 @@ pub struct MatchGate {
     pub hit_kind_word: u32,
     pub pick_extra: u64,
     pub hit_named: u8,
-    pub hit_row: u8,
+    pub pick_rows: Vec<PickRow>,
     pub open_calls: u32,
     pub chest_calls: u32,
     pub notice_owner: u64,
@@ -429,7 +440,7 @@ impl MatchGate {
             hit_kind_word: 0,
             pick_extra: 0,
             hit_named: 0,
-            hit_row: 0,
+            pick_rows: Vec::new(),
             open_calls: 0,
             chest_calls: 0,
             notice_owner: 0,
@@ -580,11 +591,19 @@ impl MatchGate {
         } else if actor
             && (self.hit_kind_word & PICK_SKIP) == 0
             && self.pick_extra == 0
-            && (self.hit_named != 0 || self.hit_row != 0)
+            && (self.hit_named != 0 || self.row_opens())
         {
             self.open_calls = self.open_calls.saturating_add(1);
         }
         self.gate_flags
+    }
+
+    /// The first record whose kind is one of the two open kinds and whose link
+    /// is the world. A later record is not visited.
+    fn row_opens(&self) -> bool {
+        self.pick_rows.iter().any(|row| {
+            (row.kind == ROW_OPEN || row.kind == ROW_OPEN_ALT) && row.link == self.world_id
+        })
     }
 
     /// The click hook. A fast world aim copies its place. A miss with the hold
@@ -2226,5 +2245,54 @@ mod tests {
         assert_eq!(focus.focus_calls, 1);
         assert!(focus.hands_set);
         assert_eq!(focus.stamp, 5);
+    }
+
+    #[test]
+    fn a_row_opens_when_its_link_is_the_world() {
+        let mut first = MatchGate::playing();
+        first.world_open = true;
+        first.pick_hit = 1;
+        first.hit_parent = 2;
+        first.world_id = 4;
+        first.hit_class = PICK_ACTOR;
+        first.pick_rows = vec![
+            PickRow { kind: 1, link: 4 },
+            PickRow {
+                kind: ROW_OPEN,
+                link: 4,
+            },
+            PickRow {
+                kind: ROW_OPEN,
+                link: 4,
+            },
+        ];
+        assert_eq!(first.run_gate(), 1);
+        assert_eq!(first.open_calls, 1);
+
+        let mut other = MatchGate::playing();
+        other.world_open = true;
+        other.pick_hit = 1;
+        other.hit_parent = 2;
+        other.world_id = 4;
+        other.hit_class = PICK_ACTOR;
+        other.pick_rows = vec![PickRow {
+            kind: ROW_OPEN_ALT,
+            link: 9,
+        }];
+        assert_eq!(other.run_gate(), 1);
+        assert_eq!(other.open_calls, 0);
+        other.pick_rows[0].link = 4;
+        assert_eq!(other.run_gate(), 1);
+        assert_eq!(other.open_calls, 1);
+
+        let mut named = MatchGate::playing();
+        named.world_open = true;
+        named.pick_hit = 1;
+        named.hit_parent = 2;
+        named.hit_class = PICK_ACTOR;
+        named.hit_named = 1;
+        named.pick_rows = vec![PickRow { kind: 1, link: 0 }];
+        assert_eq!(named.run_gate(), 1);
+        assert_eq!(named.open_calls, 1);
     }
 }
