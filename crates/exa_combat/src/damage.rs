@@ -480,6 +480,63 @@ pub(crate) fn sword_a() -> WeaponRecord {
     WeaponRecord::of_one_part(0x11, &s, false, 90.0)
 }
 
+/// The combatant's hit step's inputs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CombatHitInput {
+    pub blocked: bool,
+    pub helpless: bool,
+    pub first: bool,
+    pub current: f32,
+    pub stat: f32,
+    pub target_flag: u32,
+    pub target_hit: f32,
+    pub threshold: f32,
+    pub body_flag: u32,
+}
+
+/// The combatant's hit step's results.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CombatHit {
+    pub returned: bool,
+    pub value: f32,
+    pub target_hit: f32,
+    pub target_flag: u32,
+    pub special_call: bool,
+}
+
+/// Scales a first hit and marks the target once.
+pub fn apply_combat_hit(input: CombatHitInput) -> CombatHit {
+    if input.blocked || input.helpless {
+        return CombatHit {
+            returned: true,
+            value: input.current,
+            target_hit: input.target_hit,
+            target_flag: input.target_flag,
+            special_call: false,
+        };
+    }
+    let value = if input.first {
+        (f64::from(input.current) * ((1.0 + f64::from(input.stat)) * 0.025 + 0.95)) as f32
+    } else {
+        input.current
+    };
+    let mut target_hit = input.target_hit;
+    let mut target_flag = input.target_flag;
+    if (target_flag & 0x10_0000) == 0 {
+        if target_hit < input.threshold {
+            target_hit = input.threshold;
+        }
+        target_flag |= 0x10_0000;
+    }
+    CombatHit {
+        returned: false,
+        value,
+        target_hit,
+        target_flag,
+        special_call: (input.body_flag & 0x10_0000) != 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -708,5 +765,47 @@ mod tests {
         let outer = armour_layers(None, &[trousers], false)[1].outer.unwrap();
         assert!((outer.padding - 0.085).abs() < 1e-7);
         assert!((outer.slash - 17.0 / 140.0).abs() < 1e-7);
+    }
+
+    #[test]
+    fn the_first_hit_scales_and_marks_its_target() {
+        let input = |first, stat, target_flag| CombatHitInput {
+            blocked: false,
+            helpless: false,
+            first,
+            current: 10.0,
+            stat,
+            target_flag,
+            target_hit: 3.0,
+            threshold: 5.0,
+            body_flag: 0,
+        };
+
+        let plain = apply_combat_hit(input(true, 0.0, 0));
+        assert!(!plain.returned);
+        assert!((plain.value - 9.75).abs() < 1e-6);
+        assert_eq!(plain.target_hit, 5.0);
+        assert_eq!(plain.target_flag, 0x10_0000);
+
+        assert!((apply_combat_hit(input(true, 1.0, 0)).value - 10.0).abs() < 1e-6);
+        assert_eq!(apply_combat_hit(input(false, 1.0, 0)).value, 10.0);
+
+        let marked = apply_combat_hit(input(true, 0.0, 0x10_0000));
+        assert_eq!(marked.target_hit, 3.0);
+        assert_eq!(marked.target_flag, 0x10_0000);
+
+        let blocked = apply_combat_hit(CombatHitInput {
+            blocked: true,
+            ..input(true, 0.0, 0)
+        });
+        assert!(blocked.returned);
+        assert_eq!(blocked.value, 10.0);
+        assert_eq!(blocked.target_hit, 3.0);
+
+        let special = apply_combat_hit(CombatHitInput {
+            body_flag: 0x10_0000,
+            ..input(true, 0.0, 0)
+        });
+        assert!(special.special_call);
     }
 }
