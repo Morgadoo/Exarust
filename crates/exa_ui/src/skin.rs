@@ -3895,6 +3895,114 @@ pub fn draw_skin_scroll(place: SkinSliderPlace, unit: i32) -> Option<SkinSlider>
     }
 }
 
+/// The scroll region's inputs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkinRegionPlace {
+    pub origin: [i32; 2],
+    pub inset: [i32; 2],
+    pub extent: [i32; 2],
+    pub total: [i32; 2],
+    pub fraction: [f32; 2],
+    pub mode: u32,
+    pub flags: u32,
+    pub translated: bool,
+    pub clip_ok: bool,
+    pub prepared: bool,
+    pub lines: Vec<[i32; 4]>,
+    pub children: Vec<bool>,
+}
+
+/// The region's clip, scroll, replayed quads and detail.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkinRegion {
+    pub draw: bool,
+    pub clip: [i32; 4],
+    pub scroll: [i32; 2],
+    pub translate: Option<[f32; 2]>,
+    pub lines: Vec<[i32; 4]>,
+    pub child_calls: u32,
+    pub detail: Option<[i32; 4]>,
+    pub detail_mode: i32,
+    pub detail_offset: i32,
+    pub begin_calls: u32,
+    pub vtable_calls: u32,
+    pub fallback_calls: u32,
+    pub line_end_calls: u32,
+    pub scissor_calls: u32,
+}
+
+/// Draws the parent skin's scroll region.
+pub fn draw_skin_region(place: SkinRegionPlace, unit: i32) -> SkinRegion {
+    let translate = place
+        .translated
+        .then(|| [-(place.origin[0] as f32), place.origin[1] as f32]);
+    let early = SkinRegion {
+        draw: false,
+        clip: [0; 4],
+        scroll: [0; 2],
+        translate,
+        lines: Vec::new(),
+        child_calls: 0,
+        detail: None,
+        detail_mode: 0,
+        detail_offset: 0,
+        begin_calls: 1,
+        vtable_calls: 1,
+        fallback_calls: u32::from(!place.prepared),
+        line_end_calls: 0,
+        scissor_calls: 0,
+    };
+    if (place.mode & 1) != 0 {
+        return early;
+    }
+    let clip = [
+        place.origin[0] + place.inset[0],
+        place.origin[1] + place.inset[1],
+        place.extent[0] - place.inset[0],
+        place.extent[1] - place.inset[1],
+    ];
+    if !place.clip_ok {
+        return early;
+    }
+    let scroll = if (place.flags & 0x800) != 0 {
+        [0, 0]
+    } else {
+        [
+            ((place.total[0] - clip[2]) as f32 * place.fraction[0]).round_ties_even() as i32,
+            ((place.total[1] - clip[3]) as f32 * place.fraction[1]).round_ties_even() as i32,
+        ]
+    };
+    let (detail, detail_mode, detail_offset) = if (place.flags & 0x80) != 0 {
+        (Some([scroll[0], scroll[1], clip[2], clip[3]]), 0x30, unit)
+    } else if (place.flags & 0x10_0000) != 0 {
+        (
+            Some([scroll[0], scroll[1], clip[2], clip[3]]),
+            0x50,
+            unit.wrapping_mul(4),
+        )
+    } else {
+        (None, 0, 0)
+    };
+    let child_calls = place.children.iter().filter(|visible| **visible).count() as u32;
+    let line_end_calls = u32::from(!place.lines.is_empty());
+    SkinRegion {
+        draw: true,
+        clip,
+        scroll,
+        translate,
+        lines: place.lines.clone(),
+        child_calls,
+        detail,
+        detail_mode,
+        detail_offset,
+        begin_calls: 2,
+        vtable_calls: 2,
+        fallback_calls: u32::from(!place.prepared),
+        line_end_calls,
+        scissor_calls: 2,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7424,5 +7532,64 @@ mod tests {
         );
 
         assert_eq!(draw_skin_scroll(place(0x2000_0000, 0), 5), None);
+    }
+
+    #[test]
+    fn a_skin_region_clips_scrolls_and_replays() {
+        let place = |mode: u32, flags: u32, clip_ok: bool| SkinRegionPlace {
+            origin: [10, 20],
+            inset: [5, 4],
+            extent: [100, 80],
+            total: [150, 120],
+            fraction: [0.5, 0.25],
+            mode,
+            flags,
+            translated: true,
+            clip_ok,
+            prepared: true,
+            lines: vec![[1, 2, 3, 4], [5, 6, 7, 8]],
+            children: vec![true, false, true],
+        };
+
+        let drawn = draw_skin_region(place(0, 0, true), 5);
+        assert!(drawn.draw);
+        assert_eq!(drawn.clip, [15, 24, 95, 76]);
+        assert_eq!(drawn.scroll, [28, 11]);
+        assert_eq!(drawn.translate, Some([-10.0, 20.0]));
+        assert_eq!(drawn.lines.len(), 2);
+        assert_eq!(drawn.child_calls, 2);
+        assert_eq!(drawn.detail, None);
+        assert_eq!(
+            (
+                drawn.begin_calls,
+                drawn.vtable_calls,
+                drawn.line_end_calls,
+                drawn.scissor_calls
+            ),
+            (2, 2, 1, 2)
+        );
+
+        let skipped = draw_skin_region(place(1, 0, true), 5);
+        assert!(!skipped.draw);
+        assert_eq!(skipped.begin_calls, 1);
+        assert_eq!(skipped.vtable_calls, 1);
+        assert_eq!(skipped.clip, [0; 4]);
+
+        let rejected = draw_skin_region(place(0, 0, false), 5);
+        assert!(!rejected.draw);
+        assert_eq!(rejected.begin_calls, 1);
+
+        let fixed = draw_skin_region(place(0, 0x800, true), 5);
+        assert_eq!(fixed.scroll, [0, 0]);
+
+        let one = draw_skin_region(place(0, 0x80, true), 5);
+        assert_eq!(one.detail, Some([28, 11, 95, 76]));
+        assert_eq!((one.detail_mode, one.detail_offset), (0x30, 5));
+
+        let two = draw_skin_region(place(0, 0x10_0000, true), 5);
+        assert_eq!((two.detail_mode, two.detail_offset), (0x50, 20));
+
+        let both = draw_skin_region(place(0, 0x10_0080, true), 5);
+        assert_eq!((both.detail_mode, both.detail_offset), (0x30, 5));
     }
 }
