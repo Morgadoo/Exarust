@@ -617,7 +617,8 @@ pub struct TitleDraw {
 
 /// The opening of a form: spans, an optional shade and backdrop, the scroll
 /// shift, the shown children, the title, the corners, the edge bars, the
-/// wide top, the left side, and the bottom. The right side is not in.
+/// wide top, the left side, the bottom, and the right side. The mark
+/// after that side is not in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormDispatch {
     pub span_a: i32,
@@ -640,6 +641,7 @@ pub struct FormDispatch {
     pub wide_top: Vec<SliderQuad>,
     pub wide_side: Vec<SliderQuad>,
     pub wide_bottom: Vec<SliderQuad>,
+    pub wide_right: Vec<SliderQuad>,
     pub wide_calls: u32,
 }
 
@@ -863,82 +865,105 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
     } else {
         (Vec::new(), Vec::new(), 0)
     };
-    let (wide_top, wide_side, wide_bottom) = if wide && (place.flags_d & FORM_BAND) == FORM_BAND_ON
-    {
-        let band = unit.wrapping_shl(1);
-        let width = place.width;
-        let height = place.height;
-        let down = unit;
-        let up = unit.wrapping_neg();
-        let top = vec![
-            quad(WIDE_CAP, [(band, down), (band, up), (0, up), (0, down)]),
-            quad(
-                WIDE_BAR,
-                [
-                    (band, down),
-                    (band, up),
-                    (width.wrapping_sub(band), up),
-                    (width.wrapping_sub(band), down),
-                ],
-            ),
-            quad(
-                WIDE_CAP,
-                [
-                    (width.wrapping_sub(band), down),
-                    (width.wrapping_sub(band), up),
-                    (width, up),
-                    (width, down),
-                ],
-            ),
-        ];
-        let side = vec![
-            quad(
-                WIDE_BAR,
-                [
-                    (down, height.wrapping_sub(band)),
-                    (up, height.wrapping_sub(band)),
-                    (up, band),
-                    (down, band),
-                ],
-            ),
-            quad(WIDE_CAP, [(down, band), (up, band), (up, 0), (down, 0)]),
-            quad(
-                WIDE_CAP,
-                [
-                    (down, height.wrapping_sub(band)),
-                    (up, height.wrapping_sub(band)),
-                    (up, height),
-                    (down, height),
-                ],
-            ),
-        ];
-        let low = height.wrapping_sub(unit);
-        let high = height.wrapping_add(unit);
-        let bottom = vec![
-            quad(WIDE_CAP, [(band, low), (band, high), (0, high), (0, low)]),
-            quad(
-                WIDE_BAR,
-                [
-                    (band, low),
-                    (band, high),
-                    (width.wrapping_sub(band), high),
-                    (width.wrapping_sub(band), low),
-                ],
-            ),
-            quad(
-                WIDE_CAP,
-                [
-                    (width.wrapping_sub(band), low),
-                    (width.wrapping_sub(band), high),
-                    (width, high),
-                    (width, low),
-                ],
-            ),
-        ];
-        (top, side, bottom)
-    } else {
-        (Vec::new(), Vec::new(), Vec::new())
-    };
+    let (wide_top, wide_side, wide_bottom, wide_right) =
+        if wide && (place.flags_d & FORM_BAND) == FORM_BAND_ON {
+            let band = unit.wrapping_shl(1);
+            let width = place.width;
+            let height = place.height;
+            let down = unit;
+            let up = unit.wrapping_neg();
+            let top = vec![
+                quad(WIDE_CAP, [(band, down), (band, up), (0, up), (0, down)]),
+                quad(
+                    WIDE_BAR,
+                    [
+                        (band, down),
+                        (band, up),
+                        (width.wrapping_sub(band), up),
+                        (width.wrapping_sub(band), down),
+                    ],
+                ),
+                quad(
+                    WIDE_CAP,
+                    [
+                        (width.wrapping_sub(band), down),
+                        (width.wrapping_sub(band), up),
+                        (width, up),
+                        (width, down),
+                    ],
+                ),
+            ];
+            let side = vec![
+                quad(
+                    WIDE_BAR,
+                    [
+                        (down, height.wrapping_sub(band)),
+                        (up, height.wrapping_sub(band)),
+                        (up, band),
+                        (down, band),
+                    ],
+                ),
+                quad(WIDE_CAP, [(down, band), (up, band), (up, 0), (down, 0)]),
+                quad(
+                    WIDE_CAP,
+                    [
+                        (down, height.wrapping_sub(band)),
+                        (up, height.wrapping_sub(band)),
+                        (up, height),
+                        (down, height),
+                    ],
+                ),
+            ];
+            let low = height.wrapping_sub(unit);
+            let high = height.wrapping_add(unit);
+            let bottom = vec![
+                quad(WIDE_CAP, [(band, low), (band, high), (0, high), (0, low)]),
+                quad(
+                    WIDE_BAR,
+                    [
+                        (band, low),
+                        (band, high),
+                        (width.wrapping_sub(band), high),
+                        (width.wrapping_sub(band), low),
+                    ],
+                ),
+                quad(
+                    WIDE_CAP,
+                    [
+                        (width.wrapping_sub(band), low),
+                        (width.wrapping_sub(band), high),
+                        (width, high),
+                        (width, low),
+                    ],
+                ),
+            ];
+            let near = width.wrapping_sub(unit);
+            let far = width.wrapping_add(unit);
+            let right = vec![
+                quad(
+                    WIDE_BAR,
+                    [
+                        (near, height.wrapping_sub(band)),
+                        (far, height.wrapping_sub(band)),
+                        (far, band),
+                        (near, band),
+                    ],
+                ),
+                quad(WIDE_CAP, [(near, band), (far, band), (far, 0), (near, 0)]),
+                quad(
+                    WIDE_CAP,
+                    [
+                        (near, height.wrapping_sub(band)),
+                        (far, height.wrapping_sub(band)),
+                        (far, height),
+                        (near, height),
+                    ],
+                ),
+            ];
+            (top, side, bottom, right)
+        } else {
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new())
+        };
     FormDispatch {
         span_a,
         span_b,
@@ -965,6 +990,7 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         wide_top,
         wide_side,
         wide_bottom,
+        wide_right,
         wide_calls,
     }
 }
@@ -1812,5 +1838,34 @@ mod tests {
         form.flags_b = 0;
         form.flags_d = 0x80;
         assert!(dispatch_form(5, 0, form, &[]).wide_bottom.is_empty());
+    }
+
+    #[test]
+    fn a_dispatch_draws_the_wide_right() {
+        let mut form = place(0, 0x40_0000, 0, 0, 0, 0);
+        form.flags_d = 0x80;
+        let drawn = dispatch_form(5, 0, form, &[]);
+        assert_eq!(drawn.wide_bottom.len(), 3);
+        assert_eq!(drawn.wide_right.len(), 3);
+        assert_eq!(drawn.wide_right[0].sample, WIDE_BAR);
+        assert_eq!(
+            drawn.wide_right[0].corners,
+            [(95, 70), (105, 70), (105, 10), (95, 10)]
+        );
+        assert_eq!(drawn.wide_right[1].sample, WIDE_CAP);
+        assert_eq!(
+            drawn.wide_right[1].corners,
+            [(95, 10), (105, 10), (105, 0), (95, 0)]
+        );
+        assert_eq!(
+            drawn.wide_right[2].corners,
+            [(95, 70), (105, 70), (105, 80), (95, 80)]
+        );
+
+        form.flags_d = 0x10;
+        assert!(dispatch_form(5, 0, form, &[]).wide_right.is_empty());
+        form.flags_b = 0;
+        form.flags_d = 0x80;
+        assert!(dispatch_form(5, 0, form, &[]).wide_right.is_empty());
     }
 }
