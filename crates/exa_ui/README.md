@@ -175,7 +175,8 @@ character-loot close override closes on a mask carrying both 0x2000 and 0x2. The
 class-select screen stores its index and returns 3, playing a sound only when
 the index and flag are positive. The skill tooltip draws its icon at two by
 five units and its label at x less four units. The transition screen draws
-"TO BE CONTINUED" centred on page 2 with blend mode 0x203.
+"TO BE CONTINUED" centred on page 2 with blend mode 0x203. The skill selector
+clamps its low 16 bits to eight and toggles bits 0x110 on page 1.
 
 ## Scope
 

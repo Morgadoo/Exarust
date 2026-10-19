@@ -151,6 +151,29 @@ pub fn draw_transition_fade(place: TransitionFadePlace) -> TransitionFade {
     }
 }
 
+/// The settled skill index and the object flags after the page rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillSelection {
+    pub index: i32,
+    pub flags: u32,
+}
+
+/// Clamps the low 16 bits to eight and toggles bits 0x110 on page 1.
+pub fn settle_skill_selection(raw: i32, page: i32, flags: u32) -> SkillSelection {
+    let index = raw & 0xffff;
+    let index = if index > 8 { 0 } else { index };
+    let flags = if page == 1 {
+        if index > 0 {
+            flags | 0x110
+        } else {
+            flags & !0x110
+        }
+    } else {
+        flags
+    };
+    SkillSelection { index, flags }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,5 +283,24 @@ mod tests {
         assert_eq!(other.begin_calls, 0);
         assert_eq!(other.draw_calls, 0);
         assert_eq!(other.base_calls, 1);
+    }
+
+    #[test]
+    fn the_skill_selection_clamps_and_flags() {
+        let picked = settle_skill_selection(4, 1, 0);
+        assert_eq!(picked.index, 4);
+        assert_eq!(picked.flags, 0x110);
+
+        let cleared = settle_skill_selection(0, 1, 0xffff);
+        assert_eq!(cleared.index, 0);
+        assert_eq!(cleared.flags, 0xffff & !0x110);
+
+        assert_eq!(settle_skill_selection(9, 1, 0xffff).index, 0);
+        assert_eq!(settle_skill_selection(-1, 1, 0xffff).index, 0);
+        assert_eq!(settle_skill_selection(8, 1, 0).index, 8);
+
+        let other = settle_skill_selection(4, 0, 0x20);
+        assert_eq!(other.index, 4);
+        assert_eq!(other.flags, 0x20);
     }
 }
