@@ -707,6 +707,67 @@ fn correct_edge(particles: &mut [Particle], edge: Edge) {
     particles[edge.b].position -= shift;
 }
 
+/// The cloth's start fields.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClothStart {
+    pub flags_or: u32,
+    pub seed: i32,
+    pub matrix: [f32; 16],
+    pub step: f32,
+    pub link_or: u32,
+    pub linked_body: Option<u32>,
+}
+
+/// Seeds the cloth, installs the identity matrix and derives its step.
+pub fn start_cloth(count: i32, seed: i32, body: Option<(u32, u32)>) -> ClothStart {
+    const IDENTITY: [f32; 16] = [
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ];
+    let (link_or, linked_body) = match body {
+        Some((id, flags)) if (flags & 0x1000_0000) != 0 => (1, Some(id)),
+        _ => (0, None),
+    };
+    ClothStart {
+        flags_or: 0x1_0000,
+        seed,
+        matrix: IDENTITY,
+        step: (f64::from(count) * 1e-6).sqrt() as f32,
+        link_or,
+        linked_body,
+    }
+}
+
+/// The cloth frame swap's work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClothFrame {
+    pub copies: u32,
+    pub rotated: bool,
+    pub pending: i32,
+    pub flags_or: u32,
+    pub frame: Option<i32>,
+}
+
+/// Copies the pending buffer or rotates the three vertex buffers.
+pub fn submit_cloth_frame(pending: i32, frame: i32) -> ClothFrame {
+    if pending <= 1 {
+        ClothFrame {
+            copies: 2,
+            rotated: false,
+            pending: 0,
+            flags_or: 1,
+            frame: None,
+        }
+    } else {
+        ClothFrame {
+            copies: 0,
+            rotated: true,
+            pending,
+            flags_or: 0,
+            frame: Some(frame),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1013,5 +1074,38 @@ mod tests {
         single.double_sided = false;
         assert_eq!(single.draw_passes(), vec![DrawPass::CullBack]);
         assert_eq!(single.submitted_culls(), vec![Face::Back]);
+    }
+
+    #[test]
+    fn the_cloth_starts_and_swaps_its_frames() {
+        let started = start_cloth(10000, 7, Some((9, 0x1000_0000)));
+        assert_eq!(started.flags_or, 0x1_0000);
+        assert_eq!(started.seed, 7);
+        assert_eq!(started.step.to_bits(), 0.1f32.to_bits());
+        assert_eq!(started.link_or, 1);
+        assert_eq!(started.linked_body, Some(9));
+        assert_eq!(started.matrix[0], 1.0);
+        assert_eq!(started.matrix[5], 1.0);
+        assert_eq!(started.matrix[10], 1.0);
+        assert_eq!(started.matrix[15], 1.0);
+        assert_eq!(started.matrix[1], 0.0);
+
+        let plain = start_cloth(100, 3, Some((4, 0)));
+        assert_eq!(plain.link_or, 0);
+        assert_eq!(plain.linked_body, None);
+
+        let pending = submit_cloth_frame(1, 9);
+        assert_eq!(pending.copies, 2);
+        assert_eq!(pending.pending, 0);
+        assert_eq!(pending.flags_or, 1);
+        assert!(!pending.rotated);
+        assert_eq!(pending.frame, None);
+
+        let rotating = submit_cloth_frame(2, 9);
+        assert_eq!(rotating.copies, 0);
+        assert!(rotating.rotated);
+        assert_eq!(rotating.pending, 2);
+        assert_eq!(rotating.flags_or, 0);
+        assert_eq!(rotating.frame, Some(9));
     }
 }
