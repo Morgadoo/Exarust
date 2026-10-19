@@ -74,11 +74,19 @@ pub const SCROLL_EDGE: [u32; 4] = [0x3f33_3333, 0x3dcc_cccd, 0x3f33_3333, 0x3e4c
 /// Bar sample between those caps: 0.3, 0.1, 0.3, 0.2.
 pub const SCROLL_BAR: [u32; 4] = [0x3e99_999a, 0x3dcc_cccd, 0x3e99_999a, 0x3e4c_cccd];
 
+/// Corner sample of a frame: 0.4, 0.3, 0.4, 0.45.
+pub const FRAME_CORNER: [u32; 4] = [0x3ecc_cccd, 0x3e99_999a, 0x3ecc_cccd, 0x3ee6_6666];
+
+/// Edge sample of a frame: 0.475, 0.3, 0.475, 0.35.
+pub const FRAME_EDGE: [u32; 4] = [0x3ef3_3333, 0x3e99_999a, 0x3ef3_3333, 0x3eb3_3333];
+
 const SLIDER_PRESSED: u32 = 0x10;
 const SLIDER_SCROLL: u32 = 0x20_0000;
 const SLIDER_MARK: u32 = 0x1_0000;
 const SLIDER_MODE: u32 = 0x3000_0000;
 const SCROLL_MODE: u32 = 0x1000_0000;
+const FRAME_WIDE: u32 = 0x80_0000;
+const FRAME_HOT: u32 = 0x60;
 
 /// A slider widget. `value_bits` are the bits of its 0..1 value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -321,6 +329,121 @@ pub fn draw_flat_slider(unit: i32, place: SliderPlace) -> SliderDraw {
             ],
         }),
     }
+}
+
+/// A frame rectangle. `mark` is the word that keeps an idle ink.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FramePlace {
+    pub x: i16,
+    pub y: i16,
+    pub w: i16,
+    pub h: i16,
+    pub mode: u32,
+    pub state: u32,
+    pub mark: i16,
+}
+
+/// Corner squares, edge bars, and the side bars when the frame is tall enough.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameDraw {
+    pub ink: u8,
+    pub quads: Vec<SliderQuad>,
+}
+
+/// Draw a frame. Four corners and two edge bars are always present. The two
+/// side bars appear only when four times the unit is below the height.
+pub fn draw_frame(unit: i32, place: FramePlace) -> FrameDraw {
+    let ink = if (place.state & SLIDER_PRESSED) == SLIDER_PRESSED {
+        0
+    } else if place.mark == 0 && (place.mode & FRAME_WIDE) == 0 {
+        2
+    } else if (place.state & FRAME_HOT) == 0 {
+        0
+    } else {
+        3
+    };
+    let x = i32::from(place.x);
+    let y = i32::from(place.y);
+    let right = x.wrapping_add(i32::from(place.w));
+    let bottom = y.wrapping_add(i32::from(place.h));
+    let span = unit.wrapping_mul(3);
+    let mut quads = vec![
+        quad(
+            FRAME_CORNER,
+            [
+                (x, y),
+                (x, y.wrapping_add(span)),
+                (x.wrapping_add(span), y.wrapping_add(span)),
+                (x.wrapping_add(span), y),
+            ],
+        ),
+        quad(
+            FRAME_CORNER,
+            [
+                (x, bottom),
+                (x, bottom.wrapping_sub(span)),
+                (x.wrapping_add(span), bottom.wrapping_sub(span)),
+                (x.wrapping_add(span), bottom),
+            ],
+        ),
+        quad(
+            FRAME_CORNER,
+            [
+                (right, y),
+                (right, y.wrapping_add(span)),
+                (right.wrapping_sub(span), y.wrapping_add(span)),
+                (right.wrapping_sub(span), y),
+            ],
+        ),
+        quad(
+            FRAME_CORNER,
+            [
+                (right, bottom),
+                (right, bottom.wrapping_sub(span)),
+                (right.wrapping_sub(span), bottom.wrapping_sub(span)),
+                (right.wrapping_sub(span), bottom),
+            ],
+        ),
+        quad(
+            FRAME_EDGE,
+            [
+                (x.wrapping_add(span), y),
+                (x.wrapping_add(span), y.wrapping_add(unit)),
+                (right.wrapping_sub(span), y.wrapping_add(unit)),
+                (right.wrapping_sub(span), y),
+            ],
+        ),
+        quad(
+            FRAME_EDGE,
+            [
+                (x.wrapping_add(span), bottom),
+                (x.wrapping_add(span), bottom.wrapping_sub(unit)),
+                (right.wrapping_sub(span), bottom.wrapping_sub(unit)),
+                (right.wrapping_sub(span), bottom),
+            ],
+        ),
+    ];
+    if i64::from(unit).wrapping_shl(2) < i64::from(place.h) {
+        quads.push(quad(
+            FRAME_EDGE,
+            [
+                (x, bottom.wrapping_sub(span)),
+                (x.wrapping_add(unit), bottom.wrapping_sub(span)),
+                (x.wrapping_add(unit), y.wrapping_add(span)),
+                (x, y.wrapping_add(span)),
+            ],
+        ));
+        quads.push(quad(
+            FRAME_EDGE,
+            [
+                (right, bottom.wrapping_sub(span)),
+                (right.wrapping_sub(unit), bottom.wrapping_sub(span)),
+                (right.wrapping_sub(unit), y.wrapping_add(span)),
+                (right, y.wrapping_add(span)),
+            ],
+        ));
+    }
+    FrameDraw { ink, quads }
 }
 
 #[cfg(test)]
@@ -620,5 +743,99 @@ mod tests {
         );
         assert!(other.flat.is_none());
         assert!(other.scroll.is_none());
+    }
+
+    #[test]
+    fn a_frame_draws_corners_and_edge_bars() {
+        let short = draw_frame(
+            5,
+            FramePlace {
+                x: 10,
+                y: 20,
+                w: 100,
+                h: 20,
+                mode: 0,
+                state: 0,
+                mark: 0,
+            },
+        );
+        assert_eq!(short.ink, 2);
+        assert_eq!(short.quads.len(), 6);
+        assert_eq!(short.quads[0].sample, FRAME_CORNER);
+        assert_eq!(
+            short.quads[0].corners,
+            [(10, 20), (10, 35), (25, 35), (25, 20)]
+        );
+        assert_eq!(
+            short.quads[1].corners,
+            [(10, 40), (10, 25), (25, 25), (25, 40)]
+        );
+        assert_eq!(
+            short.quads[2].corners,
+            [(110, 20), (110, 35), (95, 35), (95, 20)]
+        );
+        assert_eq!(
+            short.quads[3].corners,
+            [(110, 40), (110, 25), (95, 25), (95, 40)]
+        );
+        assert_eq!(short.quads[4].sample, FRAME_EDGE);
+        assert_eq!(
+            short.quads[4].corners,
+            [(25, 20), (25, 25), (95, 25), (95, 20)]
+        );
+        assert_eq!(
+            short.quads[5].corners,
+            [(25, 40), (25, 35), (95, 35), (95, 40)]
+        );
+
+        let tall = draw_frame(
+            5,
+            FramePlace {
+                x: 10,
+                y: 20,
+                w: 100,
+                h: 80,
+                mode: 0,
+                state: 0x20,
+                mark: 1,
+            },
+        );
+        assert_eq!(tall.ink, 3);
+        assert_eq!(tall.quads.len(), 8);
+        assert_eq!(
+            tall.quads[6].corners,
+            [(10, 85), (15, 85), (15, 35), (10, 35)]
+        );
+        assert_eq!(
+            tall.quads[7].corners,
+            [(110, 85), (105, 85), (105, 35), (110, 35)]
+        );
+
+        let pressed = draw_frame(
+            5,
+            FramePlace {
+                x: 0,
+                y: 0,
+                w: 40,
+                h: 20,
+                mode: 0,
+                state: 0x10,
+                mark: 1,
+            },
+        );
+        assert_eq!(pressed.ink, 0);
+        let quiet = draw_frame(
+            5,
+            FramePlace {
+                x: 0,
+                y: 0,
+                w: 40,
+                h: 20,
+                mode: 0x80_0000,
+                state: 0,
+                mark: 0,
+            },
+        );
+        assert_eq!(quiet.ink, 0);
     }
 }

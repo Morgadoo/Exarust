@@ -154,3 +154,10 @@ A scroll bar whose high mode bits are 0x10000000 SHALL draw a trough and twelve 
 #### Scenario: Unit 5 places twelve quads
 - **WHEN** unit 5 draws a scroll bar at 10, 20, size 100 by 80, lip 4, value 0, and again at value one half
 - **THEN** the trough is 16, 26, 88, 68, the first thumb is 10 with a second thumb at 25, and the half value sets the thumb to 52
+
+### Requirement: Frame
+A frame SHALL draw four corner squares of three times the unit and two edge bars one unit thick. Corners SHALL use 0.4, 0.3, 0.4, 0.45. Edges SHALL use 0.475, 0.3, 0.475, 0.35. Side bars SHALL appear only when four times the unit is below the height. State bit 0x10 selects ink 0. A clear mark and a clear wide bit select ink 2. Any other clear hot mask selects ink 0, and a set hot mask selects ink 3.
+
+#### Scenario: Unit 5 places the corners
+- **WHEN** unit 5 draws a frame at 10, 20 of size 100 by 20, and again at height 80 with state bit 0x20
+- **THEN** the first stores six quads and ink 2, and the second stores eight quads and ink 3
