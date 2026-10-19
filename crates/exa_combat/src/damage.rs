@@ -537,6 +537,33 @@ pub fn apply_combat_hit(input: CombatHitInput) -> CombatHit {
     }
 }
 
+/// The combat wake's work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CombatWake {
+    pub returned: bool,
+    pub body_word: u32,
+    pub wake_calls: u32,
+    pub target_calls: u32,
+}
+
+/// Clears the wake bits and calls every listed target.
+pub fn wake_combat_targets(wake: bool, body_word: u32, target_count: i32) -> CombatWake {
+    if !wake {
+        return CombatWake {
+            returned: true,
+            body_word,
+            wake_calls: 0,
+            target_calls: 0,
+        };
+    }
+    CombatWake {
+        returned: false,
+        body_word: body_word & !6,
+        wake_calls: 1,
+        target_calls: target_count.max(0) as u32,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -807,5 +834,20 @@ mod tests {
             ..input(true, 0.0, 0)
         });
         assert!(special.special_call);
+    }
+
+    #[test]
+    fn the_wake_clears_the_bits_and_calls_targets() {
+        let woken = wake_combat_targets(true, 0x7, 3);
+        assert!(!woken.returned);
+        assert_eq!(woken.body_word, 0x1);
+        assert_eq!(woken.wake_calls, 1);
+        assert_eq!(woken.target_calls, 3);
+
+        let quiet = wake_combat_targets(false, 0x7, 3);
+        assert!(quiet.returned);
+        assert_eq!(quiet.body_word, 0x7);
+        assert_eq!(quiet.wake_calls, 0);
+        assert_eq!(quiet.target_calls, 0);
     }
 }
