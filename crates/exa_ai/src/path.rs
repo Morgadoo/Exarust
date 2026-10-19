@@ -9,7 +9,9 @@
 //! strictly after ten seconds. An approach within 250 cm of a span's
 //! midpoint starts that wait. The wander look eases toward the heading
 //! plus an offset. An aim snap copies the body's place, takes its heading's
-//! yaw, and asks for the idle stance. The other phases are not in this slice.
+//! yaw, and asks for the idle stance. A searched path is followed when it
+//! has two points and is forced, or when its ends are more than 150 cm
+//! apart. The other phases are not in this slice.
 
 use bevy::math::Vec2;
 use bevy::math::Vec3;
@@ -244,6 +246,18 @@ pub fn pass_door(walk: &Walk, door: Option<&mut SignalLeaf>) -> bool {
         door::toggle(door);
     }
     false
+}
+
+/// A searched path is followed when it is long enough, or forced.
+///
+/// Fewer than two points is never followed. Otherwise a forced path is
+/// followed, and an unforced path is followed only when its first and last
+/// points are more than 150 cm apart.
+pub fn start_follow(points: &[Vec3], forced: bool) -> bool {
+    if points.len() < 2 {
+        return false;
+    }
+    forced || (points[0] - points[points.len() - 1]).length() > 150.0
 }
 
 #[cfg(test)]
@@ -645,5 +659,20 @@ mod tests {
         assert_eq!(anim.blend, 0.0);
         assert_eq!(anim.ease, Ease::Linear);
         assert_eq!(stance, Stance::Idle);
+    }
+
+    #[test]
+    fn a_path_is_followed_when_its_ends_are_past_one_hundred_fifty_centimetres() {
+        assert!(!start_follow(&[], true));
+        assert!(!start_follow(&[Vec3::ZERO], true));
+        assert!(!start_follow(
+            &[Vec3::ZERO, Vec3::new(150.0, 0.0, 0.0)],
+            false
+        ));
+        assert!(start_follow(
+            &[Vec3::ZERO, Vec3::new(0.0, 151.0, 0.0)],
+            false
+        ));
+        assert!(start_follow(&[Vec3::ZERO, Vec3::ZERO], true));
     }
 }

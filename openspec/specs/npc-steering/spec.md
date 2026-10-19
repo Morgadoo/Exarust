@@ -57,3 +57,10 @@ An aim snap SHALL copy the body's place and set the heading, the stored heading 
 #### Scenario: A defence clip becomes idle, a walk does not
 - **WHEN** a defence stance playing its own clip is snapped from a heading whose height is 9 and whose forward part is 1, at clock 2000 with roll 1, and a wander look is then stepped at that clock, and a defence stance playing a walk is snapped from a heading along the side, and an idle stance already playing Idle is snapped from a heading straight back
 - **THEN** the place is copied, the yaw is 0, the roll is 134775814, the timer is 3094, the pace and the marker are clear, Idle plays over 30 frames, the look keeps its offset, the side heading's yaw is about 1.5708 and the walk clip stays, and the backward yaw is about 3.1416 with Idle left as it was
+
+### Requirement: Start a long path
+A path of fewer than two points SHALL NOT be followed, even when forced. Two points SHALL be followed when forced, or when the first and last are more than 150 cm apart. Exactly 150 cm SHALL NOT be followed.
+
+#### Scenario: Exactly 150 cm stays, one centimetre more follows
+- **WHEN** an empty path is forced, a single point is forced, two points 150 cm apart are not forced, two points 151 cm apart are not forced, and two points on top of each other are forced
+- **THEN** the empty path and the single point are not followed, the 150 cm path is not followed, and the 151 cm path and the forced path are followed
