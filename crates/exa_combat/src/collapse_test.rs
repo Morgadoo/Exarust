@@ -1,8 +1,13 @@
 //! The collapse before death: its start, the dying tick's rules and the
 //! death 250 ticks later.
+use bevy::ecs::system::RunSystemOnce;
 use bevy::math::Affine3A;
+use bevy::prelude::MinimalPlugins;
+use exa_physics::Physics;
 use exa_physics::body::pairs::{FOOT_LAYER, LIVING_SHIN_LAYER};
-use exa_physics::body::{FootState, PIN_GAIN, PartSetup};
+use exa_physics::body::{
+    BodyPlugin, FootState, PIN_GAIN, Pairs, PartSetup, SolverStages, step_bodies,
+};
 
 use super::*;
 
@@ -702,4 +707,125 @@ fn the_dying_tick_steps_the_dropped_weapon() {
     assert_eq!(p.x.to_bits(), 0xbe3a_7bb7);
     assert_eq!(p.y.to_bits(), 0x3f7f_a2b5);
     assert_eq!(p.z.to_bits(), 0xbe4c_cccd);
+}
+
+fn sphere_centre(body: &Ragdoll) -> Vec3 {
+    let part = &body.parts[0];
+    let (centre, _) = part.spheres[0];
+    part.transform().transform_point3(centre)
+}
+
+/// The dying tick's free weapon meets another body in the shipped solver.
+/// The two spheres start on top of each other. One `step_bodies` records
+/// the contact and pushes them apart. Stepping the weapon alone leaves it
+/// at the bits the free-body test pins.
+#[test]
+fn the_dropped_weapon_meets_another_body() {
+    let weapon_entity = Entity::from_raw_u32(30).unwrap();
+    let other_entity = Entity::from_raw_u32(40).unwrap();
+    let mut solid = sword(3, Vec3::X * 1.5);
+    let mut shape = blade(Vec3::Y);
+    shape.entity = weapon_entity;
+    solid.shape = Some(shape);
+    let mut other = blade(Vec3::Y);
+    other.entity = other_entity;
+    other.mobility = 1.25;
+    let sleeper = Ragdoll::rigid(&[other]);
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, BodyPlugin))
+        .insert_resource(Physics::default())
+        .add_systems(Update, dying_tick);
+    let id = app
+        .world_mut()
+        .spawn((
+            Fighter::default(),
+            Condition::COLLAPSING,
+            Collapse::default(),
+            Ragdoll::new(&[]).with_drive(),
+            Animator::new("Default", FALL_BACKWARD),
+            GlobalTransform::default(),
+            Hands {
+                count: 1,
+                slots: [Some(solid), None],
+                class_word: 0,
+                primary: 0,
+                loose: Vec::new(),
+            },
+        ))
+        .id();
+    app.world_mut().spawn(sleeper);
+    app.insert_resource(TickedCharacter {
+        body: id,
+        character: None,
+    });
+    app.update();
+    let bodies = free_bodies(&mut app);
+    assert_eq!(bodies.len(), 2);
+    let before = {
+        let world = app.world();
+        let weapon = world
+            .iter_entities()
+            .find_map(|e| {
+                let body = world.get::<Ragdoll>(e.id())?;
+                (body.parts.first()?.entity == weapon_entity).then(|| sphere_centre(body))
+            })
+            .unwrap();
+        let other = world
+            .iter_entities()
+            .find_map(|e| {
+                let body = world.get::<Ragdoll>(e.id())?;
+                (body.parts.first()?.entity == other_entity).then(|| sphere_centre(body))
+            })
+            .unwrap();
+        weapon.distance(other)
+    };
+    assert!(before < 1e-5, "{before}");
+    app.world_mut().run_system_once(step_bodies).unwrap();
+    let touches = app
+        .world()
+        .resource::<SolverStages>()
+        .get::<Pairs>()
+        .unwrap()
+        .touches();
+    assert_eq!(touches.len(), 1);
+    assert_eq!(touches[0].a.0, weapon_entity);
+    assert_eq!(touches[0].b.0, other_entity);
+    assert_eq!(touches[0].hits, 1);
+    assert_eq!(touches[0].deepest.to_bits(), 0x3ec3_9cd9);
+    let moved = {
+        let world = app.world();
+        let weapon = world
+            .iter_entities()
+            .find_map(|e| {
+                let body = world.get::<Ragdoll>(e.id())?;
+                (body.parts.first()?.entity == weapon_entity).then(|| sphere_centre(body))
+            })
+            .unwrap();
+        let other = world
+            .iter_entities()
+            .find_map(|e| {
+                let body = world.get::<Ragdoll>(e.id())?;
+                (body.parts.first()?.entity == other_entity).then(|| sphere_centre(body))
+            })
+            .unwrap();
+        weapon.distance(other)
+    };
+    assert!(moved > before);
+    let alone = Vec3::new(
+        f32::from_bits(0xbe3a_7bb7),
+        f32::from_bits(0x3f7f_a2b5),
+        f32::from_bits(0xbe4c_cccd),
+    );
+    let at = app
+        .world()
+        .iter_entities()
+        .find_map(|entity| {
+            let body = app.world().get::<Ragdoll>(entity.id())?;
+            (body.parts.first()?.entity == weapon_entity).then(|| body.parts[0].positions[0])
+        })
+        .unwrap();
+    assert_ne!(at, alone);
+    assert_eq!(at.x.to_bits(), 0xbda3_ae15);
+    assert_eq!(at.y.to_bits(), 0x3f7e_43be);
+    assert_eq!(at.z.to_bits(), 0xbe49_2d0c);
 }

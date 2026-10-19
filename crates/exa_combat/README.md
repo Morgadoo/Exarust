@@ -139,7 +139,10 @@ becomes -1. A part with a child, an object type whose low twelve bits are
 0x89, and object bit 0x400000, sets its mark to -2. A solid dropped
 weapon enters the solver (`free_body`), awake at 256, with its own
 mobility, friction 0.75, its spheres and its velocity. One solver tick
-moves it. A flat shape spawns nothing. A body without muscles dies at
+moves it. A flat shape spawns nothing. A dropped weapon whose
+sphere starts on another body's sphere meets it in the shipped body
+step: one hit, and the weapon leaves the place one step alone would
+leave it. A body without muscles dies at
 once. Rules: [`docs/formats/RSQ.md`](../../docs/formats/RSQ.md) (The
 collapse).
 

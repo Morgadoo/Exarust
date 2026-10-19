@@ -1314,3 +1314,10 @@ A collapsing body's dying tick SHALL put a dropped weapon that has a solid shape
 #### Scenario: A solid weapon falls free
 - **WHEN** a collapsing body holds a solid weapon of mobility 1.25 at height 1 with velocity 1.5 and one sphere, and a flat weapon, the dying tick runs twice, and the free body is stepped once against no level
 - **THEN** the solid weapon is awake at 256 with friction bits 0x3f400000, mobility bits 0x3fa00000 and that sphere, the flat weapon spawns nothing, the second tick adds no body, and the first particle is at bits 0xbe3a7bb7, 0x3f7fa2b5 and 0xbe4ccccd
+
+### Requirement: Dropped weapon meets another body
+A collapsing body's dying tick SHALL put a solid dropped weapon into the solver, and one shipped body step SHALL record a contact when that weapon's sphere starts on another body's sphere. The contact names both bodies and has one hit. The weapon leaves the place one step alone would leave it.
+
+#### Scenario: Two spheres start together
+- **WHEN** a collapsing body drops a solid weapon of velocity 1.5 whose sphere starts on another body's sphere, and the shipped body step runs once
+- **THEN** the contact names both bodies, has one hit and deepest bits 0x3ec39cd9, and the weapon's first particle is at bits 0xbda3ae15, 0x3f7e43be and 0xbe492d0c
