@@ -620,6 +620,7 @@ fn react_to_hits(
                     &mut anim,
                     body.as_deref_mut(),
                     energy,
+                    None,
                 );
                 commands
                     .entity(hit.target)

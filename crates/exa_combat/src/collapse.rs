@@ -195,11 +195,74 @@ pub fn throw_arms_wide(anim: &mut Animator, size: f32, balance: f32) -> bool {
 
 /// On a collapsing fighter (its body model root): the heading its dying
 /// ticks drift (x, z; taken from where the body faces at the first) and
-/// how many it has had.
+/// how many it has had. `released` is set once the held weapons have been
+/// dropped.
 #[derive(Component, Debug, Clone, Copy, Default, PartialEq)]
 pub struct Collapse {
     pub heading: Option<Vec2>,
     pub ticks: u32,
+    pub released: bool,
+}
+
+/// A weapon in a hand. The collapse drops it and keeps its velocity.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HeldWeapon {
+    pub id: u32,
+    /// The item's own mobility, restored when it leaves the hand.
+    pub own_mobility: f32,
+    pub mobility: f32,
+    pub friction: f32,
+    pub striker: u32,
+    pub velocity: Vec3,
+}
+
+/// A weapon that has left the hand: its own mobility, friction 0.75, no
+/// striker flags, and the velocity it already had.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LooseWeapon {
+    pub id: u32,
+    pub mobility: f32,
+    pub drag: f32,
+    pub friction: f32,
+    pub striker: u32,
+    pub velocity: Vec3,
+}
+
+/// The two hands. `count` is how many slots are filled. `class_word` is
+/// the weapon class. `primary` is cleared once nothing is held.
+#[derive(Component, Clone, Debug, Default, PartialEq)]
+pub struct Hands {
+    pub count: u32,
+    pub slots: [Option<HeldWeapon>; 2],
+    pub class_word: u32,
+    pub primary: u64,
+    pub loose: Vec<LooseWeapon>,
+}
+
+const DROP_FRICTION: f32 = 0.75;
+const DROP_DRAG: f64 = 0.175;
+
+/// Drops every held weapon. Each keeps its velocity, takes its own
+/// mobility, friction 0.75 and a drag of that mobility times 0.175. The
+/// striker flags clear. The hands, the class word and the primary are
+/// empty afterwards. An empty pair stays empty.
+pub fn release_hands(hands: &mut Hands) {
+    for slot in &mut hands.slots {
+        let Some(held) = slot.take() else {
+            continue;
+        };
+        hands.loose.push(LooseWeapon {
+            id: held.id,
+            mobility: held.own_mobility,
+            drag: (f64::from(held.own_mobility) * DROP_DRAG) as f32,
+            friction: DROP_FRICTION,
+            striker: 0,
+            velocity: held.velocity,
+        });
+    }
+    hands.count = 0;
+    hands.class_word = 0;
+    hands.primary = 0;
 }
 
 /// Starts a lethal wound's collapse, unless the fighter collapses or is
@@ -216,12 +279,16 @@ pub fn start_collapse(
     anim: &mut Animator,
     body: Option<&mut Ragdoll>,
     energy: f32,
+    hands: Option<&mut Hands>,
 ) -> bool {
     if condition.dying() {
         return false;
     }
     flags.0 &= !StateFlags::WAKING;
     *condition = Condition::COLLAPSING;
+    if let Some(hands) = hands {
+        release_hands(hands);
+    }
     if anim.action != FALL_BACKWARD {
         let blend = collapse_blend(energy);
         anim.start(FALL_BACKWARD, true, None, blend, Ease::Smooth);
@@ -306,10 +373,11 @@ pub fn dying_tick(
         &mut Animator,
         &mut Fighter,
         &GlobalTransform,
+        Option<&mut Hands>,
     )>,
 ) {
     let entity = ticked.body;
-    if let Ok((mut condition, mut collapse, mut body, mut anim, mut fighter, gt)) =
+    if let Ok((mut condition, mut collapse, mut body, mut anim, mut fighter, gt, hands)) =
         bodies.get_mut(entity)
     {
         if !condition.is_collapsing() {
@@ -339,6 +407,12 @@ pub fn dying_tick(
             collapse.ticks += 1;
             dies
         };
+        if let Some(mut hands) = hands
+            && !collapse.released
+        {
+            release_hands(&mut hands);
+            collapse.released = true;
+        }
         walk_collapse(&mut body);
         if dies {
             condition.die();

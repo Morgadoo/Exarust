@@ -779,7 +779,8 @@ as the original's (on its back, arms out, a knee up), but the body
 squats on its feet longer before it falls (Rebalance 1.6–1.9 s after the
 blow; live 0.9–1.4 s at like energies). The stagger step's length and
 target are in. The footwork that walks that target is in, and the
-dying tick calls it. Still missing from it: the dropped weapon (L13).
+dying tick calls it. The held weapons are dropped when the collapse
+starts and again on the first dying tick if they are still held.
 Done (change `regenerate-health`, M43 of the master plan): wounds heal as
 in the original. Each fixed tick yellow health regains √red × a rate that
 ramps up over 40 s to 0.01/83 a tick (0.005 a second for a human with
@@ -884,7 +885,8 @@ Done (change `arm-a-parry-grip`): a cleave is refused. Handling 0.5 inside 80 cm
 Done (change `recoil-a-striker`): a recoil sets strength and the stall rate to 0.5 and clears the released bit. A class word of 0x90 with the continuation bit, or with clock 0.4 and a counter, stops there. A released swing with the window bit and drive 1 sets flags 0x27, ends at 1240 from a clock of 1000, uses blend 40, and sets both arm stiffnesses to bits 0x3e4ccccd. Drive 0.013 ends at 1200. A follow-through with that same skip writes nothing. Gain, recoil and speed 1 at zone 0.25 set strength bits 0x3d99999a and end at 1060. An edge sets strength bits 0x3eb9999a. Strength caps at 1. A negative gain ends at the clock. Speed 0.009 ends at the clock.
 Done (change `stagger-a-collapse`): a body that is already stepping takes no stagger. Reach 80 at balance 1, tone 1 and scale root 1, with chest velocity 3 and 4, has length bits 0x42a00000 and target bits 0x42d7faf0, 0x42be0000 and 0x430ffca0. Reach 0.01 at balance 0.4 has length bits 0x3b83126f. The next lower balance has length bits 0x3b83126e. A zero velocity leaves the chest. Landings and the step kind are 0.
 Done (change `walk-a-stagger`): a target 2 m ahead pulls the stance origin to z bits 0x3f6147ae and anchors the first foot there, state 4. A target at 0.5 m stays at z bits 0x3f000000. A target on the frame moves no foot. The stagger target from reach 80, balance 1 and velocity 3 and 4 pulls the origin to bits 0x3f072b02 and 0x3f343958 and anchors the first foot at bits 0x3f53f7cf, 0xbe4ccccc and 0x3f343958.
-Done (change `walk-the-dying-tick`): the dying tick walks that stagger from the measured chest. A chest recorded at the origin, then a metre along z, then there again, anchors the first foot on the first tick and leaves it on the second. Still to
+Done (change `walk-the-dying-tick`): the dying tick walks that stagger from the measured chest. A chest recorded at the origin, then a metre along z, then there again, anchors the first foot on the first tick and leaves it on the second.
+Done (change `drop-weapons-at-death`): the dying tick drops both held weapons. Mobility 1.25 becomes drag bits 0x3e600000, friction bits 0x3f400000, and the striker flags clear. A velocity of 1.5 stays. The hands, the class word and the primary are empty. A second tick adds nothing. An empty pair stays empty. Still to
 do: injuries beyond damage, practice mode.
 
 - `exa_items`: item database, item instances, inventory and containers,

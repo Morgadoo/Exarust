@@ -153,7 +153,8 @@ fn a_lethal_wound_starts_the_collapse() {
         &mut flags,
         &mut anim,
         Some(&mut body),
-        1.0
+        1.0,
+        None
     ));
     assert_eq!(condition, Condition::COLLAPSING);
     assert_eq!(flags.0, StateFlags::DORMANT);
@@ -171,18 +172,28 @@ fn a_lethal_wound_starts_the_collapse() {
         &mut flags,
         &mut anim,
         None,
-        0.05
+        0.05,
+        None
     ));
     assert_eq!((anim.time, anim.blend), (12.0, 60.0));
     let mut dead = Condition::DEAD;
-    assert!(!start_collapse(&mut dead, &mut flags, &mut anim, None, 1.0));
+    assert!(!start_collapse(
+        &mut dead, &mut flags, &mut anim, None, 1.0, None
+    ));
     assert_eq!(dead, Condition::DEAD);
     // Killed while falling backwards: the clip goes on, held.
     let mut falling = Animator::new("Default", "Idle");
     falling.play_once(FALL_BACKWARD, "Unconcious 1");
     falling.time = 7.0;
     let mut c = Condition::NORMAL;
-    assert!(start_collapse(&mut c, &mut flags, &mut falling, None, 0.5));
+    assert!(start_collapse(
+        &mut c,
+        &mut flags,
+        &mut falling,
+        None,
+        0.5,
+        None
+    ));
     assert_eq!(
         (falling.time, falling.looping, falling.then.as_deref()),
         (7.0, true, None)
@@ -413,4 +424,85 @@ fn the_dying_tick_walks_the_stagger() {
     let ragdoll = app.world().get::<Ragdoll>(id).unwrap();
     let again: Vec<u32> = ragdoll.legs().iter().map(|leg| leg.state.0).collect();
     assert_eq!(again, vec![FootState::ANCHORED, 0]);
+}
+
+fn sword(id: u32, velocity: Vec3) -> HeldWeapon {
+    HeldWeapon {
+        id,
+        own_mobility: 1.25,
+        mobility: 0.2,
+        friction: 0.1,
+        striker: 0x40,
+        velocity,
+    }
+}
+
+/// The dying tick drops both held weapons. Friction is 0.75, mobility is
+/// the item's own, the drag is that mobility times 0.175, the striker
+/// flags clear, and the velocity stays. The hands, the class word and the
+/// primary are empty. A second tick adds nothing.
+#[test]
+fn the_dying_tick_drops_the_held_weapons() {
+    let mut app = App::new();
+    app.add_systems(Update, dying_tick);
+    let hands = Hands {
+        count: 2,
+        slots: [
+            Some(sword(3, Vec3::X * 1.5)),
+            Some(sword(4, Vec3::new(0.0, 0.0, -0.25))),
+        ],
+        class_word: 0x20,
+        primary: 9,
+        loose: Vec::new(),
+    };
+    let id = app
+        .world_mut()
+        .spawn((
+            Fighter::default(),
+            Condition::COLLAPSING,
+            Collapse::default(),
+            Ragdoll::new(&[]).with_drive(),
+            Animator::new("Default", FALL_BACKWARD),
+            GlobalTransform::default(),
+            hands,
+        ))
+        .id();
+    app.insert_resource(TickedCharacter {
+        body: id,
+        character: None,
+    });
+    app.update();
+    let hands = app.world().get::<Hands>(id).unwrap();
+    assert_eq!(hands.count, 0);
+    assert_eq!(hands.class_word, 0);
+    assert_eq!(hands.primary, 0);
+    assert!(hands.slots.iter().all(Option::is_none));
+    assert_eq!(hands.loose.len(), 2);
+    assert_eq!(hands.loose[0].id, 3);
+    assert_eq!(hands.loose[0].mobility.to_bits(), 0x3fa0_0000);
+    assert_eq!(hands.loose[0].drag.to_bits(), 0x3e60_0000);
+    assert_eq!(hands.loose[0].friction.to_bits(), 0x3f40_0000);
+    assert_eq!(hands.loose[0].striker, 0);
+    assert_eq!(hands.loose[0].velocity.x.to_bits(), 0x3fc0_0000);
+    assert_eq!(hands.loose[1].id, 4);
+    assert_eq!(hands.loose[1].velocity.z.to_bits(), 0xbe80_0000);
+    app.update();
+    assert_eq!(app.world().get::<Hands>(id).unwrap().loose.len(), 2);
+    let mut bare = Hands {
+        count: 0,
+        class_word: 0x11,
+        ..Hands::default()
+    };
+    let mut condition = Condition::NORMAL;
+    let mut flags = StateFlags::default();
+    let mut anim = Animator::new("Default", "Idle");
+    assert!(start_collapse(
+        &mut condition,
+        &mut flags,
+        &mut anim,
+        None,
+        1.0,
+        Some(&mut bare)
+    ));
+    assert_eq!((bare.count, bare.class_word, bare.loose.len()), (0, 0, 0));
 }

@@ -128,7 +128,10 @@ leaves the chest, and the landings and the step kind are 0. The footwork
 walks that target (`Ragdoll::walk_stagger`): the stance origin is the
 target pulled back to 1.1 step lengths of the frame, and one foot is
 anchored on its shifted spot. The dying tick calls that walk from the
-measured chest and its fast velocity when no step is running. A body without muscles dies at
+measured chest and its fast velocity when no step is running. The same
+tick drops every held weapon (`release_hands`): friction 0.75, its own
+mobility, a drag of that mobility times 0.175, no striker flags, and the
+velocity it had. A body without muscles dies at
 once. Rules: [`docs/formats/RSQ.md`](../../docs/formats/RSQ.md) (The
 collapse).
 
