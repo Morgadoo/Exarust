@@ -48,6 +48,10 @@ pub const HOOK_WIDE: u32 = 0x2001;
 pub const HOOK_SMALL: u32 = 2;
 /// Sort key of the ordered hook swapped when the mark changes.
 pub const HOOK_ORDER: i32 = 4;
+/// Bit that keeps a watch stamp. Without it the stamp becomes 0.
+pub const WATCH_BIT: u32 = 0x2000;
+/// Bit a watch code of 1 clears and a code of 2 sets.
+pub const WATCH_MARK: u32 = 0x800000;
 /// Words copied from one control bank. The bytes between them are not copied.
 pub const BANK_WORDS: usize = 16;
 
@@ -150,7 +154,7 @@ pub struct MatchGate {
     /// Times a different non-zero image was shown.
     pub shown: u32,
     pub shape_hooks: u32,
-    /// Times a focus was invoked. The method body is not in.
+    /// Times a focus was invoked. That virtual method is not the watch hook.
     pub focus_calls: u32,
     /// Session mark cleared to 0 when it was not already 0.
     pub session_mark: u8,
@@ -206,6 +210,27 @@ pub struct MatchGate {
     pub watch_owner: u64,
     pub play_hook: u64,
     pub play_owner: u64,
+    /// Words the gate hook clears, then the flags it sets to 1.
+    pub gate_hook_out: u64,
+    pub gate_owner_out: u64,
+    pub gate_flags: u32,
+    /// Counted when the mid byte is set. The pick under the cursor is not in.
+    pub gate_alt: u64,
+    pub gate_alt_calls: u32,
+    pub watch_flags: u32,
+    pub watch_stamp: u32,
+    pub watch_clock: u32,
+    pub watch_target: u64,
+    pub watch_ready: u8,
+    pub watch_held: u8,
+    pub watch_code: i32,
+    pub target_flags: u32,
+    pub watch_releases: u32,
+    pub watch_presses: u32,
+    pub watch_pending: i32,
+    pub watch_refreshes: u32,
+    pub watch_leave: u32,
+    pub watch_focus: u64,
     /// Cleared by the first bank and set by the second. A match leaves the words.
     pub bank_flag: u8,
     pub bank_active: [u64; BANK_WORDS],
@@ -234,7 +259,7 @@ pub struct MatchGate {
     pub install_clock: u32,
     pub install_stamp: u32,
     pub install_records: Vec<InstallRecord>,
-    /// Times a record hook ran. The hook body is not in.
+    /// Times a record hook ran. That record hook is not the gate or watch hook.
     pub install_hooks: u32,
     /// A focus object is set, so the follow runs even with a mask of 0.
     pub focus: bool,
@@ -328,6 +353,25 @@ impl MatchGate {
             watch_owner: 0,
             play_hook: 0,
             play_owner: 0,
+            gate_hook_out: 0,
+            gate_owner_out: 0,
+            gate_flags: 0,
+            gate_alt: 0,
+            gate_alt_calls: 0,
+            watch_flags: 0,
+            watch_stamp: 0,
+            watch_clock: 0,
+            watch_target: 0,
+            watch_ready: 0,
+            watch_held: 0,
+            watch_code: 0,
+            target_flags: 0,
+            watch_releases: 0,
+            watch_presses: 0,
+            watch_pending: 0,
+            watch_refreshes: 0,
+            watch_leave: 0,
+            watch_focus: 0,
             bank_flag: 0,
             bank_active: [0; BANK_WORDS],
             bank_first: [0; BANK_WORDS],
@@ -420,6 +464,51 @@ impl MatchGate {
         self.hold_byte = 0;
         self.view_flags |= VIEW_BIT;
         self.view_code = 0;
+    }
+
+    /// The gate hook. It clears two words and sets the flags to 1. A set mid
+    /// byte counts the alternate hook. The pick under the cursor is not in.
+    pub fn run_gate(&mut self) -> u32 {
+        self.gate_hook_out = 0;
+        self.gate_owner_out = 0;
+        self.gate_flags = 1;
+        if self.side_mid != 0 && self.gate_alt != 0 {
+            self.gate_alt_calls = self.gate_alt_calls.saturating_add(1);
+        }
+        self.gate_flags
+    }
+
+    /// The watch hook. It returns 1. A clear bit 0x2000 stores a stamp of 0.
+    pub fn run_watch(&mut self) -> u8 {
+        if self.watch_flags & WATCH_BIT == 0 {
+            self.watch_stamp = 0;
+        } else if self.watch_target != 0 && self.watch_ready != 0 {
+            if self.watch_held == 0 {
+                self.watch_stamp = self.watch_clock;
+            }
+            if self.watch_code > 0 {
+                if self.watch_code == 1 {
+                    if self.target_flags & WATCH_MARK != 0 {
+                        self.target_flags &= !WATCH_MARK;
+                        self.watch_releases = self.watch_releases.saturating_add(1);
+                    }
+                } else if self.watch_code == 2 {
+                    self.target_flags |= WATCH_MARK;
+                    self.watch_presses = self.watch_presses.saturating_add(1);
+                }
+            }
+        }
+        if self.watch_pending > 0 {
+            self.watch_refreshes = self.watch_refreshes.saturating_add(1);
+        }
+        if self.watch_leave != 0 && self.watch_focus != 0 {
+            self.focus_calls = self.focus_calls.saturating_add(1);
+            self.watch_focus = 0;
+            if self.session_mark != 0 {
+                enter_session(self);
+            }
+        }
+        1
     }
 }
 
@@ -611,8 +700,8 @@ fn show_image(state: &mut CloseState, image: u64) {
 }
 
 /// The call after the two lists. Argument 1 runs for a focus, or when the
-/// mask shares bit 0. A focus is counted before the hands. The method body
-/// is not in.
+/// mask shares bit 0. A focus is counted before the hands. The focus method
+/// body is not this watch hook.
 fn follow_lists(gate: &mut MatchGate) {
     let run = gate.focus || gate.list_mask & FOLLOW_ARG != 0;
     if !run {
@@ -630,24 +719,29 @@ fn follow_lists(gate: &mut MatchGate) {
         gate.hands_set = true;
     }
     if gate.focus && gate.session_mark != 0 {
-        gate.session_mark = 0;
-        gate.entered_flag = 0;
-        gate.entered_code = ENTERED_CODE;
-        if gate.world_open {
-            gate.bank_side = u8::from(gate.world_side == 0);
-            apply_world_side(gate);
-        }
-        if gate.hold_byte == 0 {
-            register_primary(gate, HOOK_GATE, gate.gate_hook, gate.self_owner);
-        }
-        if gate.bank_side == 0 {
-            select_bank(gate, 1);
-        } else {
-            gate.side_notice = 1;
-            select_bank(gate, 2);
-        }
+        enter_session(gate);
         drop_ordered(gate, gate.watch_hook, gate.watch_owner);
         insert_ordered(gate, gate.play_hook, gate.play_owner, HOOK_ORDER);
+    }
+}
+
+/// The mark changes to 0. The focus method that precedes a hand copy is not this.
+fn enter_session(gate: &mut MatchGate) {
+    gate.session_mark = 0;
+    gate.entered_flag = 0;
+    gate.entered_code = ENTERED_CODE;
+    if gate.world_open {
+        gate.bank_side = u8::from(gate.world_side == 0);
+        apply_world_side(gate);
+    }
+    if gate.hold_byte == 0 {
+        register_primary(gate, HOOK_GATE, gate.gate_hook, gate.self_owner);
+    }
+    if gate.bank_side == 0 {
+        select_bank(gate, 1);
+    } else {
+        gate.side_notice = 1;
+        select_bank(gate, 2);
     }
 }
 
@@ -1803,5 +1897,68 @@ mod tests {
         assert_eq!(back.hook_high, -1);
         assert_eq!(back.ordered, vec![listed(22, 5, HOOK_ORDER as u32)]);
         assert!(!back.activates_action_set);
+    }
+
+    #[test]
+    fn a_gate_hook_sets_its_flags_and_a_watch_hook_stamps() {
+        let mut gate = MatchGate::playing();
+        gate.gate_hook_out = 9;
+        gate.gate_owner_out = 8;
+        gate.gate_flags = 0;
+        assert_eq!(gate.run_gate(), 1);
+        assert_eq!(gate.gate_hook_out, 0);
+        assert_eq!(gate.gate_owner_out, 0);
+        assert_eq!(gate.gate_flags, 1);
+        assert_eq!(gate.gate_alt_calls, 0);
+
+        gate.side_mid = 1;
+        gate.gate_alt = 4;
+        assert_eq!(gate.run_gate(), 1);
+        assert_eq!(gate.gate_alt_calls, 1);
+        assert_eq!(gate.gate_flags, 1);
+
+        let mut quiet = MatchGate::playing();
+        quiet.watch_stamp = 9;
+        assert_eq!(quiet.run_watch(), 1);
+        assert_eq!(quiet.watch_stamp, 0);
+
+        let mut held = MatchGate::playing();
+        held.watch_flags = WATCH_BIT;
+        held.watch_target = 1;
+        held.watch_ready = 1;
+        held.watch_clock = 12;
+        held.watch_code = 1;
+        held.target_flags = WATCH_MARK;
+        held.watch_pending = 2;
+        assert_eq!(held.run_watch(), 1);
+        assert_eq!(held.watch_stamp, 12);
+        assert_eq!(held.target_flags, 0);
+        assert_eq!(held.watch_releases, 1);
+        assert_eq!(held.watch_refreshes, 1);
+
+        let mut pressed = MatchGate::playing();
+        pressed.watch_flags = WATCH_BIT;
+        pressed.watch_target = 1;
+        pressed.watch_ready = 1;
+        pressed.watch_held = 1;
+        pressed.watch_stamp = 3;
+        pressed.watch_code = 2;
+        assert_eq!(pressed.run_watch(), 1);
+        assert_eq!(pressed.watch_stamp, 3);
+        assert_eq!(pressed.target_flags, WATCH_MARK);
+        assert_eq!(pressed.watch_presses, 1);
+
+        let mut leave = MatchGate::playing();
+        leave.watch_leave = 1;
+        leave.watch_focus = 1;
+        leave.session_mark = 2;
+        leave.gate_hook = 11;
+        leave.self_owner = 3;
+        assert_eq!(leave.run_watch(), 1);
+        assert_eq!(leave.watch_focus, 0);
+        assert_eq!(leave.focus_calls, 1);
+        assert_eq!(leave.session_mark, 0);
+        assert_eq!(leave.entered_code, ENTERED_CODE);
+        assert_eq!(leave.primary, vec![listed(11, 3, HOOK_GATE)]);
     }
 }
