@@ -201,7 +201,9 @@ words nine and ten. The class select stores a positive choice, plays its sound
 and opens the next form, returning 0x40 for no choice. Its navigation
 confirms, forwards and backs, and scans the available-class bitmask for the next
 or previous choice. Its hit test maps a point to one of up to four cards laid
-out from the clock scale.
+out from the clock scale. The main-menu confirm copies the selection to 0x204
+and confirms on direction 0x1000; its select sounds the index at most once per
+200 units.
 
 ## Scope
 

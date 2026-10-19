@@ -1095,6 +1095,61 @@ pub fn hit_class_cards(input: ClassCardHitInput) -> ClassCardHit {
     miss
 }
 
+/// The main-menu confirm's work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MenuConfirm {
+    pub selected: Option<i32>,
+    pub copy_to_204: bool,
+    pub sound: bool,
+    pub result: i32,
+}
+
+/// Copies the selection to field 0x204 and confirms on the 0x1000 direction.
+pub fn confirm_main_menu(selection: i32, mask: u32, sound_ready: bool) -> MenuConfirm {
+    if selection <= 0 {
+        return MenuConfirm {
+            selected: None,
+            copy_to_204: true,
+            sound: false,
+            result: 0x40,
+        };
+    }
+    if (mask & 0xf000) != 0x1000 {
+        return MenuConfirm {
+            selected: None,
+            copy_to_204: false,
+            sound: false,
+            result: 0x40,
+        };
+    }
+    MenuConfirm {
+        selected: Some(selection),
+        copy_to_204: true,
+        sound: sound_ready,
+        result: 7,
+    }
+}
+
+/// The main-menu select's state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MenuSelect {
+    pub index: i32,
+    pub sound: bool,
+    pub stamp: i32,
+    pub result: i32,
+}
+
+/// Stores the menu index and sounds it at most once per 200 units.
+pub fn select_main_menu(index: i32, stamp: i32, now: i32, sound_ready: bool) -> MenuSelect {
+    let play = index > 0 && sound_ready && stamp.wrapping_add(0xc8) < now;
+    MenuSelect {
+        index,
+        sound: play,
+        stamp: if play { now } else { stamp },
+        result: 3,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1805,5 +1860,38 @@ mod tests {
         });
         assert_eq!(absent.index, Some(1));
         assert_eq!(absent.count, 1);
+    }
+
+    #[test]
+    fn the_main_menu_confirm_and_select() {
+        let confirmed = confirm_main_menu(3, 0x1000, true);
+        assert_eq!(confirmed.selected, Some(3));
+        assert!(confirmed.copy_to_204);
+        assert!(confirmed.sound);
+        assert_eq!(confirmed.result, 7);
+
+        let other = confirm_main_menu(3, 0x2000, true);
+        assert!(!other.copy_to_204);
+        assert_eq!(other.result, 0x40);
+
+        let none = confirm_main_menu(0, 0x1000, true);
+        assert!(none.copy_to_204);
+        assert_eq!(none.selected, None);
+        assert_eq!(none.result, 0x40);
+
+        let picked = select_main_menu(3, 0, 300, true);
+        assert!(picked.sound);
+        assert_eq!(picked.stamp, 300);
+        assert_eq!(picked.result, 3);
+
+        let zero = select_main_menu(0, 0, 300, true);
+        assert!(!zero.sound);
+        assert_eq!(zero.stamp, 0);
+
+        let limited = select_main_menu(3, 200, 300, true);
+        assert!(!limited.sound);
+        assert_eq!(limited.stamp, 200);
+
+        assert!(!select_main_menu(3, 0, 300, false).sound);
     }
 }
