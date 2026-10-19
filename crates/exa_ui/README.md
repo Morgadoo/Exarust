@@ -95,7 +95,12 @@ Shifts 2 and 100 with scales one half and 2 place the first corner at 8.5, 160
 and store colour 17 twelve times. An unset view places that corner at positive
 zero and negative zero and stores colour 0. Cursor 3 and mark 9 with flag 4
 store indexes 3 through 14 and finish at 15. Flag 0 stores none and still
-finishes 12 ahead.
+finishes 12 ahead. The square after the bar, with stored word 4 at 10, 20,
+draws (3, 29), (3, 13), (19, 13), (19, 29); word 6 draws (-1, 33), (-1, 9),
+(23, 9), (23, 33), and word -1 places the first corner at bits 0xdf000000,
+0xdf000000. Its cursor starts at 0, so flag 4 and mark 9 store indexes 0
+through 3 and finish at 4, and flag 0 stores none and still finishes at 4.
+Colour 17 is stored four times.
 
 ## Scope
 

@@ -166,6 +166,18 @@ pub const SPAN_BAR: [u32; 8] = [
     0x3dcc_cccd,
 ];
 
+/// Square on the line class: 0.4, 0.8, 0.4, 1, then 0.5, 1, 0.5, 0.8.
+pub const SPAN_SQUARE: [u32; 8] = [
+    0x3ecc_cccd,
+    0x3f4c_cccd,
+    0x3ecc_cccd,
+    0x3f80_0000,
+    0x3f00_0000,
+    0x3f80_0000,
+    0x3f00_0000,
+    0x3f4c_cccd,
+];
+
 /// Cap of a span bar: 0.7, 0.1, 0.7, 0.2, then 0.75, 0.2, 0.75, 0.1.
 pub const SPAN_CAP: [u32; 8] = [
     0x3f33_3333,
@@ -1951,6 +1963,63 @@ pub fn draw_span_bar(
         mark_indexes,
         mark_count: if marked { 12 } else { 0 },
         cursor_after: cursor,
+    }
+}
+
+/// A square on the line class: one quad, four colour writes and its marks.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpanSquare {
+    pub mode_calls: u32,
+    pub mode: i32,
+    pub prep_calls: u32,
+    pub begin_calls: u32,
+    pub bind_calls: u32,
+    pub bind: [u32; 8],
+    pub quads: [(f32, f32); 4],
+    pub colour: u32,
+    pub colour_writes: u32,
+    pub end_calls: u32,
+    pub marks: [u32; 4],
+    pub mark_indexes: [u32; 4],
+    pub mark_count: u32,
+    pub cursor_after: u32,
+}
+
+/// Draws the square after the span bar. `word` is the stored count; its
+/// left shift gives the side, and the inset pulls the origin back. The
+/// begin clears the cursor, so the four marks start at 0.
+pub fn draw_span_square(origin_x: f32, origin_y: f32, word: i32, view: SpanView) -> SpanSquare {
+    let side = (((word as u32) << 2) as i32) as i64;
+    let inset = (((side - 2) as u64) >> 1) as i64;
+    let back = inset as f32;
+    let x = origin_x - back;
+    let y = origin_y - back;
+    let side = side as f32;
+    let quads = [(x, y + side), (x, y), (x + side, y), (x + side, y + side)];
+    let marked = (view.flag & 4) > 0;
+    let mut marks = [0; 4];
+    let mut mark_indexes = [0; 4];
+    for slot in 0..4 {
+        if marked {
+            marks[slot] = view.mark;
+            mark_indexes[slot] = slot as u32;
+        }
+    }
+    SpanSquare {
+        mode_calls: 1,
+        mode: 2,
+        prep_calls: 1,
+        begin_calls: 1,
+        bind_calls: 1,
+        bind: SPAN_SQUARE,
+        quads,
+        colour: view.colour,
+        colour_writes: 4,
+        end_calls: 1,
+        marks,
+        mark_indexes,
+        mark_count: if marked { 4 } else { 0 },
+        cursor_after: 4,
     }
 }
 
@@ -4289,5 +4358,52 @@ mod tests {
         assert_eq!(wrapped.mark_indexes[2], 0);
         assert_eq!(wrapped.marks[2], 9);
         assert_eq!(wrapped.cursor_after, 10);
+    }
+
+    #[test]
+    fn a_span_square_draws_one_quad() {
+        let view = SpanView {
+            colour: 17,
+            flag: 4,
+            mark: 9,
+            cursor: 99,
+            ..SPAN_VIEW_UNSET
+        };
+        let square = draw_span_square(10.0, 20.0, 4, view);
+        assert_eq!(square.mode_calls, 1);
+        assert_eq!(square.mode, 2);
+        assert_eq!(square.prep_calls, 1);
+        assert_eq!(square.begin_calls, 1);
+        assert_eq!(square.bind_calls, 1);
+        assert_eq!(square.bind, SPAN_SQUARE);
+        assert_eq!(square.colour, 17);
+        assert_eq!(square.colour_writes, 4);
+        assert_eq!(square.end_calls, 1);
+        let expect: [(f32, f32); 4] = [(3.0, 29.0), (3.0, 13.0), (19.0, 13.0), (19.0, 29.0)];
+        for ((gx, gy), (wx, wy)) in square.quads.iter().zip(expect) {
+            assert_eq!(gx.to_bits(), wx.to_bits());
+            assert_eq!(gy.to_bits(), wy.to_bits());
+        }
+        assert_eq!(square.mark_count, 4);
+        assert_eq!(square.mark_indexes, [0, 1, 2, 3]);
+        assert_eq!(square.marks, [9; 4]);
+        assert_eq!(square.cursor_after, 4);
+
+        let six = draw_span_square(10.0, 20.0, 6, view);
+        let expect: [(f32, f32); 4] = [(-1.0, 33.0), (-1.0, 9.0), (23.0, 9.0), (23.0, 33.0)];
+        for ((gx, gy), (wx, wy)) in six.quads.iter().zip(expect) {
+            assert_eq!(gx.to_bits(), wx.to_bits());
+            assert_eq!(gy.to_bits(), wy.to_bits());
+        }
+
+        let minus = draw_span_square(10.0, 20.0, -1, view);
+        assert_eq!(minus.quads[0].0.to_bits(), 0xdf00_0000);
+        assert_eq!(minus.quads[0].1.to_bits(), 0xdf00_0000);
+
+        let clear = draw_span_square(10.0, 20.0, 4, SpanView { flag: 0, ..view });
+        assert_eq!(clear.mark_count, 0);
+        assert_eq!(clear.marks, [0; 4]);
+        assert_eq!(clear.mark_indexes, [0; 4]);
+        assert_eq!(clear.cursor_after, 4);
     }
 }
