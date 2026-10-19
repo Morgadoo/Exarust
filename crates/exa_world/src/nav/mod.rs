@@ -29,12 +29,14 @@
 
 pub mod headless;
 pub mod path;
+pub mod query;
 pub mod source;
 pub mod view;
 
 use bevy::math::{DVec3, Vec2, Vec3};
 
 pub use path::{Look, Path, find_path, look_ahead};
+pub use query::{LineHit, line_walk};
 pub use source::{GroundTile, NavSource};
 pub use view::{NavOverlay, NavPlugin, NavState, PendingNav};
 

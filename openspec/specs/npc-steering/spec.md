@@ -85,3 +85,10 @@ Urgency of 0 or less SHALL set the run bit until the carrot fraction, as a doubl
 #### Scenario: The run bit clears, then a close body stops
 - **WHEN** urgency 0 is not on the last segment, a fraction just under 0.99 is on the last segment, a fraction of 0.99 is 10 cm from the carrot, a fraction of 1 is exactly 30 cm from the carrot and another is 40 cm up, a standing body 100 cm above the carrot stops, urgency 1 is 99 cm from the last point and another is exactly 100 cm, and urgency -1 is not on the last segment
 - **THEN** the first two set the run bit, 10 cm stops with the stopping bit and keeps the carrot, exactly 30 cm clears the run bit and does not stop, 40 cm up does not stop, the raised stop pulls the carrot 20 cm along the facing at the standing height, 99 cm stops, exactly 100 cm clears the run bit and does not stop, and urgency -1 sets the run bit
+
+### Requirement: Line replan
+In the scene, a blocked line from the ground to the carrot SHALL clear the run bit and ask for a re-plan, and SHALL leave the carrot. A clear line SHALL leave the run bit and the re-plan flag. Out of the scene, and a higher scene bit alone, SHALL not walk.
+
+#### Scenario: A wall asks for a re-plan
+- **WHEN** an open line is walked in the scene with the run bit set, the same line with a floor of 40 at cell 4 is walked in the scene, out of the scene, and with only a higher scene bit while a re-plan was already asked
+- **THEN** the open line keeps the run bit and does not re-plan, the walled line clears the run bit, asks for a re-plan, and keeps the carrot, the out-of-scene line keeps the run bit and does not re-plan, and the higher bit keeps the run bit and the re-plan that was already asked

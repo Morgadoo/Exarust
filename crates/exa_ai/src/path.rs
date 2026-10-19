@@ -14,13 +14,15 @@
 //! apart. In a scene, the goal is 100 cm past the ground point's
 //! projection on that path. Out of the scene, the body slides 2 cm along
 //! the path. Near the end, the run bit clears and a close body soft-stops.
-//! The other phases are not in this slice.
+//! In the scene, a blocked line to the carrot clears the run bit and asks
+//! for a re-plan. The other phases are not in this slice.
 
 use bevy::math::Vec2;
 use bevy::math::Vec3;
 use exa_anim::Animator;
 use exa_combat::stance::{self, Stance};
 use exa_physics::door::{self, SignalDrive, SignalLeaf};
+use exa_world::nav::{self, NavGrid};
 
 /// Where the walker is on its path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -558,6 +560,49 @@ pub fn arrive(approach: Approach) -> Arrival {
             soft_stop(&approach, flags)
         } else {
             Arrival { flags, ..keep }
+        }
+    }
+}
+
+/// The run bit and re-plan flag after walking from the ground to the carrot.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LineReplan {
+    pub flags: u32,
+    pub replan: bool,
+    /// The carrot. A blocked walk does not move it.
+    pub carrot: Vec3,
+}
+
+/// In the scene, walk the line from `ground` to `carrot`. A blocked walk
+/// clears the run bit and asks for a re-plan. Out of the scene the line is
+/// not walked. The carrot is left where it was.
+pub fn line_replan(
+    grid: &NavGrid,
+    ground: Vec3,
+    carrot: Vec3,
+    flags: u32,
+    scene: u32,
+    replan: bool,
+) -> LineReplan {
+    if scene & 3 == 0 {
+        return LineReplan {
+            flags,
+            replan,
+            carrot,
+        };
+    }
+    let hit = nav::line_walk(grid, ground, carrot);
+    if hit.blocked {
+        LineReplan {
+            flags: flags & !LOCO_RUN,
+            replan: true,
+            carrot,
+        }
+    } else {
+        LineReplan {
+            flags,
+            replan,
+            carrot,
         }
     }
 }
@@ -1172,5 +1217,79 @@ mod tests {
         let back = arrive(approach(-1, false, 0.0));
         assert_eq!(back.flags, 1 | LOCO_RUN);
         assert!(!back.stopped);
+    }
+
+    fn yard(wall: bool) -> (NavGrid, Vec3, Vec3) {
+        let mut grid = NavGrid::empty(8, 8, 0.0);
+        for z in 0..8 {
+            for x in 0..8 {
+                grid.set_cell(
+                    x,
+                    z,
+                    nav::Layer::Lower,
+                    nav::NavCell {
+                        floor: 10,
+                        ..nav::NavCell::default()
+                    },
+                );
+            }
+        }
+        if wall {
+            grid.set_cell(
+                4,
+                3,
+                nav::Layer::Lower,
+                nav::NavCell {
+                    floor: 40,
+                    underside: 0,
+                    ..nav::NavCell::default()
+                },
+            );
+        }
+        let from = grid.cell_centre(1, 3);
+        let to = grid.cell_centre(6, 3);
+        (
+            grid,
+            Vec3::new(from.x, 1.0, from.y),
+            Vec3::new(to.x, 1.0, to.y),
+        )
+    }
+
+    #[test]
+    fn a_blocked_line_to_the_carrot_asks_for_a_replan() {
+        let (open, ground, carrot) = yard(false);
+        let clear = line_replan(&open, ground, carrot, 1 | LOCO_RUN, 1, false);
+        assert_eq!(
+            clear,
+            LineReplan {
+                flags: 1 | LOCO_RUN,
+                replan: false,
+                carrot,
+            }
+        );
+
+        let (walled, ground, carrot) = yard(true);
+        let blocked = line_replan(&walled, ground, carrot, 1 | LOCO_RUN, 1, false);
+        assert_eq!(
+            blocked,
+            LineReplan {
+                flags: 1,
+                replan: true,
+                carrot,
+            }
+        );
+
+        let outside = line_replan(&walled, ground, carrot, 1 | LOCO_RUN, 0, false);
+        assert_eq!(
+            outside,
+            LineReplan {
+                flags: 1 | LOCO_RUN,
+                replan: false,
+                carrot,
+            }
+        );
+        let higher = line_replan(&walled, ground, carrot, 1 | LOCO_RUN, 4, true);
+        assert_eq!(higher.flags, 1 | LOCO_RUN);
+        assert!(higher.replan);
     }
 }

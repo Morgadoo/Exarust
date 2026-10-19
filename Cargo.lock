@@ -2339,6 +2339,7 @@ dependencies = [
  "exa_combat",
  "exa_formats",
  "exa_physics",
+ "exa_world",
 ]
 
 [[package]]
