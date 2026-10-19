@@ -19,6 +19,7 @@ pub mod hear;
 pub mod idle;
 pub mod order;
 pub mod path;
+pub mod place;
 pub mod sense;
 
 pub use order::{Order, follow};
@@ -68,11 +69,8 @@ impl Duellist {
     }
 }
 
-/// The duellist strikes from this far (m, between the characters). It is
-/// Exarust's stand-in for the original's reach: the arm follows its clip
-/// through link muscles, which damp its swing (about 15–20 cm less reach
-/// than the clip's pose at the original's swing speed), and the strike
-/// lands only from this close.
+/// How close a strike is thrown (m). Closing stops earlier, on the
+/// position score's plateau.
 const STRIKE_RANGE: f32 = 1.15;
 const STRIKE_INTERVAL: f32 = 2.2;
 /// Exarust's interim footwork clip (the original's AI steps in its stance).
@@ -229,7 +227,18 @@ fn duellist(
         if attacking.is_some() || !anim.looping {
             continue;
         }
-        if dist > STRIKE_RANGE && !ai.holds_ground {
+        let spot = place::Spot {
+            other_reach_cm: reach_of(ai.target, &blades) * 100.0,
+            my_reach_cm: reach_of(entity, &blades) * 100.0,
+            other_size: target_body
+                .map(|(_, _, _, foe)| foe.stats.size)
+                .unwrap_or(1.0),
+            my_step_cm: fighter.stats.step_reach(fighter.stats.encumbrance) * 100.0,
+            other_large: target_body.is_some_and(|(_, _, _, foe)| foe.stats.rules.has(1)),
+            melee: false,
+            fight: true,
+        };
+        if place::still_closing(dist * 100.0, spot) && !ai.holds_ground {
             body.desired_velocity = order.velocity;
             anim.play_loop(COMBAT_WALK);
             continue;
@@ -341,6 +350,37 @@ mod tests {
 
     fn engage(app: &mut App, foe: Entity) {
         app.world_mut().get_mut::<Duellist>(foe).unwrap().engaged = true;
+    }
+
+    /// On the strike plateau (1.20 m, inside reach 50 cm plus a step of
+    /// 80 cm) it stands. At 2 m it is past that plateau and walks in.
+    #[test]
+    fn a_duellist_stands_on_the_strike_plateau() {
+        let (mut app, foe, root) = duel(1.20, false);
+        engage(&mut app, foe);
+        app.update();
+        app.update();
+        assert_ne!(state(&app, foe).1, "Combat Walk");
+        assert_eq!(
+            app.world()
+                .get::<CharacterBody>(root)
+                .unwrap()
+                .desired_velocity,
+            Vec3::ZERO
+        );
+        let (mut app, foe, root) = duel(2.0, false);
+        engage(&mut app, foe);
+        app.update();
+        app.update();
+        assert_eq!(state(&app, foe).1, "Combat Walk");
+        assert!(
+            app.world()
+                .get::<CharacterBody>(root)
+                .unwrap()
+                .desired_velocity
+                .length()
+                > 0.0
+        );
     }
 
     /// It stands idle until the fight starts, then takes the guard; far
