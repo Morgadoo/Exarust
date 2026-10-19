@@ -15,7 +15,8 @@
 //! positions.
 //!
 //! Evidence: the cloth step notes (retention, drag, wind, pins, edges, sleep,
-//! rustle, sphere and plane pushes). Swept triangle tests are not in this step.
+//! rustle, sphere and plane pushes, a sphere swept through a cloth triangle,
+//! and a vertex swept through a level triangle).
 
 use bevy::math::Vec3;
 
@@ -93,6 +94,31 @@ pub struct LevelPlane {
     pub normal: Vec3,
 }
 
+/// A body sphere swept from `from` to `to`, in centimetres.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SweptSphere {
+    pub from: Vec3,
+    pub to: Vec3,
+    pub radius: f32,
+    pub friction: f32,
+}
+
+/// Three particle indices of a cloth triangle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClothTri {
+    pub a: usize,
+    pub b: usize,
+    pub c: usize,
+}
+
+/// A level triangle, in centimetres.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LevelTri {
+    pub a: Vec3,
+    pub b: Vec3,
+    pub c: Vec3,
+}
+
 /// The cloth a step advances.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Cloth {
@@ -111,6 +137,9 @@ pub struct Cloth {
     pub owner_sleep: i32,
     pub spheres: Vec<BodySphere>,
     pub planes: Vec<LevelPlane>,
+    pub swept: Vec<SweptSphere>,
+    pub triangles: Vec<ClothTri>,
+    pub level: Vec<LevelTri>,
     pub rustle: bool,
     pub rustle_volume: f32,
     pub rustle_pitch: f32,
@@ -132,6 +161,9 @@ impl Cloth {
             owner_sleep: 0,
             spheres: Vec::new(),
             planes: Vec::new(),
+            swept: Vec::new(),
+            triangles: Vec::new(),
+            level: Vec::new(),
             rustle: false,
             rustle_volume: 0.0,
             rustle_pitch: 0.0,
@@ -200,6 +232,19 @@ pub fn step(cloth: &mut Cloth, gravity: Vec3) {
         let plane = cloth.planes[index];
         for particle in &mut cloth.particles {
             hit |= push_plane(particle, plane);
+        }
+    }
+    for index in 0..cloth.swept.len() {
+        let body = cloth.swept[index];
+        for tri in 0..cloth.triangles.len() {
+            let tri = cloth.triangles[tri];
+            hit |= sweep_sphere_triangle(&mut cloth.particles, tri, body);
+        }
+    }
+    for index in 0..cloth.level.len() {
+        let tri = cloth.level[index];
+        for particle in &mut cloth.particles {
+            hit |= sweep_vertex(particle, tri);
         }
     }
     if hit && cloth.sleep == 0 {
@@ -276,6 +321,81 @@ fn push_sphere(particle: &mut Particle, sphere: BodySphere) -> bool {
     let friction = sphere.friction.clamp(0.0, 1.0);
     particle.position = particle.previous + along + tangent * (1.0 - friction);
     true
+}
+
+/// Where a segment from `from` to `to` crosses a triangle, if it does.
+fn segment_triangle(from: Vec3, to: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<(f32, Vec3, Vec3)> {
+    let dir = to - from;
+    if !dir.is_finite() || dir.length_squared() <= f32::EPSILON {
+        return None;
+    }
+    let ab = b - a;
+    let ac = c - a;
+    let pvec = dir.cross(ac);
+    let det = ab.dot(pvec);
+    if !det.is_finite() || det.abs() < 1e-6 {
+        return None;
+    }
+    let inv = 1.0 / det;
+    let tvec = from - a;
+    let u = tvec.dot(pvec) * inv;
+    if !(0.0..=1.0).contains(&u) {
+        return None;
+    }
+    let qvec = tvec.cross(ab);
+    let v = dir.dot(qvec) * inv;
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+    let t = ac.dot(qvec) * inv;
+    if !(0.0..=1.0).contains(&t) {
+        return None;
+    }
+    let mut normal = ab.cross(ac).normalize_or_zero();
+    if normal == Vec3::ZERO {
+        return None;
+    }
+    if normal.dot(dir) > 0.0 {
+        normal = -normal;
+    }
+    Some((t, from + dir * t, normal))
+}
+
+fn sweep_vertex(particle: &mut Particle, tri: LevelTri) -> bool {
+    let Some((_, hit, normal)) =
+        segment_triangle(particle.previous, particle.position, tri.a, tri.b, tri.c)
+    else {
+        return false;
+    };
+    particle.position = hit + normal * PADDING_CM;
+    true
+}
+
+fn sweep_sphere_triangle(particles: &mut [Particle], tri: ClothTri, body: SweptSphere) -> bool {
+    if tri.a >= particles.len() || tri.b >= particles.len() || tri.c >= particles.len() {
+        return false;
+    }
+    if !body.radius.is_finite() || body.radius < 0.0 {
+        return false;
+    }
+    let (a, b, c) = (
+        particles[tri.a].position,
+        particles[tri.b].position,
+        particles[tri.c].position,
+    );
+    let Some((_, hit, normal)) = segment_triangle(body.from, body.to, a, b, c) else {
+        return false;
+    };
+    let sphere = BodySphere {
+        center: hit + normal * body.radius,
+        radius: body.radius,
+        friction: body.friction,
+    };
+    let mut struck = false;
+    for index in [tri.a, tri.b, tri.c] {
+        struck |= push_sphere(&mut particles[index], sphere);
+    }
+    struck
 }
 
 fn push_plane(particle: &mut Particle, plane: LevelPlane) -> bool {
@@ -484,5 +604,72 @@ mod tests {
         step(&mut cloth, gravity_cm(1.0));
         assert_ne!(cloth.vertices(), rest);
         assert_eq!(cloth.vertices(), vec![cloth.particles[0].position]);
+    }
+
+    #[test]
+    fn a_swept_sphere_and_a_vertex_meet_a_triangle() {
+        let mut cloth = Cloth::new(vec![
+            still(Vec3::new(2.0, 2.0, 0.0)),
+            still(Vec3::new(12.0, 2.0, 0.0)),
+            still(Vec3::new(2.0, 12.0, 0.0)),
+        ]);
+        cloth.sleep = 0;
+        cloth.triangles.push(ClothTri { a: 0, b: 1, c: 2 });
+        cloth.swept.push(SweptSphere {
+            from: Vec3::new(2.0, 2.0, 20.0),
+            to: Vec3::new(2.0, 2.0, -10.0),
+            radius: 4.0,
+            friction: 0.0,
+        });
+        step(&mut cloth, Vec3::ZERO);
+        assert!(
+            (cloth.particles[0].position.z + PADDING_CM).abs() < 1e-2,
+            "{:?}",
+            cloth.particles[0].position
+        );
+        assert!(
+            cloth.particles[1]
+                .position
+                .abs_diff_eq(Vec3::new(12.0, 2.0, 0.0), 1e-3)
+        );
+
+        let mut missed = cloth.clone();
+        missed.particles[0].position = Vec3::new(2.0, 2.0, 0.0);
+        missed.particles[0].previous = missed.particles[0].position;
+        missed.swept[0].from = Vec3::new(100.0, 100.0, 20.0);
+        missed.swept[0].to = Vec3::new(100.0, 100.0, -10.0);
+        missed.sleep = 0;
+        step(&mut missed, Vec3::ZERO);
+        assert!(
+            missed.particles[0]
+                .position
+                .abs_diff_eq(Vec3::new(2.0, 2.0, 0.0), 1e-3)
+        );
+
+        let floor = LevelTri {
+            a: Vec3::new(-1.0, -1.0, 0.0),
+            b: Vec3::new(20.0, -1.0, 0.0),
+            c: Vec3::new(-1.0, 20.0, 0.0),
+        };
+        let mut cloth = Cloth::new(vec![Particle {
+            previous: Vec3::new(2.0, 2.0, 8.0),
+            position: Vec3::new(2.0, 2.0, -8.0),
+        }]);
+        cloth.sleep = 0;
+        cloth.level.push(floor);
+        step(&mut cloth, Vec3::ZERO);
+        assert!(
+            (cloth.particles[0].position.z - PADDING_CM).abs() < 1e-3,
+            "{:?}",
+            cloth.particles[0].position
+        );
+        let mut beside = Cloth::new(vec![Particle {
+            previous: Vec3::new(100.0, 2.0, 8.0),
+            position: Vec3::new(100.0, 2.0, -8.0),
+        }]);
+        beside.sleep = 0;
+        beside.level.push(floor);
+        step(&mut beside, Vec3::ZERO);
+        assert!((beside.particles[0].position.z + 8.0).abs() < 1e-3);
     }
 }

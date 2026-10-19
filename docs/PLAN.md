@@ -419,8 +419,11 @@ gravity. Wind, a pin and one edge pass follow.
 Done (change `collide-and-sleep-the-cloth`): a sphere or a level plane
 pushes a vertex out to 2 cm of padding, sleep counts down while the cloth
 is still and never below its owner, rustle plays when the squared speed
-sum exceeds 400, and the mesh vertices are the particle positions. Swept
-triangle tests are not in.
+sum exceeds 400, and the mesh vertices are the particle positions.
+Done (change `sweep-cloth-collisions`): a body sphere swept through a cloth
+triangle pushes the vertices it reaches, and a vertex swept through a level
+triangle stops 2 cm short of it. A sweep that misses leaves the cloth where
+it was. The reaction on the body and the render hooks are not in.
 
 Done (change `decode-object-bodies-and-mechanisms`, data only): models'
 rigid bodies are decoded as the original stores them (class, mobility,
