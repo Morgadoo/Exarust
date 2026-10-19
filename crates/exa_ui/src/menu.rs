@@ -1036,6 +1036,65 @@ pub fn navigate_class(input: ClassNavInput) -> ClassNav {
     }
 }
 
+/// The class-card hit test's inputs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClassCardHitInput {
+    pub hit: [i32; 2],
+    pub available: u32,
+    pub screen_w: i32,
+    pub clock: i32,
+    pub scale: f32,
+}
+
+/// The hit card's ordinal and the band.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClassCardHit {
+    pub index: Option<i32>,
+    pub count: i32,
+    pub top: i32,
+    pub height: i32,
+}
+
+/// Maps a point to one of the laid-out class cards.
+pub fn hit_class_cards(input: ClassCardHitInput) -> ClassCardHit {
+    let count = 1
+        + i32::from((input.available & 1) != 0)
+        + i32::from((input.available & 2) != 0)
+        + i32::from((input.available & 4) != 0);
+    let width = (input.scale * 256.0).round_ties_even() as i32;
+    let step = input.scale * 288.0;
+    let height = (input.scale * 512.0).round_ties_even() as i32;
+    let top = ((input.clock as f32 - input.scale * 1024.0).round_ties_even() as i32) / 2
+        + (input.scale * 140.0).round_ties_even() as i32;
+    let miss = ClassCardHit {
+        index: None,
+        count,
+        top,
+        height,
+    };
+    if input.hit[1] <= top || input.hit[1] >= top + height {
+        return miss;
+    }
+    let mut slot = 0i32;
+    for ordinal in 0..4u32 {
+        if ordinal > 0 && (input.available & (1 << (ordinal - 1))) == 0 {
+            continue;
+        }
+        let offset = (slot as f32 - count as f32 * 0.5) * step;
+        let left = input.screen_w / 2 + offset.round_ties_even() as i32;
+        slot += 1;
+        if input.hit[0] > left && input.hit[0] < left + width {
+            return ClassCardHit {
+                index: Some(ordinal as i32 + 1),
+                count,
+                top,
+                height,
+            };
+        }
+    }
+    miss
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1716,5 +1775,35 @@ mod tests {
             navigate_class(input(0x8001, 0)).action,
             ClassNavAction::Move(1)
         );
+    }
+
+    #[test]
+    fn the_class_cards_are_hit_inside_their_bands() {
+        let input = |hit| ClassCardHitInput {
+            hit,
+            available: 1,
+            screen_w: 1000,
+            clock: 2048,
+            scale: 1.0,
+        };
+        let first = hit_class_cards(input([300, 700]));
+        assert_eq!(first.index, Some(1));
+        assert_eq!(first.count, 2);
+        assert_eq!(first.top, 652);
+        assert_eq!(first.height, 512);
+
+        assert_eq!(hit_class_cards(input([501, 700])).index, Some(2));
+        assert_eq!(hit_class_cards(input([468, 700])).index, None);
+        assert_eq!(hit_class_cards(input([212, 700])).index, None);
+        assert_eq!(hit_class_cards(input([300, 652])).index, None);
+        assert_eq!(hit_class_cards(input([300, 1164])).index, None);
+        assert_eq!(hit_class_cards(input([300, 653])).index, Some(1));
+
+        let absent = hit_class_cards(ClassCardHitInput {
+            available: 0,
+            ..input([400, 700])
+        });
+        assert_eq!(absent.index, Some(1));
+        assert_eq!(absent.count, 1);
     }
 }

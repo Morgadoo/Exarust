@@ -200,7 +200,8 @@ The skill selector's show clears bits 0x60 and applies its selection or -1 for
 words nine and ten. The class select stores a positive choice, plays its sound
 and opens the next form, returning 0x40 for no choice. Its navigation
 confirms, forwards and backs, and scans the available-class bitmask for the next
-or previous choice.
+or previous choice. Its hit test maps a point to one of up to four cards laid
+out from the clock scale.
 
 ## Scope
 
