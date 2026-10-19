@@ -3687,6 +3687,89 @@ pub fn skin_measures(first: i32, second: i32, third: i32, unit: i32) -> [i32; 4]
     [first, second, third, unit.wrapping_mul(4).wrapping_add(4)]
 }
 
+/// The solid-colour fragment shader the skin prepares.
+pub const SKIN_SOLID_SHADER: &str =
+    "in vec4 vrCol;\r\nout vec4 FragColor;\r\nvoid main() {\r\nFragColor = vrCol;}";
+/// The textured fragment shader.
+pub const SKIN_TEXTURED_SHADER: &str = "in vec2 vrTex;\r\nin vec4 vrCol;\r\nout vec4 FragColor;\r\nuniform float TexCol;\r\nuniform sampler2D Tex;\r\nvoid main() {\r\nvec4 tcol = texture(Tex, vrTex);\r\ntcol.rgb = tcol.rgb * TexCol + 1.0 - TexCol;\r\nFragColor.rgb = vrCol.rgb * tcol.rgb;FragColor.a = vrCol.a * tcol.a;}";
+/// The rounded-rect fragment shader.
+pub const SKIN_ROUNDED_SHADER: &str = "in vec2 vrTex;\r\nin vec4 vrCol;\r\nout vec4 FragColor;\r\nuniform vec4 Scale;\r\nvoid main() {\r\nvec2 s = abs(0.5 - vrTex);\r\ns = (s - Scale.xy) * Scale.zw;\r\nfloat a = length(max(s,0.0));\r\na = max(1.0 - a, 0.0);\r\na = a * a;\r\na = a * a;\r\nFragColor.rgb = vrCol.rgb;FragColor.a = vrCol.a * a;}";
+
+/// A uniform assignment or lookup.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SkinUniformValue {
+    Float(f32),
+    Int(i32),
+}
+
+/// One uniform operation: a value written, or `None` for a lookup.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SkinUniform {
+    pub name: &'static str,
+    pub value: Option<SkinUniformValue>,
+}
+
+/// One prepared program with its uniforms.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkinProgram {
+    pub kind: u32,
+    pub source: &'static str,
+    pub uniforms: Vec<SkinUniform>,
+}
+
+/// The skin's three programs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkinPrograms {
+    pub programs: Vec<SkinProgram>,
+    pub uniform_calls: u32,
+}
+
+/// Builds the skin's three programs once.
+pub fn prepare_skin_programs(already: bool) -> SkinPrograms {
+    if already {
+        return SkinPrograms {
+            programs: Vec::new(),
+            uniform_calls: 0,
+        };
+    }
+    let mprj = SkinUniform {
+        name: "MPrj",
+        value: Some(SkinUniformValue::Float(2.0)),
+    };
+    let scale = SkinUniform {
+        name: "Scale",
+        value: None,
+    };
+    let tex = SkinUniform {
+        name: "Tex",
+        value: Some(SkinUniformValue::Int(0)),
+    };
+    let texcol = SkinUniform {
+        name: "TexCol",
+        value: None,
+    };
+    SkinPrograms {
+        programs: vec![
+            SkinProgram {
+                kind: 5,
+                source: SKIN_SOLID_SHADER,
+                uniforms: vec![mprj],
+            },
+            SkinProgram {
+                kind: 0x15,
+                source: SKIN_TEXTURED_SHADER,
+                uniforms: vec![mprj, scale],
+            },
+            SkinProgram {
+                kind: 5,
+                source: SKIN_ROUNDED_SHADER,
+                uniforms: vec![mprj, tex, texcol],
+            },
+        ],
+        uniform_calls: 6,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7095,5 +7178,60 @@ mod tests {
     fn skin_measures_copy_the_three_globals() {
         assert_eq!(skin_measures(2, 2, 24, 4), [2, 2, 24, 20]);
         assert_eq!(skin_measures(2, 2, 24, 5), [2, 2, 24, 24]);
+    }
+
+    #[test]
+    fn the_skin_programs_build_once() {
+        let again = prepare_skin_programs(true);
+        assert!(again.programs.is_empty());
+        assert_eq!(again.uniform_calls, 0);
+
+        let built = prepare_skin_programs(false);
+        assert_eq!(built.programs.len(), 3);
+        assert_eq!(built.uniform_calls, 6);
+        let kinds: Vec<u32> = built.programs.iter().map(|p| p.kind).collect();
+        assert_eq!(kinds, vec![5, 0x15, 5]);
+
+        assert_eq!(
+            built.programs[0].uniforms,
+            vec![SkinUniform {
+                name: "MPrj",
+                value: Some(SkinUniformValue::Float(2.0))
+            }]
+        );
+        assert_eq!(
+            built.programs[1].uniforms,
+            vec![
+                SkinUniform {
+                    name: "MPrj",
+                    value: Some(SkinUniformValue::Float(2.0))
+                },
+                SkinUniform {
+                    name: "Scale",
+                    value: None
+                }
+            ]
+        );
+        assert_eq!(
+            built.programs[2].uniforms,
+            vec![
+                SkinUniform {
+                    name: "MPrj",
+                    value: Some(SkinUniformValue::Float(2.0))
+                },
+                SkinUniform {
+                    name: "Tex",
+                    value: Some(SkinUniformValue::Int(0))
+                },
+                SkinUniform {
+                    name: "TexCol",
+                    value: None
+                }
+            ]
+        );
+
+        assert!(built.programs[0].source.contains("FragColor = vrCol;"));
+        assert!(built.programs[1].source.contains("uniform sampler2D Tex;"));
+        assert!(built.programs[2].source.contains("uniform vec4 Scale;"));
     }
 }

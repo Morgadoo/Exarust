@@ -163,7 +163,9 @@ one inset rectangle and, on flag 0x40, one cornered overlay at the same
 rectangle. The textured strip draws four two-vertex bands between its first and
 third floats around a middle y. The slider draws a plain track with a translated
 thumb, or a filled inset rectangle with a unit-wide bar. The measure setter
-copies three globals and four units plus four into fields 8 through 0x14.
+copies three globals and four units plus four into fields 8 through 0x14. The
+program setup builds a solid, a textured and a rounded shader, setting `MPrj` to
+2 and looking up `Scale` and `TexCol`.
 
 ## Scope
 
