@@ -11,6 +11,7 @@ pub mod hud;
 pub mod joint_trace;
 pub mod limp;
 pub mod pair_trace;
+pub mod pick;
 pub mod player;
 pub mod session;
 pub mod sim_control;

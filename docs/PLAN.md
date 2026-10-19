@@ -660,6 +660,7 @@ death or with Ctrl, amber chevrons walking to the cursor and the
 arrowhead or cross outside combat; the cursor's point on the 80 cm aim
 plane, found through the supersampled camera's viewport
 ([UI.md](UI.md), Interface scale and World cursor).
+Done (change `classify-a-click`): a free hinge is a door, a dead character a corpse and a living one a person. A prop lighter than 0.08 is ignored, and a heavy one is ignored below strength 0.9. A point past 70 cm is turned toward first. Reach is 245 cm high and 300 cm away, or 300 cm high and 350 cm away for a door.
 Done (change `draw-the-health-bars`): the HUD's health bar (yellow, brown
 for damage that will heal, red for lasting damage) and focus bar (full blue:
 no powers yet) at the bottom centre, painted as the original draws them
