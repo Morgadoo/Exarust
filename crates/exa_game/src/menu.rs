@@ -2,9 +2,10 @@
 //!
 //! A dismissed child closes unless it is already closed. A pinned child
 //! raises a notice and still closes its own children, first to last.
-//! The capture release, the task's other children, detaching, redraw, the
-//! call after the two lists, writing a save package, and the transition
-//! are not part of this step.
+//! A capture is released first. The task's other children that name this
+//! one close before its own, a hover clears, and a shown child hides.
+//! Cursor restore, the call after the two lists, writing a save package,
+//! and the transition are not part of this step.
 
 use crate::career::Company;
 
@@ -18,6 +19,10 @@ pub const PHASE_TRANSITIONING: u32 = 0;
 pub const PHASE_PLAYING: u32 = 3;
 /// Flag bits a child must all have before a match begin dismisses it.
 pub const DISMISS_MARK: u32 = 0xce10_0000;
+/// Style bit set while this child holds the capture.
+pub const CAPTURE_BIT: u32 = 0x20;
+/// Bits a redraw ask sets. Each ask ORs them on.
+pub const REDRAW_BITS: u32 = 0x3;
 
 /// A child window on one of the two lists a match begin walks.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +39,10 @@ pub struct Window {
     /// The argument recorded when close proceeds. Already closed stays unset.
     pub seen_arg: Option<u32>,
     pub children: Vec<Window>,
+    /// The child this one names, when it sits on the task list.
+    pub owner: Option<String>,
+    /// Shown. Hiding a shown child asks for a redraw.
+    pub visible: bool,
 }
 
 /// Which mode the menu command is running in.
@@ -64,6 +73,18 @@ pub struct MatchGate {
     pub notice: bool,
     /// Close callbacks, children before their parent.
     pub close_log: Vec<String>,
+    /// Names that currently hold a capture, oldest first.
+    pub captures: Vec<String>,
+    /// The task's active form, when one is set.
+    pub active: Option<String>,
+    /// The task's hover, when one is set.
+    pub hover: Option<String>,
+    /// The task's other children.
+    pub siblings: Vec<Window>,
+    /// The redraw word. Each ask ORs on bits 0 and 1.
+    pub redraw: u32,
+    /// How many times a redraw was asked.
+    pub redraws: u32,
 }
 
 impl MatchGate {
@@ -82,6 +103,12 @@ impl MatchGate {
             dismissed: Vec::new(),
             notice: false,
             close_log: Vec::new(),
+            captures: Vec::new(),
+            active: None,
+            hover: None,
+            siblings: Vec::new(),
+            redraw: 0,
+            redraws: 0,
         }
     }
 
@@ -111,36 +138,44 @@ impl MatchGate {
 
 /// Visit `count` children from the last back to the first. A count of 0 or
 /// less does nothing. A count past the list stops at the list.
-fn dismiss_open(gate: &mut MatchGate) {
-    let mut order = std::mem::take(&mut gate.dismissed);
-    let mut log = std::mem::take(&mut gate.close_log);
-    let mut notice = gate.notice;
-    dismiss_list(
-        &mut gate.first,
-        gate.first_count,
-        &mut order,
-        &mut notice,
-        &mut log,
-    );
-    dismiss_list(
-        &mut gate.second,
-        gate.second_count,
-        &mut order,
-        &mut notice,
-        &mut log,
-    );
-    gate.dismissed = order;
-    gate.close_log = log;
-    gate.notice = notice;
+struct CloseState {
+    order: Vec<String>,
+    log: Vec<String>,
+    notice: bool,
+    captures: Vec<String>,
+    active: Option<String>,
+    hover: Option<String>,
+    siblings: Vec<Window>,
+    redraw: u32,
+    redraws: u32,
 }
 
-fn dismiss_list(
-    windows: &mut [Window],
-    count: i32,
-    order: &mut Vec<String>,
-    notice: &mut bool,
-    log: &mut Vec<String>,
-) {
+fn dismiss_open(gate: &mut MatchGate) {
+    let mut state = CloseState {
+        order: std::mem::take(&mut gate.dismissed),
+        log: std::mem::take(&mut gate.close_log),
+        notice: gate.notice,
+        captures: std::mem::take(&mut gate.captures),
+        active: gate.active.clone(),
+        hover: gate.hover.clone(),
+        siblings: std::mem::take(&mut gate.siblings),
+        redraw: gate.redraw,
+        redraws: gate.redraws,
+    };
+    dismiss_list(&mut gate.first, gate.first_count, &mut state);
+    dismiss_list(&mut gate.second, gate.second_count, &mut state);
+    gate.dismissed = state.order;
+    gate.close_log = state.log;
+    gate.notice = state.notice;
+    gate.captures = state.captures;
+    gate.active = state.active;
+    gate.hover = state.hover;
+    gate.siblings = state.siblings;
+    gate.redraw = state.redraw;
+    gate.redraws = state.redraws;
+}
+
+fn dismiss_list(windows: &mut [Window], count: i32, state: &mut CloseState) {
     if count <= 0 {
         return;
     }
@@ -148,35 +183,109 @@ fn dismiss_list(
     for window in windows[..end].iter_mut().rev() {
         if window.flags & DISMISS_MARK == DISMISS_MARK {
             window.dismissed = true;
-            order.push(window.name.clone());
-            close_window(window, 0, notice, log);
+            state.order.push(window.name.clone());
+            close_window(window, 0, state);
         }
     }
 }
 
-/// Close one window. An already closed window returns. A pinned window is
-/// marked closed and raises the notice, then its children close from the
-/// first to the last. The callback runs after those children. The capture
-/// release, the task's other children, detaching, and redraw are not in.
-fn close_window(window: &mut Window, arg: u32, notice: &mut bool, log: &mut Vec<String>) {
+/// Close one window. A capture is released before the already-closed return.
+/// A pinned window is marked closed and raises the notice. The active form
+/// stops after its callback. Any other form clears a hover, closes the task's
+/// children that name it, then its own children. A shown form hides. The
+/// callback runs, and a redraw is asked. Cursor restore is not in.
+fn close_window(window: &mut Window, arg: u32, state: &mut CloseState) {
+    release_capture(window, state);
     if window.closed {
         return;
     }
     if window.pinned {
         window.closed = true;
-        *notice = true;
+        state.notice = true;
     }
+    if state.active.as_deref() == Some(window.name.as_str()) {
+        run_close(window, state);
+        state.active = None;
+        window.closed = true;
+        window.seen_arg = Some(arg);
+        return;
+    }
+    if state.hover.as_deref() == Some(window.name.as_str()) {
+        state.hover = None;
+    }
+    close_named(window.name.clone(), arg, state);
     for child in &mut window.children {
         if !child.closed {
-            close_window(child, arg, notice, log);
+            close_window(child, arg, state);
         }
     }
-    if window.on_close {
-        window.close_ran = true;
-        log.push(window.name.clone());
-    }
+    hide_window(window, state);
+    run_close(window, state);
     window.closed = true;
     window.seen_arg = Some(arg);
+    ask_redraw(state);
+}
+
+fn release_capture(window: &mut Window, state: &mut CloseState) {
+    if window.flags & CAPTURE_BIT == 0 {
+        return;
+    }
+    let Some(index) = state.captures.iter().rposition(|name| name == &window.name) else {
+        return;
+    };
+    state.captures.remove(index);
+    window.flags &= !CAPTURE_BIT;
+}
+
+fn close_named(owner: String, arg: u32, state: &mut CloseState) {
+    let count = state.siblings.len();
+    for index in 0..count {
+        let named = !state.siblings[index].closed
+            && state.siblings[index].owner.as_deref() == Some(owner.as_str());
+        if !named {
+            continue;
+        }
+        let mut sibling = std::mem::replace(&mut state.siblings[index], blank_window());
+        close_window(&mut sibling, arg, state);
+        state.siblings[index] = sibling;
+    }
+}
+
+fn hide_window(window: &mut Window, state: &mut CloseState) {
+    if !window.visible {
+        return;
+    }
+    release_capture(window, state);
+    window.visible = false;
+    ask_redraw(state);
+}
+
+fn run_close(window: &mut Window, state: &mut CloseState) {
+    if window.on_close {
+        window.close_ran = true;
+        state.log.push(window.name.clone());
+    }
+}
+
+fn ask_redraw(state: &mut CloseState) {
+    state.redraw |= REDRAW_BITS;
+    state.redraws = state.redraws.saturating_add(1);
+}
+
+fn blank_window() -> Window {
+    Window {
+        name: String::new(),
+        flags: 0,
+        dismissed: false,
+        closed: true,
+        pinned: false,
+        on_close: false,
+        close_ran: false,
+        seen_arg: None,
+        children: Vec::new(),
+        owner: None,
+        visible: false,
+    }
 }
 
 #[cfg(test)]
@@ -256,6 +365,8 @@ mod tests {
             close_ran: false,
             seen_arg: None,
             children: Vec::new(),
+            owner: None,
+            visible: false,
         }
     }
 
@@ -351,5 +462,97 @@ mod tests {
         assert!(!gate.first[0].close_ran);
         assert!(!gate.first[0].children[0].closed);
         assert!(company.roster.is_empty());
+    }
+
+    #[test]
+    fn a_close_releases_a_capture_and_redraws() {
+        let mut gate = MatchGate::playing();
+        let mut shop = window("Shop", DISMISS_MARK | CAPTURE_BIT);
+        shop.visible = true;
+        shop.on_close = true;
+        let mut child = window("A", 0);
+        child.on_close = true;
+        shop.children = vec![child];
+        gate.first = vec![shop];
+        gate.first_count = 1;
+        gate.captures = vec!["Shop".to_string()];
+        gate.hover = Some("Shop".to_string());
+        let mut side = window("Side", 0);
+        side.owner = Some("Shop".to_string());
+        side.on_close = true;
+        let mut other = window("Other", 0);
+        other.owner = Some("Else".to_string());
+        other.on_close = true;
+        let mut done = window("Done", 0);
+        done.owner = Some("Shop".to_string());
+        done.closed = true;
+        done.on_close = true;
+        gate.siblings = vec![side, other, done];
+        let mut dying = hired_physician();
+        assert!(gate.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut dying));
+        assert!(gate.captures.is_empty());
+        assert_eq!(gate.first[0].flags & CAPTURE_BIT, 0);
+        assert!(gate.hover.is_none());
+        assert_eq!(
+            gate.close_log,
+            vec!["Side".to_string(), "A".to_string(), "Shop".to_string()]
+        );
+        assert!(gate.siblings[0].close_ran);
+        assert_eq!(gate.siblings[0].seen_arg, Some(0));
+        assert!(!gate.siblings[1].closed);
+        assert!(!gate.siblings[2].close_ran);
+        assert!(!gate.first[0].visible);
+        assert_eq!(gate.redraw, REDRAW_BITS);
+        assert_eq!(gate.redraws, 4);
+        assert!(dying.roster.is_empty());
+        assert_eq!(dying.deaths, 1);
+
+        let mut gate = MatchGate::playing();
+        let mut board = window("Board", DISMISS_MARK | CAPTURE_BIT);
+        board.closed = true;
+        board.on_close = true;
+        board.visible = true;
+        gate.first = vec![board];
+        gate.first_count = 1;
+        gate.captures = vec!["Board".to_string()];
+        gate.hover = Some("Board".to_string());
+        let mut company = Company::new("Ash");
+        assert!(gate.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert!(gate.captures.is_empty());
+        assert_eq!(gate.first[0].flags & CAPTURE_BIT, 0);
+        assert!(gate.close_log.is_empty());
+        assert_eq!(gate.redraws, 0);
+        assert_eq!(gate.hover.as_deref(), Some("Board"));
+        assert!(gate.first[0].visible);
+
+        let mut gate = MatchGate::playing();
+        let mut live = window("Live", DISMISS_MARK);
+        live.on_close = true;
+        gate.first = vec![live];
+        gate.first_count = 1;
+        gate.active = Some("Live".to_string());
+        gate.hover = Some("Live".to_string());
+        let mut side = window("Side", 0);
+        side.owner = Some("Live".to_string());
+        side.on_close = true;
+        gate.siblings = vec![side];
+        let mut company = Company::new("Ash");
+        assert!(gate.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert!(gate.active.is_none());
+        assert_eq!(gate.hover.as_deref(), Some("Live"));
+        assert!(!gate.siblings[0].closed);
+        assert_eq!(gate.close_log, vec!["Live".to_string()]);
+        assert_eq!(gate.redraws, 0);
+
+        let mut gate = MatchGate::playing();
+        let held = window("Held", DISMISS_MARK | CAPTURE_BIT);
+        gate.first = vec![held];
+        gate.first_count = 1;
+        gate.captures = vec!["Someone".to_string()];
+        let mut company = Company::new("Ash");
+        assert!(gate.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert_eq!(gate.captures, vec!["Someone".to_string()]);
+        assert_eq!(gate.first[0].flags & CAPTURE_BIT, CAPTURE_BIT);
+        assert!(gate.first[0].closed);
     }
 }
