@@ -25,7 +25,8 @@
 //! than the weight total picks the first team whose weights reach it. A
 //! bracket clears every losing id. The first group keeps a forced id and
 //! does not step the roll. A later group keeps the first team whose rounded
-//! weights pass the high half of the weight total times the stepped roll.
+//! weights pass the high half of the weight total times the stepped roll. A
+//! tournament field draws 16 of the 19 companies, numbered 1 through 19.
 //!
 //! Evidence: the arena career notes (money seed, coin rate, roster caps,
 //! the six standard matches and the seven specials, fee on entry, prize on
@@ -1006,6 +1007,41 @@ pub fn clear_losing_bracket(
     groups > 1
 }
 
+/// How many rival companies exist. A field draws [`RIVAL_FIELD`] of them.
+pub const RIVAL_COMPANIES: usize = 19;
+/// Rival companies named for one tournament.
+pub const RIVAL_FIELD: usize = 16;
+
+/// Draw 16 of the 19 rival companies.
+///
+/// The bag starts as 0 through 18. Each draw steps the roll by
+/// `× 0x08088405 + 1`. The high half of how many remain times that word
+/// chooses a slot. The stored id is one more than the value there. The
+/// remaining count shrinks first. When the new count minus 1 is still at
+/// least the chosen slot, each later value copies down one.
+pub fn draw_rival_field(roll: &mut u32) -> [i32; RIVAL_FIELD] {
+    let mut bag = [0i32; RIVAL_COMPANIES];
+    for (index, slot) in bag.iter_mut().enumerate() {
+        *slot = index as i32;
+    }
+    let mut drawn = [0i32; RIVAL_FIELD];
+    let mut remaining = RIVAL_COMPANIES as i32;
+    for slot in &mut drawn {
+        *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
+        let pick = ((i64::from(remaining).wrapping_mul(i64::from(*roll)) as u64) >> 32) as i32;
+        *slot = bag[pick as usize] + 1;
+        remaining -= 1;
+        let limit = remaining - 1;
+        if limit >= pick {
+            for index in pick..=limit {
+                let index = index as usize;
+                bag[index] = bag[index + 1];
+            }
+        }
+    }
+    drawn
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1589,5 +1625,23 @@ mod tests {
         roll = 7;
         assert!(!clear_losing_bracket(&mut [], 1, 2, 0, &mut roll));
         assert_eq!(roll, 7);
+    }
+
+    #[test]
+    fn a_tournament_draws_sixteen_rivals() {
+        let mut roll = 0u32;
+        let field = draw_rival_field(&mut roll);
+        assert_eq!(
+            field,
+            [1, 2, 17, 6, 8, 14, 9, 4, 11, 12, 3, 13, 5, 19, 7, 15]
+        );
+        assert_eq!(roll, 0x4b15_7bf0);
+        roll = 1;
+        let field = draw_rival_field(&mut roll);
+        assert_eq!(
+            field,
+            [1, 17, 5, 7, 14, 8, 4, 10, 11, 2, 13, 3, 18, 6, 12, 19]
+        );
+        assert_eq!(roll, 0xead3_2bb1);
     }
 }

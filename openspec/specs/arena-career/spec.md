@@ -109,3 +109,10 @@ A slot whose id is above 0 SHALL add its strength to the team. The team SHALL sc
 #### Scenario: A forced team stays and the next group is drawn
 - **WHEN** width 1 and two teams, ids 5 and 9 then 3 and 7, are cleared with force 5 from roll 1, one group of ids 1 and 9 is cleared from rolls 1 and 100, a width of 2 with a zero id of strength 100 beside id 1 against two ids of 3 is cleared from roll 4, and an empty list is cleared from roll 7
 - **THEN** the two groups leave ids 5, 0, 3 and 0, step the roll to 0x08088406, and report another group, roll 1 leaves id 1, roll 100 leaves id 9 at roll 0x235391f5, the zero id stays 0 while id 1 is cleared and both ids of 3 stay at roll 0x20221015, and the empty list reports no other group with roll 7
+
+### Requirement: Rival field
+A tournament field SHALL take 16 companies from the 19, numbered 1 through 19, and SHALL not repeat one. Each draw SHALL step the roll by multiplying by 0x08088405 and adding 1. The high half of how many remain times that word SHALL choose the bag slot. The id SHALL be one more than the value there. A slot that is not last SHALL close by copying each later value down one.
+
+#### Scenario: Roll 0 and roll 1 leave three companies out
+- **WHEN** a field is drawn from roll 0 and another from roll 1
+- **THEN** roll 0 yields 1, 2, 17, 6, 8, 14, 9, 4, 11, 12, 3, 13, 5, 19, 7, 15 and ends at 0x4b157bf0, and roll 1 yields 1, 17, 5, 7, 14, 8, 4, 10, 11, 2, 13, 3, 18, 6, 12, 19 and ends at 0xead32bb1
