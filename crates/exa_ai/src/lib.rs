@@ -237,6 +237,9 @@ fn duellist(
             other_large: target_body.is_some_and(|(_, _, _, foe)| foe.stats.rules.has(1)),
             melee: false,
             fight: true,
+            feral: fighter.stats.feral,
+            dull: fighter.stats.rules.has(4),
+            blow: place::Blow::default(),
         };
         if place::still_closing(dist * 100.0, spot) && !ai.holds_ground {
             body.desired_velocity = order.velocity;
