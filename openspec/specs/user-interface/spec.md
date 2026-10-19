@@ -682,3 +682,10 @@ With the still bit set, close mark -9 SHALL draw a strip from x0 plus one unit t
 #### Scenario: Other marks draw nothing
 - **WHEN** the still bit is set and the close mark is -4
 - **THEN** no close-edge tint is drawn
+
+### Requirement: Line opening wrapper
+Opening the line SHALL call the parent's open once and the texture load once.
+
+#### Scenario: The wrapper makes both calls
+- **WHEN** the line is opened
+- **THEN** the parent call count is 1 and the texture call count is 1

@@ -2889,6 +2889,21 @@ pub fn draw_line_shade(
     }
 }
 
+/// The two calls the line opening wrapper makes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineOpen {
+    pub parent_calls: u32,
+    pub texture_calls: u32,
+}
+
+/// Opens the line: the parent's open, then the texture load.
+pub fn open_line() -> LineOpen {
+    LineOpen {
+        parent_calls: 1,
+        texture_calls: 1,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5840,5 +5855,12 @@ mod tests {
         form.close_mark = -4;
         let none = dispatch_form(5, 0, form, &[]);
         assert!(none.close_edges.is_empty());
+    }
+
+    #[test]
+    fn a_line_open_makes_both_calls() {
+        let open = open_line();
+        assert_eq!(open.parent_calls, 1);
+        assert_eq!(open.texture_calls, 1);
     }
 }

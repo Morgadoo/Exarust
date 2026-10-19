@@ -136,7 +136,8 @@ State band 0x10000 selects the special ink with alpha 255. Opening a skin at
 unit 5 also stores a fifth extent of 20. With the still bit set, close mark
 -9 draws a tab tint from x0 plus one to three units between y0 and y0 plus two
 units, -10 draws it below y0, and -8 draws a four-unit square; the tint is
-255, 204, 153, 255.
+255, 204, 153, 255. Opening the line calls the parent's open once and the
+texture load once.
 
 ## Scope
 
