@@ -33,6 +33,10 @@ pub const FOLLOW_ARG: u8 = 1;
 pub const HAND_WORDS: [u32; 10] = [
     0x101, 0x2_0101, 0x102, 0x105, 0x1_0106, 0x107, 0x2_010b, 0, 0, 0,
 ];
+/// Code stored when a session mark changes to 0.
+pub const ENTERED_CODE: u32 = 4;
+/// Words copied from one control bank. The bytes between them are not copied.
+pub const BANK_WORDS: usize = 16;
 
 /// One held capture. The code is what a later release publishes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,6 +124,21 @@ pub struct MatchGate {
     pub focus_calls: u32,
     /// Session mark cleared to 0 when it was not already 0.
     pub session_mark: u8,
+    /// Stored as 0 when that mark changes to 0.
+    pub entered_flag: u8,
+    /// Stored as 4 when that mark changes to 0.
+    pub entered_code: u32,
+    /// Side 0 selects the first bank. Any other side selects the second.
+    pub bank_side: u8,
+    /// Raised when the side is not 0.
+    pub side_notice: u8,
+    /// Cleared by the first bank and set by the second. A match leaves the words.
+    pub bank_flag: u8,
+    pub bank_active: [u64; BANK_WORDS],
+    pub bank_first: [u64; BANK_WORDS],
+    pub bank_second: [u64; BANK_WORDS],
+    /// Times the install after a bank select was counted. The body is not in.
+    pub bank_installs: u32,
     /// A focus object is set, so the follow runs even with a mask of 0.
     pub focus: bool,
     /// Mask tested against argument 1.
@@ -176,6 +195,15 @@ impl MatchGate {
             shape_hooks: 0,
             focus_calls: 0,
             session_mark: 0,
+            entered_flag: 0,
+            entered_code: 0,
+            bank_side: 0,
+            side_notice: 0,
+            bank_flag: 0,
+            bank_active: [0; BANK_WORDS],
+            bank_first: [0; BANK_WORDS],
+            bank_second: [0; BANK_WORDS],
+            bank_installs: 0,
             focus: false,
             list_mask: 0,
             mode_word: 0,
@@ -427,7 +455,30 @@ fn follow_lists(gate: &mut MatchGate) {
     }
     if gate.focus && gate.session_mark != 0 {
         gate.session_mark = 0;
+        gate.entered_flag = 0;
+        gate.entered_code = ENTERED_CODE;
+        if gate.bank_side == 0 {
+            select_bank(gate, 1);
+        } else {
+            gate.side_notice = 1;
+            select_bank(gate, 2);
+        }
     }
+}
+
+/// Copy sixteen words when the bank flag does not already match, then count
+/// the install. The install body is not in.
+fn select_bank(gate: &mut MatchGate, mode: u8) {
+    if mode == 1 {
+        if gate.bank_flag != 0 {
+            gate.bank_flag = 0;
+            gate.bank_active = gate.bank_first;
+        }
+    } else if mode == 2 && gate.bank_flag == 0 {
+        gate.bank_flag = 1;
+        gate.bank_active = gate.bank_second;
+    }
+    gate.bank_installs = gate.bank_installs.saturating_add(1);
 }
 
 fn close_named(owner: String, arg: u32, state: &mut CloseState) {
@@ -934,5 +985,84 @@ mod tests {
         assert_eq!(mask.focus_calls, 0);
         assert_eq!(mask.session_mark, 1);
         assert!(mask.hands_set);
+    }
+
+    fn bank(first: u64) -> [u64; BANK_WORDS] {
+        let mut words = [0; BANK_WORDS];
+        words[0] = first;
+        words[15] = first + 1;
+        words
+    }
+
+    #[test]
+    fn a_cleared_mark_copies_one_control_bank() {
+        let mut first = MatchGate::playing();
+        first.focus = true;
+        first.session_mark = 1;
+        first.entered_flag = 3;
+        first.bank_flag = 1;
+        first.bank_first = bank(11);
+        let mut dying = hired_physician();
+        assert!(first.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut dying));
+        assert_eq!(first.session_mark, 0);
+        assert_eq!(first.entered_flag, 0);
+        assert_eq!(first.entered_code, ENTERED_CODE);
+        assert_eq!(first.bank_flag, 0);
+        assert_eq!(first.bank_active, bank(11));
+        assert_eq!(first.bank_installs, 1);
+        assert_eq!(first.side_notice, 0);
+        assert_eq!(dying.deaths, 1);
+
+        let mut second = MatchGate::playing();
+        second.focus = true;
+        second.session_mark = 1;
+        second.bank_side = 1;
+        second.bank_second = bank(22);
+        let mut company = Company::new("Ash");
+        assert!(second.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert_eq!(second.side_notice, 1);
+        assert_eq!(second.bank_flag, 1);
+        assert_eq!(second.bank_active, bank(22));
+        assert_eq!(second.entered_code, ENTERED_CODE);
+        assert_eq!(second.bank_installs, 1);
+
+        let mut stayed = MatchGate::playing();
+        stayed.focus = true;
+        stayed.entered_code = 9;
+        stayed.bank_flag = 1;
+        stayed.bank_active = bank(5);
+        stayed.bank_first = bank(11);
+        let mut company = Company::new("Ash");
+        assert!(stayed.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert_eq!(stayed.entered_code, 9);
+        assert_eq!(stayed.bank_flag, 1);
+        assert_eq!(stayed.bank_active, bank(5));
+        assert_eq!(stayed.bank_installs, 0);
+
+        let mut same = MatchGate::playing();
+        same.focus = true;
+        same.session_mark = 1;
+        same.bank_active = bank(7);
+        same.bank_first = bank(11);
+        let mut company = Company::new("Ash");
+        assert!(same.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert_eq!(same.bank_active, bank(7));
+        assert_eq!(same.bank_flag, 0);
+        assert_eq!(same.bank_installs, 1);
+        assert_eq!(same.entered_code, ENTERED_CODE);
+
+        let mut mask = MatchGate::playing();
+        mask.list_mask = 1;
+        mask.session_mark = 1;
+        mask.bank_flag = 1;
+        mask.bank_active = bank(5);
+        mask.bank_first = bank(11);
+        let mut company = Company::new("Ash");
+        assert!(mask.begin_match(IN_GAME_PAGE, BEGIN_COMMAND, PlayKind::Arena, &mut company));
+        assert_eq!(mask.bank_installs, 0);
+        assert_eq!(mask.entered_code, 0);
+        assert_eq!(mask.session_mark, 1);
+        assert_eq!(mask.bank_active, bank(5));
+        assert_eq!(mask.bank_flag, 1);
     }
 }
