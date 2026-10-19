@@ -16,6 +16,8 @@
 //! lies dormant: the dormant condition and flag, tone 0, a statue, and
 //! gait 2. The tick after that changes nothing. Seeing a contact, and only
 //! when the flags are exactly the dormant flag, knocks that sleeper out.
+//! For 1500 ms the tone stays 0. Then it rises by 0.001 a tick, and the
+//! clip base climbs by 0.01 a tick after 8 s until the tone is 1.
 
 use bevy::math::{Vec2, Vec3};
 use exa_combat::condition::{Condition, StateFlags};
@@ -505,6 +507,85 @@ pub fn see_target(
     true
 }
 
+/// Tone and clip base of a body that is waking from a knock-out.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WakeRise {
+    pub clip: f32,
+    /// Getting-up clip phase, used only while the condition is getting up.
+    pub phase: f32,
+    /// The stored tone target. It stays 0 until the clip base reaches 1.
+    pub target: f32,
+}
+
+const WAKE_STILL_MS: u32 = 1_500;
+const WAKE_CLIMB_MS: u32 = 8_000;
+const TONE_STEP: f64 = 0.001;
+const CLIP_STEP: f64 = 0.01;
+const CLIP_LIE: f32 = 0.4;
+const WAKE_NIBBLE: u32 = 0xF0;
+
+fn wake_past(since: i32, wait: u32, now: u32) -> bool {
+    u64::from(since as u32) + u64::from(wait) < u64::from(now)
+}
+
+fn add_step(value: f32, step: f64) -> f32 {
+    (f64::from(value) + step) as f32
+}
+
+/// One tick of the tone rise after a knock-out.
+///
+/// Nothing changes unless the waking flag is set. Through 1500 ms the tone
+/// and its stored target stay 0, the clip base is 0.4, the condition is
+/// down, and the dormant and waking flags are set. After that the tone
+/// gains 0.001, plus 0.001·(1 − phase)² while getting up, and the stored
+/// target stays. The dormant flag clears unless the body is held. After 8 s
+/// the clip base gains 0.01 a tick, and at 1 the tone is 1, the target is
+/// the stance factor, and the flags clear unless held. The awaken script
+/// and the weapon refresh are not in this slice. Returns whether this tick
+/// is the one that drops the dormant flag.
+pub fn rise(sleeper: &mut Sleeper, drive: &mut Drive, wake: &mut WakeRise, now: u32) -> bool {
+    if !sleeper.flags.has(StateFlags::WAKING) {
+        return false;
+    }
+    if !wake_past(sleeper.wake_at, WAKE_STILL_MS, now) {
+        wake.target = 0.0;
+        drive.tone = 0.0;
+        wake.clip = CLIP_LIE;
+        sleeper.flags.0 |= StateFlags::DORMANT | StateFlags::WAKING;
+        sleeper.condition = Condition::DOWN;
+        return false;
+    }
+    let step = if sleeper.condition == Condition::GETTING_UP {
+        let gap = 1.0 - wake.phase;
+        f64::from(gap * gap) * TONE_STEP + TONE_STEP
+    } else {
+        TONE_STEP
+    };
+    drive.tone = add_step(drive.tone, step);
+    if 1.0 < drive.tone {
+        drive.tone = 1.0;
+    }
+    if wake_past(sleeper.wake_at, WAKE_CLIMB_MS, now) {
+        wake.clip = add_step(wake.clip, CLIP_STEP);
+        if 1.0 <= wake.clip {
+            wake.clip = 1.0;
+            drive.tone = 1.0;
+            wake.target = drive.stance();
+            if !sleeper.flags.has(StateFlags::HELD) {
+                sleeper.flags.0 &= !WAKE_NIBBLE;
+            }
+        }
+        return false;
+    }
+    if sleeper.flags.has(StateFlags::HELD) {
+        sleeper.flags.0 |= StateFlags::DORMANT | StateFlags::WAKING | StateFlags::HELD;
+        return false;
+    }
+    let awaken = sleeper.flags.has(StateFlags::DORMANT);
+    sleeper.flags.0 = (sleeper.flags.0 & !WAKE_NIBBLE) | StateFlags::WAKING;
+    awaken
+}
+
 /// One idle tick. A sentry guards. A roam or a patrol stands, then walks.
 pub fn tick(routine: &mut Routine, moment: &Moment) -> Act {
     if routine.kind == Kind::Sentry {
@@ -982,5 +1063,151 @@ mod tests {
         assert!(marked.statue);
         assert_eq!(marked_roles, vec![SLEEP_ROLE]);
         assert_eq!(marked.sighted, 0);
+    }
+
+    fn knocked_out() -> (Sleeper, Drive) {
+        let mut sleeper = Sleeper {
+            condition: Condition::WALKING,
+            flags: StateFlags(0),
+            statue: false,
+            gait: 0,
+            tick: IdleTick::Active,
+            sighted: 0,
+            wake_at: -1,
+        };
+        let mut drive = Drive::default();
+        let mut roles = vec![SLEEP_ROLE];
+        let mut body = limp();
+        sleep(&mut sleeper, &mut drive);
+        assert!(see_target(
+            &mut sleeper,
+            &mut drive,
+            &mut body,
+            &mut roles,
+            true,
+            0
+        ));
+        (sleeper, drive)
+    }
+
+    #[test]
+    fn a_knock_out_keeps_tone_at_zero_then_rises_by_a_thousandth() {
+        let (mut sleeper, mut drive) = knocked_out();
+        let mut wake = WakeRise {
+            clip: 0.0,
+            phase: 0.0,
+            target: 4.0,
+        };
+        assert!(!rise(&mut sleeper, &mut drive, &mut wake, 1_500));
+        assert_eq!(drive.tone, 0.0);
+        assert_eq!(wake.target, 0.0);
+        assert_eq!(wake.clip, 0.4);
+        assert_eq!(sleeper.condition, Condition::DOWN);
+        assert_eq!(sleeper.flags.0, StateFlags::DORMANT | StateFlags::WAKING);
+
+        assert!(rise(&mut sleeper, &mut drive, &mut wake, 1_501));
+        assert!((drive.tone - 0.001).abs() < 1e-6);
+        assert_eq!(wake.target, 0.0);
+        assert_eq!(sleeper.flags.0, StateFlags::WAKING);
+        assert_eq!(sleeper.condition, Condition::DOWN);
+
+        assert!(!rise(&mut sleeper, &mut drive, &mut wake, 1_502));
+        assert!((drive.tone - 0.002).abs() < 1e-6);
+        assert_eq!(sleeper.flags.0, StateFlags::WAKING);
+
+        let (mut sleeper, mut drive) = knocked_out();
+        let mut wake = WakeRise {
+            clip: 0.4,
+            phase: 0.0,
+            target: 0.0,
+        };
+        rise(&mut sleeper, &mut drive, &mut wake, 1_500);
+        sleeper.condition = Condition::GETTING_UP;
+        wake.phase = 0.0;
+        rise(&mut sleeper, &mut drive, &mut wake, 1_501);
+        assert!((drive.tone - 0.002).abs() < 1e-6);
+        assert_eq!(wake.target, 0.0);
+        assert_eq!(sleeper.condition, Condition::GETTING_UP);
+
+        let (mut sleeper, mut drive) = knocked_out();
+        let mut wake = WakeRise {
+            clip: 0.4,
+            phase: 1.0,
+            target: 0.0,
+        };
+        rise(&mut sleeper, &mut drive, &mut wake, 1_500);
+        sleeper.condition = Condition::GETTING_UP;
+        rise(&mut sleeper, &mut drive, &mut wake, 1_501);
+        assert!((drive.tone - 0.001).abs() < 1e-6);
+
+        let (mut sleeper, mut drive) = knocked_out();
+        sleeper.flags.0 |= StateFlags::HELD;
+        let mut wake = WakeRise {
+            clip: 0.4,
+            phase: 0.0,
+            target: 0.0,
+        };
+        assert!(!rise(&mut sleeper, &mut drive, &mut wake, 1_501));
+        assert_eq!(
+            sleeper.flags.0,
+            StateFlags::DORMANT | StateFlags::WAKING | StateFlags::HELD
+        );
+
+        let (mut sleeper, mut drive) = knocked_out();
+        let mut wake = WakeRise {
+            clip: 0.4,
+            phase: 0.0,
+            target: 0.0,
+        };
+        rise(&mut sleeper, &mut drive, &mut wake, 8_000);
+        assert_eq!(wake.clip, 0.4);
+        assert!((drive.tone - 0.001).abs() < 1e-6);
+
+        let (mut sleeper, mut drive) = knocked_out();
+        let mut wake = WakeRise {
+            clip: 0.995,
+            phase: 0.0,
+            target: 4.0,
+        };
+        rise(&mut sleeper, &mut drive, &mut wake, 8_001);
+        assert_eq!(wake.clip, 1.0);
+        assert_eq!(drive.tone, 1.0);
+        assert_eq!(wake.target, drive.stance());
+        assert_eq!(drive.tone_target(), drive.stance());
+        assert_eq!(sleeper.flags.0, 0);
+
+        let (mut sleeper, mut drive) = knocked_out();
+        sleeper.flags.0 |= StateFlags::HELD;
+        let mut wake = WakeRise {
+            clip: 0.995,
+            phase: 0.0,
+            target: 4.0,
+        };
+        rise(&mut sleeper, &mut drive, &mut wake, 8_001);
+        assert_eq!(drive.tone, 1.0);
+        assert_eq!(wake.target, drive.stance());
+        assert!(sleeper.flags.has(StateFlags::HELD));
+        assert!(sleeper.flags.has(StateFlags::WAKING));
+
+        let mut sleeper = Sleeper {
+            condition: Condition::DORMANT,
+            flags: StateFlags(StateFlags::DORMANT),
+            statue: true,
+            gait: 2,
+            tick: IdleTick::Sleep,
+            sighted: 0,
+            wake_at: 0,
+        };
+        let mut drive = Drive::default();
+        drive.tone = 0.5;
+        let mut wake = WakeRise {
+            clip: 0.9,
+            phase: 0.0,
+            target: 3.0,
+        };
+        assert!(!rise(&mut sleeper, &mut drive, &mut wake, 9_000));
+        assert_eq!(drive.tone, 0.5);
+        assert_eq!(wake.clip, 0.9);
+        assert_eq!(sleeper.condition, Condition::DORMANT);
     }
 }
