@@ -875,8 +875,9 @@ Done (change `show-a-shield-bar`): weight 5 is 0.05 and impact 20 is 1. Encumbra
 Done (change `show-rank-in-the-arena`): menu 0 entering arena 8 turns rank and points on. Arena entering story turns them off. Story entering practice turns them off. Staying in practice, leaving mode 6 for practice, and leaving arena for mode 1 keep them on. Skill 0x21 is Aspirant and 0.5. Skill 0xc0 is a dash. Skill 0xe0 has no name. Skill 0x1f is 15.5. A closed gate shows neither.
 Done (change `pick-a-description-phrase`): value 11 misses a row of 0 to 10 and keeps roll 7. Value 5 turns "fine" into " fine." and the roll into 1. Roll 16 chooses " beta." and becomes 0x80884051. "fine x" and "Fine x" add nothing before "fine work". "fin x" and a bare "fine" become " fine work.". A comma phrase becomes ", but torn.". "the x" becomes " the item here.".
 Done (change `wrap-a-weapon-sentence`): "ab" stays "ab". "sword" is "A well sword sharp." at roll 0x08088406. "edge." is "An edge edge sharp.". Quality 0 on "Sword [x]" is "SwordIt is well, but sharp.". Quality 131 is "SwordIt is well and sharp.". "Blade [c]" is "BladeIt is sharp." at roll 1. "-blade" is "A prime blade keen.". A missed flawless row uses "ok".
-Done (change `edit-a-fixed-name`): "ab" stays "ab". "Sword" stays "Sword". "axe" is "An axe". "Zed" is "A Zed". "zed" is "A zed". A mark between "ab" and "xy" becomes "An aby". A mark at the end of "ab" becomes "An ab". A leading mark before "cde" becomes "A de". "Za" and a mark before "bc" becomes "A Zac". The roll does not step. Still to
-do: the apparel sentence, injuries beyond damage, grabs, practice mode,
+Done (change `edit-a-fixed-name`): "ab" stays "ab". "Sword" stays "Sword". "axe" is "An axe". "Zed" is "A Zed". "zed" is "A zed". A mark between "ab" and "xy" becomes "An aby". A mark at the end of "ab" becomes "An ab". A leading mark before "cde" becomes "A de". "Za" and a mark before "bc" becomes "A Zac". The roll does not step.
+Done (change `wrap-an-apparel-sentence`): "ab" stays "ab". "axe" is "An axe". "coat" is "A well coat sharp." at roll 0x08088406, and material 1 names the side "Wool line" without changing that text. "edge" is "An edge coat sharp.". Quality 0 on "Coat[p!]" is "CoatThey are well, but sharp.". Quality 131 is "CoatThey are well and sharp.". Both high marks stay ", but". "Coat[x!]" is "CoatIt is well, but sharp.". "ax" plus a mark plus "e[pc]" is "ax" plus a mark plus "eIt is sharp." at roll 1, and the side stays. "a coat" is "A well a coat sharp.". "coat." is "A well coat sharp.". "A coat. lined" is "A well coat sharp. lined". Material 9 on a mark between "ab" and "xy" is "A well aby sharp.". Material "wool" is "A well abwool y sharp." with side "Wool line". "oak" before "cde" is "A well oak de sharp.". Fourteen missed rows hide a fifteenth "yes", leaving "A  coat ok." at roll 1. Still to
+do: injuries beyond damage, grabs, practice mode,
 the striker's recoil
 and follow-through (C21, M26), the collapse's stagger steps; next in the
 combat timing: the unarmed parries (L10).
@@ -1149,8 +1150,12 @@ against Exarust and lists the largest missing ones. In order:
    from the rows whose range holds the value, and a repeated long word
    adds nothing. A weapon sentence wraps that phrase with the name,
    "It is", ", but" or " and", and "A " or "An ". When the id word is
-   -1, a 0x10 byte and the byte after it are deleted. The apparel
-   sentence is not.
+   -1, a 0x10 byte and the byte after it are deleted. An apparel sentence
+   drops four letters from a bracket, says "They are " or "It is", joins
+   the same side of 50 with ", but", strips a leading "A ", and keeps a
+   non-final dot as a tail. Quality reads 14 made rows. A material from 1
+   through 8 uppercases a side prefix, and a 0x10 there is replaced by
+   the material name and a space. Injuries beyond damage are not.
 3. The original's NPC brain: perception, targets and the combat state that
    drives the same inputs as the player (Phase 6). A path on the grid, the
    look-ahead, and an order that writes the player's heading and velocity

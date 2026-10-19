@@ -13,7 +13,7 @@
 //! units shifts it. A shield card shows weight, impact, and encumbrance.
 //! Arena turns rank and points on. Story and practice turn them off.
 //! A description phrase is drawn from the rows whose range holds the
-//! value, and the card wraps that phrase into a sentence.
+//! value. A weapon sentence and an apparel sentence each wrap that phrase.
 //!
 //! Evidence: the item-card page choice.
 
@@ -493,22 +493,7 @@ fn takes_an(text: &str) -> bool {
 /// Delete the 0x10 pair, then add an article when the first byte is at least Z.
 fn fixed_name(name: &str) -> String {
     let mut bytes = name.as_bytes().to_vec();
-    if let Some(pos) = bytes.iter().position(|&byte| byte == 0x10) {
-        let position = pos + 1;
-        let len = bytes.len();
-        let end = len - 2;
-        if end >= position {
-            let mut cursor = position - 1;
-            loop {
-                cursor += 1;
-                bytes[cursor - 1] = bytes[cursor + 1];
-                if end <= cursor {
-                    break;
-                }
-            }
-        }
-        bytes.truncate(len - 2);
-    }
+    drop_mark(&mut bytes);
     let text = String::from_utf8_lossy(&bytes);
     if text.as_bytes().first().is_some_and(|byte| *byte >= b'Z') {
         if takes_an(&text) {
@@ -519,6 +504,236 @@ fn fixed_name(name: &str) -> String {
     } else {
         text.into_owned()
     }
+}
+
+/// Delete the first 0x10 and the byte after it, shortening by two.
+fn drop_mark(bytes: &mut Vec<u8>) {
+    let Some(pos) = bytes.iter().position(|&byte| byte == 0x10) else {
+        return;
+    };
+    let position = pos + 1;
+    let len = bytes.len();
+    if len < 2 {
+        return;
+    }
+    let end = len - 2;
+    if end >= position {
+        let mut cursor = position - 1;
+        loop {
+            cursor += 1;
+            bytes[cursor - 1] = bytes[cursor + 1];
+            if end <= cursor {
+                break;
+            }
+        }
+    }
+    bytes.truncate(len - 2);
+}
+
+/// Quality, condition, and the material name the caller supplies.
+#[derive(Debug, Clone, Copy)]
+pub struct ApparelLine<'a> {
+    pub quality: u8,
+    pub condition: u8,
+    pub material: u8,
+    pub material_name: &'a str,
+    pub side: &'a str,
+}
+
+/// The roll, the sentence, and the side line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApparelSentence {
+    pub state: u32,
+    pub text: String,
+    pub side: String,
+}
+
+/// Wrap an apparel name with its quality phrase and a condition phrase.
+///
+/// A name of two letters or fewer is unchanged. When `fixed` is set, the
+/// id word is -1 and the fixed-name edit runs. A bracket loses its last
+/// four letters. A `p` two before that bracket, and not a `c` just before
+/// it, uses "They are ". A `c` just before it keeps the name plus "It is"
+/// and skips the quality roll. Any other bracket uses "It is ". The same
+/// side of 50 joins with ", but", and differing sides with " and". A
+/// leading "A " is removed. A dot that is not the last character saves the
+/// tail, which is appended after the condition phrase. Quality reads the
+/// first 14 made rows. Condition uses flawless, then perfect. An
+/// unbracketed sentence takes "An " or "A ". A material from 1 through 8
+/// uppercases a lowercase side prefix. With a 0x10, that material name and
+/// a space replace the mark and the next byte. Any other mark is deleted.
+pub fn apparel_sentence(
+    state: u32,
+    name: &str,
+    fixed: bool,
+    line: ApparelLine<'_>,
+    tables: &PhraseTables<'_>,
+) -> ApparelSentence {
+    if name.len() < 3 {
+        return ApparelSentence {
+            state,
+            text: name.to_string(),
+            side: line.side.to_string(),
+        };
+    }
+    if fixed {
+        return ApparelSentence {
+            state,
+            text: fixed_name(name),
+            side: line.side.to_string(),
+        };
+    }
+    let mut bytes = name.as_bytes().to_vec();
+    let mut tail = String::new();
+    let bracket = bytes.last() == Some(&b']');
+    let plural = bracket && bytes.len() >= 3 && bytes[bytes.len() - 3] == b'p';
+    let crafted = bracket && bytes.len() >= 2 && bytes[bytes.len() - 2] == b'c';
+    if bracket {
+        if bytes.len() >= 4 {
+            bytes.truncate(bytes.len() - 4);
+        } else {
+            bytes.clear();
+        }
+    } else {
+        if bytes.len() >= 2 && bytes[0] == b'A' && bytes[1] == b' ' {
+            bytes.drain(..2);
+        }
+        if bytes.len() >= 2
+            && let Some(index) = bytes[..bytes.len() - 1]
+                .iter()
+                .position(|&byte| byte == b'.')
+        {
+            tail = String::from_utf8_lossy(&bytes[index + 1..]).into_owned();
+            bytes.truncate(index + 1);
+        }
+    }
+    if bytes.last() == Some(&b'.') {
+        bytes.pop();
+    }
+    let mut name = String::from_utf8_lossy(&bytes).into_owned();
+    let mut side = line.side.to_string();
+    let quality_mark = scale_mark(line.quality);
+    let condition_mark = scale_mark(line.condition);
+    let (state, quality_text) = if crafted {
+        (state, String::new())
+    } else {
+        let rows = tables.made.len().min(14);
+        let (state, chosen) = raw_phrase(state, quality_mark, &tables.made[..rows]);
+        let (edited, next_side) = apply_material(&name, line.material, line.material_name, &side);
+        name = edited;
+        side = next_side;
+        (state, chosen.unwrap_or_default())
+    };
+    let mut text = if crafted {
+        format!("{name}It is")
+    } else if bracket {
+        let join = if (quality_mark <= 50) == (condition_mark <= 50) {
+            ", but"
+        } else {
+            " and"
+        };
+        let verb = if plural { "They are " } else { "It is " };
+        format!("{name}{verb}{quality_text}{join}")
+    } else {
+        format!("{quality_text} {name}")
+    };
+    let first = pick_phrase(state, condition_mark, tables.flawless, &quality_text);
+    let picked = if first.text.is_none() {
+        pick_phrase(first.state, condition_mark, tables.perfect, &quality_text)
+    } else {
+        first
+    };
+    if let Some(extra) = &picked.text {
+        text.push_str(extra);
+    }
+    text.push_str(&tail);
+    if !bracket {
+        text = if takes_an(&text) {
+            format!("An {text}")
+        } else {
+            format!("A {text}")
+        };
+    }
+    ApparelSentence {
+        state: picked.state,
+        text,
+        side,
+    }
+}
+
+fn apply_material(name: &str, material: u8, material_name: &str, side: &str) -> (String, String) {
+    let valid = (1..=8).contains(&material);
+    let marked = name.as_bytes().contains(&0x10);
+    if !valid {
+        if marked {
+            let mut bytes = name.as_bytes().to_vec();
+            drop_mark(&mut bytes);
+            return (
+                String::from_utf8_lossy(&bytes).into_owned(),
+                side.to_string(),
+            );
+        }
+        return (name.to_string(), side.to_string());
+    }
+    let side = material_side(material_name, side);
+    if marked && !material_name.is_empty() {
+        (splice_material(name, material_name), side)
+    } else if marked {
+        let mut bytes = name.as_bytes().to_vec();
+        drop_mark(&mut bytes);
+        (String::from_utf8_lossy(&bytes).into_owned(), side)
+    } else {
+        (name.to_string(), side)
+    }
+}
+
+fn material_side(material: &str, side: &str) -> String {
+    let mut bytes = format!("{material} {side}").into_bytes();
+    if let Some(first) = bytes.first_mut()
+        && first.is_ascii_lowercase()
+    {
+        *first = first.to_ascii_uppercase();
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// Replace the 0x10 and the next byte with the material name and a space.
+fn splice_material(name: &str, material: &str) -> String {
+    let mut bytes = name.as_bytes().to_vec();
+    let Some(pos) = bytes.iter().position(|&byte| byte == 0x10) else {
+        return name.to_string();
+    };
+    let mark = pos + 1;
+    let mat = material.as_bytes();
+    let new_len = bytes.len() + mat.len() - 1;
+    bytes.resize(new_len, 0);
+    let stop = mark + 1;
+    if stop <= new_len {
+        let mut cursor = new_len + 1;
+        loop {
+            cursor -= 1;
+            let dest = cursor - 1;
+            let src = cursor as isize - mat.len() as isize;
+            if src >= 0 {
+                bytes[dest] = bytes[src as usize];
+            }
+            if cursor <= stop {
+                break;
+            }
+        }
+    }
+    let start = mark - 1;
+    for (index, &byte) in mat.iter().enumerate() {
+        let at = start + index;
+        if at < bytes.len() {
+            bytes[at] = byte;
+        }
+    }
+    let space_at = mark + mat.len() - 1;
+    if space_at < bytes.len() {
+        bytes[space_at] = b' ';
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 fn shares_long_word(so_far: &str, phrase: &str) -> bool {
@@ -932,6 +1147,157 @@ mod tests {
         assert_eq!(
             item_sentence(0, "Za\u{10}bc", true, 0, 0, &rows).text,
             "A Zac"
+        );
+    }
+
+    fn line<'a>(
+        quality: u8,
+        condition: u8,
+        material: u8,
+        material_name: &'a str,
+        side: &'a str,
+    ) -> ApparelLine<'a> {
+        ApparelLine {
+            quality,
+            condition,
+            material,
+            material_name,
+            side,
+        }
+    }
+
+    fn apparel(
+        state: u32,
+        name: &str,
+        fixed: bool,
+        line: ApparelLine<'_>,
+        tables: &PhraseTables<'_>,
+    ) -> ApparelSentence {
+        apparel_sentence(state, name, fixed, line, tables)
+    }
+
+    #[test]
+    fn an_apparel_sentence_wraps_the_phrase_it_picks() {
+        let made = [phrase("well", 0, 255)];
+        let edge = [phrase("edge", 0, 255)];
+        let flawless = [phrase("sharp", 0, 255)];
+        let perfect = [phrase("ok", 0, 255)];
+        let rows = tables(&made, &[], &flawless, &perfect, &[]);
+        let edge_rows = tables(&edge, &[], &flawless, &perfect, &[]);
+        assert_eq!(
+            apparel(5, "ab", false, line(0, 0, 0, "", "keep"), &rows),
+            ApparelSentence {
+                state: 5,
+                text: "ab".to_string(),
+                side: "keep".to_string(),
+            }
+        );
+        assert_eq!(
+            apparel(4, "axe", true, line(9, 9, 1, "wool", "line"), &rows),
+            ApparelSentence {
+                state: 4,
+                text: "An axe".to_string(),
+                side: "line".to_string(),
+            }
+        );
+        assert_eq!(
+            apparel(0, "coat", false, line(0, 0, 0, "", "line"), &rows),
+            ApparelSentence {
+                state: 0x0808_8406,
+                text: "A well coat sharp.".to_string(),
+                side: "line".to_string(),
+            }
+        );
+        assert_eq!(
+            apparel(0, "coat", false, line(0, 0, 1, "wool", "line"), &rows),
+            ApparelSentence {
+                state: 0x0808_8406,
+                text: "A well coat sharp.".to_string(),
+                side: "Wool line".to_string(),
+            }
+        );
+        assert_eq!(
+            apparel(0, "coat", false, line(0, 0, 0, "", "line"), &edge_rows).text,
+            "An edge coat sharp."
+        );
+        assert_eq!(
+            apparel(0, "Coat[p!]", false, line(0, 0, 0, "", "line"), &rows).text,
+            "CoatThey are well, but sharp."
+        );
+        assert_eq!(
+            apparel(0, "Coat[p!]", false, line(131, 0, 0, "", "line"), &rows).text,
+            "CoatThey are well and sharp."
+        );
+        assert_eq!(
+            apparel(0, "Coat[p!]", false, line(131, 131, 0, "", "line"), &rows).text,
+            "CoatThey are well, but sharp."
+        );
+        assert_eq!(
+            apparel(0, "Coat[x!]", false, line(0, 0, 0, "", "line"), &rows).text,
+            "CoatIt is well, but sharp."
+        );
+        assert_eq!(
+            apparel(
+                0,
+                "ax\u{10}e[pc]",
+                false,
+                line(0, 0, 1, "wool", "line"),
+                &rows
+            ),
+            ApparelSentence {
+                state: 1,
+                text: "ax\u{10}eIt is sharp.".to_string(),
+                side: "line".to_string(),
+            }
+        );
+        assert_eq!(
+            apparel(0, "a coat", false, line(0, 0, 0, "", "line"), &rows).text,
+            "A well a coat sharp."
+        );
+        assert_eq!(
+            apparel(0, "coat.", false, line(0, 0, 0, "", "line"), &rows).text,
+            "A well coat sharp."
+        );
+        assert_eq!(
+            apparel(0, "A coat. lined", false, line(0, 0, 0, "", "line"), &rows).text,
+            "A well coat sharp. lined"
+        );
+        assert_eq!(
+            apparel(0, "ab\u{10}xy", false, line(0, 0, 9, "", "line"), &rows),
+            ApparelSentence {
+                state: 0x0808_8406,
+                text: "A well aby sharp.".to_string(),
+                side: "line".to_string(),
+            }
+        );
+        assert_eq!(
+            apparel(0, "ab\u{10}xy", false, line(0, 0, 1, "wool", "line"), &rows),
+            ApparelSentence {
+                state: 0x0808_8406,
+                text: "A well abwool y sharp.".to_string(),
+                side: "Wool line".to_string(),
+            }
+        );
+        assert_eq!(
+            apparel(0, "\u{10}cde", false, line(0, 0, 1, "oak", "line"), &rows).text,
+            "A well oak de sharp."
+        );
+        let mut wide = vec![phrase("no", 200, 255); 14];
+        wide.push(phrase("yes", 0, 255));
+        let missed = [phrase("late", 200, 255)];
+        assert_eq!(
+            apparel(
+                0,
+                "coat",
+                false,
+                line(0, 0, 0, "", "line"),
+                &tables(&wide, &[], &missed, &perfect, &[])
+            ),
+            ApparelSentence {
+                state: 1,
+                text: "A  coat ok.".to_string(),
+                side: "line".to_string(),
+            }
         );
     }
 }
