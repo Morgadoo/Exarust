@@ -78,7 +78,10 @@ none. A clear hold bit draws the wider quad, from 60, 80 to 80, 90 at height
 100. When mask bits 4 and 8 are not both set, the tab bit draws a quad from
 70, 50 to 110, 90 at unit 5, width 100 and height 80. Both bits set draw the
 bottom quad instead. A clear tab bit draws the same corners, and a clear
-hold bit draws none of either. The join after that quad is not in.
+hold bit draws none of either. On that band, a close mark of -4 draws one
+square from 80, 0 to 100, 20 at unit 5 and width 100. The earlier square
+remains. A mark of 0 or -3, a style that is not that band, and a wide bit
+draw none of this square. The call after that square is not in.
 
 ## Scope
 

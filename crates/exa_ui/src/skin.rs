@@ -782,8 +782,9 @@ pub struct TitleDraw {
 /// the wider strip, or the narrower one when that bit is clear, and
 /// the wider quad either way. When mask bits 4 and 8 differ, the tab
 /// bit draws a quad past that corner, and a clear tab bit draws the
-/// same corners. A clear hold bit draws none of either. The helper
-/// body and the join after those quads are not in.
+/// same corners. A clear hold bit draws none of either. On that band,
+/// a close mark of -4 draws one square. The helper body and the call
+/// after that square are not in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormDispatch {
     pub span_a: i32,
@@ -837,6 +838,7 @@ pub struct FormDispatch {
     pub held_sill: Vec<SliderQuad>,
     pub held_drape: Vec<SliderQuad>,
     pub held_fold: Vec<SliderQuad>,
+    pub band_close: Vec<SliderQuad>,
     /// Mask forced when the hold bit is clear. The held mask stays separate.
     pub open_mask: u32,
     pub open_calls: u32,
@@ -1699,6 +1701,21 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
     } else {
         Vec::new()
     };
+    let band_close = if (on_hold || on_open) && place.close_mark == -4 {
+        let span = unit.wrapping_shl(2);
+        let width = place.width;
+        vec![quad(
+            FORM_CLOSE_INK,
+            [
+                (width, 0),
+                (width.wrapping_sub(span), 0),
+                (width.wrapping_sub(span), span),
+                (width, span),
+            ],
+        )]
+    } else {
+        Vec::new()
+    };
     FormDispatch {
         span_a,
         span_b,
@@ -1756,6 +1773,7 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         held_sill,
         held_drape,
         held_fold,
+        band_close,
         open_mask,
         open_calls,
         open_tab,
@@ -3853,5 +3871,60 @@ mod tests {
 
         form.flags_d = 0x10;
         assert!(dispatch_form(5, 0, form, &[]).held_fold.is_empty());
+    }
+
+    #[test]
+    fn a_dispatch_draws_the_band_close() {
+        let mut form = place(FORM_HOLD, 0, 0, 0, 0, 0);
+        form.flags_d = 0x80;
+        form.close_mark = -4;
+        form.edge_x = 4;
+        form.edge_y = 4;
+        form.room_far_x = 400;
+        form.room_far_y = 80;
+        let drawn = dispatch_form(5, 0, form, &[]);
+        assert_eq!(drawn.held_fold.len(), 1);
+        assert_eq!(drawn.late_close.len(), 1);
+        assert_eq!(drawn.band_close.len(), 1);
+        assert_eq!(drawn.band_close[0].sample, FORM_CLOSE_INK);
+        assert_eq!(
+            drawn.band_close[0].corners,
+            [(100, 0), (80, 0), (80, 20), (100, 20)]
+        );
+
+        form.room_far_x = 100;
+        form.flags_b = FORM_TAB;
+        let both = dispatch_form(5, 0, form, &[]);
+        assert_eq!(both.held_sill.len(), 1);
+        assert_eq!(both.band_close.len(), 1);
+
+        form.close_mark = 0;
+        assert!(dispatch_form(5, 0, form, &[]).band_close.is_empty());
+        form.close_mark = -3;
+        assert!(dispatch_form(5, 0, form, &[]).band_close.is_empty());
+
+        form.close_mark = -4;
+        form.flags_d = 0x10;
+        let plain = dispatch_form(5, 0, form, &[]);
+        assert!(plain.band_close.is_empty());
+        assert_eq!(plain.late_close.len(), 1);
+
+        form.flags_d = 0x80;
+        form.flags_b = FORM_BOX;
+        let wide = dispatch_form(5, 0, form, &[]);
+        assert!(wide.band_close.is_empty());
+        assert_eq!(wide.late_close.len(), 1);
+
+        form.flags_a = 0;
+        form.flags_b = 0;
+        form.height = 100;
+        let open = dispatch_form(5, 0, form, &[]);
+        assert!(open.held_fold.is_empty());
+        assert_eq!(open.open_sill.len(), 1);
+        assert_eq!(open.band_close.len(), 1);
+        assert_eq!(
+            open.band_close[0].corners,
+            [(100, 0), (80, 0), (80, 20), (100, 20)]
+        );
     }
 }
