@@ -29,7 +29,8 @@ pub use hud::{DrawHud, HudBars};
 pub use loading::LoadingStatus;
 pub use scale::GuiScale;
 pub use skin::{
-    DrawSkin, FlatSlider, SliderDraw, SliderPlace, SliderQuad, draw_flat_slider, open_skin,
+    DrawSkin, FlatSlider, ScrollBar, SliderDraw, SliderPlace, SliderQuad, draw_flat_slider,
+    open_skin,
 };
 
 pub struct UiPlugin;

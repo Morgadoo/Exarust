@@ -68,10 +68,17 @@ pub const SLIDER_TRACK: [u32; 4] = [0x3e80_0000, 0x3f4c_cccd, 0x3e80_0000, 0x3f8
 /// Thumb sample.
 pub const SLIDER_THUMB: [u32; 4] = [0x3ecc_cccd, 0x3f4c_cccd, 0x3ecc_cccd, 0x3f80_0000];
 
+/// End-cap sample on a scroll bar: 0.7, 0.1, 0.7, 0.2.
+pub const SCROLL_EDGE: [u32; 4] = [0x3f33_3333, 0x3dcc_cccd, 0x3f33_3333, 0x3e4c_cccd];
+
+/// Bar sample between those caps: 0.3, 0.1, 0.3, 0.2.
+pub const SCROLL_BAR: [u32; 4] = [0x3e99_999a, 0x3dcc_cccd, 0x3e99_999a, 0x3e4c_cccd];
+
 const SLIDER_PRESSED: u32 = 0x10;
 const SLIDER_SCROLL: u32 = 0x20_0000;
 const SLIDER_MARK: u32 = 0x1_0000;
 const SLIDER_MODE: u32 = 0x3000_0000;
+const SCROLL_MODE: u32 = 0x1000_0000;
 
 /// A slider widget. `value_bits` are the bits of its 0..1 value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +90,8 @@ pub struct SliderPlace {
     pub mode: u32,
     pub state: u32,
     pub value_bits: u32,
+    /// Half-span the scroll quads add and subtract. The flat path does not use it.
+    pub lip: i32,
 }
 
 /// Four corners of one slider quad, with the sample bits shared by them.
@@ -101,11 +110,23 @@ pub struct FlatSlider {
     pub quads: [SliderQuad; 4],
 }
 
-/// The ink, and the flat quads when the high mode bits are clear.
+/// A scroll bar: the trough, then twelve quads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScrollBar {
+    pub trough: [i32; 4],
+    pub thumb: i32,
+    pub thumb_far: i32,
+    pub marked: bool,
+    pub bar: u8,
+    pub quads: [SliderQuad; 12],
+}
+
+/// The ink, the flat quads, or the scroll bar. A third mode has neither.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SliderDraw {
     pub ink: u8,
     pub flat: Option<FlatSlider>,
+    pub scroll: Option<ScrollBar>,
 }
 
 fn slider_ink(state: u32) -> u8 {
@@ -122,12 +143,134 @@ fn quad(sample: [u32; 4], corners: [(i32, i32); 4]) -> SliderQuad {
     SliderQuad { sample, corners }
 }
 
-/// Draw the flat slider. A mode whose high bits are set selects the ink and
-/// draws no flat quads. The scroll bar is that other mode and is not in.
+fn scroll_bar(unit: i32, place: SliderPlace) -> ScrollBar {
+    let x = i32::from(place.x);
+    let y = i32::from(place.y);
+    let width = i32::from(place.w);
+    let height = i32::from(place.h);
+    let right = x.wrapping_add(width);
+    let bottom = y.wrapping_add(height);
+    let inset = i32::from(unit as i16);
+    let lip = place.lip;
+    let trough = [
+        x.wrapping_add(inset).wrapping_add(1),
+        y.wrapping_add(inset).wrapping_add(1),
+        width.wrapping_sub(inset.wrapping_shl(1)).wrapping_sub(2),
+        height.wrapping_sub(inset.wrapping_shl(1)).wrapping_sub(2),
+    ];
+    let spare = i64::from(width) - i64::from(inset.wrapping_shl(1)) - i64::from(unit);
+    let along = (spare as f32) * f32::from_bits(place.value_bits);
+    let thumb = x.wrapping_add(along.round_ties_even() as i32);
+    let thumb_far = thumb.wrapping_add(unit.wrapping_mul(3));
+    let left = x.wrapping_add(lip);
+    let inner = right.wrapping_sub(lip);
+    let above = y.wrapping_add(unit);
+    let below = y.wrapping_sub(unit);
+    let low = bottom.wrapping_sub(unit);
+    let high = bottom.wrapping_add(unit);
+    let near = thumb.wrapping_sub(unit);
+    let far = thumb.wrapping_add(unit);
+    let near_far = thumb_far.wrapping_sub(unit);
+    let far_far = thumb_far.wrapping_add(unit);
+    let over = y.wrapping_add(lip);
+    let under = bottom.wrapping_sub(lip);
+    ScrollBar {
+        trough,
+        thumb,
+        thumb_far,
+        marked: (place.state & SLIDER_MARK) == SLIDER_MARK,
+        bar: u8::from((place.state & SLIDER_SCROLL) == SLIDER_SCROLL),
+        quads: [
+            quad(
+                SCROLL_EDGE,
+                [(left, above), (left, below), (x, below), (x, above)],
+            ),
+            quad(
+                SCROLL_BAR,
+                [(left, above), (left, below), (inner, below), (inner, above)],
+            ),
+            quad(
+                SCROLL_EDGE,
+                [
+                    (inner, above),
+                    (inner, below),
+                    (right, below),
+                    (right, above),
+                ],
+            ),
+            quad(
+                SCROLL_EDGE,
+                [(left, low), (left, high), (x, high), (x, low)],
+            ),
+            quad(
+                SCROLL_BAR,
+                [(left, low), (left, high), (inner, high), (inner, low)],
+            ),
+            quad(
+                SCROLL_EDGE,
+                [(inner, low), (inner, high), (right, high), (right, low)],
+            ),
+            quad(
+                SCROLL_BAR,
+                [(far, under), (near, under), (near, over), (far, over)],
+            ),
+            quad(
+                SCROLL_EDGE,
+                [(far, over), (near, over), (near, y), (far, y)],
+            ),
+            quad(
+                SCROLL_EDGE,
+                [(far, under), (near, under), (near, bottom), (far, bottom)],
+            ),
+            quad(
+                SCROLL_BAR,
+                [
+                    (near_far, under),
+                    (far_far, under),
+                    (far_far, over),
+                    (near_far, over),
+                ],
+            ),
+            quad(
+                SCROLL_EDGE,
+                [
+                    (near_far, over),
+                    (far_far, over),
+                    (far_far, y),
+                    (near_far, y),
+                ],
+            ),
+            quad(
+                SCROLL_EDGE,
+                [
+                    (near_far, under),
+                    (far_far, under),
+                    (far_far, bottom),
+                    (near_far, bottom),
+                ],
+            ),
+        ],
+    }
+}
+
+/// Draw a flat slider or a scroll bar. Any other high mode selects the ink
+/// and draws neither.
 pub fn draw_flat_slider(unit: i32, place: SliderPlace) -> SliderDraw {
     let ink = slider_ink(place.state);
-    if (place.mode & SLIDER_MODE) != 0 {
-        return SliderDraw { ink, flat: None };
+    let mode = place.mode & SLIDER_MODE;
+    if mode == SCROLL_MODE {
+        return SliderDraw {
+            ink,
+            flat: None,
+            scroll: Some(scroll_bar(unit, place)),
+        };
+    }
+    if mode != 0 {
+        return SliderDraw {
+            ink,
+            flat: None,
+            scroll: None,
+        };
     }
     let x = i32::from(place.x);
     let y = i32::from(place.y);
@@ -141,6 +284,7 @@ pub fn draw_flat_slider(unit: i32, place: SliderPlace) -> SliderDraw {
     let top = y + thick;
     SliderDraw {
         ink,
+        scroll: None,
         flat: Some(FlatSlider {
             pad,
             thumb,
@@ -225,6 +369,7 @@ mod tests {
                 h: 16,
                 mode: 0,
                 state: 0,
+                lip: 0,
                 value_bits: 0,
             },
         );
@@ -258,6 +403,7 @@ mod tests {
                 h: 16,
                 mode: 0,
                 state: 0,
+                lip: 0,
                 value_bits: 0x3f00_0000,
             },
         );
@@ -272,6 +418,7 @@ mod tests {
                 h: 16,
                 mode: 0,
                 state: 0,
+                lip: 0,
                 value_bits: 0x3f00_0000,
             },
         );
@@ -285,6 +432,7 @@ mod tests {
                 h: 16,
                 mode: 0,
                 state: 0,
+                lip: 0,
                 value_bits: 0x3f00_0000,
             },
         );
@@ -299,6 +447,7 @@ mod tests {
                 h: 16,
                 mode: 0,
                 state: 0x20_0010 | 0x1_0000,
+                lip: 0,
                 value_bits: 0,
             },
         );
@@ -314,6 +463,7 @@ mod tests {
                 h: 16,
                 mode: 0,
                 state: 0x20_0000,
+                lip: 0,
                 value_bits: 0,
             },
         );
@@ -328,10 +478,147 @@ mod tests {
                 h: 16,
                 mode: 0x1000_0000,
                 state: 0,
+                lip: 0,
                 value_bits: 0x3f80_0000,
             },
         );
         assert_eq!(scroll.ink, 2);
         assert!(scroll.flat.is_none());
+        assert_eq!(scroll.scroll.expect("a scroll bar").thumb, 95);
+    }
+
+    #[test]
+    fn a_scroll_bar_draws_twelve_quads() {
+        let drawn = draw_flat_slider(
+            5,
+            SliderPlace {
+                x: 10,
+                y: 20,
+                w: 100,
+                h: 80,
+                mode: 0x1000_0000,
+                state: 0x20_0000 | 0x1_0000,
+                lip: 4,
+                value_bits: 0,
+            },
+        );
+        assert_eq!(drawn.ink, 1);
+        assert!(drawn.flat.is_none());
+        let bar = drawn.scroll.expect("a scroll bar");
+        assert_eq!(bar.trough, [16, 26, 88, 68]);
+        assert_eq!(bar.thumb, 10);
+        assert_eq!(bar.thumb_far, 25);
+        assert!(bar.marked);
+        assert_eq!(bar.bar, 1);
+        assert_eq!(bar.quads.len(), 12);
+        assert_eq!(bar.quads[0].sample, SCROLL_EDGE);
+        assert_eq!(
+            bar.quads[0].corners,
+            [(14, 25), (14, 15), (10, 15), (10, 25)]
+        );
+        assert_eq!(bar.quads[1].sample, SCROLL_BAR);
+        assert_eq!(
+            bar.quads[1].corners,
+            [(14, 25), (14, 15), (106, 15), (106, 25)]
+        );
+        assert_eq!(
+            bar.quads[2].corners,
+            [(106, 25), (106, 15), (110, 15), (110, 25)]
+        );
+        assert_eq!(
+            bar.quads[3].corners,
+            [(14, 95), (14, 105), (10, 105), (10, 95)]
+        );
+        assert_eq!(bar.quads[4].sample, SCROLL_BAR);
+        assert_eq!(
+            bar.quads[4].corners,
+            [(14, 95), (14, 105), (106, 105), (106, 95)]
+        );
+        assert_eq!(
+            bar.quads[5].corners,
+            [(106, 95), (106, 105), (110, 105), (110, 95)]
+        );
+        assert_eq!(bar.quads[6].sample, SCROLL_BAR);
+        assert_eq!(bar.quads[6].corners, [(15, 96), (5, 96), (5, 24), (15, 24)]);
+        assert_eq!(bar.quads[7].corners, [(15, 24), (5, 24), (5, 20), (15, 20)]);
+        assert_eq!(
+            bar.quads[8].corners,
+            [(15, 96), (5, 96), (5, 100), (15, 100)]
+        );
+        assert_eq!(
+            bar.quads[9].corners,
+            [(20, 96), (30, 96), (30, 24), (20, 24)]
+        );
+        assert_eq!(
+            bar.quads[10].corners,
+            [(20, 24), (30, 24), (30, 20), (20, 20)]
+        );
+        assert_eq!(
+            bar.quads[11].corners,
+            [(20, 96), (30, 96), (30, 100), (20, 100)]
+        );
+
+        let half = draw_flat_slider(
+            5,
+            SliderPlace {
+                x: 10,
+                y: 20,
+                w: 100,
+                h: 80,
+                mode: 0x1000_0000,
+                state: 0,
+                lip: 4,
+                value_bits: 0x3f00_0000,
+            },
+        );
+        let half_bar = half.scroll.expect("a scroll bar");
+        assert_eq!(half_bar.thumb, 52);
+        assert_eq!(half_bar.bar, 0);
+        assert!(!half_bar.marked);
+
+        let tie = draw_flat_slider(
+            5,
+            SliderPlace {
+                x: 10,
+                y: 0,
+                w: 16,
+                h: 16,
+                mode: 0x1000_0000,
+                state: 0,
+                lip: 0,
+                value_bits: 0x3f00_0000,
+            },
+        );
+        assert_eq!(tie.scroll.expect("a scroll bar").thumb, 10);
+        let next = draw_flat_slider(
+            5,
+            SliderPlace {
+                x: 10,
+                y: 0,
+                w: 18,
+                h: 16,
+                mode: 0x1000_0000,
+                state: 0,
+                lip: 0,
+                value_bits: 0x3f00_0000,
+            },
+        );
+        assert_eq!(next.scroll.expect("a scroll bar").thumb, 12);
+
+        let other = draw_flat_slider(
+            5,
+            SliderPlace {
+                x: 10,
+                y: 20,
+                w: 100,
+                h: 80,
+                mode: 0x2000_0000,
+                state: 0,
+                lip: 4,
+                value_bits: 0,
+            },
+        );
+        assert!(other.flat.is_none());
+        assert!(other.scroll.is_none());
     }
 }

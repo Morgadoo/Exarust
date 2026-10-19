@@ -17,8 +17,9 @@ bars; the game crate starts it), and gamma-space compositing for images
 painted on the CPU (`blend`). A draw skin (`skin`) opened with unit 5
 stores spans 10, 5, 10 and 10 and the colour 255, 250, 230, 100 three
 times. A flat slider at unit 5, place 10, 20 and width 100 stores a thumb
-of 5 at value 0 and of 40 at one half, with pad 10. The scroll bar, the
-frame, and the widget dispatcher are not in.
+of 5 at value 0 and of 40 at one half, with pad 10. A scroll bar there
+with height 80 and lip 4 stores twelve quads and a thumb of 10 at value 0,
+or 52 at one half. The frame and the widget dispatcher are not in.
 
 ## Scope
 
