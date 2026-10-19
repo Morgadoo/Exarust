@@ -8,7 +8,9 @@
 //! Anything else is the plain page. A weapon row is shown only when its
 //! byte is above 5, and the bar is that byte times 0.05. An apparel row is
 //! shown only when that byte times 0.05 is above 0.25. Coverage is always
-//! that byte times 0.05. The icon picture is not drawn here.
+//! that byte times 0.05. A plain card centres the icon in the span. A
+//! stats card places it from the unit, and a picture wider than eleven
+//! units shifts it. Description phrases are not drawn here.
 //!
 //! Evidence: the item-card page choice.
 
@@ -171,6 +173,38 @@ pub fn apparel_bars(
     }
 }
 
+/// Where the card draws its icon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IconPlace {
+    pub x: i32,
+    pub y: i32,
+}
+
+/// Place the icon. A plain card uses the span and the content. A stats card uses the picture width.
+///
+/// `icon` is the icon size, initially 160. `scale` is the UI unit, initially 4.
+pub fn card_icon(
+    stats: bool,
+    span: i32,
+    content: i32,
+    picture: i32,
+    icon: i32,
+    scale: i32,
+) -> IconPlace {
+    if stats {
+        let mut x = scale * 13 - (icon >> 1);
+        if scale * 11 < picture {
+            x += picture - scale * 11;
+        }
+        IconPlace { x, y: scale }
+    } else {
+        IconPlace {
+            x: (span - icon) / 2,
+            y: (content - icon) / 2 + scale * 4,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,5 +316,33 @@ mod tests {
         assert_eq!(bars.encumbrance, None);
         assert_eq!(bars.slash.unwrap().to_bits(), 0x3e99_999a);
         assert_eq!(bars.pierce.unwrap().to_bits(), 0x3f80_0000);
+    }
+
+    #[test]
+    fn a_card_icon_centres_a_plain_picture_and_shifts_a_stats_one() {
+        assert_eq!(
+            card_icon(false, 268, 160, 0, 160, 4),
+            IconPlace { x: 54, y: 16 }
+        );
+        assert_eq!(
+            card_icon(false, 269, 100, 160, 160, 4),
+            IconPlace { x: 54, y: -14 }
+        );
+        assert_eq!(
+            card_icon(true, 268, 100, 40, 160, 4),
+            IconPlace { x: -28, y: 4 }
+        );
+        assert_eq!(
+            card_icon(true, 268, 160, 44, 160, 4),
+            IconPlace { x: -28, y: 4 }
+        );
+        assert_eq!(
+            card_icon(true, 0, 0, 45, 160, 4),
+            IconPlace { x: -27, y: 4 }
+        );
+        assert_eq!(
+            card_icon(true, 268, 160, 160, 160, 4),
+            IconPlace { x: 88, y: 4 }
+        );
     }
 }

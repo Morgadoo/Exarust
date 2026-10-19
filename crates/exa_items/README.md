@@ -2,7 +2,7 @@
 
 Item database and procedural items: weapons assembled from components by factories, armour layers, materials and quality.
 
-**Phase:** Phase 4 (see [`docs/PLAN.md`](../../docs/PLAN.md)). Status: equipping by occupancy (`carry`), an inventory pane of icons (`pane`), the description card's page and coin value, a weapon card's damage rows, and an apparel card's coverage and rows (`card`). The icon picture is still open.
+**Phase:** Phase 4 (see [`docs/PLAN.md`](../../docs/PLAN.md)). Status: equipping by occupancy (`carry`), an inventory pane of icons (`pane`), the description card's page and coin value, a weapon card's damage rows, an apparel card's coverage and rows, and the card icon's place (`card`). Description phrases are still open.
 
 ## Scope
 

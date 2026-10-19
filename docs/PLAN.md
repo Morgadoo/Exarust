@@ -869,8 +869,9 @@ hit is the top-most rectangle.
 Done (change `mark-a-container-drop`): a shared reject bit is refused. A required mask must match. An own-only pane takes only an id it already lists with the low bit set. A limit of 0 does not refuse for size, and a capacity of 0 does not refuse for bulk.
 Done (change `choose-a-card-page`): an id below 1, a container, a missing model, and a mark of 0 have no card. A map has no stats page. Seven coins print 1, and the high bit keeps 7. A withheld weapon of armour 6 is apparel, armour 0 is a shield, and armour 7 is plain. Three coins print 0.
 Done (change `show-a-weapon-bar`): slash 5 and pierce 0 are absent. Crush 6 is 0.3. Thrust 20 is 1.
-Done (change `show-an-apparel-bar`): coverage 5 is 0.25. Impact 5, crush 0, and encumbrance 5 are absent. Slash 6 is 0.3. Pierce 20 is 1. Still to
-do: the icon picture, injuries beyond damage, grabs, practice mode,
+Done (change `show-an-apparel-bar`): coverage 5 is 0.25. Impact 5, crush 0, and encumbrance 5 are absent. Slash 6 is 0.3. Pierce 20 is 1.
+Done (change `place-a-card-icon`): a plain card of span 268 and content 160 places an icon of 160 at 54, 16 with a unit of 4. Content 100 on a span of 269 places it at 54, −14. A stats picture of 40 or 44 stays at −28, 4. A picture of 45 is −27, 4. A picture of 160 is 88, 4. Still to
+do: description phrases, injuries beyond damage, grabs, practice mode,
 the striker's recoil
 and follow-through (C21, M26), the collapse's stagger steps; next in the
 combat timing: the unarmed parries (L10).
@@ -1131,7 +1132,10 @@ against Exarust and lists the largest missing ones. In order:
    does not refuse. An item card chooses a weapon, apparel, shield, or plain
    page and quarters its coin word. A weapon row is shown only above 5,
    at that byte times 0.05. Apparel coverage is always that byte times
-   0.05, and its other rows appear only above 0.25. The icon picture is not.
+   0.05, and its other rows appear only above 0.25. A plain card places
+   its icon by dividing the span minus the icon size by 2. A stats card
+   places it from the unit, and a picture wider than eleven units shifts
+   it. Description phrases are not.
 3. The original's NPC brain: perception, targets and the combat state that
    drives the same inputs as the player (Phase 6). A path on the grid, the
    look-ahead, and an order that writes the player's heading and velocity
