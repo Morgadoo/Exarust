@@ -3534,6 +3534,45 @@ pub fn draw_skin_detail(place: SkinDetailPlace, unit: i32) -> SkinDetail {
     }
 }
 
+/// The parent rectangle dispatch's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkinRectPlace {
+    pub x: i16,
+    pub y: i16,
+    pub w: i16,
+    pub h: i16,
+    pub inset: i16,
+    pub flags: u32,
+}
+
+/// The inset rectangle and the optional cornered overlay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkinRect {
+    pub rect: [i32; 4],
+    pub first: bool,
+    pub second: bool,
+    pub rect_calls: u32,
+    pub cornered_calls: u32,
+}
+
+/// Draws the inset rectangle and, on flag 0x40, the cornered overlay.
+pub fn draw_skin_rect(place: SkinRectPlace) -> SkinRect {
+    let i = i32::from(place.inset);
+    let x = i32::from(place.x).wrapping_add(i);
+    let y = i32::from(place.y).wrapping_add(i);
+    let w = i32::from(place.w).wrapping_sub(i.wrapping_mul(2));
+    let h = i32::from(place.h).wrapping_sub(i.wrapping_mul(2));
+    let first = (place.flags & 0x10) == 0x10;
+    let second = (place.flags & 0x40) == 0x40;
+    SkinRect {
+        rect: [x, y, w, h],
+        first,
+        second,
+        rect_calls: 1,
+        cornered_calls: u32::from(second),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6844,5 +6883,34 @@ mod tests {
             draw_skin_detail(place(0, 0x80), 5).vertical,
             Some([15, 25, 90, 70])
         );
+    }
+
+    #[test]
+    fn a_skin_rect_dispatches_its_overlay() {
+        let place = |flags: u32| SkinRectPlace {
+            x: 10,
+            y: 20,
+            w: 100,
+            h: 80,
+            inset: 5,
+            flags,
+        };
+
+        let plain = draw_skin_rect(place(0));
+        assert_eq!(plain.rect, [15, 25, 90, 70]);
+        assert_eq!((plain.rect_calls, plain.cornered_calls), (1, 0));
+        assert!(!plain.first);
+        assert!(!plain.second);
+
+        let first = draw_skin_rect(place(0x10));
+        assert!(first.first);
+        assert!(!first.second);
+        assert_eq!(first.cornered_calls, 0);
+
+        let second = draw_skin_rect(place(0x40));
+        assert!(!second.first);
+        assert!(second.second);
+        assert_eq!(second.cornered_calls, 1);
+        assert_eq!(second.rect, [15, 25, 90, 70]);
     }
 }
