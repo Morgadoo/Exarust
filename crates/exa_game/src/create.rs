@@ -761,6 +761,40 @@ pub fn set_creation_flag(word: i32, flag: bool, part_found: bool) -> CreationFla
     }
 }
 
+/// What applying the creation scale did.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CreationApply {
+    pub scale: f32,
+    pub stored: bool,
+    pub rebuild: bool,
+    pub global_call: bool,
+    pub built: bool,
+    pub drew: bool,
+    pub finalized: bool,
+}
+
+const CREATION_SCALE_A: f64 = f64::from_bits(0x3fc5_c28f_5c28_f5c3);
+const CREATION_SCALE_B: f64 = f64::from_bits(0x3fec_cccc_cccc_cccd);
+
+/// Stores the appearance scale and, when special, rebuilds and draws the label.
+pub fn apply_creation_scale(
+    source: f32,
+    special: bool,
+    global_flag: bool,
+    has_widget: bool,
+) -> CreationApply {
+    let scale = (f64::from(source) * CREATION_SCALE_A + CREATION_SCALE_B) as f32;
+    CreationApply {
+        scale,
+        stored: true,
+        rebuild: special,
+        global_call: special && !global_flag,
+        built: special && !has_widget,
+        drew: special,
+        finalized: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1289,5 +1323,29 @@ mod tests {
         assert_eq!(clear.word, 0);
         assert!(clear.refreshed);
         assert!(!clear.part_found);
+    }
+
+    #[test]
+    fn the_creation_scale_applies_and_rebuilds() {
+        let plain = apply_creation_scale(0.0, false, false, false);
+        assert!((plain.scale - 0.9).abs() < 1e-6);
+        assert!(plain.stored);
+        assert!(!plain.rebuild);
+        assert!(!plain.global_call);
+        assert!(!plain.built);
+        assert!(!plain.drew);
+
+        let special = apply_creation_scale(1.0, true, false, false);
+        assert!((special.scale - 1.07).abs() < 1e-6);
+        assert!(special.rebuild);
+        assert!(special.global_call);
+        assert!(special.built);
+        assert!(special.drew);
+        assert!(special.finalized);
+
+        let existing = apply_creation_scale(1.0, true, true, true);
+        assert!(!existing.global_call);
+        assert!(!existing.built);
+        assert!(existing.drew);
     }
 }
