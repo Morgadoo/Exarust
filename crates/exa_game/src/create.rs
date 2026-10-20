@@ -1219,6 +1219,42 @@ pub fn apply_creation_step(has_target: bool, part_found: bool) -> CreationApplyS
     }
 }
 
+/// What the creation part refresh did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationPartRefresh {
+    pub stored: bool,
+    pub part_found: bool,
+}
+
+/// Stores the part result at the target when it exists.
+pub fn refresh_creation_part(has_target: bool, part_found: bool) -> CreationPartRefresh {
+    CreationPartRefresh {
+        stored: has_target,
+        part_found: has_target && part_found,
+    }
+}
+
+/// What destroying the creation did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationDestroy {
+    pub base_destroy: bool,
+    pub ref_decremented: bool,
+    pub released: bool,
+    pub base: bool,
+    pub freed: bool,
+}
+
+/// Destroys the creation, decrementing or releasing its child.
+pub fn destroy_creation(flags: i32, has_child: bool, child_count: i32) -> CreationDestroy {
+    CreationDestroy {
+        base_destroy: flags > 0,
+        ref_decremented: has_child && child_count > 1,
+        released: has_child && child_count <= 1,
+        base: true,
+        freed: flags > 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2029,5 +2065,35 @@ mod tests {
         assert!(!bare.part_found);
         assert!(bare.linked);
         assert!(bare.first);
+    }
+
+    #[test]
+    fn the_creation_part_refreshes_and_destroys() {
+        let found = refresh_creation_part(true, true);
+        assert!(found.stored);
+        assert!(found.part_found);
+
+        let absent = refresh_creation_part(false, true);
+        assert!(!absent.stored);
+        assert!(!absent.part_found);
+
+        let decremented = destroy_creation(1, true, 2);
+        assert!(decremented.base_destroy);
+        assert!(decremented.ref_decremented);
+        assert!(!decremented.released);
+        assert!(decremented.base);
+        assert!(decremented.freed);
+
+        let released = destroy_creation(0, true, 1);
+        assert!(!released.base_destroy);
+        assert!(!released.ref_decremented);
+        assert!(released.released);
+        assert!(released.base);
+        assert!(!released.freed);
+
+        let none = destroy_creation(0, false, 0);
+        assert!(!none.ref_decremented);
+        assert!(!none.released);
+        assert!(none.base);
     }
 }
