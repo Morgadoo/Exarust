@@ -63,3 +63,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-20 | 52001f6 | clean | 22.6% | 5.7% | 18.5% | 27.3% | record the settings page switch |
 | 2026-10-20 | 939f051 | dirty | 22.7% | 5.7% | 18.6% | 27.3% | route the motile states |
 | 2026-10-20 | e7b5aa6 | clean | 22.7% | 5.7% | 18.6% | 27.3% | record the motile route |
+| 2026-10-20 | a96831c | dirty | 22.7% | 5.7% | 18.6% | 27.3% | seed the arena ranks |

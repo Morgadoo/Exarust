@@ -1673,3 +1673,106 @@ mod roster_tests {
         assert_eq!(state.championships, 0);
     }
 }
+
+/// The engine's MT19937 generator, used only for the arena rank roll.
+#[derive(Debug, Clone)]
+pub struct Mt19937 {
+    state: [u32; 624],
+    index: usize,
+}
+
+impl Mt19937 {
+    /// Seeds the generator with the standard MT19937 initialisation.
+    pub fn new(seed: u32) -> Self {
+        let mut state = [0u32; 624];
+        state[0] = seed;
+        for i in 1..624 {
+            state[i] = 1812433253u32
+                .wrapping_mul(state[i - 1] ^ (state[i - 1] >> 30))
+                .wrapping_add(i as u32);
+        }
+        Self { state, index: 624 }
+    }
+
+    fn twist(&mut self) {
+        for i in 0..624 {
+            let y = (self.state[i] & 0x8000_0000) | (self.state[(i + 1) % 624] & 0x7fff_ffff);
+            let mut next = self.state[(i + 397) % 624] ^ (y >> 1);
+            if y & 1 != 0 {
+                next ^= 0x9908_b0df;
+            }
+            self.state[i] = next;
+        }
+        self.index = 0;
+    }
+
+    /// The next 32-bit output.
+    pub fn next_u32(&mut self) -> u32 {
+        if self.index >= 624 {
+            self.twist();
+        }
+        let mut y = self.state[self.index];
+        self.index += 1;
+        y ^= y >> 11;
+        y ^= (y << 7) & 0x9d2c_5680;
+        y ^= (y << 15) & 0xefc6_0000;
+        y ^= y >> 18;
+        y
+    }
+
+    /// A unit draw in `[0, 1)`: `next_u32() · 2⁻³²`.
+    pub fn unit(&mut self) -> f64 {
+        self.next_u32() as f64 * 2.328_306_436_538_696_3e-10
+    }
+}
+
+/// Rolls an instance using the MT stream for the rank. The stream is
+/// advanced only when [`needs_rank`] is true.
+pub fn roll_instance_mt(
+    template: &MatchTemplate,
+    slot: u32,
+    mt: &mut Mt19937,
+    rng: &mut crate::item_container::Rng,
+) -> MatchInstance {
+    let r = if needs_rank(template) { mt.unit() } else { 0.0 };
+    roll_instance(template, slot, r, rng)
+}
+
+#[cfg(test)]
+mod mt_tests {
+    use super::*;
+    use crate::item_container::Rng;
+
+    #[test]
+    fn the_mt19937_known_vector() {
+        let mut mt = Mt19937::new(5489);
+        assert_eq!(mt.next_u32(), 3_499_211_612);
+        assert_eq!(mt.next_u32(), 581_869_302);
+        assert_eq!(mt.next_u32(), 3_890_346_734);
+        assert_eq!(mt.next_u32(), 3_586_334_585);
+        assert_eq!(mt.next_u32(), 545_404_204);
+    }
+
+    #[test]
+    fn the_rank_stream_is_not_consumed_without_a_roll() {
+        let mut mt = Mt19937::new(5489);
+        let mut rng = Rng(1);
+        let _ = roll_instance_mt(&RANKED[0], 0, &mut mt, &mut rng);
+        assert_eq!(mt.next_u32(), 3_499_211_612);
+        let mut mt = Mt19937::new(5489);
+        let _ = roll_instance_mt(&RANKED[5], 4, &mut mt, &mut rng);
+        assert_eq!(mt.next_u32(), 3_499_211_612);
+    }
+
+    #[test]
+    fn a_plain_rank_roll_consumes_one_unit() {
+        let mut mt = Mt19937::new(5489);
+        let mut check = mt.clone();
+        let mut rng = Rng(1);
+        let instance = roll_instance_mt(&RANKED[1], 3, &mut mt, &mut rng);
+        let r = check.unit();
+        let expected = (3.0 * (1.0 - r * r * r * r)).round_ties_even() as i32;
+        assert_eq!(instance.rank, expected);
+        assert_eq!(mt.next_u32(), check.next_u32());
+    }
+}
