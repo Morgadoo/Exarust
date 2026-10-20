@@ -22,3 +22,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-20 | 56f5bc2 | dirty | 20.7% | 5.7% | 17.0% | 27.3% | parse the power tree text chunk |
 | 2026-10-20 | 25d5411 | dirty | 20.7% | 5.7% | 17.0% | 27.3% | create the fresh tree text |
 | 2026-10-20 | 9294cf2 | dirty | 20.7% | 5.7% | 17.0% | 27.3% | add the force kinesis scale and activation |
+| 2026-10-20 | 3678f69 | dirty | 20.7% | 5.7% | 17.0% | 27.3% | add the force barrier orientation and pose |

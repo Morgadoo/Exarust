@@ -2763,3 +2763,67 @@ mod kinesis_tests {
         assert_eq!(effect.target, None);
     }
 }
+
+/// Swaps each point's y and z (the original's barrier orientation pass).
+pub fn swap_barrier_yz(points: &mut [[f32; 3]]) {
+    for point in points {
+        point.swap(1, 2);
+    }
+}
+
+/// The force barrier's two current and previous points plus its frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BarrierPose {
+    pub first: [f32; 3],
+    pub first_previous: [f32; 3],
+    pub second: [f32; 3],
+    pub second_previous: [f32; 3],
+    pub next_first: [f32; 3],
+    pub next_second: [f32; 3],
+    pub frame: i32,
+}
+
+/// Advances the barrier pose: the current pairs become the previous ones,
+/// the next pairs become the current ones, and the frame is stored.
+pub fn advance_barrier_pose(pose: &BarrierPose, frame: i32) -> BarrierPose {
+    BarrierPose {
+        first: pose.next_first,
+        first_previous: pose.first,
+        second: pose.next_second,
+        second_previous: pose.second,
+        next_first: pose.next_first,
+        next_second: pose.next_second,
+        frame,
+    }
+}
+
+#[cfg(test)]
+mod barrier_tests {
+    use super::*;
+
+    #[test]
+    fn the_barrier_swaps_y_and_z() {
+        let mut points = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
+        swap_barrier_yz(&mut points);
+        assert_eq!(points, [[1.0, 3.0, 2.0], [4.0, 6.0, 5.0]]);
+    }
+
+    #[test]
+    fn the_pose_advances_its_pairs() {
+        let pose = BarrierPose {
+            first: [1.0, 0.0, 0.0],
+            first_previous: [9.0, 0.0, 0.0],
+            second: [0.0, 1.0, 0.0],
+            second_previous: [0.0, 9.0, 0.0],
+            next_first: [2.0, 0.0, 0.0],
+            next_second: [0.0, 2.0, 0.0],
+            frame: 0,
+        };
+        let next = advance_barrier_pose(&pose, 7);
+        assert_eq!(next.first, [2.0, 0.0, 0.0]);
+        assert_eq!(next.first_previous, [1.0, 0.0, 0.0]);
+        assert_eq!(next.second, [0.0, 2.0, 0.0]);
+        assert_eq!(next.second_previous, [0.0, 1.0, 0.0]);
+        assert_eq!(next.frame, 7);
+    }
+}
