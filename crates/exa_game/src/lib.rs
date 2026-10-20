@@ -2,6 +2,7 @@
 //!
 //! Planned in Phase 4–7; see `README.md` next to this crate and `docs/PLAN.md`.
 
+pub mod arena_log;
 pub mod balance;
 pub mod body_overlay;
 pub mod career;
