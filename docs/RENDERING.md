@@ -793,7 +793,12 @@ menu.
     touches now, as the original ORs a moved node's old and new masks into
     its light. An animated character dirties the faces it stands in every
     frame; the light's other faces stay cached;
-  - a face draws only the casters whose sphere touches it;
+  - a face draws only the casters whose sphere touches it. A caster's faces
+    are worked out again when it moves and, for all of a light's casters,
+    when the light moves, as the original refreshes a moved light's links:
+    a carried torch's casters otherwise kept the faces of where the torch
+    had been, and a caster that crossed into another face was left out of
+    it, its shadow cut at the face's edge;
   - characters' skinned meshes are posed in the caster shader: each vertex
     is the weighted sum of its joints' world transforms times their inverse
     bind poses, computed once a frame for a character drawn into any face;

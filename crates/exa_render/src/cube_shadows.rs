@@ -63,6 +63,7 @@ impl Plugin for CubeShadowsPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "cube_shadow.wesl");
         app.init_resource::<PointShadows>()
+            .init_resource::<CubeStats>()
             .init_resource::<Pool>()
             .init_resource::<CubeJobs>()
             .add_plugins(ExtractResourcePlugin::<CubeJobs>::default())
@@ -109,6 +110,14 @@ const NEAR: f32 = 0.03;
 const REACH: f32 = 1.25;
 const ALL_FACES: u8 = 0x3F;
 
+/// This frame's cube work, for the frame profiler: faces rendered and the
+/// caster draws in them.
+#[derive(Resource, Clone, Copy, Debug, Default)]
+pub struct CubeStats {
+    pub faces: usize,
+    pub draws: usize,
+}
+
 /// Whether point lights cast shadows at all (`--no-shadows` turns it off).
 #[derive(Resource, Clone, Copy, Debug)]
 pub struct PointShadows(pub bool);
@@ -142,10 +151,31 @@ impl CubeShadow {
 }
 
 /// The meshes casting into a light's cached cube, kept by the world's shadow
-/// links, each with the faces its bounding sphere touches
-/// ([`sphere_faces`]; 0 while not yet known, drawn into every face).
+/// links, each with its bounding sphere and the faces that sphere touches
+/// from the light ([`sphere_faces`]). The faces are worked out again when
+/// the caster moves and, for all of a light's casters, when the light moves,
+/// as the original refreshes a moved light's links.
 #[derive(Component, Clone, Debug, Default)]
-pub struct CubeCasters(pub EntityHashMap<u8>);
+pub struct CubeCasters(pub EntityHashMap<CasterFaces>);
+
+/// A caster's sphere (world, metres) and the faces it touches from its light.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CasterFaces {
+    pub faces: u8,
+    pub centre: Vec3,
+    pub radius: f32,
+}
+
+impl CasterFaces {
+    /// The faces a sphere at `centre` of `radius` touches from `light`.
+    pub fn new(light: Vec3, centre: Vec3, radius: f32) -> Self {
+        Self {
+            faces: sphere_faces(light, centre, radius),
+            centre,
+            radius,
+        }
+    }
+}
 
 /// The cube faces (bit f for Bevy's face f) that a sphere at `centre` of
 /// `radius` reaches from a light at `light`, as the original masks a node's
@@ -274,11 +304,15 @@ fn create_pool(mut images: ResMut<Assets<Image>>) {
 
 type NewLights<'w, 's> = Query<'w, 's, (Entity, &'static PointLight), Without<CubeShadow>>;
 
-/// Gives new lights a cube; a moved light's faces go out of date.
+/// Gives new lights a cube; a moved light's faces go out of date, and its
+/// casters' faces are worked out again from where it is now.
 fn add_cube_shadows(
     mut commands: Commands,
     new: NewLights,
-    mut moved: Query<&mut CubeShadow, Changed<GlobalTransform>>,
+    mut moved: Query<
+        (&GlobalTransform, &mut CubeShadow, &mut CubeCasters),
+        Changed<GlobalTransform>,
+    >,
 ) {
     for (entity, light) in &new {
         commands.entity(entity).insert((
@@ -293,8 +327,12 @@ fn add_cube_shadows(
             },
         ));
     }
-    for mut cube in &mut moved {
+    for (at, mut cube, mut casters) in &mut moved {
         cube.invalidate();
+        let light = at.translation();
+        for c in casters.0.values_mut() {
+            c.faces = sphere_faces(light, c.centre, c.radius);
+        }
     }
 }
 
@@ -480,6 +518,7 @@ fn build_jobs(
     bindposes: Res<Assets<SkinnedMeshInverseBindposes>>,
     materials: Res<Assets<ExaMaterial>>,
     mut posed: Local<EntityHashMap<Option<u32>>>,
+    mut stats: ResMut<CubeStats>,
 ) {
     jobs.faces.clear();
     jobs.draws.clear();
@@ -504,8 +543,8 @@ fn build_jobs(
             let world_from_view = Mat4::from_rotation_translation(rotation, position);
             let clip_from_world = projection * world_from_view.inverse();
             let start = jobs.draws.len() as u32;
-            for (&caster, &mask) in &list.0 {
-                if mask != 0 && mask & (1 << face) == 0 {
+            for (&caster, c) in &list.0 {
+                if c.faces & (1 << face) == 0 {
                     continue;
                 }
                 let Ok((mesh, at, bias, material, skin)) = casters.get(caster) else {
@@ -550,6 +589,10 @@ fn build_jobs(
             });
         }
     }
+    *stats = CubeStats {
+        faces: jobs.faces.len(),
+        draws: jobs.draws.len(),
+    };
 }
 
 // ---- Render world ---------------------------------------------------------
@@ -1017,6 +1060,53 @@ mod tests {
         // A sphere far below spans only the downward face.
         let below = sphere_faces(light, light - Vec3::Y * 5.0, 1.0);
         assert_eq!(below.count_ones(), 1);
+    }
+
+    /// A light that moves past a caster finds it in another face: the
+    /// caster's faces follow the light, or the face it now lies in would
+    /// leave it out and cut its shadow.
+    #[test]
+    fn a_moved_light_works_out_its_casters_faces_again() {
+        let mut app = App::new();
+        app.add_systems(Update, add_cube_shadows);
+        let caster = Entity::from_raw_u32(9).unwrap();
+        let centre = Vec3::new(2.0, 1.0, 0.0);
+        let light = app
+            .world_mut()
+            .spawn((
+                PointLight::default(),
+                GlobalTransform::from_translation(Vec3::new(0.0, 1.0, 0.0)),
+                CubeShadow::default(),
+                CubeSlot {
+                    slot: None,
+                    radius: 8.0,
+                },
+                CubeCasters(
+                    [(
+                        caster,
+                        CasterFaces::new(Vec3::new(0.0, 1.0, 0.0), centre, 0.2),
+                    )]
+                    .into_iter()
+                    .collect(),
+                ),
+            ))
+            .id();
+        let faces = |app: &App| app.world().get::<CubeCasters>(light).unwrap().0[&caster].faces;
+        let towards_x = faces(&app);
+        assert_eq!(towards_x.count_ones(), 1);
+        // The light moves to the caster's other side.
+        app.world_mut()
+            .entity_mut(light)
+            .insert(GlobalTransform::from_translation(Vec3::new(4.0, 1.0, 0.0)));
+        app.update();
+        let after = faces(&app);
+        assert_eq!(after.count_ones(), 1);
+        assert_ne!(after, towards_x);
+        assert_eq!(after, sphere_faces(Vec3::new(4.0, 1.0, 0.0), centre, 0.2));
+        assert_eq!(
+            app.world().get::<CubeShadow>(light).unwrap().dirty,
+            ALL_FACES
+        );
     }
 
     #[test]

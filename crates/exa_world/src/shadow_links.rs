@@ -27,7 +27,7 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy::transform::TransformSystems;
 use exa_formats::level::LevelGrid;
-use exa_render::cube_shadows::{CubeCasters, CubeShadow, PointShadows, sphere_faces};
+use exa_render::cube_shadows::{CasterFaces, CubeCasters, CubeShadow, PointShadows};
 use exa_render::lights::{LightId, LightsSystems, MAX_MESH_LIGHTS, MeshLights};
 use exa_render::supersample::DisplayCamera;
 
@@ -39,6 +39,7 @@ impl Plugin for ShadowLinksPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<LinkedLights>()
             .init_resource::<CasterCells>()
+            .init_resource::<LinkStats>()
             .add_systems(
                 PostUpdate,
                 (
@@ -318,6 +319,16 @@ type CasterQuery<'w, 's> = Query<
     (With<Mesh3d>, Without<NotShadowCaster>, Without<PointLight>),
 >;
 
+/// This frame's linking work, for the frame profiler: lights moved, casters
+/// moved (relinked against every light), casters tried against the moved
+/// lights.
+#[derive(Resource, Clone, Copy, Debug, Default)]
+pub struct LinkStats {
+    pub lights_moved: usize,
+    pub casters_moved: usize,
+    pub casters_near: usize,
+}
+
 /// The casters by the 6 m cell of their sphere's centre, as the original
 /// keeps its nodes in sectors: a moved light is relinked only against the
 /// casters near enough to reach (and those linked to it). A caster whose
@@ -423,6 +434,7 @@ fn link_casters(
     walls: Option<Res<LevelWalls>>,
     mut cubes: Query<(&mut CubeCasters, &mut CubeShadow)>,
     mut cells: ResMut<CasterCells>,
+    mut stats: ResMut<LinkStats>,
     shadows: Res<PointShadows>,
     meshes: Res<Assets<Mesh>>,
     mut mesh_bounds: Local<HashMap<AssetId<Mesh>, Option<Aabb>>>,
@@ -430,6 +442,9 @@ fn link_casters(
     let moved: Vec<usize> = std::mem::take(&mut table.moved);
     let all_moved = !moved.is_empty();
     let fresh: EntityHashSet = moved_casters.iter().collect();
+    stats.lights_moved = moved.len();
+    stats.casters_moved = fresh.len();
+    stats.casters_near = 0;
     if !all_moved && fresh.is_empty() && !shadows.is_changed() {
         return;
     }
@@ -446,6 +461,7 @@ fn link_casters(
         }
     }
     let near: EntityHashSet = near.into_iter().collect();
+    stats.casters_near = near.len();
     // Skinned meshes have no box from Bevy; their mesh's own box, carried by
     // the bone they follow, stands in.
     let mut box_of = |aabb: Option<&Aabb>, mesh: &Mesh3d| -> Option<Aabb> {
@@ -584,9 +600,9 @@ fn apply_relinks(
             };
             let light = &table.lights[i];
             if let Ok((mut list, mut cube)) = cubes.get_mut(light.entity) {
-                let faces = sphere_faces(light.position, r.sphere.0, r.sphere.1);
-                list.0.insert(r.entity, faces);
-                cube.mark(faces);
+                let c = CasterFaces::new(light.position, r.sphere.0, r.sphere.1);
+                list.0.insert(r.entity, c);
+                cube.mark(c.faces);
             }
         }
         for &layer in removed {
@@ -594,9 +610,9 @@ fn apply_relinks(
                 continue;
             };
             if let Ok((mut list, mut cube)) = cubes.get_mut(table.lights[i].entity)
-                && let Some(faces) = list.0.remove(&r.entity)
+                && let Some(c) = list.0.remove(&r.entity)
             {
-                cube.mark(if faces == 0 { u8::MAX } else { faces });
+                cube.mark(c.faces);
             }
         }
     }
@@ -658,9 +674,8 @@ fn dirty_moved_casters(
             let Some(old) = list.0.get_mut(&entity) else {
                 continue;
             };
-            let new = sphere_faces(light.position, c, r);
-            let before = if *old == 0 { u8::MAX } else { *old };
-            cube.mark(before | new);
+            let new = CasterFaces::new(light.position, c, r);
+            cube.mark(old.faces | new.faces);
             *old = new;
         }
     }

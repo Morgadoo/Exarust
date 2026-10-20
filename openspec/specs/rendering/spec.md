@@ -430,3 +430,10 @@ A light that moves SHALL be relinked only against the casters whose sphere can r
 #### Scenario: Carried torch
 - **WHEN** the player walks with a torch in exanima01
 - **THEN** each frame tests the torch's links against the casters near it, not every caster of the level, and the shadows are unchanged
+
+### Requirement: Cube faces follow a moved light
+When a light moves, the system SHALL work out again, from the light's new position, the cube faces each of its casters touches, so a face draws every caster it holds.
+
+#### Scenario: Walking with a torch
+- **WHEN** the player walks past crates with a carried torch
+- **THEN** the crates' shadows are whole, not cut along a cube face's edge
