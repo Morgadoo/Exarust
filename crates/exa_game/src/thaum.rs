@@ -1287,6 +1287,45 @@ pub fn select_tree_node(input: TreeSelectInput) -> TreeSelect {
     }
 }
 
+/// The tree submit's inputs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TreeSubmitInput {
+    pub state: i32,
+    pub value: f32,
+    pub second: f32,
+    pub node_count: i32,
+    pub base_result: i32,
+}
+
+/// The tree submit's entry and calls.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TreeSubmit {
+    pub submitted: bool,
+    pub count: i32,
+    pub entry: Option<([f32; 2], i32)>,
+    pub cleared: bool,
+    pub base_calls: u32,
+    pub result: i32,
+}
+
+/// Appends one tree entry in state 0x21 and clears the submit state.
+pub fn submit_tree_node(input: TreeSubmitInput) -> TreeSubmit {
+    let count = input.node_count.max(0);
+    let submitted = input.state == 0x21 && count > 0;
+    TreeSubmit {
+        submitted,
+        count,
+        entry: if submitted {
+            Some(([input.value / 5.0, input.second / 5.0], count))
+        } else {
+            None
+        },
+        cleared: true,
+        base_calls: 1,
+        result: input.base_result,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2155,5 +2194,42 @@ mod tests {
         assert_eq!(kept.result, 3);
         assert_eq!(kept.selected, 0x100_0000);
         assert_eq!(kept.stamp, None);
+    }
+
+    #[test]
+    fn the_tree_submit_appends_over_five() {
+        let submitted = submit_tree_node(TreeSubmitInput {
+            state: 0x21,
+            value: 10.0,
+            second: 7.5,
+            node_count: 3,
+            base_result: 9,
+        });
+        assert!(submitted.submitted);
+        assert_eq!(submitted.count, 3);
+        assert_eq!(submitted.entry, Some(([2.0, 1.5], 3)));
+        assert!(submitted.cleared);
+        assert_eq!(submitted.base_calls, 1);
+        assert_eq!(submitted.result, 9);
+
+        let skipped = submit_tree_node(TreeSubmitInput {
+            state: 0,
+            value: 10.0,
+            second: 7.5,
+            node_count: 3,
+            base_result: 9,
+        });
+        assert!(!skipped.submitted);
+        assert_eq!(skipped.entry, None);
+        assert_eq!(skipped.base_calls, 1);
+
+        let empty = submit_tree_node(TreeSubmitInput {
+            state: 0x21,
+            value: 10.0,
+            second: 7.5,
+            node_count: 0,
+            base_result: 9,
+        });
+        assert!(!empty.submitted);
     }
 }
