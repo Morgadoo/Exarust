@@ -26,3 +26,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-20 | 3db4906 | dirty | 20.7% | 5.7% | 17.0% | 27.3% | add the force barrier per-tick update |
 | 2026-10-20 | 3aa1d86 | dirty | 20.7% | 5.7% | 17.0% | 27.3% | add the electricity arc timing and glow |
 | 2026-10-20 | 3aa1d86 | dirty | 20.8% | 5.7% | 17.1% | 27.3% | add the split effect helpers |
+| 2026-10-20 | 67cb853 | clean | 20.8% | 5.7% | 17.1% | 27.3% | record the split effect helpers |
