@@ -490,6 +490,48 @@ pub fn refresh_creation_label(clock: i32, last: i32, has_widget: bool) -> Creati
     }
 }
 
+/// What rebuilding the creation list did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationList {
+    pub built: bool,
+    pub index: i32,
+    pub replaced: bool,
+    pub stored: bool,
+    pub caption: Option<u8>,
+    pub drew: bool,
+    pub finalized: bool,
+}
+
+/// Rebuilds the option list for an index.
+pub fn rebuild_creation_list(
+    index: i32,
+    old_exists: bool,
+    new_count: i32,
+    has_caption_widget: bool,
+    drawing_allowed: bool,
+) -> CreationList {
+    if new_count <= 0 {
+        return CreationList {
+            built: false,
+            index,
+            replaced: false,
+            stored: false,
+            caption: None,
+            drew: false,
+            finalized: true,
+        };
+    }
+    CreationList {
+        built: true,
+        index,
+        replaced: old_exists,
+        stored: true,
+        caption: has_caption_widget.then_some((index + 0x41) as u8),
+        drew: drawing_allowed,
+        finalized: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -871,5 +913,31 @@ mod tests {
         assert!(existing.ran);
         assert!(!existing.built);
         assert!(existing.drew);
+    }
+
+    #[test]
+    fn the_creation_list_rebuilds_for_an_index() {
+        let built = rebuild_creation_list(2, true, 3, true, true);
+        assert!(built.built);
+        assert_eq!(built.index, 2);
+        assert!(built.replaced);
+        assert!(built.stored);
+        assert_eq!(built.caption, Some(b'C'));
+        assert!(built.drew);
+        assert!(built.finalized);
+
+        let empty = rebuild_creation_list(2, true, 0, true, true);
+        assert!(!empty.built);
+        assert!(!empty.replaced);
+        assert!(!empty.stored);
+        assert_eq!(empty.caption, None);
+        assert!(!empty.drew);
+        assert!(empty.finalized);
+
+        let suspended = rebuild_creation_list(2, false, 3, false, false);
+        assert!(suspended.built);
+        assert!(!suspended.replaced);
+        assert_eq!(suspended.caption, None);
+        assert!(!suspended.drew);
     }
 }
