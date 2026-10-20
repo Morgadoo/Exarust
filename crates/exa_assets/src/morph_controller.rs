@@ -1046,3 +1046,190 @@ mod cook_tests {
         assert_eq!(data.rest.len(), 2);
     }
 }
+
+/// A 32-byte skin record: up to four joints and their weights. Joint 0 ends
+/// the list.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SkinRecord {
+    pub joints: [u32; 4],
+    pub weights: [f32; 4],
+}
+
+/// Merges a source record into the destination with a scale, through the
+/// four-slot joint merge.
+pub fn merge_skin_record(
+    mut destination: SkinRecord,
+    source: SkinRecord,
+    scale: f32,
+) -> SkinRecord {
+    let ids: Vec<i32> = source.joints.iter().map(|&joint| joint as i32).collect();
+    let merged = merge_morph_weights(
+        MorphWeights {
+            ids: destination.joints.map(|joint| joint as i32),
+            weights: destination.weights,
+        },
+        &ids,
+        &source.weights,
+        scale,
+    );
+    for slot in 0..4 {
+        destination.joints[slot] = merged.ids[slot].max(0) as u32;
+        destination.weights[slot] = merged.weights[slot];
+    }
+    destination
+}
+
+/// Scales every weight of a record.
+pub fn scale_skin_record(mut record: SkinRecord, scale: f32) -> SkinRecord {
+    for weight in &mut record.weights {
+        *weight *= scale;
+    }
+    record
+}
+
+/// Normalizes a record: stops at the first zero joint, zeroes a negative
+/// weight (leaving it out of the sum), then divides the weights through the
+/// last used slot by the sum.
+pub fn normalize_skin_record(record: &mut SkinRecord) {
+    let mut sum = 0.0f32;
+    let mut last: Option<usize> = None;
+    for slot in 0..4 {
+        if record.joints[slot] == 0 {
+            break;
+        }
+        if record.weights[slot] < 0.0 {
+            record.weights[slot] = 0.0;
+        } else {
+            sum += record.weights[slot];
+        }
+        last = Some(slot);
+    }
+    let Some(last) = last else {
+        return;
+    };
+    let scale = 1.0 / sum;
+    for slot in 0..=last {
+        record.weights[slot] *= scale;
+    }
+}
+
+/// Fills one target record from its neighbours: each neighbour is merged at
+/// `1/sqrt(distance squared)`, and the merged weights are divided by the
+/// distance sum. Returns whether a fill happened (the sum was positive).
+pub fn fill_skin_record(record: &mut SkinRecord, neighbours: &[(SkinRecord, f32)]) -> bool {
+    let mut merged = SkinRecord::default();
+    let mut sum = 0.0f32;
+    for &(neighbour, distance_squared) in neighbours {
+        let weight = 1.0 / distance_squared.sqrt();
+        merged = merge_skin_record(merged, neighbour, weight);
+        sum += weight;
+    }
+    if sum > 0.0 {
+        let scale = 1.0 / sum;
+        *record = scale_skin_record(merged, scale);
+        true
+    } else {
+        false
+    }
+}
+
+/// Runs the three relaxation passes: each record becomes half itself plus
+/// half of `1/sqrt(distance squared)` times each neighbour, then is
+/// normalized. The neighbours are vertex ids and squared distances.
+pub fn relax_skin_records(
+    records: &[SkinRecord],
+    neighbours: &[Vec<(usize, f32)>],
+) -> Vec<SkinRecord> {
+    let mut current = records.to_vec();
+    for _ in 0..3 {
+        let previous = current.clone();
+        for (vertex, record) in current.iter_mut().enumerate() {
+            let mut mixed = scale_skin_record(previous[vertex], 0.5);
+            if let Some(list) = neighbours.get(vertex) {
+                for &(neighbour, distance_squared) in list {
+                    let weight = 0.5 * (1.0 / distance_squared.sqrt());
+                    mixed = merge_skin_record(mixed, previous[neighbour], weight);
+                }
+            }
+            normalize_skin_record(&mut mixed);
+            *record = mixed;
+        }
+    }
+    current
+}
+
+#[cfg(test)]
+mod skin_tests {
+    use super::*;
+
+    #[test]
+    fn a_record_normalizes_through_its_last_slot() {
+        let mut record = SkinRecord {
+            joints: [1, 2, 3, 0],
+            weights: [1.0, 1.0, 2.0, 0.0],
+        };
+        normalize_skin_record(&mut record);
+        assert_eq!(record.weights, [0.25, 0.25, 0.5, 0.0]);
+
+        let mut negative = SkinRecord {
+            joints: [1, 2, 0, 0],
+            weights: [2.0, -1.0, 0.0, 0.0],
+        };
+        normalize_skin_record(&mut negative);
+        assert_eq!(negative.weights, [1.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn the_merge_adds_a_scaled_source() {
+        let merged = merge_skin_record(
+            SkinRecord::default(),
+            SkinRecord {
+                joints: [5, 6, 0, 0],
+                weights: [0.5, 0.25, 0.0, 0.0],
+            },
+            2.0,
+        );
+        assert_eq!(merged.joints, [5, 6, 0, 0]);
+        assert_eq!(merged.weights, [1.0, 0.5, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_fill_weights_its_neighbours_by_the_inverse_distance() {
+        let near = SkinRecord {
+            joints: [1, 0, 0, 0],
+            weights: [1.0, 0.0, 0.0, 0.0],
+        };
+        let far = SkinRecord {
+            joints: [2, 0, 0, 0],
+            weights: [1.0, 0.0, 0.0, 0.0],
+        };
+        let mut record = SkinRecord::default();
+        assert!(fill_skin_record(&mut record, &[(near, 4.0), (far, 9.0)]));
+        assert_eq!(record.joints, [1, 2, 0, 0]);
+        let sum = 0.5f32 + 1.0 / 3.0;
+        assert!((record.weights[0] - 0.5 / sum).abs() < 1e-6);
+        assert!((record.weights[1] - (1.0 / 3.0) / sum).abs() < 1e-6);
+
+        let mut empty = SkinRecord::default();
+        assert!(!fill_skin_record(&mut empty, &[]));
+    }
+
+    #[test]
+    fn three_relaxation_passes_blend_half_and_half() {
+        let records = vec![
+            SkinRecord {
+                joints: [1, 0, 0, 0],
+                weights: [1.0, 0.0, 0.0, 0.0],
+            },
+            SkinRecord {
+                joints: [2, 0, 0, 0],
+                weights: [1.0, 0.0, 0.0, 0.0],
+            },
+        ];
+        let neighbours = vec![vec![(1, 4.0)], vec![(0, 4.0)]];
+        let relaxed = relax_skin_records(&records, &neighbours);
+        assert_eq!(relaxed[0].joints, [1, 2, 0, 0]);
+        assert!(relaxed[0].weights[0] > relaxed[0].weights[1]);
+        assert!((relaxed[0].weights[0] + relaxed[0].weights[1] - 1.0).abs() < 1e-6);
+    }
+}
