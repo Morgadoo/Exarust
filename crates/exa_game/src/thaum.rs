@@ -1197,6 +1197,96 @@ pub fn charge_tree(current: f32, tick: i32, clock: u32, already_started: bool) -
     }
 }
 
+/// The tree selection's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TreeSelectInput {
+    pub new: i32,
+    pub current: i32,
+    pub mode: i32,
+    pub table_ok: bool,
+    pub last_focus: i32,
+    pub previous: i32,
+    pub now: u32,
+    pub base_result: i32,
+}
+
+/// The tree selection's state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TreeSelect {
+    pub selected: i32,
+    pub result: i32,
+    pub last_focus: i32,
+    pub previous: i32,
+    pub stamp: Option<u32>,
+}
+
+/// Validates a new tree word and updates the focus.
+pub fn select_tree_node(input: TreeSelectInput) -> TreeSelect {
+    let unchanged = |result| TreeSelect {
+        selected: input.current,
+        result,
+        last_focus: input.last_focus,
+        previous: input.previous,
+        stamp: None,
+    };
+    if input.new <= 0 && input.current <= 0 {
+        return unchanged(input.base_result);
+    }
+    let special = |word: i32| word == 0x100_0000 || word == 0x200_0000;
+    if input.mode == 3 && (special(input.new) || special(input.current)) {
+        return TreeSelect {
+            selected: input.new,
+            result: 3,
+            last_focus: input.last_focus,
+            previous: input.previous,
+            stamp: None,
+        };
+    }
+    let candidate = if (input.new & 0x40_0000) != 0 {
+        0
+    } else if input.new > 0 && input.new < 0xffff {
+        if input.table_ok {
+            input.new & 0xffff
+        } else {
+            0
+        }
+    } else {
+        if input.current > 0 && (input.current & 0x300_0000) > 0 {
+            return unchanged(3);
+        }
+        0
+    };
+    if candidate == input.last_focus {
+        return TreeSelect {
+            selected: input.new,
+            result: 0,
+            last_focus: input.last_focus,
+            previous: input.previous,
+            stamp: None,
+        };
+    }
+    if candidate == input.previous {
+        return TreeSelect {
+            selected: input.new,
+            result: 3,
+            last_focus: input.last_focus,
+            previous: input.previous,
+            stamp: None,
+        };
+    }
+    TreeSelect {
+        selected: input.new,
+        result: 3,
+        last_focus: candidate,
+        previous: if candidate > 0 {
+            candidate
+        } else {
+            input.previous
+        },
+        stamp: Some(input.now),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2017,5 +2107,53 @@ mod tests {
         let high = charge_tree(5.0, 120, 0, true);
         assert!((high.charge - 5.0).abs() < 1e-6);
         assert!((high.gain - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_tree_selection_validates_and_stamps() {
+        let input = |new, current, mode, table_ok, last_focus, previous| TreeSelectInput {
+            new,
+            current,
+            mode,
+            table_ok,
+            last_focus,
+            previous,
+            now: 100,
+            base_result: 9,
+        };
+
+        let none = select_tree_node(input(0, 0, 0, true, 0, 0));
+        assert_eq!(none.result, 9);
+        assert_eq!(none.selected, 0);
+
+        let special = select_tree_node(input(0x100_0000, 0, 3, true, 0, 0));
+        assert_eq!(special.selected, 0x100_0000);
+        assert_eq!(special.result, 3);
+        assert_eq!(special.stamp, None);
+
+        let same = select_tree_node(input(5, 0, 0, true, 5, 0));
+        assert_eq!(same.result, 0);
+        assert_eq!(same.last_focus, 5);
+        assert_eq!(same.stamp, None);
+
+        let previous = select_tree_node(input(5, 0, 0, true, 0, 5));
+        assert_eq!(previous.result, 3);
+        assert_eq!(previous.last_focus, 0);
+        assert_eq!(previous.stamp, None);
+
+        let fresh = select_tree_node(input(5, 0, 0, true, 0, 0));
+        assert_eq!(fresh.result, 3);
+        assert_eq!(fresh.last_focus, 5);
+        assert_eq!(fresh.previous, 5);
+        assert_eq!(fresh.stamp, Some(100));
+
+        let marked = select_tree_node(input(0x50_0000, 0, 0, true, 0, 0));
+        assert_eq!(marked.result, 0);
+        assert_eq!(marked.selected, 0x50_0000);
+
+        let kept = select_tree_node(input(0, 0x100_0000, 0, true, 0, 0));
+        assert_eq!(kept.result, 3);
+        assert_eq!(kept.selected, 0x100_0000);
+        assert_eq!(kept.stamp, None);
     }
 }
