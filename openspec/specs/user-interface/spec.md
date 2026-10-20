@@ -1542,3 +1542,16 @@ State byte 4 SHALL return alpha and sound 0. Bit 0 clear SHALL return 1. Bit 0 s
 - **THEN** the bit clears and alpha and sound are 1
 - **WHEN** bit 0 is set, the deadline 1000 and the clock 800
 - **THEN** alpha is 0.84 and sound is 0.9744
+
+### Requirement: Skill screen fade-in
+With bit 1 clear nothing SHALL change. With the deadline at or below the clock the state SHALL become 4; page 2 SHALL return alpha 0 and any other page SHALL close. Otherwise the sound SHALL become `(deadline − clock) × sound / delay`.
+
+#### Scenario: Clear, closing and fading
+- **WHEN** bit 1 is clear
+- **THEN** nothing changes
+- **WHEN** bit 1 is set, the deadline 500 and the clock 600 on page 2
+- **THEN** the state is 4 and alpha is 0
+- **WHEN** the page is 1
+- **THEN** the close runs
+- **WHEN** the deadline is 1000, the clock 800, the sound 0.5 and the delay 250
+- **THEN** the sound becomes 0.4

@@ -821,6 +821,56 @@ pub fn skill_screen_fade(state: u8, deadline: i32, clock: i32) -> SkillFade {
     }
 }
 
+/// The skill screen's fade-in result.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SkillFadeIn {
+    pub state: u8,
+    pub sound: f32,
+    pub closed: bool,
+    pub alpha: Option<f32>,
+}
+
+/// Runs the draw's bit-1 fade-in.
+pub fn skill_screen_fade_in(
+    state: u8,
+    deadline: i32,
+    clock: i32,
+    sound: f32,
+    delay: f32,
+    page: i32,
+) -> SkillFadeIn {
+    if state & 2 == 0 {
+        return SkillFadeIn {
+            state,
+            sound,
+            closed: false,
+            alpha: None,
+        };
+    }
+    if deadline <= clock {
+        if page == 2 {
+            return SkillFadeIn {
+                state: 4,
+                sound: 0.0,
+                closed: false,
+                alpha: Some(0.0),
+            };
+        }
+        return SkillFadeIn {
+            state: 4,
+            sound,
+            closed: true,
+            alpha: None,
+        };
+    }
+    SkillFadeIn {
+        state,
+        sound: (deadline - clock) as f32 * sound / delay,
+        closed: false,
+        alpha: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1630,5 +1680,26 @@ mod tests {
         assert!(!fading.cleared);
         assert!((fading.alpha - 0.84).abs() < 1e-5);
         assert!((fading.sound - 0.9744).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_skill_screen_fades_in_or_closes() {
+        let quiet = skill_screen_fade_in(0, 500, 600, 0.5, 250.0, 2);
+        assert_eq!(quiet.state, 0);
+        assert_eq!(quiet.sound, 0.5);
+        assert!(!quiet.closed);
+
+        let page_two = skill_screen_fade_in(2, 500, 600, 0.5, 250.0, 2);
+        assert_eq!(page_two.state, 4);
+        assert_eq!(page_two.sound, 0.0);
+        assert_eq!(page_two.alpha, Some(0.0));
+
+        let closing = skill_screen_fade_in(2, 500, 600, 0.5, 250.0, 1);
+        assert!(closing.closed);
+        assert_eq!(closing.state, 4);
+
+        let fading = skill_screen_fade_in(2, 1000, 800, 0.5, 250.0, 2);
+        assert!((fading.sound - 0.4).abs() < 1e-6);
+        assert!(!fading.closed);
     }
 }
