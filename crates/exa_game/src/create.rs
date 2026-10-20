@@ -816,6 +816,61 @@ pub fn step_creation_list(index: i32, up: bool) -> CreationListStep {
     }
 }
 
+/// The creation mode switch's branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreationModeAction {
+    Special,
+    Widget { enabled: bool },
+}
+
+/// Routes the mode to the special branch or the widget bit.
+pub fn switch_creation_mode(mode: i32) -> CreationModeAction {
+    if mode == 2 {
+        CreationModeAction::Special
+    } else {
+        CreationModeAction::Widget { enabled: mode <= 0 }
+    }
+}
+
+/// The creation mode toggle's result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationModeToggle {
+    pub changed: bool,
+    pub mode: i32,
+    pub refreshed: bool,
+}
+
+/// Toggles between mode 1 and mode 2 by flag bits.
+pub fn toggle_creation_mode(mode: i32, flags: i32) -> CreationModeToggle {
+    if mode == 2 {
+        if flags & 1 == 0 {
+            return CreationModeToggle {
+                changed: false,
+                mode,
+                refreshed: false,
+            };
+        }
+        CreationModeToggle {
+            changed: true,
+            mode: 1,
+            refreshed: true,
+        }
+    } else {
+        if flags & 2 == 0 {
+            return CreationModeToggle {
+                changed: false,
+                mode,
+                refreshed: false,
+            };
+        }
+        CreationModeToggle {
+            changed: true,
+            mode: 2,
+            refreshed: true,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1387,5 +1442,33 @@ mod tests {
         let zero_forward = step_creation_list(0, true);
         assert!(zero_forward.rebuilt);
         assert_eq!(zero_forward.index, 1);
+    }
+
+    #[test]
+    fn the_creation_modes_switch_and_toggle() {
+        assert_eq!(switch_creation_mode(2), CreationModeAction::Special);
+        assert_eq!(
+            switch_creation_mode(1),
+            CreationModeAction::Widget { enabled: false }
+        );
+        assert_eq!(
+            switch_creation_mode(0),
+            CreationModeAction::Widget { enabled: true }
+        );
+
+        let down = toggle_creation_mode(2, 1);
+        assert!(down.changed);
+        assert_eq!(down.mode, 1);
+        assert!(down.refreshed);
+
+        let up = toggle_creation_mode(1, 2);
+        assert!(up.changed);
+        assert_eq!(up.mode, 2);
+        assert!(up.refreshed);
+
+        let refused = toggle_creation_mode(2, 2);
+        assert!(!refused.changed);
+        assert_eq!(refused.mode, 2);
+        assert!(!refused.refreshed);
     }
 }
