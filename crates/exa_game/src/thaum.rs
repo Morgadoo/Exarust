@@ -2827,3 +2827,44 @@ mod barrier_tests {
         assert_eq!(next.frame, 7);
     }
 }
+
+/// The barrier's stored padding (0.2 at `+0xc8`).
+pub const BARRIER_PADDING: f32 = 0.2;
+
+/// The original's point lerp: `a + (b - a)·t`.
+pub fn barrier_lerp(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
+}
+
+/// The per-tick barrier position: with a target, the fraction is the
+/// target's frame minus the barrier's frame, plus the probe's extra value,
+/// and the point lerps from the current pair toward the previous one.
+pub fn update_barrier_position(
+    current: [f32; 3],
+    previous: [f32; 3],
+    target_frame: i32,
+    base_frame: i32,
+    extra: f32,
+) -> ([f32; 3], f32) {
+    let t = (target_frame - base_frame) as f32 + extra;
+    (barrier_lerp(current, previous, t), t)
+}
+
+#[cfg(test)]
+mod barrier_update_tests {
+    use super::*;
+
+    #[test]
+    fn the_barrier_lerps_and_reports_its_fraction() {
+        let (position, t) = update_barrier_position([0.0, 0.0, 0.0], [10.0, 0.0, 0.0], 5, 3, 0.1);
+        assert!((t - 2.1).abs() < 1e-6);
+        assert!((position[0] - 21.0).abs() < 1e-5);
+        assert_eq!(position[1], 0.0);
+        assert_eq!(position[2], 0.0);
+        assert_eq!(BARRIER_PADDING, 0.2);
+    }
+}
