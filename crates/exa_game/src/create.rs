@@ -28,6 +28,48 @@ pub fn move_appearance(source: &mut CharacterAppearance) -> CharacterAppearance 
     moved
 }
 
+/// The creation screen's appearance labels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreationLabel {
+    None,
+    HumanFemale,
+    HumanMale,
+    Ham,
+    Om,
+    Ml,
+}
+
+impl CreationLabel {
+    /// The literal the original stores, or none.
+    pub fn code(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::HumanFemale => Some("HF"),
+            Self::HumanMale => Some("HM"),
+            Self::Ham => Some("HAM"),
+            Self::Om => Some("OM"),
+            Self::Ml => Some("ML"),
+        }
+    }
+}
+
+/// Picks the appearance label from the record's word.
+pub fn creation_label(word: i32) -> CreationLabel {
+    match word & 0xff00 {
+        0 => {
+            if word & 1 != 0 {
+                CreationLabel::HumanFemale
+            } else {
+                CreationLabel::HumanMale
+            }
+        }
+        0x200 => CreationLabel::Ham,
+        0x300 => CreationLabel::Om,
+        0x400 => CreationLabel::Ml,
+        _ => CreationLabel::None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -62,5 +104,20 @@ mod tests {
                 tail_parts: Vec::new(),
             }
         );
+    }
+
+    #[test]
+    fn the_creation_appearance_labels_its_bands() {
+        assert_eq!(creation_label(0x001), CreationLabel::HumanFemale);
+        assert_eq!(creation_label(0x001).code(), Some("HF"));
+        assert_eq!(creation_label(0x000), CreationLabel::HumanMale);
+        assert_eq!(creation_label(0x000).code(), Some("HM"));
+        assert_eq!(creation_label(0x201), CreationLabel::Ham);
+        assert_eq!(creation_label(0x201).code(), Some("HAM"));
+        assert_eq!(creation_label(0x300), CreationLabel::Om);
+        assert_eq!(creation_label(0x4ff), CreationLabel::Ml);
+        assert_eq!(creation_label(0x4ff).code(), Some("ML"));
+        assert_eq!(creation_label(0x500), CreationLabel::None);
+        assert_eq!(creation_label(0x500).code(), None);
     }
 }
