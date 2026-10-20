@@ -16,12 +16,18 @@
 //!   ±0.025 rad a tick), the head looking 30 % toward the smoothed cursor;
 //!   moving by the mouse takes the cursor's direction (a reversal beyond
 //!   120° turns first); either walks free along the facing with a
-//!   look-ahead 75 + 6·v² cm ahead (70 cm behind backwards), which a wall
-//!   clamps, switching the body to walk to the clamped point and brake
-//!   there. Shift sets the sprint latch: with the keys it is spent on a
-//!   jog; the mouse beyond 3 m runs and keeps it. Standing, A or D turns a
-//!   quarter, more than 1 s after any turn key; released, a free walk stops
-//!   softly 8·v + 20 cm ahead.
+//!   look-ahead 75 + 6·v² cm ahead (70 cm behind backwards), which the
+//!   grid's line walk clamps before a wall (`exa_world::nav::query`),
+//!   switching the body to walk to the clamped point and brake there.
+//!   Shift sets the sprint latch: with the keys it is spent on a jog; the
+//!   mouse beyond 3 m runs and keeps it. Standing, A or D turns a quarter,
+//!   more than 1 s after any turn key; released, a free walk stops softly
+//!   8·v + 20 cm ahead.
+//! - **The spawn.** On its third behaviour tick (unless down) the
+//!   character is moved onto the nearest walkable point of the grid.
+//! - **Footwork.** In combat mode a step's target, a step's length along
+//!   its keys, is clamped by the line walk too; within 20 cm the step is
+//!   not taken.
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Motions};
@@ -43,12 +49,22 @@ const BACKPEDAL_BELOW: f32 = 1.0;
 pub(crate) const CURSOR_RUN_FROM: f32 = 3.0;
 /// A cursor closer than this (m) gives no direction.
 const CURSOR_MIN: f32 = 0.5;
-/// The look-ahead: 75 cm + 6·v² ahead (v in cm a tick), 70 cm behind
-/// backwards; a wall within 100 cm also stops the run.
+/// The look-ahead: 75 cm + 6·v² ahead (v in cm a tick; 45 cm + 6·v² in
+/// combat mode's walk), 70 cm behind backwards; a wall within 100 cm also
+/// stops the run.
 const LOOK_AHEAD: f32 = 75.0;
+const COMBAT_LOOK_AHEAD: f32 = 45.0;
 const LOOK_AHEAD_SPEED: f32 = 6.0;
 const LOOK_BEHIND: f32 = -70.0;
 const RUN_CUT_WITHIN: f32 = 100.0;
+/// A footwork step whose clamped target lies this close (cm) is not
+/// taken.
+const STEP_FROM: f32 = 20.0;
+/// The behaviour tick on which the character is moved onto the grid's
+/// nearest walkable point, unless the condition has [`SNAP_HELD`] (down,
+/// getting up or dead).
+const SNAP_TICK: u8 = 3;
+const SNAP_HELD: u32 = 0x200;
 /// A soft stop's goal lies at most 8·v + 20 cm ahead.
 const SOFT_STOP_SPEED: f32 = 8.0;
 const SOFT_STOP_MARGIN: f32 = 20.0;
@@ -145,6 +161,58 @@ impl CursorFollower {
     }
 }
 
+/// What a grid query of the behaviour was for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Asked {
+    /// The look-ahead of a walk.
+    LookAhead,
+    /// A soft stop's goal.
+    SoftStop,
+    /// A footwork step's target.
+    Step,
+}
+
+/// The behaviour's last line walk on the grid, for the navigation overlay:
+/// from where, toward what, where it ended and whether something blocked
+/// it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct LineAsked {
+    pub(crate) asked: Asked,
+    pub(crate) from: Vec3,
+    pub(crate) to: Vec3,
+    pub(crate) end: Vec3,
+    pub(crate) blocked: bool,
+}
+
+/// A line walk: from where the character stands to a goal; the goal
+/// clamped before the first obstacle and whether one was met.
+pub(crate) type LineWalk<'a> = &'a dyn Fn(Vec3, Vec3) -> (Vec3, bool);
+
+/// Walks `line` from `from` to `to` and records it as `asked`.
+fn ask(line: LineWalk, asked: Asked, from: Vec3, to: Vec3) -> LineAsked {
+    let (end, blocked) = line(from, to);
+    LineAsked {
+        asked,
+        from,
+        to,
+        end,
+        blocked,
+    }
+}
+
+/// How far ahead the look-ahead lies (cm) at `speed` (cm a tick): 75 + 6·v²,
+/// 45 + 6·v² for combat mode's walk, 70 cm behind backwards (out of combat
+/// mode).
+pub(crate) fn look_ahead_reach(speed: f32, backwards: bool, combat: bool) -> f32 {
+    if combat {
+        speed * speed * LOOK_AHEAD_SPEED + COMBAT_LOOK_AHEAD
+    } else if backwards {
+        LOOK_BEHIND
+    } else {
+        speed * speed * LOOK_AHEAD_SPEED + LOOK_AHEAD
+    }
+}
+
 /// What the player's behaviour keeps between ticks.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct Steering {
@@ -165,9 +233,34 @@ pub(crate) struct Steering {
     /// no quarter turns meanwhile. Nothing sets it until the player can
     /// handle the world's objects.
     pub(crate) holds_object: bool,
+    /// Behaviour ticks counted toward the spawn snap.
+    pub(crate) ticks: u8,
+    /// The last line walk on the grid (the navigation overlay draws it).
+    pub(crate) line: Option<LineAsked>,
 }
 
 impl Steering {
+    /// The behaviour tick's spawn snap, as the original's: counting its
+    /// first ticks, on the third (unless `condition` is down, getting up or
+    /// dead) the move across the ground (m) from where the character
+    /// stands (`standing`) to `nearest`, the grid's nearest walkable point
+    /// to it; none otherwise.
+    pub(crate) fn snap(
+        &mut self,
+        condition: Condition,
+        standing: Vec3,
+        nearest: &dyn Fn(Vec3) -> Vec3,
+    ) -> Option<Vec3> {
+        if self.ticks >= SNAP_TICK {
+            return None;
+        }
+        self.ticks += 1;
+        if self.ticks < SNAP_TICK || condition.has(SNAP_HELD) {
+            return None;
+        }
+        Some((nearest(standing) - standing).with_y(0.0))
+    }
+
     /// The behaviour tick's common part: Shift held sets the sprint latch,
     /// released clears it, every tick.
     pub(crate) fn latch(req: &mut Locomotion, keys: &Keys) {
@@ -266,9 +359,7 @@ impl Steering {
 
     /// The exploration steering, one behaviour tick at `now_ms` (the game
     /// clock), for a body standing at `standing` whose locomotion is
-    /// `body`; `line` walks a straight line from where the character stands
-    /// to a goal and returns the goal clamped before the first obstacle and
-    /// whether one was met.
+    /// `body`; `line` is the grid's line walk.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn explore(
         &mut self,
@@ -278,7 +369,7 @@ impl Steering {
         now_ms: u64,
         standing: Vec3,
         condition: Condition,
-        line: &dyn Fn(Vec3, Vec3) -> (Vec3, bool),
+        line: LineWalk,
     ) {
         use flags::*;
         req.slow_turn = true;
@@ -310,7 +401,7 @@ impl Steering {
                 let heading = forward(req.heading);
                 req.look = ease_look(req.look, heading + (mixed - heading) * STANDING_LOOK);
             } else if req.free_walk {
-                soft_stop(req, body, standing, line);
+                self.line = Some(soft_stop(req, body, standing, line));
             } else {
                 req.flags &= !RUN;
             }
@@ -360,12 +451,16 @@ impl Steering {
         req.moving = true;
         let mut keeps_brake = false;
         if req.stepping.is_none() {
-            let reach = if req.flags & (BACK | TURN_ABOUT) != 0 {
-                LOOK_BEHIND
-            } else {
-                body.speed * body.speed * LOOK_AHEAD_SPEED + LOOK_AHEAD
-            };
-            let (goal, blocked) = line(standing, standing + facing * (reach / CM));
+            let backwards = req.flags & (BACK | TURN_ABOUT) != 0;
+            let reach = look_ahead_reach(body.speed, backwards, false);
+            let asked = ask(
+                line,
+                Asked::LookAhead,
+                standing,
+                standing + facing * (reach / CM),
+            );
+            self.line = Some(asked);
+            let (goal, blocked) = (asked.end, asked.blocked);
             req.goal = goal;
             req.free_walk = !blocked;
             if blocked && (goal - standing).with_y(0.0).length() * CM < RUN_CUT_WITHIN {
@@ -386,13 +481,29 @@ impl Steering {
         req: &mut Locomotion,
         body: &Locomotor,
         standing: Vec3,
-        line: &dyn Fn(Vec3, Vec3) -> (Vec3, bool),
+        line: LineWalk,
     ) {
         req.slow_turn = false;
         self.requested = false;
         if req.moving {
-            soft_stop(req, body, standing, line);
+            self.line = Some(soft_stop(req, body, standing, line));
         }
+    }
+
+    /// A footwork step's target, as the original's: `length` (m) along
+    /// `dir` (a unit vector across the ground) from where the character
+    /// stands, clamped by the line walk; none when the clamped target lies
+    /// within 20 cm (the step is not taken).
+    pub(crate) fn step_target(
+        &mut self,
+        standing: Vec3,
+        dir: Vec3,
+        length: f32,
+        line: LineWalk,
+    ) -> Option<Vec3> {
+        let asked = ask(line, Asked::Step, standing, standing + dir * length);
+        self.line = Some(asked);
+        ((asked.end - standing).with_y(0.0).length() * CM > STEP_FROM).then_some(asked.end)
     }
 }
 
@@ -405,20 +516,22 @@ fn ease_look(look: f32, wanted: Vec3) -> f32 {
 
 /// The original's soft stop: free walk and run off, stopping on; the goal
 /// brought within 8·v + 20 cm ahead of where the character stands (along
-/// its facing), then clamped by the line walk.
+/// its facing), then clamped by the line walk (whose answer it records).
 pub(crate) fn soft_stop(
     req: &mut Locomotion,
     body: &Locomotor,
     standing: Vec3,
-    line: &dyn Fn(Vec3, Vec3) -> (Vec3, bool),
-) {
+    line: LineWalk,
+) -> LineAsked {
     req.free_walk = false;
     req.flags = (req.flags & !flags::RUN) | flags::STOPPING;
     let most = (body.speed * SOFT_STOP_SPEED + SOFT_STOP_MARGIN) / CM;
     if (req.goal - standing).with_y(0.0).length() > most {
         req.goal = standing + body.facing() * most;
     }
-    req.goal = line(standing, req.goal).0;
+    let asked = ask(line, Asked::SoftStop, standing, req.goal);
+    req.goal = asked.end;
+    asked
 }
 
 /// The key segment of the clip `anim` plays (as the original's sampler

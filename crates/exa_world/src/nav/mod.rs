@@ -34,6 +34,7 @@ pub mod path;
 pub mod query;
 pub mod source;
 pub mod view;
+pub mod walkable;
 
 use bevy::math::{DVec3, Vec2, Vec3};
 
@@ -43,9 +44,10 @@ pub use mover::{
     queue_moved, queued_moves, rect_around, refresh_movers,
 };
 pub use path::{Look, Path, find_path, look_ahead};
-pub use query::{LineHit, line_walk, nearest_walkable, obstacle, straight_walk};
+pub use query::{LineHit, line_walk, obstacle, straight_walk};
 pub use source::{GroundTile, NavSource};
 pub use view::{NavOverlay, NavPlugin, NavState, PendingNav};
+pub use walkable::{cost_at, layer_at, nearest_walkable};
 
 /// Edge of a cell, metres (30 cm).
 pub const CELL: f32 = 0.30;
@@ -118,7 +120,7 @@ const NEIGHBOURS: [(i32, i32, u32); 8] = [
 ];
 
 /// One of a column's two walkable layers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Layer {
     /// The column's only span, or the one under the upper floor.
     Lower = 0,

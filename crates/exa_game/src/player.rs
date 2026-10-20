@@ -37,7 +37,7 @@ use exa_ui::CursorCapture;
 use crate::bindings::{Action, Bindings};
 
 pub(crate) use crate::steering::CURSOR_RUN_FROM;
-use crate::steering::{Keys, Steering, key_segment};
+use crate::steering::{Keys, LineAsked, LineWalk, Steering, key_segment};
 
 /// Exarust's interim combat footwork moves the capsule at the walking
 /// speed (m/s) until the original's steps replace it.
@@ -124,6 +124,12 @@ pub struct PlayerBody {
 }
 
 impl PlayerBody {
+    /// The behaviour's last line walk on the navigation grid (the look-ahead,
+    /// a soft stop or a footwork step), for the navigation overlay.
+    pub(crate) fn line_asked(&self) -> Option<LineAsked> {
+        self.steering.line
+    }
+
     /// A body whose combat aim starts along `yaw` (its locomotion's facing
     /// is [`Locomotion::facing`]'s).
     pub fn new(yaw: f32) -> Self {
@@ -442,12 +448,16 @@ fn cursor_ground(
 }
 
 /// The player's behaviour each fixed tick, before its body's tick (as the
-/// original's behaviour runs before its movement decision): Shift's sprint
-/// latch, the movement request, the cursor and the exploration steering
-/// (`crate::steering`), or in combat mode the cursor, the combat branch's
-/// part and Exarust's interim footwork; then the clip the steering starts,
-/// by the body's last movement decision. While it falls (Exarust's own) or
-/// its condition is helpless it is not steered: it asks for no move.
+/// original's behaviour runs before its movement decision): on its third
+/// tick with a navigation grid the spawn snap onto the grid's nearest
+/// walkable point (across the ground: its height is the capsule's); the
+/// crouch; Shift's sprint latch, the movement request, the cursor and the
+/// exploration steering (`crate::steering`), or in combat mode the cursor,
+/// the combat branch's part and Exarust's interim footwork; then the clip
+/// the steering starts, by the body's last movement decision. Its line
+/// walks are the grid's (a ray from the hip without one). While it falls
+/// (Exarust's own) or its condition is helpless it is not steered: it asks
+/// for no move.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn steer_player(
     keys: Res<ButtonInput<KeyCode>>,
@@ -458,7 +468,7 @@ fn steer_player(
     physics: Res<Physics>,
     nav: Option<Res<exa_world::nav::NavGrid>>,
     motions: Option<Res<Motions>>,
-    players: Query<(&CharacterBody, &GlobalTransform, &Children), With<Player>>,
+    mut players: Query<(&CharacterBody, &mut Transform, &Children), With<Player>>,
     mut bodies: Query<(
         &mut PlayerBody,
         &mut Locomotion,
@@ -467,6 +477,7 @@ fn steer_player(
         &Stance,
         Option<&Condition>,
         Has<Fallen>,
+        Option<&Fighter>,
     )>,
 ) {
     let dt = 1.0 / TICK_HZ;
@@ -480,14 +491,39 @@ fn steer_player(
         shift: held(Action::Run),
         mouse: buttons.pressed(MouseButton::Right) && cursor.0.is_some(),
     };
-    for (capsule, at, children) in &players {
+    let nearest = |at: Vec3| {
+        nav.as_deref()
+            .map_or(at, |g| exa_world::nav::nearest_walkable(g, at))
+    };
+    for (capsule, mut at, children) in &mut players {
         for child in children.iter() {
-            let Ok((mut pb, mut req, body, mut anim, &stance, condition, fallen)) =
+            let Ok((mut pb, mut req, body, mut anim, &stance, condition, fallen, fighter)) =
                 bodies.get_mut(child)
             else {
                 continue;
             };
             let state = condition.copied().unwrap_or_default();
+            // Where its feet are in the simulation, as its next step starts
+            // from.
+            let mut standing = capsule.feet(&at);
+            // The original's grid exists before its first behaviour tick;
+            // Exarust's is built after the level loads, so the snap counts
+            // the ticks it has.
+            if nav.is_some()
+                && let Some(by) = pb.steering.snap(state, standing, &nearest)
+            {
+                info!(
+                    "spawn snap: from ({:.3}, {:.3}, {:.3}) {:.3} m across the ground to the nearest walkable point",
+                    standing.x,
+                    standing.y,
+                    standing.z,
+                    by.length()
+                );
+                if by != Vec3::ZERO {
+                    standing += by;
+                    at.translation = standing;
+                }
+            }
             // The crouch is kept while down, so it is set before the
             // helpless bodies are left alone.
             let down = fallen || state.off_feet();
@@ -504,7 +540,6 @@ fn steer_player(
                 req.stepping = None;
                 continue;
             }
-            let standing = at.translation();
             let line = |from: Vec3, to: Vec3| {
                 line_walk(nav.as_deref(), &physics, from, to, capsule.radius)
             };
@@ -514,17 +549,28 @@ fn steer_player(
             if pb.combat {
                 steering.aim(&mut req, to_cursor, state.off_feet());
                 steering.fight(&mut req, body, standing, &line);
-                pb.steering = steering;
+                // A tap step's length (m), the step reach × √scale.
+                let step = fighter.map_or(STEP_LENGTH, |f| {
+                    f.stats.step_reach(f.stats.encumbrance) * f.stats.scale.sqrt()
+                });
+                let footing = Footwork {
+                    standing,
+                    step,
+                    line: &line,
+                };
                 combat_steps(
                     &keys,
                     &bindings,
                     &mut req,
+                    &mut steering,
                     &mut pb,
                     &mut anim,
                     stance,
                     body.moving(),
+                    &footing,
                     dt,
                 );
+                pb.steering = steering;
                 continue;
             }
             pb.walk_from = None;
@@ -611,24 +657,41 @@ fn explore_clip(anim: &mut Animator, gait: Option<&str>) {
     }
 }
 
+/// A tap step's length (m) for a character without stats: a human's step
+/// reach.
+const STEP_LENGTH: f32 = 0.8;
+
+/// Where the footwork steps from, how long a step is and the grid's line
+/// walk that clamps its target.
+struct Footwork<'a> {
+    standing: Vec3,
+    step: f32,
+    line: LineWalk<'a>,
+}
+
 /// Combat footwork: W, S, A and D step along and across the cursor
 /// direction; held, they walk on. The original's footwork steps the feet
 /// and never changes the clip; Exarust's interim one moves the capsule (the
 /// request's stepping velocity, so the body does not locomote meanwhile),
 /// plays "Combat Walk" while a key is held and gives back the clip it
 /// replaced (the stance's, if that clip was a stance) once they are
-/// released. A walk, run or backpedal of the exploration steering still
-/// playing when combat mode turned on ends in the stance once the body
-/// stands (`moving` false), as the original's walk ends in it.
+/// released. As the original's steps, it goes only while the target of a
+/// step (a step's length along the keys, clamped by the grid's line walk)
+/// lies more than 20 cm away. A walk, run or backpedal of the exploration
+/// steering still playing when combat mode turned on ends in the stance
+/// once the body stands (`moving` false), as the original's walk ends in
+/// it.
 #[allow(clippy::too_many_arguments)]
 fn combat_steps(
     keys: &ButtonInput<KeyCode>,
     bindings: &Bindings,
     req: &mut Locomotion,
+    steering: &mut Steering,
     pb: &mut PlayerBody,
     anim: &mut Animator,
     stance: Stance,
     moving: bool,
+    footing: &Footwork,
     dt: f32,
 ) {
     let look = forward(pb.aim);
@@ -644,7 +707,14 @@ fn combat_steps(
             dir += d;
         }
     }
-    let dir = dir.normalize_or_zero();
+    let mut dir = dir.normalize_or_zero();
+    if dir != Vec3::ZERO
+        && steering
+            .step_target(footing.standing, dir, footing.step, footing.line)
+            .is_none()
+    {
+        dir = Vec3::ZERO;
+    }
     pb.held = if dir == Vec3::ZERO { 0.0 } else { pb.held + dt };
     let walking = dir != Vec3::ZERO && pb.held >= STEP_HOLD;
     req.stepping = (dir != Vec3::ZERO).then_some(dir * FOOTWORK_SPEED);
@@ -1397,6 +1467,81 @@ mod tests {
         assert_eq!(stance_of(&app, player), Stance::Defence);
     }
 
+    /// The interim footwork, one behaviour tick, on open ground: a step of
+    /// 80 cm, the line walk ending where asked.
+    fn steps(
+        keys: &ButtonInput<KeyCode>,
+        req: &mut Locomotion,
+        pb: &mut PlayerBody,
+        anim: &mut Animator,
+        stance: Stance,
+        moving: bool,
+    ) {
+        let open = |_: Vec3, to: Vec3| (to, false);
+        let footing = Footwork {
+            standing: Vec3::ZERO,
+            step: STEP_LENGTH,
+            line: &open,
+        };
+        let mut steering = pb.steering;
+        combat_steps(
+            keys,
+            &Bindings::default(),
+            req,
+            &mut steering,
+            pb,
+            anim,
+            stance,
+            moving,
+            &footing,
+            0.012,
+        );
+        pb.steering = steering;
+    }
+
+    /// A footwork step whose target the grid's line walk clamps within
+    /// 20 cm is not taken: no walk, no clip; 21 cm away it is, and the
+    /// step's target is recorded for the overlay.
+    #[test]
+    fn footwork_stops_where_its_step_target_is_clamped() {
+        let mut keys = ButtonInput::<KeyCode>::default();
+        let mut req = Locomotion::default();
+        let mut pb = PlayerBody::new(0.0);
+        pb.set_combat(true);
+        let mut anim = Animator::new("Default", "Defence stance");
+        keys.press(KeyCode::KeyW);
+        let mut walk = |near: f32, req: &mut Locomotion, anim: &mut Animator| {
+            let wall = move |from: Vec3, to: Vec3| (from + (to - from).normalize() * near, true);
+            let footing = Footwork {
+                standing: Vec3::ZERO,
+                step: STEP_LENGTH,
+                line: &wall,
+            };
+            let mut steering = pb.steering;
+            combat_steps(
+                &keys,
+                &Bindings::default(),
+                req,
+                &mut steering,
+                &mut pb,
+                anim,
+                Stance::Defence,
+                false,
+                &footing,
+                0.012,
+            );
+            pb.steering = steering;
+            pb.steering.line
+        };
+        let asked = walk(0.2, &mut req, &mut anim).unwrap();
+        assert_eq!(req.stepping, None);
+        assert_eq!(anim.action, "Defence stance");
+        assert!(asked.blocked && (asked.to - Vec3::Z * 0.8).length() < 1e-6);
+        walk(0.21, &mut req, &mut anim);
+        assert!(req.stepping.is_some_and(|v| v.z > 0.0));
+        assert_eq!(anim.action, "Combat Walk");
+    }
+
     /// The interim footwork plays the combat walk while a key is held and
     /// gives back the clip it replaced: the guard stays the guard.
     #[test]
@@ -1408,16 +1553,7 @@ mod tests {
         let mut anim = Animator::new("Default", "Defence stance");
         keys.press(KeyCode::KeyA);
         let stance = Stance::CombatIdle;
-        combat_steps(
-            &keys,
-            &Bindings::default(),
-            &mut req,
-            &mut pb,
-            &mut anim,
-            stance,
-            false,
-            0.012,
-        );
+        steps(&keys, &mut req, &mut pb, &mut anim, stance, false);
         assert_eq!(anim.action, "Combat Walk");
         assert!(
             req.stepping.is_some_and(|v| v.x > 0.0),
@@ -1425,16 +1561,7 @@ mod tests {
             req.stepping
         );
         keys.release(KeyCode::KeyA);
-        combat_steps(
-            &keys,
-            &Bindings::default(),
-            &mut req,
-            &mut pb,
-            &mut anim,
-            stance,
-            false,
-            0.012,
-        );
+        steps(&keys, &mut req, &mut pb, &mut anim, stance, false);
         assert_eq!(anim.action, "Defence stance");
         assert_eq!(req.stepping, None);
     }
@@ -1452,53 +1579,17 @@ mod tests {
         for gait in ["Walk", "Run", "Backpedal"] {
             let mut anim = Animator::new("Default", gait);
             // Still moving (stopping softly) it walks on.
-            combat_steps(
-                &keys,
-                &Bindings::default(),
-                &mut req,
-                &mut pb,
-                &mut anim,
-                stance,
-                true,
-                0.012,
-            );
+            steps(&keys, &mut req, &mut pb, &mut anim, stance, true);
             assert_eq!(anim.action, gait);
-            combat_steps(
-                &keys,
-                &Bindings::default(),
-                &mut req,
-                &mut pb,
-                &mut anim,
-                stance,
-                false,
-                0.012,
-            );
+            steps(&keys, &mut req, &mut pb, &mut anim, stance, false);
             assert_eq!(anim.action, "Defence stance", "{gait}");
         }
         let mut anim = Animator::new("Default", "Walk");
         keys.press(KeyCode::KeyW);
-        combat_steps(
-            &keys,
-            &Bindings::default(),
-            &mut req,
-            &mut pb,
-            &mut anim,
-            stance,
-            false,
-            0.012,
-        );
+        steps(&keys, &mut req, &mut pb, &mut anim, stance, false);
         assert_eq!(anim.action, "Combat Walk");
         keys.release(KeyCode::KeyW);
-        combat_steps(
-            &keys,
-            &Bindings::default(),
-            &mut req,
-            &mut pb,
-            &mut anim,
-            stance,
-            false,
-            0.012,
-        );
+        steps(&keys, &mut req, &mut pb, &mut anim, stance, false);
         assert_eq!(anim.action, "Defence stance");
     }
 

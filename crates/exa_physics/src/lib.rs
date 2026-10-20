@@ -215,6 +215,14 @@ impl CharacterBody {
             .map_or(Vec3::ZERO, |(now, before)| now - before - self.followed)
     }
 
+    /// Where the character's feet are in the simulation (m, world), given
+    /// its entity's transform: what the next fixed step starts from (the
+    /// transform shows a drawn position between steps; one moved elsewhere
+    /// is a teleport, and wins).
+    pub fn feet(&self, transform: &Transform) -> Vec3 {
+        self.simulated(transform)
+    }
+
     /// The simulated feet position, given the entity's transform.
     fn simulated(&self, transform: &Transform) -> Vec3 {
         match self.steps {

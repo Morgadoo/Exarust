@@ -5,9 +5,8 @@
 //! is within ten. The straight walk uses five and fifteen, and follows a
 //! floor down. A line of 40 cm or less is not an obstacle; a longer one is
 //! when a floor is more than seven too high or an early cell's penalty is
-//! above 60. A point on a cell whose clearance and penalty sum to less than
-//! 80 keeps its place and takes that floor's height. Evidence: the movement
-//! notes' grid queries.
+//! above 60. The point queries (a cell's cost, the nearest walkable point)
+//! are `super::walkable`'s. Evidence: the movement notes' grid queries.
 
 use bevy::math::Vec3;
 
@@ -269,57 +268,6 @@ pub fn obstacle(grid: &NavGrid, start: Vec3, end: Vec3) -> bool {
     false
 }
 
-/// The nearest walkable place. A cheap cell keeps the point and takes the
-/// floor's height. A costly cell yields a neighbour's centre.
-pub fn nearest_walkable(grid: &NavGrid, point: Vec3) -> Vec3 {
-    let (width, depth) = grid.size();
-    let x = axis(point.x, width).round_ties_even() as i32;
-    let z = axis(point.z, depth).round_ties_even() as i32;
-    let height = voxels(point.y, grid.base());
-    let layer = pick_layer(grid, x, z, height);
-    if layer >= 0
-        && let Some(cell) = cell_at(grid, x, z, layer)
-        && cell.clearance != 255
-        && u32::from(cell.clearance) + u32::from(cell.penalty) < 80
-    {
-        return Vec3::new(point.x, grid.floor_height(cell.floor), point.z);
-    }
-    let start_floor = cell_at(grid, x, z, layer.max(0))
-        .map(|cell| i32::from(cell.floor))
-        .unwrap_or(height);
-    let mut best: Option<(i32, i32, i32, u32)> = None;
-    for (dz, dx) in NEIGHBOURS {
-        let nx = x + dx;
-        let nz = z + dz;
-        let Some((floor, cost)) = neighbour_floor(grid, nx, nz, start_floor) else {
-            continue;
-        };
-        let better = best.is_none_or(|(_, _, _, had)| cost < had);
-        if better {
-            best = Some((nx, nz, floor, cost));
-        }
-    }
-    let Some((nx, nz, floor, cost)) = best else {
-        return point;
-    };
-    if cost >= 80 || nx < 0 || nz < 0 {
-        return point;
-    }
-    let centre = grid.cell_centre(nx as usize, nz as usize);
-    Vec3::new(centre.x, grid.floor_height(floor as u8), centre.y)
-}
-
-const NEIGHBOURS: [(i32, i32); 8] = [
-    (-1, -1),
-    (-1, 0),
-    (-1, 1),
-    (0, -1),
-    (0, 1),
-    (1, -1),
-    (1, 0),
-    (1, 1),
-];
-
 impl Raster {
     fn advance(&mut self) -> Option<(i32, i32)> {
         self.major += self.step;
@@ -449,73 +397,6 @@ fn obstacle_cell(grid: &NavGrid, x: i32, z: i32, height: i32, penalise: bool) ->
     }
 }
 
-fn pick_layer(grid: &NavGrid, x: i32, z: i32, height: i32) -> i32 {
-    let (lower, upper) = floors(grid, x, z);
-    if lower.0 == 0 {
-        return -1;
-    }
-    if upper.0 == 0 || upper.0 == 255 {
-        return if lower.0 == 255 { -1 } else { 0 };
-    }
-    let fl = i32::from(lower.0);
-    let fu = i32::from(upper.0);
-    let ul = i32::from(lower.1);
-    let uu = i32::from(upper.1);
-    if fl < fu {
-        if uu - fl < 11 {
-            return 1;
-        }
-    } else if ul - fu < 11 {
-        return 0;
-    }
-    if (height - fu).abs() < (height - fl).abs() {
-        1
-    } else {
-        0
-    }
-}
-
-fn neighbour_floor(grid: &NavGrid, x: i32, z: i32, stood: i32) -> Option<(i32, u32)> {
-    let (lower, upper) = floors(grid, x, z);
-    if lower.0 == 0 {
-        return None;
-    }
-    let fl = i32::from(lower.0);
-    let ul = i32::from(lower.1);
-    let fu = i32::from(upper.0);
-    let uu = i32::from(upper.1);
-    let mut out_of_reach = false;
-    let mut floor = fl;
-    if fl > stood + 4 {
-        if ul < stood + 10 {
-            return None;
-        }
-        out_of_reach = true;
-    }
-    if upper.0 == 0 {
-        if out_of_reach {
-            return None;
-        }
-    } else if fu > stood + 4 {
-        if uu < stood + 10 && (uu != 0 || fu < fl) || out_of_reach {
-            return None;
-        }
-    } else if fu <= fl {
-        if out_of_reach {
-            return None;
-        }
-    } else {
-        floor = fu;
-    }
-    let rise = floor - stood;
-    if !(-21 < rise && rise < 5) {
-        return None;
-    }
-    let layer = if floor == fu && upper.0 != 0 { 1 } else { 0 };
-    let cell = cell_at(grid, x, z, layer)?;
-    Some((floor, u32::from(cell.clearance) + u32::from(cell.penalty)))
-}
-
 fn cell_at(grid: &NavGrid, x: i32, z: i32, layer: i32) -> Option<super::NavCell> {
     let (width, depth) = grid.size();
     if x < 0 || z < 0 || x as usize >= width || z as usize >= depth || !(0..=1).contains(&layer) {
@@ -532,7 +413,7 @@ fn cell_at(grid: &NavGrid, x: i32, z: i32, layer: i32) -> Option<super::NavCell>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nav::{Layer, NavCell, NavGrid};
+    use crate::nav::{Layer, NavCell, NavGrid, nearest_walkable};
 
     fn flat(width: usize, depth: usize) -> NavGrid {
         let mut grid = NavGrid::empty(width, depth, 0.0);
@@ -696,10 +577,10 @@ mod tests {
         let grid = flat(8, 8);
         let centre = grid.cell_centre(3, 3);
         let point = Vec3::new(centre.x + 0.05, 2.0, centre.y - 0.04);
+        // The flood works in the original's centimetres: the point comes
+        // back within a rounding of where it was, on its floor.
         let kept = nearest_walkable(&grid, point);
-        assert_eq!(kept.x, point.x);
-        assert_eq!(kept.z, point.z);
-        assert_eq!(kept.y, 1.0);
+        assert!(kept.distance(point.with_y(1.0)) < 1e-5, "{kept}");
 
         let mut costly = flat(8, 8);
         costly.set_cell(
@@ -714,6 +595,6 @@ mod tests {
         );
         let aside = nearest_walkable(&costly, Vec3::new(centre.x, 1.0, centre.y));
         let neighbour = costly.cell_centre(2, 2);
-        assert_eq!(aside, Vec3::new(neighbour.x, 1.0, neighbour.y));
+        assert!(aside.distance(Vec3::new(neighbour.x, 1.0, neighbour.y)) < 1e-5);
     }
 }

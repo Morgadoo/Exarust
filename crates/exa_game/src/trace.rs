@@ -83,9 +83,11 @@ const SWING: [&str; 3] = ["swing_rate", "strength", "attack_flags"];
 /// flag word (hex), moving and free walk (1 or 0) after the movement
 /// decision, the yaw and the heading (degrees), the turn rate this tick
 /// (degrees a second), the alignment, the speed along the heading (cm
-/// a tick), how far the move vector reached (cm) and why the body stands
-/// (`moving`, `standing`, `braked`, `arrived`, or the gate that held it).
-const LOCOMOTION: [&str; 10] = [
+/// a tick), how far the move vector reached (cm), why the body stands
+/// (`moving`, `standing`, `braked`, `arrived`, or the gate that held it)
+/// and the request's goal across the ground (cm: the look-ahead's clamped
+/// end or a soft stop's).
+const LOCOMOTION: [&str; 12] = [
     "loco_flags",
     "moving",
     "free_walk",
@@ -96,6 +98,8 @@ const LOCOMOTION: [&str; 10] = [
     "speed",
     "reach",
     "stop",
+    "goal_x",
+    "goal_z",
 ];
 /// A part target's columns: its place (cm) and its rotation.
 const TARGET: [&str; 7] = ["x", "y", "z", "qx", "qy", "qz", "qw"];
@@ -274,7 +278,7 @@ fn locomotion_columns(locomotion: Option<(&Locomotion, &Locomotor)>) -> String {
         return ",".repeat(LOCOMOTION.len());
     };
     format!(
-        ",{:#x},{},{},{},{},{},{},{},{},{}",
+        ",{:#x},{},{},{},{},{},{},{},{},{},{},{}",
         req.flags,
         u8::from(l.moving()),
         u8::from(req.free_walk),
@@ -285,6 +289,8 @@ fn locomotion_columns(locomotion: Option<(&Locomotion, &Locomotor)>) -> String {
         l.speed,
         l.reach,
         l.stop.name(),
+        req.goal.x * CM,
+        req.goal.z * CM,
     )
 }
 
@@ -402,8 +408,8 @@ mod tests {
 
     /// The locomotion columns: the flag word in hex, moving and free walk,
     /// the yaw and heading in degrees, the turn rate in degrees a second
-    /// (the base turn's 240), the alignment, the speed, the reach and the
-    /// reason; none without a request.
+    /// (the base turn's 240), the alignment, the speed, the reach, the
+    /// reason and the goal in cm; none without a request.
     #[test]
     fn the_locomotion_columns() {
         use exa_physics::body::locomotion::{BASE_TURN, Stop};
@@ -415,13 +421,14 @@ mod tests {
         l.align = 0.5;
         l.speed = 1.5;
         l.reach = 200.0;
+        req.goal = Vec3::new(1.25, 0.0, -0.5);
         let row = locomotion_columns(Some((&req, &l)));
         let cells: Vec<&str> = row.split(',').skip(1).collect();
         assert_eq!(cells.len(), LOCOMOTION.len());
         assert_eq!(&cells[..3], ["0x51", "1", "1"]);
         assert_eq!(cells[3].parse::<f32>().unwrap(), 90.0);
         assert!((cells[5].parse::<f32>().unwrap() - 240.0).abs() < 1e-3);
-        assert_eq!(&cells[6..], ["0.5", "1.5", "200", "moving"]);
+        assert_eq!(&cells[6..], ["0.5", "1.5", "200", "moving", "125", "-50"]);
         assert_eq!(locomotion_columns(None), ",".repeat(LOCOMOTION.len()));
     }
 
@@ -469,7 +476,7 @@ mod tests {
                 + SWING.len()
                 + LOCOMOTION.len()
         );
-        assert_eq!(columns.last(), Some(&LOCOMOTION[9]));
+        assert_eq!(columns.last(), Some(&LOCOMOTION[11]));
         let rows: Vec<Vec<&str>> = lines.map(|l| l.split(',').collect()).collect();
         assert_eq!(rows.len() as u64, ticks);
         let at = |name: &str| columns.iter().position(|c| *c == name).unwrap();

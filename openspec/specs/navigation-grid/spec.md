@@ -125,11 +125,30 @@ A line of 40 cm or less SHALL not be an obstacle. A longer line SHALL be one whe
 - **THEN** one cell ahead is not an obstacle, two cells ahead is, the early 61 is, and the 60 with a late 61 is not
 
 ### Requirement: Nearest walkable
-A cell whose clearance and penalty sum to less than 80 SHALL keep the point and take the floor height. A cell at 80 SHALL step to the first cheaper neighbour centre.
+A cell whose clearance and penalty sum to less than 80 SHALL keep the point and take the floor height. Otherwise the system SHALL flood best-first by distance from the point over steps under 50 cm up and 2.1 m down, in the original's neighbour order, meeting at most 220 cells, stopping at one costing under 80, and give the centre of the cheapest cell met on its floor. Off the floors it SHALL first take the nearest cell with a floor across the ground.
 
 #### Scenario: Under 80 stays, 80 steps aside
 - **WHEN** a point sits off the centre of a cheap cell, and a point sits on a cell whose penalty is 80
 - **THEN** the cheap point keeps its place at the floor height, and the costly point moves to the centre of the neighbour one cell toward the origin
+
+#### Scenario: The edge of a drop
+- **WHEN** the nearest walkable point to a cell on a drop's edge (clearance 132) is asked
+- **THEN** it is the centre of its first neighbour inward in the original's order, the diagonal one, costing 60
+
+#### Scenario: Past 220 cells
+- **WHEN** every cell costs 100 but one walkable cell 9 cells from the point, then also one 5 cells away
+- **THEN** the point first lands on its own cell's centre, then on the nearer walkable cell
+
+#### Scenario: A step too high
+- **WHEN** the only walkable neighbour of a costly cell lies 50 cm up, then 40 cm up
+- **THEN** it is not stepped onto, then it is
+
+### Requirement: Cost at a point
+The system SHALL give a point's cost as its cell's clearance and penalty over 255, on the upper layer when the point's height lies above that slab's underside less 30 cm and below its floor plus 150 cm, else on the lower.
+
+#### Scenario: Two layers
+- **WHEN** the cost of a point on the ground under a cell whose clearance is 132 is asked, and of a point on an upper floor 1.5 m up whose clearance is 60
+- **THEN** the shares are 132/255 and 60/255
 
 ### Requirement: Footprint
 A footprint SHALL add 63 to its centre, 32 to the eight neighbours, and 16 to the twelve cells beyond, on the layer whose underside is within three below the height and whose floor is within twenty-five above. The outer five cells SHALL not be stamped. Removing it SHALL take the same amounts back. That centre SHALL make the obstacle test fire, and removing it SHALL clear the test.

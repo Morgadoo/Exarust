@@ -264,7 +264,7 @@ The system SHALL set the player's crouch amount to 1 while the Crouch binding is
 - **THEN** the walk clip's clock runs at 0.9 of its rate
 
 ### Requirement: Grid look-ahead
-The player's look-ahead SHALL walk the navigation grid from the standing point toward the look-ahead goal (75 cm + 6·v², 70 cm when backing), as the original does. Blocked, the free walk SHALL end and the body walk to the clamped goal and brake there; a clamped goal within 100 cm SHALL also cut the run and the sprint latch.
+The player's look-ahead SHALL walk the navigation grid from the standing point toward the look-ahead goal (75 cm + 6·v², 70 cm when backing), as the original does. Blocked, the free walk SHALL end and the body walk to the clamped goal and brake there; a clamped goal within 100 cm SHALL also cut the run and the sprint latch. A soft stop's goal SHALL be clamped the same way.
 
 #### Scenario: Walking into a crate
 - **WHEN** the player walks toward a crate lower than its hip
@@ -298,3 +298,21 @@ Until the body walks by its carry, its capsule SHALL execute the movement decisi
 #### Scenario: Soft stop
 - **WHEN** W is released at a walk
 - **THEN** the capsule slows from 1.687 cm a tick and stops within 3 cm of the goal 8·v + 20 cm ahead
+
+### Requirement: Spawn snap
+On the player's third behaviour tick with a navigation grid, unless it is down, getting up or dead, the player SHALL be moved across the ground onto the grid's nearest walkable point, once.
+
+#### Scenario: The third tick
+- **WHEN** the player's behaviour ticks three times with a grid, then again
+- **THEN** nothing moves it on the first two, the third moves it across the ground to the nearest walkable point, and none after does
+
+#### Scenario: Down on the third tick
+- **WHEN** the player is down on its third behaviour tick
+- **THEN** it is not moved, then or later
+
+### Requirement: Footwork step targets
+In combat mode a footwork step's target SHALL be a step's length along its keys (the step reach × √scale, 80 cm for a human), clamped by the grid's line walk from where the player stands; a target within 20 cm SHALL not be stepped to. Until the original's steps replace it, the interim footwork SHALL walk only while its step's target lies farther.
+
+#### Scenario: Footwork at a wall
+- **WHEN** W is held in combat mode facing a wall that clamps the step's target 20 cm ahead, then 21 cm ahead
+- **THEN** the player takes no step and plays no walk, then it steps and plays the combat walk

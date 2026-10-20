@@ -14,7 +14,8 @@ follows the path by the same heading and desired velocity the player
 writes. A line walk steps the longer axis and blocks on a floor more than
 four above the current height when its underside is within ten. A straight
 walk allows five and follows a floor down. A line of 40 cm or less is not
-an obstacle. A point on a cell cheaper than 80 keeps its place. A footprint adds
+an obstacle. A point on a cell cheaper than 80 keeps its place; else a
+best-first flood finds the cheapest cell ([Queries](#queries)). A footprint adds
 63 at its centre, 32 on the eight neighbours, and 16 on the twelve
 cells beyond. A plan lifts that footprint and stamps it again. A dirty
 rectangle joins another when the padded union is smaller, keeps sixteen,
@@ -148,6 +149,52 @@ A walker of size class `s` may enter a cell whose clearance is at most
 
 Each layer also has a penalty byte (character footprints, added at run
 time with the planner).
+
+## Queries
+
+Besides planning, the pathfinder answers point and line questions on the
+grid (heights in voxels, `h` the start's, `fl`/`ul` and `fu`/`uu` a
+cell's lower and upper floor and underside):
+
+- **Line walk** (`nav::line_walk`; the player's look-ahead, soft stop and
+  footwork targets): one cell a step along the line's longer axis; a floor
+  more than 4 above the running height blocks when less than 10 lie under
+  its slab (an upper slab with nothing measured under it and its floor not
+  below the lower one passes); a reachable floor raises the running
+  height; drops never block. Blocked, the end moves back to where the line
+  passes the last free cell's centre (the start when the first cell
+  blocks), keeping the asked end's height.
+- **Straight walk** (`nav::straight_walk`, a walker without feet): from the
+  floor under the start, 5 up and 15 under, following the floors down too.
+- **Obstacle** (`nav::obstacle`): none on lines of 40 cm or less; longer,
+  a floor more than 7 up with less than 15 under it, or, before the
+  line's last two cells, a penalty over 60.
+- **Cost** (`nav::cost_at`): the clearance and penalty bytes over 255 on
+  the layer whose slab the point's height meets (the upper one when the
+  height lies above its underside less 3 and below its floor plus 15).
+- **Nearest walkable point** (`nav::nearest_walkable`): the layer is the
+  one the walker stands on (none without a floor, the upper one with
+  fewer than 11 between the lower floor and the upper slab, the lower one
+  with fewer than 11 under the lower slab, else the nearer floor). With a
+  layer whose clearance plus penalty is under 80 the point stays, on its
+  floor. Else a best-first flood in a 256-cell window round the point's
+  cell: from a point off the floors (no layer, or clearance 255) first the
+  nearest cell across the ground that has a floor (not open sky, with
+  more than 10 between its floor and the other layer's slab); then, from
+  the cell, each neighbour in the original's order the line walk's reach
+  steps onto (under 50 cm up, under 2.1 m down), keyed by its distance
+  from the point (×10, in 3-D), keeping the cheapest; it stops at a cell
+  under 80, with nothing left, or after 220 cells, and answers that
+  cell's centre on its floor. Without a grid the point stays.
+- **The spawn snap**: on its third behaviour tick, unless down, the player
+  is moved onto the nearest walkable point (across the ground; the
+  original does it once, not on its first three ticks).
+
+Exarust leaves out two quirks of the off-floor search: the original adds
+to every distance the square of a register it never sets there (the same
+for every cell, so it changes nothing but the bound), and its met map is
+a shared buffer cleared only ±15 cells round the centre; Exarust starts
+each search with a fresh map.
 
 ## Exarust
 

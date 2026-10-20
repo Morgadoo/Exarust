@@ -20,6 +20,7 @@ pub mod item_container;
 pub mod item_effects;
 pub mod joint_trace;
 pub mod limp;
+pub mod look_overlay;
 pub mod menu;
 pub mod menu_pages;
 pub mod mind;
@@ -72,6 +73,7 @@ impl Plugin for GamePlugin {
         .add_plugins((
             body_overlay::BodyOverlayPlugin,
             joint_trace::JointTracePlugin,
+            look_overlay::LookOverlayPlugin,
             pair_trace::PairTracePlugin,
             sim_control::SimControlPlugin,
         ));

@@ -44,7 +44,7 @@ it takes the ring's other slot.
 | `--joint-trace <file.csv>` | write every joint of every simulated character body after every 83 Hz tick ([columns](#joint-trace)) |
 | `--pair-trace <file.csv>` | write every contact between two body parts that each 83 Hz tick's body–body detection found ([columns](#pair-trace)) |
 | `--corpse x,y,z` | in play mode, a dead human (a new record, in underwear) lies down here as a level's placed dead do (metres); repeatable. For contacts with corpses outside the story levels, e.g. `--corpse 0,0,3.4 --press W@150-420 play arena` walks the player over one |
-| `--trace <file.csv>` | the body trace in the retail probe's columns ([formats/RSQ.md](formats/RSQ.md), the foot contacts' states and anchors among them), then Exarust's own (the sleep countdown and state, the frame, the blend and hold, the clip clock's `rate` this tick, its `progress` and `clip_end` (1 on the tick its end test fires), the ankles), the condition word in hex (`0x300` getting up), the swing: `swing_rate` (frames the attack's clip ran this tick), `strength` (P) and `attack_flags` (the state word in hex: `0x2` stalling, `0x10` released, `0x10000` chained, `0x80000` no Remise), and last the locomotion ([Movement](#movement)): `loco_flags`, `moving`, `free_walk`, `yaw`, `heading`, `turn_rate`, `align`, `speed`, `reach`, `stop`; character bodies only |
+| `--trace <file.csv>` | the body trace in the retail probe's columns ([formats/RSQ.md](formats/RSQ.md), the foot contacts' states and anchors among them), then Exarust's own (the sleep countdown and state, the frame, the blend and hold, the clip clock's `rate` this tick, its `progress` and `clip_end` (1 on the tick its end test fires), the ankles), the condition word in hex (`0x300` getting up), the swing: `swing_rate` (frames the attack's clip ran this tick), `strength` (P) and `attack_flags` (the state word in hex: `0x2` stalling, `0x10` released, `0x10000` chained, `0x80000` no Remise), and last the locomotion ([Movement](#movement)): `loco_flags`, `moving`, `free_walk`, `yaw`, `heading`, `turn_rate`, `align`, `speed`, `reach`, `stop`, `goal_x`, `goal_z`; character bodies only |
 | `--shove <frame>` | a body blow to every simulated character body at that frame after the load |
 | `--shove-props <frame>` | in play mode, at that frame after the load, a blow to every prop body within 3 m of the player (1.5 m/s away from it and 1.5 m/s up); the log counts them and, once all sleep again, says after how many ticks and how far each moved (a body that fell out of the world counts as settled). Props meet the level and, through the pairs, every other body: they knock into each other, and one landing on a table that is itself a body (exanima01's tables) rests on it |
 | `--sim-speed <f>` | run the simulation at this speed (0.25 is a quarter as fast), from the end of the load |
@@ -95,9 +95,12 @@ running, 1.476 backpedalling), `reach` (cm to the goal, 200 in free walk)
 and `stop`: `moving`, `standing`, `braked` (a braking body under 1 cm a
 tick), `arrived` (within 25 cm at 0.5 cm a tick), or the gate that held
 it (`tired` after a blow until the energy is full, `cooldown`,
-`stepping` during the interim combat footwork). Released, W walks on to
-its walk's key segment 0 or 4 (the `clock` column passes 0 or 40–50),
-then `0x70` and `braked` about 30 cm on.
+`stepping` during the interim combat footwork), then `goal_x` and
+`goal_z` (cm, the request's goal: the look-ahead's end clamped by the
+grid, or a soft stop's). Released, W walks on to its walk's key segment 0
+or 4 (the `clock` column passes 0 or 40–50), then `0x70` and `braked`
+about 30 cm on. On the third behaviour tick with a grid the log says how
+far the spawn snap moved the player (`spawn snap:`).
 
 ## Attacks
 
@@ -494,7 +497,11 @@ around where the camera looks:
 - the upper layer (a floor over another: tables, galleries, bridges) cyan
   through blue, magenta beyond;
 - cells with no floor, and open sky (wall tops, anything higher than 1.5 m
-  under the level's grid top), are not drawn.
+  under the level's grid top), are not drawn;
+- the player's last line walk on the grid from its feet: the way asked
+  faint (white the look-ahead, yellow a soft stop's goal, cyan a footwork
+  step's target), the walk green when free and orange when blocked, with
+  a ring at its end, and a magenta cross on a goal it walks to.
 
 `exarust --debug-nav --no-gi --no-supersample --size 960x540 play arena`
 shows the arena's floor cut by its walls. Without a window, `exa-tool nav

@@ -509,3 +509,76 @@ fn the_installed_walks_are_keyed_every_10_frames() {
         assert_eq!(key_segment(&anim, &motions), Some(segment), "{time}");
     }
 }
+
+/// The look-ahead's reach (cm): 75 + 6·v² ahead, 92.137 at 1.69 cm a tick;
+/// 45 + 6·v² for combat mode's walk, 62.137; 70 behind backwards.
+#[test]
+fn the_look_ahead_reaches_by_the_speed() {
+    assert!((look_ahead_reach(1.69, false, false) - 92.1366).abs() < 1e-3);
+    assert!((look_ahead_reach(1.69, false, true) - 62.1366).abs() < 1e-3);
+    assert_eq!(look_ahead_reach(0.0, false, true), 45.0);
+    assert_eq!(look_ahead_reach(4.0, true, false), -70.0);
+}
+
+/// The look-ahead's line walk is recorded for the overlay: from where the
+/// character stands toward the reach, where it ended and whether it was
+/// blocked; a soft stop records its goal's walk.
+#[test]
+fn the_look_ahead_is_recorded_for_the_overlay() {
+    let (mut s, mut req, mut body) = standing();
+    body.speed = 1.69;
+    let at = Vec3::new(1.0, 0.0, 2.0);
+    let wall = |from: Vec3, to: Vec3| (from + (to - from) * 0.5, true);
+    s.request(&mut req, &body, &keys("w"), Some(1), Condition::NORMAL);
+    s.explore(&mut req, &body, &keys("w"), 0, at, Condition::NORMAL, &wall);
+    let l = s.line.unwrap();
+    assert_eq!(l.asked, Asked::LookAhead);
+    assert_eq!(l.from, at);
+    assert!((l.to.z - at.z - 0.921366).abs() < 1e-5);
+    assert!(l.blocked && (l.end - (at + Vec3::Z * 0.460683)).length() < 1e-5);
+    assert_eq!(req.goal, l.end);
+    req.free_walk = true;
+    req.moving = true;
+    s.request(&mut req, &body, &keys(""), Some(0), Condition::NORMAL);
+    s.explore(&mut req, &body, &keys(""), 0, at, Condition::NORMAL, &open);
+    assert_eq!(s.line.unwrap().asked, Asked::SoftStop);
+}
+
+/// The spawn snap: nothing on the first two behaviour ticks, on the third
+/// the move across the ground to the nearest walkable point, never again;
+/// none when the third finds the character down.
+#[test]
+fn the_spawn_snaps_on_the_third_tick() {
+    let nearest = |p: Vec3| p + Vec3::new(0.3, 0.5, -0.15);
+    let mut s = Steering::default();
+    let at = Vec3::new(2.0, 1.0, 3.0);
+    assert_eq!(s.snap(Condition::NORMAL, at, &nearest), None);
+    assert_eq!(s.snap(Condition::NORMAL, at, &nearest), None);
+    let by = s.snap(Condition::NORMAL, at, &nearest).unwrap();
+    assert!((by - Vec3::new(0.3, 0.0, -0.15)).length() < 1e-6, "{by}");
+    assert_eq!(s.snap(Condition::NORMAL, at, &nearest), None);
+    let mut s = Steering::default();
+    s.snap(Condition::NORMAL, at, &nearest);
+    s.snap(Condition::NORMAL, at, &nearest);
+    assert_eq!(s.snap(Condition::DOWN, at, &nearest), None);
+    assert_eq!(s.snap(Condition::NORMAL, at, &nearest), None);
+}
+
+/// A footwork step's target: a step's length along its keys, clamped by
+/// the line walk; within 20 cm none.
+#[test]
+fn a_step_target_is_clamped_and_taken_beyond_20_cm() {
+    let mut s = Steering::default();
+    let wall =
+        |near: f32| move |from: Vec3, to: Vec3| (from + (to - from).normalize() * near, true);
+    assert_eq!(s.step_target(Vec3::ZERO, Vec3::X, 0.8, &wall(0.2)), None);
+    let t = s
+        .step_target(Vec3::ZERO, Vec3::X, 0.8, &wall(0.25))
+        .unwrap();
+    assert!((t - Vec3::X * 0.25).length() < 1e-6);
+    assert_eq!(
+        s.step_target(Vec3::ZERO, Vec3::X, 0.8, &open),
+        Some(Vec3::X * 0.8)
+    );
+    assert_eq!(s.line.unwrap().asked, Asked::Step);
+}

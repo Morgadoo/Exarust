@@ -311,7 +311,7 @@ The system SHALL advance a living physical body's clip clock by the original's r
 - **THEN** only its ticks advance the clock
 
 ### Requirement: Body trace
-`exarust --trace <file.csv>` SHALL write a row per traced body (the player's, else every character body, no prop's) a tick: the retail probe's columns, then Exarust's (sleep, frame, root, blend, hold, rate, progress, end flag, ankles, condition; swing rate, strength, word; locomotion flags, moving, free walk, yaw, heading, turn rate, alignment, speed, reach, stop). Lengths cm, words hex; empty if unsimulated.
+`exarust --trace <file.csv>` SHALL write a row per traced body (the player's, else every character body, no prop's) a tick: the retail probe's columns, then Exarust's (sleep, frame, root, blend, hold, rate, progress, end flag, ankles, condition; swing rate, strength, word; locomotion flags, moving, free walk, yaw, heading, turn rate, alignment, speed, reach, stop, goal x and z). Lengths cm, words hex; empty if unsimulated.
 
 #### Scenario: Standing in the arena
 - **WHEN** `exarust --trace t.csv play arena` runs for a minute
