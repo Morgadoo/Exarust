@@ -63,6 +63,13 @@ A placed object with a door or an operative section SHALL keep both records unde
 - **WHEN** a placed inverted, motorised door is signalled 1, 0 and −1, and a placed fire job of size 200 is signalled 1
 - **THEN** the door closes and locks, opens, and toggles, and the fire job starts a fire of size 200
 
+### Requirement: Plate links and wake
+Every plate tick SHALL set each of the plate's links' smoothing to 0.1. A grinding plate SHALL keep its body awake for 256 ticks, and a quiet one SHALL not wake it.
+
+#### Scenario: A grind wakes the body
+- **WHEN** a pressed plate starts at travel 0, and a still plate at travel 0 steps
+- **THEN** the pressed plate grinds and is awake, and the still plate is quiet and not woken
+
 ## MODIFIED Requirements
 
 ### Requirement: Door partner
@@ -80,11 +87,11 @@ Arriving more than 0.1 rad from the last detent SHALL report the rest flag at th
 - **THEN** the first signals 0, the second signals 1 and arms the return, the held lever signals -1, and the lit lever fades its light in without a signal
 
 ### Requirement: Plate travel
-Every tick SHALL set each of the plate's links' smoothing to 0.1. A pressed plate SHALL raise each travel by 0.02, at most 1, and a free plate SHALL lower each by 0.01, at least 0, each step taken in double precision and stored as a float. A one-shot SHALL stop being pressed once a travel passes 1, and later travels that tick SHALL fall. The mean SHALL be written back to every travel. Grind speed SHALL be 0.9 times the mean's change plus 0.1 times the old speed, in double precision, and SHALL stop at 0.001 or below, compared in double precision. Otherwise volume SHALL be 50 times the speed, squared, pitch SHALL be 20 times the speed plus 0.8, at most 1, and the body SHALL stay awake for 256 ticks.
+A pressed plate SHALL raise each travel by 0.02, at most 1, and a free one SHALL lower each by 0.01, at least 0, in double precision. A one-shot SHALL stop being pressed once a travel passes 1; later travels that tick SHALL fall. The mean SHALL be written back to every travel. Grind speed SHALL be 0.9 times the mean's change plus 0.1 times the old one, and SHALL stop at 0.001 or below, in double precision. Otherwise volume SHALL be (50 × speed)² and pitch 20 × speed + 0.8, at most 1.
 
 #### Scenario: A rise, a grind, and a one-shot
 - **WHEN** a pressed plate starts at travel 0, a still plate's old speed leaves it at the float nearest 0.001, and a one-shot plate with travels 0.99 and 0.5 is pressed
-- **THEN** the first mean is 0.02 with grind volume 0.81 and pitch 1 and the body awake, the plate at the float nearest 0.001 still grinds, and the one-shot is no longer pressed with both travels equal
+- **THEN** the first mean is 0.02 with grind volume 0.81 and pitch 1, the plate at the float nearest 0.001 still grinds, and the one-shot is no longer pressed with both travels equal
 
 ### Requirement: Plate click
 A plate's state SHALL be the object word's low byte as stored. A mean above 0.7 SHALL press a plate whose state is 0, click, and signal 1, or -1 when inverted. A mean below 0.5 SHALL release a plate whose state is 1 and signal 0, unless inverted. Any other state SHALL neither press nor release. A travel of 0.68 that rises SHALL not press. A travel of 0.51 that falls SHALL not release.
