@@ -7,6 +7,7 @@
 pub mod human_skin;
 pub mod model;
 pub mod morph;
+pub mod morph_controller;
 pub mod paint;
 pub mod skin;
 pub mod texture;
