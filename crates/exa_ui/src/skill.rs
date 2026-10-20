@@ -158,6 +158,79 @@ pub fn skill_node_hit(hit: SkillHit, nodes: &[(f32, f32)]) -> i32 {
     result
 }
 
+/// The skill hover's inputs.
+#[derive(Debug, Clone, Copy)]
+pub struct SkillHoverInput<'a> {
+    pub index: i32,
+    pub current: i32,
+    pub grid: Option<&'a [u8]>,
+    pub previous: i32,
+    pub last_positive: i32,
+    pub stamp: i32,
+    pub clock: i32,
+    pub base: i32,
+}
+
+/// The skill hover's result and state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillHover {
+    pub result: i32,
+    pub current: i32,
+    pub previous: i32,
+    pub last_positive: i32,
+    pub stamp: i32,
+    pub called_base: bool,
+}
+
+/// Sets the skill screen's hovered node.
+pub fn skill_hover(input: SkillHoverInput<'_>) -> SkillHover {
+    let mut out = SkillHover {
+        result: input.base,
+        current: input.current,
+        previous: input.previous,
+        last_positive: input.last_positive,
+        stamp: input.stamp,
+        called_base: false,
+    };
+    if input.index <= 0 && input.current <= 0 {
+        out.called_base = true;
+        return out;
+    }
+    out.result = 3;
+    out.current = input.index;
+    let Some(grid) = input.grid else {
+        return out;
+    };
+    let candidate = if input.index > 0 && input.index & 0x700 > 0 && input.index & 7 > 0 {
+        let at = (((input.index >> 8) & 7) * 8 + (input.index & 7) + 1) as usize;
+        if grid.get(at).is_some_and(|&byte| byte != 0) {
+            input.index
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+    if candidate == input.previous {
+        return out;
+    }
+    if candidate > 0 && input.last_positive > 0 && input.last_positive != candidate {
+        out.stamp = input.clock;
+    } else {
+        let elapsed = input.clock - input.stamp;
+        out.stamp = if elapsed >= 200 {
+            input.clock
+        } else {
+            input.clock - (200 - elapsed)
+        };
+    }
+    out.previous = candidate;
+    if candidate > 0 {
+        out.last_positive = candidate;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,5 +351,92 @@ mod tests {
             ),
             0
         );
+    }
+
+    #[test]
+    fn the_skill_hover_stores_validates_and_stamps() {
+        let base = skill_hover(SkillHoverInput {
+            index: 0,
+            current: 0,
+            grid: None,
+            previous: 0,
+            last_positive: 0,
+            stamp: 0,
+            clock: 0,
+            base: 7,
+        });
+        assert_eq!(base.result, 7);
+        assert!(base.called_base);
+
+        let mut grid = [0u8; 64];
+        grid[20] = 1;
+        let hit = skill_hover(SkillHoverInput {
+            index: 0x0203,
+            current: 0,
+            grid: Some(&grid),
+            previous: 0,
+            last_positive: 0,
+            stamp: 900,
+            clock: 1000,
+            base: 0,
+        });
+        assert_eq!(hit.result, 3);
+        assert_eq!(hit.current, 0x0203);
+        assert_eq!(hit.previous, 0x0203);
+        assert_eq!(hit.last_positive, 0x0203);
+        assert_eq!(hit.stamp, 900);
+        assert!(!hit.called_base);
+
+        let moved = skill_hover(SkillHoverInput {
+            index: 0x0203,
+            current: 0,
+            grid: Some(&grid),
+            previous: 0,
+            last_positive: 0x0101,
+            stamp: 900,
+            clock: 1000,
+            base: 0,
+        });
+        assert_eq!(moved.stamp, 1000);
+
+        let same = skill_hover(SkillHoverInput {
+            index: 0x0203,
+            current: 0,
+            grid: Some(&grid),
+            previous: 0x0203,
+            last_positive: 0x0203,
+            stamp: 900,
+            clock: 1000,
+            base: 0,
+        });
+        assert_eq!(same.stamp, 900);
+        assert_eq!(same.previous, 0x0203);
+
+        let miss = skill_hover(SkillHoverInput {
+            index: 0x0203,
+            current: 0,
+            grid: Some(&[0u8; 64]),
+            previous: 0,
+            last_positive: 0,
+            stamp: 900,
+            clock: 1000,
+            base: 0,
+        });
+        assert_eq!(miss.previous, 0);
+        assert_eq!(miss.stamp, 900);
+
+        let plain = skill_hover(SkillHoverInput {
+            index: 5,
+            current: 0,
+            grid: None,
+            previous: 0,
+            last_positive: 0,
+            stamp: 0,
+            clock: 0,
+            base: 0,
+        });
+        assert_eq!(plain.result, 3);
+        assert_eq!(plain.current, 5);
+        assert_eq!(plain.previous, 0);
     }
 }
