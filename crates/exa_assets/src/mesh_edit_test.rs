@@ -228,4 +228,17 @@ fn malformed_meshes_are_errors() {
     let mut m = square();
     m.indices[0] = 9;
     assert!(EditMesh::from_mesh(&m, &[]).is_err());
+    // A short colour stream sharing the positions' channel is allowed (it
+    // takes their count after an edit); an interpolated one is read by
+    // subdivision and must cover its corners.
+    let mut edit = EditMesh::from_mesh(&square(), &[]).unwrap();
+    edit.streams.push(Stream {
+        id: SHARES_CHANNEL | KEY_POSITIONS,
+        format: TYPE_RGBA8,
+        channel: 0,
+        data: StreamData::Rgba8(vec![[0; 4]; 1]),
+    });
+    assert!(edit.validate().is_ok());
+    edit.streams.last_mut().unwrap().format |= KEY_UVS;
+    assert!(edit.validate().is_err());
 }

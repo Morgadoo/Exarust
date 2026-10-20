@@ -496,6 +496,9 @@ impl EditMesh {
         {
             return Err(malformed("a corner names a missing position"));
         }
+        // A stream sharing its channel may be shorter (it takes the
+        // channel's count after an edit), unless subdivision reads its
+        // values (interpolated streams).
         for s in &self.streams {
             let len = s.data.len();
             if self.channels[s.channel]
@@ -503,7 +506,7 @@ impl EditMesh {
                 .iter()
                 .flatten()
                 .any(|&v| v as usize >= len)
-                && s.id & SHARES_CHANNEL == 0
+                && (s.id & SHARES_CHANNEL == 0 || s.format & INTERPOLATED != 0)
             {
                 return Err(malformed("a corner names a missing stream element"));
             }

@@ -85,8 +85,10 @@ pub struct Smoothed {
 /// Smooths a decoded mesh as the original smooths a mesh node: subdivided
 /// once with sharpness 0, its bounds refitted from every position, then
 /// converted back to render form with the vertex-cache order. `None` when
-/// the mesh has too many faces (the original logs it and leaves the mesh).
-/// The GI points are kept.
+/// the mesh has too many faces: the original logs it and leaves the faces,
+/// but its pass still refits the bounds and runs the conversion on the
+/// mesh as loaded, not in editable form (that result is not modelled; the
+/// caller keeps the mesh as it is). The GI points are kept.
 pub fn smooth_mesh(mesh: &Mesh, group_flags: &[u32]) -> Result<Option<Smoothed>, MeshError> {
     let mut edit = EditMesh::from_mesh(mesh, group_flags)?;
     let degenerate_faces = match subdivide(&mut edit, 0.0)? {

@@ -191,6 +191,78 @@ fn a_texture_seam_gets_two_edge_points() {
     assert_eq!(uv[10], [2.5, 2.5]);
 }
 
+/// Two separate triangles whose third points share one texture
+/// coordinate: each point on two creases goes halfway to the mean of its
+/// two crease edge points, the second lands 0.5 away from the first
+/// (more than 1e-6 squared) and so gets a coordinate of its own.
+#[test]
+fn a_shared_coordinate_that_moves_apart_is_split() {
+    let uv = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [2.0, 0.0], [3.0, 0.0]];
+    let m = Mesh {
+        positions: vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, -1.0],
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [2.0, 0.0, -1.0],
+        ],
+        position_ids: vec![0, 1, 2, 3, 4, 5],
+        position_count: 6,
+        uvs: Some(vec![uv[0], uv[1], uv[2], uv[3], uv[4], uv[2]]),
+        uv_ids: vec![0, 1, 2, 3, 4, 2],
+        uv_count: 5,
+        smoothing: vec![0; 6],
+        indices: vec![0, 1, 2, 3, 4, 5],
+        groups: vec![MeshGroup {
+            material: "mat".into(),
+            first_index: 0,
+            index_count: 6,
+        }],
+        ..Mesh::default()
+    };
+    let mut mesh = EditMesh::from_mesh(&m, &[SPLIT_UVS]).unwrap();
+    subdivide(&mut mesh, 0.0).unwrap();
+    let uv = uvs(&mesh);
+    // Five coordinates, six edge midpoints, one split.
+    assert_eq!(uv.len(), 12);
+    // Point 2: the mean of (0.5, 0.5) and (0, 0.5), halfway to (0, 1).
+    assert_eq!(uv[2], [0.125, 0.75]);
+    // Point 5: the mean of (1.5, 0.5) and (1, 0.5), halfway to (0, 1).
+    assert_eq!(uv[11], [0.625, 0.75]);
+    assert_eq!(uv[0], [0.125, 0.125]);
+    assert_eq!(uv[4], [2.5, 0.125]);
+    // Each third corner face names its own coordinate.
+    assert_eq!(mesh.channels[1].corners[2], [5, 7, 2]);
+    assert_eq!(mesh.channels[1].corners[6], [8, 10, 11]);
+}
+
+/// A face naming one point twice is found on its own edges three times
+/// (the count the original logs).
+#[test]
+fn a_repeated_point_counts_degenerate_faces() {
+    let m = Mesh {
+        positions: vec![[0.0; 3], [1.0, 0.0, 0.0]],
+        position_ids: vec![0, 1],
+        position_count: 2,
+        smoothing: vec![0; 2],
+        indices: vec![0, 0, 1],
+        groups: vec![MeshGroup {
+            material: "mat".into(),
+            first_index: 0,
+            index_count: 3,
+        }],
+        ..Mesh::default()
+    };
+    let mut mesh = EditMesh::from_mesh(&m, &[0]).unwrap();
+    assert_eq!(
+        subdivide(&mut mesh, 0.0).unwrap(),
+        Subdivided::Done {
+            degenerate_faces: 3
+        }
+    );
+}
+
 #[test]
 fn face_bits_and_colours_follow_the_split() {
     let mut m = square();
