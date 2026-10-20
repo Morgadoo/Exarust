@@ -478,3 +478,132 @@ mod action_tests {
         assert_eq!(game[0].kind.action(), MenuAction::NewGame);
     }
 }
+
+/// A row as the menu paints it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Painted {
+    pub index: usize,
+    pub x: i32,
+    pub y: i32,
+    pub text: String,
+    pub colour: [u8; 4],
+    pub selected: bool,
+}
+
+/// The original's paint pass: the first row starts at
+/// `trunc(height·origin) + line_height`; the selected row is skipped in the
+/// first pass and drawn last, nudged by `unit/3` when it is the final row.
+/// Rows centre on `(width − text_width) >> 1`; a disabled row is grey.
+#[allow(clippy::too_many_arguments)]
+pub fn paint(
+    width: i32,
+    height: i32,
+    origin: f32,
+    row_h: f32,
+    line_height: i32,
+    selected: usize,
+    labels: &[&str],
+    text_widths: &[i32],
+    styles: &[u32],
+    disabled: &[bool],
+    unit: i32,
+) -> Vec<Painted> {
+    let advance = row_advance(row_h);
+    let y0 = (height as f32 * origin).trunc() as i32 + line_height;
+    let mut out = Vec::with_capacity(labels.len());
+    for (index, _) in labels.iter().enumerate() {
+        if index == selected {
+            continue;
+        }
+        out.push(Painted {
+            index,
+            x: (width - text_widths.get(index).copied().unwrap_or(0)) >> 1,
+            y: y0 + index as i32 * advance,
+            text: exa_ui::form::styled_label(
+                styles.get(index).copied().unwrap_or(0),
+                labels[index],
+            ),
+            colour: if disabled.get(index).copied().unwrap_or(false) {
+                [0x80, 0x80, 0x80, 0x80]
+            } else {
+                [0xff, 0xff, 0xff, 0xff]
+            },
+            selected: false,
+        });
+    }
+    if let Some(label) = labels.get(selected) {
+        let mut y = y0 + selected as i32 * advance;
+        if selected + 1 == labels.len() {
+            y += unit / 3;
+        }
+        out.push(Painted {
+            index: selected,
+            x: (width - text_widths.get(selected).copied().unwrap_or(0)) >> 1,
+            y,
+            text: exa_ui::form::styled_label(styles.get(selected).copied().unwrap_or(0), label),
+            colour: if disabled.get(selected).copied().unwrap_or(false) {
+                [0x80, 0x80, 0x80, 0x80]
+            } else {
+                [0xff, 0xff, 0xff, 0xff]
+            },
+            selected: true,
+        });
+    }
+    out
+}
+
+#[cfg(test)]
+mod paint_tests {
+    use super::*;
+
+    #[test]
+    fn the_rows_are_centred_and_the_selected_row_is_last() {
+        let labels = ["BEGIN", "CONTINUE", "ARENA", "MANUAL", "SETTINGS", "EXIT"];
+        let widths = [100, 140, 110, 120, 130, 90];
+        let styles = [0, 1, 0, 0, 0, 0];
+        let disabled = [false, true, false, false, false, false];
+        let rows = paint(
+            1600,
+            1080,
+            0.38,
+            row_h(1080),
+            49,
+            0,
+            &labels,
+            &widths,
+            &styles,
+            &disabled,
+            6,
+        );
+        assert_eq!(rows.len(), 6);
+        assert_eq!(rows[0].index, 1);
+        assert_eq!(rows[0].y, 529);
+        assert_eq!(rows[0].x, 730);
+        assert_eq!(rows[0].colour, [0x80, 0x80, 0x80, 0x80]);
+        assert_eq!(rows[0].text, "[CONTINUE]");
+        assert_eq!(rows.last().unwrap().index, 0);
+        assert_eq!(rows.last().unwrap().y, 459);
+        assert_eq!(rows.last().unwrap().x, 750);
+        assert!(rows.last().unwrap().selected);
+    }
+
+    #[test]
+    fn the_last_selected_row_is_nudged() {
+        let labels = ["A", "B", "C"];
+        let rows = paint(
+            100,
+            100,
+            0.0,
+            1.0,
+            0,
+            2,
+            &labels,
+            &[10, 10, 10],
+            &[0, 0, 0],
+            &[false, false, false],
+            6,
+        );
+        assert_eq!(rows.last().unwrap().index, 2);
+        assert_eq!(rows.last().unwrap().y, 2 * 70 + 2);
+    }
+}
