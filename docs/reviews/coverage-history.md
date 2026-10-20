@@ -36,3 +36,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-20 | 41f432b | clean | 21.4% | 5.7% | 17.5% | 27.3% | record the item drag layer |
 | 2026-10-20 | fe7a24c | dirty | 21.5% | 5.7% | 17.5% | 27.3% | drive the motile body |
 | 2026-10-20 | a77b05e | dirty | 21.7% | 5.7% | 17.8% | 27.3% | fill the arena table |
+| 2026-10-20 | 2207f0c | clean | 21.7% | 5.7% | 17.8% | 27.3% | record the arena table |
