@@ -249,3 +249,137 @@ mod effect_tests {
         assert!(!quiet.triggered);
     }
 }
+
+/// The mind-sight overlay's phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MindPhase {
+    Idle,
+    Shown,
+    FadingOut,
+    FadingIn,
+}
+
+/// The mind-sight overlay's state.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MindOverlay {
+    pub phase: MindPhase,
+    pub alpha: f32,
+    pub stamp_ms: u32,
+    pub end_ms: u32,
+}
+
+/// Advances the overlay: shown forces alpha 1 and starts fading out past
+/// its end; the 2 s fades move alpha by the elapsed milliseconds and the
+/// fade-out ends below 0.001. Returns whether it still draws.
+pub fn advance_mind_overlay(overlay: &mut MindOverlay, now_ms: u32) -> bool {
+    match overlay.phase {
+        MindPhase::Idle => return false,
+        MindPhase::Shown => {
+            overlay.alpha = 1.0;
+            if overlay.end_ms < now_ms {
+                overlay.phase = MindPhase::FadingOut;
+            }
+        }
+        MindPhase::FadingOut => {
+            let elapsed = now_ms.wrapping_sub(overlay.stamp_ms) as f64 / 2000.0;
+            let alpha = overlay.alpha - elapsed as f32;
+            if f64::from(alpha) >= 0.001 {
+                overlay.alpha = alpha;
+            } else {
+                overlay.phase = MindPhase::Idle;
+                overlay.alpha = 0.0;
+                overlay.stamp_ms = now_ms;
+                return false;
+            }
+        }
+        MindPhase::FadingIn => {
+            let elapsed = now_ms.wrapping_sub(overlay.stamp_ms) as f64 / 2000.0;
+            let mut alpha = overlay.alpha + elapsed as f32;
+            if alpha > 1.0 {
+                alpha = 1.0;
+                overlay.phase = MindPhase::Shown;
+            }
+            overlay.alpha = alpha;
+        }
+    }
+    overlay.stamp_ms = now_ms;
+    true
+}
+
+/// The pick radius of a mind-sight node: `n · scale · 0.5 · 40 / width`.
+pub fn mind_pick_radius(n: f32, scale: f32, width: f32) -> f32 {
+    n * scale * 0.5 * 40.0 / width
+}
+
+/// Picks the nearest candidate whose normalized distance is at most 1.
+/// Each candidate carries its centre x, y and pick radius.
+pub fn pick_mind_target(candidates: &[(f32, f32, f32)], x: f32, y: f32) -> Option<usize> {
+    let mut best: Option<(f32, usize)> = None;
+    for (index, &(cx, cy, radius)) in candidates.iter().enumerate() {
+        if radius <= 0.0 {
+            continue;
+        }
+        let distance = ((x - cx) * (x - cx) + (y - cy) * (y - cy)).sqrt() / radius;
+        if distance <= 1.0 && best.is_none_or(|(kept, _)| distance < kept) {
+            best = Some((distance, index));
+        }
+    }
+    best.map(|(_, index)| index)
+}
+
+#[cfg(test)]
+mod sight_tests {
+    use super::*;
+
+    #[test]
+    fn the_overlay_fades_in_and_out_over_two_seconds() {
+        let mut shown = MindOverlay {
+            phase: MindPhase::Shown,
+            alpha: 0.0,
+            stamp_ms: 0,
+            end_ms: 1000,
+        };
+        assert!(advance_mind_overlay(&mut shown, 500));
+        assert_eq!(shown.alpha, 1.0);
+        assert_eq!(shown.phase, MindPhase::Shown);
+        assert!(advance_mind_overlay(&mut shown, 1001));
+        assert_eq!(shown.phase, MindPhase::FadingOut);
+
+        let mut fading = MindOverlay {
+            phase: MindPhase::FadingOut,
+            alpha: 1.0,
+            stamp_ms: 0,
+            end_ms: 0,
+        };
+        assert!(advance_mind_overlay(&mut fading, 1000));
+        assert!((fading.alpha - 0.5).abs() < 1e-6);
+        assert!(!advance_mind_overlay(&mut fading, 3000));
+        assert_eq!(fading.phase, MindPhase::Idle);
+
+        let mut rising = MindOverlay {
+            phase: MindPhase::FadingIn,
+            alpha: 0.0,
+            stamp_ms: 0,
+            end_ms: 0,
+        };
+        assert!(advance_mind_overlay(&mut rising, 1000));
+        assert!((rising.alpha - 0.5).abs() < 1e-6);
+        assert!(advance_mind_overlay(&mut rising, 3000));
+        assert_eq!(rising.alpha, 1.0);
+        assert_eq!(rising.phase, MindPhase::Shown);
+    }
+
+    #[test]
+    fn the_pick_radius_scales_with_n_and_the_view() {
+        assert_eq!(mind_pick_radius(1.0, 1.0, 40.0), 0.5);
+        assert_eq!(mind_pick_radius(2.0, 1.0, 40.0), 1.0);
+    }
+
+    #[test]
+    fn the_nearest_inside_candidate_wins() {
+        let candidates = [(0.0, 0.0, 10.0), (6.0, 0.0, 10.0), (100.0, 0.0, 10.0)];
+        assert_eq!(pick_mind_target(&candidates, 5.0, 0.0), Some(1));
+        assert_eq!(pick_mind_target(&candidates, 50.0, 0.0), None);
+        assert_eq!(pick_mind_target(&[(0.0, 0.0, 0.0)], 0.0, 0.0), None);
+    }
+}
