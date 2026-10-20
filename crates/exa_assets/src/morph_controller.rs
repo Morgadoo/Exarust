@@ -1233,3 +1233,85 @@ mod skin_tests {
         assert!((relaxed[0].weights[0] + relaxed[0].weights[1] - 1.0).abs() < 1e-6);
     }
 }
+
+/// Diffuses the target deltas: every unknown vertex whose neighbours are
+/// known takes the weighted mean of those neighbours, at
+/// `1/sqrt(distance squared)`, and becomes known in the next pass. The
+/// passes repeat until one changes nothing; the number of passes that
+/// changed something is returned.
+pub fn diffuse_morph_deltas(
+    deltas: &mut [[f32; 3]],
+    known: &mut [bool],
+    neighbours: &[Vec<(usize, f32)>],
+) -> usize {
+    let mut passes = 0;
+    loop {
+        let mut changed = false;
+        let mut newly = Vec::new();
+        for vertex in 0..deltas.len() {
+            if known[vertex] {
+                continue;
+            }
+            let mut sum = 0.0f32;
+            let mut acc = [0.0f32; 3];
+            if let Some(list) = neighbours.get(vertex) {
+                for &(neighbour, distance_squared) in list {
+                    if !known[neighbour] {
+                        continue;
+                    }
+                    let weight = 1.0 / distance_squared.sqrt();
+                    for axis in 0..3 {
+                        acc[axis] += deltas[neighbour][axis] * weight;
+                    }
+                    sum += weight;
+                }
+            }
+            if sum > 0.0 {
+                for axis in 0..3 {
+                    deltas[vertex][axis] = acc[axis] / sum;
+                }
+                newly.push(vertex);
+                changed = true;
+            }
+        }
+        for vertex in newly {
+            known[vertex] = true;
+        }
+        if !changed {
+            return passes;
+        }
+        passes += 1;
+    }
+}
+
+#[cfg(test)]
+mod diffuse_tests {
+    use super::*;
+
+    #[test]
+    fn the_targets_take_the_neighbour_mean_pass_by_pass() {
+        let mut deltas = vec![[4.0, 0.0, 0.0], [0.0; 3], [0.0; 3]];
+        let mut known = vec![true, false, false];
+        let neighbours = vec![vec![(1, 4.0)], vec![(0, 4.0), (2, 4.0)], vec![(1, 4.0)]];
+        assert_eq!(
+            diffuse_morph_deltas(&mut deltas, &mut known, &neighbours),
+            2
+        );
+        assert_eq!(deltas[1], [4.0, 0.0, 0.0]);
+        assert_eq!(deltas[2], [4.0, 0.0, 0.0]);
+        assert_eq!(known, vec![true, true, true]);
+    }
+
+    #[test]
+    fn an_unknown_vertex_without_known_neighbours_stays() {
+        let mut deltas = vec![[0.0; 3], [1.0, 2.0, 3.0]];
+        let mut known = vec![false, false];
+        let neighbours = vec![vec![(1, 1.0)], vec![(0, 1.0)]];
+        assert_eq!(
+            diffuse_morph_deltas(&mut deltas, &mut known, &neighbours),
+            0
+        );
+        assert_eq!(deltas[1], [1.0, 2.0, 3.0]);
+        assert_eq!(known, vec![false, false]);
+    }
+}
