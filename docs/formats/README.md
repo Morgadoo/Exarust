@@ -27,6 +27,7 @@ extension; the format is identified by its leading magic
 | save `.rsg` (not shipped) | `02 EA 7A DA` | `%APPDATA%\\Exanima` | reference only | [OTHER.md](OTHER.md#saves-rsg-rcp) |
 | manual `.fds` | pack of marked-up text | Resource (2) | verified | [OTHER.md](OTHER.md#manual-pages-fds) |
 | sound | `RIFF` (PCM WAVE) | Sound (1131) | verified | [OTHER.md](OTHER.md#sound) |
+| user settings `.ini`, `.set` (not shipped) | text; nested `{tag, size}` chunks | user folder | verified (from the executable) | [SETTINGS.md](SETTINGS.md) |
 
 The engine itself is a Free Pascal 3.2.2 Win64 program using OpenGL 4.x
 (core functions loaded at runtime, `glTexStorage2D`, uniform blocks,

@@ -17,6 +17,7 @@
 //!          --no-supersample           draw at window resolution (default: 4× supersampling, as the original)
 //!          --gi-warm-up <steps>       GI steps run when a level loads (default 600)
 //!          --size WxH                 window size (default 1600x900)
+//!          --no-settings              ignore the user's settings files (see below)
 //!          --screenshot <file.png>    save a frame and exit
 //!          --frames <n>               frames to wait before the screenshot, after loading (default 90)
 //!          --ev <ev100>               camera exposure (default 6, lower is brighter)
@@ -66,6 +67,12 @@
 //!                                     goes to yellow, and it spawns with a feral character's stats
 //! ```
 //!
+//! The user's settings files (`docs/formats/SETTINGS.md`) are read from
+//! `EXARUST_USER_DIR`, else the platform's configuration folder and
+//! `exarust`: the window size, full screen, vertical sync, supersampling,
+//! the frame-rate readout and the GUI size they name apply unless the
+//! command line says otherwise, and the store's key bindings are used.
+//!
 //! In tile-grid levels only the rooms the player can see are drawn, as in
 //! the original: the player's room and those behind a door within 2 m; the
 //! rooms behind their doors are covered by black lids and the rest is black.
@@ -82,6 +89,7 @@
 mod column;
 mod map_panel;
 mod profiler;
+mod user_settings;
 mod viewer;
 
 use std::ops::Range;
@@ -117,6 +125,10 @@ pub struct Options {
     pub no_vsync: bool,
     /// Window size in logical pixels.
     pub size: Option<(u32, u32)>,
+    /// Borderless full screen on the primary display.
+    pub fullscreen: bool,
+    /// Ignore the user's settings files.
+    pub no_settings: bool,
     /// Play mode: start here instead of the level's start (metres).
     pub at: Option<[f32; 3]>,
     /// A torch fire at this point (metres).
@@ -359,6 +371,7 @@ fn main() -> AppExit {
             "--no-supersample" => options.no_supersample = true,
             "--no-fps" => options.no_fps = true,
             "--no-vsync" => options.no_vsync = true,
+            "--no-settings" => options.no_settings = true,
             "--gi-warm-up" => {
                 if let Some(n) = args.next().and_then(|v| v.parse().ok()) {
                     options.gi.warm_up = n;
@@ -602,6 +615,14 @@ fn main() -> AppExit {
             return AppExit::from_code(2);
         }
     };
+    let user = if options.no_settings {
+        None
+    } else {
+        user_settings::load(&data.project().name)
+    };
+    if let Some(user) = &user {
+        user.apply_to(&mut options);
+    }
     let trace = match options
         .trace
         .as_deref()
@@ -672,6 +693,13 @@ fn main() -> AppExit {
                     // names the window "Unknown" in its dialogs.
                     name: Some("exarust".into()),
                     resolution: options.size.unwrap_or((1600, 900)).into(),
+                    mode: if options.fullscreen {
+                        bevy::window::WindowMode::BorderlessFullscreen(
+                            bevy::window::MonitorSelection::Primary,
+                        )
+                    } else {
+                        bevy::window::WindowMode::Windowed
+                    },
                     present_mode: if options.no_vsync {
                         bevy::window::PresentMode::AutoNoVsync
                     } else {
@@ -720,6 +748,13 @@ fn main() -> AppExit {
         map_panel::MapPanelPlugin,
         profiler::ProfilerPlugin,
     ));
+    if let Some(user) = &user {
+        if let Some(bindings) = user.bindings() {
+            app.insert_resource(bindings);
+        }
+        app.insert_resource(user.clone())
+            .add_systems(Update, user_settings::gui_size_from_display);
+    }
     if fixed_frames {
         // Whatever a frame took, it advances game time by 1/60 s: the frames'
         // clocks and the ticks they run repeat from run to run.
@@ -727,7 +762,11 @@ fn main() -> AppExit {
             std::time::Duration::from_secs_f64(1.0 / 60.0),
         ));
     }
-    app.run()
+    let exit = app.run();
+    if let Some(user) = &user {
+        user.save_store();
+    }
+    exit
 }
 
 #[cfg(test)]

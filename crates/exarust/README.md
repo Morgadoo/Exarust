@@ -10,6 +10,12 @@ flags (`--debug-bodies`, `--joint-trace`, `--pair-trace`, `--corpse`,
 `--click`, `--cursor`, `--still-opponent`, `--debug-wound`, `--debug-nav`,
 `--weapon-blood`, `--debug-spray`, `--perks`) and keys are in
 [`docs/DEBUGGING.md`](../../docs/DEBUGGING.md).
+The user's settings files (`Exanima.ini`, `Exanima.set`,
+[`docs/formats/SETTINGS.md`](../../docs/formats/SETTINGS.md)) are read at
+start from `EXARUST_USER_DIR`, else `~/.config/exarust`: the window size,
+full screen, vertical sync, supersampling, the frame-rate readout and the
+GUI size they name apply unless the command line overrides them, and the
+store's key bindings are used. `--no-settings` ignores them.
 With `--opponent` the fight starts when the level shows: the duellist enters
 combat and, in a practice or arena level, the player's combat mode turns on.
 Placed characters keep their records' perks (Remise, Feint, …); the player

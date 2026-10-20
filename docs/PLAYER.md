@@ -146,6 +146,15 @@ after the version its word is the count. Exarust's `Bindings` models both
 shapes; the primary attack, movement, combat, orbit and interact controls
 read the table, and an unbound key simply does nothing.
 
+The table is not a file of its own: it is the payload stored in the
+settings store (`<project>.set`) under the tag path `0x6440A401 /
+0x6440CB01` ([formats/SETTINGS.md](formats/SETTINGS.md), Settings store),
+and the store is written right after it. Exarust's launcher reads it from
+there. The original's reader picks the older shape by the version word
+(below 101) rather than by the count, takes whatever count the payload
+gives, and clears slot 21 (next power) after reading; Exarust's `Bindings`
+does not yet follow these three rules.
+
 ## Using what the cursor is over
 
 A click names the object. A free hinge is a door or a lever, and a blocked one is left alone. A dead character is a corpse and a living one a person. A loose prop lighter than 0.08 is ignored. A heavy prop is ignored when strength is under 0.9. A usable item on a prop stays usable; with no body it is nothing. A point farther than 70 cm is turned toward before it is used. It is already within reach at 245 cm of height and 300 cm away, or 300 cm high and 350 cm away when it is a door. A drag pulls along the cursor direction by the nearest accepted hit, and that reach starts at 1000 cm. The grabbed box is refused when any placed corner is higher than 280 cm or lower than 1000 cm.

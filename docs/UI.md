@@ -26,7 +26,10 @@ pixels:
 | scale | 3 | 4 | 5 | 6 | 8 | 12 |
 
 A hidden setting (`GUISize`) moves the pick up or down the row; it is 0
-unless set. The user's retail window, 1014 pixels tall, has scale 5, read
+unless set. Its handler keeps 0 and negative values, but turns a positive
+one into 1 only on a display 800 pixels tall and into 0 on any other
+([formats/SETTINGS.md](formats/SETTINGS.md)); Exarust's launcher applies
+the settings file's value with the primary display's height. The user's retail window, 1014 pixels tall, has scale 5, read
 from the running game. Exarust (`exa_ui::scale`, `GuiScale`) does the same
 with its window's physical height; its default 1600 × 900 window gives 5.
 
