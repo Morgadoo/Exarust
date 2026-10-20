@@ -5,17 +5,20 @@
 //! when the file's is at least 0.5, else 0.03; it reads its operative
 //! record's two targets and flags (kind 2 or bit 8 inverts the signals, bit
 //! 2 makes it one-shot, bit 0x10 signals the second target) and starts
-//! from the object word's low byte.
+//! from the object word's low byte, which it keeps as its state: 1 is down,
+//! 0 is up, and any other byte neither presses nor releases.
 //!
-//! Each travel rises by 0.02 while the plate is pressed, at most 1, and
-//! falls by 0.01 otherwise, at least 0. A one-shot stops being pressed once
-//! a travel passes 1, and later travels in that tick fall. The mean is
-//! written back to every travel.
+//! Every tick sets each link's smoothing to 0.1. Each travel rises by 0.02
+//! while the plate is pressed, at most 1, and falls by 0.01 otherwise, at
+//! least 0; the step is taken in double precision and stored as a float. A
+//! one-shot stops being pressed once a travel passes 1, and later travels
+//! in that tick fall. The mean is written back to every travel.
 //!
 //! The grind speed is 0.9 times the change in the mean plus 0.1 times the
-//! old speed. It stops at 0.001 or below. Otherwise the volume is the square
-//! of 50 times the speed and the pitch is 20 times the speed plus 0.8, at
-//! most 1.
+//! old speed, in double precision. It stops at 0.001 or below (compared in
+//! double precision). Otherwise the volume is the square of 50 times the
+//! speed, the pitch is 20 times the speed plus 0.8, at most 1, and the body
+//! is kept awake for 256 ticks.
 //!
 //! A mean above 0.7 presses a plate that was up and signals 1, or −1 when
 //! inverted, with the click at 0.3 (pitch 0.9 plus 0.2 random). A mean
@@ -26,7 +29,8 @@
 //! on the plate presses it by moving the link, and the ±0.02/0.01 ramp is
 //! the plate's own spring.
 //!
-//! Evidence: the push-surface init and step.
+//! Evidence: the push-surface init and step (instruction listing checked
+//! for the double-precision steps and the comparison directions).
 
 /// How far a pressed travel rises in one tick.
 pub const RISE: f32 = 0.02;
@@ -40,6 +44,10 @@ pub const RELEASE: f32 = 0.5;
 pub const GRIND_STOP: f32 = 0.001;
 /// Volume of the click when the plate goes down.
 pub const CLICK: f32 = 0.3;
+/// The smoothing every tick gives each of the plate's links.
+pub const LINK_SMOOTHING: f32 = 0.1;
+/// How long a grinding plate keeps its body awake, in ticks.
+pub const WAKE_TICKS: u32 = 256;
 
 /// What a plate tells its targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,8 +66,9 @@ pub struct Plate {
     pub invert: bool,
     /// The second target is signalled too.
     pub second: bool,
-    /// The plate has clicked down.
-    pub down: bool,
+    /// The object word's low byte: 1 down, 0 up. Another byte neither
+    /// presses nor releases.
+    pub state: u8,
     pub speed: f32,
     pub previous: f32,
     pub has_target: bool,
@@ -80,6 +89,8 @@ pub struct PlateTick {
     pub first: bool,
     pub second: bool,
     pub click: Option<f32>,
+    /// The body is kept awake for [`WAKE_TICKS`] (while it grinds).
+    pub wake: bool,
 }
 
 /// One tick. An empty plate does nothing.
@@ -94,13 +105,14 @@ pub fn plate_step(plate: &mut Plate, travels: &mut [f32]) -> PlateTick {
             first: false,
             second: false,
             click: None,
+            wake: false,
         };
     }
 
     let mut sum = 0.0;
     for travel in travels.iter_mut() {
         if plate.pushed {
-            *travel += RISE;
+            *travel = (f64::from(*travel) + f64::from(RISE)) as f32;
             if *travel > 1.0 {
                 *travel = 1.0;
                 if plate.one_shot {
@@ -108,7 +120,7 @@ pub fn plate_step(plate: &mut Plate, travels: &mut [f32]) -> PlateTick {
                 }
             }
         } else {
-            *travel -= FALL;
+            *travel = (f64::from(*travel) - 0.01) as f32;
             if *travel < 0.0 {
                 *travel = 0.0;
             }
@@ -117,23 +129,25 @@ pub fn plate_step(plate: &mut Plate, travels: &mut [f32]) -> PlateTick {
     }
     let mean = sum / travels.len() as f32;
     let change = (plate.previous - mean).abs();
-    plate.speed = change * 0.9 + plate.speed * 0.1;
+    plate.speed = (f64::from(change) * 0.9 + f64::from(plate.speed) * 0.1) as f32;
     plate.previous = mean;
 
-    let (playing, volume, pitch) = if !plate.speed.is_finite() || plate.speed <= GRIND_STOP {
-        (false, 0.0, 0.0)
-    } else {
+    let grinding = f64::from(plate.speed) > 0.001;
+    let (playing, volume, pitch) = if grinding {
         let scaled = plate.speed * 50.0;
-        (true, scaled * scaled, (plate.speed * 20.0 + 0.8).min(1.0))
+        let pitch = ((plate.speed * 20.0) as f64 + 0.8) as f32;
+        (true, scaled * scaled, pitch.min(1.0))
+    } else {
+        (false, 0.0, 0.0)
     };
 
     let mut signal = None;
     let mut first = false;
     let mut second = false;
     let mut click = None;
-    if mean > PRESS {
-        if !plate.down {
-            plate.down = true;
+    if f64::from(mean) > 0.7 {
+        if plate.state == 0 {
+            plate.state = 1;
             click = Some(CLICK);
             let which = if plate.invert {
                 Signal::Inverted
@@ -146,8 +160,8 @@ pub fn plate_step(plate: &mut Plate, travels: &mut [f32]) -> PlateTick {
                 signal = Some(which);
             }
         }
-    } else if mean < RELEASE && plate.down {
-        plate.down = false;
+    } else if mean < RELEASE && plate.state == 1 {
+        plate.state = 0;
         if !plate.invert {
             first = plate.has_target;
             second = plate.second && plate.has_second;
@@ -170,6 +184,7 @@ pub fn plate_step(plate: &mut Plate, travels: &mut [f32]) -> PlateTick {
         first,
         second,
         click,
+        wake: grinding,
     }
 }
 
@@ -211,7 +226,7 @@ impl Plate {
             one_shot: record.flags & ONE_SHOT != 0,
             invert: record.kind == INVERTED_KIND || record.flags & INVERTED != 0,
             second: record.flags & SECOND != 0,
-            down: saved == 1,
+            state: saved,
             speed: 0.0,
             previous: 0.0,
             has_target: record.target != 0,
@@ -223,7 +238,12 @@ impl Plate {
 
     /// The object word's low byte this plate leaves behind.
     pub fn saved(&self) -> u8 {
-        u8::from(self.down)
+        self.state
+    }
+
+    /// The plate has clicked down.
+    pub fn down(&self) -> bool {
+        self.state == 1
     }
 
     /// The click when the plate goes down.
@@ -247,7 +267,7 @@ mod tests {
             one_shot: false,
             invert: false,
             second: false,
-            down: false,
+            state: 0,
             speed: 0.0,
             previous: 0.0,
             has_target: true,
@@ -267,7 +287,7 @@ mod tests {
         };
         let plate = Plate::new(&record, 1);
         assert!(plate.one_shot && plate.invert && plate.second);
-        assert!(plate.down && plate.has_target && plate.has_second);
+        assert!(plate.down() && plate.has_target && plate.has_second);
         assert_eq!((plate.target, plate.second_target), (21, 22));
         assert_eq!(plate.saved(), 1);
         assert_eq!(Plate::new(&record, 0).saved(), 0);
@@ -302,14 +322,14 @@ mod tests {
         assert!((tick.volume - 0.81).abs() < 1e-3, "{}", tick.volume);
         assert!((tick.pitch - 1.0).abs() < 1e-5);
         assert!(tick.signal.is_none());
-        assert!(!rising.down);
+        assert!(!rising.down());
 
         let mut below = plate();
         below.pushed = true;
         let mut travel = [0.68];
         let tick = plate_step(&mut below, &mut travel);
         assert!(tick.mean <= PRESS, "{}", tick.mean);
-        assert!(!below.down);
+        assert!(!below.down());
         assert!(tick.click.is_none());
 
         let mut above = plate();
@@ -317,7 +337,7 @@ mod tests {
         let mut travel = [0.69];
         let tick = plate_step(&mut above, &mut travel);
         assert!(tick.mean > PRESS, "{}", tick.mean);
-        assert!(above.down);
+        assert!(above.down());
         assert_eq!(tick.signal, Some(Signal::On));
         assert_eq!(tick.click, Some(CLICK));
 
@@ -333,27 +353,27 @@ mod tests {
         assert!(tick.second);
 
         let mut held = plate();
-        held.down = true;
+        held.state = 1;
         let mut travel = [0.51];
         let tick = plate_step(&mut held, &mut travel);
         assert!((tick.mean - 0.5).abs() < 1e-5, "{}", tick.mean);
-        assert!(held.down);
+        assert!(held.down());
         assert!(tick.signal.is_none());
 
         let mut let_go = plate();
-        let_go.down = true;
+        let_go.state = 1;
         let mut travel = [0.5];
         let tick = plate_step(&mut let_go, &mut travel);
         assert!(tick.mean < RELEASE, "{}", tick.mean);
-        assert!(!let_go.down);
+        assert!(!let_go.down());
         assert_eq!(tick.signal, Some(Signal::Off));
 
         let mut quiet = plate();
-        quiet.down = true;
+        quiet.state = 1;
         quiet.invert = true;
         let mut travel = [0.5];
         let tick = plate_step(&mut quiet, &mut travel);
-        assert!(!quiet.down);
+        assert!(!quiet.down());
         assert!(tick.signal.is_none());
 
         let mut once = plate();
@@ -363,6 +383,40 @@ mod tests {
         plate_step(&mut once, &mut travel);
         assert!(!once.pushed);
         assert!((travel[0] - travel[1]).abs() < 1e-6);
-        assert!(once.down);
+        assert!(once.down());
+    }
+
+    /// A grinding plate keeps its body awake; a quiet one does not. A
+    /// grind speed of exactly the float nearest 0.001 still grinds, since
+    /// the stop is compared in double precision. A state byte other than 0
+    /// or 1 neither presses nor releases.
+    #[test]
+    fn a_plate_wakes_while_it_grinds_and_a_stray_state_sticks() {
+        let mut rising = plate();
+        rising.pushed = true;
+        assert!(plate_step(&mut rising, &mut [0.0]).wake);
+
+        let mut still = plate();
+        let tick = plate_step(&mut still, &mut [0.0]);
+        assert!(!tick.wake && !tick.playing);
+
+        // previous 0, mean 0: the speed is 0.1 times the old one.
+        let mut edge = plate();
+        edge.speed = GRIND_STOP * 10.0;
+        let tick = plate_step(&mut edge, &mut [0.0]);
+        assert_eq!(edge.speed, GRIND_STOP);
+        assert!(tick.playing && tick.wake);
+
+        let mut stray = plate();
+        stray.state = 2;
+        stray.pushed = true;
+        let tick = plate_step(&mut stray, &mut [0.99]);
+        assert!(tick.mean > PRESS);
+        assert_eq!(stray.state, 2);
+        assert!(tick.click.is_none() && tick.signal.is_none());
+        let tick = plate_step(&mut stray, &mut [0.0]);
+        assert!(tick.mean < RELEASE);
+        assert_eq!(stray.state, 2);
+        assert!(tick.signal.is_none());
     }
 }
