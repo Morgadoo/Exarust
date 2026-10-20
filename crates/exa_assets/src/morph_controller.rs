@@ -1742,3 +1742,215 @@ mod bake_tests {
         assert_eq!(baked[9].vertices[0], [9.0, 0.0, 0.0]);
     }
 }
+
+/// A point-order adoption: two meshes with a key per point and triangles
+/// over them, the reference read-only and the target to be reordered.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PointOrder {
+    pub reference_faces: Vec<[u32; 3]>,
+    pub target_faces: Vec<[u32; 3]>,
+    pub reference_keys: Vec<[f32; 2]>,
+    pub target_keys: Vec<[f32; 2]>,
+}
+
+fn point_incidence(faces: &[[u32; 3]], points: usize) -> Vec<Vec<usize>> {
+    let mut incidence = vec![Vec::new(); points];
+    for (face, corners) in faces.iter().enumerate() {
+        for &corner in corners {
+            if let Some(list) = incidence.get_mut(corner as usize)
+                && !list.contains(&face)
+            {
+                list.push(face);
+            }
+        }
+    }
+    incidence
+}
+
+fn key_matches(a: [f32; 2], b: [f32; 2]) -> bool {
+    let dx = a[0] - b[0];
+    let dy = a[1] - b[1];
+    dx * dx + dy * dy <= 1e-8
+}
+
+/// Adopts the reference's point order on the target: seeds one triangle by
+/// matching its three corner keys under a rotation, then floods through
+/// shared points, matching each neighbouring target triangle to an
+/// unvisited reference triangle. Unmatched points keep their identity.
+pub fn adopt_point_order(order: &PointOrder) -> Vec<u32> {
+    let mut map: Vec<u32> = (0..order.target_keys.len() as u32).collect();
+    let reference_incidence = point_incidence(&order.reference_faces, order.reference_keys.len());
+    let target_incidence = point_incidence(&order.target_faces, order.target_keys.len());
+    let mut reference_seen = vec![false; order.reference_faces.len()];
+    let mut target_seen = vec![false; order.target_faces.len()];
+    let mut queue = Vec::new();
+
+    'seed: for (target, target_face) in order.target_faces.iter().enumerate() {
+        if target_seen[target] {
+            continue;
+        }
+        let keys = [
+            order.target_keys[target_face[0] as usize],
+            order.target_keys[target_face[1] as usize],
+            order.target_keys[target_face[2] as usize],
+        ];
+        for (reference, reference_face) in order.reference_faces.iter().enumerate() {
+            if reference_seen[reference] {
+                continue;
+            }
+            for turn in 0..3 {
+                let matches = (0..3).all(|corner| {
+                    key_matches(
+                        keys[corner],
+                        order.reference_keys[reference_face[(corner + turn) % 3] as usize],
+                    )
+                });
+                if matches {
+                    for (corner, &target_point) in target_face.iter().enumerate() {
+                        map[target_point as usize] = reference_face[(corner + turn) % 3];
+                    }
+                    reference_seen[reference] = true;
+                    target_seen[target] = true;
+                    queue.push(target);
+                    continue 'seed;
+                }
+            }
+        }
+    }
+
+    while let Some(target) = queue.pop() {
+        let target_face = order.target_faces[target];
+        for &point in &target_face {
+            let reference_point = map[point as usize];
+            for &neighbour in &target_incidence[point as usize] {
+                if target_seen[neighbour] {
+                    continue;
+                }
+                let neighbour_face = order.target_faces[neighbour];
+                let Some(start) = neighbour_face.iter().position(|&id| id == point) else {
+                    continue;
+                };
+                for &reference in &reference_incidence[reference_point as usize] {
+                    if reference_seen[reference] {
+                        continue;
+                    }
+                    let reference_face = order.reference_faces[reference];
+                    let Some(reference_start) =
+                        reference_face.iter().position(|&id| id == reference_point)
+                    else {
+                        continue;
+                    };
+                    let matches = (1..3).all(|step| {
+                        key_matches(
+                            order.target_keys[neighbour_face[(start + step) % 3] as usize],
+                            order.reference_keys
+                                [reference_face[(reference_start + step) % 3] as usize],
+                        )
+                    });
+                    if matches {
+                        for step in 1..3 {
+                            map[neighbour_face[(start + step) % 3] as usize] =
+                                reference_face[(reference_start + step) % 3];
+                        }
+                        reference_seen[reference] = true;
+                        target_seen[neighbour] = true;
+                        queue.push(neighbour);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    map
+}
+
+/// One registered part before it joins the controller: zero weights, the
+/// per-vertex target-minus-reference deltas and no child positions.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MorphPartAdd {
+    pub weight: f32,
+    pub weight1: f32,
+    pub deltas: Vec<[f32; 3]>,
+    pub children: Vec<[f32; 3]>,
+}
+
+/// Adds a part when the target's point count matches the reference's; the
+/// deltas are target minus reference. Returns nothing on a count mismatch.
+pub fn add_morph_part(
+    reference_points: &[[f32; 3]],
+    target_points: &[[f32; 3]],
+) -> Option<MorphPartAdd> {
+    if reference_points.len() != target_points.len() {
+        return None;
+    }
+    let deltas = target_points
+        .iter()
+        .zip(reference_points)
+        .map(|(target, reference)| {
+            [
+                target[0] - reference[0],
+                target[1] - reference[1],
+                target[2] - reference[2],
+            ]
+        })
+        .collect();
+    Some(MorphPartAdd {
+        weight: 0.0,
+        weight1: 0.0,
+        deltas,
+        children: Vec::new(),
+    })
+}
+
+#[cfg(test)]
+mod adopt_tests {
+    use super::*;
+
+    #[test]
+    fn a_rotated_target_takes_the_reference_order() {
+        let reference_keys = vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+        let target_keys = vec![reference_keys[1], reference_keys[2], reference_keys[0]];
+        let order = PointOrder {
+            reference_faces: vec![[0, 1, 2]],
+            target_faces: vec![[0, 1, 2]],
+            reference_keys,
+            target_keys,
+        };
+        assert_eq!(adopt_point_order(&order), vec![1, 2, 0]);
+    }
+
+    #[test]
+    fn the_flood_maps_a_sharing_triangle() {
+        let reference_keys = vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]];
+        let target_keys = vec![
+            reference_keys[1],
+            reference_keys[2],
+            reference_keys[0],
+            reference_keys[3],
+        ];
+        let order = PointOrder {
+            reference_faces: vec![[0, 1, 2], [1, 3, 2]],
+            target_faces: vec![[0, 1, 2], [0, 3, 1]],
+            reference_keys,
+            target_keys,
+        };
+        let map = adopt_point_order(&order);
+        assert_eq!(map[0], 1);
+        assert_eq!(map[1], 2);
+        assert_eq!(map[2], 0);
+        assert_eq!(map[3], 3);
+    }
+
+    #[test]
+    fn a_part_adds_its_deltas_or_refuses_a_count_mismatch() {
+        let part = add_morph_part(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            &[[0.0, 1.0, 0.0], [1.0, 2.0, 0.0]],
+        )
+        .unwrap();
+        assert_eq!(part.weight, 0.0);
+        assert_eq!(part.deltas, vec![[0.0, 1.0, 0.0], [0.0, 2.0, 0.0]]);
+        assert!(part.children.is_empty());
+        assert!(add_morph_part(&[[0.0; 3]], &[]).is_none());
+    }
+}
