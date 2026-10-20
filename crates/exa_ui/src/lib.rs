@@ -21,6 +21,7 @@ pub mod loading;
 pub mod match_board;
 pub mod menu;
 pub mod scale;
+pub mod settings;
 pub mod skill;
 pub mod skin;
 
