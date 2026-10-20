@@ -580,6 +580,84 @@ pub fn handle_skill_input(input: SkillInputInput) -> SkillInputOutput {
     out
 }
 
+/// The skill screen point hit test's inputs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SkillPointInput {
+    pub state: u16,
+    pub page: i32,
+    pub base: i32,
+    pub owns: bool,
+    pub allowed: bool,
+    pub point: (i32, i32),
+    pub width: i32,
+    pub height: i32,
+    pub unit: i32,
+    pub high: i32,
+    pub low: i32,
+    pub high_point: (f32, f32),
+    pub low_point: (f32, f32),
+    pub fallback: i32,
+}
+
+/// Hit-tests a point against the skill screen's bands and nodes.
+pub fn hit_skill_point(input: SkillPointInput) -> i32 {
+    if input.state & 2 != 0 && input.page < 2 {
+        return 0;
+    }
+    if !input.owns {
+        return input.base;
+    }
+    if input.base != -1 && !input.allowed {
+        return input.base;
+    }
+    let (x, y) = input.point;
+    let unit = input.unit;
+    let centre_x = input.width / 2;
+    if input.page == 2
+        && y > input.height - 16 * unit
+        && y < input.height - 8 * unit
+        && x > centre_x - 6 * unit
+        && x < centre_x + 6 * unit
+    {
+        return 0x1_0000;
+    }
+    if input.state as u8 == 4 {
+        return input.base;
+    }
+    if input.high > 0 {
+        let (px, py) = input.high_point;
+        if py > y as f32 {
+            return -1;
+        }
+        if py + 4.0 * (unit as f32) < y as f32 {
+            return -1;
+        }
+        let dx = (x as f32 - px).round_ties_even() as i32;
+        if dx > -13 * unit && dx < -4 * unit {
+            return 1;
+        }
+        if dx > 4 * unit && dx < 13 * unit {
+            return 2;
+        }
+        return -1;
+    }
+    if input.low > 0 {
+        let (px, py) = input.low_point;
+        if py > y as f32 {
+            return -1;
+        }
+        if py + 8.0 * (unit as f32) < y as f32 {
+            return -1;
+        }
+        let slot = ((x as f32 - px) / (10.0 * unit as f32) + 4.5).round_ties_even() as i32;
+        if slot > 0 && slot < 9 {
+            return slot;
+        }
+        return -1;
+    }
+    input.fallback
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1159,5 +1237,150 @@ mod tests {
         });
         assert_eq!(no_mask.result, 0x10);
         assert!(!no_mask.hint);
+    }
+
+    fn point_input() -> SkillPointInput {
+        SkillPointInput {
+            state: 0,
+            page: 0,
+            base: 0x10,
+            owns: true,
+            allowed: true,
+            point: (100, 50),
+            width: 200,
+            height: 100,
+            unit: 4,
+            high: 1,
+            low: 0,
+            high_point: (100.0, 50.0),
+            low_point: (0.0, 0.0),
+            fallback: 99,
+        }
+    }
+
+    #[test]
+    fn the_skill_point_guards_bands_and_nodes() {
+        assert_eq!(
+            hit_skill_point(SkillPointInput {
+                state: 2,
+                page: 1,
+                ..point_input()
+            }),
+            0
+        );
+
+        assert_eq!(
+            hit_skill_point(SkillPointInput {
+                owns: false,
+                base: 7,
+                ..point_input()
+            }),
+            7
+        );
+
+        assert_eq!(
+            hit_skill_point(SkillPointInput {
+                base: 5,
+                allowed: false,
+                ..point_input()
+            }),
+            5
+        );
+
+        assert_eq!(
+            hit_skill_point(SkillPointInput {
+                page: 2,
+                ..point_input()
+            }),
+            0x1_0000
+        );
+
+        assert_eq!(
+            hit_skill_point(SkillPointInput {
+                state: 4,
+                ..point_input()
+            }),
+            0x10
+        );
+
+        assert_eq!(
+            hit_skill_point(SkillPointInput {
+                point: (80, 50),
+                ..point_input()
+            }),
+            1
+        );
+        assert_eq!(
+            hit_skill_point(SkillPointInput {
+                point: (120, 50),
+                ..point_input()
+            }),
+            2
+        );
+        assert_eq!(
+            hit_skill_point(SkillPointInput {
+                point: (100, 50),
+                ..point_input()
+            }),
+            -1
+        );
+        assert_eq!(
+            hit_skill_point(SkillPointInput {
+                point: (80, 70),
+                ..point_input()
+            }),
+            -1
+        );
+
+        let low = SkillPointInput {
+            high: 0,
+            low: 1,
+            low_point: (100.0, 40.0),
+            ..point_input()
+        };
+        assert_eq!(
+            hit_skill_point(SkillPointInput {
+                point: (120, 40),
+                ..low
+            }),
+            5
+        );
+        assert_eq!(
+            hit_skill_point(SkillPointInput {
+                point: (-70, 40),
+                ..low
+            }),
+            -1
+        );
+        assert_eq!(
+            hit_skill_point(SkillPointInput {
+                point: (120, 80),
+                ..low
+            }),
+            -1
+        );
+        assert_eq!(
+            hit_skill_point(SkillPointInput {
+                point: (-30, 40),
+                ..low
+            }),
+            1
+        );
+        assert_eq!(
+            hit_skill_point(SkillPointInput {
+                point: (240, 40),
+                ..low
+            }),
+            8
+        );
+
+        assert_eq!(
+            hit_skill_point(SkillPointInput {
+                high: 0,
+                low: 0,
+                ..point_input()
+            }),
+            99
+        );
     }
 }
