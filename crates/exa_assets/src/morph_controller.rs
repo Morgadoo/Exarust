@@ -188,6 +188,21 @@ pub fn merge_morph_weights(
     current
 }
 
+/// Starts at `base` and adds each point times its weight.
+pub fn blend_morph_point(base: [f32; 3], points: &[[f32; 3]], weights: &[f32]) -> [f32; 3] {
+    const EPSILON: f32 = f32::from_bits(0x33ff_ffd7);
+    let mut result = base;
+    for (point, &weight) in points.iter().zip(weights) {
+        if weight.abs() < EPSILON {
+            continue;
+        }
+        result[0] += point[0] * weight;
+        result[1] += point[1] * weight;
+        result[2] += point[2] * weight;
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,5 +318,18 @@ mod tests {
 
         let stopped = merge_morph_weights(current, &[0, 3, 0, 0], &[1.0, 1.0, 0.0, 0.0], 1.0);
         assert_eq!(stopped, current);
+    }
+
+    #[test]
+    fn the_morph_point_blends_its_weights() {
+        let blended = blend_morph_point([1.0, 2.0, 3.0], &[[2.0, 4.0, 6.0]], &[0.5]);
+        assert_eq!(blended, [2.0, 4.0, 6.0]);
+
+        let skipped = blend_morph_point(
+            [1.0, 2.0, 3.0],
+            &[[2.0, 4.0, 6.0], [1.0, 1.0, 1.0]],
+            &[0.0, 1.0],
+        );
+        assert_eq!(skipped, [2.0, 3.0, 4.0]);
     }
 }
