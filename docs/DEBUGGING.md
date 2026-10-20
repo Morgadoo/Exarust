@@ -44,7 +44,7 @@ it takes the ring's other slot.
 | `--joint-trace <file.csv>` | write every joint of every simulated character body after every 83 Hz tick ([columns](#joint-trace)) |
 | `--pair-trace <file.csv>` | write every contact between two body parts that each 83 Hz tick's body–body detection found ([columns](#pair-trace)) |
 | `--corpse x,y,z` | in play mode, a dead human (a new record, in underwear) lies down here as a level's placed dead do (metres); repeatable. For contacts with corpses outside the story levels, e.g. `--corpse 0,0,3.4 --press W@150-420 play arena` walks the player over one |
-| `--trace <file.csv>` | the body trace in the retail probe's columns ([formats/RSQ.md](formats/RSQ.md), the foot contacts' states and anchors among them), then Exarust's own (the sleep countdown and state, the frame, the blend and hold, the clip clock's `rate` this tick, its `progress` and `clip_end` (1 on the tick its end test fires), the ankles), the condition word in hex (`0x300` getting up) and last the swing: `swing_rate` (frames the attack's clip ran this tick), `strength` (P) and `attack_flags` (the state word in hex: `0x2` stalling, `0x10` released, `0x10000` chained, `0x80000` no Remise); character bodies only |
+| `--trace <file.csv>` | the body trace in the retail probe's columns ([formats/RSQ.md](formats/RSQ.md), the foot contacts' states and anchors among them), then Exarust's own (the sleep countdown and state, the frame, the blend and hold, the clip clock's `rate` this tick, its `progress` and `clip_end` (1 on the tick its end test fires), the ankles), the condition word in hex (`0x300` getting up), the swing: `swing_rate` (frames the attack's clip ran this tick), `strength` (P) and `attack_flags` (the state word in hex: `0x2` stalling, `0x10` released, `0x10000` chained, `0x80000` no Remise), and last the locomotion ([Movement](#movement)): `loco_flags`, `moving`, `free_walk`, `yaw`, `heading`, `turn_rate`, `align`, `speed`, `reach`, `stop`; character bodies only |
 | `--shove <frame>` | a body blow to every simulated character body at that frame after the load |
 | `--shove-props <frame>` | in play mode, at that frame after the load, a blow to every prop body within 3 m of the player (1.5 m/s away from it and 1.5 m/s up); the log counts them and, once all sleep again, says after how many ticks and how far each moved (a body that fell out of the world counts as settled). Props meet the level and, through the pairs, every other body: they knock into each other, and one landing on a table that is itself a body (exanima01's tables) rests on it |
 | `--sim-speed <f>` | run the simulation at this speed (0.25 is a quarter as fast), from the end of the load |
@@ -54,7 +54,7 @@ it takes the ring's other slot.
 | `--pause-after-jet <n>` | pause at the end of the `n`th body tick after the tick that first finds a blood jet started (a bleeding blow's, or `--debug-spray`'s), to catch a jet in flight ([Wounds](#wounds)) |
 | `--pause-on-hit <n>` | pause n ticks (at least 1) after the tick in which the player's first blow lands, for a picture of a landed punch or cut; the log names the tick and the struck bone |
 | `--pause-after-collapse <n>` | pause n ticks (at least 1) after the tick in which a killing blow first starts a body's collapse (its condition `0x800`), for a picture of the collapse that long after the blow (83 ticks is 1 s; death comes on the 250th); the log names the body and the tick ([formats/RSQ.md](formats/RSQ.md), The collapse) |
-| `--press key@frame,...` | press keys or mouse buttons at frames counted from the end of the load (`.`, `[`, `]`, `Tab`, `Ctrl`, `F1`–`F12`, a letter, or `LMB`, `RMB`, `MMB`), e.g. `.@400,.@401,P@500`; each is released the frame after; `key@a-b` holds it from frame a and lets it go at frame b, e.g. `RMB@60-400` |
+| `--press key@frame,...` | press keys or mouse buttons at frames counted from the end of the load (`.`, `[`, `]`, `Tab`, `Ctrl`, `Shift`, `F1`–`F12`, a letter, or `LMB`, `RMB`, `MMB`), e.g. `.@400,.@401,P@500`; each is released the frame after; `key@a-b` holds it from frame a and lets it go at frame b, e.g. `RMB@60-400` |
 | `--click frame,...` | click the left mouse button at frames counted from the end of the load (the same as `LMB@frame` in `--press`): with `--weapon` in an arena fight, which starts in combat mode, the player attacks unattended |
 | `--camera x,y,z,yaw,pitch` | in play mode, a fixed camera there instead of the chase camera (metres, degrees), for unattended shots; with `--fov` |
 | `--cursor x,y` | in play mode, the cursor stays at this window point (logical pixels, from the top left) whatever the mouse does: the world cursor, walking to the cursor and combat facing use it ([UI.md](UI.md), World cursor) |
@@ -68,6 +68,38 @@ it takes the ring's other slot.
 | `--weapon-blood <a>` | the player's or the character view's held weapon holds blood a (0 to 1) from the start, so its stain shows without a fight ([Wounds](#wounds)) |
 | `--debug-spray bone,R[,dx,dy,dz]` | a blood jet from the player's or the character view's body part every second, as a bleeding blow of size R swinging along d would spray ([Wounds](#wounds)); repeatable |
 | `--physique x,y[,h,a,f,w]` | the character view's body (or the player's) and its apparel morphed by this physique: the two physique values, then height, age and feral level (0 when left out) and female when w is not 0 ([Physique](#physique)) |
+
+## Movement
+
+The movement decision is measured with `--trace` and scripted keys
+([PLAYER.md](PLAYER.md), Movement; [formats/RSQ.md](formats/RSQ.md),
+Movement decision). A light run that walks, stops, turns, jogs, runs to a
+far cursor with Shift, backpedals and walks into the arena wall:
+
+```sh
+exarust --no-gi --no-supersample --size 960x540 --fixed-frames \
+  --trace t.csv --cursor 480,40 --press W@100-250,D@400,D@430,A@520,\
+W@650-700,Shift@650-700,W@800-900,A@800-900,RMB@1000-1150,\
+Shift@1000-1150,S@1250-1300,W@1400-1700 play arena
+```
+
+The trace's last columns tell each tick's decision: `loco_flags` (hex:
+`0x40` walking by the keys, `0x44` with the run bit after W + Shift, `0xc`
+run and sprint latch with the mouse beyond 3 m and Shift, `0x70` the soft
+stop braking, `0x42` backpedalling, `0x10`/`0x50` braking at a wall),
+`moving` and `free_walk`, `yaw` and `heading` (degrees), `turn_rate`
+(degrees a second: 120 for the standing quarter turn, 240 for a free walk
+at rest, 300 in combat mode or with the mouse beyond 3 m, less over the
+last 0.6 rad), `align` (the alignment, 0.4 to 1 moving), `speed` (cm a tick: 1.687 walking, 4.337
+running, 1.476 backpedalling), `reach` (cm to the goal, 200 in free walk)
+and `stop`: `moving`, `standing`, `braked` (a braking body under 1 cm a
+tick), `arrived` (within 25 cm at 0.5 cm a tick), or the gate that held
+it (`tired` after a blow until the energy is full, `cooldown`,
+`stepping` during the interim combat footwork). Released, W walks on to
+its walk's key segment 0 or 4 (the `clock` column passes 0 or 40–50),
+then `0x70` and `braked` about 30 cm on.
+
+## Attacks
 
 An unattended attack: `exarust --opponent --sim-speed 0.25 --camera
 4.2,1.4,0.6,90,-8 --press LMB@100-300 play arenao1` throws the unarmed

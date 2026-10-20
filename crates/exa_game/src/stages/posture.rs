@@ -15,6 +15,7 @@ use exa_anim::{Animator, Motions};
 use exa_combat::Condition;
 use exa_combat::condition::PostureBranch;
 use exa_physics::CharacterBody;
+use exa_physics::body::locomotion::{Locomotion, Locomotor};
 use exa_physics::body::{Bearing, Ragdoll, TickedCharacter};
 
 use crate::limp::{bearing, rising};
@@ -30,19 +31,22 @@ pub(crate) fn take_bearing(
     mut bodies: Query<(
         &mut Ragdoll,
         &Animator,
+        Option<(&Locomotion, &Locomotor)>,
         Option<&PlayerBody>,
         Option<&PostureBranch>,
         Option<&Condition>,
     )>,
 ) {
     let Some(motions) = motions else { return };
-    let Ok((mut body, anim, player, branch, condition)) = bodies.get_mut(ticked.body) else {
+    let Ok((mut body, anim, locomotion, player, branch, condition)) = bodies.get_mut(ticked.body)
+    else {
         return;
     };
     let controller = ticked.character.and_then(|c| controllers.get(c).ok());
     let state = condition.copied().unwrap_or_default();
     let branch = branch.map_or_else(Default::default, |b| b.0);
-    let mut bearing: Bearing = bearing(controller, player, anim, branch, state);
+    let crouch = player.map_or(0.0, PlayerBody::crouch);
+    let mut bearing: Bearing = bearing(controller, locomotion, crouch, anim, branch, state);
     bearing.rising = rising(&motions, anim, state);
     bearing.progress = motions
         .clip(anim, &anim.action)

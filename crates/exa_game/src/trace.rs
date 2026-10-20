@@ -8,9 +8,12 @@
 //! controller stands) across the ground, its clip's blend, how far its
 //! pose is held, the frames its clock gained, its progress and whether
 //! its end test fired, its feet's ankles, its character's condition word,
-//! and its swing: the rate its attack's clip clock ran this tick, its
-//! strength and its state word. Columns: `docs/formats/RSQ.md` (Physical
-//! body, per-tick trace).
+//! its swing: the rate its attack's clip clock ran this tick, its strength
+//! and its state word, and its locomotion: the request's flag word,
+//! whether the movement decision moved it and walked it free, its yaw and
+//! heading, its turn rate, alignment, speed along its heading, how far its
+//! move vector reached and why it stands. Columns: `docs/formats/RSQ.md`
+//! (Physical body, per-tick trace).
 
 use std::fmt::Write as _;
 use std::fs::File;
@@ -21,6 +24,7 @@ use bevy::prelude::*;
 use exa_anim::{Animator, BodyPart, Motions, Stature};
 use exa_combat::Condition;
 use exa_combat::swing::SwingState;
+use exa_physics::body::locomotion::{Locomotion, Locomotor};
 use exa_physics::body::{BodySystems, BodyTicks, Ragdoll, world_with};
 use exa_physics::prop::PropBody;
 
@@ -33,6 +37,8 @@ const CM: f32 = 100.0;
 const BONES: usize = 18;
 /// Ticks between flushes of the file (a second).
 const FLUSH_EVERY: u64 = 83;
+/// Body ticks a second, for the turn rate's column.
+const TICKS_A_SECOND: f32 = 83.0;
 /// The body's scalars, in the probe's order.
 const SCALARS: [&str; 11] = [
     "pelvis_height",
@@ -73,6 +79,24 @@ const CONDITION: &str = "condition";
 /// clock's rate this tick (frames), the swing strength and the state word
 /// (hex), the retail probe's.
 const SWING: [&str; 3] = ["swing_rate", "strength", "attack_flags"];
+/// Then its locomotion (empty for a body without a request): the request's
+/// flag word (hex), moving and free walk (1 or 0) after the movement
+/// decision, the yaw and the heading (degrees), the turn rate this tick
+/// (degrees a second), the alignment, the speed along the heading (cm
+/// a tick), how far the move vector reached (cm) and why the body stands
+/// (`moving`, `standing`, `braked`, `arrived`, or the gate that held it).
+const LOCOMOTION: [&str; 10] = [
+    "loco_flags",
+    "moving",
+    "free_walk",
+    "yaw",
+    "heading",
+    "turn_rate",
+    "align",
+    "speed",
+    "reach",
+    "stop",
+];
 /// A part target's columns: its place (cm) and its rotation.
 const TARGET: [&str; 7] = ["x", "y", "z", "qx", "qy", "qz", "qw"];
 
@@ -141,6 +165,7 @@ pub fn header() -> String {
     columns.extend(ANKLES.iter().map(|s| s.to_string()));
     columns.push(CONDITION.into());
     columns.extend(SWING.iter().map(|s| s.to_string()));
+    columns.extend(LOCOMOTION.iter().map(|s| s.to_string()));
     columns.join(",")
 }
 
@@ -187,6 +212,7 @@ fn trace_bodies(
             Option<&Stature>,
             Option<&Condition>,
             Option<&SwingState>,
+            Option<(&Locomotion, &Locomotor)>,
             Has<PlayerBody>,
         ),
         Without<PropBody>,
@@ -199,7 +225,7 @@ fn trace_bodies(
     }
     let player = bodies.iter().any(|(.., p)| p);
     let mut text = String::new();
-    for (root, body, anim, stature, condition, swing, is_player) in &bodies {
+    for (root, body, anim, stature, condition, swing, locomotion, is_player) in &bodies {
         if player && !is_player {
             continue;
         }
@@ -223,6 +249,7 @@ fn trace_bodies(
             }
             None => text.push_str(",,,"),
         }
+        text.push_str(&locomotion_columns(locomotion));
         text.push('\n');
     }
     let ticks = trace.ticks + 1;
@@ -238,6 +265,27 @@ fn trace_bodies(
         error!("body trace: {e}; tracing stops");
         trace.failed = true;
     }
+}
+
+/// The locomotion columns of a row, each led by its comma: empty for a
+/// body without a request.
+fn locomotion_columns(locomotion: Option<(&Locomotion, &Locomotor)>) -> String {
+    let Some((req, l)) = locomotion else {
+        return ",".repeat(LOCOMOTION.len());
+    };
+    format!(
+        ",{:#x},{},{},{},{},{},{},{},{},{}",
+        req.flags,
+        u8::from(l.moving()),
+        u8::from(req.free_walk),
+        l.yaw.to_degrees(),
+        req.heading.to_degrees(),
+        l.turn_rate.to_degrees() * TICKS_A_SECOND,
+        l.align,
+        l.speed,
+        l.reach,
+        l.stop.name(),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -352,6 +400,31 @@ fn row(
 mod tests {
     use super::*;
 
+    /// The locomotion columns: the flag word in hex, moving and free walk,
+    /// the yaw and heading in degrees, the turn rate in degrees a second
+    /// (the base turn's 240), the alignment, the speed, the reach and the
+    /// reason; none without a request.
+    #[test]
+    fn the_locomotion_columns() {
+        use exa_physics::body::locomotion::{BASE_TURN, Stop};
+        let (mut req, mut l) = Locomotion::facing(std::f32::consts::FRAC_PI_2);
+        req.flags = 0x51;
+        req.free_walk = true;
+        l.stop = Stop::Moving;
+        l.turn_rate = BASE_TURN;
+        l.align = 0.5;
+        l.speed = 1.5;
+        l.reach = 200.0;
+        let row = locomotion_columns(Some((&req, &l)));
+        let cells: Vec<&str> = row.split(',').skip(1).collect();
+        assert_eq!(cells.len(), LOCOMOTION.len());
+        assert_eq!(&cells[..3], ["0x51", "1", "1"]);
+        assert_eq!(cells[3].parse::<f32>().unwrap(), 90.0);
+        assert!((cells[5].parse::<f32>().unwrap() - 240.0).abs() < 1e-3);
+        assert_eq!(&cells[6..], ["0.5", "1.5", "200", "moving"]);
+        assert_eq!(locomotion_columns(None), ",".repeat(LOCOMOTION.len()));
+    }
+
     /// The trace has a row per tick for the body, with the header's
     /// columns: its clip clock advancing 0.6 frames a tick (a standing
     /// body's, as the original's; the rate column says so) and wrapping
@@ -394,8 +467,9 @@ mod tests {
                 + ANKLES.len()
                 + 1
                 + SWING.len()
+                + LOCOMOTION.len()
         );
-        assert_eq!(columns.last(), Some(&SWING[2]));
+        assert_eq!(columns.last(), Some(&LOCOMOTION[9]));
         let rows: Vec<Vec<&str>> = lines.map(|l| l.split(',').collect()).collect();
         assert_eq!(rows.len() as u64, ticks);
         let at = |name: &str| columns.iter().position(|c| *c == name).unwrap();
@@ -426,8 +500,9 @@ mod tests {
             assert_eq!(number(row, "balance_counter"), 0.0);
             assert_eq!((row[at("countdown")], row[at("sleep")]), ("256", "awake"));
             assert_eq!(row[at(CONDITION)], "0x8");
-            // Not a fighter: no swing.
+            // Not a fighter: no swing; no request: no locomotion.
             assert!(row[at("swing_rate")].is_empty() && row[at("attack_flags")].is_empty());
+            assert!(row[at("loco_flags")].is_empty() && row[at("stop")].is_empty());
             assert!(number(row, "pelvis_p3_z").is_finite());
             let lifted = number(row, "frame_height") + number(row, "root_clip_height");
             assert!((number(row, "target1_y") - lifted).abs() < 1e-2);

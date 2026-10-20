@@ -35,10 +35,10 @@ use exa_combat::swing::{Swing, SwingState};
 use exa_combat::{Condition, Fighter};
 use exa_formats::rsq::Clip;
 use exa_physics::CharacterBody;
+use exa_physics::body::locomotion::{LegMode, Locomotion, Locomotor, flags};
 use exa_physics::body::{Ragdoll, TickedCharacter, world_with};
 
 use crate::limp::{CM, Pace, clip_pose, clip_tick, physical_turns, run_overlay, sprinting};
-use crate::player::PlayerBody;
 
 /// What the sampler gave the ticked body this tick, which the carry stage
 /// puts on its character frame: each part's placement in the body root's
@@ -50,10 +50,10 @@ use crate::player::PlayerBody;
 pub(crate) struct SampledPose(pub(crate) Option<Vec<Affine3A>>);
 
 /// Advances and samples the ticked body's clip, by how far its character
-/// walked in the last step (cm), the player's run blend, its swing, the
-/// rate its swing routine set this tick for an attack's clip, its armour
-/// encumbrance, whether its posture stage found it getting up, its
-/// stance and its condition.
+/// walked in the last step (cm), its run blend, its sprint latch and leg
+/// mode (its locomotion's), its swing, the rate its swing routine set this
+/// tick for an attack's clip, its armour encumbrance, whether its posture
+/// stage found it getting up, its stance and its condition.
 #[allow(clippy::type_complexity)]
 pub(crate) fn sample_clip(
     ticked: Res<TickedCharacter>,
@@ -63,7 +63,7 @@ pub(crate) fn sample_clip(
         &Ragdoll,
         &mut Animator,
         Option<&Stature>,
-        Option<&PlayerBody>,
+        Option<(&Locomotion, &Locomotor)>,
         Option<&Swing>,
         Option<&SwingState>,
         Option<&mut Condition>,
@@ -82,7 +82,7 @@ pub(crate) fn sample_clip(
         body,
         mut anim,
         stature,
-        player,
+        locomotion,
         swing,
         swinging,
         mut condition,
@@ -102,14 +102,18 @@ pub(crate) fn sample_clip(
     let level = body.drive.as_ref().map_or(0.0, |d| d.balance().level());
     let pace = Pace {
         walked,
-        run: player.map_or(0.0, PlayerBody::run),
+        run: locomotion.map_or(0.0, |(_, l)| l.run),
         swing: swing.copied().unwrap_or(Swing::FISTS),
         attack: swinging.map(|s| s.rate),
         encumbrance: fighter.map_or(0.0, |f| f.stats.encumbrance),
-        sprinting: sprinting(player.is_some_and(PlayerBody::sprint_latch), level, walked),
+        sprinting: sprinting(
+            locomotion.is_some_and(|(req, _)| req.has(flags::SPRINT)),
+            level,
+            walked,
+        ),
         feral: fighter.map_or(0.0, |f| f.stats.feral),
         rose: branch.is_some_and(|b| b.0 == Branch::GettingUp),
-        backing: player.is_some_and(PlayerBody::backing),
+        backing: locomotion.is_some_and(|(_, l)| l.leg == LegMode::Backpedal),
         stance: stance.and_then(|s| motions.0.action_index(s.action())),
         still: condition.as_deref().is_some_and(|c| c.clip_stands_still()),
     };

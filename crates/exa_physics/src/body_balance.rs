@@ -307,6 +307,12 @@ impl Balance {
         self.airborne
     }
 
+    /// Gives the landing momentum its full weight, as a walking body that
+    /// loses its balance gets it (the movement decision's).
+    pub(super) fn land_fully(&mut self) {
+        self.landing = LANDING_WEIGHT;
+    }
+
     /// The ground under the pelvis (m; 100 m down when the query meets
     /// nothing within its 20 m), as last asked without the feet's support;
     /// none while a foot gives it.

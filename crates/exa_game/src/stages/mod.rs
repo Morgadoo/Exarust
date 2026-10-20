@@ -8,8 +8,9 @@
 //! - Readiness: the daze's stance and readiness (`exa_combat::stance`, over
 //!   every character before the ticks), a get-up's extra energy
 //!   (`balance`);
-//! - Behaviour: the player's input (`player`, in `FixedPreUpdate`) and the
-//!   duellist (`exa_ai`, once a frame);
+//! - Behaviour: the player's input (`player` and `steering`, in
+//!   `FixedPreUpdate`) and the duellist (`exa_ai`, once a frame); the
+//!   player's writes its locomotion request;
 //! - Posture: the condition (`exa_combat::condition`), the collapse's dying
 //!   tick (`exa_combat::collapse`), the falls, staggers and get-ups
 //!   (`balance`), the fall check (`fall`), and what the body does this tick
@@ -17,9 +18,10 @@
 //! - Attack: the swing routine (`exa_combat::swing`), then the health
 //!   bookkeeping (`exa_combat::regen`);
 //! - Movement: a get-up picked again and the turn toward a fall
-//!   (`balance`); the walk's lowest ankle, the controller's step left out
-//!   of the carry, the balance and the ground under the feet
-//!   ([`movement`]);
+//!   (`balance`); the movement decision, the body turn and the alignment
+//!   from the locomotion request, and the capsule's velocity; the walk's
+//!   lowest ankle, the controller's step left out of the carry, the
+//!   balance and the ground under the feet ([`movement`]);
 //! - Sampler: the clip's clock, capture and sample, and the condition's
 //!   clip-end writer ([`sampler`]);
 //! - Carry: the targets on the character frame, the lift, the controller's
@@ -66,7 +68,9 @@ impl Plugin for CharacterTickPlugin {
                         .in_set(Posture)
                         .after(crate::balance::take_posture)
                         .after(crate::fall::fall_to_death),
-                    movement::measure_ground.in_set(Movement),
+                    (movement::decide_movement, movement::measure_ground)
+                        .chain()
+                        .in_set(Movement),
                     sampler::sample_clip.in_set(Sampler),
                     carry::aim_body.in_set(Carry),
                 ),

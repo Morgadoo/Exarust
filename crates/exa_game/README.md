@@ -62,7 +62,10 @@ each body's whole tick before the next, in the original's stages
 condition, dying tick, falls and get-ups, fall check, then its bearing
 with its get-up's first quarter, its clip's progress, walking and off its
 feet by its condition (its feet read them), a collapsing body's bearing
-saying so (posture; a body that dies there skips the later stages); its walk's
+saying so (posture; a body that dies there skips the later stages); the
+original's movement decision from its character's locomotion request
+(walk or stop, brake, the gates, the turn by the table of rates, the
+alignment), which its capsule carries out at Exarust's speeds, its walk's
 lowest ankle while it moves and its balance against the level
 (movement); its clip (the capture of a start
 from the body's physical turns, the original's clock rate for what the
@@ -86,13 +89,18 @@ the Defence stance or Rebalance; in the movement stage the get-up picked
 again under 40 % and the turn toward a fall; a get-up's extra energy in
 the readiness stage; a fall leaves the controller, and
 `exa_physics::body::Fallen` marks a body off its feet), the
-player (`player`: tank controls whose steering starts only the gaits, the
-chase camera on the drawn pelvis, combat facing, its combat stance and the
+player (`player` and `steering`: tank controls as the original's
+behaviour writes them into the locomotion request — the release finishing
+the stride, the quarter turn a second after any turn key, Shift's sprint
+latch spent with the keys and kept by a far cursor, the look-ahead on the
+navigation grid and the soft stop — whose steering starts only the gaits,
+the chase camera on the drawn pelvis, combat facing, its combat stance and the
 original's attack request each behaviour tick (press, hold, release, the
 double click and Alt) through the attack executor, with the clips of the
 moveset its hands pick; a dropped request releases the swing, a released
 main-side attack returns to the stance once its stall is over, and the
-body turns at the swing's rate while it attacks),
+body turns at the swing's rate while it attacks; `--trace` shows each
+tick's locomotion),
 falls to death and the kill plane (`fall`: the fall check of a living
 body in the falls branch, in its posture stage, its scream and the player's pit sound, the
 death fade's start, death and removal from the world; dead bodies below

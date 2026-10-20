@@ -62,7 +62,7 @@ The system SHALL start the player where the original does for a new game in the 
 - **THEN** the player stands at (0, 0, 5) facing −Z and the opponent at (0, 0, 2.5) facing it, so the duellist's blows meet the player's front and land
 
 ### Requirement: Tank controls
-The system SHALL steer the player in exploration as the original does. W SHALL walk along the character's heading; A and D SHALL turn it by 0.025 rad per 83 Hz tick while moving, or by a quarter turn (at most once a second) when standing. S SHALL brake when faster than 1 cm per tick, then backpedal. Neither the camera nor the cursor SHALL change the heading.
+The system SHALL steer the player in exploration as the original does. W SHALL walk along the heading; A and D SHALL turn it 0.025 rad a tick while moving, or a quarter standing, once more than 1 s of the game clock has passed since any turn key. S SHALL backpedal, braking first above 1 cm a tick. A released walk SHALL go on to its walk's key segment 0 or 4, then stop softly 8·v + 20 cm ahead. Shift SHALL jog. Neither camera nor cursor SHALL change the heading.
 
 #### Scenario: Walking forward
 - **WHEN** W is held while the camera is orbited
@@ -72,8 +72,20 @@ The system SHALL steer the player in exploration as the original does. W SHALL w
 - **WHEN** D is pressed while standing
 - **THEN** the player turns a quarter to the right
 
+#### Scenario: Quarter turns a second apart
+- **WHEN** D is pressed standing, again half a second later, and A two seconds after the first
+- **THEN** the heading turns a quarter right, stays, and turns back a quarter left, the body following at 120°/s
+
+#### Scenario: Releasing W mid-stride
+- **WHEN** W is released while the player walks
+- **THEN** it walks on until its walk reaches key segment 0 or 4, then brakes to a stop about 30 cm on
+
+#### Scenario: W and Shift
+- **WHEN** W and Shift are held
+- **THEN** the player runs with the run bit set and the sprint latch spent at every movement decision
+
 ### Requirement: Walk to the cursor
-The system SHALL walk the player toward the cursor's point on the plane 80 cm above the player's ground while the right mouse button is held, running when that point is more than 3 m away. The point SHALL be found through the scene camera's own viewport, also when the scene is drawn supersampled into a larger image.
+The system SHALL walk the player toward the cursor's point on the plane 80 cm above its ground while the right button is held: the heading SHALL be whichever of the smoothed cursor direction and the facing is nearer the cursor's, turning first beyond 120°. Beyond 3 m it SHALL run, keeping Shift's sprint latch, and turn standing at 300°/s. The point SHALL be found through the scene camera's own viewport, also when supersampled.
 
 #### Scenario: Far cursor
 - **WHEN** the right button is held over a point 5 m away
@@ -83,8 +95,12 @@ The system SHALL walk the player toward the cursor's point on the plane 80 cm ab
 - **WHEN** the right button is held with the pointer just above the player on screen in the default supersampled view
 - **THEN** the player walks up the screen toward that point
 
+#### Scenario: Far cursor and Shift
+- **WHEN** the right button and Shift are held over a point 5 m away
+- **THEN** the movement decisions see the run bit and the sprint latch both set
+
 ### Requirement: Combat footwork
-The system SHALL toggle combat mode on Tab, and SHALL turn it on at the start of a practice or arena fight. In combat mode the heading SHALL turn to the cursor's direction once it is more than 30° off it, and follow it while the left button is held; the body SHALL turn toward the heading at the body-turn rate. W, S, A and D SHALL step along and across the cursor's direction; their walk SHALL give back the clip it replaced, and a walk from before combat mode SHALL end in the stance.
+The system SHALL toggle combat mode on Tab, and turn it on at a practice or arena fight's start. In combat mode the heading SHALL turn to the cursor once more than 30° off it, and follow it while the left button is held; the body SHALL turn toward it at the table's rate (300°/s standing). W, S, A and D SHALL step along and across the cursor's direction; their walk SHALL give back the clip it replaced; a walk from before combat mode SHALL stop softly and end in the stance.
 
 #### Scenario: Side step
 - **WHEN** A is held in combat mode
@@ -248,8 +264,37 @@ The system SHALL set the player's crouch amount to 1 while the Crouch binding is
 - **THEN** the walk clip's clock runs at 0.9 of its rate
 
 ### Requirement: Grid look-ahead
-The player's look-ahead SHALL walk the navigation grid from the standing point toward the look-ahead goal (75 cm + 6·v², 70 cm when backing) and SHALL stop the character when the walk is blocked within 100 cm, as the original does.
+The player's look-ahead SHALL walk the navigation grid from the standing point toward the look-ahead goal (75 cm + 6·v², 70 cm when backing), as the original does. Blocked, the free walk SHALL end and the body walk to the clamped goal and brake there; a clamped goal within 100 cm SHALL also cut the run and the sprint latch.
 
 #### Scenario: Walking into a crate
 - **WHEN** the player walks toward a crate lower than its hip
-- **THEN** the player stops in front of it instead of pushing into it
+- **THEN** the player brakes to a stop in front of it instead of pushing into it
+
+### Requirement: Locomotion request
+The player SHALL move through a locomotion request (heading, look, flag word, moving, free walk, goal) that its body tick decides each tick: a free walk never brakes; toward a goal a walking body SHALL brake within its gait's stop distance (50/200/250/50 cm, blended by the run) and stop within 25 cm at 0.5 cm a tick or less; a running body never brakes. A body under its most energy SHALL not walk.
+
+#### Scenario: Walking into a wall
+- **WHEN** the player walks straight at a wall
+- **THEN** the look-ahead ends its free walk and it brakes to a stop before the wall
+
+#### Scenario: Dazed
+- **WHEN** a blow leaves the player under its most energy while W is held
+- **THEN** it stands until its energy is full again, then walks
+
+### Requirement: Body turn
+The body SHALL turn toward its heading by the original's table: (1 − 0.1·v)·240°/s in free walk (v in cm a tick), 120°/s for the exploration's slow turn, the swing's law while attacking, else (1 − 0.6·enc)·300°/s/√scale; ×0.6 crouched, eased over the last 0.6 rad, ×0.9 moving by the keys, the step ÷√scale; held while helpless. The alignment of its pelvis with its heading SHALL be kept each tick.
+
+#### Scenario: A standing quarter turn
+- **WHEN** D turns the standing player's heading a quarter
+- **THEN** its body turns 120°/s until the last 0.6 rad, then eases onto the heading
+
+#### Scenario: Turning in combat mode
+- **WHEN** the cursor is moved beyond 30° of the standing player's facing in combat mode
+- **THEN** its body turns toward it at 300°/s
+
+### Requirement: Capsule executes the decision
+Until the body walks by its carry, its capsule SHALL execute the movement decision: along the heading at 1.4 m/s walking up to 3.6 m/s at a full run blend (rising 0.05 a tick to the encumbrance's cap, falling 0.015), 1.22 m/s backpedalling, slowing while braking by the original's brake drive and enough to stop on its goal. Without a navigation grid the look-ahead SHALL clamp the goal a capsule radius and a 30 cm cell short of a wall at hip height.
+
+#### Scenario: Soft stop
+- **WHEN** W is released at a walk
+- **THEN** the capsule slows from 1.687 cm a tick and stops within 3 cm of the goal 8·v + 20 cm ahead

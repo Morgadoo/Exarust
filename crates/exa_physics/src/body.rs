@@ -70,6 +70,8 @@ mod frame;
 pub mod inspect;
 #[path = "body_lift.rs"]
 mod lift;
+#[path = "body_locomotion.rs"]
+pub mod locomotion;
 #[path = "body_pairs.rs"]
 pub mod pairs;
 pub use pairs::{Pairing, Pairs, Touch};

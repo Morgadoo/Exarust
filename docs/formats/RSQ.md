@@ -1080,6 +1080,68 @@ the kill plane, constants read from the executable):
   gone on tick 423. (Exarust's fallen body sinks up to about 14 cm a tick,
   where the original's off-balance retention allows about 8.6.)
 
+### Movement decision
+
+Every steered character moves through a **locomotion request** its
+behaviour writes before its body's movement stage: the heading (a yaw),
+the head's look, the smoothed cursor direction, the wanted direction, the
+flag word, whether it moves, free walk, and a goal point (metres,
+world). Each character tick's movement stage decides from it as the
+original's body tick does (REA, `context/re/master-movement.md` §5, §21):
+
+- **Move vector**: the facing × 200 cm in free walk; else, moving, the goal
+  less where the character stands; else the facing. Its length squared is
+  the locomotion amount.
+- **Leg mode and brake**, moving: backwards → backpedal, braking within
+  the stop distance (the turn-about bit cleared); already braking → walk;
+  running → run, never braking; else walk, braking within the stop
+  distance. Never in free walk. The stop distance is the gait rows' column
+  2 blended from the walk toward the jog (or the sprint, with the latch
+  past 3.5 cm a tick) by the run blend: 50, 200, 250 and 50 cm
+  (backpedal); back to the walk's when the body stops.
+- **Gates**, in order: a cooldown (40 ticks after a stumble); energy under
+  its most (a dazed body cannot walk until its energy is full, +0.005 a
+  tick); stepping (refuses, the next tests still run); moving with balance
+  under 0.9 (double precision; a float 0.9 is under it): the cooldown and
+  the landing momentum's full weight; standing with more than 80 ticks
+  without support or balance under 0.99; more than 20 ticks of Rebalance.
+  A refusal clears the amount, the flags and the speed. Exarust reads the
+  balance steady until the body takes recovery steps (its standing balance
+  can settle at about 0.89 with nothing to restore it) and keeps no
+  Rebalance countdown yet.
+- **Brake**: braking below 1 cm a tick, the turn-about bit turns it into a
+  backpedal; otherwise the amount is 0.
+- **Move or stop**: moving with an amount over 625 cm² (25 cm) or a speed
+  over 0.5 cm a tick → the body moves (amount 1); else it stands, the
+  request no longer moving.
+- **Turn** (held while the condition is helpless): free walk (1 −
+  0.1·v)·B (v the speed in cm a tick, no floor); the slow turn 0.5·B
+  (120°/s; the exploration behaviour asks for it, cleared by a far
+  cursor's run); attacking, the swing's law ([Motion playback](#motion-playback));
+  otherwise (1 − 0.6·enc)·1.25·B/√scale (300°/s); B = 4π/3 over 83 ticks
+  (240°/s; the original writes it at its unit init). Then ×0.6 crouched
+  beyond 0.5, ×|err|/0.6 within 0.6 rad of the heading, ×0.9 moving by the
+  keys, the step ÷ √scale; within 1e-4 rad or one step it ends on the
+  heading, the yaw kept within ±π.
+- **Alignment** of the pelvis with the heading: kept 0.97 a tick toward 1 − enc standing, 0.4 +
+  0.6·(heading·pelvis forward)² moving by the keys, 0.4 + 0.6·max(0,
+  wanted·facing) moving by the mouse; the amount is then × the alignment (the walk's
+  drive will read it).
+- **The capsule** carries the decision out until the body walks by its
+  carry (Exarust's own): along the heading at its walk (1.4 m/s)
+  blended toward its run (3.6 m/s; sprinting × the feral sprint thrust over
+  the jog's, 472.2/350 at feral 0) by the run blend (+0.05 a
+  tick to the encumbrance's cap running, else −0.015, braking at most
+  f·(2 − f), f = 0.2·(v − 2), only while moving), backwards at 1.22 m/s,
+  the interim footwork's velocity while it steps; braking it keeps
+  (1 − 0.2·550/83²)·0.98977 of its speed a tick (the original's brake drive
+  and limb retention) and, toward a goal ahead, slows at least by v²/2d to
+  stop on it. The speed the decision reads is the capsule's commanded one
+  (its measured step stalls on the level mesh's seams).
+
+The player's behaviour that writes the request is in
+[PLAYER.md](../PLAYER.md) (Movement).
+
 Per-tick trace. `exarust --trace <file.csv>` writes one row per traced body
 after every tick. It traces the player's body, or every simulated body when
 there is no player. The columns are those of the retail body probe, so a
@@ -1108,6 +1170,9 @@ is left empty.
 | `ankle_{r,l}_{x,y,z}` | Exarust's own: each foot contact's ankle where the tick left it, so a foot's slide from its anchor shows |
 | `condition` | the character's condition word in hex (`0x300`), as the retail watcher logs it ([Condition](#condition)); empty for a body without one |
 | `swing_rate`, `strength`, `attack_flags` | the fighter's swing (empty for a body that does not fight): the frames its swing routine last set for an attack's clip, the swing strength P, and its attack state word in hex ([Swing](#motion-playback)), the retail probe's rate, strength and state columns |
+| `loco_flags`, `moving`, `free_walk` | the character's locomotion request (empty for a body without one, [Movement decision](#movement-decision)): its flag word in hex, the retail probe's locomotion flags (`0x1` move, `0x2` backwards, `0x4` run, `0x8` sprint latch, `0x10` brake, `0x20` stopping, `0x40` heading-driven, `0x200` turn-about), whether the decision moved the body (1/0) and whether it walks free |
+| `yaw`, `heading`, `turn_rate` | the body's yaw and the heading (degrees), and the turn rate this tick after every factor (degrees a second: 240 free walk standing still, 120 the slow turn, 300 otherwise) |
+| `align`, `speed`, `reach`, `stop` | the alignment, the speed along the heading (cm a tick), how far the move vector reached (cm: 200 in free walk, the goal's distance toward one) and why the body stands (`moving`, `standing`, `braked`, `arrived`, or the gate: `tired`, `cooldown`, `stepping`, `unsteady`, `unbalanced`, `airborne`, `rebalancing`) |
 
 The joint trace (`--joint-trace`), one row per body part, and the body
 overlay are described in [`docs/DEBUGGING.md`](../DEBUGGING.md).

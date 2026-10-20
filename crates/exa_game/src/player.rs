@@ -3,9 +3,11 @@
 //!
 //! Exploration uses tank controls: W walks along the character's heading,
 //! A and D steer it (or turn a quarter in place when standing), S brakes
-//! and backpedals, and the right mouse button walks toward the cursor. The
-//! steering starts only the walk, run and backpedal; what a standing
-//! character plays is its stance's. The
+//! and backpedals, and the right mouse button walks toward the cursor
+//! (`crate::steering`, which writes the body's locomotion request; the
+//! body tick's movement decision walks, stops and turns the body,
+//! `crate::stages::movement`). The steering starts only the walk, run and
+//! backpedal; what a standing character plays is its stance's. The
 //! camera follows the character's pelvis only: it never turns by itself,
 //! the middle mouse button orbits it and the wheel zooms by field of view.
 //! Combat mode (Tab, or the start of a fight) turns toward the cursor and
@@ -27,58 +29,21 @@ use exa_combat::attack::{self, AttackKind, AttackMotion, Attacker, Busy, Request
 use exa_combat::stance::{self, Stance};
 use exa_combat::swing::{self, Swing, SwingAt, SwingState};
 use exa_combat::{AttackStart, Attacking, Blade, Condition, Fighter};
-use exa_formats::encumbrance::run_cap;
+use exa_physics::body::locomotion::{Locomotion, Locomotor, flags, forward, turn_between, yaw_of};
 use exa_physics::body::{BodyTicks, Fallen, GoLimp, MAX_ENERGY, Ragdoll};
 use exa_physics::{CharacterBody, Physics};
 use exa_ui::CursorCapture;
 
 use crate::bindings::{Action, Bindings};
 
-/// Walking speed (m/s): where the original's walk drive settles.
-const WALK_SPEED: f32 = 1.4;
-/// Running speed (m/s) at a full run blend.
-const RUN_SPEED: f32 = 3.6;
-/// Human gait thrusts, per second (walk, jog, sprint).
-const WALK_THRUST: f32 = 88.9;
-const JOG_THRUST: f32 = 350.0;
-const SPRINT_THRUST: f32 = 472.2;
-const BACK_THRUST: f32 = 77.8;
-/// Backpedalling speed (m/s): the walk scaled by the gait table's thrusts
-/// (77.8 against 88.9).
-const BACK_SPEED: f32 = WALK_SPEED * BACK_THRUST / WALK_THRUST;
+pub(crate) use crate::steering::CURSOR_RUN_FROM;
+use crate::steering::{Keys, Steering, key_segment};
 
-/// Capsule speed (m/s) along the heading. The walk and the jog keep their
-/// measured speeds. While sprinting, the jog end is that speed times the
-/// feral sprint row's thrust over the jog thrust.
-pub(crate) fn forward_speed(run: f32, sprinting: bool, feral: f32) -> f32 {
-    let run = run.clamp(0.0, 1.0);
-    let f = feral.clamp(0.0, 1.0);
-    let sprint = SPRINT_THRUST * (1.0 - f) + JOG_THRUST * f;
-    let end = if sprinting {
-        RUN_SPEED * sprint / JOG_THRUST
-    } else {
-        RUN_SPEED
-    };
-    WALK_SPEED + (end - WALK_SPEED) * run
-}
+/// Exarust's interim combat footwork moves the capsule at the walking
+/// speed (m/s) until the original's steps replace it.
+const FOOTWORK_SPEED: f32 = 1.4;
 /// The behaviour tick (the fixed step), per second.
 const TICK_HZ: f32 = exa_physics::STEP_HZ as f32;
-/// A and D turn the heading this much per tick while moving (rad).
-const STEER: f32 = 0.025;
-/// Standing, A and D turn a quarter, at most this often (s).
-const QUARTER_TURN_EVERY: f32 = 1.0;
-/// The body's yaw follows the heading at up to this rate (rad/s).
-const BODY_TURN: f32 = 4.188_79;
-/// The body turn's rate shrinks over the last part of a turn (rad).
-const TURN_EASE: f32 = 0.6;
-/// The run blend rises and falls this much per tick.
-const RUN_RISE: f32 = 0.05;
-const RUN_FALL: f32 = 0.015;
-/// The right mouse button walks to a cursor this close (m) and runs to
-/// one further away.
-pub(crate) const CURSOR_RUN_FROM: f32 = 3.0;
-/// A cursor closer than this (m) gives no direction.
-const CURSOR_MIN: f32 = 0.5;
 /// The crouch falls by this much a tick once its key is let go.
 const CROUCH_FALL: f64 = 0.02;
 /// Cursor Look turns the facing by 3.6 rad per screen width of horizontal
@@ -101,10 +66,11 @@ impl CursorLook {
         dx * CURSOR_LOOK_SENSITIVITY / width.max(1.0)
     }
 }
-/// S faster than this (m/s) brakes before backpedalling (1 cm per tick).
-const BRAKE_ABOVE: f32 = 0.01 * TICK_HZ;
-/// The look-ahead probe starts this far above the feet (hip height, m).
+/// Without a navigation grid the look-ahead's line walk casts from this
+/// far above the feet (hip height, m), and clamps its goal a grid cell (m)
+/// more than the capsule's radius short of what it meets.
 const HIP: f32 = 0.9;
+const GRID_CELL: f32 = 0.3;
 /// The cursor's point lies on the plane this far above the player's ground
 /// (m): the original's aim plane, 80 cm.
 pub(crate) const AIM_HEIGHT: f32 = 0.8;
@@ -133,28 +99,20 @@ pub struct Player;
 
 /// The visual body under the player root. The player is human and is
 /// kept in underwear, as the original keeps its player's record; what its
-/// hands hold picks its moveset, and it keeps a combat stance.
+/// hands hold picks its moveset, and it keeps a combat stance. Its heading
+/// and look are its locomotion request's, its yaw and run blend its body
+/// tick's (`exa_physics::body::locomotion`).
 #[derive(Component, Debug)]
-#[require(exa_character::WearsUnderwear, Hands, Stance)]
+#[require(exa_character::WearsUnderwear, Hands, Stance, Locomotion)]
 pub struct PlayerBody {
-    /// The body's yaw (rad; the model faces +Z).
-    pub yaw: f32,
-    /// The heading the body turns toward and walks along.
-    pub heading: f32,
     pub combat: bool,
     /// In combat mode, the cursor's direction from the player (a yaw): the
     /// footwork steps along and across it.
     pub aim: f32,
     /// The attack request from the left button, and the attack picks.
     attack: AttackInput,
-    /// 0 walks, 1 runs.
-    run: f32,
-    /// Shift with the cursor further than 3 m. The walk keys spend it.
-    sprint_latch: bool,
-    /// S is carrying it backwards. The walk clip's clock runs negative.
-    backing: bool,
-    /// Seconds until A or D may turn a quarter again.
-    quarter_wait: f32,
+    /// The exploration behaviour's state between ticks.
+    steering: Steering,
     /// Seconds the combat footwork keys have been held.
     held: f32,
     /// The clip the combat footwork's walk replaced, which it gives back.
@@ -166,18 +124,14 @@ pub struct PlayerBody {
 }
 
 impl PlayerBody {
-    /// A body facing `yaw`.
+    /// A body whose combat aim starts along `yaw` (its locomotion's facing
+    /// is [`Locomotion::facing`]'s).
     pub fn new(yaw: f32) -> Self {
         Self {
-            yaw,
-            heading: yaw,
             combat: false,
             aim: yaw,
             attack: AttackInput::default(),
-            run: 0.0,
-            sprint_latch: false,
-            backing: false,
-            quarter_wait: 0.0,
+            steering: Steering::default(),
             held: 0.0,
             walk_from: None,
             last_attack: None,
@@ -197,28 +151,7 @@ impl PlayerBody {
         self
     }
 
-    /// The run blend: 0 walks, 1 runs.
-    pub fn run(&self) -> f32 {
-        self.run
-    }
-
-    /// Whether Shift kept the sprint latch this tick.
-    pub fn sprint_latch(&self) -> bool {
-        self.sprint_latch
-    }
-
-    /// Whether the last steer carried it backwards.
-    pub(crate) fn backing(&self) -> bool {
-        self.backing
-    }
-
-    /// What is left of the body's turn toward its heading (rad).
-    pub fn turn_left(&self) -> f32 {
-        turn_between(self.yaw, self.heading)
-    }
-
-    /// Turns combat mode on or off, as Tab does: the footwork's direction
-    /// starts along the heading.
+    /// Turns combat mode on or off, as Tab does.
     pub fn toggle_combat(&mut self) {
         self.set_combat(!self.combat);
     }
@@ -226,10 +159,7 @@ impl PlayerBody {
     /// Turns combat mode on (as the original does at the start of every
     /// practice and arena fight) or off.
     pub fn set_combat(&mut self, on: bool) {
-        if self.combat != on {
-            self.combat = on;
-            self.aim = self.heading;
-        }
+        self.combat = on;
     }
 }
 
@@ -369,16 +299,6 @@ impl Plugin for PlayerPlugin {
     }
 }
 
-/// The yaw (model facing +Z) of a horizontal direction.
-fn yaw_of(d: Vec3) -> f32 {
-    d.x.atan2(d.z)
-}
-
-/// The horizontal direction of a yaw.
-fn forward(yaw: f32) -> Vec3 {
-    Vec3::new(yaw.sin(), 0.0, yaw.cos())
-}
-
 /// One tick of the crouch: it falls by 0.02 while above 0 (the body
 /// tick's part, first), then the Crouch key `held` while the body is not
 /// `moving`, or while it is `down`, sets it to 1.
@@ -393,43 +313,6 @@ fn crouch_tick(crouch: f32, held: bool, moving: bool, down: bool) -> f32 {
     } else {
         eased
     }
-}
-
-/// One tick of the run blend: rising by 0.05 while running, at most to
-/// `cap` (the encumbrance's run cap), else falling by 0.015.
-fn run_blend(run: f32, running: bool, cap: f32) -> f32 {
-    if running {
-        (run + RUN_RISE).min(cap)
-    } else {
-        (run - RUN_FALL).max(0.0)
-    }
-}
-
-/// The signed shortest turn from `from` to `to` (rad).
-fn turn_between(from: f32, to: f32) -> f32 {
-    (to - from + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
-}
-
-/// One tick of the body's turn toward the heading while it attacks, at
-/// `rate` (rad a tick, its swing's [`Swing::turn_rate`]) for a body of
-/// `scale`: slower over the last 0.6 rad, the step rate/√scale.
-fn attack_turn(yaw: f32, heading: f32, rate: f32, scale: f32) -> f32 {
-    let error = turn_between(yaw, heading);
-    let rate = rate * (error.abs() / TURN_EASE).min(1.0) / scale.max(f32::EPSILON).sqrt();
-    yaw + error.clamp(-rate, rate)
-}
-
-/// One tick of the body's turn toward the heading.
-fn body_turn(yaw: f32, heading: f32, keyboard: bool, speed: f32) -> f32 {
-    let error = turn_between(yaw, heading);
-    let mut rate = BODY_TURN / TICK_HZ;
-    // Slower while moving fast (speed in cm per tick), and with the keys.
-    rate *= (1.0 - 0.1 * speed * 100.0 / TICK_HZ).max(0.2);
-    if keyboard {
-        rate *= 0.9;
-    }
-    rate *= (error.abs() / TURN_EASE).min(1.0);
-    yaw + error.clamp(-rate, rate)
 }
 
 /// Camera viewport pixels per window pixel: a supersampled camera draws
@@ -478,7 +361,7 @@ fn cursor_look(
     bindings: Res<Bindings>,
     motion: Res<AccumulatedMouseMotion>,
     mut windows: Query<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
-    mut players: Query<&mut PlayerBody>,
+    mut players: Query<(&mut PlayerBody, &mut Locomotion, &mut Locomotor)>,
     mut cameras: Query<&mut ChaseCamera>,
     mut capture: ResMut<CursorCapture>,
 ) {
@@ -503,11 +386,11 @@ fn cursor_look(
         let turn = CursorLook::turn(motion.delta.x, window.width());
         if turn != 0.0 {
             let mut yaw = None;
-            for mut body in &mut players {
+            for (mut pb, mut req, mut body) in &mut players {
                 let facing = turn_between(0.0, body.yaw + turn);
                 body.yaw = facing;
-                body.heading = facing;
-                body.aim = facing;
+                req.heading = facing;
+                pb.aim = facing;
                 yaw = Some(facing);
             }
             if let Some(yaw) = yaw {
@@ -558,200 +441,153 @@ fn cursor_ground(
     }
 }
 
+/// The player's behaviour each fixed tick, before its body's tick (as the
+/// original's behaviour runs before its movement decision): Shift's sprint
+/// latch, the movement request, the cursor and the exploration steering
+/// (`crate::steering`), or in combat mode the cursor, the combat branch's
+/// part and Exarust's interim footwork; then the clip the steering starts,
+/// by the body's last movement decision. While it falls (Exarust's own) or
+/// its condition is helpless it is not steered: it asks for no move.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn steer_player(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     bindings: Res<Bindings>,
     cursor: Res<CursorGround>,
+    ticks: Option<Res<BodyTicks>>,
     physics: Res<Physics>,
     nav: Option<Res<exa_world::nav::NavGrid>>,
     motions: Option<Res<Motions>>,
-    mut players: Query<(&mut CharacterBody, &GlobalTransform, &Children), With<Player>>,
+    players: Query<(&CharacterBody, &GlobalTransform, &Children), With<Player>>,
     mut bodies: Query<(
         &mut PlayerBody,
-        &mut Transform,
+        &mut Locomotion,
+        &Locomotor,
         &mut Animator,
         &Stance,
-        Option<&Fighter>,
         Option<&Condition>,
         Has<Fallen>,
-        Option<(&SwingState, &Swing)>,
-        Option<&Ragdoll>,
     )>,
 ) {
     let dt = 1.0 / TICK_HZ;
-    for (mut body, at, children) in &mut players {
+    let now = ticks.map_or(0, |t| t.millis());
+    let held = |action| bindings.pressed(&keys, action);
+    let input = Keys {
+        w: held(Action::Forward),
+        a: held(Action::Left),
+        s: held(Action::Back),
+        d: held(Action::Right),
+        shift: held(Action::Run),
+        mouse: buttons.pressed(MouseButton::Right) && cursor.0.is_some(),
+    };
+    for (capsule, at, children) in &players {
         for child in children.iter() {
-            let Ok((
-                mut pb,
-                mut t,
-                mut anim,
-                &stance,
-                fighter,
-                condition,
-                fallen,
-                swinging,
-                ragdoll,
-            )) = bodies.get_mut(child)
+            let Ok((mut pb, mut req, body, mut anim, &stance, condition, fallen)) =
+                bodies.get_mut(child)
             else {
                 continue;
             };
+            let state = condition.copied().unwrap_or_default();
             // The crouch is kept while down, so it is set before the
             // helpless bodies are left alone.
-            let down = fallen || condition.is_some_and(|c| c.off_feet());
+            let down = fallen || state.off_feet();
             pb.crouch = crouch_tick(
                 pb.crouch,
                 bindings.pressed(&keys, Action::Crouch),
-                body.desired_velocity != Vec3::ZERO,
+                body.moving(),
                 down,
             );
             // Not steered while it falls (Exarust's own) or its condition is
             // helpless: down, getting up, collapsing, dead.
-            if fallen || condition.is_some_and(|c| c.helpless()) {
-                body.desired_velocity = Vec3::ZERO;
-                pb.sprint_latch = false;
-                pb.backing = false;
+            if fallen || state.helpless() {
+                req.moving = false;
+                req.stepping = None;
                 continue;
             }
-            let feet = at.translation();
-            let speed = body.desired_velocity.length();
+            let standing = at.translation();
+            let line = |from: Vec3, to: Vec3| {
+                line_walk(nav.as_deref(), &physics, from, to, capsule.radius)
+            };
+            let to_cursor = cursor.0.map(|c| c - standing);
+            let mut steering = pb.steering;
+            Steering::latch(&mut req, &input);
             if pb.combat {
-                pb.sprint_latch = false;
-                pb.backing = false;
-                // The body turns toward the heading, which the cursor sets;
-                // while it attacks at its swing's rate.
-                let attacking = condition.is_some_and(|c| *c == Condition::ATTACKING);
-                let progress = motions
-                    .as_deref()
-                    .and_then(|m| m.clip(&anim, &anim.action))
-                    .map(|c| anim.clip_progress(c));
-                pb.yaw = match (attacking, swinging, fighter, progress) {
-                    (true, Some((state, swing)), Some(f), Some(p)) => {
-                        let rate =
-                            swing.turn_rate(p, state.strength, f.stats.encumbrance, f.stats.scale);
-                        attack_turn(pb.yaw, pb.heading, rate, f.stats.scale)
-                    }
-                    _ => body_turn(pb.yaw, pb.heading, false, speed),
-                };
-                t.rotation = Quat::from_rotation_y(pb.yaw);
-                combat_steps(&keys, &bindings, &mut body, &mut pb, &mut anim, stance, dt);
+                steering.aim(&mut req, to_cursor, state.off_feet());
+                steering.fight(&mut req, body, standing, &line);
+                pb.steering = steering;
+                combat_steps(
+                    &keys,
+                    &bindings,
+                    &mut req,
+                    &mut pb,
+                    &mut anim,
+                    stance,
+                    body.moving(),
+                    dt,
+                );
                 continue;
             }
             pb.walk_from = None;
-            let held = |action| bindings.pressed(&keys, action);
-            let to_cursor = cursor
-                .0
-                .map(|c| c - (feet + Vec3::Y * AIM_HEIGHT))
-                .filter(|d| d.xz().length() >= CURSOR_MIN);
-            let mouse = buttons.pressed(MouseButton::Right) && to_cursor.is_some();
-            let ahead = held(Action::Forward) || mouse;
-            let back = held(Action::Back) && !mouse;
-            let steer = held(Action::Left) as i32 - held(Action::Right) as i32;
-            pb.quarter_wait = (pb.quarter_wait - dt).max(0.0);
-            let shift = held(Action::Run);
-            let mut running = shift;
-            let mut cursor_far = false;
-            if mouse && let Some(d) = to_cursor {
-                pb.heading = yaw_of(d);
-                cursor_far = d.xz().length() > CURSOR_RUN_FROM;
-                running |= cursor_far;
-            } else if ahead || back {
-                // W walks the heading; A and D steer it.
-                pb.heading += steer as f32 * STEER;
-            } else if steer != 0 && pb.quarter_wait == 0.0 {
-                // Standing: a quarter turn in place.
-                pb.heading += steer as f32 * std::f32::consts::FRAC_PI_2;
-                pb.quarter_wait = QUARTER_TURN_EVERY;
-            }
-            // What it wears weighs the run down. The sprint latch, kept
-            // only with the cursor further than 3 m, uses the tighter cap.
-            let sprint_latch = keeps_sprint_latch(shift, cursor_far);
-            let cap = fighter.map_or(1.0, |f| run_cap(f.stats.encumbrance, sprint_latch));
-            pb.run = run_blend(pb.run, running && ahead, cap);
-            pb.sprint_latch = sprint_latch;
-            let level = ragdoll
-                .and_then(|b| b.drive.as_ref())
-                .map(|d| d.balance().level())
-                .unwrap_or(0.0);
-            let feral = fighter.map_or(0.0, |f| f.stats.feral);
-            let sprinting = crate::limp::sprinting(pb.sprint_latch, level, speed * 100.0 / TICK_HZ);
-            pb.yaw = body_turn(pb.yaw, pb.heading, !mouse, speed);
-            t.rotation = Quat::from_rotation_y(pb.yaw);
-            // A reversal of more than 120° turns before walking.
-            let facing_away =
-                turn_between(pb.yaw, pb.heading).abs() > 2.0 * std::f32::consts::FRAC_PI_3;
-            let heading = forward(pb.heading);
-            let mut velocity = if ahead && !facing_away {
-                heading * forward_speed(pb.run, sprinting, feral)
-            } else if back {
-                if speed > BRAKE_ABOVE && body.desired_velocity.dot(heading) > 0.0 {
-                    Vec3::ZERO
-                } else {
-                    -heading * BACK_SPEED
-                }
-            } else {
-                Vec3::ZERO
-            };
-            // A look ahead: blocked within reach, the character stops
-            // rather than pushing into the wall or the furniture.
-            if velocity != Vec3::ZERO {
-                let dir = velocity.normalize();
-                let v = velocity.length() * 100.0 / TICK_HZ;
-                let look = if back {
-                    exa_world::nav::Look::Back
-                } else {
-                    exa_world::nav::Look::Walk
-                };
-                let reach = exa_world::nav::look_ahead(v, look).abs();
-                if look_blocked(nav.as_deref(), &physics, feet, dir, reach) {
-                    velocity = Vec3::ZERO;
-                }
-            }
-            body.desired_velocity = velocity;
-            pb.backing = velocity.dot(heading) < 0.0;
-            explore_clip(&mut anim, exploration_gait(velocity != Vec3::ZERO));
+            let segment = motions
+                .as_deref()
+                .filter(|_| GAITS.contains(&anim.action.as_str()))
+                .and_then(|m| key_segment(&anim, m));
+            steering.request(&mut req, body, &input, segment, state);
+            steering.aim(&mut req, to_cursor, state.off_feet());
+            steering.explore(&mut req, body, &input, now, standing, state, &line);
+            pb.steering = steering;
+            let gait = gait_of(body, &req, &anim.action);
+            explore_clip(&mut anim, gait);
         }
     }
 }
 
-/// A look-ahead goal blocked this near (m) stops the walk.
-const LOOK_STOP: f32 = 1.0;
-
-/// Whether the walk from `feet` along `dir` is blocked within its look-ahead
-/// `reach` (m). As the original does, the pathfinder grid is walked from the
-/// standing point toward the look-ahead goal; the walk stops at the first
-/// blocking cell (a wall, a crate, a table's legs), and a goal clamped within
-/// 100 cm stops the character. Without a grid, a ray at hip height against
-/// the level stands in.
-fn look_blocked(
+/// The look-ahead's line walk from `from` toward `to`: the navigation
+/// grid's ([`exa_world::nav::line_walk`]), which ends before the first cell
+/// that blocks; without a grid (Exarust's own) a ray from hip height over
+/// `from`, a fixed collider on the way blocking the walk and clamping the
+/// goal a capsule's `radius` and a grid cell short of it (never behind
+/// `from`). Returns the goal, clamped, and whether something blocked it.
+fn line_walk(
     nav: Option<&exa_world::nav::NavGrid>,
     physics: &Physics,
-    feet: Vec3,
-    dir: Vec3,
-    reach: f32,
-) -> bool {
-    match nav {
-        Some(grid) => {
-            let hit = exa_world::nav::line_walk(grid, feet, feet + dir * reach);
-            hit.blocked && (hit.end - feet).with_y(0.0).length() <= LOOK_STOP
-        }
-        None => physics
-            .fixed_hit(feet + Vec3::Y * HIP, dir, reach.min(LOOK_STOP))
-            .is_some(),
+    from: Vec3,
+    to: Vec3,
+    radius: f32,
+) -> (Vec3, bool) {
+    if let Some(grid) = nav {
+        let hit = exa_world::nav::line_walk(grid, from, to);
+        return (hit.end, hit.blocked);
+    }
+    let way = (to - from).with_y(0.0);
+    let length = way.length();
+    if length < 1e-4 {
+        return (to, false);
+    }
+    let dir = way / length;
+    match physics.fixed_hit(from + Vec3::Y * HIP, dir, length) {
+        Some(hit) => (from + dir * (hit - radius - GRID_CELL).max(0.0), true),
+        None => (to, false),
     }
 }
 
-/// Shift keeps the sprint latch only with the cursor further than 3 m.
-/// The walk keys spend it on a jog.
-fn keeps_sprint_latch(shift: bool, cursor_far: bool) -> bool {
-    shift && cursor_far
-}
-
-/// Forward and back both play Walk. Backing runs that clip's clock
-/// backwards. The run is an overlay on the walk.
-fn exploration_gait(moving: bool) -> Option<&'static str> {
-    if moving { Some("Walk") } else { None }
+/// The gait clip of a body by its last movement decision: none standing;
+/// braking, the gait it plays; else the walk, forward and backwards (the
+/// run is an overlay on the walk, and backing runs the walk's clock
+/// backwards).
+fn gait_of(body: &Locomotor, req: &Locomotion, playing: &str) -> Option<&'static str> {
+    if !body.moving() {
+        None
+    } else if let Some(gait) = GAITS
+        .iter()
+        .copied()
+        .find(|g| *g == playing)
+        .filter(|_| req.has(flags::BRAKE))
+    {
+        Some(gait)
+    } else {
+        Some("Walk")
+    }
 }
 
 /// The exploration steering's part in the clip, as the original's: moving,
@@ -777,19 +613,22 @@ fn explore_clip(anim: &mut Animator, gait: Option<&str>) {
 
 /// Combat footwork: W, S, A and D step along and across the cursor
 /// direction; held, they walk on. The original's footwork steps the feet
-/// and never changes the clip; Exarust's interim one plays "Combat Walk"
-/// while a key is held and gives back the clip it replaced (the stance's,
-/// if that clip was a stance) once they are released. A walk, run or
-/// backpedal of the exploration steering still playing when combat mode
-/// turned on ends in the stance, as the original's walk ends in it once
-/// the body stands.
+/// and never changes the clip; Exarust's interim one moves the capsule (the
+/// request's stepping velocity, so the body does not locomote meanwhile),
+/// plays "Combat Walk" while a key is held and gives back the clip it
+/// replaced (the stance's, if that clip was a stance) once they are
+/// released. A walk, run or backpedal of the exploration steering still
+/// playing when combat mode turned on ends in the stance once the body
+/// stands (`moving` false), as the original's walk ends in it.
+#[allow(clippy::too_many_arguments)]
 fn combat_steps(
     keys: &ButtonInput<KeyCode>,
     bindings: &Bindings,
-    body: &mut CharacterBody,
+    req: &mut Locomotion,
     pb: &mut PlayerBody,
     anim: &mut Animator,
     stance: Stance,
+    moving: bool,
     dt: f32,
 ) {
     let look = forward(pb.aim);
@@ -808,11 +647,7 @@ fn combat_steps(
     let dir = dir.normalize_or_zero();
     pb.held = if dir == Vec3::ZERO { 0.0 } else { pb.held + dt };
     let walking = dir != Vec3::ZERO && pb.held >= STEP_HOLD;
-    body.desired_velocity = if dir != Vec3::ZERO {
-        dir * WALK_SPEED
-    } else {
-        Vec3::ZERO
-    };
+    req.stepping = (dir != Vec3::ZERO).then_some(dir * FOOTWORK_SPEED);
     if !anim.looping {
         return;
     }
@@ -828,7 +663,7 @@ fn combat_steps(
             .filter(|clip| !GAITS.contains(&clip.as_str()))
             .unwrap_or_else(|| stance.action().into());
         anim.play_loop(&back);
-    } else if GAITS.contains(&anim.action.as_str()) {
+    } else if GAITS.contains(&anim.action.as_str()) && !moving {
         pb.walk_from = None;
         anim.play_loop(stance.action());
     }
@@ -927,17 +762,19 @@ fn take_player_stance(
 }
 
 /// Tab turns combat mode on or off; the stance follows (the guard or the
-/// combat idle in, Idle out).
+/// combat idle in, Idle out). The footwork's direction starts along the
+/// heading.
 fn toggle_combat(
     keys: Res<ButtonInput<KeyCode>>,
     bindings: Res<Bindings>,
-    mut bodies: Query<&mut PlayerBody>,
+    mut bodies: Query<(&mut PlayerBody, &Locomotion)>,
 ) {
     if !bindings.just_pressed(&keys, Action::ToggleCombat) {
         return;
     }
-    for mut pb in &mut bodies {
+    for (mut pb, req) in &mut bodies {
         pb.toggle_combat();
+        pb.aim = req.heading;
     }
 }
 
@@ -948,7 +785,12 @@ fn player_combat(
     cursor: Res<CursorGround>,
     look: Res<CursorLook>,
     players: Query<&GlobalTransform, With<Player>>,
-    mut bodies: Query<(&mut PlayerBody, Option<&Condition>, Has<Fallen>)>,
+    mut bodies: Query<(
+        &mut PlayerBody,
+        &mut Locomotion,
+        Option<&Condition>,
+        Has<Fallen>,
+    )>,
 ) {
     let Some(player) = players.iter().next() else {
         return;
@@ -956,7 +798,7 @@ fn player_combat(
     if look.active {
         return;
     }
-    for (mut pb, condition, fallen) in &mut bodies {
+    for (mut pb, mut req, condition, fallen) in &mut bodies {
         if fallen || condition.is_some_and(|c| c.helpless()) || !pb.combat {
             continue;
         }
@@ -967,7 +809,7 @@ fn player_combat(
             .map(yaw_of);
         if let Some(aim) = aim {
             pb.aim = aim;
-            pb.heading = combat_heading(pb.heading, aim, pb.attack.requested);
+            req.heading = combat_heading(req.heading, aim, pb.attack.requested);
         }
     }
 }
@@ -994,7 +836,7 @@ fn request_attacks(
     blades: Query<(&Blade, &GlobalTransform)>,
     mut bodies: Query<(
         Entity,
-        &mut PlayerBody,
+        (&mut PlayerBody, &mut Locomotion, &Locomotor),
         &mut Animator,
         (&mut Attacker, &mut SwingState, Option<&Swing>),
         &Stance,
@@ -1011,7 +853,7 @@ fn request_attacks(
     latch.pressed_since_tick = false;
     for (
         entity,
-        mut pb,
+        (mut pb, mut req, body_turn),
         mut anim,
         (mut attacker, mut state, swing),
         stance,
@@ -1027,7 +869,7 @@ fn request_attacks(
         // A helpless condition engages no attack (the original's 0xAC0).
         let able = !fallen && !state_now.helpless() && pb.combat;
         let weapon_class = held.map_or(class::FISTS, |h| h.weapon_class);
-        let other = other_side(pb.aim, pb.yaw, weapon_class);
+        let other = other_side(pb.aim, body_turn.yaw, weapon_class);
         pb.attack.tick(able && down, now, other);
         let swing = swing.copied().unwrap_or(Swing::FISTS);
         let base = body
@@ -1061,7 +903,7 @@ fn request_attacks(
         }
         pb.attack.thrust =
             attack::may_thrust(weapon_class) && bindings.pressed(&keys, Action::Alternate);
-        pb.heading = pb.aim;
+        req.heading = pb.aim;
         let (energy, most) = body
             .and_then(|b| b.drive.as_ref())
             .map_or((MAX_ENERGY, MAX_ENERGY), |d| (d.energy, d.max_energy()));
@@ -1099,7 +941,7 @@ fn request_attacks(
                 let ahead = blades
                     .iter()
                     .find(|(b, _)| b.wielder == entity && b.slot == Slot::First)
-                    .map(|(_, gt)| gt.up().dot(forward(pb.yaw)));
+                    .map(|(_, gt)| gt.up().dot(forward(body_turn.yaw)));
                 if !ahead.is_some_and(attack::stab_faces) {
                     continue;
                 }
@@ -1112,7 +954,7 @@ fn request_attacks(
             motion.action(),
             anim.moveset,
             anim.config,
-            turn_between(pb.yaw, pb.aim).to_degrees(),
+            turn_between(body_turn.yaw, pb.aim).to_degrees(),
             attacker
                 .last_tick_ms
                 .map_or("none".into(), |t| format!("at {t} ms")),
@@ -1422,94 +1264,9 @@ mod tests {
     #[test]
     fn steering_with_w_and_a_walks_a_circle() {
         // 0.025 rad per tick at walking speed: a circle of v / ω.
-        let radius = (WALK_SPEED / TICK_HZ) / STEER;
+        let walk = exa_physics::body::locomotion::CapsuleGaits::default().walk;
+        let radius = (walk / TICK_HZ) / crate::steering::STEER;
         assert!((radius - 0.67).abs() < 0.05, "{radius}");
-    }
-
-    /// The sprint latch uses the tighter run cap. Encumbrance 0.5 with the
-    /// cursor further than 3 m tops the blend at 0.8. The walk keys, Shift
-    /// included, stay at 0.85.
-    #[test]
-    fn a_far_cursor_tightens_the_run_cap() {
-        let mut app = App::new();
-        app.init_resource::<Time>()
-            .init_resource::<ButtonInput<KeyCode>>()
-            .init_resource::<ButtonInput<MouseButton>>()
-            .init_resource::<Bindings>()
-            .init_resource::<CursorGround>()
-            .init_resource::<Physics>()
-            .add_systems(FixedPreUpdate, steer_player);
-        let mut fighter = Fighter::default();
-        fighter.stats.encumbrance = 0.5;
-        let mut pb = PlayerBody::new(0.0);
-        pb.set_combat(false);
-        let body = app
-            .world_mut()
-            .spawn((
-                pb,
-                Transform::default(),
-                GlobalTransform::IDENTITY,
-                Animator::new("Default", "Idle"),
-                Stance::Idle,
-                fighter,
-            ))
-            .id();
-        app.world_mut()
-            .spawn((Player, CharacterBody::default(), GlobalTransform::IDENTITY))
-            .add_child(body);
-        let tick = |app: &mut App| {
-            app.world_mut().run_schedule(FixedPreUpdate);
-        };
-        app.world_mut().resource_mut::<CursorGround>().0 = Some(Vec3::new(0.0, AIM_HEIGHT, 4.0));
-        {
-            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
-            keys.press(KeyCode::ShiftLeft);
-            let mut buttons = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
-            buttons.press(MouseButton::Right);
-        }
-        for _ in 0..40 {
-            tick(&mut app);
-        }
-        let far = app.world().get::<PlayerBody>(body).unwrap();
-        assert!(far.sprint_latch);
-        assert_eq!(far.run, 0.8);
-        {
-            let mut buttons = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
-            buttons.release(MouseButton::Right);
-            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
-            keys.press(KeyCode::KeyW);
-            keys.press(KeyCode::ShiftLeft);
-        }
-        app.world_mut().resource_mut::<CursorGround>().0 = None;
-        for _ in 0..40 {
-            tick(&mut app);
-        }
-        let jog = app.world().get::<PlayerBody>(body).unwrap();
-        assert!(!jog.sprint_latch);
-        assert_eq!(jog.run, 0.85);
-    }
-
-    /// Unencumbered the run blend reaches 1 in 20 ticks; at encumbrance 0.5
-    /// it tops at 0.85; released it falls 0.015 a tick.
-    #[test]
-    fn armour_weighs_the_run_down() {
-        let run = |cap: f32| (0..40).fold(0.0, |r, _| run_blend(r, true, cap));
-        assert_eq!(run(run_cap(0.0, false)), 1.0);
-        let worn = run(run_cap(0.5, false));
-        assert_eq!(worn, 0.85);
-        assert!((run_blend(worn, false, 0.85) - 0.835).abs() < 1e-6);
-    }
-
-    #[test]
-    fn the_body_turns_toward_the_heading() {
-        let mut yaw = 0.0;
-        for _ in 0..83 {
-            yaw = body_turn(yaw, std::f32::consts::FRAC_PI_2, true, 0.0);
-        }
-        assert!((yaw - std::f32::consts::FRAC_PI_2).abs() < 0.05, "{yaw}");
-        // At most 240°/s × 0.9 in the first tick.
-        let first = body_turn(0.0, 3.0, true, 0.0);
-        assert!((first - BODY_TURN * 0.9 / TICK_HZ).abs() < 1e-4);
     }
 
     #[test]
@@ -1645,34 +1402,41 @@ mod tests {
     #[test]
     fn the_combat_walk_gives_back_the_clip_it_replaced() {
         let mut keys = ButtonInput::<KeyCode>::default();
-        let mut body = CharacterBody::default();
+        let mut req = Locomotion::default();
         let mut pb = PlayerBody::new(0.0);
         pb.set_combat(true);
         let mut anim = Animator::new("Default", "Defence stance");
         keys.press(KeyCode::KeyA);
+        let stance = Stance::CombatIdle;
         combat_steps(
             &keys,
             &Bindings::default(),
-            &mut body,
+            &mut req,
             &mut pb,
             &mut anim,
-            Stance::CombatIdle,
+            stance,
+            false,
             0.012,
         );
         assert_eq!(anim.action, "Combat Walk");
-        assert!(body.desired_velocity.x > 0.0, "{}", body.desired_velocity);
+        assert!(
+            req.stepping.is_some_and(|v| v.x > 0.0),
+            "{:?}",
+            req.stepping
+        );
         keys.release(KeyCode::KeyA);
         combat_steps(
             &keys,
             &Bindings::default(),
-            &mut body,
+            &mut req,
             &mut pb,
             &mut anim,
-            Stance::CombatIdle,
+            stance,
+            false,
             0.012,
         );
         assert_eq!(anim.action, "Defence stance");
-        assert_eq!(body.desired_velocity, Vec3::ZERO);
+        assert_eq!(req.stepping, None);
     }
 
     /// Tab pressed while walking: the exploration walk (or run, or
@@ -1681,18 +1445,32 @@ mod tests {
     #[test]
     fn an_exploration_walk_ends_in_the_stance() {
         let mut keys = ButtonInput::<KeyCode>::default();
-        let mut body = CharacterBody::default();
+        let mut req = Locomotion::default();
         let mut pb = PlayerBody::new(0.0);
         pb.set_combat(true);
+        let stance = Stance::Defence;
         for gait in ["Walk", "Run", "Backpedal"] {
             let mut anim = Animator::new("Default", gait);
+            // Still moving (stopping softly) it walks on.
             combat_steps(
                 &keys,
                 &Bindings::default(),
-                &mut body,
+                &mut req,
                 &mut pb,
                 &mut anim,
-                Stance::Defence,
+                stance,
+                true,
+                0.012,
+            );
+            assert_eq!(anim.action, gait);
+            combat_steps(
+                &keys,
+                &Bindings::default(),
+                &mut req,
+                &mut pb,
+                &mut anim,
+                stance,
+                false,
                 0.012,
             );
             assert_eq!(anim.action, "Defence stance", "{gait}");
@@ -1702,10 +1480,11 @@ mod tests {
         combat_steps(
             &keys,
             &Bindings::default(),
-            &mut body,
+            &mut req,
             &mut pb,
             &mut anim,
-            Stance::Defence,
+            stance,
+            false,
             0.012,
         );
         assert_eq!(anim.action, "Combat Walk");
@@ -1713,10 +1492,11 @@ mod tests {
         combat_steps(
             &keys,
             &Bindings::default(),
-            &mut body,
+            &mut req,
             &mut pb,
             &mut anim,
-            Stance::Defence,
+            stance,
+            false,
             0.012,
         );
         assert_eq!(anim.action, "Defence stance");
@@ -1724,18 +1504,21 @@ mod tests {
 
     /// A player carrying the torch ("Torch") in combat mode, playing
     /// `action` with `stance`, under its root, with the steering, the
-    /// stance rule and the body tick's stance part; [`behaviour_tick`]
+    /// stance rule, the body tick's stance part and its movement decision
+    /// (as the ticked character, at body tick 1000); [`behaviour_tick`]
     /// runs them as the fixed step does.
     fn steered_app(action: &str, stance: Stance) -> (App, Entity) {
         let mut app = App::new();
         app.init_resource::<Time>()
+            .insert_resource(BodyTicks(1000))
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<Bindings>()
             .init_resource::<CursorGround>()
             .init_resource::<Physics>()
             .add_plugins(exa_combat::stance::StancePlugin)
-            .add_systems(FixedPreUpdate, (steer_player, take_player_stance).chain());
+            .add_systems(FixedPreUpdate, (steer_player, take_player_stance).chain())
+            .add_systems(FixedUpdate, crate::stages::movement::decide_movement);
         let mut pb = PlayerBody::new(0.0);
         pb.set_combat(true);
         let body = app
@@ -1749,9 +1532,20 @@ mod tests {
                 Fighter::default(),
             ))
             .id();
-        app.world_mut()
-            .spawn((Player, CharacterBody::default(), GlobalTransform::IDENTITY))
-            .add_child(body);
+        let root = app
+            .world_mut()
+            .spawn((
+                Player,
+                CharacterBody::default(),
+                Transform::default(),
+                GlobalTransform::IDENTITY,
+            ))
+            .add_child(body)
+            .id();
+        app.insert_resource(exa_physics::body::TickedCharacter {
+            body,
+            character: Some(root),
+        });
         (app, body)
     }
 
@@ -1807,15 +1601,26 @@ mod tests {
         for _ in 0..90 {
             behaviour_tick(&mut app);
         }
-        let pb = app.world().get::<PlayerBody>(body).unwrap();
-        assert!((pb.heading + std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+        let req = app.world().get::<Locomotion>(body).unwrap();
+        assert!((req.heading + std::f32::consts::FRAC_PI_2).abs() < 1e-5);
         assert_eq!(clip_and_stance(&app, body).0, "Cmbt - Idle");
-        // W walks; released, the walk ends in Idle.
+        // W walks once the body tick has decided it moves; released (no
+        // walk segment to finish) it stops softly, its capsule braking (its
+        // goal never nearing here, where no controller moves it: 49 ticks
+        // from 1.687 to 0.5 cm a tick), and the walk ends in Idle once the
+        // body tick has stopped it.
         set_key(&mut app, KeyCode::KeyW, true);
+        behaviour_tick(&mut app);
+        assert_eq!(clip_and_stance(&app, body).0, "Cmbt - Idle");
         behaviour_tick(&mut app);
         assert_eq!(clip_and_stance(&app, body).0, "Walk");
         set_key(&mut app, KeyCode::KeyW, false);
-        behaviour_tick(&mut app);
+        let mut ticks = 0;
+        while clip_and_stance(&app, body).0 == "Walk" && ticks < 83 {
+            behaviour_tick(&mut app);
+            ticks += 1;
+        }
+        assert_eq!(ticks, 49);
         assert_eq!(clip_and_stance(&app, body), ("Idle".into(), Stance::Idle));
     }
 
@@ -1859,15 +1664,6 @@ mod tests {
             explore_clip(&mut anim, Some("Run"));
             assert_eq!(anim.action, "Run", "{kept}");
         }
-        assert_eq!(exploration_gait(true), Some("Walk"));
-        assert_eq!(exploration_gait(false), None);
-        assert!((forward_speed(1.0, true, 0.0) - RUN_SPEED * 472.2 / 350.0).abs() < 1e-3);
-        assert!((forward_speed(1.0, true, 1.0) - RUN_SPEED).abs() < 1e-3);
-        assert!((forward_speed(0.0, true, 0.0) - WALK_SPEED).abs() < 1e-3);
-        assert!((forward_speed(1.0, false, 0.0) - RUN_SPEED).abs() < 1e-3);
-        assert!(keeps_sprint_latch(true, true));
-        assert!(!keeps_sprint_latch(true, false));
-        assert!(!keeps_sprint_latch(false, true));
         let mut anim = Animator::new("Torch", "Cmbt - Idle");
         anim.play_once("Attack Mid", "Cmbt - Idle");
         explore_clip(&mut anim, Some("Walk"));
@@ -2222,8 +2018,8 @@ mod tests {
         assert_eq!(request_tick(&mut app, body, true).0, "Attack Combo 3");
         let a = app.world().get::<Attacker>(body).unwrap();
         assert_eq!(a.primary, Some(Slot::Second));
-        let pb = app.world().get::<PlayerBody>(body).unwrap();
-        assert_eq!(pb.heading, 25f32.to_radians());
+        let req = app.world().get::<Locomotion>(body).unwrap();
+        assert_eq!(req.heading, 25f32.to_radians());
     }
 
     /// Below 80 % of its energy (dazed) the player's request stands but

@@ -7,74 +7,130 @@ addresses, are in the git-ignored `context/re/player-control.md`.
 
 ## Movement (exploration)
 
-The original has no camera-relative keyboard movement. Outside combat:
+The original has no camera-relative keyboard movement. Every character
+moves through one **locomotion request** its behaviour writes (the
+player's keys and mouse, an NPC's AI; in Exarust the player's so far): a heading, the head's look, a flag
+word (move, backwards, run, sprint latch, brake, stopping, heading-driven,
+turn-about), whether it moves, free walk or a goal point. The body tick
+decides from it each tick (below). Outside combat:
 - **W** walks the way the character faces (its heading); neither the camera
-  nor the cursor changes the heading.
+  nor the cursor changes the heading. The walk is **free**: along the
+  facing, with no goal, so it never brakes.
 - **A / D** steer the heading by ±0.025 rad per body tick (83 Hz, about
   119°/s) while moving. With W held this walks a circle of about 0.67 m by
-  design. Standing still, A or D turns a quarter (90°), at most once a
-  second.
-- **S** backpedals. Faster than 1 cm per tick, it first brakes; it never
-  turns the character about.
+  design. Standing still, A or D turns a quarter (90°) once more than a
+  second of the game clock has passed since **any** turn key (a quarter
+  turn, or A or D steering a walk); A and D together cancel but count. An
+  object held by the left button would block it (the original's
+  interaction drag; Exarust has none yet).
+- **Releasing W** does not stop at once: the request holds until the
+  playing walk reaches key segment 0 or 4 (its keys run every 10 frames
+  from 10 to 80; segment 0 is the wrap before key 10, segment 4 the one
+  after frame 40: the cycle's two double-support moments), then stops
+  softly: its goal 8·v + 20 cm ahead (v in cm a tick: 33.5 cm at a walk),
+  where it brakes to a stop.
+- **S** backpedals; faster than 1 cm a tick it first brakes, turning the
+  brake into the backpedal once it is slower; released it also finishes
+  its stride. It never turns the character about.
 - **Right mouse** walks toward the cursor's point on the plane 80 cm above
-  the player's ground (the original's aim plane, about hip height),
-  running when it is more than 3 m away. A reversal of more than 120° turns
-  before walking. The point is found through the scene camera's own
-  viewport: with supersampling the scene is drawn into an image twice the
-  window's size, and window positions are scaled to it.
-- **Shift** runs: a run blend rises 0.05 per tick, at most to 1 − 0.3 ×
-  the character's encumbrance (what it wears and the shield it holds,
-  [formats/OTHER.md](formats/OTHER.md), Encumbrance), and falls 0.015. A
-  new character in braies runs at the full blend; in a tourney plate
+  the player's ground (the original's aim plane, about hip height): the
+  heading is whichever of the smoothed cursor direction and the facing is
+  nearer the cursor's, and a reversal of more than 120° turns before
+  walking. Beyond 3 m it runs, and the exploration's slow turn is off (the
+  body turns at 300°/s while blocked or standing). The point is found
+  through the scene camera's own viewport: with supersampling the scene is
+  drawn into an image twice the window's size, and window positions are
+  scaled to it. The cursor's direction is kept once it is 50 cm or more
+  away and smoothed by a second-order yaw follower (each tick the error,
+  at most 90°, adds 0.0157 of itself to a turn speed that keeps 0.7: it
+  settles in about a second without overshoot).
+- **Shift** sets the sprint latch every tick. With the keys the latch is
+  spent on the run bit: **W + Shift jogs and never sprints**, the pose
+  staying 0.7 of the way to the run. The right mouse beyond 3 m runs and
+  keeps the latch, so with Shift it can take the sprint row (the
+  original's, REA). The run blend rises 0.05 per tick, at most to 1 − 0.3
+  × the character's encumbrance (1 − 0.4 × with the latch; what it wears
+  and the shield it holds, [formats/OTHER.md](formats/OTHER.md),
+  Encumbrance), and falls 0.015 (or follows the speed down while braking).
+  A new character in braies runs at the full blend; in a tourney plate
   harness, helm and leggings (encumbrance 0.625) the blend stops at 0.8125
-  and the run at about 3.2 m/s instead of 3.6. With the walk keys the
-  latch is spent, so the pose stays 0.7 of the way to the run. With the
-  cursor further than 3 m the latch is kept, and once the stance level
-  is above 0.9 and the step is faster than 3.5 cm a tick the pose uses
-  the run blend itself, and the walk clip's clock blends toward the
-  feral sprint row (the sprint rate, toward the jog rate by the feral
-  level) and then slows by 1 − 0.1 × encumbrance. The capsule then moves
-  at the jog speed times the feral sprint thrust over the jog thrust.
+  and the run at about 3.2 m/s instead of 3.6. With the latch kept, once
+  the stance level is above 0.9 and the step is faster than 3.5 cm a tick
+  the pose uses the run blend itself, the walk clip's clock blends toward
+  the feral sprint row (the sprint rate, toward the jog rate by the feral
+  level) and then slows by 1 − 0.1 × encumbrance, and the capsule's run
+  end is the jog speed times the feral sprint thrust over the jog thrust.
 - **Cursor Look (V)** captures the mouse while held: the pointer and world
-  cursor are hidden, horizontal mouse motion turns the facing by
-  3.6 × Δx / window width radians per pixel (no drag needed), and the
-  camera target turns behind the new facing. Releasing restores the
-  pointer where it was. The settings screen's binding template shows
-  SPACE, but the shipped table's slot is V.
+  cursor are hidden, horizontal mouse motion turns the facing (the body's
+  yaw and the request's heading) by 3.6 × Δx / window width radians per
+  pixel (no drag needed), and the camera target turns behind the new
+  facing. Releasing restores the pointer where it was. The settings
+  screen's binding template shows SPACE, but the shipped table's slot is V.
 - **Crouch (X)** sets the crouch amount to 1 while the body is not
-  moving, or while it is down (condition bit 0x200); every tick the amount
-  first falls by 0.02 while above 0, so a held key keeps it at 1 and a
-  released one eases out over 50 ticks. There is no crouch clip: the body
-  lowers its pelvis toward 60 cm over its ground, its chest shifts 10 cm
-  back and its footwork's stance narrows. Above a crouch of 0.1 the
-  locomotion clip clock runs × (1 − 0.1·crouch) (the float crouch widened
-  to a double, so 0.1 itself already slows); above 0.5 the footwork's
-  steps are 0.7 of the step length; a crouched attacker always picks the
-  first side attack.
-- **The clips.** The steering starts the walk when the character moves,
-  forwards or back, from whatever looping clip plays, and ends it in Idle
-  when the character stops. Backing runs that walk's clock backwards at
-  the backpedal rate. It starts no other clip: what a standing
-  character plays is its stance's ([The combat stance](#the-combat-stance)),
-  so a player that turned combat mode off in Cmbt - Idle keeps it, also
-  while turning in place, until it walks. (REA: the original's exploration
-  steering reaches the clip start only through the set-stance helper.)
-- The body's yaw follows the heading at up to 240°/s, ×0.9 with the keys,
-  slower when moving fast, and eased over the last 0.6 rad. There is no
-  turn-in-place clip.
-- A look-ahead of 75 cm + 6·v² cm (v in cm per tick; 70 cm when backing)
-  stops the character in front of a wall or furniture instead of pushing
-  into it. As the original does, it walks the navigation grid from the
-  standing point toward that goal ([NAVIGATION.md](NAVIGATION.md)); the walk
-  stops at the first blocking cell, and a goal clamped within 100 cm stops
-  the character. Crates, table legs and rubble block cells as walls do.
-  Pushing into them made the character controller sweep against their
-  meshes every tick, several milliseconds each, which slowed play mode to
-  10–15 FPS. Without a grid a ray at hip height against the level stands
-  in.
-- Walking settles near 1.4 m/s; backpedalling is the walk scaled by the gait
-  table's thrusts (77.8 against 88.9). Exarust's run speed is a measured
-  guess until the jog row is simulated.
+  moving (by its last movement decision), or while it is down (condition
+  bit 0x200); every tick the amount first falls by 0.02 while above 0, so
+  a held key keeps it at 1 and a released one eases out over 50 ticks.
+  There is no crouch clip: the body lowers its pelvis toward 60 cm over its
+  ground, its chest shifts 10 cm back and its footwork's stance narrows.
+  Above a crouch of 0.1 the locomotion clip clock runs × (1 − 0.1·crouch)
+  (the float crouch widened to a double, so 0.1 itself already slows);
+  above 0.5 the body turns at 0.6 of its rate and the footwork's steps are
+  0.7 of the step length; a crouched attacker always picks the first side
+  attack.
+- **The head looks** 30 % of the way from the heading toward the smoothed
+  cursor while walking by the keys, along the heading walking by the
+  mouse; standing it eases 5 % a tick toward the heading moved 40 % toward
+  the cursor (mixed 40 % with the facing). The request carries it for the
+  head (the head's sampler comes later).
+- **The look-ahead**: 75 cm + 6·v² cm ahead along the facing (70 cm behind
+  backwards). As the original does, it walks the navigation grid from the
+  standing point toward that goal ([NAVIGATION.md](NAVIGATION.md)); the
+  walk stops before the first blocking cell (crates, table legs and rubble
+  block cells as walls do). Blocked, the walk is no longer free: it walks
+  toward the clamped goal and brakes within its stop distance; within
+  100 cm of it the run and the sprint latch are cut too. Without a grid a
+  ray from hip height stands in, its goal clamped a capsule radius and a
+  30 cm grid cell short of what it meets (Exarust's own; edges lower than
+  the hip are missed).
+- **The clips.** The steering starts the walk when the body tick has
+  decided the character moves, forwards or back, from whatever looping
+  clip plays (a braking body keeps its gait), and ends it in Idle when the
+  body tick stops it. Backing (the backpedal leg mode) runs that walk's
+  clock backwards at the backpedal rate, and the run is an overlay on the
+  walk. It starts no other clip: what a standing character plays is its
+  stance's ([The combat stance](#the-combat-stance)), so a player that
+  turned combat mode off in Cmbt - Idle keeps it, also while turning in
+  place, until it walks. (REA: the original's exploration steering reaches
+  the clip start only through the set-stance helper.)
+- **The movement decision** (every body tick, after the posture): the move
+  vector is the facing × 200 cm in free walk, else toward the goal; a
+  walking or backpedalling body brakes within its gait's stop distance
+  (50 cm walking, 200 jogging, 250 sprinting, 50 backpedalling, blended by
+  the run blend), a running one never does. A body under its most energy
+  (dazed) cannot walk, and one that stumbles walking cannot for 40 ticks.
+  A braking body slower than 1 cm a tick stops; any body stops once within
+  25 cm of its goal at no more than 0.5 cm a tick
+  ([formats/RSQ.md](formats/RSQ.md), Movement decision). The original also
+  holds a body under 0.99 balance standing or 0.9 walking; Exarust's
+  standing balance can settle under 0.99 with no recovery step to restore
+  it yet, so those gates read a steady body until it can.
+- **The body turns** toward its heading by the original's table: in free
+  walk (1 − 0.1·v)·240°/s (v in cm a tick: 201.6°/s at 1.6), standing or
+  walking to a goal in exploration 120°/s (a quarter turn: 0.84 s to 90 %
+  of it), attacking by its swing's law (below), otherwise (1 − 0.6·enc)·
+  300°/s ÷ √scale; ×0.6 crouched beyond 0.5, slower over the last 0.6 rad
+  (×|err|/0.6, so it settles onto the heading), ×0.9 moving by the keys,
+  the step ÷ √scale. There is no turn-in-place clip. How well the pelvis
+  faces the heading (the alignment, 0.4 to 1 moving, smoothed 0.97 a tick)
+  is kept for the walk's drive to come.
+- **Speeds.** Until the body walks by its carry, its capsule carries the
+  decision out (Exarust's own): walking settles near 1.4 m/s, a full run
+  3.6 m/s (a measured guess until the jog row is simulated), backpedalling
+  is the walk scaled by the gait table's thrusts (77.8 against 88.9);
+  braking it slows by the original's brake drive and limb retention and at
+  least enough to stop on its goal (a released walk stops in about 0.35 s).
+  NPCs (the duellist) still write their capsule's velocity directly
+  through their path driver, not the request.
 - Moving firms the body up: its stance factor rises 0.01 per tick from the
   race's 0.5 to 0.7 walking and 1 running (it keeps what it reached until
   the character stops), so its link muscles pull with tone × 0.7 or × 1
@@ -167,18 +223,20 @@ level shows; not in the arena hub). W, S, A and D step along and across
 the cursor's direction, and keys held longer than 200 ms walk on. The
 original's footwork steps the feet and never changes the clip; Exarust's
 interim one plays "Combat Walk" while a key is held and gives back the
-clip it replaced (the guard stays the guard) when they are released. A
-walk or run still playing when Tab turns combat mode on ends in the stance
-once the body stands, as the original's walk does. While its condition
+clip it replaced (the guard stays the guard) when they are released; its
+capsule moves meanwhile, and the body does not locomote (the original's
+footwork is steps). A walk or run under way when Tab turns combat mode on
+stops softly, as the original's combat branch stops it, and ends in the
+stance once the body stands. While its condition
 word is helpless (down, getting up, collapsing, dead) the player is not
 steered, its body does not turn and it engages no attack, as the
 original's player behaviour and body tick skip them for mask `0xAC0`.
 
 - **Facing.** The heading turns to the cursor's direction once it is more
   than 30° off it, and follows it exactly while an attack is requested
-  (the left button held). The body turns toward the heading as in
-  exploration: up to 240°/s, eased over the last 0.6 rad; while it
-  attacks, at (1 − 0.6·enc)·(1 − 0.25·progress)·B·W16·P / scale a tick
+  (the left button held). The body turns toward the heading by the
+  table: standing 300°/s (combat mode has no slow turn), eased over the
+  last 0.6 rad; while it attacks, at (1 − 0.6·enc)·(1 − 0.25·progress)·B·W16·P / scale a tick
   (B = 240°/s, W16 the primary striker's handling, P the swing strength,
   the step ÷ √scale): 192°/s at the start of a punch, 168°/s half way,
   slower with a heavier weapon and none once a stall has spent the swing.

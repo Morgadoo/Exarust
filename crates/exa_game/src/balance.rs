@@ -45,7 +45,7 @@ use exa_combat::stance::Stance;
 use exa_physics::body::{CharacterStage, CharacterTick, Fallen, Ragdoll, TickedCharacter};
 
 use crate::limp::CM;
-use crate::player::PlayerBody;
+use exa_physics::body::locomotion::{Locomotion, Locomotor};
 
 pub struct BalancePlugin;
 
@@ -352,15 +352,19 @@ fn yaw_of(d: Vec3) -> f32 {
     d.x.atan2(d.z)
 }
 
-/// Turns a body root (and the player's heading and yaw) to `d`, a heading
-/// across the ground, as the original sets its heading, yaw and stance
-/// facing; its next aim does not carry the body through the turn.
-fn turn_to(body: &mut Ragdoll, root: &mut Transform, player: Option<&mut PlayerBody>, d: Vec3) {
+/// The locomotion request and body state of a body that has them (the
+/// player's), which a turn sets.
+type Steered<'a> = Option<(&'a mut Locomotion, &'a mut Locomotor)>;
+
+/// Turns a body root (and its locomotion's heading and yaw) to `d`, a
+/// heading across the ground, as the original sets its heading, yaw and
+/// stance facing; its next aim does not carry the body through the turn.
+fn turn_to(body: &mut Ragdoll, root: &mut Transform, steered: Steered, d: Vec3) {
     let yaw = yaw_of(d);
     root.rotation = Quat::from_rotation_y(yaw);
-    if let Some(pb) = player {
-        pb.yaw = yaw;
-        pb.heading = yaw;
+    if let Some((req, l)) = steered {
+        l.yaw = yaw;
+        req.heading = yaw;
     }
     body.turned();
 }
@@ -392,7 +396,7 @@ fn start_getting_up(
     condition: &mut Condition,
     flags: StateFlags,
     root: &mut Transform,
-    player: Option<&mut PlayerBody>,
+    player: Steered,
     motions: &Motions,
     then: &str,
 ) -> Rising {
@@ -538,7 +542,7 @@ pub(crate) fn take_posture(
         &PostureBranch,
         &StateFlags,
         &mut Transform,
-        Option<&mut PlayerBody>,
+        Option<(&mut Locomotion, &mut Locomotor)>,
         Option<&Stance>,
         Has<Fallen>,
     )>,
@@ -577,7 +581,7 @@ pub(crate) fn take_posture(
                 &mut condition,
                 *flags,
                 &mut t,
-                player.as_deref_mut(),
+                player.as_mut().map(|(r, l)| (&mut **r, &mut **l)),
                 &motions,
                 then,
             ) {
@@ -648,7 +652,7 @@ fn pick_again(
         &mut Condition,
         &StateFlags,
         &mut Transform,
-        Option<&mut PlayerBody>,
+        Option<(&mut Locomotion, &mut Locomotor)>,
         Option<&Stance>,
     )>,
 ) {
@@ -674,7 +678,7 @@ fn pick_again(
         &mut condition,
         *flags,
         &mut t,
-        player.as_deref_mut(),
+        player.as_mut().map(|(r, l)| (&mut **r, &mut **l)),
         &motions,
         then,
     );
@@ -698,7 +702,7 @@ fn turn_toward_fall(
         &mut Ragdoll,
         &Condition,
         &mut Transform,
-        Option<&mut PlayerBody>,
+        Option<(&mut Locomotion, &mut Locomotor)>,
     )>,
 ) {
     let Ok((mut body, condition, mut t, player)) = bodies.get_mut(ticked.body) else {
@@ -737,7 +741,12 @@ fn turn_toward_fall(
         )
     });
     if let Some(d) = turn {
-        turn_to(&mut body, &mut t, player.map(Mut::into_inner), d);
+        turn_to(
+            &mut body,
+            &mut t,
+            player.map(|(r, l)| (r.into_inner(), l.into_inner())),
+            d,
+        );
         debug!("{:?} turns toward its fall", ticked.body);
     }
 }

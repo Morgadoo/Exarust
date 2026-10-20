@@ -60,7 +60,15 @@ a pose drive turns the pelvis, spine, head and feet toward the clip's
 orientation about each part's own origin, scaled by the support S²
 (`body::Drive`); and the carry holds the body up in place of gravity, with
 a lift servo holding its pelvis at a target height over the ground under
-its feet (`src/body_lift.rs`). The pose is put on the original's character
+its feet (`src/body_lift.rs`). A character moves through a locomotion request its
+behaviour writes (`body::locomotion::Locomotion`: heading, look, the
+original's flag word, moving, free walk, goal) and the movement decision
+its tick makes from it (`body::locomotion::decide`: the move vector, leg
+mode and brake by the stop distances, the gates, the stop within 25 cm;
+`turn_rate`/`turn`: the body turn by the original's table; `align`: the
+alignment of the pelvis with the heading; `body::locomotion::Locomotor` keeps the body's side), which
+its capsule carries out until the body walks by its carry
+(`capsule_velocity`, `CapsuleGaits`; `src/body_locomotion.rs`). The pose is put on the original's character
 frame, whose origin follows the pelvis by its rules: on the pelvis while
 moving, frozen while standing steady, behind dead-bands of 5 and 10 cm
 otherwise (`src/body_frame.rs`, `body::Drive::anchor`). The controller

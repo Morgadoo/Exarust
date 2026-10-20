@@ -50,7 +50,7 @@
 //!          --pause-after-jet <n>      pause the simulation n body ticks after the first blood jet
 //!          --pause-on-hit <n>         pause the simulation n ticks after the player's first blow lands
 //!          --pause-after-collapse <n> pause the simulation n ticks after the first killing blow starts a collapse
-//!          --press key@frame,...      press keys (Ctrl among them) or mouse buttons (LMB, RMB, MMB) at frames after
+//!          --press key@frame,...      press keys (Ctrl and Shift among them) or mouse buttons (LMB, RMB, MMB) at frames after
 //!                                     loading (e.g. `.@400,P@500,LMB@600`); `key@a-b` holds it from frame a to b
 //!          --cursor x,y               play mode: the cursor stays at this window point (logical pixels), for unattended runs
 //!          --click frame,...          click the left mouse button at frames after loading
@@ -231,8 +231,8 @@ fn usage() -> AppExit {
     AppExit::from_code(2)
 }
 
-/// The key a `--press` entry names: a letter, `.`, `[`, `]`, `Tab`, `Ctrl`
-/// or `F1`–`F12`.
+/// The key a `--press` entry names: a letter, `.`, `[`, `]`, `Tab`, `Ctrl`,
+/// `Shift` or `F1`–`F12`.
 fn key_named(name: &str) -> Option<KeyCode> {
     let fkeys = [
         KeyCode::F1,
@@ -282,6 +282,7 @@ fn key_named(name: &str) -> Option<KeyCode> {
         "]" => Some(KeyCode::BracketRight),
         "Tab" => Some(KeyCode::Tab),
         "Ctrl" => Some(KeyCode::ControlLeft),
+        "Shift" => Some(KeyCode::ShiftLeft),
         _ => {
             if let Some(n) = name.strip_prefix('F').and_then(|n| n.parse::<usize>().ok()) {
                 return n.checked_sub(1).and_then(|i| fkeys.get(i)).copied();
@@ -817,11 +818,12 @@ mod tests {
     #[test]
     fn scripted_holds_and_mouse_buttons_are_read() {
         assert_eq!(
-            parse_presses("RMB@100-400,Ctrl@50-60,LMB@7"),
+            parse_presses("RMB@100-400,Ctrl@50-60,LMB@7,Shift@10-20"),
             Some(vec![
                 (Press::Button(MouseButton::Right), 100..400),
                 (Press::Key(KeyCode::ControlLeft), 50..60),
                 (Press::Button(MouseButton::Left), 7..8),
+                (Press::Key(KeyCode::ShiftLeft), 10..20),
             ])
         );
     }

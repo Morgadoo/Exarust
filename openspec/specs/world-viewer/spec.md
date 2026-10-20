@@ -130,7 +130,7 @@ P SHALL pause and resume the fixed step (character controllers, character ticks 
 - **THEN** `p.png` shows the player's right fist on the duellist three ticks after the punch landed
 
 ### Requirement: Scripted input and camera
-`--press key@frame,...` SHALL press each key (`Ctrl` among them) or mouse button (`LMB`, `RMB`, `MMB`) at its frame counted from the end of the load and release it the frame after; `key@a-b` SHALL hold it from frame a and release it at frame b. `--click frame,...` SHALL click the left mouse button the same way. In play mode, `--camera x,y,z,yaw,pitch` SHALL place a fixed camera there instead of the chase camera, and `--cursor x,y` SHALL hold the cursor at that window point (logical pixels).
+`--press key@frame,...` SHALL press each key (`Ctrl`, `Shift` among them) or mouse button (`LMB`, `RMB`, `MMB`) at its frame counted from the end of the load and release it the frame after; `key@a-b` SHALL hold it from frame a to frame b. `--click frame,...` SHALL click the left mouse button the same way. In play mode, `--camera x,y,z,yaw,pitch` SHALL place a fixed camera there instead of the chase camera, and `--cursor x,y` SHALL hold the cursor at that window point (logical pixels).
 
 #### Scenario: Scripted steps
 - **WHEN** `exarust --pause-at-tick 300 --press .@500,.@510,.@520 character` runs
@@ -147,6 +147,10 @@ P SHALL pause and resume the fixed step (character controllers, character ticks 
 #### Scenario: Scripted run to the cursor
 - **WHEN** `exarust --press RMB@60-400 --cursor 800,120 play arena` runs
 - **THEN** from frame 60 the player runs up the screen with two amber chevrons at that window position
+
+#### Scenario: Scripted jog
+- **WHEN** `exarust --press W@100-200,Shift@100-200 play arena` runs
+- **THEN** the player jogs from frame 100
 
 ### Requirement: Still opponent
 `--still-opponent` SHALL spawn the play mode duellist as `--opponent` does, standing its ground: it SHALL face the player and take its stance, but neither walk nor strike.

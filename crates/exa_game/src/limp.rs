@@ -33,11 +33,11 @@ use exa_combat::swing::{Swing, pace_swings};
 use exa_formats::encumbrance::sprint_clock;
 use exa_formats::rsq::{BoneBody, Clip};
 use exa_physics::CharacterBody;
+use exa_physics::body::locomotion::{Locomotion, Locomotor};
 use exa_physics::body::{
     BODY_HZ, Bearing, BodyStats, Drive, GoLimp, PartSetup, Physical, RaceMuscles, Ragdoll,
 };
 
-use crate::player::PlayerBody;
 use crate::stages::CharacterTickPlugin;
 
 pub struct LimpPlugin;
@@ -216,11 +216,11 @@ fn go_limp(
 pub(crate) const CM: f32 = 100.0;
 
 /// What a body's clip clock reads besides its drive: how far its character
-/// walked in the last step (cm), the player's run blend, its swing, the
-/// rate its swing routine set this tick for an attack's clip (a
-/// fighter's), its character's armour encumbrance, whether it was getting
-/// up already when its posture stage began, its fighter's stance and
-/// whether its condition holds the clock still.
+/// walked in the last step (cm), its run blend, its swing, the rate its
+/// swing routine set this tick for an attack's clip (a fighter's), its
+/// character's armour encumbrance, whether it was getting up already when
+/// its posture stage began, its fighter's stance and whether its condition
+/// holds the clock still.
 pub(crate) struct Pace {
     pub(crate) walked: f32,
     pub(crate) run: f32,
@@ -543,36 +543,42 @@ pub(crate) fn rising(motions: &Motions, anim: &Animator, condition: Condition) -
             .is_some_and(|c| anim.clip_progress(c) < RISING_SHARE)
 }
 
-/// What a body's character does this tick, for its muscles and balance: it
-/// moves while its controller is asked to, runs by the player's run blend,
-/// strides in the walk and run cycles, is off balance while its posture
-/// stage takes an off-balance `branch` (falling, lying or getting up), gets
-/// up while its condition says so, crouches by the player's crouch, is
-/// carried while its controller stands on the ground (or it has none), and
-/// turns by what is left of the player's turn, unless its condition is
-/// helpless (the original's turn is skipped then, its error zeroed); it
-/// walks and is off its feet as its condition says. Its gait floor is
+/// What a body's character does this tick, for its muscles and balance: a
+/// character with a locomotion request moves by its last movement decision
+/// (or while it steps in Exarust's interim footwork), runs by its run blend
+/// and turns by what is left of its turn toward its heading, unless its
+/// condition is helpless (the original's turn is skipped then, its error
+/// zeroed); the movement stage refreshes these after this tick's decision.
+/// Another moves while its controller is asked to. It strides in the walk
+/// and run cycles, is off balance while its posture stage takes an
+/// off-balance `branch` (falling, lying or getting up), gets up while its
+/// condition says so, crouches by `crouch` (the player's), is carried while
+/// its controller stands on the ground (or it has none). Its gait floor is
 /// measured by the character tick while it moves, its clip's progress by
 /// the posture stage.
 pub(crate) fn bearing(
     controller: Option<&CharacterBody>,
-    player: Option<&PlayerBody>,
+    locomotion: Option<(&Locomotion, &Locomotor)>,
+    crouch: f32,
     anim: &Animator,
     branch: Branch,
     condition: Condition,
 ) -> Bearing {
     let getting_up = condition == Condition::GETTING_UP;
     Bearing {
-        moving: controller.is_some_and(|c| c.desired_velocity != Vec3::ZERO),
-        run: player.map_or(0.0, PlayerBody::run),
+        moving: match locomotion {
+            Some((req, body)) => body.moving() || req.stepping.is_some(),
+            None => controller.is_some_and(|c| c.desired_velocity != Vec3::ZERO),
+        },
+        run: locomotion.map_or(0.0, |(_, body)| body.run),
         striding: matches!(anim.action.as_str(), "Walk" | "Run"),
         off_balance: getting_up || matches!(branch, Branch::Falling | Branch::LyingStill),
         getting_up,
         rising: false,
-        crouch: player.map_or(0.0, PlayerBody::crouch),
+        crouch,
         carried: controller.is_none_or(|c| c.grounded),
-        turn: match player {
-            Some(p) if !condition.helpless() => p.turn_left(),
+        turn: match locomotion {
+            Some((req, body)) if !condition.helpless() => req.turn_left(body),
             _ => 0.0,
         },
         gait_floor: None,
@@ -1082,17 +1088,18 @@ pub(crate) mod tests {
         assert!((crouch_clock(1.0) - 0.9).abs() < 1e-6);
         assert!((crouch_clock(0.5) - 0.95).abs() < 1e-6);
         let anim = Animator::new("Default", "Idle");
-        let player = PlayerBody::new(0.0).crouching(0.75);
+        let crouch = crate::player::PlayerBody::new(0.0).crouching(0.75).crouch();
         let b = bearing(
             None,
-            Some(&player),
+            None,
+            crouch,
             &anim,
             Branch::Standing,
             Condition::NORMAL,
         );
         assert_eq!(b.crouch, 0.75);
         assert_eq!(
-            bearing(None, None, &anim, Branch::Standing, Condition::NORMAL).crouch,
+            bearing(None, None, 0.0, &anim, Branch::Standing, Condition::NORMAL).crouch,
             0.0
         );
     }
@@ -1104,7 +1111,7 @@ pub(crate) mod tests {
     #[test]
     fn the_bearing_reads_the_posture_stage() {
         let anim = Animator::new("Default", "Idle");
-        let of = |branch, condition| bearing(None, None, &anim, branch, condition);
+        let of = |branch, condition| bearing(None, None, 0.0, &anim, branch, condition);
         for branch in [Branch::Falling, Branch::LyingStill] {
             let b = of(branch, Condition::DOWN);
             assert!(b.off_balance && !b.getting_up, "{branch:?}");

@@ -311,7 +311,7 @@ The system SHALL advance a living physical body's clip clock by the original's r
 - **THEN** only its ticks advance the clock
 
 ### Requirement: Body trace
-`exarust --trace <file.csv>` SHALL write one row per traced body (the player's, else every character body, no prop's) a tick: the retail probe's columns (pelvis particles; heights, tone, energy, support, balance, counter; part targets; foot contacts; motion, clock), then Exarust's (sleep countdown and state, frame origin, body root, clip blend, hold, rate, progress, end flag, ankles, condition word; swing rate, strength, state word). Lengths cm, clock frames, words hex; empty if unsimulated.
+`exarust --trace <file.csv>` SHALL write a row per traced body (the player's, else every character body, no prop's) a tick: the retail probe's columns, then Exarust's (sleep, frame, root, blend, hold, rate, progress, end flag, ankles, condition; swing rate, strength, word; locomotion flags, moving, free walk, yaw, heading, turn rate, alignment, speed, reach, stop). Lengths cm, words hex; empty if unsimulated.
 
 #### Scenario: Standing in the arena
 - **WHEN** `exarust --trace t.csv play arena` runs for a minute
@@ -328,6 +328,10 @@ The system SHALL advance a living physical body's clip clock by the original's r
 #### Scenario: The idle clock's columns
 - **WHEN** a standing body's trace runs through its Idle clip's wrap
 - **THEN** every row's `rate` is 0.6, its `progress` the clock over the last key, and `clip_end` is 1 on the wrap's row alone
+
+#### Scenario: Walking and stopping
+- **WHEN** `exarust --trace t.csv --press W@100-250 play arena` runs
+- **THEN** the rows show `moving` with flags `0x40` at 1.687 cm a tick, then the soft stop's `0x70` and the stop reason `braked`, then `standing`
 
 ### Requirement: Race body parameters
 The system SHALL decode, for every record of the installed `races.rdb`, the body parameters the original reads: the clip-rate base, support-pin factor, size, scale, mass divisor, balance bonus, stance factor, arm relaxation, limb damping ratio, and four gait rows (walk, jog, sprint, backpedal) of thrust, push scale, brake distance (the loader's 0.5, 2, 2.5, 0.5 m), clip rate and boost speed. A missing race SHALL get the original's fallback: every factor 1.0 and gaits with no push.
@@ -835,7 +839,7 @@ While a living body collapses its frame SHALL follow its pelvis exactly every ti
 - **THEN** its frame's origin follows it the same tick, at any balance and support
 
 ### Requirement: Character tick stages
-Each living body's character tick SHALL run nine stages in the original's order (upkeep, readiness, anchor, behaviour, posture, attack, movement, sampler, carry) and finish them before the next body's tick starts. Its work SHALL sit in them: red regeneration (upkeep); the condition, dying tick, falls, get-ups and fall check (posture); swing, health (attack); balance and ground (movement); the clip (sampler); targets and lift (carry). A body that dies in its posture stage SHALL skip the rest.
+Each living body's character tick SHALL run nine stages in the original's order (upkeep, readiness, anchor, behaviour, posture, attack, movement, sampler, carry), finishing them before the next body's starts. Its work SHALL sit in them: regeneration (upkeep); condition, dying tick, falls, get-ups, fall check (posture); swing, health (attack); movement decision and turn, balance, ground (movement); the clip (sampler); targets, lift (carry). A body dying in its posture stage SHALL skip the rest.
 
 #### Scenario: One character after another
 - **WHEN** two characters tick

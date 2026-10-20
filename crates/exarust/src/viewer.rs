@@ -711,6 +711,7 @@ fn spawn_players(
             Transform::from_rotation(Quat::from_rotation_y(yaw)),
             exa_anim::Animator::new("Default", "Idle"),
             exa_game::player::PlayerBody::new(yaw),
+            exa_physics::body::locomotion::Locomotion::facing(yaw),
             exa_character::Outfit::of_models(&options.outfit),
             ChildOf(player),
         ));

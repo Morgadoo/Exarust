@@ -31,6 +31,7 @@ pub mod session;
 pub mod shell_draw;
 pub mod sim_control;
 pub mod stages;
+pub mod steering;
 pub mod thaum;
 pub mod torch;
 pub mod trace;
