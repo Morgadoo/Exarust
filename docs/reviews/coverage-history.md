@@ -70,3 +70,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-20 | 8edd364 | dirty | 22.7% | 5.7% | 18.6% | 27.3% | arm the opponents |
 | 2026-10-20 | dcdae31 | clean | 22.7% | 5.7% | 18.6% | 27.3% | record the opponent weapons |
 | 2026-10-20 | 59c5d01 | dirty | 22.8% | 5.7% | 18.6% | 27.3% | paint the main menu |
+| 2026-10-20 | 84d441d | clean | 22.8% | 5.7% | 18.6% | 27.3% | record the main menu paint |
