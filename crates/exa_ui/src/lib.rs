@@ -15,8 +15,11 @@ pub mod fade;
 pub mod font;
 pub mod form;
 pub mod fps;
+pub mod gui_font;
+pub mod gui_glyphs;
 pub mod heartbeat;
 pub mod hud;
+pub mod icon_atlas;
 pub mod loading;
 pub mod match_board;
 pub mod menu;
@@ -24,6 +27,8 @@ pub mod scale;
 pub mod settings;
 pub mod skill;
 pub mod skin;
+pub mod text_box;
+pub mod text_layout;
 
 use bevy::prelude::*;
 
