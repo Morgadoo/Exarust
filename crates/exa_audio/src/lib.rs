@@ -13,7 +13,7 @@ mod music;
 use bevy::prelude::*;
 
 pub use bank::{SoundBank, SoundSet};
-pub use music::{LevelMusic, music_for_level};
+pub use music::{LevelMusic, StoryMusic, music_for_level, story_music, story_music_changes};
 
 pub struct AudioPlugin;
 

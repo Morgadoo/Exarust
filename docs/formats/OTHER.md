@@ -292,6 +292,32 @@ Not yet painted: wood, bronze, gemstone and resin finishes
 (drawn plain), pattern opacity textures, and per-instance appearances
 (randomised items, wear on characters).
 
+### Trade fields
+
+What a shop and the story's item discovery read of a record
+(`exa_formats::trade_record`), offsets in section bodies, the first
+section of each tag counting. Established by REA on the shop's stock
+update, its rank helper and the story's pickup hook; a field past its
+section's end reads as zero.
+
+| section | offset | field |
+|---|---|---|
+| `0x10000000` | `0x10` | listing word: bit `0x2` keeps the item out of every stock |
+| `0x10000000` | `0x14` | parent id: the source item of a level-local copy (a shop shuns items whose copies it holds) |
+| `0x00100000` | `0x00` | model name: a stocked item needs a non-empty one |
+| `0x00100000` | `0x10` | flags: bits `0x70` are the rarity tier 0..7, which prices a new kind's discovery at 10, 20, 50, 100, 200, 500, 1000 or 2000 points |
+| `0x00100000` | `0x1D` | rarity in hundredths: a shop weighs the item by `s = 1 − rarity/100` |
+| `0x00100000` | `0x20`, `0x24` | two words a stocked item needs non-zero [guess: the icon's size] |
+| `0x1000` | `0x1AB` | rank in the top three bits (apparel) |
+| `0x4000` | `0x42` | rank in the top three bits (a weapon without a body) |
+| `0x8000` | `0x08` | rank in the top three bits (a shield with neither) |
+
+The rank is read from the body, else the weapon section, else the shield
+section, else 0. A shop's new apparel copy rewrites its body's condition
+byte at `0x1A9` (low two bits kept, `round(|31q|)` in bits 2..6, bit 7
+for a negative quality `q`), and the appearance bytes at `0x1B1` (damage,
+0x40), `0x1B2` (dirt, 0x35) and `0x1B3` (5 in bits 3..5, 3 in bits 6..7).
+
 ## Door and operative sections
 
 Status: **verified** for the fields below (REA on the original's door,

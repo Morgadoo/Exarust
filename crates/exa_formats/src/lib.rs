@@ -32,6 +32,7 @@ pub mod save_package;
 pub mod settings_ini;
 pub mod settings_store;
 pub mod terrain;
+pub mod trade_record;
 pub mod weapon_record;
 pub mod weapon_stats;
 

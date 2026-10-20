@@ -39,6 +39,11 @@
 //! the six standard matches and the seven specials, fee on entry, prize on
 //! a win, the experience pool `(tier/4 + 1) · template · damage share`).
 
+use exa_formats::characters::Skill;
+
+use crate::experience;
+use crate::trade::{self, ShopWorld, StockReport, Transaction};
+
 /// Copper in one silver, and silver in one gold.
 pub const COIN: u32 = 12;
 /// Copper a new career starts with.
@@ -321,6 +326,8 @@ pub struct Company {
     pub tournaments_won: u32,
     /// Specialists who died before a match. The session save does not store this.
     pub deaths: u32,
+    /// The shop's shelf, oldest first. The session save does not store this.
+    pub stock: Vec<u32>,
 }
 
 /// Copper one shop line is worth, before a sale quarters the basket.
@@ -361,6 +368,7 @@ impl Company {
             reward_ids: Vec::new(),
             tournaments_won: 0,
             deaths: 0,
+            stock: Vec::new(),
         }
     }
 
@@ -383,6 +391,33 @@ impl Company {
             self.earned = self.earned.saturating_add(got);
         }
         true
+    }
+
+    /// Rotate the shop's shelf (`trade::update_stock`): `kinds` 0 asks
+    /// apparel, weapons and shields, `rank` −1 any rank.
+    pub fn restock(
+        &mut self,
+        kinds: u32,
+        rank: i32,
+        rolls: [u32; 2],
+        world: &mut impl ShopWorld,
+    ) -> StockReport {
+        trade::update_stock(&mut self.stock, kinds, rank, rolls, world)
+    }
+
+    /// Apply a confirmed trade (`trade::settle`) through coin dwords: the
+    /// copper due leaves the purse, none left below 1, and the two tallies
+    /// add to the copper spent and earned [guess: which tally is which].
+    /// The items sold join the shelf and the items bought leave it.
+    pub fn settle(&mut self, trade: &Transaction) -> Vec<(usize, usize)> {
+        let pack = |copper: u32| trade::add_coins(0, copper as i32);
+        let mut money = pack(self.copper);
+        let mut tallies = [pack(self.spent), pack(self.earned)];
+        let duplicates = trade::settle(&mut money, &mut tallies, &mut self.stock, trade);
+        self.copper = trade::coins_value(money) as u32;
+        self.spent = trade::coins_value(tallies[0]) as u32;
+        self.earned = trade::coins_value(tallies[1]) as u32;
+        duplicates
     }
 
     /// Confirm the two baskets. A buy is the sum of the line prices. A sale
@@ -736,39 +771,24 @@ fn skill_level(word: u16) -> u32 {
 }
 
 /// One lesson. The first skill under level 5 whose technique at that level
-/// the trainer knows gains 1000 divided by one plus the six levels. A sum
-/// that reaches a new multiple of 5000 snaps to it.
+/// the trainer knows gains 1000 divided by one plus the six levels, the
+/// story's skill lump (`experience::add_skill_lump`). A sum that reaches a
+/// new multiple of 5000 snaps to it.
 fn teach(student: &mut Member, trainer: &Member) {
-    let Some(skill) = (0..student.skill_xp.len()).find(|&index| {
-        let level = skill_level(student.skill_xp[index]);
-        level < TRAINED_LEVEL && student.techniques[index][level as usize] != 0
-    }) else {
+    let mut skills = std::array::from_fn(|index| Skill {
+        points: student.skill_xp[index],
+        techniques: student.techniques[index],
+    });
+    let Some((skill, next)) = experience::training_skill(&skills) else {
         return;
     };
-    let level = skill_level(student.skill_xp[skill]);
-    let technique = student.techniques[skill][level as usize];
+    let technique = student.techniques[skill][next as usize - 1];
     let known = skill_level(trainer.skill_xp[skill]) as usize;
     if known == 0 || !trainer.techniques[skill][..known.min(6)].contains(&technique) {
         return;
     }
-    let rank = 1 + student
-        .skill_xp
-        .iter()
-        .copied()
-        .map(skill_level)
-        .sum::<u32>();
-    if rank > LESSON {
-        return;
-    }
-    let grant = (LESSON / rank).min(u32::from(SKILL_STEP));
-    let before = skill_level(student.skill_xp[skill]);
-    let summed = student.skill_xp[skill].wrapping_add(grant as u16);
-    let after = skill_level(summed);
-    student.skill_xp[skill] = if before < after {
-        (after * u32::from(SKILL_STEP)) as u16
-    } else {
-        summed
-    };
+    experience::add_skill_lump(&mut skills, LESSON as i32);
+    student.skill_xp = skills.map(|s| s.points);
 }
 
 fn rested(health: u16, physician: bool) -> u16 {
@@ -1385,6 +1405,33 @@ mod tests {
         assert_eq!(company.won, 1);
         assert_eq!(company.earned, 12);
         assert_eq!(company.roster[0].xp, 1000 + 750);
+    }
+
+    /// 343 copper paying 100 leaves 243; the tallies add 100 spent and 0
+    /// earned. The sold item joins the shelf and the bought one leaves it.
+    /// A due above the purse empties it.
+    #[test]
+    fn a_settled_trade_moves_the_purse_and_the_shelf() {
+        let mut company = Company::new("Ash");
+        company.stock = vec![5, 6];
+        let trade = Transaction {
+            due: 100,
+            tallies: [100, 0],
+            sold: vec![7],
+            bought: vec![5],
+        };
+        assert!(company.settle(&trade).is_empty());
+        assert_eq!(
+            (company.copper, company.spent, company.earned),
+            (243, 100, 0)
+        );
+        assert_eq!(company.stock, [6, 7]);
+        let broke = Transaction {
+            due: 500,
+            ..Transaction::default()
+        };
+        company.settle(&broke);
+        assert_eq!(company.copper, 0);
     }
 
     #[test]

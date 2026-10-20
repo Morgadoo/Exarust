@@ -12,6 +12,7 @@ pub mod create;
 pub mod cursor;
 pub mod drag;
 pub mod emblem;
+pub mod experience;
 pub mod fall;
 pub mod hud;
 pub mod item_container;
@@ -32,6 +33,7 @@ pub mod stages;
 pub mod thaum;
 pub mod torch;
 pub mod trace;
+pub mod trade;
 
 use bevy::prelude::*;
 

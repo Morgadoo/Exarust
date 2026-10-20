@@ -7,7 +7,8 @@ Audio: PCM sound playback, positional 3D sound, reverb environments, footstep/im
 One module per kind of sound, so each change adds its sounds as a module:
 `bank` (sounds decoded by name, and the one picker every event uses to
 choose a variant of a numbered sound set, `SoundSet`: its prefix and 01 to
-its count, as the original names them), `music` (the level's track),
+its count, as the original names them), `music` (the level's track; a story level's track, volume, ambience and
+preset by the bytes of its name, and whether entering it changes the music),
 `hits` (a sword impact and a grunt at a hit), `footsteps` (steps by speed).
 
 ## Scope

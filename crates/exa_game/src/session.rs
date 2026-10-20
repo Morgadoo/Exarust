@@ -195,6 +195,7 @@ pub fn read(bytes: &[u8]) -> Result<Session, SaveError> {
             reward_ids,
             tournaments_won,
             deaths: 0,
+            stock: Vec::new(),
         },
         focus,
     })
