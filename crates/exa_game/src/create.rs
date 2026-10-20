@@ -1108,6 +1108,54 @@ pub fn select_creation_index(wanted: i32, current: i32) -> CreationPage {
     }
 }
 
+/// A creation table selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationTable {
+    pub index: i32,
+    pub applied: bool,
+}
+
+/// Selects the source index less one in the table.
+pub fn select_creation_table(index: i32) -> CreationTable {
+    CreationTable {
+        index: index - 1,
+        applied: true,
+    }
+}
+
+/// A started creation session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationSessionStart {
+    pub value: i32,
+    pub scheduled: bool,
+    pub cleared: bool,
+}
+
+/// Starts the creation session with its value.
+pub fn start_creation_session(value: i32) -> CreationSessionStart {
+    CreationSessionStart {
+        value,
+        scheduled: true,
+        cleared: true,
+    }
+}
+
+/// The creation menu's chosen call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreationDispatch {
+    Alternate,
+    Primary,
+}
+
+/// Takes the alternate call when the byte is set, else the primary call.
+pub fn dispatch_creation_menu(alternate: bool) -> CreationDispatch {
+    if alternate {
+        CreationDispatch::Alternate
+    } else {
+        CreationDispatch::Primary
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1862,5 +1910,20 @@ mod tests {
         assert_eq!(same.mode, 0);
         assert_eq!(same.index, 2);
         assert!(!same.refreshed);
+    }
+
+    #[test]
+    fn the_creation_session_selects_and_dispatches() {
+        let table = select_creation_table(4);
+        assert_eq!(table.index, 3);
+        assert!(table.applied);
+
+        let session = start_creation_session(13);
+        assert_eq!(session.value, 13);
+        assert!(session.scheduled);
+        assert!(session.cleared);
+
+        assert_eq!(dispatch_creation_menu(true), CreationDispatch::Alternate);
+        assert_eq!(dispatch_creation_menu(false), CreationDispatch::Primary);
     }
 }
