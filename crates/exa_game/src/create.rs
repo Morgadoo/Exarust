@@ -436,6 +436,33 @@ pub fn has_creation_part(node: &PartNode) -> bool {
     node.children.iter().any(has_creation_part)
 }
 
+/// What selecting a creation frame did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationFrame {
+    pub changed: bool,
+    pub current: i32,
+    pub part_found: bool,
+    pub refreshed: bool,
+}
+
+/// Selects the requested frame one lower.
+pub fn select_creation_frame(requested: i32, current: i32, part_found: bool) -> CreationFrame {
+    if requested < 1 || current == requested - 1 {
+        return CreationFrame {
+            changed: false,
+            current,
+            part_found: false,
+            refreshed: false,
+        };
+    }
+    CreationFrame {
+        changed: true,
+        current: requested - 1,
+        part_found,
+        refreshed: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -778,5 +805,24 @@ mod tests {
             children: Vec::new(),
         };
         assert!(!has_creation_part(&empty));
+    }
+
+    #[test]
+    fn the_creation_frame_follows_the_request() {
+        let changed = select_creation_frame(3, 5, true);
+        assert!(changed.changed);
+        assert_eq!(changed.current, 2);
+        assert!(changed.part_found);
+        assert!(changed.refreshed);
+
+        let same = select_creation_frame(3, 2, true);
+        assert!(!same.changed);
+        assert_eq!(same.current, 2);
+        assert!(!same.part_found);
+        assert!(!same.refreshed);
+
+        let none = select_creation_frame(0, 5, true);
+        assert!(!none.changed);
+        assert_eq!(none.current, 5);
     }
 }
