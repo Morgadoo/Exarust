@@ -9,11 +9,13 @@ use bevy::image::{CompressedImageFormatSupport, CompressedImageFormats};
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use exa_formats::material::{Material, TextureSlot};
-use exa_formats::rfc::{Mesh as RfcMesh, NodeBody, Scene};
+use exa_formats::rfc::{Mesh as RfcMesh, Node, NodeBody, Scene};
 use exa_formats::rfi::Rfi;
 use exa_formats::rsq::bone_index;
 use exa_rpk::{Archive, GameData, PackKind};
 
+use crate::mesh_edit::material_split_flags;
+use crate::mesh_smooth::smooth_mesh;
 use crate::morph::{BuiltMorph, JobMorph, MorphCache, model_key};
 use crate::paint::{
     Encoding, PaintLayer, Painted, Texels, layer_material, library, normal_library, paint,
@@ -188,6 +190,48 @@ impl ModelLoader<'_> {
         model
     }
 
+    /// The model of `entry` with every mesh smoothed as the original's
+    /// mesh-smoothing pass does it ([`crate::mesh_smooth::smooth_mesh`]):
+    /// what its character-creation scene does to the hair it shows, and
+    /// its `msm` debug command to every mesh of a scene. Cached apart from
+    /// the plain model.
+    pub fn smoothed_model(&mut self, pack: PackKind, entry: &str) -> Option<Arc<Model>> {
+        let key = format!("{}#smooth", model_key(pack, entry));
+        if let Some(cached) = self.cache.models.get(&key) {
+            return cached.clone();
+        }
+        let model = self.model_job(pack, entry).map(|mut job| {
+            job.smooth = Some(self.split_flags(&job.scene));
+            let built = job.build(bevy::tasks::ComputeTaskPool::try_get());
+            Arc::new(self.assemble(built))
+        });
+        self.cache.models.insert(key, model.clone());
+        model
+    }
+
+    /// The split flags of every mesh node's groups, from their materials
+    /// (the file's own, else the libraries'; none for run-time names).
+    fn split_flags(&self, scene: &Scene) -> Vec<Vec<u32>> {
+        scene
+            .nodes
+            .iter()
+            .map(|node| match &node.body {
+                NodeBody::Mesh(mesh) => mesh
+                    .groups
+                    .iter()
+                    .map(|g| {
+                        scene
+                            .material(&g.material)
+                            .cloned()
+                            .or_else(|| library_material(self.game, &g.material))
+                            .map_or(0, |m| material_split_flags(&m))
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            })
+            .collect()
+    }
+
     /// Loads the materials of a model, and so their textures, until
     /// `deadline`, without building the model; `true` once they are all
     /// loaded (or the model cannot be). A model with many textures takes a
@@ -282,6 +326,7 @@ impl ModelLoader<'_> {
             scene,
             body,
             morph: None,
+            smooth: None,
         })
     }
 
@@ -883,6 +928,9 @@ pub struct ModelJob {
     scene: Scene,
     body: HashMap<u16, Arc<Vec<(Vec3, VertexSkin)>>>,
     pub(crate) morph: Option<JobMorph>,
+    /// Smooth every mesh node first, with these split flags per node's
+    /// groups ([`ModelLoader::smoothed_model`]).
+    smooth: Option<Vec<Vec<u32>>>,
 }
 
 /// A model's meshes, built and not yet added as assets
@@ -914,7 +962,13 @@ impl ModelJob {
             mut scene,
             body,
             morph,
+            smooth,
         } = self;
+        if let Some(flags) = &smooth {
+            for (node, flags) in scene.nodes.iter_mut().zip(flags) {
+                smooth_node(node, flags);
+            }
+        }
         let body_model = pack == PackKind::Resource && is_body_model(&entry);
         let skinned = pack == PackKind::Characters || body_model;
         let skins_of = |scene: &Scene| -> Vec<Option<(u16, Vec<VertexSkin>)>> {
@@ -960,6 +1014,32 @@ impl ModelJob {
             nodes,
             morph,
         }
+    }
+}
+
+/// Smooths a mesh node in place and refits its bounds; a mesh that cannot
+/// be smoothed is left as it is, with the original's warnings.
+fn smooth_node(node: &mut Node, flags: &[u32]) {
+    let NodeBody::Mesh(mesh) = &mut node.body else {
+        return;
+    };
+    match smooth_mesh(mesh, flags) {
+        Ok(Some(smoothed)) => {
+            if smoothed.degenerate_faces > 0 {
+                warn!(
+                    "Meshsmooth: {} degenerate faces found in {}",
+                    smoothed.degenerate_faces, node.name
+                );
+            }
+            if let Some((centre, half, radius)) = smoothed.bounds {
+                node.bounds_centre = centre;
+                node.bounds_half_extents = half;
+                node.bounds_radius = radius;
+            }
+            **mesh = smoothed.mesh;
+        }
+        Ok(None) => warn!("MeshSmooth: {} has too many faces to subdivide", node.name),
+        Err(e) => warn!("MeshSmooth: {}: {e}", node.name),
     }
 }
 

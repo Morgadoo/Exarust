@@ -5,12 +5,16 @@
 //! ([`model`]), each cached by name.
 
 pub mod human_skin;
+pub mod mesh_edit;
+pub mod mesh_smooth;
 pub mod model;
 pub mod morph;
 pub mod morph_controller;
 pub mod paint;
+pub mod polyhedra;
 pub mod skin;
 pub mod texture;
+pub mod vertex_cache;
 pub mod weapon;
 
 use std::sync::Arc;

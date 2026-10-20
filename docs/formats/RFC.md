@@ -150,7 +150,7 @@ chunk 0x3DC0 topology:
     u32 triangles - 1
     index[3 × triangles]                  into unified vertices
     per group: u32 first_triangle, u32 last_triangle   (empty group: last = first - 1)
-    sub-chunks: 0x3DC2 u8[triangles], 0x3DC3 u32[triangles]   (not decoded)
+    sub-chunks: 0x3DC2 u8[triangles] edge bits, 0x3DC3 u32[triangles] flags
 ```
 
 The render flags are copied onto the original's mesh node as the body is
@@ -201,6 +201,95 @@ drawn nor built.
 
 Textures pair with texture coordinates unchanged when images keep their
 stored (bottom-up) row order.
+
+## Editable meshes
+
+Status: **verified** by REA on the original's mesh-smoothing unit, its mesh
+tools (render-form conversion, smoothing groups, vertex-cache order) and the
+mesh helpers that revert a mesh to editable form; implemented in
+`exa_assets::mesh_edit`, `mesh_smooth` and `vertex_cache` and checked on
+synthetic meshes (`cargo test -p exa_assets`; `shipped_hair_smooths`, run with
+`--ignored` and the game installed, smooths every mesh of `CharExt.rpk`).
+
+The stored body is the render form. To edit a mesh the original turns every
+index map into a channel holding one element per triangle corner (a channel
+keeps its map's key: `0x10001` positions, `0x10010` texture coordinates, `0x2`
+smoothing). Streams keep their elements. A stream id with bit `0x4000000`
+(the colour and skin streams) shares its channel with the first stream on
+it; format bits `0xF0` (texture coordinates) mark an interpolated stream,
+and a channel key without them is subdivided by index only.
+
+- **Incidence.** Each position element lists its corners, the last corner
+  of the mesh first (the corners hang in a ring after the element's head).
+- **Smoothing groups.** With triangle flags (`0x3DC3`), their low 16 bits are
+  smoothing-group bits. At each position element, a seed corner's bits are
+  merged with every corner's bits that share one, until nothing grows; the
+  corners sharing a bit with the result form a group, moved together in
+  the incidence (swapped into place, keeping their order), and the next
+  remaining corner seeds the next group. A face without bits is a group of
+  its own. Without flags the smoothing channel's values group the corners.
+- **Render form.** The groups are split by material group, then, in
+  groups whose material has a texture (any slot but the reflection map),
+  by texture coordinate element, and in groups with a normal map by the
+  winding of the face's texture (mirrored when
+  (c.v − a.v)(b.u − a.u) − (c.u − a.u)(b.v − a.v) < 0, from the last
+  texture stream). Each run is a unified vertex, numbered group by group
+  and run by run; the smoothing map is rewritten with the group numbers.
+- **Vertex-cache order** (skipped with render flag `0x2000000` or fewer than
+  two faces). Group by group the faces are drawn greedily: the next is the
+  unprocessed face with the highest score sum, else the head of the group's
+  list sorted (merge sort, ties in order) by the starting scores. A vertex
+  scores 2·n^−½ for its n remaining faces, plus 0.75 for the three newest
+  places of a 32-entry cache and (1 − (k − 3)/29)^1.5 for place k after them;
+  both curves are the original's fast logarithm and exponential
+  (polynomials on the float bits). Render flag `0x1000000` then sorts each
+  group's faces by their flags' low 28 bits (middle-pivot quicksort).
+  Vertices are renumbered by first use; per-face flags and edge bits move
+  with their faces.
+
+### Subdivision
+
+The original's MeshSmooth (Loop subdivision, sharpness 0 in every use;
+the character-creation scene smooths the hair it shows, a debug command a
+whole scene) refuses a mesh whose faces ×4 would pass 65 535.
+
+1. Rebuild the smoothing channel from the triangle flags (when there are
+   flags and no smoothing groups were worked out before); it goes last.
+2. **Creases.** Each edge is visited from its first face. Its corners are
+   the face's and those of every face found across it (the other way round,
+   or the same way round on a flipped neighbour). The edge is smooth when
+   every corner has a partner whose smoothing groups at the two ends are
+   its own swapped; otherwise all of them mark it a crease and both ends
+   count a crease. An edge with one face is a crease. A point's weight is
+   the sharpness on fewer than three creases, else 1.
+3. **Edge points**, appended in face and edge order (an edge's first face
+   makes it): crease edges, and edges between two points on three or more
+   creases, take a + (b − a)/2; others (3 + w_a)/8·a + (3 + w_b)/8·b plus
+   (2 − w_a − w_b)/8 of the opposite points shared out.
+4. Channels without values get a new index per edge, shared by faces
+   agreeing on both ends.
+5. **Texture coordinates**, per interpolated stream: seams are the position
+   creases plus edges with one face or whose faces disagree on the
+   coordinate at either end. Edge points as above inside each coordinate
+   island; when the two opposite coordinates lie on the same side of the
+   edge the texture folds there: the edge becomes a seam and takes the mean
+   opposite coordinate projected onto it instead.
+6. Streams sharing a channel take its new count; colours become white.
+7. **Texture vertex points.** A point's coordinates are its first corner's
+   and, if different, its last corner's (the original's scan keeps only the
+   last match). On fewer than two seams a coordinate keeps 1 − β(1 − w) of
+   itself and shares β(1 − w) among its faces' previous corners (β = 3/8,
+   3/16 with three faces); on two it goes (1 + w)/2 of the way to itself from
+   the mean of its two seam edge points; else it stays. A coordinate already
+   moved for another point that now lands more than 1e-3 away is split off.
+8. **Position vertex points**: the same rules with the position creases;
+   three or more creases keep the point.
+9. Every face becomes its three corner faces then its middle one, group by
+   group. Triangle flags are copied to the four; edge bits too, the middle
+   face's turned by one edge ((b & 3) << 1 | b >> 2 & 1).
+
+Afterwards the node's box and sphere are refitted from every position: the
+box's centre, half extents of at least 0.001 cm, and the farthest position.
 
 ## Rigid body (`3DD0B001`)
 

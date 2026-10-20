@@ -26,3 +26,17 @@ before skinning; the body's parts are skinned on the morphed shape, a
 garment from the unmorphed body. Weights that change nothing, and races
 without a morph body, return the shared model. See
 [`docs/formats/RFC.md`](../../docs/formats/RFC.md) (Morph sets).
+
+Mesh editing (pure, no Bevy types): `mesh_edit::EditMesh` is a decoded
+mesh in the original's editable form (one element index per corner and
+channel, the corners of each position element in an `Incidence`), and
+`EditMesh::render` converts it back to render form as the original does:
+smoothing groups from the triangle flags, runs split by material, texture
+seams and mirrored texture winding, then the vertex-cache order of
+`vertex_cache` (bit-exact fast logarithm and exponential). `mesh_smooth`
+is the original's Loop subdivision (creases, texture folds, weights and
+output order as the original's); `ModelLoader::smoothed_model` smooths
+every mesh node of a model and refits its bounds (`exarust model … --msm`).
+`polyhedra` builds the icosahedron, its cap and their subdivisions for the
+effect shells. See [`docs/formats/RFC.md`](../../docs/formats/RFC.md)
+(Editable meshes).

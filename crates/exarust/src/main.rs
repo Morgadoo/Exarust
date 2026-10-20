@@ -23,6 +23,8 @@
 //!          --ev <ev100>               camera exposure (default 6, lower is brighter)
 //!          --all-rooms                tile-grid levels: show every room (no black for rooms the player cannot see)
 //!          --limp                     character view: the body goes limp and falls
+//!          --msm                      model view: every mesh smoothed once, as the original's `msm` debug
+//!                                     command and its character-creation hair are (Loop subdivision)
 //!          --race <n>                 character view: the body of race n (a character record's race byte)
 //!          --physique x,y[,h,a,f,w]   character view and the player: the body (and its apparel) morphed by this
 //!                                     physique (two physique values, height, age, feral level, female if w ≠ 0)
@@ -145,6 +147,9 @@ pub struct Options {
     pub autowalk: bool,
     /// Character view: let the body go limp and fall.
     pub limp: bool,
+    /// Model view: smooth every mesh once, as the original's `msm` debug
+    /// command smooths a scene.
+    pub msm: bool,
     /// Character view: the body of this race (character race byte).
     pub race: Option<u8>,
     /// Character view and the player: the physique the body (and its
@@ -367,6 +372,7 @@ fn main() -> AppExit {
             "--screenshot" => options.screenshot = args.next().map(PathBuf::from),
             "--all-rooms" => options.all_rooms = true,
             "--limp" => options.limp = true,
+            "--msm" => options.msm = true,
             "--no-shadows" => options.no_shadows = true,
             "--no-gi" => options.gi.enabled = false,
             "--no-supersample" => options.no_supersample = true,

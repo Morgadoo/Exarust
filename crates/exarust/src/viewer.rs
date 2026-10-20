@@ -129,7 +129,11 @@ fn setup(
             error!("level {name} not found in Resource.rpk");
         }
         View::Model { pack, entry } => match PackKind::from_name(pack) {
-            Some(kind) => match loader.model(kind, entry) {
+            Some(kind) => match if options.msm {
+                loader.smoothed_model(kind, entry)
+            } else {
+                loader.model(kind, entry)
+            } {
                 Some(m) => {
                     exa_world::spawn_model(&mut commands, &m, Some(Transform::IDENTITY));
                     commands.spawn((

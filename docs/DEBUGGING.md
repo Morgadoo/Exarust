@@ -65,6 +65,7 @@ it takes the ring's other slot.
 | `--still-opponent` | `--opponent`, but the duellist stands its ground: it faces the player and takes its stance (by its distance, [PLAYER.md](PLAYER.md), The combat stance) but never walks or strikes; with `--at` it shows the stances at a chosen distance |
 | `--debug-wound bone,radius_cm[,dx,dy,dz]` | a test wound on the player's or the character view's body ([Wounds](#wounds)); repeatable |
 | `--debug-nav` | start with the navigation grid drawn ([Navigation grid](#navigation-grid)) |
+| `--msm` | in the model view, every mesh smoothed once as the original's `msm` debug command smooths a scene (Loop subdivision, [formats/RFC.md](formats/RFC.md), Editable meshes), e.g. `exarust model CharExt "hair hula01" --msm` for the hair the creation scene smooths; warns of meshes with too many faces |
 | `--weapon-blood <a>` | the player's or the character view's held weapon holds blood a (0 to 1) from the start, so its stain shows without a fight ([Wounds](#wounds)) |
 | `--debug-spray bone,R[,dx,dy,dz]` | a blood jet from the player's or the character view's body part every second, as a bleeding blow of size R swinging along d would spray ([Wounds](#wounds)); repeatable |
 | `--physique x,y[,h,a,f,w]` | the character view's body (or the player's) and its apparel morphed by this physique: the two physique values, then height, age and feral level (0 when left out) and female when w is not 0 ([Physique](#physique)) |

@@ -1180,6 +1180,11 @@ scene:
 The inventory and trade dolls light the body differently (a sun of sRGB
 0.75 grey × 3, ambient 0.5, no floor); they are not shown yet.
 
+The creation scene also smooths the hair it shows (one Loop subdivision,
+[formats/RFC.md](formats/RFC.md), Editable meshes); Exarust shows no hair
+yet. `exarust model <pack> <entry> --msm` shows any model smoothed that way,
+as the original's `msm` debug command smooths a scene.
+
 ## Procedural noise
 
 The original generates its noise images on the CPU from one linear
@@ -1223,6 +1228,16 @@ its target, +0.05 per second up and −0.1 down, and snaps within
 16 ms do nothing. Exarust takes the sine from the standard library, so it
 may differ from the original's by an ulp. The field is modelled; the
 powers do not draw it yet.
+
+## Effect shells
+
+The bubble and force-bubble effects are unit icosahedra (poles at ±y, two
+rings of five at latitude ±atan ½, the lower turned by 36°), the force
+barrier the icosahedron's five-face top cap, each subdivided three times:
+every edge's midpoint pushed out to unit length, every face split into its
+three corner faces then its middle one (1 280 faces and 642 points for the
+bubble). The subdivided cap counts 4n − 6 points, more than it makes.
+`exa_assets::polyhedra` builds them; the effects are not drawn yet.
 
 ## Not done yet
 
