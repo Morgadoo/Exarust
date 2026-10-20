@@ -990,6 +990,87 @@ pub fn build_morph_data(base: [f32; 3], rest: &[[f32; 3]], parts: Vec<MorphPartD
     }
 }
 
+impl MorphData {
+    /// Serializes the blob little-endian: the magic, the size, the base,
+    /// the rest points, the part count, then each part's pivot and deltas.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.size);
+        out.extend_from_slice(&self.magic.to_le_bytes());
+        out.extend_from_slice(&(self.size as u32).to_le_bytes());
+        for value in self.base {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        for point in &self.rest {
+            for value in point {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        out.extend_from_slice(&(self.parts.len() as u32).to_le_bytes());
+        for part in &self.parts {
+            for value in part.pivot {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+            for delta in &part.deltas {
+                for value in delta {
+                    out.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+        }
+        out
+    }
+
+    /// Parses a blob for an owner with `verts` vertices. The magic and the
+    /// size must agree with the bytes and the vertex count.
+    pub fn from_bytes(bytes: &[u8], verts: usize) -> Option<MorphData> {
+        let magic = u32::from_le_bytes(bytes.get(0..4)?.try_into().ok()?);
+        let size = u32::from_le_bytes(bytes.get(4..8)?.try_into().ok()?) as usize;
+        if magic != MORPH_MAGIC || size != bytes.len() {
+            return None;
+        }
+        let unit = 12 * (verts + 1);
+        let total = bytes.len().checked_sub(12)?;
+        if unit == 0 || total % unit != 0 {
+            return None;
+        }
+        let parts = (total / unit).checked_sub(1)?;
+        let mut cursor = 8;
+        let read_vec3 = |cursor: &mut usize| -> Option<[f32; 3]> {
+            let mut value = [0.0f32; 3];
+            for slot in &mut value {
+                *slot = f32::from_le_bytes(bytes.get(*cursor..*cursor + 4)?.try_into().ok()?);
+                *cursor += 4;
+            }
+            Some(value)
+        };
+        let base = read_vec3(&mut cursor)?;
+        let mut rest = Vec::with_capacity(verts);
+        for _ in 0..verts {
+            rest.push(read_vec3(&mut cursor)?);
+        }
+        let count = u32::from_le_bytes(bytes.get(cursor..cursor + 4)?.try_into().ok()?) as usize;
+        cursor += 4;
+        if count != parts {
+            return None;
+        }
+        let mut built = Vec::with_capacity(parts);
+        for _ in 0..parts {
+            let pivot = read_vec3(&mut cursor)?;
+            let mut deltas = Vec::with_capacity(verts);
+            for _ in 0..verts {
+                deltas.push(read_vec3(&mut cursor)?);
+            }
+            built.push(MorphPartData { pivot, deltas });
+        }
+        (cursor == bytes.len()).then_some(MorphData {
+            magic,
+            size,
+            base,
+            rest,
+            parts: built,
+        })
+    }
+}
+
 /// One vertex's delta: the barycentric triangle point minus the part's
 /// pivot, rotated by the owner's three rows.
 pub fn morph_delta(
@@ -1044,6 +1125,28 @@ mod cook_tests {
         assert_eq!(data.size, 84);
         assert_eq!(data.parts.len(), 1);
         assert_eq!(data.rest.len(), 2);
+    }
+
+    #[test]
+    fn the_blob_round_trips_through_its_bytes() {
+        let data = build_morph_data(
+            [1.0, 2.0, 3.0],
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            vec![MorphPartData {
+                pivot: [0.5, 0.0, 0.0],
+                deltas: vec![[0.1, 0.0, 0.0], [0.2, 0.0, 0.0]],
+            }],
+        );
+        let bytes = data.to_bytes();
+        assert_eq!(bytes.len(), 84);
+        assert_eq!(&bytes[0..4], &[0x89, 0xC5, 0xC0, 0xED]);
+        assert_eq!(&bytes[4..8], &84u32.to_le_bytes());
+        assert_eq!(MorphData::from_bytes(&bytes, 2), Some(data));
+
+        let mut bad = bytes.clone();
+        bad[0] = 0;
+        assert_eq!(MorphData::from_bytes(&bad, 2), None);
+        assert_eq!(MorphData::from_bytes(&bytes, 3), None);
     }
 }
 
