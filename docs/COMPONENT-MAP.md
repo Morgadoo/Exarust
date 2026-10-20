@@ -5,8 +5,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **19.0% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 16.0% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **19.6% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by function count (zero-byte imported names left out): 16.4% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **27.3%** reproduced.
 
 ## By section
@@ -22,7 +22,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Characters, motion & animation | 506 | 198 | 23 | 33% | 0% | Equipment effects and focus-item slot (RFE_Effects_Electricity by address), Golem guardians and alarm zones (RFE_Effects_Electricity by address), TCharDecomp2 |
 | Combat, weapons & damage | 14 | 3 | 3 | 31% | 0% | RFE_Effects_Blood, TBloodSprays |
 | Items, materials & crafting | 341 | 140 | 40 | 17% | 0% | TGUIItemContainer, Item description phrases, SG_ItemGUI |
-| AI & behaviour | 437 | 206 | 17 | 14% | 0% | TMotileAI, SG_PlayerControls, TAISearchActivity |
+| AI & behaviour | 437 | 206 | 17 | 21% | 0% | TAISearchActivity, Character roles & relations (script functions), SG_CharacterAI |
 | Thaumaturgy & effects | 697 | 296 | 83 | 4% | 0% | TThaumTree, TForceBlastEffect, TForceTorrentEffect |
 | Audio | 59 | 18 | 4 | 28% | 0% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 0% | 0% | RFG_Dialogue, FG_AIFunctions, RFG_Scripts |
@@ -54,8 +54,8 @@ Ordered by code size; these are where most of the original still has no counterp
 | component | section | functions | KB | coverage |
 |---|---|---:|---:|---:|
 | XA_Arena | Game modes, arena & session | 219 | 71 | 5% |
-| TMotileAI | AI & behaviour | 85 | 60 | 2% |
-| SG_PlayerControls | AI & behaviour | 122 | 47 | 3% |
+| TMotileAI | AI & behaviour | 85 | 60 | 18% |
+| SG_PlayerControls | AI & behaviour | 122 | 47 | 8% |
 | TThaumTree | Thaumaturgy & effects | 76 | 38 | 0% |
 | XA_SaveGames | Game modes, arena & session | 96 | 27 | 5% |
 | TGUIItemContainer | Items, materials & crafting | 44 | 26 | 0% |
