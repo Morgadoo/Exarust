@@ -1,7 +1,8 @@
 # item-effects Specification
 
 ## Purpose
-TBD - created by archiving change model-the-effect-ticks. Update Purpose after archive.
+Tracks the character's active item effects: each held or worn item's tick,
+its charge, and the glow it drives.
 
 ## Requirements
 
