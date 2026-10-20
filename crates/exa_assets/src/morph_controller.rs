@@ -2,11 +2,13 @@
 //!
 //! Setup stores the target's count and allocates and copies its two arrays.
 //! The nearest update replaces the best point only when a new distance is
-//! strictly closer. The vertex apply deforms each vertex's offset by the
-//! 3 × 3 basis its three morph points form, subtracts the controller's
-//! base, applies the owner's orientation and adds the vertex's base.
-//! Evidence: the 100-byte `0x1000db620`, the 66-byte `0x1000de0b0` and the
-//! 448-byte `0x1000dd3c0`.
+//! strictly closer. The basis solver projects a query onto a control
+//! triangle's plane and returns its barycentric weights. The vertex apply
+//! deforms each vertex's offset by the 3 × 3 basis its three morph points
+//! form, subtracts the controller's base, applies the owner's orientation
+//! and adds the vertex's base. Evidence: the 100-byte `0x1000db620`, the
+//! 66-byte `0x1000de0b0`, the 767-byte `0x1000dd580` and the 448-byte
+//! `0x1000dd3c0`.
 
 /// A morph controller's opening.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -582,5 +584,87 @@ mod apply_tests {
             }],
         );
         assert_eq!(out, vec![[-4.0, 1.0, 0.0]]);
+    }
+}
+
+/// A morph control triangle: the stored normal and its three points.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MorphControl {
+    pub normal: [f32; 3],
+    pub points: [[f32; 3]; 3],
+}
+
+/// Solves the morph basis: projects the query point onto the control
+/// triangle's plane through its first point along the stored normal, then
+/// returns the triangle's barycentric weights. The branch is chosen by the
+/// absolute x sum against the absolute y sum, and the third weight is one
+/// minus the other two.
+pub fn morph_barycentric(control: &MorphControl, query: [f32; 3]) -> [f32; 3] {
+    let [p0, p1, p2] = control.points;
+    let n = control.normal;
+
+    // Move to the first point, remove the normal component, move back.
+    let mut s = [query[0] - p0[0], query[1] - p0[1], query[2] - p0[2]];
+    let dot = (s[0] * n[0] + s[2] * n[2]) + s[1] * n[1];
+    s = [s[0] - n[0] * dot, s[1] - n[1] * dot, s[2] - n[2] * dot];
+    s = [s[0] + p0[0], s[1] + p0[1], s[2] + p0[2]];
+
+    let x0 = p0[0] - p2[0];
+    let x1 = p1[0] - p2[0];
+    let x2 = p2[0] - s[0];
+    let y0 = p0[1] - p2[1];
+    let y1 = p1[1] - p2[1];
+    let y2 = p2[1] - s[1];
+    let z0 = p0[2] - p2[2];
+    let z1 = p1[2] - p2[2];
+    let z2 = p2[2] - s[2];
+
+    let (u, v) = if (x0 + x1).abs() < (y0 + y1).abs() {
+        let den = (x1 + z1) * y0 - (x0 + z0) * y1;
+        let num = (x2 + z2) * y1 - y2 * (x1 + z1);
+        let u = num / den;
+        let den2 = (x0 + z0) * y1 - (x1 + z1) * y0;
+        let num2 = (x2 + z2) * y0 - y2 * (x0 + z0);
+        (u, num2 / den2)
+    } else {
+        let den = x0 * (y1 + z1) - (y0 + z0) * x1;
+        let num = (y2 + z2) * x1 - x2 * (y1 + z1);
+        let u = num / den;
+        let den2 = x1 * (y0 + z0) - (y1 + z1) * x0;
+        let num2 = (y2 + z2) * x0 - x2 * (y0 + z0);
+        (u, num2 / den2)
+    };
+
+    [u, v, 1.0 - u - v]
+}
+
+#[cfg(test)]
+mod basis_tests {
+    use super::*;
+
+    #[test]
+    fn the_basis_returns_barycentric_weights() {
+        let control = MorphControl {
+            normal: [0.0, 0.0, 1.0],
+            points: [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        };
+        let at_p0 = morph_barycentric(&control, [0.0, 0.0, 0.0]);
+        assert_eq!(at_p0, [1.0, 0.0, 0.0]);
+        let at_p1 = morph_barycentric(&control, [1.0, 0.0, 0.0]);
+        assert_eq!(at_p1, [0.0, 1.0, 0.0]);
+        let inside = morph_barycentric(&control, [0.25, 0.25, 5.0]);
+        assert_eq!(inside, [0.5, 0.25, 0.25]);
+    }
+
+    #[test]
+    fn the_second_branch_solves_the_other_extent() {
+        let control = MorphControl {
+            normal: [0.0, 1.0, 0.0],
+            points: [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [1.0, 0.0, 1.0]],
+        };
+        let weights = morph_barycentric(&control, [0.5, 5.0, 0.25]);
+        assert!((weights[0] - 0.625).abs() < 1e-6);
+        assert!((weights[1] - 0.125).abs() < 1e-6);
+        assert!((weights[2] - 0.25).abs() < 1e-6);
     }
 }
