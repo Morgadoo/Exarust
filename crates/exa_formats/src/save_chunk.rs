@@ -116,6 +116,19 @@ pub fn write_save_records(records: &[SaveRecord]) -> SaveRecordTable {
     }
 }
 
+/// Formats a save number as a zero-padded three-character decimal.
+pub fn format_save_number(value: i32) -> String {
+    if value <= 0 {
+        return "000".to_string();
+    }
+    let text = value.to_string();
+    if text.len() >= 3 {
+        text
+    } else {
+        format!("{text:0>3}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,5 +188,15 @@ mod tests {
         let table = write_save_records(&records);
         assert_eq!(table.count, 2);
         assert_eq!(table.records, records);
+    }
+
+    #[test]
+    fn the_save_number_is_padded_to_three_digits() {
+        assert_eq!(format_save_number(0), "000");
+        assert_eq!(format_save_number(5), "005");
+        assert_eq!(format_save_number(12), "012");
+        assert_eq!(format_save_number(123), "123");
+        assert_eq!(format_save_number(1234), "1234");
+        assert_eq!(format_save_number(-7), "000");
     }
 }
