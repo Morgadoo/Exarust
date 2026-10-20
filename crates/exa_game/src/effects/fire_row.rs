@@ -112,6 +112,19 @@ pub const LIGHT_EXTRA_TWO: u32 = 1;
 /// least one.
 pub const LOD_BASE: f32 = 200.0;
 
+/// A row's fade also drives the attached item's emissive sub-object: the
+/// first whose material name starts with `*`, whose emissive amount is set
+/// and whose material flag is raised.
+pub const EMISSIVE_PREFIX: char = '*';
+pub const EMISSIVE_FLAG: u32 = 0x10;
+
+/// The index of the first emissive sub-object, if the item has one.
+pub fn emissive_part(names: &[&str]) -> Option<usize> {
+    names
+        .iter()
+        .position(|name| name.starts_with(EMISSIVE_PREFIX))
+}
+
 /// The shader's two colours.
 pub const ELE_COLOUR: [f32; 3] = [0.65, 0.4, 1.0];
 pub const EDGE_COLOUR: [f32; 3] = [0.08, 0.14, 0.2];
@@ -810,6 +823,9 @@ mod tests {
         assert_eq!(SIZZLE_VOLUME, 0.3);
         assert_eq!(LOOP_SOUND, "FireS02");
         assert_eq!(MATERIAL, "_FlameMat01");
+        assert_eq!(emissive_part(&["steel", "*glow", "*other"]), Some(1));
+        assert_eq!(emissive_part(&["steel"]), None);
+        assert_eq!(EMISSIVE_FLAG, 0x10);
         assert_eq!(ELE_COLOUR, [0.65, 0.4, 1.0]);
         assert_eq!(EDGE_COLOUR, [0.08, 0.14, 0.2]);
         assert_eq!(section_count(), 16);
