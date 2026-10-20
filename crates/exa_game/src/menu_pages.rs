@@ -340,3 +340,130 @@ mod geometry_tests {
         assert_eq!(hit_row(1080, 0.38, 1.0, 70, 6, 900), None);
     }
 }
+
+/// What activating a row asks the menu to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuAction {
+    Begin,
+    Continue,
+    NewGame,
+    NewCareer,
+    Practice,
+    Versus,
+    Arena,
+    Manual,
+    Settings,
+    Exit,
+    Back,
+    Forfeit,
+    Novice,
+    Expert,
+}
+
+impl RowKind {
+    /// The action this row's kind performs.
+    pub fn action(self) -> MenuAction {
+        match self {
+            RowKind::Begin => MenuAction::Begin,
+            RowKind::Continue => MenuAction::Continue,
+            RowKind::Arena => MenuAction::Arena,
+            RowKind::Manual => MenuAction::Manual,
+            RowKind::Settings => MenuAction::Settings,
+            RowKind::Exit => MenuAction::Exit,
+            RowKind::NewCareer => MenuAction::NewCareer,
+            RowKind::Practice => MenuAction::Practice,
+            RowKind::Versus => MenuAction::Versus,
+            RowKind::Back => MenuAction::Back,
+            RowKind::NewGame => MenuAction::NewGame,
+            RowKind::Forfeit => MenuAction::Forfeit,
+            RowKind::Novice => MenuAction::Novice,
+            RowKind::Expert => MenuAction::Expert,
+        }
+    }
+}
+
+/// A page's selection, stored as a row index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MenuState {
+    pub page: Page,
+    pub selected: usize,
+}
+
+impl MenuState {
+    /// Starts on the page's first row.
+    pub fn new(page: Page) -> Self {
+        Self { page, selected: 0 }
+    }
+
+    /// Moves the selection by `delta`, clamped to the row range.
+    pub fn move_selection(&mut self, delta: i32, state: PageState) {
+        let count = page_rows(self.page, state).len() as i32;
+        if count == 0 {
+            self.selected = 0;
+            return;
+        }
+        self.selected = (self.selected as i32 + delta).clamp(0, count - 1) as usize;
+    }
+
+    /// The action of the selected row, or `None` when it is disabled.
+    pub fn activate(&self, state: PageState) -> Option<MenuAction> {
+        let rows = page_rows(self.page, state);
+        let row = rows.get(self.selected)?;
+        if !row.enabled {
+            return None;
+        }
+        Some(row.kind.action())
+    }
+}
+
+#[cfg(test)]
+mod action_tests {
+    use super::*;
+
+    #[test]
+    fn the_title_selection_clamps() {
+        let mut menu = MenuState::new(Page::Title);
+        let state = PageState::default();
+        assert_eq!(menu.selected, 0);
+        menu.move_selection(1, state);
+        assert_eq!(menu.selected, 1);
+        menu.move_selection(-1, state);
+        assert_eq!(menu.selected, 0);
+        menu.move_selection(-1, state);
+        assert_eq!(menu.selected, 0);
+        menu.move_selection(99, state);
+        assert_eq!(menu.selected, 5);
+    }
+
+    #[test]
+    fn a_disabled_row_does_not_activate() {
+        let mut menu = MenuState::new(Page::Title);
+        menu.move_selection(1, PageState::default());
+        assert_eq!(menu.activate(PageState::default()), None);
+        assert_eq!(
+            menu.activate(PageState {
+                has_save: true,
+                ..Default::default()
+            }),
+            Some(MenuAction::Continue)
+        );
+    }
+
+    #[test]
+    fn the_page_actions() {
+        let state = PageState {
+            arena: true,
+            novice: true,
+            ..Default::default()
+        };
+        let start = page_rows(Page::Start, state);
+        assert_eq!(start[0].kind.action(), MenuAction::NewCareer);
+        assert_eq!(start[3].kind.action(), MenuAction::Versus);
+        assert_eq!(start[4].kind.action(), MenuAction::Back);
+        let class = page_rows(Page::ClassSelect, state);
+        assert_eq!(class[0].kind.action(), MenuAction::Novice);
+        assert_eq!(class[1].kind.action(), MenuAction::Expert);
+        let game = page_rows(Page::InGame, PageState::default());
+        assert_eq!(game[0].kind.action(), MenuAction::NewGame);
+    }
+}

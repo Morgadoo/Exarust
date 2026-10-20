@@ -51,3 +51,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-20 | 42fd6cd | clean | 22.2% | 5.7% | 18.2% | 27.3% | record the main menu geometry |
 | 2026-10-20 | 1c22571 | dirty | 22.3% | 5.7% | 18.3% | 27.3% | route the motile dispatch |
 | 2026-10-20 | 686dedd | clean | 22.3% | 5.7% | 18.3% | 27.3% | record the motile dispatch |
+| 2026-10-20 | b3b3044 | dirty | 22.3% | 5.7% | 18.3% | 27.3% | steer the main menu |
