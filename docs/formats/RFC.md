@@ -447,9 +447,9 @@ weights to garments through the same mapping (not ported).
 **Controller** (`exa_assets::morph_controller`): setup, the nearest-point
 update, the barycentric basis, the blends, the vertex apply and the start
 that binds each owner vertex to its nearest control candidate. Evidence:
-the retail controller's methods at `0x1000db620` (100 bytes),
-`0x1000de0b0` (66), `0x1000dd580` (767), `0x1000dd880` (893),
-`0x1000da330` (680) and `0x1000dd3c0` (448).
+the retail controller's six methods (setup, nearest-point update, basis,
+blends, vertex apply and start), reverse engineered from `Exanima.exe`;
+their addresses are in the research notes.
 
 ## Light node (`3D06`)
 

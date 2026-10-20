@@ -76,3 +76,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-20 | ec5f470 | dirty | 22.8% | 5.7% | 18.7% | 27.3% | package the saves |
 | 2026-10-20 | e9cb2a0 | clean | 22.8% | 5.7% | 18.7% | 27.3% | record the save package |
 | 2026-10-20 | a545424 | dirty | 22.9% | 5.7% | 18.9% | 27.3% | bind the controls |
+| 2026-10-21 | f1bebbd7 | dirty | 24.5% | 5.7% | 20.8% | 27.3% | bounding sphere, RFC writer, settings, experience and trade, image noise and pixel formats |
