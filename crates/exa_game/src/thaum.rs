@@ -1118,6 +1118,60 @@ pub fn release_wave(reach: f32, radius: f32, speed: f32) -> WaveFront {
     }
 }
 
+/// The tree close's calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TreeClose {
+    pub global_cleared: bool,
+    pub reset_calls: u32,
+    pub byte_cleared: bool,
+    pub base_calls: u32,
+}
+
+/// Clears the tree globals and runs the reset and base.
+pub fn close_tree() -> TreeClose {
+    TreeClose {
+        global_cleared: true,
+        reset_calls: 1,
+        byte_cleared: true,
+        base_calls: 1,
+    }
+}
+
+/// The tree show's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TreeShowInput {
+    pub focus_count: i32,
+    pub global_word: u32,
+    pub pane_word: u32,
+    pub clock: u32,
+    pub offset: i32,
+    pub value_1bc: u32,
+}
+
+/// The tree show's calls and stores.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TreeShow {
+    pub focus_word: Option<u32>,
+    pub focus_calls: u32,
+    pub refresh_calls: u32,
+    pub flags_or: u8,
+    pub stamp: u32,
+    pub stored: u32,
+}
+
+/// Drives the tree's focus, refresh, stamp and stored value.
+pub fn show_tree(input: TreeShowInput) -> TreeShow {
+    let focus_word = (input.focus_count > 0).then_some((input.global_word & 7) | 0x800);
+    TreeShow {
+        focus_word,
+        focus_calls: u32::from(focus_word.is_some()),
+        refresh_calls: u32::from((input.pane_word & 0x20) != 0),
+        flags_or: 2,
+        stamp: input.clock.wrapping_add(input.offset as u32),
+        stored: input.value_1bc,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1878,5 +1932,42 @@ mod tests {
         assert!((spend_factor(0x10205) - 2.0).abs() < 1e-6);
         assert!((spend_factor(0x602) - 1.0).abs() < 1e-6);
         assert!((spend_factor(0x10601) - 80.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_tree_closes_and_shows() {
+        let closed = close_tree();
+        assert!(closed.global_cleared);
+        assert_eq!(closed.reset_calls, 1);
+        assert!(closed.byte_cleared);
+        assert_eq!(closed.base_calls, 1);
+
+        let shown = show_tree(TreeShowInput {
+            focus_count: 1,
+            global_word: 0xf,
+            pane_word: 0x20,
+            clock: 1000,
+            offset: 250,
+            value_1bc: 7,
+        });
+        assert_eq!(shown.focus_word, Some(0x807));
+        assert_eq!(shown.focus_calls, 1);
+        assert_eq!(shown.refresh_calls, 1);
+        assert_eq!(shown.flags_or, 2);
+        assert_eq!(shown.stamp, 1250);
+        assert_eq!(shown.stored, 7);
+
+        let quiet = show_tree(TreeShowInput {
+            focus_count: 0,
+            global_word: 0xf,
+            pane_word: 0,
+            clock: 10,
+            offset: 5,
+            value_1bc: 1,
+        });
+        assert_eq!(quiet.focus_word, None);
+        assert_eq!(quiet.focus_calls, 0);
+        assert_eq!(quiet.refresh_calls, 0);
+        assert_eq!(quiet.stamp, 15);
     }
 }
