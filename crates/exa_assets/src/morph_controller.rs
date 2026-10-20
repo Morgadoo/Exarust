@@ -1315,3 +1315,94 @@ mod diffuse_tests {
         assert_eq!(known, vec![false, false]);
     }
 }
+
+/// The owner's skin-weight stream as the cook registers it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MorphStream {
+    pub found: bool,
+    pub grew: bool,
+    pub flags: u32,
+    pub kind: u32,
+    pub count: usize,
+    pub zeroed: usize,
+}
+
+/// Registers the skin-weight stream: only with weights and owner bit
+/// 0x200000. An existing entry whose low flag bits are 0x1000 is reused;
+/// otherwise the owner's list grows by one with flags 0x04000001 and type
+/// 0x02a41000 and the vertex count. Either way the stream's `count·32`
+/// bytes are zeroed.
+pub fn register_morph_stream(
+    has_weights: bool,
+    owner_flag: bool,
+    existing: bool,
+    verts: usize,
+) -> Option<MorphStream> {
+    if !has_weights || !owner_flag {
+        return None;
+    }
+    Some(MorphStream {
+        found: existing,
+        grew: !existing,
+        flags: if existing { 0 } else { 0x0400_0001 },
+        kind: if existing { 0 } else { 0x02a4_1000 },
+        count: verts,
+        zeroed: verts * 32,
+    })
+}
+
+/// Rebuilds the controller's target list: every mesh triangle whose flags
+/// carry 0xC00000 contributes its three corners, remapped through the
+/// vertex map, in the order 1, 2, 0; a vertex already listed is not added
+/// again.
+pub fn collect_morph_targets(flagged: &[bool], triangles: &[[u32; 3]], map: &[u32]) -> Vec<u32> {
+    const ORDER: [usize; 3] = [1, 2, 0];
+    let mut targets: Vec<u32> = Vec::new();
+    for (index, triangle) in triangles.iter().enumerate() {
+        if !flagged.get(index).copied().unwrap_or(false) {
+            continue;
+        }
+        for corner in ORDER {
+            let mapped = map[triangle[corner] as usize];
+            if !targets.contains(&mapped) {
+                targets.push(mapped);
+            }
+        }
+    }
+    targets
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+
+    #[test]
+    fn the_stream_registers_only_with_weights_and_the_owner_bit() {
+        assert_eq!(register_morph_stream(false, true, false, 8), None);
+        assert_eq!(register_morph_stream(true, false, false, 8), None);
+
+        let existing = register_morph_stream(true, true, true, 8).unwrap();
+        assert!(existing.found);
+        assert!(!existing.grew);
+        assert_eq!(existing.zeroed, 256);
+
+        let created = register_morph_stream(true, true, false, 8).unwrap();
+        assert!(!created.found);
+        assert!(created.grew);
+        assert_eq!(created.flags, 0x0400_0001);
+        assert_eq!(created.kind, 0x02a4_1000);
+        assert_eq!(created.count, 8);
+        assert_eq!(created.zeroed, 256);
+    }
+
+    #[test]
+    fn the_targets_come_from_flagged_triangles_in_corner_order() {
+        let flagged = [true, false, true];
+        let triangles = [[10, 11, 12], [20, 21, 22], [10, 11, 12]];
+        let map: Vec<u32> = (0..32).collect();
+        assert_eq!(
+            collect_morph_targets(&flagged, &triangles, &map),
+            vec![11, 12, 10]
+        );
+    }
+}
