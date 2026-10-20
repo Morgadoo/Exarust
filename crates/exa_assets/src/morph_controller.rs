@@ -9,7 +9,8 @@
 //! and adds the vertex's base. The start binds each owner vertex to its
 //! nearest control candidate and stores that candidate's weights. Evidence:
 //! the 100-byte `0x1000db620`, the 66-byte `0x1000de0b0`, the 767-byte
-//! `0x1000dd580`, the 893-byte `0x1000dd880` and the 448-byte `0x1000dd3c0`.
+//! `0x1000dd580`, the 893-byte `0x1000dd880`, the 680-byte `0x1000da330`
+//! and the 448-byte `0x1000dd3c0`.
 
 /// A morph controller's opening.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -797,5 +798,155 @@ mod start_tests {
         assert_eq!(start.records[0].offset, [0.0, 0.0, 0.0]);
         assert_eq!(start.records[0].base, [1.0, 2.0, 3.0]);
         assert_eq!(start.unmatched, vec![0]);
+    }
+}
+
+/// One part's vertex bytes that the remap rebuilds. The record's flags at
+/// `+8` skip a part that is ordered by a different index block; its kind at
+/// `+4` gives the element size (bits 20 through 23) and the component count
+/// (bits 16 through 19); its count is at `+0xc` and its bytes at `+0x10`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MorphRemapPart {
+    pub flags: u32,
+    pub kind: u32,
+    pub count: usize,
+    pub data: Vec<u8>,
+}
+
+/// The refresh steps the rebuild runs, by the flags bit 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MorphRefresh {
+    pub purge: bool,
+    pub rebuild_arrays: bool,
+    pub rebuild_indices: bool,
+    pub rebuild_vertices: bool,
+    pub mark_dirty: bool,
+    pub stamp: bool,
+    pub rebind: bool,
+}
+
+/// The rebuild's result.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MorphRemap {
+    pub map: Vec<u32>,
+    pub parts: Vec<MorphRemapPart>,
+    pub refresh: MorphRefresh,
+}
+
+/// The element size a part's kind names: 8 bytes for 0xA, 1 for 0xB, 4 for
+/// 0xF, and 0 for any other code.
+pub fn morph_element_size(kind: u32) -> usize {
+    match (kind >> 20) & 0xf {
+        0xa => 8,
+        0xb => 1,
+        0xf => 4,
+        _ => 0,
+    }
+}
+
+/// The stride of one part element: its component count times its element
+/// size.
+pub fn morph_stride(kind: u32) -> usize {
+    (((kind >> 16) & 0xf) as usize) * morph_element_size(kind)
+}
+
+/// Rebuilds the morph's map and part bytes. The new map is `input[map[i]]`.
+/// Each part whose flags are clear is gathered by `input[j]` over its stride
+/// and count; a part with flags set is left alone. With bit 0 set the
+/// rebuild also purges, marks the owner dirty, stamps the version and
+/// re-binds the bound object; without it only the arrays, indices and
+/// vertices are rebuilt.
+#[allow(clippy::too_many_arguments)]
+pub fn rebuild_morph_remap(
+    map: &[u32],
+    input: &[u32],
+    parts: &[MorphRemapPart],
+    refresh: bool,
+    has_bound: bool,
+) -> MorphRemap {
+    let new_map: Vec<u32> = map.iter().map(|&index| input[index as usize]).collect();
+    let mut rebuilt = Vec::with_capacity(parts.len());
+    for part in parts {
+        if part.flags != 0 {
+            rebuilt.push(part.clone());
+            continue;
+        }
+        let stride = morph_stride(part.kind);
+        let mut data = Vec::with_capacity(stride * part.count);
+        for &source in input.iter().take(part.count) {
+            let source = source as usize;
+            for k in 0..stride {
+                data.push(part.data[source * stride + k]);
+            }
+        }
+        rebuilt.push(MorphRemapPart {
+            data,
+            ..part.clone()
+        });
+    }
+    MorphRemap {
+        map: new_map,
+        parts: rebuilt,
+        refresh: MorphRefresh {
+            purge: refresh,
+            rebuild_arrays: true,
+            rebuild_indices: true,
+            rebuild_vertices: true,
+            mark_dirty: refresh,
+            stamp: refresh,
+            rebind: refresh && has_bound,
+        },
+    }
+}
+
+#[cfg(test)]
+mod remap_tests {
+    use super::*;
+
+    #[test]
+    fn the_remap_composes_and_gathers_each_part() {
+        let parts = vec![
+            MorphRemapPart {
+                flags: 0,
+                kind: (0xb << 20) | (2 << 16),
+                count: 2,
+                data: vec![10, 11, 20, 21],
+            },
+            MorphRemapPart {
+                flags: 1,
+                kind: (0xb << 20) | (2 << 16),
+                count: 1,
+                data: vec![7, 8],
+            },
+        ];
+        let result = rebuild_morph_remap(&[1, 0], &[1, 0], &parts, false, false);
+        assert_eq!(result.map, vec![0, 1]);
+        assert_eq!(result.parts[0].data, vec![20, 21, 10, 11]);
+        assert_eq!(result.parts[1].data, vec![7, 8]);
+        assert!(!result.refresh.purge);
+        assert!(result.refresh.rebuild_arrays);
+        assert!(!result.refresh.mark_dirty);
+        assert!(!result.refresh.rebind);
+    }
+
+    #[test]
+    fn the_refresh_flag_runs_the_full_sequence() {
+        let result = rebuild_morph_remap(&[0], &[0], &[], true, true);
+        assert!(result.refresh.purge);
+        assert!(result.refresh.mark_dirty);
+        assert!(result.refresh.stamp);
+        assert!(result.refresh.rebind);
+        let quiet = rebuild_morph_remap(&[0], &[0], &[], false, true);
+        assert!(!quiet.refresh.rebind);
+    }
+
+    #[test]
+    fn the_kind_gives_the_element_size_and_stride() {
+        assert_eq!(morph_element_size(0xb << 20), 1);
+        assert_eq!(morph_element_size(0xa << 20), 8);
+        assert_eq!(morph_element_size(0xf << 20), 4);
+        assert_eq!(morph_element_size(0x1 << 20), 0);
+        assert_eq!(morph_stride((0xb << 20) | (3 << 16)), 3);
+        assert_eq!(morph_stride((0xf << 20) | (2 << 16)), 8);
     }
 }
