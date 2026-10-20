@@ -383,3 +383,137 @@ mod sight_tests {
         assert_eq!(pick_mind_target(&[(0.0, 0.0, 0.0)], 0.0, 0.0), None);
     }
 }
+
+/// The body values the sight's node weights read, at `+0x78`, `+0x974`,
+/// `+0x978`, `+0x7b4`, `+0x7c` and `+0x74`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MindBodyValues {
+    pub v78: f32,
+    pub v974: f32,
+    pub v978: f32,
+    pub v7b4: f32,
+    pub v7c: f32,
+    pub v74: f32,
+}
+
+/// The sight's three node weights: the threshold, the maximum and the
+/// ratio.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MindWeights {
+    pub threshold: f32,
+    pub maximum: f32,
+    pub ratio: f32,
+}
+
+/// The sight's node weights, before the fade: `A = 0.2·v78`,
+/// `B = 0.2·(v974 + v978 − v7b4)`. A marked body or `A > 1` forces all
+/// three to 1. Otherwise `A` is floored at 0, `B` clamped to 0..1, the
+/// maximum is their larger, the ratio `A/(A+B)`, and the threshold the
+/// largest of `maximum + 0.2`, `0.6·v7c` and `0.015·v74`, capped at 1.
+pub fn mind_track_weights(body: &MindBodyValues, marked: bool) -> MindWeights {
+    let a = 0.2 * body.v78;
+    let b = 0.2 * (body.v974 + body.v978 - body.v7b4);
+    if marked || a > 1.0 {
+        return MindWeights {
+            threshold: 1.0,
+            maximum: 1.0,
+            ratio: 1.0,
+        };
+    }
+    let a = a.max(0.0);
+    let b = b.clamp(0.0, 1.0);
+    let maximum = a.max(b);
+    let ratio = if a + b > 0.0 { a / (a + b) } else { 0.0 };
+    let threshold = (maximum + 0.2)
+        .max(0.6 * body.v7c)
+        .max(0.015 * body.v74)
+        .min(1.0);
+    MindWeights {
+        threshold,
+        maximum,
+        ratio,
+    }
+}
+
+/// The three colours a sight entry blends, at `+0x08`, `+0x0c` and `+0x10`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MindEntryColors {
+    pub first: f32,
+    pub second: f32,
+    pub third: f32,
+}
+
+/// Blends the entry's three values toward the weights by `2^(−dt/1000)`;
+/// a step of a second or more uses one half.
+pub fn blend_mind_weights(
+    entry: &mut MindEntryColors,
+    target: MindWeights,
+    dt_ms: u32,
+) -> MindEntryColors {
+    let k = if dt_ms >= 1000 {
+        0.5
+    } else {
+        2.0f32.powf(-(dt_ms as f32) / 1000.0)
+    };
+    entry.first += (target.threshold - entry.first) * k;
+    entry.second += (target.maximum - entry.second) * k;
+    entry.third += (target.ratio - entry.third) * k;
+    *entry
+}
+
+#[cfg(test)]
+mod weight_tests {
+    use super::*;
+
+    fn body(v78: f32, v974: f32, v978: f32, v7b4: f32, v7c: f32, v74: f32) -> MindBodyValues {
+        MindBodyValues {
+            v78,
+            v974,
+            v978,
+            v7b4,
+            v7c,
+            v74,
+        }
+    }
+
+    #[test]
+    fn a_marked_body_forces_full_weights() {
+        let weights = mind_track_weights(&body(0.0, 0.0, 0.0, 0.0, 0.0, 0.0), true);
+        assert_eq!(weights.threshold, 1.0);
+        assert_eq!(weights.maximum, 1.0);
+        assert_eq!(weights.ratio, 1.0);
+    }
+
+    #[test]
+    fn the_weights_follow_the_body_values() {
+        let weights = mind_track_weights(&body(0.5, 0.5, 0.5, 0.0, 0.0, 0.0), false);
+        assert!((weights.maximum - 0.2).abs() < 1e-6);
+        assert!((weights.ratio - 1.0 / 3.0).abs() < 1e-6);
+        assert!((weights.threshold - 0.4).abs() < 1e-6);
+
+        let strong = mind_track_weights(&body(10.0, 0.0, 0.0, 0.0, 0.0, 0.0), false);
+        assert_eq!(strong.maximum, 1.0);
+        assert_eq!(strong.ratio, 1.0);
+    }
+
+    #[test]
+    fn the_entry_blends_by_a_half_over_a_second() {
+        let mut entry = MindEntryColors {
+            first: 0.0,
+            second: 0.0,
+            third: 0.0,
+        };
+        blend_mind_weights(
+            &mut entry,
+            MindWeights {
+                threshold: 1.0,
+                maximum: 0.5,
+                ratio: 0.25,
+            },
+            1000,
+        );
+        assert_eq!(entry.first, 0.5);
+        assert_eq!(entry.second, 0.25);
+        assert_eq!(entry.third, 0.125);
+    }
+}
