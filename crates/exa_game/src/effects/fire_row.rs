@@ -299,7 +299,7 @@ pub struct FlameRow {
 }
 
 impl FlameRow {
-    /// A row with the given segment, lit by default.
+    /// A row with the given segment and flags.
     pub fn new(start_local: Vec3, end_local: Vec3, flags: u32, seed: u32) -> Self {
         Self {
             flags,
@@ -337,7 +337,7 @@ impl FlameRow {
     /// One tick: fade, the ends from the attachment, the tip lag, the speed
     /// and the light's walk. `random` holds the walk, swing and jitter
     /// units, in that draw order.
-    pub fn tick(&mut self, attach: Option<&Frame>, random: [f32; 3]) -> RowLight {
+    pub fn tick(&mut self, attach: Option<&Frame>, random: [f64; 3]) -> RowLight {
         if self.removed() {
             return self.light();
         }
@@ -370,7 +370,7 @@ impl FlameRow {
         self.speed = moved * 0.1 + self.speed * 0.9;
 
         self.walk = walk_step(self.walk, self.swing, random[0], LIGHT_FLICKER_STEP);
-        self.swing = (f64::from(self.walk) * f64::from(SWING_SCALE) * f64::from(random[1])
+        self.swing = (f64::from(self.walk) * f64::from(SWING_SCALE) * random[1]
             + f64::from(self.swing)) as f32;
         self.jitter = jitter_step(self.jitter, random[2]);
         self.light()
@@ -387,7 +387,7 @@ impl FlameRow {
     }
 
     /// One frame: remove a faded-out row and step the loop's pitch.
-    pub fn frame(&mut self, pitch_unit: f32) -> Option<RowSound> {
+    pub fn frame(&mut self, pitch_unit: f64) -> Option<RowSound> {
         if self.removed() {
             return None;
         }
@@ -395,8 +395,7 @@ impl FlameRow {
             self.flags |= REMOVED;
             return None;
         }
-        let mut pitch =
-            ((f64::from(pitch_unit) - 0.5) * f64::from(PITCH_STEP) + f64::from(self.pitch)) as f32;
+        let mut pitch = ((pitch_unit - 0.5) * f64::from(PITCH_STEP) + f64::from(self.pitch)) as f32;
         pitch = if pitch >= PITCH_MIN {
             if pitch > PITCH_MAX { PITCH_MAX } else { pitch }
         } else {
@@ -436,8 +435,8 @@ fn lag_step(target: Vec3, lag: Vec3) -> Vec3 {
 
 /// The light's soft-bounded speed walk. Its arithmetic is in double, as
 /// the original's, then narrowed back to a float.
-pub fn walk_step(walk: f32, swing: f32, unit: f32, step: f32) -> f32 {
-    let (walk, unit, step) = (f64::from(walk), f64::from(unit), f64::from(step));
+pub fn walk_step(walk: f32, swing: f32, unit: f64, step: f32) -> f32 {
+    let (walk, step) = (f64::from(walk), f64::from(step));
     let next = if f64::from(swing) > 1.0 || walk > 1.0 {
         walk - step * unit
     } else if f64::from(swing) < -1.0 || walk < -1.0 {
@@ -449,8 +448,8 @@ pub fn walk_step(walk: f32, swing: f32, unit: f32, step: f32) -> f32 {
 }
 
 /// The softness jitter's walk, clamped to 0.87–1.15.
-pub fn jitter_step(jitter: f32, unit: f32) -> f32 {
-    let jitter = ((f64::from(unit) - 0.5) * f64::from(JITTER_STEP) + f64::from(jitter)) as f32;
+pub fn jitter_step(jitter: f32, unit: f64) -> f32 {
+    let jitter = ((unit - 0.5) * f64::from(JITTER_STEP) + f64::from(jitter)) as f32;
     if jitter >= JITTER_MIN {
         if jitter > JITTER_MAX {
             JITTER_MAX
@@ -503,11 +502,7 @@ pub fn tick_rows(mut rows: Query<(&mut Flame, Option<&GlobalTransform>)>) {
     for (mut flame, transform) in &mut rows {
         let frame = transform.map(attach_frame);
         let row = &mut flame.0;
-        let random = [
-            row.rng.unit() as f32,
-            row.rng.unit() as f32,
-            row.rng.unit() as f32,
-        ];
+        let random = [row.rng.unit(), row.rng.unit(), row.rng.unit()];
         row.tick(frame.as_ref(), random);
     }
 }
@@ -516,7 +511,7 @@ pub fn tick_rows(mut rows: Query<(&mut Flame, Option<&GlobalTransform>)>) {
 pub fn frame_rows(mut rows: Query<(&mut Flame, Option<&mut PointLight>)>) {
     for (mut flame, light) in &mut rows {
         let row = &mut flame.0;
-        let unit = row.rng.unit() as f32;
+        let unit = row.rng.unit();
         if row.frame(unit).is_none() {
             continue;
         }
