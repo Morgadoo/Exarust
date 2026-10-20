@@ -273,9 +273,48 @@ pub fn build_mip_chain_rgba8(
     wrap: bool,
     conversion: MipConversion,
 ) -> (Vec<u8>, u32) {
+    build_mip_chain_rgba8_from(base, width, height, 0, wrap, conversion)
+}
+
+/// Builds an RGBA8 chain starting at `first_level`: the texels are the level
+/// `first_level` of the Kaiser chain and the levels below it, packed as a
+/// texture's base level onwards, and the count is how many levels that is.
+/// A low `TextureDetail` uploads a later level as the base and halves the
+/// stored resolution.
+pub fn build_mip_chain_rgba8_from(
+    base: &[u8],
+    width: usize,
+    height: usize,
+    first_level: u32,
+    wrap: bool,
+    conversion: MipConversion,
+) -> (Vec<u8>, u32) {
     if width == 0 || height == 0 || base.len() < width * height * 4 {
         return (base.to_vec(), 1);
     }
+    if first_level == 0 {
+        return build_chain_from_floats(base, width, height, 0, wrap, conversion);
+    }
+    let (chain, count) =
+        build_chain_from_floats(base, width, height, first_level, wrap, conversion);
+    if count == 0 {
+        // A chain that stops before `first_level` (a tiny image): the caller
+        // has nothing to upload. The retail data never asks for this.
+        return (Vec::new(), 0);
+    }
+    (chain, count)
+}
+
+/// The chain levels from `first_level` up, without the levels before it.
+fn build_chain_from_floats(
+    base: &[u8],
+    width: usize,
+    height: usize,
+    first_level: u32,
+    wrap: bool,
+    conversion: MipConversion,
+) -> (Vec<u8>, u32) {
+    let first = first_level.max(1);
     let mut floats = vec![0.0f32; width * height * 4];
     let base_bytes = &base[..width * height * 4];
     match conversion {
@@ -285,8 +324,13 @@ pub fn build_mip_chain_rgba8(
         MipConversion::Signed => pixel::signed_floats(base_bytes, &mut floats),
     }
     let floats = floats.as_slice();
-    let mut out = base.to_vec();
-    let mut count = 1u32;
+    // The chain's levels, base bytes included when `first_level` is 0.
+    let mut out: Vec<u8> = if first_level == 0 {
+        base.to_vec()
+    } else {
+        Vec::new()
+    };
+    let mut count = if first_level == 0 { 1u32 } else { 0u32 };
     let bank = kaiser_bank();
     for level in 1..=KAISER_MAX_LEVEL {
         let dst_width = width >> level;
@@ -296,6 +340,9 @@ pub fn build_mip_chain_rgba8(
         }
         if !width.is_multiple_of(dst_width) || !height.is_multiple_of(dst_height) {
             break;
+        }
+        if level < first {
+            continue;
         }
         let weights = &bank[level as usize - 1];
         let mut horizontal = vec![0.0f32; dst_width * height * 4];
@@ -446,6 +493,32 @@ mod rgba_chain_tests {
         let (short, count) = build_mip_chain_rgba8(&[7; 4], 1, 1, true, MipConversion::Linear);
         assert_eq!(count, 1);
         assert_eq!(short, vec![7; 4]);
+    }
+
+    /// A later first level is uploaded as the base and halves the chain, as
+    /// the texture detail setting does; each level is still filtered from
+    /// the stored base.
+    #[test]
+    fn a_chain_can_start_at_a_later_level() {
+        let base = vec![51u8; 8 * 8 * 4];
+        // Level 1: 4x4; level 2: 2x2; level 3 would be 1x1, which the chain
+        // stops before (the sides must sum to 3 or more).
+        let (out, count) = build_mip_chain_rgba8_from(&base, 8, 8, 1, true, MipConversion::Linear);
+        assert_eq!(count, 2);
+        assert_eq!(out.len(), 4 * 4 * 4 + 2 * 2 * 4);
+        assert!(out.iter().all(|&value| value == 51));
+
+        let (out, count) = build_mip_chain_rgba8_from(&base, 8, 8, 2, true, MipConversion::Linear);
+        assert_eq!(count, 1);
+        assert_eq!(out.len(), 2 * 2 * 4);
+        assert!(out.iter().all(|&value| value == 51));
+
+        // Past the end of the chain there is nothing to upload.
+        let (out, count) = build_mip_chain_rgba8_from(&base, 8, 8, 3, true, MipConversion::Linear);
+        assert_eq!(count, 0);
+        assert!(out.is_empty());
+        // Which image stores which level is a format question.
+        assert_eq!(exa_formats::rfi::level_dims(8, 8, 2), (2, 2));
     }
 
     /// A 4 × 4 checker of 0 and 255 halves to mid-grey: 128 when filtered

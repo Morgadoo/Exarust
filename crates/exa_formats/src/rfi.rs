@@ -29,6 +29,19 @@ pub const RFI_MAGIC: u32 = 0x1D2D_3DC6;
 const HEADER_LEN: usize = 32;
 const STORAGE_PACKED: u32 = 0x5000_0000;
 
+/// The header flag of an image that stores a complete mip chain.
+pub const FLAG_MIP_CHAIN: u32 = 0x0008_0000;
+/// The header flags that repeat the image across its width, height and depth;
+/// without them it clamps to the edge.
+pub const FLAG_REPEAT_S: u32 = 0x0001_0000;
+pub const FLAG_REPEAT_T: u32 = 0x0002_0000;
+pub const FLAG_REPEAT_R: u32 = 0x0004_0000;
+/// The two-way texture detail class, in bits 22 and 23.
+pub const FLAG_DETAIL_CLASS: u32 = 0x00C0_0000;
+/// The largest source mip dimension the texture loader uploads (its static
+/// limit); levels are skipped until both sides fit.
+pub const MAX_MIP_DIMENSION: u32 = 0x0001_0000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PixelFormat {
     /// RGB, 8 bytes per 4x4 block.
@@ -109,6 +122,45 @@ pub struct RfiHeader {
     pub flags: u32,
     pub storage: u32,
     pub data_size: u32,
+}
+
+impl RfiHeader {
+    /// Whether the file stores a complete mip chain after the base level.
+    pub fn has_mip_chain(&self) -> bool {
+        self.flags & FLAG_MIP_CHAIN != 0
+    }
+
+    /// The texture's detail class (0–3), which decides how many leading mip
+    /// levels a low `TextureDetail` setting may skip.
+    pub fn detail_class(&self) -> u32 {
+        (self.flags & FLAG_DETAIL_CLASS) >> 22
+    }
+
+    /// Whether the image repeats (`true`) or clamps on each axis.
+    pub fn repeats(&self) -> [bool; 3] {
+        [
+            self.flags & FLAG_REPEAT_S != 0,
+            self.flags & FLAG_REPEAT_T != 0,
+            self.flags & FLAG_REPEAT_R != 0,
+        ]
+    }
+
+    /// The first mip level the loader uploads as level 0: the detail class
+    /// over the detail setting, floored at zero and then raised while a side
+    /// is larger than [`MAX_MIP_DIMENSION`]. Skipping a level halves the
+    /// stored resolution; the format never changes.
+    pub fn first_mip_level(&self, texture_detail: u32) -> u32 {
+        let class = self.detail_class();
+        let skipped = class as i64 - texture_detail as i64 + 1;
+        let mut level = skipped.max(0) as u32;
+        while level < 32
+            && ((self.width >> level) > MAX_MIP_DIMENSION
+                || (self.height >> level) > MAX_MIP_DIMENSION)
+        {
+            level += 1;
+        }
+        level
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -475,5 +527,61 @@ mod tests {
         // 1024x1024 BC1 with a full chain is 699064 bytes.
         assert_eq!(mip_count_for(PixelFormat::Bc1, 1024, 1024, 699_064), 11);
         assert_eq!(mip_count_for(PixelFormat::Bc1, 1024, 1024, 524_288), 1);
+    }
+
+    #[test]
+    fn the_flag_word_carries_detail_class_wrap_and_the_chain() {
+        // A shipped diffuse: class 2, stored chain, repeat on both axes.
+        let header = RfiHeader {
+            width: 1024,
+            height: 1024,
+            depth: 1,
+            format_word: 0x813B_C600,
+            flags: 0x20AB_0000,
+            storage: 0x1000_0000,
+            data_size: 699_064,
+        };
+        assert!(header.has_mip_chain());
+        assert_eq!(header.detail_class(), 2);
+        assert_eq!(header.repeats(), [true, true, false]);
+        // A data map that clamps on both axes: 0x20A80000.
+        let clamped = RfiHeader {
+            flags: 0x20A8_0000,
+            ..header
+        };
+        assert_eq!(clamped.repeats(), [false, false, false]);
+        // No chain, class 0.
+        let plain = RfiHeader {
+            flags: 0x0001_0000,
+            ..header
+        };
+        assert!(!plain.has_mip_chain());
+        assert_eq!(plain.detail_class(), 0);
+        assert_eq!(plain.repeats(), [true, false, false]);
+    }
+
+    #[test]
+    fn the_detail_setting_chooses_the_first_uploaded_level() {
+        let header = |width, height, class: u32| RfiHeader {
+            width,
+            height,
+            depth: 1,
+            format_word: 0x813B_C600,
+            flags: class << 22,
+            storage: 0x1000_0000,
+            data_size: 0,
+        };
+        // class − detail + 1, floored at zero: the shrink table.
+        assert_eq!(header(1024, 1024, 0).first_mip_level(3), 0);
+        assert_eq!(header(1024, 1024, 1).first_mip_level(3), 0);
+        assert_eq!(header(1024, 1024, 2).first_mip_level(3), 0);
+        assert_eq!(header(1024, 1024, 3).first_mip_level(3), 1);
+        assert_eq!(header(1024, 1024, 3).first_mip_level(2), 2);
+        assert_eq!(header(1024, 1024, 2).first_mip_level(2), 1);
+        assert_eq!(header(1024, 1024, 2).first_mip_level(4), 0);
+        // With no detail setting every class above zero skips a level.
+        assert_eq!(header(1024, 1024, 0).first_mip_level(0), 1);
+        assert_eq!(header(131_072, 65_537, 0).first_mip_level(0), 1);
+        assert_eq!(header(262_144, 1024, 0).first_mip_level(0), 2);
     }
 }
