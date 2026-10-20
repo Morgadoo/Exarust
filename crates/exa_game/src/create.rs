@@ -952,6 +952,39 @@ pub fn close_creation_screen(input: CreationCloseInput) -> CreationClose {
     }
 }
 
+/// What hitting a creation option did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationOptionHit {
+    pub hit: bool,
+    pub selected: bool,
+    pub result: bool,
+}
+
+/// Hit-tests the option list and selects its last entry on a hit.
+pub fn hit_creation_option(key: i32, has_list: bool, hits: bool) -> CreationOptionHit {
+    let hit = key != 8 && has_list && hits;
+    CreationOptionHit {
+        hit,
+        selected: hit,
+        result: true,
+    }
+}
+
+/// What ensuring the creation singleton did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationSingleton {
+    pub created: bool,
+    pub ready: bool,
+}
+
+/// Creates the singleton when absent.
+pub fn ensure_creation_singleton(exists: bool) -> CreationSingleton {
+    CreationSingleton {
+        created: !exists,
+        ready: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1621,5 +1654,34 @@ mod tests {
         assert_eq!(full.released, [true, false, false, true, true, true, true]);
         assert!(full.widgets_reset);
         assert!(!full.call_2d);
+    }
+
+    #[test]
+    fn the_creation_option_hits_and_the_singleton_opens() {
+        let hit = hit_creation_option(3, true, true);
+        assert!(hit.hit);
+        assert!(hit.selected);
+        assert!(hit.result);
+
+        let key8 = hit_creation_option(8, true, true);
+        assert!(!key8.hit);
+        assert!(!key8.selected);
+        assert!(key8.result);
+
+        let no_list = hit_creation_option(3, false, true);
+        assert!(!no_list.hit);
+        assert!(no_list.result);
+
+        let miss = hit_creation_option(3, true, false);
+        assert!(!miss.hit);
+        assert!(miss.result);
+
+        let first = ensure_creation_singleton(false);
+        assert!(first.created);
+        assert!(first.ready);
+
+        let later = ensure_creation_singleton(true);
+        assert!(!later.created);
+        assert!(later.ready);
     }
 }
