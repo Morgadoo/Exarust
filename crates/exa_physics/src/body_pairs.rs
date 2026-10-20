@@ -544,6 +544,7 @@ impl Pairs {
         if movers == 0 {
             return;
         }
+        let span = bevy::log::info_span!("pairs: gather sleepers").entered();
         for (b, body) in bodies.iter().enumerate().skip(awake) {
             for (k, p) in body.parts.iter().enumerate() {
                 if !meets(p) {
@@ -555,6 +556,8 @@ impl Pairs {
                 }
             }
         }
+        drop(span);
+        let _span = bevy::log::info_span!("pairs: meet").entered();
         let mut grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
         for (i, &(_, _, cell)) in found.iter().enumerate() {
             grid.entry(cell).or_default().push(i);
@@ -878,7 +881,20 @@ impl SolverStage for Pairs {
         self.pairs.clear();
     }
 
+    fn coupled(&self, bodies: &[&mut Ragdoll], coupled: &mut [bool]) {
+        if self.pairs.is_empty() {
+            return;
+        }
+        let keys: HashSet<Entity> = self.pairs.iter().flat_map(|p| [p.a.key, p.b.key]).collect();
+        for (flag, b) in coupled.iter_mut().zip(bodies) {
+            if keys.contains(&body_key(b)) {
+                *flag = true;
+            }
+        }
+    }
+
     fn detect(&mut self, bodies: &mut [&mut Ragdoll], sleeping: &mut [&mut Ragdoll]) {
+        let _span = bevy::log::info_span!("pairs: detect").entered();
         let awake = bodies.len();
         let mut all: Vec<&mut Ragdoll> = bodies
             .iter_mut()

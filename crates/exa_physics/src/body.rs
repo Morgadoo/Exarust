@@ -1695,7 +1695,7 @@ impl Ragdoll {
 
     /// One tick of this body alone against the static `level`: the world's
     /// solver ([`solve`]) with one body, or a tick it sleeps through.
-    pub fn tick<L: Level + ?Sized>(&mut self, level: &L) {
+    pub fn tick<L: Level + Sync + ?Sized>(&mut self, level: &L) {
         if self.asleep() {
             self.sleep_tick();
         } else {
@@ -2006,7 +2006,7 @@ fn tree_orders(parts: &[Part]) -> (Vec<usize>, Vec<usize>) {
 
 /// One tick of the world's solver over `bodies` against the static `level`,
 /// in the original's order, without solver stages ([`solve_with`]).
-pub fn solve<L: Level + ?Sized>(bodies: &mut [&mut Ragdoll], level: &L) {
+pub fn solve<L: Level + Sync + ?Sized>(bodies: &mut [&mut Ragdoll], level: &L) {
     solve_with(bodies, level, &mut []);
 }
 

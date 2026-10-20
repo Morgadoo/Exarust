@@ -231,6 +231,31 @@ fn stages_without_work_change_nothing() {
     }
 }
 
+/// Bodies no stage touches run their iterations and friction together on
+/// the compute pool; several of them end each tick exactly where the
+/// interleaved, one-body-at-a-time path leaves them.
+#[test]
+fn bodies_stepped_in_parallel_match_the_interleaved_path() {
+    struct Idle;
+    impl SolverStage for Idle {}
+    let ground = floor_quad(0.0, 5.0);
+    let mut free: Vec<Ragdoll> = (0..4).map(|i| pulled_apart(0.1 + 0.1 * i as f32)).collect();
+    let mut held: Vec<Ragdoll> = (0..4).map(|i| pulled_apart(0.1 + 0.1 * i as f32)).collect();
+    let mut idle: Vec<Box<dyn SolverStage>> = vec![Box::new(Idle)];
+    for _ in 0..90 {
+        let mut a: Vec<&mut Ragdoll> = free.iter_mut().collect();
+        super::super::solve(&mut a, ground.as_slice());
+        let mut b: Vec<&mut Ragdoll> = held.iter_mut().collect();
+        solve_with(&mut b, ground.as_slice(), &mut idle);
+    }
+    for (x, y) in free.iter().zip(&held) {
+        for (p, q) in x.parts.iter().zip(&y.parts) {
+            assert_eq!(p.positions, q.positions);
+            assert_eq!(p.previous, q.previous);
+        }
+    }
+}
+
 #[derive(Default)]
 struct Other(u32);
 impl SolverStage for Other {}

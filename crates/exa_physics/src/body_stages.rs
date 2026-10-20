@@ -24,6 +24,7 @@ use std::any::Any;
 
 use bevy::ecs::schedule::{ScheduleLabel, SingleThreadedExecutor};
 use bevy::prelude::*;
+use bevy::tasks::{ComputeTaskPool, ParallelSliceMut, TaskPool};
 
 use super::{BodySystems, CharacterTicks, FRICTION_PASSES, LINK_ITERATIONS, Ragdoll};
 use crate::contact::Level;
@@ -162,6 +163,14 @@ pub trait SolverStage: Any + Send + Sync {
     fn friction(&mut self, _bodies: &mut [&mut Ragdoll], _sleeping: &mut [&mut Ragdoll]) {}
     /// After every body's post-step.
     fn post_step(&mut self, _bodies: &mut [&mut Ragdoll]) {}
+    /// Marks in `coupled` (one flag per body of `bodies`) the bodies whose
+    /// state this stage's pair passes, links or friction read or write in
+    /// this tick. The others' own link iterations and friction run apart
+    /// from the stages, together and in parallel, with the same results. A
+    /// stage that does not say marks every body.
+    fn coupled(&self, _bodies: &[&mut Ragdoll], coupled: &mut [bool]) {
+        coupled.fill(true);
+    }
 }
 
 /// The solver stages the fixed step's solver calls, in the order they were
@@ -197,7 +206,7 @@ impl SolverStages {
 
 /// One tick of the world's solver over the awake `bodies` against the
 /// static `level` with `stages`, no body asleep ([`solve_among`]).
-pub fn solve_with<L: Level + ?Sized>(
+pub fn solve_with<L: Level + Sync + ?Sized>(
     bodies: &mut [&mut Ragdoll],
     level: &L,
     stages: &mut [Box<dyn SolverStage>],
@@ -216,25 +225,34 @@ pub fn solve_with<L: Level + ?Sized>(
 /// body's spheres tested against the level (an immediate push, the
 /// contacts kept for the next tick); 8 friction passes, each the stages'
 /// pair friction then every awake body's level friction; the post-step.
-pub fn solve_among<L: Level + ?Sized>(
+pub fn solve_among<L: Level + Sync + ?Sized>(
     bodies: &mut [&mut Ragdoll],
     sleeping: &mut [&mut Ragdoll],
     level: &L,
     stages: &mut [Box<dyn SolverStage>],
 ) {
-    for b in bodies.iter_mut() {
-        b.step();
-    }
+    // Spans for the frame profiler's tracing builds (nothing without a
+    // tracing subscriber).
+    let span = bevy::log::info_span!("solver: integrate").entered();
+    each_body(bodies, None, Ragdoll::step);
     for s in stages.iter_mut() {
         s.integrated(bodies);
     }
+    drop(span);
+    let span = bevy::log::info_span!("solver: iterations").entered();
+    // A body no stage touches between its iterations runs all of them at
+    // once; the others keep the original's interleaving.
+    let together = coupled_bodies(stages, bodies);
+    each_body(bodies, Some((&together, false)), |b| {
+        for _ in 1..=LINK_ITERATIONS {
+            b.iterate();
+        }
+    });
     for iteration in 1..=LINK_ITERATIONS {
         for s in stages.iter_mut() {
             s.pair_pass(bodies, iteration);
         }
-        for b in bodies.iter_mut() {
-            b.iterate();
-        }
+        each_body(bodies, Some((&together, true)), Ragdoll::iterate);
         for s in stages.iter_mut() {
             s.links(bodies, iteration);
         }
@@ -242,6 +260,8 @@ pub fn solve_among<L: Level + ?Sized>(
     for s in stages.iter_mut() {
         s.iterated(bodies);
     }
+    drop(span);
+    let span = bevy::log::info_span!("solver: body detection").entered();
     for b in bodies.iter_mut() {
         for p in &mut b.parts {
             p.contacts.clear();
@@ -256,23 +276,67 @@ pub fn solve_among<L: Level + ?Sized>(
     for s in stages.iter_mut() {
         s.sim_object_contacts(bodies);
     }
-    for b in bodies.iter_mut() {
-        b.detect(level);
-    }
+    drop(span);
+    let span = bevy::log::info_span!("solver: level detection").entered();
+    each_body(bodies, None, |b| b.detect(level));
+    drop(span);
+    let span = bevy::log::info_span!("solver: friction").entered();
+    // The pairs found this tick decide which bodies rub with the stages.
+    let together = coupled_bodies(stages, bodies);
+    each_body(bodies, Some((&together, false)), |b| {
+        for _ in 0..FRICTION_PASSES {
+            b.rub();
+        }
+    });
     for _ in 0..FRICTION_PASSES {
         for s in stages.iter_mut() {
             s.friction(bodies, sleeping);
         }
-        for b in bodies.iter_mut() {
-            b.rub();
-        }
+        each_body(bodies, Some((&together, true)), Ragdoll::rub);
     }
-    for b in bodies.iter_mut() {
-        b.post_step();
-    }
+    drop(span);
+    let _span = bevy::log::info_span!("solver: post-step").entered();
+    each_body(bodies, None, Ragdoll::post_step);
     for s in stages.iter_mut() {
         s.post_step(bodies);
     }
+}
+
+/// Which of `bodies` any stage touches in this tick ([`SolverStage::coupled`]).
+fn coupled_bodies(stages: &[Box<dyn SolverStage>], bodies: &[&mut Ragdoll]) -> Vec<bool> {
+    let mut coupled = vec![false; bodies.len()];
+    for s in stages {
+        s.coupled(bodies, &mut coupled);
+    }
+    coupled
+}
+
+/// Runs `f` on each of `bodies` (only those whose flag in `select` equals
+/// its value), in parallel on the compute pool: a body's own step reads and
+/// writes nothing of another's, so the order does not matter.
+fn each_body(
+    bodies: &mut [&mut Ragdoll],
+    select: Option<(&[bool], bool)>,
+    f: impl Fn(&mut Ragdoll) + Send + Sync,
+) {
+    let mut chosen: Vec<&mut Ragdoll> = bodies
+        .iter_mut()
+        .enumerate()
+        .filter(|(i, _)| select.is_none_or(|(flags, want)| flags[*i] == want))
+        .map(|(_, b)| &mut **b)
+        .collect();
+    if chosen.len() < 2 {
+        for b in chosen {
+            f(b);
+        }
+        return;
+    }
+    let pool = ComputeTaskPool::get_or_init(TaskPool::default);
+    chosen.par_splat_map_mut(pool, None, |_, chunk| {
+        for b in chunk.iter_mut() {
+            f(b);
+        }
+    });
 }
 
 #[cfg(test)]

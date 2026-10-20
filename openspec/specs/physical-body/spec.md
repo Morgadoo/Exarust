@@ -1464,3 +1464,10 @@ The system SHALL route clips 5–12 to attack, tone below 0.85 to weak, clip 0x0
 - **THEN** the route is Weak
 - **WHEN** the clip is 0x0D
 - **THEN** the route is Kick
+
+### Requirement: Parallel per-body work
+The system SHALL run each body's own work in a tick (integration, links, level detection, level friction, post-step) in parallel across bodies, keeping the original's interleaving with the pair passes and pair friction for the bodies those touch, with results identical to stepping the bodies one at a time.
+
+#### Scenario: Free bodies
+- **WHEN** several bodies that touch no other body tick together
+- **THEN** each ends the tick exactly where the interleaved, one-at-a-time path leaves it

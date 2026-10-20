@@ -150,10 +150,14 @@ From the 2026-10-20 measurements, largest gain first:
    cube pass, a face re-rendered only when it is needed and a caster in it
    moved, as the original does. The render thread fell from 28.9 ms to
    7.6 ms a frame; the frame is now bound by the main thread.
-2. The original's AI activation: characters beyond its activation radius
-   (200 m, with its 80-tick hysteresis) are dormant and not stepped, and
-   targets are picked for one AI a tick. `step_bodies` and
-   `tick_characters` are 60 % of the main thread.
+2. Done (`step-bodies-in-parallel`): the body solver's per-body work runs
+   in parallel, bodies no pair touches running their 20 iterations and 8
+   friction passes at once, with identical results. The original's 200 m
+   activation would not help here: it loads levels whole and simulates every
+   character within 200 m, which in a dungeon is all of them. Play mode went
+   from 34 to 51–54 FPS; the fixed step from 18.1 to 8.5 ms a frame. Next on
+   the main thread: PostUpdate (8.5 ms: transforms, skinned bounds,
+   visibility, shadow links).
 3. Fewer render-world entities: room meshes that never move need not be
    re-extracted or re-checked each frame (31 648 meshes, 418 visible).
 4. Depth prepass, then Bevy's GPU occlusion culling.

@@ -111,6 +111,47 @@ fn two_limbs_stop_at_their_spheres() {
     }
 }
 
+/// Bodies in pairs keep the original's interleaving with the pair passes
+/// while the others run their iterations and friction together in
+/// parallel: with two balls colliding and three falling on a floor, every
+/// particle ends each tick exactly where it ends when a stage forces every
+/// body through the interleaved path.
+#[test]
+fn free_bodies_in_parallel_leave_the_pairs_unchanged() {
+    struct Every;
+    impl SolverStage for Every {}
+    let floor = floor_quad(0.0, 5.0);
+    let scene = || {
+        let mut a = ball(1, 11, Vec3::new(-0.3, 0.6, 0.0), 0.1);
+        let mut b = ball(2, 11, Vec3::new(0.3, 0.6, 0.0), 0.1);
+        a.set_velocity(Vec3::X * 2.0);
+        b.set_velocity(Vec3::NEG_X * 2.0);
+        let mut bodies = vec![a, b];
+        for i in 0..3 {
+            bodies.push(ball(10 + i, 11, Vec3::new(1.0 + i as f32, 0.5, 1.0), 0.1));
+        }
+        bodies
+    };
+    let (mut split, mut joined) = (scene(), scene());
+    let mut alone = pairs();
+    let mut together: Vec<Box<dyn SolverStage>> = vec![Box::new(Pairs::default()), Box::new(Every)];
+    let mut met = false;
+    for _ in 0..60 {
+        let mut x: Vec<&mut Ragdoll> = split.iter_mut().collect();
+        step(&mut x, floor.as_slice(), &mut alone);
+        let mut y: Vec<&mut Ragdoll> = joined.iter_mut().collect();
+        step(&mut y, floor.as_slice(), &mut together);
+        met |= !the_pairs(&alone).touches().is_empty();
+        for (p, q) in split.iter().zip(&joined) {
+            for (u, v) in p.parts.iter().zip(&q.parts) {
+                assert_eq!(u.positions, v.positions);
+                assert_eq!(u.previous, v.previous);
+            }
+        }
+    }
+    assert!(met, "the two balls never touched");
+}
+
 /// The group masks of a human's 18 parts give the original's
 /// self-collision matrix: legs, pelvis, spine and head never meet each
 /// other; the lower body meets the arms but not the shoulders; the lumbar
