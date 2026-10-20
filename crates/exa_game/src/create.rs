@@ -590,6 +590,32 @@ pub fn rebuild_creation_second_list(
     }
 }
 
+/// The creation record's cleared fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationReset {
+    pub words: [i32; 5],
+    pub tail: i32,
+    pub reset_size: i32,
+}
+
+/// Clears the record's five words and tail.
+pub fn reset_creation_record() -> CreationReset {
+    CreationReset {
+        words: [0; 5],
+        tail: 0,
+        reset_size: 8,
+    }
+}
+
+/// The three fixed creation slots.
+pub fn creation_slot_defaults() -> [[u8; 8]; 3] {
+    [
+        [0xa8, 0x61, 1, 2, 3, 4, 8, 0],
+        [0xa8, 0x61, 1, 2, 3, 4, 5, 0],
+        [0xa8, 0x61, 1, 2, 3, 4, 6, 0],
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1022,5 +1048,18 @@ mod tests {
         assert!(!empty.stored);
         assert_eq!(empty.caption, None);
         assert!(!empty.drew);
+    }
+
+    #[test]
+    fn the_creation_record_opens_cleared_with_three_slots() {
+        let reset = reset_creation_record();
+        assert_eq!(reset.words, [0; 5]);
+        assert_eq!(reset.tail, 0);
+        assert_eq!(reset.reset_size, 8);
+
+        let slots = creation_slot_defaults();
+        assert_eq!(slots[0], [0xa8, 0x61, 1, 2, 3, 4, 8, 0]);
+        assert_eq!(slots[1], [0xa8, 0x61, 1, 2, 3, 4, 5, 0]);
+        assert_eq!(slots[2], [0xa8, 0x61, 1, 2, 3, 4, 6, 0]);
     }
 }
