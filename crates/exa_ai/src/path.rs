@@ -1866,3 +1866,52 @@ mod shortcut_tests {
         assert_eq!(shortcut_path(&points, |_, _| true), points);
     }
 }
+
+/// The endpoint fix-up: from the end of the path, drop up to eight points
+/// whose penalty byte is above `64/(quality+1)`. The first point is kept.
+/// Returns the number of points that remain.
+pub fn trim_path_end(points: usize, penalties: &[u8], quality: i32) -> usize {
+    let threshold = 64 / (quality.max(0) + 1);
+    let mut end = points.min(penalties.len());
+    for _ in 0..8 {
+        if end <= 1 {
+            break;
+        }
+        if i32::from(penalties[end - 1]) > threshold {
+            end -= 1;
+        } else {
+            break;
+        }
+    }
+    end
+}
+
+#[cfg(test)]
+mod trim_tests {
+    use super::*;
+
+    #[test]
+    fn high_penalties_are_dropped_from_the_end() {
+        assert_eq!(trim_path_end(5, &[0, 0, 100, 100, 100], 0), 2);
+        assert_eq!(trim_path_end(2, &[0, 100], 0), 1);
+        assert_eq!(trim_path_end(3, &[0, 100, 0], 0), 3);
+    }
+
+    #[test]
+    fn the_trim_stops_after_eight_points() {
+        assert_eq!(
+            trim_path_end(
+                12,
+                &[0, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100],
+                0
+            ),
+            4
+        );
+    }
+
+    #[test]
+    fn the_quality_lowers_the_threshold() {
+        assert_eq!(trim_path_end(2, &[0, 40], 0), 2);
+        assert_eq!(trim_path_end(2, &[0, 40], 1), 1);
+    }
+}
