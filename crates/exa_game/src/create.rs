@@ -70,6 +70,25 @@ pub fn creation_label(word: i32) -> CreationLabel {
     }
 }
 
+/// Clears the first used creation slot and the slots after it.
+pub fn clear_creation_slots(slots: &mut [[u8; 8]; 6]) -> Option<usize> {
+    let first = slots
+        .iter()
+        .position(|slot| u16::from_le_bytes([slot[0], slot[1]]) != 0)?;
+    let slot = &mut slots[first];
+    slot[0] = 0;
+    slot[1] = 0;
+    for byte in &mut slot[3..] {
+        *byte = 0;
+    }
+    if first < 5 {
+        for later in &mut slots[first + 1..5] {
+            *later = [0; 8];
+        }
+    }
+    Some(first)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,5 +138,28 @@ mod tests {
         assert_eq!(creation_label(0x4ff).code(), Some("ML"));
         assert_eq!(creation_label(0x500), CreationLabel::None);
         assert_eq!(creation_label(0x500).code(), None);
+    }
+
+    #[test]
+    fn the_creation_slots_clear_from_the_first_used() {
+        let mut slots = [[0u8; 8]; 6];
+        slots[1] = [1, 2, 3, 4, 5, 6, 7, 8];
+        slots[5] = [7; 8];
+        assert_eq!(clear_creation_slots(&mut slots), Some(1));
+        assert_eq!(slots[0], [0; 8]);
+        assert_eq!(slots[1], [0, 0, 3, 0, 0, 0, 0, 0]);
+        assert_eq!(slots[2], [0; 8]);
+        assert_eq!(slots[3], [0; 8]);
+        assert_eq!(slots[4], [0; 8]);
+        assert_eq!(slots[5], [7; 8]);
+
+        let mut empty = [[0u8; 8]; 6];
+        assert_eq!(clear_creation_slots(&mut empty), None);
+        assert!(empty.iter().all(|slot| slot == &[0u8; 8]));
+
+        let mut last = [[0u8; 8]; 6];
+        last[5] = [7; 8];
+        assert_eq!(clear_creation_slots(&mut last), Some(5));
+        assert_eq!(last[5], [0, 0, 7, 0, 0, 0, 0, 0]);
     }
 }
