@@ -11,8 +11,15 @@ eased (a stagger's get-up jumps in a few keys, `Animator::jump_in`, and
 holds its first key); loops wrap by their last key; a clip played once ends into its
 follow-up with the original's blend table; the walk, run and backpedal
 play in place, every other clip keeps its root's travel; a pose the body
-holds pulls the sample by a weight. A physical body's tick sets the clock
-rate and the capture (`exa_game::limp`); other bodies play once a frame
+holds pulls the sample by a weight. A sample is taken in the original's
+steps (the bracket, which writes the progress; the keys blended; the
+gait overlay, the Run clip slerped over the Walk at the same keys; the
+hold; the pose kept as the targets), so a physical body's sampler can put
+its own steps between them; each tick keeps the frames it added and
+whether its end test fired. A physical body's tick sets the clock rate
+and the capture (`exa_game::limp`); other bodies tick by the same body
+clock (83 a second, counted from the frames' time, what is under a tick
+owed to the next frame), 0.6 × the race's base a tick
 ([`docs/formats/RSQ.md`](../../docs/formats/RSQ.md), Motion playback).
 
 ## Scope

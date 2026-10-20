@@ -168,6 +168,15 @@ pub struct Clip {
     pub keys: Vec<Key>,
 }
 
+impl Clip {
+    /// The clip loops: its mode's bit 0, which the original's clip start
+    /// and samplers read (a looping clip wraps by its last key and blends
+    /// from it back to its first).
+    pub fn loops(&self) -> bool {
+        self.mode & 1 != 0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Key {
     /// Frames.

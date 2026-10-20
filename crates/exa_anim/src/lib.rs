@@ -3,11 +3,12 @@
 //! A character is a hierarchy of body-part nodes whose names start with the
 //! bone index (`01Pelvis`, `09Chest`, …). A clip key stores one rotation per
 //! bone and the root (pelvis) position; sampling replaces each part's local
-//! rotation and the pelvis translation. Living physical bodies follow these
-//! poses with their muscles: their clips are advanced and sampled by their
-//! body's 83 Hz tick ([`TickedClips`]) at the original's clocks, every other
-//! body's once a frame. A clip starts from where the body is and blends to
-//! its first key ([`clock`]).
+//! rotation and the pelvis translation. Every clip clock counts frames per
+//! body tick, [`TICKS_PER_SECOND`] a second: living physical bodies' clips
+//! are advanced and sampled by their body's tick ([`TickedClips`]) at the
+//! original's clocks for what the body does, every other body's by the
+//! same ticks, counted from the frames' time ([`play_clips`]). A clip
+//! starts from where the body is and blends to its first key ([`clock`]).
 
 use std::sync::{Arc, RwLock};
 
@@ -22,11 +23,14 @@ pub use exa_formats::rsq::MovesetConfig;
 use exa_formats::rsq::{BoneBody, Clip, ClipTable, MotionSet, Sequences, bone_index};
 
 mod clock;
-pub use clock::{ATTACKS, Capture, Ease, FOOTWORK, LOCOMOTION, follow_up_blend, in_place};
+pub use clock::{
+    ATTACKS, Bracket, Capture, Ease, FOOTWORK, LOCOMOTION, STANDING_PACE, bracket, follow_up_blend,
+    hold_toward, in_place, overlay_toward,
+};
 
-/// Clip frames per second of a body without a body tick (Exarust's own:
-/// every character of the original is a body, ticked at its clocks).
-pub const FRAMES_PER_SECOND: f32 = 60.0;
+/// Body ticks a second: the clock every clip counts frames by (the
+/// original's simulation step, `exa_physics::body::BODY_HZ`).
+pub const TICKS_PER_SECOND: f32 = 83.0;
 
 pub struct AnimPlugin;
 
@@ -161,8 +165,21 @@ pub struct Animator {
     pub action: String,
     /// The clip clock, in frames.
     pub time: f32,
-    /// Scales the clock of a body without a body tick.
-    pub speed: f32,
+    /// The race's clip-rate base of a body without a body tick (a human's
+    /// 1.0): its clock gains [`STANDING_PACE`] times it a tick.
+    pub base: f32,
+    /// Seconds of the frames' time a body without a body tick has not
+    /// ticked its clock for yet (under a tick).
+    pub owed: f32,
+    /// Frames the clock gained in its last tick.
+    pub rate: f32,
+    /// The progress the last sample wrote: (clock − blend) / the last
+    /// key's time, 0 at a start; the swing clock and the posture rules read
+    /// it.
+    pub progress: f32,
+    /// The last tick's end test fired: the clip reached its last key and
+    /// wrapped, started its follow-up or finished.
+    pub ended: bool,
     pub looping: bool,
     /// Action to switch to (looping) when a non-looping clip ends.
     pub then: Option<String>,
@@ -201,7 +218,11 @@ impl Animator {
             config: MovesetConfig::NONE,
             action: action.into(),
             time: 0.0,
-            speed: 1.0,
+            base: 1.0,
+            owed: 0.0,
+            rate: 0.0,
+            progress: 0.0,
+            ended: false,
             looping: true,
             then: None,
             finished: false,
@@ -234,15 +255,6 @@ impl Animator {
     /// race moveset and no held item's moveset.
     pub fn plays_default_alone(&self) -> bool {
         self.moveset == DEFAULT_MOVESET && self.config.weapon_moveset().is_none()
-    }
-
-    /// Progress through the current clip, 0..=1, from its first key to its
-    /// last (Exarust's measure, which the combat's strike window reads).
-    pub fn progress(&self, motions: &Motions) -> Option<f32> {
-        let clip = motions.clip(self, &self.action)?;
-        let (first, last) = (clip.keys.first()?.time, clip.keys.last()?.time);
-        let len = (last - first).max(f32::EPSILON);
-        Some(((self.time - self.blend - first) / len).clamp(0.0, 1.0))
     }
 }
 
@@ -362,29 +374,21 @@ fn bind_skins(
     }
 }
 
-/// Pose at `time` frames: per-bone rotations and the root position.
+/// Pose at `time` frames without a capture or blend, as the original's
+/// pose-only sampler takes it ([`bracket`]): per-bone rotations and the
+/// root position between the keys around `time`; a clip that loops blends
+/// from its last key back to its first before the first and past the
+/// last, one that does not holds its first and last keys there.
 pub fn sample(clip: &Clip, time: f32) -> Option<(Vec<Quat>, Vec3)> {
-    let first = clip.keys.first()?;
-    let last = clip.keys.last()?;
-    let t = time.clamp(first.time, last.time);
-    let i = clip
-        .keys
-        .windows(2)
-        .position(|w| t <= w[1].time)
-        .unwrap_or(0);
-    let (a, b) = match clip.keys.get(i + 1) {
-        Some(b) => (&clip.keys[i], b),
-        None => (&clip.keys[i], &clip.keys[i]),
-    };
-    let span = (b.time - a.time).max(f32::EPSILON);
-    let f = ((t - a.time) / span).clamp(0.0, 1.0);
+    let b = bracket(clip, time, clip.loops())?;
+    let (a, z) = (&clip.keys[b.src], &clip.keys[b.dst]);
     let rotations = a
         .rotations
         .iter()
-        .zip(&b.rotations)
-        .map(|(ra, rb)| to_quat(*ra).slerp(to_quat(*rb), f))
+        .zip(&z.rotations)
+        .map(|(ra, rz)| to_quat(*ra).slerp(to_quat(*rz), b.f))
         .collect();
-    let root = Vec3::from(a.root).lerp(Vec3::from(b.root), f);
+    let root = Vec3::from(a.root).lerp(Vec3::from(z.root), b.f);
     Some((rotations, root))
 }
 
@@ -396,8 +400,8 @@ pub struct ClipPose {
 }
 
 impl ClipPose {
-    /// The pose of `clip` at `time` frames (clamped to its keys) for a body
-    /// of `stature`, its root's z left out when the clip plays `in_place`.
+    /// The pose of `clip` at `time` frames ([`sample`]) for a body of
+    /// `stature`, its root's z left out when the clip plays `in_place`.
     pub fn at(clip: &Clip, time: f32, stature: f32, in_place: bool) -> Option<Self> {
         let (rotations, mut root) = sample(clip, time)?;
         if in_place {
@@ -438,8 +442,11 @@ fn to_quat(r: [f32; 4]) -> Quat {
 }
 
 /// Advances and poses, once a frame, the clips of every body that its body
-/// does not tick: their clock runs at [`FRAMES_PER_SECOND`], and a start
-/// blends from the last pose (such a body has no physical pose).
+/// does not tick: the frame's time is counted in body ticks (what is under
+/// a tick is owed to the next frame), each ticking the clock a standing
+/// body's [`STANDING_PACE`] times the race's base, as a body of the
+/// original that only stands; a start blends from the last pose (such a
+/// body has no physical pose).
 fn play_clips(
     time: Res<Time>,
     motions: Option<Res<Motions>>,
@@ -451,13 +458,18 @@ fn play_clips(
     let set = &*motions.0;
     for (root, mut anim, stature) in &mut animators {
         anim.take_capture(&[]);
-        let Some(clip) = motions.clip(&anim, &anim.action) else {
-            continue;
-        };
-        let ending = set.action_index(&anim.action);
-        let frames = time.delta_secs() * FRAMES_PER_SECOND * anim.speed;
-        if anim.tick(clip, frames, follow_up_blend(ending, 0)) {
-            anim.take_capture(&[]);
+        anim.owed += time.delta_secs();
+        let ticks = (anim.owed * TICKS_PER_SECOND).floor();
+        anim.owed -= ticks / TICKS_PER_SECOND;
+        for _ in 0..ticks as u32 {
+            let Some(clip) = motions.clip(&anim, &anim.action) else {
+                break;
+            };
+            let ending = set.action_index(&anim.action);
+            let frames = STANDING_PACE * anim.base;
+            if anim.tick(clip, frames, follow_up_blend(ending, 0)) {
+                anim.take_capture(&[]);
+            }
         }
         let Some(clip) = motions.clip(&anim, &anim.action) else {
             continue;
@@ -490,18 +502,29 @@ mod tests {
         }
     }
 
+    /// The pose-only sampler blends between the keys around its time; a
+    /// clip played once holds its first key before it and its last past
+    /// it, while a looping one blends from its last key back to its first
+    /// on both sides (half way at 5 and at 25 frames, first key 10), and
+    /// no further than the first.
     #[test]
     fn interpolates_between_keys() {
         let clip = Clip {
-            mode: 3,
+            mode: 0,
             keys: vec![key(10.0, 0.0, 1.0), key(20.0, 1.0, 2.0)],
         };
         let (rots, root) = sample(&clip, 15.0).unwrap();
         assert!((root.y - 1.5).abs() < 1e-6);
         let (axis, angle) = rots[0].to_axis_angle();
         assert!((angle - 0.5).abs() < 1e-4 && axis.y > 0.99);
-        let (_, end) = sample(&clip, 99.0).unwrap();
-        assert!((end.y - 2.0).abs() < 1e-6);
+        let y = |clip: &Clip, t: f32| sample(clip, t).unwrap().1.y;
+        assert!((y(&clip, 99.0) - 2.0).abs() < 1e-6);
+        assert!((y(&clip, 3.0) - 1.0).abs() < 1e-6);
+        let looping = Clip { mode: 3, ..clip };
+        assert!(looping.loops());
+        assert!((y(&looping, 5.0) - 1.5).abs() < 1e-6);
+        assert!((y(&looping, 25.0) - 1.5).abs() < 1e-6);
+        assert!((y(&looping, 99.0) - 1.0).abs() < 1e-6);
     }
 
     /// Only a clip played in place loses its root's travel (along z).
@@ -525,9 +548,12 @@ mod tests {
         }
     }
 
-    /// Frames leave alone the clips of bodies their body ticks.
+    /// Frames tick the clips of bodies without a body tick by the body
+    /// clock: two 50 ms frames (the first has no time) are 8.3 ticks, so 8
+    /// tick 0.6 frames each (0.9 for a base of 1.5) and 0.3 of a tick is
+    /// owed; the clips of bodies their body ticks are left alone.
     #[test]
-    fn frames_leave_ticked_clips_alone() {
+    fn frames_tick_by_the_body_clock() {
         use bevy::time::TimeUpdateStrategy;
         let set = MotionSet {
             bone_count: 1,
@@ -549,6 +575,9 @@ mod tests {
             .insert_resource(Motions::new(Arc::new(set), Arc::default(), 0.0))
             .add_systems(Update, play_clips);
         let framed = app.world_mut().spawn(Animator::new("Default", "Walk")).id();
+        let mut ghoul = Animator::new("Default", "Walk");
+        ghoul.base = 1.5;
+        let ghoul = app.world_mut().spawn(ghoul).id();
         let ticked = app
             .world_mut()
             .spawn((Animator::new("Default", "Walk"), TickedClips))
@@ -556,10 +585,20 @@ mod tests {
         for _ in 0..3 {
             app.update();
         }
-        let time = |e: Entity| app.world().get::<Animator>(e).unwrap().time;
-        // 50 ms frames at 60 frames a second (the first has no time).
-        assert!((time(framed) - 6.0).abs() < 1e-4, "{}", time(framed));
-        assert_eq!(time(ticked), 0.0);
+        let anim = |e: Entity| app.world().get::<Animator>(e).unwrap().clone();
+        assert!(
+            (anim(framed).time - 4.8).abs() < 1e-4,
+            "{}",
+            anim(framed).time
+        );
+        assert!((anim(framed).owed - 0.3 / TICKS_PER_SECOND).abs() < 1e-5);
+        assert!((anim(framed).rate - 0.6).abs() < 1e-6);
+        assert!(
+            (anim(ghoul).time - 7.2).abs() < 1e-4,
+            "{}",
+            anim(ghoul).time
+        );
+        assert_eq!(anim(ticked).time, 0.0);
     }
 
     /// A body's clips come from the table of its base moveset and its

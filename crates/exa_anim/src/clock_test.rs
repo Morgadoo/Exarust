@@ -476,3 +476,144 @@ fn a_stagger_jumps_in_and_holds_the_first_key() {
     plain.jump_in(&rise, 9);
     assert_eq!((plain.time, plain.capture_key), (0.0, 0));
 }
+
+/// A tick keeps the frames it added as the rate and whether its end test
+/// fired; a sample writes the progress, (clock − blend) / the last key,
+/// and a start resets it: the walk at 79 + 0.6 is 0.995 through, the
+/// next tick wraps it (the end test fires, the clock reads 0.2) and a
+/// get-up's end into its follow-up fires it too, as does a clip without
+/// one finishing.
+#[test]
+fn the_end_test_rate_and_progress_are_exposed() {
+    let times: Vec<f32> = (1..=8).map(|k| 10.0 * k as f32).collect();
+    let roots = vec![Vec3::new(0.0, 100.0, 0.0); 8];
+    let walk = clip(&times, &roots, true);
+    let mut anim = Animator::new("Default", "Walk");
+    anim.leading = false;
+    anim.time = 79.0;
+    assert!(!anim.tick(&walk, 0.6, 0));
+    assert!((anim.rate - 0.6).abs() < 1e-6 && !anim.ended);
+    anim.sample(&walk, true, None).unwrap();
+    assert!(
+        (anim.progress - 79.6 / 80.0).abs() < 1e-6,
+        "{}",
+        anim.progress
+    );
+    assert!(!anim.tick(&walk, 0.6, 0));
+    assert!(anim.ended && (anim.time - 0.2).abs() < 1e-4);
+    anim.sample(&walk, true, None).unwrap();
+    assert!((anim.progress - 0.2 / 80.0).abs() < 1e-6);
+    anim.start("Idle", true, None, 0, Ease::Linear);
+    assert_eq!(anim.progress, 0.0);
+
+    let up = get_up(20.0, 80.0);
+    anim.start("Get up", false, Some("Idle".into()), 0, Ease::Linear);
+    anim.time = 79.5;
+    assert!(anim.tick(&up, 0.9, 20));
+    assert!(anim.ended && anim.action == "Idle" && (anim.rate - 0.9).abs() < 1e-6);
+    let mut once = Animator::new("Default", "Get up");
+    once.looping = false;
+    once.time = 79.5;
+    assert!(!once.tick(&up, 0.9, 0));
+    assert!(once.ended && once.finished);
+}
+
+/// The installed clips (skipped without the game) loop and lead in as the
+/// original's clock plays them: Walk's keys (10…80) first and last differ
+/// by up to 19.9° on a joint, and the loop at 0.6 a tick turns no joint
+/// more than 1.3° across the wrap (the old wrap by 70 popped the 19.9°);
+/// the stances' first and last keys are the same pose (within 0.1°), so
+/// their frames before the first key hold it; Get up (first key 20) and
+/// Get Up 2 (15)
+/// started with a blend of 20 at 0.9 a tick blend from the capture for 44
+/// and 38 ticks (the 45th and 39th pass the first key), Idle with no
+/// blend at 0.6 for 33.
+#[test]
+fn the_installed_clips_loop_and_lead_in_as_the_original() {
+    let Some(dir) = exa_assets::locate_install(None) else {
+        return;
+    };
+    let data = std::sync::Arc::new(exa_assets::GameData::open(&dir).unwrap());
+    let motions = crate::Motions::load(&exa_assets::Game(data)).expect("humanoid.rsq");
+    let clip_of = |action: &str| {
+        motions
+            .clip(&Animator::new("Default", action), action)
+            .unwrap()
+            .clone()
+    };
+    let degrees = |a: &[f32; 4], b: &[f32; 4]| to_quat(*a).angle_between(to_quat(*b)).to_degrees();
+    let widest = |a: &Key, b: &Key| {
+        a.rotations
+            .iter()
+            .zip(&b.rotations)
+            .map(|(a, b)| degrees(a, b))
+            .fold(0.0, f32::max)
+    };
+
+    let walk = clip_of("Walk");
+    let times: Vec<f32> = walk.keys.iter().map(|k| k.time).collect();
+    assert_eq!(times, (1..=8).map(|k| 10.0 * k as f32).collect::<Vec<_>>());
+    assert!(walk.loops());
+    let pop = widest(&walk.keys[0], &walk.keys[7]);
+    assert!((pop - 19.9).abs() < 0.15, "{pop}");
+    let mut anim = Animator::new("Default", "Walk");
+    anim.leading = false;
+    anim.time = 79.7;
+    let before = anim.sample(&walk, true, None).unwrap();
+    assert!(!anim.tick(&walk, 0.6, 0));
+    let after = anim.sample(&walk, true, None).unwrap();
+    let turned = before
+        .rotations
+        .iter()
+        .zip(&after.rotations)
+        .map(|(a, b)| a.angle_between(*b).to_degrees())
+        .fold(0.0, f32::max);
+    assert!(turned < 1.3, "{turned}");
+
+    for name in ["Idle", "Defence stance", "Cmbt - Idle"] {
+        let stance = clip_of(name);
+        assert!(stance.loops(), "{name}");
+        let (first, last) = (stance.keys.first().unwrap(), stance.keys.last().unwrap());
+        // The same pose within the stored keys' quantisation (Idle's
+        // differ by 0.04°).
+        assert!(widest(first, last) < 0.1, "{name}: {}", widest(first, last));
+        let mut anim = Animator::new("Default", name);
+        anim.leading = false;
+        anim.time = first.time * 0.5;
+        let held = anim.sample(&stance, false, None).unwrap();
+        let off = held
+            .rotations
+            .iter()
+            .zip(&first.rotations)
+            .map(|(a, b)| a.angle_between(to_quat(*b)).to_degrees())
+            .fold(0.0, f32::max);
+        assert!(off < 0.1, "{name}: {off}");
+    }
+
+    let idle = clip_of("Idle");
+    let lead_ins = [
+        ("Get up", 20, 0.9, 44),
+        ("Get Up 2", 20, 0.9, 38),
+        ("Idle", 0, 0.6, 33),
+    ];
+    for (name, blend, rate, ticks) in lead_ins {
+        let rise = clip_of(name);
+        let first = rise.keys[0].time;
+        assert_eq!(first, if name == "Get Up 2" { 15.0 } else { 20.0 });
+        let mut anim = Animator::new("Default", "Idle");
+        anim.time = 5.0;
+        anim.sample(&idle, false, None).unwrap();
+        anim.start(name, name == "Idle", None, blend, Ease::Linear);
+        anim.take_capture(&[]);
+        let mut blended = 0;
+        loop {
+            anim.tick(&rise, rate, 0);
+            anim.sample(&rise, false, None).unwrap();
+            if !anim.leading {
+                break;
+            }
+            blended += 1;
+        }
+        assert_eq!(blended, ticks, "{name}");
+    }
+}

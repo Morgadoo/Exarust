@@ -311,7 +311,7 @@ The system SHALL advance a living physical body's clip clock by the original's r
 - **THEN** only its ticks advance the clock
 
 ### Requirement: Body trace
-`exarust --trace <file.csv>` SHALL write one row per traced body (the player's, else every simulated character body, never a prop's) a tick, in the retail probe's columns: pelvis particles; heights, tone, energy, support, balance, counter; part targets; foot contacts (state hex, anchor); motion, clock; then sleep countdown and state, frame origin, body root, clip blend, hold, ankles, condition word (hex); swing rate, strength, state word (hex). Lengths cm, clock frames; empty if unsimulated.
+`exarust --trace <file.csv>` SHALL write one row per traced body (the player's, else every character body, no prop's) a tick: the retail probe's columns (pelvis particles; heights, tone, energy, support, balance, counter; part targets; foot contacts; motion, clock), then Exarust's (sleep countdown and state, frame origin, body root, clip blend, hold, rate, progress, end flag, ankles, condition word; swing rate, strength, state word). Lengths cm, clock frames, words hex; empty if unsimulated.
 
 #### Scenario: Standing in the arena
 - **WHEN** `exarust --trace t.csv play arena` runs for a minute
@@ -324,6 +324,10 @@ The system SHALL advance a living physical body's clip clock by the original's r
 #### Scenario: Planted feet
 - **WHEN** the player stands in the arena
 - **THEN** both foot contacts read `0x2`, their anchors 9.7 cm up, and its ankles within 0.5 cm of them
+
+#### Scenario: The idle clock's columns
+- **WHEN** a standing body's trace runs through its Idle clip's wrap
+- **THEN** every row's `rate` is 0.6, its `progress` the clock over the last key, and `clip_end` is 1 on the wrap's row alone
 
 ### Requirement: Race body parameters
 The system SHALL decode, for every record of the installed `races.rdb`, the body parameters the original reads: the clip-rate base, support-pin factor, size, scale, mass divisor, balance bonus, stance factor, arm relaxation, limb damping ratio, and four gait rows (walk, jog, sprint, backpedal) of thrust, push scale, brake distance (the loader's 0.5, 2, 2.5, 0.5 m), clip rate and boost speed. A missing race SHALL get the original's fallback: every factor 1.0 and gaits with no push.

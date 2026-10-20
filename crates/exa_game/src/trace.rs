@@ -5,11 +5,12 @@
 //! compared row by row. What Exarust does not simulate yet is left empty.
 //! Exarust's own columns follow the probe's: the body's sleep countdown and
 //! state, its character frame's origin and its body root (where its
-//! controller stands) across the ground, its clip's blend and how far its
-//! pose is held, its feet's ankles, its character's condition word, and
-//! its swing: the rate its attack's clip clock ran this tick, its strength
-//! and its state word. Columns: `docs/formats/RSQ.md` (Physical body,
-//! per-tick trace).
+//! controller stands) across the ground, its clip's blend, how far its
+//! pose is held, the frames its clock gained, its progress and whether
+//! its end test fired, its feet's ankles, its character's condition word,
+//! and its swing: the rate its attack's clip clock ran this tick, its
+//! strength and its state word. Columns: `docs/formats/RSQ.md` (Physical
+//! body, per-tick trace).
 
 use std::fmt::Write as _;
 use std::fs::File;
@@ -50,8 +51,11 @@ const SCALARS: [&str; 11] = [
 /// frame's origin and the body root across the ground.
 const OWN: [&str; 4] = ["frame_x", "frame_z", "root_x", "root_z"];
 /// Exarust's own clip columns: the blend from the clip's capture (frames,
-/// 0 once its first key is reached) and the hold weight.
-const CLIP: [&str; 2] = ["blend", "hold"];
+/// 0 once its first key is reached), the hold weight, the frames the clip
+/// clock gained this tick, the progress the sampler wrote and whether the
+/// clock's end test fired (the clip wrapped, started its follow-up or
+/// finished).
+const CLIP: [&str; 5] = ["blend", "hold", "rate", "progress", "clip_end"];
 /// Exarust's own foot columns: each foot contact's ankle where the tick
 /// left it (cm), in leg order, so a foot's slide from its anchor shows.
 const ANKLES: [&str; 6] = [
@@ -327,6 +331,9 @@ fn row(
     row.value(Some(at.z));
     row.value(anim.map(|a| a.blend));
     row.value(anim.map(|a| a.held));
+    row.value(anim.map(|a| a.rate));
+    row.value(anim.map(|a| a.progress));
+    row.whole(anim.map(|a| usize::from(a.ended)));
     for k in 0..2 {
         match body.ankle(k).filter(|_| drive.is_some()) {
             Some(at) => {
@@ -347,7 +354,9 @@ mod tests {
 
     /// The trace has a row per tick for the body, with the header's
     /// columns: its clip clock advancing 0.6 frames a tick (a standing
-    /// body's, as the original's), no blend and no hold, its
+    /// body's, as the original's; the rate column says so) and wrapping
+    /// by the clip's last key (30) once in 60 ticks, where the end test
+    /// fires, its progress the clock over that key, no blend and no hold, its
     /// tone, stance factor, tone target and support (a standing human: 1,
     /// 0.5, 0.5 and 1; this body has no legs to measure its balance on, so
     /// its balance stays 1 and its counter 0), its targets in cm (the
@@ -362,7 +371,7 @@ mod tests {
         app.world_mut()
             .entity_mut(root)
             .insert(Condition::COMBAT_IDLE);
-        while app.world().resource::<BodyTicks>().0 < 20 {
+        while app.world().resource::<BodyTicks>().0 < 60 {
             app.update();
         }
         let ticks = app.world().resource::<BodyTicks>().0;
@@ -391,12 +400,23 @@ mod tests {
         assert_eq!(rows.len() as u64, ticks);
         let at = |name: &str| columns.iter().position(|c| *c == name).unwrap();
         let number = |row: &[&str], name: &str| row[at(name)].parse::<f32>().unwrap();
+        // The clock wraps once, on the tick it reaches 30 (the 50th, or
+        // the 51st if the sum of 0.6s falls short).
+        let wrapped = rows.iter().position(|r| r[at("clip_end")] == "1").unwrap();
+        assert!(wrapped == 49 || wrapped == 50, "{wrapped}");
+        assert_eq!(rows.iter().filter(|r| r[at("clip_end")] == "1").count(), 1);
         for (k, row) in rows.iter().enumerate() {
             assert_eq!(row.len(), columns.len());
             assert_eq!(row[at("tick")], (k + 1).to_string());
-            let clock = (k + 1) as f32 * 0.6;
-            assert!((number(row, "clock") - clock).abs() < 1e-3);
+            let clock = if k < wrapped {
+                (k + 1) as f32 * 0.6
+            } else {
+                (k - wrapped) as f32 * 0.6
+            };
+            assert!((number(row, "clock") - clock).abs() < 1e-3, "{k}");
             assert_eq!((number(row, "blend"), number(row, "hold")), (0.0, 0.0));
+            assert!((number(row, "rate") - 0.6).abs() < 1e-6);
+            assert!((number(row, "progress") - clock / 30.0).abs() < 1e-4);
             assert_eq!(row[at("motion")], "0");
             assert_eq!(number(row, "tone"), 1.0);
             assert_eq!(number(row, "stance"), 0.5);

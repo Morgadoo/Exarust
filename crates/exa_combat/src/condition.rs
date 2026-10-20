@@ -65,6 +65,9 @@ impl Condition {
     pub const DYING_MASK: u32 = 0x800;
     /// ... shocked ...
     pub const SHOCK_MASK: u32 = 0x40;
+    /// ... the shocked word's other bit, which holds the clip clock still
+    /// (an attack's clip alone still advances) ...
+    pub const STILL_CLIP_MASK: u32 = 0x80;
     /// ... and walking, attacking, down, getting up, dormant, dead or
     /// switching weapons (no queued motion starts).
     pub const BUSY_MASK: u32 = 0x10203;
@@ -92,6 +95,11 @@ impl Condition {
     /// Collapsing or dead.
     pub fn dying(self) -> bool {
         self.has(Self::DYING_MASK)
+    }
+
+    /// Its clip clock stands still (shocked), but for an attack's clip.
+    pub fn clip_stands_still(self) -> bool {
+        self.has(Self::STILL_CLIP_MASK)
     }
 
     /// Walking, attacking, down, getting up, dormant, dead or switching

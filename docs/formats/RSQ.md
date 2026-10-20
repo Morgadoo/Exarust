@@ -1104,6 +1104,7 @@ is left empty.
 | `countdown`, `sleep` | Exarust's own, after the probe's: the body's sleep countdown and state (`awake`, `asleep`, `deep`) |
 | `frame_x`, `frame_z`, `root_x`, `root_z` | Exarust's own: the character frame's origin, and the body root (where the character controller stands), across the ground |
 | `blend`, `hold` | Exarust's own: the blend (frames) the clip still has from its start's capture (0 once its first key is reached), and how far the sample was pulled toward the pose the body holds |
+| `rate`, `progress`, `clip_end` | Exarust's own: the frames the clip clock gained this tick, the progress the sampler wrote ((clock − blend) / the last key) and whether the clock's end test fired this tick (1: the clip wrapped, started its follow-up or finished) |
 | `ankle_{r,l}_{x,y,z}` | Exarust's own: each foot contact's ankle where the tick left it, so a foot's slide from its anchor shows |
 | `condition` | the character's condition word in hex (`0x300`), as the retail watcher logs it ([Condition](#condition)); empty for a body without one |
 | `swing_rate`, `strength`, `attack_flags` | the fighter's swing (empty for a body that does not fight): the frames its swing routine last set for an attack's clip, the swing strength P, and its attack state word in hex ([Swing](#motion-playback)), the retail probe's rate, strength and state columns |
@@ -1251,20 +1252,33 @@ Evidence: REA (Ghidra 12.1.4) decompiles and `exe.asm` of the original's
 character init, clip start, captures, living sampler and body-tick clock
 block, constants read from `Exanima.exe`; `humanoid.rsq` and `races.rdb`
 from the installation. Exarust: `exa_anim` (`Animator`, its `clock`),
-`exa_game::limp` (the rates, the physical turns), `exa_combat::swing`.
+`exa_game::limp` (the rates, the physical turns),
+`exa_game::stages::sampler` (the per-part pipeline), `exa_combat::swing`.
 
-**Clock.** A clip's clock counts frames; each body tick adds a rate. The
-base is the race's clip rate (`races.rdb` `0x5C`: 1.0, the ghouls 1.5; the
-character init first stores (80/83)/scale, then overwrites it). Per tick:
+**Clock.** A clip's clock counts frames; each body tick adds frames from
+a rate. The base is the race's clip rate (`races.rdb` `0x5C`: 1.0, the
+ghouls 1.5; the character init first stores (80/83)/scale, then
+overwrites it). The posture rules set the rate each tick, in this order,
+the last line overriding whatever came before:
+
+| the body | rate |
+|---|---|
+| off balance (balance under 0.6: falling, lying; a get-up's first tick, set before its start) | 1.25 × base |
+| getting up | (1.5 − 0.5 × encumbrance) × base |
+| kicking, at the tone a standing body keeps (0.85 and over; under it the weak branch writes no rate, Exarust reads the base) | 2 × base |
+| the combat idle, a weapon switch, a power, any other clip (the walk and the run write none) | 1 × base |
+| an attack (actions 5–12), balanced | the swing's rate (below) |
+| the clip playing is the body's stance, whatever its balance (a dazed body in its Defence stance) | 1 × base |
+
+Then the clock block adds the frames:
 
 | state | frames a tick | a human, full tone |
 |---|---|---|
-| walking or running in the walk, run or backpedal clip | the gait's clip rate ÷ 83 (walk → jog by √run, or the backpedal's) × (0.8 × speed + 1), speed in cm a tick. While sprinting, the jog rate is the feral sprint row (sprint blended to jog by the feral level) and the rate is then × (1 − 0.1 × encumbrance) | 0.76 walking (1.69 cm), 0.89 running, 0.74 backpedalling; a sprint at feral 0, run blend 1 and 4.337 cm is 0.73, 0.69 at encumbrance 0.5, and the jog's 0.89 at feral 1 |
-| getting up | tone × (1.5 − 0.5 × encumbrance) × base × 0.6, only above half tone | 0.9 |
-| a get-up's first tick (its posture stage starts it) | tone × 1.25 × base × 0.6, only above half tone | 0.75 |
-| an attack (actions 5–12) | the swing's rate (below) | ≈ 1.0–1.3 |
-| off balance (falling, lying) | 0.6 × 1.25 × base | 0.75 |
-| otherwise (stances, idle) | 0.6 × base | 0.6 (49.8 frames a second) |
+| walking or running in the walk, run or backpedal clip | the gait's clip rate ÷ 83 (walk → jog by √run, or the backpedal's) × (1 − 0.1 × crouch above a crouch of 0.1) × (0.8 × speed + 1), speed in cm a tick; the rate plays no part. While sprinting, the jog rate is the feral sprint row (sprint blended to jog by the feral level) and the rate is then × (1 − 0.1 × encumbrance) | 0.76 walking (1.69 cm), 0.89 running, 0.74 backpedalling; a sprint at feral 0, run blend 1 and 4.337 cm is 0.73, 0.69 at encumbrance 0.5, and the jog's 0.89 at feral 1 |
+| getting up | tone × rate × 0.6, only above half tone | 0.9 (0.75 on its first tick) |
+| an attack (actions 5–12) | the rate, without the 0.6 | ≈ 1.0–1.3; 1.25 off balance (no swing routine runs) |
+| shocked (the condition's bit 0x80) | none | 0 |
+| otherwise | 0.6 × rate | 0.6 standing or in its stance (49.8 frames a second), 0.75 off balance, 1.2 kicking |
 
 The clip ends when its clock less its blend reaches the last key's time. A
 looping clip (mode bit 0, or one Exarust loops) then wraps by the last
@@ -1272,7 +1286,18 @@ key's time, and its frames before the first key blend from the last key
 back to the first. A clip played once starts its follow-up with a blend
 of twice its weapon's recovery for an attack, 60 frames from action 0x21
 on, 20 from 0x1F, none below, eased smoothly; without a follow-up it
-holds its last key. Progress is (clock − blend) / the last key's time.
+holds its last key. Progress is (clock − blend) / the last key's time,
+written first in every sample (0 at a start); each tick also keeps the
+frames it added and whether its end test fired (the trace's `rate`,
+`progress` and `clip_end`), for the swing clock, the posture rules and
+the reviewer.
+
+**Bodies without a tick.** The character view's figure and non-physical
+characters have no body tick; the original has none such (every
+character is a body). Exarust ticks their clocks by the same body ticks,
+counted from the frames' time (what is under a tick is owed to the next
+frame), each tick adding 0.6 × the race's base as a standing body's. No
+clip clock runs per frame.
 
 **Starts.** Starting a clip sets its clock to 0, its blend (frames) and its
 ease (linear unless the caller sets one) and captures where the body is:
@@ -1301,7 +1326,29 @@ of the way from a walk bone to a run bone 90° away; a full sprint is
 that run bone, and a half sprint is 45°. The root keeps the clip's travel, but
 the walk's, run's and backpedal's z (Exarust also drops its interim
 `Combat Walk`'s). A body that has not sampled a clip yet has no capture
-and starts from the keys, with no blend.
+and starts from the keys, with no blend. The pose-only sampler (a clip at
+a time, no capture or blend: the gait floor, the viewer's first pose)
+takes the same bracket: a looping clip blends from its last key back to
+its first before the first key and past the last (no further than the
+first key), one played once holds its first and last keys there.
+
+**Sampler pipeline.** A living body's sampler takes each sample in the
+original's steps, part by part in the model tree's order, one function a
+step in Exarust (`exa_game::stages::sampler`); a step whose change has
+not landed is the identity and says which:
+
+| step | what | Exarust |
+|---|---|---|
+| 1 | the keys blended: each turn slerped from the source (a key, or the start's capture) to the target key, the root lerped | `Animator::blend_keys` |
+| 2 | the gait overlay: a moving body's walk slerped toward its run at the same keys by 0.7 × the run blend (the run blend sprinting) | identity until M16 |
+| 3 | the hold toward the held pose by its weight, then normalised; the result kept as the targets | `exa_anim::hold_toward`, `Animator::keep` |
+| 4 | the femur posture: the thighs turned ±5° (or ±1.5° by the record's height) about the femur axis | identity until C13 |
+| 5 | the clip chain: each part placed by its rest translation and its posed turn under its parent's placement; the foot contacts read it | `clip_chain` |
+| 6 | the IK chain: each IK part's turn times its leg IK corrections, the chain recomposed; the targets and the pins read it | identity until C13 (standing) and C19 (walking) |
+| 7 | the torso twist on the lumbar (half) and the thorax toward the aim | identity until M8 |
+| 8 | the head look (yaw, pitch and roll by a ramping weight), the foot pitch to the ground (smoothed), the thorax's attack hunch | identity until M8 and C13 |
+| 9 | the anchors of every slack link and the pelvis height | the drive's, in the carry stage (`Ragdoll::aim`) |
+| 10 | the foot contacts' ground offsets and the gait plant events | the feet routine's; the plants with M16 |
 
 **Pose hold.** Each bone is then pulled toward the pose the body holds by
 w = 1 − (1 − S)²·(1 − s)·(E/Emax)⁴ while dazed (energy more than 0.05 under
@@ -1435,12 +1482,13 @@ from where the body is, so its targets do not jump back to the clip in
 one tick.
 
 Not reproduced yet: the locomotion clock's stride modulation, its start
-key and the run overlay (C18); the blow sag's writer, the swing's
+key and the run overlay (M16); the blow sag's writer, the swing's
 weapon-in-hand wait (weapons are bodies with M24), recoil and the
-follow-through (C21, M26); the attack arm stiffness; the torso
-twist in the captures (identity without it); the femur posture flag; the
-foot contacts' flag in the capture; the armour encumbrance; the creature
-classes' own clock bases.
+follow-through (C21, M26); the attack arm stiffness; the torso twist in
+the captures and the sampler, and the head look (M8); the femur posture
+and the foot pitch (C13); the foot contacts' flag in the capture; the
+weak branch's rate kept from last tick (Exarust reads the base); the
+creature classes' own clock bases.
 
 ## Skinning
 

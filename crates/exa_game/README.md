@@ -66,10 +66,14 @@ saying so (posture; a body that dies there skips the later stages); its walk's
 lowest ankle while it moves and its balance against the level
 (movement); its clip (the capture of a start
 from the body's physical turns, the original's clock rate for what the
-body does, the pose it holds while dazed; a get-up's clip ending into the
-stance writes the condition word normal; sampler); its targets on its
-character frame and lift, its controller told to follow the frame
-(carry); a body asked to go limp keeps its motion unless given a
+body does (the base in its stance whatever its balance, twice it
+kicking), the pose it holds while dazed, the sample taken in the
+original's per-part pipeline (the Run clip overlaid on the Walk by
+0.7 × the run blend, or by the blend sprinting) with identity slots for
+the femur posture, the IK chain, the torso twist, the head look and the
+foot pitch; a get-up's clip ending into the stance writes the condition
+word normal; sampler); its targets, the sampled parts on its character
+frame, and its lift, its controller told to follow the frame (carry); a body asked to go limp keeps its motion unless given a
 velocity (`limp`),
 the original's falls, staggers and get-ups from last tick's balance
 (`balance`, in the posture stage after the condition: upright the Defence
