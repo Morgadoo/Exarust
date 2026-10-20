@@ -10,6 +10,7 @@ pub mod contact;
 pub mod door;
 pub mod intersect;
 pub mod lever;
+pub mod mechanism;
 pub mod motile;
 pub mod plate;
 pub mod prop;

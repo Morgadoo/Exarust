@@ -1,4 +1,11 @@
-//! A pressure plate: its travel, its grind, and the click when it goes down.
+//! A pressure plate or push button: its travel, its grind, the click when
+//! it goes down, and the record it reads.
+//!
+//! The original's push surface is `TRBPushSurface`. Its mobility is 0.3
+//! when the file's is at least 0.5, else 0.03; it reads its operative
+//! record's two targets and flags (kind 2 or bit 8 inverts the signals, bit
+//! 2 makes it one-shot, bit 0x10 signals the second target) and starts
+//! from the object word's low byte.
 //!
 //! Each travel rises by 0.02 while the plate is pressed, at most 1, and
 //! falls by 0.01 otherwise, at least 0. A one-shot stops being pressed once
@@ -11,12 +18,15 @@
 //! most 1.
 //!
 //! A mean above 0.7 presses a plate that was up and signals 1, or −1 when
-//! inverted. A mean below 0.5 releases a plate that was down and signals 0,
-//! unless inverted. A mean of 0.7 does not press. A mean of 0.5 does not
-//! release.
+//! inverted, with the click at 0.3 (pitch 0.9 plus 0.2 random). A mean
+//! below 0.5 releases a plate that was down and signals 0, unless inverted.
+//! A mean of 0.7 does not press. A mean of 0.5 does not release.
 //!
-//! Evidence: the pressure-plate step. A body standing on the plate is not
-//! in this slice.
+//! The solver moves the travels through the slider links: a body standing
+//! on the plate presses it by moving the link, and the ±0.02/0.01 ramp is
+//! the plate's own spring.
+//!
+//! Evidence: the push-surface init and step.
 
 /// How far a pressed travel rises in one tick.
 pub const RISE: f32 = 0.02;
@@ -54,6 +64,9 @@ pub struct Plate {
     pub previous: f32,
     pub has_target: bool,
     pub has_second: bool,
+    /// The object signalled when the plate goes down or up.
+    pub target: u32,
+    pub second_target: u32,
 }
 
 /// What one tick reports. The travels are written in the slice passed in.
@@ -160,6 +173,70 @@ pub fn plate_step(plate: &mut Plate, travels: &mut [f32]) -> PlateTick {
     }
 }
 
+/// A push surface's operative record.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Record {
+    /// The operative kind; 2 makes the signals inverted.
+    pub kind: u8,
+    /// The flags: one-shot and the second target.
+    pub flags: u16,
+    pub target: u32,
+    pub second: u32,
+}
+
+/// The surface stops taking pushes once it is all the way down.
+pub const ONE_SHOT: u16 = 2;
+/// The second target is signalled too.
+pub const SECOND: u16 = 0x10;
+/// Signals are inverted.
+pub const INVERTED: u16 = 8;
+/// The kind that inverts the signals.
+pub const INVERTED_KIND: u8 = 2;
+/// The grind loop's sound name.
+pub const GRIND_SOUND: &str = "Stnb_mov";
+/// The click's sound name.
+pub const CLICK_SOUND: &str = "Stnb_fit";
+
+/// A push surface's mobility after the file's value: 0.3 when the file's
+/// is at least 0.5, else 0.03.
+pub fn mobility(file: f32) -> f32 {
+    if 0.5 <= file { 0.3 } else { 0.03 }
+}
+
+impl Plate {
+    /// A plate from its operative record and the object word's low byte.
+    pub fn new(record: &Record, saved: u8) -> Self {
+        Plate {
+            pushed: false,
+            one_shot: record.flags & ONE_SHOT != 0,
+            invert: record.kind == INVERTED_KIND || record.flags & INVERTED != 0,
+            second: record.flags & SECOND != 0,
+            down: saved == 1,
+            speed: 0.0,
+            previous: 0.0,
+            has_target: record.target != 0,
+            has_second: record.second != 0,
+            target: record.target,
+            second_target: record.second,
+        }
+    }
+
+    /// The object word's low byte this plate leaves behind.
+    pub fn saved(&self) -> u8 {
+        u8::from(self.down)
+    }
+
+    /// The click when the plate goes down.
+    pub fn click(&self) -> crate::door::Sound {
+        crate::door::Sound {
+            volume: CLICK,
+            volume_spread: 0.0,
+            pitch: 0.9,
+            pitch_spread: 0.2,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,7 +252,37 @@ mod tests {
             previous: 0.0,
             has_target: true,
             has_second: false,
+            target: 1,
+            second_target: 0,
         }
+    }
+
+    #[test]
+    fn a_plate_reads_its_targets_and_flags_from_its_record() {
+        let record = Record {
+            kind: INVERTED_KIND,
+            flags: ONE_SHOT | SECOND,
+            target: 21,
+            second: 22,
+        };
+        let plate = Plate::new(&record, 1);
+        assert!(plate.one_shot && plate.invert && plate.second);
+        assert!(plate.down && plate.has_target && plate.has_second);
+        assert_eq!((plate.target, plate.second_target), (21, 22));
+        assert_eq!(plate.saved(), 1);
+        assert_eq!(Plate::new(&record, 0).saved(), 0);
+        let flipped = Record {
+            kind: 1,
+            flags: INVERTED,
+            ..record
+        };
+        assert!(Plate::new(&flipped, 0).invert);
+        assert!((mobility(0.5) - 0.3).abs() < 1e-6);
+        assert!((mobility(0.49) - 0.03).abs() < 1e-6);
+        let click = plate.click();
+        assert!((click.volume - CLICK).abs() < 1e-6);
+        assert!((click.pitch - 0.9).abs() < 1e-6);
+        assert!((click.pitch_spread - 0.2).abs() < 1e-6);
     }
 
     #[test]

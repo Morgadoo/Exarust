@@ -7,8 +7,10 @@
 //! only free bodies for
 //! now: a body hung from the world by its links (lamps, chains, wall
 //! rings) needs the world-link laws, and doors, levers and push surfaces
-//! need their mechanisms, so those stay static level geometry until they
-//! land. Evidence: `docs/formats/RFC.md` (Rigid body, Props).
+//! need their mechanisms and those same world links, so they stay static
+//! level geometry until both land. Their rules are in `exa_physics`'s
+//! `door`, `lever`, `plate` and `mechanism` modules. Evidence:
+//! `docs/formats/RFC.md` (Rigid body, Props).
 
 use bevy::prelude::*;
 use exa_assets::{Model, NodeRigidBody};

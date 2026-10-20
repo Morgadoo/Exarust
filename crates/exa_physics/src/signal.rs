@@ -1,4 +1,4 @@
-//! Where a signal goes.
+//! Where a signal goes, as a single target's summary.
 //!
 //! A missing target does nothing. A door toggles on −1: an unlatched leaf
 //! is closed and a latched leaf is opened. Any other value closes on 0 and
@@ -10,22 +10,16 @@
 //! 0, 1, 2, 3 or 5 is named. Any other kind is ignored. A plate is pushed
 //! exactly when the value is not 0.
 //!
+//! The rules themselves are [`crate::mechanism::dispatch`]'s, which reads
+//! whole records; this module keeps the summary a caller that holds only a
+//! target's class and kind needs, and the door toggle's leaf rule.
+//!
 //! Evidence: the signal dispatch, the deferred job, and the toggle of the
-//! doors under a node. Kinds 0, 2, 3 and 5 run in the relay module. The
-//! close itself is not in this slice.
+//! doors under a node. Kinds 0, 2, 3 and 5 run in the relay module, the door
+//! orders in the door module.
 
-/// Operative class of a deferred fire or light.
-const JOB: u8 = 6;
-/// Operative class of a relay.
-const RELAY: u8 = 7;
-/// Operative class of a pressure plate.
-const PLATE: u8 = 5;
-/// Job kind that starts a fire.
-const FIRE: u8 = 0xC;
-/// Job kind that turns a light on or off.
-const LIGHT: u8 = 0xD;
-/// The value that toggles the doors under a node.
-const TOGGLE: i32 = -1;
+use crate::door::{self, Record as DoorRecord};
+use crate::mechanism::{self, Dispatch, Job, Relay};
 
 /// What the signal found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,25 +69,40 @@ pub fn signal(target: &mut Target, value: i32) -> Order {
         return Order::None;
     }
     if target.door {
-        return door_order(target.inverted, value);
+        let record = DoorRecord {
+            flags: if target.inverted { door::INVERTED } else { 0 },
+            ..DoorRecord::default()
+        };
+        return match mechanism::dispatch(Some(&record), None, value) {
+            Dispatch::Doors(mechanism::DoorOrder::CloseAndLock) => Order::Close,
+            Dispatch::Doors(mechanism::DoorOrder::Open) => Order::Open,
+            Dispatch::Doors(mechanism::DoorOrder::Toggle) => Order::Toggle,
+            _ => Order::None,
+        };
     }
-    match target.class {
-        JOB => job_order(target, value),
-        RELAY => relay_order(target.kind),
-        PLATE => Order::Plate { pushed: value != 0 },
-        _ => Order::None,
-    }
-}
-
-fn door_order(inverted: bool, value: i32) -> Order {
-    if value == TOGGLE {
-        return Order::Toggle;
-    }
-    let value = if inverted { !value & 1 } else { value };
-    if value == 0 {
-        Order::Close
-    } else {
-        Order::Open
+    let record = mechanism::Record {
+        class: target.class,
+        kind: target.kind,
+        value: target.stored,
+        ..mechanism::Record::default()
+    };
+    match mechanism::dispatch(None, Some(&record), value) {
+        Dispatch::Job(Job::Fire { size }) => Order::Fire { size },
+        Dispatch::Job(Job::Light { on }) => {
+            if on {
+                target.stored |= 1;
+            } else {
+                target.stored &= !1;
+            }
+            Order::Light { on }
+        }
+        Dispatch::Relay(Relay::Combine) => Order::Relay { kind: 0 },
+        Dispatch::Relay(Relay::Broadcast) => Order::Relay { kind: 1 },
+        Dispatch::Relay(Relay::Both) => Order::Relay { kind: 2 },
+        Dispatch::Relay(Relay::Second) => Order::Relay { kind: 3 },
+        Dispatch::Relay(Relay::Sequence) => Order::Relay { kind: 5 },
+        Dispatch::Plate { pushed } => Order::Plate { pushed },
+        Dispatch::None | Dispatch::Doors(_) => Order::None,
     }
 }
 
@@ -102,37 +111,22 @@ pub fn toggle_leaf(latched: bool) -> Order {
     if latched { Order::Open } else { Order::Close }
 }
 
-fn job_order(target: &mut Target, value: i32) -> Order {
-    if target.kind == FIRE {
-        if value != 0 {
-            Order::Fire {
-                size: target.stored,
-            }
-        } else {
-            Order::None
-        }
-    } else if target.kind == LIGHT {
-        if value & 1 == 0 {
-            target.stored &= !1u16;
-        } else {
-            target.stored |= 1;
-        }
-        Order::Light { on: value & 1 != 0 }
-    } else {
-        Order::None
-    }
-}
-
-fn relay_order(kind: u8) -> Order {
-    match kind {
-        0 | 1 | 2 | 3 | 5 => Order::Relay { kind },
-        _ => Order::None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Operative class of a deferred fire or light.
+    const JOB: u8 = 6;
+    /// Operative class of a relay.
+    const RELAY: u8 = 7;
+    /// Operative class of a pressure plate.
+    const PLATE: u8 = 5;
+    /// Job kind that starts a fire.
+    const FIRE: u8 = 0xC;
+    /// Job kind that turns a light on or off.
+    const LIGHT: u8 = 0xD;
+    /// The value that toggles the doors under a node.
+    const TOGGLE: i32 = -1;
 
     fn target() -> Target {
         Target {
