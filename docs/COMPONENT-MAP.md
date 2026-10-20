@@ -5,8 +5,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **21.9% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 17.9% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **22.0% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by function count (zero-byte imported names left out): 18.0% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **27.3%** reproduced.
 
 ## By section
@@ -59,7 +59,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | XA_SaveGames | Game modes, arena & session | 96 | 27 | 5% |
 | SG_GameGUI | UI | 62 | 22 | 8% |
 | SG_Thaum_Mind | Thaumaturgy & effects | 45 | 21 | 13% |
-| TGUIForm | UI | 77 | 20 | 5% |
+| TGUIForm | UI | 77 | 20 | 12% |
 | SG_GameMain | Game modes, arena & session | 59 | 20 | 5% |
 | SG_Character_Data | Characters, motion & animation | 76 | 20 | 9% |
 | SG_ObjectDB2 | Data, assets & I/O | 116 | 19 | 11% |

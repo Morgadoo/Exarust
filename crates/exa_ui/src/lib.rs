@@ -12,6 +12,7 @@ pub mod blend;
 pub mod cursor;
 pub mod fade;
 pub mod font;
+pub mod form;
 pub mod fps;
 pub mod heartbeat;
 pub mod hud;
