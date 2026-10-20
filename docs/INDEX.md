@@ -11,6 +11,7 @@
 | [`PLAYER.md`](PLAYER.md) | player control, the chase camera and the carried torch, as the original does them |
 | [`DEBUGGING.md`](DEBUGGING.md) | debug tools for bodies: the body overlay and joint readout, the joint trace, pausing, stepping and slowing the simulation, test wounds; the navigation grid overlay |
 | [`NAVIGATION.md`](NAVIGATION.md) | the original's navigation grid: 30 cm cells, voxel columns from terrain, GI points and floors, spans, two layers, cost bytes; what Exarust has of it |
+| [`THAUMATURGY.md`](THAUMATURGY.md) | the powers: cast gates, prices and slots, the Force, Energy and Displacement casts, electric arcs, the force barricade and displacement wisps |
 | [`UI.md`](UI.md) | the interface: the game's bitmap font, the frame-rate readout |
 | [`reviews/`](reviews/2026-10-16-progress.md) | dated progress reviews: coverage, commits, risks to fidelity, recommendations |
 | [`BUILD.md`](BUILD.md) | toolchain and system packages, building and running |

@@ -251,6 +251,13 @@ parts, links and anchors are drawn. `body::DealtShoves` keeps the blows the
 last tick dealt. Nothing calls them unless a tool is on
 ([`docs/DEBUGGING.md`](../../docs/DEBUGGING.md)).
 
+An effect pushes a part at one of its spheres with `Ragdoll::push_sphere`:
+each particle moves by the push times its weight of the sphere's centre,
+unclamped, and past the push strain the part's edges are restored, as the
+original's push with its strain flag does (the force barricade's shove;
+[`docs/THAUMATURGY.md`](../../docs/THAUMATURGY.md)). `Balance::set_counter`
+sets the instability counter (the barricade sets it to 100).
+
 ## Scope
 
 - The mesh voxeliser and its voxel map (`voxel`): the floor heightfield and

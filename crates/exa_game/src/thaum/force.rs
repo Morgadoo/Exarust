@@ -578,6 +578,84 @@ pub fn place_barricade(
     }
 }
 
+/// What a throw's pick under the cursor found.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ThrowTarget {
+    /// The node is part of the level.
+    pub fixed: bool,
+    /// It has a moving body.
+    pub moving: bool,
+    /// The body is a character's.
+    pub character: bool,
+    /// The character's condition word.
+    pub condition: u32,
+    /// The node may be thrown whatever its weight.
+    pub any_weight: bool,
+    /// The body's mobility.
+    pub mobility: f32,
+    /// How many hold it already.
+    pub held: i32,
+}
+
+/// Whether a throw takes the pick: a moving body off the level, a
+/// character only when dead, anything else only when it may be thrown
+/// whatever its weight or its mobility is 0.01 or more, and nobody holds
+/// it. A throw that takes it plays `thmfrc_knsst` at it (volume 0.3,
+/// pitch 0.8 + 0.4·r).
+pub fn can_throw(target: &ThrowTarget) -> bool {
+    if target.fixed || !target.moving {
+        return false;
+    }
+    if target.character {
+        if target.condition != super::casting::FALLEN_OR_DYING {
+            return false;
+        }
+    } else if !target.any_weight && target.mobility < 0.01 {
+        return false;
+    }
+    target.held < 1
+}
+
+/// A charging kinesis hands its held body to a throw when it holds one
+/// nobody else holds; the kinesis then lets go and ends.
+pub fn kinesis_hands_over(target_held: Option<i32>) -> bool {
+    target_held.is_some_and(|held| held < 1)
+}
+
+/// Where a dome sits: 100 cm above the caster's ground point, facing its
+/// heading (the barrier), its radius 100 for the barrier and 120 for the
+/// bubble.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DomePlace {
+    pub centre: Vec3,
+    pub radius: f32,
+    pub facing: Option<Vec3>,
+}
+
+/// The barrier's or the bubble's place.
+pub fn place_dome(kind: ForceKind, ground: Vec3, heading: Vec3) -> Option<DomePlace> {
+    let centre = Vec3::new(ground.x, ground.y + 100.0, ground.z);
+    match kind {
+        ForceKind::Barrier => Some(DomePlace {
+            centre,
+            radius: 100.0,
+            facing: Some(heading),
+        }),
+        ForceKind::Bubble => Some(DomePlace {
+            centre,
+            radius: 120.0,
+            facing: None,
+        }),
+        _ => None,
+    }
+}
+
+/// The pitch of the sound the shell and strikes play as they start
+/// (`thmfrc_ss` at volume 0.3): 0.6 + 0.4·r.
+pub fn start_pitch(roll: f32) -> f32 {
+    roll * 0.4 + 0.6
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::casting::{ActivePower, CASTING};
@@ -813,6 +891,59 @@ mod tests {
         assert_eq!(restore_force_power(0x2020B, &mut body), Some(0.3));
         assert!((body.reserved - (0.35 + 0.225)).abs() < 1e-6);
         assert_eq!(restore_force_power(0x20207, &mut body), None);
+    }
+
+    #[test]
+    fn a_throw_takes_loose_bodies_and_corpses() {
+        let loose = ThrowTarget {
+            fixed: false,
+            moving: true,
+            character: false,
+            condition: 0,
+            any_weight: false,
+            mobility: 0.01,
+            held: 0,
+        };
+        assert!(can_throw(&loose));
+        assert!(!can_throw(&ThrowTarget {
+            mobility: 0.0099,
+            ..loose
+        }));
+        assert!(can_throw(&ThrowTarget {
+            mobility: 0.0,
+            any_weight: true,
+            ..loose
+        }));
+        assert!(!can_throw(&ThrowTarget { held: 1, ..loose }));
+        let body = ThrowTarget {
+            character: true,
+            condition: 0xA00,
+            ..loose
+        };
+        assert!(can_throw(&body));
+        assert!(!can_throw(&ThrowTarget {
+            condition: 0x200,
+            ..body
+        }));
+        assert!(!can_throw(&ThrowTarget {
+            fixed: true,
+            ..loose
+        }));
+        assert!(kinesis_hands_over(Some(0)));
+        assert!(!kinesis_hands_over(Some(1)));
+        assert!(!kinesis_hands_over(None));
+    }
+
+    #[test]
+    fn the_domes_stand_a_metre_up() {
+        let barrier =
+            place_dome(ForceKind::Barrier, Vec3::new(1.0, 2.0, 3.0), Vec3::Z).expect("a dome");
+        assert_eq!(barrier.centre, Vec3::new(1.0, 102.0, 3.0));
+        assert_eq!((barrier.radius, barrier.facing), (100.0, Some(Vec3::Z)));
+        let bubble = place_dome(ForceKind::Bubble, Vec3::ZERO, Vec3::Z).expect("a dome");
+        assert_eq!((bubble.radius, bubble.facing), (120.0, None));
+        assert!(place_dome(ForceKind::Blast, Vec3::ZERO, Vec3::Z).is_none());
+        assert_eq!(start_pitch(0.5), 0.8);
     }
 
     #[test]

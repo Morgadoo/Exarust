@@ -7,6 +7,7 @@ Rendering on Bevy/wgpu: material plug-ins, skinned characters, terrain, grass, l
 ## Modules
 
 - `bound_sphere`: the original's smallest enclosing sphere (move-to-front over a support set of 1–4 points, in f64), which fits its sun shadow map; with the f32/f64 vector helpers ([`docs/RENDERING.md`](../../docs/RENDERING.md), Sun shadow fit).
+- `glow`: `GlowMaterial`, the thaumaturgy effects' additive stand-in (vertex colour times a tint, both faces, no shadows) until their own programs are ported ([`docs/THAUMATURGY.md`](../../docs/THAUMATURGY.md), Drawing).
 - `image_noise`: the original's procedural noise: white noise from its
   linear congruential sequence, byte octaves (the terrain's blend-rule
   maps) and their ridge fold, ridged float octaves, and `NoiseField`, the
