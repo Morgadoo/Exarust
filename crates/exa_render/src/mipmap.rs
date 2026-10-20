@@ -43,6 +43,12 @@ pub fn sinc(x: f64) -> f64 {
     }
 }
 
+/// The 13 tables, built once for every texture that needs them.
+fn kaiser_bank() -> &'static [Vec<f32>] {
+    static BANK: std::sync::OnceLock<Vec<Vec<f32>>> = std::sync::OnceLock::new();
+    BANK.get_or_init(|| (1..=KAISER_MAX_LEVEL).map(kaiser_table).collect())
+}
+
 /// The normalised Kaiser table of a mip level (1 through 13).
 pub fn kaiser_table(level: u32) -> Vec<f32> {
     let level = level.clamp(1, KAISER_MAX_LEVEL);
@@ -193,20 +199,13 @@ pub fn build_mip_chain(
         if !width.is_multiple_of(dst_width) || !height.is_multiple_of(dst_height) {
             break;
         }
-        let weights = kaiser_table(level);
+        let weights = &kaiser_bank()[level as usize - 1];
         let mut horizontal = vec![0.0f32; dst_width * height * 4];
         let mut row = vec![0.0f32; dst_width * 4];
         for y in 0..height {
             let start = y * width * 4;
             let end = start + width * 4;
-            resample_axis(
-                &base[start..end],
-                width,
-                dst_width,
-                &weights,
-                wrap,
-                &mut row,
-            );
+            resample_axis(&base[start..end], width, dst_width, weights, wrap, &mut row);
             horizontal[y * dst_width * 4..(y + 1) * dst_width * 4].copy_from_slice(&row);
         }
         let mut texels = vec![0.0f32; dst_width * dst_height * 4];
@@ -217,7 +216,7 @@ pub fn build_mip_chain(
                 let source = (y * dst_width + x) * 4;
                 column[y * 4..y * 4 + 4].copy_from_slice(&horizontal[source..source + 4]);
             }
-            resample_axis(&column, height, dst_height, &weights, wrap, &mut output);
+            resample_axis(&column, height, dst_height, weights, wrap, &mut output);
             for y in 0..dst_height {
                 let destination = (y * dst_width + x) * 4;
                 texels[destination..destination + 4].copy_from_slice(&output[y * 4..y * 4 + 4]);
