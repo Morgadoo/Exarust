@@ -858,6 +858,39 @@ pub fn clear_character_view(has_view: bool, base_result: bool) -> ViewClear {
     }
 }
 
+/// A node's record: the flags and the signed word at 0x468.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ViewNodeRecord {
+    pub flags: u32,
+    pub value: i32,
+}
+
+/// A character-view chain node: its next node and its record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ViewNode {
+    pub next: Option<usize>,
+    pub record: Option<ViewNodeRecord>,
+}
+
+/// Walks the chain from `start` and stops at the first node whose record is
+/// missing, or whose flags carry both 0x12000000 with a negative word; any
+/// other node follows its next.
+pub fn first_settled_view_node(nodes: &[ViewNode], start: usize) -> Option<usize> {
+    let mut current = start;
+    loop {
+        let node = nodes.get(current)?;
+        match node.record {
+            None => return Some(current),
+            Some(record) => {
+                if (record.flags & 0x12000000) == 0x12000000 && record.value < 0 {
+                    return Some(current);
+                }
+                current = node.next?;
+            }
+        }
+    }
+}
+
 /// The skill selector's applied value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillSelectorApplied {
@@ -1938,5 +1971,51 @@ mod tests {
         assert_eq!(none.action, None);
         assert!(!none.sound);
         assert!(!none.session);
+    }
+
+    #[test]
+    fn the_character_view_stops_its_chain_walk() {
+        let settled = [
+            ViewNode {
+                next: Some(1),
+                record: Some(ViewNodeRecord { flags: 0, value: 0 }),
+            },
+            ViewNode {
+                next: None,
+                record: Some(ViewNodeRecord {
+                    flags: 0x12000000,
+                    value: -1,
+                }),
+            },
+        ];
+        assert_eq!(first_settled_view_node(&settled, 0), Some(1));
+
+        let missing = [
+            ViewNode {
+                next: Some(1),
+                record: Some(ViewNodeRecord { flags: 0, value: 0 }),
+            },
+            ViewNode {
+                next: Some(2),
+                record: Some(ViewNodeRecord {
+                    flags: 0x12000000,
+                    value: 0,
+                }),
+            },
+            ViewNode {
+                next: None,
+                record: None,
+            },
+        ];
+        assert_eq!(first_settled_view_node(&missing, 0), Some(2));
+
+        let open = [ViewNode {
+            next: None,
+            record: Some(ViewNodeRecord {
+                flags: 0x02000000,
+                value: -1,
+            }),
+        }];
+        assert_eq!(first_settled_view_node(&open, 0), None);
     }
 }

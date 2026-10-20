@@ -42,13 +42,13 @@ pub use menu::{
     SkillSelectorApplied, SkillSelectorDraw, SkillSelectorDrawPlace, SkillSelectorMode,
     SkillSelectorShow, SkillTipDraw, SkillTipPlace, SkillTipShow, SkillTipShowInput, SplashBounds,
     SplashDestroy, SplashDestroyInput, TRANSITION_TEXT, TransitionFade, TransitionFadePlace,
-    ViewClear, ViewDestroy, clear_character_view, confirm_class, confirm_main_menu,
-    destroy_character_view, detach_inventory, dispatch_end_session, draw_skill_selector,
-    draw_skill_tip, draw_transition_fade, forward_main_menu, hit_class_cards, inventory_key_close,
-    inventory_page, main_menu_key, menu_clock_scale, menu_key_close, navigate_class,
-    select_main_menu, select_menu_class, settle_skill_selection, show_char_loot, show_journal,
-    show_skill_selector, show_skill_tip, skill_selector_key, splash_bounds, type_menu_name,
-    update_menu_hover,
+    ViewClear, ViewDestroy, ViewNode, ViewNodeRecord, clear_character_view, confirm_class,
+    confirm_main_menu, destroy_character_view, detach_inventory, dispatch_end_session,
+    draw_skill_selector, draw_skill_tip, draw_transition_fade, first_settled_view_node,
+    forward_main_menu, hit_class_cards, inventory_key_close, inventory_page, main_menu_key,
+    menu_clock_scale, menu_key_close, navigate_class, select_main_menu, select_menu_class,
+    settle_skill_selection, show_char_loot, show_journal, show_skill_selector, show_skill_tip,
+    skill_selector_key, splash_bounds, type_menu_name, update_menu_hover,
 };
 pub use scale::GuiScale;
 pub use skill::{
