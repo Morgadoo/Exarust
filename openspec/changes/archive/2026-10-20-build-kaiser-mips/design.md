@@ -16,4 +16,4 @@ The format converters, the upload path and the NPOT fallback are separate.
 
 ## Docs
 
-`RFP_Mipmaps_Kaiser` is **25%**. The headline rises slightly.
+`RFP_Mipmaps_Kaiser` is **20%**. The headline rises slightly.
