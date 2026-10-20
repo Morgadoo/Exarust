@@ -41,7 +41,7 @@ pub mod wounds;
 
 use std::collections::HashSet;
 
-pub use aim::{HeadLook, HeadTrack, track_head};
+pub use aim::{HeadLook, HeadTrack, track_head, track_head_far};
 use attack::{AttackMotion, Attacker, Slot};
 use bevy::prelude::*;
 pub use condition::{Condition, StateFlags};

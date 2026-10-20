@@ -96,6 +96,38 @@ pub fn track_head(
     body_forward: [f32; 3],
     look_at: [f32; 3],
 ) -> HeadLook {
+    track_head_inner(
+        head,
+        previous_dir,
+        eye,
+        body_forward,
+        look_at,
+        HEAD_AHEAD,
+        Some(HEAD_PITCH_FLOOR),
+    )
+}
+
+/// The far head-tracking variant (`0x1000c0cd0`): a 150 cm look-ahead and
+/// no pitch floor.
+pub fn track_head_far(
+    head: &mut HeadTrack,
+    previous_dir: [f32; 3],
+    eye: [f32; 3],
+    body_forward: [f32; 3],
+    look_at: [f32; 3],
+) -> HeadLook {
+    track_head_inner(head, previous_dir, eye, body_forward, look_at, 150.0, None)
+}
+
+fn track_head_inner(
+    head: &mut HeadTrack,
+    previous_dir: [f32; 3],
+    eye: [f32; 3],
+    body_forward: [f32; 3],
+    look_at: [f32; 3],
+    ahead: f32,
+    pitch_floor: Option<f32>,
+) -> HeadLook {
     let mut d = [
         look_at[0] - eye[0],
         look_at[1] - eye[1],
@@ -121,7 +153,10 @@ pub fn track_head(
         yaw = wrap(body_yaw - HEAD_YAW_LIMIT);
     }
 
-    let want_pitch = (-asin_poly(f64::from(dir_in[1])) as f32).max(HEAD_PITCH_FLOOR);
+    let want_pitch = match pitch_floor {
+        Some(floor) => (-asin_poly(f64::from(dir_in[1])) as f32).max(floor),
+        None => -asin_poly(f64::from(dir_in[1])) as f32,
+    };
     let pitch = step(head.pitch, want_pitch);
 
     *head = HeadTrack { yaw, pitch };
@@ -134,9 +169,9 @@ pub fn track_head(
     HeadLook {
         dir,
         point: [
-            eye[0] + HEAD_AHEAD * dir[0],
-            eye[1] + HEAD_AHEAD * dir[1],
-            eye[2] + HEAD_AHEAD * dir[2],
+            eye[0] + ahead * dir[0],
+            eye[1] + ahead * dir[1],
+            eye[2] + ahead * dir[2],
         ],
         flat: [dir[0] / flat_length, 0.0, dir[2] / flat_length],
     }
@@ -241,5 +276,35 @@ mod tests {
         );
         assert!((head.yaw - HEAD_YAW_LIMIT).abs() < 1e-6);
         assert!(look.flat[0] > 0.7);
+    }
+
+    #[test]
+    fn the_far_variant_looks_a_hundred_and_fifty_centimetres() {
+        let mut head = HeadTrack {
+            yaw: 0.0,
+            pitch: 0.0,
+        };
+        let look = track_head_far(
+            &mut head,
+            [0.0, 0.0, 1.0],
+            [0.0; 3],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 1000.0],
+        );
+        assert_eq!(look.point, [0.0, 0.0, 150.0]);
+
+        let mut up = HeadTrack {
+            yaw: 0.0,
+            pitch: -1.02,
+        };
+        let look = track_head_far(
+            &mut up,
+            [0.0, 0.0, 1.0],
+            [0.0; 3],
+            [0.0, 0.0, 1.0],
+            [100.0, 1000.0, 0.0],
+        );
+        assert!(up.pitch < -1.0);
+        assert!(look.point[1] > 0.0);
     }
 }
