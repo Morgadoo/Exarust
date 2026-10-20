@@ -256,9 +256,48 @@ mod chain_tests {
     }
 }
 
+/// Resamples one axis of an interleaved RGBA8 image into f32: the source
+/// bytes are normalised by 255, with the same ratio, start, wrap and clamp
+/// as [`resample_axis`].
+pub fn resample_axis_u8(
+    src: &[u8],
+    src_extent: usize,
+    dst_extent: usize,
+    weights: &[f32],
+    wrap: bool,
+    out: &mut [f32],
+) {
+    if src_extent == 0 || dst_extent == 0 || weights.is_empty() {
+        return;
+    }
+    let ratio = (src_extent / dst_extent).max(1);
+    let start = mip_axis_start(weights.len(), ratio);
+    for x in 0..dst_extent {
+        let s0 = start + x as i64 * ratio as i64;
+        let mut acc = [0.0f32; 4];
+        for (k, &weight) in weights.iter().enumerate() {
+            let mut source = s0 + k as i64;
+            source = if wrap {
+                source.rem_euclid(src_extent as i64)
+            } else {
+                source.clamp(0, src_extent as i64 - 1)
+            };
+            let base = source as usize * 4;
+            for (channel, value) in acc.iter_mut().enumerate() {
+                *value += weight * f32::from(src.get(base + channel).copied().unwrap_or(0)) / 255.0;
+            }
+        }
+        let base = x * 4;
+        if let Some(slot) = out.get_mut(base..base + 4) {
+            slot.copy_from_slice(&acc);
+        }
+    }
+}
+
 /// Builds the chain for an RGBA8 base: the base bytes followed by each
-/// generated level, and the total level count (base included). Channels are
-/// normalised by 255 and quantised back on output.
+/// generated level, and the total level count (base included). The base is
+/// filtered as bytes and the horizontal pass is split across rows for large
+/// images.
 pub fn build_mip_chain_rgba8(
     base: &[u8],
     width: usize,
@@ -268,18 +307,91 @@ pub fn build_mip_chain_rgba8(
     if width == 0 || height == 0 || base.len() < width * height * 4 {
         return (base.to_vec(), 1);
     }
-    let floats: Vec<f32> = base.iter().map(|value| f32::from(*value) / 255.0).collect();
-    let levels = build_mip_chain(&floats, width, height, wrap, KAISER_MAX_LEVEL);
     let mut out = base.to_vec();
-    for level in &levels {
+    let mut count = 1u32;
+    let bank = kaiser_bank();
+    for level in 1..=KAISER_MAX_LEVEL {
+        let dst_width = width >> level;
+        let dst_height = height >> level;
+        if dst_width == 0 || dst_height == 0 || dst_width + dst_height < 3 {
+            break;
+        }
+        if !width.is_multiple_of(dst_width) || !height.is_multiple_of(dst_height) {
+            break;
+        }
+        let weights = &bank[level as usize - 1];
+        let mut horizontal = vec![0.0f32; dst_width * height * 4];
+        let threads = std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(1)
+            .min((height / 32).max(1));
+        if threads > 1 && height * dst_width >= 65_536 {
+            std::thread::scope(|scope| {
+                let mut rest = horizontal.as_mut_slice();
+                let per = height.div_ceil(threads);
+                let mut start_row = 0;
+                while start_row < height {
+                    let rows = per.min(height - start_row);
+                    let (chunk, tail) = rest.split_at_mut(rows * dst_width * 4);
+                    rest = tail;
+                    let base_ref = base;
+                    let weights_ref: &[f32] = weights;
+                    scope.spawn(move || {
+                        let mut row = vec![0.0f32; dst_width * 4];
+                        for row_index in 0..rows {
+                            let y = start_row + row_index;
+                            resample_axis_u8(
+                                &base_ref[y * width * 4..(y + 1) * width * 4],
+                                width,
+                                dst_width,
+                                weights_ref,
+                                wrap,
+                                &mut row,
+                            );
+                            chunk[row_index * dst_width * 4..(row_index + 1) * dst_width * 4]
+                                .copy_from_slice(&row);
+                        }
+                    });
+                    start_row += rows;
+                }
+            });
+        } else {
+            let mut row = vec![0.0f32; dst_width * 4];
+            for y in 0..height {
+                resample_axis_u8(
+                    &base[y * width * 4..(y + 1) * width * 4],
+                    width,
+                    dst_width,
+                    weights,
+                    wrap,
+                    &mut row,
+                );
+                horizontal[y * dst_width * 4..(y + 1) * dst_width * 4].copy_from_slice(&row);
+            }
+        }
+
+        let mut texels = vec![0.0f32; dst_width * dst_height * 4];
+        let mut column = vec![0.0f32; height * 4];
+        let mut output = vec![0.0f32; dst_height * 4];
+        for x in 0..dst_width {
+            for y in 0..height {
+                let source = (y * dst_width + x) * 4;
+                column[y * 4..y * 4 + 4].copy_from_slice(&horizontal[source..source + 4]);
+            }
+            resample_axis(&column, height, dst_height, weights, wrap, &mut output);
+            for y in 0..dst_height {
+                let destination = (y * dst_width + x) * 4;
+                texels[destination..destination + 4].copy_from_slice(&output[y * 4..y * 4 + 4]);
+            }
+        }
         out.extend(
-            level
-                .texels
+            texels
                 .iter()
                 .map(|value| (value.clamp(0.0, 1.0) * 255.0).round() as u8),
         );
+        count += 1;
     }
-    (out, 1 + levels.len() as u32)
+    (out, count)
 }
 
 #[cfg(test)]
