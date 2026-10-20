@@ -1172,6 +1172,31 @@ pub fn show_tree(input: TreeShowInput) -> TreeShow {
     }
 }
 
+/// The tree charge's result.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TreeCharge {
+    pub charge: f32,
+    pub gain: f32,
+    pub started: bool,
+    pub start_clock: Option<u32>,
+}
+
+/// Advances the tree's charge, gain and start stamp.
+pub fn charge_tree(current: f32, tick: i32, clock: u32, already_started: bool) -> TreeCharge {
+    let charge = ((f64::from(current) + f64::from(tick) * (1.0 / 120.0)) as f32).clamp(-9.0, 5.0);
+    let gain = if charge >= 0.0 {
+        (5.0 + charge) * 0.2
+    } else {
+        (4.0 - (-charge).sqrt()) * 0.25
+    };
+    TreeCharge {
+        charge,
+        gain,
+        started: !already_started,
+        start_clock: (!already_started).then_some(clock),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1969,5 +1994,28 @@ mod tests {
         assert_eq!(quiet.focus_calls, 0);
         assert_eq!(quiet.refresh_calls, 0);
         assert_eq!(quiet.stamp, 15);
+    }
+
+    #[test]
+    fn the_tree_charge_rises_clamps_and_gains() {
+        let up = charge_tree(0.0, 120, 100, false);
+        assert!((up.charge - 1.0).abs() < 1e-6);
+        assert!((up.gain - 1.2).abs() < 1e-6);
+        assert!(up.started);
+        assert_eq!(up.start_clock, Some(100));
+
+        let down = charge_tree(0.0, -120, 100, true);
+        assert!((down.charge + 1.0).abs() < 1e-6);
+        assert!((down.gain - 0.75).abs() < 1e-6);
+        assert!(!down.started);
+        assert_eq!(down.start_clock, None);
+
+        let low = charge_tree(-9.0, -120, 0, true);
+        assert!((low.charge + 9.0).abs() < 1e-6);
+        assert!((low.gain - 0.25).abs() < 1e-6);
+
+        let high = charge_tree(5.0, 120, 0, true);
+        assert!((high.charge - 5.0).abs() < 1e-6);
+        assert!((high.gain - 2.0).abs() < 1e-6);
     }
 }
