@@ -1973,3 +1973,88 @@ mod budget_tests {
         );
     }
 }
+
+/// A layer's height word: its ceiling byte and its floor byte.
+pub type LayerWord = (u8, u8);
+
+/// Chooses the layer a step enters from a current floor: layer 0 first,
+/// then layer 1, with the rise kept within −20 through +4. The branch tree
+/// is the original's, including the ceiling rejection in the narrow band
+/// and the "no layer" marker that still carries a floor.
+pub fn choose_path_layer(
+    current_floor: i32,
+    layer0: LayerWord,
+    layer1: LayerWord,
+) -> Option<(u8, u8)> {
+    let h0 = i32::from(layer0.1);
+    let h1 = i32::from(layer1.1);
+    if h0 == 0 {
+        return None;
+    }
+    let mut layer: i32;
+    let mut chosen: i32;
+    if current_floor + 4 >= h0 {
+        layer = 0;
+        chosen = h0;
+    } else if current_floor + 10 > h0 {
+        return None;
+    } else {
+        layer = -1;
+        chosen = h0;
+    }
+
+    if h1 == 0 {
+        if layer < 0 {
+            return None;
+        }
+    } else if current_floor + 4 >= h1 {
+        if h1 > chosen {
+            layer = 1;
+            chosen = h1;
+        } else if layer < 0 {
+            return None;
+        }
+    } else if current_floor + 10 <= h1 {
+        if layer < 0 {
+            return None;
+        }
+    } else {
+        if layer1.0 > 0 || h1 < chosen || layer < 0 {
+            return None;
+        }
+    }
+
+    let rise = chosen - current_floor;
+    if !(-20..=4).contains(&rise) {
+        return None;
+    }
+    Some((layer as u8, chosen as u8))
+}
+
+#[cfg(test)]
+mod layer_tests {
+    use super::*;
+
+    #[test]
+    fn layer_zero_takes_a_floor_within_four() {
+        assert_eq!(choose_path_layer(10, (0, 10), (0, 0)), Some((0, 10)));
+        assert_eq!(choose_path_layer(10, (0, 14), (0, 0)), Some((0, 14)));
+    }
+
+    #[test]
+    fn layer_one_wins_a_higher_valid_floor() {
+        assert_eq!(choose_path_layer(10, (0, 10), (0, 13)), Some((1, 13)));
+    }
+
+    #[test]
+    fn a_floor_five_to_ten_above_without_a_layer_is_refused() {
+        assert_eq!(choose_path_layer(10, (0, 17), (0, 0)), None);
+        assert_eq!(choose_path_layer(10, (5, 17), (0, 0)), None);
+    }
+
+    #[test]
+    fn the_rise_must_stay_within_the_limits() {
+        assert_eq!(choose_path_layer(10, (0, 20), (0, 0)), None);
+        assert_eq!(choose_path_layer(10, (0, 0), (0, 11)), None);
+    }
+}
