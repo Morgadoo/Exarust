@@ -3,8 +3,19 @@
 Rigid-body and articulated-body simulation: the core of Exanima's feel (physically driven characters, momentum-based combat, cloth).
 
 **Phase:** Phase 3 (see [`docs/PLAN.md`](../../docs/PLAN.md)). Status: started — the original's
-body solver (`body`), its level contacts (`contact`), props and items as bodies (`prop`), a cloth step (`cloth`) and the
-character controller (`lib`).
+body solver (`body`), its level contacts (`contact`), props and items as bodies (`prop`), a cloth step (`cloth`), the
+character controller (`lib`) and the shared intersection maths (`intersect`).
+
+The original's `RF_Intersection` unit is reproduced in `intersect`, a pure-maths
+module in the original's centimetres: sweep set-up, point–segment and
+point–box distances, sphere–sphere and sphere–box tests, capsule–sphere,
+the slab tests of a swept sphere against a box and an oriented box, segment
+against oriented box (slab and separating-axis), point-set bounds, the
+cube-shadow face mask, and the convex-volume plane tests and polygon
+clipping the original builds portals with. The routines are ready for the
+solver; the body and level paths still take rapier's broad-phase queries,
+which are not the original's prefilters, so nothing calls the module from
+the simulation yet.
 
 Each fixed tick (83 Hz) moves the character controllers, then runs the
 pre-step (`body::BodyPreStep`), the character ticks (`body::CharacterTicks`:
@@ -145,6 +156,7 @@ last tick dealt. Nothing calls them unless a tool is on
 - The body collision calls back for accepted hits and pushes resolved particles to the body's radius surface.
 - The clone creates a new cloth with four copied fields.
 - Fixed-timestep deterministic simulation set, independent of frame rate.
+- The original's shared intersection routines (`intersect`): sweep set-up, point/segment/sphere/box distances and tests, the swept-sphere slab tests, segment/oriented-box separation, point-set bounds, the cube-face mask and convex-volume plane tests and polygon clipping, all in the original's centimetres.
 - Rigid bodies (props, doors, items), collision against level geometry and convex hulls.
 - Articulated character bodies driven by joint motors toward animation targets (active ragdoll / 'motile' dynamics).
 - Cloth and padded-armour layers (original engine has cloth classes per material: basic, fine, padded, silk, velvet).

@@ -8,6 +8,7 @@ pub mod body;
 pub mod cloth;
 pub mod contact;
 pub mod door;
+pub mod intersect;
 pub mod lever;
 pub mod motile;
 pub mod plate;
