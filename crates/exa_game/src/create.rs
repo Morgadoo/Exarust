@@ -365,6 +365,38 @@ pub fn signature_matches(query: i32, signature: &CreationSignature) -> bool {
     }
 }
 
+/// The creation rail's laid-out values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationRail {
+    pub view: i32,
+    pub thumb: Option<u16>,
+    pub start: Option<u16>,
+}
+
+/// Lays out the option rail from the count.
+pub fn lay_out_creation_rail(
+    count: i32,
+    unit: i32,
+    width: i32,
+    before: i32,
+    compact: bool,
+) -> CreationRail {
+    let view = width - before - unit * count;
+    if compact {
+        CreationRail {
+            view,
+            thumb: None,
+            start: None,
+        }
+    } else {
+        CreationRail {
+            view,
+            thumb: Some(((count - 4) * unit) as u16),
+            start: Some((width - (count - 2) * unit) as u16),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -649,5 +681,18 @@ mod tests {
             ..signature
         };
         assert!(!signature_matches(9, &missing));
+    }
+
+    #[test]
+    fn the_creation_rail_lays_out_its_count() {
+        let rail = lay_out_creation_rail(6, 4, 100, 10, false);
+        assert_eq!(rail.view, 66);
+        assert_eq!(rail.thumb, Some(8));
+        assert_eq!(rail.start, Some(84));
+
+        let compact = lay_out_creation_rail(6, 4, 100, 10, true);
+        assert_eq!(compact.view, 66);
+        assert_eq!(compact.thumb, None);
+        assert_eq!(compact.start, None);
     }
 }
