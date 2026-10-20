@@ -1065,6 +1065,49 @@ pub fn close_creation_form(mode: i32) -> CreationCloseForm {
     }
 }
 
+/// A creation page or select result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationPage {
+    pub mode: i32,
+    pub index: i32,
+    pub refreshed: bool,
+}
+
+/// Pages forward when the maximum exceeds the index.
+pub fn page_creation_next(max: i32, index: i32) -> CreationPage {
+    if max <= index {
+        CreationPage {
+            mode: 0,
+            index,
+            refreshed: false,
+        }
+    } else {
+        CreationPage {
+            mode: 1,
+            index: index + 1,
+            refreshed: true,
+        }
+    }
+}
+
+/// Selects the wanted index less one.
+pub fn select_creation_index(wanted: i32, current: i32) -> CreationPage {
+    let index = wanted - 1;
+    if index == current {
+        CreationPage {
+            mode: 0,
+            index: current,
+            refreshed: false,
+        }
+    } else {
+        CreationPage {
+            mode: 1,
+            index,
+            refreshed: true,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1796,5 +1839,28 @@ mod tests {
         assert_eq!(captured.mode, 2);
         assert!(captured.scheduled);
         assert!(captured.stored_cleared);
+    }
+
+    #[test]
+    fn the_creation_screen_pages_and_selects() {
+        let page = page_creation_next(5, 2);
+        assert_eq!(page.mode, 1);
+        assert_eq!(page.index, 3);
+        assert!(page.refreshed);
+
+        let stopped = page_creation_next(2, 2);
+        assert_eq!(stopped.mode, 0);
+        assert_eq!(stopped.index, 2);
+        assert!(!stopped.refreshed);
+
+        let selected = select_creation_index(4, 2);
+        assert_eq!(selected.mode, 1);
+        assert_eq!(selected.index, 3);
+        assert!(selected.refreshed);
+
+        let same = select_creation_index(3, 2);
+        assert_eq!(same.mode, 0);
+        assert_eq!(same.index, 2);
+        assert!(!same.refreshed);
     }
 }
