@@ -1,7 +1,7 @@
 # Coverage history
 
-Every row is a generated recalculation: the artifact set in the same commit
-(`docs/COMPONENT-MAP.md` and both `docs/img/coverage-map-*.png`) matches it.
+Every row is a generated recalculation. Later rows supersede earlier ones; the
+newest row describes the page and images in the same commit.
 `dirty` means uncommitted work was rated; `HEAD moved` means the tree changed
 while the map was being built, so treat the row as a best-effort snapshot.
 
@@ -14,3 +14,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-20 | d5b12f2 | clean | 19.0% | 5.7% | 16.0% | 27.3% | rerate the arena, save, creation and session components from their crate helpers |
 | 2026-10-20 | 33a91ba | clean | 19.6% | 5.7% | 16.4% | 27.3% | rerate TMotileAI and SG_PlayerControls from exa_ai and player.rs |
 | 2026-10-20 | ffccd2e | clean | 20.4% | 5.7% | 16.8% | 27.3% | rerate the tree and Force effects from thaum.rs |
+| 2026-10-20 | 1f453c3 | dirty | 20.4% | 5.7% | 16.8% | 27.3% | fix blank-text capture (clean HOME/XDG cache); rerated modes/ui |

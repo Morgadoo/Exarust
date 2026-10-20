@@ -170,6 +170,10 @@ Artifacts: docs/COMPONENT-MAP.md + both coverage-map PNGs, regenerated together.
 - **Phantom zeros** — a section at 0% while real code and crate citations exist.
 - **Split artifacts** — page newer than images, or images rendered from a
   different data revision.
+- **Wordless images** — a stale fontconfig cache under the real `HOME` makes
+  Chromium shape zero glyphs; the PNG stays valid, so only a size check or a
+  look at the image catches it. The capture now runs with a throwaway
+  `HOME`/`XDG_CACHE_HOME` and refuses suspiciously small output.
 - **Sub-band credit** — components rated 1–4% contribute nothing by the map's
   own rule; decide between 0 and a real ≥5% rating instead of leaving a
   misleading 3%.
