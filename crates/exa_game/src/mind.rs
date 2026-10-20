@@ -620,3 +620,104 @@ mod basis_tests {
         assert!((basis.eye[2] + 10.0 / 325.0f32.sqrt()).abs() < 1e-6);
     }
 }
+
+/// One sight entry's style values: the fade, the kind and the three
+/// blended values.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MindEntryStyle {
+    pub fade: f32,
+    pub kind: i32,
+    pub first: f32,
+    pub second: f32,
+    pub third: f32,
+}
+
+/// The entry's shader colours and alphas.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MindColors {
+    pub colour0: [f32; 3],
+    pub colour1: [f32; 3],
+    pub colour2: [f32; 3],
+    pub alpha: f32,
+    pub alpha2: f32,
+    /// The quad's own alpha: the overlay's, less the entry's fade.
+    pub quad_alpha: f32,
+}
+
+/// The per-entry colours: a fixed {0.1, 0.4, 0.6} and {0.8, 0.6, 0},
+/// a third blended from {0.4, 0, 0} to {0.31, 0.78, 0} by the third value,
+/// the two 0.1 + 0.6·(1 − value) alphas and the overlay alpha less the
+/// entry fade (when positive).
+pub fn mind_entry_colors(style: &MindEntryStyle, overlay_alpha: f32) -> MindColors {
+    if style.kind == 1 {
+        return MindColors {
+            colour0: [0.3, 0.3, 0.3],
+            colour1: [0.5, 0.5, 0.6],
+            colour2: [0.3, 0.3, 0.3],
+            alpha: 1.0,
+            alpha2: 0.5,
+            quad_alpha: if style.fade > 0.0 {
+                overlay_alpha - style.fade
+            } else {
+                overlay_alpha
+            },
+        };
+    }
+    let third = style.third.clamp(0.0, 1.0);
+    MindColors {
+        colour0: [0.1, 0.4, 0.6],
+        colour1: [0.8, 0.6, 0.0],
+        colour2: [0.4 + (0.31 - 0.4) * third, 0.0 + (0.78 - 0.0) * third, 0.0],
+        alpha: (0.1 + 0.6 * (1.0 - f64::from(style.first))) as f32,
+        alpha2: (0.1 + 0.6 * (1.0 - f64::from(style.second))) as f32,
+        quad_alpha: if style.fade > 0.0 {
+            overlay_alpha - style.fade
+        } else {
+            overlay_alpha
+        },
+    }
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::*;
+
+    fn style(first: f32, second: f32, third: f32, fade: f32) -> MindEntryStyle {
+        MindEntryStyle {
+            fade,
+            kind: 0,
+            first,
+            second,
+            third,
+        }
+    }
+
+    #[test]
+    fn the_entry_colours_follow_the_blended_values() {
+        let colors = mind_entry_colors(&style(0.0, 0.0, 0.0, 0.0), 1.0);
+        assert_eq!(colors.colour0, [0.1, 0.4, 0.6]);
+        assert_eq!(colors.colour1, [0.8, 0.6, 0.0]);
+        assert_eq!(colors.colour2, [0.4, 0.0, 0.0]);
+        assert!((colors.alpha - 0.7).abs() < 1e-6);
+        assert!((colors.alpha2 - 0.7).abs() < 1e-6);
+        assert_eq!(colors.quad_alpha, 1.0);
+    }
+
+    #[test]
+    fn full_values_darken_the_alphas() {
+        let colors = mind_entry_colors(&style(1.0, 1.0, 1.0, 0.2), 1.0);
+        assert!((colors.alpha - 0.1).abs() < 1e-6);
+        assert!((colors.alpha2 - 0.1).abs() < 1e-6);
+        assert_eq!(colors.colour2, [0.31, 0.78, 0.0]);
+        assert!((colors.quad_alpha - 0.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_kind_one_entry_uses_the_pale_palette() {
+        let mut pale = style(0.0, 0.0, 0.0, 0.0);
+        pale.kind = 1;
+        let colors = mind_entry_colors(&pale, 1.0);
+        assert_eq!(colors.colour0, [0.3, 0.3, 0.3]);
+        assert_eq!(colors.colour1, [0.5, 0.5, 0.6]);
+    }
+}
