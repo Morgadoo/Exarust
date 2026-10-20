@@ -257,6 +257,166 @@ pub fn skill_satellite(stored: i32, sample: i32, ring: &SkillRing) -> (f32, f32)
     (x, y)
 }
 
+/// The skill screen key handler's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillKeyInput {
+    pub key: i32,
+    pub low: i32,
+    pub high: i32,
+    pub index: i32,
+    pub state: u16,
+    pub hide: u8,
+    pub deadline: i32,
+    pub closing: i32,
+    pub clock: i32,
+    pub grid: [u8; 8],
+    pub repage: i32,
+    pub hit: i32,
+    pub flags: u32,
+}
+
+/// What the skill screen key handler did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillKeyOutput {
+    pub index: i32,
+    pub high: i32,
+    pub low: i32,
+    pub published: Option<i32>,
+    pub base: bool,
+    pub hint: bool,
+    pub state: u16,
+    pub hide: u8,
+    pub deadline: i32,
+    pub flags: u32,
+    pub cursor: bool,
+    pub hit_published: Option<i32>,
+    pub clear_call: bool,
+    pub result: i32,
+}
+
+fn skill_key_tail(input: SkillKeyInput, mut out: SkillKeyOutput) -> SkillKeyOutput {
+    if input.closing == 1 {
+        return out;
+    }
+    if input.key & 1 != 0 {
+        out.cursor = true;
+        if input.hit != 0 {
+            out.hit_published = Some(input.hit);
+        }
+    }
+    if input.key & 0x200 != 0 && input.state & 2 == 0 {
+        out.clear_call = true;
+    }
+    out
+}
+
+/// Handles a key on the skill screen.
+pub fn skill_screen_key(input: SkillKeyInput) -> SkillKeyOutput {
+    let mut out = SkillKeyOutput {
+        index: input.index,
+        high: input.high,
+        low: input.low,
+        published: None,
+        base: false,
+        hint: false,
+        state: input.state,
+        hide: input.hide,
+        deadline: input.deadline,
+        flags: input.flags,
+        cursor: false,
+        hit_published: None,
+        clear_call: false,
+        result: 0,
+    };
+    if input.low > 0 || input.high > 0 {
+        if input.key & 1 == 0 {
+            if input.key & 0x100 != 0 {
+                out.base = true;
+                out.published = Some(if input.high > 0 {
+                    input.high
+                } else {
+                    input.low
+                });
+            } else if input.key & 0x200 != 0 {
+                out.hint = true;
+                if input.hide == 0 {
+                    out.hide = 2;
+                    out.deadline = input.clock + 200;
+                }
+                out.flags &= !0x40;
+                out.published = Some(if input.high > 0 {
+                    input.high
+                } else {
+                    input.low
+                });
+            }
+            return out;
+        }
+        if input.high > 0 {
+            if input.key & 0xf001 == 0x1001 {
+                out.index -= 1;
+            } else if input.key & 0xf001 == 0x2001 && out.index < 2 {
+                out.index += 1;
+            }
+        } else if input.key & 0xf001 == 0x1001 {
+            let mut at = out.index - 2;
+            while at >= 0 {
+                if input.grid[at as usize] == 0 {
+                    out.index = at + 1;
+                    break;
+                }
+                at -= 1;
+            }
+        } else if input.key & 0xf001 == 0x2001 && out.index <= 7 {
+            let mut at = out.index - 1;
+            loop {
+                at += 1;
+                if input.grid[at as usize] == 0 {
+                    out.index = at + 1;
+                    break;
+                }
+                if at >= 7 {
+                    break;
+                }
+            }
+        }
+        if out.index > 0 && out.index != input.index {
+            out.published = Some(out.index);
+        }
+        return out;
+    }
+    if input.key != 0x100 {
+        return skill_key_tail(input, out);
+    }
+    match input.repage {
+        1 => {
+            out.high = input.index;
+            out.published = Some(1);
+        }
+        2 => {
+            out.low = input.index;
+            let mut at = 0;
+            while at < 8 {
+                if input.grid[at] == 0 {
+                    out.index = at as i32 + 1;
+                    break;
+                }
+                at += 1;
+            }
+            if at == 8 {
+                out.index = 0;
+            }
+            out.published = Some(out.index);
+        }
+        _ => return out,
+    }
+    out.hint = true;
+    out.hide = 1;
+    out.deadline = input.clock + 300;
+    out.flags |= 0x40;
+    skill_key_tail(input, out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -487,5 +647,185 @@ mod tests {
             ..ring
         };
         assert_eq!(skill_satellite(3, 1, &scrolled), (354.0, 65.0));
+    }
+
+    fn key_input() -> SkillKeyInput {
+        SkillKeyInput {
+            key: 0,
+            low: 0,
+            high: 1,
+            index: 3,
+            state: 0,
+            hide: 0,
+            deadline: 0,
+            closing: 0,
+            clock: 100,
+            grid: [1; 8],
+            repage: 0,
+            hit: 0,
+            flags: 0,
+        }
+    }
+
+    #[test]
+    fn the_skill_screen_key_moves_and_dispatches() {
+        let back = skill_screen_key(SkillKeyInput {
+            key: 0x1001,
+            ..key_input()
+        });
+        assert_eq!(back.index, 2);
+        assert_eq!(back.published, Some(2));
+
+        let forward = skill_screen_key(SkillKeyInput {
+            key: 0x2001,
+            index: 1,
+            ..key_input()
+        });
+        assert_eq!(forward.index, 2);
+        assert_eq!(forward.published, Some(2));
+
+        let stopped = skill_screen_key(SkillKeyInput {
+            key: 0x2001,
+            index: 2,
+            ..key_input()
+        });
+        assert_eq!(stopped.index, 2);
+        assert_eq!(stopped.published, None);
+
+        let mut grid = [1; 8];
+        grid[2] = 0;
+        let backward = skill_screen_key(SkillKeyInput {
+            key: 0x1001,
+            high: 0,
+            low: 1,
+            index: 4,
+            grid,
+            ..key_input()
+        });
+        assert_eq!(backward.index, 3);
+        assert_eq!(backward.published, Some(3));
+
+        let mut grid = [1; 8];
+        grid[4] = 0;
+        let forward = skill_screen_key(SkillKeyInput {
+            key: 0x2001,
+            high: 0,
+            low: 1,
+            index: 4,
+            grid,
+            ..key_input()
+        });
+        assert_eq!(forward.index, 5);
+        assert_eq!(forward.published, Some(5));
+
+        let base = skill_screen_key(SkillKeyInput {
+            key: 0x100,
+            high: 4,
+            low: 1,
+            index: 2,
+            ..key_input()
+        });
+        assert!(base.base);
+        assert_eq!(base.published, Some(4));
+
+        let hint = skill_screen_key(SkillKeyInput {
+            key: 0x200,
+            high: 0,
+            low: 3,
+            flags: 0x41,
+            ..key_input()
+        });
+        assert!(hint.hint);
+        assert_eq!(hint.published, Some(3));
+        assert_eq!(hint.hide, 2);
+        assert_eq!(hint.deadline, 300);
+        assert_eq!(hint.flags, 1);
+
+        let repage = skill_screen_key(SkillKeyInput {
+            key: 0x100,
+            high: 0,
+            low: 0,
+            index: 5,
+            repage: 1,
+            ..key_input()
+        });
+        assert_eq!(repage.high, 5);
+        assert_eq!(repage.published, Some(1));
+        assert!(repage.hint);
+        assert_eq!(repage.hide, 1);
+        assert_eq!(repage.deadline, 400);
+        assert_eq!(repage.flags, 0x40);
+        assert!(!repage.cursor);
+        assert!(!repage.clear_call);
+
+        let nothing = skill_screen_key(SkillKeyInput {
+            key: 0x100,
+            high: 0,
+            low: 0,
+            index: 5,
+            repage: 0,
+            ..key_input()
+        });
+        assert_eq!(nothing.published, None);
+        assert_eq!(nothing.high, 0);
+        assert!(!nothing.hint);
+
+        let mut grid = [1; 8];
+        grid[1] = 0;
+        let refill = skill_screen_key(SkillKeyInput {
+            key: 0x100,
+            high: 0,
+            low: 0,
+            index: 5,
+            repage: 2,
+            grid,
+            ..key_input()
+        });
+        assert_eq!(refill.low, 5);
+        assert_eq!(refill.index, 2);
+        assert_eq!(refill.published, Some(2));
+
+        let closing = skill_screen_key(SkillKeyInput {
+            key: 0x100,
+            high: 0,
+            low: 0,
+            index: 5,
+            repage: 1,
+            closing: 1,
+            hit: 7,
+            ..key_input()
+        });
+        assert_eq!(closing.high, 5);
+        assert!(!closing.cursor);
+        assert_eq!(closing.hit_published, None);
+
+        let cursor = skill_screen_key(SkillKeyInput {
+            key: 1,
+            high: 0,
+            low: 0,
+            hit: 7,
+            ..key_input()
+        });
+        assert!(cursor.cursor);
+        assert_eq!(cursor.hit_published, Some(7));
+        assert!(!cursor.clear_call);
+
+        let clear = skill_screen_key(SkillKeyInput {
+            key: 0x201,
+            high: 0,
+            low: 0,
+            ..key_input()
+        });
+        assert!(clear.cursor);
+        assert!(clear.clear_call);
+
+        let held = skill_screen_key(SkillKeyInput {
+            key: 0x201,
+            high: 0,
+            low: 0,
+            state: 2,
+            ..key_input()
+        });
+        assert!(!held.clear_call);
     }
 }
