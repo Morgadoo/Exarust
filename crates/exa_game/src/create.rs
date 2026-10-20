@@ -202,6 +202,32 @@ pub fn apply_creation_change(input: CreationChangeInput) -> CreationChange {
     }
 }
 
+/// What the creation look shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationLook {
+    pub values: [i32; 4],
+    pub letter: Option<u8>,
+}
+
+/// Updates the sex toggles and the face variant caption.
+pub fn update_creation_look(female: bool, variant: i32) -> CreationLook {
+    if female {
+        return CreationLook {
+            values: [16; 4],
+            letter: None,
+        };
+    }
+    let letter = if variant < 0 {
+        None
+    } else {
+        Some((variant + 0x41) as u8)
+    };
+    CreationLook {
+        values: [0; 4],
+        letter,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,5 +386,20 @@ mod tests {
         assert!(!disabled.second_pass);
         assert!(!disabled.callback);
         assert!(disabled.finalized);
+    }
+
+    #[test]
+    fn the_creation_look_toggles_and_letters_the_variant() {
+        let female = update_creation_look(true, 0);
+        assert_eq!(female.values, [16; 4]);
+        assert_eq!(female.letter, None);
+
+        let lettered = update_creation_look(false, 2);
+        assert_eq!(lettered.values, [0; 4]);
+        assert_eq!(lettered.letter, Some(b'C'));
+
+        let plain = update_creation_look(false, -1);
+        assert_eq!(plain.values, [0; 4]);
+        assert_eq!(plain.letter, None);
     }
 }
