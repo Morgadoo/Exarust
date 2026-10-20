@@ -134,3 +134,18 @@ Opening SHALL clear 40 bytes at `0x198`, set the count to 2 and the stride to 16
 - **AND** the second entry is `0x201`, `0x5FFF`, 0, 0
 - **AND** the stored words are `0x100101` and `0x201`
 - **AND** the value is 4.0 and the flags word is `0x510000`
+
+### Requirement: Creation signature match
+Matching SHALL be true when the query equals the signature's id. Otherwise the binding looked up by the query SHALL be required, its id SHALL equal the signature's id, and its four bytes SHALL equal the signature's four bytes.
+
+#### Scenario: Direct, bound and missing
+- **WHEN** the query equals the signature's id
+- **THEN** the match is true
+- **WHEN** the query differs, the binding's id equals the signature's id and all four bytes match
+- **THEN** the match is true
+- **WHEN** a byte differs
+- **THEN** the match is false
+- **WHEN** the binding's id differs
+- **THEN** the match is false
+- **WHEN** there is no binding
+- **THEN** the match is false

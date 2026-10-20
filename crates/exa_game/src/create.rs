@@ -339,6 +339,32 @@ pub fn creation_defaults() -> CreationDefaults {
     }
 }
 
+/// A binding behind a creation signature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationBinding {
+    pub id: i32,
+    pub parts: [u8; 4],
+}
+
+/// A creation signature to match against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationSignature {
+    pub id: i32,
+    pub parts: [u8; 4],
+    pub binding: Option<CreationBinding>,
+}
+
+/// Matches a query against a signature.
+pub fn signature_matches(query: i32, signature: &CreationSignature) -> bool {
+    if query == signature.id {
+        return true;
+    }
+    match signature.binding {
+        Some(binding) => binding.id == signature.id && binding.parts == signature.parts,
+        None => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -584,5 +610,44 @@ mod tests {
         assert_eq!(defaults.second, 0x201);
         assert_eq!(defaults.value, 4.0);
         assert_eq!(defaults.flags, 0x510000);
+    }
+
+    #[test]
+    fn the_creation_signature_matches_its_binding() {
+        let binding = CreationBinding {
+            id: 7,
+            parts: [1, 2, 3, 4],
+        };
+        let signature = CreationSignature {
+            id: 7,
+            parts: [1, 2, 3, 4],
+            binding: Some(binding),
+        };
+        assert!(signature_matches(7, &signature));
+        assert!(signature_matches(9, &signature));
+
+        let wrong_part = CreationSignature {
+            binding: Some(CreationBinding {
+                id: 7,
+                parts: [1, 2, 3, 5],
+            }),
+            ..signature
+        };
+        assert!(!signature_matches(9, &wrong_part));
+
+        let wrong_id = CreationSignature {
+            binding: Some(CreationBinding {
+                id: 8,
+                parts: [1, 2, 3, 4],
+            }),
+            ..signature
+        };
+        assert!(!signature_matches(9, &wrong_id));
+
+        let missing = CreationSignature {
+            binding: None,
+            ..signature
+        };
+        assert!(!signature_matches(9, &missing));
     }
 }
