@@ -81,13 +81,12 @@ pub const SIZZLE_VOLUME: f32 = 0.3;
 pub const SIZZLE_PITCH_BASE: f32 = 0.8;
 pub const SIZZLE_PITCH_SPAN: f32 = 0.2;
 
-/// The body's render flag while it holds a lit item.
-pub const BODY_LIT_FLAG: u32 = 0x800;
+/// The item render node's flag while its flame row burns.
+pub const LIT_RENDER_FLAG: u32 = 0x800;
+/// The body byte set on ignition.
+pub const BODY_LIT_BYTE: bool = true;
 /// The moveset modifier a lit item switches on.
 pub const FLAMING_MODIFIER: u32 = 0x1002_0000;
-/// The item flag byte set on ignition.
-pub const ITEM_LIT: bool = true;
-
 /// The item ability type this path serves.
 pub const BURNING_ABILITY: u32 = 3;
 /// The ability word's low five bits of a burning item.
@@ -209,9 +208,9 @@ pub struct Ignition {
     pub end_cm: Vec3,
     /// The row's flags: fading in.
     pub flags: u32,
-    /// The body's render flag and the item's lit byte.
-    pub body_lit: bool,
-    pub item_lit: bool,
+    /// The item render node's lit flag, and the body byte ignition sets.
+    pub render_lit: bool,
+    pub body_flag: bool,
     /// The moveset modifier.
     pub modifier: u32,
 }
@@ -222,8 +221,8 @@ pub fn ignition() -> Ignition {
         start_cm: Vec3::new(0.0, START_CM, 0.0),
         end_cm: Vec3::new(0.0, END_CM, 0.0),
         flags: FADING_IN,
-        body_lit: true,
-        item_lit: ITEM_LIT,
+        render_lit: true,
+        body_flag: BODY_LIT_BYTE,
         modifier: FLAMING_MODIFIER,
     }
 }
@@ -575,9 +574,9 @@ pub fn extinguish(children: &mut [(u32, u32)]) -> Option<usize> {
     Some(index)
 }
 
-/// The body render flags with its lit flag raised.
-pub fn light_body(flags: u32) -> u32 {
-    flags | BODY_LIT_FLAG
+/// The item render flags with its lit flag raised.
+pub fn lit_render(flags: u32) -> u32 {
+    flags | LIT_RENDER_FLAG
 }
 
 /// The shader's `Anim` values this frame: the rolling texture offset, its
@@ -806,7 +805,7 @@ mod tests {
         assert_eq!(light.start_cm, Vec3::new(0.0, 30.0, 0.0));
         assert_eq!(light.end_cm, Vec3::new(0.0, 115.0, 0.0));
         assert_eq!(light.flags, FADING_IN);
-        assert!(light.body_lit && light.item_lit);
+        assert!(light.render_lit && light.body_flag);
         assert_eq!(light.modifier, 0x1002_0000);
         assert_eq!(sizzle_pitch(0.0), 0.8);
         assert_eq!(sizzle_pitch(1.0), 1.0);
@@ -848,8 +847,8 @@ mod tests {
         assert_eq!(LIGHT_KIND, 3);
         assert_eq!(LIGHT_EXTRA_TWO, 1);
         assert_eq!(deadline_ms(100, 0.4), 500);
-        assert_eq!(BODY_LIT_FLAG, 0x800);
-        assert_eq!(light_body(0), 0x800);
+        assert_eq!(LIT_RENDER_FLAG, 0x800);
+        assert_eq!(lit_render(0), 0x800);
         assert_eq!(level_of_detail(0.5), 200.0);
         assert_eq!(level_of_detail(1.0), 200.0);
         assert_eq!(level_of_detail(4.0), 12.5);
