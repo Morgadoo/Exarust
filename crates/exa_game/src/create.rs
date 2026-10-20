@@ -419,6 +419,23 @@ pub fn creation_continue_button(mode: i32, threshold: i32) -> CreationContinue {
     }
 }
 
+/// A creation part node reduced to what the search reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartNode {
+    pub kind: i32,
+    pub wanted_count: i32,
+    pub attachments: Vec<i32>,
+    pub children: Vec<PartNode>,
+}
+
+/// Searches the part tree for the `0xFCA0` tag.
+pub fn has_creation_part(node: &PartNode) -> bool {
+    if node.kind & 0x89 == 0x89 && node.wanted_count >= 0 && node.attachments.contains(&0xfca0) {
+        return true;
+    }
+    node.children.iter().any(has_creation_part)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -731,5 +748,35 @@ mod tests {
         assert!(checkpoint.enabled);
 
         assert!(creation_continue_button(3, 3).enabled);
+    }
+
+    #[test]
+    fn the_creation_part_search_walks_attachments_and_children() {
+        let leaf = |kind, wanted_count, attachments| PartNode {
+            kind,
+            wanted_count,
+            attachments,
+            children: Vec::new(),
+        };
+
+        assert!(has_creation_part(&leaf(0x89, 2, vec![0x100, 0xfca0])));
+        assert!(!has_creation_part(&leaf(0x89, -1, vec![0xfca0])));
+        assert!(!has_creation_part(&leaf(0x01, 2, vec![0xfca0])));
+
+        let parent = PartNode {
+            kind: 0,
+            wanted_count: 0,
+            attachments: Vec::new(),
+            children: vec![leaf(0x89, 0, vec![0xfca0])],
+        };
+        assert!(has_creation_part(&parent));
+
+        let empty = PartNode {
+            kind: 0,
+            wanted_count: 0,
+            attachments: Vec::new(),
+            children: Vec::new(),
+        };
+        assert!(!has_creation_part(&empty));
     }
 }
