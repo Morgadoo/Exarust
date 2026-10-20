@@ -217,6 +217,19 @@ pub fn tick_scans(
     }
 }
 
+/// The skinned copy a scan makes, the same one a shell makes.
+pub fn copy_skinned(
+    spans: &[crate::thaum::ShellSpan],
+    triangles: &[u32],
+    remap: &[u32],
+    vertices: &[crate::thaum::ShellLinks],
+    links: &[crate::thaum::ShellLink],
+    indices: &[u32],
+    bases: &[i32],
+) -> Result<crate::effects::shell::SkinnedCopy, crate::thaum::ShellIndexError> {
+    crate::effects::shell::copy_skinned(spans, triangles, remap, vertices, links, indices, bases)
+}
+
 /// The skinned triangles a scan keeps, the same copy a shell makes.
 pub fn copy_indices(
     spans: &[crate::thaum::ShellSpan],
@@ -315,6 +328,37 @@ mod tests {
         for (got, want) in scan.uniforms().colour.iter().zip(want) {
             assert!((got - want).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn a_scan_shares_the_shell_copy() {
+        let span = crate::thaum::ShellSpan {
+            flags: 2,
+            start: 0,
+            end: 0,
+        };
+        let triangles = [1, 0, 2];
+        let copy = copy_skinned(
+            &[span],
+            &triangles,
+            &[9, 8, 7],
+            &[crate::thaum::ShellLinks { start: 0, end: 1 }],
+            &[crate::thaum::ShellLink {
+                triangle: 0,
+                corner: 0,
+            }],
+            &triangles,
+            &[1],
+        )
+        .unwrap();
+        assert_eq!(copy.indices, vec![8, 9, 7]);
+        assert_eq!(
+            copy.slots,
+            vec![Some(crate::thaum::ShellSlot {
+                section: 0,
+                local: 0
+            })]
+        );
     }
 
     #[test]

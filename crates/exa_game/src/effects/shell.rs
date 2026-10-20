@@ -218,6 +218,38 @@ fn elapsed(now_ms: u32, stamp: u32) -> f32 {
     now_ms.wrapping_sub(stamp) as f32
 }
 
+/// A skinned mesh copy: the kept triangles, the section marks and each
+/// vertex's section and local index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkinnedCopy {
+    pub indices: Vec<u32>,
+    pub marks: Vec<u8>,
+    pub slots: Vec<Option<thaum::ShellSlot>>,
+}
+
+/// The copy a shell or scan makes of a skinned mesh: marks per triangle,
+/// the kept vertex slots and the remapped indices. This is the force
+/// shell's copy, which both displacement effects share.
+#[allow(clippy::too_many_arguments)]
+pub fn copy_skinned(
+    spans: &[ShellSpan],
+    triangles: &[u32],
+    remap: &[u32],
+    vertices: &[thaum::ShellLinks],
+    links: &[thaum::ShellLink],
+    indices: &[u32],
+    bases: &[i32],
+) -> Result<SkinnedCopy, ShellIndexError> {
+    let marks = thaum::shell_marks(triangles.len() / 3, spans)?;
+    let slots = thaum::shell_slots(vertices, links, &marks, indices, bases)?;
+    let kept = thaum::shell_skinned_indices(spans, triangles, remap)?;
+    Ok(SkinnedCopy {
+        indices: kept,
+        marks,
+        slots,
+    })
+}
+
 /// The skinned triangles a shell keeps: the sections whose bit 2 is set.
 pub fn copy_indices(
     spans: &[ShellSpan],
@@ -307,6 +339,52 @@ mod tests {
         assert_eq!(Shell::level_of_detail(0.5), 900.0);
         assert_eq!(Shell::level_of_detail(1.0), 900.0);
         assert_eq!(Shell::level_of_detail(3.0), 100.0);
+    }
+
+    #[test]
+    fn a_shell_copy_carries_the_slots_and_indices() {
+        let spans = [
+            ShellSpan {
+                flags: 2,
+                start: 0,
+                end: 0,
+            },
+            ShellSpan {
+                flags: 0,
+                start: 1,
+                end: 1,
+            },
+        ];
+        let triangles = [4, 5, 6, 1, 2, 0];
+        let remap = [10, 11, 12, 13, 14, 15, 16];
+        let vertices = [thaum::ShellLinks { start: 0, end: 1 }];
+        let links = [thaum::ShellLink {
+            triangle: 0,
+            corner: 1,
+        }];
+        let copy = copy_skinned(
+            &spans,
+            &triangles,
+            &remap,
+            &vertices,
+            &links,
+            &[10, 11, 12, 13, 14, 15, 16],
+            &[10, 0],
+        )
+        .unwrap();
+        assert_eq!(copy.indices, vec![14, 15, 16]);
+        assert_eq!(copy.marks, vec![0, 0xff]);
+        assert_eq!(
+            copy.slots,
+            vec![Some(thaum::ShellSlot {
+                section: 0,
+                local: 1
+            })]
+        );
+        assert_eq!(
+            copy_skinned(&spans, &triangles, &remap, &vertices, &links, &[1], &[0]),
+            Err(ShellIndexError::Short)
+        );
     }
 
     #[test]
