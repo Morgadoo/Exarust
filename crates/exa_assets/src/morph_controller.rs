@@ -203,6 +203,83 @@ pub fn blend_morph_point(base: [f32; 3], points: &[[f32; 3]], weights: &[f32]) -
     result
 }
 
+/// One entry of a morph block: the first points and the owner's points.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MorphBlockEntry {
+    pub first: Vec<[i32; 3]>,
+    pub second: Vec<[i32; 3]>,
+}
+
+/// A parsed morph block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MorphBlock {
+    pub unknown: u32,
+    pub points_a: Vec<[i32; 3]>,
+    pub skipped: Vec<[i32; 3]>,
+    pub count_b: usize,
+    pub entries: Vec<MorphBlockEntry>,
+}
+
+struct Cursor<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl Cursor<'_> {
+    fn word(&mut self) -> Option<i32> {
+        let end = self.at.checked_add(4)?;
+        let slice = self.bytes.get(self.at..end)?;
+        self.at = end;
+        Some(i32::from_le_bytes(slice.try_into().ok()?))
+    }
+
+    fn count(&mut self) -> Option<usize> {
+        let value = self.word()?;
+        if value < 0 {
+            return None;
+        }
+        let value = value as usize;
+        if value > self.bytes.len().saturating_sub(self.at) / 12 {
+            return None;
+        }
+        Some(value)
+    }
+
+    fn points(&mut self, count: usize) -> Option<Vec<[i32; 3]>> {
+        let mut points = Vec::with_capacity(count.min(1024));
+        for _ in 0..count {
+            points.push([self.word()?, self.word()?, self.word()?]);
+        }
+        Some(points)
+    }
+}
+
+/// Parses a tagged morph block, given the owner's point count.
+pub fn parse_morph_block(bytes: &[u8], owner_points: usize) -> Option<MorphBlock> {
+    let mut cursor = Cursor { bytes, at: 0 };
+    if cursor.word()? != 0xedc0_c589u32 as i32 {
+        return None;
+    }
+    let unknown = cursor.word()? as u32;
+    let count_a = cursor.count()?;
+    let points_a = cursor.points(count_a)?;
+    let skipped = cursor.points(owner_points)?;
+    let count_b = cursor.count()?;
+    let mut entries = Vec::with_capacity(count_b.min(1024));
+    for _ in 0..count_b {
+        let first = cursor.points(count_a)?;
+        let second = cursor.points(owner_points)?;
+        entries.push(MorphBlockEntry { first, second });
+    }
+    Some(MorphBlock {
+        unknown,
+        points_a,
+        skipped,
+        count_b,
+        entries,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,5 +408,55 @@ mod tests {
             &[0.0, 1.0],
         );
         assert_eq!(skipped, [2.0, 3.0, 4.0]);
+    }
+
+    fn push(bytes: &mut Vec<u8>, value: i32) {
+        bytes.extend_from_slice(&(value as u32).to_le_bytes());
+    }
+
+    fn morph_bytes() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        push(&mut bytes, 0xedc0c589u32 as i32);
+        push(&mut bytes, 7);
+        push(&mut bytes, 1);
+        push(&mut bytes, 1);
+        push(&mut bytes, 2);
+        push(&mut bytes, 3);
+        push(&mut bytes, 4);
+        push(&mut bytes, 5);
+        push(&mut bytes, 6);
+        push(&mut bytes, 7);
+        push(&mut bytes, 8);
+        push(&mut bytes, 9);
+        push(&mut bytes, 1);
+        push(&mut bytes, 10);
+        push(&mut bytes, 11);
+        push(&mut bytes, 12);
+        push(&mut bytes, 13);
+        push(&mut bytes, 14);
+        push(&mut bytes, 15);
+        push(&mut bytes, 16);
+        push(&mut bytes, 17);
+        push(&mut bytes, 18);
+        bytes
+    }
+
+    #[test]
+    fn the_morph_block_parses_its_runs() {
+        let bytes = morph_bytes();
+        let block = parse_morph_block(&bytes, 2).unwrap();
+        assert_eq!(block.unknown, 7);
+        assert_eq!(block.points_a, vec![[1, 2, 3]]);
+        assert_eq!(block.skipped, vec![[4, 5, 6], [7, 8, 9]]);
+        assert_eq!(block.count_b, 1);
+        assert_eq!(block.entries.len(), 1);
+        assert_eq!(block.entries[0].first, vec![[10, 11, 12]]);
+        assert_eq!(block.entries[0].second, vec![[13, 14, 15], [16, 17, 18]]);
+
+        assert_eq!(parse_morph_block(&bytes[..bytes.len() - 4], 2), None);
+
+        let mut wrong = bytes.clone();
+        wrong[0] = 0;
+        assert_eq!(parse_morph_block(&wrong, 2), None);
     }
 }
