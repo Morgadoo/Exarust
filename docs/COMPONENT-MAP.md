@@ -5,8 +5,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **20.4% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 16.8% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **20.5% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by function count (zero-byte imported names left out): 16.9% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **27.3%** reproduced.
 
 ## By section
@@ -16,7 +16,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Runtime & platform | 2,407 | 293 | 26 | 4% | 72% | Steam Input action bindings, Win32 clipboard image/icon glue, Steam API glue |
 | Core, math & threading | 282 | 37 | 11 | 41% | 1% | RFT_BoundSphere, Bounding-sphere vector helpers (FLX_Entities by address) |
 | Data, assets & I/O | 440 | 91 | 26 | 21% | 0% | RFE_Export_RFC2, Graphics & key settings (ini), RF_StoreSettings |
-| Rendering & GPU | 823 | 334 | 63 | 35% | 3% | RFE_MeshSubdivide, RFP_Mipmaps_Kaiser, RF_Polyhedra |
+| Rendering & GPU | 823 | 334 | 63 | 36% | 3% | RFE_MeshSubdivide, RF_Polyhedra, FLX_IconRender |
 | World, levels & terrain | 454 | 174 | 31 | 29% | 7% | TGridEnvManager, TRBDDoor, RF_Dynamics_Game |
 | Physics, bodies & cloth | 363 | 242 | 13 | 30% | 0% | RF_Dynamics_Volumes, TVoxelMap, RFE_Dynamics_Cloth |
 | Characters, motion & animation | 506 | 198 | 23 | 33% | 0% | Equipment effects and focus-item slot (RFE_Effects_Electricity by address), Golem guardians and alarm zones (RFE_Effects_Electricity by address), TCharDecomp2 |
@@ -77,7 +77,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | TTendrilEmitter | Thaumaturgy & effects | 21 | 15 | 0% |
 | TGridEnvManager | World, levels & terrain | 30 | 15 | 0% |
 | RF_HW_Config | UI | 89 | 15 | 2% |
-| RFP_Mipmaps_Kaiser | Rendering & GPU | 34 | 15 | 2% |
+| SG_ItemGUI | Items, materials & crafting | 44 | 15 | 0% |
 
 ## Best covered components
 

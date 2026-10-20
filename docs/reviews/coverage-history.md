@@ -16,3 +16,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-20 | ffccd2e | clean | 20.4% | 5.7% | 16.8% | 27.3% | rerate the tree and Force effects from thaum.rs |
 | 2026-10-20 | 1f453c3 | dirty | 20.4% | 5.7% | 16.8% | 27.3% | fix blank-text capture (clean HOME/XDG cache); rerated modes/ui |
 | 2026-10-20 | fbf156d | dirty | 20.4% | 5.7% | 16.8% | 27.3% | add the Kaiser mip kernel and axis pass |
+| 2026-10-20 | 277ec9f | clean | 20.5% | 5.7% | 16.9% | 27.3% | rerate the Kaiser mipmaps from exa_render::mipmap |
