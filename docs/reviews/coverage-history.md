@@ -30,3 +30,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-20 | d519533 | dirty | 20.8% | 5.7% | 17.1% | 27.3% | weigh the dynamics volume |
 | 2026-10-20 | fd60df3 | clean | 20.8% | 5.7% | 17.1% | 27.3% | record the dynamics volume |
 | 2026-10-20 | 16191e4 | dirty | 21.0% | 5.7% | 17.3% | 27.3% | lay out the item panel |
+| 2026-10-20 | 075b29f | dirty | 21.3% | 5.7% | 17.4% | 27.3% | match the room manager's conversions |
