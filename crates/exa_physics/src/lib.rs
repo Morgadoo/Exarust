@@ -9,6 +9,7 @@ pub mod cloth;
 pub mod contact;
 pub mod door;
 pub mod lever;
+pub mod motile;
 pub mod plate;
 pub mod prop;
 pub mod relay;
