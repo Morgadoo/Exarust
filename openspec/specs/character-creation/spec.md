@@ -322,3 +322,14 @@ Applying SHALL store `source × 0.17 + 0.9` at the child's scale and link. With 
 - **AND** the global call, the label build and the draw all run
 - **WHEN** the label already exists
 - **THEN** it is not built and it is still drawn
+
+### Requirement: Creation list step
+Stepping SHALL rebuild the list at the index less one when stepping back and the index is positive, and at the index plus one when stepping forward. The index SHALL be returned with whether the rebuild ran.
+
+#### Scenario: Back, forward and blocked
+- **WHEN** the index is 2 and the step is back
+- **THEN** the rebuild runs at 1
+- **WHEN** the index is 0 and the step is back
+- **THEN** no rebuild runs
+- **WHEN** the index is 2 and the step is forward
+- **THEN** the rebuild runs at 3

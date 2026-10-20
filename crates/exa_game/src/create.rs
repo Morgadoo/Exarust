@@ -795,6 +795,27 @@ pub fn apply_creation_scale(
     }
 }
 
+/// A creation list step's result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationListStep {
+    pub rebuilt: bool,
+    pub index: i32,
+}
+
+/// Steps the option list back or forward.
+pub fn step_creation_list(index: i32, up: bool) -> CreationListStep {
+    if !up && index <= 0 {
+        return CreationListStep {
+            rebuilt: false,
+            index,
+        };
+    }
+    CreationListStep {
+        rebuilt: true,
+        index: if up { index + 1 } else { index - 1 },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1347,5 +1368,24 @@ mod tests {
         assert!(!existing.global_call);
         assert!(!existing.built);
         assert!(existing.drew);
+    }
+
+    #[test]
+    fn the_creation_list_steps_both_ways() {
+        let back = step_creation_list(2, false);
+        assert!(back.rebuilt);
+        assert_eq!(back.index, 1);
+
+        let blocked = step_creation_list(0, false);
+        assert!(!blocked.rebuilt);
+        assert_eq!(blocked.index, 0);
+
+        let forward = step_creation_list(2, true);
+        assert!(forward.rebuilt);
+        assert_eq!(forward.index, 3);
+
+        let zero_forward = step_creation_list(0, true);
+        assert!(zero_forward.rebuilt);
+        assert_eq!(zero_forward.index, 1);
     }
 }
