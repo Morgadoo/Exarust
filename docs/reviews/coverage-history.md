@@ -68,3 +68,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-20 | 4e61cd9 | dirty | 22.7% | 5.7% | 18.6% | 27.3% | scale the main menu |
 | 2026-10-20 | 2cd154a | clean | 22.7% | 5.7% | 18.6% | 27.3% | record the main menu scale |
 | 2026-10-20 | 8edd364 | dirty | 22.7% | 5.7% | 18.6% | 27.3% | arm the opponents |
+| 2026-10-20 | dcdae31 | clean | 22.7% | 5.7% | 18.6% | 27.3% | record the opponent weapons |
