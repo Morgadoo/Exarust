@@ -30,6 +30,8 @@ pub struct MatchTemplate {
     pub flags: u32,
     pub min_rank: i32,
     pub max_rank: i32,
+    /// The template's rank preset at `+0x24`; −1 means unranked.
+    pub preset_rank: i32,
     /// The secondary value at `+0x28`; scaled by the slot but not the cash.
     pub secondary: u32,
     /// The raw packed base-12 cash prize at `+0x2c`.
@@ -58,6 +60,7 @@ pub const STANDARD: [MatchTemplate; 6] = [
         flags: 0,
         min_rank: 0,
         max_rank: 0,
+        preset_rank: 0,
         secondary: 3,
         cash: 256,
         teams: 1,
@@ -75,6 +78,7 @@ pub const STANDARD: [MatchTemplate; 6] = [
         flags: 0,
         min_rank: 0,
         max_rank: 0,
+        preset_rank: 0,
         secondary: 6,
         cash: 1024,
         teams: 2,
@@ -92,6 +96,7 @@ pub const STANDARD: [MatchTemplate; 6] = [
         flags: 0,
         min_rank: 0,
         max_rank: 0,
+        preset_rank: 0,
         secondary: 9,
         cash: 1536,
         teams: 3,
@@ -109,6 +114,7 @@ pub const STANDARD: [MatchTemplate; 6] = [
         flags: 0,
         min_rank: 0,
         max_rank: 0,
+        preset_rank: 0,
         secondary: 3,
         cash: 512,
         teams: 1,
@@ -126,6 +132,7 @@ pub const STANDARD: [MatchTemplate; 6] = [
         flags: 1,
         min_rank: 0,
         max_rank: 0,
+        preset_rank: 0,
         secondary: 3,
         cash: 1024,
         teams: 3,
@@ -143,6 +150,7 @@ pub const STANDARD: [MatchTemplate; 6] = [
         flags: 0,
         min_rank: 0,
         max_rank: -1,
+        preset_rank: -1,
         secondary: 1,
         cash: 6,
         teams: 1,
@@ -164,6 +172,7 @@ pub const RANKED: [MatchTemplate; 7] = [
         flags: 2,
         min_rank: 0,
         max_rank: 0,
+        preset_rank: 0,
         secondary: 256,
         cash: 768,
         teams: 1,
@@ -181,6 +190,7 @@ pub const RANKED: [MatchTemplate; 7] = [
         flags: 0,
         min_rank: 0,
         max_rank: 0,
+        preset_rank: 0,
         secondary: 3,
         cash: 2048,
         teams: 1,
@@ -198,6 +208,7 @@ pub const RANKED: [MatchTemplate; 7] = [
         flags: 2,
         min_rank: 0,
         max_rank: 0,
+        preset_rank: 0,
         secondary: 4,
         cash: 768,
         teams: 1,
@@ -215,6 +226,7 @@ pub const RANKED: [MatchTemplate; 7] = [
         flags: 2,
         min_rank: 0,
         max_rank: 0,
+        preset_rank: 0,
         secondary: 6,
         cash: 1536,
         teams: 1,
@@ -232,6 +244,7 @@ pub const RANKED: [MatchTemplate; 7] = [
         flags: 2,
         min_rank: 0,
         max_rank: 0,
+        preset_rank: 0,
         secondary: 6,
         cash: 1536,
         teams: 3,
@@ -249,6 +262,7 @@ pub const RANKED: [MatchTemplate; 7] = [
         flags: 0,
         min_rank: 0,
         max_rank: -1,
+        preset_rank: -1,
         secondary: 2,
         cash: 512,
         teams: 1,
@@ -266,6 +280,7 @@ pub const RANKED: [MatchTemplate; 7] = [
         flags: 2,
         min_rank: 0,
         max_rank: 0,
+        preset_rank: 0,
         secondary: 512,
         cash: 196608,
         teams: 3,
@@ -287,6 +302,7 @@ pub const TOURNAMENTS: [MatchTemplate; 5] = [
         flags: 0,
         min_rank: 0,
         max_rank: 0,
+        preset_rank: 0,
         secondary: 0,
         cash: 0,
         teams: 1,
@@ -304,6 +320,7 @@ pub const TOURNAMENTS: [MatchTemplate; 5] = [
         flags: 0,
         min_rank: 0,
         max_rank: 0,
+        preset_rank: 0,
         secondary: 0,
         cash: 0,
         teams: 1,
@@ -321,6 +338,7 @@ pub const TOURNAMENTS: [MatchTemplate; 5] = [
         flags: 4,
         min_rank: 0,
         max_rank: 0,
+        preset_rank: 0,
         secondary: 0,
         cash: 0,
         teams: 1,
@@ -338,6 +356,7 @@ pub const TOURNAMENTS: [MatchTemplate; 5] = [
         flags: 4,
         min_rank: 0,
         max_rank: 0,
+        preset_rank: 0,
         secondary: 0,
         cash: 0,
         teams: 1,
@@ -355,6 +374,7 @@ pub const TOURNAMENTS: [MatchTemplate; 5] = [
         flags: 0,
         min_rank: 0,
         max_rank: 0,
+        preset_rank: 0,
         secondary: 0,
         cash: 0,
         teams: 2,
@@ -418,6 +438,137 @@ pub fn lookup_name(id: u32) -> Option<&'static str> {
         return Some("beast");
     }
     template(id).map(|template| template.name)
+}
+
+/// The rolled rank of a template at a day slot. An unranked template stays
+/// −1; a flag-2 template takes the slot; otherwise the rank is
+/// `trunc(slot·(1 − r⁴))`, biased towards the slot.
+pub fn roll_rank(template: &MatchTemplate, slot: u32, r: f64) -> i32 {
+    if template.preset_rank < 0 {
+        return -1;
+    }
+    if template.flags & 2 != 0 {
+        return slot as i32;
+    }
+    (slot as f64 * (1.0 - r * r * r * r)) as i32
+}
+
+/// The rank window of a rolled match: Challenger (id 8) opens 0–5, every
+/// other template spans the slot up to the rolled rank.
+pub fn rank_window(template: &MatchTemplate, slot: u32, r: f64) -> (i32, i32) {
+    let rank = roll_rank(template, slot, r);
+    let min = if template.id == 8 { 0 } else { slot as i32 };
+    let max = if template.id == 8 { 5 } else { rank };
+    (min, max)
+}
+
+/// The secondary value scaled by the slot, packed the same way as cash.
+pub fn scaled_secondary(template: &MatchTemplate, slot: u32) -> u32 {
+    pack_money(unpack_money(template.secondary) * (slot + 1))
+}
+
+/// Whether a template may be generated at `slot`: its per-pass cap is not
+/// reached, the slot is at least its minimum, and the reject mask does not
+/// reject the 0–7 roll.
+pub fn eligible(template: &MatchTemplate, slot: u32, used: u32, roll8: u32) -> bool {
+    if template.per_pass > 0 && used >= template.per_pass {
+        return false;
+    }
+    if slot < template.min_slot {
+        return false;
+    }
+    roll8 & 7 & template.reject == 0
+}
+
+/// Draws a template index with the original's retry loop: the table index,
+/// the cap, the minimum slot and the reject roll. Returns `None` when no
+/// draw succeeds within `templates.len()·8` attempts.
+pub fn pick_template(
+    templates: &[MatchTemplate],
+    slot: u32,
+    used: &[u32],
+    rng: &mut crate::item_container::Rng,
+) -> Option<usize> {
+    if templates.is_empty() {
+        return None;
+    }
+    for _ in 0..templates.len() * 8 {
+        let index = rng.below(templates.len() as u32) as usize;
+        let template = &templates[index];
+        let count = used.get(index).copied().unwrap_or(0);
+        if eligible(template, slot, count, rng.below(8)) {
+            return Some(index);
+        }
+    }
+    None
+}
+
+/// Draws a weekly tournament prize id, rejecting the ids already in the
+/// history.
+pub fn pick_prize(rng: &mut crate::item_container::Rng, history: &[u32]) -> Option<u32> {
+    for _ in 0..TOURNAMENT_PRIZES.len() * 4 {
+        let id = TOURNAMENT_PRIZES[rng.below(TOURNAMENT_PRIZES.len() as u32) as usize];
+        if !history.contains(&id) {
+            return Some(id);
+        }
+    }
+    None
+}
+
+/// A match's outcome as the settlement code sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    Win,
+    Practice,
+    Other,
+}
+
+/// What a settled match pays and logs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Settlement {
+    /// Whether the cash prize is added to the purse.
+    pub pays: bool,
+    /// The log tag: 0x20000 win, 0x40000 practice, 0x30000 otherwise.
+    pub log_tag: u32,
+    /// A Beast match was defeated.
+    pub beast_defeated: bool,
+    /// The matches-played counter always rises.
+    pub played: bool,
+}
+
+/// Settles a match: only a win pays, a Beast win counts a beast, and the
+/// tag records how it was fought.
+pub fn settle(outcome: Outcome, template_id: u32) -> Settlement {
+    match outcome {
+        Outcome::Win => Settlement {
+            pays: true,
+            log_tag: 0x20000,
+            beast_defeated: template_id == 11,
+            played: true,
+        },
+        Outcome::Practice => Settlement {
+            pays: false,
+            log_tag: 0x40000,
+            beast_defeated: false,
+            played: true,
+        },
+        Outcome::Other => Settlement {
+            pays: false,
+            log_tag: 0x30000,
+            beast_defeated: false,
+            played: true,
+        },
+    }
+}
+
+/// The season's armour set when the last week is won with all four weekly
+/// flags set.
+pub fn season_award(week: u32, won: [bool; 4]) -> Option<[u32; 4]> {
+    if week == WEEKS_PER_SEASON - 1 && won.iter().all(|&w| w) {
+        Some(SEASON_PRIZES[week as usize])
+    } else {
+        None
+    }
 }
 
 /// Unpacks a three-byte base-12 money value.
@@ -640,5 +791,87 @@ mod tests {
         assert_eq!(COMPANIES.len(), 19);
         assert_eq!(COMPANIES[0], ("Bonten Company", [0x01, 0x07, 0x01]));
         assert_eq!(POINT_LIMITS, [5, 10, 15, 20, 30, 40]);
+    }
+}
+
+#[cfg(test)]
+mod generation_tests {
+    use super::*;
+    use crate::item_container::Rng;
+
+    #[test]
+    fn the_rank_roll_and_window() {
+        let elimination = &RANKED[1];
+        assert_eq!(elimination.name, "Elimination");
+        assert_eq!(roll_rank(elimination, 3, 0.5), 2);
+        assert_eq!(rank_window(elimination, 3, 0.5), (3, 2));
+        let challenger = &RANKED[0];
+        assert_eq!(rank_window(challenger, 0, 0.5), (0, 5));
+        let brawl = &RANKED[5];
+        assert_eq!(roll_rank(brawl, 4, 0.9), -1);
+        assert_eq!(rank_window(brawl, 4, 0.9), (4, -1));
+    }
+
+    #[test]
+    fn the_secondary_scales_with_the_slot() {
+        let duel = template(1).unwrap();
+        assert_eq!(scaled_secondary(duel, 3), pack_money(12));
+    }
+
+    #[test]
+    fn the_generation_filters() {
+        let valiance = &RANKED[2];
+        assert!(eligible(valiance, 1, 0, 0));
+        assert!(!eligible(valiance, 0, 0, 0));
+        assert!(!eligible(valiance, 1, 2, 0));
+        let brawl = &RANKED[5];
+        assert!(!eligible(brawl, 0, 0, 1));
+        assert!(eligible(brawl, 0, 0, 4));
+    }
+
+    #[test]
+    fn a_template_is_drawn_with_the_engine_generator() {
+        let mut rng = Rng(12345);
+        let index = pick_template(&STANDARD, 0, &[0; 6], &mut rng);
+        let mut check = Rng(12345);
+        assert_eq!(index, Some(check.below(6) as usize));
+        let mut rng = Rng(12345);
+        let index = pick_template(&RANKED, 0, &[0; 7], &mut rng).unwrap();
+        assert!(
+            STANDARD
+                .iter()
+                .chain(RANKED.iter())
+                .any(|t| t.id == RANKED[index].id)
+        );
+    }
+
+    #[test]
+    fn a_prize_is_drawn_around_the_history() {
+        let mut rng = Rng(7);
+        let prize = pick_prize(&mut rng, &TOURNAMENT_PRIZES[..17]).unwrap();
+        assert_eq!(prize, TOURNAMENT_PRIZES[17]);
+        let mut rng = Rng(7);
+        assert!(pick_prize(&mut rng, &[]).is_some());
+    }
+
+    #[test]
+    fn a_settled_match_pays_only_on_a_win() {
+        let win = settle(Outcome::Win, 11);
+        assert!(win.pays && win.beast_defeated && win.played);
+        assert_eq!(win.log_tag, 0x20000);
+        let practice = settle(Outcome::Practice, 1);
+        assert!(!practice.pays && !practice.beast_defeated);
+        assert_eq!(practice.log_tag, 0x40000);
+        assert_eq!(settle(Outcome::Other, 1).log_tag, 0x30000);
+    }
+
+    #[test]
+    fn the_season_award_needs_the_last_week_and_all_wins() {
+        assert_eq!(
+            season_award(3, [true, true, true, true]),
+            Some(SEASON_PRIZES[3])
+        );
+        assert_eq!(season_award(2, [true, true, true, true]), None);
+        assert_eq!(season_award(3, [true, false, true, true]), None);
     }
 }
