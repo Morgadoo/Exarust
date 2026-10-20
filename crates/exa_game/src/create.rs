@@ -89,6 +89,43 @@ pub fn clear_creation_slots(slots: &mut [[u8; 8]; 6]) -> Option<usize> {
     Some(first)
 }
 
+/// What settling the creation appearance did.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CreationSettle {
+    pub stored: Option<f32>,
+    pub pending: bool,
+    pub last: i32,
+    pub callback: bool,
+}
+
+/// Settles an appearance value toward its target.
+pub fn settle_appearance(source: f32, target: f32, last: i32, clock: i32) -> CreationSettle {
+    const EPSILON: f32 = f32::from_bits(0x33ff_ffd7);
+    let value = (0.5 - source) * 2.0;
+    if (value - target).abs() < EPSILON {
+        return CreationSettle {
+            stored: None,
+            pending: false,
+            last,
+            callback: false,
+        };
+    }
+    if last + 2 > clock {
+        return CreationSettle {
+            stored: Some(value),
+            pending: true,
+            last,
+            callback: false,
+        };
+    }
+    CreationSettle {
+        stored: Some(value),
+        pending: false,
+        last: clock,
+        callback: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,5 +198,25 @@ mod tests {
         last[5] = [7; 8];
         assert_eq!(clear_creation_slots(&mut last), Some(5));
         assert_eq!(last[5], [0, 0, 7, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn the_creation_appearance_settles_toward_its_target() {
+        let settled = settle_appearance(0.25, 0.5, 0, 0);
+        assert_eq!(settled.stored, None);
+        assert!(!settled.pending);
+        assert!(!settled.callback);
+
+        let pending = settle_appearance(0.25, 0.0, 100, 101);
+        assert_eq!(pending.stored, Some(0.5));
+        assert!(pending.pending);
+        assert_eq!(pending.last, 100);
+        assert!(!pending.callback);
+
+        let fired = settle_appearance(0.25, 0.0, 100, 102);
+        assert_eq!(fired.stored, Some(0.5));
+        assert!(!fired.pending);
+        assert_eq!(fired.last, 102);
+        assert!(fired.callback);
     }
 }
