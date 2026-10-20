@@ -18,11 +18,13 @@
 //! the group blend of the perception are not applied.
 
 use bevy::prelude::*;
+use exa_formats::characters::CharacterRecord;
 use exa_formats::roles::RoleDb;
 use exa_physics::body::BodyTicks;
 
 use crate::activity::{self, Applied, Before, IdleKind, IdleRegistry, IdleState};
 use crate::idle::Routine;
+use crate::personality::{self, Personality};
 use crate::roles::{self, Partner, Relations, Roles};
 use crate::search::Search;
 use crate::sense::{Decision, Mind, decide};
@@ -60,6 +62,8 @@ pub struct Npc {
     pub search: Option<Search>,
     /// Its record's four traits, −100 to 100.
     pub traits: [f32; 4],
+    /// What it derives from its record.
+    pub personality: Option<Personality>,
 }
 
 impl Npc {
@@ -69,6 +73,22 @@ impl Npc {
             routine: Routine::wait(),
             search: None,
             traits,
+            personality: None,
+        }
+    }
+
+    /// The brain of `record`: its traits and the personality they give,
+    /// drawing the jitter from `roll`.
+    pub fn of_record(record: &CharacterRecord, roll: &mut u32) -> Self {
+        Self {
+            personality: Some(personality::personality(
+                record.combat_skill,
+                record.traits,
+                record.feral,
+                false,
+                roll,
+            )),
+            ..Self::new(record.traits)
         }
     }
 
@@ -299,6 +319,22 @@ mod tests {
         assert!(!w.get::<Mind>(npc).unwrap().asleep);
         assert_eq!(w.get::<Npc>(npc).unwrap().state(), Some(IdleState::Roam));
         assert!(!w.get::<Roles>(npc).unwrap().has(44));
+    }
+
+    /// A record's brain carries its traits and the personality they give.
+    #[test]
+    fn a_record_gives_its_brain_a_personality() {
+        let record = CharacterRecord {
+            combat_skill: 50.0,
+            traits: [0.0, 40.0, 0.0, 0.0],
+            ..Default::default()
+        };
+        let mut roll = 0;
+        let npc = Npc::of_record(&record, &mut roll);
+        assert_eq!(npc.traits[1], 40.0);
+        let p = npc.personality.unwrap();
+        assert!((p.skill - 0.5).abs() < 1e-6 && (p.courage - 0.7).abs() < 1e-6);
+        assert_eq!(roll, 1);
     }
 
     /// An idle activity of 6 creates the search; one of 0 drops it.

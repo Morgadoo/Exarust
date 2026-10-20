@@ -1323,6 +1323,8 @@ fn spawn_placed_characters(
 ) -> (usize, usize) {
     let (races, story) = (placing.races, placing.story);
     let (mut spawned, mut missing) = (0, 0);
+    // The brains' jitter draws (the engine's shared generator is not kept).
+    let mut roll = 0u32;
     let started = std::time::Instant::now();
     for c in placed {
         let race = exa_formats::races::of_character(races, c.race);
@@ -1414,7 +1416,7 @@ fn spawn_placed_characters(
             commands.entity(model).insert((
                 exa_ai::roles::Roles::of_record(&c.record, placing.book),
                 exa_ai::roles::Relations::default(),
-                exa_ai::brain::Npc::new(c.record.traits),
+                exa_ai::brain::Npc::of_record(&c.record, &mut roll),
                 exa_ai::brain::CharacterId(c.record.id),
             ));
             if physical {

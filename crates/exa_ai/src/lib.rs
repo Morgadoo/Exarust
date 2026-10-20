@@ -27,6 +27,7 @@ pub mod idle;
 pub mod manager;
 pub mod order;
 pub mod path;
+pub mod personality;
 pub mod place;
 pub mod roles;
 pub mod search;
