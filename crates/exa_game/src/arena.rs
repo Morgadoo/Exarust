@@ -1776,3 +1776,56 @@ mod mt_tests {
         assert_eq!(mt.next_u32(), check.next_u32());
     }
 }
+
+/// Picks a weapon row for `tier`, 1-based, or `None` for an empty tier.
+pub fn pick_weapon_row(tier: u32, rng: &mut crate::item_container::Rng) -> Option<u32> {
+    let rows = WEAPON_TIERS.get(tier as usize)?;
+    if rows.is_empty() {
+        return None;
+    }
+    Some(rng.below(rows.len() as u32) + 1)
+}
+
+/// Picks one variant of a tier's row (0-based, as `set_weapon` receives it).
+pub fn pick_weapon_variant(
+    tier: u32,
+    row: u32,
+    rng: &mut crate::item_container::Rng,
+) -> Option<u32> {
+    let rows = WEAPON_TIERS.get(tier as usize)?;
+    let entry = rows.get(row as usize)?;
+    pick_variant(entry, rng)
+}
+
+/// A spawned opponent's level: 60000 + rand(9999) for a company, else
+/// 50000 + rand(9999).
+pub fn spawn_level(company: bool, rng: &mut crate::item_container::Rng) -> u32 {
+    let base = if company { 60_000 } else { 50_000 };
+    base + rng.below(9_999)
+}
+
+#[cfg(test)]
+mod spawn_tests {
+    use super::*;
+    use crate::item_container::Rng;
+
+    #[test]
+    fn the_weapon_row_and_variant() {
+        let mut rng = Rng(12345);
+        assert_eq!(pick_weapon_row(1, &mut rng), Some(5));
+        let mut rng = Rng(12345);
+        assert_eq!(pick_weapon_variant(2, 1, &mut rng), Some(419));
+        assert_eq!(pick_weapon_row(6, &mut rng), None);
+        assert_eq!(pick_weapon_variant(2, 99, &mut rng), None);
+    }
+
+    #[test]
+    fn the_spawn_levels() {
+        let mut rng = Rng(12345);
+        let roll = rng.below(9_999);
+        let mut rng = Rng(12345);
+        assert_eq!(spawn_level(true, &mut rng), 60_000 + roll);
+        let mut rng = Rng(12345);
+        assert_eq!(spawn_level(false, &mut rng), 50_000 + roll);
+    }
+}
