@@ -309,3 +309,14 @@ The system SHALL fade a surface whose record's fall-off amount exceeds 0.01 in m
 #### Scenario: Salve glow outline
 - **WHEN** the salve's glow (opacity 0, amount 1, exponent 2, flag `0x100`) is shown
 - **THEN** its alpha is 1.08 where it faces the eye and 0.09 at its outline
+
+### Requirement: Cube pipeline cache
+Each mesh and key SHALL reuse its specialized pipeline id from a cache instead of specializing again. A miss SHALL specialize once and store the id; a failure SHALL not be stored.
+
+#### Scenario: First and later draws
+- **WHEN** a mesh and key are prepared for the first time
+- **THEN** the specializer runs once and the id is stored
+- **WHEN** the same mesh and key are prepared again
+- **THEN** the stored id is reused and the specializer does not run
+- **WHEN** the specializer fails
+- **THEN** nothing is stored

@@ -23,7 +23,7 @@ use bevy::core_pipeline::Core3dSystems;
 use bevy::core_pipeline::schedule::Core3d;
 use bevy::image::{ImageCompareFunction, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::math::Affine3A;
-use bevy::mesh::{Mesh, MeshVertexBufferLayoutRef};
+use bevy::mesh::{Mesh, MeshVertexBufferLayoutRef, VertexAttributeDescriptor, VertexBufferLayout};
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
@@ -476,6 +476,16 @@ struct CubePipelineKey {
     two_sided: bool,
 }
 
+impl CubePipeline {
+    fn vertex_attributes(key: CubePipelineKey) -> Vec<VertexAttributeDescriptor> {
+        let mut attributes = vec![Mesh::ATTRIBUTE_POSITION.at_shader_location(0)];
+        if key.alpha_cut {
+            attributes.push(Mesh::ATTRIBUTE_UV_0.at_shader_location(1));
+        }
+        attributes
+    }
+}
+
 impl SpecializedMeshPipeline for CubePipeline {
     type Key = CubePipelineKey;
 
@@ -484,11 +494,10 @@ impl SpecializedMeshPipeline for CubePipeline {
         key: Self::Key,
         layout: &MeshVertexBufferLayoutRef,
     ) -> Result<RenderPipelineDescriptor, SpecializedMeshPipelineError> {
-        let mut attributes = vec![Mesh::ATTRIBUTE_POSITION.at_shader_location(0)];
+        let attributes = Self::vertex_attributes(key);
         let mut defs = Vec::new();
         let mut layouts = vec![self.draws.clone()];
         if key.alpha_cut {
-            attributes.push(Mesh::ATTRIBUTE_UV_0.at_shader_location(1));
             defs.push("ALPHA_CUT".into());
             layouts.push(self.cut.clone());
         }
@@ -563,6 +572,8 @@ struct PreparedCubes {
     cuts: HashMap<AssetId<Image>, BindGroup>,
     /// Per draw, its pipeline.
     pipelines: Vec<Option<CachedRenderPipelineId>>,
+    /// Specialized ids, keyed by mesh and key.
+    specialized: HashMap<(VertexBufferLayout, CubePipelineKey), CachedRenderPipelineId>,
     /// Per pool layer, a view to render into.
     layers: Vec<TextureView>,
     /// Faces left for this frame (rendered once, by the first scene view).
@@ -576,6 +587,7 @@ impl Default for PreparedCubes {
             draws: None,
             cuts: HashMap::default(),
             pipelines: Vec::new(),
+            specialized: HashMap::default(),
             layers: Vec::new(),
             pending: false,
         }
@@ -591,6 +603,24 @@ fn fail_all(jobs: &CubeJobs) {
     if let Ok(mut f) = jobs.failed.0.lock() {
         f.extend(jobs.faces.iter().map(|j| (j.light, 1u8 << j.face)));
     }
+}
+
+/// Returns the cached pipeline for `key`, or creates and stores it once.
+fn cached_pipeline<K, V>(
+    cache: &mut HashMap<K, V>,
+    key: K,
+    create: impl FnOnce() -> Option<V>,
+) -> Option<V>
+where
+    K: Eq + std::hash::Hash + Clone,
+    V: Copy,
+{
+    if let Some(value) = cache.get(&key) {
+        return Some(*value);
+    }
+    let value = create()?;
+    cache.insert(key, value);
+    Some(value)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -647,9 +677,18 @@ fn prepare_draws(
                 alpha_cut: d.cut.is_some(),
                 two_sided: d.two_sided,
             };
-            specialized
-                .specialize(&cache, &pipeline, key, &mesh.layout)
-                .ok()
+            let Ok(layout) = mesh
+                .layout
+                .0
+                .get_layout(&CubePipeline::vertex_attributes(key))
+            else {
+                return None;
+            };
+            cached_pipeline(&mut prepared.specialized, (layout, key), || {
+                specialized
+                    .specialize(&cache, &pipeline, key, &mesh.layout)
+                    .ok()
+            })
         });
         pipelines.push(id);
         if let Some(cut) = d.cut
@@ -831,5 +870,40 @@ mod tests {
         assert!((b.max().x - 2.0).abs() < 1e-5);
         assert!(b.min().x.abs() < 1e-5);
         assert!((b.max().y - 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_pipeline_cache_specializes_once() {
+        let mut cache = HashMap::default();
+        let mut calls = 0;
+        let layout = VertexBufferLayout::default();
+        let plain = CubePipelineKey {
+            alpha_cut: false,
+            two_sided: false,
+        };
+        let first = cached_pipeline(&mut cache, (layout.clone(), plain), || {
+            calls += 1;
+            Some(CachedRenderPipelineId::new(1))
+        });
+        assert_eq!(first, Some(CachedRenderPipelineId::new(1)));
+        assert_eq!(calls, 1);
+
+        let second = cached_pipeline(&mut cache, (layout.clone(), plain), || {
+            calls += 1;
+            Some(CachedRenderPipelineId::new(2))
+        });
+        assert_eq!(second, Some(CachedRenderPipelineId::new(1)));
+        assert_eq!(calls, 1);
+
+        let cut = CubePipelineKey {
+            alpha_cut: true,
+            two_sided: false,
+        };
+        let failed = cached_pipeline(&mut cache, (layout, cut), || {
+            calls += 1;
+            None
+        });
+        assert_eq!(failed, None);
+        assert_eq!(calls, 2);
     }
 }
