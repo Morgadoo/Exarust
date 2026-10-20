@@ -9,3 +9,5 @@ while the map was being built, so treat the row as a best-effort snapshot.
 |---|---|---|---:|---:|---:|---:|---|
 | 2026-10-20 | 7d8d69e | dirty | 17.1% | 5.7% | 14.6% | 27.3% | restore combatant/pathfinder sources, fix cloth citation, add weapon-blood citation |
 | 2026-10-20 | 82927ec | dirty | 17.1% | 5.7% | 14.6% | 27.3% | pathfinder layers, stamps and shortcut budget; combatant head variants; mind powers; morph adoption |
+| 2026-10-20 | 4fef85c | clean | 17.4% | 5.7% | 14.8% | 27.3% | rerate the UI, mode screens and TGSLines from the implemented helpers |
+| 2026-10-20 | 4fef85c | dirty | 18.7% | 5.7% | 15.6% | 27.3% | rerate the UI skin, forms, menu screens, skill screen and board from the current crate |
