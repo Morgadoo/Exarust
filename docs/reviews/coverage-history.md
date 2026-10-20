@@ -17,3 +17,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-20 | 1f453c3 | dirty | 20.4% | 5.7% | 16.8% | 27.3% | fix blank-text capture (clean HOME/XDG cache); rerated modes/ui |
 | 2026-10-20 | fbf156d | dirty | 20.4% | 5.7% | 16.8% | 27.3% | add the Kaiser mip kernel and axis pass |
 | 2026-10-20 | 277ec9f | clean | 20.5% | 5.7% | 16.9% | 27.3% | rerate the Kaiser mipmaps from exa_render::mipmap |
+| 2026-10-20 | c3e15a9 | dirty | 20.6% | 5.7% | 16.9% | 27.3% | add the Kaiser chain driver |

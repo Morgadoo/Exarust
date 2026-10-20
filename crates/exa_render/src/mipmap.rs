@@ -159,3 +159,100 @@ mod tests {
         assert_eq!(out[7], 1.0);
     }
 }
+
+/// One generated level: its size and interleaved RGBA floats.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MipLevel {
+    pub width: usize,
+    pub height: usize,
+    pub texels: Vec<f32>,
+}
+
+/// Builds the mip chain from the base level: levels `1..=max_levels` while
+/// both dimensions stay above zero, the width plus height stays at least
+/// 3, and the dimensions divide exactly (the power-of-two path). Each level
+/// is resampled directly from the base with its own Kaiser table, first
+/// horizontally then vertically.
+pub fn build_mip_chain(
+    base: &[f32],
+    width: usize,
+    height: usize,
+    wrap: bool,
+    max_levels: u32,
+) -> Vec<MipLevel> {
+    let mut levels = Vec::new();
+    if width == 0 || height == 0 || base.len() < width * height * 4 {
+        return levels;
+    }
+    for level in 1..=max_levels {
+        let dst_width = width >> level;
+        let dst_height = height >> level;
+        if dst_width == 0 || dst_height == 0 || dst_width + dst_height < 3 {
+            break;
+        }
+        if !width.is_multiple_of(dst_width) || !height.is_multiple_of(dst_height) {
+            break;
+        }
+        let weights = kaiser_table(level);
+        let mut horizontal = vec![0.0f32; dst_width * height * 4];
+        let mut row = vec![0.0f32; dst_width * 4];
+        for y in 0..height {
+            let start = y * width * 4;
+            let end = start + width * 4;
+            resample_axis(
+                &base[start..end],
+                width,
+                dst_width,
+                &weights,
+                wrap,
+                &mut row,
+            );
+            horizontal[y * dst_width * 4..(y + 1) * dst_width * 4].copy_from_slice(&row);
+        }
+        let mut texels = vec![0.0f32; dst_width * dst_height * 4];
+        let mut column = vec![0.0f32; height * 4];
+        let mut output = vec![0.0f32; dst_height * 4];
+        for x in 0..dst_width {
+            for y in 0..height {
+                let source = (y * dst_width + x) * 4;
+                column[y * 4..y * 4 + 4].copy_from_slice(&horizontal[source..source + 4]);
+            }
+            resample_axis(&column, height, dst_height, &weights, wrap, &mut output);
+            for y in 0..dst_height {
+                let destination = (y * dst_width + x) * 4;
+                texels[destination..destination + 4].copy_from_slice(&output[y * 4..y * 4 + 4]);
+            }
+        }
+        levels.push(MipLevel {
+            width: dst_width,
+            height: dst_height,
+            texels,
+        });
+    }
+    levels
+}
+
+#[cfg(test)]
+mod chain_tests {
+    use super::*;
+
+    #[test]
+    fn a_uniform_image_stays_uniform() {
+        let base = vec![0.4f32; 8 * 8 * 4];
+        let levels = build_mip_chain(&base, 8, 8, false, 3);
+        assert_eq!(levels.len(), 2);
+        assert_eq!((levels[0].width, levels[0].height), (4, 4));
+        assert_eq!((levels[1].width, levels[1].height), (2, 2));
+        for level in levels {
+            for value in level.texels {
+                assert!((value - 0.4).abs() < 1e-5);
+            }
+        }
+    }
+
+    #[test]
+    fn a_small_or_npot_image_has_no_chain() {
+        assert!(build_mip_chain(&[0.0; 4], 1, 1, false, 3).is_empty());
+        assert!(build_mip_chain(&[0.0; 3 * 3 * 4], 3, 3, false, 3).is_empty());
+    }
+}
