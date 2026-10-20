@@ -145,6 +145,63 @@ pub fn copy_appearance(source: f32, target: f32, last: i32, clock: i32) -> Creat
     debounce(source, last, clock)
 }
 
+/// The creation change's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationChangeInput {
+    pub enabled: bool,
+    pub female: bool,
+    pub word: i32,
+    pub has_child_object: bool,
+    pub global_flag: bool,
+}
+
+/// What the creation change did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationChange {
+    pub word: i32,
+    pub label: CreationLabel,
+    pub text_set: bool,
+    pub child_call: bool,
+    pub global_call: bool,
+    pub first_pass: bool,
+    pub second_pass: bool,
+    pub callback: bool,
+    pub finalized: bool,
+}
+
+/// Applies the sex option to the record word and refreshes the screen.
+pub fn apply_creation_change(input: CreationChangeInput) -> CreationChange {
+    if !input.enabled {
+        return CreationChange {
+            word: input.word,
+            label: CreationLabel::None,
+            text_set: false,
+            child_call: false,
+            global_call: false,
+            first_pass: false,
+            second_pass: false,
+            callback: false,
+            finalized: true,
+        };
+    }
+    let word = if input.female {
+        input.word | 1
+    } else {
+        input.word & !1
+    };
+    CreationChange {
+        word,
+        label: creation_label(word),
+        text_set: true,
+        child_call: input.has_child_object,
+        global_call: !input.global_flag,
+        first_pass: true,
+        second_pass: true,
+        callback: true,
+        finalized: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,5 +311,54 @@ mod tests {
         assert!(!fired.pending);
         assert_eq!(fired.last, 102);
         assert!(fired.callback);
+    }
+
+    #[test]
+    fn the_creation_change_sets_the_sex_bit_and_refreshes() {
+        let female = apply_creation_change(CreationChangeInput {
+            enabled: true,
+            female: true,
+            word: 0,
+            has_child_object: true,
+            global_flag: false,
+        });
+        assert_eq!(female.word, 1);
+        assert_eq!(female.label, CreationLabel::HumanFemale);
+        assert!(female.text_set);
+        assert!(female.child_call);
+        assert!(female.global_call);
+        assert!(female.first_pass);
+        assert!(female.second_pass);
+        assert!(female.callback);
+        assert!(female.finalized);
+
+        let male = apply_creation_change(CreationChangeInput {
+            enabled: true,
+            female: false,
+            word: 1,
+            has_child_object: false,
+            global_flag: true,
+        });
+        assert_eq!(male.word, 0);
+        assert_eq!(male.label, CreationLabel::HumanMale);
+        assert!(!male.child_call);
+        assert!(!male.global_call);
+
+        let disabled = apply_creation_change(CreationChangeInput {
+            enabled: false,
+            female: true,
+            word: 0x201,
+            has_child_object: true,
+            global_flag: false,
+        });
+        assert_eq!(disabled.word, 0x201);
+        assert_eq!(disabled.label, CreationLabel::None);
+        assert!(!disabled.text_set);
+        assert!(!disabled.child_call);
+        assert!(!disabled.global_call);
+        assert!(!disabled.first_pass);
+        assert!(!disabled.second_pass);
+        assert!(!disabled.callback);
+        assert!(disabled.finalized);
     }
 }
