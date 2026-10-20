@@ -11,7 +11,8 @@
 //! layout and the text box ([`text_layout`], [`text_box`]), icon atlases
 //! and glyphs ([`icon_atlas`], [`gui_glyphs`]), the table and item views
 //! ([`table_view`], [`item_view`]) and the basic controls
-//! ([`gui_controls`]).
+//! ([`gui_controls`]), and how forms rescale with the unit
+//! ([`gui_rescale`]).
 
 pub mod blend;
 pub mod controls;
@@ -24,6 +25,7 @@ pub mod gui_controls;
 pub mod gui_font;
 pub mod gui_glyphs;
 pub mod gui_level;
+pub mod gui_rescale;
 pub mod heartbeat;
 pub mod hud;
 pub mod icon_atlas;

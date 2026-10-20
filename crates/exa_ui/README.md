@@ -213,7 +213,9 @@ caret and the draw (`text_layout`); the multi-line text box with its keys,
 clipboard, scroll and drag (`text_box`); the icon atlases and their draws
 (`icon_atlas`); the twelve built-in glyphs and the alpha hits
 (`gui_glyphs`); the table view (`table_view`), the item view
-(`item_view`) and the basic controls (`gui_controls`). `GuiLevelState`
+(`item_view`), the basic controls (`gui_controls`), and how forms and
+their controls rescale with the unit, the glyph sheet and the message
+box (`gui_rescale`). `GuiLevelState`
 (`gui_level`) keeps the level and the atlases with the GUI scale in the
 app; the other widgets wait for forms that use them.
 

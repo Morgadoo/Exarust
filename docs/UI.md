@@ -383,6 +383,25 @@ The original's own forms and controls that Exarust rebuilds, with the
 - **Skill screen** (`exa_ui::skill`): `TSkillUI`'s 186-byte node placement
   at `0x100224570`.
 
+When the GUI unit changes, every form rescales from the old unit to the
+new (`exa_ui::gui_rescale`): lengths are divided by the old unit, then
+multiplied by the new; a border of 4 pixels or more becomes its design
+value times a quarter of the unit. On each axis a stretched form keeps
+both edges' scaled gaps; others scale their size (or keep their frame
+around a scaled client) and keep their right or bottom gap, their
+centring, or their scaled place; a title-only form is its title and the
+skin's base. Child forms follow inside the parent's client, then the
+control records in their 16-bit fields: an odd width under 16 units and
+an odd height grow by one, and a record's place is corrected by half its
+height less four units before and after the scaling (one unit when it
+is taller than eight). The common glyph sheet `GlphCommon` gives the
+large atlas nineteen 64-pixel icons in a fixed order (the seventeenth,
+at 0, 256, is the item views' marker). A message box is its text's width
+plus 64 (at least 320) plus the skin's frame twice, 104 tall, centred
+down the screen (or a quarter down) with its top on the 4-unit grid; its
+label sits at 12, 4, its Ok and Cancel buttons are 80 wide, 96 apart,
+centred at grid row 13.
+
 ## Text boxes
 
 Wrapped text (`exa_ui::text_layout`) and the multi-line text box of the
