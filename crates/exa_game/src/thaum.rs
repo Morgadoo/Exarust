@@ -1461,6 +1461,71 @@ pub fn hover_tree(input: TreeHoverInput) -> TreeHover {
     }
 }
 
+/// The tree decay's inputs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TreeDecayInput {
+    pub mask: i32,
+    pub first: f32,
+    pub second: f32,
+    pub base: f32,
+    pub field_17c: f32,
+    pub field_180: f32,
+    pub runtime: f32,
+    pub mode: i32,
+    pub dim_flag: bool,
+    pub has_started: bool,
+    pub has_250: bool,
+    pub has_248: bool,
+}
+
+/// The tree decay's results.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TreeDecay {
+    pub field_17c: f32,
+    pub field_180: f32,
+    pub started: bool,
+    pub start_clock: Option<u32>,
+    pub scaled: Option<i32>,
+    pub call_250: bool,
+    pub call_248: bool,
+    pub dim_calls: u32,
+    pub result: i32,
+}
+
+/// Applies the tree's decay terms, virtual and mode callbacks.
+pub fn decay_tree(input: TreeDecayInput, now: u32) -> TreeDecay {
+    let mut field_17c = input.field_17c;
+    let mut field_180 = input.field_180;
+    let mut started = false;
+    let mut start_clock = None;
+    if (input.mask & 0x10) != 0 {
+        let base = 2.0 + input.base;
+        field_17c -= base * input.first * 4.0;
+        field_180 -= base * input.second * 4.0;
+        if !input.has_started {
+            started = true;
+            start_clock = Some(now);
+        }
+    }
+    let scaled = if (input.mask & 0x20) != 0 {
+        Some((input.runtime * -10.0).round_ties_even() as i32)
+    } else {
+        None
+    };
+    let mode3 = input.mode == 3;
+    TreeDecay {
+        field_17c,
+        field_180,
+        started,
+        start_clock,
+        scaled,
+        call_250: mode3 && input.mask == 0x200 && input.has_250,
+        call_248: mode3 && input.mask == 0x100 && input.has_248,
+        dim_calls: u32::from(!mode3 && (input.mask & 0x300) != 0 && !input.dim_flag),
+        result: if (input.mask & 0x30) != 0 { 3 } else { 0 },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2446,5 +2511,45 @@ mod tests {
         assert!(!wrong.handled);
         assert!(!wrong.copied_previous);
         assert_eq!(wrong.entry, None);
+    }
+
+    #[test]
+    fn the_tree_decay_terms_and_modes() {
+        let input = |mask, mode, dim| TreeDecayInput {
+            mask,
+            first: 1.0,
+            second: 2.0,
+            base: 3.0,
+            field_17c: 100.0,
+            field_180: 200.0,
+            runtime: 2.5,
+            mode,
+            dim_flag: dim,
+            has_started: false,
+            has_250: true,
+            has_248: true,
+        };
+
+        let terms = decay_tree(input(0x10, 0, false), 500);
+        assert!((terms.field_17c - 80.0).abs() < 1e-5);
+        assert!((terms.field_180 - 160.0).abs() < 1e-5);
+        assert!(terms.started);
+        assert_eq!(terms.start_clock, Some(500));
+        assert_eq!(terms.result, 3);
+
+        let scaled = decay_tree(input(0x20, 0, false), 0);
+        assert_eq!(scaled.scaled, Some(-25));
+        assert_eq!(scaled.result, 3);
+
+        let call = decay_tree(input(0x200, 3, false), 0);
+        assert!(call.call_250);
+        assert!(!call.call_248);
+
+        let call_two = decay_tree(input(0x100, 3, false), 0);
+        assert!(call_two.call_248);
+        assert!(!call_two.call_250);
+
+        assert_eq!(decay_tree(input(0x100, 0, false), 0).dim_calls, 1);
+        assert_eq!(decay_tree(input(0x100, 0, true), 0).dim_calls, 0);
     }
 }
