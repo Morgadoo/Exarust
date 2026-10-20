@@ -532,6 +532,64 @@ pub fn rebuild_creation_list(
     }
 }
 
+/// What rebuilding the second creation list did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationSecondList {
+    pub banded: bool,
+    pub built: bool,
+    pub index: i32,
+    pub replaced: bool,
+    pub stored: bool,
+    pub caption: Option<u8>,
+    pub drew: bool,
+    pub finalized: bool,
+}
+
+/// Rebuilds the second option list, or stores only the index on a banded record.
+pub fn rebuild_creation_second_list(
+    index: i32,
+    banded: bool,
+    old_exists: bool,
+    new_count: i32,
+    has_caption_widget: bool,
+    drawing_allowed: bool,
+) -> CreationSecondList {
+    if banded {
+        return CreationSecondList {
+            banded: true,
+            built: false,
+            index,
+            replaced: false,
+            stored: true,
+            caption: None,
+            drew: false,
+            finalized: true,
+        };
+    }
+    if new_count <= 0 {
+        return CreationSecondList {
+            banded: false,
+            built: false,
+            index,
+            replaced: false,
+            stored: false,
+            caption: None,
+            drew: false,
+            finalized: true,
+        };
+    }
+    CreationSecondList {
+        banded: false,
+        built: true,
+        index,
+        replaced: old_exists,
+        stored: true,
+        caption: has_caption_widget.then_some((index + 0x41) as u8),
+        drew: drawing_allowed,
+        finalized: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -939,5 +997,30 @@ mod tests {
         assert!(!suspended.replaced);
         assert_eq!(suspended.caption, None);
         assert!(!suspended.drew);
+    }
+
+    #[test]
+    fn the_creation_second_list_handles_the_band() {
+        let banded = rebuild_creation_second_list(1, true, true, 3, true, true);
+        assert!(banded.banded);
+        assert!(!banded.built);
+        assert!(banded.stored);
+        assert!(!banded.drew);
+
+        let built = rebuild_creation_second_list(1, false, true, 3, true, true);
+        assert!(!built.banded);
+        assert!(built.built);
+        assert_eq!(built.index, 1);
+        assert!(built.replaced);
+        assert!(built.stored);
+        assert_eq!(built.caption, Some(b'B'));
+        assert!(built.drew);
+        assert!(built.finalized);
+
+        let empty = rebuild_creation_second_list(1, false, true, 0, true, true);
+        assert!(!empty.built);
+        assert!(!empty.stored);
+        assert_eq!(empty.caption, None);
+        assert!(!empty.drew);
     }
 }
