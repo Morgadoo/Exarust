@@ -102,3 +102,19 @@ Id -1 SHALL keep the roll and use the fixed-name edit. A ] SHALL drop 4 letters.
 #### Scenario: A coat, a bracket, and a material
 - **WHEN** "ab" is wrapped, "axe" is fixed, "coat" uses "well" and "sharp", "edge" is the made phrase, "Coat[p!]" uses quality 0, then 131, then 131 and 131, "Coat[x!]" is wrapped, "ax" plus a mark plus "e[pc]" is crafted, "a coat" and "coat." are wrapped, "A coat. lined" is wrapped, "ab" plus a mark plus "xy" has material 9 and then material 1 named "wool", a mark before "cde" uses "oak", and 14 missed rows hide a 15th "yes"
 - **THEN** "ab" stays at the same roll, "axe" is "An axe" at the same roll, "coat" is "A well coat sharp." at roll 0x08088406, material 1 on "coat" keeps that text and the side becomes "Wool line", "edge" is "An edge coat sharp.", quality 0 is "CoatThey are well, but sharp.", quality 131 is "CoatThey are well and sharp.", both high marks are "CoatThey are well, but sharp.", the plain bracket is "CoatIt is well, but sharp.", the crafted mark stays in "ax" plus a mark plus "eIt is sharp." at roll 1 and the side stays, "a coat" is "A well a coat sharp.", "coat." is "A well coat sharp.", the dotted coat is "A well coat sharp. lined", material 9 becomes "A well aby sharp." and keeps the side, "wool" becomes "A well abwool y sharp." with side "Wool line", "oak" becomes "A well oak de sharp.", and the hidden row leaves "A  coat ok." at roll 1
+
+### Requirement: Item release
+The release SHALL clear bit 0 of the 0x14 flag word of every counted entry and run the base once.
+
+#### Scenario: The release sweep
+- **WHEN** the flag words are 3, 2 and 1
+- **THEN** they become 2, 2 and 0
+- **AND** one base call runs
+
+### Requirement: Item scale
+The scale SHALL divide each entry's x and y by the argument and multiply by the unit, rounding to nearest even, and run the base once.
+
+#### Scenario: The scale
+- **WHEN** the positions are 100, 200 and 50, 25 with divisor 4 and unit 10
+- **THEN** they become 250, 500 and 125, 62
+- **AND** one base call runs

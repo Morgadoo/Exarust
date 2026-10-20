@@ -188,6 +188,46 @@ fn clamp(width: i32, height: i32, extent: (i32, i32), at: (i32, i32)) -> (i32, i
     (at.0.clamp(0, max_x), at.1.clamp(0, max_y))
 }
 
+/// The release sweep's cleared flags.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemRelease {
+    pub flags: Vec<u32>,
+    pub base_calls: u32,
+}
+
+/// Clears bit 0 of every entry's flag word.
+pub fn release_items(flags: &[u32]) -> ItemRelease {
+    ItemRelease {
+        flags: flags.iter().map(|flag| flag & !1).collect(),
+        base_calls: 1,
+    }
+}
+
+/// The scale's new positions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemScale {
+    pub positions: Vec<[i32; 2]>,
+    pub base_calls: u32,
+}
+
+/// Divides each position by the divisor and multiplies by the unit.
+pub fn scale_items(positions: &[[i32; 2]], divisor: i32, unit: i32) -> ItemScale {
+    ItemScale {
+        positions: positions
+            .iter()
+            .map(|position| {
+                [
+                    (f64::from(position[0]) / f64::from(divisor) * f64::from(unit))
+                        .round_ties_even() as i32,
+                    (f64::from(position[1]) / f64::from(divisor) * f64::from(unit))
+                        .round_ties_even() as i32,
+                ]
+            })
+            .collect(),
+        base_calls: 1,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,5 +337,16 @@ mod tests {
         assert_eq!(pane.hit(2, 2), None);
         assert_eq!(pane.hit(10, 10), Some(2));
         assert_eq!(pane.hit(90, 90), None);
+    }
+
+    #[test]
+    fn the_release_and_scale_sweep_the_entries() {
+        let released = release_items(&[3, 2, 1]);
+        assert_eq!(released.flags, vec![2, 2, 0]);
+        assert_eq!(released.base_calls, 1);
+
+        let scaled = scale_items(&[[100, 200], [50, 25]], 4, 10);
+        assert_eq!(scaled.positions, vec![[250, 500], [125, 62]]);
+        assert_eq!(scaled.base_calls, 1);
     }
 }
