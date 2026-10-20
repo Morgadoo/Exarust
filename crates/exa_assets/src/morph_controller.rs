@@ -79,6 +79,30 @@ pub fn nearest_morph_index(point: [f32; 3], points: &[[f32; 3]]) -> MorphNearest
     best
 }
 
+/// The morph target switch's result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MorphSwitch {
+    pub switched: bool,
+    pub point: [i32; 3],
+    pub refreshed: bool,
+}
+
+/// Switches to the tagged target, copying and storing its point.
+pub fn switch_morph_target(valid: bool, point: [i32; 3]) -> MorphSwitch {
+    if !valid {
+        return MorphSwitch {
+            switched: false,
+            point: [0; 3],
+            refreshed: false,
+        };
+    }
+    MorphSwitch {
+        switched: true,
+        point,
+        refreshed: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,5 +158,18 @@ mod tests {
         let empty = nearest_morph_index([0.0, 0.0, 0.0], &[]);
         assert_eq!(empty.index, -1);
         assert_eq!(empty.distance, f32::MAX);
+    }
+
+    #[test]
+    fn the_morph_target_switches_on_its_tag() {
+        let switched = switch_morph_target(true, [1, 2, 3]);
+        assert!(switched.switched);
+        assert_eq!(switched.point, [1, 2, 3]);
+        assert!(switched.refreshed);
+
+        let refused = switch_morph_target(false, [1, 2, 3]);
+        assert!(!refused.switched);
+        assert_eq!(refused.point, [0; 3]);
+        assert!(!refused.refreshed);
     }
 }
