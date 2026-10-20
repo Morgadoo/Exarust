@@ -733,3 +733,184 @@ mod stage_tests {
         assert!(!impact_exceeds(2.0, 1.0, 2.0));
     }
 }
+
+/// The attack arm curve's two values.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AttackArms {
+    pub length: f32,
+    pub other: f32,
+}
+
+/// The attack arms from the posture value `p` (0xE9C), the clock (0xA28),
+/// the size (0x11E8), the weapon class (0x1068), the clip and the weapon's
+/// stab flag. The large-body branch skips the clock square.
+pub fn attack_arms(
+    p: f32,
+    clock: f32,
+    size: f32,
+    weapon_class: u32,
+    clip: i32,
+    stab: bool,
+) -> AttackArms {
+    let base = if (size as f64) > 1.4 && weapon_class & 0x30 == 0 {
+        (p as f64 * 0.9 + 0.1) as f32
+    } else {
+        let square = 1.0f32 - clock * clock;
+        (square as f64 * (p as f64 * 0.9) + 0.1) as f32
+    };
+    let blend = p * 0.5 + 1.0;
+    let mut length = if (clock as f64) > 0.3 {
+        (base as f64 + blend as f64 * ((1.0f32 - clock) as f64 * 0.5666)) as f32
+    } else {
+        (base as f64 + blend as f64 * (clock as f64 * 1.3333)) as f32
+    };
+    let other = if clip == 0x0B && stab {
+        length *= 0.3;
+        0.0
+    } else if (clock as f64) < 0.5 {
+        p
+    } else {
+        let d = 1.0f32 - clock;
+        d * d * p * 4.0
+    };
+    AttackArms { length, other }
+}
+
+/// The arm floor: `min(0.4·|turn|, 0.4)`.
+pub fn arm_floor(turn: f32) -> f32 {
+    let lo = (turn.abs() as f64 * 0.4) as f32;
+    min_second(lo, 0.4)
+}
+
+/// The parry arm ramp: `0.8·previous + 0.04`, in double.
+pub fn parry_blend(previous: f32) -> f32 {
+    (previous as f64 * 0.8 + 0.04) as f32
+}
+
+/// The gait arm: `clamp(1 − 0.15·gait, 0.05, 0.2)`.
+pub fn gait_arm(gait: f32) -> f32 {
+    let v = (1.0 - gait as f64 * 0.15) as f32;
+    if (v as f64) < 0.05 {
+        0.05
+    } else if (v as f64) > 0.2 {
+        0.2
+    } else {
+        v
+    }
+}
+
+/// The `0x40` shock deadline: true when the bit is set and the unsigned
+/// 32-bit clock has reached the deadline.
+pub fn shock_expired(condition: u32, deadline_ms: u32, now_ms: u32) -> bool {
+    condition & 0x40 != 0 && now_ms > deadline_ms
+}
+
+/// The dispatcher's first split: the posture block or the clip block.
+pub fn posture_entry(balance: f32, condition: u32) -> bool {
+    (balance as f64) < 0.6 || condition == 0x300
+}
+
+/// The lying-still gate: balance below 0.3 and motion below 25.
+pub fn lying_still(balance: f32, motion: f32) -> bool {
+    (balance as f64) < 0.3 && motion < 25.0
+}
+
+/// The auto-parry deadline: `0x1018 & 0x20` uses `ea4+400`, `0xC40 & 4`
+/// uses 0, otherwise `d34+400`; all in wrapping 32-bit arithmetic.
+pub fn auto_parry_deadline(flags_1018: u32, flags_c40: u32, ea4: u32, d34: u32) -> i32 {
+    if flags_1018 & 0x20 != 0 {
+        ea4.wrapping_add(400) as i32
+    } else if flags_c40 & 4 != 0 {
+        0
+    } else {
+        d34.wrapping_add(400) as i32
+    }
+}
+
+/// The switch-weapons phase: 0x10004 after 0.6 progress (with a log when
+/// the condition lacks bit 2), otherwise 0x10000.
+pub fn switch_phase(progress: f32, condition: u32) -> (u32, bool) {
+    if (progress as f64) > 0.6 {
+        (0x10004, condition & 4 == 0)
+    } else {
+        (0x10000, false)
+    }
+}
+
+/// The get-up clock scale: `(1.5 − 0.5·encumbrance)·base`.
+pub fn get_up_scale(base: f32, encumbrance: f32) -> f32 {
+    ((1.5 - encumbrance as f64 * 0.5) * base as f64) as f32
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+
+    fn near(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-5
+    }
+
+    #[test]
+    fn the_shock_window_is_unsigned() {
+        assert!(!shock_expired(0x40, 1000, 999));
+        assert!(!shock_expired(0x40, 1000, 1000));
+        assert!(shock_expired(0x40, 1000, 1001));
+        assert!(!shock_expired(0x800, 1000, 1001));
+    }
+
+    #[test]
+    fn the_first_split_and_lying_still() {
+        assert!(posture_entry(0.59, 0));
+        assert!(!posture_entry(0.6, 0));
+        assert!(posture_entry(0.6, 0x300));
+        assert!(!posture_entry(f32::NAN, 0));
+        assert!(lying_still(0.29, 24.9));
+        assert!(!lying_still(0.29, 25.0));
+    }
+
+    #[test]
+    fn the_attack_arms() {
+        let a = attack_arms(1.0, 0.0, 1.0, 0, 5, false);
+        assert!(near(a.length, 1.0) && near(a.other, 1.0));
+        let a = attack_arms(1.0, 0.1, 1.0, 0, 5, false);
+        assert!(near(a.length, 1.19099497795));
+        let a = attack_arms(1.0, 0.5, 1.0, 0, 5, false);
+        assert!(near(a.length, 1.19994997978) && near(a.other, 1.0));
+        let a = attack_arms(1.0, 1.0, 1.0, 0, 5, false);
+        assert!(near(a.length, 0.1));
+        let a = attack_arms(0.6, 0.8, 1.5, 0, 5, false);
+        assert!(near(a.length, 0.7873160243));
+        let a = attack_arms(0.6, 0.8, 1.5, 0x10, 5, false);
+        assert!(near(a.length, 0.4417159557));
+        let a = attack_arms(1.0, 0.6, 1.0, 0, 5, false);
+        assert!(near(a.length, 1.0159599781) && near(a.other, 0.64));
+        let a = attack_arms(1.0, 0.3, 1.0, 0, 5, false);
+        assert!(near(a.length, 1.5139299631));
+        let a = attack_arms(0.8, 0.6, 1.0, 0, 0x0B, true);
+        assert!(near(a.other, 0.0) && near(a.length, 0.2634288));
+    }
+
+    #[test]
+    fn the_arm_ramps_and_gait() {
+        assert_eq!(arm_floor(0.0), 0.0);
+        assert_eq!(arm_floor(0.5), 0.2);
+        assert_eq!(arm_floor(-10.0), 0.4);
+        assert_eq!(parry_blend(0.0), 0.04);
+        assert_eq!(parry_blend(0.2), 0.2);
+        assert_eq!(gait_arm(0.0), 0.2);
+        assert_eq!(gait_arm(5.4).to_bits(), 0x3E428F5B);
+        assert_eq!(gait_arm(6.334), 0.05);
+        assert_eq!(gait_arm(10.0), 0.05);
+    }
+
+    #[test]
+    fn the_deadline_and_phases() {
+        assert_eq!(auto_parry_deadline(0x20, 0, 1000, 5), 1400);
+        assert_eq!(auto_parry_deadline(0, 4, 1000, 5), 0);
+        assert_eq!(auto_parry_deadline(0, 0, 1000, 5), 405);
+        assert_eq!(switch_phase(0.6, 0), (0x10004, true));
+        assert_eq!(switch_phase(0.599, 0), (0x10000, false));
+        assert_eq!(switch_phase(0.7, 4), (0x10004, false));
+        assert!(near(get_up_scale(1.0, 0.5), 1.25));
+    }
+}
