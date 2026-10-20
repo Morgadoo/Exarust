@@ -665,6 +665,7 @@ impl SceneEnvironment {
     /// Takes a level's environment record: its ambient (through the
     /// ambient setter), its sun colour, and the stored sun position.
     pub fn apply_record(&mut self, record: &Environment) {
+        self.sun_mode = record.sun_mode;
         self.set_ambient([record.ambient[0], record.ambient[1], record.ambient[2], 1.0]);
         self.set_sun_colour(record.sun_colour);
         self.azimuth = record.sun_azimuth;
@@ -762,14 +763,18 @@ impl SceneEnvironment {
         if offset < 0.1 {
             self.sun_dim += 1.0 - offset * 10.0;
         }
-        self.record_fog = [
-            self.current.fog[0] * 0.375,
-            self.current.fog[1] * 0.375,
-            self.current.fog[2] * 0.375,
-        ];
-        self.fog.current_colour = self.record_fog;
-        self.fill = self.current.fill;
-        self.sky_sun_colour = self.current.sun;
+        // Without a track there is no day record to take these from; the
+        // caller's colours stand.
+        if self.track.is_some() {
+            self.record_fog = [
+                self.current.fog[0] * 0.375,
+                self.current.fog[1] * 0.375,
+                self.current.fog[2] * 0.375,
+            ];
+            self.fog.current_colour = self.record_fog;
+            self.fill = self.current.fill;
+            self.sky_sun_colour = self.current.sun;
+        }
         self.sun_towards = towards;
         SunPosition {
             towards,

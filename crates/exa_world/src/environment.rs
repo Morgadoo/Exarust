@@ -9,6 +9,11 @@
 //!
 //! The original's sky shader is not decoded; outdoor skies use Bevy's
 //! physically based atmosphere lit by the level's sun, as a stand-in.
+//!
+//! The rules themselves (sun and moon placement, the day record, clouds,
+//! fog narrowing and weather) live in [`crate::scene_env`], which is pure and
+//! tested without an app; this module only turns them into a
+//! [`Lighting`] and Bevy resources.
 
 use bevy::light::Atmosphere;
 use bevy::light::atmosphere::ScatteringMedium;
@@ -17,6 +22,11 @@ use bevy::pbr::{AtmosphereSettings, DistanceFog, FogFalloff};
 use bevy::prelude::*;
 use exa_formats::environment::{Environment, SunMode};
 
+use crate::scene_env::{OUTDOOR_FOG_COLOUR, SceneEnvironment};
+
+/// The render quality the original reads when it builds the environment's
+/// sky map (the top setting, 96 texels).
+const SKY_QUALITY: i32 = 5;
 /// Ambient colour of a typical level (sRGB grey).
 const REFERENCE_AMBIENT: f32 = 0.6275;
 /// The original's ambient is the environment cube's blurred colour × the
@@ -32,10 +42,9 @@ const LUX_PER_INTENSITY: f32 = 160.0;
 /// a scene without a level is shown under. The shading divides lux back into
 /// the original's units, so a brighter light only washes the picture out.
 pub const SUN_LUX: f32 = SUN_INTENSITY * LUX_PER_INTENSITY;
-/// Outdoor fog: distance (m) and colour (sRGB) of the original's sky-less
-/// outdoor default.
+/// The outdoor preset's fog reaches this far, metres (the level records'
+/// distance words give about this).
 const OUTDOOR_FOG_DISTANCE: f32 = 1000.0;
-const OUTDOOR_FOG: [f32; 3] = [0.47, 0.53, 0.70];
 /// Shadowed range of the sun, metres.
 const SUN_SHADOW_RANGE: f32 = 60.0;
 
@@ -86,8 +95,10 @@ pub struct Sun {
 pub struct LevelFog {
     /// Linear colour.
     pub colour: Vec3,
-    /// Metres at which the fog reaches about two thirds.
-    pub distance: f32,
+    /// Where the fog starts, metres.
+    pub near: f32,
+    /// Where it reaches its full strength, metres.
+    pub far: f32,
 }
 
 enum Preset {
@@ -118,48 +129,79 @@ fn linear(srgb: [f32; 3]) -> Vec3 {
 /// The lighting of `level`, given its environment record and the number of
 /// lights its own nodes and props bring.
 pub fn level_lighting(level: &str, record: Option<&Environment>, lights: usize) -> Lighting {
-    let env = record.cloned().unwrap_or_default();
-    let ambient = linear(env.ambient);
-    let sun = |intensity: f32| Sun {
-        towards: Vec3::from_array(env.sun_direction()).normalize(),
-        colour: linear(env.sun_colour),
-        illuminance: intensity * LUX_PER_INTENSITY,
+    level_lighting_with(level, record, lights, false)
+}
+
+/// The lighting of `level`; `legacy_grid` is a tile-grid level built the
+/// original's older way, which forces its environment indoors unless the
+/// level has terrain.
+pub fn level_lighting_with(
+    level: &str,
+    record: Option<&Environment>,
+    lights: usize,
+    legacy_grid: bool,
+) -> Lighting {
+    let mut env = SceneEnvironment::new(SKY_QUALITY);
+    if let Some(record) = record {
+        env.apply_record(record);
+    }
+    let sky = match preset(level) {
+        Preset::Outdoor => true,
+        Preset::Indoor => false,
+        Preset::FromRecord => false,
     };
-    match preset(level) {
-        Preset::Indoor => Lighting {
-            ambient,
-            sun: None,
-            fog: None,
-            sky: false,
-            background: Vec3::ZERO,
-        },
-        Preset::Outdoor => {
-            let colour = linear(OUTDOOR_FOG);
-            Lighting {
-                ambient,
-                sun: Some(sun(SUN_INTENSITY_WITH_SKY)),
-                fog: Some(LevelFog {
-                    colour,
-                    distance: OUTDOOR_FOG_DISTANCE,
-                }),
-                sky: true,
-                background: colour,
-            }
-        }
-        Preset::FromRecord => {
-            let lit = match env.sun_mode {
-                SunMode::On => true,
-                SunMode::Off => false,
-                SunMode::Auto => lights == 0,
-            };
-            Lighting {
-                ambient,
-                sun: lit.then(|| sun(SUN_INTENSITY)),
-                fog: None,
-                sky: false,
-                background: Vec3::ZERO,
-            }
-        }
+    if legacy_grid {
+        env.force_indoor();
+    }
+    if sky {
+        // Turning the sky on places the sun or moon and dims the record.
+        env.set_sky(true);
+        env.fog.enabled = true;
+        env.fog.colour = OUTDOOR_FOG_COLOUR;
+        env.fog.span = OUTDOOR_FOG_DISTANCE * 100.0;
+        env.fog.near = 0.0;
+        // Under a sky the fog takes its colour from the day record, which
+        // is not among the level files Exarust reads: the outdoor preset
+        // keeps the original's haze colour as a stand-in.
+        env.record_fog = crate::scene_env::linearise([
+            OUTDOOR_FOG_COLOUR[0],
+            OUTDOOR_FOG_COLOUR[1],
+            OUTDOOR_FOG_COLOUR[2],
+        ]);
+        env.background = OUTDOOR_FOG_COLOUR;
+    }
+    let lit = sky
+        || match (preset(level), env.sun_mode) {
+            (Preset::FromRecord, SunMode::On) => true,
+            (Preset::FromRecord, SunMode::Off) => false,
+            (Preset::FromRecord, SunMode::Auto) => lights == 0,
+            _ => false,
+        };
+    let placed = env.set_sun_position(env.azimuth, env.time_of_day);
+    let frame = env.apply_frame([0.0, 0.0, 1.0]);
+    let sun = lit.then(|| Sun {
+        towards: Vec3::from_array(placed.towards).normalize(),
+        colour: linear(if sky {
+            env.sky_sun_colour
+        } else {
+            env.sun_colour
+        }),
+        illuminance: (if sky {
+            SUN_INTENSITY_WITH_SKY
+        } else {
+            SUN_INTENSITY
+        }) * LUX_PER_INTENSITY,
+    });
+    Lighting {
+        ambient: Vec3::from_array(frame.ambient),
+        sun,
+        fog: frame.fog.map(|fog| LevelFog {
+            colour: Vec3::from_array(fog.colour),
+            near: fog.near,
+            far: fog.far,
+        }),
+        sky,
+        background: Vec3::from_array(frame.background),
     }
 }
 
@@ -266,8 +308,9 @@ fn fog_cameras(
                 let c = fog.colour;
                 commands.entity(camera).insert(DistanceFog {
                     color: Color::linear_rgb(c.x, c.y, c.z),
-                    falloff: FogFalloff::Exponential {
-                        density: 1.0 / fog.distance,
+                    falloff: FogFalloff::Linear {
+                        start: fog.near,
+                        end: fog.far,
                     },
                     ..default()
                 });
@@ -295,6 +338,48 @@ mod tests {
         // Auto sunlight only without lights.
         assert!(level_lighting("menuscene", None, 0).sun.is_some());
         assert!(level_lighting("menuscene", None, 3).sun.is_none());
+    }
+
+    #[test]
+    fn the_outdoor_fog_is_linear_and_a_kilometre_deep() {
+        let outdoor = level_lighting("arenao3", None, 0);
+        let fog = outdoor.fog.unwrap();
+        assert_eq!(fog.near, 0.0);
+        // 1 km, narrowed by the low sun the default time puts up: 0.8309.
+        assert!((fog.far - 830.949).abs() < 1e-2, "{}", fog.far);
+        // 0.47 sRGB.
+        assert!((fog.colour.x - 0.1873).abs() < 1e-3, "{}", fog.colour.x);
+    }
+
+    #[test]
+    fn the_record_s_choice_of_sun_is_followed() {
+        let mut env = Environment {
+            sun_mode: SunMode::On,
+            ..Default::default()
+        };
+        assert!(level_lighting("menuscene", Some(&env), 4).sun.is_some());
+        env.sun_mode = SunMode::Off;
+        assert!(level_lighting("menuscene", Some(&env), 0).sun.is_none());
+        env.sun_mode = SunMode::Auto;
+        assert!(level_lighting("menuscene", Some(&env), 0).sun.is_some());
+        assert!(level_lighting("menuscene", Some(&env), 4).sun.is_none());
+    }
+
+    #[test]
+    fn a_legacy_grid_level_is_forced_indoor() {
+        let env = Environment {
+            ambient: [0.5, 0.4, 0.3],
+            ..Default::default()
+        };
+        let lit = level_lighting_with("menuscene", Some(&env), 0, true);
+        // 0.6275 grey, laid over the record.
+        assert!((lit.ambient.x - 0.3516).abs() < 1e-3);
+        assert!((lit.ambient.y - 0.3516).abs() < 1e-3);
+        assert_eq!(lit.ambient.z, lit.ambient.y);
+        // Without the legacy flag the record's own ambient stands.
+        let lit = level_lighting_with("menuscene", Some(&env), 0, false);
+        assert!((lit.ambient.x - 0.2140).abs() < 1e-3);
+        assert!((lit.ambient.z - 0.0732).abs() < 1e-3);
     }
 
     #[test]
