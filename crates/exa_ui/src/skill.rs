@@ -417,6 +417,169 @@ pub fn skill_screen_key(input: SkillKeyInput) -> SkillKeyOutput {
     skill_key_tail(input, out)
 }
 
+/// The skill screen pointer input's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillInputInput {
+    pub index: i32,
+    pub mask: u16,
+    pub page: i32,
+    pub closing: i32,
+    pub state: u16,
+    pub high: i32,
+    pub low: i32,
+    pub hide: u8,
+    pub flag_1ea: bool,
+    pub clock: i32,
+    pub used: [u8; 8],
+    pub repage: i32,
+    pub selected: i32,
+    pub base: i32,
+    pub delay: i32,
+    pub deadline_160: i32,
+    pub deadline_164: i32,
+    pub deadline_15c: i32,
+}
+
+/// What the skill screen pointer input did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillInputOutput {
+    pub result: i32,
+    pub index: i32,
+    pub high: i32,
+    pub low: i32,
+    pub state: u16,
+    pub hide: u8,
+    pub deadline_160: i32,
+    pub deadline_164: i32,
+    pub deadline_15c: i32,
+    pub clear: bool,
+    pub hint: bool,
+    pub select: bool,
+    pub fill: bool,
+    pub slot: Option<(i32, i32)>,
+    pub base: bool,
+}
+
+fn skill_input_finish(input: &SkillInputInput, out: &mut SkillInputOutput) {
+    if out.index < 0 {
+        out.base = true;
+        out.result = input.base;
+    }
+}
+
+/// Handles a pointer input on the skill screen.
+pub fn handle_skill_input(input: SkillInputInput) -> SkillInputOutput {
+    let mut out = SkillInputOutput {
+        result: 0x10,
+        index: input.index,
+        high: input.high,
+        low: input.low,
+        state: input.state,
+        hide: input.hide,
+        deadline_160: input.deadline_160,
+        deadline_164: input.deadline_164,
+        deadline_15c: input.deadline_15c,
+        clear: false,
+        hint: false,
+        select: false,
+        fill: false,
+        slot: None,
+        base: false,
+    };
+    if input.index < -1 {
+        out.base = true;
+        out.result = input.base;
+        return out;
+    }
+    if input.mask & 2 != 0 {
+        if input.page > 0 {
+            return out;
+        }
+        if input.closing != 0 {
+            if input.closing == 1 {
+                return out;
+            }
+            skill_input_finish(&input, &mut out);
+            return out;
+        }
+        if out.state & 2 == 0 {
+            out.clear = true;
+        }
+        out.result = 1;
+        return out;
+    }
+    if out.index <= 0 {
+        if input.low <= 0 && input.high <= 0 {
+            skill_input_finish(&input, &mut out);
+            return out;
+        }
+        if out.hide == 0 {
+            out.hide = 2;
+            out.deadline_15c = input.clock + 200;
+        }
+        out.hint = true;
+        skill_input_finish(&input, &mut out);
+        return out;
+    }
+    if out.index == 0x10000 {
+        if input.mask & 0x2000 == 0 {
+            return out;
+        }
+        if out.state as u8 == 4 {
+            out.state = 1;
+            out.deadline_160 = input.clock + 500;
+            return out;
+        }
+        if out.state & 2 != 0 {
+            return out;
+        }
+        out.state |= 2;
+        out.deadline_164 = input.clock + input.delay;
+        return out;
+    }
+    if input.flag_1ea {
+        return out;
+    }
+    if input.mask & 0x2000 == 0 {
+        skill_input_finish(&input, &mut out);
+        return out;
+    }
+    if input.low <= 0 && input.high <= 0 {
+        match input.repage {
+            1 => out.high = out.index,
+            2 => {
+                out.low = out.index;
+                out.fill = true;
+            }
+            _ => return out,
+        }
+        out.hint = true;
+        out.hide = 1;
+        out.deadline_15c = input.clock + 300;
+        skill_input_finish(&input, &mut out);
+        return out;
+    }
+    if out.high > 0 {
+        if out.index == 1 {
+            out.select = true;
+        }
+    } else if input.used.get(out.index as usize).copied().unwrap_or(0) == 0 {
+        if input.selected > 0 {
+            out.select = true;
+        }
+        let row = ((out.low >> 8) & 7) - 1;
+        let column = out.low & 7;
+        out.slot = Some((row, column));
+    }
+    out.hint = true;
+    if out.hide == 0 {
+        out.hide = 2;
+        out.deadline_15c = input.clock + 200;
+    }
+    skill_input_finish(&input, &mut out);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -827,5 +990,174 @@ mod tests {
             ..key_input()
         });
         assert!(!held.clear_call);
+    }
+
+    fn input() -> SkillInputInput {
+        SkillInputInput {
+            index: 0,
+            mask: 0,
+            page: 0,
+            closing: 0,
+            state: 0,
+            high: 0,
+            low: 0,
+            hide: 0,
+            flag_1ea: false,
+            clock: 100,
+            used: [1; 8],
+            repage: 0,
+            selected: 0,
+            base: 7,
+            delay: 250,
+            deadline_160: 0,
+            deadline_164: 0,
+            deadline_15c: 0,
+        }
+    }
+
+    #[test]
+    fn the_skill_pointer_input_dispatches_its_branches() {
+        let base = handle_skill_input(SkillInputInput {
+            index: -2,
+            ..input()
+        });
+        assert!(base.base);
+        assert_eq!(base.result, 7);
+
+        let paged = handle_skill_input(SkillInputInput {
+            mask: 2,
+            page: 1,
+            index: 5,
+            ..input()
+        });
+        assert_eq!(paged.result, 0x10);
+        assert!(!paged.clear);
+
+        let cleared = handle_skill_input(SkillInputInput {
+            mask: 2,
+            index: 5,
+            ..input()
+        });
+        assert!(cleared.clear);
+        assert_eq!(cleared.result, 1);
+
+        let closing = handle_skill_input(SkillInputInput {
+            mask: 2,
+            closing: 1,
+            index: 5,
+            ..input()
+        });
+        assert_eq!(closing.result, 0x10);
+        assert!(!closing.clear);
+
+        let late = handle_skill_input(SkillInputInput {
+            mask: 2,
+            closing: 2,
+            index: -1,
+            base: 9,
+            ..input()
+        });
+        assert!(late.base);
+        assert_eq!(late.result, 9);
+
+        let hidden = handle_skill_input(SkillInputInput {
+            index: 0,
+            high: 1,
+            ..input()
+        });
+        assert_eq!(hidden.hide, 2);
+        assert_eq!(hidden.deadline_15c, 300);
+        assert!(hidden.hint);
+        assert_eq!(hidden.result, 0x10);
+
+        let shown = handle_skill_input(SkillInputInput {
+            index: 0x10000,
+            mask: 0x2000,
+            state: 4,
+            ..input()
+        });
+        assert_eq!(shown.state, 1);
+        assert_eq!(shown.deadline_160, 600);
+        assert_eq!(shown.result, 0x10);
+
+        let second = handle_skill_input(SkillInputInput {
+            index: 0x10000,
+            mask: 0x2000,
+            state: 0,
+            delay: 250,
+            ..input()
+        });
+        assert_eq!(second.state, 2);
+        assert_eq!(second.deadline_164, 350);
+
+        let high = handle_skill_input(SkillInputInput {
+            index: 5,
+            mask: 0x2000,
+            repage: 1,
+            ..input()
+        });
+        assert_eq!(high.high, 5);
+        assert!(high.hint);
+        assert_eq!(high.hide, 1);
+        assert_eq!(high.deadline_15c, 400);
+
+        let low = handle_skill_input(SkillInputInput {
+            index: 5,
+            mask: 0x2000,
+            repage: 2,
+            ..input()
+        });
+        assert_eq!(low.low, 5);
+        assert!(low.fill);
+
+        let used = handle_skill_input(SkillInputInput {
+            index: 5,
+            mask: 0x2000,
+            low: 3,
+            selected: 2,
+            ..input()
+        });
+        assert!(!used.select);
+        assert_eq!(used.slot, None);
+        assert!(used.hint);
+
+        let mut free = input();
+        free.used[5] = 0;
+        let written = handle_skill_input(SkillInputInput {
+            index: 5,
+            mask: 0x2000,
+            low: 3,
+            selected: 2,
+            used: free.used,
+            ..input()
+        });
+        assert!(written.select);
+        assert_eq!(written.slot, Some((-1, 3)));
+
+        let first = handle_skill_input(SkillInputInput {
+            index: 1,
+            mask: 0x2000,
+            high: 2,
+            ..input()
+        });
+        assert!(first.select);
+
+        let flagged = handle_skill_input(SkillInputInput {
+            index: 5,
+            mask: 0x2000,
+            low: 1,
+            flag_1ea: true,
+            ..input()
+        });
+        assert_eq!(flagged.result, 0x10);
+        assert!(!flagged.hint);
+
+        let no_mask = handle_skill_input(SkillInputInput {
+            index: 5,
+            low: 1,
+            ..input()
+        });
+        assert_eq!(no_mask.result, 0x10);
+        assert!(!no_mask.hint);
     }
 }
