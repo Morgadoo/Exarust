@@ -1814,3 +1814,55 @@ mod snap_tests {
         assert!(snap.nodes <= 220);
     }
 }
+
+/// Shortcuts a cell path: from the last kept point, a point is dropped when
+/// the direct line to the following point is clear, and kept otherwise.
+/// The first and last points are always kept. `clear` answers whether the
+/// line between two cells is walkable.
+pub fn shortcut_path<F>(points: &[(i32, i32)], mut clear: F) -> Vec<(i32, i32)>
+where
+    F: FnMut((i32, i32), (i32, i32)) -> bool,
+{
+    if points.len() <= 2 {
+        return points.to_vec();
+    }
+    let mut out = vec![points[0]];
+    let mut index = 1;
+    while index + 1 < points.len() {
+        let next = index + 1;
+        if clear(out[out.len() - 1], points[next]) {
+            index = next;
+        } else {
+            out.push(points[index]);
+            index += 1;
+        }
+    }
+    out.push(points[points.len() - 1]);
+    out
+}
+
+#[cfg(test)]
+mod shortcut_tests {
+    use super::*;
+
+    #[test]
+    fn a_clear_line_drops_the_middle_points() {
+        let points = [(0, 0), (1, 0), (2, 0), (3, 0)];
+        assert_eq!(shortcut_path(&points, |_, _| true), vec![(0, 0), (3, 0)]);
+    }
+
+    #[test]
+    fn blocked_lines_keep_the_bends() {
+        let points = [(0, 0), (1, 0), (2, 1), (3, 1)];
+        let clear = |a: (i32, i32), b: (i32, i32)| {
+            (a.0 - b.0).abs() + (a.1 - b.1).abs() <= 1 || a == (0, 0) && b == (2, 1)
+        };
+        assert_eq!(shortcut_path(&points, clear), vec![(0, 0), (2, 1), (3, 1)]);
+    }
+
+    #[test]
+    fn short_paths_stay_as_they_are() {
+        let points = [(0, 0), (1, 1)];
+        assert_eq!(shortcut_path(&points, |_, _| true), points);
+    }
+}
