@@ -195,19 +195,19 @@ impl Rooms {
         self.room_of_cell(x, y)
     }
 
-    /// The grid cell nearest a point (metres, on X/Z), as the original
-    /// looks a node or a character up: `round(x / 6) + half`, clamped to the
-    /// grid. The cell's centre rounds to its own cell.
+    /// The grid cell a node stands in (metres, on X/Z), as the original
+    /// sorts a node into its room: [`Self::cell_of`] clamped to the grid.
+    /// The original's integer conversion here sets the rounding mode
+    /// towards −∞ for the conversion, so it is a floor, not a round.
     pub fn cell_of_node(&self, p: Vec2) -> (i64, i64) {
-        let half = |size: u32| (size / 2) as i64;
-        let round = |v: f32| (v * 100.0 * INV_CELL_CM).round() as i64;
+        let (x, y) = self.cell_of(p);
         (
-            (round(p.x) + half(self.width)).clamp(0, self.width as i64 - 1),
-            (round(p.y) + half(self.height)).clamp(0, self.height as i64 - 1),
+            x.clamp(0, self.width as i64 - 1),
+            y.clamp(0, self.height as i64 - 1),
         )
     }
 
-    /// The room of the cell nearest a point (metres, on X/Z); a point
+    /// The room of the cell a node stands in (metres, on X/Z); a point
     /// outside the grid takes the edge cell.
     pub fn room_of_node(&self, p: Vec2) -> Option<u16> {
         let (x, y) = self.cell_of_node(p);
@@ -729,18 +729,19 @@ mod tests {
     }
 
     #[test]
-    fn a_node_looks_up_the_nearest_cell() {
+    fn a_node_looks_up_the_cell_it_stands_in() {
         let rooms = Rooms::flood(&two_rooms().0);
-        // Width 6, height 3, halves 3 and 1: cell (3, 1) is centred on
-        // (0, 0) m and spans ±3 m.
+        // Width 6, height 3, halves 3 and 1: cell (3, 1) spans 0…6 m on
+        // both axes (its centre is at 3 m), as the grid build places it.
         assert_eq!(rooms.cell_of_node(Vec2::new(0.0, 0.0)), (3, 1));
-        assert_eq!(rooms.cell_of_node(Vec2::new(2.9, -2.9)), (3, 1));
-        assert_eq!(rooms.cell_of_node(Vec2::new(3.1, 3.1)), (4, 2));
-        // The boundary is the cell's edge at −3 m.
-        assert_eq!(rooms.cell_of_node(Vec2::new(-2.9, 0.0)), (3, 1));
-        assert_eq!(rooms.cell_of_node(Vec2::new(-3.1, 0.0)), (2, 1));
+        assert_eq!(rooms.cell_of_node(Vec2::new(5.9, 5.9)), (3, 1));
+        assert_eq!(rooms.cell_of_node(Vec2::new(6.1, 0.1)), (4, 1));
+        // Below zero the floor steps down a cell.
+        assert_eq!(rooms.cell_of_node(Vec2::new(-0.1, 0.0)), (2, 1));
+        assert_eq!(rooms.cell_of_node(Vec2::new(0.0, -0.1)), (3, 0));
         // Outside the grid, the edge cell.
         assert_eq!(rooms.cell_of_node(Vec2::new(100.0, -100.0)), (5, 0));
+        assert_eq!(rooms.cell_of_node(Vec2::new(-100.0, 100.0)), (0, 2));
         assert_eq!(
             rooms.room_of_node(Vec2::new(0.0, 0.0)),
             rooms.room_of_cell(3, 1)

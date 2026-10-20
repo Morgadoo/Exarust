@@ -189,7 +189,17 @@ fn index_wall_set(model: Arc<Model>) -> WallSet {
     s
 }
 
-fn index_floor_set(model: Arc<Model>, name: &str) -> FloorSet {
+/// The floor set name the original never loads: the terrain is the ground
+/// of the cells that use it, so it brings no floor pieces and no surface.
+/// The name is compared whole (the original's string equality), so a set
+/// that only contains the word is an ordinary one.
+const TERRAIN_FLOOR_SET: &str = "Terrain";
+
+fn is_terrain_floor_set(name: &str) -> bool {
+    name == TERRAIN_FLOOR_SET
+}
+
+fn index_floor_set(model: Arc<Model>) -> FloorSet {
     let surface = model.nodes.iter().find_map(|n| {
         n.part_materials
             .iter()
@@ -202,11 +212,6 @@ fn index_floor_set(model: Arc<Model>, name: &str) -> FloorSet {
         middle: Table::default(),
         surface,
     };
-    // A floor set named after the terrain is flagged so that it brings no
-    // floor pieces: the terrain is the ground. Its surface material stays.
-    if name.contains("Terrain") {
-        return s;
-    }
     for (i, node) in model.nodes.iter().enumerate() {
         let b = name_bytes(&node.name);
         if b[0] != b'+' || b[1] != b'F' {
@@ -344,12 +349,15 @@ impl GridBuild {
             }
         }
         while self.floors.len() < grid.floor_sets.len() {
+            if is_terrain_floor_set(&grid.floor_sets[self.floors.len()]) {
+                self.floors.push(None);
+                continue;
+            }
             let Some(model) = load(loader, &grid.floor_sets[self.floors.len()], "GEFS_UWA01")
             else {
                 return false;
             };
-            let name = &grid.floor_sets[self.floors.len()];
-            self.floors.push(model.map(|m| index_floor_set(m, name)));
+            self.floors.push(model.map(index_floor_set));
             if started.elapsed() >= budget {
                 return false;
             }
@@ -600,14 +608,15 @@ impl Placer<'_, '_, '_, '_, '_> {
 
 /// The index of the nth special piece of `special`'s type in a wall set,
 /// counting from zero; past the last one the original's walk leaves the
-/// last match selected.
+/// last match selected, and with no piece of the type at all it keeps the
+/// index it started from, the set's first special piece.
 fn nth_special(
     trims: &[(Option<usize>, Option<usize>, u32)],
     special: u32,
     nth: u32,
 ) -> Option<usize> {
     let mut remaining = nth as i64;
-    let mut chosen = None;
+    let mut chosen = (!trims.is_empty()).then_some(0);
     for (i, trim) in trims.iter().enumerate() {
         if (trim.2 & 0x1F_0000) >> 16 == special {
             remaining -= 1;
@@ -679,7 +688,7 @@ fn spawn_cell(
         mask = rotate_edge_word(SPECIAL_MASKS[special as usize - 1], rotation as u8);
         floor_middle = SPECIAL_HAS_FLOOR[special as usize - 1];
         // The cell asks for the nth piece of its type. Past the last one the
-        // original places the last again.
+        // original places the last again; with none of the type, the first.
         if let Some(i) = nth_special(&ws.trims, special, nth) {
             let (p, alt, _) = &ws.trims[i];
             let node = if rotation >= 2 { alt.or(*p) } else { *p };
@@ -1286,36 +1295,18 @@ mod tests {
         assert_eq!(nth_special(&trims, 2, 2), Some(2));
         assert_eq!(nth_special(&trims, 2, 31), Some(2));
         assert_eq!(nth_special(&trims, 1, 0), Some(1));
-        assert_eq!(nth_special(&trims, 5, 0), None);
+        // No piece of the type: the walk's starting index, the first piece.
+        assert_eq!(nth_special(&trims, 5, 0), Some(0));
+        assert_eq!(nth_special(&[], 5, 0), None);
     }
 
     #[test]
-    fn a_terrain_floor_set_brings_no_pieces() {
-        let mut meshes = Assets::<Mesh>::default();
-        let mut surface = node("+F", None, quad(&mut meshes, [-3.0, 3.0], 0.0, [-3.0, 3.0]));
-        surface.part_materials = vec!["+ground".into()];
-        let model = Model {
-            nodes: vec![
-                surface,
-                node(
-                    "+FMA00",
-                    None,
-                    quad(&mut meshes, [-3.0, 3.0], 0.0, [-3.0, 3.0]),
-                ),
-                node(
-                    "+FBA00",
-                    None,
-                    quad(&mut meshes, [-3.0, 3.0], 0.0, [-3.0, 0.0]),
-                ),
-            ],
-        };
-        let terrain = index_floor_set(Arc::new(model.clone()), "GEFS_Terrain01");
-        assert!(terrain.surface.is_some());
-        assert_eq!(terrain.middle.primary(SLOT_MIDDLE), None);
-        assert_eq!(terrain.edges.primary(SLOT_BACK), None);
-        let ordinary = index_floor_set(Arc::new(model), "GEFS_UWA01");
-        assert!(ordinary.middle.primary(SLOT_MIDDLE).is_some());
-        assert!(ordinary.edges.primary(SLOT_BACK).is_some());
+    fn only_a_floor_set_named_terrain_is_skipped() {
+        assert!(is_terrain_floor_set("Terrain"));
+        // The original compares the whole name, case and all.
+        assert!(!is_terrain_floor_set("GEFS_Terrain01"));
+        assert!(!is_terrain_floor_set("terrain"));
+        assert!(!is_terrain_floor_set("GEFS_UWA01"));
     }
 
     #[test]
