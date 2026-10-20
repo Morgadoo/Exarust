@@ -14,6 +14,7 @@ use bevy::asset::{AssetPath, RenderAssetUsages, embedded_asset, embedded_path};
 use bevy::core_pipeline::Core3dSystems;
 use bevy::core_pipeline::schedule::Core3d;
 use bevy::prelude::*;
+use bevy::render::diagnostic::RecordDiagnostics;
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 use bevy::render::render_asset::RenderAssets;
 use bevy::render::render_resource::binding_types::{
@@ -714,6 +715,12 @@ fn propagate(
         (u64::from(owed.serial) << 32) | u64::from(owed.total - owed.left),
         Ordering::Release,
     );
+    // A GPU timing span for the frame profiler, when render diagnostics are
+    // on.
+    let diagnostics = ctx.diagnostic_recorder();
+    let span = diagnostics
+        .as_deref()
+        .map(|d| d.time_span(ctx.command_encoder(), "exa_gi"));
     for _ in 0..steps {
         let encoder = ctx.command_encoder();
         {
@@ -745,6 +752,9 @@ fn propagate(
             },
             size,
         );
+    }
+    if let Some(span) = span {
+        span.end(ctx.command_encoder());
     }
 }
 

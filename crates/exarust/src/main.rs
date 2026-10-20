@@ -37,6 +37,8 @@
 //!          --debug-bodies             start with the body overlay and joint readout shown (F3 toggles it)
 //!          --debug-nav                draw the level's navigation grid around the view (F6 toggles it)
 //!          --debug-column x,z[/x,z…]  once loaded, log every mesh over each floor point: name, heights, shadow level, how it casts
+//!          --profiler                 frame profiler: main/render thread and GPU times, overlay shown (F10 toggles)
+//!          --perf-log <seconds>       frame profiler on, its report logged every so often
 //! keys:    F9                         level and play views: the map panel (view switches, switch to another level)
 //!          --joint-trace <file.csv>   every joint of every simulated body after every 83 Hz tick (degrees, cm)
 //!          --pair-trace <file.csv>    every contact between two body parts found in each 83 Hz tick (cm)
@@ -79,6 +81,7 @@
 
 mod column;
 mod map_panel;
+mod profiler;
 mod viewer;
 
 use std::ops::Range;
@@ -155,6 +158,10 @@ pub struct Options {
     pub debug_nav: bool,
     /// Once loaded, log every mesh over these floor points (x, z in metres).
     pub debug_column: Vec<[f32; 2]>,
+    /// Log the frame profiler's report every this many seconds.
+    pub perf_log: Option<f32>,
+    /// Turn the frame profiler on with its overlay shown (F10 toggles it).
+    pub profiler: bool,
     /// Write every joint after every tick here (CSV).
     pub joint_trace: Option<PathBuf>,
     /// Write every contact between body parts after every tick here (CSV).
@@ -389,6 +396,8 @@ fn main() -> AppExit {
             "--trace" => options.trace = args.next().map(PathBuf::from),
             "--debug-bodies" => options.debug_bodies = true,
             "--debug-nav" => options.debug_nav = true,
+            "--perf-log" => options.perf_log = args.next().and_then(|v| v.parse().ok()),
+            "--profiler" => options.profiler = true,
             "--debug-column" => {
                 options.debug_column = args
                     .next()
@@ -709,6 +718,7 @@ fn main() -> AppExit {
         viewer::ViewerPlugin,
         column::ColumnPlugin,
         map_panel::MapPanelPlugin,
+        profiler::ProfilerPlugin,
     ));
     if fixed_frames {
         // Whatever a frame took, it advances game time by 1/60 s: the frames'

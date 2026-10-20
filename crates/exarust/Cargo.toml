@@ -5,6 +5,14 @@ edition.workspace = true
 license.workspace = true
 version.workspace = true
 
+[features]
+# Frame profiling through Bevy's tracing spans (every system, schedule and
+# render step). `trace-chrome` writes a trace-*.json for Perfetto
+# (ui.perfetto.dev); `trace-tracy` streams to the Tracy profiler. Both cost
+# frame time, so neither is in a default build. See docs/PERFORMANCE.md.
+trace-chrome = ["bevy/trace_chrome"]
+trace-tracy = ["bevy/trace_tracy"]
+
 [dependencies]
 bevy.workspace = true
 exa_render.workspace = true

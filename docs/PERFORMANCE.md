@@ -25,6 +25,65 @@ cubes the log room runs at about 200 FPS, six times the original's frame
 rate at the same spot. Play mode, with 39 characters animated in the level,
 is bound by the CPU (about 9 FPS) and is next.
 
+## Frame profiler
+
+Three tools, from a quick look to a full timeline:
+
+- **`--profiler`** (F10 toggles its overlay) and **`--perf-log <seconds>`**
+  (the same report in the log). Each frame's main thread is split by
+  schedule: First, PreUpdate, the fixed 83 Hz ticks (with how many ran),
+  Update, PostUpdate, Last, and the rest (extracting into the render
+  world, presenting, waiting). The render thread's schedule time sits
+  beside it, then Bevy's GPU timestamps per pass and Exarust's own GPU
+  spans (`exa_cube_shadows`, `exa_gi`). The overlay graphs the last 120
+  frames: green within 60 FPS, yellow within 30, red beyond. Limits of
+  Bevy 0.20's GPU timings: a pass is keyed by name only, so the
+  supersampled scene and the window's display share a line, and spans
+  around whole views read as nothing. Overall GPU load is `nvidia-smi`'s
+  (`nvidia-smi dmon -s u`).
+- **Tracing builds**: `cargo build -p exarust --profile profiling --features
+  trace-chrome` writes a `trace-*.json` of every system, schedule and render
+  step into the working directory. Open it in <https://ui.perfetto.dev>,
+  or summarise it with `context/tools/trace_summary.py trace.json
+  --skip-seconds 40` (ms per frame for each span, per thread). With
+  `--features trace-tracy` the same spans stream to the Tracy profiler
+  instead. Tracing roughly doubles the frame time; read proportions, not
+  absolute times. The `profiling` profile is the play build with line
+  tables and symbols kept, also for `perf` or samply where the system
+  allows them.
+
+## Play mode, 2026-10-20
+
+`play exanima01` at the start, 1600 × 900 window, 4× supersampling, RTX 3090,
+`--profile profiling`, `--no-vsync`:
+
+| configuration | FPS |
+|---|---|
+| everything | 26–32 |
+| `--no-supersample` | 33 |
+| `--no-shadows` | 55 |
+| `--no-gi` | 27 |
+| all three off | 60 |
+
+The profiler's split of a 31.7 ms frame:
+
+- Main thread, 29.2 ms of schedules: **the fixed ticks 19.5 ms** (2.6 ticks
+  a frame, ~7.5 ms a tick) and **PostUpdate 8.5 ms**; the rest 2.4 ms.
+- Render thread 28.9 ms.
+- GPU busy 85 % on average (the desktop alone keeps it near 30 %).
+
+The frame is bound by both CPU threads, with the GPU close behind. A
+`trace-chrome` trace (proportions, tracing on) names the costs:
+
+| thread | span | share |
+|---|---|---|
+| render | the camera driver runs the `Core3d` schedule 113 times a frame: two cameras and about 111 point-light shadow faces (Bevy's own maps for the lights that have a character linked, re-rendered every frame) | 60 % of the render thread |
+| render | 743 command buffers submitted a frame | 27 % of the render thread |
+| main | `exa_physics::body::step_bodies`, the 39 characters' bodies | 43 % of the main thread |
+| main | `exa_game::stages::tick_characters` | 19 % |
+| main | extracting into the render world (31 648 mesh entities, 418 visible) | 21 % |
+| main | PostUpdate: transforms, skinned bounds, visibility, shadow links | 25 % |
+
 ## Techniques against Exarust
 
 Status: **done**, **next**, **later**, or **no** (would change the picture,
@@ -85,10 +144,25 @@ or the original does not do it).
 
 ## Order of work
 
-1. Play mode while walking: a moving character and its carried light.
-2. Depth prepass, then Bevy's GPU occlusion culling.
-3. Room and portal culling from the grid's rooms and doors.
-4. Shader specialisation of the surface materials.
+From the 2026-10-20 measurements, largest gain first:
+
+1. Characters in Exarust's own cached cube pass: skinned casters drawn into
+   the cubes, and a face re-rendered only when it is needed and a caster in
+   it moved, as the original does. It replaces Bevy's per-frame maps (the
+   113 schedule runs and most of the 743 submissions a frame).
+2. The original's AI activation: characters beyond its activation radius
+   (200 m, with its 80-tick hysteresis) are dormant and not stepped, and
+   targets are picked for one AI a tick. `step_bodies` and
+   `tick_characters` are 60 % of the main thread.
+3. Fewer render-world entities: room meshes that never move need not be
+   re-extracted or re-checked each frame (31 648 meshes, 418 visible).
+4. Depth prepass, then Bevy's GPU occlusion culling.
+5. Room and portal culling from the grid's rooms and doors.
+6. Shader specialisation of the surface materials.
+
+Each step is checked against the original at the log room camera. The
+picture must not change, and the frame rate is measured with `--no-vsync`
+and the profiler.
 
 Each step is checked against the original at the log room camera. The
 picture must not change, and the frame rate is measured with `--no-vsync`.

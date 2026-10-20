@@ -26,6 +26,7 @@ use bevy::math::Affine3A;
 use bevy::mesh::{Mesh, MeshVertexBufferLayoutRef, VertexAttributeDescriptor, VertexBufferLayout};
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
+use bevy::render::diagnostic::RecordDiagnostics;
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 use bevy::render::mesh::allocator::MeshAllocator;
 use bevy::render::mesh::{RenderMesh, RenderMeshBufferInfo};
@@ -732,6 +733,12 @@ fn render_faces(
         return;
     }
     let mut failed = Vec::new();
+    // A GPU timing span for the frame profiler, when render diagnostics are
+    // on.
+    let diagnostics = ctx.diagnostic_recorder();
+    let span = diagnostics
+        .as_deref()
+        .map(|d| d.time_span(ctx.command_encoder(), "exa_cube_shadows"));
     for job in &jobs.faces {
         let Some(view) = prepared.layers.get(job.layer as usize) else {
             continue;
@@ -810,6 +817,9 @@ fn render_faces(
         if !complete {
             failed.push((job.light, 1u8 << job.face));
         }
+    }
+    if let Some(span) = span {
+        span.end(ctx.command_encoder());
     }
     if !failed.is_empty()
         && let Ok(mut f) = jobs.failed.0.lock()
