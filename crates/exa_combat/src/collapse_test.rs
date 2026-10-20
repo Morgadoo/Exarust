@@ -332,7 +332,11 @@ fn a_collapse_starts_one_stagger_step() {
     .unwrap();
     assert_eq!(rooted.length.to_bits(), 0x4280_0000);
     assert_eq!(rooted.target.x.to_bits(), 0x4120_0000);
-    assert_eq!(rooted.target.y.to_bits(), 0x42b4_f9a3);
+    // The direction uses the hardware reciprocal square root, whose result
+    // is implementation-defined, so this component is compared with a
+    // tolerance rather than bit for bit.
+    let expected = f32::from_bits(0x42b4_f9a3);
+    assert!((rooted.target.y - expected).abs() <= expected * 1e-3);
     assert_eq!(rooted.target.z.to_bits(), 0xc0a0_0000);
     assert!(
         stagger_step(&CollapseStep {

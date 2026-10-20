@@ -1872,9 +1872,14 @@ mod tests {
     fn a_shell_vertex_is_pushed_and_a_hit_caps() {
         let pushed = shell_vertex([1.0, 2.0, 3.0], [0.0, 3.0, 0.0]);
         assert_eq!(pushed.at[0], 1.0);
-        assert_eq!(pushed.at[1], f32::from_bits(0x407f_f800));
+        // The normal uses the hardware reciprocal square root, whose result
+        // is implementation-defined, so these two are compared with a
+        // relative tolerance rather than bit for bit.
+        let expected_at = f32::from_bits(0x407f_f800);
+        assert!((pushed.at[1] - expected_at).abs() <= expected_at * 1e-3);
         assert_eq!(pushed.at[2], 3.0);
-        assert_eq!(pushed.normal[1], f32::from_bits(0x3f7f_f000));
+        let expected_normal = f32::from_bits(0x3f7f_f000);
+        assert!((pushed.normal[1] - expected_normal).abs() <= expected_normal * 1e-3);
         let still = shell_vertex([1.0, 2.0, 3.0], [0.0, 0.0, 0.0]);
         assert_eq!(still.at, [1.0, 2.0, 3.0]);
         assert_eq!(still.normal, [0.0, 0.0, 0.0]);
