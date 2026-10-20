@@ -11,6 +11,7 @@ pub mod flame;
 pub mod gi_volume;
 pub mod grid;
 pub mod light_flood;
+pub mod mechanisms;
 pub mod nav;
 pub mod room_view;
 pub mod rooms;
@@ -289,6 +290,10 @@ fn spawn_placed_object(
         room_view::PendingRoom::default(),
         ChildOf(parent),
     ));
+    // Its door and operative records, for the signals and mechanisms.
+    if let Some(records) = mechanisms::MechanismRecords::of(object.id, item) {
+        commands.entity(e).insert(records);
+    }
     // A door, lever or push surface keeps its body for its mechanism.
     let placement = if item.mechanism().is_some() {
         bodies::Placement::Mechanism
