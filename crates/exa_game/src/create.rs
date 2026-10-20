@@ -985,6 +985,86 @@ pub fn ensure_creation_singleton(exists: bool) -> CreationSingleton {
     }
 }
 
+/// The creation key's result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationKey {
+    pub result: i32,
+    pub forwarded: bool,
+    pub closed: bool,
+}
+
+/// Routes the key to the base handler or closes with `0x40`.
+pub fn creation_key(has_selection: bool, base: i32) -> CreationKey {
+    if has_selection {
+        CreationKey {
+            result: base,
+            forwarded: true,
+            closed: false,
+        }
+    } else {
+        CreationKey {
+            result: 0x40,
+            forwarded: false,
+            closed: true,
+        }
+    }
+}
+
+/// What showing the creation form did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationShow {
+    pub prepared: bool,
+    pub dispatched: bool,
+    pub refreshed: bool,
+    pub built: bool,
+}
+
+/// Shows the form through its prepare, dispatch and refresh.
+pub fn show_creation_form(build: bool) -> CreationShow {
+    CreationShow {
+        prepared: true,
+        dispatched: true,
+        refreshed: true,
+        built: build,
+    }
+}
+
+/// A captured creation state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationCapture {
+    pub words: [u64; 6],
+    pub value: i32,
+    pub mode: i32,
+    pub scheduled: bool,
+    pub stored_cleared: bool,
+}
+
+/// Captures the six words, the value and the mode.
+pub fn capture_creation(
+    words: [u64; 6],
+    current: i32,
+    last: i32,
+    saved: i32,
+    mode: i32,
+) -> CreationCapture {
+    CreationCapture {
+        words,
+        value: current - last + saved,
+        mode,
+        scheduled: true,
+        stored_cleared: true,
+    }
+}
+
+/// Schedules the special form in mode 10, else the regular form.
+pub fn close_creation_form(mode: i32) -> CreationCloseForm {
+    if mode == 10 {
+        CreationCloseForm::Special
+    } else {
+        CreationCloseForm::Regular
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1683,5 +1763,38 @@ mod tests {
         let later = ensure_creation_singleton(true);
         assert!(!later.created);
         assert!(later.ready);
+    }
+
+    #[test]
+    fn the_creation_forms_close_key_show_and_capture() {
+        assert_eq!(close_creation_form(10), CreationCloseForm::Special);
+        assert_eq!(close_creation_form(9), CreationCloseForm::Regular);
+
+        let forwarded = creation_key(true, 3);
+        assert_eq!(forwarded.result, 3);
+        assert!(forwarded.forwarded);
+        assert!(!forwarded.closed);
+
+        let closed = creation_key(false, 3);
+        assert_eq!(closed.result, 0x40);
+        assert!(!closed.forwarded);
+        assert!(closed.closed);
+
+        let shown = show_creation_form(true);
+        assert!(shown.prepared);
+        assert!(shown.dispatched);
+        assert!(shown.refreshed);
+        assert!(shown.built);
+
+        let skipped = show_creation_form(false);
+        assert!(!skipped.built);
+        assert!(skipped.refreshed);
+
+        let captured = capture_creation([1, 2, 3, 4, 5, 6], 10, 4, 7, 2);
+        assert_eq!(captured.words, [1, 2, 3, 4, 5, 6]);
+        assert_eq!(captured.value, 13);
+        assert_eq!(captured.mode, 2);
+        assert!(captured.scheduled);
+        assert!(captured.stored_cleared);
     }
 }
