@@ -278,3 +278,65 @@ mod tests {
         assert_eq!(page_origin(Page::ClassSelect, rows.len()), 0.45);
     }
 }
+
+/// The main menu's row advance: `trunc(70·row_h)`. The live menu's
+/// `row_h` is 1.0 at 1600×1080, giving the ~70 px rows the retail
+/// screenshot shows; the scale rule that produces `row_h` is not decoded.
+pub const ROW_UNITS: f32 = 70.0;
+
+/// `trunc(70·row_h)`.
+pub fn row_advance(row_h: f32) -> i32 {
+    (ROW_UNITS * row_h).trunc() as i32
+}
+
+/// The top of `index`'s row: `trunc(height·origin) + index·advance`.
+pub fn row_top(height: i32, origin: f32, row_h: f32, index: usize) -> i32 {
+    (height as f32 * origin).trunc() as i32 + index as i32 * row_advance(row_h)
+}
+
+/// The row containing `y`, using the original's `top <= y < top+band`.
+pub fn hit_row(
+    height: i32,
+    origin: f32,
+    row_h: f32,
+    band: i32,
+    count: usize,
+    y: i32,
+) -> Option<usize> {
+    let advance = row_advance(row_h);
+    if advance <= 0 || band <= 0 {
+        return None;
+    }
+    let top = (height as f32 * origin).trunc() as i32;
+    if y < top {
+        return None;
+    }
+    let index = ((y - top) / advance) as usize;
+    if index < count && y < top + index as i32 * advance + band {
+        Some(index)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod geometry_tests {
+    use super::*;
+
+    #[test]
+    fn the_row_advance_matches_the_retail_menu() {
+        assert_eq!(row_advance(1.0), 70);
+        assert_eq!(row_advance(0.5), 35);
+        assert_eq!(row_advance(1.5), 105);
+    }
+
+    #[test]
+    fn the_title_rows_and_hit_band() {
+        assert_eq!(row_top(1080, 0.38, 1.0, 0), 410);
+        assert_eq!(row_top(1080, 0.38, 1.0, 1), 480);
+        assert_eq!(hit_row(1080, 0.38, 1.0, 70, 6, 456), Some(0));
+        assert_eq!(hit_row(1080, 0.38, 1.0, 70, 6, 525), Some(1));
+        assert_eq!(hit_row(1080, 0.38, 1.0, 70, 6, 409), None);
+        assert_eq!(hit_row(1080, 0.38, 1.0, 70, 6, 900), None);
+    }
+}
