@@ -314,6 +314,31 @@ pub fn advance_creation_variant(word: i32, has_widget: bool) -> CreationStep {
     }
 }
 
+/// The creation object's opening defaults.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CreationDefaults {
+    pub count: i32,
+    pub stride: i32,
+    pub slots: [[i32; 4]; 2],
+    pub first: i32,
+    pub second: i32,
+    pub value: f32,
+    pub flags: i32,
+}
+
+/// The two option entries and the fixed words the creation object opens with.
+pub fn creation_defaults() -> CreationDefaults {
+    CreationDefaults {
+        count: 2,
+        stride: 16,
+        slots: [[0x100101, 0x5fff, 0, 0], [0x201, 0x5fff, 0, 0]],
+        first: 0x100101,
+        second: 0x201,
+        value: 4.0,
+        flags: 0x510000,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -544,5 +569,20 @@ mod tests {
         assert_eq!(no_widget.word, 0x0030_0000);
         assert_eq!(no_widget.caption, None);
         assert!(no_widget.refreshed);
+    }
+
+    #[test]
+    fn the_creation_defaults_are_fixed() {
+        let defaults = creation_defaults();
+        assert_eq!(defaults.count, 2);
+        assert_eq!(defaults.stride, 16);
+        assert_eq!(
+            defaults.slots,
+            [[0x100101, 0x5fff, 0, 0], [0x201, 0x5fff, 0, 0]]
+        );
+        assert_eq!(defaults.first, 0x100101);
+        assert_eq!(defaults.second, 0x201);
+        assert_eq!(defaults.value, 4.0);
+        assert_eq!(defaults.flags, 0x510000);
     }
 }
