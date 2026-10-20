@@ -653,6 +653,74 @@ pub fn attach_creation_view(view: bool) -> bool {
     view
 }
 
+/// The creation link copy's debounce.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationCopy {
+    pub copied: bool,
+    pub fired: bool,
+    pub stamp: i32,
+    pub pending: bool,
+}
+
+/// Copies the link word and runs its two-unit debounce.
+pub fn copy_creation_link(stamp: i32, clock: i32) -> CreationCopy {
+    if stamp + 2 <= clock {
+        CreationCopy {
+            copied: true,
+            fired: true,
+            stamp: clock,
+            pending: false,
+        }
+    } else {
+        CreationCopy {
+            copied: true,
+            fired: false,
+            stamp,
+            pending: true,
+        }
+    }
+}
+
+/// What attaching a creation body wrote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationAttach {
+    pub body: bool,
+    pub camera: bool,
+    pub link: bool,
+    pub pane_target: bool,
+    pub link_target: bool,
+}
+
+/// Stores the body, its camera and link and targets the pane and link.
+pub fn attach_creation_body(has_pane: bool, has_link: bool) -> CreationAttach {
+    CreationAttach {
+        body: true,
+        camera: true,
+        link: true,
+        pane_target: has_pane,
+        link_target: has_link,
+    }
+}
+
+/// What sizing the creation view did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationResize {
+    pub count: i32,
+    pub size: i32,
+    pub stored: bool,
+    pub ticked: bool,
+}
+
+/// Sizes the view from the current frame.
+pub fn resize_creation_view(frame: Option<i32>, unit: i32, has_global: bool) -> CreationResize {
+    CreationResize {
+        count: frame.map_or(1, |frame| frame + 1),
+        size: unit * 12,
+        stored: true,
+        ticked: has_global,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1122,5 +1190,40 @@ mod tests {
         assert!(!release_creation_tip(false));
         assert!(attach_creation_view(true));
         assert!(!attach_creation_view(false));
+    }
+
+    #[test]
+    fn the_creation_view_copies_attaches_and_sizes() {
+        let pending = copy_creation_link(10, 11);
+        assert!(pending.copied);
+        assert!(!pending.fired);
+        assert_eq!(pending.stamp, 10);
+        assert!(pending.pending);
+
+        let fired = copy_creation_link(10, 12);
+        assert!(fired.fired);
+        assert_eq!(fired.stamp, 12);
+        assert!(!fired.pending);
+
+        let attached = attach_creation_body(true, true);
+        assert!(attached.body);
+        assert!(attached.camera);
+        assert!(attached.link);
+        assert!(attached.pane_target);
+        assert!(attached.link_target);
+
+        let bare = attach_creation_body(false, false);
+        assert!(!bare.pane_target);
+        assert!(!bare.link_target);
+
+        let sized = resize_creation_view(Some(3), 4, true);
+        assert_eq!(sized.count, 4);
+        assert_eq!(sized.size, 48);
+        assert!(sized.stored);
+        assert!(sized.ticked);
+
+        let unframed = resize_creation_view(None, 4, false);
+        assert_eq!(unframed.count, 1);
+        assert!(!unframed.ticked);
     }
 }
