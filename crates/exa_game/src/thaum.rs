@@ -1399,6 +1399,68 @@ pub fn key_tree(input: TreeKeyInput) -> TreeKey {
     }
 }
 
+/// The tree hover's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TreeHoverInput {
+    pub event_kind: u32,
+    pub index: i32,
+    pub previous_index: i32,
+    pub event_word: u32,
+    pub event_value: u32,
+    pub entry_flags: u32,
+    pub sound_ready: bool,
+}
+
+/// The updated tooltip entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TreeHoverEntry {
+    pub flags: u32,
+    pub value: u32,
+}
+
+/// The tree hover's work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TreeHover {
+    pub handled: bool,
+    pub copied_previous: bool,
+    pub entry: Option<TreeHoverEntry>,
+    pub default_copied: bool,
+    pub sound: bool,
+}
+
+/// Updates the tree tooltip from a hover event.
+pub fn hover_tree(input: TreeHoverInput) -> TreeHover {
+    if input.event_kind != 0xae56_ca01 {
+        return TreeHover {
+            handled: false,
+            copied_previous: false,
+            entry: None,
+            default_copied: false,
+            sound: false,
+        };
+    }
+    if input.index > 0 {
+        TreeHover {
+            handled: true,
+            copied_previous: input.previous_index > 0,
+            entry: Some(TreeHoverEntry {
+                flags: (input.entry_flags & 0x70_0000) | input.event_word,
+                value: input.event_value,
+            }),
+            default_copied: false,
+            sound: input.sound_ready,
+        }
+    } else {
+        TreeHover {
+            handled: false,
+            copied_previous: false,
+            entry: None,
+            default_copied: input.previous_index > 0,
+            sound: false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2347,5 +2409,42 @@ mod tests {
             key_tree(input(0, 1, 0, false, 0, 0, true)).action,
             TreeKeyAction::None
         );
+    }
+
+    #[test]
+    fn the_tree_hover_updates_or_defaults() {
+        let input = |kind, index, previous| TreeHoverInput {
+            event_kind: kind,
+            index,
+            previous_index: previous,
+            event_word: 0x11,
+            event_value: 7,
+            entry_flags: 0x123456,
+            sound_ready: true,
+        };
+
+        let hit = hover_tree(input(0xae56_ca01, 3, 2));
+        assert!(hit.handled);
+        assert!(hit.copied_previous);
+        assert_eq!(
+            hit.entry,
+            Some(TreeHoverEntry {
+                flags: 0x100011,
+                value: 7
+            })
+        );
+        assert!(hit.sound);
+        assert!(!hit.default_copied);
+
+        let miss = hover_tree(input(0xae56_ca01, 0, 2));
+        assert!(!miss.handled);
+        assert!(miss.default_copied);
+        assert_eq!(miss.entry, None);
+        assert!(!miss.sound);
+
+        let wrong = hover_tree(input(1, 3, 2));
+        assert!(!wrong.handled);
+        assert!(!wrong.copied_previous);
+        assert_eq!(wrong.entry, None);
     }
 }
