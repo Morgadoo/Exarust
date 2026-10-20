@@ -34,6 +34,59 @@ pub fn skill_position(
     }
 }
 
+/// The skill screen after showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillShow {
+    pub relayout: bool,
+    pub state: u16,
+    pub deadline: i32,
+}
+
+/// Shows the skill screen: relayout, set bit 1 and stamp the deadline.
+pub fn show_skill_ui(relayout: bool, state: u16, clock: i32, delay: i32) -> SkillShow {
+    SkillShow {
+        relayout,
+        state: state | 2,
+        deadline: clock + delay,
+    }
+}
+
+/// What leaving the skill screen did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SkillLeave {
+    pub call_base: bool,
+    pub call_clear: bool,
+}
+
+/// Leaves the skill screen, waiting out the page and the transition's tail.
+pub fn leave_skill_ui(
+    closing: bool,
+    page: i32,
+    state: u16,
+    deadline: i32,
+    clock: i32,
+) -> SkillLeave {
+    if closing {
+        return SkillLeave {
+            call_base: true,
+            ..SkillLeave::default()
+        };
+    }
+    if page != 0 {
+        return SkillLeave::default();
+    }
+    if state & 1 != 0 && deadline - 400 > clock {
+        return SkillLeave::default();
+    }
+    if state & 2 != 0 {
+        return SkillLeave::default();
+    }
+    SkillLeave {
+        call_clear: true,
+        ..SkillLeave::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,5 +112,34 @@ mod tests {
             skill_position(-1, bounds, true, (7, 9), |_, _| unreachable!()),
             (7, 9)
         );
+    }
+
+    #[test]
+    fn the_skill_screen_shows_and_leaves_on_its_guards() {
+        let shown = show_skill_ui(true, 0, 100, 250);
+        assert_eq!(
+            shown,
+            SkillShow {
+                relayout: true,
+                state: 2,
+                deadline: 350,
+            }
+        );
+
+        assert_eq!(
+            leave_skill_ui(true, 0, 0, 0, 0),
+            SkillLeave {
+                call_base: true,
+                call_clear: false,
+            }
+        );
+        assert_eq!(leave_skill_ui(false, 2, 0, 0, 0), SkillLeave::default());
+        assert!(leave_skill_ui(false, 0, 1, 900, 500).call_clear);
+        assert_eq!(
+            leave_skill_ui(false, 0, 1, 1000, 500),
+            SkillLeave::default()
+        );
+        assert_eq!(leave_skill_ui(false, 0, 2, 0, 100), SkillLeave::default());
+        assert!(leave_skill_ui(false, 0, 0, 0, 0).call_clear);
     }
 }

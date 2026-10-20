@@ -46,7 +46,9 @@ pub use menu::{
     skill_selector_key, splash_bounds, type_menu_name, update_menu_hover,
 };
 pub use scale::GuiScale;
-pub use skill::{SkillBounds, skill_position};
+pub use skill::{
+    SkillBounds, SkillLeave, SkillShow, leave_skill_ui, show_skill_ui, skill_position,
+};
 pub use skin::{
     BEVEL_INK, BackdropCorner, BevelArm, BevelBox, BevelInk, BevelPlace, CappedSpan, CentredIcon,
     CloseEdge, ControlPlace, DispatchPlace, DrawSkin, FlatSlider, FormDispatch, FrameDraw,
