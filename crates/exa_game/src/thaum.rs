@@ -1326,6 +1326,79 @@ pub fn submit_tree_node(input: TreeSubmitInput) -> TreeSubmit {
     }
 }
 
+/// One tree key action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeKeyAction {
+    Base,
+    Ignored,
+    Step(i32),
+    Dim,
+    None,
+}
+
+/// The tree key handler's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TreeKeyInput {
+    pub state: i32,
+    pub key: i32,
+    pub flags: i32,
+    pub hide_flag: bool,
+    pub hide_deadline: i32,
+    pub now: i32,
+    pub key_next: u16,
+    pub key_prev: u16,
+    pub dim_flag: bool,
+    pub base_result: i32,
+}
+
+/// The tree key handler's action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TreeKey {
+    pub action: TreeKeyAction,
+    pub result: i32,
+}
+
+/// Routes the tree's base, hide, step and dim keys.
+pub fn key_tree(input: TreeKeyInput) -> TreeKey {
+    if input.state != 0 {
+        return TreeKey {
+            action: TreeKeyAction::Base,
+            result: input.base_result,
+        };
+    }
+    if input.hide_flag && input.hide_deadline.wrapping_sub(0x3b6) > input.now {
+        return TreeKey {
+            action: TreeKeyAction::Ignored,
+            result: 0,
+        };
+    }
+    if (input.flags & 2) == 0 {
+        if input.key == i32::from(input.key_next) {
+            return TreeKey {
+                action: TreeKeyAction::Step(1),
+                result: 0,
+            };
+        }
+        if input.key == i32::from(input.key_prev) {
+            return TreeKey {
+                action: TreeKeyAction::Step(-1),
+                result: 0,
+            };
+        }
+    }
+    if input.dim_flag {
+        TreeKey {
+            action: TreeKeyAction::None,
+            result: 0,
+        }
+    } else {
+        TreeKey {
+            action: TreeKeyAction::Dim,
+            result: 0,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2231,5 +2304,48 @@ mod tests {
             base_result: 9,
         });
         assert!(!empty.submitted);
+    }
+
+    #[test]
+    fn the_tree_keys_route_base_steps_and_dim() {
+        let input = |state, key, flags, hide, deadline, now, dim| TreeKeyInput {
+            state,
+            key,
+            flags,
+            hide_flag: hide,
+            hide_deadline: deadline,
+            now,
+            key_next: 65,
+            key_prev: 66,
+            dim_flag: dim,
+            base_result: 7,
+        };
+
+        let base = key_tree(input(3, 1, 0, false, 0, 0, false));
+        assert_eq!(base.action, TreeKeyAction::Base);
+        assert_eq!(base.result, 7);
+
+        let hidden = key_tree(input(0, 1, 0, true, 1000, 10, false));
+        assert_eq!(hidden.action, TreeKeyAction::Ignored);
+
+        let visible = key_tree(input(0, 65, 0, true, 1000, 100, false));
+        assert_eq!(visible.action, TreeKeyAction::Step(1));
+
+        assert_eq!(
+            key_tree(input(0, 66, 0, false, 0, 0, false)).action,
+            TreeKeyAction::Step(-1)
+        );
+        assert_eq!(
+            key_tree(input(0, 1, 0, false, 0, 0, false)).action,
+            TreeKeyAction::Dim
+        );
+        assert_eq!(
+            key_tree(input(0, 65, 2, false, 0, 0, false)).action,
+            TreeKeyAction::Dim
+        );
+        assert_eq!(
+            key_tree(input(0, 1, 0, false, 0, 0, true)).action,
+            TreeKeyAction::None
+        );
     }
 }
