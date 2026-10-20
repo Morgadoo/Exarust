@@ -2,10 +2,10 @@
 //! into, the points each generator extracts from it, and the ray query that
 //! finds the highest surface over a column.
 //!
-//! The voxel map is the container of the rigid-body voxeliser: a box of
-//! cells (`VoxelMap`), the bytes of the cells and the spheres extracted from
-//! them. The shape builders fill one per mesh; the sphere extraction itself
-//! is theirs, not the map's.
+//! The voxel map is the container of the rigid-body voxeliser: a bordered
+//! box of cells (`VoxelMap`), one word and two fill bytes per cell, and the
+//! spheres extracted from them. The shape builders fill one per mesh; the
+//! grid fill and the sphere extraction are theirs, not the map's.
 //!
 //! Two generators sample a mesh into a fine grid and turn the occupied
 //! cells into points on a coarser lattice:
@@ -13,7 +13,8 @@
 //! * [`floor_points`] is the floor heightfield: rays down each fine column,
 //!   the highest upward face wins, its 10 cm cell is marked, and every
 //!   20 cm cell holding four marks gives a point. It keeps the original's
-//!   centimetres: its edges snap to the ±150/±300 cm lattice and its point
+//!   centimetres and its space, a grid cell's merged floor: its edges start
+//!   from the cell's quarters (±150/±300 cm), snap to 20 cm, and its point
 //!   step is a hard-coded 20 cm.
 //! * [`surface_points`] is the general surface generator: cells around the
 //!   mesh are classified by a sphere query, the near ones are cleaned up,
@@ -33,19 +34,27 @@ pub const MAP_RESOLUTION: f32 = 0.02;
 pub const MAP_SCALE: f32 = 1.0;
 
 /// A collision sphere the voxeliser extracts from a mesh, in the map's
-/// space: its centre and radius.
+/// space: its centre and radius (the original's 16-byte record).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Sphere {
     pub centre: Vec3,
     pub radius: f32,
 }
 
-/// The voxel map of the rigid-body voxeliser: a box of cells over a mesh,
-/// one byte per cell and the spheres extracted from the cells.
+/// The voxel map of the rigid-body voxeliser: a box over a mesh cut into
+/// cells, one word per cell, two fill bytes per cell and the spheres
+/// extracted from them.
 ///
-/// The original makes one per shape-builder call and frees its two arrays
-/// with it; here the map owns both arrays and [`VoxelMap::release`] is the
-/// explicit free.
+/// The grid carries one empty border cell on each side of the box's
+/// `counts`, and its cells run Z fastest, then Y, then X, as the shape
+/// builder's grid fill lays them out. Cell `i` (border included) has its
+/// centre at `i · step + (centre − half) − half / count` on each axis, with
+/// `step = 2 · half / count`: the border cells sit just outside the box.
+///
+/// The original makes one per shape-builder call. Its array release frees
+/// the cell words and the fill bytes; its destructor frees those and then
+/// the sphere list. Here the map owns all three and [`VoxelMap::release`]
+/// is the array release.
 #[derive(Debug, Clone)]
 pub struct VoxelMap {
     /// The map's resolution (0.02 at construction; the shape builder
@@ -55,13 +64,14 @@ pub struct VoxelMap {
     pub scale: f32,
     /// What the map was made for: the caller's word, kept as given.
     pub tag: u32,
-    /// Cells per axis.
-    pub dims: [usize; 3],
+    /// Cells per axis inside the box, without the border.
+    pub counts: [usize; 3],
     /// Centre of the map's box, in the map's space.
     pub centre: Vec3,
     /// Half extents of the map's box.
     pub half_extents: Vec3,
-    cells: Vec<u8>,
+    cells: Vec<i32>,
+    fill: Vec<[u8; 2]>,
     spheres: Vec<Sphere>,
 }
 
@@ -78,99 +88,87 @@ impl VoxelMap {
             resolution: MAP_RESOLUTION,
             scale: MAP_SCALE,
             tag,
-            dims: [0; 3],
+            counts: [0; 3],
             centre: Vec3::ZERO,
             half_extents: Vec3::ZERO,
             cells: Vec::new(),
+            fill: Vec::new(),
             spheres: Vec::new(),
         }
     }
 
-    /// Sets the map's box and cell counts, zeroing every cell. Returns false
-    /// (and leaves the map empty) when the counts do not fit in memory.
-    pub fn resize(&mut self, centre: Vec3, half_extents: Vec3, dims: [usize; 3]) -> bool {
+    /// Sets the map's box and its cell counts inside it, and makes the
+    /// bordered grid of cell words, all zero. Returns false (and leaves the
+    /// map empty) when the grid does not fit in memory.
+    pub fn resize(&mut self, centre: Vec3, half_extents: Vec3, counts: [usize; 3]) -> bool {
         self.centre = centre;
         self.half_extents = half_extents;
-        self.dims = dims;
-        self.cells.clear();
-        self.spheres.clear();
-        let Some(len) = dims
+        self.counts = counts;
+        self.cells = Vec::new();
+        self.fill = Vec::new();
+        let Some(len) = counts
             .iter()
-            .try_fold(1usize, |n, &d| n.checked_mul(d))
-            .filter(|&n| n <= isize::MAX as usize)
+            .try_fold(1usize, |n, &d| {
+                d.checked_add(2).and_then(|d| n.checked_mul(d))
+            })
+            .filter(|&n| n <= isize::MAX as usize / 4)
         else {
-            self.dims = [0; 3];
+            self.counts = [0; 3];
             return false;
         };
         if self.cells.try_reserve_exact(len).is_err() {
-            self.dims = [0; 3];
+            self.counts = [0; 3];
             return false;
         }
         self.cells.resize(len, 0);
         true
     }
 
-    /// One cell's size: the box's extent over the cell counts.
-    pub fn cell_size(&self) -> Vec3 {
-        if self.dims.contains(&0) {
-            return Vec3::ZERO;
-        }
+    /// Cells per axis with the border: `counts + 2`.
+    pub fn dims(&self) -> [usize; 3] {
+        self.counts.map(|n| n + 2)
+    }
+
+    /// One cell's size per axis: `2 · half / count`.
+    pub fn step(&self) -> Vec3 {
+        let n = self.counts.map(|n| n as f32);
         Vec3::new(
-            2.0 * self.half_extents.x / self.dims[0] as f32,
-            2.0 * self.half_extents.y / self.dims[1] as f32,
-            2.0 * self.half_extents.z / self.dims[2] as f32,
+            self.half_extents.x * 2.0 / n[0],
+            self.half_extents.y * 2.0 / n[1],
+            self.half_extents.z * 2.0 / n[2],
         )
     }
 
-    /// The box's low corner.
-    pub fn min(&self) -> Vec3 {
-        self.centre - self.half_extents
-    }
-
-    /// The linear index of a cell, X fastest, then Y, then Z; `None` outside
-    /// the box.
+    /// The linear index of a cell (border included), Z fastest, then Y,
+    /// then X; `None` outside the grid.
     pub fn index(&self, cell: [usize; 3]) -> Option<usize> {
-        (0..3)
-            .all(|a| cell[a] < self.dims[a])
-            .then(|| cell[0] + self.dims[0] * (cell[1] + self.dims[1] * cell[2]))
+        let [nx, ny, nz] = self.dims();
+        (cell[0] < nx && cell[1] < ny && cell[2] < nz && !self.cells.is_empty())
+            .then(|| cell[2] + nz * (cell[1] + ny * cell[0]))
     }
 
-    /// The centre of a cell, or `None` outside the box.
+    /// The centre of a cell (border included), or `None` outside the grid.
     pub fn cell_centre(&self, cell: [usize; 3]) -> Option<Vec3> {
         self.index(cell)?;
-        let size = self.cell_size();
-        Some(
-            self.min()
-                + Vec3::new(
-                    (cell[0] as f32 + 0.5) * size.x,
-                    (cell[1] as f32 + 0.5) * size.y,
-                    (cell[2] as f32 + 0.5) * size.z,
-                ),
-        )
+        let step = self.step();
+        let low = |a: usize| {
+            let h = self.half_extents[a];
+            (self.centre[a] - h) - h / self.counts[a] as f32
+        };
+        Some(Vec3::new(
+            cell[0] as f32 * step.x + low(0),
+            cell[1] as f32 * step.y + low(1),
+            cell[2] as f32 * step.z + low(2),
+        ))
     }
 
-    /// The cell holding `point`, or `None` outside the box.
-    pub fn cell_at(&self, point: Vec3) -> Option<[usize; 3]> {
-        let size = self.cell_size();
-        if size.min_element() <= 0.0 {
-            return None;
-        }
-        let p = (point - self.min()) / size;
-        let cell = [p.x, p.y, p.z].map(|v| v.floor());
-        if cell.iter().any(|v| *v < 0.0) {
-            return None;
-        }
-        let cell = [cell[0] as usize, cell[1] as usize, cell[2] as usize];
-        self.index(cell).map(|_| cell)
+    /// A cell's word, or `None` outside the grid.
+    pub fn cell(&self, cell: [usize; 3]) -> Option<i32> {
+        self.index(cell).map(|i| self.cells[i])
     }
 
-    /// A cell's byte, or `None` outside the box.
-    pub fn cell(&self, cell: [usize; 3]) -> Option<u8> {
-        self.index(cell).and_then(|i| self.cells.get(i).copied())
-    }
-
-    /// Sets a cell's byte; false outside the box.
-    pub fn set_cell(&mut self, cell: [usize; 3], value: u8) -> bool {
+    /// Sets a cell's word; false outside the grid.
+    pub fn set_cell(&mut self, cell: [usize; 3], value: i32) -> bool {
         match self.index(cell) {
             Some(i) => {
                 self.cells[i] = value;
@@ -180,14 +178,26 @@ impl VoxelMap {
         }
     }
 
-    /// Every cell's byte, X fastest.
-    pub fn cells(&self) -> &[u8] {
+    /// Every cell's word, Z fastest.
+    pub fn cells(&self) -> &[i32] {
         &self.cells
     }
 
-    /// Every cell's byte, writable.
-    pub fn cells_mut(&mut self) -> &mut [u8] {
+    /// Every cell's word, writable.
+    pub fn cells_mut(&mut self) -> &mut [i32] {
         &mut self.cells
+    }
+
+    /// The two fill bytes of every cell. The sphere extraction reads them
+    /// (a first byte above 7 marks a solid cell); which stage of the shape
+    /// builder writes them is not established.
+    pub fn fill(&self) -> &[[u8; 2]] {
+        &self.fill
+    }
+
+    /// Replaces the fill bytes.
+    pub fn set_fill(&mut self, fill: Vec<[u8; 2]>) {
+        self.fill = fill;
     }
 
     /// The spheres extracted from the cells.
@@ -200,10 +210,11 @@ impl VoxelMap {
         self.spheres = spheres;
     }
 
-    /// Frees the map's two arrays, as the original's destructor does.
+    /// Frees the cell words and the fill bytes, as the original's array
+    /// release does; the spheres stay until the map goes.
     pub fn release(&mut self) {
         self.cells = Vec::new();
-        self.spheres = Vec::new();
+        self.fill = Vec::new();
     }
 }
 
@@ -229,45 +240,60 @@ pub struct SurfaceTriangle {
     axes: [usize; 2],
     first: [f32; 2],
     weights: [f32; 4],
+    /// The face's x and z range (`[x_min, x_max, z_min, z_max]`) when it
+    /// is tested on x and z; `None` for a steep face tested on y.
+    footprint: Option<[f32; 4]>,
+}
+
+/// A face's plane as the mesh stores it: the normal of `(b − a) × (c − a)`
+/// and the plane's constant `a · normal`, summed in the original's order.
+///
+/// The original scales the cross product by the hardware's approximate
+/// reciprocal square root; this takes the exact one. The plane is scaled by
+/// one over its normal's y before use, so the two differ only in rounding.
+fn stored_plane([a, b, c]: [Vec3; 3]) -> [f32; 4] {
+    let u = b - a;
+    let v = c - a;
+    let cross = Vec3::new(
+        v.z * u.y - u.z * v.y,
+        v.x * u.z - u.x * v.z,
+        v.y * u.x - u.y * v.x,
+    );
+    let length_squared = cross.x * cross.x + cross.y * cross.y + cross.z * cross.z;
+    let r = if length_squared == 0.0 {
+        0.0
+    } else {
+        1.0 / length_squared.sqrt()
+    };
+    let constant = a.x * cross.x * r + a.y * cross.y * r + a.z * cross.z * r;
+    [cross.x * r, cross.y * r, cross.z * r, constant]
 }
 
 impl SurfaceTriangle {
-    /// Sets a triangle up for [`surface_hit`], or returns `None` when it is
-    /// degenerate or does not face up (normal y at or below the epsilon, as
-    /// the original keeps only upward faces).
+    /// Sets a triangle up for [`surface_hit`], or returns `None` when it
+    /// does not face up (normal y below the epsilon, as the original keeps
+    /// only upward faces; a degenerate face has a zero normal).
     pub fn new(triangle: [Vec3; 3]) -> Option<Self> {
         let [a, b, c] = triangle;
-        let normal = (b - a).cross(c - a);
-        let length = normal.length();
-        if length <= 0.0 || length.is_nan() || !length.is_finite() {
-            return None;
-        }
-        let normal = normal / length;
-        if normal.y < SURFACE_EPSILON {
+        let stored = stored_plane(triangle);
+        if stored[1] < SURFACE_EPSILON {
             return None;
         }
         // The dominant axis, first in the comparison order the original uses.
-        let n = normal.abs();
-        let dominant = if n.x <= n.y {
-            if n.y <= n.z { 2 } else { 1 }
-        } else if n.x <= n.z {
+        let n = [stored[0].abs(), stored[1].abs(), stored[2].abs()];
+        let dominant = if n[0] <= n[1] {
+            if n[1] <= n[2] { 2 } else { 1 }
+        } else if n[0] <= n[2] {
             2
         } else {
             0
         };
         let axes = [(dominant + 1) % 3, (dominant + 2) % 3];
         let (axis1, axis2) = (axes[0], axes[1]);
-        // The plane's four coefficients scaled by one over the normal's y:
-        // the original scales the stored plane that way, so its y is
-        // `n.y · (1 / n.y)` and not necessarily exactly one.
-        let n = normal.to_array();
-        let scale = 1.0 / n[1];
-        let plane = [
-            n[0] * scale,
-            n[1] * scale,
-            n[2] * scale,
-            normal.dot(a) * scale,
-        ];
+        // The stored plane's four coefficients scaled by one over its y, so
+        // y's coefficient is `n.y · (1 / n.y)`, not necessarily exactly one.
+        let scale = 1.0 / stored[1];
+        let plane = stored.map(|v| v * scale);
         // The edges from the first vertex, as the original lays them out.
         let edge_c = (c - a).to_array();
         let edge_b = (b - a).to_array();
@@ -279,13 +305,28 @@ impl SurfaceTriangle {
             -edge_b[axis1] * f,
         ];
         let first = a.to_array();
+        let footprint = (dominant == 1).then(|| {
+            [
+                a.x.min(b.x).min(c.x),
+                a.x.max(b.x).max(c.x),
+                a.z.min(b.z).min(c.z),
+                a.z.max(b.z).max(c.z),
+            ]
+        });
         Some(Self {
             plane,
             axes,
             first: [first[axis1], first[axis2]],
             weights,
+            footprint,
         })
     }
+}
+
+/// The distance from `origin` down to a face's plane, summed as the
+/// original does: `(a·x + b·y) + c·z − d`.
+fn plane_distance(plane: &[f32; 4], origin: [f32; 3]) -> f32 {
+    (plane[0] * origin[0] + plane[1] * origin[1]) + plane[2] * origin[2] - plane[3]
 }
 
 /// The first face hit by a ray down `direction`, with the distance from
@@ -297,29 +338,34 @@ pub fn surface_hit(
     direction: Vec3,
     max: f32,
 ) -> Option<f32> {
+    hit_among(faces.iter(), origin, direction, max)
+}
+
+/// [`surface_hit`] over the faces `faces` yields, in that order.
+fn hit_among<'a>(
+    faces: impl Iterator<Item = &'a SurfaceTriangle>,
+    origin: Vec3,
+    direction: Vec3,
+    max: f32,
+) -> Option<f32> {
     let origin = origin.to_array();
     let direction = direction.to_array();
     let mut best = max;
     let mut hit = false;
     for face in faces {
-        // The original's sum order: z, x, y, less the plane's constant.
-        let distance =
-            (face.plane[2] * origin[2] + face.plane[0] * origin[0] + face.plane[1] * origin[1])
-                - face.plane[3];
+        let distance = plane_distance(&face.plane, origin);
         if distance.is_nan() || distance <= SURFACE_EPSILON || distance >= best {
             continue;
         }
         let [axis1, axis2] = face.axes;
-        let along_2 = (origin[axis2] + direction[axis2] * distance) - face.first[1];
         let along_1 = (origin[axis1] + direction[axis1] * distance) - face.first[0];
-        // The original's sum order: the axis 2 term first.
+        let along_2 = (origin[axis2] + direction[axis2] * distance) - face.first[1];
         let w1 = face.weights[1] * along_2 + face.weights[0] * along_1;
         if w1.is_nan() || w1 < 0.0 {
             continue;
         }
         let w2 = face.weights[3] * along_2 + face.weights[2] * along_1;
-        let sum = w1 + w2;
-        if w2 < 0.0 || sum.is_nan() || sum > 1.0 {
+        if w2.is_nan() || w2 < 0.0 || w1 + w2 > 1.0 {
             continue;
         }
         best = distance;
@@ -330,7 +376,7 @@ pub fn surface_hit(
 
 /// The bounds edges the floor heightfield snaps to, in centimetres: the low
 /// edge takes the first of the first four that is more than 75 cm above the
-/// mesh's low corner, the high edge the first of the last three (downwards)
+/// mesh's low corner, the high edge the first of the last four (downwards)
 /// that is more than 75 cm below the mesh's high corner.
 const FLOOR_EDGES: [f32; 5] = [-300.0, -150.0, 0.0, 150.0, 300.0];
 /// The finest cell of the floor heightfield: half of the generator's
@@ -349,18 +395,22 @@ fn round_ties_even(v: f32) -> i64 {
 }
 
 /// A floor edge snapped to the 20 cm lattice: `round(v / 20 ∓ 0.1) · 20`,
-/// the fraction computed in the original's mixed single/double constants.
+/// the fraction computed in the original's mixed single/double constants
+/// and the product taken in whole numbers.
 fn snap_edge(v: f32, offset: f64) -> f32 {
-    ((v * 0.05f32) as f64 - offset).round_ties_even() as i64 as f32 * 20.0
+    let steps = ((v * 0.05f32) as f64 - offset).round_ties_even() as i64;
+    steps.wrapping_mul(20) as f32
 }
 
 /// The floor heightfield of a mesh: a point at the centre of every 20 cm
 /// cell whose four 10 cm columns all meet a surface in the same 20 cm band.
 ///
 /// `bounds` is the mesh's own bounds and `triangles` its faces, both in
-/// centimetres (the original's snapping and its 20 cm step are absolute).
-/// `p` is the generator's parameter: the fine columns are `p / 2` wide and
-/// the points, as in the original's downsample, still 20 cm apart.
+/// centimetres and in the space the original runs it in: a grid cell's
+/// merged floor, origin at the cell centre (the edge rule's ±150/±300 cm
+/// are the cell's quarters). `p` is the generator's parameter: the fine
+/// columns are `p / 2` wide and the points, as in the original's
+/// downsample, still 20 cm apart.
 ///
 /// Points come in Z, then Y, then X order (X fastest), as the original
 /// walks its fine blocks.
@@ -374,15 +424,15 @@ pub fn floor_points(bounds: Bounds, triangles: &[[Vec3; 3]], p: f32) -> Vec<Vec3
     // The low X edge, the high X edge, then every axis widened to the mesh.
     let mut low = [FLOOR_EDGES[0], -20.0, -300.0];
     let mut high = [FLOOR_EDGES[1], 0.0, -300.0];
-    for (i, &edge) in FLOOR_EDGES.iter().take(4).enumerate() {
+    for &edge in FLOOR_EDGES.iter().take(4) {
         if centre[0] - half[0] < edge + 75.0 {
-            low[0] = FLOOR_EDGES[i];
+            low[0] = edge;
             break;
         }
     }
-    for (i, &edge) in FLOOR_EDGES.iter().enumerate().skip(1).rev() {
+    for &edge in FLOOR_EDGES.iter().skip(1).rev() {
         if edge - 75.0 < centre[0] + half[0] {
-            high[0] = FLOOR_EDGES[i];
+            high[0] = edge;
             break;
         }
     }
@@ -403,15 +453,12 @@ pub fn floor_points(bounds: Bounds, triangles: &[[Vec3; 3]], p: f32) -> Vec<Vec3
         high[axis] = snap_edge(high[axis], -0.1);
     }
     low[1] -= 20.0;
-    let dims = [
-        round_ties_even((high[0] - low[0]) / fine),
-        round_ties_even((high[1] - low[1]) / fine),
-        round_ties_even((high[2] - low[2]) / fine),
-    ];
+    // The counts are kept as the original's 32-bit words.
+    let dims = [0, 1, 2].map(|a| round_ties_even((high[a] - low[a]) / fine) as i32);
     if dims.iter().any(|&n| n <= 0) {
         return Vec::new();
     }
-    let dims = [dims[0] as usize, dims[1] as usize, dims[2] as usize];
+    let dims = dims.map(|n| n as usize);
     let Some(len) = dims
         .iter()
         .try_fold(1usize, |n, &d| n.checked_mul(d))
@@ -428,6 +475,9 @@ pub fn floor_points(bounds: Bounds, triangles: &[[Vec3; 3]], p: f32) -> Vec<Vec3
         .iter()
         .filter_map(|&t| SurfaceTriangle::new(t))
         .collect();
+    let Some(columns) = face_columns(&faces, dims[0], dims[2], [low[0], low[2]], fine) else {
+        return Vec::new();
+    };
     let start_y = high[1] + fine;
     let max = (dims[1] as f32 + 1.0) * fine;
     let inverse = 1.0 / fine;
@@ -435,34 +485,103 @@ pub fn floor_points(bounds: Bounds, triangles: &[[Vec3; 3]], p: f32) -> Vec<Vec3
         let zc = (z as f32 + 0.5) * fine + low[2];
         for x in 0..dims[0] {
             let xc = (x as f32 + 0.5) * fine + low[0];
-            let Some(distance) = surface_hit(&faces, Vec3::new(xc, start_y, zc), Vec3::NEG_Y, max)
+            let candidates = columns[x + z * dims[0]].iter().map(|&i| &faces[i as usize]);
+            let Some(distance) =
+                hit_among(candidates, Vec3::new(xc, start_y, zc), Vec3::NEG_Y, max)
             else {
                 continue;
             };
             let y = dims[1] as i64 - round_ties_even(distance * inverse);
+            // The original writes the mark unchecked; a face inside the
+            // bounds always lands inside the grid.
             if (0..dims[1] as i64).contains(&y) {
                 marks[x + y as usize * dims[0] + z * dims[0] * dims[1]] = 0xFF;
             }
         }
     }
-    // Every 2×2×2 block of fine cells with four marked columns gives a
-    // point at its centre, on the hard-coded 20 cm step.
-    let mut points = Vec::new();
-    for z in 0..dims[2] / 2 {
-        for y in 0..dims[1] / 2 {
-            for x in 0..dims[0] / 2 {
-                let (x0, y0, z0) = (x * 2, y * 2, z * 2);
-                let at = |x: usize, y: usize, z: usize| {
-                    marks[x + y * dims[0] + z * dims[0] * dims[1]] as u32
+    downsample(&marks, dims, low)
+}
+
+/// The faces each fine column's ray tests, in the faces' order.
+///
+/// A face tested on x and z can only take a ray that falls inside its x
+/// and z range, so it joins only the columns over that range (one column
+/// more on each side, far beyond rounding); a steep face, tested on y,
+/// joins every column. Each ray then meets the same faces in the same
+/// order as a test of the whole list, without the ones it cannot hit.
+fn face_columns(
+    faces: &[SurfaceTriangle],
+    nx: usize,
+    nz: usize,
+    low: [f32; 2],
+    fine: f32,
+) -> Option<Vec<Vec<u32>>> {
+    let count = nx.checked_mul(nz)?;
+    let mut columns: Vec<Vec<u32>> = Vec::new();
+    columns.try_reserve_exact(count).ok()?;
+    columns.resize(count, Vec::new());
+    // The columns whose centres lie in [lo, hi], widened by one.
+    let span = |lo: f32, hi: f32, low: f32, n: usize| -> Option<(usize, usize)> {
+        let first = ((lo - low) / fine - 0.5).floor() - 1.0;
+        let last = ((hi - low) / fine - 0.5).ceil() + 1.0;
+        if !(first.is_finite() && last.is_finite()) {
+            return Some((0, n - 1));
+        }
+        if last < 0.0 || first > (n - 1) as f32 {
+            return None;
+        }
+        Some((first.max(0.0) as usize, last.min((n - 1) as f32) as usize))
+    };
+    for (i, face) in faces.iter().enumerate() {
+        let i = u32::try_from(i).ok()?;
+        let (xs, zs) = match face.footprint {
+            Some([x0, x1, z0, z1]) => {
+                let (Some(xs), Some(zs)) = (span(x0, x1, low[0], nx), span(z0, z1, low[1], nz))
+                else {
+                    continue;
                 };
-                let sum = at(x0, y0, z0)
-                    + at(x0 + 1, y0, z0)
-                    + at(x0, y0 + 1, z0)
-                    + at(x0 + 1, y0 + 1, z0)
-                    + at(x0, y0, z0 + 1)
-                    + at(x0 + 1, y0, z0 + 1)
-                    + at(x0, y0 + 1, z0 + 1)
-                    + at(x0 + 1, y0 + 1, z0 + 1);
+                (xs, zs)
+            }
+            None => ((0, nx - 1), (0, nz - 1)),
+        };
+        for z in zs.0..=zs.1 {
+            for x in xs.0..=xs.1 {
+                columns[x + z * nx].push(i);
+            }
+        }
+    }
+    Some(columns)
+}
+
+/// The 2×2×2 downsample of the floor marks: a point on the hard-coded
+/// 20 cm step for every block whose eight bytes sum past 1019.
+///
+/// The original walks the marks with a pointer that steps two rows per
+/// block row and one slice per block slice; with an odd number of rows the
+/// slices it reads drift one row back per block slice, and that is kept.
+fn downsample(marks: &[u8], dims: [usize; 3], low: [f32; 3]) -> Vec<Vec3> {
+    let [nx, ny, nz] = dims;
+    let slice = nx * ny;
+    let mut points = Vec::new();
+    let mut base_slice = 0usize;
+    for z in 0..nz / 2 {
+        let mut row = base_slice;
+        for y in 0..ny / 2 {
+            for x in 0..nx / 2 {
+                let at = row + x * 2;
+                let sum = [
+                    0,
+                    1,
+                    nx,
+                    nx + 1,
+                    slice,
+                    slice + 1,
+                    slice + nx,
+                    slice + nx + 1,
+                ]
+                .iter()
+                .map(|&d| marks[at + d] as u32)
+                .sum::<u32>();
                 if sum > FLOOR_MARK_SUM {
                     points.push(Vec3::new(
                         (x as f32 + 0.5) * FLOOR_POINT_STEP + low[0],
@@ -471,20 +590,22 @@ pub fn floor_points(bounds: Bounds, triangles: &[[Vec3; 3]], p: f32) -> Vec<Vec3
                     ));
                 }
             }
+            row += nx * 2;
         }
+        base_slice = row + slice;
     }
     points
 }
 
-/// The share of the surface generator's parameter that one cell takes.
-const SURFACE_STEP_SHARE: f32 = 0.2;
+/// The share of the surface generator's parameter that one cell takes, a
+/// double in the original.
+const SURFACE_STEP_SHARE: f64 = 0.2;
 /// The share of the step a cell's radius is when its centre touches the
 /// surface: half a cell.
 const SURFACE_CONTACT_SHARE: f32 = 0.5;
-/// The radius of the sphere that first asks whether the surface is anywhere
-/// near a cell: half the cell's diagonal (`√2 / 2`), as the original's
-/// truncated constant.
-const SURFACE_NEAR: f32 = 1.4142135;
+/// The point spacing the surface generator records on the node it fills
+/// (no GI code reads it).
+pub const SURFACE_POINT_SPACING: u32 = 40;
 /// A cell with the surface in it.
 const SURFACE_ON: u8 = 0xFF;
 /// A cell with the surface within its larger sphere but not its own.
@@ -520,6 +641,19 @@ fn surface_dims(bounds: Bounds, p: f32) -> [usize; 3] {
     })
 }
 
+/// The surface generator's cell size: `0.2 · p`, taken in double precision
+/// and stored as a single.
+fn surface_step(p: f32) -> f32 {
+    (p as f64 * SURFACE_STEP_SHARE) as f32
+}
+
+/// The radius of the sphere that first asks whether the surface is anywhere
+/// near a cell: half the cell's diagonal on a face, `s · √2 / 2`, in double
+/// precision and stored as a single.
+fn near_radius(step: f32) -> f32 {
+    (step as f64 * std::f64::consts::SQRT_2 * 0.5) as f32
+}
+
 /// One cell of the surface generator's fine grid, in scan order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SurfaceCell {
@@ -545,7 +679,7 @@ pub fn surface_points(
     inside: impl Fn(Vec3, f32) -> bool,
     cover: SurfaceCover,
 ) -> Vec<Vec3> {
-    let step = p * SURFACE_STEP_SHARE;
+    let step = surface_step(p);
     if step <= 0.0 || step.is_nan() || !step.is_finite() {
         return Vec::new();
     }
@@ -565,7 +699,7 @@ pub fn surface_points(
         return Vec::new();
     }
     grid.resize(len, 0u8);
-    let near = step * SURFACE_NEAR * 0.5;
+    let near = near_radius(step);
     let contact = step * SURFACE_CONTACT_SHARE;
     let centre = bounds.centre;
     for z in 1..dims[2] - 1 {

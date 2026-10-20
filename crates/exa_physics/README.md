@@ -128,19 +128,22 @@ clip clock.
 
 The mesh voxeliser (`voxel`) keeps the original's occupancy map of a
 rigid-body mesh (`VoxelMap`: the 0.02 resolution, unit scale and caller's
-tag, the map's box of cells, and the extracted spheres) and the two
-routines that sample a mesh into a fine grid. `floor_points` is the floor
-heightfield: 10 cm columns, a ray down each with the highest upward face
-winning, a mark in the 10 cm cell under it, and a point at the centre of
-every 20 cm cell holding four marks. `surface_points` is the general
-surface generator: cells a fifth of its parameter apart (4 cm for the
-original's 20) are classified on or near by a sphere query, near cells
-beside the surface are cleared, and a greedy 5×5×5 cover leaves one point
-per 20 cm cube (`SurfaceCover::EveryCell` is the original's other builder
-path, one point per cell); `shared_surface_points` is the master-to-
-instances copy, and `mesh_touches` the sphere-against-triangles query the
-generator makes. `exa_world::gi_volume` runs the floor generator on each
-floor piece in the original's centimetres.
+tag; the box with a one-cell border, one word per cell, Z fastest; two fill
+bytes per cell; the extracted spheres; the array release that frees the
+cells and fill bytes but keeps the spheres) and the two routines that
+sample a mesh into a fine grid. `floor_points` is the floor heightfield,
+run on a grid cell's merged floor in the cell's space: 10 cm columns, a ray
+down each with the highest upward face winning, a mark in the 10 cm cell
+under it, and a point at the centre of every 20 cm cell holding four marks.
+`surface_points` is the general surface generator: cells a fifth of its
+parameter apart (4 cm for the original's 20, the step and the near radius
+taken in double precision) are classified on or near by a sphere query,
+near cells beside the surface are cleared, and a greedy 5×5×5 cover leaves
+one point per 20 cm cube (`SurfaceCover::EveryCell` is the original's
+other builder path, one point per cell); `shared_surface_points` is the
+master-to-instances copy, and `mesh_touches` a stand-in for the node's
+sphere query. `exa_world::gi_volume` runs the floor generator on each grid
+cell's floor in the original's centimetres.
 
 Props and items with a rigid body are bodies in the same solver
 (`src/body_rigid.rs`, `body::Ragdoll::rigid`): built as the original
