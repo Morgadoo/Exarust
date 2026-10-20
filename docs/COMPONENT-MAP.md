@@ -58,7 +58,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | SG_PlayerControls | AI & behaviour | 122 | 47 | 8% |
 | TThaumTree | Thaumaturgy & effects | 76 | 38 | 23% |
 | TGUIDrawSkin | UI | 73 | 35 | 55% |
-| TPathFinder | AI & behaviour | 24 | 32 | 58% |
+| TPathFinder | AI & behaviour | 24 | 32 | 59% |
 | TVCCloth | Physics, bodies & cloth | 50 | 30 | 81% |
 | XA_SaveGames | Game modes, arena & session | 96 | 27 | 7% |
 | TGUIItemContainer | Items, materials & crafting | 44 | 26 | 28% |
@@ -75,7 +75,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | TPlayerBehaviour | AI & behaviour | 31 | 17 | 16% |
 | TMatchBoard | Game modes, arena & session | 30 | 17 | 3% |
 | SG_Character_Create | Game modes, arena & session | 90 | 17 | 32% |
-| TCombatant | AI & behaviour | 30 | 17 | 24% |
+| TCombatant | AI & behaviour | 30 | 17 | 30% |
 | TForceBlastEffect | Thaumaturgy & effects | 22 | 17 | 20% |
 | RF_Morphing | Characters, motion & animation | 25 | 16 | 62% |
 
