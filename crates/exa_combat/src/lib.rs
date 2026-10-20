@@ -35,6 +35,7 @@ pub mod parry;
 pub mod regen;
 pub mod stance;
 pub mod swing;
+pub mod weapon_blood;
 pub mod wounds;
 
 use std::collections::HashSet;
@@ -54,6 +55,7 @@ pub use fighter::{
     Weakened, answer_low_health, heal_second_wind,
 };
 use swing::{Swing, SwingAt, SwingState};
+pub use weapon_blood::{WeaponBlood, WeaponBloodSpot};
 use wounds::{BladeBlood, WoundQueue, frame_tetra, tetra_weights};
 
 pub struct CombatPlugin;

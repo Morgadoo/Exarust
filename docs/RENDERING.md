@@ -408,6 +408,14 @@ them. The original frees a weapon's blood when its body leaves the
 simulation and clears all of it at the end of a session or a respawn;
 Exarust despawns the weapon with its holder and has no session end yet.
 
+The original's own list (`exa_combat::weapon_blood::WeaponBlood`) keeps a
+spot per source: the source, the amount it has left, and the stain's two
+length terms (its two lengths over 80, and the square root of 80 over
+them). A hidden source adds nothing; a source takes the first free spot or
+grows the list; clearing the count empties it; clearing a spot frees it;
+adding clamps the amount to 0 through 1. The shipped stain reads the
+scalar above.
+
 **Which meshes** (`exa_character::blood::WeaponStain`): the original
 stains its weapon node's first sub-object. For a model whose root node
 has meshes that is the root's first mesh (weapon items name 110 such
