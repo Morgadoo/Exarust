@@ -103,13 +103,17 @@ pub fn motor_step(motor: &mut Motor) -> Option<f32> {
     }
     let target = (1.0 - motor.fraction) * motor.range * motor.sign + motor.closed;
     let error = target - motor.angle;
+    // The plain step's share is taken in single precision and then scaled
+    // and offset in double precision before it is rounded back; the open
+    // command's 0.1 rad slop is a double too. Their single-precision
+    // spellings differ by one unit in the last place at the boundary.
     let step = if !motor.motorised {
         let share = if motor.range.is_finite() && motor.range != 0.0 {
             (error / motor.range).abs()
         } else {
             0.0
         };
-        share * MOTOR_CATCH + MOTOR_STEP
+        (f64::from(share) * MOTOR_CATCH_WIDE + MOTOR_STEP_WIDE) as f32
     } else if motor.fast {
         FAST_STEP
     } else {
@@ -117,7 +121,7 @@ pub fn motor_step(motor: &mut Motor) -> Option<f32> {
     };
     let arrived = match active {
         MotorMode::Toggle => error.abs() <= step,
-        MotorMode::Open => error.abs() <= OPEN_SLOP,
+        MotorMode::Open => f64::from(error.abs()) <= OPEN_SLOP_WIDE,
         MotorMode::Idle => return None,
     };
     if arrived {
@@ -149,6 +153,42 @@ pub const FAST_STEP: f32 = 0.005;
 /// An open command has arrived when the error is within this, in radians.
 pub const OPEN_SLOP: f32 = 0.1;
 
+// The thresholds and factors the original keeps as doubles. Each comparison
+// or product below widens the single-precision value first, so these are
+// spelled as doubles rather than widened from the `f32` constants above
+// (`0.05_f32 as f64` is not `0.05`).
+const MOTOR_CATCH_WIDE: f64 = 0.001;
+const MOTOR_STEP_WIDE: f64 = 0.0003;
+const OPEN_SLOP_WIDE: f64 = 0.1;
+const CREAK_STOP_WIDE: f64 = 0.015;
+const CLOSED_SLOP_WIDE: f64 = 0.04;
+const NEAR_WIDE: f64 = 0.1;
+const SINGLE_LEAVE_WIDE: f64 = 0.05;
+const PASSABLE_WIDE: f64 = 0.4;
+const SLIDE_FLOOR_WIDE: f64 = 0.01;
+const SLIDE_CLOSE_STEP_WIDE: f64 = 0.075;
+const SLIDE_CEIL_WIDE: f64 = 0.99;
+const SLIDE_SHUT_WIDE: f64 = 0.995;
+const SLIDE_PASS_WIDE: f64 = 0.8;
+const SLIDE_KNOCK_WIDE: f64 = 0.05;
+const KNOCK_SPEED_WIDE: f64 = 0.01;
+
+/// Whether a squared handle speed makes a creak: strictly above 0.015 as a
+/// double. A non-finite value is quiet, as the original's unordered compare
+/// takes the quiet branch.
+fn creaks(energy: f32) -> bool {
+    f64::from(energy) > CREAK_STOP_WIDE
+}
+
+/// The hinge creak's volume and pitch for a speed (the root of the squared
+/// handle speed): `0.075·√speed` and `min(0.022·speed + 0.7, 1)`, both
+/// formed in double precision and rounded to single.
+fn hinge_creak(speed: f32) -> (f32, f32) {
+    let volume = (f64::from(speed.sqrt()) * 0.075) as f32;
+    let pitch = (f64::from(speed) * 0.022 + 0.7) as f32;
+    (volume, if pitch > 1.0 { 1.0 } else { pitch })
+}
+
 /// The creak of one tick.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Creak {
@@ -158,11 +198,13 @@ pub struct Creak {
     pub pitch: f32,
 }
 
-/// Smooth the handle velocity and say whether the hinge creaks.
+/// Smooth the handle velocity and say whether the hinge creaks. The
+/// smoothing moves halfway from the old value toward the new one
+/// (`s + (v − s)·0.5`, the original's form).
 pub fn creak(smoothed: Vec3, handle_velocity: Vec3) -> Creak {
-    let smoothed = smoothed * 0.5 + handle_velocity * 0.5;
+    let smoothed = smoothed + (handle_velocity - smoothed) * 0.5;
     let energy = smoothed.length_squared();
-    if !energy.is_finite() || energy <= CREAK_STOP {
+    if !creaks(energy) {
         return Creak {
             smoothed,
             playing: false,
@@ -170,12 +212,12 @@ pub fn creak(smoothed: Vec3, handle_velocity: Vec3) -> Creak {
             pitch: 0.0,
         };
     }
-    let speed = energy.sqrt();
+    let (volume, pitch) = hinge_creak(energy.sqrt());
     Creak {
         smoothed,
         playing: true,
-        volume: 0.075 * speed.sqrt(),
-        pitch: (0.022 * speed + 0.7).min(1.0),
+        volume,
+        pitch,
     }
 }
 
@@ -258,9 +300,6 @@ pub struct SlideTick {
     pub opened: bool,
 }
 
-/// Creak stop, shared with a hinge.
-const SLIDE_CREAK_PITCH: f32 = 0.2;
-const SLIDE_CREAK_VOLUME: f32 = 0.2;
 /// Smoothing while the door is free to travel.
 pub const SLIDE_OPEN_SMOOTH: f32 = 0.01;
 /// Smoothing while a motorised door opens.
@@ -296,26 +335,30 @@ pub const SLIDE_KNOCK_ENERGY: f32 = 0.05;
 /// A held hand point is kept inside this many centimetres of the link.
 pub const SLIDE_HAND_CM: f32 = 60.0;
 
+/// The creak's volume, and the basis a shut or knock volume is built from:
+/// `0.2·√energy` formed in double precision.
 fn slide_basis(energy: f32) -> f32 {
-    if !energy.is_finite() || energy <= CREAK_STOP {
+    if !creaks(energy) {
         SLIDE_STOP_BASIS
     } else {
-        energy.sqrt() * SLIDE_CREAK_VOLUME
+        (f64::from(energy.sqrt()) * 0.2) as f32
     }
 }
 
-/// The creak's pitch, and the pitch a shut or knock sound is built from.
+/// The creak's pitch, and the pitch a shut or knock sound is built from:
+/// `min(0.2·energy + 0.7, 1)` formed in double precision.
 fn slide_pitch(energy: f32) -> f32 {
-    if !energy.is_finite() || energy <= CREAK_STOP {
+    if !creaks(energy) {
         SLIDE_STOP_PITCH
     } else {
-        (energy * SLIDE_CREAK_PITCH + SLIDE_STOP_PITCH).min(1.0)
+        let pitch = (f64::from(energy) * 0.2 + 0.7) as f32;
+        if pitch > 1.0 { 1.0 } else { pitch }
     }
 }
 
 /// The creak of a sliding door from its stored energy.
 pub fn slide_creak(energy: f32) -> SlideTick {
-    if !energy.is_finite() || energy <= CREAK_STOP {
+    if !creaks(energy) {
         return SlideTick {
             playing: false,
             volume: 0.0,
@@ -333,8 +376,8 @@ pub fn slide_creak(energy: f32) -> SlideTick {
     }
     SlideTick {
         playing: true,
-        volume: energy.sqrt() * SLIDE_CREAK_VOLUME,
-        pitch: (energy * SLIDE_CREAK_PITCH + 0.7).min(1.0),
+        volume: slide_basis(energy),
+        pitch: slide_pitch(energy),
         passable: false,
         unlatched: false,
         slammed: false,
@@ -347,9 +390,26 @@ pub fn slide_creak(energy: f32) -> SlideTick {
     }
 }
 
-fn end_slide(slide: &mut Slide, mode: SlideMode) {
+/// A command the tick wrote to the stored word: the mode code and the
+/// countdown as they were written (the word keeps the countdown of the last
+/// command, not the one the tick has since counted down).
+type Written = Option<(i32, i32)>;
+
+fn end_slide(slide: &mut Slide, mode: SlideMode, written: &mut Written) {
     slide.mode = mode;
     slide.countdown = 0;
+    *written = Some((slide_mode_code(mode), 0));
+}
+
+/// The stored-word mode code of a sliding leaf's mode.
+fn slide_mode_code(mode: SlideMode) -> i32 {
+    match mode {
+        SlideMode::Idle => MODE_IDLE,
+        SlideMode::Shut => MODE_SHUT,
+        SlideMode::Wait => MODE_WAIT,
+        SlideMode::Open => MODE_OPEN,
+        SlideMode::Close => MODE_TOGGLE,
+    }
 }
 
 /// Pull a held hand point back to 60 cm. A point on that sphere stays.
@@ -386,6 +446,38 @@ pub fn slide_step(slide: &mut Slide) -> SlideTick {
 /// One tick, in the original's order. A frozen door keeps its parked
 /// fraction and stays passable.
 pub fn slide_tick(slide: &mut Slide, now_ms: i32) -> SlideTick {
+    let mut written = None;
+    slide_tick_written(slide, now_ms, &mut written)
+}
+
+/// [`slide_tick`], also reporting the last command written to the stored
+/// word this tick.
+fn slide_tick_written(slide: &mut Slide, now_ms: i32, written: &mut Written) -> SlideTick {
+    // A signalled open waits, then opens, in the same fields the motor uses.
+    // The wait runs in the shared part of the door's tick, before the
+    // sliding rules and so before the frozen check: a frozen leaf still
+    // takes the open command (its travel is put back to the parked value
+    // just below).
+    let mut opened = false;
+    if slide.mode == SlideMode::Wait {
+        if slide.countdown < 2 {
+            slide.latched = false;
+            slide.closed = false;
+            slide.count = 0;
+            slide.mode = SlideMode::Open;
+            if slide.motorised {
+                slide.countdown = SLIDE_MOTOR_TICKS;
+            } else {
+                slide.fraction = SLIDE_JUMP;
+                slide.countdown = SLIDE_OPEN_TICKS;
+            }
+            *written = Some((MODE_OPEN, slide.countdown));
+            opened = true;
+        } else {
+            slide.countdown -= 1;
+        }
+    }
+
     if slide.frozen {
         slide.fraction = slide.parked;
         return SlideTick {
@@ -400,39 +492,24 @@ pub fn slide_tick(slide: &mut Slide, now_ms: i32) -> SlideTick {
             knock_pitch: 0.0,
             slam_volume: 0.0,
             slam_pitch: 0.0,
-            opened: false,
+            opened,
         };
-    }
-
-    // A signalled open waits, then opens, in the same fields the motor uses.
-    let mut opened = false;
-    if slide.mode == SlideMode::Wait {
-        if slide.countdown < 2 {
-            slide.latched = false;
-            slide.closed = false;
-            slide.count = 0;
-            slide.mode = SlideMode::Open;
-            if slide.motorised {
-                slide.countdown = SLIDE_MOTOR_TICKS;
-            } else {
-                slide.fraction = SLIDE_JUMP;
-                slide.countdown = SLIDE_OPEN_TICKS;
-            }
-            opened = true;
-        } else {
-            slide.countdown -= 1;
-        }
     }
 
     let sound = slide_creak(slide.energy);
     let basis = slide_basis(slide.energy);
     let stopped_pitch = slide_pitch(slide.energy);
+    // The knock and the slam take 0.1 off the creak pitch in double
+    // precision; the roll's 0.2 is added on top.
+    let struck_pitch = (f64::from(stopped_pitch) - 0.1) as f32;
     let mut knocked = false;
     let mut knock_volume = 0.0;
-    let risen = slide.fraction >= SLIDE_OPEN_FLOOR;
-    if risen {
+    // The bottom test is a double compare: a travel of exactly 0.01 in
+    // single precision (0.00999999977…) is still below 0.01.
+    let below = f64::from(slide.fraction) < SLIDE_FLOOR_WIDE;
+    if !below {
         slide.knocked = false;
-    } else if !slide.knocked && slide.energy.is_finite() && slide.energy > SLIDE_KNOCK_ENERGY {
+    } else if !slide.knocked && f64::from(slide.energy) > SLIDE_KNOCK_WIDE {
         knocked = true;
         knock_volume = basis * 2.0 * basis * 2.0 * 0.5;
         slide.knocked = true;
@@ -450,38 +527,38 @@ pub fn slide_tick(slide: &mut Slide, now_ms: i32) -> SlideTick {
     let mut slam_volume = 0.0;
     let mut unlatched = false;
     let passable = if !slide.closed {
-        let passable = !slide.locked && slide.fraction >= SLIDE_PASS;
+        let passable = !slide.locked && f64::from(slide.fraction) >= SLIDE_PASS_WIDE;
         slide.smoothing = SLIDE_OPEN_SMOOTH;
         if slide.mode == SlideMode::Open {
             if slide.countdown < 2 {
-                end_slide(slide, SlideMode::Idle);
+                end_slide(slide, SlideMode::Idle, written);
             } else {
                 slide.countdown -= 1;
             }
             if slide.motorised {
                 slide.smoothing = SLIDE_MOTOR_SMOOTH;
-                slide.fraction -= SLIDE_OPEN_STEP;
-                if slide.fraction < SLIDE_OPEN_FLOOR {
+                slide.fraction = (f64::from(slide.fraction) - SLIDE_FLOOR_WIDE) as f32;
+                if f64::from(slide.fraction) < SLIDE_FLOOR_WIDE {
                     slide.fraction = 0.0;
-                    end_slide(slide, SlideMode::Idle);
+                    end_slide(slide, SlideMode::Idle, written);
                 }
             }
         }
         if slide.mode == SlideMode::Close {
             if slide.countdown < 2 {
-                end_slide(slide, SlideMode::Idle);
+                end_slide(slide, SlideMode::Idle, written);
             } else {
                 slide.countdown -= 1;
             }
             slide.smoothing = SLIDE_CLOSE_SMOOTH;
-            slide.fraction += SLIDE_CLOSE_STEP;
-            if slide.fraction > SLIDE_CLOSE_CEIL {
+            slide.fraction = (f64::from(slide.fraction) + SLIDE_CLOSE_STEP_WIDE) as f32;
+            if f64::from(slide.fraction) > SLIDE_CEIL_WIDE {
                 slide.fraction = 1.0;
-                end_slide(slide, SlideMode::Shut);
+                end_slide(slide, SlideMode::Shut, written);
                 slide.latched = true;
             }
         }
-        if slide.fraction >= SLIDE_SHUT && slide.mode != SlideMode::Open {
+        if f64::from(slide.fraction) >= SLIDE_SHUT_WIDE && slide.mode != SlideMode::Open {
             slide.closed = true;
             slide.count = PULL_CAP;
             if slide.latches {
@@ -498,7 +575,7 @@ pub fn slide_tick(slide: &mut Slide, now_ms: i32) -> SlideTick {
         if !slide.holding || slide.latched {
             slide.fraction = 1.0;
             slide.smoothing = SLIDE_HELD_SMOOTH;
-        } else if slide.fraction < SLIDE_SHUT {
+        } else if f64::from(slide.fraction) < SLIDE_SHUT_WIDE {
             slide.count -= PULL_STEP;
             if slide.count < 0 {
                 unlatched = true;
@@ -519,9 +596,9 @@ pub fn slide_tick(slide: &mut Slide, now_ms: i32) -> SlideTick {
         slammed,
         knocked,
         knock_volume,
-        knock_pitch: stopped_pitch - 0.1,
+        knock_pitch: struck_pitch,
         slam_volume,
-        slam_pitch: stopped_pitch - 0.1,
+        slam_pitch: struck_pitch,
         opened,
     }
 }
@@ -557,10 +634,23 @@ pub fn near_shut(angle: f32, closed: f32) -> bool {
         return false;
     }
     if angle <= closed {
-        closed - NEAR_CLOSED < angle
+        near_below(angle, closed)
     } else {
         true
     }
+}
+
+/// `closed − 0.1 < angle`, the near test, in double precision as the
+/// original forms it.
+fn near_below(angle: f32, closed: f32) -> bool {
+    f64::from(closed) - NEAR_WIDE < f64::from(angle)
+}
+
+/// `angle < closed − 0.05`, a single leaf's leave test, in double precision.
+/// A leaf whose single-precision angle is the nearest to 0.05 short
+/// (0.94999999 against a closed heading of 1) is already past it.
+fn leaves_single(angle: f32, closed: f32) -> bool {
+    f64::from(closed) - SINGLE_LEAVE_WIDE > f64::from(angle)
 }
 
 /// The shut check for one leaf. A single door still holds. A paired door
@@ -568,7 +658,7 @@ pub fn near_shut(angle: f32, closed: f32) -> bool {
 /// angle is short of closed.
 pub fn pair_shut(door: &Pair) -> PairTick {
     if !door.paired {
-        let leave = door.angle < door.closed - SINGLE_LEAVE && !door.latched;
+        let leave = leaves_single(door.angle, door.closed) && !door.latched;
         PairTick {
             shut: !leave,
             hold: true,
@@ -799,8 +889,14 @@ pub fn open_span(leaf: &SignalLeaf) -> f32 {
     if leaf.sliding {
         1.0 - leaf.fraction
     } else {
-        (leaf.angle - leaf.closed_angle) * TOGGLE_HINGE
+        hinge_openness(leaf.angle, leaf.closed_angle)
     }
+}
+
+/// `(angle − closed)·−0.7`: the gap is taken in single precision and
+/// scaled by the double −0.7 before it is rounded back.
+fn hinge_openness(angle: f32, closed: f32) -> f32 {
+    (f64::from(angle - closed) * -0.7) as f32
 }
 
 /// Toggle one door. A latched door is opened first, then the command is chosen
@@ -947,12 +1043,17 @@ pub struct Shape {
 impl Shape {
     /// The angle a shut leaf reads.
     ///
-    /// The leaf's frame is built with its zero along the stop's anchor, so
-    /// the closed heading is the half swing. A leaf at its file position
-    /// therefore reads exactly this (the shipped doors' stop links are taut
-    /// there). The frame helpers' exact construction is ambiguous in the
-    /// pseudo-code; this is the reading the shipped geometry and the closed
-    /// check agree on.
+    /// The closed heading is the heading of the stop's anchor (its tied
+    /// point less the node's position) in the leaf's frame, plus the half
+    /// swing. The frame is built from that same anchor: its up row is the
+    /// negated hinge axis, its forward row is the anchor with its part
+    /// along that row removed (normalised), and its side row is up × forward.
+    /// A heading is measured in the frame's side–forward plane from the
+    /// forward row (the arccosine of the forward share, negated when the
+    /// side share is negative), so the anchor reads zero by construction and
+    /// the closed heading is exactly the half swing. Whether a leaf at its
+    /// file position reads closed is a property of the data (a stop link
+    /// taut on the shut side), not of this rule.
     pub fn closed(&self) -> f32 {
         self.half_swing
     }
@@ -964,15 +1065,17 @@ impl Shape {
 }
 
 /// The half swing a link of this slack allows at this radius, in radians:
-/// twice the arcsine of half the slack over the radius.
+/// twice the arcsine of half the slack over the radius, with the engine's
+/// fast arcsine (the same one the lever takes).
 pub fn half_swing(slack: f32, radius: f32) -> f32 {
-    2.0 * (slack * 0.5 / radius).asin()
+    crate::lever::engine_asin(slack * 0.5 / radius) * 2.0
 }
 
-/// A body's links as the door's hinge or slide: the first hinge pin's
-/// direction, the last swing stop (its index, radius, slack and sign), or
-/// the travel link of a slider. A hinge with no stop keeps the initial half
-/// swing of pi.
+/// A body's links as the door's hinge or slide: the direction of the last
+/// qualifying hinge pin (straight up when none qualifies), the last swing
+/// stop (its index, radius and slack) with the sign any stop set, or the
+/// travel link of a slider. A hinge with no stop keeps a guessed half swing
+/// of pi.
 pub fn shape(rest: &[Vec3; 4], links: &[Link]) -> Shape {
     let sliding = links.iter().any(|l| l.flags & Link::SLIDER != 0);
     if sliding {
@@ -996,49 +1099,60 @@ pub fn shape(rest: &[Vec3; 4], links: &[Link]) -> Shape {
         };
     }
 
-    let mut axis = Vec3::X;
+    // The axis starts straight up. Each qualifying pin simply replaces it
+    // with its own direction, normalised: the first pin point farther than
+    // 1 cm from the body's origin, then any later one that is not below it
+    // (y ≥ 0). There is no hemisphere step; a later pin pointing the other
+    // way flips the axis. (The original normalises with the fast reciprocal
+    // square root, so its axis is unit only to about twelve bits.)
+    let mut axis = Vec3::Y;
     let mut pinned = false;
     let mut stop = None;
+    // The sign starts at 1 and any stop whose point has x > 0 sets it to −1;
+    // a later stop does not set it back.
+    let mut sign = 1.0;
     for (i, link) in links.iter().enumerate() {
         let point = link.point(rest);
         if link.slack <= PIN_SLACK {
-            // The first pin farther than 1 cm from the body's origin gives
-            // the axis; a later one only when it is not below it. The axis
-            // is kept in the hemisphere of the previous direction.
-            if point.length_squared() > 1.0 && (!pinned || point.y >= 0.0) {
+            // The squared length is summed z, y, x, as the original does.
+            let squared = (point.z * point.z + point.y * point.y) + point.x * point.x;
+            if squared > 1.0 && (!pinned || point.y >= 0.0) {
                 let length = point.length();
-                if length > 0.0 {
-                    let candidate = point / length;
-                    axis = if axis.dot(candidate) < 0.0 {
-                        -candidate
-                    } else {
-                        candidate
-                    };
-                }
+                axis = if length > 0.0 {
+                    point / length
+                } else {
+                    Vec3::ZERO
+                };
                 pinned = true;
             }
         } else {
+            if point.x > 0.0 {
+                sign = -1.0;
+            }
             // The last stop wins, as the original's loop overwrites.
             stop = Some((i, point, link.slack));
         }
     }
     match stop {
         Some((travel_link, point, stop_slack)) => {
-            let radius = point.length();
+            let radius = crate::lever::engine_length(point);
             Shape {
                 sliding: false,
                 travel_link,
-                sign: if point.x > 0.0 { -1.0 } else { 1.0 },
+                sign,
                 radius,
                 half_swing: half_swing(stop_slack, radius),
                 stop_slack,
                 axis,
             }
         }
+        // A guess: the original reads a half swing it never set when a
+        // hinge has no stop. No shipped hinge lacks one; pi keeps the leaf
+        // free.
         None => Shape {
             sliding: false,
             travel_link: 0,
-            sign: 1.0,
+            sign,
             radius: 0.0,
             half_swing: std::f32::consts::PI,
             stop_slack: 0.0,
@@ -1056,6 +1170,8 @@ pub fn sound_factors(mobility: f32) -> (f32, f32) {
 
 /// A leaf's motor mode, stored in the object's own word.
 pub const MODE_IDLE: i32 = 0;
+/// A slider whose close command arrived (the word then reads latched).
+pub const MODE_SHUT: i32 = 1;
 /// Waiting out a signalled open.
 pub const MODE_WAIT: i32 = 3;
 /// Driving open.
@@ -1186,6 +1302,8 @@ pub struct DoorTick {
     pub travel: f32,
     /// The unlatch sound of an open this tick (a finished signal wait).
     pub opened: Option<Sound>,
+    /// The 3 cm shove of that open, in the leaf's frame (a hinge only).
+    pub shove: Vec3,
 }
 
 impl Door {
@@ -1203,7 +1321,8 @@ impl Door {
             latches: record.has(LATCHES),
             latched: saved & 1 != 0,
             mode: saved & 0xF,
-            countdown: saved >> 24,
+            // The countdown is the word's top byte, read unsigned.
+            countdown: ((saved as u32) >> 24) as i32,
             fraction: 0.0,
             closed: false,
             near: false,
@@ -1239,7 +1358,7 @@ impl Door {
             },
         };
         if shape.sliding {
-            door.closed = SLIDE_SHUT <= travel;
+            door.closed = f64::from(travel) >= SLIDE_SHUT_WIDE;
             if door.frozen {
                 door.slide.parked = travel;
                 door.slide.fraction = travel;
@@ -1249,7 +1368,7 @@ impl Door {
             door.passable = if door.closed {
                 !door.locked
             } else {
-                !door.locked && SLIDE_PASS <= travel
+                !door.locked && f64::from(travel) >= SLIDE_PASS_WIDE
             };
             door.both_passable = door.passable;
             door.slide.closed = door.closed;
@@ -1257,41 +1376,52 @@ impl Door {
                 MODE_WAIT => SlideMode::Wait,
                 MODE_OPEN => SlideMode::Open,
                 MODE_TOGGLE => SlideMode::Close,
-                1 => SlideMode::Shut,
+                MODE_SHUT => SlideMode::Shut,
                 _ => SlideMode::Idle,
             };
             door.slide.countdown = door.countdown;
         } else {
             door.angle = heading * shape.sign;
-            door.closed = shape.closed() - CLOSED_SLOP < door.angle;
+            // Shut within 0.04 rad of closed, a double compare.
+            door.closed = f64::from(shape.closed()) - CLOSED_SLOP_WIDE < f64::from(door.angle);
             door.near = door.closed;
             if door.closed {
                 door.pull = PULL_CAP;
             }
-            door.passable =
-                !door.locked && (door.closed || door.angle > shape.closed() - PASSABLE_GAP);
+            door.passable = !door.locked && (door.closed || door.open_passable());
             door.both_passable = door.passable;
         }
+        door.slide.count = door.pull;
         door
     }
 
-    /// The stored word this door would leave behind.
+    /// The stored word this door would leave behind. It is the word as the
+    /// original keeps it: every command writes its mode into the low byte
+    /// (so an even mode clears the latch bit) and its countdown into the top
+    /// byte, a tick's countdown is not written back, a shut latching leaf
+    /// and a close-and-lock set bit 0, and an unlock clears it.
     pub fn stored(&self) -> i32 {
-        if self.mode == MODE_WAIT {
-            return stored_word(MODE_WAIT, self.countdown, self.latched);
-        }
-        if self.shape.sliding {
-            let mode = match self.slide.mode {
-                SlideMode::Idle => MODE_IDLE,
-                SlideMode::Shut => 1,
-                SlideMode::Wait => MODE_WAIT,
-                SlideMode::Open => MODE_OPEN,
-                SlideMode::Close => MODE_TOGGLE,
-            };
-            stored_word(mode, self.slide.countdown, self.slide.latched)
-        } else {
-            stored_word(self.mode, self.countdown, self.latched)
-        }
+        self.saved
+    }
+
+    /// Start a command: the mode and countdown, also written to the word's
+    /// low and top bytes (the bytes between are kept).
+    fn command(&mut self, mode: i32, countdown: i32) {
+        self.mode = mode;
+        self.countdown = countdown;
+        self.saved = (self.saved & 0x00FF_FF00) | (mode & 0xFF) | (countdown << 24);
+    }
+
+    /// Start a sliding leaf's command, in its own fields and in the word.
+    fn slide_command(&mut self, mode: SlideMode, countdown: i32) {
+        self.slide.mode = mode;
+        self.slide.countdown = countdown;
+        self.command(slide_mode_code(mode), countdown);
+    }
+
+    /// An open hinge is passable past `closed − 0.4`, a double compare.
+    fn open_passable(&self) -> bool {
+        f64::from(self.shape.closed()) - PASSABLE_WIDE < f64::from(self.angle)
     }
 
     /// Whether the leaf is open enough to walk through: a slider by its
@@ -1300,7 +1430,7 @@ impl Door {
         if self.shape.sliding {
             1.0 - self.slide.fraction
         } else {
-            (self.angle - self.shape.closed()) * TOGGLE_HINGE
+            hinge_openness(self.angle, self.shape.closed())
         }
     }
 
@@ -1315,12 +1445,11 @@ impl Door {
             self.slide.latched = false;
             self.slide.closed = false;
             self.slide.count = 0;
-            self.slide.mode = SlideMode::Open;
             if self.motorised {
-                self.slide.countdown = SLIDE_MOTOR_TICKS;
+                self.slide_command(SlideMode::Open, SLIDE_MOTOR_TICKS);
             } else {
                 self.slide.fraction = SLIDE_JUMP;
-                self.slide.countdown = SLIDE_OPEN_TICKS;
+                self.slide_command(SlideMode::Open, SLIDE_OPEN_TICKS);
             }
             Opened {
                 sound: Some(self.unlatch_sound()),
@@ -1328,12 +1457,11 @@ impl Door {
                 woke: true,
             }
         } else {
-            self.mode = MODE_IDLE;
-            self.countdown = 0;
             if self.motorised {
                 self.fraction = 0.0;
-                self.mode = MODE_OPEN;
-                self.countdown = HINGE_OPEN_TICKS;
+                self.command(MODE_OPEN, HINGE_OPEN_TICKS);
+            } else {
+                self.command(MODE_IDLE, 0);
             }
             Opened {
                 sound: Some(self.unlatch_sound()),
@@ -1379,17 +1507,16 @@ impl Door {
         let span = self.openness();
         if self.shape.sliding {
             if span <= TOGGLE_OPEN {
-                self.slide.mode = SlideMode::Open;
-                self.slide.countdown = TOGGLE_FAST;
+                self.slide_command(SlideMode::Open, TOGGLE_FAST);
                 self.slide.closed = false;
+                self.closed = false;
             } else {
-                self.slide.mode = SlideMode::Close;
-                self.slide.countdown = TOGGLE_FAST;
+                self.slide_command(SlideMode::Close, TOGGLE_FAST);
             }
         } else {
             self.fraction = if span > TOGGLE_OPEN { 1.0 } else { 0.0 };
-            self.mode = MODE_TOGGLE;
-            self.countdown = if self.fast { TOGGLE_FAST } else { TOGGLE_SLOW };
+            let ticks = if self.fast { TOGGLE_FAST } else { TOGGLE_SLOW };
+            self.command(MODE_TOGGLE, ticks);
         }
         Toggled {
             shove,
@@ -1399,34 +1526,30 @@ impl Door {
 
     /// Close and lock the leaf. Returns the lock sound when one plays.
     pub fn close_and_lock(&mut self) -> Option<Sound> {
-        if !self.shape.sliding {
+        let sound = if !self.shape.sliding {
             if self.motorised {
                 self.fraction = 1.0;
-                self.mode = MODE_TOGGLE;
-                self.countdown = if self.fast { SHUT_FAST } else { SHUT_SLOW };
-            }
-            if self.closed {
-                self.latched = true;
-                self.saved |= 1;
+                let ticks = if self.fast { SHUT_FAST } else { SHUT_SLOW };
+                self.command(MODE_TOGGLE, ticks);
             }
             None
         } else {
-            let sound = if self.slide.latched {
+            let sound = if self.latched {
                 None
             } else {
                 Some(self.lock_sound())
             };
             if self.fast {
-                self.slide.mode = SlideMode::Close;
-                self.slide.countdown = SHUT_FAST;
-            }
-            if self.slide.closed {
-                self.slide.latched = true;
-                self.latched = true;
-                self.saved |= 1;
+                self.slide_command(SlideMode::Close, SHUT_FAST);
             }
             sound
+        };
+        if self.closed {
+            self.latched = true;
+            self.slide.latched = true;
+            self.saved |= 1;
         }
+        sound
     }
 
     /// Unlock the leaf after the key fits: the unlock sound, the saved latch
@@ -1446,11 +1569,10 @@ impl Door {
     /// waits 120 ticks; a plain leaf nothing.
     pub fn wake(&mut self) {
         if self.latched || self.motorised {
-            self.mode = MODE_WAIT;
-            self.countdown = SIGNAL_WAIT;
             if self.shape.sliding {
-                self.slide.mode = SlideMode::Wait;
-                self.slide.countdown = SIGNAL_WAIT;
+                self.slide_command(SlideMode::Wait, SIGNAL_WAIT);
+            } else {
+                self.command(MODE_WAIT, SIGNAL_WAIT);
             }
         }
     }
@@ -1462,49 +1584,50 @@ impl Door {
         }
         // A signalled open waits out its countdown, then opens.
         let mut opened = None;
+        let mut shove = Vec3::ZERO;
         if self.mode == MODE_WAIT {
             if self.countdown < 2 {
-                opened = self.open().sound;
+                let open = self.open();
+                opened = open.sound;
+                shove = open.shove;
             } else {
                 self.countdown -= 1;
             }
         }
         let mut done = self.step_hinge(tick, partner);
         done.opened = opened;
+        done.shove = shove;
         done
     }
 
-    fn step_hinge(&mut self, tick: Tick, partner: Option<&mut Door>) -> DoorTick {
+    fn step_hinge(&mut self, tick: Tick, mut partner: Option<&mut Door>) -> DoorTick {
         let partner_near = partner.as_ref().map(|p| p.near);
         let partner_passable = partner.as_ref().map(|p| p.passable).unwrap_or(false);
         self.has_partner = partner.is_some();
         self.partner_near = partner_near.unwrap_or(false);
 
-        // The handle's speed. A creep below the threshold leaves the
+        // The handle's speed. A creep at or below the threshold leaves the
         // squared energy in place; above it the field holds the speed.
         let energy = tick.energy;
-        let speed = if energy <= CREAK_STOP {
-            energy
+        let playing = creaks(energy);
+        let speed = if playing { energy.sqrt() } else { energy };
+        let (volume, pitch) = if playing {
+            hinge_creak(speed)
         } else {
-            energy.sqrt()
-        };
-        let (playing, volume, pitch) = if energy <= CREAK_STOP {
-            (false, 0.003, 0.0)
-        } else {
-            (true, speed.sqrt() * 0.075, (speed * 0.022 + 0.7).min(1.0))
+            (SLIDE_STOP_BASIS, 0.0)
         };
 
-        // The stop knocks when its link is stretched past its slack.
+        // The stop knocks when its link is stretched past its slack. Its
+        // volume has no random share; the roll only lifts the pitch.
         let mut knock_sound = None;
-        if self.shape.stop_slack <= tick.travel
-            && tick.travel != self.shape.stop_slack
-            && 0.01 < speed
+        if tick.travel > self.shape.stop_slack
+            && f64::from(speed) > KNOCK_SPEED_WIDE
             && self.knock_cooldown_ms < tick.now_ms as u32
         {
             knock_sound = Some(Sound {
                 volume: volume * volume * 20.0,
-                volume_spread: 0.2,
-                pitch: speed * 0.1 + 0.3,
+                volume_spread: 0.0,
+                pitch: (f64::from(speed) * 0.1 + 0.3) as f32,
                 pitch_spread: 0.2,
             });
             self.knock_cooldown_ms = (tick.now_ms.max(0) as u32)
@@ -1512,12 +1635,13 @@ impl Door {
                 .saturating_add(tick.roll % 100);
         }
 
-        // A finished unlock clears the latch on both leaves.
+        // A finished unlock clears the latch on both leaves (the partner's
+        // own wait is left running).
         if self.unlock_pending && self.unlock_at_ms < tick.now_ms {
             self.saved &= !1;
             self.latched = false;
             self.unlock_pending = false;
-            if let Some(partner) = partner {
+            if let Some(partner) = partner.as_deref_mut() {
                 partner.latched = false;
             }
         }
@@ -1530,10 +1654,10 @@ impl Door {
         let mut shut_sound = None;
         let mut unlatch_sound = None;
         if !self.closed {
-            let own = !self.locked && self.angle > self.shape.closed() - PASSABLE_GAP;
+            let own = !self.locked && self.open_passable();
             self.set_passage(own, partner_passable);
             if self.angle <= self.shape.closed() {
-                self.near = self.shape.closed() - NEAR_SLOP < self.angle;
+                self.near = near_below(self.angle, self.shape.closed());
             } else {
                 self.closed = true;
                 self.near = true;
@@ -1543,11 +1667,12 @@ impl Door {
                     self.saved |= 1;
                 }
                 if self.slam_cooldown_ms < tick.now_ms as u32 {
-                    let amp = (tick.handle_speed_sq * 0.1).min(1.0);
+                    let amp = (f64::from(tick.handle_speed_sq) * 0.1) as f32;
+                    let amp = amp.min(1.0);
                     shut_sound = Some(Sound {
                         volume: amp * 0.5,
                         volume_spread: 0.0,
-                        pitch: amp * 0.3 + 0.4,
+                        pitch: (f64::from(amp) * 0.3 + 0.4) as f32,
                         pitch_spread: 0.2,
                     });
                     self.slam_cooldown_ms = (tick.now_ms.max(0) as u32)
@@ -1566,7 +1691,7 @@ impl Door {
                 motor_drive
             };
             if !self.has_partner {
-                if self.angle < self.shape.closed() - SINGLE_LEAVE && !self.latched {
+                if leaves_single(self.angle, self.shape.closed()) && !self.latched {
                     self.closed = false;
                 }
             } else if !self.partner_near && self.angle < self.shape.closed() {
@@ -1583,6 +1708,9 @@ impl Door {
                     self.pull = 0;
                 }
             }
+            if let Some(partner) = partner.as_deref_mut() {
+                partner.both_passable = self.both_passable;
+            }
             return DoorTick {
                 playing,
                 volume,
@@ -1597,7 +1725,11 @@ impl Door {
                 both_passable: self.both_passable,
                 travel: tick.travel,
                 opened: None,
+                shove: Vec3::ZERO,
             };
+        }
+        if let Some(partner) = partner.as_mut() {
+            partner.both_passable = self.both_passable;
         }
 
         DoorTick {
@@ -1614,17 +1746,22 @@ impl Door {
             both_passable: self.both_passable,
             travel: tick.travel,
             opened: None,
+            shove: Vec3::ZERO,
         }
     }
 
     /// Record this leaf's own passage and the pair's: the pair is passable
-    /// only when both leaves are.
+    /// only when both leaves are. The tick also writes the pair's value to
+    /// the partner, as the original does.
     pub fn set_passage(&mut self, own: bool, partner_passable: bool) {
         self.passable = own;
         self.both_passable = own && (!self.has_partner || partner_passable);
     }
 
     /// The motor's step for modes 4 and 8, shared with the rule helper.
+    /// Ending a command (its countdown, or an arrival that does not latch)
+    /// writes mode 0 and countdown 0 to the word; a tick's countdown does
+    /// not, and neither does a toggle's latch on arrival.
     fn drive(&mut self) -> Option<f32> {
         let mode = match self.mode {
             MODE_OPEN => MotorMode::Open,
@@ -1645,15 +1782,11 @@ impl Door {
             angle: self.angle,
         };
         let drive = motor_step(&mut motor);
-        self.countdown = motor.countdown;
         self.latched = motor.latched;
-        self.mode = match motor.mode {
-            MotorMode::Idle => MODE_IDLE,
-            MotorMode::Open => MODE_OPEN,
-            MotorMode::Toggle => MODE_TOGGLE,
-        };
-        if self.mode == MODE_IDLE {
-            self.countdown = 0;
+        if motor.mode == MotorMode::Idle {
+            self.command(MODE_IDLE, 0);
+        } else {
+            self.countdown = motor.countdown;
         }
         drive
     }
@@ -1665,18 +1798,28 @@ impl Door {
         self.slide.motorised = self.motorised;
         self.slide.latches = self.latches;
         self.slide.latched = self.latched;
+        self.slide.closed = self.closed;
+        self.slide.count = self.pull;
+        self.slide.holding = self.held;
         self.slide.energy = tick.energy;
         self.slide.unlock_pending = self.unlock_pending;
         self.slide.unlock_at_ms = self.unlock_at_ms;
-        let now = tick.now_ms;
-        let tick = slide_tick(&mut self.slide, now);
-        self.mode = match self.slide.mode {
-            SlideMode::Idle => MODE_IDLE,
-            SlideMode::Shut => 1,
-            SlideMode::Wait => MODE_WAIT,
-            SlideMode::Open => MODE_OPEN,
-            SlideMode::Close => MODE_TOGGLE,
-        };
+        let was_pending = self.unlock_pending;
+        let mut written = None;
+        let tick = slide_tick_written(&mut self.slide, tick.now_ms, &mut written);
+        // The word in the order the tick touches it: a finished unlock
+        // clears bit 0, the commands write their mode and countdown, a shut
+        // latching leaf sets bit 0.
+        if was_pending && !self.slide.unlock_pending {
+            self.saved &= !1;
+        }
+        if let Some((mode, countdown)) = written {
+            self.saved = (self.saved & 0x00FF_FF00) | (mode & 0xFF) | (countdown << 24);
+        }
+        if tick.slammed && self.latches {
+            self.saved |= 1;
+        }
+        self.mode = slide_mode_code(self.slide.mode);
         self.countdown = self.slide.countdown;
         self.closed = self.slide.closed;
         self.latched = self.slide.latched;
@@ -1702,7 +1845,9 @@ impl Door {
                 None
             },
             unlatched: tick.unlatched,
-            unlatch_sound: if tick.unlatched || tick.opened {
+            // A pull that unlatches a slider plays `opn` with a wider pitch
+            // roll (0.4) than the open command's (0.3).
+            unlatch_sound: if tick.unlatched {
                 Some(Sound {
                     volume: 0.1,
                     volume_spread: 0.05,
@@ -1725,7 +1870,14 @@ impl Door {
             travel: self.slide.fraction,
             passable: tick.passable,
             both_passable: tick.passable,
-            opened: None,
+            // A finished wait opens the leaf through the open command, with
+            // its sound.
+            opened: if tick.opened {
+                Some(self.unlatch_sound())
+            } else {
+                None
+            },
+            shove: Vec3::ZERO,
         }
     }
 }
@@ -1943,7 +2095,7 @@ mod tests {
         assert!(low.knocked);
         low.energy = 0.25;
         assert!(!slide_step(&mut low).knocked);
-        low.fraction = SLIDE_OPEN_FLOOR;
+        low.fraction = 0.02;
         slide_step(&mut low);
         assert!(!low.knocked);
         low.fraction = 0.0;
@@ -1975,7 +2127,7 @@ mod tests {
 
     #[test]
     fn a_partner_is_not_held_while_the_other_leaf_is_open() {
-        let on_the_line = pair_shut(&pair(1.0 - SINGLE_LEAVE));
+        let on_the_line = pair_shut(&pair(0.950_000_05));
         assert!(on_the_line.shut);
         assert!(on_the_line.hold);
 
@@ -2333,13 +2485,14 @@ mod tests {
         assert!(!swing.sliding);
         assert_eq!(swing.travel_link, 1);
         assert!((swing.radius - 164.8015).abs() < 1e-3, "{}", swing.radius);
+        // The engine's fast arcsine: 0.83806, against the exact 0.83761.
         assert!(
-            (swing.half_swing - 0.8376).abs() < 1e-4,
+            (swing.half_swing - 0.83806).abs() < 1e-4,
             "{}",
             swing.half_swing
         );
-        assert!((swing.closed() - 0.8376).abs() < 1e-4);
-        assert!((swing.range() + 1.6752).abs() < 1e-3);
+        assert!((swing.closed() - 0.83806).abs() < 1e-4);
+        assert!((swing.range() + 1.67612).abs() < 1e-3);
         assert_eq!(swing.sign, 1.0);
         assert!((swing.axis.y - 1.0).abs() < 1e-3, "{:?}", swing.axis);
 
@@ -2349,7 +2502,7 @@ mod tests {
         };
         let flipped = shape(&rest(), &[positive]);
         assert_eq!(flipped.sign, -1.0);
-        assert!((flipped.range() - 1.6752).abs() < 1e-3);
+        assert!((flipped.range() - 1.6761).abs() < 1e-3);
 
         // A link with no stop keeps the half swing of pi.
         let open = shape(&rest(), &[pin(1.0, 0.0, 0.0)]);
