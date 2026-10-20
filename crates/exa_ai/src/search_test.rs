@@ -566,6 +566,38 @@ fn gathering_floods_the_nearby_rooms() {
     assert!(!again.candidates.contains(&body));
 }
 
+/// A character of the cell whose object is container-like is weighed as an
+/// object, before the dead-character test: a living one with a chest of a
+/// record is gathered, a dead one whose chest is searched is not, even with
+/// its pack unsearched.
+#[test]
+fn a_character_with_a_container_object_is_weighed_as_one() {
+    let mut scene = Scene {
+        grid: grid(),
+        ..Scene::default()
+    };
+    let cell = 4 * 9 + 4;
+    for (id, dead) in [(20, false), (21, true)] {
+        scene.objects.push(chest(id, Vec3::ZERO));
+        scene.items.insert(id, Loot::Other);
+        scene.corpses.push(Corpse {
+            character: true,
+            dead,
+            pack_id: id + 100,
+            pack: Pack::default(),
+            object: scene.objects.len() - 1,
+        });
+        scene.grid.characters[cell].push(scene.corpses.len() - 1);
+    }
+    let mut s = Search::new();
+    s.gather(&mut scene, &[21]);
+    assert_eq!(s.candidates, vec![0]);
+    assert_eq!(
+        (scene.objects[0].reserved, scene.objects[1].reserved),
+        (1, 0)
+    );
+}
+
 /// One container holding one piece of apparel, 150 cm ahead of a searcher
 /// that walked there.
 fn looted_scene() -> Scene {

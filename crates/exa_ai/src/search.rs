@@ -36,7 +36,8 @@
 //! within √10 cells, collecting each cell's containers and loose items
 //! (searchable, not fixed, not searched, with an item record that has an
 //! apparel, weapon, operative or container part) and dead characters (not
-//! searched).
+//! searched). A character of the cell whose object is container-like is
+//! weighed as such an object instead.
 //!
 //! Weighing an item: apparel is worth `min((s + 1) + (m + 1), over the
 //! carried and worn pieces it overlaps of (m + 1)/(m' + 1) + (s + 1)/(s' + 1))
@@ -928,7 +929,18 @@ impl Search {
         }
         for f in found {
             match f {
-                Found::Character(c) => self.consider_corpse(scene, c, searched),
+                // A character whose object is container-like is weighed as
+                // an object, before the dead-character test.
+                Found::Character(c) => match scene.corpses.get(c).map(|k| k.object) {
+                    Some(o)
+                        if scene.objects.get(o).is_some_and(|obj| {
+                            obj.kind & object::KIND_MASK == object::CONTAINER_KIND
+                        }) =>
+                    {
+                        self.consider_object(scene, o, searched)
+                    }
+                    _ => self.consider_corpse(scene, c, searched),
+                },
                 Found::Object(o) => self.consider_object(scene, o, searched),
             }
         }

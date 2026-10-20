@@ -35,7 +35,7 @@ use std::collections::BTreeMap;
 
 use bevy::prelude::Component;
 use exa_formats::characters::CharacterRecord;
-use exa_formats::roles::{ATTITUDE, Role, RoleDb, RoleEntry, SECTION_ENCOUNTER};
+use exa_formats::roles::{ATTITUDE, Role, RoleDb, RoleEntry, SECTION_CORPSE, SECTION_ENCOUNTER};
 
 /// The Player role.
 pub const PLAYER: u32 = 7;
@@ -624,7 +624,8 @@ pub fn encounter<'a>(
 /// for B: for each of A's roles, newest first, the role's first entry aimed
 /// at one of B's roles, then at one of A's relation roles toward B; the
 /// first such entry carrying the bit gives its section (read from the
-/// returned entry).
+/// returned entry). The finder walks the section table, which has no corpse
+/// section, so asking it for the corpse script finds none.
 pub fn entry_for<'a>(
     book: &'a RoleDb,
     roles: &Roles,
@@ -632,6 +633,9 @@ pub fn entry_for<'a>(
     partner: &Partner<'_>,
     bit: u32,
 ) -> Option<&'a RoleEntry> {
+    if bit == SECTION_CORPSE {
+        return None;
+    }
     let held = relations.relation_roles(partner.id);
     for id in roles.ids() {
         let Some(record) = role(book, id) else {

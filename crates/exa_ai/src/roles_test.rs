@@ -429,6 +429,31 @@ fn the_entry_finder_takes_the_first_entry_per_target() {
     assert!(entry_for(&b, &other, &rel, &partner, SECTION_INTERACTION).is_none());
 }
 
+/// The finder walks the section table, which has no corpse section: an
+/// entry for the Player holding a corpse script gives none through it,
+/// though the entry's own corpse accessor finds the script.
+#[test]
+fn the_entry_finder_has_no_corpse_section() {
+    let mut b = book();
+    let corpse = RoleEntry {
+        kind: SECTION_CORPSE,
+        target: 7,
+        corpse: Some(b"Actor.Loot();".to_vec()),
+        ..RoleEntry::default()
+    };
+    assert_eq!(corpse.script(SECTION_CORPSE), Some(&b"Actor.Loot();"[..]));
+    add(&mut b, 47, 0, 0, 0, vec![corpse]);
+    let player = roles_of(&b, &[7]);
+    let partner = Partner {
+        id: 1,
+        roles: &player,
+        former: None,
+    };
+    let holder = roles_of(&b, &[47]);
+    let rel = Relations::default();
+    assert!(entry_for(&b, &holder, &rel, &partner, SECTION_CORPSE).is_none());
+}
+
 /// A version 7 record keeps its roles as saved; an older record adds them
 /// again in their order, so Skeleton brings back Undead.
 #[test]

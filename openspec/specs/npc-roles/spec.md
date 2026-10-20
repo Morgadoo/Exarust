@@ -83,11 +83,15 @@ An encounter SHALL create the relation at familiarity 0 or renew its time. It SH
 - **THEN** the scripts for anyone, the character and Human are returned, the time is renewed, and locale 5 returns two
 
 ### Requirement: Entry finder
-The entry finder SHALL take, for each of A's roles newest first, the role's first entry aimed at one of B's roles, then at one of A's relation roles toward B, and SHALL give the requested section of the first such entry that carries it.
+The entry finder SHALL take, for each of A's roles newest first, the role's first entry aimed at one of B's roles, then at one of A's relation roles toward B, and SHALL give the requested section of the first such entry that carries it, read through the section table, so the corpse section SHALL never be given.
 
 #### Scenario: An attitude entry hides a condition
 - **WHEN** one role's only entry for the Player is a condition, and another role's first entry for the Player is an attitude followed by a condition
 - **THEN** the first gives its condition and the second gives none
+
+#### Scenario: No corpse section
+- **WHEN** a role's entry for the Player holds a corpse script and the finder is asked for the corpse section
+- **THEN** it gives none, while the entry's corpse accessor finds the script
 
 ### Requirement: Level characters carry roles
 Each living placed character SHALL carry its record's roles, empty relations and a brain that applies the roles when it appears. Every frame the brain SHALL rate the player from both sides' roles and keep that attitude, tolerance and its record's traits in its contact rating. The player SHALL carry the new-character roles in the story and the arena roles elsewhere.
