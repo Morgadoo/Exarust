@@ -51,6 +51,34 @@ pub fn nearest_morph(
     }
 }
 
+/// The nearest morph point's index and distance.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MorphNearestIndex {
+    pub index: i32,
+    pub distance: f32,
+}
+
+/// Scans transformed points and returns the nearest one.
+pub fn nearest_morph_index(point: [f32; 3], points: &[[f32; 3]]) -> MorphNearestIndex {
+    let mut best = MorphNearestIndex {
+        index: -1,
+        distance: f32::MAX,
+    };
+    for (index, candidate) in points.iter().enumerate() {
+        let dx = point[0] - candidate[0];
+        let dy = point[1] - candidate[1];
+        let dz = point[2] - candidate[2];
+        let distance = dx * dx + dy * dy + dz * dz;
+        if distance < best.distance {
+            best = MorphNearestIndex {
+                index: index as i32,
+                distance,
+            };
+        }
+    }
+    best
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,5 +117,22 @@ mod tests {
         let (unordered, changed) = nearest_morph(f32::NAN, 1.0, candidate, best);
         assert!(!changed);
         assert_eq!(unordered, best);
+    }
+
+    #[test]
+    fn the_nearest_morph_index_scans_points() {
+        let points = [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 0.5]];
+        let found = nearest_morph_index([0.0, 0.0, 0.0], &points);
+        assert_eq!(found.index, 2);
+        assert_eq!(found.distance, 0.25);
+
+        let with_nan = [[f32::NAN, 0.0, 0.0], [3.0, 0.0, 0.0]];
+        let skipped = nearest_morph_index([0.0, 0.0, 0.0], &with_nan);
+        assert_eq!(skipped.index, 1);
+        assert_eq!(skipped.distance, 9.0);
+
+        let empty = nearest_morph_index([0.0, 0.0, 0.0], &[]);
+        assert_eq!(empty.index, -1);
+        assert_eq!(empty.distance, f32::MAX);
     }
 }
