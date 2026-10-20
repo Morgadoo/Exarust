@@ -503,7 +503,7 @@ pub struct ExportTrack {
     pub on_translation: bool,
     pub mode: u32,
     pub duration: f32,
-    /// Time (s) and position (cm); at least one key.
+    /// Time (s) and position (cm).
     pub keys: Vec<(f32, [f32; 3])>,
 }
 
@@ -929,8 +929,12 @@ impl<'a> Walk<'a> {
         let f = f | flags::EXPORTED;
         self.flags[i] = f;
         if f & flags::CHARACTER != 0 {
+            // A character's subtree is not walked: its nodes keep their
+            // flags and are not exported.
             self.characters.push(i);
-        } else if f & flags::PROP != 0 {
+            return Ok(());
+        }
+        if f & flags::PROP != 0 {
             self.props.push(i);
         } else if f & flags::OBJECT_MASK == flags::OBJECT {
             self.objects.push(i);
@@ -1651,10 +1655,9 @@ fn write_body(w: &mut ChunkWriter, class: u32, b: &ExportBody) -> Result<()> {
     Ok(())
 }
 
+/// A track without keys stores −1 as its last key and no keys, as the
+/// original does.
 fn write_track(w: &mut ChunkWriter, t: &ExportTrack) -> Result<()> {
-    if t.keys.is_empty() {
-        return Err(Error::Malformed("a keyframe track without keys".into()));
-    }
     w.open(tag::KEY_TRACK);
     w.u32(tag::KEY_TRACK_WORD);
     w.u32(t.mode);

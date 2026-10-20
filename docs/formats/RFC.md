@@ -897,7 +897,9 @@ A mesh node (class `0x89`) adds each part's material name, lowercased, to
 the material list unless the list or a shared library already holds it.
 Then props and placed objects are numbered after the scene nodes, the
 first prop taking the **last scene node's number** (n nodes: props from n,
-not n + 1). Characters keep the number they held. A scene node's parent
+not n + 1). Characters keep the number they held, and the walk does not
+descend into a character: the nodes under it keep their flags and numbers
+and are not written. A scene node's parent
 counts only when exported (and not owned); its data source is the exported
 node sharing its data with the lowest number below its own, if any.
 
@@ -955,7 +957,8 @@ own chunks.
   parent body's rest points under link flag `0x10000`. A mesh then writes
   the chunk it kept whole and its `3D0CEC05` GI points (spacing, count,
   points); every node writes a `3AC1` per keyframe controller on its
-  translation (`0x3AE2`, mode, duration, last index, keys).
+  translation (`0x3AE2`, mode, duration, last index, keys; a track
+without keys stores −1 and no keys).
 - **Props** `3DE10000`: count, then per prop `3DE10100`: `flags &
   0xB80000`, name, local matrix, parent number (0 unless exported), tail
   word, and part records for its owned children: `3DE0ECAC` for a body

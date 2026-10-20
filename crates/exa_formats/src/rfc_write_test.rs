@@ -743,6 +743,22 @@ fn a_track_record_is_byte_exact() {
     assert_eq!(w.into_bytes(), want);
 }
 
+#[test]
+fn a_track_without_keys_stores_minus_one_and_no_keys() {
+    let mut w = ChunkWriter::new();
+    let t = ExportTrack {
+        on_translation: true,
+        mode: 2,
+        duration: 3.0,
+        keys: Vec::new(),
+    };
+    write_track(&mut w, &t).unwrap();
+    let mut want = le(&[tag::KEY_TRACK, 16, tag::KEY_TRACK_WORD, 2]);
+    want.extend(f32s(&[3.0]));
+    want.extend(le(&[u32::MAX]));
+    assert_eq!(w.into_bytes(), want);
+}
+
 fn owned(n: &str, parent: usize, class: u32) -> SceneNode {
     SceneNode {
         attachment: Some(Attachment {
@@ -923,6 +939,27 @@ fn a_dead_character_stores_its_pose_tree() {
     assert_eq!((pl.yaw, pl.condition), (1.5, DEAD));
     // The root and its one child of class 0x12, which as a leaf writes none.
     assert_eq!(pl.pose.len(), 2);
+}
+
+#[test]
+fn a_characters_subtree_is_not_walked() {
+    // The plain node under the character is neither exported nor numbered:
+    // only the plain node beside it is a scene node, numbered 1, and the
+    // one under it parents to it (1) rather than to a number 2 the
+    // character's child would have taken.
+    let nodes = vec![
+        character(DEAD),
+        plain("Held", Some(0)),
+        plain("Beside", None),
+        plain("Under", Some(2)),
+    ];
+    let b = export(&scene_of(nodes));
+    let s = Scene::parse(&b).unwrap();
+    let names: Vec<_> = s.nodes.iter().map(|n| n.name.as_str()).collect();
+    assert_eq!(names, ["Beside", "Under"]);
+    let parents: Vec<_> = s.nodes.iter().map(|n| n.parent).collect();
+    assert_eq!(parents, [None, Some(1)]);
+    assert_eq!(s.characters.unwrap().placements.len(), 1);
 }
 
 #[test]
