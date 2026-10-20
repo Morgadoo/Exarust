@@ -228,6 +228,38 @@ pub fn scale_items(positions: &[[i32; 2]], divisor: i32, unit: i32) -> ItemScale
     }
 }
 
+/// The container destroy's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContainerDestroyInput {
+    pub free_flag: bool,
+    pub detached: bool,
+    pub count: i32,
+}
+
+/// The container destroy's calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContainerDestroy {
+    pub release_calls: u32,
+    pub entry_calls: i32,
+    pub entry_routine: u32,
+    pub array_calls: u32,
+    pub base_calls: u32,
+    pub final_calls: u32,
+}
+
+/// Releases the container's entries and array.
+pub fn destroy_container(input: ContainerDestroyInput) -> ContainerDestroy {
+    let free = u32::from(input.free_flag);
+    ContainerDestroy {
+        release_calls: free,
+        entry_calls: input.count.max(0),
+        entry_routine: if input.detached { 0x10_7a90 } else { 0x10_79e0 },
+        array_calls: 1,
+        base_calls: 1,
+        final_calls: free,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,5 +380,32 @@ mod tests {
         let scaled = scale_items(&[[100, 200], [50, 25]], 4, 10);
         assert_eq!(scaled.positions, vec![[250, 500], [125, 62]]);
         assert_eq!(scaled.base_calls, 1);
+    }
+
+    #[test]
+    fn the_container_destroys_its_entries() {
+        let freeing = destroy_container(ContainerDestroyInput {
+            free_flag: true,
+            detached: true,
+            count: 3,
+        });
+        assert_eq!(freeing.release_calls, 1);
+        assert_eq!(freeing.entry_calls, 3);
+        assert_eq!(freeing.entry_routine, 0x10_7a90);
+        assert_eq!(freeing.array_calls, 1);
+        assert_eq!(freeing.base_calls, 1);
+        assert_eq!(freeing.final_calls, 1);
+
+        let quiet = destroy_container(ContainerDestroyInput {
+            free_flag: false,
+            detached: false,
+            count: 0,
+        });
+        assert_eq!(quiet.release_calls, 0);
+        assert_eq!(quiet.entry_calls, 0);
+        assert_eq!(quiet.entry_routine, 0x10_79e0);
+        assert_eq!(quiet.array_calls, 1);
+        assert_eq!(quiet.base_calls, 1);
+        assert_eq!(quiet.final_calls, 0);
     }
 }
