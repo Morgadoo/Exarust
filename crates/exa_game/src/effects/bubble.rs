@@ -46,6 +46,15 @@ pub const SPAWN_VOLUME: f32 = 0.3;
 pub const CLOSE_VOLUME: f32 = 0.3;
 pub const SPAWN_PITCH: f32 = 1.0;
 
+/// The mesh level of detail: 500 over the squared camera distance, at
+/// least one.
+pub const LOD_BASE: f32 = 500.0;
+
+/// The mesh level of detail the play renderer stores.
+pub fn level_of_detail(distance: f32) -> f32 {
+    LOD_BASE / (distance * distance).max(1.0)
+}
+
 /// The bubble registers a GI emissive light (`TBubbleEmissive`). Its own
 /// parameters live in that class's template, which is outside this pack.
 pub const HAS_GI_LIGHT: bool = true;
@@ -126,7 +135,7 @@ impl Bubble {
         };
         match self.state {
             BubbleState::Grow => {
-                self.fade = elapsed(now_ms, self.stamp) / GROW_MS as f32;
+                self.fade = (f64::from(elapsed(now_ms, self.stamp)) / f64::from(GROW_MS)) as f32;
                 if self.fade > 1.0 {
                     self.fade = 1.0;
                     self.stamp = now_ms;
@@ -155,7 +164,7 @@ impl Bubble {
                 self.charge = if self.stamp.wrapping_add(HOLD_MS) < now_ms {
                     1.0
                 } else {
-                    elapsed(now_ms, self.stamp) * CHARGE_PER_MS
+                    (f64::from(elapsed(now_ms, self.stamp)) * f64::from(CHARGE_PER_MS)) as f32
                 };
                 if self.stamp.wrapping_add(POST_MS) < now_ms {
                     self.state = BubbleState::Post;
@@ -167,7 +176,7 @@ impl Bubble {
                 self.charge = if self.stamp.wrapping_add(HOLD_MS) < now_ms {
                     1.0
                 } else {
-                    elapsed(now_ms, self.stamp) * CHARGE_PER_MS
+                    (f64::from(elapsed(now_ms, self.stamp)) * f64::from(CHARGE_PER_MS)) as f32
                 };
                 if self.stamp.wrapping_add(HOLD_MS) < now_ms {
                     self.state = BubbleState::Gone;
@@ -176,7 +185,8 @@ impl Bubble {
                 }
             }
             BubbleState::Shrink => {
-                self.fade = -(elapsed(now_ms, self.stamp)) * SHRINK_PER_MS;
+                self.fade =
+                    (-f64::from(elapsed(now_ms, self.stamp)) * f64::from(SHRINK_PER_MS)) as f32;
                 step.sound_volume = Some((self.fade + 1.0) * 0.5);
                 self.sound_volume = (self.fade + 1.0) * 0.5;
                 if self.fade <= -1.0 {
@@ -390,5 +400,7 @@ mod tests {
         assert_eq!(SPAWN_PITCH, 1.0);
         assert_eq!(SIZE_CM, 120.0);
         assert_eq!(MATERIAL, "_TeleBubble01");
+        assert_eq!(level_of_detail(0.5), 500.0);
+        assert_eq!(level_of_detail(2.0), 125.0);
     }
 }

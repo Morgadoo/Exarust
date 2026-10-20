@@ -109,7 +109,8 @@ pub const LIGHT_EMITTER_FLAGS: u32 = 0x9000;
 pub const LIGHT_EXTRA_ONE: bool = true;
 pub const LIGHT_EXTRA_TWO: u32 = 1;
 
-/// The mesh level of detail: 200 over the camera distance, at least one.
+/// The mesh level of detail: 200 over the squared camera distance, at
+/// least one.
 pub const LOD_BASE: f32 = 200.0;
 
 /// The shader's two colours.
@@ -360,13 +361,15 @@ impl FlameRow {
         self.older_lag_end = self.lag_end;
         self.lag_start = lag_step(self.start, self.lag_start);
         self.lag_end = lag_step(self.end, self.lag_end);
+        // The original measures squared distances and smooths them as they are.
         let moved = (self.prev_start - self.start)
-            .length()
-            .max((self.prev_end - self.end).length());
+            .length_squared()
+            .max((self.prev_end - self.end).length_squared());
         self.speed = moved * 0.1 + self.speed * 0.9;
 
         self.walk = walk_step(self.walk, self.swing, random[0], LIGHT_FLICKER_STEP);
-        self.swing += self.walk * SWING_SCALE * random[1];
+        self.swing = (f64::from(self.walk) * f64::from(SWING_SCALE) * f64::from(random[1])
+            + f64::from(self.swing)) as f32;
         self.jitter = jitter_step(self.jitter, random[2]);
         self.light()
     }
@@ -390,7 +393,8 @@ impl FlameRow {
             self.flags |= REMOVED;
             return None;
         }
-        let mut pitch = self.pitch + (pitch_unit - 0.5) * PITCH_STEP;
+        let mut pitch =
+            ((f64::from(pitch_unit) - 0.5) * f64::from(PITCH_STEP) + f64::from(self.pitch)) as f32;
         pitch = if pitch >= PITCH_MIN {
             if pitch > PITCH_MAX { PITCH_MAX } else { pitch }
         } else {
@@ -428,20 +432,23 @@ fn lag_step(target: Vec3, lag: Vec3) -> Vec3 {
     lag + delta * TIP_SMOOTHING
 }
 
-/// The light's soft-bounded speed walk.
+/// The light's soft-bounded speed walk. Its arithmetic is in double, as
+/// the original's, then narrowed back to a float.
 pub fn walk_step(walk: f32, swing: f32, unit: f32, step: f32) -> f32 {
-    if swing > 1.0 || walk > 1.0 {
+    let (walk, unit, step) = (f64::from(walk), f64::from(unit), f64::from(step));
+    let next = if f64::from(swing) > 1.0 || walk > 1.0 {
         walk - step * unit
-    } else if swing < -1.0 || walk < -1.0 {
+    } else if f64::from(swing) < -1.0 || walk < -1.0 {
         walk + step * unit
     } else {
-        walk + (step + 1.0) * (unit - 0.5)
-    }
+        (step + 1.0) * (unit - 0.5) + walk
+    };
+    next as f32
 }
 
 /// The softness jitter's walk, clamped to 0.87–1.15.
 pub fn jitter_step(jitter: f32, unit: f32) -> f32 {
-    let jitter = jitter + (unit - 0.5) * JITTER_STEP;
+    let jitter = ((f64::from(unit) - 0.5) * f64::from(JITTER_STEP) + f64::from(jitter)) as f32;
     if jitter >= JITTER_MIN {
         if jitter > JITTER_MAX {
             JITTER_MAX
@@ -540,7 +547,7 @@ pub fn sizzle_pitch(unit: f32) -> f32 {
 
 /// The mesh level of detail the play renderer stores for the row.
 pub fn level_of_detail(distance: f32) -> f32 {
-    LOD_BASE / distance.max(1.0)
+    LOD_BASE / (distance * distance).max(1.0)
 }
 
 /// The sizzle of a hit: volume 0.3 and a pitch from 0.8 to 1.0.
@@ -645,6 +652,17 @@ mod tests {
         assert_eq!(jitter_step(1.0, 0.0), 0.9375);
         assert_eq!(jitter_step(1.14, 1.0), JITTER_MAX);
         assert_eq!(jitter_step(1.0, 1.0), 1.0625);
+    }
+
+    #[test]
+    fn the_speed_is_the_smoothed_squared_move_of_the_ends() {
+        let mut row = FlameRow::lit(7);
+        row.start_local = Vec3::new(3.0, 4.0, 0.0);
+        row.end_local = Vec3::ZERO;
+        row.tick(Some(&Frame::IDENTITY), [0.5, 0.5, 0.5]);
+        assert_eq!(row.speed, 2.5);
+        row.tick(Some(&Frame::IDENTITY), [0.5, 0.5, 0.5]);
+        assert_eq!(row.speed, 2.25);
     }
 
     #[test]
@@ -823,7 +841,8 @@ mod tests {
         assert_eq!(BODY_LIT_FLAG, 0x800);
         assert_eq!(light_body(0), 0x800);
         assert_eq!(level_of_detail(0.5), 200.0);
-        assert_eq!(level_of_detail(4.0), 50.0);
+        assert_eq!(level_of_detail(1.0), 200.0);
+        assert_eq!(level_of_detail(4.0), 12.5);
         let sizzle = sizzle(0.5);
         assert_eq!(sizzle.volume, 0.3);
         assert!((sizzle.pitch - 0.9).abs() < 1e-6);

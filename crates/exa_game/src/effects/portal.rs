@@ -272,20 +272,25 @@ pub fn replaces_marker(flags: u32) -> bool {
 }
 
 /// The box after a seeding pass: the midpoint of the min and max particles
-/// and a radius from the farthest one plus 5 cm. No particles gives none.
-pub fn burst_bounds(points: &[Vec3]) -> Option<(Vec3, f32)> {
+/// and half extents five centimetres past them. No particles gives none.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BurstBounds {
+    pub centre: Vec3,
+    pub half: Vec3,
+}
+
+/// The box over the seeded particles.
+pub fn burst_bounds(points: &[Vec3]) -> Option<BurstBounds> {
     let first = *points.first()?;
     let (mut min, mut max) = (first, first);
     for &p in points {
         min = min.min(p);
         max = max.max(p);
     }
-    let centre = (min + max) * 0.5;
-    let radius = points
-        .iter()
-        .map(|p| (*p - centre).length())
-        .fold(0.0, f32::max);
-    Some((centre, radius + BOUNDS_MARGIN_CM))
+    Some(BurstBounds {
+        centre: (min + max) * 0.5,
+        half: (max - min) * 0.5 + Vec3::splat(BOUNDS_MARGIN_CM),
+    })
 }
 
 /// The light record a portal marker adds, in the engine's metres.
@@ -345,9 +350,8 @@ mod tests {
             Vec3::new(0.0, 4.0, 0.0),
         ])
         .unwrap();
-        assert_eq!(boxed.0, Vec3::new(0.0, 2.0, 0.0));
-        // The farthest point is (−6, 0, 0), √40 cm away, plus the margin.
-        assert!((boxed.1 - 11.324_555).abs() < 1e-4, "{}", boxed.1);
+        assert_eq!(boxed.centre, Vec3::new(0.0, 2.0, 0.0));
+        assert_eq!(boxed.half, Vec3::new(11.0, 7.0, 5.0));
     }
 
     #[test]

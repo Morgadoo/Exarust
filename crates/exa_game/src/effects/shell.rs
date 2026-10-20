@@ -29,7 +29,8 @@ pub const OPACITY: f32 = 1.0;
 pub const TEX_OFFSET_PERIOD_MS: u32 = 40_000;
 pub const TEX_OFFSET_STEP: f32 = 0.000_025;
 
-/// The distance the play renderer divides the mesh level of detail by.
+/// The mesh level of detail: 900 over the squared camera distance, at
+/// least one.
 pub const LOD_BASE: f32 = 900.0;
 
 /// The shell's state word.
@@ -137,7 +138,7 @@ impl Shell {
         };
         match self.state {
             ShellState::Opening => {
-                self.shown = elapsed(now_ms, self.stamp) / OPEN_MS as f32;
+                self.shown = (f64::from(elapsed(now_ms, self.stamp)) / f64::from(OPEN_MS)) as f32;
                 if self.shown > 1.0 {
                     self.shown = 1.0;
                     self.state = ShellState::Resting;
@@ -149,7 +150,8 @@ impl Shell {
                 self.stamp = now_ms.wrapping_sub(back as u32);
             }
             ShellState::Fading => {
-                self.shown = 1.0 - elapsed(now_ms, self.stamp) / CLOSE_MS as f32;
+                self.shown =
+                    (1.0 - f64::from(elapsed(now_ms, self.stamp)) / f64::from(CLOSE_MS)) as f32;
                 if self.shown <= 0.0 {
                     self.shown = 0.0;
                     self.state = ShellState::Ending;
@@ -182,8 +184,7 @@ impl Shell {
 
     /// The mesh level of detail: 900 over the camera distance, at least one.
     pub fn level_of_detail(distance: f32) -> f32 {
-        let distance = distance.max(1.0);
-        LOD_BASE / distance
+        LOD_BASE / (distance * distance).max(1.0)
     }
 
     /// The shell's uniforms, in the original's order.
@@ -305,7 +306,7 @@ mod tests {
         assert_eq!(Shell::tex_offset(40_001), 0.000_025);
         assert_eq!(Shell::level_of_detail(0.5), 900.0);
         assert_eq!(Shell::level_of_detail(1.0), 900.0);
-        assert_eq!(Shell::level_of_detail(4.5), 200.0);
+        assert_eq!(Shell::level_of_detail(3.0), 100.0);
     }
 
     #[test]
