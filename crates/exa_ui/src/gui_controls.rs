@@ -309,7 +309,7 @@ pub fn track_to(c: &mut Control, x: i32, i: usize, events: &mut Vec<ControlEvent
 pub fn track_key(
     c: &mut Control,
     word: u32,
-    axes: (i32, i32),
+    axes: (f32, f32),
     i: usize,
     events: &mut Vec<ControlEvent>,
 ) {
@@ -319,10 +319,12 @@ pub fn track_key(
         _ => {
             let mut f = c.value;
             if c.steps < 1 {
+                // The axis is read as a float and the sum is taken in
+                // double precision, as the original's.
                 if word & 0x10 != 0 {
-                    f += axes.0 as f32 * 0.01;
+                    f = (f64::from(axes.0) * 0.01 + f64::from(f)) as f32;
                 } else if word & 0x20 != 0 {
-                    f += axes.1 as f32 * 0.01;
+                    f = (f64::from(axes.1) * 0.01 + f64::from(f)) as f32;
                 }
             } else {
                 let d = 1.0 / c.steps as f32;
@@ -388,7 +390,7 @@ pub fn init_trackbar(c: &mut Control, unit: i32) {
 }
 
 /// A message's words and where the pointer is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Message {
     pub message: u32,
     /// The first word: the pointer's x for a hover or press, the release's
@@ -399,8 +401,9 @@ pub struct Message {
     pub extra: u32,
     /// The pointer is on the control.
     pub over: bool,
-    /// The stick's axes, for a trackbar's keys.
-    pub axes: (i32, i32),
+    /// The x components of the two stick vectors (floats), for a
+    /// trackbar's keys.
+    pub axes: (f32, f32),
 }
 
 /// A message to control `i` of a form's `controls`. Returns the
@@ -733,19 +736,19 @@ mod tests {
         c.reports = true;
         set_steps(&mut c, 4, 2, 5);
         let mut ev = Vec::new();
-        track_key(&mut c, 0x2001, (0, 0), 0, &mut ev);
+        track_key(&mut c, 0x2001, (0.0, 0.0), 0, &mut ev);
         assert_eq!(c.value, 0.75);
-        track_key(&mut c, 0x1002, (0, 0), 0, &mut ev);
+        track_key(&mut c, 0x1002, (0.0, 0.0), 0, &mut ev);
         assert_eq!(c.value, 0.5);
-        track_key(&mut c, 0x1001, (0, 0), 0, &mut ev);
-        track_key(&mut c, 0x1001, (0, 0), 0, &mut ev);
-        track_key(&mut c, 0x1001, (0, 0), 0, &mut ev);
+        track_key(&mut c, 0x1001, (0.0, 0.0), 0, &mut ev);
+        track_key(&mut c, 0x1001, (0.0, 0.0), 0, &mut ev);
+        track_key(&mut c, 0x1001, (0.0, 0.0), 0, &mut ev);
         assert_eq!(c.value, 0.0);
         assert_eq!(ev.len(), 4);
         let mut s = Control::new(4, 0, 0, 100, 16);
-        track_key(&mut s, 0x10, (30, -50), 0, &mut ev);
+        track_key(&mut s, 0x10, (30.0, -50.0), 0, &mut ev);
         assert!((s.value - 0.3).abs() < 1e-6);
-        track_key(&mut s, ACTIVATE, (0, 0), 0, &mut ev);
+        track_key(&mut s, ACTIVATE, (0.0, 0.0), 0, &mut ev);
         assert_ne!(s.state & state::HELD, 0);
     }
 
@@ -766,7 +769,7 @@ mod tests {
                     param: 0,
                     extra: 1,
                     over: true,
-                    axes: (0, 0)
+                    axes: (0.0, 0.0)
                 },
                 5,
                 &mut ev
@@ -782,7 +785,7 @@ mod tests {
                     param: RELEASE_LANDS,
                     extra: 1,
                     over: true,
-                    axes: (0, 0)
+                    axes: (0.0, 0.0)
                 },
                 5,
                 &mut ev
@@ -801,7 +804,7 @@ mod tests {
                     param: 0,
                     extra: 2,
                     over: true,
-                    axes: (0, 0)
+                    axes: (0.0, 0.0)
                 },
                 5,
                 &mut ev
@@ -817,7 +820,7 @@ mod tests {
                     param: 0,
                     extra: 0,
                     over: false,
-                    axes: (0, 0)
+                    axes: (0.0, 0.0)
                 },
                 5,
                 &mut ev
@@ -835,7 +838,7 @@ mod tests {
                     param: 0,
                     extra: 0,
                     over: false,
-                    axes: (0, 0)
+                    axes: (0.0, 0.0)
                 },
                 5,
                 &mut ev
@@ -851,7 +854,7 @@ mod tests {
                     param: LABEL_CLICK,
                     extra: 1,
                     over: true,
-                    axes: (0, 0)
+                    axes: (0.0, 0.0)
                 },
                 5,
                 &mut ev
@@ -871,7 +874,7 @@ mod tests {
                     param: 50,
                     extra: 1,
                     over: true,
-                    axes: (0, 0)
+                    axes: (0.0, 0.0)
                 },
                 5,
                 &mut ev
@@ -904,7 +907,7 @@ mod tests {
                     param: LABEL_CLICK,
                     extra: 1,
                     over: true,
-                    axes: (0, 0)
+                    axes: (0.0, 0.0)
                 },
                 5,
                 &mut ev
@@ -922,7 +925,7 @@ mod tests {
                     param: 3,
                     extra: 0,
                     over: false,
-                    axes: (0, 0)
+                    axes: (0.0, 0.0)
                 },
                 5,
                 &mut ev
@@ -940,7 +943,7 @@ mod tests {
                 param: RELEASE_LANDS,
                 extra: 2,
                 over: true,
-                axes: (0, 0),
+                axes: (0.0, 0.0),
             },
             5,
             &mut ev,

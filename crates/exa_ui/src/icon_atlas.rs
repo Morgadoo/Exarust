@@ -263,8 +263,13 @@ impl IconAtlas {
         handle
     }
 
-    /// The handle of the cell holding `id`, or -1.
+    /// The handle of the cell holding `id`, or -1. The original compares
+    /// the stored id unsigned against the sign-extended one, so a negative
+    /// id (a free cell's -1 among them) is never found.
     pub fn find(&self, id: i32) -> i32 {
+        if id < 0 {
+            return -1;
+        }
         let used = (self.columns * self.rows) as usize;
         self.ids
             .iter()
@@ -624,6 +629,8 @@ mod tests {
         let mut h = a.add(&icon(16, 2), 2);
         a.release(&mut h);
         assert_eq!(h, 0);
+        // The freed cell holds -1, which a search never finds.
+        assert_eq!(a.find(-1), -1);
         assert_eq!(a.add(&icon(16, 3), 3), 2);
         assert_eq!(a.replace(&icon(16, 5), 1), 1);
         assert_eq!(a.image.pixels[0], 5);

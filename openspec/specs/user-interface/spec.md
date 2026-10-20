@@ -2114,7 +2114,7 @@ The large icon atlas SHALL take the common glyph sheet's nineteen 64-pixel squar
 - **THEN** the seventeenth is the square at (0, 256)
 
 ### Requirement: Message box layout
-A message box SHALL be the text's width plus 64 wide (at least 320) plus twice the skin's frame, 104 tall, centred down the screen (or a quarter down) with its top snapped to 4 units; its label SHALL be at 12, 4 and 24 narrower; its Ok and Cancel buttons SHALL be 80 wide, 96 apart, centred, at grid row 13.
+A message box SHALL be the text's width plus 64 wide (at least 320) plus twice the skin's frame, 104 tall, centred down the screen (or a quarter down) with its top turned into design pixels (divided by the unit, truncated, times 4); its label SHALL be at 12, 4 and 24 narrower; its Ok and Cancel buttons SHALL be 80 wide, 96 apart, centred, at grid row 13.
 
 #### Scenario: Ok and Cancel
 - **WHEN** a 100-pixel text gets both buttons on a 768-pixel screen at unit 4 with a 16-pixel frame

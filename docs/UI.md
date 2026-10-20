@@ -398,7 +398,8 @@ is taller than eight). The common glyph sheet `GlphCommon` gives the
 large atlas nineteen 64-pixel icons in a fixed order (the seventeenth,
 at 0, 256, is the item views' marker). A message box is its text's width
 plus 64 (at least 320) plus the skin's frame twice, 104 tall, centred
-down the screen (or a quarter down) with its top on the 4-unit grid; its
+down the screen (or a quarter down), its top turned into design pixels
+(over the unit, truncated, times 4); its
 label sits at 12, 4, its Ok and Cancel buttons are 80 wide, 96 apart,
 centred at grid row 13.
 
@@ -532,5 +533,6 @@ trackbar's knob is 4 units and 2 pixels with a 2-pixel margin (a marker
 bar's is 5); its value is the pointer's offset past the margin and half
 the knob over the travel, quantised to its steps (a stepped bar's knob is
 its inner width over one more than the steps, at least 4 units); keys and
-the stick step it, a continuous bar moving by the stick's axes in
-percent. A picture is its texture's size over 12, in units, centred.
+the stick step it, a continuous bar moving by a hundredth of a stick
+axis (a float; the sum is taken in double precision). A picture is its
+texture's size over 12, in units, centred.

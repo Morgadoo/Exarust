@@ -267,7 +267,8 @@ pub const SHEET_ICON: u16 = 64;
 pub struct MessageBoxLayout {
     /// The form's width and height.
     pub size: (i32, i32),
-    /// Its top, snapped to 4 units.
+    /// Its top in design pixels: the screen top over the unit (truncated),
+    /// times 4, the design unit.
     pub y: i32,
     /// The label's place (x, y, w): 12, 4 and the width less 24.
     pub label: (i32, i32, i32),
@@ -287,7 +288,8 @@ pub mod message_box {
 /// the width is the text plus 64, at least 320; the buttons, 80 wide and
 /// 96 apart, are centred under it at grid row 13; the form is the width
 /// plus twice the skin's `chrome` and 104 tall, centred (or a quarter
-/// down) in a screen `screen_height` tall, its top snapped to 4 units.
+/// down) in a screen `screen_height` tall, its top turned into design
+/// pixels (over the unit, times 4).
 pub fn message_box_layout(
     text_width: i32,
     flags: u32,
