@@ -137,6 +137,7 @@ fn whole_version_7_record() {
     assert_eq!(r.race, 11);
     assert_eq!((r.voice.as_str(), r.voice_pitch), ("vi03", 1.05));
     assert_eq!(r.hands, [0x17, 0, 0x22, 0]);
+    assert_eq!(r.hand_flags, [0x100, 0, 0, 0]);
     assert_eq!(r.worn, [0x8000_0010, 0x8000_00CE]);
     assert_eq!(r.feral, 0.84);
     assert_eq!(

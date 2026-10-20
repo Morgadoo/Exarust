@@ -185,6 +185,9 @@ pub struct CharacterRecord {
     pub voice_pitch: f32,
     /// Items held in the hands (two loadouts), 0 = none.
     pub hands: [u32; 4],
+    /// The flags word stored after each hand's item: `0x0100_0000` the
+    /// weapon is held flipped, `0x0200_0000` the held light burns.
+    pub hand_flags: [u32; 4],
     /// Worn apparel items.
     pub worn: Vec<u32>,
     /// How far gone an undead character is, 0…1 (0 for the living and for
@@ -230,6 +233,7 @@ impl Default for CharacterRecord {
             voice: String::new(),
             voice_pitch: 1.0,
             hands: [0; 4],
+            hand_flags: [0; 4],
             worn: Vec::new(),
             feral: 0.0,
             pools: Pools::FULL,
@@ -623,9 +627,9 @@ impl CharacterRecord {
         rec.female = profession & 1 != 0;
         rec.race = (profession >> 8) as u8;
         r.i32()?; // last locale
-        for h in &mut rec.hands {
+        for (h, f) in rec.hands.iter_mut().zip(rec.hand_flags.iter_mut()) {
             *h = r.u32()?;
-            r.u32()?;
+            *f = r.u32()?;
         }
         let worn = r.count("worn items")?;
         rec.worn = r.entries::<8>(worn)?.iter().map(|e| word(e)).collect();

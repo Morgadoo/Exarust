@@ -1403,6 +1403,8 @@ fn spawn_placed_characters(
                     .collect(),
             ),
             exa_combat::Fighter::of_stats(race, stats).with_perks(c.record.perks()),
+            // What it holds, wears and carries, as its record keeps it.
+            exa_items::possession::Possessions::of_record(&c.record),
             race.map_or_else(
                 exa_character::RaceWeaponry::default,
                 exa_character::RaceWeaponry::of_race,

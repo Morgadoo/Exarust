@@ -561,8 +561,63 @@ held items change (by the character's), both giving the same grip
 - **Not yet in Exarust.** The links (held items are scene children of the
   hand until they become bodies), the grip modes that switch them by the
   motion (the two-hander's second hand, the polearm's sliding grip), the
-  flip (no weapon starts flipped; the character records' held-item words
-  carry a flip bit, not read yet) and second weapons.
+  flip (no weapon starts flipped; the character records' held-item flag
+  words, now read into `CharacterRecord::hand_flags`, carry the flip bit
+  `0x0100_0000`, which nothing applies to the grip yet) and second
+  weapons.
+
+## Weapon sets and what a character carries
+
+`exa_items::possession` keeps a character's possessions as its record
+does (`Possessions`, on every placed character from its record and, empty,
+on the player): two weapon sets of a main and an off hand, each hand an
+item id and a flags word (`0x0100_0000` flipped, `0x0200_0000` the light
+burns), the worn items, and the carried list, in which an item in a hand
+stays listed with its held bit `0x100` set. Established by REA on the
+character body's possession routines; addresses are in the research notes.
+
+- **Swapping sets** (R, Switch Equipped). Refused while the body is busy or
+  a drag is in progress; with the pack open the sets swap at once,
+  otherwise the body enters its swap state and its animation swaps them.
+  The swap toggles the record's second-set flag `0x0100_0000`, then for
+  each hand of the set going away unmarks as many held entries of its item
+  as hands it fills (a two-handed item, the same id in both hands, counts
+  twice and is handled once from the main hand), less the hands of the
+  incoming set that hold it too; the incoming set's items are marked held
+  the same way. The hands then take what changed: a weapon as a weapon
+  (in the off hand a weapon that is a light as a light), a shield as a
+  shield, any other item with a held-light section as a light, anything
+  else as a weapon; only a weapon takes the stored lit and flipped bits.
+  Exarust carries the request out at once (no swap animation, no pack
+  window, no drag) and leaves the plan on the body (`PendingHands`);
+  nothing re-attaches held models at run time yet.
+- **Taking an item into the hands.** A one-handed item goes to the main
+  hand when it is free. With the main hand full: a light beside one
+  weapon or the fists (weapon class `0x10` or `0x80`) goes to the off hand
+  as a light, freeing it first; a light already in the main hand moves to
+  the off hand when that is free, else it is taken out; a second weapon
+  goes to the off hand only when asked for and never beside a two-hander
+  (class bit `0x20`), which is taken out instead; otherwise the main
+  hand's item is taken out. A two-handed or polearm item (grip `0x20` or
+  `0x30`) frees the off hand, then the main hand. The value of what would
+  be displaced follows the same branches, by desirability.
+- **Taking an item out.** The record's entry for that hand (else the other
+  hand's) gives its flags and is cleared; a dropped first weapon hands the
+  main hand to an off-hand weapon or light. The item goes back to the pack:
+  when no pack is open it is listed at (40, 4) sixteenths of a unit; when
+  it was already listed as held, the mark is cleared instead.
+- **A held item coming loose** clears each out hand that is not a shield
+  and its first held entry; a stowed hand whose item is no longer listed
+  is cleared (a two-handed stowed item keeps its main hand while one is
+  still listed).
+- **Giving** appends `{id, flags, 0, 0}` to the list when no pack is open.
+  **Having an item** searches the list and every container in it, at any
+  depth, through the containers' children (`exa_items::catalogue`).
+- **Golem cores.** A race flagged `0x2000` takes only the AL power
+  crystal, one flagged `0x1000` only crystal A, and only while it wears
+  none of the five crystals.
+- **The AI's planned arms.** Planning a one-handed weapon keeps a planned
+  light beside it; a two-handed one drops what was beside it.
 
 ## Camera
 
