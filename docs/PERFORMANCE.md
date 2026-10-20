@@ -155,14 +155,18 @@ From the 2026-10-20 measurements, largest gain first:
    friction passes at once, with identical results. The original's 200 m
    activation would not help here: it loads levels whole and simulates every
    character within 200 m, which in a dungeon is all of them. Play mode went
-   from 34 to 51–54 FPS; the fixed step from 18.1 to 8.5 ms a frame. Next on
-   the main thread: PostUpdate (8.5 ms: transforms, skinned bounds,
-   visibility, shadow links).
-3. Fewer render-world entities: room meshes that never move need not be
+   from 34 to 51–54 FPS; the fixed step from 18.1 to 8.5 ms a frame.
+3. Done (`relink-lights-by-cell`): a moved light (the carried torch, every
+   frame) is relinked only against the casters filed in the cells it
+   reaches, not all ~31 000. Play mode: 68 FPS; PostUpdate 8.5 → 6.5 ms.
+   Left on the main thread: 8 578 skinned meshes (about 220 per character)
+   move every frame and mark their faces one by one; the original merges a
+   character's skinned meshes into one.
+4. Fewer render-world entities: room meshes that never move need not be
    re-extracted or re-checked each frame (31 648 meshes, 418 visible).
-4. Depth prepass, then Bevy's GPU occlusion culling.
-5. Room and portal culling from the grid's rooms and doors.
-6. Shader specialisation of the surface materials.
+5. Depth prepass, then Bevy's GPU occlusion culling.
+6. Room and portal culling from the grid's rooms and doors.
+7. Shader specialisation of the surface materials.
 
 Each step is checked against the original at the log room camera. The
 picture must not change, and the frame rate is measured with `--no-vsync`

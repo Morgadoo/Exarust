@@ -740,9 +740,12 @@ menu.
     distance from the light to the mesh's sphere;
   - the mesh is not in the light's own object.
 
-  Links are kept current incrementally: a moved light is relinked against
-  every mesh, a moved mesh against every light (a character's skinned mesh
-  once it has moved 10 cm). Each light keeps its linked meshes as its cube's
+  Links are kept current incrementally: a moved mesh is relinked against
+  every light (a character's skinned mesh once it has moved 10 cm), and a
+  moved light against the meshes that can reach it, as the original
+  relinks a light against the nodes of the sectors it reaches: the meshes
+  filed in the 6 m cells within its radius plus a cell (by their sphere's
+  centre), the meshes wider than a cell, and those already linked to it. Each light keeps its linked meshes as its cube's
   casters, each with the cube faces its bounding sphere touches, as the
   original keeps a face mask per link. Each light also has a render layer of
   its own (from 2 up; layer 1 is the supersampling resolve quad) as the key

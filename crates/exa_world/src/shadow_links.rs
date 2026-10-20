@@ -37,21 +37,23 @@ pub struct ShadowLinksPlugin;
 
 impl Plugin for ShadowLinksPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<LinkedLights>().add_systems(
-            PostUpdate,
-            (
-                track_lights,
-                link_casters,
-                dirty_moved_casters,
-                see_light_layers,
-            )
-                .chain()
-                .after(TransformSystems::Propagate)
-                .after(VisibilitySystems::CalculateBounds)
-                .after(LightsSystems::Ids)
-                .before(LightsSystems::Cubes)
-                .before(VisibilitySystems::CheckVisibility),
-        );
+        app.init_resource::<LinkedLights>()
+            .init_resource::<CasterCells>()
+            .add_systems(
+                PostUpdate,
+                (
+                    track_lights,
+                    link_casters,
+                    dirty_moved_casters,
+                    see_light_layers,
+                )
+                    .chain()
+                    .after(TransformSystems::Propagate)
+                    .after(VisibilitySystems::CalculateBounds)
+                    .after(LightsSystems::Ids)
+                    .before(LightsSystems::Cubes)
+                    .before(VisibilitySystems::CheckVisibility),
+            );
     }
 }
 
@@ -316,6 +318,75 @@ type CasterQuery<'w, 's> = Query<
     (With<Mesh3d>, Without<NotShadowCaster>, Without<PointLight>),
 >;
 
+/// The casters by the 6 m cell of their sphere's centre, as the original
+/// keeps its nodes in sectors: a moved light is relinked only against the
+/// casters near enough to reach (and those linked to it). A caster whose
+/// sphere is wider than a cell is kept apart and always tried.
+#[derive(Resource, Default)]
+struct CasterCells {
+    cell_of: bevy::ecs::entity::EntityHashMap<Option<(i32, i32)>>,
+    cells: HashMap<(i32, i32), Vec<Entity>>,
+    big: Vec<Entity>,
+}
+
+/// The side of a caster cell (m).
+const CASTER_CELL: f32 = 6.0;
+
+impl CasterCells {
+    fn cell(c: Vec3, r: f32) -> Option<(i32, i32)> {
+        (r <= CASTER_CELL).then(|| {
+            (
+                (c.x / CASTER_CELL).floor() as i32,
+                (c.z / CASTER_CELL).floor() as i32,
+            )
+        })
+    }
+
+    /// Files `entity` under the cell of its sphere (`c`, `r`), moving it
+    /// when its cell changed.
+    fn place(&mut self, entity: Entity, c: Vec3, r: f32) {
+        let cell = Self::cell(c, r);
+        if let Some(&old) = self.cell_of.get(&entity) {
+            if old == cell {
+                return;
+            }
+            let list = match old {
+                Some(k) => self.cells.get_mut(&k),
+                None => Some(&mut self.big),
+            };
+            if let Some(list) = list
+                && let Some(i) = list.iter().position(|&e| e == entity)
+            {
+                list.swap_remove(i);
+            }
+        }
+        self.cell_of.insert(entity, cell);
+        match cell {
+            Some(k) => self.cells.entry(k).or_default().push(entity),
+            None => self.big.push(entity),
+        }
+    }
+
+    /// The casters a light at `position` reaching `radius` may link to:
+    /// those filed in the cells its reach (plus a cell, for the casters'
+    /// own radii) touches, and the wide ones.
+    fn near(&self, position: Vec3, radius: f32, out: &mut Vec<Entity>) {
+        let reach = radius + CASTER_CELL;
+        let lo = ((position.x - reach) / CASTER_CELL).floor() as i32;
+        let hi = ((position.x + reach) / CASTER_CELL).floor() as i32;
+        let lo_z = ((position.z - reach) / CASTER_CELL).floor() as i32;
+        let hi_z = ((position.z + reach) / CASTER_CELL).floor() as i32;
+        for x in lo..=hi {
+            for z in lo_z..=hi_z {
+                if let Some(list) = self.cells.get(&(x, z)) {
+                    out.extend_from_slice(list);
+                }
+            }
+        }
+        out.extend_from_slice(&self.big);
+    }
+}
+
 /// Where a skinned mesh's links were last worked out (world metres).
 #[derive(Component, Clone, Copy, Debug)]
 pub struct LinkedAt(Vec3);
@@ -351,6 +422,7 @@ fn link_casters(
     moved_casters: Query<Entity, CasterMoved>,
     walls: Option<Res<LevelWalls>>,
     mut cubes: Query<(&mut CubeCasters, &mut CubeShadow)>,
+    mut cells: ResMut<CasterCells>,
     shadows: Res<PointShadows>,
     meshes: Res<Assets<Mesh>>,
     mut mesh_bounds: Local<HashMap<AssetId<Mesh>, Option<Aabb>>>,
@@ -363,6 +435,17 @@ fn link_casters(
     }
     let mut relinked: Vec<Relinked> = Vec::new();
     let lights = &table.lights;
+    // Only the casters a moved light can reach, or linked to it, can gain or
+    // lose its link (casters that moved this frame are relinked in full).
+    let mut near = Vec::new();
+    for &i in &moved {
+        let l = &lights[i];
+        cells.near(l.position, l.reach.radius, &mut near);
+        if let Ok((list, _)) = cubes.get(l.entity) {
+            near.extend(list.0.keys());
+        }
+    }
+    let near: EntityHashSet = near.into_iter().collect();
     // Skinned meshes have no box from Bevy; their mesh's own box, carried by
     // the bone they follow, stands in.
     let mut box_of = |aabb: Option<&Aabb>, mesh: &Mesh3d| -> Option<Aabb> {
@@ -382,6 +465,7 @@ fn link_casters(
                       skinned: bool,
                       only: Option<&[usize]>| {
         let (c, r) = sphere(aabb, transform);
+        cells.place(entity, c, r);
         if skinned
             && only.is_none()
             && current.is_some()
@@ -449,10 +533,15 @@ fn link_casters(
         }
     }
     if all_moved {
-        for (e, (aabb, mesh), t, x, (current, at), unwalled, (skin, part)) in &casters {
-            if fresh.contains(&e) {
+        for entity in &near {
+            if fresh.contains(entity) {
                 continue;
             }
+            let Ok((e, (aabb, mesh), t, x, (current, at), unwalled, (skin, part))) =
+                casters.get(*entity)
+            else {
+                continue;
+            };
             let Some(aabb) = box_of(aabb, mesh) else {
                 continue;
             };
@@ -627,6 +716,46 @@ mod tests {
         assert!(link_weight(&l, Vec3::new(7.9, 0.0, 0.0), 0.1).is_none());
         // A big mesh reaching in is linked by its near side.
         assert!(link_weight(&l, Vec3::new(9.0, 0.0, 0.0), 4.0).is_some());
+    }
+
+    /// Every caster whose sphere reaches within a light's radius is among
+    /// the light's candidates, whichever cell its centre is filed in; one
+    /// that moves is found in its new cell only.
+    #[test]
+    fn a_moved_light_finds_every_caster_it_can_reach() {
+        let mut cells = CasterCells::default();
+        let light = Vec3::new(3.0, 1.0, -2.0);
+        let radius = 6.7;
+        let mut reachable = Vec::new();
+        let mut id = 0;
+        for x in -30..=30 {
+            for z in -30..=30 {
+                id += 1;
+                let e = Entity::from_raw_u32(id).unwrap();
+                let c = Vec3::new(x as f32 * 0.7, 0.5, z as f32 * 0.7);
+                let r = 0.2 + (id % 11) as f32 * 0.5;
+                cells.place(e, c, r);
+                if c.distance(light) - r < radius {
+                    reachable.push(e);
+                }
+            }
+        }
+        let mut near = Vec::new();
+        cells.near(light, radius, &mut near);
+        for e in &reachable {
+            assert!(near.contains(e), "{e:?} missing");
+        }
+        // Far fewer than all of them are tried.
+        assert!(near.len() < id as usize);
+        // A caster moved across the level leaves its old cell.
+        let e = Entity::from_raw_u32(1).unwrap();
+        cells.place(e, Vec3::new(500.0, 0.0, 500.0), 0.3);
+        let mut again = Vec::new();
+        cells.near(light, radius, &mut again);
+        assert!(!again.contains(&e));
+        again.clear();
+        cells.near(Vec3::new(500.0, 0.0, 500.0), 1.0, &mut again);
+        assert_eq!(again.iter().filter(|&&x| x == e).count(), 1);
     }
 
     #[test]
