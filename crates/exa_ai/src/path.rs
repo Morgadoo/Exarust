@@ -2058,3 +2058,47 @@ mod layer_tests {
         assert_eq!(choose_path_layer(10, (0, 0), (0, 11)), None);
     }
 }
+
+/// The search's stamp table side.
+pub const PATH_STAMP_SIDE: usize = 256;
+/// The blocked stamp.
+pub const PATH_STAMP_BLOCKED: u32 = u32::MAX;
+
+/// Clears the 256×256 stamp table to the blocked value on its border: the
+/// first and last rows, the first and last columns, and the last column of
+/// row 254 (the original's three loops). The interior is left to the caller.
+pub fn clear_path_stamps(stamps: &mut [u32]) {
+    let side = PATH_STAMP_SIDE;
+    if stamps.len() < side * side {
+        return;
+    }
+    for stamp in stamps.iter_mut().take(side) {
+        *stamp = PATH_STAMP_BLOCKED;
+    }
+    for stamp in &mut stamps[0xfeff..=0xffff] {
+        *stamp = PATH_STAMP_BLOCKED;
+    }
+    for row in 1..=254 {
+        stamps[row * side] = PATH_STAMP_BLOCKED;
+        stamps[row * side + side - 1] = PATH_STAMP_BLOCKED;
+    }
+}
+
+#[cfg(test)]
+mod stamp_tests {
+    use super::*;
+
+    #[test]
+    fn the_stamp_border_is_blocked_and_the_interior_untouched() {
+        let mut stamps = vec![0u32; PATH_STAMP_SIDE * PATH_STAMP_SIDE];
+        clear_path_stamps(&mut stamps);
+        for index in [0, 1, 255, 256, 511, 0xfeff, 0xff00, 0xffff] {
+            assert_eq!(stamps[index], PATH_STAMP_BLOCKED, "{index:#x}");
+        }
+        assert_eq!(stamps[257], 0);
+        assert_eq!(stamps[0xfe01], 0);
+        let mut short = [0u32; 4];
+        clear_path_stamps(&mut short);
+        assert_eq!(short, [0; 4]);
+    }
+}

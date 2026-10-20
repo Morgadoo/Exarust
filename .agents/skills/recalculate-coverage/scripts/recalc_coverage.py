@@ -56,6 +56,20 @@ def load_components(root: Path) -> dict:
     return {c["n"]: float(c.get("c") or 0) for s in data["sections"] for c in s["components"]}
 
 
+def source_coverage(root: Path) -> dict:
+    """Coverage per component as the rating sources define it."""
+    mapdir = root / "context/re/component-map"
+    out = {}
+    for section in json.loads((mapdir / "ratings.json").read_text())["sections"].values():
+        for name, rating in section["ratings"].items():
+            out[name] = float(rating.get("coverage") or 0)
+    fixes_path = mapdir / "fixes.json"
+    if fixes_path.exists():
+        for rating in json.loads(fixes_path.read_text()).get("ratings", []):
+            out[rating["name"]] = float(rating.get("coverage") or 0)
+    return out
+
+
 def headline(root: Path) -> dict:
     data = json.loads((root / DATA_REL).read_text())
     return data["coverage"]
@@ -99,6 +113,11 @@ def main() -> int:
     ap.add_argument("--force", action="store_true", help="rebuild even if the preflight audit fails")
     ap.add_argument("--no-images", action="store_true", help="rebuild the page but not the PNGs")
     ap.add_argument("--message", default="", help="short note for the history row")
+    ap.add_argument(
+        "--allow-reverts",
+        action="store_true",
+        help="proceed even when the sources would lower an already-published rating",
+    )
     args = ap.parse_args()
 
     root = Path(args.root) if args.root else Path(git(Path.cwd(), "rev-parse", "--show-toplevel") or ".")
@@ -112,7 +131,11 @@ def main() -> int:
     before = load_components(root)
 
     print("== preflight audit ==")
-    pre = subprocess.run([py, str(AUDIT), "--root", str(root)], text=True, capture_output=True)
+    pre = subprocess.run(
+        [py, str(AUDIT), "--root", str(root), "--scope", "source"],
+        text=True,
+        capture_output=True,
+    )
     print(pre.stdout.rstrip() or pre.stderr.rstrip())
     if pre.returncode != 0 and not args.force:
         print(
@@ -122,13 +145,38 @@ def main() -> int:
         )
         return 1
 
+    pending = [
+        (name, before.get(name, 0.0), value)
+        for name, value in source_coverage(root).items()
+        if name in before and abs(before[name] - value) > 0.001
+    ]
+    if pending:
+        print("\n== pending rating changes ==")
+        for name, old, new in sorted(pending, key=lambda item: -(abs(item[2] - item[1]))):
+            print(f"  {name}: {old:g}% -> {new:g}%")
+        reverts = [p for p in pending if p[2] < p[1]]
+        if reverts and not args.allow_reverts:
+            print(
+                "\nrefusing to rebuild: the sources would undo a rating the generated data\n"
+                "already carries. Find the source that produced it (or accept the loss with\n"
+                "--allow-reverts), otherwise the rebuild silently deletes that work.",
+                file=sys.stderr,
+            )
+            return 1
+
     print("\n== rebuild ==")
     for script in ("context/tools/build_map_data.py", "context/tools/component_map_doc.py"):
         print(f"$ {script}")
-        run([py, script], root)
+        done = run([py, script], root, check=False)
+        if done.returncode != 0:
+            print(f"generator failed: {script}", file=sys.stderr)
+            return done.returncode
     if not args.no_images:
         print("$ context/tools/coverage_image.py")
-        run([py, "context/tools/coverage_image.py"], root)
+        done = run([py, "context/tools/coverage_image.py"], root, check=False)
+        if done.returncode != 0:
+            print("image regeneration failed", file=sys.stderr)
+            return done.returncode
 
     print("\n== postflight audit ==")
     post = subprocess.run([py, str(AUDIT), "--root", str(root)], text=True, capture_output=True)
@@ -145,6 +193,14 @@ def main() -> int:
             print(f"  {name}: {old:g}% -> {new:g}%")
     else:
         print("\nno component rating changed; the headline should be unchanged")
+
+    if post.returncode != 0:
+        print(
+            "\nnot recorded in the history: the audit still reports errors. Fix them and run\n"
+            "again; the regenerated page and images stay in the tree for inspection.",
+            file=sys.stderr,
+        )
+        return post.returncode
 
     cov = headline(root)
     commit_after = git(root, "rev-parse", "--short", "HEAD") or "unknown"

@@ -81,12 +81,20 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--root", default=None, help="repository root (default: git toplevel)")
     ap.add_argument("--json", action="store_true", help="emit a machine-readable report")
+    ap.add_argument(
+        "--scope",
+        choices=("all", "source", "artifacts"),
+        default="all",
+        help="source: only rating inputs (used before a rebuild); artifacts: "
+             "only the generated page and images (used after one); all: both",
+    )
     args = ap.parse_args()
 
     root = Path(args.root) if args.root else Path(git(Path.cwd(), "rev-parse", "--show-toplevel") or ".")
     mapdir = root / MAP_REL
     doc_path = root / DOC_REL
-    errors: list[str] = []
+    source_errors: list[str] = []
+    artifact_errors: list[str] = []
     warnings: list[str] = []
     notes: list[str] = []
 
@@ -100,22 +108,45 @@ def main() -> int:
         *[root / p for p in IMG_REL],
     ) if not p.exists()]
     if missing:
-        errors.append("missing inputs: " + ", ".join(str(p.relative_to(root)) for p in missing))
-        print("\n".join(errors))
+        names = ", ".join(str(p.relative_to(root)) for p in missing)
+        if args.json:
+            print(json.dumps({"errors": [f"missing inputs: {names}"]}, indent=2))
+        else:
+            print(f"ERROR: missing inputs: {names}")
         return 1
 
     data = load(root, MAP_REL / "map/data.json")
     ratings = merged_ratings(mapdir)
 
     # ---- 1. citations exist -----------------------------------------------------
-    missing_citations = []
+    # Source citations gate a rebuild; published citations only prove the page is
+    # stale, which a rebuild fixes.
+    def dead_paths(entries: dict) -> list[tuple[str, str]]:
+        found = []
+        for name, citations in entries.items():
+            for citation in citations or []:
+                for rel in PATH_RE.findall(citation):
+                    if not (root / rel).exists():
+                        found.append((name, rel))
+        return found
+
+    for name, rel in dead_paths({n: r.get("exarust") for n, r in ratings.items()}):
+        source_errors.append(f"{name}: cites a path that does not exist: {rel}")
+    published = {
+        f"{s['id']}/{c['n']}": c.get("x", []) for s in data["sections"] for c in s["components"]
+    }
+    for name, rel in dead_paths(published):
+        artifact_errors.append(f"{name} (published): cites a path that does not exist: {rel}")
+
+    # ---- 1b. a source rating that claims credit without evidence ----------------
     for name, rating in ratings.items():
-        for citation in rating.get("exarust", []) or []:
-            for rel in PATH_RE.findall(citation):
-                if not (root / rel).exists():
-                    missing_citations.append((name, rel))
-    for name, rel in missing_citations:
-        errors.append(f"{name}: cites a path that does not exist: {rel}")
+        cov = float(rating.get("coverage") or 0)
+        if rating.get("status") != "not-applicable" and cov > 0 and not rating.get("exarust"):
+            source_errors.append(f"{name}: rated {cov:g}% with no Exarust code listed in the source")
+        if cov == 0 and rating.get("exarust"):
+            warnings.append(
+                f"{name}: names Exarust code at 0% in the source; the page will drop those citations"
+            )
 
     # ---- 2. status agrees with the percentage ----------------------------------
     def coverage_of(component) -> float:
@@ -131,14 +162,14 @@ def main() -> int:
         for c in section["components"]:
             want = expected_status(c)
             if c["s"] != want:
-                errors.append(
+                artifact_errors.append(
                     f"{c['n']}: stored status '{c['s']}' but {coverage_of(c)}% implies "
                     f"'{want}' ({c['b']} bytes)"
                 )
             if coverage_of(c) > 0 and not c["x"]:
-                errors.append(f"{c['n']}: {coverage_of(c)}% with no Exarust code listed")
+                artifact_errors.append(f"{c['n']}: {coverage_of(c)}% with no Exarust code listed")
             if coverage_of(c) == 0 and c["x"]:
-                errors.append(f"{c['n']}: lists Exarust code at 0%")
+                artifact_errors.append(f"{c['n']}: lists Exarust code at 0%")
 
     # ---- 3. credit that the <5% rule drops --------------------------------------
     dropped = [
@@ -158,12 +189,12 @@ def main() -> int:
     head = DOC_HEADLINE.search(doc)
     eng = DOC_ENGINE.search(doc)
     if not head or abs(float(head.group(1)) - computed["reimplemented"]) > 0.05:
-        errors.append(
+        artifact_errors.append(
             f"headline drift: document says {head.group(1) if head else 'nothing'}%, "
             f"data says {computed['reimplemented']}%"
         )
     if not eng or abs(float(eng.group(1)) - computed["engine"]) > 0.05:
-        errors.append(
+        artifact_errors.append(
             f"engine drift: document says {eng.group(1) if eng else 'nothing'}%, "
             f"data says {computed['engine']}%"
         )
@@ -171,7 +202,7 @@ def main() -> int:
     for section in data["sections"]:
         title = section["title"]
         if title not in rows:
-            errors.append(f"section row missing from the document: {title}")
+            artifact_errors.append(f"section row missing from the document: {title}")
             continue
         live = [c for c in section["components"] if c["s"] != "not-applicable"]
         base = sum(c["b"] for c in live) or 1
@@ -179,10 +210,28 @@ def main() -> int:
         engine = sum(c["b"] * coverage_of(c) / 100 for c in live if c["s"] == "engine") / base * 100
         got_own, got_engine = rows[title]
         if abs(got_own - own) > 1.0 or abs(got_engine - engine) > 1.0:
-            errors.append(
+            artifact_errors.append(
                 f"section drift {title}: document {got_own:.0f}%/{got_engine:.0f}%, "
                 f"data {own:.0f}%/{engine:.0f}%"
             )
+
+    # ---- 4b. the generated data is not ahead of its sources ---------------------
+    # A generated rating that no source carries will be silently reverted by the
+    # next rebuild. This is how hand-patched data loses work, so it is an error.
+    source_cov = {
+        name: float(rating.get("coverage") or 0)
+        for name, rating in ratings.items()
+        if rating.get("status") != "not-applicable"
+    }
+    for section in data["sections"]:
+        for c in section["components"]:
+            if c["s"] in ("engine", "not-applicable") or c["n"] not in source_cov:
+                continue
+            if abs(coverage_of(c) - source_cov[c["n"]]) > 0.001:
+                artifact_errors.append(
+                    f"{c['n']}: the generated data says {coverage_of(c):g}% but the sources say "
+                    f"{source_cov[c['n']]:g}%; a rebuild would silently change it"
+                )
 
     # ---- 5. images are not older than their data --------------------------------
     newest_input = max(
@@ -193,11 +242,14 @@ def main() -> int:
     for rel in IMG_REL:
         image = root / rel
         if image.stat().st_mtime + 1 < newest_input:
-            errors.append(
+            artifact_errors.append(
                 f"{rel} is older than the data/document it draws; regenerate both themes"
             )
 
     # ---- 6. a 0% section that a crate claims to implement -----------------------
+    # A warning, not an error: it means the section table is stale and needs a
+    # rerate, but publishing a provisional figure is still allowed when the page
+    # says so. Hiding it would be worse than publishing it with the caveat.
     section_pct = {}
     for section in data["sections"]:
         live = [c for c in section["components"] if c["s"] != "not-applicable"]
@@ -208,9 +260,9 @@ def main() -> int:
     for crate in data.get("crates", []):
         for sid in crate.get("sections", []):
             if sid in section_pct and section_pct[sid] < 1.0:
-                errors.append(
+                warnings.append(
                     f"section '{sid}' is {section_pct[sid]:.1f}% but crate "
-                    f"'{crate['n']}' lists it among its main sections; rerating is stale"
+                    f"'{crate['n']}' lists it among its main sections; rerate is stale"
                 )
 
     # ---- 7. provenance ----------------------------------------------------------
@@ -230,12 +282,20 @@ def main() -> int:
     notes.append(f"audited at {head_sha}; data sha256 {sha256(mapdir / 'map/data.json')[:16]}")
 
     # ---- report -----------------------------------------------------------------
+    if args.scope == "source":
+        errors = source_errors
+    elif args.scope == "artifacts":
+        errors = artifact_errors
+    else:
+        errors = source_errors + artifact_errors
     report = {
         "headline": computed,
         "functions": data["coverage"]["functions"],
         "combat_rules": data["coverage"]["combat_rules"],
         "sections": {s["id"]: round(p, 1) for s, p in zip(data["sections"], section_pct.values())},
         "errors": errors,
+        "source_errors": source_errors,
+        "artifact_errors": artifact_errors,
         "warnings": warnings,
         "notes": notes,
     }
