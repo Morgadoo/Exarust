@@ -17,7 +17,10 @@ walk allows five and follows a floor down. A line of 40 cm or less is not
 an obstacle. A point on a cell cheaper than 80 keeps its place; else a
 best-first flood finds the cheapest cell ([Queries](#queries)). A footprint adds
 63 at its centre, 32 on the eight neighbours, and 16 on the twelve
-cells beyond. A plan lifts that footprint and stamps it again. A dirty
+cells beyond. Each fixed tick, in the behaviour stage, every character
+under its controller moves its footprint to where its feet stand: an NPC
+always, the player unless it walks (`exa_game::footprints`). A plan lifts
+that footprint and stamps it again. A dirty
 rectangle joins another when the padded union is smaller, keeps sixteen,
 grows by three cells, and raises a floor. The scene-wide countdown is not
 in yet. With no grid there is no path.

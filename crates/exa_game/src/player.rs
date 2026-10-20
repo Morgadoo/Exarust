@@ -459,7 +459,7 @@ fn cursor_ground(
 /// (Exarust's own) or its condition is helpless it is not steered: it asks
 /// for no move.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
-fn steer_player(
+pub(crate) fn steer_player(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     bindings: Res<Bindings>,

@@ -38,7 +38,7 @@ pub mod walkable;
 
 use bevy::math::{DVec3, Vec2, Vec3};
 
-pub use footprint::{remove_footprint, stamp_footprint};
+pub use footprint::{NavFootprints, remove_footprint, stamp_footprint};
 pub use mover::{
     CellRect, FootprintAdd, FootprintList, FootprintRect, Movers, plan_around, plan_footprint,
     queue_moved, queued_moves, rect_around, refresh_movers,

@@ -101,6 +101,7 @@ moveset its hands pick; a dropped request releases the swing, a released
 main-side attack returns to the stance once its stall is over, and the
 body turns at the swing's rate while it attacks; `--trace` shows each
 tick's locomotion),
+the characters' footprints on the navigation grid, kept each fixed tick where their feet stand (an NPC always, the player unless it walks; `footprints`),
 falls to death and the kill plane (`fall`: the fall check of a living
 body in the falls branch, in its posture stage, its scream and the player's pit sound, the
 death fade's start, death and removal from the world; dead bodies below

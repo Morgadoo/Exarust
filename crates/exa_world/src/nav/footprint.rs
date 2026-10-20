@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 
 use bevy::math::Vec3;
+use bevy::prelude::{Entity, Resource};
 
 use super::query::{axis, voxels};
 use super::{Layer, NavGrid};
@@ -39,6 +40,51 @@ pub fn stamp_footprint(grid: &mut NavGrid, standing: Vec3) -> bool {
 /// Take back a footprint stamped at `standing`.
 pub fn remove_footprint(grid: &mut NavGrid, standing: Vec3) -> bool {
     apply(grid, standing, false)
+}
+
+/// Where each character's footprint is stamped on the grid, so that it can
+/// be taken back before the character stamps it again where it stands
+/// now, or when it leaves.
+#[derive(Resource, Debug, Default)]
+pub struct NavFootprints {
+    stamped: HashMap<Entity, Vec3>,
+}
+
+impl NavFootprints {
+    /// Moves `who`'s footprint to `standing`: the old one taken back, the
+    /// new one stamped (none recorded off the grid's inner cells).
+    pub fn stamp(&mut self, grid: &mut NavGrid, who: Entity, standing: Vec3) {
+        self.lift(grid, who);
+        if stamp_footprint(grid, standing) {
+            self.stamped.insert(who, standing);
+        }
+    }
+
+    /// Takes `who`'s footprint off the grid, if it has one.
+    pub fn lift(&mut self, grid: &mut NavGrid, who: Entity) {
+        if let Some(at) = self.stamped.remove(&who) {
+            remove_footprint(grid, at);
+        }
+    }
+
+    /// Takes off the footprints of the characters `keep` refuses (those
+    /// that left).
+    pub fn retain(&mut self, grid: &mut NavGrid, keep: impl Fn(Entity) -> bool) {
+        let gone: Vec<Entity> = self.stamped.keys().copied().filter(|e| !keep(*e)).collect();
+        for who in gone {
+            self.lift(grid, who);
+        }
+    }
+
+    /// Forgets every footprint: a new grid has none on it.
+    pub fn forget(&mut self) {
+        self.stamped.clear();
+    }
+
+    /// Where `who`'s footprint is stamped.
+    pub fn of(&self, who: Entity) -> Option<Vec3> {
+        self.stamped.get(&who).copied()
+    }
 }
 
 fn apply(grid: &mut NavGrid, standing: Vec3, add: bool) -> bool {

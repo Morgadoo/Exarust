@@ -15,6 +15,7 @@ pub mod effects;
 pub mod emblem;
 pub mod experience;
 pub mod fall;
+pub mod footprints;
 pub mod hud;
 pub mod item_container;
 pub mod item_effects;
@@ -63,6 +64,7 @@ impl Plugin for GamePlugin {
             limp::LimpPlugin,
             balance::BalancePlugin,
             fall::FallPlugin,
+            footprints::FootprintPlugin,
             cursor::CursorPlugin,
             hud::HudPlugin,
             torch::TorchPlugin,

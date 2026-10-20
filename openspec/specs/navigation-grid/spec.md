@@ -157,6 +157,13 @@ A footprint SHALL add 63 to its centre, 32 to the eight neighbours, and 16 to th
 - **WHEN** a footprint is stamped at a floor of height 1, removed, tried in the outer five cells, and stamped again on an upper floor at height 5
 - **THEN** the centre is 63, a neighbour is 32, a cell beyond is 16, the obstacle test fires and then clears, the outer cell stays 0, and the upper floor's centre is 63 while the lower stays 0
 
+### Requirement: Footprints kept by the characters
+Each fixed tick, in the behaviour stage, every character under its controller SHALL move its footprint to where its feet stand: an NPC always, whatever its condition; the player unless its condition is the walk's, its footprint lifted while it walks. A character that leaves, or loses its controller, SHALL take its footprint off; a new level's grid SHALL start with none.
+
+#### Scenario: A moving NPC and a walking player
+- **WHEN** an NPC stands in cell 20 and the walking player in cell 23, then the NPC moves to cell 18, then leaves
+- **THEN** cell 20 reads 63 and cell 23 nothing, then cell 18 reads 63 and cell 20 the 16 of two cells along the axis, then no cell has a penalty
+
 ### Requirement: Plan around a footprint
 A plan SHALL lift the footprint at the standing point, search from there, and stamp that footprint again. That search SHALL cost less than the same search with the footprint still down, and the centre SHALL be 63 again afterwards.
 
