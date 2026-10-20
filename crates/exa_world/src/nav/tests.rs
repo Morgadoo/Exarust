@@ -615,3 +615,17 @@ fn the_pathfinder_stores_its_opening_metrics() {
     assert_eq!(metrics.counter, 0);
     assert_eq!(metrics.base_calls, 1);
 }
+
+#[test]
+fn the_footprint_extents_advance_and_clamp() {
+    let extents = path_extents(PathExtentInput {
+        slot: 15,
+        inverse_cell: 1.0,
+        axes: [10, 10],
+        local: [2.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        extents: [1.0, 1.0, 1.0],
+    });
+    assert_eq!(extents.slot, 0);
+    assert_eq!(extents.mins, [5, 5]);
+    assert_eq!(extents.maxs, [6, 6]);
+}

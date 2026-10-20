@@ -701,5 +701,45 @@ pub fn pathfinder_metrics(seed: u8) -> PathfinderMetrics {
     }
 }
 
+/// The footprint extent's inputs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PathExtentInput {
+    pub slot: i32,
+    pub inverse_cell: f32,
+    pub axes: [i32; 2],
+    pub local: [f32; 9],
+    pub extents: [f32; 3],
+}
+
+/// The footprint's ring slot and clamped bounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PathExtent {
+    pub slot: i32,
+    pub mins: [i32; 2],
+    pub maxs: [i32; 2],
+}
+
+/// Derives the rotated footprint bounds for both axes.
+pub fn path_extents(input: PathExtentInput) -> PathExtent {
+    let slot = (input.slot + 1) % 16;
+    let mut mins = [0; 2];
+    let mut maxs = [0; 2];
+    for axis in 0..2usize {
+        let column: [usize; 3] = if axis == 0 { [0, 3, 6] } else { [2, 5, 8] };
+        let radius = input.local[column[0]].abs() * input.extents[0]
+            + input.local[column[1]].abs() * input.extents[1]
+            + input.local[column[2]].abs() * input.extents[2];
+        let coordinate = input.local[column[0]];
+        let half = input.axes[axis] >> 1;
+        let low =
+            half + ((coordinate - radius) * input.inverse_cell - 0.5).round_ties_even() as i32;
+        let high =
+            half + ((coordinate + radius) * input.inverse_cell + 0.5).round_ties_even() as i32;
+        mins[axis] = low.max(3);
+        maxs[axis] = high.min(input.axes[axis] - 4);
+    }
+    PathExtent { slot, mins, maxs }
+}
+
 #[cfg(test)]
 mod tests;
