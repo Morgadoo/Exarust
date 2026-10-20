@@ -871,6 +871,87 @@ pub fn toggle_creation_mode(mode: i32, flags: i32) -> CreationModeToggle {
     }
 }
 
+/// The form a creation close schedules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreationCloseForm {
+    Special,
+    Regular,
+}
+
+/// The creation close's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationCloseInput {
+    pub active: bool,
+    pub has_208: bool,
+    pub has_220: bool,
+    pub has_218: bool,
+    pub has_238: bool,
+    pub has_210: bool,
+    pub has_228: bool,
+    pub has_1d0: bool,
+    pub mode: i32,
+}
+
+/// What the creation close did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationClose {
+    pub scheduled: Option<CreationCloseForm>,
+    pub released: [bool; 7],
+    pub call_2d: bool,
+    pub widgets_reset: bool,
+    pub ticked: bool,
+    pub strings: bool,
+    pub disabled: bool,
+    pub cleared: bool,
+}
+
+/// Closes the creation screen, scheduling a form or releasing its children.
+pub fn close_creation_screen(input: CreationCloseInput) -> CreationClose {
+    if !input.active {
+        return CreationClose {
+            scheduled: Some(if input.mode == 10 {
+                CreationCloseForm::Special
+            } else {
+                CreationCloseForm::Regular
+            }),
+            released: [false; 7],
+            call_2d: false,
+            widgets_reset: false,
+            ticked: false,
+            strings: false,
+            disabled: false,
+            cleared: true,
+        };
+    }
+    let mut released = [false; 7];
+    let mut call_2d = false;
+    if input.has_208 {
+        released[0] = true;
+    } else if input.has_220 {
+        released[1] = true;
+        call_2d = true;
+    } else if input.has_218 {
+        released[2] = true;
+    }
+    released[3] = input.has_238;
+    released[4] = input.has_210;
+    let widgets_reset = input.mode != 12;
+    if widgets_reset {
+        released[5] = input.has_228;
+        released[6] = input.has_1d0;
+    }
+    CreationClose {
+        scheduled: None,
+        released,
+        call_2d,
+        widgets_reset,
+        ticked: true,
+        strings: true,
+        disabled: true,
+        cleared: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1470,5 +1551,75 @@ mod tests {
         assert!(!refused.changed);
         assert_eq!(refused.mode, 2);
         assert!(!refused.refreshed);
+    }
+
+    #[test]
+    fn the_creation_close_schedules_or_releases() {
+        let empty = CreationCloseInput {
+            active: false,
+            has_208: false,
+            has_220: false,
+            has_218: false,
+            has_238: false,
+            has_210: false,
+            has_228: false,
+            has_1d0: false,
+            mode: 0,
+        };
+
+        let inactive = close_creation_screen(CreationCloseInput {
+            has_208: true,
+            has_220: true,
+            has_218: true,
+            has_238: true,
+            has_210: true,
+            has_228: true,
+            has_1d0: true,
+            mode: 10,
+            ..empty
+        });
+        assert_eq!(inactive.scheduled, Some(CreationCloseForm::Special));
+        assert_eq!(inactive.released, [false; 7]);
+        assert!(!inactive.ticked);
+        assert!(inactive.cleared);
+
+        let regular = close_creation_screen(CreationCloseInput { mode: 9, ..empty });
+        assert_eq!(regular.scheduled, Some(CreationCloseForm::Regular));
+
+        let active = close_creation_screen(CreationCloseInput {
+            active: true,
+            has_220: true,
+            has_218: true,
+            has_210: true,
+            has_228: true,
+            mode: 12,
+            ..empty
+        });
+        assert_eq!(active.scheduled, None);
+        assert_eq!(
+            active.released,
+            [false, true, false, false, true, false, false]
+        );
+        assert!(active.call_2d);
+        assert!(!active.widgets_reset);
+        assert!(active.ticked);
+        assert!(active.strings);
+        assert!(active.disabled);
+        assert!(active.cleared);
+
+        let full = close_creation_screen(CreationCloseInput {
+            active: true,
+            has_208: true,
+            has_220: true,
+            has_218: true,
+            has_238: true,
+            has_210: true,
+            has_228: true,
+            has_1d0: true,
+            mode: 3,
+        });
+        assert_eq!(full.released, [true, false, false, true, true, true, true]);
+        assert!(full.widgets_reset);
+        assert!(!full.call_2d);
     }
 }
