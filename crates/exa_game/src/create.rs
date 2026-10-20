@@ -463,6 +463,33 @@ pub fn select_creation_frame(requested: i32, current: i32, part_found: bool) -> 
     }
 }
 
+/// What refreshing the creation label did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationRefresh {
+    pub ran: bool,
+    pub built: bool,
+    pub drew: bool,
+    pub last: i32,
+}
+
+/// Refreshes the creation label at most once per 300 units.
+pub fn refresh_creation_label(clock: i32, last: i32, has_widget: bool) -> CreationRefresh {
+    if clock - last < 300 {
+        return CreationRefresh {
+            ran: false,
+            built: false,
+            drew: false,
+            last,
+        };
+    }
+    CreationRefresh {
+        ran: true,
+        built: !has_widget,
+        drew: true,
+        last: clock,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -824,5 +851,25 @@ mod tests {
         let none = select_creation_frame(0, 5, true);
         assert!(!none.changed);
         assert_eq!(none.current, 5);
+    }
+
+    #[test]
+    fn the_creation_label_refresh_is_throttled() {
+        let early = refresh_creation_label(100, 0, false);
+        assert!(!early.ran);
+        assert!(!early.built);
+        assert!(!early.drew);
+        assert_eq!(early.last, 0);
+
+        let built = refresh_creation_label(400, 0, false);
+        assert!(built.ran);
+        assert!(built.built);
+        assert!(built.drew);
+        assert_eq!(built.last, 400);
+
+        let existing = refresh_creation_label(400, 0, true);
+        assert!(existing.ran);
+        assert!(!existing.built);
+        assert!(existing.drew);
     }
 }
