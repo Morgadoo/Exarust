@@ -616,6 +616,43 @@ pub fn creation_slot_defaults() -> [[u8; 8]; 3] {
     ]
 }
 
+/// The creation view's deferred callback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationDeferred {
+    pub fired: bool,
+    pub stamp: i32,
+    pub pending: bool,
+    pub result: bool,
+}
+
+/// Runs the deferred callback when its stamp allows.
+pub fn flush_creation_deferred(pending: bool, stamp: i32, clock: i32) -> CreationDeferred {
+    if !pending || stamp + 1 >= clock {
+        return CreationDeferred {
+            fired: false,
+            stamp,
+            pending,
+            result: true,
+        };
+    }
+    CreationDeferred {
+        fired: true,
+        stamp: clock,
+        pending: false,
+        result: true,
+    }
+}
+
+/// Releases the tip when present.
+pub fn release_creation_tip(has_tip: bool) -> bool {
+    has_tip
+}
+
+/// Stores the view and attaches its callback when present.
+pub fn attach_creation_view(view: bool) -> bool {
+    view
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1061,5 +1098,29 @@ mod tests {
         assert_eq!(slots[0], [0xa8, 0x61, 1, 2, 3, 4, 8, 0]);
         assert_eq!(slots[1], [0xa8, 0x61, 1, 2, 3, 4, 5, 0]);
         assert_eq!(slots[2], [0xa8, 0x61, 1, 2, 3, 4, 6, 0]);
+    }
+
+    #[test]
+    fn the_creation_view_ticks_and_attaches() {
+        let idle = flush_creation_deferred(false, 10, 12);
+        assert!(!idle.fired);
+        assert_eq!(idle.stamp, 10);
+        assert!(idle.result);
+
+        let waiting = flush_creation_deferred(true, 10, 11);
+        assert!(!waiting.fired);
+        assert_eq!(waiting.stamp, 10);
+        assert!(waiting.pending);
+
+        let fired = flush_creation_deferred(true, 10, 12);
+        assert!(fired.fired);
+        assert_eq!(fired.stamp, 12);
+        assert!(!fired.pending);
+        assert!(fired.result);
+
+        assert!(release_creation_tip(true));
+        assert!(!release_creation_tip(false));
+        assert!(attach_creation_view(true));
+        assert!(!attach_creation_view(false));
     }
 }
