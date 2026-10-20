@@ -63,7 +63,7 @@ fn every_shipped_script_runs() {
         for entry in &role.entries {
             texts.extend(entry.encounter.clone());
             texts.extend(entry.interaction.clone());
-            texts.extend(entry.event.clone());
+            texts.extend(entry.corpse.clone());
             for n in entry.dialogue.iter().flat_map(|d| d.nodes.iter().flatten()) {
                 for b in &n.branches {
                     each_branch(b, &mut |b| {

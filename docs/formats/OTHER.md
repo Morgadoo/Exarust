@@ -17,8 +17,8 @@ ids 1 Exanima, 2 Exanima01 … 13 Exanima67, 17 Arak_Ar),
 `objdb.rdb` (object database, 0x5900/16 = 1424 records), `objstrings.rdb`
 (string library, magic `0xAFBF0C02`). The community spec reports a trailing
 garbage record in each table (the reader skips entries pointing outside the
-file). `objdb` item records and race records are decoded; other payloads are
-not.
+file). `objdb` item records, race records, role records and the locale
+names are decoded; other payloads are not.
 
 **Races** (`exa_formats::races`): 18 records of 624 bytes, then an empty
 entry. Lengths below are as stored; the parser returns them in metres.
@@ -116,6 +116,18 @@ the human body (`01Pelvis`). The others name them like apparel
 (`0100Pelvis`, pelvis at the origin). All use the bone indices of
 `humanoid.rsq` and its clips. Root positions are scaled by the body's leg
 length against `humanbase` (golem 1.42×, ogre 1.39×).
+
+**Roles** (`exa_formats::roles`): `charroles.rdb`; see
+[Roles](#roles-charrolesrdb) below. The rules that read the table (role
+lists, relations, the attitude, encounters) are in
+[`crates/exa_ai/README.md`](../../crates/exa_ai/README.md).
+
+**Locales** (`locales.rdb`, magic `0xDBAE0D01`): 17 records of 44 bytes,
+a name of 20 bytes (`Exanima`, `Exanima01` … `Exanima67_C1`, `Arak_Ar`), then
+a word that is 1 for every level but `Exanima`, the rest zero. A level's
+locale is the id of the record named like the level without its extension
+(`exanima01.rfc` → 2); entries for one character compare their locale with
+it [guess: the global those entries read is the current locale's id].
 
 ## Object database items and apparel painting
 
@@ -1171,7 +1183,7 @@ the attitude apply; the other kind bits add sections, stored in this order:
 | `0x4` | encounter script: u32 length + text |
 | `0x8`, `0x10` | u32 length + bytes, never present |
 | `0x40` | interaction condition: u32 length + text (`result = …`) |
-| `0x20` | a `GameEvent(…)` line, u32 length + text (Corlian only; its place after the others is a guess, no entry combines it) |
+| `0x20` | corpse script, run when the player handles the holder's corpse: u32 length + text (Corlian only, a `GameEvent(…)` line). It is not in the section table: the original's corpse accessor reads it after the sections of `0x1` to `0x8` only, so a `0x10` or `0x40` section stored with it would read the same bytes |
 
 The first entry whose target and condition words match is the one a lookup
 takes; if it has no dialogue the lookup fails, later entries are not tried.

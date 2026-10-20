@@ -7,8 +7,10 @@
 //! (0) or one character, carries an attitude and tolerance, and holds
 //! optional sections in a fixed order: an unknown block (kind bit `0x1`),
 //! a dialogue graph (`0x2`), an encounter script (`0x4`), two unknown blocks
-//! (`0x8`, `0x10`), an interaction condition (`0x40`) and a game-event line
-//! (`0x20`). `narrator.rcd` is one dialogue graph on its own.
+//! (`0x8`, `0x10`) and an interaction condition (`0x40`). The corpse script
+//! (`0x20`, run when the player handles the holder's corpse) is read after
+//! the sections of bits `0x1` to `0x8` only, where the original's corpse
+//! accessor looks for it. `narrator.rcd` is one dialogue graph on its own.
 //!
 //! A dialogue graph: target word, block size, actor records (name[16],
 //! colour, a word, a sized extra block), then nodes. An empty node is a
@@ -22,6 +24,9 @@
 //! branch walkers of the dialogue engine and the loader of `narrator.rcd`
 //! (REA on `Exanima.exe` 0.9.5). Every record of the shipped
 //! `charroles.rdb` and the whole of `narrator.rcd` parse to their ends.
+//!
+//! A level's locale, which entries for one character are compared with, is
+//! found by name in `locales.rdb` ([`locale_id`]).
 
 use crate::rdb::Database;
 use crate::{Error, Result};
@@ -44,7 +49,13 @@ pub const SECTION_ENCOUNTER: u32 = 0x4;
 pub const SECTION_8: u32 = 0x8;
 pub const SECTION_10: u32 = 0x10;
 pub const SECTION_INTERACTION: u32 = 0x40;
-pub const SECTION_EVENT: u32 = 0x20;
+/// The corpse script: not in the section table, read after the sections
+/// of bits `0x1` to `0x8`.
+pub const SECTION_CORPSE: u32 = 0x20;
+
+/// A condition with both top bits set targets one character of one locale
+/// (the low 30 bits).
+pub const ONE_CHARACTER: u32 = 0xC000_0000;
 
 /// Deepest reply nesting accepted (the shipped graphs nest six deep).
 const MAX_DEPTH: usize = 64;
@@ -110,6 +121,19 @@ impl Role {
 
     pub fn inherits_parent(&self) -> bool {
         self.flags & INHERITS_PARENT != 0
+    }
+
+    /// The weight as a share, `weight / 100` from the low byte (computed in
+    /// double, as the attitude routine does).
+    pub fn share(&self) -> f32 {
+        (f64::from(self.weight as u8) * 0.01) as f32
+    }
+
+    /// The first entry aimed at `target` with no condition.
+    pub fn entry_for(&self, target: u32) -> Option<&RoleEntry> {
+        self.entries
+            .iter()
+            .find(|e| e.target == target && e.condition == 0)
     }
 
     /// The dialogue entry aimed at `target` (a role id, 0 for the relation
@@ -234,10 +258,10 @@ pub struct RoleEntry {
     pub section_10: Option<Vec<u8>>,
     /// Gates interaction with the player (`result = …`).
     pub interaction: Option<Vec<u8>>,
-    /// A `GameEvent(…)` line (kind `0x20`, one shipped entry; the code that
-    /// runs it was not found). Placed after the other sections: a guess, as
-    /// no shipped entry combines it with another.
-    pub event: Option<Vec<u8>>,
+    /// Run when the player handles the holder's corpse (kind `0x20`; one
+    /// shipped entry, Corlian's `GameEvent(…)` line). Read after the
+    /// sections of bits `0x1` to `0x8`, as the original's accessor does.
+    pub corpse: Option<Vec<u8>>,
 }
 
 impl RoleEntry {
@@ -255,7 +279,33 @@ impl RoleEntry {
 
     /// Whether the entry is for one character in one locale.
     pub fn for_character(&self) -> bool {
-        self.condition & 0xC000_0000 == 0xC000_0000
+        self.condition & ONE_CHARACTER == ONE_CHARACTER
+    }
+
+    /// For an entry aimed at one character, the locale it holds in.
+    pub fn locale(&self) -> Option<u32> {
+        self.for_character()
+            .then_some(self.condition & !ONE_CHARACTER)
+    }
+
+    /// Whether the entry fires for any partner: no target and no condition.
+    pub fn for_anyone(&self) -> bool {
+        self.target == 0 && self.condition == 0
+    }
+
+    /// The text of a script section (encounter, interaction condition or
+    /// corpse script, or one of the unknown blocks) by its kind bit; none
+    /// for the dialogue or a section the entry lacks.
+    pub fn script(&self, bit: u32) -> Option<&[u8]> {
+        match bit {
+            SECTION_EXTRA => self.extra.as_deref(),
+            SECTION_ENCOUNTER => self.encounter.as_deref(),
+            SECTION_8 => self.section_8.as_deref(),
+            SECTION_10 => self.section_10.as_deref(),
+            SECTION_INTERACTION => self.interaction.as_deref(),
+            SECTION_CORPSE => self.corpse.as_deref(),
+            _ => None,
+        }
     }
 
     fn parse(b: &[u8]) -> Result<Self> {
@@ -287,14 +337,17 @@ impl RoleEntry {
         if kind & SECTION_8 != 0 {
             e.section_8 = Some(r.sized()?.to_vec());
         }
+        if kind & SECTION_CORPSE != 0 {
+            // The corpse accessor skips only the sections of bits 0x1..0x8.
+            let at = r.pos;
+            e.corpse = Some(r.sized()?.to_vec());
+            r.pos = at;
+        }
         if kind & SECTION_10 != 0 {
             e.section_10 = Some(r.sized()?.to_vec());
         }
         if kind & SECTION_INTERACTION != 0 {
             e.interaction = Some(r.sized()?.to_vec());
-        }
-        if kind & SECTION_EVENT != 0 {
-            e.event = Some(r.sized()?.to_vec());
         }
         Ok(e)
     }
@@ -510,6 +563,21 @@ pub struct Line {
     pub speaker: u32,
     /// Windows-1252 text; `{…}` groups are script expressions.
     pub text: Vec<u8>,
+}
+
+/// The id a level has in `locales.rdb`: the record whose name (the first
+/// 20 bytes of its 44-byte payload) is the level's name, without the
+/// extension and ignoring case (`exanima01.rfc` → 2). A bad database or an
+/// unknown level has none.
+pub fn locale_id(locales: &[u8], level: &str) -> Option<u32> {
+    let stem = level.rsplit_once('.').map_or(level, |(stem, _)| stem);
+    let db = Database::parse(locales).ok()?;
+    db.records.iter().find_map(|r| {
+        let raw = db.payload(r).get(..20)?;
+        let end = raw.iter().position(|&c| c == 0).unwrap_or(raw.len());
+        let name = latin1(&raw[..end]);
+        (!name.is_empty() && name.eq_ignore_ascii_case(stem)).then_some(r.id)
+    })
 }
 
 struct Reader<'a> {

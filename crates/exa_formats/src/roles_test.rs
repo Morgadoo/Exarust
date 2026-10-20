@@ -318,8 +318,178 @@ fn shipped_roles_and_narrator() {
         db.get(46).unwrap().init_script,
         b"Actor.Activity = Role.Activity;"
     );
+    let skeleton = db.get(9).unwrap();
+    assert!(skeleton.inherits_parent());
+    assert_eq!(skeleton.parent, 2);
+    assert_eq!(skeleton.entry_for(1).unwrap().attitude(), -100);
+    assert_eq!(db.roles.iter().filter(|r| r.is_relation_role()).count(), 8);
+    assert_eq!(db.get(43).unwrap().init_script, b"Actor.Activity = 7;");
     let narrator = Dialogue::parse(resource.get("narrator.rcd").unwrap()).unwrap();
     assert_eq!(narrator.nodes.len(), 5);
     assert_eq!(narrator.node(1).unwrap().title.text(), "Corlian");
     assert_eq!(narrator.node(1).unwrap().branches[0].replies.len(), 3);
+}
+
+/// The Skeleton of the shipped table: weight 50, inheriting Undead, two
+/// attitude entries (Human −100, Skeleton +80 with tolerance 0).
+#[test]
+fn a_role_reads_its_head_and_attitudes() {
+    let skeleton = role(
+        INHERITS_PARENT,
+        "Skeleton",
+        2,
+        50,
+        "",
+        &[],
+        &[
+            entry(ATTITUDE, 1, 0, 0x9C, &[]),
+            entry(ATTITUDE, 9, 0, 0x50, &[]),
+        ],
+    );
+    let db = RoleDb::parse(&database(&[(9, skeleton)])).unwrap();
+    let r = db.get(9).unwrap();
+    assert_eq!(r.name.text(), "Skeleton");
+    assert_eq!((r.parent, r.weight), (2, 50));
+    assert!(r.inherits_parent() && !r.is_relation_role());
+    assert_eq!(r.share(), 0.5);
+    assert_eq!(r.entries[0].attitude(), -100);
+    assert_eq!(r.entries[1].attitude(), 80);
+    assert_eq!(r.entries[1].tolerance(), 0);
+    assert_eq!(r.entry_for(9).unwrap().value, 0x50);
+}
+
+/// Faction 1's own entry: attitude +100 with tolerance 100 (`0x6464`); a
+/// relation role (Truce) aims at the partner, target 0.
+#[test]
+fn tolerance_is_the_second_byte_and_a_relation_role_aims_at_the_partner() {
+    let truce = role(
+        RELATION_ROLE,
+        "Truce",
+        0,
+        50,
+        "",
+        &[],
+        &[entry(ATTITUDE, 0, 0, 0x6400, &[])],
+    );
+    let r = Role::parse(21, &truce).unwrap();
+    assert!(r.is_relation_role());
+    assert_eq!(r.entries[0].attitude(), 0);
+    assert_eq!(r.entries[0].tolerance(), 100);
+    assert!(r.entries[0].for_anyone());
+    let faction = entry(ATTITUDE, 17, 0, 0x6464, &[]);
+    let f = Role::parse(17, &role(0, "Faction 1", 15, 100, "", &[], &[faction])).unwrap();
+    assert_eq!(f.share(), 1.0);
+    assert_eq!(
+        (f.entries[0].attitude(), f.entries[0].tolerance()),
+        (100, 100)
+    );
+}
+
+/// Script sections are found by their kind bits: the encounter after the
+/// dialogue, the interaction condition after both; the dialogue and an
+/// absent section have no script.
+#[test]
+fn scripts_are_found_by_their_bits() {
+    let mut tail = graph(7, &[]);
+    tail.extend(sized(b"ChangeRole(09);"));
+    tail.extend(sized(b"result = 1;"));
+    let e = entry(
+        SECTION_DIALOGUE | SECTION_ENCOUNTER | SECTION_INTERACTION | ATTITUDE,
+        7,
+        0,
+        0x32,
+        &tail,
+    );
+    let r = Role::parse(1, &role(0, "Talker", 0, 50, "", &[], &[e])).unwrap();
+    let e = &r.entries[0];
+    assert_eq!(e.dialogue.as_ref().unwrap().target, 7);
+    assert_eq!(e.script(SECTION_DIALOGUE), None);
+    assert_eq!(e.script(SECTION_ENCOUNTER), Some(&b"ChangeRole(09);"[..]));
+    assert_eq!(e.script(SECTION_INTERACTION), Some(&b"result = 1;"[..]));
+    assert_eq!(e.script(SECTION_8), None);
+}
+
+/// The corpse script is read after the sections of bits 1 to 8 only
+/// (Corlian's entry carries it alone, right after the head), so an
+/// interaction condition stored with it reads the same bytes.
+#[test]
+fn the_corpse_script_follows_the_first_four_sections() {
+    let alone = entry(SECTION_CORPSE, 7, 0, 0, &sized(b"GameEvent(00C10EC0);"));
+    let mut tail = sized(b"x");
+    tail.extend(sized(b"GameEvent(1);"));
+    let after = entry(SECTION_EXTRA | SECTION_CORPSE, 7, 0, 0, &tail);
+    let both = entry(
+        SECTION_CORPSE | SECTION_INTERACTION,
+        7,
+        0,
+        0,
+        &sized(b"result = 1;"),
+    );
+    let r = Role::parse(
+        25,
+        &role(0, "Corlian", 1, 50, "", &[], &[alone, after, both]),
+    )
+    .unwrap();
+    assert_eq!(
+        r.entries[0].script(SECTION_CORPSE),
+        Some(&b"GameEvent(00C10EC0);"[..])
+    );
+    assert_eq!(
+        r.entries[1].script(SECTION_CORPSE),
+        Some(&b"GameEvent(1);"[..])
+    );
+    assert_eq!(r.entries[2].corpse.as_deref(), Some(&b"result = 1;"[..]));
+    assert_eq!(
+        r.entries[2].interaction.as_deref(),
+        Some(&b"result = 1;"[..])
+    );
+}
+
+/// An entry aimed at one character: both top bits of the condition set and
+/// the locale in the low 30 bits (Derrin's entry, locale 2).
+#[test]
+fn a_character_entry_names_its_locale() {
+    let e = entry(SECTION_ENCOUNTER, 0x8000_0008, 0xC000_0002, 0, &sized(b""));
+    let r = Role::parse(19, &role(0, "XA_Derrin", 1, 50, "", &[], &[e])).unwrap();
+    assert_eq!(r.entries[0].locale(), Some(2));
+    assert!(r.entries[0].for_character() && !r.entries[0].for_anyone());
+    assert_eq!(r.entries[0].script(SECTION_ENCOUNTER), Some(&b""[..]));
+}
+
+/// Malformed records are errors: an entry under its head, entries past the
+/// record, a section running past its entry, and the wrong magic.
+#[test]
+fn malformed_roles_are_errors() {
+    let good = role(0, "R", 0, 50, "", &[], &[entry(ATTITUDE, 1, 0, 0, &[])]);
+    let mut short = role(0, "R", 0, 50, "", &[], &[u32s(&[8, 0])]);
+    assert!(Role::parse(1, &short).is_err());
+    short[0x30..0x34].copy_from_slice(&3u32.to_le_bytes());
+    assert!(Role::parse(1, &short).is_err());
+    let mut many = good.clone();
+    many[0x30..0x34].copy_from_slice(&2u32.to_le_bytes());
+    assert!(Role::parse(1, &many).is_err());
+    let runs = entry(SECTION_ENCOUNTER, 1, 0, 0, &u32s(&[100]));
+    assert!(Role::parse(1, &role(0, "R", 0, 50, "", &[], &[runs])).is_err());
+    let mut db = database(&[(1, good)]);
+    db[..4].copy_from_slice(&0xDBCB_0D00u32.to_le_bytes());
+    assert!(RoleDb::parse(&db).is_err());
+    assert!(RoleDb::parse(&[1, 2, 3]).is_err());
+}
+
+/// A locale is found by its level's name, without the extension and
+/// ignoring case; an unknown name or a bad database has none.
+#[test]
+fn a_level_names_its_locale() {
+    let entry = |n: &str, word: u32| {
+        let mut p = n.as_bytes().to_vec();
+        p.resize(20, 0);
+        p.extend(u32s(&[word]));
+        p.resize(44, 0);
+        p
+    };
+    let db = database(&[(1, entry("Exanima", 0)), (2, entry("Exanima01", 1))]);
+    assert_eq!(locale_id(&db, "exanima01.rfc"), Some(2));
+    assert_eq!(locale_id(&db, "Exanima"), Some(1));
+    assert_eq!(locale_id(&db, "arena7.rfc"), None);
+    assert_eq!(locale_id(&[0; 3], "exanima01.rfc"), None);
 }
