@@ -187,11 +187,15 @@ The system SHALL give each sub-frame of a supersampled frame two of the eight sh
 - **THEN** its shadow and GI values average all eight taps
 
 ### Requirement: Shadow-bias levels
-The system SHALL give terrain and tile-grid floors shadow-bias level 3 and other grid set pieces level 1. A surface of level v > 0 SHALL compare shadow distances 0.995·k_c/k_r short, with k_r = 1 − 0.005·v and k_c = k_r − 0.01.
+The system SHALL give terrain and tile-grid floors shadow-bias level 3 and other grid set pieces level 1, and every other mesh the level its file stores in bits 16–18 of its render flags (level 0 when bit 19 is set). A surface of level v > 0 SHALL compare shadow distances 0.995·k_c/k_r short, with k_r = 1 − 0.005·v and k_c = k_r − 0.01.
 
 #### Scenario: Torch light grazing a floor
 - **WHEN** a torch lights a terrain floor at a grazing angle
 - **THEN** the floor shows no acne from its own shadow
+
+#### Scenario: Slab under painted ground
+- **WHEN** a broken-floor slab of shipped level 2 lies 1–2 cm under the terrain and a torch lights the terrain over it
+- **THEN** the terrain over the slab is lit, not shadowed by the slab
 
 ### Requirement: Shadow casters per light
 The system SHALL let a mesh cast into a light's shadow map only when the two are linked as the original links them: their bounding spheres overlap, (1 − 0.8·d/R)⁴ · luma(colour · intensity) > 0.01 with d the distance from the light to the mesh's sphere, and the mesh is not in the light's own object. Links SHALL follow moving lights and meshes.

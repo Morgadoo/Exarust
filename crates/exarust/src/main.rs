@@ -36,6 +36,7 @@
 //!          --trace <file.csv>         the player's body (else every simulated body) after every 83 Hz tick, in cm
 //!          --debug-bodies             start with the body overlay and joint readout shown (F3 toggles it)
 //!          --debug-nav                draw the level's navigation grid around the view (F6 toggles it)
+//!          --debug-column x,z[/x,z…]  once loaded, log every mesh over each floor point: name, heights, shadow level, how it casts
 //!          --joint-trace <file.csv>   every joint of every simulated body after every 83 Hz tick (degrees, cm)
 //!          --pair-trace <file.csv>    every contact between two body parts found in each 83 Hz tick (cm)
 //!          --fixed-frames             every frame advances game time by exactly 1/60 s, so runs repeat tick for tick
@@ -75,6 +76,7 @@
 //! navigation grid, F7 start every keyframe track of the level, P pause,
 //! `.` step one tick, `[` / `]` slower / faster.
 
+mod column;
 mod viewer;
 
 use std::ops::Range;
@@ -149,6 +151,8 @@ pub struct Options {
     pub debug_bodies: bool,
     /// Start with the navigation grid drawn.
     pub debug_nav: bool,
+    /// Once loaded, log every mesh over these floor points (x, z in metres).
+    pub debug_column: Vec<[f32; 2]>,
     /// Write every joint after every tick here (CSV).
     pub joint_trace: Option<PathBuf>,
     /// Write every contact between body parts after every tick here (CSV).
@@ -383,6 +387,20 @@ fn main() -> AppExit {
             "--trace" => options.trace = args.next().map(PathBuf::from),
             "--debug-bodies" => options.debug_bodies = true,
             "--debug-nav" => options.debug_nav = true,
+            "--debug-column" => {
+                options.debug_column = args
+                    .next()
+                    .unwrap_or_default()
+                    .split('/')
+                    .filter_map(|point| {
+                        let v: Vec<f32> = point
+                            .split(',')
+                            .filter_map(|x| x.trim().parse().ok())
+                            .collect();
+                        <[f32; 2]>::try_from(v.as_slice()).ok()
+                    })
+                    .collect();
+            }
             "--joint-trace" => options.joint_trace = args.next().map(PathBuf::from),
             "--pair-trace" => options.pair_trace = args.next().map(PathBuf::from),
             "--fixed-frames" => options.fixed_frames = true,
@@ -685,7 +703,7 @@ fn main() -> AppExit {
         .with_pause_after_collapse(options.pause_after_collapse),
     )
     .insert_resource(options)
-    .add_plugins(viewer::ViewerPlugin);
+    .add_plugins((viewer::ViewerPlugin, column::ColumnPlugin));
     if fixed_frames {
         // Whatever a frame took, it advances game time by 1/60 s: the frames'
         // clocks and the ticks they run repeat from run to run.

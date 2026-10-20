@@ -821,14 +821,23 @@ menu.
     by ±0.0625 a tick within [0.87, 1.15];
   - distances are compared 0.5 % short;
   - each node has a shadow-bias level v: 3 for terrain blocks and tile-grid
-    floors, 1 for other grid set pieces, 0 otherwise. For v > 0 the
-    original divides receiver distances by k_r = 1 − 0.005·v and caster
-    distances by k_c = k_r − 0.01, so a surface keeps about 1.5 % of the
-    light distance between itself and its own shadow. That is what keeps
-    floors free of acne at grazing light. Exarust carries v in the mesh
-    tag and applies the receiver side as that self margin (0.995·k_c/k_r);
-    the cross terms between levels are left out until the cube maps are
-    Exarust's own;
+    floors, 1 for other grid set pieces, and otherwise the level its mesh
+    ships with (bits 16–18 of the mesh's render flags, [formats/RFC.md](formats/RFC.md);
+    3 317 shipped meshes carry one, the dungeon's broken floors
+    `uw01_floorbrk*` level 2). For v > 0 the original divides receiver
+    distances by k_r = 1 − 0.005·v and caster distances by
+    k_c = k_r − 0.01, so a surface keeps about 1.5 % of the light distance
+    between itself and its own shadow. That is what keeps floors free of
+    acne at grazing light. The cached cubes apply both sides, cross terms
+    included; Bevy's skinned-shadow maps apply only the receiver's self
+    margin (0.995·k_c/k_r). The cross terms matter: a level-3 floor
+    receiving from a level-0 caster is shadowed by surfaces up to about 1 %
+    of the light distance *behind* it. Read as level 0, the broken-floor
+    slabs, which lie 1–2 cm under the painted dirt, darkened the ground over
+    them in soft bands (exanima01's start room); at their shipped level 2 a
+    caster must be about 1 % in front. The variant with bit 19 (both sides
+    × (1 + 0.005·v), one mesh, `Pave03Brk`) is not reproduced: it keeps
+    level 0;
   - in a supersampled frame each sub-frame takes two of the eight taps
     (sub-frame i takes taps 2i and 2i + 1) and the turn is per window
     pixel, so each output pixel still averages all eight. Exarust's

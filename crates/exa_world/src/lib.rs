@@ -398,6 +398,13 @@ pub fn spawn_model_nodes(
                 }),
                 None => commands.entity(part).insert(Mesh3d(mesh.clone())),
             };
+            // The level the mesh ships with. Builders that set their own
+            // (grid sets, floors) replace it.
+            if node.shadow_bias != 0 {
+                commands
+                    .entity(part)
+                    .insert(exa_render::lights::ShadowBias(node.shadow_bias));
+            }
             parts.push(part);
         }
         parts_of.push(parts);
@@ -1230,6 +1237,7 @@ mod tests {
             gi_points: Default::default(),
             rigid: None,
             tracks: Vec::new(),
+            shadow_bias: 0,
         }
     }
 

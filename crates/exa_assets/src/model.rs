@@ -64,6 +64,10 @@ pub struct ModelNode {
     /// The node's keyframe tracks (curves of its translation, played when
     /// they are started).
     pub tracks: Vec<exa_formats::key_track::KeyTrack>,
+    /// The mesh's shadow-bias level from its file (0..=7,
+    /// [`exa_formats::rfc::Mesh::shadow_bias_level`]); 0 for other nodes
+    /// and for the inflated variant.
+    pub shadow_bias: u32,
 }
 
 /// A model node's rigid body and what its mobility is divided by when the
@@ -381,6 +385,14 @@ impl ModelLoader<'_> {
                 },
                 rigid,
                 tracks: node.tracks().cloned().collect(),
+                shadow_bias: match &node.body {
+                    // The inflated variant (both sides × (1 + 0.005·v)) is
+                    // not reproduced: such a mesh keeps level 0.
+                    NodeBody::Mesh(mesh) if !mesh.shadow_bias_inflated() => {
+                        mesh.shadow_bias_level()
+                    }
+                    _ => 0,
+                },
             });
         }
         Model { nodes }

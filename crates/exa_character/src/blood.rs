@@ -1262,6 +1262,7 @@ mod tests {
             gi_points: Default::default(),
             rigid: None,
             tracks: Vec::new(),
+            shadow_bias: 0,
         }
     }
 

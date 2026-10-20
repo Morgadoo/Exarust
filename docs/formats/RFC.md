@@ -128,7 +128,7 @@ cloth marker sits on a mesh node.
 ## Mesh body (`3D03`)
 
 ```
-u32 ?                         only when version > 0x3D21
+u32 render_flags              only when version > 0x3D21: the node's render word
 u32 streams - 1
 stream × streams:
   u32 id                      low 16 bits are the key used by index maps
@@ -149,6 +149,17 @@ chunk 0x3DC0 topology:
     per group: u32 first_triangle, u32 last_triangle   (empty group: last = first - 1)
     sub-chunks: 0x3DC2 u8[triangles], 0x3DC3 u32[triangles]   (not decoded)
 ```
+
+The render flags are copied onto the original's mesh node as the body is
+read (REA on the mesh-body reader: a chunk version of at least 0x3D22 reads
+the word into the node's render word). Bits 16–18 are the node's
+shadow-bias level, which sets its shadow depth scales
+([RENDERING.md](../RENDERING.md), Lights, Filter); bit 19 (`0x80000`)
+switches to the inflated variant. In the shipped packs 19 748 meshes store
+level 0, 378 level 1, 2 761 level 2, 174 level 3 and 3 level 4; one mesh
+(`Objlib/pvmtrna03 a06`, `Pave03Brk`) sets bit 19. No mesh sets `0x800`
+(the original's cull-front bit); 38 set `0x1000`. Counted by
+`exa-tool corpus render-words`.
 
 | stream id | format word | content | count |
 |---|---|---|---:|

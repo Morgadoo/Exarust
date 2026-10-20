@@ -247,8 +247,11 @@ pub struct Mesh {
     /// `0x3D0CEC05`, after the mesh body), in metres: they mark the mesh's
     /// cells as solid for the global illumination volume.
     pub gi_points: Vec<[f32; 3]>,
-    /// The word before the streams in newer files: skinning mode flags.
-    pub skin_flags: u32,
+    /// The word before the streams in newer files (0 in older ones): the
+    /// node's render flags, which the original copies onto the mesh node
+    /// as it reads the body. Bits 16..18 are the shadow-bias level
+    /// ([`Mesh::shadow_bias_level`]).
+    pub render_flags: u32,
     /// Elements of the position stream: [`Mesh::position_ids`] index it,
     /// and a morph set holds one offset per element.
     pub position_count: usize,
@@ -258,6 +261,20 @@ pub struct Mesh {
 }
 
 impl Mesh {
+    /// The node's shadow-bias level, 0..=7 (bits 16..18 of its render
+    /// flags): the original scales a level-v caster's stored shadow
+    /// distances by 1/(1 − 0.005·v − 0.01) and a receiver's by
+    /// 1/(1 − 0.005·v), so its surfaces keep clear of their own shadow.
+    pub fn shadow_bias_level(&self) -> u32 {
+        (self.render_flags >> 16) & 7
+    }
+
+    /// Bit 19 of the render flags: the level scales both sides by
+    /// 1 + 0.005·v instead (one shipped mesh, `Pave03Brk`).
+    pub fn shadow_bias_inflated(&self) -> bool {
+        self.render_flags & 0x8_0000 != 0
+    }
+
     /// Works the normals out again from the positions, as at load: the
     /// area-weighted face normals summed over the vertices sharing a
     /// smoothing key. A morphed mesh takes its normals from its new shape.
@@ -716,7 +733,7 @@ struct Stream<'a> {
 }
 
 fn read_mesh(c: &mut Cursor<'_>, version: u16) -> Result<Mesh> {
-    let skin_flags = if version > VERSION_WITHOUT_MESH_PREFIX {
+    let render_flags = if version > VERSION_WITHOUT_MESH_PREFIX {
         c.u32()?
     } else {
         0
@@ -895,7 +912,7 @@ fn read_mesh(c: &mut Cursor<'_>, version: u16) -> Result<Mesh> {
         groups,
         triangle_flags,
         gi_points: Vec::new(),
-        skin_flags,
+        render_flags,
         position_count,
         smoothing,
     })
@@ -1105,7 +1122,7 @@ mod tests {
         ]));
         body.extend(f32s(&[50.0, 0.0, 50.0, 50.0, 0.0, -50.0, 70.7]));
         body.extend(u32s(&[0]));
-        body.extend(u32s(&[0])); // version prefix
+        body.extend(u32s(&[0])); // render flags
         body.extend(u32s(&[1])); // two streams
         body.extend(u32s(&[0x1, 0xF3_0001, 3]));
         body.extend(f32s(&[
@@ -1157,6 +1174,29 @@ mod tests {
         for n in &mesh.normals {
             assert!((n[1] - 1.0).abs() < 1e-6, "quad faces +Y: {n:?}");
         }
+    }
+
+    /// The word before the streams is the node's render flags; bits
+    /// 16..18 are its shadow-bias level (`uw01_floorbrk*` ship 0x20000,
+    /// level 2). Bit 19 is not part of the level.
+    #[test]
+    fn the_render_flags_carry_the_shadow_bias_level() {
+        let mut file = quad_file(None);
+        let streams: Vec<u8> = [0u32, 1, 0x1, 0xF3_0001]
+            .iter()
+            .flat_map(|w| w.to_le_bytes())
+            .collect();
+        let at = file
+            .windows(streams.len())
+            .position(|w| w == streams)
+            .expect("the render flags before the streams");
+        file[at..at + 4].copy_from_slice(&0x000A_0000u32.to_le_bytes());
+        let scene = Scene::parse(&file).unwrap();
+        let (_, mesh) = scene.meshes().next().unwrap();
+        assert_eq!(mesh.render_flags, 0x000A_0000);
+        assert_eq!(mesh.shadow_bias_level(), 2);
+        assert!(mesh.shadow_bias_inflated());
+        assert_eq!(Mesh::default().shadow_bias_level(), 0);
     }
 
     /// Node flag `0x80000` marks level geometry (`arenao1`'s tavern table

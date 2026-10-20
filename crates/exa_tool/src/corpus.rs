@@ -1,7 +1,8 @@
 //! `exa-tool corpus …`: decode every entry of a kind and report coverage;
 //! `corpus images` checks the channel order of uncompressed images,
-//! `corpus winding` which way the level geometry faces and `corpus tracks`
-//! lists the nodes' keyframe tracks.
+//! `corpus winding` which way the level geometry faces, `corpus tracks`
+//! lists the nodes' keyframe tracks and `corpus render-words` tallies the
+//! meshes' render words.
 
 use std::collections::BTreeMap;
 
@@ -1469,6 +1470,80 @@ pub fn tracks(game: &GameData) -> Result<()> {
         }
     }
     println!("{files} chunk trees, {found} keyframe tracks, {bad} undecodable");
+    Ok(())
+}
+
+/// One row of `corpus render-words`: one (level, bit 19) pair.
+#[derive(Default)]
+struct WordRow {
+    meshes: usize,
+    /// With the cull-front bit (0x800).
+    cull_front: usize,
+    /// With the keep-own-light bit (0x1000).
+    own_light: usize,
+    examples: Vec<String>,
+}
+
+/// `corpus render-words`: every mesh's render word (the word before its
+/// streams, the original's node render flags), tallied by shadow-bias
+/// level (bits 16..18) and the 0x80000 variant, with the cull-front
+/// (0x800) and keep-own-light (0x1000) bits counted; then every node whose
+/// name starts with `uw01_floor`, the broken floors of the dungeon levels.
+pub fn render_words(game: &GameData) -> Result<()> {
+    let mut tally: BTreeMap<(u32, bool), WordRow> = BTreeMap::new();
+    let mut floors = Vec::new();
+    for (kind, pack) in game.packs() {
+        for e in pack.entries() {
+            let b = pack.bytes(e);
+            if !matches!(
+                FileKind::detect(b),
+                FileKind::ChunkTree | FileKind::ChunkTreeAlt
+            ) {
+                continue;
+            }
+            let Ok(scene) = Scene::parse(b) else { continue };
+            for node in &scene.nodes {
+                let NodeBody::Mesh(m) = &node.body else {
+                    continue;
+                };
+                let word = m.render_flags;
+                let level = (word >> 16) & 7;
+                let row = tally.entry((level, word & 0x80000 != 0)).or_default();
+                row.meshes += 1;
+                row.cull_front += usize::from(word & 0x800 != 0);
+                row.own_light += usize::from(word & 0x1000 != 0);
+                if row.examples.len() < 6 {
+                    row.examples
+                        .push(format!("{}/{}:{}", kind.file_stem(), e.name, node.name));
+                }
+                if node.name.to_ascii_lowercase().starts_with("uw01_floor") {
+                    floors.push(format!(
+                        "{}/{}:{} {word:#010x}",
+                        kind.file_stem(),
+                        e.name,
+                        node.name
+                    ));
+                }
+            }
+        }
+    }
+    println!(
+        "{:>5} {:>7} {:>8} {:>6} {:>6}  examples",
+        "level", "0x80000", "meshes", "0x800", "0x1000"
+    );
+    for ((level, variant), row) in &tally {
+        println!(
+            "{level:>5} {variant:>7} {:>8} {:>6} {:>6}  {}",
+            row.meshes,
+            row.cull_front,
+            row.own_light,
+            row.examples.join(", ")
+        );
+    }
+    println!("\nuw01_floor* nodes:");
+    for f in floors {
+        println!("  {f}");
+    }
     Ok(())
 }
 

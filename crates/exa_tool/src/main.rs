@@ -165,6 +165,8 @@ enum CorpusKind {
     Bodies,
     /// Every keyframe track of every chunk tree, nested packs included.
     Tracks,
+    /// The mesh render word: shadow-bias levels and flags, with examples.
+    RenderWords,
 }
 
 fn main() -> Result<()> {
@@ -312,6 +314,9 @@ fn main() -> Result<()> {
         Cmd::Corpus {
             what: CorpusKind::Tracks,
         } => corpus::tracks(&game),
+        Cmd::Corpus {
+            what: CorpusKind::RenderWords,
+        } => corpus::render_words(&game),
         Cmd::Nav { level, png } => nav::nav(&game, &level, png.as_deref()),
         Cmd::ExportGltf { pack, entry, out } => {
             let scene = exa_formats::rfc::Scene::parse(entry_bytes(&game, &pack, &entry)?)

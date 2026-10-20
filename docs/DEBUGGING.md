@@ -524,3 +524,22 @@ exarust --no-gi --no-supersample --size 960x540 --physique 0,1,-1 --screenshot t
 exarust --no-gi --no-supersample --size 960x540 --physique 1,1,1 \
   --outfit leathjac_a,trouser_a,boots_b --screenshot heavy.png character
 ```
+
+## Surfaces and shadows
+
+`--debug-column x,z[/x,z…]` (play or level view) logs, 30 frames after the
+load, every mesh whose bounds cover each floor point (metres), lowest first:
+its name path, its height range, the heights where the vertical line crosses
+its triangles (`^` facing up, `v` down), its shadow-bias level, whether it
+casts and into how many cached cubes, and its material's alpha mode and
+shadow cut. It finds which surface darkens a floor: the broken-floor slabs
+of exanima01's start room showed up 1–2 cm under the terrain.
+
+```bash
+exarust --no-gi --debug-column "81.74,37.45/80.34,40.1" play exanima01
+```
+
+`exa-tool corpus render-words` tallies every mesh's render flags (the
+shadow-bias level and its bits) across the packs, with examples, and lists
+the `uw01_floor*` nodes ([formats/RFC.md](formats/RFC.md)).
+
