@@ -597,3 +597,146 @@ mod tests {
         assert_eq!(popup_inner(10, 6, 4, 4), (48, 32));
     }
 }
+
+/// What a mouse-down on the panel asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseIntent {
+    /// Nothing to do (or the base form handles it).
+    None,
+    /// Start dragging the hit entry; the grab offset is the cell's centre.
+    StartDrag { grab: Cell },
+    /// Use the hit item.
+    Use,
+    /// Open the hit container.
+    Open,
+    /// Show the hit item's card.
+    Card,
+}
+
+/// The original's mouse-down decision for the panel. `button` is the event's
+/// bit field: 0x2 right, 0x4000 drag start, 0x8000 use/open, 0x2000 card.
+/// `hit` is the 1-based hover index minus one (None for 0 or −1).
+pub fn mouse_intent(
+    button: u16,
+    hit: Option<usize>,
+    allow_drag: bool,
+    is_container: bool,
+    cell: i32,
+) -> MouseIntent {
+    if button & 0x2 != 0 {
+        return MouseIntent::None;
+    }
+    if button & 0x4000 != 0 {
+        if !allow_drag || hit.is_none() {
+            return MouseIntent::None;
+        }
+        return MouseIntent::StartDrag {
+            grab: drag_grab(cell),
+        };
+    }
+    if button & 0x8000 != 0 {
+        if hit.is_none() {
+            return MouseIntent::None;
+        }
+        return if is_container {
+            MouseIntent::Open
+        } else {
+            MouseIntent::Use
+        };
+    }
+    if button & 0x2000 != 0 && hit.is_some() {
+        return MouseIntent::Card;
+    }
+    MouseIntent::None
+}
+
+/// The grab offset once a drag has started: the cell's centre, not the
+/// click's offset inside it.
+pub fn drag_grab(cell: i32) -> Cell {
+    Cell::new(cell >> 1, cell >> 1)
+}
+
+/// What the source panel does when a drag ends without a drop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DragEnd {
+    /// The cancelled drag keeps the entry in place.
+    Cancel,
+    /// Drag-out is refused: the entry snaps back with the payload's flags.
+    SnapBack,
+    /// The entry moved to the linked panel.
+    Transfer,
+    /// The entry leaves the panel.
+    Remove,
+}
+
+/// The drag-ended decision. `dragged` says whether an entry carries the drag
+/// flag; `linked` says the payload's destination is this panel's linked one.
+pub fn drag_end(
+    dragged: bool,
+    cancelled: bool,
+    allowed_out: bool,
+    linked: bool,
+) -> Option<DragEnd> {
+    if !dragged {
+        return None;
+    }
+    if cancelled {
+        return Some(DragEnd::Cancel);
+    }
+    if !allowed_out {
+        return Some(DragEnd::SnapBack);
+    }
+    if linked {
+        return Some(DragEnd::Transfer);
+    }
+    Some(DragEnd::Remove)
+}
+
+#[cfg(test)]
+mod mouse_tests {
+    use super::*;
+
+    #[test]
+    fn the_mouse_down_intents() {
+        assert_eq!(
+            mouse_intent(0x2, Some(1), true, false, 160),
+            MouseIntent::None
+        );
+        assert_eq!(
+            mouse_intent(0x4000, Some(1), true, false, 160),
+            MouseIntent::StartDrag {
+                grab: Cell::new(80, 80)
+            }
+        );
+        assert_eq!(
+            mouse_intent(0x4000, Some(1), false, false, 160),
+            MouseIntent::None
+        );
+        assert_eq!(
+            mouse_intent(0x8000, Some(1), true, true, 160),
+            MouseIntent::Open
+        );
+        assert_eq!(
+            mouse_intent(0x8000, Some(1), true, false, 160),
+            MouseIntent::Use
+        );
+        assert_eq!(
+            mouse_intent(0x2000, Some(0), true, false, 160),
+            MouseIntent::Card
+        );
+        assert_eq!(
+            mouse_intent(0x1, Some(0), true, false, 160),
+            MouseIntent::None
+        );
+        assert_eq!(drag_grab(160), Cell::new(80, 80));
+    }
+
+    #[test]
+    fn the_drag_end_decisions() {
+        assert_eq!(drag_end(false, false, true, false), None);
+        assert_eq!(drag_end(true, true, true, false), Some(DragEnd::Cancel));
+        assert_eq!(drag_end(true, false, false, false), Some(DragEnd::SnapBack));
+        assert_eq!(drag_end(true, false, true, true), Some(DragEnd::Transfer));
+        assert_eq!(drag_end(true, false, true, false), Some(DragEnd::Remove));
+    }
+}
