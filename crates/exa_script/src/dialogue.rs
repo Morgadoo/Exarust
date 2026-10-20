@@ -300,6 +300,8 @@ pub struct Panel {
     pub other: bool,
     pub can_pick: bool,
     pub chosen: usize,
+    /// The highlighted entry, from 1 (0: none).
+    pub highlight: usize,
 }
 
 /// A pending narrator message.
@@ -2131,6 +2133,46 @@ impl Engine {
         }
         self.panel.open = false;
         self.panel.entries.clear();
+    }
+
+    /// Move the panel's highlight (wheel or keys): back while above the
+    /// first entry, forward while below the last (from none, to the first).
+    pub fn move_highlight(&mut self, forward: bool) {
+        if !self.panel.open {
+            return;
+        }
+        let h = self.panel.highlight;
+        if !forward {
+            if h > 1 {
+                self.panel.highlight = h - 1;
+            }
+        } else if h < self.panel.entries.len() {
+            self.panel.highlight = (h + 1).max(1);
+        }
+    }
+
+    /// Pick the highlighted entry.
+    pub fn confirm(&mut self, scene: &mut Scene<'_>) {
+        let h = self.panel.highlight;
+        if h > 0 && h <= self.panel.entries.len() {
+            self.pick(scene, h - 1);
+        }
+    }
+
+    /// End every conversation (a session ends or a save loads): live ones
+    /// end with their topic recorded, all are released, a pending
+    /// narration is dropped and the panel closes.
+    pub fn end_all(&mut self, scene: &mut Scene<'_>) {
+        for i in 0..self.active.len() {
+            let id = self.active[i];
+            if self.conv(id).is_some_and(|c| c.state != State::Ended) {
+                self.end(scene, id);
+            }
+            self.release(id);
+        }
+        self.active.clear();
+        self.narration = None;
+        self.close_panel(scene);
     }
 
     /// Start the narrator at `topic` (after `delay` ms when non-zero).

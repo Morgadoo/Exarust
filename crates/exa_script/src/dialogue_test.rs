@@ -519,6 +519,68 @@ fn a_relation_topic_is_activated() {
 }
 
 #[test]
+fn the_highlight_moves_within_the_list() {
+    let mut e = Engine::default();
+    e.panel.open = true;
+    for _ in 0..3 {
+        e.panel.entries.push(dialogue::Choice {
+            text: Vec::new(),
+            topic: 0,
+            branch: 0,
+        });
+    }
+    e.move_highlight(false);
+    assert_eq!(e.panel.highlight, 0);
+    for want in [1, 2, 3, 3] {
+        e.move_highlight(true);
+        assert_eq!(e.panel.highlight, want);
+    }
+    e.move_highlight(false);
+    assert_eq!(e.panel.highlight, 2);
+}
+
+#[test]
+fn ending_everything_records_and_releases() {
+    let greeting = node(
+        NODE_ENTRY | 0x9,
+        "Greeting",
+        &[],
+        vec![branch(
+            0,
+            &[(1, "Halt.")],
+            "",
+            "",
+            vec![branch(0, &[(2, "No.")], "", "", vec![])],
+        )],
+    );
+    let db = RoleDb {
+        roles: vec![
+            role(
+                100,
+                0,
+                0,
+                vec![entry(0x2, 1, Some(graph(1, vec![greeting])))],
+            ),
+            role(1, 0, 0, vec![]),
+        ],
+    };
+    let mut guard = person(GUARD, &[100], &db);
+    guard.add_relation(TRAVELLER, 1, 0);
+    let mut cast = Cast {
+        characters: vec![guard, person(TRAVELLER, &[1], &db)],
+    };
+    let mut e = Engine::default();
+    let mut s = scene(&db, None, &mut cast, 0);
+    assert!(e.greet(&mut s, GUARD, TRAVELLER));
+    e.end_all(&mut s);
+    assert!(e.active.is_empty());
+    assert!(e.conversations.iter().all(Option::is_none));
+    let words =
+        topics::block(cast.get(GUARD).unwrap(), TRAVELLER, 1, 100).and_then(|m| m.words.clone());
+    assert_eq!(words, Some(vec![1000]));
+}
+
+#[test]
 fn ended_conversations_are_released() {
     let mut e = Engine::default();
     let db = RoleDb::default();
