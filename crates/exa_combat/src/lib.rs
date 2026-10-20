@@ -23,6 +23,7 @@
 //! ([`wounds`]). An armed bite above 0.1 sticks the weapon in the part
 //! ([`bite`]).
 
+pub mod aim;
 pub mod attack;
 pub mod bite;
 pub mod collapse;
@@ -40,6 +41,7 @@ pub mod wounds;
 
 use std::collections::HashSet;
 
+pub use aim::{HeadLook, HeadTrack, track_head};
 use attack::{AttackMotion, Attacker, Slot};
 use bevy::prelude::*;
 pub use condition::{Condition, StateFlags};
