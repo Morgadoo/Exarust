@@ -289,14 +289,42 @@ pub fn build_mip_chain_rgba8_from(
     wrap: bool,
     conversion: MipConversion,
 ) -> (Vec<u8>, u32) {
+    build_mip_chain_rgba8_between(
+        base,
+        width,
+        height,
+        first_level,
+        KAISER_MAX_LEVEL,
+        wrap,
+        conversion,
+    )
+}
+
+/// Builds an RGBA8 chain of the levels `first_level..=last_level`. The first
+/// level is uploaded as the texture's base; `last_level` bounds the chain
+/// (the texture's mip filter, or the first level itself when mipmapping is
+/// off). The chain also stops where the dimensions allow.
+pub fn build_mip_chain_rgba8_between(
+    base: &[u8],
+    width: usize,
+    height: usize,
+    first_level: u32,
+    last_level: u32,
+    wrap: bool,
+    conversion: MipConversion,
+) -> (Vec<u8>, u32) {
     if width == 0 || height == 0 || base.len() < width * height * 4 {
         return (base.to_vec(), 1);
     }
-    if first_level == 0 {
-        return build_chain_from_floats(base, width, height, 0, wrap, conversion);
-    }
-    let (chain, count) =
-        build_chain_from_floats(base, width, height, first_level, wrap, conversion);
+    let (chain, count) = build_chain_from_floats(
+        base,
+        width,
+        height,
+        first_level,
+        last_level,
+        wrap,
+        conversion,
+    );
     if count == 0 {
         // A chain that stops before `first_level` (a tiny image): the caller
         // has nothing to upload. The retail data never asks for this.
@@ -311,6 +339,7 @@ fn build_chain_from_floats(
     width: usize,
     height: usize,
     first_level: u32,
+    last_level: u32,
     wrap: bool,
     conversion: MipConversion,
 ) -> (Vec<u8>, u32) {
@@ -332,7 +361,7 @@ fn build_chain_from_floats(
     };
     let mut count = if first_level == 0 { 1u32 } else { 0u32 };
     let bank = kaiser_bank();
-    for level in 1..=KAISER_MAX_LEVEL {
+    for level in 1..=last_level.min(KAISER_MAX_LEVEL) {
         let dst_width = width >> level;
         let dst_height = height >> level;
         if dst_width == 0 || dst_height == 0 || dst_width + dst_height < 3 {
@@ -519,6 +548,21 @@ mod rgba_chain_tests {
         assert!(out.is_empty());
         // Which image stores which level is a format question.
         assert_eq!(exa_formats::rfi::level_dims(8, 8, 2), (2, 2));
+    }
+
+    /// Without mipmapping, a skipped first level is uploaded alone: the
+    /// original generates levels `s..s`, not a chain.
+    #[test]
+    fn a_chain_can_stop_at_its_first_level() {
+        let base = vec![51u8; 8 * 8 * 4];
+        let (out, count) =
+            build_mip_chain_rgba8_between(&base, 8, 8, 2, 2, true, MipConversion::Linear);
+        assert_eq!(count, 1);
+        assert_eq!(out.len(), 2 * 2 * 4);
+        let (out, count) =
+            build_mip_chain_rgba8_between(&base, 8, 8, 1, 1, true, MipConversion::Linear);
+        assert_eq!(count, 1);
+        assert_eq!(out.len(), 4 * 4 * 4);
     }
 
     /// A 4 × 4 checker of 0 and 255 halves to mid-grey: 128 when filtered

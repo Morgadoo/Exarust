@@ -1,8 +1,18 @@
-//! `.rfi` images to Bevy images.
+//! `.rfi` images to Bevy images, with the original's texture parameters.
 //!
-//! Block-compressed images are uploaded as-is with their mip chain when the
-//! GPU supports BC formats and the base level is block aligned; everything
-//! else is decoded to RGBA8 on the CPU (base level only).
+//! A texture's sampler/creation word is a bit field: the filtering bits, the
+//! data (non-sRGB) bit, wrap bits per axis, the detail class and the target
+//! kind. The image's own header contributes the wrap bits, the detail class
+//! and the stored-chain bit; the material passes the rest. Block-compressed
+//! images are uploaded as-is with their mip chain when the GPU supports BC
+//! formats and the base level is block aligned; everything else is decoded
+//! to RGBA8. Which stored mip levels are uploaded, and which levels the
+//! Kaiser chain generates, follows `TextureDetail` ([`TextureSettings`]).
+//!
+//! The original sets `GL_TEXTURE_LOD_BIAS` per bind unless the texture asks
+//! to skip it. Bevy's sampler descriptor has no LOD bias; [`TextureSampler`]
+//! still computes it so the rule is testable, and a renderer wanting it must
+//! pass it to the shader.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
@@ -12,20 +22,248 @@ use exa_formats::pixel::MipConversion;
 use exa_formats::rfi::{PixelFormat, Rfi, level_dims};
 
 /// How an image's colour should be interpreted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ColorSpace {
     Srgb,
     Linear,
 }
 
+/// The bits of a texture's sampler/creation word.
+pub mod flags {
+    /// Magnification filter: linear, else nearest.
+    pub const MAG_LINEAR: u32 = 0x20;
+    /// Minification filter within a level: linear, else nearest.
+    pub const MIN_LINEAR: u32 = 0x10;
+    /// Sample the mip chain (without it only the base level is uploaded).
+    pub const MIPMAP: u32 = 0x40;
+    /// Blend between mip levels: linear, else nearest.
+    pub const MIP_LINEAR: u32 = 0x80;
+    /// The filtering bits `TextureQuality` masks.
+    pub const FILTER_MASK: u32 = 0xF0;
+    /// The image holds data, not colour: upload linear, never sRGB.
+    pub const DATA: u32 = 0x100;
+    /// Do not set the LOD bias on bind.
+    pub const NO_LOD_BIAS: u32 = 0x200;
+    pub const REPEAT_S: u32 = 0x0001_0000;
+    pub const REPEAT_T: u32 = 0x0002_0000;
+    pub const REPEAT_R: u32 = 0x0004_0000;
+    /// The texture's target kind, bits 28–30.
+    pub const TARGET_MASK: u32 = 0x7000_0000;
+    pub const TARGET_2D: u32 = 0x0000_0000;
+    pub const TARGET_3D: u32 = 0x1000_0000;
+    /// A second 2D value the original maps to `GL_TEXTURE_2D`.
+    pub const TARGET_2D_ALT: u32 = 0x2000_0000;
+    pub const TARGET_CUBE: u32 = 0x3000_0000;
+    pub const TARGET_CUBE_ARRAY: u32 = 0x4000_0000;
+    /// The anisotropy mode, subtracted from the quality's level.
+    pub const ANISOTROPY_MASK: u32 = 0x3;
+}
+
+/// The texture settings the original reads from its globals.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextureSettings {
+    /// The `TextureQuality` mask (0xF0 at quality 5).
+    pub quality_mask: u32,
+    /// The anisotropy level (4 at quality 5).
+    pub anisotropy_level: u32,
+    /// `TextureDetail` (3 in the retail user's settings, minimum 2).
+    pub texture_detail: u32,
+    /// The supersampling level the LOD bias follows.
+    pub supersample: i32,
+    /// The LOD bias base the quality setting writes (-0.75 at quality 5;
+    /// the routine's own static is -0.5).
+    pub lod_bias_base: f32,
+    /// The driver's largest texture side (`GL_MAX_TEXTURE_SIZE`, 65536
+    /// before the driver reports its own).
+    pub max_texture_size: u32,
+    /// The driver's texture units, clamped to 16.
+    pub max_units: u32,
+}
+
+impl Default for TextureSettings {
+    /// The retail user's settings: quality 5, detail 3, 4x supersampling.
+    fn default() -> Self {
+        Self {
+            quality_mask: flags::FILTER_MASK,
+            anisotropy_level: 4,
+            texture_detail: 3,
+            supersample: 4,
+            lod_bias_base: -0.5,
+            max_texture_size: exa_formats::rfi::MAX_MIP_DIMENSION,
+            max_units: 16,
+        }
+    }
+}
+
+/// The texture's target, from bits 28–30 of its word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextureTarget {
+    D2,
+    D3,
+    Cube,
+    CubeArray,
+}
+
+impl TextureTarget {
+    pub fn from_flags(flags: u32) -> TextureTarget {
+        match flags & flags::TARGET_MASK {
+            flags::TARGET_3D => TextureTarget::D3,
+            flags::TARGET_CUBE => TextureTarget::Cube,
+            flags::TARGET_CUBE_ARRAY => TextureTarget::CubeArray,
+            // Both 0 and 0x20000000 map to GL_TEXTURE_2D.
+            _ => TextureTarget::D2,
+        }
+    }
+}
+
+/// The sampler state the word asks for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextureSampler {
+    pub address_mode_u: ImageAddressMode,
+    pub address_mode_v: ImageAddressMode,
+    pub address_mode_w: ImageAddressMode,
+    pub mag_filter: ImageFilterMode,
+    pub min_filter: ImageFilterMode,
+    pub mipmap_filter: ImageFilterMode,
+    pub anisotropy_clamp: u16,
+    /// The LOD bias in the original, `None` when the texture skips it.
+    pub lod_bias: Option<f32>,
+}
+
+/// The LOD bias of a supersampling setting: the base times the setting (or
+/// one less from 2 up), divided by three, in the original's f32 order.
+pub fn lod_bias(base: f32, supersample: i32) -> f32 {
+    let factor = if supersample < 2 {
+        supersample as f32
+    } else {
+        (supersample as i64 - 1) as f32
+    };
+    base * factor * 0.333_333_34
+}
+
+impl TextureSampler {
+    /// Reads the sampler state from a texture word. Wrap comes from the
+    /// word's bits; the image's own header bits are or-ed in before this is
+    /// called.
+    pub fn from_flags(flags: u32, settings: &TextureSettings) -> TextureSampler {
+        let address = |bit: u32| {
+            if flags & bit != 0 {
+                ImageAddressMode::Repeat
+            } else {
+                ImageAddressMode::ClampToEdge
+            }
+        };
+        let min_filter = if flags & flags::MIN_LINEAR != 0 {
+            ImageFilterMode::Linear
+        } else {
+            ImageFilterMode::Nearest
+        };
+        let mipmap_filter = if flags & flags::MIPMAP == 0 {
+            ImageFilterMode::Nearest
+        } else if flags & flags::MIP_LINEAR != 0 {
+            ImageFilterMode::Linear
+        } else {
+            ImageFilterMode::Nearest
+        };
+        // 2^(level − mode), as the original's anisotropy parameter asks; the
+        // hardware clamps it to what it supports.
+        let mode = flags & flags::ANISOTROPY_MASK;
+        let shift = settings.anisotropy_level.saturating_sub(mode).min(4);
+        let anisotropy_clamp = (1u16 << shift).min(16);
+        let lod_bias = if flags & flags::NO_LOD_BIAS != 0 {
+            None
+        } else {
+            Some(lod_bias(settings.lod_bias_base, settings.supersample))
+        };
+        TextureSampler {
+            address_mode_u: address(flags::REPEAT_S),
+            address_mode_v: address(flags::REPEAT_T),
+            address_mode_w: address(flags::REPEAT_R),
+            mag_filter: if flags & flags::MAG_LINEAR != 0 {
+                ImageFilterMode::Linear
+            } else {
+                ImageFilterMode::Nearest
+            },
+            min_filter,
+            mipmap_filter,
+            anisotropy_clamp,
+            lod_bias,
+        }
+    }
+
+    fn descriptor(self) -> ImageSamplerDescriptor {
+        ImageSamplerDescriptor {
+            address_mode_u: self.address_mode_u,
+            address_mode_v: self.address_mode_v,
+            address_mode_w: self.address_mode_w,
+            mag_filter: self.mag_filter,
+            min_filter: self.min_filter,
+            mipmap_filter: self.mipmap_filter,
+            anisotropy_clamp: self.anisotropy_clamp,
+            ..ImageSamplerDescriptor::linear()
+        }
+    }
+}
+
+/// The word a material texture starts from: the record's flags and the
+/// quality mask. Filters, wrap and anisotropy are added by the caller.
+pub fn material_flags(record_flags: u32, settings: &TextureSettings) -> u32 {
+    record_flags | settings.quality_mask
+}
+
+/// Whether the word asks for the sRGB formats.
+pub fn is_srgb(space: ColorSpace, flags: u32) -> bool {
+    space == ColorSpace::Srgb && flags & flags::DATA == 0
+}
+
+/// The image with the original's parameters, from the default texture word
+/// (a material texture at the retail settings).
 pub fn rfi_to_image(
     rfi: &Rfi,
     space: ColorSpace,
     bc_supported: bool,
 ) -> exa_formats::Result<Image> {
+    rfi_to_texture(
+        rfi,
+        space,
+        bc_supported,
+        default_flags(),
+        &TextureSettings::default(),
+    )
+}
+
+/// The word a material texture gets when the record does not say.
+pub fn default_flags() -> u32 {
+    flags::REPEAT_S
+        | flags::REPEAT_T
+        | flags::REPEAT_R
+        | flags::MAG_LINEAR
+        | flags::MIN_LINEAR
+        | flags::MIPMAP
+        | flags::MIP_LINEAR
+}
+
+/// The image with a texture word: the stored or generated levels the detail
+/// setting keeps, the sRGB or linear format the word and space pick, and the
+/// sampler state it asks for.
+pub fn rfi_to_texture(
+    rfi: &Rfi,
+    space: ColorSpace,
+    bc_supported: bool,
+    flags: u32,
+    settings: &TextureSettings,
+) -> exa_formats::Result<Image> {
     let w = rfi.header.width;
     let h = rfi.header.height;
-    let srgb = space == ColorSpace::Srgb;
+    // The image's own header keeps the wrap, detail and target bits; the
+    // request supplies the filtering and data bits.
+    let word = flags | (rfi.header.flags & 0xfff8_0000);
+    let srgb = is_srgb(space, word);
+    let sampler = TextureSampler::from_flags(word, settings);
+    let first = rfi
+        .header
+        .first_mip_level(settings.texture_detail, settings.max_texture_size);
+    let mipmapped = word & flags::MIPMAP != 0;
     let block_format = match rfi.format {
         PixelFormat::Bc1 if srgb => Some(TextureFormat::Bc1RgbaUnormSrgb),
         PixelFormat::Bc1 => Some(TextureFormat::Bc1RgbaUnorm),
@@ -35,50 +273,66 @@ pub fn rfi_to_image(
         PixelFormat::Bc5 if !srgb => Some(TextureFormat::Bc5RgUnorm),
         _ => None,
     };
-    let mut image = match block_format {
+    let image = match block_format {
         Some(format)
             if bc_supported && w.is_multiple_of(4) && h.is_multiple_of(4) && !rfi.is_packed() =>
         {
-            let pixels = rfi.pixels()?;
-            let mut len = 0;
-            for level in 0..rfi.mip_count {
-                let (lw, lh) = level_dims(w, h, level);
-                len += rfi.format.level_size(lw, lh).unwrap_or(0);
-            }
-            let mut image = Image::new_uninit(
-                Extent3d {
-                    width: w,
-                    height: h,
-                    depth_or_array_layers: 1,
-                },
-                TextureDimension::D2,
-                format,
-                RenderAssetUsages::RENDER_WORLD,
-            );
-            image.texture_descriptor.mip_level_count = rfi.mip_count;
-            image.data = Some(pixels[..len.min(pixels.len())].to_vec());
-            image
+            // A stored chain is uploaded from the chosen level; a compressed
+            // image without one cannot be downsampled on the CPU, so the
+            // original uploads its base level as it is.
+            let first = if rfi.header.has_mip_chain() {
+                first.min(rfi.mip_count.saturating_sub(1))
+            } else {
+                0
+            };
+            let last = if mipmapped && rfi.header.has_mip_chain() {
+                rfi.mip_count.saturating_sub(1)
+            } else {
+                first
+            };
+            block_image(rfi, format, first, last)?
         }
         _ => {
-            // Every stored mip level, decoded, so distant surfaces filter as
-            // the original's do instead of shimmering.
-            let mut rgba = rfi.decode_mips_rgba8()?;
-            let mut mip_count = rfi.mip_count.max(1);
-            if needs_kaiser_mips(mip_count, w, h) {
-                let (chain, levels) = exa_render::mipmap::build_mip_chain_rgba8(
+            // Every kept level is decoded; a chain that is not stored is
+            // generated, starting at the level the detail setting chose.
+            let mut mip_count = 1u32;
+            let mut rgba = if rfi.header.has_mip_chain() {
+                let first = first.min(rfi.mip_count.saturating_sub(1));
+                let last = if mipmapped {
+                    rfi.mip_count.saturating_sub(1)
+                } else {
+                    first
+                };
+                let pixels = rfi.pixels()?;
+                let mut out = Vec::new();
+                for level in first..=last {
+                    out.extend(rfi.decode_level_rgba8(&pixels, level)?);
+                }
+                mip_count = last - first + 1;
+                out
+            } else {
+                rfi.decode_rgba8()?
+            };
+            if !rfi.header.has_mip_chain() {
+                let last = if mipmapped { u32::MAX } else { first.max(1) };
+                let (chain, levels) = exa_render::mipmap::build_mip_chain_rgba8_between(
                     &rgba,
                     w as usize,
                     h as usize,
+                    first,
+                    last,
                     true,
                     mip_conversion(rfi.header.format_word),
                 );
-                rgba = chain;
-                mip_count = levels;
+                if levels > 0 {
+                    rgba = chain;
+                    mip_count = levels;
+                }
             }
             let mut image = Image::new_uninit(
                 Extent3d {
-                    width: w,
-                    height: h,
+                    width: w >> first.min(31),
+                    height: h >> first.min(31),
                     depth_or_array_layers: 1,
                 },
                 TextureDimension::D2,
@@ -94,28 +348,50 @@ pub fn rfi_to_image(
             image
         }
     };
-    image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
-        address_mode_u: ImageAddressMode::Repeat,
-        address_mode_v: ImageAddressMode::Repeat,
-        address_mode_w: ImageAddressMode::Repeat,
-        mag_filter: ImageFilterMode::Linear,
-        min_filter: ImageFilterMode::Linear,
-        mipmap_filter: ImageFilterMode::Linear,
-        // The original at its top texture quality: 2^4.
-        anisotropy_clamp: 16,
-        ..ImageSamplerDescriptor::linear()
-    });
+    let mut image = image;
+    image.sampler = ImageSampler::Descriptor(sampler.descriptor());
     Ok(image)
 }
 
-/// Whether the Kaiser chain should be generated: one stored level, a
-/// power-of-two size and both sides at least 4.
-fn needs_kaiser_mips(mip_count: u32, width: u32, height: u32) -> bool {
-    mip_count <= 1
-        && width.is_power_of_two()
-        && height.is_power_of_two()
-        && width >= 4
-        && height >= 4
+/// A compressed image's uploaded levels, from the stored chain.
+fn block_image(
+    rfi: &Rfi,
+    format: TextureFormat,
+    first: u32,
+    last: u32,
+) -> exa_formats::Result<Image> {
+    let w = rfi.header.width;
+    let h = rfi.header.height;
+    let pixels = rfi.pixels()?;
+    let mut offset = 0usize;
+    let mut start = 0usize;
+    let mut len = 0usize;
+    for level in 0..=last {
+        let (lw, lh) = level_dims(w, h, level);
+        let size = rfi.format.level_size(lw, lh).unwrap_or(0);
+        if level == first {
+            start = offset;
+        }
+        if level >= first {
+            len += size;
+        }
+        offset += size;
+    }
+    let end = (start + len).min(pixels.len());
+    let data = pixels[start.min(end)..end].to_vec();
+    let mut image = Image::new_uninit(
+        Extent3d {
+            width: w >> first.min(31),
+            height: h >> first.min(31),
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        format,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.texture_descriptor.mip_level_count = (last - first + 1).max(1);
+    image.data = Some(data);
+    Ok(image)
 }
 
 /// The filtering space of a generated chain: the original's pick for the
@@ -135,24 +411,146 @@ pub fn has_alpha(rfi: &Rfi) -> bool {
 }
 
 #[cfg(test)]
-mod kaiser_tests {
-    use super::{MipConversion, mip_conversion, needs_kaiser_mips};
+mod sampler_tests {
+    use super::*;
 
     #[test]
-    fn generated_chains_filter_in_the_original_space() {
-        assert_eq!(mip_conversion(0x0100_E608), MipConversion::GammaColour);
-        assert_eq!(mip_conversion(0x0100_C600), MipConversion::Gamma);
-        assert_eq!(mip_conversion(0x0111_C600), MipConversion::Linear);
-        assert_eq!(mip_conversion(0x1111_C600), MipConversion::Signed);
-        assert_eq!(mip_conversion(0x813B_C600), MipConversion::Linear);
+    fn the_lod_bias_follows_the_supersampling_setting() {
+        // base * f / 3 in f32, f = ss below 2 and ss - 1 from 2 up.
+        assert_eq!(lod_bias(-0.75, 0), 0.0);
+        assert_eq!(lod_bias(-0.75, 1), -0.25);
+        assert_eq!(lod_bias(-0.75, 2), -0.25);
+        assert_eq!(lod_bias(-0.75, 3), -0.5);
+        assert_eq!(lod_bias(-0.75, 4), -0.75);
+        assert!((lod_bias(-0.5, 4) + 0.5).abs() < 1e-7);
     }
 
     #[test]
-    fn kaiser_mips_need_one_level_and_a_power_of_two_size() {
-        assert!(needs_kaiser_mips(1, 4, 4));
-        assert!(needs_kaiser_mips(0, 64, 32));
-        assert!(!needs_kaiser_mips(2, 64, 64));
-        assert!(!needs_kaiser_mips(1, 3, 8));
-        assert!(!needs_kaiser_mips(1, 2, 2));
+    fn the_sampler_word_picks_filters_wrap_and_anisotropy() {
+        let settings = TextureSettings::default();
+        // A material texture: record flags 0x70000 and the quality mask.
+        let word = material_flags(0x70000, &settings);
+        assert_eq!(word, 0x700F0);
+        let sampler = TextureSampler::from_flags(word, &settings);
+        assert_eq!(sampler.mag_filter, ImageFilterMode::Linear);
+        assert_eq!(sampler.min_filter, ImageFilterMode::Linear);
+        assert_eq!(sampler.mipmap_filter, ImageFilterMode::Linear);
+        assert_eq!(sampler.address_mode_u, ImageAddressMode::Repeat);
+        assert_eq!(sampler.address_mode_v, ImageAddressMode::Repeat);
+        assert_eq!(sampler.address_mode_w, ImageAddressMode::Repeat);
+        assert_eq!(sampler.anisotropy_clamp, 16);
+        assert_eq!(sampler.lod_bias, Some(-0.5));
+        // A data map that asks to skip the bias and clamps both ways.
+        let sampler = TextureSampler::from_flags(0x300 | 0x20, &settings);
+        assert_eq!(sampler.address_mode_u, ImageAddressMode::ClampToEdge);
+        assert_eq!(sampler.mipmap_filter, ImageFilterMode::Nearest);
+        assert_eq!(sampler.lod_bias, None);
+        // Anisotropy mode 1 halves the level.
+        assert_eq!(TextureSampler::from_flags(1, &settings).anisotropy_clamp, 8);
+    }
+
+    #[test]
+    fn the_target_comes_from_the_top_kind_bits() {
+        assert_eq!(TextureTarget::from_flags(0), TextureTarget::D2);
+        assert_eq!(
+            TextureTarget::from_flags(flags::TARGET_3D),
+            TextureTarget::D3
+        );
+        assert_eq!(
+            TextureTarget::from_flags(flags::TARGET_2D_ALT),
+            TextureTarget::D2
+        );
+        assert_eq!(
+            TextureTarget::from_flags(flags::TARGET_CUBE),
+            TextureTarget::Cube
+        );
+        assert_eq!(
+            TextureTarget::from_flags(flags::TARGET_CUBE_ARRAY),
+            TextureTarget::CubeArray
+        );
+    }
+
+    #[test]
+    fn the_data_bit_beats_the_colour_space() {
+        assert!(is_srgb(ColorSpace::Srgb, 0));
+        assert!(!is_srgb(ColorSpace::Srgb, flags::DATA));
+        assert!(!is_srgb(ColorSpace::Linear, 0));
+        assert!(!is_srgb(ColorSpace::Linear, flags::DATA));
+    }
+}
+
+#[cfg(test)]
+mod level_tests {
+    use super::*;
+    use exa_formats::rfi::RfiHeader;
+
+    /// An image with `levels` RGBA8 levels of `w` x `h` (base), filled with
+    /// `value` per level.
+    fn rgba_image(w: u32, h: u32, levels: u32, flags: u32) -> (Vec<u8>, RfiHeader) {
+        let mut data = Vec::new();
+        let mut size = 0;
+        for level in 0..levels {
+            let (lw, lh) = level_dims(w, h, level);
+            data.extend(std::iter::repeat_n(level as u8, (lw * lh * 4) as usize));
+            size += lw * lh * 4;
+        }
+        let header = RfiHeader {
+            width: w,
+            height: h,
+            depth: 1,
+            format_word: 0x0100_E608,
+            flags: if levels > 1 { flags | 0x8_0000 } else { flags },
+            storage: 0x1000_0000,
+            data_size: size,
+        };
+        (data, header)
+    }
+
+    #[test]
+    fn the_detail_setting_keeps_the_chosen_stored_level() {
+        // 4x4 plus 2x2 plus 1x1, class 3, detail 3: the 2x2 is the base.
+        let (data, mut header) = rgba_image(4, 4, 3, 3 << 22);
+        header.flags |= 3 << 22;
+        let mut bytes = Vec::new();
+        for v in [
+            exa_formats::rfi::RFI_MAGIC,
+            header.width,
+            header.height,
+            header.depth,
+            header.format_word,
+            header.flags,
+            header.storage,
+            header.data_size,
+        ] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        bytes.extend_from_slice(&data);
+        let rfi = Rfi::parse(&bytes).unwrap();
+        assert_eq!(rfi.mip_count, 3);
+        let image = rfi_to_texture(
+            &rfi,
+            ColorSpace::Srgb,
+            false,
+            default_flags(),
+            &TextureSettings::default(),
+        )
+        .unwrap();
+        assert_eq!(image.texture_descriptor.size.width, 2);
+        assert_eq!(image.texture_descriptor.size.height, 2);
+        // Mipmapping keeps the rest of the chain: level 1 (1x1) here.
+        assert_eq!(image.texture_descriptor.mip_level_count, 2);
+        assert_eq!(image.data.as_ref().unwrap().len(), 2 * 2 * 4 + 4);
+        assert_eq!(image.data.as_ref().unwrap()[0], 1);
+        // Without mipmapping only the chosen level is uploaded.
+        let image = rfi_to_texture(
+            &rfi,
+            ColorSpace::Srgb,
+            false,
+            default_flags() & !flags::MIPMAP,
+            &TextureSettings::default(),
+        )
+        .unwrap();
+        assert_eq!(image.texture_descriptor.mip_level_count, 1);
+        assert_eq!(image.data.as_ref().unwrap().len(), 2 * 2 * 4);
     }
 }

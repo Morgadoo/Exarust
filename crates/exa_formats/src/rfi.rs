@@ -147,15 +147,14 @@ impl RfiHeader {
 
     /// The first mip level the loader uploads as level 0: the detail class
     /// over the detail setting, floored at zero and then raised while a side
-    /// is larger than [`MAX_MIP_DIMENSION`]. Skipping a level halves the
-    /// stored resolution; the format never changes.
-    pub fn first_mip_level(&self, texture_detail: u32) -> u32 {
+    /// is larger than `max_size` (the driver's largest texture side).
+    /// Skipping a level halves the stored resolution; the format never
+    /// changes.
+    pub fn first_mip_level(&self, texture_detail: u32, max_size: u32) -> u32 {
         let class = self.detail_class();
         let skipped = class as i64 - texture_detail as i64 + 1;
         let mut level = skipped.max(0) as u32;
-        while level < 32
-            && ((self.width >> level) > MAX_MIP_DIMENSION
-                || (self.height >> level) > MAX_MIP_DIMENSION)
+        while level < 32 && ((self.width >> level) > max_size || (self.height >> level) > max_size)
         {
             level += 1;
         }
@@ -572,16 +571,49 @@ mod tests {
             data_size: 0,
         };
         // class − detail + 1, floored at zero: the shrink table.
-        assert_eq!(header(1024, 1024, 0).first_mip_level(3), 0);
-        assert_eq!(header(1024, 1024, 1).first_mip_level(3), 0);
-        assert_eq!(header(1024, 1024, 2).first_mip_level(3), 0);
-        assert_eq!(header(1024, 1024, 3).first_mip_level(3), 1);
-        assert_eq!(header(1024, 1024, 3).first_mip_level(2), 2);
-        assert_eq!(header(1024, 1024, 2).first_mip_level(2), 1);
-        assert_eq!(header(1024, 1024, 2).first_mip_level(4), 0);
+        assert_eq!(
+            header(1024, 1024, 0).first_mip_level(3, MAX_MIP_DIMENSION),
+            0
+        );
+        assert_eq!(
+            header(1024, 1024, 1).first_mip_level(3, MAX_MIP_DIMENSION),
+            0
+        );
+        assert_eq!(
+            header(1024, 1024, 2).first_mip_level(3, MAX_MIP_DIMENSION),
+            0
+        );
+        assert_eq!(
+            header(1024, 1024, 3).first_mip_level(3, MAX_MIP_DIMENSION),
+            1
+        );
+        assert_eq!(
+            header(1024, 1024, 3).first_mip_level(2, MAX_MIP_DIMENSION),
+            2
+        );
+        assert_eq!(
+            header(1024, 1024, 2).first_mip_level(2, MAX_MIP_DIMENSION),
+            1
+        );
+        assert_eq!(
+            header(1024, 1024, 2).first_mip_level(4, MAX_MIP_DIMENSION),
+            0
+        );
         // With no detail setting every class above zero skips a level.
-        assert_eq!(header(1024, 1024, 0).first_mip_level(0), 1);
-        assert_eq!(header(131_072, 65_537, 0).first_mip_level(0), 1);
-        assert_eq!(header(262_144, 1024, 0).first_mip_level(0), 2);
+        assert_eq!(
+            header(1024, 1024, 0).first_mip_level(0, MAX_MIP_DIMENSION),
+            1
+        );
+        assert_eq!(
+            header(131_072, 65_537, 0).first_mip_level(0, MAX_MIP_DIMENSION),
+            1
+        );
+        assert_eq!(
+            header(262_144, 1024, 0).first_mip_level(0, MAX_MIP_DIMENSION),
+            2
+        );
+        // The limit is the driver's largest side, which is what replaces the
+        // static 65536 on a real device.
+        assert_eq!(header(32_768, 16, 0).first_mip_level(0, 16_384), 1);
     }
 }
