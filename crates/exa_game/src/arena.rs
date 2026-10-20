@@ -875,3 +875,279 @@ mod generation_tests {
         assert_eq!(season_award(3, [true, false, true, true]), None);
     }
 }
+
+/// A weapon row: a name and its one to three variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WeaponEntry {
+    pub name: &'static str,
+    pub variants: &'static [u32],
+}
+
+const TIER0: [WeaponEntry; 8] = [
+    WeaponEntry {
+        name: "Hatchet",
+        variants: &[23],
+    },
+    WeaponEntry {
+        name: "Handsaw",
+        variants: &[224],
+    },
+    WeaponEntry {
+        name: "Hammer",
+        variants: &[262],
+    },
+    WeaponEntry {
+        name: "Cudgel",
+        variants: &[282],
+    },
+    WeaponEntry {
+        name: "Billhook",
+        variants: &[952],
+    },
+    WeaponEntry {
+        name: "Metal Bar",
+        variants: &[227],
+    },
+    WeaponEntry {
+        name: "Large Mallet",
+        variants: &[396],
+    },
+    WeaponEntry {
+        name: "Quarterstaff",
+        variants: &[406],
+    },
+];
+const TIER1: [WeaponEntry; 11] = [
+    WeaponEntry {
+        name: "Mace",
+        variants: &[79],
+    },
+    WeaponEntry {
+        name: "Spiked Club",
+        variants: &[206],
+    },
+    WeaponEntry {
+        name: "Dagger",
+        variants: &[395],
+    },
+    WeaponEntry {
+        name: "Long Knife",
+        variants: &[225],
+    },
+    WeaponEntry {
+        name: "Billhook (short)",
+        variants: &[127],
+    },
+    WeaponEntry {
+        name: "Sickle (short)",
+        variants: &[954],
+    },
+    WeaponEntry {
+        name: "Sledgehammer",
+        variants: &[232],
+    },
+    WeaponEntry {
+        name: "Iron-Shod Quarterstaff",
+        variants: &[407],
+    },
+    WeaponEntry {
+        name: "Billhook (long)",
+        variants: &[46],
+    },
+    WeaponEntry {
+        name: "Sickle (long)",
+        variants: &[39],
+    },
+    WeaponEntry {
+        name: "Pitchfork",
+        variants: &[41],
+    },
+];
+const TIER2: [WeaponEntry; 10] = [
+    WeaponEntry {
+        name: "Shortsword",
+        variants: &[210],
+    },
+    WeaponEntry {
+        name: "Axe",
+        variants: &[19, 419, 213],
+    },
+    WeaponEntry {
+        name: "War Hammer",
+        variants: &[212, 26],
+    },
+    WeaponEntry {
+        name: "Bar Mace",
+        variants: &[30],
+    },
+    WeaponEntry {
+        name: "Short Spear",
+        variants: &[422],
+    },
+    WeaponEntry {
+        name: "Maul",
+        variants: &[25],
+    },
+    WeaponEntry {
+        name: "Bardiche",
+        variants: &[37],
+    },
+    WeaponEntry {
+        name: "Great Axe",
+        variants: &[32],
+    },
+    WeaponEntry {
+        name: "Two Handed War Hammer",
+        variants: &[420],
+    },
+    WeaponEntry {
+        name: "Spear",
+        variants: &[421],
+    },
+];
+const TIER3: [WeaponEntry; 14] = [
+    WeaponEntry {
+        name: "Sword",
+        variants: &[440],
+    },
+    WeaponEntry {
+        name: "Falchion",
+        variants: &[12],
+    },
+    WeaponEntry {
+        name: "Spiked Mace",
+        variants: &[13, 22],
+    },
+    WeaponEntry {
+        name: "Flanged Mace",
+        variants: &[65],
+    },
+    WeaponEntry {
+        name: "Longsword",
+        variants: &[1166],
+    },
+    WeaponEntry {
+        name: "Two Handed Sword",
+        variants: &[24],
+    },
+    WeaponEntry {
+        name: "Grand Falchion",
+        variants: &[60],
+    },
+    WeaponEntry {
+        name: "Two Handed Battle Axe",
+        variants: &[21],
+    },
+    WeaponEntry {
+        name: "Two Handed Spiked Mace",
+        variants: &[423],
+    },
+    WeaponEntry {
+        name: "Two Handed Mace",
+        variants: &[424],
+    },
+    WeaponEntry {
+        name: "Voulge",
+        variants: &[159],
+    },
+    WeaponEntry {
+        name: "Guisarme",
+        variants: &[62],
+    },
+    WeaponEntry {
+        name: "Spetum",
+        variants: &[63],
+    },
+    WeaponEntry {
+        name: "Glaive",
+        variants: &[953],
+    },
+];
+const TIER4: [WeaponEntry; 4] = [
+    WeaponEntry {
+        name: "Greatsword",
+        variants: &[673],
+    },
+    WeaponEntry {
+        name: "Pole Axe",
+        variants: &[33],
+    },
+    WeaponEntry {
+        name: "Pole Hammer",
+        variants: &[61],
+    },
+    WeaponEntry {
+        name: "Halberd",
+        variants: &[34],
+    },
+];
+const TIER5: [WeaponEntry; 4] = TIER4;
+
+/// The six loadout tiers (`0x1002bb6a0`), each row 0x158 bytes in the
+/// binary: a count and up to 14 entries of a name and three variants.
+pub const WEAPON_TIERS: [&[WeaponEntry]; 6] = [&TIER0, &TIER1, &TIER2, &TIER3, &TIER4, &TIER5];
+
+/// A tier's weapon rows.
+pub fn weapon_tier(tier: u32) -> Option<&'static [WeaponEntry]> {
+    WEAPON_TIERS.get(tier as usize).copied()
+}
+
+/// Picks one of an entry's non-zero variants with the engine generator.
+pub fn pick_variant(entry: &WeaponEntry, rng: &mut crate::item_container::Rng) -> Option<u32> {
+    let count = entry.variants.iter().filter(|&&v| v != 0).count() as u32;
+    if count == 0 {
+        return None;
+    }
+    let index = rng.below(count) as usize;
+    entry
+        .variants
+        .iter()
+        .copied()
+        .filter(|&v| v != 0)
+        .nth(index)
+}
+
+/// A tier's point limit (`0x1002bcd30`).
+pub fn point_limit(tier: u32) -> Option<u32> {
+    POINT_LIMITS.get(tier as usize).copied()
+}
+
+#[cfg(test)]
+mod weapon_tests {
+    use super::*;
+    use crate::item_container::Rng;
+
+    #[test]
+    fn the_tier_lengths_and_names() {
+        assert_eq!(weapon_tier(0).unwrap().len(), 8);
+        assert_eq!(weapon_tier(1).unwrap().len(), 11);
+        assert_eq!(weapon_tier(2).unwrap().len(), 10);
+        assert_eq!(weapon_tier(3).unwrap().len(), 14);
+        assert_eq!(weapon_tier(4).unwrap().len(), 4);
+        assert_eq!(weapon_tier(5).unwrap().len(), 4);
+        assert_eq!(weapon_tier(2).unwrap()[1].name, "Axe");
+        assert_eq!(weapon_tier(2).unwrap()[1].variants, [19, 419, 213]);
+        assert_eq!(weapon_tier(3).unwrap()[2].variants, [13, 22]);
+        assert!(weapon_tier(6).is_none());
+    }
+
+    #[test]
+    fn a_variant_is_drawn_from_the_non_zero_ones() {
+        let entry = &weapon_tier(2).unwrap()[1];
+        let mut rng = Rng(12345);
+        let index = rng.below(3) as usize;
+        let expected = entry.variants.iter().copied().nth(index);
+        let mut rng = Rng(12345);
+        assert_eq!(pick_variant(entry, &mut rng), expected);
+        let single = &weapon_tier(0).unwrap()[0];
+        let mut rng = Rng(1);
+        assert_eq!(pick_variant(single, &mut rng), Some(23));
+    }
+
+    #[test]
+    fn the_point_limits() {
+        assert_eq!(point_limit(0), Some(5));
+        assert_eq!(point_limit(5), Some(40));
+        assert_eq!(point_limit(6), None);
+    }
+}

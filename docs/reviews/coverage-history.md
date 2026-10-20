@@ -44,3 +44,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-20 | 9c2a541 | clean | 22.0% | 5.7% | 18.0% | 27.3% | record the form layout |
 | 2026-10-20 | 5efc288 | dirty | 22.0% | 5.7% | 18.1% | 27.3% | page the main menu |
 | 2026-10-20 | daf105e | clean | 22.0% | 5.7% | 18.1% | 27.3% | record the main menu pages |
+| 2026-10-20 | db89445 | dirty | 22.1% | 5.7% | 18.1% | 27.3% | arm the arena |
