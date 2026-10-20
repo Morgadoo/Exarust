@@ -9,6 +9,7 @@
 //! painted with gamma-space blending ([`blend`]).
 
 pub mod blend;
+pub mod controls;
 pub mod cursor;
 pub mod fade;
 pub mod font;

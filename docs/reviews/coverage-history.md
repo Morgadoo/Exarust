@@ -46,3 +46,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-20 | daf105e | clean | 22.0% | 5.7% | 18.1% | 27.3% | record the main menu pages |
 | 2026-10-20 | db89445 | dirty | 22.1% | 5.7% | 18.1% | 27.3% | arm the arena |
 | 2026-10-20 | e3225f9 | clean | 22.1% | 5.7% | 18.1% | 27.3% | record the arena weapons |
+| 2026-10-20 | 21af73e | dirty | 22.2% | 5.7% | 18.2% | 27.3% | measure the controls |
