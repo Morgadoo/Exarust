@@ -535,12 +535,12 @@ fn shipped_levels() {
             NavStats {
                 width: 640,
                 depth: 640,
-                columns_by_spans: [392_056, 13_617, 3927, 0],
-                floors: [14_677, 3657],
-                passable: [14_670, 3657],
+                columns_by_spans: [392_056, 13_627, 3917, 0],
+                floors: [14_677, 3647],
+                passable: [14_670, 3647],
                 sky: [2867, 270],
             },
-            5050,
+            5006,
             34,
         ),
         (
@@ -548,12 +548,12 @@ fn shipped_levels() {
             NavStats {
                 width: 640,
                 depth: 800,
-                columns_by_spans: [190_963, 320_141, 896, 0],
-                floors: [219_292, 792],
-                passable: [219_225, 792],
-                sky: [101_745, 104],
+                columns_by_spans: [190_963, 320_140, 897, 0],
+                floors: [219_327, 793],
+                passable: [219_260, 793],
+                sky: [101_710, 104],
             },
-            190_954,
+            190_989,
             682,
         ),
     ];
@@ -585,7 +585,7 @@ fn shipped_levels() {
                 assert!(reaches(Vec3::new(8.9, -1.0, 64.0)));
                 // Over its 477 closed rooms only the walls' edges have floors
                 // (1120 cells); filling whole tiles, the ground between the
-                // rooms made 186 721 and the walk reached 338 283 cells.
+                // rooms made 186 721 and the walk reached 338 336 cells.
                 let pack = game.pack(exa_assets::PackKind::Resource).unwrap();
                 let scene = exa_formats::rfc::Scene::parse(pack.get("exanima01.rfc").unwrap());
                 let grid = scene.unwrap().grid.unwrap();
@@ -598,7 +598,7 @@ fn shipped_levels() {
                 }
                 let g = whole.build();
                 assert_eq!(floors_over_closed_rooms(&g, &grid), 186_721);
-                assert_eq!(reach(&g, start).len(), 338_283);
+                assert_eq!(reach(&g, start).len(), 338_336);
             }
             _ => {}
         }

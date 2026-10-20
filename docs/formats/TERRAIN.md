@@ -158,8 +158,13 @@ their flat tint (e.g. black `Mat STint`, which fills unseen ground).
 
 The original bakes this into per-tile colour, normal, gloss, mask, height and
 displacement textures, using up to 32 materials in groups of four. Exarust
-evaluates the same weights per vertex and layers the four heaviest materials
-of a tile in a shader. Normal maps are layered the same way, with the N-pass
+evaluates the same weights per vertex and layers every material of a tile
+(up to 16) in a shader, in palette order; each vertex's over opacities go to
+the shader in a per-tile texture, one texel per vertex. Shipped tiles use up
+to 12 materials (11 in one 6 m block, 10 in one quad): 11 of `exanima01`'s
+20 tiles use more than four, as do most outdoor tiles. Keeping only the four
+heaviest dropped lighter materials and left `Mat STint`'s black showing in
+their mask shapes. Normal maps are layered the same way, with the N-pass
 sharpness (f4, f5) and strength (f11). Gloss uses the scalar f10 without the G
 texture. The H pass is evaluated per vertex on the CPU and moves the mesh as
 the original does, by `(byte − 127) × 1.25 × (2 − normal y)` cm. The opacity

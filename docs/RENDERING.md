@@ -208,7 +208,9 @@ square repeat per 6 m cell.
 shared by `exa.wesl` and the terrain shader), as the original's terrain
 program uses its `lights`, `ambient` and `speculargi` includes. The original
 composites each 6 m block of a tile into colour, normal, gloss and height
-textures. Exarust evaluates the same per-layer stacking per pixel:
+textures. Exarust evaluates the same per-layer stacking per pixel, over
+every material the tile uses (up to 16, in palette order), skipping the
+layers that do not cover the pixel:
 - texture coordinates (X, −Z)·f0/12 per metre;
 - colour: texture × linear(tint) × 1.5·min(f9, 1), cover f9, sharpness
   f2/f3; then × 0.75 (the terrain's `MatDif`);
@@ -228,8 +230,10 @@ levels, so its terrain always shows the layers' full detail. Exarust reads
 the colour and normal layers at their base level and lets supersampling
 smooth the aliasing.
 
-Each layer's height, gloss and blend mask are packed into one texture, to
-fit the per-stage texture limit. The terrain's displacement self-shadowing
+Each layer's height, gloss and blend mask are packed into one texture, and
+every layer texture is read through one repeating sampler. Each vertex's
+over opacities sit in a per-tile texture of four RGBA layers, read
+bilinearly between the vertices. The terrain's displacement self-shadowing
 is effectively off in the original (its step is ~0).
 
 **Blending** comes from the material's blend word (`0x44`):

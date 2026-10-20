@@ -2,11 +2,11 @@
 //! palette materials its painted layers resolve to.
 //!
 //! Layers name a palette material or a blend rule; [`blend`] evaluates rules
-//! per vertex into material weights. A tile keeps its four heaviest
-//! materials, stacked in palette order like the original: the first is
-//! opaque and each later one covers what is below by an "over" opacity,
-//! sharpened by the material's blend mask. The opacities travel to the shader
-//! in the vertex colour.
+//! per vertex into material weights. A tile stacks every material it uses
+//! (up to 16) in palette order, like the original: the first is opaque and
+//! each later one covers what is below by an "over" opacity, sharpened by
+//! the material's blend mask. The opacities travel to the shader in a
+//! per-tile splat texture, one texel per vertex.
 
 pub mod blend;
 pub mod height;
@@ -36,8 +36,11 @@ use height::{HeightLayer, Plane, displacement, vegetation as vegetation_density}
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Materials a tile stacks (one vertex-colour channel each).
-const SPLAT_LAYERS: usize = 4;
+/// Materials a tile stacks: every one it uses, as the original stacks them
+/// (the shipped tiles use up to 12).
+const SPLAT_LAYERS: usize = 16;
+/// Opacities per layer of the splat texture (RGBA).
+const SPLAT_CHANNELS: usize = 4;
 /// Texture coordinates advance this much per metre before a material's
 /// tiling factor (4 per 48 m tile).
 const UV_PER_METRE: f32 = 4.0 / 48.0;
@@ -70,101 +73,108 @@ impl Plugin for TerrainPlugin {
 /// lighting (`exa_render::shading`) and its terrain gloss rule.
 pub type TerrainMaterial = TerrainSplat;
 
-#[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
-pub struct TerrainSplat {
-    #[uniform(100)]
-    pub params: SplatParams,
-    #[texture(101)]
-    #[sampler(102)]
-    pub diffuse0: Option<Handle<Image>>,
-    #[texture(103)]
-    #[sampler(104)]
-    pub diffuse1: Option<Handle<Image>>,
-    #[texture(105)]
-    #[sampler(106)]
-    pub diffuse2: Option<Handle<Image>>,
-    #[texture(107)]
-    #[sampler(108)]
-    pub diffuse3: Option<Handle<Image>>,
-    /// Per layer: parallax height (red), gloss (green) and blend mask (blue)
-    /// packed together, so a tile fits the per-stage texture limit.
-    #[texture(109)]
-    #[sampler(110)]
-    pub surface0: Option<Handle<Image>>,
-    #[texture(111)]
-    #[sampler(112)]
-    pub surface1: Option<Handle<Image>>,
-    #[texture(113)]
-    #[sampler(114)]
-    pub surface2: Option<Handle<Image>>,
-    #[texture(127)]
-    #[sampler(128)]
-    pub surface3: Option<Handle<Image>>,
-    #[texture(115)]
-    #[sampler(116)]
-    pub normal0: Option<Handle<Image>>,
-    #[texture(117)]
-    #[sampler(118)]
-    pub normal1: Option<Handle<Image>>,
-    #[texture(119)]
-    #[sampler(120)]
-    pub normal2: Option<Handle<Image>>,
-    #[texture(121)]
-    #[sampler(122)]
-    pub normal3: Option<Handle<Image>>,
-    /// The voxel GI light volume, once it exists.
-    #[texture(123, dimension = "3d")]
-    #[sampler(124)]
-    pub gi_volume: Option<Handle<Image>>,
-    /// The environment cube.
-    #[texture(125, dimension = "cube")]
-    #[sampler(126)]
-    pub environment: Option<Handle<Image>>,
-    /// Light records ([`exa_render::lights`]); the default handle is the
-    /// shared buffer.
-    #[storage(130, read_only)]
-    pub lights: Handle<bevy::render::storage::ShaderBuffer>,
-    /// The cached cube shadow pool (`exa_render::cube_shadows`).
-    #[texture(131, dimension = "cube_array", sample_type = "depth")]
-    #[sampler(132, sampler_type = "comparison")]
-    pub shadow_cubes: Handle<Image>,
+/// Declares [`TerrainSplat`] with one diffuse, surface and normal texture
+/// per layer (`layer => diffuse binding, surface binding, normal binding`).
+macro_rules! terrain_splat {
+    ($($k:tt => $diffuse:ident $bd:tt, $surface:ident $bs:tt, $normal:ident $bn:tt;)*) => {
+        #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+        pub struct TerrainSplat {
+            #[uniform(100)]
+            pub params: SplatParams,
+            /// The layers' shared repeating sampler, carried by a 1 × 1
+            /// stand-in image (the derive binds the image too).
+            #[texture(101)]
+            #[sampler(102)]
+            pub layer_sampler: Option<Handle<Image>>,
+            /// Each vertex's over opacities: four RGBA layers of 241 × 241,
+            /// layer k in channel k % 4 of layer k / 4.
+            #[texture(103, dimension = "2d_array")]
+            #[sampler(104)]
+            pub splat: Option<Handle<Image>>,
+            $(
+                #[texture($bd)]
+                pub $diffuse: Option<Handle<Image>>,
+                /// Parallax height (red), gloss (green) and blend mask
+                /// (blue) packed together.
+                #[texture($bs)]
+                pub $surface: Option<Handle<Image>>,
+                #[texture($bn)]
+                pub $normal: Option<Handle<Image>>,
+            )*
+            /// The voxel GI light volume, once it exists.
+            #[texture(123, dimension = "3d")]
+            #[sampler(124)]
+            pub gi_volume: Option<Handle<Image>>,
+            /// The environment cube.
+            #[texture(125, dimension = "cube")]
+            #[sampler(126)]
+            pub environment: Option<Handle<Image>>,
+            /// Light records ([`exa_render::lights`]); the default handle is
+            /// the shared buffer.
+            #[storage(130, read_only)]
+            pub lights: Handle<bevy::render::storage::ShaderBuffer>,
+            /// The cached cube shadow pool (`exa_render::cube_shadows`).
+            #[texture(131, dimension = "cube_array", sample_type = "depth")]
+            #[sampler(132, sampler_type = "comparison")]
+            pub shadow_cubes: Handle<Image>,
+        }
+
+        impl TerrainSplat {
+            /// Layer `k`'s diffuse, surface and normal textures.
+            fn layer_mut(&mut self, k: usize) -> Option<[&mut Option<Handle<Image>>; 3]> {
+                match k {
+                    $($k => Some([&mut self.$diffuse, &mut self.$surface, &mut self.$normal]),)*
+                    _ => None,
+                }
+            }
+        }
+
+        impl Default for TerrainSplat {
+            fn default() -> Self {
+                Self {
+                    params: SplatParams::default(),
+                    layer_sampler: None,
+                    splat: None,
+                    $($diffuse: None, $surface: None, $normal: None,)*
+                    gi_volume: None,
+                    environment: None,
+                    lights: Handle::default(),
+                    shadow_cubes: exa_render::cube_shadows::CUBE_POOL,
+                }
+            }
+        }
+    };
 }
 
-impl Default for TerrainSplat {
-    fn default() -> Self {
-        Self {
-            params: SplatParams::default(),
-            diffuse0: None,
-            diffuse1: None,
-            diffuse2: None,
-            diffuse3: None,
-            surface0: None,
-            surface1: None,
-            surface2: None,
-            surface3: None,
-            normal0: None,
-            normal1: None,
-            normal2: None,
-            normal3: None,
-            gi_volume: None,
-            environment: None,
-            lights: Handle::default(),
-            shadow_cubes: exa_render::cube_shadows::CUBE_POOL,
-        }
-    }
+terrain_splat! {
+    0 => diffuse0 140, surface0 160, normal0 180;
+    1 => diffuse1 141, surface1 161, normal1 181;
+    2 => diffuse2 142, surface2 162, normal2 182;
+    3 => diffuse3 143, surface3 163, normal3 183;
+    4 => diffuse4 144, surface4 164, normal4 184;
+    5 => diffuse5 145, surface5 165, normal5 185;
+    6 => diffuse6 146, surface6 166, normal6 186;
+    7 => diffuse7 147, surface7 167, normal7 187;
+    8 => diffuse8 148, surface8 168, normal8 188;
+    9 => diffuse9 149, surface9 169, normal9 189;
+    10 => diffuse10 150, surface10 170, normal10 190;
+    11 => diffuse11 151, surface11 171, normal11 191;
+    12 => diffuse12 152, surface12 172, normal12 192;
+    13 => diffuse13 153, surface13 173, normal13 193;
+    14 => diffuse14 154, surface14 174, normal14 194;
+    15 => diffuse15 155, surface15 175, normal15 195;
 }
 
 #[derive(ShaderType, Reflect, Debug, Clone, Copy, Default)]
 pub struct SplatParams {
     /// Linear RGB multiplier per material; alpha is its cover strength.
     pub colour: [Vec4; SPLAT_LAYERS],
-    /// Mask sharpness `s`, `t`, then 1 when the layer has a blend mask.
+    /// Mask sharpness `s`, `t`, 1 when the layer has a blend mask, then its
+    /// texture repeats per metre.
     pub blend: [Vec4; SPLAT_LAYERS],
     /// Mask sharpness `s`, `t` of the normal pass, normal-map strength (0
     /// without a normal map), gloss.
     pub normal: [Vec4; SPLAT_LAYERS],
-    /// Texture repeats per metre per material.
-    pub tiling: Vec4,
     /// Per layer: gloss factor (f10 × 1.5 × min(f9, 1)), then the parallax
     /// height's base, reference and scale (f20 + (B − f21)·f22).
     pub surface: [Vec4; SPLAT_LAYERS],
@@ -173,7 +183,8 @@ pub struct SplatParams {
     pub gi_extent: Vec4,
     /// [`terrain_flags`].
     pub flags: u32,
-    pub pad0: u32,
+    /// Layers in use.
+    pub layers: u32,
     pub pad1: u32,
     pub pad2: u32,
 }
@@ -521,6 +532,8 @@ pub struct TerrainBuild {
     tree: RuleTree,
     noise: NoiseMaps,
     environment: Option<Handle<Image>>,
+    /// The stand-in image carrying the layers' repeating sampler.
+    layer_sampler: Handle<Image>,
     /// Height and mask planes by texture name (lower case).
     planes: HashMap<String, Option<Arc<Plane>>>,
     plants: Option<Plants>,
@@ -624,6 +637,7 @@ impl TerrainBuild {
         let tree = RuleTree::new(&palette);
         let blocks = grid.map(|(grid, rooms)| grid_blocks(&terrain, grid, &rooms));
         let environment = loader.environment_map();
+        let layer_sampler = loader.images.add(layer_sampler_image());
         let plants = Plants::load(loader, &palette);
         Some(Self {
             terrain,
@@ -631,6 +645,7 @@ impl TerrainBuild {
             tree,
             noise: NoiseMaps::default(),
             environment,
+            layer_sampler,
             planes: HashMap::new(),
             plants,
             textures: HashMap::new(),
@@ -743,8 +758,11 @@ impl TerrainBuild {
         }
         let mut splat = TerrainSplat {
             environment: self.environment.clone(),
+            layer_sampler: Some(self.layer_sampler.clone()),
+            splat: Some(loader.images.add(splat_image(&built.splat))),
             ..default()
         };
+        splat.params.layers = built.materials.len() as u32;
         if splat.environment.is_some() {
             splat.params.flags |= terrain_flags::ENVIRONMENT;
         }
@@ -768,20 +786,16 @@ impl TerrainBuild {
                 look.sharpness[0],
                 look.sharpness[1],
                 if masked { 1.0 } else { 0.0 },
-                0.0,
+                look.tiling,
             );
-            splat.params.tiling[slot] = look.tiling;
             splat.params.surface[slot] = Vec4::new(
                 look.gloss,
                 look.parallax[0],
                 look.parallax[1],
                 look.parallax[2],
             );
-            match slot {
-                0 => (splat.diffuse0, splat.surface0, splat.normal0) = (diffuse, surface, normal),
-                1 => (splat.diffuse1, splat.surface1, splat.normal1) = (diffuse, surface, normal),
-                2 => (splat.diffuse2, splat.surface2, splat.normal2) = (diffuse, surface, normal),
-                _ => (splat.diffuse3, splat.surface3, splat.normal3) = (diffuse, surface, normal),
+            if let Some([d, su, nm]) = splat.layer_mut(slot) {
+                (*d, *su, *nm) = (diffuse, surface, normal);
             }
         }
         let centre = self.terrain.tile_centre(tile);
@@ -1011,8 +1025,11 @@ struct BuiltTile {
     /// Displaced vertex heights (metres) and vegetation density per vertex.
     heights: Vec<f32>,
     density: Vec<f32>,
-    /// Palette material indices, one per vertex-colour channel, ascending.
+    /// Palette material indices, one per layer, ascending.
     materials: Vec<usize>,
+    /// The layers' over opacities per vertex, as the splat texture holds
+    /// them ([`splat_image`]).
+    splat: Vec<u8>,
     unresolved: usize,
     truncated: bool,
 }
@@ -1084,28 +1101,29 @@ fn build_tile(
     let centre = terrain.tile_centre(tile);
     let lift = height_layers(&used);
     let mut density = vec![0.0f32; n * n];
-    let colours: Vec<[f32; 4]> = (0..n * n)
-        .map(|v| {
-            let w = &weights[v * m..(v + 1) * m];
-            let kept: Vec<f32> = used.iter().map(|&i| w[i]).collect();
-            let alphas = over_alphas(&kept);
-            density[v] = vegetation_density(
-                &lift,
-                &alphas,
-                positions[v][0] + centre[0],
-                positions[v][2] + centre[1],
-            );
-            let p = &mut positions[v];
-            p[1] += displacement(
-                &lift,
-                &alphas,
-                p[0] + centre[0],
-                p[2] + centre[1],
-                normals[v][1],
-            );
-            std::array::from_fn(|k| alphas.get(k).copied().unwrap_or(0.0))
-        })
-        .collect();
+    let mut splat = vec![0u8; n * n * SPLAT_LAYERS];
+    for v in 0..n * n {
+        let w = &weights[v * m..(v + 1) * m];
+        let kept: Vec<f32> = used.iter().map(|&i| w[i]).collect();
+        let alphas = over_alphas(&kept);
+        density[v] = vegetation_density(
+            &lift,
+            &alphas,
+            positions[v][0] + centre[0],
+            positions[v][2] + centre[1],
+        );
+        let p = &mut positions[v];
+        p[1] += displacement(
+            &lift,
+            &alphas,
+            p[0] + centre[0],
+            p[2] + centre[1],
+            normals[v][1],
+        );
+        for (k, a) in alphas.iter().enumerate() {
+            splat[splat_index(k, v, n)] = (a.clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+    }
     let normals = grid_normals(&positions, n);
     let heights: Vec<f32> = positions.iter().map(|p| p[1]).collect();
 
@@ -1147,7 +1165,6 @@ fn build_tile(
     // A skirt hanging from the tile's edge hides cracks where neighbouring
     // tiles lift a shared edge differently.
     let mut normals = normals;
-    let mut colours = colours;
     let edge: Vec<usize> = (0..n - 1)
         .chain((0..n - 1).map(|j| j * n + n - 1))
         .chain((1..n).rev().map(|i| (n - 1) * n + i))
@@ -1160,7 +1177,6 @@ fn build_tile(
         positions.push(p);
         normals.push(normals[v]);
         uvs.push(uvs[v]);
-        colours.push(colours[v]);
     }
     for k in 0..edge.len() {
         let (a, b) = (edge[k] as u32, edge[(k + 1) % edge.len()] as u32);
@@ -1185,7 +1201,6 @@ fn build_tile(
         positions,
         normals,
         uvs,
-        colours,
     };
     let parts = match blocks {
         // Without a grid the whole tile is one mesh, as built.
@@ -1204,9 +1219,65 @@ fn build_tile(
         heights,
         density,
         materials: used,
+        splat,
         unresolved,
         truncated,
     }
+}
+
+/// Where layer `k`'s opacity at vertex `v` (of a tile `n` vertices a side)
+/// lies in the splat texture's bytes: channel k % 4 of layer k / 4.
+fn splat_index(k: usize, v: usize, n: usize) -> usize {
+    ((k / SPLAT_CHANNELS) * n * n + v) * SPLAT_CHANNELS + k % SPLAT_CHANNELS
+}
+
+/// A tile's splat texture: its layers' over opacities, one texel per
+/// vertex, read bilinearly between them.
+fn splat_image(data: &[u8]) -> Image {
+    let n = TILE_VERTICES as u32;
+    let mut image = Image::new(
+        bevy::render::render_resource::Extent3d {
+            width: n,
+            height: n,
+            depth_or_array_layers: (SPLAT_LAYERS / SPLAT_CHANNELS) as u32,
+        },
+        bevy::render::render_resource::TextureDimension::D2,
+        data.to_vec(),
+        bevy::render::render_resource::TextureFormat::Rgba8Unorm,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.texture_view_descriptor = Some(bevy::render::render_resource::TextureViewDescriptor {
+        dimension: Some(bevy::render::render_resource::TextureViewDimension::D2Array),
+        ..default()
+    });
+    image.sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
+        address_mode_u: bevy::image::ImageAddressMode::ClampToEdge,
+        address_mode_v: bevy::image::ImageAddressMode::ClampToEdge,
+        ..bevy::image::ImageSamplerDescriptor::linear()
+    });
+    image
+}
+
+/// A 1 × 1 image whose sampler every layer texture is read through:
+/// repeating, linear (the shader reads the base level).
+fn layer_sampler_image() -> Image {
+    let mut image = Image::new(
+        bevy::render::render_resource::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        bevy::render::render_resource::TextureDimension::D2,
+        vec![255; 4],
+        bevy::render::render_resource::TextureFormat::Rgba8Unorm,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
+        address_mode_u: bevy::image::ImageAddressMode::Repeat,
+        address_mode_v: bevy::image::ImageAddressMode::Repeat,
+        ..bevy::image::ImageSamplerDescriptor::linear()
+    });
+    image
 }
 
 /// A tile's vertex arrays, its skirt included.
@@ -1214,7 +1285,6 @@ struct TileVertices {
     positions: Vec<[f32; 3]>,
     normals: Vec<[f32; 3]>,
     uvs: Vec<[f32; 2]>,
-    colours: Vec<[f32; 4]>,
 }
 
 impl TileVertices {
@@ -1227,7 +1297,6 @@ impl TileVertices {
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, self.positions);
         mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, self.normals);
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, self.uvs);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, self.colours);
         mesh.insert_indices(Indices::U32(indices));
         mesh
     }
@@ -1239,7 +1308,6 @@ impl TileVertices {
             positions: Vec::new(),
             normals: Vec::new(),
             uvs: Vec::new(),
-            colours: Vec::new(),
         };
         let indices = indices
             .iter()
@@ -1250,7 +1318,6 @@ impl TileVertices {
                     kept.positions.push(self.positions[v]);
                     kept.normals.push(self.normals[v]);
                     kept.uvs.push(self.uvs[v]);
-                    kept.colours.push(self.colours[v]);
                 }
                 remap[v]
             })
@@ -1453,7 +1520,6 @@ mod tests {
             positions: (0..4).map(|i| [i as f32, 0.0, 0.0]).collect(),
             normals: vec![[0.0, 1.0, 0.0]; 4],
             uvs: vec![[0.0; 2]; 4],
-            colours: vec![[1.0; 4]; 4],
         };
         let part = v.part(&[3, 1, 2, 2, 1, 3]);
         let p = part
@@ -1463,6 +1529,52 @@ mod tests {
         assert_eq!(p, [[3.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]]);
         let i: Vec<usize> = part.indices().unwrap().iter().collect();
         assert_eq!(i, [0, 1, 2, 2, 1, 0]);
+    }
+    #[test]
+    fn splat_texels_hold_each_layer_in_its_channel() {
+        let n = TILE_VERTICES;
+        assert_eq!(splat_index(0, 0, n), 0);
+        assert_eq!(splat_index(3, 1, n), 4 + 3);
+        // Layer 5: channel 1 of the second array layer.
+        assert_eq!(splat_index(5, 7, n), (n * n + 7) * 4 + 1);
+        assert_eq!(splat_index(15, n * n - 1, n), 4 * n * n * 4 - 1);
+        let image = splat_image(&vec![0; n * n * SPLAT_LAYERS]);
+        assert_eq!(image.texture_descriptor.size.depth_or_array_layers, 4);
+    }
+
+    /// Every shipped tile's materials fit the layers, so none is dropped:
+    /// exanima01 and exanima67 hold the tiles with the most (skipped
+    /// without the game).
+    #[test]
+    fn shipped_tiles_keep_every_material() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let pack = game.pack(PackKind::Resource).unwrap();
+        for level in ["exanima01", "exanima67"] {
+            let terrain = Terrain::parse(pack.get(&format!("{level}.rft")).unwrap()).unwrap();
+            let palette =
+                Palette::parse(pack.get(&format!("{}.ftb", terrain.palette)).unwrap()).unwrap();
+            let tree = RuleTree::new(&palette);
+            let noise = NoiseMaps::default();
+            let mut most = 0;
+            for tile in &terrain.tiles {
+                let built = build_tile(
+                    &terrain,
+                    tile,
+                    &palette,
+                    &tree,
+                    &noise,
+                    &mut |_| Vec::new(),
+                    None,
+                );
+                assert!(!built.truncated, "{level} tile {} {}", tile.x, tile.y);
+                most = most.max(built.materials.len());
+            }
+            // exanima01's dirt rooms stack eight; one exanima67 tile twelve.
+            assert!(most > 4, "{level}: {most}");
+        }
     }
 
     /// The installed story level and outdoor arena keep terrain only on

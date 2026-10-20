@@ -87,3 +87,14 @@ The system SHALL build, in a level with a tile grid, a terrain tile's 6 m block 
 #### Scenario: Outdoor arena
 - **WHEN** `arenao3` is built
 - **THEN** terrain covers its flagged 16 × 15 cell rectangle around the arena
+
+### Requirement: Every terrain material layered
+The system SHALL stack every palette material whose share of a tile passes 1/510, up to 16, in palette order: the first opaque, each later one covering what is below by its over opacity sharpened by its blend mask, as the original stacks all the materials a tile uses.
+
+#### Scenario: Dirt over the black fill
+- **WHEN** an exanima01 dirt room whose tile uses more than four materials is shown
+- **THEN** its floor shows dirt everywhere, with no black patches where the flat black fill lies under it
+
+#### Scenario: Shipped tiles
+- **WHEN** every shipped terrain is built
+- **THEN** no tile drops a material it uses

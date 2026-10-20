@@ -16,21 +16,24 @@ import exa_render::shading::{
     REFLECTION_STRENGTH, ENVIRONMENT_FALLBACK, AMBIENT_SCALE,
 };
 
+// Up to 16 layers: every palette material the tile uses, in palette order.
+const LAYERS: u32 = 16u;
+
 struct TerrainSplat {
     // Linear RGB multiplier per layer; alpha is its cover strength.
-    colour: array<vec4<f32>, 4>,
-    // Mask sharpness s, t; z is 1 when the layer has a blend mask.
-    blend: array<vec4<f32>, 4>,
+    colour: array<vec4<f32>, 16>,
+    // Mask sharpness s, t; z is 1 when the layer has a blend mask; w its
+    // texture repeats per metre.
+    blend: array<vec4<f32>, 16>,
     // Normal-pass mask sharpness s, t; normal-map strength; gloss.
-    normal: array<vec4<f32>, 4>,
-    // Texture repeats per metre per layer.
-    tiling: vec4<f32>,
+    normal: array<vec4<f32>, 16>,
     // Gloss factor; parallax height base, reference, scale.
-    surface: array<vec4<f32>, 4>,
+    surface: array<vec4<f32>, 16>,
     gi_origin: vec4<f32>,
     gi_extent: vec4<f32>,
     flags: u32,
-    pad0: u32,
+    // Layers in use.
+    layers: u32,
     pad1: u32,
     pad2: u32,
 }
@@ -41,31 +44,61 @@ const DEBUG_GI: u32 = 4u;
 const SPLIT_TAPS: u32 = 8u;
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> splat: TerrainSplat;
-@group(constants::MATERIAL_BIND_GROUP) @binding(101) var diffuse0: texture_2d<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(102) var diffuse0_sampler: sampler;
-@group(constants::MATERIAL_BIND_GROUP) @binding(103) var diffuse1: texture_2d<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(104) var diffuse1_sampler: sampler;
-@group(constants::MATERIAL_BIND_GROUP) @binding(105) var diffuse2: texture_2d<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(106) var diffuse2_sampler: sampler;
-@group(constants::MATERIAL_BIND_GROUP) @binding(107) var diffuse3: texture_2d<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(108) var diffuse3_sampler: sampler;
-// Per layer: parallax height (r), gloss (g), blend mask (b).
-@group(constants::MATERIAL_BIND_GROUP) @binding(109) var surface0: texture_2d<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(110) var surface0_sampler: sampler;
-@group(constants::MATERIAL_BIND_GROUP) @binding(111) var surface1: texture_2d<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(112) var surface1_sampler: sampler;
-@group(constants::MATERIAL_BIND_GROUP) @binding(113) var surface2: texture_2d<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(114) var surface2_sampler: sampler;
-@group(constants::MATERIAL_BIND_GROUP) @binding(127) var surface3: texture_2d<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(128) var surface3_sampler: sampler;
-@group(constants::MATERIAL_BIND_GROUP) @binding(115) var normal0: texture_2d<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(116) var normal0_sampler: sampler;
-@group(constants::MATERIAL_BIND_GROUP) @binding(117) var normal1: texture_2d<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(118) var normal1_sampler: sampler;
-@group(constants::MATERIAL_BIND_GROUP) @binding(119) var normal2: texture_2d<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(120) var normal2_sampler: sampler;
-@group(constants::MATERIAL_BIND_GROUP) @binding(121) var normal3: texture_2d<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(122) var normal3_sampler: sampler;
+// Every layer texture is read through one repeating sampler.
+@group(constants::MATERIAL_BIND_GROUP) @binding(102) var layer_sampler: sampler;
+// The layers' over opacities, one texel per vertex: layer k in channel
+// k % 4 of array layer k / 4.
+@group(constants::MATERIAL_BIND_GROUP) @binding(103) var cover_map: texture_2d_array<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(104) var cover_sampler: sampler;
+// Per layer: diffuse; parallax height (r), gloss (g), blend mask (b); normal.
+@group(constants::MATERIAL_BIND_GROUP) @binding(140) var diffuse0: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(141) var diffuse1: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(142) var diffuse2: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(143) var diffuse3: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(144) var diffuse4: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(145) var diffuse5: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(146) var diffuse6: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(147) var diffuse7: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(148) var diffuse8: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(149) var diffuse9: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(150) var diffuse10: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(151) var diffuse11: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(152) var diffuse12: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(153) var diffuse13: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(154) var diffuse14: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(155) var diffuse15: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(160) var surface0: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(161) var surface1: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(162) var surface2: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(163) var surface3: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(164) var surface4: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(165) var surface5: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(166) var surface6: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(167) var surface7: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(168) var surface8: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(169) var surface9: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(170) var surface10: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(171) var surface11: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(172) var surface12: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(173) var surface13: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(174) var surface14: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(175) var surface15: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(180) var normal0: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(181) var normal1: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(182) var normal2: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(183) var normal3: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(184) var normal4: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(185) var normal5: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(186) var normal6: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(187) var normal7: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(188) var normal8: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(189) var normal9: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(190) var normal10: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(191) var normal11: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(192) var normal12: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(193) var normal13: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(194) var normal14: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(195) var normal15: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(123) var gi_volume: texture_3d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(124) var gi_sampler: sampler;
 @group(constants::MATERIAL_BIND_GROUP) @binding(125) var environment_map: texture_cube<f32>;
@@ -73,6 +106,100 @@ const SPLIT_TAPS: u32 = 8u;
 
 fn has(bit: u32) -> bool {
     return (splat.flags & bit) != 0u;
+}
+
+// Layer `k`'s textures at `uv` (base level).
+fn layer_diffuse(k: u32, uv: vec2<f32>) -> vec4<f32> {
+    switch k {
+        case 0u: { return textureSampleLevel(diffuse0, layer_sampler, uv, 0.0); }
+        case 1u: { return textureSampleLevel(diffuse1, layer_sampler, uv, 0.0); }
+        case 2u: { return textureSampleLevel(diffuse2, layer_sampler, uv, 0.0); }
+        case 3u: { return textureSampleLevel(diffuse3, layer_sampler, uv, 0.0); }
+        case 4u: { return textureSampleLevel(diffuse4, layer_sampler, uv, 0.0); }
+        case 5u: { return textureSampleLevel(diffuse5, layer_sampler, uv, 0.0); }
+        case 6u: { return textureSampleLevel(diffuse6, layer_sampler, uv, 0.0); }
+        case 7u: { return textureSampleLevel(diffuse7, layer_sampler, uv, 0.0); }
+        case 8u: { return textureSampleLevel(diffuse8, layer_sampler, uv, 0.0); }
+        case 9u: { return textureSampleLevel(diffuse9, layer_sampler, uv, 0.0); }
+        case 10u: { return textureSampleLevel(diffuse10, layer_sampler, uv, 0.0); }
+        case 11u: { return textureSampleLevel(diffuse11, layer_sampler, uv, 0.0); }
+        case 12u: { return textureSampleLevel(diffuse12, layer_sampler, uv, 0.0); }
+        case 13u: { return textureSampleLevel(diffuse13, layer_sampler, uv, 0.0); }
+        case 14u: { return textureSampleLevel(diffuse14, layer_sampler, uv, 0.0); }
+        case 15u: { return textureSampleLevel(diffuse15, layer_sampler, uv, 0.0); }
+        default: { return vec4(0.0); }
+    }
+}
+
+fn layer_surface(k: u32, uv: vec2<f32>) -> vec4<f32> {
+    switch k {
+        case 0u: { return textureSampleLevel(surface0, layer_sampler, uv, 0.0); }
+        case 1u: { return textureSampleLevel(surface1, layer_sampler, uv, 0.0); }
+        case 2u: { return textureSampleLevel(surface2, layer_sampler, uv, 0.0); }
+        case 3u: { return textureSampleLevel(surface3, layer_sampler, uv, 0.0); }
+        case 4u: { return textureSampleLevel(surface4, layer_sampler, uv, 0.0); }
+        case 5u: { return textureSampleLevel(surface5, layer_sampler, uv, 0.0); }
+        case 6u: { return textureSampleLevel(surface6, layer_sampler, uv, 0.0); }
+        case 7u: { return textureSampleLevel(surface7, layer_sampler, uv, 0.0); }
+        case 8u: { return textureSampleLevel(surface8, layer_sampler, uv, 0.0); }
+        case 9u: { return textureSampleLevel(surface9, layer_sampler, uv, 0.0); }
+        case 10u: { return textureSampleLevel(surface10, layer_sampler, uv, 0.0); }
+        case 11u: { return textureSampleLevel(surface11, layer_sampler, uv, 0.0); }
+        case 12u: { return textureSampleLevel(surface12, layer_sampler, uv, 0.0); }
+        case 13u: { return textureSampleLevel(surface13, layer_sampler, uv, 0.0); }
+        case 14u: { return textureSampleLevel(surface14, layer_sampler, uv, 0.0); }
+        case 15u: { return textureSampleLevel(surface15, layer_sampler, uv, 0.0); }
+        default: { return vec4(0.5, 0.0, 1.0, 1.0); }
+    }
+}
+
+fn layer_normal(k: u32, uv: vec2<f32>) -> vec4<f32> {
+    switch k {
+        case 0u: { return textureSampleLevel(normal0, layer_sampler, uv, 0.0); }
+        case 1u: { return textureSampleLevel(normal1, layer_sampler, uv, 0.0); }
+        case 2u: { return textureSampleLevel(normal2, layer_sampler, uv, 0.0); }
+        case 3u: { return textureSampleLevel(normal3, layer_sampler, uv, 0.0); }
+        case 4u: { return textureSampleLevel(normal4, layer_sampler, uv, 0.0); }
+        case 5u: { return textureSampleLevel(normal5, layer_sampler, uv, 0.0); }
+        case 6u: { return textureSampleLevel(normal6, layer_sampler, uv, 0.0); }
+        case 7u: { return textureSampleLevel(normal7, layer_sampler, uv, 0.0); }
+        case 8u: { return textureSampleLevel(normal8, layer_sampler, uv, 0.0); }
+        case 9u: { return textureSampleLevel(normal9, layer_sampler, uv, 0.0); }
+        case 10u: { return textureSampleLevel(normal10, layer_sampler, uv, 0.0); }
+        case 11u: { return textureSampleLevel(normal11, layer_sampler, uv, 0.0); }
+        case 12u: { return textureSampleLevel(normal12, layer_sampler, uv, 0.0); }
+        case 13u: { return textureSampleLevel(normal13, layer_sampler, uv, 0.0); }
+        case 14u: { return textureSampleLevel(normal14, layer_sampler, uv, 0.0); }
+        case 15u: { return textureSampleLevel(normal15, layer_sampler, uv, 0.0); }
+        default: { return vec4(0.5, 0.5, 1.0, 1.0); }
+    }
+}
+
+// The layers' over opacities at tile coordinates `t` (0–1 across the
+// tile's vertices).
+struct Covers {
+    a: array<f32, 16>,
+}
+
+fn covers(t: vec2<f32>) -> Covers {
+    // Vertex i's texel centre: (i + ½) / 241.
+    let n = f32(textureDimensions(cover_map).x);
+    let uv = (t * (n - 1.0) + 0.5) / n;
+    var out: Covers;
+    for (var l = 0u; l < LAYERS / 4u; l++) {
+        let c = textureSampleLevel(cover_map, cover_sampler, uv, l, 0.0);
+        out.a[4u * l] = c.x;
+        out.a[4u * l + 1u] = c.y;
+        out.a[4u * l + 2u] = c.z;
+        out.a[4u * l + 3u] = c.w;
+    }
+    out.a[0] = 1.0;
+    return out;
+}
+
+// Whether layer `k` covers anything here (the first always does).
+fn covered(c: Covers, k: u32) -> bool {
+    return k == 0u || c.a[k] > 0.0;
 }
 
 // Opacity of layer `k` from its over opacity `a` and mask value `m`, with
@@ -85,7 +212,7 @@ fn sharpen(a: f32, m: f32, s: f32, t: f32, masked: bool) -> f32 {
 }
 
 // Colour (or gloss) of layer `k` stacked on `below`.
-fn stack(below: vec3<f32>, c: vec3<f32>, a: f32, m: f32, k: i32) -> vec3<f32> {
+fn stack(below: vec3<f32>, c: vec3<f32>, a: f32, m: f32, k: u32) -> vec3<f32> {
     let b = splat.blend[k];
     if b.z < 0.5 {
         return mix(below, c, a);
@@ -95,44 +222,35 @@ fn stack(below: vec3<f32>, c: vec3<f32>, a: f32, m: f32, k: i32) -> vec3<f32> {
 }
 
 // Tangent-space normal xy of layer `k` from its normal-map sample.
-fn normal_xy(sample: vec4<f32>, k: i32) -> vec2<f32> {
+fn normal_xy(sample: vec4<f32>, k: u32) -> vec2<f32> {
     return (sample.xy * 2.0 - 1.0) * splat.normal[k].z;
 }
 
-// The four layers' packed surface samples at ground position `p` (metres
-// along +X, −Z).
-struct Surfaces {
-    s: array<vec4<f32>, 4>,
-}
-
-fn surfaces(p: vec2<f32>) -> Surfaces {
-    var out: Surfaces;
-    out.s[0] = textureSampleLevel(surface0, surface0_sampler, p * splat.tiling.x, 0.0);
-    out.s[1] = textureSampleLevel(surface1, surface1_sampler, p * splat.tiling.y, 0.0);
-    out.s[2] = textureSampleLevel(surface2, surface2_sampler, p * splat.tiling.z, 0.0);
-    out.s[3] = textureSampleLevel(surface3, surface3_sampler, p * splat.tiling.w, 0.0);
-    return out;
+// Layer `k`'s texture coordinates at ground position `p` (metres along +X,
+// −Z).
+fn layer_uv(p: vec2<f32>, k: u32) -> vec2<f32> {
+    return p * splat.blend[k].w;
 }
 
 // The composited parallax height at `p`: each layer's f20 + (B − f21)·f22,
 // stacked like the normals.
-fn height_at(p: vec2<f32>, alpha: vec4<f32>) -> f32 {
-    let su = surfaces(p);
-    var h = layer_height(su.s[0], 0);
-    h = stack_height(h, layer_height(su.s[1], 1), alpha.y, su.s[1].b, 1);
-    h = stack_height(h, layer_height(su.s[2], 2), alpha.z, su.s[2].b, 2);
-    h = stack_height(h, layer_height(su.s[3], 3), alpha.w, su.s[3].b, 3);
+fn height_at(p: vec2<f32>, c: Covers) -> f32 {
+    var h = 0.0;
+    for (var k = 0u; k < splat.layers; k++) {
+        if !covered(c, k) {
+            continue;
+        }
+        let su = layer_surface(k, layer_uv(p, k));
+        let q = splat.surface[k];
+        let lh = q.y + (su.r - q.z) * q.w;
+        if k == 0u {
+            h = lh;
+        } else {
+            let nb = splat.normal[k];
+            h = mix(h, lh, sharpen(c.a[k], su.b, nb.x, nb.y, splat.blend[k].z > 0.5));
+        }
+    }
     return h;
-}
-
-fn layer_height(su: vec4<f32>, k: i32) -> f32 {
-    let q = splat.surface[k];
-    return q.y + (su.r - q.z) * q.w;
-}
-
-fn stack_height(below: f32, h: f32, a: f32, m: f32, k: i32) -> f32 {
-    let nb = splat.normal[k];
-    return mix(below, h, sharpen(a, m, nb.x, nb.y, splat.blend[k].z > 0.5));
 }
 
 // Terrain blocks' shadow-bias level (see `exa_render::shading`).
@@ -144,7 +262,7 @@ const PARALLAX: f32 = 0.007;
 const BLOCK: f32 = 6.0;
 
 // Normal xy of layer `k` stacked on `below`.
-fn stack_normal(below: vec2<f32>, n: vec2<f32>, a: f32, m: f32, k: i32) -> vec2<f32> {
+fn stack_normal(below: vec2<f32>, n: vec2<f32>, a: f32, m: f32, k: u32) -> vec2<f32> {
     let nb = splat.normal[k];
     return mix(below, n, sharpen(a, m, nb.x, nb.y, splat.blend[k].z > 0.5));
 }
@@ -154,10 +272,11 @@ fn fragment(
     in: VertexOutput,
     @builtin(front_facing) is_front: bool,
 ) -> FragmentOutput {
-    var alpha = vec4<f32>(1.0, 0.0, 0.0, 0.0);
-@if(VERTEX_COLORS) {
-    alpha = in.color;
+    var tile_uv = vec2<f32>(0.0);
+@if(VERTEX_UVS_A) {
+    tile_uv = in.uv;
 }
+    let cover = covers(tile_uv);
     let wp = in.world_position.xyz;
     let v = normalize(view_bindings::view.world_position.xyz - wp);
     var ng = normalize(in.world_normal);
@@ -177,46 +296,48 @@ fn fragment(
     let vt = vec3(dot(eye, tu), dot(eye, tv), dot(eye, ng));
     let dsp = vt.xy * PARALLAX * (4.0 + 3.0 * vt.z);
     let start = ground / BLOCK;
-    let d = height_at(start * BLOCK, alpha) - 0.5;
+    let d = height_at(start * BLOCK, cover) - 0.5;
     var uvb = start - dsp * d;
     var last = d;
     for (var k = 0; k < 3; k++) {
-        last = height_at(uvb * BLOCK, alpha) - 0.5;
+        last = height_at(uvb * BLOCK, cover) - 0.5;
         uvb -= dsp * last;
     }
     uvb = mix(uvb, start, min((d - last) * 2.0, 1.0));
     let p = uvb * BLOCK;
 
-    let uv0 = p * splat.tiling.x;
-    let uv1 = p * splat.tiling.y;
-    let uv2 = p * splat.tiling.z;
-    let uv3 = p * splat.tiling.w;
-    let su = surfaces(p);
-    let m1 = su.s[1].b;
-    let m2 = su.s[2].b;
-    let m3 = su.s[3].b;
-
     // The original composites each 6 m block into textures of about 170
     // texels per metre without mip levels, so terrain always shows its
-    // layers' full detail: colour and normal layers are read at their base
-    // level (supersampling smooths what that aliases).
-    var colour = textureSampleLevel(diffuse0, diffuse0_sampler, uv0, 0.0).rgb * splat.colour[0].rgb;
-    colour = stack(colour, textureSampleLevel(diffuse1, diffuse1_sampler, uv1, 0.0).rgb * splat.colour[1].rgb, alpha.y, m1, 1);
-    colour = stack(colour, textureSampleLevel(diffuse2, diffuse2_sampler, uv2, 0.0).rgb * splat.colour[2].rgb, alpha.z, m2, 2);
-    colour = stack(colour, textureSampleLevel(diffuse3, diffuse3_sampler, uv3, 0.0).rgb * splat.colour[3].rgb, alpha.w, m3, 3);
+    // layers' full detail: every layer is read at its base level
+    // (supersampling smooths what that aliases). Colour, gloss and normal
+    // stack in palette order; layers not covering this point are skipped.
+    var colour = vec3<f32>(0.0);
+    var gloss = vec3<f32>(0.0);
+    var nxy = vec2<f32>(0.0);
+    for (var k = 0u; k < splat.layers; k++) {
+        if !covered(cover, k) {
+            continue;
+        }
+        let uv = layer_uv(p, k);
+        let su = layer_surface(k, uv);
+        let c = layer_diffuse(k, uv).rgb * splat.colour[k].rgb;
+        let g = vec3<f32>(su.g * splat.surface[k].x);
+        let nk = normal_xy(layer_normal(k, uv), k);
+        if k == 0u {
+            colour = c;
+            gloss = g;
+            nxy = nk;
+        } else {
+            let a = cover.a[k];
+            colour = stack(colour, c, a, su.b, k);
+            // The composited gloss map: each layer's gloss × its factor,
+            // stacked like the colour; roughness is 1 − gloss (no wetness
+            // indoors).
+            gloss = stack(gloss, g, a, su.b, k);
+            nxy = stack_normal(nxy, nk, a, su.b, k);
+        }
+    }
     colour *= TERRAIN_DIFFUSE;
-
-    // The composited gloss map: each layer's gloss × its factor, stacked like
-    // the colour; roughness is 1 − gloss (no wetness indoors).
-    var gloss = vec3<f32>(su.s[0].g * splat.surface[0].x);
-    gloss = stack(gloss, vec3<f32>(su.s[1].g * splat.surface[1].x), alpha.y, m1, 1);
-    gloss = stack(gloss, vec3<f32>(su.s[2].g * splat.surface[2].x), alpha.z, m2, 2);
-    gloss = stack(gloss, vec3<f32>(su.s[3].g * splat.surface[3].x), alpha.w, m3, 3);
-
-    var nxy = normal_xy(textureSampleLevel(normal0, normal0_sampler, uv0, 0.0), 0);
-    nxy = stack_normal(nxy, normal_xy(textureSampleLevel(normal1, normal1_sampler, uv1, 0.0), 1), alpha.y, m1, 1);
-    nxy = stack_normal(nxy, normal_xy(textureSampleLevel(normal2, normal2_sampler, uv2, 0.0), 2), alpha.z, m2, 2);
-    nxy = stack_normal(nxy, normal_xy(textureSampleLevel(normal3, normal3_sampler, uv3, 0.0), 3), alpha.w, m3, 3);
     let nz = sqrt(1.0 - min(dot(nxy, nxy), 0.999));
     // The normal map's frame: +X and +Z across the ground (green along −v),
     // as the original's terrain program builds it.
