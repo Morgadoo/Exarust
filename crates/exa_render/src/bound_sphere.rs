@@ -731,12 +731,54 @@ mod tests {
             len: 4,
             points: [0, 1, 2, 3],
         };
+        // The smallest candidate holding the rest is the triangle on slots
+        // 1 and 2 with q (the fourth triangle row): centre (0, 0, 97/22),
+        // r² 31.258…; the set becomes those two, then q.
         let ball = grow_from_more(&mut support, &points, 4, &FOUR_SUPPORT);
-        assert!(support.len <= 4);
-        assert_eq!(support.points[support.len - 1], 4);
+        assert_eq!(
+            ball,
+            Ball {
+                centre: d(0.0, 0.0, 4.409090909090909),
+                radius_sq: 31.25826446280992
+            }
+        );
+        assert_eq!(
+            support,
+            Support {
+                len: 3,
+                points: [1, 2, 4, 3]
+            }
+        );
         for p in &points {
             assert!(excess(*p, &ball) <= INSIDE_SLACK);
         }
+    }
+
+    #[test]
+    fn two_support_without_a_candidate_takes_the_first() {
+        // Both pairs have r² 2.5e39, above the 3.4e38 start, and the
+        // triangle is flat: no candidate qualifies, so the pair on slot 0
+        // is taken and q replaces slot 1.
+        let points = vec![d(0.0, 0.0, 0.0), d(1.0, 0.0, 0.0), d(1e20, 0.0, 0.0)];
+        let mut support = Support {
+            len: 2,
+            points: [0, 1, 0, 0],
+        };
+        let ball = grow_from_two(&mut support, &points, 2);
+        assert_eq!(
+            ball,
+            Ball {
+                centre: d(5e19, 0.0, 0.0),
+                radius_sq: 1e20 * 1e20 * 0.25
+            }
+        );
+        assert_eq!(
+            support,
+            Support {
+                len: 2,
+                points: [0, 2, 0, 0]
+            }
+        );
     }
 
     /// An independent smallest sphere: every sphere on 2–4 points, the
@@ -810,6 +852,29 @@ mod tests {
             for p in &points {
                 assert!(p.distance(s.centre) <= s.radius * (1.0 + 1e-5));
             }
+        }
+    }
+
+    #[test]
+    fn seeded_sets_to_the_bit() {
+        // The first three 12-point sets of the exhaustive check, worked
+        // through a separate port of the original's routines: centre and
+        // radius bits.
+        let mut seed = 0x2545_f491u32;
+        let mut next = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 8) as f32 / (1u32 << 24) as f32 * 20.0 - 10.0
+        };
+        let expected: [([u32; 3], u32); 3] = [
+            ([0x3eee_1486, 0x4099_d098, 0x3f06_bf16], 0x413b_4436),
+            ([0x3f9b_c4cf, 0x3e66_2895, 0xbf24_77d2], 0x4130_c84f),
+            ([0xbefb_46be, 0x3f37_75ca, 0x403c_ccff], 0x4143_8d48),
+        ];
+        for (centre, radius) in expected {
+            let points: Vec<Vec3> = (0..12).map(|_| Vec3::new(next(), next(), next())).collect();
+            let s = bounding_sphere(&points).unwrap();
+            assert_eq!(s.centre.to_array().map(f32::to_bits), centre);
+            assert_eq!(s.radius.to_bits(), radius);
         }
     }
 
