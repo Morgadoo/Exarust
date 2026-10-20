@@ -604,3 +604,14 @@ fn shipped_levels() {
         }
     }
 }
+
+#[test]
+fn the_pathfinder_stores_its_opening_metrics() {
+    let metrics = pathfinder_metrics(7);
+    assert_eq!(metrics.cell, 30.0);
+    assert_eq!(metrics.depth, 10.0);
+    assert_eq!(metrics.inverse_cell, 1.0 / 30.0);
+    assert_eq!(metrics.seed, 7);
+    assert_eq!(metrics.counter, 0);
+    assert_eq!(metrics.base_calls, 1);
+}

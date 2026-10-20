@@ -151,3 +151,12 @@ A rectangle SHALL merge when its padded union is strictly smaller than the two p
 #### Scenario: Close rectangles join, and a sample raises the floor
 - **WHEN** a zero-extent box is taken around cell 12, cell 12 is queued after cell 10, cell 17 is queued after cell 10, seventeen separated rectangles are queued, and a refresh is given voxels 20, 30 and 12, plus 255, 0 and a voxel outside
 - **THEN** the box covers cell 12 and a neighbour inside the margin of three, the close pair is one rectangle, the far pair is two, seventeen keep the newest sixteen, voxel 20 raises the lower floor to 20 and its roughness is no longer 0, voxel 30 raises the upper floor to 30, voxel 12 raises an empty upper floor to 12, and voxel 255 and the outside floor stay as they were
+
+### Requirement: Pathfinder metrics
+The constructor SHALL store cell size 30, depth 10, inverse 1/30, a zero counter and the seed byte, then run the base once.
+
+#### Scenario: The opening
+- **WHEN** the seed byte is 7
+- **THEN** the cell is 30, the depth 10 and the inverse 1/30
+- **AND** the counter is 0 and the seed is 7
+- **AND** one base call runs

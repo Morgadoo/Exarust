@@ -678,5 +678,28 @@ impl NavGrid {
     }
 }
 
+/// The pathfinder's opening metrics.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PathfinderMetrics {
+    pub cell: f32,
+    pub depth: f32,
+    pub inverse_cell: f32,
+    pub seed: u8,
+    pub counter: i32,
+    pub base_calls: u32,
+}
+
+/// Stores the pathfinder's cell metrics and seed.
+pub fn pathfinder_metrics(seed: u8) -> PathfinderMetrics {
+    PathfinderMetrics {
+        cell: 30.0,
+        depth: 10.0,
+        inverse_cell: 1.0 / 30.0,
+        seed,
+        counter: 0,
+        base_calls: 1,
+    }
+}
+
 #[cfg(test)]
 mod tests;
