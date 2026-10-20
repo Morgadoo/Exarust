@@ -1156,6 +1156,69 @@ pub fn dispatch_creation_menu(alternate: bool) -> CreationDispatch {
     }
 }
 
+/// What starting the creation screen did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationStartup {
+    pub reset: bool,
+    pub second_reset: bool,
+    pub created: bool,
+    pub prepared: bool,
+    pub mode: i32,
+    pub refreshed: bool,
+    pub built: bool,
+    pub ticked: bool,
+    pub stored: bool,
+}
+
+/// Starts the creation screen and stores its form.
+pub fn start_creation_screen(
+    had_form: bool,
+    second_reset: bool,
+    mode: i32,
+    arena_flag: bool,
+    build: bool,
+) -> CreationStartup {
+    let in_mode = mode == 12;
+    CreationStartup {
+        reset: true,
+        second_reset,
+        created: !had_form,
+        prepared: true,
+        mode: if in_mode {
+            if arena_flag { 2 } else { 1 }
+        } else {
+            0
+        },
+        refreshed: in_mode,
+        built: in_mode && build,
+        ticked: in_mode,
+        stored: true,
+    }
+}
+
+/// What the creation apply step did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationApplyStep {
+    pub linked: bool,
+    pub camera: bool,
+    pub stored: bool,
+    pub part_found: bool,
+    pub first: bool,
+    pub second: bool,
+}
+
+/// Relinks, refreshes the camera, stores the part result and ticks.
+pub fn apply_creation_step(has_target: bool, part_found: bool) -> CreationApplyStep {
+    CreationApplyStep {
+        linked: true,
+        camera: true,
+        stored: has_target,
+        part_found: has_target && part_found,
+        first: true,
+        second: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1925,5 +1988,46 @@ mod tests {
 
         assert_eq!(dispatch_creation_menu(true), CreationDispatch::Alternate);
         assert_eq!(dispatch_creation_menu(false), CreationDispatch::Primary);
+    }
+
+    #[test]
+    fn the_creation_screen_starts_and_applies() {
+        let arena = start_creation_screen(true, false, 12, true, true);
+        assert!(arena.reset);
+        assert!(!arena.second_reset);
+        assert!(!arena.created);
+        assert!(arena.prepared);
+        assert_eq!(arena.mode, 2);
+        assert!(arena.refreshed);
+        assert!(arena.built);
+        assert!(arena.ticked);
+        assert!(arena.stored);
+
+        let story = start_creation_screen(false, true, 12, false, false);
+        assert!(story.created);
+        assert!(story.second_reset);
+        assert_eq!(story.mode, 1);
+        assert!(!story.built);
+
+        let other = start_creation_screen(true, false, 9, true, true);
+        assert_eq!(other.mode, 0);
+        assert!(!other.refreshed);
+        assert!(!other.built);
+        assert!(!other.ticked);
+        assert!(other.stored);
+
+        let applied = apply_creation_step(true, true);
+        assert!(applied.linked);
+        assert!(applied.camera);
+        assert!(applied.stored);
+        assert!(applied.part_found);
+        assert!(applied.first);
+        assert!(applied.second);
+
+        let bare = apply_creation_step(false, true);
+        assert!(!bare.stored);
+        assert!(!bare.part_found);
+        assert!(bare.linked);
+        assert!(bare.first);
     }
 }
