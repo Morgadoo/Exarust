@@ -109,9 +109,65 @@ pub const PORTAL_LIGHT: LightSpec = LightSpec {
 };
 
 /// Particle systems are started with this scale; the portal's own system
-/// also carries a 0.102 start value and a clear render-flag bit.
+/// also carries a 0.102 start value and clears this render-flag bit.
 pub const SYSTEM_SCALE: f32 = 1.0;
 pub const SYSTEM_START: f32 = 0.101_960_79;
+pub const SYSTEM_CLEAR_FLAG: u32 = 0x0002_0000;
+
+/// The spark system a level's portal marker becomes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PortalSpark {
+    pub particle: ParticleSpec,
+    pub light: LightSpec,
+    /// The geometry's sub-object kind and node flag.
+    pub sub_object_kind: i32,
+    pub geometry_flag: u32,
+    pub material: &'static str,
+    pub node_name: &'static str,
+    /// The system's start scale and start value.
+    pub scale: f32,
+    pub start: f32,
+    /// The particle system flag cleared after creation.
+    pub cleared_flags: u32,
+}
+
+/// The marker's spark system: `_PrtlPrt01` sparks and the blue light.
+pub const PORTAL: PortalSpark = PortalSpark {
+    particle: SPARKS,
+    light: PORTAL_LIGHT,
+    sub_object_kind: SUB_OBJECT_KIND,
+    geometry_flag: GEOMETRY_FLAG,
+    material: PARTICLE_MATERIAL,
+    node_name: PORTAL_NODE_NAME,
+    scale: SYSTEM_SCALE,
+    start: SYSTEM_START,
+    cleared_flags: SYSTEM_CLEAR_FLAG,
+};
+
+/// The dissolve a body gets when it uses a portal.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PortalDissolve {
+    pub particle: ParticleSpec,
+    pub material: &'static str,
+    pub node_name: &'static str,
+    /// The pull from the emitter's velocity into a particle's second start.
+    pub pull: f32,
+    pub sound: &'static str,
+    pub volume: f32,
+    pub pitch: f32,
+}
+
+/// The portal-use dissolve: `_PrtlPrt01` again, `_PrtlDis`-named, with the
+/// body's motion and `portaluse01` at 0.6.
+pub const DISSOLVE_EFFECT: PortalDissolve = PortalDissolve {
+    particle: DISSOLVE,
+    material: PARTICLE_MATERIAL,
+    node_name: DISSOLVE_NODE_NAME,
+    pull: SEED_VELOCITY_PULL,
+    sound: USE_SOUND,
+    volume: USE_SOUND_VOLUME,
+    pitch: USE_SOUND_PITCH,
+};
 
 /// The portal-use sound: volume 0.6 at the body, pitch 1.
 pub const USE_SOUND: &str = "portaluse01";
@@ -339,6 +395,16 @@ mod tests {
         assert!(!replaces_marker(0));
         assert_eq!(PORTAL_NODE_NAME, "_PortalPrt");
         assert_eq!(DISSOLVE_NODE_NAME, "_PrtlDis");
+        assert_eq!(PORTAL.particle, SPARKS);
+        assert_eq!(PORTAL.light, PORTAL_LIGHT);
+        assert_eq!(PORTAL.node_name, "_PortalPrt");
+        assert_eq!(PORTAL.cleared_flags, 0x0002_0000);
+        assert!((PORTAL.start - 0.101_960_79).abs() < 1e-8);
+        assert_eq!(DISSOLVE_EFFECT.particle, DISSOLVE);
+        assert_eq!(DISSOLVE_EFFECT.pull, -0.015);
+        assert_eq!(DISSOLVE_EFFECT.sound, "portaluse01");
+        assert_eq!(DISSOLVE_EFFECT.volume, 0.6);
+        assert_eq!(DISSOLVE_EFFECT.pitch, 1.0);
     }
 
     #[test]
