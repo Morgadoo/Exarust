@@ -11,7 +11,8 @@ character records and in unit globals; Exarust passes them in.
 
 - Item, kill and cell discoveries award `points` to the pool and
   `4 × points` to the player and every companion, in that order.
-- Cells: the position times the float 1/600 is rounded ties-to-even and
+- Cells: the position times the float 1/600 is rounded down (the engine's
+  cell helper converts with the rounding mode set toward minus infinity) and
   offset by half the grid (an unsigned halving). The cell must be inside
   `width × height`, have a sector table and a sector word of at least 1.
   The 5 × 5 window is clamped to `1 ..= size − 2` on both axes. A cell's

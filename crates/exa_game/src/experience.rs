@@ -13,8 +13,8 @@
 //! `(global / 5000 + 1) × 4` per point and adds 2 global experience a point,
 //! stopping at 25000.
 //!
-//! Map cells are 600 units square, as the level grid counts them. A step
-//! looks at the 5 × 5 cells around the one stood on, inside the grid's
+//! Map cells are 600 units square, as the level grid counts them, the
+//! position rounded down to its cell. A step looks at the 5 × 5 cells around the one stood on, inside the grid's
 //! border, and a cell whose flag `0x80000` is set in an open sector earns 10
 //! points once. Each level keeps its own bitmap, saved with the item kinds
 //! already seen.
@@ -396,10 +396,11 @@ pub struct Discovery {
     pub recovered: bool,
 }
 
-/// Round to the nearest, ties to even, as the conversion to an integer
-/// does; out of range gives the integer indefinite.
-fn round_even(value: f32) -> i32 {
-    let r = value.round_ties_even();
+/// Round down, as the engine's cell helper does (it converts with the
+/// rounding mode set toward minus infinity); out of range gives the
+/// integer indefinite.
+fn round_down(value: f32) -> i32 {
+    let r = value.floor();
     if r.is_nan() || !(-2_147_483_648.0..2_147_483_648.0).contains(&r) {
         i32::MIN
     } else {
@@ -538,8 +539,8 @@ impl Experience {
         }
         let (width, height) = grid.size();
         let scale = f32::from_bits(CELL_SCALE_BITS);
-        let cx = round_even(x * scale).wrapping_add(((width as u32) >> 1) as i32);
-        let cy = round_even(z * scale).wrapping_add(((height as u32) >> 1) as i32);
+        let cx = round_down(x * scale).wrapping_add(((width as u32) >> 1) as i32);
+        let cy = round_down(z * scale).wrapping_add(((height as u32) >> 1) as i32);
         let cell = cy.wrapping_mul(width).wrapping_add(cx);
         if cell < 0 || i64::from(width) * i64::from(height) <= i64::from(cell) {
             return 0;

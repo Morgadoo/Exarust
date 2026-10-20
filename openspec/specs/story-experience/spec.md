@@ -13,7 +13,7 @@ In story mode a new item kind SHALL earn the points of its model's rarity tier (
 - **THEN** the first pickup earns 100 (pool 100, the player and each companion 400), the second nothing, and the kill 500
 
 ### Requirement: Explored cells
-The player's position SHALL fall in a cell of 600 units, rounded to the nearest with ties to even, offset by half the grid. When that cell lies in the grid and in a sector, each not yet explored cell of the 5 × 5 around it, inside the grid's one-cell border, whose flag 0x80000 is set and whose sector is open, SHALL earn 10 points and be marked in the level's bitmap of `width / 32` words a row.
+The player's position SHALL fall in a cell of 600 units, rounded down, offset by half the grid. When that cell lies in the grid and in a sector, each not yet explored cell of the 5 × 5 around it, inside the grid's one-cell border, whose flag 0x80000 is set and whose sector is open, SHALL earn 10 points and be marked in the level's bitmap of `width / 32` words a row.
 
 #### Scenario: A first step
 - **WHEN** the player stands at the origin of a 10 × 10 grid with one hidden cell, twice

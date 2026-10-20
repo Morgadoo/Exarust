@@ -267,7 +267,8 @@ impl ExploreGrid for Grid {
 /// On a 10 × 10 grid the origin is cell (5, 5): the 5 × 5 cells from 3 to
 /// 7 count once, one of them hidden, 24 cells and 240 points. Rows of a
 /// 64-cell grid are two words. At x 2400 the cell is 9, cut to columns 7
-/// and 8. x 300 rounds to 0 and x 900 to 2, ties to even.
+/// and 8. Cells round down: x −300 falls in −1 and z 1100 in 1, where
+/// rounding to the nearest would give 0 and 2.
 #[test]
 fn exploring_finds_each_cell_once() {
     let grid = Grid {
@@ -290,14 +291,15 @@ fn exploring_finds_each_cell_once() {
     east.enter_level([1; 16], 64, 10);
     assert_eq!(east.explore(&grid, 2400.0, 0.0, &mut player, &mut []), 10);
     assert_eq!(east.maps[0].bits[10], 0x180);
-    let mut tie = Experience::default();
-    tie.enter_level([2; 16], 64, 10);
-    tie.explore(&grid, 300.0, 900.0, &mut player, &mut []);
-    // Columns 3..7 around 5, rows 5..9 around 7 cut to 8.
-    assert_eq!(tie.maps[0].bits[2 * 5], 0xf8);
-    assert_eq!(tie.maps[0].bits[2 * 4], 0);
-    assert_eq!(tie.maps[0].bits[2 * 8], 0xf8);
-    assert_eq!(tie.maps[0].bits[2 * 9], 0);
+    let mut down = Experience::default();
+    down.enter_level([2; 16], 64, 10);
+    down.explore(&grid, -300.0, 1100.0, &mut player, &mut []);
+    // Columns 2..6 around 4, rows 4..8 around 6; (4, 4) is hidden.
+    assert_eq!(down.maps[0].bits[2 * 4], 0x6c);
+    assert_eq!(down.maps[0].bits[2 * 5], 0x7c);
+    assert_eq!(down.maps[0].bits[2 * 3], 0);
+    assert_eq!(down.maps[0].bits[2 * 8], 0x7c);
+    assert_eq!(down.maps[0].bits[2 * 9], 0);
     // Entering a level again finds its map.
     xp.enter_level(*b"exanima01\0\0\0\0\0\0\0", 64, 10);
     assert_eq!((xp.maps.len(), xp.current), (1, Some(0)));
