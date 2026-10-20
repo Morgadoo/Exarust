@@ -32,6 +32,9 @@ pub const CHARGE_PER_MS: f64 = 0.000_142_857_142_857_142_87;
 pub const SWELL_FROM: f64 = 0.8;
 /// The swell's curve: `1 + 100·((charge − 0.8)·5)⁴`.
 pub const SWELL_GAIN: f32 = 100.0;
+/// The swell's shader scale is reproduced, but how the 120 cm geometry and
+/// the `Scale` uniform combine is not certain (guess: both apply).
+///
 /// The texture offset's period falls from 500 ms to 150 ms.
 pub const PERIOD_MAX: f32 = 500.0;
 pub const PERIOD_SWING: f32 = 350.0;
@@ -58,7 +61,9 @@ pub fn level_of_detail(distance: f32) -> f32 {
 }
 
 /// The bubble registers a GI emissive light (`TBubbleEmissive`). Its own
-/// parameters live in that class's template, which is outside this pack.
+/// parameters live in that class's template, which is outside this pack;
+/// only the registration is modelled (guess: that it carries no point
+/// light of its own).
 pub const HAS_GI_LIGHT: bool = true;
 
 /// The phase the bubble is in.

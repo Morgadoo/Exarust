@@ -56,7 +56,7 @@ pub const CONFIRM_MODIFIER: u32 = 0x2000;
 
 /// The six sector labels, in order. The third slot's text was not in the
 /// recovered strings (the others are Mind, Force, Energy, Light and
-/// Displacement).
+/// Displacement); it is left empty rather than guessed.
 pub const LABELS: [&str; SECTORS as usize] =
     ["Mind", "Force", "", "Energy", "Light", "Displacement"];
 /// The domain each sector selects, in the original's id order: Mind,
@@ -255,7 +255,8 @@ impl Wheel {
     /// Confirm the icon under the mouse. A press needs the modifier, a
     /// different previous choice, a known domain and a free button; a
     /// confirmed choice stamps the button 256 ms ahead, shifts the choices
-    /// and plays a sound.
+    /// and plays a sound. The button's flag is modelled as a 256 ms hold
+    /// (guess: its clearing code is outside this group).
     pub fn confirm(&mut self, modifiers: u32, known: &[bool; SECTORS as usize], now: u32) -> bool {
         let Some(slot) = usize::try_from(self.hot - 1)
             .ok()

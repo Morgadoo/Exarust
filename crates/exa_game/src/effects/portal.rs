@@ -198,7 +198,9 @@ pub struct SeedNode {
     pub half: Vec3,
     /// The node's frame this tick.
     pub current: Frame,
-    /// The node's frame last tick.
+    /// The node's frame last tick (guess: the object's second frame field
+    /// is its previous tick's; the alternative would be a second rest
+    /// frame, which no seeding rule uses).
     pub previous: Frame,
     pub children: Vec<SeedNode>,
 }
@@ -237,7 +239,10 @@ pub fn grid_steps(half_cm: Vec3) -> [i32; 3] {
 /// lifetime minus up to a quarter of it, the look is the next five random
 /// bits, the position is the cell plus ±1.5 cm per axis, and the two starts
 /// straddle the node's move over the last tick with the emitter's velocity
-/// pulled in by 1.5 %. Seeding stops when the capacity is reached.
+/// pulled in by 1.5 % (guess: the velocity passed in is the node's second
+/// frame value).
+///
+/// Seeding stops when the capacity is reached.
 #[allow(clippy::too_many_arguments)]
 pub fn seed_burst(
     nodes: &[SeedNode],

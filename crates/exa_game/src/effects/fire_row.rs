@@ -292,7 +292,8 @@ pub struct FlameRow {
     pub walk: f32,
     pub swing: f32,
     pub jitter: f32,
-    /// The loop sound's pitch.
+    /// The loop sound's pitch (guess: the sound object's +0x14 field, the
+    /// one the per-frame walk stores, is its pitch).
     pub pitch: f32,
     /// The seeded stream the light and sound walks draw from.
     pub rng: Mt19937,
@@ -372,6 +373,8 @@ impl FlameRow {
         self.walk = walk_step(self.walk, self.swing, random[0], LIGHT_FLICKER_STEP);
         self.swing = (f64::from(self.walk) * f64::from(SWING_SCALE) * random[1]
             + f64::from(self.swing)) as f32;
+        // A zero-initialised jitter clamps to 0.87 on the first tick
+        // (guess: the class does not write the field elsewhere).
         self.jitter = jitter_step(self.jitter, random[2]);
         self.light()
     }

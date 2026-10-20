@@ -191,6 +191,7 @@ impl Shell {
     pub fn uniforms(&self, now_ms: u32) -> ShellUniforms {
         ShellUniforms {
             fade: self.fade(),
+            // The original never writes the interior field (guess: it stays 0).
             interior: 0.0,
             tex_pos: self.tex_pos,
             tex_offset: Self::tex_offset(now_ms),
