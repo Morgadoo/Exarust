@@ -1293,3 +1293,94 @@ mod tests {
         assert!(higher.replan);
     }
 }
+
+/// The eight neighbour offsets in the original's order: north-west,
+/// north, north-east, west, east, south-west, south, south-east.
+pub const PATH_NEIGHBOURS: [(i32, i32); 8] = [
+    (-1, -1),
+    (-1, 0),
+    (-1, 1),
+    (0, -1),
+    (0, 1),
+    (1, -1),
+    (1, 0),
+    (1, 1),
+];
+
+/// The move cost of each neighbour: diagonals 7, orthogonals 5.
+pub const PATH_MOVE_COST: [i32; 8] = [7, 5, 7, 5, 5, 7, 5, 7];
+
+/// A world coordinate to a grid cell: `trunc(world / unit + 0.5)`.
+pub fn path_cell_coord(world: f32, inverse_unit: f32) -> i32 {
+    (world * inverse_unit + 0.5) as i32
+}
+
+/// A grid cell to a world coordinate: `(cell − 0.5) · unit`.
+pub fn path_world_coord(cell: i32, unit: f32) -> f32 {
+    (cell as f32 - 0.5) * unit
+}
+
+/// Whether a step may enter a cell: the next floor is set, its rise over
+/// the current floor is −20 through +4, the A byte is at most
+/// `180/(quality+1)` and the shifted B byte at most 600.
+pub fn path_step_ok(
+    current_floor: i32,
+    next_floor: u8,
+    a: u8,
+    b: u8,
+    quality: i32,
+    shift: u32,
+) -> bool {
+    let rise = i32::from(next_floor) - current_floor;
+    let quality = quality.max(0) + 1;
+    next_floor != 0
+        && (-20..=4).contains(&rise)
+        && i32::from(a) <= 180 / quality
+        && ((i32::from(b)) << shift) <= 600
+}
+
+/// The step cost: `g + 10·dz² + direction + 2·A + (B << shift)`.
+pub fn path_step_cost(current_g: i32, dz: i32, direction: usize, a: u8, b: u8, shift: u32) -> i32 {
+    current_g
+        + 10 * dz * dz
+        + PATH_MOVE_COST[direction]
+        + 2 * i32::from(a)
+        + ((i32::from(b)) << shift)
+}
+
+/// The heuristic: ten times the 3D distance, truncated.
+pub fn path_heuristic(dx: i32, dy: i32, dz: i32) -> i32 {
+    let squared = f64::from(dx * dx + dy * dy + dz * dz);
+    (10.0 * squared.sqrt()) as i32
+}
+
+#[cfg(test)]
+mod grid_cost_tests {
+    use super::*;
+
+    #[test]
+    fn cells_and_worlds_round_with_a_half_cell_shift() {
+        assert_eq!(path_cell_coord(0.5, 1.0), 1);
+        assert_eq!(path_cell_coord(1.4, 1.0), 1);
+        assert_eq!(path_cell_coord(-0.5, 1.0), 0);
+        assert_eq!(path_world_coord(1, 1.0), 0.5);
+        assert_eq!(path_world_coord(0, 1.0), -0.5);
+    }
+
+    #[test]
+    fn a_step_checks_the_floor_rise_and_the_two_penalties() {
+        assert!(path_step_ok(10, 12, 50, 0, 0, 0));
+        assert!(!path_step_ok(10, 0, 50, 0, 0, 0));
+        assert!(!path_step_ok(10, 32, 50, 0, 0, 0));
+        assert!(!path_step_ok(10, 15, 50, 0, 0, 0));
+        assert!(!path_step_ok(10, 12, 181, 0, 0, 0));
+        assert!(!path_step_ok(10, 12, 50, 100, 0, 3));
+    }
+
+    #[test]
+    fn the_cost_and_heuristic_follow_the_equation() {
+        assert_eq!(path_step_cost(100, 2, 3, 10, 4, 1), 173);
+        assert_eq!(path_heuristic(3, 4, 0), 50);
+        assert_eq!(PATH_MOVE_COST, [7, 5, 7, 5, 5, 7, 5, 7]);
+    }
+}
