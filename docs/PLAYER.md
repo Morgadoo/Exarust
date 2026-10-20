@@ -35,6 +35,12 @@ The original has no camera-relative keyboard movement. Outside combat:
   feral sprint row (the sprint rate, toward the jog rate by the feral
   level) and then slows by 1 − 0.1 × encumbrance. The capsule then moves
   at the jog speed times the feral sprint thrust over the jog thrust.
+- **Cursor Look (V)** captures the mouse while held: the pointer and world
+  cursor are hidden, horizontal mouse motion turns the facing by
+  3.6 × Δx / window width radians per pixel (no drag needed), and the
+  camera target turns behind the new facing. Releasing restores the
+  pointer where it was. The settings screen's binding template shows
+  SPACE, but the shipped table's slot is V.
 - **The clips.** The steering starts the walk when the character moves,
   forwards or back, from whatever looping clip plays, and ends it in Idle
   when the character stops. Backing runs that walk's clock backwards at
@@ -99,6 +105,28 @@ The original has no camera-relative keyboard movement. Outside combat:
   off its balance, as the original's; slowing down does not save it
   ([formats/RSQ.md](formats/RSQ.md), Falling to death; [UI.md](UI.md),
   Death fade). `--at x,200,z` drops it from 200 m.
+
+## Bindings
+
+The original's default binding table (`0x1002b72d0`, 16-byte slots whose
+first word is the virtual-key code; read from `Exanima.exe` and matched
+slot for slot) has 23 slots in this order:
+left mouse (primary), W, A, S, D, X (crouch), shift (run), alt (alternate
+attack), middle mouse (orbit), V (Cursor Look), control (interact), I
+(inventory), tab (combat), K (skills), R (switch equipped), F (flip weapon),
+J (journal), T (talk), C (use power), P (power bar), Q (use/previous
+power), right arrow (next power), left arrow (previous power). Which power
+action (use, bar, tree) each of slots 18–20 holds is not yet tied to the
+settings labels; nothing reads those slots yet. Shift, alt
+and control accept either side. The settings screen's template labels
+Cursor Look as SPACE; the shipped table's slot holds V.
+
+The saved file (`0x1000a5160` save, `0x1000a5320` load) is little-endian:
+version word 101, the controller-mode flag, the count 23, then the 23
+virtual-key codes. An older file without the controller flag is accepted:
+after the version its word is the count. Exarust's `Bindings` models both
+shapes; the primary attack, movement, combat, orbit and interact controls
+read the table, and an unbound key simply does nothing.
 
 ## Using what the cursor is over
 

@@ -5,6 +5,7 @@
 pub mod arena;
 pub mod arena_log;
 pub mod balance;
+pub mod bindings;
 pub mod body_overlay;
 pub mod career;
 pub mod create;

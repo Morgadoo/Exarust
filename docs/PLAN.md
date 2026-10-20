@@ -603,6 +603,18 @@ step (M16, C19), the locomoting bend, and the sole's orientation drive.
 Standing feet keep within 0.5 cm of their anchors; a
 heavily dazed body now sinks onto its planted feet instead of toppling.
 
+Done (change `bind-the-controls`): the 23-slot default binding table (the
+virtual-key words of the shipped table, matched slot for slot), shift, alt
+and control read on either side, and the binding file (version 101, the
+controller flag, the count and the codes; the older file without the flag
+loads). Movement, the primary and alternate attack, the combat toggle, the
+orbit drag and interact read the table. Cursor Look (V) captures and hides
+the pointer, turns the facing by 3.6 × Δx / window width, turns the camera
+behind it and restores the pointer on release. SG_PlayerControls 10%,
+RF_HW_Config 7%, RF_Navigation 6%; the headline is 22.9%. Not yet: the
+settings screen's rebinding (`TReadKeyScreen`), key names, controller axes
+and the power slots' labels.
+
 This phase carries the most risk and defines how the game feels.
 
 - `exa_anim`: skeleton, clip sampling and blending, procedural layers
@@ -622,7 +634,9 @@ This phase carries the most risk and defines how the game feels.
   button walks to the cursor, Tab toggles combat mode (on at every
   practice and arena fight start) where the body faces the cursor and the
   mouse steers attacks. Camera at a fixed 20 m with a
-  field-of-view zoom. Still to do: crouch, interact.
+  field-of-view zoom. The keys come from the original's binding table and
+  Cursor Look turns the facing (`bind-the-controls`). Still to do: crouch,
+  interact.
 
 **M3 "standing man":** a fully dressed character walks around a level under
 player control, stumbles when pushed, falls and gets up.

@@ -19,7 +19,7 @@
 
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
-use bevy::window::PrimaryWindow;
+use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use exa_anim::Stature;
 use exa_anim::{Animator, Ease, Motions};
 use exa_character::held::{Hands, HeldMoveset, class};
@@ -30,6 +30,9 @@ use exa_combat::{AttackStart, Attacking, Blade, Condition, Fighter};
 use exa_formats::encumbrance::run_cap;
 use exa_physics::body::{BodyTicks, Fallen, GoLimp, MAX_ENERGY, Ragdoll};
 use exa_physics::{CharacterBody, Physics};
+use exa_ui::CursorCapture;
+
+use crate::bindings::{Action, Bindings};
 
 /// Walking speed (m/s): where the original's walk drive settles.
 const WALK_SPEED: f32 = 1.4;
@@ -76,6 +79,26 @@ const RUN_FALL: f32 = 0.015;
 pub(crate) const CURSOR_RUN_FROM: f32 = 3.0;
 /// A cursor closer than this (m) gives no direction.
 const CURSOR_MIN: f32 = 0.5;
+/// Cursor Look turns the facing by 3.6 rad per screen width of horizontal
+/// mouse motion.
+pub const CURSOR_LOOK_SENSITIVITY: f32 = 3.6;
+
+/// Cursor Look's held state and where the pointer was before it captured
+/// the mouse.
+#[derive(Resource, Debug, Default)]
+pub struct CursorLook {
+    /// The key is held and the mouse is captured.
+    pub active: bool,
+    /// The window pointer before capture, restored on release.
+    saved: Option<Vec2>,
+}
+
+impl CursorLook {
+    /// The facing turn for `dx` pixels across a window `width` wide (rad).
+    pub fn turn(dx: f32, width: f32) -> f32 {
+        dx * CURSOR_LOOK_SENSITIVITY / width.max(1.0)
+    }
+}
 /// S faster than this (m/s) brakes before backpedalling (1 cm per tick).
 const BRAKE_ABOVE: f32 = 0.01 * TICK_HZ;
 /// The look-ahead probe starts this far above the feet (hip height, m).
@@ -260,8 +283,12 @@ struct AttackButton {
 }
 
 /// Before the frame's ticks: remembers a press for the next tick.
-fn latch_attack_button(buttons: Res<ButtonInput<MouseButton>>, mut latch: ResMut<AttackButton>) {
-    latch.pressed_since_tick |= buttons.just_pressed(MouseButton::Left);
+fn latch_attack_button(
+    buttons: Res<ButtonInput<MouseButton>>,
+    bindings: Res<Bindings>,
+    mut latch: ResMut<AttackButton>,
+) {
+    latch.pressed_since_tick |= bindings.mouse_just_pressed(&buttons, Action::Primary);
 }
 
 /// The combat-mode heading toward a cursor at yaw `aim`: the cursor's
@@ -299,6 +326,8 @@ impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CursorGround>()
             .init_resource::<AttackButton>()
+            .init_resource::<Bindings>()
+            .init_resource::<CursorLook>()
             .add_systems(
                 RunFixedMainLoop,
                 latch_attack_button.in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop),
@@ -309,7 +338,14 @@ impl Plugin for PlayerPlugin {
             )
             .add_systems(
                 Update,
-                (cursor_ground, toggle_combat, player_combat, chase_camera).chain(),
+                (
+                    cursor_look,
+                    cursor_ground,
+                    toggle_combat,
+                    player_combat,
+                    chase_camera,
+                )
+                    .chain(),
             );
     }
 }
@@ -394,6 +430,71 @@ pub(crate) fn window_point(
         .map(|p| p / viewport_scale(camera, window))
 }
 
+/// Whether the session is a Wayland one, where the pointer can be moved
+/// only while it is locked.
+fn wayland() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cursor_look(
+    mut look: ResMut<CursorLook>,
+    keys: Res<ButtonInput<KeyCode>>,
+    bindings: Res<Bindings>,
+    motion: Res<AccumulatedMouseMotion>,
+    mut windows: Query<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
+    mut players: Query<&mut PlayerBody>,
+    mut cameras: Query<&mut ChaseCamera>,
+    mut capture: ResMut<CursorCapture>,
+) {
+    let Ok((mut window, mut options)) = windows.single_mut() else {
+        return;
+    };
+    let held = bindings.pressed(&keys, Action::CursorLook);
+    if held && !look.active && window.focused {
+        look.active = true;
+        look.saved = window.cursor_position();
+        // Locked falls back to confined where it is unsupported (X11,
+        // Windows); there the pointer is also centred. Wayland locks it in
+        // place and only moves it while locked.
+        options.grab_mode = CursorGrabMode::Locked;
+        if !wayland() {
+            let centre = window.size() * 0.5;
+            window.set_cursor_position(Some(centre));
+        }
+        options.visible = false;
+    }
+    if look.active {
+        let turn = CursorLook::turn(motion.delta.x, window.width());
+        if turn != 0.0 {
+            let mut yaw = None;
+            for mut body in &mut players {
+                let facing = turn_between(0.0, body.yaw + turn);
+                body.yaw = facing;
+                body.heading = facing;
+                body.aim = facing;
+                yaw = Some(facing);
+            }
+            if let Some(yaw) = yaw {
+                for mut camera in &mut cameras {
+                    camera.yaw = yaw + std::f32::consts::PI;
+                }
+            }
+        }
+    }
+    if look.active && (!held || !window.focused) {
+        look.active = false;
+        options.grab_mode = CursorGrabMode::None;
+        options.visible = true;
+        // The window's position is applied before the grab is released, so
+        // Wayland takes it as the lock's hint and leaves the pointer there.
+        if let Some(saved) = look.saved.take() {
+            window.set_cursor_position(Some(saved));
+        }
+    }
+    capture.0 = look.active;
+}
+
 fn cursor_ground(
     mut ground: ResMut<CursorGround>,
     scripted: Res<exa_ui::ScriptedPointer>,
@@ -422,10 +523,11 @@ fn cursor_ground(
     }
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn steer_player(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
+    bindings: Res<Bindings>,
     cursor: Res<CursorGround>,
     physics: Res<Physics>,
     motions: Option<Res<Motions>>,
@@ -488,21 +590,21 @@ fn steer_player(
                     _ => body_turn(pb.yaw, pb.heading, false, speed),
                 };
                 t.rotation = Quat::from_rotation_y(pb.yaw);
-                combat_steps(&keys, &mut body, &mut pb, &mut anim, stance, dt);
+                combat_steps(&keys, &bindings, &mut body, &mut pb, &mut anim, stance, dt);
                 continue;
             }
             pb.walk_from = None;
-            let held = |k| keys.pressed(k);
+            let held = |action| bindings.pressed(&keys, action);
             let to_cursor = cursor
                 .0
                 .map(|c| c - (feet + Vec3::Y * AIM_HEIGHT))
                 .filter(|d| d.xz().length() >= CURSOR_MIN);
             let mouse = buttons.pressed(MouseButton::Right) && to_cursor.is_some();
-            let ahead = held(KeyCode::KeyW) || mouse;
-            let back = held(KeyCode::KeyS) && !mouse;
-            let steer = held(KeyCode::KeyA) as i32 - held(KeyCode::KeyD) as i32;
+            let ahead = held(Action::Forward) || mouse;
+            let back = held(Action::Back) && !mouse;
+            let steer = held(Action::Left) as i32 - held(Action::Right) as i32;
             pb.quarter_wait = (pb.quarter_wait - dt).max(0.0);
-            let shift = held(KeyCode::ShiftLeft);
+            let shift = held(Action::Run);
             let mut running = shift;
             let mut cursor_far = false;
             if mouse && let Some(d) = to_cursor {
@@ -614,6 +716,7 @@ fn explore_clip(anim: &mut Animator, gait: Option<&str>) {
 /// the body stands.
 fn combat_steps(
     keys: &ButtonInput<KeyCode>,
+    bindings: &Bindings,
     body: &mut CharacterBody,
     pb: &mut PlayerBody,
     anim: &mut Animator,
@@ -623,13 +726,13 @@ fn combat_steps(
     let look = forward(pb.aim);
     let side = Vec3::new(look.z, 0.0, -look.x);
     let mut dir = Vec3::ZERO;
-    for (key, d) in [
-        (KeyCode::KeyW, look),
-        (KeyCode::KeyS, -look),
-        (KeyCode::KeyA, side),
-        (KeyCode::KeyD, -side),
+    for (action, d) in [
+        (Action::Forward, look),
+        (Action::Back, -look),
+        (Action::Left, side),
+        (Action::Right, -side),
     ] {
-        if keys.pressed(key) {
+        if bindings.pressed(keys, action) {
             dir += d;
         }
     }
@@ -756,8 +859,12 @@ fn take_player_stance(
 
 /// Tab turns combat mode on or off; the stance follows (the guard or the
 /// combat idle in, Idle out).
-fn toggle_combat(keys: Res<ButtonInput<KeyCode>>, mut bodies: Query<&mut PlayerBody>) {
-    if !keys.just_pressed(KeyCode::Tab) {
+fn toggle_combat(
+    keys: Res<ButtonInput<KeyCode>>,
+    bindings: Res<Bindings>,
+    mut bodies: Query<&mut PlayerBody>,
+) {
+    if !bindings.just_pressed(&keys, Action::ToggleCombat) {
         return;
     }
     for mut pb in &mut bodies {
@@ -770,12 +877,16 @@ fn toggle_combat(keys: Res<ButtonInput<KeyCode>>, mut bodies: Query<&mut PlayerB
 /// while an attack is requested.
 fn player_combat(
     cursor: Res<CursorGround>,
+    look: Res<CursorLook>,
     players: Query<&GlobalTransform, With<Player>>,
     mut bodies: Query<(&mut PlayerBody, Option<&Condition>, Has<Fallen>)>,
 ) {
     let Some(player) = players.iter().next() else {
         return;
     };
+    if look.active {
+        return;
+    }
     for (mut pb, condition, fallen) in &mut bodies {
         if fallen || condition.is_some_and(|c| c.helpless()) || !pb.combat {
             continue;
@@ -809,6 +920,7 @@ fn request_attacks(
     motions: Option<Res<Motions>>,
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
+    bindings: Res<Bindings>,
     mut latch: ResMut<AttackButton>,
     blades: Query<(&Blade, &GlobalTransform)>,
     mut bodies: Query<(
@@ -826,7 +938,7 @@ fn request_attacks(
     )>,
 ) {
     let now = ticks.map_or(0, |t| t.millis());
-    let down = buttons.pressed(MouseButton::Left) || latch.pressed_since_tick;
+    let down = bindings.mouse_pressed(&buttons, Action::Primary) || latch.pressed_since_tick;
     latch.pressed_since_tick = false;
     for (
         entity,
@@ -878,8 +990,8 @@ fn request_attacks(
             }
             continue;
         }
-        pb.attack.thrust = attack::may_thrust(weapon_class)
-            && (keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight));
+        pb.attack.thrust =
+            attack::may_thrust(weapon_class) && bindings.pressed(&keys, Action::Alternate);
         pb.heading = pb.aim;
         let (energy, most) = body
             .and_then(|b| b.drive.as_ref())
@@ -1193,6 +1305,7 @@ pub(crate) fn chase_camera(
     time: Res<Time<Real>>,
     fixed: Res<Time<Fixed>>,
     buttons: Res<ButtonInput<MouseButton>>,
+    bindings: Res<Bindings>,
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -1212,7 +1325,7 @@ pub(crate) fn chase_camera(
         (w.width().max(1.0), w.width() / w.height().max(1.0))
     });
     for (mut cam, mut t, mut projection) in &mut cameras {
-        if buttons.pressed(MouseButton::Middle) {
+        if bindings.mouse_pressed(&buttons, Action::Orbit) {
             cam.yaw -= motion.delta.x * ORBIT_DRAG / width;
             cam.user_pitch += motion.delta.y * ORBIT_DRAG / width;
         }
@@ -1253,6 +1366,7 @@ mod tests {
         app.init_resource::<Time>()
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<Bindings>()
             .init_resource::<CursorGround>()
             .init_resource::<Physics>()
             .add_systems(FixedPreUpdate, steer_player);
@@ -1469,6 +1583,7 @@ mod tests {
         keys.press(KeyCode::KeyA);
         combat_steps(
             &keys,
+            &Bindings::default(),
             &mut body,
             &mut pb,
             &mut anim,
@@ -1480,6 +1595,7 @@ mod tests {
         keys.release(KeyCode::KeyA);
         combat_steps(
             &keys,
+            &Bindings::default(),
             &mut body,
             &mut pb,
             &mut anim,
@@ -1501,15 +1617,39 @@ mod tests {
         pb.set_combat(true);
         for gait in ["Walk", "Run", "Backpedal"] {
             let mut anim = Animator::new("Default", gait);
-            combat_steps(&keys, &mut body, &mut pb, &mut anim, Stance::Defence, 0.012);
+            combat_steps(
+                &keys,
+                &Bindings::default(),
+                &mut body,
+                &mut pb,
+                &mut anim,
+                Stance::Defence,
+                0.012,
+            );
             assert_eq!(anim.action, "Defence stance", "{gait}");
         }
         let mut anim = Animator::new("Default", "Walk");
         keys.press(KeyCode::KeyW);
-        combat_steps(&keys, &mut body, &mut pb, &mut anim, Stance::Defence, 0.012);
+        combat_steps(
+            &keys,
+            &Bindings::default(),
+            &mut body,
+            &mut pb,
+            &mut anim,
+            Stance::Defence,
+            0.012,
+        );
         assert_eq!(anim.action, "Combat Walk");
         keys.release(KeyCode::KeyW);
-        combat_steps(&keys, &mut body, &mut pb, &mut anim, Stance::Defence, 0.012);
+        combat_steps(
+            &keys,
+            &Bindings::default(),
+            &mut body,
+            &mut pb,
+            &mut anim,
+            Stance::Defence,
+            0.012,
+        );
         assert_eq!(anim.action, "Defence stance");
     }
 
@@ -1522,6 +1662,7 @@ mod tests {
         app.init_resource::<Time>()
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<Bindings>()
             .init_resource::<CursorGround>()
             .init_resource::<Physics>()
             .add_plugins(exa_combat::stance::StancePlugin)
@@ -1764,6 +1905,7 @@ mod tests {
             .insert_resource(attack_clips())
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<Bindings>()
             .init_resource::<AttackButton>()
             .add_systems(FixedPreUpdate, request_attacks);
         let mut pb = PlayerBody::new(0.0);
@@ -2238,5 +2380,14 @@ mod tests {
         assert!((zoom_fov(800.0, 1.6).to_degrees() - 18.0).abs() < 1e-3);
         assert!((min_pitch(2000.0) - 0.925).abs() < 1e-6);
         assert_eq!(min_pitch(900.0), 0.8);
+    }
+
+    #[test]
+    fn cursor_look_turns_three_point_six_radians_across_the_window() {
+        assert!((CursorLook::turn(1600.0, 1600.0) - 3.6).abs() < 1e-6);
+        assert!((CursorLook::turn(800.0, 1600.0) - 1.8).abs() < 1e-6);
+        assert!((CursorLook::turn(-800.0, 1600.0) + 1.8).abs() < 1e-6);
+        // A zero width is clamped to one pixel rather than dividing by 0.
+        assert_eq!(CursorLook::turn(10.0, 0.0), 36.0);
     }
 }

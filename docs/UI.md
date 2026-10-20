@@ -35,7 +35,9 @@ with its window's physical height; its default 1600 × 900 window gives 5.
 In the game's view the original hides the system pointer and draws its own
 cursor at the pointer's position: a flat sprite, not a decal. Over the
 steep chase camera it looks as if it lay on the floor (the red ring and red
-arrow of the reference screenshots).
+arrow of the reference screenshots). While Cursor Look is held the game
+captures the mouse: the system and world cursors are both hidden until it
+is released.
 
 - **Sprite.** `cursors.rfi` in the resource pack: a 256 × 512 coverage
   (A8) atlas of 2 × 4 frames, 128 pixels each, stored bottom row first

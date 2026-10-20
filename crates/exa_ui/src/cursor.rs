@@ -111,6 +111,12 @@ pub struct WorldCursor {
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
 pub struct ScriptedPointer(pub Option<Vec2>);
 
+/// The player has captured the mouse (Cursor Look): the system pointer and
+/// the world cursor stay hidden until it is released. The game sets this;
+/// the cursor draw obeys it.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CursorCapture(pub bool);
+
 impl ScriptedPointer {
     /// Where the pointer is in the window: the scripted position, else the
     /// mouse's while it is over the window.
@@ -347,6 +353,7 @@ struct OpaqueRed(bool);
 pub(crate) fn plugin(app: &mut App) {
     app.init_resource::<WorldCursor>()
         .init_resource::<ScriptedPointer>()
+        .init_resource::<CursorCapture>()
         .init_resource::<Frames>()
         .init_resource::<OpaqueRed>()
         .add_systems(Startup, spawn)
@@ -384,6 +391,7 @@ fn spawn(mut commands: Commands, game: Option<Res<Game>>) {
 fn draw(
     cursor: Res<WorldCursor>,
     scripted: Res<ScriptedPointer>,
+    capture: Res<CursorCapture>,
     gui: Res<GuiScale>,
     atlas: Option<Res<Atlas>>,
     loading: Option<Res<LoadingStatus>>,
@@ -405,10 +413,17 @@ fn draw(
     let atlas = atlas.as_ref().and_then(|a| a.0.as_ref());
     let at = scripted.position(window);
     let shown = cursor.active && loading.is_none() && atlas.is_some() && at.is_some();
-    // The system pointer is hidden only while the world cursor stands in
-    // for it; it is never moved.
-    if options.visible == shown {
-        options.visible = !shown;
+    // Cursor Look owns the pointer: hide both the system and the world
+    // cursor until it is released.
+    let visible = shown && !capture.0;
+    if options.visible == visible {
+        options.visible = !visible;
+    }
+    if capture.0 {
+        for (.., mut visibility) in &mut parts {
+            *visibility = Visibility::Hidden;
+        }
+        return;
     }
     let (Some(atlas), Some(at), true) = (atlas, at, shown) else {
         for (.., mut visibility) in &mut parts {

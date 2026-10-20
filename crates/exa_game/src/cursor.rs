@@ -7,6 +7,7 @@ use bevy::window::PrimaryWindow;
 use exa_physics::Physics;
 use exa_ui::{CursorShape, ScriptedPointer, WorldCursor};
 
+use crate::bindings::{Action, Bindings};
 use crate::player::{
     AIM_HEIGHT, CURSOR_RUN_FROM, ChaseCamera, CursorGround, Player, PlayerBody, window_point,
     window_ray,
@@ -120,6 +121,7 @@ impl Plugin for CursorPlugin {
 fn pick_cursor(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
+    bindings: Res<Bindings>,
     ground: Res<CursorGround>,
     scripted: Res<ScriptedPointer>,
     physics: Res<Physics>,
@@ -167,7 +169,7 @@ fn pick_cursor(
         combat: pb.combat,
         condition,
         walking_to,
-        interact: keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]),
+        interact: bindings.pressed(&keys, Action::Interact),
         in_reach,
     };
     let next = WorldCursor {

@@ -201,3 +201,29 @@ While the sprint latch is kept, the run blend SHALL stop at 1 minus 0.4 times en
 #### Scenario: Cursor 4 m ahead, then the walk key
 - **WHEN** a player of encumbrance 0.5 holds Shift with the right button and the cursor 4 m ahead for 40 steering ticks, then releases the button, presses the walk key, and is steered for 40 more ticks
 - **THEN** the first tops the run blend at 0.8 and keeps the sprint latch, and the second tops it at 0.85 and spends the latch
+
+### Requirement: Cursor Look
+The system SHALL capture the mouse while the Cursor Look binding is held, hide the system and world cursors, turn the player's facing, heading and combat aim by 3.6 × Δx / window width radians for horizontal mouse motion, and turn the camera's target behind the new facing. Releasing the binding or losing window focus SHALL restore the pointer to where it was.
+
+#### Scenario: Turn with the mouse
+- **WHEN** Cursor Look is held and the mouse moves 800 logical pixels right across a 1600-pixel window
+- **THEN** the player turns 1.8 radians right and the camera target follows behind it
+
+#### Scenario: Hide the cursors
+- **WHEN** Cursor Look is held
+- **THEN** neither the system pointer nor the world cursor is drawn
+
+#### Scenario: Release
+- **WHEN** Cursor Look is released
+- **THEN** the mouse is released and returned to its earlier position
+
+### Requirement: Bound controls
+The system SHALL read movement, primary attack, alternate attack, combat toggle, orbit camera and interact from the player's binding table rather than fixed keys.
+
+#### Scenario: Rebound forward
+- **WHEN** Forward is rebound from W to another key
+- **THEN** W no longer walks the player and the new key does
+
+#### Scenario: Either shift
+- **WHEN** either shift key is held with default bindings
+- **THEN** the player runs
