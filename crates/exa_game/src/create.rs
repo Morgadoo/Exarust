@@ -397,6 +397,28 @@ pub fn lay_out_creation_rail(
     }
 }
 
+/// A creation continue button's state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationContinue {
+    pub label: &'static str,
+    pub mirrored: bool,
+    pub enabled: bool,
+}
+
+/// Picks the continue label and flags from the mode.
+pub fn creation_continue_button(mode: i32, threshold: i32) -> CreationContinue {
+    let save = mode == 2;
+    CreationContinue {
+        label: if save {
+            "Continue from save"
+        } else {
+            "Continue from checkpoint"
+        },
+        mirrored: save,
+        enabled: mode >= threshold,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -694,5 +716,20 @@ mod tests {
         assert_eq!(compact.view, 66);
         assert_eq!(compact.thumb, None);
         assert_eq!(compact.start, None);
+    }
+
+    #[test]
+    fn the_creation_continue_button_follows_its_mode() {
+        let save = creation_continue_button(2, 3);
+        assert_eq!(save.label, "Continue from save");
+        assert!(save.mirrored);
+        assert!(!save.enabled);
+
+        let checkpoint = creation_continue_button(5, 3);
+        assert_eq!(checkpoint.label, "Continue from checkpoint");
+        assert!(!checkpoint.mirrored);
+        assert!(checkpoint.enabled);
+
+        assert!(creation_continue_button(3, 3).enabled);
     }
 }
