@@ -98,32 +98,51 @@ pub struct CreationSettle {
     pub callback: bool,
 }
 
-/// Settles an appearance value toward its target.
-pub fn settle_appearance(source: f32, target: f32, last: i32, clock: i32) -> CreationSettle {
-    const EPSILON: f32 = f32::from_bits(0x33ff_ffd7);
-    let value = (0.5 - source) * 2.0;
-    if (value - target).abs() < EPSILON {
-        return CreationSettle {
-            stored: None,
-            pending: false,
-            last,
-            callback: false,
-        };
+/// The distance under which nothing is written.
+const SETTLE_EPSILON: f32 = f32::from_bits(0x33ff_ffd7);
+
+fn unchanged(last: i32) -> CreationSettle {
+    CreationSettle {
+        stored: None,
+        pending: false,
+        last,
+        callback: false,
     }
+}
+
+fn debounce(value: f32, last: i32, clock: i32) -> CreationSettle {
     if last + 2 > clock {
-        return CreationSettle {
+        CreationSettle {
             stored: Some(value),
             pending: true,
             last,
             callback: false,
-        };
+        }
+    } else {
+        CreationSettle {
+            stored: Some(value),
+            pending: false,
+            last: clock,
+            callback: true,
+        }
     }
-    CreationSettle {
-        stored: Some(value),
-        pending: false,
-        last: clock,
-        callback: true,
+}
+
+/// Settles an appearance value toward its target.
+pub fn settle_appearance(source: f32, target: f32, last: i32, clock: i32) -> CreationSettle {
+    let value = (0.5 - source) * 2.0;
+    if (value - target).abs() < SETTLE_EPSILON {
+        return unchanged(last);
     }
+    debounce(value, last, clock)
+}
+
+/// Copies an appearance value to its target.
+pub fn copy_appearance(source: f32, target: f32, last: i32, clock: i32) -> CreationSettle {
+    if (source - target).abs() < SETTLE_EPSILON {
+        return unchanged(last);
+    }
+    debounce(source, last, clock)
 }
 
 #[cfg(test)]
@@ -214,6 +233,23 @@ mod tests {
         assert!(!pending.callback);
 
         let fired = settle_appearance(0.25, 0.0, 100, 102);
+        assert_eq!(fired.stored, Some(0.5));
+        assert!(!fired.pending);
+        assert_eq!(fired.last, 102);
+        assert!(fired.callback);
+    }
+
+    #[test]
+    fn the_creation_appearance_copies_with_the_same_debounce() {
+        assert_eq!(copy_appearance(0.5, 0.5, 0, 0).stored, None);
+
+        let pending = copy_appearance(0.5, 0.0, 100, 101);
+        assert_eq!(pending.stored, Some(0.5));
+        assert!(pending.pending);
+        assert_eq!(pending.last, 100);
+        assert!(!pending.callback);
+
+        let fired = copy_appearance(0.5, 0.0, 100, 102);
         assert_eq!(fired.stored, Some(0.5));
         assert!(!fired.pending);
         assert_eq!(fired.last, 102);
