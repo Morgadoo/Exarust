@@ -2661,3 +2661,105 @@ mod text_tests {
         assert!(parse_tree_text(&bytes).is_none());
     }
 }
+
+/// The kinesis effect's reach per unit (2.8).
+pub const KINESIS_REACH: f32 = 2.8;
+/// The kinesis effect's damping (0.5).
+pub const KINESIS_DAMPING: f32 = 0.5;
+
+/// The kinesis effect's scale from its speed: `(1/speed + 0.015) · 0.5`,
+/// with the division and the sum in the original's mixed precision.
+pub fn kinesis_scale(speed: f32) -> f32 {
+    ((1.0 / speed) as f64 + 0.015) as f32 * 0.5
+}
+
+/// The force kinesis effect's state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KinesisEffect {
+    pub state: i32,
+    pub target: Option<u32>,
+}
+
+/// One kinesis activation step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KinesisStep {
+    pub state: i32,
+    pub result: i32,
+    pub released: bool,
+    pub hooked: bool,
+    pub target_flagged: bool,
+    pub registered: bool,
+}
+
+/// Steps the force kinesis effect: an event carrying any of bits 1 and 3
+/// moves it to removal. Removal releases a held target and returns 2. In
+/// the active state it installs the owner hook when the owner accepts,
+/// raises the target's flag and registers the frame callback.
+pub fn step_force_kinesis(effect: &mut KinesisEffect, event: i32, can_hook: bool) -> KinesisStep {
+    if event & 0xa != 0 {
+        effect.state = 2;
+    }
+    if effect.state == 2 {
+        let released = effect.target.is_some();
+        effect.target = None;
+        return KinesisStep {
+            state: effect.state,
+            result: 2,
+            released,
+            hooked: false,
+            target_flagged: false,
+            registered: false,
+        };
+    }
+    if effect.state == 1 {
+        return KinesisStep {
+            state: effect.state,
+            result: 0,
+            released: false,
+            hooked: can_hook,
+            target_flagged: true,
+            registered: true,
+        };
+    }
+    KinesisStep {
+        state: effect.state,
+        result: 0,
+        released: false,
+        hooked: false,
+        target_flagged: false,
+        registered: false,
+    }
+}
+
+#[cfg(test)]
+mod kinesis_tests {
+    use super::*;
+
+    #[test]
+    fn the_kinesis_scale_follows_the_speed() {
+        assert!((kinesis_scale(1.0) - 0.5075).abs() < 1e-6);
+        assert!((kinesis_scale(2.0) - 0.2575).abs() < 1e-6);
+        assert!((kinesis_scale(0.5) - 1.0075).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_kinesis_activation_and_removal_paths() {
+        let mut effect = KinesisEffect {
+            state: 1,
+            target: Some(4),
+        };
+        let active = step_force_kinesis(&mut effect, 0, true);
+        assert!(active.hooked && active.target_flagged && active.registered);
+        assert_eq!(active.result, 0);
+
+        let quiet = step_force_kinesis(&mut effect, 0, false);
+        assert!(!quiet.hooked);
+        assert!(quiet.target_flagged);
+
+        let end = step_force_kinesis(&mut effect, 0xa, true);
+        assert_eq!(end.state, 2);
+        assert_eq!(end.result, 2);
+        assert!(end.released);
+        assert_eq!(effect.target, None);
+    }
+}
