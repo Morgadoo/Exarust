@@ -517,3 +517,106 @@ mod weight_tests {
         assert_eq!(entry.third, 0.125);
     }
 }
+
+/// The sight quad's basis in view space.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SightBasis {
+    pub u: [f32; 3],
+    pub v: [f32; 3],
+    pub eye: [f32; 3],
+    pub dir: [f32; 3],
+    pub blend: f32,
+}
+
+fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn normalize(v: [f32; 3]) -> [f32; 3] {
+    let length = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if length == 0.0 {
+        return [0.0; 3];
+    }
+    [v[0] / length, v[1] / length, v[2] / length]
+}
+
+fn mat3_rows(rows: [[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
+    [
+        rows[0][0] * v[0] + rows[1][0] * v[1] + rows[2][0] * v[2],
+        rows[0][1] * v[0] + rows[1][1] * v[1] + rows[2][1] * v[2],
+        rows[0][2] * v[0] + rows[1][2] * v[1] + rows[2][2] * v[2],
+    ]
+}
+
+/// The sight quad's basis: the eye anchors at the origin plus
+/// `(anchor_a + 15)·m1 + anchor_b·m2`, the direction runs to the camera,
+/// and the two axes blend the cross products by `1 − |view·dir.x|` before
+/// scaling by 0.025.
+pub fn sight_billboard(
+    rows: [[f32; 3]; 3],
+    origin: [f32; 3],
+    anchor_a: f32,
+    anchor_b: f32,
+    camera: [f32; 3],
+    view: [[f32; 3]; 3],
+) -> SightBasis {
+    let eye = [
+        origin[0] + (anchor_a + 15.0) * rows[1][0] + anchor_b * rows[2][0],
+        origin[1] + (anchor_a + 15.0) * rows[1][1] + anchor_b * rows[2][1],
+        origin[2] + (anchor_a + 15.0) * rows[1][2] + anchor_b * rows[2][2],
+    ];
+    let dir = normalize([eye[0] - camera[0], eye[1] - camera[1], eye[2] - camera[2]]);
+    let d = mat3_rows(view, dir);
+    let blend = 1.0 - d[0].abs();
+    let a = normalize(cross(rows[2], dir));
+    let b = normalize(cross(a, dir));
+    let c = normalize(cross(rows[0], dir));
+    let e = normalize(cross(c, dir));
+    let mix = |from: [f32; 3], to: [f32; 3]| {
+        normalize([
+            from[0] + (to[0] - from[0]) * blend,
+            from[1] + (to[1] - from[1]) * blend,
+            from[2] + (to[2] - from[2]) * blend,
+        ])
+    };
+    let u = mix(a, e);
+    let v = mix(b, c);
+    SightBasis {
+        u: [
+            mat3_rows(view, u)[0] * 0.025,
+            mat3_rows(view, u)[1] * 0.025,
+            mat3_rows(view, u)[2] * 0.025,
+        ],
+        v: [
+            mat3_rows(view, v)[0] * 0.025,
+            mat3_rows(view, v)[1] * 0.025,
+            mat3_rows(view, v)[2] * 0.025,
+        ],
+        eye: [-d[0], -d[1], -d[2]],
+        dir,
+        blend,
+    }
+}
+
+#[cfg(test)]
+mod basis_tests {
+    use super::*;
+
+    #[test]
+    fn the_quad_axes_are_orthogonal_and_scaled() {
+        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let basis = sight_billboard(identity, [0.0; 3], 0.0, 0.0, [0.0, 0.0, -10.0], identity);
+        let u_len = (basis.u[0].powi(2) + basis.u[1].powi(2) + basis.u[2].powi(2)).sqrt();
+        let v_len = (basis.v[0].powi(2) + basis.v[1].powi(2) + basis.v[2].powi(2)).sqrt();
+        assert!((u_len - 0.025).abs() < 1e-6);
+        assert!((v_len - 0.025).abs() < 1e-6);
+        let dot = basis.u[0] * basis.v[0] + basis.u[1] * basis.v[1] + basis.u[2] * basis.v[2];
+        assert!(dot.abs() < 1e-6);
+        assert!(basis.blend >= 0.0 && basis.blend <= 1.0);
+        assert!((basis.eye[2] + 10.0 / 325.0f32.sqrt()).abs() < 1e-6);
+    }
+}
