@@ -73,3 +73,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-20 | 84d441d | clean | 22.8% | 5.7% | 18.6% | 27.3% | record the main menu paint |
 | 2026-10-20 | 71b2816 | dirty | 22.8% | 5.7% | 18.7% | 27.3% | align the control labels |
 | 2026-10-20 | a28d1cf | clean | 22.8% | 5.7% | 18.7% | 27.3% | record the control label alignment |
+| 2026-10-20 | ec5f470 | dirty | 22.8% | 5.7% | 18.7% | 27.3% | package the saves |

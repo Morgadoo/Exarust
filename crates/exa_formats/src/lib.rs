@@ -25,6 +25,7 @@ pub mod rfi;
 pub mod rigid_body;
 pub mod rsq;
 pub mod save_chunk;
+pub mod save_package;
 pub mod terrain;
 pub mod weapon_record;
 pub mod weapon_stats;

@@ -26,7 +26,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Thaumaturgy & effects | 697 | 296 | 83 | 11% | 0% | TTendrilEmitter, SG_Thaum_Force, SG_Thaum_DIsp |
 | Audio | 59 | 18 | 4 | 28% | 0% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 0% | 0% | RFG_Dialogue, FG_AIFunctions, RFG_Scripts |
-| Game modes, arena & session | 646 | 193 | 23 | 14% | 0% | TMatchBoard, TLoadoutForm, XA_ExperienceSys |
+| Game modes, arena & session | 646 | 193 | 23 | 15% | 0% | TMatchBoard, TLoadoutForm, XA_ExperienceSys |
 | UI | 959 | 312 | 63 | 15% | 0% | RF_HW_Config, RF_GUI_Main, TGUIItemView |
 | Other, tools & editor | 171 | 33 | 8 | 0% | 0% | Debug command registry (unit before RF_Dynamics) |
 
@@ -55,7 +55,7 @@ Ordered by code size; these are where most of the original still has no counterp
 |---|---|---:|---:|---:|
 | TMotileAI | AI & behaviour | 85 | 60 | 18% |
 | SG_PlayerControls | AI & behaviour | 122 | 47 | 8% |
-| XA_SaveGames | Game modes, arena & session | 96 | 27 | 5% |
+| XA_SaveGames | Game modes, arena & session | 96 | 27 | 12% |
 | SG_GameGUI | UI | 62 | 22 | 8% |
 | SG_Thaum_Mind | Thaumaturgy & effects | 45 | 21 | 13% |
 | TGUIForm | UI | 77 | 20 | 16% |
