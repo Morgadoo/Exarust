@@ -1509,3 +1509,90 @@ mod stream_tests {
         );
     }
 }
+
+/// The epsilon the evaluators use to skip a weight (the original's
+/// 1.19209e-7).
+const MORPH_EPSILON: f32 = f32::from_bits(0x33ff_ffd7);
+
+/// Restores the rest pose: the blob's base and its rest points.
+pub fn restore_morph_positions(data: &MorphData) -> ([f32; 3], Vec<[f32; 3]>) {
+    (data.base, data.rest.clone())
+}
+
+/// The weighted base: the blob's base plus each part's pivot times its
+/// weight, skipping a weight whose absolute value is under the epsilon.
+pub fn morph_weighted_base(data: &MorphData, weights: &[f32]) -> [f32; 3] {
+    let mut base = data.base;
+    for (part, &weight) in data.parts.iter().zip(weights) {
+        if weight.abs() < MORPH_EPSILON {
+            continue;
+        }
+        for (axis, value) in base.iter_mut().enumerate() {
+            *value += part.pivot[axis] * weight;
+        }
+    }
+    base
+}
+
+/// Evaluates the morphed points: the rest points, plus each part's pivot
+/// and per-vertex delta times its weight. Returns the base and the points.
+pub fn evaluate_morph_positions(data: &MorphData, weights: &[f32]) -> ([f32; 3], Vec<[f32; 3]>) {
+    let mut base = data.base;
+    let mut positions = data.rest.clone();
+    for (part, &weight) in data.parts.iter().zip(weights) {
+        if weight.abs() < MORPH_EPSILON {
+            continue;
+        }
+        for (axis, value) in base.iter_mut().enumerate() {
+            *value += part.pivot[axis] * weight;
+        }
+        for (position, delta) in positions.iter_mut().zip(&part.deltas) {
+            for (axis, value) in position.iter_mut().enumerate() {
+                *value += delta[axis] * weight;
+            }
+        }
+    }
+    (base, positions)
+}
+
+#[cfg(test)]
+mod evaluate_tests {
+    use super::*;
+
+    fn data() -> MorphData {
+        build_morph_data(
+            [1.0, 0.0, 0.0],
+            &[[0.0; 3], [1.0, 0.0, 0.0]],
+            vec![
+                MorphPartData {
+                    pivot: [2.0, 0.0, 0.0],
+                    deltas: vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                },
+                MorphPartData {
+                    pivot: [0.0, 3.0, 0.0],
+                    deltas: vec![[0.0, 0.0, 1.0], [0.0, 0.0, 2.0]],
+                },
+            ],
+        )
+    }
+
+    #[test]
+    fn the_rest_pose_is_the_blob_base_and_points() {
+        let (base, points) = restore_morph_positions(&data());
+        assert_eq!(base, [1.0, 0.0, 0.0]);
+        assert_eq!(points, vec![[0.0; 3], [1.0, 0.0, 0.0]]);
+    }
+
+    #[test]
+    fn the_weighted_base_adds_the_scaled_pivots() {
+        assert_eq!(morph_weighted_base(&data(), &[0.5, 2.0]), [2.0, 6.0, 0.0]);
+        assert_eq!(morph_weighted_base(&data(), &[1e-8, 2.0]), [1.0, 6.0, 0.0]);
+    }
+
+    #[test]
+    fn the_points_add_the_scaled_deltas() {
+        let (base, points) = evaluate_morph_positions(&data(), &[2.0, 1.0]);
+        assert_eq!(base, [5.0, 3.0, 0.0]);
+        assert_eq!(points, vec![[2.0, 0.0, 1.0], [1.0, 2.0, 2.0]]);
+    }
+}
