@@ -3,6 +3,7 @@
 //! lighting follow. Rules: `docs/RENDERING.md`.
 
 pub mod cube_shadows;
+pub mod electricity;
 pub mod flame;
 pub mod gi;
 pub mod lights;

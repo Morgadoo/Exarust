@@ -15,6 +15,7 @@ use exa_physics::CharacterBody;
 use exa_physics::body::{BodyTicks, Fallen, MAX_ENERGY, Ragdoll};
 
 pub mod fight;
+pub mod golem;
 pub mod hear;
 pub mod idle;
 pub mod order;

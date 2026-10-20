@@ -95,3 +95,19 @@ When both pair words are 0, class 0x800 and body kind 0x100 SHALL set the hands 
 #### Scenario: Firm and open hands, then a marked class
 - **WHEN** a dead body with both pair words 0, class 0x800 and body kind 0x100 is entered, then class 0x500 at feral 1, then a pair word of 1 at feral -1, and a walking body is entered
 - **THEN** the hands are firm and open with the bare mark on, the class word is 0 and the primary is -1, the reach bits are 0x42a00000, the slots are filled and the facing is along x, class 0x500 is marked with reach bits 0x42600000, the pair word of 1 leaves the hands and scores reach bits 0x42a00000, and the walking body is unchanged
+
+### Requirement: Golem dormancy
+The system SHALL scale stored values by 0.05 on fade-in and 0.02 on fade-out, in double precision.
+
+#### Scenario: One scale each
+- **WHEN** the source is 20
+- **THEN** the fade-in value is 1
+- **WHEN** the glow is 50
+- **THEN** the fade-out value is 1
+
+### Requirement: Golem homing
+The system SHALL compute the homeward delay as distance + π + roll − 0.5 and the reach as 200 + offset.
+
+#### Scenario: A centred roll
+- **WHEN** the distance is 10 and the roll is 0.5
+- **THEN** the delay is 10 + π and the reach for an offset of 5 is 205

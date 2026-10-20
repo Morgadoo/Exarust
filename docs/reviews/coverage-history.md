@@ -24,3 +24,5 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-20 | 9294cf2 | dirty | 20.7% | 5.7% | 17.0% | 27.3% | add the force kinesis scale and activation |
 | 2026-10-20 | 3678f69 | dirty | 20.7% | 5.7% | 17.0% | 27.3% | add the force barrier orientation and pose |
 | 2026-10-20 | 3db4906 | dirty | 20.7% | 5.7% | 17.0% | 27.3% | add the force barrier per-tick update |
+| 2026-10-20 | 3aa1d86 | dirty | 20.7% | 5.7% | 17.0% | 27.3% | add the electricity arc timing and glow |
+| 2026-10-20 | 3aa1d86 | dirty | 20.8% | 5.7% | 17.1% | 27.3% | add the split effect helpers |

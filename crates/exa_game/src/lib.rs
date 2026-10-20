@@ -12,6 +12,7 @@ pub mod drag;
 pub mod emblem;
 pub mod fall;
 pub mod hud;
+pub mod item_effects;
 pub mod joint_trace;
 pub mod limp;
 pub mod menu;
