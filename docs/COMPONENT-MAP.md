@@ -6,7 +6,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
 - Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **22.8% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 18.6% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- Weighted by function count (zero-byte imported names left out): 18.7% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **27.3%** reproduced.
 
 ## By section
@@ -68,7 +68,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | TMatchBoard | Game modes, arena & session | 30 | 17 | 3% |
 | SG_Character_Create | Game modes, arena & session | 90 | 17 | 15% |
 | Item description phrases | Items, materials & crafting | 37 | 16 | 4% |
-| RF_GUI_Controls_Ex | UI | 54 | 16 | 12% |
+| RF_GUI_Controls_Ex | UI | 54 | 16 | 13% |
 | TAISearchActivity | AI & behaviour | 54 | 16 | 0% |
 | RF_Navigation | Rendering & GPU | 37 | 16 | 5% |
 | TTendrilEmitter | Thaumaturgy & effects | 21 | 15 | 0% |

@@ -304,3 +304,77 @@ mod tests {
         assert_eq!(activate(&mut items, 9), Activation::None);
     }
 }
+
+/// The control label's aligned position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LabelAt {
+    pub x: i32,
+    pub y: i32,
+}
+
+/// Aligns a control label (`0x1000fa110`). `avail` is the usable text
+/// width, `base` the font base and `line_h` its line height.
+#[allow(clippy::too_many_arguments)]
+pub fn align_label(
+    x: i32,
+    y: i32,
+    h: i32,
+    pad: i32,
+    unit: i32,
+    text_w: i32,
+    avail: i32,
+    line_h: i32,
+    base: i32,
+    style: u32,
+) -> LabelAt {
+    let lx = match style & 0x7000 {
+        0x1000 => x - text_w - unit,
+        0x2000 => x + pad + unit + (avail - 1 - text_w) / 2,
+        0x3000 => x + avail - text_w + unit,
+        0x4000 => x + avail + unit,
+        _ => x + pad + (unit + 1) / 2,
+    };
+    let ly = match style & 0x700 {
+        0x100 => y - unit / 2,
+        0x200 => y + (h + line_h + 2) / 2,
+        0x300 => y + h + base - 1,
+        0x400 => y + h,
+        _ => y + (unit + 1) / 2,
+    };
+    LabelAt { x: lx, y: ly }
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::*;
+
+    #[test]
+    fn the_horizontal_styles() {
+        assert_eq!(
+            align_label(100, 100, 20, 2, 4, 20, 100, 16, 14, 0x1000).x,
+            76
+        );
+        assert_eq!(
+            align_label(100, 100, 20, 2, 4, 20, 100, 16, 14, 0x2000).x,
+            145
+        );
+        assert_eq!(
+            align_label(100, 100, 20, 2, 4, 20, 100, 16, 14, 0x3000).x,
+            184
+        );
+        assert_eq!(
+            align_label(100, 100, 20, 2, 4, 20, 100, 16, 14, 0x4000).x,
+            204
+        );
+        assert_eq!(align_label(100, 100, 20, 2, 4, 20, 100, 16, 14, 0).x, 104);
+    }
+
+    #[test]
+    fn the_vertical_styles() {
+        assert_eq!(align_label(0, 100, 20, 2, 4, 0, 0, 16, 14, 0x100).y, 98);
+        assert_eq!(align_label(0, 100, 20, 2, 4, 0, 0, 16, 14, 0x200).y, 119);
+        assert_eq!(align_label(0, 100, 20, 2, 4, 0, 0, 16, 14, 0x300).y, 133);
+        assert_eq!(align_label(0, 100, 20, 2, 4, 0, 0, 16, 14, 0x400).y, 120);
+        assert_eq!(align_label(0, 100, 20, 2, 4, 0, 0, 16, 14, 0).y, 102);
+    }
+}
