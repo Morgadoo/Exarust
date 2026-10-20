@@ -18,6 +18,7 @@ pub mod fps;
 pub mod gui_controls;
 pub mod gui_font;
 pub mod gui_glyphs;
+pub mod gui_level;
 pub mod heartbeat;
 pub mod hud;
 pub mod icon_atlas;
@@ -41,6 +42,7 @@ pub use cursor::{
 };
 pub use fade::DeathFade;
 pub use fps::ShowFps;
+pub use gui_level::GuiLevelState;
 pub use heartbeat::Heartbeat;
 pub use hud::{DrawHud, HudBars};
 pub use loading::LoadingStatus;
@@ -101,6 +103,7 @@ impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
             scale::plugin,
+            gui_level::plugin,
             fps::plugin,
             loading::plugin,
             cursor::plugin,
