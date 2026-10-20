@@ -6,6 +6,16 @@ use crate::{Error, Result};
 pub const GRID: u32 = 0x3DED;
 pub const PROPS: u32 = 0x3DE1_0000;
 
+/// Whether a chunk tree is a level: one of its top-level chunks is the tile
+/// grid or the placed props. Reads only the chunk headers; malformed input
+/// is not a level.
+pub fn is_level(b: &[u8]) -> bool {
+    crate::FileKind::detect(b) == crate::FileKind::ChunkTree
+        && crate::chunk::Chunks::new(b, 4)
+            .map_while(Result::ok)
+            .any(|c| c.tag == GRID || c.tag == PROPS)
+}
+
 /// Files whose third grid word holds this value store planes B and C in an
 /// older bit layout, converted on load.
 const LEGACY_MARKER: u32 = 600;
@@ -207,6 +217,21 @@ mod tests {
 
     fn u32s(v: &[u32]) -> Vec<u8> {
         v.iter().flat_map(|x| x.to_le_bytes()).collect()
+    }
+
+    /// A chunk tree with a grid or props chunk at the top is a level; a
+    /// model, a truncated tree or another kind of file is not.
+    #[test]
+    fn levels_have_a_grid_or_props_at_the_top() {
+        let tree = |tag: u32| u32s(&[0x3D23_AFCF, 0xBA00, 0, tag, 4, 0]);
+        assert!(is_level(&tree(GRID)));
+        assert!(is_level(&tree(PROPS)));
+        assert!(!is_level(&tree(0x3D00_0000)));
+        let mut cut = tree(GRID);
+        cut.truncate(cut.len() - 2);
+        assert!(!is_level(&cut));
+        assert!(!is_level(&u32s(&[0xAFBF_0C01, GRID, 0])));
+        assert!(!is_level(&[]));
     }
 
     #[test]

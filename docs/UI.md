@@ -37,7 +37,9 @@ cursor at the pointer's position: a flat sprite, not a decal. Over the
 steep chase camera it looks as if it lay on the floor (the red ring and red
 arrow of the reference screenshots). While Cursor Look is held the game
 captures the mouse: the system and world cursors are both hidden until it
-is released.
+is released. While Exarust's map panel is open (F9,
+[DEBUGGING.md](DEBUGGING.md)) the system pointer is shown instead of the
+world cursor.
 
 - **Sprite.** `cursors.rfi` in the resource pack: a 256 × 512 coverage
   (A8) atlas of 2 × 4 frames, 128 pixels each, stored bottom row first

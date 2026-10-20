@@ -37,6 +37,7 @@
 //!          --debug-bodies             start with the body overlay and joint readout shown (F3 toggles it)
 //!          --debug-nav                draw the level's navigation grid around the view (F6 toggles it)
 //!          --debug-column x,z[/x,z…]  once loaded, log every mesh over each floor point: name, heights, shadow level, how it casts
+//! keys:    F9                         level and play views: the map panel (view switches, switch to another level)
 //!          --joint-trace <file.csv>   every joint of every simulated body after every 83 Hz tick (degrees, cm)
 //!          --pair-trace <file.csv>    every contact between two body parts found in each 83 Hz tick (cm)
 //!          --fixed-frames             every frame advances game time by exactly 1/60 s, so runs repeat tick for tick
@@ -77,6 +78,7 @@
 //! `.` step one tick, `[` / `]` slower / faster.
 
 mod column;
+mod map_panel;
 mod viewer;
 
 use std::ops::Range;
@@ -703,7 +705,11 @@ fn main() -> AppExit {
         .with_pause_after_collapse(options.pause_after_collapse),
     )
     .insert_resource(options)
-    .add_plugins((viewer::ViewerPlugin, column::ColumnPlugin));
+    .add_plugins((
+        viewer::ViewerPlugin,
+        column::ColumnPlugin,
+        map_panel::MapPanelPlugin,
+    ));
     if fixed_frames {
         // Whatever a frame took, it advances game time by 1/60 s: the frames'
         // clocks and the ticks they run repeat from run to run.

@@ -117,6 +117,20 @@ pub struct ScriptedPointer(pub Option<Vec2>);
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CursorCapture(pub bool);
 
+/// A panel owns the mouse (the map panel): the world cursor is hidden and
+/// the system pointer shown, to click on the panel.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PanelPointer(pub bool);
+
+/// Which pointer is drawn: (the world cursor, the system pointer). The world
+/// cursor when it is `shown` and the mouse is neither `captured` (Cursor
+/// Look) nor over a `panel`; the system pointer when the world cursor is
+/// not drawn and the mouse is not captured.
+pub fn pointer_visibility(shown: bool, captured: bool, panel: bool) -> (bool, bool) {
+    let world = shown && !captured && !panel;
+    (world, !world && !captured)
+}
+
 impl ScriptedPointer {
     /// Where the pointer is in the window: the scripted position, else the
     /// mouse's while it is over the window.
@@ -354,6 +368,7 @@ pub(crate) fn plugin(app: &mut App) {
     app.init_resource::<WorldCursor>()
         .init_resource::<ScriptedPointer>()
         .init_resource::<CursorCapture>()
+        .init_resource::<PanelPointer>()
         .init_resource::<Frames>()
         .init_resource::<OpaqueRed>()
         .add_systems(Startup, spawn)
@@ -392,6 +407,7 @@ fn draw(
     cursor: Res<WorldCursor>,
     scripted: Res<ScriptedPointer>,
     capture: Res<CursorCapture>,
+    panel: Res<PanelPointer>,
     gui: Res<GuiScale>,
     atlas: Option<Res<Atlas>>,
     loading: Option<Res<LoadingStatus>>,
@@ -414,18 +430,12 @@ fn draw(
     let at = scripted.position(window);
     let shown = cursor.active && loading.is_none() && atlas.is_some() && at.is_some();
     // Cursor Look owns the pointer: hide both the system and the world
-    // cursor until it is released.
-    let visible = shown && !capture.0;
-    if options.visible == visible {
-        options.visible = !visible;
+    // cursor until it is released. A panel shows the system pointer.
+    let (world, system) = pointer_visibility(shown, capture.0, panel.0);
+    if options.visible != system {
+        options.visible = system;
     }
-    if capture.0 {
-        for (.., mut visibility) in &mut parts {
-            *visibility = Visibility::Hidden;
-        }
-        return;
-    }
-    let (Some(atlas), Some(at), true) = (atlas, at, shown) else {
+    let (Some(atlas), Some(at), true) = (atlas, at, world) else {
         for (.., mut visibility) in &mut parts {
             *visibility = Visibility::Hidden;
         }
@@ -500,6 +510,17 @@ fn coverage_image(size: u32, coverage: &[u8], opacity: impl Fn(u8) -> f32) -> Im
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The world cursor when shown and free; the system pointer otherwise,
+    /// except while Cursor Look captures the mouse, when neither is drawn.
+    #[test]
+    fn one_pointer_is_drawn_and_none_while_captured() {
+        assert_eq!(pointer_visibility(true, false, false), (true, false));
+        assert_eq!(pointer_visibility(false, false, false), (false, true));
+        assert_eq!(pointer_visibility(true, true, false), (false, false));
+        assert_eq!(pointer_visibility(true, false, true), (false, true));
+        assert_eq!(pointer_visibility(true, true, true), (false, false));
+    }
 
     #[test]
     fn the_size_follows_the_gui_scale() {

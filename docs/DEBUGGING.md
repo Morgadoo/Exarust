@@ -543,3 +543,29 @@ exarust --no-gi --debug-column "81.74,37.45/80.34,40.1" play exanima01
 shadow-bias level and its bits) across the packs, with examples, and lists
 the `uw01_floor*` nodes ([formats/RFC.md](formats/RFC.md)).
 
+## Map panel
+
+F9 (Escape also closes it) opens a panel at the right edge of the level and
+play views:
+
+- the current view and map;
+- switches that apply at once: point shadows, every room (no lids, no
+  room hiding), the navigation grid (also F6) and the body overlay (also F3);
+- every level of the installation (a `Resource.rpk` chunk tree whose
+  top-level chunks hold a tile grid or placed props, 29 in 0.9.5), the
+  current one highlighted, scrolled with the wheel.
+
+Choosing a level restarts Exarust on it in the same view. The command line
+is kept, less the flags tied to a place, a file or a scripted moment, each
+with its value: `--at`, `--camera`, `--corpse`, `--torch`, `--screenshot`,
+`--frames`, `--press`, `--click`, `--cursor`, `--debug-column`, `--shove`,
+`--shove-props` and the `--pause-…` flags. On Unix the process replaces
+itself, so a wrapper such as `context/tools/gpu_run.sh` keeps waiting on
+it; elsewhere the new process starts and the old one exits. Settings that
+apply only at load (`--no-gi`, `--no-supersample`, `--size`) carry over
+through the command line.
+
+While the panel is open the system pointer replaces the world cursor, and
+mouse buttons and the wheel stay in the panel: a click on it does not
+attack or walk, and the wheel does not zoom.
+

@@ -27,7 +27,10 @@ pub mod skin;
 
 use bevy::prelude::*;
 
-pub use cursor::{CursorCapture, CursorShape, DrawWorldCursor, ScriptedPointer, WorldCursor};
+pub use cursor::{
+    CursorCapture, CursorShape, DrawWorldCursor, PanelPointer, ScriptedPointer, WorldCursor,
+    pointer_visibility,
+};
 pub use fade::DeathFade;
 pub use fps::ShowFps;
 pub use heartbeat::Heartbeat;
