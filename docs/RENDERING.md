@@ -702,9 +702,8 @@ menu.
   Exarust keeps y and z in a per-light record the shaders read
   (`exa_render::lights`). Each light's id travels above Bevy's default
   depth bias (0.08) in its depth-bias field, in steps of 1e-5: the shader
-  recovers it as round((bias − 0.08)/1e-5). Keeping the field a valid bias
-  matters for the skinned-shadow maps Bevy still samples through its own
-  materials.
+  recovers it as round((bias − 0.08)/1e-5). The field stays a valid bias
+  in case Bevy's own point shadow maps are ever sampled; they are off.
   Exarust sets Bevy's range to 1.25·R and computes (1 − d/range)⁴ itself.
   Point lights also keep the original's 3 cm shadow-map near plane, not
   Bevy's 10 cm default: at 10 cm a torch's close-range character shadow
@@ -727,9 +726,8 @@ menu.
   texel whose cut texture has an alpha below ½: the opacity map, otherwise
   the diffuse map. Unlike the colour pass, the cut ignores the material's
   opacity and does not square the opacity map. This rule holds in the
-  cached cube maps (static casters of point lights); Bevy's own shadow
-  passes (the sun, skinned meshes) still cut as the colour pass does
-  (`exa_prepass.wesl`).
+  cached cube maps (every caster of point lights); Bevy's own shadow pass
+  for the sun still cuts as the colour pass does (`exa_prepass.wesl`).
 - A light leaves its own object out of its shadow map: its siblings, its
   parent and its grandparent. A fire's light hangs under the fire node, so a
   torch does not shadow its own flame. Only the torch's hidden `TorchSdw`
@@ -743,13 +741,12 @@ menu.
   - the mesh is not in the light's own object.
 
   Links are kept current incrementally: a moved light is relinked against
-  every mesh, a moved mesh against every light. Exarust hands them to Bevy
-  as render layers: each shadowed light has a layer of its own (from 2 up;
-  layer 1 is the supersampling resolve quad), a mesh carries layer 0 and its
-  lights' layers, and the scene cameras see them all. In exanima01 (229
-  lights, 13 000 meshes) this keeps memory flat at about 3 GB. With every
-  mesh in reach casting into every light, Bevy's per-face bookkeeping grew
-  to about 12 GB and the frame rate fell below 2 FPS.
+  every mesh, a moved mesh against every light (a character's skinned mesh
+  once it has moved 10 cm). Each light keeps its linked meshes as its cube's
+  casters, each with the cube faces its bounding sphere touches, as the
+  original keeps a face mask per link. Each light also has a render layer of
+  its own (from 2 up; layer 1 is the supersampling resolve quad) as the key
+  of its links; every mesh carries layer 0.
 
 - **Lights per mesh**: a mesh is lit only by its 6 strongest links, as the
   original lights an object. A mesh with no links gets no point light, only
@@ -782,11 +779,21 @@ menu.
   the test. The original's GI also takes its lights from the cell lists;
   Exarust's GI still picks the lights nearest its block.
 
-- **Cached cube shadows** (`exa_render::cube_shadows`): static meshes cast
-  into cube maps kept across frames, as the original keeps its shadow maps:
+- **Cached cube shadows** (`exa_render::cube_shadows`): every caster,
+  characters included, casts into cube maps kept across frames, as the
+  original keeps its shadow maps:
   - a face is rendered only when it is needed (its pyramid out to R meets
-    the camera's view) and dirty (the light moved, a caster linked to it
-    moved or changed links, or the light just took its slot);
+    the camera's view) and dirty;
+  - every face goes out of date when the light moves or takes a slot. A
+    caster linked or unlinked dirties the faces its sphere touches; a
+    caster that moves dirties the faces it touched and the faces it
+    touches now, as the original ORs a moved node's old and new masks into
+    its light. An animated character dirties the faces it stands in every
+    frame; the light's other faces stay cached;
+  - a face draws only the casters whose sphere touches it;
+  - characters' skinned meshes are posed in the caster shader: each vertex
+    is the weighted sum of its joints' world transforms times their inverse
+    bind poses, computed once a frame for a character drawn into any face;
   - torch flicker changes only colour and intensity, so it never dirties a
     face;
   - each face holds the original's linear depth, distance / (R·k_c), in
@@ -802,11 +809,13 @@ menu.
     or one whose light needs no face this frame (that light's faces go out
     of date).
 
-  Skinned meshes (characters) still cast through Bevy's cube maps, which
-  are re-rendered every frame. Bevy's map is kept only for lights that have
-  a skinned mesh linked. The shaders multiply both. Skinned meshes carry
-  per-joint boxes (`DynamicSkinnedMeshBounds`), so they are culled per view
-  and per cube face.
+  Bevy's own point-light shadow maps stay off. They re-rendered all six
+  faces of every light with a character linked, every frame: in exanima01's
+  play mode about 111 extra views, 113 runs of the camera schedule and 743
+  command-buffer submissions a frame, the render thread's 29 ms. With the
+  characters in the cached cubes the render thread takes about 7.5 ms.
+  Skinned meshes carry per-joint boxes (`DynamicSkinnedMeshBounds`); their
+  spheres give their faces.
 
   Not done yet: draw sets per room, with one portal step into the next
   room. The notes are in `context/re/optimizations.md`.
@@ -829,8 +838,7 @@ menu.
     k_c = k_r − 0.01, so a surface keeps about 1.5 % of the light distance
     between itself and its own shadow. That is what keeps floors free of
     acne at grazing light. The cached cubes apply both sides, cross terms
-    included; Bevy's skinned-shadow maps apply only the receiver's self
-    margin (0.995·k_c/k_r). The cross terms matter: a level-3 floor
+    included. The cross terms matter: a level-3 floor
     receiving from a level-0 caster is shadowed by surfaces up to about 1 %
     of the light distance *behind* it. Read as level 0, the broken-floor
     slabs, which lie 1–2 cm under the painted dirt, darkened the ground over

@@ -1,17 +1,19 @@
-//! Cached cube shadow maps for static casters, as the original keeps its
-//! shadow maps. A light's cube face is rendered only when it is needed (it
-//! looks into the camera's view) and dirty (the light or a caster linked to
-//! it moved, or the light just took its slot). Afterwards it stays as it is,
-//! frame after frame: a still dungeon renders almost no cube faces. Torch
-//! flicker changes a light's colour, not its position, and never dirties it.
+//! Cached cube shadow maps, as the original keeps its shadow maps. A light's
+//! cube face is rendered only when it is needed (it looks into the camera's
+//! view) and dirty: the light moved or just took its slot (every face), or a
+//! caster linked to it moved (the faces its bounding sphere touched before
+//! and touches now). Afterwards it stays as it is, frame after frame: a
+//! still dungeon renders almost no cube faces, and a character dirties only
+//! the faces it stands in. Torch flicker changes a light's colour, not its
+//! position, and never dirties it. A face draws only the casters whose
+//! sphere touches it.
 //!
 //! The faces hold the original's linear depth, distance / (R·k_c), R the
 //! light's radius and k_c the caster's depth scale from its shadow-bias
 //! level. They live in a pool of cube textures shared by every light; a
 //! light that needs a slot takes a free one or one whose light needs none
-//! this frame. Skinned meshes (characters) keep casting through Bevy's own
-//! cube maps; the shaders combine both. Rules: `docs/RENDERING.md` (Cached
-//! cube shadows).
+//! this frame. Characters cast here too, skinned by their joints in the
+//! caster shader. Rules: `docs/RENDERING.md` (Cached cube shadows).
 
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
@@ -21,8 +23,10 @@ use bevy::camera::primitives::{Aabb, CUBE_MAP_FACES, Frustum};
 use bevy::camera::visibility::VisibilitySystems;
 use bevy::core_pipeline::Core3dSystems;
 use bevy::core_pipeline::schedule::Core3d;
+use bevy::ecs::entity::EntityHashMap;
 use bevy::image::{ImageCompareFunction, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::math::Affine3A;
+use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use bevy::mesh::{Mesh, MeshVertexBufferLayoutRef, VertexAttributeDescriptor, VertexBufferLayout};
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
@@ -126,16 +130,49 @@ pub struct CubeShadow {
 }
 
 impl CubeShadow {
-    /// Marks every face out of date (the light or one of its casters moved).
+    /// Marks every face out of date (the light moved or took a slot).
     pub fn invalidate(&mut self) {
         self.dirty = ALL_FACES;
     }
+
+    /// Marks `faces` out of date (a caster in them moved, came or went).
+    pub fn mark(&mut self, faces: u8) {
+        self.dirty |= faces & ALL_FACES;
+    }
 }
 
-/// The static meshes casting into a light's cached cube, kept by the world's
-/// shadow links.
+/// The meshes casting into a light's cached cube, kept by the world's shadow
+/// links, each with the faces its bounding sphere touches
+/// ([`sphere_faces`]; 0 while not yet known, drawn into every face).
 #[derive(Component, Clone, Debug, Default)]
-pub struct StaticCasters(pub Vec<Entity>);
+pub struct CubeCasters(pub EntityHashMap<u8>);
+
+/// The cube faces (bit f for Bevy's face f) that a sphere at `centre` of
+/// `radius` reaches from a light at `light`, as the original masks a node's
+/// link: face f covers the directions whose largest component is along its
+/// axis, and the sphere touches it when it reaches past each of the face's
+/// four side planes and in front of the light.
+pub fn sphere_faces(light: Vec3, centre: Vec3, radius: f32) -> u8 {
+    let d = centre - light;
+    if d.length() <= radius {
+        return ALL_FACES;
+    }
+    let mut faces = 0;
+    for (f, face) in CUBE_MAP_FACES.iter().enumerate() {
+        let axis = face.target;
+        let up = face.up;
+        let side = axis.cross(up);
+        // The four side planes pass through the light, between the face's
+        // axis and its neighbours (normals pointing into the face).
+        let inside = [axis + up, axis - up, axis + side, axis - side]
+            .iter()
+            .all(|n| d.dot(n.normalize()) >= -radius);
+        if inside && d.dot(axis) >= -radius {
+            faces |= 1 << f;
+        }
+    }
+    faces
+}
 
 /// A light's cube for the shaders: its pool slot and its radius R (metres).
 /// Changes only when the slot does.
@@ -170,6 +207,8 @@ struct Failed(Arc<Mutex<Vec<(Entity, u8)>>>);
 struct CubeJobs {
     faces: Vec<FaceJob>,
     draws: Vec<CasterDraw>,
+    /// The skinned casters' joint matrices (joint × inverse bind pose).
+    joints: Vec<[f32; 16]>,
     failed: Failed,
 }
 
@@ -187,6 +226,8 @@ struct CasterDraw {
     mesh: AssetId<Mesh>,
     gpu: GpuDraw,
     two_sided: bool,
+    /// Skinned by its joints ([`GpuDraw::joints`]).
+    skinned: bool,
     /// The texture whose alpha cuts the shadow ([`shadow_cut_texture`]).
     cut: Option<AssetId<Image>>,
 }
@@ -198,6 +239,9 @@ struct GpuDraw {
     world_from_local: [f32; 16],
     clip_from_world: [f32; 16],
     light: [f32; 4],
+    /// x: the first of a skinned caster's joint matrices in the frame's
+    /// joint buffer.
+    joints: [u32; 4],
 }
 
 fn create_pool(mut images: ResMut<Assets<Image>>) {
@@ -242,7 +286,7 @@ fn add_cube_shadows(
                 dirty: ALL_FACES,
                 ..default()
             },
-            StaticCasters::default(),
+            CubeCasters::default(),
             CubeSlot {
                 slot: None,
                 radius: light.range / REACH,
@@ -287,7 +331,7 @@ fn face_box(position: Vec3, radius: f32, face: usize) -> Aabb {
 fn needed_faces(
     enabled: Res<PointShadows>,
     cameras: Query<&Frustum, SceneCamera>,
-    mut lights: Query<(&GlobalTransform, &CubeSlot, &StaticCasters, &mut CubeShadow)>,
+    mut lights: Query<(&GlobalTransform, &CubeSlot, &CubeCasters, &mut CubeShadow)>,
 ) {
     let frusta: Vec<&Frustum> = cameras.iter().collect();
     for (transform, slot, casters, mut cube) in &mut lights {
@@ -313,7 +357,7 @@ fn needed_faces(
 /// none this frame. A light taking a slot renders all six faces.
 fn assign_slots(
     mut pool: ResMut<Pool>,
-    mut lights: Query<(Entity, &StaticCasters, &mut CubeShadow, &mut CubeSlot)>,
+    mut lights: Query<(Entity, &CubeCasters, &mut CubeShadow, &mut CubeSlot)>,
 ) {
     // Release the slots of lights gone or left without casters.
     for owner in pool.owners.iter_mut() {
@@ -392,25 +436,55 @@ type CasterData<'w, 's> = Query<
         &'static GlobalTransform,
         Option<&'static ShadowBias>,
         Option<&'static MeshMaterial3d<ExaMaterial>>,
+        Option<&'static SkinnedMesh>,
     ),
 >;
 
+/// The joint matrices of a skinned caster (each joint's world transform
+/// times its inverse bind pose), appended to `joints`; their offset, or
+/// `None` while the bind poses or a joint are missing.
+fn skin_joints(
+    skin: &SkinnedMesh,
+    bindposes: &Assets<SkinnedMeshInverseBindposes>,
+    joints: &Query<&GlobalTransform>,
+    out: &mut Vec<[f32; 16]>,
+) -> Option<u32> {
+    let inverse = bindposes.get(&skin.inverse_bindposes)?;
+    let offset = out.len();
+    for (joint, bind) in skin.joints.iter().zip(inverse.iter()) {
+        let Ok(at) = joints.get(*joint) else {
+            out.truncate(offset);
+            return None;
+        };
+        out.push((at.to_matrix() * *bind).to_cols_array());
+    }
+    Some(offset as u32)
+}
+
 /// Lists the casters of every face both needed and dirty, for the render
-/// world, and marks those faces done.
+/// world, and marks those faces done. A face draws the casters whose sphere
+/// touches it (or whose faces are not known yet); a skinned caster's joints
+/// are posed once for all the faces it is drawn into.
+#[allow(clippy::too_many_arguments)]
 fn build_jobs(
     mut jobs: ResMut<CubeJobs>,
     mut lights: Query<(
         Entity,
         &GlobalTransform,
         &CubeSlot,
-        &StaticCasters,
+        &CubeCasters,
         &mut CubeShadow,
     )>,
     casters: CasterData,
+    joints: Query<&GlobalTransform>,
+    bindposes: Res<Assets<SkinnedMeshInverseBindposes>>,
     materials: Res<Assets<ExaMaterial>>,
+    mut posed: Local<EntityHashMap<Option<u32>>>,
 ) {
     jobs.faces.clear();
     jobs.draws.clear();
+    jobs.joints.clear();
+    posed.clear();
     let projection =
         bevy::math::proj::perspective_infinite_reverse(std::f32::consts::FRAC_PI_2, 1.0, NEAR);
     for (entity, transform, slot, list, mut cube) in &mut lights {
@@ -430,9 +504,23 @@ fn build_jobs(
             let world_from_view = Mat4::from_rotation_translation(rotation, position);
             let clip_from_world = projection * world_from_view.inverse();
             let start = jobs.draws.len() as u32;
-            for &caster in &list.0 {
-                let Ok((mesh, at, bias, material)) = casters.get(caster) else {
+            for (&caster, &mask) in &list.0 {
+                if mask != 0 && mask & (1 << face) == 0 {
                     continue;
+                }
+                let Ok((mesh, at, bias, material, skin)) = casters.get(caster) else {
+                    continue;
+                };
+                let joint_offset = match skin {
+                    Some(skin) => {
+                        let offset = *posed.entry(caster).or_insert_with(|| {
+                            skin_joints(skin, &bindposes, &joints, &mut jobs.joints)
+                        });
+                        // Not posable yet: left out rather than drawn at rest.
+                        let Some(offset) = offset else { continue };
+                        Some(offset)
+                    }
+                    None => None,
                 };
                 let k_c = caster_scale(bias.map_or(0, |b| b.0));
                 let material = material.and_then(|m| materials.get(&m.0));
@@ -443,11 +531,13 @@ fn build_jobs(
                         world_from_local: at.to_matrix().to_cols_array(),
                         clip_from_world: clip_from_world.to_cols_array(),
                         light: position.extend(1.0 / (slot.radius * k_c)).to_array(),
+                        joints: [joint_offset.unwrap_or(0), 0, 0, 0],
                     },
                     // The original turns culling off for its alpha-tested
                     // casters, with or without a texture to cut with.
                     two_sided: material
                         .is_some_and(|m| m.cuts_shadow() || m.params.flags & flags::TWO_SIDED != 0),
+                    skinned: joint_offset.is_some(),
                     cut,
                 });
             }
@@ -475,6 +565,7 @@ struct CubePipeline {
 struct CubePipelineKey {
     alpha_cut: bool,
     two_sided: bool,
+    skinned: bool,
 }
 
 impl CubePipeline {
@@ -482,6 +573,10 @@ impl CubePipeline {
         let mut attributes = vec![Mesh::ATTRIBUTE_POSITION.at_shader_location(0)];
         if key.alpha_cut {
             attributes.push(Mesh::ATTRIBUTE_UV_0.at_shader_location(1));
+        }
+        if key.skinned {
+            attributes.push(Mesh::ATTRIBUTE_JOINT_INDEX.at_shader_location(2));
+            attributes.push(Mesh::ATTRIBUTE_JOINT_WEIGHT.at_shader_location(3));
         }
         attributes
     }
@@ -501,6 +596,9 @@ impl SpecializedMeshPipeline for CubePipeline {
         if key.alpha_cut {
             defs.push("ALPHA_CUT".into());
             layouts.push(self.cut.clone());
+        }
+        if key.skinned {
+            defs.push("SKINNED".into());
         }
         let buffer = layout.0.get_layout(&attributes)?;
         Ok(RenderPipelineDescriptor {
@@ -541,9 +639,13 @@ impl SpecializedMeshPipeline for CubePipeline {
 fn init_pipeline(mut commands: Commands, assets: Res<AssetServer>) {
     let draws = BindGroupLayoutDescriptor::new(
         "exa_cube_draws",
-        &BindGroupLayoutEntries::single(
+        &BindGroupLayoutEntries::sequential(
             ShaderStages::VERTEX_FRAGMENT,
-            storage_buffer_read_only_sized(false, None),
+            (
+                storage_buffer_read_only_sized(false, None),
+                // The skinned casters' joint matrices.
+                storage_buffer_read_only_sized(false, None),
+            ),
         ),
     );
     let cut = BindGroupLayoutDescriptor::new(
@@ -569,6 +671,7 @@ fn init_pipeline(mut commands: Commands, assets: Res<AssetServer>) {
 #[derive(Resource)]
 struct PreparedCubes {
     buffer: RawBufferVec<GpuDraw>,
+    joints: RawBufferVec<[f32; 16]>,
     draws: Option<BindGroup>,
     cuts: HashMap<AssetId<Image>, BindGroup>,
     /// Per draw, its pipeline.
@@ -585,6 +688,7 @@ impl Default for PreparedCubes {
     fn default() -> Self {
         Self {
             buffer: RawBufferVec::new(BufferUsages::STORAGE),
+            joints: RawBufferVec::new(BufferUsages::STORAGE),
             draws: None,
             cuts: HashMap::default(),
             pipelines: Vec::new(),
@@ -663,13 +767,23 @@ fn prepare_draws(
         prepared.buffer.push(d.gpu);
     }
     prepared.buffer.write_buffer(&device, &queue);
-    let Some(binding) = prepared.buffer.binding() else {
+    prepared.joints.clear();
+    for m in &jobs.joints {
+        prepared.joints.push(*m);
+    }
+    // The binding needs a buffer even when nothing is skinned.
+    if prepared.joints.is_empty() {
+        prepared.joints.push(Mat4::IDENTITY.to_cols_array());
+    }
+    prepared.joints.write_buffer(&device, &queue);
+    let (Some(binding), Some(joints)) = (prepared.buffer.binding(), prepared.joints.binding())
+    else {
         return;
     };
     prepared.draws = Some(device.create_bind_group(
         "exa_cube_draws",
         &cache.get_bind_group_layout(&pipeline.draws),
-        &BindGroupEntries::single(binding),
+        &BindGroupEntries::sequential((binding, joints)),
     ));
     let mut pipelines = Vec::with_capacity(jobs.draws.len());
     for d in &jobs.draws {
@@ -677,6 +791,7 @@ fn prepare_draws(
             let key = CubePipelineKey {
                 alpha_cut: d.cut.is_some(),
                 two_sided: d.two_sided,
+                skinned: d.skinned,
             };
             let Ok(layout) = mesh
                 .layout
@@ -882,6 +997,59 @@ mod tests {
         assert!((b.max().y - 2.0).abs() < 1e-5);
     }
 
+    /// A small sphere well along one axis touches only that axis's face; a
+    /// sphere on a diagonal touches the faces it straddles; a sphere around
+    /// the light touches all six. Each face index is Bevy's, the one the
+    /// face's view is built from.
+    #[test]
+    fn spheres_touch_the_faces_they_reach() {
+        let light = Vec3::new(1.0, 2.0, 3.0);
+        for (f, face) in CUBE_MAP_FACES.iter().enumerate() {
+            assert_eq!(
+                sphere_faces(light, light + face.target * 4.0, 0.3),
+                1 << f,
+                "face {f}"
+            );
+        }
+        let diagonal = sphere_faces(light, light + Vec3::new(3.0, 0.0, 3.0), 0.5);
+        assert_eq!(diagonal.count_ones(), 2, "{diagonal:#b}");
+        assert_eq!(sphere_faces(light, light + Vec3::X * 0.2, 0.5), ALL_FACES);
+        // A sphere far below spans only the downward face.
+        let below = sphere_faces(light, light - Vec3::Y * 5.0, 1.0);
+        assert_eq!(below.count_ones(), 1);
+    }
+
+    #[test]
+    fn skinned_casters_read_their_joints() {
+        let key = CubePipelineKey {
+            alpha_cut: false,
+            two_sided: false,
+            skinned: true,
+        };
+        let ids: Vec<_> = CubePipeline::vertex_attributes(key)
+            .iter()
+            .map(|a| a.id)
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                Mesh::ATTRIBUTE_POSITION.id,
+                Mesh::ATTRIBUTE_JOINT_INDEX.id,
+                Mesh::ATTRIBUTE_JOINT_WEIGHT.id
+            ]
+        );
+    }
+
+    #[test]
+    fn marks_add_to_the_dirty_faces() {
+        let mut cube = CubeShadow::default();
+        cube.mark(0b10);
+        cube.mark(0b100);
+        assert_eq!(cube.dirty, 0b110);
+        cube.mark(u8::MAX);
+        assert_eq!(cube.dirty, ALL_FACES);
+    }
+
     #[test]
     fn the_pipeline_cache_specializes_once() {
         let mut cache = HashMap::default();
@@ -890,6 +1058,7 @@ mod tests {
         let plain = CubePipelineKey {
             alpha_cut: false,
             two_sided: false,
+            skinned: false,
         };
         let first = cached_pipeline(&mut cache, (layout.clone(), plain), || {
             calls += 1;
@@ -908,6 +1077,7 @@ mod tests {
         let cut = CubePipelineKey {
             alpha_cut: true,
             two_sided: false,
+            skinned: false,
         };
         let failed = cached_pipeline(&mut cache, (layout, cut), || {
             calls += 1;

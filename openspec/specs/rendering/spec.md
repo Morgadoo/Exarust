@@ -227,7 +227,7 @@ In tile-grid levels the system SHALL flood each ranged light through the cell gr
 - **THEN** only meshes within the beam through the door's opening are lit by it in the next room
 
 ### Requirement: Cached cube shadows
-The system SHALL keep static casters' cube shadow maps across frames, as the original does. A face SHALL be rendered only when it is needed (it reaches into the camera's view) and dirty (its light moved, a caster linked to it moved or changed links, or the light took a new slot). A face the renderer could not draw SHALL stay dirty. It SHALL hold distance / (R·k_c), compared against 0.995·d / (R·k_r) on receivers.
+The system SHALL keep every caster's cube shadow maps across frames, characters' skinned meshes included, as the original does. A face SHALL be rendered only when it is needed (it reaches into the camera's view) and dirty, and SHALL draw only the casters whose bounding sphere touches it. A face the renderer could not draw SHALL stay dirty. It SHALL hold distance / (R·k_c), compared against 0.995·d / (R·k_r) on receivers.
 
 #### Scenario: Still room
 - **WHEN** nothing moves in view for a frame
@@ -240,6 +240,13 @@ The system SHALL keep static casters' cube shadow maps across frames, as the ori
 #### Scenario: Light on the first frame
 - **WHEN** a light takes its slot on the first frame, before the renderer can draw cube faces
 - **THEN** its faces are drawn on a later frame instead of staying empty and wholly shadowed
+
+### Requirement: Dirty cube faces
+Every face of a light's cube SHALL go out of date when the light moves or takes a new slot. A caster linked, unlinked or moved SHALL put out of date the faces its bounding sphere touched and the faces it touches.
+
+#### Scenario: Character beside a wall torch
+- **WHEN** an animated character stands in one face of a wall torch's cube
+- **THEN** that face is rendered again each frame with the character posed, and the torch's other faces stay cached
 
 ### Requirement: Alpha-tested casters
 The system SHALL cast a surface through the alpha-tested caster when its material is alpha-tested, or when it has the opacity flag (set by the record or by a loaded opacity map) and an opacity above 0.75 whatever its blending, as the original does. The alpha-tested caster SHALL draw both sides of the surface and SHALL drop every texel whose cut texture (the opacity map, otherwise the diffuse map) has an alpha below ½, without the material's opacity.

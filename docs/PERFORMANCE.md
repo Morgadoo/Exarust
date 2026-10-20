@@ -146,10 +146,10 @@ or the original does not do it).
 
 From the 2026-10-20 measurements, largest gain first:
 
-1. Characters in Exarust's own cached cube pass: skinned casters drawn into
-   the cubes, and a face re-rendered only when it is needed and a caster in
-   it moved, as the original does. It replaces Bevy's per-frame maps (the
-   113 schedule runs and most of the 743 submissions a frame).
+1. Done (`cache-character-shadows`): characters in Exarust's own cached
+   cube pass, a face re-rendered only when it is needed and a caster in it
+   moved, as the original does. The render thread fell from 28.9 ms to
+   7.6 ms a frame; the frame is now bound by the main thread.
 2. The original's AI activation: characters beyond its activation radius
    (200 m, with its 80-tick hysteresis) are dormant and not stepped, and
    targets are picked for one AI a tick. `step_bodies` and

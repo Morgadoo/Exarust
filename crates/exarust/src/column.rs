@@ -7,7 +7,7 @@
 use bevy::camera::primitives::Aabb;
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
-use exa_render::cube_shadows::StaticCasters;
+use exa_render::cube_shadows::CubeCasters;
 use exa_render::lights::ShadowBias;
 use exa_render::material::ExaMaterial;
 use exa_ui::LoadingStatus;
@@ -36,7 +36,7 @@ fn log_column(
     meshes: ColumnMeshes,
     names: Query<&Name>,
     parents: Query<&ChildOf>,
-    lights: Query<&StaticCasters>,
+    lights: Query<&CubeCasters>,
     materials: Res<Assets<ExaMaterial>>,
     assets: Res<Assets<Mesh>>,
 ) {
@@ -83,7 +83,7 @@ fn log_point(
     meshes: &ColumnMeshes,
     names: &Query<&Name>,
     parents: &Query<&ChildOf>,
-    lights: &Query<&StaticCasters>,
+    lights: &Query<&CubeCasters>,
     materials: &Assets<ExaMaterial>,
     assets: &Assets<Mesh>,
 ) {
@@ -103,7 +103,7 @@ fn log_point(
             .map(|(y, up)| format!("{y:.3}{}", if *up { "^" } else { "v" }))
             .collect::<Vec<_>>()
             .join(" ");
-        let cubes = lights.iter().filter(|l| l.0.contains(&e)).count();
+        let cubes = lights.iter().filter(|l| l.0.contains_key(&e)).count();
         let material = material.and_then(|m| materials.get(&m.0)).map_or_else(
             || "no exa material".to_string(),
             |m| {
