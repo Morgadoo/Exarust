@@ -404,24 +404,24 @@ pub const SEASON_PRIZES: [[u32; 4]; 4] = [
 /// The 19 rival companies' names and three profile bytes (`0x1002bbf30`).
 pub const COMPANIES: [(&str, [u8; 3]); 19] = [
     ("Bonten Company", [0x01, 0x07, 0x01]),
-    ("Fitten Gang", [0x01, 0x8C, 0x42]),
-    ("Vanrel's Band", [0x01, 0x01, 0x24]),
-    ("Mowbrots Bunch", [0x01, 0x72, 0xCB]),
+    ("Fitten Gang", [0x42, 0x8C, 0x01]),
+    ("Vanrel's Band", [0x24, 0x01, 0x01]),
+    ("Mowbrots Bunch", [0xCB, 0x72, 0x01]),
     ("Dullos Company", [0x00, 0xCB, 0x00]),
-    ("Dayker's Crew", [0x00, 0xE3, 0x60]),
-    ("Lofton Company", [0x00, 0x07, 0x23]),
-    ("Frerren Section", [0x00, 0x14, 0x9B]),
-    ("Evelique Company", [0x00, 0x54, 0x07]),
-    ("Bantree Outfit", [0x00, 0xB5, 0x7D]),
-    ("Forriel Company", [0x00, 0xFD, 0xDB]),
-    ("Rallop Company", [0x00, 0xD5, 0x25]),
-    ("Queedell's Knot", [0x00, 0x14, 0x61]),
-    ("Clivard's Lot", [0x00, 0xD6, 0x05]),
-    ("Westryn Company", [0x00, 0x5C, 0x04]),
-    ("Hisselmore Guard", [0x00, 0xD3, 0xF3]),
-    ("Greenque Pact", [0x00, 0x7D, 0x3E]),
-    ("Solden Corpora", [0x00, 0x43, 0xB5]),
-    ("Rickwich Fellers", [0x00, 0x8C, 0x72]),
+    ("Dayker's Crew", [0x60, 0xE3, 0x00]),
+    ("Lofton Company", [0x23, 0x07, 0x00]),
+    ("Frerren Section", [0x9B, 0x14, 0x00]),
+    ("Evelique Company", [0x07, 0x54, 0x00]),
+    ("Bantree Outfit", [0x7D, 0xB5, 0x00]),
+    ("Forriel Company", [0xDB, 0xFD, 0x00]),
+    ("Rallop Company", [0x25, 0xD5, 0x00]),
+    ("Queedell's Knot", [0x61, 0x14, 0x00]),
+    ("Clivard's Lot", [0x05, 0xD6, 0x00]),
+    ("Westryn Company", [0x04, 0x5C, 0x00]),
+    ("Hisselmore Guard", [0xF3, 0xD3, 0x00]),
+    ("Greenque Pact", [0x3E, 0x7D, 0x00]),
+    ("Solden Corpora", [0xB5, 0x43, 0x00]),
+    ("Rickwich Fellers", [0x72, 0x8C, 0x00]),
 ];
 
 /// A template by id: the standard table first, then the ranked one.
@@ -450,7 +450,7 @@ pub fn roll_rank(template: &MatchTemplate, slot: u32, r: f64) -> i32 {
     if template.flags & 2 != 0 {
         return slot as i32;
     }
-    (slot as f64 * (1.0 - r * r * r * r)) as i32
+    (slot as f64 * (1.0 - r * r * r * r)).round_ties_even() as i32
 }
 
 /// The rank window of a rolled match: Challenger (id 8) opens 0–5, every
@@ -790,6 +790,7 @@ mod tests {
         assert_eq!(SEASON_PRIZES[3][3], 1181);
         assert_eq!(COMPANIES.len(), 19);
         assert_eq!(COMPANIES[0], ("Bonten Company", [0x01, 0x07, 0x01]));
+        assert_eq!(COMPANIES[1], ("Fitten Gang", [0x42, 0x8C, 0x01]));
         assert_eq!(POINT_LIMITS, [5, 10, 15, 20, 30, 40]);
     }
 }
@@ -803,8 +804,8 @@ mod generation_tests {
     fn the_rank_roll_and_window() {
         let elimination = &RANKED[1];
         assert_eq!(elimination.name, "Elimination");
-        assert_eq!(roll_rank(elimination, 3, 0.5), 2);
-        assert_eq!(rank_window(elimination, 3, 0.5), (3, 2));
+        assert_eq!(roll_rank(elimination, 3, 0.5), 3);
+        assert_eq!(rank_window(elimination, 3, 0.5), (3, 3));
         let challenger = &RANKED[0];
         assert_eq!(rank_window(challenger, 0, 0.5), (0, 5));
         let brawl = &RANKED[5];
