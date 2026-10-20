@@ -7,7 +7,11 @@
 //! `w = I0(4·√(1 − t²))/I0(4) · sinc(π·c·u)`, or 0 outside `|t| < 1`;
 //! the weights are normalised to sum 1. The axis pass uses the integer
 //! ratio `src/dst`, starts at `−((n − ratio)/2)`, and wraps or clamps each
-//! tap. Channels are filtered interleaved (RGBA in the model).
+//! tap. Channels are filtered interleaved (RGBA in the model), as floats in
+//! the space the format word picks: linear, colour squared, or centred for
+//! signed data ([`exa_formats::pixel::mip_conversion`]).
+
+use exa_formats::pixel::{self, MipConversion};
 
 /// The Kaiser window's beta.
 pub const KAISER_BETA: f64 = 4.0;
@@ -256,57 +260,31 @@ mod chain_tests {
     }
 }
 
-/// Resamples one axis of an interleaved RGBA8 image into f32: the source
-/// bytes are normalised by 255, with the same ratio, start, wrap and clamp
-/// as [`resample_axis`].
-pub fn resample_axis_u8(
-    src: &[u8],
-    src_extent: usize,
-    dst_extent: usize,
-    weights: &[f32],
-    wrap: bool,
-    out: &mut [f32],
-) {
-    if src_extent == 0 || dst_extent == 0 || weights.is_empty() {
-        return;
-    }
-    let ratio = (src_extent / dst_extent).max(1);
-    let start = mip_axis_start(weights.len(), ratio);
-    for x in 0..dst_extent {
-        let s0 = start + x as i64 * ratio as i64;
-        let mut acc = [0.0f32; 4];
-        for (k, &weight) in weights.iter().enumerate() {
-            let mut source = s0 + k as i64;
-            source = if wrap {
-                source.rem_euclid(src_extent as i64)
-            } else {
-                source.clamp(0, src_extent as i64 - 1)
-            };
-            let base = source as usize * 4;
-            for (channel, value) in acc.iter_mut().enumerate() {
-                *value += weight * f32::from(src.get(base + channel).copied().unwrap_or(0)) / 255.0;
-            }
-        }
-        let base = x * 4;
-        if let Some(slot) = out.get_mut(base..base + 4) {
-            slot.copy_from_slice(&acc);
-        }
-    }
-}
-
 /// Builds the chain for an RGBA8 base: the base bytes followed by each
 /// generated level, and the total level count (base included). The base is
-/// filtered as bytes and the horizontal pass is split across rows for large
-/// images.
+/// turned into floats by `conversion` (linear, squared or centred, as the
+/// original picks per format), each level is filtered from those floats and
+/// turned back into bytes the same way. The horizontal pass is split across
+/// rows for large images.
 pub fn build_mip_chain_rgba8(
     base: &[u8],
     width: usize,
     height: usize,
     wrap: bool,
+    conversion: MipConversion,
 ) -> (Vec<u8>, u32) {
     if width == 0 || height == 0 || base.len() < width * height * 4 {
         return (base.to_vec(), 1);
     }
+    let mut floats = vec![0.0f32; width * height * 4];
+    let base_bytes = &base[..width * height * 4];
+    match conversion {
+        MipConversion::Linear => pixel::unit_floats(base_bytes, &mut floats),
+        MipConversion::Gamma => pixel::gamma_floats(base_bytes, &mut floats),
+        MipConversion::GammaColour => pixel::gamma_colour_floats(base_bytes, &mut floats),
+        MipConversion::Signed => pixel::signed_floats(base_bytes, &mut floats),
+    }
+    let floats = floats.as_slice();
     let mut out = base.to_vec();
     let mut count = 1u32;
     let bank = kaiser_bank();
@@ -335,14 +313,13 @@ pub fn build_mip_chain_rgba8(
                     let rows = per.min(height - start_row);
                     let (chunk, tail) = rest.split_at_mut(rows * dst_width * 4);
                     rest = tail;
-                    let base_ref = base;
                     let weights_ref: &[f32] = weights;
                     scope.spawn(move || {
                         let mut row = vec![0.0f32; dst_width * 4];
                         for row_index in 0..rows {
                             let y = start_row + row_index;
-                            resample_axis_u8(
-                                &base_ref[y * width * 4..(y + 1) * width * 4],
+                            resample_axis(
+                                &floats[y * width * 4..(y + 1) * width * 4],
                                 width,
                                 dst_width,
                                 weights_ref,
@@ -359,8 +336,8 @@ pub fn build_mip_chain_rgba8(
         } else {
             let mut row = vec![0.0f32; dst_width * 4];
             for y in 0..height {
-                resample_axis_u8(
-                    &base[y * width * 4..(y + 1) * width * 4],
+                resample_axis(
+                    &floats[y * width * 4..(y + 1) * width * 4],
                     width,
                     dst_width,
                     weights,
@@ -434,11 +411,14 @@ pub fn build_mip_chain_rgba8(
                 }
             }
         }
-        out.extend(
-            texels
-                .iter()
-                .map(|value| (value.clamp(0.0, 1.0) * 255.0).round() as u8),
-        );
+        let mut level = vec![0u8; texels.len()];
+        match conversion {
+            MipConversion::Linear => pixel::unit_bytes(&texels, &mut level),
+            MipConversion::Gamma => pixel::gamma_bytes(&texels, &mut level),
+            MipConversion::GammaColour => pixel::gamma_colour_bytes(&texels, &mut level),
+            MipConversion::Signed => pixel::signed_bytes(&texels, &mut level),
+        }
+        out.extend(level);
         count += 1;
     }
     (out, count)
@@ -451,13 +431,46 @@ mod rgba_chain_tests {
     #[test]
     fn an_rgba_chain_appends_its_levels() {
         let base = vec![51u8; 4 * 4 * 4];
-        let (out, count) = build_mip_chain_rgba8(&base, 4, 4, true);
-        assert_eq!(count, 2);
-        assert_eq!(out.len(), 4 * 4 * 4 + 2 * 2 * 4);
-        assert!(out.iter().all(|&value| value == 51));
+        for conversion in [
+            MipConversion::Linear,
+            MipConversion::Gamma,
+            MipConversion::GammaColour,
+            MipConversion::Signed,
+        ] {
+            let (out, count) = build_mip_chain_rgba8(&base, 4, 4, true, conversion);
+            assert_eq!(count, 2);
+            assert_eq!(out.len(), 4 * 4 * 4 + 2 * 2 * 4);
+            assert!(out.iter().all(|&value| value == 51), "{conversion:?}");
+        }
 
-        let (short, count) = build_mip_chain_rgba8(&[7; 4], 1, 1, true);
+        let (short, count) = build_mip_chain_rgba8(&[7; 4], 1, 1, true, MipConversion::Linear);
         assert_eq!(count, 1);
         assert_eq!(short, vec![7; 4]);
+    }
+
+    /// A 4 × 4 checker of 0 and 255 halves to mid-grey: 128 when filtered
+    /// linearly, √½ · 255 = 180 when squared first. Alpha stays linear.
+    #[test]
+    fn colour_is_filtered_squared() {
+        let mut base = Vec::new();
+        for y in 0..4 {
+            for x in 0..4 {
+                let v = if (x + y) % 2 == 0 { 255 } else { 0 };
+                base.extend_from_slice(&[v, v, v, v]);
+            }
+        }
+        let level = |conversion| {
+            let (out, _) = build_mip_chain_rgba8(&base, 4, 4, true, conversion);
+            out[64..68].to_vec()
+        };
+        let linear = level(MipConversion::Linear);
+        let gamma = level(MipConversion::GammaColour);
+        assert!(
+            linear.iter().all(|&v| (127..=128).contains(&v)),
+            "{linear:?}"
+        );
+        assert!((179..=181).contains(&gamma[0]), "{gamma:?}");
+        assert_eq!(gamma[3], linear[3]);
+        assert!((179..=181).contains(&level(MipConversion::Gamma)[3]));
     }
 }

@@ -1038,6 +1038,50 @@ scene:
 The inventory and trade dolls light the body differently (a sun of sRGB
 0.75 grey × 3, ambient 0.5, no floor); they are not shown yet.
 
+## Procedural noise
+
+The original generates its noise images on the CPU from one linear
+congruential sequence, `s = s · 0x08088405 + 1` (32 bits, wrapping),
+stepped before each sample (`exa_render::image_noise`). A byte sample is
+the high word of `s · 255`; a float sample is `s` read as a signed integer
+times 2⁻³², so it lies in −0.5..0.5.
+
+**Byte maps** (the terrain's blend-rule noise): white bytes, then octaves
+k = 1, 2, … blended in. The source of octave k is the first
+(w >> k)·(h >> k) bytes of the white noise, read as an image that many
+texels wide. Destination texel x takes c = trunc((x + ½)·2⁻ᵏ) and
+f = x·2⁻ᵏ − c. Below ½ it blends source texels c − 1 and c by ½ − f and
+½ + f, from ½ up texels c and c + 1 by 1½ − f and f − ½, wrapping; rows the
+same. Single precision throughout. The new value is (old + sample)·½,
+0 below 0, 255 above 255, else rounded to even. A ridge fold then maps v
+below 128 to round((v/127)²·255) and the rest to the same of 255 − v, in
+double precision.
+
+**Float images** (the force and spirit powers): white floats, then
+octaves k = 1, 2, … read from the first (w/2)·(h/2) samples. Destination
+row y reads source rows r − 1 and r, r = (2ᵏ⁻¹ + y) >> k, weighed by
+fy = (2ᵏ⁻¹ + y − r·2ᵏ + ½)/2ᵏ (wrapping above, and r past the last row
+reads row 0). Each row runs in spans between neighbouring source texels:
+half a span (2ᵏ⁻¹ samples) from the last texel to the first, a whole span
+(2ᵏ) per pair, half a span back to the first. fx starts at (2ᵏ⁻¹ + ½)/2ᵏ
+in the first span and at ½/2ᵏ in the others and steps by 2⁻ᵏ. A sample
+v = d·fx + (c·(1 − fx) + (b·fx + a·(1 − fx))) is shaped by the ridge
+(1 − |1.8·v|)⁴ (in doubles) and mixed in at half weight.
+
+**The animated field** of those powers keeps four such planes and an
+output. Its phase is offset + t/period (t in ms, period 1000 ms until set,
+0.8 s for force). The phase fraction f weighs the three oldest planes by
+amplitude · ⅔ · sin²((f + 2 − i)·π/3), which sums to the amplitude, and
+the output is their sum. Meanwhile the fourth plane is built row by row
+in step with f, from fresh white floats with every octave blended as
+ridge · 0.27 + old · 0.45 (force sets both to 0.5). On each whole phase
+the planes rotate and new white noise is drawn. The amplitude eases to
+its target, +0.05 per second up and −0.1 down, and snaps within
+0.11 × the tick. The tick is clamped to 0.1 s, and ticks closer than
+16 ms do nothing. Exarust takes the sine from the standard library, so it
+may differ from the original's by an ulp. The field is modelled; the
+powers do not draw it yet.
+
 ## Not done yet
 
 The emissive scale of a fire's parent mesh by the fire, the emissive

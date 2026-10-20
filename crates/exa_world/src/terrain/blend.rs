@@ -8,6 +8,7 @@
 //! `docs/formats/TERRAIN.md`.
 
 use exa_formats::terrain::Palette;
+use exa_render::image_noise::{ridge_bytes, value_noise_bytes};
 
 /// Side of the repeating noise maps, in terrain vertices (96 m).
 pub const NOISE_SIDE: usize = 480;
@@ -130,10 +131,13 @@ pub struct NoiseMaps {
 }
 
 impl Default for NoiseMaps {
+    /// The three maps as the terrain renderer builds them: value noise of
+    /// four octaves per seed, the first folded into a ridge.
     fn default() -> Self {
-        Self {
-            maps: NOISE_SEEDS.map(noise_map),
-        }
+        let mut maps =
+            NOISE_SEEDS.map(|seed| value_noise_bytes(NOISE_SIDE, NOISE_SIDE, NOISE_OCTAVES, seed));
+        ridge_bytes(&mut maps[0]);
+        Self { maps }
     }
 }
 
@@ -157,7 +161,7 @@ impl NoiseMaps {
         i: usize,
         j: usize,
     ) -> [f32; INPUTS] {
-        let a = ridge(self.sample(0, tile_x, tile_y, i, j)) as f32 / 255.0;
+        let a = self.sample(0, tile_x, tile_y, i, j) as f32 / 255.0;
         let b = self.sample(1, tile_x, tile_y, i, j) as f32 / 255.0;
         let c = self.sample(2, tile_x, tile_y, i, j) as f32 / 255.0;
         [
@@ -175,54 +179,6 @@ impl NoiseMaps {
             0.5,
         ]
     }
-}
-
-/// Folds a noise value into a ridge that peaks at mid-range.
-fn ridge(v: u8) -> u8 {
-    let f = if v < 128 {
-        v as f32 / 127.0
-    } else {
-        (255 - v) as f32 / 127.0
-    };
-    (f * f * 255.0).round().min(255.0) as u8
-}
-
-/// White noise from a linear congruential sequence, then four octaves of
-/// progressively coarser copies of it averaged in, coarsest last.
-fn noise_map(seed: u32) -> Vec<u8> {
-    let n = NOISE_SIDE;
-    let mut state = seed;
-    let white: Vec<u8> = (0..n * n)
-        .map(|_| {
-            state = state.wrapping_mul(0x0808_8405).wrapping_add(1);
-            ((state as u64 * 255) >> 32) as u8
-        })
-        .collect();
-    let mut out = white.clone();
-    for octave in 1..=NOISE_OCTAVES {
-        let g = n >> octave;
-        let scale = (1u32 << octave) as f32;
-        let cell = |x: usize| -> (usize, usize, f32, f32) {
-            let c = ((x as f32 + 0.5) / scale).trunc();
-            let f = x as f32 / scale - c;
-            let c = c as usize;
-            ((c + g - 1) % g, c % g, 0.5 - f, 0.5 + f)
-        };
-        for y in 0..n {
-            let (y0, y1, wy0, wy1) = cell(y);
-            for x in 0..n {
-                let (x0, x1, wx0, wx1) = cell(x);
-                let at = |cx: usize, cy: usize| white[cy * g + cx] as f32;
-                let sample = (at(x0, y0) * wx0 + at(x1, y0) * wx1) * wy0
-                    + (at(x0, y1) * wx0 + at(x1, y1) * wx1) * wy1;
-                let p = &mut out[y * n + x];
-                *p = ((*p as f32 + sample) / 2.0)
-                    .round_ties_even()
-                    .clamp(0.0, 255.0) as u8;
-            }
-        }
-    }
-    out
 }
 
 /// "Over" opacities of materials stacked in order: the first is opaque and
@@ -341,10 +297,18 @@ mod tests {
     }
 
     #[test]
-    fn ridge_peaks_mid_range() {
-        assert_eq!(ridge(0), 0);
-        assert_eq!(ridge(127), 255);
-        assert_eq!(ridge(255), 0);
+    fn the_first_map_is_ridged_value_noise() {
+        let maps = NoiseMaps::default();
+        // The original's seed-137 map, folded: its first texels and its sum
+        // (worked from the rules by a separate model).
+        assert_eq!(maps.maps[0][..8], [137, 128, 117, 131, 137, 112, 134, 143]);
+        let sum: u64 = maps.maps[0].iter().map(|&v| u64::from(v)).sum();
+        assert_eq!(sum, 40_696_892);
+        assert_eq!(maps.maps[1][..4], [156, 161, 159, 167]);
+        let inputs = maps.inputs(0.0, 1.0, 0, 0, 0, 0);
+        assert_eq!(inputs[3], 137.0 / 255.0);
+        assert_eq!(inputs[6], inputs[3]);
+        assert_eq!(inputs[4], 156.0 / 255.0);
     }
 
     #[test]

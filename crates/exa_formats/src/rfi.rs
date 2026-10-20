@@ -23,7 +23,7 @@
 
 use std::borrow::Cow;
 
-use crate::{Error, Result, read_u32};
+use crate::{Error, Result, pixel, read_u32};
 
 pub const RFI_MAGIC: u32 = 0x1D2D_3DC6;
 const HEADER_LEN: usize = 32;
@@ -243,6 +243,22 @@ impl<'a> Rfi<'a> {
         Ok(out)
     }
 
+    /// The registered pixel format whose converter reads this image: the
+    /// stored word when the original registers it, else the plain format of
+    /// its layout.
+    fn converter_format(&self) -> u32 {
+        let word = self.header.format_word;
+        if pixel::lookup(word).is_some() {
+            return word;
+        }
+        match self.format {
+            PixelFormat::L8 => pixel::id::LUM8,
+            PixelFormat::La8 => pixel::id::LUMA8,
+            PixelFormat::A8 => pixel::id::ALPHA8,
+            _ => pixel::id::RGB8,
+        }
+    }
+
     /// Decodes mip level `level` of `pixels` (from [`Rfi::pixels`]).
     pub fn decode_level_rgba8(&self, pixels: &[u8], level: u32) -> Result<Vec<u8>> {
         let (w, h) = level_dims(self.header.width, self.header.height, level);
@@ -253,11 +269,18 @@ impl<'a> Rfi<'a> {
             PixelFormat::Bc1 | PixelFormat::Bc3 | PixelFormat::Bc4 | PixelFormat::Bc5 => {
                 decode_blocks(self.format, src, w, h, &mut out)
             }
-            PixelFormat::Rgb8 => expand(src, &mut out, 3, |p| [p[0], p[1], p[2], 255]),
-            PixelFormat::Rgba8 => expand(src, &mut out, 4, |p| [p[0], p[1], p[2], p[3]]),
-            PixelFormat::L8 => expand(src, &mut out, 1, |p| [p[0], p[0], p[0], 255]),
-            PixelFormat::La8 => expand(src, &mut out, 2, |p| [p[0], p[0], p[0], p[1]]),
-            PixelFormat::A8 => expand(src, &mut out, 1, |p| [255, 255, 255, p[0]]),
+            // Already the target layout: the converters only run between
+            // different layouts.
+            PixelFormat::Rgba8 => out.copy_from_slice(&src[..w * h * 4]),
+            PixelFormat::Rgb8 | PixelFormat::L8 | PixelFormat::La8 | PixelFormat::A8 => {
+                // The original's converter of the stored format, to RGBA8.
+                let source = self.converter_format();
+                if !pixel::convert(source, pixel::id::RGBA8, src, w * h, &mut out)? {
+                    return Err(Error::Unsupported(format!(
+                        "rfi format word {source:#010x} to RGBA8"
+                    )));
+                }
+            }
             PixelFormat::Unknown(w) => {
                 return Err(Error::Unsupported(format!("rfi format word {w:#010x}")));
             }
@@ -283,12 +306,6 @@ fn mip_count_for(format: PixelFormat, w: u32, h: u32, data_size: u32) -> u32 {
         if total >= data_size as usize || (lw == 1 && lh == 1) {
             return level;
         }
-    }
-}
-
-fn expand(src: &[u8], out: &mut [u8], bpp: usize, f: impl Fn(&[u8]) -> [u8; 4]) {
-    for (px, dst) in src.chunks_exact(bpp).zip(out.as_chunks_mut::<4>().0) {
-        dst.copy_from_slice(&f(px));
     }
 }
 

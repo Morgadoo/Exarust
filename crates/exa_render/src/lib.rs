@@ -7,6 +7,7 @@ pub mod cube_shadows;
 pub mod electricity;
 pub mod flame;
 pub mod gi;
+pub mod image_noise;
 pub mod lights;
 pub mod material;
 pub mod mipmap;

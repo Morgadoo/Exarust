@@ -7,6 +7,14 @@ Rendering on Bevy/wgpu: material plug-ins, skinned characters, terrain, grass, l
 ## Modules
 
 - `bound_sphere`: the original's smallest enclosing sphere (move-to-front over a support set of 1–4 points, in f64), which fits its sun shadow map; with the f32/f64 vector helpers ([`docs/RENDERING.md`](../../docs/RENDERING.md), Sun shadow fit).
+- `image_noise`: the original's procedural noise: white noise from its
+  linear congruential sequence, byte octaves (the terrain's blend-rule
+  maps) and their ridge fold, ridged float octaves, and `NoiseField`, the
+  animated field of the force and spirit powers ([`docs/RENDERING.md`](../../docs/RENDERING.md),
+  Procedural noise).
+- `mipmap`: the Kaiser mip chain, filtered in the space the format word
+  picks (linear, squared colour or centred; [`docs/formats/RFI.md`](../../docs/formats/RFI.md),
+  Generated mip levels).
 - `shell`: `ShellMaterial`, the rooms' shells drawn opaque, unlit pure black, and the fading lid overlay (blended, no depth test, drawn last) ([`docs/RENDERING.md`](../../docs/RENDERING.md), Rooms and black fill).
 
 ## Scope

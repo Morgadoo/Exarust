@@ -9,7 +9,8 @@ bytes and returns plain data or an error. No Bevy dependency.
 |---|---|
 | `kind` | format detection by magic for every shipped entry |
 | `chunk` | `.rfc` chunk framing and list chunks |
-| `rfi` | images: header, mip chain, BC1/3/4/5 + uncompressed decoding, RLE unpacking |
+| `rfi` | images: header, mip chain, BC1/3/4/5 + uncompressed decoding (through the `pixel` converters), RLE unpacking |
+| `pixel` | the original's 20 pixel formats (ids, fallbacks, sizes) and its converters between them: grey, alpha, grey-alpha, two-channel with Z rebuilt, 1-bit, RGB and RGBA sources, luma, the float formats; the byte/float conversions its mipmapper picks per format word (linear, squared colour, centred) |
 | `rdb` | database index |
 | `races` | races: names, flag words (bleeding, red regeneration, claws, hovering, quadruped), body model, movesets, health, natural armour, the body scalars (clip-rate base, size, scale, mass divisor) and the body controller's factors, the gait table with its brake distances and the feral sprint blend, and the stats (unarmed reach, weapon swing-turn and recovery factors, AI attack bonus, perception, held offset, footsteps, voice) |
 | `characters` | a level's placed characters (position, facing, condition, pose) and their records read whole, versions 5–7 (level databases and `actors.rpk`): looks, held and worn items, feral level, saved pools, combat skill, traits, experience, the six skills with their techniques, inventory, roles, relations, saved state, powers; the perks the learnt techniques give, the Manoeuvring tier and Deflection; an actor's own item database |

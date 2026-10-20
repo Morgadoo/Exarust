@@ -142,7 +142,11 @@ every two tiles and are continuous across tiles. Each map starts as white
 noise from a 32-bit linear congruential sequence
 (`s = s · 0x08088405 + 1`, byte = high word of `s · 255`). Then four octaves of
 coarser copies of that noise (bilinear, wrapping) are averaged in, so the
-coarsest octave weighs most.
+coarsest octave weighs most. Map A is folded into its ridge once, after
+the octaves. The exact octave, rounding and fold rules are in
+[`../RENDERING.md`](../RENDERING.md) (Procedural noise). They were
+established by reverse engineering of the terrain texture renderer and the
+noise unit (REA), and are pinned by tests on a separate model of the rules.
 
 Painted layer weights descend through the rules. Weight the layers leave over
 (1 − Σ) goes to node 0, the first rule.

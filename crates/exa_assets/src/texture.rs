@@ -8,6 +8,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use exa_formats::pixel::MipConversion;
 use exa_formats::rfi::{PixelFormat, Rfi, level_dims};
 
 /// How an image's colour should be interpreted.
@@ -64,8 +65,13 @@ pub fn rfi_to_image(
             let mut rgba = rfi.decode_mips_rgba8()?;
             let mut mip_count = rfi.mip_count.max(1);
             if needs_kaiser_mips(mip_count, w, h) {
-                let (chain, levels) =
-                    exa_render::mipmap::build_mip_chain_rgba8(&rgba, w as usize, h as usize, true);
+                let (chain, levels) = exa_render::mipmap::build_mip_chain_rgba8(
+                    &rgba,
+                    w as usize,
+                    h as usize,
+                    true,
+                    mip_conversion(rfi.header.format_word),
+                );
                 rgba = chain;
                 mip_count = levels;
             }
@@ -112,6 +118,14 @@ fn needs_kaiser_mips(mip_count: u32, width: u32, height: u32) -> bool {
         && height >= 4
 }
 
+/// The filtering space of a generated chain: the original's pick for the
+/// format word (squared colour for plain 8-bit images, linear for data
+/// words, centred for signed ones). Block-compressed images decoded on the
+/// CPU, which the original never mips itself, filter linearly.
+fn mip_conversion(word: u32) -> MipConversion {
+    exa_formats::pixel::mip_conversion(word).unwrap_or(MipConversion::Linear)
+}
+
 /// Whether the image carries an alpha channel worth alpha-testing.
 pub fn has_alpha(rfi: &Rfi) -> bool {
     matches!(
@@ -122,7 +136,16 @@ pub fn has_alpha(rfi: &Rfi) -> bool {
 
 #[cfg(test)]
 mod kaiser_tests {
-    use super::needs_kaiser_mips;
+    use super::{MipConversion, mip_conversion, needs_kaiser_mips};
+
+    #[test]
+    fn generated_chains_filter_in_the_original_space() {
+        assert_eq!(mip_conversion(0x0100_E608), MipConversion::GammaColour);
+        assert_eq!(mip_conversion(0x0100_C600), MipConversion::Gamma);
+        assert_eq!(mip_conversion(0x0111_C600), MipConversion::Linear);
+        assert_eq!(mip_conversion(0x1111_C600), MipConversion::Signed);
+        assert_eq!(mip_conversion(0x813B_C600), MipConversion::Linear);
+    }
 
     #[test]
     fn kaiser_mips_need_one_level_and_a_power_of_two_size() {
