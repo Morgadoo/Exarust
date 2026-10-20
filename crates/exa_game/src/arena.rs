@@ -1152,3 +1152,256 @@ mod weapon_tests {
         assert_eq!(point_limit(6), None);
     }
 }
+
+/// A rolled match instance (the binary's 0x70-byte record).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MatchInstance {
+    pub id: u32,
+    pub flags: u32,
+    pub min_rank: i32,
+    pub max_rank: i32,
+    pub slot: u32,
+    pub rank: i32,
+    pub secondary: u32,
+    pub cash: u32,
+    pub teams: u32,
+    pub fighters: u32,
+    pub rounds: u32,
+    pub weapon_row: u32,
+    pub xp: u32,
+    pub min_slot: u32,
+    pub per_pass: u32,
+    pub reject: u32,
+}
+
+impl MatchInstance {
+    /// Copies a template into a fresh instance.
+    pub fn from_template(template: &MatchTemplate, slot: u32) -> Self {
+        Self {
+            id: template.id,
+            flags: template.flags,
+            min_rank: template.min_rank,
+            max_rank: template.max_rank,
+            slot,
+            rank: template.preset_rank,
+            secondary: template.secondary,
+            cash: template.cash,
+            teams: template.teams,
+            fighters: template.fighters,
+            rounds: template.rounds,
+            weapon_row: 0,
+            xp: template.xp,
+            min_slot: template.min_slot,
+            per_pass: template.per_pass,
+            reject: template.reject,
+        }
+    }
+}
+
+/// Whether the rank roll needs the MT19937 stream.
+pub fn needs_rank(template: &MatchTemplate) -> bool {
+    template.preset_rank >= 0 && template.flags & 2 == 0
+}
+
+/// Rolls a match instance. `r` is the MT19937 unit draw in `[0, 1)` and is
+/// ignored when [`needs_rank`] is false. The LCG draws the weapon row.
+pub fn roll_instance(
+    template: &MatchTemplate,
+    slot: u32,
+    r: f64,
+    rng: &mut crate::item_container::Rng,
+) -> MatchInstance {
+    let mut instance = MatchInstance::from_template(template, slot);
+    instance.rank = if template.preset_rank < 0 {
+        -1
+    } else if template.flags & 2 != 0 {
+        slot as i32
+    } else {
+        (slot as f64 * (1.0 - r * r * r * r)).round_ties_even() as i32
+    };
+    if template.id == 8 {
+        instance.min_rank = 0;
+        instance.max_rank = 5;
+    } else {
+        instance.min_rank = slot as i32;
+        instance.max_rank = instance.rank;
+    }
+    if template.flags & 4 != 0 {
+        let count = WEAPON_TIERS
+            .get(slot as usize)
+            .map(|tier| tier.len())
+            .unwrap_or(0);
+        instance.weapon_row = if count > 0 {
+            rng.below(count as u32) + 1
+        } else {
+            0
+        };
+    }
+    instance.secondary = scaled_secondary(template, slot);
+    instance.cash = cash_prize(template, slot);
+    instance
+}
+
+/// The six-row daily board from the ranked templates.
+pub fn generate_daily_board(seed: u32, mut rank: impl FnMut() -> f64) -> [MatchInstance; 6] {
+    let mut rng = crate::item_container::Rng(seed);
+    let mut used = [0u32; RANKED.len()];
+    let mut rows = Vec::with_capacity(6);
+    for row in 0..6u32 {
+        loop {
+            let index = rng.below(RANKED.len() as u32) as usize;
+            let template = &RANKED[index];
+            if template.per_pass > 0 && used[index] >= template.per_pass {
+                continue;
+            }
+            if row < template.min_slot {
+                continue;
+            }
+            let reject = rng.below(8);
+            if reject & template.reject != 0 {
+                continue;
+            }
+            used[index] += 1;
+            let r = if needs_rank(template) { rank() } else { 0.0 };
+            rows.push(roll_instance(template, row, r, &mut rng));
+            break;
+        }
+    }
+    rows.try_into().expect("six daily rows")
+}
+
+/// A generated tournament board.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TournamentBoard {
+    pub rows: [MatchInstance; 6],
+    pub prize_id: u32,
+    /// 1-based company ids for the 16 slots.
+    pub companies: [u8; 16],
+}
+
+/// Draws a weekly prize id and pushes its 1-based index into the history.
+pub fn draw_prize(rng: &mut crate::item_container::Rng, history: &mut [u32; 8]) -> u32 {
+    loop {
+        let index = rng.below(TOURNAMENT_PRIZES.len() as u32);
+        if history.contains(&(index + 1)) {
+            continue;
+        }
+        history.rotate_right(1);
+        history[0] = index + 1;
+        return TOURNAMENT_PRIZES[index as usize];
+    }
+}
+
+/// The six-row tournament board, its weekly prize and the company shuffle
+/// that continues the same LCG stream.
+pub fn generate_tournament_board(
+    seed: u32,
+    history: &mut [u32; 8],
+    mut rank: impl FnMut() -> f64,
+) -> TournamentBoard {
+    let mut rng = crate::item_container::Rng(seed);
+    let prize_id = draw_prize(&mut rng, history);
+    let mut used = [0u32; TOURNAMENTS.len()];
+    let mut rows = Vec::with_capacity(6);
+    for row in 0..6u32 {
+        loop {
+            let index = rng.below(TOURNAMENTS.len() as u32) as usize;
+            let template = &TOURNAMENTS[index];
+            if template.per_pass > 0 && used[index] >= template.per_pass {
+                continue;
+            }
+            if row < template.min_slot {
+                continue;
+            }
+            let reject = rng.below(8);
+            if reject & template.reject != 0 {
+                continue;
+            }
+            used[index] += 1;
+            let r = if needs_rank(template) { rank() } else { 0.0 };
+            let mut instance = roll_instance(template, row, r, &mut rng);
+            instance.min_rank = 5;
+            instance.max_rank = row as i32;
+            instance.slot = 5;
+            instance.rank = row as i32;
+            rows.push(instance);
+            break;
+        }
+    }
+    let companies = shuffle_companies(&mut rng);
+    TournamentBoard {
+        rows: rows.try_into().expect("six tournament rows"),
+        prize_id,
+        companies,
+    }
+}
+
+/// Shuffles the 19 company ids into 16 slots, 1-based.
+pub fn shuffle_companies(rng: &mut crate::item_container::Rng) -> [u8; 16] {
+    let mut pool: Vec<u8> = (0..19).collect();
+    let mut out = [0u8; 16];
+    for (i, slot) in out.iter_mut().enumerate() {
+        let index = rng.below((19 - i) as u32) as usize;
+        *slot = pool[index] + 1;
+        pool.remove(index);
+    }
+    out
+}
+
+#[cfg(test)]
+mod board_tests {
+    use super::*;
+    use crate::item_container::Rng;
+
+    #[test]
+    fn the_instance_rolls() {
+        let mut rng = Rng(1);
+        let elimination = &RANKED[1];
+        let m = roll_instance(elimination, 3, 0.5, &mut rng);
+        assert_eq!((m.rank, m.min_rank, m.max_rank), (3, 3, 3));
+        assert_eq!(m.cash, pack_money(384));
+        assert_eq!(m.secondary, pack_money(12));
+
+        let valour = &RANKED[3];
+        let m = roll_instance(valour, 4, 0.9, &mut rng);
+        assert_eq!((m.rank, m.min_rank, m.max_rank), (4, 4, 4));
+        assert_eq!(m.cash, pack_money(360));
+        assert_eq!(m.secondary, pack_money(30));
+
+        let challenger = &RANKED[0];
+        let m = roll_instance(challenger, 0, 0.0, &mut rng);
+        assert_eq!((m.rank, m.min_rank, m.max_rank), (0, 0, 5));
+        let brawl = &RANKED[5];
+        let m = roll_instance(brawl, 4, 0.9, &mut rng);
+        assert_eq!((m.rank, m.min_rank, m.max_rank), (-1, 4, -1));
+    }
+
+    #[test]
+    fn the_daily_board_matches_the_seed() {
+        let board = generate_daily_board(12345, || 0.5);
+        let ids: Vec<u32> = board.iter().map(|m| m.id).collect();
+        assert_eq!(ids, [8, 13, 8, 11, 13, 12]);
+        let tiers: Vec<i32> = board.iter().map(|m| m.rank).collect();
+        assert_eq!(tiers, [0, 1, 2, 3, 4, -1]);
+    }
+
+    #[test]
+    fn the_company_shuffle_matches_the_seed() {
+        let mut rng = Rng(0);
+        assert_eq!(
+            shuffle_companies(&mut rng),
+            [1, 2, 17, 6, 8, 14, 9, 4, 11, 12, 3, 13, 5, 19, 7, 15]
+        );
+    }
+
+    #[test]
+    fn the_prize_history_rejects_repeats() {
+        let mut rng = Rng(12345);
+        let mut history = [0u32; 8];
+        let first = draw_prize(&mut rng, &mut history);
+        let second = draw_prize(&mut rng, &mut history);
+        assert_ne!(first, second);
+        assert_ne!(history[0], 0);
+        assert_ne!(history[1], 0);
+    }
+}
