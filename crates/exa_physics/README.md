@@ -161,73 +161,78 @@ mobility and the group masks of its tree (`Part::rigid`'s pairing,
 `pairs::mask_groups`); a body below −50 m is removed. Only awake bodies are redrawn between ticks.
 
 The level's mechanisms are in `door`, `lever`, `plate`, `relay`, `signal`
-and `mechanism`: their rules are exact and unit-tested, but they are not
-yet fed by live bodies (see below).
+and `mechanism`. Their rules follow the original's instruction listings,
+including which thresholds and products are taken in double precision,
+and are unit-tested, but no live body feeds them yet (see below). Lengths
+are in the original's centimetres, as the body links store them.
 
 A door (`src/door.rs`) reads its record's flags, key and four sound
 letters. Its links decide its kind: a slider (flag 4) travels at the
-fraction of the first link whose body point is 30–160 cm up; a hinge's pins
-(slack ≤ 30 cm) give its axis and its longest link is the stop, radius r
-and half swing 2·asin(slack / 2r). The stop's heading is the angle, closed
-is that end of the swing and the range is −2·half swing times the swing
-sign. A hinge's stop link is what the solver pushes: its heading and the
-handle's velocity are the step's inputs, and the stop's stretch past its
-slack knocks. The step runs the signalled wait (mode 3, 120 ticks) before
-anything else, then the creak (stop at squared 0.015; volume
-0.075·√speed, pitch 0.022·speed + 0.7), the unlock timer (1000 ms, strictly
-past), the angle, the motor (a plain step |error/range|·0.001 + 0.0003, a
-motor's 0.0003, a fast one's 0.005; toggles arrive within their step, an
-open within 0.1 rad) and the shut/open state. Passing closed shuts and
-slams (hinge 0.5·min(0.1·|handle|², 1); slider 0.75·(0.4·√energy)²), sets
-the pull count to 20 and bars a latching leaf. A shut leaf rises by 1 to 20
-and a held, unbarred one short of closed loses 4, unlatching below 0. A
-frozen slider keeps its parked travel. Open shoves a hinge 3 cm, jumps a
-plain slider to 0.6 for 80 ticks, drives a motorised one for 100 or 300
-ticks. Toggle chooses by (angle − closed)·−0.7 or 1 − travel against 0.7
-for 100 ticks (60 fast, 60 for sliders). A signal wakes only a latched or
-motorised leaf, for 120 ticks. Double leaves pass through each other and
-report a passage only when both are passable.
+fraction of the first link whose body point is 30–160 cm up. A hinge's pins
+(slack ≤ 30 cm, farther than 1 cm) give its axis, straight up by default;
+its last longer link is the stop, radius r and half swing 2·asin(slack /
+2r) with the engine's fast arcsine, and any stop on the positive side makes
+the swing sign negative. The frame's zero is the stop's anchor, so closed
+is the half swing and the range is −2·half swing times the sign. The step
+runs the signalled wait (mode 3, 120 ticks) before anything else, then the
+creak (stop at squared 0.015; volume 0.075·√speed, pitch 0.022·speed +
+0.7), the stop knock past the link's slack, the unlock timer (1000 ms,
+strictly past), the angle, the motor (a plain step |error/range|·0.001 +
+0.0003, a motor's 0.0003, a fast one's 0.005; toggles arrive within their
+step, an open within 0.1 rad) and the shut/open state. Passing closed shuts
+and slams, sets the pull count to 20 and bars a latching leaf. A shut leaf
+rises by 1 to 20 and a held, unbarred one short of closed loses 4, opening
+below 0. A single leaf leaves once it is more than 0.05 rad short (a double
+compare), a paired one when its partner is not near. A frozen slider keeps
+its parked travel. Open shoves a hinge 3 cm, jumps a plain slider to 0.6
+for 80 ticks, drives a motorised one for 100 or 300 ticks. Toggle chooses
+by (angle − closed)·−0.7 or 1 − travel against 0.7. The stored word is
+written only by commands: the mode in its low byte, the countdown in its
+top byte.
 
-A lever (`src/lever.rs`) reads its operative record's targets and flags
-and its auto-return time (×100 ms), and finds a linked light under its
-node when its kind is 6. Its pins (slack ≤ 1 cm) give the axle and its
-longest link the arm, radius r and half swing 2·asin(slack / 2r); the two
-detents are at the ends. The step drives the arm 0.02 rad toward the hand
-(held), the off detent (forced), its home (returning) or the nearest
-detent, holds within 0.02, and on arriving more than 0.1 from the last
-report signals the rest flag's value, fades a linked light, arms a return
-or stops one. The return's own tick counts the remaining time into the
-object word and, at the deadline, aims home while `leverb_tck01` fades
-from 0.1 by 0.01 a tick.
+A lever (`src/lever.rs`) reads its operative record's targets, flags and
+auto-return time (×100 ms), and finds a linked light under its node when
+its kind is 6. Its last pin (slack ≤ 1 cm) gives the axle and its longest
+link the arm; the frame's zero is the arm's anchor and the detents are at
+−α and +α, α = 2·asin(slack / 2r). The step drives the arm 0.02 rad toward
+the hand (held), the off detent (forced), its home (returning) or the
+nearest detent (half to even), holds within 0.02, and on arriving more than
+0.1 from the last report signals the rest flag's value, arms a return or
+stops one. A report of 0 fades a linked light in and 1 fades it out. The
+return's own tick counts the remaining time into the object word's high
+half and, at the deadline, aims home while `leverb_tck01` fades from 0.1 by
+0.01 a tick.
 
 A push surface (`src/plate.rs`) reads its two targets and flags (kind 2 or
 bit 8 inverts, bit 2 one-shot, bit 0x10 second target), takes mobility 0.3
 or 0.03, and steps every travel up by 0.02 pressed or down by 0.01 free,
 the mean back into every travel. The grind speed is 0.9·|Δmean| + 0.1·old
-(volume (50s)², pitch 20s + 0.8). Above 0.7 it presses, clicks and signals
-1 (or −1); below 0.5 it releases and signals 0 unless inverted.
+(volume (50s)², pitch 20s + 0.8, the body kept awake). Above 0.7 it presses,
+clicks and signals 1 (or −1); below 0.5 it releases and signals 0 unless
+inverted. Its state is the object word's low byte as stored.
 
 `mechanism` holds the operative records and the dispatcher: a door record
 wins (value −1 toggles by latch, otherwise inversion then 0 close-and-lock
-or 1 open); class 6 starts a deferred fire/light job, class 7 a relay of
-kind 0, 1, 2, 3 or 5 (`relay` combines, broadcasts, forwards both, combines
-and forwards, or counts a sequence), class 5 forces a push surface. The
-level-load setup switches a flagged node's effects off, starts an electric
-object for a light job whose value is odd, and lights a fire record unless
-the daylight is above 0.12, in which case the light is put out. The
-mechanism environment is the original's: retention 0.001 per second in
-every band, no gravity, thresholds 40 and 20 cm/s, so a lever or plate
-stops quickly and never falls. `signal` is the single-order summary and
-`door`'s free rule helpers (`creak`, `pull_closed`, `slide_step`,
+or 1 open, the node's word taking bit 0 for a shut leaf); class 6 starts a
+deferred fire or light job, class 7 a relay of kind 0, 1, 2, 3 or 5
+(`relay` combines, broadcasts, forwards both, combines and forwards, or
+counts a sequence), class 5 forces a push surface. At load an operative
+switches its node's effects off when flagged and still runs its kind's
+setup: a light job whose value is odd starts an electric object, and a fire
+record lights a fire of the size and lift in its first target word unless
+the daylight is above 0.12, when its light is put out. The mechanism
+environment is the original's: retention 0.001 per second in every band,
+no gravity, thresholds 40 and 20 cm/s. `signal` is the single-order summary
+and `door`'s free rule helpers (`creak`, `pull_closed`, `slide_step`,
 `motor_step`, `toggle`, `signal_open`, …) remain for callers that hold one
 leaf's summary.
 
-Wiring is still open: the level loader counts doors, levers and plates as
-mechanism bodies (`exa_world::bodies`, `Placement::Mechanism`) and leaves
-them static, because their bodies hang from the world by links and the
-solver's world-link law is not implemented yet. Until it is, no live body
-feeds these steps; the rules are exercised by unit tests only.
-
+Wiring: a placed object keeps its door and operative records
+(`exa_world::mechanisms::MechanismRecords`), but the level loader leaves
+doors, levers and plates static (`exa_world::bodies`,
+`Placement::Mechanism`): their bodies hang from the world by links and the
+solver's world-link law is not implemented, so nothing produces the
+heading, handle speed, travel fraction or arm angle these steps read.
 
 The debug tools' measures are in `body::inspect` (`src/body_inspect.rs`):
 each joint's turn from its rest turn (stored when the body is built,
