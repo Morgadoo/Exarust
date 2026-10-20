@@ -914,3 +914,144 @@ mod dispatch_tests {
         assert!(near(get_up_scale(1.0, 0.5), 1.25));
     }
 }
+
+/// The dispatcher's branch, in the original's order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route {
+    /// The 0x800 collapse gate skips the whole dispatcher.
+    Skip,
+    /// The 0x40 shock/recoil window.
+    Shock,
+    /// The posture block with the get-up clock.
+    GettingUp,
+    /// Balance below 0.3 and motion below 25.
+    LyingStill,
+    /// The upright fall/clip branch.
+    Upright,
+    /// The stagger branch; `positive` is the sign of the forward dot.
+    Stagger { positive: bool },
+    /// The fall branch; `forward` is the sign of the forward dot.
+    Fall { forward: bool },
+    /// Clips 5..=12.
+    Attack,
+    /// Tone below 0.85.
+    Weak,
+    /// Clip 0x0D.
+    Kick,
+    /// The parry hold.
+    Parry,
+    /// Clip 4.
+    ParryEnd,
+    /// Clips 0x22..=0x28.
+    Power,
+    /// Clips 0 and 1.
+    Gait,
+    /// Clip 0x1F.
+    SwitchWeapons,
+    /// The default standing branch.
+    Standing,
+}
+
+/// Chooses the dispatcher's branch. `motion` is 0x1038, `tone` 0x590,
+/// `clip` 0x9B8, `upright` the lean's y > 0.8, `dot` the forward dot,
+/// `slow_sq` the slow velocity squared and `offset` 0xC74.
+#[allow(clippy::too_many_arguments)]
+pub fn route(
+    condition: u32,
+    balance: f32,
+    motion: f32,
+    tone: f32,
+    clip: i32,
+    parrying: bool,
+    upright: bool,
+    dot: f32,
+    slow_sq: f32,
+    offset: f32,
+) -> Route {
+    if condition & 0x800 != 0 {
+        return Route::Skip;
+    }
+    if condition & 0x40 != 0 {
+        return Route::Shock;
+    }
+    if posture_entry(balance, condition) {
+        if condition == 0x300 {
+            return Route::GettingUp;
+        }
+        if lying_still(balance, motion) {
+            return Route::LyingStill;
+        }
+        if upright {
+            return Route::Upright;
+        }
+        if (dot as f64).abs() > 0.4 && slow_sq < 8.0 && (balance as f64) > 0.1 && offset < 80.0 {
+            return Route::Stagger {
+                positive: dot > 0.0,
+            };
+        }
+        return Route::Fall { forward: dot > 0.0 };
+    }
+    match clip {
+        5..=12 => Route::Attack,
+        _ if tone < 0.85 => Route::Weak,
+        0x0D => Route::Kick,
+        _ if parrying => Route::Parry,
+        4 => Route::ParryEnd,
+        0x22..=0x28 => Route::Power,
+        0 | 1 => Route::Gait,
+        0x1F => Route::SwitchWeapons,
+        _ => Route::Standing,
+    }
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::*;
+
+    fn r(condition: u32, balance: f32, tone: f32, clip: i32) -> Route {
+        route(
+            condition, balance, 0.0, tone, clip, false, false, 0.0, 0.0, 0.0,
+        )
+    }
+
+    #[test]
+    fn the_gate_shock_and_posture() {
+        assert_eq!(r(0x800, 1.0, 1.0, 0), Route::Skip);
+        assert_eq!(r(0x40, 1.0, 1.0, 0), Route::Shock);
+        assert_eq!(r(0, 0.59, 1.0, 0), Route::Fall { forward: false });
+        assert_eq!(r(0x300, 0.9, 1.0, 0), Route::GettingUp);
+        assert_eq!(r(0, 0.29, 1.0, 0), Route::LyingStill);
+    }
+
+    #[test]
+    fn the_posture_leaves() {
+        assert_eq!(
+            route(0, 0.59, 0.0, 1.0, 0, false, true, 0.0, 0.0, 0.0),
+            Route::Upright
+        );
+        assert_eq!(
+            route(0, 0.59, 0.0, 1.0, 0, false, false, 0.5, 1.0, 10.0),
+            Route::Stagger { positive: true }
+        );
+        assert_eq!(
+            route(0, 0.59, 0.0, 1.0, 0, false, false, -0.5, 1.0, 10.0),
+            Route::Stagger { positive: false }
+        );
+    }
+
+    #[test]
+    fn the_clip_branches() {
+        assert_eq!(r(0, 1.0, 1.0, 5), Route::Attack);
+        assert_eq!(r(0, 1.0, 0.8, 3), Route::Weak);
+        assert_eq!(r(0, 1.0, 1.0, 0x0D), Route::Kick);
+        assert_eq!(
+            route(0, 1.0, 0.0, 1.0, 3, true, false, 0.0, 0.0, 0.0),
+            Route::Parry
+        );
+        assert_eq!(r(0, 1.0, 1.0, 4), Route::ParryEnd);
+        assert_eq!(r(0, 1.0, 1.0, 0x22), Route::Power);
+        assert_eq!(r(0, 1.0, 1.0, 0), Route::Gait);
+        assert_eq!(r(0, 1.0, 1.0, 0x1F), Route::SwitchWeapons);
+        assert_eq!(r(0, 1.0, 1.0, 3), Route::Standing);
+    }
+}
