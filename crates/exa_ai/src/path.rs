@@ -1384,3 +1384,281 @@ mod grid_cost_tests {
         assert_eq!(PATH_MOVE_COST, [7, 5, 7, 5, 5, 7, 5, 7]);
     }
 }
+
+/// The pathfinder's grid for one floor layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathGrid {
+    pub width: i32,
+    pub height: i32,
+    pub floor: Vec<u8>,
+    pub a: Vec<u8>,
+    pub b: Vec<u8>,
+}
+
+impl PathGrid {
+    fn index(&self, x: i32, y: i32) -> Option<usize> {
+        if x < 0 || y < 0 || x >= self.width || y >= self.height {
+            return None;
+        }
+        Some((y * self.width + x) as usize)
+    }
+}
+
+/// The search's query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PathRequest {
+    pub start: (i32, i32),
+    pub goal: (i32, i32),
+    pub goal_floor: i32,
+    pub quality: i32,
+    pub shift: u32,
+    /// A best node nearer than this ends the search early; 0 never does.
+    pub accept: i32,
+}
+
+/// The search's result: the parent chain from the start, whether the goal
+/// cell was reached, and how many nodes were made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathSearch {
+    pub path: Vec<(i32, i32)>,
+    pub reached: bool,
+    pub nodes: usize,
+}
+
+struct SearchNode {
+    x: i32,
+    y: i32,
+    g: i32,
+    f: i32,
+    parent: usize,
+}
+
+/// Searches the grid: a LIFO open list popped by the smallest f (the
+/// newest wins a tie), at most 4095 nodes, the acceptance distance, and a
+/// parent chain collapsed through collinear runs. The two-layer rule and
+/// the line-walk shortcut are not modelled.
+pub fn search_path(grid: &PathGrid, request: &PathRequest) -> PathSearch {
+    let Some(start) = grid.index(request.start.0, request.start.1) else {
+        return PathSearch {
+            path: Vec::new(),
+            reached: false,
+            nodes: 0,
+        };
+    };
+    if grid.index(request.goal.0, request.goal.1).is_none() {
+        return PathSearch {
+            path: Vec::new(),
+            reached: false,
+            nodes: 0,
+        };
+    }
+    let dx = request.goal.0 - request.start.0;
+    let dy = request.goal.1 - request.start.1;
+    if dx.abs() > 253 || dy.abs() > 253 {
+        return PathSearch {
+            path: Vec::new(),
+            reached: false,
+            nodes: 0,
+        };
+    }
+
+    let start_floor = i32::from(grid.floor[start]);
+    let pseudo = f64::from(grid.a[start]) / 3.0;
+    let start_f = path_heuristic(dx, dy, 0).max(0) + (10.0 * pseudo) as i32;
+    let mut nodes = vec![
+        SearchNode {
+            x: 0,
+            y: 0,
+            g: 0,
+            f: 0,
+            parent: 0,
+        },
+        SearchNode {
+            x: request.start.0,
+            y: request.start.1,
+            g: 0,
+            f: start_f,
+            parent: 0,
+        },
+    ];
+    let mut stamps = vec![0u16; (grid.width * grid.height) as usize];
+    stamps[start] = 2;
+    let mut open = vec![1usize];
+    let mut best = 1usize;
+    let mut best_h = start_h(request, start_floor);
+
+    while !open.is_empty() && nodes.len() < 0xfff {
+        let mut chosen = 0;
+        for index in (0..open.len()).rev() {
+            if nodes[open[index]].f < nodes[open[chosen]].f {
+                chosen = index;
+            }
+        }
+        let current = open.swap_remove(chosen);
+        let current_floor =
+            i32::from(grid.floor[grid.index(nodes[current].x, nodes[current].y).unwrap()]);
+        if request.accept > best_h {
+            break;
+        }
+        for (direction, &(ny, nx)) in PATH_NEIGHBOURS.iter().enumerate() {
+            let x = nodes[current].x + nx;
+            let y = nodes[current].y + ny;
+            let Some(index) = grid.index(x, y) else {
+                continue;
+            };
+            let next_floor = grid.floor[index];
+            if !path_step_ok(
+                current_floor,
+                next_floor,
+                grid.a[index],
+                grid.b[index],
+                request.quality,
+                request.shift,
+            ) {
+                continue;
+            }
+            let dz = i32::from(next_floor) - current_floor;
+            let g = path_step_cost(
+                nodes[current].g,
+                dz,
+                direction,
+                grid.a[index],
+                grid.b[index],
+                request.shift,
+            );
+            let h = path_heuristic(
+                request.goal.0 - x,
+                request.goal.1 - y,
+                i32::from(next_floor) - request.goal_floor,
+            );
+            let f = g + h;
+            let state = stamps[index];
+            if state == 0 {
+                let node = nodes.len();
+                nodes.push(SearchNode {
+                    x,
+                    y,
+                    g,
+                    f,
+                    parent: current,
+                });
+                stamps[index] = node as u16 + 1;
+                open.push(node);
+            } else if state != 0xffff {
+                let node = state as usize - 1;
+                if f < nodes[node].f {
+                    nodes[node].f = f;
+                    nodes[node].g = g;
+                    nodes[node].parent = current;
+                }
+            } else {
+                continue;
+            }
+            if h < best_h {
+                best_h = h;
+                best = stamps[index].saturating_sub(1) as usize;
+            }
+        }
+    }
+
+    let mut points = Vec::new();
+    let mut cursor = nodes[best].parent;
+    points.push((nodes[best].x, nodes[best].y));
+    while cursor != 0 {
+        points.push((nodes[cursor].x, nodes[cursor].y));
+        cursor = nodes[cursor].parent;
+    }
+    points.reverse();
+    let mut collapsed: Vec<(i32, i32)> = Vec::with_capacity(points.len());
+    for point in points {
+        if collapsed.len() >= 2 {
+            let previous = collapsed[collapsed.len() - 1];
+            let before = collapsed[collapsed.len() - 2];
+            let same = (point.0 - previous.0, point.1 - previous.1);
+            let prior = (previous.0 - before.0, previous.1 - before.1);
+            if same.0.signum() == prior.0.signum() && same.1.signum() == prior.1.signum() {
+                collapsed.pop();
+            }
+        }
+        collapsed.push(point);
+    }
+    PathSearch {
+        path: collapsed,
+        reached: nodes[best].x == request.goal.0 && nodes[best].y == request.goal.1,
+        nodes: nodes.len(),
+    }
+}
+
+fn start_h(request: &PathRequest, floor: i32) -> i32 {
+    let dx = request.goal.0 - request.start.0;
+    let dy = request.goal.1 - request.start.1;
+    let dz = floor - request.goal_floor;
+    path_heuristic(dx, dy, dz)
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    fn open_grid(width: i32, height: i32) -> PathGrid {
+        PathGrid {
+            width,
+            height,
+            floor: vec![1; (width * height) as usize],
+            a: vec![0; (width * height) as usize],
+            b: vec![0; (width * height) as usize],
+        }
+    }
+
+    fn request(start: (i32, i32), goal: (i32, i32)) -> PathRequest {
+        PathRequest {
+            start,
+            goal,
+            goal_floor: 1,
+            quality: 0,
+            shift: 0,
+            accept: 0,
+        }
+    }
+
+    #[test]
+    fn a_clear_grid_is_crossed_straight() {
+        let grid = open_grid(5, 5);
+        let search = search_path(&grid, &request((0, 2), (4, 2)));
+        assert!(search.reached);
+        assert_eq!(search.path.first(), Some(&(0, 2)));
+        assert_eq!(search.path.last(), Some(&(4, 2)));
+        assert!(search.path.iter().all(|&(_, y)| y == 2));
+        assert!(search.path.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        assert!(search.nodes < 0xfff);
+    }
+
+    #[test]
+    fn a_wall_is_walked_around() {
+        let mut grid = open_grid(5, 5);
+        for y in 1..5 {
+            grid.floor[(y * 5 + 2) as usize] = 0;
+        }
+        let search = search_path(&grid, &request((0, 2), (4, 2)));
+        assert!(search.reached);
+        assert!(search.path.len() > 2);
+        assert_eq!(search.path.first(), Some(&(0, 2)));
+        assert_eq!(search.path.last(), Some(&(4, 2)));
+        assert!(
+            search
+                .path
+                .iter()
+                .all(|&(x, y)| grid.floor[(y * 5 + x) as usize] != 0)
+        );
+    }
+
+    #[test]
+    fn a_sealed_goal_is_not_reached() {
+        let mut grid = open_grid(5, 5);
+        for (x, y) in [(3, 1), (3, 2), (3, 3), (4, 1), (4, 3)] {
+            grid.floor[(y * 5 + x) as usize] = 0;
+        }
+        let search = search_path(&grid, &request((0, 2), (4, 2)));
+        assert!(!search.reached);
+    }
+}
