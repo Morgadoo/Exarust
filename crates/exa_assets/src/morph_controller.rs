@@ -6,9 +6,10 @@
 //! triangle's plane and returns its barycentric weights. The vertex apply
 //! deforms each vertex's offset by the 3 × 3 basis its three morph points
 //! form, subtracts the controller's base, applies the owner's orientation
-//! and adds the vertex's base. Evidence: the 100-byte `0x1000db620`, the
-//! 66-byte `0x1000de0b0`, the 767-byte `0x1000dd580` and the 448-byte
-//! `0x1000dd3c0`.
+//! and adds the vertex's base. The start binds each owner vertex to its
+//! nearest control candidate and stores that candidate's weights. Evidence:
+//! the 100-byte `0x1000db620`, the 66-byte `0x1000de0b0`, the 767-byte
+//! `0x1000dd580`, the 893-byte `0x1000dd880` and the 448-byte `0x1000dd3c0`.
 
 /// A morph controller's opening.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -666,5 +667,135 @@ mod basis_tests {
         assert!((weights[0] - 0.625).abs() < 1e-6);
         assert!((weights[1] - 0.125).abs() < 1e-6);
         assert!((weights[2] - 0.25).abs() < 1e-6);
+    }
+}
+
+/// One record the morph start builds for an owner vertex.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MorphRecord {
+    pub joint: u32,
+    pub offset: [f32; 3],
+    pub base: [f32; 3],
+}
+
+/// The morph start's work: the helper it creates, the records it builds
+/// and the vertices with no control.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MorphStart {
+    pub created_helper: bool,
+    pub ensured_controls: bool,
+    pub records: Vec<MorphRecord>,
+    pub unmatched: Vec<usize>,
+}
+
+/// Starts the morph: transforms every owner vertex by the frame, binds it
+/// to the nearest control candidate by the smallest squared distance from
+/// the maximum float, stores that candidate's barycentric weights as the
+/// vertex's offset, and stores the vertex as its base. A vertex with no
+/// candidate gets joint 0, a zero offset and an entry in the unmatched
+/// list. The helper is created when the owner has none, and the owner's
+/// controls are ensured only when both are missing.
+pub fn start_morph(
+    owner_points: &[[f32; 3]],
+    candidates: &[[f32; 3]],
+    controls: &[MorphControl],
+    frame: [[f32; 3]; 4],
+    has_helper: bool,
+    has_controls: bool,
+) -> MorphStart {
+    let mut records = Vec::with_capacity(owner_points.len());
+    let mut unmatched = Vec::new();
+    for (index, point) in owner_points.iter().enumerate() {
+        let local = [
+            point[0] * frame[0][0] + point[1] * frame[1][0] + point[2] * frame[2][0] + frame[3][0],
+            point[0] * frame[0][1] + point[1] * frame[1][1] + point[2] * frame[2][1] + frame[3][1],
+            point[0] * frame[0][2] + point[1] * frame[1][2] + point[2] * frame[2][2] + frame[3][2],
+        ];
+        let mut best = f32::MAX;
+        let mut nearest = None;
+        for (candidate_index, candidate) in candidates.iter().enumerate() {
+            let dx = local[0] - candidate[0];
+            let dy = local[1] - candidate[1];
+            let dz = local[2] - candidate[2];
+            let distance = (dx * dx + dy * dy) + dz * dz;
+            if distance < best {
+                best = distance;
+                nearest = Some(candidate_index);
+            }
+        }
+        if let Some(candidate) = nearest.and_then(|i| controls.get(i).map(|control| (i, control))) {
+            let (joint, control) = candidate;
+            records.push(MorphRecord {
+                joint: joint as u32,
+                offset: morph_barycentric(control, candidates[joint]),
+                base: *point,
+            });
+        } else {
+            records.push(MorphRecord {
+                joint: 0,
+                offset: [0.0; 3],
+                base: *point,
+            });
+            unmatched.push(index);
+        }
+    }
+    MorphStart {
+        created_helper: !has_helper,
+        ensured_controls: !has_helper && !has_controls,
+        records,
+        unmatched,
+    }
+}
+
+#[cfg(test)]
+mod start_tests {
+    use super::*;
+
+    fn unit_frame() -> [[f32; 3]; 4] {
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 0.0],
+        ]
+    }
+
+    fn triangle_at(x: f32) -> MorphControl {
+        MorphControl {
+            normal: [0.0, 0.0, 1.0],
+            points: [[x, 0.0, 0.0], [x + 1.0, 0.0, 0.0], [x, 1.0, 0.0]],
+        }
+    }
+
+    #[test]
+    fn the_start_binds_each_vertex_to_its_nearest_control() {
+        let start = start_morph(
+            &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]],
+            &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]],
+            &[triangle_at(0.0), triangle_at(10.0)],
+            unit_frame(),
+            true,
+            true,
+        );
+        assert!(!start.created_helper);
+        assert!(!start.ensured_controls);
+        assert_eq!(start.records[0].joint, 0);
+        assert_eq!(start.records[0].offset, [1.0, 0.0, 0.0]);
+        assert_eq!(start.records[0].base, [0.0, 0.0, 0.0]);
+        assert_eq!(start.records[1].joint, 1);
+        assert_eq!(start.records[1].offset, [1.0, 0.0, 0.0]);
+        assert_eq!(start.records[1].base, [10.0, 0.0, 0.0]);
+        assert!(start.unmatched.is_empty());
+    }
+
+    #[test]
+    fn vertices_without_a_control_are_unmatched() {
+        let start = start_morph(&[[1.0, 2.0, 3.0]], &[], &[], unit_frame(), false, false);
+        assert!(start.created_helper);
+        assert!(start.ensured_controls);
+        assert_eq!(start.records[0].joint, 0);
+        assert_eq!(start.records[0].offset, [0.0, 0.0, 0.0]);
+        assert_eq!(start.records[0].base, [1.0, 2.0, 3.0]);
+        assert_eq!(start.unmatched, vec![0]);
     }
 }
