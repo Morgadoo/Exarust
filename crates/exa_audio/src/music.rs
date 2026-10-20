@@ -10,8 +10,10 @@
 //!
 //! Observed quirks kept: the outgoing track's volume stays A's nominal volume
 //! after a crossfade (the original writes the promoted volume to a global
-//! nothing reads), the incoming buffer is not released when an overlay ends,
-//! and stopping A keeps its buffer reference.
+//! nothing reads), the incoming buffer is neither released nor forgotten when
+//! an overlay ends, stopping A forgets its buffer without releasing it and
+//! leaves the crossfader running, and an outgoing A without a source is not
+//! freed when a crossfade ends.
 
 use bevy::prelude::*;
 use exa_assets::Game;
@@ -210,14 +212,14 @@ fn fraction(now_ms: u32, started_ms: u32) -> f32 {
 }
 
 /// The start time that makes an interrupted fade continue at the mirrored
-/// point: `now − round((1 − t)·3000)`.
+/// point: `now − round((1 − t)·3000)`, the product in single precision.
 fn mirrored_start(now_ms: u32, started_ms: u32) -> u32 {
     let fraction = fraction(now_ms, started_ms);
-    let remaining = f64::from(1.0f32 - fraction) * f64::from(FADE_MS);
-    // The original subtracts a 32-bit integer, so a fade already past its
-    // end (remaining negative) pushes the start forward.
-    let remaining = remaining.round_ties_even() as i64 as i32 as u32;
-    now_ms.wrapping_sub(remaining)
+    let remaining = ((1.0f32 - fraction) * FADE_MS as f32).round_ties_even() as i64;
+    // The original subtracts as 64-bit values and keeps the low 32 bits, so
+    // a fade already past its end (remaining negative) pushes the start
+    // forward.
+    (i64::from(now_ms) - remaining) as u32
 }
 
 impl AudioEnvironment {
@@ -226,15 +228,16 @@ impl AudioEnvironment {
         &self.music.name
     }
 
-    /// Plays a loaded track on A now, at `volume`, swapping its buffer and
-    /// keeping the voice. It does nothing while music is off, though it
-    /// remembers the name and volume.
-    pub fn music_play_loaded(
+    /// Plays a track on A now at `volume`, keeping A's voice and swapping its
+    /// buffer. The name and volume are remembered first; while music is off
+    /// nothing is loaded. The old buffer is released before the new one is
+    /// asked for.
+    pub fn music_play_now(
         &mut self,
         bank: &mut SoundBank,
-        buffer: u32,
         name: &str,
         volume: f32,
+        load: impl FnOnce(&mut SoundBank, &str) -> u32,
     ) {
         self.music.a_volume = volume;
         self.music.name.clear();
@@ -244,7 +247,9 @@ impl AudioEnvironment {
         }
         if self.music.a_buffer != 0 {
             bank.release_buffer(self.music.a_buffer);
+            self.music.a_buffer = 0;
         }
+        let buffer = load(bank, name);
         self.music.a_buffer = buffer;
         if buffer == 0 {
             return;
@@ -263,22 +268,32 @@ impl AudioEnvironment {
         }
     }
 
-    /// Stops the main track, remembering its name and buffer unless asked to
-    /// forget. Its buffer reference stays, as the original's does.
+    /// Stops the main track: frees A's voice and forgets its buffer without
+    /// releasing it (the original leaks that reference), and forgets the name
+    /// when asked. The crossfader's state is left as it is.
     pub fn music_stop(&mut self, bank: &mut SoundBank, forget_name: bool) {
         if let Some(id) = self.music.a.take() {
             self.free_voice(bank, id);
         }
-        self.music.state = IDLE;
+        self.music.a_buffer = 0;
         if forget_name {
             self.music.name.clear();
         }
     }
 
-    /// Crossfades to a loaded track, forcing music on. B starts at gain 0 and
-    /// becomes A when the fade ends.
-    pub fn music_crossfade_loaded(&mut self, buffer: u32, name: &str, volume: f32, now_ms: u32) {
+    /// Crossfades to a track, forcing music on. B starts at gain 0 and
+    /// becomes A when the fade ends. The name is remembered as A's, the
+    /// volume as B's.
+    pub fn music_crossfade(
+        &mut self,
+        bank: &mut SoundBank,
+        name: &str,
+        volume: f32,
+        now_ms: u32,
+        load: impl FnOnce(&mut SoundBank, &str) -> u32,
+    ) {
         self.music.enabled = true;
+        let buffer = load(bank, name);
         self.music.b_buffer = buffer;
         self.music.b_volume = volume;
         self.music.name.clear();
@@ -301,21 +316,16 @@ impl AudioEnvironment {
         }
     }
 
-    /// Whether [`AudioEnvironment::music_overlay_loaded`] would load a track
-    /// this call (it only does outside a fade or while fading B out).
-    pub fn music_overlay_wanted(&self) -> bool {
-        self.music.state != OVERLAY_OUT && self.music.state & OVERLAY_IN == 0
-    }
-
     /// Starts an overlay fade-in: B enters at a random point in the first 80 %
     /// of its length and rises while A ducks. Interrupting a fade-out mirrors
-    /// its progress.
-    pub fn music_overlay_loaded(
+    /// its progress; during a fade-in or while held nothing happens.
+    pub fn music_overlay(
         &mut self,
         bank: &mut SoundBank,
-        buffer: u32,
+        name: &str,
         volume: f32,
         now_ms: u32,
+        load: impl FnOnce(&mut SoundBank, &str) -> u32,
     ) {
         if self.music.state == OVERLAY_OUT {
             self.music.state = OVERLAY_IN;
@@ -325,6 +335,7 @@ impl AudioEnvironment {
         if self.music.state & OVERLAY_IN != 0 {
             return;
         }
+        let buffer = load(bank, name);
         self.music.b_buffer = buffer;
         self.music.b_volume = volume;
         if buffer == 0 {
@@ -332,13 +343,12 @@ impl AudioEnvironment {
         }
         self.music.state = OVERLAY_IN;
         self.music.started_ms = now_ms;
+        let length = bank.buffer_secs(buffer);
         if self.music.b.is_none() {
             self.music.b = self.allocate();
         }
-        let offset = {
-            let duration = bank.buffer_secs(buffer);
-            duration * 0.8 * bank.random_unit()
-        };
+        // Length × 0.8 × a unit draw, in double precision.
+        let offset = (f64::from(length) * 0.8 * f64::from(bank.random_unit())) as f32;
         if let Some(id) = self.music.b
             && let Some(voice) = self.voice_mut(id)
         {
@@ -350,7 +360,9 @@ impl AudioEnvironment {
         }
     }
 
-    /// Starts the overlay's fade-out: A resumes, B falls as `(1 − t)²`.
+    /// Starts the overlay's fade-out: A resumes, B falls as `(1 − t)²`. From
+    /// a fade-in the progress is mirrored; a second call during the fade-out
+    /// mirrors it again.
     pub fn music_overlay_fade_out(&mut self, now_ms: u32) {
         if self.music.state == OVERLAY_HELD {
             self.music.state = OVERLAY_OUT;
@@ -375,33 +387,28 @@ impl AudioEnvironment {
         }
     }
 
-    /// The "Music" setting. Turning it off stops A; turning it on restarts A
-    /// from its remembered buffer and volume. Volumes of 0.01 or less do
-    /// nothing.
-    pub fn music_set_enabled(&mut self, bank: &mut SoundBank, enabled: bool) {
+    /// The "Music" setting. Turning it off stops A (keeping its name);
+    /// turning it on plays the remembered track by name at the remembered
+    /// volume. Either acts only when that volume is above 0.01.
+    pub fn music_set_enabled(
+        &mut self,
+        bank: &mut SoundBank,
+        enabled: bool,
+        load: impl FnOnce(&mut SoundBank, &str) -> u32,
+    ) {
         if enabled == self.music.enabled {
             return;
         }
         self.music.enabled = enabled;
-        if !enabled {
-            if MIN_VOLUME < self.music.a_volume {
-                self.music_stop(bank, false);
-            }
-        } else if MIN_VOLUME < self.music.a_volume && self.music.a_buffer != 0 {
-            let buffer = self.music.a_buffer;
+        if MIN_VOLUME >= self.music.a_volume {
+            return;
+        }
+        if enabled {
+            let name = self.music.name.clone();
             let volume = self.music.a_volume;
-            if self.music.a.is_none() {
-                self.music.a = self.allocate();
-            }
-            if let Some(id) = self.music.a
-                && let Some(voice) = self.voice_mut(id)
-            {
-                voice.buffer = buffer;
-                voice.gain = volume;
-                voice.pitch = 1.0;
-                voice.flags |= MUSIC_FLAGS;
-                voice.offset = 0.0;
-            }
+            self.music_play_now(bank, &name, volume, load);
+        } else {
+            self.music_stop(bank, false);
         }
     }
 
@@ -526,41 +533,57 @@ impl AudioEnvironment {
     }
 }
 
-/// Plays the level's track once the resource names one, crossfading when it
-/// differs from the track already asked for.
+/// Plays the level's track when the level sets it. A level change goes
+/// through the original's transition screen, which stops A and forgets its
+/// name, after which the level plays its track at once (no crossfade).
 pub(crate) fn start_music(
     mut env: ResMut<AudioEnvironment>,
     music: Option<Res<LevelMusic>>,
     game: Option<Res<Game>>,
     mut bank: ResMut<SoundBank>,
     mut sources: ResMut<Assets<AudioSource>>,
-    real: Res<Time<Real>>,
+    mut pending: Local<bool>,
 ) {
-    let (Some(music), Some(game)) = (music, game) else {
+    let Some(music) = music else {
         return;
     };
-    if music.0.is_empty() || env.music_name() == music.0 {
+    if music.is_changed() {
+        *pending = true;
+    }
+    let Some(game) = game else {
+        return;
+    };
+    if !*pending {
         return;
     }
-    let now = real.elapsed().as_millis() as u32;
-    let buffer = bank.load_buffer(&game, &mut sources, &music.0).unwrap_or(0);
-    env.music_crossfade_loaded(buffer, &music.0, MUSIC_VOLUME, now);
+    *pending = false;
+    env.music_stop(&mut bank, true);
+    if music.0.is_empty() {
+        return;
+    }
+    env.music_play_now(&mut bank, &music.0, MUSIC_VOLUME, |bank, name| {
+        bank.load_buffer(&game, &mut sources, name).unwrap_or(0)
+    });
 }
 
-/// Applies the music setting and volume stored by the options screen when it
-/// changes. Not wired to a screen yet; public so one can drive it.
+/// Applies the music setting the options screen stores when it changes. Not
+/// wired to a screen yet; public so one can drive it.
 pub(crate) fn apply_music_setting(
     mut env: ResMut<AudioEnvironment>,
     mut bank: ResMut<SoundBank>,
     setting: Option<Res<MusicSetting>>,
+    game: Option<Res<Game>>,
+    mut sources: ResMut<Assets<AudioSource>>,
 ) {
-    let Some(setting) = setting else {
+    let (Some(setting), Some(game)) = (setting, game) else {
         return;
     };
     if !setting.is_changed() {
         return;
     }
-    env.music_set_enabled(&mut bank, setting.enabled);
+    env.music_set_enabled(&mut bank, setting.enabled, |bank, name| {
+        bank.load_buffer(&game, &mut sources, name).unwrap_or(0)
+    });
 }
 
 /// The "Music" setting the options screen would write.
@@ -580,11 +603,16 @@ mod tests {
     use super::*;
     use crate::environment::voice_flags;
 
+    /// A loader that hands out `buffer` whatever the name.
+    fn track(buffer: u32) -> impl FnOnce(&mut SoundBank, &str) -> u32 {
+        move |_, _| buffer
+    }
+
     fn env_with_track(length_secs: f32) -> (AudioEnvironment, SoundBank, u32) {
         let mut env = AudioEnvironment::new();
         let mut bank = SoundBank::default();
         let buffer = bank.insert_test_buffer(length_secs, (length_secs * 1000.0) as i32, false);
-        env.music_play_loaded(&mut bank, buffer, "msc_test", 1.0);
+        env.music_play_now(&mut bank, "msc_test", 1.0, track(buffer));
         // One update binds A to a source, as a running frame would.
         env.update(&mut bank, &crate::environment::UpdateInput::default());
         (env, bank, buffer)
@@ -608,7 +636,7 @@ mod tests {
     fn a_crossfade_promotes_the_new_track() {
         let (mut env, mut bank, old) = env_with_track(4.0);
         let new = bank.insert_test_buffer(4.0, 4000, false);
-        env.music_crossfade_loaded(new, "other", 0.5, 0);
+        env.music_crossfade(&mut bank, "other", 0.5, 0, track(new));
         let b = env.music.b.expect("a second voice");
         assert_eq!(env.voice(b).unwrap().gain, 0.0);
         let a = env.music.a.expect("the old voice");
@@ -628,6 +656,23 @@ mod tests {
         assert!(bank.buffer(new).is_some());
         // A keeps the outgoing volume in the original; the next fade uses it.
         assert_eq!(env.music.a_volume, 1.0);
+        assert_eq!(env.music.name, "other");
+    }
+
+    /// An outgoing track that has no source when the crossfade ends is not
+    /// freed: its voice stays allocated, as in the original.
+    #[test]
+    fn an_unbound_outgoing_track_is_left_allocated() {
+        let mut env = AudioEnvironment::new();
+        let mut bank = SoundBank::default();
+        let old = bank.insert_test_buffer(4.0, 4000, false);
+        env.music_play_now(&mut bank, "msc_test", 1.0, track(old));
+        let a = env.music.a.expect("a voice");
+        let new = bank.insert_test_buffer(4.0, 4000, false);
+        env.music_crossfade(&mut bank, "other", 0.5, 0, track(new));
+        env.advance_music(&mut bank, 3000);
+        assert_ne!(env.voice(a).unwrap().flags, 0);
+        assert_ne!(env.music.a, Some(a));
     }
 
     /// The overlay fade-in starts B from a random point in its first 80 %,
@@ -636,13 +681,16 @@ mod tests {
     fn an_overlay_fades_in_and_pauses_the_main_track() {
         let (mut env, mut bank, _) = env_with_track(4.0);
         let overlay = bank.insert_test_buffer(4.0, 4000, false);
-        // A fresh generator's first unit draw.
+        // A fresh generator's first unit draw, scaled in double precision.
         let mut probe = crate::bank::Lcg::default();
         let draw = probe.unit_f32();
         bank.rng().0 = 0;
-        env.music_overlay_loaded(&mut bank, overlay, 0.5, 1000);
+        env.music_overlay(&mut bank, "msc_sprtrealm", 0.5, 1000, track(overlay));
         let b = env.music.b.expect("an overlay voice");
-        assert!((env.voice(b).unwrap().offset - 3.2 * draw).abs() < 1e-6);
+        assert_eq!(
+            env.voice(b).unwrap().offset,
+            (4.0f64 * 0.8 * f64::from(draw)) as f32
+        );
         assert_eq!(env.music.state, OVERLAY_IN);
         env.advance_music(&mut bank, 2500);
         assert!((env.voice(b).unwrap().gain - 0.25).abs() < 1e-6);
@@ -657,15 +705,23 @@ mod tests {
                 .iter()
                 .any(|command| matches!(command, SourceCommand::Pause { .. }))
         );
+        // A second overlay while held loads nothing.
+        let mut asked = false;
+        env.music_overlay(&mut bank, "other", 1.0, 4100, |_, _| {
+            asked = true;
+            0
+        });
+        assert!(!asked);
     }
 
     /// A fade-out resumes A and falls B as (1−t)²; at the end B is freed and
-    /// A back at full volume.
+    /// A back at full volume. A's resume is a restart request, which the
+    /// backend turns into a resume of the paused source.
     #[test]
     fn an_overlay_fades_out_and_frees_the_second_track() {
         let (mut env, mut bank, _) = env_with_track(4.0);
         let overlay = bank.insert_test_buffer(4.0, 4000, false);
-        env.music_overlay_loaded(&mut bank, overlay, 1.0, 0);
+        env.music_overlay(&mut bank, "msc_sprtrealm", 1.0, 0, track(overlay));
         env.advance_music(&mut bank, 3000);
         let b = env.music.b.expect("an overlay voice");
         assert_eq!(env.music.state, OVERLAY_HELD);
@@ -684,40 +740,49 @@ mod tests {
         assert!(env.music.b.is_none());
         assert_eq!(env.voice(b).unwrap().flags, 0);
         assert_eq!(env.voice(a).unwrap().gain, 1.0);
+        // B's buffer is kept, neither released nor forgotten.
+        assert_eq!(env.music.b_buffer, overlay);
     }
 
     /// Calling a fade-in during a fade-out mirrors the progress: 500 ms into
     /// a 3000 ms fade-out, the fade-in starts as if 2500 ms had passed.
     #[test]
     fn an_interrupted_fade_mirrors_its_progress() {
-        let state = MusicState {
-            state: OVERLAY_OUT,
-            started_ms: 1000,
-            ..Default::default()
-        };
-        assert_eq!(mirrored_start(2000, state.started_ms), 0);
+        assert_eq!(mirrored_start(2000, 1000), 0);
         // now 2500, 1500 ms in: remaining 1500, start = 2500 − 1500 = 1000.
-        assert_eq!(mirrored_start(2500, state.started_ms), 1000);
+        assert_eq!(mirrored_start(2500, 1000), 1000);
         // 500 ms in: remaining 2500, start = 1500 − 2500 wraps.
-        assert_eq!(
-            mirrored_start(1500, state.started_ms),
-            1500u32.wrapping_sub(2500)
-        );
+        assert_eq!(mirrored_start(1500, 1000), 1500u32.wrapping_sub(2500));
+        // Past the end the remaining time is negative and the start moves
+        // ahead of now.
+        assert_eq!(mirrored_start(5000, 1000), 6000);
+        // A second fade-out call during a fade-out mirrors again.
+        let mut env = AudioEnvironment::new();
+        env.music.state = OVERLAY_OUT;
+        env.music.started_ms = 1000;
+        env.music_overlay_fade_out(2000);
+        assert_eq!(env.music.started_ms, 0);
     }
 
-    /// Music off stops A without forgetting its name; on restarts it from the
-    /// remembered buffer and volume. A volume of 0.01 is not above the
-    /// threshold.
+    /// Music off stops A, forgets its buffer without releasing it and keeps
+    /// the name; on plays the remembered name again at the remembered
+    /// volume. A volume of 0.01 is not above the threshold.
     #[test]
     fn music_switches_off_and_on() {
         let (mut env, mut bank, buffer) = env_with_track(4.0);
         let a = env.music.a.expect("a voice");
-        env.music_set_enabled(&mut bank, false);
-        assert_eq!(env.music.state, IDLE);
+        env.music_set_enabled(&mut bank, false, track(0));
         assert_eq!(env.voice(a).unwrap().flags, 0);
         assert_eq!(env.music.name, "msc_test");
-        assert_eq!(env.music.a_buffer, buffer);
-        env.music_set_enabled(&mut bank, true);
+        assert_eq!(env.music.a_buffer, 0);
+        // The reference was leaked, not released.
+        assert!(bank.buffer(buffer).is_some());
+        let mut asked = String::new();
+        env.music_set_enabled(&mut bank, true, |_, name: &str| {
+            asked = name.to_owned();
+            buffer
+        });
+        assert_eq!(asked, "msc_test");
         let again = env.music.a.expect("a voice");
         assert_eq!(env.voice(again).unwrap().buffer, buffer);
         assert_eq!(env.voice(again).unwrap().gain, 1.0);
@@ -725,45 +790,64 @@ mod tests {
         let mut quiet = AudioEnvironment::new();
         let mut quiet_bank = SoundBank::default();
         let buffer = quiet_bank.insert_test_buffer(1.0, 1000, false);
-        quiet.music_play_loaded(&mut quiet_bank, buffer, "quiet", 0.01);
-        quiet.music_set_enabled(&mut quiet_bank, false);
-        assert_eq!(quiet.music.state, IDLE);
+        quiet.music_play_now(&mut quiet_bank, "quiet", 0.01, track(buffer));
+        quiet.music_set_enabled(&mut quiet_bank, false, track(0));
         assert!(quiet.music.a.is_some());
     }
 
+    /// Stopping A leaves a running crossfade alone, so B still takes over
+    /// even with music switched off.
+    #[test]
+    fn stopping_leaves_the_crossfade_running() {
+        let (mut env, mut bank, _) = env_with_track(4.0);
+        let new = bank.insert_test_buffer(4.0, 4000, false);
+        env.music_crossfade(&mut bank, "other", 0.5, 0, track(new));
+        let b = env.music.b.expect("a second voice");
+        env.music_set_enabled(&mut bank, false, track(0));
+        assert_eq!(env.music.state, CROSSFADE);
+        env.advance_music(&mut bank, 3000);
+        assert_eq!(env.music.a, Some(b));
+        assert_eq!(env.music.a_buffer, new);
+    }
+
     /// Starting a track while music is off only remembers the name and
-    /// volume; turning music on does not resurrect it because nothing was
-    /// loaded, and the level path forces music on instead.
+    /// volume and loads nothing; a crossfade forces music on.
     #[test]
     fn a_track_is_only_loaded_while_music_is_on() {
         let mut env = AudioEnvironment::new();
         let mut bank = SoundBank::default();
         let buffer = bank.insert_test_buffer(1.0, 1000, false);
         env.music.enabled = false;
-        env.music_play_loaded(&mut bank, buffer, "quiet", 0.3);
+        let mut asked = false;
+        env.music_play_now(&mut bank, "quiet", 0.3, |_, _| {
+            asked = true;
+            buffer
+        });
+        assert!(!asked);
         assert_eq!(env.music.name, "quiet");
         assert_eq!(env.music.a_volume, 0.3);
         assert_eq!(env.music.a_buffer, 0);
         assert!(env.music.a.is_none());
-        // A crossfade turns the setting back on.
-        env.music_crossfade_loaded(buffer, "loud", 0.2, 0);
+        env.music_crossfade(&mut bank, "loud", 0.2, 0, track(buffer));
         assert!(env.music.enabled);
         assert_eq!(env.music.state, CROSSFADE);
     }
 
-    /// Starting a track now reuses A's voice, swaps the buffer and restarts
-    /// it at full volume.
+    /// Starting a track now reuses A's voice, releases the old buffer, swaps
+    /// in the new one and restarts it at its volume.
     #[test]
     fn playing_now_swaps_the_track_on_the_same_voice() {
         let (mut env, mut bank, old) = env_with_track(4.0);
         let a = env.music.a.expect("a voice");
         let new = bank.insert_test_buffer(2.0, 2000, false);
-        env.music_play_loaded(&mut bank, new, "new", 0.3);
+        env.music_play_now(&mut bank, "new", 0.3, track(new));
         assert_eq!(env.music.a, Some(a));
         assert_eq!(env.music.a_buffer, new);
-        assert_eq!(env.voice(a).unwrap().buffer, new);
-        assert_eq!(env.voice(a).unwrap().gain, 0.3);
-        assert_eq!(env.voice(a).unwrap().offset, 0.0);
+        let voice = env.voice(a).unwrap();
+        assert_eq!(voice.buffer, new);
+        assert_eq!(voice.gain, 0.3);
+        assert_eq!(voice.offset, 0.0);
+        assert_ne!(voice.flags & voice_flags::RESTART, 0);
         assert!(bank.buffer(old).is_none());
         assert_eq!(env.music.name, "new");
     }

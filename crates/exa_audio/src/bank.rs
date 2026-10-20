@@ -134,71 +134,72 @@ pub struct WaveInfo {
     pub data_len: u32,
 }
 
-/// Reads the format, frequency and data length of a RIFF/WAVE file. The
-/// header decode is the asset loader's, not the audio environment's; a file
-/// without a PCM `fmt ` chunk falls back to the original's mono 16-bit
-/// 22 050 Hz defaults.
+/// Reads the format, frequency and data length of a RIFF/WAVE file the way
+/// the original's loader walks it: the `WAVE` tag at byte 8 (the `RIFF` tag
+/// is not checked), then chunks while a chunk header starts more than 8 bytes
+/// before the end. A `fmt ` chunk must be PCM; it picks mono or stereo and 8
+/// or 16 bits and the frequency, and the walk steps past it by twice its size
+/// less 16 (exact for the usual 16-byte chunk). A `data` chunk counts only
+/// after a PCM `fmt ` chunk. Chunks are not word aligned. Without a `fmt `
+/// chunk the defaults are mono 16-bit 22 050 Hz and no data.
 pub fn wave_info(bytes: &[u8]) -> Option<WaveInfo> {
-    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+    if bytes.len() < 12 || &bytes[8..12] != b"WAVE" {
         return None;
     }
-    let mut format = FORMAT_MONO16;
-    let mut frequency = DEFAULT_FREQUENCY;
-    let mut data_len = 0u32;
+    let mut info = WaveInfo {
+        format: FORMAT_MONO16,
+        frequency: DEFAULT_FREQUENCY,
+        data_len: 0,
+    };
     let mut have_fmt = false;
+    let end = bytes.len() - 8;
     let mut offset = 12usize;
-    while offset + 8 <= bytes.len() {
+    while offset < end {
         let id = &bytes[offset..offset + 4];
         let size = u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().ok()?);
-        let body = offset + 8;
-        let end = body.checked_add(size as usize).unwrap_or(bytes.len());
-        if id == b"fmt " && body + 16 <= bytes.len() {
-            let tag = u16::from_le_bytes(bytes[body..body + 2].try_into().ok()?);
-            let channels = u16::from_le_bytes(bytes[body + 2..body + 4].try_into().ok()?);
-            let rate = u32::from_le_bytes(bytes[body + 4..body + 8].try_into().ok()?);
-            let bits = u16::from_le_bytes(bytes[body + 14..body + 16].try_into().ok()?);
+        let body = offset as u64 + 8;
+        let next = if id == b"fmt " {
+            let fmt = bytes.get(offset + 8..offset + 24)?;
+            let tag = u16::from_le_bytes([fmt[0], fmt[1]]);
             if tag != 1 {
                 return None;
             }
-            frequency = rate;
-            let mono = channels == 1;
-            format = match (mono, bits == 8) {
+            let channels = u16::from_le_bytes([fmt[2], fmt[3]]);
+            info.frequency = u32::from_le_bytes([fmt[4], fmt[5], fmt[6], fmt[7]]);
+            let bits = u16::from_le_bytes([fmt[14], fmt[15]]);
+            info.format = match (channels == 1, bits == 8) {
                 (true, true) => FORMAT_MONO8,
                 (true, false) => FORMAT_MONO16,
                 (false, true) => FORMAT_STEREO8,
                 (false, false) => FORMAT_STEREO16,
             };
             have_fmt = true;
-        } else if id == b"data" {
-            data_len = size;
-        }
-        // Chunks are word aligned; a malformed length still advances by the
-        // header so a truncated file ends the walk instead of looping.
-        let advance = end.saturating_sub(body).max(1);
-        offset = body.saturating_add(advance).saturating_add(advance & 1);
-        if offset <= body {
-            break;
+            (body + 2 * u64::from(size)).checked_sub(16)
+        } else {
+            if id == b"data" && have_fmt {
+                info.data_len = size;
+            }
+            Some(body + u64::from(size))
+        };
+        // A step that does not move forward would loop for ever; the walk
+        // ends there instead.
+        match next.and_then(|next| usize::try_from(next).ok()) {
+            Some(next) if next > offset => offset = next,
+            _ => break,
         }
     }
-    if !have_fmt && data_len == 0 {
-        return None;
-    }
-    Some(WaveInfo {
-        format,
-        frequency,
-        data_len,
-    })
+    Some(info)
 }
 
 /// A buffer's length in seconds, from its byte count, frequency, channels and
-/// bit depth: the byte count is rounded to whole sample frames *before* the
-/// bit depth divides it, as the original does.
+/// bit depth: the bits are rounded to whole sample frames (`size · 8 /
+/// (channels · bits)`), and the frame count is divided by the frequency.
 pub fn buffer_length_secs(size: i64, frequency: i64, channels: i64, bits: i64) -> f32 {
     if frequency <= 0 || channels <= 0 || bits <= 0 || size <= 0 {
         return 0.0;
     }
-    let frames = ((size << 3) as f64 / (frequency * channels) as f64).round_ties_even();
-    (frames / bits as f64) as f32
+    let frames = ((size << 3) as f64 / (channels * bits) as f64).round_ties_even() as i32;
+    (f64::from(frames) / frequency as f64) as f32
 }
 
 /// A buffer's length in milliseconds, from its format code, data bytes and
@@ -330,8 +331,10 @@ impl SoundBank {
         handle
     }
 
-    /// Loads (or finds) the buffer `name` and adds a reference. Returns the
-    /// buffer id, or `None` when the sound is missing or not PCM WAVE.
+    /// Finds the buffer `name` in the name index and adds a reference, or
+    /// loads it and inserts its name. Returns the buffer id, or `None` when
+    /// the sound is missing or holds no PCM data; a miss is not remembered,
+    /// so the next request tries the pack again.
     pub fn load_buffer(
         &mut self,
         game: &Game,
@@ -339,13 +342,31 @@ impl SoundBank {
         name: &str,
     ) -> Option<u32> {
         let key = NameKey::new(name);
-        if let Ok(pos) = self.index.binary_search_by(|(k, _)| k.cmp(&key)) {
-            let id = self.index[pos].1;
-            if let Some(buffer) = self.buffers.get_mut(id as usize) {
+        match self.index.binary_search_by(|(k, _)| k.cmp(&key)) {
+            Ok(pos) => {
+                let id = self.index[pos].1;
+                let buffer = self.buffers.get_mut(id as usize)?;
                 buffer.refcount = buffer.refcount.saturating_add(1);
-                return Some(id);
+                Some(id)
+            }
+            Err(pos) => {
+                let id = self.load_unindexed(game, sources, key)?;
+                self.index.insert(pos, (key, id));
+                Some(id)
             }
         }
+    }
+
+    /// Loads `key` into a fresh table slot with one reference, without
+    /// looking at or entering the name index. Sets load their variants this
+    /// way, so a set's buffers are its own even when the same file is loaded
+    /// by name.
+    fn load_unindexed(
+        &mut self,
+        game: &Game,
+        sources: &mut Assets<AudioSource>,
+        key: NameKey,
+    ) -> Option<u32> {
         let bytes = game
             .0
             .pack(PackKind::Sound)
@@ -354,13 +375,31 @@ impl SoundBank {
         if info.data_len == 0 {
             return None;
         }
-        let duration_ms = buffer_duration_ms(info.format, info.data_len, info.frequency);
-        let length_secs = buffer_length_secs(
-            i64::from(info.data_len),
-            i64::from(info.frequency),
-            1 + i64::from(matches!(info.format, FORMAT_STEREO8 | FORMAT_STEREO16)),
-            8 + 8 * i64::from(matches!(info.format, FORMAT_MONO16 | FORMAT_STEREO16)),
-        );
+        let stereo = matches!(info.format, FORMAT_STEREO8 | FORMAT_STEREO16);
+        let sixteen = matches!(info.format, FORMAT_MONO16 | FORMAT_STEREO16);
+        let handle = sources.add(AudioSource {
+            bytes: Arc::from(bytes),
+        });
+        let record = BufferRecord {
+            name: key,
+            refcount: 1,
+            duration_ms: buffer_duration_ms(info.format, info.data_len, info.frequency),
+            length_secs: buffer_length_secs(
+                i64::from(info.data_len),
+                i64::from(info.frequency),
+                1 + i64::from(stereo),
+                8 + 8 * i64::from(sixteen),
+            ),
+            stereo,
+            handle: Some(handle),
+            free: false,
+        };
+        Some(self.store_buffer(record))
+    }
+
+    /// Puts a record in the lowest free slot from 1, growing the table by one
+    /// when none is free.
+    fn store_buffer(&mut self, record: BufferRecord) -> u32 {
         let slot = match self
             .buffers
             .iter()
@@ -377,21 +416,8 @@ impl SoundBank {
                 self.buffers.len() - 1
             }
         };
-        let handle = sources.add(AudioSource {
-            bytes: Arc::from(bytes),
-        });
-        self.buffers[slot] = BufferRecord {
-            name: key,
-            refcount: 1,
-            duration_ms,
-            length_secs,
-            stereo: matches!(info.format, FORMAT_STEREO8 | FORMAT_STEREO16),
-            handle: Some(handle),
-            free: false,
-        };
-        let pos = self.index.partition_point(|(k, _)| *k < key);
-        self.index.insert(pos, (key, slot as u32));
-        Some(slot as u32)
+        self.buffers[slot] = record;
+        slot as u32
     }
 
     /// Drops one reference to `id`; at zero the name leaves the index, the
@@ -414,7 +440,12 @@ impl SoundBank {
         buffer.stereo = false;
         buffer.handle = None;
         buffer.free = true;
-        if let Ok(pos) = self.index.binary_search_by(|(k, _)| k.cmp(&key)) {
+        // The name leaves the index whichever slot the entry names: a set's
+        // own copy of a file also removes the copy loaded by name, as the
+        // original's release does.
+        if !key.is_empty()
+            && let Ok(pos) = self.index.binary_search_by(|(k, _)| k.cmp(&key))
+        {
             self.index.remove(pos);
         }
     }
@@ -445,8 +476,9 @@ impl SoundBank {
     }
 
     /// Loads (or finds) the numbered set `prefix01` … up to its first gap or
-    /// 16 variants, and adds a reference. Returns the empty set when the
-    /// prefix is unusable or no variant exists.
+    /// 16 variants, and adds a reference. The variants are loaded outside the
+    /// name index, one fresh buffer each. Returns the empty set when the
+    /// prefix is not 1 to 14 bytes or no variant loads.
     pub fn load_set(
         &mut self,
         game: &Game,
@@ -466,7 +498,7 @@ impl SoundBank {
         let mut variants = Vec::new();
         for n in 1..=MAX_VARIANTS {
             let name = format!("{prefix}{n:02}");
-            match self.load_buffer(game, sources, &name) {
+            match self.load_unindexed(game, sources, NameKey::new(&name)) {
                 Some(id) => variants.push(id),
                 None => break,
             }
@@ -677,6 +709,7 @@ mod tests {
             b.extend_from_slice(&bits.to_le_bytes());
             b.extend_from_slice(b"data");
             b.extend_from_slice(&data.to_le_bytes());
+            b.resize(b.len() + data as usize, 0);
             b
         }
         assert_eq!(
@@ -716,6 +749,56 @@ mod tests {
         let mut b = wave(1, 22_050, 8, 100);
         b[20..22].copy_from_slice(&3u16.to_le_bytes());
         assert_eq!(wave_info(&b), None);
+        // The RIFF tag is not checked, only WAVE.
+        let mut b = wave(1, 22_050, 8, 100);
+        b[0..4].copy_from_slice(b"JUNK");
+        assert_eq!(wave_info(&b).map(|i| i.data_len), Some(100));
+        // A data chunk header with nothing after it is past the walk's end.
+        let mut b = wave(1, 22_050, 8, 1);
+        b.pop();
+        assert_eq!(wave_info(&b).map(|i| i.data_len), Some(0));
+    }
+
+    /// The walk does not pad odd chunks, steps an 18-byte format chunk two
+    /// bytes too far, and ignores data that comes before the format.
+    #[test]
+    fn the_wave_walk_keeps_the_originals_steps() {
+        fn chunk(id: &[u8; 4], body: &[u8]) -> Vec<u8> {
+            let mut b = id.to_vec();
+            b.extend_from_slice(&(body.len() as u32).to_le_bytes());
+            b.extend_from_slice(body);
+            b
+        }
+        let mut fmt = Vec::new();
+        fmt.extend_from_slice(&1u16.to_le_bytes());
+        fmt.extend_from_slice(&1u16.to_le_bytes());
+        fmt.extend_from_slice(&22_050u32.to_le_bytes());
+        fmt.extend_from_slice(&44_100u32.to_le_bytes());
+        fmt.extend_from_slice(&2u16.to_le_bytes());
+        fmt.extend_from_slice(&16u16.to_le_bytes());
+        let file = |chunks: &[Vec<u8>]| {
+            let mut b = b"RIFF\0\0\0\0WAVE".to_vec();
+            for c in chunks {
+                b.extend_from_slice(c);
+            }
+            b
+        };
+        // An odd-sized chunk is followed directly by the next header.
+        let b = file(&[
+            chunk(b"fmt ", &fmt),
+            chunk(b"LIST", &[1, 2, 3]),
+            chunk(b"data", &[0; 10]),
+        ]);
+        assert_eq!(wave_info(&b).map(|i| i.data_len), Some(10));
+        // An 18-byte format chunk makes the walk land two bytes into the
+        // next header, so the data is missed.
+        let mut long_fmt = fmt.clone();
+        long_fmt.extend_from_slice(&0u16.to_le_bytes());
+        let b = file(&[chunk(b"fmt ", &long_fmt), chunk(b"data", &[0; 10])]);
+        assert_eq!(wave_info(&b).map(|i| i.data_len), Some(0));
+        // Data before the format is not taken.
+        let b = file(&[chunk(b"data", &[0; 10]), chunk(b"fmt ", &fmt)]);
+        assert_eq!(wave_info(&b).map(|i| i.data_len), Some(0));
     }
 
     /// Durations count a data byte as an eighth, a quarter or a half of a
@@ -737,15 +820,26 @@ mod tests {
         assert_eq!(buffer_duration_ms(FORMAT_MONO8, 0, 44_100), 0);
     }
 
-    /// The seconds form rounds the byte count to whole frames before the bit
-    /// depth divides it, so a short file can round to nothing.
+    /// The seconds form rounds the bits to whole sample frames, half to even,
+    /// before dividing by the frequency.
     #[test]
-    fn buffer_lengths_round_the_frame_count_first() {
+    fn buffer_lengths_count_whole_frames() {
         assert_eq!(buffer_length_secs(176_400, 44_100, 2, 16), 1.0);
         assert_eq!(buffer_length_secs(88_200, 44_100, 1, 16), 1.0);
-        // 1000 bytes at 44.1 kHz mono is 8 000/44 100 = 0.18 frames, which
-        // rounds to 0, so the length is 0 s although the audio is 11 ms.
-        assert_eq!(buffer_length_secs(1000, 44_100, 1, 16), 0.0);
+        // 1000 bytes mono 16-bit: 8000 / 16 = 500 frames, 500 / 44 100 s.
+        assert_eq!(
+            buffer_length_secs(1000, 44_100, 1, 16),
+            (500.0f64 / 44_100.0) as f32
+        );
+        // 3 bytes: 24 / 16 = 1.5 frames → 2; 5 bytes: 2.5 → 2.
+        assert_eq!(
+            buffer_length_secs(3, 44_100, 1, 16),
+            (2.0f64 / 44_100.0) as f32
+        );
+        assert_eq!(
+            buffer_length_secs(5, 44_100, 1, 16),
+            (2.0f64 / 44_100.0) as f32
+        );
         // Missing or nonsensical attributes give no length, never a panic.
         assert_eq!(buffer_length_secs(1000, 0, 1, 16), 0.0);
         assert_eq!(buffer_length_secs(-1, 44_100, 1, 16), 0.0);
@@ -805,5 +899,37 @@ mod tests {
         assert!(bank.buffer(id).is_none());
         assert_eq!(bank.buffer_ms(id), 0);
         assert_eq!(bank.buffer_secs(id), 0.0);
+        // The freed slot is the lowest free one from 1, so the next stored
+        // buffer takes it.
+        let again = bank.store_buffer(BufferRecord {
+            name: NameKey::new("again"),
+            refcount: 1,
+            ..default()
+        });
+        assert_eq!(again, id);
+    }
+
+    /// Releasing the last reference of a buffer drops its name from the index
+    /// even when the index entry points at another slot: a set's own copy of
+    /// a file takes the by-name copy's entry with it.
+    #[test]
+    fn a_release_drops_the_name_whichever_slot_it_names() {
+        let mut bank = SoundBank::default();
+        let key = NameKey::new("stpmed01");
+        let by_name = bank.store_buffer(BufferRecord {
+            name: key,
+            refcount: 1,
+            ..default()
+        });
+        bank.index.push((key, by_name));
+        let in_set = bank.store_buffer(BufferRecord {
+            name: key,
+            refcount: 1,
+            ..default()
+        });
+        bank.release_buffer(in_set);
+        assert!(bank.index.is_empty());
+        // The by-name buffer itself is still loaded.
+        assert!(bank.buffer(by_name).is_some());
     }
 }

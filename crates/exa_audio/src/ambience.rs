@@ -17,9 +17,12 @@ use crate::SoundBank;
 use crate::environment::{AudioEnvironment, CM_PER_M, SILENCE, voice_flags};
 
 /// The bed's gain as a fraction of the area volume.
-pub const BED_GAIN: f32 = 0.15;
+pub const BED_GAIN: f64 = 0.15;
 /// The bed starts somewhere in its first 0.8 s.
-pub const BED_OFFSET_S: f32 = 0.8;
+pub const BED_OFFSET_S: f64 = 0.8;
+/// The longest name the original builds for a bed or a set: its names pass
+/// through a 15-character short string.
+pub const MAX_NAME_LEN: usize = 15;
 /// The shortest delay before a mono one-shot after another one, ms.
 pub const MONO_DELAY_MS: u32 = 5000;
 /// The shortest delay before any other one-shot, ms.
@@ -33,14 +36,22 @@ pub const ONE_SHOT_DISTANCE_MIN_CM: f32 = 1000.0;
 /// Extra distance the draw can add, in cm.
 pub const ONE_SHOT_DISTANCE_SPREAD_CM: f32 = 1000.0;
 
-/// A numbered set's prefix for an area (`Amb<area>`).
+/// A numbered set's prefix for an area (`Amb<area>`), cut at 15 characters.
 pub fn set_prefix(area: &str) -> String {
-    format!("Amb{area}")
+    short_string(format!("Amb{area}"))
 }
 
-/// The bed's file name for an area (`Env<area>01`).
+/// The bed's file name for an area (`Env<area>01`), cut at 15 characters.
 pub fn bed_name(area: &str) -> String {
-    format!("Env{area}01")
+    short_string(format!("Env{area}01"))
+}
+
+/// Cuts a name to the 15 characters a short string holds.
+fn short_string(mut name: String) -> String {
+    if let Some((cut, _)) = name.char_indices().nth(MAX_NAME_LEN) {
+        name.truncate(cut);
+    }
+    name
 }
 
 /// The ambience a level starts with. Only the outdoor arenas' daylight case
@@ -106,12 +117,12 @@ impl AudioEnvironment {
             if self.ambience.bed_voice.is_none() {
                 self.ambience.bed_voice = self.allocate();
             }
-            let offset = bank.random_unit() * BED_OFFSET_S;
+            let offset = (f64::from(bank.random_unit()) * BED_OFFSET_S) as f32;
             if let Some(id) = self.ambience.bed_voice
                 && let Some(voice) = self.voice_mut(id)
             {
                 voice.buffer = bed_buffer;
-                voice.gain = volume * BED_GAIN;
+                voice.gain = (f64::from(volume) * BED_GAIN) as f32;
                 voice.pitch = 1.0;
                 voice.flags |= crate::music::MUSIC_FLAGS;
                 voice.offset = offset;
@@ -169,19 +180,20 @@ impl AudioEnvironment {
                 x *= scale;
                 z *= scale;
             }
-            // The original draws this distance from the RTL `Random` stream,
-            // not the engine generator. Its seed is process-global and not
-            // observable here; the stream starts at zero as a guess.
-            let distance_cm = self.fpc_rng.unit_f64() * f64::from(ONE_SHOT_DISTANCE_SPREAD_CM);
+            // The original draws this distance from the runtime library's
+            // own random stream, not the engine generator; its generator and
+            // seed are outside the evidence, so a stand-in stream serves.
+            let distance_cm = self.rtl_random.unit_f64() * f64::from(ONE_SHOT_DISTANCE_SPREAD_CM);
             let distance_cm = (distance_cm + f64::from(ONE_SHOT_DISTANCE_MIN_CM)) as f32;
             let position = self.listener.anchor + Vec3::new(x, 0.0, z) * (distance_cm / CM_PER_M);
             let first_two = bank.set_last(self.ambience.set) < 2;
+            // Every range is a unit draw scaled by double-precision constants.
             let gain = if first_two {
-                bank.random_unit() * 0.03 + 0.02
+                scaled_draw(bank, 0.03, 0.02)
             } else {
-                bank.random_unit() * 0.07 + 0.03
+                scaled_draw(bank, 0.07, 0.03)
             };
-            let pitch = bank.random_unit() * 0.2 + 0.9;
+            let pitch = scaled_draw(bank, 0.2, 0.9);
             if let Some(voice) = self.voice_mut(id) {
                 voice.flags = default_flags;
                 voice.buffer = buffer;
@@ -192,8 +204,8 @@ impl AudioEnvironment {
             let roll = bank.rng().below(MONO_SPREAD_MS);
             self.ambience.next_due_ms = game_ms.wrapping_add(MONO_DELAY_MS).wrapping_add(roll);
         } else {
-            let gain = bank.random_unit() * 0.075 + 0.075;
-            let pitch = bank.random_unit() * 0.2 + 0.8;
+            let gain = scaled_draw(bank, 0.075, 0.075);
+            let pitch = scaled_draw(bank, 0.2, 0.8);
             if let Some(voice) = self.voice_mut(id) {
                 voice.flags = default_flags
                     | voice_flags::INTERFACE
@@ -210,27 +222,40 @@ impl AudioEnvironment {
     }
 }
 
-/// Sets or clears the level's ambience when the resource changes.
+/// A unit draw from the engine generator times `spread` plus `base`, in
+/// double precision and stored as a single.
+fn scaled_draw(bank: &mut SoundBank, spread: f64, base: f64) -> f32 {
+    (f64::from(bank.random_unit()) * spread + base) as f32
+}
+
+/// Sets or clears the level's ambience when the resource changes (once the
+/// game data is there to load it from).
 pub(crate) fn set_level_ambience(
     mut env: ResMut<AudioEnvironment>,
     ambience: Option<Res<LevelAmbience>>,
     game: Option<Res<Game>>,
     mut bank: ResMut<SoundBank>,
     mut sources: ResMut<Assets<AudioSource>>,
+    mut pending: Local<bool>,
 ) {
     let Some(ambience) = ambience else {
         return;
     };
-    if !ambience.is_changed() {
+    if ambience.is_changed() {
+        *pending = true;
+    }
+    if !*pending {
         return;
     }
     let Some(area) = &ambience.0 else {
+        *pending = false;
         env.clear_ambience(&mut bank);
         return;
     };
     let Some(game) = game else {
         return;
     };
+    *pending = false;
     let bed = bank
         .load_buffer(&game, &mut sources, &bed_name(&area.name))
         .unwrap_or(0);
@@ -251,6 +276,9 @@ mod tests {
         assert_eq!(bed_name("NtrA"), "EnvNtrA01");
         assert_eq!(set_prefix("NtrA"), "AmbNtrA");
         assert_eq!(format!("{}01", set_prefix("NtrA")), "AmbNtrA01");
+        // Both pass through a 15-character short string.
+        assert_eq!(bed_name("ABCDEFGHIJKL"), "EnvABCDEFGHIJKL");
+        assert_eq!(set_prefix("ABCDEFGHIJKLMN"), "AmbABCDEFGHIJKL");
     }
 
     /// Only the outdoor arenas get a known area; indoor levels start silent
@@ -284,10 +312,10 @@ mod tests {
         let id = env.ambience.bed_voice.expect("a bed voice");
         let voice = env.voice(id).unwrap();
         assert_eq!(voice.buffer, bed);
-        assert_eq!(voice.gain, 0.075);
+        assert_eq!(voice.gain, (f64::from(0.5f32) * 0.15) as f32);
         assert_eq!(voice.pitch, 1.0);
         assert_eq!(voice.flags, MUSIC_FLAGS | voice_flags::ALLOCATED);
-        assert!((voice.offset - 0.8 * draw).abs() < 1e-6);
+        assert_eq!(voice.offset, (f64::from(draw) * 0.8) as f32);
         assert!(env.ambience.installed);
         assert_eq!(env.ambience.volume, 0.5);
     }
@@ -339,8 +367,8 @@ mod tests {
         env.listener.anchor = Vec3::new(10.0, 2.0, 0.0);
         // The generator starts from a known state for the placement draws.
         bank.rng().0 = 0;
-        // Distance uses the separate FPC stream, also from zero.
-        env.fpc_rng.0 = 0;
+        // The distance uses the separate stand-in stream, also from zero.
+        env.rtl_random.0 = 0;
         let input = UpdateInput {
             game_ms: 1,
             ..UpdateInput::default()

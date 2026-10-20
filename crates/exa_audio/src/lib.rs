@@ -5,10 +5,11 @@
 //! weapon impacts and pain sounds on hits (`hits`), and footsteps for moving
 //! characters (`footsteps`).
 //!
-//! The original mixes through OpenAL Soft with EFX; Bevy's rodio backend has
+//! The original mixes through OpenAL with EFX; Bevy's rodio backend has
 //! neither EFX nor per-source auxiliary sends. The mixer computes the reverb
-//! block and the send flag of every voice but the backend does not apply them
-//! (see the crate README).
+//! block and the send flag of every voice but the backend does not apply them.
+//! The OpenAL distance model the original sets up (linear, clamped between
+//! 4 m and 30 m) is applied by the playback layer (see the crate README).
 
 mod ambience;
 mod bank;
@@ -25,11 +26,12 @@ pub use ambience::{AmbienceArea, LevelAmbience, ambience_for_level, bed_name, se
 pub use bank::{SoundBank, SoundSet};
 pub use environment::{
     AudioEnvironment, BusGains, Listener, SourceCommand, SourcePlay, SourceUpdate, UpdateInput,
-    Voice, VoiceHandle, voice_flags,
+    Voice, VoiceHandle, heard_gain, voice_flags,
 };
 pub use music::{
     LevelMusic, MusicSetting, StoryMusic, music_for_level, story_music, story_music_changes,
 };
+pub use playback::{ANCHOR_HEIGHT_M, ListenerAnchor};
 pub use reverb::{EaxReverb, LevelReverb, Reverb};
 
 pub struct AudioPlugin;

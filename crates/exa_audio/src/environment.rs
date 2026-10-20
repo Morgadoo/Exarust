@@ -38,11 +38,17 @@ pub const NEAR_RADIUS_CM2: f32 = 160_000.0;
 pub const ROLLOFF_REFERENCE_CM: f32 = 400.0;
 /// The rolloff's index, 1 in the original.
 pub const ROLLOFF_FACTOR: f32 = 1.0;
+/// Every source's maximum distance, in cm: 30 m. With the linear clamped
+/// distance model a source is silent from here on.
+pub const MAX_DISTANCE_CM: f32 = 3000.0;
+/// The most a source is heard at after distance, the OpenAL default the
+/// original never changes.
+pub const HEARD_GAIN_LIMIT: f32 = 1.0;
 /// The loudest gain a source is given.
 pub const SOURCE_GAIN_LIMIT: f32 = 4.0;
 /// The global pitch factor the source pitch is multiplied by.
 pub const PITCH_FACTOR: f32 = 1.0;
-/// How far ahead of the listener anchor the listener sits, in cm: 300 cm.
+/// How far along its up vector the listener sits from its anchor, in cm.
 pub const LISTENER_PROJECTION_CM: f32 = 300.0;
 /// The same projection in metres.
 pub const LISTENER_PROJECTION_M: f32 = LISTENER_PROJECTION_CM / 100.0;
@@ -81,11 +87,13 @@ pub mod voice_flags {
 /// Where the listener is and which way it faces.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Listener {
-    /// The anchor both the listener and relative sounds use.
+    /// The anchor both the listener and relative sounds use. In the original
+    /// game it is the player's body plus 50 cm up.
     pub anchor: Vec3,
-    /// The facing direction; the listener sits 3 m along it.
+    /// The facing direction, the first half of the orientation.
     pub forward: Vec3,
-    /// The up direction.
+    /// The up direction, the second half of the orientation; the listener
+    /// sits 3 m along it.
     pub up: Vec3,
 }
 
@@ -100,9 +108,10 @@ impl Default for Listener {
 }
 
 impl Listener {
-    /// The listener's own position: the anchor plus 3 m along the facing.
+    /// The listener's own position: the anchor plus 3 m along the up vector
+    /// (the vector after the facing in the orientation the original sends).
     pub fn position(&self) -> Vec3 {
-        self.anchor + self.forward * LISTENER_PROJECTION_M
+        self.anchor + self.up * LISTENER_PROJECTION_M
     }
 }
 
@@ -199,6 +208,11 @@ pub struct SourcePlay {
     pub relative: bool,
     /// Whether the voice would get the reverb send.
     pub reverb: bool,
+    /// A restart of a bound source rather than a fresh binding. OpenAL
+    /// refuses a new buffer on a source that is playing or paused, so such a
+    /// source keeps its buffer: a paused one resumes, a playing one starts
+    /// again from the top.
+    pub restart: bool,
 }
 
 /// A bound source's per-frame properties.
@@ -293,8 +307,11 @@ pub struct AudioEnvironment {
     pub ambience: crate::ambience::AmbienceState,
     /// The global EFX reverb.
     pub reverb: crate::reverb::Reverb,
-    /// The stream `Random` draws from in the ambience placement.
-    pub fpc_rng: Lcg,
+    /// A stand-in for the runtime library's own random stream, which the
+    /// ambience placement draws its distance from (the engine generator
+    /// serves every other draw). The real stream's generator and seed are
+    /// outside the evidence; this one is the engine generator from 0.
+    pub rtl_random: Lcg,
 }
 
 impl Default for AudioEnvironment {
@@ -326,7 +343,7 @@ impl AudioEnvironment {
             music: crate::music::MusicState::default(),
             ambience: crate::ambience::AmbienceState::default(),
             reverb: crate::reverb::Reverb::default(),
-            fpc_rng: Lcg::default(),
+            rtl_random: Lcg::default(),
         }
     }
 
@@ -458,6 +475,7 @@ impl AudioEnvironment {
         voice.audibility = AUDIBLE_NONE;
         if voice.flags & voice_flags::OWNS_BUFFER != 0 {
             bank.release_buffer(voice.buffer);
+            voice.buffer = 0;
         }
         voice.flags = 0;
         if index < self.hint {
@@ -467,19 +485,14 @@ impl AudioEnvironment {
     }
 
     /// Frees a voice once it has finished: a playing non-looping voice is
-    /// marked auto-free and its handle released, anything else is freed now.
+    /// marked auto-free and plays on (an attached handle stays attached until
+    /// the voice is freed), anything else is freed now.
     pub fn finish_voice(&mut self, bank: &mut SoundBank, id: u32) {
         let Some(voice) = self.voices.get(id as usize).copied() else {
             return;
         };
-        let Some(handle) = voice.owner else {
-            return;
-        };
         if voice.flags & (voice_flags::ACTIVE | voice_flags::LOOPING) == voice_flags::ACTIVE {
             self.voices[id as usize].flags |= voice_flags::AUTO_FREE;
-            if let Some(slot) = self.handles.get_mut(handle as usize) {
-                *slot = None;
-            }
         } else {
             self.free_voice(bank, id);
         }
@@ -570,7 +583,8 @@ impl AudioEnvironment {
     }
 
     /// Restarts a voice on a random variant of a set, keeping the caller's
-    /// record. The original assigns the restart flags rather than adding them.
+    /// record. The original assigns the restart flags rather than adding them,
+    /// and, unlike the one-shots, does not ask whether the environment is live.
     pub fn retrigger_set(
         &mut self,
         bank: &mut SoundBank,
@@ -580,9 +594,6 @@ impl AudioEnvironment {
         gain: f32,
         pitch: f32,
     ) {
-        if !self.is_live() {
-            return;
-        }
         let Some(buffer) = bank.pick_set_variant(set) else {
             return;
         };
@@ -639,10 +650,17 @@ impl AudioEnvironment {
             self.schedule_ambience(bank, input.game_ms);
         }
         self.advance_music(bank, input.now_ms);
+        // The steps are double-precision constants added to the stored single.
         if input.focused {
-            self.buses.focus = (self.buses.focus + 0.01).min(1.0);
+            self.buses.focus = (f64::from(self.buses.focus) + 0.01) as f32;
+            if 1.0 < self.buses.focus {
+                self.buses.focus = 1.0;
+            }
         } else {
-            self.buses.focus = (self.buses.focus - 0.02).max(0.0);
+            self.buses.focus = (f64::from(self.buses.focus) - 0.02) as f32;
+            if self.buses.focus < 0.0 {
+                self.buses.focus = 0.0;
+            }
         }
         let active = self.scan(bank, input.now_ms, &input.source_stopped);
         let high_water = self.high_water;
@@ -862,15 +880,17 @@ impl AudioEnvironment {
             return;
         }
         if let Some(old) = self.source_owner[slot].take() {
-            let auto_free = self
-                .voices
-                .get(old as usize)
-                .is_some_and(|voice| voice.flags & voice_flags::AUTO_FREE != 0);
+            // The holder loses the slot first, so freeing it stops nothing.
+            let mut auto_free = false;
+            if let Some(voice) = self.voices.get_mut(old as usize) {
+                voice.source = -1;
+                auto_free = voice.flags & voice_flags::AUTO_FREE != 0;
+                if !auto_free {
+                    voice.flags &= !voice_flags::ACTIVE;
+                }
+            }
             if auto_free {
                 self.free_voice(bank, old);
-            } else if let Some(voice) = self.voices.get_mut(old as usize) {
-                voice.source = -1;
-                voice.flags &= !voice_flags::ACTIVE;
             }
         }
         let Some(index) = usize::try_from(id)
@@ -932,6 +952,7 @@ impl AudioEnvironment {
             min_gain,
             relative,
             reverb: !interface && self.reverb.enabled,
+            restart: false,
         }));
     }
 
@@ -1000,6 +1021,7 @@ impl AudioEnvironment {
                 min_gain,
                 relative,
                 reverb: !interface && self.reverb.enabled,
+                restart: true,
             }));
         }
         self.voices[index] = voice;
@@ -1030,6 +1052,21 @@ pub fn rank(voice: &Voice, listener: Vec3) -> f32 {
     } else {
         voice.gain
     }
+}
+
+/// What OpenAL makes of a source's gain at a distance, as the original sets
+/// it up: the linear clamped distance model with a 4 m reference, a 30 m
+/// maximum and rolloff 1, then the gain clamped between the source's minimum
+/// gain and the default maximum of 1. Distances are converted to cm.
+pub fn heard_gain(gain: f32, min_gain: Option<f32>, source: Vec3, listener: Vec3) -> f32 {
+    let distance = (source - listener).length() * CM_PER_M;
+    let clamped = distance.clamp(ROLLOFF_REFERENCE_CM, MAX_DISTANCE_CM);
+    let attenuation = 1.0
+        - ROLLOFF_FACTOR * (clamped - ROLLOFF_REFERENCE_CM)
+            / (MAX_DISTANCE_CM - ROLLOFF_REFERENCE_CM);
+    (gain * attenuation.max(0.0))
+        .max(min_gain.unwrap_or(0.0))
+        .min(HEARD_GAIN_LIMIT)
 }
 
 /// The original's Hoare quicksort over the order array, high audibility
@@ -1102,8 +1139,8 @@ mod tests {
         }
     }
 
-    /// The listener sits 3 m along its facing; a relative voice ranks by its
-    /// own gain and a world voice below 30 m does too.
+    /// The listener sits 3 m along its up vector, not its facing; a relative
+    /// voice ranks by its own gain and a world voice below 30 m does too.
     #[test]
     fn audibility_uses_gain_inside_thirty_metres() {
         let listener = Listener {
@@ -1111,7 +1148,7 @@ mod tests {
             forward: Vec3::Z,
             up: Vec3::Y,
         };
-        assert_eq!(listener.position(), Vec3::new(100.0, 50.0, 3.0));
+        assert_eq!(listener.position(), Vec3::new(100.0, 53.0, 0.0));
         let at = voice(voice_flags::ACTIVE, 0.7, Vec3::new(100.0, 50.0, 0.0));
         assert_eq!(rank(&at, listener.position()), 0.7);
         let far = voice(
@@ -1507,8 +1544,9 @@ mod tests {
         )));
     }
 
-    /// Finishing a playing one-shot marks it auto-free and releases its
-    /// handle; finishing a looping voice frees it now.
+    /// Finishing a playing one-shot marks it auto-free and lets it play on,
+    /// still attached to its handle until it is freed; finishing a looping
+    /// voice frees it now. A voice needs no handle to be finished.
     #[test]
     fn finishing_marks_one_shots_and_frees_loops() {
         let mut env = AudioEnvironment::new();
@@ -1523,8 +1561,18 @@ mod tests {
             env.voice(voice).unwrap().flags & voice_flags::AUTO_FREE,
             voice_flags::AUTO_FREE
         );
-        assert!(!env.handle_is_bound(handle));
+        assert!(env.handle_is_bound(handle));
         assert_ne!(env.voice(voice).unwrap().flags, 0);
+        env.free_voice(&mut bank, voice);
+        assert!(!env.handle_is_bound(handle));
+
+        let bare = env.allocate().expect("a voice");
+        env.voices[bare as usize].flags |= voice_flags::ACTIVE;
+        env.finish_voice(&mut bank, bare);
+        assert_ne!(env.voice(bare).unwrap().flags & voice_flags::AUTO_FREE, 0);
+        let idle = env.allocate().expect("a voice");
+        env.finish_voice(&mut bank, idle);
+        assert_eq!(env.voice(idle).unwrap().flags, 0);
 
         let handle = env.new_handle();
         assert!(env.play_set_attached(&mut bank, set, handle, Vec3::ZERO, 1.0, 1.0));
@@ -1603,12 +1651,64 @@ mod tests {
         assert_eq!(voice.position, Vec3::Y);
     }
 
+    /// Retriggering does not ask whether the environment is live, unlike the
+    /// one-shots.
+    #[test]
+    fn retriggering_works_in_the_silent_environment() {
+        let mut env = AudioEnvironment::silent();
+        let mut bank = SoundBank::default();
+        let set = bank.insert_test_set(vec![4]);
+        env.retrigger_set(&mut bank, 0, set, Vec3::X, 0.5, 1.0);
+        assert_eq!(
+            env.voice(0).unwrap().flags,
+            voice_flags::ALLOCATED | voice_flags::RESTART
+        );
+        assert_eq!(env.voice(0).unwrap().buffer, 4);
+    }
+
+    /// The distance model is linear between 4 m and 30 m, silent beyond, and
+    /// the heard gain is held between the minimum gain and 1.
+    #[test]
+    fn sources_are_heard_on_a_linear_four_to_thirty_metre_slope() {
+        let at = Vec3::ZERO;
+        assert_eq!(heard_gain(0.8, None, Vec3::X * 2.0, at), 0.8);
+        assert_eq!(heard_gain(0.8, None, Vec3::X * 4.0, at), 0.8);
+        // 17 m: 1 − 13/26 = 0.5.
+        assert!((heard_gain(0.8, None, Vec3::X * 17.0, at) - 0.4).abs() < 1e-6);
+        assert_eq!(heard_gain(0.8, None, Vec3::X * 30.0, at), 0.0);
+        assert_eq!(heard_gain(0.8, None, Vec3::X * 90.0, at), 0.0);
+        // A voice that defeats attenuation is held at its minimum gain.
+        assert_eq!(heard_gain(0.3, Some(0.3), Vec3::X * 90.0, at), 0.3);
+        // Above 1 the default maximum gain holds it.
+        assert_eq!(heard_gain(2.5, None, Vec3::X, at), 1.0);
+    }
+
+    /// The window focus steps in double precision, so 0.99 + 0.01 lands just
+    /// past 1 and is held there, and 0.5 − 0.02 is the single nearest 0.48.
+    #[test]
+    fn the_focus_steps_in_double_precision() {
+        let mut env = AudioEnvironment::new();
+        let mut bank = SoundBank::default();
+        env.buses.focus = 0.5;
+        env.update(
+            &mut bank,
+            &UpdateInput {
+                focused: false,
+                ..UpdateInput::default()
+            },
+        );
+        assert_eq!(env.buses.focus, (f64::from(0.5f32) - 0.02) as f32);
+        env.buses.focus = 0.3;
+        env.update(&mut bank, &UpdateInput::default());
+        assert_eq!(env.buses.focus, (f64::from(0.3f32) + 0.01) as f32);
+    }
+
     /// The engine's generator drives the ambience and music draws: its first
     /// two words are 1 and 0x08088406.
     #[test]
     fn the_environment_shares_the_engine_generator() {
         let mut env = AudioEnvironment::new();
-        assert_eq!(env.fpc_rng, Lcg::default());
-        assert_eq!(env.fpc_rng.step(), 1);
+        assert_eq!(env.rtl_random, Lcg::default());
+        assert_eq!(env.rtl_random.step(), 1);
     }
 }

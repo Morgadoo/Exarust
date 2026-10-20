@@ -2,16 +2,18 @@
 //! level shifts by an offset.
 //!
 //! The original creates one auxiliary effect slot and an `AL_EFFECT_EAXREVERB`
-//! on first use, then sends every world voice to it. The preset is the EFX
-//! "Generic" one with the gain and the low-frequency gain changed. A level's
-//! environment record adds its decay offset, `1.49 s + offset`.
+//! on first use, then sends every world voice to it. The block it uploads is
+//! the EFX "Generic" preset with the gain and the low-frequency gain changed
+//! and two fields rounded (all 23 fields read from the stored block). A level's environment record
+//! adds its decay offset, `1.49 s + offset`, worked in double precision.
 //!
 //! Bevy's rodio backend has no EFX or auxiliary sends, so Exarust computes and
 //! stores the whole parameter block (and the reverb send each voice would get)
 //! without applying it. See the crate README.
 
-/// The preset's base decay time in seconds.
-pub const BASE_DECAY_S: f32 = 1.49;
+/// The preset's base decay time in seconds, the double-precision constant
+/// the offset is added to.
+pub const BASE_DECAY_S: f64 = 1.49;
 
 use bevy::prelude::*;
 
@@ -68,32 +70,31 @@ pub struct EaxReverb {
 }
 
 impl Default for EaxReverb {
-    /// The preset the original uploads. The density, diffusion, gain,
-    /// high-frequency gain, low-frequency gain, decay, ratios, reflections
-    /// and their delay are the values stored beside the game's code; the
-    /// remaining fields follow the EFX generic preset the block was copied
-    /// from (their stored bits are not in the decompilation pack).
+    /// The block the original uploads, bit for bit as it is stored: the
+    /// EFX "Generic" preset with gain 0.326 (Generic 0.3162), low-frequency
+    /// gain 0.5 (Generic 1.0), late reverb gain 1.259 (Generic 1.2589) and
+    /// air absorption 0.994 (Generic 0.9943).
     fn default() -> Self {
         Self {
             density: 1.0,
             diffusion: 1.0,
-            gain: 0.326_000_005,
-            gain_hf: 0.890_999_97,
+            gain: f32::from_bits(0x3ea6_e979),
+            gain_hf: f32::from_bits(0x3f64_1893),
             gain_lf: 0.5,
-            decay_s: BASE_DECAY_S,
-            decay_hf_ratio: 0.83,
+            decay_s: f32::from_bits(0x3fbe_b852),
+            decay_hf_ratio: f32::from_bits(0x3f54_7ae1),
             decay_lf_ratio: 1.0,
-            reflections_gain: 0.05,
-            reflections_delay_s: 0.007,
+            reflections_gain: f32::from_bits(0x3d4c_cccd),
+            reflections_delay_s: f32::from_bits(0x3be5_6042),
             reflections_pan: [0.0; 3],
-            late_gain: 1.2589,
-            late_delay_s: 0.011,
+            late_gain: f32::from_bits(0x3fa1_26e9),
+            late_delay_s: f32::from_bits(0x3c34_3958),
             late_pan: [0.0; 3],
             echo_time_s: 0.25,
             echo_depth: 0.0,
             modulation_time_s: 0.25,
             modulation_depth: 0.0,
-            air_absorption_hf: 0.9943,
+            air_absorption_hf: f32::from_bits(0x3f7e_76c9),
             hf_reference_hz: 5000.0,
             lf_reference_hz: 250.0,
             room_rolloff: 0.0,
@@ -161,9 +162,10 @@ impl Reverb {
         true
     }
 
-    /// The decay time a world voice would hear, enabled or not.
+    /// The decay time a world voice would hear, enabled or not:
+    /// `offset + 1.49` in double precision, stored as a single.
     pub fn decay_s(&self) -> f32 {
-        BASE_DECAY_S + self.decay_offset
+        (f64::from(self.decay_offset) + BASE_DECAY_S) as f32
     }
 
     fn apply_decay(&mut self) {
@@ -175,19 +177,19 @@ impl Reverb {
 mod tests {
     use super::*;
 
-    /// The block starts on the original's preset: density and diffusion 1,
-    /// gain 0.326, high-frequency gain 0.891, low-frequency gain 0.5, decay
-    /// 1.49 s, ratios 0.83 and 1, reflections 0.05 at 7 ms, late reverb
-    /// 1.2589 at 11 ms, echo and modulation 0.25 s, air absorption 0.9943,
+    /// The block is the stored one: density and diffusion 1, gain 0.326,
+    /// high-frequency gain 0.891, low-frequency gain 0.5, decay 1.49 s,
+    /// ratios 0.83 and 1, reflections 0.05 at 7 ms, late reverb 1.259 at
+    /// 11 ms, echo and modulation 0.25 s at depth 0, air absorption 0.994,
     /// references 5 kHz and 250 Hz, no room rolloff, high-frequency decay
     /// limited.
     #[test]
-    fn the_preset_is_the_originals() {
+    fn the_preset_is_the_stored_block() {
         let preset = EaxReverb::default();
         assert_eq!(preset.density, 1.0);
         assert_eq!(preset.diffusion, 1.0);
-        assert_eq!(preset.gain, 0.326_000_005);
-        assert_eq!(preset.gain_hf, 0.890_999_97);
+        assert_eq!(preset.gain, 0.326);
+        assert_eq!(preset.gain_hf, 0.891);
         assert_eq!(preset.gain_lf, 0.5);
         assert_eq!(preset.decay_s, 1.49);
         assert_eq!(preset.decay_hf_ratio, 0.83);
@@ -195,14 +197,14 @@ mod tests {
         assert_eq!(preset.reflections_gain, 0.05);
         assert_eq!(preset.reflections_delay_s, 0.007);
         assert_eq!(preset.reflections_pan, [0.0; 3]);
-        assert_eq!(preset.late_gain, 1.2589);
+        assert_eq!(preset.late_gain, 1.259);
         assert_eq!(preset.late_delay_s, 0.011);
         assert_eq!(preset.late_pan, [0.0; 3]);
         assert_eq!(preset.echo_time_s, 0.25);
         assert_eq!(preset.echo_depth, 0.0);
         assert_eq!(preset.modulation_time_s, 0.25);
         assert_eq!(preset.modulation_depth, 0.0);
-        assert_eq!(preset.air_absorption_hf, 0.9943);
+        assert_eq!(preset.air_absorption_hf, 0.994);
         assert_eq!(preset.hf_reference_hz, 5000.0);
         assert_eq!(preset.lf_reference_hz, 250.0);
         assert_eq!(preset.room_rolloff, 0.0);
@@ -218,14 +220,14 @@ mod tests {
         assert_eq!(reverb.params().decay_s, 1.49);
         reverb.set_decay_offset(0.51);
         assert_eq!(reverb.params().decay_s, 1.49);
-        assert_eq!(reverb.decay_s(), 2.0);
+        assert_eq!(reverb.decay_s(), (f64::from(0.51f32) + 1.49) as f32);
         assert!(reverb.set_enabled(true));
-        assert_eq!(reverb.params().decay_s, 2.0);
+        assert_eq!(reverb.params().decay_s, reverb.decay_s());
         reverb.set_decay_offset(-0.49);
         assert!((reverb.params().decay_s - 1.0).abs() < 1e-6);
         assert!(!reverb.set_enabled(false));
         reverb.set_decay_offset(10.0);
-        assert_eq!(reverb.params().decay_s, 1.0);
+        assert!((reverb.params().decay_s - 1.0).abs() < 1e-6);
         assert_eq!(reverb.decay_s(), 11.49);
     }
 

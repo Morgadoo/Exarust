@@ -125,8 +125,10 @@ const OTHER_SIDE_EMPTY: f32 = 15.0 * std::f32::consts::PI / 180.0;
 /// blend.
 const RETURN_BLEND: u32 = 30;
 
-/// The player's physics root (origin at the feet).
+/// The player's physics root (origin at the feet). The audio listener is
+/// anchored on it, as the original anchors its listener on the player.
 #[derive(Component)]
+#[require(exa_audio::ListenerAnchor)]
 pub struct Player;
 
 /// The visual body under the player root. The player is human and is
