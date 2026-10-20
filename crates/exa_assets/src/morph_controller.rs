@@ -950,3 +950,99 @@ mod remap_tests {
         assert_eq!(morph_stride((0xf << 20) | (2 << 16)), 8);
     }
 }
+
+/// The morph data blob's magic (the original's `0xEDC0C589`).
+pub const MORPH_MAGIC: u32 = 0xEDC0_C589;
+
+/// One part's entry in the morph data: its pivot and one delta per vertex.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MorphPartData {
+    pub pivot: [f32; 3],
+    pub deltas: Vec<[f32; 3]>,
+}
+
+/// The serialized morph data the controller cooks once.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MorphData {
+    pub magic: u32,
+    pub size: usize,
+    pub base: [f32; 3],
+    pub rest: Vec<[f32; 3]>,
+    pub parts: Vec<MorphPartData>,
+}
+
+/// The blob's size: 12·(P+1)·(V+1) + 12, the magic, size and part count
+/// included.
+pub fn morph_blob_size(parts: usize, verts: usize) -> usize {
+    12 * (parts + 1) * (verts + 1) + 12
+}
+
+/// Cooks the morph data: the magic, its size, the base point, the rest
+/// points and each part's pivot and deltas.
+pub fn build_morph_data(base: [f32; 3], rest: &[[f32; 3]], parts: Vec<MorphPartData>) -> MorphData {
+    let size = morph_blob_size(parts.len(), rest.len());
+    MorphData {
+        magic: MORPH_MAGIC,
+        size,
+        base,
+        rest: rest.to_vec(),
+        parts,
+    }
+}
+
+/// One vertex's delta: the barycentric triangle point minus the part's
+/// pivot, rotated by the owner's three rows.
+pub fn morph_delta(
+    rotation: [[f32; 3]; 3],
+    bary: [f32; 3],
+    corners: [[f32; 3]; 3],
+    pivot: [f32; 3],
+) -> [f32; 3] {
+    let q = [
+        corners[0][0] * bary[0] + corners[1][0] * bary[1] + corners[2][0] * bary[2],
+        corners[0][1] * bary[0] + corners[1][1] * bary[1] + corners[2][1] * bary[2],
+        corners[0][2] * bary[0] + corners[1][2] * bary[1] + corners[2][2] * bary[2],
+    ];
+    let d = [q[0] - pivot[0], q[1] - pivot[1], q[2] - pivot[2]];
+    [
+        rotation[0][0] * d[0] + rotation[1][0] * d[1] + rotation[2][0] * d[2],
+        rotation[0][1] * d[0] + rotation[1][1] * d[1] + rotation[2][1] * d[2],
+        rotation[0][2] * d[0] + rotation[1][2] * d[1] + rotation[2][2] * d[2],
+    ]
+}
+
+#[cfg(test)]
+mod cook_tests {
+    use super::*;
+
+    #[test]
+    fn a_delta_is_the_triangle_point_less_the_pivot() {
+        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let corners = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let delta = morph_delta(identity, [0.5, 0.25, 0.25], corners, [0.0, 0.0, 0.0]);
+        assert_eq!(delta, [0.25, 0.25, 0.0]);
+        let zero = morph_delta(identity, [0.5, 0.25, 0.25], corners, [0.25, 0.25, 0.0]);
+        assert_eq!(zero, [0.0, 0.0, 0.0]);
+
+        let turn = [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        let turned = morph_delta(turn, [0.5, 0.25, 0.25], corners, [0.0, 0.0, 0.0]);
+        assert_eq!(turned, [-0.25, 0.25, 0.0]);
+    }
+
+    #[test]
+    fn the_blob_has_its_magic_and_size() {
+        assert_eq!(morph_blob_size(1, 2), 84);
+        let data = build_morph_data(
+            [0.0, 0.0, 0.0],
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            vec![MorphPartData {
+                pivot: [0.5, 0.0, 0.0],
+                deltas: vec![[0.1, 0.0, 0.0], [0.2, 0.0, 0.0]],
+            }],
+        );
+        assert_eq!(data.magic, 0xEDC0_C589);
+        assert_eq!(data.size, 84);
+        assert_eq!(data.parts.len(), 1);
+        assert_eq!(data.rest.len(), 2);
+    }
+}
