@@ -12,10 +12,13 @@
 //! targets, 3 combines and forwards, and 5 counts a sequence. Any other
 //! class is ignored. Class 5 forces the push surface under the node.
 //!
-//! At load an operative turns its effects off when its flag 0x40 is set. A
-//! light job with the value's low bit set starts an electric effect. A fire
-//! record of class 8 lights a fire unless the scene's daylight exceeds
-//! 0.12, in which case the light under the node is switched off instead.
+//! At load an operative turns its effects off when its flag 0x40 is set,
+//! and then still does what its kind asks. A light job with the value's
+//! low bit set starts an electric effect. A fire record of class 8 lights a
+//! fire unless the scene's daylight exceeds 0.12, in which case the light
+//! under the node is put out instead. The load fire's size and lift are the
+//! two halves of the record's first target word; a signalled fire job's
+//! size is the record's value.
 //!
 //! The door, relay and light operations work on the bodies and nodes the
 //! caller hands in, in the order the original walks them.
@@ -169,43 +172,79 @@ pub fn job(kind: u8, value: i32, stored: u16) -> Dispatch {
     }
 }
 
-/// What a fire record does at load.
+/// What an operative record does at load, after the optional switch-off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Setup {
     None,
-    /// The record was missing.
+    /// The record was missing ("Operative data not found").
     Missing,
-    /// The record's flag 0x40 switches the node's effects off.
-    SwitchOff,
     /// A light job with its value's low bit set starts an electric effect.
     Electricity,
-    /// A light who is put out because the daylight is up.
+    /// A fire record whose light is put out because the daylight is up (see
+    /// [`daylight_target`]).
     Daylight,
-    /// A fire is lit, of this size.
+    /// A fire is lit. `size` is the stored size (see [`fire_size`]) and
+    /// `lift` the stored height above the node in centimetres, used when
+    /// the node has no light of its own (see [`fire_lift`]). Lighting it
+    /// puts out the node's own lights ([`put_out`]); a light node under it
+    /// gives the fire its position and is replaced by it.
     Fire {
         size: u16,
+        lift: u16,
     },
 }
 
 /// The level-load part of an operative record.
-pub fn level_setup(record: Option<&Record>, daylight: f32) -> Setup {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoadSetup {
+    /// The record's flag 0x40: the node's effects are switched off first
+    /// ([`switch_off`]). The kind's own setup still follows.
+    pub switch_off: bool,
+    pub setup: Setup,
+}
+
+/// The level-load part of an operative record. The switch-off does not end
+/// the setup: a flagged light or fire record still runs its kind's part.
+pub fn level_setup(record: Option<&Record>, daylight: f32) -> LoadSetup {
     let Some(record) = record else {
-        return Setup::Missing;
+        return LoadSetup {
+            switch_off: false,
+            setup: Setup::Missing,
+        };
     };
-    if record.flags & SWITCH_OFF != 0 {
-        return Setup::SwitchOff;
-    }
-    if record.kind == LIGHT {
+    let switch_off = record.flags & SWITCH_OFF != 0;
+    let setup = if record.kind == LIGHT {
         if record.value & 1 != 0 {
-            return Setup::Electricity;
+            Setup::Electricity
+        } else {
+            Setup::None
         }
     } else if record.kind == FIRE && record.class == FIRE_CLASS {
         if DAYLIGHT < daylight {
-            return Setup::Daylight;
+            Setup::Daylight
+        } else {
+            Setup::Fire {
+                size: record.target as u16,
+                lift: (record.target >> 16) as u16,
+            }
         }
-        return Setup::Fire { size: record.value };
+    } else {
+        Setup::None
+    };
+    LoadSetup { switch_off, setup }
+}
+
+/// The node whose lights a fire record puts out by day: the first light
+/// node at or under `root` (class low bits 1), or its parent when that is a
+/// lit node; `root` itself when there is no light node.
+pub fn daylight_target(nodes: &[Node], root: usize) -> usize {
+    let Some(light) = find(nodes, root, 0xfff, LIGHT_CLASS) else {
+        return root;
+    };
+    match nodes[light].parent {
+        Some(parent) if nodes.get(parent).is_some_and(|p| p.class & 0x5f == LIT) => parent,
+        _ => light,
     }
-    Setup::None
 }
 
 /// What the door operations leave for the caller to play: the sounds, in
@@ -261,10 +300,11 @@ pub fn toggle_doors(doors: &mut [Door], now_ms: i32) -> Sounds {
     sounds
 }
 
-/// Latch or unlatch every door under a node, and set the object word's bit
-/// 0. Returns whether any door took it.
-pub fn latch_doors(doors: &mut [Door], value: bool) -> bool {
-    let mut any = false;
+/// Latch or unlatch every door under a node. The node's object word takes
+/// the value in its bit 0 whether or not there is a door (the doors under a
+/// node share their object's word, so each door's copy follows); the new
+/// word is returned.
+pub fn latch_doors(doors: &mut [Door], word: u32, value: bool) -> u32 {
     for door in doors {
         door.latched = value;
         if value {
@@ -272,9 +312,8 @@ pub fn latch_doors(doors: &mut [Door], value: bool) -> bool {
         } else {
             door.saved &= !1;
         }
-        any = true;
     }
-    any
+    if value { word | 1 } else { word & !1 }
 }
 
 /// A scene node as the operative routines see it: its class bits, its
@@ -282,6 +321,8 @@ pub fn latch_doors(doors: &mut [Door], value: bool) -> bool {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Node {
     pub class: u32,
+    /// The node this one hangs from, if any.
+    pub parent: Option<usize>,
     pub children: Vec<usize>,
     /// A light's flag word and fade rate, when the node has a light.
     pub light: Option<Light>,
@@ -384,10 +425,28 @@ pub fn retention() -> f32 {
     MECHANISM_RETENTION.powf(1.0 / MECHANISM_HZ)
 }
 
-/// A fire's radius from the stored size: hundredths of a metre, at least
-/// 0.25 and at most 10.
+/// A load fire's size from the stored size: hundredths, at least 0.25 and
+/// at most 10 (the product is taken in double precision). The size is the
+/// fire's scale, as `exa_world`'s fire light takes it.
 pub fn fire_size(stored: u16) -> f32 {
-    (f32::from(stored) * 0.01).clamp(0.25, 10.0)
+    ((f64::from(stored) * 0.01) as f32).clamp(0.25, 10.0)
+}
+
+/// A load fire's height above its node in metres, from the stored
+/// centimetres; used only when the node has no light node to take the
+/// position from.
+pub fn fire_lift(stored: u16) -> f32 {
+    (f64::from(stored) * 0.01) as f32
+}
+
+/// A signalled fire job's size: hundredths of the stored value, or 2 when
+/// the value is 0. It is not clamped.
+pub fn job_fire_size(stored: u16) -> f32 {
+    if stored < 1 {
+        2.0
+    } else {
+        (f64::from(stored) * 0.01) as f32
+    }
 }
 
 /// Trigger the electric object directly under a node (a light job with its
@@ -540,28 +599,78 @@ mod tests {
 
     #[test]
     fn a_fire_record_lights_up_unless_the_day_is_up() {
-        assert_eq!(level_setup(None, 0.0), Setup::Missing);
-        let switch = Record {
-            flags: SWITCH_OFF,
-            ..operative(JOB, FIRE)
-        };
-        assert_eq!(level_setup(Some(&switch), 0.0), Setup::SwitchOff);
+        let setup = |record: Option<&Record>, daylight| level_setup(record, daylight).setup;
+        assert_eq!(setup(None, 0.0), Setup::Missing);
+        assert!(!level_setup(None, 0.0).switch_off);
         let electric = Record {
             value: 1,
             ..operative(JOB, LIGHT)
         };
-        assert_eq!(level_setup(Some(&electric), 0.0), Setup::Electricity);
-        assert_eq!(level_setup(Some(&operative(JOB, LIGHT)), 0.0), Setup::None);
+        assert_eq!(setup(Some(&electric), 0.0), Setup::Electricity);
+        assert_eq!(setup(Some(&operative(JOB, LIGHT)), 0.0), Setup::None);
+        // Size 250 and lift 40 cm: the low and high halves of the target.
         let fire = Record {
             class: FIRE_CLASS,
-            value: 250,
+            value: 7,
+            target: 40 << 16 | 250,
             ..operative(JOB, FIRE)
         };
-        assert_eq!(level_setup(Some(&fire), 0.0), Setup::Fire { size: 250 });
-        assert_eq!(level_setup(Some(&fire), 0.12), Setup::Fire { size: 250 });
-        assert_eq!(level_setup(Some(&fire), 0.13), Setup::Daylight);
+        let lit = Setup::Fire {
+            size: 250,
+            lift: 40,
+        };
+        assert_eq!(setup(Some(&fire), 0.0), lit);
+        assert_eq!(setup(Some(&fire), 0.12), lit);
+        assert_eq!(setup(Some(&fire), 0.13), Setup::Daylight);
         let other_class = Record { class: 3, ..fire };
-        assert_eq!(level_setup(Some(&other_class), 0.0), Setup::None);
+        assert_eq!(setup(Some(&other_class), 0.0), Setup::None);
+        // The switch-off flag does not stop the kind's own setup.
+        let switched = Record {
+            flags: SWITCH_OFF,
+            ..fire
+        };
+        let both = level_setup(Some(&switched), 0.0);
+        assert!(both.switch_off);
+        assert_eq!(both.setup, lit);
+        let flagged_light = Record {
+            flags: SWITCH_OFF,
+            ..electric
+        };
+        assert_eq!(
+            level_setup(Some(&flagged_light), 0.0),
+            LoadSetup {
+                switch_off: true,
+                setup: Setup::Electricity
+            }
+        );
+    }
+
+    #[test]
+    fn a_daylit_fire_puts_out_the_light_or_its_lit_parent() {
+        // 0 holds lit node 1, which holds light node 2.
+        let mut nodes = vec![
+            Node {
+                class: 0x1000,
+                children: vec![1],
+                ..Node::default()
+            },
+            Node {
+                class: LIT,
+                parent: Some(0),
+                children: vec![2],
+                ..Node::default()
+            },
+            Node {
+                class: LIGHT_CLASS,
+                parent: Some(1),
+                ..Node::default()
+            },
+        ];
+        assert_eq!(daylight_target(&nodes, 0), 1);
+        nodes[1].class = 0x05;
+        assert_eq!(daylight_target(&nodes, 0), 2);
+        nodes[2].class = 0x05;
+        assert_eq!(daylight_target(&nodes, 0), 0);
     }
 
     fn sliding() -> Shape {
@@ -631,10 +740,12 @@ mod tests {
         assert!(sliders[0].latched && sliders[1].latched);
 
         let mut plain = [shutter(0)];
-        latch_doors(&mut plain, true);
+        assert_eq!(latch_doors(&mut plain, 0x10, true), 0x11);
         assert!(plain[0].latched && plain[0].saved & 1 == 1);
-        latch_doors(&mut plain, false);
+        assert_eq!(latch_doors(&mut plain, 0x11, false), 0x10);
         assert!(!plain[0].latched && plain[0].saved & 1 == 0);
+        // The word takes the bit even with no door under the node.
+        assert_eq!(latch_doors(&mut [], 0, true), 1);
     }
 
     /// The toggle walks the node's doors in order: an unlatched door closes
@@ -768,6 +879,10 @@ mod tests {
     #[test]
     fn a_fire_size_is_clamped_and_an_electric_object_lights_once() {
         assert!((fire_size(250) - 2.5).abs() < 1e-6);
+        assert!((fire_lift(40) - 0.4).abs() < 1e-6);
+        assert_eq!(job_fire_size(0), 2.0);
+        assert!((job_fire_size(20) - 0.2).abs() < 1e-6);
+        assert!((job_fire_size(2000) - 20.0).abs() < 1e-5, "not clamped");
         assert!((fire_size(1) - 0.25).abs() < 1e-6);
         assert!((fire_size(2000) - 10.0).abs() < 1e-6);
         assert!((fire_size(25) - 0.25).abs() < 1e-6);
