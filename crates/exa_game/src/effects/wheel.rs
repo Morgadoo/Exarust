@@ -257,10 +257,15 @@ impl Wheel {
     /// confirmed choice stamps the button 256 ms ahead, shifts the choices
     /// and plays a sound.
     pub fn confirm(&mut self, modifiers: u32, known: &[bool; SECTORS as usize], now: u32) -> bool {
-        if self.hot <= 0
-            || modifiers & CONFIRM_MODIFIER == 0
+        let Some(slot) = usize::try_from(self.hot - 1)
+            .ok()
+            .filter(|slot| *slot < SECTORS as usize)
+        else {
+            return false;
+        };
+        if modifiers & CONFIRM_MODIFIER == 0
             || self.hot == self.chosen
-            || !known[(self.hot - 1) as usize]
+            || !known[slot]
             || self.confirm_deadline > now
         {
             return false;
@@ -418,5 +423,11 @@ mod tests {
         assert_eq!(BUTTON, 2);
         assert_eq!(CONFIRM_MODIFIER, 0x2000);
         assert_eq!(DEFAULT_FADE, 0.5);
+        let mut out = Wheel {
+            hot: 99,
+            ..Wheel::default()
+        };
+        let known = [true; SECTORS as usize];
+        assert!(!out.confirm(CONFIRM_MODIFIER, &known, 0));
     }
 }

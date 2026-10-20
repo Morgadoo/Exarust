@@ -179,6 +179,9 @@ pub const GRID_STEP_CM: f32 = 6.0;
 
 /// The burst's random side offset, ±1.5 cm.
 pub const SEED_JITTER_CM: f32 = 1.5;
+/// A guard against an absurd box: no axis is divided into more steps. The
+/// original's particle capacity stops it long before this.
+pub const MAX_GRID_STEPS: i32 = 1024;
 
 /// The pull the burst applies between a particle's two starts and the
 /// emitter's velocity.
@@ -219,7 +222,11 @@ pub struct Seeded {
 pub fn grid_steps(half_cm: Vec3) -> [i32; 3] {
     [half_cm.x, half_cm.y, half_cm.z].map(|half| {
         let steps = (half / GRID_STEP_CM).round_ties_even();
-        if steps.is_finite() { steps as i32 } else { 0 }
+        if steps.is_finite() {
+            (steps as i32).clamp(-MAX_GRID_STEPS, MAX_GRID_STEPS)
+        } else {
+            0
+        }
     })
 }
 
