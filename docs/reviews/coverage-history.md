@@ -66,3 +66,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-20 | a96831c | dirty | 22.7% | 5.7% | 18.6% | 27.3% | seed the arena ranks |
 | 2026-10-20 | 9eb2ac6 | clean | 22.7% | 5.7% | 18.6% | 27.3% | record the arena ranks |
 | 2026-10-20 | 4e61cd9 | dirty | 22.7% | 5.7% | 18.6% | 27.3% | scale the main menu |
+| 2026-10-20 | 2cd154a | clean | 22.7% | 5.7% | 18.6% | 27.3% | record the main menu scale |
