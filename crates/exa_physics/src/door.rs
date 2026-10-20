@@ -1205,9 +1205,11 @@ impl Sound {
     }
 }
 
-/// What the door's own word stores: the mode, the countdown and the latch.
+/// An object word as a door leaves it: the mode in the low byte, the
+/// countdown in the top byte, and the latch, which shares bit 0 with the
+/// mode.
 pub fn stored_word(mode: i32, countdown: i32, latched: bool) -> i32 {
-    (mode & 0xF) | (countdown << 24) | i32::from(latched)
+    (mode & 0xFF) | (countdown << 24) | i32::from(latched)
 }
 
 /// A door body's state and its per-tick rules.
@@ -2130,6 +2132,10 @@ mod tests {
         let on_the_line = pair_shut(&pair(0.950_000_05));
         assert!(on_the_line.shut);
         assert!(on_the_line.hold);
+        // The float nearest 0.95 (0.94999999) is past the double 0.05 line.
+        let past_the_line = pair_shut(&pair(0.95));
+        assert!(!past_the_line.shut);
+        assert!(past_the_line.hold);
 
         let mut single = pair(1.0 - SINGLE_LEAVE - 0.01);
         let left = pair_shut(&single);
@@ -2782,5 +2788,28 @@ mod tests {
         let (squared, mean) = sound_factors(0.0);
         assert!((squared - 1.0).abs() < 1e-6);
         assert!((mean - 1.0).abs() < 1e-6);
+    }
+
+    /// Only a command writes the word: a toggle stores mode 8 and its 100
+    /// ticks, and the tick that counts the countdown down leaves it.
+    #[test]
+    fn a_command_writes_the_word_and_a_tick_does_not() {
+        let shape = Shape {
+            sliding: false,
+            travel_link: 0,
+            sign: 1.0,
+            radius: 100.0,
+            half_swing: std::f32::consts::FRAC_PI_6,
+            stop_slack: 50.0,
+            axis: Vec3::Y,
+        };
+        let mut door = Door::new(Record::default(), shape, 0, 0.52, 0.0);
+        door.toggle();
+        let word = MODE_TOGGLE | (TOGGLE_SLOW << 24);
+        assert_eq!(door.stored(), word);
+        door.step(Tick::new(0, 0.52, 0.0, 0.0), None);
+        assert_eq!(door.countdown, TOGGLE_SLOW - 1);
+        assert_eq!(door.stored(), word);
+        assert_eq!(((door.stored() as u32) >> 24) as i32, TOGGLE_SLOW);
     }
 }
