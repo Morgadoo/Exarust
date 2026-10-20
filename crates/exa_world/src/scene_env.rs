@@ -229,7 +229,9 @@ pub fn blend_records(a: EnvRecord, b: EnvRecord, t: f32) -> EnvRecord {
 /// Mixes a colour towards its luminance by `mix`, the way the sky dimming
 /// does before scaling.
 fn desaturate(c: &mut [f32; 3], mix: f32) {
-    let luma = c[2] * 0.114 + c[1] * 0.587 + c[0] * 0.299;
+    // Natural operand order x, y, z: the decompiler printed the sum the
+    // other way round.
+    let luma = c[0] * 0.299 + c[1] * 0.587 + c[2] * 0.114;
     for v in c.iter_mut() {
         *v = (luma - *v) * mix + *v;
     }
@@ -345,6 +347,8 @@ fn normalize(v: [f32; 3]) -> [f32; 3] {
 /// The daylight factor of a body's height: 0 with the body straight down,
 /// 0.5 at the horizon and 1 at the zenith.
 pub fn daylight_factor(height: f32) -> f32 {
+    // The original feeds the arc sine straight from a unit vector; the
+    // clamp only guards a rounding overshoot (guess).
     height.clamp(-1.0, 1.0).asin() * 0.318_309_87 + 0.5
 }
 
@@ -754,7 +758,9 @@ impl SceneEnvironment {
         if cloud <= CLOUD_EPSILON {
             self.sun_dim = 0.0;
         } else {
-            let cloud = if CLOUD_MAX < cloud { CLOUD_MAX } else { cloud };
+            // The original bounds the cloud factor; a minimum keeps the
+            // bound when the value is NaN.
+            let cloud = cloud.min(CLOUD_MAX);
             dim_sky(&mut self.current, cloud, 1.0 - cloud * cloud);
             self.sun_dim = cloud * 2.0;
         }
@@ -866,6 +872,8 @@ impl SceneEnvironment {
         if requested <= RAIN_MIN {
             self.weather.target = 0.0;
         } else {
+            // The original compares and stores the floor; a NaN request
+            // keeps the NaN (guess: the check, not a maximum instruction).
             self.weather.target = if requested < RAIN_FLOOR {
                 RAIN_FLOOR
             } else {
@@ -963,9 +971,8 @@ impl SceneEnvironment {
                     }
                     let gain = self.weather.lightning.step * self.weather.lightning.attenuation;
                     self.weather.lightning.intensity += gain;
-                    if self.weather.lightning.intensity < 0.0 {
-                        self.weather.lightning.intensity = 0.0;
-                    }
+                    // A maximum keeps the bound when the value is NaN.
+                    self.weather.lightning.intensity = self.weather.lightning.intensity.max(0.0);
                 }
             }
         }
@@ -999,7 +1006,8 @@ impl SceneEnvironment {
         }
         if self.sky && self.daylight < 0.54 {
             let low = 1.0 - (0.54 - self.daylight) * 4.0;
-            let low = if low < 0.15 { 0.15 } else { low };
+            // A maximum keeps the bound when the value is NaN.
+            let low = low.max(0.15);
             factor = (1.0 - factor.sqrt() * (1.0 - low)) * factor;
         }
         fog.current_far = fog.current_far * factor + fog.current_near;
