@@ -1,7 +1,7 @@
 //! The Settings and Controls forms, rebuilt from the binary's 0x68-byte
-//! control records (`TSGSettingDlg`, `0x1002b2af0`, `0x1002b2ea0` and
-//! `0x1002b1700`). Positions are design pixels at GUI unit 4; y anchors are
-//! on the 4-px grid and are scaled by the live unit.
+//! control records (`TSGSettingDlg`'s tab, Settings and Controls arrays;
+//! `docs/UI.md`, Forms). Positions are design pixels at GUI unit 4; y
+//! anchors are on the 4-px grid and are scaled by the live unit.
 
 /// The design dialog size at unit 4.
 pub const DESIGN: (i32, i32) = (434, 536);
@@ -151,7 +151,7 @@ pub fn place(records: &[Record], y_offset: i32) -> Vec<Rect> {
     out
 }
 
-/// The tab/button array (`0x1002b2af0`, 9 records; Cancel may be omitted).
+/// The tab/button array (9 records; Cancel may be omitted).
 pub const TABS: [Record; 9] = [
     rec(1, 0, 12, 5, 192, 32, Some("SETTINGS"), 0x0040_3320, 0x60),
     rec(1, 0, 212, 0x8000, 192, 32, Some("CONTROLS"), 0x0040_3320, 0),
@@ -184,7 +184,7 @@ pub const TABS: [Record; 9] = [
     rec(1, 0, 0x8002, 0x8000, 100, 0, Some("Cancel"), 0x2040_3300, 0),
 ];
 
-/// The Settings row array (`0x1002b2ea0`, 27 records).
+/// The Settings row array (27 records).
 pub const SETTINGS: [Record; 27] = [
     rec(5, 0, 16, 0, 60, 0, Some("Video Device: "), 0, 0),
     rec(5, 1, 168, 0x8000, 248, 0, Some("Unknown"), 0, 0x2000_2380),
@@ -237,7 +237,7 @@ const fn bind(label: &'static str, action: u16, key: &'static str, y: i32) -> Bi
     }
 }
 
-/// The Controls bindings (`0x1002b1700`, 22 label rows, 21 key cells).
+/// The Controls bindings (22 label rows, 21 key cells).
 pub const BINDINGS: [Binding; 22] = [
     bind("Forward", 1, "W", 8),
     bind("Back", 2, "S", 36),
@@ -512,7 +512,7 @@ pub struct PageSwitch {
     pub child: Rect,
 }
 
-/// The page switch (`0x1000a7e20`): page 0 shows the Settings child at
+/// The page switch: page 0 shows the Settings child at
 /// (0,64,426,408); page 1 shows the Controls child at a y of 56 (widescreen)
 /// or 96, height 472−y. The unit-4 values scale by `unit/4`.
 pub fn switch_page(page: u8, widescreen: bool, unit: i32) -> Option<PageSwitch> {

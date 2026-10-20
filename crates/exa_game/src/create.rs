@@ -2,7 +2,8 @@
 //!
 //! A new record takes the appearance: four words, a count and a parts list,
 //! then a tail and its list. The source keeps its words and loses both
-//! counts and lists. Evidence: the 228-byte `0x10012bd20`.
+//! counts and lists. Evidence: the retail creation record's appearance
+//! copy (`docs/formats/OTHER.md`, Saves).
 
 /// A character creation record's appearance.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

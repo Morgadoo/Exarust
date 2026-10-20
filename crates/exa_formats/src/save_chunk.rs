@@ -3,8 +3,8 @@
 //! The chunk is the header `0xECADCA01`, a twelve-byte tag and two dwords;
 //! the old flag is set when the tag's version float is below one million.
 //! The curve is two quadratics joined at 0.5.
-//! Evidence: the 90-byte `0x10017d160`, the 140-byte `0x10017d030` and the
-//! 104-byte `0x10017d0c0`.
+//! Evidence: the three retail routines behind it (`docs/formats/OTHER.md`,
+//! Saves).
 
 /// The settings chunk's header.
 pub const SAVE_SETTINGS_ID: u32 = 0xecad_ca01;

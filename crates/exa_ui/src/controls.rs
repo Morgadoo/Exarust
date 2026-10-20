@@ -124,7 +124,7 @@ pub struct ListExtent {
     pub page: Option<f32>,
 }
 
-/// `0x1000fab10`: up to 16 rows fit; beyond that the height is
+/// A list's extent: up to 16 rows fit; beyond that the height is
 /// `2·inset + 16·row` and the page fraction is `1/(count−16)`.
 pub fn list_extent(metrics: ListMetrics, count: i32) -> ListExtent {
     let row = metrics.row();
@@ -312,7 +312,7 @@ pub struct LabelAt {
     pub y: i32,
 }
 
-/// Aligns a control label (`0x1000fa110`). `avail` is the usable text
+/// Aligns a control label. `avail` is the usable text
 /// width, `base` the font base and `line_h` its line height.
 #[allow(clippy::too_many_arguments)]
 pub fn align_label(

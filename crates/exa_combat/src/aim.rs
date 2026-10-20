@@ -1,10 +1,10 @@
-//! The combatant's head tracking, as the original runs it each tick
-//! (`0x1000c0790`): two relaxed angles, a yaw and a pitch, chasing the
-//! look-at point through the engine's cheap polynomial atan2. The yaw
-//! moves at most π/100 a tick and is then held within ±π/4 of the body's
-//! facing; the pitch moves the same step and its target is floored at
-//! −0.6. The result is the unit look direction, the point 250 cm along it
-//! and the flat (y = 0) unit direction.
+//! The combatant's head tracking, as the original runs it each tick: two
+//! relaxed angles, a yaw and a pitch, chasing the look-at point through
+//! the engine's cheap polynomial atan2. The yaw moves at most π/100 a tick
+//! and is then held within ±π/4 of the body's facing; the pitch moves the
+//! same step and its target is floored at −0.6. The result is the unit look
+//! direction, the point 250 cm along it and the flat (y = 0) unit
+//! direction.
 //!
 //! Aim inside 50 cm reuses the previous direction; between 50 and 100 cm
 //! the vertical component is replaced by `(10000 − d²)·1e-4` before the
@@ -107,7 +107,7 @@ pub fn track_head(
     )
 }
 
-/// The far head-tracking variant (`0x1000c0cd0`): a 150 cm look-ahead and
+/// The far head-tracking variant: a 150 cm look-ahead and
 /// no pitch floor.
 pub fn track_head_far(
     head: &mut HeadTrack,

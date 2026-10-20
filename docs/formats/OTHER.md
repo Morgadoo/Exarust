@@ -352,6 +352,17 @@ layout in [RFC.md](RFC.md#starts-characters-and-placed-objects)) hold body,
 race, equipment, health, personality, skills, roles and relations. Exarust uses
 its own save format; this is documented for reference only.
 
+**Settings chunk** (`exa_formats::save_chunk`): the header `0xECADCA01`, a
+twelve-byte tag and two dwords; the old flag is set when the tag's version
+float is below one million, and the easing curve is two quadratics joined
+at 0.5. Evidence: the retail routines at `0x10017d160` (90 bytes),
+`0x10017d030` (140) and `0x10017d0c0` (104).
+
+**Character creation** (`exa_game::create`): a new record takes the
+appearance (four words, a count and a parts list, then a tail and its
+list); the source keeps its words and loses both counts and lists.
+Evidence: the 228-byte routine at `0x10012bd20`.
+
 ## Terrain (`.rft` and `.ftb`)
 
 Moved to [TERRAIN.md](TERRAIN.md) (verified).
@@ -373,6 +384,9 @@ sizes are in `exa_game::thaum`. A play draw submits that upload on
 the mesh when the flag is set. The Bevy render graph does not issue
 the original's GL calls. Exarust:
 `exa_formats::power_tree`.
+
+The Mind power's spirit form (`exa_game::mind`) follows `TPwrSpiritForm`'s
+tick at `0x1001e1690`.
 
 - **Header**: first word `0xAFCE01CE`. The node count is the signed word at
   byte 52. A negative count is an error. The bytes between the magic and
@@ -1058,6 +1072,26 @@ there stays. Red gains the double 0.1 times the maximum and is kept within
 it. Yellow copies red. Red bits 0x3e4ccccd with maximum 0.25 become
 0x3e666667. Red bits 0x3e75c28f become 0x3e800000. The partner is not
 spawned.
+
+## Arena tables
+
+`exa_game::arena` holds the arena's tables as read from `Exanima.exe`
+0.9.5:
+
+| table | address |
+|---|---|
+| 6 standard matches | `0x1002bc6d0` |
+| 7 daily ranked matches | `0x1002bc3c0` |
+| 5 tournament formats | `0x1002bc970` |
+| 18 weekly tournament prize ids | `0x1002bcba0` |
+| the season's 4 armour sets | `0x1002bcc40` |
+| 19 rival companies: names and three profile bytes | `0x1002bbf30` |
+| 6 loadout tiers, 0x158-byte rows | `0x1002bb6a0` |
+| the tiers' point limits | `0x1002bcd30` |
+
+The record log (`exa_game::arena_log`) grows a list of twenty-byte
+records, one id and a value or one id and four words; its two appenders
+are the 113-byte `0x100184080` and the 127-byte `0x100184100`.
 
 ## Actors
 

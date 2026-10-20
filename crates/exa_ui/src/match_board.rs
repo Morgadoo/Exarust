@@ -3,7 +3,7 @@
 //! Showing seeds three globals from the columns, clears five panels and a
 //! present pointer and returns the base result. Destroying releases the
 //! stored list and frees on positive flags.
-//! Evidence: the 379-byte `0x100195c00` and the 121-byte `0x100195d80`.
+//! Evidence: the retail match board's two methods (`docs/UI.md`, Forms).
 
 /// The match board's show inputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

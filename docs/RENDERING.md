@@ -469,7 +469,9 @@ and its 0.5, the clamp to 0…1, the registration's k1 = L/80 and k2 =
 its uniforms (0.025, −0.5, 0.0125, o) and the node's first sub-object, the
 depth nudge, the gradient's loader flags and the wrap and linear-upload
 rules, the two GLSL sources), and the corpus (`BldGr02D`'s rows and flags,
-the weapon models, pinned by tests).
+the weapon models, pinned by tests). The span is the float 80.0 at
+`0x10030fb68` and its inverse the double 0.0125 at `0x10030fb60`
+(`exa_combat::weapon_blood`).
 
 ### Blood sprays
 

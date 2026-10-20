@@ -20,11 +20,9 @@
 //!
 //! Rules: `docs/RENDERING.md` (Blood on weapons).
 
-/// The stain's span in centimetres (the original's float 80.0 at
-/// `0x10030fb68`).
+/// The stain's span in centimetres (the original's float 80.0).
 pub const SPOT_SPAN: f32 = 80.0;
-/// One over the span, as the original uses it (the double 0.0125 at
-/// `0x10030fb60`).
+/// One over the span, as the original uses it (its double 0.0125).
 pub const SPOT_INV_SPAN: f64 = 0.0125;
 
 /// One source's spot in the weapon's blood list.

@@ -313,3 +313,21 @@ Bevy draws no interface while its interface camera is off.
 
 The window's app id (X11 class) is `exarust`, so the desktop names it in
 its dialogs.
+
+## Forms
+
+The original's own forms and controls that Exarust rebuilds, with the
+`Exanima.exe` 0.9.5 code and data they were read from:
+
+- **Main menu** (`exa_game::menu_pages`): `TMainMenu`'s page table at
+  `0x100122c40`.
+- **Settings and Controls** (`exa_ui::settings`): `TSGSettingDlg`'s
+  0x68-byte control records, the 9 tabs and buttons at `0x1002b2af0`, the
+  27 Settings rows at `0x1002b2ea0` and the 22 Controls rows at
+  `0x1002b1700`; the page switch at `0x1000a7e20`.
+- **Control geometry** (`exa_ui::controls`): a list's extent at
+  `0x1000fab10`, a control label's alignment at `0x1000fa110`.
+- **Match board** (`exa_ui::match_board`): the 379-byte `0x100195c00` and
+  the 121-byte `0x100195d80`.
+- **Skill screen** (`exa_ui::skill`): `TSkillUI`'s 186-byte node placement
+  at `0x100224570`.

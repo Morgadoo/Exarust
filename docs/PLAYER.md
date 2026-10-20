@@ -383,6 +383,10 @@ Not yet, with the change that brings each:
   starts within four reaches (that part of the original's AI is not
   traced).
 
+A combatant's head tracking (`exa_combat::aim`) is the original's per-tick
+routine at `0x1000c0790`; the far variant, with a 150 cm look-ahead and no
+pitch floor, is `0x1000c0cd0`.
+
 ## Moveset from held items
 
 What a character holds picks the moveset its clips come from, after every

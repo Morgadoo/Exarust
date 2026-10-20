@@ -6,7 +6,7 @@
 
 use bevy::math::Vec3;
 
-/// Segment inverse-mass weights, bone 0..17 (`0x1002BB460`).
+/// Segment inverse-mass weights, bone 0..17 (the retail segment table).
 pub const SEGMENT_INV_MASS: [f32; 18] = [
     0.45, 0.7, 1.0, 2.8, 0.7, 1.0, 2.8, 0.45, 0.5, 1.0, 1.0, 1.2, 1.5, 1.0, 1.2, 1.5, 2.5, 2.5,
 ];

@@ -1,8 +1,8 @@
 //! The arena's record log.
 //!
 //! Two appenders grow a list of twenty-byte records: one id and a value,
-//! or one id and four words. Evidence: the 113-byte `0x100184080` and the
-//! 127-byte `0x100184100`.
+//! or one id and four words. Evidence: the retail arena's two appenders
+//! (`docs/formats/OTHER.md`, Arena tables).
 
 /// One record in the arena log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

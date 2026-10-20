@@ -2,7 +2,8 @@
 //!
 //! A positive index names a row and a column in the screen's layout; a
 //! non-positive index takes the scaled base or the centre of the bounds.
-//! Evidence: the 186-byte `TSkillUI` method at `0x100224570`.
+//! Evidence: the retail skill screen's 186-byte placement method
+//! (`docs/UI.md`, Forms).
 
 /// The skill screen's bounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

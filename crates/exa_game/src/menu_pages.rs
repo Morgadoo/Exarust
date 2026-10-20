@@ -1,4 +1,4 @@
-//! The main menu's page table (`TMainMenu` at `0x100122c40`): each page's
+//! The main menu's page table (`TMainMenu`'s rows): each page's
 //! rows, their order, which are disabled and the row origin fraction. The
 //! page geometry (row spacing) is not modelled; the retail screenshot shows
 //! ~70 px rows at 1600×1080, which the raw `70·0.5·round(H/135)` reading

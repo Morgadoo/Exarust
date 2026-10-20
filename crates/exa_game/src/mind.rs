@@ -1,6 +1,6 @@
-//! The Mind power's spirit form, as `TPwrSpiritForm` runs it
-//! (`0x1001e1690`): a value charged to 1, held, or faded to 0, published as
-//! a strength and a smooth body fade.
+//! The Mind power's spirit form, as `TPwrSpiritForm` runs it: a value
+//! charged to 1, held, or faded to 0, published as a strength and a smooth
+//! body fade.
 //!
 //! - **Charge** (state 3): the value rises by the elapsed milliseconds over
 //!   30 s. It stops at 1 and becomes held (state 1).

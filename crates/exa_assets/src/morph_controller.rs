@@ -8,9 +8,8 @@
 //! form, subtracts the controller's base, applies the owner's orientation
 //! and adds the vertex's base. The start binds each owner vertex to its
 //! nearest control candidate and stores that candidate's weights. Evidence:
-//! the 100-byte `0x1000db620`, the 66-byte `0x1000de0b0`, the 767-byte
-//! `0x1000dd580`, the 893-byte `0x1000dd880`, the 680-byte `0x1000da330`
-//! and the 448-byte `0x1000dd3c0`.
+//! the retail morph controller's six methods (`docs/formats/RFC.md`, Morph
+//! sets).
 
 /// A morph controller's opening.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

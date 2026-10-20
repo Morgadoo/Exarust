@@ -52,7 +52,7 @@ pub struct MatchTemplate {
     pub description: &'static str,
 }
 
-/// The six always-available standard matches (`0x1002bc6d0`).
+/// The six always-available standard matches.
 pub const STANDARD: [MatchTemplate; 6] = [
     MatchTemplate {
         id: 1,
@@ -164,7 +164,7 @@ pub const STANDARD: [MatchTemplate; 6] = [
     },
 ];
 
-/// The seven daily ranked matches (`0x1002bc3c0`).
+/// The seven daily ranked matches.
 pub const RANKED: [MatchTemplate; 7] = [
     MatchTemplate {
         id: 8,
@@ -294,7 +294,7 @@ pub const RANKED: [MatchTemplate; 7] = [
     },
 ];
 
-/// The five tournament formats (`0x1002bc970`).
+/// The five tournament formats.
 pub const TOURNAMENTS: [MatchTemplate; 5] = [
     MatchTemplate {
         id: 7,
@@ -388,12 +388,12 @@ pub const TOURNAMENTS: [MatchTemplate; 5] = [
     },
 ];
 
-/// The 18 weekly tournament prize ids (`0x1002bcba0`).
+/// The 18 weekly tournament prize ids.
 pub const TOURNAMENT_PRIZES: [u32; 18] = [
     213, 26, 440, 12, 65, 22, 62, 63, 953, 420, 60, 21, 24, 1166, 673, 33, 34, 61,
 ];
 
-/// The season's four armour sets (`0x1002bcc40`).
+/// The season's four armour sets.
 pub const SEASON_PRIZES: [[u32; 4]; 4] = [
     [1175, 1174, 1177, 1176],
     [1167, 1165, 1168, 1169],
@@ -401,7 +401,7 @@ pub const SEASON_PRIZES: [[u32; 4]; 4] = [
     [1178, 1179, 1180, 1181],
 ];
 
-/// The 19 rival companies' names and three profile bytes (`0x1002bbf30`).
+/// The 19 rival companies' names and three profile bytes.
 pub const COMPANIES: [(&str, [u8; 3]); 19] = [
     ("Bonten Company", [0x01, 0x07, 0x01]),
     ("Fitten Gang", [0x42, 0x8C, 0x01]),
@@ -1084,8 +1084,8 @@ const TIER4: [WeaponEntry; 4] = [
 ];
 const TIER5: [WeaponEntry; 4] = TIER4;
 
-/// The six loadout tiers (`0x1002bb6a0`), each row 0x158 bytes in the
-/// binary: a count and up to 14 entries of a name and three variants.
+/// The six loadout tiers, each row 0x158 bytes in the retail table: a
+/// count and up to 14 entries of a name and three variants.
 pub const WEAPON_TIERS: [&[WeaponEntry]; 6] = [&TIER0, &TIER1, &TIER2, &TIER3, &TIER4, &TIER5];
 
 /// A tier's weapon rows.
@@ -1108,7 +1108,7 @@ pub fn pick_variant(entry: &WeaponEntry, rng: &mut crate::item_container::Rng) -
         .nth(index)
 }
 
-/// A tier's point limit (`0x1002bcd30`).
+/// A tier's point limit.
 pub fn point_limit(tier: u32) -> Option<u32> {
     POINT_LIMITS.get(tier as usize).copied()
 }
