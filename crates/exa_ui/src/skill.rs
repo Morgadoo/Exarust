@@ -231,6 +231,32 @@ pub fn skill_hover(input: SkillHoverInput<'_>) -> SkillHover {
     out
 }
 
+/// Places the stored slot's satellite at a sample index.
+pub fn skill_satellite(stored: i32, sample: i32, ring: &SkillRing) -> (f32, f32) {
+    let unit = ring.unit as f32;
+    let centre_x = ring.width / 2
+        - if ring.scrolled && ring.page > 0 {
+            ring.unit
+        } else {
+            0
+        };
+    let centre_y = ring.height / 2 - if ring.page == 0 { 3 * ring.unit } else { 0 };
+    let angle =
+        (stored as f32 - 2.5) * (std::f32::consts::TAU / ring.count as f32) + 1.0 - ring.turn;
+    let node_x = centre_x as f32
+        + (ring.offset_a as f32 * (unit * angle.cos()) * ring.offset_b as f32).round_ties_even()
+            * ring.turn;
+    let node_y = centre_y as f32
+        + (ring.offset_a as f32 * (unit * angle.sin())).round_ties_even() * ring.turn;
+    let sample_angle = (sample - 1) as f32 * std::f32::consts::TAU * 0.2;
+    let radius = f64::from(ring.unit) * 18.3;
+    let x =
+        node_x + ((radius * f64::from(sample_angle.cos())).round_ties_even() as f32) * ring.turn;
+    let y =
+        node_y - ((radius * f64::from(sample_angle.sin())).round_ties_even() as f32) * ring.turn;
+    (x, y)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,5 +464,28 @@ mod tests {
         assert_eq!(plain.result, 3);
         assert_eq!(plain.current, 5);
         assert_eq!(plain.previous, 0);
+    }
+
+    #[test]
+    fn a_stored_slot_places_its_satellites() {
+        let ring = SkillRing {
+            count: 8,
+            offset_a: 10,
+            offset_b: 5,
+            turn: 1.0,
+            width: 200,
+            height: 100,
+            page: 0,
+            unit: 4,
+            scrolled: false,
+        };
+        assert_eq!(skill_satellite(3, 1, &ring), (358.0, 53.0));
+        assert_eq!(skill_satellite(3, 3, &ring), (226.0, 10.0));
+        let scrolled = SkillRing {
+            page: 1,
+            scrolled: true,
+            ..ring
+        };
+        assert_eq!(skill_satellite(3, 1, &scrolled), (354.0, 65.0));
     }
 }
