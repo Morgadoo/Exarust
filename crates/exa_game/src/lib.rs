@@ -11,6 +11,7 @@ pub mod career;
 pub mod create;
 pub mod cursor;
 pub mod drag;
+pub mod effects;
 pub mod emblem;
 pub mod experience;
 pub mod fall;
@@ -64,6 +65,7 @@ impl Plugin for GamePlugin {
             hud::HudPlugin,
             torch::TorchPlugin,
             trace::TracePlugin,
+            effects::EffectsPlugin,
         ))
         // Debug tools: idle unless their flags or keys turn them on.
         .add_plugins((

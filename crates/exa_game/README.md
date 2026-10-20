@@ -25,6 +25,26 @@ company's coins (`Company::restock`, `Company::settle`). The shop window,
 an apparel copy's description phrase and the weapon variant roll are not
 in.
 
+The small effect nodes (`effects`) are in: level portals replace a marker
+with a `_PrtlPrt01` spark system and a soft blue 0.75 light of 500 cm, and a
+body stepping through one gets a seeded `_PrtlDisp` dissolve burst (cells
+6 cm apart, two fifths taken, jitter ±1.5 cm, lifetime 41 ticks less up to a
+quarter) with `portaluse01` at 0.6. A lit held item carries a flame row from
+30 to 115 cm with the `_FlameMat01` shader, fading in by 0.02 a tick and out
+by 0.015, its tip lagging 20 cm and a fifth of the gap, lit by a 5.0 warm
+light of 800 cm whose walk is 0.87–1.15; its kind and fuel decide ignition,
+`FireSizzleA` plays at 0.3 and the `Flaming` modifier is 0x10020000. A
+displacement shell opens over 400 ms and closes over 300 ms from its shown
+value, with the fade, texture offset and 900/distance level of detail; a
+teleporter scan opens over 4800 ms, closes over 800 ms and flashes its
+colour at three times the shown value when it loops; a bubble grows over
+1800 ms, rests 500 ms or holds and charges over 7000 ms (flashing at 5600),
+then shrinks in 400 ms around a 120 cm sphere; the domain wheel is a 280 px
+six-sector form with a 76 px ring, a 20.8 px hit and its hover, show and
+confirm rules. Drawing the flame ribbon, shell and scan mesh copies, bubble
+and wheel geometry, the portal particle simulation and the bubble's GI
+light values is not in.
+
 It already runs the character ticks of physical bodies, the player's last,
 each body's whole tick before the next, in the original's stages
 (`stages`: the driver and one module a stage; the rules in `limp`): its
