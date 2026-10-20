@@ -284,6 +284,36 @@ pub fn step_creation_variant(word: i32, has_widget: bool) -> CreationStep {
     }
 }
 
+/// Steps the face variant up one, to a maximum of six.
+pub fn advance_creation_variant(word: i32, has_widget: bool) -> CreationStep {
+    let variant = (word >> 20) & 0xf;
+    if variant > 5 {
+        return CreationStep {
+            word,
+            changed: false,
+            caption: None,
+            default_caption: false,
+            refreshed: false,
+            finalized: true,
+        };
+    }
+    let next = variant + 1;
+    let word = (word & !0x00f0_0000) | (next << 20);
+    let caption = if has_widget {
+        Some(((next - 1) + 0x41) as u8)
+    } else {
+        None
+    };
+    CreationStep {
+        word,
+        changed: true,
+        caption,
+        default_caption: false,
+        refreshed: true,
+        finalized: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -490,6 +520,29 @@ mod tests {
         assert!(no_widget.changed);
         assert_eq!(no_widget.caption, None);
         assert!(!no_widget.default_caption);
+        assert!(no_widget.refreshed);
+    }
+
+    #[test]
+    fn the_creation_variant_advances_to_six() {
+        let advanced = advance_creation_variant(0x0020_0000, true);
+        assert_eq!(advanced.word, 0x0030_0000);
+        assert!(advanced.changed);
+        assert_eq!(advanced.caption, Some(b'C'));
+        assert!(advanced.refreshed);
+
+        let to_six = advance_creation_variant(0x0050_0000, true);
+        assert_eq!(to_six.word, 0x0060_0000);
+        assert_eq!(to_six.caption, Some(b'F'));
+
+        let capped = advance_creation_variant(0x0060_0000, true);
+        assert_eq!(capped.word, 0x0060_0000);
+        assert!(!capped.changed);
+        assert!(!capped.refreshed);
+
+        let no_widget = advance_creation_variant(0x0020_0000, false);
+        assert_eq!(no_widget.word, 0x0030_0000);
+        assert_eq!(no_widget.caption, None);
         assert!(no_widget.refreshed);
     }
 }
