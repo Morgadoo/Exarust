@@ -138,6 +138,56 @@ pub fn apply_morph_parts(node: &MorphPart) -> usize {
     count
 }
 
+/// Four morph ids and their weights.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MorphWeights {
+    pub ids: [i32; 4],
+    pub weights: [f32; 4],
+}
+
+/// Merges up to four source ids and weights into the current slots.
+pub fn merge_morph_weights(
+    mut current: MorphWeights,
+    source_ids: &[i32],
+    source_weights: &[f32],
+    scale: f32,
+) -> MorphWeights {
+    const EPSILON: f32 = f32::from_bits(0x33ff_ffd7);
+    if scale < EPSILON {
+        return current;
+    }
+    let mut last = current
+        .ids
+        .iter()
+        .rposition(|&id| id > 0)
+        .map_or(-1, |index| index as i32);
+    for index in 0..4 {
+        let Some(&id) = source_ids.get(index) else {
+            break;
+        };
+        let weight = source_weights.get(index).copied().unwrap_or(0.0);
+        if id < 1 {
+            break;
+        }
+        let mut found = false;
+        if last >= 0 {
+            for slot in 0..=last as usize {
+                if current.ids[slot] == id {
+                    current.weights[slot] += weight * scale;
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if !found && last < 3 {
+            last += 1;
+            current.ids[last as usize] = id;
+            current.weights[last as usize] = weight * scale;
+        }
+    }
+    current
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,5 +286,22 @@ mod tests {
         assert_eq!(apply_morph_parts(&root), 2);
         assert_eq!(apply_morph_parts(&leaf(0x01, 0x40_0000)), 0);
         assert_eq!(apply_morph_parts(&leaf(0x89, 0x80_0000)), 0);
+    }
+
+    #[test]
+    fn the_morph_weights_merge_into_four_slots() {
+        let current = MorphWeights {
+            ids: [1, 2, 0, 0],
+            weights: [0.5, 0.5, 0.0, 0.0],
+        };
+        let merged = merge_morph_weights(current, &[2, 3, 0, 0], &[1.0, 0.5, 0.0, 0.0], 2.0);
+        assert_eq!(merged.ids, [1, 2, 3, 0]);
+        assert_eq!(merged.weights, [0.5, 2.5, 1.0, 0.0]);
+
+        let unchanged = merge_morph_weights(current, &[2, 3, 0, 0], &[1.0, 0.5, 0.0, 0.0], 0.0);
+        assert_eq!(unchanged, current);
+
+        let stopped = merge_morph_weights(current, &[0, 3, 0, 0], &[1.0, 1.0, 0.0, 0.0], 1.0);
+        assert_eq!(stopped, current);
     }
 }
