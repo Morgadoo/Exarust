@@ -21,7 +21,8 @@ use crate::paint::{
     Encoding, PaintLayer, Painted, Texels, layer_material, library, normal_library, paint,
 };
 use crate::skin::{Joint, VertexSkin, auto_skin};
-use crate::texture::{ColorSpace, has_alpha, rfi_to_image};
+use crate::texture::{self, ColorSpace, has_alpha, material_flags, rfi_to_texture};
+use crate::texture_cache::{TextureCache, TextureKey};
 use exa_formats::material::flags as material_flags;
 use exa_formats::objdb::Appearance;
 use exa_render::material::{
@@ -129,7 +130,9 @@ type CachedTexture = Option<(Handle<Image>, bool)>;
 #[derive(Resource, Default)]
 pub struct ModelCache {
     models: HashMap<String, Option<Arc<Model>>>,
-    textures: HashMap<(String, ColorSpace), CachedTexture>,
+    /// The texture manager: records keyed by name and colour space, with
+    /// their sampler words and reference counts.
+    pub textures: TextureCache,
     materials: HashMap<String, Handle<ExaMaterial>>,
     /// Textures decoded on the CPU, for painting.
     texels: HashMap<String, Option<Arc<Texels>>>,
@@ -563,15 +566,30 @@ impl ModelLoader<'_> {
             },
             ..default()
         };
+        // The record's texture load flags, with the mode bits the original
+        // adds per slot: normal and gloss (and specular of a packed
+        // material) are data, and a diffuse with a secondary colour skips
+        // the LOD bias.
+        let settings = *self.cache.textures.settings();
+        let base_flags = material_flags(m.texture_flags, &settings);
+        let data_flags = base_flags | texture::flags::DATA | texture::flags::NO_LOD_BIAS;
+        let bias_skipped = base_flags | texture::flags::NO_LOD_BIAS;
         let mut cut_out = false;
-        if let Some(t) = m.texture(TextureSlot::Diffuse)
-            && let Some((img, alpha)) = self.texture(t, ColorSpace::Srgb)
-        {
-            mat.diffuse_map = Some(img);
-            cut_out = alpha;
+        if let Some(t) = m.texture(TextureSlot::Diffuse) {
+            let flags = if m.has_secondary_colour() {
+                bias_skipped
+            } else {
+                base_flags
+            };
+            if let Some((img, alpha)) = self.texture_with_flags(t, ColorSpace::Srgb, flags) {
+                mat.diffuse_map = Some(img);
+                cut_out = alpha;
+            }
         }
         if let Some(t) = m.texture(TextureSlot::Normal) {
-            mat.normal_map = self.texture(t, ColorSpace::Linear).map(|t| t.0);
+            mat.normal_map = self
+                .texture_with_flags(t, ColorSpace::Linear, data_flags)
+                .map(|t| t.0);
         }
         if let Some(t) = m.texture(TextureSlot::Specular) {
             let space = if packed {
@@ -579,17 +597,28 @@ impl ModelLoader<'_> {
             } else {
                 ColorSpace::Srgb
             };
-            mat.specular_map = self.texture(t, space).map(|t| t.0);
+            let flags = if m.kind & 1 != 0 {
+                data_flags
+            } else {
+                base_flags
+            };
+            mat.specular_map = self.texture_with_flags(t, space, flags).map(|t| t.0);
         }
         if let Some(t) = m.texture(TextureSlot::Emissive) {
-            mat.emissive_map = self.texture(t, ColorSpace::Srgb).map(|t| t.0);
+            mat.emissive_map = self
+                .texture_with_flags(t, ColorSpace::Srgb, base_flags)
+                .map(|t| t.0);
         }
         if let Some(t) = m.texture(TextureSlot::Opacity) {
-            mat.opacity_map = self.texture(t, ColorSpace::Linear).map(|t| t.0);
+            mat.opacity_map = self
+                .texture_with_flags(t, ColorSpace::Linear, base_flags)
+                .map(|t| t.0);
         }
         // Dirt maps only act through vertex colours, which level meshes lack.
         if let Some(t) = m.texture(TextureSlot::Gloss) {
-            mat.gloss_map = self.texture(t, ColorSpace::Linear).map(|t| t.0);
+            mat.gloss_map = self
+                .texture_with_flags(t, ColorSpace::Linear, data_flags)
+                .map(|t| t.0);
         }
         // Parallax: the height layer's depth as a fixed number of texels of
         // the height map; displacement shadows when the record asks.
@@ -892,30 +921,50 @@ impl ModelLoader<'_> {
         handle
     }
 
-    /// Image handle and whether it has alpha.
+    /// Image handle and whether it has alpha, with the default texture word
+    /// (a material texture at the retail settings).
     pub fn texture(&mut self, name: &str, space: ColorSpace) -> CachedTexture {
-        let key = (name.to_ascii_lowercase(), space);
-        if let Some(cached) = self.cache.textures.get(&key) {
-            return cached.clone();
-        }
-        let result = match self.game.texture(name) {
-            None => Err(format!("texture {name:?} not found")),
-            Some(bytes) => Rfi::parse(bytes)
-                .and_then(|rfi| {
-                    let alpha = has_alpha(&rfi);
-                    rfi_to_image(&rfi, space, self.bc_supported).map(|img| (img, alpha))
-                })
-                .map_err(|e| format!("texture {name:?}: {e}")),
-        };
-        let value = match result {
-            Ok((img, alpha)) => Some((self.images.add(img), alpha)),
-            Err(msg) => {
-                self.warn_once(msg);
-                None
+        self.texture_with_flags(name, space, crate::texture::default_flags())
+    }
+
+    /// Image handle and whether it has alpha, with the creation/sampler
+    /// word a material asks for. The cache replaces the word of a live
+    /// record, as the original does; the image is decoded once.
+    pub fn texture_with_flags(
+        &mut self,
+        name: &str,
+        space: ColorSpace,
+        flags: u32,
+    ) -> CachedTexture {
+        let key = TextureKey::new(name, space);
+        let created = self.cache.textures.acquire(key, flags).created;
+        if created {
+            let settings = *self.cache.textures.settings();
+            let result = match self.game.texture(name) {
+                None => Err(format!("texture {name:?} not found")),
+                Some(bytes) => Rfi::parse(bytes)
+                    .and_then(|rfi| {
+                        let alpha = has_alpha(&rfi);
+                        rfi_to_texture(&rfi, space, self.bc_supported, flags, &settings)
+                            .map(|img| (img, alpha))
+                    })
+                    .map_err(|e| format!("texture {name:?}: {e}")),
+            };
+            match result {
+                Ok((img, alpha)) => {
+                    let handle = self.images.add(img);
+                    self.cache.textures.finish(&key, handle, alpha);
+                }
+                Err(msg) => {
+                    self.warn_once(msg);
+                    self.cache.textures.release(&key);
+                }
             }
-        };
-        self.cache.textures.insert(key, value.clone());
-        value
+        }
+        self.cache
+            .textures
+            .get(&key)
+            .and_then(|record| record.image.clone().map(|image| (image, record.alpha)))
     }
 }
 

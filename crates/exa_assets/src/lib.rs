@@ -14,6 +14,7 @@ pub mod paint;
 pub mod polyhedra;
 pub mod skin;
 pub mod texture;
+pub mod texture_cache;
 pub mod vertex_cache;
 pub mod weapon;
 
@@ -27,6 +28,7 @@ pub use exa_rpk::{GameData, PackKind, locate_install};
 pub use model::{Model, ModelCache, ModelLoader, ModelNode, NodeRigidBody, transform_from_rows};
 pub use morph::BodyMorph;
 pub use texture::ColorSpace;
+pub use texture_cache::{TextureCache, TextureKey, TextureName, TextureRecord};
 
 /// A mesh whose vertices carry skin weights over a character's bones, in
 /// the space of body part `bone`; bound to the skeleton once it is known.

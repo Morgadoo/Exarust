@@ -99,6 +99,9 @@ pub struct Material {
     /// Extra flags (`0x4C`): `0x100000` enables displacement shadows,
     /// `0x100` turns the opacity fall-off toward the silhouette around.
     pub extra: u32,
+    /// Subsurface colour (`0x6C`): non-zero materials draw skin's scattered
+    /// light, and their diffuse texture skips the LOD bias.
+    pub subsurface: [f32; 4],
     /// Displacement-shadow step and bias (`0x5C`, `0x60`), with a height map.
     pub displacement_step: f32,
     pub displacement_bias: f32,
@@ -115,6 +118,10 @@ pub struct Material {
     /// material name's first three characters when empty, followed by
     /// `col`.
     pub collision_sound: String,
+    /// Texture load flags (`0x54`): the sampler word every texture of the
+    /// material starts from (`0x70000` = repeat on all axes in the shipped
+    /// data), combined with the texture quality mask by the texture loader.
+    pub texture_flags: u32,
     pub layers: Vec<TextureLayer>,
 }
 
@@ -185,6 +192,8 @@ impl Material {
             flags: u32_at(0x48),
             kind: u32_at(0x50),
             extra: u32_at(0x4C),
+            subsurface: rgba(0x6C),
+            texture_flags: u32_at(0x54),
             displacement_step: f32_at(0x5C),
             displacement_bias: f32_at(0x60),
             falloff_amount: f32_at(0x64),
@@ -197,6 +206,12 @@ impl Material {
             },
             layers,
         })
+    }
+
+    /// Whether the record carries a subsurface (secondary) colour: the
+    /// original's diffuse texture then skips the LOD bias.
+    pub fn has_secondary_colour(&self) -> bool {
+        self.subsurface != [0.0; 4]
     }
 
     /// What a rigid body's stored mobility is divided by when the body is
@@ -283,6 +298,14 @@ mod tests {
         assert_eq!(m.texture(TextureSlot::Diffuse), Some("GrassPalA01D"));
         assert_eq!(m.texture(TextureSlot::Normal), Some("wall01n"));
         assert_eq!(m.diffuse[0], 0.5);
+    }
+
+    #[test]
+    fn reads_the_texture_load_flags() {
+        let mut p = vec![0u8; PARAMETER_BLOCK];
+        assert_eq!(Material::parse(&p).unwrap().texture_flags, 0);
+        p[0x54..0x58].copy_from_slice(&0x0007_0000u32.to_le_bytes());
+        assert_eq!(Material::parse(&p).unwrap().texture_flags, 0x0007_0000);
     }
 
     #[test]
