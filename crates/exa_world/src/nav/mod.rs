@@ -39,7 +39,8 @@ use bevy::math::{DVec3, Vec2, Vec3};
 
 pub use footprint::{remove_footprint, stamp_footprint};
 pub use mover::{
-    CellRect, Movers, plan_around, queue_moved, queued_moves, rect_around, refresh_movers,
+    CellRect, FootprintAdd, FootprintList, FootprintRect, Movers, plan_around, plan_footprint,
+    queue_moved, queued_moves, rect_around, refresh_movers,
 };
 pub use path::{Look, Path, find_path, look_ahead};
 pub use query::{LineHit, line_walk, nearest_walkable, obstacle, straight_walk};

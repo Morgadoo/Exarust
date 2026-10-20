@@ -77,6 +77,70 @@ pub fn queued_moves(movers: &Movers) -> &[CellRect] {
     &movers.rects
 }
 
+/// A footprint rectangle on the planner grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FootprintRect {
+    pub x0: i32,
+    pub y0: i32,
+    pub x1: i32,
+    pub y1: i32,
+}
+
+impl FootprintRect {
+    fn union(self, other: Self) -> Self {
+        Self {
+            x0: self.x0.min(other.x0),
+            y0: self.y0.min(other.y0),
+            x1: self.x1.max(other.x1),
+            y1: self.y1.max(other.y1),
+        }
+    }
+
+    /// Six cells of padding, as the original measures it.
+    fn padded_area(self) -> i32 {
+        (self.x1 - self.x0 + 6) * (self.y1 - self.y0 + 6)
+    }
+}
+
+/// The planner's footprint rectangles and the spare capacity it keeps.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct FootprintList {
+    pub rects: Vec<FootprintRect>,
+    pub capacity: i32,
+}
+
+/// What planning a footprint did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FootprintAdd {
+    Blocked,
+    Merged(usize),
+    Appended(usize),
+}
+
+/// Merge `rect` into the first footprint whose padded union is smaller than
+/// the two padded areas, or append it and grow the capacity by eight when it
+/// is full. A busy planner leaves the list alone.
+pub fn plan_footprint(busy: bool, list: &mut FootprintList, rect: FootprintRect) -> FootprintAdd {
+    if busy {
+        return FootprintAdd::Blocked;
+    }
+    let area = rect.padded_area();
+    for (index, existing) in list.rects.iter_mut().enumerate() {
+        let current = *existing;
+        let joined = current.union(rect);
+        if area + current.padded_area() > joined.padded_area() {
+            *existing = joined;
+            return FootprintAdd::Merged(index);
+        }
+    }
+    if list.rects.len() as i32 >= list.capacity {
+        list.capacity += 8;
+    }
+    let index = list.rects.len();
+    list.rects.push(rect);
+    FootprintAdd::Appended(index)
+}
+
 /// Lift the footprint at `standing`, search to `goal`, and stamp it again.
 pub fn plan_around(grid: &mut NavGrid, standing: Vec3, goal: Vec3, size: u8) -> Path {
     remove_footprint(grid, standing);
@@ -237,6 +301,63 @@ mod tests {
             x1: x,
             z1: 10,
         }
+    }
+
+    #[test]
+    fn a_footprint_plan_merges_appends_and_grows() {
+        let mut list = FootprintList::default();
+        let a = FootprintRect {
+            x0: 0,
+            y0: 0,
+            x1: 9,
+            y1: 9,
+        };
+        assert_eq!(
+            plan_footprint(false, &mut list, a),
+            FootprintAdd::Appended(0)
+        );
+        assert_eq!(list.capacity, 8);
+
+        let b = FootprintRect {
+            x0: 5,
+            y0: 5,
+            x1: 14,
+            y1: 14,
+        };
+        assert_eq!(plan_footprint(false, &mut list, b), FootprintAdd::Merged(0));
+        assert_eq!(
+            list.rects,
+            vec![FootprintRect {
+                x0: 0,
+                y0: 0,
+                x1: 14,
+                y1: 14,
+            }]
+        );
+
+        let c = FootprintRect {
+            x0: 100,
+            y0: 100,
+            x1: 109,
+            y1: 109,
+        };
+        assert_eq!(
+            plan_footprint(false, &mut list, c),
+            FootprintAdd::Appended(1)
+        );
+        assert_eq!(list.capacity, 8);
+        assert_eq!(plan_footprint(true, &mut list, c), FootprintAdd::Blocked);
+        assert_eq!(list.rects.len(), 2);
+
+        let mut full = FootprintList {
+            rects: vec![a],
+            capacity: 1,
+        };
+        assert_eq!(
+            plan_footprint(false, &mut full, c),
+            FootprintAdd::Appended(1)
+        );
+        assert_eq!(full.capacity, 9);
     }
 
     #[test]
