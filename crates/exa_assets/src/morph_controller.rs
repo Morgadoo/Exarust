@@ -1596,3 +1596,149 @@ mod evaluate_tests {
         assert_eq!(points, vec![[2.0, 0.0, 1.0], [1.0, 2.0, 2.0]]);
     }
 }
+
+/// The child index a node's name begins with: two ASCII digits,
+/// `(first − '0')·10 + (second − '0')`.
+pub fn morph_child_index(name: &[u8]) -> i32 {
+    let first = name.first().copied().unwrap_or(b'0') as i32 - i32::from(b'0');
+    let second = name.get(1).copied().unwrap_or(b'0') as i32 - i32::from(b'0');
+    first * 10 + second
+}
+
+/// Gathers children into an index array: each child's position goes to the
+/// slot its name index names, the gaps stay zero, and the largest index
+/// written is returned.
+pub fn gather_morph_children(children: &[(i32, [f32; 3])]) -> (Vec<[f32; 3]>, i32) {
+    let highest = children.iter().map(|&(index, _)| index).max().unwrap_or(0);
+    let mut slots = vec![[0.0f32; 3]; highest.max(0) as usize + 1];
+    for &(index, position) in children {
+        if let Some(slot) = slots.get_mut(index.max(0) as usize) {
+            *slot = position;
+        }
+    }
+    (slots, highest)
+}
+
+/// One part the bake reorders and makes relative.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BakePart {
+    pub ordinal: i32,
+    pub vertices: Vec<[f32; 3]>,
+    pub positions: Vec<[f32; 3]>,
+    pub deltas: Vec<[f32; 3]>,
+}
+
+/// Bakes the parts: a selection sort ascending by ordinal with a starting
+/// best of 100, each delta set to the part's position minus the model's
+/// position, and, with more than nine parts, part 5's vertices and deltas
+/// subtracted from parts 6 through 8.
+pub fn bake_morph_parts(model: &[[f32; 3]], mut parts: Vec<BakePart>) -> Vec<BakePart> {
+    let count = parts.len();
+    for index in 0..count {
+        let chosen = parts
+            .iter()
+            .enumerate()
+            .skip(index)
+            .fold((100, index), |(best, chosen), (candidate, part)| {
+                if part.ordinal < best {
+                    (part.ordinal, candidate)
+                } else {
+                    (best, chosen)
+                }
+            })
+            .1;
+        parts.swap(index, chosen);
+    }
+    for part in &mut parts {
+        for (delta, position, model_point) in part
+            .deltas
+            .iter_mut()
+            .zip(&part.positions)
+            .zip(model)
+            .map(|((delta, position), model_point)| (delta, position, model_point))
+        {
+            for (axis, value) in delta.iter_mut().enumerate() {
+                *value = position[axis] - model_point[axis];
+            }
+        }
+    }
+    if parts.len() > 9 {
+        let (left, right) = parts.split_at_mut(6);
+        let reference_vertices = left[5].vertices.clone();
+        let reference_deltas = left[5].deltas.clone();
+        for part in right.iter_mut().take(3) {
+            for (slot, value) in part.vertices.iter_mut().enumerate() {
+                if let Some(reference) = reference_vertices.get(slot) {
+                    for axis in 0..3 {
+                        value[axis] -= reference[axis];
+                    }
+                }
+            }
+            for (slot, value) in part.deltas.iter_mut().enumerate() {
+                if let Some(reference) = reference_deltas.get(slot) {
+                    for axis in 0..3 {
+                        value[axis] -= reference[axis];
+                    }
+                }
+            }
+        }
+    }
+    parts
+}
+
+#[cfg(test)]
+mod bake_tests {
+    use super::*;
+
+    #[test]
+    fn a_name_indexes_its_child_by_its_first_two_digits() {
+        assert_eq!(morph_child_index(b"07abc"), 7);
+        assert_eq!(morph_child_index(b"12"), 12);
+        assert_eq!(morph_child_index(b"0"), 0);
+    }
+
+    #[test]
+    fn the_gather_zero_fills_the_gaps() {
+        let (slots, highest) = gather_morph_children(&[(2, [1.0, 0.0, 0.0]), (0, [2.0, 0.0, 0.0])]);
+        assert_eq!(highest, 2);
+        assert_eq!(slots, vec![[2.0, 0.0, 0.0], [0.0; 3], [1.0, 0.0, 0.0]]);
+    }
+
+    #[test]
+    fn the_bake_sorts_and_makes_the_deltas_relative() {
+        let part = |ordinal, x: f32| BakePart {
+            ordinal,
+            vertices: vec![[x, 0.0, 0.0]],
+            positions: vec![[x, 0.0, 0.0]],
+            deltas: vec![[0.0; 3]],
+        };
+        let parts = vec![part(2, 2.0), part(0, 0.0), part(1, 1.0)];
+        let baked = bake_morph_parts(&[[1.0, 0.0, 0.0]], parts);
+        assert_eq!(
+            baked.iter().map(|part| part.ordinal).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        for (slot, part) in baked.iter().enumerate() {
+            assert_eq!(part.deltas[0], [slot as f32 - 1.0, 0.0, 0.0]);
+        }
+    }
+
+    #[test]
+    fn parts_six_to_eight_take_part_five_off() {
+        let parts = (0..10)
+            .map(|index| BakePart {
+                ordinal: index,
+                vertices: vec![[index as f32, 0.0, 0.0]],
+                positions: vec![[index as f32, 0.0, 0.0]],
+                deltas: vec![[0.0; 3]],
+            })
+            .collect();
+        let baked = bake_morph_parts(&[[0.0; 3]], parts);
+        for (index, part) in baked.iter().enumerate().take(9).skip(6) {
+            assert_eq!(part.vertices[0], [(index - 5) as f32, 0.0, 0.0]);
+            assert_eq!(part.deltas[0], [(index - 5) as f32, 0.0, 0.0]);
+        }
+        assert_eq!(baked[5].vertices[0], [5.0, 0.0, 0.0]);
+        assert_eq!(baked[9].vertices[0], [9.0, 0.0, 0.0]);
+    }
+}
