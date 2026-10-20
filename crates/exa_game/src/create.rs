@@ -238,6 +238,52 @@ pub fn appearance_words(values: [f32; 2]) -> [u16; 2] {
     values.map(|value| (value * 65535.0).round_ties_even() as i64 as u16)
 }
 
+/// What stepping the creation variant did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationStep {
+    pub word: i32,
+    pub changed: bool,
+    pub caption: Option<u8>,
+    pub default_caption: bool,
+    pub refreshed: bool,
+    pub finalized: bool,
+}
+
+/// Steps the face variant down one.
+pub fn step_creation_variant(word: i32, has_widget: bool) -> CreationStep {
+    let variant = (word >> 20) & 0xf;
+    if variant < 1 {
+        return CreationStep {
+            word,
+            changed: false,
+            caption: None,
+            default_caption: false,
+            refreshed: false,
+            finalized: true,
+        };
+    }
+    let next = variant - 1;
+    let word = (word & !0x00f0_0000) | (next << 20);
+    let mut caption = None;
+    let mut default_caption = false;
+    if has_widget {
+        let caption_variant = next - 1;
+        if caption_variant < 0 {
+            default_caption = true;
+        } else {
+            caption = Some((caption_variant + 0x41) as u8);
+        }
+    }
+    CreationStep {
+        word,
+        changed: true,
+        caption,
+        default_caption,
+        refreshed: true,
+        finalized: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,5 +464,32 @@ mod tests {
         assert_eq!(appearance_bytes([0.0, 0.5, 1.0]), [0, 128, 255]);
         assert_eq!(appearance_words([0.0, 0.5]), [0, 32768]);
         assert_eq!(appearance_words([1.0, 0.0]), [65535, 0]);
+    }
+
+    #[test]
+    fn the_creation_variant_steps_down_and_stops_at_zero() {
+        let stepped = step_creation_variant(0x0020_0000, true);
+        assert_eq!(stepped.word, 0x0010_0000);
+        assert!(stepped.changed);
+        assert_eq!(stepped.caption, Some(b'A'));
+        assert!(!stepped.default_caption);
+        assert!(stepped.refreshed);
+
+        let to_zero = step_creation_variant(0x0010_0000, true);
+        assert_eq!(to_zero.word, 0);
+        assert!(to_zero.default_caption);
+        assert_eq!(to_zero.caption, None);
+
+        let stopped = step_creation_variant(0, true);
+        assert_eq!(stopped.word, 0);
+        assert!(!stopped.changed);
+        assert!(!stopped.refreshed);
+
+        let no_widget = step_creation_variant(0x0020_0000, false);
+        assert_eq!(no_widget.word, 0x0010_0000);
+        assert!(no_widget.changed);
+        assert_eq!(no_widget.caption, None);
+        assert!(!no_widget.default_caption);
+        assert!(no_widget.refreshed);
     }
 }
