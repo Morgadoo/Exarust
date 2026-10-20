@@ -152,3 +152,100 @@ mod tests {
         assert_eq!(full.value, 1.0);
     }
 }
+
+/// The mask and sense powers' control state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MindEffect {
+    /// 2 means the effect is being removed; any other value keeps it on.
+    pub state: i32,
+}
+
+/// The mask's flag result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MindMaskStep {
+    pub state: i32,
+    pub active: bool,
+    pub flags: u32,
+}
+
+/// The sense's trigger result.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MindSenseStep {
+    pub state: i32,
+    pub active: bool,
+    pub triggered: bool,
+}
+
+/// Steps the mind mask: an event 2 starts its removal; otherwise state 2
+/// clears the `0x10000` body flag and an active mask sets it.
+pub fn step_mind_mask(effect: &mut MindEffect, event: i32, flags: u32) -> MindMaskStep {
+    if event == 2 {
+        effect.state = 2;
+    }
+    if effect.state == 2 {
+        MindMaskStep {
+            state: effect.state,
+            active: false,
+            flags: flags & !0x10000,
+        }
+    } else {
+        MindMaskStep {
+            state: effect.state,
+            active: true,
+            flags: flags | 0x10000,
+        }
+    }
+}
+
+/// Steps the mind sense: an event 2 starts its removal; in state 2 it
+/// triggers while the stored value is above zero.
+pub fn step_mind_sense(effect: &mut MindEffect, event: i32, value: f32) -> MindSenseStep {
+    if event == 2 {
+        effect.state = 2;
+    }
+    if effect.state == 2 {
+        MindSenseStep {
+            state: effect.state,
+            active: true,
+            triggered: value > 0.0,
+        }
+    } else {
+        MindSenseStep {
+            state: effect.state,
+            active: false,
+            triggered: false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod effect_tests {
+    use super::*;
+
+    #[test]
+    fn the_mask_sets_and_clears_its_body_flag() {
+        let mut effect = MindEffect { state: 0 };
+        let on = step_mind_mask(&mut effect, 0, 0);
+        assert!(on.active);
+        assert_eq!(on.flags, 0x10000);
+
+        let off = step_mind_mask(&mut effect, 2, 0x30000);
+        assert!(!off.active);
+        assert_eq!(off.state, 2);
+        assert_eq!(off.flags, 0x20000);
+    }
+
+    #[test]
+    fn the_sense_triggers_only_while_removing_with_a_positive_value() {
+        let mut effect = MindEffect { state: 0 };
+        let idle = step_mind_sense(&mut effect, 0, 5.0);
+        assert!(!idle.active && !idle.triggered);
+
+        let ending = step_mind_sense(&mut effect, 2, 5.0);
+        assert!(ending.active && ending.triggered);
+
+        let quiet = step_mind_sense(&mut effect, 2, 0.0);
+        assert!(quiet.active);
+        assert!(!quiet.triggered);
+    }
+}
