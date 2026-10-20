@@ -1130,6 +1130,33 @@ pub fn confirm_main_menu(selection: i32, mask: u32, sound_ready: bool) -> MenuCo
     }
 }
 
+/// The main menu's forward action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MenuForward {
+    /// The action the page runs: 0 on page 1 and 1 on page 8.
+    pub action: Option<u8>,
+    /// Whether the sound plays (the input must be ready).
+    pub sound: bool,
+    /// Whether the session entry follows.
+    pub session: bool,
+}
+
+/// Runs the page's forward action: page 1 runs 0 and page 8 runs 1, each
+/// entering the session; any other page does nothing. The sound plays only
+/// when the input is ready.
+pub fn forward_main_menu(page: i32, input_active: bool) -> MenuForward {
+    let action = match page {
+        1 => Some(0),
+        8 => Some(1),
+        _ => None,
+    };
+    MenuForward {
+        action,
+        sound: action.is_some() && input_active,
+        session: action.is_some(),
+    }
+}
+
 /// The main-menu select's state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MenuSelect {
@@ -1893,5 +1920,23 @@ mod tests {
         assert_eq!(limited.stamp, 200);
 
         assert!(!select_main_menu(3, 0, 300, false).sound);
+    }
+
+    #[test]
+    fn the_main_menu_forward_runs_the_page_action() {
+        let resume = forward_main_menu(1, true);
+        assert_eq!(resume.action, Some(0));
+        assert!(resume.sound);
+        assert!(resume.session);
+
+        let other = forward_main_menu(8, false);
+        assert_eq!(other.action, Some(1));
+        assert!(!other.sound);
+        assert!(other.session);
+
+        let none = forward_main_menu(2, true);
+        assert_eq!(none.action, None);
+        assert!(!none.sound);
+        assert!(!none.session);
     }
 }
