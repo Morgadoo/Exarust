@@ -546,9 +546,9 @@ faces, no depth writes, no shadows.
 
 **Differences**: the original multiplies its 8-bit frame (lit values
 already clamped at 1) and fades the droplets with its distance fog;
-Exarust's float frame clamps in its post-processing and has no distance
-fog yet. The original clears the sprays at the end of a session and on
-respawn; Exarust has neither.
+Exarust's float frame clamps in its post-processing, and its spray
+material does not sample the level's fog. The original clears the sprays
+at the end of a session and on respawn; Exarust has neither.
 
 **Evidence**: reverse engineering of `Exanima.exe` 0.9.5 (the blood
 branch's two jet calls and their strengths, the jet routine's life,
@@ -701,6 +701,101 @@ menu.
 - ambient = g · lin(level ambient) · 15 · b · o.
 - Reflections are the cube along the mirror direction at mip
   (rough − 0.05)·8 × ambient × 8 × 2 × the geometry term.
+
+## Environment and weather
+
+The original's environment plug-in (`exa_world::scene_env`, applied by
+`exa_world::environment`) keeps the level's indoor values or an open sky,
+and the day cycle, fog, ambient, clouds and weather that follow from them.
+
+**Constructor.** Sun azimuth −0.21 and time of day 0.7516 (0 is midnight,
+0.5 noon); sRGB sun colour 0.75; ambient 0.314; fill 0.04; fog colour
+0.5 grey; clear colour transparent black; fog distance 1, density 0.01 and
+far plane 50 000 cm, so the fog spans 50 100 cm (501 m); cloudiness 1.5;
+the sun mode is auto, the sky and the fog are off.
+
+**The sun's path.** Without a sky the sun's direction comes from the
+level's altitude and azimuth: θ = (1 − altitude)·π, φ = −azimuth·π, and
+(sin θ sin φ, cos θ, sin θ cos φ). Under a sky the plug-in builds a
+rotation from the 45° latitude, the time of day · 2π and −azimuth·π, puts
+the sun on a path at 180° with the ecliptic's 23.44° tilt and the season
+at its quarter point (no declination), and the moon on a path at 0° with
+0.3 · 28.58°. The daylight factor is asin(sun.y)/π + 0.5; at 0.44 and
+above the sun is chosen, below it the moon. The chosen body is lifted
+off the horizon (y = y/2 + 0.2 when below 0.4, then y = (1 + y)/2 by day)
+and the vector renormalised. The scene's daylight scale is
+(daylight − 0.47)·3. The azimuth and time of day come from the level
+record when it has them.
+
+**The day record.** The plug-in holds a track of six environment records
+entered at climbing positions in 0…1. A value below the first entry is
+that record; between two entries the two are blended by the position
+between their keys; at or above the last key the fifth and sixth blend at
+1. Each record carries a sun colour, a fill colour, a fog colour, a sky
+cube tint, a sky colour away from and towards the sun, and further colour
+slots. Blending leaves the record's key alone, and the fill, fog and one
+further colour are linearised after the blend when colours are managed in
+linear light. Exarust's level files do not carry the track, so the outdoor
+preset stands in with the original's haze colour for the fog.
+
+**Clouds.** A cloudiness above the clear 1.5, by a factor
+(cloudiness − 1.5)·0.4 clamped to 0.9, desaturates the record's colours
+towards their luminance (0.299, 0.587, 0.114) and scales them by powers
+of f = dim²·0.8 + 0.2 and √dim, slot by slot (the sun's colour by f⁴, the
+fog's by f, the sky colours by f², and so on). The same factor dims the
+sun light by cloud·2, and a sun within 0.1 of the daylight threshold
+brightens the light again by 1 − |daylight − 0.44|·10.
+
+**Fog.** The span is distance² · far plane + 100, from a start of 0. The
+per-frame fog starts at the stored start and ends at the span; a cloudy sky
+moves the start in by (1.5 − cloudiness)² · span · 0.01 and shortens the
+span by 1 − (1.5 − cloudiness)²·0.7, and a sun below a daylight of 0.54
+shortens it further toward 0.15. A lightning flash closes the fog to
+−0.8…0.1 of the span and tints it. The original's shader uses a linear
+falloff, b = min(distance · 1/fogDistance, 1), and mixes the surface towards
+the fog colour; Exarust asks Bevy for `FogFalloff::Linear` between the same
+near and far distances.
+
+**Clear colour and sky.** The clear colour is the level's background. With
+fog on it can be the fog colour instead (the original tests a high bit of
+the sky map's word, which its constructor values never carry). Under a sky
+the colour between the record's two sky colours, weighted
+0.5 − 0.5·(light direction · view), times the sky fog colour and 2, is the
+sky's gradient; Exarust draws Bevy's atmosphere instead (see below) and
+keeps the gradient for the record.
+
+**Ambient.** The plug-in's ambient is the level's main ambient through the
+sRGB transfer, scaled by the environment cube at 8 indoors and 3 outdoors
+(the shader's `Ambient.w`). Exarust's shading takes the cube path's ×16
+stand-in when GI is off (see [Voxel GI](#voxel-gi)); the level's ambient
+colour itself is reproduced, and the model exposes the 8/3 scale.
+
+**The sun light.** `_Sunlight` is a directional light of sRGB 0.75 grey
+(4.5 units under a sky, 3 without; 160 lux a unit in Exarust) taking the
+day record's sun colour under a sky. In auto mode it exists only in a scene
+with no lights and no grid rooms, and disappears again when the scene has
+more than one room; the off and on modes remove and create it.
+
+**Weather.** Each frame the rain amount fades toward its target at
+0.0001 a millisecond: a request of 0.01 or less clears it, a request below
+0.3 is raised to 0.3, and 0.75 and above brings thunder. A rain amount
+above zero starts the rain effect and its sound. A thunderstorm schedules
+strikes 4 000…33 999 ms apart; a strike lasts 100…599 ms, flickers its
+intensity every 50…89 ms by ±(0.1…0.3) scaled by a distance attenuation
+(1 − distance·0.0002)², and plays thunder 30…583 ms after it starts. The
+time of day advances by the speed once 16 ms have passed in a frame. The
+original's random numbers are the wrapping linear congruential generator
+134 775 813·state + 1, drawn as state/2³². Exarust reproduces the rules and
+their generator; no level sets a time speed or a rain amount yet, so its
+scenes stay clear at their record's time.
+
+**Grid levels.** A tile-grid level built the original's older way forces
+the indoor values over the record unless the level has terrain: ambient
+0.6275 grey, sun colour 0.75, black background and 0.5 grey fog. Exarust
+keeps that as `SceneEnvironment::force_indoor` and passes it for such
+levels. A floor set whose name contains `Terrain` brings no floor pieces
+(the terrain is the ground), and a special tile's mask turns with the
+cell's rotation; see [formats/RFC.md](formats/RFC.md) (Grid building).
 
 ## Lights
 
@@ -1110,10 +1205,12 @@ powers do not draw it yet.
 The emissive scale of a fire's parent mesh by the fire, the emissive
 map's alpha on unlit surfaces without a fall-off, the jittered
 supersampling pattern, medium and large fire templates, the sun and
-terrain in the GI volume, several resident GI blocks, distance fog (the
-first fog mode), vertex dirt (dirt modes 1–3), glass refraction, effect programs (smoke,
-powers), the hair program, terrain parallax and wetness, and the outdoor
-environment cube. A shut door leaves the room behind it hidden. A point
+terrain in the GI volume, several resident GI blocks, vertex dirt (dirt modes 1–3), glass
+refraction, effect programs (smoke, powers), the hair program, terrain
+parallax and wetness, the outdoor environment cube's masked tint (the rule
+is in `scene_env::tint_environment_cube`, not uploaded), the day record data
+and a driven time of day and weather, and the sun light's cloud dimmer
+(the model has it, the light does not apply it). A shut door leaves the room behind it hidden. A point
 in the next room is shown only when the view crosses the doorway
 (`rooms::seen_through`). A passage loads the level its id names. The lid
 is not drawn into the lights' cube faces, and light does not yet pass

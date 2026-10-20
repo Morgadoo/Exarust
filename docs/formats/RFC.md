@@ -645,11 +645,17 @@ The game overrides the record per level: story levels and `arena1`–`7` use an
 indoor preset (no sun, sky or fog, black background). The outdoor arenas
 `arenao1`–`5` get sunlight, a sky, fog (about 1 km) and randomised weather.
 Elsewhere, "auto" lights a sun only when the level has no lights at all.
-Exarust applies the presets and the ambient colour (`exa_world::environment`).
-For the outdoor sky it uses Bevy's physically based atmosphere lit by the
-level's sun, standing in for the original's sky shader, which is not decoded
-(`Enable sky` is an engine option). The time of day and the weather are not
-done yet.
+Exarust applies the presets and the ambient colour (`exa_world::environment`),
+with the rules themselves in `exa_world::scene_env`: the sun/moon path and
+daylight factor, the day record's pick-and-blend, cloud dimming, the linear
+fog's near and far distances, the clear colour and the rain/lightning state.
+A tile-grid level built the original's older way is forced to ambient 0.6275,
+sun colour 0.75, black background and 0.5 grey fog unless it has terrain.
+The day record track and the weather's sound and lightning effects are not
+among the level files: Exarust keeps the outdoor haze as the fog stand-in,
+uses Bevy's physically based atmosphere lit by the level's sun for the sky
+(the original's sky shader is not decoded), and leaves time of day, rain and
+lightning at rest until something sets them.
 
 ## Starts, characters and placed objects
 
