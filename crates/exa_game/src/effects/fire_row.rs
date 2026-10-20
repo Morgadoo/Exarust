@@ -118,6 +118,9 @@ pub const ELE_COLOUR: [f32; 3] = [0.65, 0.4, 1.0];
 pub const EDGE_COLOUR: [f32; 3] = [0.08, 0.14, 0.2];
 /// The row's material and texture.
 pub const MATERIAL: &str = "_FlameMat01";
+/// The texture animation runs over 50 s.
+pub const ANIM_PERIOD_MS: u32 = 50_000;
+pub const ANIM_STEP: f32 = 0.000_02;
 /// The ribbon is built from this many sections.
 pub const SECTIONS: i32 = 16;
 /// The width of one section, as a share of the line.
@@ -577,6 +580,13 @@ pub fn light_body(flags: u32) -> u32 {
     flags | BODY_LIT_FLAG
 }
 
+/// The shader's `Anim` values this frame: the rolling texture offset, its
+/// negative twin, and the fade's other half.
+pub fn texture_animation(now_ms: u32, fade: f32) -> [f32; 3] {
+    let offset = (now_ms % ANIM_PERIOD_MS) as f32 * ANIM_STEP;
+    [offset, offset * -2.0, (1.0 - fade) * 0.5]
+}
+
 /// The millisecond timestamps a row's phase boundaries land on.
 pub fn deadline_ms(now_ms: u32, seconds: f32) -> u32 {
     now_ms.wrapping_add(round_i32(seconds * 1000.0) as u32)
@@ -843,6 +853,9 @@ mod tests {
         assert_eq!(level_of_detail(0.5), 200.0);
         assert_eq!(level_of_detail(1.0), 200.0);
         assert_eq!(level_of_detail(4.0), 12.5);
+        assert_eq!(texture_animation(0, 1.0), [0.0, -0.0, 0.0]);
+        assert_eq!(texture_animation(25_000, 0.0), [0.5, -1.0, 0.5]);
+        assert_eq!(texture_animation(50_000, 1.0), [0.0, -0.0, 0.0]);
         let sizzle = sizzle(0.5);
         assert_eq!(sizzle.volume, 0.3);
         assert!((sizzle.pitch - 0.9).abs() < 1e-6);

@@ -18,8 +18,10 @@ use bevy::prelude::*;
 pub const SIZE_PX: i32 = 280;
 pub const MARGIN_PX: i32 = 16;
 pub const FORM_FLAGS: u32 = 0x0008_0000;
-/// The constructor's default choice and its button kind.
+/// The constructor's default choice, its highlighted fade and its button
+/// kind.
 pub const DEFAULT_CHOICE: i32 = 2;
+pub const DEFAULT_FADE: f32 = 0.5;
 pub const BUTTON: i32 = 2;
 
 /// The wheel's unit: icons and labels are built from it.
@@ -95,11 +97,13 @@ pub struct Wheel {
     pub before: i32,
     /// The highlight animation's start stamp.
     pub hover_stamp: u32,
-    /// The shown value's start and its deadline (`+0x188`, `+0x184`).
-    pub show_start: f32,
-    pub show_deadline: u32,
-    /// The shown value the wheel eases to (`+0x158`).
-    pub show_target: f32,
+    /// The highlighted icon's fade (`+0x158`), its start (`+0x188`) and the
+    /// animation's deadline (`+0x184`).
+    pub fade: f32,
+    pub fade_start: f32,
+    pub fade_deadline: u32,
+    /// The wheel's overall show (`+0x180`).
+    pub shown: f32,
     /// The button's hold deadline (`+0x230`).
     pub confirm_deadline: u32,
     /// The button's chosen icon (`+0x1c0`).
@@ -117,9 +121,10 @@ impl Default for Wheel {
             chosen: DEFAULT_CHOICE,
             before: 0,
             hover_stamp: 0,
-            show_start: 1.0,
-            show_deadline: 0,
-            show_target: 1.0,
+            fade: DEFAULT_FADE,
+            fade_start: DEFAULT_FADE,
+            fade_deadline: 0,
+            shown: 1.0,
             confirm_deadline: 0,
             confirm_choice: 0,
             chosen_at: 0,
@@ -156,38 +161,38 @@ impl Wheel {
         0
     }
 
-    /// The shown value after `open`: the start is the current value and the
-    /// deadline is 300 ms away.
+    /// Open the wheel: the highlighted fade's start is its current value
+    /// and the deadline is 300 ms away.
     pub fn open(&mut self, now: u32) {
-        self.show_start = self.show_target;
-        self.show_deadline = now.wrapping_add(SHOW_MS);
+        self.fade_start = self.fade;
+        self.fade_deadline = now.wrapping_add(SHOW_MS);
     }
 
-    /// The eased shown value. A smoothstep stands in for the GUI's ease,
-    /// whose two scale constants were not in the pack (guess).
-    pub fn shown(&self, now: u32) -> f32 {
-        if self.show_deadline < now {
-            return self.show_target;
+    /// The eased highlighted fade. A smoothstep stands in for the GUI's
+    /// ease, whose two scale constants were not in the pack (guess).
+    pub fn fade(&self, now: u32) -> f32 {
+        if self.fade_deadline < now {
+            return self.fade;
         }
-        let left = self.show_deadline.wrapping_sub(now) as f32 / SHOW_MS as f32;
+        let left = self.fade_deadline.wrapping_sub(now) as f32 / SHOW_MS as f32;
         let eased = left * left * (3.0 - 2.0 * left);
-        (self.show_target - self.show_start) * (1.0 - eased) + self.show_start
+        (self.fade - self.fade_start) * (1.0 - eased) + self.fade_start
     }
 
-    /// The circular radius factor `(2 − shown)·shown`.
-    pub fn swell(&self, now: u32) -> f32 {
-        let shown = self.shown(now);
-        (2.0 - shown) * shown
+    /// The circular radius factor `(2 − shown)·shown` from the wheel's
+    /// overall show.
+    pub fn swell(&self) -> f32 {
+        (2.0 - self.shown) * self.shown
     }
 
-    /// The ring an icon sits on at this shown value: 76 px × the swell.
-    pub fn icon_radius(&self, now: u32) -> f32 {
-        RING_PX * self.swell(now)
+    /// The ring an icon sits on: 76 px × the swell.
+    pub fn icon_radius(&self) -> f32 {
+        RING_PX * self.swell()
     }
 
     /// The outer ring's radius: 140 px × the swell.
-    pub fn outer_radius(&self, now: u32) -> f32 {
-        140.0 * self.swell(now)
+    pub fn outer_radius(&self) -> f32 {
+        140.0 * self.swell()
     }
 
     /// A label's place from the form's centre, and its width from the
@@ -345,25 +350,26 @@ mod tests {
 
     #[test]
     fn a_open_animation_runs_over_three_hundred_milliseconds() {
-        let mut wheel = Wheel {
-            show_target: 1.0,
-            ..Wheel::default()
-        };
+        let mut wheel = Wheel::default();
         wheel.open(1_000);
-        assert_eq!(wheel.show_deadline, 1_300);
-        assert_eq!(wheel.shown(1_000), 1.0);
-        wheel.show_target = 0.5;
+        assert_eq!(wheel.fade_deadline, 1_300);
+        assert_eq!(wheel.fade(1_000), DEFAULT_FADE);
+        wheel.fade = 1.0;
         wheel.open(2_000);
-        assert_eq!(wheel.show_start, 0.5);
-        assert_eq!(wheel.shown(2_300), 0.5);
-        wheel.show_start = 1.0;
-        wheel.show_deadline = 2_300;
-        assert_eq!(wheel.shown(2_150), 0.75);
-        assert_eq!(wheel.shown(2_301), 0.5);
-        assert_eq!(wheel.swell(2_301), 0.75);
-        assert_eq!(wheel.icon_radius(2_301), 57.0);
-        assert_eq!(wheel.outer_radius(2_301), 105.0);
-        assert_eq!(wheel.icon_radius(2_301) / RING_PX, 0.75);
+        assert_eq!(wheel.fade_start, 1.0);
+        assert_eq!(wheel.fade(2_300), 1.0);
+        wheel.fade_start = 0.5;
+        wheel.fade_deadline = 2_300;
+        assert_eq!(wheel.fade(2_150), 0.75);
+        assert_eq!(wheel.fade(2_301), 1.0);
+        // The radii follow the wheel's overall show, not the fade.
+        assert_eq!(wheel.swell(), 1.0);
+        assert_eq!(wheel.icon_radius(), 76.0);
+        assert_eq!(wheel.outer_radius(), 140.0);
+        wheel.shown = 0.5;
+        assert_eq!(wheel.swell(), 0.75);
+        assert_eq!(wheel.icon_radius(), 57.0);
+        assert_eq!(wheel.outer_radius(), 105.0);
     }
 
     #[test]
@@ -411,5 +417,6 @@ mod tests {
         assert_eq!(FORM_FLAGS, 0x0008_0000);
         assert_eq!(BUTTON, 2);
         assert_eq!(CONFIRM_MODIFIER, 0x2000);
+        assert_eq!(DEFAULT_FADE, 0.5);
     }
 }

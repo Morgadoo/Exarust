@@ -16,6 +16,8 @@ use bevy::prelude::*;
 pub const SIZE_CM: f32 = 120.0;
 /// Growing lasts 1.8 s.
 pub const GROW_MS: u32 = 1_800;
+/// Its per-millisecond share, the double the original multiplies by.
+pub const GROW_PER_MS: f64 = 0.000_555_555_555_555_555_6;
 /// A bubble without the hold flag rests this long before it shrinks.
 pub const IDLE_MS: u32 = 500;
 /// A held bubble charges over 7 s.
@@ -25,7 +27,7 @@ pub const POST_MS: u32 = 5_600;
 /// The shrink runs at 0.0025 a millisecond: 400 ms from rest to gone.
 pub const SHRINK_PER_MS: f32 = 0.0025;
 /// The charge's rate over the hold: 1/7000.
-pub const CHARGE_PER_MS: f32 = 0.000_142_857_142_857_142_87;
+pub const CHARGE_PER_MS: f64 = 0.000_142_857_142_857_142_87;
 /// The charge at which the swell starts.
 pub const SWELL_FROM: f64 = 0.8;
 /// The swell's curve: `1 + 100·((charge − 0.8)·5)⁴`.
@@ -135,7 +137,7 @@ impl Bubble {
         };
         match self.state {
             BubbleState::Grow => {
-                self.fade = (f64::from(elapsed(now_ms, self.stamp)) / f64::from(GROW_MS)) as f32;
+                self.fade = (f64::from(elapsed(now_ms, self.stamp)) * GROW_PER_MS) as f32;
                 if self.fade > 1.0 {
                     self.fade = 1.0;
                     self.stamp = now_ms;
@@ -164,7 +166,7 @@ impl Bubble {
                 self.charge = if self.stamp.wrapping_add(HOLD_MS) < now_ms {
                     1.0
                 } else {
-                    (f64::from(elapsed(now_ms, self.stamp)) * f64::from(CHARGE_PER_MS)) as f32
+                    (f64::from(elapsed(now_ms, self.stamp)) * CHARGE_PER_MS) as f32
                 };
                 if self.stamp.wrapping_add(POST_MS) < now_ms {
                     self.state = BubbleState::Post;
@@ -176,7 +178,7 @@ impl Bubble {
                 self.charge = if self.stamp.wrapping_add(HOLD_MS) < now_ms {
                     1.0
                 } else {
-                    (f64::from(elapsed(now_ms, self.stamp)) * f64::from(CHARGE_PER_MS)) as f32
+                    (f64::from(elapsed(now_ms, self.stamp)) * CHARGE_PER_MS) as f32
                 };
                 if self.stamp.wrapping_add(HOLD_MS) < now_ms {
                     self.state = BubbleState::Gone;
@@ -323,7 +325,7 @@ mod tests {
         let step = bubble.step(1_801 + 5_601);
         assert!(step.post_process);
         assert_eq!(step.state, BubbleState::Post);
-        assert_eq!(bubble.charge, 5_601.0 * CHARGE_PER_MS);
+        assert_eq!(bubble.charge, (5_601.0 * CHARGE_PER_MS) as f32);
         let step = bubble.step(1_801 + 7_000);
         assert!(!step.remove);
         assert_eq!(bubble.charge, 1.0);
