@@ -13,6 +13,7 @@ pub mod grid;
 pub mod light_flood;
 pub mod mechanisms;
 pub mod nav;
+pub mod particles;
 pub mod room_view;
 pub mod rooms;
 pub mod scene_env;
