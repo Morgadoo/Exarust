@@ -624,6 +624,18 @@ the footwork's steps are 0.7 of the step length, and a crouched attacker
 picks the first side attack. Not yet: the 1.5 long step, an AI crouch and
 the crouched look twist.
 
+Done (change `follow-the-intersection-routines`): the original's
+RF_Intersection unit is in `exa_physics::intersect`, checked against the
+assembly rather than the pseudo-code (which reassociates float sums and turns
+the processor's min/max into ordered compares): sphere, box, OBB and swept
+tests, plane refresh, portal pyramid clipping, plane cut with cap and the
+directional shadow caster volume follow the original's arithmetic and NaN
+branches; the only remaining error is the approximate reciprocal and
+reciprocal square root (about 12 bits). The cube-shadow caster face mask in
+`exa_render` is now the original's exact side-plane test. Not wired yet:
+body-pair meet (needs per-part mesh boxes), the directional shadow pass,
+portal visibility; the unit's light-alias bookkeeping is not done.
+
 This phase carries the most risk and defines how the game feels.
 
 - `exa_anim`: skeleton, clip sampling and blending, procedural layers
