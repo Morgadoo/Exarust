@@ -324,8 +324,9 @@ pub fn build_mip_chain_rgba8(
         let threads = std::thread::available_parallelism()
             .map(|count| count.get())
             .unwrap_or(1)
-            .min((height / 32).max(1));
-        if threads > 1 && height * dst_width >= 65_536 {
+            .min((height / 8).max(1))
+            .min(8);
+        if threads > 1 && height * dst_width >= 8_192 {
             std::thread::scope(|scope| {
                 let mut rest = horizontal.as_mut_slice();
                 let per = height.div_ceil(threads);
@@ -371,17 +372,66 @@ pub fn build_mip_chain_rgba8(
         }
 
         let mut texels = vec![0.0f32; dst_width * dst_height * 4];
-        let mut column = vec![0.0f32; height * 4];
-        let mut output = vec![0.0f32; dst_height * 4];
-        for x in 0..dst_width {
-            for y in 0..height {
-                let source = (y * dst_width + x) * 4;
-                column[y * 4..y * 4 + 4].copy_from_slice(&horizontal[source..source + 4]);
+        let vertical_threads = if threads > 1 && dst_width >= 64 {
+            threads
+        } else {
+            1
+        };
+        if vertical_threads > 1 {
+            let columns: Vec<(usize, Vec<f32>)> = std::thread::scope(|scope| {
+                let per = dst_width.div_ceil(vertical_threads);
+                let mut handles = Vec::new();
+                for column_start in (0..dst_width).step_by(per) {
+                    let column_end = (column_start + per).min(dst_width);
+                    let horizontal_ref = &horizontal;
+                    let weights_ref: &[f32] = weights;
+                    handles.push(scope.spawn(move || {
+                        let mut column = vec![0.0f32; height * 4];
+                        let mut output = vec![0.0f32; dst_height * 4];
+                        let mut results = Vec::with_capacity(column_end - column_start);
+                        for x in column_start..column_end {
+                            for y in 0..height {
+                                let source = (y * dst_width + x) * 4;
+                                column[y * 4..y * 4 + 4]
+                                    .copy_from_slice(&horizontal_ref[source..source + 4]);
+                            }
+                            resample_axis(
+                                &column,
+                                height,
+                                dst_height,
+                                weights_ref,
+                                wrap,
+                                &mut output,
+                            );
+                            results.push((x, output.clone()));
+                        }
+                        results
+                    }));
+                }
+                handles
+                    .into_iter()
+                    .flat_map(|handle| handle.join().expect("mip column"))
+                    .collect()
+            });
+            for (x, data) in columns {
+                for y in 0..dst_height {
+                    let destination = (y * dst_width + x) * 4;
+                    texels[destination..destination + 4].copy_from_slice(&data[y * 4..y * 4 + 4]);
+                }
             }
-            resample_axis(&column, height, dst_height, weights, wrap, &mut output);
-            for y in 0..dst_height {
-                let destination = (y * dst_width + x) * 4;
-                texels[destination..destination + 4].copy_from_slice(&output[y * 4..y * 4 + 4]);
+        } else {
+            let mut column = vec![0.0f32; height * 4];
+            let mut output = vec![0.0f32; dst_height * 4];
+            for x in 0..dst_width {
+                for y in 0..height {
+                    let source = (y * dst_width + x) * 4;
+                    column[y * 4..y * 4 + 4].copy_from_slice(&horizontal[source..source + 4]);
+                }
+                resample_axis(&column, height, dst_height, weights, wrap, &mut output);
+                for y in 0..dst_height {
+                    let destination = (y * dst_width + x) * 4;
+                    texels[destination..destination + 4].copy_from_slice(&output[y * 4..y * 4 + 4]);
+                }
             }
         }
         out.extend(
