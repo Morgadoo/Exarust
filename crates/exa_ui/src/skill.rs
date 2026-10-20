@@ -121,6 +121,43 @@ pub fn skill_ring_position(slot: i32, ring: &SkillRing) -> (f32, f32) {
     (x, y)
 }
 
+/// The skill ring's hit test inputs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SkillHit {
+    pub mouse: (i32, i32),
+    pub unit: i32,
+    pub turn: f32,
+    pub page: i32,
+}
+
+/// Tests the five samples around every node.
+pub fn skill_node_hit(hit: SkillHit, nodes: &[(f32, f32)]) -> i32 {
+    let unit = f64::from(hit.unit);
+    let outer = (unit * 23.0) as f32;
+    let inner = (unit * 5.0) as f32;
+    let radius = unit * 18.3;
+    let mut result = if hit.page == 2 { 0 } else { -1 };
+    for &(x, y) in nodes {
+        let dx = hit.mouse.0 as f32 - x;
+        let dy = hit.mouse.1 as f32 - y;
+        if dx * dx + dy * dy > outer * outer {
+            continue;
+        }
+        for j in 0..5 {
+            let angle = j as f32 * std::f32::consts::TAU * 0.2;
+            let ox = ((radius * f64::from(angle.sin())).round_ties_even() as f32) * hit.turn;
+            let oy = ((radius * f64::from(angle.cos())).round_ties_even() as f32) * hit.turn;
+            let ddx = hit.mouse.0 as f32 - (x + ox);
+            let ddy = hit.mouse.1 as f32 - (y - oy);
+            if ddx * ddx + ddy * ddy < inner * inner {
+                result = (j | result) + 1;
+                break;
+            }
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,5 +234,49 @@ mod tests {
             ..ring
         };
         assert_eq!(skill_ring_position(3, &scrolled), (281.0, -27.0));
+    }
+
+    #[test]
+    fn the_skill_ring_hits_its_satellites() {
+        let nodes = [(100.0, 100.0)];
+        let hit = SkillHit {
+            mouse: (100, 27),
+            unit: 4,
+            turn: 1.0,
+            page: 2,
+        };
+        assert_eq!(skill_node_hit(hit, &nodes), 1);
+        assert_eq!(
+            skill_node_hit(
+                SkillHit {
+                    mouse: (170, 77),
+                    ..hit
+                },
+                &nodes
+            ),
+            2
+        );
+        assert_eq!(
+            skill_node_hit(
+                SkillHit {
+                    mouse: (0, 0),
+                    page: 0,
+                    ..hit
+                },
+                &nodes
+            ),
+            -1
+        );
+        assert_eq!(
+            skill_node_hit(
+                SkillHit {
+                    mouse: (100, 27),
+                    page: 0,
+                    ..hit
+                },
+                &nodes
+            ),
+            0
+        );
     }
 }
