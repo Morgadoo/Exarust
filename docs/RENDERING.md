@@ -596,23 +596,34 @@ in world space there too):
     land one per voxel centre, making solid slabs.
 - Many wall sets (the menu's `GEWS_UWA02`) store no points, and the original
   generates none for walls. Those walls block nothing.
-- **Floor layer**: each tile-grid cell's floor (the floor set's pieces and
-  the wall pieces' `+F` strips) feeds the original's floor heightfield
-  (`exa_physics::voxel::floor_points`) on the piece's triangles, in
+- **Floor layer**: each tile-grid cell's floor meshes (the floor set's
+  pieces and the wall pieces' `+F` strips) are merged, as the original
+  merges them into the cell's `+Floor` mesh, and the merged floor goes
+  through the original's floor heightfield
+  (`exa_physics::voxel::floor_points`) once, when the level's GI inputs are
+  collected, in the cell's own space (origin at the cell centre) and in
   centimetres:
-  - the bounds widen to the piece, then snap to the 20 cm lattice: the x
-    low edge is the first of −300/−150/0/150 cm more than 75 cm above the
-    piece's low corner (y low −20 cm, z low −300 cm), the x high the first
-    of 300/150/0 more than 75 cm below its high corner (y high 0, z high
-    −300 cm); the y low then drops 20 cm more;
+  - the x low edge is the first of −300/−150/0/150 cm with
+    `low < edge + 75` (default −300), the x high edge the first of
+    300/150/0/−150 cm, downwards, with `edge − 75 < high` (default −150); y
+    starts at −20…0 cm and z at −300…−300 cm; every edge then widens to the
+    floor's bounds;
+  - low edges snap to `round(v/20 − 0.1)·20`, high edges to
+    `round(v/20 + 0.1)·20` (ties to even), and the y low drops 20 cm more;
   - one ray straight down every 10 cm column, from 10 cm above the high
     edge; the highest upward-facing triangle under it wins, edges inside,
     and the ray must land within the bounds;
-  - the 10 cm cell under the surface is marked;
-  - every 20 cm cell whose four columns all mark inside it gives a point at
-    its centre (the downsample's 20 cm step is fixed, whatever the
-    generator's parameter).
-  
+  - the 10 cm cell under the surface is marked (`n_y − round(t/10)`);
+  - every 2 × 2 × 2 block of fine cells summing past 1019 (its four columns
+    marked inside it) gives a point at its centre on a fixed 20 cm step.
+    With an odd number of fine rows the original's walk drifts one row back
+    per block slice; that is kept (a 20 cm parameter always gives an even
+    count).
+
+  The meshes' render triangles stand in for the original's collision
+  triangles, and the normal is normalised exactly where the original uses
+  the hardware's approximate reciprocal square root (the plane is rescaled
+  by its y, so only rounding differs).
   A flat floor at height 0 fills the slice from −20 to 0 cm.
 - Each column remembers the lowest slice a point fell in. A sector's floor
   is the lowest over its 30 × 30 columns.

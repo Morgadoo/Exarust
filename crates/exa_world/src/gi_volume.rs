@@ -1,9 +1,9 @@
 //! The occupancy grid of the original's voxel global illumination: a block
 //! of 20 cm voxels, 256 × 256 across (48 m plus margins) and 64 or 128
 //! high, below the level's highest point. Meshes mark their cells solid by
-//! splatting their GI sample points, tile-grid floors feed the original's
-//! floor heightfield (`exa_physics::voxel`) into a solid layer under their
-//! surface, and the top two slices form a soft lid.
+//! splatting their GI sample points, each tile-grid cell's floor gets the
+//! original's floor heightfield points (`exa_physics::voxel`), a solid layer
+//! under its surface, and the top two slices form a soft lid.
 //! Light then spreads through the open cells each frame (`exa_render::gi`).
 //! Rules: `docs/RENDERING.md` (Voxel GI).
 //!
@@ -14,6 +14,9 @@
 
 use std::sync::Arc;
 
+use std::collections::BTreeMap;
+
+use bevy::math::Affine3A;
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
 use bevy::transform::TransformSystems;
@@ -40,10 +43,19 @@ impl Plugin for GiVolumePlugin {
 #[derive(Component, Clone)]
 pub struct GiPoints(pub Arc<Vec<Vec3>>);
 
-/// A tile-grid floor mesh: its upward faces become a solid layer of voxels
-/// just under the surface, as the original generates for each cell's floor.
-#[derive(Component, Clone, Copy)]
-pub struct GiFloor;
+/// A tile-grid floor mesh: with the other floor meshes of its grid cell it
+/// makes the cell's floor, whose upward faces become a solid layer of
+/// voxels just under the surface, as the original generates for each
+/// cell's merged floor.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub struct GiFloor {
+    /// The grid cell the mesh belongs to: its centre on the grid, in whole
+    /// centimetres (x, z).
+    pub cell: IVec2,
+    /// From the mesh to the cell's own space: origin at the cell centre,
+    /// the grid's axes, metres.
+    pub to_cell: Affine3A,
+}
 
 /// A terrain tile mesh: the voxels below its surface are solid.
 #[derive(Component, Clone, Copy)]
@@ -105,8 +117,8 @@ pub struct GiRefocus;
 pub const BASE_AMBIENT: f32 = 0.001;
 
 /// The level's GI inputs in world space, collected once its nodes have
-/// settled: every sample point and every upward floor triangle. Shared with
-/// the block builds.
+/// settled: every sample point, every floor point and every terrain
+/// triangle. Shared with the block builds.
 #[derive(Resource)]
 struct GiSource {
     inputs: SourceInputs,
@@ -123,46 +135,67 @@ enum SourceInputs {
 struct GiInputs {
     meshes: usize,
     points: Vec<Vec3>,
-    floors: Vec<FloorMesh>,
+    /// The grid cells' floor points, world space.
+    floor_points: Vec<Vec3>,
     terrain: Vec<[Vec3; 3]>,
 }
 
-/// A tile-grid floor piece with its world triangles and bounds (metres),
-/// kept apart from the other meshes: each piece feeds the original's floor
-/// heightfield.
-///
-/// The original merges a cell's floor strips into one mesh and runs the
-/// generator in that mesh's object space, whose origin is the cell centre
-/// (a whole number of 20 cm steps from the world origin). Running it on
-/// each piece in world space gives the same 20 cm lattice, since every
-/// snapped edge is a world multiple of 20 cm.
-struct FloorMesh {
+/// A grid cell's floor as the original merges it: the triangles of every
+/// floor mesh of the cell, in the cell's own space (metres, origin at the
+/// cell centre), and where that space sits in the world.
+struct FloorCell {
     triangles: Vec<[Vec3; 3]>,
-    bounds: Bounds,
+    to_world: Affine3A,
 }
 
-impl FloorMesh {
-    /// The piece's floor points (world, metres), from the original's floor
-    /// heightfield at its 20 cm parameter.
+impl FloorCell {
+    /// The cell's floor points (world, metres), from the original's floor
+    /// heightfield at its 20 cm parameter, run once per cell in the cell's
+    /// space as the original runs it on the cell's `+Floor` mesh.
     ///
-    /// The generator keeps the original's centimetres: the piece's
-    /// triangles and bounds are scaled up, and the points it marks on the
-    /// world's 20 cm lattice are scaled back.
+    /// The generator keeps the original's centimetres: the triangles and
+    /// their bounds are scaled up, and the points scaled back.
     fn points(&self) -> Vec<Vec3> {
         let triangles: Vec<[Vec3; 3]> = self
             .triangles
             .iter()
             .map(|t| t.map(|p| p * CM_PER_M))
             .collect();
+        let mut min = Vec3::splat(f32::INFINITY);
+        let mut max = Vec3::splat(f32::NEG_INFINITY);
+        for p in triangles.iter().flatten() {
+            min = min.min(*p);
+            max = max.max(*p);
+        }
+        if triangles.is_empty() {
+            return Vec::new();
+        }
         let bounds = Bounds {
-            centre: self.bounds.centre * CM_PER_M,
-            half_extents: self.bounds.half_extents * CM_PER_M,
+            centre: (min + max) * 0.5,
+            half_extents: (max - min) * 0.5,
         };
         voxel::floor_points(bounds, &triangles, FLOOR_PARAMETER)
             .into_iter()
-            .map(|p| p / CM_PER_M)
+            .map(|p| self.to_world.transform_point3(p / CM_PER_M))
             .collect()
     }
+}
+
+/// Merges the floor meshes into their grid cells, in cell order (the
+/// meshes of a cell in the order given).
+fn floor_cells(meshes: &[(MeshCopy, GiFloor)]) -> Vec<FloorCell> {
+    let mut cells: BTreeMap<(i32, i32), FloorCell> = BTreeMap::new();
+    for (mesh, floor) in meshes {
+        let cell = cells
+            .entry((floor.cell.x, floor.cell.y))
+            .or_insert_with(|| FloorCell {
+                triangles: Vec::new(),
+                // The mesh's world placement less its place in the cell.
+                to_world: mesh.at * floor.to_cell.inverse(),
+            });
+        cell.triangles.extend(triangles_of(mesh, floor.to_cell));
+    }
+    cells.into_values().collect()
 }
 
 /// A mesh's positions and triangle corners with its world transform, owned
@@ -204,7 +237,7 @@ fn collect_source(
     pending: Option<Res<PendingGi>>,
     settings: Res<GiSettings>,
     points: Query<(&GiPoints, &GlobalTransform)>,
-    floors: Query<(&Mesh3d, &GlobalTransform), With<GiFloor>>,
+    floors: Query<(&Mesh3d, &GlobalTransform, &GiFloor)>,
     terrain: Query<(&Mesh3d, &GlobalTransform), With<GiTerrain>>,
     meshes: Res<Assets<Mesh>>,
     fires: Query<&crate::fire::Fire>,
@@ -235,7 +268,10 @@ fn collect_source(
         .iter()
         .map(|(gi, at)| (gi.0.clone(), at.affine()))
         .collect();
-    let floors = mesh_copies(floors.iter(), &meshes);
+    let floors: Vec<(MeshCopy, GiFloor)> = floors
+        .iter()
+        .filter_map(|(mesh, at, floor)| Some((mesh_copy(mesh, at, &meshes)?, *floor)))
+        .collect();
     let ground = mesh_copies(terrain.iter(), &meshes);
     let task = AsyncComputeTaskPool::get().spawn(async move {
         let mut world = Vec::new();
@@ -245,7 +281,10 @@ fn collect_source(
         GiInputs {
             meshes: points.len(),
             points: world,
-            floors: floor_meshes(&floors),
+            floor_points: floor_cells(&floors)
+                .iter()
+                .flat_map(FloorCell::points)
+                .collect(),
             terrain: world_triangles(&ground),
         }
     });
@@ -261,35 +300,38 @@ fn mesh_copies<'a>(
     meshes: &Assets<Mesh>,
 ) -> Vec<MeshCopy> {
     parts
-        .filter_map(|(mesh, at)| {
-            let mesh = meshes.get(&mesh.0)?;
-            Some(MeshCopy {
-                positions: mesh
-                    .attribute(Mesh::ATTRIBUTE_POSITION)?
-                    .as_float3()?
-                    .to_vec(),
-                indices: mesh.indices()?.iter().map(|i| i as u32).collect(),
-                at: at.affine(),
-            })
-        })
+        .filter_map(|(mesh, at)| mesh_copy(mesh, at, meshes))
         .collect()
+}
+
+/// One mesh's positions and triangles, copied with its transform.
+fn mesh_copy(mesh: &Mesh3d, at: &GlobalTransform, meshes: &Assets<Mesh>) -> Option<MeshCopy> {
+    let mesh = meshes.get(&mesh.0)?;
+    Some(MeshCopy {
+        positions: mesh
+            .attribute(Mesh::ATTRIBUTE_POSITION)?
+            .as_float3()?
+            .to_vec(),
+        indices: mesh.indices()?.iter().map(|i| i as u32).collect(),
+        at: at.affine(),
+    })
 }
 
 /// The triangles of `meshes` in world space.
 fn world_triangles(meshes: &[MeshCopy]) -> Vec<[Vec3; 3]> {
     let mut triangles = Vec::new();
     for mesh in meshes {
-        triangles.extend(world_triangles_of(mesh));
+        triangles.extend(triangles_of(mesh, mesh.at));
     }
     triangles
 }
 
-/// A mesh's triangles in world space.
-fn world_triangles_of(mesh: &MeshCopy) -> Vec<[Vec3; 3]> {
+/// A mesh's triangles, placed by `at`.
+fn triangles_of(mesh: &MeshCopy, at: Affine3A) -> Vec<[Vec3; 3]> {
     let corners: Vec<Vec3> = mesh
         .positions
         .iter()
-        .map(|&p| mesh.at.transform_point3(Vec3::from(p)))
+        .map(|&p| at.transform_point3(Vec3::from(p)))
         .collect();
     let mut triangles = Vec::new();
     for t in mesh.indices.as_chunks::<3>().0 {
@@ -299,37 +341,6 @@ fn world_triangles_of(mesh: &MeshCopy) -> Vec<[Vec3; 3]> {
         }
     }
     triangles
-}
-
-/// The floor pieces, each with its world triangles and the bounds of those
-/// triangles.
-fn floor_meshes(meshes: &[MeshCopy]) -> Vec<FloorMesh> {
-    meshes
-        .iter()
-        .map(|mesh| {
-            let triangles = world_triangles_of(mesh);
-            let mut min = Vec3::splat(f32::INFINITY);
-            let mut max = Vec3::splat(f32::NEG_INFINITY);
-            for t in &triangles {
-                for &p in t {
-                    min = min.min(p);
-                    max = max.max(p);
-                }
-            }
-            let (centre, half_extents) = if triangles.is_empty() {
-                (Vec3::ZERO, Vec3::ZERO)
-            } else {
-                ((min + max) * 0.5, (max - min) * 0.5)
-            };
-            FloorMesh {
-                triangles,
-                bounds: Bounds {
-                    centre,
-                    half_extents,
-                },
-            }
-        })
-        .collect()
 }
 
 /// Keeps the block around the point ahead of the camera: starts a build
@@ -352,10 +363,10 @@ fn follow_camera(
             return;
         };
         info!(
-            "GI source: {} meshes, {} points, {} floor and {} terrain triangles",
+            "GI source: {} meshes, {} points, {} floor points, {} terrain triangles",
             inputs.meshes,
             inputs.points.len(),
-            inputs.floors.len(),
+            inputs.floor_points.len(),
             inputs.terrain.len()
         );
         source.inputs = SourceInputs::Ready(Arc::new(inputs));
@@ -427,13 +438,10 @@ fn build_block(focus: Vec3, level: PendingGi, inputs: &GiInputs) -> BuiltBlock {
     for &p in &inputs.points {
         occupancy.splat(p);
     }
-    let mut floor_points = 0;
-    for floor in &inputs.floors {
-        for p in floor.points() {
-            occupancy.splat(p);
-            floor_points += 1;
-        }
+    for &p in &inputs.floor_points {
+        occupancy.splat(p);
     }
+    let floor_points = inputs.floor_points.len();
     let floors = occupancy.floors();
     if let Some(path) = std::env::var_os("EXA_GI_DUMP") {
         let _ = std::fs::write(&path, &occupancy.cells);
@@ -778,29 +786,81 @@ mod tests {
             Vec3::new(6.0, 0.0, 6.0),
             Vec3::new(6.0, 0.0, 0.0),
         );
-        let floor = FloorMesh {
-            triangles: vec![[a, b, c], [a, c, d]],
-            bounds: Bounds {
-                centre: Vec3::new(3.0, 0.0, 3.0),
-                half_extents: Vec3::new(3.0, 0.0, 3.0),
-            },
+        // The cell's centre is (3, 0, 3); its floor in its own space.
+        let to_cell = Affine3A::from_translation(Vec3::new(-3.0, 0.0, -3.0));
+        let to_world = to_cell.inverse();
+        let cell = |triangles: Vec<[Vec3; 3]>| FloorCell {
+            triangles: triangles
+                .into_iter()
+                .map(|t| t.map(|p| to_cell.transform_point3(p)))
+                .collect(),
+            to_world,
         };
-        assert_eq!(floor.points().len(), 30 * 30);
-        for p in floor.points() {
+        let floor = cell(vec![[a, b, c], [a, c, d]]);
+        let points = floor.points();
+        assert_eq!(points.len(), 30 * 30);
+        for &p in &points {
             o.splat(p);
         }
         assert_eq!(o.at(Vec3::new(3.0, -0.1, 3.0)), Some(20));
         assert_eq!(o.at(Vec3::new(3.0, 0.1, 3.0)), Some(0));
         assert_eq!(o.at(Vec3::new(3.0, -0.3, 3.0)), Some(0));
         // A downward face gives nothing.
-        let down = FloorMesh {
-            triangles: vec![[a, c, b], [a, d, c]],
-            bounds: Bounds {
-                centre: Vec3::new(3.0, 0.0, 3.0),
-                half_extents: Vec3::new(3.0, 0.0, 3.0),
-            },
+        assert!(cell(vec![[a, c, b], [a, d, c]]).points().is_empty());
+    }
+
+    #[test]
+    fn a_cells_floor_meshes_are_merged_before_the_heightfield() {
+        // Two halves of a 6 m floor, split at 10 cm past the cell centre
+        // (inside a 20 cm block), as two meshes of one cell, and a third
+        // mesh in the next cell along x.
+        let half = |x0: f32, x1: f32| -> Vec<[f32; 3]> {
+            vec![
+                [x0, 0.0, -3.0],
+                [x0, 0.0, 3.0],
+                [x1, 0.0, 3.0],
+                [x1, 0.0, -3.0],
+            ]
         };
-        assert!(down.points().is_empty());
+        let quad = |positions: Vec<[f32; 3]>, at: Affine3A| MeshCopy {
+            positions,
+            indices: vec![0, 1, 2, 0, 2, 3],
+            at,
+        };
+        let centre = Vec3::new(9.0, 0.0, 3.0);
+        let next = Vec3::new(15.0, 0.0, 3.0);
+        let floor = |c: Vec3| GiFloor {
+            cell: (c.xz() * 100.0).round().as_ivec2(),
+            to_cell: Affine3A::IDENTITY,
+        };
+        let meshes = vec![
+            (
+                quad(half(-3.0, 0.1), Affine3A::from_translation(centre)),
+                floor(centre),
+            ),
+            (
+                quad(half(0.1, 3.0), Affine3A::from_translation(centre)),
+                floor(centre),
+            ),
+            (
+                quad(half(-3.0, 3.0), Affine3A::from_translation(next)),
+                floor(next),
+            ),
+        ];
+        let cells = floor_cells(&meshes);
+        assert_eq!(cells.len(), 2);
+        assert_eq!(cells[0].triangles.len(), 4);
+        // Merged, the halves cover every block: the full 30 × 30.
+        let points = cells[0].points();
+        assert_eq!(points.len(), 30 * 30);
+        // In the world, about the cell centre, 10 cm under the floor.
+        assert!(points.iter().all(|p| (p.x - 9.0).abs() < 3.0
+            && (p.z - 3.0).abs() < 3.0
+            && (p.y + 0.1).abs() < 1e-4));
+        assert_eq!(cells[1].points().len(), 30 * 30);
+        // Each half alone would lose the blocks across the split.
+        let alone = floor_cells(&meshes[..1]);
+        assert_eq!(alone[0].points().len(), 15 * 30);
     }
 
     #[test]

@@ -885,6 +885,8 @@ fn spawn_piece(
         .is_some_and(|f| std::ptr::eq(f.as_ref(), model));
     // The piece in its cell: the side rotation, about the cell centre.
     let cell_local = Affine3A::from_quat(transform.rotation);
+    // The cell, by its centre on the grid in whole centimetres.
+    let cell = (transform.translation.xz() * 100.0).round().as_ivec2();
     let world = transform.compute_affine();
     let root = spawn_node(
         commands,
@@ -895,6 +897,7 @@ fn spawn_piece(
         None,
         whole_floor.then_some((cell_local, &mut *uvs)),
         room,
+        cell,
     );
     let mut stack: Vec<(
         usize,
@@ -938,6 +941,7 @@ fn spawn_piece(
             surface,
             floor.then_some((local, &mut *uvs)),
             room,
+            cell,
         );
         stack.extend(kids[n].iter().map(|&k| (k, e, surface, local)));
     }
@@ -954,6 +958,7 @@ fn spawn_node(
     surface: Option<&Handle<exa_render::material::ExaMaterial>>,
     mut floor: Option<(Affine3A, &mut FloorUvs)>,
     room: Option<u16>,
+    cell: IVec2,
 ) -> Entity {
     let n = &model.nodes[node];
     let e = commands
@@ -984,8 +989,11 @@ fn spawn_node(
                 ChildOf(e),
             ))
             .id();
-        if floor.is_some() {
-            commands.entity(part).insert(crate::gi_volume::GiFloor);
+        if let Some((local, _)) = &floor {
+            commands.entity(part).insert(crate::gi_volume::GiFloor {
+                cell,
+                to_cell: *local,
+            });
         }
         if let Some(room) = room {
             commands.entity(part).insert(InRoom(room));
