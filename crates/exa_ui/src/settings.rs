@@ -502,3 +502,110 @@ mod tests {
         assert_eq!(l.bindings[0].y, 96);
     }
 }
+
+/// A switched page: what is visible and the child's rectangle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PageSwitch {
+    pub page: u8,
+    pub settings_visible: bool,
+    pub controls_visible: bool,
+    pub child: Rect,
+}
+
+/// The page switch (`0x1000a7e20`): page 0 shows the Settings child at
+/// (0,64,426,408); page 1 shows the Controls child at a y of 56 (widescreen)
+/// or 96, height 472−y. The unit-4 values scale by `unit/4`.
+pub fn switch_page(page: u8, widescreen: bool, unit: i32) -> Option<PageSwitch> {
+    let s = |v: i32| v * unit / 4;
+    match page {
+        0 => Some(PageSwitch {
+            page,
+            settings_visible: true,
+            controls_visible: false,
+            child: Rect {
+                x: 0,
+                y: s(64),
+                w: s(426),
+                h: s(SETTINGS_HEIGHT),
+            },
+        }),
+        1 => {
+            let y = if widescreen { 56 } else { 96 };
+            Some(PageSwitch {
+                page,
+                settings_visible: false,
+                controls_visible: true,
+                child: Rect {
+                    x: 0,
+                    y: s(y),
+                    w: s(426),
+                    h: s(472 - y),
+                },
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The Controls list's scrollbar at fraction `f`: the 412-px client of the
+/// 416-px child over 676-px content, a 15-px rail and a minimum 9-px thumb.
+/// Returns `(thumb_height, thumb_y)` scaled by `unit/4`.
+pub fn controls_scroll(f: f32, unit: i32) -> (i32, i32) {
+    let viewport = 412;
+    let content = CONTROLS_CONTENT;
+    let rail = 15;
+    let track = viewport - 2 * rail;
+    let mut thumb = (track as f64 * viewport as f64 / content as f64) as i32;
+    thumb = thumb.clamp(9, track);
+    let y = 17 + ((track - thumb) as f32 * f.clamp(0.0, 1.0)) as i32;
+    (thumb * unit / 4, y * unit / 4)
+}
+
+#[cfg(test)]
+mod page_tests {
+    use super::*;
+
+    #[test]
+    fn the_page_switch() {
+        let settings = switch_page(0, true, 4).unwrap();
+        assert!(settings.settings_visible && !settings.controls_visible);
+        assert_eq!(
+            settings.child,
+            Rect {
+                x: 0,
+                y: 64,
+                w: 426,
+                h: 408
+            }
+        );
+        let controls = switch_page(1, true, 4).unwrap();
+        assert!(!controls.settings_visible && controls.controls_visible);
+        assert_eq!(
+            controls.child,
+            Rect {
+                x: 0,
+                y: 56,
+                w: 426,
+                h: 416
+            }
+        );
+        let tall = switch_page(1, false, 4).unwrap();
+        assert_eq!(
+            tall.child,
+            Rect {
+                x: 0,
+                y: 96,
+                w: 426,
+                h: 376
+            }
+        );
+        assert!(switch_page(2, true, 4).is_none());
+    }
+
+    #[test]
+    fn the_controls_scroll() {
+        assert_eq!(controls_scroll(0.0, 4), (232, 17));
+        assert_eq!(controls_scroll(1.0, 4), (232, 167));
+        assert_eq!(controls_scroll(0.5, 6), (348, 138));
+    }
+}
