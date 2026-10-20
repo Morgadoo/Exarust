@@ -145,18 +145,22 @@ pub fn bits_per_pixel(format_id: u32) -> u32 {
 
 /// Bytes of `pixels` pixels of an uncompressed format: whole bytes per
 /// pixel, or the bits rounded up to a byte when the format is bit-packed.
-/// `None` for block-compressed formats.
+/// `None` for block-compressed formats and for counts whose size does not
+/// fit a `usize`.
 pub fn pixel_bytes(format_id: u32, pixels: usize) -> Option<usize> {
     if format_id & 0x8000_0000 != 0 {
         return None;
     }
     let bits = bits_per_pixel(format_id) as usize;
-    Some(if format_id & 0x0004_0000 != 0 {
-        (bits * pixels).div_ceil(8)
+    if format_id & 0x0004_0000 != 0 {
+        bits.checked_mul(pixels).map(|b| b.div_ceil(8))
     } else {
-        bits.div_ceil(8) * pixels
-    })
+        bits.div_ceil(8).checked_mul(pixels)
+    }
 }
+
+/// The most bytes a converter writes or reads per pixel (RGBAf).
+const MAX_PIXEL_BYTES: usize = 16;
 
 /// Rounds to the nearest integer, ties to even, as the processor's default
 /// float conversion does; NaN and values beyond `i64` give `i64::MIN`.
@@ -454,6 +458,9 @@ pub fn convert(
 ) -> Result<bool> {
     let format =
         lookup(source).ok_or_else(|| Error::Unsupported(format!("pixel format {source:#010x}")))?;
+    if pixels.checked_mul(MAX_PIXEL_BYTES).is_none() {
+        return Err(Error::Unsupported(format!("{pixels} pixels")));
+    }
     let src_len = pixel_bytes(source, pixels).unwrap_or(0);
     need(src, src_len)?;
     let masked = target & TARGET_MASK;
@@ -906,6 +913,10 @@ mod tests {
         assert!(convert(id::LUM8, id::RGBA8, &[1], 1, &mut dst).is_err());
         assert!(convert(id::LUM8, id::LUM8, &[], 1, &mut dst).is_err());
         assert!(convert(0x813B_C600, id::RGBA8, &[1], 1, &mut dst).is_err());
+        // A count whose size overflows is an error, not a panic.
+        assert!(convert(id::RGBAF, id::RGBA8, &[], usize::MAX / 8, &mut dst).is_err());
+        assert_eq!(pixel_bytes(id::RGBAF, usize::MAX / 8), None);
+        assert_eq!(pixel_bytes(id::LUMA8, usize::MAX), None);
     }
 
     #[test]

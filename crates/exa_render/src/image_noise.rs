@@ -436,7 +436,9 @@ impl NoiseField {
         }
         self.plane_amplitudes[2] = self.amplitude;
         self.fraction = fraction;
-        let last_row = (round_f32(self.height as i32 as f32 * fraction) - 1) as i32;
+        // A 64-bit conversion less one, compared on its low 32 bits: a
+        // fraction that does not convert (the indefinite value) gives −1.
+        let last_row = round_f32(self.height as i32 as f32 * fraction).wrapping_sub(1) as i32;
         if last_row > self.built_rows {
             self.build_rows(last_row);
             self.built_rows = last_row + 1;
@@ -656,6 +658,18 @@ mod tests {
         field.configure(1, 1.0, 0.985);
         assert!(field.tick(1300, counter(30)));
         assert_eq!(field.amplitude(), 0.985);
+    }
+
+    #[test]
+    fn a_zero_period_builds_no_rows() {
+        // Period 0: the offset and the phase are NaN, the whole part
+        // converts to 0 and the row count to the indefinite value, so no
+        // row is built (and nothing panics).
+        let mut field = NoiseField::new(8, 8, 1, 1.0, 0, false, counter(0));
+        field.configure(1, 0.0, 1.0);
+        assert!(field.tick(100, counter(5)));
+        assert_eq!(field.phase().0, 0);
+        assert_eq!(field.built_rows, 0);
     }
 
     #[test]
