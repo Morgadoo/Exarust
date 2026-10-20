@@ -86,3 +86,14 @@ Updating the look SHALL set its four values to 16 and the default caption when f
 - **THEN** the four values are 0 and the caption is C
 - **WHEN** the look is male with variant −1
 - **THEN** the caption is the default
+
+### Requirement: Creation appearance scales
+Scaling three values SHALL multiply each by 255 and round to the nearest even integer, keeping the low byte. Scaling two values SHALL multiply each by 65535 and round the same way, keeping the low 16 bits.
+
+#### Scenario: Bytes and words
+- **WHEN** the three values are 0, 0.5 and 1
+- **THEN** the bytes are 0, 128 and 255
+- **WHEN** the two values are 0 and 0.5
+- **THEN** the words are 0 and 32768
+- **WHEN** the value is 1
+- **THEN** the word is 65535

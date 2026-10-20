@@ -228,6 +228,16 @@ pub fn update_creation_look(female: bool, variant: i32) -> CreationLook {
     }
 }
 
+/// Scales three normalised values to bytes.
+pub fn appearance_bytes(values: [f32; 3]) -> [u8; 3] {
+    values.map(|value| (value * 255.0).round_ties_even() as i64 as u8)
+}
+
+/// Scales two normalised values to 16-bit words.
+pub fn appearance_words(values: [f32; 2]) -> [u16; 2] {
+    values.map(|value| (value * 65535.0).round_ties_even() as i64 as u16)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -401,5 +411,12 @@ mod tests {
         let plain = update_creation_look(false, -1);
         assert_eq!(plain.values, [0; 4]);
         assert_eq!(plain.letter, None);
+    }
+
+    #[test]
+    fn the_creation_appearance_scales_to_bytes_and_words() {
+        assert_eq!(appearance_bytes([0.0, 0.5, 1.0]), [0, 128, 255]);
+        assert_eq!(appearance_words([0.0, 0.5]), [0, 32768]);
+        assert_eq!(appearance_words([1.0, 0.0]), [65535, 0]);
     }
 }
