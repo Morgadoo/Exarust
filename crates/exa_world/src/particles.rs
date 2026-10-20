@@ -643,6 +643,8 @@ impl Emitter {
             Vec::new()
         } else if self.first < self.next {
             vec![(self.first, self.next - 1)]
+        } else if self.next == 0 {
+            vec![(self.first, cap)]
         } else {
             vec![(self.first, cap), (0, self.next - 1)]
         }
