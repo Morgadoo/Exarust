@@ -33,3 +33,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-20 | 075b29f | dirty | 21.3% | 5.7% | 17.4% | 27.3% | match the room manager's conversions |
 | 2026-10-20 | 3435885 | clean | 21.3% | 5.7% | 17.4% | 27.3% | record the room manager |
 | 2026-10-20 | ce7f385 | dirty | 21.4% | 5.7% | 17.5% | 27.3% | drag the item panel |
+| 2026-10-20 | 41f432b | clean | 21.4% | 5.7% | 17.5% | 27.3% | record the item drag layer |
