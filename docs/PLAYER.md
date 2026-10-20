@@ -62,8 +62,16 @@ The original has no camera-relative keyboard movement. Outside combat:
 - The body's yaw follows the heading at up to 240°/s, ×0.9 with the keys,
   slower when moving fast, and eased over the last 0.6 rad. There is no
   turn-in-place clip.
-- A look-ahead of 75 cm + 6·v² cm (v in cm per tick) stops the character in
-  front of a wall instead of sliding along it.
+- A look-ahead of 75 cm + 6·v² cm (v in cm per tick; 70 cm when backing)
+  stops the character in front of a wall or furniture instead of pushing
+  into it. As the original does, it walks the navigation grid from the
+  standing point toward that goal ([NAVIGATION.md](NAVIGATION.md)); the walk
+  stops at the first blocking cell, and a goal clamped within 100 cm stops
+  the character. Crates, table legs and rubble block cells as walls do.
+  Pushing into them made the character controller sweep against their
+  meshes every tick, several milliseconds each, which slowed play mode to
+  10–15 FPS. Without a grid a ray at hip height against the level stands
+  in.
 - Walking settles near 1.4 m/s; backpedalling is the walk scaled by the gait
   table's thrusts (77.8 against 88.9). Exarust's run speed is a measured
   guess until the jog row is simulated.

@@ -92,6 +92,46 @@ struct RenderTime(Arc<AtomicU64>);
 #[derive(Resource, Default)]
 struct RenderStart(Mutex<Option<Instant>>);
 
+/// What drives the frame's cost this frame: bodies awake and in all,
+/// living characters, the cube work and the shadow links' work.
+#[derive(Resource, Clone, Copy, Debug, Default)]
+struct Counts {
+    awake: usize,
+    bodies: usize,
+    characters: usize,
+    /// Character controllers swept this frame (moving, falling or following).
+    sweeping: usize,
+    cube: exa_render::cube_shadows::CubeStats,
+    links: exa_world::shadow_links::LinkStats,
+}
+
+fn count(
+    mut counts: ResMut<Counts>,
+    bodies: Query<&exa_physics::body::Ragdoll>,
+    controllers: Query<&exa_physics::CharacterBody>,
+    cube: Option<Res<exa_render::cube_shadows::CubeStats>>,
+    links: Option<Res<exa_world::shadow_links::LinkStats>>,
+) {
+    let (mut awake, mut all, mut characters) = (0, 0, 0);
+    for b in &bodies {
+        all += 1;
+        awake += usize::from(b.sleep == exa_physics::body::Sleep::Awake);
+        characters += usize::from(b.drive.is_some());
+    }
+    let sweeping = controllers
+        .iter()
+        .filter(|c| !(c.grounded && c.desired_velocity == Vec3::ZERO))
+        .count();
+    *counts = Counts {
+        awake,
+        bodies: all,
+        characters,
+        sweeping,
+        cube: cube.map_or_else(Default::default, |c| *c),
+        links: links.map_or_else(Default::default, |l| *l),
+    };
+}
+
 /// Whether the overlay is shown.
 #[derive(Resource, Debug, Default)]
 pub struct ProfilerOverlay {
@@ -125,6 +165,7 @@ impl Plugin for ProfilerPlugin {
             .insert_resource(ProfilerOverlay { on: shown })
             .insert_resource(render_time.clone())
             .init_resource::<Probes>()
+            .init_resource::<Counts>()
             .init_resource::<FrameHistory>();
         // A probe schedule before First and after each timed schedule.
         {
@@ -152,7 +193,7 @@ impl Plugin for ProfilerPlugin {
                 Update,
                 (toggle_overlay, show_overlay, update_overlay).chain(),
             )
-            .add_systems(Last, log_report);
+            .add_systems(Last, (count, log_report).chain());
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
@@ -243,7 +284,11 @@ fn gpu_spans(store: &DiagnosticsStore) -> Vec<(String, f64)> {
 
 /// The report: frame times over `frames`, the main-thread split, the render
 /// thread and the GPU spans.
-fn report(frames: &[FrameRecord], store: Option<&DiagnosticsStore>) -> Vec<String> {
+fn report(
+    frames: &[FrameRecord],
+    store: Option<&DiagnosticsStore>,
+    counts: &Counts,
+) -> Vec<String> {
     if frames.is_empty() {
         return vec!["profiler: waiting for frames".into()];
     }
@@ -280,6 +325,19 @@ fn report(frames: &[FrameRecord], store: Option<&DiagnosticsStore>) -> Vec<Strin
         avg(&|f| f.rest)
     ));
     lines.push(format!("render thread {:.2} ms", avg(&|f| f.render)));
+    lines.push(format!(
+        "bodies {} awake of {}, characters {} ({} controllers sweeping); cube faces {} ({} draws)",
+        counts.awake,
+        counts.bodies,
+        counts.characters,
+        counts.sweeping,
+        counts.cube.faces,
+        counts.cube.draws
+    ));
+    lines.push(format!(
+        "links: lights moved {}, casters moved {}, casters near {}",
+        counts.links.lights_moved, counts.links.casters_moved, counts.links.casters_near
+    ));
     if let Some(store) = store {
         let spans = gpu_spans(store);
         if spans.is_empty() {
@@ -294,12 +352,14 @@ fn report(frames: &[FrameRecord], store: Option<&DiagnosticsStore>) -> Vec<Strin
     lines
 }
 
+#[allow(clippy::too_many_arguments)]
 fn log_report(
     options: Res<Options>,
     time: Res<Time<Real>>,
     loading: Option<Res<LoadingStatus>>,
     store: Option<Res<DiagnosticsStore>>,
     history: Res<FrameHistory>,
+    counts: Res<Counts>,
     mut last: Local<Option<f32>>,
     mut since_frames: Local<usize>,
 ) {
@@ -320,7 +380,7 @@ fn log_report(
     let n = (*since_frames).min(history.frames.len());
     *since_frames = 0;
     let frames = &history.frames[history.frames.len() - n..];
-    for line in report(frames, store.as_deref()) {
+    for line in report(frames, store.as_deref(), &counts) {
         info!("perf: {line}");
     }
     // Every diagnostic Bevy keeps, for finding a pass by name.
@@ -422,6 +482,7 @@ fn update_overlay(
     time: Res<Time<Real>>,
     store: Option<Res<DiagnosticsStore>>,
     history: Res<FrameHistory>,
+    counts: Res<Counts>,
     mut text: Query<&mut Text, With<OverlayText>>,
     mut bars: Query<(&GraphBar, &mut Node, &mut BackgroundColor)>,
     mut refreshed: Local<f32>,
@@ -442,7 +503,7 @@ fn update_overlay(
     }
     *refreshed = now;
     if let Ok(mut t) = text.single_mut() {
-        let mut lines = report(frames, store.as_deref());
+        let mut lines = report(frames, store.as_deref(), &counts);
         lines.push(format!(
             "graph: last {GRAPH_BARS} frames, top {GRAPH_TOP_MS:.0} ms (F10 hides)"
         ));
@@ -472,7 +533,7 @@ mod tests {
             ticks: 2,
             render: 7.5,
         };
-        let lines = report(&[frame; 4], None);
+        let lines = report(&[frame; 4], None, &Counts::default());
         assert!(
             lines[0].starts_with("frame 20.0 ms (50 FPS)"),
             "{}",

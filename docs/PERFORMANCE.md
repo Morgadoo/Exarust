@@ -159,6 +159,12 @@ From the 2026-10-20 measurements, largest gain first:
 3. Done (`relink-lights-by-cell`): a moved light (the carried torch, every
    frame) is relinked only against the casters filed in the cells it
    reaches, not all ~31 000. Play mode: 68 FPS; PostUpdate 8.5 → 6.5 ms.
+   A later fix: a moved light also works out its casters' faces again (the
+   carried torch's shadows were cut at cube-face edges), and the player's
+   look-ahead walks the navigation grid as the original's does, so it stops
+   in front of furniture instead of pushing into it (a stuck push cost the
+   character controller several milliseconds a tick and slowed play mode to
+   10–15 FPS after some walking).
    Left on the main thread: 8 578 skinned meshes (about 220 per character)
    move every frame and mark their faces one by one; the original merges a
    character's skinned meshes into one.

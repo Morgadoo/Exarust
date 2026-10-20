@@ -563,6 +563,7 @@ fn steer_player(
     bindings: Res<Bindings>,
     cursor: Res<CursorGround>,
     physics: Res<Physics>,
+    nav: Option<Res<exa_world::nav::NavGrid>>,
     motions: Option<Res<Motions>>,
     mut players: Query<(&mut CharacterBody, &GlobalTransform, &Children), With<Player>>,
     mut bodies: Query<(
@@ -691,7 +692,7 @@ fn steer_player(
                 Vec3::ZERO
             };
             // A look ahead: blocked within reach, the character stops
-            // rather than sliding along the wall.
+            // rather than pushing into the wall or the furniture.
             if velocity != Vec3::ZERO {
                 let dir = velocity.normalize();
                 let v = velocity.length() * 100.0 / TICK_HZ;
@@ -700,11 +701,8 @@ fn steer_player(
                 } else {
                     exa_world::nav::Look::Walk
                 };
-                let reach = exa_world::nav::look_ahead(v, look).abs().min(1.0);
-                if physics
-                    .fixed_hit(feet + Vec3::Y * HIP, dir, reach)
-                    .is_some()
-                {
+                let reach = exa_world::nav::look_ahead(v, look).abs();
+                if look_blocked(nav.as_deref(), &physics, feet, dir, reach) {
                     velocity = Vec3::ZERO;
                 }
             }
@@ -712,6 +710,33 @@ fn steer_player(
             pb.backing = velocity.dot(heading) < 0.0;
             explore_clip(&mut anim, exploration_gait(velocity != Vec3::ZERO));
         }
+    }
+}
+
+/// A look-ahead goal blocked this near (m) stops the walk.
+const LOOK_STOP: f32 = 1.0;
+
+/// Whether the walk from `feet` along `dir` is blocked within its look-ahead
+/// `reach` (m). As the original does, the pathfinder grid is walked from the
+/// standing point toward the look-ahead goal; the walk stops at the first
+/// blocking cell (a wall, a crate, a table's legs), and a goal clamped within
+/// 100 cm stops the character. Without a grid, a ray at hip height against
+/// the level stands in.
+fn look_blocked(
+    nav: Option<&exa_world::nav::NavGrid>,
+    physics: &Physics,
+    feet: Vec3,
+    dir: Vec3,
+    reach: f32,
+) -> bool {
+    match nav {
+        Some(grid) => {
+            let hit = exa_world::nav::line_walk(grid, feet, feet + dir * reach);
+            hit.blocked && (hit.end - feet).with_y(0.0).length() <= LOOK_STOP
+        }
+        None => physics
+            .fixed_hit(feet + Vec3::Y * HIP, dir, reach.min(LOOK_STOP))
+            .is_some(),
     }
 }
 
