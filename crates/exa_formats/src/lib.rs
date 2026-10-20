@@ -20,6 +20,7 @@ pub mod level;
 pub mod material;
 pub mod morph;
 pub mod objdb;
+pub mod objstrings;
 pub mod pixel;
 pub mod power_tree;
 pub mod races;
