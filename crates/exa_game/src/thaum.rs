@@ -32,6 +32,15 @@
 
 use bevy::math::Vec3;
 
+pub mod arcs;
+pub mod barricade;
+pub mod casting;
+pub mod displacement;
+pub mod energy;
+pub mod engine;
+pub mod force;
+pub mod wisps;
+
 /// The four domains that have a cast.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Domain {
@@ -690,7 +699,7 @@ pub struct ShellVertex {
     pub normal: [f32; 3],
 }
 
-fn reciprocal_sqrt(value: f32) -> f32 {
+pub(crate) fn reciprocal_sqrt(value: f32) -> f32 {
     #[cfg(target_arch = "x86_64")]
     {
         // The same approximate reciprocal square root the shell uses to unit a sum.
