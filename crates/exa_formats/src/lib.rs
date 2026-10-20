@@ -27,6 +27,7 @@ pub mod rfc;
 pub mod rfc_write;
 pub mod rfi;
 pub mod rigid_body;
+pub mod roles;
 pub mod rsq;
 pub mod save_chunk;
 pub mod save_package;

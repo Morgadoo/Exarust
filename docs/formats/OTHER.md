@@ -12,7 +12,7 @@ payloads
 ```
 
 `races.rdb` (18 records of 624 bytes), `charroles.rdb` (dialogue and AI
-roles, including a C-like script language), `locales.rdb` (the level list:
+roles with their scripts and dialogue graphs; see [Roles](#roles-charrolesrdb)), `locales.rdb` (the level list:
 ids 1 Exanima, 2 Exanima01 … 13 Exanima67, 17 Arak_Ar),
 `objdb.rdb` (object database, 0x5900/16 = 1424 records), `objstrings.rdb`
 (string library, magic `0xAFBF0C02`). The community spec reports a trailing
@@ -1132,10 +1132,80 @@ Deflection, Security). The sixteen opponents and the proctor store empty
 pools (0, either version); ArenaShpKp, the demon, the villager and Derrin
 store full yellow and red.
 
-## Dialogue (`.rcd`)
+## Roles (`charroles.rdb`)
 
-`narrator.rcd`: speakers (`Narrator`, `Player`, `Corlian`, …) with colours,
-then utterances. Format unknown beyond that.
+Status: **verified** (`exa_formats::roles`). All 49 records of the shipped
+database parse to their ends; a 50th table entry points outside the file
+and is skipped. Established from the role lookup, the add-role walk, the
+entry-section finder and the dialogue walkers of `Exanima.exe` 0.9.5 (REA),
+then checked against the corpus (`roles::tests::shipped_roles_and_narrator`).
+
+Role record, all little-endian:
+
+| offset | field |
+|---|---|
+| `+0x00` | u32 record size |
+| `+0x04` | u32 flags: bit 0 a relation role (Truce, Ally, Leader…, held toward one other character); bit 16 adding the role adds its parent too; bit 8 (Corlian only) not decoded. The dialogue search and attitude test bit 0; topic activation tests the whole low byte equal to 1 |
+| `+0x08` | name[16], NUL-padded |
+| `+0x18` | u32 parent role id |
+| `+0x1C` | u32 unused (0) |
+| `+0x20` | u32 weight in percent (low byte; 0, 50 or 100) |
+| `+0x24` | u32 variable count |
+| `+0x28` | u32 count of a second 20-byte table (0 in every record) |
+| `+0x2C` | u32 0 |
+| `+0x30` | u32 entry count |
+| `+0x34` | u32 init script length, then the script (no NUL) |
+| … | variables: name[16] + u32 type word (0, 1, 2, 4; meaning not decoded) |
+| … | entries |
+
+Entry: u32 size (counting itself), u32 kind, u32 target (a role id; 0 the
+relation partner; a character id when the condition word has bits 31 and
+30 set, the low 30 bits then being the locale), u32 condition, u32 value
+(byte 0 attitude −100..100, byte 1 tolerance 0..100). Kind `0x1000` makes
+the attitude apply; the other kind bits add sections, stored in this order:
+
+| bit | section |
+|---|---|
+| `0x1` | u32 length + bytes, never present |
+| `0x2` | a dialogue graph (below), sized by its own block size |
+| `0x4` | encounter script: u32 length + text |
+| `0x8`, `0x10` | u32 length + bytes, never present |
+| `0x40` | interaction condition: u32 length + text (`result = …`) |
+| `0x20` | a `GameEvent(…)` line, u32 length + text (Corlian only; its place after the others is a guess, no entry combines it) |
+
+The first entry whose target and condition words match is the one a lookup
+takes; if it has no dialogue the lookup fails, later entries are not tried.
+
+### Dialogue graphs (role entries and `narrator.rcd`)
+
+`narrator.rcd` is one graph on its own (2 actors, `Narrator` and `Player`, 5
+nodes: `Corlian`, `XU_Memory`, `RVL_RaiseDead_S`, `RVL_RaiseDead_F`,
+`Power_Glean`).
+
+```
+u32 target          the aim of the entry (0 in narrator.rcd); memory is filed under it
+u32 block size      from the block's start
+u32 n actors        then n × { name[16], u32 ARGB colour, u32 0, u32 len + len bytes }
+u32 n nodes         then n nodes; an empty node is one zero word
+node:   u32 size, u32 flags, title[16], f32 x, f32 y (editor), u32 n links,
+        n × u32 link (low 16 bits a node number from 1), then a group
+group:  u32 n, n × branch
+branch: u32 size, u32 flags, u32 n lines, n × { u32 speaker (actor slot from 1),
+        u32 len + text }, u32 len + condition script, u32 len + action script,
+        then a group (the replies)
+```
+
+Node flags: bits 0–3 re-use cooldown class (0 never again, 1 a year … 13
+10 s, 14 0 s, 15 always); bits 4–7 calm class (how low the owner's arousal
+must be: 1, 10, 20, 200, 200); bits 8–12 hits that activate a topic, `0x2000`
+hits counted as distinct witnesses, `0x4000` no re-activation while active,
+bits 16–19 how long an activation lasts (same table as the cooldown), bits
+20–22 activation delay (0, 2, 5, 10, 30, 300, 1800 s); `0x1000000` an entry
+node, `0x8000000` never an entry; `0x2000000` and bits 28–31 are set in the
+data but read by no routine found. Branch flags: bits 0–2 the link to follow
+when the branch ends; bits 9–10 the highest hostility it is meant for; bits
+4–8 attitude bands (stored, not tested). Text is Windows-1252; `{…}` groups in
+lines are script expressions (`{Actor[1].Name}`).
 
 ## Material libraries (`.rml`)
 
