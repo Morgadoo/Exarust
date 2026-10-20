@@ -279,10 +279,15 @@ mod tests {
     }
 }
 
-/// The main menu's row advance: `trunc(70·row_h)`. The live menu's
-/// `row_h` is 1.0 at 1600×1080, giving the ~70 px rows the retail
-/// screenshot shows; the scale rule that produces `row_h` is not decoded.
+/// The main menu's row advance: `trunc(70·row_h)`.
 pub const ROW_UNITS: f32 = 70.0;
+
+/// The row scale from the client height: `0.5·round(H/135)/4`. The live
+/// value is 0.375 at 453 px and 1.0 at 1080 px.
+pub fn row_h(height: i32) -> f32 {
+    let step = (height as f64 / 135.0).round_ties_even();
+    (step as f32 * 0.5) / 4.0
+}
 
 /// `trunc(70·row_h)`.
 pub fn row_advance(row_h: f32) -> i32 {
@@ -325,6 +330,12 @@ mod geometry_tests {
 
     #[test]
     fn the_row_advance_matches_the_retail_menu() {
+        assert_eq!(row_h(1080), 1.0);
+        assert_eq!(row_h(453), 0.375);
+        assert_eq!(row_h(720), 0.625);
+        assert_eq!(row_h(1440), 1.375);
+        assert_eq!(row_advance(row_h(1080)), 70);
+        assert_eq!(row_advance(row_h(453)), 26);
         assert_eq!(row_advance(1.0), 70);
         assert_eq!(row_advance(0.5), 35);
         assert_eq!(row_advance(1.5), 105);
