@@ -23,6 +23,10 @@ pub const CELL_OPEN: u32 = 0x8_0000;
 pub const CELL_TERRAIN: u32 = 0x80_0000;
 /// A cell's side, metres.
 pub const CELL_M: f32 = 6.0;
+/// The original's `1/600` as an `f32` (bit pattern `0x3ADA740E`). The
+/// world-to-cell conversion multiplies a centimetre coordinate by this, not
+/// by a division.
+pub const INV_CELL_CM: f32 = 0.001_666_666_7;
 /// Edge codes.
 const EDGE_WALL: u32 = 7;
 const EDGE_DOOR: u32 = 0xB;
@@ -180,8 +184,8 @@ impl Rooms {
     /// the nearest, as the original rounds down.
     pub fn cell_of(&self, p: Vec2) -> (i64, i64) {
         (
-            (p.x / CELL_M).floor() as i64 + (self.width / 2) as i64,
-            (p.y / CELL_M).floor() as i64 + (self.height / 2) as i64,
+            (p.x * 100.0 * INV_CELL_CM).floor() as i64 + (self.width / 2) as i64,
+            (p.y * 100.0 * INV_CELL_CM).floor() as i64 + (self.height / 2) as i64,
         )
     }
 
@@ -239,6 +243,53 @@ pub fn portal_size(side_nibble: u32, special: bool) -> Vec2 {
         Vec2::new(0.82, 2.45)
     } else {
         Vec2::new(1.15, 2.90)
+    }
+}
+
+/// A cell's side, centimetres (the room code works in cm).
+pub const CELL_CM: f32 = 600.0;
+/// A room's ceiling band, centimetres: floor at 0 and ceiling at 280.
+pub const ROOM_CEILING_CM: f32 = 280.0;
+
+/// A room's cell rectangle (`x0, y0, x1, y1`, inclusive) as world bounds in
+/// centimetres: `[xmin, xmax, zmin, zmax]`.
+pub fn rect_world_cm(rect: [u32; 4], width: u32, height: u32) -> [f32; 4] {
+    let half_w = (width / 2) as f32;
+    let half_h = (height / 2) as f32;
+    [
+        (rect[0] as f32 - half_w) * CELL_CM,
+        (rect[2] as f32 - half_w + 1.0) * CELL_CM,
+        (rect[1] as f32 - half_h) * CELL_CM,
+        (rect[3] as f32 - half_h + 1.0) * CELL_CM,
+    ]
+}
+
+/// Rotates a packed edge word by `quarter` quarter turns. The low four
+/// nibbles rotate cyclically; the high four nibbles rotate their low three
+/// bits, while their bit 3 (mask `0x8888_0000`) stays put.
+pub fn rotate_edge_word(word: u32, quarter: u8) -> u32 {
+    match quarter & 3 {
+        0 => word,
+        1 => (word & 0x0777_0FFF) << 4 | (word & 0x7000_F000) >> 12 | (word & 0x8888_0000),
+        2 => (word & 0x0077_00FF) << 8 | (word & 0x7700_FF00) >> 8 | (word & 0x8888_0000),
+        _ => (word & 0x0007_000F) << 12 | (word & 0x7770_FFF0) >> 4 | (word & 0x8888_0000),
+    }
+}
+
+/// The cell step the original takes from a direction vector: `atan2(x, z)`
+/// in `[−π, π]`, then one of the four quadrants. The step is opposite to
+/// the vector.
+pub fn cell_step_from_dir(dir: Vec2) -> (i32, i32) {
+    let v = dir.x.atan2(dir.y);
+    let quarter = std::f32::consts::FRAC_PI_4;
+    if v.abs() < quarter {
+        (0, -1)
+    } else if v.abs() > 3.0 * quarter {
+        (0, 1)
+    } else if v > quarter {
+        (-1, 0)
+    } else {
+        (1, 0)
     }
 }
 
@@ -935,6 +986,37 @@ mod tests {
             .filter(|&c| grid.edges[c] & CELL_OPEN != 0 && rooms.cell_room[c].is_none())
             .count();
         assert_eq!(roomless, 0);
+    }
+
+    #[test]
+    fn the_room_bounds_are_in_centimetres() {
+        assert_eq!(
+            rect_world_cm([2, 3, 5, 4], 32, 32),
+            [-8400.0, -6000.0, -7800.0, -6600.0]
+        );
+        assert_eq!(ROOM_CEILING_CM, 280.0);
+        let rooms = Rooms::flood(&two_rooms().0);
+        assert_eq!(rooms.len(), 2);
+    }
+
+    #[test]
+    fn the_edge_word_rotates_by_quarter_turns() {
+        assert_eq!(rotate_edge_word(0x1234_5678, 0), 0x1234_5678);
+        assert_eq!(rotate_edge_word(0x1234_5678, 1), 0x2341_6785);
+        assert_eq!(rotate_edge_word(0x1234_5678, 2), 0x3412_7856);
+        assert_eq!(
+            rotate_edge_word(rotate_edge_word(0x1234_5678, 1), 3),
+            0x1234_5678
+        );
+        assert_eq!(rotate_edge_word(0x0000_0B07, 1), 0x0000_B070);
+    }
+
+    #[test]
+    fn the_direction_step_is_opposite_the_vector() {
+        assert_eq!(cell_step_from_dir(Vec2::new(0.0, 1.0)), (0, -1));
+        assert_eq!(cell_step_from_dir(Vec2::new(1.0, 0.0)), (-1, 0));
+        assert_eq!(cell_step_from_dir(Vec2::new(0.0, -1.0)), (0, 1));
+        assert_eq!(cell_step_from_dir(Vec2::new(-1.0, 0.0)), (1, 0));
     }
 
     pub(crate) fn shipped_grid(level: &str) -> Option<LevelGrid> {

@@ -5,8 +5,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **20.8% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 17.1% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **21.0% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by function count (zero-byte imported names left out): 17.3% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **27.3%** reproduced.
 
 ## By section
@@ -21,7 +21,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Physics, bodies & cloth | 363 | 242 | 13 | 31% | 0% | TVoxelMap, RFE_Dynamics_Cloth, TSimObject |
 | Characters, motion & animation | 506 | 198 | 23 | 34% | 0% | TCharDecomp2, TKFCCatRom3f, SG_CharacterMorph |
 | Combat, weapons & damage | 14 | 3 | 3 | 31% | 0% | RFE_Effects_Blood, TBloodSprays |
-| Items, materials & crafting | 341 | 140 | 40 | 17% | 0% | TGUIItemContainer, Item description phrases, SG_ItemGUI |
+| Items, materials & crafting | 341 | 140 | 40 | 20% | 0% | Item description phrases, SG_ItemGUI, Character equipment & inventory routines (TCharacterView by address) |
 | AI & behaviour | 437 | 206 | 17 | 21% | 0% | TAISearchActivity, Character roles & relations (script functions), SG_CharacterAI |
 | Thaumaturgy & effects | 697 | 296 | 83 | 11% | 0% | TTendrilEmitter, SG_Thaum_Force, SG_Thaum_DIsp |
 | Audio | 59 | 18 | 4 | 28% | 0% |  |
@@ -57,7 +57,6 @@ Ordered by code size; these are where most of the original still has no counterp
 | TMotileAI | AI & behaviour | 85 | 60 | 18% |
 | SG_PlayerControls | AI & behaviour | 122 | 47 | 8% |
 | XA_SaveGames | Game modes, arena & session | 96 | 27 | 5% |
-| TGUIItemContainer | Items, materials & crafting | 44 | 26 | 0% |
 | SG_GameGUI | UI | 62 | 22 | 8% |
 | SG_Thaum_Mind | Thaumaturgy & effects | 45 | 21 | 13% |
 | TGUIForm | UI | 77 | 20 | 5% |
@@ -78,6 +77,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | RF_HW_Config | UI | 89 | 15 | 2% |
 | SG_ItemGUI | Items, materials & crafting | 44 | 15 | 0% |
 | RF_Dynamics_Volumes | Physics, bodies & cloth | 7 | 14 | 5% |
+| RF_GUI_Main | UI | 47 | 14 | 1% |
 
 ## Best covered components
 
