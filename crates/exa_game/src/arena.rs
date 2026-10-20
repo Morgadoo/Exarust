@@ -1405,3 +1405,271 @@ mod board_tests {
         assert_ne!(history[1], 0);
     }
 }
+
+/// An entrant in a roster row: an actor id and two weapon handles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Entrant {
+    pub actor_id: u32,
+    pub weapon: [u64; 2],
+}
+
+/// A 0x30-byte roster row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RosterRow {
+    pub count: u32,
+    pub entries: [Entrant; 2],
+    /// 0 = pending; 1 = the player; 2..17 = company team ids.
+    pub team_id: u32,
+}
+
+/// The six-row roster.
+pub type Roster = [RosterRow; 6];
+
+/// The 8-byte opponent spawn profile.
+pub fn spawn_profile(tier: u8, company: Option<u8>, armed: bool) -> [u8; 8] {
+    let mut profile = [3, tier, 100, 10, 10, 0, 0, 0];
+    if armed {
+        profile[0] |= 0x04;
+    }
+    if let Some(id) = company
+        && (1..=19).contains(&id)
+    {
+        profile[0] |= 0x08;
+        let bytes = COMPANIES[(id - 1) as usize].1;
+        profile[5..8].copy_from_slice(&bytes);
+    }
+    profile
+}
+
+/// Drops entrants below 0xCCC condition from pending rows.
+pub fn drop_unfit(rows: &mut Roster, condition: impl Fn(u32) -> u16) {
+    for row in rows.iter_mut() {
+        if row.team_id > 0 {
+            continue;
+        }
+        let mut i = 0;
+        while (i as u32) < row.count {
+            if condition(row.entries[i].actor_id) >= 0x0CCC {
+                i += 1;
+                continue;
+            }
+            let count = row.count as usize;
+            for j in i..count.saturating_sub(1) {
+                row.entries[j] = row.entries[j + 1];
+            }
+            row.count -= 1;
+        }
+    }
+}
+
+/// Assigns 2..6 team ids to empty pending rows, stopping at the first
+/// pending row with entrants.
+pub fn assign_round_ids(rows: &mut Roster, rng: &mut crate::item_container::Rng) {
+    for row in rows.iter_mut() {
+        if row.team_id != 0 {
+            continue;
+        }
+        if row.count > 0 {
+            return;
+        }
+        row.team_id = rng.below(5) + 2;
+    }
+}
+
+/// The career counters the tournament resolution updates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SeasonState {
+    /// The current weekly prize instance id.
+    pub prize: u32,
+    /// 1 for a player week win; a company id+2 for a company win.
+    pub week_won: [u32; 4],
+    pub championships: u32,
+    pub days_with_entrants: u32,
+    pub seasons_won: u32,
+}
+
+/// The tournament's outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Resolution {
+    pub champion: Option<u32>,
+    pub week: u32,
+    /// The four season items granted, if the season completed.
+    pub season_award: Option<[u32; 4]>,
+}
+
+/// Tallies the six rows by team id and resolves the week/season. `give`
+/// receives every item granted.
+pub fn resolve_tournament(
+    rows: &Roster,
+    day: u32,
+    companies: &[u8; 16],
+    state: &mut SeasonState,
+    mut give: impl FnMut(u32),
+) -> Resolution {
+    let mut tally: Vec<(u32, u32)> = Vec::new();
+    for row in rows {
+        if let Some(entry) = tally.iter_mut().find(|(id, _)| *id == row.team_id) {
+            entry.1 += 1;
+        } else {
+            tally.push((row.team_id, 1));
+        }
+    }
+    let mut best = 0;
+    let mut tie = false;
+    for k in 1..tally.len() {
+        if tally[k].1 > tally[best].1 {
+            best = k;
+            tie = false;
+        } else if tally[k].1 == tally[best].1 {
+            tie = true;
+        }
+    }
+    let weeks = 4;
+    let week = (day % (weeks * 7)) / 7;
+    let champion = tally.get(best).copied().unwrap_or((0, 0));
+    if champion.0 == 1 && champion.1 > 2 && !tie {
+        if state.prize != 0 {
+            give(state.prize);
+        }
+        state.championships += 1;
+        state.week_won[week as usize] = 1;
+        let mut award = None;
+        if week == 3 {
+            let complete = state.week_won.iter().all(|&won| won == 1);
+            state.week_won = [0; 4];
+            if complete {
+                let set = ((day % (weeks * 7)) % weeks) as usize;
+                for id in SEASON_PRIZES[set] {
+                    give(id);
+                }
+                state.seasons_won += 1;
+                award = Some(SEASON_PRIZES[set]);
+            }
+        }
+        state.prize = 0;
+        return Resolution {
+            champion: Some(1),
+            week,
+            season_award: award,
+        };
+    }
+    if champion.1 > 2 && !tie {
+        let first = tally.first().map(|(id, _)| *id).unwrap_or(0);
+        if let Some(company) = companies.get(first.saturating_sub(2) as usize) {
+            state.week_won[week as usize] = *company as u32 + 2;
+        }
+    }
+    if rows.iter().any(|row| row.count > 0) {
+        state.days_with_entrants += 1;
+    }
+    if week == 3 {
+        state.week_won = [0; 4];
+    }
+    state.prize = 0;
+    Resolution {
+        champion: None,
+        week,
+        season_award: None,
+    }
+}
+
+#[cfg(test)]
+mod roster_tests {
+    use super::*;
+    use crate::item_container::Rng;
+
+    fn row(count: u32, team_id: u32) -> RosterRow {
+        RosterRow {
+            count,
+            entries: [Entrant::default(); 2],
+            team_id,
+        }
+    }
+
+    #[test]
+    fn the_spawn_profile() {
+        let p = spawn_profile(3, Some(15), false);
+        assert_eq!(p, [0x0B, 3, 100, 10, 10, 4, 92, 0]);
+        let p = spawn_profile(3, Some(15), true);
+        assert_eq!(p[0], 0x0F);
+        let p = spawn_profile(0, None, false);
+        assert_eq!(p, [3, 0, 100, 10, 10, 0, 0, 0]);
+    }
+
+    #[test]
+    fn the_unfit_are_dropped() {
+        let mut rows = [row(0, 0); 6];
+        rows[0].count = 2;
+        rows[0].entries[0].actor_id = 10;
+        rows[0].entries[1].actor_id = 11;
+        drop_unfit(&mut rows, |id| if id == 10 { 0x0CCC } else { 0x0CCB });
+        assert_eq!(rows[0].count, 1);
+        assert_eq!(rows[0].entries[0].actor_id, 10);
+        rows[1].team_id = 2;
+        rows[1].count = 1;
+        rows[1].entries[0].actor_id = 11;
+        drop_unfit(&mut rows, |_| 0);
+        assert_eq!(rows[1].count, 1);
+    }
+
+    #[test]
+    fn the_empty_rows_get_round_ids() {
+        let mut rows = [row(0, 0); 6];
+        rows[2].count = 1;
+        let mut rng = Rng(0);
+        assign_round_ids(&mut rows, &mut rng);
+        assert_eq!(rows[0].team_id, 2);
+        assert_eq!(rows[1].team_id, 2);
+        assert_eq!(rows[2].team_id, 0);
+        assert_eq!(rows[3].team_id, 0);
+    }
+
+    #[test]
+    fn the_champion_wins_the_week_and_season() {
+        let mut rows = [row(1, 0); 6];
+        for (row, team) in rows.iter_mut().zip([1, 1, 1, 2, 3, 2]) {
+            row.team_id = team;
+        }
+        let companies = [15, 17, 4, 1, 13, 9, 5, 14, 8, 6, 11, 2, 18, 3, 19, 10];
+        let mut state = SeasonState {
+            week_won: [1, 1, 1, 0],
+            prize: 62,
+            ..Default::default()
+        };
+        let mut given = Vec::new();
+        let result = resolve_tournament(&rows, 27, &companies, &mut state, |id| given.push(id));
+        assert_eq!(result.champion, Some(1));
+        assert_eq!(state.championships, 1);
+        assert_eq!(state.week_won, [0, 0, 0, 0]);
+        assert_eq!(result.season_award, Some(SEASON_PRIZES[3]));
+        assert_eq!(state.seasons_won, 1);
+        assert_eq!(given[0], 62);
+        assert_eq!(&given[1..], &SEASON_PRIZES[3]);
+    }
+
+    #[test]
+    fn a_company_win_records_its_team() {
+        let mut rows = [row(1, 0); 6];
+        for (row, team) in rows.iter_mut().zip([2, 2, 2, 1, 3, 4]) {
+            row.team_id = team;
+        }
+        let companies = [15, 17, 4, 1, 13, 9, 5, 14, 8, 6, 11, 2, 18, 3, 19, 10];
+        let mut state = SeasonState::default();
+        let result = resolve_tournament(&rows, 7, &companies, &mut state, |_| {});
+        assert_eq!(result.champion, None);
+        assert_eq!(state.week_won[1], 15 + 2);
+    }
+
+    #[test]
+    fn a_tie_has_no_champion() {
+        let mut rows = [row(1, 0); 6];
+        for (row, team) in rows.iter_mut().zip([1, 1, 2, 2, 3, 3]) {
+            row.team_id = team;
+        }
+        let companies = [0; 16];
+        let mut state = SeasonState::default();
+        let result = resolve_tournament(&rows, 7, &companies, &mut state, |_| {});
+        assert_eq!(result.champion, None);
+        assert_eq!(state.championships, 0);
+    }
+}
