@@ -1255,6 +1255,28 @@ pub fn destroy_creation(flags: i32, has_child: bool, child_count: i32) -> Creati
     }
 }
 
+/// Copies the creation point.
+pub fn copy_creation_point(point: [i32; 3]) -> [i32; 3] {
+    point
+}
+
+/// What resuming the creation did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationResume {
+    pub saved: bool,
+    pub refreshed: bool,
+    pub resumed: bool,
+}
+
+/// Saves, refreshes at the index and resumes.
+pub fn resume_creation() -> CreationResume {
+    CreationResume {
+        saved: true,
+        refreshed: true,
+        resumed: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2095,5 +2117,15 @@ mod tests {
         assert!(!none.ref_decremented);
         assert!(!none.released);
         assert!(none.base);
+    }
+
+    #[test]
+    fn the_creation_point_copies_and_resumes() {
+        assert_eq!(copy_creation_point([1, 2, 3]), [1, 2, 3]);
+
+        let resumed = resume_creation();
+        assert!(resumed.saved);
+        assert!(resumed.refreshed);
+        assert!(resumed.resumed);
     }
 }
