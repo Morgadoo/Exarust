@@ -695,9 +695,15 @@ menu.
   - applied on surfaces and in the GI injection.
   
   Exarust keeps y and z in a per-light record the shaders read
-  (`exa_render::lights`). Each light's id travels in its depth-bias field,
-  which Exarust's own shadow filter does not use.
+  (`exa_render::lights`). Each light's id travels above Bevy's default
+  depth bias (0.08) in its depth-bias field, in steps of 1e-5: the shader
+  recovers it as round((bias − 0.08)/1e-5). Keeping the field a valid bias
+  matters for the skinned-shadow maps Bevy still samples through its own
+  materials.
   Exarust sets Bevy's range to 1.25·R and computes (1 − d/range)⁴ itself.
+  Point lights also keep the original's 3 cm shadow-map near plane, not
+  Bevy's 10 cm default: at 10 cm a torch's close-range character shadow
+  smeared over the floor instead of following the body.
 - Lights cast shadows from cube maps (512² per face; the sun's map is 4096²
   at the top shadow detail).
 - Surfaces with opacity ≤ 0.8 (glass, decals) and those whose record has

@@ -4,10 +4,14 @@
 //! linked lights, not every light in reach.
 //!
 //! Each light gets an id, carried to the shaders in its `shadow_depth_bias`
-//! field (Exarust's own shadow filter does not use Bevy's biases). A mesh
-//! with a light list gets a slot, carried in its mesh tag above the
-//! shadow-bias level (bits 0–2): tag = level | (slot + 1) << 3. Slot 0 means
-//! no list: every light in reach. Rules: `docs/RENDERING.md` (Lights).
+//! field above Bevy's default point-light bias. The field must stay a valid
+//! bias: a skinned character's shadow is rendered by Bevy's own map, and an
+//! integer id (up to a few hundred) would push its shadow away from the
+//! caster. Exarust's own shadow filter reads only the fractional id above the
+//! default. A mesh with a light list gets a slot, carried in its mesh tag
+//! above the shadow-bias level (bits 0–2): tag = level | (slot + 1) << 3.
+//! Slot 0 means no list: every light in reach. Rules: `docs/RENDERING.md`
+//! (Lights).
 //!
 //! Records and lists share one storage buffer, bound to every surface
 //! material at binding 130. The buffer is stored under the default asset id,
@@ -56,6 +60,28 @@ pub enum LightsSystems {
 
 /// The most lights a mesh is lit by, as in the original.
 pub const MAX_MESH_LIGHTS: usize = 6;
+
+/// Bevy's default point-light depth bias. Every level light keeps it, so the
+/// skinned character shadows that still render through Bevy's maps retain the
+/// same bias they had before Exarust gave lights ids.
+pub const LIGHT_ID_BIAS: f32 = PointLight::DEFAULT_SHADOW_DEPTH_BIAS;
+
+/// The depth-bias distance between successive light ids. The shader recovers
+/// `round((bias - LIGHT_ID_BIAS) / LIGHT_ID_STEP)`; one step is far above
+/// `f32`'s precision at the default bias, and a whole level's ids add only a
+/// few thousandths to it.
+pub const LIGHT_ID_STEP: f32 = 0.00001;
+
+/// The depth-bias field carrying light `id` without disturbing Bevy's
+/// shadow maps.
+pub fn light_bias(id: u32) -> f32 {
+    LIGHT_ID_BIAS + id as f32 * LIGHT_ID_STEP
+}
+
+/// The id carried by a light's depth-bias field.
+pub fn light_id_of(bias: f32) -> u32 {
+    ((bias - LIGHT_ID_BIAS) / LIGHT_ID_STEP).round().max(0.0) as u32
+}
 
 /// A light's vertical shaping (y, z) for the shaders; lights without it are
 /// unshaped (1, 1).
@@ -141,7 +167,8 @@ fn create_buffer(mut buffers: ResMut<Assets<ShaderBuffer>>) {
     );
 }
 
-/// Gives every new light an id, carried in its depth-bias field.
+/// Gives every new light an id, carried above the default bias in its
+/// depth-bias field.
 fn assign_light_ids(
     mut commands: Commands,
     mut table: ResMut<LightTable>,
@@ -154,7 +181,7 @@ fn assign_light_ids(
             shaping: shaping.map_or(Vec2::ONE, |s| s.0),
             ..default()
         });
-        light.shadow_depth_bias = id as f32;
+        light.shadow_depth_bias = light_bias(id);
         commands.entity(entity).insert(LightId(id));
         table.dirty = true;
     }
@@ -283,6 +310,18 @@ mod tests {
         assert_eq!(tag(3, None), 3);
         assert_eq!(tag(1, Some(0)), 1 | 8);
         assert_eq!(tag(9, Some(4)), 1 | 40);
+    }
+
+    #[test]
+    fn ids_ride_on_the_default_point_bias() {
+        for id in [0, 1, 7, 228] {
+            let bias = light_bias(id);
+            assert_eq!(light_id_of(bias), id);
+            // The field stays a valid Bevy bias, not an integer id: even a
+            // whole level's ids add only a few thousandths.
+            assert!(bias >= PointLight::DEFAULT_SHADOW_DEPTH_BIAS);
+            assert!(bias <= PointLight::DEFAULT_SHADOW_DEPTH_BIAS + 0.01);
+        }
     }
 
     #[test]

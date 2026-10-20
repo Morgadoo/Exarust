@@ -539,6 +539,7 @@ pub fn light_bundle(
         // Static casters shadow it through the cached cubes; Bevy's map is
         // turned on only while a skinned mesh is linked to it.
         shadow_maps_enabled: false,
+        shadow_map_near_z: 0.03,
         ..default()
     };
     (
@@ -973,6 +974,25 @@ mod tests {
     use bevy::ecs::world::CommandQueue;
     use exa_assets::{GameData, ModelCache};
     use exa_formats::characters::{CharacterRecord, LOCAL_ITEM, LevelCharacters, Placement};
+
+    /// The skinned shadow maps that Bevy still renders for characters keep
+    /// the original's 3 cm near plane, not Bevy's 10 cm default. At 10 cm the
+    /// torch's close-range character shadow smeared into a floor blob.
+    #[test]
+    fn point_shadows_start_at_the_original_near_plane() {
+        let light = exa_formats::rfc::Light {
+            flags: 0,
+            color: [1.0, 0.68, 0.43],
+            multiplier: 1.0,
+            intensity: 8.0,
+            radius: 8.4,
+            softness: 2.0,
+            spot: None,
+            ranged: true,
+        };
+        let (point, ..) = light_bundle(&light);
+        assert_eq!(point.shadow_map_near_z, 0.03);
+    }
 
     /// What spawning `name` produced: the level's info, the names spawned
     /// and the number of entities and assets. Built at once, or in steps of

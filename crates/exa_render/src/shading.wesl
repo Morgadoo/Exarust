@@ -272,9 +272,15 @@ fn cube_compare(dir: vec3<f32>, id: u32, depth: f32) -> f32 {
 // light `id`'s shaping (y, z), each list two elements (count, then ids).
 @group(constants::MATERIAL_BIND_GROUP) @binding(130) var<storage, read> exa_lights: array<vec4<u32>>;
 
-// A clustered light's id in the records, carried in its depth-bias field.
+// A clustered light's id in the records, carried above Bevy's default point
+// bias. The field itself must remain a valid shadow bias: skinned characters
+// still cast through Bevy's shadow maps.
+const LIGHT_ID_BIAS: f32 = 0.08;
+const LIGHT_ID_STEP: f32 = 0.00001;
+
 fn light_id(index: u32) -> u32 {
-    return u32(view_bindings::clustered_lights.data[index].shadow_depth_bias);
+    let bias = view_bindings::clustered_lights.data[index].shadow_depth_bias;
+    return u32(round((bias - LIGHT_ID_BIAS) / LIGHT_ID_STEP));
 }
 
 // Whether the mesh with tag `tag` is lit by clustered light `index`: a mesh
