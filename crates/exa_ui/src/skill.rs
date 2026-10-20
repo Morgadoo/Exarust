@@ -87,6 +87,40 @@ pub fn leave_skill_ui(
     }
 }
 
+/// The skill ring's layout.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SkillRing {
+    pub count: i32,
+    pub offset_a: i32,
+    pub offset_b: i32,
+    pub turn: f32,
+    pub width: i32,
+    pub height: i32,
+    pub page: i32,
+    pub unit: i32,
+    pub scrolled: bool,
+}
+
+/// Places a skill node on the ring.
+pub fn skill_ring_position(slot: i32, ring: &SkillRing) -> (f32, f32) {
+    let unit = ring.unit as f32;
+    let centre_x = ring.width / 2
+        - if ring.scrolled && ring.page > 0 {
+            ring.unit
+        } else {
+            0
+        };
+    let centre_y = ring.height / 2 - if ring.page == 0 { 3 * ring.unit } else { 0 };
+    let angle = (slot as f32 - 3.5) * (std::f32::consts::TAU / ring.count as f32) + 1.0 - ring.turn;
+    let x = centre_x as f32
+        + (ring.offset_a as f32 * (unit * angle.cos()) * ring.offset_b as f32).round_ties_even()
+            * ring.turn;
+    let y = centre_y as f32
+        + (ring.offset_a as f32 * (unit * angle.sin()) * ring.offset_b as f32).round_ties_even()
+            * ring.turn;
+    (x, y)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,5 +175,27 @@ mod tests {
         );
         assert_eq!(leave_skill_ui(false, 0, 2, 0, 100), SkillLeave::default());
         assert!(leave_skill_ui(false, 0, 0, 0, 0).call_clear);
+    }
+
+    #[test]
+    fn a_skill_ring_places_its_nodes() {
+        let ring = SkillRing {
+            count: 8,
+            offset_a: 10,
+            offset_b: 5,
+            turn: 1.0,
+            width: 200,
+            height: 100,
+            page: 0,
+            unit: 4,
+            scrolled: false,
+        };
+        assert_eq!(skill_ring_position(3, &ring), (285.0, -39.0));
+        let scrolled = SkillRing {
+            page: 1,
+            scrolled: true,
+            ..ring
+        };
+        assert_eq!(skill_ring_position(3, &scrolled), (281.0, -27.0));
     }
 }

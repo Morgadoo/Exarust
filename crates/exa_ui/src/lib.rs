@@ -47,7 +47,8 @@ pub use menu::{
 };
 pub use scale::GuiScale;
 pub use skill::{
-    SkillBounds, SkillLeave, SkillShow, leave_skill_ui, show_skill_ui, skill_position,
+    SkillBounds, SkillLeave, SkillRing, SkillShow, leave_skill_ui, show_skill_ui, skill_position,
+    skill_ring_position,
 };
 pub use skin::{
     BEVEL_INK, BackdropCorner, BevelArm, BevelBox, BevelInk, BevelPlace, CappedSpan, CentredIcon,
