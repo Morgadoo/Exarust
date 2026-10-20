@@ -2,7 +2,9 @@
 
 Status: **verified** for the container, scene node headers, static meshes
 and material texture layers (`exa_formats::rfc`, `exa_formats::material`).
-Level sections are still **observed** only.
+Level sections are still **observed** only. The original's writer (the
+level export a save stores visited levels with) is **verified** by REA and
+reproduced in `exa_formats::rfc_write` (Writing chunk trees, below).
 
 Evidence: the reader in `Exanima.exe` 0.9.5 was examined with REA (Ghidra
 12.1.4), and `cargo exa corpus meshes` decodes all **23 065** mesh records in
@@ -867,3 +869,119 @@ posed in the editor).
   `arenao1..5`; `menuscene` is the title scene.
 - Base bodies: `humanbase`, `ogrebase`, `golembase`, `demona01base`,
   `skelbase`, `wraithhabase`, `gobblerbase`, … with `*morph.rfc` morph sets.
+
+## Writing chunk trees
+
+Status: **verified** (REA on the original's level exporter, its chunk
+framing, node, mesh, light, body, prop, object and character writers, the
+two database writers and the texture-name helpers; synthetic round trips
+through Exarust's reader). The original writes a visited level back into a
+chunk tree to keep it in a save; `exa_formats::rfc_write::Exporter` does
+the same over a plain description of the scene (`ExportScene`), in file
+units (cm) and version `0x3D23`.
+
+**Framing.** A chunk opens with its tag and a zero size word; closing it
+stores the bytes written after the size word. A chunk can be taken back out
+whole (tag included) when nothing was written into it. List sizes inside
+meshes are stored as count − 1 (−1 for an empty list); the writer's buffer
+grows in 512-byte steps, which changes nothing in the output.
+
+**Walk.** The scene root's children are walked in order; a top-level group
+(class `0x11`) is walked through, its own node not exported. A node with
+flag `0x1000` (owned by a prop or object) is skipped with its subtree. A
+node with neither flag `0x40000` nor class 1 is unmarked and skipped with
+its subtree. The others are marked exported (`0x1000000`) and sorted:
+`0x10000000` characters, `0x2000` props, `flags & 0x7000 == 0x4000`
+placed objects, the rest scene nodes, numbered 1, 2, … as they are found.
+A mesh node (class `0x89`) adds each part's material name, lowercased, to
+the material list unless the list or a shared library already holds it.
+Then props and placed objects are numbered after the scene nodes, the
+first prop taking the **last scene node's number** (n nodes: props from n,
+not n + 1). Characters keep the number they held. A scene node's parent
+counts only when exported (and not owned); its data source is the exported
+node sharing its data with the lowest number below its own, if any.
+
+**Root chunks**, in order: `u16 0xAFCF`, `u16 0x3D23`; `3DED` when there is
+a grid; `BA00` when the list is not empty; `3D000000` with the scene
+nodes; `3DE10000` with the props; `DBC0` with the placed objects;
+`CAC00001` with the characters; `EC00DC00` when the export is the game's
+whole scene and the record's first word lacks `0x100`; then the caller's
+own chunks.
+
+- **Grid**: wall-set count and names, floor-set count and names, width,
+  height, the words 0 and 600, planes A, B and C.
+- **Materials**: `u32` count of the list, then one `BA01` (lowercased name,
+  payload from the scene's library) for each listed material the library
+  holds: the count includes the ones it does not, so a file can promise
+  more materials than it stores. Two export switches edit texture layers
+  of kind `0x10` (word at 32 of a layer whose slot bits `0x0FFF0000` are
+  set): one renames the texture to `<stem>_rfi` (from the last `.`, or the
+  name's end, cut at 16 bytes), sets the kind to `0x40` and records the
+  pair (lowercase `<stem>.rfi`, new name) once per session; the other,
+  only without the first, gives the name the extension `.rfi`.
+- **Scene node**: chunk tag by class (`0x2000` → `3D01`; 1 → `3D01`, 3 →
+  `3D08`, 5 → `3D06`, `0x11` → `3D0A`, `0x41` → `3D0C`, `0x89` → `3D03`,
+  any other `3D01`); header: name, `flags & 0x7CF9FFFF`, `flags2 &
+  0xFFFFFF70`, the data source's number (or 0), then the parent's number
+  and the local matrix when the parent is the root (0) or exported, else 0
+  and the **world** matrix; half extents, centre, radius, the tail word. A
+  node with a data source stores nothing more. Otherwise the body:
+  - mesh: render word `& 0xFFFFFF00`; streams − 1 (counting only saved
+    streams: format bit `0x1000000` leaves one out); per stream id, format,
+    count − 1 and the elements (32, 4, 8 or 12 bytes for format bytes
+    `A4`, `B4`, `F2`, `F3`; none for others); `3DC0`: 0, vertices − 1,
+    parts − 1, per part 0, first and last vertex and the material name
+    (`_Default` without one), maps − 1, per map its key and one index per
+    vertex (u16 below 65 535 vertices, u32 from there); `3DC1` when there
+    are triangles: 0, triangles − 1, the corners, per part first and last
+    triangle, then `3DC2` (a byte per triangle) and `3DC3` (a word per
+    triangle) unless the switch that drops them is set;
+  - light: flags, colour, **1.0**, multiplier, intensity, radius (cm), the
+    unread value, softness; two spot values when `flags2 & 0x300 = 0x200`;
+    a zero word and three values when `flags & 0x30000`;
+  - voxel light: 0, colour, 1.0, intensity, radius, 0;
+  - `3D08`: another node's number and a word.
+  Then, under node flag `0x10000`, the attachment by the top byte of its
+  class word: `0x10` a rigid body `3DD0B001` (class, mobility, rest
+  points, masses, friction, 1.0, 0, group mask, last word; `CD00` spheres:
+  0, count, records; `DDB0` links: count, records up to the first with flag
+  `0x400000`, the count patched to those written; `DDB3` sounds), `0x60` a
+  cloth marker `3DD0C001` (one word), `0xA0` an emitter `3DD0E002` or
+  `3DD0E004` (one value; with another kind the original closes a chunk it
+  never opened, which Exarust refuses). A body that holds its links as
+  barycentric weights (body flag `0x10000`) stores each point as the
+  weights over the rest points (Σ wᵢ·restᵢ, summed in order) and each
+  parent point less the body's centre, the parent's own weights over the
+  parent body's rest points under link flag `0x10000`. A mesh then writes
+  the chunk it kept whole and its `3D0CEC05` GI points (spacing, count,
+  points); every node writes a `3AC1` per keyframe controller on its
+  translation (`0x3AE2`, mode, duration, last index, keys).
+- **Props** `3DE10000`: count, then per prop `3DE10100`: `flags &
+  0xB80000`, name, local matrix, parent number (0 unless exported), tail
+  word, and part records for its owned children: `3DE0ECAC` for a body
+  (name, the attachment's word, world matrix), `3DE0ECDB` for cloth (name,
+  word, particle count, particles), nested under their parents. A child
+  whose attachment is neither ends its siblings' records.
+- **Local database** `DBC0`: when the level's object database has a
+  record, `DBDB` (magic `0xDBAC0D09`, (n + 1)·16, the table, the data) and
+  `DBCD` (its strings); then `DBCE`: count, per object `DB01`: id,
+  placement word, `flags & 0xB80000`, local matrix, parent number (the
+  reader's slot), tail word, part records.
+- **Characters** `CAC00001`: count; `CECDDB00` (magic `0xDBACCD00`) when
+  the level's character database has a record; per character `CAC0CA00`:
+  record id, then for a class-1 node its local translation, heading,
+  condition and its stored bytes; otherwise (body x, floor y, body z),
+  heading, condition and: dead (`0xA00`) the pose tree `CAC0EB00`
+  (per part matrix, word, count of children of class `0x12xxxxxx`, those
+  children; a part of kind `0x18` writes none); else outside a save the
+  pose tree when the state's bit `0x10` is set; in a save `CACE0F77` (home,
+  heading, 0) for the character AI whose record kind has `0x1000` under
+  `0xFF00` and whose skip byte is clear, then in AI mode 1 the pose tree
+  and `CAC0EA00` (state, value, 0), otherwise the pose tree under bit
+  `0x10`.
+
+The save game's own placement writer (`write_character_state`) differs:
+a dead body stores `CAC0E100`, every part's matrix then the two held
+items' (identity for an empty hand); a save adds the AI home, in mode 1 the
+flat pose and the motion state, and `CAC0EC00` with what the attached
+objects wrote and their count, taken out again when none wrote.

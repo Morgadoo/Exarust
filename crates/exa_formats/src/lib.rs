@@ -21,6 +21,7 @@ pub mod power_tree;
 pub mod races;
 pub mod rdb;
 pub mod rfc;
+pub mod rfc_write;
 pub mod rfi;
 pub mod rigid_body;
 pub mod rsq;
