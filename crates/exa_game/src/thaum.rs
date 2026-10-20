@@ -2558,3 +2558,73 @@ mod tests {
         assert_eq!(decay_tree(input(0x100, 0, true), 0).dim_calls, 0);
     }
 }
+
+/// The power tree's text chunk (`0xABCD0000`): a 16-byte header whose last
+/// word is the count, `count + 1` little-endian u32 blob offsets, a u32
+/// blob size, and the blob, where each string is a 4-byte length followed
+/// by its bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeText {
+    pub strings: Vec<String>,
+}
+
+fn tree_word(bytes: &[u8], at: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
+}
+
+/// Parses the text chunk. Returns nothing on a short header, an offset past
+/// the blob, or invalid UTF-8.
+pub fn parse_tree_text(bytes: &[u8]) -> Option<TreeText> {
+    if bytes.len() < 16 {
+        return None;
+    }
+    let count = tree_word(bytes, 12)? as usize;
+    let mut cursor = 16;
+    let mut offsets = Vec::with_capacity(count + 1);
+    for _ in 0..=count {
+        offsets.push(tree_word(bytes, cursor)? as usize);
+        cursor += 4;
+    }
+    let blob_size = tree_word(bytes, cursor)? as usize;
+    cursor += 4;
+    let blob = bytes.get(cursor..cursor + blob_size)?;
+    let mut strings = Vec::with_capacity(offsets.len());
+    for offset in offsets {
+        let length: [u8; 4] = blob.get(offset..offset + 4)?.try_into().ok()?;
+        let length = u32::from_le_bytes(length) as usize;
+        let text = blob.get(offset + 4..offset + 4 + length)?;
+        strings.push(std::str::from_utf8(text).ok()?.to_string());
+    }
+    Some(TreeText { strings })
+}
+
+#[cfg(test)]
+mod text_tests {
+    use super::*;
+
+    #[test]
+    fn the_tree_text_chunk_reads_its_strings() {
+        let mut bytes = vec![0u8; 16];
+        bytes[12..16].copy_from_slice(&2u32.to_le_bytes());
+        for offset in [0u32, 6, 13] {
+            bytes.extend_from_slice(&offset.to_le_bytes());
+        }
+        let mut blob = vec![2u8, 0, 0, 0, b'a', b'b'];
+        blob.extend_from_slice(&[3, 0, 0, 0, b'c', b'd', b'e']);
+        blob.extend_from_slice(&[0, 0, 0, 0]);
+        bytes.extend_from_slice(&(blob.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&blob);
+        let text = parse_tree_text(&bytes).expect("valid");
+        assert_eq!(text.strings, vec!["ab", "cde", ""]);
+    }
+
+    #[test]
+    fn a_broken_chunk_is_refused() {
+        assert!(parse_tree_text(&[0u8; 8]).is_none());
+        let mut bytes = vec![0u8; 16];
+        bytes[12..16].copy_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&[0u8; 8]);
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        assert!(parse_tree_text(&bytes).is_none());
+    }
+}

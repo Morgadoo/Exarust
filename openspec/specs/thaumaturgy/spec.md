@@ -483,3 +483,12 @@ An applying command-dead SHALL move a missing target to state 2; a valid target 
 - **THEN** marker 0x10010d applies and the state returns to 0
 - **WHEN** the power is removing
 - **THEN** the marked effect is removed and the result is 2
+
+### Requirement: Tree text chunk
+The tree text chunk SHALL read a 16-byte header whose last word is the count, count + 1 little-endian u32 offsets, a u32 blob size, and the blob, each string a u32 length followed by its bytes. A short header, an out-of-range offset, a blob past the input, or invalid UTF-8 SHALL return nothing.
+
+#### Scenario: Three strings
+- **WHEN** the count is 2, the offsets are 0, 6 and 13, and the blob holds "ab", "cde" and the empty string
+- **THEN** the parser returns those three strings in order
+- **WHEN** the header is short or the blob size overruns
+- **THEN** the parser returns nothing
