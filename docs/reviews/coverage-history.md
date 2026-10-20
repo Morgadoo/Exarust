@@ -39,3 +39,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-20 | 2207f0c | clean | 21.7% | 5.7% | 17.8% | 27.3% | record the arena table |
 | 2026-10-20 | 4888e8f | dirty | 21.8% | 5.7% | 17.9% | 27.3% | schedule the arena board |
 | 2026-10-20 | b538de5 | clean | 21.8% | 5.7% | 17.9% | 27.3% | record the arena board |
+| 2026-10-20 | 5ab300f | dirty | 21.9% | 5.7% | 17.9% | 27.3% | step the motile tick |

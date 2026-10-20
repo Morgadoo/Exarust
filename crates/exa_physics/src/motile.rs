@@ -4,6 +4,8 @@
 //! inverse-mass redistribution, the friction-by-mode values and the action
 //! gates.
 
+use bevy::math::Vec3;
+
 /// Segment inverse-mass weights, bone 0..17 (`0x1002BB460`).
 pub const SEGMENT_INV_MASS: [f32; 18] = [
     0.45, 0.7, 1.0, 2.8, 0.7, 1.0, 2.8, 0.45, 0.5, 1.0, 1.0, 1.2, 1.5, 1.0, 1.2, 1.5, 2.5, 2.5,
@@ -511,5 +513,223 @@ mod tests {
         let mut counter = ImpactCounter(0);
         assert!(!counter.tick([[0.0, 0.0, -1.0]]));
         assert_eq!(counter.0, 2);
+    }
+}
+
+/// The tick's two posture scalars: `lift` (0xAF0) and `compliance` (0xAEC).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Posture {
+    pub lift: f32,
+    pub compliance: f32,
+}
+
+/// The original's `MINSS`/`MAXSS`: a NaN input yields the second operand.
+fn min_second(a: f32, b: f32) -> f32 {
+    if a < b { a } else { b }
+}
+
+fn max_second(a: f32, b: f32) -> f32 {
+    if a > b { a } else { b }
+}
+
+/// Recomputes the posture scalars from the lean (0x1020) and the two sags
+/// (0x12B0, 0x10B8). Lift starts at `0.9 + 0.09·lean` and falls with each
+/// sag; compliance starts at `1 − 0.01·lean` and rises, saturating at 1.
+pub fn posture_scalars(lean: f32, sag_a: f32, sag_b: f32) -> Posture {
+    let mut lift = (lean as f64 * 0.09 + 0.9) as f32;
+    let mut compliance = (1.0 - lean as f64 * 0.01) as f32;
+    compliance = min_second(compliance + ((1.0 - sag_a) as f64 * 0.05) as f32, 1.0);
+    compliance = min_second(compliance + ((1.0 - sag_b) as f64 * 0.30) as f32, 1.0);
+    lift = max_second(lift - ((1.0 - sag_b) as f64 * 0.60) as f32, 0.0);
+    lift = max_second(lift - ((1.0 - sag_a) as f64 * 0.10) as f32, 0.0);
+    Posture { lift, compliance }
+}
+
+/// The follow gain (0xB64): 0.0125 normally, plus 0.0025 while active and
+/// capped at 0.15; the frozen flag forces 0.0125.
+pub fn follow_gain(gain: f32, frozen: bool, active: bool) -> f32 {
+    if frozen {
+        return 0.0125;
+    }
+    if active {
+        let mut g = (gain as f64 + 0.0025) as f32;
+        if (g as f64) > 0.15 {
+            g = 0.15;
+        }
+        return g;
+    }
+    0.0125
+}
+
+/// One follow step (0xB58): the target minus the point, plus the velocity
+/// gain (its Y a tenth), then 0.6 of that added to the point.
+pub fn follow_step(point: Vec3, velocity: Vec3, target: Vec3, gain: f32) -> Vec3 {
+    let mut delta = target - point;
+    delta.x += velocity.x * gain;
+    delta.y += ((velocity.y * gain) as f64 * 0.1) as f32;
+    delta.z += velocity.z * gain;
+    point + delta * 0.6
+}
+
+/// The posture ramp (0x99C): +0.004 a tick up to 1 while on, else 0.
+pub fn posture_ramp(prev: f32, on: bool) -> f32 {
+    if on {
+        min_second((prev as f64 + 0.004) as f32, 1.0)
+    } else {
+        0.0
+    }
+}
+
+/// The support decay (0x100C): −0.02 a tick, floored at 0.
+pub fn support_decay(prev: f32) -> f32 {
+    if prev > 0.0 {
+        max_second((prev as f64 - 0.02) as f32, 0.0)
+    } else {
+        prev
+    }
+}
+
+/// The tone weight (0xAE8). `flag` is 0x12F6, `state` the 0xDF4 state and
+/// `scale` 0x410. The warm states (bit 0x200 or state 1) blend the error
+/// with 0.5; otherwise the flag and scale choose between the error, its
+/// square and 0.97 of its square.
+pub fn tone_weight(error: f32, flag: bool, state: i32, scale: f32) -> f32 {
+    let warm = state & 0x200 != 0 || state == 1;
+    if warm {
+        return error * 0.5 + 0.5;
+    }
+    if flag {
+        if (scale as f64) > 1.3 && state != 2 {
+            return ((error * error) as f64 * 0.97) as f32;
+        }
+        return error;
+    }
+    error * error
+}
+
+/// The step/breath cadence target: `trunc((1 − 0.25·exertion)·1660/83)`.
+pub fn cadence_target(exertion: f32) -> i32 {
+    let v = (1.0 - exertion * 0.25) * 1660.0;
+    (v as f64 / 83.0) as i32
+}
+
+/// One tick of the pitch impulse (0xD18): a flagged impulse of
+/// `2·sign(v)·v²`, then a 0.95 decay.
+pub fn pitch_step(previous: f32, v: f32, flag: bool) -> f32 {
+    let p = if flag {
+        let sign = if v > 0.0 {
+            1.0
+        } else if v < 0.0 {
+            -1.0
+        } else {
+            0.0
+        };
+        2.0 * sign * v * v
+    } else {
+        previous
+    };
+    (p as f64 * 0.95) as f32
+}
+
+/// Wraps an angle into `(−π, π]` with the original's 2π.
+pub fn wrap_angle(a: f32) -> f32 {
+    if a < -std::f32::consts::PI {
+        a + 2.0 * std::f32::consts::PI
+    } else if a > std::f32::consts::PI {
+        a - 2.0 * std::f32::consts::PI
+    } else {
+        a
+    }
+}
+
+/// Whether an impact's squared magnitude crosses `threshold·scale`.
+pub fn impact_exceeds(threshold: f32, scale: f32, impact_sq: f32) -> bool {
+    threshold * scale < impact_sq
+}
+
+#[cfg(test)]
+mod stage_tests {
+    use super::*;
+
+    fn near(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-5
+    }
+
+    #[test]
+    fn the_posture_scalars() {
+        let p = posture_scalars(1.0, 1.0, 1.0);
+        assert!(near(p.lift, 0.99) && near(p.compliance, 0.99));
+        let p = posture_scalars(0.4, 1.0, 1.0);
+        assert!(near(p.lift, 0.936) && near(p.compliance, 0.996));
+        let p = posture_scalars(0.4, 0.5, 0.0);
+        assert!(near(p.lift, 0.286) && near(p.compliance, 1.0));
+        let p = posture_scalars(0.0, 0.0, 0.0);
+        assert!(near(p.lift, 0.2) && near(p.compliance, 1.0));
+        let p = posture_scalars(0.75, 1.0, 0.5);
+        assert!(near(p.lift, 0.6675) && near(p.compliance, 1.0));
+    }
+
+    #[test]
+    fn the_follow_gain_and_step() {
+        assert!(near(follow_gain(0.0125, false, true), 0.015));
+        assert_eq!(follow_gain(0.15, false, true), 0.15);
+        assert_eq!(follow_gain(0.3, false, false), 0.0125);
+        assert_eq!(follow_gain(0.2, true, true), 0.0125);
+        let p = follow_step(
+            Vec3::new(0.1, 1.0, -0.2),
+            Vec3::new(0.03, 0.0, 0.0),
+            Vec3::new(0.4, 1.0, -0.2),
+            0.0125,
+        );
+        assert!(near(p.x, 0.28022501) && p.y == 1.0 && p.z == -0.2);
+        let p = follow_step(
+            Vec3::new(0.1, 1.0, -0.2),
+            Vec3::new(0.03, 0.0, 0.0),
+            Vec3::new(0.4, 1.0, -0.2),
+            0.15,
+        );
+        assert!(near(p.x, 0.2827));
+    }
+
+    #[test]
+    fn the_ramps_and_decay() {
+        assert!(near(posture_ramp(0.0, true), 0.004));
+        assert_eq!(posture_ramp(0.998, true), 1.0);
+        assert_eq!(posture_ramp(0.5, false), 0.0);
+        assert!(near(support_decay(0.1), 0.08));
+        assert_eq!(support_decay(0.0), 0.0);
+    }
+
+    #[test]
+    fn the_tone_weight_paths() {
+        assert!(near(tone_weight(0.42, true, 1, 1.0), 0.71));
+        assert!(near(tone_weight(0.42, false, 0, 1.0), 0.1764));
+        assert!(near(tone_weight(0.42, true, 0, 1.5), 0.171108));
+        assert!(near(tone_weight(0.42, true, 2, 1.5), 0.42));
+    }
+
+    #[test]
+    fn the_cadence_steps() {
+        assert_eq!(cadence_target(0.0), 20);
+        assert_eq!(cadence_target(0.5), 17);
+        assert_eq!(cadence_target(0.75), 16);
+        assert_eq!(cadence_target(1.0), 15);
+    }
+
+    #[test]
+    fn the_pitch_impulse_and_wrap() {
+        assert!(near(pitch_step(0.0, 0.5, true), 0.475));
+        assert!(near(pitch_step(0.0, -0.25, true), -0.11875));
+        assert!(near(pitch_step(1.0, 0.0, false), 0.95));
+        assert!(near(wrap_angle(3.5), -2.7831855));
+        assert!(near(wrap_angle(-3.5), 2.7831855));
+        assert_eq!(wrap_angle(0.2), 0.2);
+    }
+
+    #[test]
+    fn the_impact_threshold() {
+        assert!(impact_exceeds(2.0, 1.0, 5.0));
+        assert!(impact_exceeds(2.0, 1.0, 3.0));
+        assert!(!impact_exceeds(2.0, 1.0, 2.0));
     }
 }
