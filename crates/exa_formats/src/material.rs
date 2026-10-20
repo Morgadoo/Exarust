@@ -50,6 +50,22 @@ impl TextureSlot {
             other => Self::Other(other),
         }
     }
+
+    /// The slot flag a layer record stores for this slot.
+    pub fn flag(self) -> u32 {
+        match self {
+            Self::Diffuse => 0x0002_0000,
+            Self::Normal => 0x0020_0000,
+            Self::Gloss => 0x0100_0000,
+            Self::Specular => 0x0004_0000,
+            Self::Height => 0x0080_0000,
+            Self::Reflection => 0x0010_0000,
+            Self::Opacity => 0x0040_0000,
+            Self::Emissive => 0x0008_0000,
+            Self::Dirt => 0x0800_0000,
+            Self::Other(flag) => flag,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -237,6 +253,24 @@ mod tests {
         r[4..8].copy_from_slice(&(LAYER_LEN as u32).to_le_bytes());
         r[LAYER_NAME_OFFSET..LAYER_NAME_OFFSET + name.len()].copy_from_slice(name.as_bytes());
         r
+    }
+
+    #[test]
+    fn slot_flags_round_trip() {
+        for flag in [
+            0x0002_0000,
+            0x0020_0000,
+            0x0100_0000,
+            0x0004_0000,
+            0x0080_0000,
+            0x0010_0000,
+            0x0040_0000,
+            0x0008_0000,
+            0x0800_0000,
+            0x0400_0000,
+        ] {
+            assert_eq!(TextureSlot::from_flag(flag).flag(), flag);
+        }
     }
 
     #[test]

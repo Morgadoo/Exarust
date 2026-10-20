@@ -240,9 +240,13 @@ pub struct Mesh {
     /// Triangle list, counter-clockwise front faces.
     pub indices: Vec<u32>,
     pub groups: Vec<MeshGroup>,
-    /// Per-triangle flags (sub-chunk `0x3DC3`): seam classes in the high
-    /// byte, apparel cull bits `0x200000`/`0x400000`.
+    /// Per-triangle flags (sub-chunk `0x3DC3`): smoothing-group bits in the
+    /// low 16 bits, seam classes in the high byte, apparel cull bits
+    /// `0x200000`/`0x400000`.
     pub triangle_flags: Option<Vec<u32>>,
+    /// Per-triangle edge bits (sub-chunk `0x3DC2`, three low bits, one per
+    /// edge): kept through edits, not drawn.
+    pub triangle_edges: Option<Vec<u8>>,
     /// Points sampling the surfaces on a ~40 cm lattice (sub-chunk
     /// `0x3D0CEC05`, after the mesh body), in metres: they mark the mesh's
     /// cells as solid for the global illumination volume.
@@ -258,6 +262,11 @@ pub struct Mesh {
     /// Smoothing key of each vertex: vertices sharing a key share a normal
     /// ([`Mesh::recompute_normals`]).
     pub smoothing: Vec<u32>,
+    /// Texture-coordinate stream element of each vertex (empty without
+    /// texture coordinates): vertices sharing an element share its value.
+    pub uv_ids: Vec<u32>,
+    /// Elements of the texture-coordinate stream.
+    pub uv_count: usize,
 }
 
 impl Mesh {
@@ -386,6 +395,8 @@ fn read_placed_objects(b: &[u8], version: u16) -> Result<Vec<PlacedObject>> {
 
 /// Per-triangle flag sub-chunk of the triangle list.
 pub const TRIANGLE_FLAGS: u32 = 0x3DC3;
+/// Per-triangle edge-bit sub-chunk of the triangle list (one byte each).
+pub const TRIANGLE_EDGES: u32 = 0x3DC2;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SkinWeights {
@@ -782,6 +793,7 @@ fn read_mesh(c: &mut Cursor<'_>, version: u16) -> Result<Mesh> {
     let mut indices = Vec::new();
     let mut tri_ranges = Vec::new();
     let mut triangle_flags = None;
+    let mut triangle_edges = None;
     if topo.remaining() > 0 {
         let (tag, mut tris) = topo.chunk()?;
         if tag != TRIANGLES {
@@ -801,6 +813,8 @@ fn read_mesh(c: &mut Cursor<'_>, version: u16) -> Result<Mesh> {
             };
             if tag == TRIANGLE_FLAGS && sub.remaining() >= tri_count * 4 {
                 triangle_flags = Some((0..tri_count).map(|_| sub.u32()).collect::<Result<_>>()?);
+            } else if tag == TRIANGLE_EDGES && sub.remaining() >= tri_count {
+                triangle_edges = Some(sub.bytes(tri_count)?.to_vec());
             }
         }
         if let Some(&bad) = indices.iter().find(|&&i| i as usize >= vertex_count) {
@@ -842,16 +856,22 @@ fn read_mesh(c: &mut Cursor<'_>, version: u16) -> Result<Mesh> {
         .map(|&i| vec3(pos_stream.data, i).map(|v| v * CENTIMETRES_TO_METRES))
         .collect();
 
+    let mut uv_ids = Vec::new();
+    let mut uv_count = 0;
     let uvs = match (stream(0x10, StreamFormat::Vec2), map(KEY_UVS)) {
-        (Some(s), Some(m)) => Some(
-            gather(s, m)?
-                .into_iter()
-                .map(|i| {
-                    let o = i * 8;
-                    [f32_at(s.data, o), f32_at(s.data, o + 4)]
-                })
-                .collect(),
-        ),
+        (Some(s), Some(m)) => {
+            let idx = gather(s, m)?;
+            uv_ids = idx.iter().map(|&i| i as u32).collect();
+            uv_count = s.count;
+            Some(
+                idx.into_iter()
+                    .map(|i| {
+                        let o = i * 8;
+                        [f32_at(s.data, o), f32_at(s.data, o + 4)]
+                    })
+                    .collect(),
+            )
+        }
         _ => None,
     };
     let colors = stream(1, StreamFormat::Rgba8)
@@ -913,10 +933,13 @@ fn read_mesh(c: &mut Cursor<'_>, version: u16) -> Result<Mesh> {
         indices,
         groups,
         triangle_flags,
+        triangle_edges,
         gi_points: Vec::new(),
         render_flags,
         position_count,
         smoothing,
+        uv_ids,
+        uv_count,
     })
 }
 
@@ -1166,6 +1189,9 @@ mod tests {
         assert_eq!(node.transform[3], [1.0, 0.0, 0.0]);
         assert_eq!(mesh.positions[2], [1.0, 0.0, -1.0]);
         assert_eq!(mesh.uvs.as_ref().unwrap()[1], [1.0, 0.0]);
+        assert_eq!(mesh.uv_ids, [0, 1, 2, 3]);
+        assert_eq!(mesh.uv_count, 4);
+        assert_eq!(mesh.triangle_edges.as_deref(), Some(&[0u8, 0][..]));
         assert_eq!(mesh.indices, [0, 1, 2, 0, 2, 3]);
         assert_eq!(mesh.groups.len(), 2);
         assert_eq!(mesh.groups[1].material, "matb");

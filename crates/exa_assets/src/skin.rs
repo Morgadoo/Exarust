@@ -290,6 +290,7 @@ mod tests {
             gi_points: vec![],
             position_count: 8,
             smoothing: vec![],
+            ..Mesh::default()
         }
     }
 
