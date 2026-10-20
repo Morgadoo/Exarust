@@ -16,6 +16,7 @@ pub mod fps;
 pub mod heartbeat;
 pub mod hud;
 pub mod loading;
+pub mod match_board;
 pub mod menu;
 pub mod scale;
 pub mod skill;
@@ -29,6 +30,9 @@ pub use fps::ShowFps;
 pub use heartbeat::Heartbeat;
 pub use hud::{DrawHud, HudBars};
 pub use loading::LoadingStatus;
+pub use match_board::{
+    MatchBoardDestroy, MatchBoardShow, MatchBoardShowInput, destroy_match_board, show_match_board,
+};
 pub use menu::{
     CharLootShow, CharLootShowInput, ClassCardHit, ClassCardHitInput, ClassConfirm, ClassNav,
     ClassNavAction, ClassNavInput, ClassSelect, EndSessionAction, EndSessionDispatch,
