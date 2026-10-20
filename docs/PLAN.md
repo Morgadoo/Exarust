@@ -1028,6 +1028,8 @@ Done (change `fit-the-smallest-sphere`): `exa_render::bound_sphere` holds the or
 
 Done (change `match-the-noise-and-pixel-formats`, power effects part): the force and spirit powers' animated noise field is modelled as `exa_render::image_noise::NoiseField` (256×256, 4 octaves, amplitude 1, keep/add 0.5, period 0.8 s for the force) but not drawn; the three-plane weighted sum p2·w2 + (p1·w1 + p0·w0) of RF_WorkerThreads is inside it.
 
+Done (change `voxelise-cell-floors`): the original's mesh voxeliser is in `exa_physics::voxel`, checked against the assembly: the floor heightfield (ray plane distances in the original's lane order, cell edges snapped in whole 20 cm steps, the downsample's odd-row drift), the surface generator (0.2·p step and s·√2/2 near radius in double precision, near-cell clearing, greedy 40/4/0.4 cover) and the rigid-body voxel map's layout. The GI volume now merges each grid cell's floor meshes and runs the heightfield once per cell, in the cell's space, at level load; a flat 6 m cell still gives 900 points 10 cm under its floor. Not in: the node's kd-tree sphere query (closest-point stand-in), the generator's callers for floor-set props and character bodies, floor collision triangles.
+
 **M5 "looks and sounds like Exanima":** reference shots taken from matching
 camera positions in the original and in Exarust are hard to tell apart.
 
