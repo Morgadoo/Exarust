@@ -233,6 +233,20 @@ pub fn step_length(scale: f32, extension: f32) -> f32 {
     STEP_LENGTH * scale.max(0.0).sqrt() * extension.max(0.0)
 }
 
+/// Crouched deeper than this, the footwork's steps are shorter.
+const CROUCH_SHORTENS_FROM: f32 = 0.5;
+/// A crouched step's share of the step length.
+const CROUCHED_STRIDE: f64 = 0.7;
+
+/// The footwork's step length factor at `crouch`: 0.7 above 0.5, else 1.
+pub fn crouch_stride(crouch: f32) -> f32 {
+    if crouch > CROUCH_SHORTENS_FROM {
+        CROUCHED_STRIDE as f32
+    } else {
+        1.0
+    }
+}
+
 /// The target's horizontal offset from the chest (m), from the fast
 /// velocity (m a tick).
 pub(super) fn lead(fast: Vec3, support: f32, energy: f32, scale: f32) -> Vec3 {

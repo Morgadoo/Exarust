@@ -41,6 +41,16 @@ The original has no camera-relative keyboard movement. Outside combat:
   camera target turns behind the new facing. Releasing restores the
   pointer where it was. The settings screen's binding template shows
   SPACE, but the shipped table's slot is V.
+- **Crouch (X)** sets the crouch amount to 1 while the body is not
+  moving, or while it is down (condition bit 0x200); every tick the amount
+  first falls by 0.02 while above 0, so a held key keeps it at 1 and a
+  released one eases out over 50 ticks. There is no crouch clip: the body
+  lowers its pelvis toward 60 cm over its ground, its chest shifts 10 cm
+  back and its footwork's stance narrows. Above a crouch of 0.1 the
+  locomotion clip clock runs × (1 − 0.1·crouch) (the float crouch widened
+  to a double, so 0.1 itself already slows); above 0.5 the footwork's
+  steps are 0.7 of the step length; a crouched attacker always picks the
+  first side attack.
 - **The clips.** The steering starts the walk when the character moves,
   forwards or back, from whatever looping clip plays, and ends it in Idle
   when the character stops. Backing runs that walk's clock backwards at

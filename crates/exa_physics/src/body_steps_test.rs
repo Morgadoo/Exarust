@@ -362,3 +362,13 @@ fn the_pin_pass_leads_the_thorax() {
         "out of balance moved {out_dx}, still {still_dx}"
     );
 }
+
+/// Crouched deeper than half, the footwork's steps are 0.7 of the step
+/// length; at half or less they are whole.
+#[test]
+fn a_deep_crouch_shortens_the_steps() {
+    assert_eq!(crouch_stride(0.0), 1.0);
+    assert_eq!(crouch_stride(0.5), 1.0);
+    assert!(close(crouch_stride(0.51), 0.7));
+    assert!(close(crouch_stride(1.0) * step_length(1.0, 1.0), 56.0));
+}

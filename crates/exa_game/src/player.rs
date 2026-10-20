@@ -79,6 +79,8 @@ const RUN_FALL: f32 = 0.015;
 pub(crate) const CURSOR_RUN_FROM: f32 = 3.0;
 /// A cursor closer than this (m) gives no direction.
 const CURSOR_MIN: f32 = 0.5;
+/// The crouch falls by this much a tick once its key is let go.
+const CROUCH_FALL: f64 = 0.02;
 /// Cursor Look turns the facing by 3.6 rad per screen width of horizontal
 /// mouse motion.
 pub const CURSOR_LOOK_SENSITIVITY: f32 = 3.6;
@@ -157,6 +159,8 @@ pub struct PlayerBody {
     walk_from: Option<String>,
     /// When its last attack last ticked (s, on the fixed clock).
     last_attack: Option<f32>,
+    /// How far it crouches, 0 to 1.
+    crouch: f32,
 }
 
 impl PlayerBody {
@@ -175,7 +179,20 @@ impl PlayerBody {
             held: 0.0,
             walk_from: None,
             last_attack: None,
+            crouch: 0.0,
         }
+    }
+
+    /// How far it crouches, 0 to 1.
+    pub fn crouch(&self) -> f32 {
+        self.crouch
+    }
+
+    /// A body crouching by `crouch`.
+    #[cfg(test)]
+    pub(crate) fn crouching(mut self, crouch: f32) -> Self {
+        self.crouch = crouch;
+        self
     }
 
     /// The run blend: 0 walks, 1 runs.
@@ -358,6 +375,22 @@ fn yaw_of(d: Vec3) -> f32 {
 /// The horizontal direction of a yaw.
 fn forward(yaw: f32) -> Vec3 {
     Vec3::new(yaw.sin(), 0.0, yaw.cos())
+}
+
+/// One tick of the crouch: it falls by 0.02 while above 0 (the body
+/// tick's part, first), then the Crouch key `held` while the body is not
+/// `moving`, or while it is `down`, sets it to 1.
+fn crouch_tick(crouch: f32, held: bool, moving: bool, down: bool) -> f32 {
+    let eased = if crouch > 0.0 {
+        (f64::from(crouch) - CROUCH_FALL) as f32
+    } else {
+        crouch
+    };
+    if held && (!moving || down) {
+        1.0
+    } else {
+        eased
+    }
 }
 
 /// One tick of the run blend: rising by 0.05 while running, at most to
@@ -561,6 +594,15 @@ fn steer_player(
             else {
                 continue;
             };
+            // The crouch is kept while down, so it is set before the
+            // helpless bodies are left alone.
+            let down = fallen || condition.is_some_and(|c| c.off_feet());
+            pb.crouch = crouch_tick(
+                pb.crouch,
+                bindings.pressed(&keys, Action::Crouch),
+                body.desired_velocity != Vec3::ZERO,
+                down,
+            );
             // Not steered while it falls (Exarust's own) or its condition is
             // helpless: down, getting up, collapsing, dead.
             if fallen || condition.is_some_and(|c| c.helpless()) {
@@ -1022,8 +1064,8 @@ fn request_attacks(
             continue;
         };
         let motion = match start.kind {
-            AttackKind::Main => Side::Main.motion(attacker.pick(Side::Main, false)),
-            AttackKind::Other => Side::Other.motion(attacker.pick(Side::Other, false)),
+            AttackKind::Main => Side::Main.motion(attacker.pick(Side::Main, pb.crouch > 0.0)),
+            AttackKind::Other => Side::Other.motion(attacker.pick(Side::Other, pb.crouch > 0.0)),
             AttackKind::Overhead => AttackMotion::Overhead,
             AttackKind::Stab => {
                 // The held weapon's long axis, forward or not far back.
@@ -2380,6 +2422,30 @@ mod tests {
         assert!((zoom_fov(800.0, 1.6).to_degrees() - 18.0).abs() < 1e-3);
         assert!((min_pitch(2000.0) - 0.925).abs() < 1e-6);
         assert_eq!(min_pitch(900.0), 0.8);
+    }
+
+    /// Held standing, the crouch is 1 and stays 1; walking, the key does
+    /// not raise it and it falls by 0.02 a tick, reaching 0 within 50
+    /// ticks and staying there; down, the key holds it while moving.
+    #[test]
+    fn the_crouch_is_held_standing_and_eases_out() {
+        let mut c = crouch_tick(0.0, true, false, false);
+        assert_eq!(c, 1.0);
+        c = crouch_tick(c, true, false, false);
+        assert_eq!(c, 1.0);
+        assert_eq!(crouch_tick(0.0, true, true, false), 0.0);
+        assert_eq!(crouch_tick(0.3, true, true, true), 1.0);
+        c = crouch_tick(c, true, true, false);
+        assert!((c - 0.98).abs() < 1e-6);
+        for _ in 1..50 {
+            c = crouch_tick(c, false, false, false);
+        }
+        assert!(c.abs() < 1e-5, "{c}");
+        // Rounding may leave a sliver above 0, which the next tick takes
+        // below; from there it stays.
+        let rest = crouch_tick(c, false, false, false);
+        assert!(rest <= 0.0 && rest > -0.02, "{rest}");
+        assert_eq!(crouch_tick(rest, false, false, false), rest);
     }
 
     #[test]

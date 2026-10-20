@@ -731,7 +731,8 @@ impl Ragdoll {
             ),
             root: frame,
             origin: stance_origin,
-            step_cm: steps::step_length(scale, trigger.extension),
+            step_cm: steps::step_length(scale, trigger.extension)
+                * steps::crouch_stride(bearing.crouch),
             episode: drive.steps.stepping,
             episode_ms: if drive.steps.stepping {
                 steps::elapsed_ms(&drive.steps)

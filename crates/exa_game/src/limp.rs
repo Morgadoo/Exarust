@@ -329,6 +329,22 @@ const RISING_TONE: f32 = 0.5;
 /// Walking, the clock runs the gait's clip rate × (0.8·speed + 1), the
 /// speed in cm a tick.
 const STRIDE_PACE: f32 = 0.8;
+/// Crouched deeper than this, the locomotion clock slows by a tenth of
+/// the crouch.
+const CROUCH_SLOWS_FROM: f64 = 0.1;
+const CROUCH_SLOW: f64 = 0.1;
+
+/// The locomotion clock's factor at `crouch`: 1 − 0.1·crouch above 0.1,
+/// else 1.
+fn crouch_clock(crouch: f32) -> f32 {
+    let crouch = f64::from(crouch);
+    if crouch > CROUCH_SLOWS_FROM {
+        (1.0 - CROUCH_SLOW * crouch) as f32
+    } else {
+        1.0
+    }
+}
+
 /// The gait rows: walk, jog, sprint and backpedal.
 const WALK: usize = 0;
 const JOG: usize = 1;
@@ -342,10 +358,10 @@ const BACKPEDAL_ACTION: usize = 2;
 /// `progress` by last tick's clock, its drive and its pace, a human's at
 /// full tone in brackets: walking or running in its locomotion clip, the
 /// gait's clip rate (walk to jog by √run, or, while sprinting, to the
-/// feral sprint row, then × (1 − 0.1·encumbrance); or the backpedal's) ×
-/// (0.8·speed + 1) (0.76 at 1.69 cm a tick); getting up, tone × (1.5 −
-/// 0.5 × encumbrance) × base × 0.6 above half tone (0.9 unencumbered),
-/// tone × 1.25 × base × 0.6 on the tick its posture stage starts the
+/// feral sprint row, then × (1 − 0.1·encumbrance); or the backpedal's),
+/// × (1 − 0.1·crouch) above a crouch of 0.1, × (0.8·speed + 1) (0.76 at
+/// 1.69 cm a tick); getting up, tone × (1.5 − 0.5 × encumbrance) × base
+/// × 0.6 above half tone (0.9 unencumbered), tone × 1.25 × base × 0.6 on the tick its posture stage starts the
 /// get-up (0.75); attacking, the rate its swing routine set (about 1.1;
 /// without one its swing's unstalled rate); otherwise 0.6 × base, × 1.25
 /// off balance (0.6, 0.75).
@@ -373,7 +389,7 @@ fn clip_frames(playing: Option<usize>, progress: f32, drive: &Drive, pace: &Pace
                     blended
                 }
             };
-            gait * (STRIDE_PACE * pace.walked + 1.0)
+            gait * crouch_clock(bearing.crouch) * (STRIDE_PACE * pace.walked + 1.0)
         }
         _ if bearing.getting_up => {
             if drive.tone > RISING_TONE {
@@ -469,7 +485,7 @@ pub(crate) fn rising(motions: &Motions, anim: &Animator, condition: Condition) -
 /// moves while its controller is asked to, runs by the player's run blend,
 /// strides in the walk and run cycles, is off balance while its posture
 /// stage takes an off-balance `branch` (falling, lying or getting up), gets
-/// up while its condition says so, never crouches (no crouch yet), is
+/// up while its condition says so, crouches by the player's crouch, is
 /// carried while its controller stands on the ground (or it has none), and
 /// turns by what is left of the player's turn, unless its condition is
 /// helpless (the original's turn is skipped then, its error zeroed); it
@@ -491,7 +507,7 @@ pub(crate) fn bearing(
         off_balance: getting_up || matches!(branch, Branch::Falling | Branch::LyingStill),
         getting_up,
         rising: false,
-        crouch: 0.0,
+        crouch: player.map_or(0.0, PlayerBody::crouch),
         carried: controller.is_none_or(|c| c.grounded),
         turn: match player {
             Some(p) if !condition.helpless() => p.turn_left(),
@@ -990,6 +1006,33 @@ pub(crate) mod tests {
         assert!(!rising(&motions, &anim, up));
         anim.time = -9.25;
         assert!(rising(&motions, &anim, up));
+    }
+
+    /// The locomotion clock slows by a tenth of the crouch above 0.1, and
+    /// the bearing carries the player's crouch (none without a player).
+    #[test]
+    fn a_crouch_slows_the_clock_and_reaches_the_bearing() {
+        assert_eq!(crouch_clock(0.0), 1.0);
+        assert_eq!(crouch_clock(0.09), 1.0);
+        // 0.1 as a float widens to just above the double 0.1, as the
+        // original compares it, so it already slows.
+        assert!(crouch_clock(0.1) < 1.0);
+        assert!((crouch_clock(1.0) - 0.9).abs() < 1e-6);
+        assert!((crouch_clock(0.5) - 0.95).abs() < 1e-6);
+        let anim = Animator::new("Default", "Idle");
+        let player = PlayerBody::new(0.0).crouching(0.75);
+        let b = bearing(
+            None,
+            Some(&player),
+            &anim,
+            Branch::Standing,
+            Condition::NORMAL,
+        );
+        assert_eq!(b.crouch, 0.75);
+        assert_eq!(
+            bearing(None, None, &anim, Branch::Standing, Condition::NORMAL).crouch,
+            0.0
+        );
     }
 
     /// Off balance is the posture stage's: falling, lying still or getting
