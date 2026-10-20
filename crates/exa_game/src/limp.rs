@@ -227,9 +227,12 @@ pub(crate) struct Pace {
     pub(crate) swing: Swing,
     pub(crate) attack: Option<f32>,
     pub(crate) encumbrance: f32,
+    /// The sprint latch is kept: the overlay then uses the run blend
+    /// itself.
+    pub(crate) latch: bool,
     /// The sprint latch is kept, the stance level is above 0.9 and the
-    /// last step was faster than 3.5 cm. The overlay then uses the run
-    /// blend itself, and the forward clock uses the feral sprint row.
+    /// last step was faster than 3.5 cm: the forward clock then uses the
+    /// feral sprint row.
     pub(crate) sprinting: bool,
     /// The character's feral level, 0..=1. While sprinting, the sprint
     /// gait row is blended toward the jog row by this.
@@ -301,8 +304,9 @@ pub(crate) fn clip_tick(
     })
 }
 
-/// Share of the way from the walk pose to the run pose at a full jog.
-const RUN_SHARE: f32 = 0.7;
+/// Share of the way from the walk pose to the run pose at a full jog
+/// (double precision).
+const RUN_SHARE: f64 = 0.7;
 /// The stance level must be above this, in double precision, to sprint.
 const SPRINT_LEVEL: f64 = 0.9;
 /// The last step must be faster than this (cm a tick) to sprint.
@@ -313,14 +317,19 @@ pub(crate) fn sprinting(latch: bool, level: f32, speed_cm: f32) -> bool {
     latch && f64::from(level) > SPRINT_LEVEL && speed_cm > SPRINT_SPEED
 }
 
-/// The run pose's share of the walk: the run blend while sprinting, else
-/// 0.7 times it. Zero when the blend is zero.
-pub(crate) fn overlay_share(run: f32, sprinting: bool) -> f32 {
+/// The run pose's share of the walk: the run blend while the sprint latch
+/// is kept (whatever the stance level and the speed: the sampler reads the
+/// latch alone), else 0.7 times it. Zero when the blend is zero.
+pub(crate) fn overlay_share(run: f32, latch: bool) -> f32 {
     let run = run.clamp(0.0, 1.0);
     if run <= 0.0 {
         return 0.0;
     }
-    if sprinting { run } else { RUN_SHARE * run }
+    if latch {
+        run
+    } else {
+        (RUN_SHARE * f64::from(run)) as f32
+    }
 }
 
 /// While Walk plays, the Run clip at [`overlay_share`]. None on a walk,
@@ -333,7 +342,7 @@ pub(crate) fn run_overlay<'a>(
     if anim.action != "Walk" {
         return None;
     }
-    let weight = overlay_share(pace.run, pace.sprinting);
+    let weight = overlay_share(pace.run, pace.latch);
     if weight <= 0.0 {
         return None;
     }
@@ -1149,9 +1158,9 @@ pub(crate) mod tests {
         drive
     }
 
-    /// A sprint uses the run blend itself. A jog stays at 0.7 of it. The
-    /// latch at stance level 0.9, or at 3.5 cm a tick, stays a jog. The
-    /// root stays the walk's. The pose comes from the clip tick and the
+    /// The latch uses the run blend itself, also at stance level 0.9 or
+    /// 3.5 cm a tick (the sampler reads the latch alone). A jog stays at
+    /// 0.7 of it. The root stays the walk's. The pose comes from the clip tick and the
     /// sampler's overlay step, which [`run_overlay`] feeds.
     #[test]
     fn the_sprint_overlay_uses_the_run_blend() {
@@ -1195,6 +1204,7 @@ pub(crate) mod tests {
                 swing: Swing::FISTS,
                 attack: None,
                 encumbrance: 0.0,
+                latch,
                 sprinting: sprinting(latch, level, speed),
                 feral: 0.0,
                 rose: false,
@@ -1220,9 +1230,9 @@ pub(crate) mod tests {
         let half = pose(true, 1.0, 4.0, 0.5);
         assert!(close(half.rotations[0], flat.slerp(right, 0.5)));
         let low = pose(true, 0.9, 4.0, 1.0);
-        assert!(close(low.rotations[0], flat.slerp(right, 0.7)));
+        assert!(close(low.rotations[0], right));
         let slow = pose(true, 1.0, 3.5, 1.0);
-        assert!(close(slow.rotations[0], flat.slerp(right, 0.7)));
+        assert!(close(slow.rotations[0], right));
         let still = pose(true, 1.0, 4.0, 0.0);
         assert!(close(still.rotations[0], flat));
     }
@@ -1250,6 +1260,7 @@ pub(crate) mod tests {
             swing: Swing::FISTS,
             attack: None,
             encumbrance: 0.0,
+            latch: false,
             sprinting: false,
             feral: 0.0,
             rose: true,
@@ -1335,6 +1346,7 @@ pub(crate) mod tests {
             walked: speed,
             run: 1.0,
             encumbrance: enc,
+            latch,
             sprinting: sprinting(latch, level, speed),
             feral,
             ..pace

@@ -106,6 +106,7 @@ pub(crate) fn sample_clip(
         swing: swing.copied().unwrap_or(Swing::FISTS),
         attack: swinging.map(|s| s.rate),
         encumbrance: fighter.map_or(0.0, |f| f.stats.encumbrance),
+        latch: locomotion.is_some_and(|(req, _)| req.has(flags::SPRINT)),
         sprinting: sprinting(
             locomotion.is_some_and(|(req, _)| req.has(flags::SPRINT)),
             level,

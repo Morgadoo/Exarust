@@ -271,7 +271,7 @@ The player's look-ahead SHALL walk the navigation grid from the standing point t
 - **THEN** the player brakes to a stop in front of it instead of pushing into it
 
 ### Requirement: Locomotion request
-The player SHALL move through a locomotion request (heading, look, flag word, moving, free walk, goal) that its body tick decides each tick: a free walk never brakes; toward a goal a walking body SHALL brake within its gait's stop distance (50/200/250/50 cm, blended by the run) and stop within 25 cm at 0.5 cm a tick or less; a running body never brakes. A body under its most energy SHALL not walk.
+The player SHALL move through a locomotion request (heading, look, flag word, moving, free walk, goal) that its body tick decides each tick: a free walk never brakes; toward a goal a walking body SHALL brake within its gait's stop distance (50/200/250/50 cm, blended by the run; the sprint row's only with the sprint latch, a stance level above 0.9 and over 3.5 cm a tick) and stop within 25 cm at 0.5 cm a tick or less; a running body never brakes. A body under its most energy SHALL not walk.
 
 #### Scenario: Walking into a wall
 - **WHEN** the player walks straight at a wall
@@ -280,6 +280,10 @@ The player SHALL move through a locomotion request (heading, look, flag word, mo
 #### Scenario: Dazed
 - **WHEN** a blow leaves the player under its most energy while W is held
 - **THEN** it stands until its energy is full again, then walks
+
+#### Scenario: The sprint row's stop distance
+- **WHEN** a body with the sprint latch moves at 3.6 cm a tick at a half run blend, on a stance level of 1, then of 0.9
+- **THEN** its stop distance is 150 cm, then the jog's 125 cm
 
 ### Requirement: Body turn
 The body SHALL turn toward its heading by the original's table: (1 − 0.1·v)·240°/s in free walk (v in cm a tick), 120°/s for the exploration's slow turn, the swing's law while attacking, else (1 − 0.6·enc)·300°/s/√scale; ×0.6 crouched, eased over the last 0.6 rad, ×0.9 moving by the keys, the step ÷√scale; held while helpless. The alignment of its pelvis with its heading SHALL be kept each tick.

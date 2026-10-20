@@ -72,7 +72,7 @@ from the body's physical turns, the original's clock rate for what the
 body does (the base in its stance whatever its balance, twice it
 kicking), the pose it holds while dazed, the sample taken in the
 original's per-part pipeline (the Run clip overlaid on the Walk by
-0.7 × the run blend, or by the blend sprinting) with identity slots for
+0.7 × the run blend, or by the blend with the sprint latch) with identity slots for
 the femur posture, the IK chain, the torso twist, the head look and the
 foot pitch; a get-up's clip ending into the stance writes the condition
 word normal; sampler); its targets, the sampled parts on its character

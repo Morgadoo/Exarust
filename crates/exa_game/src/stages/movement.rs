@@ -172,15 +172,15 @@ pub(crate) fn decide_movement(
         encumbrance,
     );
     locomotion::align(&mut body, target);
-    let cap = run_cap(encumbrance, req.has(flags::SPRINT));
-    locomotion::locomote(&req, &mut body, cap, &stops);
-    locomotion::count_down(&mut body);
-    // Sprinting (the latch, a stance level over 0.9 and over 3.5 cm a
-    // tick), the capsule's run takes the feral sprint row.
     let level = ragdoll
         .as_deref()
         .and_then(|r| r.drive.as_ref())
         .map_or(0.0, |d| d.balance().level());
+    let cap = run_cap(encumbrance, req.has(flags::SPRINT));
+    locomotion::locomote(&req, &mut body, cap, &stops, level);
+    locomotion::count_down(&mut body);
+    // Sprinting (the latch, a stance level over 0.9 and over 3.5 cm a
+    // tick), the capsule's run takes the feral sprint row.
     let gaits = if sprinting(req.has(flags::SPRINT), level, body.speed) {
         sprint_gaits(*gaits, fighter.map_or(0.0, |f| f.stats.feral))
     } else {

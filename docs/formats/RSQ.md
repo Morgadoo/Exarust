@@ -1096,8 +1096,9 @@ original's body tick does (REA, `context/re/master-movement.md` §5, §21):
   the stop distance (the turn-about bit cleared); already braking → walk;
   running → run, never braking; else walk, braking within the stop
   distance. Never in free walk. The stop distance is the gait rows' column
-  2 blended from the walk toward the jog (or the sprint, with the latch
-  past 3.5 cm a tick) by the run blend: 50, 200, 250 and 50 cm
+  2 blended from the walk toward the jog (or the sprint, with the latch,
+  a stance level above 0.9 in double precision and past 3.5 cm a tick) by
+  the run blend: 50, 200, 250 and 50 cm
   (backpedal); back to the walk's when the body stops.
 - **Gates**, in order: a cooldown (40 ticks after a stumble); energy under
   its most (a dazed body cannot walk until its energy is full, +0.005 a
@@ -1384,11 +1385,12 @@ looping then holds its first key until its clock reaches it ([Falls and
 get-ups](#falls-and-get-ups)).
 Keys are slerped, the root lerped. While Walk plays and the run blend is
 above zero, each bone is then slerped toward the Run sample at the same
-keys by 0.7 times that blend, or by the blend itself while sprinting.
-Sprinting is the sprint latch kept, the stance level above 0.9 and the
-speed above 3.5 cm a tick. The root stays the walk's. A full jog is 63°
-of the way from a walk bone to a run bone 90° away; a full sprint is
-that run bone, and a half sprint is 45°. The root keeps the clip's travel, but
+keys by 0.7 times that blend (in double precision), or by the blend
+itself while the sprint latch is kept: the sampler reads the latch
+alone, not the stance level or the speed that pick the sprint row. The
+root stays the walk's. A full jog is 63° of the way from a walk bone to
+a run bone 90° away; with the latch a full run is that run bone, and a
+half one is 45°. The root keeps the clip's travel, but
 the walk's, run's and backpedal's z (Exarust also drops its interim
 `Combat Walk`'s). A body that has not sampled a clip yet has no capture
 and starts from the keys, with no blend. The pose-only sampler (a clip at
@@ -1405,7 +1407,7 @@ not landed is the identity and says which:
 | step | what | Exarust |
 |---|---|---|
 | 1 | the keys blended: each turn slerped from the source (a key, or the start's capture) to the target key, the root lerped | `Animator::blend_keys` |
-| 2 | the gait overlay: a moving body's walk slerped toward its run at the same keys by 0.7 × the run blend (the run blend sprinting) | identity until M16 |
+| 2 | the gait overlay: a moving body's walk slerped toward its run at the same keys by 0.7 × the run blend (the run blend with the sprint latch) | `exa_anim::overlay_toward`, fed by the Run clip and its weight |
 | 3 | the hold toward the held pose by its weight, then normalised; the result kept as the targets | `exa_anim::hold_toward`, `Animator::keep` |
 | 4 | the femur posture: the thighs turned ±5° (or ±1.5° by the record's height) about the femur axis | identity until C13 |
 | 5 | the clip chain: each part placed by its rest translation and its posed turn under its parent's placement; the foot contacts read it | `clip_chain` |

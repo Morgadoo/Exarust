@@ -54,12 +54,14 @@ decides from it each tick (below). Outside combat:
   Encumbrance), and falls 0.015 (or follows the speed down while braking).
   A new character in braies runs at the full blend; in a tourney plate
   harness, helm and leggings (encumbrance 0.625) the blend stops at 0.8125
-  and the run at about 3.2 m/s instead of 3.6. With the latch kept, once
-  the stance level is above 0.9 and the step is faster than 3.5 cm a tick
-  the pose uses the run blend itself, the walk clip's clock blends toward
-  the feral sprint row (the sprint rate, toward the jog rate by the feral
-  level) and then slows by 1 − 0.1 × encumbrance, and the capsule's run
-  end is the jog speed times the feral sprint thrust over the jog thrust.
+  and the run at about 3.2 m/s instead of 3.6. With the latch kept the
+  pose uses the run blend itself (the sampler reads the latch alone);
+  once the stance level is also above 0.9 and the step is faster than
+  3.5 cm a tick the stop distance takes the sprint row, the walk clip's
+  clock blends toward the feral sprint row (the sprint rate, toward the
+  jog rate by the feral level) and then slows by 1 − 0.1 × encumbrance,
+  and the capsule's run end is the jog speed times the feral sprint
+  thrust over the jog thrust.
 - **Cursor Look (V)** captures the mouse while held: the pointer and world
   cursor are hidden, horizontal mouse motion turns the facing (the body's
   yaw and the request's heading) by 3.6 × Δx / window width radians per

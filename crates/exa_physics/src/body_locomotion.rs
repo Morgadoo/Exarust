@@ -92,8 +92,10 @@ const RUN_FALL: f64 = 0.015;
 const RUN_SPEED_FROM: f32 = 2.0;
 const RUN_SPEED_SHARE: f64 = 0.2;
 /// With the sprint latch the gait is the sprint row once the body is
-/// faster than this (cm a tick) on level feet.
+/// faster than this (cm a tick) and its stance level is above
+/// [`SPRINT_LEVEL`] (double precision).
 const SPRINT_FROM: f32 = 3.5;
+const SPRINT_LEVEL: f64 = 0.9;
 /// Until the body walks by its carry, a braking capsule keeps this share
 /// of its speed a tick: the original's brake drive, 0.2 of the human push
 /// gain (550/83² a tick²), and its living limbs' retention, 0.98977.
@@ -644,9 +646,16 @@ pub fn align(body: &mut Locomotor, target: f32) {
 /// f = max(0.2·(speed − 2), 0), otherwise it falls 0.015, never under 0
 /// (the original's bleed by the alignment and by vertical travel comes
 /// with the walking drive). The stop distance is the backpedal's backwards, else the walk's blended
-/// toward the jog's (the sprint's with the latch once faster than 3.5 cm a
-/// tick) by the run blend. A standing body keeps both.
-pub fn locomote(req: &Locomotion, body: &mut Locomotor, cap: f32, stops: &StopDistances) {
+/// toward the jog's (the sprint's with the latch once its stance `level`
+/// is above 0.9 and it is faster than 3.5 cm a tick) by the run blend. A
+/// standing body keeps both.
+pub fn locomote(
+    req: &Locomotion,
+    body: &mut Locomotor,
+    cap: f32,
+    stops: &StopDistances,
+    level: f32,
+) {
     use flags::*;
     if !body.moving() {
         return;
@@ -663,7 +672,8 @@ pub fn locomote(req: &Locomotion, body: &mut Locomotor, cap: f32, stops: &StopDi
     body.stop_distance = if req.has(BACK) {
         stops.back
     } else {
-        let row = if req.has(SPRINT) && body.speed > SPRINT_FROM {
+        let row = if req.has(SPRINT) && f64::from(level) > SPRINT_LEVEL && body.speed > SPRINT_FROM
+        {
             stops.sprint
         } else {
             stops.jog

@@ -337,7 +337,8 @@ fn the_alignment_follows_the_pelvis() {
 /// ticks, to 0.85 at a cap of 0.85; walking it falls 0.015; braking at 3 cm
 /// a tick it is at most 0.36 (f = 0.2), at 2 none. The stop distance:
 /// 1.25 m at a half blend, 1.5 with the latch past 3.5 cm a tick (the
-/// sprint row), the backpedal's 0.5 backwards. A standing body keeps both.
+/// sprint row), the jog's again on a stance level of 0.9, the backpedal's
+/// 0.5 backwards. A standing body keeps both.
 #[test]
 fn the_run_blend_and_the_stop_distance() {
     let stops = StopDistances::HUMAN;
@@ -345,24 +346,24 @@ fn the_run_blend_and_the_stop_distance() {
     body.stop = Stop::Moving;
     body.leg = LegMode::Run;
     for _ in 0..20 {
-        locomote(&req, &mut body, 1.0, &stops);
+        locomote(&req, &mut body, 1.0, &stops, 1.0);
     }
     assert!((body.run - 1.0).abs() < 1e-6, "{}", body.run);
-    locomote(&req, &mut body, 0.85, &stops);
+    locomote(&req, &mut body, 0.85, &stops, 1.0);
     assert_eq!(body.run, 0.85);
     body.leg = LegMode::Walk;
-    locomote(&req, &mut body, 1.0, &stops);
+    locomote(&req, &mut body, 1.0, &stops, 1.0);
     assert!((body.run - 0.835).abs() < 1e-6);
     req.flags |= flags::BRAKE;
     body.speed = 3.0;
-    locomote(&req, &mut body, 1.0, &stops);
+    locomote(&req, &mut body, 1.0, &stops, 1.0);
     assert!((body.run - 0.36).abs() < 1e-6, "{}", body.run);
     body.speed = 2.0;
-    locomote(&req, &mut body, 1.0, &stops);
+    locomote(&req, &mut body, 1.0, &stops, 1.0);
     assert_eq!(body.run, 0.0);
     req.flags = flags::MOVE;
     body.run = 0.515;
-    locomote(&req, &mut body, 1.0, &stops);
+    locomote(&req, &mut body, 1.0, &stops, 1.0);
     assert!(
         (body.stop_distance - 1.25).abs() < 1e-6,
         "{}",
@@ -371,14 +372,17 @@ fn the_run_blend_and_the_stop_distance() {
     req.flags |= flags::SPRINT;
     body.run = 0.515;
     body.speed = 3.6;
-    locomote(&req, &mut body, 1.0, &stops);
+    locomote(&req, &mut body, 1.0, &stops, 1.0);
     assert!((body.stop_distance - 1.5).abs() < 1e-6);
+    body.run = 0.515;
+    locomote(&req, &mut body, 1.0, &stops, 0.9);
+    assert!((body.stop_distance - 1.25).abs() < 1e-6);
     req.flags |= flags::BACK;
-    locomote(&req, &mut body, 1.0, &stops);
+    locomote(&req, &mut body, 1.0, &stops, 1.0);
     assert_eq!(body.stop_distance, 0.5);
     body.stop = Stop::Standing;
     body.run = 0.4;
-    locomote(&req, &mut body, 1.0, &stops);
+    locomote(&req, &mut body, 1.0, &stops, 1.0);
     assert_eq!((body.run, body.stop_distance), (0.4, 0.5));
 }
 

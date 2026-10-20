@@ -117,7 +117,7 @@ Backing up SHALL play Walk and advance its clock by the negated backpedal rate. 
 - **THEN** the clock is 79.5
 
 ### Requirement: Run overlay
-While Walk plays and the run blend is above zero, each bone SHALL be the Walk sample slerped toward the Run sample at the same keys, before any pose hold, by 0.7 times the run blend, or by the run blend itself while sprinting. Sprinting SHALL require the sprint latch, a stance level above 0.9 and a speed above 3.5 cm a tick. The root SHALL stay the Walk sample.
+While Walk plays and the run blend is above zero, each bone SHALL be the Walk sample slerped toward the Run sample at the same keys, before any pose hold, by 0.7 times the run blend (in double precision), or by the run blend itself while the sprint latch is kept, whatever the stance level and the speed. The root SHALL stay the Walk sample.
 
 #### Scenario: Full run
 - **WHEN** the two clips differ by 90° about one axis and the run blend is 1
@@ -128,20 +128,20 @@ While Walk plays and the run blend is above zero, each bone SHALL be the Walk sa
 - **THEN** the pose is the walk sample
 
 #### Scenario: Full sprint
-- **WHEN** the body is sprinting, the run blend is 1 and the two clips differ by 90° about one axis
+- **WHEN** the sprint latch is kept, the run blend is 1 and the two clips differ by 90° about one axis
 - **THEN** that bone is the run's, and the root is the walk's
 
 #### Scenario: Half sprint
-- **WHEN** the body is sprinting, the run blend is 0.5 and the two clips differ by 90° about one axis
+- **WHEN** the sprint latch is kept, the run blend is 0.5 and the two clips differ by 90° about one axis
 - **THEN** that bone is 45° from the walk toward the run
 
 #### Scenario: Level at 0.9
 - **WHEN** the latch is kept, the stance level is 0.9, the speed is above 3.5 cm a tick and the run blend is 1
-- **THEN** that bone is 63° from the walk toward the run
+- **THEN** that bone is the run's
 
 #### Scenario: Speed at 3.5 cm
 - **WHEN** the latch is kept, the stance level is above 0.9, the speed is 3.5 cm a tick and the run blend is 1
-- **THEN** that bone is 63° from the walk toward the run
+- **THEN** that bone is the run's
 
 ### Requirement: Sprint clock
 While sprinting, a forward gait's clock SHALL blend from the walk rate toward the feral sprint row by the square root of the run blend, then multiply by 1 − 0.1 times the encumbrance. The feral sprint row SHALL be the sprint rate blended to the jog rate by the feral level. Without sprinting it SHALL keep the jog row and skip that factor.
