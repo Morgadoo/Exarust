@@ -317,6 +317,27 @@ Bevy draws no interface while its interface camera is off.
 The window's app id (X11 class) is `exarust`, so the desktop names it in
 its dialogs.
 
+## Speech bubbles and the reply panel
+
+The logic is in `exa_script` (`bubbles`, `dialogue`); nothing draws it yet.
+A spoken line shows for 1000 ms + 50 ms per byte, the narrator's under 10 s
+stretched by (2 − d/10 000), the player's halved. A speaker's new line closes
+its old bubble (fading four times as fast) and waits 375 ms past its end; a
+character's line is cut at a CR and the rest follows as another bubble (the
+narrator's text is kept whole). Bubbles fade in over 300 ms (smoothstep) and
+out over 1.5 s; the narrator's waits up to a minute while its replies are
+offered and closes in a second (half a second for a new narration) once one
+is picked. In the original the box is 80 interface units wide, a
+character's sits over the head (120 cm up) and the narrator's at 75 % of
+the screen height.
+
+The reply panel lists the player's lines: first the replies of a dialogue
+the partner is holding with the player, then the topics of every dialogue
+the two can hold; when both exist an `[Other]` entry switches between them.
+A pick shows the player's line, then either takes that reply or starts the
+topic; the panel closes when nothing can follow. A conversation waiting for
+a reply ends after 30 s.
+
 ## Forms
 
 The original's own forms and controls that Exarust rebuilds, with the
