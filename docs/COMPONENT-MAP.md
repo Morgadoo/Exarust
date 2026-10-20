@@ -5,8 +5,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **24.5% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 20.8% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **24.8% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by function count (zero-byte imported names left out): 21.0% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **27.3%** reproduced.
 
 ## By section
@@ -18,7 +18,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Data, assets & I/O | 440 | 91 | 26 | 39% | 0% | TStringLibrary, RF_DataManager, RFG_Locales routines (RFE_Export_RFC2 by address) |
 | Rendering & GPU | 823 | 334 | 63 | 40% | 3% | RFE_MeshSubdivide, RF_Polyhedra, FLX_IconRender |
 | World, levels & terrain | 454 | 174 | 31 | 33% | 7% | TRBDDoor, RF_Dynamics_Game, TRBRotator |
-| Physics, bodies & cloth | 363 | 242 | 13 | 35% | 0% | TVoxelMap, RFE_Dynamics_Cloth, TSimObject |
+| Physics, bodies & cloth | 363 | 242 | 13 | 38% | 0% | TVoxelMap, RFE_Dynamics_Cloth, TSimObject |
 | Characters, motion & animation | 506 | 198 | 23 | 34% | 0% | TCharDecomp2, TKFCCatRom3f, SG_CharacterMorph |
 | Combat, weapons & damage | 14 | 3 | 3 | 31% | 0% | RFE_Effects_Blood, TBloodSprays |
 | Items, materials & crafting | 341 | 140 | 40 | 21% | 0% | Item description phrases, SG_ItemGUI, Character equipment & inventory routines (TCharacterView by address) |
@@ -91,6 +91,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | RF_Skinning | Characters, motion & animation | 25 | 55% | exa_assets/src/skin.rs; exa_assets/src/model.rs |
 | RF_Morphing | Characters, motion & animation | 16 | 76% | exa_formats/src/morph.rs; exa_assets/src/morph_controller.rs |
 | FLX_ItemFactory | Items, materials & crafting | 24 | 50% | exa_formats::factory; exa_formats::weapon_stats |
+| RF_Intersection | Physics, bodies & cloth | 14 | 85% | exa_physics/src/intersect.rs; exa_render/src/cube_shadows.rs |
 | RF_Import_RFC2 | Data, assets & I/O | 17 | 51% | exa_formats/src/rfc.rs; exa_formats/src/chunk.rs |
 | Texture compression formats (DXT/LATC) | Rendering & GPU | 11 | 75% | exa_formats/src/rfi.rs; exa_assets/src/texture.rs |
 | RFE_Export_RFC2 | Data, assets & I/O | 11 | 75% | exa_formats/src/rfc_write.rs; exa_formats/src/rfc_write_test.rs |
@@ -102,7 +103,6 @@ Ordered by code size; these are where most of the original still has no counterp
 | Engine math (vectors, matrices, fast trig) | Core, math & threading | 8 | 73% | exa_game/src/player.rs; exa_game/src/torch.rs |
 | Pixel-format converters (8-bit and float) | Rendering & GPU | 6 | 95% | exa_formats/src/pixel.rs; exa_formats/src/rfi.rs |
 | TSkinController2 | Characters, motion & animation | 8 | 65% | exa_anim/src/lib.rs; Bevy SkinnedMesh / SkinnedMeshInverseBindposes GPU skinning |
-| RF_DataIO | Data, assets & I/O | 7 | 70% | exa_formats/src/data_stream.rs; exa_formats/src/file_ref.rs |
 
 ## Combat rules
 
