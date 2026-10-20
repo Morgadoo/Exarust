@@ -61,10 +61,10 @@ produced it, and the data can be edited without the page.
 ```bash
 git log -3 --oneline
 git status --short
-python3 .agents/skills/recalculate-coverage/scripts/audit_coverage.py --check
+python3 .agents/skills/recalculate-coverage/scripts/recalc_coverage.py --check
 ```
 
-The audit is read-only and exits non-zero on hard errors. Resolve every
+The check is read-only and exits non-zero on hard errors. Resolve every
 **source** error before rebuilding:
 
 - a cited path that does not exist → fix the citation, not the checker;

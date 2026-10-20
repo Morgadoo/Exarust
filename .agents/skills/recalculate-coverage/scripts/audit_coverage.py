@@ -81,6 +81,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--root", default=None, help="repository root (default: git toplevel)")
     ap.add_argument("--json", action="store_true", help="emit a machine-readable report")
+    ap.add_argument("--check", action="store_true", help="read-only alias; the audit never writes")
     ap.add_argument(
         "--scope",
         choices=("all", "source", "artifacts"),
