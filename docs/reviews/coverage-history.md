@@ -42,3 +42,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-20 | 5ab300f | dirty | 21.9% | 5.7% | 17.9% | 27.3% | step the motile tick |
 | 2026-10-20 | 7f24322 | dirty | 22.0% | 5.7% | 18.0% | 27.3% | measure the form |
 | 2026-10-20 | 9c2a541 | clean | 22.0% | 5.7% | 18.0% | 27.3% | record the form layout |
+| 2026-10-20 | 5efc288 | dirty | 22.0% | 5.7% | 18.1% | 27.3% | page the main menu |

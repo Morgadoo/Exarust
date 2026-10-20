@@ -18,6 +18,7 @@ pub mod item_effects;
 pub mod joint_trace;
 pub mod limp;
 pub mod menu;
+pub mod menu_pages;
 pub mod mind;
 pub mod pair_trace;
 pub mod pick;
