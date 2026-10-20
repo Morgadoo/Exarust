@@ -177,27 +177,49 @@ impl CasterFaces {
     }
 }
 
+/// The unit diagonals of the cube's side planes, in the original's order.
+const SIDE_DIAGONALS: [Vec3; 6] = {
+    let s = std::f32::consts::FRAC_1_SQRT_2;
+    [
+        Vec3::new(s, s, 0.0),
+        Vec3::new(s, -s, 0.0),
+        Vec3::new(s, 0.0, s),
+        Vec3::new(s, 0.0, -s),
+        Vec3::new(0.0, s, s),
+        Vec3::new(0.0, s, -s),
+    ]
+};
+
+/// Each face of the original's mask, in its bit order (+X, −X, −Y, +Y, −Z,
+/// +Z): its axis and its four side planes as (diagonal, sign), the plane's
+/// inward normal being `sign × diagonal`, in the original's table order.
+const MASK_FACES: [(Vec3, [(usize, f32); 4]); 6] = [
+    (Vec3::X, [(0, 1.0), (1, 1.0), (2, 1.0), (3, 1.0)]),
+    (Vec3::NEG_X, [(0, -1.0), (1, -1.0), (2, -1.0), (3, -1.0)]),
+    (Vec3::NEG_Y, [(0, -1.0), (1, 1.0), (4, -1.0), (5, -1.0)]),
+    (Vec3::Y, [(0, 1.0), (1, -1.0), (4, 1.0), (5, 1.0)]),
+    (Vec3::NEG_Z, [(2, -1.0), (3, 1.0), (4, -1.0), (5, 1.0)]),
+    (Vec3::Z, [(2, 1.0), (3, -1.0), (4, 1.0), (5, -1.0)]),
+];
+
 /// The cube faces (bit f for Bevy's face f) that a sphere at `centre` of
 /// `radius` reaches from a light at `light`, as the original masks a node's
-/// link: face f covers the directions whose largest component is along its
-/// axis, and the sphere touches it when it reaches past each of the face's
-/// four side planes and in front of the light.
+/// link: each face is a 90° frustum from the light bounded by four side
+/// planes through the light at 45° between its axis and its neighbours',
+/// and the sphere leaves a face out only when it lies wholly beyond one of
+/// them (farther than its radius; exactly its radius still touches). The
+/// side-plane distances are the sphere centre's dot product with each
+/// diagonal less the light's, as the original takes them; the original's
+/// face bits are then put in Bevy's face order by axis.
 pub fn sphere_faces(light: Vec3, centre: Vec3, radius: f32) -> u8 {
-    let d = centre - light;
-    if d.length() <= radius {
-        return ALL_FACES;
-    }
+    let distance = SIDE_DIAGONALS.map(|d| centre.dot(d) - light.dot(d));
     let mut faces = 0;
-    for (f, face) in CUBE_MAP_FACES.iter().enumerate() {
-        let axis = face.target;
-        let up = face.up;
-        let side = axis.cross(up);
-        // The four side planes pass through the light, between the face's
-        // axis and its neighbours (normals pointing into the face).
-        let inside = [axis + up, axis - up, axis + side, axis - side]
-            .iter()
-            .all(|n| d.dot(n.normalize()) >= -radius);
-        if inside && d.dot(axis) >= -radius {
+    for (axis, planes) in MASK_FACES {
+        let apart = planes.iter().any(|&(i, sign)| -sign * distance[i] > radius);
+        if apart {
+            continue;
+        }
+        if let Some(f) = CUBE_MAP_FACES.iter().position(|face| face.target == axis) {
             faces |= 1 << f;
         }
     }
@@ -1060,6 +1082,33 @@ mod tests {
         // A sphere far below spans only the downward face.
         let below = sphere_faces(light, light - Vec3::Y * 5.0, 1.0);
         assert_eq!(below.count_ones(), 1);
+    }
+
+    /// Only the side planes leave a face out: a sphere 1 m behind the light
+    /// and 0.9 m wide lies within 0.9 m of every side plane (its centre is
+    /// 1/√2 m from each of the +X face's), so it keeps all six faces, the
+    /// +X face's too. On the +X/+Y edge with no radius it is exactly on a
+    /// side plane of each and keeps both.
+    #[test]
+    fn only_the_side_planes_leave_a_face_out() {
+        let light = Vec3::new(1.0, 2.0, 3.0);
+        assert_eq!(
+            sphere_faces(light, light - Vec3::X, 0.9),
+            ALL_FACES,
+            "behind the light"
+        );
+        let x = CUBE_MAP_FACES
+            .iter()
+            .position(|f| f.target == Vec3::X)
+            .unwrap();
+        let y = CUBE_MAP_FACES
+            .iter()
+            .position(|f| f.target == Vec3::Y)
+            .unwrap();
+        assert_eq!(
+            sphere_faces(Vec3::ZERO, Vec3::new(10.0, 10.0, 0.0), 0.0),
+            (1 << x) | (1 << y)
+        );
     }
 
     /// A light that moves past a caster finds it in another face: the

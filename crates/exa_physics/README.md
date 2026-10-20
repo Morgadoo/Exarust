@@ -7,15 +7,20 @@ body solver (`body`), its level contacts (`contact`), props and items as bodies 
 character controller (`lib`) and the shared intersection maths (`intersect`).
 
 The original's `RF_Intersection` unit is reproduced in `intersect`, a pure-maths
-module in the original's centimetres: sweep set-up, point–segment and
-point–box distances, sphere–sphere and sphere–box tests, capsule–sphere,
-the slab tests of a swept sphere against a box and an oriented box, segment
-against oriented box (slab and separating-axis), point-set bounds, the
-cube-shadow face mask, and the convex-volume plane tests and polygon
-clipping the original builds portals with. The routines are ready for the
-solver; the body and level paths still take rapier's broad-phase queries,
-which are not the original's prefilters, so nothing calls the module from
-the simulation yet.
+module that follows the original's instructions (sums in its order, the
+processor's minimum and maximum, sign-bit answers, NaN branches): sweep
+set-up, point–segment and point–box distances, sphere–sphere and
+sphere–box tests, capsule–sphere, the slab tests of a swept sphere against
+a box and an oriented box, segment against oriented box (slab and
+separating-axis), point-set bounds, and the convex volumes: rebasing,
+plane refresh, box tests, polygon clipping into a portal pyramid, cutting
+a volume by a plane with its cap, and the directional shadow's caster
+volume. Its cube-face mask lives with its only user,
+`exa_render::cube_shadows::sphere_faces`. The body and level paths still
+take rapier's broad-phase queries and the pair stage its own bounding-sphere
+test (the original's needs each part's mesh box), and the render side has
+no directional shadow volume or portal clipping yet, so nothing in the
+simulation calls the module yet.
 
 Each fixed tick (83 Hz) moves the character controllers, then runs the
 pre-step (`body::BodyPreStep`), the character ticks (`body::CharacterTicks`:
@@ -156,7 +161,7 @@ last tick dealt. Nothing calls them unless a tool is on
 - The body collision calls back for accepted hits and pushes resolved particles to the body's radius surface.
 - The clone creates a new cloth with four copied fields.
 - Fixed-timestep deterministic simulation set, independent of frame rate.
-- The original's shared intersection routines (`intersect`): sweep set-up, point/segment/sphere/box distances and tests, the swept-sphere slab tests, segment/oriented-box separation, point-set bounds, the cube-face mask and convex-volume plane tests and polygon clipping, all in the original's centimetres.
+- The original's shared intersection routines (`intersect`): sweep set-up, point/segment/sphere/box distances and tests, the swept-sphere slab tests, segment/oriented-box separation, point-set bounds, and the convex-volume box tests, refresh, polygon clipping, plane cut with cap and directional shadow volume, in the original's arithmetic.
 - Rigid bodies (props, doors, items), collision against level geometry and convex hulls.
 - Articulated character bodies driven by joint motors toward animation targets (active ragdoll / 'motile' dynamics).
 - Cloth and padded-armour layers (original engine has cloth classes per material: basic, fine, padded, silk, velvet).

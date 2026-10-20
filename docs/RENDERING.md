@@ -752,7 +752,10 @@ menu.
   filed in the 6 m cells within its radius plus a cell (by their sphere's
   centre), the meshes wider than a cell, and those already linked to it. Each light keeps its linked meshes as its cube's
   casters, each with the cube faces its bounding sphere touches, as the
-  original keeps a face mask per link. Each light also has a render layer of
+  original keeps a face mask per link: a face is left out only when the
+  sphere lies wholly beyond one of the face's four side planes, through the
+  light at 45° between its axis and its neighbours' (farther than its
+  radius; exactly its radius still touches). Each light also has a render layer of
   its own (from 2 up; layer 1 is the supersampling resolve quad) as the key
   of its links; every mesh carries layer 0.
 
