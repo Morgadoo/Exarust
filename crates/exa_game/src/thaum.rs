@@ -2565,11 +2565,27 @@ mod tests {
 /// by its bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeText {
+    pub language: u32,
+    pub flags: u16,
+    pub kind: u16,
+    pub marker: u32,
     pub strings: Vec<String>,
 }
 
 fn tree_word(bytes: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
+}
+
+/// A fresh text chunk: the `en` language id, flags 0x4e4, kind 1, a zero
+/// marker and one empty string.
+pub fn new_tree_text() -> TreeText {
+    TreeText {
+        language: 0x6e65,
+        flags: 0x4e4,
+        kind: 1,
+        marker: 0,
+        strings: vec![String::new()],
+    }
 }
 
 /// Parses the text chunk. Returns nothing on a short header, an offset past
@@ -2578,6 +2594,10 @@ pub fn parse_tree_text(bytes: &[u8]) -> Option<TreeText> {
     if bytes.len() < 16 {
         return None;
     }
+    let language = tree_word(bytes, 0)?;
+    let flags = u16::from_le_bytes(bytes.get(4..6)?.try_into().ok()?);
+    let kind = u16::from_le_bytes(bytes.get(6..8)?.try_into().ok()?);
+    let marker = tree_word(bytes, 8)?;
     let count = tree_word(bytes, 12)? as usize;
     let mut cursor = 16;
     let mut offsets = Vec::with_capacity(count + 1);
@@ -2595,7 +2615,13 @@ pub fn parse_tree_text(bytes: &[u8]) -> Option<TreeText> {
         let text = blob.get(offset + 4..offset + 4 + length)?;
         strings.push(std::str::from_utf8(text).ok()?.to_string());
     }
-    Some(TreeText { strings })
+    Some(TreeText {
+        language,
+        flags,
+        kind,
+        marker,
+        strings,
+    })
 }
 
 #[cfg(test)]
@@ -2605,6 +2631,9 @@ mod text_tests {
     #[test]
     fn the_tree_text_chunk_reads_its_strings() {
         let mut bytes = vec![0u8; 16];
+        bytes[0..4].copy_from_slice(&0x6e65u32.to_le_bytes());
+        bytes[4..6].copy_from_slice(&0x4e4u16.to_le_bytes());
+        bytes[6..8].copy_from_slice(&1u16.to_le_bytes());
         bytes[12..16].copy_from_slice(&2u32.to_le_bytes());
         for offset in [0u32, 6, 13] {
             bytes.extend_from_slice(&offset.to_le_bytes());
@@ -2615,7 +2644,11 @@ mod text_tests {
         bytes.extend_from_slice(&(blob.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&blob);
         let text = parse_tree_text(&bytes).expect("valid");
+        assert_eq!(text.language, 0x6e65);
+        assert_eq!(text.flags, 0x4e4);
+        assert_eq!(text.kind, 1);
         assert_eq!(text.strings, vec!["ab", "cde", ""]);
+        assert_eq!(new_tree_text().strings, vec![String::new()]);
     }
 
     #[test]

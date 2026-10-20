@@ -56,7 +56,6 @@ Ordered by code size; these are where most of the original still has no counterp
 | XA_Arena | Game modes, arena & session | 219 | 71 | 5% |
 | TMotileAI | AI & behaviour | 85 | 60 | 18% |
 | SG_PlayerControls | AI & behaviour | 122 | 47 | 8% |
-| TThaumTree | Thaumaturgy & effects | 76 | 38 | 18% |
 | XA_SaveGames | Game modes, arena & session | 96 | 27 | 5% |
 | TGUIItemContainer | Items, materials & crafting | 44 | 26 | 0% |
 | SG_GameGUI | UI | 62 | 22 | 8% |
@@ -78,6 +77,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | TGridEnvManager | World, levels & terrain | 30 | 15 | 0% |
 | RF_HW_Config | UI | 89 | 15 | 2% |
 | SG_ItemGUI | Items, materials & crafting | 44 | 15 | 0% |
+| RF_Dynamics_Volumes | Physics, bodies & cloth | 7 | 14 | 0% |
 
 ## Best covered components
 
