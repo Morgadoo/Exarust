@@ -15,3 +15,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-20 | 33a91ba | clean | 19.6% | 5.7% | 16.4% | 27.3% | rerate TMotileAI and SG_PlayerControls from exa_ai and player.rs |
 | 2026-10-20 | ffccd2e | clean | 20.4% | 5.7% | 16.8% | 27.3% | rerate the tree and Force effects from thaum.rs |
 | 2026-10-20 | 1f453c3 | dirty | 20.4% | 5.7% | 16.8% | 27.3% | fix blank-text capture (clean HOME/XDG cache); rerated modes/ui |
+| 2026-10-20 | fbf156d | dirty | 20.4% | 5.7% | 16.8% | 27.3% | add the Kaiser mip kernel and axis pass |

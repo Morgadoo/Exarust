@@ -7,6 +7,7 @@ pub mod flame;
 pub mod gi;
 pub mod lights;
 pub mod material;
+pub mod mipmap;
 pub mod post;
 pub mod shell;
 pub mod spray;
