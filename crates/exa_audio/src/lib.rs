@@ -1,28 +1,59 @@
-//! Audio from `Sound.rpk` (RIFF/WAVE PCM): music and ambience per level
-//! (`music`), weapon impacts and pain sounds on hits (`hits`), footsteps for
-//! moving characters (`footsteps`), each event choosing among a sound set's
-//! numbered variants through the bank's one picker (`bank`). The original
-//! mixes through OpenAL Soft with EFX reverb; reverb zones come later
-//! (`docs/PLAN.md`, Phase 5).
+//! Audio from `Sound.rpk` (RIFF/WAVE PCM): the name-keyed buffer cache and
+//! sound sets (`bank`), the original's virtual-voice mixer with 512 voices
+//! ranked onto 64 sources (`environment`), music crossfades (`music`), area
+//! ambience (`ambience`), the global EFX reverb's parameters (`reverb`),
+//! weapon impacts and pain sounds on hits (`hits`), and footsteps for moving
+//! characters (`footsteps`).
+//!
+//! The original mixes through OpenAL Soft with EFX; Bevy's rodio backend has
+//! neither EFX nor per-source auxiliary sends. The mixer computes the reverb
+//! block and the send flag of every voice but the backend does not apply them
+//! (see the crate README).
 
+mod ambience;
 mod bank;
+mod environment;
 mod footsteps;
 mod hits;
 mod music;
+mod playback;
+mod reverb;
 
 use bevy::prelude::*;
 
+pub use ambience::{AmbienceArea, LevelAmbience, ambience_for_level, bed_name, set_prefix};
 pub use bank::{SoundBank, SoundSet};
-pub use music::{LevelMusic, StoryMusic, music_for_level, story_music, story_music_changes};
+pub use environment::{
+    AudioEnvironment, BusGains, Listener, SourceCommand, SourcePlay, SourceUpdate, UpdateInput,
+    Voice, VoiceHandle, voice_flags,
+};
+pub use music::{
+    LevelMusic, MusicSetting, StoryMusic, music_for_level, story_music, story_music_changes,
+};
+pub use reverb::{EaxReverb, LevelReverb, Reverb};
 
 pub struct AudioPlugin;
 
 impl Plugin for AudioPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<SoundBank>().add_systems(
-            Update,
-            (hits::hit_sounds, footsteps::footsteps, music::start_music),
-        );
+        app.init_resource::<SoundBank>()
+            .init_resource::<AudioEnvironment>()
+            .init_resource::<playback::SourceEntities>()
+            .init_resource::<MusicSetting>()
+            .add_systems(
+                Update,
+                (
+                    hits::hit_sounds,
+                    footsteps::footsteps,
+                    music::start_music,
+                    music::apply_music_setting,
+                    ambience::set_level_ambience,
+                    reverb::apply_level_reverb,
+                    playback::advance_audio_environment,
+                    playback::apply_source_commands,
+                )
+                    .chain(),
+            );
     }
 }
 

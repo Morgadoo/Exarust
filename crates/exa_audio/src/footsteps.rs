@@ -1,10 +1,13 @@
 //! Footsteps of moving characters, at a rate following their speed.
+//!
+//! Each step is a one-shot from a numbered set, so it goes through the
+//! mixer's voice pool and source ranking.
 
-use bevy::audio::Volume;
 use bevy::prelude::*;
 use exa_assets::Game;
 use exa_physics::CharacterBody;
 
+use crate::environment::AudioEnvironment;
 use crate::{SoundBank, SoundSet};
 
 /// Steps at a walk, and heavier ones running.
@@ -14,12 +17,15 @@ pub(crate) const HEAVY_STEPS: SoundSet<'static> = SoundSet::new("stphvy", 6);
 #[derive(Component, Default)]
 pub(crate) struct StepClock(f32);
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn footsteps(
     mut commands: Commands,
     time: Res<Time>,
     game: Option<Res<Game>>,
     mut bank: ResMut<SoundBank>,
     mut sources: ResMut<Assets<AudioSource>>,
+    mut env: ResMut<AudioEnvironment>,
+    mut sets: Local<[Option<u32>; 2]>,
     mut walkers: Query<(
         Entity,
         &CharacterBody,
@@ -44,15 +50,17 @@ pub(crate) fn footsteps(
         }
         // About two steps per metre.
         clock.0 = (0.75 / speed).clamp(0.25, 0.7);
-        let name = bank.pick_from(if speed > 2.5 { HEAVY_STEPS } else { STEPS });
-        if let Some(h) = bank.get(&game, &mut sources, &name) {
-            commands.spawn((
-                AudioPlayer(h),
-                PlaybackSettings::DESPAWN
-                    .with_spatial(true)
-                    .with_volume(Volume::Linear(0.6)),
-                Transform::from_translation(gt.translation()),
-            ));
-        }
+        let heavy = speed > 2.5;
+        let index = usize::from(heavy);
+        let set = match sets[index] {
+            Some(set) => set,
+            None => {
+                let descriptor = if heavy { HEAVY_STEPS } else { STEPS };
+                let set = bank.load_set(&game, &mut sources, descriptor.prefix);
+                sets[index] = Some(set);
+                set
+            }
+        };
+        env.play_set(&mut bank, set, gt.translation(), 0.6, 1.0, 0);
     }
 }

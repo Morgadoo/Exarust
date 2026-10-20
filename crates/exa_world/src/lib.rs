@@ -76,6 +76,8 @@ pub struct LevelInfo {
     pub bodies: bodies::BodyCounts,
     /// A floored cell to start in (stand-in for the level's start marker).
     pub spawn: Option<Vec3>,
+    /// The level environment's reverb decay offset, seconds.
+    pub reverb_decay: f32,
     pub bounds_min: Vec3,
     pub bounds_max: Vec3,
 }
@@ -902,6 +904,7 @@ impl LevelLoad {
             (self.min, self.max)
         };
         let env = self.scene.environment.clone().unwrap_or_default();
+        let reverb_decay = env.reverb_decay;
         commands.insert_resource(gi_volume::PendingGi {
             centre: (min + max) / 2.0,
             top: env.ceiling,
@@ -931,6 +934,7 @@ impl LevelLoad {
                 missing_objects: self.missing_objects,
                 bodies: self.bodies,
                 spawn: self.scene.grid.as_ref().and_then(grid::spawn_point),
+                reverb_decay,
                 bounds_min: min,
                 bounds_max: max,
             }),

@@ -524,6 +524,12 @@ fn play_level(
     commands.insert_resource(exa_audio::LevelMusic(
         exa_audio::music_for_level(name).into(),
     ));
+    commands.insert_resource(exa_audio::LevelAmbience(exa_audio::ambience_for_level(
+        name,
+    )));
+    commands.insert_resource(exa_audio::LevelReverb {
+        decay_offset: info.reverb_decay,
+    });
     commands.insert_resource(exa_game::hud::HeartbeatRule {
         allowed: options.heartbeat || exa_game::hud::heartbeat_allowed(name),
     });
