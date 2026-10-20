@@ -858,6 +858,44 @@ pub fn clear_character_view(has_view: bool, base_result: bool) -> ViewClear {
     }
 }
 
+/// The settings menu's opening.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SettingsOpen {
+    /// Whether the menu was created (it did not exist).
+    pub created: bool,
+    /// Whether an existing menu was re-shown instead.
+    pub shown: bool,
+    /// Whether the menu was laid out.
+    pub laid_out: bool,
+    /// The entry the resume flag selects.
+    pub selected: Option<i32>,
+    /// The word the open finishes with.
+    pub finished: i32,
+}
+
+/// Opens the settings menu: creates and attaches it when none exists,
+/// otherwise re-shows it, lays it out, selects entry 1 behind the resume
+/// flag and finishes with -1.
+pub fn open_settings_menu(exists: bool, select: bool) -> SettingsOpen {
+    SettingsOpen {
+        created: !exists,
+        shown: exists,
+        laid_out: true,
+        selected: if select { Some(1) } else { None },
+        finished: -1,
+    }
+}
+
+/// Closes an existing settings menu (and only an existing one).
+pub fn close_settings_menu(exists: bool) -> bool {
+    exists
+}
+
+/// Clears an existing settings menu's flag (and only an existing one).
+pub fn reset_settings_menu(exists: bool) -> bool {
+    exists
+}
+
 /// A node's record: the flags and the signed word at 0x468.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ViewNodeRecord {
@@ -2017,5 +2055,25 @@ mod tests {
             }),
         }];
         assert_eq!(first_settled_view_node(&open, 0), None);
+    }
+
+    #[test]
+    fn the_settings_menu_opens_closes_and_resets() {
+        let created = open_settings_menu(false, false);
+        assert!(created.created);
+        assert!(!created.shown);
+        assert!(created.laid_out);
+        assert_eq!(created.selected, None);
+        assert_eq!(created.finished, -1);
+
+        let shown = open_settings_menu(true, true);
+        assert!(!shown.created);
+        assert!(shown.shown);
+        assert_eq!(shown.selected, Some(1));
+
+        assert!(close_settings_menu(true));
+        assert!(!close_settings_menu(false));
+        assert!(reset_settings_menu(true));
+        assert!(!reset_settings_menu(false));
     }
 }
