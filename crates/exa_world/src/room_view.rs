@@ -176,7 +176,7 @@ fn assign_static_rooms(
                 Some((lo, hi)) => (lo + hi) * 0.5,
                 None => transforms.get(root).map_or(Vec3::ZERO, |t| t.translation()),
             };
-            let room = level.rooms.room_at(Vec2::new(centre.x, centre.z));
+            let room = level.rooms.room_of_node(Vec2::new(centre.x, centre.z));
             commands.entity(root).insert(RoomRoot(room));
             if let Some(room) = room {
                 for e in std::iter::once(root).chain(children.iter_descendants(root)) {
@@ -301,7 +301,7 @@ fn track_rooms(
     }
     for (transform, mut v) in &mut tracked {
         let p = transform.translation();
-        v.set_if_neq(visibility(rooms.room_at(Vec2::new(p.x, p.z))));
+        v.set_if_neq(visibility(rooms.room_of_node(Vec2::new(p.x, p.z))));
     }
     let mut materials = materials;
     for (shell, mut v, material) in &mut shells {

@@ -20,21 +20,23 @@ use exa_assets::{Model, ModelLoader, PackKind, transform_from_rows};
 use exa_formats::level::LevelGrid;
 
 use crate::room_view::{InRoom, RoomShell, ShellKind};
-use crate::rooms::{CELL_OPEN, CELL_TERRAIN, Rooms};
+use crate::rooms::{CELL_OPEN, CELL_TERRAIN, Rooms, rotate_edge_word};
 
-/// Edge and corner codes masked out per special tile type (1-based) and
-/// rotation, and whether the tile keeps a floor.
-const SPECIAL_MASKS: [[u32; 4]; 10] = [
-    [0x7777_FFFF, 0, 0, 0],
-    [0x7070_FFFF, 0, 0, 0],
-    [0x7077_FFFF, 0, 0, 0],
-    [0x7777_FFFF, 0, 0, 0],
-    [0x7777_FFFF, 0, 0, 0],
-    [0x7007_000F, 0, 0, 0],
-    [0x7007_000F, 0, 0, 0],
-    [0x7007_000F, 0, 0, 0],
-    [0x7007_000F, 0, 0, 0],
-    [0x0077_0FFF, 0, 0, 0],
+/// Edge and corner codes masked out per special tile type (1-based), and
+/// whether the tile keeps a floor. The mask is turned by the cell's
+/// rotation with [`rooms::rotate_edge_word`], as the original rotates its
+/// table at start-up.
+const SPECIAL_MASKS: [u32; 10] = [
+    0x7777_FFFF,
+    0x7070_FFFF,
+    0x7077_FFFF,
+    0x7777_FFFF,
+    0x7777_FFFF,
+    0x7007_000F,
+    0x7007_000F,
+    0x7007_000F,
+    0x7007_000F,
+    0x0077_0FFF,
 ];
 const SPECIAL_HAS_FLOOR: [bool; 10] = [
     false, false, false, false, true, true, true, true, false, false,
@@ -187,7 +189,7 @@ fn index_wall_set(model: Arc<Model>) -> WallSet {
     s
 }
 
-fn index_floor_set(model: Arc<Model>) -> FloorSet {
+fn index_floor_set(model: Arc<Model>, name: &str) -> FloorSet {
     let surface = model.nodes.iter().find_map(|n| {
         n.part_materials
             .iter()
@@ -200,6 +202,11 @@ fn index_floor_set(model: Arc<Model>) -> FloorSet {
         middle: Table::default(),
         surface,
     };
+    // A floor set named after the terrain is flagged so that it brings no
+    // floor pieces: the terrain is the ground. Its surface material stays.
+    if name.contains("Terrain") {
+        return s;
+    }
     for (i, node) in model.nodes.iter().enumerate() {
         let b = name_bytes(&node.name);
         if b[0] != b'+' || b[1] != b'F' {
@@ -341,7 +348,8 @@ impl GridBuild {
             else {
                 return false;
             };
-            self.floors.push(model.map(index_floor_set));
+            let name = &grid.floor_sets[self.floors.len()];
+            self.floors.push(model.map(|m| index_floor_set(m, name)));
             if started.elapsed() >= budget {
                 return false;
             }
@@ -590,6 +598,28 @@ impl Placer<'_, '_, '_, '_, '_> {
     }
 }
 
+/// The index of the nth special piece of `special`'s type in a wall set,
+/// counting from zero; past the last one the original's walk leaves the
+/// last match selected.
+fn nth_special(
+    trims: &[(Option<usize>, Option<usize>, u32)],
+    special: u32,
+    nth: u32,
+) -> Option<usize> {
+    let mut remaining = nth as i64;
+    let mut chosen = None;
+    for (i, trim) in trims.iter().enumerate() {
+        if (trim.2 & 0x1F_0000) >> 16 == special {
+            remaining -= 1;
+            chosen = Some(i);
+            if remaining < 0 {
+                break;
+            }
+        }
+    }
+    chosen
+}
+
 /// Builds the cell at (`x`, `y`): its pieces, and its room's shell strips.
 /// An open cell without a wall set but with the terrain flag is a ceiling
 /// cap: it adds ceiling strips from the first wall set to its room's lid
@@ -646,17 +676,12 @@ fn spawn_cell(
     if special != 0 && (special as usize) <= SPECIAL_MASKS.len() {
         let rotation = (c >> 21) & 3;
         let nth = (c >> 23) & 0x1F;
-        mask = SPECIAL_MASKS[special as usize - 1][rotation as usize];
+        mask = rotate_edge_word(SPECIAL_MASKS[special as usize - 1], rotation as u8);
         floor_middle = SPECIAL_HAS_FLOOR[special as usize - 1];
-        let mut remaining = nth as i64;
-        if let Some((p, alt, _)) = ws.trims.iter().find(|t| {
-            if (t.2 & 0x1F_0000) >> 16 == special {
-                remaining -= 1;
-                remaining < 0
-            } else {
-                false
-            }
-        }) {
+        // The cell asks for the nth piece of its type. Past the last one the
+        // original places the last again.
+        if let Some(i) = nth_special(&ws.trims, special, nth) {
+            let (p, alt, _) = &ws.trims[i];
             let node = if rotation >= 2 { alt.or(*p) } else { *p };
             placer.place(&ws.model, node, rotation);
         }
@@ -1230,6 +1255,67 @@ mod tests {
         // `+RBA02` under the wall is the wall's strip, not the back slot.
         assert_eq!(set.ceiling.primary(SLOT_BACK), Some(4));
         assert_eq!(set.ceiling.primary(SLOT_MIDDLE), Some(3));
+    }
+
+    #[test]
+    fn special_masks_turn_with_the_cell() {
+        // The table's own rotations, pinned: the walk turns each 4-bit edge
+        // group and each 3-bit corner group one place.
+        assert_eq!(rotate_edge_word(SPECIAL_MASKS[1], 1), 0x0707_FFFF);
+        assert_eq!(rotate_edge_word(SPECIAL_MASKS[1], 2), 0x7070_FFFF);
+        assert_eq!(rotate_edge_word(SPECIAL_MASKS[1], 3), 0x0707_FFFF);
+        assert_eq!(rotate_edge_word(SPECIAL_MASKS[2], 1), 0x0777_FFFF);
+        assert_eq!(rotate_edge_word(SPECIAL_MASKS[2], 2), 0x7770_FFFF);
+        assert_eq!(rotate_edge_word(SPECIAL_MASKS[2], 3), 0x7707_FFFF);
+        assert_eq!(rotate_edge_word(SPECIAL_MASKS[5], 1), 0x0077_00F0);
+        assert_eq!(rotate_edge_word(SPECIAL_MASKS[9], 2), 0x7700_FF0F);
+        // The fourth nibble has all its bits, so type 1 does not move.
+        assert_eq!(rotate_edge_word(SPECIAL_MASKS[0], 3), 0x7777_FFFF);
+    }
+
+    #[test]
+    fn the_nth_special_piece_stays_on_the_last_match() {
+        let trims = [
+            (Some(3), None, 0x2_0000),
+            (Some(4), Some(5), 0x1_0000),
+            (Some(6), None, 0x2_0000),
+        ];
+        assert_eq!(nth_special(&trims, 2, 0), Some(0));
+        assert_eq!(nth_special(&trims, 2, 1), Some(2));
+        // Past the second: the original places it again.
+        assert_eq!(nth_special(&trims, 2, 2), Some(2));
+        assert_eq!(nth_special(&trims, 2, 31), Some(2));
+        assert_eq!(nth_special(&trims, 1, 0), Some(1));
+        assert_eq!(nth_special(&trims, 5, 0), None);
+    }
+
+    #[test]
+    fn a_terrain_floor_set_brings_no_pieces() {
+        let mut meshes = Assets::<Mesh>::default();
+        let mut surface = node("+F", None, quad(&mut meshes, [-3.0, 3.0], 0.0, [-3.0, 3.0]));
+        surface.part_materials = vec!["+ground".into()];
+        let model = Model {
+            nodes: vec![
+                surface,
+                node(
+                    "+FMA00",
+                    None,
+                    quad(&mut meshes, [-3.0, 3.0], 0.0, [-3.0, 3.0]),
+                ),
+                node(
+                    "+FBA00",
+                    None,
+                    quad(&mut meshes, [-3.0, 3.0], 0.0, [-3.0, 0.0]),
+                ),
+            ],
+        };
+        let terrain = index_floor_set(Arc::new(model.clone()), "GEFS_Terrain01");
+        assert!(terrain.surface.is_some());
+        assert_eq!(terrain.middle.primary(SLOT_MIDDLE), None);
+        assert_eq!(terrain.edges.primary(SLOT_BACK), None);
+        let ordinary = index_floor_set(Arc::new(model), "GEFS_UWA01");
+        assert!(ordinary.middle.primary(SLOT_MIDDLE).is_some());
+        assert!(ordinary.edges.primary(SLOT_BACK).is_some());
     }
 
     #[test]

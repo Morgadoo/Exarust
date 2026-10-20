@@ -195,6 +195,25 @@ impl Rooms {
         self.room_of_cell(x, y)
     }
 
+    /// The grid cell nearest a point (metres, on X/Z), as the original
+    /// looks a node or a character up: `round(x / 6) + half`, clamped to the
+    /// grid. The cell's centre rounds to its own cell.
+    pub fn cell_of_node(&self, p: Vec2) -> (i64, i64) {
+        let half = |size: u32| (size / 2) as i64;
+        let round = |v: f32| (v * 100.0 * INV_CELL_CM).round() as i64;
+        (
+            (round(p.x) + half(self.width)).clamp(0, self.width as i64 - 1),
+            (round(p.y) + half(self.height)).clamp(0, self.height as i64 - 1),
+        )
+    }
+
+    /// The room of the cell nearest a point (metres, on X/Z); a point
+    /// outside the grid takes the edge cell.
+    pub fn room_of_node(&self, p: Vec2) -> Option<u16> {
+        let (x, y) = self.cell_of_node(p);
+        self.room_of_cell(x, y)
+    }
+
     /// Centre of a grid cell (metres, on X/Z).
     pub fn cell_centre(&self, cell: u32) -> Vec2 {
         let (x, y) = ((cell % self.width) as i64, (cell / self.width) as i64);
@@ -707,6 +726,25 @@ mod tests {
         g.0.plane_c[c] = 0xF;
         let rooms = Rooms::flood(&g.0);
         assert_eq!(rooms.room_of_cell(4, 1), Some(1));
+    }
+
+    #[test]
+    fn a_node_looks_up_the_nearest_cell() {
+        let rooms = Rooms::flood(&two_rooms().0);
+        // Width 6, height 3, halves 3 and 1: cell (3, 1) is centred on
+        // (0, 0) m and spans ±3 m.
+        assert_eq!(rooms.cell_of_node(Vec2::new(0.0, 0.0)), (3, 1));
+        assert_eq!(rooms.cell_of_node(Vec2::new(2.9, -2.9)), (3, 1));
+        assert_eq!(rooms.cell_of_node(Vec2::new(3.1, 3.1)), (4, 2));
+        // The boundary is the cell's edge at −3 m.
+        assert_eq!(rooms.cell_of_node(Vec2::new(-2.9, 0.0)), (3, 1));
+        assert_eq!(rooms.cell_of_node(Vec2::new(-3.1, 0.0)), (2, 1));
+        // Outside the grid, the edge cell.
+        assert_eq!(rooms.cell_of_node(Vec2::new(100.0, -100.0)), (5, 0));
+        assert_eq!(
+            rooms.room_of_node(Vec2::new(0.0, 0.0)),
+            rooms.room_of_cell(3, 1)
+        );
     }
 
     #[test]
