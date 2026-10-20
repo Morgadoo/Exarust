@@ -256,3 +256,24 @@ fn exertion_sums_each_parts_farthest_particle() {
         body.exertion()
     );
 }
+
+/// An effect's push at a sphere moves each particle by its weight of the
+/// sphere's centre: the four particles of a ball sphered at its middle
+/// share it, so the part moves a quarter of the push, and past the strain
+/// its edges are restored (a uniform push leaves them as they were).
+#[test]
+fn an_effect_pushes_a_part_at_its_sphere() {
+    let mut body = ball(Vec3::ZERO);
+    let before = body.parts[0].positions;
+    let centre = body.parts[0].spheres[0].0;
+    let weights = weights(&body.parts[0], centre);
+    body.push_sphere(0, 0, Vec3::X * 0.0004);
+    for (k, (after, was)) in body.parts[0].positions.iter().zip(before).enumerate() {
+        assert!((*after - was - Vec3::X * 0.0004 * weights[k]).length() < 1e-7);
+    }
+    assert!((body.parts[0].strain - 0.0004).abs() < 1e-7);
+    body.push_sphere(0, 0, Vec3::X * 0.002);
+    assert_eq!(body.parts[0].strain, 0.0, "restored past the strain");
+    body.push_sphere(0, 9, Vec3::X);
+    body.push_sphere(9, 0, Vec3::X);
+}

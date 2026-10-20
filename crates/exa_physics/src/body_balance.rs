@@ -266,6 +266,12 @@ impl Balance {
         self.counter
     }
 
+    /// Sets the instability counter, as an effect that throws the body off
+    /// balance does (a force barricade sets it to 100).
+    pub fn set_counter(&mut self, counter: i32) {
+        self.counter = counter;
+    }
+
     /// The unit offset from the support point to the chest.
     pub fn lean(&self) -> Vec3 {
         self.lean

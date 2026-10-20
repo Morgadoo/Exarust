@@ -70,6 +70,7 @@ impl Plugin for GamePlugin {
             torch::TorchPlugin,
             trace::TracePlugin,
             effects::EffectsPlugin,
+            thaum::live::ThaumEffectsPlugin,
         ))
         // Debug tools: idle unless their flags or keys turn them on.
         .add_plugins((

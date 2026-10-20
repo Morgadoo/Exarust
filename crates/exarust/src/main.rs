@@ -61,6 +61,9 @@
 //!          --weapon-blood <a>         the player's (or the character view's) weapon holds blood a (0–1) from the start
 //!          --debug-spray b,R[,dx,dy,dz]  a blood jet from the player's (or the character view's) body part b every
 //!                                     second, as a bleeding blow of size R swinging along d would spray; repeatable
+//!          --debug-arcs               play mode: the Shock power's arcs on the player's right hand
+//!          --debug-barricade          play mode: a force barricade raised 2 m in front of the player
+//!          --debug-wisps              play mode: the constant displacement's wisps on the player's body
 //!          --health yellow,red        play mode: the player's starting health (a human's full health is 0.25)
 //!          --perks a,b,...            play mode: the player's perks (e.g. `remise,feint`: hold to chain the other
 //!                                     side's attack, renew a released swing)
@@ -211,6 +214,8 @@ pub struct Options {
     pub debug_sprays: Vec<exa_character::spray::DebugSpray>,
     /// Blood the player's or the character view's weapon starts with.
     pub weapon_blood: Option<exa_character::blood::DebugWeaponBlood>,
+    /// Test thaumaturgy effects on the player.
+    pub thaum_debug: exa_game::thaum::live::ThaumDebug,
     /// The player's starting yellow and red health.
     pub health: Option<[f32; 2]>,
     /// The player's perks.
@@ -477,6 +482,9 @@ fn main() -> AppExit {
                 }
             }
             "--heartbeat" => options.heartbeat = true,
+            "--debug-arcs" => options.thaum_debug.arcs = true,
+            "--debug-barricade" => options.thaum_debug.barricade = true,
+            "--debug-wisps" => options.thaum_debug.wisps = true,
             "--feral" => {
                 options.feral = args
                     .next()
@@ -684,6 +692,9 @@ fn main() -> AppExit {
     }
     if let Some(blood) = options.weapon_blood {
         app.insert_resource(blood);
+    }
+    if options.thaum_debug != exa_game::thaum::live::ThaumDebug::default() {
+        app.insert_resource(options.thaum_debug);
     }
     if let Some(trace) = joint_trace {
         app.insert_resource(trace);

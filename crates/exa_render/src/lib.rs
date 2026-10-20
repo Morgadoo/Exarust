@@ -7,6 +7,7 @@ pub mod cube_shadows;
 pub mod electricity;
 pub mod flame;
 pub mod gi;
+pub mod glow;
 pub mod image_noise;
 pub mod lights;
 pub mod material;
@@ -47,6 +48,7 @@ impl Plugin for RenderPlugin {
             lights::LightsPlugin,
             cube_shadows::CubeShadowsPlugin,
             shell::ShellPlugin,
+            glow::GlowPlugin,
         ))
             // The original's shadow maps at its top shadow detail: 512² cubes
             // for lights and fires, 4096² for the sun.

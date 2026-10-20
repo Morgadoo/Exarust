@@ -1636,6 +1636,27 @@ impl Ragdoll {
             * CM
     }
 
+    /// An effect's push on part `index` at its sphere `sphere` (a force
+    /// barricade's): each particle moves by `delta` (m) times its weight of
+    /// the sphere's centre, unclamped, the push counts toward the part's
+    /// strain and past [`PUSH_STRAIN`] its edges are restored, as the
+    /// original's push with its strain flag does. Nothing moves for a part
+    /// or sphere the body lacks.
+    pub fn push_sphere(&mut self, index: usize, sphere: usize, delta: Vec3) {
+        let Some(part) = self.parts.get_mut(index) else {
+            return;
+        };
+        let Some(&(centre, _)) = part.spheres.get(sphere) else {
+            return;
+        };
+        let w = weights(part, centre);
+        part.push(&w, delta);
+        part.strain += delta.length();
+        if part.strain > PUSH_STRAIN {
+            keep_rigid(part);
+        }
+    }
+
     /// Applies a blow to the part of `bone`. It wakes the body as a touch
     /// from a living body (countdown 256) does.
     pub fn shove(&mut self, bone: usize, velocity: Vec3, daze: f32) {

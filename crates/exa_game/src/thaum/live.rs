@@ -1,0 +1,713 @@
+//! The thaumaturgy effects in the running game: arcs, barricades and
+//! displacement wisps as entities whose simulations ([`super::arcs`],
+//! [`super::barricade`], [`super::wisps`]) run at the body tick against the
+//! physical bodies and the level, and whose meshes are rebuilt each frame.
+//!
+//! - **Each tick** (after the bodies): an arc follows its hand, ticks,
+//!   ends at the level (the static colliders) and tests every other body's
+//!   parts, sending [`ArcShocked`] for a struck character; a shocked
+//!   fighter loses the strength in yellow health, at most once every
+//!   150 ms. A barricade ticks on the game clock, ends once its caster is
+//!   20 m away, and shoves every body part it holds: each sphere's push
+//!   moves the part's particles ([`exa_physics::body::Ragdoll::push_sphere`]),
+//!   the body wakes, a character struck in front is knocked back a step
+//!   (doubled, at most its step length), its instability counter set to 100
+//!   and its energy above 0.25 lowered. Wisps follow their body parts.
+//! - **Each frame**: the arcs' and wisps' ribbons and the barricade's slab
+//!   are drawn with [`exa_render::glow::GlowMaterial`], a stand-in for the
+//!   original's effect programs, which are not ported. An effect that ends
+//!   leaves the scene.
+//! - **Debug** ([`ThaumDebug`], `--debug-arcs`, `--debug-barricade`,
+//!   `--debug-wisps`): the Shock power's hand arcs on the player's right
+//!   hand (respawned while they last), a barricade raised 2 m in front of
+//!   the player, and the constant displacement's wisps on the player's
+//!   body. The player cannot cast yet: Exarust has no power bar.
+//!
+//! Not wired: the hum and impact sounds, the lights, the navigation stamp
+//! and the AI's sight of a barricade, the attack a barricade interrupts.
+//! Rules: `docs/THAUMATURGY.md`.
+
+use bevy::asset::RenderAssetUsages;
+use bevy::camera::visibility::NoFrustumCulling;
+use bevy::mesh::{Indices, PrimitiveTopology};
+use bevy::prelude::*;
+use bevy::transform::TransformSystems;
+use exa_combat::Fighter;
+use exa_physics::Physics;
+use exa_physics::body::locomotion::Locomotor;
+use exa_physics::body::{BodySystems, BodyTicks, Ragdoll, Shove, step_length};
+use exa_render::glow::GlowMaterial;
+
+use super::arcs::{ARC_COLOUR, ArcEmitter, ArcLimb, HAND_ARCS_OFFSET, hand_arcs};
+use super::barricade::{
+    Barricade, WAKE_TICKS, WallBody, WallBodyKind, WallFrame, barricade_mesh, power_ends,
+    slide_mesh,
+};
+use super::displacement::body_wisps;
+use super::engine::{Roll, normalize};
+use super::force::{GroundHit, place_barricade};
+use super::wisps::{Strand, Wisps};
+use crate::arena::Mt19937;
+use crate::player::PlayerBody;
+
+/// Centimetres a metre: the original's effects run in cm.
+const CM: f32 = 100.0;
+/// The shock reaction's spacing (ms), as a fighter takes a shock.
+pub const SHOCK_GAP_MS: u64 = super::SHOCK_GAP_MS as u64;
+/// The chest's bone and the right hand's.
+const CHEST: usize = 9;
+const RIGHT_HAND: usize = 17;
+
+pub struct ThaumEffectsPlugin;
+
+impl Plugin for ThaumEffectsPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_message::<ArcShocked>()
+            .insert_resource(EffectDraws(Mt19937::new(5489)))
+            .init_resource::<EffectRoll>()
+            .add_systems(
+                FixedUpdate,
+                (tick_arcs, tick_barricades, tick_wisps, shock_fighters)
+                    .chain()
+                    .after(BodySystems),
+            )
+            .add_systems(
+                Update,
+                spawn_debug_effects.run_if(resource_exists::<ThaumDebug>),
+            )
+            .add_systems(
+                PostUpdate,
+                (draw_arcs, draw_barricades, draw_wisps).after(TransformSystems::Propagate),
+            );
+    }
+}
+
+/// The runtime's random stream the effects draw from.
+#[derive(Resource)]
+pub struct EffectDraws(pub Mt19937);
+
+/// The engine's own generator, for the effects that use it.
+#[derive(Resource, Default)]
+pub struct EffectRoll(pub Roll);
+
+/// Which test effects to put on the player (the debug flags).
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ThaumDebug {
+    pub arcs: bool,
+    pub barricade: bool,
+    pub wisps: bool,
+}
+
+/// A character an arc struck.
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct ArcShocked {
+    pub body: Entity,
+    pub direction: Vec3,
+    pub strength: f32,
+}
+
+/// When a fighter last took a shock (ms of game time).
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShockedAt(pub u64);
+
+/// Arcs in the scene: the body and bone whose part they ride (its place is
+/// their frame's anchor, the hand arcs' node offset turned with it), and
+/// the body that casts them.
+#[derive(Component)]
+pub struct LiveArcs {
+    pub arcs: ArcEmitter,
+    pub hand: Option<(Entity, usize)>,
+    pub caster: Option<Entity>,
+    /// Kept in the scene when its tendrils are gone (the test arcs).
+    pub keep: bool,
+}
+
+/// A barricade in the scene and who cast it.
+#[derive(Component)]
+pub struct LiveBarricade {
+    pub wall: Barricade,
+    pub caster: Option<Entity>,
+}
+
+/// Wisps on a body: each strand rides the part of the body at its slot.
+#[derive(Component)]
+pub struct LiveWisps {
+    pub wisps: Wisps,
+    pub body: Entity,
+    pub parts: Vec<usize>,
+}
+
+/// The mesh an effect draws.
+#[derive(Component)]
+pub struct EffectMesh(pub Handle<Mesh>);
+
+/// The world place (cm) of a point given in a part's space (cm).
+fn part_point(body: &Ragdoll, part: usize, local_cm: Vec3) -> Option<Vec3> {
+    let p = body.parts.get(part)?;
+    Some(p.transform().transform_point3(local_cm / CM) * CM)
+}
+
+fn bone_part(body: &Ragdoll, bone: usize) -> Option<usize> {
+    body.parts.iter().position(|p| p.bone == bone)
+}
+
+fn tick_arcs(
+    mut arcs: Query<&mut LiveArcs>,
+    bodies: Query<(Entity, &Ragdoll)>,
+    physics: Option<Res<Physics>>,
+    mut draws: ResMut<EffectDraws>,
+    mut shocked: MessageWriter<ArcShocked>,
+) {
+    for mut live in &mut arcs {
+        let live = &mut *live;
+        if let Some((body, bone)) = live.hand {
+            let anchor = bodies
+                .get(body)
+                .ok()
+                .and_then(|(_, b)| part_point(b, bone_part(b, bone)?, HAND_ARCS_OFFSET));
+            live.arcs.anchor = anchor.or(live.arcs.anchor);
+        }
+        live.arcs.tick(&mut draws.0);
+        if let Some(physics) = physics.as_deref() {
+            live.arcs.clip_to_level(|start, dir, len| {
+                physics
+                    .fixed_hit(start / CM, dir, len / CM)
+                    .map(|hit| hit * CM)
+            });
+        }
+        for (entity, body) in &bodies {
+            if Some(entity) == live.caster || body.drive.is_none() {
+                continue;
+            }
+            let chest = bone_part(body, CHEST)
+                .and_then(|k| part_point(body, k, Vec3::ZERO))
+                .unwrap_or(Vec3::ZERO);
+            for part in &body.parts {
+                let world = part.transform();
+                let spheres: Vec<(Vec3, f32)> = part
+                    .spheres
+                    .iter()
+                    .map(|&(c, r)| (world.transform_point3(c) * CM, r * CM))
+                    .collect();
+                let limb = ArcLimb {
+                    character: entity.to_bits(),
+                    caster: false,
+                    at: Vec3::from(world.translation) * CM,
+                    chest,
+                };
+                let hit = live.arcs.strike_limb(
+                    &limb,
+                    |a, b| spheres.iter().any(|&(c, r)| segment_meets(a, b, c, r)),
+                    &mut draws.0,
+                );
+                if let Some(shock) = hit {
+                    shocked.write(ArcShocked {
+                        body: entity,
+                        direction: shock.direction,
+                        strength: shock.strength,
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Whether the segment from `a` to `b` comes within `r` of `c`.
+fn segment_meets(a: Vec3, b: Vec3, c: Vec3, r: f32) -> bool {
+    let d = b - a;
+    let len2 = d.length_squared();
+    let t = if len2 > 0.0 {
+        ((c - a).dot(d) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (a + d * t).distance_squared(c) <= r * r
+}
+
+fn shock_fighters(
+    mut commands: Commands,
+    mut shocks: MessageReader<ArcShocked>,
+    mut fighters: Query<(&mut Fighter, Option<&ShockedAt>)>,
+    ticks: Option<Res<BodyTicks>>,
+) {
+    let now = ticks.map_or(0, |t| t.millis());
+    for shock in shocks.read() {
+        let Ok((mut fighter, at)) = fighters.get_mut(shock.body) else {
+            continue;
+        };
+        if at.is_some_and(|ShockedAt(then)| now.saturating_sub(*then) < SHOCK_GAP_MS) {
+            continue;
+        }
+        let yellow = fighter.health.yellow;
+        fighter.health.yellow = (yellow - shock.strength).max(0.0);
+        commands.entity(shock.body).insert(ShockedAt(now));
+    }
+}
+
+fn tick_barricades(
+    mut commands: Commands,
+    mut walls: Query<(Entity, &mut LiveBarricade)>,
+    mut bodies: Query<(Entity, &mut Ragdoll)>,
+    ticks: Option<Res<BodyTicks>>,
+    mut roll: ResMut<EffectRoll>,
+    mut shoves: MessageWriter<Shove>,
+) {
+    let now = ticks.map_or(0, |t| t.millis()) as u32;
+    for (wall_entity, mut live) in &mut walls {
+        let live = &mut *live;
+        if let Some(caster) = live.caster
+            && let Ok((_, body)) = bodies.get(caster)
+            && let Some(at) = body.parts.first().map(|p| p.transform().translation * CM)
+            && power_ends(0, live.wall.centre, at.into())
+        {
+            live.wall.end();
+        }
+        if live.wall.tick(now) {
+            debug!("barricade {wall_entity}: gone");
+        }
+        for (entity, mut body) in &mut bodies {
+            let character = body.drive.as_ref().map(|d| {
+                let chest = bone_part(&body, CHEST)
+                    .and_then(|k| part_point(&body, k, Vec3::ZERO))
+                    .unwrap_or(Vec3::ZERO);
+                let step = step_length(d.stats.scale, d.balance().extension());
+                (chest, d.stats.scale, step)
+            });
+            let mut touched = false;
+            let mut knock = None;
+            let mut energy_loss = 0.0;
+            for k in 0..body.parts.len() {
+                let part = &body.parts[k];
+                let world = part.transform();
+                let spheres: Vec<(Vec3, f32)> = part
+                    .spheres
+                    .iter()
+                    .map(|&(c, r)| (world.transform_point3(c) * CM, r * CM))
+                    .collect();
+                let reach = spheres
+                    .iter()
+                    .map(|&(c, r)| c.distance(Vec3::from(world.translation) * CM) + r)
+                    .fold(0.0, f32::max);
+                let tested = WallBody {
+                    centre: Vec3::from(world.translation) * CM,
+                    radius: reach,
+                    mobility: part.inverse_mass,
+                    step: character.map_or(80.0, |c| c.2),
+                    spheres,
+                    kind: match character {
+                        Some((chest, scale, _)) => WallBodyKind::Limb { chest, scale },
+                        None => WallBodyKind::Other,
+                    },
+                };
+                let shove = live.wall.shove(&tested, now, &mut roll.0);
+                touched |= shove.touched;
+                for (sphere, push) in &shove.pushes {
+                    body.push_sphere(k, *sphere, *push / CM);
+                }
+                if let Some(step) = shove.knockback {
+                    knock = Some((body.parts[k].bone, step));
+                    energy_loss = shove.energy_loss;
+                }
+            }
+            if touched {
+                body.touch(WAKE_TICKS);
+            }
+            if let Some((bone, step)) = knock {
+                if let Some(drive) = body.drive.as_mut() {
+                    if 0.25 < drive.energy {
+                        drive.energy -= energy_loss;
+                    }
+                    drive.balance_mut().set_counter(100);
+                }
+                shoves.write(Shove {
+                    body: entity,
+                    bone,
+                    velocity: Vec3::ZERO,
+                    daze: 0.0,
+                    step: Some(step / CM),
+                });
+            }
+        }
+        if live.wall.state == super::barricade::state::GONE {
+            commands.entity(wall_entity).despawn();
+        }
+    }
+}
+
+fn tick_wisps(
+    mut commands: Commands,
+    mut sets: Query<(Entity, &mut LiveWisps)>,
+    bodies: Query<&Ragdoll>,
+    mut roll: ResMut<EffectRoll>,
+) {
+    for (entity, mut live) in &mut sets {
+        let live = &mut *live;
+        let Ok(body) = bodies.get(live.body) else {
+            commands.entity(entity).despawn();
+            continue;
+        };
+        let parts = &live.parts;
+        let world = |s: &Strand| {
+            s.body
+                .and_then(|slot| parts.get(slot))
+                .and_then(|&k| part_point(body, k, s.local))
+                .unwrap_or(s.local)
+        };
+        live.wisps.tick(world, &mut roll.0);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_debug_effects(
+    mut commands: Commands,
+    debug: Res<ThaumDebug>,
+    players: Query<(Entity, &Ragdoll, &Locomotor), With<PlayerBody>>,
+    physics: Option<Res<Physics>>,
+    ticks: Option<Res<BodyTicks>>,
+    mut draws: ResMut<EffectDraws>,
+    mut roll: ResMut<EffectRoll>,
+    mut done: Local<ThaumDebug>,
+) {
+    let Some((player, body, facing)) = players.iter().next() else {
+        return;
+    };
+    if body.parts.is_empty() {
+        return;
+    }
+    if debug.arcs && !done.arcs {
+        done.arcs = true;
+        let mut arcs = ArcEmitter::new(&hand_arcs(), &mut draws.0);
+        arcs.anchor =
+            bone_part(body, RIGHT_HAND).and_then(|k| part_point(body, k, HAND_ARCS_OFFSET));
+        commands.spawn((
+            Name::new("_DebugArcs"),
+            LiveArcs {
+                arcs,
+                hand: Some((player, RIGHT_HAND)),
+                caster: Some(player),
+                keep: true,
+            },
+        ));
+        info!("debug arcs on the player's right hand");
+    }
+    if debug.barricade && !done.barricade {
+        done.barricade = true;
+        let root = body.parts[0].transform();
+        let at = Vec3::from(root.translation) * CM;
+        // The model faces +Z at yaw 0.
+        let forward = normalize(Vec3::new(facing.yaw.sin(), 0.0, facing.yaw.cos()));
+        let feet = at + forward * 200.0;
+        let hit = GroundHit {
+            point: Vec3::new(feet.x, feet.y - 80.0, feet.z),
+            normal: Vec3::Y,
+            exact: true,
+        };
+        let floor = |from: Vec3, reach: f32| {
+            physics
+                .as_deref()
+                .and_then(|p| p.fixed_hit(from / CM, Vec3::NEG_Y, reach / CM))
+                .map(|d| d * CM)
+        };
+        let place = place_barricade(hit, at, floor, roll.0.unit());
+        let frame = WallFrame::facing(place.centre, place.facing);
+        let now = ticks.as_deref().map_or(0, |t| t.millis()) as u32;
+        let trim = |start: Vec3, dir: Vec3, len: f32| {
+            physics
+                .as_deref()
+                .and_then(|p| p.fixed_hit(start / CM, dir, len / CM))
+                .map(|d| d * CM)
+        };
+        let wall = Barricade::raise(frame, 0.25, now, trim, None, &mut draws.0);
+        commands.spawn((
+            Name::new("_DebugBarricade"),
+            LiveBarricade {
+                wall,
+                caster: Some(player),
+            },
+        ));
+        info!("debug barricade at {:?}", place.centre);
+    }
+    if debug.wisps && !done.wisps {
+        done.wisps = true;
+        let bones: Vec<usize> = body.parts.iter().map(|p| p.bone).collect();
+        let mut parts = Vec::new();
+        let mut strands = Vec::new();
+        for (bone, anchor) in body_wisps(&bones) {
+            if let Some(k) = bone_part(body, bone) {
+                strands.push(Strand::new(anchor, Some(parts.len())));
+                parts.push(k);
+            }
+        }
+        let world = |s: &Strand| {
+            s.body
+                .and_then(|slot| parts.get(slot))
+                .and_then(|&k| part_point(body, k, s.local))
+                .unwrap_or(s.local)
+        };
+        let mut wisps = Wisps::new(strands, 12.0, world, || draws.0.unit() as f32);
+        wisps.place(12, world, &mut roll.0);
+        commands.spawn((
+            Name::new("_DebugWisps"),
+            LiveWisps {
+                wisps,
+                body: player,
+                parts,
+            },
+        ));
+        info!("debug wisps on the player's body");
+    }
+}
+
+/// The glow tint each effect draws with.
+const ARC_TINT: Vec4 = Vec4::new(1.0, 1.0, 1.0, 1.0);
+const WALL_TINT: Vec4 = Vec4::new(0.45, 0.33, 0.95, 0.25);
+const WISP_TINT: Vec4 = Vec4::new(1.0, 1.0, 1.0, 0.6);
+
+fn mesh_of(positions: Vec<[f32; 3]>, colours: Vec<[f32; 4]>, indices: Vec<u32>) -> Mesh {
+    let normals = vec![[0.0, 1.0, 0.0]; positions.len()];
+    let uvs = vec![[0.0, 0.0]; positions.len()];
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colours);
+    mesh.insert_indices(Indices::U32(indices));
+    mesh
+}
+
+#[allow(clippy::too_many_arguments)]
+fn show(
+    commands: &mut Commands,
+    entity: Entity,
+    drawn: Option<&EffectMesh>,
+    mesh: Mesh,
+    tint: Vec4,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<GlowMaterial>,
+) {
+    match drawn {
+        Some(EffectMesh(handle)) => {
+            if let Some(mut m) = meshes.get_mut(handle) {
+                *m = mesh;
+            }
+        }
+        None => {
+            let handle = meshes.add(mesh);
+            commands.entity(entity).insert((
+                EffectMesh(handle.clone()),
+                Mesh3d(handle),
+                MeshMaterial3d(materials.add(GlowMaterial { tint })),
+                Transform::IDENTITY,
+                NoFrustumCulling,
+                bevy::light::NotShadowCaster,
+                bevy::light::NotShadowReceiver,
+            ));
+        }
+    }
+}
+
+fn camera_axis(cameras: &Query<&GlobalTransform, exa_render::supersample::SceneCamera>) -> Vec3 {
+    cameras
+        .iter()
+        .next()
+        .map_or(Vec3::NEG_Z, |c| c.forward().as_vec3())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_arcs(
+    mut commands: Commands,
+    mut arcs: Query<(Entity, &mut LiveArcs, Option<&EffectMesh>)>,
+    cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
+    time: Res<Time<Fixed>>,
+    mut draws: ResMut<EffectDraws>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<GlowMaterial>>,
+) {
+    let eye = camera_axis(&cameras);
+    let alpha = time.overstep_fraction();
+    for (entity, mut live, drawn) in &mut arcs {
+        let frame = live.arcs.frame(alpha, eye, 0.0, |p| p, &mut draws.0);
+        if frame.removed && !live.keep {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        let r = &frame.ribbon;
+        let positions = r.positions.iter().map(|p| (*p / CM).to_array()).collect();
+        let [red, green, blue] = ARC_COLOUR.map(|c| f32::from(c) / 255.0);
+        let colours = r
+            .alphas
+            .iter()
+            .map(|&a| [red, green, blue, f32::from(a) / 255.0])
+            .collect();
+        let indices = r.drawn().iter().map(|&i| u32::from(i)).collect();
+        let mesh = mesh_of(positions, colours, indices);
+        show(
+            &mut commands,
+            entity,
+            drawn,
+            mesh,
+            ARC_TINT,
+            &mut meshes,
+            &mut materials,
+        );
+    }
+}
+
+fn draw_barricades(
+    mut commands: Commands,
+    mut walls: Query<(Entity, &mut LiveBarricade, Option<&EffectMesh>)>,
+    time: Res<Time<Fixed>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<GlowMaterial>>,
+    mut slab: Local<Option<super::barricade::WallMesh>>,
+) {
+    let alpha = time.overstep_fraction();
+    let slab = slab.get_or_insert_with(barricade_mesh);
+    for (entity, mut live, drawn) in &mut walls {
+        let Some(out) = live.wall.frame(alpha) else {
+            continue;
+        };
+        let at = if out.mode == 1 {
+            out.at
+        } else {
+            live.wall.centre
+        };
+        let frame = WallFrame {
+            at,
+            ..live.wall.frame
+        };
+        let (local, _) = slide_mesh(slab, out.slide);
+        let height = (out.half_height / super::barricade::HALF_HEIGHT).max(0.0);
+        let positions = local
+            .iter()
+            .map(|p| (frame.world(Vec3::new(p.x, p.y * height, p.z)) / CM).to_array())
+            .collect();
+        let colours = vec![[1.0; 4]; local.len()];
+        let indices = slab
+            .triangles
+            .iter()
+            .flatten()
+            .map(|&i| u32::from(i))
+            .collect();
+        let mesh = mesh_of(positions, colours, indices);
+        show(
+            &mut commands,
+            entity,
+            drawn,
+            mesh,
+            WALL_TINT,
+            &mut meshes,
+            &mut materials,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_wisps(
+    mut commands: Commands,
+    mut sets: Query<(Entity, &mut LiveWisps, Option<&EffectMesh>)>,
+    cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
+    time: Res<Time<Fixed>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<GlowMaterial>>,
+) {
+    let eye = camera_axis(&cameras);
+    let alpha = time.overstep_fraction();
+    for (entity, mut live, drawn) in &mut sets {
+        let r = live.wisps.ribbon(alpha, eye);
+        if r.removed {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        let positions = r.positions.iter().map(|p| (*p / CM).to_array()).collect();
+        let colours = r
+            .colours
+            .iter()
+            .zip(&r.fade)
+            .map(|(c, f)| {
+                [
+                    f32::from(c[0]) / 255.0,
+                    f32::from(c[1]) / 255.0,
+                    f32::from(c[2]) / 255.0,
+                    f32::from(c[3]) / 255.0 * f[0],
+                ]
+            })
+            .collect();
+        let mesh = mesh_of(positions, colours, r.indices);
+        show(
+            &mut commands,
+            entity,
+            drawn,
+            mesh,
+            WISP_TINT,
+            &mut meshes,
+            &mut materials,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_segment_meets_a_sphere_beside_it() {
+        assert!(segment_meets(
+            Vec3::ZERO,
+            Vec3::X * 10.0,
+            Vec3::new(5.0, 2.0, 0.0),
+            2.0
+        ));
+        assert!(!segment_meets(
+            Vec3::ZERO,
+            Vec3::X * 10.0,
+            Vec3::new(5.0, 2.1, 0.0),
+            2.0
+        ));
+        assert!(segment_meets(
+            Vec3::ZERO,
+            Vec3::ZERO,
+            Vec3::new(0.0, 1.0, 0.0),
+            1.0
+        ));
+        assert!(!segment_meets(
+            Vec3::ZERO,
+            Vec3::X,
+            Vec3::new(3.0, 0.0, 0.0),
+            1.0
+        ));
+    }
+
+    #[test]
+    fn a_shocked_fighter_loses_yellow_once_per_gap() {
+        let mut app = App::new();
+        app.add_message::<ArcShocked>()
+            .insert_resource(BodyTicks(0))
+            .add_systems(Update, shock_fighters);
+        let fighter = app.world_mut().spawn(Fighter::default()).id();
+        let shock = ArcShocked {
+            body: fighter,
+            direction: Vec3::Y,
+            strength: 0.05,
+        };
+        app.world_mut().write_message(shock);
+        app.update();
+        let yellow = app.world().get::<Fighter>(fighter).unwrap().health.yellow;
+        assert!((yellow - 0.20).abs() < 1e-6);
+        // 12 ticks are 144 ms: within the gap.
+        app.insert_resource(BodyTicks(12));
+        app.world_mut().write_message(shock);
+        app.update();
+        let still = app.world().get::<Fighter>(fighter).unwrap().health.yellow;
+        assert_eq!(still, yellow);
+        // 13 ticks are 156 ms.
+        app.insert_resource(BodyTicks(13));
+        app.world_mut().write_message(shock);
+        app.update();
+        let after = app.world().get::<Fighter>(fighter).unwrap().health.yellow;
+        assert!((after - 0.15).abs() < 1e-6);
+    }
+}

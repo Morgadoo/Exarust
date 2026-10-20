@@ -570,6 +570,14 @@ pub struct WallShove {
     pub sound: Option<WallSound>,
 }
 
+/// The barricade's power object: an event with bit 2 or 8 ends it, and so
+/// does its caster's standing more than 20 m from the wall (it ends on the
+/// next tick); either way the wall is told to fall and the focus it held
+/// comes back.
+pub fn power_ends(event: u32, wall: Vec3, caster: Vec3) -> bool {
+    event & 10 != 0 || 4.0e6 < dist_sq(wall, caster)
+}
+
 /// A knockback step: the push's direction on the level times twice the
 /// push, at most the step length.
 pub fn knock_offset(direction: Vec3, push: f32, step: f32) -> Vec3 {
@@ -969,6 +977,14 @@ mod tests {
         assert_eq!(s.centre, (50, 50));
         assert_eq!(s.points.len(), 9);
         assert_eq!(s.points[8], Vec3::new(100.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn the_power_ends_twenty_metres_away() {
+        assert!(power_ends(2, Vec3::ZERO, Vec3::ZERO));
+        assert!(power_ends(8, Vec3::ZERO, Vec3::ZERO));
+        assert!(!power_ends(1, Vec3::ZERO, Vec3::new(2000.0, 0.0, 0.0)));
+        assert!(power_ends(0, Vec3::ZERO, Vec3::new(2000.1, 0.0, 0.0)));
     }
 
     #[test]
