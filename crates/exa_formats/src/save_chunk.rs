@@ -72,6 +72,50 @@ pub fn ease_save_curve(x: f32) -> f32 {
     }
 }
 
+/// Whether the save needs conversion.
+pub fn save_needs_conversion(
+    mode: i32,
+    pending: i32,
+    legacy: bool,
+    entry: bool,
+    read: bool,
+    tag: u32,
+) -> bool {
+    if mode != 4 || pending > 0 {
+        return false;
+    }
+    if legacy {
+        return true;
+    }
+    if !entry || !read {
+        return false;
+    }
+    tag != 0xdbac_0d06
+}
+
+/// A save record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SaveRecord {
+    pub kind: i32,
+    pub first: u64,
+    pub second: u64,
+}
+
+/// The written record table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SaveRecordTable {
+    pub count: i32,
+    pub records: Vec<SaveRecord>,
+}
+
+/// Writes the count and the records in wire order.
+pub fn write_save_records(records: &[SaveRecord]) -> SaveRecordTable {
+    SaveRecordTable {
+        count: records.len() as i32,
+        records: records.to_vec(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,5 +148,32 @@ mod tests {
         assert!(!rejected.accepted);
         assert_eq!(rejected.first, 0);
         assert_eq!(rejected.second, 0);
+    }
+
+    #[test]
+    fn the_save_version_gate_and_record_table() {
+        assert!(save_needs_conversion(4, 0, true, false, false, 0));
+        assert!(!save_needs_conversion(4, 0, false, true, true, 0xdbac_0d06));
+        assert!(save_needs_conversion(4, 0, false, true, true, 0));
+        assert!(!save_needs_conversion(3, 0, true, true, true, 0));
+        assert!(!save_needs_conversion(4, 1, true, true, true, 0));
+        assert!(!save_needs_conversion(4, 0, false, false, true, 0));
+        assert!(!save_needs_conversion(4, 0, false, true, false, 0));
+
+        let records = [
+            SaveRecord {
+                kind: 1,
+                first: 2,
+                second: 3,
+            },
+            SaveRecord {
+                kind: 4,
+                first: 5,
+                second: 6,
+            },
+        ];
+        let table = write_save_records(&records);
+        assert_eq!(table.count, 2);
+        assert_eq!(table.records, records);
     }
 }
