@@ -289,6 +289,10 @@ fn moods_band_the_attitude() {
     // Scaled by ((10 − x)/10)²; nothing past 10.
     assert_eq!(band(&mut cast, 80.0, 5.0, 0, 0.0), 0x40);
     assert_eq!(band(&mut cast, 80.0, 11.0, 0, 0.0), 0x40);
+    // An unordered contact value is scaled, not zeroed: the attitude turns
+    // unordered too and falls through every band test to 0x40.
+    assert_eq!(band(&mut cast, 80.0, f32::NAN, 0, 0.0), 0x40);
+    assert_eq!(band(&mut cast, 80.0, 10.0, 0, 0.0), 0x40);
     assert_eq!(band(&mut cast, 0.0, 0.0, 1, 5.0), 0x640);
     assert_eq!(band(&mut cast, 0.0, 0.0, 1, 2.0), 0x240);
     assert_eq!(band(&mut cast, 0.0, 0.0, 2, 0.0), 0x640);

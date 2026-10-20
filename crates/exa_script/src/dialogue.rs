@@ -411,11 +411,13 @@ pub fn mood(cast: &Cast, a: u32, b: u32) -> u16 {
                 m = 0x200;
             }
         }
-        att = if c.range <= 10.0 {
+        // Past 10 the attitude counts for nothing; otherwise (an
+        // unordered value included) it is scaled.
+        att = if c.range > 10.0 {
+            0.0
+        } else {
             let s = f64::from(10.0 - c.range) * 0.1;
             (s * s * f64::from(att)) as f32
-        } else {
-            0.0
         };
     }
     m | if att > 70.0 {

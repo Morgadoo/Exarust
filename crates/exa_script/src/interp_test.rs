@@ -161,6 +161,17 @@ fn golem_patrol_concern_both_ways() {
     assert_eq!(w.concern[&(GOLEM, PLAYER)], 0.0);
 }
 
+/// `AddConcern` clamps as the original compares: over 15 to 15, anything
+/// not at least 0 (an unordered value too) to 0.
+#[test]
+fn concern_clamps_to_fifteen_and_zero() {
+    assert_eq!(builtins::clamp_concern(15.5), 15.0);
+    assert_eq!(builtins::clamp_concern(15.0), 15.0);
+    assert_eq!(builtins::clamp_concern(0.0), 0.0);
+    assert_eq!(builtins::clamp_concern(-0.5), 0.0);
+    assert_eq!(builtins::clamp_concern(f32::NAN), 0.0);
+}
+
 /// Golem Boss's interaction condition: item $1DE.
 #[test]
 fn an_interaction_condition_returns_its_result() {

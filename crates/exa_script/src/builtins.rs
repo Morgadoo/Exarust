@@ -327,6 +327,18 @@ pub fn health_percent(pool: f32, max: f32) -> i32 {
 /// Concern is kept within 0..=15.
 pub const CONCERN_MAX: f32 = 15.0;
 
+/// The original's clamp: above 15 becomes 15, anything not at least 0
+/// (an unordered value included) becomes 0.
+pub fn clamp_concern(c: f32) -> f32 {
+    if c > CONCERN_MAX {
+        CONCERN_MAX
+    } else if c >= 0.0 {
+        c
+    } else {
+        0.0
+    }
+}
+
 fn round(v: f32) -> i32 {
     v.round_ties_even() as i32
 }
@@ -476,7 +488,7 @@ pub(crate) fn call_actor<H: Host>(
             };
             if let Some(c) = host.concern(actor, other) {
                 let c = interp::arg_int(ctx, text, 1) as f32 + c;
-                host.set_concern(actor, other, c.clamp(0.0, CONCERN_MAX));
+                host.set_concern(actor, other, clamp_concern(c));
             }
             0
         }
