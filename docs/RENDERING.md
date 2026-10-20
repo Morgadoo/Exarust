@@ -868,6 +868,44 @@ menu.
 - The sun's colour per unit of intensity is 160 lux in Exarust's scene units
   (scaled back in the shader).
 
+### Sun shadow fit
+
+The original's sun has one orthographic shadow map (no cascades). In its
+fitted mode it clips the view region by planes and takes the smallest
+sphere around the clipped corners, then works in centimetres (×100). The
+solver is `exa_render::bound_sphere`, reproduced to the bit (reverse
+engineered from Exanima.exe):
+
+- The points are widened to double precision; the result is narrowed back
+  to single (centre per component, radius = √r² rounded once).
+- Move-to-front: the sphere starts at the first point, radius 0, resting on
+  it. The scan visits the points in order and skips those in the support
+  set or within 1e-5 (squared distance minus r²). For any other point q
+  the support set and q give a new sphere; if its r² is larger the sphere
+  is replaced and the scan restarts at the first point. The support set
+  keeps what the step made of it even when the sphere is not replaced.
+- Candidates, for a support set of k (1 to 4): the spheres through q and
+  one, two or three support points, in fixed orders (k = 2: 2 pairs and the
+  triangle; k = 3: 3 pairs, 3 triangles and the tetrahedron; k = 4: 4
+  pairs, 6 triangles and 4 tetrahedra). One whose r² is below the best so
+  far wins when the remaining support points lie inside (with the 1e-5
+  slack); otherwise the one that misses by least is kept as the fallback.
+  The support set becomes the winner's points, in its order, then q. With
+  k = 2 the winner's slot order differs: q replaces the second point, the
+  first, or joins as the third. With k = 1 the sphere is always the pair.
+- A pair: the midpoint, r² = d²/4. Three points: the circumcentre
+  a + s·(b − a) + t·(c − a) in their plane, or an edge sphere when it falls
+  outside (s ≤ 0: a–c, t ≤ 0: a–b, s + t ≥ 1: b–c); a flat triangle
+  (|2·det| ≤ 1e-7) gets r² = 3.4e38 (the single-precision constant), so it
+  never wins. Four points: barycentric weights from the Gram matrix of the
+  edges from the fourth, solved by its adjugate; |det| ≤ 1e-7 gives
+  centre 0 and r² 3.4e38.
+- No points: only the radius is written, 4000 in the points' units (the
+  shadow fit never calls it with fewer than two).
+
+Exarust's sun uses Bevy's cascaded shadow maps instead of the fitted
+orthographic map, so nothing calls the solver at run time yet.
+
 ## Fires
 
 A model node with a fire emitter (`0x3DD0E002`, size s; a torch's `_Fire`

@@ -2,6 +2,7 @@
 //! chain replaces Bevy's tonemapping (grading curve, bloom); materials and
 //! lighting follow. Rules: `docs/RENDERING.md`.
 
+pub mod bound_sphere;
 pub mod cube_shadows;
 pub mod electricity;
 pub mod flame;
