@@ -44,11 +44,17 @@ impl Plugin for GiPlugin {
             .insert_resource(warm_up)
             .add_plugins((
                 ExtractResourcePlugin::<GiTextures>::default(),
+                ExtractResourcePlugin::<GiPendingTextures>::default(),
                 ExtractResourcePlugin::<GiLights>::default(),
             ))
             .add_systems(
                 PostUpdate,
-                (create_textures, gather_lights, give_materials_gi)
+                (
+                    create_textures,
+                    swap_warm_textures,
+                    gather_lights,
+                    give_materials_gi,
+                )
                     .chain()
                     .in_set(GiSystems),
             );
@@ -154,6 +160,14 @@ pub struct GiTextures {
     /// each volume's warm-up once.
     serial: u32,
 }
+
+/// The next block's textures, warming while the previous block stays
+/// active. A block rebuilt as the camera moves starts black; swapping it in
+/// before its warm-up has run leaves hard black patches and halos on the
+/// floor. The old block stays bound until the new one is warm.
+#[derive(Resource, Clone, ExtractResource)]
+#[extract_app(RenderApp)]
+pub struct GiPendingTextures(pub GiTextures);
 
 /// A light's share of the GI injection (its record's multiplier); lights
 /// without one inject in full.
@@ -334,6 +348,7 @@ fn light_image(size: UVec3, data: Vec<u8>) -> Image {
 fn create_textures(
     mut commands: Commands,
     volume: Option<Res<GiVolume>>,
+    active: Option<Res<GiTextures>>,
     mut images: ResMut<Assets<Image>>,
     mut warm_up: ResMut<GiWarmUp>,
 ) {
@@ -362,7 +377,7 @@ fn create_textures(
     let extent = Vec3::new(size.x as f32, size.z as f32, size.y as f32) * volume.voxel;
     warm_up.serial += 1;
     warm_up.steps = volume.warm_up;
-    commands.insert_resource(GiTextures {
+    let textures = GiTextures {
         occupancy,
         floors,
         light,
@@ -374,7 +389,34 @@ fn create_textures(
         base_ambient: volume.base_ambient,
         warm_up: volume.warm_up,
         serial: warm_up.serial,
-    });
+    };
+    // The first block is shown while it warms (the loading screen waits);
+    // a later block warms behind the old one.
+    if active.is_some() {
+        commands.insert_resource(GiPendingTextures(textures));
+    } else {
+        commands.insert_resource(textures);
+    }
+}
+
+/// Swaps in a rebuilt block once its warm-up has run in full. The old block
+/// stays bound until then, so the floor never shows a cold block's black
+/// patches or propagation halo.
+fn swap_warm_textures(
+    mut commands: Commands,
+    pending: Option<Res<GiPendingTextures>>,
+    warm_up: Res<GiWarmUp>,
+) {
+    let Some(pending) = pending else { return };
+    if !warm_up.finished() {
+        return;
+    }
+    info!(
+        "GI block warm: origin {:.2}, serial {}",
+        pending.0.origin, pending.0.serial
+    );
+    commands.insert_resource(pending.0.clone());
+    commands.remove_resource::<GiPendingTextures>();
 }
 
 fn gather_lights(
@@ -470,7 +512,7 @@ fn give_materials_gi(
             _ => None,
         })
         .collect();
-    let ids: Vec<AssetId<ExaMaterial>> = if textures.is_added() {
+    let ids: Vec<AssetId<ExaMaterial>> = if textures.is_changed() {
         materials.ids().collect()
     } else {
         added
@@ -561,6 +603,7 @@ const MAX_STEPS_PER_FRAME: u32 = 16;
 fn prepare_bind_group(
     mut commands: Commands,
     textures: Option<Res<GiTextures>>,
+    pending: Option<Res<GiPendingTextures>>,
     lights: Res<GiLights>,
     pipeline: Option<Res<GiPipeline>>,
     cache: Res<PipelineCache>,
@@ -569,6 +612,7 @@ fn prepare_bind_group(
     queue: Res<RenderQueue>,
     mut owed: ResMut<GiOwed>,
 ) {
+    let textures = pending.as_ref().map(|p| &p.0).or(textures.as_deref());
     let (Some(textures), Some(pipeline)) = (textures, pipeline) else {
         commands.remove_resource::<GiBindGroup>();
         return;
@@ -636,6 +680,7 @@ fn prepare_bind_group(
 fn propagate(
     view: ViewQuery<(&ExtractedView, Has<crate::supersample::DisplayCamera>)>,
     textures: Option<Res<GiTextures>>,
+    pending: Option<Res<GiPendingTextures>>,
     bind_group: Option<Res<GiBindGroup>>,
     pipeline: Option<Res<GiPipeline>>,
     cache: Res<PipelineCache>,
@@ -648,6 +693,7 @@ fn propagate(
     if view.into_inner().1 {
         return;
     }
+    let textures = pending.as_ref().map(|p| &p.0).or(textures.as_deref());
     let (Some(textures), Some(bind_group), Some(pipeline)) = (textures, bind_group, pipeline)
     else {
         return;
@@ -707,6 +753,77 @@ mod tests {
     use super::*;
 
     const BLOCK: UVec3 = UVec3::new(256, 256, 64);
+
+    fn fake_textures(serial: u32) -> GiTextures {
+        GiTextures {
+            occupancy: Handle::default(),
+            floors: Handle::default(),
+            light: Handle::default(),
+            scratch: Handle::default(),
+            origin: Vec3::ZERO,
+            extent: Vec3::ONE,
+            voxel: 0.2,
+            dims: UVec3::ONE,
+            base_ambient: 0.0,
+            warm_up: 10,
+            serial,
+        }
+    }
+
+    fn block_volume(origin: Vec3) -> GiVolume {
+        GiVolume {
+            origin,
+            size: UVec3::new(2, 2, 2),
+            voxel: 0.2,
+            cells: Arc::new(vec![0; 8]),
+            floors: Arc::new(vec![0; 4]),
+            base_ambient: 0.0,
+            warm_up: 10,
+        }
+    }
+
+    #[test]
+    fn a_rebuilt_block_waits_for_its_warm_up() {
+        let warm = GiWarmUp {
+            serial: 1,
+            steps: 10,
+            ..default()
+        };
+        let mut app = App::new();
+        app.insert_resource(Assets::<Image>::default())
+            .insert_resource(warm)
+            .insert_resource(fake_textures(1))
+            .insert_resource(block_volume(Vec3::ZERO))
+            .add_systems(Update, (create_textures, swap_warm_textures).chain());
+        app.update();
+        // The old block stays bound; the new one only warms behind it.
+        assert_eq!(app.world().resource::<GiTextures>().serial, 1);
+        assert_eq!(app.world().resource::<GiPendingTextures>().0.serial, 2);
+        app.update();
+        assert_eq!(app.world().resource::<GiTextures>().serial, 1);
+
+        // Once the render world has reported every step, it swaps.
+        let warm = app.world().resource::<GiWarmUp>();
+        warm.report.store(
+            (u64::from(warm.serial) << 32) | u64::from(warm.steps),
+            Ordering::Release,
+        );
+        app.update();
+        assert_eq!(app.world().resource::<GiTextures>().serial, 2);
+        assert!(!app.world().contains_resource::<GiPendingTextures>());
+    }
+
+    #[test]
+    fn the_first_block_is_used_while_it_warms() {
+        let mut app = App::new();
+        app.insert_resource(Assets::<Image>::default())
+            .init_resource::<GiWarmUp>()
+            .insert_resource(block_volume(Vec3::ZERO))
+            .add_systems(Update, (create_textures, swap_warm_textures).chain());
+        app.update();
+        assert!(app.world().contains_resource::<GiTextures>());
+        assert!(!app.world().contains_resource::<GiPendingTextures>());
+    }
 
     #[test]
     fn salve_voxel_light_colour() {

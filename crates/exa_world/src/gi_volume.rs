@@ -181,6 +181,8 @@ fn collect_source(
     commands.remove_resource::<GiBlock>();
     // A build for the previous level is dropped, which cancels it.
     commands.remove_resource::<GiBuild>();
+    commands.remove_resource::<exa_render::gi::GiTextures>();
+    commands.remove_resource::<exa_render::gi::GiPendingTextures>();
     if !settings.enabled {
         commands.remove_resource::<GiVolume>();
         commands.remove_resource::<GiSource>();

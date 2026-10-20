@@ -571,8 +571,11 @@ in world space there too):
   rebuilds it (with a new warm-up) when the point moves more than two
   sectors. One build runs at a time; a newer focus waits for it. The
   level's points and floor triangles are collected once in world space.
-  When a load ends, the block is rebuilt around the camera's starting
-  view if it is not already there.
+  The block already on screen stays bound while the rebuilt one warms
+  behind it, so a move never reveals a cold block's black patches or
+  propagation halo; the warm block replaces it in one step. A level change
+  drops both blocks. When a load ends, the block is rebuilt around the
+  camera's starting view if it is not already there.
 - The top slice holds 26 and the slice below 5, a soft lid.
 - Terrain comes first: in each interior column (not the margins), voxels
   below the terrain surface hold 20, and the surface voxel its covered
@@ -601,7 +604,9 @@ in world space there too):
 
 **Propagation**, one step per frame. A new block first gets a warm-up,
 600 steps by default, run 16 steps a frame (all of them in one frame stalled
-the window for seconds); the loading screen waits for it. The light is 8-bit sRGB RGB, with A = 1 − 5·occ.
+the window for seconds); the loading screen waits for the first block, and a
+rebuilt block warms behind the one on screen and is swapped in only when its
+warm-up is complete. The light is 8-bit sRGB RGB, with A = 1 − 5·occ.
 
 Only slices from the sector's floor up to the second-highest are updated.
 Sectors with no points at all, and the margins, are never updated: they
