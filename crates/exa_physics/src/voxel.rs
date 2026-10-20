@@ -1,0 +1,871 @@
+//! The mesh voxeliser and its voxel map: the grid of cells a mesh is sampled
+//! into, the points each generator extracts from it, and the ray query that
+//! finds the highest surface over a column.
+//!
+//! The voxel map is the container of the rigid-body voxeliser: a box of
+//! cells (`VoxelMap`), the bytes of the cells and the spheres extracted from
+//! them. The shape builders fill one per mesh; the sphere extraction itself
+//! is theirs, not the map's.
+//!
+//! Two generators sample a mesh into a fine grid and turn the occupied
+//! cells into points on a coarser lattice:
+//!
+//! * [`floor_points`] is the floor heightfield: rays down each fine column,
+//!   the highest upward face wins, its 10 cm cell is marked, and every
+//!   20 cm cell holding four marks gives a point. It keeps the original's
+//!   centimetres: its edges snap to the ±150/±300 cm lattice and its point
+//!   step is a hard-coded 20 cm.
+//! * [`surface_points`] is the general surface generator: cells around the
+//!   mesh are classified by a sphere query, the near ones are cleaned up,
+//!   and a greedy cover (or one point per cell) turns them into points at a
+//!   step of a fifth of the generator's parameter (4 cm for the original's
+//!   20).
+//!
+//! Rules: `docs/RENDERING.md` (Voxel GI).
+
+use std::sync::Arc;
+
+use bevy::math::Vec3;
+
+/// The resolution the original's voxel map is made with.
+pub const MAP_RESOLUTION: f32 = 0.02;
+/// The scale the original's voxel map is made with.
+pub const MAP_SCALE: f32 = 1.0;
+
+/// A collision sphere the voxeliser extracts from a mesh, in the map's
+/// space: its centre and radius.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Sphere {
+    pub centre: Vec3,
+    pub radius: f32,
+}
+
+/// The voxel map of the rigid-body voxeliser: a box of cells over a mesh,
+/// one byte per cell and the spheres extracted from the cells.
+///
+/// The original makes one per shape-builder call and frees its two arrays
+/// with it; here the map owns both arrays and [`VoxelMap::release`] is the
+/// explicit free.
+#[derive(Debug, Clone)]
+pub struct VoxelMap {
+    /// The map's resolution (0.02 at construction; the shape builder
+    /// chooses the working value from the mesh's size).
+    pub resolution: f32,
+    /// The map's unit scale (1 at construction).
+    pub scale: f32,
+    /// What the map was made for: the caller's word, kept as given.
+    pub tag: u32,
+    /// Cells per axis.
+    pub dims: [usize; 3],
+    /// Centre of the map's box, in the map's space.
+    pub centre: Vec3,
+    /// Half extents of the map's box.
+    pub half_extents: Vec3,
+    cells: Vec<u8>,
+    spheres: Vec<Sphere>,
+}
+
+impl Default for VoxelMap {
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
+
+impl VoxelMap {
+    /// An empty map made for `tag`, at the original's resolution and scale.
+    pub fn new(tag: u32) -> Self {
+        Self {
+            resolution: MAP_RESOLUTION,
+            scale: MAP_SCALE,
+            tag,
+            dims: [0; 3],
+            centre: Vec3::ZERO,
+            half_extents: Vec3::ZERO,
+            cells: Vec::new(),
+            spheres: Vec::new(),
+        }
+    }
+
+    /// Sets the map's box and cell counts, zeroing every cell. Returns false
+    /// (and leaves the map empty) when the counts do not fit in memory.
+    pub fn resize(&mut self, centre: Vec3, half_extents: Vec3, dims: [usize; 3]) -> bool {
+        self.centre = centre;
+        self.half_extents = half_extents;
+        self.dims = dims;
+        self.cells.clear();
+        self.spheres.clear();
+        let Some(len) = dims
+            .iter()
+            .try_fold(1usize, |n, &d| n.checked_mul(d))
+            .filter(|&n| n <= isize::MAX as usize)
+        else {
+            self.dims = [0; 3];
+            return false;
+        };
+        if self.cells.try_reserve_exact(len).is_err() {
+            self.dims = [0; 3];
+            return false;
+        }
+        self.cells.resize(len, 0);
+        true
+    }
+
+    /// One cell's size: the box's extent over the cell counts.
+    pub fn cell_size(&self) -> Vec3 {
+        if self.dims.contains(&0) {
+            return Vec3::ZERO;
+        }
+        Vec3::new(
+            2.0 * self.half_extents.x / self.dims[0] as f32,
+            2.0 * self.half_extents.y / self.dims[1] as f32,
+            2.0 * self.half_extents.z / self.dims[2] as f32,
+        )
+    }
+
+    /// The box's low corner.
+    pub fn min(&self) -> Vec3 {
+        self.centre - self.half_extents
+    }
+
+    /// The linear index of a cell, X fastest, then Y, then Z; `None` outside
+    /// the box.
+    pub fn index(&self, cell: [usize; 3]) -> Option<usize> {
+        (0..3)
+            .all(|a| cell[a] < self.dims[a])
+            .then(|| cell[0] + self.dims[0] * (cell[1] + self.dims[1] * cell[2]))
+    }
+
+    /// The centre of a cell, or `None` outside the box.
+    pub fn cell_centre(&self, cell: [usize; 3]) -> Option<Vec3> {
+        self.index(cell)?;
+        let size = self.cell_size();
+        Some(
+            self.min()
+                + Vec3::new(
+                    (cell[0] as f32 + 0.5) * size.x,
+                    (cell[1] as f32 + 0.5) * size.y,
+                    (cell[2] as f32 + 0.5) * size.z,
+                ),
+        )
+    }
+
+    /// The cell holding `point`, or `None` outside the box.
+    pub fn cell_at(&self, point: Vec3) -> Option<[usize; 3]> {
+        let size = self.cell_size();
+        if size.min_element() <= 0.0 {
+            return None;
+        }
+        let p = (point - self.min()) / size;
+        let cell = [p.x, p.y, p.z].map(|v| v.floor());
+        if cell.iter().any(|v| *v < 0.0) {
+            return None;
+        }
+        let cell = [cell[0] as usize, cell[1] as usize, cell[2] as usize];
+        self.index(cell).map(|_| cell)
+    }
+
+    /// A cell's byte, or `None` outside the box.
+    pub fn cell(&self, cell: [usize; 3]) -> Option<u8> {
+        self.index(cell).and_then(|i| self.cells.get(i).copied())
+    }
+
+    /// Sets a cell's byte; false outside the box.
+    pub fn set_cell(&mut self, cell: [usize; 3], value: u8) -> bool {
+        match self.index(cell) {
+            Some(i) => {
+                self.cells[i] = value;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Every cell's byte, X fastest.
+    pub fn cells(&self) -> &[u8] {
+        &self.cells
+    }
+
+    /// Every cell's byte, writable.
+    pub fn cells_mut(&mut self) -> &mut [u8] {
+        &mut self.cells
+    }
+
+    /// The spheres extracted from the cells.
+    pub fn spheres(&self) -> &[Sphere] {
+        &self.spheres
+    }
+
+    /// Replaces the extracted spheres.
+    pub fn set_spheres(&mut self, spheres: Vec<Sphere>) {
+        self.spheres = spheres;
+    }
+
+    /// Frees the map's two arrays, as the original's destructor does.
+    pub fn release(&mut self) {
+        self.cells = Vec::new();
+        self.spheres = Vec::new();
+    }
+}
+
+/// A mesh's bounds in its own space: the centre and half extents the
+/// generators work from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Bounds {
+    pub centre: Vec3,
+    pub half_extents: Vec3,
+}
+
+/// The smallest vertical distance a face may have under a ray (the
+/// original's epsilon, a hair under `f32::EPSILON`).
+pub const SURFACE_EPSILON: f32 = 1.1920899822825959e-07;
+
+/// One upward face set up for the down-ray query: its plane scaled so that
+/// `y`'s coefficient is one, the two axes the barycentric test uses, the
+/// first vertex's coordinates on them, and the inverse of the 2×2 basis the
+/// test solves.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SurfaceTriangle {
+    plane: [f32; 4],
+    axes: [usize; 2],
+    first: [f32; 2],
+    weights: [f32; 4],
+}
+
+impl SurfaceTriangle {
+    /// Sets a triangle up for [`surface_hit`], or returns `None` when it is
+    /// degenerate or does not face up (normal y at or below the epsilon, as
+    /// the original keeps only upward faces).
+    pub fn new(triangle: [Vec3; 3]) -> Option<Self> {
+        let [a, b, c] = triangle;
+        let normal = (b - a).cross(c - a);
+        let length = normal.length();
+        if length <= 0.0 || length.is_nan() || !length.is_finite() {
+            return None;
+        }
+        let normal = normal / length;
+        if normal.y < SURFACE_EPSILON {
+            return None;
+        }
+        // The dominant axis, first in the comparison order the original uses.
+        let n = normal.abs();
+        let dominant = if n.x <= n.y {
+            if n.y <= n.z { 2 } else { 1 }
+        } else if n.x <= n.z {
+            2
+        } else {
+            0
+        };
+        let axes = [(dominant + 1) % 3, (dominant + 2) % 3];
+        let (axis1, axis2) = (axes[0], axes[1]);
+        // The plane's four coefficients scaled by one over the normal's y:
+        // the original scales the stored plane that way, so its y is
+        // `n.y · (1 / n.y)` and not necessarily exactly one.
+        let n = normal.to_array();
+        let scale = 1.0 / n[1];
+        let plane = [
+            n[0] * scale,
+            n[1] * scale,
+            n[2] * scale,
+            normal.dot(a) * scale,
+        ];
+        // The edges from the first vertex, as the original lays them out.
+        let edge_c = (c - a).to_array();
+        let edge_b = (b - a).to_array();
+        let f = 1.0 / (edge_c[axis1] * edge_b[axis2] - edge_c[axis2] * edge_b[axis1]);
+        let weights = [
+            -edge_c[axis2] * f,
+            edge_c[axis1] * f,
+            edge_b[axis2] * f,
+            -edge_b[axis1] * f,
+        ];
+        let first = a.to_array();
+        Some(Self {
+            plane,
+            axes,
+            first: [first[axis1], first[axis2]],
+            weights,
+        })
+    }
+}
+
+/// The first face hit by a ray down `direction`, with the distance from
+/// `origin` to its plane: the highest face wins, the first of equal
+/// distances stays, and the barycentric test takes the edges as inside.
+pub fn surface_hit(
+    faces: &[SurfaceTriangle],
+    origin: Vec3,
+    direction: Vec3,
+    max: f32,
+) -> Option<f32> {
+    let origin = origin.to_array();
+    let direction = direction.to_array();
+    let mut best = max;
+    let mut hit = false;
+    for face in faces {
+        // The original's sum order: z, x, y, less the plane's constant.
+        let distance =
+            (face.plane[2] * origin[2] + face.plane[0] * origin[0] + face.plane[1] * origin[1])
+                - face.plane[3];
+        if distance.is_nan() || distance <= SURFACE_EPSILON || distance >= best {
+            continue;
+        }
+        let [axis1, axis2] = face.axes;
+        let along_2 = (origin[axis2] + direction[axis2] * distance) - face.first[1];
+        let along_1 = (origin[axis1] + direction[axis1] * distance) - face.first[0];
+        // The original's sum order: the axis 2 term first.
+        let w1 = face.weights[1] * along_2 + face.weights[0] * along_1;
+        if w1.is_nan() || w1 < 0.0 {
+            continue;
+        }
+        let w2 = face.weights[3] * along_2 + face.weights[2] * along_1;
+        let sum = w1 + w2;
+        if w2 < 0.0 || sum.is_nan() || sum > 1.0 {
+            continue;
+        }
+        best = distance;
+        hit = true;
+    }
+    hit.then_some(best)
+}
+
+/// The bounds edges the floor heightfield snaps to, in centimetres: the low
+/// edge takes the first of the first four that is more than 75 cm above the
+/// mesh's low corner, the high edge the first of the last three (downwards)
+/// that is more than 75 cm below the mesh's high corner.
+const FLOOR_EDGES: [f32; 5] = [-300.0, -150.0, 0.0, 150.0, 300.0];
+/// The finest cell of the floor heightfield: half of the generator's
+/// parameter, 10 cm for the original's 20.
+const FLOOR_FINE_SHARE: f32 = 0.5;
+/// The floor points' step, hard-coded in the original's downsample.
+pub const FLOOR_POINT_STEP: f32 = 20.0;
+/// Marks a 2×2×2 block of fine cells needs (four columns of 255) before it
+/// gives a point.
+const FLOOR_MARK_SUM: u32 = 1019;
+
+/// Rounds to the nearest whole number, ties to even, as the original's
+/// `Round` does, and converts to an integer the way a cast does (no panic).
+fn round_ties_even(v: f32) -> i64 {
+    v.round_ties_even() as i64
+}
+
+/// A floor edge snapped to the 20 cm lattice: `round(v / 20 ∓ 0.1) · 20`,
+/// the fraction computed in the original's mixed single/double constants.
+fn snap_edge(v: f32, offset: f64) -> f32 {
+    ((v * 0.05f32) as f64 - offset).round_ties_even() as i64 as f32 * 20.0
+}
+
+/// The floor heightfield of a mesh: a point at the centre of every 20 cm
+/// cell whose four 10 cm columns all meet a surface in the same 20 cm band.
+///
+/// `bounds` is the mesh's own bounds and `triangles` its faces, both in
+/// centimetres (the original's snapping and its 20 cm step are absolute).
+/// `p` is the generator's parameter: the fine columns are `p / 2` wide and
+/// the points, as in the original's downsample, still 20 cm apart.
+///
+/// Points come in Z, then Y, then X order (X fastest), as the original
+/// walks its fine blocks.
+pub fn floor_points(bounds: Bounds, triangles: &[[Vec3; 3]], p: f32) -> Vec<Vec3> {
+    let fine = p * FLOOR_FINE_SHARE;
+    if fine <= 0.0 || fine.is_nan() || !fine.is_finite() {
+        return Vec::new();
+    }
+    let centre = bounds.centre.to_array();
+    let half = bounds.half_extents.to_array();
+    // The low X edge, the high X edge, then every axis widened to the mesh.
+    let mut low = [FLOOR_EDGES[0], -20.0, -300.0];
+    let mut high = [FLOOR_EDGES[1], 0.0, -300.0];
+    for (i, &edge) in FLOOR_EDGES.iter().take(4).enumerate() {
+        if centre[0] - half[0] < edge + 75.0 {
+            low[0] = FLOOR_EDGES[i];
+            break;
+        }
+    }
+    for (i, &edge) in FLOOR_EDGES.iter().enumerate().skip(1).rev() {
+        if edge - 75.0 < centre[0] + half[0] {
+            high[0] = FLOOR_EDGES[i];
+            break;
+        }
+    }
+    for axis in 0..3 {
+        let lo = centre[axis] - half[axis];
+        if lo < low[axis] {
+            low[axis] = lo;
+        }
+    }
+    for axis in 0..3 {
+        let hi = centre[axis] + half[axis];
+        if high[axis] <= hi && hi != high[axis] {
+            high[axis] = hi;
+        }
+    }
+    for axis in 0..3 {
+        low[axis] = snap_edge(low[axis], 0.1);
+        high[axis] = snap_edge(high[axis], -0.1);
+    }
+    low[1] -= 20.0;
+    let dims = [
+        round_ties_even((high[0] - low[0]) / fine),
+        round_ties_even((high[1] - low[1]) / fine),
+        round_ties_even((high[2] - low[2]) / fine),
+    ];
+    if dims.iter().any(|&n| n <= 0) {
+        return Vec::new();
+    }
+    let dims = [dims[0] as usize, dims[1] as usize, dims[2] as usize];
+    let Some(len) = dims
+        .iter()
+        .try_fold(1usize, |n, &d| n.checked_mul(d))
+        .filter(|&n| n <= isize::MAX as usize)
+    else {
+        return Vec::new();
+    };
+    let mut marks = Vec::new();
+    if marks.try_reserve_exact(len).is_err() {
+        return Vec::new();
+    }
+    marks.resize(len, 0u8);
+    let faces: Vec<SurfaceTriangle> = triangles
+        .iter()
+        .filter_map(|&t| SurfaceTriangle::new(t))
+        .collect();
+    let start_y = high[1] + fine;
+    let max = (dims[1] as f32 + 1.0) * fine;
+    let inverse = 1.0 / fine;
+    for z in 0..dims[2] {
+        let zc = (z as f32 + 0.5) * fine + low[2];
+        for x in 0..dims[0] {
+            let xc = (x as f32 + 0.5) * fine + low[0];
+            let Some(distance) = surface_hit(&faces, Vec3::new(xc, start_y, zc), Vec3::NEG_Y, max)
+            else {
+                continue;
+            };
+            let y = dims[1] as i64 - round_ties_even(distance * inverse);
+            if (0..dims[1] as i64).contains(&y) {
+                marks[x + y as usize * dims[0] + z * dims[0] * dims[1]] = 0xFF;
+            }
+        }
+    }
+    // Every 2×2×2 block of fine cells with four marked columns gives a
+    // point at its centre, on the hard-coded 20 cm step.
+    let mut points = Vec::new();
+    for z in 0..dims[2] / 2 {
+        for y in 0..dims[1] / 2 {
+            for x in 0..dims[0] / 2 {
+                let (x0, y0, z0) = (x * 2, y * 2, z * 2);
+                let at = |x: usize, y: usize, z: usize| {
+                    marks[x + y * dims[0] + z * dims[0] * dims[1]] as u32
+                };
+                let sum = at(x0, y0, z0)
+                    + at(x0 + 1, y0, z0)
+                    + at(x0, y0 + 1, z0)
+                    + at(x0 + 1, y0 + 1, z0)
+                    + at(x0, y0, z0 + 1)
+                    + at(x0 + 1, y0, z0 + 1)
+                    + at(x0, y0 + 1, z0 + 1)
+                    + at(x0 + 1, y0 + 1, z0 + 1);
+                if sum > FLOOR_MARK_SUM {
+                    points.push(Vec3::new(
+                        (x as f32 + 0.5) * FLOOR_POINT_STEP + low[0],
+                        (y as f32 + 0.5) * FLOOR_POINT_STEP + low[1],
+                        (z as f32 + 0.5) * FLOOR_POINT_STEP + low[2],
+                    ));
+                }
+            }
+        }
+    }
+    points
+}
+
+/// The share of the surface generator's parameter that one cell takes.
+const SURFACE_STEP_SHARE: f32 = 0.2;
+/// The share of the step a cell's radius is when its centre touches the
+/// surface: half a cell.
+const SURFACE_CONTACT_SHARE: f32 = 0.5;
+/// The radius of the sphere that first asks whether the surface is anywhere
+/// near a cell: half the cell's diagonal (`√2 / 2`), as the original's
+/// truncated constant.
+const SURFACE_NEAR: f32 = 1.4142135;
+/// A cell with the surface in it.
+const SURFACE_ON: u8 = 0xFF;
+/// A cell with the surface within its larger sphere but not its own.
+const SURFACE_NEAR_CELL: u8 = 0x80;
+/// The weight a covered cell adds to a greedy cover's score.
+const COVER_ON: f32 = 40.0;
+/// The weight of an empty or out-of-grid cell, per step short of six.
+const COVER_EMPTY: f32 = 4.0;
+/// The weight of an already covered cell, per step short of six.
+const COVER_TAKEN: f32 = 0.4;
+/// The score a cover starts from: below every possible window.
+const COVER_START: f32 = -1000.0;
+/// The distance past which the greedy cover ignores a cell's penalty.
+const COVER_REACH: f32 = 6.0;
+
+/// How the surface generator turns its occupied cells into points.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceCover {
+    /// A greedy 5×5×5 cover, the original's default: each point stands for
+    /// up to a 20 cm cube of surface.
+    Greedy,
+    /// One point at every occupied cell (the original's other builder
+    /// flag; no shipped caller sets it).
+    EveryCell,
+}
+
+/// The surface generator's cell counts per axis: `round(10 · half / p) + 3`
+/// forced odd, one border cell on each side left out of the sampling.
+fn surface_dims(bounds: Bounds, p: f32) -> [usize; 3] {
+    [0, 1, 2].map(|axis| {
+        let n = round_ties_even(bounds.half_extents[axis] * 10.0 / p);
+        ((n as i32 as u32).wrapping_add(3) | 1) as usize
+    })
+}
+
+/// One cell of the surface generator's fine grid, in scan order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SurfaceCell {
+    cell: [u16; 3],
+    count: u16,
+}
+
+/// The general surface generator: a point for each part of the mesh's
+/// surface, on a lattice a fifth of `p` wide (4 cm for the original's 20).
+///
+/// `bounds` is the mesh's own bounds and `p` the generator's parameter, in
+/// the same unit. `inside` is the mesh's collision query: whether a sphere
+/// of the given radius at a point touches the mesh. `cover` picks the
+/// original's greedy cover or its one-point-per-cell variant.
+///
+/// A cell whose centre is within half a cell of the surface is "on"; one
+/// whose centre only the larger near sphere reaches is "near". Near cells
+/// next to an on cell are dropped, the rest become on, and the cover emits
+/// its points in the order of the on cells' 3×3×3 counts, sparse first.
+pub fn surface_points(
+    bounds: Bounds,
+    p: f32,
+    inside: impl Fn(Vec3, f32) -> bool,
+    cover: SurfaceCover,
+) -> Vec<Vec3> {
+    let step = p * SURFACE_STEP_SHARE;
+    if step <= 0.0 || step.is_nan() || !step.is_finite() {
+        return Vec::new();
+    }
+    let dims = surface_dims(bounds, p);
+    if dims.iter().any(|&n| n < 3) {
+        return Vec::new();
+    }
+    let Some(len) = dims
+        .iter()
+        .try_fold(1usize, |n, &d| n.checked_mul(d))
+        .filter(|&n| n <= isize::MAX as usize)
+    else {
+        return Vec::new();
+    };
+    let mut grid = Vec::new();
+    if grid.try_reserve_exact(len).is_err() {
+        return Vec::new();
+    }
+    grid.resize(len, 0u8);
+    let near = step * SURFACE_NEAR * 0.5;
+    let contact = step * SURFACE_CONTACT_SHARE;
+    let centre = bounds.centre;
+    for z in 1..dims[2] - 1 {
+        for y in 1..dims[1] - 1 {
+            for x in 1..dims[0] - 1 {
+                let at = centre
+                    + Vec3::new(
+                        (x as f32 + 0.5 - dims[0] as f32 * 0.5) * step,
+                        (y as f32 + 0.5 - dims[1] as f32 * 0.5) * step,
+                        (z as f32 + 0.5 - dims[2] as f32 * 0.5) * step,
+                    );
+                if !inside(at, near) {
+                    continue;
+                }
+                grid[x + y * dims[0] + z * dims[0] * dims[1]] = if inside(at, contact) {
+                    SURFACE_ON
+                } else {
+                    SURFACE_NEAR_CELL
+                };
+            }
+        }
+    }
+    let list = clean_and_list(&mut grid, dims);
+    match cover {
+        SurfaceCover::Greedy => greedy_points(&mut grid, dims, centre, step, &list),
+        SurfaceCover::EveryCell => every_cell_points(&grid, dims, centre, step),
+    }
+}
+
+/// The surface generator run once for a master node and shared by its
+/// instances: the original voxelises the master and copies the point count
+/// and buffer to every instance in its list.
+pub fn shared_surface_points(
+    bounds: Bounds,
+    p: f32,
+    inside: impl Fn(Vec3, f32) -> bool,
+    cover: SurfaceCover,
+) -> Arc<Vec<Vec3>> {
+    Arc::new(surface_points(bounds, p, inside, cover))
+}
+
+/// Whether a sphere touches a mesh given as triangles: the query the
+/// surface generator makes through a node's collision data.
+///
+/// The original's query is the node's own (a kd-tree over its collision
+/// triangles), so this is the stand-in used here: the sphere touches when
+/// its centre is no farther than its radius from any triangle's closest
+/// point. Guess: the node's query is a triangle distance test, and it is
+/// inclusive at the radius.
+pub fn mesh_touches(triangles: &[[Vec3; 3]], centre: Vec3, radius: f32) -> bool {
+    let limit = radius * radius;
+    triangles
+        .iter()
+        .any(|t| closest_distance_squared(*t, centre) <= limit)
+}
+
+/// The squared distance from `p` to the closest point of a triangle.
+fn closest_distance_squared(t: [Vec3; 3], p: Vec3) -> f32 {
+    let [a, b, c] = t;
+    let ab = b - a;
+    let ac = c - a;
+    let ap = p - a;
+    let d1 = ab.dot(ap);
+    let d2 = ac.dot(ap);
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return ap.length_squared();
+    }
+    let bp = p - b;
+    let d3 = ab.dot(bp);
+    let d4 = ac.dot(bp);
+    if d3 >= 0.0 && d4 <= d3 {
+        return bp.length_squared();
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        let v = d1 / (d1 - d3);
+        return (p - (a + ab * v)).length_squared();
+    }
+    let cp = p - c;
+    let d5 = ab.dot(cp);
+    let d6 = ac.dot(cp);
+    if d6 >= 0.0 && d5 <= d6 {
+        return cp.length_squared();
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        let w = d2 / (d2 - d6);
+        return (p - (a + ac * w)).length_squared();
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && d4 - d3 >= 0.0 && d5 - d6 >= 0.0 {
+        let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        return (p - (b + (c - b) * w)).length_squared();
+    }
+    let denom = 1.0 / (va + vb + vc);
+    let v = vb * denom;
+    let w = vc * denom;
+    (p - (a + ab * v + ac * w)).length_squared()
+}
+
+/// The pass before the cover: near cells with an on cell in their 3×3×3
+/// are cleared, the rest become on, and all on cells are listed by their
+/// 3×3×3 count, ascending, equal counts in scan order.
+fn clean_and_list(grid: &mut [u8], dims: [usize; 3]) -> Vec<SurfaceCell> {
+    let [nx, ny, nz] = dims;
+    let index = |x: usize, y: usize, z: usize| x + y * nx + z * nx * ny;
+    for z in 1..nz - 1 {
+        for y in 1..ny - 1 {
+            for x in 1..nx - 1 {
+                if grid[index(x, y, z)] != SURFACE_NEAR_CELL {
+                    continue;
+                }
+                'cells: for dz in -1i32..=1 {
+                    for dy in -1i32..=1 {
+                        for dx in -1i32..=1 {
+                            let at = index(
+                                (x as i32 + dx) as usize,
+                                (y as i32 + dy) as usize,
+                                (z as i32 + dz) as usize,
+                            );
+                            if grid[at] == SURFACE_ON {
+                                grid[index(x, y, z)] = 0;
+                                break 'cells;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut list: Vec<SurfaceCell> = Vec::new();
+    for z in 1..nz - 1 {
+        for y in 1..ny - 1 {
+            for x in 1..nx - 1 {
+                if grid[index(x, y, z)] == 0 {
+                    continue;
+                }
+                grid[index(x, y, z)] = SURFACE_ON;
+                let mut count = 0u16;
+                for dz in -1i32..=1 {
+                    for dy in -1i32..=1 {
+                        for dx in -1i32..=1 {
+                            let at = index(
+                                (x as i32 + dx) as usize,
+                                (y as i32 + dy) as usize,
+                                (z as i32 + dz) as usize,
+                            );
+                            if grid[at] != 0 {
+                                count += 1;
+                            }
+                        }
+                    }
+                }
+                let cell = [x as u16, y as u16, z as u16];
+                list.insert(list_position(&list, count), SurfaceCell { cell, count });
+            }
+        }
+    }
+    list
+}
+
+/// Where a count goes in the ascending list: after every equal count, as
+/// the original's binary search and its walk past equals do.
+fn list_position(list: &[SurfaceCell], count: u16) -> usize {
+    let mut low = 0i64;
+    let mut high = list.len() as i64 - 1;
+    let mut mid = (high / 2) as usize;
+    while low <= high {
+        if (count as i32) < (list[mid].count as i32) {
+            high = mid as i64 - 1;
+        } else {
+            if count as i32 <= list[mid].count as i32 {
+                break;
+            }
+            low = mid as i64 + 1;
+        }
+        mid = ((high - low) / 2 + low) as usize;
+    }
+    while mid < list.len() && list[mid].count == count {
+        mid += 1;
+    }
+    mid
+}
+
+/// A point at a cell's centre.
+fn cell_point(centre: Vec3, step: f32, dims: [usize; 3], cell: [usize; 3]) -> Vec3 {
+    centre
+        + Vec3::new(
+            (cell[0] as f32 + 0.5 - dims[0] as f32 * 0.5) * step,
+            (cell[1] as f32 + 0.5 - dims[1] as f32 * 0.5) * step,
+            (cell[2] as f32 + 0.5 - dims[2] as f32 * 0.5) * step,
+        )
+}
+
+/// One point at every on cell, in scan order (Z, then Y, then X).
+fn every_cell_points(grid: &[u8], dims: [usize; 3], centre: Vec3, step: f32) -> Vec<Vec3> {
+    // The whole grid, borders included, as the original walks it.
+    let [nx, ny, nz] = dims;
+    let mut points = Vec::new();
+    for z in 0..nz {
+        for y in 0..ny {
+            for x in 0..nx {
+                if grid[x + y * nx + z * nx * ny] == SURFACE_ON {
+                    points.push(cell_point(centre, step, dims, [x, y, z]));
+                }
+            }
+        }
+    }
+    points
+}
+
+/// The greedy cover: for each listed on cell still on, the best-scoring
+/// centre within ±2 cells of it takes a point and decrements every on cell
+/// of its 5×5×5 window; the first centre of equal score wins, in Z, Y, X
+/// order.
+fn greedy_points(
+    grid: &mut [u8],
+    dims: [usize; 3],
+    centre: Vec3,
+    step: f32,
+    list: &[SurfaceCell],
+) -> Vec<Vec3> {
+    let [nx, ny, nz] = dims;
+    let index = |x: usize, y: usize, z: usize| x + y * nx + z * nx * ny;
+    let mut points = Vec::new();
+    let mut window: Vec<usize> = Vec::new();
+    let mut taken: Vec<usize> = Vec::new();
+    for entry in list {
+        let [x, y, z] = entry.cell.map(usize::from);
+        if grid[index(x, y, z)] != SURFACE_ON {
+            continue;
+        }
+        let (zl, zh) = (z.saturating_sub(2), (z + 2).min(nz - 1));
+        let (yl, yh) = (y.saturating_sub(2), (y + 2).min(ny - 1));
+        let (xl, xh) = (x.saturating_sub(2), (x + 2).min(nx - 1));
+        let mut best_score = COVER_START;
+        let mut best = None;
+        for zq in zl..=zh {
+            for yq in yl..=yh {
+                for xq in xl..=xh {
+                    let mut score = 0.0f32;
+                    window.clear();
+                    for dz in -2i32..=2 {
+                        for dy in -2i32..=2 {
+                            for dx in -2i32..=2 {
+                                let (cx, cy, cz) = (xq as i32 + dx, yq as i32 + dy, zq as i32 + dz);
+                                let distance = (dx.abs() + dy.abs() + dz.abs()) as f32;
+                                if cx < 0
+                                    || cy < 0
+                                    || cz < 0
+                                    || cx >= nx as i32
+                                    || cy >= ny as i32
+                                    || cz >= nz as i32
+                                {
+                                    if distance < COVER_REACH {
+                                        score -= (COVER_REACH - distance) * COVER_EMPTY;
+                                    }
+                                    continue;
+                                }
+                                let at = index(cx as usize, cy as usize, cz as usize);
+                                match grid[at] {
+                                    SURFACE_ON => {
+                                        score += COVER_ON;
+                                        window.push(at);
+                                    }
+                                    0 => {
+                                        if distance < COVER_REACH {
+                                            score -= (COVER_REACH - distance) * COVER_EMPTY;
+                                        }
+                                    }
+                                    _ => {
+                                        if distance < COVER_REACH {
+                                            score -= (COVER_REACH - distance) * COVER_TAKEN;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if best_score < score {
+                        best_score = score;
+                        best = Some([xq, yq, zq]);
+                        taken.clone_from(&window);
+                    }
+                }
+            }
+        }
+        let Some(at) = best else { continue };
+        if taken.is_empty() {
+            continue;
+        }
+        points.push(cell_point(centre, step, dims, at));
+        for &cell in &taken {
+            if grid[cell] != 0 {
+                grid[cell] -= 1;
+            }
+        }
+    }
+    points
+}
+
+#[cfg(test)]
+mod tests;

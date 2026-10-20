@@ -597,11 +597,21 @@ in world space there too):
 - Many wall sets (the menu's `GEWS_UWA02`) store no points, and the original
   generates none for walls. Those walls block nothing.
 - **Floor layer**: each tile-grid cell's floor (the floor set's pieces and
-  the wall pieces' `+F` strips) is rasterised:
-  - one column per 10 cm, taking the highest upward-facing face;
-  - the 10 cm cell under that top is marked;
-  - every 20 cm voxel holding four marks (its four columns in the same band)
-    gets a point at its centre.
+  the wall pieces' `+F` strips) feeds the original's floor heightfield
+  (`exa_physics::voxel::floor_points`) on the piece's triangles, in
+  centimetres:
+  - the bounds widen to the piece, then snap to the 20 cm lattice: the x
+    low edge is the first of −300/−150/0/150 cm more than 75 cm above the
+    piece's low corner (y low −20 cm, z low −300 cm), the x high the first
+    of 300/150/0 more than 75 cm below its high corner (y high 0, z high
+    −300 cm); the y low then drops 20 cm more;
+  - one ray straight down every 10 cm column, from 10 cm above the high
+    edge; the highest upward-facing triangle under it wins, edges inside,
+    and the ray must land within the bounds;
+  - the 10 cm cell under the surface is marked;
+  - every 20 cm cell whose four columns all mark inside it gives a point at
+    its centre (the downsample's 20 cm step is fixed, whatever the
+    generator's parameter).
   
   A flat floor at height 0 fills the slice from −20 to 0 cm.
 - Each column remembers the lowest slice a point fell in. A sector's floor

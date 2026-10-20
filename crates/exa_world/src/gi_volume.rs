@@ -1,8 +1,9 @@
 //! The occupancy grid of the original's voxel global illumination: a block
 //! of 20 cm voxels, 256 × 256 across (48 m plus margins) and 64 or 128
 //! high, below the level's highest point. Meshes mark their cells solid by
-//! splatting their GI sample points, tile-grid floors become a solid layer
-//! under their surface, and the top two slices form a soft lid.
+//! splatting their GI sample points, tile-grid floors feed the original's
+//! floor heightfield (`exa_physics::voxel`) into a solid layer under their
+//! surface, and the top two slices form a soft lid.
 //! Light then spreads through the open cells each frame (`exa_render::gi`).
 //! Rules: `docs/RENDERING.md` (Voxel GI).
 //!
@@ -16,6 +17,7 @@ use std::sync::Arc;
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
 use bevy::transform::TransformSystems;
+use exa_physics::voxel::{self, Bounds};
 use exa_render::gi::GiVolume;
 
 pub struct GiVolumePlugin;
@@ -121,8 +123,46 @@ enum SourceInputs {
 struct GiInputs {
     meshes: usize,
     points: Vec<Vec3>,
-    floors: Vec<[Vec3; 3]>,
+    floors: Vec<FloorMesh>,
     terrain: Vec<[Vec3; 3]>,
+}
+
+/// A tile-grid floor piece with its world triangles and bounds (metres),
+/// kept apart from the other meshes: each piece feeds the original's floor
+/// heightfield.
+///
+/// The original merges a cell's floor strips into one mesh and runs the
+/// generator in that mesh's object space, whose origin is the cell centre
+/// (a whole number of 20 cm steps from the world origin). Running it on
+/// each piece in world space gives the same 20 cm lattice, since every
+/// snapped edge is a world multiple of 20 cm.
+struct FloorMesh {
+    triangles: Vec<[Vec3; 3]>,
+    bounds: Bounds,
+}
+
+impl FloorMesh {
+    /// The piece's floor points (world, metres), from the original's floor
+    /// heightfield at its 20 cm parameter.
+    ///
+    /// The generator keeps the original's centimetres: the piece's
+    /// triangles and bounds are scaled up, and the points it marks on the
+    /// world's 20 cm lattice are scaled back.
+    fn points(&self) -> Vec<Vec3> {
+        let triangles: Vec<[Vec3; 3]> = self
+            .triangles
+            .iter()
+            .map(|t| t.map(|p| p * CM_PER_M))
+            .collect();
+        let bounds = Bounds {
+            centre: self.bounds.centre * CM_PER_M,
+            half_extents: self.bounds.half_extents * CM_PER_M,
+        };
+        voxel::floor_points(bounds, &triangles, FLOOR_PARAMETER)
+            .into_iter()
+            .map(|p| p / CM_PER_M)
+            .collect()
+    }
 }
 
 /// A mesh's positions and triangle corners with its world transform, owned
@@ -205,7 +245,7 @@ fn collect_source(
         GiInputs {
             meshes: points.len(),
             points: world,
-            floors: world_triangles(&floors),
+            floors: floor_meshes(&floors),
             terrain: world_triangles(&ground),
         }
     });
@@ -239,19 +279,57 @@ fn mesh_copies<'a>(
 fn world_triangles(meshes: &[MeshCopy]) -> Vec<[Vec3; 3]> {
     let mut triangles = Vec::new();
     for mesh in meshes {
-        let corners: Vec<Vec3> = mesh
-            .positions
-            .iter()
-            .map(|&p| mesh.at.transform_point3(Vec3::from(p)))
-            .collect();
-        for t in mesh.indices.as_chunks::<3>().0 {
-            let corner = |i: u32| corners.get(i as usize).copied();
-            if let (Some(a), Some(b), Some(c)) = (corner(t[0]), corner(t[1]), corner(t[2])) {
-                triangles.push([a, b, c]);
-            }
+        triangles.extend(world_triangles_of(mesh));
+    }
+    triangles
+}
+
+/// A mesh's triangles in world space.
+fn world_triangles_of(mesh: &MeshCopy) -> Vec<[Vec3; 3]> {
+    let corners: Vec<Vec3> = mesh
+        .positions
+        .iter()
+        .map(|&p| mesh.at.transform_point3(Vec3::from(p)))
+        .collect();
+    let mut triangles = Vec::new();
+    for t in mesh.indices.as_chunks::<3>().0 {
+        let corner = |i: u32| corners.get(i as usize).copied();
+        if let (Some(a), Some(b), Some(c)) = (corner(t[0]), corner(t[1]), corner(t[2])) {
+            triangles.push([a, b, c]);
         }
     }
     triangles
+}
+
+/// The floor pieces, each with its world triangles and the bounds of those
+/// triangles.
+fn floor_meshes(meshes: &[MeshCopy]) -> Vec<FloorMesh> {
+    meshes
+        .iter()
+        .map(|mesh| {
+            let triangles = world_triangles_of(mesh);
+            let mut min = Vec3::splat(f32::INFINITY);
+            let mut max = Vec3::splat(f32::NEG_INFINITY);
+            for t in &triangles {
+                for &p in t {
+                    min = min.min(p);
+                    max = max.max(p);
+                }
+            }
+            let (centre, half_extents) = if triangles.is_empty() {
+                (Vec3::ZERO, Vec3::ZERO)
+            } else {
+                ((min + max) * 0.5, (max - min) * 0.5)
+            };
+            FloorMesh {
+                triangles,
+                bounds: Bounds {
+                    centre,
+                    half_extents,
+                },
+            }
+        })
+        .collect()
 }
 
 /// Keeps the block around the point ahead of the camera: starts a build
@@ -341,19 +419,21 @@ fn follow_camera(
 /// points, then the floors, as the original builds a block.
 fn build_block(focus: Vec3, level: PendingGi, inputs: &GiInputs) -> BuiltBlock {
     let mut occupancy = Occupancy::new(focus, level.top, level.bottom);
-    let mut ground = FloorSurface::with_columns(&occupancy, 1);
+    let mut ground = TerrainColumns::new(&occupancy);
     for &t in &inputs.terrain {
         ground.add(t);
     }
-    let terrain_columns = ground.apply_terrain(&mut occupancy);
+    let terrain_columns = ground.apply(&mut occupancy);
     for &p in &inputs.points {
         occupancy.splat(p);
     }
-    let mut surface = FloorSurface::new(&occupancy);
-    for &t in &inputs.floors {
-        surface.add(t);
+    let mut floor_points = 0;
+    for floor in &inputs.floors {
+        for p in floor.points() {
+            occupancy.splat(p);
+            floor_points += 1;
+        }
     }
-    let floor_points = surface.apply(&mut occupancy);
     let floors = occupancy.floors();
     if let Some(path) = std::env::var_os("EXA_GI_DUMP") {
         let _ = std::fs::write(&path, &occupancy.cells);
@@ -384,30 +464,24 @@ const MARGIN: usize = 8;
 const SECTOR: usize = 30;
 const SECTORS: usize = 8;
 const SECTOR_M: f32 = SECTOR as f32 * VOXEL;
-/// Floor columns are half a voxel wide.
-const FINE: usize = 2;
 /// Occupancy of a voxel below the terrain surface.
 const TERRAIN_SOLID: u8 = 20;
+/// The floor generator's parameter, in centimetres: the original's 20.
+const FLOOR_PARAMETER: f32 = 20.0;
+/// Centimetres to the metre.
+const CM_PER_M: f32 = 100.0;
 
-/// The top of a surface over the block, per column (X fastest): 10 cm
-/// columns for the floor layer, whole voxels for terrain.
-struct FloorSurface {
+/// The top of the terrain over the block, per whole column (X fastest).
+struct TerrainColumns {
     origin: Vec3,
-    /// Columns per voxel along each axis.
-    fine: usize,
     tops: Vec<f32>,
 }
 
-impl FloorSurface {
+impl TerrainColumns {
     fn new(o: &Occupancy) -> Self {
-        Self::with_columns(o, FINE)
-    }
-
-    fn with_columns(o: &Occupancy, fine: usize) -> Self {
         Self {
             origin: o.origin,
-            fine,
-            tops: vec![f32::NEG_INFINITY; SIDE * fine * SIDE * fine],
+            tops: vec![f32::NEG_INFINITY; SIDE * SIDE],
         }
     }
 
@@ -418,12 +492,10 @@ impl FloorSurface {
         if n.y <= 1e-7 * n.length() {
             return;
         }
-        let columns = SIDE * self.fine;
-        let fine = VOXEL / self.fine as f32;
-        let to_grid = |p: Vec3| ((p - self.origin) / fine).xz();
+        let to_grid = |p: Vec3| ((p - self.origin) / VOXEL).xz();
         let [a, b, c] = t.map(to_grid);
         let lo = a.min(b).min(c).floor().max(Vec2::ZERO);
-        let hi = a.max(b).max(c).ceil().min(Vec2::splat(columns as f32));
+        let hi = a.max(b).max(c).ceil().min(Vec2::splat(SIDE as f32));
         let area = (b - a).perp_dot(c - a);
         for z in lo.y as usize..hi.y as usize {
             for x in lo.x as usize..hi.x as usize {
@@ -435,7 +507,7 @@ impl FloorSurface {
                     continue;
                 }
                 let h = wa * t[0].y + wb * t[1].y + wc * t[2].y;
-                let top = &mut self.tops[x + z * columns];
+                let top = &mut self.tops[x + z * SIDE];
                 *top = top.max(h);
             }
         }
@@ -444,8 +516,7 @@ impl FloorSurface {
     /// Fills terrain as the original does (whole-voxel columns): voxels below
     /// the surface hold 20, the surface voxel its covered fraction of 20; the
     /// margins are left alone. Returns the columns filled.
-    fn apply_terrain(&self, o: &mut Occupancy) -> usize {
-        debug_assert_eq!(self.fine, 1);
+    fn apply(&self, o: &mut Occupancy) -> usize {
         let mut filled = 0;
         for z in MARGIN..SIDE - MARGIN {
             for x in MARGIN..SIDE - MARGIN {
@@ -469,39 +540,6 @@ impl FloorSurface {
                 let column = &mut o.lowest[x + z * SIDE];
                 *column = (*column).min(surface.min(o.depth - 1) as u8);
                 filled += 1;
-            }
-        }
-        filled
-    }
-
-    /// Fills each voxel holding the 10 cm cells under at least four of its
-    /// columns' tops (all four columns in the same 20 cm band); returns how
-    /// many voxels were filled.
-    fn apply(&self, o: &mut Occupancy) -> usize {
-        let fine = VOXEL / FINE as f32;
-        let mut filled = 0;
-        for z in 0..SIDE {
-            for x in 0..SIDE {
-                let mut counts = std::collections::HashMap::new();
-                for dz in 0..FINE {
-                    for dx in 0..FINE {
-                        let top = self.tops[x * FINE + dx + (z * FINE + dz) * SIDE * FINE];
-                        if top.is_finite() {
-                            // The 10 cm cell whose top is the first boundary
-                            // at or above the surface.
-                            let cell = ((top - self.origin.y) / fine).ceil() as i64 - 1;
-                            *counts.entry(cell.div_euclid(FINE as i64)).or_insert(0) += 1;
-                        }
-                    }
-                }
-                for (y, n) in counts {
-                    if n >= 4 {
-                        let centre = self.origin
-                            + Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5) * VOXEL;
-                        o.splat(centre);
-                        filled += 1;
-                    }
-                }
             }
         }
         filled
@@ -733,7 +771,6 @@ mod tests {
         let mut o = Occupancy::new(Vec3::ZERO, 3.4, 0.0);
         // Sectors sit on multiples of 6 m.
         assert!(((o.origin.x + 1.6) / 6.0).fract().abs() < 1e-4);
-        let mut floor = FloorSurface::new(&o);
         // One 6 m cell, counter-clockwise seen from above.
         let (a, b, c, d) = (
             Vec3::new(0.0, 0.0, 0.0),
@@ -741,14 +778,29 @@ mod tests {
             Vec3::new(6.0, 0.0, 6.0),
             Vec3::new(6.0, 0.0, 0.0),
         );
-        floor.add([a, b, c]);
-        floor.add([a, c, d]);
-        // Turned down: ignored.
-        floor.add([a + Vec3::Y, c + Vec3::Y, b + Vec3::Y]);
-        assert_eq!(floor.apply(&mut o), 30 * 30);
+        let floor = FloorMesh {
+            triangles: vec![[a, b, c], [a, c, d]],
+            bounds: Bounds {
+                centre: Vec3::new(3.0, 0.0, 3.0),
+                half_extents: Vec3::new(3.0, 0.0, 3.0),
+            },
+        };
+        assert_eq!(floor.points().len(), 30 * 30);
+        for p in floor.points() {
+            o.splat(p);
+        }
         assert_eq!(o.at(Vec3::new(3.0, -0.1, 3.0)), Some(20));
         assert_eq!(o.at(Vec3::new(3.0, 0.1, 3.0)), Some(0));
         assert_eq!(o.at(Vec3::new(3.0, -0.3, 3.0)), Some(0));
+        // A downward face gives nothing.
+        let down = FloorMesh {
+            triangles: vec![[a, c, b], [a, d, c]],
+            bounds: Bounds {
+                centre: Vec3::new(3.0, 0.0, 3.0),
+                half_extents: Vec3::new(3.0, 0.0, 3.0),
+            },
+        };
+        assert!(down.points().is_empty());
     }
 
     #[test]

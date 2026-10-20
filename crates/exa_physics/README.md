@@ -126,6 +126,22 @@ original's weight (`body::Drive::hold_weight`), which the character tick
 hands to the sampler; the race's clip rates (`body::RaceMuscles`) set its
 clip clock.
 
+The mesh voxeliser (`voxel`) keeps the original's occupancy map of a
+rigid-body mesh (`VoxelMap`: the 0.02 resolution, unit scale and caller's
+tag, the map's box of cells, and the extracted spheres) and the two
+routines that sample a mesh into a fine grid. `floor_points` is the floor
+heightfield: 10 cm columns, a ray down each with the highest upward face
+winning, a mark in the 10 cm cell under it, and a point at the centre of
+every 20 cm cell holding four marks. `surface_points` is the general
+surface generator: cells a fifth of its parameter apart (4 cm for the
+original's 20) are classified on or near by a sphere query, near cells
+beside the surface are cleared, and a greedy 5×5×5 cover leaves one point
+per 20 cm cube (`SurfaceCover::EveryCell` is the original's other builder
+path, one point per cell); `shared_surface_points` is the master-to-
+instances copy, and `mesh_touches` the sphere-against-triangles query the
+generator makes. `exa_world::gi_volume` runs the floor generator on each
+floor piece in the original's centimetres.
+
 Props and items with a rigid body are bodies in the same solver
 (`src/body_rigid.rs`, `body::Ragdoll::rigid`): built as the original
 registers them, asleep (countdown 0) where the level placed them, with
@@ -152,6 +168,9 @@ last tick dealt. Nothing calls them unless a tool is on
 
 ## Scope
 
+- The mesh voxeliser and its voxel map (`voxel`): the floor heightfield and
+  general surface generators, their fine cell grids, rounding and ray and
+  sphere queries, and the map of a rigid-body mesh.
 - The cloth's start seeds its fields, installs an identity matrix and derives its step from the particle count; its frame swap rotates three vertex buffers.
 - Activation sets the cloth's flag words, phase and 0.4 scale; the transform visits all three particle buffers plus the object's origin and extent.
 - The rebuild copies the origin, rejects a mismatched override and transforms every particle point into a fresh submitted buffer.
