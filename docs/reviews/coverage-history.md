@@ -54,3 +54,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-20 | b3b3044 | dirty | 22.3% | 5.7% | 18.3% | 27.3% | steer the main menu |
 | 2026-10-20 | b4bfc81 | clean | 22.3% | 5.7% | 18.3% | 27.3% | record the main menu selection |
 | 2026-10-20 | 2bc2808 | dirty | 22.3% | 5.7% | 18.3% | 27.3% | lay out the settings records |
+| 2026-10-20 | 0eb48c1 | clean | 22.3% | 5.7% | 18.3% | 27.3% | record the settings records |
