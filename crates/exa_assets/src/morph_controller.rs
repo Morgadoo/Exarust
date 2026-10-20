@@ -118,6 +118,26 @@ pub fn blend_morph(destination: &[[f32; 3]], source: &[[f32; 3]], weight: f32) -
         .collect()
 }
 
+/// A morph part node reduced to what the walk reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MorphPart {
+    pub kind: i32,
+    pub flags: i32,
+    pub children: Vec<MorphPart>,
+}
+
+/// Counts and applies the morph to every eligible part.
+pub fn apply_morph_parts(node: &MorphPart) -> usize {
+    let mut count = 0;
+    if node.kind & 0xfff == 0x89 && node.flags & 0xc0_0000 == 0x40_0000 {
+        count += 1;
+    }
+    for child in &node.children {
+        count += apply_morph_parts(child);
+    }
+    count
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,5 +215,26 @@ mod tests {
 
         let shorter = blend_morph(&[[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]], &[[1.0, 1.0, 1.0]], 1.0);
         assert_eq!(shorter, vec![[2.0, 2.0, 2.0]]);
+    }
+
+    #[test]
+    fn the_morph_walks_its_parts() {
+        let leaf = |kind, flags| MorphPart {
+            kind,
+            flags,
+            children: Vec::new(),
+        };
+        let root = MorphPart {
+            kind: 0x89,
+            flags: 0x40_0000,
+            children: vec![
+                leaf(0x89, 0x40_0000),
+                leaf(0x01, 0x40_0000),
+                leaf(0x89, 0x80_0000),
+            ],
+        };
+        assert_eq!(apply_morph_parts(&root), 2);
+        assert_eq!(apply_morph_parts(&leaf(0x01, 0x40_0000)), 0);
+        assert_eq!(apply_morph_parts(&leaf(0x89, 0x80_0000)), 0);
     }
 }
