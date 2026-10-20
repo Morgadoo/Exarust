@@ -721,6 +721,46 @@ pub fn resize_creation_view(frame: Option<i32>, unit: i32, has_global: bool) -> 
     }
 }
 
+/// The creation view's four refresh calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationViewRefresh {
+    pub link: bool,
+    pub camera: bool,
+    pub first: bool,
+    pub second: bool,
+}
+
+/// Runs the view's link, camera and two ticks.
+pub fn refresh_creation_view() -> CreationViewRefresh {
+    CreationViewRefresh {
+        link: true,
+        camera: true,
+        first: true,
+        second: true,
+    }
+}
+
+/// The creation flag's result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationFlag {
+    pub word: i32,
+    pub refreshed: bool,
+    pub part_found: bool,
+}
+
+/// Sets or clears bit `0x10000` and stores the part result.
+pub fn set_creation_flag(word: i32, flag: bool, part_found: bool) -> CreationFlag {
+    CreationFlag {
+        word: if flag {
+            word | 0x1_0000
+        } else {
+            word & !0x1_0000
+        },
+        refreshed: true,
+        part_found,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1225,5 +1265,29 @@ mod tests {
         let unframed = resize_creation_view(None, 4, false);
         assert_eq!(unframed.count, 1);
         assert!(!unframed.ticked);
+    }
+
+    #[test]
+    fn the_creation_view_refreshes_and_flags() {
+        let refresh = refresh_creation_view();
+        assert_eq!(
+            refresh,
+            CreationViewRefresh {
+                link: true,
+                camera: true,
+                first: true,
+                second: true,
+            }
+        );
+
+        let set = set_creation_flag(0, true, true);
+        assert_eq!(set.word, 0x1_0000);
+        assert!(set.refreshed);
+        assert!(set.part_found);
+
+        let clear = set_creation_flag(0x1_0000, false, false);
+        assert_eq!(clear.word, 0);
+        assert!(clear.refreshed);
+        assert!(!clear.part_found);
     }
 }
