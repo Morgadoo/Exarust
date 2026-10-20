@@ -1,9 +1,12 @@
-//! The morph controller's setup and nearest target.
+//! The morph controller: setup, nearest target, blends and the vertex apply.
 //!
 //! Setup stores the target's count and allocates and copies its two arrays.
 //! The nearest update replaces the best point only when a new distance is
-//! strictly closer. Evidence: the 100-byte `0x1000db620` and the 66-byte
-//! `0x1000de0b0`.
+//! strictly closer. The vertex apply deforms each vertex's offset by the
+//! 3 × 3 basis its three morph points form, subtracts the controller's
+//! base, applies the owner's orientation and adds the vertex's base.
+//! Evidence: the 100-byte `0x1000db620`, the 66-byte `0x1000de0b0` and the
+//! 448-byte `0x1000dd3c0`.
 
 /// A morph controller's opening.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -458,5 +461,126 @@ mod tests {
         let mut wrong = bytes.clone();
         wrong[0] = 0;
         assert_eq!(parse_morph_block(&wrong, 2), None);
+    }
+}
+
+/// One vertex the morph controller drives: the joint whose three points
+/// form its basis, the vertex's offset in that basis and the base point
+/// the result is added to.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MorphVertex {
+    pub joint: u32,
+    pub offset: [f32; 3],
+    pub base: [f32; 3],
+}
+
+/// Applies the morph's vertices: for each vertex, the three points its
+/// joint names (through the remap) are the rows of a 3 × 3 basis, the
+/// vertex's offset is multiplied by it, the controller's base is
+/// subtracted, the owner's rows are applied, and the vertex's base is
+/// added. One output point per vertex.
+pub fn apply_morph_vertices(
+    base: [f32; 3],
+    owner_rows: [[f32; 3]; 3],
+    joints: &[[u32; 3]],
+    remap: &[u32],
+    points: &[[f32; 3]],
+    vertices: &[MorphVertex],
+) -> Vec<[f32; 3]> {
+    vertices
+        .iter()
+        .map(|vertex| {
+            let joint = joints[vertex.joint as usize];
+            let row0 = points[remap[joint[0] as usize] as usize];
+            let row1 = points[remap[joint[1] as usize] as usize];
+            let row2 = points[remap[joint[2] as usize] as usize];
+            let offset = vertex.offset;
+            let deformed = [
+                row0[0] * offset[0] + row1[0] * offset[1] + row2[0] * offset[2],
+                row0[1] * offset[0] + row1[1] * offset[1] + row2[1] * offset[2],
+                row0[2] * offset[0] + row1[2] * offset[1] + row2[2] * offset[2],
+            ];
+            let relative = [
+                deformed[0] - base[0],
+                deformed[1] - base[1],
+                deformed[2] - base[2],
+            ];
+            let rotated = [
+                owner_rows[0][0] * relative[0]
+                    + owner_rows[1][0] * relative[1]
+                    + owner_rows[2][0] * relative[2],
+                owner_rows[0][1] * relative[0]
+                    + owner_rows[1][1] * relative[1]
+                    + owner_rows[2][1] * relative[2],
+                owner_rows[0][2] * relative[0]
+                    + owner_rows[1][2] * relative[1]
+                    + owner_rows[2][2] * relative[2],
+            ];
+            [
+                rotated[0] + vertex.base[0],
+                rotated[1] + vertex.base[1],
+                rotated[2] + vertex.base[2],
+            ]
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod apply_tests {
+    use super::*;
+
+    #[test]
+    fn the_basis_deforms_each_vertex() {
+        let points = [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]];
+        let joints = [[0, 1, 2]];
+        let remap = [0, 1, 2];
+        let vertices = [MorphVertex {
+            joint: 0,
+            offset: [1.0, 1.0, 1.0],
+            base: [0.0, 0.0, 10.0],
+        }];
+        let out = apply_morph_vertices(
+            [1.0, 1.0, 1.0],
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            &joints,
+            &remap,
+            &points,
+            &vertices,
+        );
+        assert_eq!(out, vec![[0.0, 1.0, 12.0]]);
+    }
+
+    #[test]
+    fn the_remap_and_owner_rows_apply() {
+        let points = [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]];
+        let joints = [[0, 1, 2]];
+        let vertices = [MorphVertex {
+            joint: 0,
+            offset: [1.0, 0.0, 0.0],
+            base: [0.0, 0.0, 0.0],
+        }];
+        let out = apply_morph_vertices(
+            [0.0, 0.0, 0.0],
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            &joints,
+            &[2, 0, 1],
+            &points,
+            &vertices,
+        );
+        assert_eq!(out, vec![[0.0, 0.0, 3.0]]);
+
+        let out = apply_morph_vertices(
+            [0.0, 0.0, 0.0],
+            [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            &joints,
+            &[0, 1, 2],
+            &points,
+            &[MorphVertex {
+                joint: 0,
+                offset: [1.0, 2.0, 0.0],
+                base: [0.0, 0.0, 0.0],
+            }],
+        );
+        assert_eq!(out, vec![[-4.0, 1.0, 0.0]]);
     }
 }
