@@ -256,3 +256,47 @@ mod chain_tests {
         assert!(build_mip_chain(&[0.0; 3 * 3 * 4], 3, 3, false, 3).is_empty());
     }
 }
+
+/// Builds the chain for an RGBA8 base: the base bytes followed by each
+/// generated level, and the total level count (base included). Channels are
+/// normalised by 255 and quantised back on output.
+pub fn build_mip_chain_rgba8(
+    base: &[u8],
+    width: usize,
+    height: usize,
+    wrap: bool,
+) -> (Vec<u8>, u32) {
+    if width == 0 || height == 0 || base.len() < width * height * 4 {
+        return (base.to_vec(), 1);
+    }
+    let floats: Vec<f32> = base.iter().map(|value| f32::from(*value) / 255.0).collect();
+    let levels = build_mip_chain(&floats, width, height, wrap, KAISER_MAX_LEVEL);
+    let mut out = base.to_vec();
+    for level in &levels {
+        out.extend(
+            level
+                .texels
+                .iter()
+                .map(|value| (value.clamp(0.0, 1.0) * 255.0).round() as u8),
+        );
+    }
+    (out, 1 + levels.len() as u32)
+}
+
+#[cfg(test)]
+mod rgba_chain_tests {
+    use super::*;
+
+    #[test]
+    fn an_rgba_chain_appends_its_levels() {
+        let base = vec![51u8; 4 * 4 * 4];
+        let (out, count) = build_mip_chain_rgba8(&base, 4, 4, true);
+        assert_eq!(count, 2);
+        assert_eq!(out.len(), 4 * 4 * 4 + 2 * 2 * 4);
+        assert!(out.iter().all(|&value| value == 51));
+
+        let (short, count) = build_mip_chain_rgba8(&[7; 4], 1, 1, true);
+        assert_eq!(count, 1);
+        assert_eq!(short, vec![7; 4]);
+    }
+}

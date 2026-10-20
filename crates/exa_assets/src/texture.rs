@@ -61,7 +61,14 @@ pub fn rfi_to_image(
         _ => {
             // Every stored mip level, decoded, so distant surfaces filter as
             // the original's do instead of shimmering.
-            let rgba = rfi.decode_mips_rgba8()?;
+            let mut rgba = rfi.decode_mips_rgba8()?;
+            let mut mip_count = rfi.mip_count.max(1);
+            if needs_kaiser_mips(mip_count, w, h) {
+                let (chain, levels) =
+                    exa_render::mipmap::build_mip_chain_rgba8(&rgba, w as usize, h as usize, true);
+                rgba = chain;
+                mip_count = levels;
+            }
             let mut image = Image::new_uninit(
                 Extent3d {
                     width: w,
@@ -76,7 +83,7 @@ pub fn rfi_to_image(
                 },
                 RenderAssetUsages::RENDER_WORLD,
             );
-            image.texture_descriptor.mip_level_count = rfi.mip_count.max(1);
+            image.texture_descriptor.mip_level_count = mip_count;
             image.data = Some(rgba);
             image
         }
@@ -95,10 +102,34 @@ pub fn rfi_to_image(
     Ok(image)
 }
 
+/// Whether the Kaiser chain should be generated: one stored level, a
+/// power-of-two size and both sides at least 4.
+fn needs_kaiser_mips(mip_count: u32, width: u32, height: u32) -> bool {
+    mip_count <= 1
+        && width.is_power_of_two()
+        && height.is_power_of_two()
+        && width >= 4
+        && height >= 4
+}
+
 /// Whether the image carries an alpha channel worth alpha-testing.
 pub fn has_alpha(rfi: &Rfi) -> bool {
     matches!(
         rfi.format,
         PixelFormat::Bc3 | PixelFormat::Rgba8 | PixelFormat::La8 | PixelFormat::A8
     )
+}
+
+#[cfg(test)]
+mod kaiser_tests {
+    use super::needs_kaiser_mips;
+
+    #[test]
+    fn kaiser_mips_need_one_level_and_a_power_of_two_size() {
+        assert!(needs_kaiser_mips(1, 4, 4));
+        assert!(needs_kaiser_mips(0, 64, 32));
+        assert!(!needs_kaiser_mips(2, 64, 64));
+        assert!(!needs_kaiser_mips(1, 3, 8));
+        assert!(!needs_kaiser_mips(1, 2, 2));
+    }
 }

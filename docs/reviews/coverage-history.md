@@ -18,3 +18,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-20 | fbf156d | dirty | 20.4% | 5.7% | 16.8% | 27.3% | add the Kaiser mip kernel and axis pass |
 | 2026-10-20 | 277ec9f | clean | 20.5% | 5.7% | 16.9% | 27.3% | rerate the Kaiser mipmaps from exa_render::mipmap |
 | 2026-10-20 | c3e15a9 | dirty | 20.6% | 5.7% | 16.9% | 27.3% | add the Kaiser chain driver |
+| 2026-10-20 | 30c7fe2 | dirty | 20.6% | 5.7% | 17.0% | 27.3% | use the Kaiser chain in texture loading |
