@@ -18,7 +18,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Data, assets & I/O | 440 | 91 | 26 | 21% | 0% | RFE_Export_RFC2, Graphics & key settings (ini), RF_StoreSettings |
 | Rendering & GPU | 823 | 334 | 63 | 37% | 3% | RFE_MeshSubdivide, RF_Polyhedra, FLX_IconRender |
 | World, levels & terrain | 454 | 174 | 31 | 29% | 7% | TGridEnvManager, TRBDDoor, RF_Dynamics_Game |
-| Physics, bodies & cloth | 363 | 242 | 13 | 30% | 0% | RF_Dynamics_Volumes, TVoxelMap, RFE_Dynamics_Cloth |
+| Physics, bodies & cloth | 363 | 242 | 13 | 31% | 0% | TVoxelMap, RFE_Dynamics_Cloth, TSimObject |
 | Characters, motion & animation | 506 | 198 | 23 | 34% | 0% | TCharDecomp2, TKFCCatRom3f, SG_CharacterMorph |
 | Combat, weapons & damage | 14 | 3 | 3 | 31% | 0% | RFE_Effects_Blood, TBloodSprays |
 | Items, materials & crafting | 341 | 140 | 40 | 17% | 0% | TGUIItemContainer, Item description phrases, SG_ItemGUI |
@@ -77,7 +77,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | TGridEnvManager | World, levels & terrain | 30 | 15 | 0% |
 | RF_HW_Config | UI | 89 | 15 | 2% |
 | SG_ItemGUI | Items, materials & crafting | 44 | 15 | 0% |
-| RF_Dynamics_Volumes | Physics, bodies & cloth | 7 | 14 | 0% |
+| RF_Dynamics_Volumes | Physics, bodies & cloth | 7 | 14 | 5% |
 
 ## Best covered components
 

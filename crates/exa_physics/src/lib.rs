@@ -13,6 +13,7 @@ pub mod plate;
 pub mod prop;
 pub mod relay;
 pub mod signal;
+pub mod volume;
 
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};

@@ -306,3 +306,21 @@ A slider's openness SHALL be 1 minus its travel. Above 0.7 it SHALL close for 60
 #### Scenario: An open slider closes, and a shut one opens
 - **WHEN** a slider at travel 0 is toggled, a shut slider at travel 0.3 is toggled, and a latched plain slider at travel 1 is toggled
 - **THEN** the open slider closes for 60 ticks and stays shut, the slider at 0.3 opens for 60 ticks and is no longer shut, and the latched slider is at 0.6 and opens for 60 ticks
+
+### Requirement: Volume summary
+The system SHALL summarise a padded voxel grid by summing each filled cell's centre minus 0.5, and SHALL return the centre (sum/count/dim − 0.5)·scale and the mass count·Π(2·scale/dim).
+
+#### Scenario: A unit volume
+- **WHEN** a 1×1×1 volume has one filled cell at its centre and scale (1, 1, 1)
+- **THEN** the centre is (0, 0, 0) and the mass is 8
+
+#### Scenario: An empty volume
+- **WHEN** no cell is filled
+- **THEN** the centre is (0, 0, 0) and the mass is 0.1
+
+### Requirement: Volume sort
+The system SHALL sort entries by their float key with a middle-pivot two-way quicksort.
+
+#### Scenario: Equal and out-of-order keys
+- **WHEN** the keys are 3, 1, 2, 1
+- **THEN** they are ordered 1, 1, 2, 3
