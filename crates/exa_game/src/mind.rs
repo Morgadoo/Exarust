@@ -721,3 +721,58 @@ mod color_tests {
         assert_eq!(colors.colour1, [0.5, 0.5, 0.6]);
     }
 }
+
+/// Whether a sight tick is due: at least four milliseconds since the last
+/// one.
+pub fn mind_track_due(now_ms: u32, stamp_ms: u32) -> bool {
+    now_ms.wrapping_sub(stamp_ms) >= 4
+}
+
+/// The dwell window of a sight node: 3000 ms when its dwell value is above
+/// 1, 5000 ms when its body is marked, and none otherwise.
+pub fn mind_dwell_window(dwell: i32, marked: bool) -> Option<u32> {
+    if dwell > 1 {
+        Some(3000)
+    } else if marked {
+        Some(5000)
+    } else {
+        None
+    }
+}
+
+/// The dwell fade and whether the node is lost: the elapsed time over the
+/// window, lost once the clock passes `seen + window`.
+pub fn mind_dwell_fade(now_ms: u32, seen_ms: u32, window_ms: u32) -> (f32, bool) {
+    if window_ms == 0 {
+        return (1.0, true);
+    }
+    let elapsed = now_ms.wrapping_sub(seen_ms) as f32 / window_ms as f32;
+    (elapsed, now_ms > seen_ms.wrapping_add(window_ms))
+}
+
+#[cfg(test)]
+mod dwell_tests {
+    use super::*;
+
+    #[test]
+    fn a_tick_is_due_after_four_milliseconds() {
+        assert!(!mind_track_due(0, 0));
+        assert!(!mind_track_due(3, 0));
+        assert!(mind_track_due(4, 0));
+        assert!(!mind_track_due(10, 8));
+    }
+
+    #[test]
+    fn the_window_follows_the_dwell_value_and_the_mark() {
+        assert_eq!(mind_dwell_window(2, false), Some(3000));
+        assert_eq!(mind_dwell_window(1, true), Some(5000));
+        assert_eq!(mind_dwell_window(0, false), None);
+    }
+
+    #[test]
+    fn the_fade_runs_over_the_window_and_is_lost_after_it() {
+        assert_eq!(mind_dwell_fade(1500, 0, 3000), (0.5, false));
+        assert_eq!(mind_dwell_fade(3001, 0, 3000), (1.0003333, true));
+        assert_eq!(mind_dwell_fade(0, 0, 0), (1.0, true));
+    }
+}
