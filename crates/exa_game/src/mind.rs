@@ -776,3 +776,139 @@ mod dwell_tests {
         assert_eq!(mind_dwell_fade(0, 0, 0), (1.0, true));
     }
 }
+
+/// The loyalty power's state: whether it is applying and the target id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoyaltyState {
+    pub state: i32,
+    pub target: Option<u32>,
+}
+
+/// One loyalty step's outcome: the removal request (2) or 0, whether the
+/// effect was applied, whether it was removed, and the effect marker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoyaltyStep {
+    pub state: i32,
+    pub result: i32,
+    pub applied: bool,
+    pub removed: bool,
+    pub marker: Option<u32>,
+}
+
+/// The effect marker the loyalty apply records (`0x10010a`).
+pub const LOYALTY_MARKER: u32 = 0x10_010a;
+
+/// Steps the loyalty power: event 2 on an applying state asks for removal
+/// (2), otherwise it starts removal (state 2). While applying, a missing or
+/// marked target moves to state 2; a valid one applies with the marker and
+/// returns to state 0. In removal it removes the target and asks for 2.
+pub fn step_loyalty(
+    loyalty: &mut LoyaltyState,
+    event: i32,
+    target_valid: bool,
+    target_marked: bool,
+) -> LoyaltyStep {
+    if event == 2 {
+        if loyalty.state == 1 {
+            return LoyaltyStep {
+                state: loyalty.state,
+                result: 2,
+                applied: false,
+                removed: false,
+                marker: None,
+            };
+        }
+        loyalty.state = 2;
+    }
+    if loyalty.state == 1 {
+        if !target_valid || target_marked {
+            loyalty.state = 2;
+            return LoyaltyStep {
+                state: loyalty.state,
+                result: 0,
+                applied: false,
+                removed: false,
+                marker: None,
+            };
+        }
+        loyalty.state = 0;
+        return LoyaltyStep {
+            state: loyalty.state,
+            result: 0,
+            applied: true,
+            removed: false,
+            marker: Some(LOYALTY_MARKER),
+        };
+    }
+    if loyalty.state == 2 {
+        loyalty.state = 2;
+        return LoyaltyStep {
+            state: loyalty.state,
+            result: 2,
+            applied: false,
+            removed: true,
+            marker: None,
+        };
+    }
+    LoyaltyStep {
+        state: loyalty.state,
+        result: 0,
+        applied: false,
+        removed: false,
+        marker: None,
+    }
+}
+
+#[cfg(test)]
+mod loyalty_tests {
+    use super::*;
+
+    #[test]
+    fn an_applying_loyalty_with_a_valid_target_applies() {
+        let mut loyalty = LoyaltyState {
+            state: 1,
+            target: Some(7),
+        };
+        let step = step_loyalty(&mut loyalty, 0, true, false);
+        assert!(step.applied);
+        assert!(!step.removed);
+        assert_eq!(step.marker, Some(LOYALTY_MARKER));
+        assert_eq!(step.state, 0);
+    }
+
+    #[test]
+    fn a_marked_or_missing_target_starts_removal() {
+        let mut loyalty = LoyaltyState {
+            state: 1,
+            target: Some(7),
+        };
+        let step = step_loyalty(&mut loyalty, 0, false, false);
+        assert!(!step.applied);
+        assert_eq!(step.state, 2);
+
+        let mut marked = LoyaltyState {
+            state: 1,
+            target: Some(7),
+        };
+        assert_eq!(step_loyalty(&mut marked, 0, true, true).state, 2);
+    }
+
+    #[test]
+    fn event_two_asks_for_removal_then_removes() {
+        let mut loyalty = LoyaltyState {
+            state: 1,
+            target: Some(7),
+        };
+        let asked = step_loyalty(&mut loyalty, 2, true, false);
+        assert_eq!(asked.result, 2);
+        assert_eq!(asked.state, 1);
+
+        let mut removing = LoyaltyState {
+            state: 2,
+            target: Some(7),
+        };
+        let removed = step_loyalty(&mut removing, 0, true, false);
+        assert!(removed.removed);
+        assert_eq!(removed.result, 2);
+    }
+}
