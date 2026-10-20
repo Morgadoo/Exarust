@@ -36,6 +36,26 @@ impl ArenaLog {
     }
 }
 
+/// One arena pick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArenaPick {
+    pub value: i32,
+    pub seed: u32,
+    pub index: usize,
+}
+
+/// Picks one of three values with the arena's `0x08088405` generator.
+pub fn pick_arena_value(values: [i32; 3], seed: u32) -> ArenaPick {
+    let count = values.iter().filter(|&&value| value > 0).count();
+    let seed = seed.wrapping_mul(0x0808_8405).wrapping_add(1);
+    let index = ((u64::from(seed) * count as u64) >> 32) as usize;
+    ArenaPick {
+        value: values[index],
+        seed,
+        index,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -61,5 +81,21 @@ mod tests {
             }
         );
         assert_eq!(log.records.len(), 2);
+    }
+
+    #[test]
+    fn the_arena_pick_scales_the_seed_by_the_count() {
+        let one = pick_arena_value([5, 0, 0], 0);
+        assert_eq!(one.seed, 1);
+        assert_eq!(one.index, 0);
+        assert_eq!(one.value, 5);
+
+        let three = pick_arena_value([3, 7, 9], 0);
+        assert_eq!(three.index, 0);
+        assert_eq!(three.value, 3);
+
+        let leading = pick_arena_value([0, 3, 0], 0);
+        assert_eq!(leading.index, 0);
+        assert_eq!(leading.value, 0);
     }
 }
