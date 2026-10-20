@@ -52,9 +52,10 @@ pub use menu::{
 pub use scale::GuiScale;
 pub use skill::{
     SkillBounds, SkillHit, SkillHover, SkillHoverInput, SkillInputInput, SkillInputOutput,
-    SkillKeyInput, SkillKeyOutput, SkillLeave, SkillPointInput, SkillRing, SkillShow,
-    handle_skill_input, hit_skill_point, leave_skill_ui, show_skill_ui, skill_hover,
-    skill_node_hit, skill_position, skill_ring_position, skill_satellite, skill_screen_key,
+    SkillKeyInput, SkillKeyOutput, SkillLeave, SkillLink, SkillLinkInput, SkillPointInput,
+    SkillRing, SkillShow, handle_skill_input, hit_skill_point, leave_skill_ui,
+    pick_skill_satellite, show_skill_ui, skill_hover, skill_node_hit, skill_position,
+    skill_ring_position, skill_satellite, skill_screen_key,
 };
 pub use skin::{
     BEVEL_INK, BackdropCorner, BevelArm, BevelBox, BevelInk, BevelPlace, CappedSpan, CentredIcon,

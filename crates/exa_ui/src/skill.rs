@@ -658,6 +658,128 @@ pub fn hit_skill_point(input: SkillPointInput) -> i32 {
     input.fallback
 }
 
+/// The skill link search's inputs.
+#[derive(Clone, Copy)]
+pub struct SkillLinkInput<'a> {
+    pub point: (i32, i32),
+    pub direction: (f32, f32),
+    pub hit: i32,
+    pub node_point: (f32, f32),
+    pub nodes: &'a [(i32, (f32, f32))],
+    pub reachable: &'a dyn Fn(i32) -> bool,
+    pub unit: i32,
+    pub turn: f32,
+}
+
+/// The chosen skill link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillLink {
+    pub code: i32,
+    pub point: (i32, i32),
+}
+
+fn link_satellite(node: (f32, f32), slot: i32, unit: i32, turn: f32) -> (f32, f32) {
+    let angle = slot as f32 * std::f32::consts::TAU * 0.2;
+    let radius = f64::from(unit) * 18.3;
+    let x = node.0 + ((radius * f64::from(angle.cos())).round_ties_even() as f32) * turn;
+    let y = node.1 - ((radius * f64::from(angle.sin())).round_ties_even() as f32) * turn;
+    (x, y)
+}
+
+fn link_metric(
+    point: (i32, i32),
+    satellite: (f32, f32),
+    direction: (f32, f32),
+    scale_y: bool,
+) -> (f32, f32) {
+    let dx = satellite.0 - point.0 as f32;
+    let mut dy = satellite.1 - point.1 as f32;
+    if scale_y {
+        dy *= 4.0;
+    }
+    let length = (dx * dx + dy * dy).sqrt();
+    let (nx, ny) = if length > 0.0 {
+        (dx / length, dy / length)
+    } else {
+        (f32::NAN, f32::NAN)
+    };
+    (length, nx * direction.0 + ny * direction.1)
+}
+
+/// Searches the adjacent slots then every node's five slots for a link.
+pub fn pick_skill_satellite(input: SkillLinkInput<'_>) -> SkillLink {
+    let scale_y = input.direction.1.abs() < input.direction.0.abs();
+    let point_of = |satellite: (f32, f32)| {
+        (
+            satellite.0.round_ties_even() as i32,
+            satellite.1.round_ties_even() as i32,
+        )
+    };
+    if input.hit > 0 {
+        let slot = (input.hit & 7) - 1;
+        let mut best_dot = 0.1f32;
+        let mut best: Option<(i32, (f32, f32))> = None;
+        for step in 0..2 {
+            let mut at = 2 * step - 1 + slot;
+            if at < 0 {
+                at = 4;
+            }
+            if at > 4 {
+                at = 0;
+            }
+            let code = (input.hit & 0xff00) | (at + 1);
+            if !(input.reachable)(code) {
+                continue;
+            }
+            let satellite = link_satellite(input.node_point, at, input.unit, input.turn);
+            let (_, dot) = link_metric(input.point, satellite, input.direction, scale_y);
+            if dot > best_dot {
+                best_dot = dot;
+                best = Some((code, satellite));
+            }
+        }
+        if let Some((code, satellite)) = best {
+            return SkillLink {
+                code,
+                point: point_of(satellite),
+            };
+        }
+    }
+    let mut best_metric = 1_000_000.0f32;
+    let mut best: Option<(i32, (f32, f32))> = None;
+    for &(high, node) in input.nodes {
+        for at in 0..5 {
+            let code = high | (at + 1);
+            if !(input.reachable)(code) {
+                continue;
+            }
+            let satellite = link_satellite(node, at, input.unit, input.turn);
+            let (length, dot) = link_metric(input.point, satellite, input.direction, scale_y);
+            if length * length < 1.0 {
+                continue;
+            }
+            if f64::from(dot) < 0.3 {
+                continue;
+            }
+            let metric = length / (dot * dot);
+            if metric < best_metric {
+                best_metric = metric;
+                best = Some((code, satellite));
+            }
+        }
+    }
+    match best {
+        Some((code, satellite)) => SkillLink {
+            code,
+            point: point_of(satellite),
+        },
+        None => SkillLink {
+            code: 0,
+            point: input.point,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1237,6 +1359,71 @@ mod tests {
         });
         assert_eq!(no_mask.result, 0x10);
         assert!(!no_mask.hint);
+    }
+
+    fn yes(_: i32) -> bool {
+        true
+    }
+
+    fn no(_: i32) -> bool {
+        false
+    }
+
+    #[test]
+    fn the_skill_link_search_takes_the_adjacent_or_scanned_slot() {
+        let adjacent = pick_skill_satellite(SkillLinkInput {
+            point: (0, 0),
+            direction: (1.0, 0.0),
+            hit: 0x0202,
+            node_point: (10.0, 10.0),
+            nodes: &[],
+            reachable: &yes,
+            unit: 1,
+            turn: 1.0,
+        });
+        assert_eq!(adjacent.code, 0x0201);
+        assert_eq!(adjacent.point, (28, 10));
+
+        let nodes = [(0x100, (0.0, 0.0))];
+        let scanned = pick_skill_satellite(SkillLinkInput {
+            point: (0, 0),
+            direction: (0.0, 1.0),
+            hit: 0,
+            node_point: (0.0, 0.0),
+            nodes: &nodes,
+            reachable: &yes,
+            unit: 1,
+            turn: 1.0,
+        });
+        assert_eq!(scanned.code, 0x105);
+        assert_eq!(scanned.point, (6, 17));
+
+        let unreachable = pick_skill_satellite(SkillLinkInput {
+            point: (3, 4),
+            direction: (1.0, 0.0),
+            hit: 0,
+            node_point: (0.0, 0.0),
+            nodes: &nodes,
+            reachable: &no,
+            unit: 1,
+            turn: 1.0,
+        });
+        assert_eq!(unreachable.code, 0);
+        assert_eq!(unreachable.point, (3, 4));
+
+        let only = |code: i32| code == 0x105;
+        let fallback = pick_skill_satellite(SkillLinkInput {
+            point: (0, 0),
+            direction: (0.0, 1.0),
+            hit: 0x0202,
+            node_point: (10.0, 10.0),
+            nodes: &nodes,
+            reachable: &only,
+            unit: 1,
+            turn: 1.0,
+        });
+        assert_eq!(fallback.code, 0x105);
+        assert_eq!(fallback.point, (6, 17));
     }
 
     fn point_input() -> SkillPointInput {
