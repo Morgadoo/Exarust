@@ -205,6 +205,18 @@ out from the clock scale. The main-menu confirm copies the selection to 0x204
 and confirms on direction 0x1000; its select sounds the index at most once per
 200 units.
 
+The original's widgets ([`docs/UI.md`](../../docs/UI.md), Fonts, Text
+boxes, Icons, Tables, Item views, Controls): the six GUI fonts with their
+recorded advances and the scale levels that pick unit, fonts and icon
+cells (`gui_font`); wrapped and marked-up text, caret moves, the pointer's
+caret and the draw (`text_layout`); the multi-line text box with its keys,
+clipboard, scroll and drag (`text_box`); the icon atlases and their draws
+(`icon_atlas`); the twelve built-in glyphs and the alpha hits
+(`gui_glyphs`); the table view (`table_view`), the item view
+(`item_view`) and the basic controls (`gui_controls`). `GuiLevelState`
+(`gui_level`) keeps the level and the atlases with the GUI scale in the
+app; the other widgets wait for forms that use them.
+
 ## Scope
 
 - GUI skin and icon atlases from `Resource.rpk` (`guiskin`, `guitex`, icon sheets).

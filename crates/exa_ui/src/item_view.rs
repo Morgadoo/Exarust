@@ -361,6 +361,50 @@ impl ItemView {
         Vec::new()
     }
 
+    /// Empties the view: no rename, no selection (reported when there
+    /// was one), no entries, both scrolls at the start.
+    pub fn clear(&mut self) -> Vec<ViewEvent> {
+        let mut events = Vec::new();
+        self.renaming = false;
+        if self.selected > 0 {
+            self.selected = 0;
+            events.push(ViewEvent::Selected(0));
+        }
+        self.entries.clear();
+        self.scroll = (0.0, 0.0);
+        events
+    }
+
+    /// The dragged entry's label at the pointer less the grab: with names,
+    /// a box a pitch wide and a row less 2 tall (x0, y0, x1, y1), the icon
+    /// at its corner and the name's pen a unit past the icon, centred by
+    /// the font's text height; icons only, just the icon.
+    pub fn drag_label(&self, pointer: (i32, i32), grab: (i32, i32), font: &GuiFont) -> DragLabel {
+        let (x, y) = (pointer.0 - grab.0, pointer.1 - grab.1);
+        if self.style & style::ICONS_ONLY != 0 {
+            return DragLabel {
+                frame: None,
+                icon: (x, y),
+                pen: None,
+            };
+        }
+        let pen_y = ((font.ascent + self.row + 1) as u32 >> 1) as i32 + y;
+        DragLabel {
+            frame: Some([x, y, x + self.pitch - 1, y + self.row - 2]),
+            icon: (x, y),
+            pen: Some((self.unit + x + self.icon, pen_y)),
+        }
+    }
+
+    /// The pointer moves with a press held: a rename takes it (3).
+    pub fn pointer_move(&self) -> ViewReply {
+        if self.renaming {
+            ViewReply::Code(3)
+        } else {
+            ViewReply::Form
+        }
+    }
+
     /// Starts renaming the selected entry when the view allows it.
     pub fn begin_rename(&mut self) {
         if self.style & style::RENAME != 0 && self.rename_from < self.selected {
@@ -660,6 +704,15 @@ pub fn grid_name(name: &[u8], icon: i32, font: &GuiFont) -> (Vec<u8>, i32) {
         let spare = icon as i64 - i64::from(font.gap) * name.len() as i64;
         (name.to_vec(), ((spare as u64) >> 1) as i32)
     }
+}
+
+/// A dragged entry's label: its box, its icon's corner and its name's
+/// pen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DragLabel {
+    pub frame: Option<[i32; 4]>,
+    pub icon: (i32, i32),
+    pub pen: Option<(i32, i32)>,
 }
 
 /// One entry's draw: its name's pen (x, y; `None` without a name), its
@@ -1003,6 +1056,21 @@ mod tests {
         assert_eq!(g.command(0x1002), vec![ViewEvent::Selected(5)]);
         assert_eq!(g.command(0x4002), vec![ViewEvent::Selected(1)]);
         assert!(g.command(0x1001).is_empty());
+    }
+
+    #[test]
+    fn clear_and_the_drag_label() {
+        let mut v = view(style::LIST, 3);
+        v.selected = 2;
+        v.scroll = (0.5, 0.5);
+        assert_eq!(v.clear(), vec![ViewEvent::Selected(0)]);
+        assert_eq!((v.entries.len(), v.scroll), (0, (0.0, 0.0)));
+        let v = view(style::LIST, 3);
+        let label = v.drag_label((100, 100), (5, 12), &RAYFORM_10);
+        assert_eq!(label.frame, Some([95, 88, 95 + 190 - 1, 88 + 23]));
+        assert_eq!(label.icon, (95, 88));
+        assert_eq!(label.pen, Some((5 + 95 + 20, 88 + (17 + 25 + 1) / 2)));
+        assert_eq!(v.pointer_move(), ViewReply::Form);
     }
 
     #[test]

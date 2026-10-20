@@ -433,6 +433,31 @@ impl TableView {
         TableReply::Code(0x10)
     }
 
+    /// The pointer moves to `x` with a press held: an open edit moves its
+    /// caret there (3); otherwise the form handles it.
+    pub fn pointer_move(&mut self, x: i32, font: &GuiFont) -> TableReply {
+        if !self.editing {
+            return TableReply::Form;
+        }
+        self.edit_caret = self.edit_caret_at(x, font);
+        TableReply::Code(3)
+    }
+
+    /// The table gains (`true`) or loses the focus; losing it closes an
+    /// open edit.
+    pub fn focus(&mut self, on: bool) -> Vec<TableEvent> {
+        if self.editing && !on {
+            return self.commit_edit();
+        }
+        Vec::new()
+    }
+
+    /// Whether a drag of `kind` may be dropped on the table: its own kind,
+    /// unless drops are off or the owner's check refuses.
+    pub fn accepts_drop(&self, kind: i32, drops_off: bool, owner_refuses: bool) -> bool {
+        kind == self.drag_kind && !drops_off && !owner_refuses
+    }
+
     /// A picked choice (1-based) for the edit column's cell.
     pub fn choose(&mut self, choice: i32) -> Vec<TableEvent> {
         let col = self.edit_column;
@@ -837,6 +862,23 @@ mod tests {
             t.command(command::ACTIVATE_DOWN),
             vec![TableEvent::Activated(3)]
         );
+    }
+
+    #[test]
+    fn moves_focus_and_drops() {
+        let mut t = table(3);
+        t.selected = 2;
+        assert_eq!(t.pointer_move(10, &RAYFORM_10), TableReply::Form);
+        t.begin_edit();
+        // "r1": r 6, 1 9 in Rayform10R; x 5 is the column's left edge.
+        assert_eq!(t.pointer_move(5 + 4, &RAYFORM_10), TableReply::Code(3));
+        assert_eq!(t.edit_caret, 1);
+        t.edit = b"new".to_vec();
+        assert_eq!(t.focus(false), vec![TableEvent::Edited(2, 0)]);
+        assert!(!t.editing);
+        t.drag_kind = 3;
+        assert!(t.accepts_drop(3, false, false));
+        assert!(!t.accepts_drop(2, false, false) && !t.accepts_drop(3, true, false));
     }
 
     #[test]

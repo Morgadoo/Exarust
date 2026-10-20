@@ -6,7 +6,12 @@
 //! ([`loading`]), the in-game world cursor ([`cursor`]), the health and
 //! focus bars ([`hud`]), the low-health heartbeat's border
 //! ([`heartbeat`]) and the fade to black of a fall to death ([`fade`]),
-//! painted with gamma-space blending ([`blend`]).
+//! painted with gamma-space blending ([`blend`]); and the original's
+//! widgets: its GUI fonts and levels ([`gui_font`], [`gui_level`]), text
+//! layout and the text box ([`text_layout`], [`text_box`]), icon atlases
+//! and glyphs ([`icon_atlas`], [`gui_glyphs`]), the table and item views
+//! ([`table_view`], [`item_view`]) and the basic controls
+//! ([`gui_controls`]).
 
 pub mod blend;
 pub mod controls;

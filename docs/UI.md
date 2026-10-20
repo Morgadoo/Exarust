@@ -9,11 +9,38 @@ The base UI font is the texture `fontbase24r` in the resource pack:
   code (row = code / 16, column = code % 16, top row first);
 - each glyph is stored upside down in its cell, and all cells share one
   baseline;
-- glyphs are proportional. Exarust takes a glyph's advance from its inked
-  columns plus a 4-pixel gap, and gives a space 18 pixels. These are
-  measured guesses until the original's glyph metrics are found.
+- glyphs are proportional. The one-line readouts (frame rate, loading
+  caption) take a glyph's advance from its inked columns plus a 4-pixel
+  gap and give a space 18 pixels, a measured guess.
 
 The font is read from the installation at run time and never shipped.
+
+The original's metrics, read from `Exanima.exe` (`exa_ui::gui_font`): the
+interface has six fonts, `Rayform06R`, `Rayform08R`, `Rayform10R`,
+`Rayform12R`, `Rayform16R` and `fontbase24r`. Each records the quad a
+glyph is drawn as (8 × 13 up to 36 × 48 pixels, the cell's top-left
+corner of the texture), the height rows centre text by, the slant of its
+italic (1 to 8), a gap (6, 8, 10, 12, 17, 24) and a line height (12, 16,
+20, 24, 36, 48), and one advance per byte, stored as an offset that the
+original adds the gap to once at start-up. In `fontbase24r` a space
+advances 21, "A" 28, "i" 12 and "m" 37. A glyph's texture cell is its
+column and row over 16; the quad's top samples the cell's far edge (the
+glyphs are stored upside down).
+
+A GUI scale level (0 to 5, the index of the scale in the table below)
+sets the GUI unit, the main and small fonts and the cells of the two icon
+atlases:
+
+| level | 0 | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|---|
+| unit | 3 | 4 | 5 | 6 | 8 | 12 |
+| main font | 06R | 08R | 10R | 12R | 16R | fontbase24r |
+| small font | 06R | 06R | 08R | 10R | 12R | 16R |
+| large icons | 16 | 20 | 28 | 32 | 42 | 64 |
+| small icons | 12 | 16 | 20 | 24 | 32 | 48 |
+
+Before a level is chosen the unit is 4 with `Rayform08R` and
+`Rayform06R`. Exarust keeps the level with the scale (`GuiLevelState`).
 
 ## Interface scale
 
@@ -355,3 +382,136 @@ The original's own forms and controls that Exarust rebuilds, with the
   the 121-byte `0x100195d80`.
 - **Skill screen** (`exa_ui::skill`): `TSkillUI`'s 186-byte node placement
   at `0x100224570`.
+
+## Text boxes
+
+Wrapped text (`exa_ui::text_layout`) and the multi-line text box of the
+manual pages, character creation and item cards (`exa_ui::text_box`).
+Text is Latin-1 bytes; line breaks are `\r\n`.
+
+- **Breaks.** A line ends after a carriage return, after the last space
+  that fits the width, or, in a line without a space, after the byte that
+  overflows it (that byte stays on the line). A following line feed is
+  skipped. A text under two bytes counts one line; one whose second-to-last
+  byte is a carriage return counts one more.
+- **Markup** (manual pages, tooltips): `[tcol=RRGGBB]` pushes a colour at
+  the skin's tag alpha (eight digits carry their own; hex parsing stops
+  at the first other byte), `[/tcol]` pops it; `[scrp=i]` slants glyphs by
+  the main font's slant, any other `[scrp=…]` stops; `[algn=2]` moves a
+  line right by half the width left at its last break; `[rimg=NAME]` draws
+  a picture its size over 6 in units, centred in the frame, and moves what
+  follows down by its height less a pitch. `{%` starts a span in
+  (180, 200, 240), slanted, that ends after `%}` (the braces and percents
+  draw too). A tag takes no width. The search for a tag's `]` stops at the
+  text's second-to-last byte, so a tag closed by the last byte loses its
+  last letter (and the `]` draws), as in the original. `[inptN]` is
+  replaced by the name of the key bound to control N, title-cased with
+  underscores as spaces.
+- **Selection** is drawn behind the text, a pitch tall from a pixel below
+  the line's top, in the skin's selection colour at half its alpha.
+- **The caret** is the `|` glyph, half the font's gap left of the pen
+  before the byte after it.
+- **Layout.** The box wraps at its client width less a unit and its margin
+  each side (200 units when it sizes itself), pitches lines at its spacing
+  in units plus the font's line height, and counts lines as its text's
+  height over the pitch (at least one). The content is the view plus the
+  lines that do not fit; the scroll moves in whole lines (one line is
+  1 / (lines − lines that fit)), snaps when set, and the drawn scroll eases
+  a fifth of the way to its target each frame, snapping within 0.001. A
+  box that grows takes the content height plus its insets.
+- **Keys.** Typed bytes insert at the caret, replacing a selection. Enter
+  inserts `\r\n`; Backspace and Delete remove a `\r\n` as one. Left over a
+  `\r\n` passes it; Right from before one stops between its two bytes (the
+  original's). Home and End go to the wrapped line's start and its end
+  before the break. Up, Down, Page Up and Page Down (the lines that fit
+  less two) keep the pen offset, landing on the nearer side of the byte
+  under it, and scroll the target line in as the first line, or as the
+  second-to-last when it is past the last visible one. Ctrl+Home and
+  Ctrl+End jump to the ends and scroll there; Ctrl+C, Ctrl+X and Ctrl+V
+  copy, cut and paste. Shift keeps the anchor. Tab goes to the owner when
+  it takes Tab. A read-only box takes no keys. Enter over a selection
+  sizes the text from its length before the cut, so bytes past the cut
+  come back at the end (Exarust keeps the old storage there, guessing that
+  the allocator resizes in place).
+- **Pointer.** A press puts the caret before the first byte whose middle
+  is right of the pointer (its line is y over the font's line height,
+  whatever the spacing), past a line's end before its break. A drag moves
+  the caret and scrolls the pointer's line in at most every 180 ms, also
+  while the pointer rests. Stick directions go to the parent form, which
+  scrolls the box a step on up and down.
+
+Exarust's forms do not use text boxes yet; the box is ready for the
+manual pages and character creation.
+
+## Icons
+
+The interface keeps two icon atlases (`exa_ui::icon_atlas`), one texture
+each, `Icon_Manager`: a colour one for items and portraits (its resized
+icons sharpened) and a single-channel one for the built-in glyphs, with
+the level's cells. An icon goes in the first free cell; the first opens a
+square the next power of two of the cell; a full atlas doubles its
+shorter side, its height first, and a wider one repacks its cells in
+order. A handle is the cell's index plus one; freeing a cell keeps its
+pixels. Each change re-sends the whole image. Icons draw as one quad the
+cell's size, upright, turned (eight recorded turns), mirrored, outlined
+(the icon in the face colour, then four copies in the outline colour a
+pixel left, right, below and above) or glowing (four copies two pixels out
+in the glow colour at half alpha, then the icon in white). A colour icon
+is hit by its alpha.
+
+The twelve built-in glyphs (`exa_ui::gui_glyphs`) are plotted pixel by
+pixel at the GUI unit into the small atlas, in this order: a cross (or the
+first symbol of the pack's `GUISymbl`), right, left, up and down chevrons,
+three window frames, minus and plus boxes, a drop-down chevron over a bar
+and a tick. Strokes are one bright pixel with dimmer fringes; a fringe
+drawn over a fringe halves it and adds its own. On a scale change both
+atlases are emptied, take the new cells, and the glyphs are drawn again
+(`GuiLevelState`, which also keeps the glyph atlas as a texture). Exarust
+does not read `GUISymbl` yet and draws the cross.
+
+## Tables
+
+The table view (`exa_ui::table_view`) draws rows 6 units tall under a
+header 6 units tall: cell text a unit in from each column's left and 11
+units down for the first row (the glyphs' bottom edge), titles at 5
+units (centred ones by their width), a header icon centred in its column.
+It scrolls over all its rows but one; rows behind the header are not hit.
+A press selects a row unless it is greyed; a second press edits an
+editable cell (all of its text selected) or opens the column's choice
+list under the cell; a double press activates. A press past the last row
+of a table that grows adds a row and edits it, and committing an emptied
+first cell of the last row deletes it. Enter commits, Escape abandons,
+Delete on an empty edit deletes the row. Down passes greyed rows, Up does
+not. The table never sorts.
+
+## Item views
+
+The item view (`exa_ui::item_view`) shows named entries with icons as a
+grid (pitch the icon plus 4 units, rows 6 units more and a line, names
+cut under the icon to one byte fewer than fit at the gap, with an
+ellipsis, else centred), a list (one per row, the icon plus a unit) or
+columns that fill top to bottom and scroll sideways (the icon plus 2 units
+apart). Icons are 4 units unless the owner fixes them, and are rendered on
+demand, one missing visible icon per request. A column entry is hit within
+its icon and its name measured as bytes times the gap. A press selects, a
+second renames (Enter keeps, Escape restores), a double press activates;
+with check marks a press toggles an entry's mark (on the selected entry
+the original sets every other flag bit too). Typed letters jump to the
+next entry whose name starts with them, case-blind, the letters adding up
+within 600 ms. Left and Right move by a line of entries outside the list
+layout, Up and Down by one; F2 renames.
+
+## Controls
+
+The seven basic control classes (`exa_ui::gui_controls`), with their
+default sizes: button 80 × 24, check box 16 × 16, image button 28 × 28,
+trackbar 16 tall, label 20 tall, icon button and picture 28 × 28. Hover
+lights a control that is not on; a release over it toggles it (a radio
+group turns its others off and keeps one on; a three-state box goes off,
+on, partly on). A check box shows the tick glyph centred while on. A
+trackbar's knob is 4 units and 2 pixels with a 2-pixel margin (a marker
+bar's is 5); its value is the pointer's offset past the margin and half
+the knob over the travel, quantised to its steps (a stepped bar's knob is
+its inner width over one more than the steps, at least 4 units); keys and
+the stick step it, a continuous bar moving by the stick's axes in
+percent. A picture is its texture's size over 12, in units, centred.

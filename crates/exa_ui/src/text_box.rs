@@ -88,7 +88,8 @@ pub enum TextBoxEvent {
 pub enum PointerReply {
     /// The form's own handling (frame, scroll bar) takes it.
     Form,
-    /// A wheel event, passed to the parent form.
+    /// A stick direction, passed to the parent form (which scrolls the
+    /// box a step on up and down).
     Parent,
     /// Handled, with the original's result code.
     Code(u32),
@@ -96,8 +97,8 @@ pub enum PointerReply {
 
 /// The pointer flags the box reads.
 pub mod pointer {
-    /// A wheel event.
-    pub const WHEEL: u32 = 0x2;
+    /// The event comes from the gamepad's stick.
+    pub const STICK: u32 = 0x2;
     /// A drag begins (the press has already placed the caret).
     pub const DRAG: u32 = 0x4000;
     /// A press that also asks for the code that opens a menu.
@@ -404,7 +405,7 @@ impl TextBox {
     }
 
     /// Scrolls the target by `delta`, leaving the drawn fraction to ease
-    /// after it (the wheel: one step up or down).
+    /// after it (the parent's stick scroll: a step up or down).
     pub fn scroll_by(&mut self, delta: f32) {
         let drawn = self.scroll;
         self.set_scroll(self.scroll_target + delta);
@@ -718,7 +719,7 @@ impl TextBox {
     }
 
     /// A press at `x`, `y` (scrolled client coordinates) with `flags`:
-    /// a wheel goes to the parent, a press on the form's frame to the
+    /// a stick direction goes to the parent, a press on the form's frame to the
     /// form; a read-only box answers 0x10; a drag begins (0x15); else the
     /// caret moves under the pointer (the anchor too, without Shift) and
     /// the box takes the focus.
@@ -730,7 +731,7 @@ impl TextBox {
         on_frame: bool,
         mods: Modifiers,
     ) -> PointerReply {
-        if flags & pointer::WHEEL != 0 {
+        if flags & pointer::STICK != 0 {
             return PointerReply::Parent;
         }
         if on_frame {
@@ -1100,7 +1101,7 @@ mod tests {
         b.release();
         assert!(!b.dragging);
         assert_eq!(
-            b.press(0, 0, pointer::WHEEL, false, shift),
+            b.press(0, 0, pointer::STICK, false, shift),
             PointerReply::Parent
         );
         assert_eq!(b.press(0, 0, 0, true, shift), PointerReply::Form);
