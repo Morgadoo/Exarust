@@ -5,8 +5,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **19.6% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 16.4% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **20.4% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by function count (zero-byte imported names left out): 16.8% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **27.3%** reproduced.
 
 ## By section
@@ -23,7 +23,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Combat, weapons & damage | 14 | 3 | 3 | 31% | 0% | RFE_Effects_Blood, TBloodSprays |
 | Items, materials & crafting | 341 | 140 | 40 | 17% | 0% | TGUIItemContainer, Item description phrases, SG_ItemGUI |
 | AI & behaviour | 437 | 206 | 17 | 21% | 0% | TAISearchActivity, Character roles & relations (script functions), SG_CharacterAI |
-| Thaumaturgy & effects | 697 | 296 | 83 | 4% | 0% | TThaumTree, TForceBlastEffect, TForceTorrentEffect |
+| Thaumaturgy & effects | 697 | 296 | 83 | 10% | 0% | TTendrilEmitter, SG_Thaum_Force, SG_Thaum_DIsp |
 | Audio | 59 | 18 | 4 | 28% | 0% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 0% | 0% | RFG_Dialogue, FG_AIFunctions, RFG_Scripts |
 | Game modes, arena & session | 646 | 193 | 23 | 5% | 0% | TMatchBoard, TLoadoutForm, XA_ExperienceSys |
@@ -56,7 +56,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | XA_Arena | Game modes, arena & session | 219 | 71 | 5% |
 | TMotileAI | AI & behaviour | 85 | 60 | 18% |
 | SG_PlayerControls | AI & behaviour | 122 | 47 | 8% |
-| TThaumTree | Thaumaturgy & effects | 76 | 38 | 0% |
+| TThaumTree | Thaumaturgy & effects | 76 | 38 | 15% |
 | XA_SaveGames | Game modes, arena & session | 96 | 27 | 5% |
 | TGUIItemContainer | Items, materials & crafting | 44 | 26 | 0% |
 | SG_GameGUI | UI | 62 | 22 | 8% |
@@ -70,14 +70,14 @@ Ordered by code size; these are where most of the original still has no counterp
 | TPlayerBehaviour | AI & behaviour | 31 | 17 | 16% |
 | TMatchBoard | Game modes, arena & session | 30 | 17 | 3% |
 | SG_Character_Create | Game modes, arena & session | 90 | 17 | 15% |
-| TForceBlastEffect | Thaumaturgy & effects | 22 | 17 | 0% |
 | Item description phrases | Items, materials & crafting | 37 | 16 | 4% |
 | RF_GUI_Controls_Ex | UI | 54 | 16 | 0% |
 | TAISearchActivity | AI & behaviour | 54 | 16 | 0% |
 | RF_Navigation | Rendering & GPU | 37 | 16 | 5% |
-| TForceTorrentEffect | Thaumaturgy & effects | 15 | 15 | 0% |
 | TTendrilEmitter | Thaumaturgy & effects | 21 | 15 | 0% |
 | TGridEnvManager | World, levels & terrain | 30 | 15 | 0% |
+| RF_HW_Config | UI | 89 | 15 | 2% |
+| RFP_Mipmaps_Kaiser | Rendering & GPU | 34 | 15 | 2% |
 
 ## Best covered components
 
@@ -99,10 +99,10 @@ Ordered by code size; these are where most of the original still has no counterp
 | Engine math (vectors, matrices, fast trig) | Core, math & threading | 8 | 73% | exa_game/src/player.rs; exa_game/src/torch.rs |
 | TSkinController2 | Characters, motion & animation | 8 | 65% | exa_anim/src/lib.rs; Bevy SkinnedMesh / SkinnedMeshInverseBindposes GPU skinning |
 | TNavCameraControl | Rendering & GPU | 8 | 55% | exa_game/src/player.rs |
+| TForceShellEffect | Thaumaturgy & effects | 7 | 60% | exa_game/src/thaum.rs |
 | TShadowCubeMap | Rendering & GPU | 5 | 83% | exa_render/src/cube_shadows.rs; exa_render/src/cube_shadow.wesl |
 | RF_Terrain_Materials | World, levels & terrain | 6 | 65% | exa_world/src/terrain/blend.rs; exa_world/src/terrain/mod.rs |
 | .rfi image codec | Rendering & GPU | 6 | 56% | exa_formats/src/rfi.rs; exa_assets/src/model.rs |
-| TTerrainManager | World, levels & terrain | 5 | 61% | exa_formats/src/terrain.rs; exa_world/src/terrain/mod.rs |
 
 ## Combat rules
 

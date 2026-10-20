@@ -13,3 +13,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-20 | 4fef85c | dirty | 18.7% | 5.7% | 15.6% | 27.3% | rerate the UI skin, forms, menu screens, skill screen and board from the current crate |
 | 2026-10-20 | d5b12f2 | clean | 19.0% | 5.7% | 16.0% | 27.3% | rerate the arena, save, creation and session components from their crate helpers |
 | 2026-10-20 | 33a91ba | clean | 19.6% | 5.7% | 16.4% | 27.3% | rerate TMotileAI and SG_PlayerControls from exa_ai and player.rs |
+| 2026-10-20 | ffccd2e | clean | 20.4% | 5.7% | 16.8% | 27.3% | rerate the tree and Force effects from thaum.rs |
