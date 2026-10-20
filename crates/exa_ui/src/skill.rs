@@ -780,6 +780,47 @@ pub fn pick_skill_satellite(input: SkillLinkInput<'_>) -> SkillLink {
     }
 }
 
+/// The skill screen's fade.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SkillFade {
+    pub alpha: f32,
+    pub sound: f32,
+    pub cleared: bool,
+}
+
+/// Fades the screen toward its deadline.
+pub fn skill_screen_fade(state: u8, deadline: i32, clock: i32) -> SkillFade {
+    if state == 4 {
+        return SkillFade {
+            alpha: 0.0,
+            sound: 0.0,
+            cleared: false,
+        };
+    }
+    if state & 1 == 0 {
+        return SkillFade {
+            alpha: 1.0,
+            sound: 1.0,
+            cleared: false,
+        };
+    }
+    if deadline <= clock {
+        return SkillFade {
+            alpha: 1.0,
+            sound: 1.0,
+            cleared: true,
+        };
+    }
+    let t = f64::from(deadline - clock) * 0.002;
+    let x = (1.0 - t) as f32;
+    let x = x * (2.0 - x);
+    SkillFade {
+        alpha: x.min(1.0),
+        sound: x * (2.0 - x),
+        cleared: false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1569,5 +1610,25 @@ mod tests {
             }),
             99
         );
+    }
+
+    #[test]
+    fn the_skill_screen_fades_to_its_deadline() {
+        let closed = skill_screen_fade(4, 0, 0);
+        assert_eq!(closed.alpha, 0.0);
+        assert_eq!(closed.sound, 0.0);
+
+        let plain = skill_screen_fade(0, 0, 0);
+        assert_eq!(plain.alpha, 1.0);
+        assert_eq!(plain.sound, 1.0);
+
+        let passed = skill_screen_fade(1, 500, 600);
+        assert!(passed.cleared);
+        assert_eq!(passed.alpha, 1.0);
+
+        let fading = skill_screen_fade(1, 1000, 800);
+        assert!(!fading.cleared);
+        assert!((fading.alpha - 0.84).abs() < 1e-5);
+        assert!((fading.sound - 0.9744).abs() < 1e-5);
     }
 }
