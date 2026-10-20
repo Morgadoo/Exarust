@@ -6,7 +6,9 @@ use bevy::prelude::*;
 
 pub mod card;
 pub mod carry;
+pub mod instance;
 pub mod pane;
+pub mod randomise;
 
 pub struct ItemsPlugin;
 

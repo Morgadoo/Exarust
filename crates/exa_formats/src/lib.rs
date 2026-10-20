@@ -8,6 +8,7 @@
 pub mod character_stats;
 pub mod characters;
 pub mod chunk;
+pub mod containers;
 pub mod data_stream;
 pub mod encumbrance;
 pub mod environment;

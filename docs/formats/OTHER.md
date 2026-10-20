@@ -27,7 +27,7 @@ Layout:
 | offset | field |
 |---|---|
 | `+0x00` | name[32] |
-| `+0x18` | first flag word (u32, inside the name field after the short name): bit 0 bleeds; `0x8` in the story, a dead character of the race may be raised again (humans, the golem suit) [inf: from the character rule bit it sets]; `0x20` sets a character rule bit read by the damage routine [?]; `0x80` red regeneration (the golem suit); `0x200` hovering feet, so the simple ground probe (the wraith). Human `0x0F`, Ogre `0x27`, Sir, harvester and demon `0x23`, Fael, both ghouls, Gobbler and Manipulator `0x03` bleed; Skeleton and Ancient 0, Wraith `0x300`, golems `0x1030`, `0x2030`, the suit `0x20B8` do not. Bits `0x2`, `0x4`, `0x10`, `0x100`, `0x1000`, `0x2000` not decoded (the golem bits `0x1000` and `0x2000` are tested together with two particular items) |
+| `+0x18` | first flag word (u32, inside the name field after the short name): bit 0 bleeds; `0x8` in the story, a dead character of the race may be raised again (humans, the golem suit) [inf: from the character rule bit it sets]; `0x20` sets a character rule bit read by the damage routine [?]; `0x80` red regeneration (the golem suit); `0x200` hovering feet, so the simple ground probe (the wraith). Human `0x0F`, Ogre `0x27`, Sir, harvester and demon `0x23`, Fael, both ghouls, Gobbler and Manipulator `0x03` bleed; Skeleton and Ancient 0, Wraith `0x300`, golems `0x1030`, `0x2030`, the suit `0x20B8` do not. `0x2000` the body takes the AL power crystal (item 500) as its core and `0x1000` crystal A (item 431), each only while it wears none of the five power crystals (431, 451, 452, 499, 500; REA on the doll's drop rule, `exa_items::possession::takes_core`). Bits `0x2`, `0x4`, `0x10`, `0x100` not decoded |
 | `+0x1C` | second flag word: `0x4` red regeneration (Ogre, Sir, the harvester, the demon: `0x7`, `0x7`, `0xF`, `0x7`), `0x8` quadruped, which stabs with both hands (the harvester); `0x1` and `0x2` set character rule bits whose effects are not traced. Fael, ghouls, Gobbler and Manipulator `0x3`; the others 0 |
 | `+0x20` | body model stem[24]: `Skel` → `skelbase.rfc`, `GlmBsA` → `glmbsabase.rfc` |
 | `+0x38` | shared moveset[16] (`Default`) |
@@ -147,6 +147,9 @@ name and body only.
 | `0x8000` | shield section (22 items, 80 bytes): weight, block and bulk bytes at 4, 5, 6 (× 0.01 in double precision; Weapon record); the bulk adds to its holder's encumbrance ([Encumbrance](#encumbrance)) |
 | `0x10000` | operative section (68 bytes; levers, buttons and plates, keys, signal jobs, relays, other usable objects): class, kind, flags, targets (Door and operative sections) |
 | `0x40000` | door section (28 bytes): flags, linked object, sound letters (Door and operative sections) |
+| `0x100` | held light (16 bytes; only "Torch A01"): the hands treat the item as a light ([Containers and random tables](#containers-and-random-tables)) |
+| `0x200` | random table (24 records): a 16-byte header and 16-byte rows ([Containers and random tables](#containers-and-random-tables)) |
+| `0x20000` | container (137 records): panel size, capacity, largest item, children ([Containers and random tables](#containers-and-random-tables)) |
 
 **Worn and ground model.** A character is dressed in the model the body
 names, never the `0x00100000` one: REA on the apparel model loader shows it
@@ -188,6 +191,57 @@ shins; boots: feet; gambeson: torso and arms). Bit `0x40` hides the slot's
 partial body variant. Exarust hides covered body parts' meshes when
 dressing (from the first byte of each slot). Fit variants and culling of
 apparel triangles by their cull bits are not done yet.
+
+### Containers and random tables
+
+Read by `exa_formats::containers`. Established by REA on the container
+panel's loader and saver, the world-load fill and the item-instance
+helpers, and checked against `objdb.rdb` (offsets are section-body
+offsets, after the 8-byte header).
+
+**Model section** (`0x00100000`, 40-byte body): the flags word at `0x10`,
+the item's bulk byte at `0x1C` (what a container's capacity counts and what
+a slot's largest item limits), and the compact price word at `0x1E`. A
+price word's low 14 bits count single copper with neither top bit set,
+twelves with `0x4000`, gross (144) with `0x8000` and 1440 with both;
+storing an amount takes copper below `0x4000`, twelves below `0x2FFF5`,
+gross below `0x23FF70` and 1440 above, dropping the remainder.
+
+**Container** (`0x20000`): u16 width and height in GUI units at 0 and 2,
+u16 capacity at 8, u16 largest item at `0xA`, u32 child count at `0x14`,
+then 12-byte children `{u32 id, u32 flags, i16 x, i16 y}` at `0x18`, the
+position in 1/80 of a GUI unit. The shipped chests are 65 × 50 units with
+capacity 200 and largest item 50, and hold no children in `objdb.rdb`; a
+level's own database lists what its containers hold. A child whose id
+has a random table is filled from it when the world loads. An empty child
+is stored as id 0 with flags `0x100`.
+
+**Random table** (`0x200`): a 16-byte header with the count draws' minimum
+and maximum bytes at 4 and 5 and the u32 row count at `0xC`, then 16-byte
+rows: u32 id at 0 (0 is the empty row, always first in the shipped
+tables), weight byte at 4, decay at 5, quota at 6, limit at 7, u16 flags
+at 8 (`0x2` the row is only for the count draws; `0x8` is set at load when
+the row's id has a table of its own, which a pick then descends into), the
+condition word at `0xA` and the bulk byte at `0xF` (copied from the item's
+model section at load). The condition word holds wealth in bits 0–3 (×
+0.25), damage in 6–8 (× 0.25) and its spread in 9–10, dirt in 11–13 and its
+spread in 14–15 (a spread code of 0 is 0.125, otherwise × 0.25). Shipped
+tables (24) have header bytes 0, no nesting, no quotas, one row with a
+limit of 1, and flags 0 or `0x80` (`0x80` not decoded); "Clothes Tier 01"
+rows carry condition words `0x5284` and `0x5484`.
+
+The fill (`exa_items::randomise`) builds one table per id in the order
+the containers name them, then for every table: quotas to random empty
+slots that fit, count draws among the count-only rows, then the weights
+(a row weighs `w·1000` unpicked, `(1 − decay·0.005)·w·1000` after one
+pick, the engine's fast `exp(n·ln(1 − decay·0.005))·w·1000` after `n`,
+and 0 at its limit; a nested row weighs its table's total less its empty
+row's, times `w/100`), and a weighted draw for every slot still empty that
+passes over count-only rows and rows bigger than the slot allows. Every
+slot draw uses the engine LCG. What instantiating a pick does to the item
+(a fresh local copy, the row's damage and dirt with their spreads, the
+apparel palette roll) is described in `exa_items::instance`; the copy
+itself is not made yet.
 
 ### Underwear
 
