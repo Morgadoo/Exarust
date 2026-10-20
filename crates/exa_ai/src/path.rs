@@ -1662,3 +1662,155 @@ mod search_tests {
         assert!(!search.reached);
     }
 }
+
+/// A grid for the snap sweep: the floor and the two penalty bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapGrid {
+    pub width: i32,
+    pub height: i32,
+    pub floor: Vec<u8>,
+    pub a: Vec<u8>,
+    pub b: Vec<u8>,
+}
+
+impl SnapGrid {
+    fn index(&self, x: i32, y: i32) -> Option<usize> {
+        if x < 0 || y < 0 || x >= self.width || y >= self.height {
+            return None;
+        }
+        Some((y * self.width + x) as usize)
+    }
+
+    /// A cell is walkable when it has a floor and its two penalties sum
+    /// under 80.
+    pub fn walkable(&self, x: i32, y: i32) -> bool {
+        match self.index(x, y) {
+            Some(index) => {
+                self.floor[index] != 0 && i32::from(self.a[index]) + i32::from(self.b[index]) < 80
+            }
+            None => false,
+        }
+    }
+}
+
+/// The snap's result: the nearest walkable cell, its height, and the nodes
+/// visited.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SnapResult {
+    pub cell: Option<(i32, i32)>,
+    pub height: f32,
+    pub nodes: usize,
+}
+
+/// Snaps a point to a walkable cell: the start cell when it is walkable,
+/// otherwise a best-first sweep of the 32×32 window around it, in distance
+/// order and up to 220 nodes. The height is the base plus the floor times
+/// ten.
+pub fn snap_to_walkable(grid: &SnapGrid, start: (i32, i32), base_height: f32) -> SnapResult {
+    let height_of = |x: i32, y: i32| -> f32 {
+        grid.index(x, y).map_or(base_height, |index| {
+            base_height + f32::from(grid.floor[index]) * 10.0
+        })
+    };
+    if grid.walkable(start.0, start.1) {
+        return SnapResult {
+            cell: Some(start),
+            height: height_of(start.0, start.1),
+            nodes: 1,
+        };
+    }
+    let mut open = vec![start];
+    let mut visited: Vec<(i32, i32)> = vec![start];
+    let mut nodes = 0;
+    while !open.is_empty() && nodes < 220 {
+        let mut chosen = 0;
+        for index in (0..open.len()).rev() {
+            let a = open[index];
+            let b = open[chosen];
+            let da = (a.0 - start.0).pow(2) + (a.1 - start.1).pow(2);
+            let db = (b.0 - start.0).pow(2) + (b.1 - start.1).pow(2);
+            if da < db {
+                chosen = index;
+            }
+        }
+        let cell = open.swap_remove(chosen);
+        nodes += 1;
+        if grid.walkable(cell.0, cell.1) {
+            return SnapResult {
+                cell: Some(cell),
+                height: height_of(cell.0, cell.1),
+                nodes,
+            };
+        }
+        for &(ny, nx) in &PATH_NEIGHBOURS {
+            let x = cell.0 + nx;
+            let y = cell.1 + ny;
+            if (x - start.0).abs() > 16 || (y - start.1).abs() > 16 {
+                continue;
+            }
+            if visited.contains(&(x, y)) {
+                continue;
+            }
+            if grid.index(x, y).is_some() {
+                visited.push((x, y));
+                open.push((x, y));
+            }
+        }
+    }
+    SnapResult {
+        cell: None,
+        height: base_height,
+        nodes,
+    }
+}
+
+#[cfg(test)]
+mod snap_tests {
+    use super::*;
+
+    fn grid_with_open(cell: (i32, i32)) -> SnapGrid {
+        let mut grid = SnapGrid {
+            width: 5,
+            height: 5,
+            floor: vec![1; 25],
+            a: vec![90; 25],
+            b: vec![0; 25],
+        };
+        grid.a[(cell.1 * 5 + cell.0) as usize] = 0;
+        grid
+    }
+
+    #[test]
+    fn a_walkable_start_is_returned_at_once() {
+        let mut grid = grid_with_open((0, 0));
+        grid.a[0] = 10;
+        let snap = snap_to_walkable(&grid, (0, 0), 100.0);
+        assert_eq!(snap.cell, Some((0, 0)));
+        assert_eq!(snap.height, 110.0);
+        assert_eq!(snap.nodes, 1);
+    }
+
+    #[test]
+    fn a_blocked_start_finds_the_nearest_walkable_cell() {
+        let grid = grid_with_open((2, 0));
+        let snap = snap_to_walkable(&grid, (0, 0), 0.0);
+        assert_eq!(snap.cell, Some((2, 0)));
+        assert_eq!(snap.height, 10.0);
+        assert!(snap.nodes <= 220);
+    }
+
+    #[test]
+    fn a_fully_blocked_window_finds_nothing() {
+        let grid = SnapGrid {
+            width: 5,
+            height: 5,
+            floor: vec![1; 25],
+            a: vec![90; 25],
+            b: vec![0; 25],
+        };
+        let snap = snap_to_walkable(&grid, (2, 2), 7.0);
+        assert_eq!(snap.cell, None);
+        assert_eq!(snap.height, 7.0);
+        assert!(snap.nodes <= 220);
+    }
+}
