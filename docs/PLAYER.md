@@ -367,7 +367,7 @@ also leaves its interim backpedal and combat walk alone).
 | the player in combat mode, dying (yellow health under 0.01, compared in double precision; alive there only after non-vital damage, [formats/OTHER.md](formats/OTHER.md), Applying damage) | Defence stance |
 | the player in combat mode, not dazed, its target nearer than 3.5 m × the target's body scale (chest to chest), or within 3 s of its last attack's last tick | Cmbt - Idle |
 | the player in combat mode otherwise | Defence stance |
-| a duellist entering combat (at the fight start) | Defence stance |
+| a duellist entering combat (at the fight start; a level character once its rating of the player engages, from the roles both hold) | Defence stance |
 | a duellist in combat | Defence stance at 4 reaches or more from its target, Cmbt - Idle within |
 | any fighter, dazed (its energy more than 0.05 under its most, compared in double precision), every body tick | Defence stance |
 

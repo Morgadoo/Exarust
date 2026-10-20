@@ -4,6 +4,10 @@
 //! far and standing in its combat idle near it. NPCs act through the same
 //! pieces as the player (body velocity, animator, stance, attacks); the
 //! duellist holds every swing through (it never releases one).
+//!
+//! A level's living characters carry a brain ([`brain`]): their roles
+//! choose their idle activity and rate the player, and a human-framed one
+//! whose rating turns hostile engages as the duellist does.
 
 use bevy::prelude::*;
 use exa_anim::Animator;
@@ -15,6 +19,7 @@ use exa_physics::CharacterBody;
 use exa_physics::body::{BodyTicks, Fallen, MAX_ENERGY, Ragdoll};
 
 pub mod activity;
+pub mod brain;
 pub mod fight;
 pub mod golem;
 pub mod hear;
@@ -34,7 +39,14 @@ pub struct AiPlugin;
 
 impl Plugin for AiPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, duellist);
+        app.add_systems(
+            Update,
+            (
+                (brain::apply_new_roles, brain::rate_the_player).chain(),
+                duellist,
+            )
+                .chain(),
+        );
     }
 }
 

@@ -656,6 +656,27 @@ fn spawn_players(
         .and_then(|b| exa_formats::races::parse(b).ok())
         .unwrap_or_default();
     let story = exa_world::start::mode(name) == Some(exa_world::start::Mode::Story);
+    // The role database and the level's locale, which the brains of the
+    // level's characters read.
+    let resource = game.0.pack(PackKind::Resource);
+    let book = resource
+        .and_then(|p| p.get("charroles.rdb"))
+        .and_then(|b| match exa_formats::roles::RoleDb::parse(b) {
+            Ok(book) => Some(book),
+            Err(e) => {
+                warn!("charroles.rdb: {e}");
+                None
+            }
+        })
+        .unwrap_or_default();
+    let locale = resource
+        .and_then(|p| p.get("locales.rdb"))
+        .and_then(|b| exa_formats::roles::locale_id(b, name))
+        .unwrap_or(0);
+    info!(
+        "{} roles; level {name} is locale {locale}",
+        book.roles.len()
+    );
     // In the story a killing blow also costs red health.
     commands.insert_resource(exa_combat::StoryMode(story));
     // The player and the duellist have no record of their own yet: a new
@@ -714,6 +735,20 @@ fn spawn_players(
             exa_physics::body::locomotion::Locomotion::facing(yaw),
             exa_character::Outfit::of_models(&options.outfit),
             ChildOf(player),
+        ));
+        // A new story character is Player, Human and the unknown background
+        // (Exarust has no background choice); the practice and arena
+        // fighters are unaligned [inf: the arena start clears the roles and
+        // adds Unaligned].
+        let roles = if story {
+            exa_ai::roles::Roles::new_character(&book, 0)
+        } else {
+            exa_ai::roles::Roles::arena(&book)
+        };
+        commands.entity(model).insert((
+            roles,
+            exa_ai::brain::CharacterId(exa_ai::brain::PLAYER_ID),
+            exa_ai::brain::RatedPlayer,
         ));
         if let Some(m) = morph {
             commands.entity(model).insert(m);
@@ -813,9 +848,19 @@ fn spawn_players(
             encumbrance: 0.0,
         })
         .collect();
-    spawn_placed_characters(commands, loader, &races, &corpses, story);
-    let (spawned, missing) =
-        spawn_placed_characters(commands, loader, &races, &start.characters, story);
+    let placing = Placing {
+        races: &races,
+        book: &book,
+        player,
+        story,
+    };
+    spawn_placed_characters(commands, loader, &placing, &corpses);
+    let (spawned, missing) = spawn_placed_characters(commands, loader, &placing, &start.characters);
+    commands.insert_resource(exa_ai::brain::RoleDatabase {
+        book,
+        locale,
+        registry: exa_ai::activity::IdleRegistry::shipped(),
+    });
     info!("level {name}: {spawned} characters placed, {missing} without a body");
     // The loading screen stays until everyone is dressed: the first frame
     // drawn with the 3D camera must already have every skinned garment.
@@ -1129,14 +1174,15 @@ fn shove_props_at_frame(
     shoved.clear();
 }
 
-/// The fight starts when the level shows: every duellist enters combat,
+/// The fight starts when the level shows: every duellist (not a level
+/// character, whose rating of the player engages it) enters combat,
 /// and in a practice or arena fight (not the arena hub) the player's
 /// combat mode turns on, as the original turns it on at every fight start.
 fn start_fight(
     view: Res<View>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     mut started: Local<bool>,
-    mut duellists: Query<&mut exa_ai::Duellist>,
+    mut duellists: Query<&mut exa_ai::Duellist, Without<exa_ai::brain::Npc>>,
     mut players: Query<&mut exa_game::player::PlayerBody>,
 ) {
     let View::Play(level) = &*view else { return };
@@ -1253,18 +1299,29 @@ fn body_stats(stats: &CharacterStats) -> BodyStats {
     }
 }
 
+/// What placing a level's characters reads: the races, the role
+/// database, the player they rate and whether the level is a story level.
+struct Placing<'a> {
+    races: &'a [exa_formats::races::Race],
+    book: &'a exa_formats::roles::RoleDb,
+    player: Entity,
+    story: bool,
+}
+
 /// Spawns a level's placed characters in their race's bodies, standing (or
 /// lying, for the dead) where the level puts them, those of human frame
 /// dressed in their own items, each with the stats its record and race
-/// give it (`story`: the level is a story level). Returns how many were
+/// give it. The living carry a brain: their record's roles, their
+/// relations and their traits; those of human frame also rate the player
+/// and duel it once their rating turns hostile. Returns how many were
 /// spawned and how many had no body.
 fn spawn_placed_characters(
     commands: &mut Commands,
     loader: &mut ModelLoader,
-    races: &[exa_formats::races::Race],
+    placing: &Placing<'_>,
     placed: &[exa_world::PlacedCharacter],
-    story: bool,
 ) -> (usize, usize) {
+    let (races, story) = (placing.races, placing.story);
     let (mut spawned, mut missing) = (0, 0);
     let started = std::time::Instant::now();
     for c in placed {
@@ -1352,6 +1409,20 @@ fn spawn_placed_characters(
                 model: model_name.clone(),
                 weapon: *weapon,
             });
+        }
+        if !c.dead {
+            commands.entity(model).insert((
+                exa_ai::roles::Roles::of_record(&c.record, placing.book),
+                exa_ai::roles::Relations::default(),
+                exa_ai::brain::Npc::new(c.record.traits),
+                exa_ai::brain::CharacterId(c.record.id),
+            ));
+            if physical {
+                commands.entity(model).insert((
+                    exa_ai::Mind::new(0.0),
+                    exa_ai::Duellist::new(placing.player),
+                ));
+            }
         }
         spawned += 1;
     }

@@ -13,12 +13,20 @@ attack), holding every swing through (it never releases one, so its
 swings stall only when struck); it can be told to hold its ground (a
 debug aid).
 
+A level's living characters carry a brain (`brain`): their record's roles,
+their relations and traits. When they appear their roles choose their idle
+activity; every frame they rate the player from both sides' roles, which
+feeds the contact rating (`sense`), and a human-framed character whose
+rating engages duels the player. A sleeper that rates the player above a
+notice drops the sleep role and wakes.
+
 | module | what it holds |
 |---|---|
 | `roles` | role lists (adding with inherited parents, newest first and counted; removing explicit roles), the new story character's and the arena fighter's roles, relations (global and per locale, relation roles with values, familiarity, the last attitude, a former level character's move), the attitude of one character toward another, encounter scripts and the entry finder |
 | `activity` | applying roles: the init scripts' assignments (newest role first), the mind-control follow, the idle state per activity, the idle-activity registry (the search as 6) |
 | `search` | the companion's search: gathering over the room grid, picking, the look sweep, the forced path, arrival, kneeling, looting worn items, packs and containers, item worth, wear room, comments to the leader, re-arming and tidying |
 | `manager` | the AI manager's frame (dormant ticks, rising undead, the 3 cm zone check), zone deeds, the group alert and the approach clamp |
+| `brain` | the components and systems that carry roles into the running game |
 | `idle` | roam, patrol, sentry and the wait, the wander and home-side points, follow, sleep, knock-out and waking |
 | `sense`, `hear`, `fight`, `place`, `path`, `order` | contact rating, noise and alert, attack choice, combat positions, path search and following, steering orders |
 
