@@ -274,30 +274,43 @@ pub fn open_doors(doors: &mut [Door], _now_ms: i32) -> Sounds {
 
 /// Close and lock the doors under a node. A motorised hinge aims shut for
 /// 300 ticks, or 100 when fast; a fast slider drives shut. A slider that is
-/// not latched plays its lock sound; a shut leaf latches.
-pub fn close_and_lock_doors(doors: &mut [Door]) -> Sounds {
+/// not latched plays its lock sound; a shut leaf latches, and then the
+/// node's object word takes bit 0. Returns the sounds and the new word.
+pub fn close_and_lock_doors(doors: &mut [Door], word: u32) -> (Sounds, u32) {
     let mut sounds = Sounds::default();
+    let mut word = word;
     for door in doors {
+        let shut = if door.shape.sliding {
+            door.slide.closed
+        } else {
+            door.closed
+        };
         if let Some(sound) = door.close_and_lock() {
             sounds.0.push(sound);
         }
+        if shut {
+            word |= 1;
+        }
     }
-    sounds
+    (sounds, word)
 }
 
 /// Toggle the doors under a node: each door in turn decides by its latch
 /// whether the whole group is closed and locked or opened, as the original
 /// re-walks the node for every door it finds.
-pub fn toggle_doors(doors: &mut [Door], now_ms: i32) -> Sounds {
+pub fn toggle_doors(doors: &mut [Door], word: u32, now_ms: i32) -> (Sounds, u32) {
     let mut sounds = Sounds::default();
+    let mut word = word;
     for i in 0..doors.len() {
         if doors[i].latched {
             sounds.0.extend(open_doors(doors, now_ms).0);
         } else {
-            sounds.0.extend(close_and_lock_doors(doors).0);
+            let (closed, next) = close_and_lock_doors(doors, word);
+            sounds.0.extend(closed.0);
+            word = next;
         }
     }
-    sounds
+    (sounds, word)
 }
 
 /// Latch or unlatch every door under a node. The node's object word takes
@@ -732,8 +745,13 @@ mod tests {
                 1.0,
             ),
         ];
-        let sounds = close_and_lock_doors(&mut sliders);
+        let (sounds, word) = close_and_lock_doors(&mut sliders, 0x10);
         assert_eq!(sounds.0.len(), 2);
+        // Both leaves are shut, so the node's word is latched.
+        assert_eq!(word, 0x11);
+        let mut open_hinge = [shutter(door::MOTORISED)];
+        open_hinge[0].closed = false;
+        assert_eq!(close_and_lock_doors(&mut open_hinge, 0x10).1, 0x10);
         assert_eq!(sliders[0].slide.mode, crate::door::SlideMode::Idle);
         assert_eq!(sliders[1].slide.mode, crate::door::SlideMode::Close);
         assert_eq!(sliders[1].slide.countdown, door::SHUT_FAST);
@@ -755,12 +773,13 @@ mod tests {
     #[test]
     fn a_toggle_lets_each_doors_latch_decide_for_the_group() {
         let mut one = [shutter(0)];
-        toggle_doors(&mut one, 0);
+        let (_, word) = toggle_doors(&mut one, 0, 0);
         assert!(one[0].latched);
+        assert_eq!(word, 1);
 
         let mut latched = [shutter(0)];
         latched[0].latched = true;
-        toggle_doors(&mut latched, 0);
+        toggle_doors(&mut latched, 0, 0);
         // The open is a 120-tick wait: the latch clears only when it ends.
         assert!(latched[0].latched);
         assert_eq!(latched[0].mode, door::MODE_WAIT);
