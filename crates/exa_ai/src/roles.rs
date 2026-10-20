@@ -1,0 +1,661 @@
+//! Roles and relations: what a character is, how it stands with each other
+//! character, and the attitude that follows.
+//!
+//! A character holds a list of roles, newest first. Adding a role adds it
+//! (or marks it explicit when it was only inherited) and, while the role
+//! just handled inherits, its parent: a parent already held counts one more
+//! child, a new one is added as inherited. The new roles go in front, in
+//! the order child, parent, grandparent. Removing a role only removes an
+//! explicit one; its inherited parents lose a count and go when the count
+//! is under 2.
+//!
+//! A relation is what one character keeps about another: a familiarity
+//! (the base attitude), the last attitude worked out, the time of the last
+//! encounter and, once a relation role is added, the relation roles held
+//! toward that partner. Global characters are kept by their id's low 28
+//! bits in one table; level characters (top bit set) in the table of the
+//! current locale.
+//!
+//! The attitude of A toward B starts at the familiarity. A's relation roles
+//! toward B come first: the first one that is a relation role and has an
+//! attitude entry for the partner decides. Then A's roles, newest first, and
+//! their attitude entries in order: an entry for one character matches that
+//! character in its locale; any other entry matches one of A's relation
+//! roles toward B or one of B's roles. The first match gives
+//! `attitude · w + (1 − w) · familiarity` and its tolerance, w being the
+//! role's weight share. Nothing matching leaves the familiarity and
+//! tolerance 0.
+//!
+//! Evidence: the original's role database routines (add, remove, has,
+//! validate, relation tables, add and remove relation, familiarity, the
+//! attitude, the encounter and the entry finder), and the shipped
+//! `charroles.rdb`.
+
+use std::collections::BTreeMap;
+
+use bevy::prelude::Component;
+use exa_formats::characters::CharacterRecord;
+use exa_formats::roles::{ATTITUDE, Role, RoleDb, RoleEntry, SECTION_ENCOUNTER};
+
+/// The Player role.
+pub const PLAYER: u32 = 7;
+/// The Human role.
+pub const HUMAN: u32 = 1;
+/// The background roles of a new story character: the unknown, the
+/// proctor and the villager.
+pub const UNKNOWN: u32 = 14;
+pub const PROCTOR: u32 = 27;
+pub const VILLAGER: u32 = 24;
+/// The arena's unaligned role.
+pub const UNALIGNED: u32 = 16;
+/// A level character's id has the top bit set.
+pub const LOCAL_ID: u32 = 0x8000_0000;
+/// Relations are kept by the id's low 28 bits.
+const KEY_BITS: u32 = 0x0FFF_FFFF;
+
+/// One role a character holds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeldRole {
+    pub id: u32,
+    /// The role's weight share when it was added.
+    pub weight: f32,
+    pub explicit: bool,
+    /// How many explicit roles pulled it in as a parent.
+    pub inherited: u8,
+    pub variables: Vec<u32>,
+}
+
+/// A character's roles, newest first.
+#[derive(Component, Debug, Clone, Default, PartialEq)]
+pub struct Roles(pub Vec<HeldRole>);
+
+/// A role held toward one partner.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RelationRole {
+    pub id: u32,
+    pub weight: f32,
+    /// Values added with the role, each once.
+    pub values: Vec<u32>,
+}
+
+/// What a character keeps about one other character.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Relation {
+    /// The familiarity: the attitude before any role.
+    pub base: f32,
+    /// The last attitude worked out.
+    pub last: f32,
+    /// The game clock of the last encounter, ms.
+    pub met_ms: u32,
+    /// The relation roles, once one has been added (the record's flag).
+    pub roles: Option<Vec<RelationRole>>,
+}
+
+/// One locale's relations.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LevelRelations {
+    pub locale: u32,
+    pub table: BTreeMap<u32, Relation>,
+}
+
+/// A character's relations: the global table and one per locale.
+#[derive(Component, Debug, Clone, PartialEq, Default)]
+pub struct Relations {
+    pub global: BTreeMap<u32, Relation>,
+    pub levels: Vec<LevelRelations>,
+    /// The table level characters are kept in, once one is chosen.
+    pub current: Option<Current>,
+}
+
+/// The current level table: one of the stored tables, or a table of locale
+/// 0, which is not stored with the others.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Current {
+    Stored(usize),
+    Loose(LevelRelations),
+}
+
+/// Who another character is, as relations see it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Partner<'a> {
+    pub id: u32,
+    pub roles: &'a Roles,
+    /// For a former level character: its locale and its id there.
+    pub former: Option<(u32, u32)>,
+}
+
+/// The attitude of one character toward another.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rating {
+    pub familiarity: f32,
+    pub attitude: f32,
+    pub tolerance: f32,
+}
+
+/// The role, or the empty role an invalid id stands for (no flags, no
+/// entries, weight 0).
+fn role(book: &RoleDb, id: u32) -> Option<&Role> {
+    book.get(id)
+}
+
+fn share(record: Option<&Role>) -> f32 {
+    record.map_or(0.0, Role::share)
+}
+
+fn inherits(record: Option<&Role>) -> Option<u32> {
+    record.filter(|r| r.inherits_parent()).map(|r| r.parent)
+}
+
+impl Roles {
+    /// A record's roles. A version 7 list is kept as saved; an older list
+    /// is added again in its order, so its parents come back.
+    pub fn of_record(record: &CharacterRecord, book: &RoleDb) -> Self {
+        let saved = record.roles.iter().map(|r| HeldRole {
+            id: r.id,
+            weight: share(role(book, r.id)),
+            explicit: r.explicit,
+            inherited: r.inherited,
+            variables: r.variables.clone(),
+        });
+        if record.version >= 7 {
+            return Self(saved.collect());
+        }
+        let mut roles = Self::default();
+        for r in record.roles.iter().rev() {
+            roles.add(book, r.id);
+        }
+        roles
+    }
+
+    pub fn has(&self, id: u32) -> bool {
+        self.0.iter().any(|r| r.id == id)
+    }
+
+    pub fn ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.0.iter().map(|r| r.id)
+    }
+
+    /// Adds `id` and the parents it inherits. True when something changed
+    /// or the role was already explicit.
+    pub fn add(&mut self, book: &RoleDb, id: u32) -> bool {
+        let mut added = Vec::new();
+        let mut current = id;
+        while current != 0 {
+            let mut found = false;
+            if let Some(held) = self.0.iter_mut().find(|r| r.id == current) {
+                if current == id {
+                    if held.explicit {
+                        return true;
+                    }
+                    held.explicit = true;
+                } else {
+                    held.inherited = held.inherited.wrapping_add(1);
+                }
+                found = true;
+            }
+            let record = role(book, current);
+            if !found {
+                added.push(HeldRole {
+                    id: current,
+                    weight: share(record),
+                    explicit: current == id,
+                    inherited: u8::from(current != id),
+                    variables: Vec::new(),
+                });
+            }
+            match inherits(record) {
+                Some(parent) => current = parent,
+                None => break,
+            }
+        }
+        if added.is_empty() {
+            return false;
+        }
+        added.append(&mut self.0);
+        self.0 = added;
+        true
+    }
+
+    /// Removes an explicit `id`, and counts its inherited parents down.
+    pub fn remove(&mut self, book: &RoleDb, id: u32) {
+        let Some(at) = self.0.iter().position(|r| r.id == id) else {
+            return;
+        };
+        if !self.0[at].explicit {
+            return;
+        }
+        self.0.remove(at);
+        let mut next = inherits(role(book, id));
+        while let Some(parent) = next {
+            if parent == 0 {
+                break;
+            }
+            if let Some(at) = self.0.iter().position(|r| r.id == parent) {
+                if self.0[at].inherited < 2 {
+                    self.0.remove(at);
+                } else {
+                    self.0[at].inherited -= 1;
+                }
+            }
+            next = inherits(role(book, parent));
+        }
+    }
+
+    /// A new story character: Player, Human, then its background (0 the
+    /// unknown, 1 and 2 the proctor, 3 the villager; other values add none).
+    pub fn new_character(book: &RoleDb, background: u32) -> Self {
+        let mut roles = Self::default();
+        roles.add(book, PLAYER);
+        roles.add(book, HUMAN);
+        match background {
+            0 => roles.add(book, UNKNOWN),
+            1 | 2 => roles.add(book, PROCTOR),
+            3 => roles.add(book, VILLAGER),
+            _ => false,
+        };
+        roles
+    }
+
+    /// An arena fighter: its roles cleared, then Unaligned.
+    pub fn arena(book: &RoleDb) -> Self {
+        let mut roles = Self::default();
+        roles.add(book, UNALIGNED);
+        roles
+    }
+}
+
+/// Whether any role, or any relation role toward `partner`, is missing
+/// from the book.
+pub fn invalid(roles: &Roles, relations: &Relations, book: &RoleDb, partner: u32) -> bool {
+    if roles.ids().any(|id| book.get(id).is_none()) {
+        return true;
+    }
+    if partner == 0 {
+        return false;
+    }
+    relations
+        .find(partner)
+        .and_then(|r| r.roles.as_ref())
+        .is_some_and(|rs| rs.iter().any(|r| book.get(r.id).is_none()))
+}
+
+impl Relations {
+    fn level(&self) -> Option<&LevelRelations> {
+        match self.current.as_ref()? {
+            Current::Stored(i) => self.levels.get(*i),
+            Current::Loose(l) => Some(l),
+        }
+    }
+
+    fn level_mut(&mut self) -> Option<&mut LevelRelations> {
+        match self.current.as_mut()? {
+            Current::Stored(i) => self.levels.get_mut(*i),
+            Current::Loose(l) => Some(l),
+        }
+    }
+
+    /// The current level table's locale.
+    pub fn locale(&self) -> Option<u32> {
+        self.level().map(|l| l.locale)
+    }
+
+    fn table(&self, id: u32) -> Option<&BTreeMap<u32, Relation>> {
+        if id & LOCAL_ID == 0 {
+            Some(&self.global)
+        } else {
+            self.level().map(|l| &l.table)
+        }
+    }
+
+    /// The table `id` belongs in, choosing the table of `locale` when none
+    /// is current yet.
+    fn table_mut(&mut self, id: u32, locale: u32) -> &mut BTreeMap<u32, Relation> {
+        if id & LOCAL_ID == 0 {
+            return &mut self.global;
+        }
+        if self.current.is_none() {
+            self.select(locale);
+        }
+        if let Some(Current::Stored(i)) = self.current {
+            return &mut self.levels[i].table;
+        }
+        let loose = self.current.get_or_insert_with(|| {
+            Current::Loose(LevelRelations {
+                locale,
+                table: BTreeMap::new(),
+            })
+        });
+        match loose {
+            Current::Loose(l) => &mut l.table,
+            Current::Stored(_) => unreachable!("a stored table returned above"),
+        }
+    }
+
+    /// The relation kept about `id`.
+    pub fn find(&self, id: u32) -> Option<&Relation> {
+        self.table(id)?.get(&(id & KEY_BITS))
+    }
+
+    pub fn find_mut(&mut self, id: u32) -> Option<&mut Relation> {
+        let key = id & KEY_BITS;
+        if id & LOCAL_ID == 0 {
+            self.global.get_mut(&key)
+        } else {
+            self.level_mut()?.table.get_mut(&key)
+        }
+    }
+
+    /// Chooses the table of `locale`. A locale without a table gets one
+    /// only when no table is current; it is stored with the others unless
+    /// the locale is 0. A current table stays current otherwise.
+    pub fn select(&mut self, locale: u32) {
+        if let Some(i) = self.levels.iter().position(|l| l.locale == locale) {
+            self.current = Some(Current::Stored(i));
+            return;
+        }
+        if self.current.is_some() {
+            return;
+        }
+        let table = LevelRelations {
+            locale,
+            table: BTreeMap::new(),
+        };
+        if locale == 0 {
+            self.current = Some(Current::Loose(table));
+        } else {
+            self.levels.push(table);
+            self.current = Some(Current::Stored(self.levels.len() - 1));
+        }
+    }
+
+    /// A new relation about `id`, familiarity `base`, met at `now_ms`. Id 0
+    /// has none. Returns `base`.
+    pub fn create(&mut self, id: u32, base: f32, now_ms: u32, locale: u32) -> f32 {
+        if id == 0 {
+            return 0.0;
+        }
+        let relation = Relation {
+            base,
+            last: 0.0,
+            met_ms: now_ms,
+            roles: None,
+        };
+        self.table_mut(id, locale).insert(id & KEY_BITS, relation);
+        base
+    }
+
+    /// The last attitude about `partner`. A global partner missing from the
+    /// table is looked for in the stored tables of its former locale and
+    /// moved to the global table, under its whole id; a partner still
+    /// missing gets a new relation and the answer 0.
+    pub fn last_attitude(&mut self, partner: &Partner<'_>, now_ms: u32, locale: u32) -> f32 {
+        if partner.id & LOCAL_ID == 0
+            && !self.global.contains_key(&(partner.id & KEY_BITS))
+            && let Some((former_locale, former_id)) = partner.former
+            && former_id != 0
+        {
+            for level in &mut self.levels {
+                if level.locale == former_locale
+                    && let Some(moved) = level.table.remove(&(former_id & KEY_BITS))
+                {
+                    self.global.insert(partner.id, moved);
+                }
+            }
+        }
+        if let Some(r) = self.find(partner.id) {
+            return r.last;
+        }
+        self.create(partner.id, 0.0, now_ms, locale);
+        0.0
+    }
+
+    /// Adds `amount` to the familiarity about `id`, if there is a relation.
+    pub fn add_familiarity(&mut self, id: u32, amount: f32) {
+        if let Some(r) = self.find_mut(id) {
+            r.base += amount;
+        }
+    }
+
+    /// Sets the familiarity about `id`, creating the relation first.
+    pub fn set_familiarity(&mut self, id: u32, value: f32, now_ms: u32, locale: u32) {
+        if self.find(id).is_none() {
+            self.create(id, 0.0, now_ms, locale);
+        }
+        if let Some(r) = self.find_mut(id) {
+            r.base = value;
+        }
+    }
+
+    /// Adds the relation role `role` toward `id`, with `value` (0 for none).
+    /// A role already held gains the value once; with no value it is left.
+    /// Returns whether the result names a role the book does not hold.
+    pub fn add_role(
+        &mut self,
+        book: &RoleDb,
+        roles: &Roles,
+        id: u32,
+        role_id: u32,
+        value: u32,
+        locale: u32,
+    ) -> bool {
+        let fresh = || RelationRole {
+            id: role_id,
+            weight: share(role(book, role_id)),
+            values: if value == 0 { Vec::new() } else { vec![value] },
+        };
+        let table = self.table_mut(id, locale);
+        let relation = table.entry(id & KEY_BITS).or_default();
+        match relation.roles.as_mut() {
+            None => relation.roles = Some(vec![fresh()]),
+            Some(held) => match held.iter_mut().find(|r| r.id == role_id) {
+                None => held.push(fresh()),
+                Some(r) => {
+                    if value == 0 || r.values.contains(&value) {
+                        return false;
+                    }
+                    r.values.push(value);
+                }
+            },
+        }
+        invalid(roles, self, book, id)
+    }
+
+    /// Removes the relation role `role_id` toward `id`. True when it was
+    /// held. The relation keeps its role flag.
+    pub fn remove_role(&mut self, id: u32, role_id: u32) -> bool {
+        let Some(held) = self.find_mut(id).and_then(|r| r.roles.as_mut()) else {
+            return false;
+        };
+        let Some(at) = held.iter().position(|r| r.id == role_id) else {
+            return false;
+        };
+        held.remove(at);
+        true
+    }
+
+    fn relation_roles(&self, id: u32) -> &[RelationRole] {
+        self.find(id)
+            .and_then(|r| r.roles.as_deref())
+            .unwrap_or(&[])
+    }
+}
+
+/// `value · s + (1 − s) · familiarity`, s the role's weight share.
+fn blended(value: i8, record: &Role, familiarity: f32) -> f32 {
+    let s = record.share();
+    f32::from(value) * s + (1.0 - s) * familiarity
+}
+
+/// The attitude of A (its roles and relations) toward B, with the entries
+/// for one character matched against `locale`. The result is also kept as
+/// the relation's last attitude, when there is a relation.
+pub fn attitude(
+    book: &RoleDb,
+    roles: &Roles,
+    relations: &mut Relations,
+    partner: &Partner<'_>,
+    locale: u32,
+) -> Rating {
+    let mut rating = Rating {
+        familiarity: 0.0,
+        attitude: 0.0,
+        tolerance: 0.0,
+    };
+    let held: Vec<u32> = relations
+        .relation_roles(partner.id)
+        .iter()
+        .map(|r| r.id)
+        .collect();
+    if let Some(r) = relations.find_mut(partner.id) {
+        rating.familiarity = r.base;
+        r.last = r.base;
+    }
+    rating.attitude = rating.familiarity;
+    let decided = 'decide: {
+        for id in &held {
+            let Some(record) = role(book, *id).filter(|r| r.is_relation_role()) else {
+                continue;
+            };
+            if let Some(e) = record
+                .entries
+                .iter()
+                .find(|e| e.kind & ATTITUDE != 0 && e.target == 0)
+            {
+                break 'decide Some((e.attitude(), e.tolerance(), record));
+            }
+        }
+        for id in roles.ids() {
+            let Some(record) = role(book, id) else {
+                continue;
+            };
+            for e in &record.entries {
+                if e.kind & ATTITUDE == 0 {
+                    continue;
+                }
+                let hit = match e.locale() {
+                    Some(at) => at == locale && e.target == partner.id,
+                    None => held.contains(&e.target) || partner.roles.has(e.target),
+                };
+                if hit {
+                    break 'decide Some((e.attitude(), e.tolerance(), record));
+                }
+            }
+        }
+        None
+    };
+    if let Some((value, tolerance, record)) = decided {
+        rating.attitude = blended(value, record, rating.familiarity);
+        rating.tolerance = f32::from(tolerance);
+        if let Some(r) = relations.find_mut(partner.id) {
+            r.last = rating.attitude;
+        }
+    }
+    rating
+}
+
+/// An encounter script to run: the role that holds it, the partner's role it
+/// was matched on (none for any partner or one character), and its text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Encounter<'a> {
+    pub role: u32,
+    pub partner_role: Option<u32>,
+    pub script: &'a [u8],
+}
+
+/// A meets B: the relation is created (familiarity 0) or its encounter time
+/// renewed, and every encounter entry of A's roles that is for anyone, for
+/// B in `locale`, or for one of B's roles (once per matching role) is
+/// returned in order to be run with A as the first actor.
+pub fn encounter<'a>(
+    book: &'a RoleDb,
+    roles: &Roles,
+    relations: &mut Relations,
+    partner: &Partner<'_>,
+    now_ms: u32,
+    locale: u32,
+) -> Vec<Encounter<'a>> {
+    match relations.find_mut(partner.id) {
+        Some(r) => r.met_ms = now_ms,
+        None => {
+            relations.create(partner.id, 0.0, now_ms, locale);
+        }
+    }
+    let mut out = Vec::new();
+    for id in roles.ids() {
+        let Some(record) = role(book, id) else {
+            continue;
+        };
+        for e in &record.entries {
+            if e.kind & SECTION_ENCOUNTER == 0 {
+                continue;
+            }
+            let Some(script) = e.script(SECTION_ENCOUNTER) else {
+                continue;
+            };
+            if e.for_anyone() {
+                out.push(Encounter {
+                    role: id,
+                    partner_role: None,
+                    script,
+                });
+            } else if let Some(at) = e.locale() {
+                if at == locale && e.target == partner.id {
+                    out.push(Encounter {
+                        role: id,
+                        partner_role: None,
+                        script,
+                    });
+                }
+            } else {
+                for theirs in partner.roles.ids().filter(|r| *r == e.target) {
+                    out.push(Encounter {
+                        role: id,
+                        partner_role: Some(theirs),
+                        script,
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The entry whose section of `bit` (a dialogue, a condition, …) A holds
+/// for B: for each of A's roles, newest first, the role's first entry aimed
+/// at one of B's roles, then at one of A's relation roles toward B; the
+/// first such entry carrying the bit gives its section (read from the
+/// returned entry).
+pub fn entry_for<'a>(
+    book: &'a RoleDb,
+    roles: &Roles,
+    relations: &Relations,
+    partner: &Partner<'_>,
+    bit: u32,
+) -> Option<&'a RoleEntry> {
+    let held = relations.relation_roles(partner.id);
+    for id in roles.ids() {
+        let Some(record) = role(book, id) else {
+            continue;
+        };
+        for theirs in partner.roles.ids() {
+            if let Some(e) = record.entry_for(theirs)
+                && e.kind & bit != 0
+            {
+                return Some(e);
+            }
+        }
+        for r in held {
+            if role(book, r.id).is_some_and(Role::is_relation_role)
+                && let Some(e) = record.entry_for(r.id)
+                && e.kind & bit != 0
+            {
+                return Some(e);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+#[path = "roles_test.rs"]
+mod tests;

@@ -14,13 +14,17 @@ use exa_combat::{AttackStart, Attacking, Blade, Condition, Fighter};
 use exa_physics::CharacterBody;
 use exa_physics::body::{BodyTicks, Fallen, MAX_ENERGY, Ragdoll};
 
+pub mod activity;
 pub mod fight;
 pub mod golem;
 pub mod hear;
 pub mod idle;
+pub mod manager;
 pub mod order;
 pub mod path;
 pub mod place;
+pub mod roles;
+pub mod search;
 pub mod sense;
 
 pub use order::{Order, follow};

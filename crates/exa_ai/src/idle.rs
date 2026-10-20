@@ -32,6 +32,8 @@ pub enum Kind {
     Roam,
     Patrol,
     Sentry,
+    /// Standing in place: the wait.
+    Wait,
 }
 
 /// Where the cycle is.
@@ -118,6 +120,16 @@ impl Routine {
             roll: 0,
         }
     }
+
+    /// The wait: it stands, after a disturbance and the alert look.
+    pub fn wait() -> Self {
+        Self {
+            kind: Kind::Wait,
+            phase: Phase::Wait,
+            until_ms: 0,
+            roll: 0,
+        }
+    }
 }
 
 /// What the world reported this tick.
@@ -165,6 +177,7 @@ fn notice(routine: &Routine, moment: &Moment) -> Option<Going> {
     let waiting = match routine.kind {
         Kind::Patrol => routine.phase == Phase::Wait,
         Kind::Roam => matches!(routine.phase, Phase::Wait | Phase::WaitHome),
+        Kind::Wait => true,
         Kind::Sentry => false,
     };
     if waiting
@@ -269,6 +282,32 @@ pub fn pick_wander(
         stop_cm: WANDER_STOP_CM,
         radius_cm: WANDER_RADIUS_CM,
         mode: WANDER_MODE,
+        node: exit.node,
+        cursor: index as i32,
+        ignore_height: true,
+    })
+}
+
+/// The mode a home-side pick writes.
+pub const HOME_MODE: i32 = 3;
+
+/// Pick the home-side point in `room_index`: the exit that leads to
+/// `toward`, the room the last wander point aimed at.
+///
+/// No room, or no exit leading there, picks nothing. The goal is the exit
+/// itself, at height 0, with the wander's stop of 20 cm and radius of
+/// 150 cm, ignoring height. It draws nothing.
+pub fn pick_home(room_index: i32, exits: &[Exit], toward: i32) -> Option<WanderPoint> {
+    if room_index < 0 {
+        return None;
+    }
+    let index = exits.iter().position(|e| e.node == toward)?;
+    let exit = exits[index];
+    Some(WanderPoint {
+        goal: Vec3::new(exit.point.x, 0.0, exit.point.y),
+        stop_cm: WANDER_STOP_CM,
+        radius_cm: WANDER_RADIUS_CM,
+        mode: HOME_MODE,
         node: exit.node,
         cursor: index as i32,
         ignore_height: true,
@@ -1159,6 +1198,12 @@ pub fn tick(routine: &mut Routine, moment: &Moment) -> Act {
     if let Some(going) = notice(routine, moment) {
         return Act { pose: None, going };
     }
+    if routine.kind == Kind::Wait {
+        return Act {
+            pose: Some(Pose::Stand),
+            going: Going::Stay,
+        };
+    }
     let mut going = Going::Stay;
     match routine.phase {
         Phase::Wait | Phase::WaitHome => {
@@ -1290,6 +1335,44 @@ mod tests {
             point: Vec2::new(x, z),
             node,
         }
+    }
+
+    /// The home-side point is the exit toward the wander's room itself, at
+    /// height 0, mode 3, stop 20 cm and radius 150 cm; no room or no such
+    /// exit picks nothing.
+    #[test]
+    fn the_home_side_point_is_the_exit_toward_the_wander_room() {
+        let exits = [exit(10.0, 20.0, 4), exit(300.0, -50.0, 9)];
+        let home = pick_home(0, &exits, 9).unwrap();
+        assert_eq!(home.goal, Vec3::new(300.0, 0.0, -50.0));
+        assert_eq!((home.mode, home.stop_cm, home.radius_cm), (3, 20, 150.0));
+        assert_eq!((home.node, home.cursor), (9, 1));
+        assert!(home.ignore_height);
+        assert!(pick_home(0, &exits, 5).is_none());
+        assert!(pick_home(-1, &exits, 9).is_none());
+    }
+
+    /// The wait stands, walks to a disturbance above 0.3, and takes the
+    /// alert look.
+    #[test]
+    fn the_wait_stands_after_the_noise_and_the_look() {
+        let mut wait = Routine::wait();
+        let still = tick(&mut wait, &Moment::default());
+        assert_eq!(still.pose, Some(Pose::Stand));
+        assert_eq!(still.going, Going::Stay);
+        let noisy = Moment {
+            disturbance: 0.31,
+            noise_at: Vec3::X,
+            ..Moment::default()
+        };
+        assert_eq!(tick(&mut wait, &noisy).going, Going::Investigate(Vec3::X));
+        let alert = Moment {
+            alert: 0.2,
+            looked_for_s: 1.0,
+            ..Moment::default()
+        };
+        assert_eq!(tick(&mut wait, &alert).going, Going::LookAround);
+        assert_eq!(wait, Routine::wait());
     }
 
     #[test]
