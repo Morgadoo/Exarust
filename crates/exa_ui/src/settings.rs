@@ -50,7 +50,7 @@ pub struct SettingItem {
 }
 
 /// The Settings page's rows, in display order.
-pub const SETTINGS: [SettingItem; 15] = [
+pub const SETTINGS: [SettingItem; 16] = [
     SettingItem {
         label: "Video Device:",
         kind: SettingKind::Info,
@@ -68,6 +68,12 @@ pub const SETTINGS: [SettingItem; 15] = [
         kind: SettingKind::Slider(0.5),
         row: 2,
         column: 0,
+    },
+    SettingItem {
+        label: "Music",
+        kind: SettingKind::Toggle(true),
+        row: 2,
+        column: 1,
     },
     SettingItem {
         label: "Super sampling:",
@@ -151,7 +157,7 @@ pub struct ControlItem {
 }
 
 /// The Controls page's bindings, in display order.
-pub const CONTROLS: [ControlItem; 14] = [
+pub const CONTROLS: [ControlItem; 22] = [
     ControlItem {
         label: "Forward",
         key: "W",
@@ -207,6 +213,38 @@ pub const CONTROLS: [ControlItem; 14] = [
     ControlItem {
         label: "Inventory",
         key: "I",
+    },
+    ControlItem {
+        label: "Skills",
+        key: "K",
+    },
+    ControlItem {
+        label: "Journal",
+        key: "J",
+    },
+    ControlItem {
+        label: "Talk",
+        key: "T",
+    },
+    ControlItem {
+        label: "Use Power",
+        key: "",
+    },
+    ControlItem {
+        label: "Power Bar",
+        key: "",
+    },
+    ControlItem {
+        label: "Previous Power",
+        key: "",
+    },
+    ControlItem {
+        label: "Next Power",
+        key: "",
+    },
+    ControlItem {
+        label: "Power Tree",
+        key: "",
     },
 ];
 
@@ -279,21 +317,25 @@ mod tests {
 
     #[test]
     fn the_settings_rows() {
-        assert_eq!(SETTINGS.len(), 15);
+        assert_eq!(SETTINGS.len(), 16);
         assert_eq!(SETTINGS[0].label, "Video Device:");
         assert_eq!(SETTINGS[2].kind, SettingKind::Slider(0.5));
-        assert_eq!(SETTINGS[3].kind, SettingKind::Choice(3));
-        assert_eq!(SETTINGS[6].kind, SettingKind::Choice(4));
-        assert_eq!(SETTINGS[9].kind, SettingKind::Choice(0));
-        assert_eq!(SETTINGS[10].kind, SettingKind::Toggle(true));
-        assert_eq!(SETTINGS[13].row, 11);
-        assert_eq!(SETTINGS[13].column, 1);
+        assert_eq!(
+            (SETTINGS[3].label, SETTINGS[3].kind),
+            ("Music", SettingKind::Toggle(true))
+        );
+        assert_eq!(SETTINGS[4].kind, SettingKind::Choice(3));
+        assert_eq!(SETTINGS[7].kind, SettingKind::Choice(4));
+        assert_eq!(SETTINGS[10].kind, SettingKind::Choice(0));
+        assert_eq!(SETTINGS[11].kind, SettingKind::Toggle(true));
+        assert_eq!(SETTINGS[14].row, 11);
+        assert_eq!(SETTINGS[14].column, 1);
         assert_eq!(CHOICES[4], "Very high");
     }
 
     #[test]
     fn the_control_rows() {
-        assert_eq!(CONTROLS.len(), 14);
+        assert_eq!(CONTROLS.len(), 22);
         assert_eq!((CONTROLS[0].label, CONTROLS[0].key), ("Forward", "W"));
         assert_eq!(
             (CONTROLS[6].label, CONTROLS[6].key),
