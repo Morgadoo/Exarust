@@ -103,6 +103,21 @@ pub fn switch_morph_target(valid: bool, point: [i32; 3]) -> MorphSwitch {
     }
 }
 
+/// Adds `source × weight` to `destination` point by point.
+pub fn blend_morph(destination: &[[f32; 3]], source: &[[f32; 3]], weight: f32) -> Vec<[f32; 3]> {
+    destination
+        .iter()
+        .zip(source)
+        .map(|(destination, source)| {
+            [
+                destination[0] + source[0] * weight,
+                destination[1] + source[1] * weight,
+                destination[2] + source[2] * weight,
+            ]
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,5 +186,14 @@ mod tests {
         assert!(!refused.switched);
         assert_eq!(refused.point, [0; 3]);
         assert!(!refused.refreshed);
+    }
+
+    #[test]
+    fn the_morph_points_blend_by_weight() {
+        let blended = blend_morph(&[[1.0, 2.0, 3.0]], &[[2.0, 4.0, 6.0]], 0.5);
+        assert_eq!(blended, vec![[2.0, 4.0, 6.0]]);
+
+        let shorter = blend_morph(&[[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]], &[[1.0, 1.0, 1.0]], 1.0);
+        assert_eq!(shorter, vec![[2.0, 2.0, 2.0]]);
     }
 }

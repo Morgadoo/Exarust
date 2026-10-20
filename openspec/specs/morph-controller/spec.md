@@ -43,3 +43,12 @@ Switching SHALL do nothing unless the target's tag is `0xEDC0C589`. Otherwise it
 - **THEN** the switch and refresh run and the point is stored
 - **WHEN** the tag differs
 - **THEN** nothing is copied, stored or refreshed
+
+### Requirement: Morph point blend
+Blending SHALL add each source point times the weight to the matching destination point. The result SHALL have the shorter of the two counts.
+
+#### Scenario: Weighted add and mismatch
+- **WHEN** the destination is 1, 2, 3, the source 2, 4, 6 and the weight 0.5
+- **THEN** the result is 2, 4, 6
+- **WHEN** the source has fewer points
+- **THEN** only the matching points are produced
