@@ -912,3 +912,129 @@ mod loyalty_tests {
         assert_eq!(removed.result, 2);
     }
 }
+
+/// The command-dead power's state: whether it is applying and the target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommandDeadState {
+    pub state: i32,
+    pub target: Option<u32>,
+}
+
+/// One command-dead step's outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommandDeadStep {
+    pub state: i32,
+    pub result: i32,
+    pub applied: bool,
+    pub removed: bool,
+    pub marker: Option<u32>,
+}
+
+/// The effect marker the command-dead apply records (`0x10010d`).
+pub const COMMAND_DEAD_MARKER: u32 = 0x10_010d;
+
+/// Steps the command-dead power: event 2 on an applying state asks for
+/// removal (2), otherwise it starts removal. While applying, a missing
+/// target moves to state 2; a valid one applies with the marker, sets the
+/// target's raised flag and returns to state 0. In removal it removes the
+/// marked effect, clears the target's flag and returns 2.
+pub fn step_command_dead(
+    dead: &mut CommandDeadState,
+    event: i32,
+    target_valid: bool,
+) -> CommandDeadStep {
+    if event == 2 {
+        if dead.state == 1 {
+            return CommandDeadStep {
+                state: dead.state,
+                result: 2,
+                applied: false,
+                removed: false,
+                marker: None,
+            };
+        }
+        dead.state = 2;
+    }
+    if dead.state == 1 {
+        if !target_valid {
+            dead.state = 2;
+            return CommandDeadStep {
+                state: dead.state,
+                result: 0,
+                applied: false,
+                removed: false,
+                marker: None,
+            };
+        }
+        dead.state = 0;
+        return CommandDeadStep {
+            state: dead.state,
+            result: 0,
+            applied: true,
+            removed: false,
+            marker: Some(COMMAND_DEAD_MARKER),
+        };
+    }
+    if dead.state == 2 {
+        return CommandDeadStep {
+            state: dead.state,
+            result: 2,
+            applied: false,
+            removed: true,
+            marker: None,
+        };
+    }
+    CommandDeadStep {
+        state: dead.state,
+        result: 0,
+        applied: false,
+        removed: false,
+        marker: None,
+    }
+}
+
+#[cfg(test)]
+mod command_dead_tests {
+    use super::*;
+
+    #[test]
+    fn a_valid_target_applies_the_marker() {
+        let mut dead = CommandDeadState {
+            state: 1,
+            target: Some(9),
+        };
+        let step = step_command_dead(&mut dead, 0, true);
+        assert!(step.applied);
+        assert_eq!(step.marker, Some(COMMAND_DEAD_MARKER));
+        assert_eq!(step.state, 0);
+    }
+
+    #[test]
+    fn a_missing_target_moves_to_removal() {
+        let mut dead = CommandDeadState {
+            state: 1,
+            target: Some(9),
+        };
+        let step = step_command_dead(&mut dead, 0, false);
+        assert!(!step.applied);
+        assert_eq!(step.state, 2);
+        assert_eq!(step.result, 0);
+    }
+
+    #[test]
+    fn event_two_and_removal_ask_for_two() {
+        let mut dead = CommandDeadState {
+            state: 1,
+            target: Some(9),
+        };
+        assert_eq!(step_command_dead(&mut dead, 2, true).result, 2);
+
+        let mut removing = CommandDeadState {
+            state: 2,
+            target: Some(9),
+        };
+        let step = step_command_dead(&mut removing, 0, true);
+        assert!(step.removed);
+        assert_eq!(step.result, 2);
+    }
+}
