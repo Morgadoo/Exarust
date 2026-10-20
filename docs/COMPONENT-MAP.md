@@ -20,7 +20,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | World, levels & terrain | 454 | 174 | 31 | 29% | 7% | TGridEnvManager, TRBDDoor, RF_Dynamics_Game |
 | Physics, bodies & cloth | 363 | 242 | 13 | 30% | 0% | RF_Dynamics_Volumes, TVoxelMap, RFE_Dynamics_Cloth |
 | Characters, motion & animation | 506 | 198 | 23 | 33% | 0% | Equipment effects and focus-item slot (RFE_Effects_Electricity by address), Golem guardians and alarm zones (RFE_Effects_Electricity by address), TCharDecomp2 |
-| Combat, weapons & damage | 14 | 3 | 3 | 0% | 0% | TWeaponBlood, RFE_Effects_Blood, TBloodSprays |
+| Combat, weapons & damage | 14 | 3 | 3 | 31% | 0% | RFE_Effects_Blood, TBloodSprays |
 | Items, materials & crafting | 341 | 140 | 40 | 17% | 0% | TGUIItemContainer, Item description phrases, SG_ItemGUI |
 | AI & behaviour | 437 | 206 | 17 | 13% | 0% | TMotileAI, SG_PlayerControls, TAISearchActivity |
 | Thaumaturgy & effects | 697 | 296 | 83 | 4% | 0% | TThaumTree, TForceBlastEffect, TForceTorrentEffect |
@@ -84,7 +84,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | component | section | KB | coverage | Exarust |
 |---|---|---:|---:|---|
 | TVCCloth | Physics, bodies & cloth | 30 | 81% | exa_physics/src/cloth.rs; exa_physics/src/cloth_render.rs |
-| TPathFinder | AI & behaviour | 32 | 59% | exa_ai/src/path.rs |
+| TPathFinder | AI & behaviour | 32 | 61% | exa_ai/src/path.rs |
 | TVXGIManager | Rendering & GPU | 29 | 55% | exa_render/src/gi.rs; exa_render/src/gi.wesl |
 | TMesh | Rendering & GPU | 25 | 60% | exa_formats/src/rfc.rs; exa_assets/src/model.rs |
 | RF_Skinning | Characters, motion & animation | 25 | 55% | exa_assets/src/skin.rs; exa_assets/src/model.rs |

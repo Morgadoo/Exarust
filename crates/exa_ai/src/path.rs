@@ -1915,3 +1915,61 @@ mod trim_tests {
         assert_eq!(trim_path_end(2, &[0, 40], 1), 1);
     }
 }
+
+/// The budgeted shortcut: like [`shortcut_path`], but the clear predicate
+/// receives the budget `costs[later] − costs[kept] + 10`.
+pub fn shortcut_path_with_budget<F>(
+    points: &[(i32, i32)],
+    costs: &[i32],
+    mut clear: F,
+) -> Vec<(i32, i32)>
+where
+    F: FnMut((i32, i32), (i32, i32), i32) -> bool,
+{
+    if points.len() <= 2 {
+        return points.to_vec();
+    }
+    let cost = |index: usize| costs.get(index).copied().unwrap_or(0);
+    let mut out = vec![points[0]];
+    let mut kept = 0;
+    let mut index = 1;
+    while index + 1 < points.len() {
+        let next = index + 1;
+        let budget = cost(next) - cost(kept) + 10;
+        if clear(points[kept], points[next], budget) {
+            index = next;
+        } else {
+            out.push(points[index]);
+            kept = index;
+            index += 1;
+        }
+    }
+    out.push(points[points.len() - 1]);
+    out
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    #[test]
+    fn the_budget_is_passed_to_the_line_walk() {
+        let points = [(0, 0), (1, 0), (2, 0), (3, 0)];
+        let costs = [0, 100, 101, 102];
+        let clear = |_: (i32, i32), _: (i32, i32), budget: i32| budget <= 20;
+        assert_eq!(
+            shortcut_path_with_budget(&points, &costs, clear),
+            vec![(0, 0), (1, 0), (3, 0)]
+        );
+    }
+
+    #[test]
+    fn a_clear_line_keeps_only_the_ends() {
+        let points = [(0, 0), (1, 0), (2, 0), (3, 0)];
+        let costs = [0, 10, 20, 30];
+        assert_eq!(
+            shortcut_path_with_budget(&points, &costs, |_, _, _| true),
+            vec![(0, 0), (3, 0)]
+        );
+    }
+}
