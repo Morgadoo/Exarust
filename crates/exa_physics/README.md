@@ -528,7 +528,7 @@ sets the instability counter (the barricade sets it to 100).
 - The destructor frees four pointers, the root origin, three managed fields and the list before the base and final calls.
 - The body collision calls back for accepted hits and pushes resolved particles to the body's radius surface.
 - The clone creates a new cloth with four copied fields.
-- The bounds midpoint the particles' component extremes and floor the half extents at 1e-4 cm; the swept-particle query takes the relative motion and radius rate and the approach's squared dot product; the cloth's blood painter takes the engine's LCG draw and lowers the vertex alpha by the ray's distance.
+- The bounds midpoint the particles' component extremes and floor the half extents at 1e-4 cm; the swept-particle query takes the relative motion and radius rate and the approach's squared dot product; the cloth's blood painter takes the engine's LCG draw and lowers the vertex alpha by the ray's distance; the owner-move blend pulls the previous positions toward a target by k and the weight plus an offset.
 - Fixed-timestep deterministic simulation set, independent of frame rate.
 - The original's shared intersection routines (`intersect`): sweep set-up, point/segment/sphere/box distances and tests, the swept-sphere slab tests, segment/oriented-box separation, point-set bounds, and the convex-volume box tests, refresh, polygon clipping, plane cut with cap and directional shadow volume, in the original's arithmetic.
 - Rigid bodies (props, doors, items), collision against level geometry and convex hulls.
