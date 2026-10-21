@@ -366,11 +366,20 @@ program.
 **Textures** are sampled with the original's settings at its top texture
 quality (`TextureQuality = 5`) and 4× supersampling:
 - anisotropic filtering 2^(4 − mode), so 16× for ordinary textures;
-- a LOD bias of base × f(supersample), with base −0.75 at quality 5 (−0.5 at
-  4, 0 below) and f = (ss − 1)/3 for ss ≥ 2. That gives −0.75. It applies
+- a LOD bias of (base · g(supersample)) · ⅓, in single precision left to
+  right, with base −0.75 at quality 5 (−0.5 at 4, 0 below) and g = ss below
+  2 and ss − 1 above. That gives −0.75. It applies
   to colour textures (diffuse, emissive, opacity, legacy specular), not to
   normal, gloss or packed specular maps. wgpu samplers have no bias, so the
   shader applies it.
+
+Compressed images upload as their stored block format: BC1 and BC3 with an
+sRGB variant for colour, BC5 linear for two-channel normal maps, and BC4 as
+`Bc4RUnorm`, the original's single-channel luminance LATC upload. A BC4
+image has one grey channel and no sRGB variant, so nothing decodes it: the
+surface shader repeats its red over the whole colour
+(`GREY_DIFFUSE`), which is what the 4 600 BC4 apparel and item diffuse maps
+show. Without GPU BC support every image decodes to RGBA8 instead.
 
 Uncompressed RGB8 and RGBA8 textures reach the shaders red first, as
 stored, raw or packed (`formats/RFI.md`). The original uploads them as RGB

@@ -84,6 +84,17 @@ impl TextureLoader {
     pub fn is_idle(&self) -> bool {
         self.decoding.is_empty() && self.stream.is_idle()
     }
+
+    /// Waits for the decodes in flight and collects them, oldest first, so
+    /// their uploads are queued in request order: the original's wait for
+    /// the loader before a caller needs a texture. The caller drains the
+    /// uploads after it ([`TextureStream::pump_uploads`]).
+    pub fn wait_decodes(&mut self) {
+        while let Some((request, task)) = self.decoding.pop_front() {
+            let decoded = block_on(task);
+            self.stream.finish_decode(request, decoded);
+        }
+    }
 }
 
 /// Runs the texture loader: hands the manager's queued requests to the

@@ -131,6 +131,34 @@ alpha, grey-alpha and RGB images and copies RGBA images, which matches
 what the original's RGBA8 targets give. Established by reverse engineering
 of the two registration routines and every converter (REA).
 
+## Upload formats
+
+The original's compatible-format table has seven uncompressed entries, each
+a stored word compared under `0x800CFFFF` (which drops bit 16 and the
+top-nibble kind) with a linear and an sRGB internal format, a GL format and
+a type:
+
+| stored word | format | linear | sRGB |
+|---|---|---|---|
+| `0x0100C600` | RGB8 | `GL_RGB8` | `GL_SRGB8` |
+| `0x0100E608` | RGBA8 | `GL_RGBA8` | `GL_SRGB8_ALPHA8` |
+| `0x01004200` | LUM8 | `GL_LUMINANCE8` | `GL_SLUMINANCE8` |
+| `0x01002008` | ALPHA8 | `GL_ALPHA8` | `GL_ALPHA8` |
+| `0x01006208` | LUMA8 | `GL_LUMINANCE8_ALPHA8` | `GL_SLUMINANCE8_ALPHA8` |
+| `0x01008400` | AB8 | `GL_RG8` | `GL_RG8` |
+| `0x11118400` | XY8 | `GL_RG8` | `GL_RG8` |
+
+So the packed `0x0111`/`0x1111` words share the RGB8 row, which has an sRGB
+variant, but they are still uploaded linear: the status word's data bit
+decides. ALPHA8 and the two-channel words have no sRGB variant at all, so
+they are never sRGB-decoded. The compressed words map to their block
+formats; BC1 and BC3 have sRGB variants, BC5 is always linear, and BC4
+(a single grey channel; 4 621 of the shipped images, the apparel and item
+diffuse and gloss maps) is uploaded as the luminance LATC format, also
+without an sRGB variant.
+Exarust uploads BC4 as `Bc4RUnorm` and repeats its red over the colour in
+the surface shader, so both the value and the format match.
+
 ## Generated mip levels
 
 When the original builds a mip chain itself (single-level uncompressed
@@ -197,7 +225,9 @@ The image's flag bits from 16 up join the requested word when a named
 image is loaded: bits 16–18 repeat it on S, T and R. Linear or sRGB storage
 is decided by the word's data bit (`0x100`) and, for an uncompressed image,
 by format bit 16 (the `0x0111` and `0x1111` words), which the upload routine
-treats as data; the compressed `0x82` and `0x92` words are data too.
+treats as data; the compressed `0x82` and `0x92` words are data too. The
+compatible-format table (below) adds that ALPHA8 and AB8 have no sRGB
+internal format, so they upload linear whatever their bit 16 says.
 
 ## Packed storage (`0x50000000`)
 

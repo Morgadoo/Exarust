@@ -43,14 +43,24 @@ diffuse whose subsurface red, green and blue are not all zero skips the
 bias), and the image's header flags from bit 16 up (wrap, stored chain,
 detail class, target) join the word. An uncompressed format word with bit 16
 set, or a compressed one whose top byte is `0x82` or `0x92`, is data whatever
-the slot asks.
+the slot asks. The target bits are the original's switch: `0x10000000` a 1D
+texture, `0x20000000` and every value from `0x50000000` up 2D, `0x30000000`
+3D and `0x40000000` the cube. The seven uncompressed formats the original
+uploads as they are (`texture::COMPATIBLE_FORMATS`, compared under
+`0x800CFFFF`) decide whether a colour word has an sRGB internal format:
+ALPHA8 and the two-channel AB8/XY8 do not, so they upload linear.
 
 The sampler follows the word: `0x10`/`0x20` pick linear minification and
 magnification, `0x40` samples the mip chain and `0x80` blends between levels;
 the wrap bits pick repeat or clamp per axis; anisotropy is
 `2^(quality level − mode)` while the mode is below the level and not 3, else
 1 (and 1 unless every filter is linear, which wgpu requires). The LOD bias is
-`base · f(ss) / 3` in f32, with `f(ss) = ss` below 2 and `ss − 1` from 2 up.
+`(base · f(ss)) · ⅓` in f32, left to right, with `f(ss) = ss` below 2 and
+`ss − 1` from 2 up. A BC4 image is uploaded as `Bc4RUnorm`, the original's
+luminance LATC format: one grey channel with no sRGB variant, whose red the
+shader repeats over rgb (`material::flags::GREY_DIFFUSE`), so the value is
+never decoded. Other BC images keep their formats (BC1 and BC3 with an sRGB
+variant, BC5 linear), and the rest decode to RGBA8.
 `TextureSettings` carries what `TextureQuality` writes (`with_quality`: the
 mask, the anisotropy level and the bias base, −0.75 at quality 5),
 `TextureDetail`, the supersampling setting, the device's largest texture
@@ -95,14 +105,34 @@ in order; a promotion that moves one request to the front and lets the last
 fill its place (the original's "Priority item"); removal; and an upload pass
 that takes only what was ready and honours a budget. `TextureStream` is the
 texture loader's queue: `request` (a duplicate of a queued name is refused),
-`promote` (which also finds a request decoded and waiting for its upload),
-`cancel`, one `decode_next` per pass on whatever executor the caller uses,
-the loader's wait while uploads are pending (skipped for a promoted request;
-pausing only stops the wake-ups), `load_now` for the priority path (promote,
-decode and upload one name), and `pump_uploads(budget, upload)` on the main
-thread with a per-upload completion callback. The original drains every
-ready upload each pass; the budget is Exarust's addition for memory-bounded
-loaders (unbounded with `usize::MAX`).
+`promote` (which finds a request queued, decoding or already uploaded: the
+original's status bit is never cleared), `cancel` (a queued request or a
+decoded one is dropped, one decoding is marked so its upload is skipped),
+`take_next`/`finish_decode` for an executor that decodes between them (or
+`decode_next` for a synchronous one), the loader's yield while uploads are
+pending (skipped for a promoted request; pausing only stops the wake-ups),
+`load_now` for the priority path (promote, decode and drain every ready
+upload, as the original's pump does; no budget, because the original has
+none), and `pump_uploads(budget, upload)` on the main thread with a
+per-upload completion callback. The pass wakes the loader after it uploads.
+The `upload_budget` is Exarust's addition for bounded callers (unbounded with
+`usize::MAX`).
+
+`texture_stream` runs that loader on Bevy's tasks. `AssetsPlugin` turns the
+manager's streaming path on (`TextureCache::set_streaming`): a new record
+gets the original's 1×1 grey placeholder under its handle and a queued load
+(`ModelLoader::texture_with_flags` returns at once), and `TextureStreamPlugin`
+decodes the queue on the async compute pool, four requests in flight and
+only the oldest collected, so uploads keep request order. Each upload
+replaces the placeholder's image under the same handle, so materials that
+already bound it draw the real texture from the next frame. The loader yields
+while uploads wait (the original's rule), the pump drains every ready upload,
+and a record freed at its last reference drops its queued load and its image
+(`ModelLoader::release_texture`). `texture_now` decodes on the calling
+thread (the original's synchronous path and its priority load); `wait_decodes`
+blocks on the in-flight decodes for a caller that must have them. Without a
+`Game` (tools) or a task pool the plugin uploads the placeholder, and a cache
+built by hand without `set_streaming` keeps decoding synchronously.
 
 `content_stream` is the stream thread's scheduler: while a level's list is
 unfinished, its next placed object alone; otherwise one generic job (its
@@ -110,18 +140,24 @@ completion queued for the main thread), one requested database object and
 one requested character in the same pass, and only when none of those was
 queued the pending streamed character nearest the focus point (squared
 distance, strict `<`, so the first of equal distances wins), else idle. A
-request that builds nothing is dropped. Its rings have the original's
-capacities (16 jobs, completions and attachments, 32 object and character
-requests and results, 128 streamed results); `fetch_object`/`fetch_character`
-fetch by request key, `pump` runs completions, then hands over the streamed
-characters to insert and the characters to attach, `wait_for_level` returns
-the built object list and missing count, and `wait_for_characters` drains
-attachments while the caller pumps other work. Content builders are supplied
-by the caller (`ContentBuilders`), as the original's thread calls into the
-database, character and item factories. The queue and loop are implemented;
-the level-object chunk reader, the database object factory and the character
-builders remain in their own components, and Exarust's level loader does not
-drive this scheduler yet.
+request that builds nothing is dropped. A placed object of the arrival word's
+player kind (or with the player marker on its database record) becomes the
+focus and its position the point the stream orders by; an object that cannot
+be built raises the missing count and leaves no hole in the built list. Its
+rings have the original's capacities (16 jobs, completions and attachments,
+32 object and character requests and results, 128 streamed results);
+`fetch_object` reports `Pending` while any object request is still queued
+(the original returns its null node then) and `Missing` when nothing matches
+(its scene's nil node); `fetch_character` fetches by owner and scene; `pump`
+runs completions, then hands over the streamed characters to insert and the
+characters to attach; `wait_for_level` returns the built object list and
+missing count only when the level had a list, and `wait_for_characters`
+drains attachments while the caller pumps other work. Content builders are
+supplied by the caller (`ContentBuilders`), as the original's thread calls
+into the database, character and item factories. The queue and loop are
+implemented; the level-object chunk reader, the database object factory and
+the character builders remain in their own components, and Exarust's level
+loader does not drive this scheduler yet.
 
 Materials that show wound blood (`docs/RENDERING.md`, Blood): the human
 skin, painted and run-time apparel and factory items, any record selecting

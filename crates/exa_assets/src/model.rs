@@ -1159,6 +1159,22 @@ impl ModelLoader<'_> {
         self.texture_load(name, space, flags, streaming)
     }
 
+    /// Releases a texture's reference and, when it was the last, frees its
+    /// image: the original's manager frees the GL texture at zero
+    /// references. `true` when the record went.
+    pub fn release_texture(&mut self, name: &str, space: ColorSpace) -> bool {
+        let key = TextureKey::new(name, space);
+        match self.cache.textures.release_record(&key) {
+            Some(record) => {
+                if let Some(image) = record.image {
+                    self.images.remove(image.id());
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Loads a texture now, on the calling thread: the original's priority
     /// path (its synchronous create, or its "load this one first" wait). A
     /// load still queued for the loader is dropped, so it cannot upload a

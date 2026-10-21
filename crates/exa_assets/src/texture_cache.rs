@@ -317,22 +317,27 @@ impl TextureCache {
         }
     }
 
+    /// Gives up a reference; the record is freed when the last one goes and
+    /// returned, so the caller can free its image too. The original frees
+    /// its GL texture here.
+    pub fn release_record(&mut self, key: &TextureKey) -> Option<TextureRecord> {
+        let index = self.search(key).ok()?;
+        let record = &mut self.entries[index];
+        record.references = record.references.saturating_sub(1);
+        if record.references != 0 {
+            return None;
+        }
+        let record = self.entries.remove(index);
+        // A load still waiting for the loader must not upload a freed
+        // record.
+        self.pending.retain(|request| &request.key != key);
+        Some(record)
+    }
+
     /// Gives up a reference; the record is freed when the last one goes.
     /// `true` when this call freed the record.
     pub fn release(&mut self, key: &TextureKey) -> bool {
-        let Ok(index) = self.search(key) else {
-            return false;
-        };
-        let record = &mut self.entries[index];
-        record.references = record.references.saturating_sub(1);
-        if record.references == 0 {
-            self.entries.remove(index);
-            // A load still waiting for the loader must not upload a freed
-            // record.
-            self.pending.retain(|request| &request.key != key);
-            return true;
-        }
-        false
+        self.release_record(key).is_some()
     }
 
     /// References held by a record, for tests and diagnostics.
@@ -427,6 +432,27 @@ mod tests {
         assert_eq!(cache.get(&key("wall01d")).unwrap().flags, 0);
         assert!(!cache.acquire(key("wall01d"), 0x300).created);
         assert_eq!(cache.references(&key("wall01d")), 3);
+    }
+
+    #[test]
+    fn the_last_release_returns_the_record_and_drops_its_queued_load() {
+        use crate::stream::TextureRequest;
+        let mut cache = TextureCache::default();
+        let key = TextureKey::new("wall01d", ColorSpace::Srgb);
+        cache.acquire(key, 0);
+        cache.acquire(key, 0);
+        cache.queue(TextureRequest::new(
+            "wall01d",
+            ColorSpace::Srgb,
+            0,
+            "wall01d",
+        ));
+        assert!(cache.release_record(&key).is_none());
+        let freed = cache.release_record(&key).expect("the last reference");
+        assert_eq!(freed.key, key);
+        assert!(cache.get(&key).is_none());
+        assert!(cache.pending().is_empty());
+        assert!(cache.release_record(&key).is_none());
     }
 
     #[test]
