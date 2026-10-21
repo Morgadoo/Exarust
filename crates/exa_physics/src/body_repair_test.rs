@@ -54,6 +54,22 @@ fn an_inverted_tetrahedron_is_rebuilt_on_its_rest_tetrahedron() {
 }
 
 #[test]
+fn drawing_interpolates_the_particles_between_the_last_two_ticks() {
+    let mut body = one_part();
+    let from = body.parts[0].positions;
+    let mut to = from;
+    to[0] += Vec3::new(0.4, 0.0, 0.0);
+    to[1] += Vec3::new(0.0, 0.2, 0.0);
+    body.parts[0].drawn_particles = (from, to);
+    let drawn = body.parts[0].drawn(0.25);
+    for i in 0..4 {
+        let want = from[i].lerp(to[i], 0.25);
+        let got = drawn.transform_point3(body.parts[0].rest[i]);
+        assert!(got.abs_diff_eq(want, 1e-5), "{got} vs {want}");
+    }
+}
+
+#[test]
 fn a_right_way_tetrahedron_is_left_alone() {
     let mut body = one_part();
     let before = body.parts[0].positions;

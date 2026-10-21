@@ -140,6 +140,7 @@ impl Part {
             own_origin: [1.0 - own.x - own.y - own.z, own.x, own.y, own.z],
             settled: Affine3A::IDENTITY,
             shown: (Affine3A::IDENTITY, Affine3A::IDENTITY),
+            drawn_particles: ([Vec3::ZERO; 4], [Vec3::ZERO; 4]),
             contacts: Vec::new(),
             strain: 0.0,
             leg_limit: None,

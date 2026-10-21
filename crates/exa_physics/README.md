@@ -67,7 +67,8 @@ tests. Not wired: the static-collider grid (rapier keeps the level's
 broad phase), the overflow guard's reset, the overlap and placement
 queries, and an automatic choice between the grid and all pairs.
 Blows are queued for the next tick, and parts are drawn between their last
-two ticks (`body::BodyPlugin`). Every part is
+two ticks by interpolating their four particles and building the part's
+matrix from them, as the original does (`body::BodyPlugin`). Every part is
 pinned at its origin to its parent, and the skeleton's links bound each
 joint's range (`body::Ragdoll::new`); a limp body's links also damp each
 joint inside its range through their smoothed lengths, reset when the

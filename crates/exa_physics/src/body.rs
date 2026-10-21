@@ -260,6 +260,10 @@ pub struct Part {
     /// Where the tick before last and the last tick left the part, untouched
     /// by the carry: it is drawn between the two.
     shown: (Affine3A, Affine3A),
+    /// The particles where the tick before last and the last tick left them:
+    /// drawing interpolates these, then builds the matrix, as the original
+    /// does.
+    drawn_particles: ([Vec3; 4], [Vec3; 4]),
     /// Level contacts found last tick, enforced in this tick's iterations.
     pub contacts: Vec<LevelContact>,
     /// Pushes and depths summed since the edges were last restored (or
@@ -368,6 +372,7 @@ impl Part {
             own_origin: [1.0 - own.x - own.y - own.z, own.x, own.y, own.z],
             settled: Affine3A::IDENTITY,
             shown: (Affine3A::IDENTITY, Affine3A::IDENTITY),
+            drawn_particles: ([Vec3::ZERO; 4], [Vec3::ZERO; 4]),
             contacts: Vec::new(),
             strain: 0.0,
             leg_limit: None,
@@ -386,23 +391,24 @@ impl Part {
     fn settle(mut self) -> Self {
         self.settled = self.transform();
         self.shown = (self.settled, self.settled);
+        self.drawn_particles = (self.positions, self.positions);
         self
     }
 
     /// The part's transform `alpha` of the way from where the tick before
-    /// last left it to where the last tick did.
+    /// last left it to where the last tick did: the original interpolates
+    /// the four particles and builds the matrix from them, so the drawn
+    /// pose has no slerp or scale drift of its own.
     pub fn drawn(&self, alpha: f32) -> Affine3A {
-        let (before, now) = self.shown;
-        if before == now {
-            return now;
+        let (from, to) = self.drawn_particles;
+        if from == to {
+            return affine_from_points(&self.rest, &self.rest_inverse, &to);
         }
-        let (_, from, start) = before.to_scale_rotation_translation();
-        let (scale, to, end) = now.to_scale_rotation_translation();
-        Affine3A::from_scale_rotation_translation(
-            scale,
-            from.slerp(to, alpha),
-            start.lerp(end, alpha),
-        )
+        let mut points = [Vec3::ZERO; 4];
+        for i in 0..4 {
+            points[i] = from[i].lerp(to[i], alpha);
+        }
+        affine_from_points(&self.rest, &self.rest_inverse, &points)
     }
 
     fn point(&self, w: &[f32; 4]) -> Vec3 {
@@ -1658,6 +1664,14 @@ impl Ragdoll {
             p.settled.translation += Vec3A::from(offset);
             p.shown.0.translation += Vec3A::from(offset);
             p.shown.1.translation += Vec3A::from(offset);
+            for x in p
+                .drawn_particles
+                .0
+                .iter_mut()
+                .chain(p.drawn_particles.1.iter_mut())
+            {
+                *x += offset;
+            }
             for c in &mut p.contacts {
                 c.point += offset;
                 c.plane = c.normal.dot(c.point) - CONTACT_SLOP;
@@ -1706,6 +1720,7 @@ impl Ragdoll {
             p.start = p.positions;
             p.settled = p.transform();
             p.shown = (p.settled, p.settled);
+            p.drawn_particles = (p.positions, p.positions);
         }
     }
 
@@ -1728,6 +1743,7 @@ impl Ragdoll {
             for p in &mut self.parts {
                 p.settled = p.transform();
                 p.shown = (p.settled, p.settled);
+                p.drawn_particles = (p.positions, p.positions);
             }
         }
     }
@@ -2092,6 +2108,8 @@ impl Ragdoll {
         for p in &mut self.parts {
             p.settled = p.transform();
             p.shown = (p.shown.1, p.settled);
+            p.drawn_particles.0 = p.drawn_particles.1;
+            p.drawn_particles.1 = p.positions;
         }
         if self.countdown <= SLEEP_COUNT {
             self.countdown = 0;
@@ -2128,6 +2146,7 @@ impl Ragdoll {
         }
         for p in &mut self.parts {
             p.shown.0 = p.shown.1;
+            p.drawn_particles.0 = p.drawn_particles.1;
         }
     }
 
@@ -2535,6 +2554,19 @@ fn drive_parts(parts: &mut [Part], drive: &Drive) {
             }
         }
     }
+}
+
+/// The affine map taking `rest` to `points`, from the rest edges' inverse:
+/// the original's body matrix built from the particles and their inverse
+/// rest basis (it maps all four points exactly).
+fn affine_from_points(rest: &[Vec3; 4], rest_inverse: &Mat3, points: &[Vec3; 4]) -> Affine3A {
+    let edges = Mat3::from_cols(
+        points[1] - points[0],
+        points[2] - points[0],
+        points[3] - points[0],
+    );
+    let m = edges * *rest_inverse;
+    Affine3A::from_mat3_translation(m, points[0] - m * rest[0])
 }
 
 /// Restores a part's six edge lengths.
