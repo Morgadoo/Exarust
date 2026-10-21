@@ -170,6 +170,9 @@ pub fn merge_parts(parts: &[MergePart]) -> Option<Mesh> {
 
 /// The generator's occlusion alpha for a merged mesh (`0x1000e7a90`).
 ///
+/// **Guess:** the class the original compares is the mesh part's material
+/// group; the caller passes the class per vertex.
+///
 /// `part` names the body part each vertex came from (0 when it is not a
 /// body part), `class` the material group the vertex belongs to, and
 /// `indices` the mesh's triangles. Every marked vertex starts opaque; a

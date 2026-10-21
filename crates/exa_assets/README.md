@@ -29,9 +29,10 @@ Merging (`merge`): `merge_parts` appends the visible body parts and garment
 pieces into one skinned mesh as the original's character assembly does:
 each part placed by its frame, its vertices, normals, UVs and colours
 appended, its weights kept vertex for vertex (a part without them bound to
-its bone), and its triangles grouped by material in first-seen order. The
-loader still draws a mesh per node; the per-triangle cull bits of hidden
-body slots are not applied yet.
+its bone), and its triangles grouped by material in first-seen order. `culled_indices` drops triangles with a slot's cull bits
+(`exa_character::layers::cull_bits`) and `occlusion_alpha` writes the
+generator's per-vertex occlusion mask. The loader still draws a mesh per
+node; the merged mesh is built by callers, not by the loader yet.
 
 Skin tone (`human_skin`): a character's `SkinLook` selects the built-in skin
 material for its record's two tone words (and the women's texture set),

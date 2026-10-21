@@ -9,6 +9,11 @@
 //! original's layout: the tree's local transform is a 3 × 4 row frame
 //! (metres), `kind` is the node's build kind, `slot` is the body slot its
 //! name gives, and a mesh carries its material and held flags.
+//!
+//! The dynamics object's full layout is not in the pack; [`Dynamics`] keeps
+//! the fields the builder touches (its flags, four scales and rest vectors
+//! and the body it follows). `restore_frames`'s flagged path and
+//! `copy_state`'s node pairing are the parts marked as guesses below.
 
 use exa_formats::morph::{Frame, compose};
 
@@ -401,7 +406,9 @@ impl Body {
 
     /// Restores the saved local frames (`0x1000ee7f0`): a node whose parent
     /// is not flagged `0x10` copies the whole frame; a child of a flagged
-    /// parent takes only its stored translation.
+    /// parent takes only its stored translation. **Guess:** the original
+    /// copies four qwords and a dword from its saved block in that branch;
+    /// only the translation is used here.
     pub fn restore_frames(&mut self, saved: &[Frame]) {
         for (i, frame) in saved.iter().enumerate() {
             let flagged = self.nodes.get(i).is_some_and(|node| {
@@ -470,7 +477,8 @@ impl Body {
 
     /// Copies one body's node state onto another by matching slot, as the
     /// rebuild's state copy does (`0x1000ee330`): transforms, flags, kind,
-    /// held and cloth state and position count.
+    /// held and cloth state and position count. **Guess:** the saved body's
+    /// descendants are paired in walk order with the rebuilt body's.
     pub fn copy_state(&mut self, dst_root: usize, src: &Body, src_root: usize) {
         let src_nodes: Vec<usize> = src.descendants(src_root);
         for (d, &s) in self.descendants(dst_root).iter().zip(&src_nodes) {

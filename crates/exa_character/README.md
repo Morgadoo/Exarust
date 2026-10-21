@@ -116,6 +116,34 @@ physique values and the body morphs they select remain the body's concern
   the record's colour, specular, gloss and opacity. The builder's refresh
   cut (keep, cover, replace) is `look::hair_refresh`.
 
+## The generator's runtime
+
+- `runtime` is the body tree the generator walks: each node's local and
+  world frame, slot and layer, mesh/held/cloth flags and its dynamics state.
+  It reproduces the subtree word writes and held marks, slot chaining and
+  re-framing from the slot rest frames, the dynamics build/split/rebuild
+  passes, frame save/restore, pose restore, scene detach, cloth velocity and
+  the node-state copy. The dynamics object keeps the fields the builder
+  touches (flags, four scales, rest vectors, followed body).
+- `factory` is the start-up data: the eighteen slots' child tables and the
+  skin-map side/format from the pixel-format setting (512 below 3, 1024
+  from 3), the item-database override and material lock.
+- `texture_job` describes the skin job the renderer runs: the race's colour,
+  gloss and normal maps, the record's tone and seed offsets, the age
+  darkening, the beard and the normal-layer blend, plus the first apparel
+  texture the job carries. `exa_assets::human_skin` draws the parts it can.
+- `rebuild` keeps the rebuild paths: saving frames before a body, look or
+  texture rebuild; the dressed-mesh plan (chosen slots, visible body slots,
+  merge order); a texture-only rebuild; and the hair cut/root rules. The
+  background dispatcher runs a rebuild inline or through an installed
+  worker.
+- `spawn` plans what the spawn writes: the stance and motion (saved attack
+  motions reset to 3, 0x13 or 0x19), the root heights (standing less 8 cm,
+  lying less 5, player less 5, saved pose less 6), the corpse's 0xA00, the
+  first two hands' equip pass, and an item model's factory/Characters
+  source. `pose` writes a placement's saved bone frames onto the body parts
+  when it spawns.
+
 ## Held items
 
 - `held::Hands` says what a body holds as the original's moveset rule reads
