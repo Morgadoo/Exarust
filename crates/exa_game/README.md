@@ -268,14 +268,16 @@ stand-ins.
 
 ## Main menu screen
 
-`menu_screen` is the running app's main menu, opened and closed with F1. It
-uses `menu_pages`' page table, hit test, paint pass and click branches:
-title (arena, character screen, start, manual, settings, exit), start (new
-career, character screen, class select, new game, back), in-game
-(close/begin, manual, settings, exit), class select (novice, expert, back)
-and the pause pages (close, settings, continue). The mouse and
-Up/Down/Enter drive the rows, Escape closes the screen. The rows are drawn
-in the base font until the original's `mmenutxt01.rfi` sprite sheet is
-bound; the recorded sprite font (`exa_ui::gui_text::MenuFont`) already
-supplies their widths and rescale. The session work behind the commands is
-named, not performed, by this screen.
+`menu_screen` is the running app's main menu, opened and closed with F1 (the
+original opens it from its session flow). It routes the pointer through an
+`exa_ui::gui_core::GuiTask` whose one form is the menu, so the hover and
+focus follow the window manager's rules, and uses `menu_pages`' page table,
+hit test, paint pass and click handler: the pointer selects the row under it
+and Up and Down move the selection, a press marks the row and its release
+over it runs the command, and Enter runs the selected row. The title page's
+EXIT quits; page changes, the resume and the exits to the title are the
+screen's own; the session work behind BEGIN, CONTINUE, NEW CAREER,
+PRACTICE, VERSUS, MANUAL and SETTINGS is named, not performed. Escape goes
+back from the arena and practice pages and closes the screen elsewhere. The
+rows are measured with the menu font's record (`titlefont.rfi`) and drawn in
+the base font until its quads are wired.

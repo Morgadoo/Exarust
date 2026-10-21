@@ -1692,19 +1692,27 @@ Software rendering here cannot afford the light shadows, so test frames use
 `exa_ui::viewport` keeps the original `T3DViewport`'s own rules. It offers
 eight supersampling levels, each a sample count and a start in the recorded
 jitter table: 1, 2, 3, 4, 8, 15, 24 and 66 points, the first at the centre.
-A point is scaled to `width·2·x / viewport_width` and
-`height·2·y / viewport_height`. The still accumulation walks the level's
-points, reports `(i + 1) / count`, `0.5 − (i + 0.5) / count` and
-`1 − 1/(i+1)` as it goes, and a level leaving or entering zero moves the
-view's sample counter by one. The camera's scale is twice the field of view
-(halved) over the target's distance, clamped to 100–3000 cm.
+A point's jitter is `2 · scale · point / size` per axis, `scale` being the
+view's projection scales. A supersampled frame renders every sample of its
+level at once: sample i takes point i, the share `(i + 1) / count` (in
+double precision), `0.5 − (i + 0.5) / count`, and after the first the blend
+`1 − 1 / (i + 1)`. The progressive path counts its samples from one over
+successive frames, but 0.9.5 sets its refresh flag on every frame, so it
+never runs. A level leaving or entering zero moves the view's count of
+supersampling viewports by one. A frame without jitter shifts a stereo eye
+by the camera scale, right for eye 1 and left for eye 2. The camera's scale
+is `(2 · fov) · 0.5` over the camera's distance to its target, held to
+100–3000 (a not-a-number distance stays one).
 
-The viewport also names the version overlay's place ("V 0.9.5.2g", a unit
-in from the left and up from the client's bottom) and the frame-rate
-readout's, and projects and unprojects view-space points through its
-horizontal and vertical projection scales. Cursor actions are chosen by the
-mask with the most bits that the key word contains; a key begins one while
-no control has the focus, a key up suspends it, and Escape ends it after its
-reply. Exarust renders its still through `exa_render::supersample`, not this
-progressive accumulation; these rules are ready for a viewport that hosts a
-view inside a form.
+The viewport also places the version overlay ("V 0.9.5.2g", a unit in from
+the left and up from the bottom) and the frame-rate readout (its width the
+main font's gap times its length, right-aligned a unit inside the client;
+refreshed once more than 250 ms have passed, two decimals and " FPS"), both
+drawn over a one-pixel black shadow at half alpha, and converts between the
+view's pixels and its space through the projection scales. Its press picks
+the cursor action whose mask the press word holds with the most bits in the
+mask's low 16 (the last among equals) when no control is selected; a
+running action is ended by the next press and decides its release, and in a
+view drag it gets the moves until it answers 0x80. Exarust renders its
+still through `exa_render::supersample`; these rules are ready for a
+viewport that hosts a view inside a form.

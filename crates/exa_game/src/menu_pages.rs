@@ -1,8 +1,7 @@
-//! The main menu's page table (`TMainMenu`'s rows): each page's
-//! rows, their order, which are disabled and the row origin fraction. The
-//! page geometry (row spacing) is not modelled; the retail screenshot shows
-//! ~70 px rows at 1600×1080, which the raw `70·0.5·round(H/135)` reading
-//! does not reproduce.
+//! The main menu (`TMainMenu`): each page's rows, their order, which are
+//! disabled and the row origin fraction; the row scale and advance, the hit
+//! test, the paint pass and the click handler's commands. Rules:
+//! `docs/UI.md` (The main menu screen).
 
 /// A main-menu page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

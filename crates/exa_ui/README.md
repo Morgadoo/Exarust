@@ -330,22 +330,25 @@ are not drawn by a form yet.
 ## GUI core
 
 `gui_core` is the window manager: a form is anything implementing
-`FormHost` (parent, bounds, hit test, focus, key, pointer and drag
-callbacks), and `GuiTask` keeps the forms in creation order, the active and
-modal forms, the selected control, the fallback focus, the pointer's press,
-drag and release state, the tooltip and the system cursor. `PlainForm` is
-the basic record wired to `gui_controls::dispatch`; `message_box_plan`
-builds the original's Ok/Cancel box, `place_form` and `edge_rect` its
-placement and title-bar grips, and `GuiMetrics` its derived lengths.
+`FormHost` (the original's virtual methods: hit test, select, press,
+release, drag move, drop, close), and `GuiTask` keeps the task's state —
+the focused form and control with its tooltip request and the tick that
+shows it, the modal form, the pointer's target, press point, held word,
+double click, drag threshold and capture, the drop hand-over and the cursor
+shape. `PlainForm` is a basic record over `gui_controls::dispatch`;
+`message_box_plan` builds the original's Ok/Cancel box, `place_form`,
+`clamp_form` and `edge_rect` its placement, clamp and grips, `GuiMetrics`
+the level switch's lengths, and `set_control_on` a toggle group's switch.
 
 `gui_text` holds the text support routines: measuring with a font's advance
 table, selecting a font and its texture, one line's glyph quads (plain,
 centred, a span, truncated with the ellipsis, or the fitted tail), a wrapped
-block with its first-line skip and centring, the line count, the width fit,
-and the menu sprite font's recorded 4 × 7 cells and rescale. `text_edit` is
-the single-line editor: the four-byte view (anchor, caret, shown length,
-first visible byte), caret from x, the horizontal scroll, the key and
-navigation handlers, clipboard copy/cut/paste, the caret and selection
-draws and the markup tags. `viewport` keeps the 3D viewport control's
-supersampling levels and jitter table, still accumulation, camera scale,
-projection, overlays and cursor-action key routing.
+block hanging from its line tops, the line count, the width fit, and the
+menu font's record (`titlefont.rfi`, rescaled half to even). `text_edit` is
+the single-line editor: the four-byte view (anchor, caret, the window's end
+and its first byte), caret from x, the horizontal scroll, the key and
+navigation handlers, clipboard copy/cut/paste, the caret and the draw's
+three paths, and the markup tags. `viewport` keeps the 3D viewport
+control's supersampling levels, jitter table and samples, camera scale,
+stereo eye, overlays, frame-rate counter, pixel/space conversions and its
+cursor actions.
