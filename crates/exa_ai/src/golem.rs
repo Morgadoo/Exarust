@@ -238,6 +238,9 @@ pub struct GolemState {
     pub speeds: [f32; 2],
     pub home: Vec3,
     pub home_angle: f32,
+    /// The body's own angle word (0xad4), which a wake copies into the
+    /// character's home angle.
+    pub body_angle: f32,
     /// Each limb's stored mass (the base the sleep scale multiplies).
     pub masses: Vec<f32>,
     /// Each limb's current scale.
@@ -276,9 +279,9 @@ pub fn wake(state: &GolemState, roll: f64, at: Vec3) -> (GolemChange, Option<f32
             stance: 0,
             energy: state.energy,
             wake_ticks: WAKE_TICKS,
-            speeds: [1.0, 1.0],
+            speeds: state.speeds,
             home: at,
-            home_angle: state.home_angle,
+            home_angle: state.body_angle,
             alarm: state.alarm,
             hook: Hook::Homeward,
             limb_scales,
@@ -316,8 +319,8 @@ pub fn sleep(state: &GolemState, home: Vec3, home_angle: f32) -> GolemChange {
         render: state.render | HIDDEN_RENDER_BIT,
         glow: 0.0,
         dormant: true,
-        pose: 1,
-        stance: 2,
+        pose: 2,
+        stance: 1,
         energy: 0.0,
         wake_ticks: SLEEP_TICKS,
         speeds: state.speeds,
@@ -530,6 +533,7 @@ mod tests {
             speeds: [0.25, 0.75],
             home: Vec3::ZERO,
             home_angle: 0.25,
+            body_angle: 0.5,
             masses: vec![20.0, 10.0],
             limb_scales: vec![20.0, 10.0],
             glow: vec![1.0, 2.0],
@@ -568,6 +572,7 @@ mod tests {
         assert_eq!(change.glow, 1.0);
         assert_eq!(change.wake_ticks, 256);
         assert_eq!(change.home, Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(change.home_angle, 0.5, "the body's own angle");
         assert_eq!(change.limb_scales, vec![20.0, 10.0]);
         assert_eq!(change.glow_scales, vec![50.0, 100.0]);
         assert!(!change.latch);
@@ -583,8 +588,8 @@ mod tests {
         let change = sleep(&s, Vec3::new(4.0, 0.0, 5.0), 0.5);
         assert_eq!(change.render, HIDDEN_RENDER_BIT);
         assert!(change.dormant);
-        assert_eq!(change.pose, 1);
-        assert_eq!(change.stance, 2);
+        assert_eq!(change.pose, 2);
+        assert_eq!(change.stance, 1);
         assert_eq!(change.energy, 0.0);
         assert_eq!(change.speeds, [0.25, 0.75], "dormancy keeps the speeds");
         assert_eq!(change.limb_scales, vec![1.0, 0.5]);

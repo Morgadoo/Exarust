@@ -1118,8 +1118,10 @@ impl ForceShell {
             strength,
         });
         if self.sound_at < now {
-            let volume = strength * (roll() * 0.05 + 0.05) * self.sound_gain;
-            let pitch = roll() * 0.4 + self.sound_pitch;
+            let volume = (f64::from(strength)
+                * (f64::from(roll()) * 0.05 + 0.05)
+                * f64::from(self.sound_gain)) as f32;
+            let pitch = (f64::from(roll()) * 0.4 + f64::from(self.sound_pitch)) as f32;
             self.sound_at = now.wrapping_add(SHELL_SOUND_GATE_MS);
             Some((pitch, volume))
         } else {
@@ -1236,13 +1238,13 @@ impl ForceShell {
     /// The sound a closing shell plays: volume 0.4, pitch 0.6 plus two
     /// fifths of a draw.
     pub fn close_sound(roll: f32) -> (f32, f32) {
-        (roll * 0.4 + 0.6, 0.4)
+        ((f64::from(roll) * 0.4 + 0.6) as f32, 0.4)
     }
 
     /// The pitch a shell's start sound takes: its base duration times the
     /// draw times 0.8.
     pub fn start_pitch(duration: f32, roll: f32) -> f32 {
-        duration * roll * 0.8
+        (f64::from(duration) * f64::from(roll) * 0.8) as f32
     }
 }
 
