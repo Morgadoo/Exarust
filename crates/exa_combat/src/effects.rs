@@ -13,11 +13,11 @@
 /// A power effect on a body.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Effect {
-    /// Its ramp (`+0xd80`).
+    /// Its ramp.
     pub ramp: f32,
-    /// The ramp at which its callback ends it (`+0xd74`).
+    /// The ramp at which its callback ends it.
     pub limit: f32,
-    /// The effect's flag (`+0x12e8`), cleared when it starts.
+    /// The effect's flag, cleared when it starts.
     pub flag: bool,
 }
 
@@ -39,7 +39,7 @@ impl Effects {
         &self.items
     }
 
-    /// A ramp added to every effect (the original's `+0xd80` add).
+    /// A ramp added to every effect (the original adds to the ramp of each).
     pub fn raise(&mut self, amount: f32) {
         for e in &mut self.items {
             e.ramp += amount;
@@ -83,7 +83,7 @@ pub struct CastStart {
     pub casting: bool,
 }
 
-/// The cast start for a motion `motion` (`+0xeb0`) and whether the body is
+/// The cast start for a motion `motion` and whether the body is
 /// parrying: a positive motion starts the clip (ending a parry first) and
 /// sets condition 0x20; no motion only clears the callback's data.
 pub fn cast_start(motion: i32, parrying: bool) -> CastStart {

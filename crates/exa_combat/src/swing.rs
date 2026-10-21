@@ -1285,7 +1285,7 @@ pub fn swing_sound(
     Some((volume, pitch))
 }
 
-/// The fatigue (`+0xaec`) after an attack tick: (1 − clock²)·0.25, capped
+/// The fatigue after an attack tick: (1 − clock²)·0.25, capped
 /// at 1.
 pub fn fatigue_add(fatigue: f32, progress: f32) -> f32 {
     let next = fatigue + (1.0 - progress * progress) * 0.25;

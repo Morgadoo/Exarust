@@ -305,11 +305,11 @@ pub struct Part {
     /// Its level queries are static (the current pose only, no sweep), as
     /// a held item body's are in the original's static-only mode.
     pub static_only: bool,
-    /// The original's class word (`+0xc`), which carries the body's
+    /// The original's class word, which carries the body's
     /// collision class bits (the grab layer, the strike window and the
     /// static-only mode among them).
     pub class_word: u32,
-    /// The original's controller state word (`+0x8` on the node's
+    /// The original's controller state word (on the node's
     /// controller), which the body tick sets bits of (bit 4 marks a part
     /// in a tangle or a hit reaction).
     pub state_word: u32,
@@ -1745,7 +1745,7 @@ impl Ragdoll {
     }
 
     /// Writes the original's class word to every part, and `word | 0x30`
-    /// to each part's first child (the original's `+0x45c` writer).
+    /// to each part's first child (as the original's class writer does).
     pub fn set_class_word(&mut self, word: u32) {
         let first: Vec<Option<usize>> =
             (0..self.parts.len()).map(|i| self.first_child(i)).collect();
@@ -1780,7 +1780,7 @@ impl Ragdoll {
     }
 
     /// ORs `flag` into every part's controller state word, as the original
-    /// walks the whole body tree (`+0x8` bit 4 for a tangle or a hit
+    /// walks the whole body tree (bit 4 for a tangle or a hit
     /// reaction).
     pub fn raise_state_flag(&mut self, flag: u32) {
         for p in &mut self.parts {

@@ -570,7 +570,7 @@ pub struct ParryStart {
 
 /// The parry start when the chosen clip differs from the one playing:
 /// `chosen` is the re-picked clip from the height table, `current` the clip
-/// playing (0xEB0), `recovery` the original's `+0x1200`. Starts only a
+/// playing, `recovery` the body's recovery state. Starts only a
 /// positive chosen clip. Also moves a current attack (motions 5–12) to
 /// motion 4, as the trigger does.
 pub fn parry_start(chosen: i32, current: i32, recovery: f32) -> Option<(ParryStart, bool)> {

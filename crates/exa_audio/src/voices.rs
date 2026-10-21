@@ -1,6 +1,6 @@
 //! A character's voice set: the original picks by its feral level, from the
-//! living voice (`record+0x4c`) or the undead one (`+0xa4`), and its sex
-//! flag (`record+0x54` bit 0). The footstep set is the race's step name, the
+//! living voice or the undead one, and its sex flag (bit 0 of the record's
+//! flags). The footstep set is the race's step name, the
 //! golem suit's own `Golem_Stp`, or the wet `StpWet` fallback.
 //!
 //! No game system selects voices yet; these are the original's rules as
