@@ -1,10 +1,12 @@
 //! Level portals: the sparks that replace a portal marker when a level is
 //! loaded, and the dissolve burst thrown over a body that steps through one.
 //!
-//! A portal marker becomes a `_PrtlPrt01` particle system with a soft blue
-//! light. Using a portal builds a second `_PrtlPrt01` system over the body,
-//! seeds it with `_PrtlDisp` particles across every model node's bounding
-//! box, and plays `portaluse01`.
+//! A portal marker (a plain node ending in the 0x3dd0_e004 emitter record,
+//! `_PortalPrt` in `uwportal01`) becomes a `_PrtlPrt01` particle system
+//! with a soft blue light 50 cm above it. Using a portal builds a second
+//! `_PrtlPrt01` system, named `_PrtlDisp`, seeds it with particles across
+//! every model node's bounding box of the body, pushed out from the body's
+//! centre, and plays `portaluse01`.
 //!
 //! Sizes are the original's centimetres. The seeding rules are plain
 //! functions; nothing here draws or spawns.
@@ -22,11 +24,12 @@ pub const PORTAL_EFFECT_KIND: u32 = 0x3dd0_e004;
 /// The geometry's sub-object kind and its flag word.
 pub const SUB_OBJECT_KIND: i32 = 35_044;
 pub const GEOMETRY_FLAG: u32 = 0x1000;
-/// A level node asks for the replacement through this flag.
+/// The world a marker is loaded into replaces it only with this flag set
+/// (the game's own scene).
 pub const IMPORT_FLAG: u32 = 0x10000;
 /// The names the systems carry.
 pub const PORTAL_NODE_NAME: &str = "_PortalPrt";
-pub const DISSOLVE_NODE_NAME: &str = "_PrtlDis";
+pub const DISSOLVE_NODE_NAME: &str = "_PrtlDisp";
 /// The particle system's box keeps this margin past its live particles.
 pub const BOUNDS_MARGIN_CM: f32 = 5.0;
 
@@ -108,11 +111,15 @@ pub const PORTAL_LIGHT: LightSpec = LightSpec {
     casts_shadow: true,
 };
 
-/// Particle systems are started with this scale; the portal's own system
-/// also carries a 0.102 start value and clears this render-flag bit.
+/// Particle systems are started with this scale. The portal's own system
+/// also stores the marker's emitter kind word (read as a float it would be
+/// 0.102; the identical bit pattern says it is the kind) and clears this
+/// render-flag bit.
 pub const SYSTEM_SCALE: f32 = 1.0;
-pub const SYSTEM_START: f32 = 0.101_960_79;
+pub const SYSTEM_KIND_WORD: u32 = PORTAL_EFFECT_KIND;
 pub const SYSTEM_CLEAR_FLAG: u32 = 0x0002_0000;
+/// A seeding pass clears this bit of the dissolve system's flags.
+pub const BURST_CLEAR_FLAG: u32 = 0x2;
 
 /// The spark system a level's portal marker becomes.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -124,9 +131,9 @@ pub struct PortalSpark {
     pub geometry_flag: u32,
     pub material: &'static str,
     pub node_name: &'static str,
-    /// The system's start scale and start value.
+    /// The system's start scale and the kind word it stores.
     pub scale: f32,
-    pub start: f32,
+    pub kind_word: u32,
     /// The particle system flag cleared after creation.
     pub cleared_flags: u32,
 }
@@ -140,7 +147,7 @@ pub const PORTAL: PortalSpark = PortalSpark {
     material: PARTICLE_MATERIAL,
     node_name: PORTAL_NODE_NAME,
     scale: SYSTEM_SCALE,
-    start: SYSTEM_START,
+    kind_word: SYSTEM_KIND_WORD,
     cleared_flags: SYSTEM_CLEAR_FLAG,
 };
 
@@ -150,15 +157,16 @@ pub struct PortalDissolve {
     pub particle: ParticleSpec,
     pub material: &'static str,
     pub node_name: &'static str,
-    /// The pull from the emitter's velocity into a particle's second start.
+    /// The pull toward the body's centre each seeded particle takes; it is
+    /// negative, so it pushes the particles out.
     pub pull: f32,
     pub sound: &'static str,
     pub volume: f32,
     pub pitch: f32,
 }
 
-/// The portal-use dissolve: `_PrtlPrt01` again, `_PrtlDis`-named, with the
-/// body's motion and `portaluse01` at 0.6.
+/// The portal-use dissolve: `_PrtlPrt01` again, `_PrtlDisp`-named, pushed
+/// out from the body's centre, and `portaluse01` at 0.6.
 pub const DISSOLVE_EFFECT: PortalDissolve = PortalDissolve {
     particle: DISSOLVE,
     material: PARTICLE_MATERIAL,
@@ -183,30 +191,34 @@ pub const SEED_JITTER_CM: f32 = 1.5;
 /// original's particle capacity stops it long before this.
 pub const MAX_GRID_STEPS: i32 = 1024;
 
-/// The pull the burst applies between a particle's two starts and the
-/// emitter's velocity.
+/// The pull the burst applies from a particle toward the body's centre:
+/// negative, a push of 1.5 % of the distance out.
 pub const SEED_VELOCITY_PULL: f32 = -0.015;
 
-/// A model node the burst is seeded over: its local box, its frame this
-/// tick and last (each composed with the node's inverse rest frame by the
-/// caller), and its children.
+/// A model node the burst is seeded over: its local box, its two frames
+/// (each composed with the node's inverse rest frame by the caller), and
+/// its children.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SeedNode {
     /// Centre of the node's box, in its own space (cm).
     pub centre: Vec3,
     /// Half extents of the node's box (cm).
     pub half: Vec3,
-    /// The node's frame this tick.
+    /// The node's frame whose point is jittered and pushed into a
+    /// particle's position.
     pub current: Frame,
-    /// The node's frame last tick (guess: the object's second frame field
-    /// is its previous tick's; the alternative would be a second rest
-    /// frame, which no seeding rule uses).
+    /// The node's other frame, whose point is the particle's previous
+    /// position as it is (guess: which of the node's two stored frames is
+    /// this tick's is not settled by this group; the jittered, pushed
+    /// point is the position because only that reading moves the
+    /// particles outward).
     pub previous: Frame,
     pub children: Vec<SeedNode>,
 }
 
-/// One seeded dissolve particle: where it starts, where Verlet thinks it
-/// came from, its life in ticks and its atlas/orientation variant.
+/// One seeded dissolve particle: its position (the record's second point)
+/// and its previous position (the first), its life in ticks and its
+/// atlas/orientation variant.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Seeded {
     pub at: Vec3,
@@ -236,17 +248,17 @@ pub fn grid_steps(half_cm: Vec3) -> [i32; 3] {
 /// its children in order; x, then y, then z of its grid.
 ///
 /// Two fifths of the cells take a particle. Life starts at the template's
-/// lifetime minus up to a quarter of it, the look is the next five random
-/// bits, the position is the cell plus ±1.5 cm per axis, and the two starts
-/// straddle the node's move over the last tick with the emitter's velocity
-/// pulled in by 1.5 % (guess: the velocity passed in is the node's second
-/// frame value).
+/// lifetime minus up to a quarter of it and the look is the next five
+/// random bits. The cell's point (taken in double precision) through the
+/// previous frame is the particle's previous position; through the current
+/// frame it is moved halfway to that, jittered by ±1.5 cm per axis and
+/// pushed 1.5 % further from `centre_cm`, the body's root node position.
 ///
 /// Seeding stops when the capacity is reached.
 #[allow(clippy::too_many_arguments)]
 pub fn seed_burst(
     nodes: &[SeedNode],
-    velocity_cm: Vec3,
+    centre_cm: Vec3,
     capacity: usize,
     lifetime_ticks: i32,
     rng: &mut Rng,
@@ -257,15 +269,7 @@ pub fn seed_burst(
         return out;
     }
     for node in nodes {
-        seed_node(
-            node,
-            velocity_cm,
-            capacity,
-            lifetime_ticks,
-            rng,
-            mt,
-            &mut out,
-        );
+        seed_node(node, centre_cm, capacity, lifetime_ticks, rng, mt, &mut out);
         if out.len() == capacity {
             break;
         }
@@ -276,7 +280,7 @@ pub fn seed_burst(
 #[allow(clippy::too_many_arguments)]
 fn seed_node(
     node: &SeedNode,
-    velocity_cm: Vec3,
+    centre_cm: Vec3,
     capacity: usize,
     lifetime_ticks: i32,
     rng: &mut Rng,
@@ -291,28 +295,26 @@ fn seed_node(
                 if rng.below(5) >= 2 {
                     continue;
                 }
-                let point = min
-                    + Vec3::new(
-                        node.half.x * (x as f32 / steps[0] as f32) * 2.0,
-                        node.half.y * (y as f32 / steps[1] as f32) * 2.0,
-                        node.half.z * (z as f32 / steps[2] as f32) * 2.0,
-                    );
-                let quarter = ((lifetime_ticks as u32) >> 2) as i32;
-                let life = lifetime_ticks - rng.below(quarter.max(0) as u32) as i32;
+                let cell = |min: f32, half: f32, i: i32, n: i32| {
+                    (f64::from(min) + f64::from(half) * (f64::from(i) / f64::from(n)) * 2.0) as f32
+                };
+                let point = Vec3::new(
+                    cell(min.x, node.half.x, x, steps[0]),
+                    cell(min.y, node.half.y, y, steps[1]),
+                    cell(min.z, node.half.z, z, steps[2]),
+                );
+                let quarter = (lifetime_ticks as u32) >> 2;
+                let life = lifetime_ticks.wrapping_sub(rng.below(quarter) as i32);
                 let look = rng.below(32) as u8;
 
-                let at = node.current.point(point);
-                let mut before = node.previous.point(point);
-                before += (at - before) * 0.5;
+                let before = node.previous.point(point);
+                let mut at = node.current.point(point);
+                at += (before - at) * 0.5;
                 let spread = f64::from(SEED_JITTER_CM * 2.0);
-                let at = at
-                    + Vec3::new(
-                        ((mt.unit() - 0.5) * spread + f64::from(at.x)) as f32 - at.x,
-                        ((mt.unit() - 0.5) * spread + f64::from(at.y)) as f32 - at.y,
-                        ((mt.unit() - 0.5) * spread + f64::from(at.z)) as f32 - at.z,
-                    );
-                let pull = velocity_cm - before;
-                let before = before + pull * SEED_VELOCITY_PULL;
+                at.x = ((mt.unit() - 0.5) * spread + f64::from(at.x)) as f32;
+                at.y = ((mt.unit() - 0.5) * spread + f64::from(at.y)) as f32;
+                at.z = ((mt.unit() - 0.5) * spread + f64::from(at.z)) as f32;
+                at += (centre_cm - at) * SEED_VELOCITY_PULL;
                 out.push(Seeded {
                     at,
                     before,
@@ -327,27 +329,33 @@ fn seed_node(
         }
     }
     for child in &node.children {
-        seed_node(child, velocity_cm, capacity, lifetime_ticks, rng, mt, out);
+        seed_node(child, centre_cm, capacity, lifetime_ticks, rng, mt, out);
         if out.len() == capacity {
             return;
         }
     }
 }
 
-/// Whether a level node's flags ask for its portal marker to be replaced.
-pub fn replaces_marker(flags: u32) -> bool {
-    flags & IMPORT_FLAG != 0
+/// Whether the world a marker is loaded into replaces it: the world's
+/// flags carry [`IMPORT_FLAG`]. The marker's 4-byte payload (its size,
+/// 100 on `uwportal01`) is read and not used.
+pub fn replaces_marker(world_flags: u32) -> bool {
+    world_flags & IMPORT_FLAG != 0
 }
 
-/// The box after a seeding pass: the midpoint of the min and max particles
-/// and half extents five centimetres past them. No particles gives none.
+/// The box after a seeding pass: half way from the min to the max particle,
+/// half extents five centimetres past the max, and the sphere through the
+/// box's corner. No particles gives none.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BurstBounds {
     pub centre: Vec3,
     pub half: Vec3,
+    pub radius: f32,
 }
 
-/// The box over the seeded particles.
+/// The box over the seeded particles, in the particle system's arithmetic
+/// (the min and max themselves come from the system's own pass, outside
+/// this group).
 pub fn burst_bounds(points: &[Vec3]) -> Option<BurstBounds> {
     let first = *points.first()?;
     let (mut min, mut max) = (first, first);
@@ -355,9 +363,13 @@ pub fn burst_bounds(points: &[Vec3]) -> Option<BurstBounds> {
         min = min.min(p);
         max = max.max(p);
     }
+    let centre = min + (max - min) * 0.5;
+    let half = (max - centre) + Vec3::splat(BOUNDS_MARGIN_CM);
+    let square = (half.x * half.x + half.y * half.y) + half.z * half.z;
     Some(BurstBounds {
-        centre: (min + max) * 0.5,
-        half: (max - min) * 0.5 + Vec3::splat(BOUNDS_MARGIN_CM),
+        centre,
+        half,
+        radius: if 0.0 < square { square.sqrt() } else { square },
     })
 }
 
@@ -406,12 +418,13 @@ mod tests {
         assert!(replaces_marker(IMPORT_FLAG));
         assert!(!replaces_marker(0));
         assert_eq!(PORTAL_NODE_NAME, "_PortalPrt");
-        assert_eq!(DISSOLVE_NODE_NAME, "_PrtlDis");
+        assert_eq!(DISSOLVE_NODE_NAME, "_PrtlDisp");
         assert_eq!(PORTAL.particle, SPARKS);
         assert_eq!(PORTAL.light, PORTAL_LIGHT);
         assert_eq!(PORTAL.node_name, "_PortalPrt");
         assert_eq!(PORTAL.cleared_flags, 0x0002_0000);
-        assert!((PORTAL.start - 0.101_960_79).abs() < 1e-8);
+        assert_eq!(PORTAL.kind_word, 0x3dd0_e004);
+        assert_eq!(BURST_CLEAR_FLAG, 0x2);
         assert_eq!(DISSOLVE_EFFECT.particle, DISSOLVE);
         assert_eq!(DISSOLVE_EFFECT.pull, -0.015);
         assert_eq!(DISSOLVE_EFFECT.sound, "portaluse01");
@@ -430,6 +443,7 @@ mod tests {
         .unwrap();
         assert_eq!(boxed.centre, Vec3::new(0.0, 2.0, 0.0));
         assert_eq!(boxed.half, Vec3::new(11.0, 7.0, 5.0));
+        assert_eq!(boxed.radius, (121.0f32 + 49.0 + 25.0).sqrt());
     }
 
     #[test]
@@ -473,13 +487,13 @@ mod tests {
         assert_eq!(first.life, 33);
         assert_eq!(first.look, 6);
         assert_eq!(first.slot, 0);
-        // The first cell is the box's (−6, −6, −6) corner, jittered by the
-        // first three random units: 0.4170, 0.9972, 0.7203.
-        let at = Vec3::new(-6.248_934, -4.508_446, -5.339_026);
+        // The first cell is the box's (−6, −6, −6) corner. Its previous
+        // position is the corner itself; its position is jittered by the
+        // first three random units (0.4170, 0.9972, 0.7203) and pushed 1.5 %
+        // further from the centre: x = −6.249 − 0.015 · 6.249.
+        assert_eq!(first.before, Vec3::splat(-6.0));
+        let at = Vec3::new(-6.342_667_6, -4.576_072, -5.419_111_7);
         assert!((first.at - at).length() < 1e-5, "{}", first.at);
-        // The second start is the unjittered corner pulled by the velocity:
-        // −6 + (−0.015)(0 − (−6)) = −6.09.
-        assert_eq!(first.before, Vec3::splat(-6.09));
         let seeded = seed_burst(
             &[node(Vec3::new(6.0, 6.0, 6.0))],
             Vec3::ZERO,
@@ -521,7 +535,7 @@ mod tests {
     }
 
     #[test]
-    fn a_burst_carries_the_velocity_into_the_second_start() {
+    fn a_burst_pushes_its_particles_out_from_the_centre() {
         let mut rng = Rng(1);
         let mut mt = Mt19937::new(1);
         let seeded = seed_burst(
@@ -533,15 +547,10 @@ mod tests {
             &mut mt,
         );
         let p = seeded[0];
-        // The identity frames put the unjittered start at the corner, and
-        // the velocity pulls the second start from there.
-        let start = Vec3::new(-6.0, -6.0, -6.0);
-        let expected = start + (Vec3::new(10.0, 20.0, 30.0) - start) * SEED_VELOCITY_PULL;
-        assert!(
-            (p.before - expected).length() < 1e-4,
-            "{} {:?}",
-            p.before,
-            expected
-        );
+        // The previous position stays the corner; the jittered position is
+        // pushed away from the centre (10, 20, 30).
+        assert_eq!(p.before, Vec3::splat(-6.0));
+        let expected = Vec3::new(-6.492_667_7, -4.876_072_4, -5.869_112);
+        assert!((p.at - expected).length() < 1e-5, "{} {:?}", p.at, expected);
     }
 }
