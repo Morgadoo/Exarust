@@ -581,8 +581,9 @@ pub fn integrate(
                     c.hostility -= one_minus * ((c.soothe * drift) * soothe_scale);
                 }
             }
-            // [Not kept: the original raises the concern through its
-            // concern setter, which also flags rises past 1.2 and 4.]
+            // The live contact's concern setter raises the 1.2 and 4.0
+            // event bits (crate::combatant::Contact::set_concern); this
+            // brain record keeps only the value.
             if c.concern < c.concern_target {
                 let value =
                     (f64::from(c.concern_target - c.concern) * 0.005 + f64::from(c.concern)) as f32;

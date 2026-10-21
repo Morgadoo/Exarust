@@ -26,12 +26,14 @@ use crate::combatant::{Attitude, Combatant, Observed, Observer, atan2_xz, percei
 use crate::route::{NavRouter, PlanTurn};
 
 pub mod activity;
+pub mod behaviour;
 pub mod brain;
 pub mod cast;
 pub mod chase;
 pub mod combat;
 pub mod combatant;
 pub mod contacts;
+pub mod entity;
 pub mod fight;
 pub mod flee;
 pub mod golem;

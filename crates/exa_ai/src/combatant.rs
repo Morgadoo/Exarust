@@ -271,16 +271,14 @@ impl Contact {
 
     /// Store a new concern, raising [`EVENT_CONCERNED`] when it first
     /// reaches [`CONCERN_EVENT`], or else [`EVENT_ALARMED`] when it first
-    /// reaches [`CONCERN_EVENT_HIGH`].
+    /// reaches [`CONCERN_EVENT_HIGH`]. A NaN concern reaches neither: the
+    /// original's `COMISS` comparisons jump away on parity.
     pub fn set_concern(&mut self, concern: f32) {
-        // A NaN concern compares as reached.
         if self.concern < CONCERN_EVENT {
-            if concern >= CONCERN_EVENT || concern.is_nan() {
+            if concern >= CONCERN_EVENT {
                 self.events |= EVENT_CONCERNED;
             }
-        } else if self.concern < CONCERN_EVENT_HIGH
-            && (concern >= CONCERN_EVENT_HIGH || concern.is_nan())
-        {
+        } else if self.concern < CONCERN_EVENT_HIGH && concern >= CONCERN_EVENT_HIGH {
             self.events |= EVENT_ALARMED;
         }
         self.concern = concern;
@@ -1357,6 +1355,15 @@ mod tests {
         assert_eq!(add_concern(&mut jump, 0.0, 2.0, 1.0), CONCERN_CAP);
         assert_eq!(jump.events, EVENT_CONCERNED);
         assert_eq!(add_concern(&mut jump, 0.0, 2.0, 1.0), CONCERN_CAP);
+        // A NaN concern crosses neither threshold (the original's ordered
+        // compares jump away on parity), and neither does a NaN old value.
+        let mut nan = Contact::new(other);
+        nan.set_concern(f32::NAN);
+        assert_eq!(nan.events, 0);
+        let mut nan = Contact::new(other);
+        nan.concern = f32::NAN;
+        nan.set_concern(5.0);
+        assert_eq!(nan.events, 0);
     }
 
     #[test]

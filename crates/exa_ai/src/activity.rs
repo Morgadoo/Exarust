@@ -229,6 +229,30 @@ pub fn apply_roles(book: &RoleDb, roles: &Roles, before: Before<'_>) -> Applied 
     }
 }
 
+/// The abstract base of the idle activities: an id, the character it acts
+/// for, and the four virtuals an activity subclass overrides. The base's
+/// reset and tick answer false and its stop and restart do nothing.
+pub trait Activity {
+    /// The registered id (6 for the search).
+    fn id(&self) -> i32;
+
+    /// Resets the activity; the base reports that it did nothing.
+    fn reset(&mut self) -> bool {
+        false
+    }
+
+    /// Stops the activity; the base does nothing.
+    fn stop(&mut self) {}
+
+    /// Ticks the activity; the base reports that it did nothing.
+    fn tick(&mut self) -> bool {
+        false
+    }
+
+    /// Restarts the activity; the base does nothing.
+    fn restart(&mut self) {}
+}
+
 /// The idle activities by id, as the registry holds them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdleKind {
@@ -246,7 +270,7 @@ impl IdleRegistry {
     /// The registry as the game fills it: the search as id 6.
     pub fn shipped() -> Self {
         let mut r = Self::default();
-        r.register(SEARCH, IdleKind::Search);
+        register_search(&mut r);
         r
     }
 
@@ -266,6 +290,12 @@ impl IdleRegistry {
             .find(|(taken, _)| *taken == id)
             .map(|(_, kind)| *kind)
     }
+}
+
+/// Registers the search activity under id 6, as the behaviour unit's init
+/// does. The registration is refused when the id is taken.
+pub fn register_search(registry: &mut IdleRegistry) -> bool {
+    registry.register(SEARCH, IdleKind::Search)
 }
 
 #[cfg(test)]
@@ -560,5 +590,31 @@ mod tests {
             scripted += 1;
         }
         assert!(scripted >= 5, "{scripted} roles with init scripts");
+    }
+
+    /// The activity base answers false and does nothing; the registry
+    /// creates the search only under id 6, and refuses a second
+    /// registration.
+    #[test]
+    fn the_activity_base_and_the_search_registration() {
+        struct Idle(i32);
+        impl Activity for Idle {
+            fn id(&self) -> i32 {
+                self.0
+            }
+        }
+        let mut idle = Idle(SEARCH);
+        assert_eq!(idle.id(), 6);
+        assert!(!idle.reset());
+        assert!(!idle.tick());
+        idle.stop();
+        idle.restart();
+        assert_eq!(idle.id(), 6);
+
+        let mut registry = IdleRegistry::shipped();
+        assert_eq!(registry.create(SEARCH), Some(IdleKind::Search));
+        assert_eq!(registry.create(1), None);
+        assert!(!register_search(&mut registry));
+        assert!(register_search(&mut IdleRegistry::default()));
     }
 }
