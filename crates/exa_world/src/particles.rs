@@ -9,6 +9,11 @@
 //! does. [`Emitter::quads`] builds the camera-facing quads the renderer
 //! draws.
 //!
+//! The arithmetic follows the original's instructions: the values it works
+//! out in double precision are worked out in double here, its rounding
+//! conversions round half to even and its truncating ones truncate, and its
+//! vector lengths add the components in its order.
+//!
 //! Units are the original's: centimetres, seconds for the template and
 //! ticks for the simulation. Rules: `docs/RENDERING.md` (Fires).
 
@@ -16,9 +21,9 @@ use bevy::prelude::{Mat3, Vec2, Vec3};
 
 /// The simulation's tick rate.
 pub const TICK_HZ: f32 = 83.0;
-/// Gravity per tick² (cm): the environment's value, which the original
-/// reads from the sim rather than from the template.
-pub const GRAVITY: f32 = -980.665 / (TICK_HZ * TICK_HZ);
+/// Gravity per tick² (cm): the environment's (0, −980.665, 0) times the
+/// reciprocal of the squared tick rate, as the original builds it.
+pub const GRAVITY: f32 = -980.665 * (1.0 / (TICK_HZ * TICK_HZ));
 
 /// Behaviour flags of an emitter (the template's, copied to the emitter).
 pub mod flags {
@@ -28,13 +33,14 @@ pub mod flags {
     pub const VELOCITY_RANDOM: u32 = 1;
     /// Start each particle's life shortened by up to a quarter.
     pub const LIFE_RANDOM: u32 = 4;
-    /// One-shot: the emitter stops when the ring empties.
+    /// One-shot: the emitter stops when its ring wraps and finishes when
+    /// the ring empties.
     pub const ONE_SHOT: u32 = 0x10;
-    /// Stop the emitter once its tick deadline passes.
+    /// Stop the emitter once its deadline passes.
     pub const FINITE: u32 = 0x20;
     /// Keep the bounding box instead of updating it.
     pub const FIXED_BOUNDS: u32 = 0x40;
-    /// Quad orientation from the camera's forward axis, not the emitter.
+    /// Spawn velocity and quad orientation from the camera's forward axis.
     pub const CAMERA_FORWARD: u32 = 0x80;
     /// Flat colour from the particle's age.
     pub const FLAT_COLOUR: u32 = 0x100;
@@ -53,9 +59,9 @@ pub mod flags {
     /// Extra ageing for burst deaths, and an accumulator refund.
     pub const BURST: u32 = 0x80000;
     /// Sound volume follows the emitter's motion.
-    pub const SOUND_MOTION: u32 = 0x2000_0000;
+    pub const SOUND_MOTION: u32 = 0x0200_0000;
     /// Sound pitch takes the wide random walk.
-    pub const SOUND_WIDE_PITCH: u32 = 0x4000_0000;
+    pub const SOUND_WIDE_PITCH: u32 = 0x0400_0000;
     /// Quad mode, the top nibble.
     pub const QUAD_MASK: u32 = 0xf000_0000;
     /// Velocity-aligned diamond (the flames' quads).
@@ -64,30 +70,88 @@ pub mod flags {
     pub const QUAD_STRETCHED: u32 = 0x1000_0000;
 }
 
-/// Random draws in the original's order. The integer stream is the
-/// original's linear congruential sequence; the float stream is a second
-/// instance of it, standing in for the original's global Mersenne twister
-/// (whose seed is not reproducible). The number and order of draws, which
-/// is what the rules depend on, are the same.
-pub trait Draws {
-    /// An integer in `[0, n)`, as `(seed · n) >> 32`.
-    fn int(&mut self, n: u32) -> u32;
-    /// A float in `[0, 1)`.
-    fn unit(&mut self) -> f32;
+/// The emitter's own state bits (the original's run-time flag word).
+pub mod state {
+    /// The value an emitter starts with.
+    pub const INITIAL: u32 = 0x4600;
+    /// Cleared when the ring wraps for the first time.
+    pub const FIRST_PASS: u32 = 0x200;
+    /// The emitter has finished; the original removes its node.
+    pub const FINISHED: u32 = 0x1000;
 }
 
-/// The default streams: the original's integer LCG and a float LCG.
+/// Random draws in the original's order. The integer stream is the
+/// engine's linear congruential sequence (`seed · 0x08088405 + 1`, a draw
+/// in `[0, n)` being `(seed · n) >> 32`); the unit stream is the run-time
+/// library's Mersenne twister scaled by 2⁻³², in double precision. Both are
+/// process-wide in the original and seeded from the clock, so only the
+/// generators, the number and the order of draws are reproduced.
+pub trait Draws {
+    /// An integer in `[0, n)` from the linear congruential stream.
+    fn int(&mut self, n: u32) -> u32;
+    /// A double in `[0, 1)` from the Mersenne twister.
+    fn unit(&mut self) -> f64;
+}
+
+/// The run-time library's MT19937 generator, standard seeding.
+#[derive(Debug, Clone)]
+pub struct Mt19937 {
+    state: Box<[u32; 624]>,
+    index: usize,
+}
+
+impl Mt19937 {
+    pub fn new(seed: u32) -> Self {
+        let mut state = Box::new([0u32; 624]);
+        state[0] = seed;
+        for i in 1..624 {
+            state[i] = 1_812_433_253u32
+                .wrapping_mul(state[i - 1] ^ (state[i - 1] >> 30))
+                .wrapping_add(i as u32);
+        }
+        Self { state, index: 624 }
+    }
+
+    fn twist(&mut self) {
+        for i in 0..624 {
+            let y = (self.state[i] & 0x8000_0000) | (self.state[(i + 1) % 624] & 0x7fff_ffff);
+            let mut next = self.state[(i + 397) % 624] ^ (y >> 1);
+            if y & 1 != 0 {
+                next ^= 0x9908_b0df;
+            }
+            self.state[i] = next;
+        }
+        self.index = 0;
+    }
+
+    /// The next tempered 32-bit output.
+    pub fn next_u32(&mut self) -> u32 {
+        if self.index >= 624 {
+            self.twist();
+        }
+        let mut y = self.state[self.index];
+        self.index += 1;
+        y ^= y >> 11;
+        y ^= (y << 7) & 0x9d2c_5680;
+        y ^= (y << 15) & 0xefc6_0000;
+        y ^= y >> 18;
+        y
+    }
+}
+
+/// The default streams: the engine's integer LCG and the run-time
+/// library's twister.
 #[derive(Debug, Clone)]
 pub struct Rng {
     ints: u32,
-    floats: u32,
+    floats: Mt19937,
 }
 
 impl Rng {
     pub fn new(seed: u32) -> Self {
         Self {
-            ints: seed | 1,
-            floats: seed.wrapping_mul(0x9E37_79B9) | 1,
+            ints: seed,
+            floats: Mt19937::new(seed.wrapping_mul(0x9E37_79B9)),
         }
     }
 }
@@ -98,9 +162,8 @@ impl Draws for Rng {
         ((u64::from(self.ints) * u64::from(n)) >> 32) as u32
     }
 
-    fn unit(&mut self) -> f32 {
-        self.floats = self.floats.wrapping_mul(0x0808_8405).wrapping_add(1);
-        (self.floats >> 8) as f32 * (1.0 / 16_777_216.0)
+    fn unit(&mut self) -> f64 {
+        f64::from(self.floats.next_u32()) * (1.0 / 4_294_967_296.0)
     }
 }
 
@@ -131,8 +194,9 @@ impl LightDesc {
 /// A colour key: RGBA bytes, the alpha the particle's opacity.
 pub type Key = [u8; 4];
 
-/// A colour key list: the count and its keys (K1 at index 0). The original
-/// stores the count as the list's first byte and the keys after it.
+/// A colour key list: the count `n` and its `n + 2` keys (K1 at index 0).
+/// The original stores the count as the list's first byte and the keys
+/// after it.
 #[derive(Debug, Clone, Copy)]
 pub struct Keys {
     pub count: i32,
@@ -140,26 +204,26 @@ pub struct Keys {
 }
 
 impl Keys {
-    /// The colour at normalised age `age`; odd ring slots start one key
-    /// later. Returns bytes, truncated and saturated as the original's
-    /// colour lerp does.
-    pub fn sample(&self, age: f32, odd: bool) -> Key {
-        let f = self.count as f32 * age;
-        let f = f.max(0.0);
-        let k = f.trunc() as usize;
+    /// The colour at key position `f` (the count times the normalised age);
+    /// odd ring slots start one key later. Each channel is lerped in single
+    /// precision and rounded half to even, saturated to a byte.
+    pub fn sample(&self, f: f32, odd: bool) -> Key {
+        let k = f as i32;
         let frac = f - k as f32;
-        let first = k + 1 + usize::from(odd);
+        let first = k + 1 + i32::from(odd);
         let a = self.entry(first);
         let b = self.entry(first + 1);
         std::array::from_fn(|c| {
-            let v = f32::from(a[c]) + (f32::from(b[c]) - f32::from(a[c])) * frac;
-            v.clamp(0.0, 255.0) as u8
+            let a = f32::from(a[c]);
+            let v = a + (f32::from(b[c]) - a) * frac;
+            v.round_ties_even().clamp(0.0, 255.0) as u8
         })
     }
 
-    fn entry(&self, i: usize) -> Key {
-        self.entries
-            .get(i.saturating_sub(1))
+    fn entry(&self, i: i32) -> Key {
+        usize::try_from(i - 1)
+            .ok()
+            .and_then(|i| self.entries.get(i))
             .copied()
             .unwrap_or([0; 4])
     }
@@ -211,7 +275,7 @@ pub struct Descriptor {
 impl Descriptor {
     /// The template scaled by an emitter's size, as the original scales it:
     /// half-size, speed, volume, rate, ring, buoyancy, the light by √size
-    /// and the density normaliser.
+    /// and the density normaliser (the integers rounded half to even).
     pub fn scaled(mut self, size: f32) -> Self {
         self.half_size *= size * 0.5 + 0.5;
         self.speed *= size * size;
@@ -235,6 +299,8 @@ pub struct Params {
     pub interval: f32,
     /// Lifetime in ticks.
     pub start_life: i32,
+    /// The reciprocal of the lifetime, the age's scale when drawing.
+    pub inverse_life: f32,
     /// Initial speed per tick.
     pub speed: f32,
     pub half_size: f32,
@@ -247,6 +313,7 @@ pub struct Params {
     pub buoyancy: f32,
     pub centring: f32,
     pub stretch: f32,
+    /// Velocity kept per tick.
     pub retention: f32,
     /// Ring capacity, excluding the spare slot.
     pub capacity: usize,
@@ -258,12 +325,15 @@ pub struct Params {
 
 impl Params {
     fn new(d: Descriptor, sources: usize) -> Self {
-        let interval = TICK_HZ / d.rate as f32 * (2.0 / 3.0);
+        // 83 / rate in double, stored, then times 2/3 in double.
+        let interval = (f64::from(TICK_HZ) / f64::from(d.rate)) as f32;
+        let interval = (f64::from(interval) * (2.0 / 3.0)) as f32;
         let start_life = (TICK_HZ * d.life) as i32;
         let capacity = if d.pool < 1 {
-            sources * ((d.rate as f32 * d.life * 1.5 + 0.501 + 1.0) as usize) + 2
+            let per_source = (f64::from(d.rate as f32 * d.life * 1.5) + 0.501 + 1.0) as i64;
+            (sources as i64 * per_source + 2).max(1) as usize
         } else {
-            d.pool.max(1) as usize
+            d.pool as usize
         };
         // A record from an untrusted file cannot ask for an unbounded pool.
         let capacity = capacity.min(1 << 20);
@@ -276,15 +346,15 @@ impl Params {
         } else {
             d.density
         };
-        let retention = if d.retention <= 0.0 {
-            1.0
+        let retention = if d.retention > 0.0 {
+            (f64::from(d.retention).ln() / f64::from(TICK_HZ)).exp() as f32
         } else {
-            (d.retention.ln() / TICK_HZ).exp()
+            1.0
         };
-        let stretch = if d.stretch <= 1.192_09e-7 {
-            1.0
-        } else {
+        let stretch = if d.stretch > 1.192_092_9e-7 {
             d.stretch
+        } else {
+            1.0
         };
         let growth = d.growth * d.half_size;
         let collision_growth = if d.flags & flags::QUAD_MASK == flags::QUAD_DIAMOND {
@@ -296,6 +366,7 @@ impl Params {
             flags: d.flags,
             interval,
             start_life,
+            inverse_life: 1.0 / start_life as f32,
             speed: d.speed / TICK_HZ,
             half_size: d.half_size,
             growth,
@@ -330,49 +401,58 @@ impl Default for NodeFrame {
     }
 }
 
-/// A spawn source: a frame on the emitter's ring with a local origin.
+/// A spawn source: a frame (three axes and an origin) in the emitter
+/// node's space. A random spawn velocity is `x·axes[0] + y·axes[1] +
+/// z·axes[2]`, `y` being the template's upward component.
 #[derive(Debug, Clone, Copy)]
 pub struct Source {
-    /// The frame's axes, in the emitter's space.
-    pub x_axis: Vec3,
-    pub direction: Vec3,
-    pub y_axis: Vec3,
-    /// The frame's origin, relative to the emitter's node.
+    /// The frame's axes, in the node's space.
+    pub axes: [Vec3; 3],
+    /// The frame's origin, relative to the node.
     pub offset: Vec3,
+    /// A pull back along the second axis applied to each new particle; the
+    /// fire presets leave it at zero.
+    pub kick: f32,
     /// Spawns left; negative is unlimited.
     pub count: i32,
-    /// The source's world origin last time it spawned.
+    /// The source's world origin last tick.
     pub last: Vec3,
     /// The source's world velocity, cm per tick.
     pub velocity: Vec3,
+    /// The camera-forward spawn's smoothed velocity.
+    pub smoothed: Vec3,
 }
 
 impl Source {
     /// The default source: the identity frame at the node.
     pub fn at_node() -> Self {
         Self {
-            x_axis: Vec3::X,
-            direction: Vec3::NEG_Z,
-            y_axis: Vec3::Y,
+            axes: [Vec3::X, Vec3::Y, Vec3::Z],
             offset: Vec3::ZERO,
+            kick: 0.0,
             count: -1,
             last: Vec3::ZERO,
             velocity: Vec3::ZERO,
+            smoothed: Vec3::ZERO,
         }
     }
 
     /// A ring of `count` sources. The angles are drawn first, each at least
     /// π/count from every earlier one, then each source's radius (0.5–1 of
-    /// `radius`), in the original's order.
+    /// `radius`), in the original's order. A source's second axis points
+    /// out from the ring's centre, its first is that axis crossed with +Z
+    /// and its third the first crossed with the second.
     pub fn ring<R: Draws>(count: usize, radius: f32, rng: &mut R) -> Vec<Source> {
         let n = count.max(1);
+        let tau = std::f32::consts::TAU;
+        let min_gap = std::f32::consts::PI / n as f32;
         let mut angles = vec![0.0f32; n];
         for slot in 0..n {
             loop {
-                let angle = std::f32::consts::TAU * rng.unit();
+                let angle = (f64::from(tau) * rng.unit()) as f32;
                 let clash = angles[..slot]
                     .iter()
-                    .any(|&other| (angle - other).abs() < std::f32::consts::PI / n as f32);
+                    .any(|&other| (angle - other).abs() < min_gap);
                 if !clash {
                     angles[slot] = angle;
                     break;
@@ -381,18 +461,16 @@ impl Source {
         }
         let mut out = Vec::with_capacity(n);
         for angle in angles {
-            let direction = Vec3::new(angle.cos(), 0.0, -angle.sin());
-            let x_axis = direction.cross(Vec3::Z).normalize_or(Vec3::X);
-            let y_axis = x_axis.cross(direction).normalize_or(Vec3::Y);
-            let r = radius * (rng.unit() * 0.5 + 0.5);
+            let (sin, cos) = angle.sin_cos();
+            let out_dir = Vec3::new(cos, 0.0, -sin);
+            let r = (f64::from(radius) * (rng.unit() * 0.5 + 0.5)) as f32;
+            let second = out_dir.normalize_or(Vec3::X);
+            let first = second.cross(Vec3::Z).normalize_or(Vec3::Y);
+            let third = first.cross(second);
             out.push(Source {
-                x_axis,
-                direction,
-                y_axis,
-                offset: direction * r,
-                count: -1,
-                last: Vec3::ZERO,
-                velocity: Vec3::ZERO,
+                axes: [first, second, third],
+                offset: out_dir * r,
+                ..Source::at_node()
             });
         }
         out
@@ -415,7 +493,7 @@ struct Slot {
     p: Vec3,
     q: Vec3,
     life: i32,
-    /// Atlas cell (bits 0–2 of the value after the mask) and symmetry.
+    /// Atlas cell (bits 3–4) and square symmetry (bits 0–2).
     variant: u8,
     /// The random size of a template that asks for one (cm).
     size: f32,
@@ -455,23 +533,26 @@ impl LightState {
         }
     }
 
-    /// One tick of the flicker walk, then the density from the live count.
+    /// One tick of the flicker walk, then the density from the live count
+    /// (the original works these out in double precision).
     fn tick<R: Draws>(&mut self, live: usize, normaliser: i32, rng: &mut R) {
-        if 1.0 < self.walk || 1.0 < self.speed {
-            self.speed -= self.step * rng.unit();
+        let speed = f64::from(self.speed);
+        self.speed = if 1.0 < self.walk || 1.0 < self.speed {
+            (speed - f64::from(self.step) * rng.unit()) as f32
         } else if self.walk < -1.0 || self.speed < -1.0 {
-            self.speed += self.step * rng.unit();
+            (f64::from(self.step) * rng.unit() + speed) as f32
         } else {
-            self.speed += (self.step + 1.0) * (rng.unit() - 0.5);
-        }
-        self.walk += self.speed * 0.3 * rng.unit();
-        self.jitter += (rng.unit() - 0.5) * 0.125;
-        self.jitter = if self.jitter >= 0.87 {
-            self.jitter.min(1.15)
-        } else {
-            0.87
+            (f64::from(self.step + 1.0) * (rng.unit() - 0.5) + speed) as f32
         };
-        self.density = live as f32 / normaliser as f32 * 0.2 + self.density * 0.8;
+        self.walk = (f64::from(self.speed) * 0.3 * rng.unit() + f64::from(self.walk)) as f32;
+        self.jitter = ((rng.unit() - 0.5) * 0.125 + f64::from(self.jitter)) as f32;
+        if f64::from(self.jitter) < 0.87 {
+            self.jitter = 0.87;
+        } else if f64::from(self.jitter) > 1.15 {
+            self.jitter = 1.15;
+        }
+        let share = (live as f64 / f64::from(normaliser)) as f32;
+        self.density = (f64::from(share) * 0.2 + f64::from(self.density) * 0.8) as f32;
     }
 
     /// The light's shadow softness this frame.
@@ -482,7 +563,7 @@ impl LightState {
     /// The light's intensity this frame, and whether it set a new peak.
     pub fn intensity(&mut self) -> (f32, bool) {
         let intensity = self.density * (self.walk * 0.05 + 1.0) * self.base;
-        if intensity >= self.peak {
+        if self.peak < intensity {
             self.peak = intensity * 1.1;
             (intensity, true)
         } else {
@@ -492,7 +573,7 @@ impl LightState {
 
     /// The emissive scale an emissive parent mesh gets.
     pub fn emissive(&self) -> f32 {
-        self.density * (self.walk * 0.2 + 0.9) * 0.8
+        (f64::from(self.density) * (f64::from(self.walk) * 0.2 + 0.9) * 0.8) as f32
     }
 }
 
@@ -503,61 +584,66 @@ pub struct SoundState {
     pub pitch: f32,
     /// The template's base volume.
     pub base: f32,
+    /// Whether the template names a sound (the original only walks a sound
+    /// it could create).
+    pub attached: bool,
 }
 
 impl SoundState {
-    fn new(volume: f32) -> Self {
+    fn new(volume: f32, attached: bool) -> Self {
         Self {
             volume: 1.0,
             pitch: 1.0,
             base: volume,
+            attached,
         }
     }
 
     /// One frame of the volume and pitch walks.
-    fn frame<R: Draws>(&mut self, density: f32, emitter_flags: u32, rng: &mut R) {
-        if emitter_flags & flags::SOUND_MOTION == 0 {
-            self.volume += self.base * 0.05 * (rng.unit() - 0.5);
-            self.volume = if self.base * 0.8 <= self.volume {
-                self.volume.min(self.base * 1.2)
-            } else {
-                self.base * 0.8
-            };
+    fn frame<R: Draws>(&mut self, density: f32, template_flags: u32, rng: &mut R) {
+        if !self.attached {
+            return;
         }
-        if emitter_flags & flags::ONE_SHOT != 0 {
+        if template_flags & flags::SOUND_MOTION == 0 {
+            self.volume =
+                (f64::from(self.base) * 0.05 * (rng.unit() - 0.5) + f64::from(self.volume)) as f32;
+            if self.volume < self.base * 0.8 {
+                self.volume = self.base * 0.8;
+            } else if self.base * 1.2 < self.volume {
+                self.volume = self.base * 1.2;
+            }
+        }
+        if template_flags & flags::ONE_SHOT != 0 {
             self.volume *= density;
         }
-        if emitter_flags & flags::SOUND_WIDE_PITCH == 0 {
-            self.pitch += (rng.unit() - 0.5) * 0.005;
-            self.pitch = if self.pitch >= 0.85 {
-                self.pitch.min(1.15)
-            } else {
-                0.85
-            };
+        let (step, low, high) = if template_flags & flags::SOUND_WIDE_PITCH == 0 {
+            (0.005, 0.85, 1.15)
         } else {
-            self.pitch += (rng.unit() - 0.5) * 0.05;
-            self.pitch = if self.pitch >= 0.6 {
-                self.pitch.min(1.4)
-            } else {
-                0.6
-            };
+            (0.05, 0.6, 1.4)
+        };
+        self.pitch = ((rng.unit() - 0.5) * step + f64::from(self.pitch)) as f32;
+        if self.pitch < low {
+            self.pitch = low;
+        } else if high < self.pitch {
+            self.pitch = high;
         }
     }
 }
 
 /// The emitter's bounding box: centre, half extent (with the original's
-/// 5 cm padding) and radius².
+/// 5 cm padding) and radius.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Bounds {
     pub centre: Vec3,
     pub extent: Vec3,
-    pub radius_squared: f32,
+    pub radius: f32,
 }
 
 /// What one tick did.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TickStats {
-    /// Particles that died and were popped.
+    /// The original's count of the head pops (it counts one more when the
+    /// pops empty the ring onto a dead slot).
     pub died: usize,
     /// Particles spawned.
     pub spawned: usize,
@@ -573,7 +659,7 @@ pub struct Emitter {
     /// The node's position last tick.
     pub last_node: Vec3,
     /// The template's size: the fire presets store their fire size here,
-    /// and the ageing's distance cap and the renderer use it.
+    /// and the ageing's distance cap uses it.
     pub size: f32,
     /// A body carrying the emitter, if any.
     pub body: Option<BodyMotion>,
@@ -585,18 +671,21 @@ pub struct Emitter {
     pub light: LightState,
     pub sound: SoundState,
     pub bounds: Bounds,
-    /// Drawn; a finished one-shot emitter is hidden.
-    pub visible: bool,
-    /// The emitter's own flags word (the original's `+0x220`).
+    /// Still emitting. A one-shot emitter stops when its ring wraps, a
+    /// finite one when its deadline passes.
+    pub active: bool,
+    /// The emitter's own state word ([`state`]).
     pub emitter_flags: u32,
     /// Ticks run, for finitely lived emitters.
     pub ticks: i32,
-    /// The tick a finitely lived emitter stops at (relative to its start).
+    /// The tick a finitely lived emitter stops at (the original keeps a
+    /// millisecond clock; no preset sets the finite flag).
     pub deadline: i32,
     /// Body contacts counted since the last body pass.
     pub hits: u32,
     /// Flat-colour particles' opacity (the material's, 0–1).
     pub flat_opacity: f32,
+    entered: bool,
     smoothed: Vec3,
     motion_squared: f32,
     motion_average: f32,
@@ -617,12 +706,22 @@ impl Emitter {
         sources: Vec<Source>,
         rng: &mut R,
     ) -> Self {
-        let params = Params::new(template, sources.len().max(1));
+        let sources = if sources.is_empty() {
+            vec![Source::at_node()]
+        } else {
+            sources
+        };
+        let params = Params::new(template, sources.len());
         let mut slots = vec![Slot::default(); params.capacity + 1];
         if params.flags & flags::RANDOM_SIZE != 0 {
             for slot in &mut slots {
-                slot.size = params.half_size * (rng.unit() * 0.5 + 0.5);
+                slot.size = (f64::from(params.half_size) * (rng.unit() * 0.5 + 0.5)) as f32;
             }
+        }
+        let sound = template.sound.is_some_and(|name| name.len() > 1);
+        let mut emitter_flags = state::INITIAL;
+        if sound {
+            emitter_flags |= template.flags & flags::SOUND_MOTION;
         }
         Self {
             params,
@@ -636,14 +735,15 @@ impl Emitter {
             sources,
             accumulator: 0.0,
             light: LightState::new(params.light),
-            sound: SoundState::new(template.volume),
+            sound: SoundState::new(template.volume, sound),
             bounds: Bounds::default(),
-            visible: true,
-            emitter_flags: 0x4600,
+            active: true,
+            emitter_flags,
             ticks: 0,
             deadline: i32::MAX,
             hits: 0,
             flat_opacity: 1.0,
+            entered: false,
             smoothed: Vec3::ZERO,
             motion_squared: 0.0,
             motion_average: 0.0,
@@ -655,35 +755,56 @@ impl Emitter {
         &self.sources
     }
 
-    /// The live slots' index ranges, oldest first.
-    pub fn ranges(&self) -> Vec<(usize, usize)> {
+    /// Whether the emitter has finished: a one-shot ring that emptied, or a
+    /// finite emitter past its deadline with no particle left.
+    pub fn finished(&self) -> bool {
+        self.emitter_flags & state::FINISHED != 0
+    }
+
+    /// The emitter enters the world at its node: the motion it measures and
+    /// its sources' last positions start from here (the original's
+    /// insertion into the simulation).
+    pub fn enter(&mut self, node: NodeFrame) {
+        self.node = node;
+        self.last_node = node.position;
+        self.bounds.centre = node.position;
+        self.smoothed = Vec3::ZERO;
+        self.motion_squared = 0.0;
+        self.motion_average = 0.0;
+        for source in &mut self.sources {
+            source.last = node.position + node.rotation * source.offset;
+        }
+        self.entered = true;
+    }
+
+    /// The live slots' index ranges, oldest first, each inclusive.
+    pub fn ranges(&self) -> [Option<(usize, usize)>; 2] {
         let cap = self.params.capacity;
         if self.first == self.next {
-            Vec::new()
+            [None, None]
         } else if self.first < self.next {
-            vec![(self.first, self.next - 1)]
+            [Some((self.first, self.next - 1)), None]
         } else if self.next == 0 {
-            vec![(self.first, cap)]
+            [Some((self.first, cap)), None]
         } else {
-            vec![(self.first, cap), (0, self.next - 1)]
+            [Some((self.first, cap)), Some((0, self.next - 1))]
         }
+    }
+
+    fn indices(&self) -> impl Iterator<Item = usize> + use<> {
+        self.ranges().into_iter().flatten().flat_map(|(a, b)| a..=b)
     }
 
     /// Live particles.
     pub fn live(&self) -> usize {
-        self.ranges()
-            .iter()
-            .map(|&(a, b)| self.slots[a..=b].iter().filter(|s| s.life > 0).count())
-            .sum()
+        self.indices().filter(|&i| self.slots[i].life > 0).count()
     }
 
     /// Particles alive with their slot index, in ring order.
     pub fn particles(&self) -> impl Iterator<Item = (usize, Vec3, Vec3, i32)> + '_ {
-        self.ranges().into_iter().flat_map(move |(a, b)| {
-            (a..=b).filter_map(move |i| {
-                let s = &self.slots[i];
-                (s.life > 0).then_some((i, s.p, s.q, s.life))
-            })
+        self.indices().filter_map(move |i| {
+            let s = &self.slots[i];
+            (s.life > 0).then_some((i, s.p, s.q, s.life))
         })
     }
 
@@ -694,6 +815,9 @@ impl Emitter {
 
     /// One simulation tick.
     pub fn tick<R: Draws>(&mut self, node: NodeFrame, rng: &mut R) -> TickStats {
+        if !self.entered {
+            self.enter(node);
+        }
         self.node = node;
         self.ticks = self.ticks.saturating_add(1);
         let p = self.params;
@@ -706,53 +830,52 @@ impl Emitter {
             if p.flags & flags::FIRE_AGEING != 0 {
                 self.age(rng);
             } else {
-                for (a, b) in self.ranges() {
-                    for s in &mut self.slots[a..=b] {
-                        if s.life > 0 {
-                            s.life -= 1;
-                        }
+                for i in self.indices() {
+                    let s = &mut self.slots[i];
+                    if s.life > 0 {
+                        s.life -= 1;
                     }
                 }
             }
-            // Pop the dead from the head, until the ring is empty.
-            while self.slots[self.first].life < 1 && self.first != self.next {
+            // Pop the dead from the head. The original counts a dead slot
+            // before it checks for the empty ring.
+            while self.slots[self.first].life < 1 {
+                died += 1;
+                if self.first == self.next || died > self.params.capacity + 1 {
+                    break;
+                }
                 self.first += 1;
                 if self.params.capacity < self.first {
                     self.first = 0;
                 }
-                died += 1;
-                if died > self.params.capacity + 1 {
-                    break;
-                }
             }
-            if p.flags & flags::BURST != 0 && died > 1 {
-                self.accumulator -= (died.min(4) - 1) as f32 * p.interval;
-            }
+        }
+        if p.flags & flags::BURST != 0 && died > 1 {
+            self.accumulator -= (died.min(4) - 1) as f32 * p.interval;
         }
         if p.flags & flags::FIRE_AGEING == 0 {
             self.last_node = self.node.position;
         }
-        for (a, b) in self.ranges() {
-            for i in a..=b {
-                self.integrate(i);
-            }
+        for i in self.indices() {
+            self.integrate(i);
         }
-        if p.flags & flags::FINITE != 0 && self.deadline < self.ticks {
-            self.visible = false;
-            if self.first == self.next {
-                self.emitter_flags |= 0x1000;
-                return TickStats {
-                    died,
-                    spawned: 0,
-                    live: 0,
-                };
+        if p.flags & flags::FINITE != 0 {
+            if self.deadline < self.ticks {
+                self.active = false;
+                if self.first == self.next {
+                    self.emitter_flags |= state::FINISHED;
+                    return TickStats {
+                        died,
+                        spawned: 0,
+                        live: 0,
+                    };
+                }
             }
         } else if p.flags & flags::ONE_SHOT != 0
-            && self.emitter_flags & 0x1200 == 0
             && self.first == self.next
+            && self.emitter_flags & (state::FINISHED | state::FIRST_PASS) == 0
         {
-            self.emitter_flags |= 0x1000;
-            self.visible = false;
+            self.emitter_flags |= state::FINISHED;
             return TickStats {
                 died,
                 spawned: 0,
@@ -764,10 +887,8 @@ impl Emitter {
             self.accumulator -= 1.0;
         }
         let mut spawned = 0;
-        loop {
-            if !self.visible || 1.0 <= self.accumulator {
-                break;
-            }
+        // NaN stops the loop, as the original's unordered compare does.
+        while self.active && self.accumulator < 1.0 {
             for index in 0..self.sources.len() {
                 if self.sources[index].count == 0 {
                     continue;
@@ -782,13 +903,21 @@ impl Emitter {
                 if self.sources[index].count > 0 {
                     self.sources[index].count -= 1;
                 }
-                if self.spawn(index, rng) {
-                    spawned += 1;
+                let slot = self.spawn(index, rng);
+                spawned += 1;
+                // The pull is along the source's own second axis, untransformed.
+                let src = self.sources[index];
+                self.slots[slot].q += src.axes[1] * -src.kick;
+                if p.start_life == 0 && self.next == self.params.capacity {
+                    self.active = false;
+                    break;
                 }
             }
             self.accumulator += p.interval;
         }
-        self.update_bounds();
+        if p.flags & flags::FIXED_BOUNDS == 0 {
+            self.update_bounds();
+        }
         TickStats {
             died,
             spawned,
@@ -806,13 +935,22 @@ impl Emitter {
             Some(b) => b.velocity,
             None => self.last_node - current,
         };
+        let radius = 140.0 * self.size;
         self.smoothed += (delta - self.smoothed) * 0.1;
-        self.motion_squared = self.smoothed.length_squared();
-        self.motion_average = self.motion_squared * 0.1 + self.motion_average * 0.9;
-        if p.flags & flags::SOUND_MOTION != 0 && p.light.is_some() {
+        let s = self.smoothed;
+        self.motion_squared = s.z * s.z + (s.y * s.y + s.x * s.x);
+        self.motion_average =
+            (f64::from(self.motion_average) * 0.9 + f64::from(self.motion_squared) * 0.1) as f32;
+        if self.emitter_flags & flags::SOUND_MOTION != 0 && self.sound.attached {
             let f = self.motion_squared * 0.014_285_714;
             let f = f * f * 0.75;
-            self.sound.volume = if f <= 1.0 { f.max(0.03) } else { 1.0 };
+            self.sound.volume = if 1.0 < f {
+                1.0
+            } else if f64::from(f) < 0.03 {
+                0.03
+            } else {
+                f
+            };
         }
         if let Some(b) = body {
             let offset = if b.full_displacement {
@@ -820,47 +958,46 @@ impl Emitter {
             } else {
                 b.velocity * 0.5
             };
-            for (a, b) in self.ranges() {
-                for s in &mut self.slots[a..=b] {
-                    if s.life > 0 {
-                        s.p += offset;
-                        s.q += offset;
-                    }
-                }
-            }
-        }
-        // Each live particle loses one extra life tick half the time.
-        if p.flags & flags::BURST != 0 {
-            for (a, b) in self.ranges() {
-                for s in &mut self.slots[a..=b] {
-                    if s.life > 0 && rng.int(2) == 0 {
-                        s.life -= 1;
-                    }
-                }
-            }
-        }
-        let radius = 140.0 * self.size;
-        let ratio = if radius != 0.0 {
-            p.start_life as f32 / radius
-        } else {
-            f32::INFINITY
-        };
-        for (a, b) in self.ranges() {
-            for i in a..=b {
-                if self.slots[i].life <= 0 {
-                    continue;
-                }
-                let mut d = self.slots[i].p - current;
-                d.y *= 0.7;
-                let cap = ((radius - d.length()) * ratio).round_ties_even() as i32;
-                if cap < self.slots[i].life {
-                    self.slots[i].life = cap;
-                } else {
-                    self.slots[i].life -= 1;
+            for i in self.indices() {
+                let s = &mut self.slots[i];
+                if s.life > 0 {
+                    s.p += offset;
+                    s.q += offset;
                 }
             }
         }
         self.last_node = current;
+        // Each live particle loses one extra life tick half the time.
+        if p.flags & flags::BURST != 0 {
+            for i in self.indices() {
+                if self.slots[i].life > 0 && rng.int(2) == 0 {
+                    self.slots[i].life -= 1;
+                }
+            }
+        }
+        let ratio = p.start_life as f32 / radius;
+        for i in self.indices() {
+            let s = &mut self.slots[i];
+            if s.life <= 0 {
+                continue;
+            }
+            let mut d = s.p - current;
+            d.y = (f64::from(d.y) * 0.7) as f32;
+            let distance = (d.x * d.x + d.y * d.y + d.z * d.z).sqrt();
+            let cap = ((radius - distance) * ratio).round_ties_even();
+            // The conversion of a NaN or out-of-range value gives the
+            // integer indefinite.
+            let cap = if cap.is_finite() && cap.abs() < 2.147_483_6e9 {
+                cap as i32
+            } else {
+                i32::MIN
+            };
+            if cap < s.life {
+                s.life = cap;
+            } else {
+                s.life -= 1;
+            }
+        }
     }
 
     fn integrate(&mut self, i: usize) {
@@ -878,12 +1015,13 @@ impl Emitter {
         s.p.z += (node.z - s.p.z) * p.centring;
     }
 
-    /// Spawns one particle from a source.
-    fn spawn<R: Draws>(&mut self, source: usize, rng: &mut R) -> bool {
+    /// Spawns one particle from a source into the ring's next slot and
+    /// returns that slot.
+    fn spawn<R: Draws>(&mut self, source: usize, rng: &mut R) -> usize {
         let p = self.params;
         let slot = self.next;
         let mut life = if p.flags & flags::LIFE_RANDOM != 0 {
-            p.start_life - rng.int((p.start_life >> 2).max(0) as u32) as i32
+            p.start_life - rng.int((p.start_life as u32) >> 2) as i32
         } else if p.start_life < 1 {
             100
         } else {
@@ -897,27 +1035,40 @@ impl Emitter {
         } else if p.flags & flags::UV_32 != 0 {
             rng.int(32) as u8
         } else {
-            0
+            self.slots[slot].variant
         };
         let src = self.sources[source];
-        let mut at = self.node.position + self.node.rotation * src.offset;
+        let rotation = self.node.rotation;
+        let mut at = self.node.position + rotation * src.offset;
         if 0.0 < p.spawn_radius {
-            let angle = std::f32::consts::TAU * rng.unit();
+            let angle = (f64::from(std::f32::consts::TAU) * rng.unit()) as f32;
+            let (sin, cos) = angle.sin_cos();
             let u = rng.unit();
-            let r = (1.0 - u * u * u * u) * p.spawn_radius;
-            at += Vec3::new(angle.cos(), 0.0, -angle.sin()) * r;
+            let u2 = u * u;
+            let r = (1.0 - u2 * u2) as f32 * p.spawn_radius;
+            at += Vec3::new(cos, 0.0, -sin) * r;
         }
-        let direction = if p.flags & flags::VELOCITY_MASK == flags::VELOCITY_RANDOM {
-            let x = p.spread * 0.001 * (rng.int(2001) as f32 - 1000.0);
-            let y = rng.int(1001) as f32 * 0.001;
-            let z = p.spread * 0.001 * (rng.int(2001) as f32 - 1000.0);
-            self.node.rotation * (src.x_axis * x + src.y_axis * y + src.direction * z)
+        let mut direction = if p.flags & flags::VELOCITY_MASK == flags::VELOCITY_RANDOM {
+            let spread = f64::from(p.spread) * 0.001;
+            let x = (spread * (f64::from(rng.int(2001)) - 1000.0)) as f32;
+            let y = (f64::from(rng.int(1001)) * 0.001) as f32;
+            let z = (spread * (f64::from(rng.int(2001)) - 1000.0)) as f32;
+            rotation * (src.axes[0] * x + src.axes[1] * y + src.axes[2] * z)
         } else {
             Vec3::Y
         };
-        let mut prev = at - direction * p.retention;
-        at += direction * p.retention;
-        prev -= src.velocity * 0.3;
+        let prev;
+        if p.flags & flags::CAMERA_FORWARD == 0 {
+            prev = at + direction * -p.speed - src.velocity * 0.3;
+            at += direction * p.speed;
+        } else {
+            direction *= p.speed;
+            direction += src.velocity * 0.15;
+            direction = direction + (src.smoothed - direction) * 0.5;
+            self.sources[source].smoothed = direction;
+            prev = at + direction * -1.2;
+            at += direction * 0.8;
+        }
         let random_size = self.slots[slot].size;
         self.slots[slot] = Slot {
             p: at,
@@ -928,26 +1079,20 @@ impl Emitter {
         };
         self.next += 1;
         if self.params.capacity < self.next {
-            self.next = 0;
-            self.emitter_flags &= !0x200;
+            self.emitter_flags &= !state::FIRST_PASS;
             if p.flags & flags::ONE_SHOT != 0 {
-                self.visible = false;
+                self.active = false;
             }
+            self.next = 0;
         }
-        if p.start_life == 0 && self.first == self.next {
-            self.visible = false;
-        }
-        true
+        slot
     }
 
     /// The bounding box of the live particles, padded by 5 cm.
     fn update_bounds(&mut self) {
-        if self.params.flags & flags::FIXED_BOUNDS != 0 {
-            return;
-        }
         if self.first == self.next {
             self.bounds.extent = Vec3::ZERO;
-            self.bounds.radius_squared = 0.0;
+            self.bounds.radius = 0.0;
             return;
         }
         let latest = if self.next == 0 {
@@ -957,18 +1102,26 @@ impl Emitter {
         };
         let mut min = self.slots[latest].p;
         let mut max = min;
-        for (a, b) in self.ranges() {
-            for s in &self.slots[a..=b] {
-                if s.life <= 0 {
-                    continue;
+        for i in self.indices() {
+            let s = &self.slots[i];
+            if s.life <= 0 {
+                continue;
+            }
+            for c in 0..3 {
+                if min[c] <= s.p[c] {
+                    if max[c] < s.p[c] {
+                        max[c] = s.p[c];
+                    }
+                } else {
+                    min[c] = s.p[c];
                 }
-                min = min.min(s.p);
-                max = max.max(s.p);
             }
         }
-        self.bounds.centre = (min + max) * 0.5;
-        self.bounds.extent = (max - self.bounds.centre) + Vec3::splat(5.0);
-        self.bounds.radius_squared = self.bounds.extent.length_squared();
+        self.bounds.centre = min + (max - min) * 0.5;
+        let e = (max - self.bounds.centre) + Vec3::splat(5.0);
+        self.bounds.extent = e;
+        let squared = e.z * e.z + e.y * e.y + e.x * e.x;
+        self.bounds.radius = if 0.0 < squared { squared.sqrt() } else { 0.0 };
     }
 
     /// A body contact pass over a slot range: particles inside the body are
@@ -1062,43 +1215,52 @@ impl Emitter {
     /// The quads of the live particles, oldest first, interpolated between
     /// the last two ticks by `alpha`.
     pub fn quads(&self, alpha: f32, view: View) -> Vec<Quad> {
+        let mut out = Vec::with_capacity(self.live());
+        self.quads_into(alpha, view, &mut out);
+        out
+    }
+
+    /// [`Emitter::quads`] into a buffer the caller keeps.
+    pub fn quads_into(&self, alpha: f32, view: View, out: &mut Vec<Quad>) {
+        out.clear();
         let p = self.params;
-        let centre = if self.bounds.radius_squared > 0.0 {
-            self.bounds.centre
+        let mode = p.flags & flags::QUAD_MASK;
+        // The diamonds face the line from the eye to the particles' centre;
+        // the beds' quads face the camera's up axis around that line.
+        let to_centre = self.bounds.centre - view.eye;
+        let facing = if mode == flags::QUAD_DIAMOND {
+            if p.flags & flags::CAMERA_FORWARD != 0 {
+                view.forward
+            } else {
+                to_centre.normalize_or(view.forward)
+            }
         } else {
-            self.node.position
+            to_centre
         };
-        let to_emitter = if p.flags & flags::CAMERA_FORWARD != 0 {
-            view.forward
-        } else {
-            (centre - view.eye).normalize_or(view.forward)
-        };
-        let mut out = Vec::new();
         for (index, position, previous, life) in self.particles() {
-            let at = previous + (position - previous) * alpha;
-            let age = 1.0 - (life as f32 - alpha) / p.start_life.max(1) as f32;
-            let size = if p.flags & flags::RANDOM_SIZE != 0 {
-                self.slots[index].size
-            } else {
-                p.half_size
-            };
-            let mode = p.flags & flags::QUAD_MASK;
+            let delta = position - previous;
+            let at = previous + delta * alpha;
+            let age = 1.0 - (life as f32 - alpha) * p.inverse_life;
             let corners = if mode == flags::QUAD_DIAMOND {
-                diamond_quad(at, position - previous, size, age, p, to_emitter, view)
+                let size = if p.flags & flags::RANDOM_SIZE != 0 {
+                    self.slots[index].size
+                } else {
+                    p.half_size
+                };
+                diamond_quad(at, delta, size, age, p, facing)
             } else if mode == flags::QUAD_STRETCHED {
-                stretched_quad(at, size, age, p, to_emitter, view)
+                stretched_quad(at, age, p, facing, view)
             } else {
-                screen_quad(at, size, view)
+                screen_quad(at, p.half_size, view)
             };
+            let variant = self.slots[index].variant;
             let uv: [Vec2; 4] = if p.flags & flags::UV_8 != 0 {
-                std::array::from_fn(|i| {
-                    Vec2::from(SYMMETRIES[(self.slots[index].variant & 7) as usize][i])
-                })
+                std::array::from_fn(|i| Vec2::from(SYMMETRIES[usize::from(variant & 7)][i]))
             } else if p.flags & flags::UV_32 != 0 {
-                let v = self.slots[index].variant & 31;
+                let v = variant & 31;
                 let cell = v >> 3;
-                let sym = SYMMETRIES[(v & 7) as usize];
-                let origin = [(cell & 1) as f32 * 0.5, ((cell >> 1) & 1) as f32 * 0.5];
+                let sym = SYMMETRIES[usize::from(v & 7)];
+                let origin = [f32::from(cell & 1) * 0.5, f32::from((cell >> 1) & 1) * 0.5];
                 std::array::from_fn(|i| {
                     Vec2::new(origin[0] + sym[i][0] * 0.5, origin[1] + sym[i][1] * 0.5)
                 })
@@ -1106,15 +1268,13 @@ impl Emitter {
                 std::array::from_fn(|i| Vec2::from(SYMMETRIES[0][i]))
             };
             let colour = if p.flags & flags::KEYS_PARITY == flags::KEYS_PARITY {
-                p.keys.sample(age, index & 1 == 1)
+                p.keys.sample(p.keys.count as f32 * age, index & 1 == 1)
             } else if p.flags & flags::KEYS != 0 {
-                p.keys.sample(age, false)
+                p.keys.sample(p.keys.count as f32 * age, false)
             } else {
-                let f = 1.0 - (life as f32 - alpha) / p.start_life.max(1) as f32;
-                let a = ((1.0 - f * f) * 255.0).round_ties_even().clamp(0.0, 255.0) as u8;
-                let o = (self.flat_opacity * 255.0)
-                    .round_ties_even()
-                    .clamp(0.0, 255.0) as u8;
+                let f = 1.0 - (life as f32 - alpha) / p.start_life as f32;
+                let a = ((1.0 - f * f) * 255.0).round_ties_even() as i32 as u8;
+                let o = (self.flat_opacity * 255.0).round_ties_even() as i32 as u8;
                 [a, a, a, o]
             };
             out.push(Quad {
@@ -1123,72 +1283,70 @@ impl Emitter {
                 colour,
             });
         }
-        out
     }
 }
 
-/// The velocity-aligned diamond of a flame particle.
-fn diamond_quad(
-    at: Vec3,
-    delta: Vec3,
-    size: f32,
-    age: f32,
-    p: Params,
-    to_emitter: Vec3,
-    view: View,
-) -> [Vec3; 4] {
-    let mut w = delta;
-    w.y -= p.buoyancy;
-    let speed = w.length();
-    let (d, x_axis, y_axis, l) = if speed > 0.0 {
-        let d = -w / speed;
-        let across = d.cross(to_emitter);
-        let l = across.length();
-        if l > 1.0e-5 {
-            let x = across / l;
-            let y = across.cross(to_emitter) / l;
-            (d, x, y, l)
-        } else {
-            (d, view.right, view.up, 0.0)
-        }
+/// The original's fast arc cosine of a non-negative argument:
+/// `(π/2 − 0.2075·x + 0.0535·x²)·√(1 − x)`.
+fn fast_acos(x: f32) -> f32 {
+    const HALF_PI: f32 = f32::from_bits(0x3fc9_0fdb);
+    const LINEAR: f32 = f32::from_bits(0x3e54_7ae1);
+    const SQUARE: f32 = f32::from_bits(0x3d5b_22d1);
+    if x < 0.0 {
+        let poly = x * x * SQUARE + (x * LINEAR + HALF_PI);
+        (std::f64::consts::PI - f64::from(poly * (1.0 + x).sqrt())) as f32
     } else {
-        // At rest along the view: the original divides by zero; keep a
-        // finite quad of the base size instead.
-        (Vec3::NEG_Y, view.right, view.up, 0.0)
-    };
-    let width = size + l * age * age * p.growth;
-    let stretch = if speed > 0.0 {
-        (2.0 - 2.0 / (speed + 1.0)) * p.stretch * d.dot(to_emitter).abs().acos()
-    } else {
-        0.0
-    };
-    let x = x_axis * width;
-    let y = y_axis * ((1.0 + stretch) * width);
-    [at - y, at - x, at + x, at + y]
+        let poly = x * x * SQUARE + (HALF_PI - x * LINEAR);
+        poly * (1.0 - x).sqrt()
+    }
 }
 
-/// The screen-aligned, age-stretched quad of an ember bed.
-fn stretched_quad(
-    at: Vec3,
-    size: f32,
-    age: f32,
-    p: Params,
-    to_emitter: Vec3,
-    view: View,
-) -> [Vec3; 4] {
-    let x_axis = to_emitter.cross(view.up).normalize_or(view.right);
-    let y_axis = x_axis.cross(to_emitter).normalize_or(view.up);
-    let width = size + age * age * p.growth;
+/// A vector's length, its squares added as the original adds them.
+fn length(v: Vec3) -> f32 {
+    ((v.x * v.x + v.z * v.z) + v.y * v.y).sqrt()
+}
+
+/// The velocity-aligned diamond of a flame particle: tail, two sides, head.
+fn diamond_quad(at: Vec3, delta: Vec3, size: f32, age: f32, p: Params, facing: Vec3) -> [Vec3; 4] {
+    let mut w = delta;
+    w.y -= p.buoyancy;
+    let speed = length(w);
+    let d = w * (-1.0 / speed);
+    let fall = 2.0 - 2.0 / (speed + 1.0);
+    let across = d.cross(facing);
+    let l = length(across);
+    // Along the view (or at rest with no buoyancy) the original divides by
+    // zero; keep a finite quad of the base size there instead.
+    if l.is_nan() || l <= 1.0e-6 || !speed.is_finite() || speed == 0.0 {
+        let side = Vec3::X * size;
+        let up = Vec3::Y * size;
+        return [at - up, at + side, at - side, at + up];
+    }
+    let k = size / l + age * age * p.growth;
+    let along = across.cross(facing);
+    let x = across * k;
+    let dot = (d.x * facing.x + d.y * facing.y) + d.z * facing.z;
+    let stretch = fall * p.stretch * fast_acos(dot.abs());
+    let reach = (stretch + 1.0) * k;
+    [at + along * -reach, at + x, at - x, at + along * reach]
+}
+
+/// The screen-aligned, age-stretched quad of an ember bed. Its long axis
+/// grows with how upright the camera's up axis is around the view line.
+fn stretched_quad(at: Vec3, age: f32, p: Params, to_centre: Vec3, view: View) -> [Vec3; 4] {
+    let x_axis = to_centre.cross(view.up).normalize_or(view.right);
+    let y_axis = x_axis.cross(to_centre).normalize_or(view.up);
+    let width = age * age * p.growth + p.half_size;
     let x = x_axis * width;
-    let y = y_axis * ((1.0 + p.stretch) * width);
-    [at - y, at - x, at + x, at + y]
+    let y = y_axis * ((y_axis.y + 1.0) * width);
+    [at - y, at + x, at - x, at + y]
 }
 
 /// A flat billboard of half-size `size`.
 fn screen_quad(at: Vec3, size: f32, view: View) -> [Vec3; 4] {
     let x = view.right * size;
     let y = view.up * size;
-    [at - y, at - x, at + x, at + y]
+    [at - y, at + x, at - x, at + y]
 }
 
 #[cfg(test)]
@@ -1198,11 +1356,11 @@ mod tests {
     /// A scripted stream: the numbers the test wants, in order.
     struct Scripted {
         ints: Vec<u32>,
-        units: Vec<f32>,
+        units: Vec<f64>,
     }
 
     impl Scripted {
-        fn new(ints: &[u32], units: &[f32]) -> Self {
+        fn new(ints: &[u32], units: &[f64]) -> Self {
             Self {
                 ints: ints.to_vec(),
                 units: units.to_vec(),
@@ -1220,7 +1378,7 @@ mod tests {
             v % n.max(1)
         }
 
-        fn unit(&mut self) -> f32 {
+        fn unit(&mut self) -> f64 {
             if self.units.is_empty() {
                 0.0
             } else {
@@ -1229,7 +1387,7 @@ mod tests {
         }
     }
 
-    /// The small fire's template, the one a torch uses.
+    /// The small fire's template, the one a torch uses (its raw keys).
     const SMALL: Descriptor = Descriptor {
         rate: 250,
         life: 1.25,
@@ -1273,7 +1431,27 @@ mod tests {
     };
 
     fn torch() -> Emitter {
-        Emitter::new(SMALL.scaled(0.2), 0.2, vec![Source::at_node()])
+        let mut e = Emitter::new(SMALL.scaled(0.2), 0.2, vec![Source::at_node()]);
+        e.enter(NodeFrame::default());
+        e
+    }
+
+    #[test]
+    fn the_mersenne_twister_matches_its_reference_outputs() {
+        let mut mt = Mt19937::new(5489);
+        assert_eq!(mt.next_u32(), 3_499_211_612);
+        assert_eq!(mt.next_u32(), 581_869_302);
+        assert_eq!(mt.next_u32(), 3_890_346_734);
+    }
+
+    #[test]
+    fn the_integer_stream_is_the_engines_lcg() {
+        let mut rng = Rng::new(0);
+        // seed 0 → 1: (1 · 3) >> 32 = 0; then 1 · 0x08088405 + 1.
+        assert_eq!(rng.int(3), 0);
+        assert_eq!(rng.ints, 1);
+        rng.int(3);
+        assert_eq!(rng.ints, 0x0808_8406);
     }
 
     #[test]
@@ -1285,39 +1463,88 @@ mod tests {
         assert!((d.buoyancy - -0.25).abs() < 1e-6);
         assert!((d.light.intensity - 3.577_709).abs() < 1e-5);
         assert!((d.light.radius - 670.820_4).abs() < 1e-3);
+        // 450 · (0.9 · 0.04 + 0.02) = 25.2 → 25.
         assert_eq!(d.density, 25);
     }
 
     #[test]
     fn the_derived_values_match_the_torch() {
         let e = torch();
+        // trunc(83 · 1.25) = trunc(103.75).
         assert_eq!(e.params.start_life, 103);
         assert!((e.params.interval - 83.0 / 50.0 * (2.0 / 3.0)).abs() < 1e-6);
+        // trunc(50 · 1.25 · 1.5 + 1.501) + 2 = trunc(95.251) + 2.
         assert_eq!(e.params.capacity, 97);
         assert_eq!(e.slots.len(), 98);
         assert_eq!(e.params.density_count, 25);
         assert_eq!(e.params.retention, 1.0);
+        assert_eq!(e.params.speed, 0.0);
         assert!((e.params.growth - 12.0).abs() < 1e-6);
         assert!((e.params.collision_growth - 18.0).abs() < 1e-6);
+        // The sound's motion bit follows the template into the state word.
+        assert_eq!(e.emitter_flags, state::INITIAL | flags::SOUND_MOTION);
+    }
+
+    #[test]
+    fn a_retention_is_taken_per_tick_in_double_precision() {
+        let mut d = SMALL;
+        d.retention = 0.5;
+        let e = Emitter::new(d, 1.0, vec![Source::at_node()]);
+        assert_eq!(e.params.retention, (0.5f64.ln() / 83.0).exp() as f32);
     }
 
     #[test]
     fn one_spawn_lands_on_the_ring_at_rest() {
         let mut e = torch();
-        // Three light draws, then the ring's angle and radius.
-        let mut rng = Scripted::new(&[], &[0.0, 0.0, 0.0, 0.5, 0.0]);
+        // Three light draws, then the atlas variant, the ring's angle and
+        // radius, and the three velocity integers (the torch's speed is
+        // zero, so they move nothing).
+        let mut rng = Scripted::new(&[1, 9, 1000, 500], &[0.0, 0.0, 0.0, 0.5, 0.0]);
         e.tick(NodeFrame::default(), &mut rng);
         let (_, p, q, life) = e.particles().next().expect("one particle");
         assert_eq!(life, 103);
-        assert!((p - q).length() < 1e-6);
+        // At rest: the template speed is zero and the node did not move.
+        assert_eq!(p, q);
         // θ = π, u = 0: r = 4.9.
         assert!((p.x + 4.9).abs() < 1e-4, "{p:?}");
         assert!(p.z.abs() < 1e-4);
+        assert!(p.y.abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_spawn_inherits_three_tenths_of_the_source_motion() {
+        let mut e = torch();
+        e.params.spawn_radius = 0.0;
+        e.tick(NodeFrame::default(), &mut Scripted::new(&[], &[]));
+        let moved = NodeFrame {
+            position: Vec3::new(10.0, 0.0, 0.0),
+            rotation: Mat3::IDENTITY,
+        };
+        let before = e.next;
+        e.accumulator = 0.0;
+        e.tick(moved, &mut Scripted::new(&[], &[]));
+        let s = e.slots[before];
+        // The source moved 10 cm this tick: q lags by 3 cm.
+        assert!((s.p.x - 10.0).abs() < 1e-5);
+        assert!((s.q.x - 7.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_first_tick_does_not_fling_a_particle_from_the_origin() {
+        let mut e = Emitter::new(SMALL.scaled(0.2), 0.2, vec![Source::at_node()]);
+        e.params.spawn_radius = 0.0;
+        let far = NodeFrame {
+            position: Vec3::new(5000.0, 300.0, -2000.0),
+            rotation: Mat3::IDENTITY,
+        };
+        e.tick(far, &mut Scripted::new(&[], &[]));
+        let (_, p, q, _) = e.particles().next().expect("a particle");
+        assert_eq!(p, q);
     }
 
     #[test]
     fn the_ring_law_puts_particles_near_the_rim() {
-        let r = |u: f32| 4.9 * (1.0 - u * u * u * u);
+        let r = |u: f64| (1.0 - u * u * u * u) as f32 * 4.9;
         assert!((r(0.0) - 4.9).abs() < 1e-6);
         assert!((r(0.5) - 4.9 * 0.9375).abs() < 1e-6);
         assert_eq!(r(1.0), 0.0);
@@ -1327,7 +1554,7 @@ mod tests {
     fn the_interval_gives_the_template_rate() {
         let e = torch();
         let actual = (2.0 / 3.0) / e.params.interval;
-        assert!((actual - 50.0 / 83.0).abs() < 1e-9);
+        assert!((actual - 50.0 / 83.0).abs() < 1e-6);
     }
 
     #[test]
@@ -1345,8 +1572,8 @@ mod tests {
         let s = e.slots[0];
         // Buoyancy −0.25 of gravity a tick²: 0.0356 cm/tick².
         assert!((s.p.y - (10.0 + 0.25 * 980.665 / (83.0 * 83.0))).abs() < 1e-6);
-        assert!(s.p.x < 3.0 && s.p.z > -2.0);
         assert!((s.p.x - (3.0 - 3.0 * 0.0007)).abs() < 1e-6);
+        assert!((s.p.z - (-2.0 + 2.0 * 0.0007)).abs() < 1e-6);
     }
 
     #[test]
@@ -1360,6 +1587,7 @@ mod tests {
             life: 103,
             ..Slot::default()
         };
+        // The extra-tick draw is 1: no extra tick.
         let mut rng = Scripted::new(&[1], &[]);
         e.age(&mut rng);
         // D = 24.5, cap = round((28 − 24.5) · 103/28) = round(12.875) = 13.
@@ -1384,17 +1612,31 @@ mod tests {
     }
 
     #[test]
+    fn an_emptying_ring_counts_one_more_pop() {
+        let mut e = torch();
+        e.params.flags &= !flags::FIRE_AGEING;
+        e.first = 0;
+        e.next = 2;
+        e.slots[0].life = 1;
+        e.slots[1].life = 1;
+        e.slots[2].life = 0;
+        let stats = e.tick(NodeFrame::default(), &mut Scripted::new(&[0], &[]));
+        // Two pops, and the dead slot the empty ring stops on.
+        assert_eq!(stats.died, 3);
+    }
+
+    #[test]
     fn the_key_list_fades_in_and_out() {
         let k = SMALL.scaled(0.2).keys;
         assert_eq!(k.sample(0.0, false), [0, 0, 0, 0]);
-        assert_eq!(k.sample(1.0, true)[3], 0);
-        let c = k.sample(4.0 / 9.0, true);
+        assert_eq!(k.sample(9.0, true)[3], 0);
+        let c = k.sample(4.0, true);
         assert_eq!(c[3], 64);
         assert_eq!(c[0], 255);
     }
 
     #[test]
-    fn the_colour_lerp_truncates() {
+    fn the_colour_lerp_rounds_half_to_even() {
         let keys = Keys {
             count: 1,
             entries: &[[10, 20, 30, 40], [110, 220, 130, 240]],
@@ -1404,8 +1646,13 @@ mod tests {
             count: 1,
             entries: &[[0, 0, 0, 0], [3, 3, 3, 3]],
         };
-        // 1.89 truncates to 1.
-        assert_eq!(keys.sample(0.63, false), [1, 1, 1, 1]);
+        // 1.89 rounds to 2; 0.5 and 2.5 round to even.
+        assert_eq!(keys.sample(0.63, false), [2, 2, 2, 2]);
+        let keys = Keys {
+            count: 1,
+            entries: &[[0, 4, 0, 0], [1, 5, 0, 0]],
+        };
+        assert_eq!(keys.sample(0.5, false)[..2], [0, 4]);
     }
 
     #[test]
@@ -1427,6 +1674,19 @@ mod tests {
         let mut rng = Scripted::new(&[], &[0.0, 0.0, 0.0]);
         e.light.tick(0, 25, &mut rng);
         assert!((e.light.density - 0.8).abs() < 1e-6);
+        e.light.density = 0.0;
+        e.light.tick(25, 25, &mut rng);
+        assert!((e.light.density - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_light_peak_needs_a_strictly_brighter_frame() {
+        let mut light = LightState::new(SMALL.light);
+        assert!(!light.intensity().1);
+        light.density = 1.0;
+        let (i, new_peak) = light.intensity();
+        assert!(new_peak);
+        assert!((light.peak - i * 1.1).abs() < 1e-6);
     }
 
     #[test]
@@ -1440,23 +1700,42 @@ mod tests {
             life: 50,
             ..Slot::default()
         };
+        e.bounds.centre = Vec3::new(0.0, 3.0, 0.0);
         let view = View {
-            eye: Vec3::new(100.0, 0.0, 0.0),
-            right: Vec3::Y,
+            eye: Vec3::new(100.0, 3.0, 0.0),
+            right: Vec3::NEG_Z,
             up: Vec3::Y,
             forward: Vec3::NEG_X,
         };
         let quads = e.quads(0.0, view);
         assert_eq!(quads.len(), 1);
         let c = quads[0].corners;
-        assert!((c[3].y - c[0].y).abs() > (c[2].x - c[1].x).abs());
-        assert!((c[3].y - 3.0).abs() > 6.0);
+        // At α = 0 the centre is the previous position (0, 1, 0). Side-on:
+        // ℓ = 1, the stretch is (2 − 2/3.25) · 0.6 · acos(0) ≈ 1.31.
+        let w = 2.0 + 0.25f32;
+        let t = 1.0 - 50.0 / 103.0;
+        let width = 6.0 + t * t * 12.0;
+        let stretch = (2.0 - 2.0 / (w + 1.0)) * 0.6 * fast_acos(0.0);
+        assert!(((c[1] - c[2]).length() - 2.0 * width).abs() < 1e-3);
+        assert!(((c[3] - c[0]).length() - 2.0 * (1.0 + stretch) * width).abs() < 1e-3);
+        // The head is up, along the motion and the buoyancy lean.
+        assert!(c[3].y > c[0].y);
+    }
+
+    #[test]
+    fn the_fast_arc_cosine_is_the_originals() {
+        assert!((fast_acos(0.0) - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        assert_eq!(fast_acos(1.0), 0.0);
+        // Close to the true value, but not it: at 0.5,
+        // √0.5 · (π/2 − 0.10375 + 0.013375) = 1.04682 against 1.04720.
+        let x = 0.5f32;
+        assert!((fast_acos(x) - 1.046_82).abs() < 1e-4, "{}", fast_acos(x));
+        assert_ne!(fast_acos(x), x.acos());
     }
 
     #[test]
     fn the_texture_variants_cover_four_cells_and_eight_symmetries() {
         let mut e = torch();
-        e.params.flags = (e.params.flags | flags::UV_32) & !flags::UV_8;
         e.first = 0;
         e.next = 1;
         e.slots[0] = Slot {
@@ -1475,10 +1754,11 @@ mod tests {
         let uv = e.quads(0.0, view)[0].uv;
         // Variant 9: cell 1 (origin 0.5, 0), symmetry 1.
         assert_eq!(uv[0], Vec2::new(1.0, 0.0));
+        assert_eq!(uv[3], Vec2::new(0.5, 0.5));
     }
 
     #[test]
-    fn a_finite_emitter_hides_after_its_deadline() {
+    fn a_finite_emitter_stops_after_its_deadline() {
         let mut d = SMALL.scaled(0.2);
         d.flags |= flags::FINITE;
         let mut e = Emitter::new(d, 0.2, vec![Source::at_node()]);
@@ -1487,7 +1767,23 @@ mod tests {
         for _ in 0..6 {
             e.tick(NodeFrame::default(), &mut rng);
         }
-        assert!(!e.visible);
+        assert!(!e.active);
+    }
+
+    #[test]
+    fn a_one_shot_emitter_stops_at_the_wrap_and_finishes_empty() {
+        let mut d = SMALL.scaled(0.2);
+        d.flags |= flags::ONE_SHOT;
+        let mut e = Emitter::new(d, 0.2, vec![Source::at_node()]);
+        let mut rng = Rng::new(3);
+        let mut ticks = 0;
+        while !e.finished() && ticks < 2000 {
+            e.tick(NodeFrame::default(), &mut rng);
+            ticks += 1;
+        }
+        assert!(e.finished(), "{ticks}");
+        assert!(!e.active);
+        assert_eq!(e.live(), 0);
     }
 
     #[test]
@@ -1548,6 +1844,24 @@ mod tests {
         for s in &sources {
             let r = s.offset.length();
             assert!((20.0..=40.0).contains(&r), "{r}");
+            // The second axis points out of the ring.
+            assert!((s.axes[1] - s.offset / r).length() < 1e-5);
         }
+    }
+
+    #[test]
+    fn a_ring_source_sends_the_upward_draw_outward() {
+        let mut rng = Scripted::new(&[], &[0.0, 0.5]);
+        let sources = Source::ring(1, 10.0, &mut rng);
+        let mut d = SMALL;
+        d.speed = 83.0;
+        d.spawn_radius = 0.0;
+        let mut e = Emitter::new(d, 1.0, sources);
+        e.enter(NodeFrame::default());
+        // The velocity integers: x = 0, y = 1000 (1.0), z = 0.
+        e.spawn(0, &mut Scripted::new(&[1000, 1000, 1000], &[]));
+        let s = e.slots[0];
+        // θ = 0: the source sits on +X and its y axis points out along +X.
+        assert!((s.p - s.q - Vec3::new(2.0, 0.0, 0.0)).length() < 1e-5);
     }
 }
