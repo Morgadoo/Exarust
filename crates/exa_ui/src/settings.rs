@@ -2,6 +2,14 @@
 //! control records (`TSGSettingDlg`'s tab, Settings and Controls arrays;
 //! `docs/UI.md`, Forms). Positions are design pixels at GUI unit 4; y
 //! anchors are on the 4-px grid and are scaled by the live unit.
+//!
+//! The option rows' behaviour is here too: the row ids, what each slider
+//! step or checkbox writes ([`on_slider`], [`on_toggle`]), what the rows show
+//! when the page opens ([`populate`]) and the labels from
+//! [`exa_formats::hw_config`]. The form's four buttons and two tabs are
+//! [`form_action`].
+
+use exa_formats::hw_config::{self, Options, Scale};
 
 /// The design dialog size at unit 4.
 pub const DESIGN: (i32, i32) = (434, 536);
@@ -607,5 +615,517 @@ mod page_tests {
         assert_eq!(controls_scroll(0.0, 4), (232, 17));
         assert_eq!(controls_scroll(1.0, 4), (232, 167));
         assert_eq!(controls_scroll(0.5, 6), (348, 138));
+    }
+}
+
+/// An editable row of the Settings page.
+///
+/// The ids are the tab dialog's control records: the two readouts are 1 and
+/// 2, then the sliders and checkboxes in the order the page shows them (id
+/// 10 is unused).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Setting {
+    Volume,
+    Music,
+    Supersample,
+    ShadingQuality,
+    TextureDetail,
+    TextureQuality,
+    ShadowDetail,
+    ShadowQuality,
+    Multisample,
+    VerticalSync,
+    ShowFps,
+    WindowMode,
+    ShowTips,
+    Checkpoints,
+}
+
+impl Setting {
+    /// The row's control id.
+    pub fn id(self) -> u16 {
+        match self {
+            Setting::Volume => 3,
+            Setting::Music => 4,
+            Setting::Supersample => 5,
+            Setting::ShadingQuality => 6,
+            Setting::TextureDetail => 7,
+            Setting::TextureQuality => 8,
+            Setting::ShadowDetail => 9,
+            Setting::ShadowQuality => 11,
+            Setting::Multisample => 12,
+            Setting::VerticalSync => 13,
+            Setting::ShowFps => 14,
+            Setting::WindowMode => 15,
+            Setting::ShowTips => 16,
+            Setting::Checkpoints => 17,
+        }
+    }
+
+    /// The row with control id `id`, if it is editable.
+    pub fn from_id(id: u16) -> Option<Self> {
+        Some(match id {
+            3 => Setting::Volume,
+            4 => Setting::Music,
+            5 => Setting::Supersample,
+            6 => Setting::ShadingQuality,
+            7 => Setting::TextureDetail,
+            8 => Setting::TextureQuality,
+            9 => Setting::ShadowDetail,
+            11 => Setting::ShadowQuality,
+            12 => Setting::Multisample,
+            13 => Setting::VerticalSync,
+            14 => Setting::ShowFps,
+            15 => Setting::WindowMode,
+            16 => Setting::ShowTips,
+            17 => Setting::Checkpoints,
+            _ => return None,
+        })
+    }
+
+    /// Whether the row is a checkbox rather than a slider.
+    pub fn is_checkbox(self) -> bool {
+        matches!(
+            self,
+            Setting::Music
+                | Setting::VerticalSync
+                | Setting::ShowFps
+                | Setting::WindowMode
+                | Setting::ShowTips
+                | Setting::Checkpoints
+        )
+    }
+}
+
+/// What a row shows when the Settings page opens.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RowState {
+    /// The slider's position, 0 to 1. Checkboxes and a slider the original
+    /// leaves at its record's value have none.
+    pub fraction: Option<f32>,
+    /// Whether a checkbox is checked.
+    pub checked: bool,
+    /// Whether the row takes input. Hardware anti-aliasing is disabled while
+    /// super-sampling is off.
+    pub enabled: bool,
+    /// The slider's label, with the original's leading space.
+    pub text: Option<&'static str>,
+}
+
+impl RowState {
+    const fn slider(fraction: f32, text: Option<&'static str>) -> Self {
+        Self {
+            fraction: Some(fraction),
+            checked: false,
+            enabled: true,
+            text,
+        }
+    }
+
+    const fn check(checked: bool) -> Self {
+        Self {
+            fraction: None,
+            checked,
+            enabled: true,
+            text: None,
+        }
+    }
+}
+
+/// The rows as the page opens, in row order.
+///
+/// Volume always shows the default's 2/3 position, not the live volume: the
+/// original's opening handler divides the default by the maximum. Hardware
+/// anti-aliasing is enabled only while super-sampling is on; when it is off,
+/// the slider shows its level-0 position.
+pub fn populate(options: &Options) -> [(Setting, RowState); 14] {
+    let row = |setting: Setting| match setting {
+        Setting::Volume => RowState::slider(Options::default().volume_fraction(), None),
+        Setting::Music => RowState::check(options.music),
+        Setting::Supersample => {
+            RowState::slider(options.supersample_fraction(), options.supersample_text())
+        }
+        Setting::ShadingQuality => {
+            RowState::slider(options.shading_fraction(), options.shading_text())
+        }
+        Setting::TextureDetail => RowState::slider(
+            options.texture_detail_fraction(),
+            options.texture_detail_text(),
+        ),
+        Setting::TextureQuality => RowState::slider(
+            options.texture_quality_fraction(),
+            options.texture_quality_text(),
+        ),
+        Setting::ShadowDetail => RowState::slider(
+            options.shadow_detail_fraction(),
+            options.shadow_detail_text(),
+        ),
+        Setting::ShadowQuality => RowState::slider(
+            options.shadow_quality_fraction(),
+            options.shadow_quality_text(),
+        ),
+        Setting::Multisample if options.supersample > 0 => RowState {
+            fraction: None,
+            checked: false,
+            enabled: true,
+            text: None,
+        },
+        Setting::Multisample => RowState {
+            fraction: Some(options.multisample_fraction()),
+            checked: false,
+            enabled: false,
+            text: options.multisample_text(),
+        },
+        Setting::VerticalSync => RowState::check(options.vertical_sync),
+        Setting::ShowFps => RowState::check(options.show_fps),
+        Setting::WindowMode => RowState::check(options.window_mode),
+        Setting::ShowTips => RowState::check(options.show_tips),
+        Setting::Checkpoints => RowState::check(options.checkpoints),
+    };
+    [
+        Setting::Volume,
+        Setting::Music,
+        Setting::Supersample,
+        Setting::ShadingQuality,
+        Setting::TextureDetail,
+        Setting::TextureQuality,
+        Setting::ShadowDetail,
+        Setting::ShadowQuality,
+        Setting::Multisample,
+        Setting::VerticalSync,
+        Setting::ShowFps,
+        Setting::WindowMode,
+        Setting::ShowTips,
+        Setting::Checkpoints,
+    ]
+    .map(|setting| (setting, row(setting)))
+}
+
+/// Where a control's change goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Effect {
+    /// The running game changes at once (volume, aim speed, music, vertical
+    /// sync, the frame rate, the tips, checkpoints).
+    Live,
+    /// Only the screen's draft changes; Apply pushes it.
+    Draft,
+    /// The change is remembered but not written to the settings file (the
+    /// Music checkbox mutes the session; the original writes the startup
+    /// value).
+    SessionOnly,
+    /// The row is disabled and ignores input.
+    Ignored,
+}
+
+/// A slider step: writes its value into `options` and says where it goes.
+///
+/// The steps are the original's: volume × 1.5; super-sampling `round(3·f)`,
+/// one more above 1; shading `round(3·f) + 3`; texture detail `round(f) + 2`;
+/// texture quality `round(3·f) + 2`; shadow detail `round(f) + 4`; shadow
+/// quality `round(3·f) + 1`; hardware anti-aliasing `1 << round(3·f)`.
+/// Rounding is to even, as the processor's conversion does.
+///
+/// The super-sampling slider also enables or disables the hardware
+/// anti-aliasing row; it does not change that row's value. The volume and
+/// aim-speed sliders change the live options; the renderer's quality sliders
+/// change the draft.
+pub fn on_slider(options: &mut Options, setting: Setting, fraction: f32) -> Effect {
+    match setting {
+        Setting::Volume => {
+            options.volume = hw_config::volume_from_fraction(fraction);
+            Effect::Live
+        }
+        Setting::Supersample => {
+            options.supersample = hw_config::supersample_from_fraction(fraction);
+            Effect::Draft
+        }
+        Setting::ShadingQuality => {
+            options.shading_quality = hw_config::shading_from_fraction(fraction);
+            Effect::Draft
+        }
+        Setting::TextureDetail => {
+            options.texture_detail = hw_config::texture_detail_from_fraction(fraction);
+            Effect::Draft
+        }
+        Setting::TextureQuality => {
+            options.texture_quality = hw_config::texture_quality_from_fraction(fraction);
+            Effect::Draft
+        }
+        Setting::ShadowDetail => {
+            options.shadow_detail = hw_config::shadow_detail_from_fraction(fraction);
+            Effect::Draft
+        }
+        Setting::ShadowQuality => {
+            options.shadow_quality = hw_config::shadow_quality_from_fraction(fraction);
+            Effect::Draft
+        }
+        Setting::Multisample => {
+            if options.supersample <= 0 {
+                return Effect::Ignored;
+            }
+            options.multisample = hw_config::multisample_from_fraction(fraction);
+            Effect::Draft
+        }
+        Setting::Music
+        | Setting::VerticalSync
+        | Setting::ShowFps
+        | Setting::WindowMode
+        | Setting::ShowTips
+        | Setting::Checkpoints => Effect::Ignored,
+    }
+}
+
+/// A checkbox click: writes it into `options` and says where it goes.
+///
+/// The Music checkbox only mutes the running session; the original's setting
+/// writes the startup music value and reopens unchecked from it.
+pub fn on_toggle(options: &mut Options, setting: Setting, checked: bool) -> Effect {
+    match setting {
+        Setting::Music => Effect::SessionOnly,
+        Setting::VerticalSync => {
+            options.vertical_sync = checked;
+            Effect::Live
+        }
+        Setting::ShowFps => {
+            options.show_fps = checked;
+            Effect::Live
+        }
+        Setting::WindowMode => {
+            options.window_mode = checked;
+            Effect::Draft
+        }
+        Setting::ShowTips => {
+            options.show_tips = checked;
+            Effect::Live
+        }
+        Setting::Checkpoints => {
+            options.checkpoints = checked;
+            Effect::Live
+        }
+        _ => Effect::Ignored,
+    }
+}
+
+/// The aim-speed row's number (`round(f × 99) + 1`) and the fraction it
+/// writes: the slider changes the live aim speed.
+pub fn set_aim_speed(options: &mut Options, fraction: f32) -> i32 {
+    options.aim_speed = fraction;
+    options.aim_speed_text()
+}
+
+/// The text of a scale the controller-backed dropdown would show, for the
+/// pages that reuse the renderer's labels.
+pub fn scale_text(scale: Scale, value: i32) -> Option<&'static str> {
+    scale.text(value)
+}
+
+/// A Settings or Controls form action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormAction {
+    /// The SETTINGS tab (page 0).
+    SettingsTab,
+    /// The CONTROLS tab (page 1).
+    ControlsTab,
+    /// The Defaults button: run the benchmark and take its quality.
+    Defaults,
+    /// Apply: store the settings and close.
+    Apply,
+    /// Cancel: push the options the screen opened with and close.
+    Cancel,
+}
+
+/// The action of the tab/button at `index` in [`TABS`]. The two rule records
+/// and the Keyboard/Controller tabs are not form actions.
+pub fn form_action(index: usize) -> Option<FormAction> {
+    Some(match index {
+        0 => FormAction::SettingsTab,
+        1 => FormAction::ControlsTab,
+        6 => FormAction::Defaults,
+        7 => FormAction::Apply,
+        8 => FormAction::Cancel,
+        _ => return None,
+    })
+}
+
+/// The page an action shows, for the two tabs.
+pub fn action_page(action: FormAction) -> Option<u8> {
+    match action {
+        FormAction::SettingsTab => Some(0),
+        FormAction::ControlsTab => Some(1),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod screen_tests {
+    use super::*;
+
+    #[test]
+    fn the_row_ids() {
+        assert_eq!(Setting::Volume.id(), 3);
+        assert_eq!(Setting::ShadowQuality.id(), 11);
+        assert_eq!(Setting::Checkpoints.id(), 17);
+        assert_eq!(Setting::from_id(10), None);
+        assert_eq!(Setting::from_id(11), Some(Setting::ShadowQuality));
+        assert!(Setting::Music.is_checkbox());
+        assert!(!Setting::Volume.is_checkbox());
+    }
+
+    #[test]
+    fn the_page_opens_on_the_original_values() {
+        let live = Options {
+            supersample: 3,
+            shading_quality: 5,
+            texture_detail: 2,
+            texture_quality: 5,
+            shadow_detail: 5,
+            shadow_quality: 2,
+            multisample: 8,
+            vertical_sync: false,
+            show_fps: true,
+            window_mode: false,
+            show_tips: false,
+            checkpoints: false,
+            ..Options::default()
+        };
+        let draft = Options::opened_from(&live);
+        let rows = populate(&draft);
+        assert_eq!(
+            rows[0],
+            (Setting::Volume, RowState::slider(2.0 / 3.0, None))
+        );
+        assert_eq!(rows[1], (Setting::Music, RowState::check(true)));
+        assert_eq!(rows[2].1.text, Some(" Medium"));
+        assert_eq!(rows[3].1.text, Some(" High"));
+        assert_eq!(rows[4].1.text, Some(" Low"));
+        assert_eq!(rows[5].1.text, Some(" Very high"));
+        assert_eq!(rows[6].1.text, Some(" High"));
+        assert_eq!(rows[7].1.text, Some(" Low"));
+        // Super-sampling is on, so the anti-aliasing row is enabled and keeps
+        // its record's position: it has no opening value.
+        assert_eq!(
+            rows[8],
+            (
+                Setting::Multisample,
+                RowState {
+                    fraction: None,
+                    checked: false,
+                    enabled: true,
+                    text: None
+                }
+            )
+        );
+        assert_eq!(rows[9], (Setting::VerticalSync, RowState::check(true)));
+        assert_eq!(rows[10], (Setting::ShowFps, RowState::check(true)));
+        assert_eq!(rows[11], (Setting::WindowMode, RowState::check(false)));
+        assert_eq!(rows[12], (Setting::ShowTips, RowState::check(true)));
+        assert_eq!(rows[13], (Setting::Checkpoints, RowState::check(true)));
+    }
+
+    #[test]
+    fn the_anti_aliasing_row_is_disabled_without_super_sampling() {
+        let options = Options::default();
+        let rows = populate(&options);
+        assert!(!rows[8].1.enabled);
+        assert_eq!(rows[8].1.fraction, Some(0.0));
+        assert_eq!(rows[8].1.text, Some(" Off"));
+    }
+
+    #[test]
+    fn a_slider_writes_its_step_and_says_where_it_goes() {
+        let mut o = Options::default();
+        assert_eq!(on_slider(&mut o, Setting::Volume, 0.5), Effect::Live);
+        assert_eq!(o.volume, 0.75);
+
+        assert_eq!(
+            on_slider(&mut o, Setting::Supersample, 2.0 / 3.0),
+            Effect::Draft
+        );
+        assert_eq!(o.supersample, 3);
+        assert_eq!(
+            on_slider(&mut o, Setting::ShadingQuality, 1.0 / 3.0),
+            Effect::Draft
+        );
+        assert_eq!(o.shading_quality, 4);
+        assert_eq!(
+            on_slider(&mut o, Setting::TextureDetail, 1.0),
+            Effect::Draft
+        );
+        assert_eq!(o.texture_detail, 3);
+        assert_eq!(
+            on_slider(&mut o, Setting::TextureQuality, 2.0 / 3.0),
+            Effect::Draft
+        );
+        assert_eq!(o.texture_quality, 4);
+        assert_eq!(on_slider(&mut o, Setting::ShadowDetail, 1.0), Effect::Draft);
+        assert_eq!(o.shadow_detail, 5);
+        assert_eq!(
+            on_slider(&mut o, Setting::ShadowQuality, 2.0 / 3.0),
+            Effect::Draft
+        );
+        assert_eq!(o.shadow_quality, 3);
+
+        // The anti-aliasing row ignores input while super-sampling is off.
+        let mut off = Options::default();
+        assert_eq!(
+            on_slider(&mut off, Setting::Multisample, 1.0),
+            Effect::Ignored
+        );
+        assert_eq!(off.multisample, 0);
+        on_slider(&mut off, Setting::Supersample, 1.0 / 3.0);
+        assert_eq!(
+            on_slider(&mut off, Setting::Multisample, 1.0),
+            Effect::Draft
+        );
+        assert_eq!(off.multisample, 8);
+    }
+
+    #[test]
+    fn a_checkbox_writes_its_flag_and_says_where_it_goes() {
+        let mut o = Options::default();
+        assert_eq!(
+            on_toggle(&mut o, Setting::VerticalSync, false),
+            Effect::Live
+        );
+        assert!(!o.vertical_sync);
+        assert_eq!(on_toggle(&mut o, Setting::ShowFps, true), Effect::Live);
+        assert!(o.show_fps);
+        assert_eq!(on_toggle(&mut o, Setting::WindowMode, false), Effect::Draft);
+        assert!(!o.window_mode);
+        assert_eq!(on_toggle(&mut o, Setting::ShowTips, false), Effect::Live);
+        assert!(!o.show_tips);
+        assert_eq!(on_toggle(&mut o, Setting::Checkpoints, false), Effect::Live);
+        assert!(!o.checkpoints);
+        // Music only mutes the session: the option keeps the startup value.
+        assert_eq!(
+            on_toggle(&mut o, Setting::Music, false),
+            Effect::SessionOnly
+        );
+        assert!(o.music);
+        assert_eq!(on_toggle(&mut o, Setting::Volume, true), Effect::Ignored);
+    }
+
+    #[test]
+    fn the_aim_speed_row() {
+        let mut o = Options::default();
+        assert_eq!(set_aim_speed(&mut o, 0.29), 30);
+        assert_eq!(o.aim_speed, 0.29);
+        assert_eq!(set_aim_speed(&mut o, 0.0), 1);
+        assert_eq!(set_aim_speed(&mut o, 1.0), 100);
+    }
+
+    #[test]
+    fn the_form_actions() {
+        assert_eq!(form_action(0), Some(FormAction::SettingsTab));
+        assert_eq!(form_action(1), Some(FormAction::ControlsTab));
+        assert_eq!(form_action(2), None);
+        assert_eq!(form_action(3), None);
+        assert_eq!(form_action(6), Some(FormAction::Defaults));
+        assert_eq!(form_action(7), Some(FormAction::Apply));
+        assert_eq!(form_action(8), Some(FormAction::Cancel));
+        assert_eq!(form_action(9), None);
+        assert_eq!(action_page(FormAction::SettingsTab), Some(0));
+        assert_eq!(action_page(FormAction::ControlsTab), Some(1));
+        assert_eq!(action_page(FormAction::Apply), None);
     }
 }
