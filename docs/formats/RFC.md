@@ -794,16 +794,17 @@ Character records (`0x00CDACvv`, the low byte the version; framed as tag +
 size, the record ends at its size): name[16], surname[16], physique f32×2,
 height (−1…1, positive is shorter), age (0…1), skin colour u16×2, hair
 style, hair colour u8×4, face styles u16×2 (read by every version),
-voice[16] (`?0N` gives voice number N − 1; the shipped names are `vi01`…
-`vi08`), pitch, profession (bit 0 female, byte 1 race, `0x0100_0000`
-while the second weapon set is out; one record sets `0x40`, another
-`0x10000`, and the reader keeps those bits), last locale, four held items
-{id, flags} (the out set's main and off hand, then the stowed set's; flags
-`0x0100_0000` flipped, `0x0200_0000` a lit light; none of the 477 level
-records sets a hand flags word or the second-set bit), then the worn items:
-`i32 n` and n × {id, flags}. The flags beside the items are part of the
-record and are kept; in the inventory, bit `0x100` marks a copy that goes
-with the hands. Ids with `0x80000000` refer to the
+voice[16] (`??0N` gives voice number N − 1, clamped at 0, and any other
+third character voice 0; the shipped names are `vi01`… `vi08`), pitch,
+profession (bit 0 female, byte 1 race, `0x0100_0000` while the second
+weapon set is out; one record sets `0x40`, another `0x10000`, and the
+reader keeps those bits), last locale, four held items {id, flags} (the
+out set's main and off hand, then the stowed set's; flags `0x0100_0000`
+flipped, `0x0200_0000` a lit light; none of the 477 level records sets a
+hand flags word or the second-set bit), then the worn items: `i32 n` and
+n × {id, flags}. The flags beside the items are part of the record and
+are kept; in the inventory, bit `0x100` marks a copy that goes with the
+hands. Ids with `0x80000000` refer to the
 level's own object database (`DBC0` → `DBDB`, an RDB of item records like
 `objdb.rdb`'s). Across the 29 levels, all 477 placed characters have a
 record and 908 of their 979 worn items resolve locally (`exa-tool corpus
@@ -833,9 +834,13 @@ The rest of the record, in order (versions 5–7 alike up to the inventory):
 
 Versions 5 and 6 (the legacy reader) differ after the inventory: roles are
 `i32 n`, n × {u32 role, u32 ignored}, each added in turn (with its parents
-from `charroles.rdb`), except that a first role of 13 (Disposition), 27
-(XA_Proctor) or 22 (Skeleton - Wait) is replaced by 8 (Corpse), 26 (XA
-Undead Bandit) or 9 (Skeleton), each followed by 33 (Activity Wait);
+from `charroles.rdb`; a role already held is not added twice, and one held
+only as a parent becomes explicit), except that a first role of 13
+(Disposition), 27 (XA_Proctor) or 22 (Skeleton - Wait) is replaced by 8
+(Corpse), 26 (XA Undead Bandit) or 9 (Skeleton), each followed by 33
+(Activity Wait). The reader compares the first entry's id before it skips
+the list, so with `n` = 0 it compares the word after the count (the first
+relation word);
 relations are skipped (version 5: `i32 n` × 16 bytes, `i32 m` × {8, `i32 k`
 × 16}; version 6: a table, then `i32 m` × {8, table}, all skipped);
 powers are 16-byte entries. Every placed character's record is version 7;
@@ -855,13 +860,19 @@ tier; Armour 4 is Deflection (worn coverage up: OTHER.md, Armour and
 Encumbrance). The name table has a
 seventh skill, Meditation, without a slot or techniques.
 
-**Saving.** The save writes yellow and red as round(value / max × 65535)
-(red 0 when not positive), focus × 65535, the seed as 0xFFFF (a random
-one when a body is released) and the saved-state entries; the load sets
-yellow and red to max × stored value / 65535 and focus to stored value /
-65535. Its saved-state loop reads the last entry's value for both tags
-(harmless with one entry; with both, the heal pool gets the potion's
-expiry), a quirk left to the save system to decide.
+**Saving.** The save works in single precision: yellow and red as
+value / max × 65535 (red 0 unless it is positive, NaN included), focus ×
+65535, each converted by the SSE instruction (nearest, ties to even; NaN,
+infinities and values past the 64-bit range give the indefinite integer)
+and cut to 16 bits; the seed as 0xFFFF (a random one when a body is
+released); the saved-state list anew (a heal pool when positive, then the
+potion when the body has one); and a body value into a record field that is
+not in the file. The load works in double precision: red, then yellow, as
+f32(max × (stored × u)) with u the double nearest 1/65535
+(`0x3EF0001000100010`), focus as f32(stored × u); the spawn computes the
+pools the same way. Its saved-state loop reads the last entry's value for
+every known tag (harmless with one entry; with both, the heal pool gets the
+potion's expiry), and what no entry names keeps its value on the body.
 
 **Writing.** The game's writer stores version 7 only: the fields in the
 order above, then the roles as `u32 count`, `u32 length` and the entries
@@ -869,11 +880,21 @@ order above, then the roles as `u32 count`, `u32 length` and the entries
 the sub-chunks it has (powers always under `CDEC01`, the reserved words,
 then the loadouts). Three details of its behaviour:
 - the voice field is rebuilt from the record's voice number as `vi` and the
-  number plus one, zero-padded to two digits (`vi01` is number 0); the
-  stored name is not copied. Two shipped records (the villager and Derrin
-  of `xac_derrin`) store `HM04` (number 3), which a save rewrites as
-  `vi04`.
-- the four traits are written as `round(value) + 100` in a byte, wrapping.
+  number plus one (a 32-bit signed sum) by the game's formatter: decimal,
+  padded to two digits, 0 as `00` and a negative sum as `0` (`vi01` is
+  number 0; from number 9 on the third character is not `0`, so the reader
+  takes voice 0 back); the stored name is not copied. Two shipped records
+  (the villager and Derrin of `xac_derrin`) store `HM04` (number 3), which
+  a save rewrites as `vi04`.
+- the four traits are written as the SSE conversion of the value (nearest,
+  ties to even; NaN and values out of range give the indefinite integer,
+  low byte 0) + 100 in a byte, wrapping.
+- the names are the 16 stored bytes; Exarust reads one character per byte
+  and writes each back as its byte.
+- the powers are written only when they have an entry, the reserved pair
+  only when its first word is not 0, and the loadouts only when there is
+  one; a power gets the blob flag exactly when it has a blob (one of size
+  4, no bytes, keeps it).
 - a skill is written only when it has a chosen technique: its points, the
   technique count up to the first empty slot (at most five, so a sixth
   technique is dropped) and that many technique bytes. A skill with points
@@ -889,10 +910,15 @@ The profession word keeps its bits other than the female bit and the race
 byte as read (one shipped record sets `0x40`).
 
 **Defaults.** A new record (`CharacterRecord::new`) is blank, with yellow
-and red at 0xFFFF and voice pitch 1. The creator's `reset` also sets a male
-human (`profession` 0), physique 0.5/0.5, skin colour 0x8000/0x8000, hair
-style 0, hair colour bytes `40 80 40 00`, voice number 0, pitch 1, full
-pools, and appends the underwear (item 8, flags 0) to the worn items.
+and red at 0xFFFF, focus 0 and voice pitch 1. The creator's reset
+(`apply_creator_defaults`, on a new record `reset`) sets a male human (the
+whole profession word 0), physique 0.5/0.5, skin colour 0x8000/0x8000, hair
+style 0, hair colour bytes `40 80 40 00`, voice number 0, pitch 1, yellow
+and red 0xFFFF, and appends the underwear (item 8, flags 0) to the worn
+items; it leaves every other field, focus included, as it was. A copy of a
+record (`duplicate`) is written and read back and loses its id. The
+creator's presets come from its database by name and have their name
+cleared (`CharacterData::from_preset`).
 
 **The live record** (`exa_character::record`, `CharacterData`). The record
 in memory carries a reference count (the constructor starts at 1; releasing
@@ -903,29 +929,51 @@ second, unsaved item list the game keeps beside the inventory. The rules:
 - the underwear rule appends item 8 to a human (race byte 0) whose worn
   items do not set bit `0x02` of the pelvis's layer-0 occupancy byte; the
   game does not check that item 8 exists.
-- the equip conflict pass takes off every worn item whose occupancy table
-  ANDs non-zero with the new item's on any of the 20 bones; a worn item
-  whose record cannot be read is left on. The second pass in the original
-  refuses an overlapping item whose byte just past its name section is over
-  50; in every shipped item the name section is followed by a tag whose low
-  byte is 0, so the branch never fires.
+- the equip conflict pass first refuses the equip, changing nothing, when
+  a worn item whose occupancy table ANDs non-zero with the new item's on
+  any of the 20 bones has an equip lock over 50 (the byte `0x24` from the
+  start of its model section, OTHER.md, Object database items: the golem
+  suit and the ogre armour and greaves, 100). Otherwise it takes off every
+  overlapping worn item, in order; a worn item whose record cannot be read
+  is left on.
 - the hands are four slots: two hands, then a second pair (another saved
   set of hands). An item held more often than the character owns it has its
   extra hand and loadout references cleared, the second hand of a pair
   first; only the id is cleared and the flags stay. Putting the hands away
   (`stow_hands`) appends their items to the inventory, marked with `0x100`
   for the first pair and listed twice when both hands hold one item.
-- removing an item takes the equipped inventory copy first (else the first
-  worn copy), then clears the surplus references; removing it everywhere
-  also empties the staged list and every saved loadout.
-- the skills are six slots of 5000 points per level; a technique can be
-  unlearnt from a level (the later ones move down and the points lose a
-  level), and the game's own table of related techniques is not reproduced.
+- removing an item (a trade) takes the last inventory copy that is not
+  marked equipped, else the last copy; with none in the inventory the worn
+  list loses its copies through the game's forward loop, which moves on
+  after a removal (a copy right after a removed one survives) and runs to
+  the list's first length (a copy at the old end can take the last kept
+  item with it); then it clears the surplus references. In a loadout an
+  item comes out of the worn list, else one surplus hand reference goes in
+  each pair. Removing it everywhere also empties the staged list and every
+  saved loadout.
+- the skills are six slots of 5000 points per level. The record's own
+  technique check (asked by the arena and the powers tree) looks at the
+  five written slots only: the first holding the technique counts when the
+  points fund its level. Unlearning a level removes its technique (the
+  later ones move down) and, in the same skill, every technique that needs
+  a removed one, by the game's table: Dual Wield needs Remise or Riposte,
+  each Manoeuvring in Armour tier the one before, Synchrony Counter and
+  Ward Synchrony, Continuity II Continuity and III II (an empty slot reads
+  the previous skill's eighth entry, so in Ranged Combat an empty slot
+  counts as needing ids 1 or 4). The cascade scans the first four slots, resumes at the second
+  after a removal and stops at the first empty slot it keeps; the points
+  lose 5000 per technique removed, in 16 bits. A level past the chosen ones
+  clears its slot and sets the points to (chosen − 1) × 5000, also in 16
+  bits.
 - health is saved and loaded as described under Saving.
 
 Evidence: REA on the record's item-list, hand, loadout, skill and save
-routines; the shipped apparel makes the conflict pass take the braies off
-for trousers and keep a shirt (`exa_character::record` tests).
+routines, with the assembly for the save's and the load's arithmetic, the
+trade's copy choice and worn loop and the unlearning cascade, and the
+prerequisite table read from the executable's data; the shipped apparel
+makes the conflict pass take the braies off for trousers and keep a shirt,
+and refuse anything over a worn golem suit (`exa_character::record`
+tests).
 
 Evidence: REA on both record readers, the writer, the constructor and the
 creator's reset, the inventory and relation readers and writers, the
@@ -966,7 +1014,8 @@ a golem; golems (bit `0x10` of the byte) 0.5, byte 17 (the boss) 1.0; then
 2 (ancient), 6 (ghoul) and 9 (manipulator) 0.375, 5 (Fael) 0.75, 7 and 8
 (hulking ghoul, gobbler) 0.5. Only the manipulator differs from 0.25 × its
 race's factor (0.375, where its factor 1 gives 0.25). Yellow and red start
-at the maximum and the load sets them to the saved shares (× 1.5259022e-5).
+at the maximum and the load sets them to the saved shares, in double
+precision (max × (stored × 1/65535), see Saving).
 The placement reader first sets both pools full when a living placement's
 record stores red 0: the arena's opponents and proctor store 0/0 and spawn
 full.

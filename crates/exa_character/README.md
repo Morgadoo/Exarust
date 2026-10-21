@@ -16,31 +16,37 @@ Characters: races, body morphs, appearance, apparel fitting, stats/attributes/sk
 - `record::CharacterData` is a character's live record: the saved fields
   (`exa_formats::characters::CharacterRecord`) plus the reference count,
   the staged item list the game keeps beside the inventory and the one
-  value the save copies out of the body. It starts blank or from the
-  character creator's defaults (a male human of average physique, skin
-  `0x8000`, hair `40 80 40 00`, pitch 1, full pools, in the underwear).
+  value the save copies out of the body. It starts blank (yellow and red
+  full, focus 0), from the character creator's defaults (a male human of
+  average physique, skin `0x8000`, hair `40 80 40 00`, pitch 1, in the
+  underwear) or from a creator preset (its name cleared).
 - Its rules are the original's character-data routines: the underwear rule
   (a human whose worn items do not cover the groin gets item 8 appended),
-  the equip conflict pass (worn items whose occupancy overlaps the new one
-  on any bone come off, and the caller gets them back to drop or store),
-  and the inventory and hand references (`mark_equipped`,
-  `take_equipped`, `trim_hands`, `stow_hands`, `drop_surplus_refs`,
-  `remove_item`, `remove_everywhere`, `clear_items`, `strip`,
-  `pick_up`, `add_worn`, `remove_worn`).
+  the equip conflict pass (refused when an overlapping worn item's equip
+  lock is over 50, as for the golem suit; otherwise worn items whose
+  occupancy overlaps the new one on any bone come off, and the caller gets
+  them back to drop or store), and the inventory and hand references
+  (`mark_equipped`, `take_equipped`, `trim_hands`, `stow_hands`,
+  `drop_surplus_refs`, `remove_item` (the last copy not equipped, the worn
+  list through the game's skipping loop), `remove_everywhere`,
+  `clear_items`, `strip` (returns the released references), `pick_up`,
+  `add_worn`, `remove_worn`).
 - Saved loadouts (four hand slots and worn items plus a word) copy to and
   from a record; applying one also ensures the underwear. Moving a record
-  between databases remaps its item references, or keeps one copy of an
-  item that is both held and carried.
+  between databases remaps its item references (every id goes through the
+  remap), or keeps one copy of an item that is both held and carried.
 - Skills: the total levels (5000 points each), whether the record may
   spend another level (no skill holds a technique past the levels its
   points fund, and the six add up to fewer than 15), the first slot that
-  breaks that rule, and unlearning a level or a technique id across the
-  skills.
-- Health: `save_health` writes yellow and red as rounded shares of the
-  maximum (red 0 when not positive), focus as its share, the seed
-  `0xFFFF` and the heal-pool and potion entries; `restore_health` reads
-  them back, including the original's quirk of taking the last saved
-  entry's value for both tags.
+  breaks that rule, and unlearning a level, which also unlearns the skill's
+  techniques that depend on it (the game's prerequisite table) and
+  re-bases the points in 16 bits.
+- Health: `save_health` writes yellow and red as shares of the maximum
+  (red 0 unless positive), focus as its share, all in single precision and
+  converted like the game's SSE instruction, the seed `0xFFFF` and the
+  heal-pool and potion entries; `restore_health` loads them onto a body in
+  double precision, including the original's quirk of taking the last
+  saved entry's value for every tag, and leaves what no entry names.
 - The player's, the duellist's and the corpses' records are the creator's
   defaults; a placed character carries its own record and gets its moveset
   from the first hand.
