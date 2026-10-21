@@ -654,9 +654,10 @@ pub fn coin_parts(packed: u32) -> (u32, u32, u32) {
     (packed & 0xff, (packed >> 8) & 0xff, packed >> 16)
 }
 
-/// Whether the day's three matches are spent.
-pub fn matches_left(played: u32) -> bool {
-    played < MATCHES_PER_DAY
+/// Whether the day's three matches are spent. The counter is the signed
+/// int the original compares.
+pub fn matches_left(played: i32) -> bool {
+    played < MATCHES_PER_DAY as i32
 }
 
 /// Whether a day is the weekly tournament day.
@@ -734,7 +735,7 @@ pub struct Board {
     /// Fighters per side for the selected match.
     pub team_size: usize,
     /// Matches the company has entered today; the day allows three.
-    pub matches_played: u32,
+    pub matches_played: i32,
     /// Whether more than one leader-class fighter may join (the flag word's
     /// low bit).
     pub allow_multiple_leaders: bool,
