@@ -35,13 +35,13 @@ pub const CLOTH: u32 = 0x6000_0000;
 /// A material's state, as the generator's hair/cloth flag pass writes it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MaterialStyle {
-    /// The material's first flag word (`+0x1D0`).
+    /// The material's first flag word.
     pub flags: u32,
-    /// The material's second flag word (`+0x1EC`).
+    /// The material's second flag word.
     pub flags2: u32,
-    /// The material's render flags (`+0x204`).
+    /// The material's render flags.
     pub render_flags: u32,
-    /// Four shading values (`+0x248…+0x254`).
+    /// Four shading values.
     pub values: [f32; 4],
 }
 
@@ -156,13 +156,13 @@ pub struct Node {
     pub local: Frame,
     /// Its frame in the body's space, refreshed by [`Body::refresh_world`].
     pub world: Frame,
-    /// The file's node flags (`+0x204`).
+    /// The file's node flags.
     pub flags: u32,
-    /// The build kind (`+0x180`).
+    /// The build kind.
     pub kind: u32,
-    /// The body slot its name gives (`+0x17C`).
+    /// The body slot its name gives.
     pub slot: usize,
-    /// The layer digits of its name (`+0x142/+0x143`).
+    /// The layer digits of its name.
     pub layer: u32,
     /// Whether it is a mesh node (`kind & 0xFFF == 0x89`).
     pub mesh: bool,
@@ -170,11 +170,11 @@ pub struct Node {
     pub held: bool,
     /// Whether the mesh is cloth (its dynamics carries the cloth kind).
     pub cloth: bool,
-    /// Per-part hidden flag of its mesh parts (`+0x109`).
+    /// Per-part hidden flag of its mesh parts.
     pub part_hidden: bool,
     /// The rigid-body state, if built.
     pub dynamics: Option<Dynamics>,
-    /// The mesh's position count (`+0x268`, or `+0x6C` for a garment).
+    /// The mesh's position count (a garment's is stored apart).
     pub position_count: usize,
     /// The velocity of a cloth mesh, zero otherwise.
     pub velocity: [f32; 3],

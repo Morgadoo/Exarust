@@ -78,10 +78,10 @@ const fn build_slot_children() -> [SlotChildren; 18] {
 /// singleton; a factory owns them here.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CharacterFactory {
-    /// The database the equip pass resolves world/global item ids against
-    /// (`+0x940`); cleared when a spawn has no override.
+    /// The database the equip pass resolves world/global item ids against;
+    /// cleared when a spawn has no override.
     pub item_database: Option<String>,
-    /// The texture-job seed holder (`+0x940` in the look rebuild).
+    /// The texture-job seed holder (the one the look rebuild reads).
     pub look_seed: u32,
 }
 
