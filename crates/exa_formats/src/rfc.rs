@@ -1548,7 +1548,7 @@ fn minss(a: f32, b: f32) -> f32 {
 
 /// The processor's reciprocal square root estimate (about 12 bits), which
 /// the original's vector code uses.
-fn reciprocal_sqrt(value: f32) -> f32 {
+pub fn reciprocal_sqrt(value: f32) -> f32 {
     #[cfg(target_arch = "x86_64")]
     {
         // SAFETY: SSE is part of the x86_64 baseline.
