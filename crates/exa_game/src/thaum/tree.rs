@@ -62,7 +62,7 @@ use exa_formats::power_tree::{PowerNode, PowerTree, learn_marks, node_pixels, pl
 /// technique nibble.
 const BAR_LOAD_MASK: u32 = 0x0E7F_FFFF;
 
-use super::casting::ActivePower;
+use super::casting::{ActivePower, CastBody};
 
 /// The mind domain's code.
 pub const DOMAIN_MIND: u8 = 1;
@@ -603,6 +603,8 @@ pub struct TreeScreen {
     pub link_turn: f32,
     /// The node the screen must look at.
     pub hovered: i32,
+    /// The quick bar overlay is open.
+    pub bar_open: bool,
 }
 
 /// The original's zoom levels' thresholds and gains.
@@ -713,6 +715,7 @@ impl TreeScreen {
             pointer: [0.0; 2],
             link_turn: 0.0,
             hovered: 0,
+            bar_open: false,
         }
     }
 
@@ -877,7 +880,9 @@ impl TreeScreen {
             if charge < -9.0 {
                 charge = -9.0;
             }
-        } else {
+        } else if !charge.is_nan() {
+            // A not-a-number charge skips both clamps and stays not a
+            // number, as the original's unordered compares do.
             charge = 5.0;
         }
         self.charge = charge;
@@ -918,7 +923,7 @@ impl TreeScreen {
         }
         let candidate = if id & focus::SLOT != 0 {
             0
-        } else if id > 0 && id < 0xffff {
+        } else if id > 0 && id < 0xfffe {
             let index = id as usize - 1;
             if self.nodes.get(index).is_some_and(|node| node.power != 0) {
                 id & focus::NODE
@@ -1142,7 +1147,8 @@ impl TreeScreen {
                 if reach * reach <= dy * dy + dx * dx {
                     if self.drag != DragState::Link {
                         self.drag = DragState::Link;
-                        self.link_turn = (dy.atan2(dx) / std::f32::consts::TAU).rem_euclid(1.0);
+                        self.link_turn =
+                            link_angle(centre[0], centre[1], x, y) / std::f32::consts::TAU;
                     }
                     self.pointer = [x, y];
                 } else {
@@ -1165,10 +1171,8 @@ impl TreeScreen {
             {
                 {
                     let node = node as usize;
-                    let dx = x - self.nodes[end - 1].x;
-                    let dy = y - self.nodes[end - 1].y;
-                    let turn = (-dx).atan2(-dy) / std::f32::consts::TAU;
-                    let turn = turn.rem_euclid(1.0);
+                    let turn = link_angle(self.nodes[end - 1].x, self.nodes[end - 1].y, x, y)
+                        / std::f32::consts::TAU;
                     let link = NodeLink {
                         out_turn: self.link_turn,
                         in_turn: turn,
@@ -1264,7 +1268,7 @@ impl TreeScreen {
             .pairs
             .retain(|pair| domain_of(pair.power) != self.domain);
         for (index, node) in self.nodes.iter().enumerate() {
-            if self.marks[index] & (LEARNED | NEW | PICKED) != 0 {
+            if self.marks[index] & 0x3fff != 0 {
                 record.pairs.push(KnownPower {
                     power: node.power,
                     flags: self.marks[index] & PAIR_BITS,
@@ -1300,6 +1304,323 @@ impl TreeScreen {
         }
         None
     }
+}
+
+impl TreeScreen {
+    /// The tooltip's name and description texts of a node.
+    pub fn node_text<'a>(&self, index: usize, texts: &'a [Vec<u8>]) -> (&'a [u8], &'a [u8]) {
+        let empty: &[u8] = &[];
+        let Some(node) = self.nodes.get(index) else {
+            return (empty, empty);
+        };
+        let name = texts
+            .get(node.name_text as usize)
+            .map(Vec::as_slice)
+            .unwrap_or(empty);
+        let description = texts
+            .get(node.description_text as usize)
+            .map(Vec::as_slice)
+            .unwrap_or(empty);
+        (name, description)
+    }
+
+    /// The hover id at `x`,`y`: a bar slot (`0x40_0000 | slot`), the
+    /// creation prompt's BACK and BEGIN buttons, a node, or a link of a
+    /// node (`0x200_0000` for an incoming link). A hidden screen hovers
+    /// nothing.
+    pub fn hover(&mut self, x: f32, y: f32, width: f32, height: f32, hidden: bool) -> i32 {
+        if hidden {
+            return 0;
+        }
+        if self.mode == TreeMode::Create && height - 36.0 < y && y < height - 8.0 && 20.0 < x {
+            if width - 148.0 < x && x < width - 20.0 {
+                return focus::BEGIN;
+            }
+            if x < 148.0 {
+                return focus::BACK;
+            }
+        } else if let Some(slot) = bar_slot_at(x, y, width, false, 4.0) {
+            return focus::SLOT | (slot as i32 + 1);
+        }
+        for index in 0..self.nodes.len() {
+            if self.marks[index] & SHOWN == 0 {
+                continue;
+            }
+            let node = &self.nodes[index];
+            let dx = x - node.x;
+            let dy = y - node.y;
+            let distance = dy * dy + dx * dx;
+            let radius = if node.power & word::FRAME != 0 {
+                self.zoom.value
+            } else {
+                self.zoom.value * 0.5
+            };
+            if distance < radius * 0.45 * radius * 0.45 {
+                return index as i32 + 1;
+            }
+            let reach = radius * 0.55 + 10.0;
+            if distance < reach * reach {
+                let turn = link_angle(node.x, node.y, x, y) / std::f32::consts::TAU;
+                for (at, link) in self.links[index].iter().enumerate() {
+                    if (turn - link.out_turn).abs() < 0.01 {
+                        return ((at as i32 + 1) << 16) | (index as i32 + 1);
+                    }
+                }
+                for other in 0..self.nodes.len() {
+                    for (at, link) in self.links[other].iter().enumerate() {
+                        if link.end as usize == index + 1 && (turn - link.in_turn).abs() < 0.01 {
+                            return ((at as i32 + 1) << 16) | (index as i32 + 1) | focus::INCOMING;
+                        }
+                    }
+                }
+            }
+        }
+        0
+    }
+
+    /// Reads the record's ten slots into the bar without their high marks,
+    /// as the bar's first showing does.
+    pub fn fill_bar(&self, bar: &mut PowerBar, record: &PowerRecord) {
+        for (slot, word) in bar.slots.iter_mut().zip(record.slots) {
+            slot.word = word;
+        }
+    }
+
+    /// Marks each node from a bar slot with the same power.
+    pub fn apply_bar_marks(&mut self, bar: &PowerBar) {
+        for (index, node) in self.nodes.iter().enumerate() {
+            for slot in &bar.slots {
+                if slot.word != 0 && slot.word & word::MATCH == node.power & word::MATCH {
+                    // The bar carries only the picked mark; the node keeps
+                    // its learnt and shown marks.
+                    self.marks[index] = (self.marks[index] & !PICKED) | (slot.state & PICKED);
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Opens or closes the quick bar: opening loads it from the record and
+    /// re-marks the nodes; closing stores it. Returns whether it is open.
+    pub fn toggle_bar(&mut self, bar: &mut PowerBar, record: &mut PowerRecord, now: u32) -> bool {
+        if self.bar_open {
+            bar.store(record, now);
+        } else {
+            bar.load(record);
+            self.apply_bar_marks(bar);
+        }
+        self.bar_open = !self.bar_open;
+        self.bar_open
+    }
+
+    /// Closes the screen: stores the domain's learnt and picked nodes into
+    /// the record.
+    pub fn close(&mut self, record: &mut PowerRecord) {
+        self.store_domain(record);
+        self.bar_open = false;
+    }
+
+    /// Leaves the screen: the open bar is stored back into the record
+    /// first, and the overlay closes.
+    pub fn leave(&mut self, bar: &mut PowerBar, record: &mut PowerRecord, now: u32) {
+        if self.bar_open {
+            bar.store(record, now);
+        }
+        self.close(record);
+    }
+
+    /// The cast entry: reads the record's slot (or the chosen one when no
+    /// slot is named), refuses while the body's powers are blocked, and
+    /// hands the power to the domain's front end by calling `dispatch`
+    /// with the domain and the asked word. The bar is stored and the slot
+    /// flashed when the cast starts.
+    pub fn cast_slot(
+        &mut self,
+        record: &mut PowerRecord,
+        bar: &mut PowerBar,
+        slot: Option<usize>,
+        body: &mut CastBody,
+        now: u32,
+        dispatch: impl FnOnce(u8, u32) -> i32,
+    ) -> CastEntry {
+        let mut out = CastEntry::default();
+        if body.status_bits & super::casting::POWERS_BLOCKED != 0 {
+            return out;
+        }
+        let slot = match slot {
+            Some(slot) => slot,
+            None => match record
+                .slots
+                .iter()
+                .position(|slot| *slot & word::CHOSEN != 0)
+            {
+                Some(slot) => slot,
+                None => return out,
+            },
+        };
+        if slot > 9 {
+            return out;
+        }
+        let word = record.slots[slot];
+        if word & word::INDEX == 0 {
+            return out;
+        }
+        let result = if body.status_bits & 0x10 != 0 {
+            super::casting::code::REFUSED
+        } else {
+            match domain_of(word) {
+                DOMAIN_MIND | DOMAIN_FORCE | DOMAIN_ENERGY | DOMAIN_DISPLACEMENT => {
+                    dispatch(domain_of(word), word & word::MATCH)
+                }
+                _ => super::casting::code::REFUSED,
+            }
+        };
+        if result == super::casting::code::NOT_NOW {
+            out.result = -1;
+            out.stop_cast = true;
+            return out;
+        }
+        if self.bar_open {
+            bar.store(record, now);
+            self.bar_open = false;
+            if result > 0 {
+                bar.cast_flash(slot, now);
+            }
+        }
+        if result > 0 {
+            body.last_instant = if word & word::KIND == 0 {
+                word & super::casting::ID_MASK
+            } else {
+                0
+            };
+            out.result = 1;
+        } else if result < 0 {
+            out.sound = Some(CAST_FAIL_SOUND);
+        }
+        out
+    }
+}
+
+/// The cast entry's answer.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct CastEntry {
+    /// 1 started, 0 released or refused, −1 "not now".
+    pub result: i32,
+    /// The running cast must be stopped.
+    pub stop_cast: bool,
+    pub sound: Option<TreeSound>,
+}
+
+/// The sound a refused cast plays.
+pub const CAST_FAIL_SOUND: TreeSound = TreeSound {
+    name: "ThaumFail01",
+    volume: 0.1,
+    pitch: 1.0,
+};
+
+/// The smoothstep the pan's ease uses: `(3 − 2x)·x²`.
+pub fn ease(x: f32) -> f32 {
+    (3.0 - 2.0 * x) * (x * x)
+}
+
+/// The angle a point makes about a node's centre, measured from +y and
+/// signed by x: `acos(dy / length)`, negated when dx is negative. A
+/// zero-length vector answers π (its x is not negative).
+pub fn link_angle(node_x: f32, node_y: f32, x: f32, y: f32) -> f32 {
+    let dx = x - node_x;
+    let dy = y - node_y;
+    let length = (dy * dy + dx * dx).sqrt();
+    let cosine = dy / length;
+    let angle = if -1.0 < cosine {
+        if cosine <= 1.0 { cosine.acos() } else { 0.0 }
+    } else {
+        std::f32::consts::PI
+    };
+    if dx < 0.0 { -angle } else { angle }
+}
+
+/// Whether the tree accepts a power dragged with `kind`.
+pub fn wants_power_drag(kind: u32) -> bool {
+    kind == press::POWER_DRAG
+}
+
+/// A power read from a saved record: its id, its prerequisite (one-based
+/// into the saved list, 0 for none) and its flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SavedPower {
+    pub power: u32,
+    pub prerequisite: usize,
+    pub flags: u32,
+}
+
+/// The flags a revalidated saved power is added with.
+pub const SAVED_RESTORED: u32 = 0x9fff;
+
+/// Revalidates a saved power against the tree: the node must be in the
+/// tree, the saved list must hold it after its first entry, and its
+/// prerequisite's flags must carry [`LEARNED`]. A missing power is added
+/// to the known list with [`SAVED_RESTORED`]. Returns whether it was
+/// added.
+pub fn validate_saved_power(
+    nodes: &[PowerNode],
+    saved: &[SavedPower],
+    known: &mut Vec<KnownPower>,
+    power: u32,
+) -> bool {
+    if !nodes
+        .iter()
+        .any(|node| node.power & 0xff0f_ffff == power & 0xff0f_ffff)
+    {
+        return false;
+    }
+    let index = saved
+        .iter()
+        .position(|entry| entry.power & word::MATCH == power & word::MATCH);
+    let Some(index) = index else {
+        return false;
+    };
+    // The original reads the saved list's second entry onward.
+    if index == 0 {
+        return false;
+    }
+    let prerequisite = saved[index].prerequisite;
+    if prerequisite == 0
+        || prerequisite > saved.len()
+        || saved[prerequisite - 1].flags & LEARNED == 0
+    {
+        return false;
+    }
+    if known
+        .iter()
+        .any(|pair| pair.power & word::MATCH == power & word::MATCH)
+    {
+        return false;
+    }
+    known.push(KnownPower {
+        power,
+        flags: SAVED_RESTORED,
+    });
+    true
+}
+
+/// The domain a tree opens in: the last domain when the same character
+/// opens it again, else the mind domain.
+pub fn open_domain(same_character: bool, last_domain: u8) -> u8 {
+    if same_character {
+        last_domain
+    } else {
+        DOMAIN_MIND
+    }
+}
+
+/// Seeds a record that knows no powers with the two default pairs, as the
+/// tree's first opening does. Returns whether it seeded them.
+pub fn seed_defaults(record: &mut PowerRecord) -> bool {
+    if !record.pairs.is_empty() {
+        return false;
+    }
+    record.pairs.extend_from_slice(&DEFAULT_PAIRS);
+    true
 }
 
 /// A focus id is one of the tree's own buttons.
@@ -1792,6 +2113,10 @@ mod tests {
         assert_eq!(technique_of(0x201), 0);
         assert_eq!(DOMAIN_FILES[1], "pwr_mind.pwr");
         assert_eq!(DOMAIN_FILES[6], "pwr_displace.pwr");
+        assert_eq!(
+            DEFAULT_BAR,
+            [0x101, 0x2_0101, 0x102, 0x105, 0x1_0106, 0x107, 0x2_010B]
+        );
     }
 
     #[test]
@@ -1830,9 +2155,11 @@ mod tests {
         tree.step_charge(-100_000.0, 20);
         assert_eq!(tree.charge, -9.0);
         assert_eq!(tree.zoom.target, 0.25);
-        // A not-a-number charge takes the upper clamp.
+        // A not-a-number charge skips both clamps and stays not a number.
         tree.step_charge(f32::NAN, 30);
-        assert_eq!(tree.charge, 5.0);
+        assert!(tree.charge.is_nan());
+        tree.step_charge(0.0, 40);
+        assert!(tree.charge.is_nan());
     }
 
     #[test]
@@ -2415,6 +2742,192 @@ mod tests {
         assert_eq!(empty.nodes[0].power, 0x401);
         assert_eq!(empty.charge, -8.0);
         assert_eq!(empty.zoom.value, zoom_gain(-8.0));
+    }
+
+    #[test]
+    fn the_hover_reads_buttons_slots_nodes_and_links() {
+        let mut screen = TreeScreen::from_nodes(
+            DOMAIN_MIND,
+            TreeMode::Play,
+            vec![node(0x101, vec![link_to(2)]), node(0x102, vec![])],
+        );
+        screen.marks = vec![SHOWN, SHOWN];
+        screen.zoom.value = 0.2929;
+        assert_eq!(screen.hover(194.0, 32.0, 1000.0, 700.0, false), 0x40_0001);
+        assert_eq!(screen.hover(0.0, 0.0, 1000.0, 700.0, false), 1);
+        assert_eq!(screen.hover(0.0, 0.0, 1000.0, 700.0, true), 0);
+        // A node's link: at 10 px straight above the second node with an
+        // incoming turn of zero.
+        screen.nodes[0].x = 0.0;
+        screen.nodes[0].y = 0.0;
+        screen.nodes[1].x = 0.0;
+        screen.nodes[1].y = 100.0;
+        let mut link = [0u8; 16];
+        link[4..8].copy_from_slice(&(-0.5_f32).to_le_bytes());
+        link[8..12].copy_from_slice(&1_u32.to_le_bytes());
+        screen.nodes[1].links = vec![link];
+        screen.links[1] = vec![NodeLink {
+            out_turn: 0.0,
+            in_turn: -0.5,
+            end: 1,
+        }];
+        // 0.01 of a circle above the first node's centre is straight up:
+        // the first node's link leaves at turn zero.
+        let id = screen.hover(0.0, 10.0, 1000.0, 700.0, false);
+        assert_eq!(id, 1 << 16 | 1);
+        // The creation prompt's buttons.
+        let mut create = TreeScreen::empty(DOMAIN_MIND, TreeMode::Create);
+        assert_eq!(
+            create.hover(900.0, 675.0, 1000.0, 700.0, false),
+            focus::BEGIN
+        );
+        assert_eq!(create.hover(60.0, 675.0, 1000.0, 700.0, false), focus::BACK);
+    }
+
+    #[test]
+    fn the_cast_entry_reads_the_record_slot_and_flashes_it() {
+        let mut screen = TreeScreen::load(DOMAIN_FORCE, TreeMode::Play, None, None, 1000.0, 700.0);
+        let mut record = PowerRecord::starter();
+        record.slots[0] = 0x100201;
+        record.slots[1] = 0x10203;
+        let mut bar = PowerBar::default();
+        bar.load(&record);
+        let mut body = CastBody::default();
+        screen.bar_open = true;
+        let out = screen.cast_slot(
+            &mut record,
+            &mut bar,
+            None,
+            &mut body,
+            500,
+            |domain, word| {
+                assert_eq!(domain, DOMAIN_FORCE);
+                assert_eq!(word, 0x201);
+                1
+            },
+        );
+        assert_eq!(out.result, 1);
+        assert_eq!(body.last_instant, 0x201);
+        assert!(!screen.bar_open);
+        assert_eq!(record.slots[0], 0x100201);
+        assert_eq!(bar.slots[0].state & bar_state::MARK, bar_state::MARK);
+        // A sustained power clears the last instant power.
+        let out = screen.cast_slot(&mut record, &mut bar, Some(1), &mut body, 600, |_, _| 1);
+        assert_eq!(out.result, 1);
+        assert_eq!(body.last_instant, 0);
+        // Blocked powers refuse without dispatching.
+        body.status_bits = super::super::casting::POWERS_BLOCKED;
+        let out = screen.cast_slot(&mut record, &mut bar, Some(0), &mut body, 700, |_, _| {
+            panic!("no dispatch")
+        });
+        assert_eq!(out.result, 0);
+        body.status_bits = 0;
+        // Shadow/body domains are refused.
+        record.slots[2] = 0x301;
+        let out = screen.cast_slot(&mut record, &mut bar, Some(2), &mut body, 800, |_, _| {
+            panic!("no dispatch")
+        });
+        assert_eq!(out.result, 0);
+        assert_eq!(out.sound, Some(CAST_FAIL_SOUND));
+        // "Not now" stops the running cast.
+        let out = screen.cast_slot(&mut record, &mut bar, Some(0), &mut body, 900, |_, _| -3);
+        assert!(out.stop_cast);
+        assert_eq!(out.result, -1);
+    }
+
+    #[test]
+    fn the_ease_and_the_link_angle_match_the_original() {
+        assert_eq!(ease(0.0), 0.0);
+        assert_eq!(ease(1.0), 1.0);
+        assert_eq!(ease(0.5), 0.5);
+        assert!(ease(0.25) < 0.25);
+        assert!(ease(0.75) > 0.75);
+        assert!((link_angle(0.0, 0.0, 0.0, 10.0) / std::f32::consts::TAU).abs() < 1e-6);
+        assert!((link_angle(0.0, 0.0, 10.0, 0.0) / std::f32::consts::TAU - 0.25).abs() < 1e-6);
+        assert!((link_angle(0.0, 0.0, -10.0, 0.0) / std::f32::consts::TAU + 0.25).abs() < 1e-6);
+        assert_eq!(link_angle(1.0, 2.0, 1.0, 2.0), std::f32::consts::PI);
+        assert!(wants_power_drag(press::POWER_DRAG));
+        assert!(!wants_power_drag(0));
+    }
+
+    #[test]
+    fn the_bar_loads_marks_and_toggles() {
+        let mut screen = TreeScreen::load(DOMAIN_MIND, TreeMode::Play, None, None, 1000.0, 700.0);
+        screen.nodes[0].power = 0x101;
+        screen.marks = vec![SHOWN | LEARNED];
+        let mut record = PowerRecord::empty(4.0);
+        record.slots[0] = 0x100101;
+        record.pairs = vec![KnownPower {
+            power: 0x101,
+            flags: LEARNED | PICKED,
+        }];
+        let mut bar = PowerBar::default();
+        assert!(screen.toggle_bar(&mut bar, &mut record, 100));
+        assert_eq!(bar.slots[0].word, 0x100101);
+        assert_eq!(screen.marks[0], SHOWN | LEARNED | PICKED);
+        assert!(!screen.toggle_bar(&mut bar, &mut record, 200));
+        assert_eq!(record.slots[0], 0x100101);
+        screen.leave(&mut bar, &mut record, 300);
+        assert!(!screen.bar_open);
+        assert_eq!(
+            record.pairs,
+            vec![KnownPower {
+                power: 0x101,
+                flags: LEARNED | PICKED
+            }]
+        );
+    }
+
+    #[test]
+    fn a_saved_power_needs_its_prerequisite_learnt() {
+        let nodes = [node(0x101, vec![]), node(0x102, vec![])];
+        let saved = [
+            SavedPower {
+                power: 0x100101,
+                prerequisite: 0,
+                flags: LEARNED,
+            },
+            SavedPower {
+                power: 0x102,
+                prerequisite: 1,
+                flags: 0,
+            },
+        ];
+        let mut known = Vec::new();
+        assert!(validate_saved_power(&nodes, &saved, &mut known, 0x102));
+        assert_eq!(
+            known,
+            vec![KnownPower {
+                power: 0x102,
+                flags: SAVED_RESTORED
+            }]
+        );
+        // The first saved entry is never revalidated.
+        assert!(!validate_saved_power(&nodes, &saved, &mut known, 0x101));
+        // A learnt prerequisite is needed.
+        let unlearnt = [SavedPower {
+            power: 0x102,
+            prerequisite: 1,
+            flags: 0,
+        }];
+        let mut known = Vec::new();
+        assert!(!validate_saved_power(&nodes, &unlearnt, &mut known, 0x102));
+        // A node the tree lacks is refused.
+        assert!(!validate_saved_power(&nodes, &saved, &mut known, 0x103));
+    }
+
+    #[test]
+    fn the_first_opening_picks_the_mind_domain_and_seeds_nothing() {
+        assert_eq!(open_domain(false, DOMAIN_DISPLACEMENT), DOMAIN_MIND);
+        assert_eq!(open_domain(true, DOMAIN_DISPLACEMENT), DOMAIN_DISPLACEMENT);
+        assert_eq!(open_domain(true, DOMAIN_FORCE), DOMAIN_FORCE);
+        let mut record = PowerRecord::empty(4.0);
+        assert!(seed_defaults(&mut record));
+        assert_eq!(record.pairs, DEFAULT_PAIRS);
+        assert!(!seed_defaults(&mut record));
+        let mut known = PowerRecord::starter();
+        assert!(!seed_defaults(&mut known));
+        assert_eq!(known.pairs.len(), 2);
     }
 
     #[test]
