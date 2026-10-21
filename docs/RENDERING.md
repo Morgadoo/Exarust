@@ -2049,10 +2049,18 @@ the recorded table's run from entry 10 (the 8-point level's), then the post chai
 the icon variant also widens alpha from the four texels three pixels away.
 The capture is not yet driven by the running renderer.
 
-`exa_render::geometry` holds the original's planar vertex layouts and
-index batches: position, texture (two or three floats), colour, normal,
-tangent, morph and second texture in allocation order, attribute
-locations 0/1/2/3/4/6/7, and index batches with 1-, 2- or 4-byte indices
-behind a 12-byte CPU header (or a 20-byte GPU header with 16-byte batch
-records). Bevy's mesh allocator and per-pipeline layouts take their place
-in the running renderer.
+`exa_render::geometry` holds the original's planar vertex streams and CPU
+index batches. A vertex buffer reserves position (12 bytes per vertex),
+then, as the format word's bits ask, texture coordinates, colour (4 bytes,
+not normalised), normal, tangent (a vec4), morph delta (3 floats) and a
+second texture stream (2 floats), each stream holding every vertex's values
+back to back. The attribute locations are 0 position, 1 texture, 2 normal,
+3 colour, 4 second texture, 6 tangent and 7 morph. The texture stream is
+twelve bytes per vertex only when the 0x80 and 0x20 bits are both set (else
+eight with the 0x10 bit), while its attribute reads three floats whenever
+0x80 and 0x10 are set; real formats set the bits together. Index batches
+use 1-, 2- or 4-byte indices (encoded 1, 2, anything else) in a CPU storage
+of a 12-byte header and then, per batch, a primitive mode and count (8
+bytes) followed by its indices. The element-buffer storage is not modelled.
+Bevy's mesh allocator and per-pipeline layouts take their place in the
+running renderer, and nothing calls these rules yet.

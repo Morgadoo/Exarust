@@ -46,7 +46,7 @@ and evidence: [`docs/formats/FLB.md`](../../docs/formats/FLB.md) and
   `0x0400_0000`, the sharpen kernel, kernel normalisation, bytes-per-pixel,
   the sub-image blits and the canvas placement of the icon atlas
   ([`docs/formats/RFI.md`](../../docs/formats/RFI.md), Generated mip levels).
-- `geometry`: the original's planar vertex formats (stream flags, stride, attribute locations and offsets, index batch sizes) as tested pure rules; Bevy's mesh allocator takes their place in the renderer.
+- `geometry`: the original's planar vertex streams (format-word flags, per-stream sizes and buffer offsets, attribute locations, index-size encoding and CPU index batches) as tested pure rules; not called by the running renderer, where Bevy's mesh allocator takes their place.
 - `queue`: the deferred draw queue (1023 entries, bucketed by the sector's light count at weight 0.004 or more capped at six, kept as a list grouped by bucket with the original's head and behind-the-first insertion rules).
 - `capture`: the still-image capture plan (eight samples jittered from the recorded `view` table, blended at `1 − 1/(i+1)`, half-size downsample) and the two recorded downsample shader sources.
 - `quality`: the settings screen's live renderer options: `ShadowQuality`
