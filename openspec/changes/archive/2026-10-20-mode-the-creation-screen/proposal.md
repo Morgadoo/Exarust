@@ -22,7 +22,7 @@ The creation screen switches between modes and toggles a pair of them by flag bi
 
 - `exa_game::create`, from `switch_creation_mode` and `toggle_creation_mode`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Character_Create` stays about 23% (about 23.3%).
-- Evidence: the 74-byte `0x10012e930`: the mode 2 branch storing `0x158` at the global and calling `0x100111670`, the widget lookup `0x4534` and the `0x10` bit at `0x1c`. The 111-byte `0x10012f360`: the mode `0x274`, the flag bits 1 and 2 at `0x1004f0400`, the new modes 1 and 2 and the refresh `0x10012f950`. No new corpus files.
+- Evidence: the 74-byte mode switch: the mode 2 branch storing the record in the global and calling its handler, the widget lookup and its `0x10` flag bit. The 111-byte toggle: the mode, the flag bits 1 and 2 of the global threshold word, the new modes 1 and 2 and the refresh. No new corpus files.
 - Out of scope: the calls and lookup.
 
 ## Phase

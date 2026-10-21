@@ -2,7 +2,7 @@
 
 ## Why
 
-`0x1000c0790` (1,330 bytes) is the combatant's per-tick head tracking: it aims the head at the body's point of interest through two relaxed angles, the engine's cheap xz atan2, a 1.8° step and a ±45° body clamp. Exarust has the combatant's reset, measures and positioning but not the head tracking.
+The combatant's per-tick head tracking (1,330 bytes) aims the head at the body's point of interest through two relaxed angles, the engine's planar angle, a 1.8° step and a ±45° body clamp. Exarust has the combatant's reset, measures and positioning but not the head tracking.
 
 ## What Changes
 
@@ -23,7 +23,7 @@
 
 - `exa_combat::aim`, from `HeadTrack`, `HeadLook`, `track_head`, `head_atan2_xz`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `TCombatant` becomes **30%**. The published headline stays 14.4% and 5.7%; the fresh sum stays about 15.5%.
-- Evidence: `0x1000c0790`: the virtual `+0x160` look-at, the eye at `body+0x9f0` × (−20, 10, 0), the 2,500/10,000 squared radii and the 1e-4 band slope, the π/100 step and ±π/4 clamps, the −0.6 pitch floor, the `(cos p sin y, −sin p, cos p cos y)` direction and the 250 cm point, with the atan2 helper `0x100019f00` and the polynomial `0x10001c820`. No new corpus files.
+- Evidence: the head tracking: the look-at virtual, the eye from the body's frame × (−20, 10, 0), the 2,500/10,000 squared radii and the 1e-4 band slope, the π/100 step and ±π/4 clamps, the −0.6 pitch floor, the `(cos p sin y, −sin p, cos p cos y)` direction and the 250 cm point, with the planar-angle helper and the arc-sine polynomial. No new corpus files.
 - Out of scope: the caller's eye frame and the point-of-interest selection.
 
 ## Phase

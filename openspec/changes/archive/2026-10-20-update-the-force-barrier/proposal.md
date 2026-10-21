@@ -22,7 +22,7 @@ The barrier's per-tick update lerps its current pair toward the previous one by 
 
 - `exa_game::thaum`, from `BARRIER_PADDING`, `barrier_lerp` and `update_barrier_position`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `TForceBarrierEffect` becomes **9%** in the source rating. The headline rises slightly.
-- Evidence: `0x10023d020` (the target check, the `+0x5c − +0x10` term, the probe value and the lerp) with the helper `0x1000194a0` and the 0.2 constant at `0x10033e820`. No new corpus files.
+- Evidence: the barrier update (the target check, the frame difference, the probe value and the lerp) with the lerp helper and the 0.2 constant. No new corpus files.
 - Out of scope: the setup and draw.
 
 ## Phase

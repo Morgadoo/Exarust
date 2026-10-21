@@ -22,7 +22,7 @@ The arena rank roll uses the engine's MT19937 stream, separate from the `0x80884
 
 - `exa_game::arena`, from `Mt19937` and `roll_instance_mt`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `XA_Arena` becomes **29%** in the source rating. The headline rises slightly.
-- Evidence: `0x10000e140` (the tempering constants `0x9d2c5680`/`0xefc60000`), `0x10000e270` (the unit draw), and `0x100183f80` (the rank roll). No new corpus files.
+- Evidence: the generator's tempering (constants `0x9d2c5680`/`0xefc60000`), its unit draw, and the rank roll. No new corpus files.
 - Out of scope: where the arena seeds the MT state and how other systems consume it.
 
 ## Phase

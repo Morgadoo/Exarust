@@ -4,7 +4,7 @@
 
 The destination takes the four qwords at `0x64`, `0x6c`, `0x74` and `0x7c`, the count at `0x84` and the list at `0x88`; the source's list is then reset to empty and its count to 0. The same happens for the tail at `0xf0` and its list at `0xf8`. The source's four words are not cleared.
 
-`0x10000b8a0` copies the dynamic array and `0x10000b8e0` resets it, so the ownership passes to the destination.
+The dynamic-array copy and reset helpers move each list, so the ownership passes to the destination.
 
 ## Model
 

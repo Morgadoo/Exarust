@@ -24,7 +24,7 @@ The skill screen's input handler routes a point and mask to the base, clears or 
 
 - `exa_ui::skill`, from `handle_skill_input`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `TSkillUI` moves from 16% to 20%.
-- Evidence: the 826-byte `0x1002241a0`: the index `0x6c`, the point `0x18`/`0x1c`, the transform `0x10002cd90`/`0x10002ce40`, mask bit 1, the page `0x1c0`, the closing `0x1c4`, the state `0x158`, the clear `0x10022a380`, the `0x10000` branch with `0x160`+500 and `0x164`, the flag `0x1ea`, the selections `0x180`/`0x184`, the repage `0x100223e30`, the fill `0x100223ac0`, the hint `0x100028a10`, the hides `0x159`/`0x15c`, the select `0x100112800`/`0x100223f00`, the slot at `0xc0` and the base `0x10002dbc0`. No new corpus files.
+- Evidence: the 826-byte click handler: the hit index, the point and its transform, mask bit 1, the page and closing words, the state word and the clear, the `0x10000` branch with its +500, the busy flag, the two selections, the repage, the fill, the hint, the two hides, the select helpers, the slot and the base handler. No new corpus files.
 - Out of scope: the called bodies.
 
 ## Phase

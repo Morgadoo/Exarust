@@ -2,7 +2,7 @@
 
 ## Behaviour
 
-The scan starts with index −1 and the maximum float. For each point it transforms the stored point through `0x1000190b0` and measures the distance with `0x100019ae0`. A distance strictly below the best replaces the best, the transformed point and the index. An unordered distance is not below.
+The scan starts with index −1 and the maximum float. For each point it transforms the stored point by the owner's frame and measures the distance. A distance strictly below the best replaces the best, the transformed point and the index. An unordered distance is not below.
 
 The model takes the already transformed points, so the transform is an input step.
 

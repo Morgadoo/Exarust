@@ -22,7 +22,7 @@ The Settings and Controls children are switched by page and the Controls list sc
 
 - `exa_ui::settings`, from `PageSwitch`, `switch_page` and `controls_scroll`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `TGUIForm` becomes **16%** in the source rating. The headline rises slightly.
-- Evidence: `0x1000a7e20` (page switch) and the generic scroll (`0x10002c180`/`0x10002c070`) with the controls child's 676-px content. No new corpus files.
+- Evidence: the settings form's page switch and the generic scroll with the controls child's 676-px content. No new corpus files.
 - Out of scope: the wheel handler, the Keyboard/Controller sub-tab bodies and the apply/reset logic.
 
 ## Phase

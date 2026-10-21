@@ -4,7 +4,7 @@
 
 With a positive index the method calls the layout virtual at slot `0x1c8` with the row and the column, reads the two floats it returns and rounds them to the nearest even integer with `cvtss2si`.
 
-With a zero or negative index, a set `0x1c4` flag forwards to the base method `0x10002d9f0`. Otherwise the x is half of field `0x44` less field `0x30` and the y is half of field `0x3c` less field `0x40`, both truncating toward zero through the original's sign-corrected shift.
+With a zero or negative index, a set scaled flag forwards to the base method. Otherwise the x is half of the form's width less its left field and the y is half of its height less its top field, both truncating toward zero through the original's sign-corrected shift.
 
 ## Model
 

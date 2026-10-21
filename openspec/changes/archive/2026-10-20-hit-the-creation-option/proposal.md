@@ -22,7 +22,7 @@ The creation screen hit-tests its option list for a key, selecting the last entr
 
 - `exa_game::create`, from `hit_creation_option` and `ensure_creation_singleton`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Character_Create` moves from 25% to 26%.
-- Evidence: the 80-byte `0x1001315d0`: the key 8 early return, the list `0x230`, the hit `0x100108430` and the selection `0x100108750` at the count less one. The 76-byte `0x100130490`: the singleton `0x1004f0450`, its creator `0x100130290` and the hook at `0x10049a9d0`. No new corpus files.
+- Evidence: the 80-byte option hit: the key 8 early return, the option list, the list hit and the selection at the count less one. The 76-byte singleton getter: the singleton, its creator and the saved hook. No new corpus files.
 - Out of scope: the hit, selection and creator bodies.
 
 ## Phase

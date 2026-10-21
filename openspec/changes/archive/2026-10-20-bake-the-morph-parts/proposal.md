@@ -2,7 +2,7 @@
 
 ## Why
 
-The last morph pass (`0x1000ddc40`) finalises the imported parts: it gathers child positions by the two digits a node's name begins with, sorts the parts by their ordinal, makes every delta relative to the model, and folds three special parts onto part 5. Its gather helper is the 680-byte `0x1000da210`. Exarust has the cook and evaluators but not this bake.
+The last morph pass finalises the imported parts: it gathers child positions by the two digits a node's name begins with, sorts the parts by their ordinal, makes every delta relative to the model, and folds three special parts onto part 5. Its gather helper is a 680-byte routine. Exarust has the cook and evaluators but not this bake.
 
 ## What Changes
 
@@ -23,7 +23,7 @@ The last morph pass (`0x1000ddc40`) finalises the imported parts: it gathers chi
 
 - `exa_assets::morph_controller`, from `morph_child_index`, `gather_morph_children`, `BakePart` and `bake_morph_parts`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `RF_Morphing` becomes **62%** (10,563 of 17,099 bytes). The published headline stays 14.4% and 5.7%; the fresh sum stays about 15.5%.
-- Evidence: `0x1000da210` (the child array at `+0x120`, the two name digits at `+0x140`/`+0x141` less `'0'`, the 12-byte copies from `+0x94`) and `0x1000ddc40` (the model gather, the per-part gather, the selection with the `0x64` start, the descriptor-to-`atoi` key, the relative subtraction, the `P>9` guard and the part-5 reference for 6 through 8). No new corpus files.
+- Evidence: the gather helper (the node's child array, the two name digits less `'0'`, the 12-byte position copies) and the bake (the model gather, the per-part gather, the selection with the `0x64` start, the descriptor-to-`atoi` key, the relative subtraction, the `P>9` guard and the part-5 reference for 6 through 8). No new corpus files.
 - Out of scope: the engine's name-string conversion and the reallocator.
 
 ## Phase

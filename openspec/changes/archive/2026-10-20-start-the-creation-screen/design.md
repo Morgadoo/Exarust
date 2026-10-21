@@ -2,11 +2,11 @@
 
 ## Behaviour
 
-The startup writes `-1` to its sentinel, calls `0x1000304c0` with the global and `-1`, calls `0x10013e880`, clears `0x4f0590`, and calls `0x10013e880` again when the global at `0x4f0be0 + 0x8` equals the one at `0x49a930`. A missing form at `0x4f0370` is created through `0x100130db0` with `0x315280`.
+The startup writes `-1` to its sentinel, calls the global reset with `-1`, calls the input reset, clears a global, and calls the input reset again when two globals match. A missing form is created from its class.
 
-The form is prepared through `0x1001316d0`, `0x100029470` with one, `0x100029660` and `0x10004c460` on its `0x160`. In mode 12 the form's `0x274` is 2 when the flag at `0x4f0400` is 2 and 1 otherwise; `0x10012f840` runs, the build runs when `0x10017e740` is true and `0x10002e760` ticks. The form is stored at `0x4eff60` and 2 at `0x4eff70`.
+The form is prepared through the screen setup, the attach pair with one, and the body's setup. In mode 12 the form's mode is 2 when the global threshold word is 2 and 1 otherwise; the continue button update runs, the build runs when the save-record conversion is true and the tick runs. The form and the value 2 are stored in two globals.
 
-The step calls `0x1000f13c0` and `0x100133020`, and when the target at `0x180` exists it stores the part search at `0x180 + 0x180`. It then calls `0x100071a20` and `0x1001e5ea0`.
+The step makes the two refresh calls, and when the view target exists it stores the part search's result on it. It then makes the two tick calls.
 
 ## Model
 

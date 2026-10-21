@@ -22,7 +22,7 @@ The creation screen searches a part tree for a part tagged `0xFCA0`, first among
 
 - `exa_game::create`, from `has_creation_part`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Character_Create` stays about 12%.
-- Evidence: the 173-byte `0x10012cb10`: the `0x89` kind mask at `0x8`, the wanted count at `0x1c8`, the attachment list at `0x1d0` with the `0xfca0` tag at `0xd0 + 0xc` shifted 16, the child count at `0x118`, the child list at `0x120` and the recursive call. No new corpus files.
+- Evidence: the 173-byte part search: the `0x89` kind mask, the wanted count, the attachment list with its `0xfca0` tag shifted 16, the child count and list, and the recursive call. No new corpus files.
 - Out of scope: the part objects themselves.
 
 ## Phase

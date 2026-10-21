@@ -14,7 +14,7 @@ Day 1 mod 7 starts a week, day 0 ends it; the season is four weeks. The prize po
 
 ## Open questions
 
-The match flow, opponent generation, live board, shop and tournament resolution are separate. The template's `+0x28` value is stored as `secondary` and is not called a prize.
+The match flow, opponent generation, live board, shop and tournament resolution are separate. The template's last value is stored as `secondary` and is not called a prize.
 
 ## Docs
 

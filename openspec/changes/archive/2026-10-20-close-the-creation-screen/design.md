@@ -2,11 +2,11 @@
 
 ## Behaviour
 
-When the child's `0x270` is not 1, the stored byte at `0x4ef330` clears and the mode at `0x4effa0` chooses the scheduled form: 10 is the special form `0x10018d400`, anything else the regular form `0x100127950`.
+When the child's active word is not 1, the stored byte clears and the global mode chooses the scheduled form: 10 is the special form, anything else the regular form.
 
-With an active child, the first present of `0x208`, `0x220` and `0x218` is released; the middle one also calls `0x10012e980` with `0x2d`. Then `0x238` and `0x210` are released when present. A mode other than 12 releases `0x228` and `0x1d0` (both with argument 1) and writes `0x110` to the widget's `0x28c` and `0x2f4`.
+With an active child, the first present of three held objects is released; the middle one also gets a call with `0x2d`. Then two more are released when present. A mode other than 12 releases two further objects (both with argument 1) and writes `0x110` to two widget fields.
 
-The tick `0x10002e760` runs, `0x270` clears, the widget's `0x68` and `0x138` receive their strings, its `0xec` loses bit `0x10`, the widget at `0x4534` receives its string, loses bit `0x10` and is called with `0x10`.
+The tick runs, the active word clears, two widget fields receive their strings, the widget loses bit `0x10`, a second widget receives its string, loses bit `0x10` and is called with `0x10`.
 
 ## Model
 

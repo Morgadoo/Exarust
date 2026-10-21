@@ -2,7 +2,7 @@
 
 ## Why
 
-The 775-byte bevel at 0x1002198c0 is slot 27 of `TGUIDrawSkin` and is inherited unchanged by `TGSLines`. `draw_bevel` already implements it, but the coverage ledger credited the line class, which does not own the method.
+The 775-byte bevel method is slot 27 of `TGUIDrawSkin` and is inherited unchanged by `TGSLines`. `draw_bevel` already implements it, but the coverage ledger credited the line class, which does not own the method.
 
 ## What Changes
 

@@ -4,7 +4,7 @@
 
 The list is built from the object's `0x1b0` and the index plus one. When the constructor's first word is not positive, the rebuild ends after the finalizer.
 
-Otherwise the index is stored at `0x190`. An existing list at `0x198` is released through `0x1000cce80`, and the new list takes its place. The child's word at `0x158 + 0x4c` receives the index. When the widget at key 7 exists, its caption is the byte `index + 0x41`. The new list is drawn through `0x1000cd390` unless the `0x1e5` flag is set.
+Otherwise the index is stored. An existing list is released and the new list takes its place. The child's record word receives the index. When the widget at key 7 exists, its caption is the byte `index + 0x41`. The new list is drawn unless the busy flag is set.
 
 ## Model
 

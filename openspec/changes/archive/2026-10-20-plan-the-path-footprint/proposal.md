@@ -23,7 +23,7 @@ The pathfinder keeps a growing list of footprint rectangles: a new footprint joi
 
 - `exa_world::nav::mover`, from `plan_footprint`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`.
-- Evidence: the 929-byte method `0x1000c2fc0`: the guard at `0x1e0`, the merge loop over the list at `0xd0` with count `0xc8` and capacity `0xcc`, the `+6` padded areas, the `+8` growth and the append. No new corpus files.
+- Evidence: the 929-byte footprint plan: the guard, the merge loop over the rectangle list with its count and capacity, the `+6` padded areas, the `+8` growth and the append. No new corpus files.
 - Out of scope: the transform and the ring slot the bounds come from, already modelled by `path_extents`.
 
 ## Phase

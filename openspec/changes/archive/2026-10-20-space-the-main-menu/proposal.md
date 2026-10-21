@@ -23,7 +23,7 @@ The main menu's page table is modelled, but its row geometry was not. The live m
 
 - `exa_game::menu_pages`, from `ROW_UNITS`, `row_advance`, `row_top` and `hit_row`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `TMainMenu` becomes **38%** in the source rating. The headline rises slightly.
-- Evidence: `0x100128f30` (Paint's 70·row_h advance and `trunc(H·fraction)` origin), `0x100128d80` (the hit band), the live `+0x158 = 1.0` at 1080, and the retail 1600×1080 screenshot (~70 px rows). No new corpus files.
+- Evidence: the menu's paint (its 70·row_h advance and `trunc(H·fraction)` origin), the hit band, the live menu scale of 1.0 at 1080, and the retail 1600×1080 screenshot (~70 px rows). No new corpus files.
 - Out of scope: the still-undecoded `row_h` scale rule, the draw, the constructor and the settings/manual rows.
 
 ## Phase

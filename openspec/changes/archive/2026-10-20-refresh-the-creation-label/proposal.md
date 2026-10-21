@@ -22,7 +22,7 @@ The creation screen refreshes its label at most once per 300 clock units: it bui
 
 - `exa_game::create`, from `refresh_creation_label`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Character_Create` moves from 13% to 14%.
-- Evidence: the 271-byte `0x10012d020`: the clock `0x1004997c0`, the stamp `0x1004f0420`, the 300-unit guard, the widget at `0x198`, the label build from `0x1b0` and `0x190 + 1`, and the draw `0x1000cd390`. No new corpus files.
+- Evidence: the 271-byte label refresh: the clock and stamp globals, the 300-unit guard, the label widget, the label build from the label base and the index plus one, and the draw. No new corpus files.
 - Out of scope: the label build and draw bodies.
 
 ## Phase

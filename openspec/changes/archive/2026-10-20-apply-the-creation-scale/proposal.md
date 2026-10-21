@@ -22,7 +22,7 @@ The creation view stores an appearance scale from the object's source value, and
 
 - `exa_game::create`, from `apply_creation_scale`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Character_Create` moves from 21% to 22%.
-- Evidence: the 307-byte `0x10012d160`: `0.17` at `0x100315e18` and `0.9` at `0x100315e10`, the source `0x38`, the stores at `0x1a0` and `0x158 + 0x50`, the `0x100000` flag on `0x1c`, the `0x1002b3d60` guard and `0x1000cf330`, the label at `0x198`, the build from `0x1b0` and `0x190 + 1`, and the draw `0x1000cd390`. No new corpus files.
+- Evidence: the 307-byte scale handler: its `0.17` and `0.9` constants, the source value, the two stores, the `0x100000` flag on the object's flag word, the global guard and its update, the label, its build from the label base and the index plus one, and the draw. No new corpus files.
 - Out of scope: the global call, build and draw bodies.
 
 ## Phase

@@ -24,7 +24,7 @@ The arena boards are generated, but the roster rows, entrant records, opponent s
 
 - `exa_game::arena`, from `Entrant`, `RosterRow`, `Roster`, `spawn_profile`, `drop_unfit`, `assign_round_ids`, `SeasonState`, `Resolution` and `resolve_tournament`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `XA_Arena` becomes **28%** in the source rating. The headline rises.
-- Evidence: the 0x30 row and 0x14 entrant layouts, `0x10018ac20` (drop), `0x10018c270` (round ids), `0x100192b90` (resolution), `0x100185ef0` (profile), the counters at `0x1004f14xx` and the season table at `0x1002bcc40`. No new corpus files.
+- Evidence: the 0x30 row and 0x14 entrant layouts, the drop, the round ids, the resolution, the profile, the arena counters and the season table. No new corpus files.
 - Out of scope: the MT19937 seeding, the live board UI, the actor spawn/body calls and the shop.
 
 ## Phase

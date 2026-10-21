@@ -6,7 +6,7 @@ The method begins once, binds the skin's 0xe8 texture and makes two setup calls.
 
 ## Open questions
 
-The table at 0x1002b97e0 and its row fields are named only by offset. The two setup calls' bodies are not in.
+The skill tooltip table and its row fields are named only by position. The two setup calls' bodies are not in.
 
 ## Docs
 

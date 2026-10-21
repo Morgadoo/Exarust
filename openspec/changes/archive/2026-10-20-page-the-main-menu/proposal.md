@@ -2,7 +2,7 @@
 
 ## Why
 
-The main menu's page table (`TMainMenu`, `0x100122c40`) defines every screen's rows, their order, which rows are disabled and the row-origin fraction. Exarust modelled the menu's gate but not the pages themselves.
+The main menu's page table (`TMainMenu`) defines every screen's rows, their order, which rows are disabled and the row-origin fraction. Exarust modelled the menu's gate but not the pages themselves.
 
 ## What Changes
 
@@ -25,7 +25,7 @@ The main menu's page table (`TMainMenu`, `0x100122c40`) defines every screen's r
 
 - `exa_game::menu_pages`, from `Page`, `RowKind`, `Row`, `PageState`, `page_rows` and `page_origin`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `TMainMenu` becomes **35%** in the source rating. The headline rises slightly.
-- Evidence: `0x100122c40` (the page table), `0x100128580` (the in-game first row and quit command), `0x1001289a0`/`0x100128a70` (hover and key routing already modelled), and the retail screenshot at 1600×1080 (rows ~70 px apart). No new corpus files.
+- Evidence: the page table, the in-game first row and quit command, the hover and key routing already modelled, and the retail screenshot at 1600×1080 (rows ~70 px apart). No new corpus files.
 - Out of scope: the row draw, the unresolved spacing formula, text advances, focus traversal and the settings/manual rows.
 
 ## Phase

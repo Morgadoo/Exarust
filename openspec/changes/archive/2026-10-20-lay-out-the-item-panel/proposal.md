@@ -27,7 +27,7 @@
 
 - `exa_game::item_container`, from `Rng`, `grid_shape`, `grid_cell`, `grid_layout`, `relax_one`, `scatter_all`, `hit_test`, `remove_entry`, `raise`, `drop_cell`, `accepts`, the codecs and `popup_inner`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `TGUIItemContainer` becomes **20%** in the source rating. The headline rises.
-- Evidence: `0x100109240` (grid), `0x100108750` (relax), `0x100108c70` (scatter), `0x10010b730` (hit test), `0x10010f080` (accept), `0x10010f210`/`0x10010faf0` (drop/remove), `0x100109900`/`0x100109cc0` (list codec), `0x10010a3a0`/`0x10010a680` (DB codec) and `0x10010e7c0` (popup). The LCG is at `0x1001093e8`; the seeds are `0x80b71a` and `0xba28`. No new corpus files.
+- Evidence: the panel's grid, relax, scatter, hit test, accept, drop and remove, list codec, DB codec and popup routines. The LCG is the panel's own; the seeds are `0x80b71a` and `0xba28`. No new corpus files.
 - Out of scope: the drag payload and mouse handlers, the item cards, the icon cache, the doll load and the popup placement.
 
 ## Phase

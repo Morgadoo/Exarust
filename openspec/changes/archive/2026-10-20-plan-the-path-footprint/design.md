@@ -4,7 +4,7 @@
 
 The method returns at once when the counter at `0x1e0` is positive. Otherwise it builds the two footprint bounds (the same arithmetic as `path_extents`) and computes the new padded area `(x1 − x0 + 6) × (y1 − y0 + 6)`.
 
-For each existing rectangle in order it takes the union (smallest low, largest high) and its padded area. When the new area plus the existing area is greater than the union area, it replaces that rectangle with the union and returns. When no rectangle takes it, the method appends the footprint; if the length has reached the capacity at `0xcc`, it adds eight and grows the storage through `0x10000b8e0`.
+For each existing rectangle in order it takes the union (smallest low, largest high) and its padded area. When the new area plus the existing area is greater than the union area, it replaces that rectangle with the union and returns. When no rectangle takes it, the method appends the footprint; if the length has reached the capacity, it adds eight and grows the storage.
 
 ## Model
 

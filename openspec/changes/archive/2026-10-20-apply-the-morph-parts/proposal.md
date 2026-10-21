@@ -22,7 +22,7 @@ The morph controller applies its morph to every eligible part: a node whose kind
 
 - `exa_assets::morph_controller`, from `apply_morph_parts`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `RF_Morphing` moves from 5% to 6%.
-- Evidence: the 154-byte `0x1000dbc30`: the kind mask `0xfff` at `0x8`, the flag band `0xc00000` at `0x204`, the apply `0x1000645e0`, the child count `0x118` and list `0x120`, and the recursive call. No new corpus files.
+- Evidence: the 154-byte part pass: the kind mask `0xfff`, the flag band `0xc00000`, the apply call, the child count and list, and the recursive call. No new corpus files.
 - Out of scope: the apply call.
 
 ## Phase

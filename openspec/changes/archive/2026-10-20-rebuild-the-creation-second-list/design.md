@@ -4,7 +4,7 @@
 
 The band is the child's `0x54` masked with `0xff00`. A non-zero band stores the index at `0x1a4` and at the child's `0xa4`, then ends without a list or a draw.
 
-With a zero band the list is built. A count at its first word that is not positive ends the rebuild. Otherwise the index is stored, an old list at `0x1a8` is released, the new list is stored, the sub-routine `0x10012cc10` runs with the index, widget 9 is captioned with the byte `index + 0x41`, and the list is drawn unless the `0x1e5` flag is set.
+With a zero band the list is built. A count at its first word that is not positive ends the rebuild. Otherwise the index is stored, an old second list is released, the new list is stored, the sub-routine runs with the index, widget 9 is captioned with the byte `index + 0x41`, and the list is drawn unless the busy flag is set.
 
 ## Model
 

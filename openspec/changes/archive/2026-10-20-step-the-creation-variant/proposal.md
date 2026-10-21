@@ -24,7 +24,7 @@ The creation screen steps the face variant down one: it rewrites bits 20 through
 
 - `exa_game::create`, from `step_creation_variant`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Character_Create` moves from 7% to 8%.
-- Evidence: the 249-byte `0x10012d3b0`: the `0xf00000` variant shifted by 20, the `0xff0fffff` mask, the `0x41` caption byte, the default `0x100315e38`, the widget lookup `0x100` and the two refresh calls. No new corpus files.
+- Evidence: the 249-byte variant step back: the `0xf00000` variant shifted by 20, the `0xff0fffff` mask, the `0x41` caption byte, the default caption, the widget lookup and the two refresh calls. No new corpus files.
 - Out of scope: the widget and refresh routines.
 
 ## Phase

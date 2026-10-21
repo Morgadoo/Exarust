@@ -22,7 +22,7 @@ The pathfinder's reconstruction ends with a fix-up that drops up to eight path p
 
 - `exa_ai::path`, from `trim_path_end`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `TPathFinder` becomes **60%**. The published headline stays 14.4% and 5.7%; the fresh sum stays about 15.5%.
-- Evidence: `0x1000c59a0`: the endpoint walk of at most eight parents while node `+3` is above `64/(quality+1)` (`0x1000c6760`–`0x1000c6856`). No new corpus files.
+- Evidence: the A* search's endpoint walk of at most eight parents while a node's penalty is above `64/(quality+1)`. No new corpus files.
 - Out of scope: the greedy line-walk budget inside the same reconstruction.
 
 ## Phase

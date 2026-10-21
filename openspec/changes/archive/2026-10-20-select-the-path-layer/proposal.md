@@ -2,7 +2,7 @@
 
 ## Why
 
-The A* chooses between the grid's two floor layers for every step. The branch tree at `0x1000c5fec` prefers layer 0, falls back to layer 1, marks a "no layer" case for a floor 5–10 above, and refuses a rise outside −20 through +4. Exarust searched a single layer.
+The A* chooses between the grid's two floor layers for every step. Its layer branch tree prefers layer 0, falls back to layer 1, marks a "no layer" case for a floor 5–10 above, and refuses a rise outside −20 through +4. Exarust searched a single layer.
 
 ## What Changes
 
@@ -23,7 +23,7 @@ The A* chooses between the grid's two floor layers for every step. The branch tr
 
 - `exa_ai::path`, from `choose_path_layer` and `LayerWord`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `TPathFinder` becomes **63%** in `data.json`. The headline stays 17.0%.
-- Evidence: `0x1000c59a0`: the layer words at `+0x98`/`+0xa0`, the `c+4`/`c+10` compares, the `−1` no-layer marker, the layer-1 ceiling rejection and the −20/+4 rise test. No new corpus files.
+- Evidence: the A* search: the two layer words, the `c+4`/`c+10` compares, the `−1` no-layer marker, the layer-1 ceiling rejection and the −20/+4 rise test. No new corpus files.
 - Out of scope: the scene-wide countdown.
 
 ## Phase

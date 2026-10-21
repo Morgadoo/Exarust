@@ -21,7 +21,7 @@ The morph controller answers a query point by starting from the block's base poi
 
 - `exa_assets::morph_controller`, from `blend_morph_point`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `RF_Morphing` moves from 7% to 8%.
-- Evidence: the 268-byte `0x1000dd090`: the block at `0x138 + 0x1c0`, the copied base at `+8`, the `0x4c` entries at `0x50` with stride 32, the weight at `+0`, the epsilon `0x2ab6c0`, the accumulate `0x1000193d0` and the output copy. No new corpus files.
+- Evidence: the 268-byte point blend: the owner's morph block, the copied base, the morph entries with stride 32 and their weights, the epsilon, the accumulate helper and the output copy. No new corpus files.
 - Out of scope: the accumulate call.
 
 ## Phase

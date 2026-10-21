@@ -4,7 +4,7 @@
 
 Setup stores the target at `0x38` and the target's count at `0x48`, allocates an array at `0x40` of twelve bytes a count and another at `0x60`, then copies twelve bytes a count from the target's points into the first array.
 
-The nearest update computes a distance through `0x100019ae0`. When it is strictly below the stored `0x14` the best point at `0x8` (twelve bytes), the extra at `0x10`, the distance and the marker at `0x18` are replaced. An unordered distance is not below and does not replace.
+The nearest update computes a distance. When it is strictly below the stored distance the best point (twelve bytes), the extra, the distance and the marker are replaced. An unordered distance is not below and does not replace.
 
 ## Model
 

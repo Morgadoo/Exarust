@@ -23,7 +23,7 @@ The arena's templates and rank roll are modelled, but not the rolled instance re
 
 - `exa_game::arena`, from `MatchInstance`, `needs_rank`, `roll_instance`, `generate_daily_board`, `TournamentBoard`, `draw_prize`, `generate_tournament_board` and `shuffle_companies`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `XA_Arena` becomes **24%** in the source rating. The headline rises.
-- Evidence: `0x100183f80` (roll), `0x10018cf70` (daily), `0x10018cc90` (tournament/prize), `0x100187bf0` (shuffle), the template arrays and the 0x70 instance layout. No new corpus files.
+- Evidence: the opponent roll, the daily and tournament/prize builders, the shuffle, the template arrays and the 0x70 instance layout. No new corpus files.
 - Out of scope: the MT19937 state/seeding, the roster/entrant flow, opponent spawn and the live board UI.
 
 ## Phase

@@ -21,7 +21,7 @@ The creation record stores normalised appearance values as bytes and as 16-bit w
 
 - `exa_game::create`, from `appearance_bytes` and `appearance_words`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Character_Create` moves from 6% to 7%.
-- Evidence: the 173-byte `0x10012c9c0` and the 149-byte `0x10012ca70`: the source floats at `0x158`/`0x15c`/`0x1a8 + 0x38`, the constants `255.0` at `0x100315db8`, `0.0` at `0x100315dc0` and `65535.0` at `0x100315dc8`, `cvtss2si`, and the byte stores at `0x44`–`0x46` and word stores at `0x3c`/`0x3e`. No new corpus files.
+- Evidence: the 173-byte and 149-byte appearance scales: the three source floats, the constants `255.0`, `0.0` and `65535.0`, `cvtss2si`, and the three byte stores and two word stores. No new corpus files.
 - Out of scope: the two calls that follow each scale.
 
 ## Phase

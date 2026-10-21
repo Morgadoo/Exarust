@@ -2,9 +2,9 @@
 
 ## Behaviour
 
-The core returns at once when the owner's data pointer at `0x1c0` is already set. It saves each part's weight (`w1 = w0`, `w0 = 0`), binds the controller to the owner with `0x1000dd880`, and allocates the blob. The blob is `12(P+1)(V+1)+12` bytes: the magic and size, the base point from `obj+0x64`, `V` rest points of 12 bytes each, the part count, then for each part its pivot (12 bytes) and `V` deltas (12 bytes each).
+The core returns at once when the owner's data pointer is already set. It saves each part's weight (`w1 = w0`, `w0 = 0`), binds the controller to the owner, and allocates the blob. The blob is `12(P+1)(V+1)+12` bytes: the magic and size, the owner's base point, `V` rest points of 12 bytes each, the part count, then for each part its pivot (12 bytes) and `V` deltas (12 bytes each).
 
-For each part the pivot is the candidate the owner's nearest search picks (`0x1000db790`); for each vertex the triangle's three corners are the controller's joint table, remapped through the owner's map into the rest points. The triangle point is `Σ bary·corner` (`0x100018820` treats the three corners as rows), the pivot is subtracted (`0x1000191a0`), and the result is rotated by the owner's rows at `obj+0x40` (`0x100018b00`).
+For each part the pivot is the candidate the owner's nearest search picks; for each vertex the triangle's three corners are the controller's joint table, remapped through the owner's map into the rest points. The triangle point is `Σ bary·corner` (the three corners taken as rows), the pivot is subtracted, and the result is rotated by the owner's rows.
 
 ## Model
 

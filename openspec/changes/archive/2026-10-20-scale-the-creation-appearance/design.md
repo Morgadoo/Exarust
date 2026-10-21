@@ -2,7 +2,7 @@
 
 ## Behaviour
 
-The byte scale reads three floats at `0x158`, `0x15c` and the object's `0x1a8 + 0x38`, multiplies each by 255 and converts with `cvtss2si`, then stores the low byte at `0x44`, `0x45` and `0x46`. The word scale reads two floats at `0x158` and `0x15c`, adds 0, multiplies by 65535 and stores the low 16 bits at `0x3c` and `0x3e`.
+The byte scale reads three floats (two of the child's and one of the object's record), multiplies each by 255 and converts with `cvtss2si`, then stores the low bytes in three consecutive bytes. The word scale reads the first two floats, adds 0, multiplies by 65535 and stores the low 16 bits in two consecutive words.
 
 The conversion rounds to the nearest even integer. Values above one wrap in the low byte or word exactly as the stores do.
 

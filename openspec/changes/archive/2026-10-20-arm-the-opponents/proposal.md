@@ -22,7 +22,7 @@ Opponent spawn still lacked the two-stage weapon pick and the level base. The de
 
 - `exa_game::arena`, from `pick_weapon_row`, `pick_weapon_variant` and `spawn_level`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `XA_Arena` becomes **30%** in the source rating. The headline rises slightly.
-- Evidence: `0x100183f80` (the weapon row), `0x100184250` (the variant), `0x100185ef0`/`0x100185d00` (the company/generic levels). No new corpus files.
+- Evidence: the weapon-row picker, the variant picker and the company and generic level rolls. No new corpus files.
 - Out of scope: the actor/body creation, condition and equipment costs.
 
 ## Phase

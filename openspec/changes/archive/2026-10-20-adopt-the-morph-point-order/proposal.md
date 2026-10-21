@@ -2,7 +2,7 @@
 
 ## Why
 
-`0x1000da5e0` (2,748 bytes) adopts a reference mesh's point order on a structurally identical target: it seeds a triangle by matching three corner keys, floods through shared points, and applies the resulting permutation. The caller then adds the part with its target-minus-reference deltas. Exarust has the controller's bake, remap and evaluators but not this adoption.
+The point-order adoption (2,748 bytes) adopts a reference mesh's point order on a structurally identical target: it seeds a triangle by matching three corner keys, floods through shared points, and applies the resulting permutation. The caller then adds the part with its target-minus-reference deltas. Exarust has the controller's bake, remap and evaluators but not this adoption.
 
 ## What Changes
 
@@ -22,7 +22,7 @@
 
 - `exa_assets::morph_controller`, from `PointOrder`, `adopt_point_order`, `MorphPartAdd` and `add_morph_part`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `RF_Morphing` becomes **76%** (13,311 of 17,099 bytes). The published headline stays 14.4% and 5.7%; the fresh sum stays about 15.5%.
-- Evidence: `0x1000da5e0`: the identity map, the visited arrays, the seed scan with the `{1,2,0}` corner tables, the face incidence at `+0x2c0`, the key comparison in the XY plane with the `1e-8` double at `0x10030d908`, and the final `0x1000da330` application; the caller `0x1000db690`: the `+0x48` count guard, the zeroed part, the node store and the `target − reference` deltas. No new corpus files.
+- Evidence: the adoption routine: the identity map, the visited arrays, the seed scan with the `{1,2,0}` corner tables, the face incidence, the key comparison in the XY plane with its `1e-8` double, and the final permutation; its caller: the point-count guard, the zeroed part, the node store and the `target − reference` deltas. No new corpus files.
 - Out of scope: the node identity pairing and the tag-0x10 stream selection.
 
 ## Phase

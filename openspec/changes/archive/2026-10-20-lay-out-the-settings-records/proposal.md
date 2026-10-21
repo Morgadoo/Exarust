@@ -25,7 +25,7 @@ The Settings and Controls pages are authored as 0x68-byte control records with a
 
 - `exa_ui::settings`, from `Record`, `skin`, `y_delta`, `x_gap`, `place`, `TABS`, `SETTINGS`, `Binding`, `BINDINGS` and `Layout`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `TGUIForm` becomes **15%** in the source rating. The headline rises slightly.
-- Evidence: the 0x68 records at `0x1002b2af0`, `0x1002b2ea0` and `0x1002b1700`; the loader `0x10002b200`; the anchor resolver `0x100033c90`; the skin registry and the 434×536 design. No new corpus files.
+- Evidence: the 0x68 records of the tab, Settings and Controls templates; the template loader; the anchor resolver; the skin registry and the 434×536 design. No new corpus files.
 - Out of scope: the scroll-wheel handler, the tab page switch bodies and the settings apply/reset logic.
 
 ## Phase

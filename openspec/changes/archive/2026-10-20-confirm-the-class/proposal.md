@@ -6,7 +6,7 @@ The class-select confirm stores the chosen class, copies it to the globals, play
 
 ## What Changes
 
-- A positive selection stores itself at 0x70 and one less in the global, returns 7, plays a sound when the global is positive, copies the menu page and shows form 0x10012a870.
+- A positive selection stores itself and one less in the global, returns 7, plays a sound when the global is positive, copies the menu page and shows the class form.
 - A zero or negative selection returns 0x40 and does nothing else.
 
 ## Capabilities

@@ -2,7 +2,7 @@
 
 ## Behaviour
 
-When the selection is at most zero the method returns 0x40 and does nothing else. Otherwise it stores the selection at 0x70, one less in the global at 0x4effb0, sets the result to 7, plays one sound when the sound global is positive, copies the page global 0x2b7540 to 0x4effa0, calls 0x10012c2c0 with zero and shows form 0x10012a870 with flag zero.
+When the selection is at most zero the method returns 0x40 and does nothing else. Otherwise it stores the selection, one less in the global class index, sets the result to 7, plays one sound when the sound global is positive, copies the page global into the mode global, prepares the character record with zero and shows the class form with flag zero.
 
 ## Open questions
 

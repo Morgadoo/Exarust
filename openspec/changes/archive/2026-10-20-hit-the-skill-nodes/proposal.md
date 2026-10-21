@@ -23,7 +23,7 @@ The skill screen hit-tests each ring node by scanning five satellite points arou
 
 - `exa_ui::skill`, from `skill_node_hit`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `TSkillUI` moves from 4% to 7%.
-- Evidence: the 512-byte `0x100224f30`: the page check at `0x1c0`, the count at `0x1a8`, the outer 23 units, the four-point loop with `0.2` at `0x10033acb8` and `18.3` at `0x10033acc0`, the turn at `0x178`, the inner 5 units, and the `(index | result) + 1` fold. No new corpus files.
+- Evidence: the 512-byte node hit: the page check, the node count, the outer 23 units, the four-point loop with its `0.2` and `18.3`, the turn, the inner 5 units, and the `(index | result) + 1` fold. No new corpus files.
 - Out of scope: the node-position virtual at slot `0x1d0`, supplied as a list.
 
 ## Phase

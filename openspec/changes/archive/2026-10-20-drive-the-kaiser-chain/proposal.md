@@ -22,7 +22,7 @@ The Kaiser kernel and axis pass are modelled, but not the driver that produces t
 
 - `exa_render::mipmap`, from `MipLevel` and `build_mip_chain`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `RFP_Mipmaps_Kaiser` becomes **30%** in the source rating. The headline rises slightly.
-- Evidence: `0x1000474f0` (the exact power-of-two probe), `0x100047470` (one level per call), `0x100048eb0` (the two passes) and `0x100049458` (the `dstW + dstH < 3` stop). No new corpus files.
+- Evidence: the exact power-of-two probe, the one-level-per-call step, the two passes and the `dstW + dstH < 3` stop. No new corpus files.
 - Out of scope: the NPOT fallback, the format converters and the upload.
 
 ## Phase

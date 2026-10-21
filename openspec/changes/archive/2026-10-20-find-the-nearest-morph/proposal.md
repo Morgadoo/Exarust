@@ -22,7 +22,7 @@ The morph controller scans its transformed points and keeps the index and distan
 
 - `exa_assets::morph_controller`, from `nearest_morph_index`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `RF_Morphing` moves from 1% to 2%.
-- Evidence: the 192-byte `0x1000db790`: the count `0x68`, the points `0x70`, the transform `0x1000190b0` with `0x38 + 0x64`, the distance `0x100019ae0`, the start `0xffffffff` with the maximum float `0x1002ab6d0`, and the index and distance stores. No new corpus files.
+- Evidence: the 192-byte nearest search: the point count and list, the transform by the owner's frame, the distance helper, the start `0xffffffff` with the maximum float, and the index and distance stores. No new corpus files.
 - Out of scope: the transform and distance bodies.
 
 ## Phase

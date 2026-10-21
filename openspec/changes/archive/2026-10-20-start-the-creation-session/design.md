@@ -2,11 +2,11 @@
 
 ## Behaviour
 
-The table selection reads the source at `0x38`, subtracts one, stores it at the child's `0x250` and passes the entry at that index in the global table `0x4f0560` to `0x100036440` with the child's `0x248`.
+The table selection reads the source, subtracts one, stores it on the child and passes the entry at that index in the global record table to the record loader with the child's record.
 
-Starting the session runs `0x10012da80`, stores `0x10012ec80`'s result at `0x4f0b80`, clears the byte at `0x4ef330` and schedules `0x1001246d0`.
+Starting the session runs the session setup, stores the start index's result in its global, clears the stored byte and schedules the next form.
 
-The menu dispatch tests the byte at `0x49a300`: set takes `0x10022d3c0` with 3, clear takes `0x100029aa0` with 3.
+The menu dispatch tests the resume flag byte: set takes the skin's menu call with 3, clear takes the form finish with 3.
 
 ## Model
 

@@ -22,7 +22,7 @@ The sight's draw colours each entry from its three blended values: two fixed col
 
 - `exa_game::mind`, from `MindEntryStyle`, `MindColors` and `mind_entry_colors`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Thaum_Mind` becomes **10%**. The published headline stays 14.4% and 5.7%; the fresh sum stays about 15.5%.
-- Evidence: `0x1001e01d0`: the fixed colours at `0x1002e88b0`/`c0`, the third lerp at `0x1002e88d0`/`e0`, the `0.1 + 0.6·(1 − value)` alphas at `0x1001e0149` in double precision, the kind-1 constants at `0x1002e88f0`/`0x1002e8900`, and the per-entry fade subtraction at `0x1001e0633`. No new corpus files.
+- Evidence: the mind-sight draw: the two fixed colours, the third lerp's pair, the `0.1 + 0.6·(1 − value)` alphas in double precision, the kind-1 constants, and the per-entry fade subtraction. No new corpus files.
 - Out of scope: the shader upload.
 
 ## Phase

@@ -14,7 +14,7 @@ The caller adds a part only when the target's point count equals the reference's
 
 ## Open questions
 
-The original pairs nodes by a `+0xd0` identity token and selects streams by a tag; both are inputs here.
+The original pairs nodes by an identity token and selects streams by a tag; both are inputs here.
 
 ## Docs
 

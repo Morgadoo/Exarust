@@ -21,7 +21,7 @@ The transition screen draws a centred "TO BE CONTINUED" when its page is 2, with
 
 - `exa_ui::menu`, from `draw_transition_fade`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`.
-- Evidence: the 260-byte transition method, its fixed string at 0x100314420 and its two font fields. No new corpus files.
+- Evidence: the 260-byte transition method, its fixed string and its two font fields. No new corpus files.
 - Out of scope: the base draw body.
 
 ## Phase

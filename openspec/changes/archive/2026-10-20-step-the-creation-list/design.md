@@ -2,7 +2,7 @@
 
 ## Behaviour
 
-Stepping back tests the child's `0x190`; a value at or below zero does nothing. Otherwise the rebuild `0x10012cc50` runs with the value less one.
+Stepping back tests the child's list index; a value at or below zero does nothing. Otherwise the list rebuild runs with the value less one.
 
 Stepping forward always rebuilds with the value plus one. Both steps call the same rebuild.
 

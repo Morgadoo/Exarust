@@ -2,9 +2,9 @@
 
 ## Behaviour
 
-When bit `0x40` of the object's `0x1c` word is clear, the method jumps to the finalizer and nothing else runs. Otherwise the child's `0x158` record gains bit 0 when the option word at `0x2` equals 2, and loses it otherwise. The appearance label is then taken through `0x10012d7a0`.
+When bit `0x40` of the object's flag word is clear, the method jumps to the finalizer and nothing else runs. Otherwise the child's record word gains bit 0 when the option word equals 2, and loses it otherwise. The appearance label is then taken through the label routine.
 
-With the label known, the method sets the child's text, calls `0x10012d650` when the object at `0x1d0` is present, calls `0x1000cf330` when the global byte at `0x1002b3d60` is clear, sets the `0x1e5` flag, runs `0x10012cc50` and `0x10012cdf0`, clears the flag, runs the callback at slot `0x1b8`, and finally runs `0x10012d850`.
+With the label known, the method sets the child's text, refreshes the view when the view object is present, runs the global update when the global guard byte is clear, sets the busy flag, runs the two rebuilds, clears the flag, runs the callback slot, and finally runs the finalizer.
 
 ## Model
 

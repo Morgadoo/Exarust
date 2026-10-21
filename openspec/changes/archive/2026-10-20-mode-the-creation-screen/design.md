@@ -2,9 +2,9 @@
 
 ## Behaviour
 
-Switching with mode 2 stores the object's `0x158` at the global `0x1004f0890` and calls `0x100111670`. Any other mode looks up the widget at `0x4534`; a positive mode clears bit `0x10` of its `0x1c`, a zero or negative mode sets it.
+Switching with mode 2 stores the object's record in a global and calls the record's handler. Any other mode looks up the mode widget; a positive mode clears bit `0x10` of its flag word, a zero or negative mode sets it.
 
-Toggling reads the mode at `0x274`. From mode 2 it needs flag bit 1, sets mode 1 and refreshes. From any other mode it needs flag bit 2, sets mode 2 and refreshes. Without the bit nothing changes. The refresh is `0x10012f950` with the object's `0x254`.
+Toggling reads the mode. From mode 2 it needs flag bit 1, sets mode 1 and refreshes. From any other mode it needs flag bit 2, sets mode 2 and refreshes. Without the bit nothing changes. The refresh takes the object's index.
 
 ## Model
 

@@ -23,7 +23,7 @@ Closing the creation screen either schedules a form or releases a list of guarde
 
 - `exa_game::create`, from `close_creation_screen`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Character_Create` moves from 23% to 25%.
-- Evidence: the 442-byte `0x10012f3d0`: the active word `0x270`, the mode `0x4effa0`, the guarded fields `0x208`, `0x220`, `0x218`, `0x238`, `0x210`, `0x228` and `0x1d0`, the `0x2d` call, the `0x28c`/`0x2f4` resets, the tick `0x10002e760`, the strings `0x1003161b0`, `0x1003161d0` and `0x1003161f0`, and the `0x10` bit. No new corpus files.
+- Evidence: the 442-byte close: the active word, the global mode, the seven guarded objects, the `0x2d` call, the two widget resets, the tick, the three strings, and the `0x10` bit. No new corpus files.
 - Out of scope: the release, tick and string bodies.
 
 ## Phase

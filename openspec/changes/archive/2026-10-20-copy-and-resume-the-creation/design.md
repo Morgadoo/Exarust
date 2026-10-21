@@ -2,9 +2,9 @@
 
 ## Behaviour
 
-The copy moves twelve bytes from the child's `0x158 + 0xc` to the object's `0x10`.
+The copy moves twelve bytes from the child's record into the object.
 
-The resume calls `0x10017f500` on the global list at `0x4f0c20`, then `0x10012f950` with the child's `0xc0` and its `0x254`, and finally slot `0xc8` with the child and the object.
+The resume calls the save routine on the global list, then the refresh with two of the child's fields, and finally a slot callback with the child and the object.
 
 ## Model
 

@@ -4,7 +4,7 @@
 
 The deferred callback needs the pending byte at `0x1e4`. Without it the tick returns true. With it, the stamp at `0x1e0` plus one is compared with the clock; when it is not below the clock the tick returns true. When it is, the stamp takes the clock, the pending byte clears and the callback at slot `0x1b8` runs with `0x1c0`. The tick always returns true.
 
-The tip release runs `0x10006e890` on `0x1d8` only when that pointer is present. The view attach stores its argument at `0x1e8` and registers `0x10012c7f0` on the view's `0x178` only when the view is present.
+The tip release runs only when the tip pointer is present. The view attach stores its argument and registers the tick as the view's callback only when the view is present.
 
 ## Model
 

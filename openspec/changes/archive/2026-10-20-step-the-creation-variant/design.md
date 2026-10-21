@@ -4,7 +4,7 @@
 
 The variant is `(word >> 20) & 0xf`. A variant below 1 leaves everything alone and only the finalizer runs. Otherwise it falls by one and the word keeps every other bit while those four receive the new value.
 
-When the widget at key `0x100` is present, its caption is chosen from the new variant less one: below 0 it is the default at `0x100315e38`, otherwise it is the byte `(variant − 1) + 0x41`. The two refresh calls run whether or not the widget is present.
+When the widget at key `0x100` is present, its caption is chosen from the new variant less one: below 0 it is the default caption, otherwise it is the byte `(variant − 1) + 0x41`. The two refresh calls run whether or not the widget is present.
 
 ## Model
 

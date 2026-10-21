@@ -22,7 +22,7 @@ The morph controller is built from a tagged block: an unknown word, a first coun
 
 - `exa_assets::morph_controller`, from `parse_morph_block`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `RF_Morphing` moves from 8% to 11%.
-- Evidence: the 412-byte `0x1000de470`: the tag `0xedc0c589` at `+0`, the unknown word, the first count at `+8`, its points at `+0xc`, the owner-point skip, the second count, the `0x4c` entries at `0x50`, each with pointers at `+0x18` and `+0x10`. No new corpus files.
+- Evidence: the 412-byte block parse: the tag `0xedc0c589`, the unknown word, the first count and its points, the owner-point skip, the second count, and the morph entries, each with its two pointers. No new corpus files.
 - Out of scope: the controller's later apply calls.
 
 ## Phase

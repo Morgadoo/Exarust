@@ -2,7 +2,7 @@
 
 ## Behaviour
 
-`0x1000da210(node, array, max)` sizes the array by the node's last child index plus one, zeroes it, then for each child computes `k = (name[0] − 0x30)·10 + (name[1] − 0x30)` from the two name bytes at `+0x140`, writes the child's position at `+0x94` into slot `k`, and reports the largest `k`. The bake calls it once for the model (into `ctl+0x70`, max at `ctl+0x68`) and once per part (into `part+0x18`).
+The gather helper `(node, array, max)` sizes the array by the node's last child index plus one, zeroes it, then for each child computes `k = (name[0] − 0x30)·10 + (name[1] − 0x30)` from the first two bytes of the child's name, writes the child's position into slot `k`, and reports the largest `k`. The bake calls it once for the model (into the controller's model array, with its maximum) and once per part (into the part's array).
 
 The bake then selects, for each index from 0, the smallest ordinal in the suffix, starting the best at 100; a part whose ordinal is not below 100 stays in place. The ordinal is the integer parsed from the name's characters after the first (the original converts a Pascal substring starting at 2 through the engine's string and `atoi`). Records swap whole, 0x20 bytes each.
 

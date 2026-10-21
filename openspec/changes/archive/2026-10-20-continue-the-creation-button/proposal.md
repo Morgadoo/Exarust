@@ -22,7 +22,7 @@ The creation screen's continue button is labelled "Continue from save" or "Conti
 
 - `exa_game::create`, from `creation_continue_button`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Character_Create` moves from 11% to 12%.
-- Evidence: the 153-byte `0x10012f840`: the mode at `0x274`, the label literals at `0x100316238` and `0x100316268`, the `0x40000000` bit at `0x18`, the threshold at `0x1004f0400` and the `0x10` bit at `0x1c`. No new corpus files.
+- Evidence: the 153-byte button update: the mode, the two label literals, the `0x40000000` style bit, the global threshold and the `0x10` flag bit. No new corpus files.
 - Out of scope: the two preparation calls and the widget lookup.
 
 ## Phase

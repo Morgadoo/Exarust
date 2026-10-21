@@ -2,9 +2,9 @@
 
 ## Behaviour
 
-The handler starts at result 16. An index below −1 returns the base result at once. The point at `0x18`/`0x1c` is transformed through `0x10002cd90` and `0x10002ce40`.
+The handler starts at result 16. An index below −1 returns the base result at once. The point is transformed through the view's two transforms.
 
-Mask bit 1 leaves when the page is positive. With a closing word it returns on 1 and otherwise finishes; without one it clears when state bit 1 is clear and returns 1. The clear runs through `0x10022a380`.
+Mask bit 1 leaves when the page is positive. With a closing word it returns on 1 and otherwise finishes; without one it clears when state bit 1 is clear and returns 1. The clear runs through the screen's clear routine.
 
 Otherwise an index at or below zero with a selection hides for 200 and hints. Index `0x10000` needs mask bit `0x2000`: state byte 4 shows for 500 at `0x160`, state bit 1 returns, and otherwise the state gains bit 1 and `0x164` takes the clock plus the delay.
 

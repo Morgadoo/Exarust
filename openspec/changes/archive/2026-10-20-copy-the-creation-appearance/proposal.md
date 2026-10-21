@@ -22,7 +22,7 @@ The creation screen also copies a raw appearance value to its target, with the s
 
 - `exa_game::create`, from `copy_appearance`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Character_Create` stays about 3% (about 3.4%).
-- Evidence: the 135-byte `0x10012d9f0`: the source `0x38`, the target `0x158 + 0x38`, the epsilon at `0x1002ab6c0`, the stamp `0x1e0`, the pending byte `0x1e4`, the two-unit guard and the callback at slot `0x1b8`. No new corpus files.
+- Evidence: the 135-byte appearance copy: the source, the child's record target, the epsilon, the stamp, the pending byte, the two-unit guard and the slot callback. No new corpus files.
 - Out of scope: the callback.
 
 ## Phase

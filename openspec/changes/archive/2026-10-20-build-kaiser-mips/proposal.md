@@ -21,7 +21,7 @@ The original builds Kaiser-windowed mipmaps with a bank of 13 normalised kernels
 
 - `exa_render::mipmap`, from `bessel_i0`, `sinc`, `kaiser_table`, `mip_axis_start` and `resample_axis`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `RFP_Mipmaps_Kaiser` becomes **20%** in `data.json`. The headline rises slightly.
-- Evidence: `0x1000495e0` (the window), `0x1000494e0` (I0), `0x100049540` (sinc), `0x1000497c0` (the 13-table bank), and the axis passes `0x1000484c0`/`0x1000486d0` (wrap/clamp). No new corpus files.
+- Evidence: the Kaiser window, its I0 and sinc helpers, the 13-table bank, and the wrap and clamp axis passes. No new corpus files.
 - Out of scope: the format conversion, uploads, the generic NPOT path and the box-filter variant.
 
 ## Phase

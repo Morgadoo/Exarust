@@ -2,7 +2,7 @@
 
 ## Why
 
-The pathfinder's A* (`0x1000c59a0`) prices every grid step with a fixed neighbour table, two per-cell penalty bytes and a 3D heuristic. Exarust has the line walk, footprint and plan helpers, but not the grid's coordinate and cost model.
+The pathfinder's A* prices every grid step with a fixed neighbour table, two per-cell penalty bytes and a 3D heuristic. Exarust has the line walk, footprint and plan helpers, but not the grid's coordinate and cost model.
 
 ## What Changes
 
@@ -23,7 +23,7 @@ The pathfinder's A* (`0x1000c59a0`) prices every grid step with a fixed neighbou
 
 - `exa_ai::path`, from `path_cell_coord`, `path_world_coord`, `path_step_ok`, `path_step_cost`, `path_heuristic`, `PATH_NEIGHBOURS` and `PATH_MOVE_COST`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `TPathFinder` becomes **32%**. The published headline stays 14.4% and 5.7%; the fresh sum stays about 15.5%.
-- Evidence: `0x1000c59a0`: the `+0.5` at `0x10030af08`, the `127.5` at `0x10030af28`, the neighbour offsets and deltas at `0x1002b3b80`/`0x1002b3ba0`, the costs `7,5,7,5,5,7,5,7` at `0x1002b3be0`, the `−20/+4` rise, the `180` and `600` caps, the `10.0` distance scale at `0x10030af20` and the `0.1` level scale at `0x10030af00`. No new corpus files.
+- Evidence: the A* search: the `+0.5`, the `127.5`, the neighbour offsets and deltas, the costs `7,5,7,5,5,7,5,7`, the `−20/+4` rise, the `180` and `600` caps, the `10.0` distance scale and the `0.1` level scale. No new corpus files.
 - Out of scope: the open/closed lists, the two-layer selection and the path reconstruction.
 
 ## Phase

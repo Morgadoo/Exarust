@@ -23,7 +23,7 @@ The Settings and Controls pages are visible in the retail game and were missing 
 
 - `exa_ui::settings`, from `Tab`, `Rect`, `CHOICES`, `SettingKind`, `SettingItem`, `SETTINGS`, `ControlItem`, `CONTROLS`, `SettingsLayout` and `layout`.
 - `docs/PLAN.md`; the coverage headline is unchanged because the page content is screenshot-derived rather than a decoded function.
-- Evidence: the user-provided retail Settings and Controls screenshots at 1600×1080. The control-template records around `0x1002b2b00` and the label strings at `0x100308928` are the binary source for a later exact pass. No new corpus files.
+- Evidence: the user-provided retail Settings and Controls screenshots at 1600×1080. The control-template records and the label strings in `Exanima.exe` are the binary source for a later exact pass. No new corpus files.
 - Out of scope: the exact template records, the scroll behavior of the controls list, and the settings apply/reset logic.
 
 ## Phase

@@ -2,7 +2,7 @@
 
 ## Behaviour
 
-The female test is bit 0 of the `0x54` word. Female writes 16 to the four widget values at `0x154`, `0x1bc`, `0x224` and `0x28c`, and writes the default caption at `0x100315e38`. Male writes 0 to those four values, then reads the variant from bits 20 through 23 of the word, less one. A negative variant uses the default caption; otherwise the caption is the single byte `variant + 0x41`, built through `0x100008af0` and written to the widget at `0x208`.
+The female test is bit 0 of the appearance word. Female writes 16 to the four slider widgets' values and writes the default caption. Male writes 0 to those four values, then reads the variant from bits 20 through 23 of the word, less one. A negative variant uses the default caption; otherwise the caption is the single byte `variant + 0x41`, built as a one-character string and written to the caption widget.
 
 ## Model
 

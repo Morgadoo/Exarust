@@ -4,11 +4,11 @@
 
 The close clears `0x4ef330` and returns the special form for mode 10, else the regular form.
 
-The key checks `0x6c`; above zero it calls `0x10002dbc0` with the key and the masked argument and returns its result; otherwise it returns `0x40` and calls slot `0xc8` with zero.
+The key checks the selection; above zero it calls the base key handler with the key and the masked argument and returns its result; otherwise it returns `0x40` and calls the close slot with zero.
 
-The show calls `0x100139430` with the argument and one, `0x1001316d0` with the two globals, then `0x10012f840`, and when `0x10017e740` is true it calls `0x10012f7e0` with the global's `0x98`.
+The show calls the input reset with the argument and one, the screen setup with the two globals, then the continue button update, and when the save-record conversion is true it builds the continue entry from the global's list.
 
-The capture sets the stored byte, copies six qwords from `0x158 + 0xc0`, computes `child+0x258 − global 0x4f0430 + global 0x4f0b80`, stores the child's `0x274`, clears `0x4ef330` and schedules `0x1001246d0`.
+The capture sets the stored byte, copies six qwords from the child's slot table, computes the child's index less one global plus another, stores the child's mode, clears the stored byte and schedules the next form.
 
 ## Model
 

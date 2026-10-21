@@ -25,7 +25,7 @@ The arena's templates are modelled, but the rules that turn a day slot into a ro
 
 - `exa_game::arena`, from `preset_rank`, `roll_rank`, `rank_window`, `scaled_secondary`, `eligible`, `pick_template`, `pick_prize`, `Outcome`, `Settlement`, `settle` and `season_award`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `XA_Arena` becomes **18%** in the source rating. The headline rises slightly.
-- Evidence: `0x100183f80` (the roll and window), `0x10018cf70`/`0x10018cc90` (the cap/slot/reject filter), `0x100184250` (the generator draw), `0x10018c2d0` (settlement tags and the Beast counter), `0x100192b90` (the season award) and `0x1002bcba0` (the prize pool). No new corpus files.
+- Evidence: the opponent roll and window, the cap/slot/reject filter of the daily and tournament builders, the generator draw, the settlement tags and the Beast counter, the season award and the prize pool. No new corpus files.
 - Out of scope: the live board, opponent generation, the shop, tournament resolution and the UI.
 
 ## Phase

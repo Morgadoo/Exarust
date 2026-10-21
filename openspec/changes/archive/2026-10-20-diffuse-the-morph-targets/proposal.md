@@ -22,7 +22,7 @@ The morph cook fills the vertices it could not bind from their neighbours: each 
 
 - `exa_assets::morph_controller`, from `diffuse_morph_deltas`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `RF_Morphing` becomes **40%** (6,843 of 17,099 bytes). The published headline stays 14.4% and 5.7%; the fresh sum stays about 15.5%.
-- Evidence: `0x1000dbdc0` phase F: the target bitmap cleared for the target list, the adjacency `obj+0x2c0`, the packed `(triangle, corner)` pairs at `obj+0x2b8`, the cyclic corner lookup `{1, 2, 0}` at `0x1002b4500`, the weight `1/√(distance squared)` at `0x1000dc384`, the weighted accumulation, the bit-2 mark and the bit-2-to-bit-1 promotion loop (`0x1000dc438` through `0x1000dc474`). No new corpus files.
+- Evidence: the morph core's target phase: the target bitmap cleared for the target list, the owner's adjacency, the packed `(triangle, corner)` pairs, the cyclic corner lookup `{1, 2, 0}`, the weight `1/√(distance squared)`, the weighted accumulation, the bit-2 mark and the bit-2-to-bit-1 promotion loop. No new corpus files.
 - Out of scope: the stream registration and the owner's re-bind.
 
 ## Phase

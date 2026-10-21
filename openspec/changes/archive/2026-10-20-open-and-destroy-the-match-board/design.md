@@ -2,9 +2,9 @@
 
 ## Behaviour
 
-Showing writes zero to the stored pointer and byte, the seed to `0x1004f1b10`, and each list's child count less one to `0x1004f1b20`, `0x1004f1b30` and `0x1004f1b40`. Five panels are cleared through `0x100107b30` only when their count is positive. A non-null pointer at `0x728` is cleared through `0x100070e20`. The base `0x10002c410` returns the result, and a non-null global at `0x1004f0be0` is called with minus one.
+Showing writes zero to the stored pointer and byte, the seed to its global, and each list's child count less one to three more globals. Five panels are cleared only when their count is positive. A non-null held pointer is cleared. The base show returns the result, and a non-null global callback is called with minus one.
 
-Destroying calls the base destructor through slot `0x90` when the flags are positive, clears the stored pointer, releases the list at `0x1a0` through `0x10000b8e0`, calls the base `0x10002aae0`, and frees through slot `0x70` when the object and flags are both present.
+Destroying calls the base destructor through its slot when the flags are positive, clears the stored pointer, releases the board's list, calls the base, and frees through the free slot when the object and flags are both present.
 
 ## Model
 

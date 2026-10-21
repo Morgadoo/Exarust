@@ -2,7 +2,7 @@
 
 ## Behaviour
 
-The target at `0x138` carries a word at `0x1c0`. Only the tag `0xedc0c589` proceeds; the method returns otherwise. On a match the point at `+8` and the target's points are copied, the point is stored at `0x64` and its third word at `0x6c`, and `0x10005d160` refreshes the target.
+The owner's morph target carries a tag word. Only the tag `0xedc0c589` proceeds; the method returns otherwise. On a match the blob's base point and the target's points are copied, the point and its third word are stored on the owner, and the owner refresh runs.
 
 ## Model
 

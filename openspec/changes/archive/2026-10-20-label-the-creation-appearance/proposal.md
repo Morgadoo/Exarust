@@ -23,7 +23,7 @@ The creation screen labels a record by its appearance band: human male or female
 
 - `exa_game::create`, from `creation_label` and `CreationLabel::code`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Character_Create` moves from 2% to about 2%.
-- Evidence: the 158-byte `0x10012d7a0`: the `0x54` band mask `0xff00`, the bit 0 split and the literals at `0x100315e58` (HF), `0x100315e78` (HM), `0x100315e98` (HAM), `0x100315eb8` (OM) and `0x100315ed8` (ML). No new corpus files.
+- Evidence: the 158-byte appearance label: the band mask `0xff00`, the bit 0 split and the literals HF, HM, HAM, OM and ML. No new corpus files.
 - Out of scope: the caller that writes the label.
 
 ## Phase

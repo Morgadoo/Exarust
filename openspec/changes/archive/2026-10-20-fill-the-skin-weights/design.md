@@ -4,7 +4,7 @@
 
 A record is four `u32` joints followed by four `f32` weights; joint 0 ends the list. The merge is the same four-slot merge the controller already uses: a scale below `1.19209e-7` does nothing; each source joint above 0 is added to an equal slot or appended to a free one.
 
-Normalization walks the slots from 0, stops at the first zero joint, sets a negative weight to 0 (excluded from the sum), sums the others, records the last slot visited, and multiplies the weights through that slot by `1/sum` (1.0 at `0x10030d918` divided by the sum).
+Normalization walks the slots from 0, stops at the first zero joint, sets a negative weight to 0 (excluded from the sum), sums the others, records the last slot visited, and multiplies the weights through that slot by `1/sum` (1.0 divided by the sum).
 
 A target fill merges each neighbour record at `1/√(distance squared)` into an empty record, sums those weights, and scales the merged record by `1/sum`. With no neighbour the sum is 0 and the record is left alone.
 

@@ -22,7 +22,7 @@
 
 - `exa_physics::volume`, from `VolumeSummary`, `EMPTY_MASS`, `sort_by_key` and `summarise`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `RF_Dynamics_Volumes` becomes **5%** in the source rating. The headline rises slightly.
-- Evidence: `0x100212490` (the padded grid walk, the centre subtraction, the 1.0 and 2.0 constants at `0x1003387f0`/`0x1003387f8`, the 0.5 at `0x100338838` and the 0.1 fallback at `0x100338830`) and `0x1002126d0` (the quicksort). No new corpus files.
+- Evidence: the volume weigh (the padded grid walk, the centre subtraction, the 1.0, 2.0 and 0.5 constants and the 0.1 fallback) and its quicksort. No new corpus files.
 - Out of scope: grid construction, solid marking, corner masks, sphere extraction and the TVoxelMap object.
 
 ## Phase

@@ -21,7 +21,7 @@ The creation screen copies a three-word point from its child and resumes by savi
 
 - `exa_game::create`, from `copy_creation_point` and `resume_creation`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Character_Create` stays about 32% (about 32.5%).
-- Evidence: the 39-byte `0x10012f590`: the copy from `0x158 + 0xc` into `0x10`. The 71-byte `0x10012f600`: the save `0x10017f500`, the refresh `0x10012f950` at `0x254` and the slot `0xc8`. No new corpus files.
+- Evidence: the 39-byte copy from the child's record into the screen. The 71-byte resume: the save call, the refresh with the child's two fields and the slot callback. No new corpus files.
 - Out of scope: the save, refresh and slot bodies.
 
 ## Phase

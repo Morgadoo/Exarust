@@ -2,7 +2,7 @@
 
 ## Behaviour
 
-The mode is the global object's `0x274`. When it is 2, the widget at key `0xcc` gets "Continue from save" and bit `0x40000000` is ORed into its `0x18` word. Any other mode gets "Continue from checkpoint" and the bit is cleared. The `0x10` bit of the `0x1c` word is set when the mode is at or above the threshold at `0x1004f0400`, and cleared below it.
+The mode is a field of the global object. When it is 2, the continue widget gets "Continue from save" and bit `0x40000000` is ORed into its style word. Any other mode gets "Continue from checkpoint" and the bit is cleared. The `0x10` bit of its flag word is set when the mode is at or above a global threshold, and cleared below it.
 
 ## Model
 

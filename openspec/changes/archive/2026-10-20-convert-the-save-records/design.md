@@ -4,7 +4,7 @@
 
 Conversion is false unless the mode is 4 and the pending count is zero. A legacy entry alone converts. Without it, the record must have been read and its tag at `+8` must differ from `0xdbac0d06`; the same tag does not convert. A missing entry or a failed read does not convert.
 
-The record table writes the count at `0x4f0550` as a dword, then for each of the count records at `0x4f0560`, stride 24, the kind at `+0`, the qword at `+8` and the qword at `+0x10`.
+The record table writes its count as a dword, then for each record (stride 24) the kind, the first qword and the second qword.
 
 ## Model
 

@@ -23,8 +23,8 @@ The skill screen lays its nodes around a ring: the slot picks an angle from the 
 
 - `exa_ui::skill`, from `skill_ring_position`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `TSkillUI` moves from 2% to 4%.
-- Evidence: the 333-byte `0x1002257d0`: the `3.5`, `2π` at `0x1002ab8d0`, `1.0` at `0x10033aca8`, the turn field `0x178`, the count `0x1a8`, the offsets `0x1a0`/`0x1a4`, the size fields `0x28`/`0x2c`, the page `0x1c0`, the scrolled byte `0x10049a230` and the unit `0x1002ad3f0`. The cosine/sine order is fixed by both ring routines using the first output for x. No new corpus files.
-- Out of scope: the sine/cosine routine `0x10001c3e0`, already used as a primitive.
+- Evidence: the 333-byte ring placement: the `3.5`, `2π`, `1.0`, the turn field, the node count, the two offsets, the size fields, the page, the scrolled byte and the unit global. The cosine/sine order is fixed by both ring routines using the first output for x. No new corpus files.
+- Out of scope: the engine's sine/cosine routine, already used as a primitive.
 
 ## Phase
 

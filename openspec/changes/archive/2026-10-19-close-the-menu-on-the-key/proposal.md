@@ -21,7 +21,7 @@ The journal and the character-loot screen share an 89-byte key override: when th
 
 - `exa_ui::menu`, from `menu_key_close`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`.
-- Evidence: the two identical 89-byte overrides at 0x10013a0d0 and 0x1001387f0. No new corpus files.
+- Evidence: the two identical 89-byte key-close overrides. No new corpus files.
 - Out of scope: the base handler body and the close's own body.
 
 ## Phase

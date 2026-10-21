@@ -2,9 +2,9 @@
 
 ## Behaviour
 
-The global settings pointer at `0x4f0170` decides the branch. When it is null the form is created with `0x100128220` (class `0x312ed0`), stored, then attached with `0x100029470` and `0x100029660`. When it exists the form is re-shown with `0x10002c8f0` and `0x10002ae50`. Both branches call the layout `0x10022c740` with zeros, set the entry at `0x6c` to 1 when the byte at `0x49a300` is set, and finish with `0x100029aa0` and −1.
+The global settings pointer decides the branch. When it is null the form is created from its class, stored, then attached with the attach pair. When it exists the form is re-shown with the re-show pair. Both branches call the layout with zeros, set entry 1 when the resume flag byte is set, and finish with −1.
 
-The close helper calls `0x100128d30` only when the pointer exists. The reset helper writes 0 to the pointer's byte at `0x218` only when it exists.
+The close helper calls the form's close only when the pointer exists. The reset helper clears the form's flag byte only when it exists.
 
 ## Model
 

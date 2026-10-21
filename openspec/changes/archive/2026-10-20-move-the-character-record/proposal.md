@@ -22,7 +22,7 @@ A character creation record moves its appearance into a new record: four words, 
 
 - `exa_game::create`, from `move_appearance`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Character_Create` moves from 1% to 2%.
-- Evidence: the 228-byte `0x10012bd20`: the qword copies at `0x64`, `0x6c`, `0x74` and `0x7c`, the dword at `0x84`, the list move and reset at `0x88`, the dword at `0xf0` and the list move and reset at `0xf8`. No new corpus files.
+- Evidence: the 228-byte record move: the four qword copies, the dword, the first list's move and reset, the second dword and the second list's move and reset. No new corpus files.
 - Out of scope: the constructors that own the lists.
 
 ## Phase

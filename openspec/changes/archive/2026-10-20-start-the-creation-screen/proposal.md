@@ -23,7 +23,7 @@ The creation screen starts by resetting, creating and preparing the form, then s
 
 - `exa_game::create`, from `start_creation_screen` and `apply_creation_step`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Character_Create` moves from 29% to 30%.
-- Evidence: the 328-byte `0x100131a80`: the sentinel and reset calls, the form `0x4f0370`, the prepare calls, the mode `0x4effa0` against 12, the mode `0x274` from `0x4f0400`, the refresh and build, the tick `0x10002e760`, and the stores at `0x4eff60`/`0x4eff70`. The 129-byte `0x100131620`: the calls `0x1000f13c0` and `0x100133020`, the part search and store at `0x180 + 0x180`, and the ticks `0x100071a20`/`0x1001e5ea0`. No new corpus files.
+- Evidence: the 328-byte startup: the sentinel and reset calls, the form global, the prepare calls, the mode global against 12, the form's mode from the global threshold word, the refresh and build, the tick, and the two stores. The 129-byte step: its two refresh calls, the part search and the store of its result, and the two ticks. No new corpus files.
 - Out of scope: the called bodies.
 
 ## Phase

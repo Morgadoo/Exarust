@@ -22,7 +22,7 @@ The creation screen follows a requested frame: it sets the frame one lower, refr
 
 - `exa_game::create`, from `select_creation_frame`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Character_Create` moves from 12% to 13%.
-- Evidence: the 128-byte `0x10012d2a0`: the requested frame at `0x190`, the early return below 1 and on equality with `0x158 + 0x40`, the store of that field, the refresh `0x1000ef7f0`, the part search `0x10012cb10` and the store at `0x180 + 0x180`. No new corpus files.
+- Evidence: the 128-byte frame select: the requested frame, the early return below 1 and on equality with the child's frame, the store of that frame, the model refresh, the part search and the store of its result. No new corpus files.
 - Out of scope: the refresh and search bodies.
 
 ## Phase

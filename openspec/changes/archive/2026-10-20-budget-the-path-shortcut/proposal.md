@@ -21,7 +21,7 @@ The pathfinder's reconstruction line-walk is given a budget of `g[later] − g[k
 
 - `exa_ai::path`, from `shortcut_path_with_budget`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `TPathFinder` becomes **61%**. The published headline stays 14.4% and 5.7%; the fresh sum stays about 15.5%.
-- Evidence: `0x1000c59a0`: the budget `g[i] − g[prev] + 10` at `0x1000c6c97` passed to the line walk `0x1000c76e0`. No new corpus files.
+- Evidence: the path search: the budget `g[i] − g[prev] + 10` passed to the line walk. No new corpus files.
 - Out of scope: the two-layer floor rule.
 
 ## Phase

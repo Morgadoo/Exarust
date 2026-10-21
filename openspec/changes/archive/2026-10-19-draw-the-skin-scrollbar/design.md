@@ -10,7 +10,7 @@ Any other style draws nothing.
 
 ## Open questions
 
-The helpers' bodies are not in. The difference between this slider and the one at 0x10021a1d0 is only visual.
+The helpers' bodies are not in. The difference between this slider and the skin's other slider is only visual.
 
 ## Docs
 

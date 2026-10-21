@@ -21,7 +21,7 @@ The creation screen matches a lookup id against a signature: the id itself, or a
 
 - `exa_game::create`, from `signature_matches`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Character_Create` stays about 10%.
-- Evidence: the 141-byte `0x10012e0a0`: the query at `(%rbx)` compared with the id, the `0x100103db0` lookup, the binding word at `+0x14`, the four bytes at `+0x1bc + i × 12` compared with `+0xf + i`, and the `0x1000` mask. No new corpus files.
+- Evidence: the 141-byte signature match: the query compared with the id, the record lookup, the binding word, the four signature bytes per entry compared with the record's bytes, and the `0x1000` mask. No new corpus files.
 - Out of scope: the lookup itself.
 
 ## Phase

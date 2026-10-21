@@ -23,7 +23,7 @@ The skill screen's draw opens with a fade: state byte 4 shows nothing, a set bit
 
 - `exa_ui::skill`, from `skill_screen_fade`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: no coverage change; this is part of the still-open 2,955-byte draw.
-- Evidence: the 2,955-byte `0x100226520` opening: the state byte `0x158` against 4, bit 0, the deadline `0x160` against the clock `0x1004997d0`, the double `0.002` at `0x10033ad30`, `1.0` at `0x10033ad28`, `2.0` at `0x10033ad38`, the clamped alpha and the `0x10002a350` sound call at code `0x23`. No new corpus files.
+- Evidence: the 2,955-byte skill-screen tick's opening: the state byte against 4, bit 0, the deadline against the game clock, the doubles `0.002`, `1.0` and `2.0`, the clamped alpha and the sound call with code `0x23`. No new corpus files.
 - Out of scope: the rest of the draw.
 
 ## Phase

@@ -24,7 +24,7 @@
 
 - `exa_ui::controls`, from the text spans, `Track`, `ListMetrics`, `item_at`, `step_selection`, `ListExtent`, `list_extent`, `ItemMeasure`, `item_extent`, `MenuItem`, `Activation` and `activate`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `RF_GUI_Controls_Ex` becomes **12%** in the source rating. The headline rises slightly.
-- Evidence: `0x1000fa5d0`/`0x1000fb380`/`0x1000fd600` (spans), `0x1000ffef0` (`3U|1`), `0x1000ff450` (value), `0x1000ff290`/`0x1000ff530` (thumb and caption), `0x1000fab10` (extent), `0x1000fafb0` (row hit), `0x1000fb0e0` (navigation), `0x1000fce70` (content size) and `0x1000fbea0` (activation). No new corpus files.
+- Evidence: the controls' span routines, the `3U|1` measure, the value, the thumb and caption, the list extent, the row hit, the navigation, the content size and the activation. No new corpus files.
 - Out of scope: the text field, drop-down event table, spinner, colour picker, progress bar, image/texture views and the 2.5 KB menu draw.
 
 ## Phase

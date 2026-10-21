@@ -23,7 +23,7 @@ The creation screen refreshes its part result through a target and destroys itse
 
 - `exa_game::create`, from `refresh_creation_part` and `destroy_creation`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Character_Create` moves from 30% to 32%.
-- Evidence: the 64-byte `0x1001313b0`: the target `0x180`, the part search on `0x160 + 0x2e0 + 0x18` and the store at `0x180 + 0x180`. The 137-byte `0x100131180`: the flags guard, slot `0x90`, the child `0x260`, the count and `0x18` clear above one, the release below, the base `0x10002aae0` and the free at slot `0x70`. No new corpus files.
+- Evidence: the 64-byte refresh: the view target, the part search on the body's model and the store of its result. The 137-byte destructor: the flags guard, the destructor slot, the held child, its count and clear above one, the release below, the base and the free slot. No new corpus files.
 - Out of scope: the search, release and free bodies.
 
 ## Phase

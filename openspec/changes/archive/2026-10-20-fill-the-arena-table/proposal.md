@@ -26,7 +26,7 @@
 
 - `exa_game::arena`, from `MatchTemplate`, `STANDARD`, `RANKED`, `TOURNAMENTS`, `template`, `lookup_name`, `unpack_money`, `pack_money`, `cash_prize`, `prize_pot`, `xp_award`, `xp_split`, `rank_points`, `loadout_tier`, `xp_gain`, `wage`, `recover`, `is_fit`, `phase`, `week_of_season`, `TOURNAMENT_PRIZES`, `SEASON_PRIZES`, `COMPANIES` and `POINT_LIMITS`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `XA_Arena` becomes **15%** in the source rating. The headline rises.
-- Evidence: the 18 records at `0x1002bc6d0`, `0x1002bc3c0` and `0x1002bc970` (read byte-for-byte); the rank/XP formulas at `0x10017cdb0`/`0x10018d0a0`; prizes at `0x100187840`; cash at `0x10018c2d0`; wages at `0x10018d840`; recovery at `0x10018c130`; the calendar at `0x100193050`; the prize tables at `0x1002bcba0`/`0x1002bcc40`; the companies at `0x1002bbf30`. No new corpus files.
+- Evidence: the 18 match records of the standard, daily and tournament tables (read byte for byte); the rank and XP formulas; the prizes; the cash; the wages; the recovery; the calendar; the two prize tables; the companies. No new corpus files.
 - Out of scope: the match flow, opponent generation, the live board, the shop/arsenal, tournament resolution and the UI.
 
 ## Phase

@@ -21,7 +21,7 @@ The tree text's create and reset path sets the header before parsing: the `en` l
 
 - `exa_game::thaum`, from `new_tree_text` and the extended `TreeText`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `TThaumTree` becomes **20%** in the source rating. The headline rises slightly.
-- Evidence: `0x10026f680` (the create writes) and `0x10026f740` (count 0, one zero offset, blob size 4, one zero-length string). No new corpus files.
+- Evidence: the tree text's create (its writes) and its reset (count 0, one zero offset, blob size 4, one zero-length string). No new corpus files.
 - Out of scope: the tree's draw.
 
 ## Phase

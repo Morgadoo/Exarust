@@ -22,7 +22,7 @@ The creation screen lays out a rail from the option count: the view shrinks by t
 
 - `exa_game::create`, from `lay_out_creation_rail`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Character_Create` moves from 10% to 11%.
-- Evidence: the 156-byte `0x10012e980`: the count at `0x1f8`, the unit `0x1002ad3f0`, the view at `0x160 + 0x28`, the compact guard at `0x4effa0` against 12, and the word stores at `0x98 + 0x140` and `0x98 + 0x13c`. No new corpus files.
+- Evidence: the 156-byte rail layout: the count, the unit global, the view width, the compact guard on the mode global against 12, and the two word stores. No new corpus files.
 - Out of scope: the refresh call.
 
 ## Phase

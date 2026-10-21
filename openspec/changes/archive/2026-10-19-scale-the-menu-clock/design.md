@@ -6,7 +6,7 @@ The method takes one 32-bit clock word. It converts it to a double, multiplies b
 
 ## Open questions
 
-The source clock at global 0x10049a930 + 0x2c is passed in; its name is not established. The base update is not in.
+The source clock, a field of a global object, is passed in; its name is not established. The base update is not in.
 
 ## Docs
 

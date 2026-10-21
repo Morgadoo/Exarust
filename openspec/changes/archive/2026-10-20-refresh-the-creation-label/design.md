@@ -2,9 +2,9 @@
 
 ## Behaviour
 
-The clock is the global at `0x1004997c0` and the stamp the global at `0x1004f0420`. A difference under 300 ends the method without touching anything. Otherwise the stamp takes the clock.
+The clock and the stamp are globals. A difference under 300 ends the method without touching anything. Otherwise the stamp takes the clock.
 
-When the widget at `0x198` is null, a label is built from the object's `0x1b0` and its `0x190 + 1`, then stored. The draw then runs through `0x1000cd390` with the widget. The finalizer runs either way.
+When the label widget is null, a label is built from the object's label base and its index plus one, then stored. The draw then runs with the widget. The finalizer runs either way.
 
 ## Model
 

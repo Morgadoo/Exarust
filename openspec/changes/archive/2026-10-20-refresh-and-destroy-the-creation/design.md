@@ -4,7 +4,7 @@
 
 The part refresh reads the object's `0x160`, follows its `0x2e0` and `0x18`, runs the part search and, when the target at `0x180` exists, stores the result at the target's `0x180`.
 
-Destroying calls slot `0x90` when the flags are positive. A child at `0x260` with a count above one clears its `0x18` and loses one from the count; at one or below it is released. The base `0x10002aae0` always runs, and slot `0x70` frees when the object and flags are present.
+Destroying calls the destructor slot when the flags are positive. A held child with a count above one clears its link and loses one from the count; at one or below it is released. The base always runs, and the free slot frees when the object and flags are present.
 
 ## Model
 

@@ -21,7 +21,7 @@ Two Mind powers are small control hooks: the mind mask sets or clears body bit `
 
 - `exa_game::mind`, from `MindEffect`, `MindMaskStep`, `MindSenseStep`, `step_mind_mask` and `step_mind_sense`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Thaum_Mind` becomes **3%**. The published headline stays 14.4% and 5.7%; the fresh sum stays about 15.5%.
-- Evidence: `0x1001e3c90` (event 2 → state 2, clear/set `0x10000` at body `+0xdf8` and return 2/0) and `0x1001e35d0` (event 2 → state 2, the value at `+0x24` against 0, and the return 2/0). No new corpus files.
+- Evidence: the two mind toggles: one (event 2 → state 2, clear/set `0x10000` on the body's flag word and return 2/0) and the other (event 2 → state 2, its value against 0, and the return 2/0). No new corpus files.
 - Out of scope: the mask's visual and the sense's target scan.
 
 ## Phase

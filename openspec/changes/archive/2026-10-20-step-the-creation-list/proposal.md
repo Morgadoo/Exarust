@@ -22,7 +22,7 @@ The creation screen steps its option list to the previous or next index. Exarust
 
 - `exa_game::create`, from `step_creation_list`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Character_Create` moves from 22% to 23%.
-- Evidence: the 43-byte `0x10012cf90`: the positive test on `0x190` and the `0x10012cc50` call at the index less one. The 34-byte `0x10012cfc0`: the same call at the index plus one. No new corpus files.
+- Evidence: the 43-byte step back: the positive test on the list index and the rebuild at the index less one. The 34-byte step forward: the same call at the index plus one. No new corpus files.
 - Out of scope: the rebuild body.
 
 ## Phase

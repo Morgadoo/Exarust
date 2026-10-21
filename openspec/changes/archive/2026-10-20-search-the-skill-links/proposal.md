@@ -22,7 +22,7 @@ The skill screen's link search resolves the node under a point, tests the two sa
 
 - `exa_ui::skill`, from `pick_skill_satellite`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `TSkillUI` moves from 25% to 32%.
-- Evidence: the 1363-byte `0x100224630`: the direction at `0x48`, the axis flag at `0x58`, the node hit `0x1c0` and point `0x1d0`, the table `0x1b8`, the two-slot loop `0x1c8`/`0x1d0`, the five-slot scan `0x1a8`/`0x1b0`, the satellite constants 18.3 and 0.2, the 0.1 dot, the 1.0 squared-length floor, the 0.3 dot, the one-million start, `length / dot²`, and the y scaling by 4. No new corpus files.
+- Evidence: the 1363-byte link search: the direction, the axis flag, the node hit and point, the link table, the two-slot loop, the five-slot scan, the satellite constants 18.3 and 0.2, the 0.1 dot, the 1.0 squared-length floor, the 0.3 dot, the one-million start, `length / dot²`, and the y scaling by 4. No new corpus files.
 - Out of scope: the hit, reach and layout bodies.
 
 ## Phase

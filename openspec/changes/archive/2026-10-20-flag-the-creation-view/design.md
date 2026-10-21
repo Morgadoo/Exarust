@@ -2,9 +2,9 @@
 
 ## Behaviour
 
-The refresh calls `0x1000f13c0` with the child's `0x168` and `0x158`, then `0x100133020` with the object's `0x160` and the child's `0x168`, then `0x100071a20`, then `0x1001e5ea0`.
+The refresh makes four calls in turn, with the child's model and record, the object's view and the child's model, and then two without arguments.
 
-The flag test is the option word at `0x2` equal to `0x11`. When it matches, bit `0x10000` is ORed into the child's `0x54`; otherwise the bit is cleared with the `0xfffeffff` mask. The refresh `0x1000ef7f0` then runs with the child's `0x168`, the part search `0x10012cb10` runs on `0x168 + 0x18`, and its result is stored at the `0x180` object's `0x180`.
+The flag test is the option word equal to `0x11`. When it matches, bit `0x10000` is ORed into the child's flag word; otherwise the bit is cleared with the `0xfffeffff` mask. The model refresh then runs with the child's model, the part search runs on the model, and its result is stored on the view object.
 
 ## Model
 

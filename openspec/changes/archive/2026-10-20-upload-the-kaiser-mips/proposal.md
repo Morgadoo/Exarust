@@ -22,7 +22,7 @@ The Kaiser chain is modelled but not used by the texture loader. The original ge
 
 - `exa_render::mipmap`, from `build_mip_chain_rgba8`; `exa_assets::texture` uses it when `needs_kaiser_mips`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `RFP_Mipmaps_Kaiser` becomes **40%** in the source rating. The headline rises slightly.
-- Evidence: `0x1000474f0` and `0x100047e80` (the level probe and the generation entry) plus the decoded texture path in `rfi_to_image`. No new corpus files.
+- Evidence: the level probe and the generation entry, plus the decoded texture path in `rfi_to_image`. No new corpus files.
 - Out of scope: the NPOT fallback, the format converters and the GL upload.
 
 ## Phase

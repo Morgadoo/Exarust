@@ -25,7 +25,7 @@ The `TMotileDynamics` dispatcher's branch conditions and leaf formulas are now d
 
 - `exa_physics::motile`, from `AttackArms`, `attack_arms`, `arm_floor`, `parry_blend`, `gait_arm`, `shock_expired`, `posture_entry`, `lying_still`, `auto_parry_deadline`, `switch_phase` and `get_up_scale`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `TMotileDynamics` becomes **30%** in the source rating. The headline rises slightly.
-- Evidence: `0x16A57D` (shock), `0x16A5B5` (split), `0x16AA4A`–`0x16AC5D` (attack arms), `0x1001688C0` (arm floor), `0x16B0EB` (parry), `0x16B354` (gait), `0x16B224` (auto-parry) and `0x16B4C3` (switch). No new corpus files.
+- Evidence: the motile dispatch's shock, split, attack-arm, arm-floor, parry, gait, auto-parry and switch branches. No new corpus files.
 - Out of scope: the dispatcher's animation calls, the main draw, the limb pull and the remaining state branches.
 
 ## Phase

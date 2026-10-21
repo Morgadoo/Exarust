@@ -23,7 +23,7 @@ The main menu's pages and row geometry are modelled, but selecting a row, clampi
 
 - `exa_game::menu_pages`, from `MenuAction`, `MenuState`, `RowKind::action` and the selection methods.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `TMainMenu` becomes **40%** in the source rating. The headline rises slightly.
-- Evidence: `0x100128a70` (the up/down clamp and activate branch), `0x1001289a0` (hover) and the page table `0x100122c40`. No new corpus files.
+- Evidence: the menu's key routing (the up/down clamp and activate branch), its hover and the page table. No new corpus files.
 - Out of scope: the draw, the still-undecoded `row_h` scale rule and the settings/manual rows.
 
 ## Phase

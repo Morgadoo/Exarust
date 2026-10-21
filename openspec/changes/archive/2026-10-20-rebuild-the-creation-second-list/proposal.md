@@ -22,7 +22,7 @@ The creation screen also rebuilds a second option list, or only stores its index
 
 - `exa_game::create`, from `rebuild_creation_second_list`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Character_Create` moves from 16% to 17%.
-- Evidence: the 414-byte `0x10012cdf0`: the `0xff00` band test on the child's `0x54`, the index at `0x1a4`, the child `0xa4`, the list constructor `0x1000ccb60`, the list at `0x1a8`, the sub-routine `0x10012cc10`, widget 9's `+0x41` caption, the `0x1e5` guard and the draw `0x1000cd390`. No new corpus files.
+- Evidence: the 414-byte second-list rebuild: the `0xff00` band test on the child's appearance word, the stored index and child, the list constructor, the list, the sub-routine, widget 9's `0x41` caption, the busy guard and the draw. No new corpus files.
 - Out of scope: the constructor, sub-routine and draw.
 
 ## Phase

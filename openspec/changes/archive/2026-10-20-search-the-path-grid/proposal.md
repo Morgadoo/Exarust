@@ -2,7 +2,7 @@
 
 ## Why
 
-The pathfinder's A* (`0x1000c59a0`) is the component's core: a bounded best-first search with a LIFO open list popped by the smallest `f`, a 4095-node cap, an acceptance distance and a parent-chain path. Exarust has the grid's coordinates and costs but not the search.
+The pathfinder's A* is the component's core: a bounded best-first search with a LIFO open list popped by the smallest `f`, a 4095-node cap, an acceptance distance and a parent-chain path. Exarust has the grid's coordinates and costs but not the search.
 
 ## What Changes
 
@@ -24,7 +24,7 @@ The pathfinder's A* (`0x1000c59a0`) is the component's core: a bounded best-firs
 
 - `exa_ai::path`, from `PathGrid`, `PathRequest`, `PathSearch` and `search_path`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `TPathFinder` becomes **44%**. The published headline stays 14.4% and 5.7%; the fresh sum stays about 15.5%.
-- Evidence: `0x1000c59a0`: the 16-byte nodes, the `g` and `f` fields, the LIFO open head and linear strict-minimum pop, the `0xfff` cap, the acceptance `q+0x20`, the re-parent test on `f`, the parent walk with collinear collapse, and the `A/3` seed pseudo-height. No new corpus files.
+- Evidence: the A* search: the 16-byte nodes, the `g` and `f` fields, the LIFO open head and linear strict-minimum pop, the `0xfff` cap, the query's acceptance distance, the re-parent test on `f`, the parent walk with collinear collapse, and the `A/3` seed pseudo-height. No new corpus files.
 - Out of scope: the two-layer floor selection, the line-walk shortcut and the endpoint penalty fix-up.
 
 ## Phase

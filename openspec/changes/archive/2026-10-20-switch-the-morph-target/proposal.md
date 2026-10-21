@@ -21,7 +21,7 @@ The morph controller switches to a tagged target: it copies the point and points
 
 - `exa_assets::morph_controller`, from `switch_morph_target`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `RF_Morphing` moves from 2% to 3%.
-- Evidence: the 122-byte `0x1000dd010`: the target `0x138`, the tag `0x1c0` against `0xedc0c589`, the point at `+8`, the points copy `0x1000022c0`, the store at `0x64`/`0x6c` and the refresh `0x10005d160`. No new corpus files.
+- Evidence: the 122-byte rest restore: the target, its tag against `0xedc0c589`, the blob's base point, the points copy, the two stores and the owner refresh. No new corpus files.
 - Out of scope: the copy and refresh bodies.
 
 ## Phase

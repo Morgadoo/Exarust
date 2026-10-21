@@ -2,7 +2,7 @@
 
 ## Why
 
-The control-label alignment routine (`0x1000fa110`) has exact horizontal and vertical style switches that the repo's skin alignment does not match.
+The control-label alignment routine has exact horizontal and vertical style switches that the repo's skin alignment does not match.
 
 ## What Changes
 
@@ -22,7 +22,7 @@ The control-label alignment routine (`0x1000fa110`) has exact horizontal and ver
 
 - `exa_ui::controls`, from `LabelAt` and `align_label`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `RF_GUI_Controls_Ex` becomes **13%** in the source rating. The headline rises slightly.
-- Evidence: `0x1000fa110` (the style switches and the `+U`/`+pad+U` differences). No new corpus files.
+- Evidence: the control-label alignment routine (the style switches and the `+U`/`+pad+U` differences). No new corpus files.
 - Out of scope: the text-run drawing and the control-specific handlers.
 
 ## Phase

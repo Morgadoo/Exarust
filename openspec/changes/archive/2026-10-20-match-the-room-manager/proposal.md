@@ -24,7 +24,7 @@
 
 - `exa_world::rooms`, from `INV_CELL_CM`, `CELL_CM`, `ROOM_CEILING_CM`, `rect_world_cm`, `rotate_edge_word` and `cell_step_from_dir`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `TGridEnvManager` becomes **45%** in the source rating. The headline rises.
-- Evidence: `0x100142f80` (cell centre), `0x100143000` (room at a point), `0x100141840` (flood), `0x1001417b0` (side test), `0x100143290`/`0x1001436f0` (linked and door reach), `0x100144610` (fade), `0x100143c20` (tracker), `0x100142110` (room bounds and portals), and the helpers `0x100140520` (edge rotation) and `0x100142cd0` (direction step). The constants are `0x10031a2f8` (1/600), `0x10031a2e0` (600), `0x10031a2d0` (280) and `0x1002ba840` (opposite sides). No new corpus files.
+- Evidence: the room manager's cell centre, room at a point, flood, side test, linked and door reach, fade, tracker, room bounds and portals, and the edge-rotation and direction-step helpers. The constants are 1/600, 600, 280 and the opposite-side table. No new corpus files.
 - Out of scope: the room render objects and buffers, the partner-room mask, the migration payload, descriptor copies, segment tests and object attachment.
 
 ## Phase

@@ -2,9 +2,9 @@
 
 ## Behaviour
 
-Both powers keep a state at `+0x18`. Event 2 sets it to 2, which means the effect is being removed; any other state leaves it on.
+Both powers keep a state. Event 2 sets it to 2, which means the effect is being removed; any other state leaves it on.
 
-The mask, in state 2, clears bit `0x10000` in the caster's `+0xdf8` flags, notifies and returns 2 (inactive); otherwise it sets the bit and returns 0 (active). The sense, in state 2, reads the value at `+0x24`, calls the trigger when it is above zero, and returns 2; otherwise it returns 0.
+The mask, in state 2, clears bit `0x10000` in the caster's body flags, notifies and returns 2 (inactive); otherwise it sets the bit and returns 0 (active). The sense, in state 2, reads its value, calls the trigger when it is above zero, and returns 2; otherwise it returns 0.
 
 ## Model
 

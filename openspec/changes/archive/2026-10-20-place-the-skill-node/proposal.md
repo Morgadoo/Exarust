@@ -22,7 +22,7 @@
 
 - `exa_ui::skill`, from `skill_position`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `TSkillUI` moves from 0% to 1%.
-- Evidence: the 186-byte method `0x100224570`: the positive-index virtual at slot `0x1c8`, the row and column masks, `cvtss2si`, the scaled branch at `0x1c4` to `0x10002d9f0`, and the half-width and half-height fields `0x30`, `0x44`, `0x3c` and `0x40`. No new corpus files.
+- Evidence: the 186-byte node placement: the positive-index virtual, the row and column masks, `cvtss2si`, the scaled branch to the base method, and the form's half-width and half-height fields. No new corpus files.
 - Out of scope: the layout virtual and the base method.
 
 ## Phase

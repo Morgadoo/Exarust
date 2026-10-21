@@ -23,7 +23,7 @@ The arena picks one of three values by counting the positive entries, advancing 
 
 - `exa_game::arena_log`, from `pick_arena_value`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `XA_Arena` stays about 34%.
-- Evidence: the 138-byte `0x100184250`: the three dwords at `+8`, `+0xc` and `+0x10` counted with `jbe`, the seed `0x498590` multiplied by `0x8088405` and incremented, the high half of seed × count as the index, and the value read at `+8 + index × 4`. No new corpus files.
+- Evidence: the 138-byte value pick: the three dwords counted with `jbe`, the seed global multiplied by `0x8088405` and incremented, the high half of seed × count as the index, and the value read at that index. No new corpus files.
 - Out of scope: the consumer call.
 
 ## Phase

@@ -58,7 +58,7 @@ columns).
   tick's; Exarust reads the base (the value it would have in its stance a
   tick before). Documented, not modelled.
 - **Progress.** `Animator::progress` becomes the field the sampler writes
-  (the original's `+0xa28`), reset by a start; `clip_progress(clip)`
+  (the original's sequence clock), reset by a start; `clip_progress(clip)`
   computes the same value from the clock for callers that read it before
   the sample.
 - **The accumulator.** `Animator::owed` holds the frames' time under a

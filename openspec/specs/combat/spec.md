@@ -544,11 +544,11 @@ The reset SHALL zero the count, the 0x770/0x788/0x798 qwords, the 0x200/0x158 wo
 - **THEN** the fields still reset and neither path runs
 
 ### Requirement: Combatant measures
-The measure pair SHALL store the given reach at 0x7b0 and the body value times 1.0 at 0x7b8.
+The measure pair SHALL store the given reach as the combatant's reach and the body value times 1.0 as its body measure.
 
 #### Scenario: The measures
 - **WHEN** the reach is 12.5 and the body value is 0.75
-- **THEN** 0x7b0 is 12.5 and 0x7b8 is 0.75
+- **THEN** the reach is 12.5 and the body measure is 0.75
 
 ### Requirement: Combat replace
 The replace SHALL set the first entry equal to the old target to the new one and leave the list alone when absent. It SHALL replace slots 0x778 and 0x770 when equal, the body's hit pointer with the new target's 0x10 word and its contact pointer with the new target, each when equal to the old.

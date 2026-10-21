@@ -22,7 +22,7 @@ The mind-sight draw anchors each node's quad from the node's three frame rows, i
 
 - `exa_game::mind`, from `SightBasis` and `sight_billboard`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Thaum_Mind` becomes **9%**. The published headline stays 14.4% and 5.7%; the fresh sum stays about 15.5%.
-- Evidence: `0x1001e01d0`: the eye anchor at `0x1001e0687` (the `+15.0` at `0x10032f208`), the normalize and view multiply, `1 − |d.x|` at `0x1001e077f`, the `m2×dir`, `a×dir`, `m0×dir`, `c×dir` chain, the blended axes and the 0.025 half-size at `0x1002e89b0`. No new corpus files.
+- Evidence: the mind-sight draw: the eye anchor (its `+15.0`), the normalize and view multiply, `1 − |d.x|`, the `m2×dir`, `a×dir`, `m0×dir`, `c×dir` chain, the blended axes and the 0.025 half-size. No new corpus files.
 - Out of scope: the shader upload and per-view matrices.
 
 ## Phase

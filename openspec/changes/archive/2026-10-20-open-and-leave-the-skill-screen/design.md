@@ -2,9 +2,9 @@
 
 ## Behaviour
 
-Showing: when field `0x60` has bit `0x20`, the relayout `0x10022c950` runs. The state at `0x158` gains bit 1, and `0x164` stores the game clock plus the delay global at `0x1002ad5b0`. The global is zero in the file and set before use, so the delay is passed in.
+Showing: when the style word has bit `0x20`, the relayout runs. The state gains bit 1, and the second deadline stores the game clock plus the delay global. The global is zero in the file and set before use, so the delay is passed in.
 
-Leaving: a set `0x1c4` forwards to the base `0x10002ac10`. A non-zero `0x1c0` returns. With state bit 0 set, the method returns while `0x160 − 0x190` is greater than the clock, so the transition's last 400 units are still open. Then state bit 1 returns. Otherwise it calls `0x10022a380` with zeroed arguments.
+Leaving: a set closing field forwards to the base. A non-zero page returns. With state bit 0 set, the method returns while the first deadline less 400 is greater than the clock, so the transition's last 400 units are still open. Then state bit 1 returns. Otherwise it calls the clear with zeroed arguments.
 
 ## Model
 

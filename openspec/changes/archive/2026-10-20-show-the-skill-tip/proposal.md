@@ -7,7 +7,7 @@ The skill tooltip searches the skill list for its marker row and, when found, st
 ## What Changes
 
 - A missing row shows nothing.
-- A found row sets the index to object+0xb8 − 1 and the threshold to row+0x38 − 1.
+- A found row sets the index to the object's skill value less one and the threshold to the row's threshold less one.
 - Flags gain 0x10; the place is the anchor's x and nine units plus its y.
 - The height is 24 units when global 0x2ad3c0 is 0 and 18 units otherwise.
 - The visible byte is set, three calls run, and the stamp is three times the base plus the stored offset.

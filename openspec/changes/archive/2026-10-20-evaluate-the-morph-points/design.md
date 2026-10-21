@@ -2,9 +2,9 @@
 
 ## Behaviour
 
-The blob starts with the magic and size, then the base (12 bytes), the rest points (`V·12`), the part count, and each part's pivot (12) and deltas (`V·12`). Restoring checks the magic, copies the rest points over the owner's positions, writes the base to the owner's `+0x64` and refreshes the owner.
+The blob starts with the magic and size, then the base (12 bytes), the rest points (`V·12`), the part count, and each part's pivot (12) and deltas (`V·12`). Restoring checks the magic, copies the rest points over the owner's positions, writes the base to the owner and refreshes the owner.
 
-The weighted base starts at the blob's base and, for each part, adds `pivot · weight` when `|weight| ≥ 1.19209e-7` (`0x1000dd090`). The full evaluation does the same to the base, then for every vertex adds `delta · weight` to the rest point (`0x1000dd1a0`), writes the base and refreshes the owner.
+The weighted base starts at the blob's base and, for each part, adds `pivot · weight` when `|weight| ≥ 1.19209e-7`. The full evaluation does the same to the base, then for every vertex adds `delta · weight` to the rest point, writes the base and refreshes the owner.
 
 ## Model
 
@@ -12,7 +12,7 @@ The weighted base starts at the blob's base and, for each part, adds `pivot · w
 
 ## Open questions
 
-The owner refresh (`0x10005d160`) is outside the data model.
+The owner refresh is outside the data model.
 
 ## Docs
 

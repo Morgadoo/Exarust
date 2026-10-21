@@ -1012,11 +1012,11 @@ A key mask carrying both 0x2000 and 0x2 SHALL close the form with argument 0 and
 - **THEN** the result is 7 and the form does not close
 
 ### Requirement: Class select index
-The class-select screen SHALL store the index at field 0x6c and return 3. It SHALL play one selection sound only when the index and the sound flag are both above zero.
+The class-select screen SHALL store the index as its selected index and return 3. It SHALL play one selection sound only when the index and the sound flag are both above zero.
 
 #### Scenario: A positive index
 - **WHEN** the index is 4 and the sound flag is positive
-- **THEN** field 0x6c is 4, one sound plays and the result is 3
+- **THEN** the selected index is 4, one sound plays and the result is 3
 
 #### Scenario: The guard
 - **WHEN** the index is 0 or negative
@@ -1103,17 +1103,17 @@ Page 2 SHALL continue for action 1 and show the main menu for action 2. Page 4 S
 - **THEN** the handler is called
 - **WHEN** the page is 3 and no handler exists
 - **THEN** nothing is dispatched
-- **AND** every path clears the action and field 0x204 and returns 0
+- **AND** every path clears the action and the hovered selection and returns 0
 
 ### Requirement: Menu hover
-The menu SHALL take its hover value when it equals field 0x204 and zero otherwise. An unchanged selection SHALL return 0. A change SHALL store the selection, play a sound when it is non-zero and the last stamp plus 200 is below the clock, update the stamp only in that case, and return 3.
+The menu SHALL take its hover value when it equals the hovered selection and zero otherwise. An unchanged selection SHALL return 0. A change SHALL store the selection, play a sound when it is non-zero and the last stamp plus 200 is below the clock, update the stamp only in that case, and return 3.
 
 #### Scenario: An unchanged selection
-- **WHEN** the hover, field 0x204 and field 0x70 are all 5
+- **WHEN** the hover, the hovered selection and the stored selection are all 5
 - **THEN** nothing changes and the result is 0
 
 #### Scenario: A changed selection
-- **WHEN** the hover and field 0x204 are 5, field 0x70 is 0, the stamp is 0 and the clock is 300
+- **WHEN** the hover and the hovered selection are 5, the stored selection is 0, the stamp is 0 and the clock is 300
 - **THEN** the selection becomes 5, a sound plays, the stamp becomes 300 and the result is 3
 - **WHEN** the selection is 0
 - **THEN** no sound plays and the result is still 3
@@ -1156,13 +1156,13 @@ An already inactive pane SHALL return true without work. Otherwise the detach SH
 - **AND** the base result returns
 
 ### Requirement: Inventory page sentinel
-The page override SHALL store −3 at field 0x6c when its argument is −1, and SHALL leave the field for any other argument. The base result SHALL return.
+The page override SHALL store −3 as the selected index when its argument is −1, and SHALL leave it for any other argument. The base result SHALL return.
 
 #### Scenario: The sentinel
 - **WHEN** the argument is −1
-- **THEN** field 0x6c becomes −3
+- **THEN** the selected index becomes −3
 - **WHEN** the argument is 4
-- **THEN** field 0x6c keeps its value
+- **THEN** the selected index keeps its value
 
 ### Requirement: Main-menu name entry
 A key without bit 0x2 SHALL go to the base handler and leave the buffer. Otherwise the ten bytes SHALL shift left by one and the character SHALL be appended, with A–Z lowered by 0x20. A buffer of "barechoons" SHALL run the submit routine.
@@ -1213,7 +1213,7 @@ At place 10, 180 with a right edge of 110, unit 5 and a measured icon of 20, pag
 - **THEN** only the begin and bind run
 
 ### Requirement: Skill tooltip show
-A missing row SHALL show nothing. A found row SHALL set the index to object+0xb8 − 1 and the threshold to row+0x38 − 1, add 0x10 to the flags, place itself at the anchor x and nine units plus the anchor y, use a height of 24 units when global 0x2ad3c0 is 0 and 18 otherwise, set visible, make three calls and stamp three times the base plus the offset.
+A missing row SHALL show nothing. A found row SHALL set the index to the object's skill value less one and the threshold to the row's threshold less one, add 0x10 to the flags, place itself at the anchor x and nine units plus the anchor y, use a height of 24 units when the compact-layout global is 0 and 18 otherwise, set visible, make three calls and stamp three times the base plus the offset.
 
 #### Scenario: A found row
 - **WHEN** a row is found, the anchor is 7, 8, the object word is 5, the row word is 4 and the unit is 5
@@ -1240,7 +1240,7 @@ The journal SHALL copy its x and y to the two origin globals, assign the string 
 
 #### Scenario: A journal page
 - **WHEN** the page is 3
-- **THEN** the origin copies, the table offset is 3 × 0x18 + 0x10 and one base call runs
+- **THEN** the origin copies, the string is page 3's table entry and one base call runs
 
 ### Requirement: Character view destroy
 The destructor SHALL make one release call on a set free flag, always run the base destructor once and make one final call only on a set free flag.
@@ -1319,15 +1319,15 @@ With screen width 1000, clock 2048, scale 1 and available mask 1, the band SHALL
 - **THEN** card 1 is named
 
 ### Requirement: Main-menu confirm
-A selection of zero or less SHALL copy field 0x70 to 0x204 and return 0x40. A positive selection with direction 0x1000 SHALL store itself at 0x70, copy it, play a sound when ready and return 7; any other direction SHALL return 0x40 without copying.
+A selection of zero or less SHALL copy the stored selection to the hovered one and return 0x40. A positive selection with direction 0x1000 SHALL store itself, copy it to the hovered selection, play a sound when ready and return 7; any other direction SHALL return 0x40 without copying.
 
 #### Scenario: The confirmation
 - **WHEN** the selection is 3 and the direction is 0x1000
-- **THEN** 3 is stored, copied to 0x204, the sound plays and the result is 7
+- **THEN** 3 is stored, copied to the hovered selection, the sound plays and the result is 7
 - **WHEN** the selection is 3 and the direction is 0x2000
 - **THEN** nothing is copied and the result is 0x40
 - **WHEN** the selection is 0
-- **THEN** 0x70 copies to 0x204 and the result is 0x40
+- **THEN** the stored selection copies to the hovered one and the result is 0x40
 
 ### Requirement: Main-menu select
 The select SHALL store the index and return 3. It SHALL play a sound and update the stamp only when the index is positive, the sound is ready and the stamp plus 200 is below the clock.
@@ -1568,7 +1568,7 @@ The main menu's forward action SHALL run action 0 on page 1 and action 1 on page
 - **THEN** no action, no sound and no session entry
 
 ### Requirement: Character view chain walk
-The character view's chain walk SHALL stop at a node whose record is missing, or whose flags carry both 0x12000000 with a negative word at 0x468; any other node SHALL follow its next node at 0x128.
+The character view's chain walk SHALL stop at a node whose record is missing, or whose flags carry both 0x12000000 with a negative state word; any other node SHALL follow its next node.
 
 #### Scenario: Settled, missing and open nodes
 - **WHEN** the first node has no matching bits and points at a node carrying both 0x12000000 with a negative word

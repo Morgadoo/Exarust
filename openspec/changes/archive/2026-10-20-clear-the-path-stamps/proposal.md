@@ -22,7 +22,7 @@ The pathfinder clears its 256×256 stamp table to the blocked value before each 
 
 - `exa_ai::path`, from `PATH_STAMP_SIDE`, `PATH_STAMP_BLOCKED` and `clear_path_stamps`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `TPathFinder` becomes **64%** in `data.json`. The headline stays 17.0%.
-- Evidence: `0x1000caee0`: the three fill loops and the `0xffffffff` constant at `0x1002b3c60`. No new corpus files.
+- Evidence: the stamp clear: the three fill loops and the `0xffffffff` constant. No new corpus files.
 - Out of scope: the constructor's globals.
 
 ## Phase

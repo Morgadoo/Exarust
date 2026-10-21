@@ -4,7 +4,7 @@
 
 The scale is `1/speed` widened to double, plus 0.015, halved and narrowed: 0.5075 at speed 1 and 0.2575 at 2. The effect keeps a state and a target.
 
-An event whose low bits meet `0xa` sets the state to removal (2). In removal a held target is released and cleared, the cleanup callback runs, and the step returns 2. In the active state (1) the owner hook is installed when the owner accepts, the target's `+0xd40->+0x96f` byte is raised, the frame callback is registered, and the step returns 0. Any other state returns 0 without side effects.
+An event whose low bits meet `0xa` sets the state to removal (2). In removal a held target is released and cleared, the cleanup callback runs, and the step returns 2. In the active state (1) the owner hook is installed when the owner accepts, the target's held flag is raised, the frame callback is registered, and the step returns 0. Any other state returns 0 without side effects.
 
 ## Model
 

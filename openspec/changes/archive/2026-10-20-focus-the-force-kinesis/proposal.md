@@ -23,7 +23,7 @@
 
 - `exa_game::thaum`, from `KINESIS_REACH`, `KINESIS_DAMPING`, `kinesis_scale`, `KinesisEffect` and `step_force_kinesis`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `TPwrForceKinesis_S` becomes **10%** in the source rating. The headline rises slightly.
-- Evidence: `0x100246ca0` (the 2.8, 0.5 and scale constants at `0x10033f100`, `0x10033e5e8`, `0x10033e600`, `0x10033f108`, `0x10033ede8`) and `0x100246200` (the `0xa` event test, the release, the owner hook, the target flag and the callback registration). No new corpus files.
+- Evidence: the kinesis focus (the 2.8, 0.5 and scale constants) and its event handler (the `0xa` event test, the release, the owner hook, the target flag and the callback registration). No new corpus files.
 - Out of scope: the 786-byte grab update and the 893-byte release body.
 
 ## Phase

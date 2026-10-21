@@ -26,7 +26,7 @@
 
 - `exa_physics::motile`, from `smoothstep`, `ease`, `advance_clock`, `Charge`, `redistribute_inverse_mass`, `friction_for`, `contact_next`, `action_allowed`, `Gate`, `action_ready`, `cycle_reset`, `in_impact_band` and `ImpactCounter`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `TMotileDynamics` becomes **25%** in the source rating. The headline rises slightly.
-- Evidence: `0x100166550`/`0x100175DE0` (smoothstep), `0x100175E10` (mode 2), `0x10017AAD0` (clock), `0x10017A6B0` (reservoirs), `0x1001730C0` (mass table `0x1002BB460`), `0x100163CC0` (friction), `0x100163EA0`/`0x100169130` (gates), `0x1001628D0` (cycle reset) and `0x100168260` (impact band). No new corpus files.
+- Evidence: the two smoothstep helpers, the mode-2 step, the clock, the reservoirs, the mass table and its reader, the friction, the two gates, the cycle reset and the impact band. No new corpus files.
 - Out of scope: the 20.3 KB tick kernel, the solver, the state machine `SetState`, torque and the animation kernels.
 
 ## Phase

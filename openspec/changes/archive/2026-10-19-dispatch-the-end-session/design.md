@@ -2,7 +2,7 @@
 
 ## Behaviour
 
-The dispatch reads the global page and the action. Page 2 action 1 calls the resume routine; action 2 shows form 0x1001243c0. Page 4 action 1 calls 0x100124650 when the form page is 4, otherwise 0x100124820; action 2 calls 0x100124820. Page 8 action 1 with form page 2 calls 0x100132250, 0x10017b480 and 0x10012c2c0, then shows form 0x100124800; with any other form page it shows 0x100123d30 with the last-round flag. Page 8 action 2 shows 0x1001243c0. Any other page calls the registered handler whose key equals the page when one exists.
+The dispatch reads the global page and the action. Page 2 action 1 calls the end page's continue; action 2 shows the main menu. Page 4 action 1 reloads the stored level when the form page is 4, otherwise ends the session to the main menu; action 2 ends the session to the main menu. Page 8 action 1 with form page 2 hides the kept form, makes a second call and prepares the character record, then shows its form; with any other form page it shows the next practice fight with the last-round flag. Page 8 action 2 shows the main menu. Any other page calls the registered handler whose key equals the page when one exists.
 
 Every path clears the action and field 0x204 and returns 0.
 

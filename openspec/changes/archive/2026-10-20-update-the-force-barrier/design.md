@@ -2,7 +2,7 @@
 
 ## Behaviour
 
-With a target, the fraction is the target's frame at `+0x5c` minus the barrier's frame at `+0x10`, both converted to float, plus the value returned by the probe `0x10008b7a0`. The position is the original's point lerp `a + (b − a)·t`, where a is the current pair at `+0x300` and b the previous at `+0x30c`; the result is written to the owner at `+0xd0` and the fraction is returned.
+With a target, the fraction is the target's frame minus the barrier's frame, both converted to float, plus the value the probe returns. The position is the original's point lerp `a + (b − a)·t`, where a is the current pair and b the previous; the result is written to the owner and the fraction is returned.
 
 ## Model
 

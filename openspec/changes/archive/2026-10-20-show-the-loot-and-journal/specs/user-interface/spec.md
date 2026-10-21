@@ -14,4 +14,4 @@ The journal SHALL copy its x and y to the two origin globals, assign the string 
 
 #### Scenario: A journal page
 - **WHEN** the page is 3
-- **THEN** the origin copies, the table offset is 3 × 0x18 + 0x10 and one base call runs
+- **THEN** the origin copies, the string is page 3's table entry and one base call runs

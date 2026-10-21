@@ -2,7 +2,7 @@
 
 ## Behaviour
 
-The first test is the query against the signature's id at `(%rbx)`; equality matches. Otherwise the binding is looked up by the query. With no binding the match is false. The binding's word at `+0x14` must equal the signature's id; then each of four bytes at `+0x1bc + i × 12` must equal the signature byte at `+0xf + i`. All four equal is a match.
+The first test is the query against the signature's id; equality matches. Otherwise the binding is looked up by the query. With no binding the match is false. The binding's id word must equal the signature's id; then each of the record's four signature bytes (one per 12-byte entry) must equal the matching signature byte. All four equal is a match.
 
 ## Model
 

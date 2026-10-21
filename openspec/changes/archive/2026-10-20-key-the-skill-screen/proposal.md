@@ -24,7 +24,7 @@ The skill screen's key handler moves the selection over the grid, routes base an
 
 - `exa_ui::skill`, from `skill_screen_key`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `TSkillUI` moves from 12% to 16%.
-- Evidence: the 864-byte `0x100224b90`: the `0x180`/`0x184` selections, the `0x6c` index, the `0xf001` masks `0x1001`/`0x2001`, the grid `0x198`, the publish slot `0x128`, the base `0x100224090`, the hint `0x100028a10`, the `0x159` hide and `0x15c` deadline, bit `0x40` of `0x60`, the page `0x1c0`, the scan `0x100223ac0`, the repage `0x100223e30`, the closing `0x1c4`, the cursor slot `0x130`, the transform `0x100019800`, the hit slot `0x158` and the clear `0x10022a380`. No new corpus files.
+- Evidence: the 864-byte key handler: the two selections, the index, the `0xf001` masks `0x1001`/`0x2001`, the grid, the publish slot, the base, the hint, the hide and its deadline, bit `0x40` of the style word, the page, the scan, the repage, the closing word, the cursor slot, the transform, the hit slot and the clear. No new corpus files.
 - Out of scope: the base, hint, cursor, hit and clear bodies.
 
 ## Phase

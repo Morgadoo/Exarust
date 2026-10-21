@@ -24,7 +24,7 @@ The creation object opens with two fixed option entries, a count, a stride, a va
 
 - `exa_game::create`, from `creation_defaults`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Character_Create` moves from 9% to 10%.
-- Evidence: the 209-byte `0x10012dba0`: the 40-byte clear at `0x198`, the count `0x188`, the 16-byte allocation at `0x190`, the `0x101`/`0x5FFF` and `0x201`/`0x5FFF` entries, the `0x100000` OR, the stored `0x198`/`0x19c`, the constant `0x100315f10` (4.0) and the `0x510000` word at `0x180`. No new corpus files.
+- Evidence: the 209-byte defaults: the 40-byte clear, the count, the 16-byte allocation, the `0x101`/`0x5FFF` and `0x201`/`0x5FFF` entries, the `0x100000` OR, the two stored words, the 4.0 constant and the `0x510000` word. No new corpus files.
 - Out of scope: the allocation routine.
 
 ## Phase

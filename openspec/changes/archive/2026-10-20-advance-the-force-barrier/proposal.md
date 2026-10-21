@@ -21,7 +21,7 @@
 
 - `exa_game::thaum`, from `swap_barrier_yz`, `BarrierPose` and `advance_barrier_pose`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `TForceBarrierEffect` becomes **6%** in the source rating. The headline rises slightly.
-- Evidence: `0x10023ca30` (the y/z swap loop) and `0x10023cfa0` (the four Vec3 pair moves and the frame store). No new corpus files.
+- Evidence: the barrier's y/z swap loop and its advance (the four Vec3 pair moves and the frame store). No new corpus files.
 - Out of scope: the barrier's setup, update and draw.
 
 ## Phase

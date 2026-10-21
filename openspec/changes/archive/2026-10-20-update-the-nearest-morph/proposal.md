@@ -22,7 +22,7 @@ A morph controller stores its target count and copies two arrays, and keeps the 
 
 - `exa_assets::morph_controller`, from `setup_morph` and `nearest_morph`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `RF_Morphing` moves from 0% to 1%.
-- Evidence: the 100-byte `0x1000db620`: the target at `0x38`, the count at `0x48` from `0x280 + 0xc`, the two arrays at `0x40` and `0x60`, and the copy `0x1000022c0`. The 66-byte `0x1000de0b0`: the distance call `0x100019ae0`, the comparison with `0x14`, and the stores at `0x8`, `0x10`, `0x14` and `0x18`. No new corpus files.
+- Evidence: the 100-byte nearest setup: the target, the point count from the owner's output, the two arrays and the copy. The 66-byte nearest callback: the distance call, the comparison with the stored distance, and the four stores. No new corpus files.
 - Out of scope: the distance, allocation and copy bodies.
 
 ## Phase

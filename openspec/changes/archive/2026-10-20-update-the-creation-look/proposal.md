@@ -21,7 +21,7 @@ The creation screen shows the sex toggles and a face variant label: female sets 
 
 - `exa_game::create`, from `update_creation_look`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Character_Create` moves from 4% to 6%.
-- Evidence: the 334-byte `0x10012d650`: the bit 0 test on the `0x54` word, the four widget values at `0x154`, `0x1bc`, `0x224` and `0x28c` set to 16 or 0, the default caption `0x100315e38`, the `0xf00000` variant shifted by 20 and less one, and the `+0x41` byte caption. No new corpus files.
+- Evidence: the 334-byte look update: the bit 0 test on the appearance word, the four slider values set to 16 or 0, the default caption, the `0xf00000` variant shifted by 20 and less one, and the `0x41` byte caption. No new corpus files.
 - Out of scope: the string and widget routines.
 
 ## Phase

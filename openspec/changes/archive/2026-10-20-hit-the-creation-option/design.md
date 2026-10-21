@@ -4,7 +4,7 @@
 
 The hit is false when the key is 8 or the list at `0x230` is absent. Otherwise it is the hit test's result. A hit calls the selection with the list's count at `0x158` less one. The method returns true in every case.
 
-The singleton at `0x1004f0450` is returned when present. When absent, `0x100130290` runs, the previous hook at `0x10049a9d0` is saved and the creator is installed as the new hook.
+The singleton is returned when present. When absent, its creator runs, the previous hook is saved and the creator is installed as the new hook.
 
 ## Model
 

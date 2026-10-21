@@ -26,7 +26,7 @@ The `TMotileDynamics` tick kernel (20.3 KB) begins with a run of pure stages tha
 
 - `exa_physics::motile`, from `Posture`, `posture_scalars`, `follow_gain`, `follow_step`, `posture_ramp`, `support_decay`, `tone_weight`, `cadence_target`, `pitch_step`, `wrap_angle` and `impact_exceeds`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `TMotileDynamics` becomes **27%** in the source rating. The headline rises slightly.
-- Evidence: `0x10016924B` (posture), `0x100169493`/`0x100169516` (gain and step), `0x10016980F` (ramp/decay), `0x100169678` (tone weight), `0x100169CD4` (cadence), `0x100169DDB` (pitch), `0x10016C2A0` (wrap) and `0x10016A300` (impact). No new corpus files.
+- Evidence: the motile tick's posture, gain and step, ramp and decay, tone weight, cadence, pitch, wrap and impact blocks. No new corpus files.
 - Out of scope: the main dispatcher, the limb pull loop, the support/friction stage, helper A/B and the state machine.
 
 ## Phase

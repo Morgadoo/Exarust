@@ -2,9 +2,9 @@
 
 ## Behaviour
 
-The requested frame is the object's `0x190`. Below 1 the method ends. The child at `0xa0` holds the current frame at `0x158 + 0x40`; when it already equals the requested frame less one, the method ends without a refresh.
+The requested frame is a field of the object. Below 1 the method ends. The child holds the current frame in its record; when it already equals the requested frame less one, the method ends without a refresh.
 
-Otherwise the child's frame becomes the requested less one. The refresh `0x1000ef7f0` runs with the child's `0x168`, the part search `0x10012cb10` runs on `0x168 + 0x18`, and its result is stored at the `0x180` object's `0x180`.
+Otherwise the child's frame becomes the requested less one. The model refresh runs with the child's model, the part search runs on the model, and its result is stored on the view object.
 
 ## Model
 

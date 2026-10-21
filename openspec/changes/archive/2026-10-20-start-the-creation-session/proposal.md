@@ -22,7 +22,7 @@ The creation screen selects a table entry, starts a session by storing its value
 
 - `exa_game::create`, from `select_creation_table`, `start_creation_session` and `dispatch_creation_menu`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Character_Create` moves from 28% to 29%.
-- Evidence: the 76-byte `0x10012e560`: the source `0x38` less one, the table `0x4f0560` and the call `0x100036440`. The 59-byte `0x10012ed60`: the value `0x4f0b80`, the byte `0x4ef330` and the schedule `0x1001246d0`. The 60-byte `0x10012ee60`: the byte `0x49a300` and the calls `0x10022d3c0` and `0x100029aa0`. The 65-byte `0x10012fcd0` repeats the shipped key handler. No new corpus files.
+- Evidence: the 76-byte table selection: the source less one, the global record table and the loader call. The 59-byte session start: the start value, the stored byte and the schedule. The 60-byte menu dispatch: the resume flag byte and its two calls. The 65-byte key handler repeats the shipped one. No new corpus files.
 - Out of scope: the called bodies.
 
 ## Phase

@@ -2,9 +2,9 @@
 
 ## Behaviour
 
-The scale is the source at `0x38`, converted to double, multiplied by the double `0.17`, added to the double `0.9` and converted back to a float. It is stored at the child's `0x1a0` and at `0x158 + 0x50`.
+The scale is the source value, converted to double, multiplied by the double `0.17`, added to the double `0.9` and converted back to a float. It is stored on the child and in the child's record.
 
-With bit `0x100000` set on the object's `0x1c`, a clear byte at `0x1002b3d60` runs `0x1000cf330`. When the child's label at `0x198` is null, one is built from `0x1b0` and `0x190 + 1` and stored. The label is then drawn through `0x1000cd390` with the scale.
+With bit `0x100000` set on the object's flag word, a clear global guard byte runs the global update. When the child's label is null, one is built from the label base and the index plus one and stored. The label is then drawn with the scale.
 
 ## Model
 

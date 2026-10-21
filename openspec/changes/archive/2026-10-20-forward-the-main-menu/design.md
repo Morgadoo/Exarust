@@ -2,7 +2,7 @@
 
 ## Behaviour
 
-The function reads the menu's page at `0x208`. Page 1 calls the action with 0; page 8 calls it with 1. Both then call the session entry with 1. The input-readiness word at `0x4f01a0` gates the sound, which is played through `0x1000cd130`. Any other page falls through without a sound, an action or the session call.
+The function reads the menu's stored page. Page 1 calls the action with 0; page 8 calls it with 1. Both then call the session entry with 1. The input-readiness global gates the sound. Any other page falls through without a sound, an action or the session call.
 
 ## Model
 

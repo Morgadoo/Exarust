@@ -2,7 +2,7 @@
 
 ## Behaviour
 
-When the index and the current value are both non-positive, the base `0x10002d6d0` runs and its result is returned. Otherwise the result is 3 and `0x6c` stores the index. Without a grid pointer at `0x170` the method ends there.
+When the index and the current value are both non-positive, the base hover runs and its result is returned. Otherwise the result is 3 and the index is stored. Without a grid pointer the method ends there.
 
 With a grid, the candidate is the index only when it is positive, its bits 8 through 10 are non-zero, its low three bits are non-zero and the byte at `0xb8 + row × 8 + column + 1` is non-zero, where row is bits 8 through 10 and column the low three bits. A candidate equal to the previous index at `0x18c` ends the method.
 

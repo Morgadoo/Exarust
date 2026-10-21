@@ -32,7 +32,7 @@ Three behaviour groups split out of the original's `RFE_Effects_Electricity` uni
 
 - `exa_game::item_effects`, `exa_ai::golem` and `exa_render::electricity`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `Equipment effects and focus-item slot` becomes **20%**, `Golem guardians and alarm zones` **20%**, and `RFE_Effects_Electricity` **10%**.
-- Evidence: `0x1001a0ae0`, `0x1001a0c50`, `0x1001a1330`, `0x1001a1ce0` (item effects); `0x1001a0160`, `0x1001a0970` (golem); `0x1001a13b0`, `0x1001a1600`, `0x1001a1710`, `0x1001a1880`, `0x1001a18a0` (electricity). The constants are at `0x100323c38`–`0x100323d38`. No new corpus files.
+- Evidence: the four item-effect ticks, the two golem ticks and the five electricity routines, and their constant block. No new corpus files.
 - Out of scope: the arc mesh and ribbon buffers, the spark burst, the golem wake/alarm handlers, and the item-effect dispatch and decay.
 
 ## Phase

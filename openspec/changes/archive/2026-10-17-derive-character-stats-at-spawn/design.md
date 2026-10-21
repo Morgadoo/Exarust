@@ -83,7 +83,7 @@ the body rules are in [`docs/formats/RSQ.md`](../../../docs/formats/RSQ.md)
 - **Player and duellist** spawn from a new human record (height 0, not
   feral) of the human race, keeping their earlier lack of a natural armour
   layer.
-- **Name.** The record's `+0x90` stays `feral` (RB21 open for the name
+- **Name.** The record's feral field stays `feral` (RB21 open for the name
   only; the rules are the same).
 
 ## Open questions
@@ -92,7 +92,7 @@ the body rules are in [`docs/formats/RSQ.md`](../../../docs/formats/RSQ.md)
 |---|---|
 | RB51: order of the builder's and the init's leg reach | answered: REA/`exe.asm`, the spawn calls the builder, then the registration whose last call is the init's slot |
 | RB49: rule bits 1, 4, 0x40 | partly: bit 1 is read by the held-item pass (fist sphere) and the AI, bit 4 only by the AI, 0x40 quarters a blow's daze and drops the swing stall; the AI uses stay untraced |
-| RB21: the name of record `+0x90` | open (name only); kept `feral` |
-| RB5: who sets state bit 0x1000 and `+0x12f6` | not needed here (C13) |
+| RB21: the name of the record's feral field | open (name only); kept `feral` |
+| RB5: who sets state bit 0x1000 and the character's matching flag | not needed here (C13) |
 | Which placement reader the arena uses | inferred: the threaded loader's reader refills, the other does not; no shipped living placement stores an empty red pool, so only the arena's records depend on it |
 | RR21: a feral 1.0 zombie standing and walking (loose head, shamble) | retail capture, not run (the game is the user's); Exarust's exanima01 checked in a light run |

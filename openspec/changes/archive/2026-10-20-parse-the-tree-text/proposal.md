@@ -23,7 +23,7 @@ The power tree's text chunk (`0xABCD0000`) holds its learning prompts as offset-
 
 - `exa_game::thaum`, from `TreeText` and `parse_tree_text`.
 - `docs/PLAN.md` and the generated `docs/COMPONENT-MAP.md`: `TThaumTree` becomes **18%** in the source rating. The headline rises slightly.
-- Evidence: `0x10026f6c0` (the header and offsets read), `0x10026f790` (the length-prefixed fetch). No new corpus files.
+- Evidence: the tree text's header and offsets read, and its length-prefixed fetch. No new corpus files.
 - Out of scope: the tree's create/reset and the rest of the loader.
 
 ## Phase

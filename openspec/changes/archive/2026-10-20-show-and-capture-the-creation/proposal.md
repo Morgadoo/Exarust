@@ -23,7 +23,7 @@ The creation screen closes a form by mode, handles a key with or without a selec
 
 - `exa_game::create`, from `close_creation_form`, `creation_key`, `show_creation_form` and `capture_creation`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Character_Create` moves from 26% to 27%.
-- Evidence: the 64-byte `0x10012f5c0`: the stored byte `0x4ef330` and the mode `0x4effa0`. The 65-byte `0x10012f790`: the selection `0x6c`, the base call `0x10002dbc0` and the `0x40` result with slot `0xc8`. The 75-byte `0x10012f8e0`: the calls `0x100139430`, `0x1001316d0`, `0x10012f840`, the check `0x10017e740` and the build `0x10012f7e0`. The 123-byte `0x10012f2e0`: six qwords from `0x158 + 0xc0`, the `0x258` value, the `0x274` mode and the schedule `0x1001246d0`. No new corpus files.
+- Evidence: the 64-byte show: the stored byte and the mode global. The 65-byte key: the selection, the base call and the `0x40` result with the close slot. The 75-byte setup: its three calls, the conversion check and the build. The 123-byte capture: six qwords from the slot table, the index value, the mode and the schedule. No new corpus files.
 - Out of scope: the called bodies.
 
 ## Phase

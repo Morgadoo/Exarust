@@ -24,7 +24,7 @@ The skill screen hit-tests a point against the form, the page-2 bottom band, the
 
 - `exa_ui::skill`, from `hit_skill_point`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `TSkillUI` moves from 20% to 25%.
-- Evidence: the 857-byte `0x100225130`: the state `0x158`, the page `0x1c0`, the base `0x10002d270`, the ownership check, the guard `0x100028a20`, the transform `0x10002ce40`, the page-2 band from 16/8 units vertically and 6 units horizontally, `0x10000`, the state byte 4 return, the high `0x184` and low `0x180` nodes, the layout slot `0x1c8`, the radius `0x1002275a0` with 41 units, the offsets 4 and 13 units, the 8-unit low band, the `4.5` at `0x10033acf0` over 10 units, and the fallback slot `0x1c0`. No new corpus files.
+- Evidence: the 857-byte point hit: the state and page, the base hit, the ownership check, the guard, the transform, the page-2 band from 16/8 units vertically and 6 units horizontally, `0x10000`, the state byte 4 return, the high and low nodes, the layout slot, the radius test with 41 units, the offsets 4 and 13 units, the 8-unit low band, the `4.5` over 10 units, and the fallback slot. No new corpus files.
 - Out of scope: the called bodies.
 
 ## Phase

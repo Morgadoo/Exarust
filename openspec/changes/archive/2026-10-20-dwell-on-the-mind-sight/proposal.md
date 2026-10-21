@@ -2,7 +2,7 @@
 
 ## Why
 
-The sight's tracker (`0x1001dfd60`) runs at most every four milliseconds and holds each node for a dwell window of 3000 or 5000 ms. Exarust has the weights and the quad but not the throttle or the dwell.
+The sight's tracker runs at most every four milliseconds and holds each node for a dwell window of 3000 or 5000 ms. Exarust has the weights and the quad but not the throttle or the dwell.
 
 ## What Changes
 
@@ -22,7 +22,7 @@ The sight's tracker (`0x1001dfd60`) runs at most every four milliseconds and hol
 
 - `exa_game::mind`, from `mind_track_due`, `mind_dwell_window` and `mind_dwell_fade`.
 - `docs/PLAN.md` and `docs/COMPONENT-MAP.md`: `SG_Thaum_Mind` becomes **11%**. The published headline stays 14.4% and 5.7%; the fresh sum stays about 15.5%.
-- Evidence: `0x1001dfd60`: the 4.0 ms throttle at `0x10032f290`, the `+0x11a4 > 1` 3000 ms window at `0x10032f2a8`, the `+0xdf4 & 0x800` 5000 ms window at `0x10032f2b0`, and the `now > seen + window` loss test. No new corpus files.
+- Evidence: the tracker: the 4.0 ms throttle, the 3000 ms window for a character whose count is above 1, the 5000 ms window for a marked character (`& 0x800`), and the `now > seen + window` loss test. No new corpus files.
 - Out of scope: the visibility test and the entry array.
 
 ## Phase

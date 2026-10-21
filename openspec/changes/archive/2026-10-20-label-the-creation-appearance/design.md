@@ -2,7 +2,7 @@
 
 ## Behaviour
 
-The band is the record's word at `0x54` masked with `0xff00`. A zero band takes HF when bit 0 is set and HM otherwise. The other bands are fixed: 0x200 gives HAM, 0x300 gives OM and 0x400 gives ML. Everything else gives no label and passes a null string to `0x1000080f0`.
+The band is the record's appearance word masked with `0xff00`. A zero band takes HF when bit 0 is set and HM otherwise. The other bands are fixed: 0x200 gives HAM, 0x300 gives OM and 0x400 gives ML. Everything else gives no label and passes a null string to the text set.
 
 ## Model
 
