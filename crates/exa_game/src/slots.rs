@@ -397,7 +397,14 @@ impl Slots {
             .into_iter()
             .find(|kind| self.file(number, *kind).is_file())
             .ok_or(SaveError::Malformed)?;
-        self.load_file(number, kind, mask)
+        let loaded = self.load_file(number, kind, mask);
+        // A failed full load from a checkpoint switches the package back to
+        // the save name, which the original's open creates when it is
+        // missing. It does not copy the checkpoint over.
+        if loaded.is_err() && kind == SlotKind::Checkpoint {
+            let _ = Self::open(&self.file(number, SlotKind::Save));
+        }
+        loaded
     }
 
     /// Opens and decodes a slot file: the mode's signature check, the player
@@ -576,16 +583,26 @@ impl Slots {
         Ok(Some(number))
     }
 
-    /// Deletes both of a slot's files.
+    /// Deletes both of a slot's files, the save first as the original does.
+    /// A file that cannot be deleted does not stop the other attempt; the
+    /// first error is returned after both.
     pub fn delete(&self, number: u32) -> io::Result<()> {
+        let mut first = None;
         for kind in [SlotKind::Save, SlotKind::Checkpoint] {
             match fs::remove_file(self.file(number, kind)) {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
+                Err(error) => {
+                    if first.is_none() {
+                        first = Some(error);
+                    }
+                }
             }
         }
-        Ok(())
+        match first {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     /// Writes a checkpoint when there is none: saves the slot, then copies
@@ -1528,6 +1545,21 @@ mod tests {
         let record = loaded.player_record().unwrap();
         assert_eq!(record.name, "Ash");
         assert_eq!(record.id, 5);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_checkpoint_load_leaves_a_fresh_save_file() {
+        let dir = folder("checkpoint-fail");
+        let slots = Slots::story(&dir);
+        // Only a checkpoint, and it is not a readable session.
+        fs::write(slots.file(3, SlotKind::Checkpoint), b"garbage").unwrap();
+        assert_eq!(slots.load(3, false), Err(SaveError::Malformed));
+        let save = fs::read(slots.file(3, SlotKind::Save)).unwrap();
+        assert_eq!(save, PackageImage::new().to_bytes());
+        // Opening the checkpoint reset its bad header; the save was created
+        // fresh as well, and the checkpoint was not copied over it.
+        assert_eq!(fs::read(slots.file(3, SlotKind::Checkpoint)).unwrap(), save);
         let _ = fs::remove_dir_all(&dir);
     }
 

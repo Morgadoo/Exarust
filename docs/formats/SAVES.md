@@ -161,7 +161,9 @@ arena save is converted first: its `arenahub` section is deleted from the
 package and the package is written back. The story loader forces the
 locale to `exanima05` when the transition state is 2. Once that succeeded
 from a `.rcp`, the checkpoint is copied over the `.rsg`, and the package
-switches back to the `.rsg` name. The character screen's load prefers the
+switches back to the `.rsg` name. A load that fails while reading a `.rcp`
+also switches back, creating the `.rsg` from a fresh header but not
+copying the checkpoint into it. The character screen's load prefers the
 `.rsg`; it takes the `.rcp` only when asked or when the `.rsg` is missing,
 and reads the player data with mask `0x100010` (the journal and the global
 experience only). It does not move the slot in the order.
