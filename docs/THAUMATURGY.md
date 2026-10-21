@@ -145,7 +145,7 @@ barrier (facing 1 or more, 3 m), shell and strikes (cost within half the
 focus, facing within 0.5, a free slot). Each creator's material
 (`_ForceMat01`, `_ForceBarrier01`, `_ForceAura01`), its parameter block,
 the shared `gi_multipoint` emissive program, the animated `_ForceNoise`
-picture and the sounds each one loads are data in `force` (the GL scene
+field (one 8-bit channel from `exa_render::image_noise`) and the sounds each one loads are data in `force` (the GL scene
 nodes, shader binding and GI registration are not issued).
 
 ## Mind
@@ -334,8 +334,9 @@ at the contact. The AI's long door and summoning words carry their cost.
 `exa_game::thaum::veil`. The body-side half of the constant displacement:
 the shell (`_EffectShell01`, fade from zero, node flags `0x21000000`, its
 end event zeroing the fade and asking the node to play `0x10`), the collision
-bit `0x4000` every physics node gains, the `thmdsp_cns01` hum at pitch
-`0.8 × length × r` whose first play is silent, the left-behind image gathered
+bit `0x4000` every physics node gains, the `thmdsp_cns01` hum that starts
+`0.8 × length × r` seconds into its loop (computed in double precision,
+silent at first), the left-behind image gathered
 from the body's mesh and skin nodes and ordered by its subobjects' `0x40`
 flags, and the visibility bits (`0x10` shown, `0x20` hidden, `0x4` fading,
 `0x8000_0000` dead) that hide a part with subobjects by setting its low
@@ -515,9 +516,12 @@ grid's penalty until the wall falls;
 wisps ride their parts. The running game opens the tree with `P` and the bar with `C` (`hotkeys`),
 routes the pointer through the tree's hover/click/drag/zoom rules, draws
 the tree, bar, tooltip and preview with the six fragment programs in
-`exa_ui::tree_draw` and the `.rfi` sheets (`power_screen`), and casts the
-chosen slot with the use key through the Force, Displacement and Energy
-front ends, spawning the creators' scene nodes (`thaum::visuals`). The
+`exa_ui::tree_draw` and the `.rfi` sheets (`power_screen`), and runs the
+chosen slot's learning and cost gates with the use key through the Force,
+Displacement and Energy front ends, against a stand-in body and the
+domains' default worlds, and spawns only a marker entity from the creator
+(`thaum::visuals`: no mesh, sound or shader is issued). The constant
+displacement's veil, the grant routine and the tree's key handler are not wired. The
 `--debug-arcs`, `--debug-barricade` and `--debug-wisps` flags still put
 those effects on the player ([DEBUGGING.md](DEBUGGING.md)).
 
