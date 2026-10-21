@@ -264,7 +264,7 @@ impl combat::Field for DuelField<'_> {
             fight: level == 3,
             ..self.spot
         };
-        let s = place::search_score(level, d, spot);
+        let s = place::score_place(d, spot);
         let away = point - self.foe;
         let ahead = if d > 0.0 {
             1.0 - (away.x * self.heading.x + away.z * self.heading.z) / d
@@ -438,7 +438,9 @@ fn duellist(
             combat::enter(&mut ai.mind, false, now as u32);
             ai.mind.heading = yaw_of(t.rotation);
             // The target is set here: the estimate and the bearing start at
-            // its body.
+            // its body [Exarust's: the original's set-target refreshes the
+            // estimate from the foe's chest with its draw; the first combat
+            // tick does that here].
             let chest_cm = stance::chest_point(gt, ragdoll) * CM;
             let target_cm = target.translation() * CM;
             let to_cm = target_cm - chest_cm;
@@ -660,11 +662,6 @@ fn duellist(
             in_attack: *condition == Condition::ATTACKING,
             presses: false,
             other_skill: 0.0,
-            lunge_band_cm: if ai.mind.lunging {
-                ai.mind.lunge_reach_cm + ai.mind.overshoot + ai.mind.overshoot_mean
-            } else {
-                0.0
-            },
         };
         for _ in 0..runs {
             let yaw = yaw_of(t.rotation);

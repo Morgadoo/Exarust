@@ -2190,14 +2190,14 @@ pub struct MoraleDrift {
     /// Panic, fed by the stress and the alarm over the courage.
     pub panic: f32,
     /// Courage, which drifts toward `max(2·(stress + alarm), 2·total,
-    /// arousal + 0.5)`.
+    /// confidence + 0.5)`.
     pub courage: f32,
     /// A random walk in ±1.
     pub jitter: f32,
     /// The health ratio the last tick measured.
     pub health_ratio: f32,
-    /// The arousal, 10 for a new brain.
-    pub arousal: f32,
+    /// The personality's confidence.
+    pub confidence: f32,
     /// The concern total the contact integration leaves.
     pub total: f32,
 }
@@ -2211,7 +2211,7 @@ impl Default for MoraleDrift {
             courage: 0.5,
             jitter: 0.0,
             health_ratio: 1.0,
-            arousal: 10.0,
+            confidence: 0.0,
             total: 0.0,
         }
     }
@@ -2225,14 +2225,16 @@ pub struct MoraleBody {
     pub down: bool,
 }
 
-/// One tick of the morale: the stress and alarm decay, a drop in health
-/// lowers the courage, the courage drifts toward its floor (the stress and
-/// alarm doubled, the concern total doubled, the arousal plus a half) at
-/// 0.0003 a tick (0.00015 above 1) times `(h + 1)(arousal + 1.1)/2`, the
-/// panic takes 0.001 of the stress over the courage and decays by 0.995,
-/// and the jitter wanders by a hundredth a tick (falling 0.003 while
-/// down). The health ratio of a downed body is scaled by
-/// `0.4 + 0.2·arousal`.
+/// One tick of the morale: the stress and alarm decay; the health ratio
+/// (scaled by `0.4 + 0.2·confidence` while down) lowers the courage when it
+/// drops; the courage eases off above `(h + 1)(confidence + 1.1)/2`, then
+/// drifts toward its floor (the stress and alarm doubled, the concern total
+/// doubled, the confidence plus a half) at 0.0003 a tick (0.00015 from 1 up)
+/// times that factor, or decays by 0.999 at or over it; the panic takes
+/// 0.001 of the stress over the courage and decays by 0.995; and the jitter
+/// wanders by a hundredth of a centred draw (falling 0.003 while down),
+/// clamped to ±1. The steps the original takes in double are taken in
+/// double.
 pub fn drift_morale(state: &mut MoraleDrift, body: MoraleBody, roll: &mut u32) {
     state.stress = (f64::from(state.stress) - 0.01) as f32;
     if state.stress < 0.0 {
@@ -2240,45 +2242,51 @@ pub fn drift_morale(state: &mut MoraleDrift, body: MoraleBody, roll: &mut u32) {
     }
     state.alarm = (f64::from(state.alarm) * 0.9999) as f32;
     let scale = if body.down {
-        state.arousal * 0.2 + 0.4
+        (f64::from(state.confidence) * 0.2 + 0.4) as f32
     } else {
         1.0
     };
     let ratio = (body.health / body.max_health) * scale;
     if ratio < state.health_ratio {
-        state.courage = ((ratio / state.health_ratio) * 0.5 + 0.5) * state.courage * 0.9;
+        let kept = ((ratio / state.health_ratio) * 0.5 + 0.5) * state.courage;
+        state.courage = (f64::from(kept) * 0.9) as f32;
     }
     state.health_ratio = ratio;
-    let factor = (ratio + 1.0) * (state.arousal + 1.1) * 0.5;
-    if factor < state.courage {
+    let factor = (f64::from(1.0 + ratio) * (f64::from(state.confidence) + 1.1) * 0.5) as f32;
+    if state.courage > factor {
         state.courage = (f64::from(state.courage) - 0.0001) as f32;
     }
     let mut floor = (state.stress + state.alarm) * 2.0;
-    if floor < state.total * 2.0 {
+    if state.total * 2.0 > floor {
         floor = state.total * 2.0;
     }
-    if floor < state.arousal + 0.5 {
-        floor = state.arousal + 0.5;
+    if 0.5 + state.confidence > floor {
+        floor = 0.5 + state.confidence;
     }
-    if floor <= state.courage {
-        state.courage = (f64::from(state.courage) * 0.999) as f32;
-    } else if 1.0 <= state.courage {
-        state.courage += (floor - state.courage) * factor * 0.00015;
+    if state.courage < floor {
+        let rate = if state.courage < 1.0 { 0.0003 } else { 0.00015 };
+        let step = (floor - state.courage) * factor;
+        state.courage = (f64::from(step) * rate + f64::from(state.courage)) as f32;
     } else {
-        state.courage += (floor - state.courage) * factor * 0.0003;
+        state.courage = (f64::from(state.courage) * 0.999) as f32;
     }
     let over = (state.stress + state.alarm) - state.courage;
     if 0.0 < over {
-        state.panic += over * 0.001;
+        state.panic = (f64::from(over) * 0.001 + f64::from(state.panic)) as f32;
     }
     state.panic = (f64::from(state.panic) * 0.995) as f32;
     if body.down {
-        state.jitter -= 0.003;
+        state.jitter = (f64::from(state.jitter) - 0.003) as f32;
         if state.jitter < -1.0 {
             state.jitter = -1.0;
         }
     } else {
-        let step = (f64::from(unit_draw(roll)) - 0.5) * 0.01;
-        state.jitter = ((f64::from(state.jitter) + step) as f32).clamp(-1.0, 1.0);
+        let centred = unit_draw(roll) - 0.5;
+        state.jitter = (f64::from(centred) * 0.01 + f64::from(state.jitter)) as f32;
+        if state.jitter < -1.0 {
+            state.jitter = -1.0;
+        } else if state.jitter > 1.0 {
+            state.jitter = 1.0;
+        }
     }
 }

@@ -103,9 +103,6 @@ pub struct Spot {
     pub presses: bool,
     /// The opponent's combat skill, used by a thrust's approach scale.
     pub other_skill: f32,
-    /// The band the engaged close term grows inside, when a lunge holds a
-    /// longer one; 0 takes the opponent's reach plus 140 cm.
-    pub lunge_band_cm: f32,
 }
 
 /// The opponent's attack arc, as the position score reads it.
@@ -317,7 +314,6 @@ pub fn attack_danger(distance_cm: f32, reach_cm: f32, blow: Blow) -> f32 {
         in_attack: true,
         presses: false,
         other_skill: 0.0,
-        lunge_band_cm: 0.0,
     };
     blow_terms(distance_cm, spot).0
 }
@@ -590,35 +586,6 @@ pub fn bearing_of(origin_cm: (f32, f32), candidate_cm: (f32, f32)) -> f32 {
     }
 }
 
-/// The position score as the combat state's place loop reads it: the
-/// place's terms with the contact level's own close adjustment. A contact
-/// below an engagement is noticed from afar: its close term takes
-/// `800/(d + 4)`. An engaged one inside its band (the lunge's when it
-/// presses with one, else the opponent's reach plus 140 cm) adds
-/// `(band − d)·0.01`, eased by `1 + cos` while the candidate lies behind
-/// the opponent [guess: Exarust reads the candidate's side from the score's
-/// published arc cosine].
-pub fn search_score(level: i32, distance_cm: f32, spot: Spot) -> PlaceScore {
-    let mut score = score_place(distance_cm, spot);
-    if level < 2 {
-        score.close += 800.0 / (distance_cm + 4.0);
-    } else {
-        let band = if spot.presses && 0.0 < spot.lunge_band_cm {
-            spot.lunge_band_cm
-        } else {
-            spot.other_reach_cm + 140.0
-        };
-        if distance_cm < band {
-            let mut add = (band - distance_cm) * 0.01;
-            if spot.other_ahead < 0.0 {
-                add *= spot.other_ahead + 1.0;
-            }
-            score.close += add;
-        }
-    }
-    score
-}
-
 /// The footwork the combat state picks around its target: hold, close,
 /// back off, or circle out of the opponent's swing.
 ///
@@ -694,7 +661,6 @@ mod tests {
             in_attack: true,
             presses: false,
             other_skill: 0.0,
-            lunge_band_cm: 0.0,
         }
     }
 
@@ -1004,27 +970,6 @@ mod tests {
         spot.blow.skill = 1.0;
         let score = score_place(25.0, spot);
         assert_eq!(score.approach.to_bits(), 0x3f90_0000);
-    }
-
-    /// The search's score adds the notice term below an engagement and the
-    /// band's growth at one.
-    #[test]
-    fn the_search_score_adds_the_contact_levels_close_terms() {
-        let spot = fight(false, false);
-        let d = 96.0;
-        let watching = search_score(0, d, spot);
-        let t = (200.0 - d) / 200.0;
-        assert!((watching.close - ((2.0 - t) * t * 4.0 + 800.0 / 100.0)).abs() < 1e-4);
-        // At level 2 the band is the opponent's reach plus 140.
-        let engaged = search_score(3, d, spot);
-        let base = (2.0 - t) * t * 4.0;
-        assert!((engaged.close - (base + (190.0 - d) * 0.01)).abs() < 1e-4);
-        // A lunge widens the band to the measured reach when it presses.
-        let mut lunging = spot;
-        lunging.presses = true;
-        lunging.lunge_band_cm = 320.0;
-        let pressed = search_score(3, d, lunging);
-        assert!((pressed.close - (base + (320.0 - d) * 0.01)).abs() < 1e-4);
     }
 
     #[test]

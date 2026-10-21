@@ -108,7 +108,7 @@ impl Npc {
             personality: Some(personality),
             morale: combat::MoraleDrift {
                 courage: personality.courage,
-                arousal: personality.arousal,
+                confidence: personality.confidence,
                 ..combat::MoraleDrift::default()
             },
             ..Self::new(record.traits)

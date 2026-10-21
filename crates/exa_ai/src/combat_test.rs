@@ -1194,7 +1194,7 @@ fn the_morale_drifts_stress_alarm_courage_panic_and_jitter() {
         stress: 1.0,
         alarm: 1.0,
         courage: 0.5,
-        arousal: 10.0,
+        confidence: 0.5,
         ..MoraleDrift::default()
     };
     let body = MoraleBody {
@@ -1206,21 +1206,21 @@ fn the_morale_drifts_stress_alarm_courage_panic_and_jitter() {
     drift_morale(&mut state, body, &mut roll);
     assert!((state.stress - 0.99).abs() < 1e-6);
     assert!((state.alarm - 0.9999).abs() < 1e-6);
-    let factor = (1.0 + 1.0) * 11.1 * 0.5;
-    let floor = (0.99 + 0.9999) * 2.0;
-    assert!(floor < 10.5);
-    let courage = 0.5 + (10.5 - 0.5) * factor * 0.0003;
+    // The factor (1 + 1)(0.5 + 1.1)/2 = 1.6; the floor is the doubled
+    // stress and alarm (over the confidence plus a half).
+    let factor = 1.6f32;
+    let floor = (0.99f32 + 0.9999) * 2.0;
+    let courage = 0.5 + (floor - 0.5) * factor * 0.0003;
     assert!((state.courage - courage).abs() < 1e-6, "{}", state.courage);
     let over = (0.99 + 0.9999) - courage;
-    let mut expected = over * 0.001;
-    expected = (f64::from(expected) * 0.995) as f32;
+    let expected = over * 0.001 * 0.995;
     assert!((state.panic - expected).abs() < 1e-6);
     assert_eq!(roll, 1);
-    // A drop in health lowers the courage by (ratio·0.5 + 0.5)·0.9.
+    // A drop in health lowers the courage by (ratio·0.5 + 0.5)·0.9; at its
+    // floor (the confidence plus a half) it then decays by 0.999.
     let mut hurt = MoraleDrift {
         health_ratio: 1.0,
         courage: 1.0,
-        arousal: 0.0,
         ..MoraleDrift::default()
     };
     drift_morale(
@@ -1233,9 +1233,11 @@ fn the_morale_drifts_stress_alarm_courage_panic_and_jitter() {
         &mut 0,
     );
     assert!((hurt.courage - 0.75 * 0.9 * 0.999).abs() < 1e-6);
-    // A downed body falls 0.003 a tick, floored at −1.
+    // A downed body's ratio is scaled by 0.4 + 0.2·confidence, and its
+    // jitter falls 0.003 a tick, floored at −1.
     let mut down = MoraleDrift {
-        jitter: 0.0,
+        jitter: -0.999,
+        confidence: 1.0,
         ..MoraleDrift::default()
     };
     drift_morale(
@@ -1247,5 +1249,6 @@ fn the_morale_drifts_stress_alarm_courage_panic_and_jitter() {
         },
         &mut 0,
     );
-    assert!((down.jitter + 0.003).abs() < 1e-6);
+    assert!((down.health_ratio - 0.6).abs() < 1e-6);
+    assert_eq!(down.jitter, -1.0);
 }
