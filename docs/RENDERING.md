@@ -693,9 +693,11 @@ Only slices from a group's lowest sector floor up to the second-highest are
 updated. The manager marks the sectors of the block to draw each frame: the
 cells within six sectors of the focus point (the camera's position 20 m
 along its view), at most 37 sectors squared from it, built in plane A's
-open flag `0x80000`, whose mid-height point the camera's frustum contains;
-the marks are then widened by one sector, as the original's second pass
-marks every cell next to a marked one. Sectors left unmarked, sectors with
+open flag `0x80000`, whose box (300 cm across in X and Z, half its span
+from the floor slice to the top in Y, around the sector's mid-height
+centre) meets the camera's convex volume; the marks are then widened by
+one sector, as the original's second pass marks every cell next to a marked
+one. Sectors left unmarked, sectors with
 no points at all, the margins and the top slice are cleared to zero every
 step: they stay dark and absorb light that reaches them through open walls.
 Voxel lights still add into them, as the original's additive pass follows

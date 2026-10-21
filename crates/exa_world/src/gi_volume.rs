@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use std::collections::BTreeMap;
 
-use bevy::camera::primitives::Frustum;
+use bevy::camera::primitives::{Aabb, Frustum};
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
@@ -524,7 +524,7 @@ fn publish_sector_lights(
             textures.origin,
             depth,
             floor,
-            |p| frustum_contains(frustum, p),
+            |centre, half| frustum_intersects(frustum, centre, half),
         ),
         // No scene camera: light the whole block (loading screens and
         // headless views have no frustum).
@@ -561,12 +561,16 @@ fn publish_sector_lights(
     *lights = GiSectorLights(Arc::new(state));
 }
 
-/// Whether a point lies inside the view's convex volume (all its planes).
-fn frustum_contains(frustum: &Frustum, p: Vec3) -> bool {
-    frustum
-        .half_spaces
-        .iter()
-        .all(|plane| plane.normal_d().dot(p.extend(1.0)) >= 0.0)
+/// Whether a box centred at `centre` with `half` extents meets the view's
+/// volume (the original tests the sector's 300 cm × half-span × 300 cm box
+/// against the camera's convex volume).
+fn frustum_intersects(frustum: &Frustum, centre: Vec3, half: Vec3) -> bool {
+    frustum.intersects_obb(
+        &Aabb::from_min_max(centre - half, centre + half),
+        &Affine3A::IDENTITY,
+        true,
+        true,
+    )
 }
 
 /// The sectors the manager draws this frame: cells within six of the focus
@@ -582,7 +586,7 @@ fn sector_marks(
     origin: Vec3,
     depth: f32,
     floor: impl Fn(i32, i32) -> u8,
-    inside: impl Fn(Vec3) -> bool,
+    meets_view: impl Fn(Vec3, Vec3) -> bool,
 ) -> [bool; SECTORS * SECTORS] {
     let (w, h) = (grid.width as i32, grid.height as i32);
     let (focus_x, focus_z) = (focus.x, focus.y);
@@ -599,15 +603,20 @@ fn sector_marks(
         if !grid.open(i64::from(x), i64::from(z)) {
             return false;
         }
-        // The centre of the sector's span from its floor slice to the
-        // volume's top.
-        let y = origin.y + (f32::from(floor(x, z)) + depth) * 0.5 * VOXEL;
-        let p = Vec3::new(
+        // The sector's box: its columns span half a 6 m cell either side of
+        // its centre, and its slices from the floor to the volume's top.
+        let floor = f32::from(floor(x, z));
+        let centre = Vec3::new(
             origin.x + 4.6 + (x - block.x) as f32 * SECTOR_M,
-            y,
+            origin.y + (floor + depth) * 0.5 * VOXEL,
             origin.z + 4.6 + (z - block.y) as f32 * SECTOR_M,
         );
-        inside(p)
+        let half = Vec3::new(
+            SECTOR_M * 0.5,
+            (depth - floor) * 0.5 * VOXEL,
+            SECTOR_M * 0.5,
+        );
+        meets_view(centre, half)
     };
     let mut marks = [false; SECTORS * SECTORS];
     for z in 0..SECTORS as i32 {
@@ -1181,9 +1190,17 @@ mod tests {
         // The point's height is the middle of the span from slice 0 to the
         // top: (0 + 64) / 2 × 20 cm = 6.4 m.
         let at = Vec3::new(origin.x + 4.6 + 6.0 * 6.0, 6.4, origin.z + 4.6 + 6.0 * 6.0);
-        let marks = sector_marks(&grid, IVec2::new(8, 8), block, origin, depth, floor, |p| {
-            (p - at).length() < 0.01
-        });
+        let marks = sector_marks(
+            &grid,
+            IVec2::new(8, 8),
+            block,
+            origin,
+            depth,
+            floor,
+            |centre, half| {
+                (centre - at).length() < 0.01 && (half - Vec3::new(3.0, 6.4, 3.0)).length() < 1e-6
+            },
+        );
         let drawn: Vec<usize> = (0..64).filter(|&i| marks[i]).collect();
         // That sector and the four neighbours the original's second pass
         // adds (the diagonal corners are two sectors out).
@@ -1200,7 +1217,7 @@ mod tests {
             origin,
             depth,
             floor,
-            |_| true,
+            |_, _| true,
         );
         assert!(!marks[0]);
         assert!(marks[1 + 8]);
@@ -1220,7 +1237,7 @@ mod tests {
             origin,
             64.0,
             |_, _| 0,
-            |_| true,
+            |_, _| true,
         );
         assert!(marks[0]);
         assert!(marks[63]);
@@ -1238,7 +1255,7 @@ mod tests {
             origin,
             64.0,
             |_, _| 0,
-            |_| true,
+            |_, _| true,
         );
         assert!(
             !marks[0],
