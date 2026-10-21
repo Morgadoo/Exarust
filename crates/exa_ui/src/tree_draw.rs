@@ -1631,6 +1631,7 @@ pub fn to_skin_batch(draw: &TreeDraw) -> SkinBatch {
             texture_shift: [0.0, 0.0],
             rounded_scale: None,
             tex_col: None,
+            subclass: 0,
             first,
             count: entry.vertices.len(),
         });

@@ -12,16 +12,20 @@
 //!   coordinates, its colour mixed by `TexCol` and multiplied by the ink.
 //! - **Rounded** (mode 3): the vertex's ink with the alpha the `Scale`
 //!   uniform cuts out of the interpolated corner coordinate.
-//! - **Skin** (mode 0x10): the subclass' program, which samples by the
-//!   vertex's place over the viewport, scaled to 512ths and shifted by the
-//!   texture offset.
+//! - **Skin** (mode 0x10): whatever the skin's subclass answers when asked.
+//!   The line skin the game screens use answers the flat program, so its
+//!   primitives draw the vertex's ink. The HUD's stone skin answers
+//!   [`HUD_STONE_MODE`] and multiplies the ink by the stone, sampled in
+//!   screen space, one texel a pixel, from the window's bottom.
 //!
-//! The blend word is the original's: bits 8–11 name the source factor and
-//! bits 0–3 the destination factor in the table `ZERO, ONE, SRC_ALPHA,
-//! ONE_MINUS_SRC_ALPHA, DST_ALPHA, ONE_MINUS_DST_ALPHA`; the word 0x100
-//! draws with blending off. The table and the exceptional word are the
-//! original's blend setter. Everything is drawn at the window's physical
-//! pixels, as the original draws its interface.
+//! The blend word is the original's: the high byte's low nibble names the
+//! source factor and the low nibble the destination factor, each an index
+//! into a ten-entry table (zero, one, source alpha, one minus source alpha,
+//! source colour, one minus source colour, destination alpha, one minus
+//! destination alpha, destination colour, one minus destination colour); the
+//! word 0x100 draws with blending off. The table and the exceptional word
+//! are the original's blend setter. Everything is drawn at the window's
+//! physical pixels, as the original draws its interface.
 //!
 //! The renderer is a CPU rasteriser into one window-sized RGBA image shown
 //! over the 3-D view through an [`ImageNode`]. It blends in sRGB, as the
@@ -45,9 +49,9 @@ use crate::text_layout::GlyphQuad;
 
 /// The skin's atlas (`guiskin.rfi`).
 pub const SKIN_TEXTURE: &str = "guiskin";
-/// The viewport side the skin's texture coordinates are scaled to
-/// (`0.001953125`, one 512th), as the subclass' vertex program scales them.
-pub const TEXTURE_SCALE: f32 = 0.001_953_125;
+/// The mode the HUD's stone skin answers when the skin asks its subclass for
+/// the mode of a primitive drawn in the subclass' own mode.
+pub const HUD_STONE_MODE: u32 = 4;
 /// The blend word that draws a control normally: source alpha over one
 /// minus source alpha.
 pub const BLEND_ALPHA: u16 = 0x203;
@@ -63,26 +67,38 @@ pub const BLEND_REPLACE: u16 = 0x100;
 pub enum BlendFactor {
     Zero,
     One,
+    SourceColour,
+    OneMinusSourceColour,
     SourceAlpha,
     OneMinusSourceAlpha,
     DestinationAlpha,
     OneMinusDestinationAlpha,
+    DestinationColour,
+    OneMinusDestinationColour,
 }
 
-/// The original's blend factor table. An index past the table is zero, as
-/// the nibble's unused values name no factor.
+/// The original's blend factor table: ten entries, the GL factors in the
+/// order zero, one, source alpha, one minus source alpha, source colour,
+/// one minus source colour, destination alpha, one minus destination alpha,
+/// destination colour, one minus destination colour. An index past the
+/// table names no factor and draws as zero.
 pub fn blend_factor(index: u32) -> BlendFactor {
     match index & 0xf {
         1 => BlendFactor::One,
         2 => BlendFactor::SourceAlpha,
         3 => BlendFactor::OneMinusSourceAlpha,
-        4 => BlendFactor::DestinationAlpha,
-        5 => BlendFactor::OneMinusDestinationAlpha,
+        4 => BlendFactor::SourceColour,
+        5 => BlendFactor::OneMinusSourceColour,
+        6 => BlendFactor::DestinationAlpha,
+        7 => BlendFactor::OneMinusDestinationAlpha,
+        8 => BlendFactor::DestinationColour,
+        9 => BlendFactor::OneMinusDestinationColour,
         _ => BlendFactor::Zero,
     }
 }
 
-/// The source and destination factors a blend word names.
+/// The source and destination factors a blend word names: the high byte's
+/// low nibble is the source, the low nibble the destination.
 pub fn blend_factors(blend: u16) -> (BlendFactor, BlendFactor) {
     (
         blend_factor(u32::from(blend >> 8)),
@@ -99,8 +115,12 @@ pub fn blend_word(source: BlendFactor, destination: BlendFactor) -> u16 {
             BlendFactor::One => 1,
             BlendFactor::SourceAlpha => 2,
             BlendFactor::OneMinusSourceAlpha => 3,
-            BlendFactor::DestinationAlpha => 4,
-            BlendFactor::OneMinusDestinationAlpha => 5,
+            BlendFactor::SourceColour => 4,
+            BlendFactor::OneMinusSourceColour => 5,
+            BlendFactor::DestinationAlpha => 6,
+            BlendFactor::OneMinusDestinationAlpha => 7,
+            BlendFactor::DestinationColour => 8,
+            BlendFactor::OneMinusDestinationColour => 9,
         }
     }
     index(source) << 8 | index(destination)
@@ -468,14 +488,21 @@ fn blend_channel(source: u8, destination: u8, source_factor: f32, destination_fa
         .clamp(0.0, 255.0)
 }
 
-fn factor_of(factor: BlendFactor, source: [f32; 4], destination: [f32; 4]) -> f32 {
+fn factor_of(factor: BlendFactor, source: [f32; 4], destination: [f32; 4]) -> [f32; 3] {
+    let colour = |value: [f32; 4]| [value[0], value[1], value[2]];
+    let alpha = |value: f32| [value; 3];
+    let one_minus = |value: [f32; 3]| [1.0 - value[0], 1.0 - value[1], 1.0 - value[2]];
     match factor {
-        BlendFactor::Zero => 0.0,
-        BlendFactor::One => 1.0,
-        BlendFactor::SourceAlpha => source[3],
-        BlendFactor::OneMinusSourceAlpha => 1.0 - source[3],
-        BlendFactor::DestinationAlpha => destination[3],
-        BlendFactor::OneMinusDestinationAlpha => 1.0 - destination[3],
+        BlendFactor::Zero => alpha(0.0),
+        BlendFactor::One => alpha(1.0),
+        BlendFactor::SourceColour => colour(source),
+        BlendFactor::OneMinusSourceColour => one_minus(colour(source)),
+        BlendFactor::SourceAlpha => alpha(source[3]),
+        BlendFactor::OneMinusSourceAlpha => alpha(1.0 - source[3]),
+        BlendFactor::DestinationAlpha => alpha(destination[3]),
+        BlendFactor::OneMinusDestinationAlpha => alpha(1.0 - destination[3]),
+        BlendFactor::DestinationColour => colour(destination),
+        BlendFactor::OneMinusDestinationColour => one_minus(colour(destination)),
     }
 }
 
@@ -522,15 +549,16 @@ fn shade(
                 ink[3] * tex[3],
             ]
         }
-        SkinMode::Skin => {
+        SkinMode::Skin if primitive.subclass == HUD_STONE_MODE => {
             let Some(texture) = texture else {
                 return [0.0; 4];
             };
-            let u =
-                place.0 / viewport.0 * (viewport.0 * TEXTURE_SCALE) + primitive.texture_shift[0];
-            let v =
-                place.1 / viewport.1 * (viewport.1 * TEXTURE_SCALE) + primitive.texture_shift[1];
-            let texel = texture.sample(u, v);
+            // The stone is sampled in screen space, one texel a pixel, from
+            // the window's bottom: stored row (height - 1 - y), column x,
+            // each moved by the texture offset (kept in 512ths).
+            let column = (place.0 + primitive.texture_shift[0] * 512.0).floor();
+            let row = (viewport.1 - place.1 + primitive.texture_shift[1] * 512.0).floor();
+            let texel = texture.texel(column as i64, texture.height as i64 - 1 - row as i64);
             [
                 ink[0] * f32::from(texel[0]) / 255.0,
                 ink[1] * f32::from(texel[1]) / 255.0,
@@ -538,7 +566,16 @@ fn shade(
                 ink[3] * f32::from(texel[3]) / 255.0,
             ]
         }
+        // Any other answer of the subclass is the flat program: the line
+        // skin game screens use binds it and draws the vertex's ink.
+        SkinMode::Skin => ink,
     }
+}
+
+/// Whether a barycentric weight is inside its edge: past it, or on it when
+/// the triangle owns the edge.
+fn inside(weight: f32, owns_edge: bool) -> bool {
+    weight > 0.0 || (weight == 0.0 && owns_edge)
 }
 
 /// One primitive's vertices as triangles: (indices into the vertex slice).
@@ -580,8 +617,14 @@ fn raster_primitive(
         return;
     }
     let viewport = (width as f32, height as f32);
-    let (source, destination) = blend_factors(primitive.blend);
-    let disabled = primitive.blend & 0x3f0f == BLEND_REPLACE & 0x3f0f;
+    // A batch that never named a word draws with the GUI's steady-state one.
+    let blend = if primitive.blend == 0 {
+        BLEND_ALPHA
+    } else {
+        primitive.blend
+    };
+    let (source, destination) = blend_factors(blend);
+    let disabled = blend & 0x3f0f == BLEND_REPLACE & 0x3f0f;
     let vertex_at = |i: usize| -> [f32; 4] {
         let v: &GuiVertex = &vertices[i];
         [
@@ -627,12 +670,14 @@ fn raster_primitive(
         // below. The alpha channel is the overlay's coverage, not a GL blend
         // target (the original draws on the window, whose alpha is unused),
         // so it accumulates the source's coverage.
-        pixel[0] =
-            blend_channel((fragment[0] * 255.0) as u8, (old[0] * 255.0) as u8, sf, df) / 255.0;
-        pixel[1] =
-            blend_channel((fragment[1] * 255.0) as u8, (old[1] * 255.0) as u8, sf, df) / 255.0;
-        pixel[2] =
-            blend_channel((fragment[2] * 255.0) as u8, (old[2] * 255.0) as u8, sf, df) / 255.0;
+        for channel in 0..3 {
+            pixel[channel] = blend_channel(
+                (fragment[channel] * 255.0) as u8,
+                (old[channel] * 255.0) as u8,
+                sf[channel],
+                df[channel],
+            ) / 255.0;
+        }
         pixel[3] = (fragment[3] + old[3] * (1.0 - fragment[3])).clamp(0.0, 1.0);
     };
     if primitive.draw == GuiDraw::Lines {
@@ -675,6 +720,22 @@ fn raster_primitive(
         if area.abs() < f32::EPSILON {
             continue;
         }
+        // For each edge, whether this triangle owns a pixel centre lying on
+        // it: the edge, walked with the inside on the same side for both
+        // triangles that share it, points down or along the row leftwards.
+        let (first, second) = if area > 0.0 { (v1, v2) } else { (v2, v1) };
+        let owned = |a: &GuiVertex, b: &GuiVertex| b.y > a.y || (b.y == a.y && b.x < a.x);
+        let owns = [
+            owned(&first, &second),
+            owned(
+                if area > 0.0 { &v2 } else { &v0 },
+                if area > 0.0 { &v0 } else { &v2 },
+            ),
+            owned(
+                if area > 0.0 { &v0 } else { &v1 },
+                if area > 0.0 { &v1 } else { &v0 },
+            ),
+        ];
         let i0ink = vertex_at(i0);
         let i1ink = vertex_at(i1);
         let i2ink = vertex_at(i2);
@@ -684,8 +745,11 @@ fn raster_primitive(
                 let py = y as f32 + 0.5;
                 let w0 = ((v1.x - px) * (v2.y - py) - (v2.x - px) * (v1.y - py)) / area;
                 let w1 = ((v2.x - px) * (v0.y - py) - (v0.x - px) * (v2.y - py)) / area;
-                let w2 = 1.0 - w0 - w1;
-                if w0 < -1e-5 || w1 < -1e-5 || w2 < -1e-5 {
+                let w2 = ((v0.x - px) * (v1.y - py) - (v1.x - px) * (v0.y - py)) / area;
+                // A pixel centre exactly on an edge belongs to one of the
+                // two triangles that share it, as the hardware's fill rule
+                // has it, so a translucent quad blends its diagonal once.
+                if !(inside(w0, owns[0]) && inside(w1, owns[1]) && inside(w2, owns[2])) {
                     continue;
                 }
                 let ink = [
@@ -885,6 +949,7 @@ mod tests {
             texture_shift: [0.0; 2],
             rounded_scale: None,
             tex_col: None,
+            subclass: 0,
             first,
             count,
         });
@@ -912,7 +977,78 @@ mod tests {
             blend_word(BlendFactor::SourceAlpha, BlendFactor::One),
             0x201
         );
-        assert_eq!(blend_factor(6), BlendFactor::Zero);
+        // Index past the table's ten entries names no factor.
+        assert_eq!(blend_factor(10), BlendFactor::Zero);
+        assert_eq!(blend_factor(15), BlendFactor::Zero);
+    }
+
+    #[test]
+    fn the_factor_table_has_ten_entries_in_the_originals_order() {
+        use BlendFactor::*;
+        let table = [
+            Zero,
+            One,
+            SourceAlpha,
+            OneMinusSourceAlpha,
+            SourceColour,
+            OneMinusSourceColour,
+            DestinationAlpha,
+            OneMinusDestinationAlpha,
+            DestinationColour,
+            OneMinusDestinationColour,
+        ];
+        for (index, factor) in table.into_iter().enumerate() {
+            assert_eq!(blend_factor(index as u32), factor, "entry {index}");
+            assert_eq!(
+                blend_word(factor, Zero),
+                (index as u16) << 8,
+                "entry {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_colour_factor_weights_each_channel_by_its_own_value() {
+        // Source colour over destination colour: each channel multiplies the
+        // two, so a red source over a half-red, full-blue pixel keeps only
+        // the red channel.
+        let base = solid_frame(
+            vec![
+                vertex(0.0, 0.0, [128, 0, 255, 255]),
+                vertex(0.0, 2.0, [128, 0, 255, 255]),
+                vertex(2.0, 2.0, [128, 0, 255, 255]),
+                vertex(2.0, 0.0, [128, 0, 255, 255]),
+            ],
+            BLEND_REPLACE,
+        );
+        let mut second = solid_frame(
+            vec![
+                vertex(0.0, 0.0, [255, 255, 0, 255]),
+                vertex(0.0, 2.0, [255, 255, 0, 255]),
+                vertex(2.0, 2.0, [255, 255, 0, 255]),
+                vertex(2.0, 0.0, [255, 255, 0, 255]),
+            ],
+            blend_word(BlendFactor::Zero, BlendFactor::SourceColour),
+        );
+        let mut frame = base;
+        frame.layers.append(&mut second.layers);
+        let pixels = rasterise(&[frame], &GuiTextures::default(), 2, 2);
+        assert_eq!(&pixels[0..4], &[128, 0, 0, 255]);
+    }
+
+    #[test]
+    fn a_primitive_without_a_blend_word_draws_with_the_steady_state_one() {
+        let frame = solid_frame(
+            vec![
+                vertex(0.0, 0.0, [10, 20, 30, 255]),
+                vertex(0.0, 2.0, [10, 20, 30, 255]),
+                vertex(2.0, 2.0, [10, 20, 30, 255]),
+                vertex(2.0, 0.0, [10, 20, 30, 255]),
+            ],
+            0,
+        );
+        let pixels = rasterise(&[frame], &GuiTextures::default(), 2, 2);
+        assert_eq!(&pixels[0..4], &[10, 20, 30, 255]);
     }
 
     #[test]
@@ -959,9 +1095,10 @@ mod tests {
         let mut frame = base;
         frame.layers.append(&mut second.layers);
         let pixels = rasterise(&[frame], &GuiTextures::default(), 2, 2);
-        // Red added at half alpha over the blue, the sum clamped by the
-        // blend target: (255, 0, 255).
-        assert_eq!(&pixels[0..4], &[255, 0, 255, 255]);
+        // Red added at half alpha over the blue, once even on the quad's
+        // diagonal: (128, 0, 255).
+        assert_eq!(&pixels[0..4], &[128, 0, 255, 255]);
+        assert_eq!(&pixels[12..16], &[128, 0, 255, 255]);
     }
 
     #[test]
@@ -994,26 +1131,81 @@ mod tests {
         assert_eq!(&pixels[0..4], &[150, 75, 38, 255]);
     }
 
-    #[test]
-    fn the_skin_mode_samples_by_place_over_512_and_the_shift() {
-        let texture = GuiTexture::solid([255, 255, 255, 255]);
-        let mut textures = GuiTextures::default();
-        textures.textures.insert(SKIN_TEXTURE.into(), texture);
+    fn skin_frame(subclass: u32, shift: [f32; 2]) -> GuiFrame {
         let mut batch = SkinBatch::new();
         batch.mode = SkinMode::Skin;
+        batch.subclass_mode = subclass;
         batch.blend = BLEND_REPLACE;
-        batch.texture_shift = [0.25, 0.0];
-        batch.set_ink([255, 255, 255, 255]);
+        batch.texture_shift = shift;
+        batch.set_ink([200, 100, 50, 255]);
         batch.vertex(0.0, 0.0);
-        batch.vertex(0.0, 1.0);
-        batch.vertex(1.0, 1.0);
-        batch.vertex(1.0, 0.0);
+        batch.vertex(0.0, 4.0);
+        batch.vertex(4.0, 4.0);
+        batch.vertex(4.0, 0.0);
         batch.end_quads();
         let mut frame = GuiFrame::new();
         frame.push(GuiLayer::new(batch, LayerTexture::Named(SKIN_TEXTURE)));
-        // The sampling rule is x/512 + shift; the test pins the scale.
-        let pixels = rasterise(&[frame], &textures, 2, 2);
-        assert_eq!(&pixels[0..4], &[255, 255, 255, 255]);
+        frame
+    }
+
+    /// A 4x4 texture whose stored rows (bottom first) are 10, 20, 30 and 40.
+    fn striped_textures() -> GuiTextures {
+        let mut bytes = Vec::new();
+        for row in [10u8, 20, 30, 40] {
+            for _ in 0..4 {
+                bytes.extend_from_slice(&[row, row, row, 255]);
+            }
+        }
+        let mut textures = GuiTextures::default();
+        textures.textures.insert(
+            SKIN_TEXTURE.into(),
+            GuiTexture::from_bottom_up(4, 4, &bytes).unwrap(),
+        );
+        textures
+    }
+
+    #[test]
+    fn a_subclass_that_answers_the_flat_program_draws_the_ink() {
+        // The line skin's answer is the flat program: the texture is not
+        // sampled, so even a texture the installation lacks changes nothing.
+        let frame = skin_frame(1, [0.0; 2]);
+        let pixels = rasterise(&[frame], &GuiTextures::default(), 4, 4);
+        assert_eq!(&pixels[0..4], &[200, 100, 50, 255]);
+        let frame = skin_frame(0, [0.0; 2]);
+        let pixels = rasterise(&[frame], &striped_textures(), 4, 4);
+        assert_eq!(&pixels[0..4], &[200, 100, 50, 255]);
+    }
+
+    #[test]
+    fn the_stone_is_sampled_from_the_windows_bottom_one_texel_a_pixel() {
+        // Window height 4: the bottom pixel row (y = 3) is stored row 0
+        // (value 10), the top row (y = 0) is stored row 3 (value 40).
+        let pixels = rasterise(
+            &[skin_frame(HUD_STONE_MODE, [0.0; 2])],
+            &striped_textures(),
+            4,
+            4,
+        );
+        let red = |x: usize, y: usize| pixels[(y * 4 + x) * 4];
+        let expected = |value: u32| (200.0 * value as f32 / 255.0).round() as u8;
+        assert_eq!(red(0, 3), expected(10));
+        assert_eq!(red(0, 2), expected(20));
+        assert_eq!(red(0, 1), expected(30));
+        assert_eq!(red(0, 0), expected(40));
+    }
+
+    #[test]
+    fn the_stone_offset_moves_the_sampled_row_in_512ths() {
+        // One texel up the stone (1/512 of the texture) moves each pixel one
+        // stored row on.
+        let shift = [0.0, 1.0 / 512.0];
+        let pixels = rasterise(
+            &[skin_frame(HUD_STONE_MODE, shift)],
+            &striped_textures(),
+            4,
+            4,
+        );
+        assert_eq!(pixels[(3 * 4) * 4], (200.0f32 * 20.0 / 255.0).round() as u8);
     }
 
     #[test]

@@ -132,8 +132,8 @@ pub use gui_core::{
 };
 pub use gui_draw::{
     BLEND_ADDITIVE, BLEND_ALPHA, BLEND_PREMULTIPLIED, BLEND_REPLACE, BlendFactor, GuiCanvas,
-    GuiDrawPlugin, GuiFrame, GuiFrames, GuiLayer, GuiTexture, GuiTextures, LayerTexture,
-    SKIN_TEXTURE, TEXTURE_SCALE, blend_factor, blend_factors, blend_word, glyph_batch, icon_batch,
+    GuiDrawPlugin, GuiFrame, GuiFrames, GuiLayer, GuiTexture, GuiTextures, HUD_STONE_MODE,
+    LayerTexture, SKIN_TEXTURE, blend_factor, blend_factors, blend_word, glyph_batch, icon_batch,
     rasterise, text_batch,
 };
 pub use gui_level::GuiLevelState;

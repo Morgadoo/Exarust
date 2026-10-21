@@ -4311,6 +4311,9 @@ pub struct GuiPrimitive {
     pub texture_shift: [f32; 2],
     pub rounded_scale: Option<[f32; 4]>,
     pub tex_col: Option<f32>,
+    /// The mode the subclass answered when this primitive's mode was the
+    /// subclass' own (mode 0x10); zero otherwise.
+    pub subclass: u32,
     pub first: usize,
     pub count: usize,
 }
@@ -4500,6 +4503,11 @@ impl SkinBatch {
             texture_shift: self.texture_shift,
             rounded_scale: self.rounded_scale,
             tex_col: self.tex_col,
+            subclass: if self.mode == SkinMode::Skin {
+                self.subclass_mode
+            } else {
+                0
+            },
             first: self.run_start,
             count,
         });
