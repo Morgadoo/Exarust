@@ -511,9 +511,6 @@ The original's own forms and controls that Exarust rebuilds, with the
   choice) are plain functions in the game crate with tests pinned to
   concrete numbers. The form itself, its model preview, sound playback and
   the power tree are not drawn yet.
-- **Match board** (`exa_ui::match_board`): the 379-byte `0x100195c00` and
-  the 121-byte `0x100195d80`.
-- **Skill screen** (`exa_ui::skill`): `TSkillUI`'s 186-byte node placement.
 - **Technique selector** (`exa_ui::technique_selector`,
   `exa_game::techniques`): one skill's eight techniques, 332 × 112
   pixels, editing the record's six skills (an experience word and five
