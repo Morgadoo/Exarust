@@ -19,8 +19,11 @@
 //! record), which Exarust does not have yet.
 
 pub mod bubble;
+pub mod fire_node;
 pub mod fire_row;
 pub mod portal;
+pub mod portal_effect;
+pub mod rain;
 pub mod scan;
 pub mod shell;
 pub mod wheel;
