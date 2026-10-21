@@ -438,6 +438,8 @@ pub mod press {
     pub const LEFT: u32 = 1;
     pub const RIGHT: u32 = 2;
     pub const MIDDLE: u32 = 4;
+    /// A press event.
+    pub const PRESS: u32 = 0x1000;
     /// A click: a release that did not drag.
     pub const CLICK: u32 = 0x2000;
     /// A drag starts.
@@ -1618,6 +1620,115 @@ pub fn seed_defaults(record: &mut PowerRecord) -> bool {
     }
     record.pairs.extend_from_slice(&DEFAULT_PAIRS);
     true
+}
+
+/// The six domains' colours from the tree's palette (RGBA); index 0 is
+/// unused.
+pub const DOMAIN_COLOURS: [[u8; 4]; 7] = [
+    [0, 0, 0, 0],
+    [90, 50, 20, 255],
+    [40, 0, 180, 255],
+    [100, 0, 0, 255],
+    [0, 40, 160, 255],
+    [110, 90, 30, 255],
+    [60, 65, 90, 255],
+];
+
+impl TreeScreen {
+    /// The draw inputs of the tree at `now`: placed nodes, the curves of
+    /// their links, the bar's slot alphas and the hover and mark fades.
+    pub fn view(
+        &self,
+        bar: &PowerBar,
+        width: f32,
+        height: f32,
+        scale: f32,
+        now: u32,
+    ) -> exa_ui::tree_draw::TreeView {
+        use exa_ui::tree_draw as draw;
+        let mut nodes = Vec::with_capacity(self.nodes.len());
+        for (index, node) in self.nodes.iter().enumerate() {
+            nodes.push(draw::NodeView {
+                power: node.power,
+                x: self.placed[index][0],
+                y: self.placed[index][1],
+                flags: self.marks[index],
+            });
+        }
+        let mut links = Vec::new();
+        for (index, node) in self.nodes.iter().enumerate() {
+            for (at, raw) in node.links.iter().enumerate() {
+                let link = self.links[index][at];
+                let end = link.end as usize;
+                if end < 1 || end > self.nodes.len() {
+                    continue;
+                }
+                let Some(curve) = exa_formats::power_tree::tree_link(
+                    exa_formats::power_tree::LinkEnd {
+                        at: self.placed[index],
+                        power: node.power,
+                        mark: self.marks[index],
+                    },
+                    exa_formats::power_tree::LinkEnd {
+                        at: self.placed[end - 1],
+                        power: self.nodes[end - 1].power,
+                        mark: self.marks[end - 1],
+                    },
+                    raw,
+                    self.zoom.value,
+                ) else {
+                    continue;
+                };
+                links.push(draw::LinkView {
+                    points: curve.points,
+                    source_mark: self.marks[index],
+                    dest_mark: self.marks[end - 1],
+                });
+            }
+        }
+        let mut slots = [draw::SlotView {
+            word: 0,
+            state: 0,
+            alpha: 0.0,
+            extra: 0,
+        }; 10];
+        for (index, slot) in bar.slots.iter().enumerate() {
+            slots[index] = draw::SlotView {
+                word: slot.word,
+                state: slot.state,
+                alpha: slot.alpha(now),
+                extra: slot.extra,
+            };
+        }
+        draw::TreeView {
+            width,
+            height,
+            scale,
+            window: 1.0,
+            shown: 1.0,
+            splash: 1.0,
+            dim: 1.0,
+            zoom: self.zoom.value,
+            icon_size: self.zoom_fixed,
+            prompt: self.mode == TreeMode::Create,
+            nodes,
+            links,
+            bar: slots,
+            hovered: self.node_under,
+            marked: self.flash,
+            hover_until: self.flash_until,
+            hover_flip: self.denied,
+            marked_until: self.flash_until,
+            now,
+            domain: self.domain,
+            domain_colour: DOMAIN_COLOURS
+                .get(usize::from(self.domain))
+                .copied()
+                .unwrap_or([255; 4]),
+            slot_pitch: scale * 17.0,
+            slot_size: scale * 13.0,
+        }
+    }
 }
 
 /// A focus id is one of the tree's own buttons.

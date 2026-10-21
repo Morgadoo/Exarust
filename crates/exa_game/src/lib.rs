@@ -58,6 +58,7 @@ pub mod player;
 pub mod player_behaviour;
 pub mod player_controls;
 pub mod player_light;
+pub mod power_screen;
 pub mod practice;
 pub mod report;
 pub mod session;
@@ -123,6 +124,7 @@ impl Plugin for GamePlugin {
                 menu_screen::MenuScreenPlugin,
                 arena_match::ArenaMatchPlugin,
                 gui_screens::GameScreensPlugin,
+                power_screen::PowerScreenPlugin,
             ),
         ))
         .add_plugins((flow::FlowPlugin, splash::SplashPlugin))

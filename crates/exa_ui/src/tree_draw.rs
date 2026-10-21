@@ -191,6 +191,69 @@ pub fn smoothstep(x: f32) -> f32 {
     (3.0 - 2.0 * x) * (x * x)
 }
 
+/// The link's soft background program.
+pub const LINK_SHADER: &str = "in vec2 vrTex;\r\nin vec2 vrTx2;\r\nin vec4 vrCol;\r\nout vec4 FragColor;\r\nuniform vec4 par0;\r\nuniform sampler2D Tex0;\r\nvoid main() {\r\nvec2 t = vrTex.xy;\r\nfloat b = vrTx2.x;\r\nfloat a = 0.5 - b;\r\na = 0.25 - a * a;\r\nb = t.y;\r\nt.y = t.y * 0.05 + par0.z * a;\r\nb = b + t.y * 2.0;\r\nt.y = t.y * par0.x;\r\nvec2 u;\r\nu.y = (t.y + par0.y) * 0.25;\r\nt.y = t.y + par0.y;\r\nu.x = t.x - par0.y;\r\nfloat c = texture(Tex0, t).r;\r\na = 1.0 - b;\r\na = a * a;\r\na = a * a;\r\na = a * a;\r\nc = c + a;\r\nfloat d = texture(Tex0, u).r;\r\nc = c * d * 0.75;\r\na = clamp(b * 32.0, 0.0, 1.0);\r\nb = b * b + par0.w;\r\nb = clamp(c - b, 0.0, 1.0);\r\nb = b * b * a;\r\nFragColor.rgb = vrCol.rgb * 1.25;\r\nFragColor.a = vrCol.a * b;\r\n}";
+/// The link's bright core program.
+pub const LINK_GLOW_SHADER: &str = "in vec2 vrTex;\r\nin vec2 vrTx2;\r\nin vec4 vrCol;\r\nout vec4 FragColor;\r\nuniform vec4 par0;\r\nuniform sampler2D Tex0;\r\nvoid main() {\r\nvec2 t = vrTex.xy;\r\nfloat b = vrTx2.x;\r\nfloat a = 0.5 - b;\r\na = 0.25 - a * a;\r\nb = t.y;\r\nt.y = t.y * 0.05 + par0.z * a;\r\nb = b + t.y * 2.0;\r\nt.y = t.y * par0.x;\r\nvec2 u;\r\nu.y = (t.y - par0.y) * 0.25;\r\nt.y = t.y - par0.y;\r\nu.x = t.x - par0.y;\r\nfloat c = texture(Tex0, t).r;\r\na = 1.0 - b;\r\na = a * a;\r\nc = c + a;\r\nfloat d = texture(Tex0, u).r;\r\nc = c * d * 0.75;\r\nc = mix(c, a, 0.75);\r\na = clamp(b * 32.0, 0.0, 1.0);\r\nb = b * b + par0.w;\r\nb = clamp(c - b, 0.0, 1.0);\r\nb = b * b * a;\r\nvec3 col = vrCol.rgb;\r\nFragColor.rgb = col * col * 0.75;\r\nFragColor.a = vrCol.a * b;\r\n}";
+/// The modifier and empty-slot program: four neighbour taps averaged with
+/// the centre.
+pub const MODS_SHADER: &str = "in vec2 vrTex;\r\nin vec4 vrCol;\r\nout vec4 FragColor;\r\nuniform vec4 par0;\r\nuniform sampler2D Tex;\r\nvoid main() {\r\nvec2 t = vrTex;\r\nt.x = t.x + par0.x;\r\nfloat a = texture(Tex, t).r;\r\nt.x = vrTex.x - par0.x;\r\na = a + texture(Tex, t).r;\r\nt.x = vrTex.x;\r\nt.y = t.y + par0.y;\r\na = a + texture(Tex, t).r;\r\nt.y = vrTex.y - par0.y;\r\na = a + texture(Tex, t).r;\r\na = a * 0.25;\r\nfloat b = texture(Tex, vrTex).r;\r\na = clamp(a+b, 0.0, 1.0);\r\nFragColor.rgb = vrCol.rgb * b;\r\nFragColor.a = vrCol.a * a;\r\n}";
+/// The frame, outer glow and flame program.
+pub const FRAME_SHADER: &str = "in vec2 vrTex;\r\nin vec2 vrTx2;\r\nin vec4 vrCol;\r\nout vec4 FragColor;\r\nuniform vec4 par0;\r\nuniform vec4 FrameCol;\r\nuniform sampler2D Tex;\r\nvoid main() {\r\nvec2 t = vrTex.xy;\r\nfloat b = vrTx2.x;\r\nfloat a = 0.5 - b;\r\na = 0.25 - a * a;\r\nb = t.y - a * 0.025;\r\nt.y = t.y + a * par0.z + par0.y;\r\na = clamp(b * 16.0, 0.0, 1.0);\r\nb = clamp(4.0 - b * 16.0, 0.0, 1.0);\r\nb = b * a;\r\na = texture(Tex, t).r;\r\nfloat d = textureLod(Tex, t, 4.0).r;\r\nfloat c = min(abs(0.13-vrTex.y) * 16.0, 1.0);\r\nc = (1 - c * c);\r\na = (a + d * c) * (1.0-c * 0.65);\r\nvec3 col = FrameCol.rgb + vrCol.rgb * c * 1.5;\r\nFragColor.rgb = col * a * vrCol.a;\r\na = a * par0.w + (1.0 - par0.w);\r\nFragColor.a = vrCol.a * b * a * 0.63;\r\n}";
+/// The power icon program.
+pub const ICON_SHADER: &str = "in vec2 vrTex;\r\nin vec4 vrCol;\r\nout vec4 FragColor;\r\nuniform vec4 par0;\r\nuniform vec4 par1;\r\nuniform vec2 tscl;\r\nuniform sampler2D Tex;\r\nvoid main() {\r\nvec2 t = vrTex - par0.xy;\r\nfloat a = (t.x*tscl.x)*(t.x*tscl.x) + (t.y*tscl.y)*(t.y*tscl.y);\r\nfloat b = clamp((a + par1.x) * par1.y, 0.0, 1.0);\r\na = 1.0 - a * 83.0;\r\nfloat c = clamp(a * par0.w, 0.0, 1.0);\r\nt = par0.xy + t * par0.z;\r\nvec3 col = texture(Tex, t).rgb;\r\nfloat d = clamp(a + par1.z, 0.0, 1.0);\r\nFragColor.rgb = col * d;\r\nb = clamp(b * 0.85 + 0.15, 0.0, 1.0);\r\na = 1.0 - a;\r\na = a * a * 0.3 * c;\r\nc = c * b + a;\r\nFragColor.a = vrCol.a * c;\r\n}";
+/// The empty slot's radial ring program.
+pub const RING_SHADER: &str = "in vec2 vrTex;\r\nin vec4 vrCol;\r\nout vec4 FragColor;\r\nuniform vec4 par0;\r\nuniform sampler2D Tex;\r\nvoid main() {\r\nvec2 t = vrTex - 0.5;\r\nfloat a = dot(t,t) * 5.0;\r\nfloat b = a + 0.2;\r\nb = b * b;\r\nb = min(b*b, 1.0);\r\nfloat d = b + 0.4;\r\na = (a - 0.8) * 5.0;\r\nfloat e = 1.0 - a;\r\nb = clamp((a+0.6) * 3.0, 0.0, 1.0);\r\na = clamp(e * 3.0, 0.0, 1.0);\r\nFragColor.rgb = vrCol.rgb * b * a;\r\ne = clamp(e * 0.6 + 0.8, 0.0, 1.0);\r\ne = clamp(e * e * d, 0.0, 1.0);\r\nFragColor.a = vrCol.a * e;\r\n}";
+
+/// One program's source and the uniforms it binds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShaderBinding {
+    pub program: Program,
+    pub source: &'static str,
+    pub uniforms: &'static [&'static str],
+    pub texture_uniform: &'static str,
+}
+
+/// The six programs the tree binds, in the original's creation order.
+pub const TREE_SHADERS: [ShaderBinding; 6] = [
+    ShaderBinding {
+        program: Program::Link,
+        source: LINK_SHADER,
+        uniforms: &["par0"],
+        texture_uniform: "Tex0",
+    },
+    ShaderBinding {
+        program: Program::LinkGlow,
+        source: LINK_GLOW_SHADER,
+        uniforms: &["par0"],
+        texture_uniform: "Tex0",
+    },
+    ShaderBinding {
+        program: Program::Mods,
+        source: MODS_SHADER,
+        uniforms: &["par0"],
+        texture_uniform: "Tex",
+    },
+    ShaderBinding {
+        program: Program::Frame,
+        source: FRAME_SHADER,
+        uniforms: &["par0", "FrameCol"],
+        texture_uniform: "Tex",
+    },
+    ShaderBinding {
+        program: Program::Icon,
+        source: ICON_SHADER,
+        uniforms: &["par0", "par1", "tscl"],
+        texture_uniform: "Tex",
+    },
+    ShaderBinding {
+        program: Program::Ring,
+        source: RING_SHADER,
+        uniforms: &["par0"],
+        texture_uniform: "Tex",
+    },
+];
+
 /// The four corners of a square's texture cell.
 fn cell_quad(
     x: f32,
@@ -1245,6 +1308,18 @@ mod tests {
             .find(|b| b.program == Program::Icon)
             .unwrap();
         assert_eq!(icon.vertices[0].colour[3], 0.5);
+    }
+
+    #[test]
+    fn the_shaders_bind_their_uniforms_and_textures() {
+        assert_eq!(TREE_SHADERS.len(), 6);
+        assert!(LINK_SHADER.contains("uniform sampler2D Tex0"));
+        assert!(ICON_SHADER.contains("uniform vec2 tscl"));
+        assert!(FRAME_SHADER.contains("uniform vec4 FrameCol"));
+        assert!(MODS_SHADER.contains("texture(Tex"));
+        assert!(RING_SHADER.contains("dot(t,t) * 5.0"));
+        assert_eq!(TREE_SHADERS[4].uniforms, ["par0", "par1", "tscl"]);
+        assert_eq!(TREE_SHADERS[3].texture_uniform, "Tex");
     }
 
     #[test]

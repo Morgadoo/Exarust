@@ -115,3 +115,74 @@ impl Game {
         texture::rfi_to_image(&rfi, space, model::bc_supported(support)).map_err(|e| e.to_string())
     }
 }
+
+/// Raw RGBA pixels as an `.rfi` decodes them: rows bottom-up, as the
+/// original's OpenGL textures store them.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RgbaImage {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<u8>,
+}
+
+impl std::fmt::Debug for RgbaImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RgbaImage")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("pixels", &self.pixels.len())
+            .finish()
+    }
+}
+
+/// The pictures the power tree draws: the six domain icon sheets, the
+/// frames, the modifier marks, the flamelets and the domain wheel. A
+/// missing sheet stays empty.
+#[derive(Debug, Clone, Default)]
+pub struct TreeSheets {
+    /// Index 0 is unused; 1 to 6 are the domain sheets.
+    pub domains: [Option<RgbaImage>; 7],
+    pub frames: Option<RgbaImage>,
+    pub mods: Option<RgbaImage>,
+    pub flamelets: Option<RgbaImage>,
+    pub wheel: Option<RgbaImage>,
+}
+
+impl Game {
+    /// An `.rfi` as raw RGBA, with its rows bottom-up.
+    pub fn load_rgba(&self, name: &str) -> Result<RgbaImage, String> {
+        let bytes = self
+            .0
+            .texture(name)
+            .ok_or_else(|| format!("texture {name:?} not found"))?;
+        let rfi = Rfi::parse(bytes).map_err(|e| e.to_string())?;
+        let pixels = rfi.decode_rgba8().map_err(|e| e.to_string())?;
+        Ok(RgbaImage {
+            width: rfi.header.width,
+            height: rfi.header.height,
+            pixels,
+        })
+    }
+
+    /// The power tree's pictures, by the original's names.
+    pub fn load_tree_sheets(&self) -> TreeSheets {
+        const DOMAINS: [&str; 7] = [
+            "",
+            "thmmndico1",
+            "thmfrcico1",
+            "thmbdyico1",
+            "thmnrgico1",
+            "thmlgtico1",
+            "thmdspico1",
+        ];
+        let mut sheets = TreeSheets::default();
+        for (index, name) in DOMAINS.iter().enumerate().skip(1) {
+            sheets.domains[index] = self.load_rgba(name).ok();
+        }
+        sheets.frames = self.load_rgba("pwrsframes").ok();
+        sheets.mods = self.load_rgba("pwrsmods").ok();
+        sheets.flamelets = self.load_rgba("flameletsa1").ok();
+        sheets.wheel = self.load_rgba("domainwheel").ok();
+        sheets
+    }
+}
