@@ -1035,6 +1035,12 @@ impl Store {
         Self { records }
     }
 
+    /// A tier from owned records, sorted by id.
+    pub fn from_records(mut records: Vec<OwnedRecord>) -> Self {
+        records.sort_by_key(|r| r.id);
+        Self { records }
+    }
+
     pub fn records(&self) -> &[OwnedRecord] {
         &self.records
     }
@@ -1688,6 +1694,157 @@ impl ObjectDb {
             .chain(self.world.records().iter().map(|r| r.id | WORLD))
             .collect();
         ids.into_iter().filter(|&id| self.migrate(id)).count()
+    }
+}
+
+impl Record<'_> {
+    /// Decodes the record's item fields, as [`Item::parse`] does.
+    pub fn item(&self) -> Result<Item> {
+        Item::parse(self.id, self.payload)
+    }
+}
+
+impl ObjectDb {
+    /// The base tier decoded into items, in table order. What the game's
+    /// callers read of `objdb.rdb`.
+    pub fn items(&self) -> Vec<Item> {
+        self.base
+            .records()
+            .iter()
+            .filter_map(|r| r.view().item().ok())
+            .collect()
+    }
+
+    /// The first record whose display name matches `name`, ignoring case.
+    /// An Exarust convenience: the original looks objects up by id only and
+    /// uses this name as an editor label, so the first in table order wins.
+    pub fn find_by_name(&self, name: &str) -> Option<&OwnedRecord> {
+        self.base.records().iter().find(|r| {
+            let view = r.view();
+            view.header()
+                .is_some_and(|h| h.name.eq_ignore_ascii_case(name))
+                || self
+                    .name(r.id)
+                    .is_some_and(|n| n.eq_ignore_ascii_case(name))
+        })
+    }
+
+    /// The first record whose model name matches `model`, ignoring case.
+    pub fn find_by_model(&self, model: &str) -> Option<&OwnedRecord> {
+        self.base.records().iter().find(|r| {
+            r.view()
+                .model()
+                .is_some_and(|m| m.name.eq_ignore_ascii_case(model))
+        })
+    }
+
+    /// Writes a tier as the original saves a database: magic, the table
+    /// (with its trailing empty slot) and the payloads. An empty tier
+    /// writes the header alone, as the original's writer does.
+    pub fn write(&self, tier: Tier) -> Vec<u8> {
+        let store = self.store(tier);
+        let count = store.len();
+        let mut out = MAGIC.to_le_bytes().to_vec();
+        let table_len = ((count + 1) * 16) as u32;
+        out.extend(table_len.to_le_bytes());
+        if count == 0 {
+            return out;
+        }
+        let mut offset = 0u32;
+        for record in store.records() {
+            out.extend(record.id.to_le_bytes());
+            out.extend(record.flags.to_le_bytes());
+            out.extend(offset.to_le_bytes());
+            out.extend((record.payload.len() as u32).to_le_bytes());
+            offset += record.payload.len() as u32;
+        }
+        out.extend([0u8; 16]);
+        for record in store.records() {
+            out.extend_from_slice(&record.payload);
+        }
+        out
+    }
+}
+
+/// A value the original stores quantised in a small bit field. The
+/// getters and setters are the routines item descriptions, the trade
+/// system and the arena share; the fields belong to item variant records
+/// whose meanings are not established, so they are named by position.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct Quantised(pub u16);
+
+impl Quantised {
+    /// Bits 0–1, 0 to 3 (the original rounds and clamps its setter).
+    pub fn count(self) -> u8 {
+        (self.0 & 3) as u8
+    }
+
+    pub fn set_count(&mut self, value: f32) {
+        let v = value.clamp(0.0, 3.0).round_ties_even() as u16;
+        self.0 = self.0 & !3 | v & 3;
+    }
+
+    /// Bits 2–6 with bit 7 as the sign, a fraction of 31, −1 to 1.
+    pub fn signed(self) -> f32 {
+        let magnitude = ((self.0 & 0x7C) >> 2) as f32 / 31.0;
+        if self.0 & 0x80 != 0 {
+            -magnitude
+        } else {
+            magnitude
+        }
+    }
+
+    pub fn set_signed(&mut self, value: f32) {
+        let magnitude = (value.abs() * 31.0) as u16 & 0x1F;
+        self.0 = self.0 & !0xFC | magnitude << 2;
+        if value < 0.0 {
+            self.0 |= 0x80;
+        } else {
+            self.0 &= !0x80;
+        }
+    }
+
+    /// Bits 5–7: the top three bits of the low byte.
+    pub fn high3(self) -> u8 {
+        (self.0 >> 5) as u8 & 7
+    }
+
+    /// Bits 0–4.
+    pub fn low5(self) -> u8 {
+        (self.0 & 0x1F) as u8
+    }
+
+    /// A three-level fraction at `index` 0 (bits 0–2), 1 (bits 3–5) or 2
+    /// (bits 6–7, only two bits): 0, 0.125, 0.25, 0.5, 0.75 or 1.
+    pub fn fraction(self, index: usize) -> f32 {
+        let (shift, mask) = FRACTION_FIELDS[index];
+        fraction_of((self.0 & mask) >> shift)
+    }
+
+    /// Stores a fraction; the original rounds by eighths, folds values
+    /// above 0.25 down one step and caps at the field's widest value.
+    pub fn set_fraction(&mut self, index: usize, value: f32) {
+        let (shift, mask) = FRACTION_FIELDS[index];
+        let max = (mask >> shift).min(5);
+        let mut n = (value * 8.0).round_ties_even() as u16;
+        if n > 1 {
+            n = (n >> 1) + 1;
+        }
+        n = n.min(max);
+        self.0 = self.0 & !mask | n << shift;
+    }
+}
+
+/// The shift and mask of each three-level fraction field.
+const FRACTION_FIELDS: [(u16, u16); 3] = [(0, 0x7), (3, 0x38), (6, 0xC0)];
+
+/// The value of a three-level fraction's raw bits: 0 and 1 read as 0 and
+/// 0.125, the rest as (n − 1)/4.
+fn fraction_of(bits: u16) -> f32 {
+    if bits < 2 {
+        bits as f32 * 0.125
+    } else {
+        (bits - 1) as f32 * 0.25
     }
 }
 
@@ -2715,5 +2872,166 @@ mod record_tests {
                 assert!(folder.entries.len() <= 0x4F);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod api_tests {
+    use super::*;
+
+    fn section(tag: u32, body: &[u8]) -> Vec<u8> {
+        let mut v = tag.to_le_bytes().to_vec();
+        v.extend((body.len() as u32 + 8).to_le_bytes());
+        v.extend_from_slice(body);
+        v
+    }
+
+    fn padded(s: &str, len: usize) -> Vec<u8> {
+        let mut v = s.as_bytes().to_vec();
+        v.resize(len, 0);
+        v
+    }
+
+    fn record(id: u32, flags: u32, sections: &[(u32, Vec<u8>)]) -> OwnedRecord {
+        OwnedRecord {
+            id,
+            flags,
+            payload: sections.iter().flat_map(|(t, b)| section(*t, b)).collect(),
+        }
+    }
+
+    fn header(name: &str) -> Vec<u8> {
+        let mut b = padded(name, 16);
+        b.extend(0u32.to_le_bytes());
+        b.extend(0u32.to_le_bytes());
+        b
+    }
+
+    fn model(name: &str) -> Vec<u8> {
+        let mut b = padded(name, 16);
+        b.extend(0u32.to_le_bytes());
+        b.extend(0u32.to_le_bytes());
+        b.extend(0u32.to_le_bytes());
+        b
+    }
+
+    fn base(records: Vec<OwnedRecord>) -> ObjectDb {
+        ObjectDb {
+            base: Store::from_records(records),
+            ..ObjectDb::default()
+        }
+    }
+
+    #[test]
+    fn name_and_model_lookups() {
+        let db = base(vec![
+            record(
+                1,
+                NAME | MODEL,
+                &[(NAME, header("Sword")), (MODEL, model("Sword_A"))],
+            ),
+            record(
+                2,
+                NAME | MODEL,
+                &[(NAME, header("Sword A")), (MODEL, model("Sword_B"))],
+            ),
+        ]);
+        eprintln!(
+            "headers {:?}",
+            db.base
+                .records()
+                .iter()
+                .map(|r| (r.id, r.view().header().map(|h| h.name)))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(db.find_by_name("Sword A").unwrap().id, 2);
+        assert_eq!(db.find_by_name("sword a").unwrap().id, 2);
+        assert_eq!(db.find_by_name("nope"), None);
+        assert_eq!(db.find_by_model("sword_b").unwrap().id, 2);
+        assert_eq!(db.find_by_model("Sword_A").unwrap().id, 1);
+    }
+
+    #[test]
+    fn item_view_decodes_the_record() {
+        let mut body = vec![0u8; 0x224];
+        body[0..9].copy_from_slice(b"Braies_A\0");
+        let db = base(vec![record(
+            8,
+            NAME | BODY,
+            &[(NAME, header("Braies_A")), (BODY, body)],
+        )]);
+        let items = db.items();
+        assert_eq!(items.len(), 1);
+        assert_eq!((items[0].id, items[0].name.as_str()), (8, "Braies_A"));
+        assert_eq!(items[0].worn_model, "Braies_A");
+        assert_eq!(db.base.records()[0].view().item().unwrap().id, 8);
+    }
+
+    #[test]
+    fn quantised_fields_round_trip() {
+        let mut q = Quantised(0);
+        q.set_count(2.6);
+        assert_eq!(q.count(), 3);
+        q.set_count(-1.0);
+        assert_eq!(q.count(), 0);
+        q.set_count(9.0);
+        assert_eq!(q.count(), 3);
+        q.set_signed(-0.5);
+        assert!((q.signed() + 0.5).abs() <= 1.0 / 31.0);
+        q.set_signed(1.0);
+        assert!((q.signed() - 1.0).abs() < 1e-6);
+        assert_eq!(q.count(), 3);
+        // The three-level fractions: 0, 0.125, 0.25, 0.5, 0.75, 1.
+        let mut q = Quantised(0);
+        q.set_fraction(0, 0.0);
+        assert_eq!(q.fraction(0), 0.0);
+        q.set_fraction(0, 0.125);
+        assert_eq!(q.fraction(0), 0.125);
+        q.set_fraction(0, 0.375);
+        assert_eq!(q.fraction(0), 0.25);
+        q.set_fraction(0, 0.5);
+        assert_eq!(q.fraction(0), 0.5);
+        q.set_fraction(0, 0.625);
+        assert_eq!(q.fraction(0), 0.5);
+        q.set_fraction(0, 0.75);
+        assert_eq!(q.fraction(0), 0.75);
+        q.set_fraction(0, 1.0);
+        assert_eq!(q.fraction(0), 1.0);
+        q.set_fraction(0, 2.0);
+        assert_eq!(q.fraction(0), 1.0);
+        q.set_fraction(1, 0.75);
+        assert_eq!(q.fraction(1), 0.75);
+        q.set_fraction(2, 1.0);
+        assert_eq!(q.fraction(2), 0.5);
+        // A two-bit field cannot hold 0.75.
+        q.set_fraction(2, 0.75);
+        assert_eq!(q.fraction(2), 0.5);
+        assert_eq!(Quantised(5 << 5).high3(), 5);
+        assert_eq!(Quantised(0x1F).low5(), 31);
+    }
+
+    #[test]
+    fn writer_round_trips_and_keeps_flags() {
+        let db = base(vec![
+            record(
+                1,
+                NAME | MODEL,
+                &[(NAME, header("A")), (MODEL, model("A_Model"))],
+            ),
+            record(5, NAME, &[(NAME, header("B"))]),
+        ]);
+        let bytes = db.write(Tier::Base);
+        let parsed = ObjectDb::parse(&bytes, &[]).unwrap();
+        assert_eq!(parsed.base.len(), 2);
+        for (a, b) in db.base.records().iter().zip(parsed.base.records()) {
+            assert_eq!((a.id, a.flags, &a.payload), (b.id, b.flags, &b.payload));
+        }
+        // The table carries the original's trailing empty slot.
+        assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 3 * 16);
+        // An empty tier writes the header alone; that is not a parseable
+        // file, and the parser says so instead of reading past the end.
+        let empty = ObjectDb::default().write(Tier::Local);
+        assert_eq!(empty.len(), 8);
+        assert!(ObjectDb::parse(&empty, &[]).is_err());
     }
 }
