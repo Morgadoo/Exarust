@@ -50,6 +50,7 @@ pub mod gui_rescale;
 pub mod gui_task;
 pub mod gui_text;
 pub mod heartbeat;
+pub mod help_system;
 pub mod hud;
 pub mod icon_atlas;
 pub mod item_view;
@@ -58,10 +59,12 @@ pub mod loading;
 pub mod loadout;
 pub mod match_board;
 pub mod menu;
+pub mod pickers;
 pub mod scale;
 pub mod selection;
 pub mod settings;
 pub mod skill;
+pub mod skill_gui;
 pub mod skin;
 pub mod table_view;
 pub mod technique_selector;
@@ -137,6 +140,12 @@ pub use gui_text::{
     font_uv, glyph_cell, measure, measure_in, menu_font_scale, needs_rescale,
 };
 pub use heartbeat::Heartbeat;
+pub use help_system::{
+    MANUAL_CONTROLLER, MANUAL_KEYBOARD, MANUAL_LINE_STEP, MANUAL_LIST_INSET, MANUAL_LIST_WIDTH,
+    MANUAL_SIZE, MANUAL_STATE, MANUAL_STYLE, MANUAL_TITLE, Manual, ManualSource, TIP_EXTRA_HEIGHT,
+    TIP_STATE, TIP_STYLE, TIP_TEXT_INSET, TIP_WIDTH, TOPIC_INDEX, TOPIC_RECORD, TOPIC_TITLE, Tip,
+    TipPlan, TipStore, TopicRef, manual_file, parse_topics, show_tip, tip_index, tip_plan,
+};
 pub use hud::{DrawHud, HudBars};
 pub use line_skin::{
     LINE_STRIP_CAP, LineIcon, LineIconAlpha, LineIconInk, LineMetrics, LineScroll, LineScrollPlace,
@@ -181,6 +190,11 @@ pub use menu::{
     show_skill_tip, skill_selector_key, splash_bounds, toggle_menu_music, type_menu_name,
     update_menu_hover,
 };
+pub use pickers::{
+    FieldQuad, FieldVertex, HAIR_CHANGED_WORD, HAIR_MARKER_SCALE, HAIR_TABLE, HairColPicker,
+    PickPoint, PickerMarker, TONE_DIVISOR, TONE_SCALE, TONE_TABLE, TONE_VERTICES, TonePicker,
+    tone_rgb,
+};
 pub use scale::GuiScale;
 pub use selection::{
     Click as PortalClick, DestinationScreen, DestinationSlot, Frame as PortalFrame, Journey,
@@ -201,6 +215,12 @@ pub use skill::{
     skill_node_hit, skill_node_spokes, skill_node_state, skill_orbit_bars, skill_popup_fade,
     skill_position, skill_requirements, skill_ring_position, skill_satellite, skill_screen_key,
     spend_skill_experience, unlearn_skill_level,
+};
+pub use skill_gui::{
+    COMPACT_WORD_OFFSETS, CompactSkillPlan, ICON_CELL, ICON_SETS, ICON_UNITS, SINGLE_CELL,
+    SINGLE_ICON_ATLAS, SINGLE_ICONS, SKILL_GUI, SKILL_GUI_FLAGS, SKILL_GUI_UNITS, SKILL_ICON_ATLAS,
+    SkillIcons, SkillResources, SkillWindowPlan, WINDOW_GROUPS, WINDOW_SLOTS, WINDOW_TABLE_COUNT,
+    build_group_icons, build_single_icons, group_cells,
 };
 pub use skin::{
     BEVEL_INK, BackdropCorner, BevelArm, BevelBox, BevelInk, BevelPlace, CappedSpan, CentredIcon,

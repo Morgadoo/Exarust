@@ -63,6 +63,7 @@ pub mod practice;
 pub mod report;
 pub mod session;
 pub mod shell_draw;
+pub mod shop_window;
 pub mod sim_control;
 pub mod slots;
 pub mod splash;
