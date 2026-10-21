@@ -235,7 +235,7 @@ fn line_clear(grid: &NavGrid, from: (i32, i32), to: (i32, i32), budget: i32, shi
         cost += (chosen - height) * (chosen - height) * 10
             + direction
             + i32::from(cell.clearance) * 2
-            + (i32::from(cell.penalty) << (shift + 1));
+            + (i32::from(cell.penalty) << ((shift + 1) & 31));
         if budget + 10 < cost {
             return false;
         }
@@ -268,6 +268,7 @@ fn minor_at(major: i32, slope: f32, intercept: f32) -> i32 {
 fn search(grid: &NavGrid, from: Vec3, to: Vec3, size: u8, accept_cm: f32, shift: u32) -> Path {
     let (width, depth) = grid.size();
     let limit = PASSABLE / (u32::from(size) + 1);
+    let shift = shift.min(31);
     let start_cell = (planner_coord(from.x), planner_coord(from.z));
     let goal_cell = (planner_coord(to.x), planner_coord(to.z));
     let margin_x = (width / 2) as i32 - CENTRE_MARGIN;
