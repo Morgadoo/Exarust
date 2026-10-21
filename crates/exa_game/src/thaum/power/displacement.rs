@@ -15,8 +15,10 @@
 //!   navigation grid for the aim's place; a found place starts the phases,
 //!   an impossible one ends at once, and phase 3 moves the body there.
 //! - **Constant Displacement** ([`ConstantDisplacement`]): a persistent
-//!   class whose shell's shown value grows 0.002 a tick up to 0.12; ending
-//!   marks the shell closing and releases the focus.
+//!   class whose hum (`thmdsp_cns01`, following the body) rises 0.002 in
+//!   volume each control tick while it is under 0.12 (in double); ending
+//!   marks the hum stopping (its flags gain 0x300), returns the reserve and
+//!   closes the shell and the distortion.
 //! - **The Summon** ([`Summon`]): picks a place and a demon, then grows the
 //!   effect over 3 s, fades over 1 s, waits 1 s and cleans up.
 //!
@@ -68,10 +70,10 @@ pub const SUMMON_FADE_MS: u32 = 3000;
 pub const SUMMON_TAIL_MS: u32 = 1000;
 /// The shell bit that marks a shell shared with Constant Displacement.
 pub const SHARED_SHELL: u32 = 0x20;
-/// How much the constant displacement's shell grows a tick.
-pub const CONSTANT_GROW: f32 = 0.002;
-/// The shown value the constant displacement's shell grows to.
-pub const CONSTANT_FULL: f32 = 0.12;
+/// How much the constant displacement's hum rises a tick (a double).
+pub const CONSTANT_GROW: f64 = 0.002;
+/// The volume under which the hum still rises (a double).
+pub const CONSTANT_FULL: f64 = 0.12;
 
 /// The vanish effect's phase state.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -412,8 +414,8 @@ impl LongDoor {
 pub struct ConstantDisplacement {
     pub state: i32,
     pub held: f32,
-    /// The shell's shown value, from 0.12 to 1.
-    pub shown: f32,
+    /// The hum's volume.
+    pub hum_volume: f32,
 }
 
 /// What a Constant Displacement tick did.
@@ -423,7 +425,8 @@ pub struct ConstantStep {
     pub released: bool,
     /// The first tick's cast motion was taken.
     pub motion: bool,
-    /// The shell is marked closing (its flags gain 0x300).
+    /// The hum is marked stopping (its flags gain 0x300); the shell and the
+    /// distortion close.
     pub closing: bool,
 }
 
@@ -437,14 +440,15 @@ impl ConstantDisplacement {
         Self {
             state: super::READY,
             held: 0.0,
-            shown: 0.0,
+            hum_volume: 0.0,
         }
     }
 
-    /// The shell's shown value grows 0.002 a tick while it is under 0.12.
+    /// The hum rises by the double 0.002 while its widened volume is under
+    /// the double 0.12, and is narrowed back.
     pub fn grow(&mut self) {
-        if self.shown < CONSTANT_FULL {
-            self.shown += CONSTANT_GROW;
+        if f64::from(self.hum_volume) < CONSTANT_FULL {
+            self.hum_volume = (f64::from(self.hum_volume) + CONSTANT_GROW) as f32;
         }
     }
 
@@ -459,6 +463,8 @@ impl ConstantDisplacement {
         if event == 2 {
             self.state = super::ENDING;
         }
+        // The hum rises on every tick, the last one too.
+        self.grow();
         if self.state == super::ENDING {
             let released = 0.0 < self.held;
             if released {
@@ -709,16 +715,23 @@ mod tests {
     }
 
     #[test]
-    fn constant_displacement_grows_its_shell_and_closes() {
+    fn constant_displacement_raises_its_hum_and_closes() {
         let mut body = CastBody::default();
         let mut power = ConstantDisplacement::new();
         power.held = 0.35;
         body.reserved = 0.35;
+        assert!(power.control(0, &mut body).motion);
+        assert_eq!(power.hum_volume, 0.002);
         for _ in 0..100 {
             power.grow();
         }
-        assert!(power.shown > CONSTANT_FULL && power.shown < CONSTANT_FULL + CONSTANT_GROW + 1e-6);
-        assert!(power.control(0, &mut body).motion);
+        // Sixty steps in double reach the first volume past 0.12; it stays.
+        let mut expected = 0.002f32;
+        while f64::from(expected) < CONSTANT_FULL {
+            expected = (f64::from(expected) + CONSTANT_GROW) as f32;
+        }
+        assert_eq!(power.hum_volume, expected);
+        assert!(f64::from(expected) >= CONSTANT_FULL);
         let end = power.control(2, &mut body);
         assert_eq!(end.result, 2);
         assert!(end.released && end.closing);
