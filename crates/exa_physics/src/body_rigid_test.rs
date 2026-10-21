@@ -462,16 +462,16 @@ fn a_settling_body_falls_without_inertia() {
     );
 }
 
-/// A translate moves each particle by the offset times its weight and,
+/// A weighted push moves each particle by the offset times its weight and,
 /// with the restore flag, adds the offset's length to the strain: past
 /// 0.1 cm the six edge lengths are restored. Without the flag the strain
 /// is left alone.
 #[test]
-fn a_translate_restores_the_edges_past_a_tenth_of_a_centimetre() {
+fn a_weighted_push_restores_the_edges_past_a_tenth_of_a_centimetre() {
     let mut body = Ragdoll::rigid(&[crate_at(Vec3::ZERO)]);
     body.wake();
     let before = body.parts[0].positions;
-    body.translate(Vec3::new(0.0, 0.0004, 0.0), [1.0, 0.5, 0.0, 2.0], false);
+    body.push_weighted(Vec3::new(0.0, 0.0004, 0.0), [1.0, 0.5, 0.0, 2.0], false);
     let after = body.parts[0].positions;
     for (i, w) in [1.0f32, 0.5, 0.0, 2.0].into_iter().enumerate() {
         assert_eq!(after[i].y, before[i].y + w * 0.0004);
@@ -481,17 +481,34 @@ fn a_translate_restores_the_edges_past_a_tenth_of_a_centimetre() {
     let mut body = Ragdoll::rigid(&[crate_at(Vec3::ZERO)]);
     body.wake();
     let x = body.parts[0].positions[0].x;
-    body.translate(Vec3::new(0.01, 0.0, 0.0), [1.0; 4], true);
+    body.push_weighted(Vec3::new(0.01, 0.0, 0.0), [1.0; 4], true);
     assert_eq!(body.parts[0].positions[0].x, x + 0.01);
     // 1 cm is past the 0.1 cm budget: the edges were restored and the
     // strain reset.
     assert_eq!(body.parts[0].strain, 0.0);
-    body.translate(Vec3::new(0.0005, 0.0, 0.0), [1.0; 4], true);
+    body.push_weighted(Vec3::new(0.0005, 0.0, 0.0), [1.0; 4], true);
     assert!((body.parts[0].strain - 0.0005).abs() < 1e-9);
-    body.translate(Vec3::new(0.0005, 0.0, 0.0), [1.0; 4], true);
+    body.push_weighted(Vec3::new(0.0005, 0.0, 0.0), [1.0; 4], true);
     // Exactly the 0.1 cm budget is not past it.
     assert!((body.parts[0].strain - 0.001).abs() < 1e-9);
-    body.translate(Vec3::new(0.0001, 0.0, 0.0), [1.0; 4], true);
+    body.push_weighted(Vec3::new(0.0001, 0.0, 0.0), [1.0; 4], true);
+    assert_eq!(body.parts[0].strain, 0.0);
+}
+
+/// A translate moves every particle set with the body, so it adds no
+/// velocity and no strain.
+#[test]
+fn a_translate_moves_the_body_without_velocity() {
+    let mut body = Ragdoll::rigid(&[crate_at(Vec3::ZERO)]);
+    body.wake();
+    let before = body.parts[0].positions;
+    let offset = Vec3::new(0.3, 0.1, -0.2);
+    body.translate(offset);
+    for (i, &b) in before.iter().enumerate() {
+        assert_eq!(body.parts[0].positions[i], b + offset);
+        assert_eq!(body.parts[0].previous[i], b + offset);
+        assert_eq!(body.parts[0].start[i], b + offset);
+    }
     assert_eq!(body.parts[0].strain, 0.0);
 }
 

@@ -272,14 +272,35 @@ limbs), the stored spheres against the level (friction 0.75), articulated
 children joined by their stored links and an origin pivot. The body also
 keeps the original's other placements: `body::Ragdoll::place_at` puts its
 particles at a node's matrix times the rest points, at rest (an item put
-back into the world), `translate` moves particle `i` by an offset times its
-weight, and with its restore flag adds the offset's length to the strain
+back into the world), `translate` moves every particle set (current,
+previous and the tick's start), the drawn transforms, level contacts and
+foot anchors with the body as a pure displacement (no velocity, no
+strain), `push_weighted` is the original's weighted push (each particle by
+the offset times its weight) that adds the offset's length to the strain
 and restores the edges past 0.1 cm, and `settle_for` runs the original's
 temporary state where gravity acts with no inertia (a re-placed
 character). The integration keeps the velocity by the motion band's
 retention (0.426, 0.25, 0.05 a second; nothing else damps a body), and the
 sleep countdown is the original's: 256 on fast motion, held at 30–32 on
-slow motion, two off a tick at rest. `prop` registers
+slow motion, two off a tick at rest.
+
+A limp body's links also carry the original's other kinds: a soft weld
+takes a quarter of its strength times the gap less 0.4 of its points'
+motion; a breakable grab spends its strain by 1 + 2q/|d| (q = 1 + the
+gap's component on its axis) or 1, pulls at strength/(1 + 0.001|d|) while
+the strain lasts and disables itself below zero; a link with an iteration
+limit runs only up to its pass. Links from a part to a point in a scene
+node (`body::world::WorldLink`, not yet created by the level) are the
+plain pin (the gap times the strength, 10·strength cm at most with no
+slack), the damped spring, the slider (its parameter clamped to the
+travel, the correction applied twice) and the hand's horizontal drag
+(twice the strength, capped by min(3·√mobility, 5) cm, less the approach);
+a plane link removes 80 % of the gap along its axis first. Each pulls only
+its own part through its weights, unclamped. After the iterations a part
+whose tetrahedron is inverted is rebuilt on its rest tetrahedron from its
+own body matrix, each axis re-formed as the cross of the other two when
+the dot product falls under 0.1, and moved by its box centre's
+displacement. `prop` registers
 them from what the level loader gives (`prop::PendingProp`, `prop::BodyNode`)
 once transforms propagate; the static build keeps their meshes as
 stand-ins moved with them (`prop::StandIns`; `contact::Level::movable`) for

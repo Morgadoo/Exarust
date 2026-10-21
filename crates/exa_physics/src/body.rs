@@ -540,7 +540,9 @@ impl Part {
         }
     }
 
-    /// The part's rigid world transform from its particles.
+    /// The part's rigid world transform from its particles: their affine
+    /// frame through the rest basis, with the nearest rotation taken by
+    /// Gram–Schmidt (the edges keep it near rigid).
     pub fn transform(&self) -> Affine3A {
         let edges = Mat3::from_cols(
             self.positions[1] - self.positions[0],
@@ -548,7 +550,6 @@ impl Part {
             self.positions[3] - self.positions[0],
         );
         let m = edges * self.rest_inverse;
-        // Nearest rotation by Gram–Schmidt (the edges keep it near rigid).
         let x = m.x_axis.normalize_or(Vec3::X);
         let y = (m.y_axis - x * x.dot(m.y_axis)).normalize_or(Vec3::Y);
         let z = x.cross(y);
@@ -1580,6 +1581,23 @@ impl Ragdoll {
         }
     }
 
+    /// Starts every limp slack link's smoothed length at its points'
+    /// distance, within the link's slack, as the original's death and
+    /// placement reset does. Pivots and the weld and grab links are left
+    /// alone.
+    pub fn reset_link_lengths(&mut self) {
+        for l in &mut self.links {
+            if l.flags & (LINK_DISABLED | LINK_SOFT_WELD | LINK_BREAKABLE) != 0 {
+                continue;
+            }
+            if l.flags & LINK_BODY == 0 {
+                continue;
+            }
+            let d = self.parts[l.parent].point(&l.on_parent) - self.parts[l.part].point(&l.on_part);
+            l.reset_length(d);
+        }
+    }
+
     /// Takes the body's muscles: it becomes a plain ragdoll, solved from
     /// the pelvis out. As the original's death does, its leg limit links
     /// pull at full strength again, each slack link's smoothed length
@@ -1597,10 +1615,7 @@ impl Ragdoll {
                 self.links[k].strength = 1.0;
             }
         }
-        let parts = &self.parts;
-        for l in &mut self.links {
-            l.reset_length(parts[l.parent].point(&l.on_parent) - parts[l.part].point(&l.on_part));
-        }
+        self.reset_link_lengths();
     }
 
     /// Whether the body sleeps (and is not simulated).
@@ -1626,13 +1641,40 @@ impl Ragdoll {
         self.settle
     }
 
-    /// Moves each part's particles by `offset`, particle `i` by `offset ·
-    /// weights[i]` (the original's translate of a body, which moves only
-    /// the current points, so the move is also a velocity). With `restore`
-    /// the offset's length is added to the part's strain, and past 0.1 cm
-    /// the six edge lengths are restored (which starts the strain afresh);
-    /// without it neither happens.
-    pub fn translate(&mut self, offset: Vec3, weights: [f32; 4], restore: bool) {
+    /// Moves the whole body by `offset` (m), as the original's translate
+    /// does: every particle set (current, previous, the tick's start) and
+    /// the drawn transforms, contacts and foot anchors travel with it, so
+    /// the move is a pure displacement with no velocity and no strain.
+    pub fn translate(&mut self, offset: Vec3) {
+        for p in &mut self.parts {
+            for x in p
+                .positions
+                .iter_mut()
+                .chain(p.previous.iter_mut())
+                .chain(p.start.iter_mut())
+            {
+                *x += offset;
+            }
+            p.settled.translation += Vec3A::from(offset);
+            p.shown.0.translation += Vec3A::from(offset);
+            p.shown.1.translation += Vec3A::from(offset);
+            for c in &mut p.contacts {
+                c.point += offset;
+                c.plane = c.normal.dot(c.point) - CONTACT_SLOP;
+            }
+        }
+        for leg in &mut self.legs {
+            leg.anchor += offset;
+            leg.at += offset;
+            leg.before += offset;
+        }
+    }
+
+    /// Moves each part's particles by `offset` times `weights` and, with
+    /// `restore`, adds the offset's length to the part's strain and restores
+    /// its edges past 0.1 cm: the original's weighted push with its strain
+    /// flag.
+    pub fn push_weighted(&mut self, offset: Vec3, weights: [f32; 4], restore: bool) {
         // The length as the original's vector length sums it: (x² + z²) + y².
         let length = ((offset.x * offset.x + offset.z * offset.z) + offset.y * offset.y).sqrt();
         for p in &mut self.parts {

@@ -98,6 +98,47 @@ fn a_soft_weld_is_a_quarter_of_its_strength_less_four_tenths_of_the_motion() {
 }
 
 #[test]
+fn resetting_link_lengths_takes_the_current_distance_within_the_slack() {
+    let link = RigidLink {
+        on_body: Vec3::ZERO,
+        on_parent: Vec3::ZERO,
+        slack: 0.2,
+        strength: 1.0,
+        smoothing: 0.5,
+        flags: 0,
+        axis: Vec3::ZERO,
+    };
+    let mut body = Ragdoll::rigid(&[
+        rigid_part(Affine3A::IDENTITY, Vec3::ZERO, Vec::new()),
+        RigidPart {
+            parent: Some(0),
+            ..rigid_part(
+                Affine3A::from_translation(Vec3::X * 0.25),
+                Vec3::ZERO,
+                vec![link],
+            )
+        },
+    ]);
+    body.links[0].length = 0.0;
+    body.reset_link_lengths();
+    // 25 cm apart, 20 cm of slack: the length is the slack.
+    assert!((body.links[0].length - 0.2).abs() < 1e-6);
+    // 10 cm apart: the current distance.
+    let shift = Vec3::X * -0.15;
+    let p = &mut body.parts[1];
+    for x in p
+        .positions
+        .iter_mut()
+        .chain(p.previous.iter_mut())
+        .chain(p.start.iter_mut())
+    {
+        *x += shift;
+    }
+    body.reset_link_lengths();
+    assert!((body.links[0].length - 0.1).abs() < 1e-6);
+}
+
+#[test]
 fn a_breakable_link_spends_its_strain_and_lets_go_below_zero() {
     let link = RigidLink {
         on_body: Vec3::ZERO,
