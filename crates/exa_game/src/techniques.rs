@@ -1,68 +1,67 @@
 //! The technique selector's bridge to a roster member.
 //!
-//! The original edits the character's six skill records (`+0xc0`, six
-//! 16-bit experience words each) and its five assignment bytes. Exarust's
-//! [`Member`] keeps one experience word per skill and six technique ids, so
-//! the selector's first experience word carries the skill's total and the
-//! member's `xp` carries the unspent pool. The level is still experience
-//! over 5 000.
+//! The original's selector edits the character record's six skills (an
+//! experience word and the technique bytes each) and the skill screen's
+//! experience pool. A [`Member`] keeps the same: `skill_xp` and
+//! `techniques` are the record's six skills, `xp` the pool.
 
-use exa_ui::{ASSIGNED, LEVEL_XP, ROWS, SkillTraining, TechniqueSelector, TechniqueTraining};
+use exa_ui::technique_selector::{
+    SKILLS, SkillRecord, TechniqueChange, TechniqueSelector, TechniqueTraining, assign_technique,
+};
 
 use crate::career::Member;
 
-/// The training the technique screen shows for a member.
+/// The training the technique screen shows for a member. The arena's
+/// skill screen sets neither the truncate nor the weighted flag (guess:
+/// those belong to the story's character screen).
 pub fn training_of(member: &Member) -> TechniqueTraining {
     let mut training = TechniqueTraining {
-        pool: member.xp as i32,
+        pool: member.xp.min(i32::MAX as u32) as i32,
         ..TechniqueTraining::default()
     };
-    for skill in 0..ROWS.min(member.techniques.len()) {
-        training.skills[skill].xp[0] = member.skill_xp[skill];
-        for slot in 0..ASSIGNED {
-            training.skills[skill].assigned[slot] = member.techniques[skill][slot];
-        }
+    for (skill, record) in training.skills.iter_mut().enumerate() {
+        *record = SkillRecord {
+            points: member.skill_xp[skill],
+            techniques: member.techniques[skill],
+        };
     }
     training
 }
 
-/// Writes the selector's training back into the member.
+/// Writes the selector's training back into the member: the six skills,
+/// their levels and the pool.
 pub fn save_to(member: &mut Member, training: &TechniqueTraining) {
-    for skill in 0..ROWS.min(member.techniques.len()) {
-        member.skill_xp[skill] = training.skills[skill].xp[0];
-        for slot in 0..ASSIGNED {
-            member.techniques[skill][slot] = training.skills[skill].assigned[slot];
-        }
+    for skill in 0..SKILLS {
+        member.skill_xp[skill] = training.skills[skill].points;
+        member.techniques[skill] = training.skills[skill].techniques;
+        member.skills[skill] = u32::from(training.skills[skill].points / 5_000);
     }
     member.xp = training.pool.max(0) as u32;
 }
 
-/// The selector for one skill and one learned slot.
-pub fn selector_for(member: &Member, skill: usize, slot: usize) -> TechniqueSelector {
-    let skill = skill.min(ROWS.min(member.techniques.len()).saturating_sub(1));
-    let slot = slot.clamp(1, ASSIGNED);
-    let picked = member.techniques[skill][slot - 1] as i32;
+/// The selector for skill `skill` (1…6) and slot `slot` (1…5) of the
+/// skill screen, with nothing picked from it yet.
+pub fn selector_for(skill: u16, slot: u16) -> TechniqueSelector {
     TechniqueSelector {
-        index: if picked == 0 { -1 } else { picked },
+        skill,
         slot,
-        group: skill,
-        ..TechniqueSelector::default()
+        last: 0,
     }
 }
 
-/// A skill's level from its stored experience.
-pub fn level(experience: u16) -> u16 {
-    experience / LEVEL_XP
-}
-
-/// The experience a technique needs for the given level.
-pub fn level_experience(level: u16) -> u16 {
-    level.saturating_mul(LEVEL_XP)
-}
-
-/// One skill's training after an assignment, for the member's use.
-pub fn skill_after(training: &TechniqueTraining, skill: usize) -> SkillTraining {
-    training.skills[skill.min(ROWS - 1)]
+/// Picks `technique` (or forgets, when negative) into a member's slot and
+/// stores the result.
+pub fn pick(
+    member: &mut Member,
+    selector: &mut TechniqueSelector,
+    technique: i32,
+) -> TechniqueChange {
+    let mut training = training_of(member);
+    let change = assign_technique(&mut training, selector, technique, false);
+    if change.changed {
+        save_to(member, &training);
+    }
+    change
 }
 
 #[cfg(test)]
@@ -84,12 +83,13 @@ mod tests {
         member.techniques[0] = [3, 4, 0, 0, 0, 0];
         let training = training_of(&member);
         assert_eq!(training.pool, 12_345);
-        assert_eq!(training.skills[0].xp[0], 5_000);
-        assert_eq!(training.skills[0].assigned[..2], [3, 4]);
-        assert_eq!(training.skills[1].xp[0], 2_500);
+        assert_eq!(training.skills[0].points, 5_000);
+        assert_eq!(training.skills[0].techniques[..2], [3, 4]);
+        assert_eq!(training.skills[1].points, 2_500);
         save_to(&mut member, &training);
         assert_eq!(member.skill_xp, [5_000, 2_500, 0, 0, 0, 0]);
-        assert_eq!(member.techniques[0][..5], [3, 4, 0, 0, 0]);
+        assert_eq!(member.skills, [1, 0, 0, 0, 0, 0]);
+        assert_eq!(member.techniques[0], [3, 4, 0, 0, 0, 0]);
         assert_eq!(member.xp, 12_345);
         // A negative pool is stored as zero.
         let mut training = training;
@@ -99,20 +99,23 @@ mod tests {
     }
 
     #[test]
-    fn a_selector_reads_the_slot_and_index() {
+    fn a_pick_moves_the_unspent_experience_into_the_skill() {
         let mut member = member();
-        member.techniques[2] = [0, 7, 0, 0, 0, 0];
-        let selector = selector_for(&member, 2, 2);
-        assert_eq!(selector.group, 2);
-        assert_eq!(selector.slot, 2);
-        assert_eq!(selector.index, 7);
-        let empty = selector_for(&member, 2, 1);
-        assert_eq!(empty.index, -1);
-        assert_eq!(selector_for(&member, 9, 9).slot, 5);
-        assert_eq!(selector_for(&member, 9, 9).group, 5);
-        assert_eq!(level(12_499), 2);
-        assert_eq!(level_experience(3), 15_000);
-        let skill = skill_after(&training_of(&member), 2);
-        assert_eq!(skill.assigned[1], 7);
+        member.xp = 9_000;
+        member.skill_xp = [5_000, 0, 0, 0, 0, 0];
+        member.techniques[0] = [3, 0, 0, 0, 0, 0];
+        let mut selector = selector_for(1, 2);
+        let change = pick(&mut member, &mut selector, 5);
+        assert!(change.changed);
+        // 9 000 − 5 000 unspent: 4 000 into skill 1, whose slot 2 is now
+        // in training.
+        assert_eq!(member.techniques[0][..2], [3, 5]);
+        assert_eq!(member.skill_xp[0], 9_000);
+        assert_eq!(selector.last, 5);
+        // Forgetting it clears the last filled slot: one level held.
+        pick(&mut member, &mut selector, -1);
+        assert_eq!(member.techniques[0][..2], [3, 0]);
+        assert_eq!(member.skill_xp[0], 5_000);
+        assert_eq!(member.skills[0], 1);
     }
 }

@@ -1,306 +1,453 @@
-//! The technique selector: one skill's techniques, their descriptions, the
-//! experience a technique costs and the confirmation before forgetting one.
+//! The technique selector: the eight techniques one skill offers, their
+//! names and descriptions, picking one into a skill slot (with the
+//! experience it moves) and the confirmation before forgetting one.
 //!
-//! Evidence: the technique selector's routines in the retail image. A level
-//! is 5 000 experience. Assigning a technique adds at most a level's worth
-//! from the character's pool; with the weighted flag the gain is
-//! `pool · 4 / (4 + Σ level)`, capped at 5 000, and the pool drops by
-//! `gain · divisor / 4`. Forgetting returns `level · 5 000 − spent`, capped
-//! by the unspent pool. The form is 332 × 112 pixels, lists eight
-//! techniques and draws the selected one's name centred at 16 units and its
-//! description at 20 units above the bottom. Words 9 and 10 mean "forget".
+//! Evidence: the technique selector's routines in the retail image, read
+//! from the instructions, with the two character-data helpers they call
+//! (the technique in training and the forget). The character record holds
+//! six skills; each has one 16-bit experience word and five technique
+//! bytes (slots 1…5). A level is 5 000 experience. The record's holder
+//! keeps the experience pool and two flags: "truncate" rounds a slot's
+//! skill down to whole levels before an assignment, "weighted" makes an
+//! assignment draw from the pool with `pool · 4 / (4 + Σ levels)` and
+//! drop the pool by `gain · divisor / 4`.
+//!
+//! The form is 332 × 112 pixels. The picked technique's name is centred
+//! at 16 units, its description boxed from 18 units down to 20 units
+//! above the bottom, the confirmation boxed at 12 units, 20 units high.
 
 /// Experience in one level.
 pub const LEVEL_XP: u16 = 5_000;
 /// The form's width in pixels.
-pub const FORM_WIDTH: i32 = 0x14c;
+pub const FORM_WIDTH: i32 = 332;
 /// The form's height in pixels.
-pub const FORM_HEIGHT: i32 = 0x70;
-/// The rows (techniques) the form lists.
+pub const FORM_HEIGHT: i32 = 112;
+/// The techniques a skill offers (the form's rows).
 pub const ROWS: usize = 8;
-/// The technique slots a skill tracks.
-pub const SLOTS: usize = 6;
-/// The assignment bytes: slots one through five.
-pub const ASSIGNED: usize = 5;
+/// The skills a character record holds.
+pub const SKILLS: usize = 6;
+/// The technique slots of one skill.
+pub const SLOTS: usize = 5;
+/// The technique-removal pass looks at the first four slots only.
+pub const DEPENDANT_SLOTS: usize = 4;
 /// The name's y in units.
-pub const NAME_Y_UNITS: i64 = 16;
-/// The description sits this many units above the bottom.
-pub const DESCRIPTION_BOTTOM_UNITS: i64 = 20;
-/// The confirmation text sits at 18 units and wraps over 20.
-pub const CONFIRM_Y_UNITS: i64 = 18;
-pub const CONFIRM_HEIGHT_UNITS: i64 = 20;
-/// The most techniques a character may hold before extras are locked.
+pub const NAME_Y_UNITS: i32 = 16;
+/// The description's y in units.
+pub const DESCRIPTION_Y_UNITS: i32 = 18;
+/// The description box ends this many units above the form's bottom.
+pub const DESCRIPTION_BOTTOM_UNITS: i32 = 20;
+/// The confirmation's y and box height in units.
+pub const CONFIRM_Y_UNITS: i32 = 12;
+pub const CONFIRM_HEIGHT_UNITS: i32 = 20;
+/// The most techniques a tree holds before the next slots stop opening.
 pub const TECHNIQUE_LIMIT: i32 = 15;
-/// The two words that mean "forget".
+/// The two hovered row codes that mean "forget".
 pub const FORGET_WORDS: [i32; 2] = [9, 10];
-/// The one row word the base handler keeps.
+/// The row code the base handler keeps.
 pub const BASE_WORD: i32 = 9;
-/// The form's mode value that lights the renderer's 0x110 bits.
+/// The form's mode while it lists techniques.
 pub const MODE_SELECT: i32 = 1;
-/// The confirmation state.
+/// The form's mode while it asks to confirm a forget.
 pub const STATE_CONFIRM: i32 = 2;
 /// The text of the confirmation.
 pub const CONFIRM_TEXT: &str = "Are you sure you want to forget this technique?";
+/// The renderer style bits a picked row lights in the select mode.
+pub const PICKED_STYLE: u32 = 0x110;
 
-/// One skill's technique training: six experience words and the five
-/// assignment bytes.
+/// One skill of the character record: its experience (`points`) and its
+/// technique bytes (0 = empty). The rules here read the first five; the
+/// record's sixth byte is never touched.
+pub use exa_formats::characters::Skill as SkillRecord;
+
+/// A skill's level: experience over 5 000.
+pub fn skill_level(record: &SkillRecord) -> u16 {
+    record.points / LEVEL_XP
+}
+
+/// The skill screen's training state: the record's six skills, the
+/// screen's experience pool and its two flags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct SkillTraining {
-    /// The experience of each slot; 5 000 is a level.
-    pub xp: [u16; SLOTS],
-    /// The technique id in each learned slot, 0 = none.
-    pub assigned: [u8; ASSIGNED],
-}
-
-/// A character's training: eight skills and the unspent pool.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TechniqueTraining {
-    pub skills: [SkillTraining; ROWS],
-    /// The unspent experience pool.
+    pub skills: [SkillRecord; SKILLS],
+    /// The experience pool.
     pub pool: i32,
-    /// Assignments truncate a slot to whole levels first.
+    /// Assignments round the slot's skill down to whole levels first.
     pub truncate: bool,
-    /// The weighted gain.
+    /// Assignments draw from the pool by the weighted rule.
     pub weighted: bool,
-    /// Every learned row is shown as learned.
-    pub all_learned: bool,
 }
 
-impl Default for TechniqueTraining {
-    fn default() -> Self {
-        Self {
-            skills: [SkillTraining::default(); ROWS],
-            pool: 0,
-            truncate: false,
-            weighted: false,
-            all_learned: false,
-        }
-    }
+/// The pairs of technique ids a technique depends on, by skill (1…6) and
+/// technique id (0…8): the character data unit's table, read as one run
+/// of pairs from skill 1's entry 0 (so technique 8 of a skill is the next
+/// skill's entry 0). Forgetting a technique also forgets every later one
+/// that names it.
+pub const PREREQUISITES: [[i32; 2]; 49] = {
+    let mut table = [[0; 2]; 49];
+    table[8] = [1, 4];
+    table[18] = [1, 0];
+    table[19] = [2, 0];
+    table[26] = [1, 0];
+    table[27] = [2, 0];
+    table[43] = [2, 0];
+    table[44] = [3, 0];
+    table
+};
+
+/// The pair a technique depends on: skill `skill` (1…6), technique `id`.
+pub fn prerequisites(skill: usize, id: u8) -> [i32; 2] {
+    PREREQUISITES
+        .get((skill.saturating_sub(1)) * ROWS + usize::from(id))
+        .copied()
+        .unwrap_or([0, 0])
 }
 
 impl TechniqueTraining {
-    /// The sum of every skill's six experience words.
+    /// The six skills' experience, summed as 32-bit words.
     pub fn spent(&self) -> i32 {
         self.skills
             .iter()
-            .flat_map(|skill| skill.xp)
-            .map(i32::from)
+            .map(|skill| i32::from(skill.points))
             .sum()
     }
 
-    /// The unspent experience: the pool less the spent words.
+    /// The experience not yet in a skill: the pool less the six words.
     pub fn available(&self) -> i32 {
-        self.pool - self.spent()
+        self.pool.wrapping_sub(self.spent())
+    }
+
+    /// The record of skill `skill` (1…6).
+    pub fn skill(&self, skill: u16) -> Option<&SkillRecord> {
+        self.skills.get(usize::from(skill).checked_sub(1)?)
+    }
+
+    fn skill_mut(&mut self, skill: u16) -> Option<&mut SkillRecord> {
+        self.skills.get_mut(usize::from(skill).checked_sub(1)?)
+    }
+
+    /// The technique in training: the first skill whose slot one past its
+    /// level holds a technique, as (skill 1…6, slot 1…5). A skill at level
+    /// five or more has none.
+    pub fn in_training(&self) -> Option<(u16, u16)> {
+        self.skills.iter().enumerate().find_map(|(index, skill)| {
+            let level = usize::from(skill_level(skill));
+            (level < SLOTS && skill.techniques[level] != 0)
+                .then_some((index as u16 + 1, level as u16 + 1))
+        })
+    }
+
+    /// Forgets the technique in slot `slot` (1…5) of skill `skill` (1…6).
+    ///
+    /// When later slots are filled the technique is taken out and the
+    /// later ones close up; every technique in the first four slots that
+    /// names the forgotten one (or names one forgotten with it) goes too,
+    /// and the skill loses a level for each technique gone. When the slot
+    /// is the last filled one (or past it), it is cleared and the skill's
+    /// experience becomes one level less than the techniques it held.
+    /// An empty slot is matched against technique 0's pair, as the
+    /// original does.
+    pub fn forget(&mut self, skill: u16, slot: u16) {
+        if skill == 0 || slot == 0 {
+            return;
+        }
+        let Some(record) = self.skill_mut(skill) else {
+            return;
+        };
+        let held = record.techniques[..SLOTS]
+            .iter()
+            .position(|&id| id == 0)
+            .unwrap_or(SLOTS);
+        let index = usize::from(slot) - 1;
+        if usize::from(slot) < held {
+            let removed = record.techniques[index];
+            close_up(&mut record.techniques, index);
+            let mut count: i32 = 1;
+            forget_dependants(record, usize::from(skill), removed, &mut count, 0);
+            record.points = record
+                .points
+                .wrapping_add((count as i16).wrapping_mul(-5_000) as u16);
+        } else {
+            if let Some(byte) = record.techniques[..SLOTS].get_mut(index) {
+                *byte = 0;
+            }
+            record.points = ((held as i16) - 1).wrapping_mul(5_000) as u16;
+        }
     }
 }
 
-/// The selector's state: the technique it highlights and the level slot it
-/// edits.
+/// Moves the slots after `index` down by one and clears the last.
+fn close_up(techniques: &mut [u8], index: usize) {
+    for slot in index..SLOTS - 1 {
+        techniques[slot] = techniques[slot + 1];
+    }
+    techniques[SLOTS - 1] = 0;
+}
+
+/// The removal pass: scan the first four slots; a technique whose pair
+/// names `removed` is taken out (counted), its own dependants follow, and
+/// the scan starts over. The scan stops at the first empty slot after
+/// testing it.
+fn forget_dependants(
+    record: &mut SkillRecord,
+    skill: usize,
+    removed: u8,
+    count: &mut i32,
+    depth: u32,
+) {
+    // The pass recurses once per technique taken out; a record holds five,
+    // so this bound is never reached by the original's own data.
+    if depth > 32 {
+        return;
+    }
+    let mut slot = 0;
+    while slot < DEPENDANT_SLOTS {
+        let id = record.techniques[slot];
+        let pair = prerequisites(skill, id);
+        if pair.contains(&i32::from(removed)) {
+            close_up(&mut record.techniques, slot);
+            *count += 1;
+            forget_dependants(record, skill, id, count, depth + 1);
+            slot = 0;
+        }
+        if record.techniques[slot] == 0 {
+            break;
+        }
+        slot += 1;
+    }
+}
+
+/// The skill screen's slot the selector edits, and the technique last
+/// picked into it there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TechniqueSelector {
-    /// The technique id last picked; below 1 means none.
-    pub index: i32,
-    /// The level slot, one through five.
-    pub slot: usize,
-    /// The skill group (the form's `param_3` less one).
-    pub group: usize,
-    /// The shown state: 0 the list, 2 the confirmation.
-    pub state: i32,
-    /// The style's low word, a row code; 9 and 10 mean "forget".
-    pub code: i32,
-    /// The hidden flag.
-    pub hidden: bool,
+    /// The skill, 1…6.
+    pub skill: u16,
+    /// The slot, 1…5.
+    pub slot: u16,
+    /// The technique last picked from this slot; below 1 means none.
+    pub last: i32,
 }
 
-/// What picking a technique did.
+/// What a pick did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TechniqueChange {
-    pub training: TechniqueTraining,
-    /// The experience added (or taken, when negative).
-    pub moved: i32,
-    /// The selector stores this index.
-    pub index: i32,
-    /// The character view needs a refresh.
-    pub refresh: bool,
+    /// The pick changed the record (and the tree is refreshed).
+    pub changed: bool,
+    /// The record is the player's: the body is refreshed too.
+    pub refresh_body: bool,
 }
 
-/// Assigns a technique (a non-negative id) or forgets one (a negative id).
-/// The gain and the refund are the original's arithmetic.
+/// Puts technique `technique` (1…8) into the selector's slot, or forgets
+/// the slot's technique (a negative `technique`). Picking the same
+/// technique again does nothing.
+///
+/// A forget refunds into the technique in training when the pool is
+/// positive and the rule is not weighted: the unspent experience, at most
+/// what lifts that skill to the training slot's level.
+///
+/// An assignment first rounds the skill down to whole levels when the
+/// truncate flag is set and the skill is below the slot; an empty slot
+/// takes the place of the technique in training (that one is forgotten).
+/// With a positive pool the skill gains the unspent experience clamped to
+/// 0…5 000, or by the weighted rule `pool · 4 / (4 + Σ levels)` capped at
+/// 5 000; only a slot nothing was picked into before gains, but the
+/// weighted rule always draws `gain · divisor / 4` from the pool.
 pub fn assign_technique(
-    training: TechniqueTraining,
-    selector: TechniqueSelector,
+    training: &mut TechniqueTraining,
+    selector: &mut TechniqueSelector,
     technique: i32,
+    is_player: bool,
 ) -> TechniqueChange {
-    let mut training = training;
-    let mut moved = 0;
-    if technique == selector.index {
+    if technique == selector.last {
         return TechniqueChange {
-            training,
-            moved,
-            index: selector.index,
-            refresh: false,
+            changed: false,
+            refresh_body: false,
         };
     }
-    let slot = selector.slot.clamp(1, ASSIGNED) - 1;
-    let group = selector.group.min(ROWS - 1);
-    let available = training.available();
-    let pool = training.pool;
-    let truncate = training.truncate;
-    let weighted = training.weighted;
-    let skill = &mut training.skills[group];
+    let (skill, slot) = (selector.skill, selector.slot);
     if technique < 0 {
-        // The refund: the slot's level, less what it already holds, capped
-        // by the unspent pool. The unspent pool counts every skill.
-        let level = selector.slot as i32;
-        let refund = level * i32::from(LEVEL_XP) - i32::from(skill.xp[slot]);
-        let add = refund.min(available);
-        skill.xp[slot] = skill.xp[slot].wrapping_add(add as u16);
-        moved = add;
-    } else {
-        if truncate && u32::from(skill.xp[slot]) / u32::from(LEVEL_XP) < selector.slot as u32 {
-            skill.xp[slot] -= skill.xp[slot] % LEVEL_XP;
-        }
-        skill.assigned[slot] = technique as u8;
-        if pool > 0 {
-            let add = if weighted {
-                let divisor = 4 + skill
-                    .xp
-                    .iter()
-                    .map(|&xp| i32::from(xp) / i32::from(LEVEL_XP))
-                    .sum::<i32>();
-                let gain = ((i64::from(pool) << 2) / i64::from(divisor)) as i32;
-                let gain = gain.clamp(0, i32::from(LEVEL_XP));
-                let cost = ((i64::from(gain) * i64::from(divisor)
-                    + ((i64::from(gain) * i64::from(divisor)) >> 63 & 3))
-                    >> 2) as i32;
-                training.pool -= cost;
-                gain
-            } else {
-                available.clamp(0, i32::from(LEVEL_XP))
-            };
-            if selector.index < 1 {
-                skill.xp[slot] = skill.xp[slot].wrapping_add(add as u16);
-                moved = add;
+        training.forget(skill, slot);
+        if training.pool > 0
+            && !training.weighted
+            && let Some((target, level)) = training.in_training()
+        {
+            let available = training.available();
+            if let Some(record) = training.skill_mut(target) {
+                let room = i32::from(level) * i32::from(LEVEL_XP) - i32::from(record.points);
+                let add = if room < available { room } else { available };
+                record.points = record.points.wrapping_add(add as u16);
             }
         }
+    } else if (1..=SLOTS as u16).contains(&slot) && training.skill(skill).is_some() {
+        let index = usize::from(slot) - 1;
+        let truncate = training.truncate;
+        if let Some(record) = training.skill_mut(skill)
+            && truncate
+            && skill_level(record) < slot
+        {
+            record.points -= record.points % LEVEL_XP;
+        }
+        let empty = training
+            .skill(skill)
+            .is_some_and(|r| r.techniques[index] == 0);
+        if empty && let Some((target, at)) = training.in_training() {
+            training.forget(target, at);
+        }
+        let pool = training.pool;
+        let available = training.available();
+        let divisor = 4 + training
+            .skills
+            .iter()
+            .map(|skill| i32::from(skill_level(skill)))
+            .sum::<i32>();
+        let weighted = training.weighted;
+        let mut drawn = 0i64;
+        if let Some(record) = training.skill_mut(skill) {
+            record.techniques[index] = technique as u8;
+            if pool > 0 {
+                let gain = if weighted {
+                    let gain = ((i64::from(pool) << 2) / i64::from(divisor)) as i32;
+                    let gain = gain.min(i32::from(LEVEL_XP));
+                    drawn = i64::from(gain) * i64::from(divisor) / 4;
+                    gain
+                } else {
+                    available.clamp(0, i32::from(LEVEL_XP))
+                };
+                if selector.last < 1 {
+                    record.points = record.points.wrapping_add(gain as u16);
+                }
+            }
+        }
+        if weighted && pool > 0 {
+            training.pool = (i64::from(training.pool) - drawn) as i32;
+        }
     }
+    selector.last = technique;
     TechniqueChange {
-        training,
-        moved,
-        index: technique,
-        refresh: true,
+        changed: true,
+        refresh_body: is_player,
     }
 }
 
-/// What a row of the refreshed tree is.
+/// A technique node's state on the skill tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RowKind {
-    /// A learned technique.
-    Technique,
-    /// A locked row.
-    Locked,
-    /// The row to learn next.
-    Next { extra: bool },
-    /// An empty row.
-    Empty,
+pub enum NodeState {
+    /// A learned technique (its slot is within the level).
+    Learned = 0,
+    /// A slot that cannot be opened yet.
+    Locked = 1,
+    /// A technique above the level (in training or waiting).
+    Assigned = 2,
+    /// An empty slot (also the next slot while a skill holds more
+    /// techniques than its level).
+    Empty = 3,
+    /// The next slot to open.
+    Next = 4,
 }
 
-/// One refreshed row.
+/// One technique node of the refreshed tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TechniqueRow {
-    pub kind: RowKind,
+pub struct TechniqueNode {
     pub technique: u8,
-    /// A learned technique above the skill's level.
-    pub locked: bool,
-    /// The skill's colour slot (the original's `skill + 2`).
-    pub colour: i32,
+    /// The skill, 1…6 (the node's colour and name group).
+    pub skill: u16,
+    pub state: NodeState,
 }
 
-/// One skill's refreshed rows.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkillRows {
-    pub rows: [TechniqueRow; SLOTS],
-    /// The level as stored (experience / 5 000).
-    pub level: i32,
-    /// The skill holds more techniques than its level.
-    pub more: bool,
+/// One skill's refreshed column.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SkillColumn {
+    /// The header's fill: experience times 0.00004 (a double), so 25 000
+    /// fills it.
+    pub progress: f32,
+    pub nodes: [TechniqueNode; SLOTS],
 }
 
 /// The refreshed tree.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TechniqueTree {
-    pub skills: Vec<SkillRows>,
-    /// Every assigned technique across the skills.
+    pub skills: Vec<SkillColumn>,
+    /// The techniques held across the skills.
     pub total: i32,
 }
 
-impl TechniqueTree {
-    /// The row states of one skill.
-    pub fn skill(&self, index: usize) -> Option<&SkillRows> {
-        self.skills.get(index)
-    }
-}
-
-/// Rebuilds the technique rows of every skill, as the form does after an
-/// assignment or a change of character.
-pub fn refresh_tree(training: &TechniqueTraining) -> TechniqueTree {
-    let mut skills = Vec::with_capacity(ROWS);
+/// Rebuilds the skill tree's technique nodes after a pick or a change of
+/// character. `all_learned` is the screen's flag that shows every slot up
+/// to one past the level as locked.
+///
+/// Every filled slot is learned within the level and assigned above it,
+/// every empty one empty. Then, unless `all_learned`: with fewer than 15
+/// techniques in the tree, each skill's first empty slot among the first
+/// `level + 1` becomes the next one (left empty while any skill holds
+/// more techniques than its level) and the slots from `level + 2` lock;
+/// with 15 or more, the empty slots from `level + 1` lock on a skill below
+/// level five. With `all_learned` the first `level + 1` slots lock.
+pub fn refresh_tree(training: &TechniqueTraining, all_learned: bool) -> TechniqueTree {
     let mut total = 0;
-    for (skill, source) in training.skills.iter().enumerate() {
-        let xp = source.xp[0];
-        let level = i32::from(xp) / i32::from(LEVEL_XP);
-        let mut rows = [TechniqueRow {
-            kind: RowKind::Empty,
-            technique: 0,
-            locked: false,
-            colour: skill as i32 + 2,
-        }; SLOTS];
-        let mut count = 0;
-        for (slot, row) in rows.iter_mut().enumerate().take(ASSIGNED) {
-            let technique = source.assigned[slot];
-            if technique != 0 {
-                count += 1;
-                row.kind = RowKind::Technique;
-                row.technique = technique;
-                // The original's word 2 marks a technique above the learned
-                // level.
-                row.locked = level - 1 < slot as i32;
-            }
-        }
-        total += count;
-        let more = level < count;
-        skills.push(SkillRows { rows, level, more });
-    }
-    let any_more = skills.iter().any(|skill| skill.more);
-    for skill in &mut skills {
-        if !training.all_learned {
-            if total < TECHNIQUE_LIMIT {
-                let mut first_empty = None;
-                for slot in 0..=skill.level.min(SLOTS as i32 - 1) as usize {
-                    if skill.rows[slot].kind == RowKind::Empty {
-                        first_empty = Some(slot);
-                        break;
+    let mut any_more = false;
+    let mut skills: Vec<SkillColumn> = training
+        .skills
+        .iter()
+        .enumerate()
+        .map(|(index, record)| {
+            let level = i32::from(skill_level(record));
+            let mut count = 0;
+            let nodes = std::array::from_fn(|slot| {
+                let technique = record.techniques[slot];
+                let state = if technique == 0 {
+                    NodeState::Empty
+                } else {
+                    count += 1;
+                    if level - 1 < slot as i32 {
+                        NodeState::Assigned
+                    } else {
+                        NodeState::Learned
                     }
+                };
+                TechniqueNode {
+                    technique,
+                    skill: index as u16 + 1,
+                    state,
                 }
-                if let Some(slot) = first_empty {
-                    skill.rows[slot].kind = RowKind::Next { extra: any_more };
-                }
-                let from = (skill.level + 2).max(0) as usize;
-                for slot in from.min(SLOTS)..SLOTS {
-                    skill.rows[slot].kind = RowKind::Locked;
-                }
-            } else if skill.level < SLOTS as i32 {
-                let from = (skill.level - 1).max(0) as usize;
-                for slot in from..(SLOTS - 1) {
-                    if skill.rows[slot].kind == RowKind::Empty {
-                        skill.rows[slot].kind = RowKind::Locked;
-                    }
-                }
+            });
+            total += count;
+            if level < count {
+                any_more = true;
             }
-        } else {
-            let upto = (skill.level + 1).clamp(0, SLOTS as i32) as usize;
-            for slot in 0..upto {
-                skill.rows[slot].kind = RowKind::Locked;
+            SkillColumn {
+                progress: (f64::from(record.points) * 4e-5) as f32,
+                nodes,
+            }
+        })
+        .collect();
+    for (column, record) in skills.iter_mut().zip(&training.skills) {
+        let level = usize::from(skill_level(record));
+        if all_learned {
+            for node in column.nodes.iter_mut().take(level + 1) {
+                node.state = NodeState::Locked;
+            }
+        } else if total < TECHNIQUE_LIMIT {
+            let next = if any_more {
+                NodeState::Empty
+            } else {
+                NodeState::Next
+            };
+            if let Some(node) = column
+                .nodes
+                .iter_mut()
+                .take(level + 1)
+                .find(|node| node.technique == 0)
+            {
+                node.state = next;
+            }
+            for node in column.nodes.iter_mut().skip(level + 1) {
+                node.state = NodeState::Locked;
+            }
+        } else if level < SLOTS {
+            for node in column.nodes.iter_mut().skip(level) {
+                if node.state == NodeState::Empty {
+                    node.state = NodeState::Locked;
+                }
             }
         }
     }
@@ -312,7 +459,8 @@ pub fn refresh_tree(training: &TechniqueTraining) -> TechniqueTree {
 pub struct SelectorRow {
     /// The control's id, one through eight.
     pub id: i32,
-    /// The row's style word: 0x10 for a row the group table marks empty.
+    /// The row's style word: 0x10 for a technique the skill's table marks
+    /// unavailable.
     pub style: u32,
 }
 
@@ -323,28 +471,31 @@ pub struct SelectorLayout {
     pub height: i32,
     pub flags: u32,
     pub style: u32,
+    /// The skill index the form names (the constructor's group less one).
+    pub skill_index: i32,
     pub rows: [SelectorRow; ROWS],
 }
 
-/// The constructor's layout for a skill group. The group's table marks
-/// each row's empty bit (`0x10`). The form's flags are the original's
-/// 0x21060, its style word 0x14c × 0x70 with 0x10 and 0x79 clear.
-pub fn layout(group: usize, empty_rows: [bool; ROWS]) -> SelectorLayout {
-    let _ = group;
+/// The constructor's layout for skill group `group` (1…6): a 332 × 112
+/// form with flags 0x21060 and style 0x10, eight row controls whose ids
+/// are 1…8, a row the skill's technique table marks unavailable carrying
+/// style 0x10.
+pub fn layout(group: i32, available: [bool; ROWS]) -> SelectorLayout {
     SelectorLayout {
         width: FORM_WIDTH,
         height: FORM_HEIGHT,
         flags: 0x21060,
         style: 0x10,
+        skill_index: group - 1,
         rows: std::array::from_fn(|row| SelectorRow {
             id: row as i32 + 1,
-            style: if empty_rows[row] { 0x10 } else { 0 },
+            style: if available[row] { 0 } else { 0x10 },
         }),
     }
 }
 
-/// The forget entry: the original's code pointer sets the owner's mode word
-/// to two and the renderer's style words to 0x110, 0 and 0.
+/// The forget entry: the confirmation control's code sets the form's mode
+/// to two and three of its controls' style words to 0x110, 0 and 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ForgetMode {
     pub mode: i32,
@@ -356,31 +507,39 @@ pub struct ForgetMode {
 /// Enters the confirmation for forgetting a technique.
 pub fn enter_forget() -> ForgetMode {
     ForgetMode {
-        mode: 2,
-        style: 0x110,
+        mode: STATE_CONFIRM,
+        style: PICKED_STYLE,
         second: 0,
         third: 0,
     }
 }
 
-/// Where the name and description go, in pixels.
+/// Where the name, the description and the confirmation go, in pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TechniqueText {
     pub name_x: i32,
     pub name_y: i32,
-    pub description_x: i32,
+    pub box_x: i32,
+    pub box_width: i32,
     pub description_y: i32,
-    pub description_width: i32,
+    pub description_height: i32,
+    pub confirm_y: i32,
+    pub confirm_height: i32,
 }
 
-/// The text places for a name `name_width` pixels wide.
+/// The text places for a name `name_width` pixels wide. The name's x is
+/// `(width − name) >> 1` (an arithmetic halving, so an odd negative rounds
+/// down).
 pub fn text_places(form_width: i32, form_height: i32, unit: i32, name_width: i32) -> TechniqueText {
     TechniqueText {
-        name_x: (form_width - name_width) / 2,
-        name_y: unit * NAME_Y_UNITS as i32,
-        description_x: unit,
-        description_y: form_height - unit * DESCRIPTION_BOTTOM_UNITS as i32,
-        description_width: form_width - 2 * unit,
+        name_x: ((i64::from(form_width) - i64::from(name_width)) >> 1) as i32,
+        name_y: unit << 4,
+        box_x: unit,
+        box_width: form_width - 2 * unit,
+        description_y: unit * DESCRIPTION_Y_UNITS,
+        description_height: form_height - unit * DESCRIPTION_BOTTOM_UNITS,
+        confirm_y: unit * CONFIRM_Y_UNITS,
+        confirm_height: unit * CONFIRM_HEIGHT_UNITS,
     }
 }
 
@@ -395,58 +554,54 @@ pub struct SelectorKey {
     pub base: bool,
 }
 
-/// The key guard: with no index, no page, or a hidden word 9/10 the base
-/// handles the key; otherwise the form closes with 0x40.
-pub fn selector_key(index: i32, page: i32, code: i32, hidden: bool) -> SelectorKey {
-    if index < 1 || page < 2 {
-        return SelectorKey {
+/// The key guard: with a technique picked in the confirmation mode the
+/// base handles the key; otherwise the base keeps it only while row code 9
+/// is hovered and the form's lock byte is clear, and any other key closes
+/// the form with 0x40. The mode is compared unsigned.
+pub fn selector_key(picked: i32, mode: i32, code: i32, locked: bool) -> SelectorKey {
+    let base = (picked >= 1 && mode as u32 > 1) || (code & 0xffff == BASE_WORD && !locked);
+    if base {
+        SelectorKey {
             result: 0,
             close: false,
             base: true,
-        };
-    }
-    if code == BASE_WORD && !hidden {
-        return SelectorKey {
-            result: 0,
-            close: false,
-            base: true,
-        };
-    }
-    SelectorKey {
-        result: 0x40,
-        close: true,
-        base: false,
+        }
+    } else {
+        SelectorKey {
+            result: 0x40,
+            close: true,
+            base: false,
+        }
     }
 }
 
-/// Clamps the picked index to the eight rows and sets the mode's style bits.
+/// The hover rule: the picked technique is the hovered control's low word
+/// (above eight it is none); in the select mode a pick lights the
+/// renderer's 0x110 bits and no pick clears them.
 pub fn clamp_index(raw: u32, mode: i32, style: u32) -> (i32, u32) {
-    let mut index = (raw & 0xffff) as i32;
-    if index > ROWS as i32 {
+    let mut index = raw & 0xffff;
+    if index > ROWS as u32 {
         index = 0;
     }
     let mut style = style;
     if mode == MODE_SELECT {
         if index < 1 {
-            style &= !0x110;
+            style &= !PICKED_STYLE;
         } else {
-            style |= 0x110;
+            style |= PICKED_STYLE;
         }
     }
-    (index, style)
+    (index as i32, style)
 }
 
-/// The technique the close picks: the index, or "forget" for words 9 and
-/// 10, or nothing when no row is picked.
-pub fn close_pick(index: i32, word: i32) -> Option<i32> {
-    if index < 1 {
-        if FORGET_WORDS.contains(&word) {
-            Some(-1)
-        } else {
-            None
-        }
+/// The technique the close picks: the picked one, or "forget" (−1) while
+/// row code 9 or 10 is hovered with no pick, or nothing. The close also
+/// clears the owner's 0x60 style bits.
+pub fn close_pick(picked: i32, code: i32) -> Option<i32> {
+    if picked < 1 {
+        FORGET_WORDS.contains(&(code & 0xffff)).then_some(-1)
     } else {
-        Some(index)
+        Some(picked)
     }
 }
 
@@ -459,16 +614,15 @@ pub enum SelectorDraw {
     Technique { row: usize },
 }
 
-/// The paint's order: the base, the skin at unit 2 and either the
-/// confirmation or the picked technique's name and description.
-pub fn draw_order(state: i32, picked: i32) -> Vec<SelectorDraw> {
+/// The paint's order: the base, the skin at style 2 and either the
+/// confirmation or the hovered technique's name and description (`row` is
+/// the hovered control's low word less one).
+pub fn draw_order(mode: i32, row: i32) -> Vec<SelectorDraw> {
     let mut draw = vec![SelectorDraw::Base, SelectorDraw::Skin];
-    if state == STATE_CONFIRM {
+    if mode == STATE_CONFIRM {
         draw.push(SelectorDraw::Confirmation);
-    } else if (0..ROWS as i32).contains(&picked) {
-        draw.push(SelectorDraw::Technique {
-            row: picked as usize,
-        });
+    } else if (0..ROWS as i32).contains(&row) {
+        draw.push(SelectorDraw::Technique { row: row as usize });
     }
     draw
 }
@@ -479,171 +633,268 @@ mod tests {
 
     fn training() -> TechniqueTraining {
         let mut t = TechniqueTraining {
-            pool: 12_000,
+            pool: 40_000,
             ..TechniqueTraining::default()
         };
-        t.skills[0].xp = [15_000, 10_000, 0, 0, 0, 0];
-        t.skills[0].assigned = [1, 2, 0, 0, 0];
-        t.skills[1].xp = [10_000, 0, 0, 0, 0, 0];
+        t.skills[0] = SkillRecord {
+            points: 15_000,
+            techniques: [1, 2, 0, 0, 0, 0],
+        };
+        t.skills[1] = SkillRecord {
+            points: 10_000,
+            techniques: [0, 0, 0, 0, 0, 0],
+        };
         t
     }
 
     #[test]
-    fn spent_and_available_count_the_words_and_the_pool() {
+    fn the_pool_less_the_six_skills_is_unspent() {
         let t = training();
-        assert_eq!(t.spent(), 35_000);
-        assert_eq!(t.available(), -23_000);
-        let mut t = t;
-        t.pool = 40_000;
-        assert_eq!(t.available(), 5_000);
+        assert_eq!(t.spent(), 25_000);
+        assert_eq!(t.available(), 15_000);
     }
 
     #[test]
-    fn an_assignment_adds_at_most_a_level_from_the_pool() {
+    fn the_technique_in_training_is_one_past_the_level() {
         let mut t = training();
-        t.pool = 40_000;
-        let selector = TechniqueSelector {
-            index: -1,
+        assert_eq!(t.in_training(), None);
+        // Skill 1 is level 3; a technique in slot 4 is in training.
+        t.skills[0].techniques[3] = 5;
+        assert_eq!(t.in_training(), Some((1, 4)));
+        // A level-five skill has none.
+        t.skills[0].points = 25_000;
+        assert_eq!(t.in_training(), None);
+    }
+
+    #[test]
+    fn an_assignment_adds_at_most_a_level_from_the_unspent_pool() {
+        let mut t = training();
+        let mut selector = TechniqueSelector {
+            skill: 1,
             slot: 3,
-            ..TechniqueSelector::default()
+            last: -1,
         };
-        let change = assign_technique(t, selector, 7);
-        assert_eq!(change.training.skills[0].assigned[2], 7);
-        // The unspent pool is 15 000; a level is added.
-        assert_eq!(change.moved, 5_000);
-        assert_eq!(change.training.skills[0].xp[2], 5_000);
-        assert_eq!(change.training.pool, 40_000);
-        assert_eq!(change.index, 7);
-        assert!(change.refresh);
-
-        // A pool of 1 000 adds exactly that.
-        let change = assign_technique(t, selector, 8);
-        assert_eq!(change.training.skills[0].xp[2], 5_000);
-        let mut t2 = t;
-        t2.pool = 36_000;
-        let change = assign_technique(t2, selector, 8);
-        assert_eq!(change.moved, 1_000);
-        assert_eq!(change.training.skills[0].xp[2], 1_000);
-    }
-
-    #[test]
-    fn the_weighted_gain_divides_by_four_plus_the_levels() {
+        let change = assign_technique(&mut t, &mut selector, 7, false);
+        assert!(change.changed);
+        assert_eq!(t.skills[0].techniques[2], 7);
+        // 15 000 unspent: a level is added.
+        assert_eq!(t.skills[0].points, 20_000);
+        assert_eq!(t.pool, 40_000);
+        assert_eq!(selector.last, 7);
+        // A second pick from the same slot gains nothing.
+        assert!(assign_technique(&mut t, &mut selector, 6, false).changed);
+        assert_eq!(t.skills[0].techniques[2], 6);
+        assert_eq!(t.skills[0].points, 20_000);
+        // The same technique again changes nothing.
+        assert!(!assign_technique(&mut t, &mut selector, 6, false).changed);
+        // A short pool adds what is left.
         let mut t = training();
-        t.pool = 40_000;
-        t.weighted = true;
-        let selector = TechniqueSelector {
-            index: -1,
-            slot: 3,
-            ..TechniqueSelector::default()
-        };
-        // Levels: 3 + 2 + 0 ... = 5, divisor 9. 40000*4/9 = 17777,
-        // capped at 5000; the pool drops by 5000*9/4 = 11250.
-        let change = assign_technique(t, selector, 7);
-        assert_eq!(change.moved, 5_000);
-        assert_eq!(change.training.pool, 28_750);
-        assert_eq!(change.training.skills[0].xp[2], 5_000);
-    }
-
-    #[test]
-    fn a_forget_returns_the_slot_less_what_it_holds() {
-        let mut t = training();
-        t.pool = 40_000;
-        // Slot 4's refund is 20 000 - 15 000 = 5 000, capped by the
-        // unspent 5 000 (the slot's own experience is 0).
-        let selector = TechniqueSelector {
-            index: 1,
-            slot: 4,
-            ..TechniqueSelector::default()
-        };
-        let change = assign_technique(t, selector, -1);
-        assert_eq!(change.moved, 5_000);
-        assert_eq!(change.training.skills[0].xp[3], 5_000);
-        assert_eq!(change.index, -1);
-        // A short unspent pool caps it.
-        let mut t = change.training;
-        t.pool = 41_000;
-        let change = assign_technique(t, selector, -1);
-        assert_eq!(change.moved, 1_000);
-        assert_eq!(change.training.skills[0].xp[3], 6_000);
-    }
-
-    #[test]
-    fn the_truncation_flag_rounds_a_slot_down_first() {
-        let mut t = training();
-        t.skills[0].xp[2] = 4_000;
-        t.truncate = true;
-        t.pool = 100_000;
-        let selector = TechniqueSelector {
-            index: -1,
-            slot: 3,
-            ..TechniqueSelector::default()
-        };
-        let change = assign_technique(t, selector, 9);
-        // 4000 / 5000 < 3, so 4000 - 4000 % 5000 = 0; then a level.
-        assert_eq!(change.training.skills[0].xp[2], 5_000);
-    }
-
-    #[test]
-    fn the_same_technique_changes_nothing() {
-        let t = training();
-        let selector = TechniqueSelector {
-            index: 4,
+        t.pool = 26_000;
+        let mut selector = TechniqueSelector {
+            skill: 2,
             slot: 1,
-            ..TechniqueSelector::default()
+            last: 0,
         };
-        let change = assign_technique(t, selector, 4);
-        assert_eq!(change.training, t);
-        assert_eq!(change.moved, 0);
-        assert!(!change.refresh);
+        assign_technique(&mut t, &mut selector, 3, true);
+        assert_eq!(t.skills[1].points, 11_000);
     }
 
     #[test]
-    fn the_refresh_marks_learned_locked_and_next_rows() {
-        let t = training();
-        let tree = refresh_tree(&t);
-        assert_eq!(tree.total, 2);
-        let skill = tree.skill(0).unwrap();
-        assert_eq!(skill.level, 3);
-        assert_eq!(skill.rows[0].kind, RowKind::Technique);
-        assert_eq!(skill.rows[1].kind, RowKind::Technique);
-        // Row 2 is empty and becomes the next one to learn.
-        assert_eq!(skill.rows[2].kind, RowKind::Next { extra: false });
-        // Rows from level+2 (5) on are locked.
-        assert_eq!(skill.rows[5].kind, RowKind::Locked);
-        // The second skill has no assignment at all.
-        let skill = tree.skill(1).unwrap();
-        assert_eq!(skill.level, 2);
-        assert_eq!(skill.rows[0].kind, RowKind::Next { extra: false });
-        assert_eq!(skill.rows[4].kind, RowKind::Locked);
-    }
-
-    #[test]
-    fn fifteen_techniques_lock_the_rows_from_the_learned_level() {
+    fn the_weighted_gain_divides_by_four_plus_every_level() {
         let mut t = training();
-        for skill in &mut t.skills {
-            skill.xp = [25_000; SLOTS];
-            skill.assigned = [1, 2, 3, 4, 5];
-        }
-        let tree = refresh_tree(&t);
-        assert_eq!(tree.total, 40);
-        let skill = tree.skill(0).unwrap();
-        assert_eq!(skill.rows[0].kind, RowKind::Technique);
-        assert_eq!(skill.rows[4].kind, RowKind::Technique);
-        // Past the level (5), every row is already filled, so nothing is
-        // emptied; row 5 stays empty.
-        assert_eq!(skill.rows[5].kind, RowKind::Empty);
+        t.weighted = true;
+        let mut selector = TechniqueSelector {
+            skill: 2,
+            slot: 1,
+            last: -1,
+        };
+        // Levels 3 + 2: divisor 9. 40 000 · 4 / 9 = 17 777, capped at
+        // 5 000; the pool drops by 5 000 · 9 / 4 = 11 250.
+        assign_technique(&mut t, &mut selector, 4, false);
+        assert_eq!(t.skills[1].points, 15_000);
+        assert_eq!(t.pool, 28_750);
+        // A small pool: 100 · 4 / 10 = 40 (levels 3 + 3 now), drawing
+        // 40 · 10 / 4 = 100; a slot picked before still draws.
+        t.pool = 100;
+        assign_technique(&mut t, &mut selector, 5, false);
+        assert_eq!(t.skills[1].points, 15_000);
+        assert_eq!(t.pool, 0);
     }
 
     #[test]
-    fn the_tree_text_and_paint_places_are_pinned() {
+    fn the_truncate_flag_rounds_the_skill_down_first() {
+        let mut t = training();
+        t.skills[1].points = 9_000;
+        t.truncate = true;
+        let mut selector = TechniqueSelector {
+            skill: 2,
+            slot: 3,
+            last: 1,
+        };
+        assign_technique(&mut t, &mut selector, 2, false);
+        // 9 000 / 5 000 = 1 < 3: 9 000 − 4 000; a picked slot gains nothing.
+        assert_eq!(t.skills[1].points, 5_000);
+    }
+
+    #[test]
+    fn an_empty_slot_replaces_the_technique_in_training() {
+        let mut t = training();
+        t.skills[0].techniques = [1, 2, 3, 5, 0, 0];
+        let mut selector = TechniqueSelector {
+            skill: 2,
+            slot: 1,
+            last: 1,
+        };
+        assign_technique(&mut t, &mut selector, 3, false);
+        // Skill 1's slot 4 was the last filled: cleared, and the skill
+        // is one level under the four it held.
+        assert_eq!(t.skills[0].techniques, [1, 2, 3, 0, 0, 0]);
+        assert_eq!(t.skills[0].points, 15_000);
+        // A gap counts only the slots before it: 5 000.
+        let mut t = training();
+        t.skills[0].techniques = [1, 2, 0, 5, 0, 0];
+        assign_technique(&mut t, &mut selector, 4, false);
+        assert_eq!(t.skills[0].techniques, [1, 2, 0, 0, 0, 0]);
+        assert_eq!(t.skills[0].points, 5_000);
+        assert_eq!(t.skills[1].techniques[0], 4);
+    }
+
+    #[test]
+    fn forgetting_closes_up_and_takes_the_dependants() {
+        // Skill 3: technique 2 names 1, technique 3 names 2.
+        let mut t = TechniqueTraining::default();
+        t.skills[2] = SkillRecord {
+            points: 20_000,
+            techniques: [1, 2, 3, 4, 0, 0],
+        };
+        t.forget(3, 1);
+        // 1 goes, then 2 (names 1), then 3 (names 2): three techniques
+        // gone, 20 000 − 15 000.
+        assert_eq!(t.skills[2].techniques, [4, 0, 0, 0, 0, 0]);
+        assert_eq!(t.skills[2].points, 5_000);
+        // The last filled slot clears and the skill is a level under the
+        // count it held.
+        let mut t = TechniqueTraining::default();
+        t.skills[0] = SkillRecord {
+            points: 12_000,
+            techniques: [1, 2, 0, 0, 0, 0],
+        };
+        t.forget(1, 2);
+        assert_eq!(t.skills[0].techniques, [1, 0, 0, 0, 0, 0]);
+        assert_eq!(t.skills[0].points, 5_000);
+        // Past the filled slots: one held, so level 0; an empty record
+        // goes to −1 level, wrapped.
+        t.forget(1, 4);
+        assert_eq!(t.skills[0].points, 0);
+        let mut empty = TechniqueTraining::default();
+        empty.forget(1, 1);
+        assert_eq!(empty.skills[0].points, 60_536);
+    }
+
+    #[test]
+    fn a_forget_refunds_into_the_technique_in_training() {
+        let mut t = training();
+        t.skills[0].techniques = [1, 2, 3, 6, 0, 0];
+        t.skills[1].techniques[2] = 4;
+        let mut selector = TechniqueSelector {
+            skill: 1,
+            slot: 1,
+            last: 1,
+        };
+        assign_technique(&mut t, &mut selector, -1, false);
+        // Skill 1 loses technique 1 and a level: 10 000. Skill 1 (level
+        // 2) then has a technique in slot 3: it is in training and takes
+        // the unspent 20 000, capped at 3 · 5 000 − 10 000.
+        assert_eq!(t.skills[0].techniques, [2, 3, 6, 0, 0, 0]);
+        assert_eq!(t.skills[0].points, 15_000);
+        assert_eq!(selector.last, -1);
+        // A weighted rule refunds nothing.
+        let mut t = training();
+        t.weighted = true;
+        t.skills[0].techniques = [1, 2, 3, 6, 0, 0];
+        let mut selector = TechniqueSelector {
+            skill: 1,
+            slot: 1,
+            last: 1,
+        };
+        assign_technique(&mut t, &mut selector, -1, false);
+        assert_eq!(t.skills[0].points, 10_000);
+    }
+
+    #[test]
+    fn the_refresh_marks_learned_assigned_next_and_locked_nodes() {
+        let t = training();
+        let tree = refresh_tree(&t, false);
+        assert_eq!(tree.total, 2);
+        let skill = &tree.skills[0];
+        assert!((skill.progress - 0.6).abs() < 1e-6);
+        assert_eq!(skill.nodes[0].state, NodeState::Learned);
+        assert_eq!(skill.nodes[0].skill, 1);
+        assert_eq!(skill.nodes[1].state, NodeState::Learned);
+        // Level 3: the first empty slot of the first four is next; the
+        // fifth (from level + 2) locks.
+        assert_eq!(skill.nodes[2].state, NodeState::Next);
+        assert_eq!(skill.nodes[3].state, NodeState::Empty);
+        assert_eq!(skill.nodes[4].state, NodeState::Locked);
+        let skill = &tree.skills[1];
+        assert_eq!(skill.nodes[0].state, NodeState::Next);
+        assert_eq!(skill.nodes[3].state, NodeState::Locked);
+        assert_eq!(tree.skills[2].nodes[0].state, NodeState::Next);
+        assert_eq!(tree.skills[2].nodes[1].state, NodeState::Locked);
+    }
+
+    #[test]
+    fn more_techniques_than_the_level_keep_the_next_slot_empty() {
+        let mut t = training();
+        // Skill 2 at level 2 holds three: one is assigned above the level.
+        t.skills[1].techniques = [1, 2, 3, 0, 0, 0];
+        let tree = refresh_tree(&t, false);
+        assert_eq!(tree.skills[1].nodes[2].state, NodeState::Assigned);
+        assert_eq!(tree.skills[0].nodes[2].state, NodeState::Empty);
+        assert_eq!(tree.skills[0].nodes[4].state, NodeState::Locked);
+    }
+
+    #[test]
+    fn fifteen_techniques_lock_the_empty_slots_from_the_level() {
+        let mut t = TechniqueTraining::default();
+        for record in &mut t.skills {
+            *record = SkillRecord {
+                points: 10_000,
+                techniques: [1, 2, 3, 0, 0, 0],
+            };
+        }
+        let tree = refresh_tree(&t, false);
+        assert_eq!(tree.total, 18);
+        let skill = &tree.skills[0];
+        assert_eq!(skill.nodes[2].state, NodeState::Assigned);
+        assert_eq!(skill.nodes[3].state, NodeState::Locked);
+        assert_eq!(skill.nodes[4].state, NodeState::Locked);
+        // With every slot shown learned, the first level + 1 lock.
+        let tree = refresh_tree(&t, true);
+        assert_eq!(tree.skills[0].nodes[2].state, NodeState::Locked);
+        assert_eq!(tree.skills[0].nodes[3].state, NodeState::Empty);
+    }
+
+    #[test]
+    fn the_text_places_are_pinned() {
         let places = text_places(FORM_WIDTH, FORM_HEIGHT, 4, 100);
         assert_eq!(places.name_x, 116);
         assert_eq!(places.name_y, 64);
-        assert_eq!(places.description_x, 4);
-        assert_eq!(places.description_y, 32);
-        assert_eq!(places.description_width, 324);
+        assert_eq!(places.box_x, 4);
+        assert_eq!(places.box_width, 324);
+        assert_eq!(places.description_y, 72);
+        assert_eq!(places.description_height, 32);
+        assert_eq!(places.confirm_y, 48);
+        assert_eq!(places.confirm_height, 80);
+        // A name wider than the form halves downward.
+        assert_eq!(text_places(10, 0, 4, 13).name_x, -2);
+        assert_eq!(CONFIRM_TEXT.len(), 47);
+    }
+
+    #[test]
+    fn the_paint_draws_the_confirmation_or_the_hovered_technique() {
         assert_eq!(
-            draw_order(0, 3),
+            draw_order(1, 3),
             vec![
                 SelectorDraw::Base,
                 SelectorDraw::Skin,
@@ -651,23 +902,25 @@ mod tests {
             ]
         );
         assert_eq!(
-            draw_order(2, 3),
+            draw_order(STATE_CONFIRM, 3),
             vec![
                 SelectorDraw::Base,
                 SelectorDraw::Skin,
                 SelectorDraw::Confirmation
             ]
         );
-        assert_eq!(draw_order(0, 9).len(), 2);
-        assert_eq!(CONFIRM_TEXT.len(), 47);
+        assert_eq!(draw_order(1, 8).len(), 2);
+        assert_eq!(draw_order(1, -1).len(), 2);
     }
 
     #[test]
     fn the_layout_and_the_forget_mode_are_pinned() {
-        let layout = layout(2, [false, false, true, true, true, true, true, true]);
-        assert_eq!(layout.width, 332);
-        assert_eq!(layout.height, 112);
+        let mut available = [true; ROWS];
+        available[2] = false;
+        let layout = layout(2, available);
+        assert_eq!((layout.width, layout.height), (332, 112));
         assert_eq!(layout.flags, 0x21060);
+        assert_eq!(layout.skill_index, 1);
         assert_eq!(layout.rows[0].id, 1);
         assert_eq!(layout.rows[0].style, 0);
         assert_eq!(layout.rows[2].style, 0x10);
@@ -684,17 +937,20 @@ mod tests {
     }
 
     #[test]
-    fn keys_close_except_for_the_base_cases() {
-        assert!(selector_key(0, 5, 1, false).base);
-        assert!(selector_key(3, 1, 1, false).base);
-        assert!(selector_key(3, 5, 9, false).base);
-        assert!(selector_key(3, 5, 10, false).close);
-        let closed = selector_key(3, 5, 3, false);
+    fn keys_go_to_the_base_only_in_its_two_cases() {
+        // A pick in the confirmation mode.
+        assert!(selector_key(3, 2, 1, false).base);
+        // Row code 9 hovered with the lock byte clear.
+        assert!(selector_key(0, 1, 9, false).base);
+        assert!(selector_key(3, 1, 0x1_0009, false).base);
+        // Everything else closes with 0x40.
+        let closed = selector_key(3, 1, 3, false);
         assert_eq!(closed.result, 0x40);
-        assert!(closed.close);
-        assert!(!closed.base);
-        // The hidden flag keeps word 9 out of the base.
-        assert!(selector_key(3, 5, 9, true).close);
+        assert!(closed.close && !closed.base);
+        assert!(selector_key(0, 2, 10, false).close);
+        assert!(selector_key(0, 1, 9, true).close);
+        // The mode compare is unsigned: a negative mode counts as large.
+        assert!(selector_key(1, -1, 0, false).base);
     }
 
     #[test]
@@ -714,5 +970,15 @@ mod tests {
         assert_eq!(close_pick(0, 10), Some(-1));
         assert_eq!(close_pick(0, 1), None);
         assert_eq!(close_pick(-1, 9), Some(-1));
+    }
+
+    #[test]
+    fn the_prerequisite_pairs_follow_the_table_run() {
+        assert_eq!(prerequisites(1, 8), [1, 4]);
+        assert_eq!(prerequisites(2, 0), [1, 4]);
+        assert_eq!(prerequisites(3, 2), [1, 0]);
+        assert_eq!(prerequisites(6, 4), [3, 0]);
+        assert_eq!(prerequisites(6, 8), [0, 0]);
+        assert_eq!(prerequisites(1, 1), [0, 0]);
     }
 }
