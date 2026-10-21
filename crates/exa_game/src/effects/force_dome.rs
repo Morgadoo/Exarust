@@ -287,7 +287,8 @@ impl Dome {
 
     /// The push a body part just outside the dome's surface takes: the part
     /// is pushed out by `((r − 10) − d − part_r)·0.1` along its outward
-    /// direction, and a ripple opens where it touches.
+    /// direction (the Barrier's blocking), and a ripple of half the distance
+    /// opens where it touches.
     pub fn push_out(&mut self, at: Vec3, part_radius: f32) -> Option<Vec3> {
         let d = (at - self.at).length();
         let limit = self.radius - KEEP_OUT_MARGIN_CM - part_radius;
@@ -300,7 +301,26 @@ impl Dome {
             Vec3::ZERO
         };
         let push = outward * ((limit - d) / d.max(1e-6) * 0.1);
-        self.strike(at, -((limit - d) * 0.1));
+        self.strike(at, d * 0.5);
+        Some(push)
+    }
+
+    /// The push the Bubble gives its own caster's parts, which are always
+    /// inside: the same push, but its ripple keeps the negative strength the
+    /// original passes for a body held in the bubble.
+    pub fn push_self(&mut self, at: Vec3, part_radius: f32) -> Option<Vec3> {
+        let d = (at - self.at).length();
+        let limit = self.radius - KEEP_OUT_MARGIN_CM - part_radius;
+        if d * d > limit * limit {
+            return None;
+        }
+        let outward = if d > 0.0 {
+            (at - self.at) / d
+        } else {
+            Vec3::ZERO
+        };
+        let push = outward * ((limit - d) / d.max(1e-6) * 0.1);
+        self.strike(at, -(limit - d));
         Some(push)
     }
 
