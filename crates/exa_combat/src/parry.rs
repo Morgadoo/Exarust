@@ -17,7 +17,19 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 use bevy::math::Vec3;
+use bevy::prelude::*;
+use exa_anim::{Animator, Ease, Motions};
+use exa_physics::body::{BodyTicks, Ragdoll, TickedCharacter};
+use exa_physics::motile::auto_parry_deadline;
 use std::f32::consts::PI;
+
+use crate::attack::Attacker;
+use crate::condition::Condition;
+use crate::damage::Guard;
+use crate::fighter::Fighter;
+use crate::stance::{self, Stance};
+use crate::swing::SwingState;
+use crate::{Attacking, Blade};
 
 /// Parry Left.
 const LEFT: u8 = 0x14;
@@ -243,39 +255,57 @@ fn wrap_pi(yaw: f32) -> f32 {
     if turn > PI { turn - PI * 2.0 } else { turn }
 }
 
-/// A parry in progress on the defender: the original's parrying flag
-/// and the attack motion it counters.
-///
-/// Exarust raises a guard only in tests, so a fighter whose guard is a parry
-/// is parrying until the parry ends; a counter-parry ends it and leaves the
-/// motion it countered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A parry in progress on the defender: the original's parrying flag, the
+/// chosen parry clip (0x14–0x18), the attack motion the clip was picked for
+/// and the parry counter.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ParryState {
-    /// It is parrying.
+    /// It is parrying (the original's parrying flag, zero on a fresh body).
     pub active: bool,
-    /// The attack motion it counters, as the original's motion
+    /// The chosen parry clip 0x14–0x18, none before the first pick.
+    pub clip: Option<u8>,
+    /// The attack motion the clip was picked for, as the original's motion
     /// number, or none.
     pub counter_motion: Option<usize>,
-}
-
-impl Default for ParryState {
-    fn default() -> Self {
-        Self {
-            active: true,
-            counter_motion: None,
-        }
-    }
+    /// The counter: Left and Right rise to 20, Up falls from above 0 and
+    /// rises from below, the downs fall while over 20.
+    pub counter: i32,
 }
 
 impl ParryState {
-    /// Ends the parry: it counters no motion and is no
-    /// longer parrying. The original also disables the grip links of every
-    /// held item and relaxes both hands; Exarust has no grip links to
-    /// disable yet.
+    /// Ends the parry: it counters no motion and is no longer parrying.
+    /// The original also disables the grip links of every held item and
+    /// relaxes both hands; Exarust has no grip links to disable yet.
     pub fn end(&mut self) {
         self.active = false;
+        self.clip = None;
         self.counter_motion = None;
     }
+}
+
+/// The blend (frames) a parry ends into its stance with (the original's
+/// 0x28), eased smoothly.
+pub const END_BLEND: u32 = 0x28;
+
+/// The clip (an action of the fighter's moveset) of a parry code, 0x14
+/// through 0x18.
+pub fn clip_action(clip: u8) -> Option<&'static str> {
+    Some(match clip {
+        LEFT => "Parry Left",
+        RIGHT => "Parry Right",
+        UP => "Parry Up",
+        LEFT_DN => "Parry Left Dn",
+        RIGHT_DN => "Parry Rgt Dn",
+        _ => return None,
+    })
+}
+
+/// Whether `action` is one of the parry clips.
+pub fn is_parry_action(action: &str) -> bool {
+    matches!(
+        action,
+        "Parry Left" | "Parry Right" | "Parry Up" | "Parry Left Dn" | "Parry Rgt Dn"
+    )
 }
 
 /// The branch a weapon's clash takes on the victim.
@@ -314,19 +344,19 @@ mod clash_tests {
         let parrying = ParryState {
             active: true,
             counter_motion: Some(5),
+            ..ParryState::default()
         };
         assert_eq!(clash_branch(parrying, 5, false), Clash::Parrying);
         let countering = ParryState {
             active: false,
             counter_motion: Some(5),
+            ..ParryState::default()
         };
         assert_eq!(clash_branch(countering, 5, false), Clash::Countering);
         assert_eq!(clash_branch(countering, 6, false), Clash::Plain);
         assert_eq!(clash_branch(countering, 5, true), Clash::Plain);
-        assert_eq!(
-            clash_branch(ParryState::default(), 5, false),
-            Clash::Parrying
-        );
+        // A fresh body is not parrying.
+        assert_eq!(clash_branch(ParryState::default(), 5, false), Clash::Plain);
     }
 
     #[test]
@@ -334,6 +364,7 @@ mod clash_tests {
         let mut parry = ParryState {
             active: true,
             counter_motion: Some(8),
+            ..ParryState::default()
         };
         parry.end();
         assert_eq!(
@@ -341,6 +372,7 @@ mod clash_tests {
             ParryState {
                 active: false,
                 counter_motion: None,
+                ..ParryState::default()
             }
         );
         assert_eq!(clash_branch(parry, 8, false), Clash::Plain);
@@ -731,5 +763,409 @@ mod repick_tests {
         assert!(parry_repick(0x14, 5, 6));
         assert!(parry_repick(0x13, 5, 5));
         assert!(parry_repick(0x19, 5, 5));
+    }
+}
+
+/// A foe seen by the parry trigger: the attacker and the values the
+/// trigger and the clip table read.
+#[derive(Clone, Copy, Debug)]
+struct Seen {
+    motion: u8,
+    progress: f32,
+    strike_window: bool,
+    cleaving: bool,
+    size: f32,
+    reach_cm: f32,
+    chest_delta: Vec3,
+    chest_cm: (f32, f32),
+    yaw: f32,
+    stab: bool,
+    overhead: bool,
+}
+
+/// A fighter's reach in centimetres, as the equip refresh sets it: its
+/// longest held weapon's record reach, else its race's unarmed reach.
+fn reach_cm(wielder: Entity, blades: &Query<&Blade>) -> f32 {
+    blades
+        .iter()
+        .filter(|b| b.wielder == wielder && b.record.armed())
+        .map(|b| b.record.reach_metres() * 100.0)
+        .fold(f32::NEG_INFINITY, f32::max)
+        .max(stance::UNARMED_REACH * 100.0)
+}
+
+/// The ground-plane yaw of `v` (0 along +Z, positive toward +X).
+fn yaw(v: Vec3) -> f32 {
+    v.x.atan2(v.z)
+}
+
+/// The body's forward across the ground.
+fn forward(gt: &GlobalTransform) -> Vec3 {
+    (gt.rotation() * Vec3::Z).with_y(0.0).normalize_or_zero()
+}
+
+/// The parry rule on every fighter that can parry, in its attack stage
+/// after the swing routine, as the original's body tick runs it each tick:
+/// a helpless body, the break-tangle clip or yellow under 0.01 ends the
+/// parry; when it already parries, the trigger runs every tick (re-picking
+/// the clip when the attacker's motion changes); otherwise a fighter in
+/// the combat idle whose auto-parry deadline has passed starts one. The
+/// attacker is the nearest foe attacking with a swing the trigger accepts
+/// (the original keeps an explicit target; the player's target is the
+/// cursor's, which Exarust does not keep as a component).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub(crate) fn run_parries(
+    mut commands: Commands,
+    ticked: Res<TickedCharacter>,
+    ticks: Option<Res<BodyTicks>>,
+    motions: Option<Res<Motions>>,
+    blades: Query<&Blade>,
+    mut bodies: ParamSet<(
+        Query<(
+            &mut Fighter,
+            &mut Animator,
+            &mut SwingState,
+            &mut Stance,
+            &Condition,
+            &GlobalTransform,
+            Option<&Ragdoll>,
+            &Attacker,
+            Has<Attacking>,
+        )>,
+        Query<(
+            Entity,
+            &Condition,
+            &Fighter,
+            &Animator,
+            &SwingState,
+            Option<&Attacking>,
+            &GlobalTransform,
+            Option<&Ragdoll>,
+        )>,
+    )>,
+) {
+    let Some(motions) = motions else { return };
+    let now = ticks.as_ref().map_or(0, |t| t.millis());
+    let entity = ticked.body;
+    let (def_chest, def_facing) = {
+        let others = bodies.p1();
+        let Ok((_, _, _, _, _, _, gt, body)) = others.get(entity) else {
+            return;
+        };
+        (stance::chest_point(gt, body), forward(gt))
+    };
+    // The foes already attacking, nearest first.
+    let mut seen: Vec<(f32, Seen)> = Vec::new();
+    {
+        let others = bodies.p1();
+        for (e, condition, fighter, anim, swing, attacking, gt, body) in others.iter() {
+            if e == entity || *condition != Condition::ATTACKING {
+                continue;
+            }
+            let Some(attacking) = attacking else { continue };
+            let chest = stance::chest_point(gt, body);
+            let delta = chest - def_chest;
+            let distance = delta.length();
+            let to_def = (def_chest - chest).with_y(0.0);
+            let aim = forward(gt);
+            let motion = attacking.motion.index() as u8;
+            seen.push((
+                distance,
+                Seen {
+                    motion,
+                    progress: motions
+                        .clip(anim, &anim.action)
+                        .map_or(0.0, |c| anim.clip_progress(c)),
+                    strike_window: swing.open.iter().any(|&o| o),
+                    cleaving: swing.has(crate::swing::flags::CLEAVING),
+                    size: fighter.stats.size,
+                    reach_cm: reach_cm(e, &blades),
+                    chest_delta: delta * 100.0,
+                    chest_cm: (def_chest.y * 100.0, chest.y * 100.0),
+                    yaw: yaw(aim) - yaw(to_def),
+                    stab: matches!(attacking.motion, crate::attack::AttackMotion::Stab),
+                    overhead: matches!(attacking.motion, crate::attack::AttackMotion::Overhead),
+                },
+            ));
+        }
+    }
+    seen.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut bodies = bodies.p0();
+    let Ok((mut fighter, mut anim, swing, mut stance, condition, _, _, attacker, attacking)) =
+        bodies.get_mut(entity)
+    else {
+        return;
+    };
+    let own_motion = motions.0.action_index(&anim.action).unwrap_or(0) as u8;
+    let mut parry = fighter.parry;
+    let yellow = fighter.health.yellow;
+    let helpless = condition.helpless();
+    let break_tangle = motions.0.action_index(&anim.action) == Some(0x1C);
+    let was_active = parry.active;
+    // A parry that ends (or a blow that ended it in the hit path) returns
+    // to its stance with the original's 0x28 blend.
+    if !parry.active && is_parry_action(&anim.action) {
+        anim.start(stance.action(), true, None, END_BLEND, Ease::Smooth);
+        if matches!(fighter.guard, Guard::Parry) {
+            fighter.guard = Guard::Open;
+        }
+    }
+    if parry_ends(helpless, own_motion, yellow) {
+        parry.end();
+        finish_parry(&mut fighter, &mut anim, &mut stance, parry);
+        return;
+    }
+    let in_combat_idle = anim.looping && anim.action == Stance::CombatIdle.action();
+    let can_start = !parry.active && !attacking && in_combat_idle;
+    let deadline_passed = can_start && {
+        let deadline = auto_parry_deadline(
+            swing.flags,
+            0,
+            swing.end_ms as u32,
+            attacker.last_tick_ms.unwrap_or(0) as u32,
+        );
+        i64::from(deadline) < i64::from(now as u32)
+    };
+    // A parry already raised runs the trigger every tick; a fresh one only
+    // after the auto-parry deadline, as the original's combat idle does.
+    if !(parry.active || deadline_passed) {
+        if was_active {
+            finish_parry(&mut fighter, &mut anim, &mut stance, parry);
+        } else {
+            fighter.parry = parry;
+        }
+        return;
+    }
+    let threat = seen.iter().find_map(|(_, a)| {
+        let threat = Threat {
+            attacking: true,
+            clock: a.progress,
+            combo: false,
+            cleaving: a.cleaving,
+            in_front: a.chest_delta.dot(def_facing) >= 0.0,
+            distance_cm: a.chest_delta.length(),
+            reach_cm: a.reach_cm,
+            size: a.size,
+            defender_has_shield: matches!(fighter.guard, Guard::Shield(_)),
+            yellow,
+            helpless,
+            break_tangle,
+            motion: a.motion,
+            yaw: a.yaw,
+            defender_chest_cm: a.chest_cm.0,
+            attacker_chest_cm: a.chest_cm.1,
+            stab: a.stab,
+            overhead: a.overhead,
+        };
+        let trigger = Trigger {
+            attacker_attacking: true,
+            attacker_size: a.size,
+            defender_has_shield: threat.defender_has_shield,
+            strike_window: a.strike_window,
+            cleaving: a.cleaving,
+            progress: a.progress,
+            reach_cm: a.reach_cm,
+            chest_delta: a.chest_delta,
+            facing: def_facing,
+        };
+        (parry_trigger(&trigger) && unarmed_parry(&threat).is_some()).then_some(threat)
+    });
+    let Some(threat) = threat else {
+        // The trigger's own failure branch ends the parry.
+        parry.end();
+        finish_parry(&mut fighter, &mut anim, &mut stance, parry);
+        return;
+    };
+    let Some(choice) = unarmed_parry(&threat) else {
+        parry.end();
+        finish_parry(&mut fighter, &mut anim, &mut stance, parry);
+        return;
+    };
+    let chosen = i32::from(choice.clip);
+    let repick = parry_repick(
+        parry.clip.map_or(-1, i32::from),
+        parry.counter_motion.map_or(-1, |m| m as i32),
+        i32::from(threat.motion),
+    );
+    if parry.active && !repick {
+        // It keeps the clip, and the counter advances by it every tick.
+        parry.counter = parry_counter(parry.counter, choice.clip);
+        fighter.parry = parry;
+        fighter.guard = Guard::Parry;
+        return;
+    }
+    let start = parry_start(
+        chosen,
+        parry.clip.map_or(-1, i32::from),
+        choice.speed,
+        own_motion,
+    );
+    if let Some(start) = start
+        && let Some(action) = clip_action(start.clip)
+    {
+        let ease = if start.ease == 2 {
+            Ease::Fast
+        } else {
+            Ease::Linear
+        };
+        anim.start(action, true, None, start.blend, ease);
+        parry.active = true;
+        parry.clip = Some(start.clip);
+        parry.counter_motion = Some(threat.motion as usize);
+        parry.counter = parry_counter(parry.counter, start.clip);
+        fighter.guard = Guard::Parry;
+        commands.entity(entity).remove::<Attacking>();
+        debug!(
+            "{entity:?} parries motion {} with clip {:#x} at {now} ms",
+            threat.motion, start.clip
+        );
+    }
+    fighter.parry = parry;
+}
+
+/// Ends a parry into the fighter's stance, with the original's 0x28 blend,
+/// and clears the guard it set.
+fn finish_parry(
+    fighter: &mut Fighter,
+    anim: &mut Animator,
+    stance: &mut Stance,
+    parry: ParryState,
+) {
+    if is_parry_action(&anim.action) {
+        anim.start(stance.action(), true, None, END_BLEND, Ease::Smooth);
+    }
+    if matches!(fighter.guard, Guard::Parry) {
+        fighter.guard = Guard::Open;
+    }
+    fighter.parry = parry;
+}
+
+#[cfg(test)]
+mod wiring_tests {
+    use super::*;
+    use crate::attack::AttackMotion;
+    use exa_formats::rsq::{Action, Clip, Key, MotionSet, Moveset};
+
+    /// A synthetic motion set: the stances, the parry clips and Attack Mid,
+    /// 100 frames each.
+    fn motions() -> Motions {
+        let key = |time| Key {
+            time,
+            root: [0.0; 3],
+            rotations: Vec::new(),
+            flags: Vec::new(),
+        };
+        let clip = || Clip {
+            mode: 1,
+            keys: vec![key(0.0), key(100.0)],
+        };
+        let actions = [
+            "Cmbt - Idle",
+            "Parry Left",
+            "Parry Right",
+            "Parry Up",
+            "Parry Left Dn",
+            "Parry Rgt Dn",
+            "Attack Mid",
+        ];
+        let set = MotionSet {
+            bone_count: 0,
+            actions: actions
+                .iter()
+                .map(|n| Action {
+                    name: (*n).into(),
+                    params: [0; 2],
+                })
+                .collect(),
+            movesets: vec![Moveset {
+                name: "Default".into(),
+                parent: String::new(),
+                clips: actions.iter().map(|_| Some(clip())).collect(),
+            }],
+        };
+        Motions::new(std::sync::Arc::new(set), std::sync::Arc::default(), 0.0)
+    }
+
+    /// A duellist attacking the defender from 1 m at `progress` with its
+    /// window `open`; the defender in the combat idle.
+    fn duel(progress: f32, open: bool) -> (App, Entity, Entity) {
+        let mut app = App::new();
+        app.insert_resource(BodyTicks(100))
+            .insert_resource(motions())
+            .add_systems(Update, run_parries);
+        let attacker = app
+            .world_mut()
+            .spawn((
+                Fighter::default(),
+                {
+                    let mut anim = Animator::new("Default", "Attack Mid");
+                    anim.time = progress * 100.0;
+                    anim.looping = false;
+                    anim
+                },
+                Condition::ATTACKING,
+                Attacking::new(AttackMotion::Main(0), 0x10),
+                SwingState {
+                    open: [open, false],
+                    ..SwingState::default()
+                },
+                Attacker::default(),
+                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 1.0)),
+            ))
+            .id();
+        let defender = app
+            .world_mut()
+            .spawn((
+                Fighter::default(),
+                Animator::new("Default", "Cmbt - Idle"),
+                Stance::CombatIdle,
+                SwingState::default(),
+                Condition::COMBAT_IDLE,
+                Attacker::default(),
+                GlobalTransform::default(),
+            ))
+            .id();
+        app.world_mut().insert_resource(TickedCharacter {
+            body: defender,
+            character: None,
+        });
+        (app, attacker, defender)
+    }
+
+    /// An attacker mid-swing 1 m in front within reach + 150 cm starts the
+    /// defender's parry from the combat idle: the height table gives the
+    /// left-down clip, blend 20, the fast ease, and the guard becomes the
+    /// parry the hit path reads. An early swing outside the window and
+    /// with no strike window starts nothing.
+    #[test]
+    fn a_mid_swing_starts_the_parry() {
+        let (mut app, _, defender) = duel(0.5, false);
+        app.update();
+        let f = app.world().get::<Fighter>(defender).unwrap();
+        assert!(f.parry.active);
+        assert_eq!(f.parry.clip, Some(LEFT_DN));
+        assert!(matches!(f.guard, Guard::Parry));
+        let anim = app.world().get::<Animator>(defender).unwrap();
+        assert_eq!(anim.action, "Parry Left Dn");
+        assert_eq!(anim.blend, 20.0);
+        assert_eq!(anim.ease, Ease::Fast);
+        assert!(anim.looping);
+
+        let (mut app, _, defender) = duel(0.2, false);
+        app.update();
+        let f = app.world().get::<Fighter>(defender).unwrap();
+        assert!(!f.parry.active);
+        assert!(matches!(f.guard, Guard::Open));
+    }
+
+    /// A running round of the parry rule on a minute of ticks does not run
+    /// into a missing resource or a lost guard.
+    #[test]
+    fn the_parry_system_ticks_on() {
+        let (mut app, _, defender) = duel(0.5, true);
+        for _ in 0..3 {
+            app.update();
+        }
+        assert!(app.world().get::<Fighter>(defender).unwrap().parry.active);
     }
 }

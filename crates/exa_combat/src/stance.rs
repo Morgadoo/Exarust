@@ -281,17 +281,23 @@ fn take_stance(
         Has<Fallen>,
     )>,
 ) {
-    for (mut stance, mut anim, fighter, condition, body, attacking, fallen) in &mut bodies {
+    for (mut stance, mut anim, mut fighter, condition, body, attacking, fallen) in &mut bodies {
         let condition = condition.copied().unwrap_or_default();
         // A collapsing or dead fighter keeps nothing of its stance.
         if condition.dying() {
             continue;
         }
-        if let Some(mut f) = fighter {
+        let parrying = fighter.as_ref().is_some_and(|f| f.parry.active);
+        if let Some(f) = fighter.as_mut() {
             let g = readiness_step(f.readiness, *stance, &anim.action);
             if f.readiness != g {
                 f.readiness = g;
             }
+        }
+        // A parry's clip is a stance while it lasts: neither the daze nor
+        // the posture switch starts another clip over it.
+        if parrying {
+            continue;
         }
         if let Some(drive) = body.and_then(|b| b.drive.as_ref())
             && drive.dazed()

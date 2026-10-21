@@ -22,8 +22,8 @@ use std::path::Path;
 
 use bevy::prelude::*;
 use exa_anim::{Animator, BodyPart, Motions, Stature};
-use exa_combat::Condition;
 use exa_combat::swing::SwingState;
+use exa_combat::{Condition, Fighter};
 use exa_physics::body::locomotion::{Locomotion, Locomotor};
 use exa_physics::body::{BodySystems, BodyTicks, Ragdoll, world_with};
 use exa_physics::prop::PropBody;
@@ -79,6 +79,10 @@ const CONDITION: &str = "condition";
 /// clock's rate this tick (frames), the swing strength and the state word
 /// (hex), the retail probe's.
 const SWING: [&str; 3] = ["swing_rate", "strength", "attack_flags"];
+/// Then the parry (empty for a body that does not fight): whether it is
+/// parrying and the parry clip code (0x14–0x18), so a count of raised
+/// parries reads the 0 → 1 changes.
+const PARRY: [&str; 2] = ["parry", "parry_clip"];
 /// Then its locomotion (empty for a body without a request): the request's
 /// flag word (hex), moving and free walk (1 or 0) after the movement
 /// decision, the yaw and the heading (degrees), the turn rate this tick
@@ -179,6 +183,7 @@ pub fn header() -> String {
     columns.extend(ANKLES.iter().map(|s| s.to_string()));
     columns.push(CONDITION.into());
     columns.extend(SWING.iter().map(|s| s.to_string()));
+    columns.extend(PARRY.iter().map(|s| s.to_string()));
     columns.extend(LOCOMOTION.iter().map(|s| s.to_string()));
     columns.join(",")
 }
@@ -226,6 +231,7 @@ fn trace_bodies(
             Option<&Stature>,
             Option<&Condition>,
             Option<&SwingState>,
+            Option<&Fighter>,
             Option<(&Locomotion, &Locomotor)>,
             Has<PlayerBody>,
         ),
@@ -239,7 +245,7 @@ fn trace_bodies(
     }
     let player = !trace.every && bodies.iter().any(|(.., p)| p);
     let mut text = String::new();
-    for (root, body, anim, stature, condition, swing, locomotion, is_player) in &bodies {
+    for (root, body, anim, stature, condition, swing, fighter, locomotion, is_player) in &bodies {
         if player && !is_player {
             continue;
         }
@@ -262,6 +268,13 @@ fn trace_bodies(
                 let _ = write!(text, ",{},{},{:#x}", s.rate, s.strength, s.flags);
             }
             None => text.push_str(",,,"),
+        }
+        match fighter {
+            Some(f) => {
+                let clip = f.parry.clip.map_or(-1, i32::from);
+                let _ = write!(text, ",{},{}", u8::from(f.parry.active), clip);
+            }
+            None => text.push_str(",,"),
         }
         text.push_str(&locomotion_columns(locomotion));
         text.push('\n');
@@ -484,6 +497,7 @@ mod tests {
                 + ANKLES.len()
                 + 1
                 + SWING.len()
+                + PARRY.len()
                 + LOCOMOTION.len()
         );
         assert_eq!(columns.last(), Some(&LOCOMOTION[11]));
@@ -517,8 +531,9 @@ mod tests {
             assert_eq!(number(row, "balance_counter"), 0.0);
             assert_eq!((row[at("countdown")], row[at("sleep")]), ("256", "awake"));
             assert_eq!(row[at(CONDITION)], "0x8");
-            // Not a fighter: no swing; no request: no locomotion.
+            // Not a fighter: no swing or parry; no request: no locomotion.
             assert!(row[at("swing_rate")].is_empty() && row[at("attack_flags")].is_empty());
+            assert!(row[at("parry")].is_empty() && row[at("parry_clip")].is_empty());
             assert!(row[at("loco_flags")].is_empty() && row[at("stop")].is_empty());
             assert!(number(row, "pelvis_p3_z").is_finite());
             let lifted = number(row, "frame_height") + number(row, "root_clip_height");

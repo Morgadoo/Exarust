@@ -380,13 +380,14 @@ pub fn track_condition(
         &StateFlags,
         &Ragdoll,
         &exa_anim::Animator,
+        Option<&crate::Fighter>,
         Option<&mut PostureBranch>,
     )>,
 ) {
     let Some(motions) = motions else { return };
     let set = &*motions.0;
     let entity = ticked.body;
-    let Ok((mut condition, flags, body, anim, taken)) = bodies.get_mut(entity) else {
+    let Ok((mut condition, flags, body, anim, fighter, taken)) = bodies.get_mut(entity) else {
         return;
     };
     let Some(drive) = body.drive.as_ref() else {
@@ -404,7 +405,7 @@ pub fn track_condition(
         balance: drive.balance().value,
         exertion: body.exertion(),
         tone: drive.tone,
-        parrying: false,
+        parrying: fighter.is_some_and(|f| f.parry.active),
         shock_over: false,
     };
     let (next, branch) = posture(next, &p);

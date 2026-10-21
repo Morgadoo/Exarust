@@ -90,10 +90,18 @@ impl Plugin for CombatPlugin {
             // its health bookkeeping and its clip's advance.
             .add_systems(
                 CharacterTick,
-                swing::run_swings
-                    .in_set(CharacterStage::Attack)
-                    .run_if(condition::ticked_lives)
-                    .before(regen::keep_health),
+                (
+                    swing::run_swings
+                        .in_set(CharacterStage::Attack)
+                        .run_if(condition::ticked_lives)
+                        .before(regen::keep_health),
+                    // The parry trigger, as the original's body tick runs it
+                    // after the swing routine.
+                    parry::run_parries
+                        .in_set(CharacterStage::Attack)
+                        .after(swing::run_swings)
+                        .run_if(condition::ticked_lives),
+                ),
             )
             .add_systems(
                 PostUpdate,
@@ -1308,6 +1316,10 @@ mod tests {
         let (attacker, blade) = swordsman(&mut app);
         let guarding = Fighter {
             guard: damage::Guard::Parry,
+            parry: parry::ParryState {
+                active: true,
+                ..parry::ParryState::default()
+            },
             ..Fighter::default()
         };
         let id = app
@@ -1339,6 +1351,7 @@ mod tests {
             parry: parry::ParryState {
                 active: false,
                 counter_motion: Some(5),
+                ..parry::ParryState::default()
             },
             ..Fighter::default()
         };
@@ -1363,6 +1376,7 @@ mod tests {
             parry::ParryState {
                 active: false,
                 counter_motion: None,
+                ..parry::ParryState::default()
             }
         );
         let striker = app.world().get::<SwingState>(attacker).unwrap();
@@ -1377,6 +1391,7 @@ mod tests {
             parry: parry::ParryState {
                 active: false,
                 counter_motion: Some(6),
+                ..parry::ParryState::default()
             },
             ..Fighter::default()
         };
@@ -1440,6 +1455,10 @@ mod tests {
             .size = 1.5;
         let parrier = Fighter {
             guard: damage::Guard::Parry,
+            parry: parry::ParryState {
+                active: true,
+                ..parry::ParryState::default()
+            },
             ..Fighter::default()
         };
         let id = app
@@ -1477,6 +1496,10 @@ mod tests {
             .spawn((
                 Fighter {
                     guard: damage::Guard::Parry,
+                    parry: parry::ParryState {
+                        active: true,
+                        ..parry::ParryState::default()
+                    },
                     ..Fighter::default()
                 },
                 Animator::new("Default", "Idle"),
@@ -2475,5 +2498,22 @@ mod tests {
         let bled: Vec<_> = (0..7).flat_map(|_| tick(&mut app)).collect();
         assert_eq!(bled.len(), 1);
         assert_eq!(bled[0].body, struck);
+    }
+
+    /// The plugin builds and ticks with no game, bodies or motion set: the
+    /// character-tick parry rule must not need a resource only the tests
+    /// create.
+    #[test]
+    fn the_combat_plugin_ticks_without_a_game() {
+        let mut app = App::new();
+        app.add_plugins((
+            bevy::prelude::MinimalPlugins,
+            exa_physics::body::BodyPlugin,
+            CombatPlugin,
+        ))
+        .insert_resource(exa_physics::Physics::default());
+        for _ in 0..3 {
+            app.update();
+        }
     }
 }
