@@ -127,8 +127,13 @@ impl Possessions {
         panel: Option<&mut dyn FnMut(u32, u32) -> bool>,
     ) -> Given {
         match panel {
-            Some(add) if add(id, flags) => Given::Panel,
-            Some(_) => Given::Refused,
+            Some(add) => {
+                if add(id, flags) {
+                    Given::Panel
+                } else {
+                    Given::Refused
+                }
+            }
             None => {
                 self.give(id, flags);
                 Given::List
