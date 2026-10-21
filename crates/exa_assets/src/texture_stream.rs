@@ -117,7 +117,7 @@ impl Plugin for TextureStreamPlugin {
 /// A material's bind group keeps the texture view it was prepared with, so a
 /// material built while its texture was the 1x1 placeholder would go on
 /// drawing the placeholder after the loader's upload replaced the image
-/// under the same handle. Touching the material (a `get_mut`) makes Bevy
+/// under the same handle. Touching the material (taking it for writing) makes Bevy
 /// prepare its bind group again with the new image. The scan runs only on a
 /// frame in which some image was modified, and looks at each material's
 /// handles once.
@@ -144,7 +144,8 @@ fn rebind_replaced_images(
         .map(|(id, _)| id)
         .collect();
     for id in touched {
-        let _ = materials.get_mut(id);
+        // Taking the asset for writing is what queues its modified event.
+        let _ = materials.get_mut(id).map(bevy::asset::AssetMut::into_inner);
     }
 }
 
@@ -456,7 +457,7 @@ mod tests {
                 diffuse_map: Some(other),
                 ..default()
             });
-            (bound.id(), unbound.id())
+            (bound, unbound)
         };
         // Settle the creation events, then replace the image.
         app.update();
@@ -475,7 +476,7 @@ mod tests {
                 modified.push(*id);
             }
         }
-        assert!(modified.contains(&bound));
-        assert!(!modified.contains(&unbound));
+        assert!(modified.contains(&bound.id()));
+        assert!(!modified.contains(&unbound.id()));
     }
 }
