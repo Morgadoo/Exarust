@@ -341,8 +341,8 @@ playback are not in),
 the per-tick body trace
 (`trace`, with the foot contacts' states and anchors and the ankles,
 ending with the condition word, the swing's rate, strength and state
-word, whether the fighter is parrying and with which clip, and the blow
-stagger's speed), and the debug tools ([`docs/DEBUGGING.md`](../../docs/DEBUGGING.md)):
+word, and whether the fighter is parrying and with which clip), and
+the debug tools ([`docs/DEBUGGING.md`](../../docs/DEBUGGING.md)):
 the body overlay and joint readout (`body_overlay`, with the feet's
 anchors and states), the joint trace
 (`joint_trace`), the trace of contacts between body parts (`pair_trace`),

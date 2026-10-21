@@ -340,24 +340,32 @@ must be attacking and under 1.3 size (or facing a shield), in its 0.3–0.9
 window, not cleaving, not behind and within its reach + 150 cm. Its counter
 rises and falls by the chosen clip, a start blends round(recovery · 20) with
 ease 2 and moves an attack motion to 4, and a changed attack motion repicks
-the clip. The running fight calls the whole rule every body tick: the
-ticked fighter, after its swing routine, ends a helpless or failing parry,
-runs the trigger while it parries, and starts one from the combat idle once
-the auto-parry deadline has passed. The attacker is the nearest attacking
-foe whose real condition, size, strike window, cleaving bit, progress,
-reach, chests and facing pass the trigger (the original keeps an explicit
-target; the player's cursor target is not a component). The chosen clip
-starts looped with its blend and fast ease and the hit path sees
-`Guard::Parry`; the parry ends into its stance with the 0x28 blend and the
-condition and stance systems leave the parry clip alone.
-
-A blow's body stagger (`stagger`) runs in the same tick: the damage
-routine's follow-through starts `stagger_strength` where it keeps a gain,
-and a parried, blocked or turned blow starts `recoil` on the striker. The
-`Stagger` component on the body loses its decay and counts down each attack
-stage, and its speed scales the swing's clip rate while it lasts. The
-striking part's factor and speed share are the weapon's impact W10 and the
-blow's penetration: the original's part table has no body in Exarust.
+the clip. The running fight calls the rule from each ticked fighter's
+attack stage, after its swing routine, as the original's body tick does:
+a fighter in the combat idle that is not parrying, whose muscle tone is at
+least 0.85, whose auto-parry deadline has passed and whose hands hold
+something (a fist does) checks the blow coming at it; a fighter that
+parries checks it again on every tick of its own, so a parry that starts
+takes its counter twice that tick; one that does not parry lets its
+counter drift back toward 0, and a parry clip left playing by a blow that
+ended the parry returns to the stance. A failed check ends the parry
+(a helpless condition, Break Tangle, yellow health under 0.01, or no blow
+passing the trigger); it returns to the Defence stance when the fighter is
+dying or dazed, else the combat idle, with a 40-frame smooth blend, unless
+the condition's clip stands still. A parry the fighter is not allowed to
+hold (its hands empty) only drops the flag. The attacker is the nearest
+attacking foe whose size, cleaving bit, progress, reach, chests and facing
+pass the trigger; a swing carrying the continuation flag skips the clock
+window. The picked clip, the countered motion and the last-check time are
+kept; the clip starts looped with its blend and the fast ease, and the hit
+path reads `Guard::Parry`, raised only while the fighter parries or still
+counters a motion and never over a shield's guard. Not yet: the armed
+parry (a weapon-holder does not parry: its speed and grip links come from
+the weapon's handling), the explicit target (the nearest attacker stands
+in for it), the Fend entry, the player's request-an-attack, which clears
+the permission, the race and claw forbids of the permission, and the
+previous-motion record of a continued swing (nothing sets the continuation
+flag yet).
 
 `weapon` is the held weapon's handling: the blade lift and bend curves and
 their two guide pushes (the weapon's and the forearm's), with the weapon's

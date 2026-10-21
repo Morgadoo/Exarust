@@ -1337,11 +1337,11 @@ and down. h is the heading.
   the thigh keeps the clip's turn otherwise
   (`exa_physics::body::femur_posture_turn`, applied by the sampler).
 - **The swing routine's body side** is reproduced piece by piece. The
-  parry trigger, its counter, start and re-pick now run in every fighter's
-  attack stage after the swing routine (`exa_combat::parry`), and a blow's
-  stagger and recoil are stored on the body and decayed there
-  (`exa_physics::body::stagger`, `exa_combat::stagger`). Still data only,
-  because the running game's weapons are bone-attached meshes: the
+  parry check, its counter, start and re-pick now run in every fighter's
+  attack stage after the swing routine (`exa_combat::parry`); a blow's
+  stagger is the swing's stall, which the swing routine already drains
+  (`exa_combat::swing`); the body-side stagger helpers
+  (`exa_physics::body::stagger`) are not called. Not run yet: the
   weapon-in-hand gate, the attack arms' stiffness, the swing sound, the
   fatigue ramp, the aim nudges (fist, edge, overhead, homing), the two-hand
   group bit, Break Tangle and the clinch clear (`exa_combat::swing`,
@@ -1380,7 +1380,6 @@ is left empty.
 | `condition` | the character's condition word in hex (`0x300`), as the retail watcher logs it ([Condition](#condition)); empty for a body without one |
 | `swing_rate`, `strength`, `attack_flags` | the fighter's swing (empty for a body that does not fight): the frames its swing routine last set for an attack's clip, the swing strength P, and its attack state word in hex ([Swing](#motion-playback)), the retail probe's rate, strength and state columns |
 | `parry`, `parry_clip` | Exarust's own: whether the fighter is parrying (1/0) and its chosen parry clip (`0x14`–`0x18`, −1 before the first), so the 0 → 1 changes count the parries raised |
-| `stagger_speed` | Exarust's own: the `Stagger` on the body, whose speed scales the swing's clip rate while it lasts (empty when none) |
 | `loco_flags`, `moving`, `free_walk` | the character's locomotion request (empty for a body without one, [Movement decision](#movement-decision)): its flag word in hex, the retail probe's locomotion flags (`0x1` move, `0x2` backwards, `0x4` run, `0x8` sprint latch, `0x10` brake, `0x20` stopping, `0x40` heading-driven, `0x200` turn-about), whether the decision moved the body (1/0) and whether it walks free |
 | `yaw`, `heading`, `turn_rate` | the body's yaw and the heading (degrees), and the turn rate this tick after every factor (degrees a second: 240 free walk standing still, 120 the slow turn, 300 otherwise) |
 | `align`, `speed`, `reach`, `stop` | the alignment, the speed along the heading (cm a tick), how far the move vector reached (cm: 200 in free walk, the goal's distance toward one) and why the body stands (`moving`, `standing`, `braked`, `arrived`, or the gate: `tired`, `cooldown`, `stepping`, `unsteady`, `unbalanced`, `airborne`, `rebalancing`) |
