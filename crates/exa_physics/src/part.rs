@@ -201,6 +201,14 @@ pub fn ragdoll_mobility(own: f32) -> f32 {
     own
 }
 
+/// `a >= b`, false when either is NaN: the original's ordered compare.
+fn at_least(a: f32, b: f32) -> bool {
+    matches!(
+        a.partial_cmp(&b),
+        Some(core::cmp::Ordering::Greater | core::cmp::Ordering::Equal)
+    )
+}
+
 /// Adds an impact to a recent-impact counter: two per call, at most forty
 /// (slot 38, the impact reaction, seen by slot 15's step).
 pub fn impact_added(counter: i32) -> i32 {
@@ -230,7 +238,8 @@ pub struct ImpactSound {
 pub fn limb_impact_sound(impact: f32, down: bool, spread: u32) -> Option<ImpactSound> {
     let scaled = impact * if down { 1.0 } else { 0.33 };
     let scaled = scaled * 0.5;
-    if (scaled as f64) < 0.5 {
+    // The original's ordered `0.5 <= impact`: a NaN is silent.
+    if !at_least(scaled, 0.5) {
         return None;
     }
     let volume = (f64::from(scaled) * 0.05).min(1.0) as f32;
@@ -247,7 +256,8 @@ pub fn limb_impact_sound(impact: f32, down: bool, spread: u32) -> Option<ImpactS
 pub fn weapon_impact_sound(impact: f32, spread: u32) -> Option<ImpactSound> {
     let linear = f64::from(impact) * 0.01;
     let value = (f64::from(impact) * 0.005 + linear * linear * 0.3).min(1.0) as f32;
-    if (value as f64) < 0.005 {
+    // The original's ordered `0.005 <= value`: a NaN is silent.
+    if !at_least(value, 0.005) {
         return None;
     }
     let cooldown_ms = 220 + spread - (80.0 * f64::from(value)).round() as u32;
@@ -262,7 +272,7 @@ pub fn weapon_impact_sound(impact: f32, spread: u32) -> Option<ImpactSound> {
 /// from the camera: `(2000 − distance)·0.001`, used under 1800 cm.
 pub fn camera_shake(distance2: f32) -> Option<f32> {
     if (distance2 as f64) < 3.24e6 {
-        Some((2000.0 - f64::from(distance2).sqrt()) as f32 * 0.001)
+        Some(((2000.0 - f64::from(distance2).sqrt()) * 0.001) as f32)
     } else {
         None
     }
@@ -557,9 +567,11 @@ mod tests {
         assert!((sound.volume - 0.5).abs() < 1e-6);
         assert!((sound.pitch - 0.8).abs() < 1e-6);
         assert_eq!(sound.cooldown_ms, 220 - 85);
-        // Under half the scaled impact: silent.
+        // Under half the scaled impact: silent; so is a NaN (the ordered
+        // compare).
         assert_eq!(limb_impact_sound(3.0, false, 0), None);
         assert_eq!(limb_impact_sound(0.9, true, 0), None);
+        assert_eq!(limb_impact_sound(f32::NAN, true, 0), None);
     }
 
     #[test]
@@ -570,6 +582,17 @@ mod tests {
         assert!((sound.pitch - 0.94).abs() < 1e-6);
         assert_eq!(sound.cooldown_ms, 220 + 10 - 64);
         assert_eq!(weapon_impact_sound(0.5, 0), None);
+        // The original clamps before the threshold test, and its minimum
+        // takes the second operand on a NaN: a NaN impact rings at full
+        // volume.
+        assert_eq!(
+            weapon_impact_sound(f32::NAN, 0),
+            Some(ImpactSound {
+                volume: 1.0,
+                pitch: 1.0,
+                cooldown_ms: 140,
+            })
+        );
         // 2 · 0.005 + (2 · 0.01)² · 0.3 = 0.01012.
         let sound = weapon_impact_sound(2.0, 0).unwrap();
         assert!((sound.volume - 0.01012).abs() < 1e-8);
@@ -583,6 +606,7 @@ mod tests {
         let near = camera_shake(1_000_000.0).unwrap();
         assert!((near - 1.0).abs() < 1e-6);
         assert_eq!(camera_shake(3_240_000.0), None);
+        assert_eq!(camera_shake(f32::NAN), None);
     }
 
     fn impact(flags: u32, motion: i32, clock: f32) -> HardImpact {
