@@ -35,6 +35,7 @@ pub mod gui_font;
 pub mod gui_glyphs;
 pub mod gui_level;
 pub mod gui_rescale;
+pub mod gui_text;
 pub mod heartbeat;
 pub mod hud;
 pub mod icon_atlas;
@@ -79,6 +80,12 @@ pub use emblem_form::{
 pub use fade::DeathFade;
 pub use fps::ShowFps;
 pub use gui_level::GuiLevelState;
+pub use gui_text::{
+    ELLIPSIS, FontBinding, MENU_FONT, MenuFont, TextQuad, WrappedDraw, add_gap, count_lines,
+    draw_line, draw_line_centred, draw_line_plain, draw_span, draw_tail, draw_truncated,
+    draw_wrapped, draw_wrapped_at, ellipsis_fit, fit_menu_width, fit_width, font_uv, glyph_uv,
+    measure, measure_in, menu_font_scale, needs_rescale,
+};
 pub use heartbeat::Heartbeat;
 pub use hud::{DrawHud, HudBars};
 pub use loading::LoadingStatus;
