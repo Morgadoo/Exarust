@@ -2603,8 +2603,10 @@ mod tests {
         assert!((radius - 0.3).abs() < 1e-7 && (length - 38.5).abs() < 1e-5);
         let lift = direction.y.asin() - back.y.asin();
         assert!((lift - 0.05).abs() < 1e-4, "{lift}");
+        // The heading is the engine's planar yaw, whose fast arc cosine is
+        // a few 1e-4 rad off the true one.
         let across = |v: Vec3| Vec3::new(v.x, 0.0, v.z).normalize();
-        assert!((across(direction) - across(back)).length() < 1e-4);
+        assert!((across(direction) - across(back)).length() < 1e-3);
         // Hits climb every other probe to four; misses come down the same
         // way to none, never below.
         let mut steps = Vec::new();

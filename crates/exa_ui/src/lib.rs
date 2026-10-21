@@ -219,9 +219,10 @@ pub use skill::{
     spend_skill_experience, unlearn_skill_level,
 };
 pub use skill_gui::{
-    ICON_CELL, ICON_SETS, ICON_UNITS, SINGLE_CELL, SINGLE_ICON_ATLAS, SINGLE_ICONS, SKILL_GUI,
-    SKILL_GUI_FLAGS, SKILL_GUI_UNITS, SKILL_ICON_ATLAS, SkillIconHandles, SkillIcons,
-    SkillResources, build_group_icons, build_single_icons, group_cells,
+    FIRST_ICON, ICON_CELL, ICON_FORMAT, ICON_SETS, ICON_UNITS, SINGLE_CELL, SINGLE_FORMAT,
+    SINGLE_ICON_ATLAS, SINGLE_ICON_UNITS, SINGLE_ICONS, SKILL_GUI, SKILL_GUI_FLAGS,
+    SKILL_GUI_UNITS, SKILL_ICON_ATLAS, SkillIconHandles, SkillIcons, SkillResources,
+    build_group_icons, build_single_icons, group_cells, icon_sharpened,
 };
 pub use skin::{
     BEVEL_INK, BackdropCorner, BevelArm, BevelBox, BevelInk, BevelPlace, CappedSpan, CentredIcon,
