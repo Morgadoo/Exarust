@@ -342,5 +342,6 @@ the timer gains 0.03 of the strength (cap 20) or loses 0.1; yellow loses
 timer × 0.00004 and red (timer × 0.002)², yellow is scaled by red's new share
 of the red the tick began with (all of it is lost when that was near 0); a
 timer over 1 crackles once the clock is 800 ms past the last draw; yellow
-under 0 after the scaling collapses. `effects` holds a body's power list (ramp
-and limit pulses) and the cast start (motion, clinch end, condition 0x20).
+under 0 after the scaling collapses. `effects` holds a body's power ramp (its
+pulses, the callback's end) and the cast start (the callback's answer, the
+motion, the clinch end, condition 0x20).
