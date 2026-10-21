@@ -1897,10 +1897,10 @@ plain draw and input records.
   items become `0x68`-byte records (the first loses its `0x8009` id);
   focusing a task moves it to the top, and removing the active layer
   clears the published task.
-- **Tip banner** (`exa_ui::game_tips`): a translucent box at eight units,
-  four units tall, 160 alpha, sized to the tip plus two units, no input;
-  the tip is among the least-shown of eighteen or from the contextual
-  table.
+- **Tip banner** (`exa_ui::game_tips`): a translucent box eight units
+  down, four units tall and the tip's width plus two units, 160 alpha,
+  centred, the tip one unit in; no input. Choosing the tip is the
+  prelude's (`exa_game::prelude::Tips`).
 - **Journal** (`exa_ui::game_gui`): closing remembers the window position
   and stores the text box into the selected entry.
 - **Colour swatch opener** (`exa_ui::colour_swatch`): the popup of
