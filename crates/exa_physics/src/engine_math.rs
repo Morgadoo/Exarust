@@ -401,23 +401,24 @@ pub fn barycentric_exact(point: Vec3, tet: &[[f32; 3]; 4]) -> [f32; 4] {
 
 /// The quaternion product as the original computes it: the vector part is
 /// `(q2 × q1) + q2·q1.w + q1·q2.w` in that addition order, and the scalar
-/// part `q1.w·q2.w − q1·q2`.
+/// part `q1.w·q2.w − q1·q2` with the dot summed `z + (y + x)`.
 pub fn quaternion_product(q1: Quat, q2: Quat) -> Quat {
     let cross = q2.xyz().cross(q1.xyz());
     let mut xyz = cross + q2.xyz() * q1.w;
     xyz += q1.xyz() * q2.w;
-    let w = q1.w * q2.w - (q1.z * q2.z + q1.y * q2.y + q1.x * q2.x);
+    let w = q1.w * q2.w - (q1.z * q2.z + (q1.y * q2.y + q1.x * q2.x));
     Quat::from_xyzw(xyz.x, xyz.y, xyz.z, w)
 }
 
 /// The quaternion of `angle` about `axis` (not necessarily unit): the sine
-/// half-angle over the axis length, the cosine half-angle. A zero-length
-/// axis gives the zero quaternion.
+/// half-angle over the axis length, the cosine half-angle. An axis whose
+/// squared length is at most [`AXIS_EPSILON`] (or NaN) gets a zero vector
+/// part; the cosine half-angle is written either way.
 pub fn quaternion_from_axis_angle(axis: Vec3, angle: f32) -> Quat {
     let (sin, cos) = sin_cos(angle * 0.5);
     let length_squared = axis.x * axis.x + axis.y * axis.y + axis.z * axis.z;
-    if length_squared <= AXIS_EPSILON {
-        Quat::from_xyzw(0.0, 0.0, 0.0, 0.0)
+    if !(length_squared > AXIS_EPSILON) {
+        Quat::from_xyzw(0.0, 0.0, 0.0, cos)
     } else {
         let scale = sin / length_squared.sqrt();
         Quat::from_xyzw(axis.x * scale, axis.y * scale, axis.z * scale, cos)
@@ -485,9 +486,11 @@ pub fn quaternion_to_mat3(q: Quat) -> Mat3A {
     )
 }
 
-/// The quaternion of a 3×3 turn, by the largest diagonal. The rows are
-/// read as the original stores them; a zero axis from a NaN matrix keeps
-/// the original's divisions.
+/// The quaternion of a 3×3 turn: from the trace when it is above zero,
+/// else from the largest diagonal (the second only when strictly above the
+/// first, the third when the pick is strictly below it; NaN keeps the
+/// pick). When that diagonal's root is zero the other three parts are
+/// multiplied by the zero root instead of `0.5 / s`.
 pub fn mat3_to_quaternion(m: &Mat3A) -> Quat {
     let rows = [
         m.x_axis.to_array(),
@@ -506,7 +509,7 @@ pub fn mat3_to_quaternion(m: &Mat3A) -> Quat {
             w,
         )
     } else {
-        let mut largest = usize::from(rows[1][1] > rows[0][0] && rows[1][1] != rows[0][0]);
+        let mut largest = usize::from(rows[1][1] > rows[0][0]);
         if rows[largest][largest] < rows[2][2] {
             largest = 2;
         }
@@ -516,7 +519,9 @@ pub fn mat3_to_quaternion(m: &Mat3A) -> Quat {
         let s = (rows[largest][largest] - (rows[next][next] + rows[other][other]) + 1.0).sqrt();
         let mut q = [0.0f32; 4];
         q[largest] = s * 0.5;
-        let inv = if s != 0.0 { 0.5 / s } else { 0.0 };
+        // `COMISS` against zero skips the division only on equal, so a
+        // zero root stays the multiplier and NaN divides.
+        let inv = if s != 0.0 { 0.5 / s } else { s };
         q[3] = (rows[next][other] - rows[other][next]) * inv;
         q[next] = (rows[largest][next] + rows[next][largest]) * inv;
         q[other] = (rows[largest][other] + rows[other][largest]) * inv;
@@ -884,8 +889,17 @@ mod tests {
     fn quaternions_and_turns() {
         let q = quaternion_from_axis_angle(Vec3::Y, 0.0);
         assert_eq!(q, Quat::from_xyzw(0.0, 0.0, 0.0, 1.0));
+        // A zero axis keeps the cosine half-angle.
         let q = quaternion_from_axis_angle(Vec3::ZERO, 1.0);
-        assert_eq!(q, Quat::from_xyzw(0.0, 0.0, 0.0, 0.0));
+        assert_eq!(q, Quat::from_xyzw(0.0, 0.0, 0.0, sin_cos(0.5).1));
+        let q = quaternion_from_axis_angle(Vec3::new(f32::NAN, 0.0, 0.0), 0.0);
+        assert_eq!(q, Quat::from_xyzw(0.0, 0.0, 0.0, 1.0));
+        // The product's scalar part sums z + (y + x): with the products
+        // x = 1, y = 2^24, z = −2^24 that is −2^24 + (2^24 + 1) = 0 (the
+        // one is lost to rounding), where (z + y) + x would give 1.
+        let a = Quat::from_xyzw(1.0, 4096.0, 4096.0, 0.0);
+        let b = Quat::from_xyzw(1.0, 4096.0, -4096.0, 0.0);
+        assert_eq!(quaternion_product(a, b).w, 0.0);
         // The original's product of the identity with a turn keeps it.
         let half = quaternion_from_axis_angle(Vec3::Y, 1.0);
         let product = quaternion_product(Quat::IDENTITY, half);
