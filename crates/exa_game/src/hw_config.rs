@@ -484,12 +484,10 @@ fn apply_window(
         window.mode = mode;
     }
     if let (true, Some((width, height))) = (config.live.window_mode, config.window_size) {
-        let (current_w, current_h) = (
-            window.resolution.physical_width(),
-            window.resolution.physical_height(),
-        );
-        if (current_w, current_h) != (width, height) {
-            window.resolution.set_physical_resolution(width, height);
+        // The launcher's size is in logical pixels; keep the same unit.
+        let (current_w, current_h) = (window.resolution.width(), window.resolution.height());
+        if (current_w, current_h) != (width as f32, height as f32) {
+            window.resolution.set(width as f32, height as f32);
         }
     }
     let present = if config.live.vertical_sync {
