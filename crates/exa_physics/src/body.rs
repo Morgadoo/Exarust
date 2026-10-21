@@ -883,7 +883,7 @@ pub struct WorldLink {
     /// A slider's axis in world space, its length the travel; a plane's
     /// normal.
     pub axis: Vec3,
-    /// The slider's fraction of its travel (+0x28).
+    /// The slider's fraction of its travel; a slack link's taut length.
     pub length: f32,
     /// Whether this is the part's origin pivot.
     pub origin: bool,
