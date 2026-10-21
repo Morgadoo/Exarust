@@ -1857,10 +1857,16 @@ plain draw and input records.
   centred, only the unlocked ones, the chosen card cream; the chosen
   portrait and name sit below.
 - **Reply choices** (`exa_ui::dialogue_choices`): a 400 by 120 panel
-  eight units above its parent's bottom; each entry starts one unit down
-  and is its wrapped line count times four units plus one tall; the
-  height eases over 500 units; a left click carrying `0x2000` picks the
-  hovered entry and the panel becomes the player's dialogue.
+  eight units above its parent's bottom. The hit test answers the entry
+  number from 1; an entry's band is its wrapped line count times four units
+  plus one, from one unit down. The height eases from its base to the
+  target over 500 units (a pure `3t² − 2t³` share), then the target is
+  taken. A left click carrying `0x2000` selects the hovered entry; the
+  dialogue unit marks it and holds it for a second, during which both text
+  colours' alpha fades with the same ease and, at the end, the entry list is
+  cleared. Rows read "N." and the wrapped text, starting a line and a unit
+  down, one line height per wrapped line plus a unit apart; the colours come
+  from the interface palette.
 - **Pickers** (`exa_ui::picker_fields`): the marker is the normalised point
   times the field's size less one; a stick moves it by hundredths and
   clamps it (an unordered value becomes 0). The physique diamond maps a
