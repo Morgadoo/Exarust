@@ -13,6 +13,8 @@
 //! assembly and its call sites in the damage routine. Lengths and speeds
 //! are the original's.
 
+use bevy::prelude::Component;
+
 /// The part-speed factor of the strength, and the countdown's ticks per
 /// unit of strength.
 const PART_SHARE: f64 = 0.15;
@@ -24,8 +26,9 @@ pub const STAGGER_FLAGS: u32 = 0x6;
 /// The single-precision epsilon below which a share is none.
 const EPSILON: f32 = 1.192_09e-7;
 
-/// A stagger in progress, as the original keeps it on the body.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// A stagger in progress, as the original keeps it on the body: a
+/// component on the body root a blow rocks.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct Stagger {
     /// Its speed, 0 to 1.
     pub speed: f32,
@@ -35,6 +38,18 @@ pub struct Stagger {
     pub until_ms: u64,
     /// The flags it sets: [`STAGGER_FLAGS`] here.
     pub flags: u32,
+}
+
+impl Stagger {
+    /// One body tick of the stagger: its speed loses `decay` (never below
+    /// 0) while it holds the stalling bit, and it is over once the game
+    /// clock is past its countdown. Returns whether it is over.
+    pub fn advance(&mut self, now_ms: u64) -> bool {
+        if self.flags & 0x2 != 0 {
+            self.speed = (self.speed - self.decay).max(0.0);
+        }
+        now_ms > self.until_ms
+    }
 }
 
 /// The stagger a blow of `speed` starts (the original's helper): the
@@ -120,6 +135,21 @@ mod tests {
         let s = stagger_strength(-1.0, 1.0, 1.0, 1.0, false, false, 0).unwrap();
         assert_eq!((s.speed, s.decay), (0.0, 0.05));
         assert!(stagger_strength(1.0, 1.0, 1.0, 1.0, false, true, 0).is_none());
+    }
+
+    /// A stagger loses its decay a tick while stalling and is over only
+    /// past its countdown; without the stalling bit its speed stays.
+    #[test]
+    fn the_stagger_decays_and_ends() {
+        let s = stagger_strength(1.0, 1.0, 1.0, 1.0, false, false, 100).unwrap();
+        let mut s = s;
+        assert!(!s.advance(100));
+        assert!(close(s.speed, 0.15 - 0.0425));
+        assert!(!s.advance(160));
+        assert!(s.advance(161));
+        let mut quiet = Stagger { flags: 0, ..s };
+        quiet.advance(100);
+        assert!(close(quiet.speed, s.speed));
     }
 
     /// The guard test: weapon class 0x90 and an active strike or a parry

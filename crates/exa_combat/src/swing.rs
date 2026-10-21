@@ -758,6 +758,7 @@ pub(crate) fn run_swings(
         &Condition,
         &Fighter,
         Option<&Swing>,
+        Option<&exa_physics::body::stagger::Stagger>,
         Option<&mut Ragdoll>,
         &GlobalTransform,
         Option<&Stance>,
@@ -774,6 +775,7 @@ pub(crate) fn run_swings(
         condition,
         fighter,
         swing,
+        staggered,
         mut body,
         gt,
         stance,
@@ -826,7 +828,13 @@ pub(crate) fn run_swings(
         strikers,
         aim: facing.with_y(0.0).normalize_or_zero(),
     };
-    match state.tick(&swing, &t, &mut attacker.primary) {
+    let event = state.tick(&swing, &t, &mut attacker.primary);
+    // The stagger's speed scales the clip's rate while it lasts, as the
+    // original's body tick multiplies its swing clock by it.
+    if let Some(stagger) = staggered {
+        state.rate *= stagger.speed;
+    }
+    match event {
         SwingEvent::Plays => {}
         SwingEvent::Chains => {
             let side = chained_side(attacking.motion);
@@ -1069,7 +1077,7 @@ impl SwingState {
     /// blow at 0.5 when it is held back ([`flags::HOLDS_BACK`]), else
     /// cleaves on; a larger one follows a body hit through at 0.5 and
     /// cleaves on from the edge ([`follow_through`]).
-    pub fn after_wound(&mut self, blow: &Outcome, recoil: f32, striker: &Striker) {
+    pub fn after_wound(&mut self, blow: &Outcome, recoil: f32, striker: &Striker) -> Option<f32> {
         self.flags = (self.flags & !flags::RELEASED) | flags::WOUNDED;
         self.open[striker.slot.index()] = false;
         let gain = if f64::from(striker.size) < LARGE_STRIKER {
@@ -1083,7 +1091,7 @@ impl SwingState {
         };
         let Some(gain) = gain else {
             self.flags |= flags::CLEAVING;
-            return;
+            return None;
         };
         if let Some(f) = follow_through(&FollowStrike {
             class_word: striker.class_word,
@@ -1102,6 +1110,7 @@ impl SwingState {
             self.flags = f.flags;
             self.end_ms = f.end_ms.max(0) as u64;
         }
+        Some(gain)
     }
 
     /// The striker's swing recoiling from a blow at `speed` (cm a tick)

@@ -83,6 +83,9 @@ const SWING: [&str; 3] = ["swing_rate", "strength", "attack_flags"];
 /// parrying and the parry clip code (0x14–0x18), so a count of raised
 /// parries reads the 0 → 1 changes.
 const PARRY: [&str; 2] = ["parry", "parry_clip"];
+/// The blow stagger's speed on the body (empty when none): it scales the
+/// swing's clip rate while it lasts.
+const STAGGER: &str = "stagger_speed";
 /// Then its locomotion (empty for a body without a request): the request's
 /// flag word (hex), moving and free walk (1 or 0) after the movement
 /// decision, the yaw and the heading (degrees), the turn rate this tick
@@ -184,6 +187,7 @@ pub fn header() -> String {
     columns.push(CONDITION.into());
     columns.extend(SWING.iter().map(|s| s.to_string()));
     columns.extend(PARRY.iter().map(|s| s.to_string()));
+    columns.push(STAGGER.into());
     columns.extend(LOCOMOTION.iter().map(|s| s.to_string()));
     columns.join(",")
 }
@@ -232,6 +236,7 @@ fn trace_bodies(
             Option<&Condition>,
             Option<&SwingState>,
             Option<&Fighter>,
+            Option<&exa_physics::body::stagger::Stagger>,
             Option<(&Locomotion, &Locomotor)>,
             Has<PlayerBody>,
         ),
@@ -245,7 +250,9 @@ fn trace_bodies(
     }
     let player = !trace.every && bodies.iter().any(|(.., p)| p);
     let mut text = String::new();
-    for (root, body, anim, stature, condition, swing, fighter, locomotion, is_player) in &bodies {
+    for (root, body, anim, stature, condition, swing, fighter, stagger, locomotion, is_player) in
+        &bodies
+    {
         if player && !is_player {
             continue;
         }
@@ -275,6 +282,12 @@ fn trace_bodies(
                 let _ = write!(text, ",{},{}", u8::from(f.parry.active), clip);
             }
             None => text.push_str(",,"),
+        }
+        match stagger {
+            Some(s) => {
+                let _ = write!(text, ",{}", s.speed);
+            }
+            None => text.push(','),
         }
         text.push_str(&locomotion_columns(locomotion));
         text.push('\n');
@@ -498,6 +511,7 @@ mod tests {
                 + 1
                 + SWING.len()
                 + PARRY.len()
+                + 1
                 + LOCOMOTION.len()
         );
         assert_eq!(columns.last(), Some(&LOCOMOTION[11]));
@@ -534,6 +548,7 @@ mod tests {
             // Not a fighter: no swing or parry; no request: no locomotion.
             assert!(row[at("swing_rate")].is_empty() && row[at("attack_flags")].is_empty());
             assert!(row[at("parry")].is_empty() && row[at("parry_clip")].is_empty());
+            assert!(row[at("stagger_speed")].is_empty());
             assert!(row[at("loco_flags")].is_empty() && row[at("stop")].is_empty());
             assert!(number(row, "pelvis_p3_z").is_finite());
             let lifted = number(row, "frame_height") + number(row, "root_clip_height");
