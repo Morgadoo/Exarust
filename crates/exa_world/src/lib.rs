@@ -1328,6 +1328,9 @@ mod tests {
             return;
         };
         let game = GameData::open(&dir).unwrap();
+        // The level's terrain builds on the async pool in game, as it does
+        // here.
+        bevy::tasks::AsyncComputeTaskPool::get_or_init(bevy::tasks::TaskPool::default);
         // A tile grid, a terrain, and both with thousands of props.
         for name in ["arena", "arenao1", "exanima01"] {
             let whole = spawn(&game, name, None);
