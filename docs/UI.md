@@ -640,8 +640,8 @@ forms, the selected control, the remembered fallback focus and the pointer.
   shows while no capture is held.
 - **Placement and grips.** `place_form` keeps a child inside its parent
   (right edge less two, or the caller's minimum); `edge_rect` returns the
-  title-bar controls (17 wide, x from the right less a unit and the 0x420
-  tab steps) and the four grips (4·unit − 1 square). The derived metrics
+  title-bar controls (17 wide, x from the right less a unit and the tab
+  steps) and the four grips (4·unit − 1 square). The derived metrics
   are `6·unit − 2` for the title, `4·unit + 1` for the rail, `4·unit − 1`
   for the grip and `(unit >> 1) + rail` for the tab.
 

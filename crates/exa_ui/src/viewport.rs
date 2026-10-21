@@ -500,7 +500,7 @@ impl KeyRoute {
     }
 
     /// The base pointer handler runs when no button is down; an active
-    /// action's callback runs first (the original's `0x148`).
+    /// action's callback runs first.
     pub fn pointer(_action: bool, _buttons: u16, base: u32) -> u32 {
         base
     }

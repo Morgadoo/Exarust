@@ -42,14 +42,14 @@ pub struct MenuScreen {
     pub page: Page,
     pub selected: usize,
     pub hover: usize,
-    /// The row whose click was confirmed (the original's field 0x204).
+    /// The row whose click was confirmed (the original's confirmed row).
     pub confirmed: Option<usize>,
     pub session: u32,
     pub new_game_ready: bool,
     pub state: PageState,
     /// The page was rebuilt since the last draw.
     dirty: bool,
-    /// The menu's hidden flag (the original's field 0x218).
+    /// The menu's hidden flag.
     hidden: bool,
 }
 

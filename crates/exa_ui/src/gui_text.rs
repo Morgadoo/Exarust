@@ -523,7 +523,7 @@ pub fn add_gap_to_fonts<const N: usize>(fonts: &mut [GuiFont; N]) {
 /// sheet at its design scale, rescaled by half the row scale.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MenuFont {
-    /// The atlas sample step (+0, +4); zero for the bitmap fonts.
+    /// The atlas sample step; zero for the bitmap fonts.
     pub uv: (f32, f32),
     /// The drawn cell in pixels.
     pub glyph: (i32, i32),

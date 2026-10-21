@@ -98,15 +98,15 @@ pub trait FormHost: Send + Sync {
     fn key(&mut self, _word: u32) -> u32 {
         0
     }
-    /// The focus-key event (the original's `0x160` slot).
+    /// The focus-key event (the form's focus-key callback).
     fn key_focus(&mut self, _form: Option<FormId>, _control: i32) -> u32 {
         0
     }
-    /// A pointer message: the original's `0x138`/`0x140` slots.
+    /// A pointer message (the form's pointer callback).
     fn pointer(&mut self, _message: u32, _param: u32, _button: u16) -> u32 {
         0
     }
-    /// A drag message: the original's `0x148` (move) and `0xe8` (end) slots.
+    /// A drag message: the move and end callbacks.
     fn drag(&mut self, _message: u32, _x: i32, _y: i32) -> u32 {
         0
     }
@@ -1118,7 +1118,7 @@ impl GuiTask {
     }
 
     /// Begins a drag at the form's control: the form's drag start callback
-    /// (the original's `0x138`) and the pressed target.
+    /// and the pressed target.
     fn drag_start(&mut self, form: FormId, code: i32, param: u32, x: i32, y: i32) -> u32 {
         let result = self
             .form_mut(form)
@@ -1365,7 +1365,7 @@ pub fn message_box_plan(
     }
 }
 
-/// Makes `form` the modal form and focuses it (the original's `0xaa80`).
+/// Makes `form` the modal form and focuses it.
 pub fn set_modal(task: &mut GuiTask, form: FormId) {
     task.modal = Some(form);
     task.focus_set(Some(form), -1);
