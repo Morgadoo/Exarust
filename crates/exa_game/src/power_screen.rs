@@ -499,9 +499,25 @@ fn pointer(
         }
         *dirty = true;
     }
-    if buttons.pressed(MouseButton::Middle) {
-        tree.drag = crate::thaum::tree::DragState::Pan;
+    if buttons.just_pressed(MouseButton::Middle) {
+        // The middle button starts a pan from the view as shown.
+        let input = crate::thaum::tree::PressInput {
+            x,
+            y,
+            word: crate::thaum::tree::press::MIDDLE,
+            width,
+            now,
+        };
+        let _ = tree.press(input, Some(record), bar);
+        *dirty = true;
+    }
+    if buttons.pressed(MouseButton::Middle) && tree.drag == crate::thaum::tree::DragState::Pan {
         tree.drag_move(x, y, now);
+        *dirty = true;
+    }
+    if buttons.just_released(MouseButton::Middle) && tree.drag == crate::thaum::tree::DragState::Pan
+    {
+        tree.release_drag(x, y);
         *dirty = true;
     }
     let mut steps = 0.0;

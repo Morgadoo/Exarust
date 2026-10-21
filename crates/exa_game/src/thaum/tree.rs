@@ -494,11 +494,15 @@ pub struct PressResult {
     pub sound: Option<TreeSound>,
 }
 
-/// The spring the pan and the zoom ease by.
+/// The pan's spring: the point the view is pulled toward, the point it is
+/// at, and the point it was at one step ago.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Spring2 {
-    pub value: [f32; 2],
-    pub target: [f32; 2],
+    /// The point the view eases toward; a drag and the wheel move it.
+    pub goal: [f32; 2],
+    /// Where the view is: the nodes are placed from this point.
+    pub position: [f32; 2],
+    /// Where the view was at the previous step.
     pub previous: [f32; 2],
 }
 
@@ -556,6 +560,8 @@ pub struct TreeScreen {
     pub placed: Vec<[f32; 2]>,
     /// The spring the pan eases by.
     pub pan: Spring2,
+    /// The point the nodes are placed from this frame.
+    pub shown_pan: [f32; 2],
     /// The charge level.
     pub charge: f32,
     /// The zoom's spring.
@@ -599,8 +605,10 @@ pub struct TreeScreen {
     pub drag: DragState,
     /// The point a drag started from.
     pub drag_origin: [f32; 2],
-    /// The last pointer point.
+    /// The pointer point a link is being drawn to.
     pub pointer: [f32; 2],
+    /// The point a pan drag started from.
+    pub press_point: [f32; 2],
     /// A link's turn while it is dragged.
     pub link_turn: f32,
     /// The node the screen must look at.
@@ -619,38 +627,38 @@ pub fn zoom_gain(charge: f32) -> f32 {
 }
 
 /// The charge level nearest to `value`: levels 1 to 5 above one, levels −8
-/// to −1 below, and 0 for one or more than two.
+/// to −1 below, and 0 for one, a not-a-number or more than two.
+///
+/// The thresholds are worked out in double precision and rounded to single,
+/// as the original does.
 pub fn zoom_level(value: f32) -> i32 {
+    if value.is_nan() {
+        return 0;
+    }
     if value >= 1.0 {
         if value > 1.0 {
             for step in 1..=5 {
-                if value < (step as f32 + 5.0) * 0.2 {
+                if value < ((step + 5) as f64 * 0.2) as f32 {
                     return step;
                 }
             }
         }
         return 0;
     }
-    // The first comparison's previous level is a not-a-number, so a value
-    // below the first threshold always answers the loop's starting level.
+    // The first comparison's previous level is a not-a-number: the distance
+    // compare is unordered and answers the level just reached, so a value
+    // below the first threshold answers −8, not −9.
     let mut previous = f32::NAN;
-    let mut at = -9;
-    loop {
-        let next = at + 1;
-        let level = (4.0 - (-f64::from(next)).sqrt()) as f32 * 0.25;
+    for next in -8..=-1 {
+        let level = ((4.0 - f64::from(-next).sqrt()) * 0.25) as f32;
         if value < level {
-            return if (level - value).abs() <= (previous - value).abs() {
-                next
-            } else {
-                at
-            };
+            // Unordered or not farther from this level: this level.
+            let farther = (level - value).abs() > (previous - value).abs();
+            return if farther { next - 1 } else { next };
         }
         previous = level;
-        at = next;
-        if at >= -1 {
-            return 0;
-        }
     }
+    0
 }
 
 impl TreeScreen {
@@ -688,6 +696,7 @@ impl TreeScreen {
             base,
             placed: vec![[0.0; 2]; count],
             pan: Spring2::default(),
+            shown_pan: [0.0; 2],
             charge: 0.0,
             zoom: ZoomSpring {
                 value: 1.0,
@@ -715,6 +724,7 @@ impl TreeScreen {
             drag: DragState::Idle,
             drag_origin: [0.0; 2],
             pointer: [0.0; 2],
+            press_point: [0.0; 2],
             link_turn: 0.0,
             hovered: 0,
             bar_open: false,
@@ -755,7 +765,9 @@ impl TreeScreen {
                 screen.wheel.total = 48.0;
             }
         }
-        let level = zoom_level(height * 0.000_434_782_608_695_652);
+        // The level comes from the whole-pixel height over 2300, worked out
+        // in double precision; the width is halved as an integer.
+        let level = zoom_level((f64::from(height.trunc()) * (1.0 / 2300.0)) as f32);
         screen.charge = level as f32;
         let gain = zoom_gain(screen.charge);
         screen.zoom = ZoomSpring {
@@ -763,13 +775,22 @@ impl TreeScreen {
             target: gain,
             previous: gain,
         };
+        let centre = (width as i64 / 2) as f32;
+        let seed = [centre, height - 250.0 * gain];
         screen.pan = Spring2 {
-            value: [width / 2.0, height - gain * 250.0],
-            target: [width / 2.0, height - gain * 250.0],
-            previous: [width / 2.0, height - gain * 250.0],
+            goal: seed,
+            position: seed,
+            previous: seed,
         };
+        screen.shown_pan = seed;
         screen.refresh_placement();
-        screen.pan.target = [width / 2.0, height - screen.zoom_fixed - 100.0];
+        // The view the first placement shows: the centre, and the height
+        // less the rounded zoom and a hundred pixels, whole numbers.
+        screen.shown_pan = [
+            centre,
+            (height as i64 - screen.zoom_fixed as i64 - 100) as f32,
+        ];
+        screen.refresh_placement();
         screen.focus = 0;
         screen
     }
@@ -855,8 +876,16 @@ impl TreeScreen {
         }
     }
 
+    /// Shows the pan at `alpha` of the way from its previous point to its
+    /// point (the original blends the last two steps by the frame's share
+    /// of a step; one is the end of a step) and places the nodes from it.
+    pub fn present(&mut self, alpha: f32) {
+        self.shown_pan = lerp2(self.pan.previous, self.pan.position, alpha);
+        self.refresh_placement();
+    }
+
     /// Places the nodes at ten times their place times the zoom plus the
-    /// pan, rounded to even unless the view is dragged.
+    /// shown pan, rounded to even unless the view is dragged.
     pub fn refresh_placement(&mut self) {
         self.zoom_fixed = (self.zoom.value * 256.0).round_ties_even();
         for index in 0..self.nodes.len() {
@@ -864,8 +893,8 @@ impl TreeScreen {
                 self.base[index][0],
                 self.base[index][1],
                 self.zoom.value,
-                self.pan.value[0],
-                self.pan.value[1],
+                self.shown_pan[0],
+                self.shown_pan[1],
                 !self.free_view,
             );
             self.placed[index] = place_node(point, 0.0, 0.0, self.factor);
@@ -904,12 +933,7 @@ impl TreeScreen {
     pub fn settle(&mut self) -> bool {
         let moved_pan = step_pan(&mut self.pan);
         let moved_zoom = step_zoom(&mut self.zoom);
-        if moved_pan {
-            self.refresh_placement();
-        }
-        if moved_zoom {
-            self.zoom_fixed = (self.zoom.value * 256.0).round_ties_even();
-        }
+        self.present(1.0);
         moved_pan || moved_zoom
     }
 
@@ -988,8 +1012,14 @@ impl TreeScreen {
             }
         }
         if word & press::MIDDLE != 0 {
+            // The drag starts from the pan as shown, in whole pixels
+            // (rounded to even), and from the point the button went down.
             self.drag = DragState::Pan;
-            self.drag_origin = self.pan.value;
+            self.drag_origin = [
+                self.shown_pan[0].round_ties_even(),
+                self.shown_pan[1].round_ties_even(),
+            ];
+            self.press_point = [input.x, input.y];
             out.result = 0x15;
             return out;
         }
@@ -1119,18 +1149,19 @@ impl TreeScreen {
         out
     }
 
-    /// Starts a pan at `(x, y)`: the middle button was pressed.
+    /// Moves a drag to `(x, y)`. A pan moves the goal by the whole pixels
+    /// the pointer has gone since the button went down.
     pub fn drag_move(&mut self, x: f32, y: f32, now: u32) -> u32 {
-        self.pointer = [x, y];
         match self.drag {
             DragState::Pan => {
-                self.pan.value = [
-                    self.drag_origin[0] + (x - self.pointer[0]),
-                    self.drag_origin[1] + (y - self.pointer[1]),
+                self.pan.goal = [
+                    (self.drag_origin[0] as i64 + (x as i64 - self.press_point[0] as i64)) as f32,
+                    (self.drag_origin[1] as i64 + (y as i64 - self.press_point[1] as i64)) as f32,
                 ];
-                self.free_view = true;
-                self.free_view_stamp = now;
-                self.refresh_placement();
+                if !self.free_view {
+                    self.free_view = true;
+                    self.free_view_stamp = now;
+                }
                 3
             }
             DragState::MoveNode | DragState::MoveLink => 3,
@@ -1200,13 +1231,12 @@ impl TreeScreen {
         let mut out = PressResult::default();
         if flags & 0x10 != 0 {
             let step = self.zoom.value + 2.0;
-            self.pan.value[0] -= step * dx * 4.0;
-            self.pan.value[1] -= step * dy * 4.0;
+            self.pan.goal[0] -= step * dx * 4.0;
+            self.pan.goal[1] -= step * dy * 4.0;
             if !self.free_view {
                 self.free_view = true;
                 self.free_view_stamp = now;
             }
-            self.refresh_placement();
             out.result = 3;
         }
         if flags & 0x20 != 0 {
@@ -2139,60 +2169,83 @@ pub fn bar_slot_at(x: f32, y: f32, width: f32, enlarged: bool, scale: f32) -> Op
     found
 }
 
-/// The pan's spring: the target is nudged by the force made from the gap
-/// and the target's velocity, clamped to four units.
+/// `a` plus `b − a` times `t`, on both lanes.
+fn lerp2(a: [f32; 2], b: [f32; 2], t: f32) -> [f32; 2] {
+    [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+}
+
+/// Whether `value` is above `limit`; a not-a-number is not, as an ordered
+/// compare answers.
+fn exceeds(value: f32, limit: f64) -> bool {
+    f64::from(value) > limit
+}
+
+/// The squared length of a vector: the x square plus the y square.
+fn length_squared(v: [f32; 2]) -> f32 {
+    v[0] * v[0] + v[1] * v[1]
+}
+
+/// One step of the pan's spring. The view's velocity is the last step's
+/// move; the pull is a tenth of the gap to the goal less that velocity,
+/// held to a length of four; the velocity takes the pull and, while it is
+/// longer than a tenth (squared length above 0.01), the view moves by 0.98
+/// of it. A gap of a hundred-billionth (squared) snaps the view to the
+/// goal. Returns whether the view moved.
 fn step_pan(spring: &mut Spring2) -> bool {
     let gap = [
-        spring.value[0] - spring.target[0],
-        spring.value[1] - spring.target[1],
+        spring.goal[0] - spring.position[0],
+        spring.goal[1] - spring.position[1],
     ];
-    let length = (gap[0] * gap[0] + gap[1] * gap[1]).sqrt();
-    if f64::from(length) <= 1e-10 {
-        spring.target = spring.value;
-        spring.previous = spring.value;
+    // A not-a-number gap fails the compare and snaps, as the original does.
+    if !exceeds(length_squared(gap), 1e-10) {
+        spring.position = spring.goal;
+        spring.previous = spring.goal;
         return false;
     }
-    let mut force = [
-        spring.target[0] - spring.previous[0],
-        spring.target[1] - spring.previous[1],
+    let mut velocity = [
+        spring.position[0] - spring.previous[0],
+        spring.position[1] - spring.previous[1],
     ];
-    spring.previous = spring.target;
-    force = [gap[0] * 0.1 - force[0], gap[1] * 0.1 - force[1]];
-    let length = (force[0] * force[0] + force[1] * force[1]).sqrt();
-    if length < 16.0 {
-        let scale = if length == 0.0 { 0.0 } else { 1.0 / length };
-        force = [force[0] * scale, force[1] * scale];
+    spring.previous = spring.position;
+    let pull = [gap[0] * 0.1 - velocity[0], gap[1] * 0.1 - velocity[1]];
+    let squared = length_squared(pull);
+    if squared < 16.0 {
+        velocity = [velocity[0] + pull[0], velocity[1] + pull[1]];
     } else {
-        let scale = 4.0 / length.sqrt();
-        force = [force[0] * scale, force[1] * scale];
+        // Longer than four, or not a number: scaled to four.
+        let scale = 4.0 / squared.sqrt();
+        velocity = [velocity[0] + pull[0] * scale, velocity[1] + pull[1] * scale];
     }
-    let length = (force[0] * force[0] + force[1] * force[1]).sqrt();
-    if 0.01 < f64::from(length) {
-        spring.target = [
-            spring.target[0] + force[0] * 0.98,
-            spring.target[1] + force[1] * 0.98,
+    if exceeds(length_squared(velocity), 0.01) {
+        spring.position = [
+            spring.position[0] + velocity[0] * 0.98,
+            spring.position[1] + velocity[1] * 0.98,
         ];
         return true;
     }
     false
 }
 
-/// The zoom's spring, in doubles for the velocity clamp.
+/// The zoom's spring, in doubles for the velocity clamp. The pull is
+/// held to a tenth; a velocity of 5e-5 or less snaps the zoom to its goal.
 fn step_zoom(spring: &mut ZoomSpring) -> bool {
-    if f64::from((spring.target - spring.value).abs()) <= 1e-10 {
+    let gap = spring.target - spring.value;
+    // A not-a-number gap fails the compare and snaps.
+    if !exceeds(gap.abs(), 1e-10) {
         spring.value = spring.target;
         spring.previous = spring.target;
         return false;
     }
-    let gap = spring.target - spring.value;
-    let mut velocity = spring.value - spring.previous;
+    let velocity = spring.value - spring.previous;
     spring.previous = spring.value;
-    let mut force = gap * 0.1 - velocity;
-    if 0.1 <= f64::from(force.abs()) {
-        force = (0.1 / f64::from(force.abs()) * f64::from(force)) as f32;
-    }
-    velocity += force;
-    if f64::from(velocity.abs()) <= 5e-05 {
+    let pull = gap * 0.1 - velocity;
+    let velocity = if f64::from(pull.abs()) < 0.1 {
+        velocity + pull
+    } else {
+        // The clamped pull is added in double precision and rounded once.
+        (0.1 / f64::from(pull.abs()) * f64::from(pull) + f64::from(velocity)) as f32
+    };
+    if !exceeds(velocity.abs(), 5e-05) {
         spring.value = spring.target;
         spring.previous = spring.target;
         return false;
@@ -2273,8 +2326,8 @@ mod tests {
     #[test]
     fn the_zoom_levels_pick_the_nearest() {
         assert_eq!(zoom_level(0.304_347_83), -8);
-        assert_eq!(zoom_level(0.25), -9);
-        assert_eq!(zoom_level(0.26), -9);
+        assert_eq!(zoom_level(0.25), -8);
+        assert_eq!(zoom_level(0.26), -8);
         assert_eq!(zoom_level(0.30), -8);
         assert_eq!(zoom_level(0.65), -2);
         assert_eq!(zoom_level(0.74), -1);
@@ -2287,6 +2340,7 @@ mod tests {
         assert_eq!(zoom_level(1.99), 5);
         assert_eq!(zoom_level(2.0), 0);
         assert_eq!(zoom_level(3.0), 0);
+        assert_eq!(zoom_level(f32::NAN), 0);
         assert_eq!(zoom_gain(-8.0), f32::from_bits(0x3e95_f61a));
         assert_eq!(zoom_gain(0.0), 1.0);
         assert_eq!(zoom_gain(5.0), 2.0);
@@ -2320,20 +2374,51 @@ mod tests {
             target: 1.0,
             previous: 0.5,
         };
+        // The pull is a tenth of the gap, 0.05, under the clamp of a tenth:
+        // the velocity takes it whole and the zoom moves by 0.998 of it.
         assert!(step_zoom(&mut zoom));
         assert_eq!(zoom.previous, 0.5);
-        assert!((zoom.value - 0.5499).abs() < 1e-6);
+        assert!((zoom.value - 0.549_9).abs() < 1e-6);
         assert!(step_zoom(&mut zoom));
+        // The pan, at rest and ten units from its goal: the pull is one
+        // unit, the velocity one, and the view moves 0.98.
         let mut pan = Spring2 {
-            value: [0.0, 0.0],
-            target: [10.0, 0.0],
-            previous: [10.0, 0.0],
+            goal: [10.0, 0.0],
+            position: [0.0, 0.0],
+            previous: [0.0, 0.0],
         };
         assert!(step_pan(&mut pan));
-        // The force is the gap's tenth, so the target backs off by 0.98.
-        assert!((pan.target[0] - 9.02).abs() < 1e-5);
-        pan.value = pan.target;
-        assert!(!step_pan(&mut pan));
+        assert!((pan.position[0] - 0.98).abs() < 1e-6);
+        assert_eq!(pan.previous, [0.0, 0.0]);
+        // Next step: the gap is 9.02, a tenth 0.902, less the 0.98 velocity
+        // leaves -0.078; the velocity is 0.902 and the view moves 0.88396.
+        assert!(step_pan(&mut pan));
+        assert!((pan.position[0] - 1.863_96).abs() < 1e-5);
+        assert_eq!(pan.previous[0], 0.98);
+        // A far goal pulls by four at most: the pull of 1000 is held to 4.
+        let mut far = Spring2 {
+            goal: [10_000.0, 0.0],
+            position: [0.0, 0.0],
+            previous: [0.0, 0.0],
+        };
+        assert!(step_pan(&mut far));
+        assert!((far.position[0] - 3.92).abs() < 1e-5);
+        // Next to the goal the view snaps onto it.
+        let mut near = Spring2 {
+            goal: [1.0, 1.0],
+            position: [1.0, 1.0],
+            previous: [0.0, 0.0],
+        };
+        assert!(!step_pan(&mut near));
+        assert_eq!(near.previous, [1.0, 1.0]);
+        // A not-a-number goal snaps too.
+        let mut lost = Spring2 {
+            goal: [f32::NAN, 0.0],
+            position: [1.0, 1.0],
+            previous: [0.0, 0.0],
+        };
+        assert!(!step_pan(&mut lost));
+        assert!(lost.position[0].is_nan());
     }
 
     #[test]
@@ -2862,6 +2947,55 @@ mod tests {
         // Returning to the node whose choice was shown gives 0.
         assert_eq!(screen.set_focus(1, 60), 0);
         assert_eq!(screen.shown_choice, 1);
+    }
+
+    #[test]
+    fn opening_seeds_the_view_from_the_window() {
+        // 1080 over 2300 is 0.4696: between the levels -5 (0.4410) and -4
+        // (0.5), and nearer -5, so the charge opens at -5.
+        let screen = TreeScreen::load(DOMAIN_MIND, TreeMode::Play, None, None, 1001.0, 1080.0);
+        assert_eq!(screen.charge, -5.0);
+        let gain = (4.0 - 5.0_f32.sqrt()) * 0.25;
+        assert_eq!(screen.zoom.value, gain);
+        // The width is halved as an integer: 500, not 500.5.
+        assert_eq!(screen.pan.goal, [500.0, 1080.0 - 250.0 * gain]);
+        assert_eq!(screen.pan.position, screen.pan.goal);
+        // The first placement shows whole numbers: 0.441 * 256 is 113.
+        assert_eq!(screen.zoom_fixed, 113.0);
+        assert_eq!(screen.shown_pan, [500.0, 1080.0 - 113.0 - 100.0]);
+    }
+
+    #[test]
+    fn a_middle_drag_moves_the_goal_and_the_view_follows() {
+        let mut screen = TreeScreen::empty(DOMAIN_MIND, TreeMode::Play);
+        let mut bar = PowerBar::default();
+        screen.shown_pan = [500.5, 300.6];
+        let input = PressInput {
+            x: 100.0,
+            y: 100.0,
+            word: press::MIDDLE,
+            width: 1000.0,
+            now: 10,
+        };
+        let out = screen.press(input, None, &mut bar);
+        assert_eq!(out.result, 0x15);
+        assert_eq!(screen.drag, DragState::Pan);
+        // The origin is the shown pan rounded to even.
+        assert_eq!(screen.drag_origin, [500.0, 301.0]);
+        assert_eq!(screen.drag_move(130.0, 90.0, 20), 3);
+        assert_eq!(screen.pan.goal, [530.0, 291.0]);
+        assert!(screen.free_view);
+        assert_eq!(screen.free_view_stamp, 20);
+        // A later move does not restamp the free view.
+        screen.drag_move(131.0, 90.0, 30);
+        assert_eq!(screen.free_view_stamp, 20);
+        assert_eq!(screen.pan.goal, [531.0, 291.0]);
+        // The view eases toward the goal: nothing has moved yet.
+        assert_eq!(screen.shown_pan, [500.5, 300.6]);
+        screen.pan.position = [500.0, 301.0];
+        screen.pan.previous = [500.0, 301.0];
+        assert!(screen.settle());
+        assert!(screen.shown_pan[0] > 500.0 && screen.shown_pan[0] < 531.0);
     }
 
     #[test]
