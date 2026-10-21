@@ -62,15 +62,17 @@ pub struct UseDevice {
 }
 
 /// The character record's identity word, the value a reconstruction-device
-/// use remembers and a level load compares. The original's record word is
-/// at `+0x124`; a new record starts at 0.
+/// use remembers and a level load compares (the original keeps it in the
+/// record's role word; a new record starts at 0).
 #[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RecordIdentity(pub u32);
 
 /// A scan is running on this character: another use starts nothing.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScanInProgress {
-    /// The clock time the scan's effect is gone (ms).
+    /// The clock time the scan's effect is gone (ms). Guess: the original
+    /// tests for the effect node itself, so this stand-in lasts the effect's
+    /// delay, opening and close.
     pub until_ms: u32,
 }
 
