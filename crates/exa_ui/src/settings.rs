@@ -1121,6 +1121,19 @@ mod screen_tests {
     }
 
     #[test]
+    fn the_controls_rows_use_their_slots_once() {
+        let mut slots: Vec<usize> = BINDINGS.iter().filter_map(|b| b.slot).collect();
+        slots.sort_unstable();
+        slots.dedup();
+        // The page has no row for the primary mouse button (slot 0) nor for
+        // the quick-power slot; every other slot appears once.
+        assert_eq!(slots, (1..20).chain(21..23).collect::<Vec<usize>>());
+        assert_eq!(BINDINGS[0].slot, Some(1)); // Forward
+        assert_eq!(BINDINGS[6].slot, Some(8)); // Orbit Camera
+        assert_eq!(BINDINGS[21].slot, None); // Power Tree
+    }
+
+    #[test]
     fn the_form_actions() {
         assert_eq!(form_action(0), Some(FormAction::SettingsTab));
         assert_eq!(form_action(1), Some(FormAction::ControlsTab));
