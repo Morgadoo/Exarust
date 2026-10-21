@@ -431,3 +431,63 @@ mod tests {
         assert_eq!(counts, [0, 136, 40, 32, 0, 0]);
     }
 }
+
+impl Grip {
+    /// The physics side of this grip: the spec `exa_physics::grip::build`
+    /// takes, with the table's points and slacks in its centimetres.
+    pub fn spec(&self) -> exa_physics::grip::GripSpec {
+        use exa_physics::grip::{GripPair, GripPoint};
+        exa_physics::grip::GripSpec {
+            hand: usize::from(self.hand == GripHand::Left),
+            links: self
+                .links
+                .iter()
+                .map(|l| GripPoint {
+                    point: l.point,
+                    slack: l.slack,
+                })
+                .collect(),
+            second_hand: self.second_hand.map(|s| GripPair {
+                item: s.other_hand.item,
+                part: s.other_hand.part,
+            }),
+            arm: self.second_hand.map(|s| GripPair {
+                item: s.arm.item,
+                part: s.arm.part,
+            }),
+            extra: self.stab.map(|s| GripPair {
+                item: s.item,
+                part: s.part,
+            }),
+        }
+    }
+}
+
+#[cfg(test)]
+mod spec_tests {
+    use super::*;
+    use exa_physics::grip::GripKind;
+
+    /// The grip table's entries become the physics builder's spec: the
+    /// two-hander has a second hand, an arm and the stab's extra link; the
+    /// polearm a second hand and an arm; the one-hander only its links.
+    #[test]
+    fn the_grip_table_becomes_a_physics_spec() {
+        let one = GRIPS[1].spec();
+        assert_eq!(one.hand, 0);
+        assert_eq!(one.links.len(), 2);
+        assert_eq!(one.kind(), GripKind::Other);
+        assert_eq!(one.links[0].slack, 0.0);
+        assert_eq!(one.links[1].point, Vec3::new(15.0, 0.0, 0.0));
+        let two = GRIPS[2].spec();
+        assert_eq!(two.kind(), GripKind::TwoHanded);
+        assert_eq!(two.links[0].slack, 5.0);
+        assert_eq!(two.second_hand.unwrap().part, Vec3::new(11.0, -3.0, 0.0));
+        assert_eq!(two.extra.unwrap().part, Vec3::new(8.0, -5.0, 0.0));
+        let pole = GRIPS[3].spec();
+        assert_eq!(pole.kind(), GripKind::Polearm);
+        assert_eq!(pole.hand, 1);
+        assert!(pole.extra.is_none());
+        assert_eq!(GRIPS[4].spec().links.len(), 0);
+    }
+}

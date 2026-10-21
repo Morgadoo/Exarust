@@ -1998,6 +1998,32 @@ impl Ragdoll {
         )
     }
 
+    /// The weights of a point `local` (m, in the part's space) over the
+    /// part's rest particles: the original's way of turning a grip point
+    /// into a link end. `None` when the part does not exist.
+    pub fn weights_at(&self, part: usize, local: Vec3) -> Option<[f32; 4]> {
+        self.parts.get(part).map(|p| weights(p, local))
+    }
+
+    /// The point with weights `w` in the part's rest pose (m). `None` when
+    /// the part does not exist.
+    pub fn rest_point_at(&self, part: usize, w: &[f32; 4]) -> Option<Vec3> {
+        self.parts
+            .get(part)
+            .map(|p| (0..4).map(|k| p.rest[k] * w[k]).sum())
+    }
+
+    /// The point with weights `w` where the part is now (m).
+    pub fn point_at(&self, part: usize, w: &[f32; 4]) -> Option<Vec3> {
+        self.parts.get(part).map(|p| p.point(w))
+    }
+
+    /// A part's link mobility: its inverse mass times the link share
+    /// ([`LINK_MOBILITY`]), the original's `+0x50` on a living limb.
+    pub fn link_mobility(&self, part: usize) -> Option<f32> {
+        self.parts.get(part).map(|p| p.inverse_mass * LINK_MOBILITY)
+    }
+
     /// The part of `bone`.
     pub fn part_of(&self, bone: usize) -> Option<&Part> {
         self.parts.iter().find(|p| p.bone == bone)
