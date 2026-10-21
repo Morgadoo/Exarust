@@ -186,3 +186,30 @@ impl Game {
         sheets
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_tree_sheets_load() {
+        let Some(dir) = crate::locate_install(None) else {
+            return;
+        };
+        let game = crate::Game(std::sync::Arc::new(
+            crate::GameData::open(dir).expect("the install opens"),
+        ));
+        let sheets = game.load_tree_sheets();
+        let mind = sheets.domains[1].as_ref().expect("the mind sheet");
+        assert_eq!((mind.width, mind.height), (2048, 2048));
+        assert_eq!(mind.pixels.len(), 2048 * 2048 * 4);
+        let force = sheets.domains[2].as_ref().expect("the force sheet");
+        assert_eq!((force.width, force.height), (2048, 2048));
+        let frames = sheets.frames.as_ref().expect("the frame sheet");
+        assert_eq!((frames.width, frames.height), (128, 256));
+        let mods = sheets.mods.as_ref().expect("the modifier sheet");
+        assert_eq!((mods.width, mods.height), (1024, 512));
+        let flamelets = sheets.flamelets.as_ref().expect("the flamelets");
+        assert_eq!((flamelets.width, flamelets.height), (1024, 1024));
+        let wheel = sheets.wheel.as_ref().expect("the domain wheel");
+        assert_eq!((wheel.width, wheel.height), (384, 384));
+    }
+}
