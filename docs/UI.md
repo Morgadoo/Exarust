@@ -660,19 +660,26 @@ primitives below are the base class's.
 
 - **Palette.** The scheme record has four colours, each with a scale and a
   tone, an accent, one float and two alpha bytes. A colour expands into
-  twelve shades: the base, its scale, scale squared and cubed, then four
-  shades pulled towards their luminance (0.299 red, 0.587 green, 0.114
-  blue) by 1.75, 2, 2.25 and 2.5 times the tone and scaled by the fourth
-  to seventh powers, then the inverse scales (1/scale to 1/scale⁴ with
-  two 0.909 factors). A second tone pass at 0.5, 1, 1.25 and 1.5 finishes
-  the last four. The scaled entries keep the alpha the palette had, as the
-  original stores only three bytes. The accent is halved and also scaled
-  by 1.9 and toned by 0.8; four mixes at 0.4, 0.6, 0.5 and 0.9 of the way
-  towards the bright end are stored, and the last two are blended with the
-  third base shade by the second alpha byte times the scheme's float over
-  255. The first group is copied to the hot group. The layout metrics are
-  border 2, pad 2, title 24, reach 4·unit + 4, edge 2, gap 2, head 24 and
-  row 20.
+  twelve shades: the base at 4, then the base times the scale, its square
+  and its cube at 5 to 7; at 8 to 11 the base pulled towards its luminance
+  (green × 0.587 plus red × 0.299, then blue × 0.114) by 1.75, 2, 2.25 and
+  2.5 times the tone (at most 1) and scaled by the fourth to seventh
+  powers; at 3 down to 0 the base over the scale, divided by the scale
+  again, then twice more with a 10/11 step each (multiplied as a double).
+  A last pass tones entries 4 to 7 by 0.5, 1, 1.25 and 1.5 times the tone
+  (the first uncapped). Scaled channels round to nearest even and saturate;
+  toned channels keep their low byte. The scaled entries keep the alpha
+  the palette had, as the original stores only three bytes. The accent is
+  halved and also scaled by 1.9 and toned by 0.8; both take the second
+  alpha byte times the scheme's float as their alpha. Four mixes at 0.4,
+  0.6, 0.5 and 0.9 of the way towards the bright end are stored, and the
+  last two are blended from the first group's fourth shade by the second
+  alpha byte times the float over 255. The first group is copied to the
+  hot group. The alpha ramps give the form group and the last two mixes
+  the first byte times its scale, and all forty-eight entries of the
+  control, hot, label and highlight groups the second. The layout metrics
+  are border 2, pad 2, title 24, reach 4·unit + 4, edge 2, gap 2, head 24
+  and row 20.
 - **Batches.** Geometry is gathered between a begin and an end in window
   pixels, with a current ink and texture coordinate, a program (flat,
   textured with `TexCol`, rounded with the `Scale` uniform, or the

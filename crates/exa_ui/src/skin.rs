@@ -2262,7 +2262,7 @@ fn mix_ink(a: [u8; 4], b: [u8; 4], t: f32) -> [u8; 4] {
     let mut out = [0; 4];
     for (slot, (from, to)) in out.iter_mut().zip(a.iter().zip(b.iter())) {
         let value = f32::from(*from) + (f32::from(*to) - f32::from(*from)) * t;
-        *slot = value.round_ties_even().clamp(0.0, 255.0) as u8;
+        *slot = rounded_byte(value);
     }
     out
 }
@@ -4009,18 +4009,15 @@ pub struct SkinPalette {
     pub text: SkinGroup,
     /// The selection and highlight inks.
     pub highlight: SkinGroup,
-    /// The accent at half strength.
+    /// The accent at half strength, with the scheme's accent alpha.
     pub accent_dim: SkinInk,
-    /// The accent at 1.9, then tuned by 0.8.
+    /// The accent at 1.9, then toned by 0.8, with the same alpha.
     pub accent_bright: SkinInk,
     /// The accent mixes at 0.4, 0.6, 0.5 and 0.9 towards the bright end.
     pub accent_mix: [SkinInk; 4],
-    /// The two stored alpha bytes the ramp and the accent use.
+    /// The two stored alpha bytes the ramps scale.
     pub first_alpha: u8,
     pub second_alpha: u8,
-    /// The accent's two derived alpha bytes.
-    pub accent_alpha_a: u8,
-    pub accent_alpha_b: u8,
 }
 
 impl SkinPalette {
@@ -4039,8 +4036,6 @@ impl SkinPalette {
             accent_mix: [ink; 4],
             first_alpha: 0,
             second_alpha: 0,
-            accent_alpha_a: 0,
-            accent_alpha_b: 0,
         }
     }
 }
@@ -4097,17 +4092,24 @@ fn scale_rgb(ink: &mut SkinInk, factor: f32) {
 }
 
 /// Blends a colour's red, green and blue towards its luminance by `amount`;
-/// the alpha is kept. The luminance is 0.299 red, 0.587 green, 0.114 blue,
-/// summed as the original sums it.
+/// the alpha is kept. The luminance sums green and red first, then blue
+/// (0.587, 0.299 and 0.114). Each channel rounds to nearest even and keeps
+/// its low byte, so an amount past 0..1 wraps rather than saturating.
 fn tone_rgb(ink: &mut SkinInk, amount: f32) {
     let red = f32::from(ink[0]);
     let green = f32::from(ink[1]);
     let blue = f32::from(ink[2]);
-    let luminance = red * 0.299 + (green * 0.587 + blue * 0.114);
+    let luminance = (green * 0.587 + red * 0.299) + blue * 0.114;
     for channel in &mut ink[..3] {
         let value = f32::from(*channel);
-        *channel = rounded_byte((luminance - value) * amount + value);
+        *channel = low_byte((luminance - value) * amount + value);
     }
+}
+
+/// The inverse ramp's 10/11 step: the factor is widened to a double,
+/// multiplied and narrowed again.
+fn eleventh_step(factor: f32) -> f32 {
+    (f64::from(factor) * 0.909_090_909_090_909_1) as f32
 }
 
 /// Writes a colour's red, green and blue scaled by `factor`; the
@@ -4121,9 +4123,9 @@ fn set_scaled_rgb(ink: &mut SkinInk, base: SkinInk, factor: f32) {
 /// Expands one scheme colour into the twelve shades of a group. `scale`
 /// shrinks and grows the colour, `tone` pulls it towards its luminance.
 /// Entries 0 to 3 and 5 to 7 keep the destination's alpha, as the
-/// original's three-byte stores do.
+/// original's three-byte stores do. The last pass tones the base and its
+/// three scaled shades (entries 4 to 7).
 pub fn expand_group(group: &mut SkinGroup, base: SkinInk, scale: f32, tone: f32) {
-    let inverse = 1.0 / scale;
     group[4] = base;
     set_scaled_rgb(&mut group[5], base, scale);
     set_scaled_rgb(&mut group[6], base, scale * scale);
@@ -4146,24 +4148,28 @@ pub fn expand_group(group: &mut SkinGroup, base: SkinInk, scale: f32, tone: f32)
     power *= scale;
     scale_rgb(&mut group[11], power);
 
+    // The inverse ramp divides by the scale each step rather than
+    // multiplying by its reciprocal.
+    let mut inverse = 1.0 / scale;
     set_scaled_rgb(&mut group[3], base, inverse);
-    let square = inverse * inverse;
-    set_scaled_rgb(&mut group[2], base, square);
-    let cube = square * inverse * 0.909_090_94;
-    set_scaled_rgb(&mut group[1], base, cube);
-    let fourth = cube * inverse * 0.909_090_94;
-    set_scaled_rgb(&mut group[0], base, fourth);
+    inverse /= scale;
+    set_scaled_rgb(&mut group[2], base, inverse);
+    inverse = eleventh_step(inverse / scale);
+    set_scaled_rgb(&mut group[1], base, inverse);
+    set_scaled_rgb(&mut group[0], base, eleventh_step(inverse / scale));
 
-    tone_rgb(&mut group[8], tone * 0.5);
-    tone_rgb(&mut group[9], min_ss(1.0, tone));
-    tone_rgb(&mut group[10], min_ss(1.0, tone * 1.25));
-    tone_rgb(&mut group[11], min_ss(1.0, tone * 1.5));
+    tone_rgb(&mut group[4], tone * 0.5);
+    tone_rgb(&mut group[5], min_ss(1.0, tone));
+    tone_rgb(&mut group[6], min_ss(1.0, tone * 1.25));
+    tone_rgb(&mut group[7], min_ss(1.0, tone * 1.5));
 }
 
 /// Reads a scheme into the palette, as the skin's loader does. The first
 /// group becomes both the form and the hot-form group, the next three
 /// become the control, label and highlight groups, and the accent shades
-/// are mixed from the accent and the first group's third shade.
+/// are mixed from the accent and the first group's fourth shade. The dim
+/// and bright accents take the second alpha byte times the accent scale as
+/// their alpha before they are mixed, so the mixes carry it too.
 pub fn load_scheme(palette: &mut SkinPalette, scheme: &SkinScheme) {
     for (group, (base, scale, tone)) in [
         &mut palette.form,
@@ -4178,12 +4184,17 @@ pub fn load_scheme(palette: &mut SkinPalette, scheme: &SkinScheme) {
     }
     palette.form_hot = palette.form;
 
-    let mut dim = scheme.accent;
-    scale_rgb(&mut dim, 0.5);
-    palette.accent_dim = dim;
-    let mut bright = scheme.accent;
-    scale_rgb(&mut bright, 1.9);
+    let mut dim = palette.accent_dim;
+    set_scaled_rgb(&mut dim, scheme.accent, 0.5);
+    let mut bright = palette.accent_bright;
+    set_scaled_rgb(&mut bright, scheme.accent, 1.9);
     tone_rgb(&mut bright, 0.8);
+    palette.first_alpha = scheme.first_alpha;
+    palette.second_alpha = scheme.second_alpha;
+    let accent_alpha = low_byte(f32::from(scheme.second_alpha) * scheme.accent_scale);
+    dim[3] = accent_alpha;
+    bright[3] = accent_alpha;
+    palette.accent_dim = dim;
     palette.accent_bright = bright;
     palette.accent_mix = [
         mix_ink(dim, bright, 0.4),
@@ -4194,16 +4205,11 @@ pub fn load_scheme(palette: &mut SkinPalette, scheme: &SkinScheme) {
     let amount = f32::from(scheme.second_alpha) * scheme.accent_scale * 0.003_921_569;
     palette.accent_mix[2] = mix_ink(palette.form[3], palette.accent_mix[2], amount);
     palette.accent_mix[3] = mix_ink(palette.form[3], palette.accent_mix[3], amount);
-    palette.first_alpha = scheme.first_alpha;
-    palette.second_alpha = scheme.second_alpha;
-    let gate = f32::from(scheme.second_alpha) * scheme.accent_scale;
-    palette.accent_alpha_a = (gate.round_ties_even() as i32) as u8;
-    palette.accent_alpha_b = palette.accent_alpha_a;
 }
 
-/// Scales the palette's alpha bytes: the form group and the two accent
-/// mixes take the first ramp, every other group takes the second. The
-/// highlight group's last entry keeps its alpha, as the original leaves it.
+/// Scales the palette's alpha bytes: the form group and the last two accent
+/// mixes take the first ramp, the control, hot-form, label and highlight
+/// groups (all forty-eight entries) take the second.
 pub fn scale_palette_alpha(palette: &mut SkinPalette, first_scale: f32, second_scale: f32) {
     let first = low_byte(f32::from(palette.first_alpha) * first_scale);
     let second = low_byte(f32::from(palette.second_alpha) * second_scale);
@@ -4219,7 +4225,7 @@ pub fn scale_palette_alpha(palette: &mut SkinPalette, first_scale: f32, second_s
             ink[3] = second;
         }
     }
-    for ink in &mut palette.highlight[..11] {
+    for ink in &mut palette.highlight {
         ink[3] = second;
     }
     palette.accent_mix[2][3] = first;
@@ -10654,8 +10660,10 @@ mod tests {
                 [11, 17, 23, 100],
                 [25, 38, 50, 100],
                 [50, 75, 100, 100],
-                [100, 150, 200, 100],
-                [200, 255, 255, 100],
+                // The last tone pass pulls the base and its three scaled
+                // shades towards the luminance (238.5 for the shade at 5).
+                [110, 148, 185, 100],
+                [219, 247, 247, 100],
                 [255, 255, 255, 100],
                 [255, 255, 255, 100],
                 [255, 255, 255, 100],
@@ -10664,6 +10672,46 @@ mod tests {
                 [255, 255, 255, 100],
             ]
         );
+    }
+
+    #[test]
+    fn a_gentle_scale_ramps_both_ways_without_saturating() {
+        // Scale 1.25 and tone 0.4: the inverse ramp divides by the scale and
+        // takes two 10/11 steps; entries 4 to 7 are toned by 0.2, 0.4, 0.5
+        // and 0.6, entries 8 to 11 by 0.7, 0.8, 0.9 and 1 before scaling.
+        let mut group = [[0u8, 0, 0, 100]; 12];
+        expand_group(&mut group, [60, 90, 120, 100], 1.25, 0.4);
+        assert_eq!(
+            group,
+            [
+                [20, 30, 41, 100],
+                [28, 42, 56, 100],
+                [38, 58, 77, 100],
+                [48, 72, 96, 100],
+                [65, 89, 113, 100],
+                [87, 109, 132, 100],
+                [113, 137, 160, 100],
+                [146, 169, 193, 100],
+                [188, 210, 232, 100],
+                [244, 255, 255, 100],
+                [255, 255, 255, 100],
+                [255, 255, 255, 100],
+            ]
+        );
+    }
+
+    #[test]
+    fn a_tone_past_one_wraps_its_low_byte() {
+        // The luminance of 200, 0, 100 is 59.8 + 11.4 = 71.2. Amount 2 takes
+        // red to (71.2 − 200) × 2 + 200 = −57.6, whose low byte is 198, green
+        // to 142.4 and blue to 42.4.
+        let mut ink = [200, 0, 100, 9];
+        tone_rgb(&mut ink, 2.0);
+        assert_eq!(ink, [198, 142, 42, 9]);
+        // 255 + (29.07 − 255) × −3 = 932.8: the low byte of 933 is 165.
+        let mut far = [0, 0, 255, 9];
+        tone_rgb(&mut far, -3.0);
+        assert_eq!(far, [169, 169, 165, 9]);
     }
 
     #[test]
@@ -10676,7 +10724,9 @@ mod tests {
         assert_eq!(group[4][3], 200);
         assert_eq!(group[8][3], 200);
         assert_eq!(group[11][3], 200);
+        // A tone of 0 leaves the base and its scaled shades as they are.
         assert_eq!(group[4][..3], [40, 80, 120]);
+        assert_eq!(group[5][..3], [60, 120, 180]);
     }
 
     #[test]
@@ -10695,25 +10745,27 @@ mod tests {
             second_alpha: 200,
         };
         load_scheme(&mut palette, &scheme);
-        assert_eq!(palette.accent_dim, [100, 50, 25, 180]);
-        assert_eq!(palette.accent_bright, [210, 197, 178, 180]);
+        // 200 × 1.5 = 300 keeps its low byte, 44, as the accents' alpha.
+        assert_eq!(palette.accent_dim, [100, 50, 25, 44]);
+        assert_eq!(palette.accent_bright, [210, 197, 178, 44]);
+        // The last two mixes blend from the form's fourth shade (alpha 77)
+        // by 300/255: 77 + (44 − 77) × 1.176 = 38.2.
         assert_eq!(
             palette.accent_mix,
             [
-                [144, 109, 86, 180],
-                [166, 138, 117, 180],
-                [174, 133, 102, 198],
-                [225, 201, 174, 198],
+                [144, 109, 86, 44],
+                [166, 138, 117, 44],
+                [174, 133, 102, 38],
+                [225, 201, 174, 38],
             ]
         );
         assert_eq!(palette.form, palette.form_hot);
         assert_eq!(palette.form[3], [50, 75, 100, 77]);
         assert_eq!((palette.first_alpha, palette.second_alpha), (120, 200));
-        assert_eq!((palette.accent_alpha_a, palette.accent_alpha_b), (44, 44));
     }
 
     #[test]
-    fn the_palette_alpha_ramps_skip_the_last_highlight_entry() {
+    fn the_palette_alpha_ramps_cover_every_group_entry() {
         let mut palette = SkinPalette::filled([10, 20, 30, 200]);
         palette.first_alpha = 100;
         palette.second_alpha = 160;
@@ -10724,7 +10776,7 @@ mod tests {
         assert_eq!(palette.form_hot[0][3], 40);
         assert_eq!(palette.text[11][3], 40);
         assert_eq!(palette.highlight[10][3], 40);
-        assert_eq!(palette.highlight[11][3], 200);
+        assert_eq!(palette.highlight[11][3], 40);
         assert_eq!(palette.accent_mix[2][3], 50);
         assert_eq!(palette.accent_mix[3][3], 50);
         assert_eq!(palette.accent_mix[0][3], 200);
