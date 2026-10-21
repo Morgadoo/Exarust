@@ -1960,24 +1960,20 @@ fn blend_mode(word: u32, has_alpha: bool) -> AlphaMode {
 /// The environment cube of indoor scenes.
 const ENVIRONMENT_MAP: &str = "genref01r";
 
-/// A cube map from an RGB8 `.rfi` holding six faces, each with its mips.
+/// A cube map from a `.rfi` whose six faces each store their own mip chain
+/// (in any format the codec decodes). Every face's chain is decoded to
+/// RGBA8 and the files are laid back to back, the layout a Bevy cube array
+/// expects.
 fn cube_image(rfi: &Rfi) -> Option<Image> {
     use bevy::render::render_resource::{
         Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension,
     };
     let (w, h) = (rfi.header.width, rfi.header.height);
-    let levels: Vec<(u32, u32)> = (0..rfi.mip_count)
-        .map(|m| ((w >> m).max(1), (h >> m).max(1)))
-        .collect();
-    let face: usize = levels.iter().map(|&(lw, lh)| (lw * lh * 3) as usize).sum();
-    if rfi.format != exa_formats::rfi::PixelFormat::Rgb8 || rfi.data.len() < face * 6 {
+    let faces = rfi.decode_faces_mips_rgba8().ok()?;
+    if faces.len() != 6 {
         return None;
     }
-    // RGB to RGBA, layer by layer with each layer's mips.
-    let mut data = Vec::with_capacity(face * 6 * 4 / 3);
-    for px in rfi.data[..face * 6].as_chunks::<3>().0 {
-        data.extend_from_slice(&[px[0], px[1], px[2], 255]);
-    }
+    let data: Vec<u8> = faces.into_iter().flatten().collect();
     let mut image = Image::new_uninit(
         Extent3d {
             width: w,

@@ -31,6 +31,64 @@ const STORAGE_PACKED: u32 = 0x5000_0000;
 
 /// The header flag of an image that stores a complete mip chain.
 pub const FLAG_MIP_CHAIN: u32 = 0x0008_0000;
+/// The header flags that make an image a cube map of six faces. Each face
+/// stores its own complete mip chain, face after face: `genref01r` is six
+/// 256² RGB8 chains in one file.
+pub const FLAG_CUBE: u32 = 0x4000_0000;
+/// The mask over the cube bits of the header flags (bits 30–31).
+pub const FLAG_CUBE_MASK: u32 = 0x7000_0000;
+
+/// The number of bytes one level of an image whose stored format word is
+/// `word` takes, as the original computes it from the word's fields:
+///
+/// - bit 31: block compression. The block's bytes are 1 + bits 19–23
+///   (`0x8` for BC1/BC4, `0x10` for BC3/BC5); the block side is 1 + bits
+///   16–18 (4), and a level is whole blocks across and down.
+/// - bit 18: bit-packed (uncompressed). The bits per pixel are bits 6–12
+///   plus bits 0–5 (24 for RGB8), and a level is `ceil(w·h·bits / 8)`.
+/// - otherwise one byte-per-channel pixel: `w·h·ceil(bits / 8)`.
+///
+/// A word whose cube bits (30–31) read `01` multiplies the answer by six.
+/// The shipped cubes carry that bit in the header flags instead, so this
+/// branch is unreachable from the data but kept as the original has it.
+pub fn format_level_size(word: u32, w: u32, h: u32) -> Option<usize> {
+    let bits = ((word >> 6) & 0x7F) + (word & 0x3F);
+    let mut size = if word & 0x8000_0000 != 0 {
+        let block = (((word & 0x00F8_0000) >> 19) + 1) as usize;
+        let side = (((word & 0x0007_0000) >> 16) + 1) as u64;
+        let across = u64::from(w).div_ceil(side);
+        let down = u64::from(h).div_ceil(side);
+        (block as u64).checked_mul(across)?.checked_mul(down)? as usize
+    } else if word & 0x0004_0000 != 0 {
+        let bits = u64::from(bits);
+        let total = bits.checked_mul(u64::from(w))?.checked_mul(u64::from(h))?;
+        ((total + 7) >> 3) as usize
+    } else {
+        let bytes = (bits as u64).div_ceil(8);
+        bytes.checked_mul(u64::from(w))?.checked_mul(u64::from(h))? as usize
+    };
+    if word & FLAG_CUBE_MASK == FLAG_CUBE {
+        size = size.checked_mul(6)?;
+    }
+    Some(size)
+}
+
+/// The pixel count of an image's full mip chain (base level first), as the
+/// original's data-size helper counts it: the base `w·h` plus every halved
+/// level while `w + h > 2`, dimensions never dropping below one.
+pub fn mip_chain_pixels(mut w: u32, mut h: u32) -> u64 {
+    let mut pixels = u64::from(w) * u64::from(h);
+    while u64::from(w) + u64::from(h) > 2 {
+        if w > 1 {
+            w >>= 1;
+        }
+        if h > 1 {
+            h >>= 1;
+        }
+        pixels += u64::from(w) * u64::from(h);
+    }
+    pixels
+}
 /// The header flags that repeat the image across its width, height and depth;
 /// without them it clamps to the edge.
 pub const FLAG_REPEAT_S: u32 = 0x0001_0000;
@@ -125,6 +183,50 @@ impl RfiHeader {
     /// Whether the file stores a complete mip chain after the base level.
     pub fn has_mip_chain(&self) -> bool {
         self.flags & FLAG_MIP_CHAIN != 0
+    }
+
+    /// Whether the image is a cube map of six faces, each with its own
+    /// complete mip chain.
+    pub fn is_cube(&self) -> bool {
+        self.flags & FLAG_CUBE_MASK == FLAG_CUBE
+    }
+
+    /// How many faces the image stores ([`RfiHeader::is_cube`]).
+    pub fn faces(&self) -> u32 {
+        if self.is_cube() { 6 } else { 1 }
+    }
+
+    /// Bytes of one level of this image's format word, from the word's own
+    /// fields ([`format_level_size`]); a cube's six faces are not included.
+    /// A hand-built header without a format word falls back on the decoded
+    /// [`PixelFormat`].
+    pub fn level_size(&self, w: u32, h: u32) -> Option<usize> {
+        format_level_size(self.format_word, w, h)
+            .filter(|&size| size > 0)
+            .or_else(|| PixelFormat::from_word(self.format_word).level_size(w, h))
+    }
+
+    /// Bytes of the base level of one face.
+    pub fn face_base_size(&self) -> Option<usize> {
+        self.level_size(self.width, self.height)
+    }
+
+    /// Bytes of every stored level of one face.
+    pub fn face_chain_size(&self) -> Option<usize> {
+        let (mut w, mut h) = (self.width, self.height);
+        let mut total = self.level_size(w, h)?;
+        if self.has_mip_chain() {
+            while w + h > 2 {
+                if w > 1 {
+                    w >>= 1;
+                }
+                if h > 1 {
+                    h >>= 1;
+                }
+                total = total.checked_add(self.level_size(w, h)?)?;
+            }
+        }
+        Some(total)
     }
 
     /// The texture's detail class (0–3), which decides how many leading mip
@@ -231,7 +333,13 @@ impl<'a> Rfi<'a> {
             data_size: read_u32(b, 28)?,
         };
         let format = PixelFormat::from_word(header.format_word);
-        let mip_count = mip_count_for(format, header.width, header.height, header.data_size);
+        let mip_count = mip_count_for(
+            format,
+            header.format_word,
+            header.width,
+            header.height,
+            header.data_size,
+        );
         Ok(Self {
             header,
             format,
@@ -244,7 +352,7 @@ impl<'a> Rfi<'a> {
         self.header.storage == STORAGE_PACKED
     }
 
-    /// The full mip chain as raw pixel data, unpacking if needed.
+    /// The full pixel stream as stored (or unpacked), all faces and levels.
     pub fn pixels(&self) -> Result<Cow<'a, [u8]>> {
         if !self.is_packed() {
             return Ok(Cow::Borrowed(self.data));
@@ -253,7 +361,8 @@ impl<'a> Rfi<'a> {
             .format
             .bytes_per_pixel()
             .ok_or_else(|| Error::Unsupported(format!("packed {:?}", self.format)))?;
-        unpack(self.data, bpp, self.header.data_size as usize).map(Cow::Owned)
+        let len = self.header.data_size as usize * self.header.faces() as usize;
+        unpack(self.data, bpp, len).map(Cow::Owned)
     }
 
     /// Bytes of mip level `level` within `pixels` (from [`Rfi::pixels`]).
@@ -262,8 +371,9 @@ impl<'a> Rfi<'a> {
         for l in 0..=level {
             let (w, h) = level_dims(self.header.width, self.header.height, l);
             let size = self
-                .format
+                .header
                 .level_size(w, h)
+                .or_else(|| self.format.level_size(w, h))
                 .ok_or_else(|| Error::Unsupported(format!("{:?}", self.format)))?;
             if l == level {
                 return pixels.get(offset..offset + size).ok_or(Error::Truncated {
@@ -277,20 +387,126 @@ impl<'a> Rfi<'a> {
         unreachable!()
     }
 
-    /// Decodes the base level to tightly packed RGBA8.
-    pub fn decode_rgba8(&self) -> Result<Vec<u8>> {
-        let pixels = self.pixels()?;
-        self.decode_level_rgba8(&pixels, 0)
+    /// The number of mip levels of one face the image stores.
+    pub fn mip_count(&self) -> u32 {
+        self.mip_count
     }
 
-    /// Decodes every stored mip level to RGBA8, base first, back to back.
-    pub fn decode_mips_rgba8(&self) -> Result<Vec<u8>> {
-        let pixels = self.pixels()?;
-        let mut out = Vec::new();
+    /// Bytes of one face's stored chain, faces excluded: every level
+    /// [`Rfi::mip_count`] counts.
+    pub fn face_chain_len(&self) -> Result<usize> {
+        let mut total = 0usize;
         for level in 0..self.mip_count {
-            out.extend(self.decode_level_rgba8(&pixels, level)?);
+            let (w, h) = level_dims(self.header.width, self.header.height, level);
+            let size = self.stored_level_size(w, h).ok_or_else(|| {
+                Error::Unsupported(format!("rfi format word {:#010x}", self.header.format_word))
+            })?;
+            total = total.checked_add(size).ok_or_else(|| {
+                Error::Unsupported(format!("rfi format word {:#010x}", self.header.format_word))
+            })?;
+        }
+        Ok(total)
+    }
+
+    /// One level's bytes from the stored word, else from the decoded layout
+    /// (a hand-built header carries no word).
+    fn stored_level_size(&self, w: u32, h: u32) -> Option<usize> {
+        self.header
+            .level_size(w, h)
+            .or_else(|| self.format.level_size(w, h))
+    }
+
+    /// The raw (unpacked) bytes of one face's mip chain. A cube stores its
+    /// six faces back to back, each its own chain.
+    pub fn face_chain(&self, face: u32) -> Result<Cow<'a, [u8]>> {
+        let face_len = self.face_chain_len()?;
+        let start = face as usize * face_len;
+        let end = start + face_len;
+        let pixels = self.pixels()?;
+        match &pixels {
+            Cow::Borrowed(all) => all
+                .get(start..end)
+                .map(Cow::Borrowed)
+                .ok_or(Error::Truncated {
+                    offset: HEADER_LEN + start,
+                    needed: face_len,
+                    len: HEADER_LEN + all.len(),
+                }),
+            Cow::Owned(all) => {
+                all.get(start..end)
+                    .map(|s| Cow::Owned(s.to_vec()))
+                    .ok_or(Error::Truncated {
+                        offset: HEADER_LEN + start,
+                        needed: face_len,
+                        len: HEADER_LEN + all.len(),
+                    })
+            }
+        }
+    }
+
+    /// Decodes one face's whole stored mip chain to RGBA8, base level first.
+    pub fn decode_face_mips_rgba8(&self, face: u32) -> Result<Vec<u8>> {
+        let chain = self.face_chain(face)?;
+        let mut out = Vec::new();
+        let mut offset = 0usize;
+        for level in 0..self.mip_count {
+            let (w, h) = level_dims(self.header.width, self.header.height, level);
+            let size = self
+                .header
+                .level_size(w, h)
+                .or_else(|| self.format.level_size(w, h))
+                .ok_or_else(|| Error::Unsupported(format!("{:?}", self.format)))?;
+            let src = chain.get(offset..offset + size).ok_or(Error::Truncated {
+                offset: HEADER_LEN + offset,
+                needed: size,
+                len: HEADER_LEN + chain.len(),
+            })?;
+            self.decode_level_into_rgba8(src, w as usize, h as usize, &mut out)?;
+            offset += size;
         }
         Ok(out)
+    }
+
+    /// Decodes every face's mip chain to RGBA8; a plane has one face.
+    pub fn decode_faces_mips_rgba8(&self) -> Result<Vec<Vec<u8>>> {
+        (0..self.header.faces())
+            .map(|face| self.decode_face_mips_rgba8(face))
+            .collect()
+    }
+
+    /// The base level of each face, tightly packed RGBA8.
+    pub fn decode_faces_rgba8(&self) -> Result<Vec<Vec<u8>>> {
+        let (w, h) = (self.header.width as usize, self.header.height as usize);
+        let faces = self.decode_faces_mips_rgba8()?;
+        Ok(faces.into_iter().map(|f| f[..w * h * 4].to_vec()).collect())
+    }
+
+    /// The base level of the first face, tightly packed RGBA8.
+    pub fn decode_rgba8(&self) -> Result<Vec<u8>> {
+        let chain = self.face_chain(0)?;
+        let (w, h) = (self.header.width as usize, self.header.height as usize);
+        let mut out = Vec::new();
+        let size = self
+            .header
+            .level_size(self.header.width, self.header.height)
+            .or_else(|| {
+                self.format
+                    .level_size(self.header.width, self.header.height)
+            })
+            .ok_or_else(|| Error::Unsupported(format!("{:?}", self.format)))?;
+        let src = chain.get(..size).ok_or(Error::Truncated {
+            offset: HEADER_LEN,
+            needed: size,
+            len: HEADER_LEN + chain.len(),
+        })?;
+        self.decode_level_into_rgba8(src, w, h, &mut out)?;
+        Ok(out)
+    }
+
+    /// Decodes every stored mip level of the first face to RGBA8, base
+    /// first, back to back.
+    pub fn decode_mips_rgba8(&self) -> Result<Vec<u8>> {
+        self.decode_face_mips_rgba8(0)
     }
 
     /// The registered pixel format whose converter reads this image: the
@@ -312,20 +528,42 @@ impl<'a> Rfi<'a> {
     /// Decodes mip level `level` of `pixels` (from [`Rfi::pixels`]).
     pub fn decode_level_rgba8(&self, pixels: &[u8], level: u32) -> Result<Vec<u8>> {
         let (w, h) = level_dims(self.header.width, self.header.height, level);
-        let (w, h) = (w as usize, h as usize);
         let src = self.level(pixels, level)?;
-        let mut out = vec![0u8; w * h * 4];
+        let mut out = Vec::new();
+        self.decode_level_into_rgba8(src, w as usize, h as usize, &mut out)?;
+        Ok(out)
+    }
+
+    /// Appends mip level pixels `src` (`w` × `h`) as tightly packed RGBA8 to
+    /// `out`.
+    fn decode_level_into_rgba8(
+        &self,
+        src: &[u8],
+        w: usize,
+        h: usize,
+        out: &mut Vec<u8>,
+    ) -> Result<()> {
+        let start = out.len();
+        out.resize(start + w * h * 4, 0);
+        let out = &mut out[start..];
         match self.format {
             PixelFormat::Bc1 | PixelFormat::Bc3 | PixelFormat::Bc4 | PixelFormat::Bc5 => {
-                decode_blocks(self.format, src, w, h, &mut out)
+                decode_blocks(self.format, src, w, h, out)
             }
             // Already the target layout: the converters only run between
             // different layouts.
-            PixelFormat::Rgba8 => out.copy_from_slice(&src[..w * h * 4]),
+            PixelFormat::Rgba8 => {
+                let src = src.get(..w * h * 4).ok_or(Error::Truncated {
+                    offset: HEADER_LEN,
+                    needed: w * h * 4,
+                    len: HEADER_LEN + src.len(),
+                })?;
+                out.copy_from_slice(src);
+            }
             PixelFormat::Rgb8 | PixelFormat::L8 | PixelFormat::La8 | PixelFormat::A8 => {
                 // The original's converter of the stored format, to RGBA8.
                 let source = self.converter_format();
-                if !pixel::convert(source, pixel::id::RGBA8, src, w * h, &mut out)? {
+                if !pixel::convert(source, pixel::id::RGBA8, src, w * h, out)? {
                     return Err(Error::Unsupported(format!(
                         "rfi format word {source:#010x} to RGBA8"
                     )));
@@ -335,7 +573,151 @@ impl<'a> Rfi<'a> {
                 return Err(Error::Unsupported(format!("rfi format word {w:#010x}")));
             }
         }
-        Ok(out)
+        Ok(())
+    }
+}
+
+/// An image whose pixels are owned: the original's image copies and the
+/// blank images its icon renderer and noise generators create. The header
+/// keeps a cube's per-face `data_size`; `pixels` holds all faces.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImageData {
+    pub header: RfiHeader,
+    pub format: PixelFormat,
+    pub pixels: Vec<u8>,
+}
+
+impl ImageData {
+    /// A copy of an image's pixel stream, unpacking it first when it is
+    /// run-length encoded (the original logs "Source image is run length
+    /// encoded." and decodes). The whole stream is copied: every face and
+    /// every stored mip level.
+    pub fn copy_of(image: &Rfi<'_>) -> Result<Self> {
+        Ok(Self {
+            header: image.header,
+            format: image.format,
+            pixels: image.pixels()?.into_owned(),
+        })
+    }
+
+    /// A copy of an image's base level only: the original's copy with its
+    /// chain flag cleared (`FUN_100046770` with the flag off sizes the base
+    /// level).
+    pub fn copy_base(image: &Rfi<'_>) -> Result<Self> {
+        let face_len = image.face_chain_len()?;
+        let base = image
+            .header
+            .level_size(image.header.width, image.header.height)
+            .or_else(|| {
+                image
+                    .format
+                    .level_size(image.header.width, image.header.height)
+            })
+            .ok_or_else(|| Error::Unsupported(format!("{:?}", image.format)))?;
+        let source = image.pixels()?;
+        let mut pixels = Vec::with_capacity(base * image.header.faces() as usize);
+        for face in 0..image.header.faces() as usize {
+            let start = face * face_len;
+            let slice = source.get(start..start + base).ok_or(Error::Truncated {
+                offset: HEADER_LEN + start,
+                needed: base,
+                len: HEADER_LEN + source.len(),
+            })?;
+            pixels.extend_from_slice(slice);
+        }
+        let mut header = image.header;
+        header.flags &= !FLAG_MIP_CHAIN;
+        header.data_size = base as u32;
+        Ok(Self {
+            header,
+            format: image.format,
+            pixels,
+        })
+    }
+
+    /// A blank image of `width` × `height` in `format_word`, as the
+    /// original's create call does: the format's own size, no mip chain.
+    pub fn blank(width: u16, height: u16, format_word: u32, flags: u32) -> Result<Self> {
+        let format = PixelFormat::from_word(format_word);
+        let size = format_level_size(format_word, u32::from(width), u32::from(height))
+            .ok_or_else(|| Error::Unsupported(format!("rfi format word {format_word:#010x}")))?;
+        Ok(Self {
+            header: RfiHeader {
+                width: u32::from(width),
+                height: u32::from(height),
+                depth: 1,
+                format_word,
+                flags,
+                storage: 0x1000_0000,
+                data_size: size as u32,
+            },
+            format,
+            pixels: vec![0; size],
+        })
+    }
+
+    /// The blank image of the original's icon target: a mip chain flag and
+    /// detail class 2, with room for the full chain.
+    pub fn render_target(width: u16, height: u16, format_word: u32, flags: u32) -> Result<Self> {
+        let mut data = Self::blank(width, height, format_word, flags)?;
+        let flags = if data.header.flags & 0x00C0_0000 == 0 {
+            data.header.flags | 0x0080_0000
+        } else {
+            data.header.flags
+        };
+        data.header.flags = flags | FLAG_MIP_CHAIN;
+        let chain = {
+            let (mut w, mut h) = (data.header.width, data.header.height);
+            let mut total = format_level_size(format_word, w, h).unwrap_or(0);
+            while w + h > 2 {
+                if w > 1 {
+                    w >>= 1;
+                }
+                if h > 1 {
+                    h >>= 1;
+                }
+                total += format_level_size(format_word, w, h).unwrap_or(0);
+            }
+            total
+        };
+        data.header.data_size = (chain / data.header.faces() as usize) as u32;
+        data.pixels = vec![0; chain];
+        Ok(data)
+    }
+
+    /// Resizes the pixel store (the original's `FUN_100046c70`): the header
+    /// keeps the requested size, times six for a cube. Existing bytes stay,
+    /// new ones are zero; shrinking drops the tail.
+    pub fn resize(&mut self, size: usize) -> Result<()> {
+        self.header.data_size =
+            u32::try_from(size).map_err(|_| Error::Unsupported(format!("image size {size}")))?;
+        let len = size
+            .checked_mul(self.header.faces() as usize)
+            .ok_or_else(|| Error::Unsupported(format!("image size {size}")))?;
+        self.pixels.resize(len, 0);
+        Ok(())
+    }
+
+    /// Frees the pixel store (the original's `FUN_100046c00`).
+    pub fn release(&mut self) {
+        self.pixels = Vec::new();
+        self.header.data_size = 0;
+    }
+
+    /// The image as a borrowed [`Rfi`], for decoding.
+    pub fn as_rfi(&self) -> Rfi<'_> {
+        Rfi {
+            header: self.header,
+            format: self.format,
+            mip_count: mip_count_for(
+                self.format,
+                self.header.format_word,
+                self.header.width,
+                self.header.height,
+                self.header.data_size,
+            ),
+            data: &self.pixels,
+        }
     }
 }
 
@@ -343,12 +725,20 @@ pub fn level_dims(w: u32, h: u32, level: u32) -> (u32, u32) {
     ((w >> level).max(1), (h >> level).max(1))
 }
 
-fn mip_count_for(format: PixelFormat, w: u32, h: u32, data_size: u32) -> u32 {
+/// The stored format word without its cube bits: one face's levels carry no
+/// face count.
+fn face_word(word: u32) -> u32 {
+    word & !FLAG_CUBE_MASK
+}
+
+fn mip_count_for(format: PixelFormat, word: u32, w: u32, h: u32, data_size: u32) -> u32 {
+    let word = face_word(word);
     let mut total = 0usize;
     let mut level = 0;
     loop {
         let (lw, lh) = level_dims(w, h, level);
-        let Some(size) = format.level_size(lw, lh) else {
+        let Some(size) = format_level_size(word, lw, lh).or_else(|| format.level_size(lw, lh))
+        else {
             return 1;
         };
         total += size;
@@ -356,6 +746,20 @@ fn mip_count_for(format: PixelFormat, w: u32, h: u32, data_size: u32) -> u32 {
         if total >= data_size as usize || (lw == 1 && lh == 1) {
             return level;
         }
+    }
+}
+
+/// The registry key of the Rayform Image reader (Exarust's; the original's
+/// numeric key is not stored in any file).
+pub const TAG: u32 = RFI_MAGIC;
+
+/// The loader-registry entry of the Rayform Image reader.
+pub fn format() -> crate::image_registry::ImageFormat {
+    crate::image_registry::ImageFormat {
+        tag: TAG,
+        extension: "rfi",
+        description: "Rayform Image",
+        loader: crate::image_registry::load_rfi,
     }
 }
 
@@ -523,8 +927,14 @@ mod tests {
     #[test]
     fn mip_chain_detection() {
         // 1024x1024 BC1 with a full chain is 699064 bytes.
-        assert_eq!(mip_count_for(PixelFormat::Bc1, 1024, 1024, 699_064), 11);
-        assert_eq!(mip_count_for(PixelFormat::Bc1, 1024, 1024, 524_288), 1);
+        assert_eq!(
+            mip_count_for(PixelFormat::Bc1, 0x813B_C600, 1024, 1024, 699_064),
+            11
+        );
+        assert_eq!(
+            mip_count_for(PixelFormat::Bc1, 0x813B_C600, 1024, 1024, 524_288),
+            1
+        );
     }
 
     #[test]
@@ -585,5 +995,122 @@ mod tests {
         // The limit is the driver's largest side, which is what replaces the
         // static 65536 on a real device.
         assert_eq!(header(32_768, 16, 0).first_mip_level(0, 16_384), 1);
+    }
+
+    #[test]
+    fn a_levels_size_comes_from_the_format_words_own_fields() {
+        // Byte-per-channel layouts.
+        assert_eq!(
+            format_level_size(0x0100_C600, 1024, 1024),
+            Some(3 * 1024 * 1024)
+        );
+        assert_eq!(
+            format_level_size(0x0100_E608, 1024, 1024),
+            Some(4 * 1024 * 1024)
+        );
+        assert_eq!(format_level_size(0x0100_4200, 2, 2), Some(4));
+        assert_eq!(format_level_size(0x0100_6208, 2, 2), Some(8));
+        // A one-bit channel mask packs eight pixels a byte.
+        assert_eq!(format_level_size(0x0104_4040, 8, 8), Some(8));
+        // Block compression: 8 bytes per 4×4 block (BC1/BC4) and 16
+        // (BC3/BC5), blocks a level across and down.
+        assert_eq!(format_level_size(0x813B_C600, 1024, 1024), Some(524_288));
+        assert_eq!(format_level_size(0x813B_4200, 1024, 1024), Some(524_288));
+        assert_eq!(format_level_size(0x817B_E608, 1024, 1024), Some(1_048_576));
+        assert_eq!(format_level_size(0x927B_8400, 1024, 1024), Some(1_048_576));
+        assert_eq!(format_level_size(0x813B_C600, 6, 5), Some(8 * 2 * 2));
+        // A cube word multiplies by six (the original's branch; the shipped
+        // cubes carry the bit in the header flags instead).
+        assert_eq!(format_level_size(0x4000_C600, 2, 2), Some(6 * 12));
+    }
+
+    #[test]
+    fn the_mip_chain_pixel_count_is_the_base_plus_every_halving() {
+        assert_eq!(mip_chain_pixels(256, 256), 87_381);
+        assert_eq!(mip_chain_pixels(4, 4), 16 + 4 + 1);
+        assert_eq!(mip_chain_pixels(1, 1), 1);
+    }
+
+    #[test]
+    fn a_cube_stores_six_faces_each_with_its_own_chain() {
+        // Six 2×2 RGB8 faces, no chain: per-face data_size 12.
+        let mut body = Vec::new();
+        for face in 0..6u8 {
+            body.extend_from_slice(&[face, 10, 20, face, 30, 40, face, 50, 60, face, 70, 80]);
+        }
+        let flags = FLAG_CUBE;
+        let raw = image(2, 2, 0x0100_C600, 0x1000_0000, 12, &body);
+        let mut raw = raw;
+        raw[20..24].copy_from_slice(&flags.to_le_bytes());
+        let rfi = Rfi::parse(&raw).unwrap();
+        assert!(rfi.header.is_cube());
+        assert_eq!(rfi.header.faces(), 6);
+        assert_eq!(rfi.header.face_chain_size(), Some(12));
+        assert_eq!(rfi.mip_count, 1);
+        let faces = rfi.decode_faces_rgba8().unwrap();
+        assert_eq!(faces.len(), 6);
+        assert_eq!(
+            faces[0],
+            [
+                0, 10, 20, 255, 0, 30, 40, 255, 0, 50, 60, 255, 0, 70, 80, 255
+            ]
+        );
+        assert_eq!(faces[5][..4], [5, 10, 20, 255]);
+        // Copying keeps the header and every face; the base-only copy
+        // clears the chain flag.
+        let copy = ImageData::copy_of(&rfi).unwrap();
+        assert_eq!(copy.pixels, body);
+        let base = ImageData::copy_base(&rfi).unwrap();
+        assert_eq!(base.header.flags & FLAG_MIP_CHAIN, 0);
+        assert_eq!(base.pixels.len(), 12 * 6);
+    }
+
+    #[test]
+    fn images_are_created_resized_and_released() {
+        let mut blank = ImageData::blank(2, 2, 0x0100_C600, 0).unwrap();
+        assert_eq!(blank.header.data_size, 12);
+        assert_eq!(blank.pixels.len(), 12);
+        blank.resize(3).unwrap();
+        assert_eq!((blank.header.data_size, blank.pixels.len()), (3, 3));
+        blank.release();
+        assert_eq!((blank.header.data_size, blank.pixels.len()), (0, 0));
+        // A cube's resize stores six faces.
+        let mut cube = ImageData::blank(2, 2, 0x0100_C600, FLAG_CUBE).unwrap();
+        cube.resize(12).unwrap();
+        assert_eq!(cube.header.data_size, 12);
+        assert_eq!(cube.pixels.len(), 72);
+        // The icon target carries a chain flag and class 2.
+        let target = ImageData::render_target(4, 4, 0x0100_E608, 0).unwrap();
+        assert!(target.header.has_mip_chain());
+        assert_eq!(target.header.detail_class(), 2);
+        assert_eq!(target.header.data_size, 4 * 4 * 4 + 2 * 2 * 4 + 1);
+        assert!(ImageData::blank(2, 2, 0x0100_C600, 0).is_ok());
+    }
+
+    /// A shipped environment cube: six 256² RGB8 faces, each nine levels,
+    /// with a per-face `data_size` of one chain. Skipped without the game.
+    #[test]
+    fn shipped_environment_cube() {
+        let Some(install) = exa_rpk::locate_install(None) else {
+            return;
+        };
+        let Ok(game) = exa_rpk::GameData::open(install) else {
+            return;
+        };
+        let Some(pack) = game.pack(exa_rpk::PackKind::Textures) else {
+            return;
+        };
+        let Some(bytes) = pack.get("genref01r") else {
+            return;
+        };
+        let rfi = Rfi::parse(bytes).unwrap();
+        assert!(rfi.header.is_cube());
+        assert_eq!(rfi.header.faces(), 6);
+        assert_eq!(rfi.mip_count, 9);
+        assert_eq!(rfi.header.data_size, 262_143);
+        assert_eq!(rfi.header.face_chain_size(), Some(262_143));
+        let faces = rfi.decode_faces_rgba8().unwrap();
+        assert_eq!(faces.len(), 6);
+        assert_eq!(faces[0].len(), 256 * 256 * 4);
     }
 }
