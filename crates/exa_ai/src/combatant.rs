@@ -231,6 +231,9 @@ pub struct Contact {
     /// When the other died on the game clock, if it did (the original reads
     /// it from the other's body).
     pub died_ms: Option<u64>,
+    /// A bad route's mark holds until this clock (ms); the target pass
+    /// clears the unreachable flag once it passes.
+    pub unreachable_until_ms: u32,
 }
 
 impl Contact {
@@ -257,6 +260,7 @@ impl Contact {
             hostility: 0.0,
             distance_cm: 0.0,
             died_ms: None,
+            unreachable_until_ms: 0,
         }
     }
 

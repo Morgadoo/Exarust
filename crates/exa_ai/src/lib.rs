@@ -16,16 +16,19 @@ use bevy::prelude::*;
 use exa_anim::{Animator, Motions};
 use exa_combat::attack::{self, AttackMotion, Attacker, Busy};
 use exa_combat::stance::{self, Stance};
-use exa_combat::swing::{self, SwingState};
+use exa_combat::swing::{self, Swing, SwingAt, SwingState};
 use exa_combat::{AttackStart, Attacking, Blade, Condition, Fighter};
 use exa_physics::CharacterBody;
 use exa_physics::body::{BodyTicks, Fallen, MAX_ENERGY, Ragdoll};
 
+use crate::chase::{ChaseBody, ChaseFoe, ContactKey};
 use crate::combatant::{Attitude, Combatant, Observed, Observer, atan2_xz, perceive};
+use crate::route::{NavRouter, PlanTurn};
 
 pub mod activity;
 pub mod brain;
 pub mod cast;
+pub mod chase;
 pub mod combat;
 pub mod combatant;
 pub mod contacts;
@@ -40,6 +43,7 @@ pub mod path;
 pub mod personality;
 pub mod place;
 pub mod roles;
+pub mod route;
 pub mod search;
 pub mod sense;
 
@@ -90,6 +94,14 @@ pub struct Duellist {
     /// The footwork queue's state the body reports: −1 when the queued
     /// step was taken up.
     queue: i32,
+    /// What the record gives the fighter, when no brain carries it.
+    pub personality: Option<personality::Personality>,
+    /// The chase's fields.
+    pub chase: chase::ChaseMind,
+    /// The one-per-tick plan turn.
+    plan: PlanTurn,
+    /// The chase route to walk (cm), as the planner returned it.
+    route: Vec<Vec3>,
 }
 
 /// A step the duellist walks: where it goes (m) and when it started.
@@ -116,6 +128,10 @@ impl Duellist {
             step: None,
             queued: None,
             queue: 0,
+            personality: None,
+            chase: chase::ChaseMind::default(),
+            plan: PlanTurn::default(),
+            route: Vec::new(),
         }
     }
 }
@@ -263,6 +279,7 @@ fn published_blow(
 fn duellist(
     mut commands: Commands,
     ticks: Option<Res<BodyTicks>>,
+    nav: Option<Res<exa_world::nav::NavGrid>>,
     targets: Query<&GlobalTransform>,
     motions: Option<Res<Motions>>,
     bodies: Query<
@@ -500,6 +517,9 @@ fn duellist(
         let (energy, most) = ragdoll
             .and_then(|r| r.drive.as_ref())
             .map_or((MAX_ENERGY, MAX_ENERGY), |d| (d.energy, d.max_energy()));
+        let base = ragdoll
+            .and_then(|r| r.drive.as_ref())
+            .map_or(1.0, |d| d.race.clip_rate);
         let busy = Busy {
             now_ms: now,
             last_tick_ms: attacker.last_tick_ms,
@@ -512,18 +532,23 @@ fn duellist(
             feint: fighter.feint(),
         };
         let ready = attack::execute(attack::Request::default(), busy).is_some();
-        let traits = brains.get(entity).ok().and_then(|b| b.personality).map_or(
-            // A fighter without a record's personality: skill 0 and
-            // the blend 1 a fully feral one has [Exarust's default].
-            combat::Traits {
-                skill: 0.0,
-                blend: 1.0,
-            },
-            |p| combat::Traits {
-                skill: p.skill,
-                blend: p.blend,
-            },
-        );
+        let traits = brains
+            .get(entity)
+            .ok()
+            .and_then(|b| b.personality)
+            .or(ai.personality)
+            .map_or(
+                // A fighter without a record's personality: skill 0 and
+                // the blend 1 a fully feral one has [Exarust's default].
+                combat::Traits {
+                    skill: 0.0,
+                    blend: 1.0,
+                },
+                |p| combat::Traits {
+                    skill: p.skill,
+                    blend: p.blend,
+                },
+            );
         let foe_chest = target_body
             .map(|(_, tgt, tgt_body, _, _)| stance::chest_point(tgt, tgt_body))
             .unwrap_or_else(|| stance::chest_point(target, None))
@@ -564,7 +589,7 @@ fn duellist(
         for _ in 0..runs {
             let yaw = yaw_of(t.rotation);
             let stepping = ai.step;
-            let me = combat::Body {
+            let mut me = combat::Body {
                 now_ms: now as u32,
                 condition: condition.0,
                 clock: anim.progress,
@@ -585,10 +610,10 @@ fn duellist(
                 step_state: stepping.map_or(0, |s| s.state),
                 step_started_ms: stepping.map_or(0, |s| s.started_ms),
                 queue: ai.queue,
-                // The original's can-act test also wants grip and
-                // awareness above 0.7 and no blocking state; the duellist
-                // has none of them, so only the condition mask gates it.
-                can_step: condition.0 & exa_physics::motile::ACTION_BLOCK == 0 && !ai.holds_ground,
+                // The body holds on and is aware; Exarust has no model of
+                // either, so the gate's grip and awareness are full and
+                // only the condition mask can refuse it.
+                can_step: true,
                 rules: fighter.stats.rules.0,
                 thrust_pref: primary.map_or(0, |r| {
                     i32::from(exa_formats::weapon_record::thrust_preference(&r))
@@ -610,6 +635,7 @@ fn duellist(
                 can_attack: ready && !ai.holds_ground,
                 ..combat::Body::default()
             };
+            me.can_step = combat::can_act(&me) && !ai.holds_ground;
             ai.queue = 0;
             let mut field = DuelField {
                 foe: foe_chest,
@@ -641,6 +667,71 @@ fn duellist(
             );
             if let Some(b) = out.bearing {
                 ai.bearing = (b.to_target, b.distance_cm);
+            }
+            if let Some(stopped) = out.stop_run
+                && let Some(step) = ai.step.as_mut()
+            {
+                step.goal = stopped.step_goal / CM;
+            }
+            // The swing the combat state lets go of is released here, as
+            // the player's own leave does.
+            if out.blow.release
+                && let Some(motion) = motions.as_deref()
+                && let Some(at) = SwingAt::of(now, &anim, motion, base)
+                && !swinging.has(swing::flags::NO_RELEASE)
+            {
+                let swing = primary.as_ref().map(Swing::of).unwrap_or(Swing::FISTS);
+                swinging.release(&swing, &at);
+            }
+            if out.exit == Some(combat::Exit::Chase) {
+                if let Some(grid) = nav.as_deref() {
+                    let id = ai.target.to_bits();
+                    let mut router = NavRouter { grid, size: 0 };
+                    ai.plan.current = Some(id);
+                    let body = ChaseBody {
+                        position_cm: feet * CM,
+                        ground_y_cm: feet.y * CM,
+                        scale: fighter.stats.scale,
+                        motion: me.motion,
+                        voice: None,
+                        now_ms: now as u32,
+                    };
+                    let outcome = {
+                        let Duellist {
+                            chase, plan, roll, ..
+                        } = &mut *ai;
+                        chase::chase(
+                            chase,
+                            id,
+                            &body,
+                            Some(ChaseFoe {
+                                id,
+                                ground_y_cm: foe_chest.y,
+                            }),
+                            None,
+                            plan,
+                            now as u32,
+                            &[ContactKey { id }],
+                            Some(&mut router),
+                            roll,
+                        )
+                    };
+                    if let Some(mark) = outcome.mark {
+                        let contact = &mut combatant.contacts[index];
+                        contact.unreachable_until_ms = mark.until_ms;
+                        contact.flags |= crate::contacts::UNREACHABLE;
+                    }
+                    if let Some(planned) = outcome.planned {
+                        ai.route = planned.route.points;
+                    }
+                    if outcome.end == chase::End::Left {
+                        ai.engaged = false;
+                        ai.in_combat = false;
+                        combatant.in_combat = false;
+                        continue;
+                    }
+                }
+                continue;
             }
             if out.exit.is_some() {
                 continue;
@@ -701,6 +792,20 @@ fn duellist(
         // It turns to the heading its look follows.
         t.rotation = Quat::from_rotation_y(ai.mind.heading);
         if attacking.is_some() || !anim.looping {
+            continue;
+        }
+        // A chase route is walked through the path's carrot.
+        if !ai.route.is_empty() {
+            let carrot = crate::path::carrot(&ai.route, feet * CM);
+            if let Some(goal) = carrot.goal {
+                let order = follow(&[feet, goal / CM], feet, yaw_of(t.rotation), 0);
+                body.desired_velocity = order.velocity;
+                anim.play_loop(COMBAT_WALK);
+            }
+            let last = ai.route[ai.route.len() - 1] / CM;
+            if Vec3::new(last.x - feet.x, 0.0, last.z - feet.z).length() < 0.5 {
+                ai.route.clear();
+            }
             continue;
         }
         match ai.step {

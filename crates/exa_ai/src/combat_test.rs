@@ -1016,3 +1016,171 @@ fn a_fighting_follower_answers_its_leader() {
     follow_check(Vec3::new(0.0, 0.0, -300.0), &sprint, &mut h);
     assert_eq!(h.band, (400.0f64 * 0.8 + 400.0 * 0.2) as f32);
 }
+
+#[test]
+fn the_can_act_gate_reads_the_grip_the_awareness_and_the_block() {
+    let ok = Body {
+        condition: 0,
+        grip: 0.7,
+        awareness: 0.71,
+        blocking: 0,
+        ..Body::default()
+    };
+    assert!(can_act(&ok));
+    // The grip compares in single precision with 0.7: just under fails.
+    assert!(!can_act(&Body { grip: 0.69, ..ok }));
+    // The awareness compares in double precision and must pass 0.7.
+    assert!(!can_act(&Body {
+        awareness: 0.7,
+        ..ok
+    }));
+    assert!(!can_act(&Body { blocking: 1, ..ok }));
+    assert!(!can_act(&Body {
+        condition: exa_physics::motile::ACTION_BLOCK,
+        ..ok
+    }));
+    // A distance that is not a number fails every compare.
+    let nan = f32::NAN;
+    assert!(!can_act(&Body { grip: nan, ..ok }));
+    assert!(!can_act(&Body {
+        awareness: nan,
+        ..ok
+    }));
+}
+
+#[test]
+fn a_run_stop_pulls_the_step_goal_inside_eight_speeds_and_a_line_walk() {
+    let me = Body {
+        position: Vec3::new(0.0, 90.0, 0.0),
+        ground_y: 90.0,
+        scale: 1.0,
+        ..Body::default()
+    };
+    // 8·1 + 20 = 28 cm: a goal a metre ahead is pulled back to 28 cm.
+    let stopped = stop_run(
+        &me,
+        0,
+        Vec3::new(0.0, 90.0, 1000.0),
+        &mut Flat::new(Vec3::ZERO),
+    );
+    assert_eq!(stopped.flags, super::LOCO_STOP);
+    assert!((stopped.step_goal - Vec3::new(0.0, 90.0, 28.0)).length() < 0.05);
+    // Inside the radius it stays, and the stop clears the run bit.
+    let near = stop_run(
+        &me,
+        super::LOCO_RUN,
+        Vec3::new(3.0, 90.0, 20.0),
+        &mut Flat::new(Vec3::ZERO),
+    );
+    assert_eq!(near.step_goal, Vec3::new(3.0, 90.0, 20.0));
+    assert_eq!(near.flags, super::LOCO_STOP);
+}
+
+/// A field with a power system: two usable weight-5 powers.
+struct Casting {
+    running: bool,
+}
+
+impl Field for Casting {
+    fn score(&mut self, _contact: usize, _level: i32, point: Vec3) -> PlaceScore {
+        PlaceScore {
+            bearing: yaw(Vec3::new(0.0, 0.0, 100.0) - point),
+            distance_cm: (Vec3::new(0.0, 0.0, 100.0) - point).length(),
+            ..PlaceScore::default()
+        }
+    }
+    fn powers(&mut self) -> Option<&mut dyn crate::cast::Powers> {
+        Some(self)
+    }
+    fn cast_running(&mut self) -> bool {
+        self.running
+    }
+}
+
+impl crate::cast::Powers for Casting {
+    fn query(&mut self, _power: u32) -> u32 {
+        crate::cast::USABLE | 5
+    }
+    fn cast(&mut self, _power: u32) {}
+}
+
+#[test]
+fn a_fighter_with_powers_casts_at_the_first_place_and_stops_the_cast() {
+    let (mut me, foe) = duel();
+    me.power_slots[0] = 1;
+    me.power_slots[1] = 2;
+    me.power_pool = 1.0;
+    let mut mind = CombatMind {
+        level: 3,
+        ..CombatMind::default()
+    };
+    let mut contacts = [foe_contact(3)];
+    let mut field = Casting { running: false };
+    let mut roll = 0;
+    let mut cast = None;
+    for _ in 0..400 {
+        let t = tick(
+            &mut mind,
+            &me,
+            NOVICE,
+            World {
+                foe: Some(&foe),
+                focus: None,
+                contacts: &mut contacts,
+                around: &[],
+                field: &mut field,
+                leader_calls: false,
+            },
+            &mut roll,
+        );
+        if t.cast.is_some() {
+            cast = t.cast;
+            break;
+        }
+        mind.casting = false;
+    }
+    let choice = cast.expect("a cast in 400 ticks");
+    assert_eq!((choice.slot, choice.power), (0, 1));
+    assert!(mind.casting);
+    // A second tick does not choose again while the cast runs.
+    let t = tick(
+        &mut mind,
+        &me,
+        NOVICE,
+        World {
+            foe: Some(&foe),
+            focus: None,
+            contacts: &mut contacts,
+            around: &[],
+            field: &mut field,
+            leader_calls: false,
+        },
+        &mut roll,
+    );
+    assert_eq!(t.cast, None);
+    // A second after its start, the power system no longer running it,
+    // the cast stops.
+    let later = Body {
+        now_ms: mind.cast_start_ms.wrapping_add(1001),
+        condition: CASTING,
+        ..me
+    };
+    let mut field = Casting { running: false };
+    let t = tick(
+        &mut mind,
+        &later,
+        NOVICE,
+        World {
+            foe: Some(&foe),
+            focus: None,
+            contacts: &mut contacts,
+            around: &[],
+            field: &mut field,
+            leader_calls: false,
+        },
+        &mut roll,
+    );
+    assert!(t.cast_stopped);
+    assert!(!mind.casting);
+    assert_eq!(t.cast, None);
+}

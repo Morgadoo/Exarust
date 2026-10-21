@@ -74,6 +74,7 @@
 use bevy::math::Vec3;
 use exa_combat::attack::AttackMotion;
 
+use crate::cast;
 use crate::fight;
 use crate::personality::unit_draw;
 
@@ -291,6 +292,14 @@ pub struct CombatMind {
     pub fresh_target: bool,
     /// A look timer the idle states clear when they take the guard [?].
     pub look_timer: f32,
+    /// Its walk state follows a route.
+    pub following: bool,
+    /// Its route goal is set.
+    pub goal_set: bool,
+    /// The cast in progress runs from this clock (ms).
+    pub cast_start_ms: u32,
+    /// The per-slot cast cooldowns.
+    pub casts: cast::Casting,
 }
 
 impl Default for CombatMind {
@@ -323,6 +332,10 @@ impl Default for CombatMind {
             estimate: Vec3::ZERO,
             fresh_target: false,
             look_timer: 0.0,
+            following: false,
+            goal_set: false,
+            cast_start_ms: 0,
+            casts: cast::Casting::default(),
         }
     }
 }
@@ -460,6 +473,14 @@ pub struct Body {
     /// The pool powers are paid from, 0 through 1 [guess: the mana-like
     /// pool the cast chooser scales by 200].
     pub power_pool: f32,
+    /// The record's ten power slots (0 empty).
+    pub power_slots: [u32; cast::SLOTS],
+    /// How firmly the body holds on, at least 0.7 to act [guess: name].
+    pub grip: f32,
+    /// Awareness above 0.7 to act [guess: name].
+    pub awareness: f32,
+    /// The blocking state word, 0 when free to act [guess: name].
+    pub blocking: i32,
 }
 
 impl Default for Body {
@@ -517,6 +538,10 @@ impl Default for Body {
             health: 1.0,
             can_attack: true,
             power_pool: 0.0,
+            power_slots: [0; cast::SLOTS],
+            grip: 1.0,
+            awareness: 1.0,
+            blocking: 0,
         }
     }
 }
@@ -542,6 +567,10 @@ pub struct Contact {
     pub character: bool,
     /// Its priority this tick (written).
     pub priority: f32,
+    /// The brain's id for it, for the chase's unreachable mark.
+    pub id: u64,
+    /// Its route was found bad until this clock (ms).
+    pub unreachable_until_ms: u32,
 }
 
 /// A contact's score of one place, from the position score.
@@ -581,6 +610,14 @@ pub trait Field {
     fn score(&mut self, contact: usize, level: i32, point: Vec3) -> PlaceScore;
     /// Starts a chase route to the foe; true when it started.
     fn chase(&mut self) -> bool {
+        false
+    }
+    /// The power system, when the world has thaumaturgy.
+    fn powers(&mut self) -> Option<&mut dyn cast::Powers> {
+        None
+    }
+    /// The power system is still running the cast the body is in.
+    fn cast_running(&mut self) -> bool {
         false
     }
 }
@@ -1565,6 +1602,12 @@ pub fn swing_sweep(me: &Body, mind: &CombatMind) -> f32 {
 pub struct Tick {
     pub exit: Option<Exit>,
     pub practice_paid: i32,
+    /// The run stop, when the body is running.
+    pub stop_run: Option<Stopped>,
+    /// A power this tick chose to cast.
+    pub cast: Option<cast::Choice>,
+    /// The cast in progress ended: the body's cast is torn down.
+    pub cast_stopped: bool,
     pub draw_weapon: bool,
     /// The estimate's new bearing, when it was looked at again.
     pub bearing: Option<Bearing>,
@@ -1699,6 +1742,49 @@ fn let_go(me: &Body, blow: &mut Blow) {
     }
 }
 
+/// Whether the body may act: no blocking condition bit, a grip of at least
+/// 0.7, an awareness above 0.7 (a double compare) and no blocking state.
+/// A distance that is not a number fails either float compare.
+pub fn can_act(me: &Body) -> bool {
+    me.condition & exa_physics::motile::ACTION_BLOCK == 0
+        && 0.7 <= me.grip
+        && 0.7 < f64::from(me.awareness)
+        && me.blocking == 0
+}
+
+/// The locomotion bits the run stop writes: the run clears, the stopping
+/// flag sets.
+pub const LOCO_RUN: u32 = 4;
+pub const LOCO_STOP: u32 = 0x20;
+
+/// What stopping a run leaves.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Stopped {
+    pub flags: u32,
+    /// The step's goal, pulled inside 8·speed + 20 cm and clamped by the
+    /// navigation line walk.
+    pub step_goal: Vec3,
+}
+
+/// Stops a run: the run bit clears and the stopping flag sets, the walk
+/// state, follow and goal marks clear, and a step goal farther than
+/// 8·speed + 20 cm from the feet is pulled back to that radius and walked
+/// to the ground with the navigation line walk.
+pub fn stop_run(me: &Body, flags: u32, step_goal: Vec3, field: &mut dyn Field) -> Stopped {
+    let radius = me.scale * 8.0 + 20.0;
+    let mut goal = step_goal;
+    let delta = goal - me.position;
+    if radius * radius < distance2(me.position, goal) {
+        goal = me.position + unit(delta) * radius;
+    }
+    let from = Vec3::new(me.position.x, me.ground_y, me.position.z);
+    field.walk_line(from, &mut goal);
+    Stopped {
+        flags: (flags & !LOCO_RUN) | LOCO_STOP,
+        step_goal: goal,
+    }
+}
+
 /// The body is free to change its stance motion.
 fn stance_free(me: &Body) -> bool {
     !me.parrying && me.motion != 0x1c && me.motion != DRAW_WEAPON && me.recoil_until_ms < me.now_ms
@@ -1716,6 +1802,9 @@ pub fn tick(
     let mut out = Tick {
         exit: None,
         practice_paid: practise(&mut mind.practice),
+        stop_run: None,
+        cast: None,
+        cast_stopped: false,
         draw_weapon: false,
         bearing: None,
         search: None,
@@ -1794,6 +1883,31 @@ pub fn tick(
         out.exit = Some(Exit::Charge);
         return out;
     }
+    if me.running {
+        out.stop_run = Some(stop_run(me, 0, me.step_goal, world.field));
+    }
+    // The cast is chosen after the first place is weighed in the original;
+    // Exarust chooses it before the search, so its cleared attack drive
+    // also reaches the first place's strike gain (the only difference).
+    if me.condition == CASTING {
+        if me.now_ms.wrapping_sub(mind.cast_start_ms) > 1000 && !world.field.cast_running() {
+            mind.casting = false;
+            out.cast_stopped = true;
+        }
+    } else if foe.is_some()
+        && !mind.casting
+        && let Some(powers) = world.field.powers()
+        && let Some(choice) = cast::choose(&mut mind.casts, &me.power_slots, me, powers, roll)
+    {
+        mind.casting = true;
+        mind.cast_start_ms = me.now_ms;
+        out.cast = Some(choice);
+    }
+    let d = if out.cast.is_some() {
+        Drives { attack: 0.0, ..d }
+    } else {
+        d
+    };
     let plan = footwork(mind, me, &d, k, roll);
     let found = search(mind, me, foe, traits, plan, &d, world.contacts, world.field);
     if let Some(Some(c)) = found.retarget
