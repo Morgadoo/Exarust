@@ -48,13 +48,15 @@ pub const WINDOW_EPSILON: f32 = 1e-6;
 /// than `sum · 2^−53` (the original's `1e-16`).
 pub fn bessel_i0(x: f64) -> f64 {
     let half = x * 0.5;
+    // The original keeps the linear term and squares it for the sum.
     let mut term = 1.0f64;
     let mut sum = 1.0f64;
     let mut m = 1.0f64;
     loop {
-        term *= (half / m) * (half / m);
-        sum += term;
-        if term <= sum * 1e-16 {
+        term *= half / m;
+        let squared = term * term;
+        sum += squared;
+        if squared <= sum * 1e-16 {
             return sum;
         }
         m += 1.0;
@@ -88,7 +90,8 @@ pub fn kaiser_table(level: u32) -> Vec<f32> {
     // f32, and the Bessel and sinc arguments in f64.
     let half = (taps as f32) * 0.5;
     let half64 = f64::from(half);
-    let c = 2f64.powi(-(level as i32));
+    // The original's bank computes `2^−L` as `exp(−L·ln 2)`.
+    let c = (-(level as f64) * 0.693_147_180_559_945_3).exp();
     let mut weights = vec![0.0f32; taps];
     let mut sum = 0.0f32;
     for (index, weight) in weights.iter_mut().enumerate() {
