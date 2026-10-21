@@ -28,6 +28,7 @@ pub mod start;
 pub mod sun_shadow;
 pub mod teleporters;
 pub mod terrain;
+pub mod voxeliser;
 
 use bevy::prelude::*;
 use exa_assets::{Model, ModelLoader, PackKind, transform_from_rows};

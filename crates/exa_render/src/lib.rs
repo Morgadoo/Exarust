@@ -5,6 +5,7 @@
 pub mod bound_sphere;
 pub mod camera;
 pub mod capture;
+pub mod convex;
 pub mod cube_shadows;
 pub mod electricity;
 pub mod flame;
@@ -27,6 +28,7 @@ pub mod shader_template;
 pub mod shader_uniforms;
 pub mod shell;
 pub mod smoke;
+pub mod splines;
 pub mod spray;
 pub mod stain;
 pub mod sun_fit;
