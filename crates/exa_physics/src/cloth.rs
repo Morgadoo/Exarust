@@ -432,6 +432,62 @@ pub fn swept_hit(
     None
 }
 
+/// The engine's generator step, as the cloth's blood painter draws it:
+/// `s = s · 0x08088405 + 1`, returned as `(s as double) · 2⁻³²` in a
+/// float, so 0 up to just under 1.
+pub fn next_random(roll: &mut u32) -> f32 {
+    *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
+    (f64::from(*roll) * 2.328_306_4e-10) as f32
+}
+
+/// Paints blood on a cloth's vertex colours (RGBA8, alpha 255 clean) where
+/// a ray from `point` along `direction` passes near a vertex, in the
+/// vertex space.
+///
+/// The point is moved half a centimetre back along the direction and the
+/// direction normalised. A vertex counts when it lies within the squared
+/// radius of the point (or of the ray, for a vertex ahead of the point:
+/// its squared distance scaled by `1 − t/|d|`, t the vertex's distance
+/// along the direction). The paint's share is `1 − distance²/radius²`; a
+/// draw blends it with a random value for the stain's edge, and the vertex
+/// alpha takes `(1 − a²·share)·255` where that is below the alpha it has.
+/// The engine's round helper is a floor. Returns how many vertices changed.
+pub fn paint_blood(
+    vertices: &[Vec3],
+    colours: &mut [[u8; 4]],
+    point: Vec3,
+    direction: Vec3,
+    radius_squared: f32,
+    roll: &mut u32,
+) -> usize {
+    let point = point + direction * -0.5;
+    let length = direction.length();
+    let direction = direction * (1.0 / length);
+    let mut painted = 0;
+    for (index, vertex) in vertices.iter().enumerate() {
+        let Some(colour) = colours.get_mut(index) else {
+            break;
+        };
+        let d = *vertex - point;
+        let mut distance_sq = d.x * d.x + d.y * d.y + d.z * d.z;
+        let along = d.x * direction.x + d.y * direction.y + d.z * direction.z;
+        if 0.0 < along {
+            distance_sq *= 1.0 - along / distance_sq.sqrt();
+        }
+        if distance_sq <= radius_squared {
+            let share = 1.0 - distance_sq / radius_squared;
+            let random = next_random(roll);
+            let blend = (1.0 - share) * random + share;
+            let value = (1.0 - blend * blend * share) * 255.0;
+            if value < f32::from(colour[3]) {
+                colour[3] = value.floor() as u8;
+                painted += 1;
+            }
+        }
+    }
+    painted
+}
+
 /// Advance one tick. Returns without changing non-finite input.
 pub fn step(cloth: &mut Cloth, gravity: Vec3) {
     if !gravity.is_finite() || !cloth.mean_velocity.is_finite() {
@@ -1848,5 +1904,44 @@ mod tests {
         assert_eq!(swept_hit(&pair, &inside, 0, 1), Some(0));
         assert_eq!(swept_hit(&pair, &inside, 1, 1), Some(1));
         assert_eq!(swept_hit(&pair, &inside, 2, 1), None);
+    }
+
+    #[test]
+    fn blood_paints_the_vertices_the_ray_meets() {
+        let vertices = [
+            Vec3::ZERO,
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 3.0),
+        ];
+        let mut colours = [[255u8, 255, 255, 255]; 3];
+        let mut roll = 1;
+        // Radius² 1 at the origin along +z: the first vertex is clean.
+        let painted = paint_blood(&vertices, &mut colours, Vec3::ZERO, Vec3::Z, 1.0, &mut roll);
+        assert_eq!(painted, 1);
+        assert_eq!(colours[0][3], 0);
+        assert_eq!(colours[1][3], 255);
+        assert_eq!(colours[2][3], 255);
+        // A vertex ahead of the point on the ray, 0.5 cm off it: the ray's
+        // distance leaves it within radius² 1.
+        let mut off = [[255u8, 255, 255, 255]; 1];
+        let mut roll = 1;
+        assert_eq!(
+            paint_blood(
+                &[Vec3::new(0.5, 0.0, 2.0)],
+                &mut off,
+                Vec3::ZERO,
+                Vec3::Z,
+                1.0,
+                &mut roll
+            ),
+            1
+        );
+        assert!(off[0][3] < 255);
+        // The generator starts at 1: s = 1·0x08088405 + 1.
+        let mut roll = 1;
+        let first = next_random(&mut roll);
+        assert_eq!(roll, 0x0808_8406);
+        assert!((f64::from(first) - f64::from(0x0808_8406u32) * 2.328_306_4e-10).abs() < 1e-9);
+        assert!((0.0..1.0).contains(&first));
     }
 }
