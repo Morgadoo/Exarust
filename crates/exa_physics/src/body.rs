@@ -52,6 +52,8 @@ pub use balance::{Balance, Leg, reset_heading};
 mod bend;
 #[path = "body_feet.rs"]
 mod feet;
+#[path = "body_stagger.rs"]
+pub mod stagger;
 pub use feet::{FootState, WalkedStep};
 #[path = "body_pins.rs"]
 mod pins;
@@ -103,6 +105,8 @@ pub const HELD_MOTION_FLAG: u32 = 0x10000;
 /// A held item body's static-only flag: every level query uses the current
 /// pose, never a sweep.
 pub const HELD_STATIC_ONLY: u32 = 0x80000;
+/// The grab layer bit the bite-grab raises on a part and its neighbours.
+pub const GRAB_LAYER: u32 = 0x40;
 /// The sleep countdown a woken body starts from, and a living body's every
 /// tick: at rest it falls asleep 128 ticks (1.54 s) later.
 pub const WAKE_COUNT: i32 = 256;
@@ -300,7 +304,42 @@ pub struct Part {
     /// Its level queries are static (the current pose only, no sweep), as
     /// a held item body's are in the original's static-only mode.
     pub static_only: bool,
+    /// The original's class word (`+0xc`), which carries the body's
+    /// collision class bits (the grab layer, the strike window and the
+    /// static-only mode among them).
+    pub class_word: u32,
+    /// The original's controller state word (`+0x8` on the node's
+    /// controller), which the body tick sets bits of (bit 4 marks a part
+    /// in a tangle or a hit reaction).
+    pub state_word: u32,
 }
+
+/// The weight a push at a body point takes, as the original's push-at-point:
+/// the point is in the body's space, and `4·(push·point)` is compared with
+/// the push's squared length. A negative (or tiny) value gets the full push;
+/// between it and the squared length the push is scaled by 1 − that share;
+/// at or past it nothing moves.
+pub fn push_fraction(push: Vec3, local_point: Vec3) -> f32 {
+    let len2 = push.length_squared();
+    if len2 < PUSH_EPSILON {
+        return 0.0;
+    }
+    let dot = push.x * local_point.x + push.y * local_point.y + push.z * local_point.z;
+    let scaled = dot * PUSH_WEIGHT;
+    if scaled >= PUSH_EPSILON {
+        if scaled < len2 {
+            1.0 - scaled / len2
+        } else {
+            0.0
+        }
+    } else {
+        1.0
+    }
+}
+
+/// The push weighting's quarter units and the single-precision epsilon.
+const PUSH_WEIGHT: f32 = 4.0;
+const PUSH_EPSILON: f32 = 1.192_09e-7;
 
 /// Barycentric weights of a point given in a part's space.
 fn weights(part: &Part, local: Vec3) -> [f32; 4] {
@@ -395,6 +434,8 @@ impl Part {
             rest_turn: Quat::IDENTITY,
             state: PartState::LIMB_FRESH,
             static_only: false,
+            class_word: 0,
+            state_word: 0,
         }
         .settle()
     }
@@ -1703,6 +1744,55 @@ impl Ragdoll {
         &self.held_flags[..self.held_count]
     }
 
+    /// Writes the original's class word to every part, and `word | 0x30`
+    /// to each part's first child (the original's `+0x45c` writer).
+    pub fn set_class_word(&mut self, word: u32) {
+        let first: Vec<Option<usize>> =
+            (0..self.parts.len()).map(|i| self.first_child(i)).collect();
+        for part in &mut self.parts {
+            part.class_word = word;
+        }
+        for child in first.into_iter().flatten() {
+            self.parts[child].class_word = word | 0x30;
+        }
+    }
+
+    /// Raises the grab layer's bit (0x40) on a part, its parent and its
+    /// direct children, as the original's bite-grab does.
+    pub fn raise_grab_layer(&mut self, index: usize) {
+        let parent = self.parts.get(index).and_then(|p| p.parent);
+        let children: Vec<usize> = self
+            .parts
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.parent == Some(index))
+            .map(|(i, _)| i)
+            .collect();
+        for i in parent
+            .into_iter()
+            .chain(std::iter::once(index))
+            .chain(children)
+        {
+            if let Some(p) = self.parts.get_mut(i) {
+                p.class_word |= GRAB_LAYER;
+            }
+        }
+    }
+
+    /// ORs `flag` into every part's controller state word, as the original
+    /// walks the whole body tree (`+0x8` bit 4 for a tangle or a hit
+    /// reaction).
+    pub fn raise_state_flag(&mut self, flag: u32) {
+        for p in &mut self.parts {
+            p.state_word |= flag;
+        }
+    }
+
+    /// The first child of part `i` in index order.
+    fn first_child(&self, i: usize) -> Option<usize> {
+        self.parts.iter().position(|p| p.parent == Some(i))
+    }
+
     /// A walk's start (another clip playing while it locomotes) clears the
     /// held items' motion flag.
     pub fn walk_started(&mut self) {
@@ -2131,6 +2221,28 @@ impl Ragdoll {
             })
             .sum::<f32>()
             * CM
+    }
+
+    /// A push at a world point of part `index`, as the original's
+    /// push-at-point: the point is taken into the part's space, the push's
+    /// weight found by [`push_fraction`], and the weighted push given to the
+    /// particles there (its strain restore past [`PUSH_STRAIN`]).
+    pub fn push_at(&mut self, index: usize, world_point: Vec3, delta: Vec3) {
+        let Some(part) = self.parts.get_mut(index) else {
+            return;
+        };
+        let local = part.transform().inverse().transform_point3(world_point);
+        let share = push_fraction(delta, local);
+        if share <= 0.0 {
+            return;
+        }
+        let w = weights(part, local);
+        let push = delta * share;
+        part.push(&w, push);
+        part.strain += push.length();
+        if part.strain > PUSH_STRAIN {
+            keep_rigid(part);
+        }
     }
 
     /// An effect's push on part `index` at its sphere `sphere` (a force

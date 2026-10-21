@@ -39,6 +39,7 @@ pub mod sounds;
 pub mod stance;
 pub mod swing;
 pub mod voice;
+pub mod weapon;
 pub mod weapon_blood;
 pub mod wounds;
 

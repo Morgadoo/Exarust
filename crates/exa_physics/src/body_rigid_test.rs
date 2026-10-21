@@ -753,3 +753,67 @@ fn held_items_keep_their_motion_and_static_only_flags() {
     body.drop_items();
     assert!(body.held_flags().is_empty());
 }
+
+/// The class word writer gives every part the word and each part's first
+/// child `word | 0x30`; the bite grab raises layer bit 0x40 on a part, its
+/// parent and its children; a state flag reaches every part.
+#[test]
+fn class_grab_and_state_words_reach_their_parts() {
+    let setup: Vec<PartSetup> = [(1, None), (2, Some(0)), (3, Some(1)), (4, None)]
+        .iter()
+        .map(|&(bone, parent)| PartSetup {
+            bone,
+            entity: Entity::PLACEHOLDER,
+            parent,
+            world: Affine3A::IDENTITY,
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+        })
+        .collect();
+    let mut body = Ragdoll::new(&setup);
+    body.set_class_word(0x400);
+    assert_eq!(body.parts[0].class_word, 0x400);
+    assert_eq!(body.parts[1].class_word, 0x430);
+    assert_eq!(body.parts[2].class_word, 0x430);
+    body.raise_grab_layer(1);
+    assert_eq!(body.parts[0].class_word, 0x440);
+    assert_eq!(body.parts[1].class_word, 0x470);
+    assert_eq!(body.parts[2].class_word, 0x470);
+    assert_eq!(body.parts[3].class_word, 0x400);
+    body.raise_state_flag(4);
+    assert!(body.parts.iter().all(|p| p.state_word & 4 != 0));
+}
+
+/// A push at a point moves the particles by its weight there, scaled by the
+/// point's share (full at a point the push goes into, none at a point it
+/// goes away from beyond the push's length).
+#[test]
+fn a_push_at_a_point_uses_its_weight() {
+    let mut body = Ragdoll::new(&[PartSetup {
+        bone: 1,
+        entity: Entity::PLACEHOLDER,
+        parent: None,
+        world: Affine3A::IDENTITY,
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.1),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot: None,
+        pins: Vec::new(),
+    }]);
+    let before = body.parts[0].positions;
+    let at = body.parts[0].transform().transform_point3(Vec3::ZERO);
+    body.push_at(0, at, Vec3::X * 0.1);
+    let dx: f32 = (0..4)
+        .map(|i| body.parts[0].positions[i].x - before[i].x)
+        .sum();
+    assert!(dx > 0.0, "{dx}");
+    for (i, was) in before.iter().enumerate() {
+        let moved = body.parts[0].positions[i] - *was;
+        assert!(moved.y.abs() < 1e-7 && moved.z.abs() < 1e-7);
+    }
+}

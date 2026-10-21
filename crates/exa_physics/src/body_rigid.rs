@@ -155,6 +155,8 @@ impl Part {
             // A prop is not a living limb: no limb family.
             state: PartState(0),
             static_only: false,
+            class_word: 0,
+            state_word: 0,
         }
         .settle()
     }
