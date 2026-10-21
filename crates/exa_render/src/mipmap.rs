@@ -283,6 +283,48 @@ pub fn power_of_two_level(
     None
 }
 
+/// Places a byte image on a new, zero-filled canvas of `canvas_width` ×
+/// `canvas_height` at the signed offset `(x, y)`, clipping the part that
+/// falls outside, as the original's canvas copy does for the icon atlas.
+/// Returns `None` when the input is too short for its size or the sizes
+/// overflow.
+#[allow(clippy::too_many_arguments)]
+pub fn place_on_canvas(
+    src: &[u8],
+    src_width: usize,
+    src_height: usize,
+    format_word: u32,
+    canvas_width: usize,
+    canvas_height: usize,
+    x: i32,
+    y: i32,
+) -> Option<Vec<u8>> {
+    let bpp = bytes_per_pixel(format_word);
+    let source_bytes = src_width.checked_mul(src_height)?.checked_mul(bpp)?;
+    let canvas_bytes = canvas_width.checked_mul(canvas_height)?.checked_mul(bpp)?;
+    if src.len() < source_bytes {
+        return None;
+    }
+    let mut canvas = vec![0u8; canvas_bytes];
+    let source_x = x.saturating_neg().max(0) as usize;
+    let dest_x = x.max(0) as usize;
+    let source_y = y.saturating_neg().max(0) as usize;
+    let dest_y = y.max(0) as usize;
+    let columns = src_width
+        .saturating_sub(source_x)
+        .min(canvas_width.saturating_sub(dest_x));
+    let rows = src_height
+        .saturating_sub(source_y)
+        .min(canvas_height.saturating_sub(dest_y));
+    let stride = columns * bpp;
+    for row in 0..rows {
+        let from = ((source_y + row) * src_width + source_x) * bpp;
+        let to = ((dest_y + row) * canvas_width + dest_x) * bpp;
+        canvas[to..to + stride].copy_from_slice(&src[from..from + stride]);
+    }
+    Some(canvas)
+}
+
 /// Normalises the first three floats of every RGBA texel to unit length, as
 /// the original does to a filtered level of an image whose flag `0x4000000`
 /// asks for it (normal maps). A zero-length vector is left alone; the
@@ -447,6 +489,23 @@ mod tests {
         assert_eq!(bytes_per_pixel(id::XY8), 2);
         assert_eq!(bytes_per_pixel(id::LUM1), 1);
         assert_eq!(bytes_per_pixel(id::RGBAF), 16);
+    }
+
+    #[test]
+    fn a_canvas_places_the_image_and_clips_it() {
+        use exa_formats::pixel::id;
+        let src: Vec<u8> = [1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4].to_vec();
+        let canvas = place_on_canvas(&src, 2, 2, id::RGB8, 4, 3, 1, 1).unwrap();
+        assert_eq!(canvas.len(), 4 * 3 * 3);
+        let at = |x: usize, y: usize| canvas[(y * 4 + x) * 3];
+        assert_eq!((at(0, 0), at(1, 1), at(2, 2)), (0, 1, 4));
+        // A negative offset crops the left column and the top row.
+        let canvas = place_on_canvas(&src, 2, 2, id::RGB8, 2, 2, -1, -1).unwrap();
+        assert_eq!(canvas, [4, 4, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        // A canvas past the source is zero there.
+        let canvas = place_on_canvas(&src, 2, 2, id::RGB8, 4, 4, 2, 2).unwrap();
+        assert_eq!(&canvas[(2 * 4 + 2) * 3..(2 * 4 + 3) * 3], &[1, 1, 1]);
+        assert!(place_on_canvas(&[0; 4], 2, 2, id::RGB8, 4, 4, 0, 0).is_none());
     }
 
     #[test]

@@ -23,9 +23,9 @@ Rendering on Bevy/wgpu: material plug-ins, skinned characters, terrain, grass, l
   setting uploads as the base (all levels from it, or that level alone when
   mipmapping is off), the phase-shifted window it uses to resample to an
   arbitrary size, normal-map renormalisation for images flagged
-  `0x0400_0000`, the sharpen kernel, kernel normalisation, bytes-per-pixel
-  and the sub-image blits ([`docs/formats/RFI.md`](../../docs/formats/RFI.md),
-  Generated mip levels).
+  `0x0400_0000`, the sharpen kernel, kernel normalisation, bytes-per-pixel,
+  the sub-image blits and the canvas placement of the icon atlas
+  ([`docs/formats/RFI.md`](../../docs/formats/RFI.md), Generated mip levels).
 - `quality`: the settings screen's live renderer options: `ShadowQuality`
   sizes the point lights' cube faces and the sun map, `MultisampleSetting`
   the scene camera's MSAA while super-sampling is off, and
