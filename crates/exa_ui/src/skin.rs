@@ -6266,6 +6266,8 @@ pub struct FormBackgroundPlace {
     pub frame_style: u32,
     pub margin: f32,
     pub bar: f32,
+    pub flat: bool,
+    pub fill: Option<SkinInk>,
     pub vertical: Option<FormScroll>,
     pub horizontal: Option<FormScroll>,
     pub title_width: i32,
@@ -6347,8 +6349,8 @@ pub fn draw_form_background(
             client_top: place.client_top as f32,
             client_right: place.client_right as f32,
             client_bottom: place.client_bottom as f32,
-            fill: None,
-            flat: false,
+            fill: place.fill,
+            flat: place.flat,
         },
         palette,
     );
@@ -6413,6 +6415,174 @@ pub fn draw_form_background(
             }
         }
     }
+    if (place.state & 0x200) != 0
+        && let Some(scroll) = place.vertical
+    {
+        let frame = GuiRect::corners(
+            (place.rect.x1 as i32 - place.inset - 17) as f32,
+            (place.client_top - 2) as f32,
+            (place.rect.x1 as i32 - place.inset + 2) as f32,
+            (place.rect.y1 as i32 - place.inset + 2) as f32,
+        );
+        double_frame(batch, frame, palette.form[5], palette.form[0]);
+        let mut before = scroll.position - (place.client_top + 15);
+        if before > 0 {
+            drawn.scroll_shadows.push([
+                (place.rect.x1 as i32 - place.inset - 15),
+                place.client_top + 15,
+                15,
+                before,
+            ]);
+            shadow_ring(
+                batch,
+                GuiRect::sized(
+                    (place.rect.x1 as i32 - place.inset - 15) as f32,
+                    (place.client_top + 15) as f32,
+                    15.0,
+                    before as f32,
+                ),
+                unit,
+                0x30,
+            );
+        }
+        before = (place.rect.y1 as i32 - place.client_top - scroll.position - scroll.length) - 15;
+        if before > 0 {
+            drawn.scroll_shadows.push([
+                (place.rect.x1 as i32 - place.inset - 15),
+                scroll.position + scroll.length,
+                15,
+                before,
+            ]);
+            shadow_ring(
+                batch,
+                GuiRect::sized(
+                    (place.rect.x1 as i32 - place.inset - 15) as f32,
+                    (scroll.position + scroll.length) as f32,
+                    15.0,
+                    before as f32,
+                ),
+                unit,
+                0x30,
+            );
+        }
+        for code in [-9, -6] {
+            let mut rect = [0; 4];
+            if !form_rect(
+                FormRectPlace {
+                    width: place.rect.x1 as i32,
+                    height: place.rect.y1 as i32,
+                    unit,
+                    inset: place.inset,
+                    client_top: place.client_top,
+                    right: place.client_right,
+                    bottom: place.client_bottom,
+                    flags: place.state,
+                },
+                code,
+                &mut rect,
+            ) {
+                continue;
+            }
+            let hot = place.hot_code == code && place.hot_flag;
+            draw_frame_control(
+                batch,
+                GuiRect::corners(
+                    rect[0] as f32,
+                    rect[1] as f32,
+                    rect[2] as f32,
+                    rect[3] as f32,
+                ),
+                false,
+                hot,
+                palette,
+            );
+            batch.add_texture_shift(0.0, scroll.position as f32);
+            draw_bar_with_boxes(
+                batch,
+                GuiRect::corners(
+                    rect[0] as f32,
+                    scroll.position as f32,
+                    rect[2] as f32,
+                    (scroll.position + scroll.length) as f32,
+                ),
+                unit,
+                false,
+                palette,
+            );
+            batch.add_texture_shift(0.0, -(scroll.position as f32));
+            drawn.scroll_bars.push([
+                rect[0],
+                scroll.position,
+                rect[2],
+                scroll.position + scroll.length,
+            ]);
+            drawn.scroll_frames.push(rect);
+        }
+    }
+    if (place.state & 0x100) != 0
+        && let Some(scroll) = place.horizontal
+    {
+        let frame = GuiRect::corners(
+            (place.inset - 2) as f32,
+            (place.rect.y1 as i32 - place.inset - 17) as f32,
+            (place.client_right + 2) as f32,
+            (place.rect.y1 as i32 - place.inset + 2) as f32,
+        );
+        double_frame(batch, frame, palette.form[5], palette.form[0]);
+        let mut last = [0; 4];
+        for code in [-13, -14] {
+            let mut rect = [0; 4];
+            if !form_rect(
+                FormRectPlace {
+                    width: place.rect.x1 as i32,
+                    height: place.rect.y1 as i32,
+                    unit,
+                    inset: place.inset,
+                    client_top: place.client_top,
+                    right: place.client_right,
+                    bottom: place.client_bottom,
+                    flags: place.state,
+                },
+                code,
+                &mut rect,
+            ) {
+                continue;
+            }
+            draw_frame_control(
+                batch,
+                GuiRect::corners(
+                    rect[0] as f32,
+                    rect[1] as f32,
+                    rect[2] as f32,
+                    rect[3] as f32,
+                ),
+                false,
+                false,
+                palette,
+            );
+            drawn.scroll_frames.push(rect);
+            last = rect;
+        }
+        let thumb = GuiRect::corners(
+            scroll.position as f32,
+            last[1] as f32,
+            (scroll.position + scroll.length) as f32,
+            last[3] as f32,
+        );
+        draw_frame_control(
+            batch,
+            thumb,
+            false,
+            place.hot_code == -14 && place.hot_flag,
+            palette,
+        );
+        drawn.scroll_bars.push([
+            scroll.position,
+            last[1],
+            scroll.position + scroll.length,
+            last[3],
+        ]);
+    }
     batch.select(2, 0, false);
     for (code, id, vertical) in [
         (-9, 4, true),
@@ -6453,164 +6623,6 @@ pub fn draw_form_background(
             ink: if active { None } else { Some(palette.text[5]) },
             scale: active.then_some(1.0),
         });
-    }
-    if (place.state & 0x200) != 0
-        && let Some(scroll) = place.vertical
-    {
-        let mut rect = [0; 4];
-        if form_rect(
-            FormRectPlace {
-                width: place.rect.x1 as i32,
-                height: place.rect.y1 as i32,
-                unit,
-                inset: place.inset,
-                client_top: place.client_top,
-                right: place.client_right,
-                bottom: place.client_bottom,
-                flags: place.state,
-            },
-            -9,
-            &mut rect,
-        ) {
-            let frame = GuiRect::corners(
-                (place.rect.x1 as i32 - place.inset - 17) as f32,
-                (place.client_top - 2) as f32,
-                (place.rect.x1 as i32 - place.inset + 2) as f32,
-                (place.rect.y1 as i32 - place.inset + 2) as f32,
-            );
-            double_frame(batch, frame, palette.form[5], palette.form[0]);
-            let mut top = scroll.position - (place.client_top + 15);
-            if top > 0 {
-                drawn.scroll_shadows.push([
-                    (place.rect.x1 as i32 - place.inset - 15),
-                    place.client_top + 15,
-                    15,
-                    top,
-                ]);
-                shadow_ring(
-                    batch,
-                    GuiRect::sized(
-                        (place.rect.x1 as i32 - place.inset - 15) as f32,
-                        (place.client_top + 15) as f32,
-                        15.0,
-                        top as f32,
-                    ),
-                    unit,
-                    0x30,
-                );
-            }
-            top = (place.rect.y1 as i32 - place.client_top - scroll.position - scroll.length) - 15;
-            if top > 0 {
-                drawn.scroll_shadows.push([
-                    (place.rect.x1 as i32 - place.inset - 15),
-                    scroll.position + scroll.length,
-                    15,
-                    top,
-                ]);
-                shadow_ring(
-                    batch,
-                    GuiRect::sized(
-                        (place.rect.x1 as i32 - place.inset - 15) as f32,
-                        (scroll.position + scroll.length) as f32,
-                        15.0,
-                        top as f32,
-                    ),
-                    unit,
-                    0x30,
-                );
-            }
-            let selected = true;
-            draw_frame_control(
-                batch,
-                GuiRect::sized(
-                    rect[0] as f32,
-                    rect[1] as f32,
-                    rect[2] as f32,
-                    rect[3] as f32,
-                ),
-                selected,
-                false,
-                palette,
-            );
-            batch.add_texture_shift(0.0, scroll.position as f32);
-            draw_bar_with_boxes(
-                batch,
-                GuiRect::sized(
-                    rect[0] as f32,
-                    scroll.position as f32,
-                    rect[2] as f32,
-                    scroll.length as f32,
-                ),
-                unit,
-                false,
-                palette,
-            );
-            batch.add_texture_shift(0.0, -(scroll.position as f32));
-            drawn.scroll_bars.push([
-                rect[0],
-                scroll.position,
-                rect[2],
-                scroll.position + scroll.length,
-            ]);
-            drawn.scroll_frames.push(rect);
-        }
-        if (place.state & 0x100) != 0
-            && let Some(scroll) = place.horizontal
-        {
-            let mut rect = [0; 4];
-            if form_rect(
-                FormRectPlace {
-                    width: place.rect.x1 as i32,
-                    height: place.rect.y1 as i32,
-                    unit,
-                    inset: place.inset,
-                    client_top: place.client_top,
-                    right: place.client_right,
-                    bottom: place.client_bottom,
-                    flags: place.state,
-                },
-                -13,
-                &mut rect,
-            ) {
-                draw_frame_control(
-                    batch,
-                    GuiRect::corners(
-                        rect[0] as f32,
-                        rect[1] as f32,
-                        rect[2] as f32,
-                        rect[3] as f32,
-                    ),
-                    false,
-                    false,
-                    palette,
-                );
-                batch.add_texture_shift(scroll.position as f32, 0.0);
-                draw_bar_with_boxes(
-                    batch,
-                    GuiRect::corners(
-                        scroll.position as f32,
-                        rect[1] as f32,
-                        (scroll.position + scroll.length) as f32,
-                        rect[3] as f32,
-                    ),
-                    unit,
-                    false,
-                    palette,
-                );
-                batch.add_texture_shift(-(scroll.position as f32), 0.0);
-                drawn
-                    .scroll_bars
-                    .push([scroll.position, rect[1], scroll.length, rect[3]]);
-                let frame = GuiRect::corners(
-                    (place.inset - 2) as f32,
-                    (place.rect.y1 as i32 - place.inset - 17) as f32,
-                    (place.client_right + 2) as f32,
-                    (place.rect.y1 as i32 - place.inset + 2) as f32,
-                );
-                double_frame(batch, frame, palette.form[5], palette.form[0]);
-                drawn.scroll_frames.push(rect);
-            }
-        }
     }
     if (place.state & 1) == 1 {
         let mut width = place.rect.x1 as i32 - (unit + place.inset) * 2;
@@ -11401,6 +11413,8 @@ mod tests {
                 frame_style: 0,
                 margin: 4.0,
                 bar: 8.0,
+                flat: false,
+                fill: None,
                 vertical: None,
                 horizontal: None,
                 title_width: 0,
@@ -11713,6 +11727,8 @@ mod tests {
                 frame_style: 0,
                 margin: 4.0,
                 bar: 8.0,
+                flat: false,
+                fill: None,
                 vertical: Some(FormScroll {
                     position: 30,
                     length: 20,
@@ -11740,6 +11756,9 @@ mod tests {
         assert_eq!(drawn.arrow_icons[0].scale, Some(1.0));
         assert_eq!(drawn.scroll_shadows.len(), 1);
         assert_eq!(drawn.scroll_shadows[0], [180, 50, 15, 11]);
-        assert_eq!(drawn.scroll_bars, vec![[180, 30, 195, 50]]);
+        assert_eq!(
+            drawn.scroll_bars,
+            vec![[180, 30, 195, 50], [179, 30, 196, 50]]
+        );
     }
 }
