@@ -24,8 +24,12 @@ pub struct TextQuad {
     pub byte: u8,
     /// The quad's pixel rectangle (left, top, width, height).
     pub rect: [i32; 4],
-    /// The atlas sample rectangle (left, top, right, bottom).
-    pub uv: [f32; 4],
+    /// The atlas cell's corner (u, v): the column and row over 16. The
+    /// sample's far corner is this plus the font's sample step
+    /// ([`font_uv`], the glyph quad over the texture's size), which the
+    /// original adds per vertex; the quad's top edge samples the far row
+    /// (the glyphs are stored upside down).
+    pub cell: (f32, f32),
     /// The pen before the glyph.
     pub pen: i32,
     /// The advance the glyph takes.
@@ -74,17 +78,12 @@ pub fn font_uv(font: &GuiFont, texture: (u16, u16)) -> Option<(f32, f32)> {
     ))
 }
 
-/// The atlas sample rectangle of one byte: its column and row over 16,
-/// with the top on the cell's far edge (the glyphs are stored upside down).
-pub fn glyph_uv(byte: u8) -> [f32; 4] {
+/// The atlas cell of one byte: its column and row over 16. The sample
+/// spans this corner plus the font's sample step ([`font_uv`]).
+pub fn glyph_cell(byte: u8) -> (f32, f32) {
     let row = f32::from(byte >> 4);
-    let column = f32::from(byte & 0x0f);
-    [
-        column * 0.0625,
-        row * 0.0625,
-        (column + 1.0) * 0.0625,
-        (row + 1.0) * 0.0625,
-    ]
+    let column = f32::from(byte) - row * 16.0;
+    (column * 0.0625, row * 0.0625)
 }
 
 /// One line of glyph quads at `x`, baseline `y`, ending at `x + width`.
@@ -106,7 +105,7 @@ fn line_quads(
         out.push(TextQuad {
             byte,
             rect: [pen, y - h, w, h],
-            uv: glyph_uv(byte),
+            cell: glyph_cell(byte),
             pen,
             advance: font.advance(byte),
         });
@@ -131,9 +130,17 @@ pub fn draw_line_plain(font: &GuiFont, text: &[u8], x: i32, y: i32) -> Vec<TextQ
     draw_line(font, text, x, y)
 }
 
-/// Draws one line centred in `width` (the line moved right by half the
-/// space left) and clipped to `x + width`. Returns the pen at its end.
-pub fn draw_line_centred(font: &GuiFont, text: &[u8], x: i32, y: i32, width: i32) -> i32 {
+/// Draws one line centred in `width` (the line moved right by
+/// `round((width − total)·0.5 + x)` when it is narrower) and stopped after
+/// the first glyph whose pen passes the moved start plus `width`. Returns
+/// the quads and the pen at their end.
+pub fn draw_line_centred(
+    font: &GuiFont,
+    text: &[u8],
+    x: i32,
+    y: i32,
+    width: i32,
+) -> (Vec<TextQuad>, i32) {
     let total: i32 = measure(font, text);
     let start = if total < width {
         round_i32(f64::from((width - total) as f32 * 0.5 + x as f32))
@@ -141,7 +148,7 @@ pub fn draw_line_centred(font: &GuiFont, text: &[u8], x: i32, y: i32, width: i32
         x
     };
     let mut out = Vec::with_capacity(text.len());
-    line_quads(
+    let pen = line_quads(
         font,
         text,
         0,
@@ -150,7 +157,8 @@ pub fn draw_line_centred(font: &GuiFont, text: &[u8], x: i32, y: i32, width: i32
         y,
         Some(start + width),
         &mut out,
-    )
+    );
+    (out, pen)
 }
 
 /// Draws the bytes `[first, last]` (both 1-based and inclusive) at `x`,
@@ -165,27 +173,27 @@ pub fn draw_span(font: &GuiFont, text: &[u8], first: i32, last: i32, x: i32, y: 
     line_quads(font, text, first, last, x, y, None, &mut out)
 }
 
-/// Shortens `text` to `width` with an ellipsis: the first bytes that,
-/// counting the ellipsis' advance from the start, still fit. A text that
-/// fits is returned whole.
+/// Shortens `text` to `width` with an ellipsis. Starting from the
+/// ellipsis' advance, the advances of the bytes before the last are added
+/// one by one; when the sum passes `width` at the k-th byte (1-based), the
+/// first k − 1 bytes and the ellipsis are returned. The last byte is never
+/// counted, and a text whose sum stays within `width` is returned whole.
 pub fn ellipsis_fit(font: &GuiFont, text: &[u8], width: i32) -> Vec<u8> {
     let mut used = font.advance(ELLIPSIS);
-    if 1 < text.len() {
-        for i in 1..text.len() {
-            used += font.advance(text[i]);
-            if width < used {
-                let mut out = text[..i].to_vec();
-                out.push(ELLIPSIS);
-                return out;
-            }
+    for k in 1..text.len() {
+        used += font.advance(text[k - 1]);
+        if width < used {
+            let mut out = text[..k - 1].to_vec();
+            out.push(ELLIPSIS);
+            return out;
         }
     }
     text.to_vec()
 }
 
-/// Draws a line cut to at most `width / gap` glyphs, the last one replaced
-/// by the ellipsis when the text is longer. The original counts whole
-/// pixels of `width` over the font's gap as the glyph limit.
+/// Draws a line cut to at most `round(width) / gap` glyphs, the last one
+/// replaced by the ellipsis when the text is longer. The pen still moves
+/// by the replaced byte's own advance, as the original's does.
 pub fn draw_truncated(font: &GuiFont, text: &[u8], x: i32, y: i32, width: i32) -> Vec<TextQuad> {
     let mut out = Vec::new();
     if width < font.gap {
@@ -207,18 +215,28 @@ pub fn draw_truncated(font: &GuiFont, text: &[u8], x: i32, y: i32, width: i32) -
         out.push(TextQuad {
             byte,
             rect: [pen, y - font.glyph.1, font.glyph.0, font.glyph.1],
-            uv: glyph_uv(byte),
+            cell: glyph_cell(byte),
             pen,
-            advance: font.advance(byte),
+            advance: font.advance(text[i]),
         });
-        pen += font.advance(byte);
+        pen += font.advance(text[i]);
     }
     out
 }
 
 /// Draws the tail of a line that fits `width`, with an ellipsis standing in
-/// for the cut-off head. Returns the quads and the pen at their end.
-pub fn draw_tail(font: &GuiFont, text: &[u8], x: i32, y: i32, width: i32) -> Vec<TextQuad> {
+/// for the first byte drawn when a head is cut off. The fit is measured
+/// with `fit_font` (the original measures with the GUI level's main font)
+/// and the tail is drawn and placed with `font`, starting where it would
+/// sit had the whole line been drawn from `x`.
+pub fn draw_tail(
+    font: &GuiFont,
+    fit_font: &GuiFont,
+    text: &[u8],
+    x: i32,
+    y: i32,
+    width: i32,
+) -> Vec<TextQuad> {
     let mut out = Vec::new();
     let len = text.len();
     if len == 0 {
@@ -229,7 +247,7 @@ pub fn draw_tail(font: &GuiFont, text: &[u8], x: i32, y: i32, width: i32) -> Vec
     let mut index = len + 1;
     while index > 1 {
         let at = index - 1;
-        left -= font.advance(text[at - 1]);
+        left -= fit_font.advance(text[at - 1]);
         first = index;
         if left < 0 {
             break;
@@ -250,7 +268,7 @@ pub fn draw_tail(font: &GuiFont, text: &[u8], x: i32, y: i32, width: i32) -> Vec
         out.push(TextQuad {
             byte,
             rect: [pen, y - font.glyph.1, font.glyph.0, font.glyph.1],
-            uv: glyph_uv(byte),
+            cell: glyph_cell(byte),
             pen,
             advance: font.advance(byte),
         });
@@ -293,50 +311,77 @@ fn scan_line(text: &[u8], start: usize, width: i32, font: &GuiFont) -> (usize, u
     (end, rest)
 }
 
-/// The line count of a plain text at `width`; a text under two bytes is
-/// one line.
-pub fn count_lines(font: &GuiFont, text: &[u8], width: i32) -> i32 {
-    if text.len() < 2 {
-        return 1;
+/// Scans the line that starts at 0-based `start` for `width` the way the
+/// width fit does: the end (exclusive) and the pixels used, which count
+/// every byte that still fits, the head of a word moved to the next line
+/// included, and stop before a carriage return or the overflowing byte.
+fn used_line(text: &[u8], start: usize, width: i32, font: &GuiFont) -> (usize, i32) {
+    let len = text.len();
+    let mut used = 0;
+    let mut space = 0usize;
+    let mut end = len;
+    let mut k = start;
+    while k < len {
+        let c = text[k];
+        if c == b'\r' {
+            end = k + 1;
+            break;
+        }
+        if c == b' ' {
+            space = k + 1;
+        }
+        let next = used + font.advance(c);
+        if width < next {
+            end = if space < 1 { k + 1 } else { space };
+            break;
+        }
+        used = next;
+        k += 1;
     }
+    (end, used)
+}
+
+/// The start of the line after one that ends at `end`: a line feed there
+/// is skipped.
+fn next_start(text: &[u8], end: usize) -> usize {
+    if text.get(end) == Some(&b'\n') {
+        end + 1
+    } else {
+        end
+    }
+}
+
+/// The line count of a plain text at `width` (an empty text has none).
+pub fn count_lines(font: &GuiFont, text: &[u8], width: i32) -> i32 {
     let mut count = 0;
     let mut start = 0usize;
     while start < text.len() {
-        let (mut end, _) = scan_line(text, start, width, font);
-        if end > text.len() {
-            end = text.len();
-        }
-        start = end;
-        if start < text.len() && text[start] == b'\n' {
-            start += 1;
-        }
+        let (end, _) = scan_line(text, start, width, font);
+        start = next_start(text, end);
         count += 1;
     }
     count
 }
 
-/// The width that makes `text` wrap into the line count it takes at
-/// `width`, then the widest of those lines. `width` is updated and the
-/// line count returned; a text under two bytes counts one line and leaves
-/// the width alone.
-pub fn fit_width(font: &GuiFont, text: &[u8], width: &mut i32) -> i32 {
+/// Narrows `width` to the text's average line width, then widens it by
+/// the GUI `unit` until the text wraps into no more lines than it took at
+/// the given width; `width` ends as the widest line of that last pass and
+/// that pass's line count is returned. A final carriage return counts one
+/// line more. A text under two bytes is one line and leaves the width
+/// alone; one that takes a single line gets the width it used.
+pub fn fit_width(font: &GuiFont, text: &[u8], width: &mut i32, unit: i32) -> i32 {
     if text.len() < 2 {
         return 1;
     }
-    let original = count_lines(font, text, *width);
+    let mut lines = 0;
     let mut sum = 0i32;
     let mut start = 0usize;
     while start < text.len() {
-        let (end, rest) = scan_line(text, start, *width, font);
-        // The original's width is the pixels used before the break, which
-        // excludes an overflowing space and the carriage return itself.
-        sum += *width - rest as i32;
-        start = end;
-        if start < text.len() && text[start] == b'\n' {
-            start += 1;
-        }
+        let (end, used) = used_line(text, start, *width, font);
+        sum += used;
+        start = next_start(text, end);
+        lines += 1;
     }
-    let mut lines = original;
     if text.last() == Some(&b'\r') {
         lines += 1;
     }
@@ -350,18 +395,15 @@ pub fn fit_width(font: &GuiFont, text: &[u8], width: &mut i32) -> i32 {
         let mut count = 0;
         let mut start = 0usize;
         while start < text.len() {
-            let (end, rest) = scan_line(text, start, *width, font);
-            widest = widest.max(*width - rest as i32);
-            start = end;
-            if start < text.len() && text[start] == b'\n' {
-                start += 1;
-            }
+            let (end, used) = used_line(text, start, *width, font);
+            widest = widest.max(used);
+            start = next_start(text, end);
             count += 1;
         }
-        *width += 4;
+        *width += unit;
         if count <= lines {
             *width = widest;
-            return count.max(lines);
+            return count;
         }
     }
 }
@@ -375,10 +417,12 @@ pub struct WrappedDraw {
     pub end: (i32, i32),
 }
 
-/// Draws a plain text wrapped at `width`, from baseline `y` down to
-/// `y + height`, skipping the first `first_line` lines. A centred line is
-/// moved right by half the width left at its last break. Returns the lines
-/// drawn and the glyphs.
+/// Draws a plain text wrapped at `width`, from the line top `y` down to
+/// `y + height`: a line is drawn while its top is at most `y + height −
+/// line_height`, and its glyphs hang down from that top (unlike a single
+/// line, whose `y` is the baseline). The first `first_line` lines are drawn
+/// at `y` without moving down. A centred line is moved right by half the
+/// width left at its last break. Returns the lines scanned and the glyphs.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_wrapped(
     font: &GuiFont,
@@ -411,8 +455,8 @@ pub fn draw_wrapped(
                 if byte != b'\n' {
                     out.quads.push(TextQuad {
                         byte,
-                        rect: [pen, pen_y - font.glyph.1, font.glyph.0, font.glyph.1],
-                        uv: glyph_uv(byte),
+                        rect: [pen, pen_y, font.glyph.0, font.glyph.1],
+                        cell: glyph_cell(byte),
                         pen,
                         advance: font.advance(byte),
                     });
@@ -471,11 +515,11 @@ pub fn draw_wrapped_at(
                         byte,
                         rect: [
                             round_i32(f64::from(pen)),
-                            round_i32(f64::from(pen_y)) - font.glyph.1,
+                            round_i32(f64::from(pen_y)),
                             font.glyph.0,
                             font.glyph.1,
                         ],
-                        uv: glyph_uv(byte),
+                        cell: glyph_cell(byte),
                         pen: round_i32(f64::from(pen)),
                         advance: font.advance(byte),
                     });
@@ -505,9 +549,9 @@ pub fn add_gap(advances: &mut [i16; 256], gap: i32) {
 }
 
 /// The wraps-to-the-same-lines width rule over a menu font.
-pub fn fit_menu_width(font: &MenuFont, text: &[u8], width: &mut i32) -> i32 {
+pub fn fit_menu_width(font: &MenuFont, text: &[u8], width: &mut i32, unit: i32) -> i32 {
     let as_gui = font.as_gui_font();
-    fit_width(&as_gui, text, width)
+    fit_width(&as_gui, text, width, unit)
 }
 
 /// Adds every font's gap to its own advances (the original's start-up step
@@ -539,6 +583,9 @@ pub struct MenuFont {
     pub trim: i32,
     pub advances: [i16; 256],
 }
+
+/// The texture the menu font's record names (its file-name source).
+pub const MENU_FONT_TEXTURE: &str = "titlefont.rfi";
 
 /// The menu font's design record (112-pixel cells, 70-pixel rows at scale
 /// one). Its letter advances are the sheet's recorded widths.
@@ -574,7 +621,8 @@ pub fn needs_rescale(last: f32, scale: f32) -> bool {
 
 impl MenuFont {
     /// The record at `scale`: the design record with every metric scaled
-    /// and rounded to even, the letter advances included.
+    /// and rounded half to even, the advances of `A` through `a` included
+    /// (the original's conversions all round with the default mode).
     pub fn at_scale(scale: f32) -> Self {
         let mut font = MENU_FONT;
         let round = |value: i32| round_i32(f64::from(value as f32 * scale));
@@ -588,7 +636,8 @@ impl MenuFont {
             // Only the letters the sheet records (A through a) are
             // rescaled, exactly as the original's loop does.
             if (0x41..=0x61).contains(&index) {
-                *advance = (MENU_FONT.advances[index] as f32 * scale) as i32 as i16;
+                *advance =
+                    round_i32(f64::from(f32::from(MENU_FONT.advances[index]) * scale)) as i16;
             }
         }
         font
@@ -613,7 +662,7 @@ impl MenuFont {
     /// menu's advance of a space differs and is handled by `row_width`).
     fn as_gui_font(&self) -> GuiFont {
         GuiFont {
-            texture: "mmenutxt01.rfi",
+            texture: MENU_FONT_TEXTURE,
             glyph: self.glyph,
             ascent: self.ascent,
             slant: self.slant,
@@ -623,8 +672,10 @@ impl MenuFont {
         }
     }
 
-    /// The menu sprite line: 26 letters in a 4 × 7 sheet (column and row
-    /// over four and eight), a space taking the gap. `x` is moved left by
+    /// The menu sprite line: 26 letters in a sheet of four columns and
+    /// eight rows (the cell's column over four, its row 0.875 less an
+    /// eighth per row; the far corner adds the record's sample step), a
+    /// space taking the gap. `x` is moved left by
     /// the cell origin first, as the original does. Returns the quads and
     /// the pen after them.
     pub fn draw_line(&self, text: &[u8], x: i32, y: i32) -> (Vec<TextQuad>, i32) {
@@ -632,18 +683,16 @@ impl MenuFont {
         let mut pen = x - self.origin.0;
         for &byte in text {
             if byte != b' ' {
-                let index = byte.wrapping_sub(0x41);
-                let column = (index & 3) as f32;
+                // The letter index is unsigned: a byte below `A` wraps to a
+                // huge index and samples far outside the sheet, as the
+                // original's does.
+                let index = u32::from(byte).wrapping_sub(0x41);
                 let row = (index >> 2) as f32;
+                let column = (index as i32) as f32 - row * 4.0;
                 out.push(TextQuad {
                     byte,
                     rect: [pen, y - self.glyph.1, self.glyph.0, self.glyph.1],
-                    uv: [
-                        column * 0.25,
-                        0.875 - row * 0.125 + self.uv.1,
-                        column * 0.25 + self.uv.0,
-                        1.0 - row * 0.125 + self.uv.1,
-                    ],
+                    cell: (column * 0.25, 0.875 - row * 0.125),
                     pen,
                     advance: i32::from(self.advances[byte as usize]),
                 });
@@ -711,7 +760,7 @@ mod tests {
             Some((15.0 / 1024.0, 20.0 / 1024.0))
         );
         assert_eq!(font_uv(&RAYFORM_10, (0, 10)), None);
-        assert_eq!(glyph_uv(b'A'), [0.0625, 0.25, 0.125, 0.3125]);
+        assert_eq!(glyph_cell(b'A'), (0.0625, 0.25));
     }
 
     #[test]
@@ -721,7 +770,7 @@ mod tests {
         assert_eq!(quads.len(), 2);
         assert_eq!(quads[0].rect, [7, 14, 12, 16]);
         assert_eq!(quads[1].rect, [17, 14, 12, 16]);
-        assert_eq!(quads[0].uv, [0.0625, 0.375, 0.125, 0.4375]);
+        assert_eq!(quads[0].cell, (0.0625, 0.375));
         assert_eq!(quads[1].pen, 17);
     }
 
@@ -736,7 +785,12 @@ mod tests {
         assert_eq!(pen, 75);
         assert_eq!(out.len(), 4);
         // The real centred draw of a 40-pixel line in 100 starts at 30.
-        assert_eq!(draw_line_centred(&f, b"abcd", 0, 0, 100), 70);
+        let (quads, pen) = draw_line_centred(&f, b"abcd", 0, 0, 100);
+        assert_eq!((quads[0].rect[0], pen), (30, 70));
+        // A line wider than its box starts at x and stops after the glyph
+        // that passes x + width: 25 wide stops at the third glyph, 30.
+        let (quads, pen) = draw_line_centred(&f, b"abcdef", 0, 0, 25);
+        assert_eq!((quads.len(), pen), (3, 30));
     }
 
     #[test]
@@ -752,9 +806,13 @@ mod tests {
         let mut f = tens();
         f.advances[ELLIPSIS as usize] = 10;
         assert_eq!(ellipsis_fit(&f, b"abcdef", 100), b"abcdef");
-        // 10 for the ellipsis, then each byte: reaches 10 + 4*10 = 50.
-        assert_eq!(ellipsis_fit(&f, b"abcdef", 45), b"abcd\x85");
-        assert_eq!(ellipsis_fit(&f, b"ab", 5), b"a\x85");
+        // 10 for the ellipsis, then a, b, c reach 40 and d passes 45 at the
+        // fourth byte: the first three bytes stay.
+        assert_eq!(ellipsis_fit(&f, b"abcdef", 45), b"abc\x85");
+        // The first byte already passes 5: only the ellipsis is left.
+        assert_eq!(ellipsis_fit(&f, b"ab", 5), b"\x85");
+        // The last byte is never counted: 10 + 10 + 10 is 30 for "abc".
+        assert_eq!(ellipsis_fit(&f, b"abc", 30), b"abc");
     }
 
     #[test]
@@ -767,6 +825,10 @@ mod tests {
         assert_eq!(q.len(), 4);
         assert_eq!(q.iter().map(|g| g.byte).collect::<Vec<_>>(), b"abc\x85");
         assert_eq!(q[3].rect[0], 30);
+        // The ellipsis advances by the byte it replaces.
+        f.advances[ELLIPSIS as usize] = 3;
+        let q = draw_truncated(&f, b"abcdef", 0, 20, 45);
+        assert_eq!(q[3].advance, 10);
         // A short text draws whole, and a narrow width draws nothing.
         assert_eq!(
             draw_truncated(&f, b"ab", 0, 20, 45)
@@ -783,11 +845,21 @@ mod tests {
         let mut f = tens();
         f.advances[ELLIPSIS as usize] = 10;
         // 25 pixels show the last two bytes and the ellipsis.
-        let q = draw_tail(&f, b"abcdef", 4, 20, 25);
+        let q = draw_tail(&f, &f, b"abcdef", 4, 20, 25);
         assert_eq!(q.iter().map(|g| g.byte).collect::<Vec<_>>(), b"\x85f");
         assert_eq!(q[0].pen, 4 + 40);
         // A generous width draws the whole line.
-        let q = draw_tail(&f, b"abcdef", 0, 20, 1000);
+        let q = draw_tail(&f, &f, b"abcdef", 0, 20, 1000);
+        assert_eq!(q.len(), 6);
+        // The fit is measured with the second font: at 25, a font of
+        // 30-pixel bytes keeps only the last byte, headed by the ellipsis.
+        let mut wide = tens();
+        wide.advances = [30; 256];
+        wide.advances[b'f' as usize] = 20;
+        let q = draw_tail(&f, &wide, b"abcdef", 0, 20, 25);
+        assert_eq!(q.iter().map(|g| g.byte).collect::<Vec<_>>(), b"\x85");
+        assert_eq!(q[0].pen, 50);
+        let q = draw_tail(&f, &f, b"abcdef", 0, 20, 1000);
         assert_eq!(q.len(), 6);
         assert_eq!(q[0].byte, b'a');
     }
@@ -795,7 +867,7 @@ mod tests {
     #[test]
     fn the_line_count_wraps_on_spaces_and_carriage_returns() {
         let f = tens();
-        assert_eq!(count_lines(&f, b"", 30), 1);
+        assert_eq!(count_lines(&f, b"", 30), 0);
         assert_eq!(count_lines(&f, b"a", 30), 1);
         assert_eq!(count_lines(&f, b"ab cd ef", 30), 3);
         assert_eq!(count_lines(&f, b"ab\r\ncd", 100), 2);
@@ -807,14 +879,27 @@ mod tests {
         let f = tens();
         // "abc def ghi" at 30 is three lines of 30; the average is 30.
         let mut width = 30;
-        assert_eq!(fit_width(&f, b"abc def ghi", &mut width), 3);
+        assert_eq!(fit_width(&f, b"abc def ghi", &mut width, 4), 3);
         assert_eq!(width, 30);
         let mut width = 100;
-        assert_eq!(fit_width(&f, b"abc def", &mut width), 1);
+        assert_eq!(fit_width(&f, b"abc def", &mut width, 4), 1);
         assert_eq!(width, 65);
         let mut width = 12;
-        assert_eq!(fit_width(&f, b"a", &mut width), 1);
+        assert_eq!(fit_width(&f, b"a", &mut width, 4), 1);
         assert_eq!(width, 12);
+        // A final carriage return counts a third line: the average is 20,
+        // widened by the unit until two lines remain at 32, so the last
+        // pass's two lines are returned and the widest, 30, is kept.
+        let mut width = 30;
+        assert_eq!(fit_width(&f, b"abc def\r", &mut width, 4), 2);
+        assert_eq!(width, 30);
+        // The used width counts the bytes that fit, the space and the head
+        // of the wrapped word included: "ab cdef" at 40 uses 35 (a, b, the
+        // space and c) and then 40; at the average, 37, the first line still
+        // uses 35 and the second 30, so two lines keep the widest, 35.
+        let mut width = 40;
+        assert_eq!(fit_width(&f, b"ab cdef", &mut width, 5), 2);
+        assert_eq!(width, 35);
     }
 
     #[test]
@@ -825,12 +910,23 @@ mod tests {
         // full line (the original allows one pitch more).
         assert_eq!(d.lines, 3);
         assert_eq!(d.quads.first().map(|q| q.rect[0]), Some(0));
+        // The glyphs hang down from the line's top.
+        assert_eq!(d.quads[0].rect[1], 0);
+        assert_eq!(d.quads.last().map(|q| q.rect[1]), Some(32));
+        // Skipping one line draws the first two at the top; the bottom is
+        // fixed at round(40 − 16) = 24, so the third line, at 16, is the
+        // last.
         let d = draw_wrapped_at(&f, b"ab cd ef", 0.0, 0.0, 30, 40, 1, false);
-        assert_eq!(d.quads[0].rect[1], -16);
-        assert!(d.lines >= 2 && d.lines < 10);
-        // A many-line text stops at the fixed bottom.
+        assert_eq!(d.quads[0].rect[1], 0);
+        assert_eq!(d.quads[2].rect[1], 0);
+        assert_eq!(d.quads.last().map(|q| q.rect[1]), Some(16));
+        assert_eq!(d.lines, 3);
+        // A many-line text stops at the fixed bottom: lines at 0 and 16.
         let long = b"a b c d e f g h i j k l m n o p q r s t";
-        assert!(draw_wrapped_at(&f, long, 0.0, 0.0, 10, 40, 0, false).lines <= 3);
+        assert_eq!(
+            draw_wrapped_at(&f, long, 0.0, 0.0, 10, 40, 0, false).lines,
+            2
+        );
         // Centring moves the line right by half its rest.
         let d = draw_wrapped(&f, b"ab", 0, 0, 30, 100, 0, true);
         assert_eq!(d.quads[0].rect[0], 5);
@@ -880,6 +976,8 @@ mod tests {
         let quarter = MenuFont::at_scale(0.25);
         assert_eq!(quarter.glyph, (28, 28));
         assert_eq!(quarter.advance(b'A'), 19);
+        // 70 × 0.25 is 17.5, which rounds to the even 18.
+        assert_eq!(quarter.advance(b'C'), 18);
         // A row width counts a space as the gap, then trims.
         assert_eq!(half.row_width(b"A B"), 38 + 18 + 29 - 3);
     }
@@ -901,10 +999,11 @@ mod tests {
         let (quads, pen) = half.draw_line(b"AB C", 100, 60);
         assert_eq!(quads.len(), 3);
         assert_eq!(quads[0].rect, [92, 4, 56, 56]);
-        assert_eq!(quads[0].uv[0], 0.0);
-        assert_eq!(quads[0].uv[1], 0.875);
-        assert_eq!(quads[1].uv[0], 0.25);
-        assert_eq!(quads[1].uv[1], 0.875);
+        assert_eq!(quads[0].cell, (0.0, 0.875));
+        assert_eq!(quads[1].cell, (0.25, 0.875));
+        // E is the fifth letter: column 0 of the second row.
+        let (quads, _) = half.draw_line(b"E", 0, 0);
+        assert_eq!(quads[0].cell, (0.0, 0.75));
         // The space takes the gap and draws nothing.
         assert_eq!(pen, 92 + 38 + 29 + 18 + 35);
     }
