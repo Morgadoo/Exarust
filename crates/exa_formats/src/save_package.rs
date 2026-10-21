@@ -603,22 +603,25 @@ pub const CHARACTER_IN_WORLD_DB: u32 = 0x4000_0000;
 /// Where an old arena save puts the player back.
 pub const OLD_ARENA_POSITION: [f32; 3] = [0.0, 0.0, 300.0];
 
-/// The player's saved placement, the payload of the character chunk: the
-/// record reference, the position, a word the loader keeps beside it, a
-/// second word, then sub-chunks the scene import picks up by id (in both
-/// retail saves observed: `0xCAC0E100` and `0xCAC0EA00`; the loader also
-/// takes `0xCAC0EB00`, `0xCAC0EC00` and `0xCACE0F77`).
+/// The player's saved placement, the payload of the character chunk, laid
+/// out as the level exporter's placement writer writes it
+/// ([`crate::rfc_write::write_character_state`]): the record reference, the
+/// position (body x and z, floor height as y), the heading, the condition,
+/// then sub-chunks the scene import picks up by id (the flat pose
+/// `0xCAC0E100`, the motion state `0xCAC0EA00`, the pose tree `0xCAC0EB00`,
+/// the attached objects `0xCAC0EC00` and the AI home `0xCACE0F77`; both
+/// retail saves observed hold the flat pose and the motion state).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CharacterPlacement {
     /// See [`PlayerData::character_reference`].
     pub reference: u32,
     /// The saved position (cm).
     pub position: [f32; 3],
-    /// The word after the position. **Inference:** a heading in radians;
-    /// both observed values lie within ±π.
-    pub facing: f32,
-    /// The word after it (zero in both observed saves).
-    pub extra: u32,
+    /// The heading in radians.
+    pub heading: f32,
+    /// The character's condition word (zero for a living player in both
+    /// observed saves).
+    pub condition: i32,
     /// The sub-chunks in order.
     pub chunks: Vec<OwnedChunk>,
 }
@@ -634,8 +637,8 @@ impl CharacterPlacement {
             take_f32(bytes, &mut at)?,
             take_f32(bytes, &mut at)?,
         ];
-        let facing = take_f32(bytes, &mut at)?;
-        let extra = take_u32(bytes, &mut at)?;
+        let heading = take_f32(bytes, &mut at)?;
+        let condition = take_u32(bytes, &mut at)? as i32;
         let mut chunks = Vec::new();
         while at < bytes.len() {
             let id = take_u32(bytes, &mut at)?;
@@ -648,8 +651,8 @@ impl CharacterPlacement {
         Ok(Self {
             reference,
             position,
-            facing,
-            extra,
+            heading,
+            condition,
             chunks,
         })
     }
@@ -661,8 +664,8 @@ impl CharacterPlacement {
         for value in self.position {
             out.extend_from_slice(&value.to_le_bytes());
         }
-        out.extend_from_slice(&self.facing.to_le_bytes());
-        out.extend_from_slice(&self.extra.to_le_bytes());
+        out.extend_from_slice(&self.heading.to_le_bytes());
+        out.extend_from_slice(&self.condition.to_le_bytes());
         for chunk in &self.chunks {
             write_chunk(&mut out, chunk.id, &chunk.data);
         }
@@ -1627,8 +1630,8 @@ mod tests {
         let placement = CharacterPlacement {
             reference: CHARACTER_IN_WORLD_DB | 1,
             position: [-168.5, 0.25, 137.0],
-            facing: -2.4,
-            extra: 0,
+            heading: -2.4,
+            condition: 0,
             chunks: vec![OwnedChunk {
                 id: 0xCAC0_EA00,
                 data: vec![0; 12],
@@ -1642,7 +1645,7 @@ mod tests {
         assert!(data.convert_arena());
         let moved = data.placement().unwrap().unwrap();
         assert_eq!(moved.position, OLD_ARENA_POSITION);
-        assert_eq!(moved.facing, -2.4);
+        assert_eq!(moved.heading, -2.4);
         assert_eq!(moved.chunks, placement.chunks);
     }
 
@@ -1659,8 +1662,8 @@ mod tests {
         let placement = CharacterPlacement::parse(&bytes).unwrap();
         assert_eq!(placement.reference, 0x4000_0001);
         assert_eq!(placement.position, [8183.75, -6.0, 3961.0]);
-        assert_eq!(placement.facing, -1.5);
-        assert_eq!(placement.extra, 0);
+        assert_eq!(placement.heading, -1.5);
+        assert_eq!(placement.condition, 0);
         assert_eq!(
             placement.chunks.iter().map(|c| c.id).collect::<Vec<_>>(),
             [0xCAC0_E100, 0xCAC0_EA00]
@@ -1681,6 +1684,42 @@ mod tests {
         assert_eq!(
             CharacterPlacement::parse(&bytes[..10]),
             Err(PlayerDataError::Truncated)
+        );
+    }
+
+    #[test]
+    fn the_exporters_placement_reads_back_as_the_saved_character() {
+        use crate::rfc_write::{ChunkWriter, DEAD, ExportCharacter, write_character_state};
+        let character = ExportCharacter {
+            record: CHARACTER_IN_WORLD_DB | 7,
+            body_position: [120.0, 55.0, -40.0],
+            floor_height: 12.5,
+            heading: 1.25,
+            condition: DEAD,
+            ..ExportCharacter::default()
+        };
+        let mut writer = ChunkWriter::new();
+        write_character_state(&mut writer, &character, true).unwrap();
+        let chunk = writer.into_bytes();
+        // The exporter writes the whole character chunk; its payload is the
+        // placement the player data carries.
+        assert_eq!(&chunk[0..4], &CHARACTER_TAG.to_le_bytes());
+        let mut data = PlayerData::story(name("exanima01"));
+        data.character = Some(chunk[8..].to_vec());
+        let bytes = data.write();
+        assert_eq!(&bytes[52..], &chunk[..]);
+        let placement = PlayerData::parse(&bytes, Flavour::Story)
+            .unwrap()
+            .placement()
+            .unwrap()
+            .unwrap();
+        assert_eq!(placement.reference, CHARACTER_IN_WORLD_DB | 7);
+        assert_eq!(placement.position, [120.0, 12.5, -40.0]);
+        assert_eq!(placement.heading, 1.25);
+        assert_eq!(placement.condition, DEAD);
+        assert_eq!(
+            placement.chunks.iter().map(|c| c.id).collect::<Vec<_>>(),
+            [0xCAC0_E100]
         );
     }
 

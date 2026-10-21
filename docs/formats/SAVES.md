@@ -233,10 +233,14 @@ chunk instead of exporting one.
 | offset | type | meaning |
 |---:|---|---|
 | 0 | u32 | character reference: bit 30 set looks the record up in the world character database (the one `#worldchrdb` restores), clear in the other character database; the low 28 bits are the record id |
-| 4 | f32[3] | position (cm) |
-| 16 | f32 | **inference:** the facing in radians (both observed values lie within ±π) |
-| 20 | u32 | a word kept beside the record (zero in both observed saves) |
-| 24 | chunks | sub-chunks to the chunk's end; the loader keeps `0xCAC0E100`, `0xCAC0EA00`, `0xCAC0EB00`, `0xCAC0EC00` and `0xCACE0F77` for the scene import (both observed saves hold `0xCAC0E100` and `0xCAC0EA00`) |
+| 4 | f32[3] | position (cm): body x, floor height, body z |
+| 16 | f32 | heading (radians) |
+| 20 | i32 | condition (zero for the living player in both observed saves) |
+| 24 | chunks | sub-chunks to the chunk's end, kept by the loader for the scene import: flat pose `0xCAC0E100`, motion state `0xCAC0EA00`, pose tree `0xCAC0EB00`, attached objects `0xCAC0EC00`, AI home `0xCACE0F77` (both observed saves hold the flat pose and the motion state) |
+
+This is the level exporter's single-placement layout ([RFC.md](RFC.md),
+`exa_formats::rfc_write::write_character_state`); the reader's field order
+matches it.
 
 A reference the lookup does not find makes the player-data reader answer
 zero: the slot is neither listed nor loaded.

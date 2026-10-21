@@ -839,8 +839,8 @@ mod tests {
             save_package::CharacterPlacement {
                 reference: save_package::CHARACTER_IN_WORLD_DB | 1,
                 position: [10.0, 0.0, 20.0],
-                facing: 0.5,
-                extra: 0,
+                heading: 0.5,
+                condition: 0,
                 chunks: Vec::new(),
             }
             .write(),
