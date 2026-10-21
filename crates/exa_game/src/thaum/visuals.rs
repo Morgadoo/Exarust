@@ -722,7 +722,6 @@ mod tests {
             world: Affine3A::IDENTITY,
             centre: Vec3::ZERO,
             half: Vec3::splat(10.0),
-            spheres: None,
             origin: Vec3::ZERO,
             links: Vec::new(),
             foot: None,
