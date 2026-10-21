@@ -124,9 +124,10 @@ later scan can list the slot again unless something else removes it.
 **Checkpoints.** The `CheckpointSave` script function does nothing unless
 it is called for the player; when checkpoints are enabled and the `.rcp`
 does not exist it saves the `.rsg` and copies it over the `.rcp`. Saving
-manually also refreshes the checkpoint this way when there is none.
-Loading from a `.rcp` and getting the level up then copies the `.rcp`
-back over the `.rsg`.
+from the menu, and the transition save below, copy the save over the
+checkpoint **unconditionally**, so those paths refresh it. Loading from a
+`.rcp` and getting the level up then copies the `.rcp` back over the
+`.rsg`.
 
 **Legacy removal** at start-up walks every `<prefix>*<3 bytes>.rsg`, opens
 it, reads `#playerdata`, and deletes the `.rsg` when its first word (the

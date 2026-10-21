@@ -285,6 +285,18 @@ impl Slots {
         Ok(true)
     }
 
+    /// A manual save: writes the session, then copies it over the
+    /// checkpoint whether or not one exists (the original's save button
+    /// refreshes the checkpoint unconditionally).
+    pub fn save_and_checkpoint(&self, number: u32, session: &Session) -> io::Result<()> {
+        self.save(number, session)?;
+        fs::copy(
+            self.file(number, SlotKind::Save),
+            self.file(number, SlotKind::Checkpoint),
+        )?;
+        Ok(())
+    }
+
     /// The permadeath rule: a dead player's slot is dropped from the list
     /// when it has no checkpoint. The files stay, as the original's routine
     /// only edits the list.
@@ -586,6 +598,24 @@ mod tests {
         .unwrap();
         assert_eq!(data.character, Some(vec![7, 7, 7]));
         assert_eq!(data.header.clock(), 3);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_manual_save_refreshes_an_existing_checkpoint() {
+        let dir = folder("manual");
+        let slots = Slots::arena(&dir);
+        let number = slots.create(&arena("Ash")).unwrap();
+        let mut first = arena("Ash");
+        first.clock = 10;
+        slots.save_and_checkpoint(number, &first).unwrap();
+        assert!(slots.has_checkpoint(number));
+        let mut second = arena("Ash");
+        second.clock = 20;
+        slots.save_and_checkpoint(number, &second).unwrap();
+        let (loaded, kind) = slots.load(number, true).unwrap();
+        assert_eq!(kind, SlotKind::Checkpoint);
+        assert_eq!(loaded.clock, 20);
         let _ = fs::remove_dir_all(&dir);
     }
 
