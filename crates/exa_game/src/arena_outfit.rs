@@ -618,7 +618,7 @@ const FIXED_ITEMS: [ItemId; 8] = [
     ITEM_402, ITEM_1359, ITEM_251, ITEM_285, ITEM_439, ITEM_436, ITEM_85, ITEM_435,
 ];
 
-/// The ten-qword float preset copied by most early branches (0x1002c78d0).
+/// The ten-qword float preset copied by most early branches.
 ///
 /// The original copies the twenty floats into the worn-float block the fit
 /// score starts from. They are also reported as the fixed preset values, in
@@ -628,7 +628,7 @@ pub const LOOK_PRESET_ROUGH: [f32; 20] = [
     1.0,
 ];
 
-/// The ten-qword look preset copied by the shield branch (0x1002c7920).
+/// The ten-qword look preset copied by the shield branch.
 pub const LOOK_PRESET_ARMED: [f32; 20] = [
     1.5, 2.0, 1.0, 2.0, 2.0, 1.0, 2.0, 1.0, 1.0, 1.0, 8.0, 8.0, 8.0, 8.0, 8.0, 8.0, 8.0, 8.0, 1.0,
     1.0,
@@ -705,11 +705,11 @@ pub struct EquippedItem {
 /// The look values the outfit routine computes or copies.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OutfitLook {
-    /// The height-like value at 0x1002c7890, clamped to one.
+    /// The height-like value, clamped to one.
     pub height: f32,
-    /// The skin-like value at 0x1002c78a0.
+    /// The skin-like value.
     pub skin: f32,
-    /// The condition seed at 0x1004f1cd0.
+    /// The condition seed.
     pub condition_seed: f32,
     /// The twenty base floats copied from one of the fixed presets. They seed
     /// the worn bonus floats before the apparel picks add to them.
@@ -1089,7 +1089,8 @@ impl<'a> Dresser<'a> {
 
     fn halve_candidates(&mut self) {
         for candidate in self.pool.candidates_mut() {
-            candidate.weight >>= 1;
+            // A logical shift, as the original shifts the weight as unsigned.
+            candidate.weight = ((candidate.weight as u32) >> 1) as i32;
         }
     }
 
@@ -1433,6 +1434,10 @@ pub fn generate_profile(
     dresser.pick_masked(tables, &tables.belt, 0xffff, max_rank);
     if max_rank {
         if flags & 8 != 0 {
+            // The original picks mode three only while two of its globals
+            // are clear (one is a flag a previous piece's description sets
+            // in the description-phrase module, which is not modelled), and
+            // mode two otherwise. Both leave the rolls untouched.
             dresser.mode = 3;
         }
         dresser.pick_masked(tables, &tables.armour_b, 0xffff, max_rank);
@@ -1501,9 +1506,13 @@ pub fn generate_by_level(
 
     let rank_scale = (f64::from(rank) * 0.05) as f32;
     let smooth = smooth_unit(unit());
-    let mut height = (1.0 - rank_scale) * smooth;
-    height += rank_scale;
-    height += warmth;
+    // The original adds the bias to the rank scale first and the smoothed
+    // draw last, and clamps the height before the skin is derived from it.
+    let mut height = rank_scale + warmth;
+    height += (1.0 - rank_scale) * smooth;
+    if height > 1.0 {
+        height = 1.0;
+    }
     let mut skin = (0.7 - f64::from(height) * 0.6) as f32;
     if character.warmth > 0.0 {
         skin = (f64::from(skin) * 0.3 + f64::from(character.warmth) * 0.7) as f32;
@@ -3370,6 +3379,15 @@ mod tests {
         assert!(close(outfit.look.height, 0.825));
         assert!(close(outfit.look.skin, 0.205));
         assert!(close(outfit.look.condition_seed, 1.7));
+    }
+
+    #[test]
+    fn generate_by_level_clamps_the_height_before_the_skin() {
+        let tables = synthetic_tables();
+        let character = OutfitCharacter::default();
+        let outfit = generate_by_level(4, 0.7, 0, &mut Lcg::new(0), &tables, &character, unit_half);
+        assert_eq!(outfit.look.height, 1.0);
+        assert!(close(outfit.look.skin, 0.1));
     }
 
     #[test]
