@@ -57,6 +57,11 @@ pub struct LevelMusic(pub String);
 #[derive(Resource, Clone, Copy, Debug, PartialEq)]
 pub struct LevelMusicVolume(pub f32);
 
+/// Where the level's track starts, in seconds, when its mode picks a start
+/// (the arena hub starts its track at one of four places).
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct LevelMusicStart(pub f32);
+
 /// Music for a level name, following the original's track naming. A story
 /// level (`exanima0…`, `exanimac…`) plays what [`story_music`] picks.
 pub fn music_for_level(level: &str) -> &'static str {
@@ -545,7 +550,7 @@ impl AudioEnvironment {
 pub(crate) fn start_music(
     mut env: ResMut<AudioEnvironment>,
     music: Option<Res<LevelMusic>>,
-    volume: Option<Res<LevelMusicVolume>>,
+    (volume, start): (Option<Res<LevelMusicVolume>>, Option<Res<LevelMusicStart>>),
     game: Option<Res<Game>>,
     mut bank: ResMut<SoundBank>,
     mut sources: ResMut<Assets<AudioSource>>,
@@ -572,6 +577,9 @@ pub(crate) fn start_music(
     env.music_play_now(&mut bank, &music.0, volume, |bank, name| {
         bank.load_buffer(&game, &mut sources, name).unwrap_or(0)
     });
+    if let Some(start) = start {
+        env.music_set_start_offset(start.0);
+    }
 }
 
 /// Applies the music setting the options screen stores when it changes. Not

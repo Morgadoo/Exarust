@@ -1926,6 +1926,10 @@ opponent its own team. A tournament event groups its entry slots into
 teams of its team size and stands every member on one ring of
 `teams × size × 50 + 100` cm (at most 350), each team spread around its
 own sixth (`bracket_layout`).
+The hub (`exa_game::arena_hub`) draws Msc_Hub01 or Msc_Hub02 at 0.1 and a
+start at none, 41, 126.8 or 152 seconds; its click hook knows the objects
+named ArenaShop and ArenaMach by their sixteen-byte names, whose first byte
+is 0xAA in the executable's copies.
 
 The staff (`exa_game::staff`) keeps the original's 56-byte employee
 records reduced to what its routines read: a class byte (1 a recruit, 2 a

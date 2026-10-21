@@ -32,7 +32,9 @@ With `--opponent` the fight starts when the level shows: the duellist enters
 combat and, in a practice or arena level, the player's combat mode turns on.
 In an arena level the match is ticked as the original ticks a career match
 (its first second, then who stands), and the music is the arena track the
-original's match start draws, at its own volume.
+original's match start draws, at its own volume. The arena hub plays the hub track the
+original's hub entry draws (Msc_Hub01 two times in three), at 0.1, from one of
+its four start places.
 Placed characters keep their records' perks (Remise, Feint, …); the player
 and the duellist are new records, with none unless `--perks` gives the
 player some.

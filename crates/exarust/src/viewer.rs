@@ -536,7 +536,27 @@ fn play_level(
     // An arena match draws its track as the original's match start does:
     // the roll is the reversed counter, and the arena is the one named on
     // the command line, so the arena draw is not run.
-    let (track, volume) = if exa_game::arena_match::arena_index(name).is_some() {
+    let hub = name
+        .strip_suffix(".rfc")
+        .unwrap_or(name)
+        .eq_ignore_ascii_case("arenahub");
+    // The hub draws its track and where it starts as the original's hub
+    // entry does, from the counter roll.
+    let hub_music = hub.then(|| {
+        let mut roll = (exa_game::arena_match::counter_now() as u32).swap_bytes();
+        exa_game::arena_hub::pick_hub_music(&mut roll, false)
+    });
+    match hub_music.and_then(|music| music.start) {
+        Some(at) => commands.insert_resource(exa_audio::LevelMusicStart(at)),
+        None => commands.remove_resource::<exa_audio::LevelMusicStart>(),
+    }
+    let (track, volume) = if let Some(music) = hub_music {
+        info!(
+            "arena hub music: {} at {}, from {:?} s",
+            music.track.name, music.track.volume, music.start
+        );
+        (music.track.name.to_ascii_lowercase(), music.track.volume)
+    } else if exa_game::arena_match::arena_index(name).is_some() {
         use exa_game::arena_match::{counter_now, pick_track};
         let mut roll = (counter_now() as u32).swap_bytes();
         let track = pick_track(&mut arena_picks.tracks, &mut roll, false, false);
