@@ -194,6 +194,11 @@ dead 0x2010D (0.25), fear 0x107 (0.18), embolden 0x108 (0.18) and raise dead
   `round((1 − 0.25·strength)·1660/83)` (19 at strength 0.2) and the strength
   scale `1.25 − 0.25·strength²`. Raise dead binds nothing; command makes the
   0x10010D effect on the corpse and the 0x2010D power on the caster.
+- **Draw descriptions**: the sight screen is a 256² texture with a
+  16-segment, 40 cm sphere and four noise octaves at 0.5; the spirit screen
+  is 512² at 0.8. Each tracked body's draw carries its billboard axes, its
+  three colours and thresholds and its texture offset; the unit's shutdown
+  is empty and its two shader source strings are released.
 - **Target picking** takes a character of body class 1 without effect flag
   0x10, alive unless the dead powers ask, seen by the view unless Sense
   Minds runs, and within `n·scale·0.5·40/depth` of the screen centre. The
@@ -222,6 +227,34 @@ dead 0x2010D (0.25), fear 0x107 (0.18), embolden 0x108 (0.18) and raise dead
   `5000 − 13333·fade`, once released), each block `light·strength`.
   A chunk's ribbon runs through 12 trail points with 8 samples, in the
   chunk's two random tints; the draw's texture offset is (0, 0, 1).
+- **Hits** (both effects): a simulation object (the 0x60000000 class) is
+  touched through its capsule and bounding radius; every body point inside
+  a chunk's `reach·2 + margin + 40` cm moves along the chunk's last motion
+  by `(1 − d²/r²)·0.8·0.025` and gathers `(1 − d²/r²)·0.0001` of impact in
+  double precision. A chunk inside a body's sphere is pushed out by
+  `radius/|d| − 1`, and a rebound moves the chunk half way to the contact
+  and keeps 90 % of its reach.
+- **Torrent hits**: a stream's live history points reach
+  `age·scale + margin + 10` cm (scale 0.25 against the level, 0.5 against a
+  character). A body point inside moves along the point's motion by
+  `(1 − d²/r²)·0.01` and gathers `1e−5` of impact; the stream point keeps
+  0.5 of the way to the contact; the stream's channels rise by the point's
+  remaining life over 66. A character hit drops its guard by
+  `inv mass·0.0005` (double), counts the hit, knocks with an impulse over
+  one normalised and capped at 30 then doubled, clears a 0x10 stance's flag
+  and timer, adds 0.01 of anger, and sets the stun to
+  `0.08·(1 − inv mass)` — floored at zero and, the original's inverted
+  clamp, to 0.008 above 0.08. A limb takes
+  `mass/(mass + 0.5)·scale·0.3·(2 − s)·s` of its overshoot and weight.
+- **Torrent light buckets**: a hit point within 25600 cm² of a bucket joins
+  the nearest, its position averaged by the bucket's weight and its level
+  added; further than that a new bucket opens, until sixteen exist, after
+  which the nearest merges whatever the distance. A bucket's level is
+  `(2 − charge)·charge`.
+- **Aim**: both effects take the planar yaw of the hand's direction from
+  the view, limit it to 45° around the body's aim yaw and build the pitch
+  from the height. The torrent's contact setup is 0.25 of reach and 0.5 of
+  share; the character's is 0.5.
 - **Torrent**: sixteen streams are born 16 cm out, their height 1.5 times
   the direction less 30 cm, with a spawn delay of 8 less a random 0 to 2
   ticks and a 66-tick life. The level is `0.4·(2 − charge)·charge` while
@@ -356,6 +389,18 @@ wisps ride their parts. The player cannot cast yet (there is no power bar):
 the player ([DEBUGGING.md](DEBUGGING.md)).
 
 ### Drawing
+
+The force and mind passes are described as draw calls in
+`exa_game::effects::draw`: program pair, uniforms, textures, blend, depth
+and view. The force geometry is one mesh a view drawn with `effectforce_v`
+and `effectforce_f` (blast family) or `effecttorrent_f` (torrent), with
+`ObjMat`, `TexOfs` (the blast's (0, 0, 1)) and `EmiTex` on unit 0; the GI
+lights carry their position, radius or strength and colour blocks. The mind
+sight is one draw a tracked body with `TexVecU`, `TexVecV`, `EyeVec`, the
+three `MindCol` vectors and `EmiTex`, and the spirit screen one 512² draw.
+Destroying either force effect releases its two sound handles and its GI
+light and drops the chunks or streams. The actual GL calls are platform
+glue and stay out.
 
 The effects' meshes come from their own builders but are drawn with
 `exa_render::glow::GlowMaterial`, an additive stand-in: the original's

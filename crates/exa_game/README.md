@@ -133,8 +133,18 @@ blocks); the torrent's sixteen 16 cm births, `0.4·(2 − charge)·charge` level
 15 cm stream step, 66-tick stream life and 8-less-a-draw spawn delay, its two
 hit channels (0.005 and 0.01, the second up to 1.8), its 1 % push, 12-quad
 ribbons and 120 cm, 2000-strength GI light. `effects::ribbon_mesh` builds the
-glow material's mesh from either ribbon. The power bar that would cast them
-and the AI's cast are not in, so no system spawns them yet.
+glow material's mesh from either ribbon. The contact rules are in too: a
+simulation object's points (`0.8·0.025` push, `0.0001` impact), a chunk's
+constraint and rebound, the torrent's scan, character hit (guard, knock,
+stun with the original's inverted clamp, anger), limb push, the light
+bucket merge (6400/25600 cm², sixteen buckets), the two aim helpers (planar
+yaw clamped 45° around the body's), the contact setups and the destroy's
+two sound handles and GI light. `effects::draw` describes every pass for the
+renderer: `effectforce_v/f`, `effecttorrent_f`, the blast/torrent GI lights,
+the mind sight (256², 16-segment sphere, per-body `MindCol` uniforms) and
+the 512² spirit screen. The power bar that would cast them and the AI's cast
+are not in, so no system spawns them yet; the GL calls themselves are
+platform glue.
 
 The Mind domain's rules (`mind`) are in: the sixteen-row table, the
 focus/record/corpse gates, calm, enrage, confusion, fear, embolden,
