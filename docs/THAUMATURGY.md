@@ -341,7 +341,9 @@ flags, and the visibility bits (`0x10` shown, `0x20` hidden, `0x4` fading,
 `0x8000_0000` dead) that hide a part with subobjects by setting its low
 hidden flag. The hit veto plays `thmdsp_phs` at pitch `0.9 + 0.2·r`, sets
 `0xC000` on the struck node and every part below it, lists it for 500 ms and
-leaves a wisp at the contact; each returned weapon ends the shell.
+leaves a wisp at the contact; each returned weapon ends the shell. A shell's timed segments show
+`clamp((elapsed − start) / (end − start), 0, 1)`, inverted unless the
+segment is reversed; a segment draws on its side of one half.
 
 ## The power tree
 

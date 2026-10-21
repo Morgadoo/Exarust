@@ -7,7 +7,9 @@
 //!   starts at zero, whose node starts at flags `0x21000000` and whose end
 //!   event sets the fade to zero and asks the node to play `0x10`. The body
 //!   hands the shell its fade tick; the effect's own subobjects are marked
-//!   with bit 8 when it ends.
+//!   with bit 8 when it ends. A timed segment shows
+//!   `clamp((elapsed − start) / (end − start), 0, 1)`, inverted unless the
+//!   segment is reversed, and draws on its side of one half.
 //! - **Constant displacement** ([`ConstantVeil::start`]): every physics node
 //!   of the body gains collision bit `0x4000`, the shell is made, the
 //!   left-behind image is gathered from the body's mesh (`kind 9`) and skin
@@ -473,6 +475,107 @@ pub fn clear_shells(nodes: &mut [ShellNode]) {
     }
 }
 
+/// A shell timeline segment: a time window and its flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShellSegment {
+    pub flags: u32,
+    /// The segment's start and end, in the body's elapsed milliseconds.
+    pub start: u32,
+    pub end: u32,
+}
+
+/// The segment's lower draw-side bit.
+pub const SEGMENT_DRAW_ON: u32 = 0x200;
+/// The segment's shown value follows the elapsed time.
+pub const SEGMENT_TIMED: u32 = 0x400;
+/// The timed value is inverted.
+pub const SEGMENT_REVERSE: u32 = 0x800;
+/// The segment draws while its shown value is on its side.
+pub const SEGMENT_DRAW: u32 = 0x600;
+/// An untimed segment is fully shown.
+pub const SEGMENT_FULL: u32 = 0x1000;
+
+/// The timed shown value: the elapsed fraction clamped to 0 to 1, then
+/// inverted unless the segment is reversed.
+pub fn segment_shown(segment: &ShellSegment, elapsed: u32) -> f32 {
+    if segment.flags & SEGMENT_TIMED == 0 {
+        return if segment.flags & SEGMENT_FULL != 0 {
+            1.0
+        } else {
+            0.0
+        };
+    }
+    let span = f64::from(segment.end) - f64::from(segment.start);
+    let at = f64::from(elapsed) - f64::from(segment.start);
+    let t = (at / span) as f32;
+    // The original's clamp is a max then a min, so a not-a-number becomes
+    // zero rather than staying not a number as `f32::clamp` would.
+    #[allow(clippy::manual_clamp)]
+    let t = t.max(0.0).min(1.0);
+    if segment.flags & SEGMENT_REVERSE != 0 {
+        t
+    } else {
+        1.0 - t
+    }
+}
+
+/// A displacement shell's timed segments.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ShellTimeline {
+    pub segments: Vec<ShellSegment>,
+    /// The segment being shown.
+    pub index: usize,
+    /// When the timeline started.
+    pub start: u32,
+    /// The current shown value.
+    pub shown: f32,
+    /// The segment whose callback ran this step.
+    pub fired: Option<usize>,
+}
+
+impl ShellTimeline {
+    /// Steps the shown value: the current segment's value and whether its
+    /// draw side is above one half.
+    pub fn step(&mut self, now: u32) -> (f32, bool) {
+        let Some(segment) = self.segments.get(self.index).copied() else {
+            return (0.0, false);
+        };
+        let elapsed = now.wrapping_sub(self.start);
+        self.shown = segment_shown(&segment, elapsed);
+        let draw = segment.flags & SEGMENT_DRAW != 0 && self.shown > 0.5;
+        (self.shown, draw)
+    }
+
+    /// Advances past a segment whose end has passed: its callback runs and
+    /// the next segment shows. Returns the fired segment.
+    pub fn advance(&mut self, now: u32) -> Option<usize> {
+        let segment = *self.segments.get(self.index)?;
+        let elapsed = now.wrapping_sub(self.start);
+        if segment.end < elapsed {
+            let fired = self.index;
+            self.index += 1;
+            self.fired = Some(fired);
+            Some(fired)
+        } else {
+            None
+        }
+    }
+
+    /// Whether the shell's subobject draws at half the shown value: the
+    /// closing side of the draw window.
+    pub fn closing_draw(&self) -> bool {
+        let Some(segment) = self.segments.get(self.index) else {
+            return false;
+        };
+        segment.flags & SEGMENT_DRAW != 0 && self.shown <= 0.5
+    }
+
+    /// The subobject's fade: one less the shown value.
+    pub fn fade(&self) -> f32 {
+        1.0 - self.shown
+    }
+}
+
 /// How long a tendril strand lives after its node's restore, in the
 /// original's milliseconds.
 pub const TENDRIL_MS: u32 = 50;
@@ -653,6 +756,63 @@ mod tests {
         assert_eq!(veil.body.children[0].collision & PHASED_BITS, 0);
         assert_eq!(veil.shell.event, SHELL_END);
         assert_eq!(veil.phased.list.len(), 0);
+    }
+
+    #[test]
+    fn a_shell_segment_follows_its_timed_window() {
+        let segment = ShellSegment {
+            flags: SEGMENT_TIMED | SEGMENT_REVERSE | SEGMENT_DRAW,
+            start: 100,
+            end: 300,
+        };
+        assert_eq!(segment_shown(&segment, 0), 0.0);
+        assert_eq!(segment_shown(&segment, 100), 0.0);
+        assert_eq!(segment_shown(&segment, 200), 0.5);
+        assert_eq!(segment_shown(&segment, 300), 1.0);
+        assert_eq!(segment_shown(&segment, 400), 1.0);
+        let reverse = ShellSegment {
+            flags: SEGMENT_TIMED,
+            start: 0,
+            end: 100,
+        };
+        assert_eq!(segment_shown(&reverse, 25), 0.75);
+        let full = ShellSegment {
+            flags: SEGMENT_FULL,
+            start: 0,
+            end: 1,
+        };
+        assert_eq!(segment_shown(&full, 0), 1.0);
+        assert_eq!(segment_shown(&ShellSegment { flags: 0, ..full }, 0), 0.0);
+    }
+
+    #[test]
+    fn the_shell_timeline_advances_and_draws_on_its_side() {
+        let mut timeline = ShellTimeline {
+            segments: vec![
+                ShellSegment {
+                    flags: SEGMENT_TIMED | SEGMENT_REVERSE | SEGMENT_DRAW,
+                    start: 0,
+                    end: 100,
+                },
+                ShellSegment {
+                    flags: SEGMENT_FULL | SEGMENT_DRAW_ON,
+                    start: 0,
+                    end: 200,
+                },
+            ],
+            start: 1000,
+            ..ShellTimeline::default()
+        };
+        assert_eq!(timeline.step(1050), (0.5, false));
+        assert!(timeline.closing_draw());
+        assert_eq!(timeline.step(1101), (1.0, true));
+        assert!(!timeline.closing_draw());
+        assert!(timeline.advance(1100).is_none());
+        assert_eq!(timeline.advance(1101), Some(0));
+        assert_eq!(timeline.index, 1);
+        assert_eq!(timeline.fired, Some(0));
+        assert_eq!(timeline.step(1201), (1.0, true));
+        assert_eq!(timeline.fade(), 0.0);
     }
 
     #[test]
