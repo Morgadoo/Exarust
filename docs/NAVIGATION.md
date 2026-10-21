@@ -21,9 +21,16 @@ cells beyond. Each fixed tick, in the behaviour stage, every character
 under its controller moves its footprint to where its feet stand: an NPC
 always, the player unless it walks (`exa_game::footprints`). A plan lifts
 that footprint and stamps it again. A dirty
-rectangle joins another when the padded union is smaller, keeps sixteen,
-grows by three cells, and raises a floor. The scene-wide countdown is not
-in yet. With no grid there is no path.
+rectangle joins another when the padded union is smaller; a ring of sixteen
+holds objects as they move, overwrites its oldest slot and never merges.
+A refresh drains the ring into the merged list, grows each side by three
+cells and raises floors from the samples: a missing floor takes any higher
+sample, a sample within fifteen above the working floor takes it, and a
+sample fifteen or more above, or at or under the cell's floor, raises the
+upper floor when that is missing or more than fifteen below the sample.
+A scene-wide countdown holds both queues for its frames, then hands the
+whole grid less its twenty-cell rim in as one rectangle. With no grid there
+is no path.
 
 Evidence: reverse engineering of `Exanima.exe` 0.9.5 (the grid build, its
 span, layer and cost passes, the scene fields it reads, the level loader),

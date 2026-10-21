@@ -42,7 +42,8 @@ pub use crate::terrain::ground::GroundTile;
 pub use footprint::{NavFootprints, remove_footprint, stamp_footprint};
 pub use mover::{
     CellRect, FootprintAdd, FootprintList, FootprintRect, Movers, plan_around, plan_footprint,
-    queue_moved, queued_moves, rect_around, refresh_movers,
+    queue_moved, queued_moves, rect_around, refresh_movers, ring_contents, ring_moved,
+    start_full_refresh,
 };
 pub use path::{Look, Path, find_path, look_ahead};
 pub use query::{LineHit, line_walk, obstacle, straight_walk};

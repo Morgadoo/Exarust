@@ -3,20 +3,24 @@
 //! A plan lifts the standing footprint, searches, and stamps it again, so
 //! the body does not pay for the cell it is standing on. A moved rectangle
 //! joins an existing one when the union padded by six on each side is
-//! strictly smaller than the two padded rectangles. Sixteen are kept. A
-//! refresh grows each side by three cells and raises floors from samples
-//! the caller supplies: the lower floor when it is missing or the sample
-//! is less than fifteen above it, otherwise the upper floor. A sample at
-//! or under the lower floor and its underside raises an empty upper floor.
-//! A changed floor is written and the cost passes run again. Evidence: the
-//! movement notes' planner and movers. The scene-wide countdown is not
-//! here, and the samples are not read out of a scene graph.
+//! strictly smaller than the two padded rectangles, else it is appended.
+//! A ring of sixteen rectangles queues objects as they move and never
+//! merges; a refresh drains it into the pending list, grows each side by
+//! three cells and raises floors from the samples the caller supplies.
+//! A sample above the working floor takes it when the floor is missing or
+//! the sample is less than fifteen above; a much higher sample or one at
+//! or under the floor raises the upper floor when the upper is missing or
+//! the sample is less than fifteen above it. A changed floor is written and
+//! the cost passes run again. A scene-wide countdown holds both queues and
+//! then hands the whole grid in as one rectangle. Evidence: the movement
+//! notes' planner and movers.
 
 use bevy::math::Vec3;
 
 use super::query::{axis, voxels};
 use super::{Layer, NavGrid, Path, find_path, remove_footprint, stamp_footprint};
 
+/// Ring slots.
 const SLOTS: usize = 16;
 const PAD: i32 = 3;
 const BOX_PAD: f64 = 2.5;
@@ -30,10 +34,33 @@ pub struct CellRect {
     pub z1: i32,
 }
 
-/// Rectangles waiting for a refresh. At most [`SLOTS`].
-#[derive(Debug, Default)]
+/// The moved objects' ring and the rectangles waiting for a refresh.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Movers {
+    /// The pending list: merged rectangles, grown as needed.
     rects: Vec<CellRect>,
+    ring: [CellRect; SLOTS],
+    read: usize,
+    write: usize,
+    /// A scene-wide refresh counts down; while it runs, both queues hold.
+    countdown: i32,
+}
+
+impl Default for Movers {
+    fn default() -> Self {
+        Self {
+            rects: Vec::new(),
+            ring: [CellRect {
+                x0: 0,
+                z0: 0,
+                x1: 0,
+                z1: 0,
+            }; SLOTS],
+            read: 0,
+            write: 0,
+            countdown: 0,
+        }
+    }
 }
 
 /// The cell rectangle around an axis-aligned box, padded by two and a half
@@ -54,10 +81,13 @@ pub fn rect_around(grid: &NavGrid, centre: Vec3, half: Vec3) -> CellRect {
     rect.normalized()
 }
 
-/// Queue `rect`, merging it into the first rectangle whose padded union is
-/// strictly smaller than the two padded areas. Otherwise append it, dropping
-/// the oldest past sixteen.
+/// Merge `rect` into the first pending rectangle whose padded union is
+/// strictly smaller than the two padded areas. Otherwise append it. The
+/// scene-wide countdown holds the merge while it runs.
 pub fn queue_moved(movers: &mut Movers, rect: CellRect) {
+    if movers.countdown >= 1 {
+        return;
+    }
     let rect = rect.normalized();
     for existing in &mut movers.rects {
         let joined = existing.union(rect);
@@ -66,15 +96,47 @@ pub fn queue_moved(movers: &mut Movers, rect: CellRect) {
             return;
         }
     }
-    if movers.rects.len() == SLOTS {
-        movers.rects.remove(0);
-    }
     movers.rects.push(rect);
 }
 
-/// The rectangles waiting for a refresh.
+/// The pending rectangles.
 pub fn queued_moves(movers: &Movers) -> &[CellRect] {
     &movers.rects
+}
+
+/// Queue one moved object in the sixteen-slot ring, clamping it to the
+/// grid's three-cell border. The oldest slot is overwritten; nothing merges.
+pub fn ring_moved(movers: &mut Movers, grid: &NavGrid, rect: CellRect) {
+    if movers.countdown >= 1 {
+        return;
+    }
+    let (width, depth) = grid.size();
+    let rect = rect.normalized();
+    let rect = CellRect {
+        x0: rect.x0.max(PAD),
+        z0: rect.z0.max(PAD),
+        x1: rect.x1.min(width as i32 - PAD - 1),
+        z1: rect.z1.min(depth as i32 - PAD - 1),
+    };
+    movers.ring[movers.write] = rect;
+    movers.write = (movers.write + 1) % SLOTS;
+}
+
+/// The rectangles in the ring, oldest first.
+pub fn ring_contents(movers: &Movers) -> Vec<CellRect> {
+    let mut out = Vec::new();
+    let mut at = movers.read;
+    while at != movers.write {
+        out.push(movers.ring[at]);
+        at = (at + 1) % SLOTS;
+    }
+    out
+}
+
+/// Starts a scene-wide refresh: the next `ticks` calls hold the queues,
+/// then the whole grid (less its twenty-cell rim) is refreshed.
+pub fn start_full_refresh(movers: &mut Movers, ticks: i32) {
+    movers.countdown = ticks.max(1);
 }
 
 /// A footprint rectangle on the planner grid.
@@ -150,9 +212,27 @@ pub fn plan_around(grid: &mut NavGrid, standing: Vec3, goal: Vec3, size: u8) -> 
 }
 
 /// Grow each queued rectangle by three cells, raise floors from `samples`,
-/// and rerun the cost passes where a floor changed. The queue is then empty.
+/// and rerun the cost passes where a floor changed. The ring is drained
+/// into the pending list first. The queues are then empty, except in the
+/// frames of the scene-wide countdown, which returns early.
 pub fn refresh_movers(grid: &mut NavGrid, movers: &mut Movers, samples: &[Vec3]) {
     let (width, depth) = grid.size();
+    if movers.countdown > 0 {
+        movers.countdown -= 1;
+        if movers.countdown != 0 {
+            return;
+        }
+        movers.rects = vec![CellRect {
+            x0: 20,
+            z0: 20,
+            x1: width as i32 - 21,
+            z1: depth as i32 - 21,
+        }];
+    }
+    while movers.read != movers.write {
+        movers.rects.push(movers.ring[movers.read]);
+        movers.read = (movers.read + 1) % SLOTS;
+    }
     let rects = std::mem::take(&mut movers.rects);
     for rect in rects {
         let x0 = (rect.x0 - PAD).max(0);
@@ -181,9 +261,9 @@ pub fn refresh_movers(grid: &mut NavGrid, movers: &mut Movers, samples: &[Vec3])
             if !(1..255).contains(&v) || sx < x0 || sz < z0 || sx > x1 || sz > z1 {
                 continue;
             }
-            let underside = grid.cell(sx as usize, sz as usize, Layer::Lower).underside;
             let i = at(sx, sz);
-            raise(&mut lower[i], &mut upper[i], underside, v as u8);
+            let floor = grid.cell(sx as usize, sz as usize, Layer::Lower).floor;
+            raise_static(&mut lower[i], &mut upper[i], floor, v as u8);
         }
         let mut changed = false;
         for z in z0..=z1 {
@@ -209,35 +289,39 @@ fn write_floor(grid: &mut NavGrid, x: usize, z: usize, layer: Layer, floor: u8) 
     true
 }
 
-/// Raise a working floor from a sample voxel.
+/// Raise a working floor from a sample voxel, as the refresh does.
 ///
-/// The lower floor takes the sample when it is missing or the sample is
-/// less than fifteen above it. A higher sample raises the upper floor. A
-/// sample at or under the lower floor and its underside raises an empty
-/// upper floor, or one it is less than fifteen above.
-fn raise(lower: &mut u8, upper: &mut u8, underside: u8, sample: u8) {
+/// A missing floor takes any sample above it; otherwise a sample up to
+/// fifteen above it takes it, and one fifteen or more above goes on to the
+/// upper floor. A sample at or under the working floor also goes on to the
+/// upper floor. The upper floor takes a higher sample when it is missing or
+/// the sample is less than fifteen above it.
+fn raise_static(lower: &mut u8, upper: &mut u8, floor: u8, sample: u8) {
     let stood = i32::from(*lower);
     let height = i32::from(sample);
-    let above = i32::from(*upper);
-    let under = i32::from(underside);
+    let mut upper_check = false;
     if stood < height {
-        if stood == 0 || height < stood + 15 {
+        if stood == 0 {
             *lower = sample;
-        } else if above < height {
+        } else if stood + 15 <= height {
+            upper_check = true;
+        } else {
+            *lower = sample;
+        }
+    } else if height <= i32::from(floor) {
+        upper_check = true;
+    }
+    if upper_check {
+        let above = i32::from(*upper);
+        if above < height && (above == 0 || height < above + 15) {
             *upper = sample;
         }
-    } else if height <= stood
-        && height <= under
-        && (above == 0 || height < above + 15)
-        && above < height
-    {
-        *upper = sample;
     }
 }
 
 fn padded_area(rect: CellRect) -> i64 {
-    let width = i64::from(rect.x1 - rect.x0 + 1);
-    let depth = i64::from(rect.z1 - rect.z0 + 1);
+    let width = i64::from(rect.x1 - rect.x0);
+    let depth = i64::from(rect.z1 - rect.z0);
     (width + 6) * (depth + 6)
 }
 
@@ -401,6 +485,8 @@ mod tests {
         queue_moved(&mut far, one(17));
         assert_eq!(queued_moves(&far).len(), 2);
 
+        // The ring holds sixteen slots and overwrites the oldest; it never
+        // merges. The pending merge keeps every rectangle.
         let mut many = Movers::default();
         for i in 0..17 {
             let x = 3 + i * 7;
@@ -414,10 +500,29 @@ mod tests {
                 },
             );
         }
-        let queued = queued_moves(&many);
-        assert_eq!(queued.len(), 16);
-        assert_eq!(queued[0].x0, 10);
-        assert_eq!(queued[15].x0, 3 + 16 * 7);
+        assert_eq!(queued_moves(&many).len(), 17);
+        let mut ring = Movers::default();
+        for i in 0..17 {
+            let x = 3 + i;
+            ring_moved(
+                &mut ring,
+                &grid,
+                CellRect {
+                    x0: x,
+                    z0: 3,
+                    x1: x,
+                    z1: 3,
+                },
+            );
+        }
+        // The reader is not moved when the writer wraps: after seventeen
+        // pushes the read index is 0 and the write index 1, so only the
+        // slot just written is drained. The original relies on the ring
+        // being emptied every frame, before it can wrap.
+        let contents = ring_contents(&ring);
+        assert_eq!(contents.len(), 1);
+        assert_eq!(contents[0].x0, 19);
+        assert_eq!(ring_contents(&Movers::default()).len(), 0);
 
         let mut cell = grid.cell(14, 12, Layer::Lower);
         cell.floor = 20;
@@ -455,5 +560,121 @@ mod tests {
         assert_eq!(grid.cell(11, 12, Layer::Lower).floor, 10);
         assert_eq!(grid.cell(16, 12, Layer::Lower).floor, 10);
         assert_eq!(grid.cell(16, 12, Layer::Lower).roughness, 0);
+    }
+
+    #[test]
+    fn a_sample_raises_the_working_or_the_upper_floor() {
+        let mut lower = 0u8;
+        let mut upper = 0u8;
+        raise_static(&mut lower, &mut upper, 0, 7);
+        assert_eq!((lower, upper), (7, 0));
+
+        let mut lower = 10u8;
+        let mut upper = 0u8;
+        raise_static(&mut lower, &mut upper, 10, 20);
+        assert_eq!((lower, upper), (20, 0));
+
+        let mut lower = 10u8;
+        let mut upper = 0u8;
+        raise_static(&mut lower, &mut upper, 10, 25);
+        assert_eq!((lower, upper), (10, 25));
+
+        let mut lower = 20u8;
+        let mut upper = 0u8;
+        raise_static(&mut lower, &mut upper, 20, 12);
+        assert_eq!((lower, upper), (20, 12));
+
+        let mut lower = 10u8;
+        let mut upper = 20u8;
+        raise_static(&mut lower, &mut upper, 10, 30);
+        assert_eq!((lower, upper), (10, 30));
+
+        let mut lower = 10u8;
+        let mut upper = 20u8;
+        raise_static(&mut lower, &mut upper, 10, 12);
+        assert_eq!((lower, upper), (12, 20));
+
+        let mut lower = 10u8;
+        let mut upper = 5u8;
+        raise_static(&mut lower, &mut upper, 10, 18);
+        assert_eq!((lower, upper), (18, 5));
+
+        let mut lower = 20u8;
+        let mut upper = 0u8;
+        raise_static(&mut lower, &mut upper, 10, 12);
+        assert_eq!((lower, upper), (20, 0));
+    }
+
+    #[test]
+    fn a_ring_rectangle_is_drained_by_the_refresh() {
+        let mut grid = yard();
+        let mut movers = Movers::default();
+        ring_moved(
+            &mut movers,
+            &grid,
+            CellRect {
+                x0: 12,
+                z0: 12,
+                x1: 12,
+                z1: 12,
+            },
+        );
+        assert_eq!(ring_contents(&movers).len(), 1);
+        assert!(queued_moves(&movers).is_empty());
+        let samples = [at(&grid, 12, 12, 2.0)];
+        refresh_movers(&mut grid, &mut movers, &samples);
+        assert!(ring_contents(&movers).is_empty());
+        assert!(queued_moves(&movers).is_empty());
+        assert_eq!(grid.cell(12, 12, Layer::Lower).floor, 20);
+    }
+
+    #[test]
+    fn a_scene_wide_refresh_waits_then_takes_the_whole_grid() {
+        let mut grid = NavGrid::empty(60, 60, 0.0);
+        for z in 0..60 {
+            for x in 0..60 {
+                grid.set_cell(
+                    x,
+                    z,
+                    Layer::Lower,
+                    NavCell {
+                        floor: 10,
+                        ..NavCell::default()
+                    },
+                );
+            }
+        }
+        let mut movers = Movers::default();
+        start_full_refresh(&mut movers, 2);
+        queue_moved(
+            &mut movers,
+            CellRect {
+                x0: 12,
+                z0: 12,
+                x1: 12,
+                z1: 12,
+            },
+        );
+        ring_moved(
+            &mut movers,
+            &grid,
+            CellRect {
+                x0: 13,
+                z0: 12,
+                x1: 13,
+                z1: 12,
+            },
+        );
+        assert!(queued_moves(&movers).is_empty());
+        assert!(ring_contents(&movers).is_empty());
+
+        refresh_movers(&mut grid, &mut movers, &[]);
+        assert_eq!(movers.countdown, 1);
+        assert!(queued_moves(&movers).is_empty());
+
+        refresh_movers(&mut grid, &mut movers, &[]);
+        assert_eq!(movers.countdown, 0);
+        assert!(queued_moves(&movers).is_empty());
+        assert!(ring_contents(&movers).is_empty());
     }
 }
