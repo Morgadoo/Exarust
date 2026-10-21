@@ -716,6 +716,8 @@ impl Scene {
     pub fn register(&mut self, node: usize, sector: usize) {
         self.nodes[node].sector = Some(sector);
         self.nodes[node].flags |= IN_SCENE;
+        // The sector is the frame origin, so the world frame follows it.
+        self.nodes[node].stale = true;
         if !self.sectors[sector].nodes.contains(&node) {
             self.sectors[sector].nodes.push(node);
         }
@@ -872,6 +874,11 @@ impl Scene {
     /// frames, so the result is already in world space.
     pub fn rebuild_sector_bounds(&mut self, sector: usize) {
         let nodes: Vec<usize> = self.sectors[sector].nodes.clone();
+        for &node in &nodes {
+            if self.nodes[node].stale {
+                self.refresh(node);
+            }
+        }
         let children: Vec<(Bounds, bool)> = nodes
             .iter()
             .filter_map(|&n| {
