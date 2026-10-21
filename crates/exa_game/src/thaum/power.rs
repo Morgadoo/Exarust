@@ -114,6 +114,11 @@ pub struct PowerBase {
 }
 
 impl PowerBase {
+    /// The base class' "can this power start a cast" slot: always false.
+    pub fn can_hook(&self) -> bool {
+        false
+    }
+
     /// A power made ready; its first control tick starts it.
     pub fn new(id: u32) -> Self {
         Self {
@@ -449,6 +454,11 @@ mod tests {
         assert!((body.spent - 0.65).abs() < 1e-6);
         power.release(&mut body);
         assert!(body.spent.abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_base_hook_slot_refuses() {
+        assert!(!PowerBase::new(0x201).can_hook());
     }
 
     #[test]

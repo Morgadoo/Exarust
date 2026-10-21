@@ -103,6 +103,11 @@ pub struct Shell {
 }
 
 impl Shell {
+    /// The HUD word of a running shell: always the active word.
+    pub fn hud(&self) -> super::HudState {
+        super::HudState::active()
+    }
+
     pub fn new() -> Self {
         Self {
             state: super::READY,
@@ -168,6 +173,11 @@ pub struct RemotePower {
 }
 
 impl RemotePower {
+    /// The HUD word of a running bubble or barricade.
+    pub fn hud(&self) -> super::HudState {
+        super::HudState::active()
+    }
+
     /// A power whose effect sits at `at`.
     pub fn new(at: [f32; 3]) -> Self {
         Self {
@@ -351,6 +361,11 @@ pub struct Kinesis {
 }
 
 impl Kinesis {
+    /// The HUD word of a running kinesis.
+    pub fn hud(&self) -> super::HudState {
+        super::HudState::active()
+    }
+
     pub fn new() -> Self {
         Self {
             state: super::READY,
@@ -455,6 +470,29 @@ pub fn kinesis_spin(direction: [f32; 3]) -> [f32; 3] {
 /// When a held body's user stamp runs out.
 pub fn hold_until(now: u32) -> u32 {
     now.wrapping_add(HOLD_MS)
+}
+
+/// What a kinesis pick puts on the body it grabs: the force shell's speed
+/// scale, the special physics material and the 2 s user stamp.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KinesisPick {
+    pub item: u64,
+    /// The shell's scale from the item's speed.
+    pub shell_scale: f32,
+    /// The body remembers its user until then.
+    pub hold_until: u32,
+    /// The body takes the special kinesis physics material.
+    pub material: bool,
+}
+
+/// The pick's shell is the force shell scaled by `(1/speed + 0.015)·0.5`.
+pub fn kinesis_pick(item: u64, speed: f32, now: u32) -> KinesisPick {
+    KinesisPick {
+        item,
+        shell_scale: super::super::kinesis_scale(speed),
+        hold_until: hold_until(now),
+        material: true,
+    }
 }
 
 /// Throw's phases.
@@ -699,6 +737,11 @@ mod tests {
         assert_eq!(kinesis_turn(8, 100.0), [0.0, -2.601]);
         assert_eq!(kinesis_spin([1.0, 2.0, 3.0]), [-0.2, -0.4, -0.6]);
         assert_eq!(hold_until(100), 2100);
+        let pick = kinesis_pick(7, 2.0, 100);
+        assert_eq!(pick.item, 7);
+        assert!((pick.shell_scale - 0.2575).abs() < 1e-6);
+        assert_eq!(pick.hold_until, 2100);
+        assert!(pick.material);
     }
 
     #[test]

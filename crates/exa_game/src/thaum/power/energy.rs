@@ -158,6 +158,11 @@ pub struct ShockWeapons {
 }
 
 impl ShockWeapons {
+    /// The HUD word of a running power.
+    pub fn hud(&self) -> super::HudState {
+        super::HudState::active()
+    }
+
     pub fn new() -> Self {
         Self {
             state: super::READY,

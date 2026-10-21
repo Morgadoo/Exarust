@@ -137,13 +137,10 @@ impl MindSense {
 }
 
 impl MindSense {
-    /// The HUD word of a running Sense Minds.
-    pub fn hud(&self, now: u32) -> super::HudState {
-        if self.state == super::ENDING {
-            super::HudState::ending(now)
-        } else {
-            super::HudState::active()
-        }
+    /// The HUD word of a running Sense Minds: the original's slot always
+    /// publishes the active word.
+    pub fn hud(&self) -> super::HudState {
+        super::HudState::active()
     }
 }
 
@@ -239,13 +236,9 @@ impl MindMask {
 }
 
 impl MindMask {
-    /// The HUD word of a running Mask Mind.
-    pub fn hud(&self, now: u32) -> super::HudState {
-        if self.state == super::ENDING {
-            super::HudState::ending(now)
-        } else {
-            super::HudState::active()
-        }
+    /// The HUD word of a running Mask Mind: always the active word.
+    pub fn hud(&self) -> super::HudState {
+        super::HudState::active()
     }
 }
 
@@ -462,6 +455,15 @@ pub struct LoyaltyStep {
 }
 
 impl LoyaltyCaster {
+    /// The HUD word: the ending row once the power ends.
+    pub fn hud(&self, now: u32) -> super::HudState {
+        if self.state == super::ENDING {
+            super::HudState::ending(now)
+        } else {
+            super::HudState::active()
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             state: super::READY,
@@ -741,6 +743,18 @@ pub struct ControlMindStep {
 }
 
 impl ControlMindCaster {
+    /// The HUD word of a running binding: always the active word.
+    pub fn hud(&self) -> super::HudState {
+        super::HudState::active()
+    }
+
+    /// Hands control over: the caster keeps the handover bit, the target
+    /// gains the control bits and carries the possession marker.
+    pub fn possess(caster: &mut CastBody, target: &mut CastBody) -> Possession {
+        super::hand_over(caster, target);
+        Possession::new()
+    }
+
     /// The control tick. While the target is not gone and the binding has
     /// not run 2 s, it spends 0.002 of focus a tick; then it hands control
     /// over. A gone target ends the power at once.
@@ -897,6 +911,11 @@ pub struct SpiritStep {
 }
 
 impl SpiritPower {
+    /// The HUD word of a running form: always the active word.
+    pub fn hud(&self) -> super::HudState {
+        super::HudState::active()
+    }
+
     pub fn new(drain: f32) -> Self {
         Self {
             state: super::RUNNING,
@@ -1042,11 +1061,11 @@ mod tests {
     #[test]
     fn the_continuous_minds_publish_a_hud_word() {
         let mut sense = MindSense::new();
-        assert_eq!(sense.hud(10), super::super::HudState::active());
+        assert_eq!(sense.hud(), super::super::HudState::active());
         sense.state = super::super::ENDING;
-        assert_eq!(sense.hud(10).kind, 12);
+        assert_eq!(sense.hud().kind, 2);
         let mask = MindMask::new();
-        assert_eq!(mask.hud(10).kind, 2);
+        assert_eq!(mask.hud().kind, 2);
     }
 
     #[test]
