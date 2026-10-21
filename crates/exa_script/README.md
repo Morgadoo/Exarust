@@ -42,7 +42,12 @@ Formats: [`docs/formats/OTHER.md`](../../docs/formats/OTHER.md#roles-charrolesrd
 
 ## Script classes
 
-`script_class` models the base class's name, tables and flags, the
-default instance and variable setter, the `Role` bind/load/commit cycle
-with its role-list reallocation, the cached `Role` instance, and the
-`Actor` setter for Activity and IdleActivity.
+`script_class` is the `Role` view of the script classes worked on the
+stored role-list byte blob: the variable slots (name, name length, value),
+the default instance and setter, the `Role` bind/load/commit cycle with the
+cached get-instance object and its commit-on-set byte, and the commit's
+reallocation, which keeps the original's tail placement (the entry after a
+resized one lands `stored * 4` bytes too far and the copy overruns the
+allocation; the model reports both). The game does not use it: scripts reach
+role values through `builtins::Host`, and the `Actor` setter is
+`exa_ai::activity`'s.
