@@ -215,7 +215,10 @@ dead 0x2010D (0.25), fear 0x107 (0.18), embolden 0x108 (0.18) and raise dead
 
 - **Blast** (0x201, and the bolt and wave through their tuning): sixteen
   chunks are kept; the 0.7 tuning spans the spawn ring over 58 ticks
-  (83·0.7). Charge rises by five sixths of the tick in seconds; past 1 it
+  (83·0.7). Their birth directions are the original's sixteen-slot table:
+  +Z, five points on a cone 26.565° from it stepped by 1.2566371 rad, then
+  the five midpoints to +Z and the five between neighbours; a chunk spawns
+  at its direction times 4 cm with the height `z·1.5 − 0.5`. Charge rises by five sixths of the tick in seconds; past 1 it
   releases with an alert 1800 cm around it, and the chunks fly at 0.96 of
   their motion a tick. Each chunk's collision reach grows 0.4 cm and its
   drawn radius `(speed·0.7 + 3)·0.0006` cm a tick. Two chunks closer than twice the reach
@@ -255,8 +258,8 @@ dead 0x2010D (0.25), fear 0x107 (0.18), embolden 0x108 (0.18) and raise dead
   the view, limit it to 45° around the body's aim yaw and build the pitch
   from the height. The torrent's contact setup is 0.25 of reach and 0.5 of
   share; the character's is 0.5.
-- **Torrent**: sixteen streams are born 16 cm out, their height 1.5 times
-  the direction less 30 cm, with a spawn delay of 8 less a random 0 to 2
+- **Torrent**: sixteen streams are born along the same sixteen directions,
+  16 cm out, their height 1.5 times the direction's z less 30 cm, with a spawn delay of 8 less a random 0 to 2
   ticks and a 66-tick life. The level is `0.4·(2 − charge)·charge` while
   charging; past 1 the streams push 15 cm along the aim a tick. A fade
   drops the level 0.01 a tick and stops below 0.02. A hit point takes 1 % of
