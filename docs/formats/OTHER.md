@@ -602,8 +602,23 @@ each of 19 body slots (bone indices). Low bits give the layer level. Bit
 `0x80` hides the body part of that slot (helm: head; trousers: thighs and
 shins; boots: feet; gambeson: torso and arms). Bit `0x40` hides the slot's
 partial body variant. Exarust hides covered body parts' meshes when
-dressing (from the first byte of each slot). Fit variants and culling of
-apparel triangles by their cull bits are not done yet.
+dressing (from the first byte of each slot, `Item::hidden_slots`).
+
+The character builder reads the whole eight-byte word of each slot
+(`Item::slot_words`) and unions the words of every worn item. Walking a
+word's layers from the outermost in, a byte with `0x80` hides the slot
+unless a higher layer already met the slot's mask, and a byte with `0x40`
+hides the slots its mask names; the pass then repeats both tests on the
+union of all layers. The union itself decides which body parts the merged mesh keeps:
+a slot whose union has `0x80` (or whose `0x40` mask names it) loses its
+body part. Exarust's `exa_character::layers` reproduces both masks and
+`equip_outfits` uses the union pass; the sub-part bits themselves are not
+decoded. A garment node's name gives its slot and layer as four digits
+(`0900Chest`: chest, layer 0), and its layer is scored against the
+garment's own coverage word (matched low bits plus a base, unmatched bits
+costing eight each), which is how the outermost node of each slot is
+picked. Fit variants and culling of apparel triangles by their cull bits
+are not done yet.
 
 ### Containers and random tables
 

@@ -19,6 +19,20 @@ splits on the groups, and up to three damped distance blends elsewhere
 human and ogre bodies are checked watertight. The weights run in the model
 build on the compute pool; a mesh that ships weights keeps them.
 
+Hair (`hair`): the original's hair colour picker (five decoded hue anchors,
+desaturation by the saturated value, a specular grey moved in, the engine's
+sRGB chain), with the feral level's lightening, the material's gloss
+0.9 − 0.4·f and opacity (1 − 0.65·f)². The character crate's `hair` system
+tints the hair materials with it.
+
+Merging (`merge`): `merge_parts` appends the visible body parts and garment
+pieces into one skinned mesh as the original's character assembly does:
+each part placed by its frame, its vertices, normals, UVs and colours
+appended, its weights kept vertex for vertex (a part without them bound to
+its bone), and its triangles grouped by material in first-seen order. The
+loader still draws a mesh per node; the per-triangle cull bits of hidden
+body slots are not applied yet.
+
 Skin tone (`human_skin`): a character's `SkinLook` selects the built-in skin
 material for its record's two tone words (and the women's texture set),
 cached per race, tone and sex. The tone multiplier is the original's, bit

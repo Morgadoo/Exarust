@@ -90,6 +90,31 @@ physique values and the body morphs they select remain the body's concern
   Placed characters are dressed exactly as stored. See
   [`docs/formats/OTHER.md`](../../docs/formats/OTHER.md) (Underwear).
 
+## Layers, looks and hair
+
+- `layers` models the builder's eighteen body slots (pelvis, belly, chest,
+  head, the two arm and leg chains and the hands), the four-digit node names
+  that place a garment part in one (`0900Chest`: chest, layer 0), the
+  original's layer score against a garment's own coverage word, and the
+  coverage pass that hides the body parts a worn set covers. The words are
+  the eight layer bytes of the item body's `0xA8` table; a layer's `0x80`
+  hides its slot and `0x40` the slots its mask names, and the union decides
+  which body parts the merged mesh keeps. `equip_outfits` uses the union to
+  hide covered body parts (alongside the first bytes the placement already
+  carries). Real-data tests read `objdb.rdb` (`EXANIMA_DIR`) and check a
+  helm on the head, boots on the feet and braies that hide nothing.
+- `look` reads the race's look word (`races.rdb` `0x14`): the skin texture
+  set (men's or women's), the six beards and their `bearda0N d/n` maps, the
+  normal-map layers and their 0.01 thresholds, the age darkening and the
+  two random skin-map offsets drawn from the record's look seed
+  (`search_seed`; a zero word is replaced from the engine's generator). It
+  also gives the per-limb leg scale: a thigh or shin over its 55/54 cm
+  stretch limit keeps the mean of the required and the body's scale.
+- `hair` builds a placed character's `CharExt` style under its head part,
+  keeping the `?` roots only under a covered head; `exa_assets::hair` gives
+  the record's colour, specular, gloss and opacity. The builder's refresh
+  cut (keep, cover, replace) is `look::hair_refresh`.
+
 ## Held items
 
 - `held::Hands` says what a body holds as the original's moveset rule reads

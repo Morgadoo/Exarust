@@ -95,7 +95,10 @@ branch, as the unordered compare does), the face variant steps through
 seven values, and sex, hair visibility, the voice sample names
 (`VHM01_GruntS`, `VHMDA01_GruntS`), the pitch (worked in doubles), the
 voice preview's 300-unit throttle (a 64-bit difference) and its
-non-repeating random variant are in. The creator icon sheet is four
+non-repeating random variant are in. The look a record carries (skin tone, hair style and colour, beards,
+normal-map layers, the look seed's skin-map offsets and the per-limb leg
+scale) is `exa_character::look`; the spawned body builds its `CharExt` hair
+with `exa_character::hair`. The creator icon sheet is four
 96-pixel cells at a scale of eight units. The form's labels and page
 captions live in `exa_ui::creation`. Drawing the form, loading the model
 preview and sounds, the object database behind the kit, record

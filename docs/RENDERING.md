@@ -513,7 +513,8 @@ word it sets on the character, 0x200 for ancients) **[inf]**.
   of the last `m` for women. Whatever the skin material names plays no
   part: `humanbase.rfc`'s names the same textures, `ancientbase.rfc`'s only
   a `missing.dds`. Exarust uses the men's set, or the women's when the
-  character's record is female, and the first physique's normal map.
+  race has it and the character's record is female (`look::skin_set`), and
+  the first physique's normal map.
 - **Diffuse map**: the race's skin texture (`humandifm`, `humandiff` for
   women) times the character's skin tone. The original loads the race
   texture as data, so the product is taken on its stored, sRGB-encoded
@@ -543,10 +544,35 @@ word it sets on the character, 0x200 for ancients) **[inf]**.
 - There is no light-receive scale, skin cap or exposure adaptation: lit skin
   is limited only by the 8-bit scene clamp.
 
+The skin job also decides the record's age darkening (the feral level when
+the race darkens with age and the character is feral or aged), its beard
+(`bearda01d/n.rfi` to `bearda06n.rfi`, from bits 20–23 of the profession
+word) and which of the six normal maps show and by how much
+(`look::normal_layers`: weights over 0.01, the feral level added to the
+first and able to show `nrm?5` alone). `look::skin_set` reads the race look
+word, `look::beard_index` and `look::skin_darkening` the record.
+
 Not yet: the player's tone (it is in the save, which is not shipped), the
-generated normal map's blend of the physique variants (`humannrmm0…5`), the
-race-flag check that restricts some races to the men's set, the dirt layer. Blood: see
-[Blood](#blood).
+drawn blend of the physique variants (`humannrmm0…5`), the beard composited
+on the skin, the dirt layer. Blood: see [Blood](#blood).
+
+### Hair
+
+The body builder adds the record's hair style from `CharExt.rpk` (style 1
+is the first `hair …` entry, style 0 is bald) under the head part (bone
+10), re-framing its roots on the head. Roots whose name begins with `?`
+show only while a helmet or hat covers the head; a style refresh keeps the
+hair, shows only its `?` roots or replaces it whole (`look::HairCut`).
+
+`exa_character::hair` loads the style once and parents its nodes to the
+head, skipping the `?` roots when the head is bare. The hair material takes
+the record's colour: `exa_assets::hair` reproduces the original's colour
+picker (five decoded hue anchors, desaturation by the saturated value, a
+specular grey moved in, the engine's sRGB chain), and the feral level
+lightens the colour, lowers the gloss (0.9 − 0.4·f) and thins the strands
+((1 − 0.65·f)²); the record's bit `0x10000` leaves the specular level
+unboosted. Not yet: hair as cloth, the material's `HarHPs1` specular map
+layer and the creation scene's smoothing.
 
 ### Blood
 

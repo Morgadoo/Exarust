@@ -1846,8 +1846,11 @@ part gets its mesh only when it is bound, since Bevy cannot draw a mesh with
 skin attributes and no skin. A mesh that ships weights keeps them. Apparel
 with no joints (one-node garments) stays rigid on its bone.
 
-Not reproduced: the `_SKIN` merge (the original appends every part and
+Not yet wired: the `_SKIN` merge (the original appends every part and
 garment into one mesh, grouped by material, with the per-triangle cull bits
 of hidden body slots removing covered triangles). Exarust keeps a mesh per
-node and hides whole body-part entities under apparel instead. The per-scene
-skin controller and manager are Bevy's.
+node and hides whole body-part entities under apparel instead; the pure
+builder `exa_assets::merge::merge_parts` reproduces the append, frame,
+weight and material-group order, but the loader does not feed it yet and
+the per-triangle cull bits are not applied. The per-scene skin controller
+and manager are Bevy's.
