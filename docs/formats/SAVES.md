@@ -166,7 +166,9 @@ the start background is 0 and the player record's word at its own offset
 | 48 | u32 | day counter |
 
 The arena reader takes its signature **exactly**; anything else shows
-"Save game format no longer supported." and the slot is not loaded.
+"Save game format no longer supported." and the slot is not loaded. A new
+arena's money word is `515` (the value the writer's global starts at);
+Exarust stores the company's copper there and also in its own chunk.
 
 ### Version conversion
 
