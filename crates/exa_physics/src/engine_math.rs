@@ -159,7 +159,8 @@ pub fn exp(x: f32) -> f32 {
 
 /// The fast sine: the angle's sign kept aside, reduced by the nearest even
 /// multiple of π/4, then a minimax sine or cosine on the reduced angle by
-/// the quadrant.
+/// the quadrant. The pick is the original's mask arithmetic: the chosen
+/// polynomial plus the other one masked to `+0`.
 pub fn sin(x: f32) -> f32 {
     let sign_bit = x.to_bits() & 0x8000_0000;
     let x = f32::from_bits(x.to_bits() & 0x7FFF_FFFF);
@@ -167,12 +168,20 @@ pub fn sin(x: f32) -> f32 {
     let reduced = x - j as f32 * 0.785_398_2;
     let z = reduced * reduced;
     let (sin_poly, cos_poly) = polynomials(z, reduced);
-    let value = if j & 2 == 0 { sin_poly } else { cos_poly };
+    let mask = quadrant_mask(j);
+    let value =
+        f32::from_bits(sin_poly.to_bits() & mask) + f32::from_bits(cos_poly.to_bits() & !mask);
     f32::from_bits(value.to_bits() ^ sign_bit ^ (((j & 4) as u32) << 29))
 }
 
 /// The engine's sine and cosine of `x` together. The first element is the
 /// sine, the second the cosine.
+///
+/// Both come out of the original's mask arithmetic: the sine is the picked
+/// polynomial plus the other masked to `+0`, the cosine is each polynomial
+/// less its masked part, summed. So the cosine is NaN whenever either
+/// polynomial is not finite, which happens for `|x|` from about 1.69e9 up,
+/// where the reduction saturates (the sine's polynomial overflows to −∞).
 pub fn sin_cos(x: f32) -> (f32, f32) {
     let sign_sin = x.to_bits() & 0x8000_0000;
     let x = f32::from_bits(x.to_bits() & 0x7FFF_FFFF);
@@ -182,15 +191,21 @@ pub fn sin_cos(x: f32) -> (f32, f32) {
     let reduced = x - j as f32 * 0.785_398_2;
     let z = reduced * reduced;
     let (sin_poly, cos_poly) = polynomials(z, reduced);
-    let (sin, cos) = if j & 2 == 0 {
-        (sin_poly, cos_poly)
-    } else {
-        (cos_poly, sin_poly)
-    };
+    let mask = quadrant_mask(j);
+    let sin_part = f32::from_bits(sin_poly.to_bits() & mask);
+    let cos_part = f32::from_bits(cos_poly.to_bits() & !mask);
+    let sin = cos_part + sin_part;
+    let cos = (sin_poly - sin_part) + (cos_poly - cos_part);
     (
         f32::from_bits(sin.to_bits() ^ sign_sin),
         f32::from_bits(cos.to_bits() ^ (sign_cos << 29)),
     )
+}
+
+/// All ones when the quadrant takes the sine polynomial (`j & 2` clear),
+/// else zero: the original's integer compare mask.
+fn quadrant_mask(j: i32) -> u32 {
+    if j & 2 == 0 { u32::MAX } else { 0 }
 }
 
 /// The two minimax polynomials on the squared reduced angle `z`.
