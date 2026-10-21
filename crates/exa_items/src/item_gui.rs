@@ -739,7 +739,8 @@ mod tests {
         assert_eq!(s.drop_crystal(1, crystal::C, 0, true), SocketDrop::Refused);
         assert_eq!(s.drag_out(0), Some((crystal::A, 0x00C8_0000)));
         s.emptied(0);
-        assert_eq!(s.0[0], 0x80);
+        // Only the low byte is rewritten; the charge 0xC8 stays.
+        assert_eq!(s.0[0], 0xC880);
         assert_eq!(s.hit(25, 4), 2 << 16);
         assert_eq!(s.hit(45, 4), 0x80_0000);
         assert_eq!(
