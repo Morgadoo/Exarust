@@ -20,6 +20,7 @@ pub mod node_life;
 pub mod particles;
 pub mod room_view;
 pub mod rooms;
+pub mod scene_content;
 pub mod scene_env;
 pub mod scene_nodes;
 pub mod shadow_links;
@@ -51,6 +52,7 @@ impl Plugin for WorldPlugin {
             node_life::NodeLifePlugin,
             room_view::RoomViewPlugin,
             sun_shadow::SunShadowPlugin,
+            scene_content::SceneContentPlugin,
         ));
     }
 }
@@ -1225,7 +1227,8 @@ impl LevelLoad {
             (self.min, self.max)
         };
         let env = self.scene.environment.clone().unwrap_or_default();
-        let reverb_decay = env.reverb_decay;
+        let applied = scene_content::apply_environment(&env);
+        let reverb_decay = applied.reverb_decay;
         let grid = self
             .scene
             .grid
@@ -1238,9 +1241,9 @@ impl LevelLoad {
             .unwrap_or_else(gi_volume::GiGrid::synthetic);
         commands.insert_resource(gi_volume::PendingGi {
             centre: (min + max) / 2.0,
-            top: env.ceiling,
-            bottom: env.floor,
-            base_ambient: [env.fill[0], env.fill[1], env.fill[2]],
+            top: applied.top,
+            bottom: applied.bottom,
+            base_ambient: [applied.fill[0], applied.fill[1], applied.fill[2]],
             grid,
         });
         let (width, depth) =
