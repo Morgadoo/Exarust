@@ -22,6 +22,11 @@ test (the original's needs each part's mesh box), and the render side has
 no directional shadow volume or portal clipping yet, so nothing in the
 simulation calls the module yet.
 
+A subtree marked `StaticGeometry` has its meshes copied into static
+triangle-mesh colliders. `NoStaticCollider` on a mesh (or subtree) under it
+keeps that mesh out: the original draws terrain vegetation but never
+collides with it.
+
 Each fixed tick (83 Hz) moves the character controllers, then runs the
 pre-step (`body::BodyPreStep`), the character ticks (`body::CharacterTicks`:
 each living character, player last, runs the nine stages of the

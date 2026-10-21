@@ -603,8 +603,9 @@ fn sync_plant_shadows(
     quality: Res<exa_render::quality::ShadowQuality>,
     mut commands: Commands,
     chunks: Query<(Entity, Has<bevy::light::NotShadowCaster>), With<PlantChunk>>,
+    added: Query<(), Added<PlantChunk>>,
 ) {
-    if !quality.is_changed() {
+    if !quality.is_changed() && added.is_empty() {
         return;
     }
     let cast = quality.0 > 4;

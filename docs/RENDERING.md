@@ -1611,6 +1611,17 @@ undrawn whatever the player should not see (`exa_world::rooms`,
   room leaves the list (its door neighbours become hidden), so a room left
   next to no active room keeps its last state, as in the original. The
   fade clock is real time [guess: the original's clock was not traced].
+- **Door portals and light reach.** Each door link's portal is a vertical
+  quad on the cells' shared edge from −50 cm up to its door height; plane
+  B's side nibble picks 82 × 245 cm (0) or 115 × 290 cm (any other), and a
+  special tile 200 × 340 cm. The original's light-reach and light-spill
+  callbacks use the point ¾ of the way from a door cell's centre to the
+  next: light passes between points in different rooms when either one is
+  within 2 m of its own side's point and that room's door onto the other
+  cell is open, and a light's spill lists the rooms behind the open doors
+  of its own cell within 2 m of their points. Exarust reproduces both
+  (`Rooms::light_reach`, `Rooms::light_spill`); every door still counts as
+  open because placed doors are not mechanisms yet.
 - **Shells.** Every placed piece's `[…` children (boxes from the floor to
   2.7 m behind the facade: most reach the cell edge, as `gews_swa01`'s
   fill the 55 cm behind its 20 cm facades, but the plain walls and inner
