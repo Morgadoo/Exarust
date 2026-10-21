@@ -171,6 +171,42 @@ pub fn shock_charge(clip_ms: u32, cost: f32) -> ShockCharge {
     }
 }
 
+/// The charge object the Shock creator instantiates: its owner, the cast
+/// flag (1), the base cost it was cast with, its charge and hand arcs, and
+/// the two sounds its creation and release play. The original also adds it
+/// to the owner's active powers with node flag 0x401.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShockPower {
+    pub owner: u64,
+    /// The object's cast flag (`+0x18`, 1).
+    pub cast_flag: i32,
+    /// The cost the cast was made with (`+0x60`), before the charge scales
+    /// it.
+    pub base_cost: f32,
+    pub charge: ShockCharge,
+    /// The hand arcs the charge object creates (`0x201`, 20 tendrils of 5
+    /// segments at the hand's −15, −5 cm).
+    pub arcs: super::arcs::ArcParams,
+    /// The charge-up sound (`thmnrg_chrga`).
+    pub sound: &'static str,
+    /// The release sound it stores (`thmnrg_shock`).
+    pub release_sound: &'static str,
+}
+
+/// Creates the Shock's charge object from the owner, the cast clip's length
+/// and the power's base cost.
+pub fn shock_power(owner: u64, clip_ms: u32, base_cost: f32) -> ShockPower {
+    ShockPower {
+        owner,
+        cast_flag: 1,
+        base_cost,
+        charge: shock_charge(clip_ms, base_cost),
+        arcs: super::arcs::hand_arcs(),
+        sound: CHARGE_SOUND,
+        release_sound: SHOCK_SOUND,
+    }
+}
+
 /// What shock weapons do when the held weapons change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WeaponChange {
@@ -302,5 +338,28 @@ mod tests {
         assert_eq!(armed.change(2, false), WeaponChange::End(2));
         assert_eq!(armed.weapons, vec![1, 4, 3]);
         assert_eq!(armed.change(5, true), WeaponChange::Arm(5));
+    }
+
+    #[test]
+    fn the_shock_creator_builds_its_charge_object() {
+        let power = shock_power(42, 600, 0.1);
+        assert_eq!(power.owner, 42);
+        assert_eq!(power.cast_flag, 1);
+        assert_eq!(power.base_cost, 0.1);
+        // 600 ms is half the charge: 0.5 long, costing 0.1·0.5·1.2.
+        assert_eq!(power.charge.length, 0.5);
+        assert!((power.charge.cost - 0.06).abs() < 1e-6);
+        assert_eq!(power.sound, "thmnrg_chrga");
+        assert_eq!(power.release_sound, "thmnrg_shock");
+        // The hand arcs: 20 tendrils, 5 segments, life 10, size 2, scale
+        // 0.25, growth 0.25, light 48.
+        let arcs = power.arcs;
+        assert_eq!((arcs.count, arcs.segments, arcs.life), (20, 5, 10));
+        assert_eq!((arcs.size, arcs.scale, arcs.growth), (2.0, 0.25, 0.25));
+        assert_eq!(arcs.light, 48.0);
+        assert_eq!(
+            super::super::arcs::HAND_ARCS_OFFSET,
+            bevy::math::Vec3::new(-15.0, -5.0, 0.0)
+        );
     }
 }

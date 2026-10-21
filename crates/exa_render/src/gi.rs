@@ -214,6 +214,26 @@ pub struct GiMultiplier(pub f32);
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
 pub struct GiRadius(pub f32);
 
+/// A GI light shape (the original's abstract `TGIEmissive` base: a dome, a
+/// cuboid, a bubble, a line or a multi-point shape). Gameplay effects
+/// register a shape with the GI manager, and each subclass builds its own
+/// injection program. The base's only virtual slot does nothing, so the
+/// default injection adds nothing; Exarust's point and voxel lights are the
+/// shapes it draws today (`gi.wesl`).
+pub trait GiEmissive {
+    /// Whether this shape injects light this frame. The base returns
+    /// `false`, as its stub returns 0.
+    fn injects(&self) -> bool {
+        false
+    }
+}
+
+/// A GI light shape that does nothing (the abstract base's stand-in).
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NoGiShape;
+
+impl GiEmissive for NoGiShape {}
+
 /// A voxel light (the original's `0x3D0C` node: a salve's, a power
 /// crystal's or embers' glow). Every step it adds its colour straight into
 /// the voxels around it; it never lights a surface directly.
@@ -1428,6 +1448,19 @@ mod tests {
         let spent = VoxelLight::new([0.2157, 0.6784, 1.0], 16.0 * 0.0044);
         assert!((spent.colour.z - 12.0 * 0.0044f32.sqrt()).abs() < 1e-3);
         assert_eq!(VoxelLight::new([1.0; 3], -1.0).colour, Vec3::ZERO);
+    }
+
+    #[test]
+    fn the_gi_emissive_base_injects_nothing() {
+        assert!(!NoGiShape.injects());
+        // Any shape can opt in without the manager knowing its type.
+        struct Glow;
+        impl GiEmissive for Glow {
+            fn injects(&self) -> bool {
+                true
+            }
+        }
+        assert!(Glow.injects());
     }
 
     #[test]

@@ -755,6 +755,12 @@ impl Emitter {
         &self.sources
     }
 
+    /// The sources, for a caller that adds or re-aims jets (the blood
+    /// spray grows its source array and drives each jet's count).
+    pub fn sources_mut(&mut self) -> &mut Vec<Source> {
+        &mut self.sources
+    }
+
     /// Whether the emitter has finished: a one-shot ring that emptied, or a
     /// finite emitter past its deadline with no particle left.
     pub fn finished(&self) -> bool {
@@ -1196,6 +1202,62 @@ pub struct Quad {
     pub corners: [Vec3; 4],
     pub uv: [Vec2; 4],
     pub colour: Key,
+}
+
+/// The 2 × 2 atlas cell origin of each of the 32 particle variants, as the
+/// original's lookup stores them (cell corner pairs, x and y).
+pub const PARTICLE_UV_CELLS: [[f32; 2]; 32] = [
+    [0.0, 0.0],
+    [1.0, 0.0],
+    [0.0, 1.0],
+    [1.0, 1.0],
+    [1.0, 0.0],
+    [0.0, 0.0],
+    [1.0, 1.0],
+    [0.0, 1.0],
+    [0.0, 1.0],
+    [1.0, 1.0],
+    [0.0, 0.0],
+    [1.0, 0.0],
+    [1.0, 1.0],
+    [0.0, 1.0],
+    [1.0, 0.0],
+    [0.0, 0.0],
+    [0.0, 0.0],
+    [0.0, 1.0],
+    [1.0, 1.0],
+    [1.0, 0.0],
+    [1.0, 1.0],
+    [1.0, 0.0],
+    [0.0, 0.0],
+    [0.0, 1.0],
+    [0.0, 0.0],
+    [1.0, 0.0],
+    [1.0, 0.0],
+    [0.0, 0.0],
+    [1.0, 1.0],
+    [0.0, 1.0],
+    [1.0, 1.0],
+    [1.0, 1.0],
+];
+
+/// The per-row origin of the 32-entry table's four rows.
+pub const PARTICLE_UV_ROWS: [[f32; 2]; 4] = [[0.0, 0.0], [0.5, 0.0], [0.0, 0.5], [0.5, 0.5]];
+
+/// The 128-entry UV/orientation lookup the particle unit builds at start-up,
+/// row-major: for row `r` and variant `v`, `cell[v]·0.5 + row[r]`. Each
+/// entry is `(u, v)` at the cell's corner; the eight symmetries of the
+/// square are already folded into the cell order.
+pub fn particle_uv_table() -> [[f32; 2]; 128] {
+    let mut out = [[0.0f32; 2]; 128];
+    for row in 0..4 {
+        for variant in 0..32 {
+            let cell = PARTICLE_UV_CELLS[variant];
+            let base = PARTICLE_UV_ROWS[row];
+            out[row * 32 + variant] = [cell[0] * 0.5 + base[0], cell[1] * 0.5 + base[1]];
+        }
+    }
+    out
 }
 
 /// The eight symmetries of the unit square, as the corner UVs of the
@@ -1863,5 +1925,35 @@ mod tests {
         let s = e.slots[0];
         // θ = 0: the source sits on +X and its y axis points out along +X.
         assert!((s.p - s.q - Vec3::new(2.0, 0.0, 0.0)).length() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod uv_table_tests {
+    use super::*;
+
+    /// The 128-entry table the particle unit builds: 32 variants in four
+    /// rows, `cell·0.5 + row`. Pinned corners: row 0 variant 3 is the
+    /// top-right cell corner (0.5, 0.5); row 3 variant 3 is (1, 1); row 1
+    /// variant 0 shifts the bottom-left cell by (0.5, 0).
+    #[test]
+    fn the_particle_uv_table_has_its_original_corners() {
+        let table = particle_uv_table();
+        assert_eq!(table[3], [0.5, 0.5]);
+        assert_eq!(table[0], [0.0, 0.0]);
+        assert_eq!(table[32], [0.5, 0.0]);
+        assert_eq!(table[32 + 1], [1.0, 0.0]);
+        assert_eq!(table[3 * 32 + 3], [1.0, 1.0]);
+        assert_eq!(table[2 * 32 + 2], [0.0, 1.0]);
+        // Every entry stays in the unit square.
+        assert!(
+            table
+                .iter()
+                .all(|p| (0.0..=1.0).contains(&p[0]) && (0.0..=1.0).contains(&p[1]))
+        );
+        // The four rows are the same cells shifted.
+        for variant in 0..32 {
+            assert!((table[32 + variant][0] - (table[variant][0] + 0.5)).abs() < 1e-6);
+        }
     }
 }

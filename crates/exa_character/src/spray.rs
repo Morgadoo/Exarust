@@ -109,6 +109,19 @@ pub const DROPLET_SPREAD: f32 = 0.25;
 pub const DROPLET_FALL: f32 = 0.25;
 /// Live droplets at most (the original's pool).
 pub const DROPLET_SLOTS: usize = 512;
+/// The name of the scene's one spray node.
+pub const SPRAY_NODE_NAME: &str = "_BloodSpray";
+/// The node flag word the spray node takes (added to the scene's effect
+/// list, not a ordinary scene node).
+pub const SPRAY_NODE_FLAGS: u32 = 0x1000;
+/// The built-in material the droplets draw with.
+pub const SPRAY_MATERIAL: &str = "_BloodPrt02";
+/// The droplet texture in that material's emissive slot.
+pub const SPRAY_MATERIAL_TEXTURE: &str = "BldPrt02";
+/// The built-in material's shading flags: emissive and unlit.
+pub const SPRAY_MATERIAL_FLAGS: u32 = 0x0008_0008;
+/// The built-in material's extra flags: no shadow.
+pub const SPRAY_MATERIAL_EXTRA: u32 = 6;
 /// The share of the jet's own motion a new droplet takes.
 pub const JET_INHERIT: f32 = 0.15;
 /// A new droplet's velocity is averaged with the jet's previous droplet's
@@ -298,6 +311,21 @@ impl Jet {
     }
 }
 
+/// The scene's spray node description: its name, material, texture and the
+/// flags the original gives the node and its built-in material.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SprayNode {
+    pub name: &'static str,
+    pub material: &'static str,
+    pub texture: &'static str,
+    /// The node's flag word (`0x1000`: in the scene's effect list).
+    pub flags: u32,
+    /// The built-in material's shading flags (emissive, unlit).
+    pub material_flags: u32,
+    /// Its extra flags (no shadow).
+    pub material_extra: u32,
+}
+
 /// The scene's blood sprays (the original's one `_BloodSpray` system): its
 /// jets, its droplets oldest first, the emission clock and the sizes of
 /// its ring slots.
@@ -352,6 +380,29 @@ impl BloodSprays {
         match self.jets.iter_mut().find(|j| j.left < 1) {
             Some(free) => *free = jet,
             None => self.jets.push(jet),
+        }
+    }
+
+    /// Ends the session's sprays, as the reset and respawn paths do: the
+    /// jets are dropped, the flying droplets cleared and the emission clock
+    /// reset. The ring's sizes (the scene's emitter state) stay.
+    pub fn reset(&mut self) {
+        self.jets.clear();
+        self.droplets.clear();
+        self.owed = 0.0;
+    }
+
+    /// The scene node the original builds once for the sprays: a geometry
+    /// node named `_BloodSpray` with the built-in `_BloodPrt02` material,
+    /// flagged into the scene's effect list.
+    pub fn scene_node() -> SprayNode {
+        SprayNode {
+            name: SPRAY_NODE_NAME,
+            material: SPRAY_MATERIAL,
+            texture: SPRAY_MATERIAL_TEXTURE,
+            flags: SPRAY_NODE_FLAGS,
+            material_flags: SPRAY_MATERIAL_FLAGS,
+            material_extra: SPRAY_MATERIAL_EXTRA,
         }
     }
 
@@ -1173,5 +1224,48 @@ mod tests {
         let frame = Affine3A::from_rotation_translation(turn, Vec3::new(0.0, 130.0, 0.0));
         let origin = (frame * jet.local).translation;
         assert!(Vec3::from(origin).distance(contact * 100.0) < 1e-3);
+    }
+}
+
+#[cfg(test)]
+mod reset_tests {
+    use super::*;
+
+    #[test]
+    fn the_scene_node_is_the_original_blood_spray() {
+        let node = BloodSprays::scene_node();
+        assert_eq!(node.name, "_BloodSpray");
+        assert_eq!(node.material, "_BloodPrt02");
+        assert_eq!(node.texture, "BldPrt02");
+        assert_eq!(node.flags, 0x1000);
+        assert_eq!(node.material_flags, 0x0008_0008);
+        assert_eq!(node.material_extra, 6);
+    }
+
+    #[test]
+    fn reset_drops_the_jets_and_droplets_but_keeps_the_sizes() {
+        let mut sprays = BloodSprays::new(3);
+        let sizes = sprays.sizes.clone();
+        // A droplet and a finished jet stand in for a session's sprays.
+        sprays.droplets.push_back(Droplet {
+            p: Vec3::ZERO,
+            q: Vec3::ZERO,
+            life: 10,
+            look: 0,
+            slot: 0,
+        });
+        sprays.start(Jet {
+            body: Entity::PLACEHOLDER,
+            part: Entity::PLACEHOLDER,
+            local: Affine3A::IDENTITY,
+            last: Vec3::ZERO,
+            motion: Vec3::ZERO,
+            carry: Vec3::ZERO,
+            left: 3,
+        });
+        sprays.reset();
+        assert!(sprays.jets.is_empty());
+        assert!(sprays.droplets.is_empty());
+        assert_eq!(sprays.sizes, sizes);
     }
 }
