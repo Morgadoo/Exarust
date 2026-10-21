@@ -352,9 +352,9 @@ segment is reversed; a segment draws on its side of one half.
 `pwr_displace`), marks each node from the character's known pairs, and
 opens a node whose links all end on learnt nodes. A click on a shown but
 unlearnt node marks it as the new power when the character has the
-techniques it asks for (a persistent power wants thaumaturgy technique 2,
-a power with a high nibble that technique among the casting skill's
-tiers). A click on a learnt node picks or drops it: a pick needs the
+techniques it asks for (a persistent power wants Concentration's technique
+2, a power with a high nibble that technique among Insight's; either skill
+funds one level for each 5000 points). A click on a learnt node picks or drops it: a pick needs the
 domain's cost within the record's remaining focus (4.0 less the picked
 powers, each domain discounted by the character's specialisation) and every
 link end picked; a drop is refused while another picked node links to it.
@@ -364,15 +364,26 @@ over 2300 picking the nearest; the pan and zoom ease by the original's
 springs.
 
 The power bar holds ten slots; the chosen one carries bit 20. Loading it
-from a record marks each slot picked when its pair is; a slot flashes in
-over 200 ms, stays lit, then fades over its duration. A press selects a
-slot, a cast stores the bar back and flashes its slot, a dropped power
+from a record copies the words (clearing bits 23 and 24 and the technique
+nibble), resets each state and marks a slot picked when its pair is; a
+slot's stamp and duration are kept. A slot flashes in over 200 ms, stays
+lit, then fades over its duration. A press selects a slot, a dropped power
 fills the slot (a drag from another slot leaves a copy there) and a drag
-that misses clears its source. The cast entry reads the record's slot,
-dispatches by domain to the mind, force, energy or displacement front end,
-and stores the last instant power. The running-power budget is the highest
-thaumaturgy technique of 2 to 4, one less without the focus item; powers
-past it are told to end.
+that misses clears its source. The cast entry reads the record's slot (the
+named one, else the first marked chosen), ends the body's control instead
+of casting while it controls another body, refuses a body whose item flags
+refuse powers, and dispatches by domain to the mind, force, energy or
+displacement front end. A front end that answers "not now" queues the
+slot; a start stores the bar back with the chosen bit moved to the slot,
+closes the bar, flashes the slot (from where its state stood, back-dated by
+the elapsed share) and stores the last instant power; a refusal plays the
+failure sound. The running game does not play that sound or retry the
+queued slot yet. The running-power budget is the highest Concentration
+technique of 2 to 4, one less without the focus item; powers past it are
+told to end. The grant routine (`grant_power`) adds a power to a record
+that holds Insight's seventh technique when its node's first link names a
+learnt prerequisite, over the first matching pair or appended, with flags
+`0x9fff`; nothing calls it from the running game.
 
 ## Electric arcs
 
@@ -535,7 +546,8 @@ Not modelled: the link ribbon's spline and texture (a plain quad strip
 stands in), the layout and text of the tooltip, the prompt and the drag
 preview, the screen's show and hide fades, the bar's opening and closing
 animation in the running game (the pose is implemented but the view always
-asks for a steady bar), the persistent-pick bit of a slot (derived from
+asks for a steady bar), the bar form's flags and opening stamps, the
+running-power mark callback on load, the persistent-pick bit of a slot (derived from
 the picked nodes) and the icon radius output. The running screen
 rasterises those batches in software (`power_screen::render`) with
 each fragment program's arithmetic and the loaded sheets; the shader

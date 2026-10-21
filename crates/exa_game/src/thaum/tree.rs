@@ -9,7 +9,8 @@
 //!   power requires and the low nibble picks its frame.
 //! - **The record** ([`PowerRecord`]) holds the character's remaining focus
 //!   (4.0 for a new character), its two specialised domains, its known
-//!   power pairs, its ten power-bar slots and the learnt technique tiers.
+//!   power pairs, its ten power-bar slots and the Insight and Concentration
+//!   skills whose techniques the learning rules read.
 //!   A pair's flags carry [`LEARNED`] and [`PICKED`] beyond its low byte.
 //! - **Opening** ([`TreeScreen::load`]): a domain's tree file gives the
 //!   nodes; a missing file leaves one node of the domain's first power. A
@@ -27,24 +28,32 @@
 //!   the zoom ease by the original's springs.
 //! - **Choosing** ([`TreeScreen::press`]): a click on a shown node that is
 //!   not learnt selects it as the new power to learn when the character has
-//!   the techniques it asks for, and leaves it stored on the record with
+//!   the techniques it asks for ([`can_learn`]: Concentration's second for a
+//!   persistent power, Insight's for a power with a high nibble), and leaves it stored on the record with
 //!   [`NEW`]. A click on a learnt node picks or drops it: picking needs the
 //!   domain's cost within what is left of the record's focus and every link
 //!   end picked; dropping is refused while another picked node links to it.
 //!   Closing stores the domain's learnt and picked nodes back into the
 //!   record, replacing that domain's pairs.
 //! - **The power bar** ([`PowerBar`]): ten slots, the chosen one marked with
-//!   bit 20. Loading it from a record copies the slots and marks a slot
-//!   picked when its pair is. A slot's state flashes in over 200 ms, stays
-//!   lit, then fades over its duration. A press selects a slot, a cast
-//!   stores the bar back and flashes the slot, a dropped power fills the
-//!   slot (and, from another slot, leaves a copy there), and a drop that
-//!   misses clears the slot it came from.
-//! - **The cast entry** ([`TreeScreen::cast_slot`]) reads the record's slot,
-//!   refuses while the body's powers are blocked, and hands the power to
-//!   the domain's front end: mind, force, energy or displacement. A cast
-//!   that starts records the last instant power (a sustained or persistent
-//!   power clears it); a refused one plays the failure sound.
+//!   bit 20. Loading it from a record copies the slots (clearing bits 23 and
+//!   24 and the technique nibble), resets each slot's state and marks a slot
+//!   picked when its pair is; the slot's stamp and duration are kept. A
+//!   slot's state flashes in over 200 ms, stays lit, then fades over its
+//!   duration. A press selects a slot; storing the bar back copies the
+//!   words, and a cast store instead moves the chosen bit to the cast slot.
+//!   A dropped power fills the slot (and, from another slot, leaves a copy
+//!   there), and a drop that misses clears the slot it came from.
+//! - **The cast entry** ([`TreeScreen::cast_slot`]) reads the record's slot
+//!   (the named one, else the first marked chosen, else the default), ends
+//!   a body's control instead of casting while it controls another, refuses
+//!   a body whose item flags refuse powers, and hands the power to the
+//!   domain's front end: mind, force, energy or displacement. A front end
+//!   that answers "not now" queues the slot. A cast that starts stores the
+//!   bar back, closes it and flashes the slot, and records the last instant
+//!   power (a sustained or persistent power clears it); a refused one plays
+//!   the failure sound. The sound and the queue are returned in the
+//!   [`CastEntry`]; the in-game screen does not play or retry them yet.
 //! - **The draw** ([`TreeScreen::view`]): hands `exa_ui::tree_draw` the
 //!   placed nodes, their link curves, the marks, the flash and learn
 //!   timers and the bar's slots; the tree pass and the bar are laid out
@@ -52,10 +61,14 @@
 //!   persistent-pick bit in the view. The show and hide window fades, the
 //!   bar's opening and closing animation and the link ribbon's spline are
 //!   not modelled: the view is always fully shown and the bar steady.
-//! - **The slot budget** ([`limit_running_powers`]): the highest thaumaturgy
-//!   technique of 2 to 4 among the record's tiers, one less without the
+//! - **The slot budget** ([`limit_running_powers`]): the highest Concentration
+//!   technique of 2 to 4 among the skill's levels, one less without the
 //!   focus item, is how many running powers a body may keep; the rest are
 //!   told to end.
+//!
+//! - **Granting** ([`grant_power`]): the game's grant routine adds a power
+//!   to a record that holds Insight's seventh technique when its node's
+//!   prerequisite is learnt. Nothing calls it from the running game yet.
 //!
 //! Evidence: the tree reader, the open, store, mark, focus, click, drag,
 //! key and bar routines, the bar's layout and its state timings, and the
@@ -63,6 +76,7 @@
 //! character creator for the final commitment of a [`NEW`] power, this
 //! module leaves the pair on the record and exposes [`TreeScreen::commit`].
 
+use exa_formats::characters::Skill;
 use exa_formats::power_tree::{PowerNode, PowerTree, learn_marks, node_pixels, place_node};
 
 /// What loading the bar clears from a record slot: bits 23 and 24 and the
@@ -166,21 +180,20 @@ pub struct KnownPower {
     pub flags: u32,
 }
 
-/// The learnt technique tiers the tree's learning rules read.
+/// The two skills the tree's learning rules read: Insight (skill 4) gates
+/// the techniques of a power's high nibble and Concentration (skill 5) gates
+/// persistent powers. Both ask [`Skill::knows`]: any of the levels the
+/// skill's points fund (one per 5000) may hold the technique. The original
+/// reads the bytes after the points for as many levels as the points give;
+/// a skill stores six, so more are never looked at.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SkillTiers {
-    /// The casting skill's tiers, one byte a technique.
-    pub casting: Vec<u8>,
-    /// The thaumaturgy skill's tiers, one byte a technique.
-    pub thaumaturgy: Vec<u8>,
-}
-
-impl SkillTiers {
-    /// Whether a tier holds `technique` among its first `count` bytes.
-    pub fn holds(tiers: &[u8], count: u16, technique: u8) -> bool {
-        let count = usize::from(count / 5000);
-        tiers.iter().take(count).any(|&tier| tier == technique)
-    }
+    /// Insight: its techniques open the powers whose word carries a
+    /// technique nibble.
+    pub insight: Skill,
+    /// Concentration: its second technique (Continuity) opens persistent
+    /// powers.
+    pub concentration: Skill,
 }
 
 /// The character's power record: what the tree reads and writes.
@@ -1661,62 +1674,78 @@ pub fn wants_power_drag(kind: u32) -> bool {
     kind == press::POWER_DRAG
 }
 
-/// A power read from a saved record: its id, its prerequisite (one-based
-/// into the saved list, 0 for none) and its flags.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SavedPower {
-    pub power: u32,
-    pub prerequisite: usize,
-    pub flags: u32,
-}
+/// The flags a granted power is added with.
+pub const GRANTED_FLAGS: u32 = 0x9fff;
 
-/// The flags a revalidated saved power is added with.
-pub const SAVED_RESTORED: u32 = 0x9fff;
+/// The technique (Insight's seventh, Revelation) the grant routine asks of
+/// the record before it adds anything. It asks as the record's own
+/// technique check does: the first of the five written slots that holds it
+/// counts when the points fund that level.
+pub const GRANT_TECHNIQUE: u8 = 7;
 
-/// Revalidates a saved power against the tree: the node must be in the
-/// tree, the saved list must hold it after its first entry, and its
-/// prerequisite's flags must carry [`LEARNED`]. A missing power is added
-/// to the known list with [`SAVED_RESTORED`]. Returns whether it was
-/// added.
-pub fn validate_saved_power(
+/// Grants `power` to a record, as the game's grant routine does for the
+/// scripts and the game functions that hand a power out.
+///
+/// The record must hold Insight's technique [`GRANT_TECHNIQUE`]. `nodes`
+/// are the power's domain tree. The last node whose word matches `power`
+/// under [`word::MATCH`] is the target: it must not be the first node, its
+/// first link must name a prerequisite node (one-based, 0 for none), and
+/// that prerequisite's flags must carry [`LEARNED`]. A node's flags are the
+/// flags of the last known pair whose id, under `0xff0f_ffff`, equals the
+/// node's whole word (no pair's flags give 0). The power is then written
+/// over the first known pair that matches it under [`word::MATCH`], or
+/// appended, with [`GRANTED_FLAGS`]. Returns whether it was written.
+///
+/// A prerequisite past the node list reads as unlearnt, where the original
+/// reads past its array.
+pub fn grant_power(
     nodes: &[PowerNode],
-    saved: &[SavedPower],
+    insight: &Skill,
     known: &mut Vec<KnownPower>,
     power: u32,
 ) -> bool {
-    if !nodes
-        .iter()
-        .any(|node| node.power & 0xff0f_ffff == power & 0xff0f_ffff)
-    {
+    if !insight.has_technique(GRANT_TECHNIQUE) {
         return false;
     }
-    let index = saved
+    let flags_of = |node: &PowerNode| {
+        known
+            .iter()
+            .rev()
+            .find(|pair| pair.power & 0xff0f_ffff == node.power)
+            .map_or(0, |pair| pair.flags)
+    };
+    let Some(target) = nodes
         .iter()
-        .position(|entry| entry.power & word::MATCH == power & word::MATCH);
-    let Some(index) = index else {
+        .rposition(|node| node.power & word::MATCH == power)
+    else {
         return false;
     };
-    // The original reads the saved list's second entry onward.
-    if index == 0 {
+    if target == 0 {
         return false;
     }
-    let prerequisite = saved[index].prerequisite;
-    if prerequisite == 0
-        || prerequisite > saved.len()
-        || saved[prerequisite - 1].flags & LEARNED == 0
-    {
-        return false;
-    }
-    if known
-        .iter()
-        .any(|pair| pair.power & word::MATCH == power & word::MATCH)
-    {
-        return false;
-    }
-    known.push(KnownPower {
-        power,
-        flags: SAVED_RESTORED,
+    let prerequisite = nodes[target].links.first().map_or(0, |link| {
+        u32::from_le_bytes([link[8], link[9], link[10], link[11]])
     });
+    if prerequisite == 0 {
+        return false;
+    }
+    let Some(prerequisite) = nodes.get(prerequisite as usize - 1) else {
+        return false;
+    };
+    if flags_of(prerequisite) & LEARNED == 0 {
+        return false;
+    }
+    let entry = KnownPower {
+        power,
+        flags: GRANTED_FLAGS,
+    };
+    match known
+        .iter_mut()
+        .find(|pair| pair.power & word::MATCH == power)
+    {
+        Some(pair) => *pair = entry,
+        None => known.push(entry),
+    }
     true
 }
 
@@ -1908,15 +1937,14 @@ pub fn filter_known(pairs: &mut Vec<KnownPower>, nodes: &[PowerNode], domain: u8
 }
 
 /// Whether the record has the techniques a new power asks for: a persistent
-/// power asks for the thaumaturgy skill's technique 2, and a power whose
-/// high nibble is set asks for that technique among the casting skill's
-/// tiers.
+/// power asks for Concentration's technique 2, and a power whose high
+/// nibble is set asks for that technique among Insight's.
 pub fn can_learn(record: &PowerRecord, power: u32) -> bool {
-    if is_persistent(power) && !SkillTiers::holds(&record.skills.thaumaturgy, 50_000, 2) {
+    if is_persistent(power) && !record.skills.concentration.knows(2) {
         return false;
     }
     let technique = technique_of(power);
-    technique == 0 || SkillTiers::holds(&record.skills.casting, 50_000, technique)
+    technique == 0 || record.skills.insight.knows(technique)
 }
 
 /// Tells the running powers past `slots` to end. Returns false when one
@@ -2365,6 +2393,10 @@ mod tests {
         }
     }
 
+    fn skill(points: u16, techniques: [u8; 6]) -> Skill {
+        Skill { points, techniques }
+    }
+
     fn link_to(end: u32) -> [u8; 16] {
         let mut link = [0u8; 16];
         link[8..12].copy_from_slice(&end.to_le_bytes());
@@ -2508,15 +2540,15 @@ mod tests {
     #[test]
     fn a_new_power_asks_for_its_technique() {
         let mut record = PowerRecord::empty(4.0);
-        record.skills.casting = vec![0, 0, 0, 1, 0];
-        record.skills.thaumaturgy = vec![0, 2, 0, 0];
+        record.skills.insight = skill(20_000, [0, 0, 0, 1, 0, 0]);
+        record.skills.concentration = skill(10_000, [0, 2, 0, 0, 0, 0]);
         assert!(can_learn(&record, 0x1000_0102));
         assert!(!can_learn(&record, 0x2000_0103));
         assert!(can_learn(&record, 0x201));
-        record.skills.casting[3] = 0;
+        record.skills.insight.techniques[3] = 0;
         assert!(!can_learn(&record, 0x1000_0102));
         assert!(can_learn(&record, 0x201));
-        record.skills.thaumaturgy[1] = 0;
+        record.skills.concentration.techniques[1] = 0;
         // Blast is neither persistent nor tiered: it needs no technique.
         assert!(can_learn(&record, 0x201));
     }
@@ -2793,7 +2825,7 @@ mod tests {
         );
         screen.marks = vec![SHOWN | LEARNED, SHOWN];
         let mut record = PowerRecord::empty(4.0);
-        record.skills.thaumaturgy = vec![0, 2, 0, 0];
+        record.skills.concentration = skill(10_000, [0, 2, 0, 0, 0, 0]);
         let mut bar = PowerBar::default();
         screen.set_focus(2, 0);
         let out = press(
@@ -2830,7 +2862,7 @@ mod tests {
         );
         screen.marks = vec![SHOWN, SHOWN];
         let mut record = PowerRecord::empty(4.0);
-        record.skills.thaumaturgy = vec![0, 2, 0, 0];
+        record.skills.concentration = skill(10_000, [0, 2, 0, 0, 0, 0]);
         let mut bar = PowerBar::default();
         screen.set_focus(1, 0);
         press(
@@ -3558,41 +3590,102 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_power_needs_its_prerequisite_learnt() {
-        let nodes = [node(0x101, vec![]), node(0x102, vec![])];
-        let saved = [
-            SavedPower {
-                power: 0x100101,
-                prerequisite: 0,
+    fn a_granted_power_needs_its_prerequisite_learnt() {
+        let nodes = [
+            node(0x101, vec![]),
+            node(0x102, vec![link_to(1)]),
+            node(0x103, vec![link_to(2)]),
+            node(0x104, vec![]),
+        ];
+        let mut insight = skill(35_000, [0; 6]);
+        insight.techniques[1] = GRANT_TECHNIQUE;
+        let mut known = vec![KnownPower {
+            power: 0x101,
+            flags: LEARNED,
+        }];
+        assert!(grant_power(&nodes, &insight, &mut known, 0x102));
+        assert_eq!(
+            known[1],
+            KnownPower {
+                power: 0x102,
+                flags: GRANTED_FLAGS
+            }
+        );
+        // The first node never has a prerequisite to ask.
+        assert!(!grant_power(&nodes, &insight, &mut known, 0x101));
+        // A granted power's flags carry the learnt bit, so it opens the
+        // next node.
+        assert!(grant_power(&nodes, &insight, &mut known, 0x103));
+        // A node without a link has no prerequisite.
+        assert!(!grant_power(&nodes, &insight, &mut known, 0x104));
+        // A power the tree lacks is refused.
+        assert!(!grant_power(&nodes, &insight, &mut known, 0x105));
+        assert_eq!(known.len(), 3);
+    }
+
+    #[test]
+    fn a_grant_overwrites_the_first_matching_pair() {
+        let nodes = [node(0x101, vec![]), node(0x102, vec![link_to(1)])];
+        let mut insight = skill(35_000, [0; 6]);
+        insight.techniques[1] = GRANT_TECHNIQUE;
+        // A pair that carries the chosen bit still stands for its node: the
+        // match drops bits 20 to 23.
+        let mut known = vec![
+            KnownPower {
+                power: 0x10_0101,
                 flags: LEARNED,
             },
-            SavedPower {
+            KnownPower {
                 power: 0x102,
-                prerequisite: 1,
-                flags: 0,
+                flags: 0x1234,
+            },
+            KnownPower {
+                power: 0x102,
+                flags: 0x5678,
             },
         ];
-        let mut known = Vec::new();
-        assert!(validate_saved_power(&nodes, &saved, &mut known, 0x102));
-        assert_eq!(
-            known,
-            vec![KnownPower {
-                power: 0x102,
-                flags: SAVED_RESTORED
-            }]
-        );
-        // The first saved entry is never revalidated.
-        assert!(!validate_saved_power(&nodes, &saved, &mut known, 0x101));
-        // A learnt prerequisite is needed.
-        let unlearnt = [SavedPower {
-            power: 0x102,
-            prerequisite: 1,
+        let mut unlearnt = known.clone();
+        assert!(grant_power(&nodes, &insight, &mut known, 0x102));
+        assert_eq!(known.len(), 3);
+        assert_eq!(known[1].flags, GRANTED_FLAGS);
+        assert_eq!(known[2].flags, 0x5678);
+        // The last pair for the prerequisite gives its flags.
+        unlearnt.push(KnownPower {
+            power: 0x101,
             flags: 0,
+        });
+        assert!(!grant_power(&nodes, &insight, &mut unlearnt, 0x102));
+        assert_eq!(unlearnt[1].flags, 0x1234);
+    }
+
+    #[test]
+    fn a_grant_needs_the_seventh_insight_technique() {
+        let nodes = [node(0x101, vec![]), node(0x102, vec![link_to(1)])];
+        let mut known = vec![KnownPower {
+            power: 0x101,
+            flags: LEARNED,
         }];
-        let mut known = Vec::new();
-        assert!(!validate_saved_power(&nodes, &unlearnt, &mut known, 0x102));
-        // A node the tree lacks is refused.
-        assert!(!validate_saved_power(&nodes, &saved, &mut known, 0x103));
+        let mut insight = skill(35_000, [0; 6]);
+        insight.techniques[1] = GRANT_TECHNIQUE;
+        // The second slot needs 10 000 points; the points fund it.
+        assert!(grant_power(&nodes, &insight, &mut known.clone(), 0x102));
+        insight.points = 9_999;
+        assert!(!grant_power(&nodes, &insight, &mut known, 0x102));
+        assert!(!grant_power(
+            &nodes,
+            &skill(35_000, [0; 6]),
+            &mut known,
+            0x102
+        ));
+    }
+
+    #[test]
+    fn a_prerequisite_past_the_nodes_is_unlearnt() {
+        let nodes = [node(0x101, vec![]), node(0x102, vec![link_to(9)])];
+        let mut insight = skill(35_000, [0; 6]);
+        insight.techniques[0] = GRANT_TECHNIQUE;
+        let mut known = vec![];
+        assert!(!grant_power(&nodes, &insight, &mut known, 0x102));
     }
 
     #[test]
