@@ -746,16 +746,27 @@ impurity map for quality, the rust normal for damage, a colour map's red as
 the rust mask and a full-resolution scuff normal); the registry is in
 `exa_formats::procedural`.
 
-Library textures are laid one texel per painted texel (weave, worn weave,
-impurities, quality); damage, dirt, rust and scuff maps are laid at 1024
-texels across.
+Each pass samples its textures through the program's tile uniforms:
+material-scale textures (weave, worn weave, impurities, quality) repeat
+once per as many target texels as the material's first colour texture is
+wide (`MatTile`, the same divisor in all three passes), damage, dirt, rust
+and scuff maps once per 1024 target texels (`DmgTile`), and the steel
+normal programs lay their scuff normal once over the region. The blade
+reads its quality maps at twice the material scale. The cloth programs'
+specular pass reads its damage and dirt at the material scale, the hide
+programs' at the damage scale. Each layer's `MatCol` is its colour and a
+wear weight: on apparel the material's (1; velvet 0.8, SteelGen 0.75,
+materials 21–25 0.5), on a factory region the area's finish level. The
+colour and normal passes run over every layer before the specular pass,
+whose crease measure reads the painted normal map ±2 texels around.
 
 Palette: index = family × 8 + shade. Each of the 32 families has hue,
 saturation, base value and value step. With k = 7 − shade, the linear ramp
-(apparel) is v = min(k·step·0.13 + base, 1) and the lifted ramp (factory
-material rolls) is v = min((k·step·0.13 + base + 0.1)², 1); both use
-s = (1 − (0.09k)²)·sat, scaled by (v + 0.6)² when v < 0.4, then HSV → RGB.
-Family 0 is the greys (0.91 down to black).
+(apparel) is v = min(k·(step·0.13) + base, 1) and the lifted ramp (factory
+material rolls) is v = min((k·(step·0.13) + (base + 0.1))², 1), the
+parenthesised sums and the square in double; both use s = (1 − (0.09k)²)·sat
+in double, scaled by (v + 0.6)² (double) when v < 0.4, then HSV → RGB with
+the sector ⌊6h⌋. Family 0 is the greys (0.91 down to black).
 
 **Colour space.** REA on the original's paint jobs and texture loading shows
 the following.
@@ -788,14 +799,17 @@ wood, steel, blade, plate, painted steel, chain, copper alloy, copper satin,
 gemstone, resin and painted planks. The surface target keeps the original's
 packed layout (intensity in red, gloss in green, metal in blue); the scene
 reads roughness = 1 − gloss, so Exarust no longer copies gloss and drops
-intensity. A factory item's paint job gets the item's raw condition bytes
-(quality, damage, dirt over 255); apparel keeps the loader's remapped
-fractions (damage x/(2−x), dirt (x²+x)/2).
+intensity. A factory item's paint job takes quality and dirt as the bytes
+over 255 and the damage as 2/(2 − x) − 1; apparel takes damage x/(2 − x)
+too and dirt (x² + x)/2. The rest of the factory job is under Weapon
+factories (Paint).
 
 Not yet painted: the per-area emblem layers (the factory appends an extra
 layer in another palette colour with a generated emblem texture; the emblem
-generator is outside the factory), pattern opacity textures, the atlas UV
-crop of a factory's part texture, and per-instance randomized appearances.
+generator is outside the factory), pattern opacity textures, the factory's
+shared atlas (each part is painted on its own at its component's
+resolution) and per-instance randomized appearances. The painter samples
+the nearest texel where the GPU filters.
 
 ### Trade fields
 
@@ -1077,7 +1091,8 @@ factory weapons of a real save, part for part and material for material.
   {material, bits, fixed colour, mode}, count at +0x30.
 - **Parts**: `i32 n`, then per part `u32 flags` (bit 0 texture-only overlay,
   `0x10` random twist, bits 1–2 paint-region flags), name[16], position,
-  rotation (radians), scale (cm), atlas rectangle (scale, offset), a
+  rotation (radians), scale (cm), atlas rectangle (offset, then scale, in
+  atlas fractions: the part's region of the factory's texture), a
   texture parameter, 3 deforms (16 bytes in v0, 28 in v1/v2: header
   type|axis<<8|flags, amount, pivot, range, blend, stat weight, 0), {chance,
   attach-to (1-based), role, attach mode}, then `i32` variants of 40 bytes
@@ -1087,34 +1102,61 @@ factory weapons of a real save, part for part and material for material.
   tag names. v0 deforms carry no blend or stat weight; the parser fills in
   0.3 and 1.
 - **Generation** (32-bit LCG `s·0x08088405 + 1`; seeds A and B; quality
-  q = byte/255): a twist per part from B; per part and deform
-  value = (2B−1)·blend + (1−blend)·(2A−1); per part a presence roll and a
+  q = byte × 1/255 in double, stored as float): a twist per part from B;
+  per part and deform value = (2B−1)·blend + (1−blend)·(2A−1); per part a
+  presence roll (the exclusion bit is the part index modulo 32) and a
   weighted pick among variants whose tags agree with earlier choices. The
-  first part offering a tag owns it; the original initialises only the first
-  tag_count−1 owners, so the last tag never constrains a later part (a
-  defined stand-in for its uninitialised stack slot). Then per area a weighted material
-  roll (weights 100/50/20/10 by class, scaled by distance from q to the
-  candidate's level) with a finish (nibbles 3/7/11/15) and a colour by the
-  material's colour class on the lifted palette ramp. A patterned candidate
-  appends an emblem layer: three draws pick an emblem id from 40, a new
-  family and a shade near the area's.
+  first part offering a tag owns it (the whole owner table starts unowned).
+  Then per area a weighted material roll (weights 100/50/20/10 by class,
+  scaled by distance from q to the candidate's level, rounded half to
+  even) with a finish (nibbles 3/7/11/15) and, unless the candidate fixes
+  it (mode 5), a colour by the material's colour class, the item
+  randomiser's colour roll with grade round(4q): cloth any family at shade
+  7 − round(6r²); leather a cloth colour when r ≤ (grade − 1)/4, else a
+  family 5–11 at 7 − round(4r²); steel 3, iron 4; painted steel the item
+  palette's metal colour; class 6 (material 15) one of `0x4B`, `0x53`,
+  `0x3B`; copper one of six; wood a family 5–11 at 7 − round(7r²); painted
+  planks any family and shade; gems and resin none. The area keeps the
+  colour on the lifted palette ramp, stored as bytes. A patterned
+  candidate appends an emblem layer: three draws pick an emblem id from
+  40, a new family and a shade near the area's.
 - **Stored choices** (section flags): a fresh item with seed A set and seed
   B zero copies A into B, marks the section `0x30000000` and rolls the
   choices from A (three spare draws per present part so the area colours
   land where a full roll would; the first three areas take their first
   candidate's material and a random colour). The three generation paths
-  then are: no flag, a full A+B roll which stores its choices when A is
-  set (flag `0x10000000`); `0x10000000`, replay the selection and areas
+  then are: no flag, a full A+B roll which stores its choices and sets
+  `0x10000000` when A is set; `0x10000000`, replay the selection and areas
   while twists use B and shapes blend A and B; `0x20000000`, replay the
   stored choices but roll shapes and twists from A alone.
-- **Assembly**: components (`Components.rpk`, +Y along the weapon, cm) are
-  placed in recipe order on their nearest chosen ancestor. The ancestor's
-  scale and band deforms move the attach point; attach mode 0 adds the
-  parent variant's child Y offset ×0.1, modes 1–3 add the parent's box
-  minimum and 4–6 its box maximum. A parent deform flagged `0x40000` also
-  deforms the child's mesh, and one flagged `0x10000` scales the child.
-  The part is then scaled by its own scale and moved to the parent's
-  position; twists accumulate down the ancestor chain.
+- **Assembly**: components (`Components.rpk`, +Y along the weapon, cm;
+  the first node, a mesh) are placed in recipe order on their nearest
+  chosen ancestor. Attach mode 0 adds the parent variant's child Y offset
+  ×0.1 (in double), modes 1–3 add the parent's box minimum and 4–6 its
+  box maximum: the component node's stored box, before any deform. The
+  ancestor's scale and band deforms then move the attach point; a parent
+  deform flagged `0x40000` also deforms the child's mesh, and a scale
+  flagged `0x10000` scales the child. The point is scaled by the parent's
+  recipe scale and moved to the parent's position; a part without a
+  parent stays at its recipe position. The part's matrix turns X, then
+  Z, then Y, and takes the part's (possibly scaled) scale; twists
+  accumulate down the ancestor chain. The bend uses the engine's packed
+  sine and cosine (one reduction by round(|x|·4/π) quarter turns, so it
+  drifts a few ulps from the exact functions) and treats a pivot or a
+  radius up to `0x33FFFFD7` as zero.
+- **Paint**: each assembled part is a region of the factory's atlas (its
+  atlas rectangle times the atlas size). Its masks `<model>m1`..`m4` take
+  the materials of the areas the variant names (material 0 paints as
+  SteelGen), the area's lifted colour bytes ×1/255 and ((finish & 0xF) +
+  1)/16 as the wear weight (`MatCol.w`); the first missing mask ends the
+  list. The job's condition is the item's quality, damage (as 2/(2 − d)
+  − 1) and dirt bytes /255. Material-scale textures repeat once per as
+  many atlas texels as the material's first colour texture is wide,
+  damage-scale ones once per 1024; four offsets from seed B,
+  round(512r)/512 − ½ each, shift them. Not reproduced yet: texture-only
+  overlay parts (part flag 1) and the mask-gated shade of parts flagged 2,
+  emblem layers, the texture-only deform's `UVScale`, and the low-quality
+  half-size atlas.
 - **Items** name a factory by a model name starting with `@`. Their weapon
   section (`0x4000`, 96 bytes) holds flags, seeds, quality, damage, dirt,
   4 material slots (material, finish, colour, mode), stats, and the stored
@@ -1125,8 +1167,13 @@ factory weapons of a real save, part for part and material for material.
   so it keeps the template's bytes.
 
 Exarust follows all of this (`exa_formats::factory`, `exa_assets::weapon`).
-Not yet: the per-part atlas UV crop, the TTetraRBD body and its impact
-sound, icon-only builds, and the half-size texture target at low quality.
+Not yet: the shared atlas and its UV transform (each part keeps its own
+textures), the merged mesh and its rebuilt normals, the striking extent's
+denominator (Exarust takes the highest placed box top for the merged
+mesh's box), the TTetraRBD body and its impact sound, and icon-only
+builds. Stale state the original reads from its cached factory (an
+unrolled area's previous material, a replayed area's previous mode and
+emblem record) is replaced by the defined values in the code.
 
 ## Weapon stats
 
@@ -1170,27 +1217,25 @@ two clawed ones).
   +0x1A, i16 each, low byte, wrapping). It also sets the type code from
   its flags (>> 4 & 0xF). Role-6 parts fill the flipped block instead.
 - Each deform with value x = v·stat weight (deform +0x14) scales bytes by
-  role through F(x) = 1 + x·amount, or 1/(1 − x·amount) when that is ≤ 0.
-  The second helper is the same function (its amount is the deform's, not
-  1).
+  role through F(x) = 1 + x·amount, or 1/(1 − x·amount) when that is ≤ 0,
+  and G(x) = 1 + x, or 1/(1 − x) when x ≤ 0 (the second helper ignores the
+  amount). Terms marked (d) are computed in double.
 
 | role | deform | effect |
 |---|---|---|
 | blade | type 1, Y | weight ×F, balance ÷F |
 | blade | type 1, X | weight ×F, balance ÷F, slash ×F, thrust ÷F |
 | blade | type 3, Y | balance ×(F/2 + ½), slash ÷ the same, thrust ×F |
-| blade | type 4, X | one-sided: thrust ÷(F/4 + ¾); else thickens: ×(F/2 + ½), thins: ×(F(−x)/2 + ½) |
-| haft | type 1 or 2, Y | f = 0.4F + 0.6; weight ×(f/2 + ½), balance ÷f |
-| haft | type 1, XZ | weight ×(0.1F + 0.9) |
+| blade | type 4, X | one-sided: thrust ÷(G/4 + ¾); else thickens: ×(G/2 + ½), thins: ×(G(−x)/2 + ½) |
+| haft | type 1 or 2, Y | f = 0.4G + 0.6 (d); weight ×(f/2 + ½), balance ÷f |
+| haft | type 1, XZ | weight ×(0.1G + 0.9) (d) |
 | guard | type 1, Y | thrust ×F |
 | head, role 2 | type 1, any axis | f = F, halved and raised by ½ on axes 1–6; weight ×(f/2 + ½), balance ÷f |
-| head | type 3, Y | f = F(−x/2), then f/2 + ½; weight ×(f/2 + ½), balance ÷f |
-| head | type 5, all or XZ | h = 0.6F(x/2) + 0.4; pierce ×h, crush ÷h |
-| head | type 5, Y | f = 0.4F(x/2) + 0.6; weight ×(f/2 + ½), balance ÷f |
-| role 6 | type 1, Y | weight ×(F/2 + ½), balance ÷F |
-| role 6 | type 3, Y | f = F(−x/2); f = f/2 + ½; weight ×(f/2 + ½), balance ÷f |
-| role 6 | type 5, all/XZ | h = 0.6F(x/2) + 0.4; pierce ×h, crush ÷h |
-| role 6 | type 5, Y | f = 0.4F(x/2) + 0.6; weight ×(f/2 + ½), balance ÷f |
+| head | type 3, Y | f = G(−x/2), then f/2 + ½; weight ×(f/2 + ½), balance ÷f |
+| head | type 5, all or XZ | h = 0.6G(x/2) + 0.4; pierce ×h, crush ÷h (d) |
+| head | type 5, Y | f = 0.4G(x/2) + 0.6 (d); weight ×(f/2 + ½), balance ÷f |
+
+  Role-6 parts' deforms change nothing.
 
 - Each rounded product is stored as a byte, so values above 255 wrap
   (the condition step clamps instead). Weight and balance are then capped
@@ -1203,7 +1248,7 @@ two clawed ones).
   - each rounded to the nearest (half to even) and stored as a byte, so a
     product past 255 wraps, then capped at 160.
 - The head's striking extent (`0x35`/`0x36`) comes from assembled
-  geometry; Exarust keeps the template's values for now.
+  geometry (Weapon factories); the stat-only refresh keeps the template's.
 - Materials and dirt do not enter the stats. There is no physical
   material table.
 

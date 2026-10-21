@@ -135,14 +135,20 @@ family (cloth, silk, velvet, leather, suede, wood, steel, blade, plate,
 painted steel, chain, copper alloy, copper satin, gemstone, resin, painted
 planks). The colour map follows the original's sRGB chain; the surface map is
 its packed intensity/gloss/metal target; the normal map is the item's normal
-plus the material's and damage normals. Factory parts are painted with the
-item's raw condition bytes, apparel with the loader's remapped ones.
+plus the material's and damage normals, and the specular pass measures its
+creases on that painted normal map. Library textures tile by the original's
+`MatTile`/`DmgTile` rules (`paint::Tiling`). A factory region
+(`model::FactoryPaint`) paints each mask with its area's material (0 as
+SteelGen), lifted colour bytes and finish level, the factory's condition
+(damage 2/(2 − d) − 1) and the region's atlas tiling with four offsets from
+seed B; apparel takes its palette colour, the material's wear weight and the
+loader's condition.
 
 Factory weapons (`weapon`): a `.fty` recipe and an item's seeds choose,
-deform (scale, band, taper, bend, radial), place (by the parent's box minimum
-or maximum) and paint `Components.rpk` parts, then assemble the striking
-extent and the stat bytes. Item quality, condition and stored choices are
-honoured.
+deform (scale, band, taper, bend, radial), place (by the parent's stored
+node box, scaled by the parent's recipe scale, turned X, Z, Y) and paint
+`Components.rpk` parts, then assemble the striking extent and the stat
+bytes. Item quality, condition and stored choices are honoured.
 
 Physique (`morph`): `ModelLoader::morphed_model` / `morphed_job` build a
 character's variant of a race body or garment at its `BodyMorph` (race
