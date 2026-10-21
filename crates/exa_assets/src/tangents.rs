@@ -1,8 +1,8 @@
-//! Tangent generation, as the original's `SplitTangents` does it: one
-//! tangent and one bitangent accumulate per vertex over the triangles that
-//! use it, weighted by the triangle's UV area; then the tangent is made
-//! perpendicular to the surface normal, normalised, and given the original's
-//! handedness sign.
+//! Tangent generation, as the original's `SplitTangents` does it: each
+//! triangle's position gradients along u and v (its edges solved against
+//! its UV edges) are summed, unweighted, into its three vertices; then the
+//! tangent is made perpendicular to the surface normal, normalised, and
+//! given the original's handedness sign.
 //!
 //! For a triangle with positions `p0,p1,p2` and texture coordinates
 //! `q0,q1,q2`:
@@ -14,10 +14,12 @@
 //! b   = (duv1.x·dp2 − duv2.x·dp1) / det
 //! ```
 //!
-//! A determinant below `1e-10` (compared in f64) uses an inverse of one
-//! instead. The final tangent is
-//! `normalize(t − n·(n·t))`, and its fourth component is `−1` when
-//! `n · (t × b) ≥ 0`, else `1`: the original's bitangent runs along −v.
+//! A determinant below `1e-10` (compared in f64; a NaN divides) uses an
+//! inverse of one instead. The final tangent is `normalize(t − n·(n·t))`
+//! (a zero vector stays zero, as under the engine's normaliser), and its
+//! fourth component is `1` when `(n × t)·b < 0` for the accumulated,
+//! unprojected `t`, else `−1` (a NaN included): the original's bitangent
+//! runs along −v.
 //!
 //! Evidence: reverse engineering of the tangent splitter and its bit-exact
 //! float order (REA); [`docs/RENDERING.md`](../../../docs/RENDERING.md)
@@ -93,25 +95,31 @@ pub fn split_tangents(
             t[1] + n[1] * share,
             t[2] + n[2] * share,
         ];
-        let length =
-            (tangent[0] * tangent[0] + tangent[1] * tangent[1] + tangent[2] * tangent[2]).sqrt();
-        tangent = [
-            tangent[0] / length,
-            tangent[1] / length,
-            tangent[2] / length,
-        ];
+        // The engine's normaliser: squares summed x, z then y, one scale
+        // for the three, and a zero vector left zero. Its root is the
+        // processor's estimate, which scales the length only; the exact
+        // root keeps the direction and a unit length.
+        let squared = (tangent[0] * tangent[0] + tangent[2] * tangent[2]) + tangent[1] * tangent[1];
+        let scale = if squared == 0.0 {
+            0.0
+        } else {
+            1.0 / squared.sqrt()
+        };
+        tangent = tangent.map(|x| x * scale);
+        // The handedness takes the accumulated tangent, before it was made
+        // perpendicular to the normal.
         let b = bitangents[vertex];
         let cross = [
-            n[1] * tangent[2] - n[2] * tangent[1],
-            n[2] * tangent[0] - n[0] * tangent[2],
-            n[0] * tangent[1] - n[1] * tangent[0],
+            n[1] * t[2] - n[2] * t[1],
+            n[2] * t[0] - n[0] * t[2],
+            n[0] * t[1] - n[1] * t[0],
         ];
-        let handedness = cross[0] * b[0] + cross[1] * b[1] + cross[2] * b[2];
+        let handedness = (cross[0] * b[0] + cross[1] * b[1]) + cross[2] * b[2];
         out.push([
             tangent[0],
             tangent[1],
             tangent[2],
-            if handedness >= 0.0 { -1.0 } else { 1.0 },
+            if handedness < 0.0 { 1.0 } else { -1.0 },
         ]);
     }
     Some(out)
@@ -163,15 +171,21 @@ mod tests {
     }
 
     /// A degenerate UV triangle uses the inverse of one, so its tangent is
-    /// `duv2.y·dp1 − duv1.y·dp2` unscaled.
+    /// `duv2.y·dp1 − duv1.y·dp2` unscaled: zero for a collapsed UV, which
+    /// the engine's normaliser leaves zero (no NaN), with the −1 sign.
     #[test]
     fn a_degenerate_uv_uses_an_inverse_of_one() {
         let positions = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
         let normals = [[0.0, 0.0, 1.0]; 3];
         let uvs = [[0.0, 0.0]; 3];
         let tangents = split_tangents(&positions, &normals, &uvs, &[0, 1, 2]).unwrap();
-        // Zero tangents normalise to NaN, as the original's divide does.
-        assert!(tangents[0][0].is_nan());
+        assert_eq!(tangents[0], [0.0, 0.0, 0.0, -1.0]);
+        // A tiny UV area (|det| = 2^-40, under 1e-10) is not divided by:
+        // the tangent is the unscaled duv2.y·dp1 − duv1.y·dp2, here +X.
+        let e = 2f32.powi(-20);
+        let uvs = [[0.0, 0.0], [e, 0.0], [0.0, e]];
+        let tangents = split_tangents(&positions, &normals, &uvs, &[0, 1, 2]).unwrap();
+        assert_eq!(tangents[0], [1.0, 0.0, 0.0, -1.0]);
     }
 
     #[test]

@@ -279,11 +279,17 @@ pub struct MeshBounds {
     pub radius: f32,
 }
 
-/// The smallest half extent the original keeps (1 mm, its 1e-3 cm).
-pub const BOUNDS_HALF_FLOOR: f32 = 1e-5;
-/// The squared radius below which the original does not take a square root
-/// (its 1e-6 cm²).
-pub const BOUNDS_RADIUS_SQUARED_FLOOR: f32 = 1e-10;
+/// The smallest half extent the original keeps (its 0.001 cm, in metres).
+pub const BOUNDS_HALF_FLOOR: f32 = 0.001 * CENTIMETRES_TO_METRES;
+/// The box helper's own floor under the half extents (its 1e-4 cm), which
+/// also turns a NaN extent into a number before the 0.001 cm floor.
+const BOUNDS_BOX_FLOOR: f32 = 1e-4 * CENTIMETRES_TO_METRES;
+/// The squared radius (cm²) above which the original takes the square
+/// root: its `0x33FFFFD7`, just under 2^−23.
+const RADIUS_SQUARED_FLOOR_CM2: f32 = f32::from_bits(0x33FF_FFD7);
+/// The face flag of faces that only shape a smoothing group's normal when
+/// no face without it shares the group.
+pub const FACE_NORMAL_FALLBACK: u32 = 0x1_0000;
 
 impl Mesh {
     /// The node's shadow-bias level, 0..=7 (bits 16..18 of its render
@@ -301,11 +307,16 @@ impl Mesh {
     }
 
     /// The node's box and bounding sphere from its vertices, as the original
-    /// refits them: the component-wise minimum and maximum, their centre and
-    /// half extents, and the radius as the farthest vertex from that centre.
-    /// Half extents are floored at the original's 1 mm, and the radius is
-    /// square-rooted above its 1e-6 cm² floor. Positions are in metres, so
-    /// the floors are the original's centimetre values scaled.
+    /// refits them: the component-wise minimum and maximum (`minps`/`maxps`,
+    /// so a NaN coordinate yields the vertex's own value), the centre
+    /// `(low + high)·0.5`, the half extents `high − centre` held to at
+    /// least 1e-4 cm and then 0.001 cm, and the radius as the farthest
+    /// vertex from the centre (`maxss` over the squared distances). The
+    /// radius is square-rooted above `0x33FFFFD7` cm²; at or under it the
+    /// squared value (in cm²) stands for the radius in centimetres, as in
+    /// the original. Positions are in metres, so the floors are the
+    /// original's centimetre values scaled. A mesh without vertices has a
+    /// zero centre and 0.001 cm extents and radius.
     pub fn bounds(&self) -> MeshBounds {
         if self.positions.is_empty() {
             return MeshBounds {
@@ -318,27 +329,35 @@ impl Mesh {
         let mut high = self.positions[0];
         for position in &self.positions[1..] {
             for axis in 0..3 {
-                low[axis] = low[axis].min(position[axis]);
-                high[axis] = high[axis].max(position[axis]);
+                low[axis] = minss(low[axis], position[axis]);
+                high[axis] = maxss(high[axis], position[axis]);
             }
         }
         let mut centre = [0.0f32; 3];
         let mut half_extents = [0.0f32; 3];
         for axis in 0..3 {
             centre[axis] = (low[axis] + high[axis]) * 0.5;
-            half_extents[axis] = ((high[axis] - low[axis]) * 0.5).max(BOUNDS_HALF_FLOOR);
+            let half = maxss(high[axis] - centre[axis], BOUNDS_BOX_FLOOR);
+            half_extents[axis] = if half < BOUNDS_HALF_FLOOR {
+                BOUNDS_HALF_FLOOR
+            } else {
+                half
+            };
         }
         let mut radius_squared = 0.0f32;
         for position in &self.positions {
             let dx = position[0] - centre[0];
             let dy = position[1] - centre[1];
             let dz = position[2] - centre[2];
-            radius_squared = radius_squared.max(dx * dx + dy * dy + dz * dz);
+            radius_squared = maxss(radius_squared, (dx * dx + dy * dy) + dz * dz);
         }
-        let radius = if radius_squared > BOUNDS_RADIUS_SQUARED_FLOOR {
+        // The floor and the unrooted fallback are the original's in cm.
+        const CM2_PER_M2: f32 = 1.0 / (CENTIMETRES_TO_METRES * CENTIMETRES_TO_METRES);
+        let squared_cm2 = radius_squared * CM2_PER_M2;
+        let radius = if squared_cm2 > RADIUS_SQUARED_FLOOR_CM2 {
             radius_squared.sqrt()
         } else {
-            radius_squared
+            squared_cm2 * CENTIMETRES_TO_METRES
         };
         MeshBounds {
             centre,
@@ -425,17 +444,23 @@ impl Mesh {
             own = (0..n as u32).collect();
             &own
         };
-        // Triangles naming a missing vertex are left out.
-        let indices: Vec<u32> = self
-            .indices
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .filter(|t| t.iter().all(|&i| (i as usize) < n))
-            .flatten()
-            .copied()
-            .collect();
-        self.normals = smooth_normals(&self.positions, &indices, keys);
+        // Triangles naming a missing vertex are left out, with their flags.
+        let flags = self
+            .triangle_flags
+            .as_ref()
+            .filter(|flags| flags.len() * 3 == self.indices.len());
+        let mut indices = Vec::with_capacity(self.indices.len());
+        let mut kept_flags = Vec::new();
+        for (face, t) in self.indices.as_chunks::<3>().0.iter().enumerate() {
+            if t.iter().all(|&i| (i as usize) < n) {
+                indices.extend_from_slice(t);
+                if let Some(flags) = flags {
+                    kept_flags.push(flags[face]);
+                }
+            }
+        }
+        let face_flags = flags.map(|_| kept_flags.as_slice());
+        self.normals = smooth_normals(&self.positions, &indices, keys, face_flags);
     }
 }
 
@@ -1028,7 +1053,7 @@ fn read_mesh(c: &mut Cursor<'_>, version: u16) -> Result<Mesh> {
         Some(m) => m.clone(),
         None => pos_idx.iter().map(|&i| i as u32).collect(),
     };
-    let normals = smooth_normals(&positions, &indices, &smoothing);
+    let normals = smooth_normals(&positions, &indices, &smoothing, triangle_flags.as_deref());
     let position_count = pos_stream.count;
 
     let tri_count = indices.len() / 3;
@@ -1070,74 +1095,175 @@ fn read_mesh(c: &mut Cursor<'_>, version: u16) -> Result<Mesh> {
     })
 }
 
+/// `maxss`: the first operand when it is greater, else the second (so a
+/// NaN in either takes the second).
+fn maxss(a: f32, b: f32) -> f32 {
+    if a > b { a } else { b }
+}
+
+/// `minss`: the first operand when it is smaller, else the second.
+fn minss(a: f32, b: f32) -> f32 {
+    if a < b { a } else { b }
+}
+
+/// The processor's reciprocal square root estimate (about 12 bits), which
+/// the original's vector code uses.
+fn reciprocal_sqrt(value: f32) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: SSE is part of the x86_64 baseline.
+        unsafe {
+            use std::arch::x86_64::{_mm_cvtss_f32, _mm_rsqrt_ss, _mm_set_ss};
+            _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(value)))
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        1.0 / value.sqrt()
+    }
+}
+
+/// The processor's reciprocal estimate (about 12 bits).
+fn reciprocal(value: f32) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: SSE is part of the x86_64 baseline.
+        unsafe {
+            use std::arch::x86_64::{_mm_cvtss_f32, _mm_rcp_ss, _mm_set_ss};
+            _mm_cvtss_f32(_mm_rcp_ss(_mm_set_ss(value)))
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        1.0 / value
+    }
+}
+
+/// `x·y + … ` in the order the original's packed dot sums lanes: x and y,
+/// then z.
+fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
+    (a[0] * b[0] + a[1] * b[1]) + a[2] * b[2]
+}
+
+/// `a × b`, as the original's shuffled packed cross product.
+fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// A face's unit normal as the original's face-plane record makes it: the
+/// cross product of its two edges from the first vertex, scaled by the
+/// reciprocal square root estimate of its squared length (summed x, y,
+/// then z). A degenerate face keeps a zero normal.
+fn face_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
+    let cross = cross3(sub(b, a), sub(c, a));
+    let squared = dot3(cross, cross);
+    let scale = if squared == 0.0 {
+        0.0
+    } else {
+        reciprocal_sqrt(squared)
+    };
+    cross.map(|x| x * scale)
+}
+
+/// The engine's vector normalisation: the squares summed x, z then y and
+/// the vector scaled by one reciprocal square root; `None` for a zero
+/// vector (which the original leaves zero). The original's root is the
+/// processor's estimate, which only scales the length (by under 4e-4) and
+/// leaves the direction; Exarust takes the exact one so normals stay unit.
+fn normalised(v: [f32; 3]) -> Option<[f32; 3]> {
+    let sum = (v[0] * v[0] + v[2] * v[2]) + v[1] * v[1];
+    if sum == 0.0 {
+        return None;
+    }
+    let scale = 1.0 / sum.sqrt();
+    Some(v.map(|x| x * scale))
+}
+
 /// The barycentric coordinates of a point against a triangle, as the
-/// original's face helper computes them: the point's offset from the first
-/// vertex is expressed in the triangle's two edge vectors. The point's
-/// component along the face normal drops out, so the result is the same as
-/// projecting it onto the plane first. A degenerate triangle divides by zero
-/// (the original's stored inverse area is infinite there).
+/// original's face helper computes them: the point is first dropped onto
+/// the face's plane along the unit face normal, its offset from the first
+/// vertex is expressed in the two edge vectors, and the face's stored
+/// `1/(d00·d11 − d01²)` is the processor's reciprocal estimate. A
+/// degenerate triangle gives infinite or NaN weights.
 pub fn barycentric(vertices: [[f32; 3]; 3], point: [f32; 3]) -> [f32; 3] {
     let [a, b, c] = vertices;
+    let normal = face_normal(a, b, c);
     let e1 = sub(b, a);
     let e2 = sub(c, a);
-    let v = sub(point, a);
-    let dot = |x: [f32; 3], y: [f32; 3]| x[0] * y[0] + x[1] * y[1] + x[2] * y[2];
-    let d00 = dot(e1, e1);
-    let d01 = dot(e1, e2);
-    let d11 = dot(e2, e2);
-    let d20 = dot(v, e1);
-    let d21 = dot(v, e2);
-    let inverse = 1.0 / (d00 * d11 - d01 * d01);
+    // The face record: its plane offset and the edges' Gram terms.
+    let plane = dot3(a, normal);
+    let d00 = dot3(e1, e1);
+    let inverse = reciprocal(d00 * dot3(e2, e2) - dot3(e1, e2) * dot3(e1, e2));
+    // The point on the plane, relative to the first vertex.
+    let distance = -(dot3(point, normal) - plane);
+    let on_plane = [
+        point[0] + normal[0] * distance,
+        point[1] + normal[1] * distance,
+        point[2] + normal[2] * distance,
+    ];
+    let v = sub(on_plane, a);
+    let d01 = dot3(e1, e2);
+    let d11 = dot3(e2, e2);
+    let d20 = dot3(v, e1);
+    let d21 = dot3(v, e2);
     let second = (d11 * d20 - d01 * d21) * inverse;
     let third = (d00 * d21 - d01 * d20) * inverse;
-    [1.0 - second - third, second, third]
+    [(1.0 - second) - third, second, third]
 }
 
 /// The corner angle's weight in the original's normal averaging: the angle
-/// between two edge vectors, approximated by
-/// `sin θ · (1.571 − 0.1945·cos θ + 0.111·(cos² θ − cos³ θ))`, and zero for
-/// a degenerate or parallel pair. The constants are the original's f32
-/// values.
+/// θ between two edge vectors by the arc-cosine approximation
+/// `√(1 − cos θ)·(1.571 − 0.1945·cos θ + 0.111·cos² θ − 0.111·cos³ θ)`,
+/// and zero when the product of the squared lengths is not above
+/// `0x33FFFFD7` or `cos θ` is not below one. The constants are the
+/// original's f32 values.
 pub fn corner_angle_weight(a: [f32; 3], b: [f32; 3]) -> f32 {
-    const EPSILON: f32 = f32::from_bits(0x3380_0000); // 2^-23
+    const EPSILON: f32 = f32::from_bits(0x33FF_FFD7);
     const ONE: f32 = 1.570_999_979_972_839_4;
     const COS: f32 = 0.194_499_999_284_744_26;
     const CUBE: f32 = 0.111_000_001_430_511_47;
-    let length_squared =
-        (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]) * (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+    let length_squared = dot3(b, b) * dot3(a, a);
     if length_squared > EPSILON {
-        let cos = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) / length_squared.sqrt();
+        let cos = dot3(a, b) / length_squared.sqrt();
         if cos < 1.0 {
             return ((cos * cos * CUBE + (ONE - cos * COS)) - cos * cos * cos * CUBE)
-                * (1.0 - cos * cos).sqrt();
+                * (1.0 - cos).sqrt();
         }
     }
     0.0
 }
 
 /// Angle-weighted face normals accumulated over vertices sharing a smoothing
-/// key. Each face contributes its unit normal times the corner angle at
-/// that vertex, as the original's normal builder does; a vertex with no
-/// usable face keeps +Y (the original divides zero by zero there).
-fn smooth_normals(positions: &[[f32; 3]], indices: &[u32], keys: &[u32]) -> Vec<[f32; 3]> {
+/// key, as the original's normal builder does: each face contributes its
+/// unit normal (the reciprocal square root estimate's, which weights the
+/// faces as in the original) times the corner angle at that vertex, and the
+/// sum is normalised. With face flags, faces carrying
+/// [`FACE_NORMAL_FALLBACK`] only count for a key no unflagged face
+/// reaches. A key with no usable face keeps +Y where the original leaves a
+/// zero normal (a labelled deviation: only degenerate faces use it).
+fn smooth_normals(
+    positions: &[[f32; 3]],
+    indices: &[u32],
+    keys: &[u32],
+    face_flags: Option<&[u32]>,
+) -> Vec<[f32; 3]> {
     let key_count = keys.iter().copied().max().map_or(0, |m| m as usize + 1);
+    // Per key: the sum over unflagged faces, the sum over flagged faces,
+    // and whether an unflagged face was seen.
     let mut acc = vec![[0.0f32; 3]; key_count];
-    for t in indices.as_chunks::<3>().0 {
+    let mut fallback = vec![[0.0f32; 3]; key_count];
+    let mut reached = vec![false; key_count];
+    for (face, t) in indices.as_chunks::<3>().0.iter().enumerate() {
         let corners = [t[0] as usize, t[1] as usize, t[2] as usize];
-        let [a, b, c] = [t[0], t[1], t[2]].map(|i| positions[i as usize]);
-        let u = sub(b, a);
-        let v = sub(c, a);
-        let cross = [
-            u[1] * v[2] - u[2] * v[1],
-            u[2] * v[0] - u[0] * v[2],
-            u[0] * v[1] - u[1] * v[0],
-        ];
-        let length = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
-        let normal = if length > 0.0 {
-            cross.map(|x| x / length)
-        } else {
-            [0.0; 3]
-        };
+        let [a, b, c] = corners.map(|i| positions[i]);
+        let normal = face_normal(a, b, c);
+        let flagged = face_flags
+            .and_then(|flags| flags.get(face))
+            .is_some_and(|&flags| flags & FACE_NORMAL_FALLBACK != 0);
         // The original's corner tables: next and previous corner.
         const NEXT: [usize; 3] = [2, 0, 1];
         const PREV: [usize; 3] = [1, 2, 0];
@@ -1145,22 +1271,27 @@ fn smooth_normals(positions: &[[f32; 3]], indices: &[u32], keys: &[u32]) -> Vec<
             let here = positions[corners[corner]];
             let next = positions[corners[NEXT[corner]]];
             let prev = positions[corners[PREV[corner]]];
-            let weight = corner_angle_weight(sub(next, here), sub(prev, here));
             let key = keys[corners[corner]] as usize;
+            if flagged && reached[key] {
+                continue;
+            }
+            let weight = corner_angle_weight(sub(next, here), sub(prev, here));
+            let target = if flagged {
+                &mut fallback[key]
+            } else {
+                reached[key] = true;
+                &mut acc[key]
+            };
             for axis in 0..3 {
-                acc[key][axis] += normal[axis] * weight;
+                target[axis] += normal[axis] * weight;
             }
         }
     }
     keys.iter()
         .map(|&k| {
-            let n = acc[k as usize];
-            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-            if len > 0.0 {
-                n.map(|x| x / len)
-            } else {
-                [0.0, 1.0, 0.0]
-            }
+            let k = k as usize;
+            let sum = if reached[k] { acc[k] } else { fallback[k] };
+            normalised(sum).unwrap_or([0.0, 1.0, 0.0])
         })
         .collect()
 }
@@ -1683,6 +1814,61 @@ mod tests {
         let empty = Mesh::default().bounds();
         assert_eq!(empty.half_extents, [BOUNDS_HALF_FLOOR; 3]);
         assert_eq!(empty.radius, BOUNDS_HALF_FLOOR);
+        // A single point: extents floored at 0.001 cm, and a zero squared
+        // radius kept unrooted.
+        let point = Mesh {
+            positions: vec![[0.5, 0.25, -1.0]],
+            ..Default::default()
+        }
+        .bounds();
+        assert_eq!(point.centre, [0.5, 0.25, -1.0]);
+        assert_eq!(point.half_extents, [BOUNDS_HALF_FLOOR; 3]);
+        assert_eq!(point.radius, 0.0);
+    }
+
+    /// Every mesh of the installed object and character packs gets finite
+    /// normals (skipped without the game), and how many faces carry the
+    /// normal fallback flag.
+    #[test]
+    fn shipped_meshes_get_finite_normals() {
+        use exa_rpk::PackKind;
+        let Some(dir) = exa_rpk::locate_install(None) else {
+            return;
+        };
+        let game = exa_rpk::GameData::open(&dir).unwrap();
+        let (mut meshes, mut faces, mut flagged) = (0usize, 0usize, 0usize);
+        for kind in [PackKind::Objlib, PackKind::CharExt, PackKind::Resource] {
+            let pack = game.pack(kind).unwrap();
+            for entry in pack.entries() {
+                let bytes = pack.bytes(entry);
+                if crate::FileKind::detect(bytes) != crate::FileKind::ChunkTree {
+                    continue;
+                }
+                let Ok(scene) = Scene::parse(bytes) else {
+                    continue;
+                };
+                for node in &scene.nodes {
+                    let NodeBody::Mesh(mesh) = &node.body else {
+                        continue;
+                    };
+                    meshes += 1;
+                    faces += mesh.indices.len() / 3;
+                    if let Some(flags) = &mesh.triangle_flags {
+                        flagged += flags
+                            .iter()
+                            .filter(|&&f| f & FACE_NORMAL_FALLBACK != 0)
+                            .count();
+                    }
+                    for normal in &mesh.normals {
+                        assert!(normal.iter().all(|x| x.is_finite()), "{}", entry.name);
+                        let length = dot3(*normal, *normal).sqrt();
+                        assert!((length - 1.0).abs() < 1e-5, "{}: {normal:?}", entry.name);
+                    }
+                }
+            }
+        }
+        eprintln!("{meshes} meshes, {faces} faces, {flagged} with the normal fallback flag");
+        assert!(meshes > 100);
     }
 
     #[test]
@@ -1726,14 +1912,44 @@ mod tests {
 
     #[test]
     fn barycentric_coordinates_split_the_triangle() {
+        let near = |a: [f32; 3], b: [f32; 3]| (0..3).all(|i| (a[i] - b[i]).abs() < 1e-3);
         let triangle = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        // The stored inverse is the reciprocal estimate, good to about
+        // 2^-12, so the weights are close to the exact ones, not equal.
         let weights = barycentric(triangle, [0.25, 0.25, 0.0]);
-        assert_eq!(weights, [0.5, 0.25, 0.25]);
-        // A point off the plane has the same coordinates: its normal
-        // component does not enter the edges.
-        let weights = barycentric(triangle, [0.25, 0.25, 3.0]);
-        assert_eq!(weights, [0.5, 0.25, 0.25]);
-        assert_eq!(barycentric(triangle, [1.0, 0.0, 0.0]), [0.0, 1.0, 0.0]);
+        assert!(near(weights, [0.5, 0.25, 0.25]), "{weights:?}");
+        // A point off the plane is dropped onto it first.
+        let lifted = barycentric(triangle, [0.25, 0.25, 3.0]);
+        assert_eq!(lifted, weights);
+        let corner = barycentric(triangle, [1.0, 0.0, 0.0]);
+        assert!(near(corner, [0.0, 1.0, 0.0]), "{corner:?}");
+        // The three always sum to one by construction: first = 1 − b − c.
+        assert_eq!(corner[0], (1.0 - corner[1]) - corner[2]);
+    }
+
+    /// A face with the fallback flag shapes a smoothing group only when no
+    /// face without it reaches the group.
+    #[test]
+    fn flagged_faces_only_shape_a_normal_alone() {
+        // Two faces share vertex 0 through key 0: an XY face (normal +Z)
+        // and a flagged XZ face (normal +Y).
+        let positions = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        let indices = [0, 1, 2, 0, 3, 1];
+        let keys = [0, 1, 2, 3];
+        let flags = [0, FACE_NORMAL_FALLBACK];
+        let normals = smooth_normals(&positions, &indices, &keys, Some(&flags));
+        assert!((normals[0][2] - 1.0).abs() < 1e-3, "{normals:?}");
+        assert!(normals[0][1].abs() < 1e-6, "{normals:?}");
+        // Vertex 3 is reached by the flagged face alone, which then counts.
+        assert!((normals[3][1] - 1.0).abs() < 1e-3, "{normals:?}");
+        // Without flags both faces count at vertex 0.
+        let plain = smooth_normals(&positions, &indices, &keys, None);
+        assert!(plain[0][1] > 0.5 && plain[0][2] > 0.5, "{plain:?}");
     }
 
     #[test]
@@ -1741,18 +1957,20 @@ mod tests {
         // A right angle: cos 0, so the polynomial alone, near π/2.
         let weight = corner_angle_weight([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
         assert!((weight - 1.570_999_979_972_839_4).abs() < 1e-6, "{weight}");
-        // Parallel and opposite edges carry no weight.
+        // Parallel edges (cos 1) carry no weight; opposite ones (cos −1)
+        // the approximation of π: √2·(1.571 + 0.1945 + 0.111 + 0.111).
         assert_eq!(corner_angle_weight([1.0, 0.0, 0.0], [1.0, 0.0, 0.0]), 0.0);
-        assert_eq!(corner_angle_weight([1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]), 0.0);
+        let opposite = corner_angle_weight([1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]);
+        assert!((opposite - 2.810_749).abs() < 1e-5, "{opposite}");
         assert_eq!(corner_angle_weight([0.0; 3], [1.0, 0.0, 0.0]), 0.0);
-        // A 45° corner: cos = √½.
-        let c = std::f32::consts::FRAC_1_SQRT_2;
-        let expected = ((c * c * 0.111_000_001_430_511_47
-            + (1.570_999_979_972_839_4 - c * 0.194_499_999_284_744_26))
-            - c * c * c * 0.111_000_001_430_511_47)
-            * (1.0 - c * c).sqrt();
-        let weight = corner_angle_weight([1.0, 0.0, 0.0], [c, c, 0.0]);
-        assert!((weight - expected).abs() < 1e-7, "{weight} {expected}");
+        // A 60° corner: cos = ½, so √½·(1.571 − 0.09725 + 0.02775 −
+        // 0.013875) = 1.05191, the approximation of π/3 = 1.04720.
+        let weight = corner_angle_weight([1.0, 0.0, 0.0], [0.5, 0.75f32.sqrt(), 0.0]);
+        assert!((weight - 1.051_91).abs() < 1e-4, "{weight}");
+        assert!((weight - std::f32::consts::FRAC_PI_3).abs() < 5e-3);
+        // A product of squared lengths under the original's 1.19e-7 floor
+        // (here 1e-16) carries no weight.
+        assert_eq!(corner_angle_weight([1e-4, 0.0, 0.0], [0.0, 1e-4, 0.0]), 0.0);
     }
 
     #[test]

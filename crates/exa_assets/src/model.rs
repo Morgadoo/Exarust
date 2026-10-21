@@ -1710,11 +1710,10 @@ fn takes_race_blood(material: &str) -> bool {
     material.starts_with('s')
 }
 
-/// A Bevy mesh holding only the vertices one material group uses.
-/// A group's index buffer in the smallest type the original uses: u8 below
-/// 255 vertices and u16 below 65 535, of which Bevy has only the u16 and the
-/// u32. `vertices` is the group's vertex count, so 255 vertices still fit
-/// the byte type in the original.
+/// A group's index buffer in the smallest type the original uses: it
+/// compares the group's last vertex index with 255 and 65 535, so groups of
+/// up to 255 vertices take bytes, up to 65 535 shorts and larger ones
+/// 32-bit words. Bevy has no byte indices, so the small groups use u16.
 fn group_indices(vertices: usize, local: Vec<u32>) -> Indices {
     if vertices < 0x1_0000 {
         Indices::U16(local.iter().map(|&i| i as u16).collect())
@@ -1723,6 +1722,7 @@ fn group_indices(vertices: usize, local: Vec<u32>) -> Indices {
     }
 }
 
+/// A Bevy mesh holding only the vertices one material group uses.
 fn group_mesh(mesh: &RfcMesh, indices: &[u32], skin: Option<&[VertexSkin]>) -> Option<Mesh> {
     if indices.is_empty() {
         return None;
@@ -1746,8 +1746,8 @@ fn group_mesh(mesh: &RfcMesh, indices: &[u32], skin: Option<&[VertexSkin]>) -> O
         let uv: Vec<[f32; 2]> = used.iter().map(|&i| uvs[i]).collect();
         crate::tangents::split_tangents(&positions, &normals, &uv, &local)
     });
-    // The original picks the smallest index type that fits: one byte below
-    // 255 vertices, two below 65 535. Bevy has no u8 indices, so 255 and
+    // The original picks the smallest index type that fits: bytes up to 255
+    // vertices, shorts up to 65 535. Bevy has no u8 indices, so 255 and
     // fewer vertices use u16.
     let indices = group_indices(used.len(), local);
     // Kept in the main world too: static colliders are built from mesh data.
@@ -2396,7 +2396,7 @@ mod tests {
     }
 
     /// A group's indices use u16 up to 65 535 vertices and u32 beyond. The
-    /// original's own cut for u8 is 255 vertices.
+    /// original's own cut for bytes is 255 vertices (last index 254).
     #[test]
     fn a_group_picks_the_smallest_index_type() {
         assert!(matches!(group_indices(255, vec![0, 1]), Indices::U16(_)));
