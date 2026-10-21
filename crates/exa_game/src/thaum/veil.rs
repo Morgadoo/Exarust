@@ -435,9 +435,9 @@ fn find_key_mut(root: &mut VeilNode, key: u64) -> Option<&mut VeilNode> {
 /// A shell node of a body: its render words and what its restore stamps.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShellNode {
-    /// The word at the node's +8.
+    /// The node's render word.
     pub render: u32,
-    /// The word at the node's +0xc.
+    /// The node's mark word; bit 28 is the shell mark.
     pub mark: u32,
     /// The restore's stamp.
     pub stamp: u32,

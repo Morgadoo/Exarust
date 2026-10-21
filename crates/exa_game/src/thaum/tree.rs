@@ -45,6 +45,13 @@
 //!   the domain's front end: mind, force, energy or displacement. A cast
 //!   that starts records the last instant power (a sustained or persistent
 //!   power clears it); a refused one plays the failure sound.
+//! - **The draw** ([`TreeScreen::view`]): hands `exa_ui::tree_draw` the
+//!   placed nodes, their link curves, the marks, the flash and learn
+//!   timers and the bar's slots; the tree pass and the bar are laid out
+//!   there. A slot whose power matches a picked node is given the
+//!   persistent-pick bit in the view. The show and hide window fades, the
+//!   bar's opening and closing animation and the link ribbon's spline are
+//!   not modelled: the view is always fully shown and the bar steady.
 //! - **The slot budget** ([`limit_running_powers`]): the highest thaumaturgy
 //!   technique of 2 to 4 among the record's tiers, one less without the
 //!   focus item, is how many running powers a body may keep; the rest are
