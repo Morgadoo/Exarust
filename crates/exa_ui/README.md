@@ -517,8 +517,8 @@ and binding table. `transition` is the state machine between game states
 (600/800/300/2000-unit fades, the switch, the hold and the fade back).
 `class_select` lays out the four story portraits and their chosen card,
 and has the picker's hit test and key steps. `dialogue_choices` is the reply list's hit test, pick, fading colours,
-rows and height animation. `picker_fields` has the creator's marker fields and the
-physique point's body-shape weights. `popups` has the item card, the
+rows and height animation. `picker_fields` has the creator's marker, keys and
+physique cross, the point's body-shape weights and the press, release and change steps. `popups` has the item card, the
 container popup and the parchment. `dialogs` has the colour window's
 gradients and hue table and the confirmation dialogs. `help_screen`, `task_stack`,
 `game_tips`, `colour_swatch`, `view_helpers` (the viewport's super-sample

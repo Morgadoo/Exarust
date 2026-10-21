@@ -1871,11 +1871,18 @@ plain draw and input records.
   cleared. Rows read "N." and the wrapped text, starting a line and a unit
   down, one line height per wrapped line plus a unit apart; the colours come
   from the interface palette.
-- **Pickers** (`exa_ui::picker_fields`): the marker is the normalised point
-  times the field's size less one; a stick moves it by hundredths and
-  clamps it (an unordered value becomes 0). The physique diamond maps a
-  point above the middle to the third body-shape weight and one below to
-  the first two, with the product as the fourth.
+- **Pickers** (`exa_ui::picker_fields`): the marker is the point times the
+  field's client size less one, in single precision and rounded to even.
+  The toggle key flips the marker bit, the hide key clears it, and a move
+  key adds hundredths of a stick to the point (worked in double), holds it
+  to 0 to 1 (an unordered value stays unordered) and runs the callback; the
+  handler always answers handled. The pointer pick is the shared base pick
+  in `pickers`. The physique field draws a cross of two lines in a grey of
+  alpha 0x28, and maps a point (an unordered one, or one right of the middle)
+  to the second and third weights, otherwise to the first, third and fourth,
+  written into the first float of the generator's first four body-shape
+  entries. A press on a free field picks and answers 7; a release clears the
+  generator's dirty flag or runs the callback.
 - **Popups** (`exa_ui::popups`): the item card is 268 by 260, its fade a
   256-unit squared curve (in: the square of the elapsed share; out: the
   square of the remaining share); its icon is centred, or on the stats

@@ -1,27 +1,42 @@
 //! The character creator's picker fields: the base field with its marker,
-//! and the physique field that maps a point to the body-shape weights.
+//! its keys, and the physique field that maps a point to body-shape weights.
 //!
 //! A picker keeps a normalised point. Its marker is drawn at the point
-//! times the field's size less one. The base hit test always misses but
-//! reports the field's centre. Keyboard or stick input moves the point by
-//! the stick vector in hundredths, clamps it to 0…1 (an unordered value
-//! becomes 0) and runs the change callback. The physique field paints a
-//! diamond in the field's grey. A point above the middle maps to the
-//! first two weights, a point below to the last two; the fourth is the
-//! product of the two coordinates.
+//! times the field's size less one, rounded to even in single precision. The
+//! base hit test always misses but reports the field's centre. A key
+//! moves the point by the stick vector in hundredths (the sum is worked in
+//! double), holds it to 0…1 (an unordered value stays unordered) and runs the
+//! change callback; the key handler always reports it handled. The pointer
+//! pick is [`crate::pickers::pick_point`]. The physique field draws a cross
+//! of two lines in the field's grey, and a point at or below the middle
+//! maps to the first, third and fourth weights, a point above it to the
+//! second and third.
 //!
-//! Evidence: the picker base's draw, hit test and input, the physique
-//! picker's draw, pick, weight and release routines (`docs/UI.md`).
+//! Evidence: the picker base's marker draw, hit test, key handler and pick,
+//! and the physique picker's constructor, draw, weight, press, release and
+//! change routines (`docs/UI.md`).
 
-/// The body shape array's four positions, as float offsets.
-pub const SHAPE_STRIDE: usize = 8;
-/// The field must have more than this many entries to take a point.
-pub const SHAPE_MIN: i32 = 3;
+use crate::pickers::{PickPoint, pick_point};
+
 /// The marker's flag bit.
 pub const MARKER_FLAG: u32 = 0x40;
-/// A change must move a coordinate by at least this much (the original's
-/// float epsilon 1.19e-7).
-pub const CHANGE_EPSILON: f32 = f32::from_bits(0x3400_0000);
+/// A body-shape array holds more than this many entries before it takes
+/// weights.
+pub const SHAPE_MIN: usize = 3;
+/// The side of a picker field before the dialog lays it out, in pixels.
+pub const FIELD_SIDE: i32 = 160;
+/// The cross's colour (red, green, blue, alpha).
+pub const CROSS_COLOUR: [u8; 4] = [0xb4, 0xb4, 0xb4, 0x28];
+/// The key code that toggles the marker.
+pub const KEY_TOGGLE_MARKER: u32 = 0x100;
+/// The key code that hides the marker.
+pub const KEY_HIDE_MARKER: u32 = 0x200;
+/// The key bits that move the point; bit `0x20` picks the second stick.
+pub const KEY_MOVE_BITS: u32 = 0x30;
+/// What the picker's key handler and the pick answer.
+pub const HANDLED: i32 = 1;
+/// What a pointer pick answers, whether or not the point moved.
+pub const PICK_ANSWER: i32 = 3;
 
 /// One picker field's state.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -30,7 +45,8 @@ pub struct Picker {
     pub point: [f32; 2],
     /// The marker's flag word.
     pub flags: u32,
-    /// The target control's id, or −1 for a free field.
+    /// The target control's id, or −1 for a free field (the marker then
+    /// draws in the free colour, otherwise in the bound colour).
     pub marker: i32,
 }
 
@@ -44,136 +60,199 @@ impl Default for Picker {
     }
 }
 
-/// The point after the clamp the original applies: above one becomes one,
-/// below zero (or unordered) becomes zero.
-fn clamp01(v: f32) -> f32 {
-    if v >= 0.0 {
-        if v > 1.0 { 1.0 } else { v }
-    } else {
+/// What a key did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PickerKey {
+    /// Always [`HANDLED`].
+    pub answer: i32,
+    /// Whether the change callback runs (a move key).
+    pub callback: bool,
+}
+
+/// Below zero becomes zero, above one becomes one; an unordered value
+/// passes both tests and stays unordered, as does −0.
+fn hold(v: f32) -> f32 {
+    if v < 0.0 {
         0.0
+    } else if v > 1.0 {
+        1.0
+    } else {
+        v
     }
 }
 
 impl Picker {
-    /// The marker's place inside a field `size` pixels across.
+    /// The marker's place inside a field of client `size`: the size less
+    /// one, in 64-bit integers, times the point in single precision, then
+    /// rounded to even.
     pub fn marker_at(&self, size: (i32, i32)) -> (i32, i32) {
-        let x = f64::from(size.0.wrapping_sub(1)) * f64::from(self.point[0]);
-        let y = f64::from(size.1.wrapping_sub(1)) * f64::from(self.point[1]);
-        (x.round_ties_even() as i32, y.round_ties_even() as i32)
+        let at = |extent: i32, p: f32| {
+            let span = (i64::from(extent) - 1) as f32;
+            (span * p).round_ties_even() as i64 as i32
+        };
+        (at(size.0, self.point[0]), at(size.1, self.point[1]))
     }
 
-    /// The base hit test's answer: it misses, reporting the centre.
+    /// The base hit test's answer: it misses (−1), reporting the centre with
+    /// the signed halving toward zero.
     pub fn base_hit(size: (i32, i32)) -> ((i32, i32), i32) {
-        // The half is computed with the original's signed divide.
-        ((size.0.wrapping_sub(0) / 2, size.1.wrapping_sub(0) / 2), -1)
+        ((size.0 / 2, size.1 / 2), -1)
     }
 
-    /// The keyboard/stick input. `stick` is the axis pair; a mask with bit
-    /// `0x20` picks the alternative pair. Returns whether it changed.
-    pub fn input(&mut self, mask: u32, stick: ([f32; 2], [f32; 2])) -> bool {
-        if mask == 0x100 {
-            self.flags |= MARKER_FLAG;
-            return false;
-        }
-        if mask == 0x200 {
+    /// The key handler. The toggle code flips the marker's bit and the hide
+    /// code clears it; a code with a move bit adds hundredths of the first
+    /// stick (or the second, with bit `0x20`) to the point and runs the
+    /// callback. Every code answers [`HANDLED`].
+    pub fn input(&mut self, code: u32, sticks: ([f32; 2], [f32; 2])) -> PickerKey {
+        let mut callback = false;
+        if code == KEY_TOGGLE_MARKER {
+            self.flags ^= MARKER_FLAG;
+        } else if code == KEY_HIDE_MARKER {
             self.flags &= !MARKER_FLAG;
-            return false;
+        } else if code & KEY_MOVE_BITS != 0 {
+            let stick = if code & 0x20 != 0 { sticks.1 } else { sticks.0 };
+            for axis in 0..2 {
+                // The product and the sum are worked in double.
+                let moved = f64::from(stick[axis]) * 0.01 + f64::from(self.point[axis]);
+                self.point[axis] = hold(moved as f32);
+            }
+            callback = true;
         }
-        if mask & 0x30 == 0 {
-            return false;
+        PickerKey {
+            answer: HANDLED,
+            callback,
         }
-        let axis = if mask & 0x20 == 0 { stick.0 } else { stick.1 };
-        self.point[0] = clamp01(self.point[0] + axis[0] * 0.01);
-        self.point[1] = clamp01(self.point[1] + axis[1] * 0.01);
-        true
     }
 
-    /// The drag pick: maps the local point to 0…1 and only writes and runs
-    /// the callback when either coordinate moved by at least the epsilon.
-    /// Returns whether it changed.
+    /// The pointer pick at `local` client coordinates; answers whether the
+    /// point moved (and so the callback runs). The pick itself answers
+    /// [`PICK_ANSWER`] either way.
     pub fn drag(&mut self, local: (i32, i32), size: (i32, i32)) -> bool {
-        let mut x = local.0 as f32 / (size.0) as f32;
-        x = clamp01(x);
-        let mut y = 1.0 - local.1 as f32 / (size.1) as f32;
-        y = clamp01(y);
-        let dx = (self.point[0] - x).abs();
-        let dy = ((self.point[1] - 1.0) + y).abs();
-        if CHANGE_EPSILON <= dx || CHANGE_EPSILON <= dy {
-            self.point = [x, 1.0 - y];
-            return true;
-        }
-        false
+        let mut p = PickPoint {
+            u: self.point[0],
+            v: self.point[1],
+        };
+        let moved = pick_point(&mut p, local.0, local.1, size);
+        self.point = [p.u, p.v];
+        moved
     }
 }
 
-/// The physique picker's constructor values: the generator's body-shape
-/// pointer and the field's place.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PhysiquePicker {
-    pub has_generator: bool,
+/// Writes the physique point's four weights into the body-shape array, one
+/// per entry's first float, when it holds more than [`SHAPE_MIN`] entries.
+/// Answers whether it wrote.
+pub fn apply_body_shape(point: [f32; 2], shape: &mut [[f32; 8]]) -> bool {
+    if shape.len() <= SHAPE_MIN {
+        return false;
+    }
+    let weights = body_shape(point);
+    for (entry, w) in shape.iter_mut().zip(weights) {
+        entry[0] = w;
+    }
+    true
 }
 
-pub fn physique_picker(has_generator: bool) -> PhysiquePicker {
-    PhysiquePicker { has_generator }
-}
-
-/// The physique field's body-shape weights from its point.
+/// The physique field's four weights from its point, in array order.
 ///
-/// The first coordinate above the middle sets the third weight from the
-/// distance past it and the second coordinate's vertical share; otherwise
-/// the first two weights split the two variables. The fourth weight is
-/// the product.
+/// With `u` the first coordinate and `v = 1 − y`: an unordered `u`, or one
+/// above the middle, takes the right half (`f = 2u − 1`: the second weight
+/// `(1 − v/4)·f`, the third `(1 − f/2)·v`, the others 0); otherwise
+/// (`s = 2u`) the first is `(1 − v)(1 − s)`, the third `s·v`, the fourth
+/// `(1 − s)·v` and the second 0.
 pub fn body_shape(point: [f32; 2]) -> [f32; 4] {
-    let mut x = point[0];
-    let y = 1.0 - point[1];
-    let (first, second, third);
-    if x > 0.5 {
-        let f = x * 2.0 - 1.0;
-        x = 1.0 - f * 0.5;
-        third = (1.0 - y * 0.25) * f;
-        first = 0.0;
-        second = 0.0;
+    let u = point[0];
+    let v = 1.0 - point[1];
+    // The original's unordered branch is the right half.
+    if u.is_nan() || u > 0.5 {
+        let f = u * 2.0 - 1.0;
+        let third = (1.0 - f * 0.5) * v;
+        let second = (1.0 - v * 0.25) * f;
+        [0.0, second, third, 0.0]
     } else {
-        x *= 2.0;
-        first = (1.0 - y) * (1.0 - x);
-        second = (1.0 - x) * y;
-        third = 0.0;
+        let s = u * 2.0;
+        let third = s * v;
+        let first = (1.0 - v) * (1.0 - s);
+        let fourth = (1.0 - s) * v;
+        [first, 0.0, third, fourth]
     }
-    [first, third, x * y, second]
 }
 
-/// The physique field's diamond: its four vertices in the field's grey.
-pub fn physique_diamond(size: (i32, i32)) -> [[f32; 2]; 4] {
-    let w = f64::from(size.0) + 0.5;
-    let h = f64::from(size.1) + 0.5;
+/// The physique field's cross: two lines through the middle of a field of
+/// client `size`, worked in single precision with half a pixel added.
+/// Returns `[from, to]` for the vertical line then the horizontal one.
+pub fn physique_cross(size: (i32, i32)) -> [[[f32; 2]; 2]; 2] {
+    let w = (i64::from(size.0) as f32) + 0.5;
+    let h = (i64::from(size.1) as f32) + 0.5;
     [
-        [(w * 0.5) as f32, 0.0],
-        [(w * 0.5) as f32, h as f32],
-        [0.0, (h * 0.5) as f32],
-        [w as f32, (h * 0.5) as f32],
+        [[w * 0.5, 0.0], [w * 0.5, h]],
+        [[0.0, h * 0.5], [w, h * 0.5]],
     ]
 }
 
-/// The physique field's diamond colour.
-pub const DIAMOND_COLOUR: [u8; 4] = [0xb4, 0xb4, 0xb4, 0x28];
-
-/// What the physique field's release did.
+/// What a press on the physique field did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PhysiqueRelease {
-    /// The generator's dirty flag.
-    pub dirty: bool,
-    /// The release picked at the point.
+pub struct PhysiquePress {
+    /// The character generator re-rolls from its owner's data and is marked
+    /// dirty.
+    pub generator_dirty: bool,
+    /// The press picks at the event's point.
     pub picked: bool,
-    /// The handler's answer is the pick's answer with 5 set.
+    /// The answer to the event.
     pub answer: i32,
 }
 
-/// The release applies the shape, marks the generator and picks again.
-pub fn physique_release() -> PhysiqueRelease {
-    PhysiqueRelease {
-        dirty: true,
+/// The press: a free field (marker −1) hands its owner to the generator,
+/// marks it dirty, picks at the point and answers the pick's answer with
+/// bits 1 and 4 set (7); a bound field answers the base's answer.
+pub fn physique_press(marker: i32, has_owner: bool, base_answer: i32) -> PhysiquePress {
+    if marker != -1 {
+        return PhysiquePress {
+            generator_dirty: false,
+            picked: false,
+            answer: base_answer,
+        };
+    }
+    PhysiquePress {
+        generator_dirty: has_owner,
         picked: true,
-        answer: 5,
+        answer: PICK_ANSWER | 5,
+    }
+}
+
+/// What a release on the physique field did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhysiqueRelease {
+    /// The generator's dirty flag is cleared (the field has an owner).
+    pub generator_clean: bool,
+    /// The change callback runs (no owner, a callback).
+    pub callback: bool,
+}
+
+/// The release: with an owner it clears the generator's dirty flag,
+/// otherwise it runs the change callback if there is one.
+pub fn physique_release(has_owner: bool, has_callback: bool) -> PhysiqueRelease {
+    PhysiqueRelease {
+        generator_clean: has_owner,
+        callback: !has_owner && has_callback,
+    }
+}
+
+/// What the physique field's change handler did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhysiqueChange {
+    /// The generator is marked dirty (a callback and an owner).
+    pub generator_dirty: bool,
+    /// The callback runs.
+    pub callback: bool,
+}
+
+/// The change handler writes the weights (see [`apply_body_shape`]) and then,
+/// with a callback, marks the generator dirty if there is an owner and runs
+/// it.
+pub fn physique_change(has_owner: bool, has_callback: bool) -> PhysiqueChange {
+    PhysiqueChange {
+        generator_dirty: has_callback && has_owner,
+        callback: has_callback,
     }
 }
 
@@ -183,40 +262,57 @@ mod tests {
 
     #[test]
     fn the_marker_follows_the_point() {
-        let p = Picker {
-            point: [0.5, 0.5],
-            ..Default::default()
-        };
+        let p = Picker::default();
+        // (101 − 1) · 0.5 and (81 − 1) · 0.5.
         assert_eq!(p.marker_at((101, 81)), (50, 40));
+        // Halves round to even: 4 · 0.5 = 2, 5 · 0.5 = 2.5 → 2, 7 · 0.5 = 3.5 → 4.
+        assert_eq!(p.marker_at((5, 6)), (2, 2));
+        assert_eq!(p.marker_at((8, 9)), (4, 4));
+        // The centre truncates toward zero, also below zero.
         assert_eq!(Picker::base_hit((101, 81)), ((50, 40), -1));
+        assert_eq!(Picker::base_hit((-3, 0)), ((-1, 0), -1));
     }
 
     #[test]
-    fn the_input_moves_and_clamps() {
+    fn the_keys_toggle_move_and_hold() {
         let mut p = Picker::default();
-        assert!(p.input(0x10, ([10.0, -5.0], [0.0, 0.0])));
-        assert_eq!(p.point, [0.6, 0.45]);
-        p.point = [0.99, 0.01];
-        assert!(p.input(0x20, ([0.0, 0.0], [10.0, -10.0])));
-        assert_eq!(p.point, [1.0, 0.0]);
-        assert!(!p.input(0x100, ([1.0, 1.0], [1.0, 1.0])));
-        assert_eq!(p.flags, MARKER_FLAG);
-        assert!(!p.input(0x200, ([0.0, 0.0], [0.0, 0.0])));
+        // Toggle flips, hide clears, every code answers handled.
+        let k = p.input(KEY_TOGGLE_MARKER, ([0.0; 2], [0.0; 2]));
+        assert_eq!(
+            (k.answer, k.callback, p.flags),
+            (HANDLED, false, MARKER_FLAG)
+        );
+        p.input(KEY_TOGGLE_MARKER, ([0.0; 2], [0.0; 2]));
         assert_eq!(p.flags, 0);
-        // An unordered move becomes zero.
-        p.point = [f32::NAN, f32::NAN];
-        assert!(p.input(0x10, ([0.0, 0.0], [0.0, 0.0])));
-        assert_eq!(p.point, [0.0, 0.0]);
+        p.flags = MARKER_FLAG;
+        let k = p.input(KEY_HIDE_MARKER, ([0.0; 2], [0.0; 2]));
+        assert_eq!((k.answer, p.flags), (HANDLED, 0));
+        // An unrelated code is handled and does nothing.
+        let k = p.input(0x4, ([9.0; 2], [9.0; 2]));
+        assert_eq!((k.answer, k.callback, p.point), (HANDLED, false, [0.5; 2]));
+        // The first stick moves by hundredths, worked in double: 0.5 + 0.1.
+        let k = p.input(0x10, ([10.0, -5.0], [0.0, 0.0]));
+        assert!(k.callback);
+        assert_eq!(p.point[0], (0.5f64 + 10.0 * 0.01) as f32);
+        assert_eq!(p.point[1], (0.5f64 + -5.0 * 0.01) as f32);
+        // Bit 0x20 reads the second stick, and the result is held to 0…1.
+        p.point = [0.99, 0.01];
+        p.input(0x20, ([0.0, 0.0], [10.0, -10.0]));
+        assert_eq!(p.point, [1.0, 0.0]);
+        // An unordered point stays unordered; the callback still runs.
+        p.point = [f32::NAN, 0.5];
+        let k = p.input(0x10, ([1.0, 1.0], [0.0, 0.0]));
+        assert!(k.callback && p.point[0].is_nan());
     }
 
     #[test]
-    fn the_drag_only_writes_on_a_real_change() {
+    fn the_pick_matches_the_shared_base_pick() {
         let mut p = Picker {
             point: [0.75, 0.75],
             ..Default::default()
         };
-        // Local (75, 25) of 100 by 100: x = 0.75, y = 1 − 0.25 = 0.75, so
-        // the stored point becomes (0.75, 0.25) — a real move.
+        // Local (75, 25) of 100 by 100: u = 0.75, 1 − 0.25 = 0.75, so the
+        // stored point becomes (0.75, 0.25): a real move.
         assert!(p.drag((75, 25), (100, 100)));
         assert_eq!(p.point, [0.75, 0.25]);
         assert!(!p.drag((75, 25), (100, 100)));
@@ -224,15 +320,59 @@ mod tests {
 
     #[test]
     fn the_physique_point_maps_to_four_weights() {
-        // Left half: x = 0.25 → 0.5, y = 0.25.
+        // Left half: s = 0.5, v = 0.75.
         assert_eq!(body_shape([0.25, 0.25]), [0.125, 0.0, 0.375, 0.375]);
-        // Right half: x = 0.75 → f = 0.5, x = 0.75, y = 0.25.
+        // Right half: f = 0.5, v = 0.75.
         assert_eq!(body_shape([0.75, 0.25]), [0.0, 0.40625, 0.5625, 0.0]);
-        let d = physique_diamond((100, 80));
-        assert_eq!(d[0], [50.25, 0.0]);
-        assert_eq!(d[2], [0.0, 40.25]);
-        assert_eq!(DIAMOND_COLOUR, [0xb4, 0xb4, 0xb4, 0x28]);
-        assert_eq!(physique_release().answer, 5);
-        assert!(physique_picker(true).has_generator);
+        // The middle is the left half; an unordered point is the right half.
+        assert_eq!(body_shape([0.5, 0.0]), [0.0, 0.0, 1.0, 0.0]);
+        let nan = body_shape([f32::NAN, 0.0]);
+        assert!(nan[1].is_nan() && nan[0] == 0.0 && nan[3] == 0.0);
+    }
+
+    #[test]
+    fn the_weights_need_four_entries() {
+        let mut few = [[9.0; 8]; 3];
+        assert!(!apply_body_shape([0.25, 0.25], &mut few));
+        assert_eq!(few[0][0], 9.0);
+        let mut shape = [[9.0; 8]; 5];
+        assert!(apply_body_shape([0.25, 0.25], &mut shape));
+        assert_eq!(
+            shape.map(|e| e[0]),
+            [0.125, 0.0, 0.375, 0.375, 9.0],
+            "four weights; the fifth entry is untouched"
+        );
+        assert_eq!(shape[0][1], 9.0, "only the first float of an entry");
+    }
+
+    #[test]
+    fn the_cross_is_two_lines_through_the_middle() {
+        let c = physique_cross((100, 80));
+        assert_eq!(c[0], [[50.25, 0.0], [50.25, 80.5]]);
+        assert_eq!(c[1], [[0.0, 40.25], [100.5, 40.25]]);
+        assert_eq!(CROSS_COLOUR, [0xb4, 0xb4, 0xb4, 0x28]);
+    }
+
+    #[test]
+    fn the_press_release_and_change_follow_the_owner() {
+        // A free field with an owner picks and answers 3 | 5 = 7.
+        let p = physique_press(-1, true, 0x20);
+        assert_eq!((p.generator_dirty, p.picked, p.answer), (true, true, 7));
+        // A bound field answers the base's answer and does nothing else.
+        let p = physique_press(4, true, 0x20);
+        assert_eq!(
+            (p.generator_dirty, p.picked, p.answer),
+            (false, false, 0x20)
+        );
+        let r = physique_release(true, true);
+        assert!(r.generator_clean && !r.callback);
+        let r = physique_release(false, true);
+        assert!(!r.generator_clean && r.callback);
+        assert!(!physique_release(false, false).callback);
+        let c = physique_change(true, true);
+        assert!(c.generator_dirty && c.callback);
+        let c = physique_change(true, false);
+        assert!(!c.generator_dirty && !c.callback);
+        assert_eq!(FIELD_SIDE, 160);
     }
 }
