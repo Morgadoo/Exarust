@@ -4,6 +4,7 @@
 //! into Bevy assets: images ([`texture`]) and models with their materials
 //! ([`model`]), each cached by name.
 
+pub mod content_stream;
 pub mod human_skin;
 pub mod mesh_edit;
 pub mod mesh_smooth;
