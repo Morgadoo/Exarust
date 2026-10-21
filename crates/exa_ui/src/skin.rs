@@ -6273,7 +6273,6 @@ pub struct FormBackgroundPlace {
     pub title_y: i32,
     pub title_style: u32,
     pub title_offset: i32,
-    pub marks: Vec<(i32, u32, bool)>,
     pub active_code: i32,
     pub hot_code: i32,
     pub hot_flag: bool,
@@ -6369,7 +6368,17 @@ pub fn draw_form_background(
             drawn.title_band = true;
         }
         let mut rect = [0; 4];
-        for (code, id, selected) in place.marks.clone() {
+        let mut mark_list = Vec::new();
+        if (place.state & 2) == 2 {
+            mark_list.push((-4, 1));
+        }
+        if (place.state & 8) == 8 {
+            mark_list.push((-6, if (place.flags & 2) == 2 { 8 } else { 7 }));
+        }
+        if (place.state & 4) == 4 {
+            mark_list.push((-5, 6));
+        }
+        for (code, id) in mark_list {
             if form_rect(
                 FormRectPlace {
                     width: place.rect.x1 as i32,
@@ -6385,7 +6394,7 @@ pub fn draw_form_background(
                 &mut rect,
             ) {
                 drawn.mark_rects.push(rect);
-                let hot = selected || (code == place.hot_code && place.hot_flag);
+                let hot = code == place.hot_code && place.hot_flag;
                 let active = code == place.active_code;
                 let shape = GuiRect::corners(
                     rect[0] as f32,
@@ -6999,6 +7008,32 @@ pub fn draw_control_label(
                 }
             }
         }
+    }
+}
+
+/// The coloured text draw's cursor: the text ink at the place, then four
+/// one-pixel lines around the point in the highlight ink, under blend 0x201.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextCursor {
+    pub text_ink: SkinInk,
+    pub cross_ink: SkinInk,
+    pub cross_points: [(f32, f32); 4],
+    pub begin_calls: u32,
+    pub end_calls: u32,
+    pub blend: u16,
+}
+
+/// Draws coloured text and its cursor cross.
+pub fn text_cursor(x: i32, y: i32, palette: &SkinPalette) -> TextCursor {
+    let x = x as f32;
+    let y = y as f32;
+    TextCursor {
+        text_ink: palette.text[7],
+        cross_ink: palette.highlight[0],
+        cross_points: [(x - 1.0, y), (x + 1.0, y), (x, y + 1.0), (x, y - 1.0)],
+        begin_calls: 1,
+        end_calls: 1,
+        blend: 0x201,
     }
 }
 
@@ -11370,7 +11405,6 @@ mod tests {
                 title_y: 0,
                 title_style: 0,
                 title_offset: 0,
-                marks: vec![(-4, 1, false)],
                 active_code: -4,
                 hot_code: 0,
                 hot_flag: false,
@@ -11641,5 +11675,21 @@ mod tests {
         assert!(coloured.coloured);
         assert_eq!(coloured.cross, Some(palette.highlight[0]));
         assert_eq!(coloured.mode_calls, 2);
+    }
+
+    #[test]
+    fn a_text_cursor_draws_four_points_around_the_place() {
+        let palette = palette_for_faces();
+        let cursor = text_cursor(10, 20, &palette);
+        assert_eq!(cursor.text_ink, palette.text[7]);
+        assert_eq!(cursor.cross_ink, palette.highlight[0]);
+        assert_eq!(
+            cursor.cross_points,
+            [(9.0, 20.0), (11.0, 20.0), (10.0, 21.0), (10.0, 19.0)]
+        );
+        assert_eq!(
+            (cursor.begin_calls, cursor.end_calls, cursor.blend),
+            (1, 1, 0x201)
+        );
     }
 }
