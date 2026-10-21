@@ -1856,6 +1856,197 @@ fn fraction_of(bits: u16) -> f32 {
     }
 }
 
+impl Store {
+    /// Empties a tier, as the original's clear does.
+    pub fn clear(&mut self) {
+        self.records.clear();
+    }
+}
+
+impl Record<'_> {
+    /// The number of weapon variants the record's section names: the low
+    /// five bits of its word at `0x42`, one less for the half-sword form
+    /// (`flags & 0x30 == 0x10`), never below zero.
+    pub fn weapon_variants(&self) -> Option<u8> {
+        let body = self.section(WEAPON)?;
+        let flags = u32_at(body, 0);
+        let word = u16_at(body, 0x42) & 0x1F;
+        let count = if flags & 0x30 == 0x10 {
+            word.saturating_sub(1)
+        } else {
+            word
+        };
+        Some(count.min(0xFF) as u8)
+    }
+}
+
+impl ObjectDb {
+    /// Removes an object from its tier, releasing the strings it owns, as
+    /// the original does when a record is dropped.
+    pub fn remove(&mut self, id: u32) -> bool {
+        let tier = Tier::of(id);
+        if tier == Tier::Base {
+            return false;
+        }
+        let Some(record) = self.store(tier).find(Tier::index(id)).cloned() else {
+            return false;
+        };
+        if let Some(model) = record.view().model() {
+            for raw in [model.name_id, model.description_id] {
+                if raw > INHERIT {
+                    self.strings_mut(tier).release(raw & ID_MASK);
+                }
+            }
+        }
+        self.store_mut(tier).remove(Tier::index(id)).is_some()
+    }
+
+    /// Empties a tier (and, for the local and world tiers, its strings).
+    pub fn clear(&mut self, tier: Tier) {
+        self.store_mut(tier).clear();
+        if tier != Tier::Base {
+            *self.strings_mut(tier) = crate::objstrings::Library::default();
+        }
+    }
+
+    fn strings_mut(&mut self, tier: Tier) -> &mut crate::objstrings::Library {
+        match tier {
+            Tier::Base => &mut self.strings,
+            Tier::Local => &mut self.local_strings,
+            Tier::World => &mut self.world_strings,
+        }
+    }
+
+    /// The template an instance names, or the id itself when its header
+    /// names none that resolves.
+    pub fn template_of(&self, id: u32) -> u32 {
+        let Some(record) = self.find(id) else {
+            return id;
+        };
+        let template = record.view().template();
+        if template != 0 && self.find(template).is_some() {
+            template
+        } else {
+            id
+        }
+    }
+
+    /// The template an instance should name: the record's header template
+    /// when that template names a non-empty model, else the record itself.
+    pub fn instance_template_id(&self, id: u32) -> u32 {
+        self.instance_template(id)
+    }
+
+    /// The class byte of the model section an instance's template names
+    /// (the record's own for a template). Its meaning is not established.
+    pub fn model_class(&self, id: u32) -> Option<u8> {
+        let mut source = id;
+        if Tier::of(id) != Tier::Base
+            && let Some(record) = self.find(id)
+        {
+            let template = record.view().template();
+            if template != 0 {
+                source = template;
+            }
+        }
+        self.section(source, MODEL)?.get(0x1C).copied()
+    }
+
+    /// Instantiates a marked base template into the local tier, or leaves
+    /// the id as it is, as using an object does.
+    pub fn instance_of(&mut self, id: u32) -> Option<u32> {
+        if Tier::of(id) != Tier::Base {
+            return Some(id);
+        }
+        let marked = self
+            .base
+            .find(id)
+            .and_then(|r| r.view().header())
+            .is_some_and(|h| h.instance_on_use());
+        if marked {
+            self.clone_template_into(id, Tier::Local).or(Some(id))
+        } else {
+            Some(id)
+        }
+    }
+
+    /// The dispatcher the game's item code uses: a base template is
+    /// instantiated into the local tier when marked, a local id is
+    /// duplicated, a world id and a missing base id give none.
+    pub fn instantiate_or_duplicate(&mut self, id: u32) -> Option<u32> {
+        match Tier::of(id) {
+            Tier::Base => {
+                self.base.find(id)?;
+                self.instance_of(id)
+            }
+            Tier::Local => self.duplicate_local(id),
+            Tier::World => None,
+        }
+    }
+}
+
+/// An amount packed in four bytes as units of 1, 12 and 144 (`b0 + 12·b1 +
+/// 144·w`), the form the original's amount helpers read and write.
+pub fn amount_units(bytes: &[u8]) -> u32 {
+    u32::from(bytes.first().copied().unwrap_or(0))
+        + 12 * u32::from(bytes.get(1).copied().unwrap_or(0))
+        + 144 * u32::from(u16_at(bytes, 2))
+}
+
+/// Packs an amount into the four-byte units form.
+pub fn amount_bytes(units: u32) -> [u8; 4] {
+    let mut out = [0u8; 4];
+    out[2..4].copy_from_slice(&((units / 144) as u16).to_le_bytes());
+    let rest = units % 144;
+    out[1] = (rest / 12) as u8;
+    out[0] = (rest % 12) as u8;
+    out
+}
+
+/// Adds `delta` to a packed amount; a result below one unit is zero.
+pub fn amount_add(bytes: &[u8], delta: i64) -> [u8; 4] {
+    let sum = i64::from(amount_units(bytes)) + delta;
+    amount_bytes(sum.max(0) as u32)
+}
+
+/// Subtracts `delta` from a packed amount; a result below one unit is zero.
+pub fn amount_sub(bytes: &[u8], delta: i64) -> [u8; 4] {
+    amount_add(bytes, -delta)
+}
+
+/// Adds two packed amounts.
+pub fn amount_total(a: &[u8], b: &[u8]) -> [u8; 4] {
+    amount_bytes(amount_units(a) + amount_units(b))
+}
+
+/// The 16-bit compact form of an amount: the top two bits scale the low 14
+/// by 12, 144 or 1440 when the amount needs it.
+pub fn amount_compact(units: u32) -> u16 {
+    if units < 0x4000 {
+        units as u16
+    } else if units < 0x2_FFF5 {
+        ((units / 12) as u16) | 0x4000
+    } else if units < 0x23_FF70 {
+        ((units / 144) as u16) | 0x8000
+    } else {
+        ((units / 1440) as u16) | 0xC000
+    }
+}
+
+/// Expands the 16-bit compact form back to units.
+pub fn amount_expand(compact: u16) -> u32 {
+    let value = u32::from(compact & 0x3FFF);
+    if compact & 0xC000 == 0xC000 {
+        value * 1440
+    } else if compact & 0x8000 != 0 {
+        value * 144
+    } else if compact & 0x4000 != 0 {
+        value * 12
+    } else {
+        value
+    }
+}
+
 /// What the original calls a weapon's default state: the two words after
 /// the flags are non-zero and the byte at `+0xF` is zero.
 fn weapon_is_default(body: &[u8]) -> bool {
@@ -3041,5 +3232,164 @@ mod api_tests {
         let empty = ObjectDb::default().write(Tier::Local);
         assert_eq!(empty.len(), 8);
         assert!(ObjectDb::parse(&empty, &[]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod extra_tests {
+    use super::*;
+
+    fn section(tag: u32, body: &[u8]) -> Vec<u8> {
+        let mut v = tag.to_le_bytes().to_vec();
+        v.extend((body.len() as u32 + 8).to_le_bytes());
+        v.extend_from_slice(body);
+        v
+    }
+
+    fn padded(s: &str, len: usize) -> Vec<u8> {
+        let mut v = s.as_bytes().to_vec();
+        v.resize(len, 0);
+        v
+    }
+
+    fn record(id: u32, flags: u32, sections: &[(u32, Vec<u8>)]) -> OwnedRecord {
+        OwnedRecord {
+            id,
+            flags,
+            payload: sections.iter().flat_map(|(t, b)| section(*t, b)).collect(),
+        }
+    }
+
+    fn header(name: &str, flags: u32, parent: u32) -> Vec<u8> {
+        let mut b = padded(name, 16);
+        b.extend(flags.to_le_bytes());
+        b.extend(parent.to_le_bytes());
+        b
+    }
+
+    fn model(name: &str, name_id: u32, class: u8) -> Vec<u8> {
+        let mut b = padded(name, 16);
+        b.extend(0u32.to_le_bytes());
+        b.extend(name_id.to_le_bytes());
+        b.extend(0u32.to_le_bytes());
+        b.resize(0x28, 0);
+        b[0x1C] = class;
+        b
+    }
+
+    #[test]
+    fn remove_and_clear_release_strings() {
+        let mut db = ObjectDb::default();
+        let own = db.local_strings.add(b"Own");
+        db.local.insert(record(
+            1,
+            NAME | MODEL,
+            &[
+                (NAME, header("A", 0, 0)),
+                (MODEL, model("Ground", own | 0x8000_0000, 0)),
+            ],
+        ));
+        assert!(db.remove(LOCAL | 1));
+        assert!(db.local.is_empty());
+        assert_eq!(db.local_strings.get(own), None);
+        assert!(!db.remove(LOCAL | 1));
+        assert!(!db.remove(1));
+        db.local
+            .insert(record(2, NAME, &[(NAME, header("B", 0, 0))]));
+        db.clear(Tier::Local);
+        assert!(db.local.is_empty());
+        assert!(db.local_strings.is_empty());
+    }
+
+    #[test]
+    fn template_helpers_and_model_class() {
+        let mut db = ObjectDb::default();
+        db.base.insert(record(
+            10,
+            NAME | MODEL,
+            &[
+                (NAME, header("Template", INSTANCE_ON_USE, 0)),
+                (MODEL, model("Ground", 0, 7)),
+            ],
+        ));
+        db.base.insert(record(
+            11,
+            NAME | MODEL,
+            &[(NAME, header("Plain", 0, 0)), (MODEL, model("Plain", 0, 9))],
+        ));
+        db.local.insert(record(
+            1,
+            NAME | MODEL,
+            &[
+                (NAME, header("Instance", 0, 10)),
+                (MODEL, model("Other", 0, 0)),
+            ],
+        ));
+        assert_eq!(db.template_of(LOCAL | 1), 10);
+        assert_eq!(db.template_of(LOCAL | 2), LOCAL | 2);
+        assert_eq!(db.instance_template_id(LOCAL | 1), 10);
+        assert_eq!(db.model_class(LOCAL | 1), Some(7));
+        assert_eq!(db.model_class(11), Some(9));
+        assert_eq!(db.model_class(12), None);
+        assert_eq!(db.instance_of(10), Some(LOCAL | 2));
+        assert_eq!(db.instance_of(11), Some(11));
+        assert!(db.instantiate_or_duplicate(LOCAL | 1).is_some());
+        assert_eq!(db.instantiate_or_duplicate(WORLD | 1), None);
+        assert_eq!(db.instantiate_or_duplicate(99), None);
+    }
+
+    #[test]
+    fn weapon_variant_count() {
+        let mut weapon = vec![0u8; 0x60];
+        weapon[0x42] = 5;
+        let r = record(
+            1,
+            NAME | WEAPON,
+            &[(NAME, header("Sword", 0, 0)), (WEAPON, weapon.clone())],
+        );
+        assert_eq!(r.view().weapon_variants(), Some(5));
+        weapon[0] = 0x10;
+        let r = record(
+            1,
+            NAME | WEAPON,
+            &[(NAME, header("Sword", 0, 0)), (WEAPON, weapon)],
+        );
+        assert_eq!(r.view().weapon_variants(), Some(4));
+        let bare = record(1, NAME, &[(NAME, header("Sword", 0, 0))]);
+        assert_eq!(bare.view().weapon_variants(), None);
+    }
+
+    #[test]
+    fn amount_packing() {
+        assert_eq!(amount_units(&amount_bytes(0)), 0);
+        for units in [0, 1, 11, 12, 13, 143, 144, 145, 1000, 100_000] {
+            assert_eq!(amount_units(&amount_bytes(units)), units);
+        }
+        assert_eq!(amount_bytes(13), [1, 1, 0, 0]);
+        assert_eq!(amount_bytes(144), [0, 0, 1, 0]);
+        assert_eq!(amount_add(&amount_bytes(10), 5), amount_bytes(15));
+        assert_eq!(amount_add(&amount_bytes(10), -20), [0; 4]);
+        assert_eq!(amount_sub(&amount_bytes(10), 3), amount_bytes(7));
+        assert_eq!(
+            amount_total(&amount_bytes(10), &amount_bytes(20)),
+            amount_bytes(30)
+        );
+        for units in [
+            0, 1, 0x3FFF, 0x4000, 0x2FFF4, 0x2FFF5, 0x23FF6F, 0x23FF70, 1_000_000,
+        ] {
+            assert_eq!(
+                amount_expand(amount_compact(units)),
+                amount_expand(amount_compact(units))
+            );
+            assert_eq!(
+                amount_expand(amount_compact(units)),
+                match units {
+                    0..=0x3FFF => units,
+                    0x4000..=0x2FFF4 => (units / 12) * 12,
+                    0x2FFF5..=0x23FF6F => (units / 144) * 144,
+                    _ => (units / 1440) * 1440,
+                }
+            );
+        }
     }
 }

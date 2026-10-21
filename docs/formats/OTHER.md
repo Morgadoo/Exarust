@@ -260,6 +260,17 @@ and "A pair of thick leather gauntlets.").
   rewritten through it). A world object only refreshes its children. The
   original's scene-entity id rewrite (`+0x180`) is caller-side here:
   `ObjectDb::remapped` exposes the pairs.
+- **Removing and clearing**: removing an object releases the strings it owns
+  and drops the record from its tier; clearing a tier empties it and, for the
+  local and world tiers, its string library. The template helpers read an
+  instance's template id (the header's, when it resolves), the template the
+  instance should name (its header's when that template has a model name),
+  and the model class byte at the template's model `0x1C`; the item
+  dispatcher instantiates a marked base template into the local tier,
+  duplicates a local id and gives nothing for a world or missing id.
+- **Weapon variants**: a weapon section's word at `0x42` low five bits is the
+  variant count, one less for the half-sword form (`flags & 0x30 == 0x10`),
+  never below zero.
 - **Migration**: an instance refreshes from its template. When the header's
   material class (bits 16–23) differs, the appearance layers are refreshed
   (layer bytes 0/1/2/3 from the template; the colour only when the template's
@@ -329,8 +340,11 @@ established; only one of the 16-bit words is the folder fraction word above
 
 **Currency helpers.** The unit also packs amounts: a `u8` + `u8` + `u16` triple
 of units 1, 12 and 144 (`b0 + 12·b1 + 144·w`), and a 16-bit compact form whose
-top two bits scale the low 14 by 1, 12, 144 or 1440. Both are reproduced in
-the report as known-but-not-ported; no Exarust caller needs them yet.
+top two bits scale the low 14 by 1, 12, 144 or 1440 (it picks the first scale
+that fits: below `0x4000`, below `0x2FFF5`, below `0x23FF70`, else 1440). The
+add, subtract and total helpers keep a result below one unit at zero. Exarust:
+`objdb::{amount_units, amount_bytes, amount_add, amount_sub, amount_total,
+amount_compact, amount_expand}`.
 
 ### Corpus (installed `objdb.rdb`)
 
