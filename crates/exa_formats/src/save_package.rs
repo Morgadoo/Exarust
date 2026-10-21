@@ -4,10 +4,11 @@
 //! A package is the magic `0xDA7AEA02`, a section count, a sentinel entry and
 //! one 24-byte directory entry per section: a u32 offset, a u32 size and a
 //! fixed 16-byte name. Section payloads start at the next `0x2000`
-//! boundary. Writing a section that is already there rewrites it in place
-//! when the room up to the next section suffices; otherwise the section is
-//! relocated into the first gap it fits in, or appended, and the old bytes
-//! are left alone. Deleting a section only removes its directory entry.
+//! boundary after the entry before them. Writing a section that is already
+//! there rewrites it at its place when the room up to the next section
+//! suffices; otherwise the section is moved to the last gap it fits in, or
+//! appended, and the old bytes are left alone. Deleting a section only
+//! removes its directory entry.
 //!
 //! The `#playerdata` section is a fixed 48-byte header followed by the
 //! player's character placement chunk and then tagged chunks. The story and
@@ -237,6 +238,8 @@ pub struct Entry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageImage {
     pub magic: u32,
+    /// The sentinel entry's offset, size and name, kept as read.
+    sentinel: (u32, u32, [u8; NAME_LEN]),
     entries: Vec<Entry>,
 }
 
@@ -245,6 +248,7 @@ impl PackageImage {
     pub fn new() -> Self {
         Self {
             magic: PACKAGE_MAGIC,
+            sentinel: (0, SENTINEL_SIZE, [0; NAME_LEN]),
             entries: Vec::new(),
         }
     }
@@ -254,6 +258,13 @@ impl PackageImage {
         let package = parse(bytes)?;
         // Rebuild from the directory so the offsets survive a round trip.
         let count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+        let mut sentinel_name = [0u8; NAME_LEN];
+        sentinel_name.copy_from_slice(&bytes[16..32]);
+        let sentinel = (
+            u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
+            u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
+            sentinel_name,
+        );
         let mut entries = Vec::with_capacity(count.saturating_sub(1));
         for index in 1..count {
             let at = 8 + index * 24;
@@ -269,6 +280,7 @@ impl PackageImage {
         }
         Ok(Self {
             magic: package.magic,
+            sentinel,
             entries,
         })
     }
@@ -291,58 +303,91 @@ impl PackageImage {
         self.section(name).is_some()
     }
 
-    /// The index of the first gap the payload fits in, or the append index:
-    /// the original scans consecutive sections and inserts after the first
-    /// whose aligned end leaves `size` bytes before the next section.
+    /// An entry's offset and size, the sentinel being index 0 as in the
+    /// file's directory.
+    fn slot(&self, index: usize) -> (u32, u32) {
+        match index.checked_sub(1) {
+            None => (self.sentinel.0, self.sentinel.1),
+            Some(at) => (self.entries[at].offset, self.entries[at].data.len() as u32),
+        }
+    }
+
+    /// Where a section of `size` bytes goes, as a directory index counting
+    /// the sentinel as 0. The original walks every pair of consecutive
+    /// entries, the sentinel included, and keeps the **last** pair whose room
+    /// (the next offset minus this offset minus this size rounded up to the
+    /// alignment, in wrapping 32-bit arithmetic) is strictly larger than
+    /// `size`; the new entry goes after that pair's first entry. With no such
+    /// pair it is appended.
     fn gap_index(&self, size: u32) -> usize {
-        for index in 0..self.entries.len().saturating_sub(1) {
-            let here = self.entries[index].offset;
-            let used = self.entries[index].data.len() as u32;
-            let gap = self.entries[index + 1].offset.saturating_sub(here);
-            if size <= gap.saturating_sub(round_up(used)) {
-                return index + 1;
+        let count = self.entries.len() + 1;
+        let mut found = count;
+        for index in 0..count.saturating_sub(1) {
+            let (here, used) = self.slot(index);
+            let (next, _) = self.slot(index + 1);
+            let room = next.wrapping_sub(here).wrapping_sub(round_up(used));
+            if size < room {
+                found = index + 1;
             }
         }
-        self.entries.len()
+        found
     }
 
-    /// Inserts a section at `index`, placing it at the next boundary after
-    /// the sentinel or the section before it.
-    fn insert_at(&mut self, index: usize, name: [u8; NAME_LEN], data: Vec<u8>) {
-        let offset = match index.checked_sub(1) {
-            Some(previous) => {
-                let entry = &self.entries[previous];
-                round_up(entry.offset + entry.data.len() as u32)
-            }
-            None => round_up(SENTINEL_SIZE),
-        };
-        self.entries.insert(index, Entry { offset, name, data });
+    /// The offset an entry at directory index `index` (sentinel = 0) is
+    /// given: the entry before it plus its size, rounded up.
+    fn offset_after(&self, index: usize) -> u32 {
+        let (offset, size) = self.slot(index - 1);
+        round_up(offset.wrapping_add(size))
     }
 
-    /// Writes a section with the original's rules: an existing last section
-    /// is rewritten in place; another existing section is rewritten in place
-    /// when the room up to the next one suffices, and relocated otherwise.
+    /// Writes a section with the original's rules. A section that is not
+    /// there is inserted at the gap index. An existing section that is not
+    /// the last one and whose room up to the next entry (that offset minus
+    /// its own) is below the new size is moved to the gap index, the entries
+    /// between shifting over it. Whatever the case, the written entry's
+    /// offset is then recomputed from the entry before it, so a section
+    /// rewritten "in place" after a predecessor shrank moves down to the
+    /// predecessor's new aligned end.
     pub fn put_section(&mut self, name: &[u8; NAME_LEN], data: &[u8]) {
         let size = data.len() as u32;
-        if let Some(at) = self.entries.iter().position(|entry| entry.name == *name) {
-            let last = at + 1 == self.entries.len();
-            let room = self
-                .entries
-                .get(at + 1)
-                .map(|next| next.offset.saturating_sub(self.entries[at].offset))
-                .unwrap_or(0);
-            if last || room >= size {
-                self.entries[at].data = data.to_vec();
-                return;
+        let count = self.entries.len() + 1;
+        let index = match self.entries.iter().position(|entry| entry.name == *name) {
+            None => {
+                let index = self.gap_index(size);
+                self.entries.insert(
+                    index - 1,
+                    Entry {
+                        offset: 0,
+                        name: *name,
+                        data: Vec::new(),
+                    },
+                );
+                index
             }
-            let index = self.gap_index(size);
-            let entry = self.entries.remove(at);
-            let index = if index > at { index - 1 } else { index };
-            self.insert_at(index, entry.name, data.to_vec());
-            return;
-        }
-        let index = self.gap_index(size);
-        self.insert_at(index, *name, data.to_vec());
+            Some(at) => {
+                let index = at + 1;
+                let (here, _) = self.slot(index);
+                let room = if index + 1 < count {
+                    Some(self.slot(index + 1).0.wrapping_sub(here))
+                } else {
+                    None
+                };
+                match room {
+                    Some(room) if room < size => {
+                        let target = self.gap_index(size);
+                        let entry = self.entries.remove(at);
+                        let index = if index < target { target - 1 } else { target };
+                        self.entries.insert(index - 1, entry);
+                        index
+                    }
+                    _ => index,
+                }
+            }
+        };
+        let offset = self.offset_after(index);
+        let entry = &mut self.entries[index - 1];
+        entry.offset = offset;
+        entry.data = data.to_vec();
     }
 
     /// Removes a section, leaving its bytes in place as the original does.
@@ -363,9 +408,9 @@ impl PackageImage {
         let mut out = Vec::new();
         out.extend_from_slice(&self.magic.to_le_bytes());
         out.extend_from_slice(&count.to_le_bytes());
-        out.extend_from_slice(&0u32.to_le_bytes());
-        out.extend_from_slice(&SENTINEL_SIZE.to_le_bytes());
-        out.extend_from_slice(&[0u8; NAME_LEN]);
+        out.extend_from_slice(&self.sentinel.0.to_le_bytes());
+        out.extend_from_slice(&self.sentinel.1.to_le_bytes());
+        out.extend_from_slice(&self.sentinel.2);
         for entry in &self.entries {
             out.extend_from_slice(&entry.offset.to_le_bytes());
             out.extend_from_slice(&(entry.data.len() as u32).to_le_bytes());
@@ -392,8 +437,10 @@ impl Default for PackageImage {
     }
 }
 
+/// Rounds up to the section alignment in wrapping 32-bit arithmetic, as the
+/// original's directory words are.
 fn round_up(value: u32) -> u32 {
-    value.saturating_add(SECTION_ALIGN - 1) & !(SECTION_ALIGN - 1)
+    value.wrapping_add(SECTION_ALIGN - 1) & !(SECTION_ALIGN - 1)
 }
 
 /// Builds a package the way a first write does: a sentinel entry, then each
@@ -1047,6 +1094,101 @@ mod tests {
         package.put_section(&name("c"), &[1u8; 0x3000]);
         assert_eq!(package.entries()[2].offset, 0x8000);
         assert_eq!(package.entries()[2].data.len(), 0x3000);
+    }
+
+    /// A package read from a hand-built directory of `(offset, size, name)`
+    /// entries whose payloads are zeroes.
+    fn laid_out(entries: &[(u32, u32, &str)]) -> PackageImage {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&PACKAGE_MAGIC.to_le_bytes());
+        bytes.extend_from_slice(&(entries.len() as u32 + 1).to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&SENTINEL_SIZE.to_le_bytes());
+        bytes.extend_from_slice(&[0u8; NAME_LEN]);
+        for (offset, size, label) in entries {
+            bytes.extend_from_slice(&offset.to_le_bytes());
+            bytes.extend_from_slice(&size.to_le_bytes());
+            bytes.extend_from_slice(&name(label));
+        }
+        let end = entries
+            .iter()
+            .map(|(offset, size, _)| (offset + size) as usize)
+            .max()
+            .unwrap_or(0);
+        bytes.resize(bytes.len().max(end), 0);
+        PackageImage::read(&bytes).unwrap()
+    }
+
+    fn offsets(package: &PackageImage) -> Vec<(String, u32)> {
+        package
+            .entries()
+            .iter()
+            .map(|entry| (name_text(&entry.name), entry.offset))
+            .collect()
+    }
+
+    #[test]
+    fn the_room_after_the_sentinel_is_a_gap_too() {
+        // The sentinel ends at 0x10, aligned 0x2000; the first section sits
+        // at 0x4000, so 0x2000 bytes are free before it.
+        let mut package = laid_out(&[(0x4000, 0x10, "d"), (0x6000, 0x10, "a")]);
+        package.put_section(&name("e"), &[1; 0x100]);
+        assert_eq!(
+            offsets(&package),
+            [
+                ("e".to_string(), 0x2000),
+                ("d".to_string(), 0x4000),
+                ("a".to_string(), 0x6000)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_new_section_takes_the_last_gap_that_is_strictly_larger() {
+        // Two 0x2000 gaps: after x (0x2000..0x4000 used by alignment, free to
+        // 0x6000) and after y (free to 0xA000).
+        let layout = [
+            (0x2000, 0x10, "x"),
+            (0x6000, 0x10, "y"),
+            (0xA000, 0x10, "z"),
+        ];
+        let mut package = laid_out(&layout);
+        package.put_section(&name("w"), &[1; 0x100]);
+        // The later gap wins: after y, at y's aligned end.
+        assert_eq!(package.entries()[2].name, name("w"));
+        assert_eq!(package.entries()[2].offset, 0x8000);
+        // A section exactly as large as the room does not fit and is
+        // appended after z.
+        let mut package = laid_out(&layout);
+        package.put_section(&name("w"), &[1; 0x2000]);
+        assert_eq!(package.entries()[3].name, name("w"));
+        assert_eq!(package.entries()[3].offset, 0xC000);
+    }
+
+    #[test]
+    fn a_rewrite_recomputes_the_offset_from_the_entry_before() {
+        let mut package = laid_out(&[(0x2000, 0x3000, "a"), (0x6000, 0x10, "b")]);
+        // `a` shrinks in place: it stays at the sentinel's aligned end.
+        package.put_section(&name("a"), &[2; 0x10]);
+        assert_eq!(package.entries()[0].offset, 0x2000);
+        // `b` is rewritten "in place", which puts it at `a`'s new aligned
+        // end, not where it was.
+        package.put_section(&name("b"), &[3; 0x10]);
+        assert_eq!(package.entries()[1].offset, 0x4000);
+        let bytes = package.to_bytes();
+        assert_eq!(&bytes[0x4000..0x4010], &[3; 0x10]);
+    }
+
+    #[test]
+    fn a_read_package_keeps_its_sentinel() {
+        let mut bytes = PackageImage::new().to_bytes();
+        bytes[12..16].copy_from_slice(&0x18u32.to_le_bytes());
+        bytes[16] = b'?';
+        let mut package = PackageImage::read(&bytes).unwrap();
+        assert_eq!(package.to_bytes(), bytes);
+        // The first section follows the sentinel's own size.
+        package.put_section(&name("s"), b"x");
+        assert_eq!(package.entries()[0].offset, 0x2000);
     }
 
     #[test]
