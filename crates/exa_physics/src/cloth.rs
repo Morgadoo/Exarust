@@ -363,6 +363,10 @@ pub const BOUNDS_FLOOR_CM: f32 = 1.0e-4;
 /// per-component minimum and maximum, and the box's half extents (each at
 /// least [`BOUNDS_FLOOR_CM`]). An empty cloth gives the origin and the
 /// floor.
+///
+/// The extremes follow the vector min and max instructions, which hand back
+/// the particle when either side is not a number, and the floor is applied
+/// the same way (a half extent that is not above it becomes the floor).
 pub fn bounds(particles: &[Particle]) -> (Vec3, Vec3) {
     let Some(first) = particles.first() else {
         return (Vec3::ZERO, Vec3::splat(BOUNDS_FLOOR_CM));
@@ -370,11 +374,30 @@ pub fn bounds(particles: &[Particle]) -> (Vec3, Vec3) {
     let mut min = first.position;
     let mut max = first.position;
     for particle in &particles[1..] {
-        min = min.min(particle.position);
-        max = max.max(particle.position);
+        min = Vec3::from_array(std::array::from_fn(|i| {
+            if min[i] < particle.position[i] {
+                min[i]
+            } else {
+                particle.position[i]
+            }
+        }));
+        max = Vec3::from_array(std::array::from_fn(|i| {
+            if max[i] > particle.position[i] {
+                max[i]
+            } else {
+                particle.position[i]
+            }
+        }));
     }
     let centre = (min + max) * 0.5;
-    let half = (max - centre).max(Vec3::splat(BOUNDS_FLOOR_CM));
+    let spread = max - centre;
+    let half = Vec3::from_array(std::array::from_fn(|i| {
+        if spread[i] > BOUNDS_FLOOR_CM {
+            spread[i]
+        } else {
+            BOUNDS_FLOOR_CM
+        }
+    }));
     (centre, half)
 }
 
@@ -388,56 +411,70 @@ pub struct SweptProbe {
     pub radius_rate: f32,
 }
 
-/// The first particle in `from..from + count` that a sphere swept over the
-/// tick meets, as the original's cloth query does.
+/// The first particle in `from..end` that a sphere swept over the tick
+/// meets, as the original's cloth query does; `None` when none is met.
 ///
-/// The relative motion is the sphere's velocity less the particle's. The
-/// pair is taken as touching when they already overlap (their distance no
-/// more than the difference of their radii) and the relative radius rate
-/// covers that distance; otherwise when the squared distance times the
-/// relative speed squared is within the approach's squared dot product
-/// (the closest approach reaches them). The original's second branch also
-/// allows a tolerance the first already implies.
+/// The relative motion is the sphere's velocity less the particle's. A
+/// particle is only looked at when the squared distance between the two is
+/// within the squared difference of their radii. It is a hit at once when
+/// the squared distance is within the squared relative radius rate.
+/// Otherwise, when the relative speed squared reaches the engine's float
+/// epsilon, the closest approach decides: with `dot` the relative motion
+/// along the separation, `left = (distance² − rate²) · speed²` must not
+/// exceed `dot²`, and `left − dot²` must be within `slack · |slack|` for
+/// `slack = speed²/2 − |dot|` (the slack goes negative, and so demands a
+/// deeper miss, once the approach lies outside the tick's motion). Every
+/// compare is the original's, so a value that is not a number skips the
+/// "above" tests and passes the "not above" ones.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 pub fn swept_hit(
     particles: &[SweptProbe],
     sphere: &SweptProbe,
     from: usize,
-    count: usize,
+    end: usize,
 ) -> Option<usize> {
-    let end = from.saturating_add(count).min(particles.len());
+    let end = end.min(particles.len());
     for (index, particle) in particles.iter().enumerate().take(end).skip(from) {
         let d = particle.position - sphere.position;
         let distance_sq = d.x * d.x + d.y * d.y + d.z * d.z;
         let reach = particle.radius - sphere.radius;
-        if distance_sq <= reach * reach {
-            let relative = sphere.velocity - particle.velocity;
-            let rate = sphere.radius_rate - particle.radius_rate;
-            if distance_sq <= rate * rate {
-                return Some(index);
-            }
-            let speed_sq =
-                relative.x * relative.x + relative.y * relative.y + relative.z * relative.z;
-            if 1.192_09e-7 <= speed_sq {
-                let dot = relative.x * d.x + relative.y * d.y + relative.z * d.z;
-                let left = (distance_sq - rate * rate) * speed_sq;
-                if left <= dot * dot {
-                    let slack = speed_sq * 0.5 - dot.abs();
-                    if left - dot * dot <= slack * slack {
-                        return Some(index);
-                    }
-                }
-            }
+        if distance_sq > reach * reach {
+            continue;
+        }
+        let relative = sphere.velocity - particle.velocity;
+        let rate = sphere.radius_rate - particle.radius_rate;
+        let rate_sq = rate * rate;
+        if !(distance_sq > rate_sq) {
+            return Some(index);
+        }
+        let diff = distance_sq - rate_sq;
+        let speed_sq = relative.x * relative.x + relative.y * relative.y + relative.z * relative.z;
+        if speed_sq < SPEED_FLOOR || speed_sq.is_nan() {
+            continue;
+        }
+        let dot = relative.x * d.x + relative.y * d.y + relative.z * d.z;
+        let left = diff * speed_sq;
+        if left > dot * dot {
+            continue;
+        }
+        let slack = speed_sq * 0.5 - dot.abs();
+        if !(left - dot * dot > slack.abs() * slack) {
+            return Some(index);
         }
     }
     None
 }
+
+/// The relative speed squared below which the swept query does not look at
+/// the closest approach (the engine's float epsilon constant).
+const SPEED_FLOOR: f32 = f32::from_bits(0x33ff_ffd7);
 
 /// The engine's generator step, as the cloth's blood painter draws it:
 /// `s = s · 0x08088405 + 1`, returned as `(s as double) · 2⁻³²` in a
 /// float, so 0 up to just under 1.
 pub fn next_random(roll: &mut u32) -> f32 {
     *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
-    (f64::from(*roll) * 2.328_306_4e-10) as f32
+    (f64::from(*roll) * (1.0 / 4_294_967_296.0)) as f32
 }
 
 /// Paints blood on a cloth's vertex colours (RGBA8, alpha 255 clean) where
@@ -445,13 +482,16 @@ pub fn next_random(roll: &mut u32) -> f32 {
 /// vertex space.
 ///
 /// The point is moved half a centimetre back along the direction and the
-/// direction normalised. A vertex counts when it lies within the squared
-/// radius of the point (or of the ray, for a vertex ahead of the point:
-/// its squared distance scaled by `1 − t/|d|`, t the vertex's distance
-/// along the direction). The paint's share is `1 − distance²/radius²`; a
-/// draw blends it with a random value for the stain's edge, and the vertex
-/// alpha takes `(1 − a²·share)·255` where that is below the alpha it has.
-/// The engine's round helper is a floor. Returns how many vertices changed.
+/// direction normalised (its length summed the engine's way: x², z², then
+/// y²). A vertex counts unless the squared radius is below its squared
+/// distance from the point (or from the ray, for a vertex ahead of the
+/// point: the squared distance scaled by `1 − t/d`, with `t` the vertex's
+/// distance along the direction and `d` its distance). The paint's share is
+/// `1 − distance²/radius²`; a draw blends it with a random value for the
+/// stain's edge, and the vertex alpha takes `(1 − blend²·share)·255` where
+/// that is below the alpha it has, rounded to nearest, ties to even, as the
+/// hardware conversion does. Returns how many vertices changed.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 pub fn paint_blood(
     vertices: &[Vec3],
     colours: &mut [[u8; 4]],
@@ -461,7 +501,9 @@ pub fn paint_blood(
     roll: &mut u32,
 ) -> usize {
     let point = point + direction * -0.5;
-    let length = direction.length();
+    let length = ((direction.x * direction.x + direction.z * direction.z)
+        + direction.y * direction.y)
+        .sqrt();
     let direction = direction * (1.0 / length);
     let mut painted = 0;
     for (index, vertex) in vertices.iter().enumerate() {
@@ -469,47 +511,52 @@ pub fn paint_blood(
             break;
         };
         let d = *vertex - point;
-        let mut distance_sq = d.x * d.x + d.y * d.y + d.z * d.z;
-        let along = d.x * direction.x + d.y * direction.y + d.z * direction.z;
+        let mut distance_sq = d.y * d.y + d.x * d.x + d.z * d.z;
+        let along = d.y * direction.y + d.x * direction.x + d.z * direction.z;
         if 0.0 < along {
             distance_sq *= 1.0 - along / distance_sq.sqrt();
         }
-        if distance_sq <= radius_squared {
-            let share = 1.0 - distance_sq / radius_squared;
-            let random = next_random(roll);
-            let blend = (1.0 - share) * random + share;
-            let value = (1.0 - blend * blend * share) * 255.0;
-            if value < f32::from(colour[3]) {
-                colour[3] = value.floor() as u8;
-                painted += 1;
-            }
+        if radius_squared < distance_sq {
+            continue;
+        }
+        let share = 1.0 - distance_sq / radius_squared;
+        let random = next_random(roll);
+        let blend = (1.0 - share) * random + share;
+        let value = (1.0 - blend * blend * share) * 255.0;
+        if value < f32::from(colour[3]) {
+            // The low byte of the 64-bit conversion, which is what the
+            // original stores.
+            colour[3] = (value.round_ties_even() as i64) as u8;
+            painted += 1;
         }
     }
     painted
 }
 
-/// Moves the previous particle positions toward `target` from their
-/// displacement `previous − current`, by `k` of the way, scaled by
-/// `weight`, plus `offset`, and returns the total displacement it added.
+/// The cloth's blend after its owner moved, from three particle buffers.
 ///
-/// This is the original's blend that follows a moved owner: each previous
-/// position becomes
-/// `(d + (target − d)·k)·weight + offset + previous` with `d = previous −
-/// current`. It is not a pin: the step's pins pull toward fixed rest
-/// points; this pass preserves the displacement between the two buffers.
+/// For each particle, with `d = base − earlier` (how far the target moved
+/// between two ticks), writes
+/// `(d + (target − d)·k)·weight + offset + base` into `out`, and returns
+/// the sum of every `d`. `target` and `k` are cloth fields in the original
+/// (the target vector and the blend share), `weight` and `offset` come from
+/// the caller. This is not a pin: the step's pins pull toward fixed rest
+/// points; this pass carries the target's own displacement onto the
+/// particles.
 pub fn pull_toward(
-    previous: &mut [Vec3],
-    current: &[Vec3],
+    out: &mut [Vec3],
+    base: &[Vec3],
+    earlier: &[Vec3],
     target: Vec3,
     offset: Vec3,
     k: f32,
     weight: f32,
 ) -> Vec3 {
     let mut sum = Vec3::ZERO;
-    for (at, now) in previous.iter_mut().zip(current) {
-        let d = *at - *now;
+    for ((out, base), earlier) in out.iter_mut().zip(base).zip(earlier) {
+        let d = *base - *earlier;
         sum += d;
-        *at = (d + (target - d) * k) * weight + offset + *at;
+        *out = (d + (target - d) * k) * weight + offset + *base;
     }
     sum
 }
@@ -1882,31 +1929,43 @@ mod tests {
 
     #[test]
     fn a_swept_sphere_finds_the_first_particle_it_meets() {
-        // A large cloth vertex at the origin and a small sphere passing it
-        // 0.4 cm off the line: the pair already overlaps the vertex's
-        // envelope, and the sphere's growing radius covers the 0.4 cm
-        // approach (the squared impact parameter, 0.16) when the relative
-        // radius rate is 1, but not at 0.1.
+        // A large cloth vertex at the origin (radius 10) and a unit sphere
+        // moving 2 cm along z with its radius growing by 1 over the tick.
         let particles = [SweptProbe {
             position: Vec3::ZERO,
-            radius: 100.0,
+            radius: 10.0,
             velocity: Vec3::ZERO,
             radius_rate: 0.0,
         }];
         let sphere = SweptProbe {
-            position: Vec3::new(0.0, 0.4, 90.0),
+            position: Vec3::new(0.0, 1.0, -0.5),
             radius: 1.0,
-            velocity: Vec3::new(0.0, 0.0, 10.0),
+            velocity: Vec3::new(0.0, 0.0, 2.0),
             radius_rate: 1.0,
         };
+        // The separation is (0, -1, 0.5): squared 1.25, within the 9 cm
+        // reach. The rate squared is 1, so the first test misses. The speed
+        // squared is 4, the dot 1 and the left side (1.25 - 1) * 4 = 1 is
+        // exactly dot squared; the slack is 2 - 1 = 1 and the remainder 0
+        // is within 1 * 1.
         assert_eq!(swept_hit(&particles, &sphere, 0, 1), Some(0));
-        let thin = SweptProbe {
-            radius_rate: 0.1,
+        // 1.5 cm farther back along the line the closest approach (1 cm) is
+        // the same, but it lies a whole tick behind the start: the dot is 4, the
+        // slack 2 - 4 = -2 and the remainder 0 is not within -2 * 2.
+        let behind = SweptProbe {
+            position: Vec3::new(0.0, 1.0, -2.0),
             ..sphere
         };
-        assert_eq!(swept_hit(&particles, &thin, 0, 1), None);
-        // A sphere resting inside the envelope at the same point hits at
-        // once; a far one does not.
+        assert_eq!(swept_hit(&particles, &behind, 0, 1), None);
+        // Three cm off the line the sphere's growth (1 cm) cannot reach: the
+        // left side (9.25 - 1) * 4 = 33 exceeds the dot squared, 1.
+        let wide = SweptProbe {
+            position: Vec3::new(0.0, 3.0, -0.5),
+            ..sphere
+        };
+        assert_eq!(swept_hit(&particles, &wide, 0, 1), None);
+        // A sphere resting inside the particle is a hit at once (its squared
+        // distance is within the rate squared, here 0).
         let inside = SweptProbe {
             position: Vec3::ZERO,
             velocity: Vec3::ZERO,
@@ -1914,22 +1973,25 @@ mod tests {
             ..sphere
         };
         assert_eq!(swept_hit(&particles, &inside, 0, 1), Some(0));
+        // One far outside the 9 cm reach is not looked at.
         let far = SweptProbe {
             position: Vec3::new(200.0, 0.0, 0.0),
             ..sphere
         };
         assert_eq!(swept_hit(&particles, &far, 0, 1), None);
-        // The index range starts at `from` and stops at `from + count`.
-        let second = SweptProbe {
-            position: Vec3::ZERO,
-            radius: 100.0,
-            velocity: Vec3::ZERO,
-            radius_rate: 0.0,
+        // The index range runs from `from` up to `end`, which the particle
+        // count caps.
+        let pair = [particles[0], particles[0]];
+        assert_eq!(swept_hit(&pair, &inside, 0, 2), Some(0));
+        assert_eq!(swept_hit(&pair, &inside, 1, 2), Some(1));
+        assert_eq!(swept_hit(&pair, &inside, 2, 3), None);
+        // A position that is not a number passes the "above" tests the way
+        // the original's compares do: here it is a hit.
+        let lost = SweptProbe {
+            position: Vec3::NAN,
+            ..sphere
         };
-        let pair = [particles[0], second];
-        assert_eq!(swept_hit(&pair, &inside, 0, 1), Some(0));
-        assert_eq!(swept_hit(&pair, &inside, 1, 1), Some(1));
-        assert_eq!(swept_hit(&pair, &inside, 2, 1), None);
+        assert_eq!(swept_hit(&particles, &lost, 0, 1), Some(0));
     }
 
     #[test]
@@ -1967,25 +2029,29 @@ mod tests {
         let mut roll = 1;
         let first = next_random(&mut roll);
         assert_eq!(roll, 0x0808_8406);
-        assert!((f64::from(first) - f64::from(0x0808_8406u32) * 2.328_306_4e-10).abs() < 1e-9);
+        assert_eq!(first, (f64::from(0x0808_8406u32) / 4_294_967_296.0) as f32);
         assert!((0.0..1.0).contains(&first));
     }
 
     #[test]
-    fn the_owner_move_blends_the_previous_positions() {
-        let mut previous = [Vec3::new(1.0, 2.0, 3.0), Vec3::new(4.0, 5.0, 6.0)];
-        let current = [Vec3::new(0.0, 2.0, 3.0), Vec3::new(4.0, 5.0, 0.0)];
-        // d = (1,0,0) and (0,0,6); target 0, k 0.5, weight 0.5, offset 1.
+    fn the_owner_move_blends_toward_the_target() {
+        let base = [Vec3::new(1.0, 2.0, 3.0), Vec3::new(4.0, 5.0, 6.0)];
+        let earlier = [Vec3::new(0.0, 2.0, 3.0), Vec3::new(4.0, 5.0, 0.0)];
+        let mut out = [Vec3::splat(-1.0); 2];
+        // d = (1,0,0) and (0,0,6); target 0, k 0.5, weight 0.5, offset 1:
+        // ((d - d/2) * 0.5) + 1 + base.
         let sum = pull_toward(
-            &mut previous,
-            &current,
+            &mut out,
+            &base,
+            &earlier,
             Vec3::ZERO,
             Vec3::splat(1.0),
             0.5,
             0.5,
         );
         assert_eq!(sum, Vec3::new(1.0, 0.0, 6.0));
-        let want = [Vec3::new(2.25, 3.0, 4.0), Vec3::new(5.0, 6.0, 8.5)];
-        assert_eq!(previous, want);
+        assert_eq!(out, [Vec3::new(2.25, 3.0, 4.0), Vec3::new(5.0, 6.0, 8.5)]);
+        // The inputs are left as they were.
+        assert_eq!(base[0], Vec3::new(1.0, 2.0, 3.0));
     }
 }

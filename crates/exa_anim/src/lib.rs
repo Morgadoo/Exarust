@@ -596,8 +596,9 @@ mod tests {
     }
 
     /// The shortest-way slerp. Half way from no turn to +90° about Y is
-    /// +45° within the quick arccosine's error (2e-4 rad here), and to −90°
-    /// it is −45°; the ends come back exactly at 0 and 1 (a zero or a unit
+    /// +45° in direction (the weights come from the engine's approximate
+    /// sine and arccosine, so the length is about 5e-5 short of one), and to
+    /// −90° it is −45°; the ends come back exactly at 0 and 1 (a zero or a unit
     /// weight over the same sine); a negative dot takes the other way round
     /// (the result of the negated end); and two rotations whose `1 − dot`
     /// is under 1.19e-7 blend linearly.
@@ -607,10 +608,11 @@ mod tests {
         let quarter = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
         let half = slerp(a, quarter, 0.5);
         let want = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 / 2.0);
-        assert!(half.dot(want).abs() > 1.0 - 1e-5, "{half:?}");
+        assert!(half.normalize().dot(want) > 1.0 - 1e-6, "{half:?}");
+        assert!((half.length() - 1.0).abs() < 1e-3, "{half:?}");
         let back = slerp(a, Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2), 0.5);
         let want = Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2 / 2.0);
-        assert!(back.dot(want).abs() > 1.0 - 1e-5, "{back:?}");
+        assert!(back.normalize().dot(want) > 1.0 - 1e-6, "{back:?}");
         assert_eq!(slerp(a, quarter, 0.0), a);
         assert_eq!(slerp(a, quarter, 1.0), quarter);
         // The same rotation as a negated quaternion: the other half of the
