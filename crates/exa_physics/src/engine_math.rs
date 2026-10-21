@@ -48,7 +48,9 @@ pub fn max(a: f32, b: f32) -> f32 {
     if a > b { a } else { b }
 }
 
-/// `MAXSS` then `MINSS`; NaN in `lo` gives `lo`, NaN in `hi` gives `hi`.
+/// `MAXSS` then `MINSS`. Each returns its second operand on NaN, so a NaN
+/// `a` gives `lo` clamped by `hi`, a NaN `lo` gives `hi`, and a NaN `hi`
+/// gives NaN.
 pub fn clamp(a: f32, lo: f32, hi: f32) -> f32 {
     min(max(a, lo), hi)
 }
@@ -850,6 +852,9 @@ mod tests {
         assert!(max(1.0, f32::NAN).is_nan());
         assert_eq!(clamp(5.0, 0.0, 3.0), 3.0);
         assert_eq!(clamp(-5.0, 0.0, 3.0), 0.0);
+        assert_eq!(clamp(f32::NAN, 1.0, 3.0), 1.0);
+        assert_eq!(clamp(2.0, f32::NAN, 3.0), 3.0);
+        assert!(clamp(2.0, 1.0, f32::NAN).is_nan());
         assert_eq!(floor_to_i32(2.9), 2);
         assert_eq!(floor_to_i32(-2.1), -3);
         assert_eq!(ceil_to_i32(2.1), 3);
