@@ -78,6 +78,11 @@ const GATE_LOSS: f64 = 0.1;
 const SOUND_SPEED: f64 = 0.1;
 const SOUND_LATE: f64 = 0.8;
 const SOUND_FADE: f64 = 5.0;
+/// The attack arms' ramp: the clock where it turns, and its rising and
+/// falling slopes.
+const ARM_RAMP_END: f64 = 0.3;
+const ARM_RISE: f64 = 1.3333;
+const ARM_FALL: f64 = 0.5666;
 const EPSILON: f32 = f32::from_bits(0x33ff_ffd7);
 /// The window region: the trackers run past 30 % of a clip, or within the
 /// first 25 % of a chained one (its carried window).
@@ -1228,12 +1233,28 @@ pub fn weapon_gate(
     WeaponGate { open: false, rate }
 }
 
-/// The two arms' stiffness through an attack tick: the swing arm's and the
-/// other's. `base` = (1 − clock²)·P·0.9 (P·0.9 when `huge` and unarmed) +
-/// 0.1; L = base + (0.5P+1)·clock·1.3333 up to clock 0.3, else
-/// base + (0.5P+1)·(1 − clock)·0.5666. The swing arm is W20·L; the other
-/// follows the stance class: 1 → 0.3L + 0.25, 2/5 → W20·L, 3 → 0.6 or 0.4
-/// (`shield`), 4 → 0.2L + 0.3, 6 → the swing arm's.
+/// The two arms' stiffness and drive through an attack tick, as the
+/// routine hands them to the arm setter, for a stance class 1 to 6.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AttackArms {
+    /// The first and second arms' stiffness.
+    pub stiffness: (f32, f32),
+    /// The first and second arms' drive.
+    pub drive: (f32, f32),
+}
+
+/// The two arms' stiffness and drive through an attack tick, in double as
+/// the original works them. `base` = (1 − clock²)·(0.9P) + 0.1 (0.9P + 0.1
+/// when `huge_unarmed`); L = base + (0.5P + 1)·(1 − clock)·0.5666 once the
+/// clock is past 0.3 (a NaN one takes the other), else base + (0.5P +
+/// 1)·clock·1.3333. The drive D is P before a clock of 0.5 and
+/// 4P(1 − clock)² after; a `thrust` (the stab motion without the item's
+/// flag 8) scales L by 0.3 and has no drive. With `arm` = W20 and a = arm·L
+/// the arms are, by stance class: 1 (a, 0.3L + 0.25) driven (D, 0); 2 and 5
+/// (a, a) driven (D, D); 3 (a, 0.4 while a parry or clinch partner is set,
+/// else 0.6) driven (D, D); 4 (a, 0.2L + 0.3) driven (D, 0); 6 (a, 0.3)
+/// driven (D, 0), with the arms and the drive swapped for the left-hand
+/// motions. Other classes set nothing.
 #[allow(clippy::too_many_arguments)]
 pub fn attack_arm_stiffness(
     progress: f32,
@@ -1241,34 +1262,43 @@ pub fn attack_arm_stiffness(
     huge_unarmed: bool,
     arm: f32,
     stance: u8,
-    shield: bool,
-) -> (f32, f32) {
+    engaged: bool,
+    left_hand: bool,
+    thrust: bool,
+) -> Option<AttackArms> {
     let p = progress;
+    let strong = f64::from(strength) * 0.9;
     let base = if huge_unarmed {
-        strength * 0.9
+        strong + 0.1
     } else {
-        (1.0 - p * p) * strength * 0.9
-    } + 0.1;
-    let l = if f64::from(p) <= 0.3 {
-        base + (0.5 * strength + 1.0) * p * 1.3333
+        f64::from(1.0 - p * p) * strong + 0.1
+    } as f32;
+    let reach = f64::from(strength * 0.5 + 1.0);
+    let mut l = if f64::from(p) > ARM_RAMP_END {
+        reach * (f64::from(1.0 - p) * ARM_FALL) + f64::from(base)
     } else {
-        base + (0.5 * strength + 1.0) * (1.0 - p) * 0.5666
+        reach * (f64::from(p) * ARM_RISE) + f64::from(base)
+    } as f32;
+    let drive = if thrust {
+        l = (f64::from(l) * 0.3) as f32;
+        0.0
+    } else if p < 0.5 {
+        strength
+    } else {
+        (1.0 - p) * (1.0 - p) * strength * 4.0
     };
-    let swing = arm * l;
-    let other = match stance {
-        1 => 0.3 * l + 0.25,
-        2 | 5 => swing,
-        3 => {
-            if shield {
-                0.6
-            } else {
-                0.4
-            }
-        }
-        4 => 0.2 * l + 0.3,
-        _ => swing,
+    let a = arm * l;
+    let wide = f64::from(l);
+    let (stiffness, drive) = match stance {
+        1 => ((a, (wide * 0.3 + 0.25) as f32), (drive, 0.0)),
+        2 | 5 => ((a, a), (drive, drive)),
+        3 => ((a, if engaged { 0.4 } else { 0.6 }), (drive, drive)),
+        4 => ((a, (wide * 0.2 + 0.3) as f32), (drive, 0.0)),
+        6 if left_hand => ((0.3, a), (0.0, drive)),
+        6 => ((a, 0.3), (drive, 0.0)),
+        _ => return None,
     };
-    (swing, other)
+    Some(AttackArms { stiffness, drive })
 }
 
 /// The swing sound's volume and pitch at a tracker speed² and progress.
@@ -1356,19 +1386,50 @@ mod routine_tests {
         assert!(!weapon_gate(false, 100.0, Vec3::splat(f32::NAN), z, 1.0, 1.0).open);
     }
 
-    /// p = 0.5, P = 1: base 0.775, L 1.19995, swing 0.47998 at W20 0.4;
-    /// the other arm 0.609985 in stance 1 and 0.6 with a shield in 3.
+    /// p = 0.5, P = 1: base 0.775, L 1.19995, a = 0.47998 at W20 0.4, drive
+    /// 4·0.25 = 1; stance 1 pairs it with 0.3L + 0.25 and drives (1, 0).
     #[test]
     fn the_attack_arms_follow_their_stances() {
-        let (swing, other) = attack_arm_stiffness(0.5, 1.0, false, 0.4, 1, false);
-        assert!(close(swing, 0.479_98), "{swing}");
-        assert!(close(other, 0.609_985), "{other}");
-        let (_, shielded) = attack_arm_stiffness(0.5, 1.0, false, 0.4, 3, true);
-        assert_eq!(shielded, 0.6);
-        let (_, unshielded) = attack_arm_stiffness(0.5, 1.0, false, 0.4, 3, false);
-        assert_eq!(unshielded, 0.4);
-        let (_, same) = attack_arm_stiffness(0.5, 1.0, false, 0.4, 2, false);
-        assert!(close(same, 0.479_98));
+        let arms = |p, class, engaged, left, thrust| {
+            attack_arm_stiffness(p, 1.0, false, 0.4, class, engaged, left, thrust)
+        };
+        let one = arms(0.5, 1, false, false, false).unwrap();
+        assert!(close(one.stiffness.0, 0.479_98), "{one:?}");
+        assert!(close(one.stiffness.1, 0.609_985), "{one:?}");
+        assert_eq!(one.drive, (1.0, 0.0));
+        // Stance 3: 0.4 with a partner, else 0.6.
+        assert_eq!(arms(0.5, 3, true, false, false).unwrap().stiffness.1, 0.4);
+        assert_eq!(arms(0.5, 3, false, false, false).unwrap().stiffness.1, 0.6);
+        let same = arms(0.5, 2, false, false, false).unwrap();
+        assert_eq!(same.stiffness.0, same.stiffness.1);
+        assert_eq!(same.drive, (1.0, 1.0));
+        let four = arms(0.5, 4, false, false, false).unwrap();
+        assert!(close(four.stiffness.1, 1.199_95 * 0.2 + 0.3));
+        // Stance 6 holds the other arm at 0.3; the left hand swaps them.
+        let six = arms(0.5, 6, false, false, false).unwrap();
+        assert!(six.stiffness.1 == 0.3 && six.drive == (1.0, 0.0));
+        let left = arms(0.5, 6, false, true, false).unwrap();
+        assert!(left.stiffness.0 == 0.3 && left.drive == (0.0, 1.0));
+        assert!(arms(0.5, 0, false, false, false).is_none());
+        assert!(arms(0.5, 7, false, false, false).is_none());
+    }
+
+    /// Before 0.3 the rise is 1.3333·clock, and the drive is P until 0.5;
+    /// a thrust scales L by 0.3 and drives nothing; a huge unarmed fighter
+    /// skips the (1 − clock²) fade; a NaN clock takes the rising ramp.
+    #[test]
+    fn the_attack_arms_ramp_and_thrust() {
+        let early = attack_arm_stiffness(0.2, 1.0, false, 1.0, 2, false, false, false).unwrap();
+        // base 0.96·0.9 + 0.1 = 0.964; L = 0.964 + 1.5·0.2·1.3333.
+        assert!(close(early.stiffness.0, 0.964 + 0.399_99), "{early:?}");
+        assert_eq!(early.drive.0, 1.0);
+        let thrust = attack_arm_stiffness(0.5, 1.0, false, 1.0, 2, false, false, true).unwrap();
+        assert!(close(thrust.stiffness.0, 1.199_95 * 0.3), "{thrust:?}");
+        assert_eq!(thrust.drive, (0.0, 0.0));
+        let huge = attack_arm_stiffness(0.5, 1.0, true, 1.0, 2, false, false, false).unwrap();
+        assert!(close(huge.stiffness.0, 1.0 + 0.424_95), "{huge:?}");
+        let nan = attack_arm_stiffness(f32::NAN, 1.0, false, 1.0, 2, false, false, false).unwrap();
+        assert!(nan.stiffness.0.is_nan());
     }
 
     /// At speed² 100, f = 1: pitch W26·0.9, volume base·loud·W25·0.07·0.5;
