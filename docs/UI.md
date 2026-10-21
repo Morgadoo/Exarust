@@ -850,7 +850,10 @@ Exarust applies:
   options.
 - **Controls**: the binding file's table is read and written; the page's
   rows show the keys' names; a click starts a rebinding and the next key or
-  mouse button replaces the slot (Escape cancels). The key-name rules are
+  mouse button replaces the slot (Escape cancels). The controller-mode switch
+  sets `InputMode` (0 or 51) for Apply; Enable Rumble is a session flag with
+  no effect (Exarust has no gamepad), and Configure Controller is not
+  reproduced (it opens Steam Input's binding screen). The key-name rules are
   the original's: the mouse flag's fourth, fifth and sixth codes are
   "Mouse 3/4/5", extended codes are `<code>`, and other codes are the
   Windows key name in title case. Exarust's own mouse codes 1, 2 and 4 are

@@ -54,6 +54,10 @@ pub struct HardwareConfig {
     /// The window size the launcher asked for, kept for a return to windowed
     /// mode.
     pub window_size: Option<(u32, u32)>,
+    /// The Controls page's "Enable Rumble" checkbox. It has no saved setting
+    /// in the original and no Exarust effect (no gamepad); kept as a session
+    /// flag (its default is a guess).
+    pub rumble: bool,
 }
 
 impl Default for HardwareConfig {
@@ -67,6 +71,7 @@ impl Default for HardwareConfig {
             refresh_after_benchmark: false,
             session_music: live.music,
             window_size: None,
+            rumble: true,
         }
     }
 }
@@ -218,6 +223,22 @@ impl HardwareConfig {
             self.session_music = checked;
         }
         effect
+    }
+
+    /// The Controls page's controller-mode switch. Turning it on or off
+    /// changes the input mode Apply writes; Exarust has no gamepad to drive.
+    pub fn set_controller(&mut self, enabled: bool) -> bool {
+        let Some(screen) = &mut self.screen else {
+            return false;
+        };
+        screen.draft.controller = enabled;
+        self.live.controller = enabled;
+        true
+    }
+
+    /// The Controls page's rumble switch (session only).
+    pub fn set_rumble(&mut self, enabled: bool) {
+        self.rumble = enabled;
     }
 
     /// An aim-speed slider step: the live aim speed and the number shown.
@@ -739,6 +760,18 @@ mod tests {
         let screen = config.screen.as_ref().unwrap();
         assert_eq!(screen.draft.supersample, 3);
         assert_eq!(screen.baseline.supersample, 3);
+    }
+
+    #[test]
+    fn the_controller_and_rumble_switches() {
+        let mut config = HardwareConfig::default();
+        assert!(!config.set_controller(true)); // no page open
+        config.open();
+        assert!(config.set_controller(true));
+        assert!(config.live.controller);
+        assert_eq!(config.lines().unwrap()[9], ("InputMode", "51".to_string()));
+        config.set_rumble(false);
+        assert!(!config.rumble);
     }
 
     #[test]
