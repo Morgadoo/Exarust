@@ -1,47 +1,58 @@
 //! The arena loadout editor: one fighter's kit for one rank, the arsenal's
 //! swaps, the equipment-point limit and the save on close.
 //!
-//! Evidence: the loadout form's routines in the retail image. The form is
-//! 1024 × 768 pixels with two item containers and the character-creation
-//! preview. Mode 1 (creation) adds a name box and dims nothing; mode 3
-//! (champion) only shows the kit. An item may be dropped when its rank fits
-//! the rank's maximum and its points fit the rank's limit; dropping an
-//! arsenal item of the form's own category swaps the one already there;
-//! a two-handed weapon clears the off hand. The preview's encumbrance is
-//! `strength² × 10`.
+//! Evidence: the loadout form's routines in the retail image, read from
+//! the instructions. The form is 1024 × 768 with the character-creation
+//! preview between the arsenal (left) and the equipment (right). Mode 1
+//! (creation) adds a name box and edits rank 5; mode 3 (champion) only
+//! shows the kit. An item may be equipped when its rank is at most the
+//! form's rank (5 when unset) and its cost fits the rank's limit; a weapon
+//! costs its points less what it displaces from the hands. The paint fills
+//! the form black before the base draws.
+//!
+//! [`LoadoutEditor`] and [`apply_drop`] are Exarust's own list model of the
+//! kit (weapons and worn items), not the original's drop handler, which
+//! reconciles the three item containers entry by entry against the arena
+//! stock (guess: the lists stand in for the containers).
 
 /// The form's width in pixels.
-pub const FORM_WIDTH: i32 = 0x400;
+pub const FORM_WIDTH: i32 = 1024;
 /// The form's height in pixels.
-pub const FORM_HEIGHT: i32 = 0x300;
-/// The form's opacity when the interface is wide.
+pub const FORM_HEIGHT: i32 = 768;
+/// The form's flags.
+pub const FORM_FLAGS: u32 = 0x80_2022;
+/// The form's opacity when the interface is wide (the float 0x3f565fbd).
 pub const FORM_OPACITY: f32 = 0.837_398_35;
-/// The arsenal container's x, y, width and height before the opacity scale.
+/// The equipment container's scale when the interface is wide.
+pub const EQUIP_SCALE_WIDE: f32 = 0.872_611_46;
+/// The arsenal container: x, y, width, and the height the opacity scales.
 pub const ARSENAL_X: i32 = 4;
-pub const ARSENAL_Y: i32 = 0xe4;
-pub const ARSENAL_WIDTH: i32 = 0xb4;
+pub const ARSENAL_Y: i32 = 180;
+pub const ARSENAL_WIDTH: i32 = 228;
 pub const ARSENAL_HEIGHT: f32 = 492.0;
-/// The equipment container's place.
-pub const EQUIP_X: i32 = 0xec;
-pub const EQUIP_WIDTH_MARGIN: i32 = 4;
-pub const EQUIP_HEIGHT: i32 = 0x58;
-pub const EQUIP_Y: i32 = 0x274;
-pub const EQUIP_Y_WIDE: i32 = 0x224;
-/// The preview's width.
-pub const PREVIEW_WIDTH: i32 = 0xec;
-/// The preview sits this far in from each side.
+/// The equipment container: its width, its y and its height (narrow and
+/// wide); it sits four pixels from the parent's right edge.
+pub const EQUIP_WIDTH: i32 = 236;
+pub const EQUIP_Y: i32 = 88;
+pub const EQUIP_HEIGHT: i32 = 628;
+pub const EQUIP_HEIGHT_WIDE: i32 = 548;
+pub const RIGHT_MARGIN: i32 = 4;
+/// The preview starts here and leaves this much on both sides plus 8.
+pub const PREVIEW_X: i32 = 236;
 pub const PREVIEW_MARGIN: i32 = 8;
-/// The name box in creation mode.
-pub const NAME_BOX_X: i32 = 0xec;
-pub const NAME_BOX_Y: i32 = 0x100;
-pub const NAME_BOX_HEIGHT: i32 = 0x20;
+/// The name box in creation mode: its width, y and height.
+pub const NAME_BOX_WIDTH: i32 = 236;
+pub const NAME_BOX_Y: i32 = 32;
+pub const NAME_BOX_HEIGHT: i32 = 256;
+/// The rank creation mode edits.
+pub const CREATION_RANK: i32 = 5;
 /// The mask that decides whether an arsenal item is swapped out.
 pub const SWAP_MASK: u32 = 0x400;
 /// The flag that marks a two-handed weapon's off hand.
 pub const OFFHAND_FLAG: u32 = 0x8000_0000;
 /// The flag of an item that may stay in the armour list.
 pub const ARMOUR_KEEP: u32 = 0x100;
-/// The point-limit check's unset rank.
+/// The rank an unset form rank stands for.
 pub const MAX_RANK_UNSET: i32 = 5;
 
 /// The form's mode.
@@ -174,61 +185,51 @@ impl Default for LoadoutEditor {
     }
 }
 
-/// The form's layout for one opacity and interface width.
+/// The form's layout for one interface width: x, y, width and height of
+/// each part.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LoadoutLayout {
-    pub arsenal: [f32; 4],
-    pub equipment: [f32; 4],
-    pub preview: [f32; 4],
-    pub name_box: [f32; 4],
+    pub arsenal: [i32; 4],
+    pub equipment: [i32; 4],
+    /// The preview's x and width (its own height less four).
+    pub preview_x: i32,
+    pub preview_width: i32,
+    /// The name box, in creation mode only.
+    pub name_box: Option<[i32; 4]>,
     pub opacity: f32,
+    /// The arsenal's scale (the opacity) and the equipment's.
+    pub equipment_scale: f32,
 }
 
-/// The layout the constructor computes. The arsenal's height and the
-/// preview's size follow the opacity; the equipment container fills the
-/// client width.
-pub fn layout(
-    mode: LoadoutMode,
-    client_width: i32,
-    client_height: i32,
-    wide: bool,
-) -> LoadoutLayout {
-    let opacity = if wide { FORM_OPACITY } else { 1.0 };
-    let arsenal_height = (f64::from(opacity) * f64::from(ARSENAL_HEIGHT)).floor() as f32;
-    let equip_y = if wide { EQUIP_Y_WIDE } else { EQUIP_Y };
-    let equip_width = client_width - EQUIP_X - EQUIP_WIDTH_MARGIN;
-    let preview_height = client_height - 4;
-    let name_width = if mode == LoadoutMode::Creation {
-        client_width - NAME_BOX_X - EQUIP_WIDTH_MARGIN
-    } else {
-        equip_width
-    };
+/// The layout the constructor computes under a parent `parent_width`
+/// wide: the arsenal's height is `492 · opacity` rounded half to even, the
+/// equipment and the name box hug the parent's right edge.
+pub fn layout(mode: LoadoutMode, parent_width: i32, wide: bool) -> LoadoutLayout {
+    let opacity = opacity(wide);
+    let arsenal_height = crate::engine_math::round_i64(ARSENAL_HEIGHT * opacity) as i32;
+    let right = parent_width - EQUIP_WIDTH - RIGHT_MARGIN;
     LoadoutLayout {
-        arsenal: [
-            ARSENAL_X as f32,
-            ARSENAL_Y as f32,
-            ARSENAL_WIDTH as f32,
-            arsenal_height,
-        ],
+        arsenal: [ARSENAL_X, ARSENAL_Y, ARSENAL_WIDTH, arsenal_height],
         equipment: [
-            EQUIP_X as f32,
-            equip_y as f32,
-            equip_width as f32,
-            EQUIP_HEIGHT as f32,
+            right,
+            EQUIP_Y,
+            EQUIP_WIDTH,
+            if wide {
+                EQUIP_HEIGHT_WIDE
+            } else {
+                EQUIP_HEIGHT
+            },
         ],
-        preview: [
-            PREVIEW_WIDTH as f32,
-            0.0,
-            (client_width - 2 * PREVIEW_WIDTH - PREVIEW_MARGIN) as f32,
-            preview_height as f32,
-        ],
-        name_box: [
-            NAME_BOX_X as f32,
-            NAME_BOX_Y as f32,
-            name_width as f32,
-            NAME_BOX_HEIGHT as f32,
-        ],
+        preview_x: PREVIEW_X,
+        preview_width: FORM_WIDTH - PREVIEW_X * 2 - PREVIEW_MARGIN,
+        name_box: (mode == LoadoutMode::Creation).then_some([
+            parent_width - NAME_BOX_WIDTH - RIGHT_MARGIN,
+            NAME_BOX_Y,
+            NAME_BOX_WIDTH,
+            NAME_BOX_HEIGHT,
+        ]),
         opacity,
+        equipment_scale: if wide { EQUIP_SCALE_WIDE } else { 1.0 },
     }
 }
 
@@ -264,10 +265,12 @@ pub fn draw_order() -> [LoadoutDraw; 4] {
     ]
 }
 
-/// The container flags a drag sets: 0x200 for match mode, 0x400 otherwise.
+/// The flags a drag out of the equipment sets: 0x200 in match mode, none
+/// for a champion, 0x400 otherwise.
 pub fn drag_flags(mode: LoadoutMode) -> u32 {
     match mode {
         LoadoutMode::Match => 0x200,
+        LoadoutMode::Champion => 0,
         _ => 0x400,
     }
 }
@@ -283,14 +286,111 @@ pub fn clear_pointed(editor: &mut LoadoutEditor, item: u32) -> bool {
     }
 }
 
-/// Whether a drop from the preview is allowed: an item whose flags share
-/// the form's mask is refused in the arena, and every item is refused in
-/// champion mode.
-pub fn drop_allowed(editor: &LoadoutEditor, item: &LoadoutItem) -> bool {
+/// Whether a drop is allowed: onto the equipment container a champion
+/// takes nothing and an item whose drag flags share the form's mask is
+/// refused; any other target allows it.
+pub fn drop_allowed(editor: &LoadoutEditor, item: &LoadoutItem, onto_equipment: bool) -> bool {
+    if !onto_equipment {
+        return true;
+    }
     if editor.mode == LoadoutMode::Champion {
         return false;
     }
     item.flags & editor.mask == 0
+}
+
+/// The weapon in the first hand, as the cost rule reads it: its family
+/// (the weapon record's flags & 0xf0) and its points.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeldWeapon {
+    pub family: u32,
+    pub points: i32,
+}
+
+/// The cost of equipping a weapon of `family` worth `points`, given what
+/// the hands hold: a one-handed weapon (family 0x10) that cannot go in the
+/// off hand displaces the first hand's weapon; one that can displaces the
+/// second hand's shield when the first holds a one-handed weapon, else the
+/// first hand's weapon. A two-handed or other weapon (0x20, 0x30)
+/// displaces both. Any other family costs nothing.
+pub fn item_cost(
+    family: u32,
+    points: i32,
+    off_hand: bool,
+    first: Option<HeldWeapon>,
+    second_shield: Option<i32>,
+) -> i32 {
+    match family & 0xf0 {
+        0x10 => {
+            let freed = match first {
+                Some(held) if !off_hand || held.family & 0xf0 != 0x10 => -held.points,
+                Some(_) => second_shield.map_or(0, |shield| -shield),
+                None => 0,
+            };
+            freed + points
+        }
+        0x20 | 0x30 => {
+            let freed = first.map_or(0, |held| -held.points) - second_shield.unwrap_or(0);
+            freed + points
+        }
+        _ => 0,
+    }
+}
+
+/// An item's kind as the equip rule reads its record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EquipKind {
+    /// A weapon: its rank and its cost ([`item_cost`]).
+    Weapon { rank: u8, cost: i32 },
+    /// A shield or armour piece: its rank (bits 5…7) and points (bits
+    /// 0…4) of its packed word.
+    Armour { rank: u8, points: i32 },
+    /// A worn piece: the same packing in its own record.
+    Worn { rank: u8, points: i32 },
+    /// No record the rule knows.
+    None,
+}
+
+/// What the equip rule knows about a dragged item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EquipFacts {
+    /// The drag comes from the arsenal or the equipment.
+    pub from_kit: bool,
+    /// How many of the character's two hands hold this item.
+    pub held: u32,
+    /// How many copies the arsenal and the equipment hold.
+    pub copies: u32,
+    /// [`drop_allowed`] for a drag from elsewhere.
+    pub allowed: bool,
+    pub kind: EquipKind,
+}
+
+/// The original's equip rule: a drag out of the kit needs a copy the hands
+/// do not hold; any other drag must be allowed (a champion's always is,
+/// and a champion takes any item). Then the item's rank must be at most
+/// the form's (5 when it is negative) and its cost plus the points used
+/// within the limit.
+pub fn may_equip(mode: LoadoutMode, rank: i32, used: i32, limit: i32, facts: EquipFacts) -> bool {
+    let rank = if rank < 0 { MAX_RANK_UNSET } else { rank };
+    if facts.from_kit {
+        if facts.copies <= facts.held {
+            return false;
+        }
+    } else if mode != LoadoutMode::Champion && !facts.allowed {
+        return false;
+    }
+    if mode == LoadoutMode::Champion {
+        return true;
+    }
+    let fits = |item_rank: u8, cost: i32| {
+        i64::from(item_rank) <= i64::from(rank)
+            && i64::from(used) + i64::from(cost) <= i64::from(limit)
+    };
+    match facts.kind {
+        EquipKind::Weapon { rank, cost } => fits(rank, cost),
+        EquipKind::Armour { rank, points } | EquipKind::Worn { rank, points } => fits(rank, points),
+        EquipKind::None => false,
+    }
 }
 
 /// The match-mode close: a mode-2 release with a key other than 8 takes the
@@ -335,31 +435,32 @@ pub fn copies(editor: &LoadoutEditor, id: u32) -> usize {
         .count()
 }
 
-/// Whether an item may be equipped: the copies already held must not exceed
-/// the free hands, its rank must fit the maximum and its points the limit.
-/// In champion mode every item is accepted; in match mode only the armour
-/// container's own items.
+/// The list model's equip check, through [`may_equip`]: an item already in
+/// the lists is a drag out of the kit, held by `hands_holding` hands; its
+/// rank and points come from the list item.
 pub fn can_equip(editor: &LoadoutEditor, item: &LoadoutItem, hands_holding: usize) -> bool {
-    if editor.mode == LoadoutMode::Champion {
-        return true;
-    }
-    if editor.mode != LoadoutMode::Match && !item.allowed {
-        return false;
-    }
     let in_lists = editor
         .weapons
         .iter()
         .chain(editor.armour.iter())
         .any(|held| held.id == item.id);
-    if in_lists && copies(editor, item.id) <= hands_holding {
-        return false;
-    }
-    let rank = if editor.max_rank < 0 {
-        MAX_RANK_UNSET
-    } else {
-        editor.max_rank
+    let facts = EquipFacts {
+        from_kit: in_lists,
+        held: hands_holding as u32,
+        copies: copies(editor, item.id) as u32,
+        allowed: item.allowed,
+        kind: EquipKind::Weapon {
+            rank: item.rank.clamp(0, 255) as u8,
+            cost: item.points,
+        },
     };
-    item.rank <= rank && editor.points + item.points <= editor.limit
+    may_equip(
+        editor.mode,
+        editor.max_rank,
+        editor.points,
+        editor.limit,
+        facts,
+    )
 }
 
 /// Where a drop came from.
@@ -505,42 +606,35 @@ pub fn encumbrance(strength: f32) -> f32 {
     strength * strength * 10.0
 }
 
-/// What closing the form saved.
+/// What closing the form does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LoadoutSave {
-    /// The mode that writes a loadout.
-    pub writes: bool,
-    /// The rank whose loadout is written.
+    /// The equipment is written to the rank's kit (the arena and match
+    /// modes).
+    pub saves_kit: bool,
+    /// The form's own loadout is stored on the character (a champion).
+    pub stores_record: bool,
+    /// The rank whose kit is written.
     pub rank: usize,
-    /// The character view needs a refresh.
-    pub refresh_view: bool,
-    /// The arena's character cards are refreshed.
+    /// The player's and the companions' character views are refreshed (the
+    /// arena and match modes).
+    pub refresh_views: bool,
+    /// The arena's cards are refreshed (every mode but the champion's).
     pub refresh_arena: bool,
 }
 
-/// The close's save: creation and match modes write the name only; a
-/// champion leaves; the arena writes the rank's loadout and refreshes the
-/// character and the arena.
+/// The close: the arena and match modes write the equipment to the rank's
+/// kit and refresh the character views; a champion stores the form's
+/// loadout on the character; creation writes nothing; every mode but the
+/// champion's refreshes the arena.
 pub fn save_on_close(editor: &LoadoutEditor) -> LoadoutSave {
-    match editor.mode {
-        LoadoutMode::Creation => LoadoutSave {
-            writes: false,
-            rank: editor.rank,
-            refresh_view: true,
-            refresh_arena: false,
-        },
-        LoadoutMode::Champion => LoadoutSave {
-            writes: false,
-            rank: editor.rank,
-            refresh_view: false,
-            refresh_arena: true,
-        },
-        LoadoutMode::Arena | LoadoutMode::Match => LoadoutSave {
-            writes: true,
-            rank: editor.rank,
-            refresh_view: true,
-            refresh_arena: editor.mode == LoadoutMode::Arena,
-        },
+    let kit = matches!(editor.mode, LoadoutMode::Arena | LoadoutMode::Match);
+    LoadoutSave {
+        saves_kit: kit,
+        stores_record: editor.mode == LoadoutMode::Champion,
+        rank: editor.rank,
+        refresh_views: kit,
+        refresh_arena: editor.mode != LoadoutMode::Champion,
     }
 }
 
@@ -564,20 +658,85 @@ mod tests {
     }
 
     #[test]
-    fn the_layout_scales_the_arsenal_and_preview() {
-        let wide = layout(LoadoutMode::Arena, 1024, 768, true);
-        assert_eq!(wide.arsenal[0..3], [4.0, 228.0, 180.0]);
-        assert_eq!(wide.arsenal[3], 411.0);
-        assert_eq!(wide.equipment[0..2], [236.0, 548.0]);
-        assert_eq!(wide.equipment[2], 784.0);
-        assert_eq!(wide.equipment[3], 88.0);
-        assert_eq!(wide.preview, [236.0, 0.0, 544.0, 764.0]);
-        assert!((wide.opacity - 0.837_398_35).abs() < 1e-7);
-        let narrow = layout(LoadoutMode::Arena, 800, 600, false);
-        assert_eq!(narrow.arsenal[3], 492.0);
-        assert_eq!(narrow.equipment[1], 628.0);
-        assert_eq!(narrow.preview[3], 596.0);
-        assert_eq!(narrow.opacity, 1.0);
+    fn the_layout_reads_the_constructors_fields() {
+        assert_eq!(FORM_OPACITY.to_bits(), 0x3f56_5fbd);
+        assert_eq!(EQUIP_SCALE_WIDE.to_bits(), 0x3f5f_6377);
+        let wide = layout(LoadoutMode::Arena, 1024, true);
+        // 492 · 0.83739835 = 411.99999 as a float, rounded to 412.
+        assert_eq!(wide.arsenal, [4, 180, 228, 412]);
+        assert_eq!(wide.equipment, [784, 88, 236, 548]);
+        assert_eq!((wide.preview_x, wide.preview_width), (236, 544));
+        assert_eq!(wide.name_box, None);
+        assert_eq!(wide.equipment_scale, EQUIP_SCALE_WIDE);
+        let narrow = layout(LoadoutMode::Creation, 800, false);
+        assert_eq!(narrow.arsenal[3], 492);
+        assert_eq!(narrow.equipment, [560, 88, 236, 628]);
+        assert_eq!(narrow.name_box, Some([560, 32, 236, 256]));
+        assert_eq!((narrow.opacity, narrow.equipment_scale), (1.0, 1.0));
+    }
+
+    #[test]
+    fn a_weapon_costs_what_it_displaces_from_the_hands() {
+        let sword = Some(HeldWeapon {
+            family: 0x10,
+            points: 4,
+        });
+        let axe = Some(HeldWeapon {
+            family: 0x20,
+            points: 6,
+        });
+        // A one-handed weapon that cannot go in the off hand replaces the
+        // first hand.
+        assert_eq!(item_cost(0x10, 5, false, sword, Some(3)), 1);
+        // One that can: beside a one-handed weapon it replaces the shield.
+        assert_eq!(item_cost(0x10, 5, true, sword, Some(3)), 2);
+        assert_eq!(item_cost(0x10, 5, true, sword, None), 5);
+        // Beside a two-handed weapon it replaces that.
+        assert_eq!(item_cost(0x10, 5, true, axe, Some(3)), -1);
+        assert_eq!(item_cost(0x11, 5, false, None, None), 5);
+        // A two-handed weapon frees both hands.
+        assert_eq!(item_cost(0x20, 9, false, sword, Some(3)), 2);
+        assert_eq!(item_cost(0x30, 9, false, None, None), 9);
+        assert_eq!(item_cost(0x40, 9, false, sword, Some(3)), 0);
+    }
+
+    #[test]
+    fn the_equip_rule_checks_copies_rank_and_limit() {
+        let facts = EquipFacts {
+            from_kit: true,
+            held: 1,
+            copies: 2,
+            allowed: false,
+            kind: EquipKind::Weapon { rank: 2, cost: 3 },
+        };
+        assert!(may_equip(LoadoutMode::Arena, 2, 7, 10, facts));
+        assert!(!may_equip(LoadoutMode::Arena, 2, 8, 10, facts));
+        assert!(!may_equip(LoadoutMode::Arena, 1, 0, 10, facts));
+        // A negative form rank stands for 5.
+        let high = EquipFacts {
+            kind: EquipKind::Armour { rank: 5, points: 1 },
+            ..facts
+        };
+        assert!(may_equip(LoadoutMode::Arena, -1, 0, 10, high));
+        // Every copy held: refused, even for a champion.
+        let held = EquipFacts { held: 2, ..facts };
+        assert!(!may_equip(LoadoutMode::Champion, 5, 0, 10, held));
+        // From elsewhere the drop must be allowed, except for a champion,
+        // who takes anything.
+        let other = EquipFacts {
+            from_kit: false,
+            kind: EquipKind::None,
+            ..facts
+        };
+        assert!(!may_equip(LoadoutMode::Arena, 5, 0, 10, other));
+        assert!(may_equip(LoadoutMode::Champion, 0, 99, 0, other));
+        let allowed = EquipFacts {
+            allowed: true,
+            kind: EquipKind::Worn { rank: 0, points: 2 },
+            ..other
+        };
+        assert!(may_equip(LoadoutMode::Match, 0, 8, 10, allowed));
+        assert!(!may_equip(LoadoutMode::Match, 0, 9, 10, allowed));
     }
 
     #[test]
@@ -710,13 +869,17 @@ mod tests {
         assert_eq!(BACKDROP_INK, 0xFF00_0000);
         assert_eq!(drag_flags(LoadoutMode::Match), 0x200);
         assert_eq!(drag_flags(LoadoutMode::Arena), 0x400);
+        assert_eq!(drag_flags(LoadoutMode::Creation), 0x400);
+        assert_eq!(drag_flags(LoadoutMode::Champion), 0);
         let mut editor = editor();
         let mut carved = item(1, 2, 0);
         carved.flags = SWAP_MASK;
-        assert!(!drop_allowed(&editor, &carved));
-        assert!(drop_allowed(&editor, &item(2, 2, 0)));
+        assert!(!drop_allowed(&editor, &carved, true));
+        assert!(drop_allowed(&editor, &carved, false));
+        assert!(drop_allowed(&editor, &item(2, 2, 0), true));
         editor.mode = LoadoutMode::Champion;
-        assert!(!drop_allowed(&editor, &item(2, 2, 0)));
+        assert!(!drop_allowed(&editor, &item(2, 2, 0), true));
+        assert!(drop_allowed(&editor, &item(2, 2, 0), false));
     }
 
     #[test]
@@ -745,22 +908,21 @@ mod tests {
     }
 
     #[test]
-    fn the_close_saves_the_arena_rank_only() {
+    fn the_close_saves_the_kit_in_the_arena_and_match_modes() {
         let mut editor = editor();
         editor.rank = 2;
         let save = save_on_close(&editor);
-        assert!(save.writes);
+        assert!(save.saves_kit && save.refresh_views && save.refresh_arena);
+        assert!(!save.stores_record);
         assert_eq!(save.rank, 2);
-        assert!(save.refresh_view);
-        assert!(save.refresh_arena);
         editor.mode = LoadoutMode::Match;
-        let save = save_on_close(&editor);
-        assert!(save.writes);
-        assert!(!save.refresh_arena);
+        assert_eq!(save_on_close(&editor), save);
         editor.mode = LoadoutMode::Creation;
-        assert!(!save_on_close(&editor).writes);
+        let save = save_on_close(&editor);
+        assert!(!save.saves_kit && !save.refresh_views && save.refresh_arena);
         editor.mode = LoadoutMode::Champion;
-        assert!(!save_on_close(&editor).writes);
+        let save = save_on_close(&editor);
+        assert!(save.stores_record && !save.saves_kit && !save.refresh_arena);
         assert_eq!(encumbrance(5.0), 250.0);
     }
 }

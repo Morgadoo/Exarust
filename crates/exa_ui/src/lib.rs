@@ -84,10 +84,10 @@ pub use heartbeat::Heartbeat;
 pub use hud::{DrawHud, HudBars};
 pub use loading::LoadingStatus;
 pub use loadout::{
-    ARSENAL_HEIGHT, DropResult, DropSource, EQUIP_HEIGHT, FORM_HEIGHT, FORM_OPACITY, FORM_WIDTH,
-    LoadoutEditor, LoadoutItem, LoadoutLayout, LoadoutMode, LoadoutSave, OFFHAND_FLAG, Slot,
-    apply_drop, can_equip, copies, encumbrance, layout as loadout_layout,
-    opacity as loadout_opacity, points_used, save_on_close, unequip,
+    DropResult, DropSource, EquipFacts, EquipKind, FORM_HEIGHT, FORM_OPACITY, FORM_WIDTH,
+    HeldWeapon, LoadoutEditor, LoadoutItem, LoadoutLayout, LoadoutMode, LoadoutSave, OFFHAND_FLAG,
+    Slot, apply_drop, can_equip, copies, encumbrance, item_cost, layout as loadout_layout,
+    may_equip, opacity as loadout_opacity, points_used, save_on_close, unequip,
 };
 pub use match_board::{
     Board, BoardAction, BoardHit, BoardInput, BoardLayout, BoardPaint, BoardTab, CellValue,
