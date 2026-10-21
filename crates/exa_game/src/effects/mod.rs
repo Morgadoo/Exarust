@@ -19,13 +19,19 @@
 //! record), which Exarust does not have yet.
 
 pub mod bubble;
+pub mod danger;
+pub mod effect_geometry;
+pub mod emissive;
 pub mod fire_node;
 pub mod fire_row;
+pub mod force_dome;
+pub mod force_wave;
 pub mod portal;
 pub mod portal_effect;
 pub mod rain;
 pub mod scan;
 pub mod shell;
+pub mod vanish;
 pub mod wheel;
 
 use bevy::prelude::*;
