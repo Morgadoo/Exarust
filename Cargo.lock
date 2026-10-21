@@ -2512,6 +2512,7 @@ dependencies = [
  "bytemuck",
  "exa_formats",
  "exa_physics",
+ "naga",
 ]
 
 [[package]]

@@ -507,15 +507,15 @@ fn publish_sector_lights(
             grid.height as i32 / 2 + (f.z / SECTOR_M).floor() as i32,
         )
     });
-    // A sector outside the block has no floor of its own yet (the original's
-    // per-sector floors are filled by every resident block); the origin's
-    // slice stands in for it.
+    // Every built block fills the floors of its sectors; a sector of a block
+    // not resident here still has 255, as the manager starts them all.
     let floor = |x: i32, z: i32| {
         let (bx, bz) = (x - textures.sector.x, z - textures.sector.y);
         if (0..SECTORS as i32).contains(&bx) && (0..SECTORS as i32).contains(&bz) {
             textures.sector_floor(bx as usize, bz as usize)
         } else {
-            0
+            // A sector no built block has filled has no floor.
+            u8::MAX
         }
     };
     let depth = textures.dims().z as f32;
@@ -620,11 +620,15 @@ fn sector_marks(
     for z in 0..SECTORS as i32 {
         for x in 0..SECTORS as i32 {
             let (cx, cz) = (block.x + x, block.y + z);
-            marks[(x + z * SECTORS as i32) as usize] = first(cx, cz)
-                || first(cx - 1, cz)
-                || first(cx + 1, cz)
-                || first(cx, cz - 1)
-                || first(cx, cz + 1);
+            // The second pass runs over the same window only: a sector on
+            // the grid's border is not drawn even if its neighbour is.
+            let in_window = cx >= lo_x && cx <= hi_x && cz >= lo_z && cz <= hi_z;
+            marks[(x + z * SECTORS as i32) as usize] = in_window
+                && (first(cx, cz)
+                    || first(cx - 1, cz)
+                    || first(cx + 1, cz)
+                    || first(cx, cz - 1)
+                    || first(cx, cz + 1));
         }
     }
     marks

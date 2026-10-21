@@ -796,7 +796,7 @@ fn shape_reaches(source: &LightSource, centre: Vec3) -> bool {
     );
     let dy = source.position.y - centre.y;
     let distance = (dx * dx + dy * dy + dz * dz).sqrt();
-    let c = if distance > 0.0 { dy / distance } else { 0.0 };
+    let c = dy / distance;
     c + (1.0 - c) * y > 1.19e-7
 }
 
@@ -1407,5 +1407,17 @@ mod tests {
         assert_eq!((lo.x, hi.x), (9, 15));
         let (lo, hi) = voxel_light_box(Vec3::new(12.5, 12.5, 30.5), BLOCK).unwrap();
         assert_eq!((lo.x, hi.x), (9, 15));
+    }
+
+    #[test]
+    fn the_propagation_shader_validates() {
+        let module =
+            naga::front::wgsl::parse_str(include_str!("gi.wesl")).expect("gi.wesl parses as WGSL");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("gi.wesl validates");
     }
 }

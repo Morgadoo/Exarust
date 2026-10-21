@@ -620,18 +620,22 @@ in world space there too):
 - One block of 256 × 256 voxels across: eight 6 m sectors of 30 columns
   plus an 8-voxel margin on each side. It is 64 voxels high (128 when the
   level's highest and lowest points are more than 12.8 m apart).
-- Sectors fall on world multiples of 6 m. The block's top is the level
-  record's highest point (`0x98`), truncated to whole voxels.
+- Sectors fall on world multiples of 6 m. The block's first cell is eight
+  sectors centred on the focus point's cell, slid inside the level's grid as
+  the original's blocks are; its top is the level record's highest point
+  (`0x98`), truncated to whole voxels. A level without a sector grid gets
+  the original's synthetic 8 × 8 grid of open cells, whose one block sits at
+  the world origin.
 - The original keeps up to nine blocks resident around a point 20 m in
-  front of the camera. Exarust keeps one block centred on that point, and
-  rebuilds it (with a new warm-up) when the point moves more than two
-  sectors. One build runs at a time; a newer focus waits for it. The
-  level's points and floor triangles are collected once in world space.
-  The block already on screen stays bound while the rebuilt one warms
-  behind it, so a move never reveals a cold block's black patches or
-  propagation halo; the warm block replaces it in one step. A level change
-  drops both blocks. When a load ends, the block is rebuilt around the
-  camera's starting view if it is not already there.
+  front of the camera. Exarust keeps one block, and rebuilds it (with a new
+  warm-up) when the point's block moves more than two sectors. One build
+  runs at a time; a newer focus waits for it. The level's points and floor
+  triangles are collected once in world space. The block already on screen
+  stays bound while the rebuilt one warms behind it, so a move never reveals
+  a cold block's black patches or propagation halo; the warm block replaces
+  it in one step. A level change drops both blocks. When a load ends, the
+  block is rebuilt around the camera's starting view if it is not already
+  there.
 - The top slice holds 26 and the slice below 5, a soft lid.
 - Terrain comes first: in each interior column (not the margins), voxels
   below the terrain surface hold 20, and the surface voxel its covered
@@ -685,9 +689,17 @@ the window for seconds); the loading screen waits for the first block, and a
 rebuilt block warms behind the one on screen and is swapped in only when its
 warm-up is complete. The light is 8-bit sRGB RGB, with A = 1 − 5·occ.
 
-Only slices from the sector's floor up to the second-highest are updated.
-Sectors with no points at all, and the margins, are never updated: they
-stay dark and absorb light that reaches them through open walls.
+Only slices from a group's lowest sector floor up to the second-highest are
+updated. The manager marks the sectors of the block to draw each frame: the
+cells within six sectors of the focus point (the camera's position 20 m
+along its view), at most 37 sectors squared from it, built in plane A's
+open flag `0x80000`, whose mid-height point the camera's frustum contains;
+the marks are then widened by one sector, as the original's second pass
+marks every cell next to a marked one. Sectors left unmarked, sectors with
+no points at all, the margins and the top slice are cleared to zero every
+step: they stay dark and absorb light that reaches them through open walls.
+Voxel lights still add into them, as the original's additive pass follows
+the clear.
 
 For each updated voxel, with occ normalised:
 - open = max(1 − 13·occ, 0);
@@ -698,12 +710,18 @@ For each updated voxel, with occ normalised:
 - open fades out over the lowest slices: · (1 − 2^(−16·r));
 - k = min(8·Σa, 1) · (0.3·open + 0.699);
 - light = sum·k/8 + base·open + Σ lights;
-- base = level record `0x30` (as stored) × 0.001;
+- base = level record `0x30` (as stored) × 0.001, per channel;
 - each light adds lin(colour)·intensity·multiplier·0.15·0.01 · (1 − d/R)⁴
   · open · shaping;
-- the lights injected are those whose reach overlaps the block, nearest its
-  centre first, up to 32. The original injects each sector group's lights,
-  up to 12 per group.
+- the lights injected are the sector's own: each sector's 6 m cell lists the
+  lights whose flood windows reached it (only ranged lights, up to 12), and
+  the original joins sectors whose lists match and whose floors lie within
+  two slices into a group, then merges groups that share a light while their
+  union stays within 12 lights. Each group takes its lowest floor and its
+  own light list; a sector sees no other light, so light does not cross a
+  wall into another room's injection. A level without a wall grid lists
+  every ranged light in every sector (the original's non-grid path uses one
+  group of the scene's lights).
 
 **Voxel lights** (`0x3D0C` nodes: glowing items and a few level nodes)
 add straight into the volume, after the propagation, every step and in
@@ -724,9 +742,11 @@ the warm-up:
 - blocked = min(20·(1 − o(voxel)·o(midpoint)), 1) with o = 1 − occupancy,
   and sdw = 1 − blocked·(1 − max(2 − 0.75/atn², 0)): through geometry the
   light reaches only about 1.2 voxels;
-- alpha is left alone, and the stored radius is unused. Exarust adds the
-  term only where the step writes, keeps up to 64 voxel lights per block,
-  nearest its centre first, apart from the point lights.
+- alpha is left alone, and the stored radius is unused. The voxel corner's
+  nearest voxel rounds ties to even (the processor's conversion); Exarust
+  adds the term to every voxel the box covers, cleared ones included, and
+  keeps up to 64 voxel lights per block, nearest its centre first, apart
+  from the point lights.
 
 The menu's Healing Salve adds (0.011, 0.125, 0.30) per step at its own
 voxel, 1.7 times a torch's blue over its box, packed into a 70 cm ball:
@@ -978,8 +998,8 @@ the cell's rotation; see [formats/RFC.md](formats/RFC.md) (Grid building).
   neighbouring cell its box spills into past no wall; a mesh around the
   light always passes. That keeps light and shadow casters in their rooms.
   Terrain tiles, far larger than the original's 6 m terrain blocks, skip
-  the test. The original's GI also takes its lights from the cell lists;
-  Exarust's GI still picks the lights nearest its block.
+  the test. The GI takes its lights from the same cell lists, sector by
+  sector (see [Voxel GI](#voxel-gi)).
 
 - **Cached cube shadows** (`exa_render::cube_shadows`): every caster,
   characters included, casts into cube maps kept across frames, as the
@@ -1504,7 +1524,9 @@ tendril motion of an electric arc and its emissive texture, the looping
 fire and electricity sounds, body contacts being driven from the physics
 step, the emissive map's alpha on unlit surfaces without a fall-off, the
 jittered supersampling pattern, the sun and terrain in the GI volume,
-several resident GI blocks, vertex dirt (dirt modes 1–3), glass
+several resident GI blocks (and their margin copies), the GI injection's
+cube-shadow test and dynamic occupancy updates, vertex dirt (dirt modes
+1–3), glass
 refraction, effect programs (smoke, powers), the hair program, terrain
 parallax and wetness, the outdoor environment cube's masked tint (the rule
 is in `scene_env::tint_environment_cube`, not uploaded), the day record table

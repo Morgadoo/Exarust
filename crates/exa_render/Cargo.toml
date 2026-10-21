@@ -11,5 +11,8 @@ bytemuck.workspace = true
 exa_formats.workspace = true
 exa_physics.workspace = true
 
+[dev-dependencies]
+naga = { version = "30", features = ["wgsl-in"] }
+
 [lints]
 workspace = true
