@@ -200,7 +200,7 @@ register or a jump target).
 own 8-byte header), then the payload or child chunks. Settings are
 addressed by tag paths; the player's key bindings live at
 `0x6440A401 / 0x6440CB01` (payload: [PLAYER.md](../PLAYER.md), Bindings:
-version 101, controller flag, count 23, the codes).
+version 101, controller flag, count 23, the saved table's rows).
 
 - **Load**: the file is read whole at start. Contents whose first word is 0
   fail the check: they are dropped and "Set file integrity check failed."

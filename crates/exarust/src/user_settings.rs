@@ -324,6 +324,10 @@ mod tests {
         let mut b = exa_game::bindings::Bindings::default();
         b.controller = true;
         u.store.set(&BINDINGS_PATH, &b.encode()).unwrap();
-        assert_eq!(u.bindings(), Some(b));
+        // The saved rows come back (the modifiers read one-sided once
+        // loaded, as the original's conversion gives them).
+        let loaded = u.bindings().expect("the store holds a set");
+        assert!(loaded.controller);
+        assert_eq!(loaded.encode(), b.encode());
     }
 }

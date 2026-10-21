@@ -195,37 +195,55 @@ decides from it each tick (below). Outside combat:
 
 ## Bindings
 
-The original's default binding table (`0x1002b72d0`, 16-byte slots whose
-first word is the virtual-key code; read from `Exanima.exe` and matched
-slot for slot) has 23 slots in this order:
+The original's default binding table (16-byte slots whose first word is
+the virtual-key code; read from `Exanima.exe` and matched slot for slot)
+has 23 slots in this order:
 left mouse (primary), W, A, S, D, X (crouch), shift (run), alt (alternate
 attack), middle mouse (orbit), V (Cursor Look), control (interact), I
 (inventory), tab (combat), K (skills), R (switch equipped), F (flip weapon),
 J (journal), T (talk), C (power bar), P (power tree), Q (use the picked
 power), right arrow (next power), left arrow (previous power): the key
 handler (Hotkeys, below) opens the power bar with slot 18, the power tree
-with slot 19 and uses the picked power with slot 20. The power slots are
-tied to the settings labels by the original's conversion from the saved key
-table into this one and by the Controls page's key captions, which read the
-saved table in row order. Shift, alt
-and control accept either side. The settings screen's template labels
-Cursor Look as SPACE; the shipped table's slot holds V.
+with slot 19 and uses the picked power with slot 20. Shift, alt and
+control accept either side. The settings screen's template labels Cursor
+Look as SPACE; the shipped table's slot holds V.
 
-The saved file (`0x1000a5160` save, `0x1000a5320` load) is little-endian:
-version word 101, the controller-mode flag, the count 23, then the 23
-virtual-key codes. An older file without the controller flag is accepted:
-after the version its word is the count. Exarust's `Bindings` models both
-shapes; the primary attack, movement, combat, orbit and interact controls
-read the table, and an unbound key simply does nothing.
+The original does not save that table. It saves a second one, the saved
+table: 23 rows in the Controls page's order (each key cell's action code
+is one more than its row), holding keyboard scan codes (bit `0x100` for an
+extended key) and, for a mouse button, `0x8000` with its virtual-key code.
+The shipped saved table is W, S, A, D, left shift, X, middle mouse
+(`0x8004`), V, left control, tab, I, K, J, left alt, R, T, C, P, left arrow
+(`0x14B`), right arrow (`0x14D`), Q, 0 and F. After a load the original
+converts it into the slots: rows 0–20 and 22 fill slots 1, 3, 2, 4, 6, 5,
+8, 9, 10, 12, 11, 13, 16, 7, 14, 17, 18, 19, 22, 21, 20 and 15; row 21
+fills none and slot 0 (the primary button) keeps its shipped code. A row
+with either of the bits `0xC000` gives its low 14 bits; any other gives
+the system's scan-to-key mapping of its low byte (the extended bit is
+dropped), which gives the modifiers their left keys' one-sided codes
+(`0xA0`, `0xA2`, `0xA4`), so a loaded table reads them on one side
+(Exarust's reading; how the original polls a one-sided code was not
+traced). The two shipped tables convert into each other row for row.
+Exarust keeps a US-layout scan-code table for the mapping (a guess outside
+the shipped keys; the keypad's keys map to the navigation keys, as the
+system's mapping ignores Num Lock).
+
+The saved payload is little-endian: version word 101, the controller-mode
+flag, the count 23, then the 23 rows. The original's loader reads the flag
+and then the count when the version is above 100, and otherwise the count
+with no flag (off); it copies as many rows as the count gives over the
+saved table from its first row, with no bound (Exarust drops rows past 23),
+and clears row 21 before converting. Exarust's `Bindings` reads and writes
+this shape (its writer turns each slot back into its row's code); the
+primary attack, movement, combat, orbit and interact controls read the slot
+table, and an unbound key simply does nothing. The Controls page writes
+virtual-key codes into the slots.
 
 The table is not a file of its own: it is the payload stored in the
 settings store (`<project>.set`) under the tag path `0x6440A401 /
 0x6440CB01` ([formats/SETTINGS.md](formats/SETTINGS.md), Settings store),
 and the store is written right after it. Exarust's launcher reads it from
-there. The original's reader picks the older shape by the version word
-(below 101) rather than by the count, takes whatever count the payload
-gives, and clears slot 21 (next power) after reading; Exarust's `Bindings`
-does not yet follow these three rules.
+there.
 
 ## Hotkeys
 
