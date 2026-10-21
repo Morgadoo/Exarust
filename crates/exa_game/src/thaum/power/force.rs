@@ -5,8 +5,10 @@
 //! [`super::super::force`]; these are the classes that run afterwards.
 //!
 //! - **Shell** ([`Shell`]): activation sets the body's hit damping to one
-//!   half (the body's hit damping). The first control tick starts cast motion 0x24 and
-//!   registers the hit-ripple hook; ending clears the damping.
+//!   half and registers the hit-ripple callback. The first control tick
+//!   starts cast motion 0x24 and installs the cast hook (which answers 0
+//!   for an event with bits `0x29`, else −1); ending returns the reserve,
+//!   closes the shell effect and clears the callback and the damping.
 //! - **Bubble and barricade** ([`RemotePower`]): a control event carrying
 //!   bit 1 or 3 ends the effect; otherwise, once the effect's centre is more
 //!   than 20 m from the caster, the power marks itself ending.
@@ -14,23 +16,30 @@
 //!   sets the attacker's strike factor to 1.0 and its swing factor to 3.0;
 //!   ending removes the auras and clears both. A weapon put away loses its
 //!   aura; a weapon taken gains one while fewer than four carry auras, and a
-//!   swing of an aura-carrying weapon reports the contact.
+//!   swing of an aura-carrying weapon ripples its aura at half the swing's
+//!   strength. Ending plays `thmfrc_brf` at volume 0.3 (pitch
+//!   `0.6 + 0.4·roll`).
 //! - **Kinesis** ([`Kinesis`]): a sustained power that starts cast motion
 //!   0x23, installs the pick callbacks and, each tick, spends its cost and
-//!   steers the held body toward the aim. The aim's velocity is the unit
-//!   direction times `1/dist` (0.02 within 50 cm) times the body's reach
-//!   (half its radius plus one); the turn keys rotate it by
-//!   `reach² · 0.001` a tick; a held body remembers its user for 2 s.
-//! - **Throw** ([`Throw`]): lifts its target (cast motion 0x23), points it
-//!   at the aim and launches it at `mass/(mass + 0.1)` of the direction (a
-//!   twentieth of the direction within 50 cm), dropping the shell after
-//!   800 ms and restoring the body's materials 200 ms later.
+//!   steers the held body toward the aim. The velocity is the unit
+//!   direction to the aim (the direction times 0.02 within 50 cm) times the
+//!   body's reach (half its radius plus one); the stick or the turn keys
+//!   rotate it by `reach² · 0.001` a tick; a held body remembers its user
+//!   for 2 s. A pick holds the body at a third of its extents' sum.
+//! - **Throw** ([`Throw`]): lifts its target (cast motion 0x23) and aims
+//!   100 cm above it, steers it there at `mass/(mass + 0.1)` of the unit
+//!   direction (a fiftieth of the direction within 50 cm) while spending
+//!   `tick · cost · 0.00125` a tick, drops the shell after 800 ms and coasts
+//!   it at six times that share toward the caster's aim point (ending at
+//!   once when that point is within 100 cm), and restores the body's
+//!   materials 200 ms later. It holds no reserve.
 //!
 //! Evidence: the Force classes' control handlers, the Strike callbacks, the
 //! Kinesis steering and the Throw phases, read from `Exanima.exe`.
 
 use super::PowerBase;
 use crate::thaum::casting::{CastBody, start_cast};
+use crate::thaum::engine::dist_sq;
 
 /// The Force power ids the classes run.
 pub const SHELL: u32 = 0x20208;
@@ -58,6 +67,19 @@ pub const STRIKES_FACTOR: f32 = 1.0;
 pub const STRIKES_SWING_FACTOR: f32 = 3.0;
 /// The swing factor a body has without Force Strikes.
 pub const PLAIN_SWING_FACTOR: f32 = 1.0;
+/// The share of a swing's strength an aura's ripple takes.
+pub const STRIKES_RIPPLE: f32 = 0.5;
+/// The sound Force Strikes plays as it ends, and its volume.
+pub const STRIKES_END_SOUND: &str = super::super::force::BUBBLE_BREAK;
+pub const STRIKES_END_VOLUME: f32 = 0.3;
+/// The swing sound a body with Force Strikes plays.
+pub const STRIKES_SWING_SOUND: &str = "ThmFrc_Swing";
+
+/// The pitch of Force Strikes' end sound: `0.6 + 0.4·roll` in double.
+pub fn strikes_end_pitch(roll: f32) -> f32 {
+    (f64::from(roll) * 0.4 + 0.6) as f32
+}
+
 /// How many weapons can carry a strike aura.
 pub const MOST_AURAS: usize = 4;
 /// A kinesis object's reach: half its radius plus one.
@@ -67,8 +89,9 @@ pub const KINESIS_REACH_BIAS: f32 = 1.0;
 pub const KINESIS_CLOSE_SQ: f32 = 2500.0;
 /// The small factor a close direction is scaled by.
 pub const CLOSE_FACTOR: f32 = 0.02;
-/// The turn a movement key gives a kinesis object, per unit of reach².
-pub const KINESIS_TURN: f32 = 0.001;
+/// The turn a movement key gives a kinesis object, per unit of reach² (the
+/// original multiplies by the double 0.001).
+pub const KINESIS_TURN_STEP: f64 = 0.001;
 /// The spin a kinesis gives the held body.
 pub const KINESIS_SPIN: f32 = -0.2;
 /// How long a held body remembers its user, in milliseconds.
@@ -81,10 +104,12 @@ pub const THROW_RESTORE_MS: u32 = 200;
 pub const THROW_DROP_DIST: f32 = 100.0;
 /// The throw's mass denominator bias.
 pub const THROW_MASS_BIAS: f64 = 0.1;
-/// The throw's speed scale after the lift.
+/// The coast's speed scale once the shell drops.
 pub const THROW_FLY_SCALE: f32 = 6.0;
-/// The throw's lift scale.
-pub const THROW_LIFT_SCALE: f32 = 0.00125;
+/// The throw's per-tick cost scale: tick ms × cost × 0.00125.
+pub const THROW_TICK_SCALE: f32 = 0.00125;
+/// How far above the lifted body the throw first aims, in cm.
+pub const THROW_LIFT_HEIGHT: f32 = 100.0;
 
 /// The shell's answer for one tick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,13 +241,7 @@ impl RemotePower {
                 released,
             };
         }
-        let delta = [
-            self.at[0] - caster[0],
-            self.at[1] - caster[1],
-            self.at[2] - caster[2],
-        ];
-        let dist_sq = delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2];
-        if REMOTE_RANGE_SQ < dist_sq {
+        if REMOTE_RANGE_SQ < dist_sq(self.at.into(), caster.into()) {
             self.state = super::ENDING;
         }
         RemoteStep {
@@ -320,9 +339,13 @@ impl Strikes {
         false
     }
 
-    /// Whether a swing's weapon is one this power has auras on.
-    pub fn swung(&self, item: u64) -> bool {
-        self.auras.iter().any(|aura| aura.item == item)
+    /// A swing's contact: the first aura on that weapon ripples at half
+    /// the swing's strength (`None` when no aura is on it).
+    pub fn swung(&self, item: u64, strength: f32) -> Option<f32> {
+        self.auras
+            .iter()
+            .any(|aura| aura.item == item)
+            .then_some(strength * STRIKES_RIPPLE)
     }
 }
 
@@ -419,8 +442,21 @@ pub fn kinesis_reach(radius: f32) -> f32 {
     radius * 0.5 + KINESIS_REACH_BIAS
 }
 
+/// The steering factor a kinesis or throw direction is scaled by: one over
+/// its length past 50 cm, else a fiftieth (also for a length that is not a
+/// number, as the original's ordered compare falls through).
+fn steer_factor(dist_sq: f32) -> f32 {
+    if dist_sq > KINESIS_CLOSE_SQ {
+        1.0 / dist_sq.sqrt()
+    } else {
+        CLOSE_FACTOR
+    }
+}
+
 /// The velocity a kinesis gives its target toward `aim`: the unit direction
-/// times the reach, or the direction times a fiftieth within 50 cm.
+/// times the reach past 50 cm, or the direction times a fiftieth of the
+/// reach within. The original then adds a fifth of the body's own motion
+/// vector, negated ([`kinesis_spin`]), before it sets the body's velocity.
 pub fn kinesis_velocity(target: &KinesisTarget, aim: [f32; 3]) -> [f32; 3] {
     let delta = [
         aim[0] - target.position[0],
@@ -428,37 +464,48 @@ pub fn kinesis_velocity(target: &KinesisTarget, aim: [f32; 3]) -> [f32; 3] {
         aim[2] - target.position[2],
     ];
     let dist_sq = delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2];
-    let factor = if dist_sq <= KINESIS_CLOSE_SQ {
-        CLOSE_FACTOR
-    } else {
-        1.0 / dist_sq.sqrt()
-    };
-    let scale = factor * kinesis_reach(target.radius);
+    let scale = steer_factor(dist_sq) * kinesis_reach(target.radius);
     [delta[0] * scale, delta[1] * scale, delta[2] * scale]
 }
 
-/// The two turn speeds the movement keys give a kinesis object, along x and
-/// y. Bits 1 and 4 turn around one axis, bits 2 and 8 around the other.
-pub fn kinesis_turn(keys: u32, radius: f32) -> [f32; 2] {
-    let step = kinesis_reach(radius) * kinesis_reach(radius) * KINESIS_TURN;
-    let mut x = 0.0;
-    let mut y = 0.0;
+/// The stick length past which the gamepad turns a kinesis object instead
+/// of the movement keys.
+pub const STICK_DEAD_ZONE: f64 = 0.1;
+
+/// The two turn angles a kinesis object takes this tick. The step is the
+/// reach squared (single) times the double 0.001, narrowed. A stick longer
+/// than 0.1 (its length, as the engine's vector-length routine is taken to
+/// give, compared in double) turns by its y and x times the step; otherwise key 1 turns the
+/// first axis forward or else key 4 back, and key 2 the second forward or
+/// else key 8 back (the original tests each pair as if/else).
+pub fn kinesis_turn(keys: u32, stick: [f32; 2], radius: f32) -> [f32; 2] {
+    let reach = kinesis_reach(radius);
+    let step = (f64::from(reach * reach) * KINESIS_TURN_STEP) as f32;
+    let mut x = 0.0f32;
+    let mut y = 0.0f32;
+    let stick_len = (stick[0] * stick[0] + stick[1] * stick[1]).sqrt();
+    if f64::from(stick_len) > STICK_DEAD_ZONE {
+        x += stick[1] * step;
+        y += stick[0] * step;
+        return [x, y];
+    }
     if keys & 1 != 0 {
         x += step;
-    }
-    if keys & 4 != 0 {
+    } else if keys & 4 != 0 {
         x -= step;
     }
     if keys & 2 != 0 {
         y += step;
-    }
-    if keys & 8 != 0 {
+    } else if keys & 8 != 0 {
         y -= step;
     }
     [x, y]
 }
 
-/// The spin a kinesis gives the held body from a steering direction.
+/// The share of the body's own motion vector a kinesis or throw adds to its
+/// steering: the vector times −0.2. Which of the body's vectors the original
+/// rotates into it (a four-component vector through the body's matrix) is
+/// not settled; this is the scaling alone.
 pub fn kinesis_spin(direction: [f32; 3]) -> [f32; 3] {
     [
         direction[0] * KINESIS_SPIN,
@@ -467,13 +514,14 @@ pub fn kinesis_spin(direction: [f32; 3]) -> [f32; 3] {
     ]
 }
 
-/// When a held body's user stamp runs out.
+/// When a held body's user stamp runs out (the game clock plus 2 s, 32-bit).
 pub fn hold_until(now: u32) -> u32 {
     now.wrapping_add(HOLD_MS)
 }
 
 /// What a kinesis pick puts on the body it grabs: the force shell's speed
-/// scale, the special physics material and the 2 s user stamp.
+/// scale, the special physics material, the 2 s user stamp and the depth it
+/// is held at.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct KinesisPick {
     pub item: u64,
@@ -483,179 +531,240 @@ pub struct KinesisPick {
     pub hold_until: u32,
     /// The body takes the special kinesis physics material.
     pub material: bool,
+    /// The depth the steering holds the body at: a third (0.333) of the sum
+    /// of its three extents.
+    pub depth: f32,
 }
 
-/// The pick's shell is the force shell scaled by `(1/speed + 0.015)·0.5`.
-pub fn kinesis_pick(item: u64, speed: f32, now: u32) -> KinesisPick {
-    KinesisPick {
+/// The shell's emissive strength on a picked item.
+pub const PICK_SHELL_GLOW: f32 = 2.8;
+/// The shell's second parameter on a picked item.
+pub const PICK_SHELL_FADE: f32 = 0.5;
+/// The pick sound's volume.
+pub const PICK_VOLUME: f32 = 0.3;
+
+/// The pick's shell is the force shell scaled by `(1/speed + 0.015)·0.5`;
+/// its depth is `(a + b + c)·0.333` of the body's extents, summed in that
+/// order in single and scaled in double. `None` is the original's empty
+/// pick, which ends the power (and, with pick mode 0, plays the failure
+/// sound).
+pub fn kinesis_pick(
+    item: Option<u64>,
+    speed: f32,
+    extents: [f32; 3],
+    now: u32,
+) -> Option<KinesisPick> {
+    let item = item?;
+    Some(KinesisPick {
         item,
         shell_scale: super::super::kinesis_scale(speed),
         hold_until: hold_until(now),
         material: true,
-    }
+        depth: (f64::from(extents[0] + extents[1] + extents[2]) * 0.333) as f32,
+    })
+}
+
+/// The pitch of the pick sound: `0.8 + 0.4·roll` in double.
+pub fn pick_pitch(roll: f32) -> f32 {
+    (f64::from(roll) * 0.4 + 0.8) as f32
 }
 
 /// Throw's phases.
 pub const THROW_LIFT: i32 = 0;
-/// Flying under its own momentum.
+/// Steered toward its aim, spending focus each tick.
 pub const THROW_FLY: i32 = 1;
-/// Dropped, waiting to restore its materials.
+/// The shell has dropped: it coasts toward the caster's aim point.
 pub const THROW_FALL: i32 = 2;
 /// Done.
 pub const THROW_DONE: i32 = 3;
 
-/// Throw: lift, launch and let go of one body.
+/// Throw: lift, steer and let go of one body. An instant power: it holds no
+/// reserve, but spends its tick cost every steered tick.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Throw {
     pub state: i32,
-    pub held: f32,
     pub phase: i32,
     pub stamp: u32,
-    /// The lift's strength.
-    pub lift: f32,
+    /// The cast's cost, which the lift turns into the per-tick cost.
+    pub cost: f32,
+    /// The focus each steered tick spends.
+    pub tick_cost: f32,
+    /// Where the body is steered: its position at the lift, 100 cm higher.
+    pub aim: [f32; 3],
+    /// The coast direction once the shell drops (unit length).
+    pub coast: [f32; 3],
 }
 
 impl Throw {
-    pub fn new(lift: f32) -> Self {
+    pub fn new(cost: f32) -> Self {
         Self {
             state: super::READY,
-            held: 0.0,
             phase: THROW_LIFT,
             stamp: 0,
-            lift,
+            cost,
+            tick_cost: 0.0,
+            aim: [0.0; 3],
+            coast: [0.0; 3],
         }
+    }
+
+    /// The lift: the per-tick cost becomes the tick in milliseconds times
+    /// the cost times 0.00125 (single, in that order), the aim the body's
+    /// position 100 cm up, and the throw steers. The loop sound starts at
+    /// volume 0.6 with a pitch of `1 + 0.2·roll`.
+    pub fn lift(&mut self, target_at: [f32; 3], tick_ms: u32) {
+        self.tick_cost = Self::tick_cost(tick_ms, self.cost);
+        self.aim = target_at;
+        self.phase = THROW_FLY;
+        self.aim[1] += THROW_LIFT_HEIGHT;
+    }
+
+    /// The focus a steered tick spends.
+    pub fn tick_cost(tick_ms: u32, cost: f32) -> f32 {
+        tick_ms as f32 * cost * THROW_TICK_SCALE
     }
 }
 
+/// What the throw's body is doing this tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ThrowView {
+    /// The thrown body's centre.
+    pub target_at: [f32; 3],
+    /// Its mass.
+    pub mass: f32,
+    /// The point the caster's behaviour aims at (read when the shell drops).
+    pub caster_point: [f32; 3],
+    /// The simulation tick in milliseconds (read by the lift).
+    pub tick_ms: u32,
+}
+
 /// What a throw's tick asks the game to do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ThrowStep {
     pub result: i32,
-    pub released: bool,
     /// The cast motion was taken.
     pub motion: bool,
-    /// The lift's shell and sound start now.
+    /// The lift ran: the shell and the loop sound start, the special
+    /// material goes on.
     pub lift: bool,
-    /// The body is launched along its aim.
-    pub launch: bool,
-    /// The shell drops and the body coasts.
-    pub coast: bool,
-    /// The body's materials come back.
+    /// The velocity set on the body this tick (before the original's
+    /// [`kinesis_spin`] term).
+    pub velocity: Option<[f32; 3]>,
+    /// The shell drops now.
+    pub drop_shell: bool,
+    /// The body's materials come back (and, before the drop, the loop sound
+    /// stops; the shell closes).
     pub restore: bool,
+    /// The held bodies take the caster as their user until
+    /// [`hold_until`].
+    pub hold: bool,
 }
 
 impl Throw {
-    /// One control tick. `close` is whether the target is within 100 cm of
-    /// its aim (the original lets go once it is that near).
-    pub fn control(&mut self, event: i32, now: u32, close: bool, body: &mut CastBody) -> ThrowStep {
-        let quiet = ThrowStep {
+    /// One control tick. An event carrying bit 1 or 3 ends the throw: its
+    /// materials come back and the cast motion stops. The first tick
+    /// starts cast motion 0x23 and lifts; each steered tick sets the
+    /// velocity toward the aim ([`throw_steer`]) and spends the tick cost,
+    /// and 800 ms after the lift the shell drops, the coast direction to
+    /// the caster's point is taken and the throw ends at once when that
+    /// point is under 100 cm away. While coasting the body flies at
+    /// `6·mass share` along it, keeps the caster as its user, and 200 ms
+    /// after the drop its materials come back and the throw ends.
+    pub fn control(
+        &mut self,
+        event: i32,
+        now: u32,
+        view: &ThrowView,
+        body: &mut CastBody,
+    ) -> ThrowStep {
+        let mut step = ThrowStep {
             result: 0,
-            released: false,
             motion: false,
             lift: false,
-            launch: false,
-            coast: false,
+            velocity: None,
+            drop_shell: false,
             restore: false,
+            hold: false,
         };
         if event & 0xa != 0 {
             self.state = super::ENDING;
         }
         if self.state == super::ENDING {
-            let released = 0.0 < self.held;
-            if released {
-                PowerBase {
-                    id: THROW,
-                    state: self.state,
-                    held: self.held,
-                }
-                .release(body);
-            }
-            return ThrowStep {
-                result: 2,
-                released,
-                restore: true,
-                ..quiet
-            };
+            step.result = 2;
+            step.restore = true;
+            return step;
         }
         if self.state == super::READY {
-            let motion = start_cast(body, THROW_MOTION, THROW);
-            let lift = self.phase == THROW_LIFT;
-            if lift {
-                self.phase = THROW_FLY;
+            step.motion = start_cast(body, THROW_MOTION, THROW);
+            if self.phase == THROW_LIFT {
+                self.lift(view.target_at, view.tick_ms);
+                step.lift = true;
             }
             self.stamp = now;
             self.state = super::RUNNING;
-            return ThrowStep {
-                motion,
-                lift,
-                ..quiet
-            };
+            return step;
         }
-        // The launch runs from the lift's start; the phase machine counts
-        // from each stamp.
-        let elapsed = now.wrapping_sub(self.stamp);
+        let share = throw_share(view.mass);
         if self.phase == THROW_FLY {
-            if elapsed > THROW_DROP_MS {
+            step.velocity = Some(throw_steer(view.target_at, self.aim, share));
+            super::drain(body, self.tick_cost);
+            // The stamp and the delay are added in 64 bits.
+            if u64::from(self.stamp) + u64::from(THROW_DROP_MS) < u64::from(now) {
                 self.phase = THROW_FALL;
                 self.stamp = now;
+                step.drop_shell = true;
+                let (coast, close) = throw_coast(view.target_at, view.caster_point);
+                self.coast = coast;
                 if close {
                     self.state = super::ENDING;
                     self.phase = THROW_DONE;
                 }
-                return ThrowStep {
-                    launch: true,
-                    ..quiet
-                };
             }
-            return quiet;
+        } else if self.phase == THROW_FALL {
+            let speed = THROW_FLY_SCALE * share;
+            step.velocity = Some([
+                self.coast[0] * speed,
+                self.coast[1] * speed,
+                self.coast[2] * speed,
+            ]);
+            if u64::from(self.stamp) + u64::from(THROW_RESTORE_MS) < u64::from(now) {
+                step.restore = true;
+                self.state = super::ENDING;
+                self.phase = THROW_DONE;
+            }
+            step.hold = true;
         }
-        if self.phase == THROW_FALL && elapsed > THROW_RESTORE_MS {
-            self.phase = THROW_DONE;
-            self.state = super::ENDING;
-            return ThrowStep {
-                restore: true,
-                ..quiet
-            };
-        }
-        if self.phase == THROW_DONE {
-            self.state = super::ENDING;
-        }
-        quiet
-    }
-
-    /// The lift's strength from the caster's record word and the cast's
-    /// strength.
-    pub fn lift_strength(record_word: u32, strength: f32) -> f32 {
-        (record_word as f32) * strength * THROW_LIFT_SCALE
+        step
     }
 }
 
-/// A launched body's velocity and whether the aim is already close enough
-/// to let go.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ThrowLaunch {
-    pub velocity: [f32; 3],
-    pub close: bool,
+/// The mass's share a throw scales by: `mass/(0.1 + mass)` in double.
+pub fn throw_share(mass: f32) -> f32 {
+    let mass = f64::from(mass);
+    (mass / (THROW_MASS_BIAS + mass)) as f32
 }
 
-/// The velocity a throw gives its body: the unit direction toward the aim,
-/// scaled by the mass's share `mass/(mass + 0.1)` (a fiftieth of the
-/// direction within 50 cm).
-pub fn throw_launch(from: [f32; 3], to: [f32; 3], mass: f32) -> ThrowLaunch {
+/// A steered throw's velocity: the direction from the body to its aim, unit
+/// length past 50 cm (a fiftieth of it within), times the mass share.
+pub fn throw_steer(from: [f32; 3], to: [f32; 3], share: f32) -> [f32; 3] {
     let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
     let dist_sq = delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2];
-    let factor = if dist_sq <= KINESIS_CLOSE_SQ {
-        CLOSE_FACTOR
-    } else {
-        1.0 / dist_sq.sqrt()
-    };
-    let mass_share = (f64::from(mass) / (f64::from(mass) + THROW_MASS_BIAS)) as f32;
-    let scale = factor * mass_share;
-    let distance = dist_sq.sqrt();
-    ThrowLaunch {
-        velocity: [delta[0] * scale, delta[1] * scale, delta[2] * scale],
-        close: distance < THROW_DROP_DIST,
-    }
+    let scale = steer_factor(dist_sq) * share;
+    [delta[0] * scale, delta[1] * scale, delta[2] * scale]
+}
+
+/// The coast direction once the shell drops: from the body to the caster's
+/// point, unit length, and whether that point is under 100 cm away (the
+/// throw then ends at once).
+pub fn throw_coast(from: [f32; 3], to: [f32; 3]) -> ([f32; 3], bool) {
+    let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+    let length = (delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]).sqrt();
+    let close = length < THROW_DROP_DIST;
+    let inverse = 1.0 / length;
+    (
+        [delta[0] * inverse, delta[1] * inverse, delta[2] * inverse],
+        close,
+    )
 }
 
 #[cfg(test)]
@@ -701,8 +810,9 @@ mod tests {
         assert_eq!(body.strike_factor, 1.0);
         assert_eq!(body.swing_factor, 3.0);
         assert_eq!(strikes.auras.len(), 2);
-        assert!(strikes.swung(11));
-        assert!(!strikes.swung(13));
+        assert_eq!(strikes.swung(11, 3.0), Some(1.5));
+        assert_eq!(strikes.swung(13, 3.0), None);
+        assert_eq!(strikes_end_pitch(0.5), 0.8);
 
         assert!(!strikes.weapon_change(12, 1, false));
         assert_eq!(strikes.auras.len(), 1);
@@ -731,17 +841,31 @@ mod tests {
         assert!((far[0] - 51.0).abs() < 1e-5);
         let near = kinesis_velocity(&target, [40.0, 0.0, 0.0]);
         assert!((near[0] - 40.0 * 0.02 * 51.0).abs() < 1e-3);
-        assert_eq!(kinesis_turn(1, 100.0), [2601.0 * 0.001, 0.0]);
-        assert_eq!(kinesis_turn(4, 100.0), [-2.601, 0.0]);
-        assert_eq!(kinesis_turn(2, 100.0), [0.0, 2.601]);
-        assert_eq!(kinesis_turn(8, 100.0), [0.0, -2.601]);
+        // The step is 2601 (single) times the double 0.001, narrowed.
+        let step = (2601.0f64 * 0.001) as f32;
+        assert_eq!(kinesis_turn(1, [0.0; 2], 100.0), [step, 0.0]);
+        assert_eq!(kinesis_turn(4, [0.0; 2], 100.0), [-step, 0.0]);
+        assert_eq!(kinesis_turn(2, [0.0; 2], 100.0), [0.0, step]);
+        assert_eq!(kinesis_turn(8, [0.0; 2], 100.0), [0.0, -step]);
+        // Each pair is if/else: the forward key wins.
+        assert_eq!(kinesis_turn(0xf, [0.0; 2], 100.0), [step, step]);
+        // A stick past the dead zone turns by its swapped axes instead.
+        assert_eq!(kinesis_turn(1, [0.5, -1.0], 100.0), [-step, 0.5 * step]);
+        assert_eq!(kinesis_turn(1, [0.05, 0.05], 100.0), [step, 0.0]);
+        // A distance that is not a number takes the close factor.
+        let lost = kinesis_velocity(&target, [f32::NAN, 0.0, 0.0]);
+        assert!(lost[1] == 0.0 && lost[0].is_nan());
         assert_eq!(kinesis_spin([1.0, 2.0, 3.0]), [-0.2, -0.4, -0.6]);
         assert_eq!(hold_until(100), 2100);
-        let pick = kinesis_pick(7, 2.0, 100);
+        assert_eq!(hold_until(u32::MAX), 1999);
+        let pick = kinesis_pick(Some(7), 2.0, [30.0, 60.0, 90.0], 100).unwrap();
         assert_eq!(pick.item, 7);
         assert!((pick.shell_scale - 0.2575).abs() < 1e-6);
         assert_eq!(pick.hold_until, 2100);
         assert!(pick.material);
+        assert_eq!(pick.depth, (180.0f64 * 0.333) as f32);
+        assert_eq!(kinesis_pick(None, 2.0, [0.0; 3], 100), None);
+        assert_eq!(pick_pitch(0.5), 1.0);
     }
 
     #[test]
@@ -760,36 +884,65 @@ mod tests {
     }
 
     #[test]
-    fn a_throw_lifts_launches_and_restores() {
-        let launch = throw_launch([0.0; 3], [100.0, 0.0, 0.0], 0.9);
-        assert!((launch.velocity[0] - 0.9).abs() < 1e-6);
-        assert!(!launch.close);
-        let near = throw_launch([0.0; 3], [40.0, 0.0, 0.0], 0.9);
-        assert!((near.velocity[0] - 40.0 * 0.02 * 0.9).abs() < 1e-4);
-        assert!(near.close);
-        let just_short = throw_launch([0.0; 3], [99.0, 0.0, 0.0], 0.9);
-        assert!((just_short.velocity[0] - 0.9).abs() < 1e-6);
-        assert!(just_short.close);
-        assert_eq!(Throw::lift_strength(100, 0.5), 0.0625);
+    fn a_throw_lifts_steers_coasts_and_restores() {
+        // The steering: a unit direction past 50 cm, a fiftieth within,
+        // times the mass share 0.9 / (0.1 + 0.9).
+        let share = throw_share(0.9);
+        assert_eq!(share, (0.9f32 as f64 / (0.1 + 0.9f32 as f64)) as f32);
+        let far = throw_steer([0.0; 3], [100.0, 0.0, 0.0], share);
+        assert!((far[0] - share).abs() < 1e-6);
+        let near = throw_steer([0.0; 3], [40.0, 0.0, 0.0], share);
+        assert!((near[0] - 40.0 * 0.02 * share).abs() < 1e-5);
+        let (coast, close) = throw_coast([0.0; 3], [0.0, 0.0, 99.0]);
+        assert_eq!(coast, [0.0, 0.0, 1.0]);
+        assert!(close);
+        assert!(!throw_coast([0.0; 3], [100.0, 0.0, 0.0]).1);
+        // 12 ms × 0.1 × 0.00125.
+        assert_eq!(Throw::tick_cost(12, 0.1), 12.0 * 0.1 * 0.00125);
 
         let mut body = CastBody::default();
-        let mut power = Throw::new(1.0);
-        let lift = power.control(0, 1000, false, &mut body);
+        let view = ThrowView {
+            target_at: [0.0, 50.0, 0.0],
+            mass: 0.9,
+            caster_point: [500.0, 50.0, 0.0],
+            tick_ms: 12,
+        };
+        let mut power = Throw::new(0.1);
+        let lift = power.control(0, 1000, &view, &mut body);
         assert!(lift.motion && lift.lift);
-        let flying = power.control(0, 1500, false, &mut body);
-        assert!(!flying.launch);
-        let drop = power.control(0, 1801, false, &mut body);
-        assert!(drop.launch);
+        assert_eq!(power.phase, THROW_FLY);
+        assert_eq!(power.aim, [0.0, 150.0, 0.0]);
+        let flying = power.control(0, 1800, &view, &mut body);
+        assert!(!flying.drop_shell);
+        assert!((flying.velocity.unwrap()[1] - share).abs() < 1e-6);
+        assert_eq!(body.spent, power.tick_cost);
+        let drop = power.control(0, 1801, &view, &mut body);
+        assert!(drop.drop_shell && !drop.hold);
         assert_eq!(power.phase, THROW_FALL);
-        let restore = power.control(0, 2002, false, &mut body);
-        assert!(restore.restore);
+        assert_eq!(power.coast, [1.0, 0.0, 0.0]);
+        let coasting = power.control(0, 2001, &view, &mut body);
+        assert_eq!(coasting.velocity, Some([6.0 * share, 0.0, 0.0]));
+        assert!(coasting.hold && !coasting.restore);
+        let restore = power.control(0, 2002, &view, &mut body);
+        assert!(restore.restore && restore.hold);
         assert_eq!(power.state, super::super::ENDING);
-
-        let mut ending = Throw::new(1.0);
-        ending.held = 0.1;
+        assert_eq!(power.control(0, 2003, &view, &mut body).result, 2);
+        // A throw holds no reserve: ending leaves it untouched.
         body.reserved = 0.1;
-        let end = ending.control(2, 0, false, &mut body);
+        let mut ending = Throw::new(0.1);
+        let end = ending.control(2, 0, &view, &mut body);
         assert_eq!(end.result, 2);
         assert!(end.restore);
+        assert_eq!(body.reserved, 0.1);
+        // A drop near the caster's point ends the throw on that tick.
+        let mut short = Throw::new(0.1);
+        let beside = ThrowView {
+            caster_point: [0.0, 50.0, 50.0],
+            ..view
+        };
+        short.control(0, 0, &beside, &mut body);
+        short.control(0, 801, &beside, &mut body);
+        assert_eq!(short.state, super::super::ENDING);
+        assert_eq!(short.phase, THROW_DONE);
     }
 }
