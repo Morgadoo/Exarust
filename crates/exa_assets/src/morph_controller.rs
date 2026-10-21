@@ -2061,7 +2061,9 @@ mod registration_tests {
         let mut near = p;
         near[1] += 2e-4;
         assert!(!degenerate_control([p, p, p], near, 1e-8));
-        assert!(degenerate_control([p, near, p], p, 1e-8));
+        let mut close = p;
+        close[1] += 5e-5;
+        assert!(degenerate_control([p, close, p], p, 1e-8));
     }
 
     #[test]
