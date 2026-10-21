@@ -10,7 +10,7 @@
 use exa_ui::{LoadoutEditor, LoadoutItem, LoadoutMode, points_used};
 
 use crate::arena;
-use crate::career::Member;
+use crate::career::{Company, Member};
 
 /// The ranks a fighter has loadouts for.
 pub const RANKS: usize = 6;
@@ -65,6 +65,21 @@ pub fn editor_for(
     }
 }
 
+/// The editor for a company roster member, with the shop's shelf as the
+/// arsenal.
+pub fn editor_for_company(
+    company: &Company,
+    member: usize,
+    rank: usize,
+    mode: LoadoutMode,
+    facts: &impl Fn(u32) -> Option<LoadoutItem>,
+) -> Option<LoadoutEditor> {
+    let roster_member = company.roster.get(member)?;
+    let mut editor = editor_for(roster_member, rank, mode, facts);
+    editor.arsenal = company.stock.iter().filter_map(|&id| facts(id)).collect();
+    Some(editor)
+}
+
 /// Writes the editor's lists back into the member's rank.
 pub fn save_to(member: &mut Member, editor: &LoadoutEditor) {
     let rank = editor.rank.min(RANKS - 1);
@@ -111,6 +126,17 @@ mod tests {
         assert_eq!(member.loadouts[0].cost(&facts), 7);
         // Out-of-range ranks clamp.
         assert_eq!(editor_for(&member, 9, LoadoutMode::Arena, &facts).rank, 5);
+    }
+
+    #[test]
+    fn the_company_shelf_is_the_arsenal() {
+        let mut company = Company::new("Ash");
+        company.hire("Bran", Profession::Combatant).unwrap();
+        company.stock = vec![1, 2, 99];
+        let editor = editor_for_company(&company, 0, 0, LoadoutMode::Arena, &facts).unwrap();
+        assert_eq!(editor.arsenal.len(), 2);
+        assert_eq!(editor.arsenal[0].id, 1);
+        assert!(editor_for_company(&company, 3, 0, LoadoutMode::Arena, &facts).is_none());
     }
 
     #[test]

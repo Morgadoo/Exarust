@@ -7,7 +7,7 @@
 //! was not read.
 //!
 //! Evidence: the name compare, the two picture loaders, and the four bytes
-//! stored with that name.
+//! stored with that name. The editor itself is [`exa_ui::EmblemEditor`].
 
 /// Which picture an index names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,9 +50,36 @@ pub fn emblem_texture(kind: EmblemKind, index: u32) -> String {
     format!("{stem}0{}{}", tens as char, ones as char)
 }
 
+/// The editor on a company's emblem.
+pub fn editor_for(company: &crate::career::Company) -> exa_ui::EmblemEditor {
+    let mut editor = exa_ui::EmblemEditor::new();
+    editor.set_record(company.emblem);
+    editor
+}
+
+/// Saves an editor's emblem back to the company.
+pub fn save_to(company: &mut crate::career::Company, editor: &exa_ui::EmblemEditor) {
+    company.emblem = editor.record();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_company_emblem_round_trips_through_the_editor() {
+        let mut company = crate::career::Company::new("Ash");
+        let mut editor = editor_for(&company);
+        assert_eq!(editor.record(), exa_ui::EmblemRecord::default());
+        editor.record.background = 49;
+        editor.record.design = 79;
+        editor.record.layers = exa_ui::emblem_form::MIRROR_X;
+        save_to(&mut company, &editor);
+        assert_eq!(company.emblem.background, 49);
+        assert_eq!(company.emblem.design, 79);
+        assert_eq!(company.emblem.layers, 0x10);
+        assert_eq!(editor_for(&company).record().design, 79);
+    }
 
     #[test]
     fn klean_selects_background_52_and_design_81() {

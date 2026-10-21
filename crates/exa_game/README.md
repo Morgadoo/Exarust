@@ -235,6 +235,24 @@ the kinesis pick; the cursor's aim plane and reach use them, and the
 physics world answers as the mesh callback because Exarust keeps no CPU
 triangles.
 
+The arena's per-rank kits are in (`loadout`): `Member::loadouts` holds six
+kits of weapon and armour item ids and their counted points; the editor
+takes the rank's kit, the tier's point limit (`arena::point_limit` of the
+member's skill total through `loadout_tier`) and the shop's shelf as its
+arsenal, and saving writes the ids back. The technique selector's bridge
+(`techniques`) copies a member's six skill experience words and six
+technique slots into the selector's training and back, with the member's
+`xp` as the unspent pool and 5 000 a level. The company emblem is a
+`exa_ui::EmblemRecord` on `Company`; `emblem::editor_for` and
+`emblem::save_to` open and close it. The teleporter's destination screen
+(`destination`) keeps the open `exa_ui::DestinationScreen`, hit-tests
+`PortalInput`, hovers and closes it, spawns the existing bubble as a
+child of the traveller, and after the bubble's end sends `TravelToLevel`
+with the row's level id and the save request. The screen's own drawing,
+the bubble's GI light values (not in the pack), the world-space place of
+the bubble (98 pixels above the clicked form) and the session's level
+change are not in.
+
 ## Scope
 
 - App states (boot → menu → loading → in-game).

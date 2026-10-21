@@ -307,6 +307,62 @@ pub fn refresh_tree(training: &TechniqueTraining) -> TechniqueTree {
     TechniqueTree { skills, total }
 }
 
+/// One row control of the selector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectorRow {
+    /// The control's id, one through eight.
+    pub id: i32,
+    /// The row's style word: 0x10 for a row the group table marks empty.
+    pub style: u32,
+}
+
+/// The selector's form and its eight row controls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectorLayout {
+    pub width: i32,
+    pub height: i32,
+    pub flags: u32,
+    pub style: u32,
+    pub rows: [SelectorRow; ROWS],
+}
+
+/// The constructor's layout for a skill group. The group's table marks
+/// each row's empty bit (`0x10`). The form's flags are the original's
+/// 0x21060, its style word 0x14c × 0x70 with 0x10 and 0x79 clear.
+pub fn layout(group: usize, empty_rows: [bool; ROWS]) -> SelectorLayout {
+    let _ = group;
+    SelectorLayout {
+        width: FORM_WIDTH,
+        height: FORM_HEIGHT,
+        flags: 0x21060,
+        style: 0x10,
+        rows: std::array::from_fn(|row| SelectorRow {
+            id: row as i32 + 1,
+            style: if empty_rows[row] { 0x10 } else { 0 },
+        }),
+    }
+}
+
+/// The forget entry: the original's code pointer sets the owner's mode word
+/// to two and the renderer's style words to 0x110, 0 and 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ForgetMode {
+    pub mode: i32,
+    pub style: u32,
+    pub second: u32,
+    pub third: u32,
+}
+
+/// Enters the confirmation for forgetting a technique.
+pub fn enter_forget() -> ForgetMode {
+    ForgetMode {
+        mode: 2,
+        style: 0x110,
+        second: 0,
+        third: 0,
+    }
+}
+
 /// Where the name and description go, in pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TechniqueText {
@@ -604,6 +660,27 @@ mod tests {
         );
         assert_eq!(draw_order(0, 9).len(), 2);
         assert_eq!(CONFIRM_TEXT.len(), 47);
+    }
+
+    #[test]
+    fn the_layout_and_the_forget_mode_are_pinned() {
+        let layout = layout(2, [false, false, true, true, true, true, true, true]);
+        assert_eq!(layout.width, 332);
+        assert_eq!(layout.height, 112);
+        assert_eq!(layout.flags, 0x21060);
+        assert_eq!(layout.rows[0].id, 1);
+        assert_eq!(layout.rows[0].style, 0);
+        assert_eq!(layout.rows[2].style, 0x10);
+        assert_eq!(layout.rows[7].id, 8);
+        assert_eq!(
+            enter_forget(),
+            ForgetMode {
+                mode: 2,
+                style: 0x110,
+                second: 0,
+                third: 0
+            }
+        );
     }
 
     #[test]

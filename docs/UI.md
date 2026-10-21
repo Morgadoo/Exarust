@@ -511,6 +511,46 @@ The original's own forms and controls that Exarust rebuilds, with the
   choice) are plain functions in the game crate with tests pinned to
   concrete numbers. The form itself, its model preview, sound playback and
   the power tree are not drawn yet.
+- **Match board** (`exa_ui::match_board`): the 379-byte `0x100195c00` and
+  the 121-byte `0x100195d80`.
+- **Skill screen** (`exa_ui::skill`): `TSkillUI`'s 186-byte node placement.
+- **Technique selector** (`exa_ui::technique_selector`): one skill's
+  eight-row technique list, 332 × 112 pixels; a level is 5 000
+  experience; an assignment moves at most a level from the unspent pool
+  (the weighted rule divides by `4 + Σ level` and caps at a level);
+  forgetting returns `level · 5 000 − spent` capped by the pool; words 9
+  and 10 mean "forget" and the confirmation text is 47 bytes.
+- **Compact skill screen** (`exa_ui::compact_skill`): the short tree
+  character creation shows, eleven units a column; rows are 30 units on a
+  four-skill tree, else 22 on a wide interface and 24 on a narrow one;
+  the margin is 4 units plus 6 for a shown title and plus 5 for the
+  compact flag on a narrow interface; a cell hit is strictly within five
+  units; the wheel picks the row nearest the pointer, then one column.
+- **Arena loadout** (`exa_ui::loadout`, `exa_game::loadout`): the 1024 ×
+  768 editor for one fighter's kit at one rank, the arsenal swap of the
+  form's own item category, the two-handed off-hand rule, the point limit
+  and the rank's per-rank kit (`Member::loadouts`). The form's opacity is
+  0.83739835 on a wide interface; the preview's encumbrance is
+  `strength² × 10`. The original's per-rank record is 0x30 bytes; Exarust
+  keeps the item ids, so the record layout is our reading (guess).
+- **Divination cards** (`exa_ui::div_card`): three distinct cards out of
+  the twenty-two on `divcardsa1.rfi` (a 6 × 4 sheet, first card at cell
+  2), dealt over 600 ms each, flipped over 900 ms each, held from 4.5 s,
+  with a one-second fade to alpha 128 and `PprMov` at each step.
+- **Company emblem** (`exa_ui::emblem_form`, `exa_game::emblem`): the
+  background (1…50) and design (1…80) layers, the two mirror bits, four
+  palette colours and the randomiser (a 32-bit multiply-add generator,
+  four records of history), previewed by the recorded four-texture
+  shader.
+- **Destination screen** (`exa_ui::selection`, `exa_game::destination`):
+  the teleporter's four (or one) reachable levels laid on a ring of 40
+  units, the 500 ms reveal and 256 ms close, hover's 200 ms flash, the
+  14-unit hit, the click that starts the journey's bubble and the travel
+  that follows it. The row fill is the original's: the first entry takes
+  row 1, later entries rows 2…, and row 0 takes the last entry once the
+  other rows are taken; the shipped 7, 10, 12, 13 show as 13, 7, 10, 12.
+  `exa_game::destination` spawns the existing bubble and sends
+  `TravelToLevel`; the level change and the save are the session's.
 
 When the GUI unit changes, every form rescales from the old unit to the
 new (`exa_ui::gui_rescale`): lengths are divided by the old unit, then

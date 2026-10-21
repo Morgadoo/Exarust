@@ -60,6 +60,38 @@ pub const MASK_INSET_X: f32 = 0.000_347_222_23;
 pub const MASK_TOP: f32 = 0.999_687_5;
 pub const MASK_BOTTOM: f32 = 0.750_312_5;
 
+/// The form's style and flag words.
+pub const FORM_STYLE: u32 = 0xf_8800;
+pub const FORM_FLAGS: u32 = 0x8_1000;
+/// The paper shader's program slot.
+pub const SHADER_PROGRAM: u32 = 0x35;
+/// The card quad shader's texture unit.
+pub const CARD_TEXTURE_UNIT: u32 = 0;
+/// The reading's two shaders.
+pub const CARD_VERTEX_SHADER: &str = "in vec3 vPos;\r\nin vec2 vTex;\r\nin vec2 vTx2;\r\nin vec4 vCol;\r\nout vec2 vrTex;\r\nout vec2 vrTx2;\r\nout vec4 vrCol;\r\nuniform mat4 MPrj;\r\nuniform mat4 MObj;\r\nvoid main() {\r\ngl_Position = MPrj * vec4(vPos,1.0);\r\nvrTex = vTex;\r\nvrTx2 = vTx2;\r\nvrCol = vCol * 0.003921568;\r\n}";
+pub const CARD_FRAGMENT_SHADER: &str = "in vec2 vrTex;\r\nin vec2 vrTx2;\r\nin vec4 vrCol;\r\nout vec4 FragColor;\r\nuniform vec4 par0;\r\nuniform sampler2D Tex0;\r\nvoid main() {\r\nvec3 c = texture(Tex0, vrTex).rgb;\r\nc = c * (0.2 + abs(par0.z) * 0.8);\r\nFragColor.rgb = vrCol.rgb * c;\r\nfloat a = texture(Tex0, vrTx2).g;\r\nFragColor.a = vrCol.a * vrCol.a * a;\r\n}";
+
+/// A reading that has just been opened: its three cards, its material and
+/// the moment it starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reading {
+    pub cards: [u32; 3],
+    pub sheet: &'static str,
+    pub sound: &'static str,
+    pub start_ms: u32,
+}
+
+/// Opens a reading: three distinct cards, the sheet and sound, starting at
+/// `now`.
+pub fn open(now: u32, random: &mut impl FnMut(u32) -> u32) -> Reading {
+    Reading {
+        cards: deal_cards(random),
+        sheet: SHEET,
+        sound: SOUND,
+        start_ms: now,
+    }
+}
+
 /// The reading's phase.
 pub mod phase {
     /// The deal.
@@ -369,6 +401,20 @@ mod tests {
         assert_eq!(SHEET, "divcardsa1.rfi");
         assert_eq!(ICON_SHEET, "thmmndico1.rfi");
         assert_eq!(SOUND, "PprMov");
+    }
+
+    #[test]
+    fn opening_loads_the_sheet_the_sound_and_three_cards() {
+        let mut draws = [0u32, 1, 2].into_iter();
+        let reading = open(500, &mut |_| draws.next().unwrap());
+        assert_eq!(reading.cards, [0, 1, 2]);
+        assert_eq!(reading.sheet, "divcardsa1.rfi");
+        assert_eq!(reading.sound, "PprMov");
+        assert_eq!(reading.start_ms, 500);
+        assert_eq!(FORM_STYLE, 0xf_8800);
+        assert_eq!(FORM_FLAGS, 0x8_1000);
+        assert!(CARD_FRAGMENT_SHADER.contains("uniform sampler2D Tex0;"));
+        assert!(CARD_VERTEX_SHADER.contains("uniform mat4 MObj;"));
     }
 
     #[test]

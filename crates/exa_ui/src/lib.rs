@@ -174,7 +174,8 @@ pub use technique_selector::{
     ASSIGNED, BASE_WORD, CONFIRM_TEXT, FORGET_WORDS, LEVEL_XP, ROWS, RowKind, SLOTS, SelectorDraw,
     SelectorKey, SkillRows, SkillTraining, TechniqueChange, TechniqueRow, TechniqueSelector,
     TechniqueText, TechniqueTraining, TechniqueTree, assign_technique, clamp_index, close_pick,
-    draw_order as technique_draw_order, refresh_tree, selector_key, text_places,
+    draw_order as technique_draw_order, enter_forget, layout as technique_layout, refresh_tree,
+    selector_key, text_places,
 };
 
 pub struct UiPlugin;

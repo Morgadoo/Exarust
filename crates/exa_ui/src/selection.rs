@@ -12,6 +12,47 @@
 
 use bevy::prelude::Resource;
 
+/// The word the form's class returns (the small no-op accessor 0x100272860).
+pub const FORM_RETURN: i32 = 4;
+/// The symbol shader's source, copied from the retail image.
+pub const SYMBOL_SHADER: &str = "in vec2 vrTex;\r\nout vec4 FragColor;\r\nuniform vec4 Colour;\r\nuniform vec4 TexPos;\r\nuniform vec2 TexOfs;\r\nuniform sampler2D Tex;\r\nvoid main() {\r\nvec2 a = vrTex - vec2(0.5);\r\nfloat b = min(dot(a,a) * 4.0, 1.0);\r\nb = b * b;b = 1.0 - b * b;b = b * b;float c = dot(a,a);c = abs(c*128-25);c = c * c;c = max(1.0 - c, 0.0);float d = min(dot(a,a) * 4.0, 1.0);\r\nd = clamp((0.6-d) * 16, 0.0, 1.0);a = vrTex * TexPos.xy * 1.3 + TexPos.zw - TexPos.xy * 0.15;a = a + TexOfs * 0.1;d = d * (1.0 - dot(TexOfs, TexOfs) * 30);c = c + texture(Tex, a).a * 0.6 * d;FragColor.rgb = Colour.rgb * c;\r\nFragColor.a = b * Colour.a;\r\n}";
+/// The symbol shader's uniform names.
+pub const SYMBOL_UNIFORMS: [&str; 3] = ["Colour", "TexPos", "TexOfs"];
+
+/// The screen's form metrics.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScreenLayout {
+    /// The parent's width and height.
+    pub width: i32,
+    pub height: i32,
+    pub flags: u32,
+    pub style: u32,
+    /// The ring's radius in units.
+    pub orbit: f32,
+}
+
+/// The form's layout: it fills its parent, with flags 0x1010 when the
+/// parent is given and 0x10 when the screen itself is the parent.
+pub fn layout(width: i32, height: i32, has_parent: bool) -> ScreenLayout {
+    ScreenLayout {
+        width,
+        height,
+        flags: if has_parent { 0x1010 } else { 0x10 },
+        style: 0x800,
+        orbit: RING_RADIUS_UNITS,
+    }
+}
+
+/// A destination marker word: the high bit selects the object record; the
+/// low 30 bits are its index. Returns the level id when the bit is set.
+pub fn mark_destination(word: u32) -> Option<u32> {
+    if word & 0x8000_0000 != 0 {
+        Some(word & 0x3fff_ffff)
+    } else {
+        None
+    }
+}
+
 /// The symbol atlas the screen draws.
 pub const SCREEN_ATLAS: &str = "prtlsmbla.rfi";
 /// The reveal takes this long (ms).
@@ -561,6 +602,22 @@ mod tests {
         assert_eq!(fill_rows(&[7, 10, 12, 13], 0), Vec::<usize>::new());
         // A fifth entry is not looked at.
         assert_eq!(fill_rows(&[7, 10, 12, 13, 14], 4), [3, 0, 1, 2]);
+    }
+
+    #[test]
+    fn the_form_metrics_and_the_marker_word_are_pinned() {
+        let metrics = layout(800, 600, true);
+        assert_eq!(metrics.width, 800);
+        assert_eq!(metrics.height, 600);
+        assert_eq!(metrics.flags, 0x1010);
+        assert_eq!(metrics.style, 0x800);
+        assert_eq!(metrics.orbit, 40.0);
+        assert_eq!(layout(800, 600, false).flags, 0x10);
+        assert_eq!(mark_destination(0x8000_0007), Some(7));
+        assert_eq!(mark_destination(0x8000_0000), Some(0));
+        assert_eq!(mark_destination(7), None);
+        assert_eq!(FORM_RETURN, 4);
+        assert!(SYMBOL_SHADER.contains("uniform sampler2D Tex;"));
     }
 
     #[test]

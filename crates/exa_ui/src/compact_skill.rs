@@ -212,6 +212,30 @@ pub fn lay_out_pips(x: i32, y: i32, unit: i32, experience: u16) -> Vec<Pip> {
     pips
 }
 
+/// The extra header cell's position: `78` units across and `9` units plus
+/// one row spacing down (the original's vmt-slot helper).
+pub fn header_cell(unit: i32, spacing: i32, row: i32) -> (f32, f32) {
+    (
+        (78 * unit) as f32,
+        ((9 + spacing * (row - 1)) * unit) as f32,
+    )
+}
+
+/// A technique node's place in its row: two units in, eleven units a column,
+/// and 4.6 units below the row's top.
+pub fn node_place(x: i32, y: i32, unit: i32, column: i32) -> (f32, f32) {
+    (
+        (x + 2 * unit + 11 * unit * column) as f32,
+        (y as f64 + f64::from(unit) * 4.6).round_ties_even() as f32,
+    )
+}
+
+/// Whether the screen's hover word picks this row and column (both
+/// 1-based).
+pub fn node_hovered(selected: i32, row: usize, column: i32) -> bool {
+    selected >> 8 & 0xff == row as i32 + 1 && selected & 0xff == column + 1
+}
+
 /// The levels a skill's technique row shows: every learned level plus, when
 /// the skill's level slot is filled or the "extra" flag is set, one more.
 /// Returns the number of slots to draw and whether the last one is the
@@ -931,6 +955,17 @@ mod tests {
         // No rows give no answer.
         let mut amount = [0.0, 1.0];
         assert!(wheel(metrics, 4, &[], 0, &mut x, &mut y, &mut amount).is_none());
+    }
+
+    #[test]
+    fn the_header_and_nodes_sit_where_the_slots_place_them() {
+        assert_eq!(header_cell(4, 30, 1), (312.0, 36.0));
+        assert_eq!(header_cell(4, 30, 3), (312.0, 276.0));
+        assert_eq!(node_place(8, 82, 4, 0), (16.0, 100.0));
+        assert_eq!(node_place(8, 82, 4, 2), (104.0, 100.0));
+        assert!(node_hovered(0x0203, 1, 2));
+        assert!(!node_hovered(0x0203, 1, 1));
+        assert!(!node_hovered(0, 0, 0));
     }
 
     #[test]

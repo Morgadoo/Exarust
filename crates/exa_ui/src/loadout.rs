@@ -237,6 +237,65 @@ pub fn opacity(wide: bool) -> f32 {
     if wide { FORM_OPACITY } else { 1.0 }
 }
 
+/// The dark ink the form's backdrop quad is filled with (`0xFF000000`).
+pub const BACKDROP_INK: u32 = 0xFF00_0000;
+
+/// The paint's steps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadoutDraw {
+    /// The form's full-area backdrop quad in [`BACKDROP_INK`].
+    Backdrop,
+    /// The arsenal container.
+    Arsenal,
+    /// The equipment container.
+    Equipment,
+    /// The character preview.
+    Preview,
+}
+
+/// The paint's order: the backdrop, the arsenal, the equipment and the
+/// preview, then the base form.
+pub fn draw_order() -> [LoadoutDraw; 4] {
+    [
+        LoadoutDraw::Backdrop,
+        LoadoutDraw::Arsenal,
+        LoadoutDraw::Equipment,
+        LoadoutDraw::Preview,
+    ]
+}
+
+/// The container flags a drag sets: 0x200 for match mode, 0x400 otherwise.
+pub fn drag_flags(mode: LoadoutMode) -> u32 {
+    match mode {
+        LoadoutMode::Match => 0x200,
+        _ => 0x400,
+    }
+}
+
+/// Whether a drop from the preview is allowed: an item whose flags share
+/// the form's mask is refused in the arena, and every item is refused in
+/// champion mode.
+pub fn drop_allowed(editor: &LoadoutEditor, item: &LoadoutItem) -> bool {
+    if editor.mode == LoadoutMode::Champion {
+        return false;
+    }
+    item.flags & editor.mask == 0
+}
+
+/// The match-mode close: a mode-2 release with a key other than 8 takes the
+/// last item off the weapon list.
+pub fn release_for_key(editor: &mut LoadoutEditor, key: i32) -> bool {
+    if editor.mode != LoadoutMode::Match || key == 8 {
+        return false;
+    }
+    if editor.weapons.pop().is_some() {
+        editor.points = points_used(&editor.weapons, &editor.armour);
+        true
+    } else {
+        false
+    }
+}
+
 /// The equipment points the lists use. A two-handed weapon counts once; the
 /// off hand's copy is not added.
 pub fn points_used(weapons: &[LoadoutItem], armour: &[LoadoutItem]) -> i32 {
@@ -624,6 +683,42 @@ mod tests {
         assert!(result.clear_pointer);
         assert!(!result.refresh);
         assert!(editor.weapons.is_empty());
+    }
+
+    #[test]
+    fn the_paint_and_drag_flags_are_pinned() {
+        assert_eq!(
+            draw_order(),
+            [
+                LoadoutDraw::Backdrop,
+                LoadoutDraw::Arsenal,
+                LoadoutDraw::Equipment,
+                LoadoutDraw::Preview
+            ]
+        );
+        assert_eq!(BACKDROP_INK, 0xFF00_0000);
+        assert_eq!(drag_flags(LoadoutMode::Match), 0x200);
+        assert_eq!(drag_flags(LoadoutMode::Arena), 0x400);
+        let mut editor = editor();
+        let mut carved = item(1, 2, 0);
+        carved.flags = SWAP_MASK;
+        assert!(!drop_allowed(&editor, &carved));
+        assert!(drop_allowed(&editor, &item(2, 2, 0)));
+        editor.mode = LoadoutMode::Champion;
+        assert!(!drop_allowed(&editor, &item(2, 2, 0)));
+    }
+
+    #[test]
+    fn a_match_release_takes_the_last_weapon() {
+        let mut editor = editor();
+        editor.mode = LoadoutMode::Match;
+        editor.weapons = vec![item(1, 2, 0), item(2, 3, 0)];
+        assert!(release_for_key(&mut editor, 1));
+        assert_eq!(editor.weapons.len(), 1);
+        assert_eq!(editor.points, 2);
+        assert!(!release_for_key(&mut editor, 8));
+        editor.mode = LoadoutMode::Arena;
+        assert!(!release_for_key(&mut editor, 1));
     }
 
     #[test]

@@ -213,6 +213,15 @@ impl EmblemRandom {
     }
 }
 
+/// The preview's inputs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EmblemPreview {
+    pub textures: [String; 4],
+    pub colours: [[f32; 3]; 4],
+    pub mirror: [f32; 2],
+    pub alpha: f32,
+}
+
 /// The emblem editor.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EmblemEditor {
@@ -259,6 +268,42 @@ impl EmblemEditor {
         selection
     }
 
+    /// The record the form shows.
+    pub fn record(&self) -> EmblemRecord {
+        self.record
+    }
+
+    /// Replaces the record, as the emblems panel's setter does, and
+    /// re-applies it.
+    pub fn set_record(&mut self, record: EmblemRecord) {
+        self.record = record;
+    }
+
+    /// Takes the renderer's four colour words into the record (the
+    /// panel's getter).
+    pub fn set_renderer_colours(&mut self, colours: [u32; 4]) {
+        self.record.colours = colours;
+    }
+
+    /// The mirror switches the apply step lights.
+    pub fn mirror_switches(&self) -> MirrorSwitches {
+        MirrorSwitches {
+            x: self.record.layers & MIRROR_X != 0,
+            y: self.record.layers & MIRROR_Y != 0,
+        }
+    }
+
+    /// The preview's state: its four textures, four colours, the mirror on
+    /// each axis and the alpha.
+    pub fn preview(&self, palette: impl Fn(u8) -> [u8; 3]) -> EmblemPreview {
+        EmblemPreview {
+            textures: preview_textures(&self.record),
+            colours: preview_colours(&self.record, palette),
+            mirror: self.record.mirror(),
+            alpha: PREVIEW_ALPHA,
+        }
+    }
+
     /// Rolls every value: two palette indices, the derived three and four,
     /// the two mirrors, the background and the design, in that order.
     pub fn randomise(&mut self, random: &mut EmblemRandom) {
@@ -299,6 +344,39 @@ impl EmblemEditor {
         record.design = random.high(DESIGN_MAX as u32) + 1;
         self.record = record;
     }
+}
+
+/// The preview's bound textures in unit order: the background, the design,
+/// `emblemtexbs` and `emblemtexra` (the original binds Tex2 from the fourth
+/// pointer and Tex3 from the third).
+pub fn preview_textures(record: &EmblemRecord) -> [String; 4] {
+    [
+        record.background_texture(),
+        record.design_texture(),
+        TEX_B.to_string(),
+        TEX_A.to_string(),
+    ]
+}
+
+/// The four colours the preview uploads: the record's RGBA dwords looked up
+/// through the palette and scaled by 0.8.
+pub fn preview_colours(record: &EmblemRecord, palette: impl Fn(u8) -> [u8; 3]) -> [[f32; 3]; 4] {
+    std::array::from_fn(|i| {
+        let rgb = palette(record.palette(i));
+        [
+            f32::from(rgb[0]) / 255.0 * 0.8,
+            f32::from(rgb[1]) / 255.0 * 0.8,
+            f32::from(rgb[2]) / 255.0 * 0.8,
+        ]
+    })
+}
+
+/// The two mirror switches the apply step lights: the first on bit 0x10,
+/// the second on bit 0x100.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MirrorSwitches {
+    pub x: bool,
+    pub y: bool,
 }
 
 /// The four draw order steps of the form's paint: the frame, the emblem
@@ -443,6 +521,41 @@ mod tests {
         assert_eq!(PREVIEW_UNITS, 64);
         assert_eq!(FORM_WIDTH, 616);
         assert_eq!(FORM_HEIGHT, 600);
+    }
+
+    #[test]
+    fn the_preview_binds_four_textures_and_scales_the_colours() {
+        let mut editor = EmblemEditor::new();
+        editor.record.background = 52;
+        editor.record.design = 81;
+        editor.record.layers = MIRROR_X;
+        editor.record.colours = [
+            u32::from_le_bytes([255, 0, 0, 1]),
+            u32::from_le_bytes([0, 255, 0, 2]),
+            u32::from_le_bytes([0, 0, 255, 3]),
+            u32::from_le_bytes([255, 255, 255, 4]),
+        ];
+        let palette = |index: u8| match index {
+            1 => [10, 20, 30],
+            2 => [40, 50, 60],
+            3 => [70, 80, 90],
+            _ => [100, 110, 120],
+        };
+        let preview = editor.preview(palette);
+        assert_eq!(preview.textures[0], "emblembkg052");
+        assert_eq!(preview.textures[1], "emblemdes081");
+        assert_eq!(preview.textures[2], "emblemtexbs");
+        assert_eq!(preview.textures[3], "emblemtexra");
+        assert_eq!(preview.mirror, [-1.0, 1.0]);
+        assert_eq!(preview.alpha, 1.0);
+        assert!((preview.colours[0][0] - 10.0 / 255.0 * 0.8).abs() < 1e-6);
+        assert!((preview.colours[3][2] - 120.0 / 255.0 * 0.8).abs() < 1e-6);
+        assert_eq!(
+            editor.mirror_switches(),
+            MirrorSwitches { x: true, y: false }
+        );
+        editor.set_renderer_colours([7, 8, 9, 10]);
+        assert_eq!(editor.record().colours, [7, 8, 9, 10]);
     }
 
     #[test]
