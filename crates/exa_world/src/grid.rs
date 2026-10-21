@@ -49,40 +49,80 @@ const CELL_CM: f32 = 600.0;
 pub const TRANSPARENT_ALPHA: f32 = 0.01;
 /// The value a fully transparent part writes into the vertex channel.
 pub const TRANSPARENT_MARK: f32 = 0.0;
-/// The extent a set piece's eligible children are subdivided to (cm).
+/// What the added vertex channel holds before any part marks it: every byte
+/// set, which reads as a NaN.
+pub const CHANNEL_UNMARKED: u32 = 0xffff_ffff;
+/// The extent the subdivider is asked to cut an eligible child to (cm).
 pub const SUBDIVIDE_EXTENT: f32 = 20.0;
-/// Piece word: the set piece has been marked (the original's `+8` bit).
-pub const PIECE_MARKED: u32 = 0x1000;
-/// Piece word: the piece is linked to a grid cell (the original's `+0x204`
-/// bit).
-pub const PIECE_GRID_LINKED: u32 = 0x1_0000;
-/// Piece word: the piece is not to be subdivided (the original's `+0xc`
-/// word).
-pub const PIECE_NO_SUBDIVIDE: u32 = 0x1000_0000;
+/// First flag word of a loaded set-model node: set on every node.
+pub const NODE_MARKED: u32 = 0x1000;
+/// Second flag word of a loaded set-model node: set on every node whose name
+/// does not start with the byte 0xE4.
+pub const NODE_EXTRA_MARK: u32 = 0x1000_0000;
+/// The nibble (bits 16 to 19) of a root node's grid word that the load
+/// replaces with 1.
+pub const GRID_WORD_NIBBLE: u32 = 0xf_0000;
 
 /// Whether a material's alpha makes the part fully transparent.
 pub fn marks_transparent(alpha: f32) -> bool {
     alpha < TRANSPARENT_ALPHA
 }
 
-/// Writes the transparent mark into `channel` at `indices`, as the wall-set
-/// loader does for a fully transparent part; false when the part is not
-/// fully transparent.
-pub fn mark_transparent_vertices(alpha: f32, indices: &[u32], channel: &mut [f32]) -> bool {
+/// The added vertex channel for a model of `vertices` vertices, unmarked.
+pub fn unmarked_channel(vertices: usize) -> Vec<f32> {
+    vec![f32::from_bits(CHANNEL_UNMARKED); vertices]
+}
+
+/// Writes the transparent mark into `channel` for a fully transparent part,
+/// as the wall-set loader does: each triangle's three vertex ids go through
+/// `remap` (the model's vertex table) to a channel slot. `triangles` are the
+/// part's triangles (the loader's inclusive first-to-last range). False,
+/// with the channel untouched, when the part is not fully transparent.
+pub fn mark_transparent_triangles(
+    alpha: f32,
+    triangles: &[[u32; 3]],
+    remap: &[u32],
+    channel: &mut [f32],
+) -> bool {
     if !marks_transparent(alpha) {
         return false;
     }
-    for &index in indices {
-        if let Some(v) = channel.get_mut(index as usize) {
-            *v = TRANSPARENT_MARK;
+    for &id in triangles.iter().flatten() {
+        if let Some(slot) = remap
+            .get(id as usize)
+            .and_then(|&slot| channel.get_mut(slot as usize))
+        {
+            *slot = TRANSPARENT_MARK;
         }
     }
     true
 }
 
-/// Whether a set piece child is subdivided: the original skips the `#`, `+`
-/// and `[` children and sends every other child through the subdivider at
-/// 20 cm.
+/// A set-model node's flag words after the load marks it: the first word
+/// always gains [`NODE_MARKED`], the second gains [`NODE_EXTRA_MARK`] unless
+/// the node's name starts with the byte 0xE4.
+pub fn mark_node(first: u32, second: u32, name_first_byte: u8) -> (u32, u32) {
+    let second = if name_first_byte == 0xe4 {
+        second
+    } else {
+        second | NODE_EXTRA_MARK
+    };
+    (first | NODE_MARKED, second)
+}
+
+/// A root node's grid word after the load: when the node is a mesh holder
+/// (kind 0x89) its nibble becomes 1, otherwise it is unchanged.
+pub fn link_grid_word(kind: u32, word: u32) -> u32 {
+    if kind & 0xfff == 0x89 {
+        (word & !GRID_WORD_NIBBLE) | 0x1_0000
+    } else {
+        word
+    }
+}
+
+/// Whether a set piece child is sent through the subdivider (at
+/// [`SUBDIVIDE_EXTENT`]): the `#`, `+` and `[` children are left out. They
+/// are still built; only the cutting skips them.
 pub fn subdivides_piece_child(name: &str) -> bool {
     !matches!(name.as_bytes(), [b'#', ..] | [b'+', ..] | [b'[', ..])
 }
@@ -991,7 +1031,6 @@ fn spawn_piece(
                     shell.occluder.append(uvs.meshes, model, kids, k, at());
                 }
             }
-            [b'#', ..] => {}
             [b'+', b'R', ..] => {
                 strips.ceiling = true;
                 if let Some(shell) = shell.as_deref_mut() {
@@ -1391,11 +1430,38 @@ mod tests {
     fn only_fully_transparent_parts_are_marked() {
         assert!(marks_transparent(0.009));
         assert!(!marks_transparent(0.01));
-        let mut channel = vec![1.0; 6];
-        assert!(mark_transparent_vertices(0.0, &[1, 4], &mut channel));
-        assert_eq!(channel, [1.0, 0.0, 1.0, 1.0, 0.0, 1.0]);
-        assert!(!mark_transparent_vertices(0.5, &[0], &mut channel));
-        assert_eq!(channel[0], 1.0);
+        let mut channel = unmarked_channel(6);
+        assert!(channel[0].is_nan());
+        // Two triangles over vertex ids 0..4; the table sends 0, 1, 2, 3 to
+        // slots 5, 1, 4, 1.
+        let remap = [5, 1, 4, 1];
+        assert!(mark_transparent_triangles(
+            0.0,
+            &[[0, 1, 2], [2, 3, 3]],
+            &remap,
+            &mut channel
+        ));
+        assert_eq!(channel[5], 0.0);
+        assert_eq!(channel[1], 0.0);
+        assert_eq!(channel[4], 0.0);
+        assert!(channel[0].is_nan() && channel[2].is_nan() && channel[3].is_nan());
+        let mut other = unmarked_channel(2);
+        assert!(!mark_transparent_triangles(
+            0.5,
+            &[[0, 0, 0]],
+            &[0],
+            &mut other
+        ));
+        assert!(other[0].is_nan());
+    }
+
+    #[test]
+    fn node_words_follow_the_load_marks() {
+        assert_eq!(mark_node(0x3, 0x4, b'A'), (0x1003, 0x1000_0004));
+        assert_eq!(mark_node(0x3, 0x4, 0xe4), (0x1003, 0x4));
+        // A mesh holder's nibble becomes 1; other bits stay.
+        assert_eq!(link_grid_word(0x2089, 0x00ab_0123), 0x00a1_0123);
+        assert_eq!(link_grid_word(0x7, 0x00ab_0123), 0x00ab_0123);
     }
 
     #[test]
