@@ -401,7 +401,7 @@ pub struct ZoneMarker {
 /// wanted id must have the character within its horizontal radius and no
 /// more than [`ZONE_HEIGHT`] above or below it.
 pub fn zone_match(locale: u32, wanted_locale: i32, zone: i32, markers: &[ZoneMarker]) -> bool {
-    locale as i32 == wanted_locale && zone_marker_matches(zone, markers)
+    same_id(locale, wanted_locale) && zone_marker_matches(zone, markers)
 }
 
 /// The marker part of `InZone` (the locale is checked before this): some
@@ -410,10 +410,16 @@ pub fn zone_match(locale: u32, wanted_locale: i32, zone: i32, markers: &[ZoneMar
 pub fn zone_marker_matches(zone: i32, markers: &[ZoneMarker]) -> bool {
     markers.iter().any(|m| {
         m.kind == ZONE_MARKER_TYPE
-            && m.id as i32 == zone
+            && same_id(m.id, zone)
             && m.horizontal_sq <= m.radius * m.radius
             && m.vertical <= ZONE_HEIGHT
     })
+}
+
+/// The original compares an unsigned id with a script integer in 64 bits:
+/// a negative argument never matches.
+fn same_id(id: u32, arg: i32) -> bool {
+    i64::from(id) == i64::from(arg)
 }
 
 /// `Trust` and `Concern` convert with CVTSS2SI in the default rounding
@@ -451,7 +457,7 @@ pub(crate) fn call_actor<H: Host>(
             0
         }
         InZone => {
-            if host.locale() as i32 != interp::arg_int(ctx, text, 0) {
+            if !same_id(host.locale(), interp::arg_int(ctx, text, 0)) {
                 return 0;
             }
             let zone = interp::arg_int(ctx, text, 1);
@@ -486,7 +492,7 @@ pub(crate) fn call_actor<H: Host>(
         }),
         LastEnc => host.last_encounter(ctx.actor),
         SkillTecs => ctx.subject().map_or(0, |a| host.skill_techniques(a)),
-        InLocale => (host.locale() as i32 == interp::arg_int(ctx, text, 0)) as i32,
+        InLocale => same_id(host.locale(), interp::arg_int(ctx, text, 0)) as i32,
         HasRole => {
             let role = interp::arg_id(ctx, text, 0);
             ctx.subject().is_some_and(|a| host.holds_role(a, role)) as i32

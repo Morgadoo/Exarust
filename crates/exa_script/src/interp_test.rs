@@ -493,6 +493,13 @@ fn zone_markers_match_by_locale_radius_height_and_id() {
     assert!(zone_match(2, 2, 9, &[marker]));
     assert!(!zone_match(1, 2, 9, &[marker]), "locale");
     assert!(!zone_match(2, 2, 8, &[marker]), "id");
+    // Ids compare in 64 bits: an all-ones id is not −1.
+    let all_ones = ZoneMarker {
+        id: u32::MAX,
+        ..marker
+    };
+    assert!(!zone_match(2, 2, -1, &[all_ones]), "negative zone");
+    assert!(!zone_match(u32::MAX, -1, 9, &[marker]), "negative locale");
     assert!(
         !zone_match(
             2,
