@@ -355,8 +355,8 @@ pub fn retain_plain_records(records: &mut Vec<[u8; 12]>) {
 /// The arena's duplicate pass over a twelve-byte record list. A plain entry
 /// (both top bits clear) is only stepped over. A special entry (either top
 /// bit set) is compared with the **later** entries: each later entry with
-/// the same first word is removed, lowest position first, and the list
-/// closes the gap after each removal. The special entry itself stays.
+/// the same first word is removed, scanning from the end of the list back
+/// to the special entry, and the list closes the gap after each removal. The special entry itself stays.
 pub fn remove_duplicate_item_ids(records: &mut Vec<[u8; 12]>) {
     let word = |entry: &[u8; 12]| u32::from_le_bytes([entry[0], entry[1], entry[2], entry[3]]);
     let mut index = 0;
