@@ -249,6 +249,13 @@ cell and confirmation. The tournament status line, primary button,
 original's tab switch and label routine. `exa_game`'s `arena_board` fills a
 board from a career and the generated daily board.
 
+The Settings page (`settings`) now also carries its rows' behaviour beside
+the form's records: the row ids and states, the volume's fixed 2/3 opening
+position, the slider steps and labels for the graphics, audio and input
+options, the anti-aliasing row enabled only with super-sampling, the
+checkbox and slider effects (live, draft or session only), the aim-speed row
+and the tab/button actions ([`docs/UI.md`](../../docs/UI.md#settings-options)).
+
 ## Scope
 
 - GUI skin and icon atlases from `Resource.rpk` (`guiskin`, `guitex`, icon sheets).

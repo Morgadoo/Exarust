@@ -94,6 +94,51 @@ Values before the file is read, and what each handler does:
 The defaults are the variables' initial values; the hardware configuration
 may change them after the file is read (not reproduced).
 
+### Hardware configuration settings
+
+The hardware configuration registers these at start; it keeps the values and
+applies the ones the renderer and audio can take. Their handlers were not
+traced, so the effects beyond the settings screen are Exarust's reading (see
+[UI.md](../UI.md), Settings options):
+
+| setting | kind | default | rule |
+|---|---|---|---|
+| `PerfIndex` | fraction | 0 | the GPU benchmark's best rate over 60 |
+| `ShowFPS`, `Music`, `CamFollow`, `LinearRGB`, `SoftwareAudio`, `NoProcMips`, `NoDynamicMips`, `DynamicVBO`, `SwapCopy`, `ForceVBO`, `GILowPrecision` | boolean | `ShowFPS` off, `GILowPrecision` off, the rest on or Exarust's guess (code comments) | kept; `ShowFPS` feeds the readout, `GILowPrecision` is already Exarust's GI format |
+| `ShadowFmt`, `ScreenWidth`, `ScreenHeight`, `InputMode`, `AimSpeed` | integer | 0, 0, 0, 0, 30 | kept; `ScreenWidth`/`ScreenHeight` are the full-screen mode's size, `InputMode` 0 is the keyboard and 51 a controller, `AimSpeed` is the 1-based step `round(100·fraction) + 1` (its inverse is a guess) |
+
+`Volume` (fraction, default 1) and the game's `ShowGameTips` and
+`CheckPoints` (booleans, default on) are read beside them because the
+settings screen's options use them.
+
+### The settings screen's options
+
+The hardware configuration's own defaults, before the file is read: volume
+1.0 (0–1.5), music on, super sampling 0, shading quality 4 (at least 3),
+texture detail 3 (at least 2), texture quality 4 (at least 2), shadow detail
+4 (at least 3), shadow quality 4, hardware antialiasing 0, vertical sync on,
+frame rate off, windowed, tips on, checkpoints on, aim speed 0.29
+(displayed as 30). The slider steps and labels are in
+[UI.md](../UI.md#settings-options).
+
+Apply writes `PerfIndex` (two decimals, trailing zeros kept), `Volume`
+(percent), `Supersample`, `ShadingQuality`, `TextureDetail`,
+`TextureQuality`, `ShadowDetail`, `ShadowQuality`, `HWMultisample`,
+`InputMode` (`0`/`51`), `AimSpeed`, `Fullscreen`, `Music`, `ShowFPS`,
+`ShowGameTips`, `Checkpoints`, `VerticalSync` and `ShowFPS` again, in that
+order, through the settings screen's line rewriter, and writes the file. The
+quality levels, super sampling, hardware antialiasing, vertical sync and
+full screen come from the screen's draft; volume and aim speed are the live
+values; the frame-rate readout, tips, checkpoints and music are the live
+values too (the Music checkbox only mutes the session, so its line keeps the
+startup value).
+
+The GPU benchmark warms up for half a second and takes three half-second
+runs, the best frame count over its whole half-seconds divided by 60. The
+performance index picks the quality levels listed in
+[UI.md](../UI.md#settings-options); its top tier's super sampling comes from
+`√(2304000 / (width·height)) × index`.
+
 ### Hotkey macros (`KeyDef`)
 
 `<shift|ctrl|alt>+<key>: command; command; …`, one per line, up to six

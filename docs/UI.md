@@ -700,3 +700,163 @@ drawn yet: the rules wait for the forms that will show them.
   up to the value less a quarter, then a half dot), a slider, coin groups
   and crystal sockets; a popup opens centred on the cursor, its bottom 8
   units below it.
+
+## Settings options
+
+Behind the Settings page is the hardware configuration unit: the graphics,
+audio and input options, their ranges and defaults, the GPU benchmark, and
+the settings file. The rows and their behaviour are in `exa_ui::settings`;
+the values and pure rules in `exa_formats::hw_config`; the running game's
+wiring in `exa_game::hw_config`; the renderer's side in
+`exa_render::quality`.
+
+### Ranges, defaults and steps
+
+| row | range | default | slider step |
+|---|---|---|---|
+| Audio volume | 0–1.5 (0–150 %) | 1.0 | `f × 1.5` |
+| Music | on/off | on | checkbox |
+| Super sampling | 0, 1, 3, 4 | 0 | `round(3·f)`, one more above 1 |
+| Shading quality | 3–6 | 4 | `round(3·f) + 3` |
+| Texture detail | 2–3 | 3 | `round(f) + 2` |
+| Texture quality | 2–5 | 4 | `round(3·f) + 2` |
+| Shadow detail | 4–5 | 4 | `round(f) + 4` |
+| Shadow quality | 1–4 | 4 | `round(3·f) + 1` |
+| HW antialiasing | 0, 1, 2, 4, 8 samples | 0 | `1 << round(3·f)` |
+| Vertical sync | on/off | on | checkbox |
+| Show framerate | on/off | off | checkbox |
+| Window mode | windowed/full screen | windowed | checkbox |
+| Show gameplay tips | on/off | on | checkbox |
+| Early checkpoints | on/off | on | checkbox |
+| Aim speed | 1–100 shown | 30 (0.29) | `round(99·f) + 1` |
+
+The sliders' labels are the original's, with its leading space: Off, Low,
+Medium, High, Very high, Ultra; Coarse, Low, Medium, High, Very high; Off,
+Coarse, Low, Medium, High, Very high; and Off, 2x, 4x, 8x for the sample
+count. Super sampling has no text at level 2 (the original's second branch
+is missing), and texture detail and shadow detail show only Low and High.
+Rounding is to even, as the processor's conversion does.
+
+A click on a slider goes through the row's step; the value is not clamped to
+the row's range beyond what the step produces. A value the step map cannot
+name keeps its old label (Exarust's [`Scale::text`] returns `None`).
+
+Window: the original's window-mode checkbox is the inverse of its full
+screen flag; setting it and pressing Apply toggles full screen immediately.
+
+### Opening the page
+
+The page opens with the live renderer quality levels, audio volume, music,
+frame-rate readout, window mode, aim speed and controller flag. It resets
+hardware antialiasing to 0, vertical sync, tips and checkpoints to on.
+
+Two quirks are reproduced: the volume slider always opens at 2/3 (the
+original divides the default 1.0 by the maximum 1.5, not the live volume),
+and the Music checkbox only mutes the session — the settings file's line
+keeps the startup music value, so the checkbox is unchecked again after a
+reopen. The volume and aim-speed sliders and the vertical-sync, frame-rate,
+tips, checkpoints and music controls act on the running game at once; the
+super-sampling, shading, texture and shadow sliders change the screen's
+draft until Apply. Hardware antialiasing is disabled while super sampling is
+off, and the super-sampling slider enables or disables it.
+
+The page's show handler runs the GPU benchmark and takes its quality levels
+on every opening outside the Deck, whose fixed preset is super sampling 3,
+shading 5, texture detail 2, texture quality 5, shadow detail 5 and shadow
+quality 3. Exarust has the screen's model and the benchmark, but the form is
+not drawn yet: `HardwareConfig::open` prepares the rows and
+`start_benchmark` runs the same protocol when a screen asks for it.
+
+### Apply, Cancel and Defaults
+
+Apply writes these lines, in this order, into the settings file (the first
+occurrence of each name is replaced, or the line is appended):
+
+`PerfIndex` (two decimals, trailing zeros kept), `Volume` (percent,
+rounded), `Supersample`, `ShadingQuality`, `TextureDetail`,
+`TextureQuality`, `ShadowDetail`, `ShadowQuality`, `HWMultisample`,
+`InputMode` (`0` for the keyboard, `51` for a controller), `AimSpeed`,
+`Fullscreen`, `Music`, `ShowFPS`, `ShowGameTips`, `Checkpoints`,
+`VerticalSync`, and `ShowFPS` again (the original's duplicate).
+
+The renderer options in the file that come from the draft are the two
+sampling levels, the four quality levels, vertical sync and full screen;
+volume, aim speed, the readout, tips and checkpoints are the live values
+because their controls changed the running game already. Apply then pushes
+a changed super sampling, shading, shadow quality and shadow detail into the
+live renderer and rebuilds the original's shader cache; it also saves the
+bindings when their first slot is not zero and toggles full screen when that
+changed. Exarust pushes the same options into `exa_render::quality` and the
+window, and writes the file itself.
+
+Cancel pushes the options the page opened with back and closes it. The
+Defaults button runs the benchmark and takes its levels; the Deck takes the
+preset instead. Both also reset hardware antialiasing, vertical sync, tips
+and checkpoints to their defaults.
+
+### GPU benchmark
+
+The original shows a "Configuration" message, draws sixteen full-screen
+quads into a 1024² RGBA8 target from a 512² texture with a simple textured
+shader, warms up for half a second with four quads a frame, then takes three
+half-second runs of sixteen quads, counting frames. A run's rate is its
+frame count over its whole half-seconds; the best rate divided by 60 is the
+performance index. The warm-up and runs are on the performance counter, with
+vertical sync off.
+
+Exarust measures the same protocol (`exa_formats::hw_config::Benchmark`)
+over the same half-second boundaries and score. Its workload is sixteen
+full-screen sprites through Bevy's sprite pipeline into the same 1024²
+target, not the original's shader: the score is comparable in spirit, not in
+number. The auto-detected quality is:
+
+| performance index | super sampling | shading | texture detail | texture quality | shadow detail | shadow quality |
+|---|---|---|---|---|---|---|
+| under 0.6 | 0 | 3 | 2 | 2 | 4 | 1 |
+| 0.6 to 1 | 0 | 3 | 2 | 2 | 4 | 2 |
+| 1 to 1.5 | 0 | 3 | 2 | 3 | 4 | 2 |
+| 1.5 and up | by display | 5 | 3 | 5 | 5 | 4 |
+
+The top tier's super-sampling level is from
+`√(2304000 / (width·height)) × index`: 0 below 3, 1 below 5, 3 below 10,
+else 4. A `NaN` index counts as "not below" every threshold (the original's
+unordered comparison takes the higher branch), so it lands on level 4.
+
+### What actually takes effect
+
+Exarust applies:
+
+- **Super sampling**: level 0 turns the scene's supersampled target off;
+  any level turns it on. Exarust has only the 4× (2× per axis) level; the
+  levels above zero are not distinguished.
+- **Shadow quality**: the point lights' cube face size and the sun map
+  size. Level 4 (the default) keeps the shipped 512 and 4096; 3 gives 256
+  and 2048, 2 gives 128 and 1024, 1 gives 64 and 512, 5 gives 1024 and 4096.
+  (The exact sizes are a guess; the original's shading path was not
+  traced.)
+- **HW antialiasing**: Bevy MSAA on the scene camera while super sampling
+  is off (1 and 2 are off and 2×, though the original's samples are 0, 1,
+  2, 4 and 8; Bevy has no 1×). Super sampling forces MSAA off, as the
+  original disables the control.
+- **Window mode, size and vertical sync**: the window's mode, its physical
+  size (when windowed and a size was asked for) and its present mode.
+- **Audio**: the master bus gain is the volume and the music switch mutes
+  the music. The original's volume goes to OpenAL rather than to its own
+  master gain, which its code never writes.
+- **Frame-rate readout**, and the tips/checkpoints/window flags as saved
+  options.
+- **Controls**: the binding file's table is read and written; the page's
+  rows show the keys' names; a click starts a rebinding and the next key or
+  mouse button replaces the slot (Escape cancels). The key-name rules are
+  the original's: the mouse flag's fourth, fifth and sixth codes are
+  "Mouse 3/4/5", extended codes are `<code>`, and other codes are the
+  Windows key name in title case. Exarust's own mouse codes 1, 2 and 4 are
+  shown as "Left mouse", "Right mouse" and "Middle mouse".
+
+Not reproduced, for lack of the matching feature: shading quality (Exarust
+has one shader), texture quality and texture detail (no streaming or mip
+selection), shadow detail (no per-detail shadow path), vertex-buffer,
+mipmap, swap-copy and GI-precision switches (the GI is already the
+original's 8-bit low-precision format), the aim-speed scaling, controller
+and Steam Input bindings, the video-device and video-memory readouts, and
+the shader-cache progress screen (Bevy compiles shaders as needed).
