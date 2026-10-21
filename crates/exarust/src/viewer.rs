@@ -1555,7 +1555,12 @@ fn spawn_placed_characters(
                 }),
             ),
             exa_character::hair::Hair {
-                style: c.record.hair_style,
+                // Only a race whose look word has hair grows it.
+                style: if race.is_some_and(|r| r.look & exa_formats::races::LOOK_HAIR != 0) {
+                    c.record.hair_style
+                } else {
+                    0
+                },
                 colour: [
                     c.record.hair_colour[0],
                     c.record.hair_colour[1],
