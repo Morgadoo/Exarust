@@ -5,8 +5,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **49.0% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 43.0% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **50.8% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by function count (zero-byte imported names left out): 45.0% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **44.1%** reproduced.
 
 ## By section
@@ -22,8 +22,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Characters, motion & animation | 506 | 198 | 23 | 42% | 0% | TCharDecomp2, TKFCCatRom3f, SG_CharacterMorph |
 | Combat, weapons & damage | 14 | 3 | 3 | 31% | 0% | RFE_Effects_Blood, TBloodSprays |
 | Items, materials & crafting | 341 | 140 | 40 | 58% | 0% | TCharLoot, TItemRenderer, TPopUpDesc |
-| AI & behaviour | 437 | 206 | 17 | 50% | 0% | TCharViewBehaviour, TObjectEntity, FLXG_Pathfinding |
-| Thaumaturgy & effects | 697 | 296 | 83 | 35% | 0% | RF_Env_Effects, TForceBubbleEffect, SG_Thaumaturgy |
+| AI & behaviour | 437 | 206 | 17 | 53% | 0% | TCharViewBehaviour, TObjectEntity, FLXG_Pathfinding |
+| Thaumaturgy & effects | 697 | 296 | 83 | 48% | 0% | TForceBlastEmissive, TForceBlastGeometry, TForceTorrentGeometry |
 | Audio | 59 | 18 | 4 | 84% | 0% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 64% | 0% | TDialogueChoices, TScriptRole, TGameTips |
 | Game modes, arena & session | 646 | 193 | 23 | 44% | 0% | TCharCreation, XA_Arena save and rank helpers (TMatchBoard by address), TShopWindow |
@@ -40,7 +40,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 - **Combat, weapons & damage.** Holds only the blood visuals of combat: a spray jet at each bleeding wound and a stain that creeps down the weapon with the red damage it deals. Exarust has none of it. The combat maths lives in the body, limb, AI and item owners and is rated as 24 combat rules: 27% reproduced, mainly damage, health, armour layers, daze and weapon stats; recoil, grips, shields and positioning are missing.
 - **Items, materials & crafting.** Builds weapons from .fty recipes (seeded part, deform and material rolls, stats), rolls item quality, condition and dyes, paints item and apparel textures from 25 materials, and runs equipping and the inventory, loot and container windows with icons and item cards. Exarust builds factory weapons with stats and paints cloth, leather and steel; other materials, equipping and item UI are missing.
 - **AI & behaviour.** Decides what characters do: player input and steering, the NPC brain (personality, idle activities from roles, hostility and morale, fight or flee, attack choice), roles and relations, companion scavenging, a grid A* pathfinder and the AI manager. Exarust has part of the player's steering and footwork and a placeholder duellist with invented rules; NPC behaviour and pathfinding are missing.
-- **Thaumaturgy & effects.** Runs thaumaturgy: per-body powers and focus, the power tree and quick bar, AI casting, and the Mind, Force, Energy and Displacement powers, each a render node, simulation, GI light and AI-visible entity. It also holds shared effects: particle fire, torch and burning-item flames, electric arcs, teleport visuals, portals, rain. Exarust has only the small fire's particles and light, and no powers.
+- **Thaumaturgy & effects.** Runs thaumaturgy: per-body powers and focus, the power tree and quick bar, AI casting, and the Mind, Force, Energy and Displacement powers, each a render node, simulation, GI light and AI-visible entity. It also holds shared effects: particle fire, torch and burning-item flames, electric arcs, teleport visuals, portals, rain. Exarust has the casts' gates and prices, the active power classes and the force and…
 - **Audio.** An OpenAL Soft front end: it binds OpenAL and EFX at run time, opens the device lazily (silent until then), loads sounds from Sound.rpk, ranks 512 voices onto 64 sources each frame, and adds reverb, area ambience and crossfading music. Exarust plays hit and footstep sounds and a looping level track via Bevy's rodio backend; voice ranking, variant sets, reverb, ambience and crossfades are missing.
 - **Script, dialogue & story.** The story layer: a small interpreter for role and dialogue scripts, and the conversation engine that finds a dialogue two characters can hold through their roles and mood, keeps per-relation topic memory and drives the narrator, reply choices, journal, loading tips and scripted world objects. Exarust has none of it; its script crate is an empty plugin.
 - **Game modes, arena & session.** The game's flow: main, pause and end-of-fight menus, switching between practice, story and arena, saving to packages with checkpoints and permadeath, class select, character creation, discovery XP and the whole arena career (company, hirelings, loadouts, matches, shop). Exarust has only debug stand-ins: start spots, a one-on-one arena opponent, a character preview and emblem texture lookup.
@@ -57,27 +57,27 @@ Ordered by code size; these are where most of the original still has no counterp
 | SG_Thaum_Mind | Thaumaturgy & effects | 45 | 21 | 13% |
 | TGUIForm | UI | 77 | 20 | 16% |
 | SG_GameMain | Game modes, arena & session | 59 | 20 | 5% |
-| TForceBarrierEffect | Thaumaturgy & effects | 7 | 5 | 9% |
-| TPwrForceKinesis_S | Thaumaturgy & effects | 9 | 4 | 10% |
 | TCharCreation | Game modes, arena & session | 12 | 3 | 3% |
 | XA_Arena save and rank helpers (TMatchBoard by address) | Game modes, arena & session | 9 | 3 | 0% |
-| RF_Env_Effects | Thaumaturgy & effects | 6 | 3 | 0% |
 | SG_Character_DBs | Data, assets & I/O | 15 | 3 | 10% |
 | TSplashScreen | UI | 7 | 3 | 4% |
 | FLX_IconRender | Rendering & GPU | 13 | 3 | 0% |
-| TForceBubbleEffect | Thaumaturgy & effects | 6 | 3 | 0% |
-| SG_Thaumaturgy | Thaumaturgy & effects | 10 | 3 | 0% |
 | THairColPicker | UI | 9 | 2 | 0% |
 | SG_GUI_Skills | UI | 8 | 2 | 0% |
-| TPwrDispSummonDemon_I | Thaumaturgy & effects | 4 | 2 | 0% |
 | TShopWindow | Game modes, arena & session | 8 | 2 | 0% |
 | Shading-mask GLSL snippets | Rendering & GPU | 6 | 2 | 0% |
 | SG_SaveWorld | Game modes, arena & session | 13 | 2 | 0% |
 | Scene content helpers (unit before RF_Dynamics) | World, levels & terrain | 11 | 2 | 10% |
 | TGUIColSwatch | UI | 12 | 2 | 0% |
 | RF_GUI_Classes | UI | 13 | 2 | 0% |
-| TPwrForceStrikes_C | Thaumaturgy & effects | 7 | 2 | 0% |
 | TTonePicker | UI | 6 | 2 | 0% |
+| XA_HelpSystem | UI | 10 | 2 | 0% |
+| SG_Prelude_Main | Game modes, arena & session | 7 | 2 | 4% |
+| Win32 clipboard image/icon glue | Runtime & platform | 8 | 2 | 0% |
+| TDropDownList | UI | 10 | 2 | 0% |
+| TGUITask | UI | 13 | 2 | 0% |
+| TTransitionScreen | UI | 5 | 2 | 3% |
+| TCharDecomp2 | Characters, motion & animation | 5 | 2 | 0% |
 
 ## Best covered components
 
@@ -86,8 +86,8 @@ Ordered by code size; these are where most of the original still has no counterp
 | XA_Arena | Game modes, arena & session | 71 | 50% | exa_game/src/manage.rs; exa_game/src/tournament.rs |
 | TMotileAI | AI & behaviour | 60 | 50% | exa_ai/src/combat.rs; exa_ai/src/combat_test.rs |
 | TGUIDrawSkin | UI | 35 | 85% | exa_ui/src/skin.rs; exa_ui/src/lib.rs |
+| TPathFinder | AI & behaviour | 32 | 86% | exa_world/src/nav/path.rs; exa_world/src/nav/mover.rs |
 | TVCCloth | Physics, bodies & cloth | 30 | 81% | exa_physics/src/cloth.rs; exa_world/src/cloth_draw.rs |
-| TPathFinder | AI & behaviour | 32 | 75% | exa_world/src/nav/walkable.rs; exa_world/src/nav/query.rs |
 | FLX_ItemFactory | Items, materials & crafting | 24 | 87% | exa_formats/src/factory.rs; exa_formats/src/weapon_stats.rs |
 | RFE_MeshTools | Rendering & GPU | 19 | 95% | exa_assets/src/mesh_weld.rs; exa_assets/src/mesh_edit.rs |
 | RF_SceneNodes | World, levels & terrain | 24 | 75% | exa_world/src/scene_nodes.rs; exa_world/src/light_flood.rs |

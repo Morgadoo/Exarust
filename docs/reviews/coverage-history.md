@@ -91,3 +91,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-21 | d99148d3 | clean | 44.1% | 5.7% | 38.3% | 44.1% | wave 3: locomotion kernel, damage routine, NPC combat state, player hand, arena company |
 | 2026-10-21 | 41f291c2 | clean | 46.9% | 5.7% | 41.3% | 44.1% | forms, skill screen, GUI core and frame loop |
 | 2026-10-21 | b1eab9cf | clean | 49.0% | 5.7% | 43.0% | 44.1% | item windows, gamepad, grid environment, dialogue, dynamics world, simulation sector, mesh tools |
+| 2026-10-21 | c4d28091 | clean | 50.8% | 5.7% | 45.0% | 44.1% | pathfinder, power classes, force effect nodes |
