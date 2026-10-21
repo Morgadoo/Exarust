@@ -1158,9 +1158,10 @@ pub const LOOK_YAW_GAIN: f32 = 30.0;
 pub const LOOK_PITCH_GAIN: f32 = 10.0;
 /// The zoom's travel on Exarust's 800–2000 scale.
 pub const ZOOM_RANGE: f32 = 1200.0;
-/// The zoom action's share of the range a step of 10 moves: the original's
-/// `10 × 0.008333334 × range × 0.2`, 20 on a range of 1200.
-pub const ZOOM_STEP_SHARE: f32 = 0.008_333_334 * 0.2;
+/// The zoom's rate per unit of the action's step: the original's
+/// `step × 0.008333334 × range × 0.2`, 20 for a step of 10 on a range of
+/// 1200. The factors are applied in the original's order.
+pub const ZOOM_RATE: f32 = 0.008_333_334;
 
 /// The processed camera stick: `y` is zero below a 0.5 dead zone; `x` is
 /// squared past a 0.1 dead zone; a magnitude over 0.01 (of the squared
@@ -1192,7 +1193,7 @@ pub fn look_delta(input: Vec2, aim_speed: f32) -> Vec2 {
 /// The zoom change one frame of the zoom actions makes on a range of
 /// [`ZOOM_RANGE`]: `input × 0.008333334 × range × 0.2`.
 pub fn zoom_step(input: f32) -> f32 {
-    input * ZOOM_STEP_SHARE * ZOOM_RANGE
+    input * ZOOM_RATE * ZOOM_RANGE * 0.2
 }
 
 /// What the gameplay reader knows about the game this frame.
@@ -1237,8 +1238,9 @@ pub struct Rumble {
 }
 
 impl Rumble {
-    /// The decay a frame leaves: each motor keeps 0.6 of itself.
-    pub const DECAY: f32 = 0.6;
+    /// The decay a frame leaves: each motor keeps 0.6 of itself, in double
+    /// precision as the original multiplies it.
+    pub const DECAY: f64 = 0.6;
 
     /// Adds `amount` to both motors, each clamped at 1.
     pub fn add(&mut self, amount: f32) {
@@ -1254,8 +1256,8 @@ impl Rumble {
 
     /// One frame's decay. The original multiplies in double precision.
     pub fn decay(&mut self) {
-        self.first = (f64::from(self.first) * f64::from(Self::DECAY)) as f32;
-        self.second = (f64::from(self.second) * f64::from(Self::DECAY)) as f32;
+        self.first = (f64::from(self.first) * Self::DECAY) as f32;
+        self.second = (f64::from(self.second) * Self::DECAY) as f32;
     }
 
     /// The 16-bit motor speeds the original asks for: the intensity times
@@ -1380,14 +1382,16 @@ impl PlayPad {
             } else {
                 (move_axes.y, (command::STEP_BACK, command::STEP_FORWARD))
             };
-            if axes > STEP_DEAD_ZONE {
+            let axes = f64::from(axes);
+            // The original compares the widened axis with the double 0.1.
+            if axes > 0.1 {
                 if self.repeat_at < now_ms {
                     previous &= !bits.1;
                     self.repeat_at = now_ms + STEP_REPEAT_MS;
                 }
                 self.state |= bits.1;
                 direction = bits.1;
-            } else if axes < -STEP_DEAD_ZONE {
+            } else if axes < -0.1 {
                 if self.repeat_at < now_ms {
                     previous &= !bits.0;
                     self.repeat_at = now_ms + STEP_REPEAT_MS;

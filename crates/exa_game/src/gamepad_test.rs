@@ -447,7 +447,10 @@ fn the_along_step_mode_reads_the_vertical_axis_with_its_signs() {
     assert_eq!(frame.step, command::STEP_FORWARD);
     let frame = *play.update(5, &pad().with_analog(Id::Move, Vec2::new(0.0, -0.5)), ctx);
     assert_eq!(frame.step, command::STEP_BACK);
+    // The widened single-precision 0.1 is just over the double 0.1.
     let frame = *play.update(6, &pad().with_analog(Id::Move, Vec2::new(0.0, 0.1)), ctx);
+    assert_eq!(frame.step, command::STEP_FORWARD);
+    let frame = *play.update(7, &pad().with_analog(Id::Move, Vec2::new(0.0, 0.099)), ctx);
     assert_eq!(frame.step, 0);
 }
 
