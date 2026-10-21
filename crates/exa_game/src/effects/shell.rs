@@ -4,8 +4,8 @@
 //! A shell opens over 400 ms, holds while its shown fraction is one, and
 //! closes over 300 ms from wherever it is when the fade is asked for. When
 //! the close reaches zero it calls its end hook and may be removed. The
-//! shader's fade is the square of one minus the shown fraction; the rest of
-//! its uniforms are a moving texture offset and a fade plane.
+//! shader's fade is `(1 − shown²)²`; the rest of its uniforms are a texture
+//! offset rolling over 40 s and a fade plane along the body's up axis.
 //!
 //! The shell adds no light. Its mesh is the same skinned copy the force
 //! shell uses, so the index rules come from [`crate::thaum`] and the index
@@ -13,7 +13,7 @@
 
 use bevy::prelude::*;
 
-use crate::effects::round_i32;
+use crate::effects::{Frame, round_i32, span_ms};
 use crate::thaum::{self, ShellIndexError, ShellSpan};
 
 /// The opening's length, milliseconds.
@@ -27,11 +27,51 @@ pub const PLANE_SCALE: f32 = 1.0;
 pub const OPACITY: f32 = 1.0;
 /// The texture offset runs over 40 s.
 pub const TEX_OFFSET_PERIOD_MS: u32 = 40_000;
-pub const TEX_OFFSET_STEP: f32 = 0.000_025;
+pub const TEX_OFFSET_STEP: f64 = 0.000_025;
 
-/// The mesh level of detail: 900 over the squared camera distance, at
-/// least one.
+/// The mesh level of detail: 900 over the squared camera distance, raised
+/// to one.
 pub const LOD_BASE: f32 = 900.0;
+
+/// The fade plane's extent along the body's up axis: a skinned copy uses
+/// its geometry's half height; a rigid one projects its node's box onto the
+/// world's up axis, no further than the node's bounding radius.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PlaneBounds {
+    Skinned {
+        /// The geometry's world centre height and half height (cm).
+        centre_y: f32,
+        half_y: f32,
+    },
+    Rigid {
+        /// The node's world centre height, its box's half extents and its
+        /// bounding radius (cm).
+        centre_y: f32,
+        half: Vec3,
+        radius: f32,
+    },
+}
+
+/// The fade plane a shell or scan shader takes: the node's frame row that
+/// gives world height, and its offset putting the plane at the bottom of
+/// the body, both divided by the extent and scaled by `scale`.
+pub fn fade_plane(frame: &Frame, bounds: PlaneBounds, scale: f32) -> [f32; 4] {
+    let up = Vec3::new(frame.x.y, frame.y.y, frame.z.y);
+    let (centre_y, extent) = match bounds {
+        PlaneBounds::Skinned { centre_y, half_y } => (centre_y, half_y),
+        PlaneBounds::Rigid {
+            centre_y,
+            half,
+            radius,
+        } => {
+            let e = (up.x.abs() * half.x + up.y.abs() * half.y) + up.z.abs() * half.z;
+            (centre_y, if e > radius { radius } else { e })
+        }
+    };
+    let offset = frame.at.y - (centre_y - extent);
+    let k = scale / extent;
+    [up.x * k, up.y * k, up.z * k, offset * k]
+}
 
 /// The shell's state word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,7 +178,7 @@ impl Shell {
         };
         match self.state {
             ShellState::Opening => {
-                self.shown = (f64::from(elapsed(now_ms, self.stamp)) / f64::from(OPEN_MS)) as f32;
+                self.shown = (span_ms(now_ms, self.stamp) as f64 / f64::from(OPEN_MS)) as f32;
                 if self.shown > 1.0 {
                     self.shown = 1.0;
                     self.state = ShellState::Resting;
@@ -151,7 +191,7 @@ impl Shell {
             }
             ShellState::Fading => {
                 self.shown =
-                    (1.0 - f64::from(elapsed(now_ms, self.stamp)) / f64::from(CLOSE_MS)) as f32;
+                    (1.0 - span_ms(now_ms, self.stamp) as f64 / f64::from(CLOSE_MS)) as f32;
                 if self.shown <= 0.0 {
                     self.shown = 0.0;
                     self.state = ShellState::Ending;
@@ -171,20 +211,21 @@ impl Shell {
         step
     }
 
-    /// The shader's fade: the square of one minus the shown fraction.
+    /// The shader's fade: `(1 − shown²)²`.
     pub fn fade(&self) -> f32 {
-        let left = 1.0 - self.shown;
+        let left = 1.0 - self.shown * self.shown;
         left * left
     }
 
-    /// The moving texture offset of the shader.
+    /// The moving texture offset of the shader, taken in double precision.
     pub fn tex_offset(now_ms: u32) -> f32 {
-        (now_ms % TEX_OFFSET_PERIOD_MS) as f32 * TEX_OFFSET_STEP
+        (f64::from(now_ms % TEX_OFFSET_PERIOD_MS) * TEX_OFFSET_STEP) as f32
     }
 
-    /// The mesh level of detail: 900 over the camera distance, at least one.
-    pub fn level_of_detail(distance: f32) -> f32 {
-        LOD_BASE / (distance * distance).max(1.0)
+    /// The mesh level of detail: 900 over the squared camera distance (cm),
+    /// raised to one.
+    pub fn level_of_detail(camera: Vec3, at: Vec3) -> f32 {
+        crate::effects::level_of_detail(LOD_BASE, camera, at)
     }
 
     /// The shell's uniforms, in the original's order.
@@ -212,11 +253,6 @@ pub struct ShellUniforms {
     pub tex_scale: f32,
     pub opacity: f32,
     pub plane_scale: f32,
-}
-
-/// A millisecond difference, wrapping like the original's unsigned clock.
-fn elapsed(now_ms: u32, stamp: u32) -> f32 {
-    now_ms.wrapping_sub(stamp) as f32
 }
 
 /// A skinned mesh copy: the kept triangles, the section marks and each
@@ -328,7 +364,8 @@ mod tests {
         assert_eq!(stored.stamp, 900);
         shell.shown = 0.25;
         let u = shell.uniforms(20_000);
-        assert_eq!(u.fade, 0.5625);
+        // (1 − 0.25²)² = 0.9375².
+        assert_eq!(u.fade, 0.878_906_25);
         assert_eq!(u.interior, 0.0);
         assert_eq!(u.tex_pos, [0.125, 0.875]);
         assert_eq!(u.tex_offset, 0.5);
@@ -337,9 +374,71 @@ mod tests {
         assert_eq!(u.plane_scale, 1.0);
         assert_eq!(Shell::tex_offset(0), 0.0);
         assert_eq!(Shell::tex_offset(40_001), 0.000_025);
-        assert_eq!(Shell::level_of_detail(0.5), 900.0);
-        assert_eq!(Shell::level_of_detail(1.0), 900.0);
-        assert_eq!(Shell::level_of_detail(3.0), 100.0);
+        assert_eq!(Shell::tex_offset(39_999), (39_999.0 * 0.000_025f64) as f32);
+        let at = Vec3::new(0.0, 0.0, 0.5);
+        assert_eq!(Shell::level_of_detail(Vec3::ZERO, at), 900.0);
+        assert_eq!(Shell::level_of_detail(Vec3::ZERO, Vec3::X), 900.0);
+        assert_eq!(
+            Shell::level_of_detail(Vec3::ZERO, Vec3::new(3.0, 0.0, 0.0)),
+            100.0
+        );
+    }
+
+    #[test]
+    fn a_shell_stamped_ahead_opens_from_below_zero() {
+        // The original widens both words before subtracting: a stamp ahead
+        // of the clock gives a negative shown fraction, not a huge one.
+        let mut shell = Shell::new(1_100, [0.0, 0.0]);
+        shell.step(1_000);
+        assert_eq!(shell.shown, -0.25);
+        assert_eq!(shell.state, ShellState::Opening);
+    }
+
+    #[test]
+    fn the_fade_plane_runs_up_the_body_from_its_feet() {
+        let frame = Frame {
+            at: Vec3::new(0.0, 100.0, 0.0),
+            ..Frame::IDENTITY
+        };
+        // A skinned copy 80 cm tall around a centre 140 cm up: the plane's
+        // offset is 100 − (140 − 40) = 0, divided by 40.
+        let plane = fade_plane(
+            &frame,
+            PlaneBounds::Skinned {
+                centre_y: 140.0,
+                half_y: 40.0,
+            },
+            PLANE_SCALE,
+        );
+        assert_eq!(plane, [0.0, 0.025, 0.0, 0.0]);
+        // A rigid box projects onto the up axis and stops at its radius.
+        let turned = Frame {
+            x: Vec3::new(1.0, 0.0, 0.0),
+            y: Vec3::new(0.0, 0.0, 1.0),
+            z: Vec3::new(0.0, -1.0, 0.0),
+            at: Vec3::new(0.0, 10.0, 0.0),
+        };
+        let plane = fade_plane(
+            &turned,
+            PlaneBounds::Rigid {
+                centre_y: 10.0,
+                half: Vec3::new(5.0, 6.0, 8.0),
+                radius: 20.0,
+            },
+            2.0,
+        );
+        // Up is (0, 0, −1): extent 8, offset 10 − (10 − 8) = 8, k = 2/8.
+        assert_eq!(plane, [0.0, 0.0, -0.25, 2.0]);
+        let capped = fade_plane(
+            &turned,
+            PlaneBounds::Rigid {
+                centre_y: 10.0,
+                half: Vec3::new(5.0, 6.0, 8.0),
+                radius: 4.0,
+            },
+            1.0,
+        );
+        assert_eq!(capped, [0.0, 0.0, -0.25, 1.0]);
     }
 
     #[test]

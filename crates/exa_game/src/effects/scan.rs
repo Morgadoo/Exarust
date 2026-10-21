@@ -8,31 +8,35 @@
 //! which is the green flash at the end. The close then calls the detach
 //! hook and removes the node.
 //!
-//! The scan adds no light. Its index copy is the same skinned copy as the
-//! force and displacement shells.
+//! The scan adds no light of its own; a GI light the teleporter hangs on it
+//! is freed when it ends. Its index copy is the same skinned copy as the
+//! force and displacement shells, refreshed every 100 ms once a scanner
+//! starts it.
 
 use bevy::prelude::*;
+
+use crate::effects::Frame;
+use crate::effects::shell::{PlaneBounds, fade_plane};
 
 /// The scan's material.
 pub const MATERIAL: &str = "ScanAura01";
 
-/// The scan's size, milliseconds: the close's length and a sixth of the
-/// open's.
-pub const SIZE_MS: u32 = 800;
+/// The scan's size, milliseconds, a stored float: the close's length and a
+/// sixth of the open's.
+pub const SIZE_MS: f32 = 800.0;
 /// The opening is six sizes.
-pub const OPEN_FACTOR: u32 = 6;
-/// The colour a scan reveals, sRGB.
+pub const OPEN_FACTOR: f32 = 6.0;
+/// The colour the shader's `Colour` is scaled from.
 pub const COLOUR: [f32; 4] = [0.45, 0.95, 0.33, 1.0];
-/// The shader's plane scale, and the stored value that is not read by the
-/// update.
+/// The shader's plane scale, and a stored value the scan never reads.
 pub const PLANE_SCALE: f32 = 1.0;
 pub const UNUSED: f32 = 0.015;
 /// The colour scale starts at one; the looping close raises it to three
 /// times the shown fraction.
 pub const COLOUR_SCALE: f32 = 1.0;
 pub const FLASH_SCALE: f32 = 3.0;
-/// A scan start schedules its callback every 100 ms.
-pub const RESTART_MS: u32 = 100;
+/// A scanner's start schedules the scan's mesh copy every 100 ms.
+pub const COPY_INTERVAL_MS: u32 = 100;
 
 /// The scan's phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,7 +95,8 @@ pub struct Scan {
     pub colour_scale: f32,
     /// Whether the close loops with the flash.
     pub looping: bool,
-    /// The shader's texture position, two random values.
+    /// Two random values the scan stores at creation; its shader has no
+    /// texture position, so nothing reads them.
     pub tex_pos: [f32; 2],
 }
 
@@ -139,7 +144,7 @@ impl Scan {
                 }
             }
             ScanState::Opening => {
-                self.shown = elapsed(now_ms, self.stamp) / (SIZE_MS * OPEN_FACTOR) as f32;
+                self.shown = elapsed(now_ms, self.stamp) / (SIZE_MS * OPEN_FACTOR);
                 if self.shown > 1.0 {
                     self.shown = 1.0;
                     self.state = if self.looping {
@@ -152,11 +157,11 @@ impl Scan {
             ScanState::Resting => {}
             ScanState::Closing => {
                 self.state = ScanState::Fading;
-                let back = ((1.0 - self.shown) * SIZE_MS as f32).round_ties_even() as u32;
-                self.stamp = now_ms.wrapping_sub(back);
+                let back = crate::effects::round_i32((1.0 - self.shown) * SIZE_MS);
+                self.stamp = now_ms.wrapping_sub(back as u32);
             }
             ScanState::Fading => {
-                self.shown = 1.0 - elapsed(now_ms, self.stamp) / SIZE_MS as f32;
+                self.shown = 1.0 - elapsed(now_ms, self.stamp) / SIZE_MS;
                 if self.shown <= 0.0 {
                     self.state = ScanState::Ending;
                     self.shown = 0.0;
@@ -176,13 +181,13 @@ impl Scan {
         step
     }
 
-    /// The shader's per-frame values.
-    pub fn uniforms(&self) -> ScanUniforms {
+    /// The shader's per-frame values: the fade, the colour scaled by the
+    /// colour scale, and the fade plane on the scanned body's node.
+    pub fn uniforms(&self, frame: &Frame, bounds: PlaneBounds) -> ScanUniforms {
         ScanUniforms {
             fade: 1.0 - self.shown,
             colour: COLOUR.map(|c| c * self.colour_scale),
-            plane_scale: PLANE_SCALE,
-            tex_pos: self.tex_pos,
+            plane: fade_plane(frame, bounds, PLANE_SCALE),
         }
     }
 }
@@ -192,12 +197,13 @@ impl Scan {
 pub struct ScanUniforms {
     pub fade: f32,
     pub colour: [f32; 4],
-    pub plane_scale: f32,
-    pub tex_pos: [f32; 2],
+    pub plane: [f32; 4],
 }
 
+/// A millisecond span as the original takes it (both words widened, the
+/// difference signed), converted to single precision.
 fn elapsed(now_ms: u32, stamp: u32) -> f32 {
-    now_ms.wrapping_sub(stamp) as f32
+    crate::effects::span_ms(now_ms, stamp) as f32
 }
 
 /// The scan component stepped by [`tick_scans`].
@@ -242,6 +248,19 @@ pub fn copy_indices(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A skinned body 80 cm tall around the origin.
+    const BOUNDS: PlaneBounds = PlaneBounds::Skinned {
+        centre_y: 0.0,
+        half_y: 40.0,
+    };
+
+    #[test]
+    fn a_scan_stamped_ahead_opens_from_below_zero() {
+        let mut scan = Scan::new(1_480, [0.0, 0.0]);
+        scan.step(1_000);
+        assert_eq!(scan.shown, -0.1);
+    }
 
     #[test]
     fn a_scan_opens_over_six_sizes_and_rests() {
@@ -290,14 +309,13 @@ mod tests {
         // fraction is forced back to one.
         assert!((scan.colour_scale - 1.5).abs() < 1e-6);
         assert_eq!(scan.shown, 1.0);
-        let u = scan.uniforms();
+        let u = scan.uniforms(&Frame::IDENTITY, BOUNDS);
         assert_eq!(u.fade, 0.0);
         let want = [0.675, 1.425, 0.495, 1.5];
         for (got, want) in u.colour.iter().zip(want) {
             assert!((got - want).abs() < 1e-6, "{u:?}");
         }
-        assert_eq!(u.plane_scale, 1.0);
-        assert_eq!(u.tex_pos, [0.0, 0.0]);
+        assert_eq!(u.plane, [0.0, 0.025, 0.0, 1.0]);
     }
 
     #[test]
@@ -310,7 +328,7 @@ mod tests {
         assert_eq!(scan.stamp, 501);
         assert_eq!(ScanState::of(8), ScanState::Waiting);
         assert_eq!(ScanState::of(99), ScanState::Waiting);
-        assert_eq!(RESTART_MS, 100);
+        assert_eq!(COPY_INTERVAL_MS, 100);
         assert_eq!(SIZE_MS, 800);
         assert_eq!(UNUSED, 0.015);
         assert_eq!(MATERIAL, "ScanAura01");
@@ -320,12 +338,17 @@ mod tests {
     fn a_scan_reveals_its_colour_and_fades_by_one_minus_shown() {
         let mut scan = Scan::new(0, [0.125, 0.875]);
         scan.shown = 0.25;
-        let u = scan.uniforms();
+        let u = scan.uniforms(&Frame::IDENTITY, BOUNDS);
         assert_eq!(u.fade, 0.75);
         assert_eq!(u.colour, [0.45, 0.95, 0.33, 1.0]);
         scan.colour_scale = 3.0;
         let want = [1.35, 2.85, 0.99, 3.0];
-        for (got, want) in scan.uniforms().colour.iter().zip(want) {
+        for (got, want) in scan
+            .uniforms(&Frame::IDENTITY, BOUNDS)
+            .colour
+            .iter()
+            .zip(want)
+        {
             assert!((got - want).abs() < 1e-6);
         }
     }
