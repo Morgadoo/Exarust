@@ -381,6 +381,25 @@ pub fn read_package(package: &PackageImage) -> Result<Session, SaveError> {
         if data.chunk(save_package::TRANSITION_CHUNK).is_some() {
             session.transition = Some(data.transition_state());
         }
+        // The story reader resets the journal to one "New Entry" page and
+        // then reads the chunk; an absent chunk is that default page.
+        let records = data
+            .journal_or_default()
+            .map_err(|_| SaveError::Malformed)?;
+        let entries: Vec<Entry> = records
+            .into_iter()
+            .map(|record| Entry {
+                title: record.title,
+                text: record.text,
+            })
+            .collect();
+        let journal = Journal::from_entries(entries).ok_or(SaveError::Malformed)?;
+        session.story = Story::restore(
+            session.story.index(),
+            journal,
+            session.story.topics_used().to_vec(),
+        )
+        .ok_or(SaveError::Malformed)?;
     }
     Ok(session)
 }
