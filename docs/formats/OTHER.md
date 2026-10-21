@@ -422,20 +422,29 @@ kind-1 relays; one door names an id its database lacks.
 
 | offset | field |
 |---|---|
-| 0 | u8 class: 1 key, 3 lever, 5 push surface (buttons, pressure plates), 6 job, 7 relay; 0, 2, 4 and 8 are other usable objects not decoded here |
+| 0 | u8 class: 1 key, 2 device (a teleporter or reconstruction device: kind 15 or 18), 3 lever, 5 push surface (buttons, pressure plates), 6 job, 7 relay; 0, 4 and 8 are other usable objects not decoded here |
 | 1 | u8 kind: a lever's 6 fades a light under its node instead of signalling; a push surface's 2 inverts its signals; a job's `0xC` lights a fire, `0xD` turns a light on or off; a relay's 0 and 3 combine their inputs' bits into a code, 1 signals every object linked to it, 2 signals both targets, 5 counts a sequence |
 | 2 | u16 flags (a lever's starting value and forced detent, a push surface's one-shot and second-target bits, a relay's inversion and quiet bits) |
 | 4 | u16 value: a fire's size, a relay's state, the bit an input sets in a relay |
 | 6 | u16 a lever's auto-return time in 100 ms (0: it stays) |
 | 8 | u32 the object signalled |
 | 12 | u32 the second target, or a relay's code |
-| 16.. | a name (`StnSwtch01`, `DeviceCmbA01`) and further words in some records of the other classes, a script line in one; not decoded |
+| 16.. | a name (`StnSwtch01`, `DeviceCmbA01`) and further words in some records of the other classes, a script line in one; not decoded except for a teleporter |
+| 16 | a teleporter's 16-byte name, zero padded (`PrtlSmblA.rfi`); the use loads the screen's atlas `prtlsmbla.rfi` by its own name |
+| 32 | a teleporter's seven u32 destination level ids (locale list ids, 0 empty); its screen walks the first four, or only the first when flag bit 2 is set |
 
 **Body class.** When the original loads an object's model, a record with an
 operative section makes the model's root rigid body a lever (class 3) or a
 push surface (class 5), and none of the others; a record with a door section
 and no operative section makes it a door. No shipped record has both
 (`Item::mechanism`).
+
+Teleporter fields: the teleporter use hands the screen the body's word at
+byte 32 as its destination list and tests flag bit 2 for the single-row
+layout (read in the device unit's assembly); the shipped `TeleporterUBB`
+(`0x555`, class 2 kind 15, flags `0x40`) names `PrtlSmblA.rfi` and the ids
+7, 10, 12 and 13 (Exanima05, 07, 08 and 67, the levels that place one),
+and `ResDevice` (`0x556`) is class 2 kind 18 (read from `objdb.rdb`).
 
 Corpus: `objdb.rdb` 47 door and 49 operative sections (15 keys of kind 0;
 47 doors, 6 levers and 5 push surfaces as bodies). `exanima01`: 43 doors and

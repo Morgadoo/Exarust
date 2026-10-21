@@ -50,9 +50,9 @@ grows over 1800 ms, rests 500 ms or holds and charges over 7000 ms
 domain wheel is a 280 px form of six domains (Mind, Force, Body, Energy,
 Light, Displacement) clockwise from the top of a 76 px ring, with a
 20.8 px hit, its hover, label, open ease, choice flash and confirm rules.
-Nothing starts the shell, scan, bubble or wheel yet: their callers (the
-displacement powers, the teleporters, the portal screen and the power
-tree) are not in. Drawing the flame ribbon's vertices, the shell and scan
+The reconstruction device starts the scan (`teleporters`); nothing
+starts the shell, bubble or wheel yet: their callers (the displacement
+powers, the portal screen's journey and the power tree) are not in. Drawing the flame ribbon's vertices, the shell and scan
 mesh copies, the bubble and wheel geometry, the portal particle
 simulation and the bubble's GI light values is not in.
 
@@ -113,13 +113,19 @@ blow's low-health check on the player's body (`exa_combat::Weakened`;
 held torch (`torch`, which fills its hand and holds it by the grip
 table's one-handed or off-hand grip for the holder's size and race; its
 tests pin the "Torch" clips' arm on the body model), the teleporter and reconstruction devices (`teleporters`: a `UseDevice`
-request finds the device's crystal slot and the placed object on it, opens
-the destination screen with the record's atlas and level ids, or starts the
-scan with its sound, 1600 ms delay and glow pulse and raises the transition
-latch; a level load's `ArriveAtLevel` strips the matching character once,
-clearing its hand and worn data and leaving just under half health; the
-device's 12 ms clock, the scan's marker and the sound and effect requests
-are hooks for the effects modules, whose wardrobe has no undress pass yet),
+request finds the device's crystal slot and the placed object on it; a
+teleporter asks for the destination screen with its rows and level ids, a
+reconstruction device puts the effects' scan on the player, waiting
+1600 ms of game time and closing with the flash (a scan already on the
+player makes the use start nothing), plays `devicescna01` at 0.3, scales
+the device's voxel lights by the glow pulse and raises the reconstruction
+latch; `SlotReleased` powers it down with `devicepwra01` at 0.1;
+`EndSession` reconstructs a scanned player who dies in the story,
+stripping them the first time (hand and worn data cleared, health just
+under half). The destination screen and its journey bubble, the grab and
+use input that would send the requests, the level change, the corpse
+record a strip leaves, the emissive half of the glow and the sound
+playback are not in),
 the per-tick body trace
 (`trace`, with the foot contacts' states and anchors and the ankles,
 ending with the condition word and the swing's rate, strength and state

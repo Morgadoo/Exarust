@@ -11,10 +11,11 @@
 //! Bevy app. The Bevy systems step components that gameplay inserts, on
 //! the original's 83 Hz tick. The one effect spawned here is a level
 //! portal's light, on the marker node a loaded model carries
-//! ([`exa_world::PortalMarker`], `uwportal01`); the others wait for the
-//! systems that start them in the original (the teleporters, the portal
-//! screen, the displacement powers, the power tree and a burning item's
-//! ability record), which Exarust does not have yet.
+//! ([`exa_world::PortalMarker`], `uwportal01`), and the reconstruction
+//! device puts a scan on the player ([`crate::teleporters`]); the others
+//! wait for the systems that start them in the original (the portal
+//! screen's journey, the displacement powers, the power tree and a burning
+//! item's ability record), which Exarust does not have yet.
 
 pub mod bubble;
 pub mod fire_row;

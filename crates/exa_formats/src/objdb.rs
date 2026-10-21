@@ -239,7 +239,7 @@ pub mod operative {
 }
 
 /// A teleporter's record holds up to this many destination level ids,
-/// from `+0x20` of its operative body.
+/// from byte 32 of its operative body.
 pub const DESTINATIONS: usize = 7;
 
 /// The operative section of an object (`0x10000`).
@@ -261,10 +261,10 @@ pub struct Operative {
     /// The second target, or a relay's code.
     pub second: u32,
     /// A teleporter's symbol atlas name (16 bytes, zero padded), from
-    /// `+0x10` of the body; empty when the section is short.
+    /// bytes 16..32 of the body; empty when the section is short.
     pub atlas: [u8; 16],
     /// A teleporter's destination level ids (the locale list's ids), from
-    /// `+0x20` of the body; 0 for an empty entry.
+    /// byte 32 of the body; 0 for an empty entry.
     pub destinations: [u32; DESTINATIONS],
 }
 
