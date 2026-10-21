@@ -431,12 +431,22 @@ prop). Rules in cm and ticks:
   the level does.
 - **Who meets whom.** Every awake part meets the parts in the 3 × 3 cells
   (600 cm) around it that it has not met yet this tick, awake or asleep,
-  so a sleeper is touched but two sleepers never meet. The first part's
-  sphere around its spheres must overlap the second's mesh sphere; then
-  the original's two-way meet test compares each part's swept bounding
-  sphere against the other's mesh box (the slab test of
-  `exa_physics::sector`; touching counts as meeting). A small sector with
-  no grid walks every later pair instead (`body::Pairs::all_pairs`). A
+  so a sleeper is touched but two sleepers never meet; a part's cell is
+  that of its mesh box's world centre. The first part's sphere around its
+  spheres must touch the second's mesh sphere (touching counts); then the
+  original's two-way meet test takes each side's bound from where the
+  last tick left it to where it is, in the other part's frames, against
+  the other's box grown by the bound's radius on every axis: a slab test
+  in units of the travel, the entry before the end of the travel and,
+  from 0, before the exit (touching does not count; a resting bound is
+  inside the grown box, corners included). The first side is the more
+  mobile part's (the one that brings its spheres) sphere bound against the
+  other's mesh box, the second the other's mesh bound against its sphere
+  box; a prop's mesh box is its node's box and bounding radius, a limb's
+  its node box. A small sector with no grid
+  walks every later pair instead (`body::Pairs::all_pairs`) and also asks
+  each part's sphere centre to lie within its own sphere radius of the
+  other's mesh box. A
   character's feet never meet other parts (the original puts a foot out of
   body–body contacts when it is registered and every tick its leg finds
   the ground; nothing takes it back).

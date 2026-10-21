@@ -50,13 +50,22 @@ and φ; up to four points per pair are solved in the next tick's
 iterations before the links (0.01 cm slop, the reversed pair friction,
 dropped once satisfied) and rub in the friction passes; a contact
 equalises the two bodies' sleep countdowns (`body::equalise_sleep`). The
-sector's bookkeeping (`src/sector.rs`) holds the original's 600 cm grid,
-the rounded-to-even cell span with its one-cell margin and row-overflow
-guard, the static and swept sphere–box meet test that gates a pair before
-contact generation (`intersect::swept_sphere_aabb_hit`), the placement
-and static overlap pre-tests, and the step's stages and budgets; the pair
-stage uses its cells, or the all-pairs walk of a small sector
-(`body::Pairs::all_pairs`).
+sector's bookkeeping (`src/sector.rs`) holds the original's 600 cm grid
+(cells by round-down of × 1/600 in single precision), the static span
+rounded half to even with one cell of margin all round, the body and
+sim-object position-overflow guards, each part's sphere-set and mesh
+bounds (`sector::Bounds`; a prop's mesh bound is its node's box and
+radius, a limb's its node box), the two-way meet test that gates a pair
+before contact generation (`sector::meet`, the original's slab test of
+each side's travel against the other's box grown by its radius), the
+overlap-only, placement and static-collider pre-tests, and the step's
+stages and budgets. The pair stage buckets parts by their mesh box's
+world centre and first asks that the awake part's sphere touch the
+other's mesh sphere; a small sector's all-pairs walk
+(`body::Pairs::all_pairs`) adds the original's two point-to-mesh-box
+tests. Not wired: the static-collider grid (rapier keeps the level's
+broad phase), the overflow guard's reset, the overlap and placement
+queries, and an automatic choice between the grid and all pairs.
 Blows are queued for the next tick, and parts are drawn between their last
 two ticks (`body::BodyPlugin`). Every part is
 pinned at its origin to its parent, and the skeleton's links bound each
