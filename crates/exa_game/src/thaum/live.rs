@@ -762,6 +762,59 @@ fn draw_wisps(
 mod tests {
     use super::*;
 
+    /// The plugin's systems run with a barricade standing on a navigation
+    /// grid (their parameters resolve, the stamp goes on and comes off).
+    #[test]
+    fn the_effects_run_with_a_barricade_on_a_grid() {
+        use bevy::asset::AssetPlugin;
+        use exa_world::nav::{Layer, NavCell};
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<GlowMaterial>()
+            .add_plugins(ThaumEffectsPlugin);
+        let mut grid = NavGrid::empty(40, 40, 0.0);
+        for z in 0..40 {
+            for x in 0..40 {
+                let floor = NavCell {
+                    floor: 10,
+                    ..NavCell::default()
+                };
+                grid.set_cell(x, z, Layer::Lower, floor);
+            }
+        }
+        app.insert_resource(grid);
+        let frame = WallFrame::facing(Vec3::new(0.0, 50.0, 0.0), Vec3::Z);
+        let mut draws = Mt19937::new(5489);
+        let wall = Barricade::raise(frame, 0.25, 0, |_, _, _| None, None, &mut draws);
+        let wall = app
+            .world_mut()
+            .spawn(LiveBarricade { wall, caster: None })
+            .id();
+        app.world_mut().run_schedule(FixedUpdate);
+        app.update();
+        assert!(app.world().get::<NavStamped>(wall).is_some());
+        let stamped: u32 = {
+            let grid = app.world().resource::<NavGrid>();
+            (0..40)
+                .flat_map(|z| (0..40).map(move |x| (x, z)))
+                .map(|(x, z)| u32::from(grid.cell(x, z, Layer::Lower).penalty))
+                .sum()
+        };
+        assert!(stamped > 0, "the line is on the grid");
+        app.world_mut()
+            .get_mut::<LiveBarricade>(wall)
+            .unwrap()
+            .wall
+            .state = super::super::barricade::state::GONE;
+        app.world_mut().run_schedule(FixedUpdate);
+        let grid = app.world().resource::<NavGrid>();
+        assert!(
+            (0..40).all(|z| (0..40).all(|x| grid.cell(x, z, Layer::Lower).penalty == 0)),
+            "the fall takes it back"
+        );
+    }
+
     #[test]
     fn a_segment_meets_a_sphere_beside_it() {
         assert!(segment_meets(
