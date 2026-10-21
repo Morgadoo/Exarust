@@ -683,9 +683,12 @@ primitives below are the base class's.
 - **Batches.** Geometry is gathered between a begin and an end in window
   pixels, with a current ink and texture coordinate, a program (flat,
   textured with `TexCol`, rounded with the `Scale` uniform, or the
-  subclass's own) and a blend word. An end submits quads as two triangles
-  per four vertices, lines as consecutive pairs, or triangles as they are.
-  A texture offset in 512ths shifts sampling; the scroll bars set it while
+  subclass's own) and a blend word. Selecting the mode already selected
+  binds nothing; mode 0x10 asks the subclass, and its answer becomes the
+  selected mode. An end submits quads as two triangles per four vertices,
+  lines as consecutive pairs, or triangles as they are. All runs share one
+  vertex list that a frame clears and refills without reallocating. A
+  texture offset in 512ths shifts sampling; the scroll bars set it while
   their thumb or trough is drawn.
 - **Primitives.** Line rectangles inset half a pixel (`outline`), four-stop
   vertical gradients (0.43/0.57 and 0.4/0.6 tones), alpha-scaled gradients,

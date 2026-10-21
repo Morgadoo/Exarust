@@ -3742,12 +3742,12 @@ pub fn prepare_skin_programs(already: bool) -> SkinPrograms {
             },
             SkinProgram {
                 kind: 0x15,
-                source: SKIN_TEXTURED_SHADER,
+                source: SKIN_ROUNDED_SHADER,
                 uniforms: vec![mprj, scale],
             },
             SkinProgram {
                 kind: 0x15,
-                source: SKIN_ROUNDED_SHADER,
+                source: SKIN_TEXTURED_SHADER,
                 uniforms: vec![mprj, tex, texcol],
             },
         ],
@@ -4333,7 +4333,8 @@ pub struct GuiVertex {
     pub ink: SkinInk,
 }
 
-/// One submitted piece of geometry with the program state it needs.
+/// One submitted piece of geometry with the program state it needs. Its
+/// vertices are the batch's `first..first + count`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GuiPrimitive {
     pub mode: SkinMode,
@@ -4342,22 +4343,29 @@ pub struct GuiPrimitive {
     pub texture_shift: [f32; 2],
     pub rounded_scale: Option<[f32; 4]>,
     pub tex_col: Option<f32>,
-    pub vertices: Vec<GuiVertex>,
+    pub first: usize,
+    pub count: usize,
 }
 
 /// The skin's immediate-mode batcher: the program, blend and ink state the
 /// original keeps in globals, and the geometry gathered between a begin and
 /// an end. Geometry stays in window pixels; the projection to clip space is
-/// applied when the batch is handed to the renderer.
+/// applied when the batch is handed to the renderer. Every run appends to one
+/// vertex list and each primitive names its slice of it, so a batch that is
+/// cleared and refilled every frame reuses its buffers.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SkinBatch {
     pub mode: SkinMode,
+    /// The mode word last selected; asking for it again binds nothing.
+    pub selected: u32,
     /// The mode the subclass reports when the skin asks for it.
     pub subclass_mode: u32,
     pub blend: u16,
     pub ink: SkinInk,
     pub u: f32,
     pub v: f32,
+    /// Where the open run starts in `vertices`.
+    pub run_start: usize,
     pub vertices: Vec<GuiVertex>,
     pub primitives: Vec<GuiPrimitive>,
     pub texture_shift: [f32; 2],
@@ -4375,11 +4383,13 @@ impl Default for SkinBatch {
     fn default() -> Self {
         SkinBatch {
             mode: SkinMode::None,
+            selected: 0,
             subclass_mode: 0,
             blend: 0,
             ink: [0; 4],
             u: 0.0,
             v: 0.0,
+            run_start: 0,
             vertices: Vec::new(),
             primitives: Vec::new(),
             texture_shift: [0.0; 2],
@@ -4399,14 +4409,20 @@ impl SkinBatch {
         Self::default()
     }
 
-    /// Selects the renderer for `mode`, as the skin's mode switch does. Mode
-    /// 0x10 asks the subclass for its own mode. A mode the switch does not
-    /// name is stored and binds nothing.
+    /// Selects the renderer for `mode`, as the skin's mode switch does. The
+    /// mode already selected binds nothing again. Mode 0x10 asks the
+    /// subclass for its own mode and keeps the answer as the selected word.
+    /// A mode the switch does not name is stored and binds nothing.
     pub fn select(&mut self, mode: u32, subclass: u32, textured_tint: bool) {
         self.mode_calls += 1;
+        if mode == self.selected {
+            return;
+        }
+        self.selected = mode;
         if mode == 0x10 {
             self.mode = SkinMode::Skin;
             self.subclass_mode = subclass;
+            self.selected = subclass;
             return;
         }
         let chosen = match mode {
@@ -4443,10 +4459,22 @@ impl SkinBatch {
         self.texture_shift[1] += y * 0.001_953_125;
     }
 
-    /// Starts a run of vertices and clears the vertex list.
+    /// Starts a run of vertices; any unsubmitted run is dropped.
     pub fn begin(&mut self) {
         self.begin_calls += 1;
+        self.vertices.truncate(self.run_start);
+    }
+
+    /// Empties the batch for the next frame, keeping its buffers.
+    pub fn clear(&mut self) {
         self.vertices.clear();
+        self.primitives.clear();
+        self.run_start = 0;
+    }
+
+    /// The vertices one primitive submitted.
+    pub fn vertices_of(&self, primitive: &GuiPrimitive) -> &[GuiVertex] {
+        &self.vertices[primitive.first..primitive.first + primitive.count]
     }
 
     /// Sets the current ink.
@@ -4493,10 +4521,10 @@ impl SkinBatch {
 
     fn end(&mut self, draw: GuiDraw) {
         self.end_calls += 1;
-        if self.vertices.is_empty() {
+        let count = self.vertices.len() - self.run_start;
+        if count == 0 {
             return;
         }
-        let vertices = std::mem::take(&mut self.vertices);
         self.primitives.push(GuiPrimitive {
             mode: self.mode,
             blend: self.blend,
@@ -4504,8 +4532,10 @@ impl SkinBatch {
             texture_shift: self.texture_shift,
             rounded_scale: self.rounded_scale,
             tex_col: self.tex_col,
-            vertices,
+            first: self.run_start,
+            count,
         });
+        self.run_start = self.vertices.len();
     }
 }
 
@@ -6172,8 +6202,8 @@ pub fn draw_form_chrome(
             }
             batch.end_quads();
             if let Some(primitive) = batch.primitives.last() {
-                chrome.gutters = primitive
-                    .vertices
+                chrome.gutters = batch
+                    .vertices_of(primitive)
                     .chunks(4)
                     .map(|quad| {
                         [
@@ -10520,8 +10550,10 @@ mod tests {
         );
 
         assert!(built.programs[0].source.contains("FragColor = vrCol;"));
-        assert!(built.programs[1].source.contains("uniform sampler2D Tex;"));
-        assert!(built.programs[2].source.contains("uniform vec4 Scale;"));
+        // The rounded program carries the Scale uniform, the textured one
+        // the sampler and TexCol.
+        assert!(built.programs[1].source.contains("uniform vec4 Scale;"));
+        assert!(built.programs[2].source.contains("uniform sampler2D Tex;"));
     }
 
     #[test]
@@ -10823,11 +10855,46 @@ mod tests {
         assert_eq!(batch.mode, SkinMode::Rounded);
         batch.select(0x10, 4, false);
         assert_eq!((batch.mode, batch.subclass_mode), (SkinMode::Skin, 4));
+        // The subclass's answer is the selected word now.
+        assert_eq!(batch.selected, 4);
         batch.set_texture_shift(512.0, 256.0);
         assert_eq!(batch.texture_shift, [1.0, 0.5]);
         batch.add_texture_shift(-256.0, 512.0);
         assert_eq!(batch.texture_shift, [0.5, 1.5]);
         assert_eq!(batch.mode_calls, 5);
+    }
+
+    #[test]
+    fn selecting_the_current_mode_binds_nothing() {
+        let mut batch = SkinBatch::new();
+        batch.select(2, 0, true);
+        assert_eq!(batch.tex_col, Some(1.0));
+        // Mode 2 again keeps the tint the first selection set.
+        batch.select(2, 0, false);
+        assert_eq!(batch.tex_col, Some(1.0));
+        // Mode 4 is stored but binds no program.
+        batch.select(4, 0, false);
+        assert_eq!((batch.selected, batch.mode), (4, SkinMode::Textured));
+        batch.select(2, 0, false);
+        assert_eq!(batch.tex_col, Some(0.0));
+    }
+
+    #[test]
+    fn a_cleared_batch_reuses_its_vertex_list() {
+        let mut batch = SkinBatch::new();
+        solid_rect(&mut batch, GuiRect::corners(0.0, 0.0, 4.0, 4.0));
+        solid_rect(&mut batch, GuiRect::corners(4.0, 0.0, 8.0, 4.0));
+        assert_eq!(batch.vertices.len(), 8);
+        assert_eq!(
+            (batch.primitives[1].first, batch.primitives[1].count),
+            (4, 4)
+        );
+        assert_eq!(batch.vertices_of(&batch.primitives[1])[0].x, 8.0);
+        let capacity = batch.vertices.capacity();
+        batch.clear();
+        solid_rect(&mut batch, GuiRect::corners(0.0, 0.0, 4.0, 4.0));
+        assert_eq!(batch.vertices.capacity(), capacity);
+        assert_eq!((batch.primitives.len(), batch.primitives[0].first), (1, 0));
     }
 
     #[test]
@@ -10837,7 +10904,11 @@ mod tests {
         outline_rect(&mut batch, GuiRect::corners(10.0, 20.0, 110.0, 100.0));
         let primitive = &batch.primitives[0];
         assert_eq!(primitive.draw, GuiDraw::Lines);
-        let points: Vec<(f32, f32)> = primitive.vertices.iter().map(|v| (v.x, v.y)).collect();
+        let points: Vec<(f32, f32)> = batch
+            .vertices_of(primitive)
+            .iter()
+            .map(|v| (v.x, v.y))
+            .collect();
         assert_eq!(
             points,
             [
@@ -10851,7 +10922,12 @@ mod tests {
                 (109.5, 20.5),
             ]
         );
-        assert!(primitive.vertices.iter().all(|v| v.ink == [1, 2, 3, 4]));
+        assert!(
+            batch
+                .vertices_of(primitive)
+                .iter()
+                .all(|v| v.ink == [1, 2, 3, 4])
+        );
     }
 
     #[test]
@@ -10865,12 +10941,12 @@ mod tests {
         );
         let primitive = &batch.primitives[0];
         assert_eq!(primitive.draw, GuiDraw::Quads);
-        let inks: Vec<SkinInk> = primitive.vertices.iter().map(|v| v.ink).collect();
+        let inks: Vec<SkinInk> = batch.vertices_of(primitive).iter().map(|v| v.ink).collect();
         assert_eq!(inks[0], [0, 0, 0, 255]);
         assert_eq!(inks[2], [110, 110, 110, 255]);
         assert_eq!(inks[4], [145, 145, 145, 255]);
         assert_eq!(inks[6], [255, 255, 255, 255]);
-        assert_eq!(primitive.vertices[2].y, 60.0);
+        assert_eq!(batch.vertices_of(primitive)[2].y, 60.0);
     }
 
     #[test]
@@ -10883,7 +10959,11 @@ mod tests {
             [40, 50, 60, 100],
             0.5,
         );
-        let inks: Vec<SkinInk> = batch.primitives[0].vertices.iter().map(|v| v.ink).collect();
+        let inks: Vec<SkinInk> = batch
+            .vertices_of(&batch.primitives[0])
+            .iter()
+            .map(|v| v.ink)
+            .collect();
         assert_eq!(inks[0], [40, 50, 60, 50]);
         assert_eq!(inks[2], [28, 38, 48, 70]);
         assert_eq!(inks[4], [22, 32, 42, 80]);
@@ -10899,7 +10979,11 @@ mod tests {
             &[[10, 20, 30, 0], [40, 50, 60, 0], [70, 80, 90, 0]],
         );
         let primitive = &batch.primitives[0];
-        let points: Vec<(f32, f32)> = primitive.vertices.iter().map(|v| (v.x, v.y)).collect();
+        let points: Vec<(f32, f32)> = batch
+            .vertices_of(primitive)
+            .iter()
+            .map(|v| (v.x, v.y))
+            .collect();
         assert_eq!(
             points,
             [
@@ -10913,10 +10997,10 @@ mod tests {
                 (111.0, 20.0),
             ]
         );
-        assert_eq!(primitive.vertices[0].ink, [10, 20, 30, 255]);
-        assert_eq!(primitive.vertices[2].ink, [40, 50, 60, 255]);
-        assert_eq!(primitive.vertices[4].ink, [40, 50, 60, 255]);
-        assert_eq!(primitive.vertices[6].ink, [70, 80, 90, 255]);
+        assert_eq!(batch.vertices_of(primitive)[0].ink, [10, 20, 30, 255]);
+        assert_eq!(batch.vertices_of(primitive)[2].ink, [40, 50, 60, 255]);
+        assert_eq!(batch.vertices_of(primitive)[4].ink, [40, 50, 60, 255]);
+        assert_eq!(batch.vertices_of(primitive)[6].ink, [70, 80, 90, 255]);
     }
 
     #[test]
@@ -10933,12 +11017,12 @@ mod tests {
         assert_eq!(batch.blend, 0x203);
         assert_eq!(batch.primitives.len(), 2);
         assert_eq!(batch.primitives[0].draw, GuiDraw::Lines);
-        let outline = &batch.primitives[0].vertices;
+        let outline = &batch.vertices_of(&batch.primitives[0]);
         assert_eq!((outline[0].x, outline[0].y), (10.0, 20.0));
         assert_eq!(outline[0].ink, [10, 20, 30, 25]);
         assert_eq!(outline[1].ink, [200, 100, 50, 200]);
         assert_eq!((outline[3].x, outline[3].y), (110.0, 20.0));
-        let glow = &batch.primitives[1].vertices;
+        let glow = &batch.vertices_of(&batch.primitives[1]);
         assert_eq!(batch.primitives[1].draw, GuiDraw::Triangles);
         assert_eq!(glow.len(), 24);
         assert_eq!((glow[0].x, glow[0].y), (60.0, 26.0));
@@ -10963,11 +11047,14 @@ mod tests {
         let scale = batch.rounded_scale.expect("a rounded scale");
         assert_eq!(scale[0], 100.0 / 140.0 * 0.5);
         assert_eq!(scale[2], 1.0 / (0.5 - scale[0]));
-        assert_eq!(batch.primitives[0].vertices[0].x, -10.0);
-        assert_eq!(batch.primitives[0].vertices[0].y, 0.0);
-        assert_eq!(batch.primitives[0].vertices[2].x, 130.0);
-        assert_eq!(batch.primitives[0].vertices[2].y, 120.0);
-        assert_eq!(batch.primitives[0].vertices[0].ink, [0, 0, 0, 255]);
+        assert_eq!(batch.vertices_of(&batch.primitives[0])[0].x, -10.0);
+        assert_eq!(batch.vertices_of(&batch.primitives[0])[0].y, 0.0);
+        assert_eq!(batch.vertices_of(&batch.primitives[0])[2].x, 130.0);
+        assert_eq!(batch.vertices_of(&batch.primitives[0])[2].y, 120.0);
+        assert_eq!(
+            batch.vertices_of(&batch.primitives[0])[0].ink,
+            [0, 0, 0, 255]
+        );
     }
 
     #[test]
@@ -10980,17 +11067,23 @@ mod tests {
             0x30,
         );
         let primitive = &batch.primitives[0];
-        assert_eq!(primitive.vertices.len(), 16);
+        assert_eq!(batch.vertices_of(primitive).len(), 16);
         assert_eq!(
-            (primitive.vertices[0].x, primitive.vertices[0].y),
+            (
+                batch.vertices_of(primitive)[0].x,
+                batch.vertices_of(primitive)[0].y
+            ),
             (10.0, 20.0)
         );
-        assert_eq!(primitive.vertices[0].ink, [0, 0, 0, 0x30]);
+        assert_eq!(batch.vertices_of(primitive)[0].ink, [0, 0, 0, 0x30]);
         assert_eq!(
-            (primitive.vertices[2].x, primitive.vertices[2].y),
+            (
+                batch.vertices_of(primitive)[2].x,
+                batch.vertices_of(primitive)[2].y
+            ),
             (18.0, 28.0)
         );
-        assert_eq!(primitive.vertices[2].ink, [0, 0, 0, 0]);
+        assert_eq!(batch.vertices_of(primitive)[2].ink, [0, 0, 0, 0]);
     }
 
     #[test]
@@ -11003,19 +11096,28 @@ mod tests {
             [2, 2, 2, 255],
         );
         let primitive = &batch.primitives[0];
-        assert_eq!(primitive.vertices.len(), 16);
-        assert_eq!(primitive.vertices[0].ink, [1, 1, 1, 255]);
+        assert_eq!(batch.vertices_of(primitive).len(), 16);
+        assert_eq!(batch.vertices_of(primitive)[0].ink, [1, 1, 1, 255]);
         assert_eq!(
-            (primitive.vertices[0].x, primitive.vertices[0].y),
+            (
+                batch.vertices_of(primitive)[0].x,
+                batch.vertices_of(primitive)[0].y
+            ),
             (109.5, 20.5)
         );
         assert_eq!(
-            (primitive.vertices[7].x, primitive.vertices[7].y),
+            (
+                batch.vertices_of(primitive)[7].x,
+                batch.vertices_of(primitive)[7].y
+            ),
             (109.5, 19.5)
         );
-        assert_eq!(primitive.vertices[8].ink, [2, 2, 2, 255]);
+        assert_eq!(batch.vertices_of(primitive)[8].ink, [2, 2, 2, 255]);
         assert_eq!(
-            (primitive.vertices[8].x, primitive.vertices[8].y),
+            (
+                batch.vertices_of(primitive)[8].x,
+                batch.vertices_of(primitive)[8].y
+            ),
             (108.5, 21.5)
         );
     }
@@ -11031,20 +11133,26 @@ mod tests {
             [255, 255, 255, 255],
         );
         let primitive = &batch.primitives[0];
-        assert_eq!(primitive.vertices.len(), 12);
+        assert_eq!(batch.vertices_of(primitive).len(), 12);
         assert_eq!(
-            (primitive.vertices[3].x, primitive.vertices[3].y),
+            (
+                batch.vertices_of(primitive)[3].x,
+                batch.vertices_of(primitive)[3].y
+            ),
             (110.0, 28.0)
         );
         assert_eq!(
-            (primitive.vertices[6].x, primitive.vertices[6].y),
+            (
+                batch.vertices_of(primitive)[6].x,
+                batch.vertices_of(primitive)[6].y
+            ),
             (10.0, 92.0)
         );
-        assert_eq!(primitive.vertices[0].ink, [0, 0, 0, 255]);
-        assert_eq!(primitive.vertices[2].ink, [89, 89, 89, 255]);
-        assert_eq!(primitive.vertices[4].ink, [128, 128, 128, 255]);
-        assert_eq!(primitive.vertices[8].ink, [166, 166, 166, 255]);
-        assert_eq!(primitive.vertices[10].ink, [255, 255, 255, 255]);
+        assert_eq!(batch.vertices_of(primitive)[0].ink, [0, 0, 0, 255]);
+        assert_eq!(batch.vertices_of(primitive)[2].ink, [89, 89, 89, 255]);
+        assert_eq!(batch.vertices_of(primitive)[4].ink, [128, 128, 128, 255]);
+        assert_eq!(batch.vertices_of(primitive)[8].ink, [166, 166, 166, 255]);
+        assert_eq!(batch.vertices_of(primitive)[10].ink, [255, 255, 255, 255]);
     }
 
     #[test]
@@ -11053,14 +11161,14 @@ mod tests {
         scroll_arrow_horizontal(&mut batch, 10.0, 20.0, 9.0, [1, 2, 3, 200]);
         let primitive = &batch.primitives[0];
         assert_eq!(primitive.draw, GuiDraw::Lines);
-        assert_eq!(primitive.vertices.len(), 12);
-        assert_eq!(primitive.vertices[0].x, 10.0);
-        assert_eq!(primitive.vertices[0].y, 25.0);
-        assert_eq!(primitive.vertices[1].x, 14.0);
-        assert_eq!(primitive.vertices[1].y, 21.0);
-        assert_eq!(primitive.vertices[3].ink, [1, 2, 3, 200]);
-        assert_eq!(primitive.vertices[4].ink, [1, 2, 3, 132]);
-        assert_eq!(primitive.vertices[11].ink, [1, 2, 3, 132]);
+        assert_eq!(batch.vertices_of(primitive).len(), 12);
+        assert_eq!(batch.vertices_of(primitive)[0].x, 10.0);
+        assert_eq!(batch.vertices_of(primitive)[0].y, 25.0);
+        assert_eq!(batch.vertices_of(primitive)[1].x, 14.0);
+        assert_eq!(batch.vertices_of(primitive)[1].y, 21.0);
+        assert_eq!(batch.vertices_of(primitive)[3].ink, [1, 2, 3, 200]);
+        assert_eq!(batch.vertices_of(primitive)[4].ink, [1, 2, 3, 132]);
+        assert_eq!(batch.vertices_of(primitive)[11].ink, [1, 2, 3, 132]);
     }
 
     fn palette_for_faces() -> SkinPalette {
@@ -11085,14 +11193,14 @@ mod tests {
             &palette,
         );
         assert_eq!(batch.primitives.len(), 3);
-        let quad = &batch.primitives[0].vertices;
+        let quad = &batch.vertices_of(&batch.primitives[0]);
         assert_eq!((quad[0].x, quad[0].y), (98.0, 2.0));
         assert_eq!(quad[0].ink, [30, 31, 32, 60]);
         assert_eq!(quad[2].ink, [30, 31, 32, 60]);
-        let border = &batch.primitives[1].vertices;
+        let border = &batch.vertices_of(&batch.primitives[1]);
         assert_eq!(border[0].ink, [30, 31, 32, 60]);
         assert_eq!(border[3].ink, [30, 31, 32, 60]);
-        let outline = &batch.primitives[2].vertices;
+        let outline = &batch.vertices_of(&batch.primitives[2]);
         assert_eq!(outline[0].ink, [30, 31, 32, 60]);
     }
 
@@ -11107,8 +11215,14 @@ mod tests {
             true,
             &palette,
         );
-        assert_eq!(batch.primitives[0].vertices[0].ink, [20, 21, 22, 50]);
-        assert_eq!(batch.primitives[2].vertices[0].ink, [20, 21, 22, 50]);
+        assert_eq!(
+            batch.vertices_of(&batch.primitives[0])[0].ink,
+            [20, 21, 22, 50]
+        );
+        assert_eq!(
+            batch.vertices_of(&batch.primitives[2])[0].ink,
+            [20, 21, 22, 50]
+        );
     }
 
     #[test]
@@ -11122,8 +11236,14 @@ mod tests {
             true,
             &palette,
         );
-        assert_eq!(batch.primitives[0].vertices[0].ink, [30, 31, 32, 60]);
-        assert_eq!(batch.primitives[0].vertices[2].ink, [30, 31, 32, 60]);
+        assert_eq!(
+            batch.vertices_of(&batch.primitives[0])[0].ink,
+            [30, 31, 32, 60]
+        );
+        assert_eq!(
+            batch.vertices_of(&batch.primitives[0])[2].ink,
+            [30, 31, 32, 60]
+        );
     }
 
     #[test]
@@ -11139,12 +11259,21 @@ mod tests {
             &palette,
         );
         assert_eq!(batch.primitives.len(), 4);
-        assert_eq!(batch.primitives[0].vertices[0].ink, [30, 31, 32, 60]);
-        assert_eq!(batch.primitives[2].vertices[0].ink, [30, 31, 32, 60]);
-        assert_eq!(batch.primitives[2].vertices[0].x, 95.5);
-        assert_eq!(batch.primitives[3].vertices.len(), 16);
-        assert_eq!(batch.primitives[3].vertices[0].ink, [0, 0, 0, 0xa0]);
-        assert_eq!(batch.primitives[3].vertices[0].x, 5.0);
+        assert_eq!(
+            batch.vertices_of(&batch.primitives[0])[0].ink,
+            [30, 31, 32, 60]
+        );
+        assert_eq!(
+            batch.vertices_of(&batch.primitives[2])[0].ink,
+            [30, 31, 32, 60]
+        );
+        assert_eq!(batch.vertices_of(&batch.primitives[2])[0].x, 95.5);
+        assert_eq!(batch.vertices_of(&batch.primitives[3]).len(), 16);
+        assert_eq!(
+            batch.vertices_of(&batch.primitives[3])[0].ink,
+            [0, 0, 0, 0xa0]
+        );
+        assert_eq!(batch.vertices_of(&batch.primitives[3])[0].x, 5.0);
     }
 
     #[test]
@@ -11160,8 +11289,8 @@ mod tests {
             &palette,
         );
         assert_eq!(batch.primitives.len(), 3);
-        assert_eq!(batch.primitives[0].vertices[0].x, 94.0);
-        assert_eq!(batch.primitives[0].vertices[0].y, 6.0);
+        assert_eq!(batch.vertices_of(&batch.primitives[0])[0].x, 94.0);
+        assert_eq!(batch.vertices_of(&batch.primitives[0])[0].y, 6.0);
     }
 
     #[test]
@@ -11210,10 +11339,10 @@ mod tests {
         );
         assert!(drawn.stripe);
         assert_eq!(drawn.shift, 44);
-        let stripe = &batch.primitives[0].vertices;
+        let stripe = &batch.vertices_of(&batch.primitives[0]);
         assert_eq!((stripe[0].x, stripe[0].y), (5.0, 5.0));
         assert_eq!((stripe[2].x, stripe[2].y), (95.0, 19.0));
-        let outline = &batch.primitives[1].vertices;
+        let outline = &batch.vertices_of(&batch.primitives[1]);
         assert_eq!((outline[0].x, outline[0].y), (51.5, 0.5));
         assert_eq!((outline[2].x, outline[2].y), (48.5, 0.5));
         assert_eq!(outline[0].ink, [40, 41, 42, 70]);
@@ -11266,7 +11395,7 @@ mod tests {
             &palette,
         );
         assert_eq!(drawn.shift, 44);
-        let outline = &batch.primitives[1].vertices;
+        let outline = &batch.vertices_of(&batch.primitives[1]);
         assert_eq!((outline[0].x, outline[0].y), (51.5, 0.5));
         assert_eq!((outline[2].x, outline[2].y), (48.5, 0.5));
     }
@@ -11314,10 +11443,16 @@ mod tests {
             &palette,
         );
         assert_eq!(batch.primitives.len(), 2);
-        assert_eq!(batch.primitives[0].vertices.len(), 16);
-        assert_eq!(batch.primitives[1].vertices[0].x, 98.5);
-        assert_eq!(batch.primitives[1].vertices[0].ink, [20, 21, 22, 50]);
-        assert_eq!(batch.primitives[1].vertices[8].ink, [30, 31, 32, 60]);
+        assert_eq!(batch.vertices_of(&batch.primitives[0]).len(), 16);
+        assert_eq!(batch.vertices_of(&batch.primitives[1])[0].x, 98.5);
+        assert_eq!(
+            batch.vertices_of(&batch.primitives[1])[0].ink,
+            [20, 21, 22, 50]
+        );
+        assert_eq!(
+            batch.vertices_of(&batch.primitives[1])[8].ink,
+            [30, 31, 32, 60]
+        );
     }
 
     #[test]
@@ -11444,8 +11579,11 @@ mod tests {
         );
         assert_eq!(chrome.frames, 1);
         assert_eq!(batch.primitives.len(), 1);
-        assert_eq!(batch.primitives[0].vertices.len(), 16);
-        assert_eq!(batch.primitives[0].vertices[0].ink, [10, 11, 12, 40]);
+        assert_eq!(batch.vertices_of(&batch.primitives[0]).len(), 16);
+        assert_eq!(
+            batch.vertices_of(&batch.primitives[0])[0].ink,
+            [10, 11, 12, 40]
+        );
     }
 
     #[test]
@@ -11492,7 +11630,7 @@ mod tests {
         );
         assert_eq!(drawn.mark_icons[0].scale, Some(1.0));
         assert_eq!(drawn.title, Some([[8, 24, 165], [9, 25, 165]]));
-        assert_eq!(batch.primitives[0].vertices.len(), 16);
+        assert_eq!(batch.vertices_of(&batch.primitives[0]).len(), 16);
     }
 
     #[test]
@@ -11641,8 +11779,8 @@ mod tests {
         assert_eq!((shadow.x0, shadow.y0), (-195.0, -106.0));
         assert_eq!((shadow.x1, shadow.y1), (0.0, 0.0));
         let primitive = batch.primitives.last().expect("a shadow draw");
-        assert_eq!(primitive.vertices.len(), 16);
-        assert_eq!(primitive.vertices[0].ink, [0, 0, 0, 0x30]);
+        assert_eq!(batch.vertices_of(primitive).len(), 16);
+        assert_eq!(batch.vertices_of(primitive)[0].ink, [0, 0, 0, 0x30]);
     }
 
     fn label_place(style: u32, state: u32) -> ControlLabelPlace {
