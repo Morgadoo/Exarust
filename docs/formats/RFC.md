@@ -37,7 +37,8 @@ same layout as `objstrings.rdb` (`exa_formats::objstrings`); a table that
 does not decode is reported (`Scene::local_string_error`) and the rest of
 the database still loads, as the original's loader does. `0xDBC0` can also
 be read on its own (`Scene::parse_database`), the original's database-only
-entry point.
+entry point: it walks every root `0xDBC0` and takes only the `0xDBDB`
+records and the `0xDBCD` strings.
 
 ## Material list (`BA00`)
 
@@ -106,7 +107,8 @@ Header, shared by every kind:
 ```
 char name[16]
 u32  flags         top 20 bits stored; low 12 bits are a class id (0x89 for meshes)
-u32  flags2        bit 31 is the deprecated fading flag (replaced by bit 24)
+u32  flags2        bit 31 is the deprecated fading flag (a mesh body's
+                   reader replaces it by bit 24)
 u32  instance      1-based index of the node that owns this one (0: its own);
                    non-zero nodes store no body or sub-chunks
 u32  parent        1-based index into the node list; 0 = root

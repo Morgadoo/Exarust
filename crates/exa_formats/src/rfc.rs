@@ -526,7 +526,9 @@ impl PlacedObject {
     }
 }
 
-fn read_local_database(b: &[u8], version: u16) -> Result<LocalDatabase> {
+/// A level's local database; `placed` reads its placed objects too (the
+/// database-only entry point leaves them).
+fn read_local_database(b: &[u8], version: u16, placed: bool) -> Result<LocalDatabase> {
     let mut db = LocalDatabase::default();
     let mut pos = 0;
     while pos + 8 <= b.len() {
@@ -543,7 +545,7 @@ fn read_local_database(b: &[u8], version: u16) -> Result<LocalDatabase> {
                 Ok(library) => db.strings = Some(library),
                 Err(e) => db.string_error = Some(e.to_string()),
             },
-            PLACED_OBJECTS => db.placed_objects = read_placed_objects(body, version)?,
+            PLACED_OBJECTS if placed => db.placed_objects = read_placed_objects(body, version)?,
             _ => {}
         }
         pos += 8 + size;
@@ -668,7 +670,7 @@ impl Scene {
                     Err(e) => level_errors.push(format!("characters: {e}")),
                 }
             } else if tag == LOCAL_DATABASE {
-                match read_local_database(chunk.b, version) {
+                match read_local_database(chunk.b, version, true) {
                     Ok(db) => {
                         local_items = db.items;
                         local_strings = db.strings;
@@ -714,9 +716,12 @@ impl Scene {
         })
     }
 
-    /// Reads only a level's local database (`0xDBC0`) and leaves the rest of
-    /// the file alone: the original's database-only entry point, for reading
-    /// a level's items without building its scene.
+    /// Reads only a level's local database records and string table and
+    /// leaves the rest of the file alone: the original's database-only entry
+    /// point, for reading a level's items without building its scene. It
+    /// walks every root `0xDBC0` chunk and takes their `0xDBDB` records and
+    /// `0xDBCD` strings; placed objects (`0xDBCE`) need the scene, so it
+    /// skips them.
     pub fn parse_database(b: &[u8]) -> Result<LocalDatabase> {
         let mut c = Cursor::new(b);
         if c.u16()? != SANITY {
@@ -725,13 +730,25 @@ impl Scene {
             ));
         }
         let version = c.u16()?;
+        let mut db = LocalDatabase::default();
         while c.remaining() >= 8 {
             let (tag, chunk) = c.chunk()?;
             if tag == LOCAL_DATABASE {
-                return read_local_database(chunk.b, version);
+                let LocalDatabase {
+                    items,
+                    strings,
+                    string_error,
+                    placed_objects: _,
+                } = read_local_database(chunk.b, version, false)?;
+                if !items.is_empty() {
+                    db.items = items;
+                }
+                if strings.is_some() || string_error.is_some() {
+                    (db.strings, db.string_error) = (strings, string_error);
+                }
             }
         }
-        Ok(LocalDatabase::default())
+        Ok(db)
     }
 
     pub fn material(&self, name: &str) -> Option<&Material> {
@@ -809,6 +826,11 @@ const LIGHT_EXTRA_LEN: usize = 16;
 /// A camera node (`0x3D08`): its body is the node its view follows (a
 /// 1-based index) and one word.
 const NODE_3D08: u32 = 0x3D08;
+/// The node word's deprecated fading bit, which the mesh reader replaces by
+/// [`FADING`].
+const DEPRECATED_FADING: u32 = 0x8000_0000;
+/// The fading bit that replaces [`DEPRECATED_FADING`].
+const FADING: u32 = 0x0100_0000;
 /// A sector node (`0x3D0A`): no body.
 const NODE_SECTOR: u32 = 0x3D0A;
 
@@ -896,11 +918,6 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
     let name = c.name()?;
     let flags = c.u32()?;
     let mut flags2 = c.u32()?;
-    // The deprecated fading bit: the reader logs "Deprecated fading flag",
-    // sets the replacement bit and clears it.
-    if flags2 & 0x8000_0000 != 0 {
-        flags2 = (flags2 | 0x0100_0000) & 0x7FFF_FFFF;
-    }
     let instance = c.u32()?;
     let parent = c.u32()? as usize;
     let mut transform = [[0.0; 3]; 4];
@@ -924,6 +941,12 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
     let body = if instance != 0 {
         NodeBody::Instance(instance)
     } else if kind == NODE_MESH {
+        // The mesh body reader replaces the deprecated fading bit: it logs
+        // "Deprecated fading flag", sets bit 24 and clears bit 31. Other
+        // kinds, and instances, keep the word as stored.
+        if flags2 & DEPRECATED_FADING != 0 {
+            flags2 = (flags2 | FADING) & !DEPRECATED_FADING;
+        }
         match read_mesh(&mut c, version) {
             Ok(mut m) => {
                 sub = read_sub_chunks(&mut c);
@@ -1954,13 +1977,18 @@ mod tests {
 
     #[test]
     fn the_deprecated_fading_flag_is_replaced() {
-        let mut body = node_with("Old", 0x8000_0001, &[]);
-        let file = file_of_nodes(&[(0x3D01, std::mem::take(&mut body))]);
-        let scene = Scene::parse(&file).unwrap();
+        // The second header word (flags2) is at byte 20 of the node.
+        let mut mesh = quad_body(None);
+        mesh[20..24].copy_from_slice(&0x8000_0001u32.to_le_bytes());
+        let scene = Scene::parse(&file_of_nodes(&[(NODE_MESH, mesh)])).unwrap();
         assert_eq!(scene.nodes[0].flags2, 0x0100_0001);
         let mut body = node_with("New", 0x0000_0001, &[]);
-        let file = file_of_nodes(&[(0x3D01, std::mem::take(&mut body))]);
+        let file = file_of_nodes(&[(NODE_MESH, std::mem::take(&mut body))]);
         assert_eq!(Scene::parse(&file).unwrap().nodes[0].flags2, 1);
+        // Only the mesh body reader replaces it: a plain node keeps it.
+        let plain = node_with("Old", 0x8000_0001, &[]);
+        let scene = Scene::parse(&file_of_nodes(&[(0x3D01, plain)])).unwrap();
+        assert_eq!(scene.nodes[0].flags2, 0x8000_0001);
     }
 
     /// An instance node draws its owner's mesh, as the original shares the
