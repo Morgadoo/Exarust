@@ -923,6 +923,37 @@ pub struct CompassInstall {
     pub installed_hook: bool,
 }
 
+/// Whether the skill selector's rows are all locked (`0x10013b2e0`): when
+/// the character's ability word is set and the control's required rank is no
+/// more than the skill's experience over 5000, every row starts at 0x10.
+pub fn selector_rows_locked(ability: u32, required_rank: u16, skill_xp: u32) -> bool {
+    ability != 0 && u32::from(required_rank) <= skill_xp / 5000
+}
+
+/// The selector's requirement marks (`0x10013b2e0`): a table slot whose
+/// requirement is positive and which is not among the first `funded` written
+/// technique bytes is marked.
+pub fn selector_requirement_marks(requirements: &[i32], written: &[u8], funded: i32) -> Vec<bool> {
+    let funded = funded.max(0) as usize;
+    requirements
+        .iter()
+        .map(|requirement| {
+            *requirement > 0
+                && !written
+                    .iter()
+                    .take(funded)
+                    .any(|chosen| i32::from(*chosen) == *requirement)
+        })
+        .collect()
+}
+
+/// The skill-ready alert's condition (`0x10013d920`): the character's
+/// current experience is below 15 and no skill has a technique chosen past
+/// its funded levels.
+pub fn ready_alert(current_xp: i32, chosen_ahead: bool) -> bool {
+    current_xp < 15 && !chosen_ahead
+}
+
 /// A form close deferred to the end of the frame (`0x10013f390`): the game
 /// queues the call and returns at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1381,6 +1412,24 @@ mod tests {
                 ran_now: false
             }
         );
+    }
+
+    #[test]
+    fn the_selector_marks_and_ready_alert() {
+        assert!(selector_rows_locked(1, 2, 10_000));
+        assert!(!selector_rows_locked(1, 3, 10_000));
+        assert!(!selector_rows_locked(0, 1, 10_000));
+        assert_eq!(
+            selector_requirement_marks(&[0, 1, 2, 3], &[1, 3, 0], 2),
+            vec![false, false, true, false]
+        );
+        assert_eq!(
+            selector_requirement_marks(&[4, 0], &[4], 1),
+            vec![false, false]
+        );
+        assert!(ready_alert(14, false));
+        assert!(!ready_alert(15, false));
+        assert!(!ready_alert(0, true));
     }
 
     #[test]

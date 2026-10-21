@@ -116,41 +116,45 @@ impl ClientRect {
     }
 }
 
-/// The form's client rectangle from its size, border and the style word
-/// (`+0x64`). `parent_top` is the parent's `+0x10`, `parent_base` its
-/// `+0x14`, `parent_extra` its `+0xc` (or 0), `rail` the skin rail and
-/// `border_metric` the DPI border (2).
+/// The form's client rectangle (`0x10002be20`) from its size, border, the
+/// style word (`+0x5c`, which picks the title and control spans) and the
+/// attribute word (`+0x64`, which picks the title, fill and scrollbars).
+/// `title_text` is the skin's title-bar text offset, `scroll_inset` the
+/// scrollbar's inset, `title_span` the title bar's height (0 without a
+/// title), `rail` the skin rail and `border_metric` the DPI border (2).
 #[allow(clippy::too_many_arguments)]
 pub fn client_rect(
     width: i32,
     height: i32,
     border: i32,
     style: u32,
-    parent_top: i32,
-    parent_base: i32,
-    parent_extra: i32,
+    attributes: u32,
+    title_text: i32,
+    scroll_inset: i32,
+    title_span: i32,
     rail: i32,
     border_metric: i32,
 ) -> ClientRect {
-    let top = if style & 1 != 0 {
-        if style & 0x80_0030 == 0x20 {
-            parent_top + border_metric
+    let top = if attributes & attribute::TITLE != 0 {
+        if attributes & 0x80_0030 == 0x20 {
+            title_text + border_metric
         } else {
-            parent_top + parent_extra
+            title_text + title_span
         }
     } else {
         border
     };
-    let right = if style & 0x200 != 0 {
-        width - border - parent_base
+    let right = if attributes & attribute::HSCROLL != 0 {
+        width - border - scroll_inset
     } else {
         width - border
     };
-    let bottom = if style & 0x100 != 0 {
-        height - border - rail - 1 - 2 * border_metric
+    let bottom = if attributes & attribute::VSCROLL != 0 {
+        (height - border - 15) - 1 - 2 * border_metric
     } else {
         height - border
     };
+    let _ = (style, rail);
     ClientRect {
         left: border,
         top,
@@ -229,9 +233,195 @@ pub fn styled_label(style: u32, text: &str) -> String {
     }
 }
 
+/// Finds a form by its type tag in a tree (`0x100029030`): the form itself
+/// first, then its children in order.
+pub fn find_form_by_tag(node: &HitNode, tag: u32) -> Option<&HitNode> {
+    if node.id == tag {
+        return Some(node);
+    }
+    node.children
+        .iter()
+        .find_map(|child| find_form_by_tag(child, tag))
+}
+
+/// The index of the first form with a tag in a sibling list (`0x1000290c0`).
+pub fn form_index_by_tag(tags: &[u32], tag: u32) -> Option<usize> {
+    tags.iter().position(|candidate| *candidate == tag)
+}
+
+/// Applies a style and attribute word (`0x100029150`): a form whose parent
+/// is not a task gets state bit 4; a maximised form (attribute 0x10000)
+/// clears 0x20000 when it is not a task's or adds style 0x10 and attributes
+/// 0x41 when it is; the state's layout bit is raised.
+pub fn set_style(style: u32, attributes: u32, parent_is_task: bool) -> (u32, u32, u32) {
+    let mut style = style;
+    let mut attributes = attributes;
+    let mut state = 0u32;
+    if !parent_is_task {
+        state |= 4;
+    }
+    if attributes & 0x1_0000 != 0 {
+        if state & 4 == 4 {
+            attributes &= !0x2_0000;
+        } else {
+            style |= 0x10;
+            attributes |= 0x41;
+        }
+    }
+    state = (state & !0x2000) | 0x1000;
+    (style, attributes, state)
+}
+
+/// The destroy's work (`0x10002aae0`): free the children, the control array
+/// and the name, clear the active form if it is this one, and the final
+/// free when the caller owns it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DestroyPlan {
+    pub children_freed: usize,
+    pub controls_freed: usize,
+    pub name_freed: bool,
+    pub clears_active: bool,
+    pub final_free: bool,
+}
+
+/// Plans a destroy from the form's counts and its ownership.
+pub fn destroy_plan(
+    child_count: usize,
+    control_count: usize,
+    owns_controls: bool,
+    is_active: bool,
+    caller_frees: bool,
+) -> DestroyPlan {
+    DestroyPlan {
+        children_freed: child_count,
+        controls_freed: if owns_controls { control_count } else { 0 },
+        name_freed: true,
+        clears_active: is_active,
+        final_free: caller_frees,
+    }
+}
+
+/// The 1-based control code's index, when it names a control (`0x10002da50`).
+pub fn control_index(code: i32, last: i32) -> Option<usize> {
+    let index = (code & 0xffff) - 1;
+    if code <= 0 || index < 0 || last < index {
+        return None;
+    }
+    Some(index as usize)
+}
+
+/// The first control with a record code (`0x10002dab0`): the form's own
+/// controls first, then the children's recursively.
+pub fn find_control(controls: &[i32], children: &[Vec<i32>], code: i32) -> Option<i32> {
+    controls
+        .iter()
+        .copied()
+        .find(|candidate| *candidate == code)
+        .or_else(|| {
+            children
+                .iter()
+                .find_map(|child| find_control(child, &[], code))
+        })
+}
+
+/// The centre of a form's content (`0x10002d9f0`): each span over two,
+/// truncating.
+pub fn content_centre(width: i32, height: i32) -> (i32, i32) {
+    (width / 2, height / 2)
+}
+
+/// A form's part of the local-to-screen chain (`0x10002cf20`): the form's
+/// place, client inset, content and scroll.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScreenOffset {
+    pub x: i32,
+    pub y: i32,
+    pub border: i32,
+    pub top: i32,
+    pub content: (i32, i32),
+    pub client: (i32, i32),
+    pub scroll_x: f32,
+    pub scroll_y: f32,
+    /// The form's scroll is locked at zero (attribute 0x800).
+    pub locked: bool,
+}
+
+/// Takes a form-local point to the screen through its ancestors' offsets
+/// (the innermost first).
+pub fn local_to_screen(mut point: (i32, i32), forms: &[ScreenOffset]) -> (i32, i32) {
+    for form in forms {
+        point.0 += form.border + form.x;
+        if form.locked {
+            point.1 += form.top;
+        } else {
+            let scrolled = ((form.content.1 - form.client.1) as f32 * form.scroll_y) as i32;
+            point.1 += form.top - scrolled;
+        }
+        point.1 += form.y;
+    }
+    point
+}
+
+/// A hover change (`0x10002d6d0`): the control hovered (0-based) and whether
+/// the form redraws. A code outside the controls clears the old hover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HoverChange {
+    pub index: Option<usize>,
+    pub redraw: bool,
+}
+
+/// The hover change from the pointer's control word. `last` is the form's
+/// highest 0-based control index.
+pub fn hover_change(word: u32, last: i32) -> HoverChange {
+    match control_index(word as i32, last) {
+        Some(index) => HoverChange {
+            index: Some(index),
+            redraw: true,
+        },
+        None => HoverChange {
+            index: None,
+            redraw: false,
+        },
+    }
+}
+
+/// A focus change (`0x10002d840`): the new 0-based control, whether the
+/// focus moved and whether the form redraws. The original clears bit 0x400
+/// on the old record and sets it on the new, and clears the form's state bit
+/// 0x10 when no control takes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FocusChange {
+    pub index: Option<usize>,
+    pub changed: bool,
+    pub redraw: bool,
+    pub lit: bool,
+}
+
+/// The focus change from the focused control word (1-based; 0 none).
+pub fn focus_change(word: u32, current: u32, last: i32) -> FocusChange {
+    if word == current {
+        return FocusChange {
+            index: control_index(word as i32, last),
+            ..Default::default()
+        };
+    }
+    let index = control_index(word as i32, last);
+    FocusChange {
+        index,
+        changed: true,
+        redraw: true,
+        lit: index.is_some(),
+    }
+}
+
 /// The selected row's nudge: `unit / 3`.
 pub fn selected_nudge(unit: i32) -> i32 {
     unit / 3
+}
+
+/// The form class's shared ease `(3 − 2t)t²` (`0x100029000`).
+pub fn ease(t: f32) -> f32 {
+    (3.0 - 2.0 * t) * t * t
 }
 
 /// The constructor's wheel step (`+0x1c`). The component map says 0.1; the
@@ -504,9 +694,9 @@ pub fn restore(saved: FormRecord, unit: i32) -> FormRecord {
 /// An unplaced coordinate (the constructor's sentinel).
 pub const UNPLACED: i32 = -987_654_321;
 
-/// A form's style word (`+0x5c`). The layering meaning of [`ON_TOP`] and
-/// [`AT_BACK`] is read from the sibling ordering rules; the words
-/// themselves are the original's.
+/// A form's style word (`+0x5c`). The two layering words are named from
+/// where the sibling ordering puts them; the words themselves are the
+/// original's.
 pub mod style {
     /// Centre the unplaced x in the parent's client.
     pub const CENTRE_X: u32 = 0x800;
@@ -1255,7 +1445,7 @@ mod tests {
 
     #[test]
     fn the_client_rectangle() {
-        let r = client_rect(302, 402, 2, 0, 0, 0, 0, 15, 2);
+        let r = client_rect(302, 402, 2, 0, 0, 0, 0, 0, 15, 2);
         assert_eq!(
             r,
             ClientRect {
@@ -1266,10 +1456,14 @@ mod tests {
             }
         );
         assert_eq!((r.width(), r.height()), (298, 398));
-        let r = client_rect(302, 402, 2, 0x200, 0, 7, 0, 15, 2);
+        let r = client_rect(302, 402, 2, 0, 0x200, 0, 7, 0, 15, 2);
         assert_eq!(r.right, 293);
-        let r = client_rect(302, 402, 2, 0x100, 0, 0, 0, 15, 2);
+        let r = client_rect(302, 402, 2, 0, 0x100, 0, 0, 0, 15, 2);
         assert_eq!(r.bottom, 400 - 15 - 1 - 4);
+        let r = client_rect(302, 402, 2, 0, 1, 6, 0, 18, 15, 2);
+        assert_eq!(r.top, 24);
+        let r = client_rect(302, 402, 2, 0, 0x21, 6, 0, 18, 15, 2);
+        assert_eq!(r.top, 8);
     }
 
     #[test]
@@ -1591,6 +1785,104 @@ mod tests {
         // A child's edge is outside it, so the root answers there.
         let hit = hit_test_tree(&root, 100, 150).unwrap();
         assert_eq!((hit.form, hit.control), (Some(1), 0));
+    }
+
+    #[test]
+    fn the_ease_and_identity_helpers() {
+        assert_eq!(ease(0.0), 0.0);
+        assert_eq!(ease(0.5), 0.5);
+        assert_eq!(ease(1.0), 1.0);
+        assert!((ease(0.25) - 0.15625).abs() < 1e-6);
+        let tags = [10, 20, 30];
+        assert_eq!(form_index_by_tag(&tags, 20), Some(1));
+        assert_eq!(form_index_by_tag(&tags, 40), None);
+        let child = leaf(7, FormRect::new(0, 0, 10, 10), Vec::new());
+        let root = HitNode {
+            children: vec![child],
+            ..leaf(1, FormRect::new(0, 0, 100, 100), Vec::new())
+        };
+        assert_eq!(find_form_by_tag(&root, 7).map(|n| n.id), Some(7));
+        assert_eq!(find_form_by_tag(&root, 1).map(|n| n.id), Some(1));
+        assert!(find_form_by_tag(&root, 9).is_none());
+    }
+
+    #[test]
+    fn the_style_and_destroy_plans() {
+        assert_eq!(set_style(0, 0, true), (0, 0, 0x1000));
+        assert_eq!(set_style(0, 0, false), (0, 0, 0x1004));
+        assert_eq!(set_style(0, 0x1_0000, true), (0x10, 0x1_0041, 0x1000));
+        assert_eq!(set_style(0, 0x1_0000, false), (0, 0x1_0000, 0x1004));
+        let plan = destroy_plan(2, 5, true, true, true);
+        assert_eq!(
+            plan,
+            DestroyPlan {
+                children_freed: 2,
+                controls_freed: 5,
+                name_freed: true,
+                clears_active: true,
+                final_free: true
+            }
+        );
+        assert_eq!(destroy_plan(0, 5, false, false, false).controls_freed, 0);
+    }
+
+    #[test]
+    fn the_control_and_screen_helpers() {
+        assert_eq!(control_index(3, 5), Some(2));
+        assert_eq!(control_index(0x7f0003, 5), Some(2));
+        assert_eq!(control_index(0, 5), None);
+        assert_eq!(control_index(-3, 5), None);
+        assert_eq!(control_index(7, 5), None);
+        let own = [4, 9];
+        let children = vec![vec![12, 15]];
+        assert_eq!(find_control(&own, &children, 9), Some(9));
+        assert_eq!(find_control(&own, &children, 12), Some(12));
+        assert_eq!(find_control(&own, &children, 13), None);
+        assert_eq!(content_centre(302, 402), (151, 201));
+        assert_eq!(content_centre(301, 401), (150, 200));
+        let root = ScreenOffset {
+            x: 10,
+            y: 20,
+            border: 2,
+            top: 24,
+            content: (300, 500),
+            client: (298, 400),
+            scroll_x: 0.0,
+            scroll_y: 0.5,
+            locked: false,
+        };
+        // y: 5 + 24 − round(100 × 0.5) + 20 = −1.
+        assert_eq!(local_to_screen((5, 5), &[root]), (17, -1));
+        let locked = ScreenOffset {
+            locked: true,
+            ..root
+        };
+        assert_eq!(local_to_screen((5, 5), &[locked]), (17, 49));
+        assert_eq!(local_to_screen((7, 8), &[]), (7, 8));
+    }
+
+    #[test]
+    fn the_hover_and_focus_changes() {
+        assert_eq!(
+            hover_change(3, 5),
+            HoverChange {
+                index: Some(2),
+                redraw: true
+            }
+        );
+        assert_eq!(hover_change(0, 5), HoverChange::default());
+        let change = focus_change(3, 1, 5);
+        assert_eq!(change.index, Some(2));
+        assert!(change.changed && change.redraw && change.lit);
+        assert_eq!(
+            focus_change(3, 3, 5),
+            FocusChange {
+                index: Some(2),
+                ..Default::default()
+            }
+        );
+        let none = focus_change(0, 3, 5);
+        assert!(none.changed && !none.lit && none.index.is_none());
     }
 
     #[test]

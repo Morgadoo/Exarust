@@ -329,7 +329,7 @@ fn sync_screen_size(
 fn screens_from_keys(
     keys: Res<ButtonInput<KeyCode>>,
     bindings: Res<Bindings>,
-    players: Query<(), With<Player>>,
+    players: Query<Entity, With<Player>>,
     conditions: Query<&Condition>,
     menu: Option<Res<MenuScreen>>,
     mut screens: ResMut<GameScreens>,
@@ -341,6 +341,10 @@ fn screens_from_keys(
         && conditions
             .iter()
             .all(|condition| !condition.is_dead() && !condition.dying());
+    // The container tag names the player's entity.
+    if let Some(entity) = players.iter().next() {
+        screens.player = entity.index().index() as i32;
+    }
     let pressed: Vec<u32> = keys
         .get_just_pressed()
         .filter_map(|&key| virtual_key(key))
@@ -483,6 +487,68 @@ mod tests {
         assert_eq!(screens.close_container_family(), 2);
         assert!(screens.open.is_empty());
         assert_eq!(screens.closes, 2);
+    }
+
+    #[test]
+    fn the_bound_keys_open_and_close_the_screens() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<Bindings>()
+            .init_resource::<GameScreens>()
+            .add_systems(Update, screens_from_keys);
+        app.world_mut().spawn((Player, Condition::NORMAL));
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyI);
+        app.update();
+        assert!(
+            app.world()
+                .resource::<GameScreens>()
+                .is_open(GameScreen::Inventory)
+        );
+        assert!(
+            app.world()
+                .resource::<GameScreens>()
+                .is_focused(GameScreen::Inventory)
+        );
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset(KeyCode::KeyI);
+        app.update();
+        // The focused inventory toggles closed.
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyI);
+        app.update();
+        assert!(
+            !app.world()
+                .resource::<GameScreens>()
+                .is_open(GameScreen::Inventory)
+        );
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset(KeyCode::KeyI);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyJ);
+        app.update();
+        assert!(
+            app.world()
+                .resource::<GameScreens>()
+                .is_open(GameScreen::Journal)
+        );
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset(KeyCode::KeyJ);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Escape);
+        app.update();
+        assert!(
+            !app.world()
+                .resource::<GameScreens>()
+                .is_open(GameScreen::Journal)
+        );
     }
 
     #[test]

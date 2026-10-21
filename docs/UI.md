@@ -932,6 +932,22 @@ the task's state. A control value of `i32::MIN` means none.
   either the task's active parent chain (when active) or the form, which is
   detached from its owner. Showing focuses the form, or its parent when it
   is the active child.
+- **Control lookup and points.** A control code is 1-based in its low 16
+  bits; a code of 0 or past the form's last control names none. The first
+  control with a record code is searched on the form, then its children.
+  A form-local point becomes a screen point through each ancestor's border
+  and place, minus its scroll offset (zero when the form's scroll is
+  locked). Hovering a valid code clears the record's 0x40000 bit and asks
+  for its 0x20 message; focusing clears the old record's 0x400, sets the
+  new one's and the form's state bit 0x10 (or clears it when no control
+  takes the focus).
+- **Style and destroy.** Setting a style and attribute word raises the
+  layout bit; a form whose parent is not a task gets state bit 4; a
+  maximised form (attribute 0x10000) on a task adds style 0x10 and
+  attributes 0x41, and off one clears 0x20000. Destroying frees the
+  children, the controls when it owns them and the name, clears the
+  active form when it is this one, and frees the object when the caller
+  owns it.
 - **Close edges and snap slots.** The close-band codes are -21…-19,
   -14…-13, -10…-9 and -6…-4, and -8 when the skin's first flag bit is set;
   the resize codes 0x80000011/12/14/18/15/16/19/1a give the four cursor
