@@ -260,20 +260,19 @@ pub mod camera {
     use super::{CameraFrame, Viewport};
     use bevy::math::Vec3;
 
-    /// The camera of the wide shot (an arena start and the story continue),
-    /// at 300, 1180, 1300 cm.
-    pub const WIDE_CAMERA: Vec3 = Vec3::new(300.0, 1180.0, 1300.0);
-    /// The camera of the other shot (a practice start and a story respawn),
-    /// at 700, 1180, 1100 cm.
-    pub const NEAR_CAMERA: Vec3 = Vec3::new(700.0, 1180.0, 1100.0);
-    /// The speed a session start forces on the view.
+    /// The camera's offset from the point in the far shot (the arena
+    /// unit's own matches use it), 300, 1180, 1300 cm.
+    pub const FAR_OFFSET: Vec3 = Vec3::new(300.0, 1180.0, 1300.0);
+    /// The camera's offset from the point in the near shot (the practice
+    /// start and next fight, the story continue, the arena hub), 700, 1180,
+    /// 1100 cm.
+    pub const NEAR_OFFSET: Vec3 = Vec3::new(700.0, 1180.0, 1100.0);
+    /// The speed a fast shot forces on the view.
     pub const START_SPEED: f32 = 1300.0;
-    /// The camera offset the story start and respawn use for their look-from
-    /// placement. The pose helper is outside this group; the triple is read
-    /// as an offset added to the target (a guess).
-    pub const STORY_OFFSET: Vec3 = Vec3::new(600.0, 600.0, 600.0);
-    /// The horizontal cursor offset of the wide and near shots, per 1/1140
-    /// of the client height.
+    /// The camera's offset from the player in the story start's shot.
+    pub const STORY_OFFSET: Vec3 = Vec3::new(600.0, 600.0, 1300.0);
+    /// The horizontal cursor offset of the point shots, per 1/1140 of the
+    /// client height.
     pub const WARP_X: f32 = 120.0;
     /// The vertical cursor offset of the same shots.
     pub const WARP_Y: f32 = 200.0;
@@ -303,12 +302,13 @@ pub mod camera {
         (cx as i32, cy as i32)
     }
 
-    /// Frames `point`: the camera at [`WIDE_CAMERA`] or [`NEAR_CAMERA`], the
-    /// point as the target, the start speed when `fast`, and the wide shot's
-    /// cursor warp.
-    pub fn frame_point(point: Vec3, fast: bool, wide: bool, viewport: Viewport) -> CameraFrame {
+    /// Frames `point`: the target at the point, the camera at the point plus
+    /// [`FAR_OFFSET`] (`far`) or [`NEAR_OFFSET`], the start speed when
+    /// `fast`, and the shot's cursor warp. (The original sets the camera to
+    /// the offset and adds the point to it in place.)
+    pub fn frame_point(point: Vec3, fast: bool, far: bool, viewport: Viewport) -> CameraFrame {
         CameraFrame {
-            camera: if wide { WIDE_CAMERA } else { NEAR_CAMERA },
+            camera: (if far { FAR_OFFSET } else { NEAR_OFFSET }) + point,
             target: point,
             speed: fast.then_some(START_SPEED),
             warp: warp(viewport.width, viewport.height, WARP_X, WARP_Y),
@@ -330,8 +330,9 @@ pub mod camera {
         }
     }
 
-    /// Frames the player at `point`: the look-from offset, the start speed,
-    /// and the cursor moved left of centre.
+    /// Frames the player at `point`: the camera at the point plus
+    /// [`STORY_OFFSET`], the start speed, and the cursor moved left of
+    /// centre.
     pub fn frame_player(point: Vec3, viewport: Viewport) -> CameraFrame {
         CameraFrame {
             camera: point + STORY_OFFSET,
@@ -365,35 +366,36 @@ pub const STORY_POINT: Vec3 = Vec3::new(8200.0, 0.0, 3920.0);
 /// The degrees-to-radians factor the spawn tables use for their angles.
 pub const DEGREES: f32 = 0.017_453_292_384_743_69;
 
-/// A rotation about the vertical axis (the spawn tables' main use of their
-/// angle helper). The engine's helper is outside this group; right-handed
-/// degrees with the yaw about +Y are a guess.
+/// A rotation about the vertical axis: [`rotation`] of the yaw alone.
 pub fn yaw(degrees: f32) -> [[f32; 3]; 3] {
-    let (sin, cos) = (degrees * DEGREES).sin_cos();
-    [[cos, 0.0, sin], [0.0, 1.0, 0.0], [-sin, 0.0, cos]]
+    rotation(0.0, degrees, 0.0)
 }
 
-/// A rotation from three angles in degrees, applied about X, then Y, then Z
-/// (the engine's helper is outside this group; the order is a guess, and
-/// only the villager's spawn uses more than the yaw).
+/// The engine's rotation from three angles in degrees (x, y, z), as the
+/// spawn tables build it: each angle times [`DEGREES`] in single precision,
+/// its sine and cosine from the x87 unit (rounded to single), and the rows
+///
+/// - `(cz·cy, sz, −cz·sy)`,
+/// - `(sx·sy + −(cx·sz)·cy, cx·cz, sx·cy + (cx·sz)·sy)`,
+/// - `(cx·sy + (sx·sz)·cy, −sx·cz, cx·cy + −(sx·sz)·sy)`,
+///
+/// each sum in that order. A yaw alone gives `(cy, 0, −sy)`, `(0, 1, 0)`,
+/// `(sy, 0, cy)`.
 pub fn rotation(x: f32, y: f32, z: f32) -> [[f32; 3]; 3] {
-    let (sx, cx) = (x * DEGREES).sin_cos();
-    let (sy, cy) = (y * DEGREES).sin_cos();
-    let (sz, cz) = (z * DEGREES).sin_cos();
-    let rx = [[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]];
-    let ry = [[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]];
-    let rz = [[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]];
-    multiply(rz, multiply(ry, rx))
-}
-
-fn multiply(a: [[f32; 3]; 3], b: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
-    let mut out = [[0.0; 3]; 3];
-    for (row, out_row) in out.iter_mut().enumerate() {
-        for (column, cell) in out_row.iter_mut().enumerate() {
-            *cell = a[row][0] * b[0][column] + a[row][1] * b[1][column] + a[row][2] * b[2][column];
-        }
-    }
-    out
+    let sin_cos = |degrees: f32| {
+        let angle = f64::from(degrees * DEGREES);
+        (angle.sin() as f32, angle.cos() as f32)
+    };
+    let (sx, cx) = sin_cos(x);
+    let (sy, cy) = sin_cos(y);
+    let (sz, cz) = sin_cos(z);
+    let cxsz = cx * sz;
+    let sxsz = sx * sz;
+    [
+        [cz * cy, sz, -cz * sy],
+        [sx * sy + -cxsz * cy, cx * cz, sx * cy + cxsz * sy],
+        [cx * sy + sxsz * cy, -sx * cz, cx * cy + -sxsz * sy],
+    ]
 }
 
 /// The story background a new story starts from: the unknown hero, a knight,
@@ -439,7 +441,9 @@ pub struct StoryStart {
     /// The story flag word the record gets.
     pub flags: u32,
     pub placement: Placement,
-    pub light: StoryLight,
+    /// The starting light: the unknown background's and the villager's; the
+    /// knight and proctor start without one.
+    pub light: Option<StoryLight>,
     /// Derrin, on the unknown background only.
     pub companion: Option<Companion>,
 }
@@ -487,11 +491,11 @@ pub fn story_start(background: Background, body_height: f32) -> StoryStart {
                     STORY_POINT.z,
                 ),
             },
-            light: StoryLight {
+            light: Some(StoryLight {
                 position: Vec3::new(8045.0, 4.7, 4075.0),
-                rotation_degrees: Vec3::new(0.0, 110.0, 88.0),
+                rotation_degrees: Vec3::new(-48.0, 110.0, 88.0),
                 intensity: STORY_LIGHT_INTENSITY,
-            },
+            }),
             companion: Some(Companion {
                 template: "xac_derrin",
                 position: Vec3::new(5808.0, 0.0, -4075.0),
@@ -507,11 +511,7 @@ pub fn story_start(background: Background, body_height: f32) -> StoryStart {
                 rotation: yaw(-50.0),
                 position: Vec3::new(STORY_POINT.x, 210.0, STORY_POINT.z),
             },
-            light: StoryLight {
-                position: Vec3::new(8000.0, 500.0, 4000.0),
-                rotation_degrees: Vec3::new(8.0, -150.0, 50.0),
-                intensity: STORY_LIGHT_INTENSITY,
-            },
+            light: None,
             companion: None,
         },
         Background::Villager => StoryStart {
@@ -522,11 +522,11 @@ pub fn story_start(background: Background, body_height: f32) -> StoryStart {
                 rotation: rotation(50.0, -50.0, 2.0),
                 position: Vec3::new(STORY_POINT.x, 300.0, STORY_POINT.z),
             },
-            light: StoryLight {
+            light: Some(StoryLight {
                 position: Vec3::new(8000.0, 500.0, 4000.0),
                 rotation_degrees: Vec3::new(8.0, -150.0, 50.0),
                 intensity: STORY_LIGHT_INTENSITY,
-            },
+            }),
             companion: None,
         },
     }
@@ -1159,12 +1159,13 @@ pub struct Flow {
     practice_health: f32,
     /// The maximum health the practice heal uses.
     practice_max: f32,
-    /// The player's placement, kept for the story respawn.
-    last_placement: Placement,
     /// The client size the camera shots are framed for.
     pub viewport: Viewport,
     /// Another unit installed a story hook (the story tick calls it).
     pub custom_hook: bool,
+    /// The fifth level's respawn portal, as the host found it when the level
+    /// loaded.
+    pub respawn_portal: Option<Placement>,
 }
 
 impl Default for Flow {
@@ -1192,15 +1193,12 @@ impl Default for Flow {
             frames: 0,
             practice_health: 0.0,
             practice_max: 0.0,
-            last_placement: Placement {
-                rotation: NO_ROTATION,
-                position: Vec3::ZERO,
-            },
             viewport: Viewport {
                 width: 1600,
                 height: 900,
             },
             custom_hook: false,
+            respawn_portal: None,
         }
     }
 }
@@ -1351,7 +1349,6 @@ impl Flow {
         self.hook = Hook::Story;
         self.phase = Phase::Playing;
         self.viewport = viewport;
-        self.last_placement = start.placement;
         self.story = StoryState {
             knockout_ms: u32::MAX - KNOCKOUT_MS,
             ..Default::default()
@@ -1399,10 +1396,15 @@ impl Flow {
                 flags: start.flags,
             },
             Step::PlacePlayer(start.placement),
-            Step::StoryLight(start.light),
-            Step::RequestAction(motion),
-            Step::Camera(camera::frame_player(start.placement.position, viewport)),
         ];
+        if let Some(light) = start.light {
+            steps.push(Step::StoryLight(light));
+        }
+        steps.push(Step::RequestAction(motion));
+        steps.push(Step::Camera(camera::frame_player(
+            start.placement.position,
+            viewport,
+        )));
         if let Some(companion) = start.companion {
             steps.push(Step::Companion(companion));
         }
@@ -1412,7 +1414,7 @@ impl Flow {
 
     /// Starts the practice ladder at its first fight. The arena is `arena`
     /// (or `arenae` for the expert ladder); the partner is `opponent01` (or
-    /// `opponent09`), the music is the ladder's, the camera the wide shot and
+    /// `opponent09`), the music is the ladder's, the camera the fast near shot and
     /// the player stands at the ring's middle, facing the camera.
     pub fn start_practice(
         &mut self,
@@ -1447,7 +1449,6 @@ impl Flow {
             position: Vec3::new(PRACTICE_POINT.x, practice_height(health), PRACTICE_POINT.z),
         };
         self.viewport = viewport;
-        self.last_placement = placement;
         vec![
             Step::TeardownWorld,
             Step::GameGui(false),
@@ -1458,7 +1459,7 @@ impl Flow {
                 teardown: true,
             },
             Step::PlacePlayer(placement),
-            Step::Camera(camera::frame_point(PRACTICE_POINT, true, true, viewport)),
+            Step::Camera(camera::frame_point(PRACTICE_POINT, true, false, viewport)),
             Step::Music {
                 name: start.music.name,
                 volume: start.music.volume,
@@ -1470,7 +1471,7 @@ impl Flow {
 
     /// Continues a story save: the save's locale is loaded (or the first
     /// level when there is none), the player nudged out of any exit trigger
-    /// by the host, and the camera framed from the player.
+    /// by the host, and the near shot framed on the player's body, fast.
     pub fn continue_story(
         &mut self,
         save_locale: Option<&'static str>,
@@ -1481,7 +1482,6 @@ impl Flow {
         self.hook = Hook::Story;
         self.phase = Phase::Playing;
         self.viewport = viewport;
-        self.last_placement = player;
         vec![
             Step::SessionTask(true),
             Step::LoadLevel {
@@ -1490,12 +1490,7 @@ impl Flow {
                 teardown: true,
             },
             Step::PlacePlayer(player),
-            Step::Camera(camera::frame_two_points(
-                player.position,
-                camera::NEAR_CAMERA,
-                true,
-                viewport,
-            )),
+            Step::Camera(camera::frame_point(player.position, true, false, viewport)),
             Step::Hook(Hook::Story),
         ]
     }
@@ -1513,7 +1508,6 @@ impl Flow {
         self.hook = Hook::None;
         self.phase = Phase::Playing;
         self.viewport = viewport;
-        self.last_placement = player;
         let music = arena_hub::pick_hub_music(roll, self.alternative_music);
         vec![
             Step::SessionTask(true),
@@ -1769,7 +1763,6 @@ impl Flow {
             rotation: PRACTICE_ROTATION,
             position: Vec3::new(PRACTICE_POINT.x, practice_height(red), PRACTICE_POINT.z),
         };
-        self.last_placement = placement;
         let mut steps = vec![
             Step::HideEndMenu,
             Step::MenuHelp(false),
@@ -1890,9 +1883,11 @@ impl Flow {
         ]
     }
 
-    /// The story's death screen CONTINUE: the player's record is written, the
-    /// world torn down and the fifth level's portal loaded with the player at
-    /// its saved placement, 15 cm higher, with the camera framed on it.
+    /// The story's death screen CONTINUE: the save is written (without the
+    /// death rule), the world torn down and `exanima05` loaded; the player
+    /// stands at the level's respawn portal (its pose, or the identity at the
+    /// origin when the level has none) 15 cm higher and plays the get-up
+    /// motion. The camera is not moved.
     pub fn story_respawn(&mut self, now: u32) -> Vec<Step> {
         self.mode = Mode::Story;
         self.phase = Phase::Playing;
@@ -1900,13 +1895,18 @@ impl Flow {
         self.story.wake = Wake::default();
         self.story.reconstruction = REBUILDABLE;
         let _ = now;
+        let portal = self.respawn_portal.unwrap_or(Placement {
+            rotation: NO_ROTATION,
+            position: Vec3::ZERO,
+        });
         let placement = Placement {
-            rotation: self.last_placement.rotation,
-            position: self.last_placement.position + Vec3::Y * 15.0,
+            rotation: portal.rotation,
+            position: portal.position + Vec3::Y * 15.0,
         };
-        self.last_placement = placement;
         vec![
-            Step::PlayerData,
+            Step::Save {
+                drop_on_low_health: false,
+            },
             Step::TeardownWorld,
             Step::LoadLevel {
                 locale: "exanima05",
@@ -1915,9 +1915,7 @@ impl Flow {
             },
             Step::PlacePlayer(placement),
             Step::RequestAction(0x2f),
-            Step::Camera(camera::frame_player(placement.position, self.viewport)),
             Step::Hook(Hook::Story),
-            Step::SessionTask(true),
         ]
     }
 
@@ -2453,23 +2451,45 @@ mod tests {
             width: 1600,
             height: 1140,
         };
+        // The offset is added to the point: (300, 1180, 1300) + (0, 0, 500).
         let shot = camera::frame_point(PRACTICE_POINT, true, true, view);
-        assert_eq!(shot.camera, Vec3::new(300.0, 1180.0, 1300.0));
+        assert_eq!(shot.camera, Vec3::new(300.0, 1180.0, 1800.0));
         assert_eq!(shot.target, Vec3::new(0.0, 0.0, 500.0));
         assert_eq!(shot.speed, Some(1300.0));
         assert_eq!(shot.warp, (920, 370));
         let near = camera::frame_point(PRACTICE_POINT, false, false, view);
-        assert_eq!(near.camera, Vec3::new(700.0, 1180.0, 1100.0));
+        assert_eq!(near.camera, Vec3::new(700.0, 1180.0, 1600.0));
         assert_eq!(near.speed, None);
         let two = camera::frame_two_points(Vec3::ZERO, Vec3::new(1.0, 2.0, 3.0), true, view);
         assert_eq!(two.camera, Vec3::new(1.0, 2.0, 3.0));
         assert_eq!(two.target, Vec3::ZERO);
         let player = camera::frame_player(Vec3::new(10.0, 20.0, 30.0), view);
-        assert_eq!(player.camera, Vec3::new(610.0, 620.0, 630.0));
+        assert_eq!(player.camera, Vec3::new(610.0, 620.0, 1330.0));
         assert_eq!(player.target, Vec3::new(10.0, 20.0, 30.0));
         assert_eq!(player.warp, (600, 570));
         // 200·(900/1140) = 157.89, which rounds to 158.
         assert_eq!(camera::warp(1600, 900, 0.0, 200.0), (800, 292));
+    }
+
+    #[test]
+    fn the_spawn_rotation_is_the_engines_row_layout() {
+        // A quarter turn of yaw: rows (cy, 0, −sy), (0, 1, 0), (sy, 0, cy).
+        let quarter = yaw(90.0);
+        assert!((quarter[0][2] + 1.0).abs() < 1e-6);
+        assert!((quarter[2][0] - 1.0).abs() < 1e-6);
+        assert!(quarter[0][0].abs() < 1e-6);
+        assert_eq!(quarter[1], [0.0, 1.0, 0.0]);
+        // A roll alone: rows (cz, sz, 0), (−sz, cz, 0), (0, 0, 1).
+        let roll = rotation(0.0, 0.0, 90.0);
+        assert!((roll[0][1] - 1.0).abs() < 1e-6);
+        assert!((roll[1][0] + 1.0).abs() < 1e-6);
+        assert_eq!(roll[2], [0.0, 0.0, 1.0]);
+        // A pitch alone: rows (1, 0, 0), (0, cx, sx), (0, −sx, cx).
+        let pitch = rotation(90.0, 0.0, 0.0);
+        assert_eq!(pitch[0], [1.0, 0.0, 0.0]);
+        assert!((pitch[1][2] - 1.0).abs() < 1e-6);
+        assert!((pitch[2][1] + 1.0).abs() < 1e-6);
+        assert_eq!(rotation(0.0, 0.0, 0.0), NO_ROTATION);
     }
 
     #[test]
@@ -2481,8 +2501,10 @@ mod tests {
         assert_eq!(unknown.placement.position.y, 30.0);
         assert_eq!(unknown.placement.position.z, 3920.0);
         assert_eq!(unknown.placement.rotation, yaw(150.0));
-        assert_eq!(unknown.light.position, Vec3::new(8045.0, 4.7, 4075.0));
-        assert_eq!(unknown.light.intensity, 256.0);
+        let light = unknown.light.unwrap();
+        assert_eq!(light.position, Vec3::new(8045.0, 4.7, 4075.0));
+        assert_eq!(light.rotation_degrees, Vec3::new(-48.0, 110.0, 88.0));
+        assert_eq!(light.intensity, 256.0);
         let derrin = unknown.companion.unwrap();
         assert_eq!(derrin.template, "xac_derrin");
         assert_eq!(derrin.position, Vec3::new(5808.0, 0.0, -4075.0));
@@ -2494,6 +2516,7 @@ mod tests {
         assert_eq!(knight.flags, 0);
         assert_eq!(knight.placement.position.y, 210.0);
         assert!(knight.companion.is_none());
+        assert!(knight.light.is_none());
         let proctor = story_start(Background::Proctor, 1.0);
         assert_eq!(proctor.placement, knight.placement);
         let villager = story_start(Background::Villager, 1.0);
@@ -2501,6 +2524,12 @@ mod tests {
         assert_eq!(villager.flags, 0x600);
         assert_eq!(villager.placement.position.y, 300.0);
         assert_ne!(villager.placement.rotation, NO_ROTATION);
+        let villager_light = villager.light.unwrap();
+        assert_eq!(villager_light.position, Vec3::new(8000.0, 500.0, 4000.0));
+        assert_eq!(
+            villager_light.rotation_degrees,
+            Vec3::new(8.0, -150.0, 50.0)
+        );
         assert_eq!(spawn_height(0.25, false), 6.25);
         assert_eq!(spawn_height(0.25, true), 14.25);
         assert_eq!(practice_height(0.25), 6.25);
@@ -3006,7 +3035,7 @@ mod tests {
         assert!(steps.contains(&Step::Camera(camera::frame_point(
             PRACTICE_POINT,
             true,
-            true,
+            false,
             view
         ))));
         assert!(steps.iter().any(|step| matches!(
@@ -3073,10 +3102,10 @@ mod tests {
             spawn: 0,
             teardown: true
         }));
-        assert!(steps.contains(&Step::Camera(camera::frame_two_points(
+        assert!(steps.contains(&Step::Camera(camera::frame_point(
             placement.position,
-            camera::NEAR_CAMERA,
             true,
+            false,
             view
         ))));
         let steps = flow.continue_story(None, placement, view);
@@ -3239,7 +3268,8 @@ mod tests {
         // The scale notification only fires when it moved.
         assert!(flow.gui_scale_changed(gui_scale(1080), 1080).is_empty());
         assert_eq!(flow.gui_scale_changed(0.0, 1080), vec![Step::GuiScale(0.5)]);
-        // The story respawn adds the 15 cm and frames the saved placement.
+        // The story respawn stands the player 15 cm over the portal and
+        // leaves the camera.
         let mut flow = Flow {
             mode: Mode::Story,
             phase: Phase::Ended,
@@ -3249,19 +3279,25 @@ mod tests {
             },
             ..Default::default()
         };
-        flow.last_placement = Placement {
-            rotation: NO_ROTATION,
-            position: Vec3::new(1.0, 2.0, 3.0),
-        };
         let steps = flow.story_respawn(0);
+        // No portal: the identity at the origin.
         assert!(steps.contains(&Step::PlacePlayer(Placement {
             rotation: NO_ROTATION,
+            position: Vec3::new(0.0, 15.0, 0.0)
+        })));
+        flow.respawn_portal = Some(Placement {
+            rotation: PRACTICE_ROTATION,
+            position: Vec3::new(1.0, 2.0, 3.0),
+        });
+        let steps = flow.story_respawn(0);
+        assert!(steps.contains(&Step::PlacePlayer(Placement {
+            rotation: PRACTICE_ROTATION,
             position: Vec3::new(1.0, 17.0, 3.0)
         })));
-        assert!(steps.contains(&Step::Camera(camera::frame_player(
-            Vec3::new(1.0, 17.0, 3.0),
-            flow.viewport
-        ))));
+        assert!(steps.contains(&Step::Save {
+            drop_on_low_health: false
+        }));
+        assert!(!steps.iter().any(|step| matches!(step, Step::Camera(_))));
     }
 
     #[test]
