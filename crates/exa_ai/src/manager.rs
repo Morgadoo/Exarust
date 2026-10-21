@@ -57,6 +57,10 @@ pub const ALERT_HOLD_MS: u32 = 10_000;
 pub const ZONE_INSIDE: f32 = 0.1;
 /// The circle around the target is this many times its speed, cm.
 pub const CIRCLE_PER_SPEED: f32 = 60.0;
+/// The scene node a level's bootstrap makes to hold its dormant characters.
+pub const DORMANT_NODE: &str = "_Temp";
+/// The flag word that node carries (`0x100000`).
+pub const DORMANT_NODE_FLAGS: u32 = 0x10_0000;
 /// A cut step must head at least this much away from the target (cosine).
 pub const CUT_HEADING: f32 = 0.75;
 
@@ -103,6 +107,23 @@ pub fn frame(state: FrameState) -> Frame {
     } else {
         Frame::Stay
     }
+}
+
+/// The node a level's AI bootstrap makes once, and the flags it gives it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bootstrap {
+    pub node: &'static str,
+    pub flags: u32,
+}
+
+/// The AI bootstrap: with no manager yet it creates the dormant holder and
+/// the manager; with one it does nothing. The holder's name and flags are
+/// all a level build needs (the manager itself is Exarust's plugin state).
+pub fn bootstrap(manager_exists: bool) -> Option<Bootstrap> {
+    (!manager_exists).then_some(Bootstrap {
+        node: DORMANT_NODE,
+        flags: DORMANT_NODE_FLAGS,
+    })
 }
 
 /// Whether a character moved enough since the last zone check, positions
@@ -321,6 +342,19 @@ mod tests {
         assert!(stay(z(0x210), true));
         assert!(!stay(z(0x210), false));
         assert!(!stay(z(0x110), true));
+    }
+
+    /// The level bootstrap makes the dormant holder once.
+    #[test]
+    fn the_bootstrap_makes_the_dormant_holder_once() {
+        assert_eq!(
+            bootstrap(false),
+            Some(Bootstrap {
+                node: "_Temp",
+                flags: 0x10_0000
+            })
+        );
+        assert_eq!(bootstrap(true), None);
     }
 
     #[test]
