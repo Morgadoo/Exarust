@@ -12,7 +12,7 @@
 
 use bevy::prelude::Resource;
 
-/// The word the form's class returns (the small no-op accessor 0x100272860).
+/// The word the form's class returns (the small no-op accessor).
 pub const FORM_RETURN: i32 = 4;
 /// The symbol shader's source, copied from the retail image.
 pub const SYMBOL_SHADER: &str = "in vec2 vrTex;\r\nout vec4 FragColor;\r\nuniform vec4 Colour;\r\nuniform vec4 TexPos;\r\nuniform vec2 TexOfs;\r\nuniform sampler2D Tex;\r\nvoid main() {\r\nvec2 a = vrTex - vec2(0.5);\r\nfloat b = min(dot(a,a) * 4.0, 1.0);\r\nb = b * b;b = 1.0 - b * b;b = b * b;float c = dot(a,a);c = abs(c*128-25);c = c * c;c = max(1.0 - c, 0.0);float d = min(dot(a,a) * 4.0, 1.0);\r\nd = clamp((0.6-d) * 16, 0.0, 1.0);a = vrTex * TexPos.xy * 1.3 + TexPos.zw - TexPos.xy * 0.15;a = a + TexOfs * 0.1;d = d * (1.0 - dot(TexOfs, TexOfs) * 30);c = c + texture(Tex, a).a * 0.6 * d;FragColor.rgb = Colour.rgb * c;\r\nFragColor.a = b * Colour.a;\r\n}";
@@ -91,7 +91,7 @@ pub mod state {
 /// it shows and the two wobble values the screen jitters.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DestinationSlot {
-    /// The time this slot's hover flash ends (0x100273b10's stamp).
+    /// The time this slot's hover flash ends.
     pub flash_until: u32,
     /// The symbol the row shows: an index into the level ids.
     pub symbol: usize,

@@ -49,8 +49,7 @@ pub fn editor_for(
 ) -> LoadoutEditor {
     let rank = rank.min(RANKS - 1);
     let loadout = &member.loadouts[rank];
-    let tier = arena::loadout_tier(member.skills.iter().sum::<u32>());
-    let limit = arena::point_limit(tier).unwrap_or(0) as i32;
+    let limit = arena::point_limit(rank as u32).unwrap_or(0) as i32;
     let weapons = CharacterLoadout::items(&loadout.weapons, facts);
     let armour = CharacterLoadout::items(&loadout.armour, facts);
     LoadoutEditor {

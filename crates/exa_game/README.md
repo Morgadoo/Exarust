@@ -237,9 +237,9 @@ triangles.
 
 The arena's per-rank kits are in (`loadout`): `Member::loadouts` holds six
 kits of weapon and armour item ids and their counted points; the editor
-takes the rank's kit, the tier's point limit (`arena::point_limit` of the
-member's skill total through `loadout_tier`) and the shop's shelf as its
-arsenal, and saving writes the ids back. The technique selector's bridge
+takes the rank's kit, that rank's point limit (`arena::point_limit`) and the
+shop's shelf as its arsenal, and saving writes the ids back; the session
+save does not store the kits or the emblem yet. The technique selector's bridge
 (`techniques`) copies a member's six skill experience words and six
 technique slots into the selector's training and back, with the member's
 `xp` as the unspent pool and 5 000 a level. The company emblem is a
