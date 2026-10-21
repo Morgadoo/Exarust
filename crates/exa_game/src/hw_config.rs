@@ -14,7 +14,10 @@ use std::path::PathBuf;
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
-use bevy::window::{PresentMode, PrimaryWindow, WindowMode};
+use bevy::window::{
+    Monitor, MonitorSelection, PresentMode, PrimaryMonitor, PrimaryWindow, VideoModeSelection,
+    WindowMode,
+};
 use exa_audio::{AudioEnvironment, MusicSetting};
 use exa_formats::file_ref::{read_whole_file, write_whole_file};
 use exa_formats::hw_config::{Benchmark, Options, QualityChange, Screen};
@@ -567,6 +570,7 @@ type AppliedWindow = (bool, Option<(u32, u32)>, bool);
 fn apply_window(
     config: Option<Res<HardwareConfig>>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
+    monitors: Query<&Monitor, With<PrimaryMonitor>>,
     mut applied: Local<Option<AppliedWindow>>,
 ) {
     let Some(config) = config else {
@@ -584,10 +588,27 @@ fn apply_window(
         return;
     }
     *applied = Some(state);
+    // The original's full screen changes the display mode and creates an
+    // exclusive window; winit falls back to borderless where the platform
+    // has no exclusive mode. A requested size picks that video mode when the
+    // display lists it, otherwise the current mode stays.
     let mode = if config.live.window_mode {
         WindowMode::Windowed
     } else {
-        WindowMode::BorderlessFullscreen(bevy::window::MonitorSelection::Primary)
+        let specific = config.window_size.and_then(|(width, height)| {
+            monitors.single().ok().and_then(|monitor| {
+                monitor
+                    .video_modes
+                    .iter()
+                    .find(|mode| mode.physical_size.x == width && mode.physical_size.y == height)
+                    .copied()
+                    .map(VideoModeSelection::Specific)
+            })
+        });
+        WindowMode::Fullscreen(
+            MonitorSelection::Primary,
+            specific.unwrap_or(VideoModeSelection::Current),
+        )
     };
     if window.mode != mode {
         window.mode = mode;

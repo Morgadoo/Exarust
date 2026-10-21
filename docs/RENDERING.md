@@ -35,6 +35,14 @@ drawn four times at window resolution:
 Bloom and the final pass then run at window resolution. Supersampling also
 turns on the final pass's sharpen.
 
+The level table is (sub-views, render scale): 1 at 1, 2 at 3/4, 3 at 2/3,
+4 at 3/5 and 8 at 1/2, the jitter entries above being the four the 4×
+level uses. Each sub-view's projection is offset by
+`2·jitter·half-extent / size` in NDC. The shared buffer is twice each
+sub-view's size (`exa_render::view` holds the table, the jitters and the
+projection arithmetic, pinned by tests). Supersampling also sets the final
+pass's sharpen to 1.5 × (0.075·level + 0.4).
+
 Exarust (`exa_render::supersample`) draws the scene at twice the window's
 resolution on each axis, an ordered 2 × 2 grid instead of the jittered
 four. A display camera resolves each 2 × 2 block by bilinear sampling at
@@ -158,6 +166,42 @@ branches (`vrCol × EmiTex × MatDif.a`, and `vrCol × OpcTex.a`), its
 map, so the original's alpha-tested cobweb cutout is unresolved; Exarust
 keeps the opacity map in the alpha for Bevy's alpha test (both shipped
 alpha-tested records have opacity 1).
+
+## Pass order
+
+The original renders a frame in one fixed walk over its per-material
+render-state lists (`exa_render::passes` holds the model and the two list
+orderings, pinned by tests):
+
+1. the scene environment's sky;
+2. the alpha-tested class (`0x8000`) and the opaque class, both with depth
+   writes on;
+3. the after-opaque hook lists;
+4. depth writes off;
+5. the `0x10000` class, then the frame copy refracting surfaces read;
+6. the copy's hook list;
+7. the blended class, one list per scene sector (or one for a sectorless
+   scene);
+8. the particles' depth pre-pass (depth writes back on) and their colour;
+9. the closing hooks, then depth writes back on.
+
+The opaque list is grouped by material program key: the first state stays
+first, each next slot takes the first unused state with the current key,
+and when none is left it takes the last unused state and moves to its key.
+This is a grouping, not an ascending sort. The blended list is selected by
+the lowest blend layer first and then the highest opacity; within a layer
+the first state found by layer alone does not set the opacity that later
+states of the layer compare against.
+
+Exarust lets Bevy's phases take the place of the fixed walk: `Opaque3d` for
+the opaque class, `AlphaMask3d` for the alpha-tested one and `Transparent3d`
+for the depth-write-free classes and the particles. The sky is Bevy's
+atmosphere or the environment camera; the frame copy and the hook lists
+have no separate node yet. `exa_cube_shadows` and `exa_gi` run in the
+`Core3d` prepass, and the post chain follows the transparent phase. The
+original's list order inside a phase is not reproduced by Bevy's batching
+(the same materials and meshes batch in any order); draw order between
+different materials follows the phase's own sort.
 
 ## Surfaces
 

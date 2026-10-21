@@ -18,6 +18,7 @@
 //!          --no-supersample           draw at window resolution (default: 4× supersampling, as the original)
 //!          --gi-warm-up <steps>       GI steps run when a level loads (default 600)
 //!          --size WxH                 window size (default 1600x900)
+//!          --max-fps <n|auto>         hold the frame to n a second, or to the display's rate
 //!          --no-settings              ignore the user's settings files (see below)
 //!          --benchmark                run the GPU benchmark and take its quality levels
 //!          --screenshot <file.png>    save a frame and exit
@@ -94,6 +95,7 @@
 //! `.` step one tick, `[` / `]` slower / faster.
 
 mod column;
+mod frame_loop;
 mod map_panel;
 mod profiler;
 mod user_settings;
@@ -134,6 +136,9 @@ pub struct Options {
     pub benchmark: bool,
     /// Present frames as soon as they are drawn (for measuring).
     pub no_vsync: bool,
+    /// The original's frame-rate cap: positive is a fixed rate, negative
+    /// automatic (the display's rate, at least 120), zero off.
+    pub max_fps: i32,
     /// Window size in logical pixels.
     pub size: Option<(u32, u32)>,
     /// Borderless full screen on the primary display.
@@ -360,6 +365,18 @@ fn parse_presses(list: &str) -> Option<Vec<(Press, Range<u32>)>> {
         .collect()
 }
 
+/// Reads the frame-rate cap: a positive rate, `auto` (the display's rate)
+/// or `0` (off).
+fn parse_max_fps(value: &str) -> Option<i32> {
+    if value == "auto" {
+        return Some(-1);
+    }
+    match value.parse::<i32>() {
+        Ok(n) if n >= 0 => Some(n),
+        _ => None,
+    }
+}
+
 /// Reads `frame,...`.
 fn parse_clicks(list: &str) -> Option<Vec<u32>> {
     list.split(',')
@@ -391,6 +408,16 @@ fn main() -> AppExit {
             "--no-fps" => options.no_fps = true,
             "--benchmark" => options.benchmark = true,
             "--no-vsync" => options.no_vsync = true,
+            "--max-fps" => {
+                let value = args.next().unwrap_or_default();
+                match parse_max_fps(&value) {
+                    Some(cap) => options.max_fps = cap,
+                    None => {
+                        eprintln!("--max-fps: cannot read {value:?} (a rate, auto or 0)");
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
             "--no-settings" => options.no_settings = true,
             "--gi-warm-up" => {
                 if let Some(n) = args.next().and_then(|v| v.parse().ok()) {
@@ -702,6 +729,15 @@ fn main() -> AppExit {
 
     let fixed_frames = options.fixed_frames;
     let mut app = App::new();
+    // The original holds a background window to about 31 frames a second
+    // and runs the foreground one as fast as its pacing allows. Winit's
+    // reactive mode wakes on every window event and otherwise waits 32 ms.
+    app.insert_resource(bevy::winit::WinitSettings {
+        focused_mode: bevy::winit::UpdateMode::Continuous,
+        unfocused_mode: bevy::winit::UpdateMode::reactive(std::time::Duration::from_millis(
+            exa_game::frame::UNFOCUSED_INTERVAL_MS as u64,
+        )),
+    });
     if let Some(trace) = trace {
         app.insert_resource(trace);
     }
@@ -736,13 +772,13 @@ fn main() -> AppExit {
                     // names the window "Unknown" in its dialogs.
                     name: Some("exarust".into()),
                     resolution: options.size.unwrap_or((1600, 900)).into(),
-                    mode: if options.fullscreen {
-                        bevy::window::WindowMode::BorderlessFullscreen(
-                            bevy::window::MonitorSelection::Primary,
-                        )
-                    } else {
-                        bevy::window::WindowMode::Windowed
+                    // The original's track-size minimum.
+                    resize_constraints: bevy::window::WindowResizeConstraints {
+                        min_width: exa_game::window::MIN_WINDOW_SIZE.x as f32,
+                        min_height: exa_game::window::MIN_WINDOW_SIZE.y as f32,
+                        ..default()
                     },
+                    mode: frame_loop::launch_window_mode(options.fullscreen),
                     present_mode: if options.no_vsync {
                         bevy::window::PresentMode::AutoNoVsync
                     } else {
@@ -789,6 +825,7 @@ fn main() -> AppExit {
     )
     .insert_resource(options)
     .add_plugins((
+        frame_loop::FrameLoopPlugin,
         viewer::ViewerPlugin,
         column::ColumnPlugin,
         map_panel::MapPanelPlugin,
@@ -872,6 +909,16 @@ mod tests {
             "P", "P@x", "F13@1", "Esc@2", "@3", "lmb@4", "XMB@5", "RMB@5-5", "RMB@9-4", "W@1-x",
         ] {
             assert_eq!(parse_presses(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_frame_rate_cap_is_read() {
+        assert_eq!(parse_max_fps("60"), Some(60));
+        assert_eq!(parse_max_fps("0"), Some(0));
+        assert_eq!(parse_max_fps("auto"), Some(-1));
+        for bad in ["-1", "x", "", "60.0"] {
+            assert_eq!(parse_max_fps(bad), None, "{bad}");
         }
     }
 

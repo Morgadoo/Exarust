@@ -25,6 +25,30 @@ cubes the log room runs at about 200 FPS, six times the original's frame
 rate at the same spot. Play mode, with 39 characters animated in the level,
 is bound by the CPU (about 9 FPS) and is next.
 
+## Frame pacing
+
+The original's frame tick measures real time from the previous frame's
+start, sleeps to a target interval and only then takes the frame's game
+delta. The target is 32 ms while the window is unfocused; otherwise the
+display's refresh rate when the cap is automatic, the refresh rate again
+when a fixed cap is at or above it, and the fixed rate below it. The fixed
+rate's whole-millisecond period truncates (`1000/fps`, one millisecond
+early); the display's period rounds to nearest, ties to even, then loses
+1 ms. Time spent under a fixed FPS setting is added to a paused-time
+accumulator, so game time advances by exactly one capped interval a frame;
+pausing adds the whole frame.
+
+`exa_game::frame` holds these rules (`FramePacer`, `FrameClock`) with tests,
+and `exarust` applies them only when `--max-fps` asks for a cap: with no cap
+the swap chain's vertical sync and the GPU already set the pace, and adding
+the original's pre-frame sleep would only take time from the frame. A
+background window uses winit's 32 ms reactive update. The rest of the tick's
+work is Bevy's schedules: the fixed 83 Hz ticks run up to four steps behind
+a slow frame (`exa_physics::MAX_STEPS_BEHIND`, 48 ms), and the periodic
+timer table, the deferred-call ring and the redraw-driven idle wait are
+engine-internal in the original, modelled in `exa_game::frame` and not
+needed by Exarust's event-driven winit loop.
+
 ## Frame profiler
 
 Three tools, from a quick look to a full timeline:

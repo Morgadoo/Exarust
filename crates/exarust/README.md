@@ -11,6 +11,17 @@ flags (`--debug-bodies`, `--joint-trace`, `--pair-trace`, `--corpse`,
 `--bevy-sun-cascades`,
 `--weapon-blood`, `--debug-spray`, `--perks`) and keys are in
 [`docs/DEBUGGING.md`](../../docs/DEBUGGING.md).
+`--max-fps <n|auto>` is the original's frame-rate cap (a fixed rate, or
+`auto` for the display's rate at least 120 Hz) and is off by default, so no
+frame is held; `src/frame_loop.rs` applies it from the previous frame's
+start, keeps a background window to winit's 32 ms reactive update and binds
+Alt+Enter to the windowed/borderless toggle with its size and position
+restored. A launch full screen asks for an exclusive display mode of the
+requested size when the monitor lists one, as the original changes the
+display mode, and falls back to the current mode where the platform has no
+exclusive mode. The window's minimum track size is the original's 640 ×
+480. Rules: [`docs/PERFORMANCE.md`](../../docs/PERFORMANCE.md) (Frame
+pacing).
 The user's settings files (`Exanima.ini`, `Exanima.set`,
 [`docs/formats/SETTINGS.md`](../../docs/formats/SETTINGS.md)) are read at
 start from `EXARUST_USER_DIR`, else `~/.config/exarust`: the window size,

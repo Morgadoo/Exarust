@@ -12,6 +12,7 @@ pub mod image_noise;
 pub mod lights;
 pub mod material;
 pub mod mipmap;
+pub mod passes;
 pub mod post;
 pub mod quality;
 pub mod shader_program;
@@ -22,6 +23,7 @@ pub mod spray;
 pub mod stain;
 pub mod sun_fit;
 pub mod supersample;
+pub mod view;
 
 use bevy::prelude::*;
 

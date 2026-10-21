@@ -18,6 +18,7 @@ pub mod emblem;
 pub mod experience;
 pub mod fall;
 pub mod footprints;
+pub mod frame;
 pub mod hud;
 pub mod hw_config;
 pub mod item_container;
@@ -48,6 +49,7 @@ pub mod thaum;
 pub mod torch;
 pub mod trace;
 pub mod trade;
+pub mod window;
 
 use bevy::prelude::*;
 

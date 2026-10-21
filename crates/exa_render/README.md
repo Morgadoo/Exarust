@@ -49,6 +49,18 @@ prints a material's original GLSL for comparison. Rules and evidence:
   the scene camera's MSAA while super-sampling is off, and
   `supersample::SuperSampling` turns the supersampled scene's target off and
   on ([`docs/UI.md`](../../docs/UI.md#what-actually-takes-effect)).
+- `passes`: the original's fixed frame walk (sky, alpha-tested and opaque
+  classes with depth writes, depth-write-free classes, the refraction copy,
+  the blended per-sector lists and the particles' depth pre-pass), the
+  blended list's layer/opacity selection and the opaque list's grouping by
+  material program key, with the Bevy phase each step maps to
+  ([`docs/RENDERING.md`](../../docs/RENDERING.md), Pass order).
+- `view`: the 3D view's arithmetic: the perspective frustum's half extents,
+  the five super-sampling levels (sub-view counts 1/2/3/4/8, render scales
+  1, 3/4, 2/3, 3/5 and 1/2, their sub-pixel jitters and sharpen strengths),
+  the seven-deep viewport and scissor stacks, and the original's integer
+  rectangle clip ([`docs/RENDERING.md`](../../docs/RENDERING.md),
+  Supersampling).
 - `shell`: `ShellMaterial`, the rooms' shells drawn opaque, unlit pure black, and the fading lid overlay (blended, no depth test, drawn last) ([`docs/RENDERING.md`](../../docs/RENDERING.md), Rooms and black fill).
 - `electricity`: the electric arcs' rules and material. `ArcMaterial` is the original's `_ElecMat01` fragment program (the texture's red mixed a third into the ribbon's V, the 24th and 6th powers, EleCol and EdgCol, squared, additive and two-sided; `arc.wesl`); the module also holds the 84-byte arc record, the weapon, spark-burst and device presets (sustained or one-shot), the charge an electrified item spends, the arc checks' release and rebuild rules and the jittered tendril ribbon (U along, V across) ([`docs/RENDERING.md`](../../docs/RENDERING.md), Electricity).
 - `flame`: `FlameMaterial` for the fire presets' particles (`flame.wesl`, premultiplied blending).
