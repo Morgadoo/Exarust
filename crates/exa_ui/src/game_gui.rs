@@ -954,6 +954,66 @@ pub fn ready_alert(current_xp: i32, chosen_ahead: bool) -> bool {
     current_xp < 15 && !chosen_ahead
 }
 
+/// The bars' show inputs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BarsInput {
+    pub yellow: f32,
+    pub last_yellow: f32,
+    pub focus_cap: f32,
+    pub last_focus_cap: f32,
+    pub casting: bool,
+    pub out_of_action: bool,
+    pub now: u32,
+    pub interaction_until: u32,
+}
+
+/// Whether the health/focus bars ride up (`0x10013dd80`): yellow health
+/// changed, the focus capacity dropped, a power is being cast, the player is
+/// out of action or the interaction delay has not passed. The fade itself is
+/// [`crate::hud::Fade`].
+pub fn bars_shown(input: BarsInput) -> bool {
+    input.yellow != input.last_yellow
+        || (input.focus_cap <= input.last_focus_cap && input.last_focus_cap != input.focus_cap)
+        || input.casting
+        || input.out_of_action
+        || input.now < input.interaction_until
+}
+
+/// Whether the block-stamina gauge rides up (`0x10013df60`): the character
+/// holds a shield item and is out of action.
+pub fn gauge_shown(shield_item: bool, out_of_action: bool) -> bool {
+    shield_item && out_of_action
+}
+
+/// The HUD fade reset (`0x10013dd00`): opacity zero, the clock reset, and
+/// the last yellow health, focus capacity and interaction clock stored.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HudFadeReset {
+    pub opacity: f32,
+    pub start: u32,
+    pub yellow: f32,
+    pub focus_cap: f32,
+    pub interaction_until: u32,
+    pub interaction_start: u32,
+}
+
+/// The fade reset at `now` for the given health and focus.
+pub fn reset_hud_fade(
+    now: u32,
+    yellow: f32,
+    focus_cap: f32,
+    interaction_until: u32,
+) -> HudFadeReset {
+    HudFadeReset {
+        opacity: 0.0,
+        start: now,
+        yellow,
+        focus_cap,
+        interaction_until,
+        interaction_start: now,
+    }
+}
+
 /// A form close deferred to the end of the frame (`0x10013f390`): the game
 /// queues the call and returns at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1412,6 +1472,48 @@ mod tests {
                 ran_now: false
             }
         );
+    }
+
+    #[test]
+    fn the_hud_show_rules() {
+        let base = BarsInput {
+            yellow: 0.5,
+            last_yellow: 0.5,
+            focus_cap: 1.0,
+            last_focus_cap: 1.0,
+            casting: false,
+            out_of_action: false,
+            now: 10,
+            interaction_until: 0,
+        };
+        assert!(bars_shown(BarsInput {
+            last_yellow: 0.6,
+            ..base
+        }));
+        assert!(!bars_shown(base));
+        assert!(bars_shown(BarsInput {
+            focus_cap: 0.8,
+            ..base
+        }));
+        assert!(!bars_shown(BarsInput {
+            interaction_until: 10,
+            ..base
+        }));
+        assert!(bars_shown(BarsInput {
+            casting: true,
+            ..base
+        }));
+        assert!(bars_shown(BarsInput {
+            out_of_action: true,
+            ..base
+        }));
+        assert!(gauge_shown(true, true));
+        assert!(!gauge_shown(true, false));
+        assert!(!gauge_shown(false, true));
+        let reset = reset_hud_fade(100, 0.7, 0.9, 400);
+        assert_eq!(reset.opacity, 0.0);
+        assert_eq!((reset.start, reset.yellow), (100, 0.7));
+        assert_eq!((reset.focus_cap, reset.interaction_until), (0.9, 400));
     }
 
     #[test]

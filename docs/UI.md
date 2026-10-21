@@ -989,7 +989,10 @@ drawing classes:
   centre and 8 above the bottom (the skill-ready alert 60 units left),
   pulsing with `(3 − 2t)t² × 0.6` at `t = |1000 − elapsed mod 2000|/1000`;
   the level curtain is black at `round(t × 255)` for `t` of three seconds
-  with the world at `1 − t`; the heartbeat's fade-out is `1 − elapsed/1000`
+  with the world at `1 − t`; the bars ride up when yellow health changes,
+  the focus capacity drops, a power is cast, the player is out of action or
+  the interaction delay has not passed, and the stamina gauge when a shield
+  item is held out of action; the heartbeat's fade-out is `1 − elapsed/1000`
   with the sound at 0.3 of it; the menu cursor is `round(scale × height ×
   32/1080)` at most 128 with a 0.176/0.08 hotspot; the compass is a
   12-unit diamond two units plus its half width from the left and bottom.
