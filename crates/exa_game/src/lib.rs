@@ -22,6 +22,7 @@ pub mod experience;
 pub mod fall;
 pub mod footprints;
 pub mod frame;
+pub mod gamepad;
 pub mod hand;
 pub mod hirelings;
 pub mod hotkeys;
@@ -73,6 +74,7 @@ impl Plugin for GamePlugin {
         app.add_plugins((
             exa_assets::AssetsPlugin,
             player::PlayerPlugin,
+            gamepad::GamepadPlugin,
             exa_render::RenderPlugin,
             exa_physics::PhysicsPlugin,
             exa_anim::AnimPlugin,

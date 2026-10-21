@@ -206,6 +206,8 @@ fn press_hotkeys(
     keys: Res<ButtonInput<KeyCode>>,
     bindings: Res<Bindings>,
     hand: Option<ResMut<Hand>>,
+    pad: Option<Res<crate::gamepad::PlayPad>>,
+    pad_status: Option<Res<crate::gamepad::PadStatus>>,
     mut players: Query<(
         Entity,
         &mut PlayerBody,
@@ -216,10 +218,32 @@ fn press_hotkeys(
     )>,
     mut bodies: Query<&mut Ragdoll, Without<PlayerBody>>,
 ) {
-    let pressed: Vec<u32> = keys
+    let mut pressed: Vec<u32> = keys
         .get_just_pressed()
         .filter_map(|&k| virtual_key(k))
         .collect();
+    // The pad's presses go through the same handler as their keys. The
+    // original has no Steam action for combat mode; Exarust's pad turns it
+    // on and off with Look (the right stick's click), which has no Cursor
+    // Look meaning on a gamepad (Exarust's own). SwapWeapon is the
+    // original's action for the weapon-set swap. Each counts as its bound
+    // key, so the handler's gates apply to it.
+    if pad_status.as_ref().is_some_and(|s| s.active())
+        && let Some(frame) = pad.as_ref().map(|p| p.frame())
+    {
+        for (on, action) in [
+            (frame.look_pressed, Action::ToggleCombat),
+            (
+                frame.pressed & crate::gamepad::command::SWAP_WEAPON != 0,
+                Action::SwitchEquipped,
+            ),
+        ] {
+            let key = bindings.key(action);
+            if on && key != 0 {
+                pressed.push(key);
+            }
+        }
+    }
     if pressed.is_empty() {
         return;
     }

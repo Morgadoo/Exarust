@@ -264,9 +264,16 @@ struct AttackButton {
 fn latch_attack_button(
     buttons: Res<ButtonInput<MouseButton>>,
     bindings: Res<Bindings>,
+    status: Option<Res<crate::gamepad::PadStatus>>,
+    pad: Option<ResMut<crate::gamepad::PlayPad>>,
     mut latch: ResMut<AttackButton>,
 ) {
     latch.pressed_since_tick |= bindings.mouse_just_pressed(&buttons, Action::Primary);
+    if status.as_ref().is_some_and(|s| s.active())
+        && let Some(mut pad) = pad
+    {
+        latch.pressed_since_tick |= pad.take_attack_press();
+    }
 }
 
 /// The combat-mode heading toward a cursor at yaw `aim`: the cursor's
@@ -306,6 +313,8 @@ impl Plugin for PlayerPlugin {
             .init_resource::<AttackButton>()
             .init_resource::<Bindings>()
             .init_resource::<CursorLook>()
+            .init_resource::<crate::gamepad::PlayPad>()
+            .init_resource::<crate::gamepad::PadStatus>()
             .add_systems(
                 RunFixedMainLoop,
                 latch_attack_button.in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop),
@@ -484,6 +493,8 @@ pub(crate) fn steer_player(
     buttons: Res<ButtonInput<MouseButton>>,
     bindings: Res<Bindings>,
     cursor: Res<CursorGround>,
+    pad: Option<Res<crate::gamepad::PlayPad>>,
+    pad_status: Option<Res<crate::gamepad::PadStatus>>,
     ticks: Option<Res<BodyTicks>>,
     physics: Res<Physics>,
     nav: Option<Res<exa_world::nav::NavGrid>>,
@@ -512,6 +523,10 @@ pub(crate) fn steer_player(
         d: held(Action::Right),
         shift: held(Action::Run),
         mouse: buttons.pressed(MouseButton::Right) && cursor.0.is_some(),
+    };
+    let gamepad = match (pad_status.as_deref(), pad.as_deref()) {
+        (Some(status), Some(pad)) if status.active() => Some(*pad.frame()),
+        _ => None,
     };
     let nearest = |at: Vec3| {
         nav.as_deref()
@@ -546,12 +561,48 @@ pub(crate) fn steer_player(
                     at.translation = standing;
                 }
             }
+            // The pad's stick drives the same request the keys do: beside
+            // the heading its off-axis part turns with A or D, straight
+            // behind it backpedals; in combat mode it steps along and
+            // across the aim. (The original feeds an analog move vector to
+            // its player controls; Exarust's exploration steering is
+            // key-driven, so the stick is read as the keys a player would
+            // hold. Its aim stick is the combat aim.)
+            let mut input = input;
+            let pad_crouch = gamepad.is_some_and(|g| g.crouch);
+            if let Some(g) = gamepad {
+                input.shift |= g.sprint;
+                let ground = g.move_world.with_y(0.0);
+                if pb.combat {
+                    let look = forward(pb.aim);
+                    let side = Vec3::new(look.z, 0.0, -look.x);
+                    let along = ground.dot(look);
+                    let across = ground.dot(side);
+                    input.w |= along > 0.4;
+                    input.s |= along < -0.4;
+                    input.a |= across > 0.4;
+                    input.d |= across < -0.4;
+                } else if ground.length() > 0.2 {
+                    let want = yaw_of(ground);
+                    let error = turn_between(req.heading, want);
+                    if error > 0.06 {
+                        input.a = true;
+                    } else if error < -0.06 {
+                        input.d = true;
+                    }
+                    if error.abs() > 3.0 * std::f32::consts::FRAC_PI_4 {
+                        input.s = true;
+                    } else {
+                        input.w = true;
+                    }
+                }
+            }
             // The crouch is kept while down, so it is set before the
             // helpless bodies are left alone.
             let down = fallen || state.off_feet();
             pb.crouch = crouch_tick(
                 pb.crouch,
-                bindings.pressed(&keys, Action::Crouch),
+                bindings.pressed(&keys, Action::Crouch) || pad_crouch,
                 body.moving(),
                 down,
             );
@@ -585,8 +636,7 @@ pub(crate) fn steer_player(
                     line: &line,
                 };
                 combat_steps(
-                    &keys,
-                    &bindings,
+                    &input,
                     &mut req,
                     &mut steering,
                     &mut pb,
@@ -712,8 +762,7 @@ struct Footwork<'a> {
 /// it.
 #[allow(clippy::too_many_arguments)]
 fn combat_steps(
-    keys: &ButtonInput<KeyCode>,
-    bindings: &Bindings,
+    input: &Keys,
     req: &mut Locomotion,
     steering: &mut Steering,
     pb: &mut PlayerBody,
@@ -726,13 +775,13 @@ fn combat_steps(
     let look = forward(pb.aim);
     let side = Vec3::new(look.z, 0.0, -look.x);
     let mut dir = Vec3::ZERO;
-    for (action, d) in [
-        (Action::Forward, look),
-        (Action::Back, -look),
-        (Action::Left, side),
-        (Action::Right, -side),
+    for (held, d) in [
+        (input.w, look),
+        (input.s, -look),
+        (input.a, side),
+        (input.d, -side),
     ] {
-        if bindings.pressed(keys, action) {
+        if held {
             dir += d;
         }
     }
@@ -866,6 +915,8 @@ fn take_player_stance(
 pub(crate) fn player_combat(
     cursor: Res<CursorGround>,
     look: Res<CursorLook>,
+    pad: Option<Res<crate::gamepad::PlayPad>>,
+    pad_status: Option<Res<crate::gamepad::PadStatus>>,
     players: Query<&GlobalTransform, With<Player>>,
     mut bodies: Query<(
         &mut PlayerBody,
@@ -877,18 +928,26 @@ pub(crate) fn player_combat(
     let Some(player) = players.iter().next() else {
         return;
     };
-    if look.active {
+    let pad_active = pad_status.as_ref().is_some_and(|s| s.active());
+    if look.active && !pad_active {
         return;
     }
     for (mut pb, mut req, condition, fallen) in &mut bodies {
         if fallen || condition.is_some_and(|c| c.helpless()) || !pb.combat {
             continue;
         }
-        let aim = cursor
-            .0
-            .map(|c| c - player.translation())
-            .filter(|to| to.xz().length() > 0.2)
+        let pad_aim = pad_active
+            .then(|| pad.as_deref().map(|p| p.frame().aim_world))
+            .flatten()
+            .filter(|aim| aim.xz().length() > 0.2)
             .map(yaw_of);
+        let aim = pad_aim.or_else(|| {
+            cursor
+                .0
+                .map(|c| c - player.translation())
+                .filter(|to| to.xz().length() > 0.2)
+                .map(yaw_of)
+        });
         if let Some(aim) = aim {
             pb.aim = aim;
             req.heading = combat_heading(req.heading, aim, pb.attack.requested);
@@ -914,6 +973,8 @@ fn request_attacks(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     bindings: Res<Bindings>,
+    pad: Option<Res<crate::gamepad::PlayPad>>,
+    pad_status: Option<Res<crate::gamepad::PadStatus>>,
     mut latch: ResMut<AttackButton>,
     blades: Query<(&Blade, &GlobalTransform)>,
     mut bodies: Query<(
@@ -931,7 +992,10 @@ fn request_attacks(
     )>,
 ) {
     let now = ticks.map_or(0, |t| t.millis());
-    let down = bindings.mouse_pressed(&buttons, Action::Primary) || latch.pressed_since_tick;
+    let pad_active = pad_status.as_ref().is_some_and(|s| s.active()) && pad.is_some();
+    let down = bindings.mouse_pressed(&buttons, Action::Primary)
+        || latch.pressed_since_tick
+        || (pad_active && pad.as_deref().is_some_and(|p| p.attack_held()));
     latch.pressed_since_tick = false;
     for (
         entity,
@@ -983,8 +1047,9 @@ fn request_attacks(
             }
             continue;
         }
-        pb.attack.thrust =
-            attack::may_thrust(weapon_class) && bindings.pressed(&keys, Action::Alternate);
+        pb.attack.thrust = attack::may_thrust(weapon_class)
+            && (bindings.pressed(&keys, Action::Alternate)
+                || (pad_active && pad.as_deref().is_some_and(|p| p.frame().alternate)));
         req.heading = pb.aim;
         let (energy, most) = body
             .and_then(|b| b.drive.as_ref())
@@ -1303,6 +1368,8 @@ pub(crate) fn chase_camera(
     bindings: Res<Bindings>,
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
+    pad: Option<Res<crate::gamepad::PlayPad>>,
+    pad_status: Option<Res<crate::gamepad::PadStatus>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     players: Query<&Transform, (With<Player>, Without<ChaseCamera>)>,
     bodies: Query<&Ragdoll, With<PlayerBody>>,
@@ -1334,6 +1401,16 @@ pub(crate) fn chase_camera(
         if scroll.delta.y != 0.0 {
             let level = ((cam.zoom - 800.0) / 240.0).round() - scroll.delta.y.signum();
             cam.zoom = 800.0 + 240.0 * level.clamp(0.0, (ZOOM_STOPS - 1) as f32);
+        }
+        if pad_status.as_ref().is_some_and(|s| s.active())
+            && let Some(pad) = pad.as_deref()
+        {
+            let frame = pad.frame();
+            cam.yaw += frame.look_delta.x;
+            cam.user_pitch += frame.look_delta.y;
+            if frame.zoom != 0.0 {
+                cam.zoom = (cam.zoom + frame.zoom).clamp(800.0, 2000.0);
+            }
         }
         let floor = pitch_floor(cam.shown_zoom);
         cam.user_pitch = clamp_pitch(cam.user_pitch, floor, MAX_PITCH);
@@ -1491,7 +1568,7 @@ mod tests {
     /// The interim footwork, one behaviour tick, on open ground: a step of
     /// 80 cm, the line walk ending where asked.
     fn steps(
-        keys: &ButtonInput<KeyCode>,
+        input: &Keys,
         req: &mut Locomotion,
         pb: &mut PlayerBody,
         anim: &mut Animator,
@@ -1506,8 +1583,7 @@ mod tests {
         };
         let mut steering = pb.steering;
         combat_steps(
-            keys,
-            &Bindings::default(),
+            input,
             req,
             &mut steering,
             pb,
@@ -1540,8 +1616,10 @@ mod tests {
             };
             let mut steering = pb.steering;
             combat_steps(
-                &keys,
-                &Bindings::default(),
+                &Keys {
+                    w: true,
+                    ..Keys::default()
+                },
                 req,
                 &mut steering,
                 &mut pb,
@@ -1567,22 +1645,36 @@ mod tests {
     /// gives back the clip it replaced: the guard stays the guard.
     #[test]
     fn the_combat_walk_gives_back_the_clip_it_replaced() {
-        let mut keys = ButtonInput::<KeyCode>::default();
         let mut req = Locomotion::default();
         let mut pb = PlayerBody::new(0.0);
         pb.set_combat(true);
         let mut anim = Animator::new("Default", "Defence stance");
-        keys.press(KeyCode::KeyA);
         let stance = Stance::CombatIdle;
-        steps(&keys, &mut req, &mut pb, &mut anim, stance, false);
+        steps(
+            &Keys {
+                a: true,
+                ..Keys::default()
+            },
+            &mut req,
+            &mut pb,
+            &mut anim,
+            stance,
+            false,
+        );
         assert_eq!(anim.action, "Combat Walk");
         assert!(
             req.stepping.is_some_and(|v| v.x > 0.0),
             "{:?}",
             req.stepping
         );
-        keys.release(KeyCode::KeyA);
-        steps(&keys, &mut req, &mut pb, &mut anim, stance, false);
+        steps(
+            &Keys::default(),
+            &mut req,
+            &mut pb,
+            &mut anim,
+            stance,
+            false,
+        );
         assert_eq!(anim.action, "Defence stance");
         assert_eq!(req.stepping, None);
     }
@@ -1592,7 +1684,6 @@ mod tests {
     /// footwork's walk took over from it, instead of walking on the spot.
     #[test]
     fn an_exploration_walk_ends_in_the_stance() {
-        let mut keys = ButtonInput::<KeyCode>::default();
         let mut req = Locomotion::default();
         let mut pb = PlayerBody::new(0.0);
         pb.set_combat(true);
@@ -1600,17 +1691,39 @@ mod tests {
         for gait in ["Walk", "Run", "Backpedal"] {
             let mut anim = Animator::new("Default", gait);
             // Still moving (stopping softly) it walks on.
-            steps(&keys, &mut req, &mut pb, &mut anim, stance, true);
+            steps(&Keys::default(), &mut req, &mut pb, &mut anim, stance, true);
             assert_eq!(anim.action, gait);
-            steps(&keys, &mut req, &mut pb, &mut anim, stance, false);
+            steps(
+                &Keys::default(),
+                &mut req,
+                &mut pb,
+                &mut anim,
+                stance,
+                false,
+            );
             assert_eq!(anim.action, "Defence stance", "{gait}");
         }
         let mut anim = Animator::new("Default", "Walk");
-        keys.press(KeyCode::KeyW);
-        steps(&keys, &mut req, &mut pb, &mut anim, stance, false);
+        steps(
+            &Keys {
+                w: true,
+                ..Keys::default()
+            },
+            &mut req,
+            &mut pb,
+            &mut anim,
+            stance,
+            false,
+        );
         assert_eq!(anim.action, "Combat Walk");
-        keys.release(KeyCode::KeyW);
-        steps(&keys, &mut req, &mut pb, &mut anim, stance, false);
+        steps(
+            &Keys::default(),
+            &mut req,
+            &mut pb,
+            &mut anim,
+            stance,
+            false,
+        );
         assert_eq!(anim.action, "Defence stance");
     }
 
