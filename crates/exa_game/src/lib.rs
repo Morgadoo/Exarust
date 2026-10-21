@@ -9,6 +9,7 @@ pub mod arena_ids;
 pub mod arena_log;
 pub mod arena_match;
 pub mod arena_outfit;
+pub mod arena_outfit_data;
 pub mod arsenal;
 pub mod balance;
 pub mod bindings;
