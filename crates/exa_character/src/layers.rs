@@ -26,14 +26,9 @@ pub struct Slot {
     pub parent: usize,
     /// The slots that hang under this one.
     pub children: &'static [usize],
-    /// The next slot in the builder's walk order (the eighteen slots are a
-    /// single chain).
-    pub next: usize,
-    /// The related slot the builder falls back on when a garment has no node
-    /// for this one.
-    pub related: usize,
-    /// The original's per-slot flag word: `0x1F` on the chest, `0x7` on the
-    /// parts that span a joint, `0x3` on the distal ones.
+    /// The original's per-slot flag word: `0x1F` on the head, `0x7` on the
+    /// legs, belly, chest and arms, `0x3` on the pelvis, feet, shoulders and
+    /// hands. The layer passes below do not read it.
     pub flags: u32,
 }
 
@@ -43,144 +38,108 @@ pub const SLOTS: [Slot; 18] = [
         name: "Pelvis",
         parent: 0,
         children: &[2, 5, 8],
-        next: 2,
-        related: 1,
-        flags: 0x7,
+        flags: 0x3,
     },
     Slot {
         name: "RULeg",
         parent: 1,
         children: &[3],
-        next: 3,
-        related: 2,
         flags: 0x7,
     },
     Slot {
         name: "RLLeg",
         parent: 2,
         children: &[4],
-        next: 4,
-        related: 3,
-        flags: 0x3,
+        flags: 0x7,
     },
     Slot {
         name: "RFoot",
         parent: 3,
         children: &[],
-        next: 5,
-        related: 1,
-        flags: 0x7,
+        flags: 0x3,
     },
     Slot {
         name: "LULeg",
         parent: 1,
         children: &[6],
-        next: 6,
-        related: 5,
         flags: 0x7,
     },
     Slot {
         name: "LLLeg",
         parent: 5,
         children: &[7],
-        next: 7,
-        related: 6,
-        flags: 0x3,
+        flags: 0x7,
     },
     Slot {
         name: "LFoot",
         parent: 6,
         children: &[],
-        next: 8,
-        related: 1,
-        flags: 0x7,
+        flags: 0x3,
     },
     Slot {
         name: "Belly",
         parent: 1,
         children: &[9],
-        next: 9,
-        related: 8,
         flags: 0x7,
     },
     Slot {
         name: "Chest",
         parent: 8,
         children: &[10, 11, 14],
-        next: 10,
-        related: 9,
-        flags: 0x1F,
+        flags: 0x7,
     },
     Slot {
         name: "Head",
         parent: 9,
         children: &[],
-        next: 11,
-        related: 9,
-        flags: 0x3,
+        flags: 0x1F,
     },
     Slot {
         name: "RShld",
         parent: 9,
         children: &[12],
-        next: 12,
-        related: 9,
-        flags: 0x7,
+        flags: 0x3,
     },
     Slot {
         name: "RUArm",
         parent: 11,
         children: &[13],
-        next: 13,
-        related: 11,
         flags: 0x7,
     },
     Slot {
         name: "RFArm",
         parent: 12,
         children: &[17],
-        next: 14,
-        related: 12,
-        flags: 0x3,
+        flags: 0x7,
     },
     Slot {
         name: "LShld",
         parent: 9,
         children: &[15],
-        next: 15,
-        related: 9,
-        flags: 0x7,
+        flags: 0x3,
     },
     Slot {
         name: "LUArm",
         parent: 14,
         children: &[16],
-        next: 16,
-        related: 14,
         flags: 0x7,
     },
     Slot {
         name: "LFarm",
         parent: 15,
         children: &[18],
-        next: 17,
-        related: 15,
-        flags: 0x3,
+        flags: 0x7,
     },
     Slot {
         name: "RHand",
         parent: 13,
         children: &[],
-        next: 18,
-        related: 13,
         flags: 0x3,
     },
     Slot {
         name: "LHand",
         parent: 16,
         children: &[],
-        next: 18,
-        related: 16,
         flags: 0x3,
     },
 ];
@@ -472,7 +431,7 @@ pub fn related_search(
     if !(1..=SLOTS.len()).contains(&slot) {
         return None;
     }
-    let related = SLOTS[slot - 1].related;
+    let related = SLOTS[slot - 1].parent;
     let mut best = (-64, None);
     for root in body.roots() {
         let mut stack = vec![root];
@@ -657,10 +616,13 @@ mod tests {
         assert_eq!(SLOTS[9].name, "Head");
         assert_eq!(SLOTS[16].name, "RHand");
         assert_eq!(SLOTS[17].name, "LHand");
-        // One chain in the builder's order, as the table's next words are.
-        for (i, slot) in SLOTS.iter().enumerate() {
-            assert_eq!(slot.next, (i + 2).min(18), "{i}");
+        // Each slot hangs under its parent and is one of the parent's
+        // children, as the table's parent and child words say.
+        for (i, slot) in SLOTS.iter().enumerate().skip(1) {
+            assert!(SLOTS[slot.parent - 1].children.contains(&(i + 1)), "{i}");
         }
+        assert_eq!(SLOTS[9].flags, 0x1F);
+        assert_eq!(SLOTS[0].flags, 0x3);
         assert_eq!(SLOTS[0].children, [2, 5, 8]);
         assert_eq!(SLOTS[8].children, [10, 11, 14]);
         assert_eq!(SLOTS[15].children, [18]);
