@@ -152,14 +152,14 @@ pub fn nearest_hit(ray: Ray, layer_mask: u32, candidates: &[Candidate<'_>]) -> O
     })
 }
 
-/// The nearest node a kinesis pick meets, with a fixed sphere radius and
-/// the node flag the original requires (`0x200000`): returns the candidate
-/// index and distance. This is the variant whose mesh callback only reports
-/// whether it was hit.
+/// The nearest node a kinesis pick meets, with the node's box lifted by
+/// `height` for the test and the node flag the original requires
+/// (`0x200000`): returns the candidate index and distance. This is the
+/// variant whose mesh callback only reports whether it was hit.
 pub fn kinesis_hit(
     ray: Ray,
     layer_mask: u32,
-    radius: f32,
+    height: f32,
     candidates: &[Candidate<'_>],
 ) -> Option<(usize, f32)> {
     let mut best = MESH_FAR;
@@ -172,12 +172,12 @@ pub fn kinesis_hit(
         {
             continue;
         }
-        if !ray_meets_sphere(ray, node.centre, node.radius) {
+        let centre = node.centre + Vec3::Y * height;
+        if !ray_meets_sphere(ray, centre, node.radius) {
             continue;
         }
         if let Some((_, distance)) = node.mesh.nearest_hit(ray)
             && distance < best
-            && distance <= radius
         {
             best = distance;
             found = Some((index, distance));
@@ -414,7 +414,7 @@ mod tests {
     }
 
     #[test]
-    fn the_kinesis_pick_needs_the_node_flag_and_the_radius() {
+    fn the_kinesis_pick_needs_the_node_flag_and_the_height() {
         let triangle = [[
             Vec3::new(-1.0, -1.0, 1.0),
             Vec3::new(1.0, -1.0, 1.0),
@@ -430,15 +430,15 @@ mod tests {
             radius: 5.0,
             mesh: &mesh,
         };
-        assert_eq!(kinesis_hit(ray, u32::MAX, 4000.0, &[node]), Some((0, 1.0)));
+        assert_eq!(kinesis_hit(ray, u32::MAX, 0.0, &[node]), Some((0, 1.0)));
         // Without the flag the node is not picked.
         node.flags = 0;
-        assert!(kinesis_hit(ray, u32::MAX, 4000.0, &[node]).is_none());
-        // A radius shorter than the hit rejects it.
-        node.flags = KINESIS_NODE;
-        assert!(kinesis_hit(ray, u32::MAX, 0.5, &[node]).is_none());
+        assert!(kinesis_hit(ray, u32::MAX, 0.0, &[node]).is_none());
         // A layer the pick does not visit rejects it.
-        assert!(kinesis_hit(ray, 0, 4000.0, &[node]).is_none());
+        node.flags = KINESIS_NODE;
+        assert!(kinesis_hit(ray, 0, 0.0, &[node]).is_none());
+        // The height lifts the box out of the ray.
+        assert!(kinesis_hit(ray, u32::MAX, 10.0, &[node]).is_none());
     }
 
     #[test]
