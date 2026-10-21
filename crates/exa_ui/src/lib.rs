@@ -64,6 +64,7 @@ pub mod technique_selector;
 pub mod text_box;
 pub mod text_edit;
 pub mod text_layout;
+pub mod tree_draw;
 pub mod viewport;
 
 use bevy::prelude::*;
