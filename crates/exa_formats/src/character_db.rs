@@ -13,9 +13,13 @@
 //! entry carries bytes and has no live object parses them into a
 //! [`SharedCharacter`] and stores it; later lookups return the same object
 //! and count one more holder. A live object's id is stamped with its
-//! database's tag. `flush` rewrites the payload from every live object
-//! (serialising it) and from the stored bytes of the others; `save` writes
-//! the table and payload after a flush.
+//! database's tag. Adding a character stores the object live with an empty
+//! entry (no bytes until a flush). Setting a payload of the entry's own
+//! length overwrites it in place; another length removes the old bytes
+//! (pulling the later offsets back) and appends the new ones. `flush`
+//! rewrites the payload from every live object (serialising it) and from
+//! the stored bytes of the others; `save` writes the table and payload as
+//! they are (the original's save does not flush).
 //!
 //! Evidence: the original's two character databases and their lookup, add,
 //! release, delete, payload, load, flush and save routines.
@@ -73,12 +77,7 @@ impl SharedCharacter {
     }
 
     fn hold(&self) -> usize {
-        if self.holders.load(Ordering::Relaxed) == 0 {
-            self.holders.store(1, Ordering::Relaxed);
-            1
-        } else {
-            self.holders.fetch_add(1, Ordering::Relaxed) + 1
-        }
+        self.holders.fetch_add(1, Ordering::Relaxed) + 1
     }
 }
 
@@ -182,10 +181,12 @@ impl CharacterDb {
         id
     }
 
-    /// Adds `record` under `id`, or under the first free id when `id` is 0.
-    /// The record's id is stamped with the tag. Returns the id, or nothing
-    /// when that id is taken.
-    pub fn add(&mut self, id: u32, record: CharacterRecord) -> Option<u32> {
+    /// Adds `record` under `id`, or under the first free id when `id` is 0:
+    /// the object is stored live (one holder, the caller) with an empty
+    /// entry, and its id is stamped with the tag. Its bytes reach the
+    /// payload at the next [`flush`](Self::flush). Returns the object, or
+    /// nothing when that id is taken.
+    pub fn add(&mut self, id: u32, record: CharacterRecord) -> Option<Arc<SharedCharacter>> {
         let id = if id == 0 { self.free_id() } else { id };
         let index = self.entries.partition_point(|e| e.id < id);
         if self.entries.get(index).is_some_and(|e| e.id == id) {
@@ -193,30 +194,27 @@ impl CharacterDb {
         }
         let mut record = record;
         record.id = id | self.tag;
-        let bytes = record.to_bytes().ok()?;
-        let offset = self.payload.len();
-        let len = bytes.len();
-        self.payload.extend_from_slice(&bytes);
-        self.entries.insert(index, Entry { id, offset, len });
+        self.entries.insert(
+            index,
+            Entry {
+                id,
+                offset: 0,
+                len: 0,
+            },
+        );
         let live = Arc::new(SharedCharacter::new(record));
-        // The added object is the caller's; no lookup holds it yet.
-        live.holders.store(0, Ordering::Relaxed);
-        self.live.insert(index, Some(live));
-        Some(id)
+        self.live.insert(index, Some(live.clone()));
+        Some(live)
     }
 
-    /// Releases the character `id`: its live object is dropped (the stored
-    /// bytes remain, so a later lookup parses a fresh one) and the object's
-    /// record id is cleared. Returns whether a live object was released.
+    /// Forgets the live object of character `id` (the stored bytes remain,
+    /// so a later lookup parses a fresh one). Returns whether there was
+    /// one. The holder count is not touched, as in the original.
     pub fn release(&mut self, id: u32) -> bool {
         let Some(index) = self.index(id) else {
             return false;
         };
-        let Some(live) = self.live[index].take() else {
-            return false;
-        };
-        live.record().id = 0;
-        true
+        self.live[index].take().is_some()
     }
 
     /// Deletes the character `id`: its table entry goes and its bytes are
@@ -232,21 +230,26 @@ impl CharacterDb {
     }
 
     /// Replaces the stored bytes of character `id` (the original's set
-    /// payload), keeping the live object alone. Returns whether it was
-    /// there.
+    /// payload), keeping the live object alone: bytes of the entry's own
+    /// length overwrite it in place; otherwise the old bytes are removed
+    /// and the new ones appended at the end. Returns whether it was there.
     pub fn set_payload(&mut self, id: u32, bytes: &[u8]) -> bool {
         let Some(index) = self.index(id) else {
             return false;
         };
         let entry = self.entries[index];
-        self.remove_bytes(entry.offset, entry.len);
-        let offset = self.payload.len();
-        self.payload.extend_from_slice(bytes);
-        self.entries[index] = Entry {
-            id,
-            offset,
-            len: bytes.len(),
-        };
+        if entry.len != bytes.len() {
+            self.remove_bytes(entry.offset, entry.len);
+            let offset = self.payload.len();
+            self.payload.extend_from_slice(bytes);
+            self.entries[index] = Entry {
+                id,
+                offset,
+                len: bytes.len(),
+            };
+        } else if let Some(stored) = self.payload.get_mut(entry.offset..entry.offset + entry.len) {
+            stored.copy_from_slice(bytes);
+        }
         true
     }
 
@@ -294,9 +297,9 @@ impl CharacterDb {
     }
 
     /// The database in its save form: the magic, the table size, the
-    /// entries and their payload. The live characters are flushed first.
-    pub fn save(&mut self) -> Result<Vec<u8>> {
-        self.flush()?;
+    /// entries and their payload, as they are; call [`flush`](Self::flush)
+    /// first for the live characters' current bytes.
+    pub fn save(&self) -> Vec<u8> {
         let table_bytes = (self.entries.len() + 1) * ENTRY;
         let mut out = Vec::with_capacity(8 + table_bytes + self.payload.len());
         out.extend_from_slice(&SAVE_MAGIC.to_le_bytes());
@@ -312,12 +315,14 @@ impl CharacterDb {
             out.extend_from_slice(&[0u8; ENTRY]);
             out.extend_from_slice(&self.payload);
         }
-        Ok(out)
+        out
     }
 
-    /// Reads a save into a database with `tag`. The magic, the table size,
-    /// the id order and every payload range are checked; a header-only
-    /// empty save is accepted.
+    /// Reads a save into a database with `tag`: `table size / 16 − 1`
+    /// entries (the original's count, the last 16 bytes being the sentinel),
+    /// the payload after the table. A table under two entries is an empty
+    /// database. Exarust also checks the magic, the id order and every
+    /// payload range, which the original's load takes on trust.
     pub fn load(tag: u32, bytes: &[u8]) -> Result<Self> {
         let magic = crate::read_u32(bytes, 0)?;
         if magic != SAVE_MAGIC {
@@ -327,22 +332,11 @@ impl CharacterDb {
             });
         }
         let table_bytes = crate::read_u32(bytes, 4)? as usize;
-        if table_bytes < ENTRY || !table_bytes.is_multiple_of(ENTRY) {
-            return Err(Error::Malformed(format!(
-                "character database table of {table_bytes} bytes"
-            )));
-        }
-        let count = table_bytes / ENTRY - 1;
+        let count = (table_bytes / ENTRY).saturating_sub(1);
         let mut db = Self::new(tag);
-        if bytes.len() == 8 {
-            // The empty save writes the header alone.
-            if count != 0 {
-                return Err(Error::Truncated {
-                    offset: 8,
-                    needed: table_bytes,
-                    len: bytes.len(),
-                });
-            }
+        if count == 0 {
+            // No entry: the original keeps no payload (the empty save
+            // writes the header alone).
             return Ok(db);
         }
         let table_end = 8usize
@@ -383,7 +377,7 @@ impl CharacterDb {
     pub fn from_rdb(tag: u32, bytes: &[u8]) -> Result<Self> {
         let db = crate::rdb::Database::parse(bytes)?;
         let mut out = Self::new(tag);
-        for (i, r) in db.records.iter().enumerate() {
+        for r in &db.records {
             let bytes = db.payload(r);
             if bytes.is_empty() {
                 continue;
@@ -396,7 +390,6 @@ impl CharacterDb {
                 len: bytes.len(),
             });
             out.live.push(None);
-            let _ = i;
         }
         out.entries.sort_by_key(|e| e.id);
         Ok(out)
@@ -445,30 +438,37 @@ impl CharacterDbs {
         }
     }
 
-    /// Adds a record to the store `tag` names (0 is the local store).
-    pub fn add(&mut self, tag: u32, id: u32, record: CharacterRecord) -> Option<u32> {
-        let id = if tag & WORLD_TAG != 0 {
-            self.world.add(id, record)?
+    /// Adds a record to the store `tag` names (the world store for the
+    /// world bit, the local one otherwise) and returns its live object.
+    pub fn add(
+        &mut self,
+        tag: u32,
+        id: u32,
+        record: CharacterRecord,
+    ) -> Option<Arc<SharedCharacter>> {
+        if tag & WORLD_TAG != 0 {
+            self.world.add(id, record)
         } else {
-            self.local.add(id, record)?
-        };
-        Some(
-            id | if tag & WORLD_TAG != 0 {
-                WORLD_TAG
-            } else {
-                LOCAL_TAG
-            },
-        )
+            self.local.add(id, record)
+        }
     }
 
-    /// Releases a character by its tagged id from its store. The record's
-    /// id is cleared, as the original's release does.
-    pub fn release(&mut self, id: u32) -> bool {
-        if id & WORLD_TAG != 0 {
+    /// Releases a character: its record id names the store (the world bit
+    /// the world store, else the local bit the local one, else none), the
+    /// store forgets the live object, and the record's id is cleared
+    /// either way, as the original's release does. Returns whether a store
+    /// held it.
+    pub fn release(&mut self, character: &SharedCharacter) -> bool {
+        let id = character.id();
+        let released = if id & WORLD_TAG != 0 {
             self.world.release(id & ID_MASK)
-        } else {
+        } else if id & LOCAL_TAG != 0 {
             self.local.release(id & ID_MASK)
-        }
+        } else {
+            false
+        };
+        character.record().id = 0;
+        released
     }
 }
 
@@ -482,56 +482,58 @@ mod tests {
         r
     }
 
-    /// Two records save and load back with their ids, names and payloads,
-    /// the magic and the sentinel entry.
+    /// Added characters have no bytes until a flush; the save then holds
+    /// the magic, (count + 1) × 16 table bytes with the sentinel, and the
+    /// payload, and loads back.
     #[test]
     fn a_database_saves_and_loads() {
         let mut db = CharacterDb::new(LOCAL_TAG);
-        assert_eq!(db.add(0, record("Ada")), Some(1));
-        assert_eq!(db.add(0, record("Bran")), Some(2));
-        assert_eq!(db.len(), 2);
-        // The live record carries the tag; the untagged id is the table id.
-        let ada = db.get(1).unwrap();
+        let ada = db.add(0, record("Ada")).unwrap();
         assert_eq!(ada.id(), LOCAL_TAG | 1);
+        assert_eq!(ada.holders(), 1);
+        assert_eq!(db.add(0, record("Bran")).unwrap().id(), LOCAL_TAG | 2);
         assert_eq!(CharacterDb::untagged(ada.id()), 1);
-        assert_eq!(ada.record().name, "Ada");
-        let bytes = db.save().unwrap();
+        // Not flushed: the entries are empty.
+        assert_eq!(db.save().len(), 8 + 48);
+        db.flush().unwrap();
+        let bytes = db.save();
         assert_eq!(&bytes[..4], &SAVE_MAGIC.to_le_bytes());
-        // (2 + 1) entries of 16 bytes after the 8-byte header.
         assert_eq!(&bytes[4..8], &48u32.to_le_bytes());
         assert_eq!(bytes.len(), 8 + 48 + db.payload.len());
-
         let mut loaded = CharacterDb::load(LOCAL_TAG, &bytes).unwrap();
-        assert_eq!(loaded.len(), 2);
         assert_eq!(loaded.ids().collect::<Vec<_>>(), [1, 2]);
         assert_eq!(loaded.get(1).unwrap().record().name, "Ada");
         assert_eq!(loaded.get(2).unwrap().record().name, "Bran");
         assert!(loaded.get(3).is_none());
     }
 
-    /// A lookup parses lazily and counts its holders; a release drops the
-    /// object and the next lookup parses a fresh one.
+    /// A lookup parses lazily and counts its holders; a release forgets
+    /// the object and the next lookup parses a fresh one.
     #[test]
     fn lookups_are_lazy_and_count_holders() {
         let mut db = CharacterDb::new(WORLD_TAG);
         db.add(7, record("Cy")).unwrap();
+        db.flush().unwrap();
+        assert!(db.release(7));
         let first = db.get(7).unwrap();
         assert_eq!(first.holders(), 1);
+        assert_eq!(first.id(), WORLD_TAG | 7);
         let second = db.get(7).unwrap();
         assert_eq!(second.holders(), 2);
         assert!(Arc::ptr_eq(&first, &second));
         assert!(db.release(7));
-        assert_eq!(first.holders(), 2);
         assert!(!db.release(7));
-        // Released: the live object id is cleared, but a new lookup parses
-        // the stored bytes again.
-        assert_eq!(first.record().id, 0);
         let again = db.get(7).unwrap();
+        assert!(!Arc::ptr_eq(&first, &again));
         assert_eq!(again.holders(), 1);
         assert_eq!(again.record().name, "Cy");
+        // An entry without bytes and no live object gives nothing.
+        db.add(8, record("Dee")).unwrap();
+        db.release(8);
+        assert!(db.get(8).is_none());
     }
 
-    /// New ids step over the table's collisions and gaps.
+    /// New ids step over the table's collisions; a taken id is refused.
     #[test]
     fn new_ids_skip_taken_numbers() {
         let mut db = CharacterDb::new(LOCAL_TAG);
@@ -539,77 +541,94 @@ mod tests {
         db.add(0, record("a")).unwrap();
         db.add(0, record("b")).unwrap();
         assert_eq!(db.free_id(), 3);
-        db.add(0, record("c")).unwrap();
-        assert_eq!(db.ids().collect::<Vec<_>>(), [1, 2, 3]);
-        assert_eq!(db.free_id(), 4);
-        assert_eq!(db.add(2, record("d")), None);
+        db.add(5, record("c")).unwrap();
+        assert_eq!(db.ids().collect::<Vec<_>>(), [1, 2, 5]);
+        assert_eq!(db.free_id(), 3);
+        assert!(db.add(2, record("d")).is_none());
     }
 
-    /// Setting a payload keeps the live record; deleting removes the entry
-    /// and its bytes; a later flush serialises the live changes.
+    /// A payload of the same length is written in place; another length
+    /// moves the entry to the end and pulls the later offsets back.
     #[test]
-    fn payloads_flush_and_delete() {
+    fn payloads_are_set_in_place_or_appended() {
         let mut db = CharacterDb::new(LOCAL_TAG);
-        db.add(0, record("old")).unwrap();
-        db.add(0, record("keep")).unwrap();
-        assert!(db.set_payload(1, &record("stored").to_bytes().unwrap()));
-        // The live object still reads old until the DB is released; the
-        // stored bytes then read back as set.
-        assert_eq!(db.get(1).unwrap().record().name, "old");
-        db.release(1);
-        assert_eq!(db.get(1).unwrap().record().name, "stored");
-        assert!(db.delete(1));
-        assert!(!db.contains(1));
-        assert_eq!(db.get(2).unwrap().record().name, "keep");
-        // A live change reaches the stored form on flush.
-        db.get(2).unwrap().record().name = "renamed".into();
-        db.flush().unwrap();
-        db.release(2);
-        assert_eq!(db.get(2).unwrap().record().name, "renamed");
+        for id in 1..=3 {
+            db.add(id, record("x")).unwrap();
+        }
+        assert!(db.set_payload(1, &[1, 1]));
+        assert!(db.set_payload(2, &[2, 2, 2]));
+        assert!(db.set_payload(3, &[3]));
+        assert_eq!(db.payload, [1, 1, 2, 2, 2, 3]);
+        assert!(db.set_payload(2, &[9, 9, 9]));
+        assert_eq!(db.payload, [1, 1, 9, 9, 9, 3]);
+        assert!(db.set_payload(1, &[7]));
+        assert_eq!(db.payload, [9, 9, 9, 3, 7]);
+        assert_eq!(db.stored(0), Some(&[7][..]));
+        assert_eq!(db.stored(1), Some(&[9, 9, 9][..]));
+        assert_eq!(db.stored(2), Some(&[3][..]));
+        assert!(db.delete(2));
+        assert_eq!(db.payload, [3, 7]);
+        assert_eq!(db.stored(1), Some(&[3][..]));
+        assert!(!db.set_payload(2, &[0]));
     }
 
-    /// The total parser refuses a bad magic, a bad table and a payload past
-    /// its end, and handles the empty save's header alone.
+    /// A flush serialises the live records; a stored entry keeps its bytes.
+    #[test]
+    fn a_flush_serialises_the_live_records() {
+        let mut db = CharacterDb::new(LOCAL_TAG);
+        let live = db.add(0, record("old")).unwrap();
+        live.record().name = "renamed".into();
+        db.flush().unwrap();
+        db.release(1);
+        assert_eq!(db.get(1).unwrap().record().name, "renamed");
+    }
+
+    /// The parser: a bad magic is refused, a table under two entries is an
+    /// empty database (also with an odd size, as the original divides by
+    /// 16), a truncated table and a payload past its end are errors.
     #[test]
     fn malformed_saves_are_errors() {
         let mut db = CharacterDb::new(LOCAL_TAG);
-        assert!(db.save().is_ok());
-        assert!(db.save().unwrap().len() == 8);
-        assert!(CharacterDb::load(LOCAL_TAG, &db.save().unwrap()).is_ok());
-        let mut bad = db.save().unwrap();
+        assert_eq!(db.save().len(), 8);
+        assert!(CharacterDb::load(LOCAL_TAG, &db.save()).unwrap().is_empty());
+        let mut bad = db.save();
         bad[1] = 0;
         assert!(CharacterDb::load(LOCAL_TAG, &bad).is_err());
-        let mut bad = db.save().unwrap();
-        bad[4] = 15;
-        assert!(CharacterDb::load(LOCAL_TAG, &bad).is_err());
+        let mut odd = db.save();
+        odd[4] = 31;
+        assert!(CharacterDb::load(LOCAL_TAG, &odd).unwrap().is_empty());
         db.add(0, record("x")).unwrap();
-        let good = db.save().unwrap();
+        db.flush().unwrap();
+        let good = db.save();
         for n in 0..good.len() {
             let _ = CharacterDb::load(LOCAL_TAG, &good[..n]);
         }
+        assert!(CharacterDb::load(LOCAL_TAG, &good[..20]).is_err());
         let mut bad = good.clone();
-        // The first entry's payload length runs past the payload.
         bad[8 + ENTRY - 4..8 + ENTRY].copy_from_slice(&0xFFFFu32.to_le_bytes());
         assert!(CharacterDb::load(LOCAL_TAG, &bad).is_err());
     }
 
-    /// The two stores route by the world bit: a world id is not in the
-    /// local store, and a release clears the one it names.
+    /// The two stores route by the world bit; a release clears the
+    /// record's id even when no store holds it.
     #[test]
     fn the_two_databases_route_by_the_world_bit() {
         let mut dbs = CharacterDbs::new();
         let local = dbs.add(0, 0, record("local")).unwrap();
         let world = dbs.add(WORLD_TAG, 0, record("world")).unwrap();
-        assert_eq!(local, LOCAL_TAG | 1);
-        assert_eq!(world, WORLD_TAG | 1);
-        assert_eq!(dbs.store_of(local).tag(), LOCAL_TAG);
-        assert_eq!(dbs.store_of(world).tag(), WORLD_TAG);
-        assert_eq!(dbs.store_of(local).len(), 1);
-        assert_eq!(dbs.store_of(world).len(), 1);
-        assert_eq!(dbs.get(local).unwrap().record().name, "local");
-        assert_eq!(dbs.get(world).unwrap().record().name, "world");
-        assert!(dbs.release(world));
-        assert!(!dbs.world.release(1));
+        assert_eq!(local.id(), LOCAL_TAG | 1);
+        assert_eq!(world.id(), WORLD_TAG | 1);
+        assert_eq!(dbs.store_of(local.id()).tag(), LOCAL_TAG);
+        assert_eq!(dbs.store_of(world.id()).tag(), WORLD_TAG);
+        assert!(Arc::ptr_eq(&dbs.get(local.id()).unwrap(), &local));
+        assert!(Arc::ptr_eq(&dbs.get(world.id()).unwrap(), &world));
+        assert!(dbs.release(&world));
+        assert_eq!(world.id(), 0);
         assert!(dbs.local.contains(1));
+        assert!(!dbs.release(&world));
+        let stray = SharedCharacter::new(record("stray"));
+        stray.record().id = 3;
+        assert!(!dbs.release(&stray));
+        assert_eq!(stray.id(), 0);
     }
 }
