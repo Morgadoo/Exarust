@@ -61,8 +61,11 @@ tile's row of 241) and the block draw's vertex offset.
 
 The original's ground slot answers a world (`x`, `z`) in centimetres: the
 tile coordinate is the floor of `width/2 + x/4800` (the engine's "round"
-helper rounds down), the 6 m block the floor of the tile fraction times
-eight, the point is refused where the block is not built, and its height is
+helper rounds down, NaN giving the integer indefinite), and the tile is slot
+`tz · width + tx` wherever that lies in `0 .. width × height` (the axes are
+not checked one by one, so one tile past a row's end is the next row's
+first), the 6 m block the floor of the tile fraction times eight, the point
+is refused where the block is not built, and its height is
 the bilinear interpolation of the four vertices around it, the products and
 sums in the original's order. A vertex is a hole when it or its +X
 neighbour is set in its row or the row below of the hole mask, read a byte

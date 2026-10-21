@@ -274,7 +274,8 @@ as the original's "block until every tile is loaded" does at the end of a
 load (`terrain::stream` holds the three rules, pinned by tests).
 
 **Height query** (`TerrainGround`): the original's ground slot floors the
-tile coordinate `width/2 + x/48 m`, floors the fraction times eight for the
+tile coordinate `width/2 + x/48 m`, takes tile slot `tz · width + tx`
+anywhere in the grid's slots, floors the fraction times eight for the
 6 m block, refuses blocks the level does not build, takes the bilinear
 height of the four vertices around (its sums in the original's order; a
 hole is tested as a byte, so the right-hand neighbour is not tested where it
