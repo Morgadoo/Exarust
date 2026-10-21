@@ -263,7 +263,7 @@ pub fn still_samples(setting: i32, scale: (f32, f32), view: (i32, i32)) -> Vec<S
                 jitter: jitter(offset, scale, view),
                 fraction: (f64::from(i + 1) / f64::from(level.count)) as f32,
                 half: 0.5 - (i as f32 + 0.5) / level.count as f32,
-                blend: (i > 0).then(|| 1.0 - 1.0 / (i + 1) as f32),
+                blend: (i > 0).then_some(1.0 - 1.0 / (i + 1) as f32),
             }
         })
         .collect()
@@ -292,7 +292,7 @@ pub fn progressive_sample(
         jitter: jitter(offset, scale, view),
         fraction: (f64::from(index) / f64::from(level.count)) as f32,
         half: 0.5 - (index as f32 + 0.5) / level.count as f32,
-        blend: (index > 1).then(|| 1.0 - 1.0 / index as f32),
+        blend: (index > 1).then_some(1.0 - 1.0 / index as f32),
     })
 }
 

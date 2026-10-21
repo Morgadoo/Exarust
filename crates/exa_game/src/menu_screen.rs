@@ -630,7 +630,7 @@ fn blit(
         if sy >= text.height {
             continue;
         }
-        let py = top + dy;
+        let py = i64::from(top) + i64::from(dy);
         if py < 0 || py as usize >= height {
             continue;
         }
@@ -639,7 +639,9 @@ fn blit(
             if sx >= text.width {
                 continue;
             }
-            let px = x + dx;
+            // A row wider than the client sits far to the right (the
+            // original's unsigned shift): the sum must not overflow.
+            let px = i64::from(x) + i64::from(dx);
             if px < 0 || px as usize >= width {
                 continue;
             }
@@ -719,6 +721,10 @@ mod tests {
         blit(&mut canvas, 4, 1, 0, 0, &text, 1.0, [255, 0, 0]);
         assert_eq!(&canvas[0..4], &[255, 0, 0, 255]);
         assert_eq!(&canvas[4..8], &[0, 0, 0, 0]);
+        // A row placed far to the right draws nothing.
+        let mut canvas = vec![0u8; 16];
+        blit(&mut canvas, 4, 1, i32::MAX, 0, &text, 1.0, [255, 0, 0]);
+        assert_eq!(canvas, vec![0u8; 16]);
     }
 
     #[test]

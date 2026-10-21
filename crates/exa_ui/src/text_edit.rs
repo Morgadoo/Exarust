@@ -441,6 +441,7 @@ impl EditDraw {
 
 /// The 1-based inclusive span `[first, last]` from `x`, baseline `y`, into
 /// a run; returns the pen at its end.
+#[allow(clippy::too_many_arguments)]
 fn span_run(
     font: &GuiFont,
     text: &[u8],

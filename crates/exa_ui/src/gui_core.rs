@@ -212,10 +212,10 @@ impl PlainForm {
     }
 
     fn send(&mut self, message: u32, param: u32) -> u32 {
-        let Some(index) = (self.selected >= 1).then(|| self.selected as usize - 1) else {
+        let Ok(index) = usize::try_from(self.selected - 1) else {
             return 0;
         };
-        if index >= self.controls.len() {
+        if self.selected < 1 || index >= self.controls.len() {
             return 0;
         }
         dispatch(
