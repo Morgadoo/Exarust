@@ -3,8 +3,9 @@
 //! per frame, and surfaces take their ambient from it. The occupancy comes
 //! from the world (`exa_world::gi_volume`); this module owns the volume
 //! textures, the propagation pass (`gi.wesl`) and the lights it injects:
-//! point lights, and voxel lights (glowing items), which add their light
-//! straight into the volume around themselves.
+//! point lights, sector by sector as the original draws them from its cell
+//! lists, and voxel lights (glowing items), which add their light straight
+//! into the volume around themselves.
 //! Rules: `docs/RENDERING.md` (Voxel GI).
 
 use std::sync::Arc;
@@ -13,6 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use bevy::asset::{AssetPath, RenderAssetUsages, embedded_asset, embedded_path};
 use bevy::core_pipeline::Core3dSystems;
 use bevy::core_pipeline::schedule::Core3d;
+use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy::render::diagnostic::RecordDiagnostics;
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
@@ -42,6 +44,7 @@ impl Plugin for GiPlugin {
         let warm_up = GiWarmUp::default();
         let report = WarmUpReport(warm_up.report.clone());
         app.init_resource::<GiLights>()
+            .init_resource::<GiSectorLights>()
             .insert_resource(warm_up)
             .add_plugins((
                 ExtractResourcePlugin::<GiTextures>::default(),
@@ -134,9 +137,11 @@ pub struct GiVolume {
     /// The lowest slice light propagates in, per column (X fastest, then
     /// Z); 255 where it never does.
     pub floors: Arc<Vec<u8>>,
-    /// The faint light every open voxel gains per step (level record 0x30
-    /// × 0.001).
-    pub base_ambient: f32,
+    /// The faint light every open voxel gains per step, per channel (level
+    /// record 0x30, as stored, × 0.001).
+    pub base_ambient: Vec3,
+    /// The block's first 6 m cell in the level's sector grid.
+    pub sector: IVec2,
     /// Steps run at once when the volume is created.
     pub warm_up: u32,
 }
@@ -146,7 +151,6 @@ pub struct GiVolume {
 #[extract_app(RenderApp)]
 pub struct GiTextures {
     pub occupancy: Handle<Image>,
-    floors: Handle<Image>,
     pub light: Handle<Image>,
     scratch: Handle<Image>,
     pub origin: Vec3,
@@ -154,12 +158,41 @@ pub struct GiTextures {
     /// Voxel edge, metres, and the texture's size (X, Z, Y).
     voxel: f32,
     dims: UVec3,
-    base_ambient: f32,
+    /// The per-column floors the block was built with (X fastest, then Z).
+    pub floors: Arc<Vec<u8>>,
+    /// The block's first 6 m cell in the level's sector grid.
+    pub sector: IVec2,
+    base_ambient: Vec3,
     /// Steps run at once when the volume is created.
     warm_up: u32,
     /// Which volume these are (counting from 1), so the render world starts
     /// each volume's warm-up once.
     serial: u32,
+}
+
+impl GiTextures {
+    /// The lowest slice sector (`x`, `z`) of the block updates; 255 when it
+    /// has no geometry.
+    pub fn sector_floor(&self, x: usize, z: usize) -> u8 {
+        let (w, h) = (self.dims.x as usize, self.dims.y as usize);
+        let (cx, cz) = (
+            MARGIN as usize + SECTOR_VOXELS as usize * x,
+            MARGIN as usize + SECTOR_VOXELS as usize * z,
+        );
+        if x >= SECTORS
+            || z >= SECTORS
+            || cx + SECTOR_VOXELS as usize > w
+            || cz + SECTOR_VOXELS as usize > h
+        {
+            return u8::MAX;
+        }
+        self.floors.get(cx + cz * w).copied().unwrap_or(u8::MAX)
+    }
+
+    /// Voxels along X, Z and Y.
+    pub fn dims(&self) -> UVec3 {
+        self.dims
+    }
 }
 
 /// The next block's textures, warming while the previous block stays
@@ -194,12 +227,198 @@ impl VoxelLight {
     }
 }
 
+/// The lights one sector of a block records: the lights of its 6 m cell in
+/// the order the cell's flood lists them, at most twelve.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GiSector {
+    lights: [u32; MAX_SECTOR_LIGHTS],
+    count: u8,
+}
+
+impl GiSector {
+    /// From light ids (the shaders' record ids), keeping the first
+    /// [`MAX_SECTOR_LIGHTS`].
+    pub fn new(ids: impl IntoIterator<Item = u32>) -> Self {
+        let mut out = Self::default();
+        for id in ids {
+            if (out.count as usize) < MAX_SECTOR_LIGHTS {
+                out.lights[out.count as usize] = id;
+                out.count += 1;
+            }
+        }
+        out
+    }
+
+    /// The sector's light ids, in the cell's order.
+    pub fn ids(&self) -> &[u32] {
+        &self.lights[..self.count as usize]
+    }
+}
+
+/// The manager's per-frame state for the block's 8 × 8 sectors: whether the
+/// camera marks a sector for update (the reach and frustum test, widened by
+/// one sector), and the lights its 6 m cell records. The world fills it
+/// every frame (`exa_world::gi_volume`), as the original marks sectors and
+/// reads each block's lights from the cell lists.
+#[derive(Resource, Clone, Default)]
+pub struct GiSectorLights(pub Arc<GiSectors>);
+
+/// [`GiSectorLights`]'s body.
+#[derive(Clone, Debug)]
+pub struct GiSectors {
+    /// Sectors drawn this frame, X fastest (texture X, then Z).
+    pub drawn: [bool; SECTORS * SECTORS],
+    /// Each sector's lights.
+    pub sectors: [GiSector; SECTORS * SECTORS],
+}
+
+impl Default for GiSectors {
+    fn default() -> Self {
+        Self {
+            drawn: [false; SECTORS * SECTORS],
+            sectors: [GiSector::default(); SECTORS * SECTORS],
+        }
+    }
+}
+
+impl GiSectors {
+    /// The state of sector (`x`, `z`), both 0..8.
+    pub fn sector(&self, x: usize, z: usize) -> &GiSector {
+        &self.sectors[x + z * SECTORS]
+    }
+}
+
+/// A sector as the light grouping reads it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GiSectorPlan {
+    /// The manager marked the sector for update.
+    pub drawn: bool,
+    /// The lowest slice it updates.
+    pub floor: u8,
+    /// The lights its cell records.
+    pub lights: GiSector,
+}
+
+/// A group of sectors the original draws together: the same light set and
+/// floors within two slices, merged while the group keeps at most twelve
+/// lights.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GiGroupPlan {
+    /// The lowest slice any sector of the group updates.
+    pub floor: u8,
+    /// The group's lights, in the order its sectors list them.
+    pub lights: Vec<u32>,
+}
+
+/// The original's sector grouping: sectors are joined into a group while
+/// their light lists match exactly in the same order and their floor slices
+/// differ by less than 3. Two groups then merge, in two passes, when at
+/// least one light is common (or both are empty) and their union stays
+/// within twelve lights. Returns the groups in creation order and each
+/// sector's group, or 255 for a sector not drawn.
+pub fn group_sectors(
+    sectors: &[GiSectorPlan; SECTORS * SECTORS],
+) -> (Vec<GiGroupPlan>, [u8; SECTORS * SECTORS]) {
+    let mut groups: Vec<GiGroupPlan> = Vec::new();
+    let mut of_sector = [u8::MAX; SECTORS * SECTORS];
+    for (i, sector) in sectors.iter().enumerate() {
+        // A sector with no geometry (floor 255) is never drawn, and neither
+        // is one the camera did not mark.
+        if !sector.drawn || sector.floor == u8::MAX {
+            continue;
+        }
+        let ids = sector.lights.ids();
+        let joined = groups.iter().position(|g| {
+            g.lights == ids && (i32::from(g.floor) - i32::from(sector.floor)).abs() < 3
+        });
+        match joined {
+            Some(g) => {
+                groups[g].floor = groups[g].floor.min(sector.floor);
+                of_sector[i] = g as u8;
+            }
+            None => {
+                groups.push(GiGroupPlan {
+                    floor: sector.floor,
+                    lights: ids.to_vec(),
+                });
+                of_sector[i] = (groups.len() - 1) as u8;
+            }
+        }
+    }
+    // Two passes over the pairs, as the original's merge loop runs.
+    for _ in 0..2 {
+        let mut i = 0;
+        while i < groups.len() {
+            let mut j = i + 1;
+            while j < groups.len() {
+                let common = groups[j]
+                    .lights
+                    .iter()
+                    .filter(|l| groups[i].lights.contains(l))
+                    .count();
+                let union = groups[i].lights.len() + groups[j].lights.len() - common;
+                let disjoint =
+                    common == 0 && (!groups[i].lights.is_empty() || !groups[j].lights.is_empty());
+                if disjoint || union > MAX_SECTOR_LIGHTS {
+                    j += 1;
+                    continue;
+                }
+                // The second group's lights not already in the first join
+                // it, then its floor, and it disappears.
+                let added: Vec<u32> = groups[j]
+                    .lights
+                    .iter()
+                    .copied()
+                    .filter(|l| !groups[i].lights.contains(l))
+                    .collect();
+                groups[i].lights.extend(added);
+                groups[i].floor = groups[i].floor.min(groups[j].floor);
+                groups.remove(j);
+                for g in &mut of_sector {
+                    if *g == j as u8 {
+                        *g = i as u8;
+                    } else if *g != u8::MAX && *g as usize > j {
+                        *g -= 1;
+                    }
+                }
+            }
+            i += 1;
+        }
+    }
+    (groups, of_sector)
+}
+
 /// The lights injected into the volume this frame.
-#[derive(Resource, Clone, Default, ExtractResource)]
+#[derive(Resource, Clone, ExtractResource)]
 #[extract_app(RenderApp)]
 pub struct GiLights {
+    /// The groups' lights, one run of [`GiGroupUniform::count`] after
+    /// another.
     lights: Vec<GiLight>,
+    groups: Vec<GiGroupUniform>,
+    /// Per sector (X fastest), its group or 255.
+    sector_groups: [u8; SECTORS * SECTORS],
     voxel_lights: Vec<GiVoxelLight>,
+}
+
+impl Default for GiLights {
+    fn default() -> Self {
+        Self {
+            lights: Vec::new(),
+            groups: Vec::new(),
+            sector_groups: [u8::MAX; SECTORS * SECTORS],
+            voxel_lights: Vec::new(),
+        }
+    }
+}
+
+/// A group of sectors: the slice it draws from, and its run of lights.
+#[derive(Clone, Copy, Default, ShaderType)]
+struct GiGroupUniform {
+    floor: u32,
+    first: u32,
+    count: u32,
+    _pad: u32,
 }
 
 #[derive(Clone, Copy, Default, ShaderType)]
@@ -210,7 +429,18 @@ struct GiLight {
     shaping: Vec4,
 }
 
-const MAX_LIGHTS: usize = 32;
+/// Sectors across a block (X and Z): the original's 8 × 8 of 6 m cells.
+pub const SECTORS: usize = 8;
+/// Voxels along one side of a sector's interior, 6 m at 20 cm.
+const SECTOR_VOXELS: u32 = 30;
+/// Voxels of margin on each side of the sectors.
+const MARGIN: u32 = 8;
+/// The most lights one sector records and one group injects.
+pub const MAX_SECTOR_LIGHTS: usize = 12;
+/// Groups of sectors a block draws at once, one per sector at most.
+const MAX_GROUPS: usize = SECTORS * SECTORS;
+/// The flat light array the groups index into.
+const MAX_GROUP_LIGHTS: usize = MAX_GROUPS * MAX_SECTOR_LIGHTS;
 
 /// A voxel light as the pass reads it.
 #[derive(Clone, Copy, Default, ShaderType)]
@@ -232,7 +462,13 @@ const MAX_VOXEL_LIGHTS: usize = 64;
 struct GiParams {
     origin: Vec4,
     extent: Vec4,
-    lights: [GiLight; MAX_LIGHTS],
+    /// The base ambient every open voxel gains per step, per channel.
+    base: Vec4,
+    /// The groups of sectors drawn this frame.
+    groups: [GiGroupUniform; MAX_GROUPS],
+    /// Per sector (X fastest), its group or u32::MAX.
+    sector_groups: [UVec4; SECTORS * SECTORS / 4],
+    lights: [GiLight; MAX_GROUP_LIGHTS],
     /// x = the number of voxel lights.
     voxel_count: UVec4,
     voxel_lights: [GiVoxelLight; MAX_VOXEL_LIGHTS],
@@ -265,7 +501,11 @@ pub fn voxel_light_box(at: Vec3, dims: UVec3) -> Option<(UVec3, UVec3)> {
     if !at.is_finite() {
         return None;
     }
-    let corner = at.round().as_ivec3();
+    let corner = IVec3::new(
+        at.x.round_ties_even() as i32,
+        at.y.round_ties_even() as i32,
+        at.z.round_ties_even() as i32,
+    );
     let reach = VOXEL_LIGHT_REACH;
     let columns = |c: i32, size: u32| {
         let far = size as i32 - VOXEL_LIGHT_MARGIN;
@@ -366,12 +606,6 @@ fn create_textures(
         volume.cells.as_ref().clone(),
         false,
     ));
-    let floors = images.add(volume_image(
-        UVec3::new(size.x, size.y, 1),
-        TextureFormat::R8Unorm,
-        volume.floors.as_ref().clone(),
-        false,
-    ));
     let empty = vec![0u8; voxels * 4];
     let light = images.add(light_image(size, empty.clone()));
     let scratch = images.add(volume_image(size, TextureFormat::Rgba8Unorm, empty, true));
@@ -380,13 +614,14 @@ fn create_textures(
     warm_up.steps = volume.warm_up;
     let textures = GiTextures {
         occupancy,
-        floors,
         light,
         scratch,
         origin: volume.origin,
         extent,
         voxel: volume.voxel,
         dims: size,
+        floors: volume.floors.clone(),
+        sector: volume.sector,
         base_ambient: volume.base_ambient,
         warm_up: volume.warm_up,
         serial: warm_up.serial,
@@ -420,49 +655,149 @@ fn swap_warm_textures(
     commands.remove_resource::<GiPendingTextures>();
 }
 
+/// A light as the grouping and the uniforms need it.
+struct LightSource {
+    colour: Vec3,
+    intensity: f32,
+    /// The radius the injection falls off over, metres.
+    radius: f32,
+    position: Vec3,
+    multiplier: f32,
+    shaping: Vec2,
+}
+
+/// The point lights the injection reads.
+type GiLightQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static PointLight,
+        &'static GlobalTransform,
+        &'static crate::lights::LightId,
+        Option<&'static GiMultiplier>,
+        Option<&'static crate::lights::LightShaping>,
+    ),
+>;
+
+#[allow(clippy::too_many_arguments)]
 fn gather_lights(
     mut gi: ResMut<GiLights>,
-    lights: Query<(
-        &PointLight,
-        &GlobalTransform,
-        Option<&GiMultiplier>,
-        Option<&crate::lights::LightShaping>,
-    )>,
+    lights: GiLightQuery,
     voxel_lights: Query<(&VoxelLight, &GlobalTransform)>,
     textures: Option<Res<GiTextures>>,
+    pending: Option<Res<GiPendingTextures>>,
+    sectors: Option<Res<GiSectorLights>>,
 ) {
     gi.lights.clear();
+    gi.groups.clear();
     gi.voxel_lights.clear();
-    let Some(textures) = textures else {
+    gi.sector_groups = [u8::MAX; SECTORS * SECTORS];
+    let textures = pending.as_ref().map(|p| &p.0).or(textures.as_deref());
+    let (Some(textures), Some(sectors)) = (textures, sectors) else {
         return;
     };
-    gather_voxel_lights(&mut gi.voxel_lights, &textures, voxel_lights.iter());
-    // The lights whose reach overlaps the block, nearest its centre first
-    // (the original injects the lights of each sector group).
-    let (lo, hi) = (textures.origin, textures.origin + textures.extent);
-    let centre = (lo + hi) * 0.5;
-    let mut near: Vec<_> = lights
-        .iter()
-        .filter(|l| l.2.is_none_or(|m| m.0 > 0.0))
-        .filter(|(light, at, _, _)| {
-            let p = at.translation();
-            p.clamp(lo, hi).distance(p) < light.range / REACH
-        })
-        .collect();
-    near.sort_by(|a, b| {
-        a.1.translation()
-            .distance_squared(centre)
-            .total_cmp(&b.1.translation().distance_squared(centre))
-    });
-    for (light, at, share, shaping) in near.into_iter().take(MAX_LIGHTS) {
+    gather_voxel_lights(&mut gi.voxel_lights, textures, voxel_lights.iter());
+    // The lights the cells record, by their shader id.
+    let mut sources: HashMap<u32, LightSource> = HashMap::default();
+    for (light, at, id, share, shaping) in &lights {
         let c = light.color.to_linear();
-        let intensity = light.intensity / LUMENS_PER_INTENSITY * share.map_or(1.0, |m| m.0);
-        gi.lights.push(GiLight {
-            position_radius: at.translation().extend(light.range / REACH),
-            colour: (Vec3::new(c.red, c.green, c.blue) * intensity * INJECTION).extend(0.0),
-            shaping: shaping.map_or(Vec2::ONE, |s| s.0).extend(0.0).extend(0.0),
+        sources.insert(
+            id.0,
+            LightSource {
+                colour: Vec3::new(c.red, c.green, c.blue),
+                intensity: light.intensity / LUMENS_PER_INTENSITY,
+                radius: light.range / REACH,
+                position: at.translation(),
+                multiplier: share.map_or(1.0, |m| m.0),
+                shaping: shaping.map_or(Vec2::ONE, |s| s.0),
+            },
+        );
+    }
+    // Each drawn sector keeps the lights of its cell that the downward
+    // shaping lets reach its floor slice, in the cell's order.
+    let mut plans = [GiSectorPlan::default(); SECTORS * SECTORS];
+    for z in 0..SECTORS {
+        for x in 0..SECTORS {
+            let i = x + z * SECTORS;
+            let floor = textures.sector_floor(x, z);
+            let drawn = sectors.0.drawn[i] && floor != u8::MAX;
+            let mut kept = [0u32; MAX_SECTOR_LIGHTS];
+            let mut count = 0;
+            if drawn {
+                let centre = textures.origin
+                    + Vec3::new(
+                        4.6 + 6.0 * x as f32,
+                        (f32::from(floor) + 0.5) * textures.voxel,
+                        4.6 + 6.0 * z as f32,
+                    );
+                for &id in sectors.0.sector(x, z).ids() {
+                    let Some(source) = sources.get(&id) else {
+                        continue;
+                    };
+                    if !shape_reaches(source, centre) {
+                        continue;
+                    }
+                    kept[count] = id;
+                    count += 1;
+                }
+            }
+            plans[i] = GiSectorPlan {
+                drawn,
+                floor,
+                lights: GiSector::new(kept[..count].iter().copied()),
+            };
+        }
+    }
+    let (groups, of_sector) = group_sectors(&plans);
+    for group in &groups {
+        let first = gi.lights.len();
+        for id in &group.lights {
+            let Some(source) = sources.get(id) else {
+                continue;
+            };
+            let intensity = source.intensity * source.multiplier;
+            gi.lights.push(GiLight {
+                position_radius: source.position.extend(source.radius),
+                colour: (source.colour * intensity * INJECTION).extend(0.0),
+                shaping: source.shaping.extend(0.0).extend(0.0),
+            });
+        }
+        let count = (gi.lights.len() - first) as u32;
+        gi.groups.push(GiGroupUniform {
+            floor: u32::from(group.floor),
+            first: first as u32,
+            count,
+            _pad: 0,
         });
     }
+    gi.sector_groups = of_sector;
+}
+
+/// The original's downward-shaping test at a sector's floor slice: the light
+/// must still carry vertically at the sector centre. Lights that are not
+/// shaped (y = 1) always pass. The horizontal offset is folded one 6 m cell
+/// towards zero, so a light within half a cell of the centre counts as
+/// straight above it.
+fn shape_reaches(source: &LightSource, centre: Vec3) -> bool {
+    let y = source.shaping.x;
+    if y == 1.0 {
+        return true;
+    }
+    let fold = |d: f32| {
+        if d.abs() <= 3.0 {
+            0.0
+        } else {
+            d - d.signum() * 3.0
+        }
+    };
+    let (dx, dz) = (
+        fold(source.position.x - centre.x),
+        fold(source.position.z - centre.z),
+    );
+    let dy = source.position.y - centre.y;
+    let distance = (dx * dx + dy * dy + dz * dz).sqrt();
+    let c = if distance > 0.0 { dy / distance } else { 0.0 };
+    c + (1.0 - c) * y > 1.19e-7
 }
 
 /// The voxel lights that reach into the block, nearest its centre first (the
@@ -558,7 +893,6 @@ fn init_pipeline(
                 sampler(SamplerBindingType::Filtering),
                 texture_storage_3d(TextureFormat::Rgba8Unorm, StorageTextureAccess::WriteOnly),
                 uniform_buffer::<GiParams>(false),
-                texture_3d(TextureSampleType::Float { filterable: true }),
             ),
         ),
     );
@@ -618,27 +952,39 @@ fn prepare_bind_group(
         commands.remove_resource::<GiBindGroup>();
         return;
     };
-    let (Some(light), Some(occupancy), Some(scratch), Some(floors)) = (
+    let (Some(light), Some(occupancy), Some(scratch)) = (
         images.get(&textures.light),
         images.get(&textures.occupancy),
         images.get(&textures.scratch),
-        images.get(&textures.floors),
     ) else {
         return;
     };
-    let mut entries = [GiLight::default(); MAX_LIGHTS];
+    let mut entries = [GiLight::default(); MAX_GROUP_LIGHTS];
     for (slot, l) in entries.iter_mut().zip(&lights.lights) {
         *slot = *l;
+    }
+    let mut groups = [GiGroupUniform::default(); MAX_GROUPS];
+    for (slot, g) in groups.iter_mut().zip(&lights.groups) {
+        *slot = *g;
+    }
+    let mut sector_groups = [UVec4::splat(u32::MAX); SECTORS * SECTORS / 4];
+    for (i, &group) in lights.sector_groups.iter().enumerate() {
+        sector_groups[i / 4][i % 4] = if group == u8::MAX {
+            u32::MAX
+        } else {
+            u32::from(group)
+        };
     }
     let mut voxel_entries = [GiVoxelLight::default(); MAX_VOXEL_LIGHTS];
     for (slot, l) in voxel_entries.iter_mut().zip(&lights.voxel_lights) {
         *slot = *l;
     }
     let mut params = UniformBuffer::from(GiParams {
-        origin: textures.origin.extend(textures.base_ambient),
-        extent: textures
-            .extent
-            .extend(lights.lights.len().min(MAX_LIGHTS) as f32),
+        origin: textures.origin.extend(0.0),
+        extent: textures.extent.extend(0.0),
+        base: textures.base_ambient.extend(0.0),
+        groups,
+        sector_groups,
         lights: entries,
         voxel_count: UVec4::new(
             lights.voxel_lights.len().min(MAX_VOXEL_LIGHTS) as u32,
@@ -661,7 +1007,6 @@ fn prepare_bind_group(
             &pipeline.sampler,
             &scratch.texture_view,
             binding,
-            &floors.texture_view,
         )),
     );
     if owed.serial != textures.serial {
@@ -767,14 +1112,21 @@ mod tests {
     fn fake_textures(serial: u32) -> GiTextures {
         GiTextures {
             occupancy: Handle::default(),
-            floors: Handle::default(),
             light: Handle::default(),
             scratch: Handle::default(),
             origin: Vec3::ZERO,
             extent: Vec3::ONE,
             voxel: 0.2,
             dims: UVec3::ONE,
-            base_ambient: 0.0,
+            floors: Arc::new(vec![
+                0;
+                SECTORS
+                    * SECTOR_VOXELS as usize
+                    * SECTORS
+                    * SECTOR_VOXELS as usize
+            ]),
+            sector: IVec2::ZERO,
+            base_ambient: Vec3::ZERO,
             warm_up: 10,
             serial,
         }
@@ -787,7 +1139,8 @@ mod tests {
             voxel: 0.2,
             cells: Arc::new(vec![0; 8]),
             floors: Arc::new(vec![0; 4]),
-            base_ambient: 0.0,
+            base_ambient: Vec3::ZERO,
+            sector: IVec2::ZERO,
             warm_up: 10,
         }
     }
@@ -873,7 +1226,7 @@ mod tests {
         // space, and 3.8 where everything around blocks it.
         let at = Vec3::new(100.5, 100.5, 30.5);
         let (lo, hi) = voxel_light_box(at, BLOCK).unwrap();
-        assert_eq!((lo, hi), (UVec3::new(98, 98, 28), UVec3::new(104, 104, 35)));
+        assert_eq!((lo, hi), (UVec3::new(97, 97, 27), UVec3::new(103, 103, 34)));
         let sum = |blocked: f32| {
             let mut s = 0.0;
             for z in lo.z..hi.z {
@@ -925,5 +1278,134 @@ mod tests {
         // Without a warm-up there is nothing to wait for.
         warm.steps = 0;
         assert!(warm.finished());
+    }
+
+    fn plan(drawn: bool, floor: u8, lights: &[u32]) -> GiSectorPlan {
+        GiSectorPlan {
+            drawn,
+            floor,
+            lights: GiSector::new(lights.iter().copied()),
+        }
+    }
+
+    #[test]
+    fn sectors_with_the_same_lights_share_a_group_and_its_lowest_floor() {
+        let mut sectors = [GiSectorPlan::default(); 64];
+        sectors[0] = plan(true, 46, &[3, 7]);
+        sectors[1] = plan(true, 48, &[3, 7]);
+        sectors[2] = plan(true, 49, &[3, 7]);
+        // An unmarked or empty sector is left out.
+        sectors[3] = plan(false, 46, &[3, 7]);
+        sectors[4] = plan(true, u8::MAX, &[3, 7]);
+        let (groups, of_sector) = group_sectors(&sectors);
+        // The sector pass keeps floors within two slices apart, and the
+        // group pass then joins the equal light sets whatever their floors.
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].lights, vec![3, 7]);
+        assert_eq!(groups[0].floor, 46);
+        assert_eq!(&of_sector[..3], &[0, 0, 0]);
+        assert_eq!(of_sector[3], u8::MAX);
+        assert_eq!(of_sector[4], u8::MAX);
+    }
+
+    #[test]
+    fn far_floors_alone_do_not_split_equal_light_sets() {
+        let mut sectors = [GiSectorPlan::default(); 64];
+        sectors[0] = plan(true, 10, &[1]);
+        sectors[1] = plan(true, 100, &[1]);
+        let (groups, _) = group_sectors(&sectors);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].floor, 10);
+    }
+
+    #[test]
+    fn groups_merge_only_where_their_lights_overlap_and_stay_within_twelve() {
+        let mut sectors = [GiSectorPlan::default(); 64];
+        // Two groups with different sets: [1, 2] and [2, 5], far enough
+        // apart in floor to start apart. The merge pass joins them (they
+        // share 2) and takes the first group's floor.
+        sectors[0] = plan(true, 10, &[1, 2]);
+        sectors[1] = plan(true, 20, &[2, 5]);
+        let (groups, of_sector) = group_sectors(&sectors);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].lights, vec![1, 2, 5]);
+        assert_eq!(groups[0].floor, 10);
+        assert_eq!(&of_sector[..2], &[0, 0]);
+
+        // Disjoint light sets never merge, even when both are empty.
+        let mut sectors = [GiSectorPlan::default(); 64];
+        sectors[0] = plan(true, 10, &[1]);
+        sectors[1] = plan(true, 10, &[2]);
+        let (groups, _) = group_sectors(&sectors);
+        assert_eq!(groups.len(), 2);
+
+        // Eight lights and six sharing one make thirteen, over the cap.
+        let eight: Vec<u32> = (0..8).collect();
+        let six: Vec<u32> = (7..13).collect();
+        sectors[0] = plan(true, 10, &eight);
+        sectors[1] = plan(true, 10, &six);
+        let (groups, _) = group_sectors(&sectors);
+        assert_eq!(groups.len(), 2);
+
+        // Five sharing one with eight gives twelve and merges.
+        let five: Vec<u32> = (7..12).collect();
+        sectors[1] = plan(true, 10, &five);
+        let (groups, _) = group_sectors(&sectors);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].lights.len(), 12);
+    }
+
+    #[test]
+    fn shaped_lights_must_still_reach_a_sectors_floor_slice() {
+        let source = |position: Vec3, y: f32| LightSource {
+            colour: Vec3::ONE,
+            intensity: 1.0,
+            radius: 10.0,
+            position,
+            multiplier: 1.0,
+            shaping: Vec2::new(y, 1.0),
+        };
+        let centre = Vec3::new(0.0, 1.0, 0.0);
+        // Straight above passes, and so does a light within half a cell.
+        assert!(shape_reaches(
+            &source(Vec3::new(0.0, 5.0, 0.0), 0.0),
+            centre
+        ));
+        assert!(shape_reaches(
+            &source(Vec3::new(2.9, 5.0, 0.0), 0.0),
+            centre
+        ));
+        // At its own height, or below the slice, a shaped light is cut.
+        assert!(!shape_reaches(
+            &source(Vec3::new(0.0, 1.0, 0.0), 0.0),
+            centre
+        ));
+        assert!(!shape_reaches(
+            &source(Vec3::new(0.0, -3.0, 0.0), 0.0),
+            centre
+        ));
+        // Its horizontal offset folds one cell towards zero: 2 m after the
+        // fold of a 5 m offset, below a 5 m rise, still carries.
+        assert!(shape_reaches(
+            &source(Vec3::new(5.0, 6.0, 0.0), 0.0),
+            centre
+        ));
+        // An unshaped light always passes.
+        assert!(shape_reaches(
+            &source(Vec3::new(5.0, -20.0, 0.0), 1.0),
+            centre
+        ));
+    }
+
+    #[test]
+    fn voxel_light_corners_round_to_even() {
+        // The corner is the nearest voxel, ties to even as the processor's
+        // conversion rounds.
+        let (lo, hi) = voxel_light_box(Vec3::new(10.5, 10.5, 30.5), BLOCK).unwrap();
+        assert_eq!((lo.x, hi.x), (8, 13));
+        let (lo, hi) = voxel_light_box(Vec3::new(11.5, 11.5, 30.5), BLOCK).unwrap();
+        assert_eq!((lo.x, hi.x), (9, 15));
+        let (lo, hi) = voxel_light_box(Vec3::new(12.5, 12.5, 30.5), BLOCK).unwrap();
+        assert_eq!((lo.x, hi.x), (9, 15));
     }
 }

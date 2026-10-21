@@ -53,10 +53,16 @@ impl Plugin for ShadowLinksPlugin {
                     .after(VisibilitySystems::CalculateBounds)
                     .after(LightsSystems::Ids)
                     .before(LightsSystems::Cubes)
-                    .before(VisibilitySystems::CheckVisibility),
+                    .before(VisibilitySystems::CheckVisibility)
+                    .in_set(LightCells),
             );
     }
 }
+
+/// The point lights' 6 m cell lists are current: the flood has run for every
+/// light that moved this frame. The GI reads the lists after this set.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LightCells;
 
 /// The link test's inputs for a light: its radius R (m) and the luma of its
 /// colour × intensity.
@@ -100,6 +106,25 @@ impl LevelWalls {
         )?;
         let cells = CellLights::new(&walls);
         Some(Self { grid: walls, cells })
+    }
+
+    /// The grid's size in cells (X, Z).
+    pub fn size(&self) -> (usize, usize) {
+        self.grid.size()
+    }
+
+    /// Whether the cell (`x`, `z`) is built (plane A's open flag).
+    pub fn open(&self, x: i64, z: i64) -> bool {
+        self.grid.open(x, z)
+    }
+
+    /// The lights the cell (`x`, `z`) records, in the order the flood lists
+    /// them.
+    pub fn lights(&self, x: usize, z: usize) -> impl Iterator<Item = u32> + '_ {
+        let (w, h) = self.grid.size();
+        let cell = (x < w && z < h).then(|| z * w + x);
+        cell.into_iter()
+            .flat_map(move |cell| self.cells.lights(cell))
     }
 }
 

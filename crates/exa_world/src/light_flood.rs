@@ -29,6 +29,8 @@ pub const MAX_CELL_LIGHTS: usize = 12;
 const STACK_LIMIT: usize = 31;
 /// Cell size, metres.
 const CELL: f32 = 6.0;
+/// Plane A's bit for a built cell.
+const OPEN: u32 = 0x8_0000;
 
 /// Outward normal and the axis along each side towards its a1 end, in cell
 /// space (u along +X, v along +Z). Sides: 0 −Z, 1 −X, 2 +Z, 3 +X.
@@ -120,6 +122,17 @@ impl WallGrid {
     fn index(&self, i: i64, j: i64) -> Option<usize> {
         (i >= 0 && j >= 0 && (i as usize) < self.w && (j as usize) < self.h)
             .then(|| j as usize * self.w + i as usize)
+    }
+
+    /// The grid's size in cells (X, Z).
+    pub fn size(&self) -> (usize, usize) {
+        (self.w, self.h)
+    }
+
+    /// Whether a cell is built: plane A's open flag `0x80000`. A cell
+    /// outside the grid is not.
+    pub fn open(&self, x: i64, z: i64) -> bool {
+        self.index(x, z).is_some_and(|i| self.a[i] & OPEN != 0)
     }
 
     /// World metres to cell space: cell (i, j) is centred on (i, j).

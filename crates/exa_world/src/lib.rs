@@ -1020,11 +1020,22 @@ impl LevelLoad {
         };
         let env = self.scene.environment.clone().unwrap_or_default();
         let reverb_decay = env.reverb_decay;
+        let grid = self
+            .scene
+            .grid
+            .as_ref()
+            .map(|g| gi_volume::GiGrid {
+                width: g.width,
+                height: g.height,
+                edges: std::sync::Arc::new(g.edges.clone()),
+            })
+            .unwrap_or_else(gi_volume::GiGrid::synthetic);
         commands.insert_resource(gi_volume::PendingGi {
             centre: (min + max) / 2.0,
             top: env.ceiling,
             bottom: env.floor,
-            base_ambient: env.fill[0] * gi_volume::BASE_AMBIENT,
+            base_ambient: [env.fill[0], env.fill[1], env.fill[2]],
+            grid,
         });
         let (width, depth) =
             nav::source::grid_size(self.scene.grid.as_ref().map(|g| (g.width, g.height)));
