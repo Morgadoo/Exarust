@@ -618,11 +618,16 @@ fn footwork(legs: &mut [Leg], ankles: &[Vec3], spots: &[Option<Vec3>], work: &Wo
     ended
 }
 
+/// The projection the rearmost foot's search starts under.
+const REAR_START: f32 = 3.4e38;
+
 impl Ragdoll {
     /// Leaving the walk: the rearmost foot (the smallest projection of its
-    /// animated contact along the frame's forward) is anchored at its
-    /// stance spot under the frame, keeping its height, and the other foot
-    /// lands where it is. Both keep their slow ramp bit.
+    /// current contact point along the frame's forward; the first of equal
+    /// ones, and the first when none is under 3.4e38 or all are NaN) is
+    /// anchored at its stance spot under the frame, keeping its height,
+    /// and every other foot lands where it is (whether or not it was
+    /// anchored). Both keep their slow ramp bit.
     pub fn plant_trailing_foot(&mut self) {
         let Ragdoll {
             parts, legs, drive, ..
@@ -637,37 +642,32 @@ impl Ragdoll {
             return;
         }
         let forward = Vec3::from(frame.matrix3.z_axis);
-        let rear = legs
-            .iter()
-            .enumerate()
-            .map(|(i, leg)| {
-                let posed = drive.targets[leg.shin].transform_point3(leg.point);
-                (i, posed.dot(forward))
-            })
-            .fold(None, |best: Option<(usize, f32)>, (i, along)| {
-                Some(match best {
-                    Some((_, b)) if b <= along => best.unwrap(),
-                    _ => (i, along),
-                })
-            });
-        let Some((rear, _)) = rear else {
-            return;
-        };
+        // A strict compare against the running smallest: a NaN never wins.
+        let mut smallest = REAR_START;
+        let mut rear = 0;
+        for (i, leg) in legs.iter().enumerate() {
+            let along = parts[leg.shin].point(&leg.contact).dot(forward);
+            if smallest > along {
+                smallest = along;
+                rear = i;
+            }
+        }
         for (i, leg) in legs.iter_mut().enumerate() {
+            let at = parts[leg.shin].point(&leg.contact);
             if i == rear {
                 let posed = drive.targets[leg.shin].transform_point3(leg.point);
-                let at = parts[leg.shin].point(&leg.contact);
                 leg.anchor = Vec3::new(posed.x, at.y, posed.z);
                 leg.at = at;
                 leg.before = at;
                 leg.state = FootState(
                     leg.state.0 & FootState::RAMP_SLOW | FootState::TOUCHING | FootState::ANCHORED,
                 );
-            } else if leg.state.has(FootState::ANCHORED) {
-                let at = parts[leg.shin].point(&leg.contact);
-                leg.anchor = at;
-                leg.at = at;
-                leg.before = at;
+            } else {
+                if leg.state.has(FootState::ANCHORED) {
+                    leg.anchor = at;
+                    leg.at = at;
+                    leg.before = at;
+                }
                 leg.state = FootState(leg.state.0 & FootState::RAMP_SLOW | FootState::TOUCHING);
             }
         }

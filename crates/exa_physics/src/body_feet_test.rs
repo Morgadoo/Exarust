@@ -800,8 +800,9 @@ fn a_stagger_target_walks_one_foot() {
     assert_eq!(walked.states, vec![0, 0]);
 }
 
-/// Leaving the walk, the rearmost foot is anchored at its stance spot
-/// under the frame (keeping its height) and the other lands where it is.
+/// Leaving the walk, the rearmost foot (by where its contact is, not by
+/// its stance spot) is anchored at its stance spot under the frame
+/// (keeping its height) and the other lands where it is, anchored or not.
 #[test]
 fn the_trailing_foot_is_planted_on_leaving_the_walk() {
     let (mut body, pose) = footed(Vec3::ZERO);
@@ -810,23 +811,34 @@ fn the_trailing_foot_is_planted_on_leaving_the_walk() {
         leg.state = FootState(FootState::ANCHORED | FootState::RAMP_SLOW);
         leg.anchor = Vec3::new(9.0, 9.0, 9.0);
     }
+    // The second foot's contact trails the first's.
+    let shin = body.legs[1].shin;
+    for x in &mut body.parts[shin].positions {
+        *x -= Vec3::Z * 0.2;
+    }
     body.plant_trailing_foot();
-    let anchored: Vec<usize> = body
-        .legs
-        .iter()
-        .enumerate()
-        .filter(|(_, l)| l.state.has(FootState::ANCHORED))
-        .map(|(i, _)| i)
-        .collect();
-    assert_eq!(anchored.len(), 1);
-    let rear = anchored[0];
-    assert!(body.legs[1 - rear].state.has(FootState::TOUCHING));
-    assert!(!body.legs[1 - rear].state.has(FootState::ANCHORED));
-    let posed =
-        drive(&body).targets()[body.legs[rear].shin].transform_point3(body.legs[rear].point);
-    assert!(close(body.legs[rear].anchor.x, posed.x, 1e-5));
-    assert!(close(body.legs[rear].anchor.z, posed.z, 1e-5));
-    assert_ne!(body.legs[rear].anchor, Vec3::new(9.0, 9.0, 9.0));
+    assert!(body.legs[1].state.has(FootState::ANCHORED));
+    assert!(body.legs[1].state.has(FootState::RAMP_SLOW));
+    assert!(body.legs[0].state.has(FootState::TOUCHING));
+    assert!(!body.legs[0].state.has(FootState::ANCHORED));
+    let posed = drive(&body).targets()[body.legs[1].shin].transform_point3(body.legs[1].point);
+    assert!(close(body.legs[1].anchor.x, posed.x, 1e-5));
+    assert!(close(body.legs[1].anchor.z, posed.z, 1e-5));
+    assert_ne!(body.legs[1].anchor, Vec3::new(9.0, 9.0, 9.0));
+    // The other foot's anchor is where it is.
+    let at = body.parts[body.legs[0].shin].point(&body.legs[0].contact);
+    assert_eq!(body.legs[0].anchor, at);
+    // A foot that was not anchored still lands, keeping its anchor.
+    for leg in &mut body.legs {
+        leg.state = FootState(FootState::RAMP_SLOW);
+        leg.anchor = Vec3::new(9.0, 9.0, 9.0);
+    }
+    body.plant_trailing_foot();
+    assert_eq!(
+        body.legs[0].state.0,
+        FootState::RAMP_SLOW | FootState::TOUCHING
+    );
+    assert_eq!(body.legs[0].anchor, Vec3::new(9.0, 9.0, 9.0));
 }
 
 /// Clearing a state mask leaves the other bits; the full tone reset is 1
