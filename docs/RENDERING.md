@@ -1884,6 +1884,40 @@ The creation scene also smooths the hair it shows (one Loop subdivision,
 yet. `exarust model <pack> <entry> --msm` shows any model smoothed that way,
 as the original's `msm` debug command smooths a scene.
 
+## Character decomposition
+
+A corpse's or undead's skin rots through the procedural material the
+original's texture compositor adds when the decomposition amount is above
+0: three passes over the skin, run as `chardecomp_d`, `chardecomp_s` and
+`chardecomp_n` on the GPU there. Exarust evaluates the same arithmetic per
+texel in `exa_assets::decomp` (the compositor is on the CPU), taking the
+shader texels, the skin colour, the amount and the UV offset.
+
+* **Diffuse.** The skin times a colour mixed from the skin colour toward
+  grey by `0.4 + 0.1·amount`; the decomposition map's rgb multiplies it,
+  scaled by `2 + 0.4·amount`, with red at 0.85 and blue pulled toward its
+  square root (`0.75·b + 0.25·√b`). The `skindecomp` map, weighted
+  `0.25·amount`, mixes the green into a double-green term at
+  `0.3·amount`. The seam mask's red channel, square-rooted, is the weight
+  of the final decay layer (the full-screen mask variant is compiled out:
+  the shipped mask is the seam map's red). That layer is exposed and
+  tinted by its own red, its red and blue pulled down by `d·0.04`, and
+  mixed in by the weight.
+* **Specular.** Green only: the skin's grey times 2.5, times
+  `0.4 + (0.75 − 0.1·amount)²`, mixed toward the fourth map by
+  `w·(2 − w²)`, w the seam mask; the colour is `(1, g, 0)`.
+* **Normal.** The decay layers' normals are added by their weights
+  (`lamt`, two layers in the shipped material), a further map's xy by
+  `amount/(1 + amount)`, then an eighth map's xy by `√w`. A cavity normal
+  from the eight neighbouring height texels (squared, sobel-weighted,
+  normalised, z = 0.5) is added by `3·(1 − w)²`; z is rebuilt from the
+  xy length. The result is stored as `0.5·n + 0.5`.
+
+Which file lands in which shader unit is only partly read: the passes bind
+`humanseams`, `humandcmpw`, `ancientdifm`, `skindecomp`, `humandcmpf`,
+`ancientnrmm0`, `humandcmpn` and `humandcmpg`, but the unit map is the
+original's material state. `decomp::created` is the amount's ordered test.
+
 ## Procedural noise
 
 The original generates its noise images on the CPU from one linear

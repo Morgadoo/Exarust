@@ -47,6 +47,12 @@ scales are `tone_grid_scales` (the darkest column over the base skin's
 linear colour, times 0.8 in double precision), the grid the unit's init
 precomputes.
 
+The decomposition pass (`decomp`): the original's `chardecomp_d`, `_s`
+and `_n` programs evaluated per texel for a corpse's or undead's skin —
+the skin scaling and decay mixes, the green specular sheen and the decay
+normals with the height-map cavity normal — from shader texels, the skin
+colour and the amount (the file-to-unit map is only partly read).
+
 The character-creation sliders (`morph_controller`): a centred slider reads
 its position as `0.5 − position`, a direct one as itself; `morph_slider`
 writes that float into one morph target's weight and returns it for the
