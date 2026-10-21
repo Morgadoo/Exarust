@@ -286,6 +286,7 @@ fn the_focus_stack_moves_duplicates_and_picks_the_sets() {
         FocusChange::Gameplay(1)
     );
     assert_eq!(stack.depth(), 3);
+    assert!(stack.contains(8) && !stack.contains(10));
     // A form pushed again moves to the top.
     assert_eq!(
         stack.push(FocusEntry {

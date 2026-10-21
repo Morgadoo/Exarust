@@ -972,6 +972,11 @@ impl FocusStack {
         self.entries.len()
     }
 
+    /// Whether `form` is on the stack.
+    pub fn contains(&self, form: u64) -> bool {
+        self.entries.iter().any(|entry| entry.form == form)
+    }
+
     /// The set the top form asks for, if any.
     pub fn top_change(&self) -> FocusChange {
         self.entries.last().map_or(FocusChange::None, Self::change)
