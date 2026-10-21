@@ -795,7 +795,11 @@ size, the record ends at its size): name[16], surname[16], physique f32×2,
 height (−1…1, positive is shorter), age (0…1), skin colour u16×2, hair
 style, hair colour u8×4, face styles u16×2 (read by every version),
 voice[16] (`xx0N` gives voice number N − 1), pitch, profession (bit 0
-female, byte 1 race), last locale, four held items {id, flags}, then the
+female, byte 1 race, `0x0100_0000` while the second weapon set is out),
+last locale, four held items {id, flags} (the out set's main and off hand,
+then the stowed set's; flags `0x0100_0000` flipped, `0x0200_0000` a lit
+light; none of the 477 level records sets a flags word or the second-set
+bit), then the
 worn items: `i32 n` and n × {id, flags}. Ids with `0x80000000` refer to the
 level's own object database (`DBC0` → `DBDB`, an RDB of item records like
 `objdb.rdb`'s). Across the 29 levels, all 477 placed characters have a

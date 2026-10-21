@@ -103,16 +103,16 @@ impl ItemKind {
 }
 
 impl Possessions {
-    /// The possessions a character's record starts with: the four hands'
-    /// items and flags, the worn items and the carried list. The record's
-    /// second-set flag is not read yet; the first set starts out.
+    /// The possessions a character's record starts with: the record's word
+    /// with the second-set flag, the four hands' items and flags (the out
+    /// set first), the worn items and the carried list.
     pub fn of_record(record: &CharacterRecord) -> Self {
         let hand = |i: usize| Hand {
             id: record.hands[i],
             flags: record.hand_flags[i],
         };
         Self {
-            flags: 0,
+            flags: record.profession,
             out: [hand(0), hand(1)],
             stowed: [hand(2), hand(3)],
             worn: record.worn.clone(),
@@ -965,6 +965,7 @@ mod tests {
         let r = CharacterRecord {
             hands: [1, 2, 3, 4],
             hand_flags: [0, LIT, 0, 0],
+            profession: SECOND_SET | 1,
             worn: vec![8],
             inventory: vec![exa_formats::characters::Carried {
                 item: 1,
@@ -976,6 +977,7 @@ mod tests {
         let p = Possessions::of_record(&r);
         assert_eq!((p.out[1].id, p.stowed[0].id), (2, 3));
         assert_eq!(p.out[1].flags, LIT);
+        assert_eq!(p.flags & SECOND_SET, SECOND_SET);
         assert_eq!(
             p.carried[0],
             Carried {

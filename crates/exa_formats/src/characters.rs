@@ -180,6 +180,10 @@ pub struct CharacterRecord {
     pub age: f32,
     pub female: bool,
     pub race: u8,
+    /// The whole word the sex and race are read from: bit 0 female, the
+    /// race in bits 8–15, and `0x0100_0000` while the second weapon set is
+    /// out (REA on the weapon-set swap, which toggles it).
+    pub profession: u32,
     pub voice: String,
     /// Voice pitch as stored (the character's init clamps it).
     pub voice_pitch: f32,
@@ -230,6 +234,7 @@ impl Default for CharacterRecord {
             age: 0.0,
             female: false,
             race: 0,
+            profession: 0,
             voice: String::new(),
             voice_pitch: 1.0,
             hands: [0; 4],
@@ -624,6 +629,7 @@ impl CharacterRecord {
         rec.voice = r.name()?;
         rec.voice_pitch = r.f32()?;
         let profession = r.u32()?;
+        rec.profession = profession;
         rec.female = profession & 1 != 0;
         rec.race = (profession >> 8) as u8;
         r.i32()?; // last locale

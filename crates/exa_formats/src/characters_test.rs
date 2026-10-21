@@ -135,6 +135,7 @@ fn whole_version_7_record() {
     assert_eq!((r.physique, r.height, r.age), ([0.25, 0.75], -0.5, 0.3));
     assert!(r.female);
     assert_eq!(r.race, 11);
+    assert_eq!(r.profession, 0x0000_0B01);
     assert_eq!((r.voice.as_str(), r.voice_pitch), ("vi03", 1.05));
     assert_eq!(r.hands, [0x17, 0, 0x22, 0]);
     assert_eq!(r.hand_flags, [0x100, 0, 0, 0]);
