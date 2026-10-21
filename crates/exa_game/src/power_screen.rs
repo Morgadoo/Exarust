@@ -10,6 +10,8 @@
 //! the open screen is drawn, at most 33 ms apart; the in-game bar draws a
 //! strip `scale × 20` high.
 
+use std::sync::{Arc, Mutex};
+
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
@@ -17,6 +19,7 @@ use bevy::window::PrimaryWindow;
 use exa_assets::{Game, RgbaImage, TreeSheets};
 use exa_formats::rfi::Rfi;
 use exa_ui::font::{BASE_FONT, GameFont};
+use exa_ui::gui_core::{FormHost, FormId, GuiRect, GuiTask};
 use exa_ui::tree_draw::{self, Batch, Program, TextRun, Texture, TreeDraw, TreeVertex};
 
 use crate::bindings::{Action, Bindings};
@@ -95,9 +98,62 @@ impl Plugin for PowerScreenPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PowerScreen>()
             .init_resource::<PowerBody>()
-            .add_systems(Startup, load_screen)
+            .add_systems(Startup, (load_screen, setup_router))
             .add_systems(Update, (hotkeys, pointer, draw).chain());
     }
+}
+
+/// The tree's form in the GUI core's task, so the pointer takes the
+/// window manager's route.
+#[derive(Resource)]
+struct PowerRouter {
+    task: GuiTask,
+    form: FormId,
+    state: Arc<Mutex<PowerFormState>>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct PowerFormState {
+    open: bool,
+    width: i32,
+    height: i32,
+}
+
+struct PowerForm {
+    state: Arc<Mutex<PowerFormState>>,
+}
+
+impl FormHost for PowerForm {
+    fn parent(&self) -> Option<FormId> {
+        None
+    }
+
+    fn bounds(&self) -> GuiRect {
+        let state = self.state.lock().map(|s| *s).unwrap_or_default();
+        GuiRect::new(0, 0, state.width, state.height)
+    }
+
+    fn is_visible(&self) -> bool {
+        self.state.lock().map(|state| state.open).unwrap_or(false)
+    }
+
+    fn hit_test(&self, x: i32, y: i32) -> i32 {
+        let state = self.state.lock().map(|s| *s).unwrap_or_default();
+        if state.open && (0..state.width).contains(&x) && (0..state.height).contains(&y) {
+            1
+        } else {
+            -1
+        }
+    }
+}
+
+fn setup_router(mut commands: Commands) {
+    let state = Arc::new(Mutex::new(PowerFormState::default()));
+    let mut task = GuiTask::new((800, 600));
+    let form = task.add(Box::new(PowerForm {
+        state: Arc::clone(&state),
+    }));
+    commands.insert_resource(PowerRouter { task, form, state });
 }
 
 /// The body a bar cast is priced and gated on.
@@ -345,6 +401,7 @@ fn pointer(
     windows: Query<&Window, With<PrimaryWindow>>,
     time: Res<Time>,
     mut screen: ResMut<PowerScreen>,
+    mut router: Option<ResMut<PowerRouter>>,
 ) {
     if !screen.open {
         while wheel.read().next().is_some() {}
@@ -361,6 +418,18 @@ fn pointer(
     let x = cursor.x * window.scale_factor();
     let y = cursor.y * window.scale_factor();
     let now = time.elapsed().as_millis() as u32;
+    if let Some(router) = router.as_deref_mut() {
+        router.task.screen = (width as i32, height as i32);
+        if let Ok(mut state) = router.state.lock() {
+            state.open = screen.open;
+            state.width = width as i32;
+            state.height = height as i32;
+        }
+        let hit = router.task.hit_and_focus(x as i32, y as i32);
+        if hit.form != Some(router.form) {
+            return;
+        }
+    }
     let PowerScreen {
         open,
         tree,

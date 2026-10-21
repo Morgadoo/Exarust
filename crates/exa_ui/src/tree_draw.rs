@@ -36,6 +36,8 @@
 //! measurements. The font glyphs are the running game's font; the original
 //! draws them with the GUI skin's letter sheet.
 
+use crate::skin::{GuiDraw, GuiPrimitive, GuiVertex, SkinBatch, SkinInk, SkinMode};
+
 /// A vertex as the immediate helpers leave it: place, two texture
 /// coordinate sets and an ink.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1065,6 +1067,46 @@ pub fn preview_draw(power: u32, flags: u32, x: f32, y: f32, size: f32, domain: u
     out
 }
 
+/// Fills a [`SkinBatch`] with the draw's vertices and one primitive per
+/// batch, as the skin's immediate path would submit them: textured batches
+/// through the textured program, the ring through the solid one, quads.
+pub fn to_skin_batch(draw: &TreeDraw) -> SkinBatch {
+    let mut batch = SkinBatch::default();
+    for entry in &draw.batches {
+        let mode = match entry.program {
+            Program::Ring => SkinMode::Solid,
+            _ => SkinMode::Textured,
+        };
+        let first = batch.vertices.len();
+        for vertex in &entry.vertices {
+            let ink: SkinInk = [
+                (vertex.colour[0].clamp(0.0, 1.0) * 255.0) as u8,
+                (vertex.colour[1].clamp(0.0, 1.0) * 255.0) as u8,
+                (vertex.colour[2].clamp(0.0, 1.0) * 255.0) as u8,
+                (vertex.colour[3].clamp(0.0, 1.0) * 255.0) as u8,
+            ];
+            batch.vertices.push(GuiVertex {
+                x: vertex.x,
+                y: vertex.y,
+                u: vertex.u,
+                v: vertex.v,
+                ink,
+            });
+        }
+        batch.primitives.push(GuiPrimitive {
+            mode,
+            blend: 0,
+            draw: GuiDraw::Quads,
+            texture_shift: [0.0, 0.0],
+            rounded_scale: None,
+            tex_col: None,
+            first,
+            count: entry.vertices.len(),
+        });
+    }
+    batch
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1308,6 +1350,29 @@ mod tests {
             .find(|b| b.program == Program::Icon)
             .unwrap();
         assert_eq!(icon.vertices[0].colour[3], 0.5);
+    }
+
+    #[test]
+    fn the_draw_fills_a_skin_batch() {
+        let mut draw = TreeDraw::default();
+        let mut ring = Batch::new(Program::Ring, Texture::None);
+        ring.vertices = vec![
+            TreeVertex::new(1.0, 2.0, 0.5, 0.5).with_colour([1.0, 0.5, 0.0, 1.0]),
+            TreeVertex::new(3.0, 4.0, 0.5, 0.5),
+            TreeVertex::new(5.0, 6.0, 0.5, 0.5),
+        ];
+        draw.batches.push(ring);
+        let mut icon = Batch::new(Program::Icon, Texture::Domain);
+        icon.vertices = vec![TreeVertex::new(0.0, 0.0, 0.25, 0.5); 6];
+        draw.batches.push(icon);
+        let batch = to_skin_batch(&draw);
+        assert_eq!(batch.vertices.len(), 9);
+        assert_eq!(batch.primitives.len(), 2);
+        assert_eq!(batch.primitives[0].mode, SkinMode::Solid);
+        assert_eq!(batch.primitives[1].mode, SkinMode::Textured);
+        assert_eq!(batch.primitives[1].first, 3);
+        assert_eq!(batch.primitives[1].count, 6);
+        assert_eq!(batch.vertices[0].ink, [255, 127, 0, 255]);
     }
 
     #[test]
