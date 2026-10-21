@@ -439,14 +439,115 @@ mod tests {
 mod volume_fit {
     use bevy::math::Vec3;
     use exa_assets::PackKind;
-    use exa_formats::rfc::{NodeBody, Scene};
-    use exa_physics::volume::{Mesh, VolumeOptions, fit};
+    use exa_formats::rfc::{Node, NodeBody, Scene};
+    use exa_physics::volume::{
+        COARSE_RESOLUTION, FINE_RESOLUTION, FittedVolume, MIN_DEPTH, Mesh, PRECISE_MIN_DEPTH,
+        VolumeOptions, fit,
+    };
+    use exa_physics::voxel::Bounds;
 
-    /// The installed game's prop bodies (with `EXANIMA_DIR`): the voxeliser
-    /// fit of each body node's mesh gives the same radii its stored sphere
-    /// list (the original's own fit) has, at least at the small end, a
-    /// plausible volume and a sphere count of the same order. Checked on
-    /// the first four models of `Objlib` with a body.
+    /// The file's centimetre words behind `metres` (the parser multiplies
+    /// each by 0.01 in single precision, which can map two neighbouring
+    /// words to one value): the first run of little-endian words in
+    /// `bytes` that maps onto `metres` value by value.
+    fn raw_words(bytes: &[u8], metres: &[f32]) -> Option<Vec<f32>> {
+        let first = *metres.first()?;
+        let len = metres.len() * 4;
+        let word =
+            |o: usize| f32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
+        (0..bytes.len().checked_sub(len)? + 1).find_map(|at| {
+            if word(at) * 0.01 != first {
+                return None;
+            }
+            let words: Vec<f32> = (0..metres.len()).map(|i| word(at + i * 4)).collect();
+            words
+                .iter()
+                .zip(metres)
+                .all(|(w, m)| w * 0.01 == *m)
+                .then_some(words)
+        })
+    }
+
+    /// A body node's mesh in the file's centimetres over its stored box.
+    fn node_mesh(bytes: &[u8], node: &Node) -> Option<Mesh> {
+        let NodeBody::Mesh(mesh) = &node.body else {
+            return None;
+        };
+        let mut elements = vec![None; mesh.position_count];
+        for (v, &e) in mesh.position_ids.iter().enumerate() {
+            *elements.get_mut(e as usize)? = Some(*mesh.positions.get(v)?);
+        }
+        let all = elements.into_iter().collect::<Option<Vec<[f32; 3]>>>()?;
+        let stream = raw_words(bytes, &all.concat())?;
+        let at = |v: u32| {
+            let o = *mesh.position_ids.get(v as usize)? as usize * 3;
+            Some(Vec3::new(
+                *stream.get(o)?,
+                *stream.get(o + 1)?,
+                *stream.get(o + 2)?,
+            ))
+        };
+        let triangles = mesh
+            .indices
+            .chunks(3)
+            .map(|t| Some([at(*t.first()?)?, at(*t.get(1)?)?, at(*t.get(2)?)?]))
+            .collect::<Option<Vec<_>>>()?;
+        let mut header = node.bounds_half_extents.to_vec();
+        header.extend(node.bounds_centre);
+        let raw = raw_words(bytes, &header)?;
+        Some(Mesh::with_bounds(
+            &triangles,
+            Bounds {
+                centre: Vec3::new(raw[3], raw[4], raw[5]),
+                half_extents: Vec3::new(raw[0], raw[1], raw[2]),
+            },
+        ))
+    }
+
+    /// A fit's spheres as the file stores them (metres, bits), sorted. With
+    /// `earlier`, the candidate spheres are `r` cells across, as an earlier
+    /// version of the fit made them, instead of `r/(1 + 0.01 r)`.
+    fn stored_form(fitted: &FittedVolume, bounds: Bounds, earlier: bool) -> Vec<[u32; 4]> {
+        let h = bounds.half_extents;
+        let mut axis = 0;
+        for a in 1..3 {
+            if h[axis] < h[a] {
+                axis = a;
+            }
+        }
+        let cell = h[axis] / fitted.counts[axis] as f32 * 2.0;
+        let mut out: Vec<[u32; 4]> = fitted
+            .spheres
+            .iter()
+            .map(|s| {
+                let radius = if earlier && s.radius != cell {
+                    (1..40_000u32)
+                        .map(|n| f64::from(n).sqrt() as f32)
+                        .find(|&r| {
+                            let r = f64::from(r);
+                            (r / (r * 0.01 + 1.0) * f64::from(cell)) as f32 == s.radius
+                        })
+                        .map_or(s.radius, |r| r * cell)
+                } else {
+                    s.radius
+                };
+                let c = s.centre;
+                [c.x * 0.01, c.y * 0.01, c.z * 0.01, radius * 0.01].map(f32::to_bits)
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// The installed game's prop bodies (with `EXANIMA_DIR`): every body
+    /// node of the `Objlib` models is fitted from its mesh, in the file's
+    /// centimetres over its stored box, and its spheres compared bit for
+    /// bit with its stored list. The stored lists come from two versions of
+    /// the fit (one making candidate spheres `r` cells across) and were made
+    /// with or without the voxeliser's wide-query flag, at either
+    /// resolution; a body matches when one of those reproduces it. On the
+    /// shipped build 1060 of the 1503 bodies match, 526 of them with the
+    /// builders' defaults.
     #[test]
     fn shipped_prop_meshes_fit_their_stored_bodies() {
         let Some(dir) = exa_assets::locate_install(None) else {
@@ -454,11 +555,9 @@ mod volume_fit {
         };
         let game = exa_assets::GameData::open(&dir).unwrap();
         let pack = game.pack(PackKind::Objlib).unwrap();
-        let mut checked = 0;
+        let (mut bodies, mut by_default, mut matched) = (0usize, 0usize, 0usize);
+        let mut time = std::time::Duration::ZERO;
         for entry in pack.entries() {
-            if checked >= 4 {
-                break;
-            }
             let Some(bytes) = pack.get(&entry.name) else {
                 continue;
             };
@@ -469,83 +568,64 @@ mod volume_fit {
                 let Some(Ok(body)) = &node.rigid_body else {
                     continue;
                 };
-                let NodeBody::Mesh(mesh) = &node.body else {
+                let Some(mesh) = node_mesh(bytes, node) else {
                     continue;
                 };
-                if body.spheres.len() < 4 || mesh.indices.len() < 12 {
-                    continue;
-                }
-                let triangles: Vec<[Vec3; 3]> = mesh
-                    .indices
-                    .chunks(3)
-                    .filter_map(|i| {
-                        let a = mesh.positions.get(i[0] as usize)?;
-                        let b = mesh.positions.get(i[1] as usize)?;
-                        let c = mesh.positions.get(i[2] as usize)?;
-                        Some([
-                            Vec3::from(*a) * 100.0,
-                            Vec3::from(*b) * 100.0,
-                            Vec3::from(*c) * 100.0,
-                        ])
-                    })
+                bodies += 1;
+                let mut stored: Vec<[u32; 4]> = body
+                    .spheres
+                    .iter()
+                    .map(|s| [s.centre[0], s.centre[1], s.centre[2], s.radius].map(f32::to_bits))
                     .collect();
-                if triangles.is_empty() {
+                stored.sort();
+                let defaults = VolumeOptions::for_bounds(&mesh.bounds(), false);
+                let begun = std::time::Instant::now();
+                let fitted = fit(&mesh, &defaults);
+                time += begun.elapsed();
+                let same = |f: &FittedVolume| {
+                    [false, true]
+                        .iter()
+                        .any(|&earlier| stored_form(f, mesh.bounds(), earlier) == stored)
+                };
+                if same(&fitted) {
+                    by_default += 1;
+                    matched += 1;
                     continue;
                 }
-                let m = Mesh::new(&triangles);
-                let options = VolumeOptions::for_bounds(&m.bounds(), false);
-                let fitted = fit(&m, &options);
-                let stored_min = body
-                    .spheres
-                    .iter()
-                    .map(|s| s.radius * 100.0)
-                    .fold(f32::MAX, f32::min);
-                let stored_max = body
-                    .spheres
-                    .iter()
-                    .map(|s| s.radius * 100.0)
-                    .fold(0.0, f32::max);
-                let fit_min = fitted
-                    .spheres
-                    .iter()
-                    .map(|s| s.radius)
-                    .fold(f32::MAX, f32::min);
-                let fit_max = fitted.spheres.iter().map(|s| s.radius).fold(0.0, f32::max);
-                assert!(
-                    (fit_min - stored_min).abs() / stored_min < 0.02,
-                    "{} {:?}: smallest sphere {fit_min} vs stored {stored_min}",
-                    entry.name,
-                    node.name
-                );
-                assert!(
-                    fit_max <= stored_max * 1.2 && fit_max >= stored_min * 0.95,
-                    "{} {:?}: largest sphere {fit_max} vs stored {stored_min}..{stored_max}",
-                    entry.name,
-                    node.name
-                );
-                assert!(
-                    fitted.spheres.len() >= body.spheres.len() / 2
-                        && fitted.spheres.len() <= body.spheres.len() * 3,
-                    "{} {:?}: {} spheres vs stored {}",
-                    entry.name,
-                    node.name,
-                    fitted.spheres.len(),
-                    body.spheres.len()
-                );
-                let h = m.bounds().half_extents;
-                let box_volume = 8.0 * f64::from(h.x) * f64::from(h.y) * f64::from(h.z);
-                assert!(
-                    fitted.summary.mass as f64 > box_volume * 0.01
-                        && (fitted.summary.mass as f64) < box_volume * 1.2,
-                    "{} {:?}: mass {} of a {box_volume} box",
-                    entry.name,
-                    node.name,
-                    fitted.summary.mass
-                );
-                checked += 1;
-                break;
+                let other = if defaults.resolution == FINE_RESOLUTION {
+                    COARSE_RESOLUTION
+                } else {
+                    FINE_RESOLUTION
+                };
+                let found = [
+                    (defaults.resolution, MIN_DEPTH, true),
+                    (other, MIN_DEPTH, true),
+                    (other, MIN_DEPTH, false),
+                    (FINE_RESOLUTION, PRECISE_MIN_DEPTH, true),
+                ]
+                .into_iter()
+                .any(|(resolution, min_depth, wide_queries)| {
+                    same(&fit(
+                        &mesh,
+                        &VolumeOptions {
+                            resolution,
+                            min_depth,
+                            wide_queries,
+                            ..defaults
+                        },
+                    ))
+                });
+                matched += usize::from(found);
             }
         }
-        assert_eq!(checked, 4, "too few shipped bodies found");
+        eprintln!(
+            "shipped bodies: {bodies}, {matched} fitted bit for bit ({by_default} with the \
+             builders' defaults); default fits took {time:?}"
+        );
+        assert!(bodies > 1000, "too few shipped bodies found: {bodies}");
+        assert!(
+            matched * 10 >= bodies * 6,
+            "{matched} of {bodies} shipped bodies fitted"
+        );
     }
 }
