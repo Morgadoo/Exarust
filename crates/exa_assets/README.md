@@ -59,8 +59,10 @@ refraction mode), and the emissive doubles only when that masked word keeps
 transparent record (destination nibble 3) is rewritten opaque when in
 refraction mode, or with opacity above 0.99, fall-off below 0.01 and no
 opacity flag; the compare widens the stored f32 to f64 as the original's
-does. Maps bind only where the factory binds them: the colour slot needs
-`0x20000` (diffuse) or `0x400000` (opacity), the emissive needs `0x80000`
+does; the rewrite starts from the class after the alpha-test rewrite and
+reads the loaded flags. Maps bind only where the factory binds them: the
+colour slot needs `0x20000` and a lit record (diffuse) or `0x400000`
+(opacity), the emissive needs `0x80000`
 and `MatEmi`, the specular `0x40000` and `0x100004`, the normal `0x200000`
 and a shaded material word (`0x100807`), and a type-2 record keeps only the
 colour/opacity slot. Refracting records cast shadows, and a record whose
