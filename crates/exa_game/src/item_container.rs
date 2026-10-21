@@ -1263,6 +1263,20 @@ pub struct DropDrag {
 }
 
 impl Container {
+    /// Releases every entry's icon (the destroy path), leaving the entries'
+    /// places and items in place.
+    pub fn release_all_icons<F>(&mut self, mut release: F)
+    where
+        F: FnMut(usize),
+    {
+        for entry in &mut self.entries {
+            if entry.icon != 0 {
+                release(entry.icon);
+                entry.icon = 0;
+            }
+        }
+    }
+
     /// The accept test of this panel. `own_icon` reports whether an entry
     /// carries the dragged icon.
     pub fn accept(&self, drag: &Drag, own_icon: impl FnMut(u32) -> bool) -> bool {
@@ -1840,6 +1854,27 @@ mod container_tests {
         assert_eq!(timer.tick(), None);
         assert_eq!(timer.tick(), Some((7, 0x10)));
         assert_eq!(timer.tick(), None);
+    }
+
+    #[test]
+    fn releasing_all_icons_clears_their_slots() {
+        let mut panel = Container {
+            entries: vec![
+                Entry {
+                    icon: 3,
+                    ..Entry::default()
+                },
+                Entry {
+                    icon: 7,
+                    ..Entry::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let mut released = Vec::new();
+        panel.release_all_icons(|icon| released.push(icon));
+        assert_eq!(released, vec![3, 7]);
+        assert!(panel.entries.iter().all(|entry| entry.icon == 0));
     }
 
     #[test]
