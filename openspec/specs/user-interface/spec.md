@@ -1088,7 +1088,7 @@ The selector SHALL run its base handler when the selection is above zero and the
 - **THEN** the form closes and the result is 0x40
 
 ### Requirement: End-session dispatch
-Page 2 SHALL run the end page's continue (the next arena match when one is due) for action 1 and show the main menu for action 2. Page 4 SHALL reload the stored level for action 1 on form page 4, otherwise end the session to the main menu, and end the session to the main menu for action 2. Page 8 SHALL, for action 1 on form page 2, hide the kept form, make its second call and prepare the character record, then show its form; otherwise it SHALL show the next practice fight with the last-round flag. Any other page SHALL call its registered handler when present. Every path SHALL clear the action and the menu's hovered selection and return 0.
+Page 2 SHALL continue for action 1 and show the main menu for action 2. Page 4 SHALL reload the stored level for action 1 on form page 4, else end to the main menu. Page 8's action 1 SHALL, on form page 2, hide the kept form, make its second call, prepare the character record and show its form, and otherwise show the next practice fight with the last-round flag. Other pages SHALL call their registered handler. Every path SHALL clear the action and hovered selection, returning 0.
 
 #### Scenario: The built-in pages
 - **WHEN** the page is 2 and the action is 1
