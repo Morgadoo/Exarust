@@ -41,26 +41,37 @@ pub fn log2_floor(value: u32) -> i32 {
     count
 }
 
-/// The first index at or after `from` where `needle` occurs inside `text`.
-/// `needle` is the original's first argument, `text` its second, and the
-/// search is refused (`-1`) when a pointer is empty, `from` is negative,
-/// `needle` is empty or the window does not fit. Equal to a forward
-/// `windows` search, which is what the original's unrolled loop computes.
+/// The 0-based position of the first occurrence of `needle` in `text`
+/// whose window starts at or after the 1-based position `from`; `-1` when
+/// there is none. `needle` is the original's first argument, `text` its
+/// second. The search is refused (`-1`) when either is empty, `from` is
+/// negative, or the first window (its last byte at 1-based `from +
+/// needle.len() - 1`) runs past the text.
+///
+/// `from` 0 makes the first window start one byte before the text, where
+/// the original reads the top byte of the string's length word (zero); a
+/// match there returns its position, `-1`. The original's unrolled loop
+/// tests each window's last byte first, then the rest; the first full
+/// match in text order is the same.
 pub fn find_from(needle: &[u8], text: &[u8], from: i32) -> i32 {
     if needle.is_empty() || text.is_empty() || from < 0 {
         return -1;
     }
-    let from = from as usize;
-    if from
-        .checked_add(needle.len())
-        .is_none_or(|end| end > text.len())
-    {
+    let needle_len = needle.len() as i64;
+    let text_len = text.len() as i64;
+    let first = i64::from(from) - 1;
+    if first + needle_len > text_len {
         return -1;
     }
-    text[from..]
-        .windows(needle.len())
-        .position(|window| window == needle)
-        .map_or(-1, |at| (from + at) as i32)
+    let byte = |at: i64| if at < 0 { 0 } else { text[at as usize] };
+    (first..=text_len - needle_len)
+        .find(|&start| {
+            needle
+                .iter()
+                .enumerate()
+                .all(|(k, &want)| byte(start + k as i64) == want)
+        })
+        .map_or(-1, |start| start as i32)
 }
 
 /// `CVTSS2SI`: round half to even; a NaN or a value out of range is
@@ -527,14 +538,22 @@ mod tests {
 
     #[test]
     fn a_forward_search_from_an_offset() {
+        // `from` is 1-based, the result 0-based.
+        assert_eq!(find_from(b"bc", b"abcdbc", 1), 1);
+        assert_eq!(find_from(b"bc", b"abcdbc", 2), 1);
+        assert_eq!(find_from(b"bc", b"abcdbc", 3), 4);
+        assert_eq!(find_from(b"bc", b"abcdbc", 5), 4);
+        assert_eq!(find_from(b"bc", b"abcdbc", 6), -1);
+        // From 0 starts one byte early, before the text.
         assert_eq!(find_from(b"bc", b"abcdbc", 0), 1);
-        assert_eq!(find_from(b"bc", b"abcdbc", 2), 4);
-        assert_eq!(find_from(b"bc", b"abcdbc", 5), -1);
-        assert_eq!(find_from(b"", b"abc", 0), -1);
-        assert_eq!(find_from(b"a", b"", 0), -1);
+        assert_eq!(find_from(b"abc", b"ab", 0), -1);
+        assert_eq!(find_from(b"\0a", b"ab", 0), -1);
+        assert_eq!(find_from(b"c", b"abc", 3), 2);
+        assert_eq!(find_from(b"c", b"abc", 4), -1);
+        assert_eq!(find_from(b"", b"abc", 1), -1);
+        assert_eq!(find_from(b"a", b"", 1), -1);
         assert_eq!(find_from(b"a", b"abc", -1), -1);
-        assert_eq!(find_from(b"abcd", b"abc", 0), -1);
-        assert_eq!(find_from(b"a", b"abc", 3), -1);
+        assert_eq!(find_from(b"abcd", b"abc", 1), -1);
     }
 
     #[test]
