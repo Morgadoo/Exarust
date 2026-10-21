@@ -77,22 +77,23 @@ pub enum BlendFactor {
     OneMinusDestinationColour,
 }
 
-/// The original's blend factor table: ten entries, the GL factors in the
-/// order zero, one, source alpha, one minus source alpha, source colour,
-/// one minus source colour, destination alpha, one minus destination alpha,
-/// destination colour, one minus destination colour. An index past the
+/// The original's blend factor table ([`crate::blend::UI_BLEND_FACTORS`],
+/// ten entries) as the factor each GL constant names. An index past the
 /// table names no factor and draws as zero.
 pub fn blend_factor(index: u32) -> BlendFactor {
-    match index & 0xf {
+    let Some(&gl) = crate::blend::UI_BLEND_FACTORS.get((index & 0xf) as usize) else {
+        return BlendFactor::Zero;
+    };
+    match gl {
         1 => BlendFactor::One,
-        2 => BlendFactor::SourceAlpha,
-        3 => BlendFactor::OneMinusSourceAlpha,
-        4 => BlendFactor::SourceColour,
-        5 => BlendFactor::OneMinusSourceColour,
-        6 => BlendFactor::DestinationAlpha,
-        7 => BlendFactor::OneMinusDestinationAlpha,
-        8 => BlendFactor::DestinationColour,
-        9 => BlendFactor::OneMinusDestinationColour,
+        0x0300 => BlendFactor::SourceColour,
+        0x0301 => BlendFactor::OneMinusSourceColour,
+        0x0302 => BlendFactor::SourceAlpha,
+        0x0303 => BlendFactor::OneMinusSourceAlpha,
+        0x0304 => BlendFactor::DestinationAlpha,
+        0x0305 => BlendFactor::OneMinusDestinationAlpha,
+        0x0306 => BlendFactor::DestinationColour,
+        0x0307 => BlendFactor::OneMinusDestinationColour,
         _ => BlendFactor::Zero,
     }
 }
@@ -628,7 +629,8 @@ fn raster_primitive(
         primitive.blend
     };
     let (source, destination) = blend_factors(blend);
-    let disabled = blend & 0x3f0f == BLEND_REPLACE & 0x3f0f;
+    let mask = crate::blend::UI_BLEND_MASK as u16;
+    let disabled = blend & mask == BLEND_REPLACE & mask;
     let vertex_at = |i: usize| -> [f32; 4] {
         let v: &GuiVertex = &vertices[i];
         [

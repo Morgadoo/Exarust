@@ -1059,18 +1059,25 @@ permissions apply), the inventory and journal are forms on a `GuiTask`
 (so their focus follows the window manager), the inventory is registered
 as an open container, the journal keeps its session entries, and Escape
 closes the focused screen (Exarust's). Both screens now draw
-(`exa_game::gui_paint`): the frame, its title and close mark through the
-line skin's background painter, the title text and control captions through
-the font quads, the inventory's character view (its grey wash and 40 × 4
-preview bars), its 228 × 180 pack panel, its Encumbrance label and Primary
-button, and the journal's New and Erase buttons and the selected entry's
-text through the text box's draw. The panel's item icons are not drawn (the
-item renderer is not wired), the journal's entry list has no geometry in
-the packs (the entry count and names go into text box fields the draw path
-was not traced for), and the 0xac01 control in the inventory's records has
-no located behaviour; these are left out. The skills key's screen and the
-power tree are outside this unit, and the selector opens only from a power
-slot the HUD does not draw yet.
+(`exa_game::gui_paint`) with the words their constructors write. The form
+attribute word is 0x30022 (the journal adds 0x8000) and the frame style
+adds the centred-title bit 0x3000; the item pack adds 0x80 to its style and
+0x10 and 0x100000 to its attributes. Attribute bit 1 is the title bar and
+no shipped form constructor sets it, so neither screen draws a title bar.
+The inventory's 8-unit spacing and the journal's 2 frame the client; the
+control records are laid out by the two-pass layout: the inventory's
+Encumbrance label (class 5, y 0x62 in design units, at client (4, 386)),
+its unlocated class-0xac01 record and its Primary button (108 × 24 at
+(4, 416)), and the journal's New (4, 20) and Erase (120, 20), 104 × 24
+each. A button caption takes the skin's placement from its style word
+(0x3000 centres horizontally, 0x300 centres vertically). The journal's
+selected entry draws through the text box. Not wired: the character view
+and its preview bars, the pack's item icons (the item renderer), the
+journal's entry list (its geometry is not in the traced units), the
+0xac01 record, the controls' callbacks, the loot window and the technique
+selector. The skills key's screen and the power tree are outside this unit,
+and the selector opens only from a power slot the HUD does not draw yet.
+The Rayform faces are not shipped, so the text uses the base font.
 
 ## Text boxes
 
@@ -1324,11 +1331,16 @@ leaves behind.
   pixels. Solid mode draws the vertex ink; textured mode samples the
   texture, mixes it by `TexCol` and multiplies it by the ink; rounded mode
   cuts the alpha from the interpolated corner coordinate and the `Scale`
-  uniform; the subclass (skin) mode samples by the vertex's place over the
-  viewport in 512ths plus the texture shift. The blend word is the
+  uniform; mode 0x10 asks the skin's subclass, which answers the flat
+  program for the line skin and mode 4 (the stone, sampled in screen space
+  from the window's bottom) for the HUD's. The blend word is the
   original's: bits 8–11 pick the source factor and 0–3 the destination from
-  `ZERO, ONE, SRC_ALPHA, ONE_MINUS_SRC_ALPHA, DST_ALPHA,
-  ONE_MINUS_DST_ALPHA`, and 0x100 draws with blending off. The running game
+  a ten-entry table (`ZERO, ONE, SRC_ALPHA, ONE_MINUS_SRC_ALPHA, SRC_COLOR,
+  ONE_MINUS_SRC_COLOR, DST_ALPHA, ONE_MINUS_DST_ALPHA, DST_COLOR,
+  ONE_MINUS_DST_COLOR`); a word of 0 draws as 0x203, and 0x100 draws with
+  blending off. Quads share their diagonal under a top-left fill rule so a
+  blended edge is drawn once, and the canvas is kept when a frame matches
+  the last. The running game
   rasterises these primitives on the CPU into one window-sized RGBA image
   and shows it over the 3-D view as a UI image; colours are blended in sRGB
   as the original's interface blends, and the image carries straight alpha

@@ -492,14 +492,17 @@ The inventory toggles when active, is activated otherwise, sits at its
 (8, 8) or remembered place and is registered as an open container; the
 journal keeps its session entries and stores its text on close. Escape
 closes the focused screen (Exarust's). The rules are `exa_ui::game_gui`'s.
-The screens draw through `gui_paint` and `exa_ui::gui_draw`: the frame,
-title and close mark, the inventory's character-view wash, 40 × 4 preview
-bars (the HUD's painter), 228 × 180 pack panel, Encumbrance label and
-Primary button, and the journal's New and Erase buttons and the selected
-entry's text box. The pack panel's item icons wait for the item renderer,
-the journal's entry list has no draw geometry in the packs, and the
-inventory's 0xac01 record has no located behaviour; the skills key's screen
-and the power tree are not opened.
+The screens draw through `gui_paint` and `exa_ui::gui_draw` with the words
+their constructors write: the frame (no title bar, as no shipped form sets
+the title bit), the inventory's 228 × 180 pack panel, and the control
+records laid out by the two-pass layout (the inventory's Encumbrance label
+and Primary button, the journal's New and Erase buttons) with captions
+placed by the skin's own rule, and the journal's selected entry through the
+text box. The character view, the preview bars, the pack's item icons, the
+journal's entry list, the controls' callbacks and the inventory's unlocated
+second record are not wired; the text uses the base font while the
+Rayform faces are not shipped. The skills key's screen and the power tree
+are not opened.
 
 ## Scope
 
