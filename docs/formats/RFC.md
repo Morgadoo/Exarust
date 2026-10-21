@@ -671,8 +671,13 @@ Body after the node header: `u32 flags`, `f32 rgb[3]` (linear colour),
 `u32 ?`, then five `f32`: a multiplier and an intensity whose product scales
 the light (`0.1 × 60`, `1.0 × 1.3`), the radius in centimetres (630–1500),
 and two unidentified values (`0`, `0.5`/`1.0`). When `flags2 & 0x300 == 0x200`
-two more floats follow, and when `flags & 0x30000` is set, a skipped word and
-three floats. `exanima01` has 196 of these lights; arenas have one or two.
+two more floats follow, and when `flags & 0x30000` is set (`0x10000`
+flicker, `0x20000` fade), a skipped word and three floats: the flicker
+amplitude, its speed and the share of the walk the parent mesh's emissive
+takes (`exa_formats::rfc::LightAnimation`; established by reverse
+engineering of the light body loader; a light without them keeps the
+constructor's 0.1, 0.5 and 0.5). `exanima01` has 196 of these lights, all
+with body flags 0; arenas have one or two.
 
 ## Voxel light node (`3D0C`)
 
