@@ -193,6 +193,49 @@ pub fn ragdoll_state(state: PartState) -> PartState {
     state.with(PartState::MUSCLED)
 }
 
+/// Stamps the sound cooldown `stamp` (`+0x46c`) on a part, its first-child
+/// chain and its weapon ancestors (`0x100157fa0`): the part, each first
+/// child down the chain, then each parent while it is a striking weapon
+/// (class bit 0x1). `first_child` is each part's first child, `parents` its
+/// parent; a cycle is cut after the part count.
+pub fn stamp_sound_cooldown(
+    states: &[PartState],
+    parents: &[Option<usize>],
+    first_child: &[Option<usize>],
+    root: usize,
+    stamp: u32,
+    out: &mut [u32],
+) {
+    let len = states.len().min(out.len());
+    if root >= len {
+        return;
+    }
+    out[root] = stamp;
+    let mut i = root;
+    let mut steps = 0;
+    while steps < len {
+        steps += 1;
+        let Some(child) = first_child.get(i).copied().flatten() else {
+            break;
+        };
+        if child >= len {
+            break;
+        }
+        i = child;
+        out[i] = stamp;
+    }
+    let mut p = parents.get(root).copied().flatten();
+    let mut steps = 0;
+    while let Some(i) = p {
+        if steps >= len || i >= len || !states[i].has(PartState::STRIKING) {
+            break;
+        }
+        out[i] = stamp;
+        steps += 1;
+        p = parents.get(i).copied().flatten();
+    }
+}
+
 /// The material record a part's impact sound uses (`+0x470`), the tree's
 /// (`+0x728`) and the record's use count (`+0x4c`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -805,6 +848,27 @@ mod tests {
         assert_eq!(classify(&c), None);
         c.other_guarded = false;
         assert_eq!(classify(&c).unwrap().kind, ContactKind::Wound);
+    }
+
+    #[test]
+    fn a_sound_cooldown_stamps_the_first_chain_and_weapon_parents() {
+        // 0 (striking weapon) ← 1 (striking) ← 2, with first children
+        // 0→3→4.
+        let states = [
+            PartState::LIMB_FRESH.with(PartState::STRIKING),
+            PartState::LIMB_FRESH.with(PartState::STRIKING),
+            PartState::LIMB_FRESH,
+            PartState::LIMB_FRESH,
+            PartState::LIMB_FRESH,
+        ];
+        let parents = [None, Some(0), Some(1), None, Some(3)];
+        let first_child = [Some(3), None, None, Some(4), None];
+        let mut out = [0u32; 5];
+        stamp_sound_cooldown(&states, &parents, &first_child, 2, 77, &mut out);
+        assert_eq!(out, [77, 77, 77, 0, 0]);
+        let mut out = [0u32; 5];
+        stamp_sound_cooldown(&states, &parents, &first_child, 3, 9, &mut out);
+        assert_eq!(out, [0, 0, 0, 9, 9]);
     }
 
     #[test]
