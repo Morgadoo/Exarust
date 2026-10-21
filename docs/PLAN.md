@@ -213,6 +213,8 @@ original's sky shader, time of day and weather of the outdoor arenas,
 **M2 "walkable world":** load any arena or story level, fly around, and get
 correct geometry, textures and light placement.
 
+Done (change `rebuild-the-world-tail`; worldtail lane): the triangle and terrain kd-trees are modelled from the instructions in `exa_physics::kd_tree` (8-byte node, clipped-polygon cost-search build, box-clipped ray, segment and any-ray queries, swept traversals, the 30x30 terrain block tree); the simulation's environment conversion, frame fraction and sector append are in `exa_physics::dynamics`; the world side adds the live scene bookkeeping, preset linearisation, the scene editor's step and tick, the terrain manager's tile record and set-up. Only the detail offset in the terrain height is called by the game; collision stays rapier. Open: the mesh-side leaf tests, the triangle plane orientation, a ray-query caller and the terrain GL upload.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
@@ -703,6 +705,8 @@ This phase carries the most risk and defines how the game feels.
 **M3 "standing man":** a fully dressed character walks around a level under
 player control, stumbles when pushed, falls and gets up.
 
+Done (change `port-the-cloth-and-character-view-rules`; charcloth lane): the cloth step runs live with a mesh per cloth node (`ClothPlugin`, the level-mesh cloth flag), with the Catmull-Rom and linear keyframe controllers, clock and slerp exact; the character-view preview turn runs in the viewer, and the pathfinder install (with its level fallback) is modelled. Not wired: the character decomposition passes, the cloth blood/swept/pull/bounds helpers, the pin rule, the triangle binding, the preview pointer and aim source, and the player-control flags.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
@@ -1104,6 +1108,8 @@ Done (change `join-the-mesh-streams`; meshunits2 lane): the mesh unit's second p
 
 **M5 "looks and sounds like Exanima":** reference shots taken from matching
 camera positions in the original and in Exarust are hard to tell apart.
+
+Done (change `correct-the-light-and-effect-units`; lightfx lane): the light and effect units were checked against the executable: the voxel light node (drives the game), camera node data, the material defaults and manager model (the shared `_Default` fallback drives the loader), the shadow-map plumbing, the 2049-quad spline strip, the 128-entry particle UV table, the voxeliser constants, the spray node names and the shock charge object are tested data. Next: camera planes, shadow sizes, the loader through the material manager and a splines caller.
 
 ### Phase 6 — AI (started)
 
@@ -1591,6 +1597,12 @@ Done (change `reproduce-the-data-tail`; datatail lane, Phase 1, registry under P
 
 Done (change `run-the-parry-in-the-body-tick`; Phase 4 Combat): the parry rule family now runs in the body tick as the original's callers run it, and the blow stagger is stored on the body, so wiring completeness rose. Still unwired: the armed grip, the explicit target, the Fend entry, the request-an-attack clearing, the capable-flag forbids, the learned-skill deadline word, the continuation record, the part-check counter side effects, the Force-wall interrupt is unexercised, and the `exa_physics::body::stagger` helpers have no caller.
 
+Done (change `wire-casting`; Phase 7 thaumaturgy): casts run in the game through `thaum::cast::CastPlugin`: bar keys reach the bar cast entry, the Force, Energy and Displacement front ends and the creators (shell, kinesis, throw, strikes, bubble, barricade, shock, shock weapons, vanish, long door, constant displacement, summon) run, and the body tick walks the active list. The invented known-power gate, the release-flag event and the stand-in power body are gone. Not wired: the blast, bolt, wave, torrent, barrier, dome, shell, shock burst, vanish and demon effect entities, the kinesis and throw targets, the Mind casts, the saved record and grant, sounds and HUD, the queued-slot retry, the shell's combat damping and the AI chooser.
+
+Done (change `draw-the-game-screens`; Phase 7 UI): the GUI draw path is wired (`exa_ui::gui_draw`, a CPU rasteriser over the 3-D view: ten-entry blend table, four skin programs, top-left fill, bottom-up rows) and the inventory and journal windows draw through their constructors' words, without a title bar. Next: the item renderer, the Rayform fonts if they are found, the control callbacks, the character view and preview bars, item icons, the tab strip, the journal list, typing, the loot window and the technique selector.
+
+Done (change `model-the-retail-screens`; Phase 7 UI and Phase 4 item windows): about 61% of the 39 kB screens pack is modelled as tested records and rules: tooltips, the modal and transition screens, class select, dialogue choices, the pickers, popups, dialogs, help screen, task stack, game tips, colour swatch, item renderer, loot window, inventory window, arsenal and the script class and role models, with the save family, physique wait and emblem steps corrected. Nothing is painted or wired yet; the creator's 3-D preview and the running of role scripts are not in.
+
 Still open:
 
 - The other emblem controls. A candidate's listed price is the rank square plus four fifths of the gear. A swept season grants its four item ids, and day 134 repeats the first row. A shop line prices at 1, 12, 144 or 1440 copper, and a sale is a quarter of the basket. A tier multiplies a match stake by one more than the tier. A recruitment costs 12 copper. Overnight rest and a trainer's lesson are in.
@@ -1798,3 +1810,13 @@ against Exarust and lists the largest missing ones. In order:
    the strikes' factor, drawing the force effects with their own programs,
    GI injection of the emissives, and registering the force entities with
    the AI's sight.
+8. What remains after batch 18. Most of the new units are tested models
+   that nothing in the running game calls: the rest of the unwired rules
+   (cast effect entities, Mind casts, the character decomposition passes,
+   the cloth helpers, camera planes, shadow sizes, the splines caller, the
+   ray-query caller, the screens' painting and callbacks) need their
+   callers. The small components still unpacked or unrated are the
+   scene-node, material and object helpers at 0% in the component map,
+   and the largest-missing table of [`COMPONENT-MAP.md`](COMPONENT-MAP.md)
+   is the worklist. There is no fixups list under `docs/reviews/`; the
+   open questions each change notes ("Open", "Not wired") are the list.
