@@ -11,7 +11,13 @@
 //!   trimmed by the level: a ray from the middle along each side, 40 cm
 //!   short of the reach, that meets the level leaves the reach 40 cm past
 //!   the hit. The line between the ends is stamped into the navigation grid
-//!   ([`NavStamp`]).
+//!   ([`NavStamp`], its cells from each line point).
+//! - **In the world** ([`Barricade::add_to_world`]): starts cast motion
+//!   0x24 with the power 0x20206 and its end hook, creates the power object
+//!   and reserves the focus, and makes the AI entity that carries the wall
+//!   and the wall's navigation cell. [`Barricade::destroy`] gives the focus
+//!   back and frees the entity, the sound and the stamp; the running game
+//!   raises and lowers the stamp's cell penalties in `live`.
 //! - **Each tick** ([`Barricade::tick`]): the ripple reach is 30 + 1.25 per
 //!   ripple. A struck ripple's target moves to the mean of its hits (half
 //!   way there once it shows). Every ripple then loses 0.03 of strength,
@@ -57,7 +63,9 @@
 
 use bevy::math::{Vec2, Vec3};
 
+use super::casting::{self, ActivePower, CastBody};
 use super::engine::{Draws, Roll, dist_sq, dot_zyx, normalize, rotate_about, sign};
+use super::power;
 
 /// The wall's frame: its middle and axes.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -115,6 +123,40 @@ pub mod state {
     pub const GONE: i32 = 4;
 }
 
+/// The barricade's power id and cast motion.
+pub const POWER_ID: u32 = 0x20206;
+pub const CAST_MOTION: u32 = 0x24;
+
+/// What raising a barricade in the world reports.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BarricadeAdd {
+    pub power: ActivePower,
+    /// The focus reserved (three quarters with the reserve technique).
+    pub held: f32,
+    /// The cast motion started.
+    pub motion: bool,
+    pub entity: BarricadeEntity,
+    /// The impact sound's pitch at creation.
+    pub sound_pitch: f32,
+}
+
+/// The AI entity a barricade carries: the navigation cell it stands in and
+/// whether it is registered with the dynamics scene.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BarricadeEntity {
+    pub cell: Option<i32>,
+    pub registered: bool,
+}
+
+/// What destroying a barricade frees.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BarricadeTeardown {
+    pub held: f32,
+    pub entity: bool,
+    pub sound: bool,
+    pub stamp: Option<NavStamp>,
+}
+
 /// The barricade's rise time and fall time (ms).
 pub const RISE_MS: f64 = 1600.0;
 pub const FALL_MS: f32 = 750.0;
@@ -126,12 +168,14 @@ pub const THICKNESS: f32 = 5.0;
 pub const SOUND_GAP: u32 = 400;
 
 /// The cells of the navigation grid a barricade blocks: the patch's middle
-/// and size (cells) and the points along the wall's line.
+/// and size (cells), the points along the wall's line and the cell of each
+/// point (the cells the grid manager closes).
 #[derive(Debug, Clone, PartialEq)]
 pub struct NavStamp {
     pub centre: (i32, i32),
     pub size: (i32, i32),
     pub points: Vec<Vec3>,
+    pub cells: Vec<(i32, i32)>,
 }
 
 /// A navigation grid's frame: its size in cells and cells per cm.
@@ -182,10 +226,12 @@ pub fn nav_stamp(grid: &GridFrame, a: Vec3, b: Vec3) -> NavStamp {
     if n > 1 {
         points.push(b);
     }
+    let cells = points.iter().map(|&p| grid.cell(p)).collect();
     NavStamp {
         centre,
         size: (w, h),
         points,
+        cells,
     }
 }
 
@@ -222,6 +268,12 @@ pub struct Barricade {
     /// The node's half size and height (the mesh's).
     pub node_half: Vec3,
     pub stamp: Option<NavStamp>,
+    /// The cast hook was installed (the power object runs).
+    pub spawned: bool,
+    /// The AI entity the wall carries.
+    pub entity: bool,
+    /// The focus the power object holds.
+    pub held: f32,
 }
 
 /// The node's half size the mesh build leaves: 30 across, 100 up, 5 deep.
@@ -274,7 +326,77 @@ impl Barricade {
             texture,
             node_half: NODE_HALF,
             stamp,
+            spawned: false,
+            entity: false,
+            held: 0.0,
         }
+    }
+
+    /// Enters the world: starts the cast motion (0x24) with the power id
+    /// (0x20206) and installs its hook when the body accepts the cast,
+    /// creates the power object and reserves the barricade's focus, and
+    /// makes the AI entity that carries the wall and the navigation cell.
+    /// `sound_pitch` is the impact sound's base pitch times the draw the
+    /// original takes: 0.8 of the base at most.
+    pub fn add_to_world(
+        &mut self,
+        body: &mut CastBody,
+        grid: Option<&GridFrame>,
+        sound_base: f32,
+        roll: f32,
+    ) -> BarricadeAdd {
+        let motion = casting::start_cast(body, CAST_MOTION, POWER_ID);
+        let held = casting::reserve(body, self.cost);
+        let power = ActivePower {
+            id: POWER_ID,
+            state: power::RUNNING,
+        };
+        body.powers.push(power);
+        self.spawned = true;
+        self.entity = true;
+        self.held = held;
+        let cell = grid.map(|g| {
+            let (x, z) = g.cell(self.frame.at);
+            z * g.width as i32 + x
+        });
+        BarricadeAdd {
+            power,
+            held,
+            motion,
+            entity: BarricadeEntity {
+                cell,
+                registered: true,
+            },
+            sound_pitch: sound_base * 0.8 * roll,
+        }
+    }
+
+    /// Leaves the world: the focus it held comes back, its power leaves the
+    /// body's list and its AI entity and sound are freed. Returns what the
+    /// teardown had.
+    pub fn destroy(&mut self, body: &mut CastBody) -> BarricadeTeardown {
+        casting::release_reserve(body, self.held);
+        body.powers.retain(|power| power.id != POWER_ID);
+        let stamp = self.stamp.clone();
+        let teardown = BarricadeTeardown {
+            held: self.held,
+            entity: self.entity,
+            sound: self.cost > 0.0,
+            stamp,
+        };
+        self.held = 0.0;
+        self.entity = false;
+        self.spawned = false;
+        self.stamp = None;
+        teardown
+    }
+
+    /// The navigation cells the wall closes.
+    pub fn stamp_cells(&self) -> Vec<(i32, i32)> {
+        self.stamp
+            .as_ref()
+            .map(|stamp| stamp.cells.clone())
+            .unwrap_or_default()
     }
 
     /// Its power ended: the wall falls from the next tick.
@@ -977,6 +1099,51 @@ mod tests {
         assert_eq!(s.centre, (50, 50));
         assert_eq!(s.points.len(), 9);
         assert_eq!(s.points[8], Vec3::new(100.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn raising_in_the_world_starts_the_cast_power_and_entity() {
+        use super::super::casting::CastBody;
+        let grid = GridFrame {
+            width: 100,
+            height: 100,
+            scale: 0.04,
+        };
+        let frame = WallFrame {
+            at: Vec3::new(0.0, 100.0, 0.0),
+            x: Vec3::NEG_Z,
+            y: Vec3::Y,
+            z: Vec3::X,
+        };
+        let mut draws = Fixed::new(&[0.25, 0.75], &[0]);
+        let mut wall = Barricade::raise(frame, 0.25, 1000, |_, _, _| None, Some(&grid), &mut draws);
+        let mut body = CastBody::default();
+        let add = wall.add_to_world(&mut body, Some(&grid), 2.0, 0.5);
+        assert!(add.motion, "the cast motion starts");
+        assert_eq!(add.power.id, POWER_ID);
+        assert_eq!(add.power.state, power::RUNNING);
+        assert_eq!(add.held, 0.25);
+        assert_eq!(body.reserved, 0.25);
+        assert_eq!(body.spent, 0.25);
+        assert_eq!(body.powers.len(), 1);
+        assert_eq!(body.cast_motion, Some(CAST_MOTION));
+        // The cell of the wall's middle: 100 wide, 0 cm, round(−0.5) = 0.
+        assert_eq!(add.entity.cell, Some(50 * 100 + 50));
+        assert!(add.entity.registered);
+        assert!((add.sound_pitch - 0.8).abs() < 1e-6);
+        assert!(wall.spawned && wall.entity);
+        // 300 cm each way is 12 cells each way: 25 points/cells.
+        let cells = wall.stamp_cells();
+        assert_eq!(cells.len(), 25);
+        assert_eq!(cells[0], (50, 38));
+        assert_eq!(cells[24], (50, 62));
+        let teardown = wall.destroy(&mut body);
+        assert_eq!(teardown.held, 0.25);
+        assert!(teardown.entity && teardown.sound);
+        assert!(teardown.stamp.is_some());
+        assert_eq!(body.reserved, 0.0);
+        assert!(body.powers.is_empty());
+        assert!(!wall.spawned && wall.stamp.is_none());
     }
 
     #[test]

@@ -548,6 +548,35 @@ impl NavGrid {
         changed
     }
 
+    /// Adds `amount` to a cell's penalty on both layers, saturating. The
+    /// barricade's stamp closes its line here; a full byte is refused by the
+    /// planner once its shift pushes the penalty past its limit.
+    pub fn raise_penalty(&mut self, x: i32, z: i32, amount: u8) -> bool {
+        self.change_penalty(x, z, amount, true)
+    }
+
+    /// Takes `amount` back off a cell's penalty on both layers, saturating
+    /// at zero.
+    pub fn lower_penalty(&mut self, x: i32, z: i32, amount: u8) -> bool {
+        self.change_penalty(x, z, amount, false)
+    }
+
+    fn change_penalty(&mut self, x: i32, z: i32, amount: u8, raise: bool) -> bool {
+        if x < 0 || z < 0 || x >= self.width as i32 || z >= self.depth as i32 {
+            return false;
+        }
+        let i = z as usize * self.width + x as usize;
+        for layer in Layer::BOTH {
+            let at = &mut self.layers[layer as usize].penalty[i];
+            *at = if raise {
+                at.saturating_add(amount)
+            } else {
+                at.saturating_sub(amount)
+            };
+        }
+        true
+    }
+
     /// What cell (`x`, `z`) holds on `layer` (nothing outside the grid).
     pub fn cell(&self, x: usize, z: usize, layer: Layer) -> NavCell {
         if x >= self.width || z >= self.depth {

@@ -42,6 +42,7 @@ use exa_physics::Physics;
 use exa_physics::body::locomotion::Locomotor;
 use exa_physics::body::{BodySystems, BodyTicks, Ragdoll, step_length};
 use exa_render::glow::GlowMaterial;
+use exa_world::nav::NavGrid;
 
 use super::arcs::{ARC_COLOUR, ArcEmitter, ArcLimb, HAND_ARCS_OFFSET, hand_arcs};
 use super::barricade::{
@@ -175,6 +176,14 @@ pub struct LiveWisps {
 /// The mesh an effect draws.
 #[derive(Component)]
 pub struct EffectMesh(pub Handle<Mesh>);
+
+/// The navigation cells a barricade has closed, so they can open when it
+/// goes. The planner's penalty byte is raised by all of it.
+#[derive(Component)]
+pub struct NavStamped(pub Vec<(i32, i32)>);
+
+/// The penalty a barricade's stamp writes into each cell it closes.
+pub const STAMP_PENALTY: u8 = 255;
 
 /// The world place (cm) of a point given in a part's space (cm).
 fn part_point(body: &Ragdoll, part: usize, local_cm: Vec3) -> Option<Vec3> {
@@ -315,15 +324,17 @@ pub fn energy_after_knocks(energy: f32, losses: &[f32]) -> f32 {
         .fold(energy, |e, &loss| if 0.25 < e { e - loss } else { e })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tick_barricades(
     mut commands: Commands,
-    mut walls: Query<(Entity, &mut LiveBarricade)>,
+    mut walls: Query<(Entity, &mut LiveBarricade, Option<&NavStamped>)>,
     mut bodies: Query<&mut Ragdoll>,
     ticks: Option<Res<BodyTicks>>,
     mut roll: ResMut<EffectRoll>,
+    mut nav: Option<ResMut<NavGrid>>,
 ) {
     let now = ticks.map_or(0, |t| t.millis()) as u32;
-    for (wall_entity, mut live) in &mut walls {
+    for (wall_entity, mut live, stamped) in &mut walls {
         let live = &mut *live;
         if let Some(caster) = live.caster
             && let Ok(body) = bodies.get(caster)
@@ -395,7 +406,22 @@ fn tick_barricades(
             }
         }
         if live.wall.state == super::barricade::state::GONE {
+            if let (Some(marked), Some(grid)) = (stamped, nav.as_mut()) {
+                for &(x, z) in &marked.0 {
+                    grid.lower_penalty(x, z, STAMP_PENALTY);
+                }
+            }
             commands.entity(wall_entity).despawn();
+        } else if stamped.is_none()
+            && live.wall.stamp.is_some()
+            && let Some(grid) = nav.as_mut()
+        {
+            // The wall's line closes its navigation cells while it stands.
+            let cells = live.wall.stamp_cells();
+            for &(x, z) in &cells {
+                grid.raise_penalty(x, z, STAMP_PENALTY);
+            }
+            commands.entity(wall_entity).insert(NavStamped(cells));
         }
     }
 }
