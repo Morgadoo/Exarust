@@ -79,24 +79,35 @@ pub struct SwapRequested;
 #[derive(Component, Debug, Clone, Copy)]
 pub struct PendingHands(pub HandPlan);
 
-/// Builds the catalogue once the game data is there.
-pub fn load_catalogue(game: Option<Res<Game>>, mut catalogue: ResMut<ItemCatalogue>) {
-    if !catalogue.is_empty() {
+/// Builds the catalogue once the game data is there. The object database
+/// is read once: a missing or unreadable one leaves the catalogue empty
+/// rather than being retried every frame.
+pub fn load_catalogue(
+    game: Option<Res<Game>>,
+    mut catalogue: ResMut<ItemCatalogue>,
+    mut tried: Local<bool>,
+) {
+    if *tried {
         return;
     }
     let Some(game) = game else {
         return;
     };
+    *tried = true;
     let Some(bytes) = game
         .0
         .pack(PackKind::Resource)
         .and_then(|p| p.get("objdb.rdb"))
     else {
+        warn!("item catalogue: no objdb.rdb in the resource pack");
         return;
     };
-    if let Ok(db) = Database::parse(bytes) {
-        *catalogue = ItemCatalogue::of_database(&db);
-        info!("item catalogue: {} records", catalogue.kinds.len());
+    match Database::parse(bytes) {
+        Ok(db) => {
+            *catalogue = ItemCatalogue::of_database(&db);
+            info!("item catalogue: {} records", catalogue.kinds.len());
+        }
+        Err(e) => warn!("item catalogue: objdb.rdb does not parse: {e}"),
     }
 }
 
