@@ -24,7 +24,7 @@ Moving an item SHALL take it out of the source list and append it to the destina
 - **THEN** the chest no longer holds it and the pack does, and moving it again does nothing
 
 ### Requirement: Weapon set swap
-A character's possessions SHALL hold an out and a stowed weapon set of a main and an off hand, and a carried list in which an item in a hand stays listed with its held bit 0x100. Swapping the sets SHALL toggle the record's second-set flag 0x0100_0000, unmark each going item's held entries once per hand it fills less the incoming hands that hold it, mark the incoming items held the same way, and trade the sets. A two-handed item SHALL be counted once, from the main hand.
+A character's possessions SHALL hold an out and a stowed weapon set of a main and an off hand, and a carried list in which an item in a hand stays listed with its held bit 0x100. Swapping the sets SHALL toggle the record's second-set flag 0x0100_0000, unmark each going item's held entries once per hand it fills less the incoming hands that hold it, and mark the incoming items held the same way, a two-handed item counting once. The sets SHALL trade places only when a hand's item changes.
 
 #### Scenario: A sword for a two-handed axe
 - **WHEN** a sword is out and a two-handed axe fills both stowed hands, and the sets are swapped and swapped back
@@ -33,6 +33,10 @@ A character's possessions SHALL hold an out and a stowed weapon set of a main an
 #### Scenario: An item in both sets
 - **WHEN** the same item is in the out main hand and the stowed main hand
 - **THEN** a swap keeps its held mark and the main hand does not change
+
+#### Scenario: The same items in both sets
+- **WHEN** both sets hold the same sword in the main hand, the stowed one marked lit, and the sets are swapped
+- **THEN** the flag is set, no hand plan is made and the out sword stays unlit
 
 ### Requirement: Hands after a swap
 The hands SHALL take what changed: a weapon as a weapon, a light weapon in the off hand as a light, a shield as a shield, another item with a light section as a light, anything else as a weapon. Only a weapon SHALL take the stored lit and flipped bits.
