@@ -55,6 +55,7 @@ pub mod technique_selector;
 pub mod text_box;
 pub mod text_edit;
 pub mod text_layout;
+pub mod viewport;
 
 use bevy::prelude::*;
 
@@ -206,6 +207,11 @@ pub use text_edit::{
     apply_key, apply_markup_state, apply_markup_tag, backspace, caret_from_x, caret_position,
     delete_forward, delete_selection, draw_edit, key, navigate_key, paste, picture_rect,
     scroll_view, selected_text, selection,
+};
+pub use viewport::{
+    BORDER, CursorAction, FPS_LINE, KeyOutcome, KeyRoute, LEVELS, NO_VIEW, SAMPLE_OFFSETS, STATE,
+    STYLE, Still, StillProgress, SupersampleLevel, TITLE, VERSION, ViewSize, camera_scale,
+    extra_hit, fps_place, fps_text, jitter, level, pick_action, project, unproject, version_place,
 };
 
 pub struct UiPlugin;
