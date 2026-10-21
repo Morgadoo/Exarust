@@ -1070,6 +1070,29 @@ fn read_mesh(c: &mut Cursor<'_>, version: u16) -> Result<Mesh> {
     })
 }
 
+/// The barycentric coordinates of a point against a triangle, as the
+/// original's face helper computes them: the point's offset from the first
+/// vertex is expressed in the triangle's two edge vectors. The point's
+/// component along the face normal drops out, so the result is the same as
+/// projecting it onto the plane first. A degenerate triangle divides by zero
+/// (the original's stored inverse area is infinite there).
+pub fn barycentric(vertices: [[f32; 3]; 3], point: [f32; 3]) -> [f32; 3] {
+    let [a, b, c] = vertices;
+    let e1 = sub(b, a);
+    let e2 = sub(c, a);
+    let v = sub(point, a);
+    let dot = |x: [f32; 3], y: [f32; 3]| x[0] * y[0] + x[1] * y[1] + x[2] * y[2];
+    let d00 = dot(e1, e1);
+    let d01 = dot(e1, e2);
+    let d11 = dot(e2, e2);
+    let d20 = dot(v, e1);
+    let d21 = dot(v, e2);
+    let inverse = 1.0 / (d00 * d11 - d01 * d01);
+    let second = (d11 * d20 - d01 * d21) * inverse;
+    let third = (d00 * d21 - d01 * d20) * inverse;
+    [1.0 - second - third, second, third]
+}
+
 /// The corner angle's weight in the original's normal averaging: the angle
 /// between two edge vectors, approximated by
 /// `sin θ · (1.571 − 0.1945·cos θ + 0.111·(cos² θ − cos³ θ))`, and zero for
@@ -1699,6 +1722,18 @@ mod tests {
         assert_eq!(mesh.groups.len(), 1);
         assert_eq!(mesh.groups[0].index_count, 6);
         assert!(mesh.regroup_by_material(&[0]).is_err());
+    }
+
+    #[test]
+    fn barycentric_coordinates_split_the_triangle() {
+        let triangle = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let weights = barycentric(triangle, [0.25, 0.25, 0.0]);
+        assert_eq!(weights, [0.5, 0.25, 0.25]);
+        // A point off the plane has the same coordinates: its normal
+        // component does not enter the edges.
+        let weights = barycentric(triangle, [0.25, 0.25, 3.0]);
+        assert_eq!(weights, [0.5, 0.25, 0.25]);
+        assert_eq!(barycentric(triangle, [1.0, 0.0, 0.0]), [0.0, 1.0, 0.0]);
     }
 
     #[test]
