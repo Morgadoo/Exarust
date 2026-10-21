@@ -126,6 +126,11 @@ not count as painted, so their weight falls to node 0 (see below).
 | | u32 | rule count, then 64-byte rule records |
 | | u32 | plant count, then 104-byte plant records |
 
+Version 2 material records store 25 parameters; the loader inserts four
+defaults (0.5, 0.3, 0.5, 1.0) at index 20, so the file's parameters 20–24
+become the runtime's 24–28. A missing palette falls back to `default.ftb`,
+with the "Could not find … (Terrain Palette)" message.
+
 ### Material (232 bytes in v3, 216 in v2)
 
 `name[16]`, `u32 flags`, six texture names `[16]` in slot order **D** (diffuse),
@@ -234,15 +239,21 @@ One system grows grass and plants (`exa_world::terrain::vegetation`):
 - **Shapes**: every mesh of `trn_grassa02.rfc` (1 grass), `trn_splnta02.rfc`
   (6 small) and `trn_lplnta02.rfc` (29 large) is a variant, all textured with
   `PlantSet_01D`/`N`. Grass is shrunk to 0.75. Grass and small plants are
-  lit as if facing up. Alpha test 0.1, no wind, no fade.
+  lit as if facing up and store the loader's 0.75 grey vertex colour (the
+  large plants store none and are lit normally). Alpha test 0.1, no fade.
+  The original's grass program sways them in the wind; Exarust draws them
+  still. Exarust gives the chunks no collider, and casts their shadows only
+  above shadow quality 4 (the original's shadow hook).
 - **Points**: one Poisson-disc set for every tile, from the 32-bit LCG
   (`s = s·0x08088405 + 1`) seeded `0x17972D3E`: radius 1.3 vertex steps
   (26 cm) over 240 × 240, 30 attempts per active point, margin r/4. The set
   is partitioned in place into 8 × 8 chunks of 6 m, rows first.
 - **Density**: the mask pass layers each material's f13 (green), with cover
   forced to 1. A point reads it as a byte, d = G/255 − 0.2, or −1 in a hole.
-  Nothing grows below d = 0.35, so only materials with f13 ≥ 0.55 (e.g.
-  `Mat GrassT`) carry plants.
+  The mask is 240 × 240 texels: a vertex step `p` reads texel
+  `round(p × 239/240)`, while the hole bit uses `round(p)`. Nothing grows
+  below d = 0.35, so only materials with f13 ≥ 0.55 (e.g. `Mat GrassT`)
+  carry plants.
 - **Choice** (tile seed, the `.rft` tile word after x and y): for every
   point in chunk order, two steps decide: grass when (s·N)>>32 < 10 with
   N = round(50d²), then the variant. A second pass, two steps per point,

@@ -526,12 +526,12 @@ fn shipped_levels() {
             NavStats {
                 width: 640,
                 depth: 640,
-                columns_by_spans: [407_134, 2466, 0, 0],
-                floors: [1935, 0],
-                passable: [1935, 0],
-                sky: [531, 0],
+                columns_by_spans: [407_126, 2474, 0, 0],
+                floors: [1941, 0],
+                passable: [1941, 0],
+                sky: [533, 0],
             },
-            1856,
+            1861,
             0,
         ),
         (
@@ -539,10 +539,10 @@ fn shipped_levels() {
             NavStats {
                 width: 640,
                 depth: 640,
-                columns_by_spans: [392_056, 13_627, 3917, 0],
-                floors: [14_677, 3647],
-                passable: [14_670, 3647],
-                sky: [2867, 270],
+                columns_by_spans: [392_042, 13_609, 3949, 0],
+                floors: [14_684, 3679],
+                passable: [14_673, 3679],
+                sky: [2874, 270],
             },
             5006,
             34,
@@ -552,14 +552,14 @@ fn shipped_levels() {
             NavStats {
                 width: 640,
                 depth: 800,
-                columns_by_spans: [190_998, 320_113, 889, 0],
-                floors: [219_413, 790],
-                passable: [219_346, 790],
-                sky: [101_589, 99],
+                columns_by_spans: [190_932, 320_144, 924, 0],
+                floors: [219_518, 822],
+                passable: [219_370, 822],
+                sky: [101_550, 102],
             },
             // The grid's special tiles now mask their edges in every
             // rotation, as the original's start-up table does.
-            191_010,
+            191_348,
             682,
         ),
     ];
@@ -590,21 +590,21 @@ fn shipped_levels() {
                 assert_eq!(g.cell(x, z, Layer::Lower).floor, 211);
                 assert!(reaches(Vec3::new(8.9, -1.0, 64.0)));
                 // Over its 477 closed rooms only the walls' edges have floors
-                // (1120 cells); filling whole tiles, the ground between the
-                // rooms made 186 721 and the walk reached 338 428 cells.
+                // (1545 cells); filling whole tiles, the ground between the
+                // rooms made 186 721 and the walk reached 338 617 cells.
                 let pack = game.pack(exa_assets::PackKind::Resource).unwrap();
                 let scene = exa_formats::rfc::Scene::parse(pack.get("exanima01.rfc").unwrap());
                 let grid = scene.unwrap().grid.unwrap();
                 let closed = grid.edges.iter();
                 assert_eq!(closed.filter(|&&e| e & CELL_OPEN == 0).count(), 477);
-                assert_eq!(floors_over_closed_rooms(&g, &grid), 1120);
+                assert_eq!(floors_over_closed_rooms(&g, &grid), 1545);
                 let mut whole = level.source.clone();
                 for tile in &mut whole.ground {
                     *tile = Arc::new((**tile).clone().with_blocks(GroundTile::ALL_BLOCKS));
                 }
                 let g = whole.build();
                 assert_eq!(floors_over_closed_rooms(&g, &grid), 186_721);
-                assert_eq!(reach(&g, start).len(), 338_428);
+                assert_eq!(reach(&g, start).len(), 338_617);
             }
             _ => {}
         }

@@ -335,6 +335,14 @@ fn spawn_placed_object(
         scaled = m;
         &scaled
     };
+    let with_overrides;
+    let model = match prop_model(loader, model, &object.attachments) {
+        Some(m) => {
+            with_overrides = m;
+            &with_overrides
+        }
+        None => model,
+    };
     let (e, nodes) = spawn_model_nodes(
         commands,
         model,
@@ -414,6 +422,97 @@ fn dim_child_glows(
             let mut dimmed = material.clone();
             dimmed.params.emissive = (e.truncate() * share).extend(e.w);
             *handle = materials.add(dimmed);
+        }
+    }
+}
+
+/// The model of a prop with the placement's node overrides applied, as the
+/// original applies them before it builds the prop: a named node's local
+/// transform (`0x3DE0ECAC`), or its mesh's element positions
+/// (`0x3DE0ECDB`), replaced. `None` when the prop changes nothing, so its
+/// cached model is shared as it is.
+fn prop_model(
+    loader: &mut ModelLoader<'_>,
+    model: &Model,
+    attachments: &[exa_formats::level::PropAttachment],
+) -> Option<Model> {
+    use exa_formats::level::PropAttachment;
+    if attachments.is_empty() {
+        return None;
+    }
+    let mut out = model.clone();
+    apply_transform_attachments(&mut out, attachments);
+    let root = out.roots().next();
+    for attachment in attachments {
+        let PropAttachment::MeshPositions {
+            name, positions, ..
+        } = attachment
+        else {
+            continue;
+        };
+        // An empty name is the prop's own root; otherwise the first direct
+        // child of that name (the original's attachment lookup).
+        let target = if name.is_empty() {
+            root
+        } else {
+            out.nodes
+                .iter()
+                .position(|n| n.parent == root && n.name.eq_ignore_ascii_case(name))
+        };
+        let Some(target) = target else { continue };
+        for (mesh, _) in &mut out.nodes[target].parts {
+            let Some(mut copy) = loader.meshes.get(&*mesh).cloned() else {
+                continue;
+            };
+            let Some(verts) = copy
+                .attribute(Mesh::ATTRIBUTE_POSITION)
+                .and_then(|a| a.as_float3())
+            else {
+                continue;
+            };
+            if verts.len() != positions.len() {
+                continue;
+            }
+            copy.insert_attribute(
+                Mesh::ATTRIBUTE_POSITION,
+                positions
+                    .iter()
+                    .map(|p| [p[0], p[1], p[2]])
+                    .collect::<Vec<_>>(),
+            );
+            copy.compute_normals();
+            *mesh = loader.meshes.add(copy);
+        }
+    }
+    Some(out)
+}
+
+/// The transform overrides of a placement, applied to the model's nodes: the
+/// prop's own root for an empty name, else its first direct child of that
+/// name. Unknown names leave the model alone.
+fn apply_transform_attachments(
+    model: &mut Model,
+    attachments: &[exa_formats::level::PropAttachment],
+) {
+    use exa_formats::level::PropAttachment;
+    let root = model.roots().next();
+    for attachment in attachments {
+        let PropAttachment::Transform {
+            name, transform, ..
+        } = attachment
+        else {
+            continue;
+        };
+        let target = if name.is_empty() {
+            root
+        } else {
+            model
+                .nodes
+                .iter()
+                .position(|n| n.parent == root && n.name.eq_ignore_ascii_case(name))
+        };
+        if let Some(target) = target {
+            model.nodes[target].transform = transform_from_rows(transform);
         }
     }
 }
@@ -890,7 +989,16 @@ impl LevelLoad {
                     let e = match loader.model(PackKind::Objlib, &prop.object) {
                         Some(model) => {
                             self.lights += model.nodes.iter().filter(|n| n.light.is_some()).count();
-                            let (e, nodes) = spawn_model_nodes(commands, &model, Some(placement));
+                            let owned;
+                            let model: &Model = match prop_model(loader, &model, &prop.attachments)
+                            {
+                                Some(m) => {
+                                    owned = m;
+                                    &owned
+                                }
+                                None => &model,
+                            };
+                            let (e, nodes) = spawn_model_nodes(commands, model, Some(placement));
                             // A prop placed static is level geometry.
                             let placement = if prop.is_static() {
                                 bodies::Placement::Static
@@ -898,7 +1006,7 @@ impl LevelLoad {
                                 bodies::Placement::Loose
                             };
                             self.bodies
-                                .add(bodies::register_bodies(commands, &model, &nodes, placement));
+                                .add(bodies::register_bodies(commands, model, &nodes, placement));
                             e
                         }
                         None => {
@@ -1382,6 +1490,46 @@ mod tests {
             shadow_bias: 0,
             is_skin: false,
         }
+    }
+
+    /// A placement's node transforms change the named direct child of the
+    /// prop root, or the root itself for an empty name; other nodes stay.
+    #[test]
+    fn placement_attachments_move_the_named_nodes() {
+        use exa_formats::level::PropAttachment;
+        let mut model = Model {
+            nodes: vec![
+                node("Root", None, None),
+                node("MetalRing", Some(0), None),
+                node("Other", Some(0), None),
+            ],
+        };
+        apply_transform_attachments(
+            &mut model,
+            &[
+                PropAttachment::Transform {
+                    name: "metalring".into(),
+                    slot: 0,
+                    transform: [
+                        [1.0, 0.0, 0.0],
+                        [0.0, 1.0, 0.0],
+                        [0.0, 0.0, 1.0],
+                        [1.0, 2.0, 3.0],
+                    ],
+                },
+                PropAttachment::Transform {
+                    name: "nope".into(),
+                    slot: 0,
+                    transform: [[0.0; 3]; 4],
+                },
+            ],
+        );
+        assert_eq!(
+            model.nodes[1].transform.translation,
+            Vec3::new(1.0, 2.0, 3.0)
+        );
+        assert_eq!(model.nodes[2].transform, Transform::IDENTITY);
+        assert_eq!(model.nodes[0].transform, Transform::IDENTITY);
     }
 
     #[test]

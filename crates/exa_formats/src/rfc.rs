@@ -514,6 +514,9 @@ pub struct PlacedObject {
     pub transform: [[f32; 3]; 4],
     /// Slot in a containing object (0 in the world).
     pub slot: i32,
+    /// What the placement changes in the object's own nodes, as for a prop
+    /// ([`crate::level::PropAttachment`]).
+    pub attachments: Vec<crate::level::PropAttachment>,
 }
 
 impl PlacedObject {
@@ -583,11 +586,24 @@ fn read_placed_objects(b: &[u8], version: u16) -> Result<Vec<PlacedObject>> {
             *v *= CENTIMETRES_TO_METRES;
         }
         let slot = o.u32()? as i32;
+        o.u32()?; // a second placement word
+        // Version 0x3D22 stores one more word before the sub-chunks.
+        if version == 0x3D22 {
+            o.u32()?;
+        }
+        let mut attachments = Vec::new();
+        while o.remaining() >= 8 {
+            let Ok((tag, sub)) = o.chunk() else { break };
+            if let Some(a) = level::read_attachment(tag, sub.b) {
+                attachments.push(a);
+            }
+        }
         out.push(PlacedObject {
             id,
             flags,
             transform,
             slot,
+            attachments,
         });
     }
     Ok(out)
@@ -1907,6 +1923,79 @@ mod tests {
         assert_eq!(db.strings.unwrap().get(id).as_deref(), Some("Brass key"));
         assert!(db.items.is_empty() && db.placed_objects.is_empty());
         assert!(Scene::parse_database(b"not an rfc").is_err());
+    }
+
+    /// A level's placed objects carry the same node overrides as props.
+    #[test]
+    fn placed_objects_keep_their_attachment() {
+        let mut body = u32s(&[0x8000_0001, 0, 0]);
+        body.extend(f32s(&[
+            1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 10.0, 20.0, 30.0,
+        ]));
+        body.extend(u32s(&[1, 0]));
+        let mut attachment = name("DoorRing");
+        attachment.extend(u32s(&[3]));
+        attachment.extend(f32s(&[
+            1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 100.0, 0.0, 0.0,
+        ]));
+        body.extend(chunk(0x3DE0_ECAC, &attachment));
+        let mut objects = u32s(&[1]);
+        objects.extend(chunk(0xDB01, &body));
+        let mut file = vec![0xCF, 0xAF, 0x23, 0x3D];
+        file.extend(chunk(LOCAL_DATABASE, &chunk(PLACED_OBJECTS, &objects)));
+        let scene = Scene::parse(&file).unwrap();
+        assert!(scene.level_errors.is_empty(), "{:?}", scene.level_errors);
+        let o = &scene.placed_objects[0];
+        for (got, want) in o.transform[3].iter().zip([0.1, 0.2, 0.3]) {
+            assert!((got - want).abs() < 1e-6, "{got} != {want}");
+        }
+        let crate::level::PropAttachment::Transform {
+            name,
+            slot,
+            transform,
+        } = &o.attachments[0]
+        else {
+            panic!("not a transform");
+        };
+        assert_eq!((name.as_str(), *slot), ("DoorRing", 3));
+        assert_eq!(transform[3], [1.0, 0.0, 0.0]);
+    }
+
+    /// The installed levels' props carry node overrides (skipped without the
+    /// game): every level has transform records (the arena's dummy bases),
+    /// and exanima01 replaces a banner mesh's 228 positions.
+    #[test]
+    fn shipped_props_keep_their_placement_overrides() {
+        use exa_rpk::PackKind;
+        let Some(dir) = exa_rpk::locate_install(None) else {
+            return;
+        };
+        let game = exa_rpk::GameData::open(&dir).unwrap();
+        let pack = game.pack(PackKind::Resource).unwrap();
+        let exanima01 = Scene::parse(pack.get("exanima01.rfc").unwrap()).unwrap();
+        let mut transforms = 0;
+        let mut banner = None;
+        for prop in &exanima01.props {
+            for attachment in &prop.attachments {
+                match attachment {
+                    crate::level::PropAttachment::Transform { .. } => transforms += 1,
+                    crate::level::PropAttachment::MeshPositions {
+                        name, positions, ..
+                    } => {
+                        if name.starts_with("UW01_Bann") {
+                            banner = Some(positions.len());
+                        }
+                    }
+                }
+            }
+        }
+        assert!(transforms > 0, "exanima01's metal rings");
+        assert_eq!(banner, Some(228));
+        let arena = Scene::parse(pack.get("arenahub.rfc").unwrap()).unwrap();
+        assert!(
+            arena.props.iter().any(|p| !p.attachments.is_empty()),
+            "the dummy bases"
+        );
     }
 
     /// The cloth markers of the installed packs (skipped without the

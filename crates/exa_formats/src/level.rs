@@ -63,7 +63,33 @@ pub struct Prop {
     /// 1-based index of the parent prop, if any.
     pub parent: Option<usize>,
     pub extra: u32,
+    /// What the placement changes in the object's own nodes, in file order.
+    pub attachments: Vec<PropAttachment>,
 }
+
+/// A change a placement makes to one node of its object, as the original's
+/// `0x3DE0ECAC` and `0x3DE0ECDB` records carry it: the node is the prop's
+/// root for an empty name, else the first direct child of that name.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PropAttachment {
+    /// A new local transform (row-major 3×4, translation in metres).
+    Transform {
+        name: String,
+        slot: u32,
+        transform: [[f32; 3]; 4],
+    },
+    /// New mesh positions for the node (metres): the stored editable mesh's
+    /// element positions, which the original replaces wholesale.
+    MeshPositions {
+        name: String,
+        slot: u32,
+        positions: Vec<[f32; 3]>,
+    },
+}
+
+/// Sub-chunk tags of a placed object's node overrides.
+pub const PROP_TRANSFORM: u32 = 0x3DE0_ECAC;
+pub const PROP_MESH_POSITIONS: u32 = 0x3DE0_ECDB;
 
 impl Prop {
     /// Placement flag: the whole object is level geometry. The original
@@ -143,15 +169,86 @@ pub(crate) fn read_props(b: &[u8]) -> Result<Vec<Prop>> {
         }
         let parent = r.u32()? as usize;
         let extra = r.u32()?;
+        let mut attachments = Vec::new();
+        while r.remaining() >= 8 {
+            let Ok(tag) = r.u32() else { break };
+            let Ok(size) = r.u32() else { break };
+            let Ok(body) = r.bytes(size as usize) else {
+                break;
+            };
+            if let Some(a) = read_attachment(tag, body) {
+                attachments.push(a);
+            }
+        }
         props.push(Prop {
             object,
             flags,
             transform,
             parent: (parent > 0).then_some(parent),
             extra,
+            attachments,
         });
     }
     Ok(props)
+}
+
+/// Reads a placement's node override chunk; `None` for another tag or a
+/// record that does not decode.
+pub(crate) fn read_attachment(tag: u32, body: &[u8]) -> Option<PropAttachment> {
+    match tag {
+        PROP_TRANSFORM => read_prop_transform(body).ok(),
+        PROP_MESH_POSITIONS => read_prop_positions(body).ok(),
+        _ => None,
+    }
+}
+
+/// One `0x3DE0ECAC` record: the node's name, its slot word and a 3×4
+/// transform whose translation is in centimetres.
+fn read_prop_transform(b: &[u8]) -> Result<PropAttachment> {
+    let mut r = Reader { b, pos: 0 };
+    let name = r.name()?;
+    let slot = r.u32()?;
+    let mut transform = [[0.0f32; 3]; 4];
+    for row in &mut transform {
+        for v in row.iter_mut() {
+            *v = f32::from_bits(r.u32()?);
+        }
+    }
+    for v in &mut transform[3] {
+        *v *= CENTIMETRES_TO_METRES;
+    }
+    Ok(PropAttachment::Transform {
+        name,
+        slot,
+        transform,
+    })
+}
+
+/// One `0x3DE0ECDB` record: the node's name, its slot word, a count and that
+/// many positions in centimetres.
+fn read_prop_positions(b: &[u8]) -> Result<PropAttachment> {
+    let mut r = Reader { b, pos: 0 };
+    let name = r.name()?;
+    let slot = r.u32()?;
+    let count = r.u32()? as usize;
+    if count.saturating_mul(12) > r.remaining() {
+        return Err(Error::Malformed(format!(
+            "{count} placement positions do not fit"
+        )));
+    }
+    let mut positions = Vec::with_capacity(count);
+    for _ in 0..count {
+        let mut p = [0.0f32; 3];
+        for v in &mut p {
+            *v = f32::from_bits(r.u32()?) * CENTIMETRES_TO_METRES;
+        }
+        positions.push(p);
+    }
+    Ok(PropAttachment::MeshPositions {
+        name,
+        slot,
+        positions,
+    })
 }
 
 struct Reader<'a> {
@@ -282,6 +379,67 @@ mod tests {
     /// (3 883 of the 79 935 shipped props); `0x100000` and `0x200000` do
     /// not.
     #[test]
+    fn prop_attachments_change_a_node() {
+        let mut rec = u32s(&[0]);
+        rec.extend(name("banner a01"));
+        let m: [f32; 12] = [1., 0., 0., 0., 1., 0., 0., 0., 1., 250., 0., -100.];
+        rec.extend(m.iter().flat_map(|f| f.to_le_bytes()));
+        rec.extend(u32s(&[0, 0]));
+        // A node transform: name, slot, then 3 x 4 rows in centimetres.
+        let mut tr = name("UW01_Bann");
+        tr.extend(u32s(&[7]));
+        let rows: [f32; 12] = [1., 0., 0., 0., 1., 0., 0., 0., 1., 100., 200., 300.];
+        tr.extend(rows.iter().flat_map(|f| f.to_le_bytes()));
+        rec.extend(u32s(&[PROP_TRANSFORM, tr.len() as u32]));
+        rec.extend(tr);
+        // New positions: name, slot, count, then the positions.
+        let mut pos = name("UW01_Bann");
+        pos.extend(u32s(&[7, 2]));
+        pos.extend(f32s(&[0.0, 0.0, 0.0, 100.0, 50.0, -20.0]));
+        rec.extend(u32s(&[PROP_MESH_POSITIONS, pos.len() as u32]));
+        rec.extend(pos);
+        // A truncated override is dropped, the prop still reads.
+        rec.extend(u32s(&[PROP_MESH_POSITIONS, 8]));
+        rec.extend(u32s(&[1, 2]));
+        let mut b = u32s(&[1, 0x3DE1_0100, rec.len() as u32]);
+        b.extend(rec);
+        let props = read_props(&b).unwrap();
+        let p = &props[0];
+        assert_eq!(p.transform[3], [2.5, 0.0, -1.0]);
+        assert_eq!(p.attachments.len(), 2, "{:?}", p.attachments);
+        assert_eq!(
+            p.attachments[0],
+            PropAttachment::Transform {
+                name: "UW01_Bann".into(),
+                slot: 7,
+                transform: [
+                    [1.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [0.0, 0.0, 1.0],
+                    [1.0, 2.0, 3.0]
+                ]
+            }
+        );
+        let PropAttachment::MeshPositions {
+            name,
+            slot,
+            positions,
+        } = &p.attachments[1]
+        else {
+            panic!("not a position override");
+        };
+        assert_eq!((name.as_str(), *slot), ("UW01_Bann", 7));
+        assert_eq!(positions[0], [0.0, 0.0, 0.0]);
+        assert!((positions[1][0] - 1.0).abs() < 1e-6);
+        assert!((positions[1][1] - 0.5).abs() < 1e-6);
+        assert!((positions[1][2] + 0.2).abs() < 1e-6);
+    }
+
+    fn f32s(v: &[f32]) -> Vec<u8> {
+        v.iter().flat_map(|f| f.to_le_bytes()).collect()
+    }
+
+    #[test]
     fn static_props() {
         let prop = |flags| Prop {
             object: "barrel wdo1 a01".into(),
@@ -289,6 +447,7 @@ mod tests {
             transform: [[0.0; 3]; 4],
             parent: None,
             extra: 0,
+            attachments: Vec::new(),
         };
         assert!(prop(0x8_0000).is_static());
         assert!(prop(0x18_0000).is_static());

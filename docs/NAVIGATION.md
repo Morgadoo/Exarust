@@ -215,18 +215,19 @@ from the level's start by the planner's step rules: under 50 cm up, under
 
 | level | cells | floor cells (lower, upper) | open sky (lower, upper) | reached from the start |
 |---|---|---|---|---|
-| `arena` | 640 × 640 | 1935, 0 | 531, 0 | 1856 |
-| `arenao1` | 640 × 640 | 14677, 3647 | 2867, 270 | 5006 |
-| `exanima01` | 640 × 800 | 219327, 793 | 101710, 104 | 190989 |
+| `arena` | 640 × 640 | 1941, 0 | 533, 0 | 1861 |
+| `arenao1` | 640 × 640 | 14684, 3679 | 2874, 270 | 5006 |
+| `exanima01` | 640 × 800 | 219518, 822 | 101550, 102 | 191348 |
 
 In exanima01 the walk from the start reaches the foot of the stair room
 (8.9, −1, 64), whose floor reads voxel 211, a metre under the corridors,
 down steps of 10–20 cm. Its terrain fills only its 682 flagged blocks: of
-the cells over its 477 closed grid cells (the rock between the rooms) 1120
-keep a floor, at the walls' edges. Filling the whole tiles instead (what
+the cells over its 477 closed grid cells (the rock between the rooms) 1545
+keep a floor, at the walls' edges and where props' node overrides stamp
+their points. Filling the whole tiles instead (what
 Exarust did before `build-nav-terrain-only-where-blocks-are`) made the
 rock's ground, at about 0, floor too: 186 721 such cells, and a walk from
-the start reaching 338 336 cells. arenao1 fills its 34 flagged blocks of
+the start reaching 338 617 cells. arenao1 fills its 34 flagged blocks of
 its one tile. The counts follow the terrain's height pass over every
 material a tile uses (`layer-every-terrain-material`); with only the four
 heaviest, arenao1 reached 5050 cells and exanima01 190 954.
