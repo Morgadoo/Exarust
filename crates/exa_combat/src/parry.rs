@@ -503,17 +503,20 @@ mod tests {
 }
 
 /// What stops a parry before the attacker is looked at: a helpless
-/// condition, the break-tangle motion (0x1C), or yellow health under 0.01.
+/// condition, the break-tangle motion (0x1C), or yellow health under 0.01
+/// (compared in double, so a yellow of `0.01_f32` is under it).
 pub fn parry_ends(condition_helpless: bool, motion: u8, yellow: f32) -> bool {
-    condition_helpless || motion == 0x1C || yellow < 0.01
+    condition_helpless || motion == 0x1C || f64::from(yellow) < 0.01
 }
 
 /// The attacker as the parry trigger reads it.
 #[derive(Debug, Clone, Copy)]
 pub struct Trigger {
+    /// The attacker's condition is exactly attacking.
     pub attacker_attacking: bool,
     pub attacker_size: f32,
-    pub attacker_has_shield: bool,
+    /// The defender holds a shield.
+    pub defender_has_shield: bool,
     pub strike_window: bool,
     pub cleaving: bool,
     pub progress: f32,
@@ -525,30 +528,38 @@ pub struct Trigger {
 }
 
 /// The parry trigger's attacker test (the routine's gate): the attacker is
-/// attacking, or big (1.3) without the defender's shield; its strike
-/// window is open while its clip is from 0.3 through 0.9; it is not
-/// cleaving; it is in front, within its reach plus 150 cm.
+/// attacking and either smaller than 1.3 (in double) or facing a defender
+/// with a shield; unless its strike window is open, its clip is from 0.3
+/// through 0.9; it is not cleaving; it is not behind (the chest delta's dot
+/// with the facing is not negative) and within its reach plus 150 cm. NaN
+/// never rules a blow out of the compares.
 pub fn parry_trigger(t: &Trigger) -> bool {
-    if !t.attacker_attacking && (t.attacker_size < 1.3 || t.attacker_has_shield) {
+    if !t.attacker_attacking || !(f64::from(t.attacker_size) < 1.3 || t.defender_has_shield) {
         return false;
     }
-    if !t.strike_window && (t.progress < 0.3 || t.progress > 0.9) {
+    let progress = f64::from(t.progress);
+    if !t.strike_window && (progress < 0.3 || progress > 0.9) {
         return false;
     }
     if t.cleaving {
         return false;
     }
-    if t.chest_delta.dot(t.facing) <= 0.0 {
+    let d = t.chest_delta;
+    let f = t.facing;
+    // The original sums the z product onto the sum of the y and x ones.
+    if d.z * f.z + (d.y * f.y + d.x * f.x) < 0.0 {
         return false;
     }
     let reach = t.reach_cm + 150.0;
-    t.chest_delta.length_squared() <= reach * reach
+    let length_squared = d.z * d.z + (d.y * d.y + d.x * d.x);
+    !(reach * reach < length_squared)
 }
 
 /// The parry counter after choosing `clip` (0x14 Left, 0x15 Right,
 /// 0x16 Up, 0x17 Left Dn, 0x18 Right Dn): Left and Right rise to 20; Up
 /// falls from above 0 to it and rises from below; the two downs fall while
-/// over 20.
+/// over 20. The original passes the last clip it chose, every tick, even
+/// when this tick chose none.
 pub fn parry_counter(counter: i32, clip: u8) -> i32 {
     match clip {
         0x14 | 0x15 if counter < 20 => counter + 1,
@@ -560,33 +571,39 @@ pub fn parry_counter(counter: i32, clip: u8) -> i32 {
 }
 
 /// What a successful parry starts: the clip, its blend (round(recovery·20))
-/// and the ease (2).
+/// and the ease (2), and the attack motion the body is left in.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ParryStart {
     pub clip: u8,
     pub blend: u32,
     pub ease: u32,
+    pub attack_motion: u8,
 }
 
 /// The parry start when the chosen clip differs from the one playing:
-/// `chosen` is the re-picked clip from the height table, `current` the clip
-/// playing, `recovery` the body's recovery state. Starts only a
-/// positive chosen clip. Also moves a current attack (motions 5–12) to
-/// motion 4, as the trigger does.
-pub fn parry_start(chosen: i32, current: i32, recovery: f32) -> Option<(ParryStart, bool)> {
+/// `chosen` is the re-picked clip from the height table (none below 0),
+/// `current` the clip playing, `recovery` the body's recovery state and
+/// `attack_motion` the motion it is attacking with, which a start moves
+/// from an attack (5–12) to 4.
+pub fn parry_start(
+    chosen: i32,
+    current: i32,
+    recovery: f32,
+    attack_motion: u8,
+) -> Option<ParryStart> {
     if chosen < 0 || chosen == current {
         return None;
     }
-    let clip = chosen as u8;
-    let blend = (recovery * 20.0).round_ties_even() as u32;
-    Some((
-        ParryStart {
-            clip,
-            blend,
-            ease: 2,
+    Some(ParryStart {
+        clip: chosen as u8,
+        blend: (recovery * 20.0).round_ties_even() as u32,
+        ease: 2,
+        attack_motion: if (5..=12).contains(&attack_motion) {
+            4
+        } else {
+            attack_motion
         },
-        true,
-    ))
+    })
 }
 
 #[cfg(test)]
@@ -597,7 +614,7 @@ mod trigger_tests {
         Trigger {
             attacker_attacking: true,
             attacker_size: 1.0,
-            attacker_has_shield: false,
+            defender_has_shield: false,
             strike_window: true,
             cleaving: false,
             progress: 0.5,
@@ -615,15 +632,22 @@ mod trigger_tests {
         assert!(parry_ends(true, 5, 1.0));
         assert!(parry_ends(false, 0x1C, 1.0));
         assert!(parry_ends(false, 5, 0.0099));
-        assert!(!parry_ends(false, 5, 0.01));
+        // The compare is in double: 0.01 as a float is just under it.
+        assert!(parry_ends(false, 5, 0.01));
+        assert!(!parry_ends(false, 5, 0.0100001));
         assert!(parry_trigger(&attacker()));
         let mut t = attacker();
         t.attacker_attacking = false;
         assert!(!parry_trigger(&t));
+        t.attacker_attacking = true;
+        // Size 1.3 as a float is under 1.3 in double; the next float is not
+        // unless the defender holds a shield.
         t.attacker_size = 1.3;
         assert!(parry_trigger(&t));
-        t.attacker_has_shield = true;
+        t.attacker_size = 1.300_000_1;
         assert!(!parry_trigger(&t));
+        t.defender_has_shield = true;
+        assert!(parry_trigger(&t));
         let mut t = attacker();
         t.strike_window = false;
         t.progress = 0.3;
@@ -634,12 +658,17 @@ mod trigger_tests {
         assert!(!parry_trigger(&t));
         t.progress = 0.91;
         assert!(!parry_trigger(&t));
+        t.progress = f32::NAN;
+        assert!(parry_trigger(&t));
         let mut t = attacker();
         t.cleaving = true;
         assert!(!parry_trigger(&t));
         let mut t = attacker();
         t.chest_delta = Vec3::NEG_Z * 100.0;
         assert!(!parry_trigger(&t));
+        // Level with the defender (a zero dot) is not behind it.
+        t.chest_delta = Vec3::X * 100.0;
+        assert!(parry_trigger(&t));
         let mut t = attacker();
         t.chest_delta = Vec3::Z * 250.0;
         assert!(parry_trigger(&t));
@@ -648,7 +677,7 @@ mod trigger_tests {
     }
 
     /// The counter rises to 20 on the sides, falls from above 0 on Up and
-    /// falls while over 20 on the downs; a start needs a new positive clip
+    /// falls while over 20 on the downs; a start needs a new clip (0 or above)
     /// and blends round(recovery·20) with ease 2.
     #[test]
     fn the_parry_counter_and_start_are_the_originals() {
@@ -658,18 +687,26 @@ mod trigger_tests {
         assert_eq!(parry_counter(-1, 0x16), 0);
         assert_eq!(parry_counter(22, 0x17), 21);
         assert_eq!(parry_counter(20, 0x18), 20);
-        let (start, ease) = parry_start(0x15, 0x14, 1.05).unwrap();
+        let start = parry_start(0x15, 0x14, 1.05, 6).unwrap();
         assert_eq!(
             start,
             ParryStart {
                 clip: 0x15,
                 blend: 21,
-                ease: 2
+                ease: 2,
+                attack_motion: 4,
             }
         );
-        assert!(ease);
-        assert!(parry_start(0x14, 0x14, 1.0).is_none());
-        assert!(parry_start(-1, 0x14, 1.0).is_none());
+        // 20 · 0.025 is a half: it rounds to even.
+        assert_eq!(parry_start(0x15, 0x14, 0.025, 3).unwrap().blend, 0);
+        assert_eq!(
+            parry_start(0x15, 0x14, 0.075, 13).unwrap().attack_motion,
+            13
+        );
+        // Clip 0 is a start too.
+        assert!(parry_start(0, 0x14, 1.0, 0).is_some());
+        assert!(parry_start(0x14, 0x14, 1.0, 0).is_none());
+        assert!(parry_start(-1, 0x14, 1.0, 0).is_none());
     }
 }
 

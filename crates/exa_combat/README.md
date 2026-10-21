@@ -327,17 +327,20 @@ the 0x28 stance blend). Grip link bodies are another lane's
 
 `parry` adds the trigger (`parry_trigger`): a helpless body, the
 break-tangle motion or yellow under 0.01 end a parry; otherwise the attacker
-must be attacking (or 1.3 size against no shield), in its 0.3–0.9 window,
-not cleaving, in front and within its reach + 150 cm. Its counter rises and
-falls by the chosen clip, a start blends round(recovery · 20) with ease 2,
-and a changed attack motion repicks the clip.
+must be attacking and under 1.3 size (or facing a shield), in its 0.3–0.9
+window, not cleaving, not behind and within its reach + 150 cm. Its counter
+rises and falls by the chosen clip, a start blends round(recovery · 20) with
+ease 2 and moves an attack motion to 4, and a changed attack motion repicks
+the clip.
 
 `weapon` is the held weapon's handling: the blade lift and bend curves and
 their two guide pushes (the weapon's and the forearm's), with the weapon's
 balance W7 term, using `exa_physics::body::push_fraction`'s point weighting.
 
-`burn` is fire's damage over time: the timer gains 0.03 of the strength
-(cap 20) or loses 0.1; yellow loses timer × 0.00004 and red (timer × 0.002)²,
-yellow scaled by red's new share; a timer over 1 crackles every 800 ms at
-most; yellow under 0 collapses. `effects` holds a body's power list (ramp
+`burn` is fire's damage over time, worked in double as the original does:
+the timer gains 0.03 of the strength (cap 20) or loses 0.1; yellow loses
+timer × 0.00004 and red (timer × 0.002)², yellow is scaled by red's new share
+of the red the tick began with (all of it is lost when that was near 0); a
+timer over 1 crackles once the clock is 800 ms past the last draw; yellow
+under 0 after the scaling collapses. `effects` holds a body's power list (ramp
 and limit pulses) and the cast start (motion, clinch end, condition 0x20).
