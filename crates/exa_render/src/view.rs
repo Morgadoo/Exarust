@@ -1,27 +1,33 @@
 //! The 3D view's projection, viewport and super-sampling rules.
 //!
 //! The original builds its own perspective frustum from the vertical field of
-//! view, draws a frame in up to eight jittered sub-views into a shared
-//! off-screen buffer, resolves them to the window and post-processes at
-//! window resolution. It also keeps a seven-deep viewport and scissor stack
-//! for nested targets. Exarust renders the scene with Bevy cameras and
+//! view, draws a super-sampled frame as up to four jittered sub-views a pass
+//! into the quadrants of a shared off-screen buffer twice the view's render
+//! size, resolves them to the window and post-processes at window
+//! resolution. Its framebuffers keep a viewport stack and a region (scissor)
+//! stack for nested targets. Exarust renders the scene with Bevy cameras and
 //! resolves an ordered 2 × 2 grid; the constants and the arithmetic that the
 //! original uses are kept here, modelled and pinned by tests, and the
 //! differences are recorded in `docs/RENDERING.md`.
 //!
-//! Rules: `docs/RENDERING.md` (Supersampling, Post-processing).
+//! Rules: `docs/RENDERING.md` (Supersampling).
 
-use bevy::prelude::{IVec2, UVec2};
+use bevy::prelude::{IVec2, UVec2, Vec2};
 
-/// The original's super-sampling levels, by internal level. The settings
-/// slider's 4× choice is internal level 3.
+/// The highest super-sampling level Exarust models. The settings slider's
+/// 4× choice is level 3 and its top is 4; the original's level table goes
+/// on to levels 5–7 (15, 24 and 66 sub-views from jitter entries 18, 33 and
+/// 57), which the slider never selects.
 pub const MAX_SUPERSAMPLE_LEVEL: u8 = 4;
-/// Sub-views drawn at each level (from the level's first jitter entry).
+/// Sub-views drawn at each level, from the original's level table.
 const SUBVIEW_COUNTS: [u8; 5] = [1, 2, 3, 4, 8];
 /// The first jitter entry each level uses in [`JITTERS`].
 const JITTER_OFFSETS: [usize; 5] = [0, 1, 3, 6, 10];
-/// The sharpen strength's base at the 4× setting, before the level term.
+/// The sharpen strength's base at the original's settings, before the level
+/// term.
 pub const SHARPEN_BASE: f32 = 1.5;
+/// Sub-views drawn in one pass, one per quadrant of the shared buffer.
+pub const SUBVIEWS_PER_PASS: usize = 4;
 
 /// Sub-pixel jitter of every sub-view, in pixels: x and y offsets from the
 /// window pixel's centre. The table is the original's, in level order.
@@ -47,8 +53,7 @@ pub const JITTERS: [(f32, f32); 18] = [
 ];
 
 /// One super-sampling level: how many jittered sub-views it draws, where
-/// its jitters start, the render scale it draws them at and the sharpen
-/// strength it gives the final pass.
+/// its jitters start and the sharpen strength it gives the final pass.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SupersampleLevel(pub u8);
 
@@ -60,9 +65,14 @@ impl Default for SupersampleLevel {
 }
 
 impl SupersampleLevel {
-    /// The level clamped to the ones the original has.
+    /// The level clamped to the ones Exarust models.
     pub fn clamped(self) -> Self {
         Self(self.0.min(MAX_SUPERSAMPLE_LEVEL))
+    }
+
+    /// Whether the level draws into the shared super-sampling buffer.
+    pub fn is_on(self) -> bool {
+        self.0 > 0
     }
 
     /// How many sub-views the level draws.
@@ -70,92 +80,155 @@ impl SupersampleLevel {
         SUBVIEW_COUNTS[self.clamped().0 as usize] as usize
     }
 
-    /// The level's sub-pixel jitters.
+    /// How many passes of up to four sub-views the level takes.
+    pub fn passes(self) -> usize {
+        self.subviews().div_ceil(SUBVIEWS_PER_PASS)
+    }
+
+    /// The level's sub-pixel jitters; pass `p`'s sub-view `i` takes entry
+    /// `4·p + i`.
     pub fn jitters(self) -> &'static [(f32, f32)] {
         let level = self.clamped().0 as usize;
         let first = JITTER_OFFSETS[level];
         &JITTERS[first..first + SUBVIEW_COUNTS[level] as usize]
     }
 
-    /// The share of the window each sub-view covers on each axis: 1, 3/4,
-    /// 2/3, 3/5 or 1/2, truncated to whole pixels as the original does.
-    pub fn render_scale(self) -> f32 {
-        match self.clamped().0 {
-            0 => 1.0,
-            1 => 0.75,
-            2 => 2.0 / 3.0,
-            3 => 0.6,
-            _ => 0.5,
-        }
-    }
-
     /// The sharpen strength the final pass gets: zero at level 0, then
-    /// 1.5 × (0.075·level + 0.4); 0.9375 at the 4× setting.
+    /// `base · (0.075·level + 0.4)` in double precision, stored in single;
+    /// 0.9375 at the 4× setting.
     pub fn sharpen(self) -> f32 {
         let level = self.clamped().0;
         if level == 0 {
             0.0
         } else {
-            SHARPEN_BASE * (level as f32 * 0.075 + 0.4)
+            (f64::from(SHARPEN_BASE) * (f64::from(level) * 0.075 + 0.4)) as f32
         }
-    }
-
-    /// The size a view of `window` pixels draws its sub-views at, on each
-    /// axis (`floor(size × scale)`, at least one pixel).
-    pub fn render_size(self, window: UVec2) -> UVec2 {
-        let scale = self.render_scale();
-        UVec2::new(
-            ((window.x as f32 * scale) as u32).max(1),
-            ((window.y as f32 * scale) as u32).max(1),
-        )
-    }
-
-    /// The shared buffer's size: twice each sub-view's size, the quadrants
-    /// the sub-views are drawn into.
-    pub fn buffer_size(self, window: UVec2) -> UVec2 {
-        (self.render_size(window) * 2).max(UVec2::ONE)
     }
 }
 
-/// The perspective frustum's half extents at the near plane for a vertical
-/// field of view in degrees and a viewport aspect ratio.
+/// The view's render-scale mode: the share of the window each sub-view is
+/// drawn at. It is a separate switch from the super-sampling level; the
+/// original's views start at mode 0 (full size) and nothing in play changes
+/// it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RenderScale(pub i32);
+
+impl RenderScale {
+    /// The render size for a window of `window` pixels, or `None` for a mode
+    /// the original does not handle (it keeps the previous size).
+    ///
+    /// Mode 0 is the window's size; 1 is `3·trunc(size·0.25)`, 2
+    /// `2·trunc(size/3)`, 3 `3·trunc(size/5)` and 4 `trunc(size·0.5)`, each
+    /// in double precision and truncated toward zero, as the original
+    /// computes them (so 3/4 of 1602 is 1200, not 1201).
+    pub fn render_size(self, window: UVec2) -> Option<UVec2> {
+        let axis = |size: u32| -> u32 {
+            let size = f64::from(size as i32);
+            match self.0 {
+                1 => (size * 0.25) as i64 as u32 * 3,
+                2 => ((size / 3.0) as i64 as u32) << 1,
+                3 => (size / 5.0) as i64 as u32 * 3,
+                _ => (size * 0.5) as i64 as u32,
+            }
+        };
+        match self.0 {
+            0 => Some(window),
+            1..=4 => Some(UVec2::new(axis(window.x), axis(window.y))),
+            _ => None,
+        }
+    }
+
+    /// The offset the resolve's up-scale applies for the mode: 0, 0, −1/3,
+    /// −0.2 and −0.5 (single precision).
+    pub fn resolve_offset(self) -> f32 {
+        match self.0 {
+            2 => -1.0 / 3.0,
+            3 => -0.2,
+            4 => -0.5,
+            _ => 0.0,
+        }
+    }
+}
+
+/// The view's render size and its share of the shared super-sampling
+/// buffer: with super-sampling on, the render-scale size and a buffer twice
+/// it on each axis (the four quadrants); off, the window's size and no
+/// buffer, whatever the render scale.
+pub fn view_targets(
+    window: UVec2,
+    level: SupersampleLevel,
+    scale: RenderScale,
+    previous: UVec2,
+) -> (UVec2, Option<UVec2>) {
+    if level.is_on() {
+        let render = scale.render_size(window).unwrap_or(previous);
+        (render, Some(render * 2))
+    } else {
+        (window, None)
+    }
+}
+
+/// The perspective frustum's half extents at the near plane, for a vertical
+/// field of view in degrees and a width/height aspect ratio.
 ///
-/// The original computes the half height in double precision from the
-/// vertical field of view and the near distance (`near · tan(fov/2)`) and
-/// the half width as that times the width/height ratio.
+/// The original halves the field of view in radians in single precision,
+/// then divides the negated near distance by `cos/sin` of it, the cosine in
+/// double precision and the sine in single (its own polynomial; Rust's is
+/// within the last bit), stores that half height in single precision and
+/// multiplies it by the aspect in single. It stores both negated; this
+/// returns them positive.
 pub fn frustum_half_extents(fov_y_degrees: f32, aspect: f32, near: f32) -> (f32, f32) {
-    let half = fov_y_degrees.to_radians() as f64 * 0.5;
-    let height = near as f64 * half.tan();
-    ((height * aspect as f64) as f32, height as f32)
+    let half = fov_y_degrees * (std::f32::consts::PI / 180.0) * 0.5;
+    let cotangent = f64::from(half).cos() / f64::from(half.sin());
+    let height = (f64::from(-near) / cotangent) as f32;
+    let width = height * aspect;
+    (-width, -height)
+}
+
+/// The range the view stores beside its frustum when the projection is
+/// built: one less than a positive far distance, else 25 000 (what reads it
+/// was not traced).
+pub fn view_range(far: f32) -> f32 {
+    if 0.0 < far { far - 1.0 } else { 25_000.0 }
+}
+
+/// The projection offset a sub-pixel jitter moves the frustum's edges by:
+/// `2·half_extent·jitter / size`, in single precision in that order, with
+/// `size` the view's render size on that axis. (The original's half extents
+/// are negative; the sign follows them.)
+pub fn jitter_offset(jitter: f32, half_extent: f32, size: u32) -> f32 {
+    if size == 0 {
+        return 0.0;
+    }
+    2.0 * half_extent * jitter / size as i32 as f32
 }
 
 /// Projects a point in the camera's frame to window pixels and depth.
 ///
-/// The original takes the point's x, y and z (z towards the viewer), and
-/// for a point in front reaches `x = width/2 + half_width·width·0.5·x / −z`
-/// and `y = height/2 + half_height·height·0.5·y / −z`, then flips y to the
-/// window's top-down pixels and reports `−z` as the depth. A point at or
-/// behind the eye sits on the window edge its other coordinates' signs pick,
-/// with the depth still reported.
-pub fn project_to_screen(
-    window: UVec2,
-    half_width: f32,
-    half_height: f32,
-    point: [f32; 3],
-) -> (f32, f32, f32) {
+/// `scale` is the projection matrix's x and y scale (its `[0][0]` and
+/// `[1][1]`, the near distance over each half extent). For a point in front
+/// of the eye (`z < 0`) the original computes
+/// `x = width·0.5 + scale.x·width·0.5·x / −z` and the same for y in single
+/// precision, in that order; a point at or behind the eye (or a NaN `z`)
+/// sits on the window edge its other coordinates' signs pick: 0 for a
+/// negative coordinate, the full size otherwise (NaN included). Then y flips
+/// to the window's top-down rows, and the depth is `−z` either way.
+pub fn project_to_screen(window: UVec2, scale: Vec2, point: [f32; 3]) -> (f32, f32, f32) {
     let [x, y, z] = point;
-    let (px, py) = if z >= 0.0 {
+    let width = window.x as i32 as f32;
+    let height = window.y as i32 as f32;
+    let (px, py) = if z < 0.0 {
         (
-            if x >= 0.0 { window.x as f32 } else { 0.0 },
-            if y >= 0.0 { window.y as f32 } else { 0.0 },
+            width * 0.5 + scale.x * width * 0.5 * x / -z,
+            height * 0.5 + scale.y * height * 0.5 * y / -z,
         )
     } else {
         (
-            window.x as f32 * 0.5 + half_width * window.x as f32 * 0.5 * x / -z,
-            window.y as f32 * 0.5 + half_height * window.y as f32 * 0.5 * y / -z,
+            if x < 0.0 { 0.0 } else { width },
+            if y < 0.0 { 0.0 } else { height },
         )
     };
-    (px, window.y as f32 - py, -z)
+    (px, height - py, -z)
 }
 
 /// An integer rectangle in window space, left/top inclusive and right/bottom
@@ -203,69 +276,87 @@ impl Rect {
     }
 
     /// Clips this rectangle to `other` in place, the original's rectangle
-    /// clip: a rectangle touching the clip region by an edge only has no
-    /// area and becomes [`Rect::EMPTY`]. Returns whether any area is left.
+    /// clip, and returns false when they are apart (the rectangle becomes
+    /// [`Rect::EMPTY`], four zeroes).
     ///
-    /// The edges are compared exactly (`other.left < self.left`,
-    /// `other.right < self.right`, and so on), so the empty result is stored
-    /// as four zeroes.
+    /// The tests are not symmetric. When this rectangle starts after
+    /// `other`'s left edge it is apart only if it starts beyond `other`'s
+    /// right edge, so touching that edge leaves a zero-width rectangle and
+    /// returns true; otherwise it is apart when it ends at or before
+    /// `other`'s left edge. The same holds on the vertical axis.
     pub fn clip_to(&mut self, other: Rect) -> bool {
-        if other.x < self.x {
-            if other.right() < self.x {
+        let (mut left, mut top, mut right, mut bottom) =
+            (self.x, self.y, self.right(), self.bottom());
+        if other.x < left {
+            if other.right() < left {
                 *self = Self::EMPTY;
                 return false;
-            }
-            if other.right() < self.right() {
-                self.width = other.right() - self.x;
             }
         } else {
-            if self.right() <= other.x {
+            if right <= other.x {
                 *self = Self::EMPTY;
                 return false;
             }
-            self.x = other.x;
-            if other.right() < self.right() {
-                self.width = other.right() - self.x;
-            }
+            left = other.x;
         }
-        if other.y < self.y {
-            if other.bottom() < self.y {
+        if other.right() < right {
+            right = other.right();
+        }
+        if other.y < top {
+            if other.bottom() < top {
                 *self = Self::EMPTY;
                 return false;
-            }
-            if other.bottom() < self.bottom() {
-                self.height = other.bottom() - self.y;
             }
         } else {
-            if self.bottom() <= other.y {
+            if bottom <= other.y {
                 *self = Self::EMPTY;
                 return false;
             }
-            self.y = other.y;
-            if other.bottom() < self.bottom() {
-                self.height = other.bottom() - self.y;
-            }
+            top = other.y;
         }
+        if other.bottom() < bottom {
+            bottom = other.bottom();
+        }
+        *self = Self::from_edges(left, top, right, bottom);
         true
     }
 }
 
-/// The deepest viewport and scissor stack the original keeps.
-pub const VIEWPORT_DEPTH: usize = 7;
+/// How many regions can be pushed above a framebuffer's root region.
+pub const REGION_PUSHES: usize = 7;
 
-/// The original's framebuffer viewport stack.
+/// One entry of a framebuffer's region stack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Region {
+    /// Where viewports and child regions are placed from.
+    pub origin: IVec2,
+    /// The content offset child regions are placed against
+    /// ([`ViewportStack::set_scroll`]).
+    pub scroll: IVec2,
+    /// The region's rectangle clipped by its parent's.
+    pub clip: Rect,
+    /// Whether the region turns the scissor test on.
+    pub scissor: bool,
+}
+
+/// The original's framebuffer viewport and region stacks.
 ///
-/// A target starts with the whole target as its viewport. A pushed viewport
-/// is placed at an offset from the current viewport's top-left corner and
-/// clipped by the current scissor region (the whole target at the root). The
-/// stack is seven deep; a push past that, or a pop from the root, changes
-/// nothing and returns false. Exarust's cameras carry a single viewport;
-/// nested viewports are a Bevy UI/clip concern.
+/// A framebuffer starts with the whole target as its viewport and as its
+/// root region. A viewport is placed from the current region's origin and
+/// clipped by the region's rectangle; a clip that leaves the rectangles
+/// apart refuses the push. A region is placed from the current region's
+/// origin less its scroll offset and clipped by the current region's
+/// rectangle; it is pushed even when that clip leaves nothing (its
+/// rectangle is then empty). Seven regions can be pushed above the root.
+/// The original has eight viewport slots and no bound check on a viewport
+/// push; the model does not bound them either. Popping the root of either
+/// stack changes nothing and returns false (the original logs an
+/// underflow). Exarust's cameras carry a single viewport; nested viewports
+/// are a Bevy UI/clip concern.
 #[derive(Clone, Debug)]
 pub struct ViewportStack {
-    target: Rect,
-    rects: Vec<Rect>,
-    regions: Vec<Rect>,
+    viewports: Vec<Rect>,
+    regions: Vec<Region>,
 }
 
 impl ViewportStack {
@@ -278,84 +369,104 @@ impl ViewportStack {
             height: target.y as i32,
         };
         Self {
-            target: rect,
-            rects: vec![rect],
-            regions: vec![rect],
+            viewports: vec![rect],
+            regions: vec![Region {
+                origin: IVec2::ZERO,
+                scroll: IVec2::ZERO,
+                clip: rect,
+                scissor: false,
+            }],
         }
-    }
-
-    /// The target rectangle.
-    pub fn target(&self) -> Rect {
-        self.target
     }
 
     /// The viewport in force.
     pub fn viewport(&self) -> Rect {
-        *self.rects.last().unwrap_or(&self.target)
+        self.viewports[self.viewports.len() - 1]
     }
 
-    /// The scissor region in force.
-    pub fn region(&self) -> Rect {
-        *self.regions.last().unwrap_or(&self.target)
+    /// The region in force.
+    pub fn region(&self) -> Region {
+        self.regions[self.regions.len() - 1]
     }
 
-    /// How many viewports are pushed.
-    pub fn depth(&self) -> usize {
-        self.rects.len()
+    /// How many viewports are pushed above the root.
+    pub fn viewport_depth(&self) -> usize {
+        self.viewports.len() - 1
+    }
+
+    /// How many regions are pushed above the root.
+    pub fn region_depth(&self) -> usize {
+        self.regions.len() - 1
+    }
+
+    /// Whether the scissor test is on: the current region is not the root
+    /// and was pushed with the scissor.
+    pub fn scissor_enabled(&self) -> bool {
+        self.region_depth() > 0 && self.region().scissor
     }
 
     /// Pushes a viewport `width` × `height` at (`x`, `y`) from the current
-    /// viewport's corner, clipped by the current region. Returns false when
-    /// the stack is full or the clipped viewport is empty.
+    /// region's origin, clipped by the region's rectangle. Returns false,
+    /// pushing nothing, when the two are apart.
     pub fn push_viewport(&mut self, x: i32, y: i32, width: i32, height: i32) -> bool {
-        if self.rects.len() >= VIEWPORT_DEPTH {
-            return false;
-        }
-        let current = self.viewport();
+        let region = self.region();
         let mut rect = Rect {
-            x: current.x + x,
-            y: current.y + y,
+            x: region.origin.x + x,
+            y: region.origin.y + y,
             width,
             height,
         };
-        if !rect.clip_to(self.region()) || rect.is_empty() {
+        if !rect.clip_to(region.clip) {
             return false;
         }
-        self.rects.push(rect);
+        self.viewports.push(rect);
         true
     }
 
     /// Pops the current viewport. Returns false at the root.
     pub fn pop_viewport(&mut self) -> bool {
-        if self.rects.len() <= 1 {
+        if self.viewports.len() <= 1 {
             return false;
         }
-        self.rects.pop();
+        self.viewports.pop();
         true
     }
 
-    /// Pushes a scissor region at (`x`, `y`) from the current viewport's
-    /// corner, intersected with the current region. Returns false when the
-    /// stack is full or the intersection is empty.
-    pub fn push_region(&mut self, x: i32, y: i32, width: i32, height: i32) -> bool {
-        if self.regions.len() >= VIEWPORT_DEPTH {
+    /// Sets the current region's scroll offset, which the next pushed
+    /// region is placed against.
+    pub fn set_scroll(&mut self, x: i32, y: i32) {
+        let last = self.regions.len() - 1;
+        self.regions[last].scroll = IVec2::new(x, y);
+    }
+
+    /// Pushes a region `width` × `height` at (`x`, `y`) from the current
+    /// region's origin less its scroll offset, clipped by the current
+    /// region's rectangle. Returns false when seven regions are already
+    /// pushed. A region with the scissor always reports true; one without
+    /// reports whether the clip left anything.
+    pub fn push_region(&mut self, x: i32, y: i32, width: i32, height: i32, scissor: bool) -> bool {
+        if self.region_depth() >= REGION_PUSHES {
             return false;
         }
-        let current = self.viewport();
-        let mut rect = Rect {
-            x: current.x + x,
-            y: current.y + y,
+        let parent = self.region();
+        let origin = parent.origin + IVec2::new(x, y) - parent.scroll;
+        let mut clip = Rect {
+            x: origin.x,
+            y: origin.y,
             width,
             height,
         };
-        if !rect.clip_to(self.region()) || rect.is_empty() {
-            return false;
-        }
-        self.regions.push(rect);
-        true
+        let inside = clip.clip_to(parent.clip);
+        self.regions.push(Region {
+            origin,
+            scroll: IVec2::ZERO,
+            clip,
+            scissor,
+        });
+        scissor || inside
     }
 
-    /// Pops the current scissor region. Returns false at the root.
+    /// Pops the current region. Returns false at the root.
     pub fn pop_region(&mut self) -> bool {
         if self.regions.len() <= 1 {
             return false;
@@ -363,42 +474,56 @@ impl ViewportStack {
         self.regions.pop();
         true
     }
-}
 
-/// The integer size a sub-pixel jitter moves the projection: a jitter of
-/// `j` pixels is `2·j·half_extent / size` in NDC, the original's offset of
-/// the frustum's edges.
-pub fn jitter_offset(jitter: f32, half_extent: f32, size: u32) -> f32 {
-    if size == 0 {
-        return 0.0;
+    /// A scissor rectangle given by its edges from the current region's
+    /// origin, clipped by the region's rectangle, and whether anything is
+    /// left (an empty scissor draws nothing).
+    pub fn scissor_rect(&self, left: i32, top: i32, right: i32, bottom: i32) -> (Rect, bool) {
+        let region = self.region();
+        let mut rect = Rect::from_edges(
+            region.origin.x + left,
+            region.origin.y + top,
+            region.origin.x + right,
+            region.origin.y + bottom,
+        );
+        let inside = rect.clip_to(region.clip);
+        (rect, inside)
     }
-    2.0 * half_extent * jitter / size as f32
 }
 
-/// Where a full-screen copy of `source` lands inside `target` for the given
-/// region, the original's texture copy: the region scaled to the target
-/// rectangle, in integer pixels.
-pub fn fullscreen_quad(region: Rect, target: UVec2) -> [IVec2; 4] {
+/// How a view's texture is copied to the window: replaced at full opacity,
+/// else blended with a constant alpha.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CopyBlend {
+    Replace,
+    ConstantAlpha(f32),
+}
+
+impl CopyBlend {
+    /// The blend for an opacity: 1 or more replaces.
+    pub fn for_opacity(opacity: f32) -> Self {
+        if 1.0 <= opacity {
+            Self::Replace
+        } else {
+            Self::ConstantAlpha(opacity)
+        }
+    }
+}
+
+/// The quad the original draws to copy a view's texture into its window
+/// rectangle: the corners `view` covers, each with its texture coordinate,
+/// the far one being the view's size over the texture's render size (in
+/// double precision, stored in single). In the original's order: right
+/// bottom, right top, left top, left bottom, with v = 0 at the bottom edge.
+pub fn copy_quad(view: Rect, render: UVec2) -> [(IVec2, Vec2); 4] {
+    let u = (f64::from(view.width) / f64::from(render.x as i32)) as f32;
+    let v = (f64::from(view.height) / f64::from(render.y as i32)) as f32;
     [
-        IVec2::new(region.x, region.y),
-        IVec2::new(region.right(), region.y),
-        IVec2::new(region.right(), region.bottom()),
-        IVec2::new(region.x, region.bottom()),
+        (IVec2::new(view.right(), view.bottom()), Vec2::new(u, 0.0)),
+        (IVec2::new(view.right(), view.y), Vec2::new(u, v)),
+        (IVec2::new(view.x, view.y), Vec2::new(0.0, v)),
+        (IVec2::new(view.x, view.bottom()), Vec2::new(0.0, 0.0)),
     ]
-    .map(|p| {
-        IVec2::new(
-            if target.x == 0 {
-                0
-            } else {
-                p.x * target.x as i32 / region.width.max(1)
-            },
-            if target.y == 0 {
-                0
-            } else {
-                p.y * target.y as i32 / region.height.max(1)
-            },
-        )
-    })
 }
 
 #[cfg(test)]
@@ -406,26 +531,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn levels_pick_their_subviews_and_scales() {
-        let window = UVec2::new(1600, 900);
-        for (level, subviews, scale) in [
-            (0, 1, 1.0),
-            (1, 2, 0.75),
-            (2, 3, 2.0 / 3.0),
-            (3, 4, 0.6),
-            (4, 8, 0.5),
-        ] {
+    fn levels_pick_their_subviews_and_jitters() {
+        for (level, subviews, passes) in [(0, 1, 1), (1, 2, 1), (2, 3, 1), (3, 4, 1), (4, 8, 2)] {
             let level = SupersampleLevel(level);
             assert_eq!(level.subviews(), subviews);
-            assert_eq!(level.render_scale(), scale);
-            let size = level.render_size(window);
-            assert_eq!(size.x, (1600.0 * scale) as u32);
-            assert_eq!(size.y, (900.0 * scale) as u32);
-            assert_eq!(level.buffer_size(window), size * 2);
+            assert_eq!(level.passes(), passes);
+            assert_eq!(level.jitters().len(), subviews);
         }
         // The 4× setting's jitters are the documented four.
         let jitters = SupersampleLevel(3).jitters();
-        assert_eq!(jitters.len(), 4);
         for (a, b) in jitters.iter().zip([
             (-0.292_626, -0.149_945),
             (0.296_924, 0.149_994),
@@ -434,59 +548,116 @@ mod tests {
         ]) {
             assert_eq!(*a, b);
         }
-        for j in jitters {
+        for j in JITTERS {
             assert!(j.0.abs() <= 0.5 && j.1.abs() <= 0.5);
         }
         assert_eq!(SupersampleLevel(0).jitters(), &[(0.0, 0.0)]);
-        assert_eq!(SupersampleLevel(4).jitters().len(), 8);
+        assert_eq!(SupersampleLevel(9).subviews(), 8);
     }
 
     #[test]
     fn the_sharpen_strength_follows_the_level() {
         assert_eq!(SupersampleLevel(0).sharpen(), 0.0);
-        assert!((SupersampleLevel(1).sharpen() - 0.7125).abs() < 1e-6);
-        assert!((SupersampleLevel(2).sharpen() - 0.825).abs() < 1e-6);
-        assert!((SupersampleLevel(3).sharpen() - 0.9375).abs() < 1e-6);
-        assert!((SupersampleLevel(4).sharpen() - 1.05).abs() < 1e-6);
-        assert_eq!(SupersampleLevel(9).subviews(), 8);
+        assert_eq!(SupersampleLevel(1).sharpen(), 0.7125);
+        assert_eq!(SupersampleLevel(2).sharpen(), 0.825);
+        assert_eq!(SupersampleLevel(3).sharpen(), 0.9375);
+        assert_eq!(SupersampleLevel(4).sharpen(), 1.05);
+    }
+
+    #[test]
+    fn the_render_scale_truncates_per_axis() {
+        let window = UVec2::new(1602, 901);
+        // 3 * trunc(400.5) = 1200 and 3 * trunc(225.25) = 675.
+        assert_eq!(
+            RenderScale(1).render_size(window),
+            Some(UVec2::new(1200, 675))
+        );
+        // 2 * trunc(534) = 1068 and 2 * trunc(300.33) = 600.
+        assert_eq!(
+            RenderScale(2).render_size(window),
+            Some(UVec2::new(1068, 600))
+        );
+        // 3 * trunc(320.4) = 960 and 3 * trunc(180.2) = 540.
+        assert_eq!(
+            RenderScale(3).render_size(window),
+            Some(UVec2::new(960, 540))
+        );
+        assert_eq!(
+            RenderScale(4).render_size(window),
+            Some(UVec2::new(801, 450))
+        );
+        assert_eq!(RenderScale(0).render_size(window), Some(window));
+        assert_eq!(RenderScale(5).render_size(window), None);
+        assert_eq!(RenderScale(2).resolve_offset(), -0.333_333_34);
+        assert_eq!(RenderScale(1).resolve_offset(), 0.0);
+    }
+
+    #[test]
+    fn super_sampling_doubles_the_render_size() {
+        let window = UVec2::new(1600, 900);
+        // At the 4x setting and the default scale each sub-view is the
+        // window's size and the buffer twice it.
+        assert_eq!(
+            view_targets(window, SupersampleLevel(3), RenderScale(0), window),
+            (window, Some(UVec2::new(3200, 1800)))
+        );
+        // Off, the render scale is ignored.
+        assert_eq!(
+            view_targets(window, SupersampleLevel(0), RenderScale(4), window),
+            (window, None)
+        );
+        assert_eq!(
+            view_targets(
+                window,
+                SupersampleLevel(1),
+                RenderScale(4),
+                UVec2::new(1, 1)
+            ),
+            (UVec2::new(800, 450), Some(UVec2::new(1600, 900)))
+        );
     }
 
     #[test]
     fn the_projection_half_extents_follow_the_field_of_view() {
-        // A 45-degree view 1 m out is 0.4142 m tall on each side at 16:10.
+        // A 45-degree view 1 m out is 0.4142 m tall on each side; at 16:10
+        // 0.6627 m wide.
         let (x, y) = frustum_half_extents(45.0, 1.6, 1.0);
-        assert!((y - 0.414_214).abs() < 1e-5, "{y}");
-        assert!((x - 0.662_742).abs() < 1e-5, "{x}");
-        // Doubling the field of view more than doubles the extents.
+        assert!((y - 0.414_213_57).abs() < 1e-6, "{y}");
+        assert_eq!(x, y * 1.6);
         let (_, y2) = frustum_half_extents(90.0, 1.6, 1.0);
         assert!((y2 - 1.0).abs() < 1e-6);
+        assert_eq!(view_range(12_500.0), 12_499.0);
+        assert_eq!(view_range(0.0), 25_000.0);
+        assert_eq!(view_range(f32::NAN), 25_000.0);
     }
 
     #[test]
     fn a_camera_point_projects_to_window_pixels() {
         let window = UVec2::new(800, 600);
-        let (x, y, depth) = project_to_screen(window, 0.75, 0.5, [0.0, 0.0, -1.0]);
+        let scale = Vec2::new(0.75, 0.5);
+        let (x, y, depth) = project_to_screen(window, scale, [0.0, 0.0, -1.0]);
         assert_eq!((x, y, depth), (400.0, 300.0, 1.0));
-        // Half an extent across is a quarter of the window from its centre,
-        // then y flips to the top-down pixel row.
-        let (x, y, _) = project_to_screen(window, 0.75, 0.5, [1.0, 1.0, -2.0]);
-        assert!((x - 550.0).abs() < 1e-4, "{x}");
-        assert!((y - 225.0).abs() < 1e-4, "{y}");
+        // x: 400 + 0.75 * 800 * 0.5 * 1 / 2 = 550; y: 300 + 75 = 375, then
+        // flipped to 600 - 375.
+        let (x, y, _) = project_to_screen(window, scale, [1.0, 1.0, -2.0]);
+        assert_eq!((x, y), (550.0, 225.0));
         // At or behind the eye the point sits on a window edge.
         assert_eq!(
-            project_to_screen(window, 0.75, 0.5, [-1.0, 1.0, 0.0]),
-            (0.0, 0.0, 0.0)
+            project_to_screen(window, scale, [-1.0, 1.0, 0.0]),
+            (0.0, 0.0, -0.0)
         );
         assert_eq!(
-            project_to_screen(window, 0.75, 0.5, [1.0, -1.0, 2.0]),
+            project_to_screen(window, scale, [1.0, -1.0, 2.0]),
             (800.0, 600.0, -2.0)
         );
+        // A NaN depth takes the edge path, a NaN coordinate the far edge.
+        let (x, y, _) = project_to_screen(window, scale, [f32::NAN, -1.0, f32::NAN]);
+        assert_eq!((x, y), (800.0, 600.0));
     }
 
     #[test]
-    fn jitter_offsets_are_ndc_shifts() {
-        // Half an extent across a 200-pixel view is 0.25 of the extent, so a
-        // half-pixel jitter is 0.25 of the extent in NDC.
+    fn jitter_offsets_are_frustum_shifts() {
+        // 2 * 1 * 0.5 / 200.
         assert_eq!(jitter_offset(0.5, 1.0, 200), 0.005);
         assert_eq!(jitter_offset(-0.5, 1.0, 200), -0.005);
         assert_eq!(jitter_offset(0.5, 1.0, 0), 0.0);
@@ -502,14 +673,21 @@ mod tests {
         r = Rect::from_edges(0, 0, 100, 100);
         assert!(r.clip_to(Rect::from_edges(10, 20, 30, 40)));
         assert_eq!(r, Rect::from_edges(10, 20, 30, 40));
-        // Touching an edge is empty, not a zero-width remainder.
+        // Ending at the clip's left edge is apart.
         r = Rect::from_edges(0, 0, 10, 10);
         assert!(!r.clip_to(Rect::from_edges(10, 0, 20, 10)));
         assert_eq!(r, Rect::EMPTY);
-        // Beyond by one pixel is empty too.
+        // Starting at the clip's right edge is not: a zero-width remainder.
+        r = Rect::from_edges(10, 0, 20, 10);
+        assert!(r.clip_to(Rect::from_edges(0, 0, 10, 10)));
+        assert_eq!(r, Rect::from_edges(10, 0, 10, 10));
+        assert!(r.is_empty());
+        // Beyond by one pixel is apart.
         r = Rect::from_edges(0, 0, 10, 10);
         assert!(!r.clip_to(Rect::from_edges(20, 20, 30, 30)));
         assert_eq!(r, Rect::EMPTY);
+        r = Rect::from_edges(31, 0, 40, 10);
+        assert!(!r.clip_to(Rect::from_edges(20, 0, 30, 10)));
         // A partial overlap keeps the intersection.
         r = Rect::from_edges(5, 5, 25, 25);
         assert!(r.clip_to(Rect::from_edges(10, 0, 20, 15)));
@@ -517,53 +695,74 @@ mod tests {
     }
 
     #[test]
-    fn the_viewport_stack_is_seven_deep_and_clips() {
+    fn viewports_are_placed_from_the_region() {
         let mut stack = ViewportStack::new(UVec2::new(800, 600));
         assert_eq!(stack.viewport(), Rect::from_edges(0, 0, 800, 600));
         assert!(stack.push_viewport(100, 50, 200, 100));
         assert_eq!(stack.viewport(), Rect::from_edges(100, 50, 300, 150));
-        // Relative to the current viewport.
+        // From the region's origin, not the current viewport's corner.
         assert!(stack.push_viewport(10, 10, 50, 50));
-        assert_eq!(stack.viewport(), Rect::from_edges(110, 60, 160, 110));
-        // Placed from the parent's corner and clipped by the scissor region
-        // (the whole target here), not by the parent's own rectangle.
-        assert!(stack.pop_viewport());
-        assert!(stack.push_viewport(190, 90, 200, 100));
-        assert_eq!(stack.viewport(), Rect::from_edges(290, 140, 490, 240));
-        // A region clips the next viewport.
-        assert!(stack.push_region(0, 0, 15, 15));
+        assert_eq!(stack.viewport(), Rect::from_edges(10, 10, 60, 60));
+        assert_eq!(stack.viewport_depth(), 2);
+        // A region moves the origin and clips.
+        assert!(stack.push_region(100, 50, 300, 200, true));
+        assert!(stack.scissor_enabled());
         assert!(stack.push_viewport(0, 0, 100, 100));
-        assert_eq!(stack.viewport(), Rect::from_edges(290, 140, 305, 155));
-        assert!(stack.pop_viewport());
-        assert!(stack.pop_region());
-        for _ in 0..(VIEWPORT_DEPTH - stack.depth()) {
-            assert!(stack.push_viewport(0, 0, 1, 1));
-        }
-        assert_eq!(stack.depth(), VIEWPORT_DEPTH);
-        assert!(!stack.push_viewport(0, 0, 1, 1));
+        assert_eq!(stack.viewport(), Rect::from_edges(100, 50, 200, 150));
+        assert!(stack.push_viewport(250, 150, 100, 100));
+        assert_eq!(stack.viewport(), Rect::from_edges(350, 200, 400, 250));
+        // Apart from the region: refused.
+        assert!(!stack.push_viewport(400, 0, 10, 10));
         while stack.pop_viewport() {}
         assert!(!stack.pop_viewport());
-        // An empty push changes nothing.
-        assert!(!stack.push_viewport(800, 600, 10, 10));
-        assert_eq!(stack.depth(), 1);
-        // The scissor region stack is independent.
-        assert!(stack.push_region(10, 10, 20, 20));
-        assert_eq!(stack.region(), Rect::from_edges(10, 10, 30, 30));
-        assert!(stack.pop_region());
-        assert!(!stack.pop_region());
+        assert_eq!(stack.viewport(), Rect::from_edges(0, 0, 800, 600));
     }
 
     #[test]
-    fn a_fullscreen_copy_scales_the_region() {
-        let quad = fullscreen_quad(Rect::from_edges(0, 0, 400, 300), UVec2::new(800, 600));
+    fn regions_scroll_clip_and_stop_at_seven() {
+        let mut stack = ViewportStack::new(UVec2::new(800, 600));
+        assert!(!stack.scissor_enabled());
+        assert!(stack.push_region(100, 50, 300, 200, true));
+        // A child placed against the scroll offset: (100 - 20, 50 - 10),
+        // clipped to the parent's (100, 50)-(400, 250).
+        stack.set_scroll(20, 10);
+        assert!(stack.push_region(0, 0, 50, 50, false));
+        assert_eq!(stack.region().origin, IVec2::new(80, 40));
+        assert_eq!(stack.region().clip, Rect::from_edges(100, 50, 130, 90));
+        assert!(!stack.scissor_enabled());
+        // A region apart from its parent is still pushed, empty.
+        assert!(!stack.push_region(1000, 1000, 10, 10, false));
+        assert_eq!(stack.region().clip, Rect::EMPTY);
+        assert!(stack.push_region(1000, 1000, 10, 10, true));
+        assert_eq!(stack.region_depth(), 4);
+        for _ in stack.region_depth()..REGION_PUSHES {
+            assert!(stack.push_region(0, 0, 1, 1, true));
+        }
+        assert!(!stack.push_region(0, 0, 1, 1, true));
+        assert_eq!(stack.region_depth(), REGION_PUSHES);
+        while stack.pop_region() {}
+        assert!(!stack.pop_region());
+        // A scissor rectangle by its edges from the region's origin.
+        assert!(stack.push_region(100, 100, 100, 100, true));
+        assert_eq!(
+            stack.scissor_rect(10, 10, 300, 50),
+            (Rect::from_edges(110, 110, 200, 150), true)
+        );
+    }
+
+    #[test]
+    fn a_view_copy_maps_its_rectangle() {
+        let quad = copy_quad(Rect::from_edges(0, 0, 800, 600), UVec2::new(1600, 1200));
         assert_eq!(
             quad,
             [
-                IVec2::new(0, 0),
-                IVec2::new(800, 0),
-                IVec2::new(800, 600),
-                IVec2::new(0, 600)
+                (IVec2::new(800, 600), Vec2::new(0.5, 0.0)),
+                (IVec2::new(800, 0), Vec2::new(0.5, 0.5)),
+                (IVec2::new(0, 0), Vec2::new(0.0, 0.5)),
+                (IVec2::new(0, 600), Vec2::new(0.0, 0.0)),
             ]
         );
+        assert_eq!(CopyBlend::for_opacity(1.0), CopyBlend::Replace);
+        assert_eq!(CopyBlend::for_opacity(0.25), CopyBlend::ConstantAlpha(0.25));
     }
 }
