@@ -898,6 +898,90 @@ mod tests {
         assert_eq!(pumped.attached[0].sink, CharacterSink::Attach);
     }
 
+    /// The pump runs every completion, then inserts every streamed
+    /// character, then attaches every requested one, whatever order they
+    /// finished in.
+    #[test]
+    fn the_pump_drains_completions_then_streamed_then_attachments() {
+        let mut stream = ContentStream::new();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let done = log.clone();
+        stream.submit_job(Job {
+            work: Box::new(|| {}),
+            done: Some(Box::new(move || done.lock().unwrap().push("done"))),
+        });
+        let mut builders = Recorder {
+            objects: vec![Some(20)],
+            characters: vec![Some(40)],
+            streamed_ok: true,
+            ..Recorder::default()
+        };
+        stream.begin_characters(7, [character(3, [0.0; 3])]);
+        stream.request_object(ObjectRequest {
+            id: 5,
+            flags: 0,
+            parent: 7,
+        });
+        stream.request_character(CharacterRequest {
+            owner: 9,
+            scene: 7,
+            class: 1,
+            flags: 0x400,
+        });
+        assert!(matches!(
+            stream.step(&mut builders),
+            Step::Requests {
+                job: true,
+                object: Some(true),
+                character: Some(true)
+            }
+        ));
+        assert_eq!(stream.step(&mut builders), Step::Streamed { built: true });
+        let pumped = stream.pump();
+        assert_eq!(pumped.completions, 1);
+        assert_eq!(pumped.added.len(), 1);
+        assert_eq!(pumped.added[0].node, 3);
+        assert_eq!(pumped.attached.len(), 1);
+        assert_eq!(pumped.attached[0].node, 40);
+        assert_eq!(*log.lock().unwrap(), ["done"]);
+        // A second pump finds nothing: all three rings are empty.
+        let again = stream.pump();
+        assert_eq!(again.completions, 0);
+        assert!(again.added.is_empty() && again.attached.is_empty());
+    }
+
+    /// The two arrival words name the player's placed-object kind; any other
+    /// load has none.
+    #[test]
+    fn the_arrival_word_names_the_players_object_kind() {
+        let mut stream = ContentStream::new();
+        let mut builders = Recorder {
+            level: vec![Some(41)],
+            player: Some((0, 15, [1.0, 2.0, 3.0])),
+            ..Recorder::default()
+        };
+        stream.begin_level(7, 1, ARRIVAL_WORD);
+        stream.step(&mut builders);
+        assert_eq!(stream.player(), Some(41));
+        let mut other = Recorder {
+            level: vec![Some(42)],
+            player: Some((0, 15, [1.0, 2.0, 3.0])),
+            ..Recorder::default()
+        };
+        stream.begin_level(7, 1, 0);
+        stream.step(&mut other);
+        assert_eq!(stream.player(), None);
+        let mut respawn = Recorder {
+            level: vec![Some(43)],
+            player: Some((0, RESPAWN_PLAYER_KIND, [4.0, 5.0, 6.0])),
+            ..Recorder::default()
+        };
+        stream.begin_level(7, 1, RESPAWN_ARRIVAL_WORD);
+        stream.step(&mut respawn);
+        assert_eq!(stream.player(), Some(43));
+        assert_eq!(stream.focus(), [4.0, 5.0, 6.0]);
+    }
+
     #[test]
     fn the_level_wait_reports_built_and_missing_objects() {
         let mut stream = ContentStream::new();

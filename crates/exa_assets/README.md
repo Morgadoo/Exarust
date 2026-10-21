@@ -107,7 +107,8 @@ that takes only what was ready and honours a budget. `TextureStream` is the
 texture loader's queue: `request` (a duplicate of a queued name is refused),
 `promote` (which finds a request queued, decoding or already uploaded: the
 original's status bit is never cleared), `cancel` (a queued request or a
-decoded one is dropped, one decoding is marked so its upload is skipped),
+decoded one is dropped, one decoding is marked by its request id so its
+upload is skipped and a later request for the same name still loads),
 `take_next`/`finish_decode` for an executor that decodes between them (or
 `decode_next` for a synchronous one), the loader's yield while uploads are
 pending (skipped for a promoted request; pausing only stops the wake-ups),

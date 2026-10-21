@@ -12,7 +12,7 @@
 //! instead of waiting for room, so no request is ever dropped; the original
 //! blocks its producer until the consumer catches up.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 
@@ -254,6 +254,10 @@ pub struct TextureRequest {
     /// Promoted to the front (the original's "priority" mark, status bit 2):
     /// its decode does not yield to waiting uploads.
     pub promoted: bool,
+    /// The loader assigns this when the request is queued, so a release can
+    /// cancel this load alone while the same name is requested again (the
+    /// original's per-record status bits).
+    pub id: u64,
 }
 
 impl TextureRequest {
@@ -265,6 +269,7 @@ impl TextureRequest {
             flags,
             source: source.into(),
             promoted: false,
+            id: 0,
         }
     }
 }
@@ -309,10 +314,12 @@ pub struct TextureStream {
     finished: Vec<TextureKey>,
     /// Taken by the loader at least once (status bit 4).
     decoded: HashSet<TextureKey>,
-    /// Released while loading (status bit 16).
-    cancelled: HashSet<TextureKey>,
-    /// The requests the loader is decoding now (status bit 1 per record).
-    in_hand: HashSet<TextureKey>,
+    /// Released while loading (status bit 16), by request id.
+    cancelled: HashSet<u64>,
+    next_id: u64,
+    /// The requests the loader is decoding now (status bit 1 per record),
+    /// with the id that request was queued under.
+    in_hand: HashMap<TextureKey, u64>,
     in_flight: usize,
     /// Whether the request decoded last was promoted.
     last_promoted: bool,
@@ -332,7 +339,7 @@ impl TextureStream {
 
     /// Queues a load. The original also wakes the loader unless the stream is
     /// paused; [`TextureStream::take_wake`] reports that.
-    pub fn request(&mut self, request: TextureRequest) -> RequestOutcome {
+    pub fn request(&mut self, mut request: TextureRequest) -> RequestOutcome {
         let queue = self
             .requests
             .get_or_insert_with(|| RingQueue::new(16, RING_GROWTH));
@@ -343,9 +350,8 @@ impl TextureStream {
         if queue.iter().any(|queued| queued.key == request.key) {
             return RequestOutcome::AlreadyQueued;
         }
-        // A fresh request is a fresh record: any cancellation of an earlier
-        // one is spent.
-        self.cancelled.remove(&request.key);
+        request.id = self.next_id;
+        self.next_id += 1;
         queue.push(request);
         self.in_flight += 1;
         self.wake();
@@ -392,8 +398,8 @@ impl TextureStream {
             .position(|upload| &upload.key == key)
             .map(|index| self.uploads.remove(index))
             .is_some();
-        let in_hand = self.in_hand.contains(key);
-        if !queued && !uploading && !in_hand {
+        let in_hand = self.in_hand.get(key).copied();
+        if !queued && !uploading && in_hand.is_none() {
             return false;
         }
         if queued {
@@ -406,7 +412,9 @@ impl TextureStream {
         // priority load under the same name; one still decoding is dropped
         // when the pass finishes.
         self.decoded.remove(key);
-        self.cancelled.insert(*key);
+        if let Some(id) = in_hand {
+            self.cancelled.insert(id);
+        }
         true
     }
 
@@ -424,7 +432,7 @@ impl TextureStream {
     pub fn take_next(&mut self) -> Option<TextureRequest> {
         let request = self.requests.as_mut().and_then(RingQueue::pop)?;
         self.last_promoted = request.promoted;
-        self.in_hand.insert(request.key);
+        self.in_hand.insert(request.key, request.id);
         self.decoded.insert(request.key);
         Some(request)
     }
@@ -439,7 +447,7 @@ impl TextureStream {
         decoded: Option<(Image, bool)>,
     ) -> bool {
         self.in_hand.remove(&request.key);
-        if self.cancelled.remove(&request.key) {
+        if self.cancelled.remove(&request.id) {
             self.in_flight = self.in_flight.saturating_sub(1);
             return false;
         }
@@ -571,7 +579,7 @@ impl TextureStream {
             .as_ref()
             .is_some_and(|queue| queue.iter().any(|request| &request.key == key))
             || self.uploads.iter().any(|upload| &upload.key == key)
-            || self.in_hand.contains(key)
+            || self.in_hand.contains_key(key)
     }
 
     /// Loads one texture to completion on the main thread: promotes its
@@ -798,6 +806,24 @@ mod tests {
             Some(bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb)
         );
         assert!(stream.is_idle());
+    }
+
+    /// A release cancels the load it names, not every later load of the
+    /// same texture: a re-request while the old decode runs still uploads.
+    #[test]
+    fn a_re_request_survives_the_cancelled_decode() {
+        let mut stream = TextureStream::new();
+        stream.request(request("a"));
+        let old = stream.take_next().unwrap();
+        assert!(stream.cancel(&key("a")));
+        assert_eq!(stream.request(request("a")), RequestOutcome::Queued);
+        // The old pass finishes: its upload is dropped, not the new load's.
+        assert!(!stream.finish_decode(old, Some((Image::default(), false))));
+        assert_eq!(stream.pending_uploads(), 0);
+        let new = stream.take_next().unwrap();
+        assert!(stream.finish_decode(new, Some((Image::default(), false))));
+        assert_eq!(stream.pending_uploads(), 1);
+        assert!(stream.promote(&key("a")));
     }
 
     #[test]

@@ -276,6 +276,75 @@ mod tests {
         );
     }
 
+    /// A batch of shipped images streams through the loader and finishes in
+    /// request order, each at the size its header asks for.
+    #[test]
+    fn a_batch_finishes_in_request_order() {
+        let Some((mut app, data)) = streaming_app() else {
+            return;
+        };
+        let mut names = Vec::new();
+        for (_, pack) in data.packs() {
+            for entry in pack.entries() {
+                if names.len() >= 16 {
+                    break;
+                }
+                if exa_formats::FileKind::detect(pack.bytes(entry)) == exa_formats::FileKind::Image
+                {
+                    names.push(crate::TextureName::new(&entry.name).as_str().to_string());
+                }
+            }
+        }
+        assert!(names.len() >= 8, "shipped images to stream");
+        let handles: Vec<Handle<Image>> = names
+            .iter()
+            .map(|name| request(&mut app, &data, name, false))
+            .collect();
+        for handle in &handles {
+            assert_eq!(width(&app, handle), 1, "placeholders first");
+        }
+        let mut finished = Vec::new();
+        for _ in 0..5000 {
+            app.update();
+            finished.extend(
+                app.world_mut()
+                    .resource_mut::<TextureLoader>()
+                    .stream_mut()
+                    .take_finished(),
+            );
+            let cache = app.world().resource::<ModelCache>();
+            if names.iter().all(|name| {
+                let key = crate::TextureKey::new(name, texture::ColorSpace::Srgb);
+                cache
+                    .textures
+                    .get(&key)
+                    .is_some_and(|record| !record.pending)
+            }) {
+                break;
+            }
+        }
+        let requested: Vec<String> = names
+            .iter()
+            .map(|name| crate::TextureName::new(name).as_str().to_string())
+            .collect();
+        let done: Vec<String> = finished
+            .iter()
+            .map(|key| key.name.as_str().to_string())
+            .collect();
+        assert_eq!(done, requested, "uploads keep request order");
+        // Each finished image has the base size its detail class leaves.
+        let settings = *app.world().resource::<ModelCache>().textures.settings();
+        for (name, handle) in names.iter().zip(&handles) {
+            let bytes = data.texture(name).expect("the image is shipped");
+            let rfi = exa_formats::rfi::Rfi::parse(bytes).unwrap();
+            let first = rfi
+                .header
+                .first_mip_level(settings.texture_detail, settings.max_texture_size);
+            let expected = (rfi.header.width >> first).max(1);
+            assert_eq!(width(&app, handle), expected, "{name}");
+        }
+    }
+
     /// The synchronous priority path replaces a placeholder at once and
     /// drops its queued load.
     #[test]
