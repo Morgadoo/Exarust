@@ -8,6 +8,7 @@ pub mod content_stream;
 pub mod decomp;
 pub mod hair;
 pub mod human_skin;
+pub mod material_manager;
 pub mod merge;
 pub mod mesh_edit;
 pub mod mesh_smooth;

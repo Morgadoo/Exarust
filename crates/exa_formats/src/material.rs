@@ -230,15 +230,30 @@ impl Default for Material {
             render_state: 0,
             plugin_mask: 0,
             reserved: [0; 4],
-            physical_divisor: 0.0,
+            physical_divisor: DEFAULT_PHYSICAL_DIVISOR,
             tail: [0; 2],
             collision_sound: String::new(),
-            texture_flags: 0,
+            texture_flags: DEFAULT_TEXTURE_FLAGS,
             raw_block: [0; PARAMETER_BLOCK / 4],
             layers: Vec::new(),
         }
     }
 }
+
+/// The texture load flags a material object starts from: the original's
+/// `0xF0` with its `0x70000` sampler bits (repeat wrapping on every axis).
+pub const DEFAULT_TEXTURE_FLAGS: u32 = 0xF0 | 0x70000;
+/// The physical divisor a material object starts from.
+pub const DEFAULT_PHYSICAL_DIVISOR: f32 = 1.0;
+/// The material record used for a name the libraries do not know: the
+/// original's built-in `_Default`, opaque grey with no texture.
+pub const DEFAULT_MATERIAL_NAME: &str = "_Default";
+/// The built-in `_Default` material's diffuse colour (sRGB grey) and
+/// opacity, as its 32-byte payload stores them (emissive black).
+pub const DEFAULT_MATERIAL_DIFFUSE: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
+/// The reference count the built-in `_Default` material starts with: it is
+/// never freed.
+pub const DEFAULT_MATERIAL_REFERENCES: i32 = 0x3FFF_FFFF;
 
 impl Material {
     pub fn parse(payload: &[u8]) -> Result<Self> {
@@ -599,5 +614,21 @@ mod tests {
         p[0x4C..0x50].copy_from_slice(&0x40u32.to_le_bytes());
         let m = Material::parse(&p).unwrap().uv_transform.unwrap();
         assert_eq!((m[0], m[9]), (2.0, -0.5));
+    }
+
+    /// The constructor's defaults: texture load flags 0x700F0 (0xF0 and the
+    /// 0x70000 sampler bits) and a physical divisor of 1. The built-in
+    /// `_Default` material is opaque grey with a reference count it never
+    /// loses.
+    #[test]
+    fn constructed_material_defaults() {
+        let m = Material::default();
+        assert_eq!(m.uv_transform, None);
+        assert_eq!(m.texture_flags, 0x700F0);
+        assert_eq!(m.physical_divisor, 1.0);
+        assert_eq!(m.mobility_divisor(), 1.0);
+        assert_eq!(DEFAULT_MATERIAL_DIFFUSE, [0.5, 0.5, 0.5, 1.0]);
+        assert_eq!(DEFAULT_MATERIAL_NAME, "_Default");
+        assert_eq!(DEFAULT_MATERIAL_REFERENCES, 0x3FFF_FFFF);
     }
 }

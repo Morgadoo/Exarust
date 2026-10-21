@@ -647,18 +647,44 @@ impl ModelLoader<'_> {
             }
             None => {
                 self.warn_once(format!("material {name:?} not found"));
-                ExaMaterial {
-                    params: ExaParams {
-                        diffuse: Vec4::new(0.32, 0.32, 0.32, 1.0),
-                        ..default()
-                    },
-                    ..default()
-                }
+                crate::material_manager::default_material()
             }
         };
         let handle = self.materials.add(mat);
         self.cache.materials.insert(key, handle.clone());
         handle
+    }
+
+    /// The get-or-load entry point of the original's material manager: the
+    /// scene's own record first, then the project's libraries, cached by
+    /// name; an unknown name logs once and returns the built-in `_Default`
+    /// material.
+    pub fn get_material(&mut self, entry: &str, scene: &Scene, name: &str) -> Handle<ExaMaterial> {
+        self.material(entry, scene, name)
+    }
+
+    /// The built-in `_Default` material, created once and cached. It is
+    /// opaque grey with no texture and, in the original, a reference count
+    /// that never reaches zero.
+    pub fn default_material(&mut self) -> Handle<ExaMaterial> {
+        let key = format!(
+            "lib#{}",
+            exa_formats::material::DEFAULT_MATERIAL_NAME.to_ascii_lowercase()
+        );
+        if let Some(h) = self.cache.materials.get(&key) {
+            return h.clone();
+        }
+        let handle = self
+            .materials
+            .add(crate::material_manager::default_material());
+        self.cache.materials.insert(key, handle.clone());
+        handle
+    }
+
+    /// The cached material of a key ([`ModelLoader::material_key`]) once it
+    /// was loaded.
+    pub fn cached_material(&self, key: &str) -> Option<&Handle<ExaMaterial>> {
+        self.cache.materials.get(key)
     }
 
     /// A material shaded like the original's from its library record.
