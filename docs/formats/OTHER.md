@@ -1393,8 +1393,17 @@ W17 0.67, W18 0.275, W19 8.
 | ogre (`0x2000000`) | 0.32 – 0.80 | 0.50 – 1.00 | 0.50 – 1.00 |
 | demon (`0x4000000`) | 0.50 – 1.20 | 0.75 – 1.50 | 0.75 – 1.50 |
 
-spread over the weapon's rigid parts half evenly and half by their own
-masses; the weapon's own part then weighs s times more.
+The part tree redistributes in two passes, parent before children
+(`exa_physics::weapon_mass`). A saved mass of zero is replaced by the
+live mass and then left alone. The live mass becomes 1.25 times that
+saved mass and the inverse word becomes its reciprocal; the walk counts
+the parts and sums those reciprocals. The second pass writes both words
+with the reciprocal of (0.5/count + (inverse/sum)·0.5) · scale, where
+scale is the caller's factor. A saved mass that is already set is the
+one inflated. A zero inflated mass
+divides the way a single-precision division by zero does. `spread_mass`
+splits a chosen total half evenly and half by each part's own mass, and
+multiplies the first share by the holder's size.
 
 **Equip refresh**: each held record is held again with the character's g
 and s; the character's reach is the largest W23; W19 = round(W19 × race
@@ -1442,7 +1451,13 @@ mode).
 **Shield record**, item section `0x8000` (22 items): weight, block and
 bulk = bytes 4, 5, 6 × 0.01, each in double precision then stored as a
 float (a round shield 0.5, 0.58, 0.6; a buckler's weight 15 is 0.15, where
-single precision gives 0.14999999). In the off
+single precision gives 0.14999999). On the part those three floats fill a
+16-byte block (`ShieldBlock`). The block is created with its first word
+`0x80000000`; an existing block keeps its first word. With no section
+body, the item's `0x8000` section object is used and the body is read
+eight bytes in. A missed lookup leaves the three floats unwritten, and so
+does a body that does not hold bytes 4, 5 and 6 (the original reads them
+with no length check). In the off
 hand it gives parry effectiveness 0.5 + 1.5·(1 − weight)² (weight/2 with
 the Mobility technique), a block leak of 1 − block/2, a stamina cost per
 block of the leak (× 2/3 with Endure), and adds (2 − u)·bulk/4 to the

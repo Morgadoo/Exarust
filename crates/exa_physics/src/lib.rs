@@ -30,6 +30,7 @@ pub mod signal;
 pub mod sim_object;
 pub mod volume;
 pub mod voxel;
+pub mod weapon_mass;
 
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};

@@ -2,9 +2,9 @@
 //! record, built from an item's weapon section (`0x4000`), the weapon's
 //! length along its parts and the character holding it, then refreshed on
 //! every equip change. Also the built-in fist and claw sections, the shield
-//! record (section `0x8000`), the weapon mass table and a character's
-//! reaches. Rules, constants and evidence: `docs/formats/OTHER.md` (Weapon
-//! record).
+//! record and the part's shield stat block (section `0x8000`), the weapon
+//! mass table and a character's reaches. Rules, constants and evidence:
+//! `docs/formats/OTHER.md` (Weapon record).
 //!
 //! Units follow the original: lengths in cm. Masses are the simulation's
 //! own units.
@@ -670,10 +670,10 @@ pub fn total_mass(flags: u32, weight: f32) -> Option<f32> {
     Some(heavy * weight + (1.0 - weight) * light)
 }
 
-/// Spreads a weapon's `total` mass over its rigid parts, whose own masses
-/// are `parts` (the weapon's part first, then its child parts): half evenly
-/// and half by their own masses. The holder's size multiplies the first
-/// part's share afterwards.
+/// Splits `total` across `parts`, the weapon's part first: half of the
+/// total is shared evenly and half by the parts' own masses. The first
+/// share is then multiplied by `size`. The part tree's redistribution is
+/// `exa_physics::weapon_mass`.
 pub fn spread_mass(total: f32, parts: &[f32], size: f32) -> Vec<f32> {
     let n = parts.len() as f32;
     let sum: f32 = parts.iter().sum();
@@ -745,6 +745,53 @@ impl ShieldRecord {
     /// technique's −0.3: (2 − weightless)·bulk/4.
     pub fn encumbrance(&self, weightless: f32) -> f32 {
         (2.0 - weightless) * self.bulk * 0.25
+    }
+}
+
+/// First word of a shield stat block, written only when the block is created.
+pub const SHIELD_BLOCK_MARKER: u32 = 0x8000_0000;
+
+/// Where the three shield bytes are read from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShieldSource<'a> {
+    /// The caller already holds the section body. Bytes 4, 5 and 6 are the
+    /// weight, the block and the bulk.
+    Body(&'a [u8]),
+    /// No body was passed. `None` is a missed lookup of section kind
+    /// `0x8000`. `Some` is that section object; its body starts at byte 8.
+    Lookup(Option<&'a [u8]>),
+}
+
+/// The 16-byte block a part keeps for its shield: a marker word and the
+/// three scaled section bytes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShieldBlock {
+    /// `SHIELD_BLOCK_MARKER` when this block was created for the write.
+    /// An existing block keeps whatever marker it had.
+    pub marker: u32,
+    /// The three floats. Absent until a section body long enough to hold
+    /// bytes 4, 5 and 6 has been written; a missed lookup leaves it as it
+    /// was. The original reads those bytes with no length check.
+    pub stats: Option<ShieldRecord>,
+}
+
+impl ShieldBlock {
+    /// Creates the block when `existing` is absent, then writes the shield
+    /// bytes from `source`. A new block's marker is [`SHIELD_BLOCK_MARKER`].
+    pub fn write(existing: Option<Self>, source: ShieldSource<'_>) -> Self {
+        let mut block = existing.unwrap_or(Self {
+            marker: SHIELD_BLOCK_MARKER,
+            stats: None,
+        });
+        let body = match source {
+            ShieldSource::Body(body) => Some(body),
+            ShieldSource::Lookup(None) => None,
+            ShieldSource::Lookup(Some(record)) => record.get(8..),
+        };
+        if let Some(stats) = body.and_then(ShieldRecord::from_section) {
+            block.stats = Some(stats);
+        }
+        block
     }
 }
 
@@ -1139,6 +1186,52 @@ mod tests {
         assert!(close(s.encumbrance(0.0), 0.3));
         assert!(close(s.encumbrance(1.0), 0.15));
         assert!(ShieldRecord::from_section(&[0; 6]).is_none());
+    }
+
+    #[test]
+    fn a_new_shield_block_is_marked_and_an_old_one_keeps_its_marker() {
+        let body = [0u8, 0, 0, 0, 0, 100, 50];
+        let created = ShieldBlock::write(None, ShieldSource::Body(&body));
+        assert_eq!(created.marker, SHIELD_BLOCK_MARKER);
+        let stats = created.stats.unwrap();
+        assert_eq!(stats.weight, 0.0);
+        assert_eq!(stats.block, 1.0);
+        assert_eq!(stats.bulk, 0.5);
+        // Byte 15 scaled in double, then narrowed: bits 0x3e19999a.
+        let odd = [0u8, 0, 0, 0, 15, 0, 0];
+        let odd = ShieldBlock::write(None, ShieldSource::Body(&odd));
+        assert_eq!(odd.stats.unwrap().weight.to_bits(), 0x3e19_999a);
+
+        let mut kept = created;
+        kept.marker = 0x11;
+        let again = ShieldBlock::write(Some(kept), ShieldSource::Body(&[0u8, 0, 0, 0, 100, 0, 0]));
+        assert_eq!(again.marker, 0x11);
+        assert_eq!(again.stats.unwrap().weight, 1.0);
+    }
+
+    #[test]
+    fn a_looked_up_shield_section_is_read_eight_bytes_in() {
+        let mut record = vec![0u8; 15];
+        record[4] = 9;
+        record[5] = 9;
+        record[6] = 9;
+        record[12] = 0;
+        record[13] = 100;
+        record[14] = 50;
+        let written = ShieldBlock::write(None, ShieldSource::Lookup(Some(&record)));
+        let stats = written.stats.unwrap();
+        assert_eq!((stats.weight, stats.block, stats.bulk), (0.0, 1.0, 0.5));
+
+        let missed = ShieldBlock::write(None, ShieldSource::Lookup(None));
+        assert_eq!(missed.marker, SHIELD_BLOCK_MARKER);
+        assert!(missed.stats.is_none());
+
+        let existing = ShieldBlock::write(None, ShieldSource::Body(&[0u8, 0, 0, 0, 50, 0, 0]));
+        let kept = ShieldBlock::write(Some(existing), ShieldSource::Lookup(None));
+        assert_eq!(kept, existing);
+
+        let short = ShieldBlock::write(None, ShieldSource::Body(&[0u8; 6]));
+        assert!(short.stats.is_none());
     }
 
     /// The record of every weapon item of the installed object database

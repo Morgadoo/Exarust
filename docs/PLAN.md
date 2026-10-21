@@ -1752,7 +1752,16 @@ against Exarust and lists the largest missing ones. In order:
    the character view's camera, background and drags, checked instruction
    by instruction), and so are the character record's live rules (equip
    lock, trade, loadouts, skills); drawing the windows, the cards and the
-   3D figure, and re-attaching held models, are not. Injuries beyond damage are not.
+   3D figure, and re-attaching held models, are not. A weapon part tree
+   redistributes its masses in two passes (`exa_physics::weapon_mass`): a
+   saved mass of zero is latched from the live mass, each live mass becomes
+   1.25 times that saved mass, and both the mass word and the inverse word
+   become the reciprocal of a half-even, half-by-inverse share of the
+   caller's scale. A part's shield stat block (`ShieldBlock`) is marked
+   `0x80000000` only when it is created; the three floats are the shield
+   section's bytes 4, 5 and 6 times 0.01 in double, or those bytes eight
+   bytes into a looked-up section object, and a missed lookup leaves them
+   unwritten. Injuries beyond damage are not.
 3. The original's NPC brain: perception, targets and the combat state that
    drives the same inputs as the player (Phase 6). A path on the grid, the
    look-ahead, and an order that writes the player's heading and velocity

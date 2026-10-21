@@ -5,7 +5,9 @@ Rigid-body and articulated-body simulation: the core of Exanima's feel (physical
 **Phase:** Phase 3 (see [`docs/PLAN.md`](../../docs/PLAN.md)). Status: started — the original's
 body solver (`body`), its level contacts (`contact`), props and items as bodies (`prop`), a cloth step (`cloth`), the
 character controller (`lib`), the dynamics world unit (`dynamics`), the rigid-body shape
-builders (`shape`), the shared intersection maths (`intersect`) and the engine's own maths unit (`engine_math`).
+builders (`shape`), the shared intersection maths (`intersect`), the engine's own maths unit (`engine_math`) and the weapon part tree's mass redistribution (`weapon_mass`).
+
+`weapon_mass` redistributes a weapon's part tree in two passes, parent before children. A saved mass of zero is latched from the live mass. The live mass becomes 1.25 times that saved mass and the inverse word its reciprocal. Both words then become the reciprocal of (0.5/count + (inverse/sum)·0.5) · scale. A second pass inflates the saved mass again. Nothing in the running game calls it yet.
 
 `engine_math` is the one shared implementation of the engine's fast maths,
 checked against the original's instructions: the sign stub, the
