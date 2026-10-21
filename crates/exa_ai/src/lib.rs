@@ -531,7 +531,11 @@ fn duellist(
             combatant.clear_combat_step(gt.translation() * 100.0, t.rotation * Vec3::Z, 0.0);
             combatant.refresh_fighting(0.0, reach_of(entity, &blades) * 100.0);
             stance::set_stance(&mut stance, &mut anim, Stance::Defence);
-            info!("duellist {entity:?} enters combat: {:?}", *stance);
+            info!(
+                "duellist {entity:?} enters combat: {:?} at tick {}",
+                *stance,
+                tick_now.unwrap_or(0)
+            );
             continue;
         }
         // The target's body: the fighter at or under the target entity.

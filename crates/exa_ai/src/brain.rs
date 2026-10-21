@@ -442,10 +442,15 @@ pub fn perceive_all(
             if sensed.entity == entity {
                 continue;
             }
+            if sensed.invisible {
+                npc.unseen(sensed.id);
+                continue;
+            }
             let index = combatant.contact_index(sensed.entity);
             let observed = Observed {
                 entity: sensed.entity,
                 position_cm: sensed.position_cm,
+                // Exarust keeps the look and the facing on one transform.
                 look: sensed.forward,
                 forward: sensed.forward,
                 condition: sensed.condition,
@@ -593,6 +598,9 @@ pub fn ai_tick(
             foe: target.map(Entity::to_bits),
             sees_foe: sighting.is_some(),
             foe_point: target_cm,
+            // [guess: the model's translation stands in for the body's
+            // stored ground height; the running game has no room graph, so
+            // every foe is in room 0].
             foe_ground_y: target_cm.y,
             foe_room: 0,
             focus: None,
