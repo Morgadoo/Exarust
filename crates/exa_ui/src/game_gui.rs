@@ -533,9 +533,9 @@ pub fn hud_span(x: i32, width: i32, first: f32, second: f32) -> HudSpan {
 /// `(3 − 2t)t²` at `t = |1000 − elapsed mod 2000| / 1000`, times 0.6. The
 /// marker is drawn at 2.4 units square (its icon 4 units, a fifth) in the
 /// original's two places.
-pub fn status_pulse(elapsed: i64) -> f32 {
-    let rem = elapsed.rem_euclid(2000);
-    let t = (1000 - rem).unsigned_abs() as f32 / 1000.0;
+pub fn status_pulse(elapsed: u32) -> f32 {
+    let rem = elapsed % 2000;
+    let t = 1000u32.abs_diff(rem) as f32 / 1000.0;
     let ease = (3.0 - 2.0 * t) * t * t;
     ease * 0.6
 }
@@ -575,8 +575,8 @@ pub fn status_marker(entries: &[u32]) -> bool {
 /// The level curtain (the black page that lifts over three seconds when a
 /// level starts): its alpha and the level's brightness at `elapsed` ms.
 /// The brightness is applied to the world, the black quad is drawn over it.
-pub fn level_curtain(elapsed: i64) -> (u8, f32) {
-    let t = (elapsed.max(0) as f64 * 0.000_333_333_333_333_333_3).min(1.0);
+pub fn level_curtain(elapsed: u32) -> (u8, f32) {
+    let t = (elapsed as f64 * 0.000_333_333_333_333_333_3).min(1.0);
     let alpha = (t * 255.0).round_ties_even() as u8;
     (alpha, 1.0 - t as f32)
 }
@@ -722,8 +722,8 @@ pub fn hud_layers() -> &'static [HudLayer] {
 /// ms after the fade began. The original fades over a second at
 /// `1 − elapsed / 1000`; at or below the GUI's invisible threshold it stops
 /// both.
-pub fn heartbeat_fade(elapsed: i64) -> Option<(f32, f32)> {
-    let alpha = 1.0 - elapsed.max(0) as f64 * 0.001;
+pub fn heartbeat_fade(elapsed: u32) -> Option<(f32, f32)> {
+    let alpha = 1.0 - elapsed as f64 * 0.001;
     if alpha < 1.192_089_982_282_595_9e-7 {
         return None;
     }
@@ -1307,10 +1307,10 @@ mod tests {
         assert!(status_marker(&[0x1000, 0]));
         assert!(!status_marker(&[0, 0x2000]));
         assert!(!status_marker(&[0x1000]));
-        assert!((status_pulse(0) - 0.6).abs() < 1e-6);
-        assert!(status_pulse(1000).abs() < 1e-6);
-        assert!((status_pulse(500) - 0.3).abs() < 1e-6);
-        assert!((status_pulse(1500) - 0.3).abs() < 1e-6);
+        assert!((status_pulse(0_u32) - 0.6).abs() < 1e-6);
+        assert!(status_pulse(1000_u32).abs() < 1e-6);
+        assert!((status_pulse(500_u32) - 0.3).abs() < 1e-6);
+        assert!((status_pulse(1500_u32) - 0.3).abs() < 1e-6);
         assert_eq!(status_place(1600, 900, 5), (800 + 265, 860));
         assert_eq!(ready_place(1600, 900, 5), (800 - 300, 860));
         assert_eq!(compass_extent(4), 48);
@@ -1391,12 +1391,12 @@ mod tests {
 
     #[test]
     fn the_heartbeat_fade() {
-        assert_eq!(heartbeat_fade(0), Some((1.0, 0.30000001)));
-        let (alpha, gain) = heartbeat_fade(500).unwrap();
+        assert_eq!(heartbeat_fade(0_u32), Some((1.0, 0.30000001)));
+        let (alpha, gain) = heartbeat_fade(500_u32).unwrap();
         assert!((alpha - 0.5).abs() < 1e-6);
         assert!((gain - 0.15).abs() < 1e-6);
-        assert_eq!(heartbeat_fade(1000), None);
-        assert_eq!(heartbeat_fade(5000), None);
+        assert_eq!(heartbeat_fade(1000_u32), None);
+        assert_eq!(heartbeat_fade(5000_u32), None);
     }
 
     #[test]
