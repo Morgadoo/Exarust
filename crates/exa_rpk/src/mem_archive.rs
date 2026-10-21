@@ -1,12 +1,12 @@
 //! An `.rpk`-format pack held entirely in memory, whose entries can be
 //! read, added, replaced and deleted in place.
 //!
-//! The original's `TMemBlockLibrary` is the material and shader library:
-//! it reads the table and the whole payload area into memory, appends a
-//! zeroed 32-byte entry for a new name in sorted order, replaces an entry's
-//! payload by closing the old bytes' hole and appending the new ones (or
-//! overwriting at the same length), and deletes by replacing with an empty
-//! payload and closing the table up.
+//! The original's in-memory library class (`TMemBlockLibrary`) reads the
+//! table and the whole payload area into memory, appends a zeroed 32-byte
+//! entry for a new name in sorted order, replaces an entry's payload by
+//! closing the old bytes' hole and appending the new ones (or overwriting at
+//! the same length), and deletes by replacing with an empty payload and
+//! closing the table up. [`MemArchive::write`] is Exarust's addition.
 //!
 //! Layout: [`crate::RPK_MAGIC`], `table_len: u32`, then
 //! `table_len / 32` entries of `name[16]`, `offset: u32`, `size: u32`, 8
@@ -63,9 +63,11 @@ pub struct MemArchive {
 
 impl MemArchive {
     /// Reads a pack from memory: the magic and the table are checked, the
-    /// payload area is everything after the table. Entries are kept as they
-    /// are (an entry pointing outside the payload reads as nothing), and
-    /// are sorted by the lower-cased name as the original's table is.
+    /// payload area is everything after the table. Entries are kept in file
+    /// order and are not re-sorted: shipped packs are written sorted, and
+    /// [`MemArchive::find`] relies on that. An entry pointing outside the
+    /// payload reads as nothing. A table with no entries keeps no payload,
+    /// as the original frees its buffer then.
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         let magic = read_u32(bytes, 0)?;
         if magic != RPK_MAGIC {
@@ -99,10 +101,12 @@ impl MemArchive {
                 reserved: record[24..32].try_into().expect("8 bytes"),
             });
         }
-        Ok(Self {
-            entries,
-            blob: bytes[table_end..].to_vec(),
-        })
+        let blob = if entries.is_empty() {
+            Vec::new()
+        } else {
+            bytes[table_end..].to_vec()
+        };
+        Ok(Self { entries, blob })
     }
 
     /// An empty pack.
@@ -232,17 +236,8 @@ impl MemArchive {
         Some(self.entries.remove(index))
     }
 
-    /// Sets the entry's name (the original's "set file name" slot), without
-    /// re-sorting: the caller is the one that gives a new library its name.
-    pub fn set_name(&mut self, index: usize, name: &str) -> bool {
-        let Some(entry) = self.entries.get_mut(index) else {
-            return false;
-        };
-        entry.name = name_key(name);
-        true
-    }
-
-    /// The pack's bytes as it is held: magic, the table and the payload
+    /// The pack's bytes as it is held (Exarust's own addition: the original
+    /// never writes this library back): magic, the table and the payload
     /// area. Entries keep their order and offsets.
     pub fn write(&self) -> Vec<u8> {
         let mut out = RPK_MAGIC.to_le_bytes().to_vec();
