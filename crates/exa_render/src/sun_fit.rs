@@ -78,8 +78,8 @@ const CAP_CLOSED2: f64 = 1e-4;
 /// Two cut ends this close (squared, cm²) are the same point when a cap is
 /// chained.
 const CAP_SAME_POINT2: f32 = 5.0;
-/// The vertical centre of the fitted mode's scene box, cm: the original
-/// raises the scene box's y to 1.5 m before clipping.
+/// The vertical centre of the fitted mode's scene box, cm: the original sets
+/// the scene box's vertical centre to 1.5 m before clipping.
 pub const SCENE_MIDDLE_CM: f32 = 150.0;
 /// The vertical half extent of the fitted mode's scene box, cm: with
 /// [`SCENE_MIDDLE_CM`] the sun's planes keep y inside −500…800 cm.
@@ -135,11 +135,12 @@ impl SceneBox {
 }
 
 /// The one plane per axis the fitted mode clips by: on an axis the sun
-/// travels along negatively it keeps the low side of the scene box, on one it
-/// travels along positively the high side, so the region behind the sun is
-/// cut away. A zero component adds no plane. The vertical axis uses the
-/// original's fixed box ([`SCENE_MIDDLE_CM`], [`SCENE_HALF_HEIGHT_CM`]) in
-/// place of the scene's own.
+/// travels along negatively the plane at the scene box's high edge is kept
+/// (`axis ≤ centre + extent`), along positively the one at its low edge
+/// (`axis ≥ centre − extent`), so the region behind the sun is cut away. A
+/// zero component adds no plane. The vertical axis uses the original's fixed
+/// box ([`SCENE_MIDDLE_CM`], [`SCENE_HALF_HEIGHT_CM`]) in place of the
+/// scene's own.
 pub fn direction_clip_planes(scene: SceneBox, dir: Vec3) -> Vec<ClipPlane> {
     let centre = Vec3::new(scene.centre.x, SCENE_MIDDLE_CM, scene.centre.z);
     let extent = Vec3::new(scene.extent.x, SCENE_HALF_HEIGHT_CM, scene.extent.z);
