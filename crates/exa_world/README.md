@@ -76,20 +76,22 @@ and the grid's rooms; portal clipping is next (see
   renderer and light lists with swap removal, and the sector destructor.
 - `scene_plugin`: the scene extension list with its attach and node-batch
   hooks, in attach order.
-- `terrain::manager`: the manager's construction numbers (48 m of 240 cm
-  cells, 241 vertices, 244 apron rows, detail size 4096/8192 and palette
-  scale), the tile record's allocation (heights, centred vertices, the
-  0x7f-filled channel, the 12/24-byte vertex stride), the 8 × 8 translated
-  block kd-trees, the 16 × 16 height bounds with the original's running
-  min/max, the 6 m block radius and centre, the layered normal y and the
-  opacity byte.
+- `terrain::manager`: the manager's construction numbers (a 48 m tile of 240
+  cells of 20 cm, 241 vertices, 244 apron rows; detail size 4096/8192 from
+  the texture-detail setting, quality tables from a separate quality level,
+  the integer palette scale and the height scale), the tile record (heights,
+  centred positions and normals as the two halves of one vertex buffer, the
+  0x7f-filled channel read with a 244 stride, packed normals and opacity
+  bytes), the Sobel normal with the processor's approximate reciprocal square
+  root, the vertex-height pass, the 16 × 16 height bounds, the block
+  descriptor (centre, half extents, radius) and the 8 × 8 translated block
+  kd-trees. Only the detail displacement is shared with the running terrain
+  build; its own normal keeps the exact square root.
 - `terrain::plugins`: the terrain extension list (attach order, activate
   forward and deactivate backward) and the static terrain's create-or-reuse
-  set-up with one 8 × 8 shadow-receiver set per tile and the room-mode
-  variant.
-- `grid` marks a fully transparent part's vertices in the added channel
-  (alpha below 0.01 writes the zero mark), skips a piece's `#` children, and
-  defines the piece flags and the 20 cm child subdivision extent.
-  The manager also keeps a tile's Sobel normals (apron index
-  `(j+1)·244 + (i+1)`), its finalise (normals, pending clear), the static
-  terrain's attach and its stop-and-wait shutdown.
+  set-up: the scene is marked only when the manager is created, one shadow
+  receiver per tile and block outside room mode, a pool sized in room mode.
+- `grid` keeps the set-piece loader's rules: a fully transparent part (alpha
+  below 0.01) marks its triangles' vertices in an added channel, the load's
+  node flag words, and the child skip for the 20 cm subdivision (`#`, `+` and
+  `[` children are not subdivided, but are still built).
