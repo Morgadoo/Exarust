@@ -652,20 +652,18 @@ pub struct MindEntryStyle {
     pub third: f32,
 }
 
-/// The entry's shader colours and alphas.
+/// The entry's shader colours and alphas. The three alphas are the shader's
+/// `MindCol0.w`, `MindCol1.w` and `MindCol2.w`: the first is the quad's
+/// alpha (the overlay's less the entry's fade) and the other two are the
+/// two blend thresholds.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MindColors {
     pub colour0: [f32; 3],
     pub colour1: [f32; 3],
     pub colour2: [f32; 3],
-    /// The first colour's alpha, also the quad's own alpha before the fade.
-    pub alpha: f32,
-    /// The first blend's threshold, the second colour's alpha.
-    pub alpha2: f32,
-    /// The second blend's threshold, the third colour's alpha.
-    pub alpha3: f32,
-    /// The quad's own alpha: the overlay's, less the entry's fade.
-    pub quad_alpha: f32,
+    pub colour0_alpha: f32,
+    pub colour1_alpha: f32,
+    pub colour2_alpha: f32,
 }
 
 /// The per-entry colours: a fixed {0.1, 0.4, 0.6} and {0.8, 0.6, 0},
@@ -673,21 +671,19 @@ pub struct MindColors {
 /// the two 0.1 + 0.6·(1 − value) alphas and the overlay alpha less the
 /// entry fade (when positive).
 pub fn mind_entry_colors(style: &MindEntryStyle, overlay_alpha: f32) -> MindColors {
+    let quad_alpha = if style.fade > 0.0 {
+        overlay_alpha - style.fade
+    } else {
+        overlay_alpha
+    };
     if style.kind == 1 {
         return MindColors {
             colour0: [0.3, 0.3, 0.3],
             colour1: [0.3, 0.3, 0.3],
             colour2: [0.5, 0.5, 0.6],
-            // The first colour's alpha is the overlay's, less the entry's
-            // fade (the quad's alpha below).
-            alpha: overlay_alpha,
-            alpha2: 1.0,
-            alpha3: 0.5,
-            quad_alpha: if style.fade > 0.0 {
-                overlay_alpha - style.fade
-            } else {
-                overlay_alpha
-            },
+            colour0_alpha: quad_alpha,
+            colour1_alpha: 1.0,
+            colour2_alpha: 0.5,
         };
     }
     let third = style.third.clamp(0.0, 1.0);
@@ -695,17 +691,9 @@ pub fn mind_entry_colors(style: &MindEntryStyle, overlay_alpha: f32) -> MindColo
         colour0: [0.1, 0.4, 0.6],
         colour1: [0.8, 0.6, 0.0],
         colour2: [0.4 + (0.31 - 0.4) * third, 0.0 + (0.78 - 0.0) * third, 0.0],
-        alpha: (0.1 + 0.6 * (1.0 - f64::from(style.first))) as f32,
-        alpha2: (0.1 + 0.6 * (1.0 - f64::from(style.second))) as f32,
-        // A guess: the original never writes the third colour's alpha on this
-        // path, so its value is stack garbage. The kind-1 palette's 0.5 is
-        // the only value the original ever leaves there deliberately.
-        alpha3: 0.5,
-        quad_alpha: if style.fade > 0.0 {
-            overlay_alpha - style.fade
-        } else {
-            overlay_alpha
-        },
+        colour0_alpha: quad_alpha,
+        colour1_alpha: (0.1 + 0.6 * (1.0 - f64::from(style.first))) as f32,
+        colour2_alpha: (0.1 + 0.6 * (1.0 - f64::from(style.second))) as f32,
     }
 }
 
@@ -729,18 +717,18 @@ mod color_tests {
         assert_eq!(colors.colour0, [0.1, 0.4, 0.6]);
         assert_eq!(colors.colour1, [0.8, 0.6, 0.0]);
         assert_eq!(colors.colour2, [0.4, 0.0, 0.0]);
-        assert!((colors.alpha - 0.7).abs() < 1e-6);
-        assert!((colors.alpha2 - 0.7).abs() < 1e-6);
-        assert_eq!(colors.quad_alpha, 1.0);
+        assert_eq!(colors.colour0_alpha, 1.0);
+        assert!((colors.colour1_alpha - 0.7).abs() < 1e-6);
+        assert!((colors.colour2_alpha - 0.7).abs() < 1e-6);
     }
 
     #[test]
     fn full_values_darken_the_alphas() {
         let colors = mind_entry_colors(&style(1.0, 1.0, 1.0, 0.2), 1.0);
-        assert!((colors.alpha - 0.1).abs() < 1e-6);
-        assert!((colors.alpha2 - 0.1).abs() < 1e-6);
+        assert_eq!(colors.colour0_alpha, 0.8);
+        assert!((colors.colour1_alpha - 0.1).abs() < 1e-6);
+        assert!((colors.colour2_alpha - 0.1).abs() < 1e-6);
         assert_eq!(colors.colour2, [0.31, 0.78, 0.0]);
-        assert!((colors.quad_alpha - 0.8).abs() < 1e-6);
     }
 
     #[test]
@@ -751,7 +739,7 @@ mod color_tests {
         assert_eq!(colors.colour0, [0.3, 0.3, 0.3]);
         assert_eq!(colors.colour1, [0.3, 0.3, 0.3]);
         assert_eq!(colors.colour2, [0.5, 0.5, 0.6]);
-        assert_eq!((colors.alpha2, colors.alpha3), (1.0, 0.5));
+        assert_eq!((colors.colour1_alpha, colors.colour2_alpha), (1.0, 0.5));
     }
 }
 
@@ -1299,8 +1287,8 @@ pub const COMMAND_BIND: u32 = 0x10_010d;
 pub const MIND_MASKED: u32 = 0x1_0000;
 pub const MIND_ENRAGED: u32 = 0x8_0000;
 pub const MIND_CONFUSED: u32 = 0x4_0000;
-pub const MIND_SUSPICIOUS: u32 = 0x10_0000;
-pub const MIND_FEARFUL: u32 = 0x8_0000;
+/// The bit the suspicion effect's id carries.
+pub const SUSPICION_EFFECT_BIT: u32 = 0x10_0000;
 pub const SPIRIT_FORM: u32 = 0x100_0000;
 /// The status bit a raised body carries.
 pub const UNDEAD_RAISED: u32 = 0x10;
@@ -1540,13 +1528,12 @@ pub fn mind_duration(focus: f32, cost: f32, span: i32) -> i32 {
 /// and half again with the sustain technique; a persistent one keeps its
 /// table cost. `casting` is the id the body is already casting.
 pub fn mind_cost(id: u32, table_cost: f32, tick_ms: u32, techniques: u32, casting: u32) -> f32 {
-    let row = id & 0x002f_ffff;
-    if row & 0x3_0000 == 0 {
+    if id & 0x3_0000 == 0 {
         if techniques & REPEAT_TECHNIQUE != 0 && casting == id {
             return table_cost * 0.5;
         }
         table_cost
-    } else if row & 0x3_0000 == 0x1_0000 {
+    } else if id & 0x3_0000 == 0x1_0000 {
         let mut cost = (f32::from(tick_ms as u16) * table_cost) / 1000.0;
         if techniques & SUSTAIN_TECHNIQUE != 0 {
             cost *= 0.5;
@@ -1790,7 +1777,7 @@ pub fn mind_suspicion(caster: &mut MindState, target: &mut MindState, cost: f32)
         MindRecord::Other => return MindOutcome::refused(),
         MindRecord::Living => {}
     }
-    let masked = id | MIND_SUSPICIOUS;
+    let masked = id | SUSPICION_EFFECT_BIT;
     let owner = caster.id;
     let slot = target.effect_or_insert(masked);
     slot.state = 1;
@@ -2594,7 +2581,7 @@ mod cast_tests {
         let mut target = living(7);
         let outcome = mind_suspicion(&mut caster, &mut target, 0.19);
         assert_eq!(outcome.code, MIND_APPLIED);
-        assert!(target.effect(0x10B | MIND_SUSPICIOUS).is_some());
+        assert!(target.effect(0x10B | SUSPICION_EFFECT_BIT).is_some());
         assert_eq!(target.effect_flags, 0);
     }
 
