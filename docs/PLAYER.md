@@ -542,8 +542,8 @@ press (20 pixels at once, nothing between 181 and 190 ms). A release before
 that is a **click**: outside combat mode it turns the player toward the
 cursor's point once that is farther than 70 cm (the heading takes the
 cursor's direction); it then names or uses what was clicked when **Ctrl**
-is held or the
-press is the second of a double click (within 300 ms and 2 pixels): a lock
+is held or the press is the second of a double click (within 300 ms and 2
+pixels): a lock
 with the player's key and its first unlock's 100 or 1000 experience, a
 container, a corpse's roles' scripts, the character screen, or a person to
 talk to (`player_controls::interact`). Out of reach, the click asks the
