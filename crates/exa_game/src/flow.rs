@@ -81,6 +81,12 @@ pub const KNOCKOUT_MS: u32 = 5000;
 pub const WAKE_DELAY_MS: u32 = 2000;
 /// How long before the story's delayed wake-up the scripted motion starts.
 pub const WAKE_LEAD_MS: u32 = 3000;
+/// How long a get-up holds its pose before the final write.
+pub const GET_UP_MS: u32 = 500;
+/// The wake-up motion each background starts the story with.
+pub const START_MOTION_ANIMATION: u32 = 0x1d;
+pub const START_MOTION_VILLAGER: u32 = 0x1b;
+pub const START_MOTION_WAKING: u32 = 0x13;
 /// The health at or above which a fallen player is knocked out rather than
 /// dead, compared in double precision.
 pub const ALIVE_HEALTH: f64 = 0.01;
@@ -730,10 +736,61 @@ pub struct Unlocks {
     pub backgrounds: u32,
 }
 
+/// The settings script's hook name the game main unit registers.
+pub const SCRIPT_HOOK: &str = "GameEvent";
+/// The settings keys the game main unit registers. Their values are read by
+/// the units named next to them, not here.
+pub const SETTINGS_KEYS: [&str; 6] = [
+    "CursorSize",
+    "CursorInt",
+    "CursorCom",
+    "FirstRun",
+    "ShowGameTips",
+    "CheckPoints",
+];
+
+impl Unlocks {
+    /// Reads an unlock word from the settings bytes: a 4-byte little-endian
+    /// integer, or `None` when the entry is missing or short.
+    pub fn read_word(bytes: &[u8]) -> Option<u32> {
+        let word = bytes.get(0..4)?;
+        Some(u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+    }
+
+    /// Reads the background word, leaving the current bits when the entry is
+    /// missing.
+    pub fn read_backgrounds(&mut self, bytes: &[u8]) {
+        if let Some(word) = Self::read_word(bytes) {
+            self.backgrounds = word;
+        }
+    }
+
+    /// Reads the expert unlock's word: anything but zero unlocks it.
+    pub fn read_expert(&mut self, bytes: &[u8]) {
+        if let Some(word) = Self::read_word(bytes) {
+            self.expert = word != 0;
+        }
+    }
+
+    /// The background bits as the settings entry's 4 bytes.
+    pub fn background_bytes(&self) -> [u8; 4] {
+        self.backgrounds.to_le_bytes()
+    }
+
+    /// The expert unlock as the settings entry's 4 bytes: one when unlocked.
+    pub fn expert_bytes(&self) -> [u8; 4] {
+        u32::from(self.expert).to_le_bytes()
+    }
+}
+
 /// A task the game's boot performs. The pieces that live outside this
 /// component are named, not performed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BootTask {
+    /// Create the window's graphics context and the GUI's graphics.
+    Window,
+    /// Open the audio device.
+    Audio,
     /// Load the actor/character template library.
     ActorLibrary,
     /// Initialise the game layer's interface.
@@ -830,6 +887,20 @@ pub enum Step {
     TeardownWorld,
     /// Show the end-of-session menu.
     EndMenu(EndMenu),
+    /// Hide the end-of-session menu.
+    HideEndMenu,
+    /// Clear or set the menu's help flag (the form field the help screen
+    /// clears when it closes).
+    MenuHelp(bool),
+    /// The GUI's scale was re-quantised; both menus lay out again.
+    GuiScale(f32),
+    /// The menu's hover sound: this gain at the menu's volume.
+    Hover {
+        volume: f32,
+        gain: f32,
+    },
+    /// The menu confirms its selected row.
+    MenuConfirm,
     /// Give or take the player's controls.
     Controls(bool),
     /// Strip the player's gear (the reconstruction device).
@@ -1082,6 +1153,10 @@ pub struct Flow {
     practice_health: f32,
     /// The maximum health the practice heal uses.
     practice_max: f32,
+    /// The player's placement, kept for the story respawn.
+    last_placement: Placement,
+    /// The client size the camera shots are framed for.
+    pub viewport: Viewport,
 }
 
 impl Default for Flow {
@@ -1109,6 +1184,14 @@ impl Default for Flow {
             frames: 0,
             practice_health: 0.0,
             practice_max: 0.0,
+            last_placement: Placement {
+                rotation: NO_ROTATION,
+                position: Vec3::ZERO,
+            },
+            viewport: Viewport {
+                width: 1600,
+                height: 900,
+            },
         }
     }
 }
@@ -1159,6 +1242,7 @@ impl Flow {
         self.booted = true;
         let mut steps = vec![
             Step::Boot(BootTask::FirstRun),
+            Step::Boot(BootTask::Window),
             Step::Boot(BootTask::ActorLibrary),
             Step::Boot(BootTask::GameGui),
             Step::Boot(BootTask::ItemGui),
@@ -1169,6 +1253,7 @@ impl Flow {
             Step::Boot(BootTask::ArenaData),
             Step::Boot(BootTask::Transition),
             Step::Boot(BootTask::Scripts),
+            Step::Boot(BootTask::Audio),
             Step::Boot(BootTask::Splash),
             Step::Boot(BootTask::MainMenu),
         ];
@@ -1243,14 +1328,48 @@ impl Flow {
         background: Background,
         body_height: f32,
         viewport: Viewport,
+        now: u32,
     ) -> Vec<Step> {
         let start = story_start(background, body_height);
         self.mode = Mode::Story;
         self.hook = Hook::Story;
         self.phase = Phase::Playing;
+        self.viewport = viewport;
+        self.last_placement = start.placement;
         self.story = StoryState {
             knockout_ms: u32::MAX - KNOCKOUT_MS,
             ..Default::default()
+        };
+        // The three backgrounds start a different wake-up: the unknown one
+        // plays its animation, the villager gets up, and the knight and
+        // proctor wait for a scripted motion. All three start three seconds
+        // after the spawn.
+        let wake_start = now.wrapping_add(WAKE_LEAD_MS);
+        let motion = match background {
+            Background::Unknown => {
+                self.story.wake = Wake {
+                    animating: true,
+                    start_ms: wake_start,
+                    ..Default::default()
+                };
+                START_MOTION_ANIMATION
+            }
+            Background::Villager => {
+                self.story.wake = Wake {
+                    getting_up: true,
+                    start_ms: wake_start,
+                    ..Default::default()
+                };
+                START_MOTION_VILLAGER
+            }
+            Background::Knight | Background::Proctor => {
+                self.story.wake = Wake {
+                    delayed: true,
+                    start_ms: wake_start,
+                    ..Default::default()
+                };
+                START_MOTION_WAKING
+            }
         };
         let mut steps = vec![
             Step::SessionTask(true),
@@ -1265,6 +1384,7 @@ impl Flow {
             },
             Step::PlacePlayer(start.placement),
             Step::StoryLight(start.light),
+            Step::RequestAction(motion),
             Step::Camera(camera::frame_player(start.placement.position, viewport)),
         ];
         if let Some(companion) = start.companion {
@@ -1310,7 +1430,11 @@ impl Flow {
             rotation: PRACTICE_ROTATION,
             position: Vec3::new(PRACTICE_POINT.x, practice_height(health), PRACTICE_POINT.z),
         };
+        self.viewport = viewport;
+        self.last_placement = placement;
         vec![
+            Step::TeardownWorld,
+            Step::GameGui(false),
             Step::SessionTask(true),
             Step::LoadLevel {
                 locale: start.locale,
@@ -1340,6 +1464,8 @@ impl Flow {
         self.mode = Mode::Story;
         self.hook = Hook::Story;
         self.phase = Phase::Playing;
+        self.viewport = viewport;
+        self.last_placement = player;
         vec![
             Step::SessionTask(true),
             Step::LoadLevel {
@@ -1370,6 +1496,8 @@ impl Flow {
         self.mode = Mode::Arena;
         self.hook = Hook::None;
         self.phase = Phase::Playing;
+        self.viewport = viewport;
+        self.last_placement = player;
         let music = arena_hub::pick_hub_music(roll, self.alternative_music);
         vec![
             Step::SessionTask(true),
@@ -1511,7 +1639,7 @@ impl Flow {
                 wake.animating = false;
             }
         } else if wake.getting_up {
-            if u64::from(wake.start_ms) + u64::from(WAKE_DELAY_MS) < u64::from(now) {
+            if u64::from(wake.start_ms) + u64::from(GET_UP_MS) < u64::from(now) {
                 steps.push(Step::Wake(WakePose {
                     request: None,
                     condition: 0,
@@ -1568,11 +1696,15 @@ impl Flow {
                 self.hook = Hook::None;
                 let menu = end_menu(MENU_WON, self.mode);
                 self.end_menu = Some(menu);
-                let mut steps = vec![Step::Tip(5)];
-                if self.mode == Mode::Practice && self.practice.ladder == Ladder::Novice {
-                    self.unlocks.expert = true;
-                }
+                // The novice ladder unlocks expert and shows its tip; the
+                // expert ladder shows the other one.
+                let mut steps = Vec::new();
                 if self.practice.ladder == Ladder::Novice {
+                    steps.push(Step::Tip(5));
+                    if self.mode == Mode::Practice {
+                        self.unlocks.expert = true;
+                    }
+                } else {
                     steps.push(Step::Tip(6));
                 }
                 steps.push(Step::EndMenu(menu));
@@ -1615,13 +1747,23 @@ impl Flow {
             rotation: PRACTICE_ROTATION,
             position: Vec3::new(PRACTICE_POINT.x, practice_height(red), PRACTICE_POINT.z),
         };
+        self.last_placement = placement;
         let mut steps = vec![
+            Step::HideEndMenu,
+            Step::MenuHelp(false),
             Step::Health {
                 red_bits: step.red_bits,
                 yellow_bits: step.yellow_bits,
             },
             Step::PlacePlayer(placement),
+            Step::Camera(camera::frame_point(
+                PRACTICE_POINT,
+                false,
+                false,
+                self.viewport,
+            )),
             Step::Hook(Hook::Practice),
+            Step::SessionTask(true),
         ];
         if step.boss {
             let music = practice_boss_music(
@@ -1728,7 +1870,7 @@ impl Flow {
 
     /// The story's death screen CONTINUE: the player's record is written, the
     /// world torn down and the fifth level's portal loaded with the player at
-    /// its saved placement, 15 cm higher.
+    /// its saved placement, 15 cm higher, with the camera framed on it.
     pub fn story_respawn(&mut self, now: u32) -> Vec<Step> {
         self.mode = Mode::Story;
         self.phase = Phase::Playing;
@@ -1736,6 +1878,11 @@ impl Flow {
         self.story.wake = Wake::default();
         self.story.reconstruction = REBUILDABLE;
         let _ = now;
+        let placement = Placement {
+            rotation: self.last_placement.rotation,
+            position: self.last_placement.position + Vec3::Y * 15.0,
+        };
+        self.last_placement = placement;
         vec![
             Step::PlayerData,
             Step::TeardownWorld,
@@ -1744,7 +1891,9 @@ impl Flow {
                 spawn: 0,
                 teardown: true,
             },
+            Step::PlacePlayer(placement),
             Step::RequestAction(0x2f),
+            Step::Camera(camera::frame_player(placement.position, self.viewport)),
             Step::Hook(Hook::Story),
             Step::SessionTask(true),
         ]
@@ -1896,6 +2045,79 @@ impl Flow {
         };
         steps.push(Step::Quit);
         steps
+    }
+
+    /// The named-locale exit: the original checks the locale exists before it
+    /// transitions to its load. A missing locale does nothing.
+    pub fn leave_to_locale(&mut self, locale: &'static str, exists: bool, now: u32) -> Vec<Step> {
+        if !exists {
+            return Vec::new();
+        }
+        self.transition(Action::Locale(locale), now)
+    }
+
+    /// The class select's cancel: a scripted mode's end hook runs, then the
+    /// session leaves to the title behind the transition.
+    pub fn cancel_class_select(&mut self, now: u32) -> Vec<Step> {
+        let mut steps = Vec::new();
+        if let Mode::Other(word) = self.mode
+            && word & SCRIPT_MODE_BIT != 0
+        {
+            steps.push(Step::ScriptMode {
+                mode: word,
+                hook: ScriptHook::End,
+            });
+        }
+        steps.extend(self.transition(Action::QuitToMenu, now));
+        steps
+    }
+
+    /// The class select's cancel form's final step: back to the title.
+    pub fn cancel_to_menu(&mut self) -> Vec<Step> {
+        self.quit_to_menu()
+    }
+
+    /// The splash's hand-over: the title page is built and shown, and the
+    /// frame task is not running.
+    pub fn after_splash(&mut self) -> Vec<Step> {
+        self.mode = Mode::Menu;
+        self.phase = Phase::Menu;
+        self.menu_open = true;
+        vec![Step::ShowMenu(Page::Title), Step::SessionTask(false)]
+    }
+
+    /// The help screen closed: the menu's help flag clears.
+    pub fn help_closed(&mut self) -> Vec<Step> {
+        vec![Step::MenuHelp(false)]
+    }
+
+    /// The menu's confirm key with a hovered row: the hover sound (a random
+    /// gain of 0.4 to 0.8 at volume 0.06) and the row's confirmation. A menu
+    /// that is not showing does nothing.
+    pub fn menu_confirm(&mut self, menu_visible: bool, hovered: bool, roll: u32) -> Vec<Step> {
+        if !menu_visible {
+            return Vec::new();
+        }
+        let mut steps = Vec::new();
+        if let Some(gain) = hover_sound(hovered, roll) {
+            steps.push(Step::Hover {
+                volume: HOVER_VOLUME,
+                gain,
+            });
+        }
+        steps.push(Step::MenuConfirm);
+        steps
+    }
+
+    /// The GUI scale notification: when the quantised scale moved, both
+    /// menus lay out again.
+    pub fn gui_scale_changed(&self, previous: f32, height: i32) -> Vec<Step> {
+        let scale = gui_scale(height);
+        if scale.to_bits() == previous.to_bits() {
+            Vec::new()
+        } else {
+            vec![Step::GuiScale(scale)]
+        }
     }
 
     /// The versus lobby's availability and the alternative-music setting.
@@ -2459,16 +2681,16 @@ mod tests {
                 .contains(&Step::RequestAction(0x20))
         );
         assert!(!flow.story.wake.delayed);
-        // The get-up holds its pose until its start time and then writes the
-        // other pose.
+        // The get-up holds its pose for half a second, then writes the other
+        // pose and stops.
         flow.story.wake.getting_up = true;
         flow.story.wake.start_ms = 10_000;
-        let steps = flow.story_tick(11_000, Some(alive));
+        let steps = flow.story_tick(10_200, Some(alive));
         assert!(steps.iter().any(|step| matches!(
             step,
             Step::Wake(WakePose { turn, flags: 0x600, .. }) if *turn == 0.49
         )));
-        let steps = flow.story_tick(13_000, Some(alive));
+        let steps = flow.story_tick(10_501, Some(alive));
         assert!(steps.iter().any(|step| matches!(
             step,
             Step::Wake(WakePose { turn, flags: 0x20, .. }) if *turn == 0.4
@@ -2794,7 +3016,10 @@ mod tests {
             width: 800,
             height: 600,
         };
-        let steps = flow.start_story(Background::Unknown, 1.8, view);
+        let steps = flow.start_story(Background::Unknown, 1.8, view, 500);
+        assert!(steps.contains(&Step::RequestAction(0x1d)));
+        assert!(flow.story.wake.animating);
+        assert_eq!(flow.story.wake.start_ms, 3500);
         assert_eq!(flow.mode, Mode::Story);
         assert_eq!(flow.phase, Phase::Playing);
         assert!(steps.contains(&Step::LoadLevel {
@@ -2913,6 +3138,103 @@ mod tests {
     }
 
     #[test]
+    fn the_unlock_words_round_trip() {
+        let mut unlocks = Unlocks::default();
+        unlocks.read_backgrounds(&[0x05, 0, 0, 0]);
+        assert_eq!(unlocks.backgrounds, 5);
+        unlocks.read_expert(&[1, 0, 0, 0]);
+        assert!(unlocks.expert);
+        assert_eq!(unlocks.background_bytes(), [5, 0, 0, 0]);
+        assert_eq!(unlocks.expert_bytes(), [1, 0, 0, 0]);
+        // A missing or short entry leaves the word alone.
+        unlocks.read_backgrounds(&[7, 0]);
+        assert_eq!(unlocks.backgrounds, 5);
+        unlocks.read_expert(&[0, 0, 0, 0]);
+        assert!(!unlocks.expert);
+        assert_eq!(Unlocks::read_word(&[1, 2, 3, 4]), Some(0x0403_0201));
+        assert_eq!(Unlocks::read_word(&[]), None);
+        assert_eq!(SCRIPT_HOOK, "GameEvent");
+        assert_eq!(
+            SETTINGS_KEYS,
+            [
+                "CursorSize",
+                "CursorInt",
+                "CursorCom",
+                "FirstRun",
+                "ShowGameTips",
+                "CheckPoints"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_named_locale_requires_the_level() {
+        let mut flow = Flow {
+            mode: Mode::Story,
+            phase: Phase::Playing,
+            ..Default::default()
+        };
+        assert!(flow.leave_to_locale("exanima04", false, 100).is_empty());
+        assert_eq!(flow.phase, Phase::Playing);
+        let steps = flow.leave_to_locale("exanima04", true, 100);
+        assert!(steps.contains(&Step::Transition));
+        assert_eq!(flow.phase, Phase::Transition);
+        let steps = flow.transition_due(200).unwrap();
+        assert!(steps.contains(&Step::LoadLevel {
+            locale: "exanima04",
+            spawn: 0,
+            teardown: true
+        }));
+    }
+
+    #[test]
+    fn the_class_cancel_and_the_splash_hand_over() {
+        let mut flow = Flow {
+            mode: Mode::Other(VERSUS_MODE),
+            phase: Phase::Playing,
+            ..Default::default()
+        };
+        let steps = flow.cancel_class_select(500);
+        assert!(steps.contains(&Step::ScriptMode {
+            mode: VERSUS_MODE,
+            hook: ScriptHook::End
+        }));
+        assert!(steps.contains(&Step::Transition));
+        let _ = flow.transition_due(600);
+        assert_eq!(flow.mode, Mode::Menu);
+        let mut flow = Flow::default();
+        let steps = flow.after_splash();
+        assert!(steps.contains(&Step::ShowMenu(Page::Title)));
+        assert_eq!(flow.phase, Phase::Menu);
+        // The scale notification only fires when it moved.
+        assert!(flow.gui_scale_changed(gui_scale(1080), 1080).is_empty());
+        assert_eq!(flow.gui_scale_changed(0.0, 1080), vec![Step::GuiScale(0.5)]);
+        // The story respawn adds the 15 cm and frames the saved placement.
+        let mut flow = Flow {
+            mode: Mode::Story,
+            phase: Phase::Ended,
+            viewport: Viewport {
+                width: 1600,
+                height: 1140,
+            },
+            ..Default::default()
+        };
+        flow.last_placement = Placement {
+            rotation: NO_ROTATION,
+            position: Vec3::new(1.0, 2.0, 3.0),
+        };
+        let steps = flow.story_respawn(0);
+        assert!(steps.contains(&Step::PlacePlayer(Placement {
+            rotation: NO_ROTATION,
+            position: Vec3::new(1.0, 17.0, 3.0)
+        })));
+        assert!(steps.contains(&Step::Camera(camera::frame_player(
+            Vec3::new(1.0, 17.0, 3.0),
+            flow.viewport
+        ))));
+    }
+
+    #[test]
     fn the_gui_scale_save_managers_and_hover() {
         assert_eq!(gui_scale(1080), 0.5);
         assert_eq!(gui_scale(453), 0.1875);
@@ -2925,5 +3247,19 @@ mod tests {
         assert_eq!(hover_sound(true, 0x8000_0000), Some(0.6));
         assert_eq!(HOVER_VOLUME, 0.06);
         assert_eq!(Flow::default().practice_health(), 0.0);
+        let mut flow = Flow::default();
+        assert_eq!(flow.help_closed(), vec![Step::MenuHelp(false)]);
+        assert!(flow.menu_confirm(false, true, 0).is_empty());
+        assert_eq!(
+            flow.menu_confirm(true, true, 0x8000_0000),
+            vec![
+                Step::Hover {
+                    volume: 0.06,
+                    gain: 0.6
+                },
+                Step::MenuConfirm
+            ]
+        );
+        assert_eq!(flow.menu_confirm(true, false, 0), vec![Step::MenuConfirm]);
     }
 }
