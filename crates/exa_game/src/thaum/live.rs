@@ -20,10 +20,9 @@
 //!   each. Wisps follow their body parts.
 //! - **Each frame**: the arcs' and wisps' ribbons and the barricade's slab
 //!   are drawn with [`exa_render::glow::GlowMaterial`], a stand-in for the
-//!   original's effect programs, which are not ported; an arc that carries a
-//!   light (the Shock's hand arcs) also gets a flickering blue point light
-//!   at its middle, the stand-in for the original's voxel and GI lights. An
-//!   effect that ends leaves the scene.
+//!   original's effect programs, which are not ported (the arcs' ribbon
+//!   carries its texture coordinates). An effect that ends leaves the
+//!   scene.
 //! - **Debug** ([`ThaumDebug`], `--debug-arcs`, `--debug-barricade`,
 //!   `--debug-wisps`): the Shock power's hand arcs on the player's right
 //!   hand (respawned while they last), a barricade raised 2 m in front of
@@ -46,7 +45,7 @@ use exa_physics::body::{BodySystems, BodyTicks, Ragdoll, step_length};
 use exa_render::glow::GlowMaterial;
 use exa_world::nav::NavGrid;
 
-use super::arcs::{ARC_COLOUR, ArcEmitter, ArcLight, ArcLimb, HAND_ARCS_OFFSET, hand_arcs};
+use super::arcs::{ARC_COLOUR, ArcEmitter, ArcLimb, HAND_ARCS_OFFSET, hand_arcs};
 use super::barricade::{
     Barricade, WAKE_TICKS, WallBody, WallBodyKind, WallFrame, barricade_mesh, power_ends,
     slide_mesh,
@@ -187,17 +186,6 @@ pub struct NavStamped(pub Vec<(i32, i32)>);
 /// The penalty a barricade's stamp writes into each cell it closes.
 pub const STAMP_PENALTY: u8 = 255;
 
-/// The point light a light-carrying arc owns (a stand-in for the original's
-/// voxel light, which feeds the GI volume).
-#[derive(Component)]
-pub struct ArcGlow(pub Entity);
-
-/// The arcs' light colour: a blue-white glow (a guess; the level devices'
-/// flicker is blue and the hand arcs' colour is not in the pack).
-pub const ARC_LIGHT_COLOUR: [f32; 3] = [0.55, 0.7, 1.0];
-/// The arcs' light range (cm), as the level devices' 800.
-pub const ARC_LIGHT_RADIUS: f32 = 8.0;
-
 /// The world place (cm) of a point given in a part's space (cm).
 fn part_point(body: &Ragdoll, part: usize, local_cm: Vec3) -> Option<Vec3> {
     let p = body.parts.get(part)?;
@@ -254,11 +242,10 @@ fn tick_arcs(
                 };
                 let hit = live.arcs.strike_limb(
                     &limb,
-                    |origin, dir, len| {
-                        let end = origin + dir * len;
+                    |probe| {
                         spheres
                             .iter()
-                            .any(|&(c, r)| segment_meets(origin, end, c, r))
+                            .any(|&(c, r)| segment_meets(probe.start, probe.end, c, r))
                     },
                     &mut draws.0,
                 );
@@ -634,7 +621,7 @@ fn camera_axis(cameras: &Query<&GlobalTransform, exa_render::supersample::SceneC
 #[allow(clippy::too_many_arguments)]
 fn draw_arcs(
     mut commands: Commands,
-    mut arcs: Query<(Entity, &mut LiveArcs, Option<&EffectMesh>, Option<&ArcGlow>)>,
+    mut arcs: Query<(Entity, &mut LiveArcs, Option<&EffectMesh>)>,
     cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
     time: Res<Time<Fixed>>,
     mut draws: ResMut<EffectDraws>,
@@ -643,7 +630,7 @@ fn draw_arcs(
 ) {
     let eye = camera_axis(&cameras);
     let alpha = time.overstep_fraction();
-    for (entity, mut live, drawn, glow) in &mut arcs {
+    for (entity, mut live, drawn) in &mut arcs {
         let frame = live.arcs.frame(alpha, eye, 0.0, |p| p, &mut draws.0);
         if frame.removed && !live.keep {
             commands.entity(entity).despawn();
@@ -669,41 +656,6 @@ fn draw_arcs(
             &mut meshes,
             &mut materials,
         );
-        // The light the arcs carry: a point light at the arcs' middle, its
-        // intensity the frame's value. The original's voxel and GI lights
-        // are not ported; this is their stand-in.
-        if matches!(live.arcs.light_kind, ArcLight::Point | ArcLight::Voxel) {
-            let at = live.arcs.centre / CM;
-            let light = PointLight {
-                color: Color::srgb(
-                    ARC_LIGHT_COLOUR[0],
-                    ARC_LIGHT_COLOUR[1],
-                    ARC_LIGHT_COLOUR[2],
-                ),
-                intensity: frame.light.max(0.0) * exa_world::LUMENS_PER_INTENSITY,
-                range: ARC_LIGHT_RADIUS,
-                shadow_maps_enabled: false,
-                ..PointLight::default()
-            };
-            match glow {
-                Some(ArcGlow(child)) => {
-                    commands
-                        .entity(*child)
-                        .insert((Transform::from_translation(at), light));
-                }
-                None => {
-                    let child = commands
-                        .spawn((
-                            Name::new("_ArcLight"),
-                            Transform::from_translation(at),
-                            light,
-                        ))
-                        .id();
-                    commands.entity(entity).insert(ArcGlow(child));
-                    commands.entity(entity).add_child(child);
-                }
-            }
-        }
     }
 }
 

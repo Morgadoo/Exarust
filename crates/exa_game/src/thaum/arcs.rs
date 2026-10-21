@@ -32,15 +32,15 @@
 //!   and is held within half a segment of its neighbours' middle (a whole
 //!   one behind the last). The main tendril's end sits on the target.
 //! - **The level** ([`ArcEmitter::clip_to_level`]): a segment that meets
-//!   the level ends the tendril after its own end point; the later points
-//!   and the branches from the point on are lost.
-//! - **Characters** ([`ArcEmitter::strike_limb`]): the character's short
-//!   probe ([`PROBE_LENGTH`], 20 cm) runs from each segment's start over
-//!   the points before the last two. The first segment that meets a limb of
-//!   a character other than the caster shocks that character with the
-//!   emitter's strength along the line from the arcs' mean point to its
-//!   chest (once per character with flag 0x10), and the tendril sends a
-//!   branch from the point before toward the limb.
+//!   the level ends the tendril at the hit, losing its branches past the
+//!   cut.
+//! - **Characters** ([`ArcEmitter::strike_limb`]): each segment but the
+//!   last is given to the character's query with a 20 cm value
+//!   ([`ArcProbe`]). The first segment that meets a limb of a character
+//!   other than the caster shocks that character with the emitter's
+//!   strength along the line from the arcs' mean point to its chest (once
+//!   per character with flag 0x10), and the tendril sends a branch from the
+//!   point before toward the limb.
 //! - **Each frame** ([`ArcEmitter::frame`]): an ending emitter with no
 //!   points left is removed. The fill is the points over segments·count,
 //!   times 2; the light flickers by (r − ½)/2 within 0.75–1.2 and shines
@@ -50,14 +50,15 @@
 //!   ([`ArcRibbon`]) runs along each tendril through Hermite midpoints,
 //!   half as wide as a fifth of a segment at its root and narrowing by
 //!   life, its first and last pair transparent; its points feed up to 16
-//!   light points that merge within 40 cm. [`ArcEmitter::uniforms`] gives
-//!   the electricity program's scroll and two colours.
+//!   light points that merge within 40 cm.
 //! - **The world** ([`attach`], [`ArcEmitter::add_to_world`],
 //!   [`ArcEmitter::remove_from_world`], [`ArcEmitter::destroy`]): the node
-//!   gains its child bit and its local frame, the emitter's mean starts at
-//!   the node, a named hum starts at volume 1 and pitch 1, and removal
-//!   stops the hum and frees the light points. [`node_bounds`] refreshes a
-//!   local-frame node's box.
+//!   gains its child bit and the emitter as its child; entering the world
+//!   starts the mean at the node's box centre, gives the node the
+//!   local-frame bit when its parent has it, and starts a named hum looping
+//!   at the node; leaving frees the light and stops the hum.
+//!   [`follow_parent`] is the node's update under a local-frame parent: the
+//!   parent's matrix with the node's own offset carried through it.
 //!
 //! Evidence: the emitter's constructor, setup, tick, level and character
 //! tests, branch and respawn helpers, bounds and frame, read from
@@ -238,6 +239,8 @@ pub struct ArcEmitter {
     pub respawns: bool,
     pub respawn_life: i32,
     pub flags: u32,
+    /// The emitter is in the world.
+    pub in_world: bool,
     /// Told to end: removed once its points are gone.
     pub ending: bool,
     /// Points in use after the last tick.
@@ -306,6 +309,7 @@ impl ArcEmitter {
             respawns: false,
             respawn_life: 10,
             flags: 0,
+            in_world: false,
             ending: false,
             total: 0,
             light: 0.0,
@@ -810,55 +814,49 @@ impl ArcEmitter {
         p + self.anchor.unwrap_or(Vec3::ZERO)
     }
 
-    /// The level's test: `ray(start, unit direction, length)` says whether
-    /// the level meets the segment. A tendril ends after the point at the end
-    /// of the first segment that meets it: the earlier points and that point
-    /// stay, and the branches from that point on are killed. The original
-    /// casts the whole segment, not a shortened probe.
+    /// The level's test: `ray(start, unit direction, length)` returns how
+    /// far along the level was met (the original's query writes the hit's
+    /// distance back into the ray). A tendril ends at the hit on the first
+    /// segment that meets the level, losing the branches from that segment's
+    /// end point on.
     pub fn clip_to_level(&mut self, mut ray: impl FnMut(Vec3, Vec3, f32) -> Option<f32>) {
         for t in 0..self.tendrils.len() {
             if self.tendrils[t].count < 2 {
                 continue;
             }
             let mut start = self.world(self.tendrils[t].points[0]);
-            let mut k = 0usize;
-            while (k as i32) < self.tendrils[t].count - 1 {
-                k += 1;
-                let end = self.world(self.tendrils[t].points[k]);
+            let mut i = 0usize;
+            while (i as i32) < self.tendrils[t].count - 1 {
+                let end = self.world(self.tendrils[t].points[i + 1]);
                 let d = end - start;
                 let len = length(d);
-                if len == 0.0 {
-                    start = end;
-                    continue;
-                }
                 let dir = d * (1.0 / len);
-                if ray(start, dir, len).is_some() {
-                    let last = (self.tendrils[t].count - 2).max(0) as usize;
-                    let mut at = k;
-                    while at <= last {
-                        self.kill_branch(t, at);
-                        at += 1;
+                if let Some(hit) = ray(start, dir, len) {
+                    let last = self.tendrils[t].count - 1;
+                    for k in i + 1..=last.max(0) as usize {
+                        self.kill_branch(t, k);
                     }
-                    self.tendrils[t].count = k as i32 + 1;
+                    let at = start + dir * hit;
+                    self.tendrils[t].points[i + 1] = at - self.anchor.unwrap_or(Vec3::ZERO);
+                    self.tendrils[t].count = i as i32 + 2;
                     break;
                 }
                 start = end;
+                i += 1;
             }
         }
     }
 
-    /// One limb of a character against the arcs: `meets(origin, unit
-    /// direction, length)` runs the character's own short body probe along a
-    /// segment. The original probes each segment from its start, 20 cm
-    /// ahead ([`PROBE_LENGTH`]), for the points before the last two (the
-    /// first point's segment up to two short of the end). Returns the shock
-    /// dealt, when the first segment that meets the limb is the character's
-    /// first this tick (and, with [`SHOCK_ONCE`], ever); the tendril is then
-    /// clipped to a branch toward the limb either way.
+    /// One limb of a character against the arcs: `meets` runs the
+    /// character's own query on each segment ([`ArcProbe`]), from the first
+    /// point's segment up to two short of the end. Returns the shock dealt,
+    /// when the first segment that meets the limb is the character's first
+    /// this tick (and, with [`SHOCK_ONCE`], ever); the tendril then sends a
+    /// branch from the point before toward the limb either way.
     pub fn strike_limb(
         &mut self,
         limb: &ArcLimb,
-        mut meets: impl FnMut(Vec3, Vec3, f32) -> bool,
+        mut meets: impl FnMut(&ArcProbe) -> bool,
         draws: &mut impl Draws,
     ) -> Option<ArcShock> {
         if limb.caster {
@@ -880,12 +878,14 @@ impl ArcEmitter {
                 let end = self.world(self.tendrils[t].points[k as usize]);
                 let d = end - start;
                 let len = length(d);
-                let dir = if len == 0.0 {
-                    Vec3::ZERO
-                } else {
-                    d * (1.0 / len)
+                let probe = ArcProbe {
+                    start,
+                    end,
+                    direction: d * (1.0 / len),
+                    length: len,
+                    reach: PROBE_REACH,
                 };
-                if meets(start, dir, PROBE_LENGTH) {
+                if meets(&probe) {
                     let mut shock = None;
                     if fresh {
                         if self.flags & SHOCK_ONCE != 0 {
@@ -1110,119 +1110,73 @@ impl ArcEmitter {
     }
 }
 
-/// The length of the character probe the body test casts from each segment
-/// start (20 cm). The original's character query takes this short ray, not
-/// the whole segment.
-pub const PROBE_LENGTH: f32 = 20.0;
+/// The value the character query receives with each segment (20 cm),
+/// between the segment's start and its end; its role in that query (a
+/// radius or a reach) is not traced.
+pub const PROBE_REACH: f32 = 20.0;
 
-/// The ribbon's edge colour, the shader's second colour. The pack carries
-/// no shader source for the electricity program, so the edge colour is a
-/// guess: opaque white, which leaves the electric colour's alpha ramp.
-pub const EDGE_COLOUR: [u8; 4] = [0xff; 4];
-
-/// The electricity program's uniforms, as the draw binds them.
+/// One segment as the character query receives it: its start and end, its
+/// unit direction and length, and [`PROBE_REACH`].
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ElecUniforms {
-    /// The texture scroll, interpolated between the last two ticks.
-    pub tex_ofs: f32,
-    /// The electric colour: 25, 0, 255 with the vertex alpha.
-    pub elec_colour: [f32; 4],
-    /// The edge colour (see [`EDGE_COLOUR`]).
-    pub edge_colour: [f32; 4],
+pub struct ArcProbe {
+    pub start: Vec3,
+    pub end: Vec3,
+    pub direction: Vec3,
+    pub length: f32,
+    pub reach: f32,
 }
 
-impl ArcEmitter {
-    /// The electricity program's uniforms for a frame `alpha` of the way to
-    /// the next tick.
-    pub fn uniforms(&self, alpha: f32) -> ElecUniforms {
-        let scroll = self.scroll[1] * alpha + (1.0 - alpha) * self.scroll[0];
-        let [r, g, b] = ARC_COLOUR.map(|c| f32::from(c) / 255.0);
-        ElecUniforms {
-            tex_ofs: scroll,
-            elec_colour: [r, g, b, 1.0],
-            edge_colour: EDGE_COLOUR.map(|c| f32::from(c) / 255.0),
-        }
-    }
-}
-
-/// The node an emitter rides: its render word, whether it keeps a local
-/// frame and whether the emitter is its child.
+/// The node an emitter rides: its flag word, whether its parent keeps a
+/// local frame, its render word and whether the emitter is its child.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ArcNode {
+    pub flags: u32,
+    pub parent_local_frame: bool,
     pub render: u32,
-    pub local_frame: bool,
     pub child: bool,
 }
 
-/// The node's render bit saying it has a child.
+/// The node flag saying it has a child.
 pub const HAS_CHILD: u32 = 0x1_0000;
-/// The node's render bit saying it keeps its own local frame.
+/// The render bit of a node that keeps its own local frame.
 pub const LOCAL_FRAME: u32 = 0x10;
 
-/// Attaches an emitter to its node: the node's render word gains the
-/// child bit and its child pointer is the emitter. The emitter's world flag
-/// is set as well.
+/// Attaches an emitter to its node: the node's flag word gains the child
+/// bit and its child is the emitter.
 pub fn attach(node: &mut ArcNode) {
-    node.render |= HAS_CHILD;
+    node.flags |= HAS_CHILD;
     node.child = true;
 }
 
-/// A node frame: its axes and origin, in cm.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct NodeFrame {
-    pub at: Vec3,
-    pub x: Vec3,
-    pub y: Vec3,
-    pub z: Vec3,
-}
+/// A node's 4×4 matrix as the scene stores it: three axis rows and the
+/// translation row, four floats each.
+pub type NodeMatrix = [[f32; 4]; 4];
 
-/// A node's axis-aligned box in the world.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct NodeBox {
-    pub lo: Vec3,
-    pub hi: Vec3,
-    pub centre: Vec3,
-    pub radius: f32,
-}
-
-/// The node's bounds helper: only a node with a local frame is recomputed,
-/// from its frame and its half extents. Returns the world box and its
-/// bounding radius.
-pub fn node_bounds(local_frame: bool, frame: NodeFrame, half: Vec3) -> Option<NodeBox> {
-    if !local_frame {
+/// The node's update under its parent: when the parent keeps a local frame
+/// the node takes the parent's matrix, its translation row replaced by the
+/// node's own offset `local` carried through it, `(x·m0 + y·m1) + (z·m2 +
+/// m3)` (the row's fourth float kept). `None` otherwise.
+pub fn follow_parent(
+    parent_local_frame: bool,
+    parent: &NodeMatrix,
+    local: Vec3,
+) -> Option<NodeMatrix> {
+    if !parent_local_frame {
         return None;
     }
-    let mut lo = Vec3::splat(f32::INFINITY);
-    let mut hi = Vec3::splat(f32::NEG_INFINITY);
-    for sx in [-1.0f32, 1.0] {
-        for sy in [-1.0f32, 1.0] {
-            for sz in [-1.0f32, 1.0] {
-                let p = frame.at
-                    + frame.x * (sx * half.x)
-                    + frame.y * (sy * half.y)
-                    + frame.z * (sz * half.z);
-                lo = lo.min(p);
-                hi = hi.max(p);
-            }
-        }
+    let mut out = *parent;
+    for c in 0..3 {
+        out[3][c] = (local.x * parent[0][c] + local.y * parent[1][c])
+            + (local.z * parent[2][c] + parent[3][c]);
     }
-    let centre = (lo + hi) * 0.5;
-    let extent = (hi - lo) * 0.5;
-    let radius = length(extent);
-    Some(NodeBox {
-        lo,
-        hi,
-        centre,
-        radius,
-    })
+    Some(out)
 }
 
-/// The hum an emitter starts when it enters the world.
+/// The hum an emitter starts when it enters the world: a looping voice at
+/// the node's translation (started with the engine's arguments 0 and 1).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HumStart {
     pub at: Vec3,
-    pub volume: f32,
-    pub pitch: f32,
 }
 
 /// What adding an emitter to the world reports.
@@ -1241,25 +1195,27 @@ pub struct ArcStart {
 pub struct ArcRemoval {
     /// A hum was stopped.
     pub sound: bool,
-    /// Light points dropped.
+    /// Light points dropped with the light.
     pub lights: usize,
 }
 
 impl ArcEmitter {
-    /// Enters the world on `node`: the world flag is set, the emitters' mean
-    /// is the node's origin, a node with a local frame gains the frame bit,
-    /// and a named hum starts at the node, volume 1 and pitch 1.
-    pub fn add_to_world(&mut self, node: &mut ArcNode, node_at: Vec3) -> ArcStart {
-        self.flags |= 0x1_0000;
-        if node.local_frame {
+    /// Enters the world on `node`: the emitter is marked in the world, its
+    /// mean starts at the node's box centre, the node gains the local-frame
+    /// render bit when its parent has one, and a named hum starts at the
+    /// node's translation.
+    pub fn add_to_world(
+        &mut self,
+        node: &mut ArcNode,
+        centre: Vec3,
+        translation: Vec3,
+    ) -> ArcStart {
+        self.in_world = true;
+        self.mean = centre;
+        if node.parent_local_frame {
             node.render |= LOCAL_FRAME;
         }
-        self.mean = node_at;
-        let hum = self.sound.map(|_| HumStart {
-            at: node_at,
-            volume: 1.0,
-            pitch: 1.0,
-        });
+        let hum = self.sound.map(|_| HumStart { at: translation });
         ArcStart {
             render: node.render,
             mean: self.mean,
@@ -1267,18 +1223,21 @@ impl ArcEmitter {
         }
     }
 
-    /// Leaves the world: the hum stops and the light points are freed.
+    /// Leaves the world: the light (and its points) is freed and the hum
+    /// stops.
     pub fn remove_from_world(&mut self) -> ArcRemoval {
         let lights = self.lights.len();
         self.lights.clear();
+        self.in_world = false;
         ArcRemoval {
             sound: self.sound.is_some(),
             lights,
         }
     }
 
-    /// Frees the emitter: its records, its light points and its hum. The
-    /// strings the original releases are Exarust's own storage.
+    /// Frees the emitter: it leaves the world, its sound is released and its
+    /// shocked list and records are emptied. The strings the original
+    /// releases are Exarust's own storage.
     pub fn destroy(&mut self) -> ArcRemoval {
         let removal = self.remove_from_world();
         self.tendrils.clear();
@@ -1620,10 +1579,9 @@ mod tests {
             let end = start + dir * len;
             (start.x < 6.0 && 6.0 <= end.x).then_some(6.0 - start.x)
         });
-        // The point at the end of the segment that met the level stays; the
-        // tendril loses the points after it.
+        // The tendril ends at the hit on the segment that met the level.
         assert_eq!(arc.tendrils[0].count, 3);
-        assert_eq!(arc.tendrils[0].points[2], Vec3::new(8.0, 0.0, 0.0));
+        assert_eq!(arc.tendrils[0].points[2], Vec3::new(6.0, 0.0, 0.0));
     }
 
     #[test]
@@ -1647,9 +1605,11 @@ mod tests {
         let shock = arc
             .strike_limb(
                 &limb,
-                |origin, dir, len| {
-                    assert_eq!(len, PROBE_LENGTH);
-                    dir.x > 0.0 && origin.x < 4.0
+                |probe| {
+                    assert_eq!(probe.reach, PROBE_REACH);
+                    assert_eq!(probe.length, 4.0);
+                    assert_eq!(probe.direction, Vec3::X);
+                    probe.end.x >= 4.0
                 },
                 &mut draws,
             )
@@ -1662,7 +1622,7 @@ mod tests {
         assert_eq!(arc.tendrils[b].count, 2);
         assert_eq!(arc.tendrils[b].points[1], Vec3::new(4.0, 4.0, 0.0));
         assert!(
-            arc.strike_limb(&limb, |_, _, _| true, &mut draws).is_none(),
+            arc.strike_limb(&limb, |_| true, &mut draws).is_none(),
             "once only"
         );
         let caster = ArcLimb {
@@ -1670,10 +1630,7 @@ mod tests {
             character: 8,
             ..limb
         };
-        assert!(
-            arc.strike_limb(&caster, |_, _, _| true, &mut draws)
-                .is_none()
-        );
+        assert!(arc.strike_limb(&caster, |_| true, &mut draws).is_none());
     }
 
     #[test]
@@ -1696,41 +1653,31 @@ mod tests {
             chest: Vec3::new(6.0, 100.0, 5.0),
         };
         let shock = arc
-            .strike_limb(&limb, |_, _, _| true, &mut draws)
+            .strike_limb(&limb, |_| true, &mut draws)
             .expect("a shock");
         assert!((shock.direction - Vec3::Y).length() < 1e-3);
     }
 
     #[test]
-    fn a_node_without_a_local_frame_has_no_bounds() {
-        let frame = NodeFrame {
-            at: Vec3::ZERO,
-            x: Vec3::X,
-            y: Vec3::Y,
-            z: Vec3::Z,
-        };
-        assert_eq!(node_bounds(false, frame, Vec3::ONE), None);
-        let b = node_bounds(true, frame, Vec3::new(30.0, 100.0, 5.0)).unwrap();
-        assert_eq!(b.lo, Vec3::new(-30.0, -100.0, -5.0));
-        assert_eq!(b.hi, Vec3::new(30.0, 100.0, 5.0));
-        assert_eq!(b.centre, Vec3::ZERO);
-        assert!((b.radius - length(Vec3::new(30.0, 100.0, 5.0))).abs() < 1e-4);
-        let turned = NodeFrame {
-            at: Vec3::new(1.0, 2.0, 3.0),
-            x: Vec3::Y,
-            y: Vec3::X,
-            z: Vec3::Z,
-        };
-        let b = node_bounds(true, turned, Vec3::new(2.0, 3.0, 4.0)).unwrap();
-        assert_eq!(b.centre, Vec3::new(1.0, 2.0, 3.0));
-        assert_eq!(b.hi - b.lo, Vec3::new(6.0, 4.0, 8.0));
+    fn a_node_follows_its_local_frame_parent() {
+        let parent: NodeMatrix = [
+            [0.0, 1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [10.0, 20.0, 30.0, 1.0],
+        ];
+        assert_eq!(follow_parent(false, &parent, Vec3::X), None);
+        let m = follow_parent(true, &parent, Vec3::new(1.0, 2.0, 3.0)).unwrap();
+        assert_eq!(&m[..3], &parent[..3]);
+        assert_eq!(m[3], [8.0, 21.0, 33.0, 1.0]);
     }
 
     #[test]
     fn an_emitter_enters_and_leaves_the_world() {
         let mut node = ArcNode {
+            flags: 0x4,
+            parent_local_frame: true,
             render: 0x20,
-            local_frame: true,
             child: false,
         };
         let mut arc = ArcEmitter::allocate(1, 4, 1.0);
@@ -1741,20 +1688,23 @@ mod tests {
             count: 1,
         });
         attach(&mut node);
-        assert_eq!(node.render, 0x1_0020);
+        assert_eq!((node.flags, node.render), (0x1_0004, 0x20));
         assert!(node.child);
-        let start = arc.add_to_world(&mut node, Vec3::new(5.0, 6.0, 7.0));
-        assert_eq!(start.render, 0x1_0020 | LOCAL_FRAME);
+        let start = arc.add_to_world(
+            &mut node,
+            Vec3::new(5.0, 6.0, 7.0),
+            Vec3::new(5.0, 0.0, 7.0),
+        );
+        assert_eq!(start.render, 0x20 | LOCAL_FRAME);
         assert_eq!(start.mean, Vec3::new(5.0, 6.0, 7.0));
         assert_eq!(
             start.hum,
             Some(HumStart {
-                at: Vec3::new(5.0, 6.0, 7.0),
-                volume: 1.0,
-                pitch: 1.0
+                at: Vec3::new(5.0, 0.0, 7.0)
             })
         );
-        assert_eq!(arc.flags & 0x1_0000, 0x1_0000);
+        assert!(arc.in_world);
+        assert_eq!(arc.flags, 0, "the record flags are left alone");
         let removal = arc.remove_from_world();
         assert_eq!(
             removal,
@@ -1763,23 +1713,14 @@ mod tests {
                 lights: 1
             }
         );
-        assert!(arc.lights.is_empty());
+        assert!(arc.lights.is_empty() && !arc.in_world);
         let teardown = arc.destroy();
         assert!(teardown.sound);
         assert!(arc.tendrils.is_empty());
         assert_eq!(arc.total, 0);
-    }
-
-    #[test]
-    fn the_electric_uniforms_follow_the_scroll() {
-        let mut arc = ArcEmitter::allocate(1, 4, 1.0);
-        arc.scroll = [0.1, 0.3];
-        let u = arc.uniforms(0.5);
-        assert!((u.tex_ofs - 0.2).abs() < 1e-6);
-        assert!((u.elec_colour[0] - 25.0 / 255.0).abs() < 1e-6);
-        assert_eq!(u.elec_colour[1], 0.0);
-        assert_eq!(u.elec_colour[2], 1.0);
-        assert_eq!(u.edge_colour, [1.0; 4]);
+        let mut plain = ArcNode::default();
+        ArcEmitter::allocate(1, 4, 1.0).add_to_world(&mut plain, Vec3::ZERO, Vec3::ZERO);
+        assert_eq!(plain.render, 0, "no local-frame parent: no bit");
     }
 
     #[test]
