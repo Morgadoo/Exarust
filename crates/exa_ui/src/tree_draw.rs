@@ -121,8 +121,8 @@ pub enum Program {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Texture {
     None,
-    /// A domain's icon sheet (`thmmndico1`…).
-    Domain,
+    /// A domain's icon sheet (`thmmndico1`…), by the domain's number.
+    Domain(u8),
     Frames,
     Mods,
     Flamelets,
@@ -997,7 +997,7 @@ fn icons(out: &mut TreeDraw, view: &TreeView) {
         } else {
             view.icon_size
         };
-        let mut batch = Batch::new(Program::Icon, Texture::Domain);
+        let mut batch = Batch::new(Program::Icon, Texture::Domain(view.domain));
         batch.uniforms.par1 = icon_fade(node.flags);
         if icon(
             &mut batch,
@@ -1306,7 +1306,7 @@ fn bar_icons(out: &mut TreeDraw, view: &TreeView, pose: &BarPose) {
                 } else {
                     pose.a12
                 };
-                let mut batch = Batch::new(Program::Icon, Texture::Domain);
+                let mut batch = Batch::new(Program::Icon, Texture::Domain(domain));
                 batch.uniforms.par1 = [1.0, 1.0, 0.5, 0.0];
                 if icon(
                     &mut batch,
@@ -1560,7 +1560,7 @@ pub fn tooltip_draw(view: &TreeView, name: &str, lines: &[String]) -> TreeDraw {
 /// An approximation of the original's drag image.
 pub fn preview_draw(power: u32, flags: u32, x: f32, y: f32, size: f32, domain: u8) -> TreeDraw {
     let mut out = TreeDraw::default();
-    let mut batch = Batch::new(Program::Icon, Texture::Domain);
+    let mut batch = Batch::new(Program::Icon, Texture::Domain(domain));
     batch.uniforms.par1 = [1.0, 1.0, 0.5, 0.0];
     let colour = if flags & mark::PICKED != 0 {
         [1.0, 1.0, 1.0, 1.0]
@@ -2376,7 +2376,7 @@ mod tests {
             TreeVertex::new(5.0, 6.0, 0.5, 0.5),
         ];
         draw.batches.push(ring);
-        let mut icon = Batch::new(Program::Icon, Texture::Domain);
+        let mut icon = Batch::new(Program::Icon, Texture::Domain(1));
         icon.vertices = vec![TreeVertex::new(0.0, 0.0, 0.25, 0.5); 6];
         draw.batches.push(icon);
         let batch = to_skin_batch(&draw);

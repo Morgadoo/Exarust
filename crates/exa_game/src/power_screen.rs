@@ -9,6 +9,15 @@
 //! one screen-sized image (the same canvas path the main menu uses). Only
 //! the open screen is drawn, at most 33 ms apart; the in-game bar draws a
 //! strip `scale × 20` high.
+//!
+//! Not modelled: the link programs' ribbon texture (the draw treats it as
+//! white, so links lack the spline's texture), the bar's form flags and
+//! open/close animation, the show and hide fades, the tooltip and prompt
+//! layout of the original, and the base form's key handlers. The key that
+//! uses the bar's chosen power runs the real learning and cost gates but
+//! against a stand-in body ([`PowerBody`]) and the domains' default worlds,
+//! and spawns a marker entity at the player from [`crate::thaum::visuals`]
+//! rather than a working effect.
 
 use std::sync::{Arc, Mutex};
 
@@ -732,9 +741,16 @@ pub fn render(
     height: u32,
 ) -> Vec<u8> {
     let mut canvas = vec![0u8; width as usize * height as usize * 4];
+    // The frame program also reads its sheet at mip level 4.
+    let coarse = sheets.frames.as_ref().map(level_four);
     for batch in &draw.batches {
         let texture = texture_of(batch.texture, sheets);
-        raster_batch(&mut canvas, width, height, batch, texture);
+        let level = if batch.texture == Texture::Frames {
+            coarse.as_ref()
+        } else {
+            None
+        };
+        raster_batch(&mut canvas, width, height, batch, texture, level);
     }
     if let Some(font) = font {
         for run in &draw.texts {
@@ -747,11 +763,50 @@ pub fn render(
 fn texture_of(texture: Texture, sheets: &TreeSheets) -> Option<&RgbaImage> {
     match texture {
         Texture::None => None,
-        Texture::Domain => sheets.domains.get(1).and_then(Option::as_ref),
+        Texture::Domain(domain) => sheets
+            .domains
+            .get(usize::from(domain))
+            .and_then(Option::as_ref),
         Texture::Frames => sheets.frames.as_ref(),
         Texture::Mods => sheets.mods.as_ref(),
         Texture::Flamelets => sheets.flamelets.as_ref(),
         Texture::Wheel => sheets.wheel.as_ref(),
+    }
+}
+
+/// The picture at mip level 4: every 16 by 16 block averaged, at least one
+/// texel a side.
+fn level_four(image: &RgbaImage) -> RgbaImage {
+    let width = (image.width >> 4).max(1);
+    let height = (image.height >> 4).max(1);
+    let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
+    for y in 0..height {
+        for x in 0..width {
+            let mut sum = [0u32; 4];
+            let mut count = 0u32;
+            let (x0, y0) = (x * image.width / width, y * image.height / height);
+            let (x1, y1) = (
+                ((x + 1) * image.width / width).max(x0 + 1),
+                ((y + 1) * image.height / height).max(y0 + 1),
+            );
+            for sy in y0..y1.min(image.height) {
+                for sx in x0..x1.min(image.width) {
+                    let at = (sy as usize * image.width as usize + sx as usize) * 4;
+                    for (channel, total) in sum.iter_mut().enumerate() {
+                        *total += u32::from(image.pixels[at + channel]);
+                    }
+                    count += 1;
+                }
+            }
+            for total in sum {
+                pixels.push((total / count.max(1)) as u8);
+            }
+        }
+    }
+    RgbaImage {
+        width,
+        height,
+        pixels,
     }
 }
 
@@ -815,6 +870,7 @@ fn raster_batch(
     height: u32,
     batch: &Batch,
     texture: Option<&RgbaImage>,
+    coarse: Option<&RgbaImage>,
 ) {
     for triangle in batch.vertices.as_chunks::<3>().0 {
         let [a, b, c] = *triangle;
@@ -837,7 +893,7 @@ fn raster_batch(
                     continue;
                 }
                 let vertex = mix_vertex(a, b, c, w0, w1, w2);
-                let [r, g, bl, alpha] = shade(batch, vertex, texture);
+                let [r, g, bl, alpha] = shade(batch, vertex, texture, coarse);
                 blend(canvas, width, height, x, y, [r, g, bl, alpha]);
             }
         }
@@ -877,7 +933,12 @@ fn clamp01(x: f32) -> f32 {
 }
 
 /// The six fragment programs' arithmetic.
-fn shade(batch: &Batch, vertex: TreeVertex, texture: Option<&RgbaImage>) -> [f32; 4] {
+fn shade(
+    batch: &Batch,
+    vertex: TreeVertex,
+    texture: Option<&RgbaImage>,
+    coarse: Option<&RgbaImage>,
+) -> [f32; 4] {
     let uniforms = &batch.uniforms;
     let col = vertex.colour;
     let mut out = match batch.program {
@@ -929,18 +990,19 @@ fn shade(batch: &Batch, vertex: TreeVertex, texture: Option<&RgbaImage>) -> [f32
             [tex[0] * d, tex[1] * d, tex[2] * d, col[3] * c2]
         }
         Program::Frame => {
-            let mut ty = vertex.v;
+            // The band keeps the bowed row only; the texture's row adds the
+            // pad terms on the unbowed one.
             let b = vertex.u2;
             let a = 0.5 - b;
             let a = 0.25 - a * a;
-            ty -= a * 0.025;
-            ty += a * uniforms.par0[2] + uniforms.par0[1];
+            let band_row = vertex.v - a * 0.025;
             let tx = vertex.u;
-            let lower = clamp01(ty * 16.0);
-            let upper = clamp01(4.0 - ty * 16.0);
+            let ty = vertex.v + a * uniforms.par0[2] + uniforms.par0[1];
+            let lower = clamp01(band_row * 16.0);
+            let upper = clamp01(4.0 - band_row * 16.0);
             let band = lower * upper;
             let tex = sample(texture, tx, ty)[0];
-            let lod = sample(texture, tx, ty)[0];
+            let lod = sample(coarse, tx, ty)[0];
             let mut c = ((0.13 - vertex.v).abs() * 16.0).min(1.0);
             c = 1.0 - c * c;
             let a2 = (tex + lod * c) * (1.0 - c * 0.65);
@@ -1056,10 +1118,10 @@ mod tests {
     fn the_ring_shader_draws_a_dot() {
         let mut batch = Batch::new(Program::Ring, Texture::None);
         batch.vertices = vec![TreeVertex::new(0.0, 0.0, 0.5, 0.5)];
-        let centre = shade(&batch, batch.vertices[0], None);
+        let centre = shade(&batch, batch.vertices[0], None, None);
         assert!(centre[3] > 0.0);
         let edge = TreeVertex::new(0.0, 0.0, 0.0, 0.0);
-        assert_eq!(shade(&batch, edge, None)[3], 0.0);
+        assert_eq!(shade(&batch, edge, None, None)[3], 0.0);
     }
 
     #[test]
@@ -1071,10 +1133,48 @@ mod tests {
             ..Uniforms::default()
         };
         let centre = TreeVertex::new(0.0, 0.0, 0.5, 0.5).with_colour([1.0, 1.0, 1.0, 1.0]);
-        let middle = shade(&batch, centre, None);
+        let middle = shade(&batch, centre, None, None);
         assert!(middle[3] > 0.9);
         let edge = TreeVertex::new(0.0, 0.0, 0.0, 0.0).with_colour([1.0, 1.0, 1.0, 1.0]);
-        assert!(shade(&batch, edge, None)[3] < middle[3]);
+        assert!(shade(&batch, edge, None, None)[3] < middle[3]);
+    }
+
+    #[test]
+    fn each_domain_draws_with_its_own_sheet() {
+        let sheet = |width| RgbaImage {
+            width,
+            height: 1,
+            pixels: vec![0; width as usize * 4],
+        };
+        let mut sheets = TreeSheets::default();
+        sheets.domains[1] = Some(sheet(1));
+        sheets.domains[2] = Some(sheet(2));
+        assert_eq!(
+            texture_of(Texture::Domain(2), &sheets).map(|i| i.width),
+            Some(2)
+        );
+        assert_eq!(
+            texture_of(Texture::Domain(1), &sheets).map(|i| i.width),
+            Some(1)
+        );
+        assert!(texture_of(Texture::Domain(9), &sheets).is_none());
+    }
+
+    #[test]
+    fn the_coarse_level_averages_sixteen_texel_blocks() {
+        let mut image = RgbaImage {
+            width: 32,
+            height: 16,
+            pixels: vec![0; 32 * 16 * 4],
+        };
+        for y in 0..16usize {
+            for x in 16..32usize {
+                image.pixels[(y * 32 + x) * 4] = 200;
+            }
+        }
+        let level = level_four(&image);
+        assert_eq!((level.width, level.height), (2, 1));
+        assert_eq!((level.pixels[0], level.pixels[4]), (0, 200));
     }
 
     #[test]
