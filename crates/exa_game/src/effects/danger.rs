@@ -1,350 +1,504 @@
 //! What the AI sees of the force effects: a blast, a wave and a barricade.
 //!
-//! Each tells the AI where it is, how dangerous it is and which way to step
-//! aside. The words a danger assessment fills, as the AI reads them:
-//! `flags` gains 4 when the effect is within 12 m; `near` (word 0x14) is a
-//! distance score; `urge` (word 0x0f) is `min(1 − d/1200, 0.99)` for a blast
-//! and a wave (`d` the distance to the body's chest) and the same for a
-//! barricade to the wall's face; `reach` (word 0x14) is the effect's
-//! threatening size; `fear` (word 0x0c) its blow; `face` (word 0x10) how
-//! squarely the body faces it.
+//! Each effect registers an entity the AI's sight asks two things of: how
+//! threatening it is to a viewing body ([`assess_blast`], [`assess_wave`],
+//! [`assess_barricade`], filling a [`Seen`] record) and where to step to get
+//! out of its way ([`avoid_blast`], [`avoid_barricade`]). Its place is the
+//! effect's place; a barricade's is the nearest point of its wall
+//! ([`wall_point`]).
 //!
-//! - **Blast** ([`assess`], kind [`Kind::Blast`]): the nearest body's
-//!   relation caps the score at `1 − relation/100`. A released blast has
-//!   twice the reach and thrice the fear; a charged one only the near score
-//!   `s²·36` (s = the eased urge). The reach is `s²·36·rel·0.003` (twice
-//!   for a released charge), the fear `s²·rel·0.5` (doubled while over 12),
-//!   and the face is a quarter of the aim's forward dot plus three quarters
-//!   of the body's own facing.
-//! - **Wave** ([`assess`], kind [`Kind::Wave`]): `s²·12` near, `s²·rel`
-//!   fear, and the same face.
-//! - **Barricade** ([`assess`], kind [`Kind::Barricade`]): the distance is
-//!   to the wall's face; `s·6` near (thrice while it rises), `s²·rel·0.1`
-//!   fear (thrice with the instant flag), and a lowered distance score when
-//!   the body is behind the wall.
-//! - **Stepping aside** ([`avoid`]): a released blast within 5 m pushes the
-//!   body away with `(1 − d·0.002)·6`; the angle is the direction from the
-//!   blast plus half a turn, wrapped to ±π.
+//! - **Assessing** (all three): the fear word starts at 0. The offset is
+//!   the effect's point less the viewer's chest; within 1200 cm (strictly
+//!   for a blast) the record gains flag 4, the urge is
+//!   `min(1 − d/1200, 0.99)` (compared in double precision) and, from the
+//!   eased urge `s = (2 − u)·u`, the near score is `36·s` (blast), `12·s`
+//!   (wave) or `6·u` (barricade). A released blast or wave doubles it and
+//!   raises the alarm word to at least `6·s`; a rising barricade triples
+//!   it and raises the alarm to at least `6·u`. With the relation factor
+//!   `k = 1 − relation·0.01` (tripled while released, or for a barricade
+//!   whose strong flag is set): the blast's reach word is `k·near·0.003`
+//!   and its fear `s²·k·0.5`, or `s²·k` above 12; the wave's fear is
+//!   `s²·k`; the barricade's reach is `near·0.0001` times the untripled
+//!   factor and its fear `u²·k·0.1`. The face word is
+//!   `((look·dir)·−½ + ½)²·¼ + ((facing·dir)·−½ + ½)·¾`, `dir` the unit
+//!   offset. A blast and a wave clear the relation word afterwards; a blast
+//!   ignores its own caster.
+//! - **Avoiding**: the blast's line runs from its caster's chest along its
+//!   aim; the step is taken from the line's nearest point ahead of the
+//!   chest (the barricade's from its wall point), flattened. Its length
+//!   and its heading turned half a turn are reported; a released blast
+//!   within 500 cm pushes both words by `(1 − 0.002·d)·6`. The barricade
+//!   also scores the distance against the viewer's reach,
+//!   `(300 − |d − reach|)·0.003`, and a keep-away weight
+//!   `((w − g)/w)²·0.5` when the gap `g` to its keeping distance is inside
+//!   `w = 150 − 50·caution` (doubled when alert, and again behind it),
+//!   scaled by `(300 − keep)·0.01` under a keeping distance of 200.
 //!
-//! Evidence: the three entities' position, assessment and avoidance
-//! routines, read from `Exanima.exe`.
+//! The relation number, the viewer's fields and the AI that reads the
+//! words are outside this group; nothing registers these entities yet.
+//!
+//! Evidence: the blast, wave and barricade entities' place, assessment and
+//! avoidance routines, read from `Exanima.exe`.
 
 use bevy::prelude::*;
 
-use super::{Frame, distance_squared};
+use crate::nav_camera::planar_yaw;
+use crate::thaum::engine::sign;
 
-/// The reach of a blast or a wave, cm.
-pub const REACH_CM: f32 = 1200.0;
-/// The most urge, below one.
-pub const MOST_URGE: f32 = 0.99;
-/// A released blast is felt twice as far and three times as hard.
-pub const RELEASED_REACH: f32 = 2.0;
-pub const RELEASED_FEAR: f32 = 3.0;
-/// A barricade's near score and its rising gain.
-pub const BARRICADE_NEAR: f32 = 6.0;
-pub const BARRICADE_RISING: f32 = 3.0;
-/// The blast's avoidance radius and push.
+/// How far the AI notices a force effect, cm.
+pub const SIGHT_CM: f32 = 1200.0;
+/// The urge's cap.
+pub const MOST_URGE: f32 = f32::from_bits(0x3f7d_70a4);
+/// The flag a noticed effect sets.
+pub const SEEN_FLAG: u32 = 4;
+/// A released blast pushes a viewer within this distance, cm, this hard.
 pub const AVOID_RANGE_CM: f32 = 500.0;
 pub const AVOID_PUSH: f32 = 6.0;
 
-/// Which force effect the AI is looking at.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
-    Blast,
-    Wave,
-    Barricade,
-}
-
-/// The words a danger assessment fills.
+/// The words of the AI's record an assessment fills.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct Assessment {
+pub struct Seen {
     pub flags: u32,
+    /// The highest alarm so far (only raised).
+    pub alarm: f32,
     pub near: f32,
-    pub urge: f32,
     pub reach: f32,
+    /// The relation to the effect's caster, as the relation routine gives
+    /// it.
+    pub relation: f32,
     pub fear: f32,
+    pub urge: f32,
     pub face: f32,
-    /// Whether the body is within the effect's reach at all.
-    pub in_reach: bool,
 }
 
-/// A force effect's body for the AI: where it is and what state it is in.
+/// The viewing body's chest and its two facing axes.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ForceDanger {
-    pub kind: Kind,
-    pub at: Vec3,
-    /// The blast's or wave's forward aim; the barricade's wall normal.
-    pub aim: Vec3,
-    /// 1 while a blast or barricade charges, 2 released; the barricade's
-    /// instant flag for its fear.
-    pub state: i32,
-    /// The barricade's wall angle (its facing turn), radians.
-    pub wall_angle: f32,
-    /// The distance from the barricade's face to its wall's far end, cm.
-    pub behind: f32,
+pub struct Viewer {
+    pub chest: Vec3,
+    /// The axis the first face term uses (the body's look).
+    pub look: Vec3,
+    /// The axis the second uses (the body's facing).
+    pub facing: Vec3,
 }
 
-/// The mean of two facing scores: a quarter of the first, three quarters of
-/// the second.
-fn blend_face(aim: Vec3, toward: Vec3, aim_dot: f32, body_dot: f32) -> f32 {
-    let _ = (aim, toward);
-    let first = aim_dot * -0.5 + 0.5;
-    let second = body_dot * -0.5 + 0.5;
+/// `(x·x + y·y) + z·z`, as the entities sum their dots.
+fn dot(a: Vec3, b: Vec3) -> f32 {
+    (a.x * b.x + a.y * b.y) + a.z * b.z
+}
+
+/// The urge and the unit direction of an effect point seen from a chest,
+/// when it lies within sight. `strict` for the blast's `<`.
+fn sight(point: Vec3, chest: Vec3, strict: bool) -> Option<(f32, Vec3)> {
+    let offset = point - chest;
+    let d2 = (offset.y * offset.y + offset.x * offset.x) + offset.z * offset.z;
+    let limit = SIGHT_CM * SIGHT_CM;
+    let inside = if strict { d2 < limit } else { d2 <= limit };
+    if !inside {
+        return None;
+    }
+    let d = d2.sqrt();
+    let dir = offset * (1.0 / d);
+    let urge = 1.0 - d / SIGHT_CM;
+    let urge = if f64::from(urge) > 0.99 {
+        MOST_URGE
+    } else {
+        urge
+    };
+    Some((urge, dir))
+}
+
+fn face(viewer: &Viewer, dir: Vec3) -> f32 {
+    let second = dot(viewer.facing, dir) * -0.5 + 0.5;
+    let first = dot(viewer.look, dir) * -0.5 + 0.5;
     first * first * 0.25 + second * 0.75
 }
 
-/// Assess one effect against a body's chest.
-pub fn assess(
-    effect: &ForceDanger,
-    chest: Vec3,
-    relation: i32,
-    body_facing: Vec3,
-) -> Option<Assessment> {
-    let offset = effect.at - chest;
-    let d2 = offset.length_squared();
-    match effect.kind {
-        Kind::Blast | Kind::Wave => {
-            let limit = REACH_CM * REACH_CM;
-            let inside = match effect.kind {
-                Kind::Blast => d2 < limit,
-                _ => d2 <= limit,
-            };
-            if !inside {
-                return None;
-            }
-            let d = d2.sqrt();
-            let dir = offset / d;
-            let mut urge = 1.0 - d / REACH_CM;
-            if MOST_URGE < urge {
-                urge = MOST_URGE;
-            }
-            let eased = (2.0 - urge) * urge;
-            let released = 0 < effect.state;
-            let base = if effect.kind == Kind::Blast {
-                36.0
-            } else {
-                12.0
-            };
-            let mut near = eased * base;
-            if released {
-                near *= RELEASED_REACH;
-            }
-            let mut relation_scale = 1.0 - relation as f32 * 0.01;
-            if released {
-                relation_scale *= RELEASED_FEAR;
-            }
-            let reach = relation_scale * near * 0.003;
-            let fear = if effect.kind == Kind::Blast {
-                let value = eased * eased * relation_scale * 0.5;
-                if 12.0 < value {
-                    eased * eased * relation_scale
-                } else {
-                    value
-                }
-            } else {
-                eased * eased * relation_scale
-            };
-            let aim_dot = dir.dot(effect.aim);
-            let body_dot = dir.dot(body_facing);
-            Some(Assessment {
-                flags: 4,
-                near,
-                urge,
-                reach,
-                fear,
-                face: blend_face(effect.aim, dir, aim_dot, body_dot),
-                in_reach: true,
-            })
-        }
-        Kind::Barricade => {
-            let limit = REACH_CM * REACH_CM;
-            if d2 > limit {
-                return None;
-            }
-            let d = d2.sqrt();
-            let dir = offset / d;
-            let mut urge = 1.0 - d / REACH_CM;
-            if MOST_URGE < urge {
-                urge = MOST_URGE;
-            }
-            let rising = effect.state == 1;
-            let mut near = urge * BARRICADE_NEAR;
-            if rising {
-                near *= BARRICADE_RISING;
-            }
-            let mut relation_scale = 1.0 - relation as f32 * 0.01;
-            let instant = effect.state != 0;
-            if instant {
-                relation_scale *= BARRICADE_RISING;
-            }
-            let aim_dot = dir.dot(effect.aim);
-            let body_dot = dir.dot(body_facing);
-            Some(Assessment {
-                flags: 4,
-                near,
-                urge,
-                reach: relation_scale * near * 0.0001,
-                fear: urge * urge * relation_scale * 0.1,
-                face: blend_face(effect.aim, dir, aim_dot, body_dot),
-                in_reach: true,
-            })
-        }
-    }
+fn relation_factor(relation: f32) -> f32 {
+    (1.0 - f64::from(relation) * 0.01) as f32
 }
 
-/// Where and how hard to step aside from a blast or barricade.
+/// A blast seen by a viewer: `released` once thrown, `caster` when the
+/// viewer cast it. False when it is out of sight (true for its caster,
+/// whose record keeps only the cleared fear).
+pub fn assess_blast(
+    at: Vec3,
+    released: bool,
+    viewer: &Viewer,
+    caster: bool,
+    relation: f32,
+    seen: &mut Seen,
+) -> bool {
+    seen.fear = 0.0;
+    if caster {
+        return true;
+    }
+    seen.relation = relation;
+    let Some((urge, dir)) = sight(at, viewer.chest, true) else {
+        return false;
+    };
+    seen.flags |= SEEN_FLAG;
+    seen.urge = urge;
+    let s = (2.0 - urge) * urge;
+    seen.near = s * 36.0;
+    if released {
+        seen.near *= 2.0;
+        raise(&mut seen.alarm, s * 6.0);
+    }
+    let mut k = relation_factor(seen.relation);
+    if released {
+        k *= 3.0;
+    }
+    seen.reach = (f64::from(k) * (f64::from(seen.near) * 0.003)) as f32;
+    seen.fear = s * s * k * 0.5;
+    if seen.fear > 12.0 {
+        seen.fear = s * s * k;
+    }
+    seen.face = face(viewer, dir);
+    seen.relation = 0.0;
+    true
+}
+
+/// A wave seen by a viewer (the wave does not leave out its caster).
+pub fn assess_wave(
+    at: Vec3,
+    released: bool,
+    viewer: &Viewer,
+    relation: f32,
+    seen: &mut Seen,
+) -> bool {
+    seen.fear = 0.0;
+    seen.relation = relation;
+    let Some((urge, dir)) = sight(at, viewer.chest, false) else {
+        return false;
+    };
+    seen.flags |= SEEN_FLAG;
+    seen.urge = urge;
+    let s = (2.0 - urge) * urge;
+    seen.near = s * 12.0;
+    if released {
+        seen.near *= 2.0;
+        raise(&mut seen.alarm, s * 6.0);
+    }
+    let mut k = relation_factor(seen.relation);
+    if released {
+        k *= 3.0;
+    }
+    seen.fear = s * s * k * 1.0;
+    seen.face = face(viewer, dir);
+    seen.relation = 0.0;
+    true
+}
+
+/// A barricade's wall: its middle, its axis along the wall and its half
+/// width.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Avoidance {
-    /// The distance from the body, cm.
-    pub distance: f32,
-    /// The push, or the danger falloff.
-    pub push: f32,
-    /// The direction to step, radians: from the effect, half a turn on.
-    pub angle: f32,
+pub struct Wall {
+    pub centre: Vec3,
+    pub along: Vec3,
+    pub half_width: f32,
 }
 
-/// The step aside from a released blast within 5 m, or the falloff from a
-/// barricade's wall.
-pub fn avoid(effect: &ForceDanger, body: Vec3) -> Option<Avoidance> {
-    match effect.kind {
-        Kind::Blast | Kind::Wave => {
-            let offset = body - effect.at;
-            let distance = offset.length();
-            let released = 0 < effect.state;
-            if distance < AVOID_RANGE_CM && released {
-                let push = (1.0 - distance * 0.002) * AVOID_PUSH;
-                let angle = offset.z.atan2(offset.x);
-                let angle = if angle <= std::f32::consts::PI {
-                    angle + std::f32::consts::PI
-                } else {
-                    angle - std::f32::consts::PI
-                };
-                Some(Avoidance {
-                    distance,
-                    push,
-                    angle,
-                })
-            } else {
-                None
-            }
-        }
-        Kind::Barricade => {
-            let offset = body - effect.at;
-            let distance = offset.length();
-            let wall = (300.0 - (distance - effect.behind).abs()) * 0.003;
-            Some(Avoidance {
-                distance,
-                push: wall,
-                angle: offset.z.atan2(offset.x),
-            })
-        }
+/// The wall's point nearest `point`: along the wall by the dot of the
+/// offset, limited to the half width (strictly beyond it).
+pub fn wall_point(wall: &Wall, point: Vec3) -> Vec3 {
+    let mut t = dot(point, wall.along) - dot(wall.centre, wall.along);
+    if t.abs() > wall.half_width {
+        t = sign(t) * wall.half_width;
+    }
+    wall.centre + wall.along * t
+}
+
+/// A barricade seen by a viewer: `rising` while it grows (state 1),
+/// `strong` its flag that triples the fear.
+pub fn assess_barricade(
+    wall: &Wall,
+    rising: bool,
+    strong: bool,
+    viewer: &Viewer,
+    relation: f32,
+    seen: &mut Seen,
+) -> bool {
+    seen.fear = 0.0;
+    let point = wall_point(wall, viewer.chest);
+    seen.relation = relation;
+    let Some((urge, dir)) = sight(point, viewer.chest, false) else {
+        return false;
+    };
+    seen.flags |= SEEN_FLAG;
+    seen.urge = urge;
+    seen.near = urge * 6.0;
+    if rising {
+        seen.near *= 3.0;
+        raise(&mut seen.alarm, urge * 6.0);
+    }
+    let factor = 1.0 - f64::from(seen.relation) * 0.01;
+    let mut k = factor as f32;
+    seen.reach = (factor * (f64::from(seen.near) * 0.0001)) as f32;
+    if strong {
+        k *= 3.0;
+    }
+    seen.fear = (f64::from(urge * urge * k) * 0.1) as f32;
+    seen.face = face(viewer, dir);
+    true
+}
+
+fn raise(word: &mut f32, value: f32) {
+    if value > *word {
+        *word = value;
     }
 }
 
-/// A blast's place: its effect's frame applied to its local place.
-pub fn blast_position(frame: &Frame, local: Vec3) -> Vec3 {
-    frame.point(local)
+/// Where to step away from an effect.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Avoidance {
+    /// The two push words.
+    pub push: [f32; 2],
+    /// The barricade's keep-away weight and distance score.
+    pub keep: f32,
+    pub score: f32,
+    /// The heading to step along, radians.
+    pub heading: f32,
+    /// The flat distance, cm.
+    pub distance: f32,
 }
 
-/// Whether a body is within a blast's danger: 12 m from its place.
-pub fn in_blast_reach(at: Vec3, chest: Vec3) -> bool {
-    distance_squared(at, chest) < REACH_CM * REACH_CM
+/// The flat step from `from` to `body`: its length and its heading half a
+/// turn on.
+fn step_away(body: Vec3, from: Vec3) -> (f32, f32) {
+    let mut v = body - from;
+    v.y = 0.0;
+    let distance = ((v.x * v.x + v.z * v.z) + v.y * v.y).sqrt();
+    let yaw = planar_yaw(v);
+    let heading = if yaw <= std::f32::consts::PI {
+        yaw + std::f32::consts::PI
+    } else {
+        yaw - std::f32::consts::PI
+    };
+    (distance, heading)
+}
+
+/// The step away from a blast whose caster's chest is `chest` and whose aim
+/// is `aim`, for a body at `body`.
+pub fn avoid_blast(chest: Vec3, aim: Vec3, released: bool, body: Vec3) -> Avoidance {
+    let mut t = dot(body, aim) - dot(chest, aim);
+    if t < 0.0 {
+        t = 0.0;
+    }
+    let nearest = chest + aim * t;
+    let (distance, heading) = step_away(body, nearest);
+    let mut out = Avoidance {
+        distance,
+        heading,
+        ..Avoidance::default()
+    };
+    if distance < AVOID_RANGE_CM && released {
+        let push = (1.0 - distance * 0.002) * AVOID_PUSH;
+        out.push = [push, push];
+    }
+    out
+}
+
+/// The viewer's figures the barricade's step weighs (their roles beyond
+/// these formulas are not established).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Keeper {
+    /// The body's size factor: at most 1.3 takes the long reach.
+    pub scale: f32,
+    /// The arm the reach is 1.5 (or 1.4) times, and the reach's base.
+    pub arm: f32,
+    pub base: f32,
+    /// The caution figure the window shrinks with, and the alert state
+    /// that doubles it.
+    pub caution: f32,
+    pub alert: bool,
+    /// The distance the viewer keeps.
+    pub keep: f32,
+}
+
+/// The step away from a barricade's wall for a body at `body`.
+pub fn avoid_barricade(wall: &Wall, body: Vec3, keeper: &Keeper) -> Avoidance {
+    let point = wall_point(wall, body);
+    let (distance, heading) = step_away(body, point);
+    let reach = if keeper.scale <= 1.3 {
+        keeper.arm * 1.5 + keeper.base
+    } else {
+        keeper.arm * 1.4 + keeper.base
+    };
+    let mut out = Avoidance {
+        distance,
+        heading,
+        score: (300.0 - (distance - reach).abs()) * 0.003,
+        ..Avoidance::default()
+    };
+    let mut window = 150.0 - keeper.caution * 50.0;
+    if keeper.alert {
+        window *= 2.0;
+    }
+    let mut gap = (distance - keeper.keep) - 10.0;
+    if gap < 0.0 {
+        window *= 2.0;
+        gap = -gap;
+    }
+    if gap < window {
+        let w = (window - gap) / window;
+        out.keep = w * w * 0.5;
+        if keeper.keep < 200.0 {
+            out.keep *= (300.0 - keeper.keep) * 0.01;
+        }
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn blast(released: bool) -> ForceDanger {
-        ForceDanger {
-            kind: Kind::Blast,
-            at: Vec3::new(600.0, 0.0, 0.0),
-            aim: Vec3::X,
-            state: if released { 2 } else { 0 },
-            wall_angle: 0.0,
-            behind: 0.0,
+    fn viewer() -> Viewer {
+        Viewer {
+            chest: Vec3::ZERO,
+            look: Vec3::Z,
+            facing: Vec3::Z,
         }
     }
 
     #[test]
-    fn a_blast_just_inside_twelve_metres_is_assessed() {
-        let effect = blast(false);
-        let chest = Vec3::ZERO;
-        let a = assess(&effect, chest, 0, Vec3::Y).unwrap();
-        assert_eq!(a.flags, 4);
-        assert!((a.urge - 0.5).abs() < 1e-6);
-        // s = (2 − 0.5)·0.5 = 0.75; near = 0.75·36 = 27.
-        assert!((a.near - 27.0).abs() < 1e-5);
-        // Charged: reach 27·0.003, fear 0.75²·0.5.
-        assert!((a.reach - 27.0 * 0.003).abs() < 1e-7);
-        assert!((a.fear - 0.75 * 0.75 * 0.5).abs() < 1e-5);
-        // Beyond 12 m nothing.
-        assert!(assess(&effect, Vec3::new(-601.0, 0.0, 0.0), 0, Vec3::Y).is_none());
+    fn a_blast_six_metres_off_is_feared_by_its_eased_urge() {
+        let mut seen = Seen::default();
+        assert!(assess_blast(
+            Vec3::new(0.0, 0.0, 600.0),
+            false,
+            &viewer(),
+            false,
+            0.0,
+            &mut seen
+        ));
+        assert_eq!(seen.flags, 4);
+        assert_eq!(seen.urge, 0.5);
+        let s = 1.5f32 * 0.5;
+        assert_eq!(seen.near, s * 36.0);
+        assert_eq!(seen.reach, (1.0f64 * (f64::from(s * 36.0) * 0.003)) as f32);
+        assert_eq!(seen.fear, s * s * 0.5);
+        // Facing it: both dots 1, so the face is 0.
+        assert_eq!(seen.face, 0.0);
+        assert_eq!(seen.alarm, 0.0);
+        // Released: doubled near, tripled factor, the alarm raised.
+        let mut seen = Seen::default();
+        assess_blast(
+            Vec3::new(0.0, 0.0, 600.0),
+            true,
+            &viewer(),
+            false,
+            0.0,
+            &mut seen,
+        );
+        assert_eq!(seen.near, s * 36.0 * 2.0);
+        assert_eq!(seen.alarm, s * 6.0);
+        assert_eq!(seen.fear, s * s * 3.0 * 0.5);
+        // Out of sight, and the caster's own.
+        let mut seen = Seen::default();
+        assert!(!assess_blast(
+            Vec3::new(0.0, 0.0, 1200.0),
+            false,
+            &viewer(),
+            false,
+            0.0,
+            &mut seen
+        ));
+        assert!(assess_blast(
+            Vec3::ZERO,
+            true,
+            &viewer(),
+            true,
+            0.0,
+            &mut seen
+        ));
+        assert_eq!(seen.flags, 0);
     }
 
     #[test]
-    fn a_released_blast_is_twice_the_reach_and_thrice_the_fear() {
-        let effect = blast(true);
-        let a = assess(&effect, Vec3::ZERO, 0, Vec3::X).unwrap();
-        // The released blast has twice the near score: 54.
-        assert!((a.near - 54.0).abs() < 1e-5);
-        // Reach: 3·54·0.003 = 0.486.
-        assert!((a.reach - 0.486).abs() < 1e-6);
-        // Fear: 0.75²·3·0.5 = 0.84375.
-        assert!((a.fear - 0.843_75).abs() < 1e-6);
-        // The aim dot for a chest 600 west of the blast is 1: face =
-        // 0.25·(0·−0.5+0.5)² ... the blended score.
-        assert!(a.face >= 0.0 && a.face <= 1.0);
+    fn a_wave_counts_its_edge_and_has_no_reach_word() {
+        let mut seen = Seen::default();
+        assert!(assess_wave(
+            Vec3::new(0.0, 0.0, 1200.0),
+            false,
+            &viewer(),
+            50.0,
+            &mut seen
+        ));
+        assert_eq!(seen.urge, 0.0);
+        assert_eq!(seen.reach, 0.0);
+        let mut seen = Seen::default();
+        assess_wave(
+            Vec3::new(0.0, 0.0, 600.0),
+            false,
+            &viewer(),
+            50.0,
+            &mut seen,
+        );
+        let s = 1.5f32 * 0.5;
+        assert_eq!(seen.near, s * 12.0);
+        assert_eq!(seen.fear, s * s * (1.0f64 - 50.0 * 0.01) as f32);
+        assert_eq!(seen.relation, 0.0);
     }
 
     #[test]
-    fn a_wave_is_twelve_and_merges_at_twelve_metres() {
-        let wave = ForceDanger {
-            kind: Kind::Wave,
-            at: Vec3::new(1200.0, 0.0, 0.0),
-            aim: Vec3::X,
-            state: 1,
-            wall_angle: 0.0,
-            behind: 0.0,
+    fn a_barricade_is_seen_from_its_nearest_wall_point() {
+        let wall = Wall {
+            centre: Vec3::new(0.0, 0.0, 600.0),
+            along: Vec3::X,
+            half_width: 300.0,
         };
-        let a = assess(&wave, Vec3::ZERO, 0, Vec3::X).unwrap();
-        assert_eq!(a.urge, 0.0f32.max(1.0 - 1.0));
-        assert!(a.in_reach);
-        let near = ForceDanger {
-            at: Vec3::new(600.0, 0.0, 0.0),
-            ..wave
-        };
-        let a = assess(&near, Vec3::ZERO, 0, Vec3::X).unwrap();
-        // 0.75·12 = 9, doubled for a released wave: 18.
-        assert!((a.near - 18.0).abs() < 1e-5);
+        assert_eq!(
+            wall_point(&wall, Vec3::new(500.0, 0.0, 0.0)),
+            Vec3::new(300.0, 0.0, 600.0)
+        );
+        assert_eq!(
+            wall_point(&wall, Vec3::new(-100.0, 0.0, 0.0)),
+            Vec3::new(-100.0, 0.0, 600.0)
+        );
+        let mut seen = Seen::default();
+        assess_barricade(&wall, true, true, &viewer(), 0.0, &mut seen);
+        assert_eq!(seen.urge, 0.5);
+        assert_eq!(seen.near, 0.5 * 6.0 * 3.0);
+        assert_eq!(seen.alarm, 3.0);
+        assert_eq!(seen.reach, (1.0f64 * (9.0f64 * 0.0001)) as f32);
+        assert_eq!(seen.fear, (f64::from(0.25f32 * 3.0) * 0.1) as f32);
     }
 
     #[test]
-    fn a_barricade_scores_six_while_it_stands_and_thrice_while_it_rises() {
-        let wall = ForceDanger {
-            kind: Kind::Barricade,
-            at: Vec3::new(300.0, 0.0, 0.0),
-            aim: Vec3::X,
-            state: 0,
-            wall_angle: 0.0,
-            behind: 0.0,
-        };
-        let a = assess(&wall, Vec3::ZERO, 0, Vec3::X).unwrap();
-        assert!((a.near - 4.5).abs() < 1e-5);
-        assert!((a.fear - 0.75 * 0.75 * 0.1).abs() < 1e-6);
-        let rising = ForceDanger { state: 1, ..wall };
-        let a = assess(&rising, Vec3::ZERO, 0, Vec3::X).unwrap();
-        assert!((a.near - 13.5).abs() < 1e-5);
+    fn a_released_blast_pushes_from_the_nearest_point_of_its_line() {
+        let a = avoid_blast(Vec3::ZERO, Vec3::Z, true, Vec3::new(100.0, 50.0, 300.0));
+        assert_eq!(a.distance, 100.0);
+        assert_eq!(a.push, [(1.0 - 100.0 * 0.002) * 6.0; 2]);
+        // The step is +x: its heading π/2 turned half a turn on.
+        let yaw = planar_yaw(Vec3::X);
+        assert_eq!(a.heading, yaw + std::f32::consts::PI);
+        // Behind the chest the line's start is the nearest point.
+        let behind = avoid_blast(Vec3::ZERO, Vec3::Z, false, Vec3::new(0.0, 0.0, -50.0));
+        assert_eq!(behind.distance, 50.0);
+        assert_eq!(behind.push, [0.0; 2]);
     }
 
     #[test]
-    fn a_released_blast_pushes_a_nearby_body_away_round_the_turn() {
-        let effect = blast(true);
-        let a = avoid(&effect, Vec3::new(600.0, 0.0, 100.0)).unwrap();
-        assert!((a.distance - 100.0).abs() < 1e-4);
-        assert!((a.push - (1.0 - 100.0 * 0.002) * 6.0).abs() < 1e-5);
-        assert!((a.angle - std::f32::consts::FRAC_PI_2 * 3.0).abs() < 1e-5);
-        // A charged blast is not stepped aside from.
-        assert!(avoid(&blast(false), Vec3::new(600.0, 0.0, 100.0)).is_none());
+    fn the_barricade_step_weighs_reach_and_keeping_distance() {
+        let wall = Wall {
+            centre: Vec3::ZERO,
+            along: Vec3::X,
+            half_width: 300.0,
+        };
+        let keeper = Keeper {
+            scale: 1.0,
+            arm: 50.0,
+            base: 25.0,
+            caution: 1.0,
+            alert: false,
+            keep: 100.0,
+        };
+        let a = avoid_barricade(&wall, Vec3::new(0.0, 0.0, 150.0), &keeper);
+        assert_eq!(a.distance, 150.0);
+        assert_eq!(a.score, (300.0 - (150.0f32 - 100.0).abs()) * 0.003);
+        // Gap 40 within the window of 100.
+        let w = (100.0f32 - 40.0) / 100.0;
+        assert_eq!(a.keep, w * w * 0.5 * ((300.0 - 100.0) * 0.01));
     }
 }
