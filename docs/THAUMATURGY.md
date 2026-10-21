@@ -408,10 +408,10 @@ effect_geometry}`.
   released; the face word mixes the viewer's look and facing. A released
   blast within 5 m of its line pushes the viewer `(1 − 0.002·d)·6`.
 
-## The shaped-force aurora
+## The shaped-force aura
 
 `exa_game::thaum` holds the force-shell aura (`ForceShell`, the
-section filter, the uniforms and the draw in `shell_draw`): it OPENS over
+section filter, the uniforms and the draw in `shell_draw`): it opens over
 1.5 times its 800 cm size (1.2 s), holds, closes over 800 ms from wherever
 it is and then leaves. A hit keeps at most eight ripples; each ripple's
 strength loses 0.04 a tick, its shown amount moves within 0.06 and −0.04,
@@ -436,8 +436,8 @@ drawn as smoothed camera-facing strips.
 
 `exa_game::thaum::live::ThaumEffectsPlugin` runs live arcs, barricades and
 wisps after the bodies: arcs follow their hand, end at the static level and
-shock other fighters with the character probe; a shock lands once the game clock is within 150 ms
-of the fighter's next shock time, which then moves 500 ms plus a draw below
+shock other fighters with the character probe; a shock lands once the game
+clock is within 150 ms of the fighter's next shock time, which then moves 500 ms plus a draw below
 200 ms of the engine's generator ahead, and a fighter that is not
 collapsing or dead loses the strength in yellow health (the rest of the
 shock reaction, its motion and stagger, is not wired); a barricade pushes
