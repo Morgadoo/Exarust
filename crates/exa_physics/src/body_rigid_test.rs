@@ -741,7 +741,6 @@ fn held_items_keep_their_motion_and_static_only_flags() {
         links: vec![],
         foot: None,
         pins: Vec::new(),
-
         spheres: None,
     }]);
     assert!(body.held_flags().is_empty());
@@ -775,7 +774,6 @@ fn class_grab_and_state_words_reach_their_parts() {
             links: vec![],
             foot: None,
             pins: Vec::new(),
-
             spheres: None,
         })
         .collect();
@@ -810,7 +808,6 @@ fn a_push_at_a_point_uses_its_weight() {
         links: vec![],
         foot: None,
         pins: Vec::new(),
-
         spheres: None,
     }]);
     let before = body.parts[0].positions;
@@ -841,7 +838,6 @@ fn a_push_along_the_points_travel_is_dropped() {
         links: vec![],
         foot: None,
         pins: Vec::new(),
-
         spheres: None,
     }]);
     let at = body.parts[0].transform().transform_point3(Vec3::ZERO);
