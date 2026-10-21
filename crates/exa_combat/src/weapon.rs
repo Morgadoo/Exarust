@@ -135,8 +135,9 @@ mod tests {
         assert!(close(blade_lift(1.0), 0.066_156_685));
     }
 
-    /// A push into the point acts in full, one partly into it in part, one
-    /// across it not at all; a push away from the point acts in full.
+    /// A push against the point's travel this tick (or one it barely moves
+    /// along) acts in full, one it moves along partly, and one it outruns
+    /// not at all.
     #[test]
     fn the_push_weighting_is_the_originals() {
         let push = Vec3::X;

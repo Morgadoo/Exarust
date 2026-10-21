@@ -315,17 +315,20 @@ pub struct Part {
     pub state_word: u32,
 }
 
-/// The weight a push at a body point takes, as the original's push-at-point:
-/// the point is in the body's space, and `4·(push·point)` is compared with
-/// the push's squared length. A negative (or tiny) value gets the full push;
-/// between it and the squared length the push is scaled by 1 − that share;
-/// at or past it nothing moves.
-pub fn push_fraction(push: Vec3, local_point: Vec3) -> f32 {
-    let len2 = push.length_squared();
+/// The share of a push at a point of a body that acts, as the original's
+/// push-at-point: `moved` is how far the point travelled this tick (the weighted particle displacement) and `4·(push·moved)` is compared with the push's squared
+/// length. A push whose squared length is below the epsilon, or one moving
+/// the point at least as far along it (or a NaN), gets 0; a negative or tiny
+/// value gets the full push (1); between them the push is scaled by 1 minus
+/// that share. Both dots sum z + (y + x).
+pub fn push_fraction(push: Vec3, moved: Vec3) -> f32 {
+    let len2 = push.z * push.z + (push.y * push.y + push.x * push.x);
+    // A NaN length falls through, as the original's compare does; every
+    // test below then fails and nothing moves.
     if len2 < PUSH_EPSILON {
         return 0.0;
     }
-    let dot = push.x * local_point.x + push.y * local_point.y + push.z * local_point.z;
+    let dot = push.z * moved.z + (push.y * moved.y + push.x * moved.x);
     let scaled = dot * PUSH_WEIGHT;
     // Only a strictly small value (not a NaN) takes the full push.
     if scaled < PUSH_EPSILON {
@@ -339,7 +342,7 @@ pub fn push_fraction(push: Vec3, local_point: Vec3) -> f32 {
 
 /// The push weighting's quarter units and the single-precision epsilon.
 const PUSH_WEIGHT: f32 = 4.0;
-const PUSH_EPSILON: f32 = 1.192_09e-7;
+const PUSH_EPSILON: f32 = f32::from_bits(0x33ff_ffd7);
 
 /// Barycentric weights of a point given in a part's space.
 fn weights(part: &Part, local: Vec3) -> [f32; 4] {
@@ -2224,25 +2227,22 @@ impl Ragdoll {
     }
 
     /// A push at a world point of part `index`, as the original's
-    /// push-at-point: the point is taken into the part's space, the push's
-    /// weight found by [`push_fraction`], and the weighted push given to the
-    /// particles there (its strain restore past [`PUSH_STRAIN`]).
+    /// push-at-point: the point's weights over the part's particles are
+    /// found, how far that point moved this tick is weighed against the
+    /// push by [`push_fraction`], and the scaled push is given to the
+    /// particles by their raw weights. No strain is kept and nothing is
+    /// restored here; the next tick's edge restore sees the stretch.
     pub fn push_at(&mut self, index: usize, world_point: Vec3, delta: Vec3) {
         let Some(part) = self.parts.get_mut(index) else {
             return;
         };
         let local = part.transform().inverse().transform_point3(world_point);
-        let share = push_fraction(delta, local);
+        let w = weights(part, local);
+        let share = push_fraction(delta, part.point(&w) - part.point_at_start(&w));
         if share <= 0.0 {
             return;
         }
-        let w = weights(part, local);
-        let push = delta * share;
-        part.push(&w, push);
-        part.strain += push.length();
-        if part.strain > PUSH_STRAIN {
-            keep_rigid(part);
-        }
+        part.push(&w, delta * share);
     }
 
     /// An effect's push on part `index` at its sphere `sphere` (a force

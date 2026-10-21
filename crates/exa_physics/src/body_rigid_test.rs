@@ -789,8 +789,9 @@ fn class_grab_and_state_words_reach_their_parts() {
 }
 
 /// A push at a point moves the particles by its weight there, scaled by the
-/// point's share (full at a point the push goes into, none at a point it
-/// goes away from beyond the push's length).
+/// share left after the point's own travel this tick (full for a point at
+/// rest, none for one already travelling along the push faster than the
+/// push is long).
 #[test]
 fn a_push_at_a_point_uses_its_weight() {
     let mut body = Ragdoll::new(&[PartSetup {
@@ -816,4 +817,29 @@ fn a_push_at_a_point_uses_its_weight() {
         let moved = body.parts[0].positions[i] - *was;
         assert!(moved.y.abs() < 1e-7 && moved.z.abs() < 1e-7);
     }
+}
+
+/// The same push at a point that already moved 0.1 along it this tick (4 ×
+/// 0.1·0.1 = 0.04 against the push's 0.01 squared length) does nothing.
+#[test]
+fn a_push_along_the_points_travel_is_dropped() {
+    let mut body = Ragdoll::new(&[PartSetup {
+        bone: 1,
+        entity: Entity::PLACEHOLDER,
+        parent: None,
+        world: Affine3A::IDENTITY,
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.1),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot: None,
+        pins: Vec::new(),
+    }]);
+    let at = body.parts[0].transform().transform_point3(Vec3::ZERO);
+    for p in &mut body.parts[0].positions {
+        *p += Vec3::X * 0.1;
+    }
+    let before = body.parts[0].positions;
+    body.push_at(0, at + Vec3::X * 0.1, Vec3::X * 0.1);
+    assert_eq!(body.parts[0].positions, before);
 }

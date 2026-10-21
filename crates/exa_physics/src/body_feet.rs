@@ -619,7 +619,7 @@ fn footwork(legs: &mut [Leg], ankles: &[Vec3], spots: &[Option<Vec3>], work: &Wo
 }
 
 /// The projection the rearmost foot's search starts under.
-const REAR_START: f32 = 3.4e38;
+const REAR_START: f32 = f32::from_bits(0x7f7f_c99e);
 
 impl Ragdoll {
     /// Leaving the walk: the rearmost foot (the smallest projection of its
@@ -627,7 +627,9 @@ impl Ragdoll {
     /// ones, and the first when none is under 3.4e38 or all are NaN) is
     /// anchored at its stance spot under the frame, keeping its height,
     /// and every other foot lands where it is (whether or not it was
-    /// anchored). Both keep their slow ramp bit.
+    /// anchored). Both keep their slow ramp bit. (The original also stamps
+    /// two stand-still timers, the clock plus 100 ms and the clock; they
+    /// are not modelled.)
     pub fn plant_trailing_foot(&mut self) {
         let Ragdoll {
             parts, legs, drive, ..
@@ -646,7 +648,9 @@ impl Ragdoll {
         let mut smallest = REAR_START;
         let mut rear = 0;
         for (i, leg) in legs.iter().enumerate() {
-            let along = parts[leg.shin].point(&leg.contact).dot(forward);
+            let at = parts[leg.shin].point(&leg.contact);
+            // The projection sums z + (y + x), as the original does.
+            let along = at.z * forward.z + (at.y * forward.y + at.x * forward.x);
             if smallest > along {
                 smallest = along;
                 rear = i;
@@ -801,9 +805,8 @@ mod step_end_tests {
 }
 
 impl Ragdoll {
-    /// Clears bits `mask` from every foot contact's state. The original
-    /// clears them on every part of the body (the parts list), when a
-    /// motion starts or a get-up begins; only the feet are modelled here.
+    /// Clears bits `mask` from every foot contact's state, as the original
+    /// does when a motion starts or a get-up begins.
     pub fn clear_foot_state(&mut self, mask: u32) {
         for leg in &mut self.legs {
             leg.state = FootState(leg.state.0 & !mask);
