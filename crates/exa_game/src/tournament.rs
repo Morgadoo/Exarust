@@ -130,6 +130,24 @@ pub fn forfeit_tourney(rows: &mut Roster) {
     }
 }
 
+/// The fallback after a forfeit or a finished board: the first event with
+/// no winner takes a rival from `high(roll × 8) + 7` (7 through 14), unless
+/// the tournament field holds a company with a count, whose id then wins.
+/// Every event already having a winner leaves the rows alone.
+pub fn settle_first_undecided(winners: &mut [u32; 6], field: &[u32], roll: &mut u32) {
+    for winner in winners {
+        if *winner != 0 {
+            continue;
+        }
+        *roll = roll.wrapping_mul(STEP).wrapping_add(1);
+        *winner = ((u64::from(*roll) * 8) >> 32) as u32 + 7;
+        if let Some(&id) = field.iter().find(|&&id| id > 0) {
+            *winner = id;
+        }
+        return;
+    }
+}
+
 /// What arriving at the hub does beyond the staff's renumbering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HubArrival {
@@ -308,5 +326,25 @@ mod tests {
         assert_eq!(rematch_lineup(&[2, 8, 1, 2, 2], 2), [2, 3]);
         assert_eq!(rematch_lineup(&[2, 2], 3), [1]);
         assert!(rematch_lineup(&[2, 2], 0).is_empty());
+    }
+
+    #[test]
+    fn the_forfeit_fallback_fills_only_the_first_undecided_event() {
+        let mut winners = [0, 4, 0, 0, 0, 0];
+        let mut roll = 5489;
+        settle_first_undecided(&mut winners, &[], &mut roll);
+        assert_ne!(winners[0], 0);
+        assert!((7..=14).contains(&(winners[0] as i32)));
+        assert_eq!(&winners[1..], &[4, 0, 0, 0, 0]);
+        // The roll advanced once.
+        assert_eq!(roll, 5489u32.wrapping_mul(STEP).wrapping_add(1));
+        // A field's first counted company takes the event instead.
+        let mut winners = [0; 6];
+        settle_first_undecided(&mut winners, &[0, 11, 12], &mut roll);
+        assert_eq!(winners, [11, 0, 0, 0, 0, 0]);
+        // Nothing is decided when every event has a winner.
+        let mut full = [1, 2, 3, 4, 5, 6];
+        settle_first_undecided(&mut full, &[11], &mut roll);
+        assert_eq!(full, [1, 2, 3, 4, 5, 6]);
     }
 }

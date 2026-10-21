@@ -18,6 +18,15 @@
 //!   (0x120 bytes), the sixteen rival companies (64 bytes), each event's
 //!   template id, rank and two more words, then 16 and 32 bytes of the
 //!   season's weeks and the prize history.
+//! * employees (`0xA0400000`): written only while someone is employed; a
+//!   count, then each employee's two unused words, profession word, a
+//!   custom-fighter flag (a flagged entry carries no character id), the
+//!   character id otherwise, an item list (a count and twelve-byte entries)
+//!   and four words.
+//! * merchant (`0xA0500000`): written only while a merchant is employed:
+//!   the stock type, the specialisation word, two unused words, and the
+//!   stock's count and item ids. A loader that skips stock reads only the
+//!   header.
 //!
 //! Evidence: the arena save writers and loaders read from `Exanima.exe`
 //! 0.9.5; no shipped file holds these chunks (they are written into the
@@ -31,6 +40,12 @@ pub const COMPANY_CHUNK: u32 = 0xA0DC_0000;
 pub const DAY_CHUNK: u32 = 0xA0D1_0000;
 /// The tournament chunk's id.
 pub const TOURNAMENT_CHUNK: u32 = 0xA060_0000;
+/// The employees chunk's id.
+pub const EMPLOYEES_CHUNK: u32 = 0xA040_0000;
+/// The merchant chunk's id.
+pub const MERCHANT_CHUNK: u32 = 0xA050_0000;
+/// One item reference in an employee's own list.
+pub const ITEM_ENTRY_LEN: usize = 12;
 /// The emblem record's size.
 pub const EMBLEM_LEN: usize = 0x1c;
 /// A log record's size.
@@ -241,6 +256,151 @@ pub fn write_day(chunk: &DayChunk) -> Vec<u8> {
     out
 }
 
+/// One twelve-byte item reference of an employee's own list: the item, its
+/// flags and a third word the original carries without reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ItemEntry {
+    pub id: u32,
+    pub flags: u32,
+    pub extra: u32,
+}
+
+impl ItemEntry {
+    fn parse(bytes: &[u8]) -> Self {
+        Self {
+            id: u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            flags: u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+            extra: u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
+        }
+    }
+
+    fn write(&self, out: &mut Vec<u8>) {
+        put(out, self.id);
+        put(out, self.flags);
+        put(out, self.extra);
+    }
+}
+
+/// An employed specialist or fighter as the employees chunk keeps one.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct EmployeeRecord {
+    /// The profession word: the class is its low byte.
+    pub class: u32,
+    /// A custom fighter (a recruit): the entry carries no character id.
+    pub custom: bool,
+    /// The world character id of a candidate hired from the list.
+    pub character: u32,
+    /// The employee's own items.
+    pub items: Vec<ItemEntry>,
+    /// Four words kept after the item list.
+    pub words: [u32; 4],
+}
+
+/// The employees chunk. An empty staff writes no chunk at all.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct EmployeesChunk {
+    pub employees: Vec<EmployeeRecord>,
+}
+
+/// Read an employees chunk's payload. A negative count reads no employees.
+pub fn parse_employees(bytes: &[u8]) -> Result<EmployeesChunk, ArenaSaveError> {
+    let mut r = Reader { bytes, at: 0 };
+    let count = r.word()? as i32;
+    let mut employees = Vec::new();
+    for _ in 0..count.max(0) {
+        r.take(4)?;
+        r.take(4)?;
+        let class = r.word()?;
+        let custom = r.word()? & 1 != 0;
+        let character = if custom { 0 } else { r.word()? };
+        let entries = r.word()? as i32;
+        let mut items = Vec::new();
+        for _ in 0..entries.max(0) {
+            items.push(ItemEntry::parse(r.take(ITEM_ENTRY_LEN)?));
+        }
+        let words = r.words::<4>()?;
+        employees.push(EmployeeRecord {
+            class,
+            custom,
+            character,
+            items,
+            words,
+        });
+    }
+    Ok(EmployeesChunk { employees })
+}
+
+/// Write an employees chunk's payload.
+pub fn write_employees(chunk: &EmployeesChunk) -> Vec<u8> {
+    let mut out = Vec::new();
+    put(&mut out, chunk.employees.len() as u32);
+    for employee in &chunk.employees {
+        put(&mut out, 0);
+        put(&mut out, 0);
+        put(&mut out, employee.class);
+        put(&mut out, u32::from(employee.custom));
+        if !employee.custom {
+            put(&mut out, employee.character);
+        }
+        put(&mut out, employee.items.len() as u32);
+        for item in &employee.items {
+            item.write(&mut out);
+        }
+        for &word in &employee.words {
+            put(&mut out, word);
+        }
+    }
+    out
+}
+
+/// The merchant's stock chunk.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MerchantChunk {
+    /// What kind of stock the merchant carries.
+    pub stock_type: u32,
+    /// The specialisation word (kept raw: the original starts it at −1).
+    pub specialisation: u32,
+    /// The two unused words between the specialisation and the count.
+    pub unused: [u32; 2],
+    /// The stock's item ids.
+    pub ids: Vec<u32>,
+}
+
+/// Read a merchant chunk's payload. `keep_stock` is false on the load path
+/// that regenerates the stock: only the header is read then.
+pub fn parse_merchant(bytes: &[u8], keep_stock: bool) -> Result<MerchantChunk, ArenaSaveError> {
+    let mut r = Reader { bytes, at: 0 };
+    let stock_type = r.word()?;
+    let specialisation = r.word()?;
+    let unused = r.words::<2>()?;
+    let count = if keep_stock { r.word()? as i32 } else { 0 };
+    let mut ids = Vec::new();
+    for _ in 0..count.max(0) {
+        ids.push(r.word()?);
+    }
+    Ok(MerchantChunk {
+        stock_type,
+        specialisation,
+        unused,
+        ids,
+    })
+}
+
+/// Write a merchant chunk's payload.
+pub fn write_merchant(chunk: &MerchantChunk) -> Vec<u8> {
+    let mut out = Vec::new();
+    put(&mut out, chunk.stock_type);
+    put(&mut out, chunk.specialisation);
+    for &word in &chunk.unused {
+        put(&mut out, word);
+    }
+    put(&mut out, chunk.ids.len() as u32);
+    for &id in &chunk.ids {
+        put(&mut out, id);
+    }
+    out
+}
+
 /// One tournament event's saved words.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct EventEntry {
@@ -445,6 +605,88 @@ mod tests {
         empty.extend_from_slice(&(-1i32).to_le_bytes());
         empty.extend_from_slice(&[0; 8]);
         assert!(parse_day(&empty).unwrap().specials.is_empty());
+    }
+
+    #[test]
+    fn employees_round_trip_with_both_entry_kinds() {
+        let chunk = EmployeesChunk {
+            employees: vec![
+                EmployeeRecord {
+                    class: 0x10,
+                    custom: false,
+                    character: 0x1234,
+                    items: vec![
+                        ItemEntry {
+                            id: 7,
+                            flags: 0x200,
+                            extra: 9,
+                        },
+                        ItemEntry {
+                            id: 8,
+                            flags: 0,
+                            extra: 0,
+                        },
+                    ],
+                    words: [1, 2, 3, 4],
+                },
+                EmployeeRecord {
+                    class: 2,
+                    custom: true,
+                    character: 0,
+                    items: Vec::new(),
+                    words: [5, 6, 7, 8],
+                },
+            ],
+        };
+        let payload = write_employees(&chunk);
+        // count; the first entry has a character id, the second not.
+        assert_eq!(payload.len(), 4 + 64 + 36);
+        let back = parse_employees(&payload).unwrap();
+        assert_eq!(back, chunk);
+        // The two leading words are skipped whatever they hold.
+        let mut odd = payload.clone();
+        odd[4] = 0xff;
+        odd[8] = 0xee;
+        assert_eq!(parse_employees(&odd).unwrap(), chunk);
+        assert_eq!(
+            parse_employees(&payload[..payload.len() - 1]),
+            Err(ArenaSaveError::Short)
+        );
+        assert_eq!(parse_employees(&[]), Err(ArenaSaveError::Short));
+    }
+
+    #[test]
+    fn an_empty_staff_writes_and_reads_an_empty_chunk() {
+        let payload = write_employees(&EmployeesChunk::default());
+        assert_eq!(payload, 0u32.to_le_bytes());
+        assert_eq!(
+            parse_employees(&payload).unwrap(),
+            EmployeesChunk::default()
+        );
+        let mut negative = (-1i32).to_le_bytes().to_vec();
+        negative.extend_from_slice(&[0; 8]);
+        assert!(parse_employees(&negative).unwrap().employees.is_empty());
+    }
+
+    #[test]
+    fn a_merchant_keeps_or_skips_its_stock() {
+        let chunk = MerchantChunk {
+            stock_type: 0x2c,
+            specialisation: u32::MAX,
+            unused: [0, 0],
+            ids: vec![17, 18, 19],
+        };
+        let payload = write_merchant(&chunk);
+        assert_eq!(payload.len(), 20 + 12);
+        assert_eq!(parse_merchant(&payload, true).unwrap(), chunk);
+        let skipped = parse_merchant(&payload, false).unwrap();
+        assert_eq!(skipped.ids, Vec::new());
+        assert_eq!(skipped.stock_type, 0x2c);
+        assert_eq!(skipped.specialisation, u32::MAX);
+        assert_eq!(
+            parse_merchant(&payload[..15], true),
+            Err(ArenaSaveError::Short)
+        );
     }
 
     #[test]

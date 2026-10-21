@@ -5,6 +5,7 @@
 pub mod arena;
 pub mod arena_board;
 pub mod arena_hub;
+pub mod arena_ids;
 pub mod arena_log;
 pub mod arena_match;
 pub mod arsenal;

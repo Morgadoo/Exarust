@@ -164,6 +164,28 @@ pub struct Staff {
     pub order: Vec<i32>,
 }
 
+/// Number the manager and the staff as the arena does before a match. The
+/// manager is fighter 1 and carries the leader bit; an employee is the next
+/// number in list order and also carries it when its class's low bit is
+/// set. A combatant or recruit (the low two class bits) counts as a fighter,
+/// so the count starts at the manager.
+pub fn number_fighters(classes: &[u8]) -> (u32, Vec<u32>) {
+    let mut count = 1;
+    let mut roles = Vec::with_capacity(classes.len() + 1);
+    roles.push(CONTROLLED);
+    for (index, &class) in classes.iter().enumerate() {
+        if class & 3 != 0 {
+            count += 1;
+        }
+        let mut role = index as u32 + 2;
+        if class & 1 != 0 {
+            role |= CONTROLLED;
+        }
+        roles.push(role);
+    }
+    (count, roles)
+}
+
 impl Staff {
     /// Fighters, the manager first.
     pub fn fighters(&self) -> u32 {
@@ -916,5 +938,14 @@ mod tests {
             staff.lesson_round(),
             Some((1, vec![None, Some(0), Some(3)]))
         );
+    }
+
+    #[test]
+    fn fighters_are_numbered_from_the_manager_and_leaders_carry_the_bit() {
+        let (count, roles) = number_fighters(&[COMBATANT, MERCHANT, TRAINER | RECRUIT, 0]);
+        assert_eq!(count, 3);
+        assert_eq!(roles, vec![CONTROLLED, 2, 3, 4 | CONTROLLED, 5]);
+        assert_eq!(number_fighters(&[]), (1, vec![CONTROLLED]));
+        assert_eq!(number_fighters(&[PHYSICIAN]), (1, vec![CONTROLLED, 2]));
     }
 }
