@@ -307,12 +307,21 @@ impl CharacterStats {
         weapon_record::step_reach(self.scale, self.feral, encumbrance) / CM
     }
 
-    /// The attack reach (`+0xfd0`), cm: √scale times 1 − 0.3·age (the
-    /// record's age, omitted when it is negative) times 1 − 0.2·encumbrance
-    /// times 80. A human of scale 1, age 0 and no armour reaches 80 cm.
+    /// The attack reach, cm: √scale times (1 − 0.2·encumbrance) times 80,
+    /// times 1 − 0.3·age (the record's age) unless the age is negative. A
+    /// human of scale 1, age 0 and no armour reaches 80 cm. The original
+    /// works in double precision, multiplies the encumbrance factor by 80
+    /// before the age factor and narrows once; a NaN age counts as aged
+    /// (the sign test lets it through).
     pub fn attack_reach(&self, age: f32) -> f32 {
-        let aged = if age >= 0.0 { 1.0 - age * 0.3 } else { 1.0 };
-        self.scale.sqrt() * aged * (1.0 - self.encumbrance * 0.2) * 80.0
+        let size = f64::from(self.scale.sqrt());
+        let base = (1.0 - f64::from(self.encumbrance) * 0.2) * 80.0;
+        let reach = if age < 0.0 {
+            size * base
+        } else {
+            size * ((1.0 - f64::from(age) * 0.3) * base)
+        };
+        reach as f32
     }
 
     /// What the character brings to the weapons it holds: its size, its

@@ -582,7 +582,7 @@ fn shipped_arena_actors() {
     );
 }
 
-/// The attack reach (`+0xfd0`): √scale × (1 − 0.3 age, omitted when the
+/// The attack reach: √scale × (1 − 0.3 age, omitted when the
 /// age is negative) × (1 − 0.2 encumbrance) × 80 cm.
 #[test]
 fn the_attack_reach() {
@@ -607,4 +607,6 @@ fn the_attack_reach() {
     };
     // 1.5 × 1 × 0.95 × 80.
     assert!((both.attack_reach(0.0) - 114.0).abs() < 1e-5);
+    // A NaN age is not negative: the aged product is NaN.
+    assert!(human.attack_reach(f32::NAN).is_nan());
 }
