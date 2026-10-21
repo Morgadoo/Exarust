@@ -1012,10 +1012,49 @@ the cell's rotation; see [formats/RFC.md](formats/RFC.md) (Grid building).
 
 ### Sun shadow fit
 
-The original's sun has one orthographic shadow map (no cascades). In its
-fitted mode it clips the view region by planes and takes the smallest
-sphere around the clipped corners, then works in centimetres (×100). The
-solver is `exa_render::bound_sphere`, reproduced to the bit (reverse
+The original's sun has one orthographic shadow map (no cascades). The map is
+`{256, 512, 1024, 2048, 4096, 8192}[q − 1]` texels with
+`q = min(ShadowDetail, 5) + the sun's RFC flags bits 0–1` (0, +1, −1, −2; 0
+means no map), DEPTH_COMPONENT16, clamp-to-edge, linear, compare to texture,
+less. The sun's own flags give 0, so the top detail is 4096²
+(`exa_render::SUN_SHADOW_SIZE`).
+
+Every frame of its fitted mode the update copies the active view's convex
+volume, clips it by up to three planes on the side the sun comes from, fits
+the smallest sphere around the surviving corners, and works in centimetres
+(×100):
+
+- **Clipping.** The scene's bounds give a centre and half extents per axis
+  (y forced to 1.5 m ± 6.5 m, so the vertical planes sit at −5 m and 8 m);
+  an axis whose sun direction component is negative gets the plane
+  `axis ≤ centre + extent`, one whose component is positive
+  `axis ≥ centre − extent`, and a zero component adds none. Another camera
+  mode instead clips both vertical planes (the level's floor and ceiling,
+  0 and 340 cm in the grid levels). A face keeps the part where
+  `normal · p − w ≤ 0`; the cut segments chain into a cap, appended last.
+- **Corners.** Every face's vertices, in face order, merged within 0.1 cm².
+  Fewer than two corners skip the whole fit (the previous frame's
+  projection stays). The corners are then scaled by 0.01 into the solver's
+  metres and the fitted centre and radius are scaled back by 100.
+- **Radius.** `h = 200·round(r/200 + 0.4)`, the conversion being the
+  processor's `cvtsd2si` (nearest, ties to even; the engine's floor and
+  ceil helpers are separate routines this path never calls). The half
+  extent is kept across frames: the quantised value is taken only when it
+  differs *and* `r > h + 200·0.3` (grow) or `r < h − 200·0.1` (shrink).
+  The constructor starts it at 3000 cm.
+- **Centre and depth.** The centre is rotated into the light's frame (its
+  travel direction is the negated, normalised vector towards the sun;
+  `right = dir × +Y`, `up = right × dir`; a fixed frame when
+  |dir.y| > 0.9999), its x and y are snapped to the texel grid
+  (`round(c / texel)·texel`, `texel = 2h / size`) and the box extends
+  ±8000 cm along the light from it.
+- **Softness and bias.** The same update writes the sun light's softness
+  `(c + 1)·400 / h` (c the light's own value, 0 by default), floored at
+  0.15 with `c' = 0.15 / (the unfloored value)`; the render routine's
+  polygon offset is `1 + 1000/h + 2000c'/h` and it nudges casters by
+  1.25·(c' + 1) cm in window depth.
+
+The solver is `exa_render::bound_sphere`, reproduced to the bit (reverse
 engineered from Exanima.exe):
 
 - The points are widened to double precision; the result is narrowed back
@@ -1045,8 +1084,24 @@ engineered from Exanima.exe):
 - No points: only the radius is written, 4000 in the points' units (the
   shadow fit never calls it with fewer than two).
 
-Exarust's sun uses Bevy's cascaded shadow maps instead of the fitted
-orthographic map, so nothing calls the solver at run time yet.
+Exarust's fit is `exa_render::sun_fit`: plain functions for the clip, the
+sphere (`bound_sphere`), the quantisation, the snap and the matrices, plus
+the `SunFit` state that carries the half extent between frames.
+`exa_world::sun_shadow` builds the region from the scene camera's frustum
+(near plane out to the 60 m shadow range) and the level's bounds, then
+replaces the sun's single Bevy cascade entry with the fitted matrices each
+frame, after Bevy's cascade builder and before it derives the shadow frusta
+(so the CPU caster culling follows them too). The `CascadeShadowConfig` has
+one bound, at the shadow range: past it the map is unshadowed, as past the
+original's fitted region.
+
+The camera frustum stands in for the original's visible-region volume (its
+active rooms and portals, which Exarust does not keep as a convex volume),
+and the shadow range for the original's untraced camera far plane; Bevy's
+1000 m far would make one 4096² map far coarser than the original's. Not
+wired: the softness, which needs a filter-radius uniform Bevy's directional
+shadows only have with its PCSS feature, and the polygon offset and
+caster-side depth nudge (Bevy's own depth and normal biases apply instead).
 
 ## Fires
 

@@ -16,8 +16,8 @@
 //! [`Lighting`] and Bevy resources.
 
 use bevy::light::Atmosphere;
+use bevy::light::CascadeShadowConfigBuilder;
 use bevy::light::atmosphere::ScatteringMedium;
-use bevy::light::{CascadeShadowConfigBuilder, DirectionalLightShadowMap};
 use bevy::pbr::{AtmosphereSettings, DistanceFog, FogFalloff};
 use bevy::prelude::*;
 use exa_formats::environment::{Environment, SunMode};
@@ -45,15 +45,17 @@ pub const SUN_LUX: f32 = SUN_INTENSITY * LUX_PER_INTENSITY;
 /// The outdoor preset's fog reaches this far, metres (the level records'
 /// distance words give about this).
 const OUTDOOR_FOG_DISTANCE: f32 = 1000.0;
-/// Shadowed range of the sun, metres.
-const SUN_SHADOW_RANGE: f32 = 60.0;
+/// Shadowed range of the sun, metres: how far the fitted orthographic map
+/// looks, and the single cascade's far bound.
+pub const SUN_SHADOW_RANGE: f32 = 60.0;
 
 pub struct EnvironmentPlugin;
 
 impl Plugin for EnvironmentPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(DirectionalLightShadowMap { size: 2048 })
-            .add_systems(PostUpdate, (fog_cameras, sky_cameras));
+        // The sun's map size comes from `exa_render` (the original's top
+        // shadow detail); do not override it here.
+        app.add_systems(PostUpdate, (fog_cameras, sky_cameras));
     }
 }
 
@@ -243,12 +245,16 @@ pub fn apply_lighting(commands: &mut Commands, lighting: &Lighting, parent: Enti
                 shadow_maps_enabled: true,
                 ..default()
             },
+            // One map fitted to the visible region, as the original's sun:
+            // `sun_shadow` replaces this cascade's matrices each frame with
+            // the fitted ones. The bound is where the fit stops looking.
             CascadeShadowConfigBuilder {
-                num_cascades: 2,
+                num_cascades: 1,
                 maximum_distance: SUN_SHADOW_RANGE,
                 ..default()
             }
             .build(),
+            crate::sun_shadow::SunFitState::default(),
             // The light shines along its −Z, away from the sun.
             Transform::default().looking_to(-sun.towards, Vec3::Y),
             ChildOf(parent),

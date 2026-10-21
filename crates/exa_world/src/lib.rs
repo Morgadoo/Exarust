@@ -21,6 +21,7 @@ pub mod scene_env;
 pub mod scene_nodes;
 pub mod shadow_links;
 pub mod start;
+pub mod sun_shadow;
 pub mod teleporters;
 pub mod terrain;
 
@@ -44,6 +45,7 @@ impl Plugin for WorldPlugin {
             nav::NavPlugin,
             shadow_links::ShadowLinksPlugin,
             room_view::RoomViewPlugin,
+            sun_shadow::SunShadowPlugin,
         ));
     }
 }
@@ -993,6 +995,11 @@ impl LevelLoad {
         });
         let (width, depth) =
             nav::source::grid_size(self.scene.grid.as_ref().map(|g| (g.width, g.height)));
+        commands.insert_resource(sun_shadow::SunShadowRegion {
+            scene: exa_render::sun_fit::SceneBox::from_bounds(min * 100.0, max * 100.0),
+            floor_cm: env.floor * 100.0,
+            ceiling_cm: env.ceiling * 100.0,
+        });
         commands.insert_resource(nav::PendingNav {
             root: self.root,
             width,

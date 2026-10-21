@@ -16,6 +16,7 @@ pub mod post;
 pub mod shell;
 pub mod spray;
 pub mod stain;
+pub mod sun_fit;
 pub mod supersample;
 
 use bevy::prelude::*;
@@ -23,6 +24,10 @@ use bevy::prelude::*;
 /// Faces of the lights' cube shadow maps, texels (the original's at its top
 /// shadow detail).
 pub const POINT_SHADOW_SIZE: usize = 512;
+/// The sun's fitted shadow map, texels on a side. The original sizes it from
+/// the user's shadow detail plus the level's sun flags: 256/512/1024/2048/
+/// 4096/8192 for detail 1–6 at flag 0, which is 4096 at the top detail.
+pub const SUN_SHADOW_SIZE: usize = 4096;
 
 /// A node's shadow-bias level ([`lights::ShadowBias`], carried to the
 /// shaders in the mesh tag): terrain and tile-grid floors are 3, other grid
@@ -56,6 +61,8 @@ impl Plugin for RenderPlugin {
             .insert_resource(bevy::light::PointLightShadowMap {
                 size: POINT_SHADOW_SIZE,
             })
-            .insert_resource(bevy::light::DirectionalLightShadowMap { size: 4096 });
+            .insert_resource(bevy::light::DirectionalLightShadowMap {
+                size: SUN_SHADOW_SIZE,
+            });
     }
 }
