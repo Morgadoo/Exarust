@@ -3,11 +3,19 @@
 //! item's seeds. Layout, rules and evidence: `docs/formats/OTHER.md`
 //! (Weapon factories).
 
+use crate::procedural::{CLASS_WEIGHTS, COLOUR_CLASS, EMBLEM_IDS, FINISH_LEVELS};
 use crate::{Error, Result};
 
-const MAGIC_BASE: u32 = 0xAFCE_0F00;
+const MAGIC: [u32; 3] = [0xAFCE_0F00, 0xAFCE_0F01, 0xAFCE_0F02];
 const MAX_AREAS: usize = 8;
-const AREA_LEN: usize = 0x38;
+
+/// The item's weapon section marks its choices as stored.
+pub const STORED: u32 = 0x1000_0000;
+/// The item's weapon section carries the choices but re-rolls their shape
+/// from seed A (the path a fresh item takes after its choices are copied).
+pub const REROLLED: u32 = 0x2000_0000;
+/// Both marks together: a complete stored choice record.
+pub const STORED_AND_REROLLED: u32 = STORED | REROLLED;
 
 /// A material area (`Assembly`, `Grip`, `Blade`, …) and its candidates.
 #[derive(Debug, Clone, PartialEq)]
@@ -23,7 +31,7 @@ pub struct Candidate {
     /// Weight class (bits 0–1), quality level (2–3), finish levels (4–7).
     pub bits: u8,
     pub colour: u8,
-    /// 5: the fixed colour; bit `0x40`: a secondary pattern layer.
+    /// 5: the fixed colour; bit `0x40`: an emblem pattern layer.
     pub mode: u8,
 }
 
@@ -35,33 +43,40 @@ pub struct Deform {
     pub kind: u8,
     /// 0 all, 1 X, 2 Y, 3 Z, 4 XY, 5 XZ, 6 YZ.
     pub axis: u8,
-    /// `0x10000`: one-sided, or scales attached children too.
+    /// `0x10000`: one-sided, or scales attached children too; `0x40000`:
+    /// the deform also moves the parent's mesh where a child attaches.
     pub flags: u32,
     pub amount: f32,
     pub pivot: f32,
     pub range: f32,
     /// Share of the second seed stream in the value.
     pub blend: f32,
-    /// How strongly the value changes the weapon's stats (0 before v1).
+    /// How strongly the value changes the weapon's stats.
     pub stat_weight: f32,
 }
 
 /// One slot of the recipe (grip, guard, blade, pommel, haft, head…).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Part {
-    /// bit 0: texture-only overlay; `0x10`: random twist about Y.
+    /// bit 0: texture-only overlay; `0x10`: random twist about Y; bits 1–2
+    /// are paint-region flags.
     pub flags: u32,
     pub name: String,
     /// Centimetres, radians, scale.
     pub position: [f32; 3],
     pub rotation: [f32; 3],
     pub scale: [f32; 3],
+    /// Scale and offset of the component's texture atlas rectangle.
+    pub atlas: [f32; 4],
+    pub texture_parameter: f32,
     pub deforms: [Deform; 3],
     /// ≥ 100: always present.
     pub chance: u8,
     /// 1-based index of the part it attaches to (0: none).
     pub attach_to: u8,
     pub role: u8,
+    /// 0: the parent's child-Y offset; 1–3: the parent's box minimum;
+    /// 4–6: its box maximum.
     pub attach_mode: u8,
     pub variants: Vec<Variant>,
 }
@@ -82,11 +97,17 @@ pub struct Variant {
     pub flags: u16,
     /// Offset of attached children along Y, millimetres.
     pub child_y_offset: i8,
+    /// Texture-atlas scale and offset of this variant (v2 only), in 1/127
+    /// or 1/254 steps.
+    pub texture_scale: i8,
+    pub texture_offset: [i8; 2],
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Factory {
     pub version: u8,
+    /// Texture atlas width and height.
+    pub atlas: [i32; 2],
     pub parts: Vec<Part>,
     pub areas: Vec<Area>,
     pub tags: Vec<String>,
@@ -96,20 +117,20 @@ impl Factory {
     pub fn parse(b: &[u8]) -> Result<Self> {
         let mut r = Reader { b, pos: 0 };
         let magic = r.u32()?;
-        if magic & 0xFFFF_FF00 != MAGIC_BASE || magic & 0xFF > 2 {
+        let Some(version) = MAGIC.iter().position(|&m| m == magic).map(|v| v as u8) else {
             return Err(Error::BadMagic {
                 found: magic,
-                expected: MAGIC_BASE,
+                expected: MAGIC[0],
             });
-        }
-        let version = (magic & 0xFF) as u8;
-        r.bytes(8 + 16 + 8)?; // reserved, name, atlas size
+        };
+        r.bytes(8 + 16)?; // reserved, name
+        let atlas = [r.i32()?, r.i32()?];
         let grips = r.count(8)?;
         r.bytes(grips * 8)?;
-        let declared = r.count(1)?;
+        let declared_areas = r.count(0x38)?;
         let mut areas = Vec::new();
-        for _ in 0..declared.min(MAX_AREAS) {
-            let a = r.bytes(AREA_LEN)?;
+        for _ in 0..declared_areas.min(MAX_AREAS) {
+            let a = r.bytes(0x38)?;
             let count = (a[0x30] as usize).min(8);
             areas.push(Area {
                 name: name(&a[..16]),
@@ -132,13 +153,16 @@ impl Factory {
             let flags = r.u32()?;
             let part_name = name(r.bytes(16)?);
             let v: Vec<f32> = (0..9).map(|_| r.f32()).collect::<Result<_>>()?;
-            r.bytes(16 + 4)?; // atlas rectangle, texture parameter
+            let atlas = [r.f32()?, r.f32()?, r.f32()?, r.f32()?];
+            let texture_parameter = r.f32()?;
             let mut read = Vec::with_capacity(3);
             for _ in 0..3 {
                 let header = r.u32()?;
                 let (amount, pivot, range) = (r.f32()?, r.f32()?, r.f32()?);
                 let (blend, stat_weight) = if version == 0 {
-                    (0.3, 0.0)
+                    // v0 deforms carry no blend or stat weight; the parser
+                    // fills in 0.3 and 1.
+                    (0.3, 1.0)
                 } else {
                     let blend = r.f32()?;
                     let weight = r.f32()?;
@@ -178,6 +202,12 @@ impl Factory {
                     excludes: u16::from_le_bytes([v[0x24], v[0x25]]),
                     flags: u16::from_le_bytes([v[0x26], v[0x27]]),
                     child_y_offset: if version >= 2 { v[0x29] as i8 } else { 0 },
+                    texture_scale: if version >= 2 { v[0x28] as i8 } else { 0 },
+                    texture_offset: if version >= 2 {
+                        [v[0x2A] as i8, v[0x2B] as i8]
+                    } else {
+                        [0, 0]
+                    },
                 });
             }
             parts.push(Part {
@@ -186,6 +216,8 @@ impl Factory {
                 position: [v[0], v[1], v[2]],
                 rotation: [v[3], v[4], v[5]],
                 scale: [v[6], v[7], v[8]],
+                atlas,
+                texture_parameter,
                 deforms,
                 chance: b4[0],
                 attach_to: b4[1],
@@ -200,10 +232,40 @@ impl Factory {
             .collect::<Result<_>>()?;
         Ok(Self {
             version,
+            atlas,
             parts,
             areas,
             tags,
         })
+    }
+
+    /// The tags each part may not take because an earlier part already
+    /// chose them: for every tag, the first part offering it owns it, and
+    /// later parts are constrained by it.
+    ///
+    /// The original fills the owner table from 0xFF for all but the last
+    /// tag (an off-by-one in its fill loop), so the last tag's owner is
+    /// whatever the stack held. We leave every tag unowned until a variant
+    /// offers it, and the last tag therefore never constrains a later part.
+    pub fn tag_constraints(&self) -> Vec<u8> {
+        let tags = self.tags.len().min(8);
+        let mut owner = vec![0xFFu8; tags];
+        for (i, part) in self.parts.iter().enumerate() {
+            for variant in &part.variants {
+                for (t, slot) in owner.iter_mut().enumerate() {
+                    if variant.tags & (1 << t) != 0 {
+                        *slot = (*slot).min(i.min(0xFE) as u8);
+                    }
+                }
+            }
+        }
+        (0..self.parts.len())
+            .map(|i| {
+                (0..tags)
+                    .filter(|&t| (owner[t] as usize) < i)
+                    .fold(0u8, |m, t| m | 1 << t)
+            })
+            .collect()
     }
 }
 
@@ -214,9 +276,13 @@ fn name(b: &[u8]) -> String {
 
 /// The original's 32-bit linear congruential generator.
 #[derive(Debug, Clone, Copy)]
-struct Lcg(u32);
+pub struct Lcg(u32);
 
 impl Lcg {
+    pub fn new(seed: u32) -> Self {
+        Self(seed)
+    }
+
     fn step(&mut self) -> u32 {
         self.0 = self.0.wrapping_mul(0x0808_8405).wrapping_add(1);
         self.0
@@ -226,8 +292,79 @@ impl Lcg {
         (self.step() as f64 * 2f64.powi(-32)) as f32
     }
 
-    fn below(&mut self, n: u32) -> u32 {
-        ((self.step() as u64 * n as u64) >> 32) as u32
+    fn below(&mut self, n: u64) -> u32 {
+        ((self.step() as u64 * n) >> 32) as u32
+    }
+}
+
+/// CVTSS2SI: round to nearest, ties to even.
+fn round(x: f32) -> i32 {
+    x.round_ties_even() as i32
+}
+
+/// A colour roll's palette index. `material` selects the family's rule,
+/// `grade` is the quality byte ×4 rounded (the shade band), and `dye` is the
+/// item randomiser's dye colour (the global the steel-painted class reads).
+///
+/// Classes 16 and 17 (gemstone and resin) fall through the original's
+/// switch and return an uninitialised register; 0 is used here.
+pub fn random_colour(material: u8, kind: u8, grade: u8, dye: u8, rng: &mut Lcg) -> u8 {
+    let class = COLOUR_CLASS.get(material as usize).copied().unwrap_or(0);
+    match class {
+        0 => match kind {
+            0 => {
+                let u = rng.step();
+                let r = rng.unit();
+                (((u >> 27) << 3) as u8)
+                    .wrapping_add(7)
+                    .wrapping_sub(round(r * r * 6.0) as u8)
+            }
+            // The item randomiser's two dye colours; not reached from a
+            // factory roll.
+            _ => dye,
+        },
+        1 => match kind {
+            0 => {
+                let threshold = (grade as f32 - 1.0) * 0.25;
+                let r = rng.unit();
+                if threshold >= r {
+                    let u = rng.step();
+                    let r = rng.unit();
+                    (((u >> 27) << 3) as u8)
+                        .wrapping_add(7)
+                        .wrapping_sub(round(r * r * 6.0) as u8)
+                } else {
+                    let u = rng.step();
+                    let r = rng.unit();
+                    ((((u as u64 * 7) >> 32) as u8).wrapping_add(5) << 3)
+                        .wrapping_add(7)
+                        .wrapping_sub(round(r * r * 4.0) as u8)
+                }
+            }
+            // Two palette tables built by the item randomiser; not reached
+            // from a factory roll.
+            _ => 0,
+        },
+        4 => 3,
+        5 => dye,
+        6 | 9 => {
+            const COLOURS: [u8; 6] = [0x5D, 0x4C, 0x35, 0x0D, 0x65, 0x6C];
+            COLOURS[rng.below(6) as usize]
+        }
+        7 => {
+            let u = rng.step();
+            let r = rng.unit();
+            ((((u as u64 * 7) >> 32) as u8).wrapping_add(5) << 3)
+                .wrapping_add(7)
+                .wrapping_sub(round(r * r * 7.0) as u8)
+        }
+        8 => 4,
+        18 => {
+            let u1 = rng.step();
+            let u2 = rng.step();
+            (((u1 >> 27) << 3) as u8).wrapping_add((u2 >> 29) as u8)
+        }
+        _ => 0,
     }
 }
 
@@ -237,8 +374,40 @@ pub struct AreaMaterial {
     pub material: u8,
     /// Finish levels, two nibbles.
     pub finish: u8,
-    /// Palette index; `None` when the colour is decided at run time.
-    pub colour: Option<u8>,
+    /// Palette index.
+    pub colour: u8,
+    /// The candidate's mode (5: fixed colour, `0x40`: emblem layer).
+    pub mode: u8,
+    /// An emblem layer drawn over the area in another colour (bit `0x40`).
+    pub emblem: Option<EmblemLayer>,
+}
+
+/// An emblem-pattern layer over a material area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmblemLayer {
+    pub colour: u8,
+    pub emblem: u8,
+}
+
+/// The item section's stored material choice for one area.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AreaChoice {
+    pub material: u8,
+    /// Finish byte (two nibbles).
+    pub finish: u8,
+    /// Palette index.
+    pub colour: u8,
+    /// 5: a fixed colour; `0x45`: adds an emblem layer.
+    pub mode: u8,
+}
+
+/// The choices an item's weapon section stores.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Choices {
+    /// 1-based variant per part (0: absent).
+    pub selection: Vec<u8>,
+    /// Up to four material areas.
+    pub areas: Vec<AreaChoice>,
 }
 
 /// A weapon generated from a factory and an item's seeds.
@@ -250,22 +419,38 @@ pub struct Generated {
     pub twist: Vec<f32>,
     /// Deform values per part, −1..1.
     pub deform: Vec<[f32; 3]>,
+    /// Material per recipe area, in area order.
     pub materials: Vec<AreaMaterial>,
 }
 
+/// What a factory needs from an item to build its weapon.
+#[derive(Debug, Clone, Default)]
+pub struct WeaponSpec {
+    pub flags: u32,
+    pub seeds: [u32; 2],
+    pub quality: u8,
+    /// The item randomiser's dye colour.
+    pub dye: u8,
+    pub choices: Option<Choices>,
+}
+
+/// A built weapon and the choices the item should store afterwards.
+#[derive(Debug, Clone)]
+pub struct Built {
+    pub generated: Generated,
+    /// The seeds after the original's seed-A copy (both streams equal when
+    /// the item had no second seed).
+    pub seeds: [u32; 2],
+    pub flags: u32,
+    pub choices: Option<Choices>,
+}
+
 impl Factory {
-    /// Generates a weapon from its seeds and quality byte. When the item
-    /// stores its selection, pass it in `stored` to keep it (deforms and
-    /// twists still come from the seeds).
-    pub fn generate(
-        &self,
-        seed_a: u32,
-        seed_b: u32,
-        quality: u8,
-        stored: Option<&[u8]>,
-    ) -> Generated {
-        let mut a = Lcg(seed_a);
-        let mut b = Lcg(seed_b);
+    /// Generates a weapon from its seeds and quality byte in the original's
+    /// full random path (both seed streams, choice roll, area materials).
+    pub fn roll(&self, seed_a: u32, seed_b: u32, quality: u8, dye: u8) -> Generated {
+        let mut a = Lcg::new(seed_a);
+        let mut b = Lcg::new(seed_b);
         let q = quality as f32 * 0.003_921_569;
         let n = self.parts.len();
         let twist: Vec<f32> = (0..n)
@@ -282,76 +467,124 @@ impl Factory {
                 })
             })
             .collect();
-        // Each tag belongs to the first part offering it; later parts must
-        // agree with what earlier choices took.
-        let tag_count = self.tags.len().min(8);
-        let owner: Vec<usize> = (0..tag_count)
-            .map(|t| {
-                self.parts
-                    .iter()
-                    .position(|p| p.variants.iter().any(|v| v.tags & (1 << t) != 0))
-                    .unwrap_or(usize::MAX)
-            })
-            .collect();
-        let constrained: Vec<u8> = (0..n)
-            .map(|i| {
-                (0..tag_count)
-                    .filter(|&t| owner[t] < i)
-                    .fold(0u8, |m, t| m | 1 << t)
-            })
-            .collect();
+        let constraints = self.tag_constraints();
         let mut selection = vec![0u8; n];
-        let (mut taken, mut excluded) = (0u8, 0u16);
+        let (mut taken, mut excluded) = (0u8, 0u32);
         for (i, part) in self.parts.iter().enumerate() {
-            let roll = a.unit();
-            let present = !part.variants.is_empty()
-                && excluded >> i & 1 == 0
-                && (part.chance > 99 || roll * 100.0 <= part.chance as f32);
+            let Some(roll) = roll_pick(part, &constraints, i, taken, excluded, &mut a) else {
+                continue;
+            };
+            selection[i] = roll;
+            let v = &part.variants[roll as usize - 1];
+            taken |= v.tags;
+            excluded |= v.excludes as u32;
+        }
+        let mut materials = Vec::with_capacity(self.areas.len());
+        for area in &self.areas {
+            materials.push(area_material(area, q, dye, &mut a));
+        }
+        Generated {
+            selection,
+            twist,
+            deform,
+            materials,
+        }
+    }
+
+    /// Replays stored choices keeping both seed streams: twists from seed B,
+    /// deform values blended from A and B, the selection and area materials
+    /// from the item.
+    pub fn replay(
+        &self,
+        choices: &Choices,
+        seed_a: u32,
+        seed_b: u32,
+        _quality: u8,
+        _dye: u8,
+    ) -> Generated {
+        let mut a = Lcg::new(seed_a);
+        let mut b = Lcg::new(seed_b);
+        let n = self.parts.len();
+        let twist: Vec<f32> = (0..n)
+            .map(|_| (b.unit() * 2.0 - 1.0) * std::f32::consts::TAU)
+            .collect();
+        let deform: Vec<[f32; 3]> = self
+            .parts
+            .iter()
+            .map(|p| {
+                p.deforms.map(|d| {
+                    let ra = a.unit();
+                    let rb = b.unit();
+                    (rb * 2.0 - 1.0) * d.blend + (1.0 - d.blend) * (ra * 2.0 - 1.0)
+                })
+            })
+            .collect();
+        let selection = self.stored_selection(choices);
+        let mut materials = Vec::with_capacity(self.areas.len().min(4));
+        for k in 0..self.areas.len().min(4) {
+            let c = choices.areas.get(k).copied().unwrap_or_default();
+            let emblem = (c.mode & 0x40 != 0).then_some(EmblemLayer {
+                colour: 0,
+                emblem: 0,
+            });
+            materials.push(AreaMaterial {
+                material: c.material,
+                finish: c.finish,
+                colour: c.colour,
+                mode: 0,
+                emblem,
+            });
+        }
+        Generated {
+            selection,
+            twist,
+            deform,
+            materials,
+        }
+    }
+
+    /// Replays stored choices with the freshly stored path: shape values and
+    /// twists from seed A alone, the selection and materials from the item.
+    pub fn replay_rerolled(
+        &self,
+        choices: &Choices,
+        seed_a: u32,
+        _quality: u8,
+        _dye: u8,
+    ) -> Generated {
+        let mut a = Lcg::new(seed_a);
+        let n = self.parts.len();
+        let selection = self.stored_selection(choices);
+        let mut deform = vec![[0.0f32; 3]; n];
+        let mut excluded = 0u32;
+        for (i, part) in self.parts.iter().enumerate() {
+            let present = roll_presence(part, i, excluded, &mut a);
             if !present {
                 continue;
             }
-            let roll = a.unit();
-            let eligible: Vec<bool> = part
-                .variants
-                .iter()
-                .map(|v| constrained[i] & v.tags <= taken & v.tags)
-                .collect();
-            let total: u32 = part
-                .variants
-                .iter()
-                .zip(&eligible)
-                .filter(|(_, e)| **e)
-                .map(|(v, _)| v.weight)
-                .sum();
-            let limit = (total as f32 * roll) as u32;
-            let mut sum = 0;
-            let mut pick = None;
-            for (k, (v, &e)) in part.variants.iter().zip(&eligible).enumerate() {
-                if e {
-                    sum += v.weight;
-                    if limit < sum {
-                        pick = Some(k + 1);
-                        break;
-                    }
-                }
-            }
-            let pick = pick.unwrap_or(sum as usize).clamp(1, part.variants.len());
-            selection[i] = pick as u8;
-            let v = &part.variants[pick - 1];
-            taken |= v.tags;
-            excluded |= v.excludes;
-        }
-        if let Some(stored) = stored {
-            for (i, s) in selection.iter_mut().enumerate() {
-                if let Some(&k) = stored.get(i) {
-                    *s = k.min(self.parts[i].variants.len() as u8);
-                }
+            a.step(); // the pick roll is drawn but the stored choice is kept
+            deform[i] = std::array::from_fn(|_| a.unit() * 2.0 - 1.0);
+            if let Some(v) = selection
+                .get(i)
+                .and_then(|&s| (s as usize).checked_sub(1))
+                .and_then(|v| part.variants.get(v))
+            {
+                excluded |= v.excludes as u32;
             }
         }
-        let materials = self
-            .areas
-            .iter()
-            .map(|area| area_material(area, q, &mut a))
+        let mut materials = Vec::with_capacity(self.areas.len().min(4));
+        for k in 0..self.areas.len().min(4) {
+            let c = choices.areas.get(k).copied().unwrap_or_default();
+            materials.push(AreaMaterial {
+                material: c.material,
+                finish: c.finish,
+                colour: c.colour,
+                mode: 0,
+                emblem: None,
+            });
+        }
+        let twist: Vec<f32> = (0..n)
+            .map(|_| (a.unit() * 2.0 - 1.0) * std::f32::consts::TAU)
             .collect();
         Generated {
             selection,
@@ -360,211 +593,233 @@ impl Factory {
             materials,
         }
     }
+
+    /// The selection an item stores, clamped to each part's variants.
+    fn stored_selection(&self, choices: &Choices) -> Vec<u8> {
+        (0..self.parts.len())
+            .map(|i| {
+                let s = choices.selection.get(i).copied().unwrap_or(0);
+                s.min(self.parts[i].variants.len() as u8)
+            })
+            .collect()
+    }
+
+    /// The choices an item stores after a random generation (only the first
+    /// four areas are kept; a patterned area is marked `0x45`).
+    pub fn store(&self, g: &Generated) -> Choices {
+        let areas = (0..self.areas.len().min(4))
+            .map(|k| {
+                let m = g.materials.get(k).copied().unwrap_or(AreaMaterial {
+                    material: 0,
+                    finish: 0,
+                    colour: 0,
+                    mode: 0,
+                    emblem: None,
+                });
+                AreaChoice {
+                    material: m.material,
+                    finish: m.finish,
+                    colour: m.colour,
+                    mode: if m.mode & 0x40 != 0 { 0x45 } else { 5 },
+                }
+            })
+            .collect();
+        Choices {
+            selection: g.selection.clone(),
+            areas,
+        }
+    }
+
+    /// The choices a fresh item stores before its first shape roll: the
+    /// choice roll from seed A (with three spare draws per present part so
+    /// the area colours land where a full roll would), then the first
+    /// candidate of the first three areas with a random colour.
+    pub fn initial_choices(&self, seed_a: u32, quality: u8, dye: u8) -> Choices {
+        let mut a = Lcg::new(seed_a);
+        let q = quality as f32 * 0.003_921_569;
+        let grade = (round(q * 4.0) & 0xFF) as u8;
+        let constraints = self.tag_constraints();
+        let mut selection = vec![0u8; self.parts.len()];
+        let (mut taken, mut excluded) = (0u8, 0u32);
+        for (i, part) in self.parts.iter().enumerate() {
+            let Some(roll) = roll_pick(part, &constraints, i, taken, excluded, &mut a) else {
+                continue;
+            };
+            selection[i] = roll;
+            let v = &part.variants[roll as usize - 1];
+            taken |= v.tags;
+            excluded |= v.excludes as u32;
+            a.step();
+            a.step();
+            a.step();
+        }
+        let areas = (0..self.areas.len().min(3))
+            .map(|k| {
+                let material = self.areas[k].candidates.first().map_or(0, |c| c.material);
+                AreaChoice {
+                    material,
+                    finish: crate::procedural::default_finish(material),
+                    colour: random_colour(material, 0, grade, dye, &mut a),
+                    mode: 5,
+                }
+            })
+            .collect();
+        Choices { selection, areas }
+    }
+
+    /// Builds an item's weapon exactly as the original does: copies seed A
+    /// into an empty B (marking the choices as stored), then picks the
+    /// stored, freshly-stored or random path from the flags.
+    pub fn build(&self, spec: &WeaponSpec) -> Built {
+        let mut seeds = spec.seeds;
+        let mut flags = spec.flags;
+        let mut choices = spec.choices.clone();
+        if flags & STORED == 0 && seeds[0] != 0 && seeds[1] == 0 {
+            seeds[1] = seeds[0];
+            flags |= STORED_AND_REROLLED;
+            choices = Some(self.initial_choices(seeds[0], spec.quality, spec.dye));
+        }
+        let empty = Choices::default();
+        let stored = choices.as_ref().unwrap_or(&empty);
+        let generated = if flags & REROLLED != 0 {
+            self.replay_rerolled(stored, seeds[0], spec.quality, spec.dye)
+        } else if flags & STORED != 0 {
+            self.replay(stored, seeds[0], seeds[1], spec.quality, spec.dye)
+        } else {
+            let g = self.roll(seeds[0], seeds[1], spec.quality, spec.dye);
+            if seeds[0] != 0 {
+                choices = Some(self.store(&g));
+            }
+            g
+        };
+        Built {
+            generated,
+            seeds,
+            flags,
+            choices,
+        }
+    }
 }
 
-const CLASS_WEIGHTS: [f32; 4] = [100.0, 50.0, 20.0, 10.0];
-const FINISH_LEVELS: [u8; 4] = [3, 7, 11, 15];
-/// Colour rule per material type.
-const COLOUR_CLASS: [u8; 26] = [
-    0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 4, 4, 4, 5, 6, 4, 7, 7, 8, 9, 9, 1, 16, 17, 18,
-];
+/// The part's presence roll and weighted variant pick, or `None` when it is
+/// absent. Advances the stream exactly as the original does.
+fn roll_pick(
+    part: &Part,
+    constraints: &[u8],
+    i: usize,
+    taken: u8,
+    excluded: u32,
+    rng: &mut Lcg,
+) -> Option<u8> {
+    if !roll_presence(part, i, excluded, rng) {
+        return None;
+    }
+    let roll = rng.unit();
+    let constrained = constraints.get(i).copied().unwrap_or(0);
+    let eligible: Vec<bool> = part
+        .variants
+        .iter()
+        .map(|v| constrained & v.tags <= taken & v.tags)
+        .collect();
+    let total: i32 = part
+        .variants
+        .iter()
+        .zip(&eligible)
+        .filter(|(_, e)| **e)
+        .map(|(v, _)| v.weight as i32)
+        .sum();
+    let limit = (total as f32 * roll) as i32;
+    let mut sum = 0i32;
+    for (k, (v, &e)) in part.variants.iter().zip(&eligible).enumerate() {
+        if e {
+            sum += v.weight as i32;
+            if limit < sum {
+                return Some(k as u8 + 1);
+            }
+        }
+    }
+    // No eligible variant (all weights zero). The original would store a
+    // running sum as the index; treating the part as absent is our choice.
+    None
+}
 
-fn area_material(area: &Area, q: f32, rng: &mut Lcg) -> AreaMaterial {
-    let weights: Vec<u32> = area
+/// The presence roll of a part.
+fn roll_presence(part: &Part, i: usize, excluded: u32, rng: &mut Lcg) -> bool {
+    let roll = rng.unit();
+    !part.variants.is_empty()
+        && (i >= 32 || excluded & (1 << i) == 0)
+        && (part.chance > 99 || roll * 100.0 <= part.chance as f32)
+}
+
+/// The material an area rolls: candidate weights from the quality's
+/// distance to the candidate's level, a finish nibble pair, a colour by the
+/// candidate's material class, and an emblem layer for patterned candidates.
+fn area_material(area: &Area, q: f32, dye: u8, rng: &mut Lcg) -> AreaMaterial {
+    let weights: Vec<i32> = area
         .candidates
         .iter()
         .map(|c| {
             let level = ((c.bits & 0xC) >> 2) as f32;
             let d = (q * 2.0 - level).abs();
             let f = if d < 2.0 { 1.0 - d * 0.5 } else { 0.0 };
-            (CLASS_WEIGHTS[(c.bits & 3) as usize] * f).round() as u32
+            round(CLASS_WEIGHTS[(c.bits & 3) as usize] as f32 * f)
         })
         .collect();
-    let total: u32 = weights.iter().sum();
-    let limit = (total as f32 * rng.unit()) as u32;
-    let mut sum = 0;
-    let pick = weights.iter().position(|w| {
+    let total: i32 = weights.iter().sum();
+    let limit = (total as f32 * rng.unit()) as i32;
+    let mut sum = 0i32;
+    let mut idx = 0usize;
+    for (k, w) in weights.iter().enumerate() {
         sum += w;
-        limit < sum
-    });
-    let c = pick
-        .or(if area.candidates.is_empty() {
-            None
-        } else {
-            Some(0)
-        })
-        .map(|i| area.candidates[i])
-        .unwrap_or(Candidate {
-            material: 0,
-            bits: 0,
-            colour: 0,
-            mode: 0,
-        });
-    let (material, finish) = match pick {
-        Some(_) => (
-            c.material,
-            FINISH_LEVELS[(c.bits >> 6) as usize] << 4
-                | FINISH_LEVELS[((c.bits & 0x30) >> 4) as usize],
-        ),
-        None => (0, 0),
-    };
-    let colour = if c.mode == 5 {
-        Some(c.colour)
-    } else {
-        colour_for(material, q, rng)
-    };
-    if c.mode & 0x40 != 0 {
-        rng.step();
-        rng.step();
-        rng.step();
+        if limit < sum {
+            idx = k;
+            break;
+        }
     }
+    let c = area.candidates.get(idx).copied().unwrap_or(Candidate {
+        material: 0,
+        bits: 0,
+        colour: 0,
+        mode: 0,
+    });
+    let finish =
+        FINISH_LEVELS[(c.bits >> 6) as usize] << 4 | FINISH_LEVELS[((c.bits & 0x30) >> 4) as usize];
+    let grade = (round(q * 4.0) & 0xFF) as u8;
+    let colour = if c.mode == 5 {
+        c.colour
+    } else {
+        random_colour(c.material, 0, grade, dye, rng)
+    };
+    let emblem = (c.mode & 0x40 != 0).then(|| {
+        // Three draws: the emblem id, the new family, the new shade.
+        let r1 = rng.step();
+        let r2 = rng.step();
+        let r3 = rng.step();
+        let emblem = EMBLEM_IDS[((r1 as u64 * EMBLEM_IDS.len() as u64) >> 32) as usize];
+        let shade = colour & 7;
+        let new_shade = if shade < 4 {
+            (((r3 as u64 * (5 - shade) as u64) >> 32) as u8) + shade + 3
+        } else {
+            ((r3 as u64 * (shade - 2) as u64) >> 32) as u8
+        };
+        EmblemLayer {
+            colour: ((((r2 as u64 * 255) >> 32) as u8) & 0xF8) | new_shade,
+            emblem,
+        }
+    });
     AreaMaterial {
-        material,
+        material: c.material,
         finish,
         colour,
+        mode: c.mode,
+        emblem,
     }
-}
-
-fn colour_for(material: u8, q: f32, rng: &mut Lcg) -> Option<u8> {
-    let class = COLOUR_CLASS.get(material as usize).copied().unwrap_or(0);
-    let grade = (q * 4.0).round();
-    let any = |rng: &mut Lcg| -> u8 {
-        let u = rng.step();
-        let r = rng.unit();
-        (((((u as u64) << 5) >> 32) as u32) << 3)
-            .wrapping_add(7)
-            .wrapping_sub((r * r * 6.0).round() as u32) as u8
-    };
-    Some(match class {
-        0 => any(rng),
-        1 => {
-            let r = rng.unit();
-            if r <= (grade - 1.0) * 0.25 {
-                any(rng)
-            } else {
-                let u = rng.step();
-                let r2 = rng.unit();
-                (((((u as u64 * 7) >> 32) as u32) + 5) * 8 + 7)
-                    .wrapping_sub((r2 * r2 * 4.0).round() as u32) as u8
-            }
-        }
-        4 => 3,
-        5 => return None,
-        6 => [0x4B, 0x53, 0x3B][rng.below(3) as usize],
-        7 => {
-            let u = rng.step();
-            let r = rng.unit();
-            (((((u as u64 * 7) >> 32) as u32) + 5) * 8 + 7)
-                .wrapping_sub((r * r * 7.0).round() as u32) as u8
-        }
-        8 => 4,
-        9 => [0x5D, 0x4C, 0x35, 0x0D, 0x65, 0x6C][rng.below(6) as usize],
-        18 => {
-            let u1 = rng.step();
-            let u2 = rng.step();
-            ((((((u1 as u64) << 5) >> 32) as u32) << 3) + ((((u2 as u64) << 3) >> 32) as u32)) as u8
-        }
-        _ => return None,
-    })
-}
-
-/// A placed component: its variant, position (cm), rotation (radians) and
-/// scale in the weapon's space.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Placed {
-    pub part: usize,
-    pub variant: usize,
-    pub position: [f32; 3],
-    pub rotation: [f32; 3],
-    pub scale: [f32; 3],
 }
 
 /// Scale factor of a deform value: grows above 0, shrinks reciprocally below.
 pub fn deform_factor(value: f32, amount: f32) -> f32 {
     let x = value * amount;
     if x <= 0.0 { 1.0 / (1.0 - x) } else { x + 1.0 }
-}
-
-impl Factory {
-    /// Where each chosen component goes: attached to its nearest chosen
-    /// ancestor, moved by the ancestor's scale deforms, twisted with it.
-    pub fn place(&self, g: &Generated) -> Vec<Placed> {
-        let n = self.parts.len();
-        let mut positions: Vec<Option<[f32; 3]>> = vec![None; n];
-        let mut out = Vec::new();
-        for (i, part) in self.parts.iter().enumerate() {
-            let sel = g.selection[i] as usize;
-            if part.flags & 1 != 0 || sel == 0 || sel > part.variants.len() {
-                continue;
-            }
-            let variant = &part.variants[sel - 1];
-            let mut rotation = part.rotation;
-            if part.flags & 0x10 != 0 && variant.flags & 8 == 0 {
-                rotation[1] += g.twist[i];
-            }
-            let mut up = part.attach_to as usize;
-            while up > 0 && up <= n {
-                if self.parts[up - 1].flags & 0x10 != 0 {
-                    rotation[1] += g.twist[up - 1];
-                }
-                up = self.parts[up - 1].attach_to as usize;
-            }
-            let mut p = part.position;
-            let mut s = part.scale;
-            let mut parent = part.attach_to as usize;
-            while parent > 0 && parent <= n && g.selection[parent - 1] == 0 {
-                parent = self.parts[parent - 1].attach_to as usize;
-            }
-            if parent > 0
-                && parent <= n
-                && let Some(base) = positions[parent - 1]
-            {
-                let par = &self.parts[parent - 1];
-                if part.attach_mode == 0 {
-                    let pv = &par.variants[g.selection[parent - 1] as usize - 1];
-                    p[1] += pv.child_y_offset as f32 * 0.1;
-                }
-                for (j, d) in par.deforms.iter().enumerate() {
-                    let f = deform_factor(g.deform[parent - 1][j], d.amount);
-                    match d.kind {
-                        1 => {
-                            let ax = d.axis as i32 - 1;
-                            match ax {
-                                -1 => p = p.map(|x| x * f),
-                                0..=2 => {
-                                    let k = ax as usize;
-                                    p[k] = (p[k] - d.pivot) * f + d.pivot;
-                                }
-                                _ => {}
-                            }
-                            if d.flags & 0x10000 != 0 {
-                                match ax {
-                                    -1 => s = s.map(|x| x * f),
-                                    0..=2 => s[ax as usize] *= f,
-                                    3 => (s[0], s[1]) = (s[0] * f, s[1] * f),
-                                    4 => (s[0], s[2]) = (s[0] * f, s[2] * f),
-                                    5 => (s[1], s[2]) = (s[1] * f, s[2] * f),
-                                    _ => {}
-                                }
-                            }
-                        }
-                        2 => p[1] = band_stretch(p[1], d, f),
-                        _ => {}
-                    }
-                }
-                p = std::array::from_fn(|k| p[k] * par.scale[k] + base[k]);
-            }
-            positions[i] = Some(p);
-            out.push(Placed {
-                part: i,
-                variant: sel - 1,
-                position: p,
-                rotation,
-                scale: s,
-            });
-        }
-        out
-    }
 }
 
 /// Moves `y` by a band stretch of factor `f` over `pivot ± range`; beyond
@@ -585,6 +840,383 @@ pub fn band_stretch(y: f32, d: &Deform, f: f32) -> f32 {
         (y - pivot) * f + pivot
     } else {
         y + (f - 1.0) * range
+    }
+}
+
+/// Applies a part's deform to its vertices (all kinds: scale, band stretch,
+/// taper, bend, radial). Unit of the positions is the component's.
+pub fn deform_positions(positions: &mut [[f32; 3]], d: &Deform, value: f32) {
+    match d.kind {
+        1 => scale_positions(positions, d, value),
+        2 => band_positions(positions, d, value),
+        3 => taper_positions(positions, d, value),
+        4 => bend_positions(positions, d, value),
+        5 => radial_positions(positions, d, value),
+        _ => {}
+    }
+}
+
+fn axes_for(axis: u8) -> [usize; 2] {
+    match axis {
+        4 => [0, 1],
+        5 => [0, 2],
+        6 => [1, 2],
+        _ => [0, 0],
+    }
+}
+
+fn scale_positions(p: &mut [[f32; 3]], d: &Deform, value: f32) {
+    let f = deform_factor(value, d.amount);
+    match d.axis {
+        0 => {
+            for v in p.iter_mut() {
+                *v = v.map(|x| x * f);
+            }
+        }
+        1..=3 => {
+            let a = d.axis as usize - 1;
+            for v in p.iter_mut() {
+                v[a] = (v[a] - d.pivot) * f + d.pivot;
+            }
+        }
+        4..=6 => {
+            let [a, b] = axes_for(d.axis);
+            for v in p.iter_mut() {
+                v[a] *= f;
+                v[b] *= f;
+            }
+        }
+        _ => {}
+    }
+}
+
+fn band_positions(p: &mut [[f32; 3]], d: &Deform, value: f32) {
+    let a = d.axis as i32 - 1;
+    if !(0..3).contains(&a) {
+        return;
+    }
+    let a = a as usize;
+    let f = deform_factor(value, d.amount);
+    let (pivot, range) = (d.pivot, d.range);
+    let one_sided = d.flags & 0x10000 != 0;
+    for v in p.iter_mut() {
+        let x = v[a];
+        v[a] = if one_sided {
+            if pivot <= x && x != pivot {
+                if x <= pivot + range {
+                    (x - pivot) * f + pivot
+                } else {
+                    (f - 1.0) * range + x
+                }
+            } else {
+                x
+            }
+        } else if x <= pivot {
+            if x >= pivot - range {
+                (x - pivot) * f + pivot
+            } else {
+                x - (f - 1.0) * range
+            }
+        } else if x <= pivot + range {
+            (x - pivot) * f + pivot
+        } else {
+            (f - 1.0) * range + x
+        };
+    }
+}
+
+fn taper_positions(p: &mut [[f32; 3]], d: &Deform, value: f32) {
+    let a = d.axis as i32 - 1;
+    if !(0..3).contains(&a) {
+        return;
+    }
+    let a = a as usize;
+    // The original adds the deform's range in double precision, multiplies
+    // by −0.05 and narrows.
+    let x = ((value + d.range) as f64 * -0.05) as f32;
+    let f = deform_factor(x, d.amount);
+    for v in p.iter_mut() {
+        let delta = v[a] - d.pivot;
+        let s = f * delta + (1.0 - delta);
+        for (k, c) in v.iter_mut().enumerate() {
+            if k != a {
+                *c *= s;
+            }
+        }
+    }
+}
+
+/// `sign(x)`: ±1, or 0 for zero (the engine's tiny guard helper).
+fn sign_or_zero(x: f32) -> f32 {
+    if x == 0.0 {
+        0.0
+    } else if x.is_sign_negative() {
+        -1.0
+    } else {
+        1.0
+    }
+}
+
+fn bend_positions(p: &mut [[f32; 3]], d: &Deform, value: f32) {
+    if !(1..=6).contains(&d.axis) {
+        return;
+    }
+    let value = if d.flags & 0x10000 == 0 {
+        value * d.amount
+    } else {
+        (value + 1.0) * 0.5 * d.amount
+    };
+    let (a, b, c) = match d.axis {
+        1 => (0, 1, 2),
+        2 => (1, 2, 0),
+        3 => (1, 0, 2),
+        4 => (0, 1, 2),
+        5 => (0, 2, 1),
+        _ => (0, 2, 1),
+    };
+    if d.axis <= 3 {
+        let k = if d.pivot.abs() >= 1.0 {
+            d.pivot
+        } else {
+            sign_or_zero(d.pivot)
+        };
+        let k = if k.abs() <= 1.192_092_9e-7 {
+            1.0
+        } else {
+            1.2 / k
+        };
+        for v in p.iter_mut() {
+            if v[b].abs() < d.range {
+                continue;
+            }
+            let delta = d.pivot - v[a];
+            let (sin, cos) = (v[b] * value * k).sin_cos();
+            v[a] = -cos * delta + d.pivot;
+            v[b] = (1.0 - value) * v[b] + delta * sin;
+        }
+    } else if value >= 0.01 {
+        let k = 40.0 / value;
+        for v in p.iter_mut() {
+            let r2 = v[a] * v[a] + v[b] * v[b];
+            if r2 < 1.192_092_9e-7 {
+                continue;
+            }
+            let r = r2.sqrt();
+            let (sin, cos) = (r / k).sin_cos();
+            let z = v[c] + k;
+            let s = (z * sin) / r;
+            v[a] *= s;
+            v[b] *= s;
+            v[c] = z * cos - k;
+        }
+    }
+}
+
+fn radial_positions(p: &mut [[f32; 3]], d: &Deform, value: f32) {
+    let axis = d.axis as i32 - 1;
+    if !(-1..5).contains(&axis) {
+        return;
+    }
+    let f = deform_factor(value, d.amount);
+    if axis == -1 {
+        for v in p.iter_mut() {
+            v[1] -= d.pivot;
+            let r2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+            if d.range * d.range < r2 {
+                let r = r2.sqrt();
+                let s = ((r - d.range) * f + d.range) / r;
+                *v = v.map(|x| x * s);
+            }
+            v[1] += d.pivot;
+        }
+    } else if axis == 4 {
+        for v in p.iter_mut() {
+            let r2 = v[0] * v[0] + v[2] * v[2];
+            if d.range * d.range < r2 {
+                let r = r2.sqrt();
+                let s = ((r - d.range) * f + d.range) / r;
+                v[0] *= s;
+                v[2] *= s;
+            }
+        }
+    } else if d.flags & 0x10000 == 0 {
+        let a = axis as usize;
+        for v in p.iter_mut() {
+            let x = v[a];
+            if x <= d.range {
+                if x <= -d.range && -d.range != x {
+                    v[a] = (x + d.range) * f - d.range;
+                }
+            } else {
+                v[a] = (x - d.range) * f + d.range;
+            }
+        }
+    } else {
+        let a = axis as usize;
+        for v in p.iter_mut() {
+            let x = v[a];
+            if d.range <= x && x != d.range {
+                v[a] = (x - d.range) * f + d.range;
+            }
+        }
+    }
+}
+
+/// The deform's effect on a child's attach point (only scale and band
+/// stretches move it).
+pub fn deform_attach_point(p: &mut [f32; 3], d: &Deform, value: f32) {
+    match d.kind {
+        1 => {
+            let f = deform_factor(value, d.amount);
+            let a = d.axis as i32 - 1;
+            if a < 0 {
+                *p = p.map(|x| x * f);
+            } else if a < 3 {
+                let a = a as usize;
+                p[a] = (p[a] - d.pivot) * f + d.pivot;
+            }
+        }
+        2 => {
+            let a = d.axis as i32 - 1;
+            if (0..3).contains(&a) {
+                let a = a as usize;
+                p[a] = band_stretch(p[a], d, deform_factor(value, d.amount));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Scales a child's axis scale by a parent scale deform: all axes for axis
+/// 0, one for 1–3, and the two named axes for 4–6.
+pub fn scale_axis(scale: &mut [f32; 3], f: f32, axis: u8) {
+    match axis {
+        0 => *scale = scale.map(|x| x * f),
+        1..=3 => scale[axis as usize - 1] *= f,
+        4 => {
+            scale[0] *= f;
+            scale[1] *= f;
+        }
+        5 => {
+            scale[0] *= f;
+            scale[2] *= f;
+        }
+        6 => {
+            scale[1] *= f;
+            scale[2] *= f;
+        }
+        _ => {}
+    }
+}
+
+/// A placed component: its variant, position (cm), rotation (radians) and
+/// scale in the weapon's space, and the part it attaches to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Placed {
+    pub part: usize,
+    pub variant: usize,
+    pub attach_to: Option<usize>,
+    pub position: [f32; 3],
+    pub rotation: [f32; 3],
+    pub scale: [f32; 3],
+}
+
+/// The component box after its own deforms: centre and half extents, cm.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ComponentBox {
+    pub centre: [f32; 3],
+    pub half: [f32; 3],
+}
+
+impl Factory {
+    /// Where each chosen component goes: attached to its nearest chosen
+    /// ancestor, moved by the ancestor's scale, band and radial deforms,
+    /// twisted with it, then scaled by its own scale and moved to the
+    /// ancestor's position. `boxes` gives each part's component box after
+    /// its own deforms, in the part's order.
+    pub fn place(&self, g: &Generated, boxes: &[ComponentBox]) -> Vec<Placed> {
+        let n = self.parts.len();
+        let mut positions: Vec<Option<[f32; 3]>> = vec![None; n];
+        let mut out = Vec::new();
+        for (i, part) in self.parts.iter().enumerate() {
+            let sel = g.selection.get(i).copied().unwrap_or(0) as usize;
+            if part.flags & 1 != 0 || sel == 0 || sel > part.variants.len() {
+                continue;
+            }
+            let variant = &part.variants[sel - 1];
+            let mut rotation = part.rotation;
+            if part.flags & 0x10 != 0 && variant.flags & 8 == 0 {
+                rotation[1] += g.twist[i];
+            }
+            let mut up = part.attach_to as usize;
+            while up > 0 && up <= n {
+                if self.parts[up - 1].flags & 0x10 != 0 {
+                    rotation[1] += g.twist[up - 1];
+                }
+                up = self.parts[up - 1].attach_to as usize;
+            }
+            let mut p = part.position;
+            let mut s = part.scale;
+            let mut parent = part.attach_to as usize;
+            while parent > 0
+                && parent <= n
+                && g.selection.get(parent - 1).copied().unwrap_or(0) == 0
+            {
+                parent = self.parts[parent - 1].attach_to as usize;
+            }
+            let attach_to = (parent > 0 && parent <= n).then_some(parent - 1);
+            if let Some(pi) = attach_to {
+                let par = &self.parts[pi];
+                let box_ = boxes.get(pi).copied().unwrap_or_default();
+                match part.attach_mode {
+                    0 => {
+                        if let Some(pv) = g.selection.get(pi).and_then(|&s| {
+                            (s as usize)
+                                .checked_sub(1)
+                                .and_then(|k| par.variants.get(k))
+                        }) {
+                            p[1] += pv.child_y_offset as f32 * 0.1;
+                        }
+                    }
+                    1..=3 => {
+                        p[part.attach_mode as usize - 1] += box_.centre
+                            [part.attach_mode as usize - 1]
+                            - box_.half[part.attach_mode as usize - 1]
+                    }
+                    4..=6 => {
+                        p[part.attach_mode as usize - 4] += box_.centre
+                            [part.attach_mode as usize - 4]
+                            + box_.half[part.attach_mode as usize - 4]
+                    }
+                    _ => {}
+                }
+                for (d, &value) in par.deforms.iter().zip(&g.deform[pi]) {
+                    if d.kind == 0 {
+                        continue;
+                    }
+                    deform_attach_point(&mut p, d, value);
+                    if d.kind == 1 && d.flags & 0x10000 != 0 {
+                        scale_axis(&mut s, deform_factor(value, d.amount), d.axis);
+                    }
+                }
+                p = std::array::from_fn(|k| p[k] * part.scale[k]);
+                if let Some(base) = positions[pi] {
+                    p = std::array::from_fn(|k| p[k] + base[k]);
+                }
+            } else {
+                p = std::array::from_fn(|k| p[k] * part.scale[k]);
+            }
+            positions[i] = Some(p);
+            out.push(Placed {
+                part: i,
+                variant: sel - 1,
+                attach_to,
+                position: p,
+                rotation,
+                scale: s,
+            });
+        }
+        out
     }
 }
 
@@ -610,6 +1242,10 @@ impl<'a> Reader<'a> {
         ))
     }
 
+    fn i32(&mut self) -> Result<i32> {
+        Ok(self.u32()? as i32)
+    }
+
     fn f32(&mut self) -> Result<f32> {
         Ok(f32::from_bits(self.u32()?))
     }
@@ -627,6 +1263,7 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::palette;
 
     fn deform(kind: u8, axis: u8, flags: u32, amount: f32, pivot: f32, range: f32) -> Deform {
         Deform {
@@ -637,7 +1274,7 @@ mod tests {
             pivot,
             range,
             blend: 0.3,
-            stat_weight: 0.0,
+            stat_weight: 1.0,
         }
     }
 
@@ -649,20 +1286,91 @@ mod tests {
 
     #[test]
     fn band_stretch_beyond_the_band_offsets() {
-        // The axe head example: y = 50 beyond the band [−25 ± 50].
         let d = deform(2, 2, 0, 1.0, -25.0, 50.0);
         let f = 0.997_92;
         let y = band_stretch(50.0, &d, f);
         assert!((y - (50.0 + (f - 1.0) * 50.0)).abs() < 1e-4);
-        // Inside the band it scales about the pivot.
         assert!((band_stretch(0.0, &d, 2.0) - 25.0).abs() < 1e-5);
     }
 
     #[test]
     fn rng_matches_the_original_stream() {
-        let mut r = Lcg(1);
+        let mut r = Lcg::new(1);
         assert_eq!(r.step(), 0x0808_8406);
         let x = r.unit();
         assert!((0.0..1.0).contains(&x));
+    }
+
+    #[test]
+    fn colour_rolls_are_pinned() {
+        // Material 1 is class 1: the first draw decides the band, the next
+        // two make the palette index.
+        let mut r = Lcg::new(7);
+        let c = random_colour(1, 0, 4, 0, &mut r);
+        assert!(c < 26 * 8, "{c}");
+        // Class 4 (materials 11–13) is always shade 3.
+        assert_eq!(random_colour(11, 0, 0, 0, &mut Lcg::new(1)), 3);
+        assert_eq!(random_colour(13, 0, 0, 0, &mut Lcg::new(1)), 3);
+        // Class 8 (material 19) is always 4.
+        assert_eq!(random_colour(19, 0, 0, 0, &mut Lcg::new(1)), 4);
+        // Class 5 (material 14) is the item's dye.
+        assert_eq!(random_colour(14, 0, 0, 0x42, &mut Lcg::new(1)), 0x42);
+        // Class 6 (material 15) takes one of six dark shades.
+        assert!(
+            [0x5D, 0x4C, 0x35, 0x0D, 0x65, 0x6C].contains(&random_colour(
+                15,
+                0,
+                0,
+                0,
+                &mut Lcg::new(1)
+            ))
+        );
+    }
+
+    #[test]
+    fn palette_lifted_matches_the_factory_ramp() {
+        // Family 1 shade 0 exists in both ramps; family 0 shade 0 is white.
+        assert!((palette::lifted(0)[0] - 1.0).abs() < 1e-5);
+        let lifted = palette::lifted(9);
+        let linear = palette::linear(9);
+        assert!(lifted.iter().sum::<f32>() > linear.iter().sum::<f32>());
+    }
+
+    #[test]
+    fn taper_scales_the_other_axes() {
+        let d = deform(3, 2, 0, 1.0, 0.0, 1.0);
+        // value 1: x = (1 + 1)·−0.05 = −0.1, f = 1/(1 − (−0.1)) = 1.1111.
+        let mut p = vec![[1.0, 2.0, 1.0]];
+        deform_positions(&mut p, &d, 1.0);
+        let delta = 2.0;
+        let f = 1.0 / 1.1;
+        let s = f * delta + (1.0 - delta);
+        assert!((p[0][0] - s).abs() < 1e-5);
+        assert!((p[0][1] - 2.0).abs() < 1e-6);
+        assert!((p[0][2] - s).abs() < 1e-5);
+    }
+
+    #[test]
+    fn radial_band_leaves_the_middle_alone() {
+        let d = deform(5, 2, 0, 1.0, 0.0, 1.0);
+        let mut p = vec![[1.0, 0.5, 1.0], [1.0, 2.0, 1.0], [1.0, -2.0, 1.0]];
+        deform_positions(&mut p, &d, 0.5);
+        assert_eq!(p[0][1], 0.5);
+        let f = deform_factor(0.5, 1.0);
+        assert!((p[1][1] - ((2.0 - 1.0) * f + 1.0)).abs() < 1e-5);
+        assert!((p[2][1] - ((-2.0 + 1.0) * f - 1.0)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn scale_axis_matches_the_six_axes() {
+        let mut s = [1.0, 1.0, 1.0];
+        scale_axis(&mut s, 2.0, 0);
+        assert_eq!(s, [2.0, 2.0, 2.0]);
+        let mut s = [1.0, 1.0, 1.0];
+        scale_axis(&mut s, 2.0, 4);
+        assert_eq!(s, [2.0, 2.0, 1.0]);
+        let mut s = [1.0, 1.0, 1.0];
+        scale_axis(&mut s, 2.0, 6);
+        assert_eq!(s, [1.0, 2.0, 2.0]);
     }
 }

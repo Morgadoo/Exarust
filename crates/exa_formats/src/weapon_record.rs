@@ -1151,9 +1151,8 @@ mod tests {
             let mut stats = w.stats;
             let lengths = if let Some(name) = item.model.strip_prefix('@') {
                 let f = crate::factory::Factory::parse(factories.get(name).unwrap()).unwrap();
-                let stored = w.has_stored_choices().then_some(&w.selection[..]);
-                let g = f.generate(w.seeds[0], w.seeds[1], w.quality, stored);
-                stats = crate::weapon_stats::factory_stats(&f, &g, w.stats);
+                let built = f.build(&w.spec(0));
+                stats = crate::weapon_stats::factory_stats(&f, &built.generated, w.stats);
                 stats = crate::weapon_stats::condition(stats, w.quality, w.damage);
                 factory += 1;
                 // Measured on the assembled model by `exa_character`.

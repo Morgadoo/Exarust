@@ -397,7 +397,7 @@ pub struct Weapon {
     pub damage: u8,
     pub dirt: u8,
     /// Up to four material slots: (material, finish, colour).
-    pub materials: [(u8, u8, u8); 4],
+    pub materials: [(u8, u8, u8, u8); 4],
     /// 1-based variant per factory part (0: none).
     pub selection: [u8; 10],
     /// Weight, balance, slash, crush, pierce, thrust… (`weapon_stats`).
@@ -418,7 +418,7 @@ impl Weapon {
             dirt: b[0x0E],
             materials: std::array::from_fn(|k| {
                 let m = &b[0x10 + 8 * k..0x18 + 8 * k];
-                (m[0], m[3], m[4])
+                (m[0], m[3], m[4], m[7])
             }),
             selection: std::array::from_fn(|i| b[0x50 + i]),
             stats: StatBytes::from_section(b)?,
@@ -427,6 +427,51 @@ impl Weapon {
 
     pub fn has_stored_choices(&self) -> bool {
         self.flags & WEAPON_STORED != 0
+    }
+
+    /// The choices the section stores, in the factory's form.
+    pub fn choices(&self) -> crate::factory::Choices {
+        crate::factory::Choices {
+            selection: self.selection.to_vec(),
+            areas: self
+                .materials
+                .iter()
+                .map(
+                    |&(material, finish, colour, mode)| crate::factory::AreaChoice {
+                        material,
+                        finish,
+                        colour,
+                        mode,
+                    },
+                )
+                .collect(),
+        }
+    }
+
+    /// What a factory needs from this item to build its weapon. `dye` is
+    /// the item randomiser's dye colour (the steel-painted area class reads
+    /// it; 0 stands in when the item was not randomised).
+    pub fn spec(&self, dye: u8) -> crate::factory::WeaponSpec {
+        crate::factory::WeaponSpec {
+            flags: self.flags,
+            seeds: self.seeds,
+            quality: self.quality,
+            dye,
+            choices: self.has_stored_choices().then(|| self.choices()),
+        }
+    }
+
+    /// Writes choices back, as the original does when it rolls and stores
+    /// them on a fresh item; the flags then mark them stored and shape-rerolled.
+    pub fn apply_choices(&mut self, choices: &crate::factory::Choices, seeds: [u32; 2]) {
+        self.seeds = seeds;
+        self.flags |= crate::factory::STORED_AND_REROLLED;
+        for (slot, value) in self.selection.iter_mut().zip(&choices.selection) {
+            *slot = *value;
+        }
+        for (slot, area) in self.materials.iter_mut().zip(&choices.areas) {
+            *slot = (area.material, area.finish, area.colour, area.mode);
+        }
     }
 }
 

@@ -1,0 +1,545 @@
+//! The original's procedural material registry: the 25 materials an item can
+//! be painted with, their shader families, passes and library textures, the
+//! random sets an object record draws its materials from, and the tables the
+//! factory's material and colour rolls read.
+//!
+//! Each material names a *family*: the program that paints its colour,
+//! surface and normal maps. A family may share another's normal program
+//! (copper satin uses copper alloy's normals) or have a separate specular
+//! family (silk). Pass flags select the pattern, painted-pattern (emblem),
+//! alpha and alternate-normal programs.
+//!
+//! Evidence: the material registry and its singletons, the material class
+//! and default finish tables, and the random-set table (`docs/formats/OTHER.md`,
+//! Apparel painting and Weapon factories).
+
+use std::sync::LazyLock;
+
+/// Which program family paints a material's maps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Family {
+    Cloth,
+    Velvet,
+    Leather,
+    Suede,
+    Wood,
+    Steel,
+    SteelBlade,
+    SteelPlate,
+    SteelPainted,
+    Chain,
+    CopperAlloy,
+    CopperSatin,
+    Gemstone,
+    Resin,
+    PlanksPainted,
+}
+
+/// Optional programs a material's family compiles besides its colour,
+/// specular and normal passes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct Passes {
+    /// The alpha program (`<family>_a`).
+    pub alpha: bool,
+    /// A pattern pass, which multiplies the mask alpha by another texture.
+    pub pattern: bool,
+    /// A painted pattern pass, with the pattern's own position.
+    pub painted_pattern: bool,
+    /// An alternate normal pass.
+    pub alternate_normal: bool,
+}
+
+/// One procedural material.
+#[derive(Debug, Clone)]
+pub struct Material {
+    pub family: Family,
+    pub passes: Passes,
+    /// Colour-pass textures in sampler order (`Tex2…`).
+    pub colour: Vec<&'static str>,
+    /// Specular-pass textures in sampler order.
+    pub specular: Vec<&'static str>,
+    /// Normal-pass textures in sampler order.
+    pub normal: Vec<&'static str>,
+    /// How strongly ageing and gloss apply (`MatCol.w`).
+    pub wear: f32,
+}
+
+/// The 25 materials by id, index 0 unused (ids 1..25).
+pub static MATERIALS: LazyLock<[Material; 26]> = LazyLock::new(|| {
+    let cloth = |colour, spec, normal| Material {
+        family: Family::Cloth,
+        passes: Passes::default(),
+        colour,
+        specular: spec,
+        normal,
+        wear: 1.0,
+    };
+    let mut m = std::array::from_fn::<_, 26, _>(|_| cloth(Vec::new(), Vec::new(), Vec::new()));
+    m[1] = Material {
+        passes: Passes {
+            painted_pattern: true,
+            ..default_passes()
+        },
+        ..cloth(
+            vec!["clothrgha03d", "leatherdmga02d", "clothdmga01d", "drtapr01"],
+            vec!["clothrgha03s", "leatherdmga02d", "drtapr01"],
+            vec!["clothrgha03n", "leatherdmga02d", "leatherdmga02n"],
+        )
+    };
+    let cloth_fine = |family, normal0| Material {
+        family,
+        passes: Passes::default(),
+        colour: vec!["clothfina01d", "leatherdmga02d", "clothdmga01d", "drtapr01"],
+        specular: vec!["clothfina01g", "leatherdmga02d", "drtapr01"],
+        normal: vec![normal0, "leatherdmga02d", "leatherdmga02n"],
+        wear: 1.0,
+    };
+    m[2] = cloth_fine(Family::Cloth, "clothfina01n");
+    m[3] = cloth_fine(Family::Cloth, "clothfina01n");
+    m[4] = Material {
+        wear: 0.8,
+        ..cloth_fine(Family::Velvet, "clothvlva01n")
+    };
+    m[5] = Material {
+        family: Family::Cloth,
+        passes: Passes::default(),
+        colour: vec!["clthp01d", "leatherdmga02d", "clothdmga01d", "drtapr01"],
+        specular: vec!["clthp01s", "leatherdmga02d", "drtapr01"],
+        normal: vec!["clthp01n", "leatherdmga02d", "leatherdmga02n"],
+        wear: 1.0,
+    };
+    m[6] = Material {
+        colour: vec!["clthp02d", "leatherdmga02d", "clothdmga01d", "drtapr01"],
+        specular: vec!["clthp02s", "leatherdmga02d", "drtapr01"],
+        normal: vec!["clthp02n", "leatherdmga02d", "leatherdmga02n"],
+        ..m[5].clone()
+    };
+    let leather = |stem: &'static str, painted: bool| Material {
+        family: Family::Leather,
+        passes: Passes {
+            painted_pattern: painted,
+            ..default_passes()
+        },
+        colour: vec![stem_colour(stem), "leatherdmga02d", "drtapr01"],
+        specular: vec![stem_spec(stem), "leatherdmga02d", "drtapr01"],
+        normal: vec![stem_normal(stem), "leatherdmga02d", "leatherdmga02n"],
+        wear: 1.0,
+    };
+    m[7] = leather("leathera02", true);
+    m[8] = leather("leathera01", true);
+    let suede = Material {
+        family: Family::Suede,
+        passes: Passes::default(),
+        colour: vec!["suedea01d", "leatherdmga02d", "drtapr01"],
+        specular: vec!["suedea01g", "leatherdmga02d", "drtapr01"],
+        normal: vec!["suedea01n", "leatherdmga02d", "leatherdmga02n"],
+        wear: 1.0,
+    };
+    m[9] = suede.clone();
+    m[10] = suede;
+    m[11] = Material {
+        family: Family::Chain,
+        passes: Passes::default(),
+        colour: vec![
+            "mailstla01d",
+            "mtldirta01d",
+            "mtlrusta02d",
+            "mtlscufa01",
+            "mtlrusta01g",
+        ],
+        specular: vec![
+            "mailstla01d",
+            "mailstla01o",
+            "mtlscufa01",
+            "mtlrusta01g",
+            "scuffsgnra01",
+        ],
+        normal: vec![
+            "mailstla01n",
+            "mtlirnrst01n",
+            "mtlscufa01",
+            "mtlrusta01g",
+            "mtlscufa01n",
+        ],
+        wear: 1.0,
+    };
+    let steel = |family, rust, rust_normal, wear, passes| Material {
+        family,
+        passes,
+        colour: vec![
+            "mtlstlbas01d",
+            "mtlimpure01d",
+            rust,
+            "mtlscufa01",
+            "mtlrusta01g",
+        ],
+        specular: vec![
+            "mtlstlbas01d",
+            "mtlimpure01d",
+            "mtlscufa01",
+            "mtlrusta01g",
+            "scuffsgnra01",
+        ],
+        normal: vec![
+            "mtlimpure02n",
+            rust_normal,
+            "mtlscufa01",
+            "mtlrusta01g",
+            "mtlscufa01n",
+        ],
+        wear,
+    };
+    m[12] = steel(
+        Family::Steel,
+        "mtlrusta03d",
+        "mtlrusta03n",
+        1.0,
+        Passes {
+            alternate_normal: true,
+            ..default_passes()
+        },
+    );
+    m[13] = steel(
+        Family::SteelPlate,
+        "mtlrusta03d",
+        "mtlrusta04n",
+        1.0,
+        Passes::default(),
+    );
+    m[14] = Material {
+        family: Family::SteelPainted,
+        passes: Passes::default(),
+        colour: vec![
+            "mtlstlbas01d",
+            "mtlimpure01d",
+            "mtlrusta03d",
+            "mtlscufa01",
+            "mtlrusta01g",
+            "mtldirta01d",
+        ],
+        specular: vec![
+            "mtlstlbas01d",
+            "mtlimpure01d",
+            "mtlscufa01",
+            "mtlrusta01g",
+            "scuffsgnra01",
+        ],
+        normal: vec![
+            "mtlimpure02n",
+            "mtlrusta03n",
+            "mtlscufa01",
+            "mtlrusta01g",
+            "mtlscufa01n",
+        ],
+        wear: 1.0,
+    };
+    m[15] = steel(
+        Family::SteelPlate,
+        "mtlrusta03d",
+        "mtlrusta04n",
+        1.0,
+        Passes::default(),
+    );
+    m[16] = Material {
+        family: Family::SteelBlade,
+        passes: Passes::default(),
+        colour: vec![
+            "mtlstlbld01d",
+            "mtlrough01d",
+            "mtlrusta02d",
+            "mtlscufa01",
+            "mtlrusta01g",
+        ],
+        specular: vec![
+            "mtlstlbld01d",
+            "mtlrough01d",
+            "mtlscufa01",
+            "mtlrusta01g",
+            "scuffsgnra01",
+        ],
+        normal: vec![
+            "mtlrough01n",
+            "mtlrusta03n",
+            "mtlscufa01",
+            "mtlrusta01g",
+            "mtlscufa01n",
+        ],
+        wear: 1.0,
+    };
+    let wood = |colour, spec, normal| Material {
+        family: Family::Wood,
+        passes: Passes::default(),
+        colour: vec![colour, "mtlscufa01", "mtldirta01d"],
+        specular: vec![spec, "mtlscufa01", "mtldirta01d"],
+        normal: vec![normal, "mtldirta01d", "mtlscufa01n"],
+        wear: 1.0,
+    };
+    m[17] = wood("woodfinea01d", "woodfinea01g", "woodfinea01n");
+    m[18] = wood("wodhft01d", "wodhft01g", "wodhft01n");
+    m[19] = steel(
+        Family::Steel,
+        "mtlrusta03d",
+        "mtlrusta03n",
+        1.0,
+        Passes {
+            alternate_normal: true,
+            ..default_passes()
+        },
+    );
+    let copper = |family, rust, spec_rust| Material {
+        family,
+        passes: Passes::default(),
+        colour: vec![
+            "mtlstlbas01d",
+            "mtlimpure01d",
+            rust,
+            "mtlscufa01",
+            "mtlrusta01g",
+            "verdigris01d",
+        ],
+        specular: vec![
+            spec_rust,
+            "mtlimpure01d",
+            "mtlscufa01",
+            "scuffsgnra01",
+            "verdigris01d",
+        ],
+        normal: vec![
+            "mtlimpure02n",
+            "mtlrusta03n",
+            "mtlscufa01",
+            "mtlrusta01g",
+            "mtlscufa01n",
+        ],
+        wear: 1.0,
+    };
+    m[20] = copper(Family::CopperAlloy, "mtlrustc01d", "mtlrustc01d");
+    m[21] = copper(Family::CopperSatin, "mtlrustc01d", "mtlrustc01d");
+    m[22] = Material {
+        family: Family::Leather,
+        passes: Passes::default(),
+        colour: vec!["gripltra02d", "leatherdmga02d", "drtapr01"],
+        specular: vec!["gripltra02g", "leatherdmga02d", "drtapr01"],
+        normal: vec!["gripltra02n", "leatherdmga02d", "leatherdmga02n"],
+        wear: 1.0,
+    };
+    let gem = |family, passes| Material {
+        family,
+        passes,
+        colour: vec![
+            "mtlstlbas01d",
+            "mtlimpure01d",
+            "mtlrustc01d",
+            "mtlscufa01",
+            "mtlrusta01g",
+            "dirtbrowna01",
+        ],
+        specular: vec![
+            "mtlrustc01d",
+            "mtlimpure01d",
+            "mtlscufa01",
+            "scuffsgnra01",
+            "dirtbrowna01",
+        ],
+        normal: vec![
+            "mtlimpure02n",
+            "mtlrusta03n",
+            "mtlscufa01",
+            "mtlrusta01g",
+            "mtlscufa01n",
+        ],
+        wear: 0.5,
+    };
+    m[23] = gem(
+        Family::Gemstone,
+        Passes {
+            alpha: true,
+            pattern: true,
+            ..default_passes()
+        },
+    );
+    m[24] = gem(
+        Family::Resin,
+        Passes {
+            alpha: true,
+            ..default_passes()
+        },
+    );
+    m[25] = Material {
+        family: Family::PlanksPainted,
+        passes: Passes {
+            painted_pattern: true,
+            ..default_passes()
+        },
+        colour: vec!["wodplnkp01d", "mtlscufa01", "mtldirta01d", "paintmska01"],
+        specular: vec!["wodplnkp01g", "mtlscufa01", "mtldirta01d"],
+        normal: vec!["wodplnkp01n", "mtldirta01d", "mtlscufa01n"],
+        wear: 0.5,
+    };
+    m
+});
+
+const fn default_passes() -> Passes {
+    Passes {
+        alpha: false,
+        pattern: false,
+        painted_pattern: false,
+        alternate_normal: false,
+    }
+}
+
+/// Texture stems are stored lowercase, like the pack's entries.
+fn stem_colour(stem: &'static str) -> &'static str {
+    match stem {
+        "leathera01" => "leathera01d",
+        _ => "leathera02d",
+    }
+}
+
+fn stem_spec(stem: &'static str) -> &'static str {
+    match stem {
+        "leathera01" => "leathera01g",
+        _ => "leathera02g",
+    }
+}
+
+fn stem_normal(stem: &'static str) -> &'static str {
+    match stem {
+        "leathera01" => "leathera01n",
+        _ => "leathera02n",
+    }
+}
+
+/// The material with `id`, or ClothBasic for an unknown id (the original
+/// reports "Invalid Procedural Material ID." and falls back to it).
+pub fn material(id: u8) -> &'static Material {
+    if id == 0 || id > 25 {
+        &MATERIALS[1]
+    } else {
+        &MATERIALS[id as usize]
+    }
+}
+
+/// A weighted material class's weight: common, uncommon, rare, very rare.
+pub const CLASS_WEIGHTS: [u32; 4] = [100, 50, 20, 10];
+
+/// Finish levels by two-bit index; an area's finish byte is two of these
+/// nibbles.
+pub const FINISH_LEVELS: [u8; 4] = [3, 7, 11, 15];
+
+/// The finish byte an object record without stored materials gets for a
+/// material id: the same two 8-level nibbles for every known material.
+pub fn default_finish(material: u8) -> u8 {
+    if (1..=25).contains(&material) {
+        0x88
+    } else {
+        0
+    }
+}
+
+/// Colour class per material id (the table the colour roll switches on).
+/// Classes not listed have no rule and give colour 0.
+pub const COLOUR_CLASS: [u8; 26] = [
+    0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 4, 4, 4, 5, 6, 4, 7, 7, 8, 9, 9, 1, 16, 17, 18,
+];
+
+/// Emblem ids the factory's pattern areas choose from.
+pub const EMBLEM_IDS: [u8; 40] = [
+    1, 2, 4, 5, 6, 7, 9, 10, 11, 12, 8, 13, 14, 17, 19, 20, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32,
+    33, 34, 35, 36, 39, 43, 44, 45, 46, 47, 48, 49, 50, 51,
+];
+
+/// The materials a random-set layer can take. Sets 1 and 5 are the same
+/// list, as are several cloth sets.
+pub const RANDOM_SETS: [&[u8]; 16] = [
+    &[],
+    &[1, 2, 3, 4, 7, 8, 9],
+    &[5, 6, 10],
+    &[1, 2, 3, 4],
+    &[7, 8, 9],
+    &[1, 2, 3, 4, 7, 8, 9],
+    &[1, 2, 3, 4],
+    &[13, 20],
+    &[1, 2, 3, 4, 11, 13, 14],
+    &[5, 6],
+    &[7],
+    &[11],
+    &[13, 14],
+    &[13, 14, 15],
+    &[20],
+    &[23],
+];
+
+/// The materials of random set `set`; empty for an unknown set.
+pub fn random_set(set: u8) -> &'static [u8] {
+    RANDOM_SETS.get(set as usize).copied().unwrap_or(&[])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_material_names_its_family_textures() {
+        for id in 1..=25u8 {
+            let m = material(id);
+            assert!(!m.colour.is_empty(), "material {id}");
+            assert!(!m.specular.is_empty(), "material {id}");
+            assert!(!m.normal.is_empty(), "material {id}");
+        }
+        assert_eq!(material(1).family, Family::Cloth);
+        assert_eq!(material(4).family, Family::Velvet);
+        assert_eq!(material(11).family, Family::Chain);
+        assert_eq!(material(12).family, Family::Steel);
+        assert_eq!(material(13).family, Family::SteelPlate);
+        assert_eq!(material(14).family, Family::SteelPainted);
+        assert_eq!(material(16).family, Family::SteelBlade);
+        assert_eq!(material(20).family, Family::CopperAlloy);
+        assert_eq!(material(21).family, Family::CopperSatin);
+        assert_eq!(material(23).family, Family::Gemstone);
+        assert_eq!(material(24).family, Family::Resin);
+        assert_eq!(material(25).family, Family::PlanksPainted);
+    }
+
+    #[test]
+    fn invalid_ids_fall_back_to_cloth_basic() {
+        assert_eq!(material(0).family, Family::Cloth);
+        assert_eq!(material(0).colour, material(1).colour);
+        assert_eq!(material(200).colour, material(1).colour);
+    }
+
+    #[test]
+    fn passes_match_the_material_flags() {
+        assert!(material(1).passes.painted_pattern);
+        assert!(material(8).passes.painted_pattern);
+        assert!(material(12).passes.alternate_normal);
+        assert!(material(19).passes.alternate_normal);
+        assert!(!material(13).passes.alternate_normal);
+        assert!(material(23).passes.alpha && material(23).passes.pattern);
+        assert!(material(24).passes.alpha && !material(24).passes.pattern);
+        assert!(material(25).passes.painted_pattern);
+    }
+
+    #[test]
+    fn random_sets_are_the_originals_tables() {
+        assert_eq!(random_set(1), &[1, 2, 3, 4, 7, 8, 9]);
+        assert_eq!(random_set(2), &[5, 6, 10]);
+        assert_eq!(random_set(7), &[13, 20]);
+        assert_eq!(random_set(8), &[1, 2, 3, 4, 11, 13, 14]);
+        assert_eq!(random_set(13), &[13, 14, 15]);
+        assert_eq!(random_set(15), &[23]);
+        assert!(random_set(0).is_empty());
+        assert!(random_set(16).is_empty());
+    }
+
+    #[test]
+    fn default_finishes_and_emblem_ids() {
+        assert_eq!(default_finish(0), 0);
+        assert_eq!(default_finish(1), 0x88);
+        assert_eq!(default_finish(25), 0x88);
+        assert_eq!(default_finish(26), 0);
+        assert_eq!(EMBLEM_IDS.len(), 40);
+        assert_eq!(EMBLEM_IDS[0], 1);
+        assert_eq!(EMBLEM_IDS[39], 51);
+    }
+}
