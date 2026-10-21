@@ -592,6 +592,17 @@ fn shipped_actors() {
         .collect();
     assert_eq!(records.len(), 21);
     assert_eq!(records.iter().filter(|(_, r)| r.version == 6).count(), 14);
+    // The same sub-chunks are absent from the actors.
+    assert!(
+        records
+            .iter()
+            .all(|(_, r)| r.relation_count() == 0 && r.saved.is_empty())
+    );
+    assert!(
+        records
+            .iter()
+            .all(|(_, r)| r.loadouts.is_empty() && r.reserved.is_none())
+    );
     let actor = |name: &str| &records.iter().find(|(n, _)| n == name).unwrap().1;
     let perks = |name: &str| {
         actor(name)

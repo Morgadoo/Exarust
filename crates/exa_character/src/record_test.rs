@@ -639,7 +639,7 @@ fn shipped_apparel_follows_the_underwear_and_conflict_rules() {
         .and_then(|bytes| Database::parse(bytes).ok())
         .map(|db| exa_formats::objdb::items(&db))
         .unwrap_or_default();
-    assert!(items.len() > 1400);
+    assert_eq!(items.len(), 1423, "objdb items");
     let find = |id: u32| items.iter().find(|item| item.id == id);
 
     // Every apparel item overlaps itself on some bone.
