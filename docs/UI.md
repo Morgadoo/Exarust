@@ -735,7 +735,10 @@ Medium, High, Very high, Ultra; Coarse, Low, Medium, High, Very high; Off,
 Coarse, Low, Medium, High, Very high; and Off, 2x, 4x, 8x for the sample
 count. Super sampling has no text at level 2 (the original's second branch
 is missing), and texture detail and shadow detail show only Low and High.
-Rounding is to even, as the processor's conversion does.
+The Off branch of the first scale and the Coarse branch of the second
+compare unsigned (0–1 and 0–2), so a negative value shows no text.
+Rounding is to even, as the processor's conversion does; the conversion is
+64-bit and the original keeps its low 32 bits.
 
 A click on a slider goes through the row's step; the value is not clamped to
 the row's range beyond what the step produces. A value the step map cannot
@@ -746,34 +749,43 @@ screen flag; setting it and pressing Apply toggles full screen immediately.
 
 ### Opening the page
 
-The page opens with the live renderer quality levels, audio volume, music,
-frame-rate readout, window mode, tips, checkpoints, aim speed and controller
-flag. It resets hardware antialiasing to 0 and vertical sync to on.
+The original keeps three copies of the options: the live ones the game
+runs with, the page's draft its controls edit, and a saved set that Cancel
+and the auto-detection push back into both. Opening the form takes the
+saved set from the live options, reads the settings file again over the
+live options (each line through its startup rule), copies the result into
+the draft, and then puts the live quality levels, super sampling, hardware
+antialiasing, vertical sync and window mode back to the saved ones; the
+other live options keep what the file gave. Nothing is reset and no
+benchmark runs.
 
-Two quirks are reproduced: the volume slider always opens at 2/3 (the
-original divides the default 1.0 by the maximum 1.5, not the live volume),
-and the Music checkbox only mutes the session — the settings file's line
-keeps the startup music value, so the checkbox is unchecked again after a
-reopen. The volume and aim-speed sliders and the vertical-sync, frame-rate,
-tips, checkpoints and music controls act on the running game at once; the
-super-sampling, shading, texture and shadow sliders change the screen's
-draft until Apply. Hardware antialiasing is disabled while super sampling is
-off, and the super-sampling slider enables or disables it.
+The rows show the draft, except the volume (live volume ÷ 1.5), Music (the
+live startup value), super sampling and window mode, which show the live
+options. Hardware antialiasing is enabled only while the live super
+sampling is 0, showing the draft's samples; while super sampling is on the
+row is disabled and keeps its position. Moving the super-sampling slider
+disables the row above level 0 and enables it at 0.
 
-The page's show handler runs the GPU benchmark and takes its quality levels
-on every opening outside the Deck, whose fixed preset is super sampling 3,
-shading 5, texture detail 2, texture quality 5, shadow detail 5 and shadow
-quality 3. Exarust has the screen's model and the benchmark, but the form is
-not drawn yet: `HardwareConfig::open` prepares the rows and starts the
-benchmark (its result fills the draft), `deck_preset` takes the Deck's
-levels, and `--benchmark` runs it at start. The benchmark's workload is
-Exarust's own, so it also runs in the game's window rather than a
-"Configuration" message box.
+The volume and texture-detail and texture-quality sliders, and the
+vertical-sync, frame-rate, tips and checkpoints checkboxes, act on the
+running game at once (each changes only its own live option) as well as the
+draft. The super-sampling, shading, shadow-detail, shadow-quality and
+antialiasing sliders and the window-mode checkbox change the draft until
+Apply. The Music checkbox only mutes the session: the live music value, and
+so the file's line and the reopened checkbox, keep the startup value.
+
+Exarust has this model, but the form is not drawn yet:
+`HardwareConfig::open` prepares the page (reading the settings file when
+the launcher gave one), `rows` gives what the rows show, and the slider,
+checkbox, Defaults, Apply and Cancel calls follow the original.
 
 ### Apply, Cancel and Defaults
 
-Apply writes these lines, in this order, into the settings file (the first
-occurrence of each name is replaced, or the line is appended):
+Apply first reads the settings file; when it cannot be read, nothing at
+all happens and the form stays open. It then commits the Controls page's
+copy of the bindings (when the copy's Forward key is set) and saves them,
+and writes these lines, in this order (the first occurrence of each name is
+replaced, or the line is appended):
 
 `PerfIndex` (two decimals, trailing zeros kept), `Volume` (percent,
 rounded), `Supersample`, `ShadingQuality`, `TextureDetail`,
@@ -782,20 +794,39 @@ rounded), `Supersample`, `ShadingQuality`, `TextureDetail`,
 `Fullscreen`, `Music`, `ShowFPS`, `ShowGameTips`, `Checkpoints`,
 `VerticalSync`, and `ShowFPS` again (the original's duplicate).
 
-The renderer options in the file that come from the draft are the two
-sampling levels, the four quality levels, vertical sync and full screen;
-volume, aim speed, the readout, tips and checkpoints are the live values
-because their controls changed the running game already. Apply then pushes
-a changed super sampling, shading, shadow quality and shadow detail into the
-live renderer and rebuilds the original's shader cache; it also saves the
-bindings when their first slot is not zero and toggles full screen when that
-changed. Exarust pushes the same options into `exa_render::quality` and the
-window, and writes the file itself.
+The quality levels, both sampling options, full screen, vertical sync and
+the second `ShowFPS` come from the draft; the performance index, volume,
+input mode, aim speed, music, the first `ShowFPS`, tips and checkpoints are
+the live values, because their controls changed the running game already.
+Apply then closes the form, toggles full screen when the window mode
+changed, and pushes each of super sampling, shading, shadow quality and
+shadow detail that differs from the saved set into the live renderer; any of
+those rebuilds the original's shader cache behind a progress screen.
+Hardware antialiasing is only stored, so it takes effect at the next start.
+Exarust pushes the same options into `exa_render::quality` and the window,
+and writes the file itself; without a settings file (a launch with
+`--no-settings`) there is no hardware configuration at all.
 
-Cancel pushes the options the page opened with back and closes it. The
-Defaults button runs the benchmark and takes its levels; the Deck takes the
-preset instead. Both also reset hardware antialiasing and vertical sync to
-their defaults.
+Cancel pushes the saved set back into the live options (all but the shadow
+detail, whose setter writes only the page) and closes the form, dropping the
+Controls page's edits.
+
+Defaults acts on the page in view. On Settings it runs the GPU benchmark
+(the Deck takes its fixed preset instead: super sampling 3, shading 5,
+texture detail 2, texture quality 5, shadow detail 5, shadow quality 3),
+makes the result the saved set (every other option copied from the live
+ones, except the window mode, which stays the one the page opened with),
+pushes it into the live options and the draft (the draft keeps its
+antialiasing and window mode; the live options keep their shadow detail) and
+refills the rows; nothing is saved. On Controls it puts the shipped keys
+into the page's copy, or, in controller mode, the saved aim speed back into
+the live one.
+
+The original runs the same auto-detection at start only on a first run
+(when `FirstRun` is set), and saves its result then. Exarust does not run it
+at launch (its workload and GPU differ, and it would replace the saved
+quality); `--benchmark` runs it once, without saving, and Steam Deck
+detection is not wired.
 
 ### GPU benchmark
 
@@ -808,7 +839,8 @@ performance index. The warm-up and runs are on the performance counter, with
 vertical sync off.
 
 Exarust measures the same protocol (`exa_formats::hw_config::Benchmark`)
-over the same half-second boundaries and score. Its workload is sixteen
+over the same half-second boundaries and score; its clock starts at the
+first drawn frame rather than just before it. Its workload is sixteen
 full-screen sprites through Bevy's sprite pipeline into the same 1024²
 target, not the original's shader: the score is comparable in spirit, not in
 number. The auto-detected quality is:
@@ -832,14 +864,16 @@ Exarust applies:
 - **Super sampling**: level 0 turns the scene's supersampled target off;
   any level turns it on. Exarust has only the 4× (2× per axis) level; the
   levels above zero are not distinguished.
+  A settings file that does not name `Supersample` keeps Exarust's level on
+  (live level 4); `Supersample = 0` or `--no-supersample` turns it off.
 - **Shadow quality**: the point lights' cube face size and the sun map
   size. Level 4 (the default) keeps the shipped 512 and 4096; 3 gives 256
   and 2048, 2 gives 128 and 1024, 1 gives 64 and 512, 5 gives 1024 and 4096.
   (The exact sizes are a guess; the original's shading path was not
   traced.)
 - **HW antialiasing**: Bevy MSAA on the scene camera while super sampling
-  is off (1 and 2 are off and 2×, though the original's samples are 0, 1,
-  2, 4 and 8; Bevy has no 1×). Super sampling forces MSAA off, as the
+  is off (1 is off and 2, 4, 8 their sample counts; Bevy has no 1×), read at
+  start as the original reads it. Super sampling forces MSAA off, as the
   original disables the control.
 - **Window mode, size and vertical sync**: the window's mode, its size
   (when windowed and a size was asked for) and its present mode.
@@ -849,15 +883,19 @@ Exarust applies:
 - **Frame-rate readout**, and the tips/checkpoints/window flags as saved
   options.
 - **Controls**: the binding file's table is read and written; the page's
-  rows show the keys' names; a click starts a rebinding and the next key or
-  mouse button replaces the slot (Escape cancels). The controller-mode switch
+  22 rows (each with a key cell, Power Tree included) show the keys' names;
+  a click starts a rebinding of the page's copy and the next key or mouse
+  button replaces the slot (Escape cancels); Apply commits the copy. The controller-mode switch
   sets `InputMode` (0 or 51) for Apply; Enable Rumble is a session flag with
   no effect (Exarust has no gamepad), and Configure Controller is not
   reproduced (it opens Steam Input's binding screen). The key-name rules are
   the original's: the mouse flag's fourth, fifth and sixth codes are
-  "Mouse 3/4/5", extended codes are `<code>`, and other codes are the
-  Windows key name in title case. Exarust's own mouse codes 1, 2 and 4 are
-  shown as "Left mouse", "Right mouse" and "Middle mouse".
+  "Mouse 3/4/5", codes with bit `0x4000` are `<code>`, and other codes are
+  the system's key name in title case. The original's codes are scan codes
+  (its extended-key fix-up compares the shifted value and never fires);
+  Exarust's table holds virtual-key codes, named from a table that gives the
+  same names. Exarust's own mouse codes 1, 2 and 4 are shown as "Left
+  mouse", "Right mouse" and "Middle mouse".
 
 Not reproduced, for lack of the matching feature: shading quality (Exarust
 has one shader), texture quality and texture detail (no streaming or mip

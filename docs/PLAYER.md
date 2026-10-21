@@ -190,10 +190,11 @@ slot for slot) has 23 slots in this order:
 left mouse (primary), W, A, S, D, X (crouch), shift (run), alt (alternate
 attack), middle mouse (orbit), V (Cursor Look), control (interact), I
 (inventory), tab (combat), K (skills), R (switch equipped), F (flip weapon),
-J (journal), T (talk), C (use power), P (power bar), Q (use/previous
-power), right arrow (next power), left arrow (previous power). Which power
-action (use, bar, tree) each of slots 18–20 holds is not yet tied to the
-settings labels; nothing reads those slots yet. Shift, alt
+J (journal), T (talk), C (power bar), P (power tree), Q (use power), right
+arrow (next power), left arrow (previous power). The power slots are tied
+to the settings labels by the original's conversion from the saved key
+table into this one and by the Controls page's key captions, which read the
+saved table in row order; nothing reads those slots yet. Shift, alt
 and control accept either side. The settings screen's template labels
 Cursor Look as SPACE; the shipped table's slot holds V.
 

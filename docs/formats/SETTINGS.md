@@ -96,18 +96,21 @@ may change them after the file is read (not reproduced).
 
 ### Hardware configuration settings
 
-The hardware configuration registers these at start; it keeps the values and
-applies the ones the renderer and audio can take. Their handlers were not
-traced, so the effects beyond the settings screen are Exarust's reading (see
-[UI.md](../UI.md), Settings options):
+The hardware configuration registers these at start; their handlers store
+the value (the ones below with a rule transform it first). What the renderer
+switches do beyond that was not traced, so their effects are Exarust's
+reading (see [UI.md](../UI.md), Settings options):
 
 | setting | kind | default | rule |
 |---|---|---|---|
 | `PerfIndex` | fraction | 0 | the GPU benchmark's best rate over 60 |
-| `ShowFPS`, `Music`, `CamFollow`, `LinearRGB`, `SoftwareAudio`, `NoProcMips`, `NoDynamicMips`, `DynamicVBO`, `SwapCopy`, `ForceVBO`, `GILowPrecision` | boolean | `ShowFPS` off, `GILowPrecision` off, the rest on or Exarust's guess (code comments) | kept; `ShowFPS` feeds the readout, `GILowPrecision` is already Exarust's GI format |
-| `ShadowFmt`, `ScreenWidth`, `ScreenHeight`, `InputMode`, `AimSpeed` | integer | 0, 0, 0, 0, 30 | kept; `ScreenWidth`/`ScreenHeight` are the full-screen mode's size, `InputMode` 0 is the keyboard and 51 a controller, `AimSpeed` is the 1-based step `round(100·fraction) + 1` (its inverse is a guess) |
+| `ShowFPS`, `Music`, `CamFollow`, `LinearRGB`, `SoftwareAudio`, `NoProcMips`, `NoDynamicMips`, `DynamicVBO`, `SwapCopy`, `ForceVBO`, `GILowPrecision` | boolean | `Music` and `CamFollow` on, the rest off (`ShowFPS` and `Music` are the screen's own defaults; the others are guesses, see the code comments) | kept; `ShowFPS` feeds the readout, `GILowPrecision` is already Exarust's GI format |
+| `ShadowFmt`, `ScreenWidth`, `ScreenHeight` | integer | 0 | kept; `ScreenWidth`/`ScreenHeight` are the full-screen mode's size |
+| `InputMode` | integer | 0 | the controller when greater than 0 (the screen writes 0 or 51) |
+| `AimSpeed` | integer | 30 (0.29) | the 1-based step: the aim speed is `(step − 1) / 99` in double precision, then single, unclamped (the screen writes `round(99·fraction) + 1`) |
 
-`Volume` (fraction, default 1) and the game's `ShowGameTips` and
+The audio's `Volume` (a fraction in percent: the handler multiplies it by
+0.01 in single precision, default 1.0) and the game's `ShowGameTips` and
 `CheckPoints` (booleans, default on) are read beside them because the
 settings screen's options use them.
 
@@ -121,17 +124,19 @@ frame rate off, windowed, tips on, checkpoints on, aim speed 0.29
 (displayed as 30). The slider steps and labels are in
 [UI.md](../UI.md#settings-options).
 
-Apply writes `PerfIndex` (two decimals, trailing zeros kept), `Volume`
+Apply reads the file first (nothing happens when it cannot be read), then
+writes `PerfIndex` (two decimals, trailing zeros kept), `Volume`
 (percent), `Supersample`, `ShadingQuality`, `TextureDetail`,
 `TextureQuality`, `ShadowDetail`, `ShadowQuality`, `HWMultisample`,
 `InputMode` (`0`/`51`), `AimSpeed`, `Fullscreen`, `Music`, `ShowFPS`,
 `ShowGameTips`, `Checkpoints`, `VerticalSync` and `ShowFPS` again, in that
 order, through the settings screen's line rewriter, and writes the file. The
-quality levels, super sampling, hardware antialiasing, vertical sync and
-full screen come from the screen's draft; volume and aim speed are the live
-values; the frame-rate readout, tips, checkpoints and music are the live
-values too (the Music checkbox only mutes the session, so its line keeps the
-startup value).
+quality levels, super sampling, hardware antialiasing, vertical sync, full
+screen and the second `ShowFPS` come from the screen's draft; the
+performance index, volume, input mode, aim speed, music, the first
+`ShowFPS`, tips and checkpoints are the live values (the Music checkbox only
+mutes the session, so its line keeps the startup value). Opening the page
+reads the file again into its draft.
 
 The GPU benchmark warms up for half a second and takes three half-second
 runs, the best frame count over its whole half-seconds divided by 60. The

@@ -208,11 +208,12 @@ prize. It also carries the rival company names, the four seasons' reward ids
 and the tournament weapon tiers.
 
 The hardware configuration (`hw_config`) runs the settings screen: it holds
-the live options and the open screen's draft, opens/apply/cancels/defaults
-them, writes the settings file's lines, rebinds a Controls row from the next
-key or mouse button, and drives the GPU benchmark (a 1024² target, a 512²
-texture and sixteen full-screen quads, the original's half-second warm-up
-and three runs). It pushes the live options into `exa_render::quality`
+the live options, the saved set and the open page's draft; opens the page
+(reading the settings file again), applies, cancels and runs Defaults per
+page; writes the settings file's lines; rebinds a Controls row of the page's
+copy of the bindings from the next key or mouse button; and drives the GPU
+benchmark (a 1024² target, a 512² texture and sixteen full-screen quads, the
+original's half-second warm-up and three runs). It pushes the live options into `exa_render::quality`
 (super-sampling on or off, shadow-map sizes, MSAA), the audio buses, the
 frame-rate readout and the window's mode, size and present mode
 ([`docs/UI.md`](../../docs/UI.md#settings-options)).
