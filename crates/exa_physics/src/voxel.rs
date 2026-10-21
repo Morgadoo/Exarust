@@ -757,7 +757,7 @@ pub fn mesh_touches(triangles: &[[Vec3; 3]], centre: Vec3, radius: f32) -> bool 
 }
 
 /// The squared distance from `p` to the closest point of a triangle.
-fn closest_distance_squared(t: [Vec3; 3], p: Vec3) -> f32 {
+pub(crate) fn closest_distance_squared(t: [Vec3; 3], p: Vec3) -> f32 {
     let [a, b, c] = t;
     let ab = b - a;
     let ac = c - a;

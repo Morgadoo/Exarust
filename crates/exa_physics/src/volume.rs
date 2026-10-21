@@ -21,7 +21,7 @@
 
 use bevy::math::{Mat3, Vec3};
 
-use crate::voxel::{Bounds, Sphere, mesh_touches};
+use crate::voxel::{Bounds, Sphere};
 
 /// A volume's centre and mass. The centre is an offset from the grid box's
 /// centre (the bounds' centre), the arithmetic the original's summary
@@ -245,6 +245,248 @@ impl VolumeOptions {
     }
 }
 
+/// A mesh to fit a volume to: its triangles with the bounding box and the
+/// bounding-volume tree the original's kd-tree gives it, so the grid's
+/// ray and sphere queries do not test every triangle of a large mesh.
+#[derive(Debug, Clone)]
+pub struct Mesh {
+    triangles: Vec<[Vec3; 3]>,
+    bounds: Bounds,
+    /// Bounding boxes of the tree's nodes, depth first: a leaf holds
+    /// `count` triangles from `first`, an inner node two children at
+    /// `left` and `left + 1`.
+    nodes: Vec<Node>,
+    order: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Node {
+    lo: Vec3,
+    hi: Vec3,
+    left: u32,
+    right: u32,
+    count: u32,
+    first: u32,
+}
+
+impl Mesh {
+    /// A mesh's tree, its box the union of its triangles' boxes (the
+    /// original's mesh kd-tree box). An empty mesh has no box or tree.
+    pub fn new(triangles: &[[Vec3; 3]]) -> Self {
+        let (mut lo, mut hi) = (Vec3::MAX, Vec3::MIN);
+        for t in triangles {
+            for v in t {
+                lo = lo.min(*v);
+                hi = hi.max(*v);
+            }
+        }
+        if triangles.is_empty() {
+            lo = Vec3::ZERO;
+            hi = Vec3::ZERO;
+        }
+        let bounds = Bounds {
+            centre: (lo + hi) * 0.5,
+            half_extents: (hi - lo) * 0.5,
+        };
+        let mut order: Vec<u32> = (0..triangles.len() as u32).collect();
+        let mut nodes = Vec::new();
+        if !triangles.is_empty() {
+            let len = order.len();
+            build_node(triangles, &mut order, 0, len, &mut nodes);
+        }
+        Self {
+            triangles: triangles.to_vec(),
+            bounds,
+            nodes,
+            order,
+        }
+    }
+
+    /// The box around every triangle.
+    pub fn bounds(&self) -> Bounds {
+        self.bounds
+    }
+
+    pub fn triangles(&self) -> &[[Vec3; 3]] {
+        &self.triangles
+    }
+
+    /// Whether any triangle's closest point is within `radius` of
+    /// `centre`.
+    pub fn touches(&self, centre: Vec3, radius: f32) -> bool {
+        let limit = radius * radius;
+        let mut stack = vec![0u32];
+        while let Some(index) = stack.pop() {
+            let Some(node) = self.nodes.get(index as usize) else {
+                continue;
+            };
+            if box_distance2(centre, node.lo, node.hi) > limit {
+                continue;
+            }
+            if node.count > 0 {
+                let first = node.first as usize;
+                for &i in &self.order[first..first + node.count as usize] {
+                    if let Some(t) = self.triangles.get(i as usize)
+                        && crate::voxel::closest_distance_squared(*t, centre) <= limit
+                    {
+                        return true;
+                    }
+                }
+            } else {
+                stack.push(node.left);
+                stack.push(node.right);
+            }
+        }
+        false
+    }
+
+    /// Whether a triangle is hit by the ray from `origin` along `direction`
+    /// (unit) within `reach`.
+    pub fn ray(&self, origin: Vec3, direction: Vec3, reach: f32) -> bool {
+        let mut stack = vec![0u32];
+        while let Some(index) = stack.pop() {
+            let Some(node) = self.nodes.get(index as usize) else {
+                continue;
+            };
+            if !segment_box(origin, direction, reach, node.lo, node.hi) {
+                continue;
+            }
+            if node.count > 0 {
+                let first = node.first as usize;
+                for &i in &self.order[first..first + node.count as usize] {
+                    if let Some(t) = self.triangles.get(i as usize)
+                        && ray_hits_triangle(*t, origin, direction, reach)
+                    {
+                        return true;
+                    }
+                }
+            } else {
+                stack.push(node.left);
+                stack.push(node.right);
+            }
+        }
+        false
+    }
+}
+
+/// Builds one tree node over `order[start..start + count]`, splitting the
+/// widest axis at the median of the triangles' centres, with at most eight
+/// per leaf.
+fn build_node(
+    triangles: &[[Vec3; 3]],
+    order: &mut [u32],
+    start: usize,
+    count: usize,
+    nodes: &mut Vec<Node>,
+) -> u32 {
+    const LEAF: usize = 8;
+    let (mut lo, mut hi) = (Vec3::MAX, Vec3::MIN);
+    let (mut clo, mut chi) = (Vec3::MAX, Vec3::MIN);
+    for &i in &order[start..start + count] {
+        let t = triangles[i as usize];
+        let c = (t[0] + t[1] + t[2]) / 3.0;
+        clo = clo.min(c);
+        chi = chi.max(c);
+        lo = lo.min(t[0].min(t[1]).min(t[2]));
+        hi = hi.max(t[0].max(t[1]).max(t[2]));
+    }
+    let index = nodes.len() as u32;
+    nodes.push(Node {
+        lo,
+        hi,
+        left: 0,
+        right: 0,
+        count: count as u32,
+        first: start as u32,
+    });
+    if count <= LEAF {
+        return index;
+    }
+    let extent = chi - clo;
+    let axis = if extent.x >= extent.y && extent.x >= extent.z {
+        0
+    } else if extent.y >= extent.z {
+        1
+    } else {
+        2
+    };
+    let range = &mut order[start..start + count];
+    range.sort_by(|&a, &b| {
+        let ca =
+            (triangles[a as usize][0] + triangles[a as usize][1] + triangles[a as usize][2]) / 3.0;
+        let cb =
+            (triangles[b as usize][0] + triangles[b as usize][1] + triangles[b as usize][2]) / 3.0;
+        ca[axis].total_cmp(&cb[axis])
+    });
+    let middle = count / 2;
+    let left_index = build_node(triangles, order, start, middle, nodes);
+    let right_index = build_node(triangles, order, start + middle, count - middle, nodes);
+    if let Some(node) = nodes.get_mut(index as usize) {
+        node.count = 0;
+        node.left = left_index;
+        node.right = right_index;
+    }
+    index
+}
+
+/// Squared distance from a point to an axis-aligned box (0 inside).
+fn box_distance2(p: Vec3, lo: Vec3, hi: Vec3) -> f32 {
+    let d = (lo - p).max(Vec3::ZERO).max(p - hi);
+    d.length_squared()
+}
+
+/// Whether the segment `origin .. origin + direction·reach` meets the box.
+fn segment_box(origin: Vec3, direction: Vec3, reach: f32, lo: Vec3, hi: Vec3) -> bool {
+    let mut near = 0.0f32;
+    let mut far = reach;
+    for a in 0..3 {
+        let d = direction[a];
+        if d.abs() < 1e-12 {
+            if origin[a] < lo[a] || origin[a] > hi[a] {
+                return false;
+            }
+            continue;
+        }
+        let inv = 1.0 / d;
+        let (mut t0, mut t1) = ((lo[a] - origin[a]) * inv, (hi[a] - origin[a]) * inv);
+        if t0 > t1 {
+            std::mem::swap(&mut t0, &mut t1);
+        }
+        near = near.max(t0);
+        far = far.min(t1);
+        if near > far {
+            return false;
+        }
+    }
+    true
+}
+
+/// Whether the ray from `origin` along `direction` (unit) meets the
+/// triangle within `reach`, two-sided.
+fn ray_hits_triangle(t: [Vec3; 3], origin: Vec3, direction: Vec3, reach: f32) -> bool {
+    let [a, b, c] = t;
+    let e1 = b - a;
+    let e2 = c - a;
+    let p = direction.cross(e2);
+    let det = e1.dot(p);
+    if det.abs() < 1e-9 {
+        return false;
+    }
+    let inv = 1.0 / det;
+    let s = origin - a;
+    let u = s.dot(p) * inv;
+    if !(0.0..=1.0).contains(&u) {
+        return false;
+    }
+    let q = s.cross(e1);
+    let v = direction.dot(q) * inv;
+    if v < 0.0 || u + v > 1.0 {
+        return false;
+    }
+    let distance = e2.dot(q) * inv;
+    distance >= 0.0 && distance <= reach
+}
+
 /// A fitted voxel volume: the grid's cell counts per axis, its volume and
 /// centre, and the collision spheres in the mesh's space.
 #[derive(Debug, Clone, PartialEq)]
@@ -257,15 +499,22 @@ pub struct FittedVolume {
 
 /// The original's rigid-body voxeliser: the grid fill, the solid fill, the
 /// volume and centre, the corner masks and the sphere extraction, in the
-/// order the shape builders run them. Bounds and triangles must be in the
-/// same (centimetre) space.
-pub fn fit(bounds: Bounds, triangles: &[[Vec3; 3]], options: &VolumeOptions) -> FittedVolume {
-    let mut grid = Grid::new(bounds, options);
-    grid.mark_surface(triangles, options);
-    grid.mark_solid(triangles);
+/// order the shape builders run them. The mesh's triangles must be in the
+/// original's centimetres.
+pub fn fit(mesh: &Mesh, options: &VolumeOptions) -> FittedVolume {
+    if mesh.triangles.is_empty() {
+        return FittedVolume {
+            counts: [0; 3],
+            summary: summarise([0; 3], [0.0; 3], &[]),
+            spheres: Vec::new(),
+        };
+    }
+    let mut grid = Grid::new(mesh.bounds, options);
+    grid.mark_surface(mesh, options);
+    grid.mark_solid(mesh);
     let summary = summarise(grid.counts, grid.half.to_array(), &grid.cells);
     grid.mark_corners();
-    let spheres = grid.extract_spheres(triangles, options);
+    let spheres = grid.extract_spheres(options);
     FittedVolume {
         counts: grid.counts,
         summary,
@@ -500,7 +749,7 @@ impl Grid {
     /// four near neighbours (their offsets summing to at most three per
     /// axis) whose centre touches the mesh within 0.75·√2 half-cells is
     /// marked provisional; every provisional cell becomes solid.
-    fn mark_surface(&mut self, triangles: &[[Vec3; 3]], options: &VolumeOptions) {
+    fn mark_surface(&mut self, mesh: &Mesh, options: &VolumeOptions) {
         if self.cells.is_empty() {
             return;
         }
@@ -515,7 +764,7 @@ impl Grid {
             for j in 1..=self.counts[1] {
                 for k in 1..=self.counts[2] {
                     let at = [i, j, k];
-                    if mesh_touches(triangles, self.cell_centre(at), near)
+                    if mesh.touches(self.cell_centre(at), near)
                         && let Some(n) = self.index(at)
                     {
                         self.cells[n] = 1;
@@ -547,7 +796,7 @@ impl Grid {
                     }
                     if n > 4
                         && sum.iter().all(|s| s.abs() <= 3)
-                        && mesh_touches(triangles, self.cell_centre(at), inner)
+                        && mesh.touches(self.cell_centre(at), inner)
                         && let Some(index) = self.index(at)
                     {
                         self.cells[index] = 2;
@@ -575,7 +824,7 @@ impl Grid {
     /// The original's solid fill: a cell still empty is solid when the mesh
     /// is hit by both rays of every axis from its centre. Returns the solid
     /// cell count.
-    fn mark_solid(&mut self, triangles: &[[Vec3; 3]]) -> i32 {
+    fn mark_solid(&mut self, mesh: &Mesh) -> i32 {
         if self.cells.is_empty() {
             return 0;
         }
@@ -608,7 +857,7 @@ impl Grid {
                             } else {
                                 (at3[axis] - min[axis]) + 0.2
                             };
-                            if reach < 0.0 || !ray_touches(triangles, at3, dir, reach) {
+                            if reach < 0.0 || !mesh.ray(at3, dir, reach) {
                                 hit = false;
                                 break;
                             }
@@ -696,29 +945,9 @@ fn ratio_floor(n: i32, a: f32, b: f32) -> i32 {
 /// within `reach`: the original's kd-tree ray query, two-sided, tested
 /// against every triangle.
 pub fn ray_touches(triangles: &[[Vec3; 3]], origin: Vec3, direction: Vec3, reach: f32) -> bool {
-    let eps = 1e-9;
-    triangles.iter().any(|&[a, b, c]| {
-        let e1 = b - a;
-        let e2 = c - a;
-        let p = direction.cross(e2);
-        let det = e1.dot(p);
-        if det.abs() < eps {
-            return false;
-        }
-        let inv = 1.0 / det;
-        let t = origin - a;
-        let u = t.dot(p) * inv;
-        if !(0.0..=1.0).contains(&u) {
-            return false;
-        }
-        let q = t.cross(e1);
-        let v = direction.dot(q) * inv;
-        if v < 0.0 || u + v > 1.0 {
-            return false;
-        }
-        let distance = e2.dot(q) * inv;
-        distance >= 0.0 && distance <= reach
-    })
+    triangles
+        .iter()
+        .any(|&t| ray_hits_triangle(t, origin, direction, reach))
 }
 
 impl Grid {
@@ -730,7 +959,7 @@ impl Grid {
     /// survivors become spheres of `r/(1 + 0.01 r)` cells, and the cells on
     /// the voxel surface then give corner spheres. A mesh with no candidate
     /// at all takes the corner-only fallback.
-    fn extract_spheres(&self, _triangles: &[[Vec3; 3]], options: &VolumeOptions) -> Vec<Sphere> {
+    fn extract_spheres(&self, options: &VolumeOptions) -> Vec<Sphere> {
         if self.cells.is_empty() {
             return Vec::new();
         }
@@ -1073,6 +1302,7 @@ fn popcount(mask: u8) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::voxel::mesh_touches;
 
     #[test]
     fn the_entries_sort_by_key() {
@@ -1166,10 +1396,10 @@ mod tests {
             centre: Vec3::new(5.0, 6.0, 7.0),
             half_extents: Vec3::new(10.0, 10.0, 2.0),
         };
-        let triangles = box_triangles(bounds);
+        let mesh = Mesh::new(&box_triangles(bounds));
         let options = VolumeOptions::for_bounds(&bounds, false);
         assert_eq!(options.resolution, COARSE_RESOLUTION);
-        let fitted = fit(bounds, &triangles, &options);
+        let fitted = fit(&mesh, &options);
         assert_eq!(fitted.counts, [6, 6, 2]);
         assert!(
             (fitted.summary.mass - 1600.0).abs() < 0.01,
@@ -1204,9 +1434,9 @@ mod tests {
             centre: Vec3::ZERO,
             half_extents: Vec3::splat(10.0),
         };
-        let triangles = box_triangles(bounds);
+        let mesh = Mesh::new(&box_triangles(bounds));
         let options = VolumeOptions::for_bounds(&bounds, false);
-        let fitted = fit(bounds, &triangles, &options);
+        let fitted = fit(&mesh, &options);
         assert_eq!(fitted.counts, [6, 6, 6]);
         assert!((fitted.summary.mass - 8000.0).abs() < 0.01);
         assert_eq!(fitted.summary.centre, [0.0, 0.0, 0.0]);
@@ -1284,9 +1514,9 @@ mod tests {
             centre: Vec3::ZERO,
             half_extents: Vec3::new(10.0, 10.0, 3.0),
         };
-        let triangles = box_triangles(bounds);
+        let mesh = Mesh::new(&box_triangles(bounds));
         let options = VolumeOptions::for_bounds(&bounds, false);
-        let fitted = fit(bounds, &triangles, &options);
+        let fitted = fit(&mesh, &options);
         assert!(!fitted.spheres.is_empty());
         assert!(fitted.summary.mass > 0.0);
     }
@@ -1307,6 +1537,81 @@ mod tests {
             Vec3::X,
             100.0
         ));
+    }
+
+    /// The bounding-volume tree answers exactly as a test of every
+    /// triangle does, for sphere and ray queries over a mesh of many
+    /// triangles.
+    #[test]
+    fn the_tree_matches_testing_every_triangle() {
+        let bounds = Bounds {
+            centre: Vec3::new(1.0, -2.0, 3.0),
+            half_extents: Vec3::new(10.0, 6.0, 4.0),
+        };
+        let triangles = subdivided_box(bounds, 4);
+        assert!(triangles.len() > 150);
+        let mesh = Mesh::new(&triangles);
+        assert_eq!(mesh.bounds().centre, bounds.centre);
+        assert_eq!(mesh.bounds().half_extents, bounds.half_extents);
+        let mut tested = 0;
+        for i in -4..=4 {
+            for j in -4..=4 {
+                for k in -4..=4 {
+                    let p = bounds.centre + Vec3::new(i as f32, j as f32, k as f32) * 3.0;
+                    for r in [0.5f32, 2.0, 5.0] {
+                        assert_eq!(
+                            mesh.touches(p, r),
+                            mesh_touches(&triangles, p, r),
+                            "touch at {p} r {r}"
+                        );
+                        tested += 1;
+                    }
+                    for dir in [Vec3::X, -Vec3::Y, Vec3::new(0.3, 0.5, 0.8).normalize()] {
+                        assert_eq!(
+                            mesh.ray(p, dir, 40.0),
+                            ray_touches(&triangles, p, dir, 40.0),
+                            "ray at {p} along {dir}"
+                        );
+                        tested += 1;
+                    }
+                }
+            }
+        }
+        assert!(tested > 1000);
+    }
+
+    /// A box's sides cut into `n` by `n` quads each, outward-facing.
+    fn subdivided_box(b: Bounds, n: usize) -> Vec<[Vec3; 3]> {
+        let mut out = Vec::new();
+        let at = |axis: usize, sign: f32, u: f32, v: f32| {
+            let mut p = b.centre;
+            let (a, c) = match axis {
+                0 => (1, 2),
+                1 => (0, 2),
+                _ => (0, 1),
+            };
+            p[axis] += sign * b.half_extents[axis];
+            p[a] += (u - 0.5) * 2.0 * b.half_extents[a];
+            p[c] += (v - 0.5) * 2.0 * b.half_extents[c];
+            p
+        };
+        for axis in 0..3 {
+            for sign in [-1.0f32, 1.0] {
+                for i in 0..n {
+                    for j in 0..n {
+                        let (u0, u1) = (i as f32 / n as f32, (i + 1) as f32 / n as f32);
+                        let (v0, v1) = (j as f32 / n as f32, (j + 1) as f32 / n as f32);
+                        let a = at(axis, sign, u0, v0);
+                        let b2 = at(axis, sign, u1, v0);
+                        let c = at(axis, sign, u1, v1);
+                        let d = at(axis, sign, u0, v1);
+                        out.push([a, b2, c]);
+                        out.push([a, c, d]);
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// The 12 triangles of an axis-aligned box's sides.

@@ -149,10 +149,12 @@ six-ray solid fill, the corner masks, and the sphere extraction (candidate
 radii to the nearest cell that is not full, the coverage count and
 redundancy pruning in the original's quicksort order, a final coverage
 pass, corner spheres for surface cells whose corners no candidate covers,
-and the thin-mesh fallback). Its `VolumeSummary` weighs a body: mobility
-10 000 over the volume, and four point masses 4 over the barycentric
-weights of the centre of mass on the rest tetrahedron. The original has no
-buoyancy or drag, so none is modelled. `floor_points` is the floor heightfield,
+and the thin-mesh fallback). The queries run through `volume::Mesh`, a
+bounding-volume tree over the mesh's triangles (the original's mesh
+kd-tree), and `VolumeSummary` weighs a body: mobility 10 000 over the
+volume, and four point masses 4 over the barycentric weights of the centre
+of mass on the rest tetrahedron. The original has no buoyancy or drag, so
+none is modelled. `floor_points` is the floor heightfield,
 run on a grid cell's merged floor in the cell's space: 10 cm columns, a ray
 down each with the highest upward face winning, a mark in the 10 cm cell
 under it, and a point at the centre of every 20 cm cell holding four marks.
