@@ -598,6 +598,57 @@ fn unlearning_a_technique_takes_its_dependents() {
     assert_eq!(skipped.record.skills[ARMOUR_SLOT].points, 15000);
 }
 
+/// The node table the screen reads: Close Combat's Dual Wield needs Remise
+/// or Riposte, Armour's second and third tiers need the one before, and an
+/// empty node has none.
+#[test]
+fn a_skill_slots_prerequisites_come_from_the_table() {
+    assert_eq!(slot_prerequisites(0, 7), [1, 4]);
+    assert_eq!(slot_prerequisites(2, 1), [1, 0]);
+    assert_eq!(slot_prerequisites(2, 2), [2, 0]);
+    assert_eq!(slot_prerequisites(4, 7), [0, 0]);
+    // Past the table reads as no prerequisites, as the game would read on.
+    assert_eq!(slot_prerequisites(9, 0), [0, 0]);
+    assert_eq!(slot_prerequisites(0, 9), [0, 0]);
+}
+
+/// Choosing a technique spends a level the record already funds and takes
+/// the slot; a technique past the funded levels is a surplus choice and is
+/// unlearned first.
+#[test]
+fn choosing_a_technique_writes_the_slot_and_clears_a_surplus() {
+    let mut data = CharacterData::new();
+    data.record.skills[0] = Skill {
+        points: 10000,
+        techniques: [1, 0, 0, 0, 0, 0],
+    };
+    assert!(data.choose_technique(1, 2));
+    assert_eq!(data.record.skills[0].techniques, [1, 2, 0, 0, 0, 0]);
+    assert_eq!(data.record.skills[0].points, 10000);
+    // The same choice again writes nothing.
+    assert!(!data.choose_technique(1, 2));
+
+    // A surplus third technique is unlearned (and its points rebased)
+    // before the second level's choice goes in.
+    let mut surplus = CharacterData::new();
+    surplus.record.skills[0] = Skill {
+        points: 10000,
+        techniques: [1, 0, 3, 0, 0, 0],
+    };
+    assert_eq!(surplus.surplus_chosen_level(), Some((1, 3)));
+    assert!(surplus.choose_technique(1, 2));
+    assert_eq!(surplus.record.skills[0].techniques, [1, 2, 0, 0, 0, 0]);
+    // Unlearning the level past the chosen run re-bases the points to the
+    // chosen count less one.
+    assert_eq!(surplus.record.skills[0].points, 0);
+
+    // A skill, level or slot outside the record writes nothing.
+    assert!(!surplus.choose_technique(0, 1));
+    assert!(!surplus.choose_technique(7, 1));
+    assert!(!surplus.choose_technique(1, 0));
+    assert!(!surplus.choose_technique(1, 7));
+}
+
 #[test]
 fn a_loadout_applied_to_a_bare_human_puts_the_underwear_on() {
     let braies = item(UNDERWEAR_ITEM, 0x03);

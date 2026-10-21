@@ -2555,6 +2555,7 @@ version = "0.0.1"
 dependencies = [
  "bevy",
  "exa_assets",
+ "exa_character",
  "exa_formats",
 ]
 

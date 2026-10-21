@@ -10,8 +10,8 @@
 use bevy::prelude::*;
 use exa_formats::characters::{
     Carried, CharacterRecord, ID_MASK, ItemRef, Loadout, MAX_TOTAL_LEVELS, POINTS_PER_TECHNIQUE,
-    Pools, Role, SAVED_HEAL_POOL, SAVED_POTION, SKILLS, SavedState, Skill, UNDERWEAR_ITEM,
-    WORLD_DB, WRITTEN_TECHNIQUES,
+    Pools, Role, SAVED_HEAL_POOL, SAVED_POTION, SKILLS, SavedState, Skill, TECHNIQUE_SLOTS,
+    UNDERWEAR_ITEM, WORLD_DB, WRITTEN_TECHNIQUES,
 };
 
 /// A record id's database bits, as an item id's: `0x40000000` is the world
@@ -78,6 +78,18 @@ const PREREQUISITES: [[[u8; 2]; 8]; SKILLS] = [
 fn prerequisites(slot: usize, technique: u8) -> [u8; 2] {
     let flat = (slot * 8 + usize::from(technique)).checked_sub(1);
     flat.and_then(|at| PREREQUISITES.as_flattened().get(at))
+        .copied()
+        .unwrap_or([0, 0])
+}
+
+/// The nodes a skill's node slot depends on: the two ids in that slot's table
+/// entry, 0 for none. `slot` and `node` are 0-based; an id past the table
+/// reads as having none. The skill screen shows a node as available once
+/// every nonzero id is among the techniques chosen before it.
+pub fn slot_prerequisites(skill: usize, node: usize) -> [u8; 2] {
+    PREREQUISITES
+        .get(skill)
+        .and_then(|techniques| techniques.get(node))
         .copied()
         .unwrap_or([0, 0])
 }
@@ -768,6 +780,36 @@ impl CharacterData {
     pub fn apply_loadout<'a>(&mut self, loadout: &Loadout, find: impl Fn(u32) -> Option<&'a Item>) {
         loadout.apply_to(&mut self.record);
         self.ensure_underwear(find);
+    }
+
+    /// Chooses the technique of a skill's 1-based level, as the skill screen
+    /// does when a node's requirements are met. A technique the points do
+    /// not fund (a surplus choice) is unlearned first, with its dependents,
+    /// and the new technique takes the level's slot. The points do not
+    /// change: the choice spends a level the record already holds. A skill or
+    /// level of 0, a skill past the six, or a level past the record's six
+    /// stored slots does nothing (the game would write the screen's own
+    /// eighth byte). Returns whether a technique was written.
+    pub fn choose_technique(&mut self, skill: usize, level: u32) -> bool {
+        let Some(slot) = skill.checked_sub(1) else {
+            return false;
+        };
+        let Ok(at) = usize::try_from(level) else {
+            return false;
+        };
+        if slot >= SKILLS || at == 0 || at > TECHNIQUE_SLOTS {
+            return false;
+        }
+        if let Some((surplus_skill, surplus_level)) = self.surplus_chosen_level() {
+            self.unlearn_level(surplus_skill, surplus_level);
+        }
+        let node = u8::try_from(at).unwrap_or(0);
+        let entry = &mut self.record.skills[slot];
+        if entry.techniques[at - 1] == node {
+            return false;
+        }
+        entry.techniques[at - 1] = node;
+        true
     }
 
     /// The record's hands and worn items as a loadout.

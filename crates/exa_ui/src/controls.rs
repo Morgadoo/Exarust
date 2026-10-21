@@ -39,14 +39,18 @@ impl Track {
     }
 
     /// The value at a cursor x: `(cursor − x − pad − span/2) / travel`,
-    /// clamped to 0..1 and quantised to `steps` when positive. NaN passes
-    /// both clamps, as the original's `jp`.
+    /// clamped to 0..1 and quantised to `steps` when positive. The clamp is
+    /// the original's ordered `0 ≤ f` / `1 < f` pair, so a NaN falls to 0.
     pub fn value_at(self, x: i32, w: i32, cursor: i32, steps: i32) -> f32 {
         let num = cursor - x - self.pad - self.span / 2;
         let den = self.travel(w);
         let mut f = (num as f64 / den as f64) as f32;
-        if !f.is_nan() {
-            f = f.clamp(0.0, 1.0);
+        if 0.0 <= f {
+            if 1.0 < f {
+                f = 1.0;
+            }
+        } else {
+            f = 0.0;
         }
         if steps > 0 {
             let q = (steps as f32 * f).round_ties_even() as i32;
@@ -233,6 +237,8 @@ mod tests {
         assert!((t.value_at(0, 100, 61, 0) - 49.0 / 76.0).abs() < 1e-6);
         assert_eq!(t.value_at(0, 100, 0, 0), 0.0);
         assert_eq!(t.value_at(0, 100, 100, 0), 1.0);
+        // A zero travel makes 0/0; the ordered clamp sends NaN to 0.
+        assert_eq!(t.value_at(0, 24, 12, 0), 0.0);
         assert_eq!(t.value_at(0, 100, 61, 4), 0.75);
         assert_eq!(t.thumb_left(0, 100, 0.5), 40);
         assert_eq!(t.value_at(0, 100, 40 + 10, 0), 0.5);
@@ -327,18 +333,20 @@ pub fn align_label(
     base: i32,
     style: u32,
 ) -> LabelAt {
+    // The original switches on 1, 3, 4 and 5; a 2 falls through to the
+    // default, so only those four alignments exist.
     let lx = match style & 0x7000 {
         0x1000 => x - text_w - unit,
-        0x2000 => x + pad + unit + (avail - 1 - text_w) / 2,
-        0x3000 => x + avail - text_w + unit,
-        0x4000 => x + avail + unit,
+        0x3000 => (avail - 1 - text_w) / 2 + pad + x + unit,
+        0x4000 => x + avail - text_w + unit,
+        0x5000 => avail + x + unit,
         _ => x + pad + (unit + 1) / 2,
     };
     let ly = match style & 0x700 {
         0x100 => y - unit / 2,
-        0x200 => y + (h + line_h + 2) / 2,
-        0x300 => y + h + base - 1,
-        0x400 => y + h,
+        0x300 => (line_h + h + 2) / 2 + y,
+        0x400 => y + h + base - 1,
+        0x500 => y + h,
         _ => y + (unit + 1) / 2,
     };
     LabelAt { x: lx, y: ly }
@@ -354,16 +362,21 @@ mod label_tests {
             align_label(100, 100, 20, 2, 4, 20, 100, 16, 14, 0x1000).x,
             76
         );
+        // 0x2000 is not a case: the original falls through to the default.
         assert_eq!(
             align_label(100, 100, 20, 2, 4, 20, 100, 16, 14, 0x2000).x,
-            145
+            104
         );
         assert_eq!(
             align_label(100, 100, 20, 2, 4, 20, 100, 16, 14, 0x3000).x,
-            184
+            145
         );
         assert_eq!(
             align_label(100, 100, 20, 2, 4, 20, 100, 16, 14, 0x4000).x,
+            184
+        );
+        assert_eq!(
+            align_label(100, 100, 20, 2, 4, 20, 100, 16, 14, 0x5000).x,
             204
         );
         assert_eq!(align_label(100, 100, 20, 2, 4, 20, 100, 16, 14, 0).x, 104);
@@ -372,9 +385,1021 @@ mod label_tests {
     #[test]
     fn the_vertical_styles() {
         assert_eq!(align_label(0, 100, 20, 2, 4, 0, 0, 16, 14, 0x100).y, 98);
-        assert_eq!(align_label(0, 100, 20, 2, 4, 0, 0, 16, 14, 0x200).y, 119);
-        assert_eq!(align_label(0, 100, 20, 2, 4, 0, 0, 16, 14, 0x300).y, 133);
-        assert_eq!(align_label(0, 100, 20, 2, 4, 0, 0, 16, 14, 0x400).y, 120);
+        // 0x200 is not a case either.
+        assert_eq!(align_label(0, 100, 20, 2, 4, 0, 0, 16, 14, 0x200).y, 102);
+        assert_eq!(align_label(0, 100, 20, 2, 4, 0, 0, 16, 14, 0x300).y, 119);
+        assert_eq!(align_label(0, 100, 20, 2, 4, 0, 0, 16, 14, 0x400).y, 133);
+        assert_eq!(align_label(0, 100, 20, 2, 4, 0, 0, 16, 14, 0x500).y, 120);
         assert_eq!(align_label(0, 100, 20, 2, 4, 0, 0, 16, 14, 0).y, 102);
+    }
+}
+
+/// The unit-derived text inset: `3 × unit | 1`, the value the original
+/// caches at start-up and adds to a control's border.
+pub fn text_inset(unit: i32) -> i32 {
+    (3 * unit) | 1
+}
+
+/// The extended control classes, in the order the unit registers them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExtendedClass {
+    pub id: u16,
+    pub name: &'static str,
+    /// The record's default size (w, h).
+    pub size: (i32, i32),
+}
+
+/// The text field class id.
+pub const TEXT_FIELD: u16 = 17;
+/// The combo box class id.
+pub const COMBO_BOX: u16 = 18;
+/// The colour swatch class id.
+pub const COLOUR_SWATCH: u16 = 23;
+/// The numeric spinner class id.
+pub const SPINNER: u16 = 16;
+/// The progress bar class id.
+pub const PROGRESS_BAR: u16 = 20;
+/// The separator class id.
+pub const SEPARATOR: u16 = 19;
+/// The image class id.
+pub const IMAGE: u16 = 24;
+/// The texture view class id.
+pub const TEXTURE_VIEW: u16 = 21;
+/// The trackbar class id.
+pub const TRACKBAR: u16 = 22;
+/// The caption class id.
+pub const CAPTION: u16 = 25;
+/// The scroll bar class id.
+pub const SCROLL_BAR: u16 = 32;
+
+/// The eleven classes, in registration order.
+pub const EXTENDED_CLASSES: [ExtendedClass; 11] = [
+    ExtendedClass {
+        id: TEXT_FIELD,
+        name: "text field",
+        size: (80, 24),
+    },
+    ExtendedClass {
+        id: COMBO_BOX,
+        name: "combo box",
+        size: (80, 24),
+    },
+    ExtendedClass {
+        id: COLOUR_SWATCH,
+        name: "colour swatch",
+        size: (0, 24),
+    },
+    ExtendedClass {
+        id: SPINNER,
+        name: "spinner",
+        size: (60, 20),
+    },
+    ExtendedClass {
+        id: PROGRESS_BAR,
+        name: "progress bar",
+        size: (0, 24),
+    },
+    ExtendedClass {
+        id: SEPARATOR,
+        name: "separator",
+        size: (0, 3),
+    },
+    ExtendedClass {
+        id: IMAGE,
+        name: "image",
+        size: (0, 0),
+    },
+    ExtendedClass {
+        id: TEXTURE_VIEW,
+        name: "texture view",
+        size: (0, 0),
+    },
+    ExtendedClass {
+        id: TRACKBAR,
+        name: "trackbar",
+        size: (0, 28),
+    },
+    ExtendedClass {
+        id: CAPTION,
+        name: "caption",
+        size: (0, 20),
+    },
+    ExtendedClass {
+        id: SCROLL_BAR,
+        name: "scroll bar",
+        size: (0, 16),
+    },
+];
+
+/// The extended class with `id`.
+pub fn extended_class(id: u16) -> Option<&'static ExtendedClass> {
+    EXTENDED_CLASSES.iter().find(|class| class.id == id)
+}
+
+/// The text field's usable span: `w − 2·pad − 2·unit`.
+pub fn text_field_span(w: i32, pad: i32, unit: i32) -> i32 {
+    text_span_a(w, pad, unit)
+}
+
+/// The combo box's usable span: `w − (4·unit|1) − 2·pad − unit`.
+pub fn combo_text_span(w: i32, pad: i32, unit: i32) -> i32 {
+    text_span_b(w, pad, unit)
+}
+
+/// The spinner's usable span: `w − (3·unit|1) − 2·pad − 2·unit`.
+pub fn spinner_text_span(w: i32, pad: i32, unit: i32) -> i32 {
+    text_span_c(w, pad, unit)
+}
+
+/// The trackbar's default height (`20` when the record gives none) and pad
+/// (`2`), set when the control is created.
+pub fn trackbar_defaults(height: i32) -> (i32, i32) {
+    (if height == 0 { 20 } else { height }, 2)
+}
+
+/// The scroll bar's pad (`2`), set when the control is created.
+pub fn scrollbar_defaults() -> i32 {
+    2
+}
+
+/// What a text field's key or pointer did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextFieldEvent {
+    /// The key was swallowed.
+    None,
+    /// The text or the selection changed.
+    Changed,
+    /// Enter committed the text.
+    Submitted,
+    /// The field lost the selection or focus.
+    FocusLost,
+    /// The key asks for the on-screen keyboard.
+    Keyboard,
+}
+
+/// A single-line text field: the bytes, the selection anchor and caret, the
+/// visible start and the maximum length. The editing rules are the text
+/// edit unit's, re-exposed for the controls that host one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextField {
+    pub text: Vec<u8>,
+    /// The selection anchor (0 to `text.len()`).
+    pub anchor: usize,
+    /// The caret (0 to `text.len()`).
+    pub caret: usize,
+    /// The first byte drawn.
+    pub view_start: usize,
+    /// The longest text the field accepts; 0 means only the class's own
+    /// limit (the original treats 0 as 255 at init).
+    pub max_len: usize,
+    pub editable: bool,
+}
+
+impl TextField {
+    /// A field around `text`.
+    pub fn new(text: &[u8], max_len: usize, editable: bool) -> Self {
+        let text = text.to_vec();
+        let caret = text.len();
+        Self {
+            text,
+            anchor: caret,
+            caret,
+            view_start: 0,
+            max_len,
+            editable,
+        }
+    }
+
+    /// The selected byte range, low to high.
+    pub fn selection(&self) -> (usize, usize) {
+        if self.anchor <= self.caret {
+            (self.anchor, self.caret)
+        } else {
+            (self.caret, self.anchor)
+        }
+    }
+
+    /// Replaces the selection (or inserts at the caret) with `bytes`.
+    pub fn insert(&mut self, bytes: &[u8]) {
+        if !self.editable {
+            return;
+        }
+        let (low, high) = self.selection();
+        if self.max_len != 0 {
+            let room = self.max_len.saturating_sub(self.text.len() - (high - low));
+            let take = bytes.len().min(room);
+            self.text.splice(low..high, bytes[..take].iter().copied());
+            self.caret = low + take;
+        } else {
+            self.text.splice(low..high, bytes.iter().copied());
+            self.caret = low + bytes.len();
+        }
+        self.anchor = self.caret;
+    }
+
+    /// Removes the selection, or the byte on `side` of the caret (`-1`
+    /// before, `1` after).
+    pub fn erase(&mut self, side: i32) {
+        if !self.editable {
+            return;
+        }
+        let (low, high) = self.selection();
+        if low != high {
+            self.text.drain(low..high);
+            self.caret = low;
+            self.anchor = low;
+            return;
+        }
+        if side < 0 && self.caret > 0 {
+            self.caret -= 1;
+            self.text.remove(self.caret);
+            self.anchor = self.caret;
+        } else if side > 0 && self.caret < self.text.len() {
+            self.text.remove(self.caret);
+            self.anchor = self.caret;
+        }
+    }
+
+    /// Handles a key. Printable bytes come as their Latin-1 code.
+    pub fn key(&mut self, key: i32, shift: bool) -> TextFieldEvent {
+        if !self.editable {
+            return TextFieldEvent::None;
+        }
+        match key {
+            13 => return TextFieldEvent::Submitted,
+            8 => {
+                self.erase(-1);
+                return TextFieldEvent::Changed;
+            }
+            46 => {
+                self.erase(1);
+                return TextFieldEvent::Changed;
+            }
+            37 => {
+                if self.caret > 0 {
+                    self.caret -= 1;
+                }
+                if !shift {
+                    self.anchor = self.caret;
+                }
+                return TextFieldEvent::Changed;
+            }
+            39 => {
+                if self.caret < self.text.len() {
+                    self.caret += 1;
+                }
+                if !shift {
+                    self.anchor = self.caret;
+                }
+                return TextFieldEvent::Changed;
+            }
+            36 => {
+                self.caret = 0;
+                if !shift {
+                    self.anchor = 0;
+                }
+                return TextFieldEvent::Changed;
+            }
+            35 => {
+                self.caret = self.text.len();
+                if !shift {
+                    self.anchor = self.caret;
+                }
+                return TextFieldEvent::Changed;
+            }
+            256 => return TextFieldEvent::Keyboard,
+            _ => {}
+        }
+        if (32..=255).contains(&key) {
+            self.insert(&[key as u8]);
+            return TextFieldEvent::Changed;
+        }
+        TextFieldEvent::None
+    }
+
+    /// Places the caret at `column`, as a press does: an anchor when not
+    /// dragging, a selection end when it is.
+    pub fn place(&mut self, column: usize, drag: bool) {
+        self.caret = column.min(self.text.len());
+        if !drag {
+            self.anchor = self.caret;
+        }
+    }
+
+    /// The byte column under `x`, from the text's own origin and advances.
+    pub fn hit(&self, x: i32, origin: i32, advances: &[i16]) -> usize {
+        let mut at = self.view_start.min(self.text.len());
+        let mut left = x - origin;
+        while at < self.text.len() {
+            let advance = advances
+                .get(usize::from(self.text[at]))
+                .copied()
+                .unwrap_or(1) as i32;
+            if left < advance / 2 {
+                break;
+            }
+            left -= advance;
+            at += 1;
+        }
+        at
+    }
+
+    /// The field's first visible byte when the caret moved past its span.
+    /// A guess: the original clips the text to the span and redraws, the
+    /// scrolled start is not traced.
+    pub fn scroll_to_caret(&mut self, origin: i32, span: i32, advances: &[i16]) {
+        let mut width = 0;
+        for &byte in &self.text[self.view_start.min(self.text.len())..self.caret] {
+            width += advances.get(usize::from(byte)).copied().unwrap_or(1) as i32;
+        }
+        while width > span && self.view_start < self.caret {
+            let byte = self.text[self.view_start];
+            width -= advances.get(usize::from(byte)).copied().unwrap_or(1) as i32;
+            self.view_start += 1;
+        }
+        let _ = origin;
+    }
+}
+
+/// A drop-down list's placement under its combo box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DropDownPlace {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    pub row: i32,
+    pub count: i32,
+}
+
+/// A combo box: a selected item, its list and its open state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComboBox {
+    pub items: Vec<Vec<u8>>,
+    /// The selected item, 1-based; 0 is none.
+    pub selected: i32,
+    pub open: bool,
+    pub max_len: usize,
+}
+
+impl ComboBox {
+    pub fn new(items: Vec<Vec<u8>>, selected: i32) -> Self {
+        Self {
+            items,
+            selected,
+            open: false,
+            max_len: 0,
+        }
+    }
+
+    /// The selected item's bytes, empty when none is selected.
+    pub fn text(&self) -> &[u8] {
+        usize::try_from(self.selected)
+            .ok()
+            .and_then(|at| at.checked_sub(1))
+            .and_then(|at| self.items.get(at))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// Selects a 1-based item, clamped to the list; returns whether it
+    /// changed.
+    pub fn choose(&mut self, item: i32) -> bool {
+        if self.items.is_empty() {
+            return false;
+        }
+        let chosen = item.clamp(1, self.items.len() as i32);
+        if chosen == self.selected {
+            return false;
+        }
+        self.selected = chosen;
+        true
+    }
+
+    /// Opens the list under `rect`; `None` for an empty list.
+    pub fn open_below(
+        &mut self,
+        rect: (i32, i32, i32, i32),
+        metrics: ListMetrics,
+        window_h: i32,
+    ) -> Option<DropDownPlace> {
+        if self.items.is_empty() {
+            return None;
+        }
+        let count = self.items.len() as i32;
+        let extent = list_extent(metrics, count);
+        let row = metrics.row();
+        let mut y = rect.1 + rect.3 + 1;
+        if y + extent.height > window_h {
+            // Guess: the list flips above when it would leave the window.
+            y = rect.1 - extent.height;
+        }
+        self.open = true;
+        Some(DropDownPlace {
+            x: rect.0,
+            y,
+            w: rect.2,
+            h: extent.height,
+            row,
+            count,
+        })
+    }
+}
+
+/// A numeric spinner's state.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Spinner {
+    pub value: f32,
+    pub min: f32,
+    pub max: f32,
+    pub step: f32,
+    /// Digits after the point; 0 with `integer` formats as an integer.
+    pub precision: i32,
+    /// The control's style bit stores an integer rather than a float.
+    pub integer: bool,
+    /// The edit is in progress (the caret is in the text zone).
+    pub editing: bool,
+}
+
+impl Default for Spinner {
+    fn default() -> Self {
+        Self {
+            value: 0.0,
+            min: 0.0,
+            max: 0.0,
+            step: 0.0,
+            precision: 0,
+            integer: false,
+            editing: false,
+        }
+    }
+}
+
+/// What setting a spinner's value did.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpinnerSet {
+    pub changed: bool,
+    /// The text named a value outside the range and was clamped.
+    pub clamped: bool,
+}
+
+/// A spinner's text zone or one of its two step halves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpinnerPart {
+    Text,
+    Up,
+    Down,
+}
+
+impl Spinner {
+    /// The init rule: a zero step becomes 1, a zero maximum 100, and a
+    /// value under the minimum is raised to it.
+    pub fn init(&mut self) {
+        if self.step == 0.0 {
+            self.step = 1.0;
+        }
+        if self.max == 0.0 {
+            self.max = 100.0;
+        }
+        if self.value < self.min {
+            self.value = self.min;
+        }
+    }
+
+    /// Sets the value from a typed number with the original's ordered
+    /// clamp: `min ≤ v ≤ max`, a NaN falling to the minimum.
+    pub fn set(&mut self, value: f32, report: bool) -> SpinnerSet {
+        let mut v = value;
+        if self.min <= v {
+            if self.max <= v && v != self.max {
+                v = self.max;
+            }
+        } else {
+            v = self.min;
+        }
+        let changed = (v - self.value).abs() > 1e-8;
+        let clamped = v != value;
+        if changed {
+            self.value = v;
+        }
+        let _ = report;
+        SpinnerSet { changed, clamped }
+    }
+
+    /// Steps the value up or down by one step, clamped to the range.
+    pub fn step(&mut self, up: bool) -> bool {
+        let next = if up {
+            self.value + self.step
+        } else {
+            self.value - self.step
+        };
+        let mut v = next;
+        if self.min <= v {
+            if self.max <= v && v != self.max {
+                v = self.max;
+            }
+        } else {
+            v = self.min;
+        }
+        if v != self.value {
+            self.value = v;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The shown text: the value with the configured digits.
+    pub fn text(&self) -> String {
+        if self.integer {
+            format!("{}", self.value as i32)
+        } else {
+            format!("{:.*}", self.precision.max(0) as usize, self.value)
+        }
+    }
+
+    /// The part under (`x`, `y`) within `rect` and `span` (the usable text
+    /// width).
+    pub fn part(&self, x: i32, y: i32, rect: (i32, i32, i32, i32), span: i32) -> SpinnerPart {
+        if x < rect.0 + rect.2 - span {
+            SpinnerPart::Text
+        } else if y < rect.1 + rect.3 / 2 {
+            SpinnerPart::Up
+        } else {
+            SpinnerPart::Down
+        }
+    }
+}
+
+/// The spinner's auto-repeat pixel step: `round(unit × 96 / ((max − min) /
+/// step))`, clamped to `unit/2 .. 8·unit`.
+pub fn spinner_repeat_step(unit: i32, min: f32, max: f32, step: f32) -> i32 {
+    let range = (max - min) / step;
+    let value = (f64::from(unit) * 96.0 / f64::from(range)) as f32;
+    let value = value.round_ties_even() as i32;
+    value.clamp(unit / 2, unit * 8)
+}
+
+/// A progress bar's state.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ProgressBar {
+    pub value: f32,
+    pub max: f32,
+    pub step: f32,
+    pub precision: i32,
+    pub integer: bool,
+}
+
+impl Default for ProgressBar {
+    fn default() -> Self {
+        Self {
+            value: 0.0,
+            max: 0.0,
+            step: 0.0,
+            precision: 0,
+            integer: false,
+        }
+    }
+}
+
+impl ProgressBar {
+    /// The init rule: a zero step becomes 1, a zero maximum 100, a value
+    /// under zero zero.
+    pub fn init(&mut self) {
+        if self.step == 0.0 {
+            self.step = 1.0;
+        }
+        if self.max == 0.0 {
+            self.max = 100.0;
+        }
+        if self.value < 0.0 || self.value.is_nan() {
+            self.value = 0.0;
+        }
+    }
+
+    /// Sets the value; a negative value or NaN becomes zero.
+    pub fn set(&mut self, value: f32) -> bool {
+        let mut v = value;
+        // The original tests `v ≤ 0` and `v ≠ 0`; for a float that is the
+        // same set as `v < 0` (−0 stays, NaN stays).
+        if v < 0.0 {
+            v = 0.0;
+        }
+        if v != self.value {
+            self.value = v;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The shown text: the value times a hundred, one digit, then `%`.
+    pub fn text(&self) -> String {
+        format!("{:.*}%", self.precision.max(1) as usize, self.value * 100.0)
+    }
+
+    /// The filled width: `round(width × value)`.
+    pub fn fill(&self, width: i32) -> i32 {
+        (width as f32 * self.value).round_ties_even() as i32
+    }
+}
+
+/// The separator's gap when it carries text: one line height a byte.
+pub fn separator_gap(font_height: i32, text_len: i32) -> i32 {
+    font_height.saturating_mul(text_len)
+}
+
+/// The separator's line rectangles. Text leaves a gap at the centre, or at
+/// the right when the alignment's 0x2000 bit is set.
+pub fn separator_lines(
+    rect: (i32, i32, i32, i32),
+    gap: i32,
+    right: bool,
+) -> Vec<(i32, i32, i32, i32)> {
+    let (x, y, w, h) = rect;
+    if gap <= 0 {
+        return vec![(x, y, w, h)];
+    }
+    if right {
+        return vec![(x, y, w - gap - 1, h)];
+    }
+    let first = (w - gap) / 2 - 1;
+    vec![(x, y, first, h), (x + w - first, y, first, h)]
+}
+
+/// An image view: the normalised point picked by a press.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImagePick {
+    pub u: f32,
+    pub v: f32,
+}
+
+/// The image's inset rectangle.
+pub fn image_rect(rect: (i32, i32, i32, i32), pad: i32) -> (i32, i32, i32, i32) {
+    (
+        rect.0 + pad,
+        rect.1 + pad,
+        rect.2 - 2 * pad,
+        rect.3 - 2 * pad,
+    )
+}
+
+/// The normalised point under a press in an image view. `u` is across,
+/// `v` is up (the original measures from the bottom), both clamped to 0..1
+/// with NaN falling to 0.
+pub fn image_pick(rect: (i32, i32, i32, i32), pad: i32, x: i32, y: i32) -> ImagePick {
+    let inner_w = rect.2 - pad;
+    let inner_h = rect.3 - pad;
+    let clamp = |value: f32| {
+        if 0.0 <= value {
+            if 1.0 < value { 1.0 } else { value }
+        } else {
+            0.0
+        }
+    };
+    let u = if inner_w == 0 {
+        f32::NAN
+    } else {
+        (x - rect.0 - pad) as f32 / inner_w as f32
+    };
+    let v = if inner_h == 0 {
+        f32::NAN
+    } else {
+        1.0 - (y - rect.1 - pad) as f32 / inner_h as f32
+    };
+    ImagePick {
+        u: clamp(u),
+        v: clamp(v),
+    }
+}
+
+/// A texture view's centred rectangle for a texture of `tex` within `rect`
+/// and `pad`.
+pub fn texture_rect(
+    rect: (i32, i32, i32, i32),
+    _pad: i32,
+    tex: (i32, i32),
+) -> (i32, i32, i32, i32) {
+    (
+        rect.0 + (rect.2 - tex.0) / 2,
+        rect.1 + (rect.3 - tex.1) / 2,
+        tex.0,
+        tex.1,
+    )
+}
+
+/// A caption's alignment: the original draws its text with vertical style
+/// 0x300 (a line centred in the box) and the horizontal style's own bit.
+pub fn caption_align(style: u32) -> u32 {
+    (style & 0x7000) | 0x300
+}
+
+/// A colour swatch's press result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwatchPress {
+    Ignored,
+    /// The owner's callback.
+    Callback,
+    /// Open the colour picker (the original's 0x105 result).
+    Picker,
+}
+
+/// The colour swatch's press rule: the picker bit opens the picker, the
+/// callback bit calls the owner, anything else does nothing.
+pub fn swatch_press(flags: u32) -> SwatchPress {
+    if flags & 0x4000 != 0 {
+        SwatchPress::Picker
+    } else if flags & 0x2000 != 0 {
+        SwatchPress::Callback
+    } else {
+        SwatchPress::Ignored
+    }
+}
+
+/// The colour drag's payload code.
+pub const COLOUR_DRAG_CODE: u32 = 0xcd0c;
+
+/// Whether a drag asking for `code` is accepted: true for the colour code.
+pub fn swatch_accepts(code: u32) -> bool {
+    code == COLOUR_DRAG_CODE
+}
+
+/// A scroll bar's thumb: its width (`4 × unit + 1`) and left offset.
+pub fn scroll_thumb(unit: i32, pad: i32, w: i32, value: f32) -> (i32, i32) {
+    let width = 4 * unit + 1;
+    let offset = ((w - 2 * pad - width) as f32 * value).round_ties_even() as i32;
+    (width, offset)
+}
+
+/// The scroll bar's value at `x`: `(x − left − pad − thumb/2) / travel`,
+/// clamped with the ordered pair so NaN falls to 0.
+pub fn scroll_value(unit: i32, x0: i32, pad: i32, w: i32, x: i32) -> f32 {
+    let thumb = 4 * unit + 1;
+    let num = x - x0 - pad - thumb / 2;
+    let den = w - 2 * pad - thumb;
+    let mut value = (num as f64 / den as f64) as f32;
+    if 0.0 <= value {
+        if 1.0 < value {
+            value = 1.0;
+        }
+    } else {
+        value = 0.0;
+    }
+    value
+}
+
+/// The scroll bar's current-value label: the value, no digits.
+pub fn scroll_label(value: f32) -> String {
+    format!("{}", value as i32)
+}
+
+#[cfg(test)]
+mod extended_tests {
+    use super::*;
+
+    #[test]
+    fn the_extended_classes_and_defaults_are_in_registration_order() {
+        assert_eq!(extended_class(TEXT_FIELD).unwrap().size, (80, 24));
+        assert_eq!(extended_class(COMBO_BOX).unwrap().size, (80, 24));
+        assert_eq!(extended_class(COLOUR_SWATCH).unwrap().size, (0, 24));
+        assert_eq!(extended_class(SPINNER).unwrap().size, (60, 20));
+        assert_eq!(extended_class(PROGRESS_BAR).unwrap().size, (0, 24));
+        assert_eq!(extended_class(SEPARATOR).unwrap().size, (0, 3));
+        assert_eq!(extended_class(IMAGE).unwrap().size, (0, 0));
+        assert_eq!(extended_class(TEXTURE_VIEW).unwrap().size, (0, 0));
+        assert_eq!(extended_class(TRACKBAR).unwrap().size, (0, 28));
+        assert_eq!(extended_class(CAPTION).unwrap().size, (0, 20));
+        assert_eq!(extended_class(SCROLL_BAR).unwrap().size, (0, 16));
+        assert_eq!(extended_class(1), None);
+        assert_eq!(text_inset(4), 13);
+        assert_eq!(text_inset(5), 15);
+        assert_eq!(text_field_span(100, 2, 4), 88);
+        assert_eq!(combo_text_span(100, 2, 4), 75);
+        assert_eq!(spinner_text_span(100, 2, 4), 75);
+        assert_eq!(trackbar_defaults(0), (20, 2));
+        assert_eq!(trackbar_defaults(24), (24, 2));
+        assert_eq!(scrollbar_defaults(), 2);
+    }
+
+    fn advances() -> Vec<i16> {
+        let mut table = vec![1i16; 256];
+        table[usize::from(b'A')] = 10;
+        table[usize::from(b'B')] = 10;
+        table
+    }
+
+    #[test]
+    fn a_text_field_hits_edits_and_limits_its_bytes() {
+        let mut field = TextField::new(b"abc", 0, true);
+        assert_eq!(field.caret, 3);
+        assert_eq!(field.key(256, false), TextFieldEvent::Keyboard);
+        assert_eq!(field.key(13, false), TextFieldEvent::Submitted);
+        assert_eq!(field.key(8, false), TextFieldEvent::Changed);
+        assert_eq!(field.text, b"ab");
+        field.place(1, false);
+        assert_eq!(field.key(b'Z' as i32, false), TextFieldEvent::Changed);
+        assert_eq!(field.text, b"aZb");
+        assert_eq!(field.caret, 2);
+        // Shift-left keeps the anchor, so typing replaces the selection.
+        let mut selected = TextField::new(b"abc", 0, true);
+        selected.place(1, false);
+        selected.key(37, true);
+        assert_eq!(selected.selection(), (0, 1));
+        selected.insert(b"X");
+        assert_eq!(selected.text, b"Xbc");
+        assert_eq!(selected.caret, 1);
+        // A max length clips the insert.
+        let mut limited = TextField::new(b"ab", 3, true);
+        limited.insert(b"CD");
+        assert_eq!(limited.text, b"abC");
+        // Read-only fields take nothing.
+        let mut read_only = TextField::new(b"ab", 0, false);
+        assert_eq!(read_only.key(b'X' as i32, false), TextFieldEvent::None);
+        assert_eq!(read_only.text, b"ab");
+    }
+
+    #[test]
+    fn a_text_field_hit_takes_the_byte_whose_middle_is_right() {
+        let mut field = TextField::new(b"AB", 0, true);
+        assert_eq!(field.hit(4, 0, &advances()), 0);
+        assert_eq!(field.hit(5, 0, &advances()), 1);
+        assert_eq!(field.hit(14, 0, &advances()), 1);
+        assert_eq!(field.hit(20, 0, &advances()), 2);
+        assert_eq!(field.hit(99, 0, &advances()), 2);
+        field.place(2, true);
+        assert_eq!(field.selection(), (2, 2));
+    }
+
+    #[test]
+    fn a_combo_box_chooses_and_opens_its_list() {
+        let mut combo = ComboBox::new(vec![b"one".to_vec(), b"two".to_vec()], 1);
+        assert_eq!(combo.text(), b"one");
+        assert!(combo.choose(2));
+        assert_eq!(combo.text(), b"two");
+        assert!(!combo.choose(9));
+        assert_eq!(combo.selected, 2);
+        let place = combo
+            .open_below((10, 20, 80, 24), ListMetrics { unit: 4, inset: 3 }, 200)
+            .unwrap();
+        assert_eq!((place.x, place.y, place.w), (10, 45, 80));
+        assert_eq!(place.h, 54);
+        assert_eq!(place.row, 24);
+        let flipped = combo
+            .open_below((10, 160, 80, 24), ListMetrics { unit: 4, inset: 3 }, 200)
+            .unwrap();
+        assert_eq!(flipped.y, 106);
+        let mut empty = ComboBox::new(Vec::new(), 0);
+        assert_eq!(
+            empty.open_below((0, 0, 10, 10), ListMetrics { unit: 4, inset: 3 }, 100),
+            None
+        );
+        assert!(!empty.open);
+    }
+
+    #[test]
+    fn a_spinner_clamps_steps_and_formats() {
+        let mut spinner = Spinner {
+            value: -5.0,
+            ..Spinner::default()
+        };
+        spinner.init();
+        assert_eq!(spinner.step, 1.0);
+        assert_eq!(spinner.max, 100.0);
+        assert_eq!(spinner.value, 0.0);
+
+        let set = spinner.set(150.0, true);
+        assert!(set.changed);
+        assert!(set.clamped);
+        assert_eq!(spinner.value, 100.0);
+        let nan = spinner.set(f32::NAN, true);
+        assert!(nan.changed);
+        assert_eq!(spinner.value, 0.0);
+        assert!(!spinner.step(false));
+        spinner.value = 1.0;
+        assert!(spinner.step(false));
+        assert_eq!(spinner.value, 0.0);
+
+        let mut precise = Spinner {
+            value: 2.6,
+            min: 0.0,
+            max: 10.0,
+            step: 0.5,
+            precision: 2,
+            ..Spinner::default()
+        };
+        precise.init();
+        assert_eq!(precise.text(), "2.60");
+        precise.precision = 0;
+        assert_eq!(precise.text(), "3");
+
+        let integer = Spinner {
+            value: 3.9,
+            integer: true,
+            ..Spinner::default()
+        };
+        assert_eq!(integer.text(), "3");
+
+        let rect = (0, 0, 60, 20);
+        let span = spinner_text_span(60, 2, 4);
+        assert_eq!(span, 35);
+        assert_eq!(spinner.part(10, 5, rect, span), SpinnerPart::Text);
+        assert_eq!(spinner.part(40, 5, rect, span), SpinnerPart::Up);
+        assert_eq!(spinner.part(40, 15, rect, span), SpinnerPart::Down);
+        assert_eq!(spinner_repeat_step(4, 0.0, 100.0, 1.0), 4);
+        // The clamp keeps a tiny step at half a unit and a huge one at 8.
+        assert_eq!(spinner_repeat_step(4, 0.0, 1000.0, 1.0), 2);
+        assert_eq!(spinner_repeat_step(4, 0.0, 1.0, 1.0), 32);
+    }
+
+    #[test]
+    fn a_progress_bar_starts_at_zero_and_fills_by_its_value() {
+        let mut bar = ProgressBar {
+            value: -1.0,
+            ..ProgressBar::default()
+        };
+        bar.init();
+        assert_eq!(bar.step, 1.0);
+        assert_eq!(bar.max, 100.0);
+        assert_eq!(bar.value, 0.0);
+        assert!(!bar.set(-2.0));
+        assert!(bar.set(0.5));
+        assert_eq!(bar.text(), "50.0%");
+        assert_eq!(bar.fill(100), 50);
+        assert_eq!(bar.fill(101), 50);
+        let mut whole = ProgressBar {
+            precision: 0,
+            ..ProgressBar::default()
+        };
+        whole.value = 0.25;
+        assert_eq!(whole.text(), "25.0%");
+    }
+
+    #[test]
+    fn a_separator_leaves_a_gap_for_its_text() {
+        assert_eq!(separator_gap(16, 2), 32);
+        assert_eq!(
+            separator_lines((0, 0, 100, 3), 0, false),
+            vec![(0, 0, 100, 3)]
+        );
+        assert_eq!(
+            separator_lines((0, 0, 100, 3), 32, false),
+            vec![(0, 0, 33, 3), (67, 0, 33, 3)]
+        );
+        assert_eq!(
+            separator_lines((0, 0, 100, 3), 32, true),
+            vec![(0, 0, 67, 3)]
+        );
+    }
+
+    #[test]
+    fn an_image_view_picks_its_normalised_point() {
+        let rect = (10, 20, 100, 80);
+        assert_eq!(image_rect(rect, 2), (12, 22, 96, 76));
+        let pick = image_pick(rect, 2, 12, 22);
+        assert_eq!((pick.u, pick.v), (0.0, 1.0));
+        let pick = image_pick(rect, 2, 61, 61);
+        assert_eq!(pick.u, 0.5);
+        assert_eq!(pick.v, 0.5);
+        let pick = image_pick(rect, 2, 200, 200);
+        assert_eq!((pick.u, pick.v), (1.0, 0.0));
+        // A zero inner extent is NaN, and the ordered clamp makes it 0.
+        let pick = image_pick((0, 0, 2, 2), 2, 0, 0);
+        assert_eq!((pick.u, pick.v), (0.0, 0.0));
+    }
+
+    #[test]
+    fn a_texture_view_centres_its_texture() {
+        assert_eq!(
+            texture_rect((10, 20, 100, 80), 2, (40, 30)),
+            (40, 45, 40, 30)
+        );
+        assert_eq!(texture_rect((0, 0, 10, 10), 0, (20, 20)), (-5, -5, 20, 20));
+    }
+
+    #[test]
+    fn a_colour_swatch_opens_the_picker_or_calls_back() {
+        assert_eq!(swatch_press(0x4000), SwatchPress::Picker);
+        assert_eq!(swatch_press(0x2000), SwatchPress::Callback);
+        assert_eq!(swatch_press(0), SwatchPress::Ignored);
+        assert!(swatch_accepts(COLOUR_DRAG_CODE));
+        assert!(!swatch_accepts(COLOUR_DRAG_CODE + 1));
+    }
+
+    #[test]
+    fn a_scroll_bar_maps_its_thumb() {
+        assert_eq!(scroll_thumb(4, 2, 100, 0.0), (17, 0));
+        assert_eq!(scroll_thumb(4, 2, 100, 0.5), (17, 40));
+        assert_eq!(scroll_thumb(4, 2, 100, 1.0), (17, 79));
+        assert_eq!(scroll_value(4, 0, 2, 100, 10), 0.0);
+        assert_eq!(scroll_value(4, 0, 2, 100, 89), 1.0);
+        // Zero travel gives NaN, which the ordered clamp sends to 0.
+        assert_eq!(scroll_value(4, 0, 2, 21, 10), 0.0);
+        assert_eq!(scroll_label(42.9), "42");
+    }
+
+    #[test]
+    fn a_caption_uses_the_centred_vertical_style() {
+        assert_eq!(caption_align(0x1000), 0x1300);
+        assert_eq!(caption_align(0), 0x300);
     }
 }
