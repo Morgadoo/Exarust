@@ -27,6 +27,8 @@ pub mod look_overlay;
 pub mod menu;
 pub mod menu_pages;
 pub mod mind;
+pub mod nav_camera;
+pub mod nav_pick;
 pub mod pair_trace;
 pub mod pick;
 pub mod player;

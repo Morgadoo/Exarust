@@ -35,6 +35,9 @@ use exa_physics::{CharacterBody, Physics};
 use exa_ui::CursorCapture;
 
 use crate::bindings::{Action, Bindings};
+use crate::nav_camera::{
+    align_behind, clamp_pitch, frame_step, orbit_pitch, orbit_yaw, pitch_floor,
+};
 
 pub(crate) use crate::steering::CURSOR_RUN_FROM;
 use crate::steering::{Keys, LineAsked, LineWalk, Steering, key_segment};
@@ -408,7 +411,8 @@ fn cursor_look(
             }
             if let Some(yaw) = yaw {
                 for mut camera in &mut cameras {
-                    camera.yaw = yaw + std::f32::consts::PI;
+                    // Behind the new facing, kept within half a turn of it.
+                    camera.yaw = align_behind(yaw + std::f32::consts::PI, yaw);
                 }
             }
         }
@@ -446,11 +450,12 @@ fn cursor_ground(
         return;
     };
     let plane = player.translation().y + AIM_HEIGHT;
-    if ray.direction.y.abs() > 1e-4 {
-        let d = (plane - ray.origin.y) / ray.direction.y;
-        if d > 0.0 {
-            ground.0 = Some(ray.origin + *ray.direction * d);
-        }
+    let hit = crate::nav_pick::plane_hit(
+        crate::nav_pick::Ray::new(ray.origin, *ray.direction),
+        crate::nav_pick::Plane::new(Vec3::Y, plane),
+    );
+    if hit.distance > 0.0 && hit.point.is_finite() {
+        ground.0 = Some(hit.point);
     }
 }
 
@@ -1137,10 +1142,7 @@ fn leave_swing(
 /// The camera's distance from the player (m): fixed, as the original's;
 /// zoom narrows the field of view instead.
 const CAMERA_DISTANCE: f32 = 20.0;
-/// The camera's tick (s) and the spring constants per tick.
-const CAMERA_TICK: f32 = 0.017;
-/// Camera ticks a frame runs at most; the rest of a backlog is dropped.
-const MAX_CAMERA_TICKS: u32 = 9;
+/// The spring constants per tick.
 const ORBIT_STIFFNESS: f32 = 0.0718;
 const ORBIT_RETENTION: f32 = 0.616;
 /// The yaw leads the shown yaw by at most this per tick (rad).
@@ -1234,6 +1236,15 @@ impl ChaseCamera {
         self.shake_before -= by;
     }
 
+    /// A random kick from the original's routine: a small random offset
+    /// plus the camera's right axis, jittered vertically and normalised to
+    /// `size` (m). The draws come from the game's generator, in the
+    /// original's order.
+    pub fn kick_random(&mut self, right: Vec3, size: f32, draw: &mut impl FnMut() -> f32) {
+        let offset = crate::nav_camera::kick_offset(right, size, draw);
+        self.kick(offset);
+    }
+
     /// One 17 ms tick: the shake, the orbit spring, the pitch and the zoom
     /// ease.
     fn tick(&mut self) {
@@ -1250,7 +1261,7 @@ impl ChaseCamera {
         let lead = turn_between(self.shown_yaw, self.yaw).clamp(-MAX_YAW_LEAD, MAX_YAW_LEAD);
         self.yaw_speed = ORBIT_RETENTION * (self.yaw_speed + ORBIT_STIFFNESS * lead);
         self.shown_yaw += self.yaw_speed;
-        let target_pitch = self.user_pitch.max(min_pitch(self.shown_zoom));
+        let target_pitch = clamp_pitch(self.user_pitch, pitch_floor(self.shown_zoom), MAX_PITCH);
         self.pitch += (target_pitch - self.pitch) * 0.1;
         let ease = 5.0 / 59.0;
         self.shown_zoom += (self.zoom - self.shown_zoom) * ease;
@@ -1260,15 +1271,11 @@ impl ChaseCamera {
     /// last frame: at most nine, the rest of a backlog dropped. Returns how
     /// far the frame is into the last tick (0–1).
     fn advance(&mut self, dt: f32) -> f32 {
-        self.ahead -= dt;
-        let mut ran = 0;
-        while self.ahead < 0.0 && ran < MAX_CAMERA_TICKS {
-            self.ahead += CAMERA_TICK;
+        let (ran, t) = frame_step(&mut self.ahead, dt);
+        for _ in 0..ran {
             self.tick();
-            ran += 1;
         }
-        self.ahead = self.ahead.max(0.0);
-        1.0 - self.ahead / CAMERA_TICK
+        t
     }
 
     /// The backward vector, zoom and eye offset to show `t` of the way from
@@ -1289,11 +1296,7 @@ impl ChaseCamera {
 
 /// The shallowest pitch at a zoom: 0.8 rad, steeper when zoomed out.
 fn min_pitch(zoom: f32) -> f32 {
-    if zoom < 1000.0 {
-        0.8
-    } else {
-        0.8 + (zoom - 1000.0) * 0.000_125
-    }
+    pitch_floor(zoom)
 }
 
 /// The field of view (rad) at a zoom, for the window's aspect.
@@ -1339,15 +1342,22 @@ pub(crate) fn chase_camera(
     });
     for (mut cam, mut t, mut projection) in &mut cameras {
         if bindings.mouse_pressed(&buttons, Action::Orbit) {
-            cam.yaw -= motion.delta.x * ORBIT_DRAG / width;
-            cam.user_pitch += motion.delta.y * ORBIT_DRAG / width;
+            let per_pixel = ORBIT_DRAG / width;
+            cam.yaw = orbit_yaw(cam.yaw, motion.delta.x, per_pixel);
+            cam.user_pitch = orbit_pitch(
+                cam.user_pitch,
+                motion.delta.y,
+                per_pixel,
+                pitch_floor(cam.shown_zoom),
+                MAX_PITCH,
+            );
         }
         if scroll.delta.y != 0.0 {
             let level = ((cam.zoom - 800.0) / 240.0).round() - scroll.delta.y.signum();
             cam.zoom = 800.0 + 240.0 * level.clamp(0.0, (ZOOM_STOPS - 1) as f32);
         }
-        let floor = min_pitch(cam.shown_zoom);
-        cam.user_pitch = cam.user_pitch.clamp(floor, MAX_PITCH);
+        let floor = pitch_floor(cam.shown_zoom);
+        cam.user_pitch = clamp_pitch(cam.user_pitch, floor, MAX_PITCH);
         let along = cam.advance(time.delta_secs());
         let (backward, zoom, shake) = cam.shown(along);
         t.translation = focus + backward * CAMERA_DISTANCE;

@@ -8,6 +8,7 @@ use exa_physics::Physics;
 use exa_ui::{CursorShape, ScriptedPointer, WorldCursor};
 
 use crate::bindings::{Action, Bindings};
+use crate::nav_pick::{Candidate, PICK_CLASS, PhysicsMesh, Ray, nearest_hit};
 use crate::player::{
     AIM_HEIGHT, CURSOR_RUN_FROM, ChaseCamera, CursorGround, Player, PlayerBody, window_point,
     window_ray,
@@ -160,9 +161,25 @@ fn pick_cursor(
         && pointer
             .and_then(|p| window_ray(camera, eye, window, p))
             .and_then(|ray| {
-                physics
-                    .fixed_hit(ray.origin, *ray.direction, PICK_RANGE)
-                    .map(|t| ray.origin + *ray.direction * t)
+                let segment = *ray.direction * PICK_RANGE;
+                let level = PhysicsMesh {
+                    physics: &physics,
+                    far: PICK_RANGE,
+                };
+                let node = Candidate {
+                    class: PICK_CLASS,
+                    layers: u32::MAX,
+                    flags: 0,
+                    centre: ray.origin + segment * 0.5,
+                    radius: segment.length() * 0.5,
+                    mesh: &level,
+                };
+                nearest_hit(
+                    Ray::new(ray.origin, *ray.direction),
+                    u32::MAX,
+                    std::slice::from_ref(&node),
+                )
+                .map(|hit| hit.point)
             })
             .is_some_and(|point| within_reach(point, aim));
     let state = CursorState {
