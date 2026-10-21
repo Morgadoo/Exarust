@@ -110,7 +110,8 @@ directories, and for each matching name whose number is not already listed:
 1. opens the package (creating or resetting it as above) and imports
    `#worldchrdb`;
 2. runs the mode's player-data reader on it with load mask 0 (the header
-   and the character, no chunks);
+   and the character, no chunks); the arena reader still converts an old
+   save's header first, so the scan deletes its `arenahub` section;
 3. a negative answer **deletes both files** of the slot; a positive one
    lists the slot with the player's name; zero leaves the slot out and its
    files alone.

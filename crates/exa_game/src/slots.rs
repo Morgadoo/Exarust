@@ -241,8 +241,11 @@ impl Slots {
     /// What the mode's player-data reader makes of a package during a scan
     /// (it reads no chunks then): the story refuses a signature older than
     /// its own, which deletes the slot, and reads any other as a story; the
-    /// arena takes only its exact signature and refuses nothing.
-    fn verdict(&self, package: &PackageImage) -> Verdict {
+    /// arena takes only its exact signature and refuses nothing. The arena
+    /// reader still converts an old save's header before the chunk loop:
+    /// the `arenahub` section is deleted from the package here, as the
+    /// scan does.
+    fn verdict(&self, package: &mut PackageImage, path: &Path) -> Verdict {
         let Some(section) = package.section(PLAYER_DATA) else {
             return Verdict::Skip;
         };
@@ -261,6 +264,14 @@ impl Slots {
                 // The scan's load mask is 0: the header and the character
                 // are read, no chunk is dispatched.
                 data.apply_mask(0);
+                if flavour == Flavour::Arena && data.arena_data_is_old() {
+                    data.convert_arena();
+                    if package.remove_section(&save_package::name("arenahub")) {
+                        // The loader's section delete rewrites the
+                        // directory over the file.
+                        let _ = fs::write(path, package.to_bytes());
+                    }
+                }
                 let mut info = session::slot_info_of(&data);
                 info.player_name = session::player_name(package, &data);
                 Verdict::Keep(info)
@@ -328,7 +339,8 @@ impl Slots {
             }
             seen.push(number);
             let path = self.file(number, kind);
-            match self.verdict(&Self::open(&path)?) {
+            let mut package = Self::open(&path)?;
+            match self.verdict(&mut package, &path) {
                 Verdict::Keep(info) => valid.push(Slot { number, kind, info }),
                 Verdict::Delete => self.delete(number)?,
                 Verdict::Skip => {}
@@ -1461,6 +1473,18 @@ mod tests {
         package.put_section(PLAYER_DATA, &data.write());
         package.put_section(&save_package::name("arenahub"), b"hub");
         fs::write(&path, package.to_bytes()).unwrap();
+
+        // The scan runs the arena reader too: its version conversion
+        // deletes the hub section from the package.
+        assert!(
+            slots
+                .list()
+                .unwrap()
+                .iter()
+                .any(|slot| slot.number == number)
+        );
+        let scanned = PackageImage::read(&fs::read(&path).unwrap()).unwrap();
+        assert!(!scanned.has_section(&save_package::name("arenahub")));
 
         let loaded = slots.load_package(number, false).unwrap();
         assert!(loaded.converted);
