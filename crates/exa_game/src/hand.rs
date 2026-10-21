@@ -312,6 +312,50 @@ pub fn door_pull_anchor(pull: DoorPull, ray_point: Vec3, axis: Vec3) -> Vec3 {
     }
 }
 
+/// What a cloth drag's frame does (F86).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ClothAction {
+    /// The button came up or the cloth is gone: the drag is released.
+    Release,
+    /// The cursor is over the grabbed patch: its local point is the anchor.
+    Grab { local: Vec3 },
+    /// The cursor is elsewhere: the re-picked ground point is the anchor.
+    Pull { at: Vec3 },
+}
+
+/// A cloth drag's frame: with the button up or no cloth, release; over the
+/// grabbed vertex within `radius` (m, squared compare) the local point is
+/// the anchor; otherwise the re-picked point is. `grabbed` is the cloth's
+/// grabbed local point.
+pub fn cloth_drag(
+    release: bool,
+    has_cloth: bool,
+    grabbed: Option<Vec3>,
+    pick_local: Vec3,
+    pick_world: Vec3,
+    radius: f32,
+) -> ClothAction {
+    if release || !has_cloth {
+        return ClothAction::Release;
+    }
+    if let Some(g) = grabbed
+        && (pick_local - g).length_squared() < radius * radius
+    {
+        return ClothAction::Grab { local: pick_local };
+    }
+    ClothAction::Pull { at: pick_world }
+}
+
+/// A door drag's frame (F83): a blocked door stops the pull; otherwise,
+/// closed, the anchor moves from the capture toward the cursor; open, it
+/// slides along the door's own axis (as [`door_pull_anchor`]).
+pub fn door_drag_frame(pull: DoorPull, ray_point: Vec3, axis: Vec3, blocked: bool) -> Option<Vec3> {
+    if blocked {
+        return None;
+    }
+    Some(door_pull_anchor(pull, ray_point, axis))
+}
+
 /// A wheel's turn: the wanted angle moves the current one by the gap,
 /// clamped into `[0, limit]` — at most `limit` a frame, one way only (the
 /// original's rim drag).

@@ -954,3 +954,367 @@ mod tests {
         assert_eq!(walk_stop(at, Vec3::new(0.0, 0.0, 2.0), false), None);
     }
 }
+
+/// The input gate's state (F135/F136), in Exarust's terms: whether the
+/// mouse is free/look-enabled, which Steam action set the original selects
+/// (0 none, 1 interact, 2 combat), and the player's own flags the switches
+/// clear.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputGate {
+    /// The mouse cursor look is on (the controls set their read callback).
+    pub cursor_active: bool,
+    /// The right stick's look is disabled instead (the spectate switch's
+    /// own flag).
+    pub look_disabled: bool,
+    /// The controls' own "off" flag.
+    pub controls_off: bool,
+    /// The player's input is blocked (`+0x58`).
+    pub player_blocked: bool,
+    /// The held keys are cleared and the combat/heading flags reset.
+    pub keys_cleared: bool,
+    /// The Steam action set the original selects: 0, 1 or 2.
+    pub steam_set: u8,
+    /// The free-cursor flag (`+0xd80`), cleared when the input goes off.
+    pub free_cursor: bool,
+}
+
+/// The game's input switch (F135): enabled, the cursor look is on, the
+/// player is unblocked and the Steam set is the interact (1) or combat (2)
+/// one; disabled, the look callback is dropped, the keys and the player's
+/// combat/heading/aim flags are cleared, the player is blocked and the
+/// Steam set is 0.
+pub fn gameplay_input(enabled: bool, combat: bool) -> InputGate {
+    if enabled {
+        InputGate {
+            cursor_active: true,
+            look_disabled: false,
+            controls_off: false,
+            player_blocked: false,
+            keys_cleared: false,
+            steam_set: if combat { 2 } else { 1 },
+            free_cursor: true,
+        }
+    } else {
+        InputGate {
+            cursor_active: false,
+            look_disabled: false,
+            controls_off: true,
+            player_blocked: true,
+            keys_cleared: true,
+            steam_set: 0,
+            free_cursor: false,
+        }
+    }
+}
+
+/// The spectate input switch (F136): enabled, the cursor look is on and the
+/// player is unblocked; disabled, the look callback is dropped, the keys
+/// are cleared, the spectate look flag (`+0xaf`) is set and the player is
+/// blocked.
+pub fn spectate_input(enabled: bool, combat: bool) -> InputGate {
+    if enabled {
+        InputGate {
+            cursor_active: true,
+            look_disabled: false,
+            controls_off: false,
+            player_blocked: false,
+            keys_cleared: false,
+            steam_set: if combat { 2 } else { 1 },
+            free_cursor: true,
+        }
+    } else {
+        InputGate {
+            cursor_active: false,
+            look_disabled: true,
+            controls_off: false,
+            player_blocked: true,
+            keys_cleared: true,
+            steam_set: 0,
+            free_cursor: false,
+        }
+    }
+}
+
+/// The spectate mode (F137): whether spectating, the controls' dialogue
+/// flag and the permission mask. Spectating narrows the mask to powers (4);
+/// leaving restores all five.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Spectate {
+    pub spectating: bool,
+    pub controls_flag: bool,
+    pub permission: u32,
+}
+
+pub const PLAY_PERMISSIONS: u32 = 0x1F;
+pub const SPECTATE_PERMISSIONS: u32 = 0x4;
+
+/// The spectate switch.
+pub fn spectate(enabled: bool) -> Spectate {
+    if enabled {
+        Spectate {
+            spectating: true,
+            controls_flag: true,
+            permission: SPECTATE_PERMISSIONS,
+        }
+    } else {
+        Spectate {
+            spectating: false,
+            controls_flag: false,
+            permission: PLAY_PERMISSIONS,
+        }
+    }
+}
+
+/// Whether the viewport's input word asks for a GUI task (F62): bit 0 opens
+/// the task through the interface's call. Returns whether it would open;
+/// the task itself is the GUI layer's.
+pub fn opens_gui_task(input_flags: u32) -> bool {
+    input_flags & 1 != 0
+}
+
+/// The input a disabled controls object keeps (F134): the controls' clock,
+/// the mouse read off, the keys cleared, the player blocked, and its
+/// combat/heading/aim words and the drag stepping reset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisabledInput {
+    /// The game clock (ms) the switch ran.
+    pub now_ms: u32,
+    pub gate: InputGate,
+    /// The player's combat word, heading word and drag step are cleared.
+    pub combat_cleared: bool,
+}
+
+/// Disables the player's input, as the death and menu switches do (F134):
+/// the controls' clock takes `now`, the gameplay gate goes off, and the
+/// player's combat/heading/aim words reset.
+pub fn disable_input(now_ms: u32) -> DisabledInput {
+    DisabledInput {
+        now_ms,
+        gate: gameplay_input(false, false),
+        combat_cleared: true,
+    }
+}
+
+/// A sound the controls ask for at a world point (F110): the item/event's
+/// sound name, its place, gain 0.25 and natural pitch, not looped.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SoundRequest {
+    pub name: String,
+    pub at: Vec3,
+    pub gain: f32,
+    pub pitch: f32,
+    pub looping: bool,
+}
+
+/// The controls' point-sound request (F110): the name is resolved by the
+/// audio environment and played at `at` with a quarter gain and pitch 1.
+pub fn point_sound(name: impl Into<String>, at: Vec3) -> SoundRequest {
+    SoundRequest {
+        name: name.into(),
+        at,
+        gain: 0.25,
+        pitch: 1.0,
+        looping: false,
+    }
+}
+
+/// The key direction word from the movement keys and the gamepad stick
+/// (F29): the stick over 0.01 (double) is 0x8000 (the caller keeps its
+/// vector); otherwise W is bit 1, A bit 2, S bit 4 and D bit 8, with A and
+/// D cancelling and S taken only when W is not held (W cleared in its
+/// place).
+pub fn key_direction_word(w: bool, a: bool, s: bool, d: bool, stick: f64) -> u32 {
+    if stick > 0.01 {
+        return 0x8000;
+    }
+    let mut word = 0;
+    if a {
+        word = 2;
+    }
+    if d {
+        if word == 2 {
+            word = 0;
+        } else {
+            word = 8;
+        }
+    }
+    if w {
+        word |= 1;
+    }
+    if s {
+        if word & 1 == 0 {
+            word |= 4;
+        } else {
+            word &= !1;
+        }
+    }
+    word
+}
+
+/// The direction a key word asks in a body's frame (F28): W along
+/// `forward`, A against `right`, D along it, S against `forward`, then
+/// normalized. A zero vector when nothing is held.
+pub fn key_direction(word: u32, forward: Vec3, right: Vec3) -> Vec3 {
+    let mut dir = Vec3::ZERO;
+    if word & 1 != 0 {
+        dir = forward;
+    }
+    if word & 2 != 0 {
+        dir -= right;
+    }
+    if word & 4 != 0 {
+        dir -= forward;
+    }
+    if word & 8 != 0 {
+        dir += right;
+    }
+    dir.normalize_or_zero()
+}
+
+/// Whether a walk-to goal is still over 20 cm away (F30's squared
+/// comparison against 400 cm²; both points in metres).
+pub fn walk_goal_far(from: Vec3, goal: Vec3) -> bool {
+    let d = (goal - from) * 100.0;
+    d.length_squared() > 400.0
+}
+
+/// The power tree's delayed key (F143): the slot is 1-based and its
+/// deadline is half a second on.
+pub fn power_hold(index: usize, now_ms: u32) -> (usize, u32) {
+    (index + 1, now_ms.wrapping_add(500))
+}
+
+/// One registered game mode (F152): its 1-based id, its name, the level
+/// kind a start gives it (id + 2), and the callbacks' names kept as data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GameMode {
+    pub id: usize,
+    pub name: &'static str,
+    pub level_kind: usize,
+}
+
+/// The unit's game-mode registration (F152): Character then Spectate, each
+/// taking the counter's next id and the id plus two as its level kind.
+pub fn register_game_modes(first_id: usize) -> [GameMode; 2] {
+    [
+        GameMode {
+            id: first_id,
+            name: "Character",
+            level_kind: first_id + 2,
+        },
+        GameMode {
+            id: first_id + 1,
+            name: "Spectate",
+            level_kind: first_id + 3,
+        },
+    ]
+}
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+
+    /// The gameplay and spectate switches: enabled restores the cursor and
+    /// the player; disabled blocks, clears and drops the Steam set.
+    #[test]
+    fn the_input_switches() {
+        let on = gameplay_input(true, false);
+        assert!(on.cursor_active && !on.player_blocked && !on.keys_cleared);
+        assert_eq!(on.steam_set, 1);
+        let combat = gameplay_input(true, true);
+        assert_eq!(combat.steam_set, 2);
+        let off = gameplay_input(false, false);
+        assert!(!off.cursor_active && off.controls_off && off.player_blocked);
+        assert!(off.keys_cleared && off.steam_set == 0 && !off.free_cursor);
+        let s = spectate_input(false, false);
+        assert!(s.look_disabled && s.player_blocked && !s.controls_off);
+        assert!(spectate_input(true, false).cursor_active);
+    }
+
+    /// Spectating keeps only the powers permission; leaving restores all.
+    #[test]
+    fn the_spectate_permissions() {
+        assert_eq!(
+            spectate(true),
+            Spectate {
+                spectating: true,
+                controls_flag: true,
+                permission: 4
+            }
+        );
+        assert_eq!(
+            spectate(false),
+            Spectate {
+                spectating: false,
+                controls_flag: false,
+                permission: 0x1F
+            }
+        );
+    }
+
+    #[test]
+    fn the_power_tree_hold_is_half_a_second() {
+        assert_eq!(power_hold(0, 1000), (1, 1500));
+        let late = u32::MAX - 200;
+        assert_eq!(power_hold(9, late), (10, late.wrapping_add(500)));
+    }
+
+    /// The key word pairs A with D and S with W; the stick wins past 0.01.
+    #[test]
+    fn the_key_direction_word_and_direction() {
+        assert_eq!(key_direction_word(false, false, false, false, 0.0), 0);
+        assert_eq!(key_direction_word(true, false, false, false, 0.0), 1);
+        assert_eq!(key_direction_word(false, true, false, false, 0.0), 2);
+        // A and D cancel.
+        assert_eq!(key_direction_word(false, true, false, true, 0.0), 0);
+        assert_eq!(key_direction_word(true, true, false, true, 0.0), 1);
+        // S with W clears W and does not take S (both cancel).
+        assert_eq!(key_direction_word(true, false, true, false, 0.0), 0);
+        assert_eq!(key_direction_word(false, false, true, false, 0.0), 4);
+        assert_eq!(key_direction_word(true, false, false, true, 0.01), 9);
+        assert_eq!(key_direction_word(true, false, false, true, 0.02), 0x8000);
+        // The direction in a body frame.
+        let f = Vec3::Z;
+        let r = Vec3::X;
+        assert_eq!(key_direction(1, f, r), f);
+        assert_eq!(key_direction(2, f, r), -r);
+        assert_eq!(key_direction(4, f, r), -f);
+        assert_eq!(key_direction(8, f, r), r);
+        assert_eq!(key_direction(0, f, r), Vec3::ZERO);
+        let diag = key_direction(9, f, r);
+        assert!((diag - (f + r).normalize()).length() < 1e-6);
+        // A goal 20.01 cm away is far; 20 cm is not.
+        assert!(walk_goal_far(Vec3::ZERO, Vec3::new(0.2001, 0.0, 0.0)));
+        assert!(!walk_goal_far(Vec3::ZERO, Vec3::new(0.2, 0.0, 0.0)));
+    }
+
+    /// The viewport's GUI task bit, the disabled input's fields and the
+    /// point sound's numbers.
+    #[test]
+    fn the_controls_gui_task_disabled_input_and_sound() {
+        assert!(opens_gui_task(1));
+        assert!(!opens_gui_task(2));
+        let off = disable_input(1234);
+        assert_eq!(off.now_ms, 1234);
+        assert!(off.gate.player_blocked && off.gate.keys_cleared && !off.gate.cursor_active);
+        assert_eq!(off.gate.steam_set, 0);
+        assert!(off.combat_cleared);
+        let s = point_sound("doorcreak01", Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(s.gain, 0.25);
+        assert_eq!(s.pitch, 1.0);
+        assert!(!s.looping);
+        assert_eq!(s.at, Vec3::new(1.0, 2.0, 3.0));
+    }
+
+    /// Character and Spectate take ids 1 and 2 and level kinds 3 and 4.
+    #[test]
+    fn the_game_modes_register_in_order() {
+        let modes = register_game_modes(1);
+        assert_eq!(modes[0].id, 1);
+        assert_eq!(modes[0].name, "Character");
+        assert_eq!(modes[0].level_kind, 3);
+        assert_eq!(modes[1].id, 2);
+        assert_eq!(modes[1].name, "Spectate");
+        assert_eq!(modes[1].level_kind, 4);
+    }
+}

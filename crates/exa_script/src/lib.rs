@@ -13,6 +13,7 @@ pub mod bubbles;
 pub mod builtins;
 pub mod cast;
 pub mod dialogue;
+pub mod interaction;
 pub mod interp;
 pub mod objects;
 pub mod story;

@@ -246,6 +246,57 @@ pub fn aim_lock_height(plane: f32, bone: f32, distance2: f32, radius: f32) -> f3
     }
 }
 
+/// A bone's two projected ends and the cursor, in screen pixels: the
+/// fraction along the bone nearest the cursor and the squared distance to
+/// it. The original writes the clamped fraction beside the bone and treats
+/// the returned length as a squared pixel distance for its two-radius lock.
+/// (The exact projection of its three-vector helper is not fully read; the
+/// standard closest point is used and labelled a guess.)
+pub fn bone_screen(start: Vec2, end: Vec2, cursor: Vec2) -> (f32, f32) {
+    let bone = end - start;
+    let to = cursor - start;
+    let len2 = bone.x * bone.x + bone.y * bone.y;
+    let t = if len2 > 0.0 {
+        ((to.x * bone.x + to.y * bone.y) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let nearest = start + bone * t;
+    let d = nearest - cursor;
+    (t, d.x * d.x + d.y * d.y)
+}
+
+/// The original's interpolated 2-D value: the current value and the one
+/// before it, shown between them by the frame's fraction (its VMT's
+/// previous/current pair).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Interpolated2 {
+    pub previous: Vec2,
+    pub current: Vec2,
+}
+
+impl Interpolated2 {
+    /// A value settled at `at`.
+    pub fn at(at: Vec2) -> Self {
+        Self {
+            previous: at,
+            current: at,
+        }
+    }
+
+    /// The next tick's value: the current becomes the previous, `target`
+    /// the current.
+    pub fn advance(&mut self, target: Vec2) {
+        self.previous = self.current;
+        self.current = target;
+    }
+
+    /// The value shown `t` of the way from the previous to the current.
+    pub fn shown(&self, t: f32) -> Vec2 {
+        self.current + (self.previous - self.current) * t
+    }
+}
+
 /// The aim point, raised onto a surface the cursor's pick met: the surface's
 /// height `hit` when it is above the plane and below the player's ground
 /// plus 200 cm, else the plane.
@@ -567,6 +618,39 @@ mod tests {
         // The world point eases by the same factor.
         let p = aim_point_step(Vec3::ZERO, Vec3::new(100.0, 0.0, 0.0), 0.29);
         assert!((p.x - 4.6656).abs() < 1e-4, "{p}");
+    }
+
+    /// A bone's projection gives the fraction along it and the squared
+    /// distance to the cursor; a midpoint is zero away.
+    #[test]
+    fn the_bone_screen_fraction_and_distance() {
+        let (t, d2) = bone_screen(
+            Vec2::new(10.0, 0.0),
+            Vec2::new(10.0, 100.0),
+            Vec2::new(14.0, 50.0),
+        );
+        assert!((t - 0.5).abs() < 1e-6);
+        assert!((d2 - 16.0).abs() < 1e-6);
+        // Beyond the ends the fraction clamps.
+        let (t, _) = bone_screen(Vec2::ZERO, Vec2::X * 10.0, Vec2::new(20.0, 0.0));
+        assert_eq!(t, 1.0);
+        let (t, _) = bone_screen(Vec2::ZERO, Vec2::X * 10.0, Vec2::new(-5.0, 0.0));
+        assert_eq!(t, 0.0);
+        // A zero-length bone is at fraction 0.
+        assert_eq!(bone_screen(Vec2::ZERO, Vec2::ZERO, Vec2::X).0, 0.0);
+    }
+
+    /// The 2-D interpolation keeps the current and the one before and shows
+    /// between them.
+    #[test]
+    fn the_two_dimensional_interpolation() {
+        let mut v = Interpolated2::at(Vec2::ZERO);
+        v.advance(Vec2::new(10.0, 20.0));
+        assert_eq!(v.previous, Vec2::ZERO);
+        assert_eq!(v.current, Vec2::new(10.0, 20.0));
+        assert_eq!(v.shown(0.0), v.current);
+        assert_eq!(v.shown(1.0), v.previous);
+        assert_eq!(v.shown(0.5), Vec2::new(5.0, 10.0));
     }
 
     /// The aim point is 250·|aim| + 50 cm out; under 0.01 squared it is not
