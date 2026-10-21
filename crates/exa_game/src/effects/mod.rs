@@ -113,7 +113,7 @@ impl Plugin for EffectsPlugin {
     }
 }
 
-fn advance_clock(time: Res<Time>, mut clock: ResMut<EffectClock>) {
+pub(crate) fn advance_clock(time: Res<Time>, mut clock: ResMut<EffectClock>) {
     *clock = EffectClock::at(time.elapsed());
 }
 

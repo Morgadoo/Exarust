@@ -80,15 +80,10 @@ impl PlacedItem {
             condition: ((object.flags >> 16) & 0xFF) as u8,
         }
     }
-
-    /// The id without the local/world tier bits.
-    pub fn base_id(&self) -> u32 {
-        self.id & teleporters::OBJECT_ID_MASK
-    }
 }
 
 /// A teleporter or reconstruction device placed in a level: its operative
-/// kind and record. The `[` child under its root marks the crystal slot.
+/// kind and record. The first `[` node of its model marks the crystal slot.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TeleportDevice {
     pub kind: u8,

@@ -1,34 +1,41 @@
 //! Teleporter and reconstruction devices: a pedestal whose `[` slot takes a
-//! power crystal and opens the destination screen, and the device that scans
-//! a body before a level transition.
+//! power crystal and opens the destination screen, and the device that
+//! scans the player so that a death in the story brings them back.
 //!
-//! Units are the original's: centimetres and milliseconds. A device use is
-//! refused while the shared use gate is shut, when the user's point is more
-//! than 100 cm from a point 16 cm above the device, when the device has no
-//! `[` child, when no scene object lies within 1 cm of that child, or when
-//! that object is not the device's crystal. The gate, the distance and the
-//! proximity all follow the original's comparisons: a NaN distance passes
-//! the reach test, and a squared distance of exactly 1 or 10 000 cm² is
-//! inside.
+//! Units are the original's: centimetres and milliseconds of game time. A
+//! device use is refused while the player possesses another body, when the
+//! player's point is more than 100 cm from a point 16 cm above the device,
+//! when the device has no `[` child, when no scene object lies within 1 cm
+//! of that child, or when that object is not the device's crystal. The
+//! distance and the proximity follow the original's comparisons: a NaN
+//! distance passes the reach test and is never near, and a squared distance
+//! of exactly 10 000 cm² is inside while exactly 1 cm² is not near.
 //!
 //! The teleporter takes a Power Crystal A (431) or its large-crystal
-//! adapter (1423) that is less than 0x55 (85) spent; its operative record
-//! names the symbol atlas and the destination level ids (the locale list's
-//! ids). The reconstruction device takes a Power Crystal L (500), whatever
+//! adapter (1423), compared by the object's whole record id, that is less
+//! than 0x55 (85) spent; its operative record gives the destination level
+//! ids (the locale list's ids) and whether the screen shows one row or
+//! four. The reconstruction device takes a Power Crystal L (500), whatever
 //! its charge, and starts the scan and the device's glow pulse.
 //!
-//! A scan begins 1600 ms after the use. Its effect is the waiting state
-//! (word 8) with the 3.0 flashing close; the device's glow rises over
-//! 1500 ms and falls over 3800 ms. The use remembers the character record's
-//! identity word and raises the transition latch: the next level load whose
-//! arriving character has the same identity strips the character (hands and
-//! worn items cleared, the underwear rule, health and stamina at 0x7FFF of
-//! 0xFFFF) once, and the latch settles on arrived.
+//! A scan is a scan effect on the player that waits 1600 ms (the waiting
+//! state, word 8) and closes with the 3.0 flash. A use while one is already
+//! on the player starts nothing. The device's glow rises over 1500 ms,
+//! holds 3800 ms and falls over 1500 ms. The use remembers the player
+//! record's identity word and raises the reconstruction latch. When the
+//! player dies in the story with the same identity, the session ends in a
+//! reconstruction instead of a death: the first time, the body is stripped
+//! (hands and worn items cleared, the underwear rule, health and stamina at
+//! 0x7FFF of 0xFFFF) and an unstripped copy of its record is left behind as
+//! the corpse; later deaths reconstruct without a strip. Taking the crystal
+//! off the device's slot plays the power-down sound and clears the latch.
 //!
 //! Evidence: the ten routines of the teleporter unit, checked against the
-//! assembly for the comparisons and the order of the squared sum. The scan,
-//! bubble and portal visuals belong to the effects modules; this module
-//! only gives their requests.
+//! assembly for the comparisons, the order of the squared sum and the row
+//! fill; the session end that consumes the latch, the glow pulse task and
+//! the grab release that powers a device down were read at their call
+//! sites. The scan, bubble and portal visuals belong to the effects
+//! modules.
 
 use bevy::math::Vec3;
 use bevy::prelude::Resource;
@@ -40,13 +47,10 @@ use crate::rooms::{self, Gate};
 pub const SLOT_PREFIX: char = '[';
 /// A scene object closer than this to the slot is on it, squared (cm²).
 pub const NEAR_SQUARED_CM: f32 = 1.0;
-/// The user must be within this of the device point, squared (cm²).
+/// The player must be within this of the device point, squared (cm²).
 pub const REACH_SQUARED_CM: f32 = 10_000.0;
 /// The device point is this far above the device's origin (cm).
 pub const DEVICE_POINT_CM: f32 = 16.0;
-/// The object id's local and world tier bits are dropped before it is
-/// compared with a device's crystal.
-pub const OBJECT_ID_MASK: u32 = 0x3FFF_FFFF;
 /// Power Crystal A, the teleporter's small crystal.
 pub const POWER_CRYSTAL: u32 = 0x1AF;
 /// Power Crystal L, the reconstruction device's crystal.
@@ -56,13 +60,14 @@ pub const LARGE_POWER_CRYSTAL: u32 = 0x1F4;
 pub const CRYSTAL_ADAPTER: u32 = 0x58F;
 /// A crystal spent at least this much is refused by the teleporter.
 pub const CHARGE_LIMIT: u8 = 0x55;
-/// A spent crystal's condition.
-pub const SPENT: u8 = 0xFF;
+/// The symbol atlas the destination screen draws. The use loads this file
+/// once, by name, whatever the record holds.
+pub const SCREEN_ATLAS: &str = "prtlsmbla.rfi";
 /// The scan effect starts this long after the use (ms).
 pub const SCAN_DELAY_MS: u32 = 1600;
 /// The scan's waiting state word at creation.
 pub const SCAN_STATE: i32 = 8;
-/// The colour/size scale a scanner device gives the scan's close.
+/// The flash scale a scanner device gives the scan's looping close.
 pub const SCAN_SCALE: f32 = 3.0;
 /// The scanner's sound and the power sound, with their volume and pitch.
 pub const SCAN_SOUND: &str = "devicescna01";
@@ -70,19 +75,29 @@ pub const POWER_SOUND: &str = "devicepwra01";
 pub const SCAN_VOLUME: f32 = 0.3;
 pub const POWER_VOLUME: f32 = 0.1;
 pub const SOUND_PITCH: f32 = 1.0;
-/// The device glow's rise and fall, milliseconds.
-pub const PULSE_RISE_MS: u32 = 1500;
-pub const PULSE_FALL_MS: u32 = 3800;
-/// The glow ends when twice the rise and the fall have passed (ms).
-pub const PULSE_END_MS: u32 = 2 * PULSE_RISE_MS + PULSE_FALL_MS;
-/// The health and stamina words a teleporter strip leaves (of 0xFFFF).
+/// The device glow's rise (and fall) and its hold, milliseconds.
+pub const PULSE_RAMP_MS: u32 = 1500;
+pub const PULSE_HOLD_MS: u32 = 3800;
+/// The glow is over once more than the two ramps and the hold have passed
+/// (ms).
+pub const PULSE_END_MS: u32 = 2 * PULSE_RAMP_MS + PULSE_HOLD_MS;
+/// An object let go closer than this to a device's slot point takes the
+/// device's crystal off it, squared (cm²).
+pub const SLOT_RELEASE_SQUARED_CM: f32 = 5.0;
+/// The red health under which the player is dead when the session ends,
+/// compared in double precision.
+pub const DEATH_RED: f64 = 0.01;
+/// The health and stamina words a strip leaves (of 0xFFFF).
 pub const STRIPPED_WORD: u16 = 0x7FFF;
 /// The share of full health and stamina a strip leaves.
 pub const STRIPPED_SHARE: f32 = 0x7FFF as f32 / 0xFFFF as f32;
-/// The record word's shared bit: a shared record is stripped in place.
+/// The character's shared-record bit: a shared record is stripped in place
+/// and no corpse record is left.
 pub const SHARED_RECORD: u32 = 0x0008_0000;
-/// Roles a teleporter gives the fresh record it strips.
-pub const STRIP_ROLES: [i32; 2] = [1, 0xC2];
+/// The bit the left-behind record gets in its status word.
+pub const LEFT_BEHIND_MARK: u32 = 0x40;
+/// The roles the left-behind record is given, after its own are dropped.
+pub const LEFT_BEHIND_ROLES: [i32; 2] = [1, 0xC2];
 
 /// A device child: its name and position (cm).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -109,20 +124,17 @@ pub struct Object {
 }
 
 impl Object {
-    /// The id without its local/world tier bits.
-    pub fn base_id(&self) -> u32 {
-        self.id & OBJECT_ID_MASK
-    }
-
     /// Whether this is an unspent-enough teleporter crystal: a Power
-    /// Crystal A or the large-crystal adapter, below [`CHARGE_LIMIT`].
+    /// Crystal A or the large-crystal adapter, below [`CHARGE_LIMIT`]. The
+    /// id is compared whole: a record id carrying a tier bit is not a
+    /// crystal.
     pub fn is_portal_crystal(&self) -> bool {
-        matches!(self.base_id(), POWER_CRYSTAL | CRYSTAL_ADAPTER) && self.condition < CHARGE_LIMIT
+        matches!(self.id, POWER_CRYSTAL | CRYSTAL_ADAPTER) && self.condition < CHARGE_LIMIT
     }
 
     /// Whether this is the reconstruction device's Power Crystal L.
     pub fn is_res_crystal(&self) -> bool {
-        self.base_id() == LARGE_POWER_CRYSTAL
+        self.id == LARGE_POWER_CRYSTAL
     }
 }
 
@@ -139,14 +151,13 @@ pub fn near_cm(origin: Vec3, point: Vec3) -> bool {
     squared_distance_cm(origin, point) < NEAR_SQUARED_CM
 }
 
-/// Whether a user at `user` (cm) can use a device at `device` (cm): the
+/// Whether the player at `user` (cm) can use a device at `device` (cm): the
 /// squared distance from the point 16 cm above the device must not be more
 /// than 10 000 cm². The original's unordered compare lets a NaN pass.
 pub fn in_reach_cm(device: Vec3, user: Vec3) -> bool {
     let point = device + Vec3::Y * DEVICE_POINT_CM;
     let squared = squared_distance_cm(point, user);
-    // The original's unordered compare: only a greater ordered distance
-    // refuses, so NaN passes.
+    // Only an ordered "greater" refuses, so NaN passes.
     squared.is_nan() || squared <= REACH_SQUARED_CM
 }
 
@@ -160,14 +171,20 @@ pub fn find_near(slot: Vec3, objects: &[Object]) -> Option<&Object> {
     objects.iter().find(|object| near_cm(slot, object.at))
 }
 
+/// Whether an object let go at `released` (cm) leaves the slot point at
+/// `slot` (cm): closer than [`SLOT_RELEASE_SQUARED_CM`] squared.
+pub fn released_from_slot(slot: Vec3, released: Vec3) -> bool {
+    squared_distance_cm(released, slot) < SLOT_RELEASE_SQUARED_CM
+}
+
 /// What the teleporter's record tells the destination screen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScreenData {
     /// The operative flags; bit 2 makes the screen show one row instead of
     /// four.
     pub flags: u16,
-    /// The symbol atlas the screen draws (`PrtlSmblA.rfi`).
-    pub atlas: String,
+    /// The symbol atlas the screen draws ([`SCREEN_ATLAS`]).
+    pub atlas: &'static str,
     /// The destination level ids from the record, zero entries included.
     pub destinations: [u32; DESTINATIONS],
 }
@@ -182,7 +199,7 @@ impl ScreenData {
     pub fn of(record: &Operative) -> Self {
         Self {
             flags: record.flags,
-            atlas: record.atlas_name().to_string(),
+            atlas: SCREEN_ATLAS,
             destinations: record.destinations,
         }
     }
@@ -202,35 +219,30 @@ impl ScreenData {
         self.destinations.iter().copied().filter(|&id| id != 0)
     }
 
-    /// The record entry a screen row shows. The original fills row 0 with
-    /// the last entry it reaches and the rows after it with the earlier
-    /// entries in order, so the shipped four destinations 7, 10, 12, 13
-    /// appear on rows 0..3 as 13, 7, 10, 12. A zero entry ends the fill
-    /// there and leaves the later rows on entry 0.
-    pub fn row_index(&self, row: usize) -> Option<usize> {
+    /// The record entry each screen row shows. The original walks the
+    /// first `rows()` entries in order: an empty (zero) entry, or one met
+    /// after rows 1.. are all taken, goes to row 0 (the last such entry
+    /// wins); any other entry takes the next of rows 1... A row nothing
+    /// reaches keeps entry 0. The shipped destinations 7, 10, 12, 13 show
+    /// as 13, 7, 10, 12.
+    pub fn row_entries(&self) -> Vec<usize> {
         let count = self.rows();
-        if row >= count {
-            return None;
-        }
-        let mut index = vec![0usize; count];
-        let mut later = index.iter_mut().skip(1);
-        let mut first = 0usize;
-        for i in 0..count {
-            let destination = self.destinations.get(i).copied().unwrap_or(0);
-            if destination == 0 {
-                first = i;
-                break;
-            }
-            match later.next() {
-                Some(slot) => *slot = i,
-                None => {
-                    first = i;
-                    break;
-                }
+        let mut rows = vec![0usize; count];
+        let mut next = 1usize;
+        for (i, &destination) in self.destinations.iter().enumerate().take(count) {
+            if destination == 0 || next >= count {
+                rows[0] = i;
+            } else {
+                rows[next] = i;
+                next += 1;
             }
         }
-        index[0] = first;
-        index.get(row).copied()
+        rows
+    }
+
+    /// The record entry a screen row shows.
+    pub fn row_index(&self, row: usize) -> Option<usize> {
+        self.row_entries().get(row).copied()
     }
 
     /// The destination level id a screen row shows.
@@ -258,22 +270,24 @@ pub enum PortalUse<'a> {
     },
 }
 
-/// Use the teleporter `children`/`objects` stand for. `record` is the
-/// operative section of the device after its record was resolved; `None`
-/// refuses. `row_screen_open` is whether a screen for this device is
-/// already shown. The checks run in the original's order: the use gate,
-/// the reach, the slot, the object near it, its id and charge, the record,
-/// and only then the open screen.
+/// Use the teleporter `children`/`objects` stand for. `possessing` is
+/// whether the player controls another body; `user` is the player's point,
+/// `None` when there is no player (the reach test is then skipped).
+/// `record` is the operative section of the device after its record was
+/// resolved; `None` refuses. `screen_open` is whether a destination screen
+/// is already shown. The checks run in the original's order: the
+/// possession, the reach, the slot, the object near it, its id and charge,
+/// the record, and only then the open screen.
 pub fn use_portal<'a>(
-    blocked: bool,
+    possessing: bool,
     device: Vec3,
     user: Option<Vec3>,
     children: &[Child<'_>],
     objects: &'a [Object],
     record: Option<&Operative>,
-    row_screen_open: bool,
+    screen_open: bool,
 ) -> PortalUse<'a> {
-    if blocked {
+    if possessing {
         return PortalUse::Refused;
     }
     if let Some(user) = user
@@ -287,18 +301,18 @@ pub fn use_portal<'a>(
     let Some(item) = find_near(slot.at, objects) else {
         return PortalUse::Refused;
     };
-    if item.base_id() == 0 || !item.is_portal_crystal() {
+    if item.id == 0 || !item.is_portal_crystal() {
         return PortalUse::Refused;
     }
     let Some(record) = record else {
         return PortalUse::Refused;
     };
-    if row_screen_open {
+    if screen_open {
         return PortalUse::AlreadyOpen;
     }
     PortalUse::Open {
         item,
-        adapter: item.base_id() == CRYSTAL_ADAPTER,
+        adapter: item.id == CRYSTAL_ADAPTER,
         screen: ScreenData::of(record),
     }
 }
@@ -308,25 +322,26 @@ pub fn use_portal<'a>(
 pub enum ScanUse<'a> {
     /// The use was refused.
     Refused,
-    /// A scan of this body is already running; the use still succeeds and
+    /// A scan effect is already on the player; the use still succeeds and
     /// starts nothing.
     AlreadyScanning,
-    /// Scan this crystal's user.
+    /// Scan the player with this crystal.
     Started { item: &'a Object },
 }
 
 /// Use the reconstruction device `children`/`objects` stand for. Its checks
 /// are the teleporter's without the charge test, and with the Power Crystal
-/// L as the only accepted object.
+/// L as the only accepted object. `scanning` is whether a scan effect is
+/// already a child of the player.
 pub fn use_res_device<'a>(
-    blocked: bool,
+    possessing: bool,
     device: Vec3,
     user: Option<Vec3>,
     children: &[Child<'_>],
     objects: &'a [Object],
     scanning: bool,
 ) -> ScanUse<'a> {
-    if blocked {
+    if possessing {
         return ScanUse::Refused;
     }
     if let Some(user) = user
@@ -340,7 +355,7 @@ pub fn use_res_device<'a>(
     let Some(item) = find_near(slot.at, objects) else {
         return ScanUse::Refused;
     };
-    if item.base_id() == 0 || !item.is_res_crystal() {
+    if item.id == 0 || !item.is_res_crystal() {
         return ScanUse::Refused;
     }
     if scanning {
@@ -352,11 +367,12 @@ pub fn use_res_device<'a>(
 /// What a scan use schedules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScanTiming {
-    /// The scan effect's start (ms on the device clock).
+    /// The scan effect's start stamp (game ms).
     pub effect_at_ms: u32,
-    /// The device glow's rise and fall, and the millisecond it ends.
-    pub pulse_rise_ms: u32,
-    pub pulse_fall_ms: u32,
+    /// The device glow's ramp and hold, and the millisecond after which it
+    /// is over.
+    pub pulse_ramp_ms: u32,
+    pub pulse_hold_ms: u32,
     pub pulse_end_ms: u32,
 }
 
@@ -364,32 +380,71 @@ pub struct ScanTiming {
 pub fn scan_timing(now_ms: u32) -> ScanTiming {
     ScanTiming {
         effect_at_ms: now_ms.wrapping_add(SCAN_DELAY_MS),
-        pulse_rise_ms: PULSE_RISE_MS,
-        pulse_fall_ms: PULSE_FALL_MS,
+        pulse_ramp_ms: PULSE_RAMP_MS,
+        pulse_hold_ms: PULSE_HOLD_MS,
         pulse_end_ms: now_ms.wrapping_add(PULSE_END_MS),
     }
 }
 
-/// The transition latch the device use raises and the level load consumes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum LatchPhase {
-    /// No transition is pending.
-    #[default]
-    Idle,
-    /// A scan started; the next load of the same character strips it.
-    Charging,
-    /// The matching character arrived and was stripped (once).
-    Arrived,
+/// One step of a device's glow pulse.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PulseStep {
+    /// The factor the device's lights and emissive parts are scaled by.
+    pub strength: f32,
+    /// The pulse is over: this step wrote its last value (0).
+    pub done: bool,
 }
 
-/// The state behind a use of a reconstruction device and the strip at the
+/// The glow pulse `elapsed_ms` after its start (the 32-bit clock
+/// difference): rising over `ramp_ms`, holding at one for `hold_ms`, then
+/// falling over `ramp_ms` again, its fractions taken in double precision.
+/// The sums are compared in 64 bits, but twice the ramp is doubled in 32.
+pub fn pulse_step(elapsed_ms: u32, ramp_ms: u32, hold_ms: u32) -> PulseStep {
+    let elapsed = u64::from(elapsed_ms);
+    let ramp = u64::from(ramp_ms);
+    let hold = u64::from(hold_ms);
+    if u64::from(ramp_ms.wrapping_shl(1)) + hold < elapsed {
+        return PulseStep {
+            strength: 0.0,
+            done: true,
+        };
+    }
+    let strength = if elapsed_ms < ramp_ms {
+        (elapsed as f64 / ramp as f64) as f32
+    } else if elapsed > ramp + hold {
+        let fallen = (elapsed - hold - ramp) as i64 as f64;
+        (1.0 - fallen / ramp as f64) as f32
+    } else {
+        1.0
+    };
+    PulseStep {
+        strength,
+        done: false,
+    }
+}
+
+/// The reconstruction latch the device use raises and the session end
+/// consumes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LatchPhase {
+    /// No reconstruction is pending.
+    #[default]
+    Idle,
+    /// A scan started; the next death of the same character strips it.
+    Charging,
+    /// The character was reconstructed; later deaths reconstruct it
+    /// without a strip.
+    Reconstructed,
+}
+
+/// The state behind a use of a reconstruction device and the death at the
 /// other end.
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Default)]
 pub struct Latch {
     pub phase: LatchPhase,
-    /// The character record's identity word the scan was started for.
+    /// The player record's identity word the scan was started for.
     pub remembered: u32,
-    /// The scan's stored value (0 at the start; its later reader is not
+    /// A word the scan clears (0 at the start; its reader is not
     /// established).
     pub value: f32,
 }
@@ -402,33 +457,66 @@ impl Latch {
         self.value = 0.0;
     }
 
-    /// The device was freed: clear the latch. Returns whether the power
-    /// sound plays (`sound` is whether its handle is loaded).
-    pub fn power_down(&mut self, sound: bool) -> bool {
+    /// The crystal left the device: clear the latch, whatever its phase.
+    pub fn power_down(&mut self) {
         self.phase = LatchPhase::Idle;
-        sound
     }
 
-    /// A level load brought the character with `arriving`. If a scan is
-    /// pending for that identity, settle the latch and report whether this
-    /// arrival is the one that strips: the first matching load strips, the
-    /// later ones only keep the settled latch.
-    pub fn arrive(&mut self, arriving: u32) -> Option<bool> {
-        if self.phase == LatchPhase::Idle || arriving != self.remembered {
+    /// The player died with the record identity `dying`. With a pending
+    /// scan for that identity the latch settles on reconstructed and the
+    /// answer is whether this death strips (only the first after a scan
+    /// does); `None` is an ordinary death.
+    pub fn on_death(&mut self, dying: u32) -> Option<bool> {
+        if self.phase == LatchPhase::Idle || dying != self.remembered {
             return None;
         }
         let strip = self.phase == LatchPhase::Charging;
-        self.phase = LatchPhase::Arrived;
+        self.phase = LatchPhase::Reconstructed;
         Some(strip)
     }
 }
 
-/// The character-record fields a teleporter strip changes.
+/// How a play session ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionEnd {
+    /// The player left alive.
+    Left,
+    /// The player died. In the story this is the end of the game.
+    Died,
+    /// The player died in the story after a scan of the same identity and
+    /// is reconstructed; `stripped` is whether this death stripped them.
+    Reconstructed { stripped: bool },
+}
+
+/// The session end for a player with red health `red` and record identity
+/// `identity`: dead below [`DEATH_RED`] (widened to double; a NaN is
+/// alive), and only in the story does the latch turn a death into a
+/// reconstruction.
+pub fn session_end(red: f32, story: bool, identity: u32, latch: &mut Latch) -> SessionEnd {
+    let red = f64::from(red);
+    if red.is_nan() || red >= DEATH_RED {
+        return SessionEnd::Left;
+    }
+    if !story {
+        return SessionEnd::Died;
+    }
+    match latch.on_death(identity) {
+        Some(stripped) => SessionEnd::Reconstructed { stripped },
+        None => SessionEnd::Died,
+    }
+}
+
+/// The character-record fields a strip changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
-    /// The record's shared bit ([`SHARED_RECORD`]): a shared record is
-    /// stripped in place, an unshared one works on a fresh copy first.
+    /// The character's shared-record bit ([`SHARED_RECORD`]).
     pub shared: bool,
+    /// The record's use count.
+    pub uses: u32,
+    /// The record's status word ([`LEFT_BEHIND_MARK`]).
+    pub status: u32,
+    /// The record's identity word.
+    pub identity: u32,
     /// The four hand item ids.
     pub held: [u32; 4],
     /// The worn item ids.
@@ -443,20 +531,35 @@ pub struct Record {
 }
 
 impl Record {
-    /// The strip: clear both hands and the worn list, leave health and
-    /// stamina at [`STRIPPED_WORD`], keep one empty action, and give a
-    /// fresh record the two roles. The underwear rule runs after this, on
-    /// the cleared worn list.
-    pub fn strip(&mut self) {
-        if !self.shared {
-            self.roles.clear();
-            self.roles.extend_from_slice(&STRIP_ROLES);
-        }
+    /// The strip of a reconstructed body. An unshared record is first
+    /// copied, and the copy, returned, is what the dead body keeps: one use,
+    /// the left-behind mark, identity 0, its roles replaced by
+    /// [`LEFT_BEHIND_ROLES`] and its health and stamina at 0, with every
+    /// item still on it. The record itself, the one the player goes on
+    /// with, then loses both hands and the worn list, keeps one empty
+    /// action and is left at [`STRIPPED_WORD`] health and stamina; the
+    /// underwear rule runs after this, on the cleared worn list. A shared
+    /// record is stripped in place and counts one more use.
+    pub fn strip(&mut self) -> Option<Record> {
+        let left_behind = (!self.shared).then(|| {
+            let mut copy = self.clone();
+            copy.uses = 1;
+            copy.status |= LEFT_BEHIND_MARK;
+            copy.identity = 0;
+            copy.roles = LEFT_BEHIND_ROLES.to_vec();
+            copy.health = 0;
+            copy.stamina = 0;
+            copy
+        });
         self.held = [0; 4];
         self.worn.clear();
+        self.actions = vec![0];
         self.health = STRIPPED_WORD;
         self.stamina = STRIPPED_WORD;
-        self.actions = vec![0];
+        if self.shared {
+            self.uses += 1;
+        }
+        left_behind
     }
 }
 
@@ -467,8 +570,8 @@ pub fn stripped_share() -> f32 {
 }
 
 /// The level a chosen destination id loads, through the locale list's
-/// names. The original's travel job carries a level id and a second word;
-/// the entrance is not part of the id, so it is 0 here.
+/// names. The journey the screen starts carries a level id; the entrance is
+/// not part of it, so it is 0 here.
 pub fn destination_gate(level: u32) -> Gate {
     Gate { level, entrance: 0 }
 }
@@ -483,9 +586,9 @@ pub fn destination_level<'a>(
     rooms::enter_level(current, destination_gate(chosen), names)
 }
 
-/// Fill in the locale ids and names the shipped teleporter reaches, for
-/// tests and callers without the level list: Exanima05, Exanima07,
-/// Exanima08 and Exanima67.
+/// The locale ids and names the shipped teleporter reaches, for tests and
+/// callers without the level list: Exanima05, Exanima07, Exanima08 and
+/// Exanima67.
 pub const SHIPPED_DESTINATIONS: [(u32, &str); 4] = [
     (7, "exanima05"),
     (10, "exanima07"),
@@ -587,8 +690,9 @@ mod tests {
     fn only_the_charged_portal_crystals_fit_the_teleporter() {
         assert!(crystal(POWER_CRYSTAL, 0, Vec3::ZERO).is_portal_crystal());
         assert!(crystal(CRYSTAL_ADAPTER, 0x54, Vec3::ZERO).is_portal_crystal());
-        // The tier bit is ignored.
-        assert!(crystal(0x8000_01AF, 0, Vec3::ZERO).is_portal_crystal());
+        // The id is compared whole: a tier bit is not the crystal.
+        assert!(!crystal(0x8000_01AF, 0, Vec3::ZERO).is_portal_crystal());
+        assert!(!crystal(0x4000_01F4, 0, Vec3::ZERO).is_res_crystal());
         // 0x55 spent is refused, 0x54 accepted.
         assert!(!crystal(POWER_CRYSTAL, 0x55, Vec3::ZERO).is_portal_crystal());
         assert!(!crystal(POWER_CRYSTAL, 0xFF, Vec3::ZERO).is_portal_crystal());
@@ -613,7 +717,7 @@ mod tests {
     #[test]
     fn the_teleporter_opens_for_a_crystal_on_its_slot() {
         let children = [child("[000001AFL]", Vec3::new(0.0, 16.0, 0.0))];
-        let objects = [crystal(0x8000_01AF, 0, Vec3::new(0.2, 16.0, 0.0))];
+        let objects = [crystal(POWER_CRYSTAL, 0, Vec3::new(0.2, 16.0, 0.0))];
         let record = record();
         let origin = Some(Vec3::new(0.0, 0.0, 0.0));
         let PortalUse::Open {
@@ -624,11 +728,12 @@ mod tests {
         else {
             panic!("opens");
         };
-        assert_eq!(item.id, 0x8000_01AF);
+        assert_eq!(item.id, POWER_CRYSTAL);
         assert!(!adapter);
-        assert_eq!(screen.atlas, "PrtlSmblA.rfi");
+        // The screen draws the atlas the use loads by name.
+        assert_eq!(screen.atlas, "prtlsmbla.rfi");
         assert_eq!(screen.rows(), 4);
-        // A shut use gate refuses even with a crystal in place.
+        // A possession refuses even with a crystal in place.
         assert_eq!(
             at(
                 true,
@@ -726,17 +831,30 @@ mod tests {
         assert_eq!(screen.row_destination(0), Some(7));
         assert_eq!(screen.row_destination(1), None);
 
-        // A zero entry stops the fill: row 0 takes that empty entry and the
-        // rows already filled keep the earlier entries.
+        // A zero entry goes to row 0 and the walk goes on: 7, 0, 12, 13
+        // lays out as entries 1, 0, 2, 3 (the third and fourth entries
+        // still take rows 2 and 3).
         let mut zero = record();
-        zero.destinations[2] = 0;
+        zero.destinations[1] = 0;
         let screen = ScreenData::of(&zero);
-        assert_eq!(screen.row_index(0), Some(2));
+        assert_eq!(screen.row_entries(), [1, 0, 2, 3]);
         assert_eq!(screen.row_destination(0), Some(0));
         assert_eq!(screen.row_destination(1), Some(7));
-        assert_eq!(screen.row_destination(2), Some(10));
-        // A row the fill never reached keeps entry 0.
+        assert_eq!(screen.row_destination(2), Some(12));
+        assert_eq!(screen.row_destination(3), Some(13));
+        // Two entries: rows 1 and 2 take them, row 0 the empty entry 3 (the
+        // last zero wins), row 3 is never reached and keeps entry 0.
+        let mut two = record();
+        two.destinations[2] = 0;
+        two.destinations[3] = 0;
+        let screen = ScreenData::of(&two);
+        assert_eq!(screen.row_entries(), [3, 0, 1, 0]);
         assert_eq!(screen.row_destination(3), Some(7));
+        // Only the first `rows()` entries are walked: a fifth entry is not
+        // shown.
+        let mut five = record();
+        five.destinations[4] = 99;
+        assert_eq!(ScreenData::of(&five).row_entries(), [3, 0, 1, 2]);
     }
 
     #[test]
@@ -744,11 +862,12 @@ mod tests {
         let children = [child("[000001F4L]", Vec3::ZERO)];
         let large = [crystal(LARGE_POWER_CRYSTAL, 0xFF, Vec3::ZERO)];
         let small = [crystal(POWER_CRYSTAL, 0, Vec3::ZERO)];
+        // Its charge is not read: a spent crystal still works.
         assert!(matches!(
             use_res_device(false, Vec3::ZERO, None, &children, &large, false),
             ScanUse::Started { item } if item.id == LARGE_POWER_CRYSTAL
         ));
-        // Its charge is not read: a spent crystal still works.
+        // A small crystal is refused.
         assert_eq!(
             use_res_device(false, Vec3::ZERO, None, &children, &small, false),
             ScanUse::Refused
@@ -784,8 +903,8 @@ mod tests {
     fn a_scan_starts_after_1600_ms_and_the_glow_runs_6800_ms() {
         let timing = scan_timing(1_000);
         assert_eq!(timing.effect_at_ms, 2_600);
-        assert_eq!(timing.pulse_rise_ms, 1_500);
-        assert_eq!(timing.pulse_fall_ms, 3_800);
+        assert_eq!(timing.pulse_ramp_ms, 1_500);
+        assert_eq!(timing.pulse_hold_ms, 3_800);
         assert_eq!(timing.pulse_end_ms, 7_800);
         assert_eq!(SCAN_STATE, 8);
         assert_eq!(SCAN_SCALE, 3.0);
@@ -794,57 +913,141 @@ mod tests {
     }
 
     #[test]
-    fn the_latch_strips_the_matching_character_once() {
+    fn the_glow_rises_holds_and_falls() {
+        let step = |e| pulse_step(e, PULSE_RAMP_MS, PULSE_HOLD_MS);
+        assert_eq!(step(0).strength, 0.0);
+        // 750 / 1500 in double precision.
+        assert_eq!(step(750).strength, 0.5);
+        assert_eq!(step(1_499).strength, (1_499.0f64 / 1_500.0) as f32);
+        // From the end of the ramp to ramp + hold it holds at one.
+        assert_eq!(step(1_500).strength, 1.0);
+        assert_eq!(step(5_300).strength, 1.0);
+        // Then it falls: 1 - (5 301 - 3 800 - 1 500) / 1 500.
+        assert_eq!(step(5_301).strength, (1.0 - 1.0f64 / 1_500.0) as f32);
+        assert_eq!(step(6_050).strength, 0.5);
+        // At exactly two ramps and the hold it is 0 but not yet over.
+        assert_eq!(
+            step(6_800),
+            PulseStep {
+                strength: 0.0,
+                done: false
+            }
+        );
+        assert_eq!(
+            step(6_801),
+            PulseStep {
+                strength: 0.0,
+                done: true
+            }
+        );
+        assert_eq!(PULSE_END_MS, 6_800);
+        // A stamp ahead of the clock wraps to a huge span: the pulse ends.
+        assert!(pulse_step(0u32.wrapping_sub(1), 1_500, 3_800).done);
+        // Twice the ramp is doubled in 32 bits: a ramp of 2³¹ doubles to 0,
+        // so 1 ms past the hold is already over.
+        assert!(pulse_step(11, 0x8000_0000, 10).done);
+    }
+
+    #[test]
+    fn a_crystal_let_go_within_five_square_centimetres_leaves_the_slot() {
+        let slot = Vec3::new(0.0, 16.0, 0.0);
+        // 2² + 1² = 5: not closer, so not taken off.
+        assert!(!released_from_slot(slot, Vec3::new(2.0, 17.0, 0.0)));
+        // 2² + 0.9² = 4.81.
+        assert!(released_from_slot(slot, Vec3::new(2.0, 16.9, 0.0)));
+        assert!(!released_from_slot(slot, Vec3::splat(f32::NAN)));
+    }
+
+    #[test]
+    fn the_latch_turns_the_matching_death_into_a_reconstruction() {
         let mut latch = Latch::default();
         assert_eq!(latch.phase, LatchPhase::Idle);
-        assert_eq!(latch.arrive(0), None);
+        assert_eq!(latch.on_death(0), None);
         latch.begin(0x00C1_0ED0);
         assert_eq!(latch.phase, LatchPhase::Charging);
         assert_eq!(latch.remembered, 0x00C1_0ED0);
         assert_eq!(latch.value, 0.0);
-        // Another character does not consume it.
-        assert_eq!(latch.arrive(0x00C1_0ED1), None);
+        // Another identity dies as usual.
+        assert_eq!(latch.on_death(0x00C1_0ED1), None);
         assert_eq!(latch.phase, LatchPhase::Charging);
-        // The matching arrival strips once.
-        assert_eq!(latch.arrive(0x00C1_0ED0), Some(true));
-        assert_eq!(latch.phase, LatchPhase::Arrived);
-        assert_eq!(latch.arrive(0x00C1_0ED0), Some(false));
-        // The power sound clears it and reports whether it played.
-        assert!(!latch.power_down(false));
+        // The matching death strips once; later ones reconstruct only.
+        assert_eq!(latch.on_death(0x00C1_0ED0), Some(true));
+        assert_eq!(latch.phase, LatchPhase::Reconstructed);
+        assert_eq!(latch.on_death(0x00C1_0ED0), Some(false));
+        // Taking the crystal off clears it.
+        latch.power_down();
         assert_eq!(latch.phase, LatchPhase::Idle);
-        latch.begin(7);
-        assert!(latch.power_down(true));
-        assert_eq!(latch.phase, LatchPhase::Idle);
-        assert_eq!(latch.arrive(7), None);
+        assert_eq!(latch.on_death(0x00C1_0ED0), None);
     }
 
     #[test]
-    fn the_strip_clears_the_body_and_leaves_half_health() {
+    fn the_session_ends_by_red_health_mode_and_latch() {
+        let mut latch = Latch::default();
+        latch.begin(7);
+        // The compare is in double: 0.01f32 widens to 0.00999999977..., just
+        // under the double 0.01, so it is dead; the next float up is alive.
+        assert!(f64::from(0.01f32) < DEATH_RED);
+        let above = f32::from_bits(0.01f32.to_bits() + 1);
+        assert_eq!(session_end(above, true, 7, &mut latch), SessionEnd::Left);
+        assert_eq!(session_end(f32::NAN, true, 7, &mut latch), SessionEnd::Left);
+        assert_eq!(latch.phase, LatchPhase::Charging);
+        // Outside the story a death is a death, and the latch is kept.
+        assert_eq!(session_end(0.0099, false, 7, &mut latch), SessionEnd::Died);
+        assert_eq!(latch.phase, LatchPhase::Charging);
+        // Another identity dies.
+        assert_eq!(session_end(0.0, true, 8, &mut latch), SessionEnd::Died);
+        assert_eq!(
+            session_end(0.0, true, 7, &mut latch),
+            SessionEnd::Reconstructed { stripped: true }
+        );
+        assert_eq!(
+            session_end(0.01, true, 7, &mut latch),
+            SessionEnd::Reconstructed { stripped: false }
+        );
+    }
+
+    #[test]
+    fn the_strip_leaves_a_dressed_corpse_record_and_a_bare_body() {
         let mut record = Record {
             shared: false,
+            uses: 3,
+            status: 0x01,
+            identity: 0x00C1_0ED0,
             held: [10, 11, 12, 13],
             worn: vec![20, 21],
             health: 0xFFFF,
-            stamina: 0xFFFF,
+            stamina: 0xC000,
             actions: vec![7, 8, 9],
             roles: vec![9],
         };
-        record.strip();
+        let corpse = record.strip().expect("an unshared record leaves a copy");
+        // The record the player keeps: bare, one empty action, just under
+        // half health and stamina, its roles, uses and identity kept.
         assert_eq!(record.held, [0; 4]);
         assert!(record.worn.is_empty());
         assert_eq!((record.health, record.stamina), (0x7FFF, 0x7FFF));
         assert_eq!(record.actions, [0]);
-        assert_eq!(record.roles, [1, 0xC2]);
-        // A shared record keeps its roles.
+        assert_eq!(record.roles, [9]);
+        assert_eq!((record.uses, record.identity), (3, 0x00C1_0ED0));
+        // The copy the dead body keeps: still dressed and armed, no health,
+        // one use, the mark, identity 0 and the two roles.
+        assert_eq!(corpse.held, [10, 11, 12, 13]);
+        assert_eq!(corpse.worn, [20, 21]);
+        assert_eq!(corpse.actions, [7, 8, 9]);
+        assert_eq!((corpse.health, corpse.stamina), (0, 0));
+        assert_eq!((corpse.uses, corpse.status), (1, 0x41));
+        assert_eq!(corpse.identity, 0);
+        assert_eq!(corpse.roles, [1, 0xC2]);
+        // A shared record is stripped in place, counts a use, leaves none.
         let mut shared = Record {
             shared: true,
-            roles: vec![9],
-            ..record.clone()
+            held: [1, 0, 0, 0],
+            ..corpse.clone()
         };
-        shared.strip();
-        assert_eq!(shared.roles, [9]);
+        assert!(shared.strip().is_none());
         assert_eq!(shared.held, [0; 4]);
-        // 32767 of 65535.
+        assert_eq!(shared.roles, [1, 0xC2]);
+        assert_eq!(shared.uses, 2);
         // 32767 of 65535 is just under half.
         assert!((stripped_share() - 0.499_992_4).abs() < 1e-6);
         assert_eq!(STRIPPED_WORD, 32767);
