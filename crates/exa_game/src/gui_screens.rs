@@ -479,16 +479,36 @@ fn font_texture(textures: &GuiTextures, font: &exa_ui::gui_font::GuiFont) -> Opt
 }
 
 /// The font a screen uses: the level's main font when its texture is
-/// installed, else the base font (the only GUI font the packs ship).
-pub(crate) fn screen_font<'a>(
-    level_font: &'a exa_ui::gui_font::GuiFont,
+/// installed. Else the level's metrics (glyph quad, advances, line height,
+/// which the layout and the controls' sizes are built from) are kept and the
+/// glyph cells are sampled from the base font's atlas, the only GUI font the
+/// packs ship. The size returned then is the atlas size the level's glyph
+/// quad would span one base glyph cell of, so [`exa_ui::gui_text::font_uv`]
+/// gives the base cell's sample step while the quad keeps the level's size.
+pub(crate) fn screen_font(
+    level_font: &exa_ui::gui_font::GuiFont,
     textures: &GuiTextures,
-) -> (&'a exa_ui::gui_font::GuiFont, Option<(u16, u16)>) {
+) -> (exa_ui::gui_font::GuiFont, Option<(u16, u16)>) {
     if let Some(size) = font_texture(textures, level_font) {
-        return (level_font, Some(size));
+        return (*level_font, Some(size));
     }
     let base = &exa_ui::gui_font::FONTBASE_24;
-    (base, font_texture(textures, base))
+    let size = font_texture(textures, base).map(|(width, height)| {
+        let scaled = |extent: u16, quad: i32, base_quad: i32| {
+            (f32::from(extent) * quad as f32 / base_quad as f32)
+                .round()
+                .clamp(1.0, f32::from(u16::MAX)) as u16
+        };
+        (
+            scaled(width, level_font.glyph.0, base.glyph.0),
+            scaled(height, level_font.glyph.1, base.glyph.1),
+        )
+    });
+    let font = exa_ui::gui_font::GuiFont {
+        texture: base.texture,
+        ..*level_font
+    };
+    (font, size)
 }
 
 /// Paints the control records a screen's form carries: buttons with their
@@ -534,7 +554,7 @@ fn paint_inventory(bounds: GuiRect, unit: i32, textures: &GuiTextures) -> gui_pa
     let (font, size) = screen_font(exa_ui::gui_font::gui_level(level).main, textures);
     let mut frame = Frame::new(bounds, unit, INVENTORY_TITLE);
     frame.spacing = gui_paint::INVENTORY_SPACING;
-    let mut painted = gui_paint::paint_frame(&frame, &palette, font, size);
+    let mut painted = gui_paint::paint_frame(&frame, &palette, &font, size);
     let client = frame.client();
     let pack = GuiRect::new(
         client.left,
@@ -554,7 +574,7 @@ fn paint_inventory(bounds: GuiRect, unit: i32, textures: &GuiTextures) -> gui_pa
         painted.push(layer);
     }
     let controls = screen_controls(GameScreen::Inventory, bounds);
-    paint_controls(&controls, unit, &palette, font, size, &mut painted);
+    paint_controls(&controls, unit, &palette, &font, size, &mut painted);
     painted
 }
 
@@ -572,17 +592,17 @@ fn paint_journal(
     let (font, size) = screen_font(fonts.main, textures);
     let mut frame = Frame::new(bounds, unit, JOURNAL_TITLE);
     frame.attributes = gui_paint::JOURNAL_ATTRIBUTES;
-    let mut painted = gui_paint::paint_frame(&frame, &palette, font, size);
+    let mut painted = gui_paint::paint_frame(&frame, &palette, &font, size);
     let client = frame.client();
     let controls = screen_controls(GameScreen::Journal, bounds);
-    paint_controls(&controls, unit, &palette, font, size, &mut painted);
+    paint_controls(&controls, unit, &palette, &font, size, &mut painted);
     let box_client = exa_ui::form::ClientRect {
         left: client.left + JOURNAL_TEXT.left,
         top: client.top + JOURNAL_TEXT.top,
         right: client.left + JOURNAL_TEXT.right,
         bottom: client.top + JOURNAL_TEXT.bottom,
     };
-    let mut text_box = exa_ui::text_box::TextBox::new(unit, font, fonts.small, box_client);
+    let mut text_box = exa_ui::text_box::TextBox::new(unit, fonts.main, fonts.small, box_client);
     text_box.read_only = true;
     let text = journal
         .entries
@@ -633,7 +653,7 @@ fn paint_journal(
             glyph.y += box_client.top;
         }
         if !glyphs.is_empty() {
-            let batch = exa_ui::gui_draw::glyph_batch(font, &glyphs, texture, 1.0);
+            let batch = exa_ui::gui_draw::glyph_batch(&font, &glyphs, texture, 1.0);
             painted.push(exa_ui::gui_draw::GuiLayer::new(
                 batch,
                 exa_ui::gui_draw::LayerTexture::Named(font.texture),
@@ -815,6 +835,37 @@ mod tests {
                     | exa_ui::skin::SkinMode::Skin
             )
         }));
+    }
+
+    #[test]
+    fn without_the_level_font_the_base_atlas_is_sampled_at_the_levels_size() {
+        use exa_ui::gui_draw::{GuiTexture, GuiTextures};
+        let level = exa_ui::gui_font::gui_level(exa_ui::gui_font::level_for_unit(4)).main;
+        let mut textures = GuiTextures::default();
+        // Nothing installed: no size, the base name.
+        let (font, size) = screen_font(level, &textures);
+        assert_eq!(font.texture, "fontbase24r");
+        assert_eq!(size, None);
+        textures.textures.insert(
+            "fontbase24r".into(),
+            GuiTexture::from_top_down(1024, 1024, &vec![0u8; 1024 * 1024 * 4]).unwrap(),
+        );
+        let (font, size) = screen_font(level, &textures);
+        // The level's quad, advances and line height stay.
+        assert_eq!(font.glyph, level.glyph);
+        assert_eq!(font.line_height, level.line_height);
+        assert_eq!(font.advances, level.advances);
+        // The sample step is still the base glyph's: 36 and 48 texels.
+        let (du, dv) = exa_ui::gui_text::font_uv(&font, size.unwrap()).unwrap();
+        assert!((du - 36.0 / 1024.0).abs() < 1e-4, "{du}");
+        assert!((dv - 48.0 / 1024.0).abs() < 1e-4, "{dv}");
+        // With the level's own texture the level font is used as is.
+        textures
+            .textures
+            .insert(level.texture.into(), GuiTexture::solid([255; 4]));
+        let (font, size) = screen_font(level, &textures);
+        assert_eq!(font.texture, level.texture);
+        assert_eq!(size, Some((1, 1)));
     }
 
     #[test]

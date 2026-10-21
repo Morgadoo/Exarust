@@ -416,7 +416,7 @@ pub fn paint_debug_form(rect: GuiRect, unit: i32, textures: &GuiTextures) -> Pai
     // The debug form sets the title bit itself so that the title path shows.
     let mut frame = Frame::new(rect, unit, "GUI Form");
     frame.attributes |= 1;
-    paint_frame(&frame, &palette, font, font_texture)
+    paint_frame(&frame, &palette, &font, font_texture)
 }
 
 /// The line skin's palette (a convenience for the screen painters).

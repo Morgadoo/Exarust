@@ -500,9 +500,9 @@ and Primary button, the journal's New and Erase buttons) with captions
 placed by the skin's own rule, and the journal's selected entry through the
 text box. The character view, the preview bars, the pack's item icons, the
 journal's entry list, the controls' callbacks and the inventory's unlocated
-second record are not wired; the text uses the base font while the
-Rayform faces are not shipped. The skills key's screen and the power tree
-are not opened.
+second record are not wired; the text keeps the level font's metrics and
+samples the base font's atlas while the Rayform faces are not shipped. The
+skills key's screen and the power tree are not opened.
 
 ## Scope
 

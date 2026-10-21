@@ -186,7 +186,9 @@ impl GuiTexture {
     }
 
     /// The texel a normalized coordinate samples with nearest-neighbour
-    /// filtering (the original's GUI sampler).
+    /// filtering (the original's GUI sampler). `v` runs up the image like
+    /// the original's texture coordinate: `v = 0` is the bottom row, and the
+    /// storage is top-down, so the row is counted from the bottom.
     pub fn sample(&self, u: f32, v: f32) -> [u8; 4] {
         if !u.is_finite() || !v.is_finite() || self.width == 0 || self.height == 0 {
             return [0; 4];
@@ -199,7 +201,7 @@ impl GuiTexture {
             return [0; 4];
         };
         let y = if y.is_finite() {
-            y as i64
+            i64::from(self.height) - 1 - y as i64
         } else {
             return [0; 4];
         };
@@ -1274,6 +1276,45 @@ mod tests {
         assert_eq!(at(1, 1), 255);
         assert_eq!(at(2, 2), 255);
         assert_eq!(at(3, 3), 0);
+    }
+
+    #[test]
+    fn a_texture_coordinate_runs_up_the_image() {
+        // Stored rows bottom first: 10, 20, 30, 40. v = 0 is the bottom row
+        // (10) and v just under 1 is the top row (40).
+        let textures = striped_textures();
+        let texture = textures.get(SKIN_TEXTURE).unwrap();
+        assert_eq!(texture.sample(0.0, 0.0)[0], 10);
+        assert_eq!(texture.sample(0.0, 0.3)[0], 20);
+        assert_eq!(texture.sample(0.0, 0.99)[0], 40);
+    }
+
+    #[test]
+    fn a_textured_quad_shows_the_row_its_top_vertex_names() {
+        // A quad whose top edge is v = 0.75 and bottom edge is v = 0 over the
+        // striped texture shows the 30 row above the 10 row.
+        let mut batch = SkinBatch::new();
+        batch.select(2, 0, true);
+        batch.blend = BLEND_ALPHA;
+        batch.tex_col = Some(1.0);
+        batch.begin();
+        batch.set_ink([255, 255, 255, 255]);
+        batch.set_uv(0.0, 0.75);
+        batch.vertex(0.0, 0.0);
+        batch.set_uv(0.0, 0.0);
+        batch.vertex(0.0, 4.0);
+        batch.set_uv(1.0, 0.0);
+        batch.vertex(4.0, 4.0);
+        batch.set_uv(1.0, 0.75);
+        batch.vertex(4.0, 0.0);
+        batch.end_quads();
+        let mut frame = GuiFrame::new();
+        frame.push(GuiLayer::new(batch, LayerTexture::Named(SKIN_TEXTURE)));
+        let pixels = rasterise(&[frame], &striped_textures(), 4, 4);
+        // The blend rounds a texel by one at most.
+        assert!(pixels[0].abs_diff(30) <= 1, "top row {}", pixels[0]);
+        let bottom = pixels[(3 * 4) * 4];
+        assert!(bottom.abs_diff(10) <= 1, "bottom row {bottom}");
     }
 
     #[test]

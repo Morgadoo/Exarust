@@ -1077,7 +1077,11 @@ journal's entry list (its geometry is not in the traced units), the
 0xac01 record, the controls' callbacks, the loot window and the technique
 selector. The skills key's screen and the power tree are outside this unit,
 and the selector opens only from a power slot the HUD does not draw yet.
-The Rayform faces are not shipped, so the text uses the base font.
+The Rayform faces are not shipped, so the text keeps the level font's
+metrics (glyph quad, advances, line height) and samples its glyph cells
+from the base font's atlas, a quad of the level's size over one base cell.
+A texture coordinate runs up the image, so a stored-top-down texture is
+read from its bottom row.
 
 ## Text boxes
 
