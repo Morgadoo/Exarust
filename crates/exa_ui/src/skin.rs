@@ -44,7 +44,7 @@ pub fn open_skin(unit: i32, arg: i32, allocated: bool) -> Option<DrawSkin> {
         span_b: unit,
         span_c: doubled,
         span_d: doubled,
-        span_e: 0,
+        span_e: unit.wrapping_shl(2),
         pad_a: 8,
         pad_b: 4,
         pad_c: 8,
@@ -92,6 +92,9 @@ const FRAME_HOT: u32 = 0x60;
 const ICON_MARK: u32 = 0x1_0000;
 const ICON_NUDGE: u32 = 0x40;
 const ICON_BAND: u32 = 0x60;
+const ICON_STYLE: u32 = 0x0100_0000;
+const ICON_FOCUS: u32 = 0x11;
+const ICON_TURN: u32 = 0x7000_0000;
 const ICON_SCALE: u32 = 0x3f80_0000;
 const FORM_SHADE: u32 = 0x40;
 const FORM_BACK: u32 = 0x2_0000;
@@ -718,15 +721,12 @@ pub struct IconPlace {
 pub struct CentredIcon {
     pub own: bool,
     pub marked: bool,
-    /// The icon list is drawn mirrored when this is set.
-    pub mirrored: bool,
-    /// A marked icon is drawn outlined as well as mirrored.
-    pub outlined: bool,
-    /// The ink the icon binds: 0 the plain ink, 1 the hot ink, 2 the focus
-    /// ink and 3 the raised ink. A marked icon binds no ink at all.
+    /// The icon-list turn, 0 when the icon is drawn upright.
+    pub turn: u8,
+    /// The ink the icon binds: 0 the label group's fourth shade (focus),
+    /// 1 its eleventh and 2 its seventh shade, 3 and 4 those two forced
+    /// opaque for a styled icon.
     pub ink: u8,
-    /// The raised ink lifts its alpha by 0x40 before it is bound.
-    pub alpha_boost: bool,
     pub id: u32,
     pub x: i32,
     pub y: i32,
@@ -741,11 +741,11 @@ fn centre_spare(span: i16, icon: i32) -> i32 {
 /// Place a centred icon. `icon` is the stored icon size. A marked state
 /// passes the scale bits of 1, and bit 0x40 inside the band 0x60 adds one
 /// to the height. Any other state picks an ink and does not pass that scale.
-/// Bit 0x40000000 mirrors the icon.
+/// The style's top three bits turn the icon.
 pub fn draw_centred_icon(icon: i32, place: IconPlace) -> CentredIcon {
     let x = i32::from(place.x).wrapping_add(centre_spare(place.w, icon));
     let y = i32::from(place.y).wrapping_add(centre_spare(place.h, icon));
-    let mirrored = (place.mode & 0x4000_0000) != 0;
+    let turn = ((place.mode & ICON_TURN) >> 28) as u8;
     if (place.state & 0xf_0000) == ICON_MARK {
         let nudged = if (place.state & ICON_BAND) == ICON_NUDGE {
             y.wrapping_add(1)
@@ -755,38 +755,38 @@ pub fn draw_centred_icon(icon: i32, place: IconPlace) -> CentredIcon {
         return CentredIcon {
             own: place.own,
             marked: true,
-            mirrored,
-            outlined: true,
+            turn,
             ink: 0,
-            alpha_boost: false,
             id: place.id,
             x,
             y: nudged,
             scale_bits: ICON_SCALE,
         };
     }
-    // The plain icon tests the focus bit; a set high flag word moves the
-    // raised and focus inks, and the raised ink lifts its alpha.
-    let (ink, alpha_boost) = if (place.state & 0x10) != 0 {
-        (0, false)
-    } else if (place.mode & 0x8000_0000) == 0 {
-        if (place.state & 0x40) == 0x40 {
-            (1, false)
-        } else {
-            (0, false)
-        }
-    } else if (place.state & 0x40) == 0x40 {
-        (3, true)
+    // The styled icon tests the focus bit alone, the plain one bits 0x11.
+    let focus = if (place.mode & ICON_STYLE) == 0 {
+        place.state & ICON_FOCUS != 0
     } else {
-        (2, false)
+        (place.state & SLIDER_PRESSED) == SLIDER_PRESSED
+    };
+    let ink = if focus {
+        0
+    } else if (place.mode & ICON_STYLE) == 0 {
+        if (place.state & ICON_NUDGE) == ICON_NUDGE {
+            1
+        } else {
+            2
+        }
+    } else if (place.state & ICON_NUDGE) == ICON_NUDGE {
+        3
+    } else {
+        4
     };
     CentredIcon {
         own: place.own,
         marked: false,
-        mirrored,
-        outlined: false,
+        turn,
         ink,
-        alpha_boost,
         id: place.id,
         x,
         y,
@@ -837,9 +837,6 @@ pub struct DispatchPlace {
     pub seat_y: i32,
     /// The y the quad after the lower tab measures. Its low edge sits one unit below.
     pub post_y: i32,
-    /// The close square's x and y.
-    pub close_x: i32,
-    pub close_y: i32,
 }
 
 /// One corner of the backdrop, with its sample bits.
@@ -1383,52 +1380,6 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         Vec::new()
     };
     let edge_mask = edge_mask(unit, &place);
-    let close_edges = if (place.flags_c & FORM_STILL) != 0 {
-        let x0 = i64::from(place.close_x)
-            + (f64::from(unit) * f64::from_bits(CLOSE_SLANT)).round_ties_even() as i64;
-        let lift = if (edge_mask & 5) == 5 {
-            unit.wrapping_mul(3)
-        } else {
-            unit.wrapping_shl(1)
-        };
-        let y0 = i64::from(place.close_y) + i64::from(lift);
-        let u = i64::from(unit);
-        let corners = match place.close_mark {
-            -9 => Some([
-                (x0 + u, y0 + 2 * u),
-                (x0 + u, y0),
-                (x0 + 3 * u, y0),
-                (x0 + 3 * u, y0 + 2 * u),
-            ]),
-            -10 => Some([
-                (x0 + u, y0 - 2 * u),
-                (x0 + u, y0),
-                (x0 + 3 * u, y0),
-                (x0 + 3 * u, y0 - 2 * u),
-            ]),
-            -8 => Some([
-                (x0, y0 + 4 * u),
-                (x0, y0),
-                (x0 + 4 * u, y0),
-                (x0 + 4 * u, y0 + 4 * u),
-            ]),
-            _ => None,
-        };
-        corners
-            .map(|corners| {
-                vec![CloseEdge {
-                    sample: LINE_RAIL,
-                    corners: std::array::from_fn(|i| {
-                        let (x, y) = corners[i];
-                        (x as i32, y as i32)
-                    }),
-                    ink: [0xff, 0xcc, 0x99, 0xff],
-                }]
-            })
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
     let reach = unit.wrapping_shl(2).wrapping_add(unit.wrapping_shl(1));
     let band = unit.wrapping_shl(1);
     let skip_bar = (edge_mask & 1) != 0
@@ -1677,6 +1628,31 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         right_strip(unit, place.width, place.height, slot, down)
     } else {
         Vec::new()
+    };
+    // The orange tint falls on the tab quad the close mark names: -9 the
+    // upper tab, -10 the lower one, -8 the square below the thumb. The
+    // square binds the marker's sample.
+    let close_edges = {
+        let (tab, lower, post) = if on_hold {
+            (&held_tab, &held_lower, &held_post)
+        } else {
+            (&open_tab, &open_lower, &open_post)
+        };
+        let picked = match place.close_mark {
+            -9 => tab.first().map(|quad| (LINE_RAIL, quad.corners)),
+            -10 => lower.first().map(|quad| (LINE_RAIL, quad.corners)),
+            -8 => post.first().map(|quad| (SPAN_SQUARE, quad.corners)),
+            _ => None,
+        };
+        picked
+            .map(|(sample, corners)| {
+                vec![CloseEdge {
+                    sample,
+                    corners,
+                    ink: [0xff, 0xcc, 0x99, 0xff],
+                }]
+            })
+            .unwrap_or_default()
     };
     let on_band = (place.flags_b & FORM_BOX) == 0 && (place.flags_d & FORM_BAND) == FORM_BAND_ON;
     let live_mask = if on_hold {
@@ -2760,29 +2736,33 @@ pub struct HitPlace {
 }
 
 /// Returns the original's hit code: 0, -3, -4, -8, -9 or -10. The meaning
-/// of each code is not established.
+/// of each code is not established. A point in the title band that hits
+/// neither the -4 corner nor the -3 band goes on to the 0x200 strip test.
+/// The edge sums are 64-bit, as the original's are.
 pub fn hit_line(place: HitPlace, x: i32, y: i32, unit: i32, wide: bool) -> i32 {
     let span = if wide {
         unit.wrapping_mul(6)
     } else {
         unit.wrapping_shl(2)
     };
+    let (x64, y64, span64) = (i64::from(x), i64::from(y), i64::from(span));
     if (place.flags & 0x30) == 0x10 && span >= y {
-        if (place.control & 2) != 0 && place.right.wrapping_sub(span) <= x {
+        if (place.control & 2) != 0 && i64::from(place.right) - span64 <= x64 {
             return -4;
         }
         if (place.control & 1) != 0 {
             return -3;
         }
-    } else if (place.control & 0x200) != 0 && x > place.left {
+    }
+    if (place.control & 0x200) != 0 && x > place.left {
         if y > place.top {
             if y < place.bottom {
                 return -8;
             }
-            if place.bottom.wrapping_add(span) > y {
+            if i64::from(place.bottom) + span64 > y64 {
                 return -10;
             }
-        } else if place.top.wrapping_sub(span) < y {
+        } else if i64::from(place.top) - span64 < y64 {
             return -9;
         }
     }
@@ -7041,7 +7021,7 @@ mod tests {
         assert_eq!(plain.span_b, 5);
         assert_eq!(plain.span_c, 10);
         assert_eq!(plain.span_d, 10);
-        assert_eq!(plain.span_e, 0);
+        assert_eq!(plain.span_e, 20);
         assert_eq!(
             [plain.pad_a, plain.pad_b, plain.pad_c, plain.pad_d],
             [8, 4, 8, 8]
@@ -7441,9 +7421,8 @@ mod tests {
         );
         assert!(!plain.own);
         assert!(!plain.marked);
-        assert!(!plain.mirrored);
-        assert_eq!(plain.ink, 0);
-        assert!(!plain.alpha_boost);
+        assert_eq!(plain.turn, 0);
+        assert_eq!(plain.ink, 2);
         assert_eq!(plain.id, 7);
         assert_eq!((plain.x, plain.y), (52, 52));
         assert_eq!(plain.scale_bits, 0);
@@ -7479,7 +7458,7 @@ mod tests {
                 own: false,
             },
         );
-        assert!(nudged.mirrored);
+        assert_eq!(nudged.turn, 4);
         assert_eq!((nudged.x, nudged.y), (52, 53));
 
         let both = draw_centred_icon(
@@ -7547,7 +7526,7 @@ mod tests {
                 y: 0,
                 w: 16,
                 h: 16,
-                mode: 0x8000_0000,
+                mode: 0x0100_0000,
                 state: 0x40,
                 id: 1,
                 own: false,
@@ -7561,13 +7540,13 @@ mod tests {
                 y: 0,
                 w: 16,
                 h: 16,
-                mode: 0x8000_0000,
+                mode: 0x0100_0000,
                 state: 0,
                 id: 1,
                 own: false,
             },
         );
-        assert_eq!(dim.ink, 2);
+        assert_eq!(dim.ink, 4);
     }
 
     fn place(
@@ -7612,8 +7591,6 @@ mod tests {
             grip_y: 0,
             seat_y: 0,
             post_y: 0,
-            close_x: 0,
-            close_y: 0,
         }
     }
 
@@ -9853,6 +9830,41 @@ mod tests {
         assert_eq!(hit_line(strip, 50, -5, 5, false), 0);
         assert_eq!(hit_line(strip, 5, 30, 5, false), 0);
         assert_eq!(hit_line(strip, 50, 30, 5, true), -8);
+
+        // A title-band point that misses the corner and the band falls
+        // through to the strip test.
+        let both = HitPlace {
+            flags: 0x10,
+            control: 0x200,
+            ..strip
+        };
+        assert_eq!(hit_line(both, 50, 15, 5, false), -9);
+        assert_eq!(
+            hit_line(
+                HitPlace {
+                    control: 0x202,
+                    ..both
+                },
+                50,
+                15,
+                5,
+                false
+            ),
+            -9
+        );
+        assert_eq!(
+            hit_line(
+                HitPlace {
+                    control: 0x202,
+                    ..both
+                },
+                98,
+                15,
+                5,
+                false
+            ),
+            -4
+        );
     }
 
     #[test]
@@ -9949,14 +9961,22 @@ mod tests {
 
     #[test]
     fn a_dispatch_tints_the_close_edges() {
-        let mut form = place(0, 0, FORM_STILL, 0, 0, 0);
-        form.close_x = 10;
-        form.close_y = 20;
+        let mut form = place(FORM_HOLD, FORM_TAB, 0, 0, 0, 0);
+        form.flags_d = 0x80;
+        form.edge_x = 5;
+        form.edge_y = 5;
+        form.room_far_x = 400;
+        form.room_far_y = 400;
+        form.grip_x = 10;
+        form.grip_y = 20;
+        form.seat_y = 80;
+        form.post_y = 40;
         form.close_mark = -9;
         let nine = dispatch_form(5, 0, form, &[]);
         assert_eq!(nine.close_edges.len(), 1);
         assert_eq!(nine.close_edges[0].sample, LINE_RAIL);
         assert_eq!(nine.close_edges[0].ink, [0xff, 0xcc, 0x99, 0xff]);
+        assert_eq!(nine.close_edges[0].corners, nine.held_tab[0].corners);
         assert_eq!(
             nine.close_edges[0].corners,
             [(16, 40), (16, 30), (26, 30), (26, 40)]
@@ -9964,21 +9984,35 @@ mod tests {
 
         form.close_mark = -10;
         let ten = dispatch_form(5, 0, form, &[]);
+        assert_eq!(ten.close_edges[0].corners, ten.held_lower[0].corners);
         assert_eq!(
             ten.close_edges[0].corners,
-            [(16, 20), (16, 30), (26, 30), (26, 20)]
+            [(16, 60), (16, 70), (26, 70), (26, 60)]
         );
 
+        // The square below the thumb binds the marker's sample.
         form.close_mark = -8;
         let eight = dispatch_form(5, 0, form, &[]);
+        assert_eq!(eight.close_edges[0].sample, SPAN_SQUARE);
+        assert_eq!(eight.close_edges[0].corners, eight.held_post[0].corners);
         assert_eq!(
             eight.close_edges[0].corners,
-            [(11, 50), (11, 30), (31, 30), (31, 50)]
+            [(11, 55), (11, 35), (31, 35), (31, 55)]
         );
 
         form.close_mark = -4;
-        let none = dispatch_form(5, 0, form, &[]);
-        assert!(none.close_edges.is_empty());
+        assert!(dispatch_form(5, 0, form, &[]).close_edges.is_empty());
+
+        // The tints follow the tabs, which need the tab bit.
+        form.close_mark = -9;
+        form.flags_b = 0;
+        assert!(dispatch_form(5, 0, form, &[]).close_edges.is_empty());
+
+        // The open frame tints its own tabs.
+        form.flags_a = 0;
+        form.flags_b = FORM_TAB;
+        let open = dispatch_form(5, 0, form, &[]);
+        assert_eq!(open.close_edges[0].corners, open.open_tab[0].corners);
     }
 
     #[test]
