@@ -31,6 +31,17 @@ Rendering on Bevy/wgpu: material plug-ins, skinned characters, terrain, grass, l
 - Terrain (`.rft` + `.ftb` material layers), grass/foliage instancing, particles, blood spatter, power effects.
 - Post-processing: bloom, blur, tone mapping matching the original look.
 
+## Terrain
+
+The terrain material lives in `exa_world::terrain`; its shader
+(`terrain.wesl`) shares `exa_render::shading` with the lit model program, so
+terrain and models see the same lights, GI, reflections and shadows. Its
+palette normal map is applied in the original's tangent frame (+X projected
+onto the surface, crossed with the vertex normal), its gloss is the
+composite gloss (roughness 1 − it), and its specular is masked by the
+composite colour before the terrain's 0.75 diffuse factor. Rules:
+[`docs/RENDERING.md`](../../docs/RENDERING.md) (Terrain).
+
 ## Blood
 
 `material::BloodProgram` is the original's dirt mode 4 in its three

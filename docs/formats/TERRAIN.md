@@ -200,14 +200,19 @@ to 12 materials (11 in one 6 m block, 10 in one quad): 11 of `exanima01`'s
 20 tiles use more than four, as do most outdoor tiles. Keeping only the four
 heaviest dropped lighter materials and left `Mat STint`'s black showing in
 their mask shapes. Normal maps are layered the same way, with the N-pass
-sharpness (f4, f5) and strength (f11). Gloss uses the scalar f10 without the G
-texture. The H pass is evaluated per vertex on the CPU and moves the mesh as
-the original does, by `(byte − 127) × 1.25 × (2 − normal y)` cm. The opacity
+sharpness (f4, f5) and strength (f11). Gloss is the G texture's red times
+f10 × 1.5·min(f9, 1), stacked like the colour; roughness is 1 − it. The
+parallax height is the B texture's red through `f20 + (B − f21) × f22`,
+stacked like the normals, at half the colour's resolution in the original.
+G, B and the M mask are packed into one texture per material by
+`exa_world::terrain::surface_image`.
+
+The H pass is evaluated per vertex on the CPU and moves the mesh as the
+original does, by `(byte − 127) × 1.25 × (2 − normal y)` cm. The opacity
 there is boosted by 1.5, and each material contributes
 `f16 + (H − f17) × f18`. Neutral materials (0.5) store as byte 128, so painted
 ground rests about 1.25 cm above dungeon floors laid at 0 and covers them
-(dirt over flagstones). Not yet reproduced: the G texture and the fine
-displacement pass (B). Grass and plants grow from the mask pass (see
+(dirt over flagstones). Grass and plants grow from the mask pass (see
 Vegetation); the plant records only give their colour.
 
 ### Plant (104 bytes)
