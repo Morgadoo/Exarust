@@ -5,8 +5,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **56.0% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 49.3% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **58.0% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by function count (zero-byte imported names left out): 51.9% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **44.1%** reproduced.
 
 ## By section
@@ -14,20 +14,20 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | section | functions | KB | components | reimplemented | by engine | largest missing |
 |---|---:|---:|---:|---:|---:|---|
 | Runtime & platform | 2,407 | 293 | 26 | 13% | 72% | Win32 clipboard image/icon glue |
-| Core, math & threading | 282 | 37 | 11 | 66% | 1% |  |
-| Data, assets & I/O | 440 | 91 | 26 | 62% | 0% | TStringLibrary, RF_DataManager, RFG_Locales routines (RFE_Export_RFC2 by address) |
+| Core, math & threading | 282 | 37 | 11 | 77% | 1% |  |
+| Data, assets & I/O | 440 | 91 | 26 | 64% | 0% | TStringLibrary, RF_DataManager, RFG_Locales routines (RFE_Export_RFC2 by address) |
 | Rendering & GPU | 823 | 334 | 63 | 62% | 3% | FLX_IconRender, Shading-mask GLSL snippets, Screen-quad GLSL snippets |
-| World, levels & terrain | 454 | 174 | 31 | 54% | 7% | TSector, Scene node despawn and viewport step (TSceneTaskInt by address), TTerrainPlugin |
+| World, levels & terrain | 454 | 174 | 31 | 55% | 7% | TSector, Scene node despawn and viewport step (TSceneTaskInt by address), TTerrainPlugin |
 | Physics, bodies & cloth | 363 | 242 | 13 | 57% | 0% | RFE_Dynamics_Cloth, TSimObject |
-| Characters, motion & animation | 506 | 198 | 23 | 51% | 0% | TCharDecomp2, TKFCCatRom3f, SG_CharacterMorph |
+| Characters, motion & animation | 506 | 198 | 23 | 54% | 0% | TCharDecomp2, TKFCCatRom3f, SG_CharacterMorph |
 | Combat, weapons & damage | 14 | 3 | 3 | 31% | 0% | RFE_Effects_Blood, TBloodSprays |
-| Items, materials & crafting | 341 | 140 | 40 | 58% | 0% | TCharLoot, TItemRenderer, TPopUpDesc |
+| Items, materials & crafting | 341 | 140 | 40 | 59% | 0% | TCharLoot, TItemRenderer, TPopUpDesc |
 | AI & behaviour | 437 | 206 | 17 | 58% | 0% | TCharViewBehaviour, TObjectEntity, FLXG_Pathfinding |
-| Thaumaturgy & effects | 697 | 296 | 83 | 58% | 0% |  |
+| Thaumaturgy & effects | 697 | 296 | 83 | 62% | 0% |  |
 | Audio | 59 | 18 | 4 | 84% | 0% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 64% | 0% | TDialogueChoices, TScriptRole, TGameTips |
-| Game modes, arena & session | 646 | 193 | 23 | 56% | 0% | TCharCreation, TShopWindow, SG_SaveWorld |
-| UI | 959 | 312 | 63 | 66% | 0% | SG_GUI_Skills, TGUIColSwatch, RF_GUI_Classes |
+| Game modes, arena & session | 646 | 193 | 23 | 59% | 0% | TCompanyCreate, Save-package section delete (SG_EmblemGen by address), TSaveGameManager |
+| UI | 959 | 312 | 63 | 71% | 0% | TTransitionScreen, TGUIDrawSkinTex, TReadKeyScreen |
 | Other, tools & editor | 171 | 33 | 8 | 0% | 0% | Debug command registry (unit before RF_Dynamics) |
 
 - **Runtime & platform.** The Free Pascal runtime, the Windows imports and the engine's thin platform layer: program entry, window and OpenGL context, the frame loop with its pacing, and Steam with Steam Input gamepads. Much of the linked runtime never runs. Rust std, winit, Bevy and wgpu cover most of what does run; Steam, gamepads, the custom cursor, fullscreen display modes and the error message box are missing.
@@ -53,22 +53,11 @@ Ordered by code size; these are where most of the original still has no counterp
 
 | component | section | functions | KB | coverage |
 |---|---|---:|---:|---:|
-| TCharCreation | Game modes, arena & session | 12 | 3 | 3% |
-| SG_Character_DBs | Data, assets & I/O | 15 | 3 | 10% |
+| TCharCreation | Game modes, arena & session | 12 | 3 | 14% |
 | FLX_IconRender | Rendering & GPU | 13 | 3 | 0% |
-| SG_GUI_Skills | UI | 8 | 2 | 0% |
-| TShopWindow | Game modes, arena & session | 8 | 2 | 0% |
 | Shading-mask GLSL snippets | Rendering & GPU | 6 | 2 | 0% |
-| SG_SaveWorld | Game modes, arena & session | 13 | 2 | 0% |
 | Scene content helpers (unit before RF_Dynamics) | World, levels & terrain | 11 | 2 | 10% |
-| TGUIColSwatch | UI | 12 | 2 | 0% |
-| RF_GUI_Classes | UI | 13 | 2 | 0% |
-| TTonePicker | UI | 6 | 2 | 0% |
-| XA_HelpSystem | UI | 10 | 2 | 0% |
-| SG_Prelude_Main | Game modes, arena & session | 7 | 2 | 4% |
 | Win32 clipboard image/icon glue | Runtime & platform | 8 | 2 | 0% |
-| TDropDownList | UI | 10 | 2 | 0% |
-| TGUITask | UI | 13 | 2 | 0% |
 | TTransitionScreen | UI | 5 | 2 | 3% |
 | TCharDecomp2 | Characters, motion & animation | 5 | 2 | 0% |
 | SG_EmblemGen | Game modes, arena & session | 20 | 2 | 10% |
@@ -78,6 +67,17 @@ Ordered by code size; these are where most of the original still has no counterp
 | Steam API glue | Runtime & platform | 16 | 1 | 7% |
 | TScriptRole | Script, dialogue & story | 6 | 1 | 0% |
 | TCharLoot | Items, materials & crafting | 7 | 1 | 0% |
+| TGUIDrawSkinTex | UI | 4 | 1 | 0% |
+| TReadKeyScreen | UI | 10 | 1 | 0% |
+| TItemRenderer | Items, materials & crafting | 3 | 1 | 0% |
+| TPopUpDesc | Items, materials & crafting | 9 | 1 | 0% |
+| THairEditForm | UI | 4 | 1 | 0% |
+| TToolTip | UI | 4 | 1 | 0% |
+| RFE_Effects_Blood | Combat, weapons & damage | 7 | 1 | 0% |
+| TCharEditForm | UI | 3 | 1 | 0% |
+| TSector | World, levels & terrain | 3 | 1 | 0% |
+| Texture pixel-format names | Rendering & GPU | 4 | 1 | 0% |
+| TPickerForm | UI | 4 | 1 | 0% |
 
 ## Best covered components
 
