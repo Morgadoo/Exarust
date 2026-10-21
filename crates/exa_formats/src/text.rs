@@ -150,13 +150,13 @@ pub fn format_hex(value: i64, width: i32) -> String {
         magnitude >>= 4;
     }
     digits.reverse();
-    let mut out = String::new();
-    if negative {
-        out.push('-');
-    }
-    out.push_str(&String::from_utf8_lossy(&digits));
+    let mut out = String::from_utf8_lossy(&digits).into_owned();
+    // The original pads the digits before prepending the sign.
     while out.len() < width as usize {
-        out.insert(usize::from(negative), '0');
+        out.insert(0, '0');
+    }
+    if negative {
+        out.insert(0, '-');
     }
     out
 }
@@ -532,6 +532,7 @@ mod tests {
         assert_eq!(format_hex(0xBEEF, 4), "BEEF");
         assert_eq!(format_hex(0x12345, 4), "12345");
         assert_eq!(format_hex(-0x2A, 2), "-2A");
+        assert_eq!(format_hex(-0x2A, 4), "-002A");
     }
 
     #[test]

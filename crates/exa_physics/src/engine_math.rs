@@ -303,41 +303,30 @@ pub fn angle_difference(a: f32, b: f32) -> f32 {
     }
 }
 
-/// The product of a four-vector with the transpose of a 4×3 matrix (three
-/// rows of four): `(v·row0, v·row1, v·row2)`. The dot sums have the
-/// original's horizontal order.
-pub fn vec4_mul_4x3(v: Vec4, rows: &[[f32; 4]; 3]) -> Vec3 {
-    Vec3::new(
-        v.x * rows[0][0] + v.y * rows[0][1] + v.z * rows[0][2] + v.w * rows[0][3],
-        v.x * rows[1][0] + v.y * rows[1][1] + v.z * rows[1][2] + v.w * rows[1][3],
-        v.x * rows[2][0] + v.y * rows[2][1] + v.z * rows[2][2] + v.w * rows[2][3],
-    )
-}
-
-/// The difference of two 4×3 products, each row being the first four or
-/// the second four of a six-word row.
-pub fn vec4_mul_4x3_difference(first: Vec4, second: Vec4, rows: &[[f32; 8]; 3]) -> Vec3 {
+/// The product of a four-vector with a 4×3 matrix stored as four rows of
+/// three: `(v·column0, v·column1, v·column2)`, the original's row-vector
+/// times a matrix. The dot sums keep its horizontal order.
+pub fn vec4_mul_4x3(v: Vec4, rows: &[[f32; 3]; 4]) -> Vec3 {
     let mut out = Vec3::ZERO;
-    for axis in 0..3 {
-        let a = first.x * rows[axis][0]
-            + first.y * rows[axis][1]
-            + first.z * rows[axis][2]
-            + first.w * rows[axis][3];
-        let b = first.x * rows[axis][4]
-            + first.y * rows[axis][5]
-            + first.z * rows[axis][6]
-            + first.w * rows[axis][7];
-        let c = second.x * rows[axis][0]
-            + second.y * rows[axis][1]
-            + second.z * rows[axis][2]
-            + second.w * rows[axis][3];
-        let d = second.x * rows[axis][4]
-            + second.y * rows[axis][5]
-            + second.z * rows[axis][6]
-            + second.w * rows[axis][7];
-        out[axis] = (a + b) - (c + d);
+    for column in 0..3 {
+        let low = v.x * rows[0][column] + v.y * rows[1][column];
+        let high = v.z * rows[2][column] + v.w * rows[3][column];
+        out[column] = low + high;
     }
     out
+}
+
+/// The difference of two 4×3 products: two matrices of four rows of three,
+/// the second 48 bytes after the first. Each output column is the first
+/// product less the second.
+pub fn vec4_mul_4x3_difference(first: Vec4, second: Vec4, rows: &[[f32; 3]; 8]) -> Vec3 {
+    let mut one = [[0.0f32; 3]; 4];
+    let mut two = [[0.0f32; 3]; 4];
+    one.copy_from_slice(&rows[..4]);
+    two.copy_from_slice(&rows[4..]);
+    let first = vec4_mul_4x3(first, &one);
+    let second = vec4_mul_4x3(second, &two);
+    Vec3::new(first.x - second.x, first.y - second.y, first.z - second.z)
 }
 
 /// The scalar triple product `a · (b × c)`, summed in the original's
@@ -811,13 +800,26 @@ mod tests {
     #[test]
     fn the_small_linear_algebra() {
         let rows = [
-            [1.0, 2.0, 3.0, 4.0],
-            [5.0, 6.0, 7.0, 8.0],
-            [9.0, 10.0, 11.0, 12.0],
+            [1.0, 2.0, 3.0],
+            [4.0, 5.0, 6.0],
+            [7.0, 8.0, 9.0],
+            [10.0, 11.0, 12.0],
         ];
+        // v times the matrix: each output is a dot with a column.
         assert_eq!(
             vec4_mul_4x3(Vec4::new(1.0, 1.0, 1.0, 1.0), &rows),
-            Vec3::new(10.0, 26.0, 42.0)
+            Vec3::new(22.0, 26.0, 30.0)
+        );
+        let mut pair = [[0.0; 3]; 8];
+        pair[..4].copy_from_slice(&rows);
+        pair[4..].copy_from_slice(&rows);
+        assert_eq!(
+            vec4_mul_4x3_difference(
+                Vec4::new(1.0, 0.0, 0.0, 0.0),
+                Vec4::new(1.0, 0.0, 0.0, 0.0),
+                &pair
+            ),
+            Vec3::new(0.0, 0.0, 0.0)
         );
         assert_eq!(triple_product(Vec3::X, Vec3::Y, Vec3::Z), 1.0);
         assert!(close(
