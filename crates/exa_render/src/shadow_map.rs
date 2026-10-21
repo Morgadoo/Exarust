@@ -375,6 +375,21 @@ pub fn shadow_ortho(min: Vec3, max: Vec3) -> Mat4 {
     ])
 }
 
+/// The cube face's projection, as the original builds it: 90° vertical, an
+/// aspect of 1, the near plane (10 when the map is created, 3 when it
+/// renders) and the far plane at the light's radius. Exarust's caster shader
+/// writes the distance directly, so its Bevy projection keeps the same near
+/// and far while the depth test is reversed.
+pub fn cube_projection(radius: f32, near: f32) -> PerspectiveProjection {
+    PerspectiveProjection {
+        fov: 90f32.to_radians(),
+        aspect_ratio: 1.0,
+        near,
+        far: radius,
+        ..default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -434,6 +449,17 @@ mod tests {
         assert!((cube_fade_distance(5) - 0.025).abs() < 1e-7);
         assert_eq!(cube_fade_distance(6), 0.025);
         assert_eq!(cube_fade_distance(99), 0.025);
+    }
+
+    #[test]
+    fn a_cube_face_looks_ninety_degrees_over_the_lights_radius() {
+        let p = cube_projection(6.7, 0.03);
+        assert_eq!(p.fov, std::f32::consts::FRAC_PI_2);
+        assert_eq!(p.aspect_ratio, 1.0);
+        assert_eq!(p.near, 0.03);
+        assert_eq!(p.far, 6.7);
+        // The creation's near plane is 10 engine units (10 cm).
+        assert_eq!(cube_projection(670.0, 10.0).near, 10.0);
     }
 
     #[test]
