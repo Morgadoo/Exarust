@@ -20,11 +20,14 @@ refresh that repaints a slot's own cell from the caller's record, the
 user-item tags (local, world or base) and errors with the record's own id,
 and the exact release: a freed slot clears its id, reference count and
 cell, keeping its variant and half extents.
+
 The off-screen icon renderer (`item_renderer`) is modelled from its
 constructor: an icon-size global starting at 160 pixels, depth and colour
 renderbuffers at twice that, the two RGBA image headers, the sun along
 (0.46, 0.47, 0.48) in the colour (0.75, 0.75, 0.75, 0.5), and the camera at
-(0, 0, 350) with the settings 40 and 10. The Body loot window (`char_loot`) is 244 by 440 with a 228 by 180
+(0, 0, 350) with the settings 40 and 10.
+
+The Body loot window (`char_loot`) is 244 by 440 with a 228 by 180
 pack at the bottom of the client area and the equipment panel above it; a
 drag off the body drops a held weapon, or takes the item off the record,
 marks the character and rebuilds apparel, and Power Crystal AL (500) runs
@@ -33,4 +36,4 @@ constructor geometry, the pack's place at the client bottom, bind and close
 plans, drag permissions, drop-back rules and position memory; the arsenal
 (`arsenal`) its layout (five columns, eight controls on the top row),
 close order, key, scroll and release handling, drag hooks and drop rules.
-Neither window is wired into the running game.
+None of these modules is wired into the running game.
