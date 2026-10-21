@@ -366,7 +366,12 @@ held.
 The controls' item-use values (`player_controls`) are a pour's warmth, the
 cleaning and repair kits' targets and the timed list that carries them over
 two seconds; the start and end of play set the AI's activation centre and
-radius (`PlaySession`, which nothing reads yet). A door, wheel or cloth
+radius (`PlaySession`, which nothing reads yet); `PlayerControl` is the
+player-control singleton's creation state (hotkey mask 31 and the two
+constructor flags). The GUI character preview (`char_view`) turns the
+figure toward the mouse: 0.7 of the pointer angle clamped to ±1.5 rad, a
+5 % step under 1 rad and a clamped 0.05 rad above, then the head's look
+40 % toward the cursor direction and 5 % more a tick (`PreviewTurn`). A door, wheel or cloth
 press holds the hand until the release without keeping the movement
 request.
 

@@ -178,6 +178,9 @@ fn setup(
                     exa_anim::Animator::new(moveset, action),
                     exa_character::Outfit::of_models(&options.outfit),
                     exa_character::blood::DebugWoundTarget,
+                    // The preview turns toward the mouse, as the GUI's
+                    // character view does.
+                    exa_game::char_view::PreviewTurn::default(),
                 ));
                 if let Some(m) = morph {
                     commands.entity(root).insert(m);

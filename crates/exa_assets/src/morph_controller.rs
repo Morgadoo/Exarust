@@ -151,6 +151,48 @@ pub struct MorphWeights {
     pub weights: [f32; 4],
 }
 
+/// The weight a centred character-creation slider sets: its position from
+/// 0 to 1 read as `(position − 0.5) · −1`, so the middle leaves the target
+/// at rest and the ends reach −½ and +½.
+pub fn centred_slider_weight(position: f32) -> f32 {
+    // The original's `(position − 0.5) · −1`, which is `0.5 − position` to
+    // the last bit.
+    0.5 - position
+}
+
+/// The weight a slider sets, centred or direct, before its morph is applied.
+pub fn slider_weight(position: f32, centred: bool) -> f32 {
+    if centred {
+        centred_slider_weight(position)
+    } else {
+        position
+    }
+}
+
+/// Stores one morph target's weight — the first float of the target's
+/// record — and says whether the index names a target. The caller applies
+/// the morph afterwards, as the original's slider callbacks do.
+pub fn set_morph_target_weight(weights: &mut [f32], index: usize, value: f32) -> bool {
+    let Some(slot) = weights.get_mut(index) else {
+        return false;
+    };
+    *slot = value;
+    true
+}
+
+/// A slider's act: sets target `index` to the slider's weight and returns
+/// the weight to apply, or `None` when the index names no target (the
+/// original would write past its array; this refuses instead).
+pub fn morph_slider(
+    weights: &mut [f32],
+    index: usize,
+    position: f32,
+    centred: bool,
+) -> Option<f32> {
+    let value = slider_weight(position, centred);
+    set_morph_target_weight(weights, index, value).then_some(value)
+}
+
 /// Merges up to four source ids and weights into the current slots.
 pub fn merge_morph_weights(
     mut current: MorphWeights,
@@ -2117,5 +2159,32 @@ mod registration_tests {
             Some(vec![[0.0, 1.0, 0.0], [0.0, 2.0, 0.0]])
         );
         assert_eq!(numbered_target_deltas(&base, &target[..1]), None);
+    }
+}
+
+#[cfg(test)]
+mod slider_tests {
+    use super::*;
+
+    /// A centred slider at its ends reads −½ and +½ and at the middle 0;
+    /// a direct one reads its position. The target takes the weight, and an
+    /// index past the targets is refused without writing.
+    #[test]
+    fn the_creation_sliders_set_one_weight() {
+        assert_eq!(centred_slider_weight(0.0), 0.5);
+        assert_eq!(centred_slider_weight(0.5), 0.0);
+        assert_eq!(centred_slider_weight(1.0), -0.5);
+        assert_eq!(slider_weight(0.25, false), 0.25);
+        assert_eq!(slider_weight(0.25, true), 0.25);
+        assert_eq!(slider_weight(0.75, true), -0.25);
+
+        let mut weights = [0.0f32; 3];
+        assert_eq!(morph_slider(&mut weights, 1, 0.75, true), Some(-0.25));
+        assert_eq!(weights, [0.0, -0.25, 0.0]);
+        assert_eq!(morph_slider(&mut weights, 2, 1.0, false), Some(1.0));
+        assert_eq!(weights, [0.0, -0.25, 1.0]);
+        assert_eq!(morph_slider(&mut weights, 3, 0.0, false), None);
+        assert!(!set_morph_target_weight(&mut weights, 3, 1.0));
+        assert_eq!(weights, [0.0, -0.25, 1.0]);
     }
 }

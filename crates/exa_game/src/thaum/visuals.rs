@@ -716,6 +716,7 @@ mod tests {
     #[test]
     fn a_body_is_placed_at_the_new_point_and_wakes() {
         let setup = PartSetup {
+            spheres: None,
             bone: 1,
             entity: Entity::PLACEHOLDER,
             parent: None,

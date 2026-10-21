@@ -154,6 +154,39 @@ pub const START_ACTIVATION_RADIUS2: f32 = 16_000_000.0;
 /// 400 000 000, 200 m.
 pub const END_ACTIVATION_RADIUS2: f32 = 400_000_000.0;
 
+/// The player-control singleton's state at creation: the hotkey permission
+/// mask 31, and both flags the constructor sets to 1. The first flag is the
+/// controls flag the input handlers read and the second the combat flag Tab
+/// toggles; the original's names for the flags are not traced [?], and
+/// Exarust's running player keeps its combat state on the body
+/// (`exa_game::player::PlayerBody`), which starts out of combat.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlayerControl {
+    /// The hotkey permission mask (+0xA8): 31 at creation.
+    pub hotkey_mask: u32,
+    /// The constructor's first flag (+0xAC): 1.
+    pub controls: bool,
+    /// The constructor's second flag (+0xAE): 1. Tab toggles it.
+    pub combat: bool,
+}
+
+impl Default for PlayerControl {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PlayerControl {
+    /// The singleton as its constructor leaves it.
+    pub fn new() -> Self {
+        Self {
+            hotkey_mask: 31,
+            controls: true,
+            combat: true,
+        }
+    }
+}
+
 /// The session state the start and end of play set: the AI activation
 /// centre (m) and squared radius (cm²), and whether the player's controls
 /// are in play.
@@ -301,5 +334,16 @@ mod tests {
         // The squared radii root to 40 m and 200 m.
         assert_eq!(START_ACTIVATION_RADIUS2.sqrt(), 4000.0);
         assert_eq!(END_ACTIVATION_RADIUS2.sqrt(), 20_000.0);
+    }
+
+    /// The player-control singleton starts with the hotkey mask 31 and both
+    /// of the constructor's flags set.
+    #[test]
+    fn the_player_control_starts_as_its_constructor() {
+        let c = PlayerControl::new();
+        assert_eq!(c.hotkey_mask, 31);
+        assert!(c.controls);
+        assert!(c.combat);
+        assert_eq!(PlayerControl::default(), c);
     }
 }

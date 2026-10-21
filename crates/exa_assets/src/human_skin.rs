@@ -226,6 +226,22 @@ pub fn tone_field_bytes() -> [[[u8; 3]; 3]; 3] {
         })
     })
 }
+
+/// The creator's nine tone colours in linear light, rows `v` = 0, ½, 1 then
+/// columns `u` = 0, ½, 1: the grid the unit's init precomputes from the
+/// stored hue/saturation/value table (HSV to RGB, then the sRGB decode).
+pub fn tone_grid_linear() -> [[[f32; 3]; 3]; 3] {
+    std::array::from_fn(|row| std::array::from_fn(|column| tone_grid(row, column)))
+}
+
+/// The three mode scales the unit's init derives after the grid: the last
+/// column's linear colour over the base texture's linear colour, times 0.8
+/// (the multiplication is done in double precision, as the original does).
+pub fn tone_grid_scales() -> [f32; 3] {
+    let reference = TONE_REFERENCE.map(srgb_decode);
+    let dark = tone_grid(0, 2);
+    [0, 1, 2].map(|i| ((f64::from(dark[i]) / f64::from(reference[i])) * 0.8) as f32)
+}
 /// The share of the diffuse colour that scatters under a human's skin (sRGB).
 pub const SCATTER: [f32; 3] = [1.0, 0.8, 0.46];
 /// The share that scatters under an ancient's skin (sRGB).
@@ -351,6 +367,25 @@ pub fn skin_material_of(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The picker's grid in linear light and its three mode scales: the
+    /// middle tone's HSV (0.062, 0.3, 0.33) decodes to about (0.089, 0.058,
+    /// 0.044), and the darkest column over the base's linear colour, times
+    /// 0.8, gives about (0.158, 0.200, 0.237).
+    #[test]
+    fn the_tone_grid_and_its_scales() {
+        let grid = tone_grid_linear();
+        let middle = grid[1][1];
+        for (got, want) in middle.iter().zip([0.0890, 0.0583, 0.0436]) {
+            assert!((got - want).abs() < 2e-3, "{middle:?}");
+        }
+        // The grid is the stored table decoded, row by row.
+        assert_eq!(tone_grid(1, 1), hsv_to_rgb(TONE_HSV[1][1]).map(srgb_decode));
+        let scales = tone_grid_scales();
+        for (got, want) in scales.iter().zip([0.1581, 0.2005, 0.2369]) {
+            assert!((got - want).abs() < 3e-3, "{scales:?}");
+        }
+    }
 
     #[test]
     fn only_the_body_skin_is_replaced() {

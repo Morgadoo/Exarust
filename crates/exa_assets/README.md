@@ -41,7 +41,17 @@ node; the merged mesh is built by callers, not by the loader yet.
 Skin tone (`human_skin`): a character's `SkinLook` selects the built-in skin
 material for its record's two tone words (and the women's texture set),
 cached per race, tone and sex. The tone multiplier is the original's, bit
-for bit: its HSV tone table, grid halves and fast power.
+for bit: its HSV tone table, grid halves and fast power. The creator's
+picker grid is `tone_grid_linear` (nine linear colours) and its three mode
+scales are `tone_grid_scales` (the darkest column over the base skin's
+linear colour, times 0.8 in double precision), the grid the unit's init
+precomputes.
+
+The character-creation sliders (`morph_controller`): a centred slider reads
+its position as `0.5 − position`, a direct one as itself; `morph_slider`
+writes that float into one morph target's weight and returns it for the
+caller's apply, and refuses an index past the targets instead of writing
+past the array.
 
 Model nodes carry their rigid body with the physical divisor of their first
 mesh part's material (`ModelNode::rigid`, `NodeRigidBody::mobility`), what

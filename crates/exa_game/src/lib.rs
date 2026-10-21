@@ -17,6 +17,7 @@ pub mod bindings;
 pub mod body_overlay;
 pub mod career;
 pub mod commands;
+pub mod char_view;
 pub mod create;
 pub mod cursor;
 pub mod destination;
@@ -109,7 +110,7 @@ impl Plugin for GamePlugin {
             balance::BalancePlugin,
             fall::FallPlugin,
             footprints::FootprintPlugin,
-            cursor::CursorPlugin,
+            (cursor::CursorPlugin, char_view::CharViewPlugin),
             (
                 hand::HandPlugin,
                 idle_orbit::IdleOrbitPlugin,
