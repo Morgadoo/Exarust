@@ -432,10 +432,8 @@ pub fn paint_preview_bars(rect: GuiRect, unit: i32, shares: (f32, f32)) -> Paint
 pub fn paint_debug_form(rect: GuiRect, unit: i32, textures: &GuiTextures) -> Painted {
     let palette = line_palette();
     let level = exa_ui::gui_font::level_for_unit(unit);
-    let font = exa_ui::gui_font::gui_level(level).main;
-    let font_texture = textures
-        .get(font.texture)
-        .map(|texture| (texture.width as u16, texture.height as u16));
+    let (font, font_texture) =
+        crate::gui_screens::screen_font(exa_ui::gui_font::gui_level(level).main, textures);
     let frame = Frame::new(rect, unit, "GUI Form");
     paint_frame(&frame, &palette, font, font_texture)
 }

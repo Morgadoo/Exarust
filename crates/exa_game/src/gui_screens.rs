@@ -461,6 +461,19 @@ fn font_texture(textures: &GuiTextures, font: &exa_ui::gui_font::GuiFont) -> Opt
         .map(|texture| (texture.width as u16, texture.height as u16))
 }
 
+/// The font a screen uses: the level's main font when its texture is
+/// installed, else the base font (the only GUI font the packs ship).
+pub(crate) fn screen_font<'a>(
+    level_font: &'a exa_ui::gui_font::GuiFont,
+    textures: &GuiTextures,
+) -> (&'a exa_ui::gui_font::GuiFont, Option<(u16, u16)>) {
+    if let Some(size) = font_texture(textures, level_font) {
+        return (level_font, Some(size));
+    }
+    let base = &exa_ui::gui_font::FONTBASE_24;
+    (base, font_texture(textures, base))
+}
+
 /// Paints a line of text at a window position.
 fn text_layer(
     font: &exa_ui::gui_font::GuiFont,
@@ -489,8 +502,7 @@ fn paint_inventory(
 ) -> gui_paint::Painted {
     let palette = gui_paint::palette();
     let level = exa_ui::gui_font::level_for_unit(unit);
-    let font = exa_ui::gui_font::gui_level(level).main;
-    let size = font_texture(textures, font);
+    let (font, size) = screen_font(exa_ui::gui_font::gui_level(level).main, textures);
     let mut frame = Frame::new(bounds, unit, INVENTORY_TITLE);
     frame.spacing = gui_paint::SCREEN_SPACING;
     let mut painted = gui_paint::paint_frame(&frame, &palette, font, size);
@@ -601,8 +613,7 @@ fn paint_journal(
     let palette = gui_paint::palette();
     let level = exa_ui::gui_font::level_for_unit(unit);
     let fonts = exa_ui::gui_font::gui_level(level);
-    let font = fonts.main;
-    let size = font_texture(textures, font);
+    let (font, size) = screen_font(fonts.main, textures);
     let mut frame = Frame::new(bounds, unit, JOURNAL_TITLE);
     frame.spacing = 2;
     let mut painted = gui_paint::paint_frame(&frame, &palette, font, size);
@@ -639,7 +650,7 @@ fn paint_journal(
         right: client.left + JOURNAL_TEXT.right,
         bottom: client.top + JOURNAL_TEXT.bottom,
     };
-    let mut text_box = exa_ui::text_box::TextBox::new(unit, fonts.main, fonts.small, box_client);
+    let mut text_box = exa_ui::text_box::TextBox::new(unit, font, fonts.small, box_client);
     text_box.read_only = true;
     let text = journal
         .entries

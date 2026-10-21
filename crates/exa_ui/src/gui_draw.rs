@@ -437,7 +437,12 @@ fn load_gui_textures(
     let unit = scale.as_deref().map_or(4, |scale| scale.scale as i32);
     let level = crate::gui_font::level_for_unit(unit);
     let fonts = crate::gui_font::gui_level(level);
-    for name in [SKIN_TEXTURE, fonts.main.texture, fonts.small.texture] {
+    for name in [
+        SKIN_TEXTURE,
+        fonts.main.texture,
+        fonts.small.texture,
+        crate::gui_font::FONTBASE_24.texture,
+    ] {
         if textures.textures.contains_key(name) || textures.missing.iter().any(|n| n == name) {
             continue;
         }
