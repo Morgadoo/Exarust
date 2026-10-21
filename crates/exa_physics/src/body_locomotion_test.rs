@@ -418,6 +418,7 @@ fn the_pelvis_forward_follows_the_pelvis_turn() {
         links: vec![],
         foot: None,
         pins: Vec::new(),
+        spheres: None,
     }])
     .with_drive();
     // No target yet: the facing.
@@ -443,6 +444,7 @@ fn the_footing_reads_the_body() {
         links: vec![],
         foot: None,
         pins: Vec::new(),
+        spheres: None,
     }])
     .with_drive();
     let d = body.drive.as_mut().unwrap();

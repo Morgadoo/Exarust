@@ -1111,6 +1111,7 @@ mod tests {
             links: vec![],
             foot: None,
             pins: Vec::new(),
+            spheres: None,
         };
         let mut ragdoll = Ragdoll::new(&[part]).with_drive();
         ragdoll.drive.as_mut().unwrap().energy = 0.79;

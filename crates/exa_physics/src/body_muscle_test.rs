@@ -40,6 +40,7 @@ fn arm() -> Ragdoll {
             links: vec![],
             foot: None,
             pins: Vec::new(),
+            spheres: None,
         },
         PartSetup {
             bone: 13,
@@ -55,6 +56,7 @@ fn arm() -> Ragdoll {
             ],
             foot: None,
             pins: Vec::new(),
+            spheres: None,
         },
     ];
     Ragdoll::new(&setup).with_drive()
@@ -434,6 +436,7 @@ fn part_factors_and_arm_strengths() {
             links: vec![],
             foot: None,
             pins: Vec::new(),
+            spheres: None,
         })
         .collect();
     let body = Ragdoll::new(&setup);
@@ -645,6 +648,7 @@ fn a_looking_heads_anchors_follow_the_physical_thorax() {
             links: vec![],
             foot: None,
             pins: Vec::new(),
+            spheres: None,
         },
         PartSetup {
             bone: 10,
@@ -657,6 +661,7 @@ fn a_looking_heads_anchors_follow_the_physical_thorax() {
             links: vec![(cm(0.0, 0.0, 10.0), cm(0.0, 20.0, 10.0), 0.05)],
             foot: None,
             pins: Vec::new(),
+            spheres: None,
         },
     ];
     let still = vec![thorax, thorax * Affine3A::from_translation(neck)];

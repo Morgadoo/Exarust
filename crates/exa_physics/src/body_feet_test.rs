@@ -43,6 +43,7 @@ fn footed(at: Vec3) -> (Ragdoll, Vec<Affine3A>) {
             links: vec![(Vec3::X * 0.04, Vec3::X * 0.04, 0.0), (along, along, 0.12)],
             foot: None,
             pins: Vec::new(),
+            spheres: None,
         });
         pose.push(world);
         setup[shin].foot = Some(Vec3::new(0.0, -0.5, 0.0));
@@ -752,6 +753,7 @@ fn two_feet() -> (Ragdoll, [Vec3; 2]) {
         links: vec![],
         foot: Some(Vec3::new(0.0, -0.2, 0.0)),
         pins: Vec::new(),
+        spheres: None,
     };
     let pelvis = PartSetup {
         bone: 1,
@@ -764,6 +766,7 @@ fn two_feet() -> (Ragdoll, [Vec3; 2]) {
         links: vec![],
         foot: None,
         pins: Vec::new(),
+        spheres: None,
     };
     let body = Ragdoll::new(&[pelvis, shin(3, 0.3), shin(5, -0.3)]).with_drive();
     let ankles = [

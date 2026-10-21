@@ -415,6 +415,7 @@ mod tests {
                     links: vec![],
                     foot: None,
                     pins: Vec::new(),
+                    spheres: None,
                 })
                 .collect();
             let body = Ragdoll::new(&setup);
@@ -446,6 +447,7 @@ mod tests {
                 links: vec![],
                 foot: None,
                 pins: Vec::new(),
+                spheres: None,
             }];
             let mut body = Ragdoll::new(&setup).with_drive();
             body.drive.as_mut().unwrap().energy = energy;

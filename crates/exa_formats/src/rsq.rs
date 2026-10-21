@@ -32,14 +32,38 @@ pub struct Sequences {
     pub bodies: Vec<BoneBody>,
 }
 
-/// How a bone's body part joins its parent and touches the ground: links
-/// (point on this part, point on the parent, slack), foot contact points
-/// and shoulder pins, in the bone's space (metres).
-#[derive(Debug, Clone, Default, PartialEq)]
+/// A bone's physical body as its character block stores it: the class
+/// word, the collision spheres, how the part joins its parent and touches
+/// the ground (links, foot contact points and shoulder pins, in the bone's
+/// space, metres), and the two mass factors the loader sets to 1.
+#[derive(Debug, Clone, PartialEq)]
 pub struct BoneBody {
+    /// The body's class word (the first word of the body chunk; `0x10000000`
+    /// on every shipped character part).
+    pub class: u32,
+    /// The two per-part mass factors the loader writes as 1.0
+    /// (`0xB4` and `0x54` in the original's part); a character's init later
+    /// normalises the part masses by their divisor.
+    pub mass_factors: [f32; 2],
+    /// The collision spheres in the part's frame (metres), sorted later by
+    /// the dynamics builder.
+    pub spheres: Vec<crate::rigid_body::Sphere>,
     pub links: Vec<BoneLink>,
     pub contacts: Vec<[f32; 3]>,
     pub pins: Vec<[f32; 3]>,
+}
+
+impl Default for BoneBody {
+    fn default() -> Self {
+        Self {
+            class: 0,
+            mass_factors: [1.0; 2],
+            spheres: Vec::new(),
+            links: Vec::new(),
+            contacts: Vec::new(),
+            pins: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -56,6 +80,7 @@ pub struct BoneLink {
 }
 
 const BODY_DATA: u32 = 0x3DD0_B100;
+const SPHERES: u32 = 0xCD00;
 const LINKS: u32 = 0xDDB0;
 const CONTACTS: u32 = 0xDDBC;
 const PINS: u32 = 0xDDBB;
@@ -82,6 +107,10 @@ fn read_bodies(list: &[u8]) -> Result<Vec<BoneBody>> {
             let len = sub.u32()? as usize;
             let data = sub.bytes(len)?;
             if tag == BODY_DATA {
+                // The body chunk's first word is its class; its fixed
+                // header runs to 0x5C, where the sub-chunks start.
+                let class = crate::read_u32(data, 0)?;
+                body.class = class;
                 read_body_chunks(data.get(BODY_CHUNKS..).unwrap_or(&[]), &mut body)?;
             }
         }
@@ -99,6 +128,27 @@ fn read_body_chunks(b: &[u8], body: &mut BoneBody) -> Result<()> {
         let data = r.bytes(len)?;
         let mut d = Reader { b: data, pos: 0 };
         match tag {
+            SPHERES => {
+                // A word the loader skips, then the count, then a centre
+                // and radius (cm) a sphere.
+                d.u32()?;
+                let n = d.u32()? as usize;
+                // Each sphere is 16 bytes; a count the chunk cannot hold is
+                // an error.
+                if n.saturating_mul(16) > d.b.len().saturating_sub(d.pos) {
+                    return Err(Error::Malformed(format!(
+                        "{n} spheres do not fit in {} bytes",
+                        d.b.len().saturating_sub(d.pos)
+                    )));
+                }
+                body.spheres.reserve(n.min(64));
+                for _ in 0..n {
+                    let centre = [d.f32()?, d.f32()?, d.f32()?].map(cm);
+                    let radius = cm(d.f32()?);
+                    body.spheres
+                        .push(crate::rigid_body::Sphere { centre, radius });
+                }
+            }
             LINKS => {
                 let n = d.u32()? as usize;
                 for _ in 0..n.min(16) {
@@ -1080,5 +1130,65 @@ mod tests {
         assert_eq!(bone_index("01Pelvis"), Some(1));
         assert_eq!(bone_index("17RHand"), Some(17));
         assert_eq!(bone_index("Omni"), None);
+    }
+
+    /// A bone's body chunk: its class word, the fixed header, then its
+    /// collision spheres (a skipped word, the count, a centre and radius a
+    /// sphere) and its links, pins and contacts.
+    fn body_node(class: u32, chunks: &[(u32, Vec<u8>)]) -> Vec<u8> {
+        let mut body = le(&[class], u32::to_le_bytes);
+        body.resize(0x5c, 0);
+        for (tag, payload) in chunks {
+            body.extend(le(&[*tag, payload.len() as u32], u32::to_le_bytes));
+            body.extend(payload);
+        }
+        let mut node = vec![0u8; 112];
+        node.extend(le(&[BODY_DATA, body.len() as u32], u32::to_le_bytes));
+        node.extend(body);
+        let mut list = le(&[1u32, 0, node.len() as u32], u32::to_le_bytes);
+        list.extend(node);
+        list
+    }
+
+    #[test]
+    fn a_bone_body_reads_its_class_spheres_and_links() {
+        let mut spheres = le(&[0u32, 1], u32::to_le_bytes);
+        spheres.extend(le(&[10.0f32, 20.0, 30.0, 2.5], f32::to_le_bytes));
+        let mut links = le(&[1u32], u32::to_le_bytes);
+        links.extend(le(&[0u32], u32::to_le_bytes));
+        links.extend(le(&[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], f32::to_le_bytes));
+        links.extend(le(&[0.5f32, 1.0, 0.25], f32::to_le_bytes));
+        let list = body_node(0x1000_0000, &[(SPHERES, spheres), (LINKS, links)]);
+        let bodies = read_bodies(&list).unwrap();
+        let body = &bodies[0];
+        assert_eq!(body.class, 0x1000_0000);
+        assert_eq!(body.mass_factors, [1.0, 1.0]);
+        assert_eq!(body.spheres.len(), 1);
+        let sphere = body.spheres[0];
+        assert!((sphere.centre[0] - 0.1).abs() < 1e-6);
+        assert!((sphere.centre[1] - 0.2).abs() < 1e-6);
+        assert!((sphere.centre[2] - 0.3).abs() < 1e-6);
+        assert!((sphere.radius - 0.025).abs() < 1e-6);
+        assert_eq!(body.links.len(), 1);
+        let link = body.links[0];
+        assert!((link.on_part[0] - 0.01).abs() < 1e-6);
+        assert!((link.on_parent[1] - 0.05).abs() < 1e-6);
+        assert!((link.slack - 0.005).abs() < 1e-6);
+        assert_eq!((link.stiffness, link.smoothing), (1.0, 0.25));
+    }
+
+    #[test]
+    fn a_sphere_count_the_chunk_cannot_hold_is_an_error() {
+        let payload = le(&[0u32, 1000], u32::to_le_bytes);
+        let list = body_node(0x1000_0000, &[(SPHERES, payload)]);
+        assert!(read_bodies(&list).is_err());
+        // Every prefix parses or fails without panicking.
+        let mut spheres = le(&[0u32, 1], u32::to_le_bytes);
+        spheres.extend(le(&[1.0f32, 2.0, 3.0, 0.5], f32::to_le_bytes));
+        let full = body_node(0x1000_0000, &[(SPHERES, spheres)]);
+        for n in 0..full.len() {
+            let _ = read_bodies(&full[..n]);
+        }
+        assert!(read_bodies(&full).is_ok());
     }
 }

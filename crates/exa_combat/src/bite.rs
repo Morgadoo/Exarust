@@ -158,6 +158,7 @@ mod tests {
                 links: vec![],
                 foot: None,
                 pins: Vec::new(),
+                spheres: None,
             },
             exa_physics::body::PartSetup {
                 bone: 2,
@@ -170,6 +171,7 @@ mod tests {
                 links: vec![],
                 foot: None,
                 pins: Vec::new(),
+                spheres: None,
             },
         ])
     }

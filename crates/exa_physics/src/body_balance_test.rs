@@ -149,6 +149,7 @@ fn biped_at(place: Affine3A) -> Ragdoll {
             } else {
                 vec![]
             },
+            spheres: None,
         })
         .collect();
     Ragdoll::new(&setup).with_drive()

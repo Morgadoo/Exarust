@@ -20,6 +20,7 @@ fn ball(at: Vec3) -> Ragdoll {
         links: vec![],
         foot: None,
         pins: Vec::new(),
+        spheres: None,
     }])
 }
 
@@ -245,6 +246,7 @@ fn exertion_sums_each_parts_farthest_particle() {
         links: vec![],
         foot: None,
         pins: Vec::new(),
+        spheres: None,
     };
     let mut body = Ragdoll::new(&[part(None, Vec3::ZERO), part(Some(0), Vec3::Y * 0.3)]);
     assert_eq!(body.exertion(), 0.0);

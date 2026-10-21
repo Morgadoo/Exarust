@@ -178,6 +178,14 @@ pub(crate) fn part_setup(
         pins: body.map_or_else(Vec::new, |b| {
             b.pins.iter().map(|&p| Vec3::from_array(p)).collect()
         }),
+        spheres: body.and_then(|b| {
+            (!b.spheres.is_empty()).then(|| {
+                b.spheres
+                    .iter()
+                    .map(|s| (Vec3::from_array(s.centre), s.radius))
+                    .collect()
+            })
+        }),
     }
 }
 
@@ -792,6 +800,7 @@ pub(crate) mod tests {
                 links: vec![],
                 foot: None,
                 pins: Vec::new(),
+                spheres: None,
             },
             // Pinned at its origin, the hip.
             PartSetup {
@@ -805,6 +814,7 @@ pub(crate) mod tests {
                 links: vec![],
                 foot: None,
                 pins: Vec::new(),
+                spheres: None,
             },
         ];
         world.entity_mut(root).insert((

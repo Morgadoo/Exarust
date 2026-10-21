@@ -361,6 +361,7 @@ impl Part {
             world,
             ..
         } = *s;
+        let stored = s.spheres.clone();
         let largest = half.max_element();
         let half = half.max(Vec3::splat(MIN_EXTENT.max(0.2 * largest)));
         let rest = TEMPLATE.map(|t| centre + t * half * TEMPLATE_SCALE);
@@ -380,16 +381,19 @@ impl Part {
         let thick = (half - axis * long).max_element().max(MIN_EXTENT * 0.5);
         let count = ((long / thick).round() as usize).clamp(1, 4);
         let span = (long - thick).max(0.0);
-        let spheres = (0..count)
-            .map(|k| {
-                let t = if count == 1 {
-                    0.0
-                } else {
-                    k as f32 / (count - 1) as f32 * 2.0 - 1.0
-                };
-                (centre + axis * span * t, thick)
-            })
-            .collect::<Vec<_>>();
+        let spheres = match stored {
+            Some(stored) if !stored.is_empty() => stored,
+            _ => (0..count)
+                .map(|k| {
+                    let t = if count == 1 {
+                        0.0
+                    } else {
+                        k as f32 / (count - 1) as f32 * 2.0 - 1.0
+                    };
+                    (centre + axis * span * t, thick)
+                })
+                .collect::<Vec<_>>(),
+        };
         let inverse_mass = INVERSE_MASS
             .get(bone.wrapping_sub(1))
             .copied()
@@ -1534,6 +1538,10 @@ pub struct PartSetup {
     /// Box of the part's mesh in its space.
     pub centre: Vec3,
     pub half: Vec3,
+    /// The part's stored collision spheres (centre, radius, in its space,
+    /// metres), when its skeleton carries them; `None` lets the builder fit
+    /// spheres to the box.
+    pub spheres: Option<Vec<(Vec3, f32)>>,
     /// Where the part's origin (its joint centre) sits in its parent's
     /// space: the model's local translation of the part. The part is pinned
     /// there, and the parent's link points are measured from it.
@@ -3086,6 +3094,7 @@ mod tests {
                 links: vec![],
                 foot: None,
                 pins: Vec::new(),
+                spheres: None,
             },
             // Pinned at its middle, 40 cm under the parent's; its top meets
             // the parent's bottom.
@@ -3100,6 +3109,7 @@ mod tests {
                 links: vec![(Vec3::new(0.0, 0.2, 0.0), Vec3::new(0.0, 0.2, 0.0), slack)],
                 foot: None,
                 pins: Vec::new(),
+                spheres: None,
             },
         ])
     }
@@ -3217,6 +3227,7 @@ mod tests {
                 links: vec![],
                 foot: None,
                 pins: Vec::new(),
+                spheres: None,
             }]);
             if living {
                 body = body.with_drive();

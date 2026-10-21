@@ -322,6 +322,7 @@ fn pelvis(turn: Quat) -> Ragdoll {
         links: vec![],
         foot: None,
         pins: Vec::new(),
+        spheres: None,
     }])
     .with_drive()
 }

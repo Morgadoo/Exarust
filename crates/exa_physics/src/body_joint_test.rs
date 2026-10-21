@@ -26,6 +26,7 @@ fn part(
         links: vec![],
         foot: None,
         pins: Vec::new(),
+        spheres: None,
     }
 }
 

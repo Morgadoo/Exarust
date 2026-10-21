@@ -25,6 +25,7 @@ fn legs() -> Ragdoll {
         links: vec![],
         foot,
         pins: Vec::new(),
+        spheres: None,
     };
     Ragdoll::new(&[
         part(1, None, 1.0, Vec3::splat(0.1), None),
@@ -359,6 +360,7 @@ fn two_feet() -> (Ragdoll, [Vec3; 2]) {
         links: vec![],
         foot: Some(Vec3::new(0.0, -0.2, 0.0)),
         pins: Vec::new(),
+        spheres: None,
     };
     let pelvis = PartSetup {
         bone: 1,
@@ -371,6 +373,7 @@ fn two_feet() -> (Ragdoll, [Vec3; 2]) {
         links: vec![],
         foot: None,
         pins: Vec::new(),
+        spheres: None,
     };
     let body = Ragdoll::new(&[pelvis, shin(3, 0.3), shin(5, -0.3)]).with_drive();
     let ankles = [Vec3::new(0.3, -0.2, 0.0), Vec3::new(-0.3, -0.2, 0.0)];

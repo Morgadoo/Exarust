@@ -238,6 +238,7 @@ fn limb_at(at: Vec3) -> PartSetup {
         links: vec![],
         foot: None,
         pins: Vec::new(),
+        spheres: None,
     }
 }
 

@@ -30,6 +30,7 @@ fn setup(id: u32, bone: usize, parent: Option<usize>, at: Vec3, half: Vec3) -> P
         links: vec![],
         foot: None,
         pins: Vec::new(),
+        spheres: None,
     }
 }
 

@@ -456,6 +456,7 @@ mod tests {
                 links: vec![],
                 foot: None,
                 pins: Vec::new(),
+                spheres: None,
             },
             PartSetup {
                 bone: 2,
@@ -468,6 +469,7 @@ mod tests {
                 links: vec![(Vec3::new(0.0, -0.3, 0.0), Vec3::new(0.0, -0.3, 0.0), slack)],
                 foot: None,
                 pins: Vec::new(),
+                spheres: None,
             },
         ])
     }

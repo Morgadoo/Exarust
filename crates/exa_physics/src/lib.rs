@@ -20,6 +20,7 @@ pub mod prop;
 pub mod relay;
 pub mod sector;
 pub mod shape;
+pub mod shock;
 pub mod signal;
 pub mod volume;
 pub mod voxel;

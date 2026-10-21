@@ -38,6 +38,7 @@ fn part(bone: usize, parent: Option<usize>, origin: Vec3, world: Vec3) -> PartSe
         } else {
             vec![]
         },
+        spheres: None,
     }
 }
 

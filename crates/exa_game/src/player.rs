@@ -2386,6 +2386,7 @@ mod tests {
             links: vec![],
             foot: None,
             pins: Vec::new(),
+            spheres: None,
         };
         let mut ragdoll = Ragdoll::new(&[part]).with_drive();
         ragdoll.drive.as_mut().unwrap().energy = 0.79;
@@ -2426,6 +2427,7 @@ mod tests {
             links: vec![],
             foot: None,
             pins: Vec::new(),
+            spheres: None,
         };
         let feral = exa_physics::body::BodyStats {
             max_energy: 0.9,
@@ -2578,6 +2580,7 @@ mod tests {
             links: vec![],
             foot: None,
             pins: Vec::new(),
+            spheres: None,
         };
         let body = Ragdoll::new(&[
             part(1, None, feet + Vec3::Y),

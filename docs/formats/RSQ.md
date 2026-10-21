@@ -30,11 +30,15 @@ named with the same indices (`01Pelvis`, `09Chest`, `17RHand`).
 
 ## Physical body (`0x3DD0B100`)
 
-Each bone node carries a body chunk. The node header is 112 bytes. Its
-nested sub-chunks start at offset `0x5C` inside the chunk:
+Each bone node carries a body chunk. The node header is 112 bytes. The
+chunk's first word is the body's class (`0x10000000` on every shipped
+character part); the fixed header runs to `0x5C`. The two per-part mass
+factors at the original's `+0xB4` and `+0x54` are written as 1.0 by the
+loader, not read. Its nested sub-chunks start at offset `0x5C`:
 
 | chunk | content |
 |---|---|
+| `0xCD00` | collision spheres: u32 skipped, u32 n, then n × {vec3 centre, f32 radius} cm |
 | `0xDDB0` | links to the parent part: u32 n, then n × {u32 flags, vec3 point on the part, vec3 point on the parent, f32 slack, f32 stiffness, f32 smoothing, vec3 axis if flags & 4} |
 | `0xDDBC` | foot contact points (each lower leg: one, at (±0.16, −48.97, 2.4) cm; the original stands the leg on its foot part's origin instead, below) |
 | `0xDDBB` | thorax pins (two shoulder points at (±10.4, 9.65, 1.25) cm) |
@@ -56,7 +60,9 @@ How the original simulates a body (`exa_physics::body`):
 - Every part is a rigid tetrahedron of 4 particles, kept rigid by its 6
   edge lengths. The particles start from a regular template laid over the
   part mesh's box (each extent at least 6 cm) and scaled by 1.25. The part's
-  frame follows the particles through the inverse rest matrix.
+  collision spheres are the stored `0xCD00` ones when the bone has them,
+  otherwise a row fitted to the box's longest axis. The part's frame
+  follows the particles through the inverse rest matrix.
 - Verlet integration at 83 Hz with gravity −9.80665 m/s². Every body,
   characters living or dead included, takes the simulation's default
   environment (REA on every writer of a body's environment). A limp part

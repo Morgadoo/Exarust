@@ -159,6 +159,7 @@ mod tests {
             links: vec![],
             foot: None,
             pins: Vec::new(),
+            spheres: None,
         }]);
         if living { body.with_drive() } else { body }
     }

@@ -26,6 +26,7 @@ fn ball(y: f32) -> Ragdoll {
         links: vec![],
         foot: None,
         pins: Vec::new(),
+        spheres: None,
     }])
 }
 
@@ -46,6 +47,7 @@ fn pulled_apart(clearance: f32) -> Ragdoll {
             links: vec![],
             foot: None,
             pins: Vec::new(),
+            spheres: None,
         },
         PartSetup {
             bone: 2,
@@ -58,6 +60,7 @@ fn pulled_apart(clearance: f32) -> Ragdoll {
             links: vec![],
             foot: None,
             pins: Vec::new(),
+            spheres: None,
         },
     ])
 }
