@@ -725,26 +725,41 @@ primitives below are the base class's.
   points back at the same rectangle) or the striped fill. The shell adds
   the frame, an optional drop shadow at `-unit/2` and the sunken face; the
   fill is the control's own colour, forced opaque.
-- **Form chrome and background.** A form's chrome first draws the four
-  scrollbar-gutter strips (between the margin and the client's left, top,
-  right and bottom, each `bar` wide, when there is room), then the client
-  fill, then the double frames its style's two three-bit fields select (the
-  second inset by a pixel), and an outer pair two pixels outside. A flat
-  form uses a two-ink outline instead. The default background adds the
-  rounded textured shell when the state has bit 0x40, a title gradient from
-  y 2 to 24 with an optional two-ink band below it, the close, small and
-  large marks (their rectangles from the form's control-code switch), the
-  vertical and horizontal scrollbar frames, their shadows, thumbs and
-  arrows, and the title's two text blocks (base ink one pixel left and
-  above, plain ink at the place) whose width drops by 17 per small mark and
-  20 for the large one, centred when the style says so.
-- **Form page and clipping.** A page draws its own background or the skin's,
-  clips to the client rectangle (the original scissors to the parent's
-  client), applies the scroll offset (the stored scroll less the limit from
-  the inset or title, times the view scale; bit 0x800 locks it), draws the
-  line rectangles in the base ink, the control records, the visible
-  children, and last one drop shadow (unit and alpha 0x30, or 4·unit and
-  0x50) unless the scroll is locked.
+- **Form chrome and background.** A form keeps a state word (bit 1 a
+  flat frame, bit 4 no gutters, bit 2 picks the small mark's icon, bit 1
+  hides the page) and a style word (bit 1 a title, 2, 8 and 4 the close,
+  small and large marks, 0x20 a client fill, 0x40 a rounded shell and an
+  outline frame, 0x80 a drop shadow, 0x100 and 0x200 the scrollbars,
+  0x800 a locked scroll, 0x2_0000 the scrollbar gutters). The chrome first
+  draws the four gutter strips in the form's fourth shade (between the
+  margin and the client's left, top, right and bottom, each `bar` wide,
+  when there is room; a titled form has none above), then the client fill
+  when the form keeps no line rectangles, then its frame: the first style
+  field draws a double frame or, with style bit 0x40, an outline a pixel
+  in; the second frames the client two pixels outside. A flat form draws
+  only its frame: the outline, the double frame or a two-ink outline. The
+  default background adds the rounded textured shell, a title gradient
+  from y 2 to 24 with an optional two-line band below it and the close,
+  small and large marks (their rectangles from the form's control-code
+  switch, pressed under the button or hovered), then the vertical and
+  horizontal scrollbar frames, their shadows, the arrow frame slots
+  (pressed when held), the thumbs (the vertical one as a gradient bar, the
+  horizontal one as a frame slot, each with the texture shifted by the
+  thumb's place), the arrow icons half a unit less one in, the mark icons
+  and last the title's two text blocks: the form's second shade one pixel
+  left and above, the label's seventh at the place, at y `(margin + line
+  height + 25) / 2`. Their width drops by 17 for the close mark, 20 for
+  the large one and 17 for a title icon; the title is centred when the
+  style says so.
+- **Form page and clipping.** A page draws its own background or the
+  skin's, stops if its state hides it, clips to the client rectangle (the
+  original scissors to the parent's client), works out the scroll offset
+  (the stored scroll less the client's extent, times the view scale; bit
+  0x800 locks it at zero) and translates the contents to the inset and
+  top less that offset, then draws the line rectangles in the form's
+  fourth shade, the control records, the visible children, and last one
+  drop shadow (unit and alpha 0x30, or 4·unit and 0x50), locked or not. A
+  form whose class asks for it moves the skin's texture with its place.
 - **Labels.** A label's place follows its style word: 0x1000 left of the
   control, 0x3000 centred by the measured width, 0x4000 right, 0x5000 past
   the right edge, otherwise the inset and half the unit plus one; the

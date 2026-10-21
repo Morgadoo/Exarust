@@ -6146,7 +6146,10 @@ pub fn form_rect(place: FormRectPlace, code: i32, rect: &mut [i32; 4]) -> bool {
 }
 
 /// The fields a form's chrome reads. The client rectangle's four edges are
-/// kept separately, as the original stores them.
+/// kept separately, as the original stores them. `state` is the form's
+/// state word (bit 1 a flat frame, bit 4 no gutters), `flags` its style
+/// word (bit 1 a title, 0x20 a client fill, 0x40 the outline frame,
+/// 0x2_0000 the scrollbar gutters).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FormChromePlace {
     pub rect: GuiRect,
@@ -6161,7 +6164,8 @@ pub struct FormChromePlace {
     pub client_bottom: f32,
     /// The form's own fill colour, or the base palette's shade 3.
     pub fill: Option<SkinInk>,
-    pub flat: bool,
+    /// Whether the form keeps line rectangles; it then draws no fill.
+    pub has_lines: bool,
 }
 
 /// The chrome's geometry: the gutter quads, the fill and the frames.
@@ -6169,7 +6173,6 @@ pub struct FormChromePlace {
 pub struct FormChrome {
     pub gutters: Vec<[(f32, f32); 4]>,
     pub fill: Option<[(f32, f32); 4]>,
-    pub fills: Vec<[(f32, f32); 4]>,
     pub frames: u32,
     pub begin_calls: u32,
     pub end_calls: u32,
@@ -6177,7 +6180,8 @@ pub struct FormChrome {
 }
 
 /// Draws a form's frame: the scrollbar gutters, the client fill and the
-/// double frames its style word selects.
+/// frames its style word selects. A flat form draws only its frame: the
+/// outline, the double frame or the two-ink outline.
 pub fn draw_form_chrome(
     batch: &mut SkinBatch,
     place: FormChromePlace,
@@ -6186,7 +6190,6 @@ pub fn draw_form_chrome(
     let mut chrome = FormChrome {
         gutters: Vec::new(),
         fill: None,
-        fills: Vec::new(),
         frames: 0,
         begin_calls: 0,
         end_calls: 0,
@@ -6195,12 +6198,13 @@ pub fn draw_form_chrome(
     let begin_before = batch.begin_calls;
     let end_before = batch.end_calls;
     let mode_before = batch.mode_calls;
+    let outlined = (place.flags & 0x40) == 0x40;
     if (place.state & 1) == 1 {
         match place.frame_style & 0x30 {
             0x10 => {
-                if (place.state & 0x40) == 0x40 {
+                if outlined {
                     batch.set_ink(palette.form[5]);
-                    solid_rect(batch, place.rect);
+                    outline_rect(batch, place.rect);
                 } else {
                     double_frame(batch, place.rect, palette.form[0], palette.form[5]);
                 }
@@ -6222,9 +6226,11 @@ pub fn draw_form_chrome(
             let bottom = place.client_bottom;
             let w = place.rect.x1;
             let h = place.rect.y1;
+            let start = batch.vertices.len();
             batch.begin();
-            if m + bar < top {
-                batch.set_ink(palette.form[3]);
+            batch.set_ink(palette.form[3]);
+            // A titled form has no gutter above its client.
+            if (place.flags & 1) == 0 && m + bar < top {
                 batch.vertex(m, m);
                 batch.vertex(m, top - bar);
                 batch.vertex(w - m, top - bar);
@@ -6236,37 +6242,33 @@ pub fn draw_form_chrome(
                 batch.vertex(left - bar, h - m);
                 batch.vertex(left - bar, top - bar);
             }
-            if right < (w - m) - bar {
+            if (w - m) - bar > right {
                 batch.vertex(right + bar, top - bar);
                 batch.vertex(right + bar, h - m);
                 batch.vertex(w - m, h - m);
                 batch.vertex(w - m, top - bar);
             }
-            if bottom < (h - m) - bar {
+            if (h - m) - bar > bottom {
                 batch.vertex(left - bar, bottom + bar);
                 batch.vertex(left - bar, h - m);
                 batch.vertex(right + bar, h - m);
                 batch.vertex(right + bar, bottom + bar);
             }
+            chrome.gutters = batch.vertices[start..]
+                .chunks(4)
+                .map(|quad| {
+                    [
+                        (quad[0].x, quad[0].y),
+                        (quad[1].x, quad[1].y),
+                        (quad[2].x, quad[2].y),
+                        (quad[3].x, quad[3].y),
+                    ]
+                })
+                .collect();
             batch.end_quads();
-            if let Some(primitive) = batch.primitives.last() {
-                chrome.gutters = batch
-                    .vertices_of(primitive)
-                    .chunks(4)
-                    .map(|quad| {
-                        [
-                            (quad[0].x, quad[0].y),
-                            (quad[1].x, quad[1].y),
-                            (quad[2].x, quad[2].y),
-                            (quad[3].x, quad[3].y),
-                        ]
-                    })
-                    .collect();
-            }
         }
-        if (place.state & 0x20) != 0 && place.flat {
+        if (place.flags & 0x20) != 0 && !place.has_lines {
             batch.select(0x10, 0, false);
-            chrome.mode_calls += 1;
             batch.set_ink(place.fill.unwrap_or(palette.form[3]));
             let corners = [
                 (place.client_left, place.client_top),
@@ -6280,20 +6282,14 @@ pub fn draw_form_chrome(
             }
             batch.end_quads();
             chrome.fill = Some(corners);
-            chrome.fills.push(corners);
         }
         match place.frame_style & 0x30 {
             0x10 => {
-                if (place.state & 0x40) == 0x40 {
+                if outlined {
                     batch.set_ink(palette.form[5]);
-                    solid_rect(
+                    outline_rect(
                         batch,
-                        GuiRect {
-                            x0: place.rect.x0 + 1.0,
-                            y0: place.rect.y0 + 1.0,
-                            x1: place.rect.x1 - 1.0,
-                            y1: place.rect.y1 - 1.0,
-                        },
+                        GuiRect::corners(1.0, 1.0, place.rect.x1 - 1.0, place.rect.y1 - 1.0),
                     );
                 } else {
                     double_frame(batch, place.rect, palette.form[0], palette.form[5]);
@@ -6306,19 +6302,20 @@ pub fn draw_form_chrome(
             }
             _ => {}
         }
-        let grown = GuiRect {
-            x0: place.rect.x0 - 2.0,
-            y0: place.rect.y0 - 2.0,
-            x1: place.rect.x1 + 2.0,
-            y1: place.rect.y1 + 2.0,
-        };
+        // The second field frames the client, the pad (2) outside it.
+        let client = GuiRect::corners(
+            place.client_left - 2.0,
+            place.client_top - 2.0,
+            place.client_right + 2.0,
+            place.client_bottom + 2.0,
+        );
         match place.frame_style & 0xc0 {
             0x40 => {
-                double_frame(batch, grown, palette.form[0], palette.form[5]);
+                double_frame(batch, client, palette.form[0], palette.form[5]);
                 chrome.frames += 1;
             }
             0x80 => {
-                double_frame(batch, grown, palette.form[5], palette.form[0]);
+                double_frame(batch, client, palette.form[5], palette.form[0]);
                 chrome.frames += 1;
             }
             _ => {}
@@ -6326,7 +6323,7 @@ pub fn draw_form_chrome(
     }
     chrome.begin_calls = batch.begin_calls - begin_before;
     chrome.end_calls = batch.end_calls - end_before;
-    chrome.mode_calls += batch.mode_calls - mode_before;
+    chrome.mode_calls = batch.mode_calls - mode_before;
     chrome
 }
 
@@ -6337,7 +6334,10 @@ pub struct FormScroll {
     pub length: i32,
 }
 
-/// The form background's inputs.
+/// The form background's inputs. `state` and `flags` are the form's state
+/// and style words (see `FormChromePlace`); the style word's bits 2, 4 and
+/// 8 add the close, large and small marks, 0x40 the rounded shell, 0x100
+/// and 0x200 the horizontal and vertical scrollbars.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FormBackgroundPlace {
     pub rect: GuiRect,
@@ -6348,23 +6348,36 @@ pub struct FormBackgroundPlace {
     pub state: u32,
     pub flags: u32,
     pub frame_style: u32,
-    pub margin: f32,
-    pub bar: f32,
-    pub flat: bool,
+    pub margin: i32,
+    pub bar: i32,
+    pub has_lines: bool,
     pub fill: Option<SkinInk>,
     pub vertical: Option<FormScroll>,
     pub horizontal: Option<FormScroll>,
+    /// The title's measured width, for a centred title.
     pub title_width: i32,
-    pub title_x: i32,
-    pub title_y: i32,
-    pub title_style: u32,
-    pub title_offset: i32,
-    pub active_code: i32,
-    pub hot_code: i32,
-    pub hot_flag: bool,
+    /// Whether the title carries an icon, which shifts it right.
+    pub title_icon: bool,
+    /// The title font's line height.
+    pub line_height: i32,
+    /// The code under the mouse, the pressed code and the button state.
+    pub hover_code: i32,
+    pub pressed_code: i32,
+    pub button_down: bool,
 }
 
-/// A form background's structure in draw order.
+/// One of the title's two text blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormTitle {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub ink: SkinInk,
+}
+
+/// A form background's structure in draw order: the shell, the chrome, the
+/// title bar and its mark boxes, the scrollbars, the arrow icons, the mark
+/// icons and last the title text.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FormBackground {
     pub rounded: bool,
@@ -6372,17 +6385,62 @@ pub struct FormBackground {
     pub title_bar: bool,
     pub title_band: bool,
     pub mark_rects: Vec<[i32; 4]>,
-    pub mark_icons: Vec<MarkIcon>,
     pub scroll_frames: Vec<[i32; 4]>,
     pub scroll_shadows: Vec<[i32; 4]>,
     pub scroll_bars: Vec<[i32; 4]>,
     pub arrow_icons: Vec<MarkIcon>,
-    pub title: Option<[[i32; 3]; 2]>,
-    pub begin_calls: u32,
+    pub mark_icons: Vec<MarkIcon>,
+    pub title: Option<[FormTitle; 2]>,
+    pub primitives: u32,
+}
+
+/// The background's title-mark list: the close mark, the small mark (its
+/// icon by state bit 2) and the large mark, each with its icon.
+fn title_marks(place: &FormBackgroundPlace) -> Vec<(i32, u32)> {
+    let mut marks = Vec::new();
+    if (place.flags & 2) == 2 {
+        marks.push((-4, 1));
+    }
+    if (place.flags & 8) == 8 {
+        marks.push((-6, if (place.state & 2) == 2 { 8 } else { 7 }));
+    }
+    if (place.flags & 4) == 4 {
+        marks.push((-5, 6));
+    }
+    marks
+}
+
+fn background_rect(place: &FormBackgroundPlace, unit: i32, code: i32) -> Option<[i32; 4]> {
+    let mut rect = [0; 4];
+    form_rect(
+        FormRectPlace {
+            width: place.rect.x1 as i32,
+            height: place.rect.y1 as i32,
+            unit,
+            inset: place.inset,
+            client_top: place.client_top,
+            right: place.client_right,
+            bottom: place.client_bottom,
+            flags: place.flags,
+        },
+        code,
+        &mut rect,
+    )
+    .then_some(rect)
+}
+
+fn corner_rect(rect: [i32; 4]) -> GuiRect {
+    GuiRect::corners(
+        rect[0] as f32,
+        rect[1] as f32,
+        rect[2] as f32,
+        rect[3] as f32,
+    )
 }
 
 /// Draws a form's default background: the rounded shell, the chrome, the
-/// title bar, the scrollbars with their arrows, and the title text blocks.
+/// title bar with its marks, the scrollbars, their arrow icons, the mark
+/// icons and the title text blocks.
 pub fn draw_form_background(
     batch: &mut SkinBatch,
     place: FormBackgroundPlace,
@@ -6395,24 +6453,22 @@ pub fn draw_form_background(
         title_bar: false,
         title_band: false,
         mark_rects: Vec::new(),
-        mark_icons: Vec::new(),
         scroll_frames: Vec::new(),
         scroll_shadows: Vec::new(),
         scroll_bars: Vec::new(),
         arrow_icons: Vec::new(),
+        mark_icons: Vec::new(),
         title: None,
-        begin_calls: 0,
+        primitives: 0,
     };
     let start = batch.primitives.len();
-    if (place.state & 0x40) == 0x40 {
+    let width = place.rect.x1 as i32;
+    let height = place.rect.y1 as i32;
+    let pressed = |code: i32| code == place.pressed_code && place.button_down;
+    if (place.flags & 0x40) == 0x40 {
         rounded_textured_frame(
             batch,
-            GuiRect {
-                x0: 1.0,
-                y0: 1.0,
-                x1: place.rect.x1 - 1.0,
-                y1: place.rect.y1 - 1.0,
-            },
+            GuiRect::corners(1.0, 1.0, place.rect.x1 - 1.0, place.rect.y1 - 1.0),
             unit,
             4,
             120,
@@ -6427,313 +6483,212 @@ pub fn draw_form_background(
             frame_style: place.frame_style,
             flags: place.flags,
             state: place.state,
-            margin: place.margin,
-            bar: place.bar,
+            margin: place.margin as f32,
+            bar: place.bar as f32,
             client_left: place.inset as f32,
             client_top: place.client_top as f32,
             client_right: place.client_right as f32,
             client_bottom: place.client_bottom as f32,
             fill: place.fill,
-            flat: place.flat,
+            has_lines: place.has_lines,
         },
         palette,
     );
     drawn.chrome = true;
-    if (place.state & 1) == 1 {
-        let width = place.rect.x1;
-        let title = GuiRect::corners(2.0, 2.0, width - 2.0, 24.0);
+    let marks = title_marks(&place);
+    if (place.flags & 1) == 1 {
+        let title = GuiRect::corners(2.0, 2.0, (width - 2) as f32, 24.0);
         fade_rect(batch, title, palette.form[3], palette.form[2]);
         drawn.title_bar = true;
-        if (place.state & 0x800030) == 0x20 && (place.frame_style & 0x80) == 0 {
+        if (place.flags & 0x80_0030) == 0x20 && (place.frame_style & 0x80) == 0 {
             two_ink_band(
                 batch,
-                GuiRect::corners(2.0, 24.0, width - 2.0, 26.0),
+                GuiRect::corners(2.0, 24.0, (width - 2) as f32, 26.0),
                 palette.form[1],
                 palette.form[5],
             );
             drawn.title_band = true;
         }
-        let mut rect = [0; 4];
-        let mut mark_list = Vec::new();
-        if (place.state & 2) == 2 {
-            mark_list.push((-4, 1));
-        }
-        if (place.state & 8) == 8 {
-            mark_list.push((-6, if (place.flags & 2) == 2 { 8 } else { 7 }));
-        }
-        if (place.state & 4) == 4 {
-            mark_list.push((-5, 6));
-        }
-        for (code, id) in mark_list {
-            if form_rect(
-                FormRectPlace {
-                    width: place.rect.x1 as i32,
-                    height: place.rect.y1 as i32,
-                    unit,
-                    inset: place.inset,
-                    client_top: place.client_top,
-                    right: place.client_right,
-                    bottom: place.client_bottom,
-                    flags: place.state,
-                },
-                code,
-                &mut rect,
-            ) {
+        for &(code, _) in &marks {
+            if let Some(rect) = background_rect(&place, unit, code) {
                 drawn.mark_rects.push(rect);
-                let hot = code == place.hot_code && place.hot_flag;
-                let active = code == place.active_code;
-                let shape = GuiRect::corners(
-                    rect[0] as f32,
-                    rect[1] as f32,
-                    rect[2] as f32,
-                    rect[3] as f32,
-                );
-                draw_mark(batch, shape, hot, active, palette);
-                drawn.mark_icons.push(draw_mark_icon(
-                    shape,
-                    unit,
-                    id,
-                    mark_active(code, place.active_code, place.hot_flag, place.hot_code),
+                draw_mark(
+                    batch,
+                    corner_rect(rect),
+                    pressed(code),
+                    code == place.hover_code,
                     palette,
-                ));
+                );
             }
         }
     }
-    if (place.state & 0x200) != 0
+    if (place.flags & 0x200) != 0
         && let Some(scroll) = place.vertical
     {
         let frame = GuiRect::corners(
-            (place.rect.x1 as i32 - place.inset - 17) as f32,
+            (width - place.inset - 17) as f32,
             (place.client_top - 2) as f32,
-            (place.rect.x1 as i32 - place.inset + 2) as f32,
-            (place.rect.y1 as i32 - place.inset + 2) as f32,
+            (width - place.inset + 2) as f32,
+            (height - place.inset + 2) as f32,
         );
         double_frame(batch, frame, palette.form[5], palette.form[0]);
-        let mut before = scroll.position - (place.client_top + 15);
+        let rail_x = width - place.inset - 15;
+        let before = scroll.position - (place.client_top + 15);
         if before > 0 {
-            drawn.scroll_shadows.push([
-                (place.rect.x1 as i32 - place.inset - 15),
-                place.client_top + 15,
-                15,
-                before,
-            ]);
+            let shade = [rail_x, place.client_top + 15, 15, before];
+            drawn.scroll_shadows.push(shade);
             shadow_ring(
                 batch,
-                GuiRect::sized(
-                    (place.rect.x1 as i32 - place.inset - 15) as f32,
-                    (place.client_top + 15) as f32,
-                    15.0,
-                    before as f32,
-                ),
+                GuiRect::sized(shade[0] as f32, shade[1] as f32, 15.0, before as f32),
                 unit,
                 0x30,
             );
         }
-        before = (place.rect.y1 as i32 - place.client_top - scroll.position - scroll.length) - 15;
-        if before > 0 {
-            drawn.scroll_shadows.push([
-                (place.rect.x1 as i32 - place.inset - 15),
-                scroll.position + scroll.length,
-                15,
-                before,
-            ]);
+        let after = height - place.client_top - scroll.position - scroll.length - 15;
+        if after > 0 {
+            let shade = [rail_x, scroll.position + scroll.length, 15, after];
+            drawn.scroll_shadows.push(shade);
             shadow_ring(
                 batch,
-                GuiRect::sized(
-                    (place.rect.x1 as i32 - place.inset - 15) as f32,
-                    (scroll.position + scroll.length) as f32,
-                    15.0,
-                    before as f32,
-                ),
+                GuiRect::sized(shade[0] as f32, shade[1] as f32, 15.0, after as f32),
                 unit,
                 0x30,
             );
         }
-        for code in [-9, -6] {
-            let mut rect = [0; 4];
-            if !form_rect(
-                FormRectPlace {
-                    width: place.rect.x1 as i32,
-                    height: place.rect.y1 as i32,
-                    unit,
-                    inset: place.inset,
-                    client_top: place.client_top,
-                    right: place.client_right,
-                    bottom: place.client_bottom,
-                    flags: place.state,
-                },
-                code,
-                &mut rect,
-            ) {
-                continue;
+        let mut last = None;
+        for code in [-9, -10] {
+            if let Some(rect) = background_rect(&place, unit, code) {
+                draw_frame_control(batch, corner_rect(rect), pressed(code), false, palette);
+                drawn.scroll_frames.push(rect);
+                last = Some(rect);
             }
-            let hot = place.hot_code == code && place.hot_flag;
-            draw_frame_control(
-                batch,
-                GuiRect::corners(
-                    rect[0] as f32,
-                    rect[1] as f32,
-                    rect[2] as f32,
-                    rect[3] as f32,
-                ),
-                false,
-                hot,
-                palette,
-            );
-            batch.add_texture_shift(0.0, scroll.position as f32);
-            draw_bar_with_boxes(
-                batch,
-                GuiRect::corners(
-                    rect[0] as f32,
-                    scroll.position as f32,
-                    rect[2] as f32,
-                    (scroll.position + scroll.length) as f32,
-                ),
-                unit,
-                false,
-                palette,
-            );
-            batch.add_texture_shift(0.0, -(scroll.position as f32));
-            drawn.scroll_bars.push([
+        }
+        if let Some(rect) = last {
+            let thumb = [
                 rect[0],
                 scroll.position,
                 rect[2],
                 scroll.position + scroll.length,
-            ]);
-            drawn.scroll_frames.push(rect);
+            ];
+            batch.add_texture_shift(0.0, scroll.position as f32);
+            draw_bar_with_boxes(batch, corner_rect(thumb), unit, false, palette);
+            batch.add_texture_shift(0.0, -(scroll.position as f32));
+            drawn.scroll_bars.push(thumb);
         }
     }
-    if (place.state & 0x100) != 0
+    if (place.flags & 0x100) != 0
         && let Some(scroll) = place.horizontal
     {
         let frame = GuiRect::corners(
             (place.inset - 2) as f32,
-            (place.rect.y1 as i32 - place.inset - 17) as f32,
+            (height - place.inset - 17) as f32,
             (place.client_right + 2) as f32,
-            (place.rect.y1 as i32 - place.inset + 2) as f32,
+            (height - place.inset + 2) as f32,
         );
         double_frame(batch, frame, palette.form[5], palette.form[0]);
-        let mut last = [0; 4];
+        let mut last = None;
         for code in [-13, -14] {
-            let mut rect = [0; 4];
-            if !form_rect(
-                FormRectPlace {
-                    width: place.rect.x1 as i32,
-                    height: place.rect.y1 as i32,
-                    unit,
-                    inset: place.inset,
-                    client_top: place.client_top,
-                    right: place.client_right,
-                    bottom: place.client_bottom,
-                    flags: place.state,
-                },
-                code,
-                &mut rect,
-            ) {
-                continue;
+            if let Some(rect) = background_rect(&place, unit, code) {
+                draw_frame_control(batch, corner_rect(rect), pressed(code), false, palette);
+                drawn.scroll_frames.push(rect);
+                last = Some(rect);
             }
-            draw_frame_control(
-                batch,
-                GuiRect::corners(
-                    rect[0] as f32,
-                    rect[1] as f32,
-                    rect[2] as f32,
-                    rect[3] as f32,
-                ),
-                false,
-                false,
-                palette,
-            );
-            drawn.scroll_frames.push(rect);
-            last = rect;
         }
-        let thumb = GuiRect::corners(
-            scroll.position as f32,
-            last[1] as f32,
-            (scroll.position + scroll.length) as f32,
-            last[3] as f32,
-        );
-        draw_frame_control(
-            batch,
-            thumb,
-            false,
-            place.hot_code == -14 && place.hot_flag,
-            palette,
-        );
-        drawn.scroll_bars.push([
-            scroll.position,
-            last[1],
-            scroll.position + scroll.length,
-            last[3],
-        ]);
+        if let Some(rect) = last {
+            let thumb = [
+                scroll.position,
+                rect[1],
+                scroll.position + scroll.length,
+                rect[3],
+            ];
+            batch.add_texture_shift(-(scroll.position as f32), 0.0);
+            draw_frame_control(batch, corner_rect(thumb), false, false, palette);
+            batch.add_texture_shift(scroll.position as f32, 0.0);
+            drawn.scroll_bars.push(thumb);
+        }
     }
     batch.select(2, 0, false);
-    for (code, id, vertical) in [
-        (-9, 4, true),
-        (-6, 5, true),
-        (-13, 2, false),
-        (-14, 3, false),
+    let nudge = (((unit as u32) >> 1) as i32).wrapping_sub(1);
+    for (code, id, flag) in [
+        (-9, 4, 0x200),
+        (-10, 5, 0x200),
+        (-13, 2, 0x100),
+        (-14, 3, 0x100),
     ] {
-        let enabled = if vertical {
-            (place.state & 0x200) != 0
-        } else {
-            (place.state & 0x100) != 0
+        if (place.flags & flag) == 0 {
+            continue;
+        }
+        let Some(rect) = background_rect(&place, unit, code) else {
+            continue;
         };
-        if !enabled {
-            continue;
-        }
-        let mut rect = [0; 4];
-        if !form_rect(
-            FormRectPlace {
-                width: place.rect.x1 as i32,
-                height: place.rect.y1 as i32,
-                unit,
-                inset: place.inset,
-                client_top: place.client_top,
-                right: place.client_right,
-                bottom: place.client_bottom,
-                flags: place.state,
-            },
+        let active = mark_active(
             code,
-            &mut rect,
-        ) {
-            continue;
-        }
-        let active = mark_active(code, place.active_code, place.hot_flag, place.hot_code);
+            place.hover_code,
+            place.button_down,
+            place.pressed_code,
+        );
         drawn.arrow_icons.push(MarkIcon {
-            x: (rect[0] + (unit >> 1) - 1) as f32,
-            y: (rect[1] + (unit >> 1) - 1) as f32,
+            x: rect[0].wrapping_add(nudge) as f32,
+            y: rect[1].wrapping_add(nudge) as f32,
             id,
-            ink: if active { None } else { Some(palette.text[5]) },
+            ink: (!active).then_some(palette.text[5]),
             scale: active.then_some(1.0),
         });
     }
-    if (place.state & 1) == 1 {
-        let mut width = place.rect.x1 as i32 - (unit + place.inset) * 2;
-        if (place.state & 2) == 2 {
-            width -= 17;
+    if (place.flags & 1) == 1 {
+        for &(code, id) in &marks {
+            if let Some(rect) = background_rect(&place, unit, code) {
+                let active = mark_active(
+                    code,
+                    place.hover_code,
+                    place.button_down,
+                    place.pressed_code,
+                );
+                drawn
+                    .mark_icons
+                    .push(draw_mark_icon(corner_rect(rect), unit, id, active, palette));
+            }
         }
-        if (place.state & 4) == 4 {
-            width -= 20;
+        batch.select(2, 0, false);
+        let mut text_width = width - (unit + place.inset) * 2;
+        if (place.flags & 2) == 2 {
+            text_width -= 17;
         }
-        let x = if (place.title_style & 0x3000) == 0x3000 {
-            (place.rect.x1 as i32 - place.title_width) / 2
-        } else if place.title_x < 1 {
-            place.inset + unit
+        if (place.flags & 4) == 4 {
+            text_width -= 17 + 3;
+        }
+        let x = if (place.frame_style & 0x3000) == 0x3000 {
+            (width - place.title_width) / 2
+        } else if place.title_icon {
+            text_width -= 17;
+            place.inset + 21
         } else {
-            width -= 17;
-            place.inset + 0x15
+            place.inset + unit
         };
-        let y = (place.client_top + place.title_offset + 24 + 1) >> 1;
-        let first = [x - 1, y, width];
-        let second = [x, y + 1, width];
-        drawn.title = Some([first, second]);
+        let y =
+            ((i64::from(place.margin) + i64::from(place.line_height) + 24 + 1) as u64 >> 1) as i32;
+        drawn.title = Some([
+            FormTitle {
+                x: x - 1,
+                y,
+                width: text_width,
+                ink: palette.form[1],
+            },
+            FormTitle {
+                x,
+                y: y + 1,
+                width: text_width,
+                ink: palette.text[6],
+            },
+        ]);
     }
-    drawn.begin_calls = (batch.primitives.len() - start) as u32;
+    drawn.primitives = (batch.primitives.len() - start) as u32;
     drawn
 }
 
-/// A form page's fields for the draw-order model.
+/// A form page's fields for the draw-order model. `flags` is the style
+/// word (0x80 and 0x10_0000 the drop shadows, 0x800 a locked scroll),
+/// `state` the state word (bit 1 hides the page after its background).
 #[derive(Debug, Clone, PartialEq)]
 pub struct FormPagePlace {
     pub rect: GuiRect,
@@ -6745,6 +6700,9 @@ pub struct FormPagePlace {
     pub scroll_y: i32,
     pub scale: [f32; 2],
     pub flags: u32,
+    pub state: u32,
+    /// The form's class asks the skin's texture to follow its place.
+    pub texture_follows: bool,
     pub own_background: bool,
     pub parent_clip: [i32; 4],
     pub clip_ok: bool,
@@ -6759,6 +6717,7 @@ pub struct FormPage {
     pub background_calls: u32,
     pub clip: [i32; 4],
     pub visible: bool,
+    /// The translation the page's contents draw at, from the form's place.
     pub origin: [i32; 2],
     pub scroll: [i32; 2],
     pub lines: Vec<[(f32, f32); 4]>,
@@ -6777,6 +6736,9 @@ pub fn draw_form_page(
     palette: &SkinPalette,
 ) -> FormPage {
     batch.select(0x10, 0, false);
+    if place.texture_follows {
+        batch.set_texture_shift(-place.rect.x0, place.rect.y0);
+    }
     let background_calls = u32::from(!place.own_background);
     let client = [
         place.rect.x0 as i32 + place.inset,
@@ -6790,16 +6752,18 @@ pub fn draw_form_page(
     let clip_bottom = (client[1] + client[3]).min(place.parent_clip[1] + place.parent_clip[3]);
     let clip = [clip_x, clip_y, clip_right - clip_x, clip_bottom - clip_y];
     let overlap = clip[2] > 0 && clip[3] > 0;
-    let (scroll, origin) = if (place.flags & 0x800) != 0 {
-        ([0, 0], [place.rect.x0 as i32, place.rect.y0 as i32])
+    let scroll = if (place.flags & 0x800) != 0 {
+        [0, 0]
     } else {
         let x = ((place.scroll_x - (place.right - place.inset)) as f32 * place.scale[0])
             .round_ties_even() as i32;
         let y = ((place.scroll_y - (place.bottom - place.top)) as f32 * place.scale[1])
             .round_ties_even() as i32;
-        ([x, y], [place.rect.x0 as i32 - x, place.rect.y0 as i32 - y])
+        [x, y]
     };
-    if !overlap || !place.clip_ok {
+    let origin = [place.inset - scroll[0], place.top - scroll[1]];
+    let hidden = (place.state & 1) == 1;
+    if hidden || !overlap || !place.clip_ok {
         return FormPage {
             background_calls,
             clip,
@@ -6818,49 +6782,38 @@ pub fn draw_form_page(
         batch.set_ink(palette.form[3]);
         batch.begin();
         for line in &place.lines {
-            batch.vertex(line.x0, line.y0);
-            batch.vertex(line.x0, line.y1);
-            batch.vertex(line.x1, line.y1);
-            batch.vertex(line.x1, line.y0);
+            let corners = [
+                (line.x0, line.y0),
+                (line.x0, line.y1),
+                (line.x1, line.y1),
+                (line.x1, line.y0),
+            ];
+            for (x, y) in corners {
+                batch.vertex(x, y);
+            }
+            lines.push(corners);
         }
         batch.end_quads();
-        lines = place
-            .lines
-            .iter()
-            .map(|line| {
-                [
-                    (line.x0, line.y0),
-                    (line.x0, line.y1),
-                    (line.x1, line.y1),
-                    (line.x1, line.y0),
-                ]
-            })
-            .collect();
     }
     let child_calls = place.children.iter().filter(|visible| **visible).count() as u32;
-    let shadow = if (place.flags & 0x80) != 0 {
-        batch.select(1, 0, false);
-        let rect = GuiRect::sized(
-            scroll[0] as f32,
-            scroll[1] as f32,
-            (place.right - place.inset) as f32,
-            (place.bottom - place.top) as f32,
-        );
-        shadow_ring(batch, rect, unit, 0x30);
-        Some(rect)
+    let shadow_inset = if (place.flags & 0x80) != 0 {
+        Some((unit, 0x30))
     } else if (place.flags & 0x10_0000) != 0 {
-        batch.select(1, 0, false);
-        let rect = GuiRect::sized(
-            scroll[0] as f32,
-            scroll[1] as f32,
-            (place.right - place.inset) as f32,
-            (place.bottom - place.top) as f32,
-        );
-        shadow_ring(batch, rect, unit * 4, 0x50);
-        Some(rect)
+        Some((unit.wrapping_mul(4), 0x50))
     } else {
         None
     };
+    let shadow = shadow_inset.map(|(inset, alpha)| {
+        batch.select(1, 0, false);
+        let rect = GuiRect::sized(
+            scroll[0] as f32,
+            scroll[1] as f32,
+            (place.right - place.inset) as f32,
+            (place.bottom - place.top) as f32,
+        );
+        shadow_ring(batch, rect, inset, alpha);
+        rect
+    });
     FormPage {
         background_calls,
         clip,
@@ -11828,15 +11781,12 @@ mod tests {
         assert_eq!(rect, [1, 2, 3, 4]);
     }
 
-    #[test]
-    fn a_chrome_draws_the_scrollbar_gutters_and_the_client_fill() {
-        let mut batch = SkinBatch::new();
-        let palette = palette_for_faces();
-        let place = FormChromePlace {
+    fn chrome_place() -> FormChromePlace {
+        FormChromePlace {
             rect: GuiRect::corners(0.0, 0.0, 200.0, 100.0),
             frame_style: 0,
-            flags: 0x2_0000,
-            state: 0x20,
+            flags: 0x2_0020,
+            state: 0,
             margin: 4.0,
             bar: 8.0,
             client_left: 20.0,
@@ -11844,9 +11794,17 @@ mod tests {
             client_right: 180.0,
             client_bottom: 80.0,
             fill: Some([1, 2, 3, 4]),
-            flat: true,
-        };
-        let chrome = draw_form_chrome(&mut batch, place, &palette);
+            has_lines: false,
+        }
+    }
+
+    #[test]
+    fn a_chrome_draws_the_scrollbar_gutters_and_the_client_fill() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        let chrome = draw_form_chrome(&mut batch, chrome_place(), &palette);
+        // Margin 4 and bar 8: each gutter runs from the margin to the bar
+        // outside the client, in the form's fourth shade.
         assert_eq!(chrome.gutters.len(), 4);
         assert_eq!(
             chrome.gutters[0],
@@ -11856,6 +11814,7 @@ mod tests {
             chrome.gutters[3],
             [(12.0, 88.0), (12.0, 96.0), (188.0, 96.0), (188.0, 88.0)]
         );
+        assert_eq!(batch.vertices[0].ink, [10, 3, 0, 40]);
         assert_eq!(
             chrome.fill,
             Some([(20.0, 30.0), (20.0, 80.0), (180.0, 80.0), (180.0, 30.0)])
@@ -11863,30 +11822,34 @@ mod tests {
         assert_eq!(batch.mode, SkinMode::Skin);
         assert_eq!(chrome.frames, 0);
         assert_eq!((chrome.begin_calls, chrome.end_calls), (2, 2));
+
+        // A titled form has no gutter above the client, and a form with
+        // lines draws no fill.
+        let mut titled = SkinBatch::new();
+        let chrome = draw_form_chrome(
+            &mut titled,
+            FormChromePlace {
+                flags: 0x2_0021,
+                has_lines: true,
+                ..chrome_place()
+            },
+            &palette,
+        );
+        assert_eq!(chrome.gutters.len(), 3);
+        assert_eq!(chrome.fill, None);
     }
 
     #[test]
     fn a_flat_styled_chrome_frames_the_form() {
         let mut batch = SkinBatch::new();
         let palette = palette_for_faces();
-        let chrome = draw_form_chrome(
-            &mut batch,
-            FormChromePlace {
-                rect: GuiRect::corners(0.0, 0.0, 200.0, 100.0),
-                frame_style: 0x10,
-                flags: 0,
-                state: 1,
-                margin: 0.0,
-                bar: 0.0,
-                client_left: 0.0,
-                client_top: 0.0,
-                client_right: 0.0,
-                client_bottom: 0.0,
-                fill: None,
-                flat: false,
-            },
-            &palette,
-        );
+        let flat = FormChromePlace {
+            frame_style: 0x10,
+            flags: 0,
+            state: 1,
+            ..chrome_place()
+        };
+        let chrome = draw_form_chrome(&mut batch, flat, &palette);
         assert_eq!(chrome.frames, 1);
         assert_eq!(batch.primitives.len(), 1);
         assert_eq!(batch.vertices_of(&batch.primitives[0]).len(), 16);
@@ -11894,6 +11857,72 @@ mod tests {
             batch.vertices_of(&batch.primitives[0])[0].ink,
             [10, 0, 0, 40]
         );
+
+        // Style bit 0x40 outlines the form in the sixth shade instead.
+        let mut outlined = SkinBatch::new();
+        draw_form_chrome(
+            &mut outlined,
+            FormChromePlace {
+                flags: 0x40,
+                ..flat
+            },
+            &palette,
+        );
+        let outline = outlined.vertices_of(&outlined.primitives[0]);
+        assert_eq!(outline.len(), 8);
+        assert_eq!((outline[0].x, outline[0].y), (199.5, 0.5));
+        assert_eq!(outline[0].ink, [10, 5, 0, 40]);
+    }
+
+    #[test]
+    fn a_chrome_frames_the_client_two_pixels_out() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        let chrome = draw_form_chrome(
+            &mut batch,
+            FormChromePlace {
+                frame_style: 0x90,
+                flags: 0x40,
+                ..chrome_place()
+            },
+            &palette,
+        );
+        assert_eq!(chrome.frames, 2);
+        // The outlined frame sits a pixel in: 1.5 to 198.5.
+        let outline = batch.vertices_of(&batch.primitives[0]);
+        assert_eq!((outline[1].x, outline[1].y), (1.5, 1.5));
+        // The client frame runs from 18, 28 to 182, 82, the sixth shade
+        // outside.
+        let client = batch.vertices_of(&batch.primitives[1]);
+        assert_eq!((client[1].x, client[1].y), (18.5, 28.5));
+        assert_eq!((client[0].x, client[0].y), (181.0, 28.5));
+        assert_eq!(client[0].ink, [10, 5, 0, 40]);
+        assert_eq!(client[8].ink, [10, 0, 0, 40]);
+    }
+
+    fn background_place() -> FormBackgroundPlace {
+        FormBackgroundPlace {
+            rect: GuiRect::corners(0.0, 0.0, 200.0, 100.0),
+            inset: 5,
+            client_top: 24,
+            client_right: 180,
+            client_bottom: 90,
+            state: 0,
+            flags: 0,
+            frame_style: 0,
+            margin: 4,
+            bar: 8,
+            has_lines: false,
+            fill: None,
+            vertical: None,
+            horizontal: None,
+            title_width: 0,
+            title_icon: false,
+            line_height: 0,
+            hover_code: 0,
+            pressed_code: 0,
+            button_down: false,
+        }
     }
 
     #[test]
@@ -11903,28 +11932,10 @@ mod tests {
         let drawn = draw_form_background(
             &mut batch,
             FormBackgroundPlace {
-                rect: GuiRect::corners(0.0, 0.0, 200.0, 100.0),
-                inset: 5,
-                client_top: 24,
-                client_right: 180,
-                client_bottom: 90,
-                state: 0x40 | 1 | 2,
-                flags: 0,
-                frame_style: 0,
-                margin: 4.0,
-                bar: 8.0,
-                flat: false,
-                fill: None,
-                vertical: None,
-                horizontal: None,
-                title_width: 0,
-                title_x: 0,
-                title_y: 0,
-                title_style: 0,
-                title_offset: 0,
-                active_code: -4,
-                hot_code: 0,
-                hot_flag: false,
+                flags: 0x40 | 1 | 2,
+                line_height: 13,
+                hover_code: -4,
+                ..background_place()
             },
             4,
             &palette,
@@ -11932,15 +11943,131 @@ mod tests {
         assert!(drawn.rounded);
         assert!(drawn.chrome);
         assert!(drawn.title_bar);
+        // The close mark: 17 wide, a unit in from the right, from unit − 1
+        // down to 27 − unit.
         assert_eq!(drawn.mark_rects, vec![[179, 3, 196, 23]]);
         assert_eq!(drawn.mark_icons.len(), 1);
-        assert_eq!(
-            (drawn.mark_icons[0].x, drawn.mark_icons[0].y),
-            (181.0, 6.0)
-        );
+        assert_eq!((drawn.mark_icons[0].x, drawn.mark_icons[0].y), (181.0, 6.0));
         assert_eq!(drawn.mark_icons[0].scale, Some(1.0));
-        assert_eq!(drawn.title, Some([[8, 24, 165], [9, 25, 165]]));
+        // Width 200 − 2 × (4 + 5) − 17 = 165 at x 5 + 4; y is
+        // (4 + 13 + 24 + 1) / 2 = 21.
+        let title = drawn.title.expect("a title");
+        assert_eq!(
+            title,
+            [
+                FormTitle {
+                    x: 8,
+                    y: 21,
+                    width: 165,
+                    ink: [10, 1, 0, 40]
+                },
+                FormTitle {
+                    x: 9,
+                    y: 22,
+                    width: 165,
+                    ink: [40, 6, 0, 70]
+                },
+            ]
+        );
         assert_eq!(batch.vertices_of(&batch.primitives[0]).len(), 16);
+        // Shell, title gradient, then the hovered mark's two bevels and
+        // outline.
+        assert_eq!(drawn.primitives, 5);
+    }
+
+    #[test]
+    fn a_vertical_scrollbar_places_its_arrows_and_trough() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        let drawn = draw_form_background(
+            &mut batch,
+            FormBackgroundPlace {
+                flags: 0x200,
+                vertical: Some(FormScroll {
+                    position: 30,
+                    length: 20,
+                }),
+                hover_code: -9,
+                pressed_code: -10,
+                button_down: true,
+                ..background_place()
+            },
+            4,
+            &palette,
+        );
+        assert_eq!(drawn.arrow_icons.len(), 2);
+        assert_eq!(
+            (drawn.arrow_icons[0].x, drawn.arrow_icons[0].y),
+            (181.0, 25.0)
+        );
+        assert_eq!(drawn.arrow_icons[0].id, 4);
+        assert_eq!(drawn.arrow_icons[0].ink, None);
+        assert_eq!(drawn.arrow_icons[0].scale, Some(1.0));
+        // The lower arrow is pressed with the button down: not active.
+        assert_eq!(drawn.arrow_icons[1].id, 5);
+        assert_eq!(drawn.arrow_icons[1].ink, Some([40, 5, 0, 70]));
+        assert_eq!(drawn.scroll_shadows.len(), 1);
+        assert_eq!(drawn.scroll_shadows[0], [180, 50, 15, 11]);
+        assert_eq!(
+            drawn.scroll_frames,
+            vec![[180, 24, 195, 39], [180, 80, 195, 95]]
+        );
+        assert_eq!(drawn.scroll_bars, vec![[180, 30, 195, 50]]);
+        // Frame, shadow, two frame slots (the pressed one in the control
+        // group's shades 4 and 1), then the bar's gradient boxes.
+        let pressed = batch.vertices_of(&batch.primitives[5]);
+        assert_eq!(pressed[0].ink, [30, 1, 0, 60]);
+        assert_eq!(batch.texture_shift, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_horizontal_thumb_shifts_the_texture_while_it_draws() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        let drawn = draw_form_background(
+            &mut batch,
+            FormBackgroundPlace {
+                flags: 0x100,
+                horizontal: Some(FormScroll {
+                    position: 40,
+                    length: 30,
+                }),
+                ..background_place()
+            },
+            4,
+            &palette,
+        );
+        assert_eq!(
+            drawn.scroll_frames,
+            vec![[5, 80, 20, 95], [165, 80, 180, 95]]
+        );
+        assert_eq!(drawn.scroll_bars, vec![[40, 80, 70, 95]]);
+        let thumb = batch.primitives.last().expect("a thumb outline");
+        assert_eq!(thumb.texture_shift, [-40.0 / 512.0, 0.0]);
+        assert_eq!(batch.texture_shift, [0.0, 0.0]);
+        assert_eq!(drawn.arrow_icons.len(), 2);
+    }
+
+    fn page_place() -> FormPagePlace {
+        FormPagePlace {
+            rect: GuiRect::corners(10.0, 20.0, 210.0, 140.0),
+            inset: 5,
+            top: 24,
+            right: 200,
+            bottom: 130,
+            scroll_x: 0,
+            scroll_y: 0,
+            scale: [1.0, 1.0],
+            flags: 0,
+            state: 0,
+            texture_follows: false,
+            own_background: false,
+            parent_clip: [0, 0, 1000, 1000],
+            clip_ok: true,
+            lines: Vec::new(),
+            controls: 0,
+            children: Vec::new(),
+        }
     }
 
     #[test]
@@ -11950,24 +12077,13 @@ mod tests {
         let page = draw_form_page(
             &mut batch,
             FormPagePlace {
-                rect: GuiRect::corners(10.0, 20.0, 210.0, 140.0),
-                inset: 5,
-                top: 24,
-                right: 200,
-                bottom: 130,
-                scroll_x: 0,
-                scroll_y: 0,
-                scale: [1.0, 1.0],
-                flags: 0,
-                own_background: false,
-                parent_clip: [0, 0, 1000, 1000],
-                clip_ok: true,
                 lines: vec![
                     GuiRect::sized(0.0, 0.0, 10.0, 10.0),
                     GuiRect::sized(0.0, 20.0, 10.0, 10.0),
                 ],
                 controls: 5,
                 children: vec![true, false, true],
+                ..page_place()
             },
             4,
             &palette,
@@ -11975,9 +12091,16 @@ mod tests {
         assert!(page.visible);
         assert_eq!(page.background_calls, 1);
         assert_eq!(page.clip, [15, 44, 195, 106]);
+        // The scroll is the stored offset less the client's extent:
+        // 0 − (200 − 5) and 0 − (130 − 24); the contents translate by the
+        // inset and the top less that.
         assert_eq!(page.scroll, [-195, -106]);
-        assert_eq!(page.origin, [205, 126]);
+        assert_eq!(page.origin, [200, 130]);
         assert_eq!(page.lines.len(), 2);
+        assert_eq!(
+            batch.vertices_of(&batch.primitives[0])[0].ink,
+            [10, 3, 0, 40]
+        );
         assert_eq!(page.control_calls, 5);
         assert_eq!(page.child_calls, 2);
         assert_eq!(page.shadow, None);
@@ -11985,78 +12108,72 @@ mod tests {
         let locked = draw_form_page(
             &mut batch,
             FormPagePlace {
-                rect: GuiRect::corners(10.0, 20.0, 210.0, 140.0),
-                inset: 5,
-                top: 24,
-                right: 200,
-                bottom: 130,
-                scroll_x: 0,
-                scroll_y: 0,
-                scale: [1.0, 1.0],
                 flags: 0x800,
                 own_background: true,
-                parent_clip: [0, 0, 1000, 1000],
-                clip_ok: true,
-                lines: Vec::new(),
-                controls: 0,
-                children: Vec::new(),
+                ..page_place()
             },
             4,
             &palette,
         );
         assert_eq!(locked.scroll, [0, 0]);
-        assert_eq!(locked.origin, [10, 20]);
+        assert_eq!(locked.origin, [5, 24]);
         assert_eq!(locked.background_calls, 0);
 
+        let refused = draw_form_page(
+            &mut batch,
+            FormPagePlace {
+                clip_ok: false,
+                controls: 3,
+                children: vec![true],
+                ..page_place()
+            },
+            4,
+            &palette,
+        );
+        assert!(!refused.visible);
+        assert_eq!(refused.control_calls, 0);
+        assert_eq!(refused.child_calls, 0);
+
+        // State bit 1 hides the page after its background.
         let hidden = draw_form_page(
             &mut batch,
             FormPagePlace {
-                rect: GuiRect::corners(10.0, 20.0, 210.0, 140.0),
-                inset: 5,
-                top: 24,
-                right: 200,
-                bottom: 130,
-                scroll_x: 0,
-                scroll_y: 0,
-                scale: [1.0, 1.0],
-                flags: 0,
-                own_background: false,
-                parent_clip: [0, 0, 1000, 1000],
-                clip_ok: false,
-                lines: Vec::new(),
+                state: 1,
                 controls: 3,
-                children: vec![true],
+                ..page_place()
             },
             4,
             &palette,
         );
         assert!(!hidden.visible);
-        assert_eq!(hidden.control_calls, 0);
-        assert_eq!(hidden.child_calls, 0);
+        assert_eq!((hidden.background_calls, hidden.control_calls), (1, 0));
 
         let clipped = draw_form_page(
             &mut batch,
             FormPagePlace {
-                rect: GuiRect::corners(10.0, 20.0, 210.0, 140.0),
-                inset: 5,
-                top: 24,
-                right: 200,
-                bottom: 130,
-                scroll_x: 0,
-                scroll_y: 0,
-                scale: [1.0, 1.0],
-                flags: 0,
-                own_background: false,
                 parent_clip: [0, 0, 50, 50],
-                clip_ok: true,
-                lines: Vec::new(),
-                controls: 0,
-                children: Vec::new(),
+                ..page_place()
             },
             4,
             &palette,
         );
         assert_eq!(clipped.clip, [15, 44, 35, 6]);
+    }
+
+    #[test]
+    fn a_following_texture_takes_the_form_place() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        draw_form_page(
+            &mut batch,
+            FormPagePlace {
+                texture_follows: true,
+                ..page_place()
+            },
+            4,
+            &palette,
+        );
+        assert_eq!(batch.texture_shift, [-10.0 / 512.0, 20.0 / 512.0]);
     }
 
     #[test]
@@ -12066,21 +12183,9 @@ mod tests {
         let page = draw_form_page(
             &mut batch,
             FormPagePlace {
-                rect: GuiRect::corners(10.0, 20.0, 210.0, 140.0),
-                inset: 5,
-                top: 24,
-                right: 200,
-                bottom: 130,
-                scroll_x: 0,
-                scroll_y: 0,
-                scale: [1.0, 1.0],
                 flags: 0x80,
                 own_background: true,
-                parent_clip: [0, 0, 1000, 1000],
-                clip_ok: true,
-                lines: Vec::new(),
-                controls: 0,
-                children: Vec::new(),
+                ..page_place()
             },
             4,
             &palette,
@@ -12091,6 +12196,21 @@ mod tests {
         let primitive = batch.primitives.last().expect("a shadow draw");
         assert_eq!(batch.vertices_of(primitive).len(), 16);
         assert_eq!(batch.vertices_of(primitive)[0].ink, [0, 0, 0, 0x30]);
+        // The scroll lock does not drop the shadow.
+        let locked = draw_form_page(
+            &mut batch,
+            FormPagePlace {
+                flags: 0x880,
+                own_background: true,
+                ..page_place()
+            },
+            4,
+            &palette,
+        );
+        assert_eq!(
+            locked.shadow,
+            Some(GuiRect::corners(0.0, 0.0, 195.0, 106.0))
+        );
     }
 
     fn label_place(style: u32, state: u32) -> ControlLabelPlace {
@@ -12207,58 +12327,6 @@ mod tests {
         assert_eq!(
             (cursor.begin_calls, cursor.end_calls, cursor.blend),
             (1, 1, 0x201)
-        );
-    }
-
-    #[test]
-    fn a_vertical_scrollbar_places_its_arrows_and_trough() {
-        let mut batch = SkinBatch::new();
-        let palette = palette_for_faces();
-        let drawn = draw_form_background(
-            &mut batch,
-            FormBackgroundPlace {
-                rect: GuiRect::corners(0.0, 0.0, 200.0, 100.0),
-                inset: 5,
-                client_top: 24,
-                client_right: 180,
-                client_bottom: 90,
-                state: 0x200,
-                flags: 0,
-                frame_style: 0,
-                margin: 4.0,
-                bar: 8.0,
-                flat: false,
-                fill: None,
-                vertical: Some(FormScroll {
-                    position: 30,
-                    length: 20,
-                }),
-                horizontal: None,
-                title_width: 0,
-                title_x: 0,
-                title_y: 0,
-                title_style: 0,
-                title_offset: 0,
-                active_code: -9,
-                hot_code: -9,
-                hot_flag: false,
-            },
-            4,
-            &palette,
-        );
-        assert_eq!(drawn.arrow_icons.len(), 2);
-        assert_eq!(
-            (drawn.arrow_icons[0].x, drawn.arrow_icons[0].y),
-            (181.0, 25.0)
-        );
-        assert_eq!(drawn.arrow_icons[0].id, 4);
-        assert_eq!(drawn.arrow_icons[0].ink, None);
-        assert_eq!(drawn.arrow_icons[0].scale, Some(1.0));
-        assert_eq!(drawn.scroll_shadows.len(), 1);
-        assert_eq!(drawn.scroll_shadows[0], [180, 50, 15, 11]);
-        assert_eq!(
-            drawn.scroll_bars,
-            vec![[180, 30, 195, 50], [179, 30, 196, 50]]
         );
     }
 }
