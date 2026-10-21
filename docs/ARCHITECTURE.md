@@ -44,7 +44,10 @@ Rules:
 
 Player input and AI both produce the same `ControlIntent` component. The
 simulation never reads raw input. This keeps AI on equal footing with the
-player and makes replays a recording of intents.
+player and makes replays a recording of intents. Keyboard, mouse and the
+gamepad reader (`exa_game::gamepad`, on Bevy's gamepad backend) feed the
+player's systems; the pad's Steam Input action sets, dead zones, command
+word and default binding table are in [PLAYER.md](PLAYER.md#gamepad).
 
 ## Data flow for an asset
 

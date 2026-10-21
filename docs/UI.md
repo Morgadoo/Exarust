@@ -1619,10 +1619,15 @@ Exarust applies:
 - **Controls**: the binding file's table is read and written; the page's
   22 rows (each with a key cell, Power Tree included) show the keys' names;
   a click starts a rebinding of the page's copy and the next key or mouse
-  button replaces the slot (Escape cancels); Apply commits the copy. The controller-mode switch
-  sets `InputMode` (0 or 51) for Apply; Enable Rumble is a session flag with
-  no effect (Exarust has no gamepad), and Configure Controller is not
-  reproduced (it opens Steam Input's binding screen). The key-name rules are
+  button replaces the slot (Escape cancels); Apply commits the copy. The
+  controller-mode switch sets `InputMode` (0 or 51) for Apply and the live
+  controller flag, which the running game copies into the saved bindings'
+  controller flag; the player then reads the gamepad
+  ([PLAYER.md](PLAYER.md), Gamepad). Enable Rumble is a session flag: the
+  gamepad reader computes the original's motor speeds, but the original's
+  vibration wrapper is a stub that sends nothing, so there is no visible
+  effect. Configure Controller is not reproduced (it opens Steam Input's
+  binding screen). The key-name rules are
   the original's: the mouse flag's fourth, fifth and sixth codes are
   "Mouse 3/4/5", codes with bit `0x4000` are `<code>`, and other codes are
   the system's key name in title case. The original's codes are scan codes
@@ -1637,6 +1642,9 @@ has one shader), texture quality and texture detail (the texture loader's
 retail user's values; the live options are not pushed into it yet), shadow
 detail (no per-detail shadow path), vertex-buffer,
 mipmap, swap-copy and GI-precision switches (the GI is already the
-original's 8-bit low-precision format), the aim-speed scaling, controller
-and Steam Input bindings, the video-device and video-memory readouts, and
-the shader-cache progress screen (Bevy compiles shaders as needed).
+original's 8-bit low-precision format), the video-device and video-memory
+readouts, and the shader-cache progress screen (Bevy compiles shaders as
+needed). The aim-speed scaling and the controller bindings are in: it scales
+the gamepad's look rate and the default pad table plays the game
+([PLAYER.md](PLAYER.md), Gamepad); Steam's own binding screen and prompts
+are not, since Exarust does not link Steam.

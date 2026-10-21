@@ -303,6 +303,19 @@ held marks and the torn-out AR crystal trigger; the item card's request,
 its 200 ms delay timer and its description box. The panel is not drawn or bound to an
 input form yet; the running game has no inventory screen to host it.
 
+The gamepad (`gamepad`) reproduces the original's Steam Input action sets on
+Bevy's gamepad backend instead of Steam: the menu set and the interact and
+combat gameplay sets with their digital and analog actions and manifest
+names, a documented default binding table, the menu reader's 0.25 dead zone,
+400/150/30 ms repeats, three-millisecond set priming, cursors and directional
+control picking, the focus stack, and the gameplay reader's camera-relative
+move, aim, look dead zones and AimSpeed scale, zoom, step modes, 500 ms power
+hold, command word and rumble. The player reads it for movement, combat
+steps, aim, attack and alternate attack, crouch, sprint, weapon swap,
+combat mode and the chase camera; the controls page's `InputMode` drives its
+controller flag. There is no Steam library, no binding panel and no floating
+gamepad keyboard ([`docs/PLAYER.md`](../../docs/PLAYER.md#gamepad)).
+
 ## Scope
 
 - App states (boot → menu → loading → in-game).

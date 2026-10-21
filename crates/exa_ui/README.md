@@ -282,6 +282,10 @@ slider steps and labels for the graphics, audio and input options, the
 anti-aliasing row disabled while super-sampling is on, the checkbox and
 slider effects (live, draft or session only), the aim-speed row, the
 Controls rows' key cells and binding slots, and the tab/button actions ([`docs/UI.md`](../../docs/UI.md#settings-options)).
+Its controller-mode switch feeds the saved bindings' controller flag and the
+gamepad reader in `exa_game::gamepad`; Enable Rumble still has no visible
+effect because the original's vibration call is a stub. Steam's binding
+panel and button prompts are Steam's own and are not drawn ([`docs/PLAYER.md`](../../docs/PLAYER.md#gamepad)).
 
 The forms of the arena and the teleporter (see
 [`docs/UI.md`](../../docs/UI.md), Forms), each read from the original's
