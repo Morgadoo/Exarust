@@ -630,6 +630,32 @@ fn the_raw_fallback_scales_its_stick_and_marks_the_run() {
 }
 
 #[test]
+fn the_plugin_reads_a_connected_bevy_gamepad_into_the_readers() {
+    use bevy::time::TimePlugin;
+
+    let mut app = App::new();
+    app.add_plugins((TimePlugin, GamepadPlugin))
+        .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_millis(10),
+        ));
+    let mut pad = Gamepad::default();
+    pad.digital_mut().press(GamepadButton::South);
+    pad.analog_mut().set(GamepadAxis::LeftStickX, 0.5);
+    app.world_mut().spawn((pad, GamepadSettings::default()));
+    app.update();
+    // The first frame primes the reader; the second reads the held keys.
+    app.update();
+    let status = *app.world().resource::<PadStatus>();
+    assert!(status.connected);
+    assert!(status.auto);
+    assert!(status.controller);
+    let play = app.world().resource::<PlayPad>();
+    assert!(play.frame().state & command::USE != 0);
+    assert_eq!(play.frame().move_raw, Vec2::new(0.5, 0.0));
+    assert_eq!(play.frame().move_world, Vec3::new(0.5, 0.0, 0.0));
+}
+
+#[test]
 fn pad_activity_counts_a_button_or_a_half_pushed_stick() {
     let pad = Gamepad::default();
     assert!(!pad_activity(&pad));
