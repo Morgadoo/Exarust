@@ -2025,6 +2025,31 @@ mod tests {
         (app, body)
     }
 
+    /// The pad's attack trigger requests the same attack the left button
+    /// does.
+    #[test]
+    fn the_pad_trigger_requests_an_attack() {
+        use crate::gamepad::{Id, PadSample, PadStatus, PlayContext, PlayPad};
+        let (mut app, body) = attack_app();
+        let mut sample = PadSample::default();
+        sample.connected = true;
+        sample.set_digital(Id::Combat, true);
+        let ctx = PlayContext::default();
+        let mut pad = PlayPad::default();
+        pad.update(0, &sample, ctx);
+        pad.update(3, &sample, ctx);
+        pad.update(4, &sample, ctx);
+        assert!(pad.attack_held());
+        app.insert_resource(pad).insert_resource(PadStatus {
+            connected: true,
+            controller: true,
+        });
+        app.world_mut().run_schedule(FixedPreUpdate);
+        let anim = app.world().get::<Animator>(body).unwrap();
+        assert!(!anim.looping, "{}", anim.action);
+        assert!(anim.action.starts_with("Attack"), "{}", anim.action);
+    }
+
     /// One behaviour tick with the left button down or up, the game clock
     /// one tick on; the clip it plays after.
     fn request_tick(app: &mut App, body: Entity, down: bool) -> (String, bool) {

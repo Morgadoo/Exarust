@@ -581,6 +581,51 @@ fn the_pad_status_needs_a_connected_pad_and_controller_mode() {
 }
 
 #[test]
+fn the_set_registry_starts_on_interact_and_switches_with_the_variant() {
+    let mut sets = SetRegistry::default();
+    assert_eq!(sets.names(), ["Set_Interact", "Set_Combat"]);
+    assert_eq!(sets.variant(), Some(Variant::Interact));
+    assert!(!sets.activate(1));
+    assert!(sets.activate(2));
+    assert_eq!(sets.variant(), Some(Variant::Combat));
+    assert_eq!(
+        sets.active(),
+        ActiveSet::Gameplay {
+            index: 1,
+            variant: Variant::Combat
+        }
+    );
+    assert!(sets.set_variant(Variant::Interact));
+    assert_eq!(sets.variant(), Some(Variant::Interact));
+    assert!(sets.activate(0));
+    assert_eq!(sets.active(), ActiveSet::Menus);
+    assert_eq!(sets.variant(), None);
+    assert!(sets.apply(FocusChange::Gameplay(1)));
+    assert_eq!(sets.variant(), Some(Variant::Combat));
+    assert!(!sets.apply(FocusChange::None));
+    assert_eq!(sets.register("Set_Test"), Some(2));
+}
+
+#[test]
+fn a_picked_control_receives_the_focus_bit_unless_its_form_is_full_screen() {
+    assert_eq!(picked_key(7, true), 7);
+    assert_eq!(picked_key(7, false), 0x1_0007);
+}
+
+#[test]
+fn the_raw_fallback_scales_its_stick_and_marks_the_run() {
+    let (move_world, fast) = raw_move(16384, 0, Vec3::X, Vec3::Z);
+    assert!((move_world.x - 0.5).abs() < 1e-5, "{move_world:?}");
+    assert!(!fast);
+    let (_, fast) = raw_move(25000, 25000, Vec3::X, Vec3::Z);
+    assert!(fast);
+    let (move_world, _) = raw_move(32767, 0, Vec3::X, Vec3::Z);
+    assert!((move_world.x - 0.999_969_5).abs() < 1e-5);
+    assert!(raw_button(0x40));
+    assert!(!raw_button(0xbf));
+}
+
+#[test]
 fn the_default_table_reads_bevys_buttons_and_sticks() {
     let mut pad = Gamepad::default();
     pad.digital_mut().press(GamepadButton::RightTrigger2);

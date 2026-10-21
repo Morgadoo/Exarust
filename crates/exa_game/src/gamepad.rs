@@ -784,6 +784,141 @@ pub fn pick_control(cursor: Vec2, origin: IVec2, targets: &[PickTarget]) -> Opti
     best
 }
 
+/// The active action set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActiveSet {
+    /// The menu set.
+    Menus,
+    /// Registered gameplay set `index` (zero-based) with its variant.
+    Gameplay { index: usize, variant: Variant },
+}
+
+/// The registered gameplay sets and the active set, as the original's set
+/// table holds them: the interact set and the combat set, registered in that
+/// order, with the interact set active at start-up. Switching a set primes
+/// the input reader, as the original's activation callback does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetRegistry {
+    names: Vec<&'static str>,
+    active: ActiveSet,
+}
+
+impl Default for SetRegistry {
+    fn default() -> Self {
+        Self {
+            names: vec!["Set_Interact", "Set_Combat"],
+            active: ActiveSet::Gameplay {
+                index: 0,
+                variant: Variant::Interact,
+            },
+        }
+    }
+}
+
+impl SetRegistry {
+    /// The registered set names, in index order.
+    pub fn names(&self) -> &[&'static str] {
+        &self.names
+    }
+
+    /// The active set.
+    pub fn active(&self) -> ActiveSet {
+        self.active
+    }
+
+    /// The gameplay set's variant, or `None` for the menus.
+    pub fn variant(&self) -> Option<Variant> {
+        match self.active {
+            ActiveSet::Menus => None,
+            ActiveSet::Gameplay { variant, .. } => Some(variant),
+        }
+    }
+
+    /// Registers a gameplay set with `name`; returns its index, or `None`
+    /// when the table is full (the original's registration fails when its
+    /// eight-entry table is full).
+    pub fn register(&mut self, name: &'static str) -> Option<usize> {
+        if self.names.len() >= 8 {
+            return None;
+        }
+        self.names.push(name);
+        Some(self.names.len() - 1)
+    }
+
+    /// Activates set `index`: 0 is the menus; 1 and up are the registered
+    /// gameplay sets. Returns whether the active set changed.
+    pub fn activate(&mut self, index: usize) -> bool {
+        let next = if index == 0 {
+            ActiveSet::Menus
+        } else {
+            let at = index - 1;
+            let variant = match self.names.get(at) {
+                Some(&"Set_Combat") => Variant::Combat,
+                _ => Variant::Interact,
+            };
+            ActiveSet::Gameplay { index: at, variant }
+        };
+        let changed = next != self.active;
+        self.active = next;
+        changed
+    }
+
+    /// Activates the set a focus change names.
+    pub fn apply(&mut self, change: FocusChange) -> bool {
+        match change {
+            FocusChange::Menus => self.activate(0),
+            FocusChange::Gameplay(index) => self.activate(index + 1),
+            FocusChange::None => false,
+        }
+    }
+
+    /// Switches to the variant's gameplay set.
+    pub fn set_variant(&mut self, variant: Variant) -> bool {
+        let index = self
+            .names
+            .iter()
+            .position(|name| *name == variant.set_name())
+            .map_or(0, |at| at + 1);
+        self.activate(index)
+    }
+}
+
+impl Variant {
+    /// The original's manifest name for the set.
+    pub const fn set_name(self) -> &'static str {
+        match self {
+            Variant::Interact => "Set_Interact",
+            Variant::Combat => "Set_Combat",
+        }
+    }
+}
+
+/// The key a picked control receives: its id, or its id with 0x10000 set
+/// when the form is not full screen (the original's send-key rule).
+pub fn picked_key(id: i32, full_screen: bool) -> i32 {
+    if full_screen { id } else { id | 0x1_0000 }
+}
+
+/// The raw gamepad fallback's move, from a 16-bit stick pair: each axis over
+/// 32768, turned into the camera's frame, with the squared magnitude over
+/// 0.8 marked fast. The original uses this only when Steam Input is not
+/// available; Exarust's Bevy reader replaces it, but the rule is kept.
+pub fn raw_move(x: i16, y: i16, camera_right: Vec3, camera_forward: Vec3) -> (Vec3, bool) {
+    const SCALE: f32 = 3.051_757_8e-05;
+    let x = f32::from(x) * SCALE;
+    let y = f32::from(y) * SCALE;
+    let right = camera_right.normalize_or_zero();
+    let forward = camera_forward.normalize_or_zero();
+    let move_world = (right * x + forward * y).with_y(0.0);
+    (move_world, 0.8 < f64::from(x * x + y * y))
+}
+
+/// Whether the raw fallback's button word has the one button the original
+/// maps (bit 0x40).
+pub fn raw_button(buttons: u32) -> bool {
+    buttons & 0x40 != 0
+}
+
 /// One form on the focus stack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FocusEntry {

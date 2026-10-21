@@ -275,7 +275,10 @@ the gameplay sets: their actions end in `I` and `C`, and the game switches
 between them with its combat mode. `Inventory` and `Skills` are only in the
 interact set (read only while it is active); `CrouchC` and `AltAction` are
 only in the combat set. Exarust reads whichever variant the player's combat
-mode names.
+mode names. The set table registers `Set_Interact` and `Set_Combat` in that
+order and starts on the interact set; a focus change activates the menus or
+the set a form names, and switching a gameplay set primes the reader
+(`gamepad::SetRegistry`).
 
 | action | set | kind | default Bevy control |
 |---|---|---|---|
