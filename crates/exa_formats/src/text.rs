@@ -173,9 +173,10 @@ pub fn format_hex(value: i64, width: i32) -> String {
         digits.push(HEX_DIGITS[(magnitude % 16) as usize]);
         magnitude >>= 4;
     }
-    // The length is compared as a 32-bit word with `width - 1`.
+    // The original pads when the 32-bit length is not above `width - 1`,
+    // which for every width but `i32::MIN` is `len < width`.
     let len = digits.len() as i32;
-    let pad = if width != i32::MIN && len <= width - 1 {
+    let pad = if width != i32::MIN && len < width {
         (width - len) as usize
     } else {
         0
