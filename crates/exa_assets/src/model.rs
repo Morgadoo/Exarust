@@ -1035,17 +1035,7 @@ impl ModelJob {
         }
         let body_model = pack == PackKind::Resource && is_body_model(&entry);
         let skinned = pack == PackKind::Characters || body_model;
-        let skins_of = |scene: &Scene| -> Vec<Option<(u16, Vec<VertexSkin>)>> {
-            scene
-                .nodes
-                .iter()
-                .enumerate()
-                .map(|(index, node)| match &node.body {
-                    NodeBody::Mesh(mesh) if skinned => node_skin(scene, index, mesh, pack),
-                    _ => None,
-                })
-                .collect()
-        };
+        let skins_of = |scene: &Scene| scene_skins(scene, skinned, pack);
         // A garment takes its weights from the unmorphed body before it is
         // morphed; the body's parts are skinned on their morphed shape and
         // joints.
@@ -1105,6 +1095,23 @@ fn smooth_node(node: &mut Node, flags: &[u32]) {
         Ok(None) => warn!("MeshSmooth: {} has too many faces to subdivide", node.name),
         Err(e) => warn!("MeshSmooth: {}: {e}", node.name),
     }
+}
+
+/// The skin weights of every node of a scene, when it is skinned at all.
+fn scene_skins(
+    scene: &Scene,
+    skinned: bool,
+    pack: PackKind,
+) -> Vec<Option<(u16, Vec<VertexSkin>)>> {
+    scene
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| match &node.body {
+            NodeBody::Mesh(mesh) if skinned => node_skin(scene, index, mesh, pack),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Skin weights of a node's mesh: worked out from its seams for body parts
@@ -1883,6 +1890,57 @@ mod tests {
             assert_eq!(rigid.mobility_divisor, divisor, "{entry}");
             assert_eq!(rigid.mobility(), rigid.body.mobility / divisor, "{entry}");
         }
+    }
+
+    /// Every shipped body and garment builds weights that sum to one
+    /// (skipped without the game). The skinner runs on the parsed scenes,
+    /// without building meshes.
+    #[test]
+    fn every_shipped_body_and_garment_skins() {
+        let Some(dir) = crate::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(dir).unwrap();
+        let mut bodies = 0;
+        let mut parts = 0;
+        for kind in [PackKind::Resource, PackKind::Characters] {
+            let Some(pack) = game.pack(kind) else {
+                continue;
+            };
+            for entry in pack.entries() {
+                let body = kind == PackKind::Resource && is_body_model(&entry.name);
+                if kind != PackKind::Characters && !body {
+                    continue;
+                }
+                let Ok(scene) = Scene::parse(pack.bytes(entry)) else {
+                    continue;
+                };
+                if body {
+                    bodies += 1;
+                }
+                let skins = scene_skins(&scene, true, kind);
+                for (index, skin) in skins.into_iter().enumerate() {
+                    let Some((bone, skin)) = skin else { continue };
+                    let NodeBody::Mesh(mesh) = &scene.nodes[index].body else {
+                        continue;
+                    };
+                    parts += 1;
+                    assert_eq!(skin.len(), mesh.positions.len(), "{} {bone}", entry.name);
+                    for weights in &skin {
+                        let total: f32 = weights.iter().map(|(_, w)| w).sum();
+                        assert!(
+                            (total - 1.0).abs() < 1e-4,
+                            "{} bone {bone}: {weights:?}",
+                            entry.name
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            bodies >= 10 && parts > 2000,
+            "{bodies} bodies, {parts} parts"
+        );
     }
 
     /// Which shipped materials show blood, and how (skipped without the
