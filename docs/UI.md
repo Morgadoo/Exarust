@@ -1861,17 +1861,21 @@ plain draw and input records.
   and is its wrapped line count times four units plus one tall; the
   height eases over 500 units; a left click carrying `0x2000` picks the
   hovered entry and the panel becomes the player's dialogue.
-- **Pickers** (`exa_ui::pickers`): the marker is the normalised point
+- **Pickers** (`exa_ui::picker_fields`): the marker is the normalised point
   times the field's size less one; a stick moves it by hundredths and
   clamps it (an unordered value becomes 0). The physique diamond maps a
   point above the middle to the third body-shape weight and one below to
   the first two, with the product as the fourth.
 - **Popups** (`exa_ui::popups`): the item card is 268 by 260, its fade a
-  256-unit squared curve; its icon is centred, or on the stats card
-  thirteen units in and one down, pushed by any icon height over eleven
-  units. The container popup holds a 544-byte panel at eight units and
-  saves it on close; the parchment is sized to its texture in six-unit
-  steps and hit-tested through its alpha (0xF0).
+  256-unit squared curve (in: the square of the elapsed share; out: the
+  square of the remaining share); its icon is centred, or on the stats
+  card thirteen units in and one down, pushed by any icon height over
+  eleven units. A left press keeps the card open, a right release or a
+  hover answer of 0 fades it out. The container popup wraps an item panel
+  (a 544-byte object, margin eight units) and destroys it on close; the
+  parchment is a sixth of a unit per texture pixel (so a 64 by 32 map is
+  43 by 21 at four pixels to the unit) and is hit-tested through its
+  texture's alpha (0xF0) at six texture pixels to the unit.
 - **Dialogs and colour** (`exa_ui::dialogs`): the colour window is 402 by
   282 with sixteen controls and the strips black, red, green, blue, red
   and white. The four confirmations are 392 by 112 and close with `0x40`

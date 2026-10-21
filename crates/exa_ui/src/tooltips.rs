@@ -265,12 +265,7 @@ pub struct SkillTipPlace {
 }
 
 /// Places the skill tooltip at a control's screen point.
-pub fn skill_tip_place(
-    anchor: (i32, i32),
-    tall: bool,
-    unit: i32,
-    fade_at: u32,
-) -> SkillTipPlace {
+pub fn skill_tip_place(anchor: (i32, i32), tall: bool, unit: i32, fade_at: u32) -> SkillTipPlace {
     let width = (unit & 1).wrapping_add(unit.wrapping_mul(SKILL_WIDTH_UNITS));
     let height = unit.wrapping_mul(if tall {
         SKILL_HEIGHT_TALL_UNITS

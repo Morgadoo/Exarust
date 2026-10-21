@@ -26,9 +26,9 @@
 
 pub mod blend;
 pub mod character_view;
+pub mod class_select;
 pub mod col_swatch;
 pub mod colour_picker;
-pub mod class_select;
 pub mod colour_swatch;
 pub mod compact_skill;
 pub mod controls;
@@ -56,8 +56,8 @@ pub mod gui_rescale;
 pub mod gui_task;
 pub mod gui_text;
 pub mod heartbeat;
-pub mod help_system;
 pub mod help_screen;
+pub mod help_system;
 pub mod hud;
 pub mod icon_atlas;
 pub mod item_view;
