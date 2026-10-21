@@ -129,6 +129,35 @@ pub fn frustum_half_extents(fov_y_degrees: f32, aspect: f32, near: f32) -> (f32,
     ((height * aspect as f64) as f32, height as f32)
 }
 
+/// Projects a point in the camera's frame to window pixels and depth.
+///
+/// The original takes the point's x, y and z (z towards the viewer), and
+/// for a point in front reaches `x = width/2 + half_width·width·0.5·x / −z`
+/// and `y = height/2 + half_height·height·0.5·y / −z`, then flips y to the
+/// window's top-down pixels and reports `−z` as the depth. A point at or
+/// behind the eye sits on the window edge its other coordinates' signs pick,
+/// with the depth still reported.
+pub fn project_to_screen(
+    window: UVec2,
+    half_width: f32,
+    half_height: f32,
+    point: [f32; 3],
+) -> (f32, f32, f32) {
+    let [x, y, z] = point;
+    let (px, py) = if z >= 0.0 {
+        (
+            if x >= 0.0 { window.x as f32 } else { 0.0 },
+            if y >= 0.0 { window.y as f32 } else { 0.0 },
+        )
+    } else {
+        (
+            window.x as f32 * 0.5 + half_width * window.x as f32 * 0.5 * x / -z,
+            window.y as f32 * 0.5 + half_height * window.y as f32 * 0.5 * y / -z,
+        )
+    };
+    (px, window.y as f32 - py, -z)
+}
+
 /// An integer rectangle in window space, left/top inclusive and right/bottom
 /// exclusive.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -431,6 +460,27 @@ mod tests {
         // Doubling the field of view more than doubles the extents.
         let (_, y2) = frustum_half_extents(90.0, 1.6, 1.0);
         assert!((y2 - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_camera_point_projects_to_window_pixels() {
+        let window = UVec2::new(800, 600);
+        let (x, y, depth) = project_to_screen(window, 0.75, 0.5, [0.0, 0.0, -1.0]);
+        assert_eq!((x, y, depth), (400.0, 300.0, 1.0));
+        // Half an extent across is a quarter of the window from its centre,
+        // then y flips to the top-down pixel row.
+        let (x, y, _) = project_to_screen(window, 0.75, 0.5, [1.0, 1.0, -2.0]);
+        assert!((x - 550.0).abs() < 1e-4, "{x}");
+        assert!((y - 225.0).abs() < 1e-4, "{y}");
+        // At or behind the eye the point sits on a window edge.
+        assert_eq!(
+            project_to_screen(window, 0.75, 0.5, [-1.0, 1.0, 0.0]),
+            (0.0, 0.0, 0.0)
+        );
+        assert_eq!(
+            project_to_screen(window, 0.75, 0.5, [1.0, -1.0, 2.0]),
+            (800.0, 600.0, -2.0)
+        );
     }
 
     #[test]
