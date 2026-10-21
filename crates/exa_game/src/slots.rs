@@ -1539,6 +1539,11 @@ mod tests {
         assert_eq!(loaded.forced_locale, Some(save_package::name("exanima05")));
         assert_eq!(loaded.level_locale, save_package::name("exanima05"));
         assert_eq!(loaded.level_locale_name(), "exanima05");
+        // The session layer applies the forced level too.
+        assert_eq!(
+            slots.load(number, false).unwrap().0.story.level(),
+            "exanima05"
+        );
         assert!(!loaded.has_level_section);
         assert!(!loaded.has_world_characters);
         assert!(!loaded.has_world_objects);

@@ -398,12 +398,26 @@ pub fn read_package(package: &PackageImage) -> Result<Session, SaveError> {
             })
             .collect();
         let journal = Journal::from_entries(entries).unwrap_or_default();
-        session.story = Story::restore(
-            session.story.index(),
-            journal,
-            session.story.topics_used().to_vec(),
-        )
-        .ok_or(SaveError::Malformed)?;
+        let mut index = session.story.index();
+        // The level comes from the header's locale (or `exanima05` when a
+        // transition was cut short); the Exarust payload's index is only a
+        // fallback.
+        let locale = if let Some(forced) = data.story_transition_locale() {
+            Some(forced)
+        } else {
+            Some(data.header.locale())
+        };
+        if let Some(locale) = locale {
+            let name = save_package::name_text(&locale);
+            if let Some(found) = exa_script::story::CAMPAIGN
+                .iter()
+                .position(|level| *level == name)
+            {
+                index = found;
+            }
+        }
+        session.story = Story::restore(index, journal, session.story.topics_used().to_vec())
+            .ok_or(SaveError::Malformed)?;
     }
     Ok(session)
 }
@@ -913,11 +927,13 @@ mod tests {
         header.clock = 50;
         header.seed = 60;
         header.flags = 2 | save_package::STORY_STARTED_FLAG;
+        header.locale = save_package::name("exanima05");
         package.put_section(PLAYER_DATA, &data.write_ordered());
         let loaded = read(&package.to_bytes()).unwrap();
         assert_eq!(loaded.clock, 50);
         assert_eq!(loaded.seed, 60);
         assert_eq!(loaded.start_background, 2);
+        assert_eq!(loaded.story.level(), "exanima05");
 
         let mut session = Session::career("Ash");
         session.company.copper = 4;
