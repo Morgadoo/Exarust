@@ -7,6 +7,17 @@ use bevy::math::{Affine3A, Vec3};
 
 use super::*;
 
+/// A sphere set's bounds are the box around the spheres themselves (their
+/// radii included) and the sphere enclosing them all.
+#[test]
+fn sphere_bounds_include_their_radii() {
+    let b = Bounds::of_spheres(&[(Vec3::ZERO, 10.0), (Vec3::new(100.0, 0.0, 0.0), 20.0)]);
+    assert_eq!(b.centre, Vec3::new(55.0, 0.0, 0.0));
+    assert_eq!(b.half, Vec3::new(65.0, 20.0, 20.0));
+    assert_eq!(b.radius, 65.0);
+    assert_eq!(Bounds::of_spheres(&[]).radius, 0.0);
+}
+
 /// A point's cell floors at 600 cm and keeps its sign.
 #[test]
 fn cells_are_600_cm_and_floor() {

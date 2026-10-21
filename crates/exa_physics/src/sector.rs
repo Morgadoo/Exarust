@@ -26,6 +26,24 @@ use bevy::platform::collections::HashMap;
 
 use crate::intersect::{self, Sweep};
 
+/// The processor's per-component minimum ([`intersect::min_first`]).
+fn min_each(a: Vec3, b: Vec3) -> Vec3 {
+    Vec3::new(
+        intersect::min_first(a.x, b.x),
+        intersect::min_first(a.y, b.y),
+        intersect::min_first(a.z, b.z),
+    )
+}
+
+/// The processor's per-component maximum ([`intersect::max_first`]).
+fn max_each(a: Vec3, b: Vec3) -> Vec3 {
+    Vec3::new(
+        intersect::max_first(a.x, b.x),
+        intersect::max_first(a.y, b.y),
+        intersect::max_first(a.z, b.z),
+    )
+}
+
 /// The original's constraint iterations, shared with the solver.
 pub const ITERATIONS: usize = crate::body::LINK_ITERATIONS;
 /// The original's friction passes, shared with the solver.
@@ -311,11 +329,11 @@ impl Bounds {
         );
         for &(centre, radius) in &spheres[1..] {
             let r = Vec3::splat(radius);
-            low = low.min(centre - r);
-            high = high.max(centre + r);
+            low = min_each(low, centre - r);
+            high = max_each(high, centre + r);
         }
         let centre = (low + high) * 0.5;
-        let half = (high - centre).max(Vec3::splat(intersect::MIN_BOUNDS_EXTENT));
+        let half = max_each(high - centre, Vec3::splat(intersect::MIN_BOUNDS_EXTENT));
         let radius = spheres
             .iter()
             .map(|&(c, r)| c.distance(centre) + r)
