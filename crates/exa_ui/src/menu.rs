@@ -1248,6 +1248,188 @@ pub fn select_main_menu(index: i32, stamp: i32, now: i32, sound_ready: bool) -> 
     }
 }
 
+/// The sound cues the main menu asks for.
+pub const SELECT_SOUND: &str = "MenuSel";
+pub const CLICK_SOUND: &str = "MenuClick";
+
+/// The menu music's two themes and their gains.
+pub const MENU_THEME: (&str, f32) = ("MenuTheme", 0.1);
+pub const MENU_THEME_DNB: (&str, f32) = ("MenuTheme_DnB", 0.2);
+
+/// The music toggle: when the flag is clear the drum-and-bass theme plays
+/// at 0.2 and the flag becomes set; when set the plain theme plays at 0.1
+/// and the flag clears.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MusicToggle {
+    pub drum_and_bass: bool,
+    pub theme: &'static str,
+    pub gain: f32,
+}
+
+/// Toggles the main menu's music theme (`b -> MenuTheme_DnB` at 0.2, else
+/// `MenuTheme` at 0.1).
+pub fn toggle_menu_music(flag: bool) -> MusicToggle {
+    if flag {
+        MusicToggle {
+            drum_and_bass: false,
+            theme: MENU_THEME.0,
+            gain: MENU_THEME.1,
+        }
+    } else {
+        MusicToggle {
+            drum_and_bass: true,
+            theme: MENU_THEME_DNB.0,
+            gain: MENU_THEME_DNB.1,
+        }
+    }
+}
+
+/// The row scale a main menu takes: `round(H/135) × 0.125`.
+pub fn menu_row_scale(height: i32) -> f32 {
+    (round_even(f64::from(height) / 135.0) as f32) * 0.125
+}
+
+/// Round to even through a 64-bit integer, as the original's conversion
+/// does.
+fn round_even(value: f64) -> i64 {
+    if !value.is_finite() {
+        return 0;
+    }
+    value.round_ties_even() as i64
+}
+
+/// A menu show's mode: what the shown page is for and what the call sets
+/// up. The app performs the session work; these are the original's fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuShow {
+    /// Story menu: character page mode 2, the story session.
+    Story,
+    /// Arena/class menu: the class selection at mode 0x40.
+    Arena,
+    /// Emblem generation: the same at mode 0x40.
+    Emblem,
+    /// The character screen: mode 2.
+    Character,
+}
+
+impl MenuShow {
+    /// The session mode the show leaves behind.
+    pub fn mode(self) -> u32 {
+        match self {
+            MenuShow::Story | MenuShow::Character => 2,
+            MenuShow::Arena | MenuShow::Emblem => 0x40,
+        }
+    }
+
+    /// Whether the show resets the page flags to the arena page set.
+    pub fn arena_page_flags(self) -> bool {
+        matches!(self, MenuShow::Story | MenuShow::Arena | MenuShow::Emblem)
+    }
+}
+
+/// The main menu's creation defaults, as its constructor sets them: the
+/// sound stamps, the hover limit, the row advance, the title flag and the
+/// form style.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MenuDefaults {
+    pub title: bool,
+    pub sound_ready: bool,
+    pub click_gain: f32,
+    /// `0x2d` (45) in the original's field.
+    pub selection_field: i32,
+    /// `0x46` (70) in the original's field: the row advance in design pixels.
+    pub row_advance: i32,
+    pub style: u32,
+    pub state: u32,
+}
+
+/// The main menu's constructor values.
+pub const MENU_DEFAULTS: MenuDefaults = MenuDefaults {
+    title: true,
+    sound_ready: true,
+    click_gain: 0.37,
+    selection_field: 0x2d,
+    row_advance: 0x46,
+    style: 8,
+    state: 0x1000,
+};
+
+/// The class select's show place: centred across, and down the screen by
+/// `round(row_scale × 370) + round(H − row_scale × 1024) / 2`.
+pub fn class_select_place(width: i32, height: i32, row_scale: f32) -> (i32, i32) {
+    let x = width >> 1;
+    let y = round_even(f64::from(row_scale * 370.0))
+        + (round_even(f64::from(height as f32 - row_scale * 1024.0)) / 2);
+    (x, y as i32)
+}
+
+/// The back key's page change: page 1 goes to the title and page 8 to the
+/// start menu; any other page stays. The sound plays for both moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MenuBack {
+    pub page: i32,
+    pub sound: bool,
+}
+
+/// The back key from `page`.
+pub fn back_main_menu(page: i32) -> MenuBack {
+    match page {
+        1 => MenuBack {
+            page: 0,
+            sound: true,
+        },
+        8 => MenuBack {
+            page: 1,
+            sound: true,
+        },
+        _ => MenuBack { page, sound: false },
+    }
+}
+
+/// The close/submenu helper's effect: the row list's style flags reset and
+/// the form hidden, before the caller removes a child.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CloseSubmenu {
+    pub reset_rows: bool,
+    pub hide: bool,
+    pub sound: bool,
+    pub decrement_pause: bool,
+}
+
+/// The submenu close: rows are reset and the form hidden; a sound plays
+/// when the caller asks for one, and the in-game pause count drops when
+/// the menu is a pause menu.
+pub fn close_submenu(sound: bool, pause_menu: bool) -> CloseSubmenu {
+    CloseSubmenu {
+        reset_rows: true,
+        hide: true,
+        sound,
+        decrement_pause: pause_menu,
+    }
+}
+
+/// The menu page's forward action from a page: page 2 confirms the session
+/// (mode 4 for story, 1 for arena); page 1 and page 8 enter the session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MenuForwardPage {
+    pub page: i32,
+    pub enters: bool,
+    pub session_mode: u32,
+}
+
+/// The forward action of a top-level menu page.
+pub fn forward_page(page: i32, arena: bool) -> MenuForwardPage {
+    MenuForwardPage {
+        page,
+        enters: matches!(page, 1 | 2),
+        session_mode: if page == 2 {
+            if arena { 4 } else { 3 }
+        } else {
+            2
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2075,5 +2257,108 @@ mod tests {
         assert!(!close_settings_menu(false));
         assert!(reset_settings_menu(true));
         assert!(!reset_settings_menu(false));
+    }
+
+    #[test]
+    fn the_menu_music_swaps_themes() {
+        let first = toggle_menu_music(false);
+        assert_eq!(
+            (first.drum_and_bass, first.theme, first.gain),
+            (true, "MenuTheme_DnB", 0.2)
+        );
+        let second = toggle_menu_music(true);
+        assert_eq!(
+            (second.drum_and_bass, second.theme, second.gain),
+            (false, "MenuTheme", 0.1)
+        );
+    }
+
+    #[test]
+    fn the_row_scale_quantises_by_135ths() {
+        assert_eq!(menu_row_scale(1080), 1.0);
+        assert_eq!(menu_row_scale(900), 0.875);
+        assert_eq!(menu_row_scale(453), 0.375);
+        assert_eq!(menu_row_scale(135), 0.125);
+        assert_eq!(menu_row_scale(67), 0.0);
+    }
+
+    #[test]
+    fn the_class_select_sits_where_the_original_puts_it() {
+        assert_eq!(class_select_place(1600, 1014, 1.0), (800, 365));
+        assert_eq!(class_select_place(1600, 1080, 1.0), (800, 398));
+        assert_eq!(class_select_place(800, 600, 0.5), (400, 229));
+    }
+
+    #[test]
+    fn the_back_key_swaps_two_pages() {
+        assert_eq!(
+            back_main_menu(1),
+            MenuBack {
+                page: 0,
+                sound: true
+            }
+        );
+        assert_eq!(
+            back_main_menu(8),
+            MenuBack {
+                page: 1,
+                sound: true
+            }
+        );
+        assert_eq!(
+            back_main_menu(2),
+            MenuBack {
+                page: 2,
+                sound: false
+            }
+        );
+    }
+
+    #[test]
+    fn the_submenu_close_resets_and_hides() {
+        assert_eq!(
+            close_submenu(true, true),
+            CloseSubmenu {
+                reset_rows: true,
+                hide: true,
+                sound: true,
+                decrement_pause: true
+            }
+        );
+        assert!(!close_submenu(false, false).sound);
+    }
+
+    #[test]
+    fn the_forward_page_enters_the_right_session() {
+        assert_eq!(
+            forward_page(2, false),
+            MenuForwardPage {
+                page: 2,
+                enters: true,
+                session_mode: 3
+            }
+        );
+        assert_eq!(forward_page(2, true).session_mode, 4);
+        assert_eq!(forward_page(1, true).session_mode, 2);
+        assert!(!forward_page(0, true).enters);
+    }
+
+    #[test]
+    fn the_constructor_defaults() {
+        assert_eq!(
+            (
+                MENU_DEFAULTS.title,
+                MENU_DEFAULTS.sound_ready,
+                MENU_DEFAULTS.selection_field,
+                MENU_DEFAULTS.row_advance,
+                MENU_DEFAULTS.style,
+                MENU_DEFAULTS.state
+            ),
+            (true, true, 0x2d, 0x46, 8, 0x1000)
+        );
+        assert!((MENU_DEFAULTS.click_gain - 0.37).abs() < 1e-6);
+        assert_eq!(MenuShow::Story.mode(), 2);
+        assert_eq!(MenuShow::Arena.mode(), 0x40);
+        assert!(MenuShow::Arena.arena_page_flags());
     }
 }

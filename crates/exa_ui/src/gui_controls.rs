@@ -108,6 +108,8 @@ pub mod state {
     pub const CHANGING: u32 = 0x10_0000;
     /// A trackbar's activation key is held.
     pub const HELD: u32 = 0x20_0000;
+    /// The control is shown (the visibility helper's bit).
+    pub const SHOWN: u32 = 0x20;
 }
 
 /// The messages a control answers.

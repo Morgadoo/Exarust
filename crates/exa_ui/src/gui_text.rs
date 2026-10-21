@@ -508,6 +508,15 @@ pub fn fit_menu_width(font: &MenuFont, text: &[u8], width: &mut i32) -> i32 {
     fit_width(&as_gui, text, width)
 }
 
+/// Adds every font's gap to its own advances (the original's start-up step
+/// over its six bitmap fonts).
+pub fn add_gap_to_fonts<const N: usize>(fonts: &mut [GuiFont; N]) {
+    for font in fonts.iter_mut() {
+        let gap = font.gap;
+        add_gap(&mut font.advances, gap);
+    }
+}
+
 /// The main menu's sprite font record: 112-pixel letter cells in a 4 × 7
 /// sheet at its design scale, rescaled by half the row scale.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -820,6 +829,20 @@ mod tests {
         // Centring moves the line right by half its rest.
         let d = draw_wrapped(&f, b"ab", 0, 0, 30, 100, 0, true);
         assert_eq!(d.quads[0].rect[0], 5);
+    }
+
+    #[test]
+    fn every_font_folds_its_own_gap() {
+        let mut fonts = [RAYFORM_10; 2];
+        add_gap_to_fonts(&mut fonts);
+        assert_eq!(
+            fonts[0].advance(b'A'),
+            RAYFORM_10.advance(b'A') + RAYFORM_10.gap
+        );
+        assert_eq!(
+            fonts[1].advance(b' '),
+            RAYFORM_10.advance(b' ') + RAYFORM_10.gap
+        );
     }
 
     #[test]

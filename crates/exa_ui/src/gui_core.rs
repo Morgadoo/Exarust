@@ -11,7 +11,7 @@
 //! Rules: `docs/UI.md` (Forms, Controls).
 
 use crate::form::Anchor;
-use crate::gui_controls::{Control, ControlEvent, Message, dispatch};
+use crate::gui_controls::{Control, ControlEvent, Message, dispatch, state as control_state};
 use crate::gui_rescale::{MessageBoxLayout, message_box, message_box_layout};
 
 /// A form's identity in a [`GuiTask`].
@@ -512,6 +512,91 @@ impl Tooltip {
         self.request = None;
         self.hint = None;
         self.shown_at = None;
+    }
+}
+
+/// Shows or hides a control: hiding clears its shown bit; showing clears
+/// every other control of the same class's shown and lit bits (reporting
+/// each, unless `no_callback`), then sets this one's shown and lit bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ControlVisibility {
+    pub shown: bool,
+    /// The other controls that were hidden.
+    pub hidden: usize,
+}
+
+/// Sets control `index`'s shown state as the original's visibility helper.
+pub fn set_control_visible(
+    controls: &mut [Control],
+    index: usize,
+    show: bool,
+    no_callback: bool,
+    events: &mut Vec<ControlEvent>,
+) -> ControlVisibility {
+    let Some(control) = controls.get(index) else {
+        return ControlVisibility::default();
+    };
+    let class = control.class;
+    let group = control.group;
+    if !show {
+        controls[index].state &= !control_state::SHOWN;
+        return ControlVisibility::default();
+    }
+    let mut hidden = 0;
+    for (other, control) in controls.iter_mut().enumerate() {
+        if other != index
+            && control.class == class
+            && control.state & control_state::SHOWN != 0
+            && (group == 0 || control.group == group || control.group == 0)
+        {
+            control.state &= !(control_state::SHOWN | control_state::LIT);
+            if !no_callback && control.reports {
+                events.push(ControlEvent::Changed(other));
+            }
+            hidden += 1;
+        }
+    }
+    controls[index].state |= control_state::SHOWN;
+    let lit = (controls[index].state & control_state::ON) << 1;
+    controls[index].state = (controls[index].state & !control_state::LIT) | lit;
+    ControlVisibility {
+        shown: true,
+        hidden,
+    }
+}
+
+/// Clamps a form's place and size to the screen: `x` to 0, the width so
+/// the right edge fits (less two), and `y` to at least a unit.
+pub fn clamp_form(x: i32, y: i32, width: i32, unit: i32, screen_width: i32) -> (i32, i32, i32) {
+    let x = if x < 0 {
+        0
+    } else if screen_width < x + width {
+        (screen_width - width) - 2
+    } else {
+        x
+    };
+    let width = width.max(unit);
+    let y = y.max(unit);
+    (x, y, width)
+}
+
+/// The pointer grab record: which form held it and whether the system
+/// pointer is captured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PointerGrab {
+    pub form: Option<FormId>,
+    pub captured: bool,
+}
+
+impl PointerGrab {
+    /// Grabs for `form`, releasing the previous holder through its callback.
+    /// Returns the previous holder.
+    pub fn grab(&mut self, form: Option<FormId>, offset: (i32, i32)) -> Option<FormId> {
+        let previous = self.form;
+        self.form = form;
+        self.captured = form.is_some();
+        let _ = offset;
+        previous
     }
 }
 
@@ -1147,6 +1232,62 @@ impl GuiTask {
     pub fn tooltip_at(&self, now: i32) -> Option<(i32, i32)> {
         self.tooltip.visible(now).then_some(self.tooltip.position)
     }
+
+    /// Whether `form` is the active modal form.
+    pub fn is_modal(&self, form: FormId) -> bool {
+        self.modal == Some(form)
+    }
+
+    /// The hit-and-focus step (the original's pointer re-hit test): the hit
+    /// form and code, the cursor shape and the focus result.
+    pub fn hit_and_focus(&mut self, x: i32, y: i32) -> HitResult {
+        let (form, code, cursor) = self.hit_cursor(x, y);
+        let result = self.focus_set(form, code);
+        self.cursor.set_shape(cursor);
+        HitResult {
+            form,
+            control: code,
+            cursor,
+            result,
+        }
+    }
+
+    /// Forgets the remembered fallback focus.
+    pub fn reset_fallback(&mut self) {
+        self.fallback = None;
+        self.fallback_until = 0;
+    }
+
+    /// The pointer's grab: the previous holder and the capture state.
+    pub fn grab(&mut self, form: Option<FormId>) -> Option<FormId> {
+        let previous = self.pressed_drag;
+        self.pressed_drag = form;
+        if previous.is_some() && form.is_none() {
+            self.cursor.release();
+        } else if previous.is_none() && form.is_some() {
+            self.cursor.capture();
+        }
+        previous
+    }
+}
+
+/// The form factory registry (the original's registered form constructors):
+/// each registration returns a 1-based index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FactoryRegistry {
+    pub next: i32,
+}
+
+impl FactoryRegistry {
+    pub fn register(&mut self) -> i32 {
+        self.next += 1;
+        self.next
+    }
+
+    /// The factory for an index, when it was registered.
+    pub fn get(&self, index: i32) -> Option<i32> {
+        (index >= 1 && index <= self.next).then_some(index)
+    }
 }
 
 /// A message box's construction: its layout, controls and flags.
@@ -1566,5 +1707,74 @@ mod tests {
         task.focus_set(Some(id), 1);
         assert_eq!(task.key(0x2001), 3);
         assert_eq!(log.borrow().keys, vec![0x2001]);
+    }
+
+    #[test]
+    fn showing_a_control_hides_its_classmates() {
+        let mut controls = vec![Control::new(2, 0, 0, 16, 16), Control::new(2, 0, 0, 16, 16)];
+        controls[0].state = control_state::SHOWN;
+        controls[0].reports = true;
+        controls[1].state = control_state::SHOWN | control_state::LIT;
+        controls[1].reports = true;
+        let mut events = Vec::new();
+        let change = set_control_visible(&mut controls, 1, true, false, &mut events);
+        assert_eq!(
+            change,
+            ControlVisibility {
+                shown: true,
+                hidden: 1
+            }
+        );
+        assert_eq!(controls[0].state & control_state::SHOWN, 0);
+        // The shown bit is also the on bit; the lit bit follows it.
+        assert_eq!(
+            controls[1].state & (control_state::SHOWN | control_state::LIT),
+            control_state::SHOWN | control_state::LIT
+        );
+        assert_eq!(events.len(), 1);
+        let change = set_control_visible(&mut controls, 1, false, true, &mut events);
+        assert!(!change.shown);
+        assert_eq!(controls[1].state & control_state::SHOWN, 0);
+    }
+
+    #[test]
+    fn a_form_is_clamped_to_the_screen() {
+        assert_eq!(clamp_form(-5, 1, 100, 4, 800), (0, 4, 100));
+        assert_eq!(clamp_form(750, 20, 100, 4, 800), (698, 20, 100));
+        assert_eq!(clamp_form(10, 20, 2, 4, 800), (10, 20, 4));
+        assert_eq!(clamp_form(10, 20, 100, 4, 800), (10, 20, 100));
+    }
+
+    #[test]
+    fn the_pointer_grab_records_its_holder() {
+        let mut grab = PointerGrab::default();
+        assert_eq!(grab.grab(Some(3), (10, 20)), None);
+        assert!(grab.captured);
+        assert_eq!(grab.grab(None, (0, 0)), Some(3));
+        assert!(!grab.captured);
+    }
+
+    #[test]
+    fn a_hit_and_focus_reports_the_form_control_and_cursor() {
+        let (mut task, id, _log) = task_with_recorder();
+        let hit = task.hit_and_focus(100, 100);
+        assert_eq!((hit.form, hit.control, hit.cursor), (Some(id), 1, 2));
+        assert_eq!(task.cursor.shape, 2);
+        assert_eq!(task.active, Some(id));
+        assert!(!task.is_modal(id));
+    }
+
+    #[test]
+    fn factories_and_fallbacks_reset() {
+        let mut factories = FactoryRegistry::default();
+        assert_eq!(factories.register(), 1);
+        assert_eq!(factories.register(), 2);
+        assert_eq!(factories.get(2), Some(2));
+        assert_eq!(factories.get(0), None);
+        let (mut task, id, _log) = task_with_recorder();
+        task.focus_set(Some(id), 1);
+        assert!(task.fallback.is_some());
+        task.reset_fallback();
+        assert!(task.fallback.is_none());
     }
 }

@@ -87,17 +87,18 @@ pub use gui_controls::{
     layout_records, register_class, register_default_classes,
 };
 pub use gui_core::{
-    CursorState, DragState, FormHost, FormId, GuiMetrics, GuiRect, GuiTask, HitResult,
-    MESSAGE_FRAME, MESSAGE_HIGH, MESSAGE_MODAL, MESSAGE_NO_CLOSE, MessageBoxPlan, PlaceRequest,
-    PlainForm, PointerState, TOOLTIP_DELAY, Tooltip, anchored, drag_threshold, edge_rect,
-    message_box_plan, place_form, set_modal,
+    ControlVisibility, CursorState, DragState, FactoryRegistry, FormHost, FormId, GuiMetrics,
+    GuiRect, GuiTask, HitResult, MESSAGE_FRAME, MESSAGE_HIGH, MESSAGE_MODAL, MESSAGE_NO_CLOSE,
+    MessageBoxPlan, PlaceRequest, PlainForm, PointerGrab, PointerState, TOOLTIP_DELAY, Tooltip,
+    anchored, clamp_form, drag_threshold, edge_rect, message_box_plan, place_form,
+    set_control_visible, set_modal,
 };
 pub use gui_level::GuiLevelState;
 pub use gui_text::{
-    ELLIPSIS, FontBinding, MENU_FONT, MenuFont, TextQuad, WrappedDraw, add_gap, count_lines,
-    draw_line, draw_line_centred, draw_line_plain, draw_span, draw_tail, draw_truncated,
-    draw_wrapped, draw_wrapped_at, ellipsis_fit, fit_menu_width, fit_width, font_uv, glyph_uv,
-    measure, measure_in, menu_font_scale, needs_rescale,
+    ELLIPSIS, FontBinding, MENU_FONT, MenuFont, TextQuad, WrappedDraw, add_gap, add_gap_to_fonts,
+    count_lines, draw_line, draw_line_centred, draw_line_plain, draw_span, draw_tail,
+    draw_truncated, draw_wrapped, draw_wrapped_at, ellipsis_fit, fit_menu_width, fit_width,
+    font_uv, glyph_uv, measure, measure_in, menu_font_scale, needs_rescale,
 };
 pub use heartbeat::Heartbeat;
 pub use hud::{DrawHud, HudBars};
@@ -118,22 +119,25 @@ pub use match_board::{
     show_match_board, tournament_begins_in,
 };
 pub use menu::{
-    CharLootShow, CharLootShowInput, ClassCardHit, ClassCardHitInput, ClassConfirm, ClassNav,
-    ClassNavAction, ClassNavInput, ClassSelect, EndSessionAction, EndSessionDispatch,
-    EndSessionInput, InventoryDetach, InventoryDetachInput, InventoryKeyClose, InventoryPage,
-    JournalShow, MENU_NAME_CODE, MainMenuKey, MainMenuKeyAction, MainMenuKeyInput, MenuConfirm,
-    MenuForward, MenuHover, MenuKeyClose, MenuName, MenuSelect, SettingsOpen, SkillKey,
-    SkillSelection, SkillSelectorApplied, SkillSelectorDraw, SkillSelectorDrawPlace,
-    SkillSelectorMode, SkillSelectorShow, SkillTipDraw, SkillTipPlace, SkillTipShow,
-    SkillTipShowInput, SplashBounds, SplashDestroy, SplashDestroyInput, TRANSITION_TEXT,
-    TransitionFade, TransitionFadePlace, ViewClear, ViewDestroy, ViewNode, ViewNodeRecord,
-    clear_character_view, close_settings_menu, confirm_class, confirm_main_menu,
+    CLICK_SOUND, CharLootShow, CharLootShowInput, ClassCardHit, ClassCardHitInput, ClassConfirm,
+    ClassNav, ClassNavAction, ClassNavInput, ClassSelect, CloseSubmenu, EndSessionAction,
+    EndSessionDispatch, EndSessionInput, InventoryDetach, InventoryDetachInput, InventoryKeyClose,
+    InventoryPage, JournalShow, MENU_DEFAULTS, MENU_NAME_CODE, MENU_THEME, MENU_THEME_DNB,
+    MainMenuKey, MainMenuKeyAction, MainMenuKeyInput, MenuBack, MenuConfirm, MenuDefaults,
+    MenuForward, MenuForwardPage, MenuHover, MenuKeyClose, MenuName, MenuSelect, MenuShow,
+    MusicToggle, SELECT_SOUND, SettingsOpen, SkillKey, SkillSelection, SkillSelectorApplied,
+    SkillSelectorDraw, SkillSelectorDrawPlace, SkillSelectorMode, SkillSelectorShow, SkillTipDraw,
+    SkillTipPlace, SkillTipShow, SkillTipShowInput, SplashBounds, SplashDestroy,
+    SplashDestroyInput, TRANSITION_TEXT, TransitionFade, TransitionFadePlace, ViewClear,
+    ViewDestroy, ViewNode, ViewNodeRecord, back_main_menu, class_select_place,
+    clear_character_view, close_settings_menu, close_submenu, confirm_class, confirm_main_menu,
     destroy_character_view, detach_inventory, dispatch_end_session, draw_skill_selector,
-    draw_skill_tip, draw_transition_fade, first_settled_view_node, forward_main_menu,
+    draw_skill_tip, draw_transition_fade, first_settled_view_node, forward_main_menu, forward_page,
     hit_class_cards, inventory_key_close, inventory_page, main_menu_key, menu_clock_scale,
-    menu_key_close, navigate_class, open_settings_menu, reset_settings_menu, select_main_menu,
-    select_menu_class, settle_skill_selection, show_char_loot, show_journal, show_skill_selector,
-    show_skill_tip, skill_selector_key, splash_bounds, type_menu_name, update_menu_hover,
+    menu_key_close, menu_row_scale, navigate_class, open_settings_menu, reset_settings_menu,
+    select_main_menu, select_menu_class, settle_skill_selection, show_char_loot, show_journal,
+    show_skill_selector, show_skill_tip, skill_selector_key, splash_bounds, toggle_menu_music,
+    type_menu_name, update_menu_hover,
 };
 pub use scale::GuiScale;
 pub use selection::{

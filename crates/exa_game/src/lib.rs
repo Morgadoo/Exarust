@@ -28,6 +28,7 @@ pub mod loadout;
 pub mod look_overlay;
 pub mod menu;
 pub mod menu_pages;
+pub mod menu_screen;
 pub mod mind;
 pub mod nav_camera;
 pub mod nav_pick;
@@ -83,6 +84,7 @@ impl Plugin for GamePlugin {
             teleporters::TeleportPlugin,
             hw_config::HardwareConfigPlugin,
             destination::DestinationPlugin,
+            menu_screen::MenuScreenPlugin,
         ))
         // Debug tools: idle unless their flags or keys turn them on.
         .add_plugins((
