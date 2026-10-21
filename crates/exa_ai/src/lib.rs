@@ -1,9 +1,12 @@
 //! NPC behaviour. For now a duellist: once the fight starts it enters
-//! combat in its guard, faces the target, closes to striking distance and
-//! attacks at intervals with varied strikes, guarding while the target is
-//! far and standing in its combat idle near it. NPCs act through the same
-//! pieces as the player (body velocity, animator, stance, attacks); the
-//! duellist holds every swing through (it never releases one).
+//! combat in its guard and runs the original's combat state
+//! ([`combat`]) once per body tick: the state's footwork search picks the
+//! places it steps to (Exarust walks them in its combat walk), the blows
+//! it starts and the stance it guards in, and turns its heading; each
+//! frame the combatant's perception pass ([`combatant`]) keeps its contact
+//! with the target. NPCs act through the same pieces as the player (body
+//! velocity, animator, stance, attacks); the duellist does not release a
+//! swing yet.
 //!
 //! A level's living characters carry a brain ([`brain`]): their roles
 //! choose their idle activity and rate the player, and a human-framed one
@@ -11,7 +14,7 @@
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Motions};
-use exa_combat::attack::{self, Attacker, Busy};
+use exa_combat::attack::{self, AttackMotion, Attacker, Busy};
 use exa_combat::stance::{self, Stance};
 use exa_combat::swing::{self, SwingState};
 use exa_combat::{AttackStart, Attacking, Blade, Condition, Fighter};
@@ -22,6 +25,7 @@ use crate::combatant::{Attitude, Combatant, Observed, Observer, atan2_xz, percei
 
 pub mod activity;
 pub mod brain;
+pub mod combat;
 pub mod combatant;
 pub mod fight;
 pub mod golem;
@@ -61,39 +65,143 @@ impl Plugin for AiPlugin {
 #[require(Stance, Combatant)]
 pub struct Duellist {
     pub target: Entity,
-    pub cooldown: f32,
-    pub next_strike: usize,
-    /// The attack choice's generator.
+    /// The combat state's generator.
     pub roll: u32,
     /// The fight has started: until then the duellist stands idle.
     pub engaged: bool,
     /// It stands its ground: it faces its target and takes its stance, but
-    /// neither walks nor strikes (a debug aid for still comparisons).
+    /// neither steps nor strikes (a debug aid for still comparisons).
     pub holds_ground: bool,
     /// It has entered combat (taken its guard).
     in_combat: bool,
-    /// The footwork it is carrying out.
-    pub footwork: place::Footwork,
-    /// Ticks the footwork is held before the next change. The original's
-    /// combat state biases a step change by a switching cost; the hold is
-    /// this interim duellist's version of it (a guess).
-    pub hold_ticks: u32,
+    /// The combat state's fields.
+    pub mind: combat::CombatMind,
+    /// The last body tick the combat state ran for.
+    last_tick: Option<u64>,
+    /// The bearing the last estimate left: direction and distance (cm).
+    bearing: (Vec3, f32),
+    /// The step it is taking (Exarust's stand-in for the body's step).
+    step: Option<Stepping>,
+    /// A step queued after it, as an offset from the chest (cm).
+    queued: Option<Vec3>,
+    /// The footwork queue's state the body reports: −1 when the queued
+    /// step was taken up.
+    queue: i32,
+}
+
+/// A step the duellist walks: where it goes (m) and when it started.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Stepping {
+    goal: Vec3,
+    started_ms: u32,
+    /// 2 for the second half of a long step.
+    state: i32,
 }
 
 impl Duellist {
-    /// A duellist of `target`, waiting for the fight to start, its first
-    /// strike 2 s after it comes within striking distance.
+    /// A duellist of `target`, waiting for the fight to start.
     pub fn new(target: Entity) -> Self {
         Self {
             target,
-            cooldown: 2.0,
-            next_strike: 0,
             roll: 0,
             engaged: false,
             holds_ground: false,
             in_combat: false,
-            footwork: place::Footwork::Hold,
-            hold_ticks: 0,
+            mind: combat::CombatMind::default(),
+            last_tick: None,
+            bearing: (Vec3::Z, 1.0),
+            step: None,
+            queued: None,
+            queue: 0,
+        }
+    }
+}
+
+/// Exarust's interim footwork clip (the original's AI steps in its stance).
+const COMBAT_WALK: &str = "Combat Walk";
+/// Centimetres per metre: the combat state works in the original's units.
+const CM: f32 = 100.0;
+/// A step is done this close to its goal (m) [Exarust's: the original's
+/// body ends a step on its feet's landing].
+const STEP_DONE: f32 = 0.1;
+/// A step that has not arrived ends after this long (ms) [Exarust's].
+const STEP_MOST_MS: u32 = 1000;
+/// Combat ticks run at most this many times a frame.
+const MOST_TICKS: u64 = 4;
+
+/// A fighter's reach (m), as the original's equip refresh sets it: its
+/// longest held weapon's record reach (60 cm × its size plus the weapon's
+/// sweet spot), else (its fists) its race's unarmed reach (the human's
+/// 50 cm).
+fn reach_of(fighter: Entity, blades: &Query<&Blade>) -> f32 {
+    blades
+        .iter()
+        .filter(|b| b.wielder == fighter && b.record.armed())
+        .map(|b| b.record.reach_metres())
+        .reduce(f32::max)
+        .unwrap_or(stance::UNARMED_REACH)
+}
+
+/// A fighter's weapon class as its strikers make it: a held weapon's hands
+/// bits, else the fists' (the claws' for a clawed race's).
+fn weapon_class_of(fighter: Entity, blades: &Query<&Blade>) -> u8 {
+    let mine = || blades.iter().filter(|b| b.wielder == fighter);
+    if let Some(weapon) = mine().find(|b| b.record.armed()) {
+        return (weapon.record.flags & 0x30) as u8;
+    }
+    if mine().any(|b| b.record.flags & 0x40 != 0) {
+        0xC0
+    } else {
+        0x80
+    }
+}
+
+/// The motion id a clip plays, as the combat state reads it: the stances
+/// 3 and 4, the side attacks 5–7 and 8–10, the stab 11, the overhead 12.
+fn motion_of(attacking: Option<&Attacking>, stance: Stance) -> i32 {
+    match attacking.map(|a| a.motion) {
+        Some(AttackMotion::Main(i)) => 5 + i as i32,
+        Some(AttackMotion::Other(i)) => 8 + i as i32,
+        Some(AttackMotion::Stab) => 0xb,
+        Some(AttackMotion::Overhead) => 0xc,
+        None => match stance {
+            Stance::Defence => combat::GUARD,
+            _ => combat::COMBAT_IDLE,
+        },
+    }
+}
+
+/// The combat state's view of a duel: the one contact is the target, which
+/// the position score rates from each place.
+struct DuelField {
+    foe: Vec3,
+    heading: Vec3,
+    spot: place::Spot,
+}
+
+impl combat::Field for DuelField {
+    fn score(&mut self, _contact: usize, level: i32, point: Vec3) -> combat::PlaceScore {
+        let to = self.foe - point;
+        let d = (to.x * to.x + to.z * to.z).sqrt();
+        let spot = place::Spot {
+            fight: level == 3,
+            ..self.spot
+        };
+        let s = place::score_place(d, spot);
+        let away = point - self.foe;
+        let ahead = if d > 0.0 {
+            1.0 - (away.x * self.heading.x + away.z * self.heading.z) / d
+        } else {
+            1.0
+        };
+        combat::PlaceScore {
+            close: s.close,
+            danger: s.danger,
+            approach: s.approach,
+            strike: s.strike,
+            bearing: combat::yaw(to),
+            distance_cm: d,
+            ahead,
         }
     }
 }
@@ -148,44 +256,9 @@ fn published_blow(
     }
 }
 
-/// How close a strike is thrown (m). Closing stops earlier, on the
-/// position score's plateau.
-const STRIKE_RANGE: f32 = 1.15;
-const STRIKE_INTERVAL: f32 = 2.2;
-/// Exarust's interim footwork clip (the original's AI steps in its stance).
-const COMBAT_WALK: &str = "Combat Walk";
-
-/// A fighter's reach (m), as the original's equip refresh sets it: its
-/// longest held weapon's record reach (60 cm × its size plus the weapon's
-/// sweet spot), else (its fists) its race's unarmed reach (the human's
-/// 50 cm).
-fn reach_of(fighter: Entity, blades: &Query<&Blade>) -> f32 {
-    blades
-        .iter()
-        .filter(|b| b.wielder == fighter && b.record.armed())
-        .map(|b| b.record.reach_metres())
-        .reduce(f32::max)
-        .unwrap_or(stance::UNARMED_REACH)
-}
-
-/// A fighter's weapon class as its strikers make it: a held weapon's hands
-/// bits, else the fists' (the claws' for a clawed race's).
-fn weapon_class_of(fighter: Entity, blades: &Query<&Blade>) -> u8 {
-    let mine = || blades.iter().filter(|b| b.wielder == fighter);
-    if let Some(weapon) = mine().find(|b| b.record.armed()) {
-        return (weapon.record.flags & 0x30) as u8;
-    }
-    if mine().any(|b| b.record.flags & 0x40 != 0) {
-        0xC0
-    } else {
-        0x80
-    }
-}
-
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn duellist(
     mut commands: Commands,
-    time: Res<Time>,
     ticks: Option<Res<BodyTicks>>,
     targets: Query<&GlobalTransform>,
     motions: Option<Res<Motions>>,
@@ -201,6 +274,7 @@ fn duellist(
     >,
     children: Query<&Children>,
     blades: Query<&Blade>,
+    brains: Query<&brain::Npc>,
     mut minds: Query<&mut Mind>,
     mut npcs: Query<(
         Entity,
@@ -220,6 +294,7 @@ fn duellist(
     )>,
     mut roots: Query<(&mut CharacterBody, &GlobalTransform)>,
 ) {
+    let tick_now = ticks.as_ref().map(|t| t.0);
     let now = ticks.map_or(0, |t| t.millis());
     for (
         entity,
@@ -272,10 +347,13 @@ fn duellist(
             continue;
         };
         if !ai.in_combat {
-            // Entering combat: the guard, from the idle it stood in, and
-            // the published reach. The combat rating comes from the
-            // experience system, which is not wired here.
+            // Entering combat: the guard, from the idle it stood in, its
+            // eagerness at a half, and the published reach. The combat
+            // rating comes from the experience system, which is not wired
+            // here.
             ai.in_combat = true;
+            combat::enter(&mut ai.mind, false, now as u32);
+            ai.mind.heading = yaw_of(t.rotation);
             combatant.in_combat = true;
             combatant.clear_combat_step(gt.translation() * 100.0, t.rotation * Vec3::Z, 0.0);
             combatant.refresh_fighting(0.0, reach_of(entity, &blades) * 100.0);
@@ -287,22 +365,8 @@ fn duellist(
         let target_body = std::iter::once(ai.target)
             .chain(children.iter_descendants(ai.target))
             .find_map(|e| bodies.get(e).ok());
-        // Its stance by the distance between the chests: the guard at four
-        // reaches or more, the combat idle within.
-        if let Some((_, tgt, tgt_body, _, _)) = target_body {
-            let d = stance::chest_point(gt, ragdoll).distance(stance::chest_point(tgt, tgt_body));
-            let reach = reach_of(entity, &blades);
-            let chosen = stance::duellist_stance(d, reach);
-            if *stance != chosen {
-                info!("duellist {entity:?} stance: {chosen:?} at {d:.2} m (reach {reach:.2} m)");
-                *stance = chosen;
-            }
-        }
-        // Its stance starts with 40 frames of blend without a primary
-        // striker, else twice the primary's stance blend, eased smoothly.
-        let primary_blend = attacker
-            .primary_record(entity, blades.iter())
-            .map(|r| r.blend);
+        let primary = attacker.primary_record(entity, blades.iter()).copied();
+        let primary_blend = primary.map(|r| r.blend);
         // Leave a collapsing or dead target alone.
         if target_body.is_some_and(|(c, ..)| c.dying()) {
             if anim.looping {
@@ -310,22 +374,12 @@ fn duellist(
             }
             continue;
         }
+        let facing = t.rotation * Vec3::Z;
         let to = target.translation() - root_gt.translation();
         let flat = Vec3::new(to.x, 0.0, to.z);
-        let dist = flat.length();
-        let facing = t.rotation * Vec3::Z;
-        let heading = facing.x.atan2(facing.z);
-        let order = follow(
-            &[root_gt.translation(), target.translation()],
-            root_gt.translation(),
-            heading,
-            0,
-        );
-        if dist > 0.05 {
-            t.rotation = Quat::from_rotation_y(order.heading);
-        }
 
-        // One perception pass on the target, then the position terms.
+        // One perception pass on the target (the combatant's), then the
+        // published arc the position score reads.
         let target_forward = target.rotation() * Vec3::Z;
         let target_condition = target_body.map(|(c, ..)| *c).unwrap_or(Condition::NORMAL);
         let target_fighter = target_body.map(|(_, _, _, f, _)| f);
@@ -393,7 +447,6 @@ fn duellist(
         if target_condition.is_dead() && contact.died_ms.is_none() {
             contact.died_ms = Some(now);
         }
-
         let target_angle = {
             let to_me = gt.translation() - target.translation();
             atan2_xz(to_me.x, to_me.z)
@@ -413,79 +466,34 @@ fn duellist(
         if blow.kind == 0 {
             blow.sweeping = false;
         }
-        let dir_to_me = -flat.normalize_or_zero();
-        let spot = place::Spot {
-            other_reach_cm: reach_of(ai.target, &blades) * 100.0,
-            my_reach_cm: reach_of(entity, &blades) * 100.0,
-            other_size: target_fighter.map_or(1.0, |f| f.stats.size),
-            my_step_cm: fighter.stats.step_reach(fighter.stats.encumbrance) * 100.0,
-            other_large: target_fighter.is_some_and(|f| f.stats.rules.has(1)),
-            melee: false,
-            fight: true,
-            feral: fighter.stats.feral,
-            dull: fighter.stats.rules.has(4),
-            blow,
-            wide: false,
-            observer_ahead: Vec3::new(order.heading.sin(), 0.0, order.heading.cos()).dot(dir_to_me),
-            other_ahead: target_forward.dot(dir_to_me),
-            in_attack: *condition == Condition::ATTACKING,
-            presses: false,
-            other_skill: 0.0,
-        };
-        if ai.holds_ground {
-            ai.footwork = place::Footwork::Hold;
-        } else if ai.hold_ticks > 0 {
-            ai.hold_ticks -= 1;
-        } else {
-            let chosen = place::choose_footwork(dist * 100.0, spot);
-            if chosen != ai.footwork {
-                ai.footwork = chosen;
-                // A queued step resets the switching weight to four, or to
-                // eight for a retreat (the original's two reset values).
-                ai.hold_ticks = if chosen == place::Footwork::Retreat {
-                    8
-                } else {
-                    4
-                };
-            }
-        }
 
-        ai.cooldown -= time.delta_secs();
-        if attacking.is_some() || !anim.looping {
-            continue;
+        // The step it walks ends at its goal, or when it has taken too long;
+        // a queued one starts then.
+        if let Some(step) = ai.step {
+            let to = step.goal - root_gt.translation();
+            let arrived = Vec3::new(to.x, 0.0, to.z).length() < STEP_DONE;
+            if arrived || (now as u32).wrapping_sub(step.started_ms) > STEP_MOST_MS {
+                ai.step = None;
+                if let Some(offset) = ai.queued.take() {
+                    let chest = stance::chest_point(gt, ragdoll);
+                    ai.step = Some(Stepping {
+                        goal: Vec3::new(chest.x, root_gt.translation().y, chest.z) + offset / CM,
+                        started_ms: now as u32,
+                        state: 0,
+                    });
+                    ai.queue = -1;
+                }
+            }
         }
-        match ai.footwork {
-            place::Footwork::Approach if !ai.holds_ground => {
-                body.desired_velocity = order.velocity;
-                anim.play_loop(COMBAT_WALK);
-                continue;
-            }
-            place::Footwork::Retreat if !ai.holds_ground => {
-                body.desired_velocity = -order.velocity * 0.8;
-                anim.play_loop("Backpedal");
-                continue;
-            }
-            place::Footwork::CircleLeft | place::Footwork::CircleRight if !ai.holds_ground => {
-                let dir = flat.normalize_or_zero();
-                let sign = if ai.footwork == place::Footwork::CircleLeft {
-                    1.0
-                } else {
-                    -1.0
-                };
-                body.desired_velocity =
-                    Vec3::new(dir.z, 0.0, -dir.x) * sign * order.velocity.length() * 0.6;
-                anim.play_loop(COMBAT_WALK);
-                continue;
-            }
-            _ => {}
-        }
-        // Standing: its stance starts at once, as the original's AI starts
-        // it whenever it is free.
-        stance::take_ai_stance(&mut anim, *stance, primary_blend);
-        // Its request goes through the original's executor: enough energy
-        // and the cooldown since its last attack's last tick (it never
-        // releases a swing, so neither the overhead after a release nor
-        // Feint).
+        let runs = match (tick_now, ai.last_tick) {
+            (Some(n), Some(last)) => n.saturating_sub(last).min(MOST_TICKS),
+            _ => 1,
+        };
+        ai.last_tick = tick_now;
+        let feet = root_gt.translation();
+        let chest = stance::chest_point(gt, ragdoll) * CM;
+        let reach = reach_of(entity, &blades);
+        let class = weapon_class_of(entity, &blades);
         let (energy, most) = ragdoll
             .and_then(|r| r.drive.as_ref())
             .map_or((MAX_ENERGY, MAX_ENERGY), |d| (d.energy, d.max_energy()));
@@ -500,52 +508,218 @@ fn duellist(
             side_started_ms: attacker.side_started_ms,
             feint: fighter.feint(),
         };
-        let ready = attack::has_energy(energy, most)
-            && attack::execute(attack::Request::default(), busy).is_some();
-        if dist <= STRIKE_RANGE && !ai.holds_ground && ai.cooldown <= 0.0 && ready {
-            let reach_cm = reach_of(entity, &blades) * 100.0;
-            let class = weapon_class_of(entity, &blades);
-            let choice = fight::choose_attack(
-                &fight::Situation {
-                    unarmed: class == 0x80,
-                    open_hands: class & 0x30 == 0,
-                    distance_cm: dist * 100.0,
-                    reach_cm,
-                    energy,
-                    energy_max: most,
-                    ..fight::Situation::default()
-                },
-                &mut ai.roll,
-            );
-            let Some(choice) = choice else {
-                continue;
+        let ready = attack::execute(attack::Request::default(), busy).is_some();
+        let traits = brains.get(entity).ok().and_then(|b| b.personality).map_or(
+            // A fighter without a record's personality: skill 0 and
+            // the blend 1 a fully feral one has [Exarust's default].
+            combat::Traits {
+                skill: 0.0,
+                blend: 1.0,
+            },
+            |p| combat::Traits {
+                skill: p.skill,
+                blend: p.blend,
+            },
+        );
+        let foe_chest = target_body
+            .map(|(_, tgt, tgt_body, _, _)| stance::chest_point(tgt, tgt_body))
+            .unwrap_or_else(|| stance::chest_point(target, None))
+            * CM;
+        let foe = combat::Foe {
+            condition: target_condition.0,
+            dead: target_condition.is_dead(),
+            reach_cm: reach_of(ai.target, &blades) * CM,
+            chest: foe_chest,
+            step_goal: foe_chest,
+            facing: target_forward,
+            scale: target_fighter.map_or(1.0, |f| f.stats.scale),
+            rules: target_fighter.map_or(0, |f| f.stats.rules.0),
+            ..combat::Foe::default()
+        };
+        let dir_to_me = -flat.normalize_or_zero();
+        let spot = place::Spot {
+            other_reach_cm: foe.reach_cm,
+            my_reach_cm: reach * CM,
+            other_size: target_fighter.map_or(1.0, |f| f.stats.size),
+            my_step_cm: fighter.stats.step_reach(fighter.stats.encumbrance) * CM,
+            other_large: target_fighter.is_some_and(|f| f.stats.rules.has(1)),
+            melee: false,
+            fight: true,
+            feral: fighter.stats.feral,
+            dull: fighter.stats.rules.has(4),
+            blow: place::Blow {
+                skill: traits.skill,
+                ..blow
+            },
+            wide: false,
+            observer_ahead: facing.dot(dir_to_me),
+            other_ahead: target_forward.dot(dir_to_me),
+            in_attack: *condition == Condition::ATTACKING,
+            presses: false,
+            other_skill: 0.0,
+        };
+        for _ in 0..runs {
+            let yaw = yaw_of(t.rotation);
+            let stepping = ai.step;
+            let me = combat::Body {
+                now_ms: now as u32,
+                condition: condition.0,
+                clock: anim.progress,
+                weapon_class: u32::from(class),
+                held: blades
+                    .iter()
+                    .filter(|b| b.wielder == entity && b.record.armed())
+                    .count() as i32,
+                motion: motion_of(attacking, *stance),
+                energy,
+                max_energy: most,
+                scale: fighter.stats.scale,
+                size: fighter.stats.size,
+                encumbrance: fighter.stats.encumbrance,
+                reach_cm: reach * CM,
+                step_cm: spot.my_step_cm,
+                stepping: stepping.is_some(),
+                step_state: stepping.map_or(0, |s| s.state),
+                step_started_ms: stepping.map_or(0, |s| s.started_ms),
+                queue: ai.queue,
+                can_step: condition.0 & 0x82c1 == 0 && !ai.holds_ground,
+                rules: fighter.stats.rules.0,
+                thrust_pref: primary.map_or(0, |r| {
+                    i32::from(exa_formats::weapon_record::thrust_preference(&r))
+                }),
+                yaw,
+                heading: combat::of_yaw(yaw),
+                facing: combat::of_yaw(yaw),
+                position: chest,
+                step_goal: stepping.map_or(chest, |s| s.goal * CM),
+                chest,
+                ground_y: feet.y * CM,
+                look: combat::of_yaw(ai.mind.heading),
+                target_point: foe_chest,
+                to_target: ai.bearing.0,
+                distance_cm: ai.bearing.1,
+                swing_amount: primary.map(|r| r.swing_turn),
+                stance_blend: primary_blend,
+                health: fighter.health.yellow,
+                can_attack: ready && !ai.holds_ground,
+                ..combat::Body::default()
             };
-            let strike = choice.motion;
-            ai.next_strike += 1;
-            ai.cooldown = STRIKE_INTERVAL;
-            exa_combat::start_attack(
-                &mut commands,
-                entity,
-                &mut anim,
-                &mut attacker,
-                &mut swinging,
-                blades.iter(),
-                AttackStart {
-                    remise: fighter.remise(),
-                    ..AttackStart::of(strike, weapon_class_of(entity, &blades), now)
+            ai.queue = 0;
+            let mut field = DuelField {
+                foe: foe_chest,
+                heading: me.heading,
+                spot,
+            };
+            let mut contacts = [combat::Contact {
+                level: 3,
+                is_foe: true,
+                character: true,
+                concern: combatant.contacts[index].concern,
+                hostility: combatant.contacts[index].hostility,
+                ..combat::Contact::default()
+            }];
+            let Duellist { mind, roll, .. } = &mut *ai;
+            let out = combat::tick(
+                mind,
+                &me,
+                traits,
+                combat::World {
+                    foe: Some(&foe),
+                    focus: None,
+                    contacts: &mut contacts,
+                    around: &[],
+                    field: &mut field,
+                    leader_calls: false,
                 },
-                stance.action(),
+                roll,
             );
+            if let Some(b) = out.bearing {
+                ai.bearing = (b.to_target, b.distance_cm);
+            }
+            if out.exit.is_some() {
+                continue;
+            }
+            match out.step {
+                combat::Footstep::Start { goal, .. } => {
+                    ai.step = Some(Stepping {
+                        goal: Vec3::new(goal.x / CM, feet.y, goal.z / CM),
+                        started_ms: now as u32,
+                        state: 0,
+                    });
+                }
+                combat::Footstep::Continue { goal, .. } => {
+                    ai.step = Some(Stepping {
+                        goal: Vec3::new(goal.x / CM, feet.y, goal.z / CM),
+                        started_ms: now as u32,
+                        state: 2,
+                    });
+                }
+                combat::Footstep::Queue { offset, .. } => ai.queued = Some(offset),
+                combat::Footstep::Stay => {}
+            }
+            if out.marks.clear_queue {
+                ai.queued = None;
+            }
+            // Its stance: the guard or the combat idle the state chose.
+            if let Some(guard) = out.blow.guard {
+                let chosen = if guard.stance == combat::GUARD {
+                    Stance::Defence
+                } else {
+                    Stance::CombatIdle
+                };
+                if *stance != chosen {
+                    info!("duellist {entity:?} stance: {chosen:?}");
+                    *stance = chosen;
+                }
+            }
+            if let Some(motion) = out.blow.motion
+                && attacking.is_none()
+                && anim.looping
+                && !ai.holds_ground
+            {
+                exa_combat::start_attack(
+                    &mut commands,
+                    entity,
+                    &mut anim,
+                    &mut attacker,
+                    &mut swinging,
+                    blades.iter(),
+                    AttackStart {
+                        remise: fighter.remise(),
+                        ..AttackStart::of(motion, class, now)
+                    },
+                    stance.action(),
+                );
+            }
+        }
+        // It turns to the heading its look follows.
+        t.rotation = Quat::from_rotation_y(ai.mind.heading);
+        if attacking.is_some() || !anim.looping {
+            continue;
+        }
+        match ai.step {
+            Some(step) if !ai.holds_ground => {
+                let order = follow(&[feet, step.goal], feet, yaw_of(t.rotation), 0);
+                body.desired_velocity = order.velocity;
+                anim.play_loop(COMBAT_WALK);
+            }
+            _ => stance::take_ai_stance(&mut anim, *stance, primary_blend),
         }
     }
+}
+
+/// The yaw a rotation faces (+Z forward).
+fn yaw_of(rotation: Quat) -> f32 {
+    let facing = rotation * Vec3::Z;
+    facing.x.atan2(facing.z)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// An unarmed duellist (reach 0.5 m: it guards from 2 m) on a root at
-    /// the origin, its target `distance` m away along +Z.
+    /// An unarmed duellist on a root at the origin, its target `distance` m
+    /// away along +Z.
     fn duel(distance: f32, holds_ground: bool) -> (App, Entity, Entity) {
         let mut app = App::new();
         app.init_resource::<Time>().add_systems(Update, duellist);
@@ -588,6 +762,23 @@ mod tests {
         app.world_mut().get_mut::<Duellist>(foe).unwrap().engaged = true;
     }
 
+    /// One frame of one body tick.
+    fn step(app: &mut App) {
+        if let Some(mut ticks) = app.world_mut().get_resource_mut::<BodyTicks>() {
+            ticks.0 += 1;
+        } else {
+            app.insert_resource(BodyTicks(1));
+        }
+        app.update();
+    }
+
+    fn velocity(app: &App, root: Entity) -> Vec3 {
+        app.world()
+            .get::<CharacterBody>(root)
+            .unwrap()
+            .desired_velocity
+    }
+
     /// The perception pass fills a contact for the target: seen, its
     /// distance and its closeness.
     #[test]
@@ -608,79 +799,19 @@ mod tests {
         assert!((contact.view - 1.0).abs() < 1e-5, "{}", contact.view);
     }
 
-    /// A chosen footwork is held for its timer before the next decision.
-    #[test]
-    fn the_footwork_is_held_between_decisions() {
-        let (mut app, foe, _) = duel(2.0, false);
-        engage(&mut app, foe);
-        app.update();
-        app.world_mut().get_mut::<Duellist>(foe).unwrap().hold_ticks = 2;
-        app.update();
-        assert_ne!(state(&app, foe).1, "Combat Walk");
-        app.update();
-        assert_ne!(state(&app, foe).1, "Combat Walk");
-        app.update();
-        assert_eq!(state(&app, foe).1, "Combat Walk");
-    }
-
-    /// On the strike plateau (1.20 m, inside reach 50 cm plus a step of
-    /// 80 cm) it stands. At 2 m it is past that plateau and walks in.
-    #[test]
-    fn a_duellist_stands_on_the_strike_plateau() {
-        let (mut app, foe, root) = duel(1.20, false);
-        engage(&mut app, foe);
-        app.update();
-        app.update();
-        assert_ne!(state(&app, foe).1, "Combat Walk");
-        assert_eq!(
-            app.world()
-                .get::<CharacterBody>(root)
-                .unwrap()
-                .desired_velocity,
-            Vec3::ZERO
-        );
-        let (mut app, foe, root) = duel(2.0, false);
-        engage(&mut app, foe);
-        app.update();
-        app.update();
-        assert_eq!(state(&app, foe).1, "Combat Walk");
-        assert!(
-            app.world()
-                .get::<CharacterBody>(root)
-                .unwrap()
-                .desired_velocity
-                .length()
-                > 0.0
-        );
-    }
-
-    /// It stands idle until the fight starts, then takes the guard; far
-    /// from its target (8 m, beyond four reaches) it keeps the guard and
-    /// walks in with the interim footwork.
+    /// It stands idle until the fight starts, then takes the guard, its
+    /// eagerness at a half.
     #[test]
     fn the_duellist_enters_combat_in_its_guard() {
-        let (mut app, foe, root) = duel(8.0, false);
+        let (mut app, foe, _) = duel(8.0, false);
         app.update();
         assert_eq!(state(&app, foe), (Stance::Idle, "Idle".into()));
         engage(&mut app, foe);
         app.update();
         assert_eq!(state(&app, foe), (Stance::Defence, "Defence stance".into()));
-        let combatant = app.world().get::<Combatant>(foe).unwrap();
-        assert!(combatant.in_combat);
-        assert_eq!(combatant.reach_cm, 50.0);
-        app.update();
-        assert_eq!(state(&app, foe), (Stance::Defence, "Combat Walk".into()));
-        let v = app
-            .world()
-            .get::<CharacterBody>(root)
-            .unwrap()
-            .desired_velocity;
-        let order = follow(&[Vec3::ZERO, Vec3::new(0.0, 0.0, 8.0)], Vec3::ZERO, 0.0, 0);
-        assert!(order.velocity.length() > 1.0, "{}", order.velocity);
-        assert!(
-            (v - order.velocity).length() < 1e-4,
-            "{v} vs {}",
-            order.velocity
+        assert_eq!(
+            app.world().get::<Duellist>(foe).unwrap().mind.eagerness,
+            0.5
         );
     }
 
@@ -699,74 +830,69 @@ mod tests {
         assert_eq!(state(&app, foe).0, Stance::Defence);
     }
 
-    /// Standing its ground it shows its stance: the guard at 8 m, the
-    /// combat idle at 1.5 m (under four reaches), and it never strikes.
+    /// Fresh and at full energy, a human on guard stands in its combat idle
+    /// (the guard comes back when it tires); standing its ground it never
+    /// steps or strikes.
     #[test]
-    fn a_still_duellist_shows_its_stance_by_distance() {
-        let (mut app, foe, root) = duel(8.0, true);
-        engage(&mut app, foe);
-        app.update();
-        app.update();
-        assert_eq!(state(&app, foe), (Stance::Defence, "Defence stance".into()));
-        let (mut near, foe2, root2) = duel(1.0, true);
-        engage(&mut near, foe2);
-        near.world_mut().get_mut::<Duellist>(foe2).unwrap().cooldown = 0.0;
-        for _ in 0..3 {
-            near.update();
-        }
-        assert_eq!(
-            state(&near, foe2),
-            (Stance::CombatIdle, "Cmbt - Idle".into())
-        );
-        assert!(near.world().get::<Attacking>(foe2).is_none());
-        for (app, root) in [(&app, root), (&near, root2)] {
-            let v = app
-                .world()
-                .get::<CharacterBody>(root)
-                .unwrap()
-                .desired_velocity;
-            assert_eq!(v, Vec3::ZERO);
+    fn a_still_duellist_stands_in_its_combat_idle() {
+        for distance in [8.0, 1.0] {
+            let (mut app, foe, root) = duel(distance, true);
+            engage(&mut app, foe);
+            for _ in 0..600 {
+                step(&mut app);
+            }
+            assert_eq!(state(&app, foe), (Stance::CombatIdle, "Cmbt - Idle".into()));
+            assert!(app.world().get::<Attacking>(foe).is_none());
+            assert_eq!(velocity(&app, root), Vec3::ZERO);
         }
     }
 
-    /// Within striking distance it strikes once its cooldown runs out, the
-    /// attack ending in its stance.
+    /// Facing its foe 5 m away (past the approach band, so no place to
+    /// strike from), it steps in once its eagerness and its press build
+    /// up, walking toward the step's goal.
     #[test]
-    fn the_duellist_strikes_into_its_stance() {
-        let (mut app, foe, _) = duel(1.0, false);
+    fn the_duellist_steps_in_on_its_foe() {
+        let (mut app, foe, root) = duel(5.0, false);
         engage(&mut app, foe);
-        app.update();
-        app.update();
-        assert!(app.world().get::<Attacking>(foe).is_none());
-        app.world_mut().get_mut::<Duellist>(foe).unwrap().cooldown = 0.0;
-        app.update();
+        let mut walked = false;
+        for _ in 0..1500 {
+            step(&mut app);
+            let v = velocity(&app, root);
+            if v.length() > 0.0 {
+                assert!(v.z > 0.0, "{v}");
+                assert_eq!(state(&app, foe).1, "Combat Walk");
+                walked = true;
+                break;
+            }
+        }
+        assert!(walked);
+    }
+
+    /// Within the approach band it strikes once eager enough, from where it
+    /// stands (a forward strike place gives way to it), the attack ending in
+    /// its stance; with under eight tenths of its energy it never does.
+    #[test]
+    fn the_duellist_strikes_when_eager_and_rested() {
+        let (mut app, foe, root) = duel(3.0, false);
+        engage(&mut app, foe);
+        let mut struck = false;
+        for _ in 0..1500 {
+            step(&mut app);
+            if app.world().get::<Attacking>(foe).is_some() {
+                struck = true;
+                break;
+            }
+        }
+        assert!(struck);
+        assert_eq!(velocity(&app, root), Vec3::ZERO);
         let anim = app.world().get::<Animator>(foe).unwrap();
-        let mut roll = 0;
-        let choice = fight::choose_attack(
-            &fight::Situation {
-                unarmed: true,
-                distance_cm: 100.0,
-                reach_cm: stance::UNARMED_REACH * 100.0,
-                ..fight::Situation::default()
-            },
-            &mut roll,
-        )
-        .unwrap();
-        assert_eq!(anim.action, choice.motion.action());
-        assert_eq!(anim.then.as_deref(), Some("Cmbt - Idle"));
-        assert!(app.world().get::<Attacking>(foe).is_some());
-    }
-
-    /// Its strikes go through the original's executor: none under 80 % of
-    /// its most energy (0.79), and with 0.8 none until 400 ms (no primary
-    /// striker yet) after its last attack tick on the game clock.
-    #[test]
-    fn the_duellist_waits_for_its_energy_and_cooldown() {
-        let (mut app, foe, _) = duel(1.0, false);
-        app.insert_resource(BodyTicks(1000)); // 12 000 ms
-        engage(&mut app, foe);
-        app.update();
-        app.update();
+        assert!(
+            AttackMotion::of_action(&anim.action).is_some(),
+            "{}",
+            anim.action
+        );
+        let (mut tired, foe2, _) = duel(3.0, false);
+        engage(&mut tired, foe2);
         let part = exa_physics::body::PartSetup {
             bone: 1,
             entity: Entity::PLACEHOLDER,
@@ -781,22 +907,25 @@ mod tests {
         };
         let mut ragdoll = Ragdoll::new(&[part]).with_drive();
         ragdoll.drive.as_mut().unwrap().energy = 0.79;
-        app.world_mut().entity_mut(foe).insert(ragdoll);
-        app.world_mut().get_mut::<Duellist>(foe).unwrap().cooldown = 0.0;
+        tired.world_mut().entity_mut(foe2).insert(ragdoll);
+        for _ in 0..1500 {
+            step(&mut tired);
+            assert!(tired.world().get::<Attacking>(foe2).is_none());
+        }
+    }
+
+    /// The combat ticks follow the body ticks: four at most a frame.
+    #[test]
+    fn the_combat_state_ticks_with_the_body() {
+        let (mut app, foe, _) = duel(8.0, true);
+        app.insert_resource(BodyTicks(100));
+        engage(&mut app, foe);
         app.update();
-        assert!(app.world().get::<Attacking>(foe).is_none());
-        let mut e = app.world_mut().entity_mut(foe);
-        e.get_mut::<Ragdoll>()
-            .unwrap()
-            .drive
-            .as_mut()
-            .unwrap()
-            .energy = 0.8;
-        e.get_mut::<Attacker>().unwrap().last_tick_ms = Some(11_700);
         app.update();
-        assert!(app.world().get::<Attacking>(foe).is_none());
-        app.world_mut().resource_mut::<BodyTicks>().0 = 1009; // 12 108 ms
+        let practice = |app: &App| app.world().get::<Duellist>(foe).unwrap().last_tick;
+        assert_eq!(practice(&app), Some(100));
+        app.world_mut().resource_mut::<BodyTicks>().0 = 110;
         app.update();
-        assert!(app.world().get::<Attacking>(foe).is_some());
+        assert_eq!(practice(&app), Some(110));
     }
 }

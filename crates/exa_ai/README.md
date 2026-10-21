@@ -4,14 +4,21 @@ NPC behaviour: perception, path finding on the level grid, combat AI that drives
 
 **Phase:** Phase 6 (see [`docs/PLAN.md`](../../docs/PLAN.md)). Status: partial.
 
-It already drives the play mode duellist: from the fight start it enters
-combat in its guard, guards at four reaches or more from its target and
-stands in Cmbt - Idle within, walks in with Exarust's interim combat walk
-and strikes at intervals, each strike through the original's attack
-executor (`exa_combat::attack`: enough energy, the cooldown since its last
-attack), holding every swing through (it never releases one, so its
-swings stall only when struck); it can be told to hold its ground (a
-debug aid).
+It already drives the play mode duellist with the original's combat
+state (`combat`), once per body tick: it enters combat in its guard with
+its eagerness at a half, and each tick weighs up to seventeen places
+(where it stands, eight steps and eight long steps) through the position
+score (`place`, with the foe's published arc), keeping its contact with
+the target through the combatant's perception pass (`combatant`); it
+steps to the cheapest, strikes from the cheapest strike place through the original's attack choice (`fight`) and executor
+(`exa_combat::attack`), guards in Cmbt - Idle when fresh and in the
+Defence stance when tired, and turns its heading 0.03 of the gap a tick
+(by the swing's sweep while it swings, leaning against a foe's side
+swing on guard). Its eagerness drifts up at full energy and its press
+comes within 3 s, so it hesitates before it closes. Exarust walks a
+chosen step in its interim combat walk until it arrives; the duellist
+does not release a swing yet; it can be told to hold its ground (a debug
+aid).
 
 A level's living characters carry a brain (`brain`): their record's roles,
 their relations and traits. When they appear their roles choose their idle
@@ -30,6 +37,7 @@ notice drops the sleep role and wakes.
 | `brain` | the components and systems that carry roles into the running game |
 | `idle` | roam, patrol, sentry and the wait, the wander and home-side points, follow, sleep, knock-out and waking |
 | `combatant` | the behaviour base: contacts, perception, the attitude and trust overrides, concern, references, the queued step, the nav footprint |
+| `combat` | the combat state: practice, the foe estimate, the weapon draw and the lunge, the chase count and eagerness, the footwork drives, the seventeen-place search, the attack decision with the friend test and the keep-off, the step, the guard, the fierce stance and the body turn |
 | `sense`, `hear`, `fight`, `place`, `path`, `order` | contact rating, noise and alert, attack choice, combat positions, path search and following, steering orders |
 
 **Roles and attitude.** Adding a role adds it, or marks it explicit, and
@@ -46,6 +54,24 @@ B's roles. The first match gives `attitude · w + (1 − w) · familiarity`
 and tolerance 0. Shipped matrix (familiarity 0): zombie → human −20,
 skeleton → human −50, demon → human −100, demon → demon +100 (tolerance
 60), skeleton → golem +30, human → demon −50.
+
+**Combat state.** Each tick: practice from struck foes pays four per
+point past a gain of 10; with probability `(0.8k² + 0.2)²` the foe is
+looked at again, blended back by `0.6 − 0.6k²`; the foe's contact gives
+the level; engaged and balanced, a far, high or unseen foe counts the
+fighter stuck (a chase after 21 ticks) and the eagerness drifts by
+`(3 − k)(0.02·draw − 0.006)` up to 6 at full energy. The attack, strike
+and spacing drives weigh the places: each costs its ground, the change of
+step, three times each contact's danger and twice its closeness, less the
+strike drive times the foe's strike term; a place whose approach times
+the attack drive (less half its danger times the spacing) passes 1 can be
+struck from. A strike wins by 2 (1 committed) when no friend stands in
+the way; a forward strike place gives way to where it stands; otherwise
+it steps only to a place cheaper by 1. Arithmetic keeps the original's
+order and its double-precision comparisons. The position score's ground
+cost, line walk, sight test and nav snap have defaults (no navigation
+queries in the running game), and the chase route, the follow check and
+casting are hooks with no answer yet.
 
 Not in yet: a script engine (encounter, dialogue and condition scripts are
 found, not run; only the init assignments run), the brain feeding the
