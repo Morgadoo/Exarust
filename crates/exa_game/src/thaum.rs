@@ -746,11 +746,11 @@ pub fn shell_hit(held: u32, amount: f32) -> Option<f32> {
     if held >= 8 {
         return None;
     }
-    let strength = if !(f64::from(amount) > 0.3) {
+    let strength = if f64::from(amount) > 0.3 {
+        6.0
+    } else {
         let scaled = (f64::from(amount) * 3.333) as f32;
         (2.0 - scaled) * scaled * 6.0
-    } else {
-        6.0
     };
     Some(strength)
 }

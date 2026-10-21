@@ -152,10 +152,7 @@ pub fn radius_query(
         let dz = body.at.z - point.z;
         let d2 = dx * dx + dz * dz;
         // An ordered compare: a distance that is not a number is not inside.
-        if !(d2 < r2) || body.node_flags & QUERY_FLAG == 0 {
-            continue;
-        }
-        if accept(body) {
+        if d2 < r2 && body.node_flags & QUERY_FLAG != 0 && accept(body) {
             count += 1;
         }
     }

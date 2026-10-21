@@ -140,8 +140,7 @@ pub fn stamp_line(
             }
         }
         // The cells beside the ring that neither pass marked.
-        for q in line..queue.len() {
-            let (qx, qz) = queue[q];
+        for &(qx, qz) in &queue[line..] {
             for &(dx, dz) in &OFFSETS[..4] {
                 let (lx, lz) = (qx + dx, qz + dz);
                 let Some(i) = index(lx, lz) else { continue };
