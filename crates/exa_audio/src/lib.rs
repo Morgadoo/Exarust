@@ -29,7 +29,8 @@ pub use environment::{
     Voice, VoiceHandle, heard_gain, voice_flags,
 };
 pub use music::{
-    LevelMusic, MusicSetting, StoryMusic, music_for_level, story_music, story_music_changes,
+    LevelMusic, LevelMusicVolume, MUSIC_VOLUME, MusicSetting, StoryMusic, music_for_level,
+    story_music, story_music_changes,
 };
 pub use playback::{ANCHOR_HEIGHT_M, ListenerAnchor};
 pub use reverb::{EaxReverb, LevelReverb, Reverb};

@@ -51,6 +51,12 @@ pub const MIN_VOLUME: f32 = 0.01;
 #[derive(Resource, Clone, Debug)]
 pub struct LevelMusic(pub String);
 
+/// The volume the level's track plays at, when the level's mode sets one
+/// (an arena match plays each track at its own volume). Without it the
+/// track plays at [`MUSIC_VOLUME`].
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct LevelMusicVolume(pub f32);
+
 /// Music for a level name, following the original's track naming. A story
 /// level (`exanima0…`, `exanimac…`) plays what [`story_music`] picks.
 pub fn music_for_level(level: &str) -> &'static str {
@@ -539,6 +545,7 @@ impl AudioEnvironment {
 pub(crate) fn start_music(
     mut env: ResMut<AudioEnvironment>,
     music: Option<Res<LevelMusic>>,
+    volume: Option<Res<LevelMusicVolume>>,
     game: Option<Res<Game>>,
     mut bank: ResMut<SoundBank>,
     mut sources: ResMut<Assets<AudioSource>>,
@@ -561,7 +568,8 @@ pub(crate) fn start_music(
     if music.0.is_empty() {
         return;
     }
-    env.music_play_now(&mut bank, &music.0, MUSIC_VOLUME, |bank, name| {
+    let volume = volume.map_or(MUSIC_VOLUME, |volume| volume.0);
+    env.music_play_now(&mut bank, &music.0, volume, |bank, name| {
         bank.load_buffer(&game, &mut sources, name).unwrap_or(0)
     });
 }

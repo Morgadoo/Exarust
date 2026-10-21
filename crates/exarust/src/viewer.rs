@@ -356,6 +356,7 @@ fn continue_level(
     mut flies: Query<(&mut Transform, &mut FlyCamera)>,
     play_camera: Option<Res<PlayCamera>>,
     gi: Res<exa_world::gi_volume::GiSettings>,
+    mut arena_picks: ResMut<exa_game::arena_match::ArenaPicks>,
 ) {
     let mut loader = ModelLoader {
         game: &game.0,
@@ -404,6 +405,7 @@ fn continue_level(
             info,
             play_camera.map(|c| c.0),
             &options,
+            &mut arena_picks,
         ),
         _ => {
             begin_lighting(&mut commands, &gi, BUILT_AT);
@@ -524,11 +526,32 @@ fn play_level(
     info: exa_world::LevelInfo,
     camera: Option<Entity>,
     options: &Options,
+    arena_picks: &mut exa_game::arena_match::ArenaPicks,
 ) {
     commands.entity(root).insert(exa_physics::StaticGeometry);
-    commands.insert_resource(exa_audio::LevelMusic(
-        exa_audio::music_for_level(name).into(),
-    ));
+    // An arena match draws its track as the original's match start does:
+    // the roll is the reversed counter, and the arena is the one named on
+    // the command line, so the arena draw is not run.
+    let (track, volume) = if exa_game::arena_match::arena_index(name).is_some() {
+        use exa_game::arena_match::{counter_now, pick_track};
+        let mut roll = (counter_now() as u32).swap_bytes();
+        let track = pick_track(&mut arena_picks.tracks, &mut roll, false, false);
+        info!("arena match music: {} at {}", track.name, track.volume);
+        (track.name.to_ascii_lowercase(), track.volume)
+    } else {
+        (
+            exa_audio::music_for_level(name).to_string(),
+            exa_audio::MUSIC_VOLUME,
+        )
+    };
+    commands.insert_resource(exa_audio::LevelMusic(track));
+    commands.insert_resource(exa_audio::LevelMusicVolume(volume));
+    if exa_game::arena_match::arena_index(name).is_some() && options.opponent {
+        // A duel (template 1): one round, one life.
+        commands.insert_resource(exa_game::arena_match::ArenaMatch::begin(1));
+    } else {
+        commands.remove_resource::<exa_game::arena_match::ArenaMatch>();
+    }
     commands.insert_resource(exa_audio::LevelAmbience(exa_audio::ambience_for_level(
         name,
     )));

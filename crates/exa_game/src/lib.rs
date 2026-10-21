@@ -5,6 +5,8 @@
 pub mod arena;
 pub mod arena_board;
 pub mod arena_log;
+pub mod arena_match;
+pub mod arsenal;
 pub mod balance;
 pub mod bindings;
 pub mod body_overlay;
@@ -20,6 +22,7 @@ pub mod fall;
 pub mod footprints;
 pub mod frame;
 pub mod hand;
+pub mod hirelings;
 pub mod hotkeys;
 pub mod hud;
 pub mod hw_config;
@@ -96,7 +99,7 @@ impl Plugin for GamePlugin {
             teleporters::TeleportPlugin,
             hw_config::HardwareConfigPlugin,
             destination::DestinationPlugin,
-            menu_screen::MenuScreenPlugin,
+            (menu_screen::MenuScreenPlugin, arena_match::ArenaMatchPlugin),
         ))
         // Debug tools: idle unless their flags or keys turn them on.
         .add_plugins((
