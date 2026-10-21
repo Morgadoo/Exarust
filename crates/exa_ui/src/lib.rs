@@ -83,8 +83,8 @@ pub use emblem_form::{
 pub use fade::DeathFade;
 pub use fps::ShowFps;
 pub use gui_controls::{
-    ClassRegistry, LabelDraw, LabelInk, append_records, check_tick_shown, label_draw,
-    layout_records, register_class, register_default_classes,
+    CheckLabelInk, ClassRegistry, LabelDraw, LabelFront, LayoutClient, append_records,
+    check_label_ink, label_draw, layout_records, register_class, register_default_classes,
 };
 pub use gui_core::{
     DropState, EdgeForm, FormHost, FormId, GuiMetrics, GuiRect, GuiTask, HitResult, MessageBoxPlan,
