@@ -110,25 +110,27 @@ pub fn filter_creation_gear(
     arena_kit: &[u32],
 ) {
     if game_mode == 4 && background == 0 {
-        gear.hands = [GearSlot::default(); 4];
+        for hand in &mut gear.hands {
+            hand.item = 0;
+        }
         keep_braies_only(&mut gear.worn);
         gear.carried.clear();
     } else if game_mode & 2 == 0 {
         if game_mode == 8 {
             for hand in gear.hands.iter_mut().take(2) {
                 if hand.item != 0 && !arena_kit.contains(&hand.item) {
-                    *hand = GearSlot::default();
+                    hand.item = 0;
                 }
             }
-            gear.hands[2] = GearSlot::default();
-            gear.hands[3] = GearSlot::default();
+            gear.hands[2].item = 0;
+            gear.hands[3].item = 0;
             keep_braies_only(&mut gear.worn);
             gear.carried.clear();
         }
     } else {
         for hand in gear.hands.iter_mut().take(2) {
             if hand.item == FIST_ITEM {
-                *hand = GearSlot::default();
+                hand.item = 0;
             }
         }
         gear.carried.clear();
@@ -3856,8 +3858,17 @@ mod tests {
     #[test]
     fn the_story_filter_keeps_braies_only() {
         let mut story = gear([1, 2, 3, 4], &[7, 8, 9], &[10]);
+        story.hands[0].flags = 7;
         filter_creation_gear(&mut story, 4, 0, &[247, 249]);
-        assert_eq!(story.hands, [GearSlot::default(); 4]);
+        assert_eq!(
+            story.hands,
+            [
+                GearSlot { item: 0, flags: 7 },
+                GearSlot::default(),
+                GearSlot::default(),
+                GearSlot::default()
+            ]
+        );
         assert_eq!(story.worn, vec![GearSlot::new(8)]);
         assert!(story.carried.is_empty());
 
