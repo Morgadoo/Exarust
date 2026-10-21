@@ -32,6 +32,8 @@ pub struct OpenScreen {
     pub item: Entity,
     pub device: Entity,
     pub atlas: &'static str,
+    /// The crystal is the large-crystal adapter: its bubble holds.
+    pub adapter: bool,
     pub level_ids: Vec<u32>,
     /// The screen's layout, from the interface scale.
     pub width: i32,
@@ -113,6 +115,7 @@ fn open_screen(
             item: message.item,
             device: message.device,
             atlas: message.screen.atlas,
+            adapter: message.adapter,
             level_ids,
             width: 0,
             height: 0,
@@ -162,7 +165,7 @@ fn screen_input(
             Click::Dismiss => open.screen.close(clock.now_ms),
             Click::Travel(level) => {
                 let color = level as u8;
-                let journey = journey(false, level, color);
+                let journey = journey(open.adapter, level, color);
                 let bubble = commands
                     .spawn((
                         Name::new("portal journey bubble"),
@@ -180,8 +183,8 @@ fn screen_input(
                     started: clock.now_ms,
                     end_ms: clock.now_ms.wrapping_add(journey.end_ms),
                     level,
-                    // The small teleporter crystal.
-                    crystal_flags: 0x1af,
+                    // The small teleporter crystal, or its adapter.
+                    crystal_flags: if open.adapter { 0x58f } else { 0x1af },
                     stored_color: color,
                     finish: false,
                 });
@@ -439,13 +442,13 @@ mod tests {
             .unwrap()
             .level;
         assert_eq!(level, 7);
-        // The bubble grows, rests and shrinks away; then the travel
-        // message is out.
+        // The adapter's bubble holds: it grows, charges for seven seconds
+        // and is then freed; the travel message follows.
         at(&mut app, 2_900);
-        at(&mut app, 3_500);
-        at(&mut app, 3_600);
-        at(&mut app, 4_100);
-        at(&mut app, 4_200);
+        at(&mut app, 8_800);
+        at(&mut app, 9_900);
+        at(&mut app, 9_901);
+        at(&mut app, 9_910);
         let travel: Vec<_> = app
             .world_mut()
             .resource_mut::<Messages<TravelToLevel>>()
