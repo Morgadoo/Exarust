@@ -41,6 +41,7 @@ use bevy::camera::visibility::NoFrustumCulling;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::transform::TransformSystems;
+use exa_combat::swing::SwingState;
 use exa_combat::{Condition, Fighter};
 use exa_physics::Physics;
 use exa_physics::body::locomotion::Locomotor;
@@ -328,7 +329,7 @@ pub fn energy_after_knocks(energy: f32, losses: &[f32]) -> f32 {
 fn tick_barricades(
     mut commands: Commands,
     mut walls: Query<(Entity, &mut LiveBarricade, Option<&NavStamped>)>,
-    mut bodies: Query<&mut Ragdoll>,
+    mut bodies: Query<(&mut Ragdoll, Option<&mut SwingState>)>,
     ticks: Option<Res<BodyTicks>>,
     mut roll: ResMut<EffectRoll>,
     mut nav: Option<ResMut<NavGrid>>,
@@ -338,7 +339,7 @@ fn tick_barricades(
         let live = &mut *live;
         if let Some(caster) = live.caster
             && let Ok(body) = bodies.get(caster)
-            && let Some(at) = body.parts.first().map(|p| p.transform().translation * CM)
+            && let Some(at) = body.0.parts.first().map(|p| p.transform().translation * CM)
             && power_ends(0, live.wall.centre, at.into())
         {
             live.wall.end();
@@ -346,7 +347,7 @@ fn tick_barricades(
         if live.wall.tick(now) {
             debug!("barricade {wall_entity}: gone");
         }
-        for mut body in &mut bodies {
+        for (mut body, mut swing) in &mut bodies {
             let character = body.drive.as_ref().map(|d| {
                 let chest = bone_part(&body, CHEST)
                     .and_then(|k| part_point(&body, k, Vec3::ZERO))
@@ -382,6 +383,15 @@ fn tick_barricades(
                     },
                 };
                 let shove = live.wall.shove(&tested, now, &mut roll.0);
+                // The original's Force walls interrupt the holder's attack
+                // when they strike a weapon part; Exarust's weapons are
+                // bone-attached meshes, so the wall never classifies one
+                // and this stays unexercised.
+                if shove.interrupt
+                    && let Some(state) = swing.as_mut()
+                {
+                    state.force_interrupt(u64::from(now));
+                }
                 touched |= shove.touched;
                 for (sphere, push) in &shove.pushes {
                     body.push_sphere(k, *sphere, *push / CM);
@@ -914,5 +924,21 @@ mod tests {
         assert!((energy_after_knocks(0.26, &[0.004; 3]) - 0.248).abs() < 1e-6);
         assert_eq!(energy_after_knocks(0.25, &[0.004]), 0.25);
         assert_eq!(energy_after_knocks(1.0, &[]), 1.0);
+    }
+
+    /// The plugin builds and ticks with no game and no barricade: the
+    /// interrupt path's query must resolve after the plugin's messages and
+    /// assets are in place.
+    #[test]
+    fn the_effects_plugin_ticks_without_a_game() {
+        use bevy::asset::AssetPlugin;
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<GlowMaterial>()
+            .add_plugins(ThaumEffectsPlugin);
+        for _ in 0..3 {
+            app.update();
+        }
     }
 }

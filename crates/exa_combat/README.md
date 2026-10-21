@@ -106,9 +106,11 @@ wound on a boned limb adds its size to the struck fighter's bleeding tally
 damage over time.
 A Force effect's interrupt (`SwingState::force_interrupt`) breaks an
 attack into a full-strength stall with no drain, cleaving and recoiled,
-its window shut and the stance 600 ms on; nothing calls it yet, and the
-original's 50·clock attack-reach penalty has no attack reach to take it
-from.
+its window shut and the stance 600 ms on. The debug barricade calls it
+where the original's Force dome, barrier and barricade do, when their wall
+strikes a weapon part; Exarust's weapons are bone-attached meshes, so the
+wall never classifies one and the call stays unexercised. The original's
+50·clock attack-reach penalty has no attack reach to take it from.
 
 ## Grips
 
@@ -338,7 +340,24 @@ must be attacking and under 1.3 size (or facing a shield), in its 0.3–0.9
 window, not cleaving, not behind and within its reach + 150 cm. Its counter
 rises and falls by the chosen clip, a start blends round(recovery · 20) with
 ease 2 and moves an attack motion to 4, and a changed attack motion repicks
-the clip.
+the clip. The running fight calls the whole rule every body tick: the
+ticked fighter, after its swing routine, ends a helpless or failing parry,
+runs the trigger while it parries, and starts one from the combat idle once
+the auto-parry deadline has passed. The attacker is the nearest attacking
+foe whose real condition, size, strike window, cleaving bit, progress,
+reach, chests and facing pass the trigger (the original keeps an explicit
+target; the player's cursor target is not a component). The chosen clip
+starts looped with its blend and fast ease and the hit path sees
+`Guard::Parry`; the parry ends into its stance with the 0x28 blend and the
+condition and stance systems leave the parry clip alone.
+
+A blow's body stagger (`stagger`) runs in the same tick: the damage
+routine's follow-through starts `stagger_strength` where it keeps a gain,
+and a parried, blocked or turned blow starts `recoil` on the striker. The
+`Stagger` component on the body loses its decay and counts down each attack
+stage, and its speed scales the swing's clip rate while it lasts. The
+striking part's factor and speed share are the weapon's impact W10 and the
+blow's penetration: the original's part table has no body in Exarust.
 
 `weapon` is the held weapon's handling: the blade lift and bend curves and
 their two guide pushes (the weapon's and the forearm's), with the weapon's

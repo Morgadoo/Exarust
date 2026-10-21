@@ -214,7 +214,8 @@ Not yet: the role database feeding `perceive` (the brain's attitudes are
 not passed in), the encounter scripts and the familiarity write, the mind
 power calls the pass and a hit make, the scene's forget broadcast on
 removal, the pathfinder's footprint insert, the full candidate footwork
-search, and the auto-parry.
+search, and the AI's own parry choice (the body's auto-parry runs in
+`exa_combat::parry`).
 
 ## Scope
 

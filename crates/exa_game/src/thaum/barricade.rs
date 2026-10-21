@@ -1060,9 +1060,16 @@ mod tests {
         let shove = w.shove(&body, 5000, &mut roll);
         assert!((shove.pushes[0].1 - n * 0.025).length() < 1e-6);
         assert!(!shove.interrupt, "only in front");
+        // A weapon part in front interrupts the holder's attack.
+        let front = WallBody {
+            centre: w.frame.at + n * 5.0,
+            spheres: vec![(w.frame.at + n * 5.0, 10.0)],
+            ..body.clone()
+        };
+        assert!(w.shove(&front, 5000, &mut roll).interrupt);
         let far = WallBody {
             centre: w.frame.at + n * 50.0,
-            ..body
+            ..body.clone()
         };
         assert!(!w.shove(&far, 5000, &mut roll).touched);
     }
