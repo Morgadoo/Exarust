@@ -89,9 +89,10 @@ pub mod flags {
     /// The specular map packs intensity, gloss and metalness.
     pub const PACKED_SPECULAR: u32 = 64;
     pub const TWO_SIDED: u32 = 128;
-    /// The record has a reflection cube (`Mat.TexRef`, slot `0x100000`), so
-    /// the surface reflects the environment cube; without it the original's
-    /// specular GI is a quarter of the ambient.
+    /// The surface reflects the environment cube inside the GI volume. A
+    /// library record needs its reflection layer kept (`Mat.TexRef`);
+    /// without it the original's specular GI there is a quarter of the
+    /// ambient. Outside the volume every surface reflects the cube.
     pub const ENVIRONMENT: u32 = 256;
     /// A dirt texture is bound (the blood speckle, [`super::BloodProgram`]).
     pub const DIRT_MAP: u32 = 512;

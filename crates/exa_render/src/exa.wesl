@@ -427,24 +427,21 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             mirrored = textureSampleLevel(environment_map, environment_sampler, r, max(s.rough - 0.05, 0.0) * 8.0).rgb;
             reflected = mirrored * ambient * REFLECTION_STRENGTH * 2.0 * gv;
         } else {
-            // Without a reflection cube the original's specular GI is a
+            // Without a reflection layer (`Mat.TexRef`) the specular GI is a
             // quarter of the ambient, not a cube sample.
             reflected = ambient * 0.25 * gv;
         }
     } else {
-        // The cube always lights the surface outside the GI volume.
+        // Outside the GI volume the cube lights and reflects every surface,
+        // with or without a reflection layer of its own.
         ambient = textureSampleLevel(environment_map, environment_sampler, n, 5.0).rgb * level;
-        if has(ENVIRONMENT) {
-            mirrored = textureSampleLevel(environment_map, environment_sampler, r, max(s.rough - 0.1, 0.0) * 8.0).rgb;
-            reflected = (mirrored + mirrored * mirrored) * level / AMBIENT_SCALE * REFLECTION_STRENGTH * gv;
-        } else {
-            reflected = ambient * 0.25 * gv;
-        }
+        mirrored = textureSampleLevel(environment_map, environment_sampler, r, max(s.rough - 0.1, 0.0) * 8.0).rgb;
+        reflected = (mirrored + mirrored * mirrored) * level / AMBIENT_SCALE * REFLECTION_STRENGTH * gv;
     }
-    // Parallax darkens the ambient in hollows, with or without the
-    // displacement shadows (the original's `Mat.TexDsp` branch is
-    // independent of `Shd.DispSdw`).
-    if displaced {
+    // Parallax darkens the PBR program's ambient in hollows, with or without
+    // the displacement shadows (`Mat.TexDsp`, independent of `Shd.DispSdw`;
+    // the older program adds its ambient as it is).
+    if displaced && !s.legacy {
         ambient *= min(dsp_val + 1.2, 1.0);
     }
     var colour = (diffuse + ambient) * dif_col;

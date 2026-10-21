@@ -610,14 +610,10 @@ impl ModelLoader<'_> {
             && size.x > 1
             && size.y > 1
         {
-            let (w, h) = (size.x as f32, size.y as f32);
-            // The engine's round helper floors (as the GI edges do).
-            let depth = (50.0 * layer.amount).floor().min(65535.0);
-            let y = (depth * 2048.0 / h).floor();
-            let x = (y * h / w).floor();
+            let (x, y) = exa_render::shader_uniforms::parallax_texels(layer.amount, size.x, size.y);
             mat.params.displacement = Vec4::new(
-                x * PARALLAX_UNIT,
-                y * PARALLAX_UNIT,
+                f32::from(x) * PARALLAX_UNIT,
+                f32::from(y) * PARALLAX_UNIT,
                 m.displacement_step * 0.004,
                 m.displacement_bias * 0.05,
             );
@@ -655,12 +651,15 @@ impl ModelLoader<'_> {
             let spatter = self.spatter();
             mat = mat.with_blood(program, spatter);
         }
-        // Only a record with its own reflection cube takes the cube path;
-        // every other surface's specular GI is a quarter of the ambient.
-        let reflection = m.layer(TextureSlot::Reflection).is_some();
+        // The cube stays bound (it lights every surface outside the GI
+        // volume), but only a record whose material state keeps its
+        // reflection layer (`Mat.TexRef`) reflects it inside the volume;
+        // every other surface's specular GI there is a quarter of the
+        // ambient. The original loads that layer's own cube; Exarust binds
+        // the level's.
         mat = mat.with_map_flags();
-        if reflection {
-            mat.params.flags |= flags::ENVIRONMENT;
+        if !reflects_cube(m) {
+            mat.params.flags &= !flags::ENVIRONMENT;
         }
         mat
     }
@@ -1504,9 +1503,6 @@ impl PaintJob {
     }
 }
 
-/// How a material blends, from its blend word: `0x4000` alpha-tests (when
-/// a map gives alpha); otherwise the source and destination factors (bits
-/// 8–11 and 0–3) pick opaque, premultiplied, additive or alpha blending.
 /// The diffuse colour as the original's material uniform takes it: linear,
 /// after legacy materials (type 0) brighten it by 1.5.
 fn material_diffuse(m: &Material) -> Vec3 {
@@ -1518,32 +1514,54 @@ fn material_diffuse(m: &Material) -> Vec3 {
     ])
 }
 
-/// The specular colour: linear, times the record's specular level; zero
-/// without the specular bit, and tripled for a PBR record with a packed
-/// specular map (the `shadeopt` program's `MatSpc`).
+/// The shading quality the program choice of library materials assumes
+/// (the shipped setting; Exarust renders at it).
+const SHADING_QUALITY: u32 = 5;
+
+/// The specular colour the material uniform takes: linear, times the
+/// record's specular level when the material state keeps its specular bit;
+/// the unscaled colour when only a reflection cube asks for it; zero
+/// otherwise. A program whose class has bit 0 set (PBR, hair, skin with a
+/// scattering colour, translucent) triples it when a specular map is
+/// bound.
 fn material_specular(m: &Material) -> Vec3 {
-    if m.flags & material_flags::SPECULAR == 0 {
+    let Some((mat, shd)) = exa_render::shader_program::key_words(m, SHADING_QUALITY) else {
         return Vec3::ZERO;
-    }
-    let mut specular = linear_rgb([m.specular[0], m.specular[1], m.specular[2]]) * m.specular_level;
-    // Only the PBR program (type 1) triples the specular with a map; the
-    // skin program multiplies the lights by the map instead.
-    if m.kind & 0xFF == 1 && m.texture(TextureSlot::Specular).is_some() {
+    };
+    let colour = linear_rgb([m.specular[0], m.specular[1], m.specular[2]]);
+    let mut specular = if mat & 0x4 != 0 {
+        colour * m.specular_level
+    } else if mat & 0x10_0000 != 0 {
+        colour
+    } else {
+        return Vec3::ZERO;
+    };
+    if shd & 1 != 0 && mat & 0x4_0000 != 0 {
         specular *= 3.0;
     }
     specular
 }
 
-/// The record's glossiness as stored; type-0 materials are raised to 0.01,
-/// as the original's material uniform does.
+/// Whether the factory keeps a record's reflection layer (`Mat.TexRef`):
+/// the flag bit, which the type's plug-in passes, and the layer.
+fn reflects_cube(m: &Material) -> bool {
+    exa_render::shader_program::key_words(m, SHADING_QUALITY)
+        .is_some_and(|(mat, _)| mat & 0x10_0000 != 0)
+}
+
+/// The record's glossiness as stored; type-0 materials below 0.01 are
+/// raised to it, as the original's loader does.
 fn material_gloss(m: &Material) -> f32 {
-    if m.kind & 0xFF == 0 {
-        m.glossiness.clamp(0.01, 1.0)
+    if m.kind & 0xFF == 0 && m.glossiness < 0.01 {
+        0.01
     } else {
         m.glossiness
     }
 }
 
+/// How a material blends, from its blend word: `0x4000` alpha-tests (when
+/// a map gives alpha); otherwise the source and destination factors (bits
+/// 8–11 and 0–3) pick opaque, premultiplied, additive or alpha blending.
 fn blend_mode(word: u32, has_alpha: bool) -> AlphaMode {
     const ONE: u32 = 1;
     const SRC_ALPHA: u32 = 2;
@@ -1964,12 +1982,12 @@ mod tests {
     }
 
     #[test]
-    fn specular_needs_the_bit_and_a_pbr_map_triples_it() {
+    fn specular_needs_the_bit_and_an_odd_class_triples_it() {
         let mut m = Material {
             specular: [1.0, 0.5, 0.25, 1.0],
             specular_level: 0.5,
             kind: 1,
-            flags: 0x4,
+            flags: 0x4 | 0x4_0000,
             ..default()
         };
         let s = material_specular(&m);
@@ -1988,6 +2006,12 @@ mod tests {
             amount: 0.0,
         });
         assert!((material_specular(&m).x - 1.5).abs() < 1e-6);
+        // Hair (class 3) triples too; legacy (0) and skin without a
+        // scattering colour (6) do not.
+        let at = |kind| material_specular(&Material { kind, ..m.clone() }).x;
+        assert!((at(3) - 1.5).abs() < 1e-6);
+        assert!((at(0) - 0.5).abs() < 1e-6);
+        assert!((at(4) - 0.5).abs() < 1e-6);
     }
 
     #[test]
