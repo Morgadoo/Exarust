@@ -584,6 +584,67 @@ down the screen (or a quarter down), its top turned into design pixels
 label sits at 12, 4, its Ok and Cancel buttons are 80 wide, 96 apart,
 centred at grid row 13.
 
+### The main menu screen
+
+The running app opens the main menu with F1 (`exa_game::menu_screen`). It
+draws the page's rows from the same page table, origin, row scale, row
+advance, centred widths and selected/disabled colours as the original, and
+follows its hit test (the band above each row, disabled rows taking no
+click) and click branches (`menu_command`): the title page's arena,
+character screen, start, manual, settings and quit; the start page's new
+career, character screen, class select, new game and back; the in-game
+page's close/begin, manual, settings and exit; the class page's novice,
+expert and back; the pause pages' close, settings and continue. The mouse
+and Up/Down/Enter drive it, Escape closes it. The rows are drawn in the
+base font for now: the original's `mmenutxt01.rfi` sprite sheet is not
+bound yet, though `MenuFont` holds and rescales its recorded cells,
+advances and row width. The page's session work (starting a level, the
+character screen, the arena) is the game modes' and is only named here.
+
+### The window manager
+
+`exa_ui::gui_core` is the original's GUI main unit, apart from the form
+classes themselves. A `FormHost` supplies
+a form's parent, rectangle, hit test and callbacks; `GuiTask` keeps the
+forms in creation order (the last drawn on top), the active and modal
+forms, the selected control, the remembered fallback focus and the pointer.
+
+- **Focus.** A change leaves the old form's control (the focus-changed
+  callback with 0), enters the new one, and returns the original's result
+  bits: 1 something changed, 3 redraw, 0x100 a focus was granted, 0x200 it
+  was not keyboard-driven. A granted focus is remembered with its form and
+  control; it is restored after a modal closes while still valid. A modal
+  form refuses focus to every other form.
+- **Hit test.** Without a modal the deepest visible child under the point
+  is tested, else the root; with one, only the modal is. The result is the
+  1-based control or a negative grip code, and the cursor shape the form
+  gives that code. The hit updates the focus.
+- **Pointer.** A press goes to the form under the pointer (a second press
+  on a non-dragged form releases a held drag first); the press position and
+  stamp are kept. Moving while a button is down starts a drag once the
+  pointer leaves a threshold of `((200 − elapsed) / 20) × limit` until 191
+  time units after the press, then `limit`. A release whose button matches
+  the press either hands the release to the hovered form, ends the drag, or
+  closes a modal; a double press within 450 units and two pixels sends the
+  down word with 0x8000 and the up word with 0x1000.
+- **Message box.** `message_box_plan` builds the original's box: width the
+  text plus 64 at least 320, 104 tall, the label at 12, 4, Ok and Cancel
+  80 wide and 96 apart at grid row 13, centred (or a quarter down with
+  flag 0x10), style 0x808, the state's 0x1000 and bit 2 unless flag 0x20,
+  modal with 0x80. The layout and the button places are
+  `gui_rescale::message_box_layout`.
+- **Tooltip and cursor.** A hint waits 450 time units before the tooltip is
+  drawn (a guess: the tooltip class is outside the read unit), at the
+  pointer's request point, and clears on a press. The cursor keeps its
+  shape (set only when it changes) and a capture count; the system pointer
+  shows while no capture is held.
+- **Placement and grips.** `place_form` keeps a child inside its parent
+  (right edge less two, or the caller's minimum); `edge_rect` returns the
+  title-bar controls (17 wide, x from the right less a unit and the 0x420
+  tab steps) and the four grips (4·unit − 1 square). The derived metrics
+  are `6·unit − 2` for the title, `4·unit + 1` for the rail, `4·unit − 1`
+  for the grip and `(unit >> 1) + rail` for the tab.
+
 ## Text boxes
 
 Wrapped text (`exa_ui::text_layout`) and the multi-line text box of the
@@ -643,6 +704,38 @@ Text is Latin-1 bytes; line breaks are `\r\n`.
 
 Exarust's forms do not use text boxes yet; the box is ready for the
 manual pages and character creation.
+
+### Text editing
+
+`exa_ui::text_edit` is the single-line editor behind table cells and item
+names. Its state is four bytes like the original's: the selection anchor,
+the caret (bytes before it), the shown length and the first visible byte.
+
+- **Caret from a pointer.** The editor walks the visible bytes while the
+  pointer's x is at least half the glyph's advance and stops before the
+  first whose middle is right of it; the caret clamps to the text's length.
+- **Horizontal scroll.** A caret before the window's start moves the window
+  back to the caret less one; a caret at or past its end moves the window to
+  end just after the caret, then backtracks until the width is used; inside
+  the window the shown length is recomputed from the width. Widths count a
+  byte's advance; a byte that exactly exhausts the width ends the window
+  before it (the original's `< 1` test).
+- **Keys.** Typed bytes replace a selection and stop at the maximum length;
+  Backspace removes the selection or the preceding byte, Delete the
+  selection or the byte under the caret; Home and End go to 0 and the
+  length; Left and Right move one byte; Shift keeps the anchor. Ctrl+C,
+  Ctrl+X and Ctrl+V copy, cut and paste (paste replaces the selection,
+  shifts the tail, and clamps to the maximum, moving the caret back when
+  needed). The navigation-only handler does Home, End, Left, Right and
+  Ctrl+C. Tags set the colour stack (`[tcol=RGB]` takes the skin's tag
+  alpha, `[tcol=RGBA]` its own, `[/tcol]` pops), `[scrp=i]` the main font's
+  slant and `[algn=2]` centring; `[rimg=NAME]` returns a picture to load,
+  its size over six in units and centred. The texture cache keys by name
+  and asks for `NAME.rfi`.
+- **Draw.** `caret_position` sums the visible advances to the caret and
+  backs off half the font's gap; `draw_edit` emits the run with the
+  selection rectangle a line tall from one pixel below the glyphs' top,
+  its ink at half alpha.
 
 ## Icons
 
@@ -843,6 +936,25 @@ its inner width over one more than the steps, at least 4 units); keys and
 the stick step it, a continuous bar moving by a hundredth of a stick
 axis (a float; the sum is taken in double precision). A picture is its
 texture's size over 12, in units, centred.
+
+- **Layout.** `layout_records` is the original's two-pass placement: a
+  record without its laid-out bit takes its class's default size and style,
+  then the row anchors `-0x8000` … `-0x7ff6` place it relative to the record
+  above (rows 0 and 13 down to 5, subtracted when the 0x80000 bit is set),
+  the x anchors `-0x8000` (same x), `-0x7fff` (after the record above on the
+  same row, else the leftmost earlier x) and `-0x7ffe` … `-0x7ff6` (gaps
+  0x48, 0x38, 0x20, 0x14, 0x10, 0xc, 8, 4, 0 after its right edge). Widths
+  and heights become design pixels times four. The second pass aligns every
+  laid-out record: centred (0x800), right (0x30000 == 0x20000) or left, and
+  bottom (0xc0000 == 0x80000) or top, then adds one to the margin for the
+  0x30 bits and two for the 0xc0 bits. `append_records` appends after the
+  last used index; the shipped registry order is button, check box, image
+  button, label, trackbar, icon button, picture.
+- **Label inks.** `label_draw` picks the first ink for the 0x10 bit, the
+  coloured renderer for 0x10000, the nudged ink for the 0x60 bits and the
+  second ink otherwise; `0x10000000` also draws the label's panel.
+  `check_tick_shown` is the three-state test (0x10000000: partial bit 0x80;
+  else on or lit).
 
 The extended controls (`exa_ui::controls`) are registered in this order,
 with their records' default sizes: text field 80 × 24, combo box 80 × 24,

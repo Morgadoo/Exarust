@@ -1686,3 +1686,25 @@ is not drawn into the lights' cube faces, and light does not yet pass
 through the portals (the wall flood of [Lights](#lights) bounds it).
 Software rendering here cannot afford the light shadows, so test frames use
 `--no-shadows`.
+
+## Viewport still images
+
+`exa_ui::viewport` keeps the original `T3DViewport`'s own rules. It offers
+eight supersampling levels, each a sample count and a start in the recorded
+jitter table: 1, 2, 3, 4, 8, 15, 24 and 66 points, the first at the centre.
+A point is scaled to `width·2·x / viewport_width` and
+`height·2·y / viewport_height`. The still accumulation walks the level's
+points, reports `(i + 1) / count`, `0.5 − (i + 0.5) / count` and
+`1 − 1/(i+1)` as it goes, and a level leaving or entering zero moves the
+view's sample counter by one. The camera's scale is twice the field of view
+(halved) over the target's distance, clamped to 100–3000 cm.
+
+The viewport also names the version overlay's place ("V 0.9.5.2g", a unit
+in from the left and up from the client's bottom) and the frame-rate
+readout's, and projects and unprojects view-space points through its
+horizontal and vertical projection scales. Cursor actions are chosen by the
+mask with the most bits that the key word contains; a key begins one while
+no control has the focus, a key up suspends it, and Escape ends it after its
+reply. Exarust renders its still through `exa_render::supersample`, not this
+progressive accumulation; these rules are ready for a viewport that hosts a
+view inside a form.

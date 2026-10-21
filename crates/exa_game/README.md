@@ -265,3 +265,17 @@ stand-ins.
 - Arena: companies, fighters, matches, rewards; Story: levels Underworld 0..8; Practice/sandbox.
 - Save games in the original's package and player-data shape, with our own
   payload for the session state.
+
+## Main menu screen
+
+`menu_screen` is the running app's main menu, opened and closed with F1. It
+uses `menu_pages`' page table, hit test, paint pass and click branches:
+title (arena, character screen, start, manual, settings, exit), start (new
+career, character screen, class select, new game, back), in-game
+(close/begin, manual, settings, exit), class select (novice, expert, back)
+and the pause pages (close, settings, continue). The mouse and
+Up/Down/Enter drive the rows, Escape closes the screen. The rows are drawn
+in the base font until the original's `mmenutxt01.rfi` sprite sheet is
+bound; the recorded sprite font (`exa_ui::gui_text::MenuFont`) already
+supplies their widths and rescale. The session work behind the commands is
+named, not performed, by this screen.
