@@ -161,3 +161,10 @@ The system SHALL model the original's composite selection: the focus 10 m ahead 
 #### Scenario: The cut-offs
 - **WHEN** blocks lie 14.99 m, 15 m, 44.4 m and 44.41 m from the focus
 - **THEN** the first is high resolution, the next two low, and the last has none
+
+### Requirement: Vegetation scatter offsets
+The system SHALL place each new point of the grass scatter at the cosine of the drawn angle times the drawn radius across and its sine times the radius along, with the engine's sine and cosine (one round-to-nearest reduction by quarter turns, single-precision polynomials).
+
+#### Scenario: A quarter turn
+- **WHEN** the drawn angle is a quarter turn
+- **THEN** the new point lies straight along, not across, from its centre
