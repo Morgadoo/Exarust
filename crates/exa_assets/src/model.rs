@@ -392,6 +392,13 @@ impl ModelLoader<'_> {
                 NodeBody::Mesh(mesh) => Some(mesh.as_ref()),
                 _ => None,
             };
+            if let Some(mesh) = mesh
+                && mesh.indices.is_empty()
+            {
+                // The original's after-load init reports a mesh without
+                // faces and keeps it empty.
+                self.warn_once(format!("{}:{}: mesh has no faces", entry, node.name));
+            }
             let skin_bone = built.skin.as_ref().map(|(bone, _)| *bone);
             // A node marked as level geometry never registers its body.
             let rigid = node
@@ -2234,6 +2241,46 @@ mod tests {
         ] {
             assert!(!takes_race_blood(other), "{other}");
         }
+    }
+
+    /// A shipped prop whose mesh stores a vertex-colour stream reaches the
+    /// GPU with that attribute (skipped without the game). `barrel a`'s
+    /// models carry the stream on their level meshes.
+    #[test]
+    fn shipped_meshes_upload_vertex_colours() {
+        let Some(dir) = crate::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(dir).unwrap();
+        let mut cache = ModelCache::default();
+        let mut meshes = Assets::<Mesh>::default();
+        let mut materials = Assets::<ExaMaterial>::default();
+        let mut images = Assets::<Image>::default();
+        let model = {
+            let mut loader = ModelLoader {
+                game: &game,
+                cache: &mut cache,
+                meshes: &mut meshes,
+                materials: &mut materials,
+                images: &mut images,
+                bc_supported: false,
+            };
+            loader.model(PackKind::Objlib, "barrel a").unwrap()
+        };
+        let mut parts = 0;
+        let mut coloured = 0;
+        for node in &model.nodes {
+            for (handle, _) in &node.parts {
+                parts += 1;
+                if meshes
+                    .get(handle)
+                    .is_some_and(|m| m.attribute(Mesh::ATTRIBUTE_COLOR).is_some())
+                {
+                    coloured += 1;
+                }
+            }
+        }
+        assert!(parts > 0 && coloured > 0, "{coloured} of {parts} parts");
     }
 
     /// What the shipped rigid bodies' mobility is divided by (skipped

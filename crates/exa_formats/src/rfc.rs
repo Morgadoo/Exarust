@@ -1955,7 +1955,14 @@ mod tests {
         assert_eq!(mesh.render_flags, 0x000A_0000);
         assert_eq!(mesh.shadow_bias_level(), 2);
         assert!(mesh.shadow_bias_inflated());
+        assert!(!mesh.cull_front());
         assert_eq!(Mesh::default().shadow_bias_level(), 0);
+        // The cull-front bit is the render word's 0x800.
+        let mut mesh = (*mesh).clone();
+        mesh.render_flags = 0x0000_0800;
+        assert!(mesh.cull_front());
+        assert_eq!(mesh.shadow_bias_level(), 0);
+        assert!(!mesh.shadow_bias_inflated());
     }
 
     /// Node flag `0x80000` marks level geometry (`arenao1`'s tavern table
