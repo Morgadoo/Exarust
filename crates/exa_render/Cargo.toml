@@ -15,8 +15,6 @@ thiserror.workspace = true
 [dev-dependencies]
 # Real-data checks read the installed packs (and skip without them).
 exa_rpk.workspace = true
-
-[dev-dependencies]
 naga = { version = "30", features = ["wgsl-in"] }
 
 [lints]
