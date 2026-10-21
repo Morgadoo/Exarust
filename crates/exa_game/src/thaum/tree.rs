@@ -1005,7 +1005,7 @@ impl TreeScreen {
     pub fn press(
         &mut self,
         input: PressInput,
-        mut record: Option<&mut PowerRecord>,
+        record: Option<&mut PowerRecord>,
         bar: &mut PowerBar,
     ) -> PressResult {
         let PressInput {
@@ -1069,7 +1069,7 @@ impl TreeScreen {
             }
             let node = self.node_under as usize - 1;
             if node < self.nodes.len() {
-                self.click_node(node, now, record.as_deref_mut(), &mut out);
+                self.click_node(node, now, record, &mut out);
             }
             return out;
         }
@@ -1604,12 +1604,7 @@ pub const CAST_FAIL_SOUND: TreeSound = TreeSound {
     pitch: 1.0,
 };
 
-/// The quick-rising ease the tree uses on a share `x`: `1 + 0.111·x −
-/// 1/(1 + 8x)`, the reciprocal in single precision and the rest in double.
-pub fn ease(x: f32) -> f32 {
-    let rise = 1.0 / (x * 8.0 + 1.0);
-    (f64::from(x) * 0.111 + 1.0 - f64::from(rise)) as f32
-}
+pub use exa_ui::tree_draw::ease;
 
 /// The angle a point makes about a node's centre, measured from +y and
 /// signed by x: the engine's arc cosine of `dy / length`, π at or below −1
@@ -1714,17 +1709,7 @@ pub fn seed_defaults(record: &mut PowerRecord) -> bool {
     true
 }
 
-/// The six domains' colours from the tree's palette (RGBA); index 0 is
-/// unused.
-pub const DOMAIN_COLOURS: [[u8; 4]; 7] = [
-    [0, 0, 0, 0],
-    [90, 50, 20, 255],
-    [40, 0, 180, 255],
-    [100, 0, 0, 255],
-    [0, 40, 160, 255],
-    [110, 90, 30, 255],
-    [60, 65, 90, 255],
-];
+pub use exa_ui::tree_draw::DOMAIN_COLOURS;
 
 impl TreeScreen {
     /// The draw inputs of the tree at `now`: placed nodes, the curves of
@@ -1778,18 +1763,24 @@ impl TreeScreen {
                 });
             }
         }
-        let mut slots = [draw::SlotView {
-            word: 0,
-            state: 0,
-            alpha: 0.0,
-            extra: 0,
-        }; 10];
+        let picked: Vec<u32> = self
+            .nodes
+            .iter()
+            .zip(&self.marks)
+            .filter(|(_, mark)| **mark & PICKED != 0)
+            .map(|(node, _)| node.power & word::MATCH)
+            .collect();
+        let mut slots = [draw::SlotView::default(); 10];
         for (index, slot) in bar.slots.iter().enumerate() {
+            let mut state = slot.state;
+            if picked.contains(&(slot.word & word::MATCH)) {
+                state |= draw::state::PICKED;
+            }
             slots[index] = draw::SlotView {
                 word: slot.word,
-                state: slot.state,
-                alpha: slot.alpha(now),
-                extra: slot.extra,
+                state,
+                stamp: slot.stamp,
+                duration: slot.duration,
             };
         }
         draw::TreeView {
@@ -1797,28 +1788,27 @@ impl TreeScreen {
             height,
             scale,
             window: 1.0,
-            shown: 1.0,
-            splash: 1.0,
-            dim: 1.0,
             zoom: self.zoom.value,
             icon_size: self.zoom_fixed,
-            prompt: self.mode == TreeMode::Create,
+            mode: match self.mode {
+                TreeMode::Play => draw::ScreenMode::Play,
+                TreeMode::Practice => draw::ScreenMode::Practice,
+                TreeMode::Test => draw::ScreenMode::Test,
+                TreeMode::Create => draw::ScreenMode::Create,
+            },
             nodes,
             links,
             bar: slots,
+            bar_phase: draw::BarPhase::Steady,
             hovered: self.node_under,
-            marked: self.flash + 1,
-            hover_until: self.flash_until,
-            hover_flip: self.denied,
-            marked_until: self.flash_until,
+            flash: self.flash,
+            flash_until: self.flash_until,
+            denied: self.denied,
+            learn_until: self.learn_until,
+            retired_new: i32::try_from(self.retired_new).unwrap_or(0),
+            accent: [255, 250, 230, 100],
             now,
             domain: self.domain,
-            domain_colour: DOMAIN_COLOURS
-                .get(usize::from(self.domain))
-                .copied()
-                .unwrap_or([255; 4]),
-            slot_pitch: scale * 17.0,
-            slot_size: scale * 13.0,
         }
     }
 }
@@ -1932,39 +1922,12 @@ pub struct BarSlot {
 }
 
 /// The bar's display states.
-pub mod bar_state {
-    /// The slot flashes in.
-    pub const FLASH: u32 = 1;
-    /// The slot is lit.
-    pub const LIT: u32 = 2;
-    /// The slot fades out.
-    pub const FADE: u32 = 4;
-    /// The slot's power is picked or being cast.
-    pub const MARK: u32 = 8;
-    /// How long the flash in takes.
-    pub const FLASH_MS: u32 = 200;
-}
+pub use exa_ui::tree_draw::state as bar_state;
 
 impl BarSlot {
     /// The slot's brightness at `now`.
     pub fn alpha(&self, now: u32) -> f32 {
-        if self.state & bar_state::FLASH != 0 {
-            if self.stamp.wrapping_add(bar_state::FLASH_MS) < now {
-                1.0
-            } else {
-                now.wrapping_sub(self.stamp) as f32 * 0.005
-            }
-        } else if self.state & bar_state::FADE != 0 {
-            if self.stamp.wrapping_add(self.duration) < now {
-                0.0
-            } else {
-                1.0 - now.wrapping_sub(self.stamp) as f32 / self.duration as f32
-            }
-        } else if self.state & bar_state::LIT != 0 {
-            1.0
-        } else {
-            0.0
-        }
+        exa_ui::tree_draw::slot_flash(self.state, self.stamp, self.duration, now)
     }
 
     /// Moves the state on as the original's draw does: a flash that has run

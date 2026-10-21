@@ -614,15 +614,13 @@ fn draw(
     };
     let view = tree.view(bar, width as f32, height as f32, scale, now as u32);
     let draw = if tree_open {
+        // The tree pass already ends with the bar.
         let mut draw = tree_draw::tree_draw(&view);
-        // The bar's filled slots are the HUD draw's icons.
-        draw.batches.extend(tree_draw::bar_draw(&view).batches);
         // The tooltip: the hovered node's name and wrapped description.
         if tree.node_under > 0 && (tree.node_under as usize) <= tree.nodes.len() {
             let (name, description) = tree.node_text(tree.node_under as usize - 1, texts);
             let wrapped = wrap_text(description, 59);
-            let tooltip =
-                tree_draw::tooltip_draw(&view, &String::from_utf8_lossy(name), "", &wrapped);
+            let tooltip = tree_draw::tooltip_draw(&view, &String::from_utf8_lossy(name), &wrapped);
             draw.batches.extend(tooltip.batches);
             draw.texts.extend(tooltip.texts);
         }
