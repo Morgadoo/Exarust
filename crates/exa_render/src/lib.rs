@@ -42,6 +42,7 @@ impl Plugin for RenderPlugin {
             material::MaterialsPlugin,
             gi::GiPlugin,
             flame::FlamePlugin,
+            electricity::ElectricityPlugin,
             spray::SprayPlugin,
             stain::StainPlugin,
             supersample::SupersamplePlugin,

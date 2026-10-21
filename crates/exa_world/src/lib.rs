@@ -3,6 +3,7 @@
 //! ground from the terrain heightfields (`terrain`); the grid's rooms decide
 //! what shows (`rooms`, `room_view`).
 
+pub mod arc;
 pub mod bodies;
 pub mod cloth_draw;
 pub mod environment;
@@ -35,6 +36,7 @@ impl Plugin for WorldPlugin {
         app.add_plugins((
             terrain::TerrainPlugin,
             environment::EnvironmentPlugin,
+            arc::ArcPlugin,
             fire::FirePlugin,
             flame::FlamePlugin,
             gi_volume::GiVolumePlugin,
