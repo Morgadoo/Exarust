@@ -1,4 +1,4 @@
-//! The draw descriptions of the force and mind effects.
+//! The draw descriptions of the force effects.
 //!
 //! The original issues OpenGL calls from a handful of effect programs. The
 //! calls themselves are platform glue, but the state they set is data: the
@@ -11,10 +11,6 @@
 //!   matrix), `TexOfs` (the texture offset) and `EmiTex` on unit 0. The
 //!   blast's offset is (0, 0, 1); the torrent's comes from its two scroll
 //!   words.
-//! - The **mind sight** program takes `ObjMat`, `TexVecU`, `TexVecV` and
-//!   `EyeVec`, the three `MindCol` vectors and `EmiTex`; every tracked body
-//!   is one draw of the sphere with its own uniforms.
-//! - The **spirit screen** draws its 512² noise texture over the view.
 //! - The **GI lights** carry their positions, colour blocks and radius.
 //!
 //! Rules and evidence: `Exanima.exe`'s effect geometry and emissive code and
@@ -22,7 +18,6 @@
 
 use crate::effects::blast::BlastLightSet;
 use crate::effects::torrent::TorrentLightSet;
-use crate::mind::MindEntryDraw;
 
 /// The force geometry's vertex program.
 pub const FORCE_VERTEX: &str = "effectforce_v";
@@ -30,13 +25,6 @@ pub const FORCE_VERTEX: &str = "effectforce_v";
 pub const FORCE_FRAGMENT: &str = "effectforce_f";
 /// The force geometry's fragment program for the torrent.
 pub const TORRENT_FRAGMENT: &str = "effecttorrent_f";
-/// The mind sight's two programs. The original builds them from two literal
-/// sources rather than a library entry.
-pub const MIND_SIGHT_VERTEX: &str = "mind_sight_v";
-pub const MIND_SIGHT_FRAGMENT: &str = "mind_sight_f";
-/// The spirit screen's programs.
-pub const SPIRIT_VERTEX: &str = "spirit_screen_v";
-pub const SPIRIT_FRAGMENT: &str = "spirit_screen_f";
 /// The GI light program.
 pub const GI_LIGHT: &str = "gi_light";
 
@@ -164,81 +152,6 @@ pub fn torrent_geometry_draws(
     )
 }
 
-/// The mind sight's draws: one per tracked body, its sphere under its own
-/// billboard axes, colours and texture offset.
-pub fn mind_sight_draws(entries: &[MindEntryDraw], matrix: [[f32; 4]; 4]) -> Vec<DrawCall> {
-    entries
-        .iter()
-        .enumerate()
-        .map(|(view, entry)| DrawCall {
-            vertex: MIND_SIGHT_VERTEX,
-            fragment: MIND_SIGHT_FRAGMENT,
-            uniforms: vec![
-                ("ObjMat", UniformValue::Mat4(matrix)),
-                ("TexVecU", UniformValue::Vec3(entry.basis.u)),
-                ("TexVecV", UniformValue::Vec3(entry.basis.v)),
-                ("EyeVec", UniformValue::Vec3(entry.basis.eye)),
-                (
-                    "MindCol0",
-                    UniformValue::Vec4([
-                        entry.colours.colour0[0],
-                        entry.colours.colour0[1],
-                        entry.colours.colour0[2],
-                        entry.colours.colour0_alpha,
-                    ]),
-                ),
-                (
-                    "MindCol1",
-                    UniformValue::Vec4([
-                        entry.colours.colour1[0],
-                        entry.colours.colour1[1],
-                        entry.colours.colour1[2],
-                        entry.colours.colour1_alpha,
-                    ]),
-                ),
-                (
-                    "MindCol2",
-                    UniformValue::Vec4([
-                        entry.colours.colour2[0],
-                        entry.colours.colour2[1],
-                        entry.colours.colour2[2],
-                        entry.colours.colour2_alpha,
-                    ]),
-                ),
-                ("TexOfs", UniformValue::Vec3(entry.texture)),
-            ],
-            textures: vec![TextureBinding {
-                name: "EmiTex",
-                unit: 0,
-            }],
-            blend: Blend::Add,
-            depth_write: false,
-            depth_test: true,
-            cull: false,
-            view,
-        })
-        .collect()
-}
-
-/// The spirit screen's one draw: its 512² noise texture, blended additively
-/// over the view.
-pub fn spirit_screen_draw(matrix: [[f32; 4]; 4]) -> DrawCall {
-    DrawCall {
-        vertex: SPIRIT_VERTEX,
-        fragment: SPIRIT_FRAGMENT,
-        uniforms: vec![("ObjMat", UniformValue::Mat4(matrix))],
-        textures: vec![TextureBinding {
-            name: "EmiTex",
-            unit: 0,
-        }],
-        blend: Blend::Add,
-        depth_write: false,
-        depth_test: false,
-        cull: false,
-        view: 0,
-    }
-}
-
 /// The blast's GI light as a draw: its position, radius and colour blocks
 /// (one per chunk), with no texture.
 pub fn blast_light_draw(set: &BlastLightSet) -> DrawCall {
@@ -314,7 +227,6 @@ fn mean3(values: &[f32]) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mind::{SightNode, mind_entry_draw};
     use bevy::prelude::Vec3;
 
     fn identity() -> [[f32; 4]; 4] {
@@ -358,47 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn a_mind_entry_is_one_draw_with_its_own_colours() {
-        let node = SightNode {
-            body: 1,
-            kind: 0,
-            seen_ms: 0,
-            fade: 0.0,
-            weights: crate::mind::MindEntryColors {
-                first: 0.0,
-                second: 0.0,
-                third: 0.0,
-            },
-        };
-        let rows = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        let draw = mind_entry_draw(
-            &node,
-            1.0,
-            rows,
-            [0.0; 3],
-            0.0,
-            0.0,
-            [0.0, 0.0, -10.0],
-            rows,
-            1.0,
-            [0.0, 0.1, 0.2],
-        );
-        let calls = mind_sight_draws(&[draw], identity());
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].fragment, MIND_SIGHT_FRAGMENT);
-        assert_eq!(calls[0].textures[0].unit, 0);
-        assert!(
-            calls[0]
-                .uniforms
-                .iter()
-                .any(|(name, _)| *name == "MindCol2")
-        );
-    }
-
-    #[test]
     fn the_spirit_screen_and_lights_are_described() {
-        let screen = spirit_screen_draw(identity());
-        assert_eq!(screen.textures.len(), 1);
         let blast = BlastLightSet {
             position: Vec3::ZERO,
             radius: 5000.0,

@@ -21,8 +21,9 @@
 //!   (bits 8–15) sends an AI evaluation to Force, Energy or Displacement;
 //!   every other domain answers 0x400_0000 (the "cannot use" word).
 //! - **Loading** ([`restore_persistent`]): a save's `(id, size)` pairs are
-//!   rebuilt into running powers, Mind by its own module and Force by
-//!   [`super::force::restore_force_power`] (which reserves three quarters
+//!   rebuilt into running powers, Mind by
+//!   [`crate::mind::casts::restore_mind_power`] and Force by
+//!   [`super::force::restore_force_power`] (each reserves three quarters
 //!   with the technique); a body with the reserve technique then has each
 //!   rebuilt power's held focus multiplied by 0.75 once more.
 //! - **Power Glean** ([`glean`]): a shaper that dies within 20 m teaches
@@ -69,6 +70,8 @@ pub const SENSE_HUD_MS: u32 = 2000;
 
 /// The id bits a power's domain is read from.
 pub const DOMAIN_MASK: u32 = 0xff00;
+/// The Mind domain's byte.
+pub const DOMAIN_MIND: u32 = 0x100;
 /// The Force domain's byte.
 pub const DOMAIN_FORCE: u32 = 0x200;
 /// The Energy domain's byte.
@@ -248,24 +251,30 @@ pub struct RestoredPower {
     pub held: f32,
 }
 
-/// Rebuilds saved persistent powers on a body. Force powers are rebuilt by
-/// their own routine, which reserves the row's cost (three quarters with
-/// the reserve technique); the load then multiplies the held focus by 0.75
-/// once more for a body with the technique, so such a power holds
-/// `0.5625 × cost` against a reserve of `0.75 × cost`. A Mind power is
-/// left for the Mind module, which this lane does not own. Returns the
-/// powers added, in the save's order.
+/// Rebuilds saved persistent powers on a body. Force and Mind powers are
+/// rebuilt by their domain's routine ([`restore_force_power`],
+/// [`crate::mind::casts::restore_mind_power`]), which reserves the row's
+/// cost (three quarters with the reserve technique). A Force power holds
+/// what it reserved and a Mind power its whole cost; the load then
+/// multiplies the held focus by 0.75 for a body with the technique, so a
+/// Force power holds `0.5625 × cost` and a Mind power `0.75 × cost`
+/// against a reserve of `0.75 × cost`. Returns the powers added, in the
+/// save's order.
 pub fn restore_persistent(body: &mut CastBody, saved: &[SavedPower]) -> Vec<RestoredPower> {
     let mut added = Vec::new();
     for entry in saved {
-        if entry.id & DOMAIN_MASK != DOMAIN_FORCE {
-            continue;
-        }
-        let Some(cost) = restore_force_power(entry.id, body) else {
+        let technique = body.techniques & RESERVE_TECHNIQUE != 0;
+        // What the rebuilt object holds: a Force power what it reserved, a
+        // Mind power its whole cost.
+        let held = match entry.id & DOMAIN_MASK {
+            DOMAIN_FORCE => restore_force_power(entry.id, body)
+                .map(|cost| if technique { cost * 0.75 } else { cost }),
+            DOMAIN_MIND => crate::mind::casts::restore_mind_power(entry.id, body),
+            _ => None,
+        };
+        let Some(mut held) = held else {
             continue;
         };
-        let technique = body.techniques & RESERVE_TECHNIQUE != 0;
-        let mut held = if technique { cost * 0.75 } else { cost };
         if technique {
             held *= 0.75;
         }
@@ -593,11 +602,19 @@ mod tests {
         );
         assert_eq!(body.powers.len(), 1);
         assert_eq!(body.powers[0].id, 0x20208);
-        let mind = [SavedPower {
-            id: 0x2010A,
-            size: 0,
-        }];
-        assert!(restore_persistent(&mut body, &mind).is_empty());
+        let mind = [
+            SavedPower {
+                id: 0x2010A,
+                size: 0,
+            },
+            SavedPower { id: 0x103, size: 0 },
+        ];
+        // Loyalty has a restore constructor; Calm does not.
+        let back = restore_persistent(&mut body, &mind);
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].id, 0x2010A);
+        assert_eq!(back[0].held, 0.29);
+        assert_eq!(body.reserved, 0.35 + 0.29);
         // With the technique the reserve takes three quarters and the held
         // focus three quarters of that.
         let mut reserving = CastBody {
@@ -607,6 +624,13 @@ mod tests {
         let back = restore_persistent(&mut reserving, &saved);
         assert_eq!(back[0].held, 0.35 * 0.75 * 0.75);
         assert_eq!(reserving.reserved, 0.35 * 0.75);
+        let mut mind_reserving = CastBody {
+            techniques: RESERVE_TECHNIQUE,
+            ..CastBody::default()
+        };
+        let back = restore_persistent(&mut mind_reserving, &mind);
+        assert_eq!(back[0].held, 0.29 * 0.75);
+        assert_eq!(mind_reserving.reserved, 0.29 * 0.75);
     }
 
     #[test]
