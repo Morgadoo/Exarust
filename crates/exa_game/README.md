@@ -200,10 +200,12 @@ blow or the first collapse).
 `exa_ui::match_board::Board`: the player is pool slot zero and the roster
 follows in hire order; a member's rank is the six skill levels halved and
 capped at Master; combatants get class zero and the staff roles classes above
-the board's combatant limit; and the six daily match instances become the
-event rows, with the rolled secondary as the entry fee and the cash as the
-prize (the fee mapping is a guess). It also carries the rival company names
-and the four seasons' reward ids.
+the board's combatant limit (a guess); and each daily match instance becomes
+an event record field for field: kind, flags, rank window, side size and
+weapon row, the day slot in the rank column, the rolled rank in the tier
+column, the slot-scaled secondary value as the entry fee and the cash as the
+prize. It also carries the rival company names, the four seasons' reward ids
+and the tournament weapon tiers.
 
 ## Scope
 

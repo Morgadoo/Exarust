@@ -371,49 +371,84 @@ The arena's "Matches" form has four tabs: standard matches, the daily
 events, the weekly tournament and the season. Its code is
 `exa_ui::match_board`; `exa_game::arena_board` fills it from a career and a
 generated daily board. The rules are plain functions and values and need no
-Bevy app.
+Bevy app. Evidence: the original's board constructor, tab switch, list
+refreshes, fighter assignment and coin cell callback, read against their
+assembly, and the standard-match and rank-label tables in `Exanima.exe`.
 
-- **Standard tab.** Three lists stand side by side: the six match types
-  (Duel, Doubles, Skirmish, Fray, Reserve, Pugilism), the six ranks (Inept,
-  Aspirant, Novice, Adept, Expert, Master), and a tier list. The tier cannot
-  exceed the selected rank, and the tier's rows at and above the rank are
-  disabled. The two list spans are one rank step and three rank steps.
-- **Daily events.** Six events, five columns: match, rank, tier, entry and
-  prize. A merchant event (kind 8) shows a dash in the tier column; a
-  negative second rank shows Inept. Entry and prize are packed base-12 coin
-  dwords drawn as coin icons, or as the text "0" four pixels right when the
-  value is zero. An entered event's row is disabled. Selecting an entered
-  event moves the selection to the first event not yet entered; when all
-  six are entered the table's top row moves past the last row.
-- **Tournament.** Six winner rows (event, tier, winner). A winner company id
-  of 1 is the player's company; ids 2 through 20 are the rival companies;
-  zero or an id above 20 is a dash. The status line says "Tournament is in
-  progress.", "No more events entered.", "The tournament has ended.",
-  "Tournament begins tomorrow." or "Tournament begins in N days.". With an
+- **Selected match.** Every tab copies one match record and the lineup is
+  built for it: its lowest rank is the rank floor, its side size caps the
+  lineup, its kind picks the Captain rule, flag 1 lifts the one-leader and
+  marked-fighter rules, and flag 4 names a weapon for a tournament event.
+  The record carries the arena's fields: kind, flags, rank window, day slot,
+  rolled rank, fee, prize, side size and weapon row.
+- **Standard tab.** Three lists stand side by side: the six standard
+  matches, the six ranks (Inept, Aspirant, Novice, Adept, Expert, Master)
+  and a tier list. The standard matches are Duel (one a side, 3 copper,
+  1 silver), Doubles (two, 6 copper, 4 silver), Skirmish (three, 9 copper,
+  6 silver), Fray (one, 3 copper, 2 silver), Reserve (three, flag 1,
+  3 copper, 4 silver) and Pugilism (one, unranked, 1 copper, 6 copper). A
+  rank change moves the tier to the same row; the tier cannot exceed the
+  rank and the tier rows above the rank are greyed. The refresh stores the
+  rank as the floor and the tier (none for Pugilism), and multiplies the fee
+  and prize by the rank plus one: the coins are unpacked at twelve copper
+  to the silver and twelve silver to the gold, multiplied in 32 bits and
+  repacked with a 16-bit gold count and wrapping silver and copper bytes.
+- **Message box.** The standard and events refreshes write "There are no
+  more matches running this day. End the day to participate in more
+  matches." once three matches were entered that day, and clear it
+  otherwise; the tournament refresh clears it.
+- **Daily events.** Six events, five columns: match, rank (the day slot),
+  tier (the rolled rank), entry and prize. Challenger (kind 8) shows a dash
+  in the tier column and an unranked event shows Inept. A rank index past
+  Master reads on in the original's label table: the dash, Merchant,
+  Trainer, Physician and "+". Entry and prize are packed coin dwords drawn
+  as coin icons, or as a dash four pixels right when the value is zero. An
+  event with flag 1 is greyed; selecting one moves the row to the first
+  event without it, and when all six have it the row moves to the last one
+  while the selected record stays.
+- **Tournament.** Six winner rows (event, tier, winner). A winner of 1 is
+  the player's company, below 1 a dash, and from 2 an entry of the
+  tournament's company table, which holds a company id less one. The status
+  line says "Tournament begins tomorrow." or "Tournament begins in N days."
+  off the tournament day; on it, "Tournament is in progress." with no
+  entries, "The tournament has ended." when every entered event is settled
+  and the last event has a winner, else "No more events entered.". With an
   entered event that has no winner, the primary button reads "Begin" (or
-  "Continue" once the first event has one) and a second button appears;
-  otherwise both are hidden and the status line shows. On a tournament day
-  with entries the tab is forced to the tournament and fighter assignment is
-  locked.
+  "Continue" once the first event has a winner) and a second button
+  appears. A weapon event shows the reward panel with the weapon row's
+  name, shortens the lineup to 120 pixels and marks the panel when the
+  first fighter entered in the event's tier does not carry one of the row's
+  up to three weapons (the first zero ends the list). On a tournament day
+  with entries the tab is forced to the tournament (the show hides the tab
+  it leaves) and fighter assignment is locked. Leaving the tab restores the
+  primary button and its "Enter" label.
 - **Season.** Four weekly winner lines. A week already played with no
-  winner says "No winner"; a zero or out-of-range winner is a dash. The
+  winner says "No winner"; a zero winner or one above 20 is a dash. The
   season is four weeks, the season index is `((day + 6) / 28) mod 4`, and
   the reward picture is `seasonrwrd{a..d}.rfi`. The four reward items are
   shown in the order first, third, second, fourth. The completed weeks are
-  `ceil((day mod 28) / 7)` for the first three weeks, else zero.
+  `ceil((day mod 28) / 7)` up to day 21 of the block, else zero.
 - **Fighters.** The left table lists the company's available fighters and
-  the right the selected lineup; both show name, rank and health. A double
-  click or a drop moves a fighter between them, keeping the available table
-  in pool-slot order. A full lineup benches its last fighter to the end of
-  the available table. A fighter may join when its rank reaches the floor;
-  the Captain event (type 9) lets teammates be two ranks lower, and keeps a
-  qualified fighter first when more than two are chosen. A marked fighter
-  replaces an existing marked teammate. At most one leader-class fighter
-  joins unless the caller allows more.
-- **Day and confirmation.** A company may enter three matches a day. The
-  "Entered n/m" label writes one character per count, adding 0x30, so the
-  original shows a single digit (and punctuation past nine). The primary
-  button is enabled only when the lineup is full and matches remain.
+  the right the lineup; both show name, rank and health. A fighter's rank is
+  the sum of its six skill levels (each skill word over 5000) halved and
+  capped at Master. The rebuild walks the lineup order: a fighter joins when
+  its rank reaches the floor (on a Captain event, after the first fighter,
+  two ranks lower), at most one leader joins unless flag 1 is set (the
+  player counts as a leader), and it stops at the side size. A double click
+  joins when there is room and otherwise benches the last teammate to the
+  end of the company table; a drop swaps with the row. A marked fighter
+  swaps with the first marked teammate. On a Captain event with more than
+  two teammates of whom fewer than two reach the floor, a fighter under the
+  floor may not replace one who does, and a qualified teammate is moved
+  first. The fighter's place in the lineup order becomes the row it joined,
+  or the first place after a marked swap or a bench. A fighter moved back is
+  inserted in pool-slot order and keeps its place in the lineup order.
+- **Day and confirmation.** The "Entered n/m" label writes one character
+  per count, adding 0x30, so the original shows a single digit (and
+  punctuation past nine). After each rebuild or move the primary button is
+  disabled once three matches were entered or while the lineup is short,
+  and hidden on the season tab. A day-end control is enabled once a match
+  was entered (on a tournament day the arena's own checks decide).
 - **Layout.** The form is 604 by 656 (604 by 636 in the compact form). The
   match list is 196 wide at x 0, the rank list 192 at x 200 and the tier
   list 192 at x 396, all from y 56 and 180 tall. The event table is 588 by
@@ -421,23 +456,24 @@ Bevy app.
   with columns 120, 100 and 120. The fighter tables are 292 wide at x 0 and
   x 296 from y 348, 244 tall (224 compact), with columns 140, 68 and 132.
   The message box is 520 by 96 at 40, 276. The tournament picture is 192 by
-  180 at 396, 56 and the reward panel 292 by 100 or 120 at 296, 472. The
-  season table is 280 by 132 at 32, 60.
-- **Drawing order.** The form, the four tabs, then the visible tables in the
-  order the constructor made them: match, rank, tier, events, winners,
-  picture, reward panel, message, roster, lineup and season. A table draws
-  its frame, its column headers, then its rows left to right. The rows are
-  30 pixels tall (a guess from the six-row and eight-row fits). A point maps
-  to a tab, the primary button or a visible cell (`Board::hit_test`), and a
-  click selects the tab, match, rank, tier, event or winner or confirms the
-  board (`Board::click`).
+  180 at 396, 56 and the reward panel 292 by 120 (100 compact) at 296, 472.
+  The season table is 280 by 132 at 32, 60, one 160-wide column.
+- **Drawing order.** The form, the four tabs, then the visible child views
+  in the order the constructor made them: match, rank and tier lists,
+  picture, reward panel, events, winners, message, company, lineup and
+  season tables. A table draws its frame, its column headers, then its rows
+  left to right. The rows are 30 pixels tall (a guess from the six-row and
+  eight-row fits). A point maps to a tab, the primary button or a visible
+  cell (`Board::hit_test`), and a click selects the tab, match, rank, tier,
+  event or winner or confirms the board (`Board::click`).
 
-Known guesses: the row height, the tab strip's exact rectangles, the static
-labels' positions, the fee field of an event, the class bytes for the three
-staff professions, and the rank dropdown as the source of the filter floor.
-The original keeps the floor in a global written outside the board's own
-methods, and its "you are not entered" message text could not be decoded, so
-only the decision to show it is modelled.
+Known guesses: the row height, the tab strip's and the template controls'
+rectangles and labels, the prize item's slot, where the template's controls
+draw relative to the child views, the class bytes for the three staff
+professions, the meaning of flag 1 on a daily event, and the day-end role
+of its control. The weapon check's item kind of a fighter's event value and
+the tournament day's day-end checks are the arena's and are supplied by the
+caller. The board does not count matches; the arena does.
 
 ## Forms
 
