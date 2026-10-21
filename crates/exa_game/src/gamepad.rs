@@ -506,6 +506,11 @@ pub const STEP_REPEAT_MS: i64 = 300;
 /// A held `Powers` adds its second command after this long (ms).
 pub const POWERS_HOLD_MS: i64 = 500;
 
+/// The engine's squared length of a pair: `x·x + y·y` in single precision.
+fn squared_length(v: Vec2) -> f32 {
+    v.x * v.x + v.y * v.y
+}
+
 /// What the menu reader knows about the focused form.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MenuContext {
@@ -526,12 +531,19 @@ pub struct MenuContext {
 /// One menu frame's output.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct MenuFrame {
-    /// The key word a form's key method receives: the newly pressed
-    /// `MenuSel`/`MenuBak`/`MenuExit` bits and this frame's direction.
+    /// The key word the focused form's key method receives this frame: the
+    /// newly pressed `MenuSel`/`MenuBak`/`MenuExit` bits, this frame's
+    /// direction and the analog bits. Zero means the form is not called.
     pub key: u32,
-    /// The menu cursor's movement, `(dx, dy)` with `y` down.
+    /// The form's exit hook runs this frame instead of the key dispatch
+    /// (`MenuExit` newly pressed on a form that has one).
+    pub exit_hook: bool,
+    /// The navigation cursor the form receives with the key: the stick with
+    /// `y` down, scaled by the frame's sixteenths of a millisecond when the
+    /// stick's squared length is over 0.1.
     pub cursor: Vec2,
-    /// The scroll stick's movement.
+    /// The scroll stick's cursor, the same way; it is only read while the
+    /// navigation stick is inside its 0.1, otherwise it keeps its value.
     pub scroll_cursor: Vec2,
 }
 
@@ -549,44 +561,49 @@ pub struct MenuPad {
     scroll_cursor: Vec2,
 }
 
+/// A stick's squared length must be over this (compared in double
+/// precision) for its analog bit and its scaled cursor.
+pub const MENU_ANALOG: f64 = 0.1;
+
 impl MenuPad {
     /// One frame of the menu set at `now_ms` (the real clock).
     pub fn frame(&mut self, now_ms: i64, sample: &PadSample, ctx: MenuContext) -> MenuFrame {
         if !ctx.focused || !ctx.ready {
             self.last_ms = now_ms;
-            return self.out();
+            return self.out(0);
         }
         if self.primed {
             if now_ms < self.prime_at + PRIME_MS {
-                return self.out();
+                return self.out(0);
             }
             self.prime(sample);
             self.primed = false;
         }
+        // `MenuSel`'s "active" flag stands for the whole set's.
         if !sample.connected {
             self.primed = true;
             self.prime_at = now_ms;
-            return self.out();
+            return self.out(0);
         }
         let previous = self.mask;
         self.mask = 0;
         if sample.digital(Id::MenuSelect) {
-            self.mask |= gui_key::SELECT;
+            self.mask = gui_key::SELECT;
         }
-        self.cursor = Vec2::ZERO;
         let dt = (now_ms - self.last_ms) as f32 * 0.0625;
         self.last_ms = now_ms;
-        let mut direction = 0;
         let nav = sample.analog(Id::MenuNav);
-        let nav_mag = nav.x * nav.x + nav.y * nav.y;
-        if nav_mag > MENU_DEAD_ZONE {
+        self.cursor = Vec2::new(nav.x, -nav.y);
+        let mut key = 0;
+        let length = squared_length(self.cursor);
+        if length > MENU_DEAD_ZONE {
             if now_ms > self.repeat_at {
-                direction = Self::direction(nav, false);
-                direction |= gui_key::ANALOG;
-                self.cursor = Vec2::new(nav.x, -nav.y) * dt;
+                key = Self::direction(nav, false);
                 if self.repeat_at == 0 {
                     self.repeat_at = now_ms + MENU_FIRST_REPEAT_MS;
                 } else if ctx.fast_nav {
+                    // The original writes the fast delay to the scroll
+                    // stick's deadline, so fast navigation runs every frame.
                     self.scroll_repeat_at = now_ms + MENU_FAST_REPEAT_MS;
                 } else {
                     self.repeat_at = now_ms + MENU_REPEAT_MS;
@@ -595,15 +612,17 @@ impl MenuPad {
         } else {
             self.repeat_at = 0;
         }
-        if direction & gui_key::ANALOG == 0 {
-            self.scroll_cursor = Vec2::ZERO;
+        if f64::from(length) > MENU_ANALOG {
+            key |= gui_key::ANALOG;
+            self.cursor = Vec2::new(self.cursor.x * dt, self.cursor.y * dt);
+        }
+        if key & gui_key::ANALOG == 0 {
             let scroll = sample.analog(Id::MenuScreen);
-            let scroll_mag = scroll.x * scroll.x + scroll.y * scroll.y;
-            if scroll_mag > MENU_DEAD_ZONE {
+            self.scroll_cursor = Vec2::new(scroll.x, -scroll.y);
+            let length = squared_length(self.scroll_cursor);
+            if length > MENU_DEAD_ZONE {
                 if now_ms > self.scroll_repeat_at {
-                    direction = Self::direction(scroll, true);
-                    direction |= gui_key::SCROLL_ANALOG;
-                    self.scroll_cursor = Vec2::new(scroll.x, -scroll.y) * dt;
+                    key = Self::direction(scroll, true);
                     if self.scroll_repeat_at == 0 {
                         self.scroll_repeat_at = now_ms + MENU_FIRST_REPEAT_MS;
                     } else if ctx.fast_scroll {
@@ -615,6 +634,11 @@ impl MenuPad {
             } else {
                 self.scroll_repeat_at = 0;
             }
+            if f64::from(length) > MENU_ANALOG {
+                key |= gui_key::SCROLL_ANALOG;
+                self.scroll_cursor =
+                    Vec2::new(self.scroll_cursor.x * dt, self.scroll_cursor.y * dt);
+            }
         }
         if sample.digital(Id::MenuBack) {
             self.mask |= gui_key::FORWARD;
@@ -622,31 +646,19 @@ impl MenuPad {
         if sample.digital(Id::MenuExit) {
             self.mask |= gui_key::BACK;
             if ctx.exit_hook {
-                return if previous & gui_key::BACK == 0 {
-                    MenuFrame {
-                        key: gui_key::BACK,
-                        ..MenuFrame::default()
-                    }
-                } else {
-                    MenuFrame {
-                        key: 0,
-                        cursor: self.cursor,
-                        scroll_cursor: self.scroll_cursor,
-                    }
+                return MenuFrame {
+                    exit_hook: previous & gui_key::BACK == 0,
+                    ..self.out(0)
                 };
             }
         }
-        let key = (!previous & self.mask) | direction;
-        MenuFrame {
-            key,
-            cursor: self.cursor,
-            scroll_cursor: self.scroll_cursor,
-        }
+        self.out((!previous & self.mask) | key)
     }
 
     /// The directional key for a stick, `scrolled` for the scroll stick's
-    /// codes: the dominant axis, vertical on a tie, with the raw axis's
-    /// sign.
+    /// codes: the vertical axis unless the horizontal one is strictly the
+    /// larger (a tie or a NaN is vertical), then up or right only for a
+    /// positive raw axis (zero or NaN is down or left).
     fn direction(axes: Vec2, scrolled: bool) -> u32 {
         let (left, right, down, up) = if scrolled {
             (
@@ -658,12 +670,12 @@ impl MenuPad {
         } else {
             (gui_key::LEFT, gui_key::RIGHT, gui_key::DOWN, gui_key::UP)
         };
-        if axes.x.abs() <= axes.y.abs() {
-            if axes.y <= 0.0 { down } else { up }
-        } else if axes.x <= 0.0 {
-            left
+        if axes.y.abs() < axes.x.abs() {
+            if 0.0 < axes.x { right } else { left }
+        } else if 0.0 < axes.y {
+            up
         } else {
-            right
+            down
         }
     }
 
@@ -682,10 +694,12 @@ impl MenuPad {
         }
     }
 
-    /// The last frame's output, unchanged.
-    fn out(&self) -> MenuFrame {
+    /// The frame's output with `key`: the cursors are the reader's own,
+    /// kept from frame to frame.
+    fn out(&self, key: u32) -> MenuFrame {
         MenuFrame {
-            key: 0,
+            key,
+            exit_hook: false,
             cursor: self.cursor,
             scroll_cursor: self.scroll_cursor,
         }

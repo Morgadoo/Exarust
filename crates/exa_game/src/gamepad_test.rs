@@ -73,10 +73,56 @@ fn the_action_sets_hold_the_originals_actions() {
 #[test]
 fn the_menu_stick_dead_zone_is_a_squared_magnitude_of_a_quarter() {
     let mut menu = MenuPad::default();
+    // Exactly a quarter steps nowhere but is past the analog tenth.
     let edge = pad().with_analog(Id::MenuNav, Vec2::new(0.0, 0.5));
-    assert_eq!(menu.frame(16, &edge, menu_ctx()).key, 0);
+    assert_eq!(menu.frame(16, &edge, menu_ctx()).key, gui_key::ANALOG);
     let over = pad().with_analog(Id::MenuNav, Vec2::new(0.0, 0.5001));
-    assert_eq!(menu.frame(32, &over, menu_ctx()).key, gui_key::UP | 0x10);
+    assert_eq!(
+        menu.frame(32, &over, menu_ctx()).key,
+        gui_key::UP | gui_key::ANALOG
+    );
+}
+
+#[test]
+fn a_stick_past_a_tenth_sends_its_analog_bit_and_scaled_cursor_every_frame() {
+    // 0.3 squared is 0.09: inside the analog tenth, the cursor is the raw
+    // stick (y down) and the scroll stick is read.
+    let mut menu = MenuPad::default();
+    let small = pad()
+        .with_analog(Id::MenuNav, Vec2::new(0.3, 0.0))
+        .with_analog(Id::MenuScreen, Vec2::new(0.0, 0.4));
+    let frame = menu.frame(32, &small, menu_ctx());
+    assert_eq!(frame.key, gui_key::SCROLL_ANALOG);
+    assert_eq!(frame.cursor, Vec2::new(0.3, 0.0));
+    // 32 ms at a sixteenth is a factor of 2.
+    assert_eq!(frame.scroll_cursor, Vec2::new(0.0, -0.8));
+    // 0.4 squared is 0.16: the bit and the scaled cursor, no direction, and
+    // the scroll stick is not read, so its cursor stays.
+    let middle = pad().with_analog(Id::MenuNav, Vec2::new(0.4, 0.0));
+    let frame = menu.frame(48, &middle, menu_ctx());
+    assert_eq!(frame.key, gui_key::ANALOG);
+    assert_eq!(frame.cursor, Vec2::new(0.4, 0.0));
+    assert_eq!(frame.scroll_cursor, Vec2::new(0.0, -0.8));
+}
+
+#[test]
+fn a_nan_stick_is_vertical_and_down_or_left() {
+    assert_eq!(
+        MenuPad::direction(Vec2::new(f32::NAN, 0.0), false),
+        gui_key::DOWN
+    );
+    assert_eq!(
+        MenuPad::direction(Vec2::new(0.6, f32::NAN), false),
+        gui_key::DOWN
+    );
+    assert_eq!(
+        MenuPad::direction(Vec2::new(-0.6, 0.0), false),
+        gui_key::LEFT
+    );
+    assert_eq!(
+        MenuPad::direction(Vec2::new(0.0, 0.0), true),
+        gui_key::SCROLL_DOWN
+    );
 }
 
 #[test]
@@ -99,26 +145,22 @@ fn the_menu_sticks_directions_take_the_dominant_axis() {
 fn the_menu_steps_repeat_after_400_then_every_150_ms() {
     let sample = pad().with_analog(Id::MenuNav, Vec2::new(0.0, 0.6));
     let mut menu = MenuPad::default();
-    assert_eq!(menu.frame(16, &sample, menu_ctx()).key, gui_key::UP | 0x10);
-    assert_eq!(menu.frame(100, &sample, menu_ctx()).key, 0);
-    assert_eq!(menu.frame(416, &sample, menu_ctx()).key, 0);
-    assert_eq!(menu.frame(417, &sample, menu_ctx()).key, gui_key::UP | 0x10);
-    assert_eq!(menu.frame(567, &sample, menu_ctx()).key, 0);
-    assert_eq!(menu.frame(568, &sample, menu_ctx()).key, gui_key::UP | 0x10);
+    let mut key = |at: i64, sample: &PadSample| menu.frame(at, sample, menu_ctx()).key;
+    // Between the steps the pushed stick still sends its analog bit.
+    let step = gui_key::UP | gui_key::ANALOG;
+    assert_eq!(key(16, &sample), step);
+    assert_eq!(key(100, &sample), gui_key::ANALOG);
+    assert_eq!(key(416, &sample), gui_key::ANALOG);
+    assert_eq!(key(417, &sample), step);
+    assert_eq!(key(567, &sample), gui_key::ANALOG);
+    assert_eq!(key(568, &sample), step);
     // A stick that returns inside the dead zone resets the first delay.
-    let rest = pad();
-    menu.frame(600, &rest, menu_ctx());
-    assert_eq!(menu.frame(700, &sample, menu_ctx()).key, gui_key::UP | 0x10);
-    assert_eq!(menu.frame(1100, &sample, menu_ctx()).key, 0);
-    assert_eq!(
-        menu.frame(1101, &sample, menu_ctx()).key,
-        gui_key::UP | 0x10
-    );
-    assert_eq!(menu.frame(1251, &sample, menu_ctx()).key, 0);
-    assert_eq!(
-        menu.frame(1252, &sample, menu_ctx()).key,
-        gui_key::UP | 0x10
-    );
+    assert_eq!(key(600, &pad()), 0);
+    assert_eq!(key(700, &sample), step);
+    assert_eq!(key(1100, &sample), gui_key::ANALOG);
+    assert_eq!(key(1101, &sample), step);
+    assert_eq!(key(1251, &sample), gui_key::ANALOG);
+    assert_eq!(key(1252, &sample), step);
 }
 
 #[test]
@@ -130,7 +172,7 @@ fn a_fast_menu_navigation_form_steps_again_every_frame_after_its_second_step() {
     };
     let mut menu = MenuPad::default();
     assert_eq!(menu.frame(16, &sample, ctx).key, gui_key::RIGHT | 0x10);
-    assert_eq!(menu.frame(100, &sample, ctx).key, 0);
+    assert_eq!(menu.frame(100, &sample, ctx).key, gui_key::ANALOG);
     assert_eq!(menu.frame(417, &sample, ctx).key, gui_key::RIGHT | 0x10);
     // The original writes the fast delay to the scroll stick's deadline and
     // leaves the navigation deadline alone, so navigation runs on freely.
@@ -716,17 +758,25 @@ fn the_default_table_reads_bevys_buttons_and_sticks() {
 
 #[test]
 fn the_menu_exit_hook_takes_the_exit_key_instead_of_the_normal_dispatch() {
-    let exit = pad().with_digital(Id::MenuExit, true);
+    let exit = pad()
+        .with_digital(Id::MenuExit, true)
+        .with_analog(Id::MenuNav, Vec2::new(0.5, 0.0));
     let ctx = MenuContext {
         exit_hook: true,
         ..menu_ctx()
     };
     let mut menu = MenuPad::default();
-    assert_eq!(menu.frame(16, &exit, ctx).key, gui_key::BACK);
-    // The hook ran; a held exit does not dispatch again.
-    assert_eq!(menu.frame(17, &exit, ctx).key, 0);
-    assert_eq!(menu.frame(18, &pad(), ctx).key, 0);
-    assert_eq!(menu.frame(19, &exit, ctx).key, gui_key::BACK);
+    let frame = menu.frame(16, &exit, ctx);
+    assert!(frame.exit_hook);
+    assert_eq!(frame.key, 0);
+    // The cursor was still read: the hook's frame keeps it.
+    assert_eq!(frame.cursor, Vec2::new(0.5, 0.0));
+    // A held exit does not run the hook again, and nothing is dispatched.
+    let frame = menu.frame(17, &exit, ctx);
+    assert!(!frame.exit_hook);
+    assert_eq!(frame.key, 0);
+    assert!(!menu.frame(18, &pad(), ctx).exit_hook);
+    assert!(menu.frame(19, &exit, ctx).exit_hook);
 }
 
 #[test]
