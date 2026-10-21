@@ -30,13 +30,13 @@ use crate::mesh_edit::{
     SHARES_CHANNEL, Smoothing, StreamData, TYPE_MASK, TYPE_RGBA8, bounds,
 };
 
-/// A subdivided mesh may have at most this many faces: the original refuses
-/// when four times one more face would pass its 16-bit limit of 65 535
-/// (`(faces + 1) × 4 > 65 535`), so 16 382 faces still divide and 16 383 do
-/// not.
-pub const MAX_FACES: usize = 16_382;
-/// The original's 16-bit face word. Four children per face, plus one face
-/// for the check itself, must fit it.
+/// The most faces a mesh may have and still be subdivided: the original
+/// refuses when four times its face count would pass its 16-bit limit of
+/// 65 535 (its face field holds the last face's index, and the check adds
+/// one back), so 16 383 faces still divide and 16 384 do not.
+pub const MAX_FACES: usize = FACE_LIMIT / 4;
+/// The original's 16-bit face word: the four children of every face must
+/// fit it.
 const FACE_LIMIT: usize = 0xFFFF;
 
 /// Squared distance past which a shared texture coordinate is split.
@@ -116,13 +116,10 @@ pub fn smooth_mesh(mesh: &Mesh, group_flags: &[u32]) -> Result<Smoothed, MeshErr
     })
 }
 
-/// Whether a mesh with `faces` faces may be subdivided: four times one
-/// more face must fit the original's 16-bit word.
+/// Whether a mesh with `faces` faces may be subdivided: four times its
+/// faces must fit the original's 16-bit word.
 pub fn can_subdivide(faces: usize) -> bool {
-    faces
-        .checked_add(1)
-        .and_then(|n| n.checked_mul(4))
-        .is_some_and(|n| n <= FACE_LIMIT)
+    faces.checked_mul(4).is_some_and(|n| n <= FACE_LIMIT)
 }
 
 /// Subdivides `mesh` once. `sharpness` is the weight of points on fewer

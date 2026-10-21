@@ -312,10 +312,11 @@ element directly, and the indirect builder is kept for a generic import.
 
 The original's MeshSmooth (Loop subdivision, sharpness 0 in every use;
 the character-creation scene smooths the hair it shows, a debug command a
-whole scene) refuses a mesh when four times one more face would pass the
-16-bit limit, `(faces + 1) × 4 > 65 535`: 16 382 faces still divide and
-16 383 do not. A refused mesh is not subdivided, but its bounds are still
-refitted and it is still converted to render form.
+whole scene) refuses a mesh whose faces ×4 would pass 65 535 (its face
+field holds the last face's index and the check adds one back): 16 383
+faces still divide and 16 384 do not. A refused mesh is not subdivided,
+but its bounds are still refitted and it is still converted to render
+form.
 
 1. Rebuild the smoothing channel from the triangle flags (when there are
    flags and no smoothing groups were worked out before); it goes last.

@@ -306,10 +306,11 @@ fn different_smoothing_groups_crease_the_diagonal() {
 }
 
 #[test]
-fn the_face_limit_is_four_times_one_more_face() {
+fn the_face_limit_is_four_times_the_faces() {
     assert!(can_subdivide(MAX_FACES));
     assert!(!can_subdivide(MAX_FACES + 1));
-    assert_eq!(MAX_FACES, 16_382);
+    assert_eq!(MAX_FACES, 16_383);
+    assert!(!can_subdivide(usize::MAX));
 }
 
 #[test]
