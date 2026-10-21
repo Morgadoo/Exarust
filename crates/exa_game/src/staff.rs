@@ -167,8 +167,8 @@ pub struct Staff {
 /// Number the manager and the staff as the arena does before a match. The
 /// manager's id word is just the control flag; an employee's is its place
 /// in the list plus one ([`Staff::id_word`]), with the flag too when its
-/// class's low bit (a recruit) is set. A combatant or recruit (the low two class bits) counts as a fighter,
-/// so the count starts at the manager.
+/// class's low bit (a recruit) is set. A combatant or recruit (the low two
+/// class bits) counts as a fighter, so the count starts at the manager.
 pub fn number_fighters(classes: &[u8]) -> (u32, Vec<u32>) {
     let mut count = 1;
     let mut roles = Vec::with_capacity(classes.len() + 1);
