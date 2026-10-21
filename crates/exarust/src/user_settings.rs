@@ -83,7 +83,10 @@ impl UserSettings {
     /// The hardware configuration the settings file gives, with the launch
     /// options' overrides: the launcher's full screen, size, vertical sync,
     /// super-sampling and frame-rate choices (already merged with the file by
-    /// [`UserSettings::apply_to`]) win.
+    /// [`UserSettings::apply_to`]) win. Exarust draws its one super-sampling
+    /// level unless it is turned off, so a file that does not name
+    /// `Supersample` gives the live level 4 rather than the original's
+    /// pre-detection 0.
     pub fn hardware(
         &self,
         fullscreen: bool,
@@ -97,6 +100,8 @@ impl UserSettings {
         live.vertical_sync = !no_vsync;
         if no_supersample {
             live.supersample = 0;
+        } else if live.supersample < 1 {
+            live.supersample = 4;
         }
         live.show_fps = !no_fps;
         exa_game::hw_config::HardwareConfig {
@@ -271,6 +276,12 @@ mod tests {
         assert_eq!(hardware.window_size, Some((1280, 720)));
         // The test's folder is empty, so the file path is empty too.
         assert_eq!(hardware.settings_file, Some(PathBuf::new()));
+
+        // Without a Supersample line Exarust's own level stays on.
+        let plain = user(b"Volume = 100\r\n");
+        let hardware = plain.hardware(false, None, false, false, false);
+        assert_eq!(hardware.live.supersample, 4);
+        assert_eq!(hardware.live.volume, 1.0);
 
         let hardware = u.hardware(true, None, true, true, true);
         assert!(!hardware.live.window_mode);
