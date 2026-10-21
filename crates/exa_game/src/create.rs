@@ -2928,7 +2928,7 @@ pub fn draw_voice_variant(rng: &mut Lcg, count: usize, history: &mut VoiceHistor
         }
         index
     };
-    if count >= 2 {
+    if count >= 1 {
         history.before_last = history.last;
         history.last = index;
     }
@@ -4681,9 +4681,14 @@ mod tests {
         assert_eq!(history.last, 1);
 
         let mut rng = Lcg(0);
-        let mut history = VoiceHistory::default();
+        let mut history = VoiceHistory {
+            last: 5,
+            before_last: 5,
+        };
         assert_eq!(draw_voice_variant(&mut rng, 1, &mut history), 0);
         assert_eq!(rng.0, 0);
+        assert_eq!(history.last, 0);
+        assert_eq!(history.before_last, 5);
     }
 
     #[test]
