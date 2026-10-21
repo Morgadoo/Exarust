@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Blow damage
-The system SHALL resolve each weapon contact by the original's damage model, in its order and precision. The inputs are the weapon's stat record, where along the weapon and how fast the struck point met the part, whether the blow was a stab (the stab motion, unless the attacker's race walks on four limbs) and whether the attacker holds no weapon. The speed is capped at 30 cm a tick and softened under 10, then raised 1.5 for an overhead; the impact follows the swing's or the stab's rule; the hit point picks the zone (a stab's tip and lunge, the fists' shares in full, the haft, past the striking part, each kind's tip zone), and a haft hit adds its material's crush bonus whatever its on-target share. The blow passes through the struck part's two armour layers by one coverage roll, outer first, giving impact, crush, slash and pierce through padding and resistances, crush and pierce raised by the engine's fast power. Part multipliers apply.
+The system SHALL resolve each weapon contact by the original's damage routine, in its order and precision: the struck point's speed, the swing's or the stab's impact, the zone along the weapon (a haft hit adds its material's crush bonus at any on-target share), one coverage roll over the part's two armour layers, outer first, and impact, crush, slash and pierce through padding and resistances, crush and pierce raised by the engine's fast power. Part multipliers apply.
 
 #### Scenario: Armour stops the edge
 - **WHEN** a sword cut lands on a chest fully covered by plate
@@ -14,21 +14,6 @@ The system SHALL resolve each weapon contact by the original's damage model, in 
 #### Scenario: A haft's metal crushes
 - **WHEN** a mace with a metal haft (crush 90, its head from 60 % of 100 cm) strikes 5 cm below its head at 20 cm a tick
 - **THEN** its crush gains 0.2 of the 0.25 off target, and its penetration is 1.3150014
-
-### Requirement: Blow reactions
-The system SHALL take the yellow and red health bars by a resolved blow, daze the victim, shove it on heavy impact, sag its stance by the blow (Blow sag), and start the victim's collapse when yellow health falls below 0.01 (a body without muscles goes limp at once). A blow that does not kill SHALL NOT start a reaction clip on the struck fighter; its stance changes come from its balance. A fighter struck during an attack SHALL have its swing stalled by the daze (Struck swing); a killing blow ends its attack. The striker's swing SHALL then react to the wound (Striker after a wound).
-
-#### Scenario: Knock-down
-- **WHEN** a fighter's yellow health falls below 0.01
-- **THEN** it collapses with Fall Backward, dies 3 s later and lies limp where it fell, and it is no longer attacked
-
-#### Scenario: Cut on the arm
-- **WHEN** a bare forearm of a fighter in its stance takes a sword cut and the fighter stays up
-- **THEN** it keeps playing its stance clip
-
-#### Scenario: Struck mid-swing
-- **WHEN** a fighter is cut during an attack
-- **THEN** its attack's clip plays on, slowed by its stall, and returns to its stance within the swing's expected rest
 
 ### Requirement: Struck swing
 A fighter dazed by D (at most 0.9) while attacking SHALL have its swing stall by r = 4·D·f − (1 − D)·min(0.005·s, 1)·W17 a tick when r ≥ 0.001 (f the blow's stall factor: 0.25 over its most health, times (D′/τ′)² with the Security perk, halved under a potion, 0 for a steadfast body; s its strikers' larger tracked speed squared), added to a stall in progress up to 1; its stance SHALL return 80·P/stall ms later, at most the swing's expected rest. A spent swing (P = 0) takes no stall.
@@ -75,6 +60,13 @@ A striker of size 1.4 or more SHALL follow a blow by the weapon's body through a
 #### Scenario: A large striker
 - **WHEN** a striker of size 1.5 wounds by the weapon's body at an impact of 5
 - **THEN** it follows through at gain 0.5 instead of cleaving on
+
+### Requirement: Quadruped stab
+The stab's rules SHALL apply to the stab motion unless the attacker's race walks on four limbs (its second flag word's bit 8): a quadruped's stab is resolved as a swing.
+
+#### Scenario: Harvester
+- **WHEN** a race's second flag word holds 0x8
+- **THEN** its characters' stabs take the swing's rules, and the ogre's 0x7 does not
 
 ### Requirement: Turned blow
 A blow on a body whose state flag 0x400 is set SHALL deal nothing (no health, no shove, no daze) and SHALL make the striker recoil, whatever its size.

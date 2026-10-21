@@ -52,8 +52,9 @@ None.
 
 ### Modified Capabilities
 
-- `combat`: Blow damage, Blow reactions, Struck swing, Guarded blow; new
-  requirements for the striker after a wound, a turned blow, the blow sag,
+- `combat`: Blow damage, Struck swing, Guarded blow; new
+  requirements for the striker after a wound, a quadruped stab, a turned
+  blow, the blow sag,
   the hit sounds and the holding pass's precision.
 
 ## Impact
