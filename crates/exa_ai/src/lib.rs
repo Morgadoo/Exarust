@@ -103,10 +103,10 @@ pub struct Duellist {
     pub personality: Option<personality::Personality>,
     /// The chase's fields.
     pub chase: chase::ChaseMind,
-    /// The one-per-tick plan turn.
-    plan: PlanTurn,
     /// The chase route to walk (cm), as the planner returned it.
     route: Vec<Vec3>,
+    /// The last combat tick ended at the chase, following the route.
+    chasing: bool,
 }
 
 /// A step the duellist walks: where it goes (m) and when it started.
@@ -151,8 +151,8 @@ impl Duellist {
             queue: 0,
             personality: None,
             chase: chase::ChaseMind::default(),
-            plan: PlanTurn::default(),
             route: Vec::new(),
+            chasing: false,
         }
     }
 }
@@ -213,17 +213,54 @@ fn motion_of(attacking: Option<&Attacking>, stance: Stance) -> i32 {
 
 /// The combat state's view of a duel: the one contact is the target, which
 /// the position score rates from each place.
-struct DuelField {
+struct DuelField<'a> {
     foe: Vec3,
     heading: Vec3,
     spot: place::Spot,
-    /// The level has a navigation grid, so a chase route can be planned.
-    can_chase: bool,
+    /// The chase's state, when the level has a navigation grid.
+    chase: Option<DuelChase<'a>>,
 }
 
-impl combat::Field for DuelField {
-    fn chase(&mut self) -> bool {
-        self.can_chase
+/// What the chase route needs from the duel, and what it did.
+struct DuelChase<'a> {
+    mind: &'a mut chase::ChaseMind,
+    turn: &'a mut PlanTurn,
+    grid: &'a exa_world::nav::NavGrid,
+    who: u64,
+    frame: u32,
+    body: ChaseBody,
+    foe: ChaseFoe,
+    outcome: Option<chase::Outcome>,
+}
+
+impl combat::Field for DuelField<'_> {
+    fn chase(&mut self, estimate: Vec3, roll: &mut u32) -> bool {
+        let Some(c) = self.chase.as_mut() else {
+            return false;
+        };
+        // The duellist's foe is fresh while it perceives it [Exarust's: the
+        // original's mark is set when the target is taken].
+        c.mind.fresh = true;
+        c.mind.estimate = estimate;
+        let mut router = NavRouter {
+            grid: c.grid,
+            size: 0,
+        };
+        let outcome = chase::chase(
+            c.mind,
+            c.who,
+            &c.body,
+            Some(c.foe),
+            None,
+            c.turn,
+            c.frame,
+            &[ContactKey { id: c.foe.id }],
+            Some(&mut router),
+            roll,
+        );
+        let ends = outcome.end.ends_tick();
+        c.outcome = Some(outcome);
+        ends
     }
     fn score(&mut self, _contact: usize, level: i32, point: Vec3) -> combat::PlaceScore {
         let to = self.foe - point;
@@ -339,7 +376,12 @@ fn duellist(
         &Fighter,
     )>,
     mut roots: Query<(&mut CharacterBody, &GlobalTransform)>,
+    mut planning: Local<(PlanTurn, u32)>,
 ) {
+    // One brain plans a route a frame: the longest waiter of the last one.
+    let (turn, frame) = &mut *planning;
+    *frame = frame.wrapping_add(1);
+    turn.next_turn();
     let tick_now = ticks.as_ref().map(|t| t.0);
     let now = ticks.map_or(0, |t| t.millis());
     for (
@@ -680,25 +722,60 @@ fn duellist(
             };
             me.can_step = combat::can_act(&me) && !ai.holds_ground;
             ai.queue = 0;
+            let ai_target_bits = ai.target.to_bits();
+            let Duellist {
+                mind,
+                roll,
+                chase: chase_mind,
+                ..
+            } = &mut *ai;
             let mut field = DuelField {
                 foe: foe_chest,
                 heading: me.heading,
                 spot,
-                can_chase: nav.is_some(),
+                chase: nav.as_deref().map(|grid| DuelChase {
+                    mind: chase_mind,
+                    turn: &mut *turn,
+                    grid,
+                    who: entity.to_bits(),
+                    frame: *frame,
+                    body: ChaseBody {
+                        position_cm: feet * CM,
+                        ground_y_cm: feet.y * CM,
+                        scale: fighter.stats.scale,
+                        motion: me.motion,
+                        voice: None,
+                        now_ms: now as u32,
+                    },
+                    foe: ChaseFoe {
+                        id: ai_target_bits,
+                        ground_y_cm: target.translation().y * CM,
+                    },
+                    outcome: None,
+                }),
             };
             let brain_level = brains
                 .get(entity)
                 .ok()
                 .map_or(3, |b| b.pass.level.clamp(1, 3));
+            // A chase mark lapses once its time has passed (the contact
+            // integration's rule).
+            let held = &mut combatant.contacts[index];
+            if held.flags & crate::contacts::UNREACHABLE != 0
+                && held.unreachable_until_ms < now as u32
+            {
+                held.flags &= !crate::contacts::UNREACHABLE;
+            }
+            let marked = held.flags & crate::contacts::UNREACHABLE != 0;
             let mut contacts = [combat::Contact {
                 level: brain_level,
                 is_foe: true,
                 character: true,
-                concern: combatant.contacts[index].concern,
-                hostility: combatant.contacts[index].hostility,
+                concern: held.concern,
+                hostility: held.hostility,
+                unreachable: marked,
                 ..combat::Contact::default()
             }];
-            let Duellist { mind, roll, .. } = &mut *ai;
             let out = combat::tick(
                 mind,
                 &me,
@@ -713,6 +790,11 @@ fn duellist(
                 },
                 roll,
             );
+            let chased = field.chase.and_then(|c| c.outcome);
+            if marked && !contacts[0].unreachable {
+                // The foe is in reach again.
+                combatant.contacts[index].flags &= !crate::contacts::UNREACHABLE;
+            }
             if let Some(b) = out.bearing {
                 ai.bearing = (b.to_target, b.distance_cm);
             }
@@ -731,62 +813,27 @@ fn duellist(
                 let swing = primary.as_ref().map(Swing::of).unwrap_or(Swing::FISTS);
                 swinging.release(&swing, &at);
             }
-            if out.exit == Some(combat::Exit::Chase) {
-                // The duellist's target is fresh while it perceives it, and
-                // the estimate is the combat state's.
-                ai.chase.fresh = true;
-                ai.chase.estimate = if ai.mind.estimate == Vec3::ZERO {
-                    foe_chest
-                } else {
-                    ai.mind.estimate
-                };
-                if let Some(grid) = nav.as_deref() {
-                    let id = ai.target.to_bits();
-                    let mut router = NavRouter { grid, size: 0 };
-                    ai.plan.current = Some(id);
-                    let body = ChaseBody {
-                        position_cm: feet * CM,
-                        ground_y_cm: feet.y * CM,
-                        scale: fighter.stats.scale,
-                        motion: me.motion,
-                        voice: None,
-                        now_ms: now as u32,
-                    };
-                    let outcome = {
-                        let Duellist {
-                            chase, plan, roll, ..
-                        } = &mut *ai;
-                        chase::chase(
-                            chase,
-                            id,
-                            &body,
-                            Some(ChaseFoe {
-                                id,
-                                ground_y_cm: foe_chest.y,
-                            }),
-                            None,
-                            plan,
-                            now as u32,
-                            &[ContactKey { id }],
-                            Some(&mut router),
-                            roll,
-                        )
-                    };
-                    if let Some(mark) = outcome.mark {
-                        let contact = &mut combatant.contacts[index];
-                        contact.unreachable_until_ms = mark.until_ms;
-                        contact.flags |= crate::contacts::UNREACHABLE;
-                    }
-                    if let Some(planned) = outcome.planned {
-                        ai.route = planned.route.points;
-                    }
-                    if outcome.end == chase::End::Left {
-                        ai.leave();
-                        combatant.in_combat = false;
-                        continue;
-                    }
+            ai.chasing = out.exit == Some(combat::Exit::Chase);
+            if let Some(outcome) = chased {
+                let contact = &mut combatant.contacts[index];
+                if let Some(mark) = outcome.mark {
+                    contact.unreachable_until_ms = mark.until_ms;
+                    contact.flags |= crate::contacts::UNREACHABLE;
+                } else if outcome.reached.is_some() {
+                    contact.flags &= !crate::contacts::UNREACHABLE;
                 }
-                continue;
+                if let Some(planned) = outcome.planned {
+                    ai.route = if planned.following {
+                        planned.route.points
+                    } else {
+                        Vec::new()
+                    };
+                }
+                if outcome.end == chase::End::Left {
+                    info!("duellist {entity:?} leaves combat: its foe is out of reach");
+                    ai.leave();
+                    combatant.in_combat = false;
+                }
             }
             if out.exit.is_some() {
                 continue;
@@ -849,8 +896,9 @@ fn duellist(
         if attacking.is_some() || !anim.looping {
             continue;
         }
-        // A chase route is walked through the path's carrot.
-        if !ai.route.is_empty() {
+        // While the combat tick ends at the chase, its route is walked
+        // through the path's carrot.
+        if ai.chasing && !ai.route.is_empty() {
             let carrot = crate::path::carrot(&ai.route, feet * CM);
             if let Some(goal) = carrot.goal {
                 let order = follow(&[feet, goal / CM], feet, yaw_of(t.rotation), 0);
@@ -1101,6 +1149,7 @@ mod chase_tests {
     use super::*;
     use exa_world::nav::{Layer, NavCell, NavGrid};
 
+    /// A flat 80 × 80 grid with its floors at 10 m (voxel 100 over base 0).
     fn yard() -> NavGrid {
         let mut grid = NavGrid::empty(80, 80, 0.0);
         for z in 0..80 {
@@ -1110,7 +1159,7 @@ mod chase_tests {
                     z,
                     Layer::Lower,
                     NavCell {
-                        floor: 10,
+                        floor: 100,
                         ..NavCell::default()
                     },
                 );
@@ -1120,10 +1169,12 @@ mod chase_tests {
     }
 
     /// A fighter whose foe is out of reach for 21 ticks plans a chase
-    /// route on the navigation grid (the one pathfinder), marks the contact
-    /// unreachable and walks the route's carrot.
+    /// route on the navigation grid (the one pathfinder) on its plan turn,
+    /// follows it, and walks its carrot while the combat tick ends at the
+    /// chase; the route reaches the foe, so its contact is not marked.
     #[test]
     fn a_stuck_fighter_plans_its_chase_route_through_the_grid() {
+        let floor = Vec3::new(0.0, 10.0, 0.0);
         let mut app = App::new();
         app.init_resource::<Time>()
             .add_systems(Update, duellist)
@@ -1131,13 +1182,16 @@ mod chase_tests {
         let target = app
             .world_mut()
             .spawn((
-                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 8.0)),
+                GlobalTransform::from_translation(floor + Vec3::new(0.0, 0.0, 8.0)),
                 Fighter::default(),
             ))
             .id();
         let root = app
             .world_mut()
-            .spawn((CharacterBody::default(), GlobalTransform::IDENTITY))
+            .spawn((
+                CharacterBody::default(),
+                GlobalTransform::from_translation(floor),
+            ))
             .id();
         let mut ai = Duellist::new(target);
         ai.engaged = true;
@@ -1146,14 +1200,14 @@ mod chase_tests {
             .world_mut()
             .spawn((
                 ai,
-                Transform::default(),
-                GlobalTransform::IDENTITY,
+                Transform::from_translation(floor),
+                GlobalTransform::from_translation(floor),
                 Animator::new("Default", "Idle"),
                 Fighter::default(),
                 ChildOf(root),
             ))
             .id();
-        for _ in 0..5 {
+        for _ in 0..6 {
             if let Some(mut ticks) = app.world_mut().get_resource_mut::<BodyTicks>() {
                 ticks.0 += 1;
             } else {
@@ -1163,10 +1217,13 @@ mod chase_tests {
         }
         let ai = app.world().get::<Duellist>(foe).unwrap();
         assert!(ai.chase.following, "the chase started");
+        assert!(ai.chasing, "the combat tick ends at the chase");
         assert!(!ai.route.is_empty(), "the route was planned");
-        let combatant = app.world().get::<Combatant>(foe).unwrap();
-        assert!(combatant.contacts.iter().any(|c| c.flags & 0x10 != 0));
         // The route walks toward the foe (+z).
-        assert!(ai.route[ai.route.len() - 1].z > 0.0);
+        assert!(ai.route[ai.route.len() - 1].z > 600.0);
+        let combatant = app.world().get::<Combatant>(foe).unwrap();
+        assert!(combatant.contacts.iter().all(|c| c.flags & 0x10 == 0));
+        let body = app.world().get::<CharacterBody>(root).unwrap();
+        assert!(body.desired_velocity.z > 0.0, "it walks the route");
     }
 }

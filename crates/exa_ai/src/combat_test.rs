@@ -53,7 +53,7 @@ impl Field for Flat {
             ..PlaceScore::default()
         }
     }
-    fn chase(&mut self) -> bool {
+    fn chase(&mut self, _estimate: Vec3, _roll: &mut u32) -> bool {
         self.chased = true;
         true
     }

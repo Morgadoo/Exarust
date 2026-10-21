@@ -1,29 +1,35 @@
 //! The chase: a fighter that cannot close on its foe plans a route to it.
 //!
-//! A big creature (scale above 1.3) with a voice barks now and then while it
-//! runs, at most every two seconds, its volume and pitch drawn around the
-//! voice's. The fighter remembers the foe it last chased. Not following yet
-//! and no fresh target, it drops the foe, the focus and its level and
-//! leaves combat; with a fresh target it marks a re-plan. Following, it
-//! re-plans when the foe has moved more than 100 cm from the route's end.
-//! Its gait is a walk.
+//! A big creature (scale above 1.3, a double compare) with a voice barks
+//! while it chases, once its timer has passed (the timer plus two seconds
+//! against the clock, 64-bit, no wrap): its volume and pitch are drawn
+//! around the voice's (in double precision) and the next timer is drawn up
+//! to four seconds on. The fighter remembers the foe it chased. Not
+//! following a route yet: with no fresh foe it drops the foe, the focus and
+//! its level and leaves combat; with one it marks a re-plan. Following, it
+//! re-plans when the estimate has left the route's end by more than a
+//! metre (3-D). Its gait is a walk. Only while following does the combat
+//! tick end here; otherwise it runs on.
 //!
-//! A re-plan unregisters the foe's navigation footprint, aims at the
-//! estimate (on the foe's ground height when it has one), asks the plan
-//! turn for a route to it, and marks the foe's contact unreachable for
-//! 3 s plus a draw of up to 3 s when the route does not reach it, or clears
-//! that mark when it does. The route is followed when it has two points or
-//! lands more than 150 cm away, or when its end is more than a metre off in
-//! height (the estimate's height less 100 cm against the last point's); the
-//! foe's contact then starts being followed. The footprint is stamped
-//! again.
+//! A re-plan aims at the estimate (on the foe's ground height when it has a
+//! foe) and asks the plan turn for a route; the route's own start test
+//! decides whether it is followed (it is then no longer re-planned). A plan
+//! that ran marks the foe's contact unreachable for 3 s plus a draw of up
+//! to 3 s when the route does not reach it (fewer than two points, its end
+//! more than 150 cm from the estimate across the ground, or more than a
+//! metre off the estimate's height less a metre), else clears the mark, and
+//! the route's end becomes the estimate. The foe's navigation footprint is
+//! lifted around the plan (Exarust's planner reads no footprint of the
+//! foe's own: [not modelled]).
 //!
-//! Evidence: the original's chase-route routine, read from the instructions
-//! (the bark draws in double precision, the signed two-second compare, the
-//! horizontal 150 cm and vertical 100 cm route tests, the mark's timer).
+//! Evidence: the original's chase-route routine and its plan turn, read
+//! from the instructions (the bark draws in double precision, the 64-bit
+//! timer compare, the 3-D re-plan distance, the reach test from the
+//! estimate to the route's last point, the mark's timer).
 
 use bevy::math::Vec3;
 
+use crate::personality::unit_draw;
 use crate::route::{Goal, PlanTurn, Planned, Router};
 
 /// A creature above this scale barks while it runs (double compare).
@@ -34,11 +40,14 @@ pub const BARK_EVERY_MS: u32 = 2000;
 pub const BARK_DRAWN_MS: u32 = 4000;
 /// The foe counts as moved past this distance from the route's end (cm).
 pub const REPLAN_CM: f32 = 100.0;
-/// A route is followed when its ends are farther apart than this (cm).
-pub const ROUTE_SPAN_CM: f32 = 150.0;
-/// The vertical tolerance of a route's end (cm).
+/// A route whose end lies farther than this from the estimate across the
+/// ground does not reach the foe (cm).
+pub const REACH_CM: f32 = 150.0;
+/// The vertical tolerance of a route's end, against the estimate's height
+/// less this much (cm).
 pub const ROUTE_HEIGHT_CM: f32 = 100.0;
-/// The motion a chase walks in is the current one plus this.
+/// The goal's motion is the brain's motion word plus this [guess: which
+/// word the original reads].
 pub const CHASE_MOTION: i32 = 3;
 /// The chase walks (gait 1).
 pub const WALK_GAIT: i32 = 1;
@@ -117,13 +126,23 @@ pub struct ChaseFoe {
     pub ground_y_cm: f32,
 }
 
-/// How the chase ended the combat tick.
+/// How the chase ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum End {
-    /// No fresh foe: back to the idle activity (without the leave timers).
+    /// No fresh foe: back to the idle activity (without the leave timers);
+    /// the combat tick runs on.
     Left,
-    /// Still chasing: the tick ends here.
+    /// A fresh foe, not yet followed: the combat tick runs on.
+    Replanning,
+    /// Following its route: the combat tick ends here.
     Following,
+}
+
+impl End {
+    /// The combat tick ends at the chase.
+    pub fn ends_tick(self) -> bool {
+        self == End::Following
+    }
 }
 
 /// A contact the chase marks unreachable, by its slot.
@@ -141,7 +160,7 @@ pub struct Outcome {
     pub planned: Option<Planned>,
     /// The contact whose unreachable mark changed, if any.
     pub mark: Option<Mark>,
-    /// The route was not followed and its unreachable mark cleared.
+    /// The route reaches the foe: this contact's unreachable mark clears.
     pub reached: Option<usize>,
 }
 
@@ -149,12 +168,6 @@ pub struct Outcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContactKey {
     pub id: u64,
-}
-
-/// The engine's draw in 0..1.
-fn unit_draw(roll: &mut u32) -> f32 {
-    *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
-    (f64::from(*roll) * (1.0 / 4_294_967_296.0)) as f32
 }
 
 /// One chase tick.
@@ -172,22 +185,18 @@ pub fn chase(
     roll: &mut u32,
 ) -> Outcome {
     let mut outcome = Outcome {
-        end: End::Following,
+        end: End::Replanning,
         bark: None,
         planned: None,
         mark: None,
         reached: None,
     };
-    if f64::from(me.scale) > BARK_SCALE
-        && me.voice.is_some()
-        && (mind.last_bark_ms.wrapping_add(BARK_EVERY_MS) as i32) < me.now_ms as i32
+    if let Some(voice) = me.voice
+        && f64::from(me.scale) > BARK_SCALE
+        && u64::from(mind.last_bark_ms) + u64::from(BARK_EVERY_MS) < u64::from(me.now_ms)
     {
-        let voice = me.voice.unwrap_or(Voice {
-            volume: 0.0,
-            pitch: 0.0,
-        });
-        let reach = f64::from(unit_draw(roll)) * 0.2 + 0.75;
-        let volume = (f64::from(voice.volume) * reach) as f32;
+        let volume_draw = f64::from(unit_draw(roll)) * 0.2 + 0.75;
+        let volume = (f64::from(voice.volume) * volume_draw) as f32;
         let pitch_draw = f64::from(unit_draw(roll)) * 0.2 + 0.2;
         let pitch = (f64::from(voice.pitch) * pitch_draw) as f32;
         *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
@@ -198,19 +207,16 @@ pub fn chase(
     mind.previous_foe = foe.map(|f| f.id);
     if !mind.following {
         if !mind.fresh {
-            mind.following = false;
-            mind.replanned = false;
-            mind.gait = WALK_GAIT;
             outcome.end = End::Left;
             return outcome;
         }
         mind.replanned = true;
     } else {
-        let dx = mind.route_end.x - mind.estimate.x;
-        let dz = mind.route_end.z - mind.estimate.z;
-        if dx * dx + dz * dz > REPLAN_CM * REPLAN_CM {
+        let d = mind.route_end - mind.estimate;
+        if (d.x * d.x + d.y * d.y) + d.z * d.z > REPLAN_CM * REPLAN_CM {
             mind.replanned = true;
         }
+        outcome.end = End::Following;
     }
     mind.gait = WALK_GAIT;
     if !mind.replanned {
@@ -232,40 +238,38 @@ pub fn chase(
     let Some(planned) = planned else {
         return outcome;
     };
-    let points = &planned.route.points;
-    let mut follow = true;
-    if points.len() >= 2 {
-        let last = points[points.len() - 1];
-        let first = points[0];
-        let dx = first.x - last.x;
-        let dz = first.z - last.z;
-        let far = dx * dx + dz * dz > ROUTE_SPAN_CM * ROUTE_SPAN_CM;
-        let high = ((mind.estimate.y - ROUTE_HEIGHT_CM) - last.y).abs() > ROUTE_HEIGHT_CM;
-        follow = far || high;
+    if planned.following {
+        mind.following = true;
+        mind.replanned = false;
     }
+    let points = &planned.route.points;
+    let unreached = match points.last() {
+        Some(last) if points.len() >= 2 => {
+            let dx = mind.estimate.x - last.x;
+            let dz = mind.estimate.z - last.z;
+            let far = dz * dz + dx * dx > REACH_CM * REACH_CM;
+            // A NaN height is not off.
+            let high = ROUTE_HEIGHT_CM < ((mind.estimate.y - ROUTE_HEIGHT_CM) - last.y).abs();
+            far || high
+        }
+        _ => true,
+    };
     let wanted = foe.map(|f| f.id).or(focus);
-    if follow {
-        if let Some(id) = wanted
-            && let Some(index) = contacts.iter().position(|c| c.id == id)
-        {
+    if let Some(id) = wanted
+        && let Some(index) = contacts.iter().position(|c| c.id == id)
+    {
+        if unreached {
             *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
             let drawn = ((u64::from(*roll) * u64::from(UNREACHABLE_MS)) >> 32) as u32;
             outcome.mark = Some(Mark {
                 index,
                 until_ms: me.now_ms.wrapping_add(UNREACHABLE_MS).wrapping_add(drawn),
             });
+        } else {
+            outcome.reached = Some(index);
         }
-        mind.following = true;
-        mind.route_end = mind.estimate;
-        mind.replanned = false;
-    } else if let Some(id) = wanted
-        && let Some(index) = contacts.iter().position(|c| c.id == id)
-    {
-        outcome.reached = Some(index);
-        mind.replanned = false;
-    } else {
-        mind.replanned = false;
     }
+    mind.route_end = mind.estimate;
     outcome.planned = Some(planned);
     outcome
 }
@@ -275,16 +279,17 @@ mod tests {
     use super::*;
     use exa_world::nav::{Layer, NavCell, NavGrid};
 
+    /// A flat 40 × 40 grid with its floors at 10 m (voxel 100 over base 0).
     fn yard() -> NavGrid {
-        let mut grid = NavGrid::empty(20, 20, 0.0);
-        for z in 0..20 {
-            for x in 0..20 {
+        let mut grid = NavGrid::empty(40, 40, 0.0);
+        for z in 0..40 {
+            for x in 0..40 {
                 grid.set_cell(
                     x,
                     z,
                     Layer::Lower,
                     NavCell {
-                        floor: 10,
+                        floor: 100,
                         ..NavCell::default()
                     },
                 );
@@ -293,10 +298,16 @@ mod tests {
         grid
     }
 
-    fn body(now: u32) -> ChaseBody {
+    /// A cell's centre on the floor (cm).
+    fn at(grid: &NavGrid, x: usize, z: usize) -> Vec3 {
+        let c = grid.cell_centre(x, z);
+        Vec3::new(c.x, 10.0, c.y) * 100.0
+    }
+
+    fn body(grid: &NavGrid, now: u32) -> ChaseBody {
         ChaseBody {
-            position_cm: Vec3::new(-250.0, 100.0, 0.0),
-            ground_y_cm: 100.0,
+            position_cm: at(grid, 11, 20),
+            ground_y_cm: 1000.0,
             scale: 1.0,
             motion: 4,
             voice: None,
@@ -311,206 +322,157 @@ mod tests {
         }
     }
 
+    const FOE: Option<ChaseFoe> = Some(ChaseFoe {
+        id: 7,
+        ground_y_cm: 1000.0,
+    });
+
+    fn run(grid: &NavGrid, mind: &mut ChaseMind, now: u32, roll: &mut u32) -> Outcome {
+        let mut router = crate::route::NavRouter { grid, size: 0 };
+        chase(
+            mind,
+            1,
+            &body(grid, now),
+            FOE,
+            None,
+            &mut turn(),
+            0,
+            &[ContactKey { id: 7 }],
+            Some(&mut router),
+            roll,
+        )
+    }
+
     /// Not following and not fresh, it leaves combat; with a fresh foe it
-    /// plans a route, follows it and marks the contact unreachable until a
-    /// drawn time past three seconds.
+    /// plans a route 5.1 m long, follows it (the tick still runs on this
+    /// once), and the route reaching the foe clears its mark.
     #[test]
-    fn a_fresh_foe_gets_a_route_and_an_unreachable_mark() {
+    fn a_fresh_foe_gets_a_route_that_reaches_it() {
         let grid = yard();
-        let mut router = crate::route::NavRouter {
-            grid: &grid,
-            size: 0,
-        };
         let mut mind = ChaseMind {
-            estimate: Vec3::new(250.0, 100.0, 0.0),
-            fresh: false,
+            estimate: at(&grid, 28, 20) + Vec3::new(0.0, 100.0, 0.0),
             ..ChaseMind::default()
         };
-        let mut roll = 0;
-        let out = chase(
-            &mut mind,
-            1,
-            &body(1000),
-            Some(ChaseFoe {
-                id: 7,
-                ground_y_cm: 100.0,
-            }),
-            None,
-            &mut turn(),
-            0,
-            &[ContactKey { id: 7 }],
-            Some(&mut router),
-            &mut roll,
-        );
+        let out = run(&grid, &mut mind, 1000, &mut 0);
         assert_eq!(out.end, End::Left);
-        assert_eq!(mind.gait, WALK_GAIT);
-
+        assert!(!out.end.ends_tick());
         mind.fresh = true;
-        let mut roll = 0;
-        let out = chase(
-            &mut mind,
-            1,
-            &body(1000),
-            Some(ChaseFoe {
-                id: 7,
-                ground_y_cm: 100.0,
-            }),
-            None,
-            &mut turn(),
-            0,
-            &[ContactKey { id: 7 }],
-            Some(&mut router),
-            &mut roll,
-        );
-        assert_eq!(out.end, End::Following);
+        let out = run(&grid, &mut mind, 1000, &mut 0);
+        assert_eq!(out.end, End::Replanning);
         let planned = out.planned.unwrap();
         assert!(planned.following);
         assert_eq!(planned.goal.motion, 4 + CHASE_MOTION);
-        assert!(mind.following);
+        assert_eq!(planned.goal.point.y, 1000.0);
+        assert!(mind.following && !mind.replanned);
         assert_eq!(mind.route_end, mind.estimate);
         assert_eq!(mind.previous_foe, Some(7));
-        let mark = out.mark.unwrap();
-        assert_eq!(mark.index, 0);
-        // now + 3000 + draw(3000), the draw the second step of the generator.
-        assert!((3000..6000).contains(&mark.until_ms.wrapping_sub(1000)));
+        assert_eq!((out.reached, out.mark), (Some(0), None));
+        // Following, the next tick ends at the chase without a re-plan.
+        let out = run(&grid, &mut mind, 1012, &mut 0);
+        assert_eq!(out.end, End::Following);
+        assert_eq!(out.planned, None);
     }
 
-    /// A short route is not followed: its contact is cleared, not marked.
+    /// A route whose end lies more than a metre off the estimate's height
+    /// less a metre does not reach the foe: its contact is marked
+    /// unreachable until 3 s plus a draw of up to 3 s.
     #[test]
-    fn a_short_route_clears_the_mark() {
+    fn a_route_off_the_foes_height_marks_it_unreachable() {
         let grid = yard();
-        let mut router = crate::route::NavRouter {
-            grid: &grid,
-            size: 0,
-        };
-        let near = grid.cell_centre(0, 10);
-        let position = Vec3::new(near.x, 1.0, near.y) * 100.0;
         let mut mind = ChaseMind {
-            estimate: position + Vec3::new(20.0, 0.0, 0.0),
+            estimate: at(&grid, 28, 20) + Vec3::new(0.0, 201.0, 0.0),
             fresh: true,
             ..ChaseMind::default()
         };
-        let mut me = body(1000);
-        me.position_cm = position;
-        let mut roll = 0;
-        let out = chase(
-            &mut mind,
-            1,
-            &me,
-            Some(ChaseFoe {
-                id: 7,
-                ground_y_cm: 100.0,
-            }),
-            None,
-            &mut turn(),
-            0,
-            &[ContactKey { id: 7 }],
-            Some(&mut router),
-            &mut roll,
-        );
-        assert_eq!(out.reached, Some(0));
-        assert_eq!(out.mark, None);
-        assert!(!mind.following);
+        let out = run(&grid, &mut mind, 1000, &mut 0);
+        let mark = out.mark.unwrap();
+        assert_eq!(mark.index, 0);
+        assert!((4000..7000).contains(&mark.until_ms));
+        assert_eq!(out.reached, None);
+        // 200 cm over the floor is still within the metre.
+        let mut mind = ChaseMind {
+            estimate: at(&grid, 28, 20) + Vec3::new(0.0, 200.0, 0.0),
+            fresh: true,
+            ..ChaseMind::default()
+        };
+        assert_eq!(run(&grid, &mut mind, 1000, &mut 0).reached, Some(0));
     }
 
-    /// A big voiced creature barks at most every two seconds; the volume
-    /// and pitch sit around the voice's.
+    /// A short route is not followed: it reaches the foe, so its mark
+    /// clears, and the chase keeps asking for a re-plan.
+    #[test]
+    fn a_short_route_is_not_followed() {
+        let grid = yard();
+        let mut mind = ChaseMind {
+            estimate: at(&grid, 12, 20),
+            fresh: true,
+            ..ChaseMind::default()
+        };
+        let out = run(&grid, &mut mind, 1000, &mut 0);
+        assert!(!out.planned.unwrap().following);
+        assert_eq!((out.reached, out.mark), (Some(0), None));
+        assert!(!mind.following && mind.replanned);
+    }
+
+    /// A big voiced creature barks once its timer is two seconds past; the
+    /// volume and pitch sit around the voice's.
     #[test]
     fn a_big_fighter_barks_every_two_seconds() {
         let mut mind = ChaseMind::default();
-        let mut me = body(5000);
+        let mut me = body(&yard(), 5000);
         me.scale = 1.4;
         me.voice = Some(Voice {
             volume: 1.0,
             pitch: 1.0,
         });
         let mut roll = 0;
-        let out = chase(
-            &mut mind,
-            1,
-            &me,
-            None,
-            None,
-            &mut turn(),
-            0,
-            &[],
-            None,
-            &mut roll,
-        );
-        let bark = out.bark.unwrap();
+        let once = |mind: &mut ChaseMind, me: &ChaseBody, roll: &mut u32| {
+            chase(mind, 1, me, None, None, &mut turn(), 0, &[], None, roll)
+        };
+        let bark = once(&mut mind, &me, &mut roll).bark.unwrap();
         assert!((0.75..=0.95).contains(&bark.volume));
         assert!((0.2..=0.4).contains(&bark.pitch));
-        assert!((5000..=9000).contains(&mind.last_bark_ms));
+        assert!((5000..9000).contains(&mind.last_bark_ms));
         // The next tick is too soon for another bark.
-        let out = chase(
-            &mut mind,
-            1,
-            &me,
-            None,
-            None,
-            &mut turn(),
-            0,
-            &[],
-            None,
-            &mut roll,
-        );
-        assert_eq!(out.bark, None);
-        // A small creature never barks.
+        assert_eq!(once(&mut mind, &me, &mut roll).bark, None);
+        // A creature of scale 1.3 never barks.
         let mut small = me;
         small.scale = 1.3;
         let mut mind = ChaseMind::default();
-        let out = chase(
-            &mut mind,
-            1,
-            &small,
-            None,
-            None,
-            &mut turn(),
-            0,
-            &[],
-            None,
-            &mut roll,
-        );
-        assert_eq!(out.bark, None);
+        assert_eq!(once(&mut mind, &small, &mut roll).bark, None);
     }
 
-    /// Following, it re-plans only once the foe leaves the route's end by
-    /// more than a metre.
+    /// Following, it re-plans once the estimate leaves the route's end by
+    /// more than a metre in 3-D.
     #[test]
     fn a_moved_foe_is_replanned() {
+        let grid = yard();
         let mut mind = ChaseMind {
             following: true,
             route_end: Vec3::new(0.0, 100.0, 0.0),
             estimate: Vec3::new(99.0, 100.0, 0.0),
             ..ChaseMind::default()
         };
-        let out = chase(
-            &mut mind,
-            1,
-            &body(10),
-            None,
-            None,
-            &mut turn(),
-            0,
-            &[],
-            None,
-            &mut 0,
-        );
-        assert_eq!(out.planned, None);
+        let none = |mind: &mut ChaseMind| {
+            chase(
+                mind,
+                1,
+                &body(&grid, 10),
+                None,
+                None,
+                &mut turn(),
+                0,
+                &[],
+                None,
+                &mut 0,
+            )
+        };
+        let out = none(&mut mind);
+        assert_eq!(out.end, End::Following);
         assert!(!mind.replanned);
-        mind.estimate = Vec3::new(101.0, 100.0, 0.0);
-        let out = chase(
-            &mut mind,
-            1,
-            &body(10),
-            None,
-            None,
-            &mut turn(),
-            0,
-            &[],
-            None,
-            &mut 0,
-        );
+        // 60 cm across and 90 cm up: 117 cm away.
+        mind.estimate = Vec3::new(60.0, 190.0, 0.0);
+        let out = none(&mut mind);
         assert!(mind.replanned);
         assert_eq!(out.planned, None);
     }

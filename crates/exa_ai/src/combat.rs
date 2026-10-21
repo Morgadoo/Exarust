@@ -562,10 +562,6 @@ pub struct Contact {
     pub character: bool,
     /// Its priority this tick (written).
     pub priority: f32,
-    /// The brain's id for it, for the chase's unreachable mark.
-    pub id: u64,
-    /// Its route was found bad until this clock (ms).
-    pub unreachable_until_ms: u32,
 }
 
 /// A contact's score of one place, from the position score.
@@ -603,8 +599,10 @@ pub trait Field {
     /// A contact's score of a place, `level` the level passed (the foe's,
     /// else 0 in a committed swing).
     fn score(&mut self, contact: usize, level: i32, point: Vec3) -> PlaceScore;
-    /// Starts a chase route to the foe; true when it started.
-    fn chase(&mut self) -> bool {
+    /// Runs the chase route toward `estimate` (cm); true when the fighter
+    /// follows a route and the combat tick ends here, false when the tick
+    /// runs on (no route yet, or the fighter left combat).
+    fn chase(&mut self, _estimate: Vec3, _roll: &mut u32) -> bool {
         false
     }
     /// The power system, when the world has thaumaturgy.
@@ -771,7 +769,7 @@ pub fn chase_and_eagerness(
     if range < distance_cm || 150.0 < height || field.blocked(ground, me.target_point) {
         if mind.stuck < 21 || unreachable {
             mind.stuck += 1;
-        } else if field.chase() {
+        } else if field.chase(mind.estimate, roll) {
             return Chase::Started;
         }
     } else {

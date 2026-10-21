@@ -2,21 +2,24 @@
 //!
 //! Only the brain whose turn it is plans; every other caller records how
 //! long it has waited, and the longest waiter is remembered for the next
-//! turn. The planner searches the navigation grid from the body's feet to
-//! its goal, and starts following when the path has at least two points
-//! and either the plan is forced or the path's ends are more than 150 cm
-//! apart horizontally; otherwise it clears the route.
+//! turn: a wait counts only when it is longer than the longest so far
+//! (unsigned, on the wrapping frame clock). The planner searches the
+//! navigation grid from the body's feet to its goal, and starts following
+//! when the path has at least two points and either the plan is forced or
+//! the path's ends are more than 150 cm apart horizontally (squared,
+//! `z² + x²` against 22 500); otherwise it clears the route. A downed body
+//! does not plan and records no wait (its caller's test).
 //!
 //! The navigation grid itself is [`exa_world::nav`]'s; this module only
 //! owns the turn and the start test, so there is one pathfinder.
 //!
 //! Evidence: the original's plan turn and its route start, read from the
-//! instructions (the waiting count on the frame clock, the horizontal span
-//! in the start test).
+//! instructions (the waiting count on the frame clock and its strict
+//! compare, the horizontal span in the start test).
 
 use bevy::math::Vec3;
 
-/// A point on the navigation grid, in centimetres, with a route start.
+/// A route is followed when its ends lie farther apart than this (cm).
 pub const FOLLOW_SPAN_CM: f32 = 150.0;
 
 /// The goal a plan walks to.
@@ -71,8 +74,8 @@ impl PlanTurn {
             .iter()
             .find(|(id, _)| *id == who)
             .map_or(0, |(_, at)| *at);
-        let waited = clock.saturating_sub(last);
-        if waited >= self.longest_wait || self.longest.is_none() {
+        let waited = clock.wrapping_sub(last);
+        if waited > self.longest_wait {
             self.longest = Some(who);
             self.longest_wait = waited;
         }
@@ -114,13 +117,14 @@ pub struct Planned {
     pub following: bool,
 }
 
-/// The horizontal span between a path's ends, which the start test reads.
-pub fn route_span(points: &[Vec3]) -> f32 {
+/// The squared horizontal span between a path's ends, as the start test
+/// sums it (`z² + x²`).
+pub fn route_span2(points: &[Vec3]) -> f32 {
     match (points.first(), points.last()) {
         (Some(first), Some(last)) => {
             let dx = first.x - last.x;
             let dz = first.z - last.z;
-            (dx * dx + dz * dz).sqrt()
+            dz * dz + dx * dx
         }
         _ => 0.0,
     }
@@ -141,7 +145,8 @@ pub fn plan(
         return None;
     }
     let points = router.route(from, goal.point);
-    let following = points.len() >= 2 && (forced || route_span(&points) > FOLLOW_SPAN_CM);
+    let following =
+        points.len() >= 2 && (forced || route_span2(&points) > FOLLOW_SPAN_CM * FOLLOW_SPAN_CM);
     Some(Planned {
         goal,
         route: Route {
@@ -176,6 +181,9 @@ mod tests {
     use super::*;
     use exa_world::nav::{Layer, NavCell, NavGrid};
 
+    /// A flat grid whose floors stand at voxel 100 (10 m over base 0): a
+    /// start much lower would take the empty upper layer, as the planner's
+    /// start rule does.
     fn yard(width: usize, depth: usize) -> NavGrid {
         let mut grid = NavGrid::empty(width, depth, 0.0);
         for z in 0..depth {
@@ -185,7 +193,7 @@ mod tests {
                     z,
                     Layer::Lower,
                     NavCell {
-                        floor: 10,
+                        floor: 100,
                         ..NavCell::default()
                     },
                 );
@@ -194,16 +202,16 @@ mod tests {
         grid
     }
 
-    /// A grid of 20 × 20 cells, from its first cell's centre to its cell
-    /// (18, 10).
+    /// A grid of 40 × 40 cells (planner cells −10 to 10 in reach), from
+    /// its cell (11, 20) to its cell (28, 20), 5.1 m apart.
     fn route() -> (NavGrid, Vec3, Vec3) {
-        let grid = yard(20, 20);
-        let from = grid.cell_centre(1, 10);
-        let to = grid.cell_centre(18, 10);
+        let grid = yard(40, 40);
+        let from = grid.cell_centre(11, 20);
+        let to = grid.cell_centre(28, 20);
         (
             grid,
-            Vec3::new(from.x, 1.0, from.y) * 100.0,
-            Vec3::new(to.x, 1.0, to.y) * 100.0,
+            Vec3::new(from.x, 10.0, from.y) * 100.0,
+            Vec3::new(to.x, 10.0, to.y) * 100.0,
         )
     }
 
@@ -214,6 +222,9 @@ mod tests {
         assert!(!turn.turn(9, 2));
         assert_eq!(turn.longest, Some(9));
         assert_eq!(turn.longest_wait, 2);
+        // An equal wait does not take the place.
+        assert!(!turn.turn(5, 2));
+        assert_eq!(turn.longest, Some(9));
         turn.current = Some(7);
         assert!(turn.turn(7, 3));
         assert_eq!(turn.last_plan(7), Some(3));
@@ -243,10 +254,10 @@ mod tests {
         assert_eq!(planned.route.points.first().copied(), Some(from));
         assert_eq!(planned.route.points.last().copied(), Some(to));
 
-        // Two cells apart is about 30 cm: under the span, not followed,
+        // The next cell is 30 cm away: under the span, not followed,
         // unless forced.
-        let near = grid.cell_centre(2, 10);
-        let near = Vec3::new(near.x, 1.0, near.y) * 100.0;
+        let near = grid.cell_centre(12, 20);
+        let near = Vec3::new(near.x, 10.0, near.y) * 100.0;
         let mut turn = PlanTurn {
             current: Some(1),
             ..PlanTurn::default()
@@ -291,9 +302,9 @@ mod tests {
     #[test]
     fn the_span_is_horizontal() {
         assert_eq!(
-            route_span(&[Vec3::new(0.0, 0.0, 0.0), Vec3::new(300.0, 900.0, 0.0)]),
-            300.0
+            route_span2(&[Vec3::new(0.0, 0.0, 0.0), Vec3::new(300.0, 900.0, 0.0)]),
+            90_000.0
         );
-        assert_eq!(route_span(&[]), 0.0);
+        assert_eq!(route_span2(&[]), 0.0);
     }
 }
