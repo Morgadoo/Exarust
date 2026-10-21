@@ -2334,7 +2334,10 @@ fn boot(mut flow: ResMut<Flow>) {
 fn tick(
     mut flow: ResMut<Flow>,
     ticks: Option<Res<exa_physics::body::BodyTicks>>,
-    players: Query<(&exa_combat::Condition, &exa_combat::Fighter), With<crate::player::PlayerBody>>,
+    players: Query<
+        (Option<&exa_combat::Condition>, Option<&exa_combat::Fighter>),
+        With<crate::player::PlayerBody>,
+    >,
     others: Query<&exa_combat::Condition, Without<crate::player::PlayerBody>>,
 ) {
     let now = ticks.as_ref().map_or(0, |ticks| ticks.millis() as u32);
@@ -2342,8 +2345,9 @@ fn tick(
         .single()
         .ok()
         .map(|(condition, fighter)| PlayerReading {
-            condition: condition.0,
-            health: fighter.health.red,
+            condition: condition.map_or(0, |condition| condition.0),
+            // A body without a fighter record is treated as unhurt.
+            health: fighter.map_or(0.25, |fighter| fighter.health.red),
         });
     let others: Vec<u32> = others.iter().map(|condition| condition.0).collect();
     for step in flow.frame(now, player, &others) {
