@@ -167,13 +167,27 @@ channel, the corners of each position element in an `Incidence`), and
 `EditMesh::render` converts it back to render form as the original does:
 smoothing groups from the triangle flags, runs split by material, texture
 seams and mirrored texture winding, then the vertex-cache order of
-`vertex_cache` (bit-exact fast logarithm and exponential). `mesh_smooth`
-is the original's Loop subdivision (creases, texture folds, weights and
-output order as the original's); `ModelLoader::smoothed_model` smooths
-every mesh node of a model and refits its bounds (`exarust model … --msm`).
+`vertex_cache` (bit-exact fast logarithm and exponential).
+`Incidence::build_indirect` is the generic-format incidence that maps each
+corner through a reference list. `EditMesh::weld` and
+`EditMesh::weld_influences` are the original's welding tools: each stream's
+elements sorted by their first component (the original's quicksort), values
+within 0.01 cm (positions) or its texture tolerance welded, the incidence
+rings spliced in the original's order, the channels compacted and the
+streams sharing a channel renumbered with their owner; the character pass
+also folds welded-away skin influences into the survivor. The tolerances
+are converted from the original's centimetres to metres. `flip_winding`
+reverses every face and `rebuild_incidence` rebuilds the master incidence.
+`mesh_smooth` is the original's Loop subdivision (creases, texture folds,
+weights and output order as the original's; a mesh past the original's
+16-bit face limit is only refitted and converted); `ModelLoader::
+smoothed_model` smooths every mesh node of a model and refits its bounds
+(`exarust model … --msm`).
 `polyhedra` builds the icosahedron, its cap and their subdivisions for the
-effect shells. See [`docs/formats/RFC.md`](../../docs/formats/RFC.md)
-(Editable meshes).
+effect shells, and the mind effects' UV sphere with the original's fast
+sine, normals, texture coordinates, tangents and cross-strip indices.
+See [`docs/formats/RFC.md`](../../docs/formats/RFC.md) (Editable meshes)
+and [`docs/RENDERING.md`](../../docs/RENDERING.md) (Effect shells).
 
 Model meshes are built per material group with the original's split
 tangents (`tangents::split_tangents`: a per-face unweighted tangent and

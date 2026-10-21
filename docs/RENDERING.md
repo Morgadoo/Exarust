@@ -1742,6 +1742,18 @@ three corner faces then its middle one (1 280 faces and 642 points for the
 bubble). The subdivided cap counts 4n − 6 points, more than it makes.
 `exa_assets::polyhedra` builds them; the effects are not drawn yet.
 
+The mind effects build a **UV sphere** instead: `segments` columns and
+`segments / 2` rows from pole to pole at an angle step 2π/segments on both
+axes, in column pairs of triangle strips. Each pair's first strip writes
+the pole, the rows of both columns and the next pole; its continuation
+strip writes the next column's pole and bottom and patches its middle
+indices to borrow the following pair's vertices, so the strips join without
+duplicate seam vertices. The normal and the position direction come from
+the original's fast sine (its 4/π quadrant fold and polynomial) and an
+ordinary cosine; the texture coordinates tile by the two scales, the
+tangent runs from a column point to the next round the equator, and the
+colour word is -1. `exa_assets::polyhedra::uv_sphere` builds it.
+
 ## Not done yet
 
 The emissive scale of a fire's parent mesh by the fire, the per-tick

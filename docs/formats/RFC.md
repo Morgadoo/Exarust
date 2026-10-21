@@ -247,11 +247,12 @@ stored (bottom-up) row order.
 ## Editable meshes
 
 Status: **verified** by REA on the original's mesh-smoothing unit, its mesh
-tools (render-form conversion, smoothing groups, vertex-cache order) and the
-mesh helpers that revert a mesh to editable form; implemented in
-`exa_assets::mesh_edit`, `mesh_smooth` and `vertex_cache` and checked on
-synthetic meshes (`cargo test -p exa_assets`; `shipped_hair_smooths`, run with
-`--ignored` and the game installed, smooths every mesh of `CharExt.rpk`).
+tools (render-form conversion, smoothing groups, welding, vertex-cache
+order) and the mesh helpers that revert a mesh to editable form;
+implemented in `exa_assets::mesh_edit`, `mesh_weld`, `mesh_smooth` and
+`vertex_cache` and checked on synthetic meshes (`cargo test -p exa_assets`;
+`shipped_hair_smooths`, run with `--ignored` and the game installed,
+smooths every mesh of `CharExt.rpk`).
 
 The stored body is the render form. To edit a mesh the original turns every
 index map into a channel holding one element per triangle corner (a channel
@@ -259,7 +260,10 @@ keeps its map's key: `0x10001` positions, `0x10010` texture coordinates, `0x2`
 smoothing). Streams keep their elements. A stream id with bit `0x4000000`
 (the colour and skin streams) shares its channel with the first stream on
 it; format bits `0xF0` (texture coordinates) mark an interpolated stream,
-and a channel key without them is subdivided by index only.
+and a channel key without them is subdivided by index only. A generic-format
+mesh indexes each corner through a reference list (`element = channel[refs[
+corner]]`) before the incidence is built; Exarust's decoded meshes store the
+element directly, and the indirect builder is kept for a generic import.
 
 - **Incidence.** Each position element lists its corners, the last corner
   of the mesh first (the corners hang in a ring after the element's head).
@@ -288,12 +292,30 @@ and a channel key without them is subdivided by index only.
   group's faces by their flags' low 28 bits (middle-pivot quicksort).
   Vertices are renumbered by first use; per-face flags and edge bits move
   with their faces.
+- **Welding.** Each stream that owns its channel sorts its elements by the
+  first component (middle-pivot quicksort) and merges a later element into
+  an earlier live one when their values are within 0.01 cm (positions) or
+  0.001 (texture coordinates) on that axis and their squared distance is
+  under 0.0001 cm² or 1e-9. The merged element's ring is spliced after the
+  survivor's ring, its corners become the survivor's, and the survivors
+  renumber from zero in their old order. Streams sharing the channel take
+  the new count, their element values moving to the new numbers; the
+  character pass folds a welded-away position's four skin influences into
+  its survivor (a bone already there keeps the larger weight, the rest
+  fill its free slots, and every element with two or more influences is
+  divided by their sum). A fixed stream (format bit `0x1000000`) is not
+  welded but still compacted.
+- **Winding flip.** Every channel swaps the first and third element of each
+  corner triple, reversing every face; the stream values stay.
 
 ### Subdivision
 
 The original's MeshSmooth (Loop subdivision, sharpness 0 in every use;
 the character-creation scene smooths the hair it shows, a debug command a
-whole scene) refuses a mesh whose faces ×4 would pass 65 535.
+whole scene) refuses a mesh when four times one more face would pass the
+16-bit limit, `(faces + 1) × 4 > 65 535`: 16 382 faces still divide and
+16 383 do not. A refused mesh is not subdivided, but its bounds are still
+refitted and it is still converted to render form.
 
 1. Rebuild the smoothing channel from the triangle flags (when there are
    flags and no smoothing groups were worked out before); it goes last.
