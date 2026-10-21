@@ -890,11 +890,11 @@ placed by the level designers).
 
 **Scene node**: the original builds once a geometry node named
 `_BloodSpray` with one sub-object using the built-in `_BloodPrt02` material
-(`BldPrt02`, emissive white, blend word 0x0004, unlit, no shadow, node flag
-0x1000, added to the scene's effect list) and the one spray emitter. Exarust
-draws its droplets through one mesh and the resource (`exa_character::spray`)
-and keeps the node's description for the scene set-up. At session end and
-respawn the jets and flying droplets are cleared while the ring's sizes stay.
+(texture `BldPrt02`, a 240-byte built-in record registered under that name),
+the node flag word 0x1000, added to the scene's effect list, and the one
+spray emitter. Exarust draws its droplets through one mesh and the resource
+(`exa_character::spray`) and keeps the node's names and flag words as data
+(`BloodSprays::scene_node`); nothing builds that node.
 
 **Jets**: one per bleeding blow (R over 0.05 on a race that bleeds,
 [Blood](#blood)), started at the blow even when the wound is dropped from
@@ -2039,23 +2039,28 @@ powers do not draw it yet.
 
 The thaumaturgy skill tree draws its connections with the original's
 anti-aliased line program (`exa_render::splines`). A render object holds a
-pre-built index list for up to 2 048 quads (two triangles each: `2i, 2i+1,
-2i+3` and `2i, 2i+3, 2i+2`) and per-segment strip coordinates (`u` the
-segment index, `v` 0/1 across the line). Tessellating a spline appends two
-vertices per point, offset either side of it by the chord normal scaled to
-the width (the 2D normal `(−dy, dx)` of the chord from the previous point);
-the texture coordinate is the segment pair, the strip coordinate's `x` is
-the join's curvature (the chord normal dotted with the incoming segment less
-the outgoing one, × −0.09 over the width squared; 0 for a hard join), and
-each vertex stores four colour bytes. Closing without an explicit point
-takes the midpoint of the previous and current points, and the final pair is
-dropped from the index run. The draw's width values are `w/2 + √(4w)`,
-`−(0.3w + 0.15)` in double precision and `√(6w)`, with `1/(right − left)`
-and `1/(bottom − top)` from the viewport; the fragment rule computes the
-soft edge from the strip coordinate, scales the coverage by the width and
-multiplies the vertex colour. `splines.rs` holds the CPU geometry and the
-fragment rule as WGSL; no caller exists yet (Exarust has no thaumaturgy
-tree).
+pre-built index list for 2 049 quads (the table loop runs from 0 to 2 048
+inclusive; two triangles each: `2i, 2i+1, 2i+3` and `2i, 2i+3, 2i+2`) and
+per-vertex strip coordinates (`u` the pair index, `v` 1 on the first vertex
+of a pair, 0 on the second). A spline starts at a point with its length in
+segments; every added point appends two vertices on the current point,
+offset either side by the normal `(−dy, dx)` of the chord from the previous
+point to the new one, scaled to the line width (set by the draw state). The
+curvature term is the normal dotted with the incoming segment less the
+outgoing one, × −0.09 over the width squared in double precision; the
+join modes zero it on the first vertex (mode 2) or the second (mode 1). Each
+vertex stores four colour bytes (a new strip's colour is zero); with the
+fade set, the alpha byte is the colour's alpha × (the pair's first vertex
+index ÷ the segments) × ½, rounded to even and cut to its low byte. Closing
+without an explicit point extends the previous point through the current one
+to twice the distance, and the final pair is dropped from the draw. The draw
+state's three width values are `w/2 + √(4w)`, `−(0.3w + 0.15)` in double
+precision and `√(6w)`; the viewport's reciprocals are computed but never
+uploaded. The fragment rule computes the soft edge from the strip
+coordinate, scales the coverage by the width and multiplies the vertex
+colour (bytes scaled by 0.003921568). `splines.rs` holds the CPU geometry
+and the fragment rule as WGSL; no caller exists yet (Exarust has no
+thaumaturgy tree).
 
 ## Effect shells
 

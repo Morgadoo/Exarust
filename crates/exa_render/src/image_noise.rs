@@ -268,49 +268,6 @@ pub fn ridged_noise_floats(width: usize, height: usize, octaves: u32, seed: u32)
     image
 }
 
-/// An animated noise image owned by an effect: a byte buffer the effect
-/// fills and frees when it goes. The original's class only has a
-/// destructor in the counted group; Rust's drop is the equivalent, and
-/// [`AnimNoise::release`] clears the buffer early for callers that end an
-/// effect before dropping it.
-#[derive(Clone, Debug, Default)]
-pub struct AnimNoise {
-    /// The image's bytes, row-major.
-    pub buffer: Vec<u8>,
-    /// Width and height in texels.
-    pub size: (usize, usize),
-}
-
-impl AnimNoise {
-    /// An image of `width` × `height` zeroed bytes.
-    pub fn new(width: usize, height: usize) -> Self {
-        Self {
-            buffer: vec![0; width.saturating_mul(height)],
-            size: (width, height),
-        }
-    }
-
-    /// The byte at (`x`, `y`), or `None` outside the image.
-    pub fn get(&self, x: usize, y: usize) -> Option<u8> {
-        let (w, h) = self.size;
-        (x < w && y < h).then(|| self.buffer[x + y * w])
-    }
-
-    /// Sets the byte at (`x`, `y`); outside is a no-op.
-    pub fn set(&mut self, x: usize, y: usize, value: u8) {
-        let (w, h) = self.size;
-        if x < w && y < h {
-            self.buffer[x + y * w] = value;
-        }
-    }
-
-    /// Frees the image's buffer, as the destructor does.
-    pub fn release(&mut self) {
-        self.buffer = Vec::new();
-        self.size = (0, 0);
-    }
-}
-
 /// The animated noise field of the force and spirit powers: four ridged
 /// planes cross-faded over time into an output plane, while the next plane
 /// is built row by row from fresh white noise.
@@ -713,20 +670,6 @@ mod tests {
         assert!(field.tick(100, counter(5)));
         assert_eq!(field.phase().0, 0);
         assert_eq!(field.built_rows, 0);
-    }
-
-    #[test]
-    fn an_owned_noise_image_frees_its_bytes() {
-        let mut image = AnimNoise::new(4, 3);
-        image.set(1, 2, 7);
-        assert_eq!(image.get(1, 2), Some(7));
-        assert_eq!(image.get(4, 0), None);
-        image.set(4, 0, 9);
-        assert_eq!(image.buffer.len(), 12);
-        image.release();
-        assert!(image.buffer.is_empty());
-        assert_eq!(image.size, (0, 0));
-        assert_eq!(image.get(0, 0), None);
     }
 
     #[test]
