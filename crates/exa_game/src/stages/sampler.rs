@@ -479,7 +479,6 @@ mod tests {
     #[test]
     fn a_look_target_turns_the_head_after_its_timer() {
         let setup = [PartSetup {
-            spheres: None,
             bone: HEAD,
             entity: Entity::PLACEHOLDER,
             parent: None,
