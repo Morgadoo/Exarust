@@ -1126,6 +1126,7 @@ const SCREENSHOT_TEXTURE_WAIT_FRAMES: u32 = 1800;
 /// armed, frames before the simulation pauses, nor, up to
 /// [`SCREENSHOT_TEXTURE_WAIT_FRAMES`], frames while textures are still
 /// streaming in, so the picture does not show placeholders), then exits.
+#[allow(clippy::too_many_arguments)]
 fn screenshot_after_frames(
     mut commands: Commands,
     options: Res<Options>,
