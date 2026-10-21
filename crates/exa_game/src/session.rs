@@ -188,10 +188,11 @@ pub fn slot_info(bytes: &[u8]) -> Result<SlotInfo, SaveError> {
     let package = PackageImage::read(bytes).map_err(|_| SaveError::Malformed)?;
     let section = package.section(PLAYER_DATA).ok_or(SaveError::Malformed)?;
     let data = PlayerData::parse(section, flavour_of(section)).map_err(|_| SaveError::Malformed)?;
-    Ok(info_of(&data))
+    Ok(slot_info_of(&data))
 }
 
-fn info_of(data: &PlayerData) -> SlotInfo {
+/// What a decoded player data says, for listing.
+pub fn slot_info_of(data: &PlayerData) -> SlotInfo {
     let (money, day) = match &data.header {
         PlayerHeader::Story(_) => (0, 0),
         PlayerHeader::Arena(header) => (header.money, header.day),
