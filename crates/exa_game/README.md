@@ -369,9 +369,13 @@ two seconds; the start and end of play set the AI's activation centre and
 radius (`PlaySession`, which nothing reads yet); `PlayerControl` is the
 player-control singleton's creation state (hotkey mask 31 and the two
 constructor flags). The GUI character preview (`char_view`) turns the
-figure toward the mouse: 0.7 of the pointer angle clamped to ±1.5 rad, a
-5 % step under 1 rad and a clamped 0.05 rad above, then the head's look
-40 % toward the cursor direction and 5 % more a tick (`PreviewTurn`). A door, wheel or cloth
+figure toward the mouse: 0.7 of the pointer's arc-cosine yaw clamped to
+±1.5 rad, a 5 % step under 1 rad and a clamped 0.05 rad above (the wrap
+and the products in double), then the head's look eases 5 % a tick toward
+the stored aim vector blended 40 % toward the cursor direction, built
+with the engine's fast sine and cosine and its height zeroed
+(`PreviewTurn`; the stored aim vector's source is unknown, so it is an
+input). A door, wheel or cloth
 press holds the hand until the release without keeping the movement
 request.
 

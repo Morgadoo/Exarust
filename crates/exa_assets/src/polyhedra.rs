@@ -205,14 +205,17 @@ fn normalised(v: [f32; 3]) -> [f32; 3] {
     v.map(|x| x * inv)
 }
 
-/// The engine's fast sine: a quadrant fold (multiply by 4/π, round to the
-/// nearest integer as the processor's default rounding does, then up to an
-/// even quadrant) and a degree-7 polynomial for the sine or cosine of the
-/// remainder. The result is the original's, bit for bit (its final sign is
-/// the input's sign xor the quadrant's bit 2). Past π/8 the rounding picks
-/// the next quadrant, so the cosine polynomial runs on a remainder below
-/// −π/4; the original's error there is kept.
-pub fn fast_sin(x: f32) -> f32 {
+/// The engine's fast sine and cosine together: a quadrant fold (multiply
+/// by 4/π, round to the nearest integer as the processor's default
+/// rounding does, then up to an even quadrant) and a degree-7 polynomial
+/// pair on the remainder. The sine takes the sine polynomial in the even
+/// half-quadrants and the cosine polynomial in the odd ones, the cosine
+/// the other way about. The sine's final sign is the input's sign xor the
+/// quadrant's bit 2; the cosine's is the complement of the bit 2 of the
+/// quadrant less two. Past π/8 the rounding picks the next quadrant, so
+/// the cosine polynomial runs on a remainder below −π/4; the original's
+/// error there is kept.
+pub fn fast_sin_cos(x: f32) -> (f32, f32) {
     const FOUR_OVER_PI: f32 = 1.273_239_5;
     const QUARTER_PI: f32 = 0.785_398_2;
     let bits = x.to_bits();
@@ -230,9 +233,22 @@ pub fn fast_sin(x: f32) -> f32 {
     let sine = (((-0.000_195_152_96 * f2 + 0.008_332_161) * f2 - 0.166_666_55) * f2 * f) + f;
     let cosine =
         (((2.443_315_7e-5 * f2 - 0.001_388_731_6) * f2 + 0.041_666_646) * f2 * f2 - 0.5 * f2) + 1.0;
-    let selected = if quadrant & 2 == 0 { sine } else { cosine };
-    let sign = (bits & 0x8000_0000) ^ ((quadrant & 4) << 29);
-    f32::from_bits(selected.to_bits() ^ sign)
+    let (sin_poly, cos_poly) = if quadrant & 2 == 0 {
+        (sine, cosine)
+    } else {
+        (cosine, sine)
+    };
+    let sin_sign = (bits & 0x8000_0000) ^ ((quadrant & 4) << 29);
+    let cos_sign = (!quadrant.wrapping_sub(2) & 4) << 29;
+    (
+        f32::from_bits(sin_poly.to_bits() ^ sin_sign),
+        f32::from_bits(cos_poly.to_bits() ^ cos_sign),
+    )
+}
+
+/// The engine's fast sine: the first half of [`fast_sin_cos`], bit for bit.
+pub fn fast_sin(x: f32) -> f32 {
+    fast_sin_cos(x).0
 }
 
 /// The UV sphere's attribute mask: per-vertex normals.
@@ -554,6 +570,30 @@ mod tests {
         assert_eq!(fast_sin(2.0).to_bits(), 0x3F68_C788);
         // The quadrant fold makes π a signed zero.
         assert_eq!(fast_sin(std::f32::consts::PI).to_bits(), 0x8000_0000);
+    }
+
+    /// The cosine comes from the same fold: the other polynomial of the
+    /// pair and its own sign rule.
+    #[test]
+    fn the_fast_cosine_shares_the_sines_fold() {
+        assert_eq!(fast_sin_cos(0.0), (0.0, 1.0));
+        let (sine, cosine) = fast_sin_cos(std::f32::consts::PI);
+        assert_eq!((sine.to_bits(), cosine), (0x8000_0000, -1.0));
+        let (sine, cosine) = fast_sin_cos(std::f32::consts::FRAC_PI_2);
+        assert_eq!((sine, cosine.to_bits()), (1.0, 0x8000_0000));
+        let (sine, cosine) = fast_sin_cos(-std::f32::consts::FRAC_PI_2);
+        assert_eq!((sine, cosine.to_bits()), (-1.0, 0x8000_0000));
+        let (sine, cosine) = fast_sin_cos(1.0);
+        assert_eq!(sine, fast_sin(1.0));
+        assert!((cosine - 1.0f32.cos()).abs() < 1e-5, "{cosine}");
+        // Around the circle both stay near the library's.
+        for step in -80..=80 {
+            let x = step as f32 * 0.1;
+            let (sine, cosine) = fast_sin_cos(x);
+            assert_eq!(sine.to_bits(), fast_sin(x).to_bits());
+            assert!((sine - x.sin()).abs() < 1e-4, "{x}: {sine}");
+            assert!((cosine - x.cos()).abs() < 1e-4, "{x}: {cosine}");
+        }
     }
 
     #[test]
