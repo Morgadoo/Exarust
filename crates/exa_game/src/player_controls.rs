@@ -229,7 +229,7 @@ mod tests {
     /// A salve fills the heal pool by 0.2, or 0.1 when the value word is
     /// 50, in double precision: 0.3 + 0.2 is 0.5 exactly once narrowed.
     #[test]
-    fn a_pour_warms_in_double_precision() {
+    fn a_salve_fills_in_double_precision() {
         assert_eq!(poured(0.3, 1), 0.5);
         assert_eq!(poured(0.3, SMALL_POUR_TYPE), 0.4);
         assert_eq!(poured(0.0, 7), 0.2);

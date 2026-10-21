@@ -314,7 +314,7 @@ mod tests {
             u32::MAX - 10,
             || 0.0,
         );
-        assert_eq!(restamped.potion_until, u32::MAX - 10 + 1800);
+        assert_eq!(restamped.potion_until, (u32::MAX - 10).wrapping_add(1800));
         assert_eq!(restamped.flags, StateFlags::POTION);
     }
 
