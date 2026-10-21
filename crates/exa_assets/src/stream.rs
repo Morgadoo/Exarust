@@ -84,6 +84,13 @@ impl<T> RingQueue<T> {
         self.slots[self.head].as_ref()
     }
 
+    pub fn front_mut(&mut self) -> Option<&mut T> {
+        if self.is_empty() {
+            return None;
+        }
+        self.slots[self.head].as_mut()
+    }
+
     /// Removes the front entry (the original's advance step).
     pub fn pop(&mut self) -> Option<T> {
         if self.is_empty() {
@@ -241,6 +248,9 @@ pub struct TextureRequest {
     pub flags: u32,
     /// The image entry to decode.
     pub source: String,
+    /// Promoted to the front (the original's "priority" mark): its decode
+    /// does not yield to waiting uploads.
+    pub promoted: bool,
 }
 
 /// A decoded image waiting for the main thread to add it to Bevy.
@@ -272,6 +282,8 @@ pub struct TextureStream {
     /// The keys uploaded since the last [`TextureStream::take_finished`].
     finished: Vec<TextureKey>,
     in_flight: usize,
+    /// Whether the request decoded last was promoted.
+    last_promoted: bool,
     paused: bool,
     awake: bool,
     completion: Option<UploadCallback>,
@@ -305,14 +317,25 @@ impl TextureStream {
         RequestOutcome::Queued
     }
 
-    /// Moves a queued request to the front: the original's "priority item".
-    /// `false` when it is not queued (already decoding or unknown), which the
-    /// caller reports as "Priority item not found.".
+    /// Moves a queued request to the front and marks it promoted: the
+    /// original's "priority item". A request already decoded and waiting
+    /// for its upload counts as found, as the original's in-progress mark
+    /// does. `false` when it is neither (unknown or already uploaded),
+    /// which the caller reports as "Priority item not found.".
     pub fn promote(&mut self, key: &TextureKey) -> bool {
+        if self.uploads.iter().any(|upload| &upload.key == key) {
+            return true;
+        }
         let Some(queue) = self.requests.as_mut() else {
             return false;
         };
-        queue.promote(|request| &request.key == key)
+        if !queue.promote(|request| &request.key == key) {
+            return false;
+        }
+        if let Some(front) = queue.front_mut() {
+            front.promoted = true;
+        }
+        true
     }
 
     /// Drops a queued request. Exarust's model of a texture released while it
@@ -353,6 +376,7 @@ impl TextureStream {
         let Some(request) = self.next_request() else {
             return false;
         };
+        self.last_promoted = request.promoted;
         // A failed decode uploads the original's 1x1 grey placeholder, as the
         // synchronous image loader does.
         let (image, alpha) = decode(&request).unwrap_or_else(|| {
@@ -369,10 +393,11 @@ impl TextureStream {
         true
     }
 
-    /// The loader's backpressure rule: while uploads are waiting and the
-    /// stream is not paused, yield to the main thread before queueing more.
+    /// The loader's backpressure rule: while uploads are waiting, it waits
+    /// for the main thread before it goes on, unless the request it just
+    /// decoded was promoted. Pausing only stops the wake-ups.
     pub fn wants_to_yield(&self) -> bool {
-        !self.uploads.is_empty() && !self.paused
+        !self.uploads.is_empty() && !self.last_promoted
     }
 
     /// Uploads the requests that were ready when the pass started, up to
@@ -514,6 +539,7 @@ mod tests {
             space: ColorSpace::Srgb,
             flags: 0,
             source: name.to_string(),
+            promoted: false,
         }
     }
 
@@ -715,8 +741,20 @@ mod tests {
     fn the_loader_yields_while_uploads_are_waiting() {
         let mut stream = TextureStream::new();
         stream.request(request("a"));
+        stream.request(request("b"));
         assert!(!stream.wants_to_yield());
         stream.decode_next(|_| Some((Image::default(), false)));
         assert!(stream.wants_to_yield());
+        // Pausing does not change it.
+        stream.pause();
+        assert!(stream.wants_to_yield());
+        // A promoted request goes on past waiting uploads.
+        assert!(stream.promote(&key("b")));
+        stream.decode_next(|_| Some((Image::default(), false)));
+        assert!(!stream.wants_to_yield());
+        // A decoded request waiting for its upload is still found.
+        assert!(stream.promote(&key("a")));
+        stream.pump_uploads(usize::MAX, |_| {});
+        assert!(!stream.promote(&key("a")));
     }
 }
