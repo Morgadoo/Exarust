@@ -217,6 +217,7 @@ fn load_screen(
     commands.insert_resource(AssetsLoaded);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn hotkeys(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
