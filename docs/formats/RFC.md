@@ -1128,21 +1128,34 @@ sub-chunks            0x3DE0EC00, 0x3DE0ECAC, 0x3DE0ECDB
 The sub-chunks change nodes of the object before the level uses it:
 
 ```
-3DE0ECAC: char name[16], u32 slot, f32 matrix[12]     3x4, translation cm
-3DE0ECDB: char name[16], u32 slot, u32 count, f32 positions[count][3]  cm
-3DE0EC00: u32 count, u32 ?, then per child a 76-byte record:
-          char name[16], u32 slot, f32 matrix[12], u32 children,
-          u32 ?, then the children's records (0x4c bytes each)
+3DE0ECAC: char name[16], u32 ?, f32 matrix[12]     3x4, translation cm (68 bytes)
+          then sub-chunks: 3DE0ECAC / 3DE0ECDB records for that node's children
+3DE0ECDB: char name[16], u32 word, u32 count, f32 positions[count][3]  cm
+3DE0EC00: u32 count, u32 ?, then count 76-byte records:
+          char name[16], u32 ?, f32 matrix[12], u32 children,
+          u32 descendants, then the descendants' records (0x4c bytes each)
 ```
 
-`0x3DE0ECAC` replaces the node's local transform and `0x3DE0ECDB` the mesh
-node's position-stream elements. The node is the object's root for an
-empty name, otherwise the first direct child of that name. Every level
-ships transform records (the arena's dummy bases, exanima01's metal
-rings); ten levels ship position records (a banner's stored drape).
-Exarust parses the first two into `PropAttachment` values and applies them
-when the prop spawns, before its bodies register; `0x3DE0EC00` is not
-shipped and is skipped. A placed object (`DB01`, below) carries the same
+`0x3DE0ECAC` replaces a node's local transform and then applies its own
+sub-chunks to that node's children; `0x3DE0ECDB` replaces a mesh node's
+position-stream elements when `count` equals the stream's count (and
+copies `word` onto the node's copy of a soft-body record, not traced). A
+record looks its node up from the node it applies to (the object's root at
+the top level): that node for an empty name, else its first direct child
+whose 16-byte name matches exactly; a record whose node is missing is
+skipped with its sub-chunks (REA on the importer's two record readers).
+The positions reader leaves its cursor at the record's start, so it never
+applies nested records. Shipped: 7 939 transform records, about 40 % of
+them carrying nested ones (sizes 68, 144, 220, 296, 448, …), none with an
+empty name, their word always 0; 85 position records (ten levels; a
+banner's stored drape), word 0 and no trailing data; no `0x3DE0EC00`.
+Every exanima01 record resolves, and its 14 position records match their
+meshes' counts (`shipped_props_keep_their_placement_overrides`). Exarust
+parses the first two into `PropAttachment` trees and applies them when the
+prop spawns, before its bodies register: transforms on the model's nodes,
+positions by rebuilding the object's model from its file with the new
+elements (normals recomputed from them, cached per distinct set).
+`0x3DE0EC00` is skipped. A placed object (`DB01`, below) carries the same
 records, which Exarust also applies.
 
 All 79 935 props in the 29 retail levels name existing Objlib objects.

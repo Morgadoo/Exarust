@@ -327,7 +327,7 @@ fn spawn_placed_object(
         });
     }
     let model = placed_object_model(loader, scene, global, object)
-        .and_then(|(kind, entry)| loader.model(kind, &entry));
+        .and_then(|(kind, entry)| placement_base(loader, kind, &entry, &object.attachments));
     let Some(model) = model else {
         return Some(PlacedSpawn::Missing);
     };
@@ -342,7 +342,7 @@ fn spawn_placed_object(
         &scaled
     };
     let with_overrides;
-    let model = match prop_model(loader, model, &object.attachments) {
+    let model = match with_placement_transforms(model, &object.attachments) {
         Some(m) => {
             with_overrides = m;
             &with_overrides
@@ -432,93 +432,128 @@ fn dim_child_glows(
     }
 }
 
-/// The model of a prop with the placement's node overrides applied, as the
-/// original applies them before it builds the prop: a named node's local
-/// transform (`0x3DE0ECAC`), or its mesh's element positions
-/// (`0x3DE0ECDB`), replaced. `None` when the prop changes nothing, so its
-/// cached model is shared as it is.
-fn prop_model(
+/// Each of a placement's node records with the model node it applies to,
+/// in the order the original applies them: a record looks its node up from
+/// the node it applies to (the model's root at the top level), as that node
+/// itself for an empty name, else as its first direct child of exactly that
+/// name; a transform record's nested records apply to its node's children.
+/// A record whose node is not there is skipped with its nested records.
+fn resolved_attachments<'a>(
+    model: &Model,
+    attachments: &'a [exa_formats::level::PropAttachment],
+) -> Vec<(usize, &'a exa_formats::level::PropAttachment)> {
+    use exa_formats::level::PropAttachment;
+    fn walk<'a>(
+        model: &Model,
+        at: usize,
+        list: &'a [PropAttachment],
+        out: &mut Vec<(usize, &'a PropAttachment)>,
+    ) {
+        for a in list {
+            let target = if a.name().is_empty() {
+                Some(at)
+            } else {
+                model
+                    .nodes
+                    .iter()
+                    .position(|n| n.parent == Some(at) && n.name == a.name())
+            };
+            let Some(target) = target else { continue };
+            out.push((target, a));
+            if let PropAttachment::Transform { children, .. } = a {
+                walk(model, target, children, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if let Some(root) = model.roots().next() {
+        walk(model, root, attachments, &mut out);
+    }
+    out
+}
+
+/// The model a placement draws before its transform records: `entry`'s,
+/// rebuilt from its file when the placement replaces a mesh's positions
+/// (`0x3DE0ECDB`), as the original replaces the position-stream elements of
+/// its copy of the object before it builds the render meshes (only when the
+/// count is the stream's). The normals follow the new positions. A rebuilt
+/// model is cached per distinct set of positions.
+fn placement_base(
     loader: &mut ModelLoader<'_>,
+    pack: PackKind,
+    entry: &str,
+    attachments: &[exa_formats::level::PropAttachment],
+) -> Option<std::sync::Arc<Model>> {
+    use exa_formats::level::PropAttachment;
+    use std::hash::{Hash, Hasher};
+    let model = loader.model(pack, entry)?;
+    let edits: Vec<(usize, &[[f32; 3]])> = resolved_attachments(&model, attachments)
+        .into_iter()
+        .filter_map(|(node, a)| match a {
+            PropAttachment::MeshPositions { positions, .. } => Some((node, positions.as_slice())),
+            PropAttachment::Transform { .. } => None,
+        })
+        .collect();
+    if edits.is_empty() {
+        return Some(model);
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for (node, positions) in &edits {
+        (node, positions.len()).hash(&mut hasher);
+        for v in positions.iter().flatten() {
+            v.to_bits().hash(&mut hasher);
+        }
+    }
+    let variant = format!("positions-{:016x}", hasher.finish());
+    loader.edited_model(pack, entry, &variant, |scene| {
+        for (node, positions) in &edits {
+            let Some(exa_formats::rfc::NodeBody::Mesh(mesh)) =
+                scene.nodes.get_mut(*node).map(|n| &mut n.body)
+            else {
+                continue;
+            };
+            if mesh.position_count != positions.len() {
+                continue;
+            }
+            for (p, &id) in mesh.positions.iter_mut().zip(&mesh.position_ids) {
+                if let Some(&q) = positions.get(id as usize) {
+                    *p = q;
+                }
+            }
+            mesh.recompute_normals();
+        }
+    })
+}
+
+/// A copy of `model` with the placement's transform records (`0x3DE0ECAC`)
+/// applied, or `None` when none applies, so the model is shared as it is.
+fn with_placement_transforms(
     model: &Model,
     attachments: &[exa_formats::level::PropAttachment],
 ) -> Option<Model> {
     use exa_formats::level::PropAttachment;
-    if attachments.is_empty() {
+    let resolved = resolved_attachments(model, attachments);
+    if !resolved
+        .iter()
+        .any(|(_, a)| matches!(a, PropAttachment::Transform { .. }))
+    {
         return None;
     }
     let mut out = model.clone();
     apply_transform_attachments(&mut out, attachments);
-    let root = out.roots().next();
-    for attachment in attachments {
-        let PropAttachment::MeshPositions {
-            name, positions, ..
-        } = attachment
-        else {
-            continue;
-        };
-        // An empty name is the prop's own root; otherwise the first direct
-        // child of that name (the original's attachment lookup).
-        let target = if name.is_empty() {
-            root
-        } else {
-            out.nodes
-                .iter()
-                .position(|n| n.parent == root && n.name.eq_ignore_ascii_case(name))
-        };
-        let Some(target) = target else { continue };
-        for (mesh, _) in &mut out.nodes[target].parts {
-            let Some(mut copy) = loader.meshes.get(&*mesh).cloned() else {
-                continue;
-            };
-            let Some(verts) = copy
-                .attribute(Mesh::ATTRIBUTE_POSITION)
-                .and_then(|a| a.as_float3())
-            else {
-                continue;
-            };
-            if verts.len() != positions.len() {
-                continue;
-            }
-            copy.insert_attribute(
-                Mesh::ATTRIBUTE_POSITION,
-                positions
-                    .iter()
-                    .map(|p| [p[0], p[1], p[2]])
-                    .collect::<Vec<_>>(),
-            );
-            copy.compute_normals();
-            *mesh = loader.meshes.add(copy);
-        }
-    }
     Some(out)
 }
 
-/// The transform overrides of a placement, applied to the model's nodes: the
-/// prop's own root for an empty name, else its first direct child of that
-/// name. Unknown names leave the model alone.
+/// The transform records of a placement, applied to the model's nodes: each
+/// replaces its node's local transform ([`resolved_attachments`]).
 fn apply_transform_attachments(
     model: &mut Model,
     attachments: &[exa_formats::level::PropAttachment],
 ) {
     use exa_formats::level::PropAttachment;
-    let root = model.roots().next();
-    for attachment in attachments {
-        let PropAttachment::Transform {
-            name, transform, ..
-        } = attachment
-        else {
-            continue;
-        };
-        let target = if name.is_empty() {
-            root
-        } else {
-            model
-                .nodes
-                .iter()
-                .position(|n| n.parent == root && n.name.eq_ignore_ascii_case(name))
-        };
-        if let Some(target) = target {
-            model.nodes[target].transform = transform_from_rows(transform);
+    for (node, a) in resolved_attachments(model, attachments) {
+        if let PropAttachment::Transform { transform, .. } = a {
+            model.nodes[node].transform = transform_from_rows(transform);
         }
     }
 }
@@ -1000,18 +1035,23 @@ impl LevelLoad {
                     let placement = transform_from_rows(&prop.transform);
                     self.min = self.min.min(placement.translation);
                     self.max = self.max.max(placement.translation);
-                    let e = match loader.model(PackKind::Objlib, &prop.object) {
+                    let e = match placement_base(
+                        loader,
+                        PackKind::Objlib,
+                        &prop.object,
+                        &prop.attachments,
+                    ) {
                         Some(model) => {
                             self.lights += model.nodes.iter().filter(|n| n.light.is_some()).count();
                             let owned;
-                            let model: &Model = match prop_model(loader, &model, &prop.attachments)
-                            {
-                                Some(m) => {
-                                    owned = m;
-                                    &owned
-                                }
-                                None => &model,
-                            };
+                            let model: &Model =
+                                match with_placement_transforms(&model, &prop.attachments) {
+                                    Some(m) => {
+                                        owned = m;
+                                        &owned
+                                    }
+                                    None => &model,
+                                };
                             let (e, nodes) = spawn_model_nodes(commands, model, Some(placement));
                             // A prop placed static is level geometry.
                             let placement = if prop.is_static() {
@@ -1516,34 +1556,38 @@ mod tests {
                 node("Root", None, None),
                 node("MetalRing", Some(0), None),
                 node("Other", Some(0), None),
+                node("Pin", Some(1), None),
+                node("Pin", Some(0), None),
             ],
         };
+        let rows = |x: f32| {
+            [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [x, 0.0, 0.0],
+            ]
+        };
+        let transform =
+            |name: &str, x: f32, children: Vec<PropAttachment>| PropAttachment::Transform {
+                name: name.into(),
+                word: 0,
+                transform: rows(x),
+                children,
+            };
         apply_transform_attachments(
             &mut model,
             &[
-                PropAttachment::Transform {
-                    name: "metalring".into(),
-                    slot: 0,
-                    transform: [
-                        [1.0, 0.0, 0.0],
-                        [0.0, 1.0, 0.0],
-                        [0.0, 0.0, 1.0],
-                        [1.0, 2.0, 3.0],
-                    ],
-                },
-                PropAttachment::Transform {
-                    name: "nope".into(),
-                    slot: 0,
-                    transform: [[0.0; 3]; 4],
-                },
+                // The ring, then its own child `Pin` (not the root's).
+                transform("MetalRing", 1.0, vec![transform("Pin", 2.0, Vec::new())]),
+                // Names match exactly, case included.
+                transform("other", 3.0, Vec::new()),
+                // A record whose node is missing skips its nested records.
+                transform("nope", 4.0, vec![transform("Pin", 5.0, Vec::new())]),
             ],
         );
-        assert_eq!(
-            model.nodes[1].transform.translation,
-            Vec3::new(1.0, 2.0, 3.0)
-        );
-        assert_eq!(model.nodes[2].transform, Transform::IDENTITY);
-        assert_eq!(model.nodes[0].transform, Transform::IDENTITY);
+        let x = |i: usize| model.nodes[i].transform.translation.x;
+        assert_eq!((x(0), x(1), x(2), x(3), x(4)), (0.0, 1.0, 0.0, 2.0, 0.0));
     }
 
     #[test]

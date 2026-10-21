@@ -531,7 +531,7 @@ fn shipped_levels() {
                 passable: [1941, 0],
                 sky: [533, 0],
             },
-            1861,
+            1860,
             0,
         ),
         (
@@ -539,9 +539,9 @@ fn shipped_levels() {
             NavStats {
                 width: 640,
                 depth: 640,
-                columns_by_spans: [392_042, 13_609, 3949, 0],
-                floors: [14_684, 3679],
-                passable: [14_673, 3679],
+                columns_by_spans: [392_042, 13_612, 3946, 0],
+                floors: [14_684, 3676],
+                passable: [14_673, 3676],
                 sky: [2874, 270],
             },
             5006,
@@ -552,14 +552,14 @@ fn shipped_levels() {
             NavStats {
                 width: 640,
                 depth: 800,
-                columns_by_spans: [190_932, 320_144, 924, 0],
-                floors: [219_518, 822],
-                passable: [219_370, 822],
-                sky: [101_550, 102],
+                columns_by_spans: [190_921, 320_149, 930, 0],
+                floors: [219_539, 825],
+                passable: [219_364, 825],
+                sky: [101_540, 105],
             },
             // The grid's special tiles now mask their edges in every
             // rotation, as the original's start-up table does.
-            191_348,
+            191_331,
             682,
         ),
     ];
@@ -590,21 +590,21 @@ fn shipped_levels() {
                 assert_eq!(g.cell(x, z, Layer::Lower).floor, 211);
                 assert!(reaches(Vec3::new(8.9, -1.0, 64.0)));
                 // Over its 477 closed rooms only the walls' edges have floors
-                // (1545 cells); filling whole tiles, the ground between the
-                // rooms made 186 721 and the walk reached 338 617 cells.
+                // (1555 cells); filling whole tiles, the ground between the
+                // rooms made 186 721 and the walk reached 338 602 cells.
                 let pack = game.pack(exa_assets::PackKind::Resource).unwrap();
                 let scene = exa_formats::rfc::Scene::parse(pack.get("exanima01.rfc").unwrap());
                 let grid = scene.unwrap().grid.unwrap();
                 let closed = grid.edges.iter();
                 assert_eq!(closed.filter(|&&e| e & CELL_OPEN == 0).count(), 477);
-                assert_eq!(floors_over_closed_rooms(&g, &grid), 1545);
+                assert_eq!(floors_over_closed_rooms(&g, &grid), 1555);
                 let mut whole = level.source.clone();
                 for tile in &mut whole.ground {
                     *tile = Arc::new((**tile).clone().with_blocks(GroundTile::ALL_BLOCKS));
                 }
                 let g = whole.build();
                 assert_eq!(floors_over_closed_rooms(&g, &grid), 186_721);
-                assert_eq!(reach(&g, start).len(), 338_617);
+                assert_eq!(reach(&g, start).len(), 338_602);
             }
             _ => {}
         }

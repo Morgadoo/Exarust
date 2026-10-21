@@ -2048,13 +2048,14 @@ mod tests {
         }
         let crate::level::PropAttachment::Transform {
             name,
-            slot,
+            word,
             transform,
+            ..
         } = &o.attachments[0]
         else {
             panic!("not a transform");
         };
-        assert_eq!((name.as_str(), *slot), ("DoorRing", 3));
+        assert_eq!((name.as_str(), *word), ("DoorRing", 3));
         assert_eq!(transform[3], [1.0, 0.0, 0.0]);
     }
 
@@ -2093,6 +2094,77 @@ mod tests {
             arena.props.iter().any(|p| !p.attachments.is_empty()),
             "the dummy bases"
         );
+
+        // Every record of exanima01 against its object: the node is the
+        // root's (or the enclosing record's node's) first direct child of
+        // that exact name, and a position list matches the mesh's
+        // position-stream count.
+        let objlib = game.pack(PackKind::Objlib).unwrap();
+        #[derive(Default, Debug)]
+        struct Count {
+            transforms: usize,
+            nested: usize,
+            unresolved: usize,
+            positions: usize,
+            matching: usize,
+        }
+        fn walk(
+            scene: &Scene,
+            at: usize,
+            list: &[crate::level::PropAttachment],
+            nested: bool,
+            n: &mut Count,
+        ) {
+            use crate::level::PropAttachment as A;
+            for a in list {
+                let target = if a.name().is_empty() {
+                    Some(at)
+                } else {
+                    scene
+                        .nodes
+                        .iter()
+                        .position(|c| c.parent == Some(at + 1) && c.name == a.name())
+                };
+                match a {
+                    A::Transform { .. } => {
+                        n.transforms += 1;
+                        n.nested += usize::from(nested);
+                    }
+                    A::MeshPositions { .. } => n.positions += 1,
+                }
+                let Some(t) = target else {
+                    n.unresolved += 1;
+                    continue;
+                };
+                match a {
+                    A::Transform { children, .. } => walk(scene, t, children, true, n),
+                    A::MeshPositions { positions, .. } => {
+                        if let NodeBody::Mesh(m) = &scene.nodes[t].body
+                            && m.position_count == positions.len()
+                        {
+                            n.matching += 1;
+                        }
+                    }
+                }
+            }
+        }
+        let mut n = Count::default();
+        for prop in &exanima01.props {
+            if prop.attachments.is_empty() {
+                continue;
+            }
+            let object = Scene::parse(objlib.get(&prop.object).unwrap()).unwrap();
+            let root = object
+                .nodes
+                .iter()
+                .position(|n| n.parent.is_none())
+                .unwrap();
+            walk(&object, root, &prop.attachments, false, &mut n);
+        }
+        eprintln!("exanima01 placement records: {n:?}");
+        assert!(n.nested > 0, "transform records nest: {n:?}");
+        assert_eq!(n.unresolved, 0, "{n:?}");
+        assert_eq!((n.positions, n.matching), (14, 14), "{n:?}");
     }
 
     /// The cloth markers of the installed packs (skipped without the

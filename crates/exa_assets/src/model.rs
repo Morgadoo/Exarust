@@ -222,6 +222,31 @@ impl ModelLoader<'_> {
         model
     }
 
+    /// The model of `entry` built from its file after `edit` changes the
+    /// parsed scene (a level placement's node overrides, which the original
+    /// applies to its copy of the object before it builds the render
+    /// meshes). Cached under `variant`, apart from the plain model; the
+    /// model's nodes are the scene's, in order.
+    pub fn edited_model(
+        &mut self,
+        pack: PackKind,
+        entry: &str,
+        variant: &str,
+        edit: impl FnOnce(&mut Scene),
+    ) -> Option<Arc<Model>> {
+        let key = format!("{}#{variant}", model_key(pack, entry));
+        if let Some(cached) = self.cache.models.get(&key) {
+            return cached.clone();
+        }
+        let model = self.model_job(pack, entry).map(|mut job| {
+            edit(&mut job.scene);
+            let built = job.build(bevy::tasks::ComputeTaskPool::try_get());
+            Arc::new(self.assemble(built))
+        });
+        self.cache.models.insert(key, model.clone());
+        model
+    }
+
     /// The split flags of every mesh node's groups, from their materials
     /// (the file's own, else the libraries'; none for run-time names).
     fn split_flags(&self, scene: &Scene) -> Vec<Vec<u32>> {

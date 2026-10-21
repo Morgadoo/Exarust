@@ -68,24 +68,48 @@ pub struct Prop {
 }
 
 /// A change a placement makes to one node of its object, as the original's
-/// `0x3DE0ECAC` and `0x3DE0ECDB` records carry it: the node is the prop's
-/// root for an empty name, else the first direct child of that name.
+/// `0x3DE0ECAC` and `0x3DE0ECDB` records carry it. The node is looked up
+/// from the node the record applies to (the object's root for a top-level
+/// record): that node itself for an empty name, else its first direct child
+/// whose 16-byte name matches exactly. A record whose node is not found is
+/// skipped with everything nested in it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PropAttachment {
-    /// A new local transform (row-major 3×4, translation in metres).
+    /// A new local transform (row-major 3×4, translation in metres), then
+    /// the records for that node's own children.
     Transform {
         name: String,
-        slot: u32,
+        /// The word after the name; the original does not read it (0 in
+        /// every shipped record).
+        word: u32,
         transform: [[f32; 3]; 4],
+        children: Vec<PropAttachment>,
     },
-    /// New mesh positions for the node (metres): the stored editable mesh's
-    /// element positions, which the original replaces wholesale.
+    /// New positions for the node's mesh (metres): the position stream's
+    /// elements, which the original replaces when their count matches the
+    /// stream's.
     MeshPositions {
         name: String,
-        slot: u32,
+        /// The word after the name; the original copies it onto the
+        /// node's own copy of its owner's soft-body record [guess: the
+        /// record was not traced]. 0 in every shipped record.
+        word: u32,
         positions: Vec<[f32; 3]>,
     },
 }
+
+impl PropAttachment {
+    /// The node name the record looks up (empty: the node it applies to).
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Transform { name, .. } | Self::MeshPositions { name, .. } => name,
+        }
+    }
+}
+
+/// How deep the reader follows nested transform records; deeper ones (no
+/// shipped object nests more than a few) are dropped rather than recursed.
+const ATTACHMENT_DEPTH: usize = 32;
 
 /// Sub-chunk tags of a placed object's node overrides.
 pub const PROP_TRANSFORM: u32 = 0x3DE0_ECAC;
@@ -195,19 +219,25 @@ pub(crate) fn read_props(b: &[u8]) -> Result<Vec<Prop>> {
 /// Reads a placement's node override chunk; `None` for another tag or a
 /// record that does not decode.
 pub(crate) fn read_attachment(tag: u32, body: &[u8]) -> Option<PropAttachment> {
+    read_attachment_at(tag, body, 0)
+}
+
+fn read_attachment_at(tag: u32, body: &[u8], depth: usize) -> Option<PropAttachment> {
     match tag {
-        PROP_TRANSFORM => read_prop_transform(body).ok(),
+        PROP_TRANSFORM => read_prop_transform(body, depth).ok(),
         PROP_MESH_POSITIONS => read_prop_positions(body).ok(),
         _ => None,
     }
 }
 
-/// One `0x3DE0ECAC` record: the node's name, its slot word and a 3×4
-/// transform whose translation is in centimetres.
-fn read_prop_transform(b: &[u8]) -> Result<PropAttachment> {
+/// One `0x3DE0ECAC` record: the node's name, a word, a 3×4 transform whose
+/// translation is in centimetres (68 bytes), then sub-chunks: the records
+/// for that node's children (`0x3DE0ECAC` and `0x3DE0ECDB`; others are
+/// skipped, as is a truncated one and everything after it).
+fn read_prop_transform(b: &[u8], depth: usize) -> Result<PropAttachment> {
     let mut r = Reader { b, pos: 0 };
     let name = r.name()?;
-    let slot = r.u32()?;
+    let word = r.u32()?;
     let mut transform = [[0.0f32; 3]; 4];
     for row in &mut transform {
         for v in row.iter_mut() {
@@ -217,19 +247,33 @@ fn read_prop_transform(b: &[u8]) -> Result<PropAttachment> {
     for v in &mut transform[3] {
         *v *= CENTIMETRES_TO_METRES;
     }
+    let mut children = Vec::new();
+    while depth < ATTACHMENT_DEPTH && r.remaining() >= 8 {
+        let Ok(tag) = r.u32() else { break };
+        let Ok(size) = r.u32() else { break };
+        let Ok(body) = r.bytes(size as usize) else {
+            break;
+        };
+        if let Some(a) = read_attachment_at(tag, body, depth + 1) {
+            children.push(a);
+        }
+    }
     Ok(PropAttachment::Transform {
         name,
-        slot,
+        word,
         transform,
+        children,
     })
 }
 
-/// One `0x3DE0ECDB` record: the node's name, its slot word, a count and that
-/// many positions in centimetres.
+/// One `0x3DE0ECDB` record: the node's name, a word, a count and that many
+/// positions in centimetres. The original's reader leaves its cursor at the
+/// record's start when it looks for nested records, so it reads the name as
+/// a chunk header and applies none (and none ships).
 fn read_prop_positions(b: &[u8]) -> Result<PropAttachment> {
     let mut r = Reader { b, pos: 0 };
     let name = r.name()?;
-    let slot = r.u32()?;
+    let word = r.u32()?;
     let count = r.u32()? as usize;
     if count.saturating_mul(12) > r.remaining() {
         return Err(Error::Malformed(format!(
@@ -246,7 +290,7 @@ fn read_prop_positions(b: &[u8]) -> Result<PropAttachment> {
     }
     Ok(PropAttachment::MeshPositions {
         name,
-        slot,
+        word,
         positions,
     })
 }
@@ -375,9 +419,8 @@ mod tests {
         assert!(!props[0].is_static());
     }
 
-    /// Placement flag `0x80000` makes the whole object level geometry
-    /// (3 883 of the 79 935 shipped props); `0x100000` and `0x200000` do
-    /// not.
+    /// A prop's node overrides: a transform with a nested child record, a
+    /// position list, and a truncated record that is dropped.
     #[test]
     fn prop_attachments_change_a_node() {
         let mut rec = u32s(&[0]);
@@ -385,14 +428,20 @@ mod tests {
         let m: [f32; 12] = [1., 0., 0., 0., 1., 0., 0., 0., 1., 250., 0., -100.];
         rec.extend(m.iter().flat_map(|f| f.to_le_bytes()));
         rec.extend(u32s(&[0, 0]));
-        // A node transform: name, slot, then 3 x 4 rows in centimetres.
+        // A node transform: name, a word, then 3 x 4 rows in centimetres,
+        // then the records of that node's children.
         let mut tr = name("UW01_Bann");
         tr.extend(u32s(&[7]));
         let rows: [f32; 12] = [1., 0., 0., 0., 1., 0., 0., 0., 1., 100., 200., 300.];
         tr.extend(rows.iter().flat_map(|f| f.to_le_bytes()));
+        let mut child = name("Ring");
+        child.extend(u32s(&[0]));
+        child.extend(rows.iter().flat_map(|f| f.to_le_bytes()));
+        tr.extend(u32s(&[PROP_TRANSFORM, child.len() as u32]));
+        tr.extend(child);
         rec.extend(u32s(&[PROP_TRANSFORM, tr.len() as u32]));
         rec.extend(tr);
-        // New positions: name, slot, count, then the positions.
+        // New positions: name, a word, count, then the positions.
         let mut pos = name("UW01_Bann");
         pos.extend(u32s(&[7, 2]));
         pos.extend(f32s(&[0.0, 0.0, 0.0, 100.0, 50.0, -20.0]));
@@ -405,30 +454,37 @@ mod tests {
         b.extend(rec);
         let props = read_props(&b).unwrap();
         let p = &props[0];
+        const ROWS: [[f32; 3]; 4] = [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 2.0, 3.0],
+        ];
         assert_eq!(p.transform[3], [2.5, 0.0, -1.0]);
         assert_eq!(p.attachments.len(), 2, "{:?}", p.attachments);
         assert_eq!(
             p.attachments[0],
             PropAttachment::Transform {
                 name: "UW01_Bann".into(),
-                slot: 7,
-                transform: [
-                    [1.0, 0.0, 0.0],
-                    [0.0, 1.0, 0.0],
-                    [0.0, 0.0, 1.0],
-                    [1.0, 2.0, 3.0]
-                ]
+                word: 7,
+                transform: ROWS,
+                children: vec![PropAttachment::Transform {
+                    name: "Ring".into(),
+                    word: 0,
+                    transform: ROWS,
+                    children: Vec::new(),
+                }],
             }
         );
         let PropAttachment::MeshPositions {
             name,
-            slot,
+            word,
             positions,
         } = &p.attachments[1]
         else {
             panic!("not a position override");
         };
-        assert_eq!((name.as_str(), *slot), ("UW01_Bann", 7));
+        assert_eq!((name.as_str(), *word), ("UW01_Bann", 7));
         assert_eq!(positions[0], [0.0, 0.0, 0.0]);
         assert!((positions[1][0] - 1.0).abs() < 1e-6);
         assert!((positions[1][1] - 0.5).abs() < 1e-6);
@@ -439,6 +495,9 @@ mod tests {
         v.iter().flat_map(|f| f.to_le_bytes()).collect()
     }
 
+    /// Placement flag `0x80000` makes the whole object level geometry
+    /// (3 883 of the 79 935 shipped props); `0x100000` and `0x200000` do
+    /// not.
     #[test]
     fn static_props() {
         let prop = |flags| Prop {
