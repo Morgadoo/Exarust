@@ -316,6 +316,49 @@ fn rows<'a>(table: &'a [Phrase<'a>], count: usize) -> &'a [Phrase<'a>] {
     &table[..table.len().min(count)]
 }
 
+/// A weapon's displayed weight, balance and derived handling figure.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WeaponHandling {
+    pub weight: f32,
+    pub balance: f32,
+    pub handling: f32,
+}
+
+/// The weapon card's weight, balance and handling from the weapon section's
+/// weight (`w`), balance (`b`) and grip (`g`) bytes. A weapon flagged
+/// `0x6000000` shows weight 1, handling 5 and balance 0. Otherwise:
+/// weight `w·0.01`, balance `b·0.05`, and handling
+/// `((g − 127)·0.01 + f·0.96153843)·5`, where a balance under 101 gives
+/// `f = (1 − b·0.01)·0.6 + w·0.004 + 0.1` and otherwise `w·0.004 + 0.1`.
+pub fn weapon_handling(flags: u32, w: u8, b: u8, g: u8) -> WeaponHandling {
+    if flags & 0x0600_0000 != 0 {
+        return WeaponHandling {
+            weight: 1.0,
+            balance: 0.0,
+            handling: 5.0,
+        };
+    }
+    let weight = f32::from(w) * 0.01;
+    let balance = f32::from(b) * 0.05;
+    let mut f = f32::from(w) * 0.004 + 0.1;
+    if b < 101 {
+        f += (1.0 - f32::from(b) * 0.01) * 0.6;
+    }
+    let handling = ((f64::from(g) - 127.0) as f32 * 0.01 + f * 0.961_538_43) * 5.0;
+    WeaponHandling {
+        weight,
+        balance,
+        handling,
+    }
+}
+
+/// The shield card's three bars: weight `+0xc·0.01`, impact `+0xd·0.05`,
+/// encumbrance `+0xe·0.05`, with the two fixed bits giving weight 1 and
+/// encumbrance 8.
+pub fn shield_card(flags: u32, weight: u8, impact: u8, encumbrance: u8) -> ShieldBars {
+    shield_bars(flags, weight, impact, encumbrance)
+}
+
 /// One description phrase and the inclusive byte range that may use it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Phrase<'a> {
@@ -1266,6 +1309,29 @@ mod tests {
         tables: &PhraseTables<'_>,
     ) -> ApparelSentence {
         apparel_sentence(state, name, fixed, line, tables)
+    }
+
+    #[test]
+    fn a_weapon_shows_its_handling_figure() {
+        let h = weapon_handling(0, 100, 50, 127);
+        assert!((h.weight - 1.0).abs() < 1e-6);
+        assert!((h.balance - 2.5).abs() < 1e-6);
+        assert!((h.handling - 3.846_154).abs() < 1e-5);
+        let fixed = weapon_handling(0x0200_0000, 10, 90, 200);
+        assert_eq!(
+            (fixed.weight, fixed.balance, fixed.handling),
+            (1.0, 0.0, 5.0)
+        );
+        let light = weapon_handling(0, 50, 120, 126);
+        // f = 0.2 + 0.1 = 0.3; handling = (−0.01 + 0.28846) · 5.
+        assert!((light.handling - 1.392_307_7).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_shield_card_reuses_the_three_bars() {
+        let bars = shield_card(0, 150, 20, 3);
+        assert_eq!(bars.weight.to_bits(), 1.5f32.to_bits());
+        assert!(bars.encumbrance.is_some());
     }
 
     #[test]

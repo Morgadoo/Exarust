@@ -548,7 +548,32 @@ pub fn manager_cell(manager: IconManager, unit: i32) -> i32 {
     }
 }
 
-/// How the icon renderer frames an item.
+/// A two-stage resolution: the item's object record is looked up first, then
+/// its icon. A streamed item whose icon is still pending is retried; a
+/// missing record or icon is the "Unable to resolve item" error.
+pub fn resolve_item<F, G>(id: u32, flags: u32, mut record: F, mut icon: G) -> Result<usize, String>
+where
+    F: FnMut(u32, u32) -> bool,
+    G: FnMut(u32, u32) -> Option<usize>,
+{
+    if !record(id, flags) {
+        return Err(crate::icon_cache::unresolved(id).unwrap_or_default());
+    }
+    icon(id, flags)
+        .filter(|slot| *slot > 0)
+        .ok_or_else(|| crate::icon_cache::unresolved(id).unwrap_or_default())
+}
+
+/// A popup container's inner panel from its record's size in units and the
+/// popup's border.
+pub fn popup_container_size(size: (u16, u16), unit: i32, border: i32) -> (i32, i32) {
+    (
+        i32::from(size.0) * unit + border * 2,
+        i32::from(size.1) * unit + border * 2,
+    )
+}
+
+/// The icon renderer's framing for an item.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Framing {
     /// The camera's framing distance.
@@ -725,6 +750,28 @@ mod tests {
         assert_eq!(s.knob, 100);
         assert_eq!((s.left, s.right), (Some((11, 107)), Some((115, 211))));
         assert_eq!(slider(0, 200, 0.0).left, None);
+    }
+
+    #[test]
+    fn an_item_resolution_has_two_stages() {
+        assert_eq!(
+            resolve_item(
+                7,
+                0x10,
+                |id, flags| id == 7 && flags == 0x10,
+                |_, _| Some(4)
+            ),
+            Ok(4)
+        );
+        assert_eq!(
+            resolve_item(7, 0, |_, _| false, |_, _| Some(4)),
+            Err("Unable to resolve item: 00000007".to_string())
+        );
+        assert_eq!(
+            resolve_item(7, 0, |_, _| true, |_, _| None),
+            Err("Unable to resolve item: 00000007".to_string())
+        );
+        assert_eq!(popup_container_size((10, 6), 4, 4), (48, 32));
     }
 
     #[test]

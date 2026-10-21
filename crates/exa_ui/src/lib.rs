@@ -19,6 +19,7 @@
 //! and drawing order live in [`match_board`].
 
 pub mod blend;
+pub mod character_view;
 pub mod compact_skill;
 pub mod controls;
 pub mod creation;
@@ -64,6 +65,12 @@ pub use compact_skill::{
     cell_centre, decode_cell, draw_order as compact_draw_order, handle_key as compact_key,
     hit_cells, lay_out_pips, metrics as compact_metrics, pips, technique_nodes, technique_slots,
     wheel,
+};
+pub use character_view::{
+    AcceptDragInput, FigureDragEnd, FigureDrop, FigureDropInput, Hover, ViewRef, accepts_drag,
+    background_bright_rgba, background_rgba, camera_follow, camera_offset, current_card,
+    default_camera_offset, drag_end as figure_drag_end, drop_kind, find_owner, first_record,
+    hover as figure_hover, insight_blocks, supersample_level, worn_index,
 };
 pub use cursor::{
     CursorCapture, CursorShape, DrawWorldCursor, PanelPointer, ScriptedPointer, WorldCursor,

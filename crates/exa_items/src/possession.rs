@@ -104,6 +104,34 @@ impl ItemKind {
     }
 }
 
+/// Where a given item went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Given {
+    /// Into the open pack's panel.
+    Panel,
+    /// Appended to the carried list at the origin.
+    List,
+}
+
+impl Possessions {
+    /// Gives an item the way the original does with an open panel: the
+    /// panel takes it when it can (its callback places and grids it), and
+    /// otherwise the list gets it at its origin.
+    pub fn give_to(
+        &mut self,
+        id: u32,
+        flags: u32,
+        mut panel: impl FnMut(u32, u32) -> bool,
+    ) -> Given {
+        if panel(id, flags) {
+            Given::Panel
+        } else {
+            self.give(id, flags);
+            Given::List
+        }
+    }
+}
+
 impl Possessions {
     /// The possessions a character's record starts with: the record's word
     /// with the second-set flag, the four hands' items and flags (the out
@@ -695,6 +723,26 @@ mod tests {
             weapon: Some(flags),
             ..Default::default()
         })
+    }
+
+    #[test]
+    fn a_given_item_prefers_the_open_panel() {
+        let mut p = Possessions::default();
+        assert_eq!(
+            p.give_to(7, 0x10, |id, flags| id == 7 && flags == 0x10),
+            Given::Panel
+        );
+        assert!(p.carried.is_empty());
+        assert_eq!(p.give_to(8, 0, |_, _| false), Given::List);
+        assert_eq!(
+            p.carried,
+            vec![Carried {
+                id: 8,
+                flags: 0,
+                x: 0,
+                y: 0
+            }]
+        );
     }
 
     #[test]
