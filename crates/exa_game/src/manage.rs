@@ -4,10 +4,13 @@
 //! Manage Company lists the manager and the staff, each with a rank label
 //! (the profession for a merchant, trainer or physician, else the rank
 //! name, marked "+" while the fighter is ready to train), and a health bar.
-//! Recruit is disabled at eight fighters and Hire at ten employees. A
-//! report line opens what it names: the tournament line the board's
-//! tournament tab, a hire-list line the first candidate of that
-//! profession, a fighter's line the roster (on its first row).
+//! Its refresh writes the day or week title, the money, the total daily
+//! upkeep, today's earned and spent, End Day, then the report's log,
+//! training and rank lines, hire lines and tournament line. Recruit is
+//! disabled at eight fighters and Hire at ten employees. A report line
+//! opens what it names: the tournament line the board's tournament tab, a
+//! hire-list line the first candidate of that profession, a fighter's line
+//! the roster (on its first row).
 //!
 //! The arsenal form has four pages: the roster (0), the hire list (1), a
 //! specialist's record (2) and an event's lineup (3). Previous is disabled
@@ -29,8 +32,9 @@
 //! (`context/re/arena-manage.md`).
 
 use crate::arena::Roster;
+use crate::arena_log::ArenaRecord;
 use crate::career::Profession;
-use crate::report::RANKS;
+use crate::report::{self, RANKS, ReportFighter, ReportLine};
 
 /// The manage window's title.
 pub const MANAGE_TITLE: &str = "Manage Company";
@@ -132,6 +136,105 @@ pub fn name_ink(kind: NameKind, alpha: u8) -> Option<[u8; 4]> {
         NameKind::Specialist => Some([0xdc, 0xb4, 0xa0, (alpha / 3).wrapping_mul(2)]),
         NameKind::Hireling => Some([0xa0, 0xb4, 0xf0, (alpha / 3).wrapping_mul(2)]),
         NameKind::Recruit => None,
+    }
+}
+
+/// The roster table's three columns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RosterColumn {
+    Name,
+    Rank,
+    Health,
+}
+
+/// A cell's text and ink; `None` ink is the table's own text colour.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RosterCellText {
+    pub text: String,
+    pub ink: Option<[u8; 4]>,
+}
+
+/// One drawn roster cell. The health column has no text: the original
+/// paints a bar filled by [`health_fill`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum RosterCell {
+    Name(RosterCellText),
+    Rank(RosterCellText),
+    Health(f32),
+}
+
+/// Bytes of a record's name a roster cell reads.
+pub const NAME_CELL_BYTES: usize = 15;
+
+/// A name cut to the fifteen bytes a roster cell reads. Cuts on a
+/// character boundary, as the game's names are ASCII.
+pub fn roster_name(name: &str) -> String {
+    let mut end = name.len().min(NAME_CELL_BYTES);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    name[..end].to_string()
+}
+
+/// The health bar's fill: health over 65535, in single precision.
+pub fn health_fill(health: u16) -> f32 {
+    f32::from(health) * (1.0 / 65535.0)
+}
+
+/// A roster cell: the name in its role's ink, the rank label followed by
+/// the ready mark, or the health bar's fill.
+pub fn roster_cell(
+    column: RosterColumn,
+    name: &str,
+    kind: NameKind,
+    role: RowRole,
+    alpha: u8,
+    health: u16,
+) -> RosterCell {
+    match column {
+        RosterColumn::Name => RosterCell::Name(RosterCellText {
+            text: roster_name(name),
+            ink: name_ink(kind, alpha),
+        }),
+        RosterColumn::Rank => {
+            let (label, mark) = row_label(role);
+            RosterCell::Rank(RosterCellText {
+                text: format!("{label}{mark}"),
+                ink: None,
+            })
+        }
+        RosterColumn::Health => RosterCell::Health(health_fill(health)),
+    }
+}
+
+/// A roster row as the table draws it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RosterRowText {
+    pub name: RosterCellText,
+    pub rank: RosterCellText,
+    /// The health bar's fill, health over 65535.
+    pub health: f32,
+}
+
+/// The three cells of a roster row.
+pub fn roster_row(
+    name: &str,
+    kind: NameKind,
+    role: RowRole,
+    alpha: u8,
+    health: u16,
+) -> RosterRowText {
+    let (label, mark) = row_label(role);
+    RosterRowText {
+        name: RosterCellText {
+            text: roster_name(name),
+            ink: name_ink(kind, alpha),
+        },
+        rank: RosterCellText {
+            text: format!("{label}{mark}"),
+            ink: None,
+        },
+        health: health_fill(health),
     }
 }
 
@@ -653,6 +756,171 @@ pub fn company_status(
     }
 }
 
+/// The highest rank's index: Master. The rank after it (the "-" label) has
+/// no rank name.
+pub const MASTER_RANK: usize = 5;
+
+/// A fighter's rank: half the sum of the six levels (an experience word
+/// over 5000), at most Master.
+pub fn rank_of(skill_xp: &[u16; 6]) -> usize {
+    (report::level_sum(skill_xp) as usize / 2).min(MASTER_RANK)
+}
+
+/// A record's daily upkeep: a merchant 2, a physician 12, a trainer the
+/// sum of the six levels, and a fighter its rank plus one.
+pub fn daily_upkeep(profession: Profession, skill_xp: &[u16; 6]) -> u32 {
+    match profession {
+        Profession::Merchant => crate::career::MERCHANT_WAGE,
+        Profession::Physician => crate::career::PHYSICIAN_WAGE,
+        Profession::Trainer => report::level_sum(skill_xp),
+        Profession::Combatant => rank_of(skill_xp) as u32 + 1,
+    }
+}
+
+/// End Day: on a tournament day (a multiple of seven with an event
+/// entered) it is closed while an event is still to play and open once
+/// every event has been played; on any other day it is open once a day
+/// has passed since the last tournament.
+pub fn end_day_open(day: u32, events: usize, unplayed: usize, days_since_tournament: u32) -> bool {
+    if day.is_multiple_of(7) && events > 0 {
+        return unplayed == 0;
+    }
+    days_since_tournament > 0
+}
+
+/// The manage window's plain inputs: the day, the books, the fighter
+/// count and whether End Day is open, and the skin's text alpha.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ManageDay {
+    pub day: u32,
+    /// Company money, and what it earned and spent today.
+    pub money: u32,
+    pub earned: u32,
+    pub spent: u32,
+    /// Fighters the company has (the manager counts), for Recruit.
+    pub fighters: u32,
+    pub end_day: bool,
+    pub alpha: u8,
+}
+
+/// The manager or an employee as the manage window reads the record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManageRecord {
+    pub fighter: ReportFighter,
+    pub profession: Profession,
+    /// The health bar's fill, 0 to 65535 (full).
+    pub health: u16,
+    /// Under the company's control in battle (a recruit); such a name is
+    /// drawn in the skin's own text colour.
+    pub controlled: bool,
+}
+
+impl ManageRecord {
+    /// The rank index, at most Master.
+    pub fn rank(&self) -> usize {
+        rank_of(&self.fighter.skill_xp)
+    }
+
+    /// Whether the record has a technique to train.
+    pub fn ready(&self) -> bool {
+        report::ready_to_train(&self.fighter.skill_xp, &self.fighter.techniques)
+    }
+
+    pub fn role(&self) -> RowRole {
+        match self.profession {
+            Profession::Combatant => RowRole::Fighter {
+                rank: self.rank(),
+                ready: self.ready(),
+            },
+            profession => RowRole::Specialist(profession),
+        }
+    }
+
+    /// The ink a name takes: the manager's, a specialist's, a hireling's or
+    /// a recruit's own colour.
+    pub fn name_kind(&self, manager: bool) -> NameKind {
+        if manager {
+            NameKind::Manager
+        } else if self.profession == Profession::Combatant {
+            if self.controlled {
+                NameKind::Recruit
+            } else {
+                NameKind::Hireling
+            }
+        } else {
+            NameKind::Specialist
+        }
+    }
+
+    pub fn upkeep(&self) -> u32 {
+        daily_upkeep(self.profession, &self.fighter.skill_xp)
+    }
+
+    /// The row this record draws; the manager is the first row.
+    pub fn row(&self, manager: bool, alpha: u8) -> RosterRowText {
+        roster_row(
+            &report::name_text(&self.fighter.name),
+            self.name_kind(manager),
+            self.role(),
+            alpha,
+            self.health,
+        )
+    }
+}
+
+/// What a Manage Company refresh writes, in the original's order: the day
+/// title, the money, the total daily upkeep, today's earned and spent, End
+/// Day, then the roster rows (the manager first) and the report's lines.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ManageRefresh {
+    pub title: String,
+    pub money: u32,
+    pub upkeep: u32,
+    pub earned: u32,
+    pub spent: u32,
+    pub end_day: bool,
+    pub recruit: bool,
+    pub hire: bool,
+    pub roster: Vec<RosterRowText>,
+    pub report: Vec<ReportLine>,
+}
+
+/// Manage Company's refresh from plain records. The roster holds the
+/// manager and every employee in staff order; the report holds the log's
+/// lines, each ready fighter's training and rank lines (employees newest
+/// first, then the manager), the hire-list counts and the tournament line.
+/// Only a fighter (the combatant role) reaches the training lines.
+pub fn manage_refresh(
+    day: ManageDay,
+    manager: &ManageRecord,
+    employees: &[ManageRecord],
+    log: &[ArenaRecord],
+    listed: &[Profession],
+    name_of: impl Fn(u8) -> Option<[u8; 16]>,
+) -> ManageRefresh {
+    let mut roster = Vec::with_capacity(employees.len() + 1);
+    roster.push(manager.row(true, day.alpha));
+    roster.extend(employees.iter().map(|e| e.row(false, day.alpha)));
+    let upkeep = employees.iter().map(ManageRecord::upkeep).sum();
+    let fighters: Vec<ReportFighter> = employees
+        .iter()
+        .filter(|e| e.profession == Profession::Combatant)
+        .map(|e| e.fighter.clone())
+        .collect();
+    ManageRefresh {
+        title: report::day_title(day.day),
+        money: day.money,
+        upkeep,
+        earned: day.earned,
+        spent: day.spent,
+        end_day: day.end_day,
+        recruit: recruit_open(day.fighters),
+        hire: hire_open(employees.len()),
+        roster,
+        report: report::report_lines(log, &fighters, &manager.fighter, listed, day.day, name_of),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -972,5 +1240,432 @@ mod tests {
         assert_eq!(status.masters, "2");
         assert_eq!(status.morale, "Good");
         assert_eq!(company_status("A", 4, &[]).masters, "None");
+    }
+
+    fn name16(text: &str) -> [u8; 16] {
+        let mut bytes = [0u8; 16];
+        bytes[..text.len()].copy_from_slice(text.as_bytes());
+        bytes
+    }
+
+    fn fighter(name: &str, id: u8, skill_xp: [u16; 6]) -> ReportFighter {
+        ReportFighter {
+            name: name16(name),
+            id,
+            skill_xp,
+            techniques: [[0; 6]; 6],
+        }
+    }
+
+    fn record(
+        name: &str,
+        id: u8,
+        profession: Profession,
+        skill_xp: [u16; 6],
+        health: u16,
+        controlled: bool,
+    ) -> ManageRecord {
+        ManageRecord {
+            fighter: fighter(name, id, skill_xp),
+            profession,
+            health,
+            controlled,
+        }
+    }
+
+    #[test]
+    fn ranks_cap_at_master_and_set_the_daily_upkeep() {
+        assert_eq!(rank_of(&[0; 6]), 0);
+        assert_eq!(rank_of(&[10_000, 10_000, 0, 0, 0, 0]), 2);
+        assert_eq!(rank_of(&[25_000, 25_000, 25_000, 0, 0, 0]), 5);
+        assert_eq!(daily_upkeep(Profession::Merchant, &[25_000; 6]), 2);
+        assert_eq!(daily_upkeep(Profession::Physician, &[25_000; 6]), 12);
+        assert_eq!(
+            daily_upkeep(Profession::Trainer, &[5000, 5000, 0, 0, 0, 0]),
+            2
+        );
+        assert_eq!(
+            daily_upkeep(Profession::Combatant, &[10_000, 10_000, 0, 0, 0, 0]),
+            3
+        );
+        assert_eq!(
+            daily_upkeep(Profession::Combatant, &[25_000, 25_000, 25_000, 0, 0, 0]),
+            6
+        );
+    }
+
+    #[test]
+    fn end_day_closes_on_a_pending_tournament() {
+        assert!(!end_day_open(0, 0, 0, 0));
+        assert!(end_day_open(0, 0, 0, 1));
+        assert!(!end_day_open(0, 3, 1, 4));
+        assert!(end_day_open(0, 3, 0, 0));
+        assert!(end_day_open(7, 3, 0, 4));
+        assert!(end_day_open(3, 3, 1, 2));
+        assert!(!end_day_open(7, 1, 1, 6));
+    }
+
+    #[test]
+    fn roster_cells_take_their_text_and_ink() {
+        assert_eq!(roster_name("Ash"), "Ash");
+        assert_eq!(roster_name("Sixteen chars ok"), "Sixteen chars o");
+        assert_eq!(
+            roster_cell(
+                RosterColumn::Name,
+                "Boss",
+                NameKind::Manager,
+                RowRole::Fighter {
+                    rank: 0,
+                    ready: false
+                },
+                255,
+                0,
+            ),
+            RosterCell::Name(RosterCellText {
+                text: "Boss".into(),
+                ink: Some([255, 210, 100, 153]),
+            })
+        );
+        assert_eq!(
+            roster_cell(
+                RosterColumn::Name,
+                "Bors",
+                NameKind::Specialist,
+                RowRole::Specialist(Profession::Merchant),
+                255,
+                0,
+            ),
+            RosterCell::Name(RosterCellText {
+                text: "Bors".into(),
+                ink: Some([220, 180, 160, 170]),
+            })
+        );
+        assert_eq!(
+            roster_cell(
+                RosterColumn::Name,
+                "Ash",
+                NameKind::Hireling,
+                RowRole::Fighter {
+                    rank: 3,
+                    ready: true
+                },
+                255,
+                0,
+            ),
+            RosterCell::Name(RosterCellText {
+                text: "Ash".into(),
+                ink: Some([160, 180, 240, 170]),
+            })
+        );
+        assert_eq!(
+            roster_cell(
+                RosterColumn::Name,
+                "Ash",
+                NameKind::Recruit,
+                RowRole::Fighter {
+                    rank: 3,
+                    ready: true
+                },
+                255,
+                0,
+            ),
+            RosterCell::Name(RosterCellText {
+                text: "Ash".into(),
+                ink: None,
+            })
+        );
+        assert_eq!(
+            roster_cell(
+                RosterColumn::Rank,
+                "Ash",
+                NameKind::Recruit,
+                RowRole::Fighter {
+                    rank: 2,
+                    ready: true
+                },
+                255,
+                0,
+            ),
+            RosterCell::Rank(RosterCellText {
+                text: "Novice+".into(),
+                ink: None,
+            })
+        );
+        assert_eq!(
+            roster_cell(
+                RosterColumn::Rank,
+                "Tara",
+                NameKind::Specialist,
+                RowRole::Specialist(Profession::Trainer),
+                255,
+                0,
+            ),
+            RosterCell::Rank(RosterCellText {
+                text: "Trainer".into(),
+                ink: None,
+            })
+        );
+        assert_eq!(
+            roster_cell(
+                RosterColumn::Rank,
+                "Ash",
+                NameKind::Hireling,
+                RowRole::Fighter {
+                    rank: 7,
+                    ready: false
+                },
+                255,
+                0,
+            ),
+            RosterCell::Rank(RosterCellText {
+                text: "-".into(),
+                ink: None,
+            })
+        );
+        assert_eq!(health_fill(0), 0.0);
+        assert_eq!(health_fill(65535), 1.0);
+        assert_eq!(health_fill(32768), 32768.0 / 65535.0);
+        assert_eq!(
+            roster_cell(
+                RosterColumn::Health,
+                "Ash",
+                NameKind::Recruit,
+                RowRole::Fighter {
+                    rank: 2,
+                    ready: true
+                },
+                255,
+                32768,
+            ),
+            RosterCell::Health(32768.0 / 65535.0)
+        );
+    }
+
+    #[test]
+    fn a_roster_row_names_its_three_cells() {
+        let row = roster_row(
+            "Ash",
+            NameKind::Recruit,
+            RowRole::Fighter {
+                rank: 2,
+                ready: true,
+            },
+            255,
+            65535,
+        );
+        assert_eq!(row.name.text, "Ash");
+        assert_eq!(row.name.ink, None);
+        assert_eq!(row.rank.text, "Novice+");
+        assert_eq!(row.rank.ink, None);
+        assert_eq!(row.health, 1.0);
+    }
+
+    #[test]
+    fn a_refresh_writes_books_roster_and_report_in_order() {
+        let manager = record(
+            "Boss",
+            0,
+            Profession::Combatant,
+            [5000, 0, 0, 0, 0, 0],
+            65535,
+            false,
+        );
+        let employees = [
+            record(
+                "Ash",
+                2,
+                Profession::Combatant,
+                [10_000, 10_000, 0, 0, 0, 0],
+                32768,
+                true,
+            ),
+            record(
+                "Tara",
+                3,
+                Profession::Trainer,
+                [5000, 5000, 0, 0, 0, 0],
+                65535,
+                false,
+            ),
+            record("Mort", 4, Profession::Merchant, [0; 6], 65535, false),
+        ];
+        let listed = [
+            Profession::Merchant,
+            Profession::Trainer,
+            Profession::Trainer,
+        ];
+        let day = ManageDay {
+            day: 3,
+            money: 1234,
+            earned: 50,
+            spent: 20,
+            fighters: 7,
+            end_day: true,
+            alpha: 255,
+        };
+        let refresh = manage_refresh(day, &manager, &employees, &[], &listed, |_| None);
+        assert_eq!(refresh.title, "Day 4");
+        assert_eq!(refresh.money, 1234);
+        assert_eq!(refresh.upkeep, 7);
+        assert_eq!(refresh.earned, 50);
+        assert_eq!(refresh.spent, 20);
+        assert!(refresh.end_day);
+        assert!(refresh.recruit);
+        assert!(refresh.hire);
+        let names: Vec<&str> = refresh
+            .roster
+            .iter()
+            .map(|r| r.name.text.as_str())
+            .collect();
+        assert_eq!(names, ["Boss", "Ash", "Tara", "Mort"]);
+        assert_eq!(refresh.roster[0].name.ink, Some([255, 210, 100, 153]));
+        assert_eq!(refresh.roster[1].name.ink, None);
+        assert_eq!(refresh.roster[1].rank.text, "Novice+");
+        assert_eq!(refresh.roster[2].name.ink, Some([220, 180, 160, 170]));
+        assert_eq!(refresh.roster[2].rank.text, "Trainer");
+        assert_eq!(refresh.roster[3].rank.text, "Merchant");
+        assert_eq!(refresh.roster[1].health, 32768.0 / 65535.0);
+        let texts: Vec<&str> = refresh.report.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            [
+                "Ash has trained a new technique.",
+                "Ash has reached Novice rank.",
+                "Boss has trained a new technique.",
+                "A merchant is available for hire.",
+                "2 trainers are available for hire.",
+                "The tournament begins in 4 days.",
+            ]
+        );
+        assert_eq!(refresh.report[0].code, 0x0214_0000);
+        assert_eq!(refresh.report[1].code, 0x0215_0000);
+        assert_eq!(refresh.report[2].code, 0x0014_0000);
+    }
+
+    #[test]
+    fn a_refresh_closes_the_caps_and_skips_a_full_fighter() {
+        let manager = record(
+            "Boss",
+            0,
+            Profession::Combatant,
+            [5000, 0, 0, 0, 0, 0],
+            65535,
+            false,
+        );
+        let master = record(
+            "Ash",
+            2,
+            Profession::Combatant,
+            [25_000, 25_000, 25_000, 0, 0, 0],
+            65535,
+            false,
+        );
+        let mut employees: Vec<ManageRecord> = (0..9)
+            .map(|i| {
+                record(
+                    &format!("M{i}"),
+                    10 + i,
+                    Profession::Merchant,
+                    [0; 6],
+                    65535,
+                    false,
+                )
+            })
+            .collect();
+        employees.push(master);
+        let day = ManageDay {
+            day: 7,
+            money: 0,
+            earned: 0,
+            spent: 0,
+            fighters: 8,
+            end_day: false,
+            alpha: 100,
+        };
+        let refresh = manage_refresh(day, &manager, &employees, &[], &[], |_| None);
+        assert_eq!(refresh.title, "Week 1 Day 1");
+        assert!(!refresh.recruit);
+        assert!(!refresh.hire);
+        assert!(!refresh.end_day);
+        assert_eq!(refresh.upkeep, 18 + 6);
+        assert_eq!(refresh.roster[1].name.text, "M0");
+        assert_eq!(refresh.roster[1].name.ink, Some([220, 180, 160, 66]));
+        assert_eq!(refresh.roster[10].rank.text, "Master");
+        let texts: Vec<&str> = refresh.report.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            [
+                "Boss has trained a new technique.",
+                "The tournament takes place today.",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_specialist_name_is_inked_and_a_fighter_is_judged() {
+        let specialist = record("Bors", 1, Profession::Physician, [0; 6], 65535, false);
+        assert_eq!(specialist.rank(), 0);
+        assert!(specialist.ready());
+        assert_eq!(
+            specialist.role(),
+            RowRole::Specialist(Profession::Physician)
+        );
+        assert_eq!(specialist.name_kind(false), NameKind::Specialist);
+        assert_eq!(specialist.upkeep(), 12);
+        let fighter = record(
+            "Ash",
+            2,
+            Profession::Combatant,
+            [25_000, 25_000, 25_000, 0, 0, 0],
+            0,
+            true,
+        );
+        assert_eq!(fighter.rank(), 5);
+        assert!(!fighter.ready());
+        assert_eq!(
+            fighter.role(),
+            RowRole::Fighter {
+                rank: 5,
+                ready: false
+            }
+        );
+        assert_eq!(fighter.name_kind(false), NameKind::Recruit);
+        assert_eq!(fighter.row(false, 255).rank.text, "Master");
+        assert_eq!(fighter.row(false, 255).health, 0.0);
+    }
+
+    #[test]
+    fn a_refresh_reaches_the_master_rank_line() {
+        let manager = record("Boss", 0, Profession::Combatant, [0; 6], 65535, false);
+        let master = record(
+            "Vex",
+            2,
+            Profession::Combatant,
+            [25_000, 25_000, 0, 0, 0, 0],
+            65535,
+            true,
+        );
+        let day = ManageDay {
+            day: 0,
+            money: 0,
+            earned: 0,
+            spent: 0,
+            fighters: 2,
+            end_day: true,
+            alpha: 255,
+        };
+        let refresh = manage_refresh(day, &manager, &[master], &[], &[], |_| None);
+        assert_eq!(refresh.roster[1].rank.text, "Master+");
+        let texts: Vec<&str> = refresh.report.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            [
+                "Vex has trained a new technique.",
+                "Vex has reached Master rank.",
+                "Boss has trained a new technique.",
+                "Boss has reached Inept rank.",
+                "The tournament takes place today.",
+            ]
+        );
     }
 }
