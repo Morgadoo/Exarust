@@ -16,6 +16,7 @@
 
 pub mod blend;
 pub mod controls;
+pub mod creation;
 pub mod cursor;
 pub mod fade;
 pub mod font;

@@ -1,32 +1,107 @@
-//! Character creation's record movement.
+//! Character creation: the record, its starting kit, the two pages and the
+//! flow shared by story, arena recruiting and versus.
 //!
-//! A new record takes the appearance: four words, a count and a parts list,
-//! then a tail and its list. The source keeps its words and loses both
-//! counts and lists. Evidence: the retail creation record's appearance
-//! copy (`docs/formats/OTHER.md`, Saves).
+//! The creator edits a character record. Its gear is four hand items, a
+//! worn list and a carried list; the screen offers the kit its mode and
+//! background allow, lets the player spend the account's experience on the
+//! six skills, names the character and commits it. The preset of each story
+//! background is kept in the settings under its own key.
+//!
+//! Evidence: REA on the character screen's unit routines, their callers and
+//! the record layout (`docs/formats/RFC.md`, Starts, characters and placed
+//! objects; `docs/formats/OTHER.md`, Character creation).
 
-/// A character creation record's appearance.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct CharacterAppearance {
-    pub words: [u64; 4],
-    pub count: i32,
-    pub parts: Vec<u32>,
-    pub tail: i32,
-    pub tail_parts: Vec<u32>,
+use exa_formats::characters::{ARMOUR, CLOSE_COMBAT, SHIELDS, SKILLS, Skill, TECHNIQUE_SLOTS};
+
+use crate::experience::{LEVEL_STEP, training_skill};
+
+use exa_audio::Lcg;
+
+/// The item id of the braies, the one worn item the story screen keeps.
+pub const BRAIES: u32 = 8;
+/// A hand item id that some modes treat as empty.
+const FIST_ITEM: u32 = 0x1f;
+
+/// One item reference: the item and its per-instance flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GearSlot {
+    pub item: u32,
+    pub flags: u32,
 }
 
-/// Moves the appearance out of `source` into a new record.
-pub fn move_appearance(source: &mut CharacterAppearance) -> CharacterAppearance {
-    let moved = CharacterAppearance {
-        words: source.words,
-        count: source.count,
-        parts: std::mem::take(&mut source.parts),
-        tail: source.tail,
-        tail_parts: std::mem::take(&mut source.tail_parts),
-    };
-    source.count = 0;
-    source.tail = 0;
-    moved
+impl GearSlot {
+    /// An item reference with no flags.
+    pub fn new(item: u32) -> Self {
+        Self { item, flags: 0 }
+    }
+}
+
+/// A creator record's gear.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CreationGear {
+    /// The four hand items (two loadouts).
+    pub hands: [GearSlot; 4],
+    /// Worn apparel, innermost first.
+    pub worn: Vec<GearSlot>,
+    /// Carried inventory items.
+    pub carried: Vec<GearSlot>,
+}
+
+/// Moves the gear out of `source` into a new record.
+///
+/// The hand items are copied and stay in the source; both lists move.
+pub fn move_creation_gear(source: &mut CreationGear) -> CreationGear {
+    CreationGear {
+        hands: source.hands,
+        worn: std::mem::take(&mut source.worn),
+        carried: std::mem::take(&mut source.carried),
+    }
+}
+
+/// Keeps only the braies among the worn items, as the story preset filter
+/// does.
+fn keep_braies_only(worn: &mut Vec<GearSlot>) {
+    worn.retain(|slot| slot.item == BRAIES);
+}
+
+/// Applies the mode filter to a creator's gear.
+///
+/// Story background 0 keeps the character in braies only and clears every
+/// hand item. The arena keeps the first two hand items only if the preset
+/// kit offers them, clears the last two and keeps braies only. Modes with
+/// the 2 bit clear the fist placeholder from the first two hands. Every
+/// branch empties the inventory. `arena_kit` is the ids the arena preset
+/// offers.
+pub fn filter_creation_gear(
+    gear: &mut CreationGear,
+    game_mode: i32,
+    background: i32,
+    arena_kit: &[u32],
+) {
+    if game_mode == 4 && background == 0 {
+        gear.hands = [GearSlot::default(); 4];
+        keep_braies_only(&mut gear.worn);
+        gear.carried.clear();
+    } else if game_mode & 2 == 0 {
+        if game_mode == 8 {
+            for hand in gear.hands.iter_mut().take(2) {
+                if hand.item != 0 && !arena_kit.contains(&hand.item) {
+                    *hand = GearSlot::default();
+                }
+            }
+            gear.hands[2] = GearSlot::default();
+            gear.hands[3] = GearSlot::default();
+            keep_braies_only(&mut gear.worn);
+            gear.carried.clear();
+        }
+    } else {
+        for hand in gear.hands.iter_mut().take(2) {
+            if hand.item == FIST_ITEM {
+                *hand = GearSlot::default();
+            }
+        }
+        gear.carried.clear();
+    }
 }
 
 /// The creation screen's appearance labels.
@@ -112,7 +187,9 @@ fn unchanged(last: i32) -> CreationSettle {
 }
 
 fn debounce(value: f32, last: i32, clock: i32) -> CreationSettle {
-    if last + 2 > clock {
+    // The original compares the unsigned clock with the saved stamp plus
+    // two, so a stamp near the end of its range wraps.
+    if (last as u32).wrapping_add(2) > clock as u32 {
         CreationSettle {
             stored: Some(value),
             pending: true,
@@ -130,20 +207,24 @@ fn debounce(value: f32, last: i32, clock: i32) -> CreationSettle {
 }
 
 /// Settles an appearance value toward its target.
+///
+/// The distance is tested as `epsilon <= |value − target|`; a NaN distance
+/// fails that test and writes nothing, as the original's ordered compare
+/// does.
 pub fn settle_appearance(source: f32, target: f32, last: i32, clock: i32) -> CreationSettle {
     let value = (0.5 - source) * 2.0;
-    if (value - target).abs() < SETTLE_EPSILON {
-        return unchanged(last);
+    match (value - target).abs().partial_cmp(&SETTLE_EPSILON) {
+        Some(std::cmp::Ordering::Less) | None => unchanged(last),
+        _ => debounce(value, last, clock),
     }
-    debounce(value, last, clock)
 }
 
 /// Copies an appearance value to its target.
 pub fn copy_appearance(source: f32, target: f32, last: i32, clock: i32) -> CreationSettle {
-    if (source - target).abs() < SETTLE_EPSILON {
-        return unchanged(last);
+    match (source - target).abs().partial_cmp(&SETTLE_EPSILON) {
+        Some(std::cmp::Ordering::Less) | None => unchanged(last),
+        _ => debounce(source, last, clock),
     }
-    debounce(source, last, clock)
 }
 
 /// The creation change's inputs.
@@ -211,6 +292,9 @@ pub struct CreationLook {
 }
 
 /// Updates the sex toggles and the face variant caption.
+///
+/// The caption is the variant one below the stored one, so variant 1 reads
+/// "A"; variant 0 has no caption and shows a dash.
 pub fn update_creation_look(female: bool, variant: i32) -> CreationLook {
     if female {
         return CreationLook {
@@ -218,10 +302,10 @@ pub fn update_creation_look(female: bool, variant: i32) -> CreationLook {
             letter: None,
         };
     }
-    let letter = if variant < 0 {
+    let letter = if variant < 1 {
         None
     } else {
-        Some((variant + 0x41) as u8)
+        Some((variant + 0x40) as u8)
     };
     CreationLook {
         values: [0; 4],
@@ -407,16 +491,12 @@ pub struct CreationContinue {
 }
 
 /// Picks the continue label and flags from the mode.
-pub fn creation_continue_button(mode: i32, threshold: i32) -> CreationContinue {
-    let save = mode == 2;
+pub fn creation_continue_button(kind: i32, availability: i32) -> CreationContinue {
+    let save = kind == 2;
     CreationContinue {
-        label: if save {
-            "Continue from save"
-        } else {
-            "Continue from checkpoint"
-        },
+        label: exa_ui::creation::continue_label(kind),
         mirrored: save,
-        enabled: mode >= threshold,
+        enabled: kind >= availability,
     }
 }
 
@@ -475,7 +555,7 @@ pub struct CreationRefresh {
 
 /// Refreshes the creation label at most once per 300 units.
 pub fn refresh_creation_label(clock: i32, last: i32, has_widget: bool) -> CreationRefresh {
-    if clock - last < 300 {
+    if (clock as u32).wrapping_sub(last as u32) < 300 {
         return CreationRefresh {
             ran: false,
             built: false,
@@ -628,7 +708,7 @@ pub struct CreationDeferred {
 
 /// Runs the deferred callback when its stamp allows.
 pub fn flush_creation_deferred(pending: bool, stamp: i32, clock: i32) -> CreationDeferred {
-    if !pending || stamp + 1 >= clock {
+    if !pending || (stamp as u32).wrapping_add(1) >= clock as u32 {
         return CreationDeferred {
             fired: false,
             stamp,
@@ -665,7 +745,7 @@ pub struct CreationCopy {
 
 /// Copies the link word and runs its two-unit debounce.
 pub fn copy_creation_link(stamp: i32, clock: i32) -> CreationCopy {
-    if stamp + 2 <= clock {
+    if (stamp as u32).wrapping_add(2) <= clock as u32 {
         CreationCopy {
             copied: true,
             fired: true,
@@ -1278,38 +1358,1486 @@ pub fn resume_creation() -> CreationResume {
     }
 }
 
+/// The skills a freely created character starts with.
+///
+/// Close Combat, Armour and Shields each stand at five levels (25000
+/// points) and have their first techniques chosen; Ranged Combat, Insight
+/// and Concentration are empty. The freely created character also starts
+/// with the two default option entries (see [`creation_defaults`]).
+pub fn starting_skills() -> [Skill; SKILLS] {
+    let mut skills = [Skill::default(); SKILLS];
+    skills[CLOSE_COMBAT] = Skill {
+        points: 5 * LEVEL_STEP,
+        techniques: [1, 2, 3, 4, 8, 0],
+    };
+    skills[ARMOUR] = Skill {
+        points: 5 * LEVEL_STEP,
+        techniques: [1, 2, 3, 4, 5, 0],
+    };
+    skills[SHIELDS] = Skill {
+        points: 5 * LEVEL_STEP,
+        techniques: [1, 2, 3, 4, 6, 0],
+    };
+    skills
+}
+
+/// The byte after a skill's points at `level`, read across the six slots
+/// as the original's unchecked index reads them.
+///
+/// Guess: a read past the six slots is taken as zero, where the original
+/// would read whatever follows the record.
+fn technique_byte(skills: &[Skill; SKILLS], slot: usize, level: usize) -> u8 {
+    let byte = slot * 8 + 2 + level;
+    if byte >= SKILLS * 8 {
+        return 0;
+    }
+    let skill = &skills[byte / 8];
+    let offset = byte % 8;
+    if offset < 2 {
+        // The original reads a neighbouring slot's point bytes here.
+        skill.points.to_le_bytes()[offset]
+    } else {
+        skill.techniques[offset - 2]
+    }
+}
+
+/// Clears the first used skill and every skill after it.
+///
+/// The first used slot keeps its first technique byte, as the original's
+/// five one-byte writes leave it; the later slots are cleared whole.
+pub fn clear_skills_from_first_used(skills: &mut [Skill; SKILLS]) -> Option<usize> {
+    let first = skills.iter().position(|skill| skill.points != 0)?;
+    let skill = &mut skills[first];
+    skill.points = 0;
+    if skill.techniques.len() > 1 {
+        skill.techniques[1..].fill(0);
+    }
+    for later in &mut skills[first + 1..] {
+        *later = Skill::default();
+    }
+    Some(first)
+}
+
+/// What spending the account's experience on the skills did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillBudget {
+    /// The skills after the budget was applied.
+    pub skills: [Skill; SKILLS],
+    /// The experience left after the skills were capped, before the
+    /// training skill took its share.
+    pub leftover: u32,
+    /// The training skill that took the leftover, if any.
+    pub training: Option<usize>,
+}
+
+/// Caps the six skills to a global experience budget.
+///
+/// A slot over the remaining budget is cut to it; when its technique at
+/// the new level is chosen, the first such slot keeps that technique and
+/// clears only the later ones. Whatever is left goes to the skill in
+/// training up to its next level. A knight or proctor's budget is at least
+/// 10000.
+pub fn set_skill_budget(skills: &[Skill; SKILLS], global: u32, background: i32) -> SkillBudget {
+    let mut budget = if matches!(background, 1 | 2) {
+        global.max(10_000)
+    } else {
+        global
+    };
+    let mut out = *skills;
+    let mut keep_technique = true;
+    for index in 0..SKILLS {
+        let mut skill = out[index];
+        let points = u32::from(skill.points);
+        if budget < points {
+            skill.points = budget as u16;
+            let points = u32::from(skill.points);
+            let mut level = points / u32::from(LEVEL_STEP);
+            if keep_technique && technique_byte(&out, index, level as usize) != 0 {
+                level += 1;
+                keep_technique = false;
+            }
+            if level <= TECHNIQUE_SLOTS as u32 {
+                let from = (level as usize).min(TECHNIQUE_SLOTS);
+                skill.techniques[from..].fill(0);
+            }
+            budget = budget.wrapping_sub(points);
+        } else {
+            budget = budget.wrapping_sub(points);
+        }
+        out[index] = skill;
+    }
+    let leftover = budget;
+    // The original asks the character unit for the skill in training and
+    // its next level; the experience unit's training rule is the same one
+    // (guess: the two agree, as the arena lesson's rule does).
+    let training = if leftover == 0 {
+        None
+    } else {
+        training_skill(&out).map(|(index, next)| {
+            let cap = next.saturating_mul(u32::from(LEVEL_STEP));
+            let slot = &mut out[index];
+            let raised = u32::from(slot.points).wrapping_add(leftover) as u16;
+            slot.points = if cap < u32::from(raised) {
+                cap as u16
+            } else {
+                raised
+            };
+            index
+        })
+    };
+    SkillBudget {
+        skills: out,
+        leftover,
+        training,
+    }
+}
+
+/// What the skills are worth as global experience.
+///
+/// Each 5000 points is worth more than the last (the first at 4, then 5,
+/// 6, …), the first skill's partial level is worth its remainder at the
+/// current weight, and the total is quartered and rounded down. The
+/// original visits the slots in order, so only the first partial level
+/// counts.
+pub fn effective_global_experience(skills: &[Skill; SKILLS]) -> i32 {
+    let mut total = 0i64;
+    let mut weight = 4i64;
+    for skill in skills {
+        let levels = i64::from(skill.points) / i64::from(LEVEL_STEP);
+        for _ in 0..levels {
+            total += weight * i64::from(LEVEL_STEP);
+            weight += 1;
+        }
+    }
+    for skill in skills {
+        let points = i64::from(skill.points);
+        let rem = points % i64::from(LEVEL_STEP);
+        if rem != 0 {
+            total += rem * weight;
+            break;
+        }
+    }
+    let quarter = total.div_euclid(4);
+    i32::try_from(quarter).unwrap_or(i32::MAX)
+}
+
+/// The new global experience shown on the skills page.
+///
+/// It is the converted worth less the account's experience, or zero when
+/// the account already covers it.
+///
+/// Guess: the original passes both values through the experience system's
+/// two converters; this unit does not contain them, and their effect on
+/// the difference is not established.
+pub fn new_global_experience(converted: u32, account: u32) -> u32 {
+    converted.saturating_sub(account)
+}
+
+/// Which skills page the creator shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillPageMode {
+    /// The arena's current skill progress.
+    Arena,
+    /// The account's experience, editable.
+    Global,
+    /// A continued character's new experience.
+    NewGlobal,
+}
+
+/// The skills page's heading and state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillPage {
+    pub mode: SkillPageMode,
+    pub heading: &'static str,
+    pub value: u32,
+    pub clear_skills: bool,
+    pub show_current: bool,
+    /// The page selector's value (4 for the arena, else 6).
+    pub page: i32,
+}
+
+/// Picks the skills page for the game and screen modes.
+pub fn skill_page(game_mode: i32, screen_mode: i32, account: u32, converted: u32) -> SkillPage {
+    let continuing = screen_mode == 12;
+    if game_mode == 8 {
+        SkillPage {
+            mode: SkillPageMode::Arena,
+            heading: if continuing {
+                "Current skill progress"
+            } else {
+                "SKILLS"
+            },
+            value: 0,
+            clear_skills: !continuing,
+            show_current: true,
+            page: 4,
+        }
+    } else if continuing {
+        SkillPage {
+            mode: SkillPageMode::NewGlobal,
+            heading: "New global experience",
+            value: new_global_experience(converted, account),
+            clear_skills: false,
+            show_current: false,
+            page: 6,
+        }
+    } else {
+        SkillPage {
+            mode: SkillPageMode::Global,
+            heading: "Global experience",
+            value: account,
+            clear_skills: false,
+            show_current: true,
+            page: 6,
+        }
+    }
+}
+
+/// A story background whose saved character seeds the creator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackgroundClass {
+    /// The unknown background: no template name.
+    Unknown,
+    Knight,
+    Proctor,
+    Villager,
+}
+
+/// The settings keys a background's preset is kept under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PresetKeys {
+    pub root: u32,
+    pub character: u32,
+}
+
+/// A background preset's name and keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BackgroundPreset {
+    pub class: BackgroundClass,
+    pub name: Option<&'static str>,
+    pub keys: PresetKeys,
+}
+
+/// The first preset key (the unknown background).
+const PRESET_KEY_BASE: u32 = 0x6431_bc02;
+/// The character chunk key beside it.
+const PRESET_CHARACTER_BASE: u32 = 0x6431_cc02;
+
+/// The preset of a story background, or `None` past the three templates.
+pub fn background_preset(background: i32) -> Option<BackgroundPreset> {
+    let class = match background {
+        0 => BackgroundClass::Unknown,
+        1 => BackgroundClass::Knight,
+        2 => BackgroundClass::Proctor,
+        3 => BackgroundClass::Villager,
+        _ => return None,
+    };
+    let name = match class {
+        BackgroundClass::Unknown => None,
+        BackgroundClass::Knight => Some("knight"),
+        BackgroundClass::Proctor => Some("proctor"),
+        BackgroundClass::Villager => Some("villager"),
+    };
+    let offset = background as u32;
+    Some(BackgroundPreset {
+        class,
+        name,
+        keys: PresetKeys {
+            root: PRESET_KEY_BASE + offset,
+            character: PRESET_CHARACTER_BASE + offset,
+        },
+    })
+}
+
+/// The settings keys a committed character saves its preset under.
+///
+/// Story mode keeps one preset per background; the arena keeps its career
+/// character. Other modes save nothing.
+pub fn preset_save_keys(game_mode: i32, background: i32) -> Option<PresetKeys> {
+    match game_mode {
+        4 => background_preset(background).map(|preset| preset.keys),
+        8 => Some(PresetKeys {
+            root: PRESET_KEY_BASE - 1,
+            character: PRESET_CHARACTER_BASE - 1,
+        }),
+        _ => None,
+    }
+}
+
+/// Where a preset's record came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresetSource {
+    /// The settings held a preset.
+    Saved,
+    /// No preset was found: the creator made an empty record.
+    NewDefault,
+    /// No preset was found and the background's template is used instead.
+    Template,
+}
+
+/// What loading a story background does to the record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BackgroundPlan {
+    pub preset: BackgroundPreset,
+    pub source: PresetSource,
+    /// The unknown background resets the record to the creator defaults.
+    pub creation_defaults: bool,
+}
+
+/// Plans the record for a story background from whether its preset loaded.
+///
+/// Guess: a named background whose preset is missing uses its template
+/// record; the template is supplied by the caller and not by this unit.
+pub fn plan_background(background: i32, preset_loaded: bool) -> Option<BackgroundPlan> {
+    let preset = background_preset(background)?;
+    let (source, creation_defaults) = match background {
+        0 => (
+            if preset_loaded {
+                PresetSource::Saved
+            } else {
+                PresetSource::NewDefault
+            },
+            true,
+        ),
+        _ => (
+            if preset_loaded {
+                PresetSource::Saved
+            } else {
+                PresetSource::Template
+            },
+            false,
+        ),
+    };
+    Some(BackgroundPlan {
+        preset,
+        source,
+        creation_defaults,
+    })
+}
+
+/// Where a freely created record starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FreeCreateSource {
+    /// Load the given background preset and share its gear.
+    Preset(PresetKeys),
+    /// Make an empty record.
+    NewDefault,
+    /// Keep the record the creator already had.
+    KeepRecord,
+}
+
+/// What opening the free creator does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FreeCreatePlan {
+    pub source: FreeCreateSource,
+    /// The skills are set to [`starting_skills`] whatever the record held.
+    pub reset_skills: bool,
+}
+
+/// Plans the free creator's record for the game mode.
+pub fn plan_free_create(game_mode: i32, record_present: bool) -> FreeCreatePlan {
+    if game_mode == 4 {
+        return FreeCreatePlan {
+            source: FreeCreateSource::Preset(PresetKeys {
+                root: PRESET_KEY_BASE,
+                character: PRESET_CHARACTER_BASE,
+            }),
+            reset_skills: false,
+        };
+    }
+    if game_mode == 8 {
+        return FreeCreatePlan {
+            source: FreeCreateSource::Preset(PresetKeys {
+                root: PRESET_KEY_BASE - 1,
+                character: PRESET_CHARACTER_BASE - 1,
+            }),
+            reset_skills: false,
+        };
+    }
+    FreeCreatePlan {
+        source: if record_present {
+            FreeCreateSource::KeepRecord
+        } else {
+            FreeCreateSource::NewDefault
+        },
+        reset_skills: true,
+    }
+}
+
+/// The screen mode the creator was opened in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreationScreenMode {
+    Free,
+    Story,
+    Recruit,
+    Continue,
+}
+
+impl CreationScreenMode {
+    /// Reads the screen mode; an unknown value is the free creator.
+    pub fn from_code(code: i32) -> Self {
+        match code {
+            4 => Self::Story,
+            10 => Self::Recruit,
+            12 => Self::Continue,
+            _ => Self::Free,
+        }
+    }
+}
+
+/// Why the creator could not open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreationEntryError {
+    /// Continue mode needs the save manager.
+    SaveManagerMissing,
+}
+
+impl CreationEntryError {
+    /// The message the original shows for this error.
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::SaveManagerMissing => exa_ui::creation::SAVE_MANAGER_MISSING,
+        }
+    }
+}
+
+/// Where the creator's record comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntrySource {
+    NewDefault,
+    Background(i32),
+    ContinueSave,
+    FreeCreate,
+    Existing,
+}
+
+/// The record source and filtering an entry performs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EntryPlan {
+    /// The screen mode after a failed continue falls back to the free one.
+    pub mode: CreationScreenMode,
+    /// The game mode (story 4, arena 8, versus 0x1010, …).
+    pub game_mode: i32,
+    pub source: EntrySource,
+    /// Non-continued records get the mode filter and full health.
+    pub filter: bool,
+    pub full_health: bool,
+    pub background: i32,
+}
+
+/// Plans the record a character screen entry edits.
+///
+/// Continue mode first lists the saves; an invalid save list falls back to
+/// the free creator. Recruit mode makes a new record; story mode loads the
+/// chosen background's preset; other modes keep the record they had or
+/// create a free one.
+pub fn plan_creation_entry(
+    screen_mode: i32,
+    game_mode: i32,
+    background: i32,
+    record_present: bool,
+    save_manager_present: bool,
+    saves_valid: bool,
+) -> Result<EntryPlan, CreationEntryError> {
+    let mut mode = CreationScreenMode::from_code(screen_mode);
+    if mode == CreationScreenMode::Continue {
+        if !save_manager_present {
+            return Err(CreationEntryError::SaveManagerMissing);
+        }
+        if saves_valid {
+            return Ok(EntryPlan {
+                mode,
+                game_mode,
+                source: EntrySource::ContinueSave,
+                filter: false,
+                full_health: false,
+                background,
+            });
+        }
+        mode = CreationScreenMode::Free;
+    }
+    let source = match mode {
+        CreationScreenMode::Recruit => EntrySource::NewDefault,
+        CreationScreenMode::Story => EntrySource::Background(background),
+        _ if record_present => EntrySource::Existing,
+        _ => EntrySource::FreeCreate,
+    };
+    Ok(EntryPlan {
+        mode,
+        game_mode,
+        source,
+        filter: true,
+        full_health: true,
+        background,
+    })
+}
+
+/// The two pages of the creator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreationScreenPage {
+    /// The name, sex, face and hair.
+    Appearance,
+    /// The equipment and skills.
+    Equipment,
+}
+
+/// What the final button does for a game mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommitKind {
+    Recruit,
+    Begin,
+    Ready,
+    Create,
+    /// The record asks for the advanced character editor.
+    AdvancedEditor,
+}
+
+/// The state the character screen's final button reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubmitInput {
+    pub page: CreationScreenPage,
+    pub name_len: usize,
+    /// The record's creation-object count: positive opens the advanced editor.
+    pub object_count: i32,
+    pub game_mode: i32,
+    pub screen_mode: i32,
+    pub continue_mode: bool,
+}
+
+/// What pressing the final button did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Submit {
+    pub page: CreationScreenPage,
+    /// The name is missing and the warning box is shown.
+    pub missing_name: bool,
+    /// The equipment page is built.
+    pub build_equipment: bool,
+    pub button: Option<&'static str>,
+    /// The screen flags that a versus lobby button needs.
+    pub ready_flags: bool,
+    pub commit: Option<CommitKind>,
+}
+
+/// Advances the creator's page or commits the character.
+///
+/// On the appearance page a non-continued character needs a name; a
+/// missing one asks for it and changes nothing. A present one builds the
+/// equipment page and labels the button for the mode. On the equipment
+/// page a record with a creation object opens the advanced editor;
+/// otherwise the mode decides what the commit starts.
+pub fn submit_creation(input: SubmitInput) -> Submit {
+    if input.page == CreationScreenPage::Appearance {
+        if !input.continue_mode && input.name_len < 1 {
+            return Submit {
+                page: input.page,
+                missing_name: true,
+                build_equipment: false,
+                button: None,
+                ready_flags: false,
+                commit: None,
+            };
+        }
+        let button = if input.object_count == 0 {
+            Some(exa_ui::creation::commit_label(
+                input.screen_mode,
+                input.game_mode,
+            ))
+        } else {
+            None
+        };
+        return Submit {
+            page: CreationScreenPage::Equipment,
+            missing_name: false,
+            build_equipment: true,
+            button,
+            ready_flags: input.object_count == 0 && input.game_mode == 0x1010,
+            commit: None,
+        };
+    }
+    if input.object_count > 0 {
+        return Submit {
+            page: input.page,
+            missing_name: false,
+            build_equipment: false,
+            button: None,
+            ready_flags: false,
+            commit: Some(CommitKind::AdvancedEditor),
+        };
+    }
+    let commit = if input.screen_mode == 10 {
+        CommitKind::Recruit
+    } else if input.game_mode == 0x1010 {
+        CommitKind::Ready
+    } else if input.game_mode == 4 {
+        CommitKind::Begin
+    } else {
+        CommitKind::Create
+    };
+    Submit {
+        page: input.page,
+        missing_name: false,
+        build_equipment: false,
+        button: None,
+        ready_flags: false,
+        commit: Some(commit),
+    }
+}
+
+/// The labels the creator's header shows after a page switch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PageHeader {
+    pub page: CreationScreenPage,
+    pub first: &'static str,
+    pub second: &'static str,
+    /// The final button's label on the first page.
+    pub final_button: &'static str,
+}
+
+/// Switches back to the appearance page.
+pub fn appearance_page_header() -> PageHeader {
+    let labels = exa_ui::creation::appearance_labels();
+    PageHeader {
+        page: CreationScreenPage::Appearance,
+        first: labels.first,
+        second: labels.second,
+        final_button: labels.final_button,
+    }
+}
+
+/// The header of the equipment page.
+pub fn equipment_page_header(game_mode: i32, screen_mode: i32, versus_script: bool) -> PageHeader {
+    let labels = exa_ui::creation::equipment_labels(game_mode, screen_mode, versus_script);
+    PageHeader {
+        page: CreationScreenPage::Equipment,
+        first: labels.first,
+        second: labels.second,
+        final_button: labels.final_button,
+    }
+}
+
+/// Where the page tab switch sends the screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageDestination {
+    /// Stay on the creator and show the appearance page.
+    Appearance,
+    /// Start the arena's recruit form.
+    Arena,
+    /// Start the mode's transition.
+    Transition,
+}
+
+/// The result of the equipment page's tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PageSwitch {
+    pub page: CreationScreenPage,
+    pub destination: PageDestination,
+    pub header: Option<PageHeader>,
+}
+
+/// Switches from the equipment page back, or commits from the appearance
+/// page.
+pub fn switch_creation_page(page: CreationScreenPage, screen_mode: i32) -> PageSwitch {
+    if page == CreationScreenPage::Equipment {
+        PageSwitch {
+            page: CreationScreenPage::Appearance,
+            destination: PageDestination::Appearance,
+            header: Some(appearance_page_header()),
+        }
+    } else {
+        PageSwitch {
+            page,
+            destination: if screen_mode == 10 {
+                PageDestination::Arena
+            } else {
+                PageDestination::Transition
+            },
+            header: None,
+        }
+    }
+}
+
+/// The account experience after an arena character is committed.
+///
+/// The new global experience, less what was spent before, plus what the
+/// character's skills are worth.
+pub fn arena_global_experience(new_global: i32, spent_before: i32, worth: i32) -> i32 {
+    new_global.wrapping_sub(spent_before).wrapping_add(worth)
+}
+
+/// What the arena commit carries over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArenaCommit {
+    pub skills: [Skill; SKILLS],
+    pub global: i32,
+    pub loadout: i32,
+}
+
+/// Prepares an arena character's commit.
+pub fn commit_arena(
+    skills: [Skill; SKILLS],
+    new_global: i32,
+    spent_before: i32,
+    loadout: i32,
+) -> ArenaCommit {
+    ArenaCommit {
+        skills,
+        global: arena_global_experience(
+            new_global,
+            spent_before,
+            effective_global_experience(&skills),
+        ),
+        loadout,
+    }
+}
+
+/// A story commit's preset and worth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoryCommit {
+    pub keys: Option<PresetKeys>,
+    pub worth: i32,
+    pub transition: bool,
+}
+
+/// Prepares a story character's commit: save its preset and start the mode.
+pub fn commit_story(game_mode: i32, background: i32, skills: &[Skill; SKILLS]) -> StoryCommit {
+    StoryCommit {
+        keys: preset_save_keys(game_mode, background),
+        worth: effective_global_experience(skills),
+        transition: true,
+    }
+}
+
+/// The two kinds of save the continue screen offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveKind {
+    Checkpoint = 1,
+    Save = 2,
+}
+
+impl SaveKind {
+    /// Reads a choice; 2 is a save, anything else a checkpoint.
+    pub fn from_code(code: i32) -> Self {
+        if code == 2 {
+            Self::Save
+        } else {
+            Self::Checkpoint
+        }
+    }
+
+    /// The original's choice code.
+    pub fn code(self) -> i32 {
+        self as i32
+    }
+}
+
+/// A save slot's availability mask: bit 0 a checkpoint, bit 1 a save.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SaveAvailability(pub u32);
+
+impl SaveAvailability {
+    /// Whether the kind may be selected.
+    pub fn has(self, kind: SaveKind) -> bool {
+        self.0 & (1 << (kind.code() - 1)) != 0
+    }
+}
+
+/// A continue-screen selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SaveSelection {
+    pub index: i32,
+    pub kind: SaveKind,
+    pub availability: SaveAvailability,
+    /// The mask offered another kind than the chosen one.
+    pub adjusted: bool,
+}
+
+/// Selects a save slot with its kind, adjusting the kind to what the slot
+/// offers.
+pub fn select_save(index: i32, kind: SaveKind, availability: SaveAvailability) -> SaveSelection {
+    let mut kind = kind;
+    let mut adjusted = false;
+    if kind == SaveKind::Save && !availability.has(SaveKind::Save) {
+        kind = SaveKind::Checkpoint;
+        adjusted = true;
+    } else if kind != SaveKind::Save && !availability.has(SaveKind::Checkpoint) {
+        kind = SaveKind::Save;
+        adjusted = true;
+    }
+    SaveSelection {
+        index,
+        kind,
+        availability,
+        adjusted,
+    }
+}
+
+/// Steps to the previous save, if any.
+pub fn previous_save(index: i32) -> Option<i32> {
+    (index > 0).then_some(index - 1)
+}
+
+/// Steps to the next save, if any.
+pub fn next_save(index: i32, count: i32) -> Option<i32> {
+    // The list's last index is one below the save count.
+    (i64::from(index) < i64::from(count) - 1).then_some(index + 1)
+}
+
+/// Toggles the save kind against the availability mask.
+pub fn toggle_save_kind(kind: SaveKind, availability: SaveAvailability) -> Option<SaveKind> {
+    match kind {
+        SaveKind::Save => availability
+            .has(SaveKind::Checkpoint)
+            .then_some(SaveKind::Checkpoint),
+        SaveKind::Checkpoint => availability.has(SaveKind::Save).then_some(SaveKind::Save),
+    }
+}
+
+/// What deleting the selected save did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeleteSave {
+    pub index: i32,
+    /// No save is left; the continue screen opens its empty state.
+    pub empty: bool,
+}
+
+/// Deletes the selected save; the selection moves to the last remaining.
+pub fn delete_save(index: i32, count: i32) -> DeleteSave {
+    let remaining = count.saturating_sub(1).max(0);
+    let index = index.min(remaining - 1);
+    DeleteSave {
+        index,
+        empty: index < 0,
+    }
+}
+
+/// The continue screen's button and navigation state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContinueLayout {
+    pub button: CreationContinue,
+    pub previous_disabled: bool,
+    pub next_disabled: bool,
+    /// The name shown, cut to fifteen bytes.
+    pub name: String,
+}
+
+/// Lays out the continue screen for a save index.
+pub fn continue_layout(
+    index: i32,
+    count: i32,
+    kind: SaveKind,
+    availability: SaveAvailability,
+    name: &str,
+) -> ContinueLayout {
+    ContinueLayout {
+        button: creation_continue_button(kind.code(), availability.0 as i32),
+        previous_disabled: index < 1,
+        next_disabled: i64::from(index) >= i64::from(count) - 1,
+        name: name.chars().take(15).collect(),
+    }
+}
+
+/// The voice pitch a slider value produces: 0.9 to 1.07.
+pub fn voice_pitch(slider: f32) -> f32 {
+    slider * 0.17 + 0.9
+}
+
+/// The two-digit number the voice names use: at least two digits, and a
+/// lone zero for a negative input (the original formats no digits and then
+/// prepends one zero).
+pub fn two_digits(value: i32) -> String {
+    if value < 0 {
+        return "0".to_string();
+    }
+    if value < 10 {
+        format!("0{value}")
+    } else {
+        value.to_string()
+    }
+}
+
+/// The sound a voice selection plays.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoicePreview {
+    /// The name the sound is looked up under.
+    pub name: String,
+    /// The same voice with the variant suffix, used for the alternative.
+    pub variant_name: String,
+    pub pitch_bits: u32,
+}
+
+/// Builds the sound names of a selected voice, played when its sample
+/// exists. The name is the prefix and the one-based voice number; the
+/// alternative inserts `DA` before it.
+pub fn voice_preview(prefix: &str, index: i32, pitch: f32) -> VoicePreview {
+    let number = two_digits(index + 1);
+    VoicePreview {
+        name: format!("{prefix}{number}"),
+        variant_name: format!("{prefix}DA{number}"),
+        pitch_bits: voice_pitch(pitch).to_bits(),
+    }
+}
+
+/// Steps the voice selection down, stopping at zero.
+pub fn previous_voice(index: i32) -> Option<i32> {
+    (index > 0).then_some(index - 1)
+}
+
+/// Steps the voice selection up.
+pub fn next_voice(index: i32) -> i32 {
+    index.saturating_add(1)
+}
+
+/// The pitch slider's throttle: a preview at most once per 300 clock
+/// units.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VoiceThrottle {
+    pub played: bool,
+    pub last: i32,
+}
+
+/// Allows a voice preview when 300 clock units have passed.
+pub fn throttle_voice(clock: i32, last: i32) -> VoiceThrottle {
+    if (clock as u32).wrapping_sub(last as u32) > 299 {
+        VoiceThrottle {
+            played: true,
+            last: clock,
+        }
+    } else {
+        VoiceThrottle {
+            played: false,
+            last,
+        }
+    }
+}
+
+/// The hair button's state from the creator's flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HairButton {
+    Hidden,
+    Visible,
+    Expanded,
+}
+
+/// Reads the hair button's state: bit 0 shows it, a face variant expands it.
+pub fn hair_button(sex_or_word: i32, variant_bits: i32) -> HairButton {
+    if sex_or_word & 1 != 0 {
+        HairButton::Visible
+    } else if variant_bits & 0xf0_0000 != 0 {
+        HairButton::Expanded
+    } else {
+        HairButton::Hidden
+    }
+}
+
+/// Sets or clears the hair visibility flag from the checkbox.
+pub fn set_hair_visible(word: i32, checkbox_on: bool) -> i32 {
+    if checkbox_on {
+        word | 0x1_0000
+    } else {
+        word & !0x1_0000
+    }
+}
+
+/// The sex change's record word and voice prefix suffix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SexChange {
+    pub word: i32,
+    pub label: CreationLabel,
+}
+
+/// Applies the sex radio choice: 2 is female.
+pub fn change_sex(word: i32, radio: i32) -> SexChange {
+    let word = if radio == 2 { word | 1 } else { word & !1 };
+    SexChange {
+        word,
+        label: creation_label(word),
+    }
+}
+
+/// A starting kit table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KitTable {
+    Story,
+    StoryUnknown,
+    StoryIntro,
+    Versus,
+    ArenaRecruit,
+    ArenaContinue,
+}
+
+impl KitTable {
+    /// The entries the table holds.
+    pub fn apparel_len(self) -> usize {
+        match self {
+            Self::Story => 6,
+            Self::StoryUnknown => 5,
+            Self::StoryIntro | Self::Versus | Self::ArenaRecruit => 10,
+            Self::ArenaContinue => 15,
+        }
+    }
+
+    /// The weapon entries of the table.
+    pub fn weapons_len(self) -> usize {
+        match self {
+            Self::Versus => 7,
+            _ => 6,
+        }
+    }
+}
+
+/// The apparel kit table a mode offers, or none.
+pub fn apparel_kit_table(
+    game_mode: i32,
+    screen_mode: i32,
+    background: i32,
+    intro: bool,
+) -> Option<KitTable> {
+    if game_mode == 8 {
+        return Some(if screen_mode == 10 {
+            KitTable::ArenaRecruit
+        } else {
+            KitTable::ArenaContinue
+        });
+    }
+    if game_mode == 2 {
+        return Some(if intro {
+            KitTable::StoryIntro
+        } else {
+            KitTable::Story
+        });
+    }
+    if game_mode == 4 {
+        return (background == 0).then_some(KitTable::StoryUnknown);
+    }
+    if game_mode == 0x1010 {
+        return Some(KitTable::Versus);
+    }
+    Some(KitTable::Story)
+}
+
+/// The weapon kit table a mode offers, or none.
+pub fn weapon_kit_table(game_mode: i32, intro: bool) -> Option<KitTable> {
+    if game_mode == 4 {
+        return None;
+    }
+    if game_mode == 2 && intro {
+        return Some(KitTable::Versus);
+    }
+    Some(KitTable::Story)
+}
+
+/// One starting kit entry: an item and the appearance it is given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KitItem {
+    pub item: u32,
+    /// The item instance's variant word.
+    pub variant: u32,
+    /// The two dye bytes.
+    pub dyes: [u8; 2],
+    /// The three colour bytes.
+    pub colours: [u8; 3],
+}
+
+impl KitItem {
+    /// A plain item with no appearance.
+    pub const fn plain(item: u32) -> Self {
+        Self {
+            item,
+            variant: 0,
+            dyes: [0; 2],
+            colours: [0; 3],
+        }
+    }
+}
+
+/// A database item record's fields the kit match reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KitRecord {
+    /// The item's base id.
+    pub base: u32,
+    pub colours: [u8; 3],
+}
+
+/// Whether a kit entry already covers an item.
+///
+/// The item matches by id, or its database record's base id and colour
+/// bytes match the entry.
+pub fn kit_item_matches(item: u32, record: Option<&KitRecord>, spec: &KitItem) -> bool {
+    if item == spec.item {
+        return true;
+    }
+    match record {
+        Some(record) => record.base == spec.item && record.colours == spec.colours,
+        None => false,
+    }
+}
+
+/// The kit entries missing from the worn list.
+pub fn missing_apparel(
+    worn: &[GearSlot],
+    table: &[KitItem],
+    record_of: impl Fn(u32) -> Option<KitRecord>,
+) -> Vec<KitItem> {
+    table
+        .iter()
+        .filter(|spec| {
+            !worn
+                .iter()
+                .any(|slot| kit_item_matches(slot.item, record_of(slot.item).as_ref(), spec))
+        })
+        .copied()
+        .collect()
+}
+
+/// The kit entries missing from the first two hand slots.
+///
+/// Weapons match by database base id, not by colour.
+pub fn missing_weapons(
+    hands: &[GearSlot; 4],
+    table: &[KitItem],
+    base_of: impl Fn(u32) -> u32,
+) -> Vec<KitItem> {
+    table
+        .iter()
+        .filter(|spec| {
+            !hands[..2]
+                .iter()
+                .any(|slot| slot.item != 0 && base_of(slot.item) == spec.item)
+        })
+        .copied()
+        .collect()
+}
+
+/// What a kit entry looks like once resolved against the item database.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedKitItem {
+    pub item: u32,
+    /// The appearance to write, or none for a plain item.
+    pub appearance: Option<KitAppearance>,
+}
+
+/// The appearance a kit entry gives an item instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KitAppearance {
+    pub variant: u32,
+    pub dyes: [u8; 2],
+    pub colours: [u8; 3],
+}
+
+impl From<&KitItem> for KitAppearance {
+    fn from(spec: &KitItem) -> Self {
+        Self {
+            variant: spec.variant,
+            dyes: spec.dyes,
+            colours: spec.colours,
+        }
+    }
+}
+
+/// Resolves a kit entry by the database flags it meets.
+///
+/// A plain database item is added as itself. An instance item keeps its id
+/// and takes the entry's variant, dyes and colours. An item with a colour
+/// block is an alias: when the entry names another item the target is added
+/// with the entry's appearance, otherwise the item is added unchanged.
+///
+/// The database's sub-record flags are reduced to these cases here; their
+/// exact layout belongs to the object database.
+pub fn resolve_kit_item(
+    spec: &KitItem,
+    database_flag: bool,
+    has_colour_block: bool,
+    alias: Option<u32>,
+) -> ResolvedKitItem {
+    if !database_flag {
+        return ResolvedKitItem {
+            item: spec.item,
+            appearance: None,
+        };
+    }
+    if has_colour_block {
+        return match alias {
+            Some(target) => ResolvedKitItem {
+                item: target,
+                appearance: Some(KitAppearance::from(spec)),
+            },
+            None => ResolvedKitItem {
+                item: spec.item,
+                appearance: None,
+            },
+        };
+    }
+    ResolvedKitItem {
+        item: spec.item,
+        appearance: Some(KitAppearance::from(spec)),
+    }
+}
+
+/// The creator icon sheet's frame size.
+pub const CREATION_ICON_SIZE: i32 = 96;
+/// The two sheets' cells are stacked top first at these offsets.
+pub const CREATION_ICON_OFFSETS: [i32; 4] = [288, 192, 96, 0];
+
+/// The icon size the creator's icon sheet is scaled to.
+pub fn creation_icon_size(unit: i32) -> i32 {
+    unit * 8
+}
+
+/// A creator panel's place in its form's client rectangle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PanelPlace {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+/// The apparel panel: a quarter-unit inset, 0xac wide, 0x26c or 0x238
+/// tall depending on the window's aspect flag.
+pub fn apparel_panel_place(tall: bool) -> PanelPlace {
+    PanelPlace {
+        x: 4,
+        y: 0x18,
+        w: 0xac,
+        h: if tall { 0x26c } else { 0x238 },
+    }
+}
+
+/// The weapons panel beside the apparel one.
+pub fn weapon_panel_place(parent_width: i32, tall: bool) -> PanelPlace {
+    PanelPlace {
+        x: parent_width - 0xb0,
+        y: 0x18,
+        w: 0xac,
+        h: if tall { 0x26c } else { 0x238 },
+    }
+}
+
+/// The skills panel: 0xd8 wide, 0x204 tall when recruiting and 0x294
+/// otherwise, against the parent's right edge.
+pub fn skill_panel_place(parent_width: i32, screen_mode: i32) -> PanelPlace {
+    let w = 0xd8;
+    let h = if screen_mode == 10 { 0x204 } else { 0x294 };
+    PanelPlace {
+        x: parent_width - w - 0xc,
+        y: 0x18,
+        w,
+        h,
+    }
+}
+
+/// The skill page's slide and tab positions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillTabPlace {
+    /// The skills panel's width after the slide.
+    pub width: i32,
+    /// The tab's horizontal offset.
+    pub tab_x: i32,
+    /// The tab's vertical offset.
+    pub tab_y: i32,
+}
+
+/// Lays out the skills page's slide for its index.
+///
+/// The panel's width shrinks by one unit per index. A continued character
+/// does not move the tab labels.
+pub fn skill_tab_place(
+    form_width: i32,
+    panel_x: i32,
+    unit: i32,
+    index: i32,
+    continuing: bool,
+) -> SkillTabPlace {
+    let (tab_x, tab_y) = if continuing {
+        (0, 0)
+    } else {
+        let unit = unit as i16;
+        let index = index as i16;
+        (
+            i32::from(index.wrapping_sub(4).wrapping_mul(unit)),
+            i32::from((form_width as i16).wrapping_sub(index.wrapping_sub(2).wrapping_mul(unit))),
+        )
+    };
+    SkillTabPlace {
+        width: form_width - panel_x - unit * index,
+        tab_x,
+        tab_y,
+    }
+}
+
+/// The continue screen's name label and item list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContinuePlace {
+    /// The save list's extent.
+    pub list: PanelPlace,
+    /// The name box's extent; its height runs to the parent's bottom.
+    pub name: PanelPlace,
+}
+
+/// Lays out the continue screen; one GUI unit is 59 pixels of row.
+pub fn continue_place(unit: i32, parent_height: i32) -> ContinuePlace {
+    ContinuePlace {
+        list: PanelPlace {
+            x: unit * 0x3b,
+            y: 0x74,
+            w: 0xe4,
+            h: 0xb4,
+        },
+        name: PanelPlace {
+            x: 4,
+            y: 0x28,
+            w: 0xe4,
+            h: parent_height - 0x28,
+        },
+    }
+}
+
+/// Reselects a save slot when its availability changes.
+///
+/// A zero mask leaves the chosen kind alone; otherwise the kind follows
+/// what the slot offers.
+pub fn reselect_save(index: i32, kind: SaveKind, availability: SaveAvailability) -> SaveSelection {
+    if availability.0 == 0 {
+        SaveSelection {
+            index,
+            kind,
+            availability,
+            adjusted: false,
+        }
+    } else {
+        select_save(index, kind, availability)
+    }
+}
+
+/// Which creator the open action shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenCreator {
+    /// The continue screen's initial choice.
+    pub continue_kind: SaveKind,
+    pub show_continue: bool,
+    pub reset_to_portal: bool,
+    pub update_input: bool,
+}
+
+/// Opens the creator form, choosing the continue screen's first slot.
+pub fn open_creator(
+    screen_mode: i32,
+    availability: SaveAvailability,
+    reset_to_portal: bool,
+) -> OpenCreator {
+    OpenCreator {
+        continue_kind: if availability.0 == 2 {
+            SaveKind::Save
+        } else {
+            SaveKind::Checkpoint
+        },
+        show_continue: screen_mode == 12,
+        reset_to_portal: screen_mode == 12 && reset_to_portal,
+        update_input: true,
+    }
+}
+
+/// The equipment page's tab action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EquipmentTab {
+    /// The character tab stores the record and refreshes the figure.
+    Character,
+    /// Another tab shows or hides its form flag.
+    Other { enabled: bool },
+}
+
+/// Reads the equipment page's tab index; 2 is the character tab.
+pub fn equipment_tab(index: i32) -> EquipmentTab {
+    if index == 2 {
+        EquipmentTab::Character
+    } else {
+        EquipmentTab::Other {
+            enabled: index == 0,
+        }
+    }
+}
+
+/// Whether a voice selection takes: only when its sample exists.
+pub fn select_voice(index: i32, sample_exists: bool) -> Option<i32> {
+    sample_exists.then_some(index)
+}
+
+/// The voice variants played last, so a preview does not repeat one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct VoiceHistory {
+    pub last: usize,
+    pub before_last: usize,
+}
+
+/// Draws the voice variant a preview plays.
+///
+/// One or two samples always use the first; two or three avoid the last
+/// variant, and four or more avoid the last two. The draw advances the
+/// engine's generator; a single sample does not draw at all.
+pub fn draw_voice_variant(rng: &mut Lcg, count: usize, history: &mut VoiceHistory) -> usize {
+    let index = if count < 2 {
+        0
+    } else if count < 4 {
+        let mut index = rng.below(count as u32) as usize;
+        while index == history.last {
+            index = rng.below(count as u32) as usize;
+        }
+        index
+    } else {
+        let mut index = rng.below(count as u32) as usize;
+        while index == history.last || index == history.before_last {
+            index = rng.below(count as u32) as usize;
+        }
+        index
+    };
+    if count >= 2 {
+        history.before_last = history.last;
+        history.last = index;
+    }
+    index
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn a_character_record_moves_its_appearance() {
-        let mut source = CharacterAppearance {
-            words: [1, 2, 3, 4],
-            count: 5,
-            parts: vec![7, 8],
-            tail: 9,
-            tail_parts: vec![10],
+    fn a_character_record_moves_its_gear() {
+        let mut source = CreationGear {
+            hands: [
+                GearSlot { item: 1, flags: 2 },
+                GearSlot::new(3),
+                GearSlot::new(4),
+                GearSlot::new(5),
+            ],
+            worn: vec![GearSlot::new(7), GearSlot::new(8)],
+            carried: vec![GearSlot::new(10)],
         };
-        let moved = move_appearance(&mut source);
+        let moved = move_creation_gear(&mut source);
         assert_eq!(
             moved,
-            CharacterAppearance {
-                words: [1, 2, 3, 4],
-                count: 5,
-                parts: vec![7, 8],
-                tail: 9,
-                tail_parts: vec![10],
+            CreationGear {
+                hands: [
+                    GearSlot { item: 1, flags: 2 },
+                    GearSlot::new(3),
+                    GearSlot::new(4),
+                    GearSlot::new(5),
+                ],
+                worn: vec![GearSlot::new(7), GearSlot::new(8)],
+                carried: vec![GearSlot::new(10)],
             }
         );
         assert_eq!(
             source,
-            CharacterAppearance {
-                words: [1, 2, 3, 4],
-                count: 0,
-                parts: Vec::new(),
-                tail: 0,
-                tail_parts: Vec::new(),
+            CreationGear {
+                hands: [
+                    GearSlot { item: 1, flags: 2 },
+                    GearSlot::new(3),
+                    GearSlot::new(4),
+                    GearSlot::new(5),
+                ],
+                worn: Vec::new(),
+                carried: Vec::new(),
             }
         );
     }
@@ -1446,9 +2974,12 @@ mod tests {
 
         let lettered = update_creation_look(false, 2);
         assert_eq!(lettered.values, [0; 4]);
-        assert_eq!(lettered.letter, Some(b'C'));
+        assert_eq!(lettered.letter, Some(b'B'));
 
-        let plain = update_creation_look(false, -1);
+        let first = update_creation_look(false, 1);
+        assert_eq!(first.letter, Some(b'A'));
+
+        let plain = update_creation_look(false, 0);
         assert_eq!(plain.values, [0; 4]);
         assert_eq!(plain.letter, None);
     }
@@ -2128,5 +3659,872 @@ mod tests {
         assert!(resumed.saved);
         assert!(resumed.refreshed);
         assert!(resumed.resumed);
+    }
+
+    fn skill(points: u16, techniques: [u8; 6]) -> Skill {
+        Skill { points, techniques }
+    }
+
+    fn gear(hands: [u32; 4], worn: &[u32], carried: &[u32]) -> CreationGear {
+        CreationGear {
+            hands: hands.map(GearSlot::new),
+            worn: worn.iter().copied().map(GearSlot::new).collect(),
+            carried: carried.iter().copied().map(GearSlot::new).collect(),
+        }
+    }
+
+    #[test]
+    fn the_story_filter_keeps_braies_only() {
+        let mut story = gear([1, 2, 3, 4], &[7, 8, 9], &[10]);
+        filter_creation_gear(&mut story, 4, 0, &[247, 249]);
+        assert_eq!(story.hands, [GearSlot::default(); 4]);
+        assert_eq!(story.worn, vec![GearSlot::new(8)]);
+        assert!(story.carried.is_empty());
+
+        let mut knight = gear([1, 2, 3, 4], &[7, 8, 9], &[10]);
+        filter_creation_gear(&mut knight, 4, 1, &[247, 249]);
+        assert_eq!(knight, gear([1, 2, 3, 4], &[7, 8, 9], &[10]));
+    }
+
+    #[test]
+    fn the_arena_filter_keeps_offered_hands_and_braies() {
+        let mut arena = gear([247, 38, 3, 4], &[7, 8, 9], &[10]);
+        filter_creation_gear(&mut arena, 8, 0, &[247, 249]);
+        assert_eq!(
+            arena.hands,
+            [
+                GearSlot::new(247),
+                GearSlot::default(),
+                GearSlot::default(),
+                GearSlot::default()
+            ]
+        );
+        assert_eq!(arena.worn, vec![GearSlot::new(8)]);
+        assert!(arena.carried.is_empty());
+    }
+
+    #[test]
+    fn the_other_modes_clear_the_fist_and_the_inventory() {
+        let mut arena_mode = gear([0x1f, 0x1f, 3, 4], &[7, 8], &[10]);
+        filter_creation_gear(&mut arena_mode, 10, 0, &[]);
+        assert_eq!(
+            arena_mode.hands,
+            [
+                GearSlot::default(),
+                GearSlot::default(),
+                GearSlot::new(3),
+                GearSlot::new(4)
+            ]
+        );
+        assert_eq!(arena_mode.worn, vec![GearSlot::new(7), GearSlot::new(8)]);
+        assert!(arena_mode.carried.is_empty());
+
+        let mut other = gear([8, 9, 3, 4], &[7, 8], &[10]);
+        filter_creation_gear(&mut other, 0x1010, 0, &[]);
+        assert_eq!(other, gear([8, 9, 3, 4], &[7, 8], &[10]));
+    }
+
+    #[test]
+    fn the_starting_skills_are_three_full_melee_skills() {
+        let skills = starting_skills();
+        assert_eq!(skills[CLOSE_COMBAT], skill(25000, [1, 2, 3, 4, 8, 0]));
+        assert_eq!(skills[1], Skill::default());
+        assert_eq!(skills[ARMOUR], skill(25000, [1, 2, 3, 4, 5, 0]));
+        assert_eq!(skills[SHIELDS], skill(25000, [1, 2, 3, 4, 6, 0]));
+        assert_eq!(skills[4], Skill::default());
+        assert_eq!(skills[5], Skill::default());
+    }
+
+    #[test]
+    fn clearing_skills_keeps_the_first_used_first_technique() {
+        let mut skills = [Skill::default(); SKILLS];
+        skills[1] = skill(7000, [1, 2, 3, 4, 5, 6]);
+        skills[3] = skill(5000, [7, 7, 7, 7, 7, 7]);
+        assert_eq!(clear_skills_from_first_used(&mut skills), Some(1));
+        assert_eq!(skills[1], skill(0, [1, 0, 0, 0, 0, 0]));
+        assert_eq!(skills[2], Skill::default());
+        assert_eq!(skills[3], Skill::default());
+
+        let mut empty = [Skill::default(); SKILLS];
+        assert_eq!(clear_skills_from_first_used(&mut empty), None);
+    }
+
+    #[test]
+    fn the_skill_budget_caps_slots_and_keeps_a_chosen_technique() {
+        let mut skills = [Skill::default(); SKILLS];
+        skills[0] = skill(25000, [1, 2, 3, 4, 5, 6]);
+        skills[1] = skill(25000, [1, 2, 3, 4, 5, 6]);
+        let budget = set_skill_budget(&skills, 12000, 0);
+        assert_eq!(budget.skills[0], skill(12000, [1, 2, 3, 0, 0, 0]));
+        assert_eq!(budget.skills[1], Skill::default());
+        assert_eq!(budget.leftover, 0);
+        assert_eq!(budget.training, None);
+    }
+
+    #[test]
+    fn the_skill_budget_gives_the_leftover_to_the_training_skill() {
+        let mut skills = [Skill::default(); SKILLS];
+        skills[0] = skill(1000, [1, 0, 0, 0, 0, 0]);
+        let budget = set_skill_budget(&skills, 30000, 0);
+        assert_eq!(budget.skills[0].points, 5000);
+        assert_eq!(budget.leftover, 29000);
+        assert_eq!(budget.training, Some(0));
+
+        let knight = set_skill_budget(&skills, 5000, 1);
+        assert_eq!(knight.leftover, 9000);
+        assert_eq!(knight.skills[0].points, 5000);
+
+        let proctor = set_skill_budget(&[Skill::default(); SKILLS], 9999, 2);
+        assert_eq!(proctor.leftover, 10000);
+        assert_eq!(proctor.training, None);
+    }
+
+    #[test]
+    fn the_effective_experience_weighs_levels_and_the_first_remainder() {
+        let mut one = [Skill::default(); SKILLS];
+        one[0] = skill(25000, [0; 6]);
+        assert_eq!(effective_global_experience(&one), 37500);
+
+        let mut two = one;
+        two[1] = skill(25000, [0; 6]);
+        assert_eq!(effective_global_experience(&two), 106250);
+
+        let mut partial = [Skill::default(); SKILLS];
+        partial[0] = skill(7500, [0; 6]);
+        assert_eq!(effective_global_experience(&partial), 8125);
+
+        partial[1] = skill(7500, [0; 6]);
+        assert_eq!(effective_global_experience(&partial), 15000);
+
+        assert_eq!(effective_global_experience(&[Skill::default(); SKILLS]), 0);
+    }
+
+    #[test]
+    fn the_skills_page_follows_the_mode() {
+        let arena = skill_page(8, 0, 20000, 0);
+        assert_eq!(arena.mode, SkillPageMode::Arena);
+        assert_eq!(arena.heading, exa_ui::creation::SKILLS);
+        assert!(arena.clear_skills);
+        assert_eq!(arena.page, 4);
+
+        let arena_continue = skill_page(8, 12, 20000, 0);
+        assert_eq!(arena_continue.heading, "Current skill progress");
+        assert!(!arena_continue.clear_skills);
+
+        let global = skill_page(4, 0, 12000, 0);
+        assert_eq!(global.mode, SkillPageMode::Global);
+        assert_eq!(global.heading, "Global experience");
+        assert_eq!(global.value, 12000);
+        assert!(global.show_current);
+        assert_eq!(global.page, 6);
+
+        let continued = skill_page(4, 12, 12000, 30000);
+        assert_eq!(continued.mode, SkillPageMode::NewGlobal);
+        assert_eq!(continued.heading, "New global experience");
+        assert_eq!(continued.value, 18000);
+        assert!(!continued.show_current);
+    }
+
+    #[test]
+    fn the_new_global_experience_never_goes_negative() {
+        assert_eq!(new_global_experience(30000, 12000), 18000);
+        assert_eq!(new_global_experience(12000, 12000), 0);
+        assert_eq!(new_global_experience(100, 12000), 0);
+    }
+
+    #[test]
+    fn the_background_presets_name_their_keys() {
+        let unknown = background_preset(0).unwrap();
+        assert_eq!(unknown.class, BackgroundClass::Unknown);
+        assert_eq!(unknown.name, None);
+        assert_eq!(
+            unknown.keys,
+            PresetKeys {
+                root: 0x6431_bc02,
+                character: 0x6431_cc02
+            }
+        );
+
+        let knight = background_preset(1).unwrap();
+        assert_eq!(knight.name, Some("knight"));
+        assert_eq!(knight.keys.root, 0x6431_bc03);
+        assert_eq!(knight.keys.character, 0x6431_cc03);
+        assert_eq!(background_preset(2).unwrap().name, Some("proctor"));
+        assert_eq!(background_preset(3).unwrap().name, Some("villager"));
+        assert_eq!(background_preset(4), None);
+    }
+
+    #[test]
+    fn the_preset_save_keys_follow_the_mode() {
+        assert_eq!(preset_save_keys(4, 0).unwrap().root, 0x6431_bc02);
+        assert_eq!(preset_save_keys(4, 3).unwrap().character, 0x6431_cc05);
+        assert_eq!(
+            preset_save_keys(8, 0).unwrap(),
+            PresetKeys {
+                root: 0x6431_bc01,
+                character: 0x6431_cc01
+            }
+        );
+        assert_eq!(preset_save_keys(0, 0), None);
+        assert_eq!(preset_save_keys(4, 9), None);
+    }
+
+    #[test]
+    fn the_background_plan_resets_only_the_unknown_background() {
+        let unknown = plan_background(0, false).unwrap();
+        assert_eq!(unknown.source, PresetSource::NewDefault);
+        assert!(unknown.creation_defaults);
+
+        let template = plan_background(1, false).unwrap();
+        assert_eq!(template.source, PresetSource::Template);
+        assert!(!template.creation_defaults);
+
+        let saved = plan_background(2, true).unwrap();
+        assert_eq!(saved.source, PresetSource::Saved);
+        assert!(!saved.creation_defaults);
+        assert_eq!(plan_background(4, true), None);
+    }
+
+    #[test]
+    fn the_free_create_plan_picks_a_preset_or_default() {
+        let story = plan_free_create(4, true);
+        assert_eq!(
+            story.source,
+            FreeCreateSource::Preset(PresetKeys {
+                root: 0x6431_bc02,
+                character: 0x6431_cc02
+            })
+        );
+        assert!(!story.reset_skills);
+
+        assert_eq!(
+            plan_free_create(8, false).source,
+            FreeCreateSource::Preset(PresetKeys {
+                root: 0x6431_bc01,
+                character: 0x6431_cc01
+            })
+        );
+
+        let kept = plan_free_create(0, true);
+        assert_eq!(kept.source, FreeCreateSource::KeepRecord);
+        assert!(kept.reset_skills);
+
+        let fresh = plan_free_create(0x1010, false);
+        assert_eq!(fresh.source, FreeCreateSource::NewDefault);
+        assert!(fresh.reset_skills);
+    }
+
+    #[test]
+    fn the_entry_plan_loads_the_record_each_mode_edits() {
+        assert_eq!(
+            plan_creation_entry(12, 4, 0, false, false, true),
+            Err(CreationEntryError::SaveManagerMissing)
+        );
+
+        let continued = plan_creation_entry(12, 4, 0, false, true, true).unwrap();
+        assert_eq!(continued.source, EntrySource::ContinueSave);
+        assert!(!continued.filter);
+        assert!(!continued.full_health);
+
+        let invalid = plan_creation_entry(12, 4, 0, false, true, false).unwrap();
+        assert_eq!(invalid.mode, CreationScreenMode::Free);
+        assert_eq!(invalid.source, EntrySource::FreeCreate);
+        assert!(invalid.filter);
+        assert!(invalid.full_health);
+
+        let recruit = plan_creation_entry(10, 8, 0, false, true, true).unwrap();
+        assert_eq!(recruit.source, EntrySource::NewDefault);
+        assert!(recruit.filter);
+
+        let story = plan_creation_entry(4, 4, 2, false, true, true).unwrap();
+        assert_eq!(story.source, EntrySource::Background(2));
+
+        let existing = plan_creation_entry(0, 8, 0, true, true, true).unwrap();
+        assert_eq!(existing.source, EntrySource::Existing);
+    }
+
+    #[test]
+    fn the_final_button_advances_or_commits() {
+        let unnamed = submit_creation(SubmitInput {
+            page: CreationScreenPage::Appearance,
+            name_len: 0,
+            object_count: 0,
+            game_mode: 4,
+            screen_mode: 4,
+            continue_mode: false,
+        });
+        assert!(unnamed.missing_name);
+        assert_eq!(unnamed.page, CreationScreenPage::Appearance);
+        assert!(unnamed.button.is_none());
+
+        let named = submit_creation(SubmitInput {
+            page: CreationScreenPage::Appearance,
+            name_len: 1,
+            object_count: 0,
+            game_mode: 4,
+            screen_mode: 4,
+            continue_mode: false,
+        });
+        assert!(!named.missing_name);
+        assert_eq!(named.page, CreationScreenPage::Equipment);
+        assert!(named.build_equipment);
+        assert_eq!(named.button, Some("BEGIN"));
+        assert!(!named.ready_flags);
+
+        let ready = submit_creation(SubmitInput {
+            page: CreationScreenPage::Appearance,
+            name_len: 3,
+            object_count: 0,
+            game_mode: 0x1010,
+            screen_mode: 0,
+            continue_mode: false,
+        });
+        assert_eq!(ready.button, Some("READY"));
+        assert!(ready.ready_flags);
+
+        let recruit = submit_creation(SubmitInput {
+            page: CreationScreenPage::Equipment,
+            name_len: 3,
+            object_count: 0,
+            game_mode: 8,
+            screen_mode: 10,
+            continue_mode: false,
+        });
+        assert_eq!(recruit.commit, Some(CommitKind::Recruit));
+
+        let advanced = submit_creation(SubmitInput {
+            page: CreationScreenPage::Equipment,
+            name_len: 3,
+            object_count: 2,
+            game_mode: 8,
+            screen_mode: 10,
+            continue_mode: false,
+        });
+        assert_eq!(advanced.commit, Some(CommitKind::AdvancedEditor));
+
+        let free = submit_creation(SubmitInput {
+            page: CreationScreenPage::Equipment,
+            name_len: 3,
+            object_count: 0,
+            game_mode: 0,
+            screen_mode: 0,
+            continue_mode: false,
+        });
+        assert_eq!(free.commit, Some(CommitKind::Create));
+    }
+
+    #[test]
+    fn the_page_switch_goes_back_or_commits() {
+        let back = switch_creation_page(CreationScreenPage::Equipment, 10);
+        assert_eq!(back.page, CreationScreenPage::Appearance);
+        assert_eq!(back.destination, PageDestination::Appearance);
+        let header = back.header.unwrap();
+        assert_eq!(header.first, "NAME");
+        assert_eq!(header.second, "HAIR");
+        assert_eq!(header.final_button, "NEXT");
+
+        let arena = switch_creation_page(CreationScreenPage::Appearance, 10);
+        assert_eq!(arena.destination, PageDestination::Arena);
+        assert!(arena.header.is_none());
+
+        let other = switch_creation_page(CreationScreenPage::Appearance, 4);
+        assert_eq!(other.destination, PageDestination::Transition);
+    }
+
+    #[test]
+    fn the_equipment_header_follows_the_versus_script() {
+        let normal = equipment_page_header(8, 10, false);
+        assert_eq!(normal.first, "APPAREL");
+        assert_eq!(normal.second, "WEAPONS");
+        assert_eq!(normal.final_button, "RECRUIT");
+
+        let story = equipment_page_header(4, 4, false);
+        assert_eq!(story.final_button, "BEGIN");
+
+        let versus = equipment_page_header(0x1010, 0, true);
+        assert_eq!(versus.first, "EQUIPMENT");
+        assert_eq!(versus.second, "LOBBY");
+        assert_eq!(versus.final_button, "READY");
+
+        let no_script = equipment_page_header(0x1010, 0, false);
+        assert_eq!(no_script.first, "APPAREL");
+        assert_eq!(no_script.second, "WEAPONS");
+    }
+
+    #[test]
+    fn the_arena_commit_returns_the_new_global_experience() {
+        let mut skills = [Skill::default(); SKILLS];
+        skills[0] = skill(25000, [0; 6]);
+        let commit = commit_arena(skills, 50000, 10000, 3);
+        assert_eq!(commit.global, 77500);
+        assert_eq!(commit.skills[0].points, 25000);
+        assert_eq!(commit.loadout, 3);
+    }
+
+    #[test]
+    fn the_story_commit_saves_the_preset_and_weighs_the_skills() {
+        let mut skills = [Skill::default(); SKILLS];
+        skills[0] = skill(25000, [0; 6]);
+        let story = commit_story(4, 2, &skills);
+        assert_eq!(story.keys.unwrap().root, 0x6431_bc04);
+        assert_eq!(story.worth, 37500);
+        assert!(story.transition);
+
+        assert_eq!(commit_story(0, 0, &skills).keys, None);
+    }
+
+    #[test]
+    fn the_save_choices_adjust_and_step() {
+        let checkpoint = SaveAvailability(1);
+        let save = SaveAvailability(2);
+        let both = SaveAvailability(3);
+
+        assert!(select_save(3, SaveKind::Save, checkpoint).adjusted);
+        assert_eq!(
+            select_save(3, SaveKind::Save, checkpoint).kind,
+            SaveKind::Checkpoint
+        );
+        assert!(select_save(3, SaveKind::Checkpoint, save).adjusted);
+        assert_eq!(
+            select_save(3, SaveKind::Checkpoint, save).kind,
+            SaveKind::Save
+        );
+        assert!(!select_save(3, SaveKind::Save, both).adjusted);
+
+        assert_eq!(previous_save(0), None);
+        assert_eq!(previous_save(1), Some(0));
+        assert_eq!(next_save(0, 3), Some(1));
+        assert_eq!(next_save(2, 3), None);
+        assert_eq!(next_save(0, 1), None);
+
+        assert_eq!(
+            toggle_save_kind(SaveKind::Save, checkpoint),
+            Some(SaveKind::Checkpoint)
+        );
+        assert_eq!(toggle_save_kind(SaveKind::Save, save), None);
+        assert_eq!(
+            toggle_save_kind(SaveKind::Checkpoint, save),
+            Some(SaveKind::Save)
+        );
+        assert_eq!(toggle_save_kind(SaveKind::Checkpoint, checkpoint), None);
+    }
+
+    #[test]
+    fn deleting_a_save_moves_to_the_last_remaining() {
+        assert_eq!(
+            delete_save(1, 3),
+            DeleteSave {
+                index: 1,
+                empty: false
+            }
+        );
+        assert_eq!(
+            delete_save(2, 3),
+            DeleteSave {
+                index: 1,
+                empty: false
+            }
+        );
+        assert_eq!(
+            delete_save(0, 1),
+            DeleteSave {
+                index: -1,
+                empty: true
+            }
+        );
+        assert!(delete_save(0, 0).empty);
+    }
+
+    #[test]
+    fn the_continue_layout_disables_its_ends_and_cuts_the_name() {
+        let layout = continue_layout(
+            0,
+            3,
+            SaveKind::Save,
+            SaveAvailability(2),
+            "A very long character name",
+        );
+        assert!(layout.previous_disabled);
+        assert!(!layout.next_disabled);
+        assert_eq!(layout.name, "A very long cha");
+        assert_eq!(layout.button.label, "Continue from save");
+        assert!(layout.button.mirrored);
+        assert!(layout.button.enabled);
+
+        let last = continue_layout(2, 3, SaveKind::Checkpoint, SaveAvailability(3), "X");
+        assert!(!last.previous_disabled);
+        assert!(last.next_disabled);
+        assert_eq!(last.button.label, "Continue from checkpoint");
+        assert!(!last.button.mirrored);
+        assert!(!last.button.enabled);
+    }
+
+    #[test]
+    fn the_voice_names_and_pitch_follow_the_selection() {
+        assert_eq!(two_digits(0), "00");
+        assert_eq!(two_digits(1), "01");
+        assert_eq!(two_digits(9), "09");
+        assert_eq!(two_digits(10), "10");
+        assert_eq!(two_digits(100), "100");
+        assert_eq!(two_digits(-1), "0");
+
+        let preview = voice_preview("Vo", 0, 0.0);
+        assert_eq!(preview.name, "Vo01");
+        assert_eq!(preview.variant_name, "VoDA01");
+        assert_eq!(preview.pitch_bits, 0.9f32.to_bits());
+
+        assert_eq!(previous_voice(0), None);
+        assert_eq!(previous_voice(1), Some(0));
+        assert_eq!(next_voice(4), 5);
+
+        assert!((voice_pitch(0.0) - 0.9).abs() < 1e-7);
+        assert!((voice_pitch(1.0) - 1.07).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_voice_preview_is_throttled_and_wraps() {
+        let played = throttle_voice(300, 0);
+        assert!(played.played);
+        assert_eq!(played.last, 300);
+        assert!(!throttle_voice(299, 0).played);
+        assert!(!throttle_voice(0, -2).played);
+        assert!(throttle_voice(0, -300).played);
+    }
+
+    #[test]
+    fn the_hair_button_and_sex_change_read_the_flags() {
+        assert_eq!(hair_button(0, 0), HairButton::Hidden);
+        assert_eq!(hair_button(1, 0), HairButton::Visible);
+        assert_eq!(hair_button(0, 0x10_0000), HairButton::Expanded);
+        assert_eq!(hair_button(0, 0x1_0000), HairButton::Hidden);
+
+        assert_eq!(set_hair_visible(0, true), 0x1_0000);
+        assert_eq!(set_hair_visible(0x1_0000, false), 0);
+
+        let female = change_sex(0, 2);
+        assert_eq!(female.word, 1);
+        assert_eq!(female.label, CreationLabel::HumanFemale);
+        let male = change_sex(1, 1);
+        assert_eq!(male.word, 0);
+        assert_eq!(male.label, CreationLabel::HumanMale);
+        let ham = change_sex(0x200, 2);
+        assert_eq!(ham.word, 0x201);
+        assert_eq!(ham.label, CreationLabel::Ham);
+    }
+
+    #[test]
+    fn the_kit_tables_follow_the_modes() {
+        assert_eq!(
+            apparel_kit_table(8, 10, 0, false),
+            Some(KitTable::ArenaRecruit)
+        );
+        assert_eq!(
+            apparel_kit_table(8, 12, 0, false),
+            Some(KitTable::ArenaContinue)
+        );
+        assert_eq!(apparel_kit_table(2, 0, 0, true), Some(KitTable::StoryIntro));
+        assert_eq!(apparel_kit_table(2, 0, 0, false), Some(KitTable::Story));
+        assert_eq!(
+            apparel_kit_table(4, 0, 0, false),
+            Some(KitTable::StoryUnknown)
+        );
+        assert_eq!(apparel_kit_table(4, 0, 1, false), None);
+        assert_eq!(
+            apparel_kit_table(0x1010, 0, 0, false),
+            Some(KitTable::Versus)
+        );
+        assert_eq!(apparel_kit_table(0, 0, 0, false), Some(KitTable::Story));
+
+        assert_eq!(KitTable::ArenaRecruit.apparel_len(), 10);
+        assert_eq!(KitTable::ArenaContinue.apparel_len(), 15);
+        assert_eq!(KitTable::StoryUnknown.apparel_len(), 5);
+        assert_eq!(KitTable::Story.apparel_len(), 6);
+        assert_eq!(KitTable::StoryIntro.weapons_len(), 6);
+        assert_eq!(KitTable::Versus.weapons_len(), 7);
+
+        assert_eq!(weapon_kit_table(4, false), None);
+        assert_eq!(weapon_kit_table(2, true), Some(KitTable::Versus));
+        assert_eq!(weapon_kit_table(2, false), Some(KitTable::Story));
+        assert_eq!(weapon_kit_table(8, true), Some(KitTable::Story));
+    }
+
+    #[test]
+    fn the_kits_skip_what_is_already_held() {
+        let five = KitItem::plain(5);
+        let seven = KitItem {
+            item: 7,
+            variant: 2,
+            dyes: [4, 5],
+            colours: [1, 2, 3],
+        };
+
+        assert!(kit_item_matches(5, None, &five));
+        assert!(!kit_item_matches(6, None, &five));
+        assert!(kit_item_matches(
+            9,
+            Some(&KitRecord {
+                base: 5,
+                colours: [0; 3]
+            }),
+            &five
+        ));
+        assert!(kit_item_matches(
+            9,
+            Some(&KitRecord {
+                base: 7,
+                colours: [1, 2, 3]
+            }),
+            &seven
+        ));
+        assert!(!kit_item_matches(
+            9,
+            Some(&KitRecord {
+                base: 7,
+                colours: [1, 2, 4]
+            }),
+            &seven
+        ));
+
+        let worn = vec![GearSlot::new(5), GearSlot::new(9)];
+        let record_of = |item: u32| match item {
+            9 => Some(KitRecord {
+                base: 7,
+                colours: [1, 2, 3],
+            }),
+            _ => None,
+        };
+        assert!(missing_apparel(&worn, &[five, seven], record_of).is_empty());
+
+        let hands = [
+            GearSlot::new(5),
+            GearSlot::new(8),
+            GearSlot::new(6),
+            GearSlot::new(7),
+        ];
+        let base_of = |item: u32| if item == 8 { 5 } else { item };
+        assert_eq!(
+            missing_weapons(&hands, &[five, seven], base_of),
+            vec![seven]
+        );
+    }
+
+    #[test]
+    fn kit_items_resolve_by_database_flags() {
+        let spec = KitItem {
+            item: 12,
+            variant: 9,
+            dyes: [3, 4],
+            colours: [5, 6, 7],
+        };
+
+        let plain = resolve_kit_item(&spec, false, false, None);
+        assert_eq!(
+            plain,
+            ResolvedKitItem {
+                item: 12,
+                appearance: None
+            }
+        );
+
+        let instance = resolve_kit_item(&spec, true, false, None);
+        assert_eq!(instance.item, 12);
+        assert_eq!(
+            instance.appearance,
+            Some(KitAppearance {
+                variant: 9,
+                dyes: [3, 4],
+                colours: [5, 6, 7]
+            })
+        );
+
+        let alias = resolve_kit_item(&spec, true, true, Some(21));
+        assert_eq!(alias.item, 21);
+        assert!(alias.appearance.is_some());
+
+        let no_alias = resolve_kit_item(&spec, true, true, None);
+        assert_eq!(no_alias.item, 12);
+        assert!(no_alias.appearance.is_none());
+    }
+
+    #[test]
+    fn the_creation_icons_are_four_sheet_cells() {
+        assert_eq!(CREATION_ICON_SIZE, 96);
+        assert_eq!(CREATION_ICON_OFFSETS, [288, 192, 96, 0]);
+        assert_eq!(creation_icon_size(4), 32);
+        assert_eq!(creation_icon_size(5), 40);
+    }
+
+    #[test]
+    fn the_creator_panels_place_against_the_form() {
+        assert_eq!(
+            apparel_panel_place(true),
+            PanelPlace {
+                x: 4,
+                y: 0x18,
+                w: 0xac,
+                h: 0x26c
+            }
+        );
+        assert_eq!(apparel_panel_place(false).h, 0x238);
+        assert_eq!(
+            weapon_panel_place(1000, false),
+            PanelPlace {
+                x: 824,
+                y: 0x18,
+                w: 0xac,
+                h: 0x238
+            }
+        );
+        assert_eq!(
+            skill_panel_place(1000, 10),
+            PanelPlace {
+                x: 772,
+                y: 0x18,
+                w: 0xd8,
+                h: 0x204
+            }
+        );
+        assert_eq!(skill_panel_place(1000, 0).h, 0x294);
+    }
+
+    #[test]
+    fn the_skill_tab_slides_by_four_units() {
+        let placed = skill_tab_place(800, 100, 4, 6, false);
+        assert_eq!(placed.width, 676);
+        assert_eq!(placed.tab_x, 8);
+        assert_eq!(placed.tab_y, 784);
+
+        let continued = skill_tab_place(800, 100, 4, 6, true);
+        assert_eq!(continued.width, 676);
+        assert_eq!(continued.tab_x, 0);
+        assert_eq!(continued.tab_y, 0);
+    }
+
+    #[test]
+    fn the_continue_screen_places_its_list_and_name() {
+        let place = continue_place(4, 300);
+        assert_eq!(
+            place.list,
+            PanelPlace {
+                x: 236,
+                y: 0x74,
+                w: 0xe4,
+                h: 0xb4
+            }
+        );
+        assert_eq!(
+            place.name,
+            PanelPlace {
+                x: 4,
+                y: 0x28,
+                w: 0xe4,
+                h: 260
+            }
+        );
+    }
+
+    #[test]
+    fn reselecting_a_save_keeps_the_kind_when_nothing_is_available() {
+        let none = reselect_save(4, SaveKind::Save, SaveAvailability(0));
+        assert_eq!(none.kind, SaveKind::Save);
+        assert!(!none.adjusted);
+
+        let changed = reselect_save(4, SaveKind::Save, SaveAvailability(1));
+        assert_eq!(changed.kind, SaveKind::Checkpoint);
+        assert!(changed.adjusted);
+    }
+
+    #[test]
+    fn the_creator_opens_on_the_right_continue_slot() {
+        let story = open_creator(4, SaveAvailability(2), false);
+        assert!(!story.show_continue);
+        assert!(!story.reset_to_portal);
+        assert!(story.update_input);
+
+        let save = open_creator(12, SaveAvailability(2), true);
+        assert_eq!(save.continue_kind, SaveKind::Save);
+        assert!(save.show_continue);
+        assert!(save.reset_to_portal);
+
+        let checkpoint = open_creator(12, SaveAvailability(1), false);
+        assert_eq!(checkpoint.continue_kind, SaveKind::Checkpoint);
+        assert!(!checkpoint.reset_to_portal);
+    }
+
+    #[test]
+    fn the_equipment_tabs_store_and_toggle() {
+        assert_eq!(equipment_tab(2), EquipmentTab::Character);
+        assert_eq!(equipment_tab(0), EquipmentTab::Other { enabled: true });
+        assert_eq!(equipment_tab(1), EquipmentTab::Other { enabled: false });
+    }
+
+    #[test]
+    fn a_voice_selection_needs_its_sample() {
+        assert_eq!(select_voice(3, true), Some(3));
+        assert_eq!(select_voice(3, false), None);
+    }
+
+    #[test]
+    fn the_voice_variant_avoids_the_last_draws() {
+        let mut rng = Lcg(0);
+        let mut history = VoiceHistory::default();
+
+        // The first two draws are 0 and 0 and repeat the last variant; the
+        // third is 3.
+        assert_eq!(draw_voice_variant(&mut rng, 4, &mut history), 3);
+        assert_eq!(history.last, 3);
+        assert_eq!(history.before_last, 0);
+
+        let mut rng = Lcg(0);
+        let mut history = VoiceHistory::default();
+        assert_eq!(draw_voice_variant(&mut rng, 2, &mut history), 1);
+        assert_eq!(history.last, 1);
+
+        let mut rng = Lcg(0);
+        let mut history = VoiceHistory::default();
+        assert_eq!(draw_voice_variant(&mut rng, 1, &mut history), 0);
+        assert_eq!(rng.0, 0);
+    }
+
+    #[test]
+    fn the_creation_sliders_guard_nan_and_round_like_the_original() {
+        let epsilon = f32::from_bits(0x33ff_ffd7);
+        let nan = settle_appearance(f32::NAN, 0.0, 0, 0);
+        assert_eq!(nan.stored, None);
+
+        let boundary = settle_appearance(0.5, -epsilon, 10, 12);
+        assert_eq!(boundary.stored, Some(0.0));
+        assert!(boundary.callback);
+
+        let copied = copy_appearance(f32::NAN, 0.0, 0, 0);
+        assert_eq!(copied.stored, None);
+
+        let just_below = copy_appearance(f32::from_bits(0x33ff_ffd6), 0.0, 10, 12);
+        assert_eq!(just_below.stored, None);
+
+        let above = copy_appearance(epsilon * 2.0, 0.0, 10, 12);
+        assert_eq!(above.stored, Some(epsilon * 2.0));
+    }
+
+    #[test]
+    fn the_creation_deferred_calls_use_the_unsigned_clock() {
+        let fired = flush_creation_deferred(true, -1, 1);
+        assert!(fired.fired);
+        assert_eq!(fired.stamp, 1);
+        assert!(!fired.pending);
+
+        let wrapped = flush_creation_deferred(true, -1, 0);
+        assert!(!wrapped.fired);
+        assert!(wrapped.pending);
+
+        let early = flush_creation_deferred(true, 10, 11);
+        assert!(!early.fired);
+        assert!(early.pending);
+
+        let due = flush_creation_deferred(true, 10, 12);
+        assert!(due.fired);
+
+        assert!(refresh_creation_label(300, 0, false).ran);
+        assert!(!refresh_creation_label(299, 0, false).ran);
     }
 }

@@ -23,7 +23,7 @@ mod reverb;
 use bevy::prelude::*;
 
 pub use ambience::{AmbienceArea, LevelAmbience, ambience_for_level, bed_name, set_prefix};
-pub use bank::{SoundBank, SoundSet};
+pub use bank::{Lcg, SoundBank, SoundSet};
 pub use environment::{
     AudioEnvironment, BusGains, Listener, SourceCommand, SourcePlay, SourceUpdate, UpdateInput,
     Voice, VoiceHandle, heard_gain, voice_flags,
