@@ -88,25 +88,24 @@ impl GameData {
         })?;
         let project = Project::parse(&bytes)?;
         let mut packs = BTreeMap::new();
-        // The resource pack named by the project. The project stores its
-        // path without the extension (`Resource`); the original resolves it
-        // against the project folder and appends `.rpk`.
-        let resource_file = Project::resolve_path(
-            &root,
-            &format!("{}.rpk", project.resource_pack.trim_end_matches(".rpk")),
-        );
+        // The resource pack: the original opens `Resource` in the project
+        // folder (the project file's own copy of the name is the same).
+        let resource_file =
+            Project::resolve_path(&root, &format!("{}.rpk", PackKind::Resource.file_stem()));
         let resource = MappedArchive::open(&resource_file)?;
         packs.insert(PackKind::Resource, resource);
-        // The project's object and texture libraries must be there; a
-        // missing one is fatal ("Unable to locate data files.").
+        // The object and texture libraries the project names must be there;
+        // a missing one is fatal in the original ("Unable to locate data
+        // files."). A name Exarust has no pack kind for is skipped: nothing
+        // here could look anything up in it.
         for name in project
             .object_libraries
             .iter()
             .chain(&project.texture_libraries)
         {
-            let kind = PackKind::from_name(name).ok_or_else(|| {
-                Error::Malformed(format!("project names unknown library {name:?}"))
-            })?;
+            let Some(kind) = PackKind::from_name(name) else {
+                continue;
+            };
             let path = Project::resolve_path(&root, &format!("{}.rpk", kind.file_stem()));
             if !path.exists() {
                 return Err(Error::Malformed(format!(
