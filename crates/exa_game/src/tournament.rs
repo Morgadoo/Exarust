@@ -12,7 +12,8 @@
 //! index. Forfeiting the entire tourney (after "Do you wish to forfeit the
 //! entire tourney?") empties every event that has no winner. Back at the
 //! hub after any match on a tournament day (a day that is a multiple of 7)
-//! the same pass runs again with a rival of 2 to 6 (`2 + high(roll × 5)`).
+//! the same pass runs again with a rival of 2 to 6 (`2 + high(roll × 5)`,
+//! `arena::assign_round_ids`).
 //!
 //! Arriving at the hub, when a physician is on the staff, removes the
 //! weapon-kind object lying at (−2100, 0, 900) cm, as the physician's hire
@@ -73,10 +74,11 @@ pub fn fill_bracket(team_size: i32, sides: i32, rounds: i32, base: i32) -> Vec<B
     slots
 }
 
-/// Give the events before the first open one the company entered a
-/// winner: an event with no winner and no entrant takes a company id of 2
-/// to `1 + rivals`, the high half of the stepped roll times `rivals`.
-fn settle(rows: &mut Roster, roll: &mut u32, rivals: u64) {
+/// Give the events before the first one the company entered a winner: an
+/// event with no winner and no entrant takes a company id of 2 to 7. (The
+/// return to the hub's pass, a rival of 2 to 6, is
+/// [`crate::arena::assign_round_ids`].)
+pub fn settle_unentered(rows: &mut Roster, roll: &mut u32) {
     for row in rows.iter_mut() {
         if row.team_id != 0 {
             continue;
@@ -85,20 +87,8 @@ fn settle(rows: &mut Roster, roll: &mut u32, rivals: u64) {
             return;
         }
         *roll = roll.wrapping_mul(STEP).wrapping_add(1);
-        row.team_id = ((u64::from(*roll) * rivals) >> 32) as u32 + 2;
+        row.team_id = ((u64::from(*roll) * 6) >> 32) as u32 + 2;
     }
-}
-
-/// The settling a tournament event's start runs: a rival of 2 to 7.
-pub fn settle_unentered(rows: &mut Roster, roll: &mut u32) {
-    settle(rows, roll, 6);
-}
-
-/// The settling the return to the hub runs on a tournament day (a day
-/// that is a multiple of 7), after the day's match count: a rival of 2
-/// to 6.
-pub fn settle_after_return(rows: &mut Roster, roll: &mut u32) {
-    settle(rows, roll, 5);
 }
 
 /// A started tournament event.
@@ -255,13 +245,12 @@ mod tests {
             entered(0, 0),
             entered(0, 0),
         ];
-        let mut roll = 1;
-        settle_after_return(&mut rows, &mut roll);
+        let mut rng = crate::item_container::Rng(1);
+        crate::arena::assign_round_ids(&mut rows, &mut rng);
         assert_eq!(rows.map(|r| r.team_id), [2, 5, 6, 0, 0, 0]);
-        assert_eq!(roll, 0xdc6d_ac1f);
+        assert_eq!(rng.0, 0xdc6d_ac1f);
         let mut rows = [entered(0, 0); 6];
-        let mut roll = 1;
-        settle_after_return(&mut rows, &mut roll);
+        crate::arena::assign_round_ids(&mut rows, &mut crate::item_container::Rng(1));
         assert_eq!(rows.map(|r| r.team_id), [2, 6, 3, 3, 5, 3]);
         let mut rows = [entered(0, 0); 6];
         let mut roll = 1;

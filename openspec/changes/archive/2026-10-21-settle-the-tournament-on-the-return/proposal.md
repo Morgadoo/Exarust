@@ -4,8 +4,9 @@
 
 Review of the arena career lane. The return to the hub on a tournament day
 settles the events before the first open entered one a second time, with a
-rival drawn from five companies instead of six; Exarust only had the
-tournament start's pass. The hub arrival's "physician's mark" was a guess
+rival drawn from five companies instead of six. Exarust had that pass
+(`arena::assign_round_ids`) but not when the return runs it, and the
+tournament start's pass beside it was not pinned against it. The hub arrival's "physician's mark" was a guess
 written as fact: the original removes a weapon-kind object lying at a fixed
 hub spot, the same call the physician's hire makes.
 
@@ -13,9 +14,10 @@ Phase 7, milestone M7 "arena season" (`docs/PLAN.md`).
 
 ## What Changes
 
-- `tournament::settle_after_return`: the return's pass, a rival of
-  `2 + high(roll × 5)` (2 to 6), beside the start's `settle_unentered`
-  (2 to 7), both one loop.
+- The return's pass (`arena::assign_round_ids`, a rival of
+  `2 + high(roll × 5)`, 2 to 6) is specified as run on a tournament day after
+  the day's match count, and pinned against the start's
+  `tournament::settle_unentered` (2 to 7).
 - The hub arrival's flag is `clear_physician_spot`, documented as the object
   at (−2100, 0, 900) cm, its meaning labelled as not traced.
 - `docs/formats/OTHER.md` loses a stale duplicate "Character creation"
