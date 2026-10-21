@@ -747,8 +747,8 @@ screen flag; setting it and pressing Apply toggles full screen immediately.
 ### Opening the page
 
 The page opens with the live renderer quality levels, audio volume, music,
-frame-rate readout, window mode, aim speed and controller flag. It resets
-hardware antialiasing to 0, vertical sync, tips and checkpoints to on.
+frame-rate readout, window mode, tips, checkpoints, aim speed and controller
+flag. It resets hardware antialiasing to 0 and vertical sync to on.
 
 Two quirks are reproduced: the volume slider always opens at 2/3 (the
 original divides the default 1.0 by the maximum 1.5, not the live volume),
@@ -794,8 +794,8 @@ window, and writes the file itself.
 
 Cancel pushes the options the page opened with back and closes it. The
 Defaults button runs the benchmark and takes its levels; the Deck takes the
-preset instead. Both also reset hardware antialiasing, vertical sync, tips
-and checkpoints to their defaults.
+preset instead. Both also reset hardware antialiasing and vertical sync to
+their defaults.
 
 ### GPU benchmark
 

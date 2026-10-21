@@ -141,8 +141,8 @@ impl Options {
             vertical_sync: Self::default().vertical_sync,
             show_fps: live.show_fps,
             window_mode: live.window_mode,
-            show_tips: Self::default().show_tips,
-            checkpoints: Self::default().checkpoints,
+            show_tips: live.show_tips,
+            checkpoints: live.checkpoints,
             aim_speed: live.aim_speed,
             controller: live.controller,
             perf_index: live.perf_index,
@@ -164,8 +164,6 @@ impl Options {
             shadow_quality: quality.shadow_quality,
             multisample: Self::default().multisample,
             vertical_sync: Self::default().vertical_sync,
-            show_tips: Self::default().show_tips,
-            checkpoints: Self::default().checkpoints,
             perf_index,
             ..*live
         }
@@ -185,8 +183,6 @@ impl Options {
             shadow_quality: 3,
             multisample: Self::default().multisample,
             vertical_sync: Self::default().vertical_sync,
-            show_tips: Self::default().show_tips,
-            checkpoints: Self::default().checkpoints,
             ..*live
         }
     }

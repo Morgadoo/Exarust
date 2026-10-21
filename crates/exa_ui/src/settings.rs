@@ -1024,8 +1024,8 @@ mod screen_tests {
         assert_eq!(rows[9], (Setting::VerticalSync, RowState::check(true)));
         assert_eq!(rows[10], (Setting::ShowFps, RowState::check(true)));
         assert_eq!(rows[11], (Setting::WindowMode, RowState::check(false)));
-        assert_eq!(rows[12], (Setting::ShowTips, RowState::check(true)));
-        assert_eq!(rows[13], (Setting::Checkpoints, RowState::check(true)));
+        assert_eq!(rows[12], (Setting::ShowTips, RowState::check(false)));
+        assert_eq!(rows[13], (Setting::Checkpoints, RowState::check(false)));
     }
 
     #[test]

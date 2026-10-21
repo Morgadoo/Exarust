@@ -275,8 +275,9 @@ fn opening_the_screen_keeps_some_values_and_resets_others() {
     assert!(draft.vertical_sync);
     assert!(draft.show_fps);
     assert!(!draft.window_mode);
-    assert!(draft.show_tips);
-    assert!(draft.checkpoints);
+    // The tips and checkpoints are live values, not reset.
+    assert!(!draft.show_tips);
+    assert!(!draft.checkpoints);
     assert_eq!(draft.aim_speed, 0.4);
     assert!(draft.controller);
     assert_eq!(draft.perf_index, 1.2);
@@ -306,8 +307,9 @@ fn the_auto_detection_fills_the_quality_and_resets_the_rest() {
     assert_eq!(auto.shadow_quality, 4);
     assert_eq!(auto.multisample, 0);
     assert!(auto.vertical_sync);
-    assert!(auto.show_tips);
-    assert!(auto.checkpoints);
+    // The tips and checkpoints stay live across the auto-detection.
+    assert!(!auto.show_tips);
+    assert!(!auto.checkpoints);
     assert_eq!(auto.volume, 0.8);
     assert!(!auto.music);
     assert!(!auto.window_mode);
