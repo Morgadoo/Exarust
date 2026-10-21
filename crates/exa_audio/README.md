@@ -253,7 +253,8 @@ placement and names, the reverb block's stored bits and the backend's
 restart rule. The installed-sets test reads `EXANIMA_DIR` and skips when it
 is not set.
 
-`voices` holds the original's voice choice (a feral body speaks its undead
-voice, else its living one, with the record's sex bit) and the footstep
-set selection (the golem suit's `Golem_Stp`, else the race's step name,
-else `StpWet`).
+`voices` holds the original's voice choice (a body with a feral level above
+0 speaks its undead voice, else its living one, with the record's sex bit)
+and the footstep set selection (the golem suit's `Golem_Stp`, else the
+race's step name), plus the name of the wet splash set (`StpWet`). Nothing
+selects voices in the running game yet.

@@ -344,9 +344,10 @@ pub fn daze_factor(max_health: f32, potion: bool) -> f32 {
     if potion { f * 0.5 } else { f }
 }
 
-/// The original's smoothstep, (3 − 2x)·x², unclamped.
+/// The original's smoothstep, (3 − 2x)·(x·x), unclamped (the square is
+/// formed first).
 pub fn smoothstep(x: f32) -> f32 {
-    (3.0 - 2.0 * x) * x * x
+    (3.0 - 2.0 * x) * (x * x)
 }
 
 /// A float rounded as the original rounds (to the nearest, ties to even),
@@ -1466,9 +1467,11 @@ mod routine_tests {
 }
 
 /// The original's fall ease (the clip start's mode 2), monotonic from 0 to
-/// 1: (0.11x + 1) − 1/(8x + 1), in double precision.
+/// 1: (0.11x + 1) − 1/(8x + 1), the quotient in single precision and the
+/// rest in double.
 pub fn fall_ease(x: f32) -> f32 {
-    ((f64::from(x) * 0.11 + 1.0) - 1.0 / (f64::from(x) * 8.0 + 1.0)) as f32
+    let narrow = 1.0 / (x * 8.0 + 1.0);
+    ((f64::from(x) * 0.11 + 1.0) - f64::from(narrow)) as f32
 }
 
 #[cfg(test)]

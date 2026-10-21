@@ -3334,8 +3334,9 @@ mod environment_tests {
 pub fn step_phase(phase: f32, travel2: f32) -> (f32, f32) {
     let previous = phase;
     let mut now = phase;
-    if travel2 > 1.192_09e-7 {
-        now += travel2.sqrt() * 0.0002;
+    if travel2 > f32::from_bits(0x33ff_ffd7) {
+        // The sum runs in double: the root widened, scaled, added, narrowed.
+        now = (f64::from(travel2.sqrt()) * 0.0002 + f64::from(now)) as f32;
     }
     if now > 1.0 {
         now -= 1.0;
@@ -3357,5 +3358,10 @@ mod step_phase_tests {
         assert!((prev - 0.1).abs() < 1e-6);
         assert!((now - 0.102).abs() < 1e-6);
         assert_eq!(step_phase(0.5, 0.0), (0.5, 0.5));
+        // At the epsilon itself or for a NaN travel the phase stands.
+        assert_eq!(step_phase(0.5, f32::from_bits(0x33ff_ffd7)), (0.5, 0.5));
+        assert_eq!(step_phase(0.5, f32::NAN), (0.5, 0.5));
+        // Exactly 1 does not wrap; the sum is taken in double.
+        assert_eq!(step_phase(1.0, 0.0), (1.0, 1.0));
     }
 }

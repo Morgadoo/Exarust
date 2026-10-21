@@ -851,9 +851,10 @@ fn state_masks_and_the_full_tone_are_the_originals() {
     }
     body.clear_foot_state(0xffff);
     assert!(body.legs.iter().all(|l| l.state.0 == 0));
-    assert!(full_tone(0x0E).getting_up);
-    assert!(full_tone(0x0F).getting_up);
-    assert!(!full_tone(0x0D).getting_up);
-    assert_eq!(full_tone(0).stance, 1.0);
-    assert_eq!(full_tone(0).stagger_decay, 0.0);
+    assert!(full_tone(0x0E, 0.75).getting_up);
+    assert!(full_tone(0x0F, 0.75).getting_up);
+    assert!(!full_tone(0x0D, 0.75).getting_up);
+    assert_eq!(full_tone(0, 0.75).stance, 0.75);
+    assert_eq!(full_tone(0, 0.75).tone, 1.0);
+    assert_eq!(full_tone(0, 0.75).stagger_decay, 0.0);
 }

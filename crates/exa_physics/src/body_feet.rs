@@ -761,9 +761,9 @@ pub(super) fn extension(level: f32, over: f32, reach: f32) -> f32 {
 #[path = "body_feet_test.rs"]
 mod tests;
 
-/// What the end of a step leaves: where the step target is (the original
-/// subtracts the goal from the chest and lets the level clamp it), and
-/// whether the AI is told (its step direction turned toward its facing).
+/// What the end of a step leaves: where the step target is (the base
+/// point moved by the step vector), and whether the AI is told (the step
+/// pointing along the body's facing).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StepEnd {
     pub target: Vec3,
@@ -771,14 +771,15 @@ pub struct StepEnd {
 }
 
 /// The step's end (the original's step-end routine): with an AI target the
-/// AI is told when the step direction points along the facing; the target
-/// is the chest less the goal, which the level's scene and height queries
-/// then clamp. The stepping flag, its lift and the foot timers are the
+/// AI is told when the step vector points along the facing (the dot summed
+/// z + (y + x), strictly above 0); the target is the base point plus the
+/// step. The stepping flags, the lift reset and the foot timer are the
 /// caller's to set.
-pub fn step_end(ai_target: bool, step_dir: Vec3, facing: Vec3, chest: Vec3, goal: Vec3) -> StepEnd {
+pub fn step_end(ai_target: bool, step: Vec3, facing: Vec3, base: Vec3) -> StepEnd {
+    let dot = step.z * facing.z + (step.y * facing.y + step.x * facing.x);
     StepEnd {
-        target: chest - goal,
-        tell_ai: ai_target && step_dir.dot(facing) > 0.0,
+        target: base + step,
+        tell_ai: ai_target && dot > 0.0,
     }
 }
 
@@ -787,18 +788,22 @@ mod step_end_tests {
     use super::*;
 
     #[test]
-    fn the_step_end_targets_the_chest_less_the_goal() {
-        let end = step_end(true, Vec3::Z, Vec3::Z, Vec3::new(1.0, 2.0, 3.0), Vec3::Z);
-        assert_eq!(end.target, Vec3::new(1.0, 2.0, 2.0));
+    fn the_step_end_moves_the_base_by_the_step() {
+        let end = step_end(true, Vec3::Z, Vec3::Z, Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(end.target, Vec3::new(1.0, 2.0, 4.0));
         assert!(end.tell_ai);
-        assert!(!step_end(false, Vec3::Z, Vec3::Z, Vec3::ZERO, Vec3::ZERO).tell_ai);
-        assert!(!step_end(true, Vec3::NEG_Z, Vec3::Z, Vec3::ZERO, Vec3::ZERO).tell_ai);
+        assert!(!step_end(false, Vec3::Z, Vec3::Z, Vec3::ZERO).tell_ai);
+        assert!(!step_end(true, Vec3::NEG_Z, Vec3::Z, Vec3::ZERO).tell_ai);
+        // A step across the facing (dot exactly 0) or a NaN step tells no one.
+        assert!(!step_end(true, Vec3::X, Vec3::Z, Vec3::ZERO).tell_ai);
+        assert!(!step_end(true, Vec3::NAN, Vec3::Z, Vec3::ZERO).tell_ai);
     }
 }
 
 impl Ragdoll {
-    /// Clears bits `mask` from every foot contact's state, as the original
-    /// clears part state bits when a motion starts or a get-up begins.
+    /// Clears bits `mask` from every foot contact's state. The original
+    /// clears them on every part of the body (the parts list), when a
+    /// motion starts or a get-up begins; only the feet are modelled here.
     pub fn clear_foot_state(&mut self, mask: u32) {
         for leg in &mut self.legs {
             leg.state = FootState(leg.state.0 & !mask);
@@ -806,9 +811,9 @@ impl Ragdoll {
     }
 }
 
-/// The tone and stance fields a full reset writes: the stance factor and
-/// tone 1, the stagger speed 1 and decay 0, and the getting-up condition
-/// for the two get-up motions.
+/// What a full tone reset writes: the stance factor carried into two
+/// fields, tone 1, the stagger speed 1 and decay 0, and the getting-up
+/// condition word (assigned, not or-ed) for the two get-up motions.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FullTone {
     pub stance: f32,
@@ -818,11 +823,13 @@ pub struct FullTone {
     pub getting_up: bool,
 }
 
-/// The reset values (the original's routine): all 1, the stagger's decay 0,
-/// and `true` for motions 0x0E and 0x0F (which sets condition 0x300).
-pub fn full_tone(motion: i32) -> FullTone {
+/// The reset values (the original's routine): the stance factor is copied
+/// from the body's current one (`stance`), the tone and stagger speed are 1,
+/// the stagger's decay 0, and for motions 0x0E and 0x0F the whole condition
+/// word is assigned 0x300 (`getting_up`).
+pub fn full_tone(motion: i32, stance: f32) -> FullTone {
     FullTone {
-        stance: 1.0,
+        stance,
         tone: 1.0,
         stagger_speed: 1.0,
         stagger_decay: 0.0,

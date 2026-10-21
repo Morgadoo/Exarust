@@ -523,7 +523,6 @@ push at a world point with the original's weighting (`push_fraction`, the
 `4·dot` test against the push's squared length). The stagger helper
 (`stagger`, `recoil`) gives a blow's stagger speed, decay, flags and
 countdown; `step_phase` advances the footstep phase from the pelvis travel;
-`scene_ground_below` is the placement query's box-level ground probe;
 `femur_posture_turn` is the thigh posture's alternating 5° (splayed) or
 (1 − height)·−1.5° (combat) turn, applied by the sampler to the clip's
 thigh turns in the combat conditions; and `MOTILE_ENVIRONMENT` is the class init's unused
