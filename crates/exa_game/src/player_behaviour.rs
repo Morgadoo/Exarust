@@ -16,6 +16,9 @@
 //! enemy, screen-nearest character and attack timing, read in the
 //! instructions (the tests below carry the numbers).
 
+// NaN-sensitive compares are kept as the original makes them.
+#![allow(clippy::neg_cmp_op_on_partial_ord)]
+
 use bevy::math::{Vec2, Vec3};
 
 /// The engine's single-precision epsilon, the floor under its "is it zero"
@@ -116,12 +119,8 @@ pub fn aim_lock_height(plane: f32, point: f32, distance2: f32, radius: f32) -> f
 pub fn bone_screen(start: Vec2, end: Vec2, cursor: Vec2) -> (f32, f32) {
     let bone = end - start;
     let to = cursor - start;
-    let mut t = (bone.x * to.x + bone.y * to.y) / (bone.x * bone.x + bone.y * bone.y);
-    if t < 0.0 {
-        t = 0.0;
-    } else if t > 1.0 {
-        t = 1.0;
-    }
+    // Clamped as the original's two ordered tests do: NaN and −0 pass.
+    let t = ((bone.x * to.x + bone.y * to.y) / (bone.x * bone.x + bone.y * bone.y)).clamp(0.0, 1.0);
     let d = start + bone * t - cursor;
     (t, d.x * d.x + d.y * d.y)
 }
