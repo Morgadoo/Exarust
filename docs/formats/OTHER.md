@@ -1832,7 +1832,8 @@ executable; a retail trace; `exa_combat::regen`)
   a human with full red heals 0.005 a second, the whole bar in 50 s.
 - r is set to 0 by every blow that deals health and by every weapon
   contact on a character, before the damage routine decides what the
-  contact does; burning resets it too (not ported).
+  contact does; a burn that still has strength clears it in the upkeep
+  stage, before this bookkeeping (`exa_combat::burn`).
 - An active second wind, after the heal pool and before the rate ramp,
   adds the double 0.0003 to yellow and stores the float, whether or not
   the fighter attacks. The wind stays while the game clock is at or before

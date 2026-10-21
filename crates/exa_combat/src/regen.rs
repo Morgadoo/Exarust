@@ -8,6 +8,8 @@
 //! fighter attacks (condition 2) or while Cmbt - Idle plays, so a fighter
 //! in its fighting stance never heals, and every blow sets it back to 0
 //! ([`crate::Health::take`], and each weapon contact in the hit reaction).
+//! A burn that still has strength clears it in the upkeep stage, before
+//! this bookkeeping ([`crate::burn`]).
 //! Red health heals only for the races whose rule bits give red
 //! regeneration without the bit that blocks it (the ogre, Sir, the
 //! harvester, the demon, a golem suit wearing its core), dead or alive,

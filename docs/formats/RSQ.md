@@ -1358,8 +1358,10 @@ and down. h is the heading.
   weapon-in-hand gate, the attack arms' stiffness, the swing sound, the
   fatigue ramp, the aim nudges (fist, edge, overhead, homing), the two-hand
   group bit, Break Tangle and the clinch clear (`exa_combat::swing`,
-  `strike_body`), the held weapon's handling pushes (`weapon`) and burning
-  (`exa_combat::burn`). Not reproduced: the start callback itself (no
+  `strike_body`) and the held weapon's handling pushes (`weapon`).
+  Burning runs in the upkeep stage (`exa_combat::burn`): a tick that still
+  has strength clears the regeneration rate, and yellow under 0 starts the
+  collapse. Not reproduced: the start callback itself (no
   callback is registered), the grip link bodies and their collision
   consumers (the drop/clinch logic is here), the full three-bone IK, and
   the reciprocal-square-root approximations (Exarust normalises exactly).

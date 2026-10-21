@@ -6,13 +6,18 @@
 //! sound once the clock is 800 ms past the one drawn after the last (a random
 //! share of 800 ms past that sound); yellow under 0, after red has scaled it,
 //! collapses the body (yellow and red 0). A red already near 0 takes all of
-//! yellow. The body's condition bit 0x200 (down) and 0x800 (dying) stop
-//! it.
+//! yellow. A tick that still has strength clears the regeneration rate.
+//! The body's condition bit 0x200 (down) and 0x800 (dying) stop it. The
+//! character tick's upkeep stage runs this ([`burn_upkeep`]).
 //!
 //! The original keeps these as the burning body's strength, timer and sound
 //! clock, and the yellow and red flame levels; [`Burn`] holds the first three.
 //! Evidence: the burning routine's assembly and the damage model notes.
 //! Constants are the original's.
+
+use bevy::prelude::*;
+
+use crate::collapse;
 
 /// The timer gains this share of the strength a tick, up to 20; gone, it
 /// loses 0.1.
@@ -31,7 +36,7 @@ pub const BURN_SOUND_MS: u64 = 800;
 const SOUND_FROM: f32 = 1.0;
 
 /// A body's burn.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct Burn {
     /// The burn's strength this tick.
     pub strength: f32,
@@ -59,11 +64,14 @@ pub struct BurnStep {
     pub red: f32,
     pub sound_at: Option<u64>,
     pub collapse: bool,
+    /// The tick still had strength, so the regeneration rate is cleared.
+    pub clears_regen: bool,
 }
 
 /// One burning tick of a body not off its feet (`condition` & 0xA00 clear),
 /// with `yellow`, `red`, the burn and the game clock `now_ms`; `roll` is the
-/// sound cooldown's random draw (0..1). The sound's own volume and pitch
+/// sound cooldown's random draw (0..1). A tick that still has strength
+/// reports [`BurnStep::clears_regen`]. The sound's own volume and pitch
 /// draws, and the body's staggering reset the original makes here, are not
 /// reproduced.
 pub fn burn_tick(
@@ -115,6 +123,7 @@ pub fn burn_tick(
             red,
             sound_at,
             collapse,
+            clears_regen: true,
         });
     }
     burn.timer = (f64::from(burn.timer) - TIMER_FALL) as f32;
@@ -127,7 +136,82 @@ pub fn burn_tick(
         red,
         sound_at,
         collapse: false,
+        clears_regen: false,
     })
+}
+
+/// Writes one burning tick onto `health`. A tick that still has strength
+/// clears the regeneration rate. A body that is down or dying is left as
+/// it is.
+pub fn apply_burn(
+    health: &mut crate::Health,
+    condition: u32,
+    burn: &mut Burn,
+    now_ms: u64,
+    roll: f32,
+) -> Option<BurnStep> {
+    let step = burn_tick(condition, health.yellow, health.red, burn, now_ms, roll)?;
+    health.yellow = step.yellow;
+    health.red = step.red;
+    if step.clears_regen {
+        health.rate = 0.0;
+    }
+    Some(step)
+}
+
+/// The ticked body's burn, in its upkeep stage: health, the regeneration
+/// rate, and a collapse when yellow falls below 0. The blend takes the
+/// body's muscle energy (the collapse start reads that energy against 1.2).
+#[allow(clippy::type_complexity)]
+pub fn burn_upkeep(
+    mut commands: Commands,
+    ticked: Res<exa_physics::body::TickedCharacter>,
+    ticks: Option<Res<exa_physics::body::BodyTicks>>,
+    mut fighters: Query<(
+        &mut crate::Fighter,
+        &mut crate::Condition,
+        &mut crate::StateFlags,
+        &mut exa_anim::Animator,
+        Option<&mut exa_physics::body::Ragdoll>,
+        Option<&mut crate::collapse::Hands>,
+        &mut Burn,
+    )>,
+    mut roll: Local<crate::Roll>,
+) {
+    let Ok((mut fighter, mut condition, mut flags, mut anim, mut body, mut hands, mut burn)) =
+        fighters.get_mut(ticked.body)
+    else {
+        return;
+    };
+    let now = ticks.as_ref().map_or(0, |t| t.millis());
+    let Some(step) = apply_burn(
+        &mut fighter.health,
+        condition.0,
+        &mut burn,
+        now,
+        roll.next(),
+    ) else {
+        return;
+    };
+    let energy = body
+        .as_ref()
+        .and_then(|b| b.drive.as_ref())
+        .map_or(1.0, |d| d.energy);
+    if step.collapse
+        && collapse::start_collapse(
+            &mut condition,
+            &mut flags,
+            &mut anim,
+            body.as_deref_mut(),
+            energy,
+            hands.as_deref_mut(),
+        )
+    {
+        commands
+            .entity(ticked.body)
+            .insert(collapse::Collapse::default())
+            .remove::<exa_physics::body::Fallen>();
+    }
 }
 
 #[cfg(test)]
@@ -203,5 +287,90 @@ mod tests {
         let mut b = Burn::default();
         assert!(burn_tick(0x200, 1.0, 1.0, &mut b, 0, 0.0).is_none());
         assert!(burn_tick(0x800, 1.0, 1.0, &mut b, 0, 0.0).is_none());
+    }
+
+    /// A tick that still has strength clears the regeneration rate. A tick
+    /// whose strength is gone leaves the rate, and a down body leaves both.
+    #[test]
+    fn a_damaging_burn_clears_the_regeneration_rate() {
+        let mut health = crate::Health {
+            yellow: 0.9,
+            red: 1.0,
+            max: 1.0,
+            rate: 1.0,
+            heal_pool: 0.0,
+        };
+        let mut burn = Burn {
+            strength: 1.0,
+            ..Burn::default()
+        };
+        let step = apply_burn(&mut health, 0, &mut burn, 0, 0.0).unwrap();
+        assert!(step.clears_regen);
+        assert_eq!(health.rate, 0.0);
+        assert!(health.yellow < 0.9);
+
+        let mut health = crate::Health {
+            yellow: 1.0,
+            red: 1.0,
+            max: 1.0,
+            rate: 0.5,
+            heal_pool: 0.0,
+        };
+        let mut burn = Burn {
+            strength: 0.0,
+            timer: 0.25,
+            ..Burn::default()
+        };
+        let step = apply_burn(&mut health, 0, &mut burn, 0, 0.0).unwrap();
+        assert!(!step.clears_regen);
+        assert_eq!(health.rate, 0.5);
+        assert_eq!(health.yellow, 1.0);
+
+        let mut health = crate::Health {
+            yellow: 1.0,
+            red: 1.0,
+            max: 1.0,
+            rate: 0.5,
+            heal_pool: 0.0,
+        };
+        let mut burn = Burn {
+            strength: 1.0,
+            ..Burn::default()
+        };
+        assert!(apply_burn(&mut health, 0x200, &mut burn, 0, 0.0).is_none());
+        assert_eq!(health.rate, 0.5);
+        assert_eq!(burn.strength, 1.0);
+    }
+
+    /// The upkeep stage writes that cleared rate onto the ticked fighter.
+    #[test]
+    fn the_upkeep_clears_the_ticked_fighters_rate() {
+        let mut app = App::new();
+        app.add_systems(Update, burn_upkeep);
+        let mut fighter = crate::Fighter::default();
+        fighter.health.rate = 1.0;
+        let body = app
+            .world_mut()
+            .spawn((
+                fighter,
+                crate::Condition::NORMAL,
+                crate::StateFlags::default(),
+                exa_anim::Animator::new("Default", "Idle"),
+                Burn {
+                    strength: 1.0,
+                    ..Burn::default()
+                },
+            ))
+            .id();
+        app.insert_resource(exa_physics::body::TickedCharacter {
+            body,
+            character: None,
+        });
+        app.update();
+        let health = app.world().get::<crate::Fighter>(body).unwrap().health;
+        assert_eq!(health.rate, 0.0);
+        assert!(health.yellow < 0.25);
+        assert_eq!(app.world().get::<Burn>(body).unwrap().strength, 0.0);
+        assert!(app.world().get::<crate::collapse::Collapse>(body).is_none());
     }
 }

@@ -105,6 +105,12 @@ impl Plugin for CombatPlugin {
                 ),
             )
             .add_systems(
+                CharacterTick,
+                burn::burn_upkeep
+                    .in_set(CharacterStage::Upkeep)
+                    .after(regen::regenerate_red),
+            )
+            .add_systems(
                 PostUpdate,
                 // Wounds struck this frame wait from the next tick on.
                 (
