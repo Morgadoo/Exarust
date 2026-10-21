@@ -414,11 +414,8 @@ mod tests {
         assert_eq!(clock.now(65_000), 180);
         assert_eq!(GameClock::new().now(12_345), 12);
         // A tick before the base borrows from 2^64, as the original's
-        // 64-bit subtraction of two zero-extended words does.
-        let borrow = (u64::MAX - 999) / 1000;
-        assert_eq!(
-            GameClock::restore(0, 1_000).now(0),
-            (borrow & 0xFFFF_FFFF) as u32
-        );
+        // 64-bit subtraction of two zero-extended words does: the quotient
+        // is 18 446 744 073 709 550 and its low word is 1 271 310 318.
+        assert_eq!(GameClock::restore(0, 1_000).now(0), 1_271_310_318);
     }
 }

@@ -91,7 +91,9 @@ impl Slots {
     /// Whether a checkpoint file for the slot exists. The original's test
     /// only opens the file; its magic read has no effect on the result.
     pub fn has_checkpoint(&self, number: u32) -> bool {
-        fs::File::open(self.file(number, SlotKind::Checkpoint)).is_ok()
+        fs::metadata(self.file(number, SlotKind::Checkpoint))
+            .map(|meta| meta.is_file())
+            .unwrap_or(false)
     }
 
     /// Every candidate found by file name, in directory order, the first
