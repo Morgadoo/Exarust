@@ -263,8 +263,10 @@ impl Params {
         let capacity = if d.pool < 1 {
             sources * ((d.rate as f32 * d.life * 1.5 + 0.501 + 1.0) as usize) + 2
         } else {
-            d.pool as usize
+            d.pool.max(1) as usize
         };
+        // A record from an untrusted file cannot ask for an unbounded pool.
+        let capacity = capacity.min(1 << 20);
         let density_count = if d.density < 1 {
             if d.flags & flags::LIFE_RANDOM != 0 {
                 sources as i32 * (d.rate as f32 * d.life * 0.875) as i32
@@ -603,8 +605,25 @@ pub struct Emitter {
 impl Emitter {
     /// An emitter for a scaled template and its sources.
     pub fn new(template: Descriptor, size: f32, sources: Vec<Source>) -> Self {
+        let mut rng = Rng::new((template.flags ^ template.rate as u32) | 1);
+        Self::with_draws(template, size, sources, &mut rng)
+    }
+
+    /// An emitter whose random size table draws from `rng`, as the original
+    /// fills it when the emitter enters the world.
+    pub fn with_draws<R: Draws>(
+        template: Descriptor,
+        size: f32,
+        sources: Vec<Source>,
+        rng: &mut R,
+    ) -> Self {
         let params = Params::new(template, sources.len().max(1));
-        let slots = vec![Slot::default(); params.capacity + 1];
+        let mut slots = vec![Slot::default(); params.capacity + 1];
+        if params.flags & flags::RANDOM_SIZE != 0 {
+            for slot in &mut slots {
+                slot.size = params.half_size * (rng.unit() * 0.5 + 0.5);
+            }
+        }
         Self {
             params,
             node: NodeFrame::default(),
@@ -1511,6 +1530,20 @@ mod tests {
         assert_eq!(e.slots[0].life, 102);
         assert!((e.take_dose(0.25) - 0.25).abs() < 1e-6);
         assert_eq!(e.hits, 0);
+    }
+
+    #[test]
+    fn the_random_size_table_is_filled_in_slot_order() {
+        let mut d = SMALL.scaled(0.2);
+        d.flags |= flags::RANDOM_SIZE;
+        d.pool = 3;
+        let mut rng = Scripted::new(&[], &[0.0, 0.5, 1.0, 0.25]);
+        let e = Emitter::with_draws(d, 0.2, vec![Source::at_node()], &mut rng);
+        // Four slots, each half-size × (0.5 + 0.5 u).
+        assert!((e.slots[0].size - 6.0 * 0.5).abs() < 1e-6);
+        assert!((e.slots[1].size - 6.0 * 0.75).abs() < 1e-6);
+        assert!((e.slots[2].size - 6.0 * 1.0).abs() < 1e-6);
+        assert!((e.slots[3].size - 6.0 * 0.625).abs() < 1e-6);
     }
 
     #[test]

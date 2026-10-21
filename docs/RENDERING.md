@@ -1050,58 +1050,140 @@ orthographic map, so nothing calls the solver at run time yet.
 
 ## Fires
 
-A model node with a fire emitter (`0x3DD0E002`, size s; a torch's `_Fire`
-is 0.2) becomes an omni light:
-- colour sRGB (1, 0.68, 0.43);
-- intensity 8√s and radius 1500√s cm, ×1.25 for 0.2 < s ≤ 0.35, compared
-  in double precision: a torch's stored 0.2 (0.2000000030) is above 0.2, so
-  a torch's radius is 838.5 cm (reaching zero at 1048 cm); larger fires use
-  other templates;
-- placed 5 cm above the node, casting shadows.
+The original's fire presets turn a fire marker into particle emitters and
+the light they drive. Exarust reproduces the templates, the tier choice,
+the emitters and their rules in `exa_world::fire`, `exa_world::flame` and
+`exa_world::particles`.
 
-Every tick the intensity is density · (1 + 0.05·x) · base:
-- x is a soft-bounded random walk. With u uniform in [0, 1): v −= u past
-  +1, v += u past −1, otherwise v += 2(u − ½); then x += 0.3·v·u.
-- The density ramps in as 0.8·density + 0.2·(live particles / maximum).
+**Tiers** (`CreateFire`, size s; the stored size is a float, e.g. a torch's
+0.2 read unchanged from the model's `_Fire` node):
+- `s ≤ 0.35`: the small template (`_FirePrt02`), one emitter at the node.
+  The light is 8√s, radius 1500√s cm, ×1.25 when s > 0.2 (compared in
+  double precision, so a torch's f32 0.2 widens): 3.58 and 838.5 cm.
+  Burning items use this too (0.2 from the marker, or 0.25–10 from an
+  object record's percent).
+- `0.35 < s < 0.5`: the medium-small flame (`_FirePrt01`, 8/1500) and a
+  `_FireBas` bed 15s cm below it; the light sits 40 cm up.
+- `0.5 ≤ s ≤ 1`: the medium flame (12/1600) with a bed 20s cm below; the
+  light 50 cm up.
+- `s > 1`: the large flame at half the size (12/1500) with a bed 40·(s/2)
+  cm below; the light 40 cm up.
+- The flame gets `round(√s · 4)` (or 5) sources on a ring at 20–40 s cm,
+  each at least π/n apart in angle; the beds have one source at the node.
 
-Candles have no fire and give no light.
+**Templates.** Every field is the original's: rate (250/40/100/80/80/70/100
+per second), lifetime (1.25/0.7/0.5/0.65/0.5/0.6/0.5 s), half-size
+(10/18/16/30/25/50/25 cm), speed, retention (0/0/0.5/0/0.5/1/0.5 per
+second), growth, stretch (0.6/0/0/0.75/0/0.6/0), ring (35/15/100/30/45/45/50
+cm), buoyancy (−1.25/−0.5/−0.05/−1.5/−0.33/−1.5/−0.33 × gravity), centring
+(0.0007/0.0005/0.001/0.0002/0/0.0005/0), flags, light, sound
+(`FireS02`/`FireS01`/`FireS02`/`FireL01`) and the colour keys. The size
+scales half-size by 0.5 + 0.5s, speed by s², volume by s, rate by s
+(rounded to even), ring by 0.5s + s², buoyancy by s, the light by √s, and
+the density normaliser by 0.9s² + 0.1s. The keys' RGB are scaled by 0.7 at
+load (K1…Kn, alpha untouched); the beds' keys carry no alpha, so they add
+their colour without dimming.
 
-**Flame particles** (`exa_world::flame`, small fires such as torches; all
-lengths in cm, and the simulation runs at the 83 Hz tick):
-- **Template** for size s:
-  - rate round(250s) per second, lifetime 1.25 s (103 ticks);
-  - half-size 10·(0.5 + 0.5s), growing by twice that over the life;
-  - spawn ring 35·(0.5s + s²) (4.9 for a torch);
-  - buoyancy −1.25s × gravity (it rises);
-  - pull toward the axis 0.0007 per tick; reach 140s; "full" count
-    round(450·(0.9s² + 0.1s)).
-- **Emission**: an accumulator drops by 1 with probability ⅔ each tick
-  (and faster after several deaths at once). While it is below 1, a
-  particle spawns and the accumulator gains (83/rate)·⅔. New particles
-  start at rest at r·(cos θ, 0, −sin θ) from the node, with r = ring·(1 −
-  u⁴), inheriting 0.3 of the node's own motion.
-- **Each tick**:
-  - a particle loses an extra tick half the time;
-  - its life is cut to round((reach − D)·L/reach) when that is shorter,
-    with D = |(x, 0.7y, z)| from the node;
-  - dead particles at the head are dropped;
-  - Verlet step: d = p − q, d.y += gravity·buoyancy, then the pull
-    toward the axis.
-  
-  A torch's wisps live about half a second and rise about 40 cm.
-- **Drawing**: each particle is a diamond facing the camera, with its long
-  axis along its motion (plus 0.25 cm/tick up, so resting particles point
-  up). Half-width = half-size + ℓ·t²·growth, where ℓ is the sine between
-  the motion and the view. It is stretched along the motion by
-  (2 − 2/(|w| + 1))·0.6·angle.
-  - UVs: one of the four wisps of `FirePrt02` (a 2 × 2 atlas), under one of
-    the eight symmetries of the square.
-  - Colour: eleven keys over the life (RGB × 0.7 for keys 2–10; odd ring
-    slots run one key later), used as linear bytes/255.
-  - Output: texture × colour, premultiplied (ONE, ONE_MINUS_SRC_ALPHA), with
-    no depth writes, drawn oldest first.
-- The fire's density follows 0.8·density + 0.2·live/full each tick; it
-  settles a little above 1.
+**Emitter state and order** (all at the 83 Hz tick, one ring of
+`capacity + 1` slots):
+- Derived: interval = (83/rate)·⅔; lifetime = trunc(83·life); per-tick
+  retention = v^(1/83) (1 when v ≤ 0); growth = template · half-size;
+  pool = sources·trunc(rate·life·1.5 + 1.501) + 2 (a torch: 97); density
+  normaliser = trunc(rate·life) · sources.
+- Each tick, in order: the light's flicker walk and density; ageing (dead
+  at the head popped, extra losses, the distance cap); the burst refund;
+  Verlet integration; the one-shot/finite checks; the accumulator's
+  two-thirds loss; spawning while the accumulator is below one; the
+  bounding box.
+- Ageing: with the fire flag every particle loses one life a tick, half
+  again at random, and its life is capped to round((R − D)·L/R) when
+  shorter, where R = 140·(the emitter's size) and D = |(x, 0.7y, z)| from
+  the node. A torch dies after roughly 30–60 ticks, 40–55 cm up.
+- Integration: d = p − q; q = p; d.y += gravity·buoyancy (gravity
+  −980.665/83² cm/tick²); p += d·retention; then p.x/z move a fraction
+  `centring` toward the node's x/z. There is no other drag or noise.
+- Spawning: at the source frame, plus a ring offset in world XZ,
+  r = R_ring·(1 − u⁴) (u uniform); mode 1 adds a random velocity
+  x/z = spread·(rand(2001) − 1000)/1000 and y = rand(1001)/1000, rotated
+  by the source frame, so a torch starts at rest with a 0–1 cm/tick
+  upward kick (2× retention in the initial Verlet pair); other modes use
+  +Y. The previous position then loses 0.3 of the source's own motion.
+  Draws: lifetime (when randomised), UV variant, ring angle and u⁴, then
+  the velocity's three integers, in that order.
+- The light: x walks softly in ±1 with v ±= u past the bounds and else
+  v += 2(u − ½), x += 0.3·v·u (three draws); jitter += (u − ½)·0.125 in
+  [0.87, 1.15]; density = 0.8·density + 0.2·live/normaliser.
+  Intensity = density·(1 + 0.05x)·base; softness = 2·jitter; an emissive
+  parent's scale is 0.8·density·(0.9 + 0.2x). Sound: with the motion flag
+  the volume follows the smoothed emitter motion; otherwise it walks
+  ±20 % of the template's volume; the pitch walks ±0.005 (or ±0.05) in
+  [0.85, 1.15] (or [0.6, 1.4]). Exarust keeps the walks but plays no loop.
+
+**Drawing** (per frame, oldest first, no depth sort):
+- Position p = q + (p − q)·α; age = 1 − (life − α)/L.
+- Mode 4 (flames): w = (p − q) − (0, buoyancy, 0); d = −w/|w|; A is the
+  unit vector from the camera to the emitter's centre; ℓ = |d × A|;
+  half-width = S + ℓ·age²·growth; stretch =
+  (2 − 2/(|w| + 1))·stretch·acos(|d·A|); the four corners are the
+  diamond's tips, the long axis along A-projected motion, scaled by
+  1 + stretch.
+- Mode 1 (beds): a screen-facing quad whose half-width is
+  S + age²·growth, stretched by 1 + the template's stretch along the
+  screen's up axis. Mode 0 is a flat billboard of half-size S.
+- UVs: one of the four atlas cells × one of the eight square symmetries
+  (variant 0..31), or a direct 8-symmetry variant.
+- Colour: the keys at f = n·age, K[k+1]→K[k+2], truncated; odd ring slots
+  start one key later; flat mode uses a = round((1 − f²)·255) and the
+  material's opacity.
+- Output: texture × vertex colour, premultiplied (ONE,
+  ONE_MINUS_SRC_ALPHA), no depth writes. The beds are additive in effect
+  because their key alpha is zero.
+
+Still missing for fires: the per-tick tendril of a carried fire's body
+attachment (the emitter translates by half the body velocity, and the
+particles' source frame follows the body), body contacts being driven from
+the physics step, the emissive scale on the fire's parent mesh, and the
+looping sound.
+
+## Electricity
+
+The original's electric arcs (`RFE_Effects_Electricity`) are reproduced as
+rules in `exa_render::electricity` and a Bevy layer in `exa_world::arc`.
+
+- **Presets.** An electrified weapon: 20 tendrils of 5 segments, size 2 cm
+  (three-quarters after the preset), 10–19 ticks, the `electricity03` hum
+  and the voxel light (0.6, 0.6, 1) of 16 at 180 cm. A spark burst: 20 + 6
+  tendrils of 5 segments at 3 cm, 10–19 ticks, the light (0.5, 0.5, 1) of
+  8 at 100 cm. A level device from its object record: size =
+  duration/1000, segments = round(length/(4·size)) (10 when below 2),
+  tendrils = branches (10 when 0), the `electricity01` hum, and a point
+  light (0.6, 0.65, 1), multiplier 2, softness 5, radius 80·size cm, with
+  the 16-at-180 cm voxel light.
+- **Record.** The 84-byte arc record holds flags, tendril count, segments,
+  lifetime (ms), size, scale, a reserved word, the direction jitter, the
+  burst radius, a 15-byte sound name, an offset, a direction and a length.
+  A short record is an error; nothing panics.
+- **Charge.** An electrified item adds 0x10 a hit (0x80 for a heavy part);
+  the step that would cross 255 fills the charge and releases the effect.
+  With a live part the arc is created unless a finished one exists; a dead
+  part releases it. Releasing hides the first 0x21-kind node, sets its
+  state to 1 and clears the callbacks.
+- **Geometry.** Each tendril is a polyline of `segments` points between the
+  arc's ends, jittered inside them; each segment becomes a camera-facing
+  quad of width 2·size·scale. The segment count, width and timing are the
+  original's; the tendril's own per-tick motion is a model (the original's
+  tendril emitter is a separate component), so the zig-zag's exact shape is
+  [guess].
+- **Shader.** `_ElecMat01`: `tc = (uv + TexOfs)·0.25`; a = the texture's
+  red mixed a third into the ribbon's V; a = 1 − |2a − 1|; b = a²⁴;
+  a = a⁶; colour = mix(vertex, EleCol (0.65, 0.4, 1), b)·b +
+  EdgCol (0.15, 0.2, 0.4)·a·2; then squared. Additive, two-sided, unlit.
+  The material's emissive texture is a white stand-in until its library
+  texture is available.
+
+Still missing: the exact per-tick tendril integration (jitter, segment
+lifetimes and the texture-scroll phase), the `_ElecMat01` emissive map, the
+per-branch scissor/uniform loop and the electric device's hum.
 
 ## Rooms and black fill
 
@@ -1241,10 +1323,12 @@ bubble). The subdivided cap counts 4n − 6 points, more than it makes.
 
 ## Not done yet
 
-The emissive scale of a fire's parent mesh by the fire, the emissive
-map's alpha on unlit surfaces without a fall-off, the jittered
-supersampling pattern, medium and large fire templates, the sun and
-terrain in the GI volume, several resident GI blocks, vertex dirt (dirt modes 1–3), glass
+The emissive scale of a fire's parent mesh by the fire, the per-tick
+tendril motion of an electric arc and its emissive texture, the looping
+fire and electricity sounds, body contacts being driven from the physics
+step, the emissive map's alpha on unlit surfaces without a fall-off, the
+jittered supersampling pattern, the sun and terrain in the GI volume,
+several resident GI blocks, vertex dirt (dirt modes 1–3), glass
 refraction, effect programs (smoke, powers), the hair program, terrain
 parallax and wetness, the outdoor environment cube's masked tint (the rule
 is in `scene_env::tint_environment_cube`, not uploaded), the day record table
