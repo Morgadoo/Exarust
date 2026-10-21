@@ -88,6 +88,7 @@ impl Pass {
                 | Self::ParticleDepth
         )
     }
+
     /// The Bevy phase or node that stands in for the pass. `None` marks a
     /// pass Exarust has no separate equivalent for.
     pub fn bevy_phase(self) -> Option<&'static str> {
@@ -208,45 +209,40 @@ pub fn group_by_key(entries: &[RenderEntry]) -> Vec<RenderEntry> {
 /// The render-state list a material's flag word files it in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateList {
-    /// Opaque, drawn with depth writes on (list `+0xB8`).
+    /// Opaque, drawn with depth writes on.
     Opaque,
-    /// The alpha-tested class (list `+0xE8`).
+    /// The alpha-tested class.
     AlphaTest,
-    /// The decal class, drawn after depth writes go off (list `+0xC8`).
+    /// The decal class, drawn after depth writes go off. The second renderer
+    /// mode files everything but a blending word here too.
     Decal,
-    /// Blended (list `+0xF8`).
+    /// Blended.
     Blend,
-    /// The second renderer mode's decal/opaque list (`+0xC8`).
-    SecondDecal,
-    /// The second renderer mode's blended list (`+0x108`).
+    /// The second renderer mode's blended list.
     SecondBlend,
 }
 
 /// The list a material's flag word picks, or `None` when the word gets no
-/// state (a low nibble above 4 in the first renderer mode).
+/// state (a low nibble above 4 in either mode).
 ///
 /// The original checks the bits in this order: `0x10000` first, then
-/// `0x8000`, then the low nibble. In the second renderer mode (`+0x1FC`
-/// non-zero) every class but a blending nibble 1–4 goes to the `+0xC8`
-/// list, which is drawn after depth writes are switched off.
+/// `0x8000`, then the low nibble. In the second renderer mode every class
+/// but a blending nibble 1-4 goes to the decal list, and a blending nibble
+/// has a list of its own.
 pub fn state_list(flags: u32, second_mode: bool) -> Option<StateList> {
     if flags & 0x10000 != 0 {
-        return Some(if second_mode {
-            StateList::SecondDecal
-        } else {
-            StateList::Decal
-        });
+        return Some(StateList::Decal);
     }
     if flags & 0x8000 != 0 {
         return Some(if second_mode {
-            StateList::SecondDecal
+            StateList::Decal
         } else {
             StateList::AlphaTest
         });
     }
     match flags & 0xF {
         0 => Some(if second_mode {
-            StateList::SecondDecal
+            StateList::Decal
         } else {
             StateList::Opaque
         }),
@@ -260,10 +256,10 @@ pub fn state_list(flags: u32, second_mode: bool) -> Option<StateList> {
 }
 
 /// The list the renderer's own lookup walks when it finds an existing state
-/// for a material (`0x10004d860`). It reads the flag word differently from
-/// [`state_list`]: the `0x10000` bit is ignored, `0x8000` picks the
-/// alpha-tested list, a nibble of 0 the opaque list, 1–4 the blended list
-/// and 5–15 nothing.
+/// for a material. It reads the flag word differently from [`state_list`]
+/// and ignores the renderer mode: the `0x10000` bit is ignored, `0x8000`
+/// picks the alpha-tested list, a nibble of 0 the opaque list, 1-4 the
+/// blended list and 5-15 nothing.
 pub fn existing_state_list(flags: u32) -> Option<StateList> {
     if flags & 0x8000 != 0 {
         return Some(StateList::AlphaTest);
@@ -275,12 +271,11 @@ pub fn existing_state_list(flags: u32) -> Option<StateList> {
     }
 }
 
-/// The flag word a released render state carries (`0x10004d800`). A
+/// The flag word a released render state carries. A
 /// material below detail 3 loses bit 21 and one below 4 loses bit 23; a
-/// material with the first `0x120` flag returns only the original's
-/// `0x600011` bits (the detail clears are discarded); otherwise the second
-/// `0x121` flag clears bits 1 and 2. The two flag bytes' meanings are not
-/// traced.
+/// renderer with its first flag byte set returns only the `0x0060_0011` bits
+/// of the word (the detail clears are discarded); otherwise its second flag
+/// byte clears bits 1 and 2. The two flag bytes' meanings are not traced.
 pub fn released_flags(flags: u32, detail_level: i32, first_flag: bool, second_flag: bool) -> u32 {
     let mut adjusted = flags;
     if detail_level < 3 {
@@ -439,10 +434,11 @@ mod tests {
         // 5 and above create no state at all.
         assert_eq!(state_list(5, false), None);
         assert_eq!(state_list(0xF, false), None);
-        // Second mode: only a blending nibble 1–4 differs.
-        assert_eq!(state_list(0x10000, true), Some(StateList::SecondDecal));
-        assert_eq!(state_list(0x8000, true), Some(StateList::SecondDecal));
-        assert_eq!(state_list(0, true), Some(StateList::SecondDecal));
+        // Second mode: the alpha-tested and opaque words join the decals,
+        // and a blending nibble 1-4 gets its own list.
+        assert_eq!(state_list(0x10000, true), Some(StateList::Decal));
+        assert_eq!(state_list(0x8000, true), Some(StateList::Decal));
+        assert_eq!(state_list(0, true), Some(StateList::Decal));
         assert_eq!(state_list(1, true), Some(StateList::SecondBlend));
         assert_eq!(state_list(4, true), Some(StateList::SecondBlend));
         assert_eq!(state_list(5, true), None);
@@ -470,7 +466,7 @@ mod tests {
         // when the detail would have cleared more.
         assert_eq!(released_flags(all, 2, true, false), all & 0x0060_0011);
         assert_eq!(released_flags(all, 2, true, true), all & 0x0060_0011);
-        // Without it, the second clears the two low blend bits.
+        // Without it, the second flag clears the two low blend bits.
         assert_eq!(
             released_flags(all, 2, false, true),
             (all & !(0x0080_0000 | 0x0020_0000)) & !6
