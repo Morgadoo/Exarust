@@ -1007,18 +1007,23 @@ tick.
 - **Header**: first word `0xAFCE01CE`. The node count is the signed word at
   byte 52. A negative count is an error. The bytes between the magic and
   the count are skipped.
-- **Nodes**: power id, two further words, x and y as floats, then a signed
-  link count. A count below 1 stores no links. Otherwise that many 16-byte
-  links follow. After every node is read, each node but the first subtracts
-  the first node's x and y.
+- **Nodes**: power id, the index of its name in the text table, the index
+  of its description, x and y as floats, then a signed link count. A count
+  below 1 stores no links. Otherwise that many 16-byte links follow. After
+  every node is read, each node but the first subtracts the first node's x
+  and y.
 - **Text chunk**: first word `0xABCD0000`, then five words, then a 16-byte
-  head whose last word is the string count. One more offset than that count
-  follows, then a byte length and that many bytes. Each string is a length
-  word at its offset and that many bytes. A length below 1 is empty. No
-  chunk leaves the texts empty. A chunk that ends early is an error.
-- **On screen**: a node sits at ten times its place times the zoom, plus the
-  pan, and rounds to the nearest even integer unless the view is dragged. A
-  factor then scales that point about the origin. A link whose two marks are
+  head whose last word is the *last* string's index, so the chunk holds one
+  more string than that count. One more offset than that count follows,
+  then a byte length and that many bytes. Each string is a length word at
+  its offset and that many bytes. A length below 1 is empty. An offset
+  outside the text leaves that string empty: the retail Force tree's table
+  holds 19 offsets that point past its text. No chunk leaves the texts
+  empty. A chunk that ends early is an error.
+- **On screen** (`exa_game::thaum::tree`): a node sits at ten times its
+  place times the zoom, plus the pan, and rounds to the nearest even integer
+  unless the view is dragged. A factor then scales that point about the
+  origin. A link whose two marks are
   zero is not drawn. Otherwise each end leaves its node along the sine and
   cosine of its turn (the link's first two words, fractions of a circle)
   times a full circle. The reach is 0.514, or 0.295 when the power's high
@@ -1033,8 +1038,8 @@ tick.
   four fifths of the size. A wide picture drops the fraction of the view; a
   narrow one uses half. A glow is 32 spokes on a ring of 0.84 of the width
   plus the outer size, starting straight up.
-- **Learning**: a node's mark is the last known pair whose id, with bits 20
-  to 23 cleared, equals the power. The first node sets bit 0x10000. A mark
+- **Learning** (`exa_game::thaum::tree`): a node's mark is the last known
+  pair whose id, with bits 20 to 23 cleared, equals the power. The first node sets bit 0x10000. A mark
   that already has bit 0x1000 keeps bit 0x4000 and sets bit 0x10000. Any
   other mark clears bit 0x4000, and sets bit 0x10000 when the top nibble is
   not 7 and every link's one-based end has bit 0x1000. A missing end does

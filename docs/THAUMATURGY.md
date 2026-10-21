@@ -142,7 +142,11 @@ ground point, 100 cm up from the floor 210 cm below, facing away from the
 caster; the barrier and the bubble are domes 100 cm above the caster,
 radius 100 and 120. The AI casts blast (focus, facing within 1, 6 m),
 barrier (facing 1 or more, 3 m), shell and strikes (cost within half the
-focus, facing within 0.5, a free slot).
+focus, facing within 0.5, a free slot). Each creator's material
+(`_ForceMat01`, `_ForceBarrier01`, `_ForceAura01`), its parameter block,
+the shared `gi_multipoint` emissive program, the animated `_ForceNoise`
+picture and the sounds each one loads are data in `force` (the GL scene
+nodes, shader binding and GI registration are not issued).
 
 ## Mind
 
@@ -325,6 +329,49 @@ roll is at most `100 >> (s + 1)` (s ≥ 0) or `100 − (100 >> (1 − s))`
 miss. A passing weapon loses its collisions for 500 ms and leaves a wisp
 at the contact. The AI's long door and summoning words carry their cost.
 
+## A constantly displaced body
+
+`exa_game::thaum::veil`. The body-side half of the constant displacement:
+the shell (`_EffectShell01`, fade from zero, node flags `0x21000000`, its
+end event zeroing the fade and asking the node to play `0x10`), the collision
+bit `0x4000` every physics node gains, the `thmdsp_cns01` hum at pitch
+`0.8 × length × r` whose first play is silent, the left-behind image gathered
+from the body's mesh and skin nodes and ordered by its subobjects' `0x40`
+flags, and the visibility bits (`0x10` shown, `0x20` hidden, `0x4` fading,
+`0x8000_0000` dead) that hide a part with subobjects by setting its low
+hidden flag. The hit veto plays `thmdsp_phs` at pitch `0.9 + 0.2·r`, sets
+`0xC000` on the struck node and every part below it, lists it for 500 ms and
+leaves a wisp at the contact; each returned weapon ends the shell.
+
+## The power tree
+
+`exa_game::thaum::tree`. The tree screen reads a domain's `.pwr` file
+(`pwr_mind`, `pwr_force`, `pwr_body`, `pwr_energy`, `pwr_light`,
+`pwr_displace`), marks each node from the character's known pairs, and
+opens a node whose links all end on learnt nodes. A click on a shown but
+unlearnt node marks it as the new power when the character has the
+techniques it asks for (a persistent power wants thaumaturgy technique 2,
+a power with a high nibble that technique among the casting skill's
+tiers). A click on a learnt node picks or drops it: a pick needs the
+domain's cost within the record's remaining focus (4.0 less the picked
+powers, each domain discounted by the character's specialisation) and every
+link end picked; a drop is refused while another picked node links to it.
+Closing replaces the domain's pairs with the learnt and picked nodes. The
+view's zoom is a charge of −9 to 5 levels (0.25 to 2.0), its opening height
+over 2300 picking the nearest; the pan and zoom ease by the original's
+springs.
+
+The power bar holds ten slots; the chosen one carries bit 20. Loading it
+from a record marks each slot picked when its pair is; a slot flashes in
+over 200 ms, stays lit, then fades over its duration. A press selects a
+slot, a cast stores the bar back and flashes its slot, a dropped power
+fills the slot (a drag from another slot leaves a copy there) and a drag
+that misses clears its source. The cast entry reads the record's slot,
+dispatches by domain to the mind, force, energy or displacement front end,
+and stores the last instant power. The running-power budget is the highest
+thaumaturgy technique of 2 to 4, one less without the focus item; powers
+past it are told to end.
+
 ## Electric arcs
 
 `exa_game::thaum::arcs`. Tendrils of points grow from a source a segment
@@ -452,7 +499,8 @@ the body for 32 ticks, knocks a character back a step and sets its
 instability, each part it strikes in front lowers the character's energy
 again while it is above 0.25, and its line is stamped on the navigation
 grid's penalty until the wall falls;
-wisps ride their parts. The player cannot cast yet (there is no power bar):
+wisps ride their parts. The power tree and its bar are modelled in `thaum::tree` but no play mode
+opens the screen or reads the bar yet, so the player cannot cast:
 `--debug-arcs`, `--debug-barricade` and `--debug-wisps` put the effects on
 the player ([DEBUGGING.md](DEBUGGING.md)).
 
