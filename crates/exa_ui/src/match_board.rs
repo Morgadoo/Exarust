@@ -1568,7 +1568,6 @@ impl Board {
                 self.controls[control::TOURNAMENT_PANEL_LABEL] = control::HIDDEN;
                 self.controls[control::SECONDARY] = control::HIDDEN;
                 self.controls[control::STATUS] = control::HIDDEN;
-                self.tournament_reward = None;
             }
             BoardTab::Season => {
                 self.controls[control::SHARED_LABEL_0] = control::SHOWN;
@@ -3276,7 +3275,11 @@ mod tests {
         assert_eq!(board.tournament_reward, None);
         assert!(board.switch_tab(BoardTab::Tournament).is_some());
         assert_eq!(board.tournament_reward, Some(77));
+        // The item survives a tab switch; the show and close methods release
+        // it, not the tab switch.
         assert!(board.switch_tab(BoardTab::Events).is_some());
+        assert_eq!(board.tournament_reward, Some(77));
+        board.show();
         assert_eq!(board.tournament_reward, None);
     }
 
