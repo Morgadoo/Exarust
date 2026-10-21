@@ -129,16 +129,31 @@ pub const FLAG_DETAIL_CLASS: u32 = 0x00C0_0000;
 pub enum PixelFormat {
     /// RGB, 8 bytes per 4x4 block.
     Bc1,
+    /// BC1 with one-bit transparency (the block's second mode stores black
+    /// with alpha 0), 8 bytes per block.
+    Bc1Alpha,
     /// RGBA, 16 bytes per block.
     Bc3,
     /// One channel (luminance), 8 bytes per block.
     Bc4,
+    /// One channel stored as alpha only, 8 bytes per block.
+    Bc4Alpha,
+    /// Two luminance-alpha channels, 16 bytes per block.
+    Latc2,
     /// Two channels (normal map X/Y), 16 bytes per block.
     Bc5,
     /// Stored as R, G, B.
     Rgb8,
     /// Stored as R, G, B, A.
     Rgba8,
+    /// Stored as B, G, R.
+    Bgr8,
+    /// Stored as B, G, R, A.
+    Bgra8,
+    /// Stored as Z, Y, X (a normal map whose red and blue are swapped).
+    Zyx8,
+    /// Stored as Z, Y, X, V.
+    Zyxv8,
     L8,
     La8,
     A8,
@@ -150,8 +165,24 @@ impl PixelFormat {
     /// block compression; bit 6 of the third byte selects 16-byte blocks; the
     /// second byte is a channel mask in which `0x20` means alpha, `0x42` one
     /// luminance channel, `0x84` two channels and `0xC6` RGB. The mapping was
-    /// derived from data sizes across every shipped image.
+    /// derived from data sizes across every shipped image. The words the
+    /// original registers in its own tables are matched whole first, because
+    /// several of them share a channel mask but decode differently.
     pub fn from_word(word: u32) -> PixelFormat {
+        match word {
+            0x813B_C600 | 0x823B_C600 => return PixelFormat::Bc1,
+            0x813B_E601 => return PixelFormat::Bc1Alpha,
+            0x817B_E608 | 0x827B_E608 | 0x827B_A408 => return PixelFormat::Bc3,
+            0x813B_4200 => return PixelFormat::Bc4,
+            0x813B_2008 => return PixelFormat::Bc4Alpha,
+            0x817B_6208 => return PixelFormat::Latc2,
+            0x927B_8400 => return PixelFormat::Bc5,
+            0x0200_C600 => return PixelFormat::Bgr8,
+            0x0200_E608 => return PixelFormat::Bgra8,
+            0x1201_C600 => return PixelFormat::Zyx8,
+            0x1201_E608 => return PixelFormat::Zyxv8,
+            _ => {}
+        }
         let channels = (word >> 8) & 0xFF;
         let compressed = word & 0x8000_0000 != 0;
         let wide_blocks = word & 0x0040_0000 != 0;
@@ -172,8 +203,8 @@ impl PixelFormat {
     /// Bytes per pixel of uncompressed formats.
     pub fn bytes_per_pixel(self) -> Option<usize> {
         match self {
-            PixelFormat::Rgb8 => Some(3),
-            PixelFormat::Rgba8 => Some(4),
+            PixelFormat::Rgb8 | PixelFormat::Bgr8 | PixelFormat::Zyx8 => Some(3),
+            PixelFormat::Rgba8 | PixelFormat::Bgra8 | PixelFormat::Zyxv8 => Some(4),
             PixelFormat::La8 => Some(2),
             PixelFormat::L8 | PixelFormat::A8 => Some(1),
             _ => None,
@@ -185,10 +216,12 @@ impl PixelFormat {
         let blocks = || (w.div_ceil(4) * h.div_ceil(4)) as usize;
         let px = (w * h) as usize;
         Some(match self {
-            PixelFormat::Bc1 | PixelFormat::Bc4 => blocks() * 8,
-            PixelFormat::Bc3 | PixelFormat::Bc5 => blocks() * 16,
-            PixelFormat::Rgb8 => px * 3,
-            PixelFormat::Rgba8 => px * 4,
+            PixelFormat::Bc1 | PixelFormat::Bc1Alpha | PixelFormat::Bc4 | PixelFormat::Bc4Alpha => {
+                blocks() * 8
+            }
+            PixelFormat::Bc3 | PixelFormat::Latc2 | PixelFormat::Bc5 => blocks() * 16,
+            PixelFormat::Rgb8 | PixelFormat::Bgr8 | PixelFormat::Zyx8 => px * 3,
+            PixelFormat::Rgba8 | PixelFormat::Bgra8 | PixelFormat::Zyxv8 => px * 4,
             PixelFormat::La8 => px * 2,
             PixelFormat::L8 | PixelFormat::A8 => px,
             PixelFormat::Unknown(_) => return None,
@@ -533,6 +566,10 @@ impl<'a> Rfi<'a> {
             PixelFormat::L8 => pixel::id::LUM8,
             PixelFormat::La8 => pixel::id::LUMA8,
             PixelFormat::A8 => pixel::id::ALPHA8,
+            PixelFormat::Bgr8 => pixel::id::BGR8,
+            PixelFormat::Bgra8 => pixel::id::BGRA8,
+            PixelFormat::Zyx8 => pixel::id::ZYX8,
+            PixelFormat::Zyxv8 => pixel::id::ZYXV8,
             _ => pixel::id::RGB8,
         }
     }
@@ -559,9 +596,13 @@ impl<'a> Rfi<'a> {
         out.resize(start + w * h * 4, 0);
         let out = &mut out[start..];
         match self.format {
-            PixelFormat::Bc1 | PixelFormat::Bc3 | PixelFormat::Bc4 | PixelFormat::Bc5 => {
-                decode_blocks(self.format, src, w, h, out)
-            }
+            PixelFormat::Bc1
+            | PixelFormat::Bc1Alpha
+            | PixelFormat::Bc3
+            | PixelFormat::Bc4
+            | PixelFormat::Bc4Alpha
+            | PixelFormat::Latc2
+            | PixelFormat::Bc5 => decode_blocks(self.format, src, w, h, out),
             // Already the target layout: the converters only run between
             // different layouts.
             PixelFormat::Rgba8 => {
@@ -572,7 +613,14 @@ impl<'a> Rfi<'a> {
                 })?;
                 out.copy_from_slice(src);
             }
-            PixelFormat::Rgb8 | PixelFormat::L8 | PixelFormat::La8 | PixelFormat::A8 => {
+            PixelFormat::Rgb8
+            | PixelFormat::Bgr8
+            | PixelFormat::Bgra8
+            | PixelFormat::Zyx8
+            | PixelFormat::Zyxv8
+            | PixelFormat::L8
+            | PixelFormat::La8
+            | PixelFormat::A8 => {
                 // The original's converter of the stored format, to RGBA8.
                 let source = self.converter_format();
                 if !pixel::convert(source, pixel::id::RGBA8, src, w * h, out)? {
@@ -842,40 +890,159 @@ fn mip_count_for(format: PixelFormat, word: u32, w: u32, h: u32, data_size: u32)
     }
 }
 
+/// Expands a 5-6-5 colour word the way the original's decoder does: each
+/// channel keeps its top bits in the high bits of the byte and repeats its
+/// top two or three bits in the low ones (`v << 3 | v >> 2` for five bits,
+/// `v << 2 | v >> 4` for six).
+fn expand_565(word: u16) -> [u8; 3] {
+    let r = (word >> 11) & 0x1F;
+    let g = (word >> 5) & 0x3F;
+    let b = word & 0x1F;
+    [
+        ((r << 3) | (r >> 2)) as u8,
+        ((g << 2) | (g >> 4)) as u8,
+        ((b << 3) | (b >> 2)) as u8,
+    ]
+}
+
+/// The four colours of a colour block: the two endpoints expanded, then
+/// either the two third-point blends (when the first endpoint is larger) or
+/// one half blend and transparent black. Divides truncate, as the original's
+/// integer `DIV` does.
+fn colour_palette(first: u16, second: u16, transparent: bool) -> [[u8; 4]; 4] {
+    let a = expand_565(first);
+    let b = expand_565(second);
+    let mut palette = [[0u8; 4]; 4];
+    for c in 0..3 {
+        palette[0][c] = a[c];
+        palette[1][c] = b[c];
+        if first > second {
+            palette[2][c] = ((u16::from(a[c]) * 2 + u16::from(b[c])) / 3) as u8;
+            palette[3][c] = ((u16::from(a[c]) + u16::from(b[c]) * 2) / 3) as u8;
+        } else {
+            palette[2][c] = ((u16::from(a[c]) + u16::from(b[c])) >> 1) as u8;
+            palette[3][c] = 0;
+        }
+    }
+    palette[0][3] = 255;
+    palette[1][3] = 255;
+    palette[2][3] = 255;
+    palette[3][3] = if first > second || !transparent {
+        255
+    } else {
+        0
+    };
+    palette
+}
+
+/// Decodes one 8-byte colour block to 16 RGBA texels, row by row.
+fn decode_colour_block(block: &[u8], out: &mut [[u8; 4]; 16], transparent: bool) {
+    let first = u16::from_le_bytes([block[0], block[1]]);
+    let second = u16::from_le_bytes([block[2], block[3]]);
+    let palette = colour_palette(first, second, transparent);
+    let indices = u32::from_le_bytes([block[4], block[5], block[6], block[7]]);
+    for (pixel, texel) in out.iter_mut().enumerate() {
+        *texel = palette[((indices >> (2 * pixel)) & 3) as usize];
+    }
+}
+
+/// The eight values of a BC4/BC3 alpha block. The six interpolants divide by
+/// seven or by five with a truncating integer division, without the rounding
+/// term a GPU adds.
+fn alpha_palette(first: u8, second: u8) -> [u8; 8] {
+    let (a, b) = (u16::from(first), u16::from(second));
+    let mut palette = [0u8; 8];
+    palette[0] = first;
+    palette[1] = second;
+    if first > second {
+        for (i, value) in palette.iter_mut().enumerate().skip(2) {
+            let w = i as u16 - 1;
+            *value = (((7 - w) * a + w * b) / 7) as u8;
+        }
+    } else {
+        palette[2] = ((4 * a + b) / 5) as u8;
+        palette[3] = ((3 * a + 2 * b) / 5) as u8;
+        palette[4] = ((2 * a + 3 * b) / 5) as u8;
+        palette[5] = ((a + 4 * b) / 5) as u8;
+        palette[6] = 0;
+        palette[7] = 255;
+    }
+    palette
+}
+
+/// Decodes one 8-byte alpha block to 16 values, row by row.
+fn decode_alpha_block(block: &[u8], out: &mut [u8; 16]) {
+    let palette = alpha_palette(block[0], block[1]);
+    let mut bits = 0u64;
+    for (i, &byte) in block[2..8].iter().enumerate() {
+        bits |= u64::from(byte) << (8 * i);
+    }
+    for (pixel, value) in out.iter_mut().enumerate() {
+        *value = palette[((bits >> (3 * pixel)) & 7) as usize];
+    }
+}
+
+/// Decodes a two-channel block pair to X and Y.
+fn decode_pair(first: &[u8], second: &[u8]) -> ([u8; 16], [u8; 16]) {
+    let mut x = [0u8; 16];
+    let mut y = [0u8; 16];
+    decode_alpha_block(first, &mut x);
+    decode_alpha_block(second, &mut y);
+    (x, y)
+}
+
 fn decode_blocks(format: PixelFormat, src: &[u8], w: usize, h: usize, out: &mut [u8]) {
     let block_len = match format {
-        PixelFormat::Bc1 | PixelFormat::Bc4 => 8,
+        PixelFormat::Bc1 | PixelFormat::Bc1Alpha | PixelFormat::Bc4 | PixelFormat::Bc4Alpha => 8,
         _ => 16,
     };
     let (bw, bh) = (w.div_ceil(4), h.div_ceil(4));
-    let mut tile = [0u8; 4 * 4 * 4];
-    let mut narrow = [0u8; 4 * 4 * 2];
+    let mut tile = [[0u8; 4]; 16];
+    let mut alpha = [0u8; 16];
+    let mut second = [0u8; 16];
     for by in 0..bh {
         for bx in 0..bw {
             let i = (by * bw + bx) * block_len;
-            let block = &src[i..i + block_len];
+            let Some(block) = src.get(i..i + block_len) else {
+                return;
+            };
             match format {
-                PixelFormat::Bc1 => bcdec_rs::bc1(block, &mut tile, 16),
-                PixelFormat::Bc3 => bcdec_rs::bc3(block, &mut tile, 16),
+                PixelFormat::Bc1 | PixelFormat::Bc1Alpha => {
+                    decode_colour_block(block, &mut tile, format == PixelFormat::Bc1Alpha);
+                }
+                PixelFormat::Bc3 => {
+                    decode_colour_block(block, &mut tile, false);
+                    decode_alpha_block(&block[8..], &mut alpha);
+                    for (texel, a) in tile.iter_mut().zip(alpha) {
+                        texel[3] = a;
+                    }
+                }
                 PixelFormat::Bc4 => {
-                    bcdec_rs::bc4(block, &mut narrow, 4, false);
-                    for p in 0..16 {
-                        let l = narrow[p];
-                        tile[p * 4..p * 4 + 4].copy_from_slice(&[l, l, l, 255]);
+                    decode_alpha_block(block, &mut alpha);
+                    for (texel, l) in tile.iter_mut().zip(alpha) {
+                        *texel = [l, l, l, 255];
+                    }
+                }
+                PixelFormat::Bc4Alpha => {
+                    decode_alpha_block(block, &mut alpha);
+                    for (texel, a) in tile.iter_mut().zip(alpha) {
+                        *texel = [0, 0, 0, a];
+                    }
+                }
+                PixelFormat::Latc2 => {
+                    decode_alpha_block(block, &mut alpha);
+                    decode_alpha_block(&block[8..], &mut second);
+                    for ((texel, l), a) in tile.iter_mut().zip(alpha).zip(second) {
+                        *texel = [l, l, l, a];
                     }
                 }
                 PixelFormat::Bc5 => {
-                    bcdec_rs::bc5(block, &mut narrow, 8, false);
-                    for p in 0..16 {
-                        let (x, y) = (narrow[p * 2], narrow[p * 2 + 1]);
-                        let nx = x as f32 / 127.5 - 1.0;
-                        let ny = y as f32 / 127.5 - 1.0;
-                        let nz = (1.0 - nx * nx - ny * ny).max(0.0).sqrt();
-                        let z = ((nz + 1.0) * 127.5) as u8;
-                        tile[p * 4..p * 4 + 4].copy_from_slice(&[x, y, z, 255]);
+                    let (x, y) = decode_pair(block, &block[8..]);
+                    for ((texel, x), y) in tile.iter_mut().zip(x).zip(y) {
+                        *texel = [x, y, pixel::rebuild_z(x, y), 255];
                     }
                 }
-                _ => unreachable!(),
+                _ => return,
             }
             for row in 0..4 {
                 let y = by * 4 + row;
@@ -884,7 +1051,7 @@ fn decode_blocks(format: PixelFormat, src: &[u8], w: usize, h: usize, out: &mut 
                 }
                 let cols = (w - bx * 4).min(4);
                 let dst = (y * w + bx * 4) * 4;
-                out[dst..dst + cols * 4].copy_from_slice(&tile[row * 16..row * 16 + cols * 4]);
+                out[dst..dst + cols * 4].copy_from_slice(&tile[row * 4..row * 4 + cols].concat());
             }
         }
     }
@@ -898,14 +1065,198 @@ mod tests {
     fn format_words_from_shipped_data() {
         assert_eq!(PixelFormat::from_word(0x813B_C600), PixelFormat::Bc1);
         assert_eq!(PixelFormat::from_word(0x823B_C600), PixelFormat::Bc1);
+        assert_eq!(PixelFormat::from_word(0x813B_E601), PixelFormat::Bc1Alpha);
         assert_eq!(PixelFormat::from_word(0x813B_4200), PixelFormat::Bc4);
+        assert_eq!(PixelFormat::from_word(0x813B_2008), PixelFormat::Bc4Alpha);
+        assert_eq!(PixelFormat::from_word(0x817B_6208), PixelFormat::Latc2);
         assert_eq!(PixelFormat::from_word(0x927B_8400), PixelFormat::Bc5);
         assert_eq!(PixelFormat::from_word(0x817B_E608), PixelFormat::Bc3);
+        assert_eq!(PixelFormat::from_word(0x827B_E608), PixelFormat::Bc3);
+        assert_eq!(PixelFormat::from_word(0x827B_A408), PixelFormat::Bc3);
         assert_eq!(PixelFormat::from_word(0x0100_C600), PixelFormat::Rgb8);
         assert_eq!(PixelFormat::from_word(0x1111_C600), PixelFormat::Rgb8);
         assert_eq!(PixelFormat::from_word(0x0100_E608), PixelFormat::Rgba8);
         assert_eq!(PixelFormat::from_word(0x0100_6208), PixelFormat::La8);
         assert_eq!(PixelFormat::from_word(0x0100_2008), PixelFormat::A8);
+        assert_eq!(PixelFormat::from_word(0x0200_C600), PixelFormat::Bgr8);
+        assert_eq!(PixelFormat::from_word(0x0200_E608), PixelFormat::Bgra8);
+        assert_eq!(PixelFormat::from_word(0x1201_C600), PixelFormat::Zyx8);
+        assert_eq!(PixelFormat::from_word(0x1201_E608), PixelFormat::Zyxv8);
+    }
+
+    /// A 4x4 image of one block.
+    fn block_image(word: u32, block: &[u8]) -> Vec<u8> {
+        let size = block.len() as u32;
+        image(4, 4, word, 0x1000_0000, size, block)
+    }
+
+    fn rgba_attexels(decoded: &[u8]) -> Vec<[u8; 4]> {
+        decoded
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|p| [p[0], p[1], p[2], p[3]])
+            .collect()
+    }
+
+    #[test]
+    fn bc1_expands_endpoints_and_blends_with_truncating_division() {
+        // Red and blue endpoints (first larger): the third-point blends are
+        // (2·255)/3 = 170 and 255/3 = 85, and the indices are 0, 1, 2, 3.
+        let mut block = [0u8; 8];
+        block[..4].copy_from_slice(&[0x00, 0xF8, 0x1F, 0x00]);
+        block[4] = 0b1110_0100;
+        let texels = rgba_attexels(
+            &Rfi::parse(&block_image(0x813B_C600, &block))
+                .unwrap()
+                .decode_rgba8()
+                .unwrap(),
+        );
+        assert_eq!(texels[0], [255, 0, 0, 255]);
+        assert_eq!(texels[1], [0, 0, 255, 255]);
+        assert_eq!(texels[2], [170, 0, 85, 255]);
+        assert_eq!(texels[3], [85, 0, 170, 255]);
+        // The second row's indices are all zero.
+        assert_eq!(texels[4], [255, 0, 0, 255]);
+
+        // The reverse order selects the half blend and transparent black.
+        let mut block = [0u8; 8];
+        block[..4].copy_from_slice(&[0x1F, 0x00, 0x00, 0xF8]);
+        block[4] = 0b1110_0100;
+        let texels = rgba_attexels(
+            &Rfi::parse(&block_image(0x813B_C600, &block))
+                .unwrap()
+                .decode_rgba8()
+                .unwrap(),
+        );
+        assert_eq!(texels[2], [127, 0, 127, 255]);
+        assert_eq!(texels[3], [0, 0, 0, 255]);
+        // The alpha variant makes that texel transparent.
+        let texels = rgba_attexels(
+            &Rfi::parse(&block_image(0x813B_E601, &block))
+                .unwrap()
+                .decode_rgba8()
+                .unwrap(),
+        );
+        assert_eq!(texels[3], [0, 0, 0, 0]);
+    }
+
+    /// The six bytes of a 48-bit alpha index stream.
+    fn alpha_indices(indices: &[u8; 16]) -> [u8; 6] {
+        let mut bits = 0u64;
+        for (pixel, &index) in indices.iter().enumerate() {
+            bits |= u64::from(index) << (3 * pixel);
+        }
+        let bytes = bits.to_le_bytes();
+        [bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]]
+    }
+
+    #[test]
+    fn bc4_alpha_palettes_divide_without_rounding() {
+        let indices = [0, 1, 2, 3, 4, 5, 6, 7, 0, 0, 0, 0, 0, 0, 0, 0];
+        let mut block = [0u8; 8];
+        block[0] = 255;
+        block[1] = 0;
+        block[2..].copy_from_slice(&alpha_indices(&indices));
+        let decoded = Rfi::parse(&block_image(0x813B_4200, &block))
+            .unwrap()
+            .decode_rgba8()
+            .unwrap();
+        let texels = rgba_attexels(&decoded);
+        // 6·255/7 = 218, 5·255/7 = 182, … 255/7 = 36, all truncated.
+        assert_eq!(
+            texels[..8].iter().map(|p| p[0]).collect::<Vec<_>>(),
+            [255, 0, 218, 182, 145, 109, 72, 36]
+        );
+        assert_eq!(texels[0], [255, 255, 255, 255]);
+
+        // Alpha-only: the value lands in alpha.
+        let decoded = Rfi::parse(&block_image(0x813B_2008, &block))
+            .unwrap()
+            .decode_rgba8()
+            .unwrap();
+        assert_eq!(rgba_attexels(&decoded)[2], [0, 0, 0, 218]);
+
+        // The second mode: /5 blends, then 0 and 255.
+        let mut block = [0u8; 8];
+        block[0] = 0;
+        block[1] = 255;
+        let indices = [2, 3, 4, 5, 6, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        block[2..].copy_from_slice(&alpha_indices(&indices));
+        let decoded = Rfi::parse(&block_image(0x813B_4200, &block))
+            .unwrap()
+            .decode_rgba8()
+            .unwrap();
+        let texels = rgba_attexels(&decoded);
+        assert_eq!(
+            texels[..6].iter().map(|p| p[0]).collect::<Vec<_>>(),
+            [51, 102, 153, 204, 0, 255]
+        );
+        assert_eq!(texels[6], [0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn bc3_combines_a_colour_block_with_an_alpha_block() {
+        let mut block = [0u8; 16];
+        // Red endpoint over blue, all indices zero.
+        block[..4].copy_from_slice(&[0x00, 0xF8, 0x1F, 0x00]);
+        // Alpha endpoint 200 over 100, all indices 0 except the last pixel.
+        block[8] = 200;
+        block[9] = 100;
+        let indices = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        block[10..].copy_from_slice(&alpha_indices(&indices));
+        let texels = rgba_attexels(
+            &Rfi::parse(&block_image(0x817B_E608, &block))
+                .unwrap()
+                .decode_rgba8()
+                .unwrap(),
+        );
+        assert_eq!(texels[0], [255, 0, 0, 200]);
+        assert_eq!(texels[15], [255, 0, 0, 100]);
+    }
+
+    #[test]
+    fn the_two_channel_blocks_rebuild_z() {
+        // X and Y both 128: the middle of the signed range gives Z 255.
+        let mut block = [0u8; 16];
+        for half in block.chunks_mut(8) {
+            half[0] = 128;
+            half[1] = 128;
+        }
+        let texels = rgba_attexels(
+            &Rfi::parse(&block_image(0x927B_8400, &block))
+                .unwrap()
+                .decode_rgba8()
+                .unwrap(),
+        );
+        assert_eq!(texels[0], [128, 128, 255, 255]);
+        // The luminance-alpha variant feeds the second channel to alpha.
+        let texels = rgba_attexels(
+            &Rfi::parse(&block_image(0x817B_6208, &block))
+                .unwrap()
+                .decode_rgba8()
+                .unwrap(),
+        );
+        assert_eq!(texels[0], [128, 128, 128, 128]);
+    }
+
+    #[test]
+    fn channel_order_words_swap_red_and_blue() {
+        let raw = image(1, 1, 0x0200_C600, 0x1000_0000, 3, &[30, 120, 220]);
+        assert_eq!(
+            Rfi::parse(&raw).unwrap().decode_rgba8().unwrap(),
+            [220, 120, 30, 255]
+        );
+        let raw = image(1, 1, 0x0200_E608, 0x1000_0000, 4, &[30, 120, 220, 128]);
+        assert_eq!(
+            Rfi::parse(&raw).unwrap().decode_rgba8().unwrap(),
+            [220, 120, 30, 128]
+        );
+        let raw = image(1, 1, 0x1201_C600, 0x1000_0000, 3, &[128, 128, 255]);
+        assert_eq!(
+            Rfi::parse(&raw).unwrap().decode_rgba8().unwrap(),
+            [255, 128, 128, 255]
+        );
     }
 
     #[test]

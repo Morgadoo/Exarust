@@ -327,6 +327,11 @@ pub const COMPATIBLE_MASK: u32 = 0x800C_FFFF;
 /// Exarust treats it as having no sRGB variant (its pixels stay linear).
 pub fn has_srgb_format(format_word: u32) -> bool {
     let key = format_word & COMPATIBLE_MASK;
+    // The two blue-first words are registered in their own table with the
+    // same RGB8/RGBA8 and SRGB8/SRGB8_ALPHA8 internal formats.
+    if matches!(key, 0x0200_C600 | 0x0200_E608) {
+        return true;
+    }
     COMPATIBLE_FORMATS
         .iter()
         .find(|(word, _)| word & COMPATIBLE_MASK == key)
@@ -462,8 +467,8 @@ pub fn rfi_to_texture(
     // mip bit through.
     let mipmapped = settings.quality_mask & word & flags::MIPMAP != 0;
     let block_format = match rfi.format {
-        PixelFormat::Bc1 if srgb => Some(TextureFormat::Bc1RgbaUnormSrgb),
-        PixelFormat::Bc1 => Some(TextureFormat::Bc1RgbaUnorm),
+        PixelFormat::Bc1 | PixelFormat::Bc1Alpha if srgb => Some(TextureFormat::Bc1RgbaUnormSrgb),
+        PixelFormat::Bc1 | PixelFormat::Bc1Alpha => Some(TextureFormat::Bc1RgbaUnorm),
         PixelFormat::Bc3 if srgb => Some(TextureFormat::Bc3RgbaUnormSrgb),
         PixelFormat::Bc3 => Some(TextureFormat::Bc3RgbaUnorm),
         // A single grey channel: the original's luminance LATC format, which
@@ -473,6 +478,8 @@ pub fn rfi_to_texture(
         PixelFormat::Bc4 => Some(TextureFormat::Bc4RUnorm),
         // Two-channel normal maps: Bevy reconstructs Z for RG formats.
         PixelFormat::Bc5 if !srgb => Some(TextureFormat::Bc5RgUnorm),
+        // The alpha-only and luminance-alpha BC4 variants have no wgpu
+        // upload that keeps their channel meaning: they decode to RGBA8.
         _ => None,
     };
     let image = match block_format {
@@ -604,7 +611,15 @@ fn block_image(
 pub fn has_alpha(rfi: &Rfi) -> bool {
     matches!(
         rfi.format,
-        PixelFormat::Bc3 | PixelFormat::Rgba8 | PixelFormat::La8 | PixelFormat::A8
+        PixelFormat::Bc1Alpha
+            | PixelFormat::Bc3
+            | PixelFormat::Bc4Alpha
+            | PixelFormat::Latc2
+            | PixelFormat::Rgba8
+            | PixelFormat::Bgra8
+            | PixelFormat::Zyxv8
+            | PixelFormat::La8
+            | PixelFormat::A8
     )
 }
 

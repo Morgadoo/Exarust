@@ -60,6 +60,12 @@ bits 0..7     0x08 when alpha present
 | `0x823BC600` | 187 | BC1 | specular (`*s`) |
 | `0x817BE608` | 110 | BC3 | diffuse with alpha (foliage) |
 | `0x827BA408` | 4 | BC3 (guess) | |
+| `0x813BE601` | — | BC1 with one-bit alpha (`DXT1a`) | registered by the original; not shipped |
+| `0x813B2008` | — | BC4 alpha only (`ALPHATC`) | registered; not shipped |
+| `0x817B6208` | — | two-channel BC4 luminance-alpha (`LATC`) | registered; not shipped |
+| `0x827BE608` | — | BC3 data (`DXT5n`) | registered; not shipped |
+| `0x0200C600`, `0x0200E608` | — | BGR8, BGRA8 | registered; converted to RGB8/RGBA8 |
+| `0x1201C600`, `0x1201E608` | — | ZYX8, ZYXV8 | registered; normal-map channel orders |
 | `0x0100C600`, `0x0111C600`, `0x1111C600` | 63 | RGB8 | reflection cubes, glow maps, a few diffuse maps and UI icons (`0100`); packed specular (`0111`); normal maps and one packed specular (`1111`) |
 | `0x0100E608` | 23 | RGBA8 | foliage, fire particles, UI pictures |
 | `0x01004200`, `0x01114200` | ~25 | L8 | height maps (`*h`) |
@@ -102,6 +108,23 @@ the converters walk (`exa_formats::rfi::image_pixels`) is the same walk
 over `width·height`, times six for a cube. A run-length encoded image
 unpacks to `data size` bytes. Established by reverse engineering of the
 size, pixel-count, decoder and copy routines (REA).
+
+The original does register blue-first words in a second table:
+`BGR8` (`0x0200C600`) and `BGRA8` (`0x0200E608`) convert to `RGB8` and
+`RGBA8` by swapping the first and third bytes, and the normal-map orders
+`ZYX8` (`0x1201C600`) and `ZYXV8` (`0x1201E608`) convert to
+`XYZ8`/`XYZV8` the same way. No shipped image uses any of the four; the
+upload table lists their GL formats as `GL_BGR`/`GL_BGRA`. Exarust
+classifies them and decodes them through the converters.
+
+The compressed words whose block layouts are not shipped decode through
+the registered converter family: `DXT1a` keeps the second mode's black
+texel transparent, `ALPHATC` is BC4 alpha only, `LATC` takes two BC4
+channels as luminance and alpha, and `DXT5n`/`DXT5na` decode as plain BC3
+(the latter is a guess; only four images carry the word). The BC1 colour
+expansion and the BC4/BC3 alpha blends use the original's integer
+arithmetic: bit replication for 5-6-5 endpoints and truncating `/3`,
+`/7` and `/5` divisions with no rounding term.
 
 ## Pixel-format conversion
 

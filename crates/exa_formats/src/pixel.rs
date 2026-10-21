@@ -51,6 +51,14 @@ pub mod id {
     pub const AF: u32 = 0x0108_2020;
     pub const XYZF: u32 = 0x0109_D800;
     pub const VF: u32 = 0x0109_4800;
+    /// Stored blue, green, red; converted to [`RGB8`].
+    pub const BGR8: u32 = 0x0200_C600;
+    /// Stored blue, green, red, alpha; converted to [`RGBA8`].
+    pub const BGRA8: u32 = 0x0200_E608;
+    /// Stored Z, Y, X; converted to [`XYZ8`].
+    pub const ZYX8: u32 = 0x1201_C600;
+    /// Stored Z, Y, X, V; converted to [`XYZV8`].
+    pub const ZYXV8: u32 = 0x1201_E608;
 }
 
 /// Compares a target without its data-kind bits.
@@ -81,6 +89,14 @@ pub enum Source {
     Scalarf,
     /// One float value, scaled without a clamp into RGB.
     Valuef,
+    /// Three channels stored blue first (BGR).
+    Bgr,
+    /// Four channels stored blue first (BGRA).
+    Bgra,
+    /// Three channels stored Z first (ZYX).
+    Zyx,
+    /// Four channels stored Z first (ZYXV).
+    Zyxv,
 }
 
 /// A registered format: its id, the format it falls back to, its name and
@@ -130,11 +146,20 @@ pub const FLOAT_FORMATS: [Format; 6] = [
     format(id::VF, id::VAL8, "Vf", Source::Valuef),
 ];
 
+/// The channel-order formats the original registers in a second table.
+pub const CHANNEL_ORDER_FORMATS: [Format; 4] = [
+    format(id::BGR8, id::RGB8, "BGR8", Source::Bgr),
+    format(id::BGRA8, id::RGBA8, "BGRA8", Source::Bgra),
+    format(id::ZYX8, id::XYZ8, "ZYX8", Source::Zyx),
+    format(id::ZYXV8, id::XYZV8, "ZYXV8", Source::Zyxv),
+];
+
 /// The registered format with this id.
 pub fn lookup(format_id: u32) -> Option<&'static Format> {
     EIGHT_BIT_FORMATS
         .iter()
         .chain(FLOAT_FORMATS.iter())
+        .chain(CHANNEL_ORDER_FORMATS.iter())
         .find(|f| f.id == format_id)
 }
 
@@ -703,6 +728,61 @@ pub fn convert(
             }
             _ => return Ok(false),
         },
+        // The channel-order converters read the stored order and write the
+        // canonical one: the third stored byte becomes red (BGR to RGB,
+        // ZYX to XYZ), the first becomes blue.
+        Source::Bgr | Source::Zyx => {
+            let px = src[..n * 3].as_chunks::<3>().0.iter();
+            match masked {
+                0x2008 | 0x4200 => {
+                    need(dst, n)?;
+                    for (out, p) in dst.iter_mut().zip(px) {
+                        *out = luma(p[2], p[1], p[0]);
+                    }
+                }
+                0xC600 => {
+                    need(dst, n * 3)?;
+                    for (out, p) in dst.as_chunks_mut::<3>().0.iter_mut().zip(px) {
+                        out.copy_from_slice(&[p[2], p[1], p[0]]);
+                    }
+                }
+                0xE608 => {
+                    need(dst, n * 4)?;
+                    for (out, p) in dst.as_chunks_mut::<4>().0.iter_mut().zip(px) {
+                        out.copy_from_slice(&[p[2], p[1], p[0], 255]);
+                    }
+                }
+                _ => return Ok(false),
+            }
+        }
+        Source::Bgra | Source::Zyxv => {
+            let px = src[..n * 4].as_chunks::<4>().0.iter();
+            match masked {
+                0x2008 | 0x4200 => {
+                    need(dst, n)?;
+                    for (out, p) in dst.iter_mut().zip(px) {
+                        *out = if masked == 0x2008 {
+                            p[3]
+                        } else {
+                            luma(p[2], p[1], p[0])
+                        };
+                    }
+                }
+                0xC600 => {
+                    need(dst, n * 3)?;
+                    for (out, p) in dst.as_chunks_mut::<3>().0.iter_mut().zip(px) {
+                        out.copy_from_slice(&[p[2], p[1], p[0]]);
+                    }
+                }
+                0xE608 => {
+                    need(dst, n * 4)?;
+                    for (out, p) in dst.as_chunks_mut::<4>().0.iter_mut().zip(px) {
+                        out.copy_from_slice(&[p[2], p[1], p[0], p[3]]);
+                    }
+                }
+                _ => return Ok(false),
+            }
+        }
     }
     Ok(true)
 }
@@ -714,9 +794,14 @@ mod tests {
     #[test]
     fn registrations_and_sizes() {
         assert_eq!(EIGHT_BIT_FORMATS.len() + FLOAT_FORMATS.len(), 20);
+        assert_eq!(CHANNEL_ORDER_FORMATS.len(), 4);
         let lum1 = lookup(id::LUM1).unwrap();
         assert_eq!((lum1.name, lum1.fallback), ("LUM1", id::LUM8));
         assert_eq!(lookup(id::VF).unwrap().fallback, id::VAL8);
+        assert_eq!(lookup(id::BGR8).unwrap().name, "BGR8");
+        assert_eq!(lookup(id::BGRA8).unwrap().fallback, id::RGBA8);
+        assert_eq!(pixel_bytes(id::BGR8, 5), Some(15));
+        assert_eq!(pixel_bytes(id::ZYXV8, 5), Some(20));
         assert_eq!(bits_per_pixel(id::RGB8), 24);
         assert_eq!(bits_per_pixel(id::RGBA8), 32);
         assert_eq!(bits_per_pixel(id::RGBAF), 128);
@@ -917,6 +1002,42 @@ mod tests {
         assert!(convert(id::RGBAF, id::RGBA8, &[], usize::MAX / 8, &mut dst).is_err());
         assert_eq!(pixel_bytes(id::RGBAF, usize::MAX / 8), None);
         assert_eq!(pixel_bytes(id::LUMA8, usize::MAX), None);
+    }
+
+    #[test]
+    fn channel_order_sources_swap_red_and_blue() {
+        assert_eq!(
+            run(id::BGR8, id::RGB8, &[30, 120, 220], 1, 3).unwrap(),
+            [220, 120, 30]
+        );
+        assert_eq!(
+            run(id::BGR8, id::RGBA8, &[30, 120, 220], 1, 4).unwrap(),
+            [220, 120, 30, 255]
+        );
+        assert_eq!(
+            run(id::BGRA8, id::RGBA8, &[30, 120, 220, 128], 1, 4).unwrap(),
+            [220, 120, 30, 128]
+        );
+        assert_eq!(
+            run(id::BGRA8, id::ALPHA8, &[30, 120, 220, 128], 1, 1).unwrap(),
+            [128]
+        );
+        assert_eq!(
+            run(id::ZYX8, id::XYZ8, &[128, 128, 255], 1, 3).unwrap(),
+            [255, 128, 128]
+        );
+        assert_eq!(
+            run(id::ZYXV8, id::XYZV8, &[1, 2, 3, 4], 1, 4).unwrap(),
+            [3, 2, 1, 4]
+        );
+        // Blue first, so the luma weights see the stored order (30, 200, 10:
+        // 30·0.299 + 200·0.587 + 10·0.114 = 127.51).
+        assert_eq!(
+            run(id::BGR8, id::LUM8, &[10, 200, 30], 1, 1).unwrap(),
+            [128]
+        );
+        // A target the converter does not write is declined.
+        assert_eq!(run(id::BGR8, id::LUMA8, &[1, 2, 3], 1, 2), None);
     }
 
     #[test]
