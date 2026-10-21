@@ -206,42 +206,137 @@ impl Victim {
     }
 }
 
-/// How the victim meets a blow. Open takes the flesh wound. A parry stops
-/// it. A shield lets a leak of yellow through and no lasting wound.
+/// How the victim meets a blow. Open takes the flesh wound. A weapon's
+/// parry stops it ([`parried`]). A shield takes it on its arm's stamina
+/// and lets a leak of yellow through, no lasting wound ([`block`]).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Guard {
     #[default]
     Open,
     Parry,
-    /// `leak` is 1 − block/2. `stamina` is the shield arm, 0..=1.
-    Shield {
-        leak: f32,
-        stamina: f32,
-    },
+    Shield(ShieldGuard),
 }
 
-/// The blow a guard lets through. A parry deals none. A shield that is not
-/// itself parrying deals yellow 0.05·Q and daze (0.3 − 0.2·stamina)·Q, with
-/// Q = (1 − stamina)·(0.4 + 0.4·I) from the blow's impact I at the hit,
-/// times `leak`, and no lasting wound.
-pub fn guard_outcome(blow: Outcome, guard: Guard) -> Outcome {
-    match guard {
-        Guard::Open => blow,
-        Guard::Parry => Outcome::default(),
-        Guard::Shield { leak, stamina } => {
-            let leak = leak.clamp(0.0, 1.0);
-            let stamina = stamina.clamp(0.0, 1.0);
-            let q = (1.0 - stamina) * (0.4 + 0.4 * blow.hit_impact) * leak;
-            Outcome {
-                yellow: 0.05 * q,
-                daze: (0.3 - 0.2 * stamina).max(0.0) * q,
-                material: blow.material,
-                hit_impact: blow.hit_impact,
-                speed: blow.speed,
-                ..Outcome::default()
-            }
+/// A shield held up: its factors and its arm's stamina.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ShieldGuard {
+    /// The share of a tired block's blow that reaches yellow: 1 − block/2.
+    pub leak: f32,
+    /// What a blow costs the arm per unit of impact: the leak, × 2/3 with
+    /// Endure.
+    pub cost: f32,
+    /// The shield arm's stamina, 0..=1.
+    pub stamina: f32,
+    /// The holder parries with the shield.
+    pub parrying: bool,
+}
+
+/// What the shield's holder brings to a blow on its shield besides the
+/// shield: its techniques, its own swing clock, whether it counters this
+/// very attack, a potion.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Holding {
+    pub synchrony: bool,
+    pub persist: bool,
+    pub counter: bool,
+    /// It counters this very attack's motion.
+    pub countering: bool,
+    /// Its swing clock.
+    pub clock: f32,
+    pub potion: bool,
+}
+
+/// A blow on a shield: the arm's stamina left, the yellow left, the daze
+/// and its stall factor, the sag, whether the holder is locked out of
+/// attacking for 600 ms, whether the low-health check runs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Blocked {
+    pub stamina: f32,
+    pub yellow: f32,
+    pub daze: f32,
+    pub daze_factor: f32,
+    pub sag: Option<f32>,
+    pub locked: bool,
+    pub low: bool,
+}
+
+/// How long a parried or shield-parried attacker's victim is kept from
+/// attacking, ms (none with Riposte, with Counter for a shield).
+pub const PARRY_LOCK_MS: u64 = 600;
+
+/// A blow at impact `impact` (at the hit, no armour) on a shield held as
+/// `shield` by a holder of yellow health `yellow`, as the original's block
+/// path: parrying, the arm pays cost·0.4·I, the holder is locked unless it
+/// has Counter, and its stance sags (0.7 − S/2)·I (at most 1); else, under
+/// Synchrony while it counters this attack before 0.3 of its own clock,
+/// x = clock/0.3 (0 at or under 0) and the arm pays cost·(0.3x + 0.3)·I,
+/// otherwise x = 1 and it pays cost·0.8·I. The stamina is at least 0.
+/// With x above 0 a tired arm leaks Q = (1 − S)·(0.4·I + 0.4·x)·leak:
+/// yellow −= 0.05·Q (0.025 under a potion), at least 0. Yellow under 0.05
+/// runs the low-health check. The daze is (0.3 − 0.2·S)·Q (·I when x is
+/// 0); its stall factor half the holder's clock with Persist, its clock
+/// under Synchrony before 0.3, else 1. Products in double as the original.
+pub fn block(impact: f32, yellow: f32, shield: &ShieldGuard, holder: &Holding) -> Blocked {
+    let wide_cost = |k: f64| (f64::from(shield.stamina) - f64::from(shield.cost) * k) as f32;
+    let (mut stamina, x, sag, locked) = if shield.parrying {
+        let stamina = wide_cost(f64::from(impact) * 0.4);
+        let sag = ((0.7 - f64::from(stamina * 0.5)) * f64::from(impact)) as f32;
+        (
+            stamina,
+            0.0,
+            Some(if sag > 1.0 { 1.0 } else { sag }),
+            !holder.counter,
+        )
+    } else if holder.synchrony && holder.countering && f64::from(holder.clock) < 0.3 {
+        let x = if holder.clock > 0.0 {
+            (f64::from(holder.clock) * 3.333_333_333_333_333_5) as f32
+        } else {
+            0.0
+        };
+        let stamina = wide_cost((f64::from(x) * 0.3 + 0.3) * f64::from(impact));
+        (stamina, x, None, false)
+    } else {
+        (wide_cost(f64::from(impact) * 0.8), 1.0, None, false)
+    };
+    if 0.0 > stamina {
+        stamina = 0.0;
+    }
+    let mut yellow = yellow;
+    let mut q = impact;
+    if 0.0 < x {
+        let reach = (f64::from(impact) * 0.4 + f64::from(x) * 0.4) as f32;
+        q = (1.0 - stamina) * reach * shield.leak;
+        let share = if holder.potion { 0.025 } else { 0.05 };
+        yellow = (f64::from(yellow) - f64::from(q) * share) as f32;
+        if 0.0 > yellow {
+            yellow = 0.0;
         }
     }
+    let daze_factor = if holder.persist {
+        holder.clock * 0.5
+    } else if holder.synchrony && f64::from(holder.clock) < 0.3 {
+        holder.clock
+    } else {
+        1.0
+    };
+    Blocked {
+        stamina,
+        yellow,
+        daze: ((0.3 - f64::from(stamina) * 0.2) * f64::from(q)) as f32,
+        daze_factor,
+        sag,
+        locked,
+        low: yellow < LOW_YELLOW,
+    }
+}
+
+/// Under this yellow the low-health check runs.
+const LOW_YELLOW: f32 = 0.05;
+
+/// The sag a weapon's parry sets on its holder: min(I/2, 1).
+pub fn parried(impact: f32) -> f32 {
+    let sag = impact * 0.5;
+    if sag > 1.0 { 1.0 } else { sag }
 }
 
 /// The float 0.75 a lasting wound is weighed by before the notice.
@@ -1463,6 +1558,69 @@ mod tests {
         let o = resolve(&sword_a(), &swing(20.0, 0.8, 70.0), None, 9, &human()).unwrap();
         assert_eq!(o.sag, None);
         pin!(o, hit_impact = 0.674_666_7, impact = 0.674_666_7);
+    }
+
+    /// The block path on the cut's impact at the hit (0.6746667) against a
+    /// shield of block 0.58 (leak and cost 0.71) and yellow 0.25, bits from
+    /// a model of the listing: a tired arm leaks, a fresh one pays 0.8·I,
+    /// a shield parry 0.4·I and sags the stance, Synchrony while countering
+    /// at 0.15 of its clock pays (0.3·0.5 + 0.3)·I, Persist halves the
+    /// clock for the stall factor, a potion halves the leak.
+    #[test]
+    fn a_shield_takes_the_blow_on_its_arm() {
+        let impact = f32::from_bits(0x3f2c_b6f5);
+        let leak = 1.0 - 0.5 * 0.58;
+        let shield = |stamina, parrying| ShieldGuard {
+            leak,
+            cost: leak,
+            stamina,
+            parrying,
+        };
+        let bits = |b: &Blocked| [b.stamina, b.yellow, b.daze, b.daze_factor].map(f32::to_bits);
+        let tired = block(impact, 0.25, &shield(0.0, false), &Holding::default());
+        assert_eq!(bits(&tired), [0, 0x3e67_a625, 0x3e12_1b21, 0x3f80_0000]);
+        assert!(tired.sag.is_none() && !tired.locked && !tired.low);
+        let fresh = block(impact, 0.25, &shield(1.0, false), &Holding::default());
+        assert_eq!(
+            bits(&fresh),
+            [0x3f1d_e5e7, 0x3e76_ab1f, 0x3d03_de27, 0x3f80_0000]
+        );
+        let parry = block(impact, 0.25, &shield(1.0, true), &Holding::default());
+        assert_eq!(
+            bits(&parry),
+            [0x3f4e_f2f4, 0x3e80_0000, 0x3dbf_1ee1, 0x3f80_0000]
+        );
+        assert_eq!(parry.sag.map(f32::to_bits), Some(0x3e4c_5b9c));
+        assert!(parry.locked);
+        let countered = Holding {
+            counter: true,
+            ..Holding::default()
+        };
+        assert!(!block(impact, 0.25, &shield(1.0, true), &countered).locked);
+        let sync = Holding {
+            synchrony: true,
+            countering: true,
+            clock: 0.15,
+            ..Holding::default()
+        };
+        let synced = block(impact, 0.25, &shield(1.0, false), &sync);
+        assert_eq!(
+            bits(&synced),
+            [0x3f48_d152, 0x3e7c_5174, 0x3c28_9c81, 0x3e19_999a]
+        );
+        let persist = Holding {
+            persist: true,
+            clock: 0.4,
+            potion: true,
+            ..Holding::default()
+        };
+        let persisted = block(impact, 0.25, &shield(0.5, false), &persist);
+        assert_eq!(
+            bits(&persisted),
+            [0x3def_2f39, 0x3e75_3f19, 0x3ded_fd89, 0x3e4c_cccd]
+        );
+        // Under 0.05 yellow the low-health check runs.
+        assert!(block(impact, 0.04, &shield(1.0, true), &Holding::default()).low);
     }
 
     /// The readiness halves the wound's terms but not the shove.

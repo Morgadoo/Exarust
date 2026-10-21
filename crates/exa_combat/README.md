@@ -74,7 +74,10 @@ returns an `Outcome` with what the rest of the hit reads: the impact at
 the hit, the blow sag (min(2·I, 1)), the zone and whether the edge or the
 weapon's body struck, the bite and its smoothing, the hit sound's volume,
 pitch and muffling and each layer's ringing (`hit_sounds`). A blow on a
-shield or a weapon (`Guard`) meets no layer and draws no roll. Rules and
+shield or a weapon (`Guard`) meets no layer and draws no roll: a weapon's
+parry deals nothing and sags the parrier (`parried`), a shield takes it on
+its arm's stamina and leaks yellow (`block`, the block path with its
+Synchrony, Persist and Counter rules). Rules and
 numbers: [`docs/formats/OTHER.md`](../../docs/formats/OTHER.md), Damage.
 
 The hit reaction then runs the striker's side (`SwingState::after_wound`):

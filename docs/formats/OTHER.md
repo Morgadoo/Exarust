@@ -1801,11 +1801,24 @@ calls)
   routine's 0.5 and clamp); hands have none. It stains the weapon from
   its tip ([RENDERING.md](../RENDERING.md), Blood on weapons).
 
-A parry stops the blow. A shield that is not parrying lets through yellow
-0.05·(1 − stamina)·(0.4 + 0.4·I)·(1 − block/2), I the impact at the hit
-before any armour (a guarded blow meets no layer and draws no roll), and
-no lasting wound (`damage::guard_outcome`); either makes the striker
-recoil when it is smaller than 1.4. An armed bite above 0.1 sticks the weapon
+A guarded blow meets no layer and draws no roll; I below is its impact
+at the hit. A weapon's parry deals nothing: the parrying fighter's attack
+state clears, it is kept from attacking 600 ms (not with Riposte) and its
+stance sags min(I/2, 1) (`damage::parried`). A blow on a shield is the
+block path (`damage::block`, REA on its branch, products in double): a
+shield parry pays the arm's stamina cost·0.4·I, locks the holder 600 ms
+without Counter and sags its stance (0.7 − S/2)·I, at most 1; else under
+Synchrony while it counters this attack before 0.3 of its clock
+x = clock/0.3 and the arm pays cost·(0.3x + 0.3)·I, otherwise x = 1 and it
+pays cost·0.8·I (cost = 1 − block/2, × 2/3 with Endure). The stamina stays
+at least 0. With x above 0 the leak Q = (1 − S)·(0.4·I + 0.4·x)·(1 −
+block/2) takes 0.05·Q off yellow directly (0.025 under a potion; not the
+damage call), at least 0; yellow under 0.05 runs the low-health check.
+The daze is (0.3 − 0.2·S)·Q (·I when x is 0) with the stall factor half
+the holder's clock with Persist, its clock under Synchrony before 0.3,
+else 1. No lasting wound, no shove; either guard makes a striker smaller
+than 1.4 recoil. Exarust has no counters and no shield stamina
+regeneration yet: a held shield's stamina only falls. An armed bite above 0.1 sticks the weapon
 (`bite::stick`): the depth is capped at 1, flags are 0x11000 or 0x211000
 around the widened 0.4, strength is 12 times the depth, smoothing adds
 0.5, and the count is 3 times the truncated 83·unit·depth. The weapon

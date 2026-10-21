@@ -538,56 +538,128 @@ fn react_to_hits(
         // A guarded blow meets a shield or a weapon: no armour, no roll.
         let guarded = f.guard != damage::Guard::Open;
         let layers = (!guarded).then(|| (armour, roll.next()));
-        let Some(mut outcome) =
-            damage::resolve(&hit.weapon, &hit.strike, layers, hit.bone, &victim)
+        let Some(outcome) = damage::resolve(&hit.weapon, &hit.strike, layers, hit.bone, &victim)
         else {
             continue;
         };
-        if guarded {
-            outcome = damage::guard_outcome(outcome, f.guard);
+        let base = body
+            .as_deref()
+            .and_then(|b| b.drive.as_ref())
+            .map_or(1.0, |d| d.race.clip_rate);
+        let at = motions
+            .as_deref()
+            .and_then(|m| SwingAt::of(now, &anim, m, base));
+        let swing = swing.copied().unwrap_or(Swing::FISTS);
+        let recoils = StrikerReaction::Recoils {
+            blow: outcome,
+            guarded: true,
+        };
+        let guard = f.guard;
+        match guard {
+            damage::Guard::Open => {}
+            damage::Guard::Parry => {
+                // A weapon's parry deals nothing: the parrying fighter's
+                // attack state clears, it is kept from attacking 600 ms
+                // unless it has Riposte, and its stance sags by half the
+                // impact.
+                if let Some(mut state) = state {
+                    state.flags = 0;
+                    if !f.perks.has(Perk::Riposte) {
+                        state.end_ms = now + damage::PARRY_LOCK_MS;
+                    }
+                }
+                shoves.write(Shove {
+                    body: hit.target,
+                    bone: hit.bone,
+                    velocity: Vec3::ZERO,
+                    daze: 0.0,
+                    step: None,
+                    sag: Some(damage::parried(outcome.hit_impact)),
+                });
+                after.push((hit, recoils));
+                continue;
+            }
+            damage::Guard::Shield(shield) => {
+                // The shield's arm pays for the blow; a tired arm leaks
+                // yellow, and the blow dazes.
+                let holding = damage::Holding {
+                    synchrony: f.perks.has(Perk::Synchrony),
+                    persist: f.perks.has(Perk::Persist),
+                    counter: f.perks.has(Perk::Counter),
+                    countering: false,
+                    clock: at.as_ref().map_or(0.0, |a| a.progress),
+                    potion: flags.has(StateFlags::POTION),
+                };
+                let b = damage::block(outcome.hit_impact, f.health.yellow, &shield, &holding);
+                f.health.yellow = b.yellow;
+                f.guard = damage::Guard::Shield(damage::ShieldGuard {
+                    stamina: b.stamina,
+                    ..shield
+                });
+                let mut state = state;
+                if b.locked
+                    && let Some(state) = state.as_mut()
+                {
+                    state.end_ms = now + damage::PARRY_LOCK_MS;
+                }
+                if b.low {
+                    answer_low(
+                        hit.target,
+                        now as u32,
+                        &mut f.second_wind,
+                        &mut winds,
+                        &mut weakened,
+                    );
+                }
+                if *condition == Condition::ATTACKING
+                    && let (Some(mut state), Some(at)) = (state, at.as_ref())
+                {
+                    state.daze_stall(&swing, at, b.daze.min(MAX_DAZE), b.daze_factor);
+                }
+                shoves.write(Shove {
+                    body: hit.target,
+                    bone: hit.bone,
+                    velocity: Vec3::ZERO,
+                    daze: b.daze,
+                    step: None,
+                    sag: b.sag,
+                });
+                info!(
+                    "blow on {:?}'s shield: impact {:.2}, stamina {:.3} left, yellow {:.3}, \
+                     daze {:.3}",
+                    hit.target, outcome.hit_impact, b.stamina, b.yellow, b.daze
+                );
+                after.push((hit, recoils));
+                continue;
+            }
+        }
+        // The struck part's sound cooldown draws from the generator.
+        let _ = roll.below(PART_SOUND_SPREAD_MS);
+        if flags.has(StateFlags::TURNS_BLOWS) {
+            // The blow is turned: the striker recoils, nothing is dealt.
             after.push((
                 hit,
                 StrikerReaction::Recoils {
                     blow: outcome,
-                    guarded: true,
+                    guarded: false,
                 },
             ));
-        } else {
-            // The struck part's sound cooldown draws from the generator.
-            let _ = roll.below(PART_SOUND_SPREAD_MS);
-            if flags.has(StateFlags::TURNS_BLOWS) {
-                // The blow is turned: the striker recoils, nothing is dealt.
-                after.push((
-                    hit,
-                    StrikerReaction::Recoils {
-                        blow: outcome,
-                        guarded: false,
-                    },
-                ));
-                continue;
-            }
-            after.push((hit, StrikerReaction::Wounded(outcome)));
+            continue;
         }
+        after.push((hit, StrikerReaction::Wounded(outcome)));
         // A fighter struck mid-swing (attacking) has its swing stalled by
         // the daze, before the blow's damage as the original's daze runs
         // first: its stance returns when the stall ends.
         if *condition == Condition::ATTACKING
-            && let (Some(mut state), Some(motions)) = (state, motions.as_deref())
+            && let (Some(mut state), Some(at)) = (state, at.as_ref())
         {
-            let base = body
-                .as_deref()
-                .and_then(|b| b.drive.as_ref())
-                .map_or(1.0, |d| d.race.clip_rate);
-            if let Some(at) = SwingAt::of(now, &anim, motions, base) {
-                let swing = swing.copied().unwrap_or(Swing::FISTS);
-                let daze = outcome.daze.min(MAX_DAZE);
-                if let Some(r) = state.daze_stall(&swing, &at, daze, outcome.daze_factor) {
-                    info!(
-                        "{:?} struck mid-swing at {:.2} of its clip: stall {r:.3} a tick \
-                         (now {:.3}), strength {:.2}, stance at {} ms",
-                        hit.target, at.progress, state.stall, state.strength, state.end_ms
-                    );
-                }
+            let daze = outcome.daze.min(MAX_DAZE);
+            if let Some(r) = state.daze_stall(&swing, at, daze, outcome.daze_factor) {
+                info!(
+                    "{:?} struck mid-swing at {:.2} of its clip: stall {r:.3} a tick \
+                     (now {:.3}), strength {:.2}, stance at {} ms",
+                    hit.target, at.progress, state.stall, state.strength, state.end_ms
+                );
             }
         }
         // The original's damage call, by the victim's rule bits and state
@@ -601,22 +673,13 @@ fn react_to_hits(
             });
         }
         if taken == Taken::Weakened {
-            let now = ticks.as_ref().map_or(0, |t| t.millis() as u32);
-            if let LowAnswer::SecondWind {
-                volume_bits,
-                pitch_bits,
-            } = answer_low_health(now, &mut f.second_wind)
-            {
-                winds.write(SecondWindFired {
-                    fighter: hit.target,
-                    volume_bits,
-                    pitch_bits,
-                });
-            } else {
-                weakened.write(Weakened {
-                    fighter: hit.target,
-                });
-            }
+            answer_low(
+                hit.target,
+                now as u32,
+                &mut f.second_wind,
+                &mut winds,
+                &mut weakened,
+            );
         }
         let killed = taken == Taken::Killed;
         // A deep enough wound on a race that bleeds sprays a jet at once
@@ -791,6 +854,30 @@ fn react_to_hits(
         if attacking && anim.looping {
             commands.entity(e).remove::<Attacking>();
         }
+    }
+}
+
+/// The low-health check of a fighter left low but alive: a second wind
+/// when it may fire, else the weakened message (the heartbeat's).
+fn answer_low(
+    fighter: Entity,
+    now: u32,
+    wind: &mut SecondWind,
+    winds: &mut MessageWriter<SecondWindFired>,
+    weakened: &mut MessageWriter<Weakened>,
+) {
+    if let LowAnswer::SecondWind {
+        volume_bits,
+        pitch_bits,
+    } = answer_low_health(now, wind)
+    {
+        winds.write(SecondWindFired {
+            fighter,
+            volume_bits,
+            pitch_bits,
+        });
+    } else {
+        weakened.write(Weakened { fighter });
     }
 }
 
@@ -1071,7 +1158,13 @@ mod tests {
             app.insert_resource(exa_physics::body::BodyTicks(1));
             let mut fighter = Fighter::default();
             fighter.health.yellow = yellow;
-            fighter.guard = damage::Guard::Parry;
+            // A shield parry deals no yellow but runs the low-health check.
+            fighter.guard = damage::Guard::Shield(damage::ShieldGuard {
+                leak: 1.0,
+                cost: 1.0,
+                stamina: 1.0,
+                parrying: true,
+            });
             fighter.second_wind.granted = true;
             fighter.second_wind.ready_at = ready_at;
             let id = app
@@ -1099,37 +1192,61 @@ mod tests {
         assert_eq!(fighter.second_wind.ready_at, 180_012);
     }
 
-    /// The same cut that wounds bare flesh deals nothing through a parry, and
-    /// only the shield's yellow leak when the shield arm is tired.
+    /// The same cut that wounds bare flesh deals nothing through a parry
+    /// (the parrying fighter kept from attacking 600 ms, its stance sagging
+    /// by half the impact) and only the shield's yellow leak when the
+    /// shield arm is tired, its arm at 0; the striker recoils from both.
     #[test]
     fn a_parry_or_a_block_changes_the_blow() {
-        let open = outcome(9);
-        assert!(open.wound > 0.0 && open.yellow > 0.0, "{open:?}");
-        let parried = damage::guard_outcome(open, damage::Guard::Parry);
-        assert_eq!(
-            (parried.wound, parried.yellow, parried.red),
-            (0.0, 0.0, 0.0)
-        );
-        let leak = 1.0 - 0.5 * 0.58;
-        let blocked = damage::guard_outcome(open, damage::Guard::Shield { leak, stamina: 0.0 });
-        let q = (0.4 + 0.4 * open.impact) * leak;
-        assert!((blocked.yellow - 0.05 * q).abs() < 1e-5, "{blocked:?}");
-        assert_eq!(blocked.wound, 0.0);
-        assert!(blocked.yellow < open.yellow, "{blocked:?} {open:?}");
-
         let mut app = reactions();
+        let (attacker, blade) = swordsman(&mut app);
         let guarding = Fighter {
             guard: damage::Guard::Parry,
             ..Fighter::default()
         };
         let id = app
             .world_mut()
-            .spawn((guarding, Animator::new("Default", "Idle")))
+            .spawn((
+                guarding,
+                Animator::new("Default", "Idle"),
+                SwingState::default(),
+            ))
             .id();
-        strike(&mut app, id, 9);
+        swung(&mut app, attacker, blade, id, cut());
         let health = app.world().get::<Fighter>(id).unwrap().health;
-        assert_eq!(health.yellow, 0.25);
-        assert_eq!(health.red, 0.25);
+        assert_eq!((health.yellow, health.red), (0.25, 0.25));
+        assert_eq!(app.world().get::<SwingState>(id).unwrap().end_ms, 600);
+        let impact = outcome(9).hit_impact;
+        assert_eq!(shoves(&app)[0].sag, Some(impact * 0.5));
+        assert_eq!(shoves(&app)[0].daze, 0.0);
+        let striker = app.world().get::<SwingState>(attacker).unwrap();
+        assert!(striker.has(swing::flags::RECOILED));
+
+        let mut app = reactions();
+        let (attacker, blade) = swordsman(&mut app);
+        let leak = 1.0 - 0.5 * 0.58;
+        let shielded = Fighter {
+            guard: damage::Guard::Shield(damage::ShieldGuard {
+                leak,
+                cost: leak,
+                stamina: 0.0,
+                parrying: false,
+            }),
+            ..Fighter::default()
+        };
+        let id = app
+            .world_mut()
+            .spawn((shielded, Animator::new("Default", "Idle")))
+            .id();
+        swung(&mut app, attacker, blade, id, cut());
+        let f = app.world().get::<Fighter>(id).unwrap();
+        assert_eq!(f.health.yellow.to_bits(), 0x3e67_a625);
+        assert_eq!(f.health.red, 0.25);
+        assert!(matches!(f.guard, damage::Guard::Shield(s) if s.stamina == 0.0));
+        assert_eq!(shoves(&app)[0].daze.to_bits(), 0x3e12_1b21);
+        assert_eq!(shoves(&app)[0].sag, None);
+        let striker = app.world().get::<SwingState>(attacker).unwrap();
+        assert!(striker.has(swing::flags::RECOILED));
     }
 
     /// A sword cut that wounds but does not kill starts no clip: a bare
