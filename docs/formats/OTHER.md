@@ -166,9 +166,19 @@ models), against 363 by the ground model. Exarust reads both
 up by its worn model, weapons by their ground model.
 
 Appearance block (100 bytes): quality, damage and dirt bytes (the painter uses
-q = x, damage = x/(2−x), dirt = (x²+x)/2 with x = byte/255), one unknown
-byte, then eight 12-byte layers: +1 mask number (`<stem>m<n>`, 0 = unused),
-+2 material set (used when the material is 0), +4 material, +8 palette colour.
+q = x, damage = x/(2−x), dirt = (x²+x)/2 with x = byte/255), their packed
+spreads ([Armour](#armour)), then eight 12-byte layers: +0 flags (`0x1` the
+first layer's material sets the armour variants a leather adds and later
+such layers copy it, `0x2` layers of one random set share a material), +1
+mask number (`<stem>m<n>`, 0 = unused), +2 material set (used when the
+material is 0), +3 wealth level, +4 material, +8 palette colour, +0xB
+colour mode (5 once rolled). The roll of a copy (`exa_items::palette`,
+REA on the apparel roll) draws a missing material from its set: sets 1, 3,
+4, 5 and 8 weigh each material by `reach − |level − its level|` (the
+material table, levels 0–3) times the set's weight, set 12 takes the
+plain plate below the palette's plate level and its plate above it, set 13
+the palette's mail, the others pick evenly; the colour follows the
+material's class and the layer's colour mode.
 
 **Occupancy table** at body `0x10`: a `u64` for each of bones 1..20 (bone b
 at `0x10 + 8(b − 1)`). Byte L is a bit mask of the bone's sub-parts the
@@ -862,6 +872,13 @@ Apparel item body (`0x1000`) fields:
 - `0x1A5`: encumbrance ×0.0025 ([Encumbrance](#encumbrance));
 - `0x1A6`: hit sound class (0 flesh, 1 cloth, 2 leather, 3 mail, 4 plate,
   6 golem);
+- `0x1A8`: armour type, `0x1A9`: wealth variance (bits 2–6 in 31sts, bit 7
+  the sign), `0x1AA`: armour variant (1–8; `0xFF` until rolled), `0x1AC`: the
+  paint seed (u32; 0 until rolled);
+- `0x1B0..0x1B3`: quality, damage, dirt and their packed spreads (the
+  "unknown" fourth byte of the appearance block: quality in bits 0–2,
+  damage in 3–5, dirt in 6–7; codes 0 and 1 are eighths, the others
+  quarters less one; non-zero means the copy still rolls);
 - `0x214`: special kind (4 the golem suit, 6 gauntlets that lighten a held
   shield; 1, 2, 3, 5, 7 other item effects);
 - `0x218` bit 0 and `0x219`: a power crystal is in and its charge (0xFF
@@ -874,6 +891,13 @@ condition, c = (1 − 0.4·d/255)·(0.8 + 0.5·q/255) with q and d the
 appearance block's quality and damage: padding and resistances × c,
 rounded (half to even), at most 160; the coverage display byte × (0.3c +
 0.7); encumbrance ÷ ((1 − 0.15·d/255)·(0.85 + 0.3·q/255)), rounded. The
+armour variant then scales the bytes once more, without a cap (the byte
+wraps): 1 resistances × 0.9 and encumbrance × 0.8; 2 × 1.1 and × 1.16; 3 ×
+1.2 and × 1.1; 4 slash and pierce × 1.35 and × 1.06; 5 padding × 1.4,
+crush × 1.2 and × 1.06; 6 padding and crush × 1.3, slash and pierce × 1.1
+and × 1.16; 7 and 8 nothing. A copy's price is the template's ÷ (2q₀² +
+0.5) × (2q² + 0.5)(2(1 − d)² + 0.5)/2 in the compact price word
+([Containers and random tables](#containers-and-random-tables)). The
 armour pass then reads the bytes as the item stores them: the level
 databases' instances store them scaled already (of those whose condition
 changes their encumbrance byte, 381 store it scaled and 1 as the template;

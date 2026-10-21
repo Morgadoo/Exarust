@@ -12,6 +12,7 @@ pub mod icon_cache;
 pub mod instance;
 pub mod inventory_window;
 pub mod item_gui;
+pub mod palette;
 pub mod pane;
 pub mod possession;
 pub mod randomise;

@@ -103,8 +103,14 @@ pub struct Protection {
     pub encumbrance: u8,
 }
 
-/// Apparel's protection from its template's at the copy's condition.
-pub fn apparel_condition(template: &Protection, quality: u8, damage: u8) -> Protection {
+/// Apparel's protection from its template's at the copy's condition, then
+/// its armour variant's adjustment ([`variant_scales`]).
+pub fn apparel_condition(
+    template: &Protection,
+    quality: u8,
+    damage: u8,
+    variant: u8,
+) -> Protection {
     let c = condition_factor(quality, damage);
     let coverage = nearest_f64((f64::from(c) * 0.3 + 0.7) * f64::from(template.coverage)) as u8;
     let resist = template
@@ -113,10 +119,35 @@ pub fn apparel_condition(template: &Protection, quality: u8, damage: u8) -> Prot
     let wear = ((1.0 - f64::from(damage) * COVER_DAMAGE)
         * (f64::from(quality) * COVER_QUALITY + 0.85)) as f32;
     let encumbrance = nearest(f32::from(template.encumbrance) * (1.0 / wear)) as u8;
-    Protection {
+    let mut p = Protection {
         resist,
         coverage,
         encumbrance,
+    };
+    if let Some((scales, enc)) = variant_scales(variant) {
+        p.encumbrance = nearest_f64(f64::from(p.encumbrance) * enc) as u8;
+        for (r, k) in p.resist.iter_mut().zip(scales) {
+            if k != 1.0 {
+                *r = nearest_f64(f64::from(*r) * k) as u8;
+            }
+        }
+    }
+    p
+}
+
+/// The armour variants 1–8 an apparel copy can be rolled with: each scales
+/// the padding, slash, crush and pierce bytes and the encumbrance after the
+/// condition (the bytes wrap; no cap). Variants 7 and 8 change nothing.
+pub fn variant_scales(variant: u8) -> Option<([f64; 4], f64)> {
+    match variant {
+        1 => Some(([0.9; 4], 0.8)),
+        2 => Some(([1.1; 4], 1.16)),
+        3 => Some(([1.2; 4], 1.1)),
+        4 => Some(([1.0, 1.35, 1.0, 1.35], 1.06)),
+        5 => Some(([1.4, 1.0, 1.2, 1.0], 1.06)),
+        6 => Some(([1.3, 1.1, 1.3, 1.1], 1.16)),
+        7 | 8 => Some(([1.0; 4], 1.0)),
+        _ => None,
     }
 }
 
@@ -337,15 +368,24 @@ mod tests {
             coverage: 100,
             encumbrance: 20,
         };
-        let p = apparel_condition(&t, 255, 0);
+        let p = apparel_condition(&t, 255, 0, 0);
         assert_eq!(p.resist, [52, 104, STAT_CAP, 0]);
         // 0.3·1.3 + 0.7 = 1.09.
         assert_eq!(p.coverage, 109);
         // 20 / (1 · 1.15) = 17.4.
         assert_eq!(p.encumbrance, 17);
-        let bad = apparel_condition(&t, 0, 255);
+        let bad = apparel_condition(&t, 0, 255, 0);
         // 20 / (0.85 · 0.85) = 27.7.
         assert_eq!(bad.encumbrance, 28);
+        // Variant 4 hardens slash and pierce by 1.35 and weighs 1.06 more;
+        // the bytes are not capped again.
+        let v = apparel_condition(&t, 255, 0, 4);
+        assert_eq!(v.resist, [52, 140, STAT_CAP, 0]);
+        assert_eq!(v.encumbrance, 18);
+        let v = apparel_condition(&t, 255, 0, 3);
+        assert_eq!(v.resist, [62, 125, 192, 0]);
+        assert_eq!(apparel_condition(&t, 255, 0, 7), p);
+        assert_eq!(apparel_condition(&t, 255, 0, 9), p);
     }
 
     #[test]
