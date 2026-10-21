@@ -262,38 +262,6 @@ pub fn key_code(code: u32) -> Option<KeyCode> {
     })
 }
 
-/// The Windows virtual-key code of a Bevy key: the letters, the digit row,
-/// Tab, Space, Escape, the arrows and either side's shift, control and alt.
-pub fn virtual_key(key: KeyCode) -> Option<u32> {
-    use KeyCode::*;
-    const LETTERS: [KeyCode; 26] = [
-        KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ, KeyK, KeyL, KeyM, KeyN, KeyO,
-        KeyP, KeyQ, KeyR, KeyS, KeyT, KeyU, KeyV, KeyW, KeyX, KeyY, KeyZ,
-    ];
-    const DIGITS: [KeyCode; 10] = [
-        Digit0, Digit1, Digit2, Digit3, Digit4, Digit5, Digit6, Digit7, Digit8, Digit9,
-    ];
-    if let Some(i) = LETTERS.iter().position(|&k| k == key) {
-        return Some(0x41 + i as u32);
-    }
-    if let Some(i) = DIGITS.iter().position(|&k| k == key) {
-        return Some(0x30 + i as u32);
-    }
-    Some(match key {
-        Tab => 0x09,
-        Space => 0x20,
-        Escape => 0x1B,
-        ArrowLeft => 0x25,
-        ArrowUp => 0x26,
-        ArrowRight => 0x27,
-        ArrowDown => 0x28,
-        ShiftLeft | ShiftRight => 0x10,
-        ControlLeft | ControlRight => 0x11,
-        AltLeft | AltRight => 0x12,
-        _ => return None,
-    })
-}
-
 /// The Bevy mouse button for a Windows virtual-key code in the table.
 pub fn mouse_button(code: u32) -> Option<MouseButton> {
     Some(match code {
@@ -320,7 +288,8 @@ mod tests {
         assert_eq!(virtual_key(KeyCode::Digit9), Some(0x39));
         assert_eq!(virtual_key(KeyCode::KeyZ), Some(0x5A));
         assert_eq!(virtual_key(KeyCode::ControlRight), Some(0x11));
-        assert_eq!(virtual_key(KeyCode::F1), None);
+        assert_eq!(virtual_key(KeyCode::F1), Some(0x70));
+        assert_eq!(virtual_key(KeyCode::Fn), None);
     }
 
     #[test]

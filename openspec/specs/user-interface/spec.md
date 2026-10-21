@@ -61,7 +61,7 @@ The system SHALL draw the world cursor in play mode at the pointer's position, i
 - **THEN** the system pointer stays and the app keeps running
 
 ### Requirement: World cursor shapes
-The system SHALL pick the cursor's shape as the original does. In combat mode: chevrons while walking to the cursor (two beyond 300 cm), else the arrowhead while Ctrl is held, else the ring, also down or collapsing; the arrowhead once dead. Outside it: the cross while down, collapsing or dead, chevrons while walking to the cursor, else the arrowhead over a point within 3 m and the cross beyond. Ring and chevrons SHALL turn away from the player.
+The system SHALL pick the cursor's shape as the original does. In combat mode: chevrons while walking to the cursor (two beyond 300 cm), else the arrowhead while Ctrl is held, else the ring, also down or collapsing; the arrowhead once dead. Outside it: the cross while down, collapsing or dead, chevrons while walking to the cursor, else the arrowhead over a point within the hand's reach and the cross beyond. Ring and chevrons SHALL turn away from the player.
 
 #### Scenario: Running to the cursor
 - **WHEN** the right button is held over a point 5 m from the player outside combat mode
