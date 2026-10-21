@@ -1744,14 +1744,19 @@ bubble). The subdivided cap counts 4n − 6 points, more than it makes.
 
 The mind effects build a **UV sphere** instead: `segments` columns and
 `segments / 2` rows from pole to pole at an angle step 2π/segments on both
-axes, in column pairs of triangle strips. Each pair's first strip writes
-the pole, the rows of both columns and the next pole; its continuation
-strip writes the next column's pole and bottom and patches its middle
-indices to borrow the following pair's vertices, so the strips join without
-duplicate seam vertices. The normal and the position direction come from
-the original's fast sine (its 4/π quadrant fold and polynomial) and an
-ordinary cosine; the texture coordinates tile by the two scales, the
-tangent runs from a column point to the next round the equator, and the
+axes, (rows + 1)(segments − 1) + segments vertices, in column pairs of
+triangle strips of `segments` indices. A pair's first strip runs from
+column c's north pole down between columns c and c + 1 to the south pole.
+Its second strip writes column c + 1's south pole, then patches its indices
+to zigzag between column c + 2 (the next pair's first strip, written
+later) and column c + 1, and writes column c + 1's north pole last. The
+last pair's second strip instead writes column `segments` itself (the
+seam, u = 1) and patches only the column c + 1 side. The normal and
+position come from the engine's fast sine (its 4/π quadrant fold rounded
+to nearest, then the polynomial) and the double-precision cosine, the z
+terms multiplied in double; the texture coordinates tile by the two
+scales (the poles half a column to the left), the tangent runs from a
+column point to the next round the equator (none at the poles), and the
 colour word is -1. `exa_assets::polyhedra::uv_sphere` builds it.
 
 ## Not done yet

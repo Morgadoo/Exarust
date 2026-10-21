@@ -205,23 +205,26 @@ fn normalised(v: [f32; 3]) -> [f32; 3] {
     v.map(|x| x * inv)
 }
 
-/// The engine's fast sine: a quadrant fold (multiply by 4/π, round to an
+/// The engine's fast sine: a quadrant fold (multiply by 4/π, round to the
+/// nearest integer as the processor's default rounding does, then up to an
 /// even quadrant) and a degree-7 polynomial for the sine or cosine of the
 /// remainder. The result is the original's, bit for bit (its final sign is
-/// the input's sign xor the quadrant's bit 2).
+/// the input's sign xor the quadrant's bit 2). Past π/8 the rounding picks
+/// the next quadrant, so the cosine polynomial runs on a remainder below
+/// −π/4; the original's error there is kept.
 pub fn fast_sin(x: f32) -> f32 {
     const FOUR_OVER_PI: f32 = 1.273_239_5;
     const QUARTER_PI: f32 = 0.785_398_2;
     let bits = x.to_bits();
     let magnitude = f32::from_bits(bits & 0x7FFF_FFFF);
-    let t = magnitude * FOUR_OVER_PI;
-    // CVTTSS2SI's out-of-range result is the integer's smallest value.
-    let truncated = if t.is_nan() || t >= 2_147_483_648.0 || t < -2_147_483_648.0 {
+    let t = (magnitude * FOUR_OVER_PI).round_ties_even();
+    // CVTPS2DQ's out-of-range result is the integer's smallest value.
+    let rounded = if t.is_nan() || t >= 2_147_483_648.0 || t < -2_147_483_648.0 {
         i32::MIN
     } else {
         t as i32
     };
-    let quadrant = truncated.wrapping_add(1) as u32 & !1;
+    let quadrant = rounded.wrapping_add(1) as u32 & !1;
     let f = magnitude - (quadrant as i32 as f32) * QUARTER_PI;
     let f2 = f * f;
     let sine = (((-0.000_195_152_96 * f2 + 0.008_332_161) * f2 - 0.166_666_55) * f2 * f) + f;
@@ -243,9 +246,10 @@ pub const SPHERE_TANGENTS: u32 = 0x8;
 pub const SPHERE_UVS: u32 = 0x10;
 
 /// A sphere built as the mind effects' geometry: a column of triangle
-/// strips. The vertices are written pair by pair, and a strip's indices
-/// point at vertices of the next strip (the original's GL strips), so the
-/// list of indices is kept rather than turned into independent triangles.
+/// strips. The vertices are written one by one, and a strip's patched
+/// indices point at vertices of the strip before or after it (the
+/// original's GL strips), so the list of indices is kept rather than
+/// turned into independent triangles.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct UvSphere {
     pub positions: Vec<[f32; 3]>,
@@ -253,131 +257,189 @@ pub struct UvSphere {
     pub normals: Vec<[f32; 3]>,
     /// Filled when [`SPHERE_UVS`] is set.
     pub uvs: Vec<[f32; 2]>,
-    /// Filled when [`SPHERE_TANGENTS`] is set.
+    /// Filled when [`SPHERE_TANGENTS`] is set; zero at the poles, which the
+    /// original leaves unwritten.
     pub tangents: Vec<[f32; 4]>,
     /// Filled when [`SPHERE_COLOURS`] is set.
     pub colours: Vec<u32>,
-    /// One triangle strip per column pair; its indices name [`positions`].
+    /// The triangle strips, `segments` indices each (an odd count leaves
+    /// the last one 0, as the original's buffer does); they name
+    /// [`UvSphere::positions`].
     pub strips: Vec<Vec<u32>>,
 }
 
-/// Builds the UV sphere of `segments` columns (even in every use) and
-/// `segments / 2` rows per hemisphere. `u_scale` and `v_scale` tile the
-/// texture coordinates; `flags` is the attribute mask (see the
-/// `SPHERE_*` constants). The angle step is 2π / segments on both axes,
-/// so the rows run from the north pole (row 0) to the south pole
-/// (`segments / 2`). An invalid segment count builds nothing.
-pub fn uv_sphere(segments: usize, radius: f32, u_scale: f32, v_scale: f32, flags: u32) -> UvSphere {
-    let rows = segments / 2;
-    if segments == 0 || rows == 0 {
-        return UvSphere::default();
+/// The sphere's vertex writer: appends the vertex of column `col` and row
+/// `row` and returns its index.
+struct SphereWriter {
+    segments: usize,
+    rows: usize,
+    radius: f32,
+    u_scale: f32,
+    v_scale: f32,
+    flags: u32,
+    inv_segments: f32,
+    inv_rows: f32,
+}
+
+impl SphereWriter {
+    /// The angle of column or row `i`: both step by 2π / segments.
+    fn angle(&self, i: usize) -> f32 {
+        (i as f32 * std::f32::consts::TAU) * self.inv_segments
     }
-    let inv_segments = 1.0f32 / segments as f32;
-    let inv_rows = 1.0f32 / rows as f32;
-    let mut out = UvSphere::default();
-    let write = |col: usize, row: usize, out: &mut UvSphere| -> u32 {
+
+    fn write(&self, col: usize, row: usize, out: &mut UvSphere) -> u32 {
         let index = out.positions.len() as u32;
-        let col_angle = (col as f32 * std::f32::consts::TAU) * inv_segments;
-        let row_angle = (row as f32 * std::f32::consts::TAU) * inv_segments;
-        if row == 0 || row == rows {
-            let u = (col as f32 * inv_segments - inv_segments * 0.5) * u_scale;
-            let v = row as f32 * -inv_rows * v_scale;
-            let cosine = (row_angle as f64).cos() as f32;
-            out.positions
-                .push([0.0, (radius as f64 * f64::from(cosine)) as f32, 0.0]);
-            if flags & SPHERE_NORMALS != 0 {
-                out.normals.push([0.0, cosine, 0.0]);
-            }
-            if flags & SPHERE_UVS != 0 {
+        let row_angle = self.angle(row);
+        let cos_row = f64::from(row_angle).cos();
+        let v = row as f32 * -self.inv_rows * self.v_scale;
+        if row == 0 || row == self.rows {
+            let u = (col as f32 * self.inv_segments - self.inv_segments * 0.5) * self.u_scale;
+            if self.flags & SPHERE_UVS != 0 {
                 out.uvs.push([u, v]);
             }
+            if self.flags & SPHERE_NORMALS != 0 {
+                out.normals.push([0.0, cos_row as f32, 0.0]);
+            }
+            if self.flags & SPHERE_TANGENTS != 0 {
+                // The original writes no tangent for a pole; its slot keeps
+                // what the buffer held (zero here).
+                out.tangents.push([0.0; 4]);
+            }
+            out.positions
+                .push([0.0, (f64::from(self.radius) * cos_row) as f32, 0.0]);
         } else {
-            let u = col as f32 * inv_segments * u_scale;
-            let v = row as f32 * -inv_rows * v_scale;
+            if self.flags & SPHERE_UVS != 0 {
+                out.uvs
+                    .push([col as f32 * self.inv_segments * self.u_scale, v]);
+            }
+            let col_angle = self.angle(col);
             let sin_col = fast_sin(col_angle);
             let sin_row = fast_sin(row_angle);
-            let cos_col = (col_angle as f64).cos() as f32;
-            let cos_row = (row_angle as f64).cos() as f32;
-            out.positions.push([
-                sin_row * sin_col * radius,
-                (radius as f64 * f64::from(cos_row)) as f32,
-                radius * sin_row * cos_col,
-            ]);
-            if flags & SPHERE_TANGENTS != 0 {
-                let next_angle = ((col as f32 + 1.0) * std::f32::consts::TAU) * inv_segments;
-                let a = [fast_sin(col_angle), 0.0, cos_col];
-                let b = [fast_sin(next_angle), 0.0, (next_angle as f64).cos() as f32];
+            let cos_col = f64::from(col_angle).cos();
+            if self.flags & SPHERE_TANGENTS != 0 {
+                // From this column's point round the equator to the next
+                // column's, normalised.
+                let next = self.angle(col + 1);
+                let a = [sin_col, 0.0, cos_col as f32];
+                let b = [fast_sin(next), 0.0, f64::from(next).cos() as f32];
                 let d = normalised([b[0] - a[0], b[1] - a[1], b[2] - a[2]]);
                 out.tangents.push([d[0], d[1], d[2], -1.0]);
             }
-            if flags & SPHERE_NORMALS != 0 {
+            // The z terms multiply in double, as the original does.
+            let z = f64::from(sin_row) * cos_col;
+            if self.flags & SPHERE_NORMALS != 0 {
                 out.normals
-                    .push([sin_row * sin_col, cos_row, sin_row * cos_col]);
+                    .push([sin_row * sin_col, cos_row as f32, z as f32]);
             }
-            if flags & SPHERE_UVS != 0 {
-                out.uvs.push([u, v]);
-            }
+            out.positions.push([
+                sin_row * sin_col * self.radius,
+                (f64::from(self.radius) * cos_row) as f32,
+                (f64::from(self.radius) * z) as f32,
+            ]);
         }
-        if flags & SPHERE_COLOURS != 0 {
+        if self.flags & SPHERE_COLOURS != 0 {
             out.colours.push(0xFFFF_FFFF);
         }
         index
-    };
+    }
+}
 
+/// A strip being filled: the original's index buffer and its write slot.
+struct Strip {
+    indices: Vec<u32>,
+    slot: usize,
+}
+
+impl Strip {
+    fn new(len: usize) -> Self {
+        Self {
+            indices: vec![0; len],
+            slot: 0,
+        }
+    }
+
+    /// Writes `index` at the next slot (past the buffer it is dropped, as
+    /// no shipped count reaches it).
+    fn push(&mut self, index: u32) {
+        if let Some(s) = self.indices.get_mut(self.slot) {
+            *s = index;
+        }
+        self.slot += 1;
+    }
+
+    /// Overwrites slot `at`.
+    fn set(&mut self, at: usize, index: u32) {
+        if let Some(s) = self.indices.get_mut(at) {
+            *s = index;
+        }
+    }
+}
+
+/// Builds the UV sphere of `segments` columns (even in every use) and
+/// `segments / 2` rows from the north pole (row 0) to the south pole, both
+/// stepping by 2π / segments. `u_scale` and `v_scale` tile the texture
+/// coordinates; `flags` is the attribute mask (see the `SPHERE_*`
+/// constants). Fewer than two segments build nothing.
+///
+/// The columns go in pairs of strips. A pair's first strip runs from the
+/// north pole down between column `c` and `c + 1` to the south pole; its
+/// second starts at column `c + 1`'s south pole, then patches its indices
+/// to zigzag between column `c + 2` (the next pair's first strip, written
+/// later) and column `c + 1` (the strip before), and ends at column
+/// `c + 1`'s north pole. The last pair's second strip writes column
+/// `segments` itself (the seam, u = 1) and patches only the other side.
+pub fn uv_sphere(segments: usize, radius: f32, u_scale: f32, v_scale: f32, flags: u32) -> UvSphere {
+    let rows = segments / 2;
+    if rows == 0 {
+        return UvSphere::default();
+    }
+    let writer = SphereWriter {
+        segments,
+        rows,
+        radius,
+        u_scale,
+        v_scale,
+        flags,
+        inv_segments: 1.0 / segments as f32,
+        inv_rows: 1.0 / rows as f32,
+    };
+    let mut out = UvSphere::default();
     let mut col = 0usize;
     loop {
-        if col >= segments {
-            break;
-        }
-        let mut strip = Vec::new();
-        strip.push(write(col, 0, &mut out));
+        let mut strip = Strip::new(writer.segments);
+        strip.push(writer.write(col, 0, &mut out));
         for row in 1..rows {
-            strip.push(write(col, row, &mut out));
-            strip.push(write(col + 1, row, &mut out));
+            strip.push(writer.write(col, row, &mut out));
+            strip.push(writer.write(col + 1, row, &mut out));
         }
-        strip.push(write(col, rows, &mut out));
+        strip.push(writer.write(col, rows, &mut out));
+        out.strips.push(strip.indices);
         let next = col + 1;
         if next == segments {
-            out.strips.push(strip);
             break;
         }
-        let mut continuation = Vec::new();
-        let first = write(next, rows, &mut out);
-        continuation.push(first);
+        let mut strip = Strip::new(writer.segments);
+        let mut last = writer.write(next, rows, &mut out);
+        strip.push(last);
         if next == segments - 1 {
-            // The closing strip: one writer per row, its index stepping
-            // back three vertices each time (the writer's own index is
-            // replaced by the patched one).
-            let mut row = rows;
-            while row > 1 {
-                row -= 1;
-                let vertex = write(next, row, &mut out);
-                continuation.push(vertex.wrapping_sub(3 * (rows - row) as u32));
+            for row in (1..rows).rev() {
+                last = writer.write(next + 1, row, &mut out);
+                strip.push(last);
+                strip.push(last.wrapping_sub(3 * (rows - row) as u32));
             }
-            continuation.push(write(next, 0, &mut out));
         } else {
-            // The strip borrows vertices of the next column pair: two
-            // patched indices per row, then its own bottom vertex.
-            let mut patched = vec![0u32; segments];
-            patched[0] = first;
-            let mut position = 0usize;
-            let mut row = rows;
-            while row > 1 {
-                row -= 1;
-                position += 2;
-                patched[position - 1] = first.wrapping_add(1 + 2 * row as u32);
-                patched[position] = first.wrapping_sub(2 * (rows - row) as u32);
+            for row in (1..rows).rev() {
+                strip.slot += 2;
+                strip.set(strip.slot - 2, last + 1 + 2 * row as u32);
+                strip.set(strip.slot - 1, last.wrapping_sub(2 * (rows - row) as u32));
             }
-            let last = write(next, 0, &mut out);
-            patched[segments - 1] = last;
-            continuation = patched;
         }
-        out.strips.push(strip);
-        out.strips.push(continuation);
-        if next == segments - 1 {
+        strip.push(writer.write(next, 0, &mut out));
+        out.strips.push(strip.indices);
+        col += 2;
+        if col == segments {
             break;
         }
-        col += 2;
     }
     out
 }
@@ -482,12 +544,14 @@ mod tests {
     #[test]
     fn the_fast_sine_is_the_originals_polynomial() {
         assert_eq!(fast_sin(0.0), 0.0);
-        assert_eq!(fast_sin(1.0), 0.841_470_96);
-        assert_eq!(fast_sin(0.5), 0.479_425_55);
+        assert_eq!(fast_sin(1.0).to_bits(), 0x3F57_6AA4);
+        // Past π/8 the fold rounds up to the next quadrant and the cosine
+        // polynomial runs on −1.07: a few ulps off the library sine
+        // (0x3EF5_7744), as the original is.
+        assert_eq!(fast_sin(0.5).to_bits(), 0x3EF5_7746);
         assert_eq!(fast_sin(std::f32::consts::FRAC_PI_2), 1.0);
         assert_eq!(fast_sin(-std::f32::consts::FRAC_PI_2), -1.0);
-        // The polynomial rounds 2.0 a little above the library sine.
-        assert_eq!(fast_sin(2.0), 0.909_297_47);
+        assert_eq!(fast_sin(2.0).to_bits(), 0x3F68_C788);
         // The quadrant fold makes π a signed zero.
         assert_eq!(fast_sin(std::f32::consts::PI).to_bits(), 0x8000_0000);
     }
@@ -508,9 +572,14 @@ mod tests {
                 vec![0, 1, 2, 3],
                 vec![4, 7, 2, 5],
                 vec![6, 7, 8, 9],
-                vec![10, 8, 12],
+                vec![10, 11, 8, 12],
             ]
         );
+        // The closing strip writes the seam column (u = 1) and zigzags back
+        // to the last column's points.
+        assert_eq!(s.uvs[11], [1.0, -0.5]);
+        assert!((s.positions[11][2] - 1.0).abs() < 1e-6);
+        assert!(s.positions[11][0].abs() < 1e-6);
         // Poles at ±y, the equator ring at the four quarter turns.
         assert_eq!(s.positions[0], [0.0, 1.0, 0.0]);
         assert_eq!(s.positions[3], [0.0, -1.0, 0.0]);
@@ -523,8 +592,11 @@ mod tests {
         assert_eq!(s.uvs[1], [0.0, -0.5]);
         assert_eq!(s.uvs[3], [-0.125, -1.0]);
         assert_eq!(s.uvs[2], [0.25, -0.5]);
-        // The tangent runs from a column point to the next round the equator.
-        let t = s.tangents[0];
+        // The tangent runs from a column point to the next round the
+        // equator; the poles have none.
+        assert_eq!(s.tangents.len(), s.positions.len());
+        assert_eq!(s.tangents[0], [0.0; 4]);
+        let t = s.tangents[1];
         assert!((t[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
         assert!((t[2] + std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
         assert_eq!(t[3], -1.0);
@@ -542,6 +614,14 @@ mod tests {
         assert!(s.colours.is_empty());
         assert_eq!(s.normals.len(), s.positions.len());
         assert_eq!(s.positions[0], [0.0, 2.0, 0.0]);
+        // (rows + 1)(segments − 1) + segments vertices, as the original
+        // allocates.
+        assert_eq!(s.positions.len(), 43);
+        // Column 3, row 1 (vertex 12): the z terms multiply in double, which
+        // rounds to −1 and −0.5 where single precision gives one ulp less.
+        assert_eq!(s.positions[12][2].to_bits(), 0xBF80_0000);
+        assert_eq!(s.normals[12][2].to_bits(), 0xBF00_0000);
         assert!(uv_sphere(0, 1.0, 1.0, 1.0, 0).positions.is_empty());
+        assert!(uv_sphere(1, 1.0, 1.0, 1.0, 0).positions.is_empty());
     }
 }
