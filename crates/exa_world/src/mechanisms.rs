@@ -12,7 +12,8 @@
 //! The records are all that reaches the running game for now. A door,
 //! lever or plate is a body hung from the world by its links: the hinge
 //! pins and swing stop of a door, the axle pins and arm of a lever, the
-//! slider links of a plate. The solver has no world-link law yet, so the
+//! slider links of a plate. `exa_physics` has the body-side world-link laws
+//! (`exa_physics::body::world`) but no level registers them yet, so the
 //! bodies stay static level geometry ([`crate::bodies::Placement`]) and
 //! nothing produces the per-tick heading, handle speed, travel fraction or
 //! arm angle the steps read. Until then no system ticks a mechanism or
