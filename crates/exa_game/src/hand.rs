@@ -331,6 +331,18 @@ pub fn wheel_grip(first_facing: f32, grip_yaw: f32, back_yaw: f32) -> f32 {
     }
 }
 
+/// Whether a grabbed box may be taken: every placed corner is at most 280 cm
+/// high and at least −1000 cm (the original refuses a box outside those).
+pub fn box_ok(corners: impl IntoIterator<Item = Vec3>) -> bool {
+    for corner in corners {
+        let y = corner.y * 100.0;
+        if y > 280.0 || y < -1000.0 {
+            return false;
+        }
+    }
+    true
+}
+
 /// The cloth vertex a press grabbed: the first of the cloth's local vertices
 /// within `radius` (m) of the cursor's point in the cloth's own space. The
 /// original tests each vertex's sphere as it walks them.
@@ -1221,6 +1233,15 @@ mod tests {
         let v = [Vec3::ZERO, Vec3::X, Vec3::Y];
         assert_eq!(cloth_vertex(&v, Vec3::new(0.99, 0.0, 0.0), 0.1), Some(1));
         assert_eq!(cloth_vertex(&v, Vec3::new(0.5, 0.0, 0.0), 0.1), None);
+        assert!(box_ok([
+            Vec3::new(0.0, 2.8, 0.0),
+            Vec3::new(0.0, -10.0, 0.0)
+        ]));
+        assert!(!box_ok([
+            Vec3::new(0.0, 2.8, 0.0),
+            Vec3::new(0.0, 2.81, 0.0)
+        ]));
+        assert!(!box_ok([Vec3::new(0.0, -10.01, 0.0)]));
     }
 
     /// The hand's state keeps the request while a press is refused or a

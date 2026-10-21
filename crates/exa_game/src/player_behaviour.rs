@@ -162,6 +162,17 @@ impl AimFollower {
     }
 }
 
+/// The heading after the original's snap: when the target lies more than 30°
+/// off the body's yaw, the heading becomes the body's own yaw; else it
+/// stays as it was.
+pub fn snap_heading(heading: f32, body_yaw: f32, target: f32) -> f32 {
+    if (wrap_near(body_yaw, target) - body_yaw).abs() > 30.0 * std::f32::consts::PI / 180.0 {
+        body_yaw
+    } else {
+        heading
+    }
+}
+
 /// Turns a body yaw toward `aim` by at most 0.1π rad: the original's
 /// per-tick step toward a look point. Returns the new yaw (wrapped near the
 /// old one).
@@ -712,6 +723,15 @@ mod tests {
         assert_eq!(wrap_near(1.0, 1.5), 1.5);
         assert_eq!(wrap_positive(-0.5), std::f32::consts::TAU - 0.5);
         assert_eq!(wrap_positive(std::f32::consts::TAU + 0.5), 0.5);
+    }
+
+    /// The heading snaps to the body's yaw when the target is more than 30°
+    /// off it.
+    #[test]
+    fn a_target_beyond_30_degrees_snaps_the_heading() {
+        assert_eq!(snap_heading(1.0, 0.0, deg(20.0)), 1.0);
+        assert_eq!(snap_heading(1.0, 0.0, deg(40.0)), 0.0);
+        assert_eq!(snap_heading(1.0, 0.0, deg(-40.0)), 0.0);
     }
 
     /// The body steps at most 0.1π rad toward its aim a tick.

@@ -297,6 +297,29 @@ feet to a point, drawn and logged) and the simulation controls (`sim_control`, w
 tick, a stretched link, the first blood jet, the player's first landed
 blow or the first collapse).
 
+The player behaviour's own rules (`player_behaviour`) are the aim point
+with its soft height lock on a target's bone and its raised surface, the
+gamepad aim's `250·|aim| + 50` cm point and dead zone, the AimSpeed cursor
+ease `(0.4·AimSpeed + 0.1)²`, the 12 m contact list and its 12-entry
+eviction, the `(500 − d)·(cos + 0.5)` combat target and the screen-nearest
+one, the engaged-enemy test, the 1/3-gain aim follower and the 0.1π body
+step, the attack wind-up and recovery times, and the 3/4 stance helper. The
+gamepad's aim runs through the eased world cursor (`player_combat`,
+`AimCursor`); the right button walks to the cursor in combat mode too, and
+the walk-to-cursor latch holds the reach off through the stride.
+
+The controls' remaining rules (`player_controls`) are the click's
+interaction (a lock's key and its 100 or 1000 experience, a container, a
+corpse's scripts, the character screen, talk), double clicks, usable items
+on the world (pours, fire, cleaning and repair kits and the timed list that
+carries them over two seconds), the reach against the navigation region
+with the original's NaN-passes compares, the start and end of play and
+their AI activation centre and radius, and the blocked/modal camera-turn
+gate. Ctrl or a double click names the click and starts its auto-walk; the
+windows, dialogue and item cursor it would open are not in. The mechanism
+drags' arithmetic is modelled (`hand::{door_pull_anchor, wheel_turn,
+cloth_vertex}`), their objects are not bodies under the hand.
+
 ## Arena match board bridge
 
 `arena_board` turns a career and a generated daily board into

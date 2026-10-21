@@ -268,12 +268,11 @@ while the body is busy (its condition word has any of 0x10202) or a lift is
 on the cursor. F toggles the record's light flag of the first held item
 when it gives light and the body is not switching weapons (0x10000).
 
-Wired in Exarust: Tab, R and F. Not yet: the windows, the dialogue and the
-power bar the other keys open; the extinguished light itself (the record's
-flag changes, the torch burns on); the original's cancel of a lift or drag
-on entering combat, which puts a lifted item back where its lift saved it
-and leaves a drag's link in place (Exarust lets go of the drag); the flag
-that keeps a player out of combat mode.
+Wired in Exarust: Tab (with the hand's cancel: a lift goes back to its
+saved transform and a drag's link stays where it was), R and F. Not yet:
+the windows, the dialogue and the power bar the other keys open; the
+extinguished light itself (the record's flag changes, the torch burns on);
+the flag that keeps a player out of combat mode.
 
 ## Gamepad
 
@@ -433,8 +432,10 @@ already down is not a press.
   behaviour takes the aim once its `z·z + x·x` is over 0.01: it puts the
   cursor point `250·|aim| + 50` cm out along it and eases the screen
   cursor there by `(0.4·AimSpeed + 0.1)²` a tick, the one place AimSpeed
-  acts. Exarust turns the combat aim straight to the stick's yaw past the
-  same 0.01 (`gamepad::aim_engaged`); the eased cursor is not reproduced.
+  acts. Exarust eases the world point the camera projects by the same
+  factor (`player::AimCursor`, `player_behaviour::aim_factor`)
+  and turns the combat aim to it; the projection step is Exarust's own,
+  and the screen point would ease the same way.
 - **Zoom.** While `Zoom_In` is held the stepped camera takes ten zoom
   steps a frame, `Zoom_Out` minus ten, applied in that order and each held
   in the zoom range: a step is `(steps × 0.008333334) × stop`, the stop
@@ -521,13 +522,15 @@ across; a wheel from its own place with the plain limits. A comparison with
 a NaN passes, as the original's unordered compares do. The reach is measured
 each frame: outside combat mode while the right button is not walking to the
 cursor, in combat mode only with Ctrl held or something held, whatever the
-right button does; a drag in hand is always within reach. (The original
+right button does; a drag in hand is always within reach. The original
 keeps its walk to the cursor latched after the right button's release until
-the player stops moving, and skips the reach meanwhile; Exarust reads the
-button.) Outside combat mode the cursor shows the pointer within reach and the
+the player stops moving, and skips the reach meanwhile; Exarust's steering
+keeps the same latch (`PlayerBody::walk_requested`) and the hand waits on
+it. Outside combat mode the cursor shows the pointer within reach and the
 cross beyond it. The player down, collapsing or dead lets go of everything
-and is out of reach. Not in Exarust: the original's further test that the
-point lies in the player's navigation region with nothing between.
+and is out of reach. A sim object's point must also lie in the player's
+navigation region with nothing between: the grid's line walk from the feet
+stands in (`player_controls::Reach`, `hand::reach_hand`).
 
 ### The hand
 
@@ -538,10 +541,14 @@ it was pressed by more than 2 pixels on either axis, or within the first
 press (20 pixels at once, nothing between 181 and 190 ms). A release before
 that is a **click**: outside combat mode it turns the player toward the
 cursor's point once that is farther than 70 cm (the heading takes the
-cursor's direction); the original then names or uses what was clicked,
-which Exarust cannot show yet. A double click (a second press within the
-double-click time and 2 pixels) opens containers, loots corpses and talks
-in the original; Exarust has no window for them yet.
+cursor's direction); it then names or uses what was clicked when **Ctrl**
+is held or the
+press is the second of a double click (within 300 ms and 2 pixels): a lock
+with the player's key and its first unlock's 100 or 1000 experience, a
+container, a corpse's roles' scripts, the character screen, or a person to
+talk to (`player_controls::interact`). Out of reach, the click asks the
+body to walk to its stop first (`Steering::walk_to`). Exarust has no window,
+talk or script to open yet, so the action is logged.
 
 A drag start does nothing while combat mode keeps the button for attacks
 (unless Ctrl is held or something is already held), while the point under
@@ -559,8 +566,11 @@ there:
 - **A corpse** is dragged by the limb the pick hit, strength 0.5, in every
   pass, with or without Ctrl.
 - A door, a wheel or a sim object (cloth) start their own drags in the
-  original; in Exarust they are level geometry, so the hand does not take
-  them yet.
+  original. Exarust's doors, wheels and cloth are not bodies under the hand,
+  so a press records the mode and its pick and the release ends it; the
+  drags' arithmetic (the door's 100 cm pull, the wheel's clamped turn, the
+  cloth's vertex grab) is modelled in `hand::{door_pull_anchor, wheel_turn,
+  cloth_vertex}`.
 - **Anything else** (a person, the level, a heavy prop) is refused until the
   release: the cursor shows the cross and the frame's movement request is
   left as it was.
@@ -886,9 +896,11 @@ shared bit also lays the Torch overlay on a one-handed weapon).
 
 The cursor is the game's own world cursor ([UI.md](UI.md), World cursor):
 a red ring in combat mode, and outside it an amber arrowhead over ground
-within reach, a cross beyond it and chevrons while walking to it. Not yet
-in Exarust: the original's right button also walks to the cursor in
-combat mode.
+within reach, a cross beyond it and chevrons while walking to it. In
+combat mode the right button walks to the cursor too: the body walks
+toward the point, running beyond 3 m, and the footwork yields while it
+walks (`steering::Steering::combat_walk`; the run is Exarust's guess, the
+original's combat walk not being fully traced).
 
 ## Held items and their grips
 
@@ -1088,9 +1100,10 @@ character body's possession routines; addresses are in the research notes.
   camera's target yaw turns by 0.0001 rad for each millisecond since the
   last frame (0.1 rad a second, in double precision, then single), less a
   whole turn once it passes 2π, and the behaviour stops reading the cursor
-  until the player is busy again. Not in Exarust: the death screen and the
-  in-game menu, which turn the camera the same way without the idle test,
-  and an open window, which stops the turn.
+  until the player is busy again. A blocked screen (a dead player, the
+  in-game menu) turns it without the idle test; a modal form or an open
+  window stops it and restamps the clock (`idle_orbit::Frame`). Not in
+  Exarust: a dialogue or the power bar as the modal form.
 
 ## Start outfit
 
@@ -1208,10 +1221,12 @@ is more than 1 cm up, a 10 cm ball swept up from the head through the level
 (not the props) puts it where the ball first meets the ceiling. Nothing
 moves while the game is paused.
 
-Not in Exarust: the second rule that puts it out (a held weapon section of
-kind 3 whose held part is lit), the Mind power that forces it on, and the
-spectating view's light. A normal start wears no such helm, so the light
-stays off, as in the original.
+The second off rule (a held weapon section of kind 3 whose held part is
+lit) is modelled (`player_light::weapon_puts_out`) but no Exarust item
+record exposes that lit bit yet, so the running switch passes it off. Not
+in Exarust: the Mind power that forces it on, and the spectating view's
+light. A normal start wears no such helm, so the light stays off, as in the
+original.
 
 ## Unattended runs
 
