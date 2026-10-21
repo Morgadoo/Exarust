@@ -1261,13 +1261,12 @@ impl ObjectDb {
                 return None;
             }
             let raw = self.string_id(template, description)?;
-            return self.strings.get(raw & ID_MASK);
+            // The original passes the template's id to the shared library
+            // unmasked: a nested inherit or an own string simply misses.
+            return self.strings.get(raw);
         }
         if raw & 0x8000_0000 != 0 {
-            return self
-                .library(Tier::of(id))
-                .get(raw & ID_MASK)
-                .or_else(|| self.strings.get(raw & ID_MASK));
+            return self.library(Tier::of(id)).get(raw & ID_MASK);
         }
         self.strings.get(raw)
     }
@@ -1346,7 +1345,7 @@ impl ObjectDb {
                         INHERIT
                     } else {
                         self.strings
-                            .bytes(tpl_model.description_id & ID_MASK)
+                            .bytes(tpl_model.description_id)
                             .map(|text| {
                                 let text = text.to_vec();
                                 let string = self.local_strings.add(&text);
