@@ -135,14 +135,7 @@ impl CallbackList {
     /// removed and the later ones close up, so the next one runs at the
     /// same index.
     pub fn run(&mut self, arg: FormId) {
-        let mut index = 0;
-        while index < self.callbacks.len() {
-            if (self.callbacks[index])(arg) {
-                index += 1;
-            } else {
-                self.callbacks.remove(index);
-            }
-        }
+        self.callbacks.retain_mut(|callback| callback(arg));
     }
 }
 
