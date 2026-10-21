@@ -1011,20 +1011,14 @@ pub fn practice_boss_music(alternative: bool, expert: bool) -> Track {
 }
 
 /// The menu theme and its volume: the plain theme at 0.1, the alternative
-/// at 0.2.
+/// at 0.2 ([`exa_ui::menu::MENU_THEME`] and its drum-and-bass twin).
 pub fn menu_theme(alternative: bool) -> Track {
-    Track {
-        name: if alternative {
-            "MenuTheme_DnB"
-        } else {
-            "MenuTheme"
-        },
-        volume: f32::from_bits(if alternative {
-            0x3e4c_cccd
-        } else {
-            0x3dcc_cccd
-        }),
-    }
+    let (name, volume) = if alternative {
+        exa_ui::menu::MENU_THEME_DNB
+    } else {
+        exa_ui::menu::MENU_THEME
+    };
+    Track { name, volume }
 }
 
 /// The two save managers the game creates at boot: the mode, its player-data

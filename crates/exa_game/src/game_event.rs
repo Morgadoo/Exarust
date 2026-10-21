@@ -1,5 +1,5 @@
 //! The story scripts' `GameEvent`: memory fragments, the raise-dead
-//! narration, Corlian's line, the four domain awakenings and the background
+//! narration, Corlian's line, the three domain awakenings and the background
 //! unlock.
 //!
 //! The handler reads an event code from the script and turns it into what the
@@ -270,11 +270,11 @@ pub fn handle(
             priority: WAIL_PRIORITY,
         });
         if code == AWAKENING_MIND {
+            effects.push(Effect::MindAwakening);
             effects.push(Effect::Class {
                 mask: CLASS_MASK,
                 bits: CLASS_MIND,
             });
-            effects.push(Effect::MindAwakening);
         } else {
             effects.push(Effect::Sound {
                 name: FORCE_SWING,
@@ -283,6 +283,10 @@ pub fn handle(
                 pitch: SWING_PITCH,
                 priority: SOUND_PRIORITY,
             });
+            // The last code wakes the mind domain too, before its class.
+            if code == AWAKENING_FORCE[1] {
+                effects.push(Effect::MindAwakening);
+            }
             effects.push(Effect::Class {
                 mask: CLASS_MASK,
                 bits: if code == AWAKENING_FORCE[1] {
@@ -536,14 +540,15 @@ mod tests {
                 priority: 0x4460
             }
         );
+        // The mind domain wakes, then the class word is written.
+        assert_eq!(effects[5], Effect::MindAwakening);
         assert_eq!(
-            effects[5],
+            effects[6],
             Effect::Class {
                 mask: 0xff00_ffff,
                 bits: 0x00d1_0000
             }
         );
-        assert_eq!(effects[6], Effect::MindAwakening);
         assert_eq!(effects.len(), 7);
         assert_eq!(fragments_seen(0x000f), 4);
         // The male voice and the force swing.
@@ -576,6 +581,7 @@ mod tests {
             bits: 0x00ca_0000
         }));
         assert!(effects.contains(&Effect::ForceAwakening));
+        assert!(!effects.contains(&Effect::MindAwakening));
     }
 
     #[test]
@@ -590,11 +596,25 @@ mod tests {
             0,
             &mut draw,
         );
-        assert!(effects.contains(&Effect::Class {
-            mask: 0xff00_ffff,
-            bits: 0x008a_0000
-        }));
-        assert!(effects.contains(&Effect::ForceAwakening));
+        // The swing, then the mind domain, the class bits and the force
+        // domain: the last code wakes both.
+        let n = effects.len();
+        assert_eq!(effects[n - 3], Effect::MindAwakening);
+        assert_eq!(
+            effects[n - 2],
+            Effect::Class {
+                mask: 0xff00_ffff,
+                bits: 0x008a_0000
+            }
+        );
+        assert_eq!(effects[n - 1], Effect::ForceAwakening);
+        assert!(matches!(
+            effects[n - 4],
+            Effect::Sound {
+                name: "ThmFrc_Swing06",
+                ..
+            }
+        ));
         // The awakenings do nothing outside the unknown background.
         let mut draw = draws(&[0.0, 0.0]);
         assert!(
