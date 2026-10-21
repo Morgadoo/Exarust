@@ -15,6 +15,8 @@
 //! Its empty hands are its fists (or claws), strikers built from its race's
 //! unarmed records; a wielded weapon strikes instead.
 
+pub mod hair;
+
 pub mod held;
 
 pub mod layers;
@@ -55,6 +57,7 @@ impl Plugin for CharacterPlugin {
                 Update,
                 (
                 apply_skin_looks.run_if(resource_exists::<Game>),
+                hair::attach_hair.run_if(resource_exists::<Game>),
                 load_underwear_items
                     .run_if(resource_exists::<Game>)
                     .run_if(not(resource_exists::<UnderwearItems>)),

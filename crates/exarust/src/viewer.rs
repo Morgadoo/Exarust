@@ -1547,6 +1547,16 @@ fn spawn_placed_characters(
             ),
             morph,
             exa_assets::SkinLook::of_entry(&model_name, c.record.skin, c.record.female),
+            exa_character::hair::Hair {
+                style: c.record.hair_style,
+                colour: [
+                    c.record.hair_colour[0],
+                    c.record.hair_colour[1],
+                    c.record.hair_colour[2],
+                ],
+                feral: c.record.feral,
+                light_variant: c.record.profession_rest & 0x1_0000 != 0,
+            },
             ChildOf(root),
         ));
         if let Some((model_name, weapon)) = &c.held {
