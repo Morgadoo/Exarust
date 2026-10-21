@@ -836,3 +836,71 @@ fn silhouette_side(a: &Plane, b: &Plane, light: Vec3) -> Option<Plane> {
 #[cfg(test)]
 #[path = "intersect_test.rs"]
 mod tests;
+
+/// A scene mesh's bounds, as the placement query tests them: an
+/// axis-aligned box in the world.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneBox {
+    pub centre: Vec3,
+    pub half: Vec3,
+}
+
+/// The ground under `point` among the scene boxes, as the placement query
+/// finds it: the point lifted by `lift` is dropped by at most `distance`
+/// (cm), and the highest top face it meets is returned with the point's
+/// x and z. None when no box is under it. The original tests each mesh's
+/// box first and then its triangles; the boxes' top faces are the
+/// reproduction here (labelled).
+pub fn scene_ground_below(
+    boxes: &[SceneBox],
+    point: Vec3,
+    distance: f32,
+    lift: f32,
+) -> Option<Vec3> {
+    let start = point.y + lift;
+    let low = start - distance;
+    let mut best: Option<f32> = None;
+    for b in boxes {
+        if (point.x - b.centre.x).abs() > b.half.x || (point.z - b.centre.z).abs() > b.half.z {
+            continue;
+        }
+        let top = b.centre.y + b.half.y;
+        if top > start || top < low {
+            continue;
+        }
+        if best.is_none_or(|h| top > h) {
+            best = Some(top);
+        }
+    }
+    best.map(|y| Vec3::new(point.x, y, point.z))
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::*;
+
+    /// The highest box top under the point within the drop wins; a box
+    /// beside the point, above the start or below the reach is skipped.
+    #[test]
+    fn the_placement_query_finds_the_highest_ground() {
+        let boxes = [
+            SceneBox {
+                centre: Vec3::new(0.0, -10.0, 0.0),
+                half: Vec3::new(50.0, 10.0, 50.0),
+            },
+            SceneBox {
+                centre: Vec3::new(0.0, -50.0, 0.0),
+                half: Vec3::new(50.0, 10.0, 50.0),
+            },
+            SceneBox {
+                centre: Vec3::new(100.0, 0.0, 0.0),
+                half: Vec3::new(10.0, 10.0, 10.0),
+            },
+        ];
+        let at = scene_ground_below(&boxes, Vec3::new(0.0, 100.0, 0.0), 300.0, 10.0).unwrap();
+        assert_eq!(at, Vec3::new(0.0, 0.0, 0.0));
+        let deeper = scene_ground_below(&boxes, Vec3::new(0.0, 100.0, 0.0), 50.0, 10.0);
+        assert!(deeper.is_none());
+        assert!(scene_ground_below(&boxes, Vec3::new(0.0, 100.0, 0.0), 300.0, 300.0).is_none());
+    }
+}

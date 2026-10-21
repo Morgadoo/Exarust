@@ -760,3 +760,38 @@ pub(super) fn extension(level: f32, over: f32, reach: f32) -> f32 {
 #[cfg(test)]
 #[path = "body_feet_test.rs"]
 mod tests;
+
+/// What the end of a step leaves: where the step target is (the original
+/// subtracts the goal from the chest and lets the level clamp it), and
+/// whether the AI is told (its step direction turned toward its facing).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StepEnd {
+    pub target: Vec3,
+    pub tell_ai: bool,
+}
+
+/// The step's end (the original's step-end routine): with an AI target the
+/// AI is told when the step direction points along the facing; the target
+/// is the chest less the goal, which the level's scene and height queries
+/// then clamp. The stepping flag, its lift and the foot timers are the
+/// caller's to set.
+pub fn step_end(ai_target: bool, step_dir: Vec3, facing: Vec3, chest: Vec3, goal: Vec3) -> StepEnd {
+    StepEnd {
+        target: chest - goal,
+        tell_ai: ai_target && step_dir.dot(facing) > 0.0,
+    }
+}
+
+#[cfg(test)]
+mod step_end_tests {
+    use super::*;
+
+    #[test]
+    fn the_step_end_targets_the_chest_less_the_goal() {
+        let end = step_end(true, Vec3::Z, Vec3::Z, Vec3::new(1.0, 2.0, 3.0), Vec3::Z);
+        assert_eq!(end.target, Vec3::new(1.0, 2.0, 2.0));
+        assert!(end.tell_ai);
+        assert!(!step_end(false, Vec3::Z, Vec3::Z, Vec3::ZERO, Vec3::ZERO).tell_ai);
+        assert!(!step_end(true, Vec3::NEG_Z, Vec3::Z, Vec3::ZERO, Vec3::ZERO).tell_ai);
+    }
+}

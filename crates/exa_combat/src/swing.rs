@@ -333,7 +333,7 @@ pub fn daze_factor(max_health: f32, potion: bool) -> f32 {
 }
 
 /// The original's smoothstep, (3 − 2x)·x², unclamped.
-fn smoothstep(x: f32) -> f32 {
+pub fn smoothstep(x: f32) -> f32 {
     (3.0 - 2.0 * x) * x * x
 }
 
@@ -1178,3 +1178,199 @@ pub fn pace_swings(
 #[cfg(test)]
 #[path = "swing_test.rs"]
 mod tests;
+
+/// The attack's weapon-in-hand gate, run once per swing after the lead-in:
+/// unarmed, it opens; armed, the primary weapon anchors within 50·scale cm
+/// of its hand and its axis is within 60° (dot over 0.5) of the hand's.
+/// A failed gate takes 0.1 off the rate (if it is over 0.1) and the tick
+/// makes no window or nudge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WeaponGate {
+    /// The gate opened (the original's flag 8 set).
+    pub open: bool,
+    /// The rate's loss this tick when it did not.
+    pub rate_loss: f32,
+}
+
+/// The weapon-in-hand gate at `scale`. `distance` and `axis_dot` are the
+/// primary weapon's grip anchor from the hand's, in cm, and the dot of the
+/// weapon's and hand's axes; unarmed skips them.
+pub fn weapon_gate(
+    unarmed: bool,
+    distance: f32,
+    axis_dot: f32,
+    scale: f32,
+    rate: f32,
+) -> WeaponGate {
+    if unarmed || (distance < 50.0 * scale && axis_dot > 0.5) {
+        return WeaponGate {
+            open: true,
+            rate_loss: 0.0,
+        };
+    }
+    WeaponGate {
+        open: false,
+        rate_loss: if rate > 0.1 { 0.1 } else { 0.0 },
+    }
+}
+
+/// The two arms' stiffness through an attack tick: the swing arm's and the
+/// other's. `base` = (1 − clock²)·P·0.9 (P·0.9 when `huge` and unarmed) +
+/// 0.1; L = base + (0.5P+1)·clock·1.3333 up to clock 0.3, else
+/// base + (0.5P+1)·(1 − clock)·0.5666. The swing arm is W20·L; the other
+/// follows the stance class: 1 → 0.3L + 0.25, 2/5 → W20·L, 3 → 0.6 or 0.4
+/// (`shield`), 4 → 0.2L + 0.3, 6 → the swing arm's.
+#[allow(clippy::too_many_arguments)]
+pub fn attack_arm_stiffness(
+    progress: f32,
+    strength: f32,
+    huge_unarmed: bool,
+    arm: f32,
+    stance: u8,
+    shield: bool,
+) -> (f32, f32) {
+    let p = progress;
+    let base = if huge_unarmed {
+        strength * 0.9
+    } else {
+        (1.0 - p * p) * strength * 0.9
+    } + 0.1;
+    let l = if f64::from(p) <= 0.3 {
+        base + (0.5 * strength + 1.0) * p * 1.3333
+    } else {
+        base + (0.5 * strength + 1.0) * (1.0 - p) * 0.5666
+    };
+    let swing = arm * l;
+    let other = match stance {
+        1 => 0.3 * l + 0.25,
+        2 | 5 => swing,
+        3 => {
+            if shield {
+                0.6
+            } else {
+                0.4
+            }
+        }
+        4 => 0.2 * l + 0.3,
+        _ => swing,
+    };
+    (swing, other)
+}
+
+/// The swing's sound at a tracker speed² and progress: speed f =
+/// 0.1·√speed² (×(1 − 5(p − 0.8)) past 0.8); pitch = W26·(0.5f + 0.4), a
+/// stab's W26·(0.5·(0.1f + 1 − 1/(40f + 1)) + 0.6); volume =
+/// base·W25·f·0.07. None with no speed.
+pub fn swing_sound(
+    speed2: f32,
+    progress: f32,
+    stab: bool,
+    pitch_factor: f32,
+    volume_factor: f32,
+    base_volume: f32,
+) -> Option<(f32, f32)> {
+    if speed2 <= EPSILON {
+        return None;
+    }
+    let mut f = speed2.sqrt() * 0.1;
+    if progress > 0.8 {
+        f *= 1.0 - (progress - 0.8) * 5.0;
+    }
+    let pitch = if stab {
+        pitch_factor * ((f * 0.1 + 1.0 - 1.0 / (f * 40.0 + 1.0)) * 0.5 + 0.6)
+    } else {
+        pitch_factor * (f * 0.5 + 0.4)
+    };
+    let volume = base_volume * volume_factor * f * 0.07;
+    Some((volume, pitch))
+}
+
+/// The fatigue (`+0xaec`) after an attack tick: (1 − clock²)·0.25, capped
+/// at 1.
+pub fn fatigue_add(fatigue: f32, progress: f32) -> f32 {
+    let next = fatigue + (1.0 - progress * progress) * 0.25;
+    if next > 1.0 { 1.0 } else { next }
+}
+
+#[cfg(test)]
+mod routine_tests {
+    use super::*;
+
+    fn close(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-4
+    }
+
+    /// The gate opens unarmed and armed within 50·scale cm and 60°; a
+    /// failed armed gate takes 0.1 off a rate over 0.1.
+    #[test]
+    fn the_weapon_gate_is_the_originals() {
+        assert_eq!(
+            weapon_gate(true, 999.0, -1.0, 1.0, 1.0),
+            WeaponGate {
+                open: true,
+                rate_loss: 0.0
+            }
+        );
+        assert!(weapon_gate(false, 49.0, 0.6, 1.0, 1.0).open);
+        let far = weapon_gate(false, 50.0, 0.6, 1.0, 1.0);
+        assert_eq!((far.open, far.rate_loss), (false, 0.1));
+        let turned = weapon_gate(false, 49.0, 0.5, 1.0, 0.05);
+        assert_eq!((turned.open, turned.rate_loss), (false, 0.0));
+    }
+
+    /// p = 0.5, P = 1: base 0.775, L 1.19995, swing 0.47998 at W20 0.4;
+    /// the other arm 0.609985 in stance 1 and 0.6 with a shield in 3.
+    #[test]
+    fn the_attack_arms_follow_their_stances() {
+        let (swing, other) = attack_arm_stiffness(0.5, 1.0, false, 0.4, 1, false);
+        assert!(close(swing, 0.479_98), "{swing}");
+        assert!(close(other, 0.609_985), "{other}");
+        let (_, shielded) = attack_arm_stiffness(0.5, 1.0, false, 0.4, 3, true);
+        assert_eq!(shielded, 0.6);
+        let (_, unshielded) = attack_arm_stiffness(0.5, 1.0, false, 0.4, 3, false);
+        assert_eq!(unshielded, 0.4);
+        let (_, same) = attack_arm_stiffness(0.5, 1.0, false, 0.4, 2, false);
+        assert!(close(same, 0.479_98));
+    }
+
+    /// At speed² 100, f = 1: pitch W26·0.9, volume base·W25·0.07; a stab's
+    /// pitch W26·(0.5·(0.1 + 1 − 1/41) + 0.6).
+    #[test]
+    fn the_swing_sound_is_the_originals() {
+        let (volume, pitch) = swing_sound(100.0, 0.5, false, 2.0, 0.5, 1.0).unwrap();
+        assert!(close(volume, 0.035));
+        assert!(close(pitch, 1.8));
+        let (_, stab) = swing_sound(100.0, 0.5, true, 2.0, 0.5, 1.0).unwrap();
+        assert!(close(stab, 2.0 * ((0.1 + 1.0 - 1.0 / 41.0) * 0.5 + 0.6)));
+        assert!(swing_sound(0.0, 0.5, false, 1.0, 1.0, 1.0).is_none());
+    }
+
+    /// The fatigue rises (1 − p²)·0.25 a tick, capped at 1.
+    #[test]
+    fn fatigue_is_the_originals() {
+        assert_eq!(fatigue_add(0.0, 0.0), 0.25);
+        assert_eq!(fatigue_add(0.0, 1.0), 0.0);
+        assert_eq!(fatigue_add(0.9, 0.0), 1.0);
+    }
+}
+
+/// The original's fall ease (the clip start's mode 2), monotonic from 0 to
+/// 1: (0.11x + 1) − 1/(8x + 1), in double precision.
+pub fn fall_ease(x: f32) -> f32 {
+    ((f64::from(x) * 0.11 + 1.0) - 1.0 / (f64::from(x) * 8.0 + 1.0)) as f32
+}
+
+#[cfg(test)]
+mod curve_tests {
+    use super::*;
+
+    #[test]
+    fn the_start_curves_are_the_originals() {
+        assert_eq!(smoothstep(0.0), 0.0);
+        assert_eq!(smoothstep(1.0), 1.0);
+        assert!((smoothstep(0.5) - 0.5).abs() < 1e-7);
+        assert_eq!(fall_ease(0.0), 0.0);
+        assert!((fall_ease(1.0) - 0.998_888_9).abs() < 1e-6);
+        assert!((fall_ease(0.1) - 0.455_444_44).abs() < 1e-5);
+    }
+}

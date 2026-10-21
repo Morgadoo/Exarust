@@ -705,3 +705,48 @@ fn relax_legs(parts: &mut [Part]) {
 #[cfg(test)]
 #[path = "body_muscle_test.rs"]
 mod tests;
+
+/// The two arms' stiffness targets through an attack tick, before
+/// `0x1001688c0`'s floor: in a tangle both are 0.5; stepping they ease by
+/// 0.8·x + 0.08; otherwise by 0.8·x + (0.5·relaxation + 0.5)·0.08, all in
+/// double precision. The floor is 0.4·|turn| capped at 0.4.
+pub fn attack_arms(
+    next: (f32, f32),
+    stepping: bool,
+    tangle: bool,
+    relaxation: f32,
+    turn: f32,
+) -> (f32, f32) {
+    let (right, left) = if tangle {
+        (0.5, 0.5)
+    } else if stepping {
+        (
+            (f64::from(next.0) * 0.8 + 0.08) as f32,
+            (f64::from(next.1) * 0.8 + 0.08) as f32,
+        )
+    } else {
+        let add = ((f64::from(relaxation) * 0.5 + 0.5) * 0.08) as f32;
+        (
+            (f64::from(next.0) * 0.8 + f64::from(add)) as f32,
+            (f64::from(next.1) * 0.8 + f64::from(add)) as f32,
+        )
+    };
+    let floor = ((f64::from(turn.abs()) * 0.4) as f32).min(0.4);
+    (right.max(floor), left.max(floor))
+}
+
+#[cfg(test)]
+mod attack_arm_tests {
+    use super::*;
+
+    #[test]
+    fn the_attack_arm_targets_are_the_originals() {
+        assert_eq!(attack_arms((0.5, 0.5), false, true, 0.0, 0.0), (0.5, 0.5));
+        let (r, l) = attack_arms((0.5, 0.5), true, false, 0.0, 0.0);
+        assert!((r - 0.48).abs() < 1e-6 && (l - 0.48).abs() < 1e-6);
+        let (r, _) = attack_arms((0.5, 0.5), false, false, 0.0, 0.0);
+        assert!((r - 0.44).abs() < 1e-6, "{r}");
+        let (r, l) = attack_arms((0.0, 0.0), false, false, 0.0, 1.0);
+        assert_eq!((r, l), (0.4, 0.4));
+    }
+}

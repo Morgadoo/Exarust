@@ -43,18 +43,19 @@ use crate::part::PartState;
 
 #[path = "body_muscle.rs"]
 mod muscle;
-pub use muscle::{Bearing, BodyStats, RaceMuscles};
+pub use muscle::{Bearing, BodyStats, RaceMuscles, attack_arms};
 
 #[path = "body_balance.rs"]
 mod balance;
 pub use balance::{Balance, Leg, reset_heading};
 #[path = "body_bend.rs"]
 mod bend;
+pub use bend::foot_pitch_turn;
 #[path = "body_feet.rs"]
 mod feet;
 #[path = "body_stagger.rs"]
 pub mod stagger;
-pub use feet::{FootState, WalkedStep};
+pub use feet::{FootState, StepEnd, WalkedStep, step_end};
 #[path = "body_pins.rs"]
 mod pins;
 #[path = "body_stages.rs"]
@@ -3281,5 +3282,81 @@ mod tests {
         // shove is not pulled back to the origin. The energy still recovers.
         assert!(back.abs() > 0.2, "pulled back to {back}");
         assert_eq!(body.drive.as_ref().unwrap().energy, 1.0);
+    }
+}
+
+/// A physics environment's bands, as the original's environment records
+/// store them: velocity retention a second at the fast, medium and slow
+/// speeds, the speeds themselves (cm/s), and gravity (cm/s²).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Environment {
+    pub fast: f32,
+    pub medium: f32,
+    pub slow: f32,
+    pub gravity_y: f32,
+    pub fast_speed: f32,
+    pub slow_speed: f32,
+}
+
+/// The "motile" environment the class init builds from the default's bands
+/// × 0.6 (retention 0.426/0.25/0.05 → 0.2556/0.15/0.03), gravity
+/// −980.665, thresholds 40 and 20 cm/s. No body ever uses it (the shipped
+/// code never assigns it), so it is data only.
+pub const MOTILE_ENVIRONMENT: Environment = Environment {
+    fast: 0.426 * 0.6,
+    medium: 0.25 * 0.6,
+    slow: 0.05 * 0.6,
+    gravity_y: -980.665,
+    fast_speed: 40.0,
+    slow_speed: 20.0,
+};
+
+#[cfg(test)]
+mod environment_tests {
+    use super::*;
+
+    #[test]
+    fn the_motile_environment_is_the_defaults_times_six_tenths() {
+        assert!((MOTILE_ENVIRONMENT.fast - 0.2556).abs() < 1e-6);
+        assert!((MOTILE_ENVIRONMENT.medium - 0.15).abs() < 1e-6);
+        assert!((MOTILE_ENVIRONMENT.slow - 0.03).abs() < 1e-6);
+        assert_eq!(MOTILE_ENVIRONMENT.gravity_y, -980.665);
+        assert_eq!(
+            (MOTILE_ENVIRONMENT.fast_speed, MOTILE_ENVIRONMENT.slow_speed),
+            (40.0, 20.0)
+        );
+    }
+}
+
+/// The body's footstep phase after a tick whose pelvis origin travelled
+/// `travel2` (cm², over the last two particle sets): the phase kept as the
+/// previous one, then raised by √travel²·0.0002 above the epsilon; over 1
+/// both wrap by one.
+pub fn step_phase(phase: f32, travel2: f32) -> (f32, f32) {
+    let previous = phase;
+    let mut now = phase;
+    if travel2 > 1.192_09e-7 {
+        now += travel2.sqrt() * 0.0002;
+    }
+    if now > 1.0 {
+        now -= 1.0;
+        return (previous - 1.0, now);
+    }
+    (previous, now)
+}
+
+#[cfg(test)]
+mod step_phase_tests {
+    use super::*;
+
+    #[test]
+    fn the_footstep_phase_follows_the_pelvis_travel() {
+        let (prev, now) = step_phase(0.5, 100.0);
+        assert_eq!(prev, 0.5);
+        assert!((now - 0.502).abs() < 1e-7);
+        let (prev, now) = step_phase(1.1, 100.0);
+        assert!((prev - 0.1).abs() < 1e-6);
+        assert!((now - 0.102).abs() < 1e-6);
+        assert_eq!(step_phase(0.5, 0.0), (0.5, 0.5));
     }
 }

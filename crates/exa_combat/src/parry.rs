@@ -12,6 +12,7 @@
 //!
 //! Evidence: the unarmed parry decision, the height table, and the armed grip.
 
+use bevy::math::Vec3;
 use std::f32::consts::PI;
 
 /// Parry Left.
@@ -498,5 +499,196 @@ mod tests {
         })
         .unwrap();
         assert_eq!(one.slot, 0);
+    }
+}
+
+/// What stops a parry before the attacker is looked at: a helpless
+/// condition, the break-tangle motion (0x1C), or yellow health under 0.01.
+pub fn parry_ends(condition_helpless: bool, motion: u8, yellow: f32) -> bool {
+    condition_helpless || motion == 0x1C || yellow < 0.01
+}
+
+/// The attacker as the parry trigger reads it.
+#[derive(Debug, Clone, Copy)]
+pub struct Trigger {
+    pub attacker_attacking: bool,
+    pub attacker_size: f32,
+    pub attacker_has_shield: bool,
+    pub strike_window: bool,
+    pub cleaving: bool,
+    pub progress: f32,
+    pub reach_cm: f32,
+    /// Attacker's chest less the defender's chest (cm, world).
+    pub chest_delta: Vec3,
+    /// The defender's forward across the ground (unit).
+    pub facing: Vec3,
+}
+
+/// The parry trigger's attacker test (the routine's gate): the attacker is
+/// attacking, or big (1.3) without the defender's shield; its strike
+/// window is open while its clip is from 0.3 through 0.9; it is not
+/// cleaving; it is in front, within its reach plus 150 cm.
+pub fn parry_trigger(t: &Trigger) -> bool {
+    if !t.attacker_attacking && (t.attacker_size < 1.3 || t.attacker_has_shield) {
+        return false;
+    }
+    if !t.strike_window && (t.progress < 0.3 || t.progress > 0.9) {
+        return false;
+    }
+    if t.cleaving {
+        return false;
+    }
+    if t.chest_delta.dot(t.facing) <= 0.0 {
+        return false;
+    }
+    let reach = t.reach_cm + 150.0;
+    t.chest_delta.length_squared() <= reach * reach
+}
+
+/// The parry counter after choosing `clip` (0x14 Left, 0x15 Right,
+/// 0x16 Up, 0x17 Left Dn, 0x18 Right Dn): Left and Right rise to 20; Up
+/// falls from above 0 to it and rises from below; the two downs fall while
+/// over 20.
+pub fn parry_counter(counter: i32, clip: u8) -> i32 {
+    match clip {
+        0x14 | 0x15 if counter < 20 => counter + 1,
+        0x16 if counter >= 1 => counter - 1,
+        0x16 if counter < 0 => counter + 1,
+        0x17 | 0x18 if counter > 20 => counter - 1,
+        _ => counter,
+    }
+}
+
+/// What a successful parry starts: the clip, its blend (round(recovery·20))
+/// and the ease (2).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ParryStart {
+    pub clip: u8,
+    pub blend: u32,
+    pub ease: u32,
+}
+
+/// The parry start when the chosen clip differs from the one playing:
+/// `chosen` is the re-picked clip from the height table, `current` the clip
+/// playing (0xEB0), `recovery` the original's `+0x1200`. Starts only a
+/// positive chosen clip. Also moves a current attack (motions 5–12) to
+/// motion 4, as the trigger does.
+pub fn parry_start(chosen: i32, current: i32, recovery: f32) -> Option<(ParryStart, bool)> {
+    if chosen < 0 || chosen == current {
+        return None;
+    }
+    let clip = chosen as u8;
+    let blend = (recovery * 20.0).round_ties_even() as u32;
+    Some((
+        ParryStart {
+            clip,
+            blend,
+            ease: 2,
+        },
+        true,
+    ))
+}
+
+#[cfg(test)]
+mod trigger_tests {
+    use super::*;
+
+    fn attacker() -> Trigger {
+        Trigger {
+            attacker_attacking: true,
+            attacker_size: 1.0,
+            attacker_has_shield: false,
+            strike_window: true,
+            cleaving: false,
+            progress: 0.5,
+            reach_cm: 100.0,
+            chest_delta: Vec3::Z * 100.0,
+            facing: Vec3::Z,
+        }
+    }
+
+    /// The trigger's gates: helpless, break tangle and yellow under 0.01
+    /// end it; the attacker must be attacking (or big against no shield),
+    /// in its window, not cleaving, in front and within reach + 150 cm.
+    #[test]
+    fn the_parry_trigger_is_the_originals() {
+        assert!(parry_ends(true, 5, 1.0));
+        assert!(parry_ends(false, 0x1C, 1.0));
+        assert!(parry_ends(false, 5, 0.0099));
+        assert!(!parry_ends(false, 5, 0.01));
+        assert!(parry_trigger(&attacker()));
+        let mut t = attacker();
+        t.attacker_attacking = false;
+        assert!(!parry_trigger(&t));
+        t.attacker_size = 1.3;
+        assert!(parry_trigger(&t));
+        t.attacker_has_shield = true;
+        assert!(!parry_trigger(&t));
+        let mut t = attacker();
+        t.strike_window = false;
+        t.progress = 0.3;
+        assert!(parry_trigger(&t));
+        t.progress = 0.9;
+        assert!(parry_trigger(&t));
+        t.progress = 0.29;
+        assert!(!parry_trigger(&t));
+        t.progress = 0.91;
+        assert!(!parry_trigger(&t));
+        let mut t = attacker();
+        t.cleaving = true;
+        assert!(!parry_trigger(&t));
+        let mut t = attacker();
+        t.chest_delta = Vec3::NEG_Z * 100.0;
+        assert!(!parry_trigger(&t));
+        let mut t = attacker();
+        t.chest_delta = Vec3::Z * 250.0;
+        assert!(parry_trigger(&t));
+        t.chest_delta = Vec3::Z * 250.01;
+        assert!(!parry_trigger(&t));
+    }
+
+    /// The counter rises to 20 on the sides, falls from above 0 on Up and
+    /// falls while over 20 on the downs; a start needs a new positive clip
+    /// and blends round(recovery·20) with ease 2.
+    #[test]
+    fn the_parry_counter_and_start_are_the_originals() {
+        assert_eq!(parry_counter(3, 0x14), 4);
+        assert_eq!(parry_counter(20, 0x15), 20);
+        assert_eq!(parry_counter(3, 0x16), 2);
+        assert_eq!(parry_counter(-1, 0x16), 0);
+        assert_eq!(parry_counter(22, 0x17), 21);
+        assert_eq!(parry_counter(20, 0x18), 20);
+        let (start, ease) = parry_start(0x15, 0x14, 1.05).unwrap();
+        assert_eq!(
+            start,
+            ParryStart {
+                clip: 0x15,
+                blend: 21,
+                ease: 2
+            }
+        );
+        assert!(ease);
+        assert!(parry_start(0x14, 0x14, 1.0).is_none());
+        assert!(parry_start(-1, 0x14, 1.0).is_none());
+    }
+}
+
+/// Whether the parry clip is picked again (the clash bookkeeping): when the
+/// clip playing is outside the parry clips 0x14–0x18, or the attack motion
+/// differs from the countered motion `f5c`.
+pub fn parry_repick(current_clip: i32, current_motion: i32, attack_motion: i32) -> bool {
+    !(0x14..=0x18).contains(&current_clip) || attack_motion != current_motion
+}
+
+#[cfg(test)]
+mod repick_tests {
+    use super::*;
+
+    #[test]
+    fn the_parry_is_repicked_for_a_new_motion() {
+        assert!(!parry_repick(0x14, 5, 5));
+        assert!(parry_repick(0x14, 5, 6));
+        assert!(parry_repick(0x13, 5, 5));
+        assert!(parry_repick(0x19, 5, 5));
     }
 }

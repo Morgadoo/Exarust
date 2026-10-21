@@ -158,6 +158,7 @@ pub(crate) fn sample_clip(
         look.as_mut(),
         &body,
         root,
+        fighter.map_or(0.0, |f| f.stats.height),
         &parents,
         &nodes,
     );
@@ -241,6 +242,7 @@ pub(crate) fn sample_parts(
     look: Option<&mut Look>,
     body: &Ragdoll,
     root: Entity,
+    record_height: f32,
     parents: &Query<&ChildOf>,
     nodes: &Query<(&Transform, Option<&BodyPart>)>,
 ) -> Option<Vec<Affine3A>> {
@@ -254,7 +256,7 @@ pub(crate) fn sample_parts(
     let mut parts = ik_chain(chain);
     twist_spine(&mut parts, &spine(body, nodes), twist);
     look_with_head(&mut parts, body, look);
-    Some(foot_pitch(parts))
+    Some(foot_pitch(parts, body, record_height))
 }
 
 /// Step 2, the gait overlay: a moving body's walk is slerped toward its
@@ -349,7 +351,15 @@ fn look_with_head(parts: &mut [Affine3A], body: &Ragdoll, look: Option<&mut Look
 /// Step 8, the foot pitch: a standing foot is pitched to the ground under
 /// it by the smoothed angle. Until C13 lands the feet keep the clip: the
 /// parts are returned as they are.
-fn foot_pitch(parts: Vec<Affine3A>) -> Vec<Affine3A> {
+fn foot_pitch(mut parts: Vec<Affine3A>, body: &Ragdoll, record_height: f32) -> Vec<Affine3A> {
+    for (leg, joint) in body.legs().iter().enumerate() {
+        if let Some(foot) = joint.foot
+            && let Some(part) = parts.get_mut(foot)
+        {
+            let turn = exa_physics::body::foot_pitch_turn(false, record_height, leg);
+            part.matrix3 *= bevy::math::Mat3A::from_quat(turn);
+        }
+    }
     parts
 }
 
