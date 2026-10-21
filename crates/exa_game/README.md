@@ -297,28 +297,24 @@ feet to a point, drawn and logged) and the simulation controls (`sim_control`, w
 tick, a stretched link, the first blood jet, the player's first landed
 blow or the first collapse).
 
-The player behaviour's own rules (`player_behaviour`) are the aim point
-with its soft height lock on a target's bone and its raised surface, the
-gamepad aim's `250·|aim| + 50` cm point and dead zone, the AimSpeed cursor
-ease `(0.4·AimSpeed + 0.1)²`, the 12 m contact list and its 12-entry
-eviction, the `(500 − d)·(cos + 0.5)` combat target and the screen-nearest
-one, the engaged-enemy test, the 1/3-gain aim follower and the 0.1π body
-step, the attack wind-up and recovery times, and the 3/4 stance helper. The
-gamepad's aim runs through the eased world cursor (`player_combat`,
-`AimCursor`); the right button walks to the cursor in combat mode too, and
-the walk-to-cursor latch holds the reach off through the stride.
+The player behaviour's own rules (`player_behaviour`) are the aim point's
+soft height lock on a target's bone and its raised surface, the gamepad
+aim's `250·|aim| + 50` cm point and its `(0.4·AimSpeed + 0.1)²` ease, the
+12 m contact list and its 12-entry eviction, the strongest engaged enemy
+(the enemy's own contact score for the player over 2), the character
+nearest the cursor on screen, and the attack wind-up and recovery times.
+The gamepad's aim runs through the eased world cursor each behaviour tick
+(`player::AimCursor`, read by `player_combat`); the others have no caller
+yet. The right button walks to the cursor in combat mode too
+(`steering::Steering::combat_walk`), the chevrons showing while it is
+held.
 
-The controls' remaining rules (`player_controls`) are the click's
-interaction (a lock's key and its 100 or 1000 experience, a container, a
-corpse's scripts, the character screen, talk), double clicks, usable items
-on the world (pours, fire, cleaning and repair kits and the timed list that
-carries them over two seconds), the reach against the navigation region
-with the original's NaN-passes compares, the start and end of play and
-their AI activation centre and radius, and the blocked/modal camera-turn
-gate. Ctrl or a double click names the click and starts its auto-walk; the
-windows, dialogue and item cursor it would open are not in. The mechanism
-drags' arithmetic is modelled (`hand::{door_pull_anchor, wheel_turn,
-cloth_vertex}`), their objects are not bodies under the hand.
+The controls' item-use values (`player_controls`) are a pour's warmth, the
+cleaning and repair kits' targets and the timed list that carries them over
+two seconds; the start and end of play set the AI's activation centre and
+radius (`PlaySession`, which nothing reads yet). A door, wheel or cloth
+press holds the hand until the release without keeping the movement
+request.
 
 ## Arena match board bridge
 

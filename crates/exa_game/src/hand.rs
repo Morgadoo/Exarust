@@ -64,9 +64,8 @@ use exa_physics::prop::{PropBody, StandIns};
 use exa_ui::ScriptedPointer;
 
 use crate::bindings::{Action, Bindings};
-use crate::pick::{self, Body, Pick, Target};
+use crate::pick::{self, Body, Pick, ReachTo, Target};
 use crate::player::{ChaseCamera, Player, PlayerBody, window_ray};
-use crate::player_controls::{ReachFrame, Region};
 
 /// Centimetres per metre: the original's rules are in cm.
 const CM: f32 = 100.0;
@@ -125,8 +124,6 @@ pub struct Hand {
     pub out_of_reach: bool,
     /// The left button's press, until its release.
     pub left: Option<LeftPress>,
-    /// The press before's pointer and time, for a double click.
-    pub(crate) last_click: Option<(IVec2, i64)>,
 }
 
 /// Where and when the left button went down, and whether its drag started.
@@ -273,114 +270,17 @@ pub fn drag_anchor(origin: Vec3, dir: Vec3, height: f32, hip: Vec3) -> Option<Ve
     Some(at / CM)
 }
 
-/// A door's drag, as the press records it: its grip point on the handle, the
-/// height the cursor was at, and whether the door was already open.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DoorPull {
-    /// The point the press hit on the handle (m).
-    pub capture: Vec3,
-    /// The door was open: the pull runs along its own hinge axis.
-    pub open: bool,
-}
-
-/// A door's dragged anchor (m): closed, the capture point moved 100 cm
-/// toward the cursor's point across the ground; open, the cursor's point
-/// projected onto the door's own axis `axis` (a unit vector across the
-/// ground) through the capture. (The original's open branch solves the
-/// hinge's own frame; Exarust has no hinge node, so the axis stands in.)
-pub fn door_pull_anchor(pull: DoorPull, ray_point: Vec3, axis: Vec3) -> Vec3 {
-    let flat = (ray_point - pull.capture).with_y(0.0);
-    if pull.open {
-        let axis = axis.with_y(0.0).normalize_or_zero();
-        pull.capture + axis * flat.dot(axis)
-    } else {
-        pull.capture + flat.normalize_or_zero()
-    }
-}
-
-/// What a cloth drag's frame does (F86).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ClothAction {
-    /// The button came up or the cloth is gone: the drag is released.
-    Release,
-    /// The cursor is over the grabbed patch: its local point is the anchor.
-    Grab { local: Vec3 },
-    /// The cursor is elsewhere: the re-picked ground point is the anchor.
-    Pull { at: Vec3 },
-}
-
-/// A cloth drag's frame: with the button up or no cloth, release; over the
-/// grabbed vertex within `radius` (m, squared compare) the local point is
-/// the anchor; otherwise the re-picked point is. `grabbed` is the cloth's
-/// grabbed local point.
-pub fn cloth_drag(
-    release: bool,
-    has_cloth: bool,
-    grabbed: Option<Vec3>,
-    pick_local: Vec3,
-    pick_world: Vec3,
-    radius: f32,
-) -> ClothAction {
-    if release || !has_cloth {
-        return ClothAction::Release;
-    }
-    if let Some(g) = grabbed
-        && (pick_local - g).length_squared() < radius * radius
-    {
-        return ClothAction::Grab { local: pick_local };
-    }
-    ClothAction::Pull { at: pick_world }
-}
-
-/// A door drag's frame (F83): a blocked door stops the pull; otherwise,
-/// closed, the anchor moves from the capture toward the cursor; open, it
-/// slides along the door's own axis (as [`door_pull_anchor`]).
-pub fn door_drag_frame(pull: DoorPull, ray_point: Vec3, axis: Vec3, blocked: bool) -> Option<Vec3> {
-    if blocked {
-        return None;
-    }
-    Some(door_pull_anchor(pull, ray_point, axis))
-}
-
-/// A wheel's turn: the wanted angle moves the current one by the gap,
-/// clamped into `[0, limit]` — at most `limit` a frame, one way only (the
-/// original's rim drag).
-pub fn wheel_turn(current: f32, wanted: f32, limit: f32) -> f32 {
-    current + (wanted - current).clamp(0.0, limit)
-}
-
-/// The wheel grip the drag follows: the first grip point when its direction
-/// from the wheel's body is at least 0.2 along the camera's right axis, else
-/// the second. `grip_yaw` is the first grip's yaw around the body's axis,
-/// and `back` the second's (the original's two pick points on the rim).
-pub fn wheel_grip(first_facing: f32, grip_yaw: f32, back_yaw: f32) -> f32 {
-    if first_facing.abs() >= 0.2 {
-        grip_yaw
-    } else {
-        back_yaw
-    }
-}
-
 /// Whether a grabbed box may be taken: every placed corner is at most 280 cm
-/// high and at least −1000 cm (the original refuses a box outside those).
+/// high and at least −1000 cm (the original refuses a box outside those; an
+/// unordered height passes).
 pub fn box_ok(corners: impl IntoIterator<Item = Vec3>) -> bool {
     for corner in corners {
-        let y = corner.y * 100.0;
+        let y = corner.y * CM;
         if y > 280.0 || y < -1000.0 {
             return false;
         }
     }
     true
-}
-
-/// The cloth vertex a press grabbed: the first of the cloth's local vertices
-/// within `radius` (m) of the cursor's point in the cloth's own space. The
-/// original tests each vertex's sphere as it walks them.
-pub fn cloth_vertex(vertices: &[Vec3], at: Vec3, radius: f32) -> Option<usize> {
-    let r2 = radius * radius;
-    vertices
-        .iter()
-        .position(|v| (*v - at).length_squared() < r2)
 }
 
 /// Whether the frame measures the reach: in combat mode only with Ctrl
@@ -630,9 +530,6 @@ fn press_hand(
             ms: now,
             dragging: false,
         });
-        if let Some((_, pixels)) = pointer {
-            hand.last_click = Some((pixels, now));
-        }
         return;
     }
     let Some(mut left) = hand.left.filter(|l| !l.dragging) else {
@@ -687,8 +584,10 @@ fn press_hand(
     };
     match press(state, named) {
         Press::Ignored => {}
-        Press::Refused => hand.holding = Holding::Refused,
+        // Exarust's doors, wheels and cloth are not bodies under the hand:
+        // the press records the drag until the release.
         Press::Mechanism(pick) => hand.holding = Holding::Mechanism(pick),
+        Press::Refused => hand.holding = Holding::Refused,
         Press::Lift => {
             pb.hold_object(true);
             hand.holding = Holding::Lift;
@@ -730,11 +629,7 @@ fn press_hand(
 /// The hold each frame: the drag follows the cursor, the release lets go.
 #[allow(clippy::too_many_arguments)]
 fn hold_hand(
-    keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
-    bindings: Res<Bindings>,
-    physics: Res<Physics>,
-    stand_ins: Res<StandIns>,
     scripted: Res<ScriptedPointer>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ChaseCamera>>,
@@ -750,74 +645,25 @@ fn hold_hand(
     // the player turns toward the cursor.
     if released {
         let left = hand.left.take();
-        if let Some(left) = left.filter(|l| !l.dragging) {
-            let double = hand.last_click.is_some_and(|(was, ms)| {
-                crate::player_controls::is_double_click(
-                    (was.x, was.y),
-                    ms as u64,
-                    (left.pixels.x, left.pixels.y),
-                    left.ms as u64,
-                )
-            });
-            if let Some((feet, child)) = player
-                && let Ok((pb, own, condition, _)) = player_bodies.get(child)
-            {
-                if !pb.combat
-                    && let Some((yaw, distance)) = pb.cursor()
-                    && click_turns(distance * CM)
-                    && let Ok(mut req) = requests.get_mut(child)
-                {
-                    req.heading = yaw;
-                }
-                // A double click or Ctrl names and uses what was clicked.
-                let ctrl = bindings.pressed(&keys, Action::Interact);
-                if double || ctrl {
-                    let ray = windows.single().ok().zip(cameras.single().ok()).and_then(
-                        |(window, (camera, eye))| window_ray(camera, eye, window, left.at),
-                    );
-                    let picked = pick_with(
-                        ray,
-                        &physics,
-                        &stand_ins,
-                        &bodies,
-                        own.map(|r| (child, r, condition.copied().unwrap_or_default())),
-                    );
-                    if let Some(picked) = picked {
-                        let named = name_of(picked.hit, |body| {
-                            bodies
-                                .get(body)
-                                .ok()
-                                .and_then(|(_, r, ..)| r.parts.iter().find(|p| p.parent.is_none()))
-                                .map(|p| p.inverse_mass)
-                        });
-                        let click = crate::player_controls::Click {
-                            named,
-                            usable: matches!(named, Pick::Usable).then_some(1),
-                            ..Default::default()
-                        };
-                        let action = crate::player_controls::interact(click);
-                        info!("click names {named:?}: {action:?} (double {double})");
-                        // Out of reach, the click walks the body to its
-                        // stop before using it.
-                        if action != crate::player_controls::Interact::Nothing
-                            && hand.out_of_reach
-                            && let Some(goal) = crate::player_controls::walk_stop(
-                                feet,
-                                picked.at,
-                                named == Pick::Hinge,
-                            )
-                            && let Ok((mut pb, ..)) = player_bodies.get_mut(child)
-                        {
-                            pb.walk_to(goal);
-                        }
-                    }
-                }
-            }
+        if left.is_some_and(|l| !l.dragging)
+            && let Some((_, child)) = player
+            && let Ok((pb, ..)) = player_bodies.get(child)
+            && !pb.combat
+            && let Some((yaw, distance)) = pb.cursor()
+            && click_turns(distance * CM)
+            && let Ok(mut req) = requests.get_mut(child)
+        {
+            req.heading = yaw;
         }
     }
     match hand.holding {
         Holding::Nothing => {}
         Holding::Refused => {
+            if released {
+                hand.holding = Holding::Nothing;
+            }
+        }
+        Holding::Mechanism(_) => {
             if released {
                 hand.holding = Holding::Nothing;
             }
@@ -830,11 +676,6 @@ fn hold_hand(
                 {
                     pb.hold_object(false);
                 }
-            }
-        }
-        Holding::Mechanism(_) => {
-            if released {
-                hand.holding = Holding::Nothing;
             }
         }
         Holding::Drag {
@@ -885,7 +726,6 @@ fn reach_hand(
     scripted: Res<ScriptedPointer>,
     physics: Res<Physics>,
     stand_ins: Res<StandIns>,
-    nav: Option<Res<exa_world::nav::NavGrid>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ChaseCamera>>,
     mut hand: ResMut<Hand>,
@@ -915,9 +755,6 @@ fn reach_hand(
         return;
     }
     let ctrl = bindings.pressed(&keys, Action::Interact);
-    // The original skips the reach while its walk latch is held by the right
-    // button; after the release (and while the keys walk) its keys-walking
-    // bit measures the reach again, so only the button counts.
     let walking = buttons.pressed(MouseButton::Right);
     if !measures_reach(pb.combat, ctrl, hand.holding != Holding::Nothing, walking) {
         return;
@@ -934,45 +771,7 @@ fn reach_hand(
                 &bodies,
                 own.map(|r| (child, r, condition)),
             )
-            .is_some_and(|p| {
-                let named = name_of(p.hit, |body| {
-                    bodies
-                        .get(body)
-                        .ok()
-                        .and_then(|(_, r, ..)| r.parts.iter().find(|p| p.parent.is_none()))
-                        .map(|p| p.inverse_mass)
-                });
-                let frame = match named {
-                    Pick::Hinge => ReachFrame::Door,
-                    Pick::Wheel => ReachFrame::Wheel,
-                    _ => ReachFrame::Point,
-                };
-                // The original's navigation-region test: a sim object's
-                // point must lie in the player's region with nothing
-                // between. The grid's line walk stands in.
-                let (region, object) = match (p.hit, nav.as_deref()) {
-                    (Hit::Level, _) => (Region::None, false),
-                    (_, Some(grid)) => {
-                        let walk = exa_world::nav::line_walk(grid, feet, p.at);
-                        (
-                            if walk.blocked {
-                                Region::Outside
-                            } else {
-                                Region::Inside
-                            },
-                            true,
-                        )
-                    }
-                    (_, None) => (Region::None, true),
-                };
-                crate::player_controls::within_reach(crate::player_controls::Reach {
-                    height_cm: p.at.y * CM,
-                    offset_cm: (p.at - hip) * CM,
-                    frame,
-                    region,
-                    object,
-                })
-            })
+            .is_some_and(|p| pick::within_reach(p.at.y * CM, (p.at - hip) * CM, ReachTo::Point))
         }
     };
     hand.out_of_reach = !in_reach;
@@ -1230,42 +1029,10 @@ mod tests {
         assert!(!hand.out_of_reach);
     }
 
-    /// A door's closed pull runs 100 cm toward the cursor; an open one
-    /// slides along the door's axis; a wheel stops at its limit and takes
-    /// the grip its facing picks; a cloth grabs the vertex under the cursor.
-    #[test]
-    fn the_mechanism_drags() {
-        let pull = DoorPull {
-            capture: Vec3::new(0.0, 1.0, 0.0),
-            open: false,
-        };
-        let a = door_pull_anchor(pull, Vec3::new(0.0, 1.0, 2.0), Vec3::X);
-        assert!((a - Vec3::new(0.0, 1.0, 1.0)).length() < 1e-6, "{a}");
-        let open = DoorPull { open: true, ..pull };
-        let a = door_pull_anchor(open, Vec3::new(3.0, 1.0, 1.0), Vec3::X);
-        assert!((a - Vec3::new(3.0, 1.0, 0.0)).length() < 1e-6, "{a}");
-        assert_eq!(wheel_turn(0.5, 2.0, 1.0), 1.5);
-        assert_eq!(wheel_turn(1.5, 2.0, 1.0), 2.0);
-        assert_eq!(wheel_turn(0.5, 0.0, 1.0), 0.5);
-        assert_eq!(wheel_grip(0.2, 0.5, 0.9), 0.5);
-        assert_eq!(wheel_grip(0.19, 0.5, 0.9), 0.9);
-        let v = [Vec3::ZERO, Vec3::X, Vec3::Y];
-        assert_eq!(cloth_vertex(&v, Vec3::new(0.99, 0.0, 0.0), 0.1), Some(1));
-        assert_eq!(cloth_vertex(&v, Vec3::new(0.5, 0.0, 0.0), 0.1), None);
-        assert!(box_ok([
-            Vec3::new(0.0, 2.8, 0.0),
-            Vec3::new(0.0, -10.0, 0.0)
-        ]));
-        assert!(!box_ok([
-            Vec3::new(0.0, 2.8, 0.0),
-            Vec3::new(0.0, 2.81, 0.0)
-        ]));
-        assert!(!box_ok([Vec3::new(0.0, -10.01, 0.0)]));
-    }
-
     /// The hand's state keeps the request while a press is refused or a
     /// lift holds (not while a mechanism is dragged), and shows the cross
-    /// only for the refusal.
+    /// only for the refusal; a grabbed box must stay within 280 cm up and
+    /// 1000 cm down.
     #[test]
     fn a_refused_press_keeps_the_request_and_shows_the_cross() {
         let mut hand = Hand::default();
@@ -1283,5 +1050,15 @@ mod tests {
             character: false,
         };
         assert!(!hand.keeps_the_request());
+        assert!(box_ok([
+            Vec3::new(0.0, 2.8, 0.0),
+            Vec3::new(0.0, -10.0, 0.0)
+        ]));
+        assert!(!box_ok([
+            Vec3::new(0.0, 2.8, 0.0),
+            Vec3::new(0.0, 2.81, 0.0)
+        ]));
+        assert!(!box_ok([Vec3::new(0.0, -10.01, 0.0)]));
+        assert!(box_ok([Vec3::new(0.0, f32::NAN, 0.0)]));
     }
 }

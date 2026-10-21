@@ -13,10 +13,12 @@
 //! the behaviour stops reading the cursor (the head and the heading keep
 //! the cursor's last direction), until the player is busy again.
 //!
-//! Not in Exarust: the screens that block the controls (the death screen,
-//! the in-game menu), which turn the camera the same way without the idle
-//! test; an open window that stops the turn; the dialogue and power bar
-//! that make the player busy.
+//! A screen that blocks the controls turns the camera the same way without
+//! the idle test (only the ten seconds since the stamp); an open window, the
+//! active view not being the game's, restamps the clock; a dialogue or the
+//! power bar makes the player busy. Exarust's in-game menu is such a window;
+//! no Exarust screen blocks the controls yet, nor is there a dialogue or a
+//! power bar.
 //!
 //! Evidence: the controls' frame and its blocked branch, read in the
 //! instructions (`context/re/player-control-hand.md`, The idle turn).
@@ -107,11 +109,26 @@ pub fn turned(yaw: f32, now: u32, last: u32) -> f32 {
 
 impl IdleWatch {
     /// One frame of the watch: the camera's yaw after it, from `yaw`. A
-    /// blocked screen or a dead player is idle whatever the pointer does;
-    /// a modal form, an open window or a held button keeps the camera and
-    /// restamps the idle clock.
+    /// blocked screen turns the camera once the clock is ten seconds past
+    /// the stamp, whatever the pointer, the buttons or a form do; an open
+    /// window (the active view not the game's) only restamps the clock; a
+    /// modal form (a dialogue, the power bar) or a held button keeps the
+    /// player busy.
     pub fn frame(&mut self, f: Frame, yaw: f32) -> f32 {
-        let still = if f.condition.is_dead() || f.blocked {
+        if f.blocked {
+            let mut yaw = yaw;
+            if i64::from(self.stamp) + IDLE_MS < i64::from(f.now) {
+                self.follows_cursor = false;
+                yaw = turned(yaw, f.now, self.last);
+            }
+            self.last = f.now;
+            return yaw;
+        }
+        if f.window_open {
+            self.stamp = f.now;
+            return yaw;
+        }
+        let still = if f.condition.is_dead() {
             true
         } else {
             f.pointer.is_none_or(|p| pointer_still(self.pointer, p))
@@ -119,8 +136,7 @@ impl IdleWatch {
                 && !f.stepping
                 && !f.holding
         };
-        let free = !f.buttons && !f.modal && !f.window_open;
-        if free && still {
+        if !f.buttons && !f.modal && still {
             let mut yaw = yaw;
             if i64::from(self.stamp) + IDLE_MS < i64::from(f.now) {
                 self.follows_cursor = false;
@@ -183,9 +199,10 @@ fn watch_idle(
             .is_some_and(|d| d.stepping()),
         holding: hand.is_some_and(|h| h.holding != Holding::Nothing),
         buttons: buttons.get_pressed().next().is_some(),
-        // The in-game menu blocks the controls and its form consumes the
-        // input, so the camera waits; the death screen only blocks.
-        blocked: menu.as_ref().is_some_and(|m| m.open) || condition.is_some_and(|c| c.is_dead()),
+        // No Exarust screen blocks the controls yet, nor opens a dialogue or
+        // the power bar; the in-game menu's form takes the input from the
+        // game's view, which restamps the clock.
+        blocked: false,
         modal: false,
         window_open: menu.as_ref().is_some_and(|m| m.open),
     };
@@ -288,38 +305,38 @@ mod tests {
         assert_eq!(w.frame(idle(13_000), yaw), yaw);
     }
 
-    /// A blocked screen turns without the idle test; a modal form or an open
-    /// window stops it; the death screen's block lets it turn.
+    /// A blocked screen turns past the ten seconds whatever the pointer and
+    /// the buttons do; a modal form keeps the player busy; an open window
+    /// only restamps the clock.
     #[test]
     fn a_blocked_screen_turns_and_a_modal_form_waits() {
         let moving = Frame {
             pointer: Some(IVec2::new(900, 900)),
+            buttons: true,
             blocked: true,
             ..idle(20_000)
         };
         let mut w = IdleWatch::default();
         let yaw = w.frame(moving, 1.0);
         assert!((yaw - 3.0).abs() < 1e-6, "{yaw}");
+        assert!(!w.follows_cursor && w.stamp == 0 && w.last == 20_000);
         let mut w = IdleWatch::default();
         let modal = Frame {
             modal: true,
-            ..moving
+            ..idle(20_000)
         };
         assert_eq!(w.frame(modal, 1.0), 1.0);
         assert_eq!(w.stamp, 20_000);
-        let mut w = IdleWatch::default();
+        let mut w = IdleWatch {
+            follows_cursor: false,
+            ..IdleWatch::default()
+        };
         let window = Frame {
             window_open: true,
-            ..moving
+            ..idle(20_000)
         };
         assert_eq!(w.frame(window, 1.0), 1.0);
-        assert_eq!(w.stamp, 20_000);
-        // The in-game menu is both blocked and a window: it waits.
-        let menu = Frame {
-            window_open: true,
-            ..moving
-        };
-        assert_eq!(IdleWatch::default().frame(menu, 1.0), 1.0);
+        assert_eq!((w.stamp, w.last, w.follows_cursor), (20_000, 0, false));
     }
 
     /// Walking (word 1), a stepping foot, a hold or a button keep the camera

@@ -28,12 +28,6 @@ cast, player, world clock base, locale) and steps the engine every frame on
 
 Formats: [`docs/formats/OTHER.md`](../../docs/formats/OTHER.md#roles-charrolesrdb).
 
-The player controls' script hooks are in `interaction`: the near
-scripted objects (the original's squared 5 cm² radius), the roles a dead
-character runs on interaction and the talk condition (status 0 allows,
-else the option's script must answer over zero). They are tested rules;
-the running controls do not call them yet.
-
 ## Not yet
 
 - Drawing the bubbles and the reply panel (placement, wrapping, the height

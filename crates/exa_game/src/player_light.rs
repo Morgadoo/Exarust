@@ -89,78 +89,6 @@ pub fn switched_on(
     on
 }
 
-/// What attaching the player to a level's environment did (F131).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Attach {
-    /// The level's height field was switched in for the player (the level
-    /// node's option bit 0x2000000).
-    pub switched_env: bool,
-    /// The player's node's two bytes at 0x178/0x179 were cleared with it.
-    pub cleared_node: bool,
-    /// The player's place in the environment's registered list.
-    pub index: usize,
-}
-
-/// Attaches the player to the level's environment (F131): a level with a
-/// height field switches the player's environment to the level's and
-/// clears the player's own node flags; the player is appended to the
-/// environment's registered list if absent, and the main player is moved
-/// to its front.
-pub fn attach_player(
-    player: u64,
-    level_height_field: bool,
-    player_is_main: bool,
-    registered: &mut Vec<u64>,
-) -> Attach {
-    // The player's two node bytes are always cleared, as the original does
-    // after it has picked the environment.
-    let cleared_node = true;
-    let index = match registered.iter().position(|&p| p == player) {
-        Some(i) => i,
-        None => {
-            registered.push(player);
-            registered.len() - 1
-        }
-    };
-    let index = if player_is_main {
-        registered.swap(0, index);
-        0
-    } else {
-        index
-    };
-    Attach {
-        switched_env: level_height_field,
-        cleared_node,
-        index,
-    }
-}
-
-/// The per-level setup the controls run when a level appears (F132): the
-/// level's particle system, the player light when it is on, and the player
-/// attached to the level's environment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LevelSetup {
-    pub particles: Option<u64>,
-    pub light: bool,
-    pub player: Option<u64>,
-}
-
-/// The level setup's choice: the level's particle object is attached, the
-/// light stands if the switch is on, and the player is attached when both
-/// it and the level exist.
-pub fn setup_level(
-    level: u64,
-    player: Option<u64>,
-    light_on: bool,
-    particles: Option<u64>,
-) -> LevelSetup {
-    LevelSetup {
-        particles: particles.map(|_| level),
-        light: light_on,
-        player: player.filter(|_| level != 0),
-    }
-}
-
 /// The intensity after a frame of `ms` milliseconds.
 pub fn ramp(intensity: f32, ms: f32) -> f32 {
     let under = intensity < TARGET - EPSILON;
@@ -347,40 +275,6 @@ mod tests {
     fn the_light_hangs_over_the_head_under_the_ceiling() {
         assert_eq!(height(150.0, |_| None), 230.0);
         assert_eq!(height(150.0, |gap| (gap == 80.0).then_some(35.0)), 185.0);
-    }
-
-    /// A height-field level switches the environment; the player is added
-    /// once and the main player goes to the front.
-    #[test]
-    fn attaching_the_player_to_the_level() {
-        let mut list = vec![9, 4];
-        let a = attach_player(7, true, false, &mut list);
-        assert!(a.switched_env && a.cleared_node);
-        assert_eq!(a.index, 2);
-        assert_eq!(list, vec![9, 4, 7]);
-        let a = attach_player(7, false, true, &mut list);
-        assert!(!a.switched_env);
-        assert_eq!(a.index, 0);
-        assert_eq!(list, vec![7, 4, 9]);
-        let a = attach_player(4, false, true, &mut list);
-        assert_eq!(a.index, 0);
-        assert_eq!(list, vec![4, 7, 9]);
-    }
-
-    /// The level setup carries the particles, the light switch and the
-    /// player when both exist.
-    #[test]
-    fn the_level_setup() {
-        let setup = setup_level(3, Some(7), true, Some(9));
-        assert_eq!(
-            setup,
-            LevelSetup {
-                particles: Some(3),
-                light: true,
-                player: Some(7)
-            }
-        );
-        assert_eq!(setup_level(3, None, false, None).player, None);
     }
 
     #[test]

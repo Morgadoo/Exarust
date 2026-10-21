@@ -180,11 +180,6 @@ impl PlayerBody {
         self.steering.raw
     }
 
-    /// Asks the body to walk to a clicked point (m), until it is reached.
-    pub(crate) fn walk_to(&mut self, goal: Vec3) {
-        self.steering.walk_to = Some(goal);
-    }
-
     /// The left button starts or stops holding an object
     /// ([`crate::hand`]): while it holds one, the standing quarter turns
     /// wait.
@@ -357,9 +352,9 @@ impl Plugin for PlayerPlugin {
     }
 }
 
-/// The start of play: the controls run, the AI's activation centre is the
-/// player and its radius 40 m, and the camera starts at its preset. The
-/// player is spawned by the viewer; the first frame it exists is the start.
+/// The start of play: the controls run and the AI's activation centre is
+/// the player, its radius 40 m. The player is spawned by the viewer; the
+/// first frame it exists is the start.
 fn begin_play_session(
     mut session: ResMut<crate::player_controls::PlaySession>,
     players: Query<&Transform, Added<Player>>,
@@ -368,10 +363,7 @@ fn begin_play_session(
         return;
     };
     session.begin(at.translation);
-    info!(
-        "start of play: activation radius 40 m, camera at {:.0}",
-        session.zoom
-    );
+    info!("start of play: activation radius 40 m");
 }
 
 /// The end of play: the controls stop, the activation centre goes back to the

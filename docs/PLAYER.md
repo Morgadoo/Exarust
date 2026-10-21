@@ -515,6 +515,25 @@ drag pulls along the cursor direction by the nearest accepted hit, and that
 reach starts at 1000 cm. The grabbed box is refused when any placed corner
 is higher than 280 cm or lower than 1000 cm.
 
+### Using an item
+
+An item used on the world acts by its usable section's subtype: 8 pours a
+liquid that warms the character it is poured on by 0.2 (0.1 for a liquid of
+type 50, added in double precision), 14 pours one that marks the character
+and stamps an 1800 ms timer, 9 is a cleaning kit that takes an item's dirt
+byte down to 0x20, and 10 a repair kit that lowers its wear byte by 255
+over the material's rating step `(r + 5) / 10` (at least 1), never under
+zero. A kit's change runs over two seconds: the byte moves 0.0005 of its
+gap a millisecond (rounded to the nearest, ties to even), and the timed
+list drops an entry once it arrives by moving the last into its place
+(`player_controls::{poured, clean_to, repair_to, Timed, TimedList}`). Not
+in Exarust: the item cursor that would carry the item, and the dispatcher
+that picks the target.
+
+The start of play makes the AI's activation centre the player with a 40 m
+radius; the end of play puts it back at the origin with 200 m
+(`player_controls::PlaySession`; nothing in Exarust reads it yet).
+
 ### The reach
 
 A point is within reach when the point the pick hit is at most 245 cm high
@@ -529,11 +548,13 @@ right button does; a drag in hand is always within reach. The original
 keeps its walk latched after the right button's release until the player
 stops moving, but the release also sets the request's keys-walking bit,
 which measures the reach again, so the reach waits only while the button
-walks to the cursor, as in Exarust. Outside combat mode the cursor shows the pointer within reach and the
-cross beyond it. The player down, collapsing or dead lets go of everything
-and is out of reach. A sim object's point must also lie in the player's
-navigation region with nothing between: the grid's line walk from the feet
-stands in (`player_controls::Reach`, `hand::reach_hand`).
+walks to the cursor, as in Exarust. Outside combat mode the cursor shows
+the pointer within reach and the cross beyond it. The player down,
+collapsing or dead lets go of everything and is out of reach. Not in
+Exarust: the original's two further tests for everything but a door, that
+the point's grid-environment room is the player's or joined to it by an
+open portal (6 m cells), and that no flagged mesh of the environment lies
+along the pick ray.
 
 ### The hand
 
@@ -544,14 +565,13 @@ it was pressed by more than 2 pixels on either axis, or within the first
 press (20 pixels at once, nothing between 181 and 190 ms). A release before
 that is a **click**: outside combat mode it turns the player toward the
 cursor's point once that is farther than 70 cm (the heading takes the
-cursor's direction); it then names or uses what was clicked when **Ctrl**
-is held or the press is the second of a double click (within 300 ms and 2
-pixels): a lock
-with the player's key and its first unlock's 100 or 1000 experience, a
-container, a corpse's roles' scripts, the character screen, or a person to
-talk to (`player_controls::interact`). Out of reach, the click asks the
-body to walk to its stop first (`Steering::walk_to`). Exarust has no window,
-talk or script to open yet, so the action is logged.
+cursor's direction); the original then names what was clicked (an object's
+description card, the narrator's line for a lock it opened, the HUD for the
+player's own body, a corpse's roles' scripts), which Exarust cannot show
+yet. A double click (a second press within 450 ms and less than 2 pixels
+from the one before) opens containers, the player's own inventory, loots
+corpses and talks in the original, within reach only; Exarust has no window
+for them yet.
 
 A drag start does nothing while combat mode keeps the button for attacks
 (unless Ctrl is held or something is already held), while the point under
@@ -570,10 +590,9 @@ there:
   pass, with or without Ctrl.
 - A door, a wheel or a sim object (cloth) start their own drags in the
   original. Exarust's doors, wheels and cloth are not bodies under the hand,
-  so a press records the mode and its pick and the release ends it; the
-  drags' arithmetic (the door's 100 cm pull, the wheel's clamped turn, the
-  cloth's vertex grab) is modelled in `hand::{door_pull_anchor, wheel_turn,
-  cloth_vertex}`.
+  so a press only records the drag until the release; meanwhile, as in the
+  original, the keys and the right button keep the movement request and the
+  idle camera waits.
 - **Anything else** (a person, the level, a heavy prop) is refused until the
   release: the cursor shows the cross and the frame's movement request is
   left as it was.
