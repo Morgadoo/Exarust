@@ -824,7 +824,11 @@ lightning at rest until something sets them.
 (cm), `f32 yaw`, `i32 condition` (`0xA00` = dead, placed from its pose), then
 sub-chunks: `CAC0EB00` pose as a bone tree (per node a 3×4 matrix, a word
 and a child count), `CAC0E100` legacy flat bone matrices, `CAC0EA00` motion
-state, `CACE0F77` AI home (saves). `exanima01` places 39 characters, 8 of
+state, `CACE0F77` AI home (saves). A world-database character is created
+only in its own locale: the record's own id bit `0x40000000` set and its
+stored locale different from the level's `locales.rdb` id leaves it out
+(REA on the character section reader); a level's local records are always
+created. Exarust filters them when the level's locale resolves. `exanima01` places 39 characters, 8 of
 them corpses. Hostility comes from each record's roles in `charroles.rdb`.
 
 Character records (`0x00CDACvv`, the low byte the version; framed as tag +

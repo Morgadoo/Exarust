@@ -169,7 +169,7 @@ pub struct Worn {
 
 /// Resolves a level's placed characters: records from its own database,
 /// worn items from its local object database or the game's.
-fn placed_characters(scene: &Scene, global: &[Item]) -> Vec<PlacedCharacter> {
+fn placed_characters(scene: &Scene, global: &[Item], locale: Option<u32>) -> Vec<PlacedCharacter> {
     use exa_formats::characters::{ID_MASK, LOCAL_ITEM};
     let Some(chars) = &scene.characters else {
         return Vec::new();
@@ -179,6 +179,12 @@ fn placed_characters(scene: &Scene, global: &[Item]) -> Vec<PlacedCharacter> {
         .iter()
         .filter_map(|p| {
             let record = chars.record(p.id)?;
+            // A world-database character is created only in its own locale:
+            // the level's local records always are.
+            let world = p.id & 0x4000_0000 != 0 || record.id & 0x4000_0000 != 0;
+            if world && locale.is_some_and(|here| record.locale != here) {
+                return None;
+            }
             let find = |id: u32| -> Option<&Item> {
                 let items: &[Item] = if id & LOCAL_ITEM != 0 {
                     &scene.local_items
@@ -795,6 +801,8 @@ enum Stage {
 /// last the lighting.
 pub struct LevelLoad {
     entry: String,
+    /// The level's id in `locales.rdb`, when it has one.
+    locale: Option<u32>,
     scene: Scene,
     root: Entity,
     stage: Stage,
@@ -852,8 +860,14 @@ impl LevelLoad {
             ))
             .id();
         let props = scene.props.len();
+        let locale = loader
+            .game
+            .pack(PackKind::Resource)
+            .and_then(|p| p.get("locales.rdb"))
+            .and_then(|b| exa_formats::roles::locale_id(b, &entry));
         Some(Self {
             entry,
+            locale,
             scene,
             root,
             stage: Stage::Grid,
@@ -1169,7 +1183,7 @@ impl LevelLoad {
                 grid: self.grid_stats,
                 terrain: self.terrain_stats.clone(),
                 lighting,
-                characters: placed_characters(&self.scene, &self.global_items),
+                characters: placed_characters(&self.scene, &self.global_items, self.locale),
                 placed_objects: self.placed_objects,
                 missing_objects: self.missing_objects,
                 bodies: self.bodies,
@@ -1655,6 +1669,46 @@ mod tests {
         }
     }
 
+    /// A world-database character is created only in its own locale; a
+    /// level's local records always are. Without the level's locale nothing
+    /// is filtered.
+    #[test]
+    fn world_characters_wait_for_their_locale() {
+        let mut local = record(3, Vec::new());
+        local.locale = 9;
+        let mut elsewhere = record(0x4000_0004, Vec::new());
+        elsewhere.locale = 5;
+        let mut here = record(0x4000_0005, Vec::new());
+        here.locale = 2;
+        let scene = Scene {
+            version: 0,
+            nodes: Vec::new(),
+            materials: Vec::new(),
+            grid: None,
+            props: Vec::new(),
+            environment: None,
+            characters: Some(LevelCharacters {
+                records: vec![local, elsewhere, here],
+                placements: vec![placement(3), placement(0x4000_0004), placement(0x4000_0005)],
+            }),
+            local_items: Vec::new(),
+            local_strings: None,
+            local_string_error: None,
+            placed_objects: Vec::new(),
+            unknown_chunks: Vec::new(),
+            level_errors: Vec::new(),
+        };
+        let ids = |locale| {
+            placed_characters(&scene, &[], locale)
+                .iter()
+                .map(|c| c.record.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(Some(2)), [3, 0x4000_0005]);
+        assert_eq!(ids(Some(5)), [3, 0x4000_0004]);
+        assert_eq!(ids(None).len(), 3);
+    }
+
     #[test]
     fn placed_characters_wear_their_stored_items() {
         // The underwear has no ground model; quilted trousers show
@@ -1685,7 +1739,7 @@ mod tests {
             unknown_chunks: Vec::new(),
             level_errors: Vec::new(),
         };
-        let placed = placed_characters(&scene, &global);
+        let placed = placed_characters(&scene, &global, None);
         assert_eq!(placed.len(), 2);
         assert_eq!((placed[0].encumbrance, placed[1].encumbrance), (0.025, 0.0));
         let worn: Vec<&str> = placed[0].worn.iter().map(|w| w.model.as_str()).collect();

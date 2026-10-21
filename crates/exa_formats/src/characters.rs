@@ -882,7 +882,9 @@ pub struct LevelCharacters {
 
 impl LevelCharacters {
     pub fn record(&self, id: u32) -> Option<&CharacterRecord> {
-        self.records.iter().find(|r| r.id == id & ID_MASK)
+        // A placement and its record both carry the database bit in their
+        // ids; the low 28 bits are the record number.
+        self.records.iter().find(|r| r.id & ID_MASK == id & ID_MASK)
     }
 
     /// Parses a level's character section. Database entries that are not
