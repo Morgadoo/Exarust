@@ -41,22 +41,19 @@ impl Track {
         w - 2 * self.pad - self.span
     }
 
-    /// The value at a cursor x: `(cursor − x − pad − span/2) / travel`,
-    /// clamped to 0..1 and quantised to `steps` when positive. The clamp is
-    /// the original's ordered `0 ≤ f` / `1 < f` pair, so a NaN falls to 0.
+    /// The value at a cursor x: `(cursor − x − pad − span/2) / travel` in
+    /// double precision, then below 0 is 0 and above 1 is 1; a NaN (zero
+    /// travel) passes both, as the original's unordered compares let it.
+    /// With `steps` the value is quantised: `steps × f` rounded half to even
+    /// in 64 bits (a NaN to the indefinite integer), divided back in double
+    /// precision.
     pub fn value_at(self, x: i32, w: i32, cursor: i32, steps: i32) -> f32 {
         let num = cursor - x - self.pad - self.span / 2;
         let den = self.travel(w);
-        let mut f = (num as f64 / den as f64) as f32;
-        if 0.0 <= f {
-            if 1.0 < f {
-                f = 1.0;
-            }
-        } else {
-            f = 0.0;
-        }
+        // `f32::clamp` leaves a NaN alone, as the unordered compares do.
+        let mut f = ((num as f64 / den as f64) as f32).clamp(0.0, 1.0);
         if steps > 0 {
-            let q = (steps as f32 * f).round_ties_even() as i32;
+            let q = round_to_i64(steps as f32 * f);
             f = (q as f64 / steps as f64) as f32;
         }
         f
@@ -240,8 +237,10 @@ mod tests {
         assert!((t.value_at(0, 100, 61, 0) - 49.0 / 76.0).abs() < 1e-6);
         assert_eq!(t.value_at(0, 100, 0, 0), 0.0);
         assert_eq!(t.value_at(0, 100, 100, 0), 1.0);
-        // A zero travel makes 0/0; the ordered clamp sends NaN to 0.
-        assert_eq!(t.value_at(0, 24, 12, 0), 0.0);
+        // A zero travel makes 0/0, which passes both clamps; quantised, it
+        // rounds to the indefinite integer.
+        assert!(t.value_at(0, 24, 12, 0).is_nan());
+        assert_eq!(t.value_at(0, 24, 12, 4), (i64::MIN as f64 / 4.0) as f32);
         assert_eq!(t.value_at(0, 100, 61, 4), 0.75);
         assert_eq!(t.thumb_left(0, 100, 0.5), 40);
         assert_eq!(t.value_at(0, 100, 40 + 10, 0), 0.5);
@@ -347,7 +346,7 @@ pub fn align_label(
     };
     let ly = match style & 0x700 {
         0x100 => y - unit / 2,
-        0x300 => (line_h + h + 2) / 2 + y,
+        0x300 => ((line_h + h + 2) >> 1) + y,
         0x400 => y + h + base - 1,
         0x500 => y + h,
         _ => y + (unit + 1) / 2,
@@ -393,23 +392,41 @@ mod label_tests {
         assert_eq!(align_label(0, 100, 20, 2, 4, 0, 0, 16, 14, 0x300).y, 119);
         assert_eq!(align_label(0, 100, 20, 2, 4, 0, 0, 16, 14, 0x400).y, 133);
         assert_eq!(align_label(0, 100, 20, 2, 4, 0, 0, 16, 14, 0x500).y, 120);
+        // The centre's halving is a shift: −3 halves to −2.
+        assert_eq!(align_label(0, 0, -21, 2, 4, 0, 0, 16, 14, 0x300).y, -2);
         assert_eq!(align_label(0, 100, 20, 2, 4, 0, 0, 16, 14, 0).y, 102);
     }
 }
 
-/// The unit-derived text inset: `3 × unit | 1`, the value the original
-/// caches at start-up and adds to a control's border.
-pub fn text_inset(unit: i32) -> i32 {
+/// `CVTSS2SI` into 64 bits: rounds half to even; NaN and values outside
+/// the range give `i64::MIN`, the instruction's "integer indefinite". The
+/// controls convert this way and keep the low 32 bits where they want an
+/// `int`, so an indefinite result reads as 0 there.
+pub fn round_to_i64(value: f32) -> i64 {
+    let rounded = value.round_ties_even();
+    if rounded.is_nan() || rounded < i64::MIN as f32 || rounded >= 9.223_372e18 {
+        i64::MIN
+    } else {
+        rounded as i64
+    }
+}
+
+/// The spinner's button width, `3 × unit | 1`: the unit-change hook the
+/// unit installs (ahead of the previous hook, which it then calls) caches
+/// it for every spinner.
+pub fn spinner_button_width(unit: i32) -> i32 {
     (3 * unit) | 1
 }
 
-/// The extended control classes, in the order the unit registers them.
+/// An extended control class as the unit registers it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExtendedClass {
     pub id: u16,
     pub name: &'static str,
-    /// The record's default size (w, h).
+    /// The record's default size (w, h); 0 keeps the form's.
     pub size: (i32, i32),
+    /// Whether the class has a creation hook.
+    pub has_init: bool,
 }
 
 /// The text field class id.
@@ -435,63 +452,29 @@ pub const CAPTION: u16 = 25;
 /// The scroll bar class id.
 pub const SCROLL_BAR: u16 = 32;
 
-/// The eleven classes, in registration order.
+const fn class(id: u16, name: &'static str, size: (i32, i32), has_init: bool) -> ExtendedClass {
+    ExtendedClass {
+        id,
+        name,
+        size,
+        has_init,
+    }
+}
+
+/// The eleven classes, in registration order, with their records' default
+/// sizes and whether a creation hook is set.
 pub const EXTENDED_CLASSES: [ExtendedClass; 11] = [
-    ExtendedClass {
-        id: TEXT_FIELD,
-        name: "text field",
-        size: (80, 24),
-    },
-    ExtendedClass {
-        id: COMBO_BOX,
-        name: "combo box",
-        size: (80, 24),
-    },
-    ExtendedClass {
-        id: COLOUR_SWATCH,
-        name: "colour swatch",
-        size: (0, 24),
-    },
-    ExtendedClass {
-        id: SPINNER,
-        name: "spinner",
-        size: (60, 20),
-    },
-    ExtendedClass {
-        id: PROGRESS_BAR,
-        name: "progress bar",
-        size: (0, 24),
-    },
-    ExtendedClass {
-        id: SEPARATOR,
-        name: "separator",
-        size: (0, 3),
-    },
-    ExtendedClass {
-        id: IMAGE,
-        name: "image",
-        size: (0, 0),
-    },
-    ExtendedClass {
-        id: TEXTURE_VIEW,
-        name: "texture view",
-        size: (0, 0),
-    },
-    ExtendedClass {
-        id: TRACKBAR,
-        name: "trackbar",
-        size: (0, 28),
-    },
-    ExtendedClass {
-        id: CAPTION,
-        name: "caption",
-        size: (0, 20),
-    },
-    ExtendedClass {
-        id: SCROLL_BAR,
-        name: "scroll bar",
-        size: (0, 16),
-    },
+    class(TEXT_FIELD, "text field", (80, 24), true),
+    class(COMBO_BOX, "combo box", (80, 24), true),
+    class(COLOUR_SWATCH, "colour swatch", (0, 24), false),
+    class(SPINNER, "spinner", (60, 20), true),
+    class(PROGRESS_BAR, "progress bar", (0, 24), false),
+    class(SEPARATOR, "separator", (0, 3), false),
+    class(IMAGE, "image", (0, 0), false),
+    class(TEXTURE_VIEW, "texture view", (0, 0), false),
+    class(TRACKBAR, "trackbar", (0, 28), true),
+    class(CAPTION, "caption", (0, 20), false),
+    class(SCROLL_BAR, "scroll bar", (0, 16), true),
 ];
 
 /// The extended class with `id`.
@@ -509,618 +492,395 @@ pub fn combo_text_span(w: i32, pad: i32, unit: i32) -> i32 {
     text_span_b(w, pad, unit)
 }
 
-/// The spinner's usable span: `w − (3·unit|1) − 2·pad − 2·unit`.
+/// The spinner's usable span: `w − button − 2·pad − 2·unit`, the button
+/// [`spinner_button_width`].
 pub fn spinner_text_span(w: i32, pad: i32, unit: i32) -> i32 {
     text_span_c(w, pad, unit)
 }
 
-/// The trackbar's default height (`20` when the record gives none) and pad
-/// (`2`), set when the control is created.
-pub fn trackbar_defaults(height: i32) -> (i32, i32) {
-    (if height == 0 { 20 } else { height }, 2)
+/// The trackbar's creation hook: a knob width of 0 becomes 20, and the pad
+/// is 2. Returns `(span, pad)`.
+pub fn trackbar_defaults(span: i32) -> (i32, i32) {
+    (if span == 0 { DEFAULT_SPAN } else { span }, DEFAULT_PAD)
 }
 
-/// The scroll bar's pad (`2`), set when the control is created.
+/// The trackbar's knob width after the unit changes from `old_unit`:
+/// `unit × (span / old_unit)` in double precision, rounded half to even.
+pub fn trackbar_rescale(span: i32, old_unit: i32, unit: i32) -> i32 {
+    let scaled = f64::from(unit) * (f64::from(span) / f64::from(old_unit));
+    if scaled.is_nan() || scaled.abs() >= 9.2e18 {
+        0
+    } else {
+        scaled.round_ties_even() as i64 as i32
+    }
+}
+
+/// The scroll bar's creation hook sets its pad to 2.
 pub fn scrollbar_defaults() -> i32 {
-    2
+    DEFAULT_PAD
 }
 
-/// What a text field's key or pointer did.
+/// A text control's edit state: the selection anchor and caret, and the
+/// drawn run (`start` to `end`), all byte positions.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EditState {
+    pub anchor: u8,
+    pub caret: u8,
+    pub end: u8,
+    pub start: u8,
+}
+
+impl EditState {
+    /// Selects the whole text (the anchor at 0, the caret at the end), as
+    /// a control that gains the focus does.
+    pub fn select_all(&mut self, len: usize) {
+        self.anchor = 0;
+        self.caret = len as u8;
+    }
+
+    /// The reset message: the run starts at 0 and ends at the text's end,
+    /// with the anchor and caret there too.
+    pub fn reset(&mut self, len: usize) {
+        self.start = 0;
+        self.end = len as u8;
+        self.anchor = self.end;
+        self.caret = self.end;
+    }
+
+    /// The caret position under a pointer `x` already made relative to the
+    /// text's origin ([`align_label`]): walking the drawn run from `start`,
+    /// the first byte whose half advance (an unsigned shift) passes the
+    /// remaining offset, else `end`; below 1 is 0, and past the text's
+    /// length is its length. `advances` holds the font's per-byte widths.
+    pub fn hit(&self, text: &[u8], x: i32, advances: &[i16]) -> u8 {
+        let mut left = x;
+        let mut at = i32::from(self.end);
+        let mut index = i32::from(self.start);
+        while index < i32::from(self.end) {
+            let byte = text.get(index as usize).copied().unwrap_or(0);
+            let advance = advances.get(usize::from(byte)).copied().unwrap_or(0);
+            let half = ((i32::from(advance) as u32) >> 1) as i32;
+            if left < half {
+                at = index;
+                break;
+            }
+            left -= i32::from(advance);
+            index += 1;
+        }
+        let at = at.max(0) as usize;
+        at.min(text.len()) as u8
+    }
+}
+
+/// What a key does in a text field (its handler's key message). The
+/// editing itself belongs to the text edit unit the field calls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TextFieldEvent {
-    /// The key was swallowed.
-    None,
-    /// The text or the selection changed.
-    Changed,
-    /// Enter committed the text.
-    Submitted,
-    /// The field lost the selection or focus.
-    FocusLost,
-    /// The key asks for the on-screen keyboard.
-    Keyboard,
+pub enum TextFieldKey {
+    /// Enter with an owner callback: it is called with the "submitted" bit
+    /// set; with `release` the field also gives the focus up.
+    Submit { release: bool },
+    /// A digits-only field drops a typed byte that is not a digit.
+    Dropped,
+    /// An editable field passes the key to the text edit unit with its
+    /// length limit, then calls the owner when `notify`.
+    Edit { max_len: i32, notify: bool },
+    /// A read-only field passes the key to the text edit unit's moves only
+    /// (with a 255-byte limit).
+    Move,
 }
 
-/// A single-line text field: the bytes, the selection anchor and caret, the
-/// visible start and the maximum length. The editing rules are the text
-/// edit unit's, re-exposed for the controls that host one.
-#[derive(Debug, Clone, PartialEq)]
+/// The text field's style bits the key handler reads.
+pub mod text_style {
+    /// The bits that make a field editable (all three).
+    pub const EDITABLE: u32 = 0xd;
+    /// The owner is called after every edit.
+    pub const NOTIFY: u32 = 0x100_0000;
+    /// Enter gives the focus up.
+    pub const RELEASE: u32 = 0x200_0000;
+    /// Typed bytes must be digits.
+    pub const DIGITS: u32 = 0x400_0000;
+}
+
+/// The text field's key rule. `typed` is the message's "typed byte" flag;
+/// `has_callback` whether the owner gave one.
+pub fn text_field_key(style: u32, key: u32, typed: bool, has_callback: bool) -> TextFieldKey {
+    if key == 0x0d && has_callback {
+        return TextFieldKey::Submit {
+            release: style & text_style::RELEASE != 0,
+        };
+    }
+    if style & text_style::EDITABLE == text_style::EDITABLE {
+        let byte = key as u8;
+        if style & text_style::DIGITS != 0 && typed && !byte.is_ascii_digit() {
+            return TextFieldKey::Dropped;
+        }
+        return TextFieldKey::Edit {
+            max_len: 0,
+            notify: style & text_style::NOTIFY != 0 && has_callback,
+        };
+    }
+    TextFieldKey::Move
+}
+
+/// A single-line text field: its bytes, edit state and limit.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextField {
     pub text: Vec<u8>,
-    /// The selection anchor (0 to `text.len()`).
-    pub anchor: usize,
-    /// The caret (0 to `text.len()`).
-    pub caret: usize,
-    /// The first byte drawn.
-    pub view_start: usize,
-    /// The longest text the field accepts; the constructor turns 0 into
-    /// 255, as the original's init does.
-    pub max_len: usize,
-    pub editable: bool,
+    pub edit: EditState,
+    /// The longest text the field takes; creation turns 0 into 255.
+    pub max_len: i32,
+    pub style: u32,
 }
 
 impl TextField {
-    /// A field around `text`.
-    pub fn new(text: &[u8], max_len: usize, editable: bool) -> Self {
-        // The original's init turns a zero limit into 255.
-        let max_len = if max_len == 0 { 255 } else { max_len };
-        let text = text.to_vec();
-        let caret = text.len();
+    /// A field as created: a zero limit becomes 255.
+    pub fn new(text: &[u8], max_len: i32, style: u32) -> Self {
         Self {
-            text,
-            anchor: caret,
-            caret,
-            view_start: 0,
-            max_len,
-            editable,
+            text: text.to_vec(),
+            edit: EditState::default(),
+            max_len: if max_len == 0 { 255 } else { max_len },
+            style,
         }
     }
 
-    /// The selected byte range, low to high.
-    pub fn selection(&self) -> (usize, usize) {
-        if self.anchor <= self.caret {
-            (self.anchor, self.caret)
-        } else {
-            (self.caret, self.anchor)
+    /// The pointer-shape query: a text cursor that takes the focus.
+    pub const CURSOR: u32 = 0x801_0000;
+
+    /// A press places the caret under `x` (relative to the text origin).
+    pub fn press(&mut self, x: i32, advances: &[i16]) {
+        self.edit.caret = self.edit.hit(&self.text, x, advances);
+    }
+
+    /// A left press while the field's state is the drag state (`0x10000`)
+    /// also drops the anchor at the caret.
+    pub fn press_anchor(&mut self, x: i32, advances: &[i16]) {
+        self.press(x, advances);
+        self.edit.anchor = self.edit.caret;
+    }
+
+    /// A key: [`text_field_key`] with the field's own limit.
+    pub fn key(&self, key: u32, typed: bool, has_callback: bool) -> TextFieldKey {
+        match text_field_key(self.style, key, typed, has_callback) {
+            TextFieldKey::Edit { notify, .. } => TextFieldKey::Edit {
+                max_len: self.max_len,
+                notify,
+            },
+            TextFieldKey::Move => TextFieldKey::Move,
+            other => other,
         }
     }
 
-    /// Replaces the selection (or inserts at the caret) with `bytes`.
-    pub fn insert(&mut self, bytes: &[u8]) {
-        if !self.editable {
-            return;
+    /// The focus message: a field that has the focus selects all of it.
+    pub fn focus(&mut self, focused: bool) {
+        if focused {
+            self.edit.select_all(self.text.len());
         }
-        let (low, high) = self.selection();
-        if self.max_len != 0 {
-            let room = self.max_len.saturating_sub(self.text.len() - (high - low));
-            let take = bytes.len().min(room);
-            self.text.splice(low..high, bytes[..take].iter().copied());
-            self.caret = low + take;
-        } else {
-            self.text.splice(low..high, bytes.iter().copied());
-            self.caret = low + bytes.len();
-        }
-        self.anchor = self.caret;
-    }
-
-    /// Removes the selection, or the byte on `side` of the caret (`-1`
-    /// before, `1` after).
-    pub fn erase(&mut self, side: i32) {
-        if !self.editable {
-            return;
-        }
-        let (low, high) = self.selection();
-        if low != high {
-            self.text.drain(low..high);
-            self.caret = low;
-            self.anchor = low;
-            return;
-        }
-        if side < 0 && self.caret > 0 {
-            self.caret -= 1;
-            self.text.remove(self.caret);
-            self.anchor = self.caret;
-        } else if side > 0 && self.caret < self.text.len() {
-            self.text.remove(self.caret);
-            self.anchor = self.caret;
-        }
-    }
-
-    /// Handles a key. Printable bytes come as their Latin-1 code.
-    pub fn key(&mut self, key: i32, shift: bool) -> TextFieldEvent {
-        if !self.editable {
-            return TextFieldEvent::None;
-        }
-        match key {
-            13 => return TextFieldEvent::Submitted,
-            8 => {
-                self.erase(-1);
-                return TextFieldEvent::Changed;
-            }
-            46 => {
-                self.erase(1);
-                return TextFieldEvent::Changed;
-            }
-            37 => {
-                if self.caret > 0 {
-                    self.caret -= 1;
-                }
-                if !shift {
-                    self.anchor = self.caret;
-                }
-                return TextFieldEvent::Changed;
-            }
-            39 => {
-                if self.caret < self.text.len() {
-                    self.caret += 1;
-                }
-                if !shift {
-                    self.anchor = self.caret;
-                }
-                return TextFieldEvent::Changed;
-            }
-            36 => {
-                self.caret = 0;
-                if !shift {
-                    self.anchor = 0;
-                }
-                return TextFieldEvent::Changed;
-            }
-            35 => {
-                self.caret = self.text.len();
-                if !shift {
-                    self.anchor = self.caret;
-                }
-                return TextFieldEvent::Changed;
-            }
-            256 => return TextFieldEvent::Keyboard,
-            _ => {}
-        }
-        if (32..=255).contains(&key) {
-            self.insert(&[key as u8]);
-            return TextFieldEvent::Changed;
-        }
-        TextFieldEvent::None
-    }
-
-    /// Places the caret at `column`, as a press does: an anchor when not
-    /// dragging, a selection end when it is.
-    pub fn place(&mut self, column: usize, drag: bool) {
-        self.caret = column.min(self.text.len());
-        if !drag {
-            self.anchor = self.caret;
-        }
-    }
-
-    /// The byte column under `x`, from the text's own origin and advances.
-    pub fn hit(&self, x: i32, origin: i32, advances: &[i16]) -> usize {
-        let mut at = self.view_start.min(self.text.len());
-        let mut left = x - origin;
-        while at < self.text.len() {
-            let advance = advances
-                .get(usize::from(self.text[at]))
-                .copied()
-                .unwrap_or(1) as i32;
-            if left < advance / 2 {
-                break;
-            }
-            left -= advance;
-            at += 1;
-        }
-        at
-    }
-
-    /// The field's first visible byte when the caret moved past its span.
-    /// A guess: the original clips the text to the span and redraws, the
-    /// scrolled start is not traced.
-    pub fn scroll_to_caret(&mut self, origin: i32, span: i32, advances: &[i16]) {
-        let mut width = 0;
-        for &byte in &self.text[self.view_start.min(self.text.len())..self.caret] {
-            width += advances.get(usize::from(byte)).copied().unwrap_or(1) as i32;
-        }
-        while width > span && self.view_start < self.caret {
-            let byte = self.text[self.view_start];
-            width -= advances.get(usize::from(byte)).copied().unwrap_or(1) as i32;
-            self.view_start += 1;
-        }
-        let _ = origin;
     }
 }
 
-/// A drop-down list's placement under its combo box.
+/// The text field's inner frame, drawn after the skin when the style has
+/// any of the `0xf0` frame bits: from one pixel in at the left and two at
+/// the top to one in at the right and two at the bottom, as
+/// `(left, top, right, bottom)`.
+pub fn text_border(rect: (i32, i32, i32, i32), style: u32) -> Option<(i32, i32, i32, i32)> {
+    if style & 0xf0 == 0 {
+        return None;
+    }
+    let (x, y, w, h) = rect;
+    let (y, h) = (y + 1, h - 2);
+    Some((x + 1, y + 1, w + x - 1, h + y - 1))
+}
+
+/// A drop-down list's placement under its owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DropDownPlace {
     pub x: i32,
     pub y: i32,
     pub w: i32,
     pub h: i32,
-    pub row: i32,
-    pub count: i32,
+    /// The list was cut short and scrolls (its `0x200` style bit).
+    pub scrolls: bool,
 }
 
-/// A combo box: a selected item, its list and its open state.
-#[derive(Debug, Clone, PartialEq)]
+/// Places a drop-down list under its owner (the owner's rectangle in
+/// screen space). When the list's height `h` does not fit below, whole
+/// `row`s that fit (inside `2·pad`) are counted below and above: with
+/// fewer than six below and fewer than half again as many as above, it
+/// opens above with the rows above, else it is cut to the rows below.
+/// Either cut that is shorter than `h` scrolls. The half is the unsigned
+/// shift of the row count, as the original's (a negative count halves to
+/// a huge number).
+pub fn drop_down_place(
+    owner: (i32, i32, i32, i32),
+    h: i32,
+    pad: i32,
+    row: i32,
+    screen_h: i32,
+) -> DropDownPlace {
+    let (x, top, w, owner_h) = owner;
+    let mut place = DropDownPlace {
+        x,
+        y: owner_h + top,
+        w,
+        h,
+        scrolls: false,
+    };
+    let space = screen_h - place.y;
+    if space < place.h && row != 0 {
+        let below = (i64::from(space) - i64::from(pad << 1)) / i64::from(row);
+        let above = ((i64::from(top) - i64::from(pad << 1)) / i64::from(row)) as i32;
+        let half = (((below as u64) >> 1) as u32 & 0x7fff_ffff) as i64;
+        let below32 = below as i32;
+        if below32 < 6 && i64::from(below32) + half < i64::from(above) {
+            let cut = above * row + pad * 2;
+            if cut < place.h {
+                place.scrolls = true;
+                place.h = cut;
+            }
+            place.y = top - place.h;
+        } else {
+            let cut = below32 * row + pad * 2;
+            if cut < place.h {
+                place.scrolls = true;
+            }
+            place.h = cut;
+        }
+    }
+    place
+}
+
+/// A combo box: its items, the 1-based selected one and its text limit.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComboBox {
     pub items: Vec<Vec<u8>>,
-    /// The selected item, 1-based; 0 is none.
     pub selected: i32,
-    pub open: bool,
-    pub max_len: usize,
+    pub max_len: i32,
+    pub text: Vec<u8>,
 }
 
 impl ComboBox {
-    pub fn new(items: Vec<Vec<u8>>, selected: i32) -> Self {
-        Self {
+    /// A combo box as created: the selected item's text, a zero limit
+    /// turned into 255.
+    pub fn new(items: Vec<Vec<u8>>, selected: i32, max_len: i32) -> Self {
+        let mut combo = Self {
             items,
             selected,
-            open: false,
-            max_len: 255,
+            max_len: if max_len == 0 { 255 } else { max_len },
+            text: Vec::new(),
+        };
+        if let Some(item) = combo.item(selected) {
+            combo.text = item.to_vec();
         }
+        combo
     }
 
-    /// The selected item's bytes, empty when none is selected.
-    pub fn text(&self) -> &[u8] {
-        usize::try_from(self.selected)
-            .ok()
-            .and_then(|at| at.checked_sub(1))
-            .and_then(|at| self.items.get(at))
-            .map(|text| &text[..text.len().min(self.max_len)])
-            .unwrap_or(&[])
+    fn item(&self, selected: i32) -> Option<&[u8]> {
+        let at = usize::try_from(selected).ok()?.checked_sub(1)?;
+        self.items.get(at).map(Vec::as_slice)
     }
 
-    /// Selects a 1-based item, clamped to the list; returns whether it
-    /// changed.
-    pub fn choose(&mut self, item: i32) -> bool {
-        if self.items.is_empty() {
+    /// The set message: 0 (or an empty list) clears the text and reports
+    /// nothing; otherwise the item, capped at the last, becomes the text,
+    /// cut to the limit, and the owner is told (unless the caller asked for
+    /// quiet). Returns whether it took an item.
+    pub fn choose(&mut self, item: u32) -> bool {
+        if item == 0 || self.items.is_empty() {
+            self.text.clear();
             return false;
         }
-        let chosen = item.clamp(1, self.items.len() as i32);
-        if chosen == self.selected {
-            return false;
-        }
-        self.selected = chosen;
+        let count = self.items.len() as i64;
+        self.selected = if i64::from(item) > count {
+            count as i32
+        } else {
+            item as i32
+        };
+        let mut text = self.item(self.selected).unwrap_or(&[]).to_vec();
+        text.truncate(usize::try_from(self.max_len).unwrap_or(0));
+        self.text = text;
         true
     }
+}
 
-    /// Opens the list under `rect`; `None` for an empty list.
-    pub fn open_below(
-        &mut self,
-        rect: (i32, i32, i32, i32),
-        metrics: ListMetrics,
-        window_h: i32,
-    ) -> Option<DropDownPlace> {
-        if self.items.is_empty() {
-            return None;
-        }
-        let count = self.items.len() as i32;
-        let extent = list_extent(metrics, count);
-        let row = metrics.row();
-        let mut y = rect.1 + rect.3 + 1;
-        if y + extent.height > window_h {
-            // Guess: the list flips above when it would leave the window.
-            y = rect.1 - extent.height;
-        }
-        self.open = true;
-        Some(DropDownPlace {
-            x: rect.0,
-            y,
-            w: rect.2,
-            h: extent.height,
-            row,
-            count,
-        })
+/// The combo box's pointer-shape query: an editable box shows the text
+/// cursor left of its arrow (`x < left + w − (4·unit|1) − pad`), else none.
+pub fn combo_cursor(style: u32, x: u32, rect: (i32, i32, i32, i32), pad: i32, unit: i32) -> u32 {
+    let limit =
+        i64::from(rect.0) + (i64::from(rect.2) - i64::from((4 * unit) | 1)) - i64::from(pad);
+    if style & text_style::EDITABLE == text_style::EDITABLE && i64::from(x) < limit {
+        0x802_0000
+    } else {
+        0
     }
 }
 
-/// A numeric spinner's state.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Spinner {
-    pub value: f32,
-    pub min: f32,
-    pub max: f32,
-    pub step: f32,
-    /// Digits after the point; 0 with `integer` formats as an integer.
-    pub precision: i32,
-    /// The control's style bit stores an integer rather than a float.
-    pub integer: bool,
-    /// The edit is in progress (the caret is in the text zone).
-    pub editing: bool,
-}
-
-impl Default for Spinner {
-    fn default() -> Self {
-        Self {
-            value: 0.0,
-            min: 0.0,
-            max: 0.0,
-            step: 0.0,
-            precision: 0,
-            integer: false,
-            editing: false,
-        }
-    }
-}
-
-/// What setting a spinner's value did.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SpinnerSet {
-    pub changed: bool,
-    /// The text named a value outside the range and was clamped.
-    pub clamped: bool,
-}
-
-/// A spinner's text zone or one of its two step halves.
+/// What a combo box's left press does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpinnerPart {
-    Text,
-    Up,
-    Down,
+pub enum ComboPress {
+    /// The box is in its edit state (`0x20000`): the press drops the
+    /// anchor at the caret.
+    Edit,
+    /// Otherwise the press opens the drop-down list.
+    Open,
 }
 
-impl Spinner {
-    /// The init rule: a zero step becomes 1, a zero maximum 100, and a
-    /// value under the minimum is raised to it.
-    pub fn init(&mut self) {
-        if self.step == 0.0 {
-            self.step = 1.0;
-        }
-        if self.max == 0.0 {
-            self.max = 100.0;
-        }
-        if self.value < self.min {
-            self.value = self.min;
-        }
-    }
-
-    /// Sets the value from a typed number with the original's ordered
-    /// clamp: `min ≤ v ≤ max`, a NaN falling to the minimum.
-    pub fn set(&mut self, value: f32, report: bool) -> SpinnerSet {
-        let mut v = value;
-        if self.min <= v {
-            if self.max <= v && v != self.max {
-                v = self.max;
-            }
-        } else {
-            v = self.min;
-        }
-        let changed = (v - self.value).abs() > 1e-8;
-        let clamped = v != value;
-        if changed {
-            self.value = v;
-        }
-        let _ = report;
-        SpinnerSet { changed, clamped }
-    }
-
-    /// Steps the value up or down by one step, clamped to the range.
-    pub fn step(&mut self, up: bool) -> bool {
-        let next = if up {
-            self.value + self.step
-        } else {
-            self.value - self.step
-        };
-        let mut v = next;
-        if self.min <= v {
-            if self.max <= v && v != self.max {
-                v = self.max;
-            }
-        } else {
-            v = self.min;
-        }
-        if v != self.value {
-            self.value = v;
-            true
-        } else {
-            false
-        }
-    }
-
-    /// The shown text: the value with the configured digits.
-    pub fn text(&self) -> String {
-        if self.integer {
-            format!("{}", self.value as i32)
-        } else {
-            format!("{:.*}", self.precision.max(0) as usize, self.value)
-        }
-    }
-
-    /// The part under (`x`, `y`) within `rect` and `span` (the usable text
-    /// width).
-    pub fn part(&self, x: i32, y: i32, rect: (i32, i32, i32, i32), span: i32) -> SpinnerPart {
-        if x < rect.0 + rect.2 - span {
-            SpinnerPart::Text
-        } else if y < rect.1 + rect.3 / 2 {
-            SpinnerPart::Up
-        } else {
-            SpinnerPart::Down
-        }
-    }
-}
-
-/// The spinner's auto-repeat pixel step: `round(unit × 96 / ((max − min) /
-/// step))`, clamped to `unit/2 .. 8·unit`.
-pub fn spinner_repeat_step(unit: i32, min: f32, max: f32, step: f32) -> i32 {
-    let range = (max - min) / step;
-    let raw = unit as f32 * 96.0 / range;
-    if raw.is_nan() {
-        unit / 2
+/// The combo box's left-press rule, from its state bits (`0xf0000`).
+pub fn combo_press(state: u32) -> ComboPress {
+    if state & 0xf_0000 == 0x2_0000 {
+        ComboPress::Edit
     } else {
-        (raw.round_ties_even() as i32).clamp(unit / 2, unit * 8)
+        ComboPress::Open
     }
 }
 
-/// A progress bar's state.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ProgressBar {
-    pub value: f32,
-    pub min: f32,
-    pub max: f32,
-    pub step: f32,
-    pub precision: i32,
-    pub integer: bool,
-}
-
-impl Default for ProgressBar {
-    fn default() -> Self {
-        Self {
-            value: 0.0,
-            min: 0.0,
-            max: 0.0,
-            step: 0.0,
-            precision: 0,
-            integer: false,
-        }
+/// The combo box's arrow origin: `(4·unit|1) − unit/2 + 1` in from the
+/// right edge and `(unit + 1) − (unit & 1)` down; no arrow with the style's
+/// `0x8000000` bit.
+pub fn combo_arrow(rect: (i32, i32, i32, i32), unit: i32, style: u32) -> Option<(i32, i32)> {
+    if style & 0x800_0000 != 0 {
+        return None;
     }
+    let width = (((4 * unit) | 1) - (unit >> 1)) + 1;
+    let height = (unit + 1) - (unit & 1);
+    Some((rect.2 + rect.0 - width, height + rect.1))
 }
 
-impl ProgressBar {
-    /// The init rule: a zero step becomes 1, a zero maximum 100, a value
-    /// under the minimum raised to it.
-    pub fn init(&mut self) {
-        if self.step == 0.0 {
-            self.step = 1.0;
-        }
-        if self.max == 0.0 {
-            self.max = 100.0;
-        }
-        if self.value < self.min {
-            self.value = self.min;
-        }
-    }
-
-    /// Sets the value; a negative value becomes zero (NaN stays, as the
-    /// original's ordered test leaves it).
-    pub fn set(&mut self, value: f32) -> bool {
-        let mut v = value;
-        if v < 0.0 {
-            v = 0.0;
-        }
-        if v != self.value {
-            self.value = v;
-            true
-        } else {
-            false
-        }
-    }
-
-    /// The shown text: the value times a hundred, one digit, then `%`.
-    pub fn text(&self) -> String {
-        // The original formats this text with a fixed one digit.
-        format!("{:.1}%", self.value * 100.0)
-    }
-
-    /// The filled width: `round(width × value)`.
-    pub fn fill(&self, width: i32) -> i32 {
-        (width as f32 * self.value).round_ties_even() as i32
-    }
-}
-
-/// The separator's gap when it carries text: one line height a byte.
-pub fn separator_gap(font_height: i32, text_len: i32) -> i32 {
-    font_height.saturating_mul(text_len)
-}
-
-/// The separator's line rectangles. Text leaves a gap at the centre, or at
-/// the right when the alignment's 0x2000 bit is set.
-pub fn separator_lines(
-    rect: (i32, i32, i32, i32),
-    gap: i32,
-    right: bool,
-    unit: i32,
-) -> Vec<(i32, i32, i32, i32)> {
-    let (x, y, w, h) = rect;
-    if gap <= 0 {
-        return vec![(x, y, w, h)];
-    }
-    if right {
-        // The line keeps its right edge and starts after the gap and a unit.
-        return vec![(x + gap + unit, y, w - gap - unit, h)];
-    }
-    let first = (w - gap) / 2 - 1;
-    vec![(x, y, first, h), (x + w - first, y, first, h)]
-}
-
-/// An image view: the normalised point picked by a press.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ImagePick {
-    pub u: f32,
-    pub v: f32,
-}
-
-/// The image's inset rectangle.
-pub fn image_rect(rect: (i32, i32, i32, i32), pad: i32) -> (i32, i32, i32, i32) {
-    (
-        rect.0 + pad,
-        rect.1 + pad,
-        rect.2 - 2 * pad,
-        rect.3 - 2 * pad,
-    )
-}
-
-/// The normalised point under a press in an image view. `u` is across,
-/// `v` is up (the original measures from the bottom), both clamped to 0..1
-/// with NaN falling to 0.
-pub fn image_pick(rect: (i32, i32, i32, i32), pad: i32, x: i32, y: i32) -> ImagePick {
-    let inner_w = rect.2 - pad;
-    let inner_h = rect.3 - pad;
-    let clamp = |value: f32| {
-        if 0.0 <= value {
-            if 1.0 < value { 1.0 } else { value }
-        } else {
-            0.0
-        }
-    };
-    let u = if inner_w == 0 {
-        f32::NAN
-    } else {
-        (x - rect.0 - pad) as f32 / inner_w as f32
-    };
-    let v = if inner_h == 0 {
-        f32::NAN
-    } else {
-        1.0 - (y - rect.1 - pad) as f32 / inner_h as f32
-    };
-    ImagePick {
-        u: clamp(u),
-        v: clamp(v),
-    }
-}
-
-/// A texture view's centred rectangle for a texture of `tex` within `rect`
-/// and `pad`.
-pub fn texture_rect(
-    rect: (i32, i32, i32, i32),
-    _pad: i32,
-    tex: (i32, i32),
-) -> (i32, i32, i32, i32) {
-    (
-        rect.0 + (rect.2 - tex.0) / 2,
-        rect.1 + (rect.3 - tex.1) / 2,
-        tex.0,
-        tex.1,
-    )
-}
-
-/// A caption's alignment: the original draws its text with vertical style
-/// 0x300 (a line centred in the box) and the horizontal style's own bit.
-pub fn caption_align(style: u32) -> u32 {
-    (style & 0x7000) | 0x300
-}
-
-/// A colour swatch's press result.
+/// What a colour swatch's left press does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SwatchPress {
     Ignored,
-    /// The owner's callback.
+    /// The owner's callback (result 1).
     Callback,
-    /// Open the colour picker (the original's 0x105 result).
-    Picker,
+    /// A colour drag starts (result `0x105`).
+    Drag(ColourDrag),
 }
 
-/// The colour swatch's press rule: the picker bit opens the picker, the
-/// callback bit calls the owner, anything else does nothing.
-pub fn swatch_press(flags: u32) -> SwatchPress {
+/// The colour drag's payload code.
+pub const COLOUR_DRAG_CODE: u32 = 0xcd0c;
+
+/// The colour a swatch drags: the colour, the press's offset into the
+/// swatch and the swatch's inner size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColourDrag {
+    pub colour: u32,
+    pub offset: (i32, i32),
+    pub size: (i32, i32),
+}
+
+/// The swatch's left press: with the `0x4000` modifier bit the colour is
+/// dragged; else with `0x2000` the owner is called; else nothing.
+pub fn swatch_press(
+    flags: u32,
+    colour: u32,
+    press: (i32, i32),
+    rect: (i32, i32, i32, i32),
+    pad: i32,
+) -> SwatchPress {
     if flags & 0x4000 != 0 {
-        SwatchPress::Picker
+        SwatchPress::Drag(ColourDrag {
+            colour,
+            offset: (press.0 - rect.0, press.1 - rect.1),
+            size: (rect.2 - pad * 2, rect.3 - pad * 2),
+        })
     } else if flags & 0x2000 != 0 {
         SwatchPress::Callback
     } else {
@@ -1128,41 +888,452 @@ pub fn swatch_press(flags: u32) -> SwatchPress {
     }
 }
 
-/// The colour drag's payload code.
-pub const COLOUR_DRAG_CODE: u32 = 0xcd0c;
-
-/// Whether a drag asking for `code` is accepted: true for the colour code.
+/// Whether a swatch accepts a dragged payload: the colour code only.
 pub fn swatch_accepts(code: u32) -> bool {
     code == COLOUR_DRAG_CODE
 }
 
-/// A scroll bar's thumb: its width (`4 × unit + 1`) and left offset.
+/// The dragged colour's rectangle under the cursor, drawn at alpha `0xa0`.
+pub fn colour_drag_rect(cursor: (i32, i32), drag: &ColourDrag) -> (i32, i32, i32, i32) {
+    (
+        cursor.0 - drag.offset.0,
+        cursor.1 - drag.offset.1,
+        drag.size.0,
+        drag.size.1,
+    )
+}
+
+/// A numeric spinner: its value, range and step, in float or (with the
+/// integer style) 32-bit integer form.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Spinner {
+    pub value: f32,
+    pub min: f32,
+    pub max: f32,
+    pub step: f32,
+    pub integer: bool,
+    /// The typed text no longer shows the value (the `0x40000000` bit).
+    pub dirty: bool,
+}
+
+impl Spinner {
+    /// The creation hook: a zero step becomes 1 (1.0, or the integer 1),
+    /// a zero maximum becomes 100.0 (written as a float even for an integer
+    /// spinner, whose maximum then reads as `0x42c80000`), and a float
+    /// value under the minimum rises to it.
+    pub fn init(&mut self) {
+        if self.step == 0.0 {
+            self.step = if self.integer { f32::from_bits(1) } else { 1.0 };
+        }
+        if self.max == 0.0 {
+            self.max = 100.0;
+        }
+        if !self.integer && self.value < self.min {
+            self.value = self.min;
+        }
+    }
+
+    /// Commits a typed float: below the minimum takes the minimum, above
+    /// the maximum the maximum, NaN neither (the ordered compares skip
+    /// it). Unless `reformat`, a value the clamp moved marks the text
+    /// dirty. The value changes when it moves by more than 1e-8 (in double
+    /// precision), so a NaN never lands. Returns whether it changed.
+    pub fn commit(&mut self, typed: f32, reformat: bool) -> bool {
+        let mut value = typed;
+        if value < self.min {
+            value = self.min;
+        } else if value > self.max {
+            value = self.max;
+        }
+        if !reformat && value != typed {
+            self.dirty = true;
+        }
+        if f64::from((value - self.value).abs()) > 1e-8 {
+            self.value = value;
+            return true;
+        }
+        false
+    }
+}
+
+/// Where a spinner's left press lands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpinnerPress {
+    /// In the text with the `0x8000` modifier: select all.
+    SelectAll,
+    /// In the text: the anchor drops at the caret (result `0x15`).
+    Anchor,
+    /// The upper half of the buttons steps up (result `0x1f`).
+    Up,
+    /// The lower half steps down.
+    Down,
+}
+
+/// The spinner's press rule: left of the button column is the text; the
+/// buttons split at half the height (an unsigned shift).
+pub fn spinner_press(
+    rect: (i32, i32, i32, i32),
+    button: i32,
+    x: i32,
+    y: i32,
+    flags: u32,
+) -> SpinnerPress {
+    let (left, top, w, h) = rect;
+    if i64::from(x) < i64::from(left) + i64::from(w) - i64::from(button) {
+        if flags & 0x8000 != 0 {
+            SpinnerPress::SelectAll
+        } else {
+            SpinnerPress::Anchor
+        }
+    } else if i64::from(y) - i64::from(top) < i64::from(((h as u32) >> 1) as i32) {
+        SpinnerPress::Up
+    } else {
+        SpinnerPress::Down
+    }
+}
+
+/// The spinner's pointer-shape query: the text cursor over the text (that
+/// takes the focus when editable), else the up or down button's.
+/// The message's `x` and `y` are unsigned, as the original compares them.
+pub fn spinner_cursor(rect: (i32, i32, i32, i32), button: i32, style: u32, x: u32, y: u32) -> u32 {
+    let (left, top, w, h) = rect;
+    if i64::from(x) < i64::from(left) + i64::from(w) - i64::from(button) {
+        if style & text_style::EDITABLE == text_style::EDITABLE {
+            0x801_0000
+        } else {
+            0x1_0000
+        }
+    } else if i64::from(y) < i64::from(((h as u32) >> 1) as i32) + i64::from(top) {
+        0x2_0000
+    } else {
+        0x4_0000
+    }
+}
+
+/// What a key does in a spinner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpinnerKey {
+    /// A typed byte the filter drops.
+    Dropped,
+    /// A typed dot over the dot at the anchor steps the anchor and caret
+    /// past it instead.
+    SkipDot,
+    /// Up (`0x26`) adds a step, Down (`0x28`) takes one.
+    Step(bool),
+    /// Enter reformats a dirty text, commits and selects all.
+    Commit,
+    /// Anything else goes to the text edit unit (255 bytes), marks the
+    /// text edited and, with the style's `0x2000000` bit, commits at once.
+    Edit {
+        commit: bool,
+    },
+    /// Ctrl+V pastes (32 bytes at most), Ctrl+C copies.
+    Paste,
+    Copy,
+    /// Other control keys.
+    Ignored,
+}
+
+/// The spinner's key rule. `flags` holds the message's modifier bits:
+/// `0x40` Ctrl, `0x80` Alt, `2` a typed byte. A typed byte passes only as
+/// a digit, a dot, or a minus while the anchor or the caret is at 0.
+pub fn spinner_key(text: &[u8], edit: EditState, style: u32, key: u32, flags: u32) -> SpinnerKey {
+    let typed = flags & 2 != 0;
+    if flags & 0x40 != 0 && !typed {
+        return match key {
+            0x56 => SpinnerKey::Paste,
+            0x43 => SpinnerKey::Copy,
+            _ => SpinnerKey::Ignored,
+        };
+    }
+    if flags & 0xc0 != 0 {
+        return SpinnerKey::Ignored;
+    }
+    if typed {
+        match key as u8 {
+            b'.' => {
+                let at = usize::from(edit.anchor);
+                if at < text.len() && text[at] == b'.' {
+                    return SpinnerKey::SkipDot;
+                }
+            }
+            b'-' => {
+                if edit.anchor != 0 && edit.caret != 0 {
+                    return SpinnerKey::Dropped;
+                }
+            }
+            byte if !byte.is_ascii_digit() => return SpinnerKey::Dropped,
+            _ => {}
+        }
+    }
+    match key {
+        0x26 => SpinnerKey::Step(true),
+        0x28 => SpinnerKey::Step(false),
+        0x0d => SpinnerKey::Commit,
+        _ => SpinnerKey::Edit {
+            commit: style & 0x200_0000 != 0,
+        },
+    }
+}
+
+/// The spinner's drag step in pixels: `96·unit / ((max − min) / step)`
+/// rounded half to even (in 64 bits, keeping the low 32), at most
+/// `8·unit`, then at least `unit / 2`; a NaN or infinite quotient rounds to
+/// the indefinite integer, whose low half 0 lands on the floor.
+pub fn spinner_repeat_step(unit: i32, min: f32, max: f32, step: f32) -> i32 {
+    let mut pixels = round_to_i64((96 * unit) as f32 / ((max - min) / step)) as i32;
+    if unit << 3 < pixels {
+        pixels = unit << 3;
+    }
+    if pixels < unit >> 1 {
+        pixels = unit >> 1;
+    }
+    pixels
+}
+
+/// The spinner's drawn parts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpinnerButtons {
+    /// The field's frame: left, top, right, bottom.
+    pub field: (i32, i32, i32, i32),
+    /// The up and down buttons: left, top, width, height.
+    pub up: (i32, i32, i32, i32),
+    pub down: (i32, i32, i32, i32),
+    /// The arrows' origins and width (`(unit − 1)·2 | 1`).
+    pub up_arrow: (i32, i32),
+    pub down_arrow: (i32, i32),
+    pub arrow_width: i32,
+}
+
+/// Lays a spinner's draw out: the field up to the button column, two
+/// buttons of half the height plus an overlap (1, or 2 from a unit of 5)
+/// starting that overlap above the top, and the arrows `(unit + 1) / 2`
+/// into each.
+pub fn spinner_buttons(rect: (i32, i32, i32, i32), button: i32, unit: i32) -> SpinnerButtons {
+    let (x, y, w, h) = rect;
+    let overlap = if unit < 5 { 1 } else { 2 };
+    let half = (((h as u32) >> 1) as i32) + overlap;
+    let column = x + w - button;
+    let inset = (unit + 1) >> 1;
+    SpinnerButtons {
+        field: (x, y, column, h + y),
+        up: (column, y - overlap, button, half),
+        down: (column, (y + half) - overlap, button, half),
+        up_arrow: (column, y + inset),
+        down_arrow: (column, y + half + inset),
+        arrow_width: ((unit - 1) * 2) | 1,
+    }
+}
+
+/// A progress bar's value (a fraction, shown as a percentage).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ProgressBar {
+    pub value: f32,
+}
+
+impl ProgressBar {
+    /// The set message: a negative value becomes 0 (−0 and NaN stay, by
+    /// the original's `≤ 0 and ≠ 0` test); the owner is told every time.
+    pub fn set(&mut self, value: f32) {
+        // The original's `≤ 0 and ≠ 0` is a plain `< 0`.
+        self.value = if value < 0.0 { 0.0 } else { value };
+    }
+
+    /// The caption: the value times a hundred with one decimal, then `%`.
+    /// The number formatter is outside the evidence; Rust's fixed-point
+    /// formatting stands in for it.
+    pub fn text(&self) -> String {
+        format!("{:.1}%", self.value * 100.0)
+    }
+
+    /// The filled width: `w × value`, rounded half to even.
+    pub fn fill(&self, w: i32) -> i32 {
+        round_to_i64(w as f32 * self.value) as i32
+    }
+
+    /// The caption draws only on a bar taller than five units.
+    pub fn shows_text(h: i32, unit: i32) -> bool {
+        i64::from(unit) * 5 < i64::from(h)
+    }
+}
+
+/// A progress bar's drawn rectangles, each left, top, right, bottom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProgressRects {
+    /// The empty part (drawn at 0.4 alpha), when the fill is short of the
+    /// width.
+    pub rest: Option<(i32, i32, i32, i32)>,
+    /// The filled bar and its highlight, when the fill is positive.
+    pub bar: Option<(i32, i32, i32, i32)>,
+    pub highlight: Option<(i32, i32, i32, i32)>,
+}
+
+/// Lays a progress bar's draw out from its fill ([`ProgressBar::fill`]).
+pub fn progress_rects(rect: (i32, i32, i32, i32), pad: i32, fill: i32) -> ProgressRects {
+    let (x, y, w, h) = rect;
+    ProgressRects {
+        rest: (fill < w).then_some((fill + x - 1, y + 1, w + x - 1, h + y - 1)),
+        bar: (fill > 0).then_some((
+            pad + x + 2,
+            pad + y + 2,
+            (x + fill) - pad - 2,
+            (h + y) - pad - 2,
+        )),
+        highlight: (fill > 0).then_some((
+            pad + x + 1,
+            pad + y + 1,
+            (x + fill) - pad - 1,
+            (y + h) - pad - 1,
+        )),
+    }
+}
+
+/// The separator's text gap: the font's character width (its `0x18`
+/// metric) times the text's length.
+pub fn separator_gap(char_width: i32, text_len: i32) -> i32 {
+    char_width.wrapping_mul(text_len)
+}
+
+/// The separator's line rectangles (left, top, width, height). With no
+/// text the line spans the control, raised by half its height (an unsigned
+/// shift), or with a positive line count `lines` lowered by half of
+/// `unit × lines`. With text, a right-aligned (`0x2000`) separator keeps
+/// only the part right of the text and a unit; any other leaves the text
+/// in the middle, each side `(w − gap) / 2 − 1`.
+pub fn separator_lines(
+    rect: (i32, i32, i32, i32),
+    gap: i32,
+    style: u32,
+    unit: i32,
+    lines: i32,
+) -> Vec<(i32, i32, i32, i32)> {
+    let (x, y, w, h) = rect;
+    if gap < 1 {
+        let top = if lines < 1 {
+            y - ((h as u32) >> 1) as i32
+        } else {
+            (((i64::from(unit) * i64::from(lines)) as u64 >> 1) as i32) + y
+        };
+        return vec![(x, top, w, h)];
+    }
+    if style & 0x7000 == 0x2000 {
+        let width = (w - gap) - unit;
+        return vec![((x + w) - width, y, width, h)];
+    }
+    let width = ((((i64::from(w) - i64::from(gap)) as u64) >> 1) as i32) - 1;
+    vec![(x, y, width, h), ((x + w) - width, y, width, h)]
+}
+
+/// The separator, image and caption pointer query result that lets
+/// presses through to what is under them.
+pub const PASS_THROUGH: u32 = 0x80_0000;
+
+/// An image view's picked point: across, and up from the bottom.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImagePick {
+    pub u: f32,
+    pub v: f32,
+}
+
+/// The point a drag over an image view picks. `x` and `y` are the
+/// message's coordinates, from which only the pad is taken (the original
+/// does not take the control's origin off); each fraction is divided in
+/// double precision by the size less one pad, `v` turned to count up, and
+/// clamped below 0 and above 1. A NaN (a zero extent with a zero offset)
+/// passes both clamps.
+pub fn image_pick(w: i32, h: i32, pad: i32, x: i32, y: i32) -> ImagePick {
+    // `f32::clamp` leaves a NaN alone, as the unordered compares do.
+    let clamp = |value: f32| value.clamp(0.0, 1.0);
+    let u = (f64::from(x - pad) / f64::from(w - pad)) as f32;
+    let v = (1.0 - f64::from(y - pad) / f64::from(h - pad)) as f32;
+    ImagePick {
+        u: clamp(u),
+        v: clamp(v),
+    }
+}
+
+/// The image's inset rectangle (the pad in from each side), where the
+/// image and its fading shade draw.
+pub fn image_rect(rect: (i32, i32, i32, i32), pad: i32) -> (i32, i32, i32, i32) {
+    (
+        rect.0 + pad,
+        pad + rect.1,
+        rect.2 - pad * 2,
+        rect.3 - pad * 2,
+    )
+}
+
+/// Where a texture view draws its texture's frame: centred by the
+/// texture's cell size, each half truncated toward zero.
+pub fn texture_origin(rect: (i32, i32, i32, i32), cell: i32) -> (i32, i32) {
+    (rect.0 + (rect.2 - cell) / 2, rect.1 + (rect.3 - cell) / 2)
+}
+
+/// A caption's draw and pointer rules.
+pub mod caption {
+    /// The skin draws behind the caption only with a frame bit (`0xf0`).
+    pub fn draws_back(style: u32) -> bool {
+        style & 0xf0 != 0
+    }
+
+    /// The text wraps over lines with either `0x3000` bit.
+    pub fn wraps(style: u32) -> bool {
+        style & 0x3000 != 0
+    }
+
+    /// A caption without a callback lets the pointer through.
+    pub fn pointer(has_callback: bool) -> u32 {
+        if has_callback { 0 } else { super::PASS_THROUGH }
+    }
+
+    /// An enabled caption calls its owner on the `0x2001` left press.
+    pub fn press(disabled: bool, flags: u32, has_callback: bool) -> bool {
+        !disabled && flags == 0x2001 && has_callback
+    }
+}
+
+/// A scroll bar's thumb: its width (`4·unit + 1`) and its offset from
+/// `x + pad`, `(w − 2·pad − width) × value` rounded half to even.
 pub fn scroll_thumb(unit: i32, pad: i32, w: i32, value: f32) -> (i32, i32) {
-    let width = 4 * unit + 1;
-    let offset = ((w - 2 * pad - width) as f32 * value).round_ties_even() as i32;
+    let width = unit * 4 + 1;
+    let offset = round_to_i64(((w - (pad << 1)) - width) as f32 * value) as i32;
     (width, offset)
 }
 
-/// The scroll bar's value at `x`: `(x − left − pad − thumb/2) / travel`,
-/// clamped with the ordered pair so NaN falls to 0.
-pub fn scroll_value(unit: i32, x0: i32, pad: i32, w: i32, x: i32) -> f32 {
-    let thumb = 4 * unit + 1;
-    let num = x - x0 - pad - thumb / 2;
-    let den = w - 2 * pad - thumb;
-    let mut value = (num as f64 / den as f64) as f32;
-    if 0.0 <= value {
-        if 1.0 < value {
-            value = 1.0;
-        }
-    } else {
-        value = 0.0;
-    }
-    value
+/// The scroll bar's value at `x`: `(x − left − pad − width/2) / travel` in
+/// double precision, clamped below 0 and above 1; a NaN passes both.
+pub fn scroll_value(unit: i32, left: i32, pad: i32, w: i32, x: i32) -> f32 {
+    let width = (unit * 4 + 1) as u32;
+    let num = i64::from(x - left) - i64::from(pad) - i64::from((width >> 1) as i32);
+    let den = (i64::from(w) - i64::from(pad << 1)) - i64::from(width as i32);
+    // `f32::clamp` leaves a NaN alone, as the unordered compares do.
+    ((num as f64 / den as f64) as f32).clamp(0.0, 1.0)
 }
 
-/// The scroll bar's current-value label: the value, no digits.
-pub fn scroll_label(value: f32) -> String {
-    format!("{}", value as i32)
+/// The scroll bar's three captions: its own text at the left, its suffix
+/// at the right (alignment `0x4000`) and the value, `(max − min) × value +
+/// min` with no decimals, in the middle (`0x3000`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScrollLabels {
+    pub text: Vec<u8>,
+    pub suffix: Vec<u8>,
+    pub value: String,
+}
+
+/// The scroll bar's captions. The number formatter is outside the
+/// evidence; Rust's fixed-point formatting stands in for it.
+pub fn scroll_labels(text: &[u8], suffix: &[u8], value: f32, min: f32, max: f32) -> ScrollLabels {
+    ScrollLabels {
+        text: text.to_vec(),
+        suffix: suffix.to_vec(),
+        value: format!("{:.0}", (max - min) * value + min),
+    }
+}
+
+/// The scroll bar's and trackbar's left press: an enabled control re-sends
+/// the press as a drag (`0x30`) and adds `5` to its result.
+pub fn drag_press(disabled: bool, flags: u32) -> bool {
+    !disabled && flags & 7 == 1
 }
 
 #[cfg(test)]
@@ -1170,27 +1341,38 @@ mod extended_tests {
     use super::*;
 
     #[test]
-    fn the_extended_classes_and_defaults_are_in_registration_order() {
+    fn the_classes_register_in_order_with_their_defaults() {
         assert_eq!(extended_class(TEXT_FIELD).unwrap().size, (80, 24));
-        assert_eq!(extended_class(COMBO_BOX).unwrap().size, (80, 24));
-        assert_eq!(extended_class(COLOUR_SWATCH).unwrap().size, (0, 24));
         assert_eq!(extended_class(SPINNER).unwrap().size, (60, 20));
-        assert_eq!(extended_class(PROGRESS_BAR).unwrap().size, (0, 24));
-        assert_eq!(extended_class(SEPARATOR).unwrap().size, (0, 3));
-        assert_eq!(extended_class(IMAGE).unwrap().size, (0, 0));
-        assert_eq!(extended_class(TEXTURE_VIEW).unwrap().size, (0, 0));
         assert_eq!(extended_class(TRACKBAR).unwrap().size, (0, 28));
-        assert_eq!(extended_class(CAPTION).unwrap().size, (0, 20));
         assert_eq!(extended_class(SCROLL_BAR).unwrap().size, (0, 16));
+        assert_eq!(extended_class(SEPARATOR).unwrap().size, (0, 3));
+        let hooked: Vec<u16> = EXTENDED_CLASSES
+            .iter()
+            .filter(|class| class.has_init)
+            .map(|class| class.id)
+            .collect();
+        assert_eq!(
+            hooked,
+            [TEXT_FIELD, COMBO_BOX, SPINNER, TRACKBAR, SCROLL_BAR]
+        );
         assert_eq!(extended_class(1), None);
-        assert_eq!(text_inset(4), 13);
-        assert_eq!(text_inset(5), 15);
+        assert_eq!(spinner_button_width(4), 13);
+        assert_eq!(spinner_button_width(5), 15);
         assert_eq!(text_field_span(100, 2, 4), 88);
         assert_eq!(combo_text_span(100, 2, 4), 75);
         assert_eq!(spinner_text_span(100, 2, 4), 75);
+        // The trackbar's creation hook defaults the knob width, not the
+        // height.
         assert_eq!(trackbar_defaults(0), (20, 2));
         assert_eq!(trackbar_defaults(24), (24, 2));
+        assert_eq!(trackbar_rescale(20, 4, 8), 40);
+        assert_eq!(trackbar_rescale(21, 4, 6), 32);
         assert_eq!(scrollbar_defaults(), 2);
+        assert_eq!(round_to_i64(2.5), 2);
+        assert_eq!(round_to_i64(3.5), 4);
+        assert_eq!(round_to_i64(f32::NAN), i64::MIN);
+        assert_eq!(round_to_i64(1e30), i64::MIN);
     }
 
     fn advances() -> Vec<i16> {
@@ -1201,433 +1383,397 @@ mod extended_tests {
     }
 
     #[test]
-    fn a_text_field_hits_edits_and_limits_its_bytes() {
-        let mut field = TextField::new(b"abc", 0, true);
-        assert_eq!(field.caret, 3);
-        assert_eq!(field.key(256, false), TextFieldEvent::Keyboard);
-        assert_eq!(field.key(13, false), TextFieldEvent::Submitted);
-        assert_eq!(field.key(8, false), TextFieldEvent::Changed);
-        assert_eq!(field.text, b"ab");
-        field.place(1, false);
-        assert_eq!(field.key(b'Z' as i32, false), TextFieldEvent::Changed);
-        assert_eq!(field.text, b"aZb");
-        assert_eq!(field.caret, 2);
-        // Shift-left keeps the anchor, so typing replaces the selection.
-        let mut selected = TextField::new(b"abc", 0, true);
-        selected.place(1, false);
-        selected.key(37, true);
-        assert_eq!(selected.selection(), (0, 1));
-        selected.insert(b"X");
-        assert_eq!(selected.text, b"Xbc");
-        assert_eq!(selected.caret, 1);
-        // A max length clips the insert; zero becomes the original's 255.
-        let mut limited = TextField::new(b"ab", 3, true);
-        limited.insert(b"CD");
-        assert_eq!(limited.text, b"abC");
-        let mut default_limited = TextField::new(b"", 0, true);
-        default_limited.insert(&[b'x'; 300]);
-        assert_eq!(default_limited.text.len(), 255);
-        // Read-only fields take nothing.
-        let mut read_only = TextField::new(b"ab", 0, false);
-        assert_eq!(read_only.key(b'X' as i32, false), TextFieldEvent::None);
-        assert_eq!(read_only.text, b"ab");
+    fn an_edit_hit_takes_the_byte_whose_half_advance_passes() {
+        let text = b"AB";
+        let edit = EditState {
+            end: 2,
+            ..EditState::default()
+        };
+        assert_eq!(edit.hit(text, 4, &advances()), 0);
+        assert_eq!(edit.hit(text, 5, &advances()), 1);
+        assert_eq!(edit.hit(text, 14, &advances()), 1);
+        assert_eq!(edit.hit(text, 15, &advances()), 2);
+        assert_eq!(edit.hit(text, 99, &advances()), 2);
+        let scrolled = EditState { start: 1, ..edit };
+        assert_eq!(scrolled.hit(text, 4, &advances()), 1);
+        // A run past the text clamps to its length.
+        let long = EditState { end: 5, ..edit };
+        assert_eq!(long.hit(text, 99, &advances()), 2);
+
+        let mut state = edit;
+        state.select_all(2);
+        assert_eq!((state.anchor, state.caret), (0, 2));
+        state.reset(3);
+        assert_eq!(
+            state,
+            EditState {
+                anchor: 3,
+                caret: 3,
+                end: 3,
+                start: 0
+            }
+        );
     }
 
     #[test]
-    fn a_text_field_hit_takes_the_byte_whose_middle_is_right() {
-        let mut field = TextField::new(b"AB", 0, true);
-        assert_eq!(field.hit(4, 0, &advances()), 0);
-        assert_eq!(field.hit(5, 0, &advances()), 1);
-        assert_eq!(field.hit(14, 0, &advances()), 1);
-        assert_eq!(field.hit(20, 0, &advances()), 2);
-        assert_eq!(field.hit(99, 0, &advances()), 2);
-        field.place(2, true);
-        assert_eq!(field.selection(), (2, 2));
+    fn a_text_fields_keys_submit_filter_or_edit() {
+        use text_style::*;
+        assert_eq!(
+            text_field_key(EDITABLE, 0x0d, false, true),
+            TextFieldKey::Submit { release: false }
+        );
+        assert_eq!(
+            text_field_key(EDITABLE | RELEASE, 0x0d, false, true),
+            TextFieldKey::Submit { release: true }
+        );
+        assert_eq!(
+            text_field_key(EDITABLE, 0x0d, false, false),
+            TextFieldKey::Edit {
+                max_len: 0,
+                notify: false
+            }
+        );
+        assert_eq!(
+            text_field_key(EDITABLE | DIGITS, u32::from(b'x'), true, false),
+            TextFieldKey::Dropped
+        );
+        assert_eq!(
+            text_field_key(EDITABLE | DIGITS, u32::from(b'5'), true, false),
+            TextFieldKey::Edit {
+                max_len: 0,
+                notify: false
+            }
+        );
+        // The digit filter reads typed bytes only.
+        assert!(matches!(
+            text_field_key(EDITABLE | DIGITS, 0x78, false, false),
+            TextFieldKey::Edit { .. }
+        ));
+        assert_eq!(
+            text_field_key(EDITABLE | NOTIFY, u32::from(b'a'), true, true),
+            TextFieldKey::Edit {
+                max_len: 0,
+                notify: true
+            }
+        );
+        assert_eq!(
+            text_field_key(0x5, u32::from(b'a'), true, true),
+            TextFieldKey::Move
+        );
+
+        let mut field = TextField::new(b"AB", 0, EDITABLE);
+        assert_eq!(field.max_len, 255);
+        assert_eq!(
+            field.key(u32::from(b'c'), true, false),
+            TextFieldKey::Edit {
+                max_len: 255,
+                notify: false
+            }
+        );
+        field.focus(true);
+        assert_eq!((field.edit.anchor, field.edit.caret), (0, 2));
+        field.edit.end = 2;
+        field.press_anchor(5, &advances());
+        assert_eq!((field.edit.anchor, field.edit.caret), (1, 1));
+        assert_eq!(text_border((10, 20, 80, 24), 0x10), Some((11, 22, 89, 42)));
+        assert_eq!(text_border((10, 20, 80, 24), 0), None);
     }
 
     #[test]
-    fn a_combo_box_chooses_and_opens_its_list() {
-        let mut combo = ComboBox::new(vec![b"one".to_vec(), b"two".to_vec()], 1);
-        assert_eq!(combo.text(), b"one");
+    fn a_drop_down_opens_below_cut_or_above() {
+        // 176 pixels below fit seven 24-pixel rows inside the pad.
+        assert_eq!(
+            drop_down_place((10, 100, 80, 24), 200, 2, 24, 300),
+            DropDownPlace {
+                x: 10,
+                y: 124,
+                w: 80,
+                h: 172,
+                scrolls: true
+            }
+        );
+        // No row below and ten above: it opens above at its full height.
+        assert_eq!(
+            drop_down_place((10, 250, 80, 24), 200, 2, 24, 300),
+            DropDownPlace {
+                x: 10,
+                y: 50,
+                w: 80,
+                h: 200,
+                scrolls: false
+            }
+        );
+        assert_eq!(drop_down_place((10, 100, 80, 24), 200, 2, 24, 1000).h, 200);
+        // A negative row count halves (unsigned) to a huge number, so the
+        // list is cut below to a negative height.
+        assert_eq!(
+            drop_down_place((0, 300, 80, 40), 200, 2, 24, 300),
+            DropDownPlace {
+                x: 0,
+                y: 340,
+                w: 80,
+                h: -20,
+                scrolls: true
+            }
+        );
+    }
+
+    #[test]
+    fn a_combo_box_takes_its_item_and_opens_or_edits() {
+        let items = vec![b"one".to_vec(), b"two".to_vec()];
+        let mut combo = ComboBox::new(items.clone(), 1, 0);
+        assert_eq!((combo.text.as_slice(), combo.max_len), (&b"one"[..], 255));
         assert!(combo.choose(2));
-        assert_eq!(combo.text(), b"two");
-        assert!(!combo.choose(9));
+        assert_eq!(combo.text, b"two");
+        assert!(combo.choose(9));
         assert_eq!(combo.selected, 2);
-        let place = combo
-            .open_below((10, 20, 80, 24), ListMetrics { unit: 4, inset: 3 }, 200)
-            .unwrap();
-        assert_eq!((place.x, place.y, place.w), (10, 45, 80));
-        assert_eq!(place.h, 54);
-        assert_eq!(place.row, 24);
-        let flipped = combo
-            .open_below((10, 160, 80, 24), ListMetrics { unit: 4, inset: 3 }, 200)
-            .unwrap();
-        assert_eq!(flipped.y, 106);
-        let mut empty = ComboBox::new(Vec::new(), 0);
+        assert!(!combo.choose(0));
+        assert!(combo.text.is_empty());
+        let mut short = ComboBox::new(items, 0, 2);
+        assert!(short.text.is_empty());
+        short.choose(1);
+        assert_eq!(short.text, b"on");
+
+        assert_eq!(combo_cursor(0xd, 10, (0, 0, 80, 24), 2, 4), 0x802_0000);
+        assert_eq!(combo_cursor(0xd, 61, (0, 0, 80, 24), 2, 4), 0);
+        assert_eq!(combo_cursor(0, 10, (0, 0, 80, 24), 2, 4), 0);
+        assert_eq!(combo_press(0x2_0000), ComboPress::Edit);
+        assert_eq!(combo_press(0x1_0000), ComboPress::Open);
+        assert_eq!(combo_arrow((10, 20, 80, 24), 4, 0), Some((74, 25)));
+        assert_eq!(combo_arrow((0, 0, 80, 24), 5, 0), Some((60, 5)));
+        assert_eq!(combo_arrow((10, 20, 80, 24), 4, 0x800_0000), None);
+    }
+
+    #[test]
+    fn a_swatch_drags_its_colour_or_calls_back() {
+        let rect = (10, 20, 50, 24);
+        let drag = ColourDrag {
+            colour: 0xff00ff,
+            offset: (20, 20),
+            size: (46, 20),
+        };
         assert_eq!(
-            empty.open_below((0, 0, 10, 10), ListMetrics { unit: 4, inset: 3 }, 100),
-            None
-        );
-        assert!(!empty.open);
-    }
-
-    #[test]
-    fn a_spinner_clamps_steps_and_formats() {
-        let mut spinner = Spinner {
-            value: -5.0,
-            ..Spinner::default()
-        };
-        spinner.init();
-        assert_eq!(spinner.step, 1.0);
-        assert_eq!(spinner.max, 100.0);
-        assert_eq!(spinner.value, 0.0);
-
-        let set = spinner.set(150.0, true);
-        assert!(set.changed);
-        assert!(set.clamped);
-        assert_eq!(spinner.value, 100.0);
-        let nan = spinner.set(f32::NAN, true);
-        assert!(nan.changed);
-        assert_eq!(spinner.value, 0.0);
-        assert!(!spinner.step(false));
-        spinner.value = 1.0;
-        assert!(spinner.step(false));
-        assert_eq!(spinner.value, 0.0);
-
-        let mut precise = Spinner {
-            value: 2.6,
-            min: 0.0,
-            max: 10.0,
-            step: 0.5,
-            precision: 2,
-            ..Spinner::default()
-        };
-        precise.init();
-        assert_eq!(precise.text(), "2.60");
-        precise.precision = 0;
-        assert_eq!(precise.text(), "3");
-
-        let integer = Spinner {
-            value: 3.9,
-            integer: true,
-            ..Spinner::default()
-        };
-        assert_eq!(integer.text(), "3");
-
-        let rect = (0, 0, 60, 20);
-        let span = spinner_text_span(60, 2, 4);
-        assert_eq!(span, 35);
-        assert_eq!(spinner.part(10, 5, rect, span), SpinnerPart::Text);
-        assert_eq!(spinner.part(40, 5, rect, span), SpinnerPart::Up);
-        assert_eq!(spinner.part(40, 15, rect, span), SpinnerPart::Down);
-        assert_eq!(spinner_repeat_step(4, 0.0, 100.0, 1.0), 4);
-        // The clamp keeps a tiny step at half a unit and a huge one at 8.
-        assert_eq!(spinner_repeat_step(4, 0.0, 1000.0, 1.0), 2);
-        assert_eq!(spinner_repeat_step(4, 0.0, 1.0, 1.0), 32);
-    }
-
-    #[test]
-    fn a_progress_bar_starts_at_zero_and_fills_by_its_value() {
-        let mut bar = ProgressBar {
-            value: -1.0,
-            ..ProgressBar::default()
-        };
-        bar.init();
-        assert_eq!(bar.step, 1.0);
-        assert_eq!(bar.max, 100.0);
-        assert_eq!(bar.value, 0.0);
-        assert!(!bar.set(-2.0));
-        assert!(bar.set(0.5));
-        assert_eq!(bar.text(), "50.0%");
-        assert_eq!(bar.fill(100), 50);
-        assert_eq!(bar.fill(101), 50);
-        let mut whole = ProgressBar {
-            precision: 0,
-            ..ProgressBar::default()
-        };
-        whole.value = 0.25;
-        assert_eq!(whole.text(), "25.0%");
-        let mut negative = ProgressBar {
-            min: -5.0,
-            value: -10.0,
-            ..ProgressBar::default()
-        };
-        negative.init();
-        assert_eq!(negative.value, -5.0);
-        assert!(negative.set(f32::NAN));
-        assert!(negative.value.is_nan());
-    }
-
-    #[test]
-    fn a_separator_leaves_a_gap_for_its_text() {
-        assert_eq!(separator_gap(16, 2), 32);
-        assert_eq!(
-            separator_lines((0, 0, 100, 3), 0, false, 4),
-            vec![(0, 0, 100, 3)]
+            swatch_press(0x4000, 0xff00ff, (30, 40), rect, 2),
+            SwatchPress::Drag(drag)
         );
         assert_eq!(
-            separator_lines((0, 0, 100, 3), 32, false, 4),
-            vec![(0, 0, 33, 3), (67, 0, 33, 3)]
+            swatch_press(0x6000, 0xff00ff, (30, 40), rect, 2),
+            SwatchPress::Drag(drag)
         );
         assert_eq!(
-            separator_lines((0, 0, 100, 3), 32, true, 4),
-            vec![(36, 0, 64, 3)]
+            swatch_press(0x2000, 0, (30, 40), rect, 2),
+            SwatchPress::Callback
         );
-    }
-
-    #[test]
-    fn an_image_view_picks_its_normalised_point() {
-        let rect = (10, 20, 100, 80);
-        assert_eq!(image_rect(rect, 2), (12, 22, 96, 76));
-        let pick = image_pick(rect, 2, 12, 22);
-        assert_eq!((pick.u, pick.v), (0.0, 1.0));
-        let pick = image_pick(rect, 2, 61, 61);
-        assert_eq!(pick.u, 0.5);
-        assert_eq!(pick.v, 0.5);
-        let pick = image_pick(rect, 2, 200, 200);
-        assert_eq!((pick.u, pick.v), (1.0, 0.0));
-        // A zero inner extent is NaN, and the ordered clamp makes it 0.
-        let pick = image_pick((0, 0, 2, 2), 2, 0, 0);
-        assert_eq!((pick.u, pick.v), (0.0, 0.0));
-    }
-
-    #[test]
-    fn a_texture_view_centres_its_texture() {
-        assert_eq!(
-            texture_rect((10, 20, 100, 80), 2, (40, 30)),
-            (40, 45, 40, 30)
-        );
-        assert_eq!(texture_rect((0, 0, 10, 10), 0, (20, 20)), (-5, -5, 20, 20));
-    }
-
-    #[test]
-    fn a_colour_swatch_opens_the_picker_or_calls_back() {
-        assert_eq!(swatch_press(0x4000), SwatchPress::Picker);
-        assert_eq!(swatch_press(0x2000), SwatchPress::Callback);
-        assert_eq!(swatch_press(0), SwatchPress::Ignored);
+        assert_eq!(swatch_press(0, 0, (30, 40), rect, 2), SwatchPress::Ignored);
+        assert_eq!(colour_drag_rect((100, 100), &drag), (80, 80, 46, 20));
         assert!(swatch_accepts(COLOUR_DRAG_CODE));
         assert!(!swatch_accepts(COLOUR_DRAG_CODE + 1));
     }
 
+    fn spinner() -> Spinner {
+        Spinner {
+            value: 0.0,
+            min: 0.0,
+            max: 100.0,
+            step: 1.0,
+            integer: false,
+            dirty: false,
+        }
+    }
+
     #[test]
-    fn a_scroll_bar_maps_its_thumb() {
+    fn a_spinner_inits_and_commits_with_ordered_clamps() {
+        let mut fresh = Spinner {
+            value: -5.0,
+            max: 0.0,
+            step: 0.0,
+            ..spinner()
+        };
+        fresh.init();
+        assert_eq!((fresh.step, fresh.max, fresh.value), (1.0, 100.0, 0.0));
+        // An integer spinner's step is the integer 1 and its maximum the
+        // float 100's bits; its value is not raised.
+        let mut whole = Spinner {
+            value: -5.0,
+            max: 0.0,
+            step: 0.0,
+            integer: true,
+            ..spinner()
+        };
+        whole.init();
+        assert_eq!(whole.step.to_bits(), 1);
+        assert_eq!(whole.max.to_bits(), 0x42c8_0000);
+        assert_eq!(whole.value, -5.0);
+
+        let mut value = spinner();
+        assert!(value.commit(150.0, false));
+        assert_eq!(value.value, 100.0);
+        assert!(value.dirty);
+        // A NaN passes both clamps and never lands, but marks the text.
+        let mut nan = spinner();
+        nan.value = 50.0;
+        assert!(!nan.commit(f32::NAN, false));
+        assert_eq!(nan.value, 50.0);
+        assert!(nan.dirty);
+        assert!(!nan.commit(50.0, false));
+        let mut quiet = spinner();
+        quiet.value = 100.0;
+        assert!(quiet.commit(-3.0, true));
+        assert_eq!(quiet.value, 0.0);
+        assert!(!quiet.dirty);
+    }
+
+    #[test]
+    fn a_spinner_presses_its_text_or_halves_and_filters_keys() {
+        let rect = (0, 0, 60, 20);
+        assert_eq!(spinner_press(rect, 13, 10, 5, 0), SpinnerPress::Anchor);
+        assert_eq!(
+            spinner_press(rect, 13, 10, 5, 0x8000),
+            SpinnerPress::SelectAll
+        );
+        assert_eq!(spinner_press(rect, 13, 47, 5, 0), SpinnerPress::Up);
+        assert_eq!(spinner_press(rect, 13, 50, 10, 0), SpinnerPress::Down);
+        assert_eq!(spinner_cursor(rect, 13, 0xd, 10, 5), 0x801_0000);
+        assert_eq!(spinner_cursor(rect, 13, 0, 10, 5), 0x1_0000);
+        assert_eq!(spinner_cursor(rect, 13, 0, 50, 5), 0x2_0000);
+        assert_eq!(spinner_cursor(rect, 13, 0, 50, 15), 0x4_0000);
+        // An unsigned "negative" x is far right, on the buttons.
+        assert_eq!(spinner_cursor(rect, 13, 0, u32::MAX, 15), 0x4_0000);
+
+        let at = |anchor, caret| EditState {
+            anchor,
+            caret,
+            ..EditState::default()
+        };
+        let typed = |byte: u8, edit| spinner_key(b"1.5", edit, 0, u32::from(byte), 2);
+        assert_eq!(typed(b'.', at(1, 1)), SpinnerKey::SkipDot);
+        assert_eq!(typed(b'.', at(0, 0)), SpinnerKey::Edit { commit: false });
+        assert_eq!(typed(b'-', at(1, 1)), SpinnerKey::Dropped);
+        assert_eq!(typed(b'-', at(0, 1)), SpinnerKey::Edit { commit: false });
+        assert_eq!(typed(b'x', at(0, 0)), SpinnerKey::Dropped);
+        let key = |code, flags| spinner_key(b"", at(0, 0), 0x200_0000, code, flags);
+        assert_eq!(key(0x26, 0), SpinnerKey::Step(true));
+        assert_eq!(key(0x28, 0), SpinnerKey::Step(false));
+        assert_eq!(key(0x0d, 0), SpinnerKey::Commit);
+        assert_eq!(key(u32::from(b'7'), 2), SpinnerKey::Edit { commit: true });
+        assert_eq!(key(0x56, 0x40), SpinnerKey::Paste);
+        assert_eq!(key(0x43, 0x40), SpinnerKey::Copy);
+        assert_eq!(key(0x41, 0x40), SpinnerKey::Ignored);
+        assert_eq!(key(0x26, 0x80), SpinnerKey::Ignored);
+        assert_eq!(key(0x56, 0x42), SpinnerKey::Ignored);
+
+        assert_eq!(spinner_repeat_step(4, 0.0, 100.0, 1.0), 4);
+        assert_eq!(spinner_repeat_step(4, 0.0, 1000.0, 1.0), 2);
+        assert_eq!(spinner_repeat_step(4, 0.0, 1.0, 1.0), 32);
+        // A zero range divides to infinity: the indefinite integer's low
+        // half is 0, which the floor lifts to half a unit.
+        assert_eq!(spinner_repeat_step(4, 0.0, 0.0, 1.0), 2);
+
+        let buttons = spinner_buttons(rect, 13, 4);
+        assert_eq!(buttons.field, (0, 0, 47, 20));
+        assert_eq!(buttons.up, (47, -1, 13, 11));
+        assert_eq!(buttons.down, (47, 10, 13, 11));
+        assert_eq!((buttons.up_arrow, buttons.down_arrow), ((47, 2), (47, 13)));
+        assert_eq!(buttons.arrow_width, 7);
+        assert_eq!(spinner_buttons(rect, 15, 5).up.1, -2);
+    }
+
+    #[test]
+    fn a_progress_bar_sets_fills_and_lays_out() {
+        let mut bar = ProgressBar { value: 0.0 };
+        bar.set(-2.0);
+        assert_eq!(bar.value, 0.0);
+        bar.set(-0.0);
+        assert!(bar.value.is_sign_negative());
+        bar.set(f32::NAN);
+        assert!(bar.value.is_nan());
+        bar.set(0.5);
+        assert_eq!(bar.text(), "50.0%");
+        assert_eq!(bar.fill(100), 50);
+        assert_eq!(bar.fill(101), 50);
+        assert_eq!(bar.fill(103), 52);
+        assert!(ProgressBar::shows_text(21, 4));
+        assert!(!ProgressBar::shows_text(20, 4));
+        let rects = progress_rects((10, 20, 100, 24), 2, 50);
+        assert_eq!(rects.rest, Some((59, 21, 109, 43)));
+        assert_eq!(rects.bar, Some((14, 24, 56, 40)));
+        assert_eq!(rects.highlight, Some((13, 23, 57, 41)));
+        assert_eq!(progress_rects((10, 20, 100, 24), 2, 0).bar, None);
+        assert_eq!(progress_rects((10, 20, 100, 24), 2, 100).rest, None);
+    }
+
+    #[test]
+    fn a_separator_lines_up_around_its_text() {
+        assert_eq!(separator_gap(8, 4), 32);
+        assert_eq!(
+            separator_lines((0, 10, 100, 3), 0, 0, 4, 0),
+            vec![(0, 9, 100, 3)]
+        );
+        assert_eq!(
+            separator_lines((0, 10, 100, 3), 0, 0, 4, 2),
+            vec![(0, 14, 100, 3)]
+        );
+        assert_eq!(
+            separator_lines((0, 10, 100, 3), 32, 0, 4, 0),
+            vec![(0, 10, 33, 3), (67, 10, 33, 3)]
+        );
+        assert_eq!(
+            separator_lines((0, 10, 100, 3), 32, 0x2000, 4, 0),
+            vec![(36, 10, 64, 3)]
+        );
+        assert_eq!(separator_lines((0, 10, 100, 3), 32, 0x3000, 4, 0).len(), 2);
+    }
+
+    #[test]
+    fn an_image_picks_and_a_texture_centres() {
+        let pick = image_pick(100, 80, 2, 2, 2);
+        assert_eq!((pick.u, pick.v), (0.0, 1.0));
+        let pick = image_pick(100, 80, 2, 51, 41);
+        assert_eq!((pick.u, pick.v), (0.5, 0.5));
+        let pick = image_pick(100, 80, 2, 200, 200);
+        assert_eq!((pick.u, pick.v), (1.0, 0.0));
+        // 0/0 passes both clamps; x/0 is infinite and clamps to 1.
+        assert!(image_pick(2, 80, 2, 2, 2).u.is_nan());
+        assert_eq!(image_pick(2, 80, 2, 3, 2).u, 1.0);
+        assert_eq!(image_rect((10, 20, 100, 80), 2), (12, 22, 96, 76));
+        assert_eq!(texture_origin((10, 20, 100, 80), 40), (40, 40));
+        assert_eq!(texture_origin((0, 0, 10, 10), 21), (-5, -5));
+    }
+
+    #[test]
+    fn a_caption_passes_the_pointer_without_a_callback() {
+        assert!(caption::draws_back(0x10));
+        assert!(!caption::draws_back(0));
+        assert!(caption::wraps(0x1000));
+        assert!(!caption::wraps(0x4000));
+        assert_eq!(caption::pointer(false), PASS_THROUGH);
+        assert_eq!(caption::pointer(true), 0);
+        assert!(caption::press(false, 0x2001, true));
+        assert!(!caption::press(true, 0x2001, true));
+        assert!(!caption::press(false, 0x2002, true));
+    }
+
+    #[test]
+    fn a_scroll_bar_maps_its_thumb_and_labels() {
         assert_eq!(scroll_thumb(4, 2, 100, 0.0), (17, 0));
         assert_eq!(scroll_thumb(4, 2, 100, 0.5), (17, 40));
         assert_eq!(scroll_thumb(4, 2, 100, 1.0), (17, 79));
+        assert_eq!(scroll_thumb(4, 2, 100, f32::NAN), (17, 0));
         assert_eq!(scroll_value(4, 0, 2, 100, 10), 0.0);
         assert_eq!(scroll_value(4, 0, 2, 100, 89), 1.0);
-        // Zero travel gives NaN, which the ordered clamp sends to 0.
-        assert_eq!(scroll_value(4, 0, 2, 21, 10), 0.0);
-        assert_eq!(scroll_label(42.9), "42");
-    }
-
-    #[test]
-    fn a_text_and_combo_field_trace_their_inner_parts() {
-        assert_eq!(text_border((10, 20, 80, 24)), (11, 21, 78, 22));
-        assert_eq!(combo_arrow((10, 20, 80, 24), 4), (10 + 80 - 16, 20 + 5));
-    }
-
-    #[test]
-    fn a_combo_press_opens_or_edits() {
-        assert_eq!(combo_press(false, true, true), ComboPress::Open);
-        assert_eq!(combo_press(false, false, true), ComboPress::Edit);
-        assert_eq!(combo_press(true, false, true), ComboPress::Edit);
-        assert_eq!(combo_press(false, true, false), ComboPress::Ignored);
-    }
-
-    #[test]
-    fn a_spinner_splits_its_buttons_and_filters_its_bytes() {
-        let buttons = spinner_buttons((0, 0, 60, 20), 35);
-        assert_eq!(buttons.text, (0, 0, 25, 20));
-        assert_eq!(buttons.up, (25, 0, 35, 10));
-        assert_eq!(buttons.down, (25, 10, 35, 10));
-
-        let mut field = TextField::new(b"", 0, true);
-        assert!(spinner_accepts(&field, b'5'));
-        assert!(!spinner_accepts(&field, b'x'));
-        assert!(spinner_accepts(&field, b'-'));
-        field.insert(b"5");
-        field.place(1, false);
-        assert!(!spinner_accepts(&field, b'-'));
-        field.insert(b".");
-        field.place(1, false);
-        assert!(!spinner_accepts(&field, b'.'));
-
-        let mut spinner = Spinner {
-            value: 1.0,
-            min: 0.0,
-            max: 2.0,
-            step: 1.0,
-            ..Spinner::default()
-        };
-        let mut field = TextField::new(b"", 0, true);
-        assert_eq!(
-            spinner_key(&mut spinner, &field, 0x26),
-            SpinnerKey::Stepped(true)
-        );
-        assert_eq!(spinner.value, 2.0);
-        assert_eq!(
-            spinner_key(&mut spinner, &field, 0x28),
-            SpinnerKey::Stepped(false)
-        );
-        assert_eq!(spinner.value, 1.0);
-        assert_eq!(
-            spinner_key(&mut spinner, &field, b'7' as i32),
-            SpinnerKey::Edited
-        );
-        assert_eq!(spinner_key(&mut spinner, &field, 13), SpinnerKey::Committed);
-        assert_eq!(
-            spinner_key(&mut spinner, &field, b'x' as i32),
-            SpinnerKey::Ignored
-        );
-        field.insert(b"1");
-    }
-
-    #[test]
-    fn a_scroll_bar_labels_its_current_value() {
+        assert_eq!(scroll_value(4, 0, 2, 100, 200), 1.0);
+        assert_eq!(scroll_value(4, 0, 2, 100, 0), 0.0);
+        // Zero travel: 0/0 passes the clamps, 1/0 clamps to 1.
+        assert!(scroll_value(4, 0, 2, 21, 10).is_nan());
+        assert_eq!(scroll_value(4, 0, 2, 21, 11), 1.0);
         let labels = scroll_labels(b"volume", b"%", 0.5, 0.0, 100.0);
-        assert_eq!(labels.text, b"volume");
-        assert_eq!(labels.unit, b"%");
+        assert_eq!(
+            (labels.text.as_slice(), labels.suffix.as_slice()),
+            (&b"volume"[..], &b"%"[..])
+        );
         assert_eq!(labels.value, "50");
-        assert_eq!(colour_drag_rect(20, 10), (0, 0, 20, 10));
+        assert!(drag_press(false, 1));
+        assert!(!drag_press(true, 1));
+        assert!(!drag_press(false, 2));
     }
-
-    #[test]
-    fn a_caption_uses_the_centred_vertical_style() {
-        assert_eq!(caption_align(0x1000), 0x1300);
-        assert_eq!(caption_align(0), 0x300);
-    }
-}
-
-/// A text control's inner border: the rectangle one pixel inside the
-/// control, as the text field's draw-back pass traces it.
-pub fn text_border(rect: (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
-    (rect.0 + 1, rect.1 + 1, rect.2 - 2, rect.3 - 2)
-}
-
-/// A combo box's drop-down arrow: its left edge and top, from the class's
-/// `(4·unit|1) − unit/2 + 1` width and `(unit+1) − (unit&1)` height.
-pub fn combo_arrow(rect: (i32, i32, i32, i32), unit: i32) -> (i32, i32) {
-    let width = ((4 * unit) | 1) - unit / 2 + 1;
-    let height = (unit + 1) - (unit & 1);
-    (rect.0 + rect.2 - width, rect.1 + height)
-}
-
-/// What a combo box's press did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ComboPress {
-    Ignored,
-    /// The button opened the list.
-    Open,
-    /// The press landed in the text and moves the caret.
-    Edit,
-}
-
-/// The combo box's press rule: while open the text takes the caret, while
-/// closed the arrow opens the list.
-pub fn combo_press(open: bool, on_arrow: bool, button_left: bool) -> ComboPress {
-    if !button_left {
-        return ComboPress::Ignored;
-    }
-    if open || on_arrow {
-        if open {
-            ComboPress::Edit
-        } else {
-            ComboPress::Open
-        }
-    } else {
-        ComboPress::Edit
-    }
-}
-
-/// A spinner's two step buttons and text zone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SpinnerButtons {
-    pub text: (i32, i32, i32, i32),
-    pub up: (i32, i32, i32, i32),
-    pub down: (i32, i32, i32, i32),
-}
-
-/// Splits a spinner into its text zone and its up and down halves.
-pub fn spinner_buttons(rect: (i32, i32, i32, i32), span: i32) -> SpinnerButtons {
-    let (x, y, w, h) = rect;
-    let text_w = w - span;
-    SpinnerButtons {
-        text: (x, y, text_w, h),
-        up: (x + text_w, y, span, h / 2),
-        down: (x + text_w, y + h / 2, span, h - h / 2),
-    }
-}
-
-/// Whether the spinner takes a typed byte: a digit, a dot unless one is
-/// already at the caret, or a minus only at an empty caret.
-pub fn spinner_accepts(field: &TextField, byte: u8) -> bool {
-    if byte == b'.' {
-        field.text.get(field.caret).copied() != Some(b'.')
-    } else if byte == b'-' {
-        field.caret == 0 && field.anchor == 0
-    } else {
-        byte.is_ascii_digit()
-    }
-}
-
-/// What a spinner's key did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpinnerKey {
-    Ignored,
-    /// A byte was accepted by the text edit unit.
-    Edited,
-    /// Enter committed the typed value.
-    Committed,
-    /// The up or down key stepped the value.
-    Stepped(bool),
-}
-
-/// A spinner's key: up and down step, Enter commits, the filter admits the
-/// numeric bytes and the rest goes to the text edit unit.
-pub fn spinner_key(spinner: &mut Spinner, field: &TextField, key: i32) -> SpinnerKey {
-    match key {
-        0x26 => {
-            if spinner.step(true) {
-                SpinnerKey::Stepped(true)
-            } else {
-                SpinnerKey::Ignored
-            }
-        }
-        0x28 => {
-            if spinner.step(false) {
-                SpinnerKey::Stepped(false)
-            } else {
-                SpinnerKey::Ignored
-            }
-        }
-        13 => SpinnerKey::Committed,
-        _ if (0..=255).contains(&key) && spinner_accepts(field, key as u8) => SpinnerKey::Edited,
-        _ => SpinnerKey::Ignored,
-    }
-}
-
-/// The scroll bar's three captions: its own text at the left, its unit text
-/// at the right and the current value in the middle.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ScrollLabels {
-    pub text: Vec<u8>,
-    pub unit: Vec<u8>,
-    pub value: String,
-}
-
-/// The scroll bar's captions; the value is `(max − min) × value + min`,
-/// rounded to a whole number.
-pub fn scroll_labels(text: &[u8], suffix: &[u8], value: f32, min: f32, max: f32) -> ScrollLabels {
-    let shown = (max - min) * value + min;
-    ScrollLabels {
-        text: text.to_vec(),
-        unit: suffix.to_vec(),
-        value: format!("{:.0}", shown),
-    }
-}
-
-/// A colour drag payload's draw rectangle, relative to the control.
-pub fn colour_drag_rect(w: i32, h: i32) -> (i32, i32, i32, i32) {
-    (0, 0, w, h)
 }
