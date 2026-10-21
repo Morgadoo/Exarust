@@ -558,7 +558,17 @@ Exarust match the original look).
   1–4 → corner piece, floor slot 4, ceiling slot 3.
 - Special tiles: a mask per type removes the regular pieces they cover:
   `7777FFFF`, `7070FFFF`, `7077FFFF`, `7777FFFF`, `7777FFFF`, `7007000F`
-  (types 6–9), `00770FFF`; types 5–8 keep the centre floor.
+  (types 6–9), `00770FFF`; types 5–8 keep the centre floor. The table holds
+  the masks for side 0; at start-up the game turns each into rotations 1–3
+  (each edge nibble and corner triple moves one side; the `0x8888` flag
+  bits stay), and a cell reads the one for its rotation. The cell places
+  the nth piece of its type (bits 23–27); past the last it places the last,
+  and with no piece of the type at all the wall set's first special piece.
+- A floor set named exactly `Terrain` (a whole-name comparison) is never
+  loaded and brings no pieces: the terrain is the ground there.
+- A node or character is sorted into the room of the cell it stands in,
+  `floor(x / 600) + w/2` (the conversion's rounding mode is set towards
+  −∞), clamped to the grid for nodes.
 - Floors are merged into a `+Floor` mesh per cell in the original; walls
   stay separate objects. The ceiling strips also make a per-cell
   `+Ceiling` mesh that is never drawn (its node is marked externally drawn;
@@ -649,10 +659,11 @@ Exarust applies the presets and the ambient colour (`exa_world::environment`),
 with the rules themselves in `exa_world::scene_env`: the sun/moon path and
 daylight factor, the day record's pick-and-blend, cloud dimming, the linear
 fog's near and far distances, the clear colour and the rain/lightning state.
-A tile-grid level built the original's older way is forced to ambient 0.6275,
-sun colour 0.75, black background and 0.5 grey fog unless it has terrain.
-The day record track and the weather's sound and lightning effects are not
-among the level files: Exarust keeps the outdoor haze as the fog stand-in,
+A tile-grid level built the original's older way is forced to a black
+background and 0.5 grey fog, and, unless it has terrain, an ambient of 0.6275
+and a global light of 0.75. The day record track is a constant table in the
+executable (not decoded yet) and the weather's sound and lightning effects
+are not reproduced: Exarust keeps the outdoor haze as the fog stand-in,
 uses Bevy's physically based atmosphere lit by the level's sun for the sky
 (the original's sky shader is not decoded), and leaves time of day, rain and
 lightning at rest until something sets them.
