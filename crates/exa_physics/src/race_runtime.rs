@@ -9,8 +9,8 @@
 //! the two gender voice templates, from which each (voice index, gender,
 //! slot) sound set's four names are built on demand.
 //!
-//! The built-in human stands in for an id the database lacks, as the
-//! original's race lookup falls back. Evidence: REA on the race loader,
+//! The built-in record ([`exa_formats::races::builtin_human`]) stands in
+//! for an id the database lacks, as the original's race lookup falls back. Evidence: REA on the race loader,
 //! the runtime-race build and the voice-set builders; values checked
 //! against the assembly.
 
@@ -41,8 +41,8 @@ impl RaceRuntime {
         }
     }
 
-    /// The four sound names of voice `index` for a gender and template,
-    /// falling back between the groans when one is missing.
+    /// The four sound names of voice `index` for a gender and builder
+    /// ([`RaceVoice::names`]).
     pub fn voice_names(
         &self,
         index: u32,
@@ -76,7 +76,8 @@ impl Default for RaceCache {
 }
 
 impl RaceCache {
-    /// The cache with the built-in human, which a missing id takes.
+    /// The cache with the built-in record's runtime, which a missing id
+    /// takes.
     pub fn new() -> Self {
         Self {
             runtimes: HashMap::new(),
@@ -92,7 +93,7 @@ impl RaceCache {
             .clone()
     }
 
-    /// The runtime of the race with `id`, or the built-in human's.
+    /// The runtime of the race with `id`, or the built-in record's.
     pub fn by_id(&mut self, db: &exa_formats::races::RaceDb, id: u32) -> Arc<RaceRuntime> {
         let race = db.get(id);
         if race.id == 0 {
@@ -101,7 +102,7 @@ impl RaceCache {
         self.runtime(race)
     }
 
-    /// The built-in human's runtime.
+    /// The built-in record's runtime.
     pub fn human(&self) -> Arc<RaceRuntime> {
         self.builtin.clone()
     }
@@ -188,20 +189,20 @@ mod tests {
         let mut race = race();
         race.voice = RaceVoice {
             first: exa_formats::races::GenderedName {
-                male: "humanm".into(),
-                female: "humanf".into(),
+                male: "vhm".into(),
+                female: "vhf".into(),
             },
             second: exa_formats::races::GenderedName {
                 male: "goblin".into(),
                 female: "goblin".into(),
             },
-            first_numbered: true,
-            second_numbered: false,
+            gendered: true,
+            numbered: true,
         };
         let runtime = RaceRuntime::of(&race);
         let names = runtime.voice_names(2, true, VoiceSlot::First, |_| true);
-        assert_eq!(names.grunt, "humanf03_GruntS");
+        assert_eq!(names.grunt, "vhf03_GruntS");
         let names = runtime.voice_names(2, false, VoiceSlot::Second, |_| true);
-        assert_eq!(names.grunt, "goblin_GruntS");
+        assert_eq!(names.grunt, "goblin02_GruntS");
     }
 }

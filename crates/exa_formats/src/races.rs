@@ -53,70 +53,63 @@ pub struct Race {
 }
 
 /// One voice template's two gendered names: `{S}` in the record expands to
-/// `m` here and `f` in the female name, everything else lowercased.
+/// `m` here and `f` in the female name, any other `{…}` group is dropped,
+/// and everything else is lowercased.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GenderedName {
     pub male: String,
     pub female: String,
 }
 
-/// The race's voice templates (`0x174` and `0x184`, NUL-terminated): the
-/// first names its sound sets one-based, the second zero-based, when the
-/// template's last character is not a digit (the original's number flag).
+/// The race's two voice templates (`0x174` and `0x184`, NUL-terminated)
+/// as the runtime race keeps them, with the two flags only the first
+/// template sets.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RaceVoice {
     pub first: GenderedName,
     pub second: GenderedName,
-    /// The first template's names carry the voice's number (one-based).
-    pub first_numbered: bool,
-    /// The second template's do (zero-based).
-    pub second_numbered: bool,
+    /// The first template has a `{S}`: female voices take the female
+    /// names (of either template).
+    pub gendered: bool,
+    /// The first template's expanded name does not end in a digit: both
+    /// templates' names carry the voice's two-digit number.
+    pub numbered: bool,
 }
 
-/// Which of the race's two voice templates a sound set comes from.
+/// Which of the race's two voice-set builders a sound set comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VoiceSlot {
+    /// Numbered from one, the groans sharing a missing one.
     First,
+    /// Numbered from zero, no sharing.
     Second,
 }
 
-/// A voice's four sound names, with the short groan standing in for a
-/// missing heavy one (or the other way round), as the original caches them.
+/// A voice's four sound names.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct VoiceNames {
     pub grunt: String,
     pub groan_short: String,
     pub groan_heavy: String,
     pub scream: String,
-    /// The heavy groan was missing and the short one stands in for it, or
-    /// the reverse.
+    /// The first builder's heavy groan was missing and the short one
+    /// stands in for it, or the reverse.
     pub shared_groan: bool,
 }
 
+/// The longest sound name the builders pass on: the name is put together
+/// in a 16-byte buffer and converted with a 15-character limit.
+const VOICE_NAME_MOST: usize = 15;
+
 impl RaceVoice {
-    /// The template a slot names, its gendered names.
-    pub fn template(&self, slot: VoiceSlot) -> &GenderedName {
-        match slot {
-            VoiceSlot::First => &self.first,
-            VoiceSlot::Second => &self.second,
-        }
-    }
-
-    /// Whether a slot's names carry the voice number: one-based for the
-    /// first, zero-based for the second.
-    pub fn numbered(&self, slot: VoiceSlot) -> bool {
-        match slot {
-            VoiceSlot::First => self.first_numbered,
-            VoiceSlot::Second => self.second_numbered,
-        }
-    }
-
     /// The four sound names of voice number `voice` for a gender, from the
-    /// slot's template. A name numbered by the race gets a two-digit suffix
-    /// (`01` for the first template's voice 0, `00` for the second's).
-    /// `exists` says whether a sound is shipped; when the heavy groan is
-    /// missing the short one is used for it, and the reverse, with
-    /// `shared_groan` set.
+    /// slot's template: the male name unless the voice is female and the
+    /// race gendered; when numbered, two digits of the voice number (plus
+    /// one for the first builder; the tens digit is not reduced, so 100
+    /// gives `:0`); then `_GruntS`, `_GroanS`, `_GroanH` and `_Scream`, all
+    /// cut at 15 characters. `exists` says whether a sound set is shipped;
+    /// the first builder shares the short groan for a missing heavy one,
+    /// else the heavy for a missing short one.
     pub fn names(
         &self,
         voice: u32,
@@ -124,66 +117,108 @@ impl RaceVoice {
         slot: VoiceSlot,
         exists: impl Fn(&str) -> bool,
     ) -> VoiceNames {
-        let template = self.template(slot);
-        let mut base = if female {
-            template.female.clone()
-        } else {
-            template.male.clone()
+        let template = match slot {
+            VoiceSlot::First => &self.first,
+            VoiceSlot::Second => &self.second,
         };
-        if self.numbered(slot) {
-            let number = match slot {
-                VoiceSlot::First => voice + 1,
-                VoiceSlot::Second => voice,
-            };
-            base.push(char::from(b'0' + (number / 10 % 10) as u8));
-            base.push(char::from(b'0' + (number % 10) as u8));
+        let name = if female && self.gendered {
+            &template.female
+        } else {
+            &template.male
+        };
+        let mut base: Vec<u8> = name.bytes().take(16).collect();
+        if self.numbered {
+            let number = i64::from(voice) + i64::from(slot == VoiceSlot::First);
+            base.push(((number / 10) as u8).wrapping_add(b'0'));
+            base.push(((number % 10) as u8).wrapping_add(b'0'));
         }
+        let named = |suffix: &str| {
+            let mut bytes = base.clone();
+            bytes.extend_from_slice(suffix.as_bytes());
+            bytes.truncate(VOICE_NAME_MOST);
+            bytes.into_iter().map(char::from).collect::<String>()
+        };
         let mut names = VoiceNames {
-            grunt: format!("{base}_GruntS"),
-            groan_short: format!("{base}_GroanS"),
-            groan_heavy: format!("{base}_GroanH"),
-            scream: format!("{base}_Scream"),
+            grunt: named("_GruntS"),
+            groan_short: named("_GroanS"),
+            groan_heavy: named("_GroanH"),
+            scream: named("_Scream"),
             shared_groan: false,
         };
-        if !exists(&names.groan_heavy) {
-            names.groan_heavy = names.groan_short.clone();
-            names.shared_groan = true;
-        } else if !exists(&names.groan_short) {
-            names.groan_short = names.groan_heavy.clone();
-            names.shared_groan = true;
+        if slot == VoiceSlot::First {
+            if !exists(&names.groan_heavy) {
+                names.groan_heavy = names.groan_short.clone();
+                names.shared_groan = true;
+            } else if !exists(&names.groan_short) {
+                names.groan_short = names.groan_heavy.clone();
+                names.shared_groan = true;
+            }
         }
         names
     }
 }
 
-/// Reads one NUL-terminated gendered voice template and whether its
-/// expanded male name ends in a digit (the original's number flag: a last
-/// character below `'0'` or above `'9'` means no number).
-fn voice_template(b: &[u8], at: usize) -> (GenderedName, bool) {
-    let mut male = String::new();
-    let mut female = String::new();
-    let mut i = at;
-    while let Some(&c) = b.get(i) {
-        if c == 0 {
-            break;
-        }
-        if c == b'{' && b.get(i + 1) == Some(&b'S') {
-            male.push('m');
-            female.push('f');
-            i += 2;
-            while b.get(i).is_some_and(|&c| c != b'}') {
-                i += 1;
+/// Expands one voice template at `at` as the runtime race build does:
+/// returns the names, whether it had a `{S}`, and whether its expanded
+/// male name ends in something other than a digit. The build copies the
+/// character after a `{…}` group without testing it for the terminator,
+/// so a template ending in `}` goes on past its NUL (the names stop at the
+/// first NUL, the digit test looks at the last byte written); the reading
+/// here stops at the record's end.
+fn voice_template(b: &[u8], at: usize) -> (GenderedName, bool, bool) {
+    let byte = |i: usize| b.get(at + i).copied().unwrap_or(0);
+    let lower = |c: u8| if c.is_ascii_uppercase() { c + 32 } else { c };
+    let (mut male, mut female) = (Vec::new(), Vec::new());
+    let mut gendered = false;
+    let mut i = 0;
+    while at + i < b.len() && byte(i) != 0 {
+        if byte(i) == b'{' {
+            let mut j = i + 1;
+            if byte(j) == b'S' {
+                gendered = true;
+                male.push(b'm');
+                female.push(b'f');
             }
-            i += usize::from(b.get(i) == Some(&b'}'));
-            continue;
+            while at + j < b.len() && byte(j) != b'}' {
+                j += 1;
+            }
+            i = j + 1;
+            if at + i > b.len() {
+                break;
+            }
         }
-        let c = if c.is_ascii_uppercase() { c + 32 } else { c };
-        male.push(c as char);
-        female.push(c as char);
+        let c = lower(byte(i));
+        male.push(c);
+        female.push(c);
         i += 1;
     }
-    let numbered = male.as_bytes().last().is_none_or(|&c| !c.is_ascii_digit());
-    (GenderedName { male, female }, numbered)
+    // An empty template has no last byte (the original then reads the
+    // byte before its buffer); it is taken as numbered here.
+    let numbered = male.last().is_none_or(|c| !c.is_ascii_digit());
+    let text = |v: &[u8]| {
+        let end = v.iter().position(|&c| c == 0).unwrap_or(v.len());
+        v[..end].iter().map(|&c| char::from(c)).collect::<String>()
+    };
+    (
+        GenderedName {
+            male: text(&male),
+            female: text(&female),
+        },
+        gendered,
+        numbered,
+    )
+}
+
+/// The race's voice as the runtime race build reads the record.
+fn race_voice(b: &[u8]) -> RaceVoice {
+    let (first, gendered, numbered) = voice_template(b, VOICE_TEMPLATES[0]);
+    let (second, _, _) = voice_template(b, VOICE_TEMPLATES[1]);
+    RaceVoice {
+        first,
+        second,
+        gendered,
+        numbered,
+    }
 }
 
 /// The factors and gaits a race gives its characters' bodies.
@@ -611,36 +646,32 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Race>> {
         if races.iter().any(|x| x.id == r.id) {
             continue;
         }
-        races.push(Race {
-            id: r.id,
-            name: text(b, NAME, 0x20),
-            flags: word(b, FLAGS),
-            look: word(b, LOOK),
-            stem: text(b, STEM, 0x18),
-            movesets: MOVESETS.map(|at| text(b, at, 0x10)),
-            health: float(b, HEALTH),
-            natural: Natural {
-                coverage: std::array::from_fn(|i| b[COVERAGE + 4 * i].min(100)),
-                padding: b[PROTECTION],
-                slash: b[PROTECTION + 1],
-                crush: b[PROTECTION + 2],
-                pierce: b[PROTECTION + 3],
-            },
-            body: RaceBody::read(b),
-            stats: RaceStats::read(b),
-            voice: {
-                let (first, first_numbered) = voice_template(b, VOICE_TEMPLATES[0]);
-                let (second, second_numbered) = voice_template(b, VOICE_TEMPLATES[1]);
-                RaceVoice {
-                    first,
-                    second,
-                    first_numbered,
-                    second_numbered,
-                }
-            },
-        });
+        races.push(record(r.id, b));
     }
     Ok(races)
+}
+
+/// One race record (at least [`RECORD`] bytes) under `id`.
+fn record(id: u32, b: &[u8]) -> Race {
+    Race {
+        id,
+        name: text(b, NAME, 0x20),
+        flags: word(b, FLAGS),
+        look: word(b, LOOK),
+        stem: text(b, STEM, 0x18),
+        movesets: MOVESETS.map(|at| text(b, at, 0x10)),
+        health: float(b, HEALTH),
+        natural: Natural {
+            coverage: std::array::from_fn(|i| b[COVERAGE + 4 * i].min(100)),
+            padding: b[PROTECTION],
+            slash: b[PROTECTION + 1],
+            crush: b[PROTECTION + 2],
+            pierce: b[PROTECTION + 3],
+        },
+        body: RaceBody::read(b),
+        stats: RaceStats::read(b),
+        voice: race_voice(b),
+    }
 }
 
 /// The race of a character record's race byte.
@@ -1118,8 +1149,8 @@ mod tests {
     }
 }
 
-/// The race database and its built-in human: races by id, with the original's
-/// human record used when an id is missing.
+/// The race database and its built-in record: races by id, the built-in
+/// record standing in for a missing id as the original's lookup does.
 #[derive(Debug, Clone)]
 pub struct RaceDb {
     pub races: Vec<Race>,
@@ -1152,23 +1183,61 @@ impl RaceDb {
     }
 }
 
-/// The built-in human the original falls back on: the `human` name, the
-/// human body model stem and the shared moveset, with the fallback body and
-/// stats and no voice. [guess: the built-in zero record's name and stem are
-/// not in the shipped file]
+/// The non-zero bytes of the race record built into the executable (the
+/// rest of its 624 bytes are zero): no name or flags, the stem `human`,
+/// no shared moveset and `Default` as its own, every body factor 1.0, no
+/// gaits, 1 m of unarmed reach, health 1.0, no voice templates, and a
+/// table of 18 byte pairs at `0x1C8`. [`RaceBody::FALLBACK`] and
+/// [`RaceStats::FALLBACK`] are what it reads as.
+const BUILTIN_RECORD: &[(usize, &[u8])] = &[
+    (0x020, &[0x68, 0x75, 0x6D, 0x61, 0x6E, 0x00, 0x00, 0x00]),
+    (
+        0x040,
+        &[
+            0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x80, 0x3F, 0x44, 0x65, 0x66, 0x61, 0x75, 0x6C,
+            0x74, 0x00,
+        ],
+    ),
+    (
+        0x05C,
+        &[
+            0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00,
+            0x80, 0x3F, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x80, 0x3F,
+            0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00,
+            0xC8, 0x42, 0x00, 0x00, 0x80, 0x3F,
+        ],
+    ),
+    (0x090, &[0x00, 0x00, 0x80, 0x3F]),
+    (0x0E4, &[0x00, 0x00, 0x80, 0x3F, 0x80, 0x00, 0x00, 0xFF]),
+    (
+        0x100,
+        &[
+            0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x80, 0x3F,
+        ],
+    ),
+    (0x110, &[0x00, 0x00, 0x80, 0x3F]),
+    (0x118, &[0x00, 0x00, 0x80, 0x3F]),
+    (
+        0x1C8,
+        &[
+            0x12, 0x00, 0x00, 0x00, 0x64, 0x64, 0x00, 0x00, 0x64, 0x64, 0x00, 0x00, 0x3C, 0x64,
+            0x00, 0x00, 0x28, 0x64, 0x00, 0x00, 0x64, 0x64, 0x00, 0x00, 0x3C, 0x64, 0x00, 0x00,
+            0x28, 0x64, 0x00, 0x00, 0x64, 0x64, 0x00, 0x00, 0x78, 0x78, 0x00, 0x00, 0xA0, 0x8C,
+            0x00, 0x00, 0x64, 0x64, 0x00, 0x00, 0x64, 0x64, 0x00, 0x00, 0x32, 0x4B, 0x00, 0x00,
+            0x64, 0x64, 0x00, 0x00, 0x64, 0x64, 0x00, 0x00, 0x32, 0x4B, 0x00, 0x00, 0x1E, 0x3C,
+            0x00, 0x00, 0x1E, 0x3C, 0x00, 0x00, 0x14, 0x32, 0x00, 0x00, 0x14, 0x32, 0x00, 0x00,
+        ],
+    ),
+];
+
+/// The race the original's race lookup returns for an id the database
+/// lacks: the built-in record, read as any other (id 0).
 pub fn builtin_human() -> Race {
-    Race {
-        id: 0,
-        name: "human".into(),
-        flags: BLEEDS,
-        stem: "human".into(),
-        movesets: ["Default".into(), "Default".into()],
-        health: 1.0,
-        natural: Natural::default(),
-        body: RaceBody::FALLBACK,
-        stats: RaceStats::FALLBACK,
-        voice: RaceVoice::default(),
+    let mut b = [0u8; RECORD];
+    for &(at, bytes) in BUILTIN_RECORD {
+        b[at..at + bytes.len()].copy_from_slice(bytes);
     }
+    record(0, &b)
 }
 
 #[cfg(test)]
@@ -1200,70 +1269,126 @@ mod voice_tests {
         file
     }
 
-    /// A voice template expands `{S}` to m and f, lowercases, and carries
-    /// the number flag when its last character is not a digit.
+    fn template(b: &mut [u8], at: usize, text: &[u8]) {
+        b[at..at + 16].fill(0);
+        b[at..at + text.len()].copy_from_slice(text);
+    }
+
+    /// A template expands `{S}` to m and f, drops other `{…}` groups,
+    /// lowercases, and is numbered when its last character is not a digit.
     #[test]
     fn voice_templates_expand_their_gender_marker() {
         let mut b = vec![0u8; RECORD];
-        b[VOICE_TEMPLATES[0]..VOICE_TEMPLATES[0] + 14].copy_from_slice(b"Human{S}_Voice");
-        b[VOICE_TEMPLATES[1]..VOICE_TEMPLATES[1] + 7].copy_from_slice(b"VOICE0\0");
-        b[VOICE_TEMPLATES[0] + 14] = 0;
-        b[VOICE_TEMPLATES[1] + 8] = 0;
-        let (first, first_numbered) = voice_template(&b, VOICE_TEMPLATES[0]);
+        template(&mut b, VOICE_TEMPLATES[0], b"Human{S}_Voice");
+        template(&mut b, VOICE_TEMPLATES[1], b"VO{x}ICE0");
+        let (first, gendered, numbered) = voice_template(&b, VOICE_TEMPLATES[0]);
         assert_eq!(first.male, "humanm_voice");
         assert_eq!(first.female, "humanf_voice");
-        assert!(first_numbered);
-        let (second, second_numbered) = voice_template(&b, VOICE_TEMPLATES[1]);
+        assert!(gendered && numbered);
+        let (second, gendered, numbered) = voice_template(&b, VOICE_TEMPLATES[1]);
         assert_eq!(second.male, "voice0");
-        assert!(!second_numbered);
+        assert!(!gendered && !numbered);
+        // A template ending in its group copies the NUL after it: the name
+        // stops there and the digit test sees the NUL (numbered).
+        template(&mut b, VOICE_TEMPLATES[0], b"VH{S}");
+        let (first, gendered, numbered) = voice_template(&b, VOICE_TEMPLATES[0]);
+        assert_eq!((first.male.as_str(), first.female.as_str()), ("vhm", "vhf"));
+        assert!(gendered && numbered);
+        // Only the first template sets the record's two flags.
+        template(&mut b, VOICE_TEMPLATES[0], b"Goblin7");
+        template(&mut b, VOICE_TEMPLATES[1], b"g{S}");
+        let voice = race_voice(&b);
+        assert!(!voice.gendered && !voice.numbered);
+        assert_eq!(voice.second.female, "gf");
     }
 
-    /// The names: one-based numbering on the first template, zero-based on
-    /// the second, the four suffixes in order, and the short groan standing
-    /// in for a missing heavy one.
-    #[test]
-    fn voice_names_number_and_share_the_groans() {
-        let voice = RaceVoice {
+    fn voice() -> RaceVoice {
+        RaceVoice {
             first: GenderedName {
-                male: "humanm".into(),
-                female: "humanf".into(),
+                male: "vhm".into(),
+                female: "vhf".into(),
             },
             second: GenderedName {
                 male: "otherm".into(),
                 female: "otherf".into(),
             },
-            first_numbered: true,
-            second_numbered: true,
-        };
-        let all = |_: &str| true;
-        let first = voice.names(0, false, VoiceSlot::First, all);
-        assert_eq!(first.grunt, "humanm01_GruntS");
-        assert_eq!(first.groan_short, "humanm01_GroanS");
-        assert_eq!(first.groan_heavy, "humanm01_GroanH");
-        assert_eq!(first.scream, "humanm01_Scream");
-        assert!(!first.shared_groan);
-        let female = voice.names(11, true, VoiceSlot::Second, all);
-        assert_eq!(female.grunt, "otherf11_GruntS");
-        let exists = |name: &str| name.ends_with("_GruntS") || name.ends_with("_GroanS");
-        let shared = voice.names(0, false, VoiceSlot::Second, exists);
-        assert_eq!(shared.groan_heavy, "otherm00_GroanS");
-        assert!(shared.shared_groan);
-        let only_heavy = |name: &str| name.ends_with("_GruntS") || name.ends_with("_GroanH");
-        let shared = voice.names(0, false, VoiceSlot::Second, only_heavy);
-        assert_eq!(shared.groan_short, "otherm00_GroanH");
-        assert!(shared.shared_groan);
+            gendered: true,
+            numbered: true,
+        }
     }
 
+    /// The names: one-based on the first builder, zero-based on the
+    /// second, both numbered by the first template's flag; the tens digit
+    /// unreduced; 15 characters at most.
     #[test]
-    fn the_race_database_falls_back_on_the_built_in_human() {
+    fn voice_names_number_from_the_first_template() {
+        let all = |_: &str| true;
+        let first = voice().names(0, false, VoiceSlot::First, all);
+        assert_eq!(first.grunt, "vhm01_GruntS");
+        assert_eq!(first.groan_short, "vhm01_GroanS");
+        assert_eq!(first.groan_heavy, "vhm01_GroanH");
+        assert_eq!(first.scream, "vhm01_Scream");
+        assert!(!first.shared_groan);
+        assert_eq!(
+            voice().names(11, true, VoiceSlot::Second, all).grunt,
+            "otherf11_GruntS"
+        );
+        assert_eq!(
+            voice().names(99, false, VoiceSlot::First, all).grunt,
+            "vhm:0_GruntS"
+        );
+        let mut long = voice();
+        long.second.male = "abcdefgh".into();
+        assert_eq!(
+            long.names(3, false, VoiceSlot::Second, all).grunt,
+            "abcdefgh03_Grun"
+        );
+        let plain = RaceVoice {
+            numbered: false,
+            gendered: false,
+            ..voice()
+        };
+        assert_eq!(
+            plain.names(5, true, VoiceSlot::Second, all).scream,
+            "otherm_Scream"
+        );
+    }
+
+    /// Only the first builder shares a missing groan.
+    #[test]
+    fn only_the_first_builder_shares_the_groans() {
+        let no_heavy = |name: &str| !name.ends_with("_GroanH");
+        let shared = voice().names(0, false, VoiceSlot::First, no_heavy);
+        assert_eq!(shared.groan_heavy, "vhm01_GroanS");
+        assert!(shared.shared_groan);
+        let no_short = |name: &str| !name.ends_with("_GroanS");
+        let shared = voice().names(0, false, VoiceSlot::First, no_short);
+        assert_eq!(shared.groan_short, "vhm01_GroanH");
+        let second = voice().names(0, false, VoiceSlot::Second, no_heavy);
+        assert_eq!(second.groan_heavy, "otherm00_GroanH");
+        assert!(!second.shared_groan);
+    }
+
+    /// A missing id takes the built-in record: no name, the `human` stem,
+    /// `Default` as its own moveset, no bleeding, and the fallback body and
+    /// stats.
+    #[test]
+    fn the_race_database_falls_back_on_the_built_in_record() {
         let records = [record("Human", "Human", "Default")];
         let races = parse(&database(&[(1, records[0].clone())])).unwrap();
         let db = RaceDb::new(races);
         assert_eq!(db.get(1).name, "Human");
         assert_eq!(db.of_character(0).name, "Human");
-        assert_eq!(db.get(9).name, "human");
-        assert_eq!(db.of_character(8).name, "human");
-        assert_eq!(db.builtin.model(), "humanbase.rfc");
-        assert!(db.builtin.bleeds());
+        let builtin = db.get(9);
+        assert_eq!(builtin.id, 0);
+        assert_eq!(builtin.name, "");
+        assert_eq!(builtin.model(), "humanbase.rfc");
+        assert_eq!(builtin.movesets, [String::new(), "Default".to_string()]);
+        assert!(!builtin.bleeds());
+        assert_eq!(builtin.health, 1.0);
+        assert_eq!(builtin.body, RaceBody::FALLBACK);
+        assert_eq!(builtin.stats, RaceStats::FALLBACK);
+        assert!(builtin.voice.first.male.is_empty() && !builtin.voice.gendered);
+        assert_eq!(db.of_character(8).id, 0);
     }
 }

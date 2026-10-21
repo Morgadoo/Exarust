@@ -26,7 +26,7 @@ simulation calls the module yet.
 `race_runtime` builds a race's runtime data once per id: its four gait
 rows scaled to the 83 Hz tick (the thrust and clock by 1/83, the push by
 1/83², the loader's brake distances and the backpedal's signs) and its two
-gendered voice templates, with the built-in human for a missing id. The
+gendered voice templates, with the built-in record for a missing id. The
 character body takes a race's gait rows from the same scaling. `shock`
 models the electric shock a body takes: the 150 ms window, the `elechit`
 sound's draws (pitch first, then gain), the races that are released into
