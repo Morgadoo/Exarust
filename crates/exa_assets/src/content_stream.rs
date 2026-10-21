@@ -20,14 +20,14 @@
 //! characters into the scene and attaches the characters requested for an
 //! existing entity. Requested database objects and the other requested
 //! characters wait in their result rings until the caller fetches them by
-//! the key it asked with: an object fetch reports "pending" while any
-//! request is still queued, as the original returns its null node then, and
-//! the scene's nil node when nothing matches.
+//! the key it asked with: a fetch always looks through the results, and when
+//! nothing matches it answers with the null node while any request is still
+//! queued, and with the scene's nil node otherwise.
 //!
-//! A placed level object may be the player: the arrival word names the kind
-//! the player's object has, and a record-level marker names it outright.
-//! Its position becomes the focus point the streamed characters are ordered
-//! by. Exarust drives [`ContentStream::step`] from its own executor; the
+//! A placed level object may be the player: the session's arrival word names
+//! the operative kind the player's object has, and a marker record names it
+//! when its first word equals the arrival word. The player's position
+//! becomes the focus point the streamed characters are ordered by. Exarust drives [`ContentStream::step`] from its own executor; the
 //! original runs the same loop on its stream thread.
 
 use std::collections::VecDeque;
@@ -118,24 +118,25 @@ pub enum Step {
     Idle,
 }
 
-/// A built placed level object and what the stream needs from it: the
-/// object's kind and position, and whether its database record marks it as
-/// the player. The original reads these off the node it just built, inside
-/// the object builder; Exarust's builders report them.
+/// A built placed level object and what the stream needs from it. The
+/// original reads these off the node it just built, inside the object
+/// builder; Exarust's builders report them.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LevelNode {
     /// The built scene node.
     pub node: u64,
-    /// The object's kind word: in the levels whose arrival word is one of
-    /// the two below, the placed player is the object of that kind.
-    pub kind: u32,
+    /// For an object of the operative class (the actors), the kind its
+    /// operative record carries: the placed player is the object whose kind
+    /// is the one the arrival word names. `None` for every other class.
+    pub operative_kind: Option<u32>,
     /// The node's position (centimetres, the original's world units), which
     /// becomes the focus point when the object is the player.
     pub position: [f32; 3],
-    /// The object's database record is the player marker (the original's
-    /// second rule: record `0x8000ac07`, type `0x40`, both tone words −1),
-    /// independent of the arrival word.
-    pub focus_marker: bool,
+    /// For an object of the marker class whose marker record exists and has
+    /// the player type: the record's two words in file order. The marker
+    /// names the player when the first word is the session's arrival word
+    /// and the second is all ones.
+    pub marker: Option<[u32; 2]>,
 }
 
 impl LevelNode {
@@ -143,24 +144,26 @@ impl LevelNode {
     pub fn new(node: u64) -> Self {
         Self {
             node,
-            kind: 0,
+            operative_kind: None,
             position: [0.0; 3],
-            focus_marker: false,
+            marker: None,
         }
     }
 }
 
-/// The arrival word of a journey between levels (`exa_ui::selection`'s
-/// `ARRIVAL_WORD`): placed objects of kind 15 are the player.
+/// The arrival word a journey between levels leaves in the session
+/// (`exa_ui::selection::ARRIVAL_WORD`): the player's operative kind is 15.
 pub const ARRIVAL_WORD: u32 = 0xEEEE_00DA;
-/// The second arrival word: placed objects of kind 18 are the player. It is
-/// the value the original's session falls back to when it is not the
-/// journey's arrival word; what starts that session is not traced. **[guess]**
-pub const RESPAWN_ARRIVAL_WORD: u32 = 0xEEEE_00DB;
-/// The player's object kind under [`ARRIVAL_WORD`].
+/// The arrival word a game started from the menu or loaded from a save
+/// leaves in the session: the player's operative kind is 18.
+pub const SESSION_START_WORD: u32 = 0xEEEE_00DB;
+/// The session's arrival word when nothing set one, and the marker record's
+/// second word.
+pub const NO_ARRIVAL_WORD: u32 = u32::MAX;
+/// The player's operative kind under [`ARRIVAL_WORD`].
 pub const ARRIVAL_PLAYER_KIND: u32 = 15;
-/// The player's object kind under [`RESPAWN_ARRIVAL_WORD`].
-pub const RESPAWN_PLAYER_KIND: u32 = 18;
+/// The player's operative kind under [`SESSION_START_WORD`].
+pub const SESSION_START_PLAYER_KIND: u32 = 18;
 
 /// The builders the scheduler calls. The original's stream thread calls into
 /// the database, character and item factories; Exarust supplies closures
@@ -196,7 +199,10 @@ struct LevelObjects {
     done: usize,
     built: Vec<u64>,
     missing: usize,
-    /// The kind of the player's placed object, from the arrival word.
+    /// The arrival word the level began with.
+    arrival: u32,
+    /// The operative kind of the player's placed object, from the arrival
+    /// word.
     player_kind: Option<u32>,
     /// The player's node, once built.
     player: Option<u64>,
@@ -217,11 +223,13 @@ pub struct LevelStream {
 pub enum Fetch {
     /// The object was built; its scene node.
     Ready(u64),
-    /// Its request is still queued or being built: try again later. The
-    /// original returns its null node here.
+    /// No result matched, but object requests are still queued, so the one
+    /// asked for may yet be built: try again later. The original returns its
+    /// null node here.
     Pending,
-    /// Nothing waits: the request is not there and no result matched. The
-    /// original returns the scene's nil node.
+    /// No result matched and no request is queued: the object was never
+    /// requested, failed to build or was already fetched. The original
+    /// returns the scene's nil node.
     Missing,
 }
 
@@ -309,17 +317,20 @@ impl ContentStream {
     }
 
     /// Begins a level's object list: the scene, how many objects the chunk
-    /// holds and the arrival word that names the player's object kind (0
-    /// when the load is not a journey). The original's level handoff.
+    /// holds and the session's arrival word, which names the player's
+    /// operative kind ([`NO_ARRIVAL_WORD`] when nothing set one). The
+    /// original's level handoff; any other word names no kind, so only a
+    /// marker record can then name the player.
     pub fn begin_level(&mut self, scene: u64, total: usize, arrival: u32) {
         let player_kind = match arrival {
             ARRIVAL_WORD => Some(ARRIVAL_PLAYER_KIND),
-            RESPAWN_ARRIVAL_WORD => Some(RESPAWN_PLAYER_KIND),
+            SESSION_START_WORD => Some(SESSION_START_PLAYER_KIND),
             _ => None,
         };
         self.level = LevelObjects {
             scene,
             total,
+            arrival,
             player_kind,
             ..LevelObjects::default()
         };
@@ -327,7 +338,10 @@ impl ContentStream {
     }
 
     /// Begins a level's streamed characters: the scene and the characters
-    /// with their positions. The focus point is the scene's, set by
+    /// with their positions. The original's reader leaves out the entries it
+    /// cannot turn into a placeholder (a missing character record, or a
+    /// conditional entry whose record does not match the session), so the
+    /// list holds only what will be built. The focus point is the scene's, set by
     /// [`ContentStream::set_focus`] or by the placed player ([`ContentStream::begin_level`]).
     pub fn begin_characters(
         &mut self,
@@ -488,11 +502,16 @@ impl ContentStream {
         Step::Idle
     }
 
-    /// Adopts a built placed object as the player when it is the arrival
-    /// kind or carries the player marker: its position becomes the focus
-    /// point the streamed characters are ordered by.
+    /// Adopts a built placed object as the player when it is an actor of the
+    /// arrival word's kind or its marker record matches the arrival word:
+    /// its position becomes the focus point the streamed characters are
+    /// ordered by. A later match replaces an earlier one, as the original's
+    /// globals are overwritten.
     fn adopt(&mut self, object: &LevelNode) {
-        let player = self.level.player_kind == Some(object.kind) || object.focus_marker;
+        let by_kind =
+            object.operative_kind.is_some() && self.level.player_kind == object.operative_kind;
+        let by_marker = object.marker == Some([self.level.arrival, NO_ARRIVAL_WORD]);
+        let player = by_kind || by_marker;
         if player {
             self.level.player = Some(object.node);
             self.focus = object.position;
@@ -519,22 +538,20 @@ impl ContentStream {
     }
 
     /// Fetches a finished database object by the key it was requested with:
-    /// the original's object fetch. While any object request is still
-    /// queued the original returns its null node without looking at the
-    /// results, and when nothing matches it returns the scene's nil node;
-    /// [`Fetch`] keeps the three outcomes apart. A found result leaves the
-    /// order of the rest.
+    /// the original's object fetch. The results are searched whatever is
+    /// queued, and a found one leaves the order of the rest; when none
+    /// matches, the original answers with its null node while any object
+    /// request is queued and with the scene's nil node otherwise, which
+    /// [`Fetch`] keeps apart.
     pub fn fetch_object(&mut self, id: u32, flags: u32, parent: u64) -> Fetch {
-        if !self.object_requests.is_empty() {
-            return Fetch::Pending;
-        }
         match self.object_results.remove(|result| {
             result.request.id == id
                 && result.request.flags == flags
                 && result.request.parent == parent
         }) {
             Some(result) => Fetch::Ready(result.node),
-            None => Fetch::Missing,
+            None if self.object_requests.is_empty() => Fetch::Missing,
+            None => Fetch::Pending,
         }
     }
 
@@ -641,10 +658,11 @@ mod tests {
         objects: Vec<Option<u64>>,
         characters: Vec<Option<u64>>,
         streamed_ok: bool,
-        /// A placed object that is the player: its index, kind and position.
+        /// A placed actor: its index, operative kind and position.
         player: Option<(usize, u32, [f32; 3])>,
-        /// A placed object carrying the player marker: index and position.
-        marker: Option<(usize, [f32; 3])>,
+        /// A placed object with a marker record: index, the record's words
+        /// and the position.
+        marker: Option<(usize, [u32; 2], [f32; 3])>,
     }
 
     impl ContentBuilders for Recorder {
@@ -655,13 +673,13 @@ mod tests {
             if let Some((at, kind, position)) = self.player
                 && at == index
             {
-                object.kind = kind;
+                object.operative_kind = Some(kind);
                 object.position = position;
             }
-            if let Some((at, position)) = self.marker
+            if let Some((at, words, position)) = self.marker
                 && at == index
             {
-                object.focus_marker = true;
+                object.marker = Some(words);
                 object.position = position;
             }
             Some(object)
@@ -973,10 +991,10 @@ mod tests {
         assert_eq!(stream.player(), None);
         let mut respawn = Recorder {
             level: vec![Some(43)],
-            player: Some((0, RESPAWN_PLAYER_KIND, [4.0, 5.0, 6.0])),
+            player: Some((0, SESSION_START_PLAYER_KIND, [4.0, 5.0, 6.0])),
             ..Recorder::default()
         };
-        stream.begin_level(7, 1, RESPAWN_ARRIVAL_WORD);
+        stream.begin_level(7, 1, SESSION_START_WORD);
         stream.step(&mut respawn);
         assert_eq!(stream.player(), Some(43));
         assert_eq!(stream.focus(), [4.0, 5.0, 6.0]);
@@ -1033,26 +1051,63 @@ mod tests {
             player: Some((0, ARRIVAL_PLAYER_KIND, [1.0, 2.0, 3.0])),
             ..Recorder::default()
         };
-        stream.begin_level(7, 1, RESPAWN_ARRIVAL_WORD);
+        stream.begin_level(7, 1, SESSION_START_WORD);
         stream.step(&mut other);
         assert_eq!(stream.player(), None);
         // The focus point is the scene's, not the level's: a list that
         // builds no player leaves it where it was.
         assert_eq!(stream.focus(), [1200.0, 48.0, -600.0]);
-        // The database record's own marker wins whatever the arrival word.
+        // A marker record names the player when its first word is the
+        // session's arrival word and its second is all ones, whatever kind
+        // the actors have.
         let mut builders = Recorder {
             level: vec![Some(43)],
-            marker: Some((0, [4.0, 5.0, 6.0])),
+            marker: Some((0, [NO_ARRIVAL_WORD, NO_ARRIVAL_WORD], [4.0, 5.0, 6.0])),
+            ..Recorder::default()
+        };
+        stream.begin_level(7, 1, NO_ARRIVAL_WORD);
+        stream.step(&mut builders);
+        assert_eq!(stream.player(), Some(43));
+        assert_eq!(stream.focus(), [4.0, 5.0, 6.0]);
+        // A marker for another arrival word, or with a second word that is
+        // not all ones, is not the player.
+        for words in [[0, NO_ARRIVAL_WORD], [NO_ARRIVAL_WORD, 0]] {
+            let mut builders = Recorder {
+                level: vec![Some(44)],
+                marker: Some((0, words, [7.0, 8.0, 9.0])),
+                ..Recorder::default()
+            };
+            stream.begin_level(7, 1, NO_ARRIVAL_WORD);
+            stream.step(&mut builders);
+            assert_eq!(stream.player(), None);
+            assert_eq!(stream.focus(), [4.0, 5.0, 6.0]);
+        }
+        let mut builders = Recorder {
+            level: vec![Some(45)],
+            marker: Some((0, [0, NO_ARRIVAL_WORD], [1.0, 1.0, 1.0])),
             ..Recorder::default()
         };
         stream.begin_level(7, 1, 0);
         stream.step(&mut builders);
-        assert_eq!(stream.player(), Some(43));
-        assert_eq!(stream.focus(), [4.0, 5.0, 6.0]);
+        assert_eq!(stream.player(), Some(45));
+    }
+
+    /// An object that is not an actor has no operative kind, so no kind can
+    /// make it the player.
+    #[test]
+    fn only_an_actor_can_be_the_player_by_kind() {
+        let mut stream = ContentStream::new();
+        let mut builders = Recorder {
+            level: vec![Some(41)],
+            ..Recorder::default()
+        };
+        stream.begin_level(7, 1, ARRIVAL_WORD);
+        stream.step(&mut builders);
+        assert_eq!(stream.player(), None);
     }
 
     #[test]
-    fn an_object_fetch_waits_while_its_request_is_queued() {
+    fn an_object_fetch_searches_the_results_and_waits_only_for_the_rest() {
         let mut stream = ContentStream::new();
         let mut builders = Recorder {
             objects: vec![Some(20)],
@@ -1063,11 +1118,20 @@ mod tests {
             flags: 2,
             parent: 7,
         });
-        // A queued request makes the fetch report pending without touching
-        // the results.
+        // A queued request makes an unmatched fetch pending.
         assert_eq!(stream.fetch_object(5, 2, 7), Fetch::Pending);
         stream.step(&mut builders);
+        stream.request_object(ObjectRequest {
+            id: 6,
+            flags: 2,
+            parent: 7,
+        });
+        // The built object is found although another request is queued, as
+        // the original always searches its results; the queued one is
+        // pending, a never-requested key is too while the queue is not empty.
         assert_eq!(stream.fetch_object(5, 2, 7), Fetch::Ready(20));
+        assert_eq!(stream.fetch_object(6, 2, 7), Fetch::Pending);
+        stream.cancel_object(6, 2, 7);
         assert_eq!(stream.fetch_object(5, 2, 7), Fetch::Missing);
         assert_eq!(stream.fetch_object(6, 2, 7), Fetch::Missing);
     }

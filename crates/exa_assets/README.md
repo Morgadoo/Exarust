@@ -143,15 +143,16 @@ completion queued for the main thread), one requested database object and
 one requested character in the same pass, and only when none of those was
 queued the pending streamed character nearest the focus point (squared
 distance, strict `<`, so the first of equal distances wins), else idle. A
-request that builds nothing is dropped. A placed object of the arrival word's
-player kind (or with the player marker on its database record) becomes the
-focus and its position the point the stream orders by; an object that cannot
+request that builds nothing is dropped. A placed actor of the operative kind
+the session's arrival word names (15 after a journey, 18 after a start or a
+load), or an object whose marker record's first word is the arrival word,
+becomes the player and its position the point the stream orders by; an object that cannot
 be built raises the missing count and leaves no hole in the built list. Its
 rings have the original's capacities (16 jobs, completions and attachments,
 32 object and character requests and results, 128 streamed results);
-`fetch_object` reports `Pending` while any object request is still queued
-(the original returns its null node then) and `Missing` when nothing matches
-(its scene's nil node); `fetch_character` fetches by owner and scene; `pump`
+`fetch_object` always searches the results, and when none matches reports
+`Pending` while any object request is still queued (the original's null
+node) and `Missing` otherwise (its scene's nil node); `fetch_character` fetches by owner and scene; `pump`
 runs completions, then hands over the streamed characters to insert and the
 characters to attach; `wait_for_level` returns the built object list and
 missing count only when the level had a list, and `wait_for_characters`
