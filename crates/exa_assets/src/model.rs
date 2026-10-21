@@ -174,11 +174,10 @@ pub struct ModelCache {
     warned: HashSet<String>,
 }
 
-/// Everything conversion needs from the world.
 /// The shading flags a diffuse slot adds from its texture word: a BC4 image
 /// is one grey channel, and a word that skips the LOD bias makes the
 /// material select a zero bias for its diffuse sample.
-fn diffuse_shading_flags(word: u32, grey: bool) -> u32 {
+pub(crate) fn diffuse_shading_flags(word: u32, grey: bool) -> u32 {
     let mut flags = 0;
     if grey {
         flags |= flags::GREY_DIFFUSE;
@@ -189,6 +188,7 @@ fn diffuse_shading_flags(word: u32, grey: bool) -> u32 {
     flags
 }
 
+/// Everything conversion needs from the world.
 pub struct ModelLoader<'a> {
     pub game: &'a GameData,
     pub cache: &'a mut ModelCache,
@@ -772,9 +772,11 @@ impl ModelLoader<'_> {
             ..default()
         };
         mat.params.texture_bias = self.cache.textures.settings().lod_bias();
-        match self.texture(&format!("{texture_key}d"), ColorSpace::Srgb) {
-            Some((img, alpha)) => {
-                mat.diffuse_map = Some(img);
+        let flags = texture::default_flags();
+        match self.texture_info(&format!("{texture_key}d"), ColorSpace::Srgb, flags) {
+            Some(TextureInfo { image, alpha, grey }) => {
+                mat.diffuse_map = Some(image);
+                mat.params.flags |= diffuse_shading_flags(flags, grey);
                 if alpha {
                     mat.alpha_mode = AlphaMode::Mask(0.5);
                 }

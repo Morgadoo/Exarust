@@ -273,7 +273,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // blurred.
     var scatter_col = material.diffuse.rgb;
     if skin && has(DIFFUSE_MAP) {
-        scatter_col *= textureSampleLevel(diffuse_map, diffuse_sampler, uv, SCATTER_COLOUR_LOD).rgb;
+        let blurred = textureSampleLevel(diffuse_map, diffuse_sampler, uv, SCATTER_COLOUR_LOD);
+        scatter_col *= select(blurred.rgb, blurred.rrr, has(GREY_DIFFUSE));
     }
     // A map tinted in sRGB space (a character's skin, which the original
     // bakes from undecoded texels and reads back as sRGB): decode the

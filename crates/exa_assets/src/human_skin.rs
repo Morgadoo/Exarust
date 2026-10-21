@@ -299,7 +299,11 @@ pub fn skin_material_of(
     // All read as stored, as the original loads them: the tint applies to
     // the encoded colour texels and the shading decodes the product.
     let [colour, normal, gloss] = race_textures(&stem, female);
-    mat.diffuse_map = loader.texture(&colour, ColorSpace::Linear).map(|t| t.0);
+    let word = crate::texture::default_flags();
+    if let Some(info) = loader.texture_info(&colour, ColorSpace::Linear, word) {
+        mat.diffuse_map = Some(info.image);
+        mat.params.flags |= crate::model::diffuse_shading_flags(word, info.grey);
+    }
     mat.normal_map = loader.texture(&normal, ColorSpace::Linear).map(|t| t.0);
     mat.gloss_map = loader.texture(&gloss, ColorSpace::Linear).map(|t| t.0);
     // Wounds show on the human skin through the skin program's blood.
