@@ -5,8 +5,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **25.5% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 21.6% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **26.1% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by function count (zero-byte imported names left out): 22.1% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **27.3%** reproduced.
 
 ## By section
@@ -17,7 +17,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Core, math & threading | 282 | 37 | 11 | 59% | 1% |  |
 | Data, assets & I/O | 440 | 91 | 26 | 39% | 0% | TStringLibrary, RF_DataManager, RFG_Locales routines (RFE_Export_RFC2 by address) |
 | Rendering & GPU | 823 | 334 | 63 | 42% | 3% | RFE_MeshSubdivide, RF_Polyhedra, FLX_IconRender |
-| World, levels & terrain | 454 | 174 | 31 | 33% | 7% | TRBDDoor, RF_Dynamics_Game, TRBRotator |
+| World, levels & terrain | 454 | 174 | 31 | 42% | 7% | SG_Teleporters, TSector, Scene node despawn and viewport step (TSceneTaskInt by address) |
 | Physics, bodies & cloth | 363 | 242 | 13 | 38% | 0% | RFE_Dynamics_Cloth, TSimObject |
 | Characters, motion & animation | 506 | 198 | 23 | 34% | 0% | TCharDecomp2, TKFCCatRom3f, SG_CharacterMorph |
 | Combat, weapons & damage | 14 | 3 | 3 | 31% | 0% | RFE_Effects_Blood, TBloodSprays |
@@ -102,7 +102,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | RFE_Image_Noise | Rendering & GPU | 7 | 90% | exa_render/src/image_noise.rs; exa_world/src/terrain/blend.rs |
 | RF_3DView | Rendering & GPU | 11 | 60% | exa_render/src/supersample.rs; exa_render/src/resolve.wesl |
 | FLX_System | Core, math & threading | 12 | 51% | glam via bevy::math; exa_game/src/player.rs |
-| Engine math (vectors, matrices, fast trig) | Core, math & threading | 8 | 73% | exa_game/src/player.rs; exa_game/src/torch.rs |
+| TRBDDoor | World, levels & terrain | 9 | 70% | exa_physics/src/door.rs |
 
 ## Combat rules
 
