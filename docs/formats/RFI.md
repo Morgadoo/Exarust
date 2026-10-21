@@ -153,6 +153,19 @@ texture. A test for an exact `ALPHA8` word, which would select the linear
 pair, can never match (the mask drops the bit it tests), so alpha-only
 images are squared too.
 
+Which stored level becomes the uploaded base follows `TextureDetail`
+(header flags bits 22–23 are the image's detail class 0–3):
+`first = max(0, class − TextureDetail + 1)`, then raised while width or
+height shifted by it is larger than the driver's largest texture side (the
+static 65536 before the driver reports its own). With the mip bit (`0x40`)
+in the creation word every stored level from `first` is uploaded and a
+generated chain runs to its end; without it only level `first` is uploaded
+(or generated), which halves the stored resolution instead of changing the
+format. A compressed image without a stored chain keeps its base level: the
+CPU cannot downsample it. The image's flag bits 16–18 repeat it on S, T and
+R, and the stored word's top byte marks data formats (`0x82`, `0x92`,
+`0x12`) that are never uploaded as sRGB.
+
 ## Packed storage (`0x50000000`)
 
 Only uncompressed formats are packed: emblems, fonts, some foliage, small

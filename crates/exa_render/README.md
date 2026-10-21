@@ -16,7 +16,9 @@ Rendering on Bevy/wgpu: material plug-ins, skinned characters, terrain, grass, l
   Procedural noise).
 - `mipmap`: the Kaiser mip chain, filtered in the space the format word
   picks (linear, squared colour or centred; [`docs/formats/RFI.md`](../../docs/formats/RFI.md),
-  Generated mip levels).
+  Generated mip levels), and the chain from a later first level, which the
+  texture detail setting uploads as the base (all levels from it, or that
+  level alone when mipmapping is off).
 - `shell`: `ShellMaterial`, the rooms' shells drawn opaque, unlit pure black, and the fading lid overlay (blended, no depth test, drawn last) ([`docs/RENDERING.md`](../../docs/RENDERING.md), Rooms and black fill).
 - `electricity`: the electric arcs' rules and material. `ArcMaterial` is the original's `_ElecMat01` fragment program (the texture's red mixed a third into the ribbon's V, the 24th and 6th powers, EleCol and EdgCol, squared, additive and two-sided; `arc.wesl`); the module also holds the 84-byte arc record, the weapon, spark-burst and device presets (sustained or one-shot), the charge an electrified item spends, the arc checks' release and rebuild rules and the jittered tendril ribbon (U along, V across) ([`docs/RENDERING.md`](../../docs/RENDERING.md), Electricity).
 - `flame`: `FlameMaterial` for the fire presets' particles (`flame.wesl`, premultiplied blending).

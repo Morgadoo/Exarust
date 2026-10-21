@@ -163,6 +163,27 @@ impl TextureCache {
         }
     }
 
+    /// Adds a record the caller has already decoded. `false` when the name
+    /// is already in the manager: the original logs "Added texture already
+    /// exists.", releases the supplied image and returns the live record.
+    pub fn insert_new(&mut self, key: TextureKey, flags: u32) -> bool {
+        if self.search(&key).is_ok() {
+            return false;
+        }
+        let index = self.search(&key).unwrap_or_else(|index| index);
+        self.entries.insert(
+            index,
+            TextureRecord {
+                key,
+                flags,
+                alpha: false,
+                image: None,
+                references: 1,
+            },
+        );
+        true
+    }
+
     /// Takes a reference without creating a record: the original's lookup
     /// used where a missing name is not an error.
     pub fn find(&mut self, key: &TextureKey) -> Option<&TextureRecord> {
@@ -254,6 +275,17 @@ mod tests {
         assert!(cache.release(&key("stone01d")));
         assert!(cache.get(&key("stone01d")).is_none());
         assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn a_duplicate_insert_is_refused_but_an_acquire_joins_the_live_record() {
+        let mut cache = TextureCache::default();
+        assert!(cache.insert_new(key("wall01d"), 0));
+        assert!(!cache.insert_new(key("wall01d"), 0x70000));
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.references(&key("wall01d")), 1);
+        assert!(!cache.acquire(key("wall01d"), 0x300).created);
+        assert_eq!(cache.references(&key("wall01d")), 2);
     }
 
     #[test]

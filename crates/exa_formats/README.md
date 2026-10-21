@@ -9,7 +9,7 @@ bytes and returns plain data or an error. No Bevy dependency.
 |---|---|
 | `kind` | format detection by magic for every shipped entry |
 | `chunk` | `.rfc` chunk framing and list chunks |
-| `rfi` | images: header, mip chain, BC1/3/4/5 + uncompressed decoding (through the `pixel` converters), RLE unpacking |
+| `rfi` | images: header, mip chain, BC1/3/4/5 + uncompressed decoding (through the `pixel` converters), RLE unpacking, the header flag word (stored chain, repeat per axis, the two-bit texture detail class) and the first uploaded mip level the detail setting picks |
 | `pixel` | the original's 20 pixel formats (ids, fallbacks, sizes) and its converters between them: grey, alpha, grey-alpha, two-channel with Z rebuilt, 1-bit, RGB and RGBA sources, luma, the float formats; the byte/float conversions its mipmapper picks per format word (linear, squared colour, centred) |
 | `rdb` | database index |
 | `roles` | roles (`charroles.rdb`): head, init script, variables and entries with their sections (the corpse script where the original reads it), the dialogue graphs of role entries and `narrator.rcd`; a level's locale in `locales.rdb` |
@@ -22,7 +22,7 @@ bytes and returns plain data or an error. No Bevy dependency.
 | `morph` | morph sets (`*morph.rfc`: landmarks, base positions, targets; both shipped sets decode), the physique weights a record gives them, the transfer to body parts and garments (nearest surface within 10 cm, the nearest landmark's offset, neighbour fill) and morphing a scene's meshes, bounds and joints |
 | `key_track` | node keyframe tracks (`0x3AC1`): play mode, duration, keys of time and position (the one shipped track decodes) |
 | `rigid_body` | models' rigid bodies: class, mobility, rest tetrahedron, point masses, collision spheres, links (pins, ropes, sliders with their travel), scrape and roll sound slots (every body of every pack decodes) |
-| `material` | material payloads: shading parameters, texture layers and slot roles, the physical divisor a rigid body's mobility is divided by and the impact sound prefix |
+| `material` | material payloads: shading parameters, texture layers and slot roles, the texture load flags (`0x54`), the subsurface colour (`0x6C`), the physical divisor a rigid body's mobility is divided by and the impact sound prefix |
 | `objdb` | object database items: names, models, occupancy, appearance, protection, what a worn item weighs (encumbrance, covered bones, articulated set, special kind, powered), the equip lock the conflict pass reads, weapon, shield, door and operative sections (including a teleporter's symbol atlas and destination level ids), and the mechanism a record makes of its model |
 | `trade_record` | the shop fields of an item record: listing word, parent id, the model's rarity tier, rarity and size words, and the rank by body, weapon or shield ([Trade fields](../../docs/formats/OTHER.md#trade-fields)) |
 | `weapon_stats` | weapon stat bytes and how a factory recipe and the item's condition produce them |
