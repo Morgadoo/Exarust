@@ -52,8 +52,9 @@ pub struct PageState {
     pub in_game: bool,
     /// The arena is available, so VERSUS appears.
     pub arena: bool,
-    /// The novice class is available.
-    pub novice: bool,
+    /// The expert difficulty is unlocked (practice's EXPERT row is greyed
+    /// out until then).
+    pub expert: bool,
 }
 
 impl PageState {
@@ -170,12 +171,12 @@ pub fn page_rows(page: Page, state: PageState) -> Vec<Row> {
             Row {
                 label: "NOVICE",
                 kind: RowKind::Novice,
-                enabled: state.novice,
+                enabled: true,
             },
             Row {
                 label: "EXPERT",
                 kind: RowKind::Expert,
-                enabled: true,
+                enabled: state.expert,
             },
             Row {
                 label: "BACK",
@@ -263,18 +264,21 @@ mod tests {
     }
 
     #[test]
-    fn the_class_page_gates_novice() {
+    fn the_class_page_gates_expert() {
+        // The page's second row takes the disabled flag until the expert
+        // difficulty is unlocked.
         let rows = page_rows(Page::ClassSelect, PageState::default());
         assert_eq!(rows[0].label, "NOVICE");
-        assert!(!rows[0].enabled);
+        assert!(rows[0].enabled);
+        assert!(!rows[1].enabled);
         let rows = page_rows(
             Page::ClassSelect,
             PageState {
-                novice: true,
+                expert: true,
                 ..Default::default()
             },
         );
-        assert!(rows[0].enabled);
+        assert!(rows[1].enabled);
         assert_eq!(page_origin(Page::ClassSelect, rows.len()), 0.45);
     }
 }
@@ -289,14 +293,26 @@ pub fn row_h(height: i32) -> f32 {
     (step as f32 * 0.5) / 4.0
 }
 
-/// `trunc(70·row_h)`.
+/// `round(70·row_h)` in single precision, half to even (the original's
+/// conversion rounds with the default mode).
 pub fn row_advance(row_h: f32) -> i32 {
-    (ROW_UNITS * row_h).trunc() as i32
+    round_even(ROW_UNITS * row_h)
 }
 
-/// The top of `index`'s row: `trunc(height·origin) + index·advance`.
+/// The page's top: `round(height·origin)` in single precision.
+pub fn page_top(height: i32, origin: f32) -> i32 {
+    round_even(height as f32 * origin)
+}
+
+/// The top of `index`'s row: the page's top plus `index` advances.
 pub fn row_top(height: i32, origin: f32, row_h: f32, index: usize) -> i32 {
-    (height as f32 * origin).trunc() as i32 + index as i32 * row_advance(row_h)
+    page_top(height, origin) + index as i32 * row_advance(row_h)
+}
+
+/// A single-precision value rounded half to even into an integer, as the
+/// original's conversion does (saturating, 0 for not-a-number).
+fn round_even(value: f32) -> i32 {
+    value.round_ties_even() as i32
 }
 
 /// The row containing `y`, using the original's `top <= y < top+band`.
@@ -312,7 +328,7 @@ pub fn hit_row(
     if advance <= 0 || band <= 0 {
         return None;
     }
-    let top = (height as f32 * origin).trunc() as i32;
+    let top = page_top(height, origin);
     if y < top {
         return None;
     }
@@ -324,57 +340,69 @@ pub fn hit_row(
     }
 }
 
-/// The menu's hit test: a row, a miss inside the open menu, or a pass to
-/// the forms behind it.
+/// The menu's hit test: a row, a point the menu keeps, or a point it lets
+/// through to the forms behind it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuHit {
-    /// The clicked row, 1-based.
+    /// The row under the point, 1-based.
     Row(usize),
-    /// The menu is open but the point is on no row.
+    /// The point is on no row, and the menu keeps it (the original's -1).
     Miss,
-    /// The menu is not open: the point belongs to the forms behind it.
+    /// The point is on no row, and the menu lets it through (0).
     Pass,
 }
 
-/// The original's row hit test: from the page's top, each row's band is
-/// `ascent − origin_y` tall and steps by `trunc(70·row_h)`; a row's x is its
-/// centred width. A disabled row takes no click but still advances. The
-/// hidden flag returns a miss without testing, and a closed menu a pass.
-#[allow(clippy::too_many_arguments)]
+/// The menu's geometry for one hit test.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MenuGeometry {
+    /// The client size.
+    pub width: i32,
+    pub height: i32,
+    /// The page's row origin, a fraction of the height.
+    pub origin: f32,
+    /// The row scale.
+    pub row_h: f32,
+    /// The menu font's ascent and the inset the band leaves above it (the
+    /// record's second origin field), both at the current scale.
+    pub ascent: i32,
+    pub band_inset: i32,
+}
+
+/// The original's row hit test. The first band's top is `round(H·origin)`;
+/// each row's band is `ascent − band_inset` tall, and the next top is
+/// `round(70·row_h + top)` in single precision. A row spans
+/// `round((W − row_width)·0.5)` plus its width; every bound is strict. A
+/// disabled row takes no point but still advances. While `covered` (a
+/// manual opened from the menu covers it) every point is kept; otherwise a
+/// point on no row is kept when the menu `blocks`, else let through.
 pub fn menu_hit(
-    height: i32,
-    origin: f32,
-    row_h: f32,
-    ascent: i32,
-    origin_y: i32,
-    selected_hidden: bool,
-    menu_open: bool,
+    geometry: MenuGeometry,
+    covered: bool,
+    blocks: bool,
     x: i32,
     y: i32,
-    width: i32,
     rows: &[Row],
     row_widths: &[i32],
 ) -> MenuHit {
-    if selected_hidden {
+    if covered {
         return MenuHit::Miss;
     }
-    if !menu_open {
-        return MenuHit::Pass;
-    }
-    let advance = row_advance(row_h);
-    let band = ascent - origin_y;
-    let mut top = (height as f32 * origin).trunc() as i32;
+    let miss = if blocks { MenuHit::Miss } else { MenuHit::Pass };
+    let band = geometry.ascent - geometry.band_inset;
+    let mut top = page_top(geometry.height, geometry.origin);
     for (index, row) in rows.iter().enumerate() {
         if row.enabled {
-            let left = (width - row_widths.get(index).copied().unwrap_or(0)) >> 1;
-            let right = left + row_widths.get(index).copied().unwrap_or(0);
-            if left < x && x < right && top < y && y < top + band {
+            let width = row_widths.get(index).copied().unwrap_or(0);
+            let left = round_even((i64::from(geometry.width) - i64::from(width)) as f32 * 0.5);
+            let (left, x, y) = (i64::from(left), i64::from(x), i64::from(y));
+            let top64 = i64::from(top);
+            if left < x && x < left + i64::from(width) && top64 < y && y < top64 + i64::from(band) {
                 return MenuHit::Row(index + 1);
             }
         }
-        top += advance;
+        top = round_even(ROW_UNITS * geometry.row_h + top as f32);
     }
-    MenuHit::Miss
+    miss
 }
 
 #[cfg(test)]
@@ -392,6 +420,11 @@ mod geometry_tests {
         assert_eq!(row_advance(1.0), 70);
         assert_eq!(row_advance(0.5), 35);
         assert_eq!(row_advance(1.5), 105);
+        // 70 × 0.25 is 17.5 and 70 × 0.75 is 52.5: both round to even.
+        assert_eq!(row_advance(0.25), 18);
+        assert_eq!(row_advance(0.75), 52);
+        // The page's top rounds: 0.37 of 1013 is 374.81.
+        assert_eq!(page_top(1013, 0.37), 375);
     }
 
     #[test]
@@ -446,138 +479,105 @@ impl RowKind {
     }
 }
 
-/// The session mode the menu was opened over (the original's mode word):
-/// its bit 2 marks an arena session and bit 1 a story in progress; the
-/// values 4 and 5 are the arena and story pause menus.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MenuSession {
-    /// No session: the title screen.
-    None,
-    /// A class select is open.
-    ClassSelect,
-    /// The character screen.
-    Create,
-    /// An arena pause menu.
-    ArenaPause,
-    /// A story pause menu.
-    StoryPause,
-    /// An arena session.
-    Arena,
-    /// The start menu.
-    Start,
-    /// Another registered mode word.
-    Other(u32),
+/// The game-mode word's values the menu reads.
+pub mod game_mode {
+    /// The title menu, no game.
+    pub const MENU: u32 = 0;
+    pub const PRACTICE: u32 = 2;
+    pub const STORY: u32 = 4;
+    pub const ARENA: u32 = 8;
+    /// The versus lobby, one of the script modes.
+    pub const VERSUS: u32 = 0x1010;
 }
 
-impl MenuSession {
-    /// The mode from the original's word.
-    pub fn from_mode(mode: u32) -> Self {
-        match mode {
-            0 => MenuSession::None,
-            1 | 8 => MenuSession::ClassSelect,
-            2 => MenuSession::Create,
-            4 => MenuSession::ArenaPause,
-            5 => MenuSession::StoryPause,
-            0x20 => MenuSession::Arena,
-            0x40 => MenuSession::Start,
-            other => MenuSession::Other(other),
-        }
-    }
-
-    /// The mode word.
-    pub fn mode(self) -> u32 {
-        match self {
-            MenuSession::None => 0,
-            MenuSession::ClassSelect => 1,
-            MenuSession::Create => 2,
-            MenuSession::ArenaPause => 4,
-            MenuSession::StoryPause => 5,
-            MenuSession::Arena => 0x20,
-            MenuSession::Start => 0x40,
-            MenuSession::Other(mode) => mode,
-        }
-    }
-
-    /// Bit 2: an arena session.
-    pub fn arena(self) -> bool {
-        matches!(self, MenuSession::Arena | MenuSession::ArenaPause)
-    }
-
-    /// Bit 1 of the mode word: a story session in progress.
-    pub fn story(self) -> bool {
-        self.mode() & 2 != 0
-    }
+/// The session-state word's values the menu reads.
+pub mod session_state {
+    pub const TRANSITIONING: u32 = 0;
+    pub const MAIN_MENU: u32 = 1;
+    /// The character creator is showing.
+    pub const CREATOR: u32 = 2;
+    pub const PLAYING: u32 = 3;
+    pub const WON: u32 = 4;
+    pub const ENDED: u32 = 5;
+    pub const ROUND_WON: u32 = 8;
+    pub const FORFEIT: u32 = 0x10;
+    /// A setup form before a game (the class select or the emblem).
+    pub const SETUP: u32 = 0x40;
 }
 
 /// What a clicked row asks the app to do, in the order the original's click
-/// handler decides. The caller performs the form work the original does
-/// behind these commands (opening the settings form, the character screen,
-/// starting a session); the command names the branch.
+/// handler decides. The caller performs the session and form work behind
+/// each command; the command names the branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuCommand {
     None,
-    /// Close a submenu (the original's close helper).
-    CloseSubmenu,
-    /// Begin a story session from the in-game page.
-    BeginStory,
+    /// Close the menu and go back to the game.
+    Resume,
+    /// Practice's in-game NEW GAME: a new practice character from the
+    /// creator.
+    NewPractice,
     OpenManual,
     OpenSettings,
-    /// Leave the session and show the titled menu.
+    /// The arena's in-game EXIT: save the arena and go back to the title.
+    ExitArena,
+    /// The story's in-game EXIT: the story's quit.
+    QuitStory,
+    /// Another game's in-game EXIT: back to the title.
     ExitToTitle,
-    /// Quit the game.
-    ExitGame,
-    /// Open the character creator (its mode argument) and the class select.
-    NewCareer,
-    /// Open the character screen (its mode argument).
-    CharacterScreen,
+    /// The title's EXIT: leave the application.
+    Quit,
     /// Show another page.
     ShowPage(Page),
-    /// Open the character creator with the arena's class list.
-    OpenArena,
-    /// Start a new game at the class select with the novice class.
-    Novice,
-    /// Start a new game at the class select with the expert class.
-    Expert,
-    /// Continue an arena session.
-    ContinueArena,
-    /// Set the session to 0x10 (the arena's continuing mode).
-    ArenaContinue,
-    /// A row asked to leave the application.
-    Quit,
+    /// The title's BEGIN: a story game, opened at the class select.
+    BeginStory,
+    /// A CONTINUE: the character screen of a game mode's saves.
+    CharacterScreen(u32),
+    /// The arena's NEW CAREER: an arena game, opened at the emblem
+    /// generator.
+    NewCareer,
+    /// VERSUS: the versus lobby's character creator.
+    Versus,
+    /// A practice difficulty: a practice game from the character creator.
+    Practice {
+        expert: bool,
+    },
+    /// An end page's third row (FORFEIT or EXIT): finish the match, as a
+    /// forfeit unless the session was won.
+    FinishMatch {
+        forfeit: bool,
+    },
 }
 
-/// The click handler's branch for `page`, the 1-based `row`, the session
-/// mode and whether a new game is ready (the original's field 0xeff90).
-pub fn menu_command(page: Page, row: usize, session: u32, new_game_ready: bool) -> MenuCommand {
-    let story = session & 2 != 0;
-    let arena = session & 4 != 0;
+/// The click handler's branch for `page` and the 1-based `row`, from the
+/// game-mode word, the session-state word and whether the versus lobby is
+/// available (which also decides whether the arena page's fourth row is
+/// VERSUS or BACK).
+pub fn menu_command(page: Page, row: usize, game: u32, state: u32, versus: bool) -> MenuCommand {
     match page {
         Page::InGame => match row {
             1 => {
-                if !story {
-                    MenuCommand::CloseSubmenu
+                if game & 2 == 0 {
+                    MenuCommand::Resume
                 } else {
-                    MenuCommand::BeginStory
+                    MenuCommand::NewPractice
                 }
             }
             2 => MenuCommand::OpenManual,
             3 => MenuCommand::OpenSettings,
-            4 => {
-                if session == MenuSession::ArenaPause.mode() {
-                    MenuCommand::ExitGame
-                } else {
-                    MenuCommand::ExitToTitle
-                }
-            }
+            4 => match game {
+                game_mode::ARENA => MenuCommand::ExitArena,
+                game_mode::STORY => MenuCommand::QuitStory,
+                _ => MenuCommand::ExitToTitle,
+            },
             _ => MenuCommand::None,
         },
         Page::Start => match row {
             1 => MenuCommand::NewCareer,
-            2 => MenuCommand::CharacterScreen,
+            2 => MenuCommand::CharacterScreen(game_mode::ARENA),
             3 => MenuCommand::ShowPage(Page::ClassSelect),
             4 => {
-                if new_game_ready {
-                    MenuCommand::NewCareer
+                if versus {
+                    MenuCommand::Versus
                 } else {
                     MenuCommand::ShowPage(Page::Title)
                 }
@@ -586,26 +586,22 @@ pub fn menu_command(page: Page, row: usize, session: u32, new_game_ready: bool) 
             _ => MenuCommand::None,
         },
         Page::ClassSelect => match row {
-            1 => MenuCommand::Novice,
-            2 => MenuCommand::Expert,
+            1 => MenuCommand::Practice { expert: false },
+            2 => MenuCommand::Practice { expert: true },
             3 => MenuCommand::ShowPage(Page::Start),
             _ => MenuCommand::None,
         },
         Page::ArenaPause | Page::StoryPause => match row {
-            1 => MenuCommand::CloseSubmenu,
+            1 => MenuCommand::Resume,
             2 => MenuCommand::OpenSettings,
-            3 => {
-                if arena {
-                    MenuCommand::ContinueArena
-                } else {
-                    MenuCommand::ArenaContinue
-                }
-            }
+            3 => MenuCommand::FinishMatch {
+                forfeit: state & 4 == 0,
+            },
             _ => MenuCommand::None,
         },
         Page::Title => match row {
-            1 => MenuCommand::OpenArena,
-            2 => MenuCommand::CharacterScreen,
+            1 => MenuCommand::BeginStory,
+            2 => MenuCommand::CharacterScreen(game_mode::STORY),
             3 => MenuCommand::ShowPage(Page::Start),
             4 => MenuCommand::OpenManual,
             5 => MenuCommand::OpenSettings,
@@ -686,7 +682,7 @@ mod action_tests {
     fn the_page_actions() {
         let state = PageState {
             arena: true,
-            novice: true,
+            expert: true,
             ..Default::default()
         };
         let start = page_rows(Page::Start, state);
@@ -712,10 +708,24 @@ pub struct Painted {
     pub selected: bool,
 }
 
-/// The original's paint pass: the first row's baseline is
-/// `trunc(height·origin) + ascent`; the selected row is skipped in the
-/// first pass and drawn last, nudged by `unit/3` when it is the confirmed
-/// row. Rows centre on `(width − row_width) >> 1`; a disabled row is grey.
+/// The suffix a row's mark count adds to its label: `[` for one, `[[` for
+/// two or more (the menu font draws those bytes as marks).
+pub fn marked_label(label: &str, marks: i32) -> String {
+    match marks {
+        i32::MIN..=0 => label.to_string(),
+        1 => format!("{label}["),
+        _ => format!("{label}[["),
+    }
+}
+
+/// The original's paint pass. The first row's baseline is
+/// `round(H·origin) + ascent`, and each row moves down by
+/// `round(70·row_h)`. Every row but the selected one is drawn in order, white
+/// or, when disabled, grey at half alpha; the selected row (if any) is drawn
+/// last in white with the menu's text shader, nudged down by `unit / 3`
+/// when it is also the pressed row. A row's x is `(W − row_width) >> 1` as
+/// an unsigned 64-bit shift: a row wider than the client lands far off to
+/// the right. A row's marks add their suffix ([`marked_label`]).
 #[allow(clippy::too_many_arguments)]
 pub fn paint(
     width: i32,
@@ -723,29 +733,30 @@ pub fn paint(
     origin: f32,
     row_h: f32,
     ascent: i32,
-    selected: usize,
-    confirmed: Option<usize>,
+    selected: Option<usize>,
+    pressed: Option<usize>,
     labels: &[&str],
     text_widths: &[i32],
-    styles: &[u32],
+    marks: &[i32],
     disabled: &[bool],
     unit: i32,
 ) -> Vec<Painted> {
     let advance = row_advance(row_h);
-    let y0 = (height as f32 * origin).trunc() as i32 + ascent;
+    let y0 = page_top(height, origin) + ascent;
+    let x_of = |index: usize| {
+        let spare = i64::from(width) - i64::from(text_widths.get(index).copied().unwrap_or(0));
+        ((spare as u64) >> 1) as f32 as i32
+    };
     let mut out = Vec::with_capacity(labels.len());
-    for (index, _) in labels.iter().enumerate() {
-        if index == selected {
+    for (index, label) in labels.iter().enumerate() {
+        if Some(index) == selected {
             continue;
         }
         out.push(Painted {
             index,
-            x: (width - text_widths.get(index).copied().unwrap_or(0)) >> 1,
+            x: x_of(index),
             y: y0 + index as i32 * advance,
-            text: exa_ui::form::styled_label(
-                styles.get(index).copied().unwrap_or(0),
-                labels[index],
-            ),
+            text: marked_label(label, marks.get(index).copied().unwrap_or(0)),
             colour: if disabled.get(index).copied().unwrap_or(false) {
                 [0x80, 0x80, 0x80, 0x80]
             } else {
@@ -754,21 +765,19 @@ pub fn paint(
             selected: false,
         });
     }
-    if let Some(label) = labels.get(selected) {
+    if let Some(selected) = selected
+        && let Some(label) = labels.get(selected)
+    {
         let mut y = y0 + selected as i32 * advance;
-        if confirmed == Some(selected) {
+        if pressed == Some(selected) {
             y += unit / 3;
         }
         out.push(Painted {
             index: selected,
-            x: (width - text_widths.get(selected).copied().unwrap_or(0)) >> 1,
+            x: x_of(selected),
             y,
-            text: exa_ui::form::styled_label(styles.get(selected).copied().unwrap_or(0), label),
-            colour: if disabled.get(selected).copied().unwrap_or(false) {
-                [0x80, 0x80, 0x80, 0x80]
-            } else {
-                [0xff, 0xff, 0xff, 0xff]
-            },
+            text: marked_label(label, marks.get(selected).copied().unwrap_or(0)),
+            colour: [0xff, 0xff, 0xff, 0xff],
             selected: true,
         });
     }
@@ -779,6 +788,17 @@ pub fn paint(
 mod command_tests {
     use super::*;
 
+    fn title_geometry() -> MenuGeometry {
+        MenuGeometry {
+            width: 1600,
+            height: 1080,
+            origin: 0.38,
+            row_h: row_h(1080),
+            ascent: 49,
+            band_inset: 16,
+        }
+    }
+
     #[test]
     fn the_menu_hit_uses_the_rows_centred_bands() {
         let state = PageState {
@@ -788,235 +808,177 @@ mod command_tests {
         };
         let rows = page_rows(Page::Title, state);
         let widths = [100, 140, 110, 120, 130, 90];
-        // Top 410; the first row's band is 33 tall and 100 wide centred
-        // at 750 (1600 − 100 over 2).
-        let hit = menu_hit(
-            1080,
-            0.38,
-            row_h(1080),
-            49,
-            16,
-            false,
-            true,
-            800,
-            420,
-            1600,
-            &rows,
-            &widths,
-        );
-        assert_eq!(hit, MenuHit::Row(1));
-        let hit = menu_hit(
-            1080,
-            0.38,
-            row_h(1080),
-            49,
-            16,
-            false,
-            true,
-            800,
-            490,
-            1600,
-            &rows,
-            &widths,
-        );
-        assert_eq!(hit, MenuHit::Row(2));
-        assert_eq!(
-            menu_hit(
-                1080,
-                0.38,
-                row_h(1080),
-                49,
-                16,
-                false,
-                true,
-                10,
-                420,
-                1600,
-                &rows,
-                &widths
-            ),
-            MenuHit::Miss
-        );
-        assert_eq!(
-            menu_hit(
-                1080,
-                0.38,
-                row_h(1080),
-                49,
-                16,
-                true,
-                true,
-                800,
-                420,
-                1600,
-                &rows,
-                &widths
-            ),
-            MenuHit::Miss
-        );
-        assert_eq!(
-            menu_hit(
-                1080,
-                0.38,
-                row_h(1080),
-                49,
-                16,
-                false,
-                false,
-                800,
-                420,
-                1600,
-                &rows,
-                &widths
-            ),
-            MenuHit::Pass
-        );
+        let g = title_geometry();
+        let hit =
+            |x, y, covered, blocks, rows: &[Row]| menu_hit(g, covered, blocks, x, y, rows, &widths);
+        // Top round(410.4) = 410; the first band is 49 − 16 = 33 tall and
+        // 100 wide from 750 (1600 − 100 over 2), every bound strict.
+        assert_eq!(hit(800, 420, false, true, &rows), MenuHit::Row(1));
+        assert_eq!(hit(800, 410, false, true, &rows), MenuHit::Miss);
+        assert_eq!(hit(800, 442, false, true, &rows), MenuHit::Row(1));
+        assert_eq!(hit(800, 443, false, true, &rows), MenuHit::Miss);
+        assert_eq!(hit(750, 420, false, true, &rows), MenuHit::Miss);
+        assert_eq!(hit(751, 420, false, true, &rows), MenuHit::Row(1));
+        // The next band starts round(70 + 410) = 480.
+        assert_eq!(hit(800, 490, false, true, &rows), MenuHit::Row(2));
+        // A miss is kept when the menu blocks, else let through; a covered
+        // menu keeps every point.
+        assert_eq!(hit(10, 420, false, true, &rows), MenuHit::Miss);
+        assert_eq!(hit(10, 420, false, false, &rows), MenuHit::Pass);
+        assert_eq!(hit(800, 420, true, false, &rows), MenuHit::Miss);
         // A disabled row does not hit but still advances the band.
         let disabled = page_rows(Page::Title, PageState::default());
-        assert_eq!(
-            menu_hit(
-                1080,
-                0.38,
-                row_h(1080),
-                49,
-                16,
-                false,
-                true,
-                800,
-                420,
-                1600,
-                &disabled,
-                &widths
-            ),
-            MenuHit::Row(1)
-        );
-        assert_eq!(
-            menu_hit(
-                1080,
-                0.38,
-                row_h(1080),
-                49,
-                16,
-                false,
-                true,
-                800,
-                490,
-                1600,
-                &disabled,
-                &widths
-            ),
-            MenuHit::Miss
-        );
+        assert_eq!(hit(800, 420, false, true, &disabled), MenuHit::Row(1));
+        assert_eq!(hit(800, 490, false, true, &disabled), MenuHit::Miss);
+        assert_eq!(hit(800, 560, false, true, &disabled), MenuHit::Row(3));
+    }
+
+    #[test]
+    fn the_hit_bands_step_by_a_rounded_float_sum() {
+        // At row scale 0.25 a step is 17.5 before rounding: from a top of
+        // 101 the sum 118.5 rounds to the even 118, and from 118 the sum
+        // 135.5 rounds to 136.
+        let g = MenuGeometry {
+            width: 100,
+            height: 1000,
+            origin: 0.101,
+            row_h: 0.25,
+            ascent: 10,
+            band_inset: 0,
+        };
+        let rows = page_rows(Page::Title, PageState::default());
+        let widths = [50; 6];
+        let hit = |y| menu_hit(g, false, true, 50, y, &rows, &widths);
+        assert_eq!(hit(102), MenuHit::Row(1));
+        assert_eq!(hit(119), MenuHit::Miss);
+        assert_eq!(hit(137), MenuHit::Row(3));
+        assert_eq!(hit(136), MenuHit::Miss);
     }
 
     #[test]
     fn the_click_handler_follows_the_pages() {
-        // Title: arena, character screen, start, manual, settings, quit.
+        use game_mode::{ARENA, MENU, PRACTICE, STORY};
+        use session_state::{ENDED, MAIN_MENU, WON};
+        let command = |page, row, game, state, versus| menu_command(page, row, game, state, versus);
+        // Title: BEGIN, CONTINUE, ARENA, MANUAL, SETTINGS, EXIT.
         assert_eq!(
-            menu_command(Page::Title, 1, 0, false),
-            MenuCommand::OpenArena
-        );
-        assert_eq!(
-            menu_command(Page::Title, 2, 0, false),
-            MenuCommand::CharacterScreen
-        );
-        assert_eq!(
-            menu_command(Page::Title, 3, 0, false),
-            MenuCommand::ShowPage(Page::Start)
-        );
-        assert_eq!(menu_command(Page::Title, 6, 0, false), MenuCommand::Quit);
-        // Start: class select, character screen, class page, new game, back.
-        assert_eq!(
-            menu_command(Page::Start, 1, 0, false),
-            MenuCommand::NewCareer
-        );
-        assert_eq!(
-            menu_command(Page::Start, 3, 0, false),
-            MenuCommand::ShowPage(Page::ClassSelect)
-        );
-        assert_eq!(
-            menu_command(Page::Start, 4, 0, false),
-            MenuCommand::ShowPage(Page::Title)
-        );
-        assert_eq!(
-            menu_command(Page::Start, 4, 0, true),
-            MenuCommand::NewCareer
-        );
-        assert_eq!(
-            menu_command(Page::Start, 5, 0, false),
-            MenuCommand::ShowPage(Page::Title)
-        );
-        // In-game.
-        assert_eq!(
-            menu_command(Page::InGame, 1, 0, false),
-            MenuCommand::CloseSubmenu
-        );
-        assert_eq!(
-            menu_command(Page::InGame, 1, 3, false),
+            command(Page::Title, 1, MENU, MAIN_MENU, false),
             MenuCommand::BeginStory
         );
         assert_eq!(
-            menu_command(Page::InGame, 2, 0, false),
+            command(Page::Title, 2, MENU, MAIN_MENU, false),
+            MenuCommand::CharacterScreen(STORY)
+        );
+        assert_eq!(
+            command(Page::Title, 3, MENU, MAIN_MENU, false),
+            MenuCommand::ShowPage(Page::Start)
+        );
+        assert_eq!(
+            command(Page::Title, 4, MENU, MAIN_MENU, false),
             MenuCommand::OpenManual
         );
         assert_eq!(
-            menu_command(Page::InGame, 3, 0, false),
+            command(Page::Title, 5, MENU, MAIN_MENU, false),
             MenuCommand::OpenSettings
         );
         assert_eq!(
-            menu_command(Page::InGame, 4, MenuSession::ArenaPause.mode(), false),
-            MenuCommand::ExitGame
+            command(Page::Title, 6, MENU, MAIN_MENU, false),
+            MenuCommand::Quit
         );
         assert_eq!(
-            menu_command(Page::InGame, 4, 8, false),
-            MenuCommand::ExitToTitle
+            command(Page::Title, 9, MENU, MAIN_MENU, false),
+            MenuCommand::None
         );
-        // Class select.
+        // Arena: NEW CAREER, CONTINUE, PRACTICE, then VERSUS and BACK, or
+        // only BACK without the versus lobby.
         assert_eq!(
-            menu_command(Page::ClassSelect, 1, 0, false),
-            MenuCommand::Novice
-        );
-        assert_eq!(
-            menu_command(Page::ClassSelect, 2, 0, false),
-            MenuCommand::Expert
+            command(Page::Start, 1, MENU, MAIN_MENU, false),
+            MenuCommand::NewCareer
         );
         assert_eq!(
-            menu_command(Page::ClassSelect, 3, 0, false),
+            command(Page::Start, 2, MENU, MAIN_MENU, false),
+            MenuCommand::CharacterScreen(ARENA)
+        );
+        assert_eq!(
+            command(Page::Start, 3, MENU, MAIN_MENU, false),
+            MenuCommand::ShowPage(Page::ClassSelect)
+        );
+        assert_eq!(
+            command(Page::Start, 4, MENU, MAIN_MENU, false),
+            MenuCommand::ShowPage(Page::Title)
+        );
+        assert_eq!(
+            command(Page::Start, 4, MENU, MAIN_MENU, true),
+            MenuCommand::Versus
+        );
+        assert_eq!(
+            command(Page::Start, 5, MENU, MAIN_MENU, true),
+            MenuCommand::ShowPage(Page::Title)
+        );
+        // Practice difficulty.
+        assert_eq!(
+            command(Page::ClassSelect, 1, MENU, MAIN_MENU, false),
+            MenuCommand::Practice { expert: false }
+        );
+        assert_eq!(
+            command(Page::ClassSelect, 2, MENU, MAIN_MENU, false),
+            MenuCommand::Practice { expert: true }
+        );
+        assert_eq!(
+            command(Page::ClassSelect, 3, MENU, MAIN_MENU, false),
             MenuCommand::ShowPage(Page::Start)
         );
-        // The pause pages.
+        // In-game: practice (bit 2 of the game mode) restarts, the others
+        // resume; EXIT depends on the game.
         assert_eq!(
-            menu_command(Page::ArenaPause, 1, 4, false),
-            MenuCommand::CloseSubmenu
+            command(Page::InGame, 1, STORY, 3, false),
+            MenuCommand::Resume
         );
         assert_eq!(
-            menu_command(Page::ArenaPause, 2, 4, false),
+            command(Page::InGame, 1, PRACTICE, 3, false),
+            MenuCommand::NewPractice
+        );
+        assert_eq!(
+            command(Page::InGame, 2, STORY, 3, false),
+            MenuCommand::OpenManual
+        );
+        assert_eq!(
+            command(Page::InGame, 3, STORY, 3, false),
             MenuCommand::OpenSettings
         );
         assert_eq!(
-            menu_command(Page::StoryPause, 3, 5, false),
-            MenuCommand::ContinueArena
+            command(Page::InGame, 4, ARENA, 3, false),
+            MenuCommand::ExitArena
         );
         assert_eq!(
-            menu_command(Page::StoryPause, 3, 2, false),
-            MenuCommand::ArenaContinue
+            command(Page::InGame, 4, STORY, 3, false),
+            MenuCommand::QuitStory
         );
         assert_eq!(
-            menu_command(Page::ArenaPause, 3, 4, false),
-            MenuCommand::ContinueArena
+            command(Page::InGame, 4, PRACTICE, 3, false),
+            MenuCommand::ExitToTitle
         );
-        assert_eq!(menu_command(Page::Title, 9, 0, false), MenuCommand::None);
-    }
-
-    #[test]
-    fn the_session_bits_match_the_mode_word() {
-        assert!(MenuSession::from_mode(3).story());
-        assert!(!MenuSession::from_mode(5).story());
-        assert!(MenuSession::from_mode(4).arena());
-        assert!(MenuSession::from_mode(0x20).arena());
-        assert_eq!(MenuSession::from_mode(8).mode(), 1);
-        assert_eq!(MenuSession::from_mode(6).mode(), 6);
-        assert!(MenuSession::from_mode(6).story());
+        // The end pages: the third row forfeits unless the state has bit 4.
+        assert_eq!(
+            command(Page::ArenaPause, 1, ARENA, WON, false),
+            MenuCommand::Resume
+        );
+        assert_eq!(
+            command(Page::ArenaPause, 2, ARENA, WON, false),
+            MenuCommand::OpenSettings
+        );
+        assert_eq!(
+            command(Page::ArenaPause, 3, ARENA, WON, false),
+            MenuCommand::FinishMatch { forfeit: false }
+        );
+        assert_eq!(
+            command(Page::StoryPause, 3, ARENA, 3, false),
+            MenuCommand::FinishMatch { forfeit: true }
+        );
+        assert_eq!(
+            command(Page::StoryPause, 3, ARENA, ENDED, false),
+            MenuCommand::FinishMatch { forfeit: false }
+        );
     }
 }
 
@@ -1028,7 +990,7 @@ mod paint_tests {
     fn the_rows_are_centred_and_the_selected_row_is_last() {
         let labels = ["BEGIN", "CONTINUE", "ARENA", "MANUAL", "SETTINGS", "EXIT"];
         let widths = [100, 140, 110, 120, 130, 90];
-        let styles = [0, 1, 0, 0, 0, 0];
+        let marks = [0, 1, 0, 2, 0, 0];
         let disabled = [false, true, false, false, false, false];
         let rows = paint(
             1600,
@@ -1036,44 +998,107 @@ mod paint_tests {
             0.38,
             row_h(1080),
             49,
-            0,
+            Some(0),
             None,
             &labels,
             &widths,
-            &styles,
+            &marks,
             &disabled,
             6,
         );
         assert_eq!(rows.len(), 6);
         assert_eq!(rows[0].index, 1);
+        // round(410.4) + 49 + 70.
         assert_eq!(rows[0].y, 529);
         assert_eq!(rows[0].x, 730);
         assert_eq!(rows[0].colour, [0x80, 0x80, 0x80, 0x80]);
-        assert_eq!(rows[0].text, "[CONTINUE]");
+        assert_eq!(rows[0].text, "CONTINUE[");
+        assert_eq!(rows[2].text, "MANUAL[[");
         assert_eq!(rows.last().unwrap().index, 0);
         assert_eq!(rows.last().unwrap().y, 459);
         assert_eq!(rows.last().unwrap().x, 750);
         assert!(rows.last().unwrap().selected);
+        // A disabled selected row is drawn white.
+        let rows = paint(
+            1600,
+            1080,
+            0.38,
+            row_h(1080),
+            49,
+            Some(1),
+            None,
+            &labels,
+            &widths,
+            &marks,
+            &disabled,
+            6,
+        );
+        assert_eq!(rows.last().unwrap().colour, [0xff, 0xff, 0xff, 0xff]);
+        // No selection draws every row in order.
+        let rows = paint(
+            1600,
+            1080,
+            0.38,
+            row_h(1080),
+            49,
+            None,
+            None,
+            &labels,
+            &widths,
+            &marks,
+            &disabled,
+            6,
+        );
+        assert_eq!(
+            rows.iter().map(|r| r.index).collect::<Vec<_>>(),
+            [0, 1, 2, 3, 4, 5]
+        );
+        assert!(rows.iter().all(|r| !r.selected));
     }
 
     #[test]
-    fn the_last_selected_row_is_nudged() {
+    fn the_pressed_selected_row_is_nudged() {
         let labels = ["A", "B", "C"];
+        let draw = |selected, pressed| {
+            paint(
+                100,
+                100,
+                0.0,
+                1.0,
+                0,
+                selected,
+                pressed,
+                &labels,
+                &[10, 10, 10],
+                &[0, 0, 0],
+                &[false, false, false],
+                6,
+            )
+        };
+        assert_eq!(draw(Some(2), Some(2)).last().unwrap().y, 2 * 70 + 2);
+        assert_eq!(draw(Some(1), Some(1)).last().unwrap().y, 70 + 2);
+        assert_eq!(draw(Some(1), None).last().unwrap().y, 70);
+        assert_eq!(draw(Some(1), Some(2)).last().unwrap().y, 70);
+    }
+
+    #[test]
+    fn a_row_wider_than_the_client_lands_off_to_the_right() {
         let rows = paint(
             100,
             100,
             0.0,
             1.0,
             0,
-            2,
-            Some(2),
-            &labels,
-            &[10, 10, 10],
-            &[0, 0, 0],
-            &[false, false, false],
+            None,
+            None,
+            &["WIDE"],
+            &[102],
+            &[0],
+            &[false],
             6,
         );
-        assert_eq!(rows.last().unwrap().index, 2);
-        assert_eq!(rows.last().unwrap().y, 2 * 70 + 2);
+        // (100 − 102) as an unsigned 64-bit value, halved, is far past any
+        // client width.
+        assert_eq!(rows[0].x, i32::MAX);
     }
 }

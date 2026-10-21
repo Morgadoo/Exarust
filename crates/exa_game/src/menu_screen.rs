@@ -2,10 +2,14 @@
 //! opened and closed with F1, whose mouse and keyboard follow the original's
 //! page table, hit test and click handler ([`crate::menu_pages`]).
 //!
-//! The original draws its row text from the `mmenutxt01.rfi` sprite sheet.
-//! This screen draws the same rows in the game's base font until the sprite
-//! sheet's quads are wired (`docs/UI.md`, Forms); the row positions, widths,
-//! selection, commands and page flow are the original's.
+//! The original draws its row text with the menu font's letter sheet
+//! (`titlefont.rfi`). This screen draws the same rows in the game's base
+//! font until the sheet's quads are wired (`docs/UI.md`, Main menu); the row
+//! positions, widths, selection, press, commands and page flow are the
+//! original's. A row is selected under the pointer or with Up and Down, a
+//! press nudges the selected row down, and the row runs on the release over
+//! it or on Enter. Escape goes back from the arena and practice pages, as
+//! the original's does at the main menu, and closes the screen elsewhere.
 
 use std::sync::{Arc, Mutex};
 
@@ -22,8 +26,8 @@ use exa_ui::menu::{back_main_menu, menu_row_scale};
 use exa_ui::scale::GuiScale;
 
 use crate::menu_pages::{
-    MenuCommand, MenuHit, MenuSession, Page, PageState, Row, menu_command, menu_hit, page_origin,
-    page_rows, paint, row_h,
+    MenuCommand, MenuGeometry, MenuHit, Page, PageState, Row, RowKind, game_mode, menu_command,
+    menu_hit, page_origin, page_rows, paint, row_h, session_state,
 };
 
 /// The overlay's darkness.
@@ -40,17 +44,19 @@ const DISABLED_COLOUR: [u8; 3] = [128, 128, 128];
 pub struct MenuScreen {
     pub open: bool,
     pub page: Page,
+    /// The selected row (the pointer's or the keys'), 0-based.
     pub selected: usize,
-    pub hover: usize,
-    /// The row whose click was confirmed (the original's confirmed row).
-    pub confirmed: Option<usize>,
+    /// The row a press is held on, drawn nudged down; it runs when the
+    /// press is released over it.
+    pub pressed: Option<usize>,
+    /// The game-mode and session-state words the commands read.
+    pub game: u32,
     pub session: u32,
-    pub new_game_ready: bool,
     pub state: PageState,
     /// The page was rebuilt since the last draw.
     dirty: bool,
-    /// The menu's hidden flag.
-    hidden: bool,
+    /// A manual opened from the menu covers it.
+    covered: bool,
 }
 
 impl Default for MenuScreen {
@@ -59,13 +65,12 @@ impl Default for MenuScreen {
             open: false,
             page: Page::Title,
             selected: 0,
-            hover: 0,
-            confirmed: None,
-            session: 0,
-            new_game_ready: false,
+            pressed: None,
+            game: game_mode::MENU,
+            session: session_state::MAIN_MENU,
             state: PageState::default(),
             dirty: true,
-            hidden: false,
+            covered: false,
         }
     }
 }
@@ -74,15 +79,20 @@ impl MenuScreen {
     /// Opens the title page.
     pub fn open(&mut self) {
         self.open = true;
-        self.page = Page::Title;
-        self.selected = 0;
-        self.hover = 0;
-        self.confirmed = None;
-        self.dirty = true;
+        self.show(Page::Title);
     }
 
     pub fn close(&mut self) {
         self.open = false;
+        self.pressed = None;
+        self.dirty = true;
+    }
+
+    /// Shows `page` from its first row.
+    pub fn show(&mut self, page: Page) {
+        self.page = page;
+        self.selected = 0;
+        self.pressed = None;
         self.dirty = true;
     }
 
@@ -94,41 +104,44 @@ impl MenuScreen {
             return;
         }
         self.selected = (self.selected as i32 + delta).clamp(0, count - 1) as usize;
-        self.hover = self.selected;
         self.dirty = true;
     }
 
     /// The command of the 1-based row.
     pub fn command(&self, row: usize) -> MenuCommand {
-        menu_command(self.page, row, self.session, self.new_game_ready)
+        menu_command(self.page, row, self.game, self.session, self.state.arena)
     }
 
-    /// Runs a command whose page work this screen owns.
+    /// Runs a command whose page work this screen owns: a page change, the
+    /// resume (the screen closes) and the exits to the title. The session
+    /// and form work of the others belongs to the game modes.
     pub fn apply(&mut self, command: MenuCommand) {
         match command {
-            MenuCommand::ShowPage(page) => {
-                self.page = page;
-                self.selected = 0;
-                self.hover = 0;
-                self.confirmed = None;
-                self.dirty = true;
+            MenuCommand::ShowPage(page) => self.show(page),
+            MenuCommand::Resume => self.close(),
+            MenuCommand::ExitArena | MenuCommand::QuitStory | MenuCommand::ExitToTitle => {
+                self.show(Page::Title)
             }
-            MenuCommand::CloseSubmenu | MenuCommand::ExitToTitle => self.close(),
             MenuCommand::None => {}
-            _ => {
-                // The session and form work belongs to the game modes: this
-                // screen only names the branch.
-                debug!("menu command {command:?}");
-            }
+            _ => debug!("menu command {command:?}"),
         }
+        self.pressed = None;
     }
 
-    /// The row's width in window pixels, as the menu sprite font measures
-    /// it.
-    pub fn row_width(&self, row: &crate::menu_pages::Row, row_scale: f32) -> i32 {
-        MenuFont::at_scale(menu_font_scale(row_scale))
-            .row_width(row.label.as_bytes())
-            .max(1)
+    /// The back move (the original's back handler): the arena page goes to
+    /// the title and the practice page to the arena page. Returns whether
+    /// the page changed.
+    pub fn back(&mut self) -> bool {
+        let back = back_main_menu(self.page as i32);
+        if back.sound {
+            self.show(page_from_number(back.page));
+        }
+        back.sound
+    }
+
+    /// The row's width in window pixels, as the menu font measures it.
+    pub fn row_width(&self, row: &Row, row_scale: f32) -> i32 {
+        row_width_px(row, row_scale)
     }
 }
 
@@ -138,14 +151,14 @@ struct MenuFontRes(Option<GameFont>);
 /// The geometry the menu's form hit tests against, shared with the GUI
 /// core's form record.
 #[derive(Debug, Clone, Default)]
-struct MenuGeometry {
+struct FormGeometry {
     bounds: GuiRect,
     rows: Vec<RowGeometry>,
     origin: f32,
     row_h: f32,
     ascent: i32,
-    origin_y: i32,
-    hidden: bool,
+    band_inset: i32,
+    covered: bool,
     open: bool,
 }
 
@@ -158,7 +171,7 @@ struct RowGeometry {
 
 /// The menu's form in the GUI core: the rows are its controls (1-based).
 struct MenuForm {
-    geometry: Arc<Mutex<MenuGeometry>>,
+    geometry: Arc<Mutex<FormGeometry>>,
     selected: i32,
 }
 
@@ -184,27 +197,31 @@ impl FormHost for MenuForm {
             .iter()
             .map(|row| Row {
                 label: "",
-                kind: crate::menu_pages::RowKind::Begin,
+                kind: RowKind::Begin,
                 enabled: row.enabled,
             })
             .collect();
         let widths: Vec<i32> = geometry.rows.iter().map(|row| row.width).collect();
+        let shape = MenuGeometry {
+            width: geometry.bounds.width(),
+            height: geometry.bounds.height(),
+            origin: geometry.origin,
+            row_h: geometry.row_h,
+            ascent: geometry.ascent,
+            band_inset: geometry.band_inset,
+        };
         match menu_hit(
-            geometry.bounds.height(),
-            geometry.origin,
-            geometry.row_h,
-            geometry.ascent,
-            geometry.origin_y,
-            geometry.hidden,
-            geometry.open,
+            shape,
+            geometry.covered,
+            true,
             x - geometry.bounds.left,
             y - geometry.bounds.top,
-            geometry.bounds.width(),
             &rows,
             &widths,
         ) {
             MenuHit::Row(row) => row as i32,
-            _ => -1,
+            MenuHit::Miss => -1,
+            MenuHit::Pass => 0,
         }
     }
 
@@ -222,7 +239,7 @@ impl FormHost for MenuForm {
 #[derive(Resource)]
 struct MenuRouter {
     task: GuiTask,
-    geometry: Arc<Mutex<MenuGeometry>>,
+    geometry: Arc<Mutex<FormGeometry>>,
     form: FormId,
 }
 
@@ -234,7 +251,7 @@ struct MenuCanvas;
 struct DrawnMenu {
     page: Option<Page>,
     selected: usize,
-    hover: usize,
+    pressed: Option<usize>,
     size: (u32, u32),
 }
 
@@ -259,7 +276,7 @@ fn load_font(mut commands: Commands, game: Option<Res<Game>>) {
 
 /// Creates the menu's form in a GUI core task.
 fn setup_router(mut commands: Commands) {
-    let geometry = Arc::new(Mutex::new(MenuGeometry::default()));
+    let geometry = Arc::new(Mutex::new(FormGeometry::default()));
     let mut task = GuiTask::new((800, 600));
     let form = task.add(Box::new(MenuForm {
         geometry: Arc::clone(&geometry),
@@ -290,7 +307,7 @@ fn canvas_node() -> impl Bundle {
 
 /// Reads the pointer and keys while the menu is open.
 fn input(
-    menu: ResMut<MenuScreen>,
+    mut menu: ResMut<MenuScreen>,
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -300,9 +317,10 @@ fn input(
     if !menu.open {
         return;
     }
-    let mut menu = menu;
     if keys.just_pressed(KeyCode::Escape) {
-        menu.close();
+        if !menu.back() {
+            menu.close();
+        }
         return;
     }
     if keys.just_pressed(KeyCode::ArrowDown) {
@@ -310,6 +328,15 @@ fn input(
     }
     if keys.just_pressed(KeyCode::ArrowUp) {
         menu.move_selection(-1);
+    }
+    if keys.just_pressed(KeyCode::Enter) {
+        let row = menu.selected + 1;
+        run(&mut menu, row, &mut exit);
+        return;
+    }
+    if keys.just_pressed(KeyCode::Backspace) {
+        menu.back();
+        return;
     }
     let Ok(window) = windows.single() else {
         return;
@@ -319,86 +346,74 @@ fn input(
     let width = window.physical_width() as i32;
     let row_scale = menu_row_scale(height);
     let rows = page_rows(menu.page, menu.state);
-    let widths: Vec<i32> = rows
-        .iter()
-        .map(|row| row_width_px(row, row_scale))
-        .collect();
     let Some(cursor) = window.cursor_position() else {
         return;
     };
     let x = (cursor.x * scale) as i32;
     let y = (cursor.y * scale) as i32;
     let menu_font = MenuFont::at_scale(menu_font_scale(row_scale));
-    let origin = page_origin(menu.page, rows.len());
     if let Ok(mut geometry) = router.geometry.lock() {
         geometry.bounds = GuiRect::new(0, 0, width, height);
         geometry.rows = rows
             .iter()
-            .zip(widths.iter())
-            .map(|(row, &width)| RowGeometry {
-                width,
+            .map(|row| RowGeometry {
+                width: row_width_px(row, row_scale),
                 enabled: row.enabled,
             })
             .collect();
-        geometry.origin = origin;
+        geometry.origin = page_origin(menu.page, rows.len());
         geometry.row_h = row_h(height);
         geometry.ascent = menu_font.ascent;
-        geometry.origin_y = menu_font.origin.1;
-        geometry.hidden = menu.hidden;
+        geometry.band_inset = menu_font.origin.1;
+        geometry.covered = menu.covered;
         geometry.open = menu.open;
     }
     let hit_row = {
         let hit = router.task.hit_and_focus(x, y);
-        (hit.form == Some(router.form) && hit.control > 0).then_some(hit.control as usize)
+        (hit.form == Some(router.form) && hit.control > 0).then_some(hit.control as usize - 1)
     };
+    // The pointer selects the row under it; while a press is held only
+    // the pressed row can be selected.
     if let Some(row) = hit_row
-        && menu.hover != row - 1
+        && menu.selected != row
+        && menu.pressed.is_none_or(|pressed| pressed == row)
     {
-        menu.hover = row - 1;
+        menu.selected = row;
         menu.dirty = true;
     }
     if mouse.just_pressed(MouseButton::Left)
         && let Some(row) = hit_row
     {
-        let command = menu.command(row);
-        menu.selected = row - 1;
-        menu.confirmed = Some(row - 1);
-        if matches!(command, MenuCommand::Quit | MenuCommand::ExitGame) {
-            exit.write(AppExit::Success);
-        }
-        menu.apply(command);
+        menu.selected = row;
+        menu.pressed = Some(row);
         menu.dirty = true;
     }
-    if keys.just_pressed(KeyCode::Enter) {
-        let row = menu.selected + 1;
-        let command = menu.command(row);
-        menu.confirmed = Some(menu.selected);
-        if matches!(command, MenuCommand::Quit | MenuCommand::ExitGame) {
-            exit.write(AppExit::Success);
+    if mouse.just_released(MouseButton::Left)
+        && let Some(pressed) = menu.pressed
+    {
+        if hit_row == Some(pressed) {
+            run(&mut menu, pressed + 1, &mut exit);
+        } else {
+            menu.pressed = None;
         }
-        menu.apply(command);
         menu.dirty = true;
-    }
-    // The back key's page changes.
-    if keys.just_pressed(KeyCode::Backspace) {
-        let back = back_main_menu(page_number(menu.page));
-        if back.sound {
-            menu.page = page_from_number(back.page);
-            menu.selected = 0;
-            menu.hover = 0;
-            menu.dirty = true;
-        }
     }
 }
 
-fn row_width_px(row: &crate::menu_pages::Row, row_scale: f32) -> i32 {
+/// Runs the 1-based row's command; the title's EXIT leaves the app.
+fn run(menu: &mut MenuScreen, row: usize, exit: &mut MessageWriter<AppExit>) {
+    let command = menu.command(row);
+    if command == MenuCommand::Quit {
+        exit.write(AppExit::Success);
+    }
+    menu.apply(command);
+    menu.dirty = true;
+}
+
+fn row_width_px(row: &Row, row_scale: f32) -> i32 {
     MenuFont::at_scale(menu_font_scale(row_scale))
         .row_width(row.label.as_bytes())
         .max(1)
-}
-
-fn page_number(page: Page) -> i32 {
-    page as i32
 }
 
 fn page_from_number(number: i32) -> Page {
@@ -446,11 +461,11 @@ fn draw(
     let drawn = canvas
         .iter()
         .next()
-        .map(|(_, _, _, drawn)| (drawn.page, drawn.selected, drawn.hover, drawn.size));
-    let up_to_date = drawn.is_some_and(|(page, selected, hover, size)| {
+        .map(|(_, _, _, drawn)| (drawn.page, drawn.selected, drawn.pressed, drawn.size));
+    let up_to_date = drawn.is_some_and(|(page, selected, pressed, size)| {
         page == Some(menu.page)
             && selected == menu.selected
-            && hover == menu.hover
+            && pressed == menu.pressed
             && size == (width, height)
             && !menu.dirty
     });
@@ -474,7 +489,7 @@ fn draw(
         .map(|row| row_width_px(row, row_scale))
         .collect();
     let labels: Vec<&str> = rows.iter().map(|row| row.label).collect();
-    let styles: Vec<u32> = vec![0; rows.len()];
+    let marks: Vec<i32> = vec![0; rows.len()];
     let disabled: Vec<bool> = rows.iter().map(|row| !row.enabled).collect();
     let menu_font = MenuFont::at_scale(menu_font_scale(row_scale));
     let painted = paint(
@@ -483,11 +498,11 @@ fn draw(
         page_origin(menu.page, rows.len()),
         row_h(height as i32),
         menu_font.ascent,
-        menu.selected,
-        menu.confirmed,
+        Some(menu.selected),
+        menu.pressed,
         &labels,
         &widths,
-        &styles,
+        &marks,
         &disabled,
         exa_ui::gui_font::gui_level(exa_ui::gui_font::level_for_unit(scale.scale as i32)).unit,
     );
@@ -560,7 +575,7 @@ fn draw(
         *visibility = Visibility::Inherited;
         drawn.page = Some(menu.page);
         drawn.selected = menu.selected;
-        drawn.hover = menu.hover;
+        drawn.pressed = menu.pressed;
         drawn.size = (width, height);
         spawned = true;
     }
@@ -583,7 +598,7 @@ fn draw(
             DrawnMenu {
                 page: Some(menu.page),
                 selected: menu.selected,
-                hover: menu.hover,
+                pressed: menu.pressed,
                 size: (width, height),
             },
         ));
@@ -644,11 +659,6 @@ fn blit(
     }
 }
 
-/// The session helper the screen's state carries.
-pub fn session_mode(session: MenuSession) -> u32 {
-    session.mode()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -670,19 +680,27 @@ mod tests {
         menu.move_selection(99);
         assert_eq!(menu.selected, 5);
         assert_eq!(menu.command(6), MenuCommand::Quit);
+        assert_eq!(menu.command(3), MenuCommand::ShowPage(Page::Start));
         menu.apply(MenuCommand::ShowPage(Page::Start));
         assert_eq!(menu.page, Page::Start);
         assert_eq!(menu.selected, 0);
-        menu.apply(MenuCommand::CloseSubmenu);
+        // Back goes to the title, and from the title nowhere.
+        assert!(menu.back());
+        assert_eq!(menu.page, Page::Title);
+        assert!(!menu.back());
+        menu.apply(MenuCommand::ExitToTitle);
+        assert!(menu.open);
+        assert_eq!(menu.page, Page::Title);
+        menu.apply(MenuCommand::Resume);
         assert!(!menu.open);
     }
 
     #[test]
     fn the_row_width_uses_the_menu_sprite_record() {
         let menu = MenuScreen::default();
-        let row = crate::menu_pages::Row {
+        let row = Row {
             label: "AB",
-            kind: crate::menu_pages::RowKind::Begin,
+            kind: RowKind::Begin,
             enabled: true,
         };
         // Half the row scale: A 38, B 29, less the trim 3.
@@ -704,7 +722,7 @@ mod tests {
 
     #[test]
     fn the_menu_form_hits_through_the_gui_core_geometry() {
-        let geometry = Arc::new(Mutex::new(MenuGeometry {
+        let geometry = Arc::new(Mutex::new(FormGeometry {
             bounds: GuiRect::new(0, 0, 1600, 1080),
             rows: vec![RowGeometry {
                 width: 100,
@@ -713,8 +731,8 @@ mod tests {
             origin: 0.38,
             row_h: 1.0,
             ascent: 49,
-            origin_y: 16,
-            hidden: false,
+            band_inset: 16,
+            covered: false,
             open: true,
         }));
         let form = MenuForm {

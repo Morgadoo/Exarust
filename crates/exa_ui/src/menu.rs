@@ -1298,47 +1298,53 @@ fn round_even(value: f64) -> i64 {
     value.round_ties_even() as i64
 }
 
-/// A menu show's mode: what the shown page is for and what the call sets
-/// up. The app performs the session work; these are the original's fields.
+/// What a menu transition opens once the menu has closed. Every one first
+/// clears the menu's row marks, hides it, shows the title page and tears
+/// the world down; all but the character screen then copy the game mode
+/// into the creator's mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuShow {
-    /// Story menu: character page mode 2, the story session.
-    Story,
-    /// Arena/class menu: the class selection at mode 0x40.
-    Arena,
-    /// Emblem generation: the same at mode 0x40.
+    /// The character creator (a new practice, versus or story character).
+    Creator,
+    /// The class select (the story's BEGIN).
+    ClassSelect,
+    /// The emblem generator (the arena's NEW CAREER).
     Emblem,
-    /// The character screen: mode 2.
-    Character,
+    /// The character creator reached from a CONTINUE's character screen.
+    CharacterScreen,
 }
 
 impl MenuShow {
-    /// The session mode the show leaves behind.
-    pub fn mode(self) -> u32 {
+    /// The session state the show leaves behind: the creator's 2, or the
+    /// setup forms' 0x40.
+    pub fn state(self) -> u32 {
         match self {
-            MenuShow::Story | MenuShow::Character => 2,
-            MenuShow::Arena | MenuShow::Emblem => 0x40,
+            MenuShow::Creator | MenuShow::CharacterScreen => 2,
+            MenuShow::ClassSelect | MenuShow::Emblem => 0x40,
         }
     }
 
-    /// Whether the show resets the page flags to the arena page set.
-    pub fn arena_page_flags(self) -> bool {
-        matches!(self, MenuShow::Story | MenuShow::Arena | MenuShow::Emblem)
+    /// Whether the show copies the game mode into the creator's mode.
+    pub fn copies_game_mode(self) -> bool {
+        !matches!(self, MenuShow::CharacterScreen)
     }
 }
 
-/// The main menu's creation defaults, as its constructor sets them: the
-/// sound stamps, the hover limit, the row advance, the title flag and the
-/// form style.
+/// The main menu's constructor values.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MenuDefaults {
+    /// The title picture is drawn.
     pub title: bool,
-    pub sound_ready: bool,
-    pub click_gain: f32,
-    /// `0x2d` (45) in the original's field.
-    pub selection_field: i32,
-    /// `0x46` (70) in the original's field: the row advance in design pixels.
+    /// A point on no row is kept by the menu rather than let through.
+    pub blocks: bool,
+    /// The row origin, a fraction of the client height (each page sets its
+    /// own when shown).
+    pub origin: f32,
+    /// A design length of 45 pixels, not read by the menu's own routines.
+    pub unread_length: i32,
+    /// The row advance in design pixels.
     pub row_advance: i32,
+    /// Two of the form's style words (meanings not established).
     pub style: u32,
     pub state: u32,
 }
@@ -1346,10 +1352,10 @@ pub struct MenuDefaults {
 /// The main menu's constructor values.
 pub const MENU_DEFAULTS: MenuDefaults = MenuDefaults {
     title: true,
-    sound_ready: true,
-    click_gain: 0.37,
-    selection_field: 0x2d,
-    row_advance: 0x46,
+    blocks: true,
+    origin: 0.37,
+    unread_length: 45,
+    row_advance: 70,
     style: 8,
     state: 0x1000,
 };
@@ -1386,47 +1392,23 @@ pub fn back_main_menu(page: i32) -> MenuBack {
     }
 }
 
-/// The close/submenu helper's effect: the row list's style flags reset and
-/// the form hidden, before the caller removes a child.
+/// The menu's resume: it closes the menu so the game goes on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CloseSubmenu {
-    pub reset_rows: bool,
-    pub hide: bool,
-    pub sound: bool,
-    pub decrement_pause: bool,
+pub struct MenuResume {
+    /// The pause count, one lower.
+    pub pause: i32,
+    /// The match overlay is shown again (a won or round-won session).
+    pub show_overlay: bool,
 }
 
-/// The submenu close: rows are reset and the form hidden; a sound plays
-/// when the caller asks for one, and the in-game pause count drops when
-/// the menu is a pause menu.
-pub fn close_submenu(sound: bool, pause_menu: bool) -> CloseSubmenu {
-    CloseSubmenu {
-        reset_rows: true,
-        hide: true,
-        sound,
-        decrement_pause: pause_menu,
-    }
-}
-
-/// The menu page's forward action from a page: page 2 confirms the session
-/// (mode 4 for story, 1 for arena); page 1 and page 8 enter the session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MenuForwardPage {
-    pub page: i32,
-    pub enters: bool,
-    pub session_mode: u32,
-}
-
-/// The forward action of a top-level menu page.
-pub fn forward_page(page: i32, arena: bool) -> MenuForwardPage {
-    MenuForwardPage {
-        page,
-        enters: matches!(page, 1 | 2),
-        session_mode: if page == 2 {
-            if arena { 4 } else { 3 }
-        } else {
-            2
-        },
+/// The resume from the in-game or end pages: the pause count drops by
+/// one, the menu's row marks clear and it hides, the overlay comes back
+/// when the session state has bit 4 or is 8, the settings and the manual
+/// close, and the hub form takes the focus.
+pub fn resume_from_menu(pause: i32, state: u32) -> MenuResume {
+    MenuResume {
+        pause: pause - 1,
+        show_overlay: state & 4 != 0 || state == 8,
     }
 }
 
@@ -2315,32 +2297,18 @@ mod tests {
     }
 
     #[test]
-    fn the_submenu_close_resets_and_hides() {
+    fn the_resume_drops_the_pause_and_shows_the_overlay() {
         assert_eq!(
-            close_submenu(true, true),
-            CloseSubmenu {
-                reset_rows: true,
-                hide: true,
-                sound: true,
-                decrement_pause: true
+            resume_from_menu(1, 3),
+            MenuResume {
+                pause: 0,
+                show_overlay: false
             }
         );
-        assert!(!close_submenu(false, false).sound);
-    }
-
-    #[test]
-    fn the_forward_page_enters_the_right_session() {
-        assert_eq!(
-            forward_page(2, false),
-            MenuForwardPage {
-                page: 2,
-                enters: true,
-                session_mode: 3
-            }
-        );
-        assert_eq!(forward_page(2, true).session_mode, 4);
-        assert_eq!(forward_page(1, true).session_mode, 2);
-        assert!(!forward_page(0, true).enters);
+        assert!(resume_from_menu(1, 4).show_overlay);
+        assert!(resume_from_menu(1, 5).show_overlay);
+        assert!(resume_from_menu(1, 8).show_overlay);
+        assert!(!resume_from_menu(1, 0x10).show_overlay);
     }
 
     #[test]
@@ -2348,17 +2316,19 @@ mod tests {
         assert_eq!(
             (
                 MENU_DEFAULTS.title,
-                MENU_DEFAULTS.sound_ready,
-                MENU_DEFAULTS.selection_field,
+                MENU_DEFAULTS.blocks,
+                MENU_DEFAULTS.unread_length,
                 MENU_DEFAULTS.row_advance,
                 MENU_DEFAULTS.style,
                 MENU_DEFAULTS.state
             ),
-            (true, true, 0x2d, 0x46, 8, 0x1000)
+            (true, true, 45, 70, 8, 0x1000)
         );
-        assert!((MENU_DEFAULTS.click_gain - 0.37).abs() < 1e-6);
-        assert_eq!(MenuShow::Story.mode(), 2);
-        assert_eq!(MenuShow::Arena.mode(), 0x40);
-        assert!(MenuShow::Arena.arena_page_flags());
+        assert_eq!(MENU_DEFAULTS.origin.to_bits(), 0x3ebd_70a4);
+        assert_eq!(MenuShow::Creator.state(), 2);
+        assert_eq!(MenuShow::ClassSelect.state(), 0x40);
+        assert_eq!(MenuShow::Emblem.state(), 0x40);
+        assert!(MenuShow::Emblem.copies_game_mode());
+        assert!(!MenuShow::CharacterScreen.copies_game_mode());
     }
 }
