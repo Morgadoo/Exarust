@@ -87,3 +87,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-21 | a349aae1 | clean | 37.8% | 5.7% | 32.4% | 32.3% | scene nodes, particles, electricity, teleporters, character data, sun fit, textures, content stream, terrain, combatant |
 | 2026-10-21 | 15bab6cb | clean | 39.9% | 5.7% | 35.6% | 32.3% | object database, save games, creator, match board, hardware configuration |
 | 2026-10-21 | 77073966 | clean | 40.4% | 5.7% | 35.9% | 32.3% | GI sectors, skin builder, factory paint |
+| 2026-10-21 | 6cf36fe7 | clean | 42.4% | 5.7% | 37.0% | 32.3% | mip and mesh units, body fit, navigation, draw skin, shader templates |
