@@ -365,6 +365,77 @@ A pick shows the player's line, then either takes that reply or starts the
 topic; the panel closes when nothing can follow. A conversation waiting for
 a reply ends after 30 s.
 
+## Arena match board
+
+The arena's "Matches" form has four tabs: standard matches, the daily
+events, the weekly tournament and the season. Its code is
+`exa_ui::match_board`; `exa_game::arena_board` fills it from a career and a
+generated daily board. The rules are plain functions and values and need no
+Bevy app.
+
+- **Standard tab.** Three lists stand side by side: the six match types
+  (Duel, Doubles, Skirmish, Fray, Reserve, Pugilism), the six ranks (Inept,
+  Aspirant, Novice, Adept, Expert, Master), and a tier list. The tier cannot
+  exceed the selected rank, and the tier's rows at and above the rank are
+  disabled. The two list spans are one rank step and three rank steps.
+- **Daily events.** Six events, five columns: match, rank, tier, entry and
+  prize. A merchant event (kind 8) shows a dash in the tier column; a
+  negative second rank shows Inept. Entry and prize are packed base-12 coin
+  dwords drawn as coin icons, or as the text "0" four pixels right when the
+  value is zero. An entered event's row is disabled. Selecting an entered
+  event moves the selection to the first event not yet entered; when all
+  six are entered the table's top row moves past the last row.
+- **Tournament.** Six winner rows (event, tier, winner). A winner company id
+  of 1 is the player's company; ids 2 through 20 are the rival companies;
+  zero or an id above 20 is a dash. The status line says "Tournament is in
+  progress.", "No more events entered.", "The tournament has ended.",
+  "Tournament begins tomorrow." or "Tournament begins in N days.". With an
+  entered event that has no winner, the primary button reads "Begin" (or
+  "Continue" once the first event has one) and a second button appears;
+  otherwise both are hidden and the status line shows. On a tournament day
+  with entries the tab is forced to the tournament and fighter assignment is
+  locked.
+- **Season.** Four weekly winner lines. A week already played with no
+  winner says "No winner"; a zero or out-of-range winner is a dash. The
+  season is four weeks, the season index is `((day + 6) / 28) mod 4`, and
+  the reward picture is `seasonrwrd{a..d}.rfi`. The four reward items are
+  shown in the order first, third, second, fourth. The completed weeks are
+  `ceil((day mod 28) / 7)` for the first three weeks, else zero.
+- **Fighters.** The left table lists the company's available fighters and
+  the right the selected lineup; both show name, rank and health. A double
+  click or a drop moves a fighter between them, keeping the available table
+  in pool-slot order. A full lineup benches its last fighter to the end of
+  the available table. A fighter may join when its rank reaches the floor;
+  the Captain event (type 9) lets teammates be two ranks lower, and keeps a
+  qualified fighter first when more than two are chosen. A marked fighter
+  replaces an existing marked teammate. At most one leader-class fighter
+  joins unless the caller allows more.
+- **Day and confirmation.** A company may enter three matches a day. The
+  "Entered n/m" label writes one character per count, adding 0x30, so the
+  original shows a single digit (and punctuation past nine). The primary
+  button is enabled only when the lineup is full and matches remain.
+- **Layout.** The form is 604 by 656 (604 by 636 in the compact form). The
+  match list is 196 wide at x 0, the rank list 192 at x 200 and the tier
+  list 192 at x 396, all from y 56 and 180 tall. The event table is 588 by
+  180 with columns 140, 100, 100, 114 and 106; the winners table 392 by 180
+  with columns 120, 100 and 120. The fighter tables are 292 wide at x 0 and
+  x 296 from y 348, 244 tall (224 compact), with columns 140, 68 and 132.
+  The message box is 520 by 96 at 40, 276. The tournament picture is 192 by
+  180 at 396, 56 and the reward panel 292 by 100 or 120 at 296, 472. The
+  season table is 280 by 132 at 32, 60.
+- **Drawing order.** The form, the four tabs, then the visible tables in the
+  order the constructor made them: match, rank, tier, events, winners,
+  picture, reward panel, message, roster, lineup and season. A table draws
+  its frame, its column headers, then its rows left to right. The rows are
+  30 pixels tall (a guess from the six-row and eight-row fits).
+
+Known guesses: the row height, the tab strip's exact rectangles, the static
+labels' positions, the fee field of an event, the class bytes for the three
+staff professions, and the rank dropdown as the source of the filter floor.
+The original keeps the floor in a global written outside the board's own
+methods, and its "you are not entered" message text could not be decoded, so
+only the decision to show it is modelled.
+
 ## Forms
 
 The original's own forms and controls that Exarust rebuilds, with the
@@ -378,8 +449,8 @@ The original's own forms and controls that Exarust rebuilds, with the
   `0x1002b1700`; the page switch at `0x1000a7e20`.
 - **Control geometry** (`exa_ui::controls`): a list's extent at
   `0x1000fab10`, a control label's alignment at `0x1000fa110`.
-- **Match board** (`exa_ui::match_board`): the 379-byte `0x100195c00` and
-  the 121-byte `0x100195d80`.
+- **Match board** (`exa_ui::match_board`): the board's constructor, tab
+  switch, list refreshes and fighter assignment.
 - **Skill screen** (`exa_ui::skill`): `TSkillUI`'s 186-byte node placement
   at `0x100224570`.
 - **Character creation** (`exa_game::create`, `exa_ui::creation`): the

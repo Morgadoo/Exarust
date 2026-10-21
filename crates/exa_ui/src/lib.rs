@@ -12,7 +12,9 @@
 //! and glyphs ([`icon_atlas`], [`gui_glyphs`]), the table and item views
 //! ([`table_view`], [`item_view`]) and the basic controls
 //! ([`gui_controls`]), and how forms rescale with the unit
-//! ([`gui_rescale`]).
+//! ([`gui_rescale`]). The arena match board's tabs, match and event
+//! tables, tournament and season rows, fighter assignment, layout and
+//! drawing order live in [`match_board`].
 
 pub mod blend;
 pub mod controls;
@@ -55,7 +57,12 @@ pub use heartbeat::Heartbeat;
 pub use hud::{DrawHud, HudBars};
 pub use loading::LoadingStatus;
 pub use match_board::{
-    MatchBoardDestroy, MatchBoardShow, MatchBoardShowInput, destroy_match_board, show_match_board,
+    Board, BoardAction, BoardEvent, BoardInput, BoardLayout, BoardPaint, BoardTab, CellValue,
+    CloseState, CoinDraw, Column, EventEntry, Fighter, MatchBoardDestroy, MatchBoardShow,
+    MatchBoardShowInput, Participant, Rect, ShowState, TableLayout, TableSlot, TournamentStatus,
+    Widget, control, destroy_match_board, is_tournament_day, layout, rank_name, rank_of,
+    season_index, season_picture_name, season_reward_order, season_weeks_elapsed, show_match_board,
+    tournament_begins_in,
 };
 pub use menu::{
     CharLootShow, CharLootShowInput, ClassCardHit, ClassCardHitInput, ClassConfirm, ClassNav,

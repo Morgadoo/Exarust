@@ -221,6 +221,29 @@ box (`gui_rescale`). `GuiLevelState`
 (`gui_level`) keeps the level and the atlases with the GUI scale in the
 app; the other widgets wait for forms that use them.
 
+## Arena match board
+
+`match_board` models the arena's "Matches" form beyond the base-form show
+and destroy. A board holds the four tabs, the six match types, the rank and
+tier lists, the six daily events (match, rank, tier and packed coin entry
+and prize columns), six tournament winner rows and the season's four weekly
+winners. Its rules are plain values and functions: the rank is the six
+skill levels halved and capped at Master; a fighter may join when its rank
+reaches the floor, and the Captain event (type 9) lets teammates be two
+ranks lower; a full lineup benches its last fighter; the available table
+stays in pool-slot order; a marked fighter replaces a marked teammate; and
+a company enters three matches a day. The calendar gives a tournament day
+every seventh day, a season of four weeks, the season index
+`((day + 6) / 28) mod 4`, the reward picture `seasonrwrd{a..d}.rfi` and
+the reward order first, third, second, fourth. The form's exact rectangles,
+columns and drawing order are in `layout` and `Board::paint`, with a 30-pixel
+row height guessed from the six-row and eight-row fits. The two shared
+roster tables take a double click or a drop; on a tournament day with
+entries the tournament tab is forced and assignment is locked. The
+tournament status line, primary button, "Entered n/m" label and the show,
+close and control states follow the original's tab switch. `exa_game`'s
+`arena_board` fills a board from a career and the generated daily board.
+
 ## Scope
 
 - GUI skin and icon atlases from `Resource.rpk` (`guiskin`, `guitex`, icon sheets).

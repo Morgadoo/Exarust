@@ -194,6 +194,17 @@ and the simulation controls (`sim_control`, with the scripted pauses at a
 tick, a stretched link, the first blood jet, the player's first landed
 blow or the first collapse).
 
+## Arena match board bridge
+
+`arena_board` turns a career and a generated daily board into
+`exa_ui::match_board::Board`: the player is pool slot zero and the roster
+follows in hire order; a member's rank is the six skill levels halved and
+capped at Master; combatants get class zero and the staff roles classes above
+the board's combatant limit; and the six daily match instances become the
+event rows, with the rolled secondary as the entry fee and the cash as the
+prize (the fee mapping is a guess). It also carries the rival company names
+and the four seasons' reward ids.
+
 ## Scope
 
 - App states (boot → menu → loading → in-game).
