@@ -20,8 +20,15 @@
 //! characters into the scene and attaches the characters requested for an
 //! existing entity. Requested database objects and the other requested
 //! characters wait in their result rings until the caller fetches them by
-//! the key it asked with. Exarust drives [`ContentStream::step`] from its own
-//! executor; the original runs the same loop on its stream thread.
+//! the key it asked with: an object fetch reports "pending" while any
+//! request is still queued, as the original returns its null node then, and
+//! the scene's nil node when nothing matches.
+//!
+//! A placed level object may be the player: the arrival word names the kind
+//! the player's object has, and a record-level marker names it outright.
+//! Its position becomes the focus point the streamed characters are ordered
+//! by. Exarust drives [`ContentStream::step`] from its own executor; the
+//! original runs the same loop on its stream thread.
 
 use std::collections::VecDeque;
 
@@ -111,12 +118,56 @@ pub enum Step {
     Idle,
 }
 
+/// A built placed level object and what the stream needs from it: the
+/// object's kind and position, and whether its database record marks it as
+/// the player. The original reads these off the node it just built, inside
+/// the object builder; Exarust's builders report them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LevelNode {
+    /// The built scene node.
+    pub node: u64,
+    /// The object's kind word: in the levels whose arrival word is one of
+    /// the two below, the placed player is the object of that kind.
+    pub kind: u32,
+    /// The node's position (centimetres, the original's world units), which
+    /// becomes the focus point when the object is the player.
+    pub position: [f32; 3],
+    /// The object's database record is the player marker (the original's
+    /// second rule: record `0x8000ac07`, type `0x40`, both tone words −1),
+    /// independent of the arrival word.
+    pub focus_marker: bool,
+}
+
+impl LevelNode {
+    /// A node with nothing the stream can read as the player.
+    pub fn new(node: u64) -> Self {
+        Self {
+            node,
+            kind: 0,
+            position: [0.0; 3],
+            focus_marker: false,
+        }
+    }
+}
+
+/// The arrival word of a journey between levels (`exa_ui::selection`'s
+/// `ARRIVAL_WORD`): placed objects of kind 15 are the player.
+pub const ARRIVAL_WORD: u32 = 0xEEEE_00DA;
+/// The second arrival word: placed objects of kind 18 are the player. It is
+/// the value the original's session falls back to when it is not the
+/// journey's arrival word; what starts that session is not traced. **[guess]**
+pub const RESPAWN_ARRIVAL_WORD: u32 = 0xEEEE_00DB;
+/// The player's object kind under [`ARRIVAL_WORD`].
+pub const ARRIVAL_PLAYER_KIND: u32 = 15;
+/// The player's object kind under [`RESPAWN_ARRIVAL_WORD`].
+pub const RESPAWN_PLAYER_KIND: u32 = 18;
+
 /// The builders the scheduler calls. The original's stream thread calls into
 /// the database, character and item factories; Exarust supplies closures
 /// over its own loaders.
 pub trait ContentBuilders {
     /// Builds placed level object `index` of the current level.
-    fn level_object(&mut self, index: usize) -> Option<u64>;
+    fn level_object(&mut self, index: usize) -> Option<LevelNode>;
     /// Builds one requested database object.
     fn object(&mut self, request: &ObjectRequest) -> Option<u64>;
     /// Builds one requested character and returns its scene node.
@@ -141,9 +192,14 @@ pub struct Pumped {
 struct LevelObjects {
     scene: u64,
     total: usize,
+    /// Reader entries consumed: the ordinal of the next object to read.
     done: usize,
     built: Vec<u64>,
     missing: usize,
+    /// The kind of the player's placed object, from the arrival word.
+    player_kind: Option<u32>,
+    /// The player's node, once built.
+    player: Option<u64>,
 }
 
 /// The finished level object list.
@@ -154,6 +210,19 @@ pub struct LevelStream {
     pub objects: Vec<u64>,
     /// Objects whose database record or model was not found.
     pub missing: usize,
+}
+
+/// What fetching a requested database object found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fetch {
+    /// The object was built; its scene node.
+    Ready(u64),
+    /// Its request is still queued or being built: try again later. The
+    /// original returns its null node here.
+    Pending,
+    /// Nothing waits: the request is not there and no result matched. The
+    /// original returns the scene's nil node.
+    Missing,
 }
 
 /// The original's stream-thread scheduler.
@@ -239,27 +308,33 @@ impl ContentStream {
             .is_some()
     }
 
-    /// Begins a level's object list: the scene and how many objects the
-    /// chunk holds (the original's level handoff).
-    pub fn begin_level(&mut self, scene: u64, total: usize) {
+    /// Begins a level's object list: the scene, how many objects the chunk
+    /// holds and the arrival word that names the player's object kind (0
+    /// when the load is not a journey). The original's level handoff.
+    pub fn begin_level(&mut self, scene: u64, total: usize, arrival: u32) {
+        let player_kind = match arrival {
+            ARRIVAL_WORD => Some(ARRIVAL_PLAYER_KIND),
+            RESPAWN_ARRIVAL_WORD => Some(RESPAWN_PLAYER_KIND),
+            _ => None,
+        };
         self.level = LevelObjects {
             scene,
             total,
+            player_kind,
             ..LevelObjects::default()
         };
         self.scene = scene;
     }
 
-    /// Begins a level's streamed characters: the scene, the focus point and
-    /// the characters with their positions.
+    /// Begins a level's streamed characters: the scene and the characters
+    /// with their positions. The focus point is the scene's, set by
+    /// [`ContentStream::set_focus`] or by the placed player ([`ContentStream::begin_level`]).
     pub fn begin_characters(
         &mut self,
         scene: u64,
-        focus: [f32; 3],
         characters: impl IntoIterator<Item = StreamedCharacter>,
     ) {
         self.scene = scene;
-        self.focus = focus;
         self.streamed = characters.into_iter().collect();
         self.stream_cursor = 0;
     }
@@ -271,6 +346,17 @@ impl ContentStream {
 
     pub fn scene(&self) -> u64 {
         self.scene
+    }
+
+    /// The focus point the nearest-first stream orders by: the placed
+    /// player's position once it is built, else what the caller set.
+    pub fn focus(&self) -> [f32; 3] {
+        self.focus
+    }
+
+    /// The placed player's scene node, once the level's list built it.
+    pub fn player(&self) -> Option<u64> {
+        self.level.player
     }
 
     pub fn is_terminated(&self) -> bool {
@@ -308,11 +394,17 @@ impl ContentStream {
             return Step::Idle;
         }
         if self.level.done < self.level.total {
+            // The entry being read; a build that fails leaves no slot for
+            // it (the original's missing count rises and the list closes
+            // up).
             let index = self.level.done;
             let built = builders.level_object(index);
             self.level.done += 1;
             match built {
-                Some(node) => self.level.built.push(node),
+                Some(object) => {
+                    self.level.built.push(object.node);
+                    self.adopt(&object);
+                }
                 None => self.level.missing += 1,
             }
             return Step::LevelObject {
@@ -396,6 +488,17 @@ impl ContentStream {
         Step::Idle
     }
 
+    /// Adopts a built placed object as the player when it is the arrival
+    /// kind or carries the player marker: its position becomes the focus
+    /// point the streamed characters are ordered by.
+    fn adopt(&mut self, object: &LevelNode) {
+        let player = self.level.player_kind == Some(object.kind) || object.focus_marker;
+        if player {
+            self.level.player = Some(object.node);
+            self.focus = object.position;
+        }
+    }
+
     /// Runs the completion callbacks, then collects the streamed characters
     /// to insert into the scene and the characters to attach (the
     /// original's pump, in its order). Requested characters without the
@@ -416,16 +519,23 @@ impl ContentStream {
     }
 
     /// Fetches a finished database object by the key it was requested with:
-    /// the original's object fetch. A missing result is `None`; the result
-    /// queue keeps the order of the rest.
-    pub fn fetch_object(&mut self, id: u32, flags: u32, parent: u64) -> Option<u64> {
-        self.object_results
-            .remove(|result| {
-                result.request.id == id
-                    && result.request.flags == flags
-                    && result.request.parent == parent
-            })
-            .map(|result| result.node)
+    /// the original's object fetch. While any object request is still
+    /// queued the original returns its null node without looking at the
+    /// results, and when nothing matches it returns the scene's nil node;
+    /// [`Fetch`] keeps the three outcomes apart. A found result leaves the
+    /// order of the rest.
+    pub fn fetch_object(&mut self, id: u32, flags: u32, parent: u64) -> Fetch {
+        if !self.object_requests.is_empty() {
+            return Fetch::Pending;
+        }
+        match self.object_results.remove(|result| {
+            result.request.id == id
+                && result.request.flags == flags
+                && result.request.parent == parent
+        }) {
+            Some(result) => Fetch::Ready(result.node),
+            None => Fetch::Missing,
+        }
     }
 
     /// Fetches a finished character by its owner and scene (the original's
@@ -436,16 +546,22 @@ impl ContentStream {
     }
 
     /// Waits for the level's object list: runs the scheduler until every
-    /// object is done, then returns the built nodes and the missing count.
-    /// The original also reports "N missing database objects.".
+    /// entry is done, then returns the built nodes and the missing count, or
+    /// `None` when the level had no list at all (the original's return
+    /// value). The original reports "N missing database objects." and clears
+    /// the count; the caller logs it from [`LevelStream::missing`].
     pub fn wait_for_level(
         &mut self,
         builders: &mut dyn ContentBuilders,
         mut idle: impl FnMut(),
-    ) -> LevelStream {
+    ) -> Option<LevelStream> {
+        if self.level.total == 0 {
+            return None;
+        }
         while self.level.done < self.level.total && !self.terminated {
             self.step(builders);
-            // The original pumps procedural work and yields between objects.
+            // The original steps its procedural materials and yields between
+            // objects.
             idle();
         }
         let stream = LevelStream {
@@ -456,7 +572,7 @@ impl ContentStream {
         self.level.total = 0;
         self.level.done = 0;
         self.level.missing = 0;
-        stream
+        Some(stream)
     }
 
     /// Waits for the character requests to finish: each round notes whether
@@ -525,12 +641,30 @@ mod tests {
         objects: Vec<Option<u64>>,
         characters: Vec<Option<u64>>,
         streamed_ok: bool,
+        /// A placed object that is the player: its index, kind and position.
+        player: Option<(usize, u32, [f32; 3])>,
+        /// A placed object carrying the player marker: index and position.
+        marker: Option<(usize, [f32; 3])>,
     }
 
     impl ContentBuilders for Recorder {
-        fn level_object(&mut self, index: usize) -> Option<u64> {
+        fn level_object(&mut self, index: usize) -> Option<LevelNode> {
             self.calls.lock().unwrap().push(format!("level {index}"));
-            self.level.get(index).copied().flatten()
+            let node = self.level.get(index).copied().flatten()?;
+            let mut object = LevelNode::new(node);
+            if let Some((at, kind, position)) = self.player
+                && at == index
+            {
+                object.kind = kind;
+                object.position = position;
+            }
+            if let Some((at, position)) = self.marker
+                && at == index
+            {
+                object.focus_marker = true;
+                object.position = position;
+            }
+            Some(object)
         }
 
         fn object(&mut self, request: &ObjectRequest) -> Option<u64> {
@@ -576,9 +710,10 @@ mod tests {
             objects: vec![Some(20)],
             characters: vec![Some(30)],
             streamed_ok: true,
+            ..Recorder::default()
         };
-        stream.begin_level(7, 2);
-        stream.begin_characters(7, [0.0; 3], []);
+        stream.begin_level(7, 2, 0);
+        stream.begin_characters(7, []);
         stream.submit_job(Job {
             work: Box::new(|| {}),
             done: None,
@@ -616,8 +751,8 @@ mod tests {
             *calls.lock().unwrap(),
             ["level 0", "level 1", "object 5", "character 9"]
         );
-        assert_eq!(stream.fetch_object(5, 0, 7), Some(20));
-        assert_eq!(stream.fetch_object(5, 0, 7), None);
+        assert_eq!(stream.fetch_object(5, 0, 7), Fetch::Ready(20));
+        assert_eq!(stream.fetch_object(5, 0, 7), Fetch::Missing);
         // The pump leaves a requested character for its fetch.
         let pumped = stream.pump();
         assert!(pumped.added.is_empty());
@@ -634,7 +769,7 @@ mod tests {
             streamed_ok: true,
             ..Recorder::default()
         };
-        stream.begin_characters(7, [0.0; 3], [character(3, [1.0, 0.0, 0.0])]);
+        stream.begin_characters(7, [character(3, [1.0, 0.0, 0.0])]);
         stream.request_object(ObjectRequest {
             id: 5,
             flags: 0,
@@ -649,7 +784,7 @@ mod tests {
                 character: None,
             }
         );
-        assert_eq!(stream.fetch_object(5, 0, 7), None);
+        assert_eq!(stream.fetch_object(5, 0, 7), Fetch::Missing);
         assert_eq!(stream.step(&mut builders), Step::Streamed { built: true });
         assert_eq!(*calls.lock().unwrap(), ["object 5", "streamed 3"]);
         // The pump inserts it into the scene.
@@ -696,9 +831,9 @@ mod tests {
             streamed_ok: true,
             ..Recorder::default()
         };
+        stream.set_focus([0.0, 0.0, 0.0]);
         stream.begin_characters(
             7,
-            [0.0, 0.0, 0.0],
             [
                 character(5, [5.0, 0.0, 0.0]),
                 character(1, [1.0, 0.0, 0.0]),
@@ -766,22 +901,91 @@ mod tests {
     #[test]
     fn the_level_wait_reports_built_and_missing_objects() {
         let mut stream = ContentStream::new();
-        stream.begin_level(7, 3);
+        stream.begin_level(7, 3, 0);
         let mut builders = Recorder {
             level: vec![Some(1), None, Some(3)],
             ..Recorder::default()
         };
         let mut waited = 0;
-        let level = stream.wait_for_level(&mut builders, || waited += 1);
+        let level = stream
+            .wait_for_level(&mut builders, || waited += 1)
+            .unwrap();
         assert_eq!(level.scene, 7);
+        // The missing entry leaves no hole: the two built nodes follow each
+        // other, in build order.
         assert_eq!(level.objects, [1, 3]);
         assert_eq!(level.missing, 1);
         assert_eq!(waited, 3);
         assert_eq!(stream.pending_streamed(), 0);
-        // The list is cleared for the next chunk.
-        let empty = stream.wait_for_level(&mut builders, || {});
-        assert!(empty.objects.is_empty());
-        assert_eq!(empty.missing, 0);
+        // The list is cleared for the next chunk, and a level with no list
+        // reports nothing at all.
+        assert!(stream.wait_for_level(&mut builders, || {}).is_none());
+        assert_eq!(
+            *builders.calls.lock().unwrap(),
+            ["level 0", "level 1", "level 2"]
+        );
+    }
+
+    #[test]
+    fn a_placed_player_becomes_the_focus_point() {
+        let mut stream = ContentStream::new();
+        let mut builders = Recorder {
+            level: vec![Some(41), Some(42)],
+            player: Some((1, ARRIVAL_PLAYER_KIND, [1200.0, 48.0, -600.0])),
+            ..Recorder::default()
+        };
+        stream.begin_level(7, 2, ARRIVAL_WORD);
+        stream.begin_characters(7, []);
+        stream.step(&mut builders);
+        assert_eq!(stream.player(), None);
+        assert_eq!(stream.focus(), [0.0; 3]);
+        stream.step(&mut builders);
+        assert_eq!(stream.player(), Some(42));
+        assert_eq!(stream.focus(), [1200.0, 48.0, -600.0]);
+        // An object of another kind, or another arrival word, is not the
+        // player.
+        let mut other = Recorder {
+            level: vec![Some(41)],
+            player: Some((0, ARRIVAL_PLAYER_KIND, [1.0, 2.0, 3.0])),
+            ..Recorder::default()
+        };
+        stream.begin_level(7, 1, RESPAWN_ARRIVAL_WORD);
+        stream.step(&mut other);
+        assert_eq!(stream.player(), None);
+        // The focus point is the scene's, not the level's: a list that
+        // builds no player leaves it where it was.
+        assert_eq!(stream.focus(), [1200.0, 48.0, -600.0]);
+        // The database record's own marker wins whatever the arrival word.
+        let mut builders = Recorder {
+            level: vec![Some(43)],
+            marker: Some((0, [4.0, 5.0, 6.0])),
+            ..Recorder::default()
+        };
+        stream.begin_level(7, 1, 0);
+        stream.step(&mut builders);
+        assert_eq!(stream.player(), Some(43));
+        assert_eq!(stream.focus(), [4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn an_object_fetch_waits_while_its_request_is_queued() {
+        let mut stream = ContentStream::new();
+        let mut builders = Recorder {
+            objects: vec![Some(20)],
+            ..Recorder::default()
+        };
+        stream.request_object(ObjectRequest {
+            id: 5,
+            flags: 2,
+            parent: 7,
+        });
+        // A queued request makes the fetch report pending without touching
+        // the results.
+        assert_eq!(stream.fetch_object(5, 2, 7), Fetch::Pending);
+        stream.step(&mut builders);
+        assert_eq!(stream.fetch_object(5, 2, 7), Fetch::Ready(20));
+        assert_eq!(stream.fetch_object(5, 2, 7), Fetch::Missing);
+        assert_eq!(stream.fetch_object(6, 2, 7), Fetch::Missing);
     }
 
     #[test]
@@ -803,8 +1007,8 @@ mod tests {
             flags: 0,
         });
         assert!(stream.cancel_character(4, 7));
-        stream.begin_characters(7, [0.0; 3], [character(1, [0.0; 3])]);
-        stream.begin_level(7, 2);
+        stream.begin_characters(7, [character(1, [0.0; 3])]);
+        stream.begin_level(7, 2, 0);
         stream.reset();
         assert_eq!(stream.queued_objects(), 0);
         assert_eq!(stream.queued_characters(), 0);
@@ -826,8 +1030,10 @@ mod tests {
         assert_eq!(stream.step(&mut builders), Step::Idle);
         assert!(stream.is_terminated());
         // The waiting helpers must not spin on a terminated stream.
-        stream.begin_level(7, 4);
-        assert_eq!(stream.wait_for_level(&mut builders, || {}).objects.len(), 0);
+        stream.begin_level(7, 4, 0);
+        // A level that had a list reports the empty one it built.
+        let level = stream.wait_for_level(&mut builders, || {}).unwrap();
+        assert!(level.objects.is_empty());
         stream.request_character(CharacterRequest {
             owner: 1,
             scene: 7,
