@@ -536,3 +536,30 @@ sets the instability counter (the barricade sets it to 100).
 - Cloth and padded-armour layers (original engine has cloth classes per material: basic, fine, padded, silk, velvet).
 - Decision recorded in docs/plan: rapier3d for level colliders and the character controller; the
   body solver and its level contacts are in-house, as the original's (`docs/formats/RSQ.md`).
+
+The body kernel also keeps the original's class and state words
+(`Part::class_word`/`state_word`): `Ragdoll::set_class_word` writes the
+class word to every part and `word | 0x30` to each first child,
+`raise_grab_layer` adds the bite-grab's 0x40 to a part, its parent and its
+children, and `raise_state_flag` walks the whole tree. `push_at` applies a
+push at a world point with the original's weighting (`push_fraction`, the
+`4·dot` test against the push's squared length). The stagger helper
+(`stagger`, `recoil`) gives a blow's stagger speed, decay, flags and
+countdown; `step_phase` advances the footstep phase from the pelvis travel;
+`femur_posture_turn` is the thigh posture's alternating 5° (splayed) or
+(1 − height)·−1.5° (combat) turn, applied by the sampler to the clip's
+thigh turns in the combat conditions; and `MOTILE_ENVIRONMENT` is the class init's unused
+0.2556/0.15/0.03 environment. `full_tone`/`clear_foot_state` are the
+original's resets.
+
+`kd_tree` is the original's triangle kd-tree (`TkdTree`) and its terrain
+block subclass (`TTErrainkdTree`) as a pure model: the 8-byte node layout
+(axis plus child offset, or the leaf marker with a triangle count), the
+split choice (the 15 planes at 1/16 of each axis with the original's cost
+estimate, the middle split above 512 triangles, leaves at 8 triangles or a
+10 cm extent), nearest front-face ray casts, both-face segment casts with
+the far end included, the boolean ray query, radius-expanded sphere and
+capsule overlap, closest-point projection, and the 30 × 30 cell block tree
+whose leaves list two triangles per cell and whose split planes move with
+a block's translation. The game still takes the level's collision from
+rapier's trimesh BVH; this module has tests of its own and no game path yet.

@@ -12,6 +12,7 @@ pub mod dynamics;
 pub mod engine_math;
 pub mod grip;
 pub mod intersect;
+pub mod kd_tree;
 pub mod kdtree;
 pub mod lever;
 pub mod mechanism;
