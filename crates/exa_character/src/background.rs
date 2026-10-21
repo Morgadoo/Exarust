@@ -80,7 +80,8 @@ mod tests {
     #[test]
     fn a_runner_takes_the_build_and_the_apply_apart() {
         let mut bg = Background::default();
-        let applies: Rc<RefCell<Vec<(Box<dyn Any>, Apply)>>> = Rc::new(RefCell::new(Vec::new()));
+        type Pending = Rc<RefCell<Vec<(Box<dyn Any>, Apply)>>>;
+        let applies: Pending = Rc::new(RefCell::new(Vec::new()));
         let q = applies.clone();
         bg.install(Box::new(move |build, apply| {
             let result = build();

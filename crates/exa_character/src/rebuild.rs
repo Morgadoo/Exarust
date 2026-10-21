@@ -150,27 +150,12 @@ pub fn dress_plan(body: &Body, garments: &[WornGarment]) -> DressPlan {
     }
 }
 
-/// A texture-only rebuild: reset the job, re-read the look,
-/// and take the first apparel texture. Returns the job.
-pub fn retexture(
-    pixel_format: u32,
-    stem: &str,
-    record: &exa_formats::characters::CharacterRecord,
-    look_word: u32,
-    controller_weights: &[f32],
-    apparel: &[Option<String>],
-    fresh: &mut dyn FnMut() -> u32,
-    exists: &dyn Fn(&str) -> bool,
-) -> SkinJob {
-    let mut job = SkinJob::of_record(
-        pixel_format,
-        stem,
-        record,
-        look_word,
-        controller_weights,
-        fresh,
-        exists,
-    );
+/// A texture-only rebuild: the skin job built again from the record
+/// ([`SkinJob::of_record`]) takes the first apparel texture of the body's
+/// mesh children. The original also composites a feral character's
+/// apparel overlay (its feral share `(2 − f)·f` in two bytes), which is not
+/// reproduced.
+pub fn retexture(mut job: SkinJob, apparel: &[Option<String>]) -> SkinJob {
     job.take_first_apparel(apparel);
     job
 }
@@ -297,16 +282,8 @@ mod tests {
     fn a_retexture_takes_the_look_and_the_first_apparel() {
         let record = exa_formats::characters::CharacterRecord::default();
         let exists = |_: &str| true;
-        let job = retexture(
-            2,
-            "human",
-            &record,
-            0x1BF,
-            &[0.0; 12],
-            &[None, Some("&doublet_ba1".into())],
-            &mut || 1,
-            &exists,
-        );
+        let job = SkinJob::of_record(2, "human", &record, 0x1BF, &[0.0; 12], &mut || 1, &exists);
+        let job = retexture(job, &[None, Some("&doublet_ba1".into())]);
         assert_eq!(job.colour.as_deref(), Some("humandifm"));
         assert_eq!(job.first_apparel.as_deref(), Some("&doublet_ba1"));
         assert_eq!(job.format.side, 0x200);

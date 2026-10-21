@@ -734,8 +734,8 @@ impl Body {
                 Some(c) => {
                     self.nodes[c].world = r.frame;
                     let parent = self.nodes[node].world;
-                    for k in 0..3 {
-                        self.nodes[c].local[k] = unturn(&parent, r.frame[k]);
+                    for (row, w) in self.nodes[c].local.iter_mut().zip(&r.frame).take(3) {
+                        *row = unturn(&parent, *w);
                     }
                     self.pose_children(c, r.children, records, next);
                 }
@@ -758,8 +758,8 @@ impl Body {
         for &i in bones.iter().skip(1) {
             if let Some(parent) = self.parent_world(i) {
                 let world = self.nodes[i].world;
-                for k in 0..3 {
-                    self.nodes[i].local[k] = unturn(&parent, world[k]);
+                for (row, w) in self.nodes[i].local.iter_mut().zip(&world).take(3) {
+                    *row = unturn(&parent, *w);
                 }
             }
         }
