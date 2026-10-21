@@ -1800,9 +1800,18 @@ against Exarust and lists the largest missing ones. In order:
    retail saves and rebuilds them byte for byte; applying the flow's
    steps and loading a save into a session come next.
    The arena's match, staff, report, save chunks and company windows'
-   rules are in; a hub screen to draw and wire the windows and actor
-   spawning for matches come next. The gamepad drives the player in
-   controller mode; its menu keys and picks wait for those drawn forms.
+   rules are in. A fresh tournament match (`match_layout::raise_fresh_match`)
+   places that bracket: a side stops at the first body the generator
+   refuses and reports "Failed to generate match motile."; the bodies
+   created on that side take familiarity 100 toward each other, both ways,
+   and both of their AI clocks wait 3000 ms; fewer than three formed sides
+   are hostile and three or more are a free-for-all; the player's side is
+   stood from the company list and the player's own entry is not spawned
+   again. A rematch (dropping the dead mode and repositioning the bodies
+   that remain) is not in, and neither is creating the scene bodies. A hub
+   screen to draw and wire the windows comes next. The gamepad drives the
+   player in controller mode; its menu keys and picks wait for those drawn
+   forms.
 7. Thaumaturgy in play (Phase 7): the casts' gates and prices, the active
    power classes and the force and environment effect nodes are tested
    rules; a power bar or cast dispatcher that creates the classes from the

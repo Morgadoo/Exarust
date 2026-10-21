@@ -16,10 +16,22 @@
 //! fighters every sixth of a turn, the company's fighter fourth, each
 //! opponent on a team of its own. Pugilism's opponent has no gear tier.
 //!
+//! A fresh tournament match then creates those bodies. A side stops at the
+//! first body the generator cannot create and reports the failure; the
+//! bodies that were created on that side are given familiarity 100 toward
+//! each other, both ways, and both of their AI clocks wait 3000 ms. Fewer
+//! than three formed sides are hostile; three or more are a free-for-all.
+//! The side whose id is the player's is stood from the company list, and
+//! the player's own entry is not spawned again. A rematch, which drops
+//! bodies in the dead mode and repositions the rest, is a separate branch.
+//!
 //! Evidence: the retail arena's eleven template setups, the ring placement,
-//! the fixed placement templates and the next-round routine read from
-//! `Exanima.exe` (`context/re/arena-layout.md`).
+//! the fixed placement templates, the next-round routine and the fresh
+//! match generator, read from `Exanima.exe` 0.9.5 (`context/re/arena-layout.md`).
 
+use crate::arena_spawn::{
+    GenericPlan, HirePlan, MANAGER_ROLE, SPAWN_DAMAGE, SPAWN_HEALTH, generic_plan, hire_plan,
+};
 use crate::thaum::engine::sin_cos;
 
 /// The opponent's spot from the arena's spawn spot (cm): 2 m ahead, 5 cm up.
@@ -363,6 +375,277 @@ pub fn bracket_opponent(team: i32, teams: usize, tier: i32) -> Fighter {
     }
 }
 
+/// Both AI clocks of a body created for a fresh match wait this long.
+pub const MATCH_ACT_GRACE_MS: u32 = 3_000;
+/// Familiarity each generated teammate is given toward the others.
+pub const TEAMMATE_FAMILIARITY: f32 = 100.0;
+/// The report title when a match body cannot be created.
+pub const MATCH_ERROR_TITLE: &str = "Error";
+/// The report message when a match body cannot be created.
+pub const MATCH_ERROR: &str = "Failed to generate match motile.";
+
+/// The three condition words written on a character before its body is created.
+///
+/// A generated opponent writes −100, 100, 0. A company entrant writes
+/// 100, 100, 0.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ConditionWords {
+    pub first: f32,
+    pub second: f32,
+    pub third: f32,
+}
+
+/// Condition words of a generated opponent.
+pub const OPPONENT_CONDITION: ConditionWords = ConditionWords {
+    first: SPAWN_DAMAGE,
+    second: SPAWN_HEALTH,
+    third: 0.0,
+};
+
+/// Condition words of a company entrant created for the player's side.
+pub const COMPANY_CONDITION: ConditionWords = ConditionWords {
+    first: SPAWN_HEALTH,
+    second: SPAWN_HEALTH,
+    third: 0.0,
+};
+
+/// The behaviour reset forced onto every generated opponent: mode 0,
+/// parameter 20, applied even when that mode is already current.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BehaviourReset {
+    pub mode: u32,
+    pub parameter: u32,
+    pub forced: bool,
+}
+
+/// The reset [`raise_fresh_match`] applies to a generated opponent.
+pub const OPPONENT_BEHAVIOUR: BehaviourReset = BehaviourReset {
+    mode: 0,
+    parameter: 20,
+    forced: true,
+};
+
+/// What a fresh match asks the generator to create for one opponent.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum OpponentPlan {
+    /// Team id under 2: level 5, dressed at the event's tier.
+    Generic(GenericPlan),
+    /// Team id of 2 or more: the hire-list profile. The profile's level
+    /// byte is the event tier, not the team id.
+    Hire(HirePlan),
+}
+
+/// One opponent the generator is asked to create.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OpponentAttempt {
+    pub slot: usize,
+    pub team: i32,
+    pub place: Place,
+    pub plan: OpponentPlan,
+}
+
+/// A body a fresh match settled.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RaisedBody {
+    /// The player's own character, stood on its place and not spawned again.
+    Player,
+    /// Another company entrant. Role [`MANAGER_ROLE`], both AI clocks held.
+    Company {
+        condition: ConditionWords,
+        role: u32,
+        act_at_ms: u32,
+    },
+    /// A generated opponent. Its pending-action word is cleared.
+    Opponent {
+        plan: OpponentPlan,
+        condition: ConditionWords,
+        role: u32,
+        act_at_ms: u32,
+        behaviour: BehaviourReset,
+        action_cleared: bool,
+    },
+}
+
+/// One placed fighter of a fresh match.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RaisedFighter {
+    pub slot: usize,
+    pub team: i32,
+    pub place: Place,
+    pub body: RaisedBody,
+}
+
+/// Familiarity from one generated teammate toward another.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TeammateLink {
+    pub from_slot: usize,
+    pub to_slot: usize,
+    pub familiarity: f32,
+}
+
+/// A generation failure, reported as the side stops.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MatchReport {
+    pub title: &'static str,
+    pub message: &'static str,
+}
+
+/// The bodies, teammate links and failure reports of a fresh match.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct RaisedMatch {
+    pub fighters: Vec<RaisedFighter>,
+    pub links: Vec<TeammateLink>,
+    pub reports: Vec<MatchReport>,
+}
+
+/// The inputs of a fresh match, while the rematch counter is still zero.
+pub struct FreshMatch<'a> {
+    pub slots: &'a [i32],
+    pub per_team: i32,
+    /// How many teams to form, at most.
+    pub teams: i32,
+    pub spawn_at: [f32; 3],
+    /// The side stood from the company list instead of generated.
+    pub player_team: i32,
+    /// How many company entries exist. A player-side member at this index
+    /// or past it is left out.
+    pub company_entries: usize,
+    /// The company entry, counted inside its team window, that is the
+    /// player's own character.
+    pub player_entry: Option<usize>,
+    /// The event's gear tier: a generic opponent's outfit level, and the
+    /// level byte of a hire-list profile.
+    pub tier: i32,
+    /// Forced outfit id of a hire-list team, indexed by team id.
+    pub outfits: &'a [i32],
+    /// The event's weapon count. Positive draws a weapon from the row below.
+    pub event_weapon: i32,
+    /// The game clock, in milliseconds. Created bodies act at this plus
+    /// [`MATCH_ACT_GRACE_MS`].
+    pub now_ms: u32,
+}
+
+/// Raise a fresh tournament match from its bracket.
+///
+/// Sides and places come from [`bracket_layout`]. The player's side is
+/// placed from the company list: the player's own entry keeps the body it
+/// already has, and every other entry in range is a company body. Every
+/// other side is generated. `create` returning false stops that side, the
+/// failed body and the ones after it on that side are left out, and the
+/// failure is reported; earlier bodies on the side stay, and later sides
+/// are still raised. The created opponents of one side are linked both
+/// ways at [`TEAMMATE_FAMILIARITY`]. Role flags follow how many sides were
+/// formed, the player's side included: hostile below three, otherwise a
+/// free-for-all.
+#[must_use]
+pub fn raise_fresh_match(
+    spec: &FreshMatch<'_>,
+    mut create: impl FnMut(&OpponentAttempt) -> bool,
+) -> RaisedMatch {
+    let laid = bracket_layout(spec.slots, spec.per_team, spec.teams, spec.spawn_at);
+    let flags = if laid.len() < 3 {
+        HOSTILE
+    } else {
+        FREE_FOR_ALL
+    };
+    let mut raised = RaisedMatch::default();
+    for team in &laid {
+        if team.team == spec.player_team {
+            raise_company(team, spec, &mut raised);
+        } else {
+            raise_opponents(team, spec, flags, &mut create, &mut raised);
+        }
+    }
+    raised
+}
+
+fn raise_company(team: &BracketTeam, spec: &FreshMatch<'_>, raised: &mut RaisedMatch) {
+    for (order, &(slot, place)) in team.members.iter().enumerate() {
+        if order >= spec.company_entries {
+            break;
+        }
+        let window = slot % spec.per_team as usize;
+        let body = if spec.player_entry == Some(window) {
+            RaisedBody::Player
+        } else {
+            RaisedBody::Company {
+                condition: COMPANY_CONDITION,
+                role: MANAGER_ROLE,
+                act_at_ms: spec.now_ms.saturating_add(MATCH_ACT_GRACE_MS),
+            }
+        };
+        raised.fighters.push(RaisedFighter {
+            slot,
+            team: team.team,
+            place,
+            body,
+        });
+    }
+}
+
+fn raise_opponents(
+    team: &BracketTeam,
+    spec: &FreshMatch<'_>,
+    flags: u32,
+    create: &mut impl FnMut(&OpponentAttempt) -> bool,
+    raised: &mut RaisedMatch,
+) {
+    let mut spawned = Vec::new();
+    for &(slot, place) in &team.members {
+        let plan = opponent_plan(team.team, spec);
+        let attempt = OpponentAttempt {
+            slot,
+            team: team.team,
+            place,
+            plan,
+        };
+        if !create(&attempt) {
+            raised.reports.push(MatchReport {
+                title: MATCH_ERROR_TITLE,
+                message: MATCH_ERROR,
+            });
+            break;
+        }
+        spawned.push(slot);
+        raised.fighters.push(RaisedFighter {
+            slot,
+            team: team.team,
+            place,
+            body: RaisedBody::Opponent {
+                plan,
+                condition: OPPONENT_CONDITION,
+                role: flags,
+                act_at_ms: spec.now_ms.saturating_add(MATCH_ACT_GRACE_MS),
+                behaviour: OPPONENT_BEHAVIOUR,
+                action_cleared: true,
+            },
+        });
+    }
+    for &from in &spawned {
+        for &to in &spawned {
+            if from != to {
+                raised.links.push(TeammateLink {
+                    from_slot: from,
+                    to_slot: to,
+                    familiarity: TEAMMATE_FAMILIARITY,
+                });
+            }
+        }
+    }
+}
+
+fn opponent_plan(team: i32, spec: &FreshMatch<'_>) -> OpponentPlan {
+    if team < 2 {
+        OpponentPlan::Generic(generic_plan(5, spec.tier))
+    } else {
+        let company = usize::try_from(team)
+            .ok()
+            .and_then(|index| spec.outfits.get(index).copied())
+            .unwrap_or(0);
+        OpponentPlan::Hire(hire_plan(spec.tier as u8, company, spec.event_weapon))
+    }
+}
+
 /// The next round's change.
 pub fn next_round(losses: i32, fighter_dead: bool) -> NextRound {
     if losses < 1 || !fighter_dead {
@@ -568,5 +851,201 @@ mod tests {
         assert_eq!(next_round(0, true), NextRound::FreshOpponent);
         assert_eq!(next_round(1, false), NextRound::FreshOpponent);
         assert_eq!(next_round(2, true), NextRound::Reserve(2));
+    }
+
+    fn fresh<'a>(slots: &'a [i32], per_team: i32, teams: i32) -> FreshMatch<'a> {
+        FreshMatch {
+            slots,
+            per_team,
+            teams,
+            spawn_at: [0.0; 3],
+            player_team: 1,
+            company_entries: 8,
+            player_entry: None,
+            tier: 4,
+            outfits: &[],
+            event_weapon: 0,
+            now_ms: 1_000,
+        }
+    }
+
+    fn opponent(body: &RaisedBody) -> (&OpponentPlan, &ConditionWords, u32, u32, &BehaviourReset) {
+        match body {
+            RaisedBody::Opponent {
+                plan,
+                condition,
+                role,
+                act_at_ms,
+                behaviour,
+                action_cleared,
+            } => {
+                assert!(*action_cleared);
+                (plan, condition, *role, *act_at_ms, behaviour)
+            }
+            other => panic!("expected an opponent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_failed_body_stops_its_side_and_reports() {
+        let slots = [4, 4, 4];
+        let mut spec = fresh(&slots, 3, 1);
+        spec.outfits = &[0, 0, 0, 0, 2];
+        spec.event_weapon = 5;
+        let mut asked = 0;
+        let raised = raise_fresh_match(&spec, |attempt| {
+            asked += 1;
+            assert_eq!(attempt.slot, 0);
+            assert_eq!(attempt.team, 4);
+            match attempt.plan {
+                OpponentPlan::Hire(plan) => {
+                    assert_eq!(plan, hire_plan(4, 2, 5));
+                    assert!(plan.draw_weapon);
+                }
+                OpponentPlan::Generic(_) => panic!("team 4 is a hire"),
+            }
+            false
+        });
+        assert_eq!(asked, 1);
+        assert!(raised.fighters.is_empty());
+        assert!(raised.links.is_empty());
+        assert_eq!(
+            raised.reports,
+            vec![MatchReport {
+                title: "Error",
+                message: "Failed to generate match motile.",
+            }]
+        );
+    }
+
+    #[test]
+    fn two_successes_are_related_both_ways_and_the_third_is_dropped() {
+        let slots = [4, 4, 4];
+        let spec = fresh(&slots, 3, 1);
+        let mut n = 0;
+        let raised = raise_fresh_match(&spec, |_| {
+            n += 1;
+            n < 3
+        });
+        assert_eq!(
+            raised.fighters.iter().map(|f| f.slot).collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        let (plan, condition, role, act_at, behaviour) = opponent(&raised.fighters[0].body);
+        assert!(matches!(plan, OpponentPlan::Hire(_)));
+        assert_eq!(*condition, OPPONENT_CONDITION);
+        assert_eq!(role, HOSTILE);
+        assert_eq!(act_at, 4_000);
+        assert_eq!(*behaviour, OPPONENT_BEHAVIOUR);
+        assert_eq!(
+            raised.links,
+            vec![
+                TeammateLink {
+                    from_slot: 0,
+                    to_slot: 1,
+                    familiarity: 100.0,
+                },
+                TeammateLink {
+                    from_slot: 1,
+                    to_slot: 0,
+                    familiarity: 100.0,
+                },
+            ]
+        );
+        assert_eq!(raised.reports.len(), 1);
+        assert_eq!(
+            raised.fighters[0].place,
+            bracket_layout(&slots, 3, 1, [0.0; 3])[0].members[0].1
+        );
+    }
+
+    #[test]
+    fn three_successes_link_every_ordered_pair() {
+        let slots = [6, 6, 6];
+        let raised = raise_fresh_match(&fresh(&slots, 3, 1), |_| true);
+        assert_eq!(raised.links.len(), 6);
+        assert!(raised.reports.is_empty());
+        assert!(
+            raised
+                .links
+                .iter()
+                .all(|link| link.from_slot != link.to_slot)
+        );
+        assert!(raised.links.iter().all(|link| link.familiarity == 100.0));
+    }
+
+    #[test]
+    fn three_sides_fight_free_and_two_stay_hostile() {
+        let three = [2, 3, 4];
+        let raised = raise_fresh_match(&fresh(&three, 1, 3), |_| true);
+        assert!(raised.fighters.iter().all(|f| match f.body {
+            RaisedBody::Opponent { role, .. } => role == FREE_FOR_ALL,
+            _ => false,
+        }));
+        let two = [2, 3];
+        let raised = raise_fresh_match(&fresh(&two, 1, 2), |_| true);
+        assert!(raised.fighters.iter().all(|f| match f.body {
+            RaisedBody::Opponent { role, .. } => role == HOSTILE,
+            _ => false,
+        }));
+    }
+
+    #[test]
+    fn a_low_team_id_is_generic_level_five() {
+        let slots = [0];
+        let mut spec = fresh(&slots, 1, 1);
+        spec.player_team = 99;
+        spec.tier = 3;
+        let raised = raise_fresh_match(&spec, |_| true);
+        let (plan, _, _, _, _) = opponent(&raised.fighters[0].body);
+        assert_eq!(plan, &OpponentPlan::Generic(generic_plan(5, 3)));
+    }
+
+    #[test]
+    fn the_player_side_is_stood_and_not_generated() {
+        let slots = [1, 0, 1, 2];
+        let mut spec = fresh(&slots, 3, 2);
+        spec.player_entry = Some(2);
+        spec.company_entries = 2;
+        let mut asked = Vec::new();
+        let raised = raise_fresh_match(&spec, |attempt| {
+            asked.push(attempt.slot);
+            true
+        });
+        assert_eq!(asked, vec![3]);
+        assert_eq!(raised.fighters.len(), 3);
+        assert!(matches!(
+            raised.fighters[0].body,
+            RaisedBody::Company {
+                role: MANAGER_ROLE,
+                act_at_ms: 4_000,
+                condition: COMPANY_CONDITION
+            }
+        ));
+        assert!(matches!(raised.fighters[1].body, RaisedBody::Player));
+        assert_eq!(raised.fighters[1].slot, 2);
+        assert!(raised.links.is_empty());
+        let (_, _, role, _, _) = opponent(&raised.fighters[2].body);
+        assert_eq!(role, HOSTILE);
+    }
+
+    #[test]
+    fn a_later_side_is_still_raised_after_a_failure() {
+        let slots = [4, 4, 5];
+        let raised = raise_fresh_match(&fresh(&slots, 2, 2), |attempt| attempt.team != 4);
+        assert_eq!(
+            raised.fighters.iter().map(|f| f.slot).collect::<Vec<_>>(),
+            vec![2]
+        );
+        assert_eq!(raised.reports.len(), 1);
+        assert!(raised.links.is_empty());
+    }
+
+    #[test]
+    fn an_unknown_outfit_forces_nothing() {
+        let slots = [8];
+        let raised = raise_fresh_match(&fresh(&slots, 1, 1), |_| true);
+        let (plan, _, _, _, _) = opponent(&raised.fighters[0].body);
+        assert_eq!(plan, &OpponentPlan::Hire(hire_plan(4, 0, 0)));
     }
 }
