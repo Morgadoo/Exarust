@@ -1307,42 +1307,65 @@ drawn yet: the rules wait for the forms that will show them.
   into a hand becomes held. A looted body's worn panel scatters its
   items and shield (leaving out any the icon cache cannot draw, which take
   no random draws) over the middle half of the panel and relaxes them in
-  four rounds (overlap ÷ 6, 5, 4, 3, twice each). A map opens as a
-  parchment of its texture's size in sixths of a unit.
+  four rounds (overlap ÷ 6, 5, 4, 3, twice each), measuring both axes
+  with the icons' horizontal half extents as the original's loop does. A
+  map opens as a parchment of its texture's size in sixths of a unit.
+- **Layouts** (`exa_game::item_container`): the grid takes `round(√(n ·
+  W/H))` columns and `ceil(n / columns)` rows (single precision), gives
+  its first slot to the last entry, jitters each centre by up to an eighth
+  of a cell from its own seeded generator and relaxes five times (overlap
+  ÷ 4 … 8), clamping after each pass. Scattering everything and placing a
+  new entry draw from the engine's shared generator; the scatter relaxes
+  six times (÷ 1, 1, 2, 2, 3, 3) and the placement six passes of two
+  rounds, pushing only when an axis overlaps by more than the pass number
+  (a signed compare) and only when both axes do. The scatter and worn
+  passes also store a seed for the run-time library's own generator.
 - **Panel state** (`exa_game::item_container::Container`): a panel keeps
   its entries, used bulk, capacity, item limit, container id, linked
   panel, owner, masks, vertical scale and client area. A list load stores
-  positions in sixteenths of a unit, a record load in eightieths, and
-  both clamp every resolved icon; the saves invert the same codecs. An
-  add at the centre refuses an item with no icon (the original's user-item
-  error). A drop from the panel or its linked one only moves the entry and
-  clears its held mark; any other drop appends it and adds its bulk
-  unless the item is already shown held. Item 499 fires game function 2
-  with the container id, or 3 for a character-owned panel. A drag released
-  elsewhere snaps back with the payload's flags when drag-out is refused,
-  leaves without charging bulk for the linked panel, and otherwise leaves
-  and loses its bulk. A UI-scale change rescales positions by
-  `round(unit · place / old)`.
+  positions in sixteenths of a unit (y also divided by the vertical
+  scale) and clamps every resolved icon; a record load takes the
+  container's id and positions in eightieths and clamps nothing; both
+  round half to even and the saves keep the low 16 bits. A record is saved
+  only for a loaded panel showing a database copy. An add at the centre
+  refuses an item with no icon (the original's user-item error). A drop
+  from the linked panel shows its held entry again, a drop from the panel
+  itself moves the entry still marked dragged with the payload's icon, and
+  either is raised; any other drop appends the item, adding its bulk unless
+  it came from the linked panel. The dropped entry is kept inside by its
+  icon's half extents (right, left, top, bottom). Item 499 appended fires
+  game function 2 with the container id, or 3 for an owned pack. A drag
+  released elsewhere snaps back with the payload's flags when drag-out is
+  refused, leaves without charging bulk for the linked panel, and
+  otherwise leaves and loses its bulk. A UI-scale change rescales
+  positions by `round(unit · place / old)`. The hit test tries the icons'
+  own pixels from the top, then (a switch on by default) the icon cache's
+  second test; nothing happens to a mouse event without its press bit.
 - **Container records** (`ContainerRecord`, `ListChild`): the panel reads
-  size `+8`/`+0xa`, capacity `+0x10`, item limit `+0x12` and a 12-byte
-  child array from `+0x20`; the character list is an array of 12-byte
-  `{id, flags, x, y}`. Both parsers are total and both writers round-trip
-  the fields the panel uses.
+  the container section's size, capacity and item limit words and its
+  12-byte children `{id, flags, x, y}`; the character list is an array of
+  the same 12-byte entries. Both parsers are total and both writers
+  round-trip the fields the panel uses.
 - **Item resolution** (`exa_items::item_gui`): an id is looked up as an
   object record first and then as an icon; a missing record or icon
-  produces "Unable to resolve item: XXXXXXXX". A popup container's inner
-  panel is its record's size times the unit plus twice its border.
-- **Cards** (`exa_items::card`, `exa_game::item_container`): a card action
-  is a plain show, a show that first runs the game's type-2 use, a toggle
-  of the same item's card, a container open, or nothing. The card opens
-  after two frames. The weapon page shows weight `w·0.01`, balance
-  `b·0.05` and the derived handling
-  `((g − 127)·0.01 + f·0.96153843)·5`, where `f` is
-  `(1 − b·0.01)·0.6 + w·0.004 + 0.1` below a balance byte of 101 and
-  `w·0.004 + 0.1` otherwise; a weapon flagged `0x6000000` shows weight 1,
+  produces "Unable to resolve item: XXXXXXXX" (none for id 0). A popup
+  container's inner panel is its record's size times the unit plus twice
+  its border (`exa_game::item_container::popup_inner`).
+- **Cards** (`exa_items::card`, `exa_game::item_container`): a card
+  request with an item under the pointer and no request pending asks for
+  the card on a 200 ms timer (two of the GUI timer's 100 ms steps) when
+  the item's use type is 0 or 1, runs the game's use first for type 2,
+  and builds the card at once otherwise. The weapon page shows weight
+  `w·0.01`, balance `b·0.05` and the handling `(a + f)·5` with
+  `a = (g − 127)·0.01` and `f = ((1 − b·0.01)·0.6 + w·0.004 + 0.1)/1.04`
+  for a balance byte up to 100, `(w·0.004 + 0.1)/1.04` above, in the
+  original's mixed precision; a weapon flagged `0x6000000` shows weight 1,
   handling 5 and balance 0. Strike rows show above 5 and scale by 0.05;
-  apparel rows above 0.25; coverage always. Description pronouns are
-  `he/she`, `him/her` and `his/her` by the owner's sex bit.
+  apparel rows above 0.25; coverage always. The striking side's shown rows
+  (slash, crush, pierce) fill the card's rows from the first. A
+  description's pronoun marker names `HeShe`, `HimHer`, `HisHer` or
+  `HisHers`, giving he/she, him/her, his/her or his/hers by the owner's
+  sex bit; the description box sits `0xb4` pixels below the page's top.
 - **Inventory** (`exa_items::inventory_window`): 244 × 644 units (628
   compact, 590 inside the arsenal), the doll above a 228 × 180 pack of
   capacity 400 and items up to 50; worn items count against the pack.
@@ -1362,38 +1385,43 @@ drawn yet: the rules wait for the forms that will show them.
   three, three, three and six cells. A socket row hovers by fifths of a
   unit, takes only crystals 431, 451, 452 and 499, shows a crystal's card
   on a right click and starts its drag on a drag, and hands the previous
-  crystal back when one replaces it. Committing the row writes the
-  sockets into a weapon (refreshing its electric effect) or apparel
-  (refreshing the player's abilities), and an AR crystal fires the game's
-  fourth function.
+  crystal back when one replaces it; a finished drag clears the socket's
+  kind but leaves its charge byte. Committing the row writes the sockets
+  into the item's weapon section (refreshing its electric effect), else
+  its apparel section (refreshing the player's abilities), and an AR
+  crystal fires the game's fourth function.
 
 ## Character view
 
 The character screen's 3D panel (`exa_ui::character_view`; the item
 window rules above are its drop targets). The figure stands at
-(0, 100, 0); the camera looks from 410 cm along (200, −60, −360) with a
-30° field of view. The first super-sampling level is 1 when the setting
-is at most 0, two more than the setting for 1–3, and 4 above. The scene
-is `_Inventory`. Its background is a wash of the scheme colour: the
-scheme's green over 240 (optionally × 1.4) gives red 0.38 and green 0.4,
-and blue over 240 (× 1.4) gives blue 0.45, rounded to even; the brighter
-copy uses 280. The camera follows a target by `rate · 0.003 · step`,
-never past it.
+(0, 100, 0); the camera sits 410 cm from it towards (−200, 60, 360), so
+it looks along (200, −60, −360), with a 30° field of view. The first
+super-sampling level is 1 when the setting is at most 0, two more than
+the setting for 1–3, and 4 above. The scene is `_Inventory`. Its
+background is a vertical wash of the skin scheme's colour: each byte
+over 240, decoded from sRGB when the renderer's sRGB targets are on (the
+default) or × 1.4 when they are off; red is 0.38 of the green, green 0.4
+and blue 0.45 of the blue, as bytes of 255 at the top and 280 at the
+bottom, rounded to even. The view's task eases the figure's race share
+up to its race's value by 0.003 per frame millisecond, never past it.
 
 A drag over the figure is accepted only when its item section allows it:
-apparel needs a body whose race flags carry bit 2 and a view that is not
-frozen; a withheld weapon or shield needs the matching body permission
-(`0x10000`, or `0x20000` for a weapon's second bit); a body that takes
-the AL crystal accepts item 500 while nothing is shown. A drop wears
-apparel, takes a weapon into a hand, takes a shield into the off hand, or
-takes the body's core crystal. A hover shows the item under the pointer
-and its icon, and clears the shown item when the icon cannot be resolved.
-A release takes off the worn item under the pointer (1-based), takes off
-the shown item, or gives the item back to the pack. The view's owner
-lookup follows the first visible form of its class; the insight check
-looks for technique 8 in the mind skill and blocks on the right half of
-the figure.
-
+apparel needs a race that wears it (bit 4) and a view that allows
+changes; a withheld weapon or shield needs the matching body permission
+(`0x10000`, or `0x20000` for a weapon's second bit); a race whose core
+word takes the AL crystal accepts item 500 while nothing is shown. A drop
+wears apparel, takes a weapon into a hand, takes a shield into the off
+hand, or takes the body's core crystal. A hover shows the item under the
+pointer and its icon, and clears the shown item when the icon cannot be
+resolved. A frozen view starts drags only from a held item. A release
+takes a held item out of its hand (the pack drops its held entry), takes
+the shown item off when the shown icon is the dragged one, and otherwise
+takes the dragged item off and charges the pack its bulk. The view's
+owner lookup follows the first visible form of its class, and the
+player's pack is that view's; the insight check looks for technique 8 in
+the skill block the view reads and blocks on the right half of the
+figure.
 
 ## Settings options
 

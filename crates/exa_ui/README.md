@@ -241,10 +241,11 @@ app; the other widgets wait for forms that use them.
 ## Character view
 
 `character_view` holds the character screen's 3D panel: the `_Inventory`
-scene's camera (410 cm, 30°), its super-sampling choice and background
-wash, the follow, the drag-over acceptance, the drop/equip classification,
-the hover and release decisions, the owner lookup and the insight check.
-The panel itself is not built yet.
+scene's camera (410 cm from the figure, 30°), its super-sampling choice
+and background wash (sRGB-decoded or boosted), the task's race-share
+easing, the drag-over acceptance, the drop classification, the shown
+item, the drag start and release decisions, the owner and player-pack
+lookups and the insight check. The panel itself is not built yet.
 
 ## Arena match board
 
