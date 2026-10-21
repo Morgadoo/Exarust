@@ -1,25 +1,40 @@
 //! The start-up splash screen: the two BME logos, their fades and the
 //! hand-over to the main menu.
 //!
-//! The screen is a small state machine on the real clock. It waits a second
-//! while it warms up the renderer's programs, fades the first logo in over
-//! 600 ms, holds it two seconds, shows the second logo with the
-//! `BME Critters` sound, holds it 200 ms while the interface settles, fades
-//! it out over 300 ms, waits for the warm-up to finish, hands over to the
-//! main menu, waits a second, draws the menu's theme and fades the whole
-//! screen to the game over a second. Every logo is centred and scaled by
-//! `round(height/135)·0.125`, the same quantised scale the menu uses.
+//! The screen is a small state machine. Every tick it first draws its black
+//! backdrop over the whole client at the backdrop's alpha, then runs its
+//! state: it waits a second while it warms up the renderer's programs, fades
+//! the first logo in from black over 600 ms (the logo's grey level rises; the
+//! backdrop stays opaque), holds it two seconds, shows the second logo with
+//! the `BME Critters` sound, holds it 200 ms while the warm-up goes on, fades
+//! it to black over 300 ms, finishes the warm-up, runs the hand-over (the
+//! main menu is built behind the splash), waits a second, asks for the menu's
+//! theme and fades the backdrop out over a second. Every logo is centred and
+//! scaled by `round(height/135)·0.125`, the same quantised scale the menu
+//! uses.
 //!
-//! The textures are loaded by [`Splash::new`]'s caller; this module holds
-//! their sizes and the state machine, not the drawn quads. [`SplashPlugin`]
-//! can run it (nothing starts it by default: Exarust's launcher opens a level
-//! view rather than the original's menu).
+//! Two clocks are read, as in the original: the frame's time (sampled when
+//! the frame starts; every comparison and elapsed time uses it) and the
+//! system clock (read when a stage is stamped). An elapsed time is their
+//! signed 64-bit difference, so a stamp taken after the frame started gives a
+//! small negative time, not a wrapped one.
 //!
-//! Evidence: the splash screen's load, draw and destroy routines and their
-//! state words.
+//! The splash also drives two global fades: the screen-transition audio gain
+//! (silent from the load until the second logo, silent again after the menu
+//! wait, then rising with the last fade) and the marker outline fade (1, the
+//! outlines hidden, during the warm-up; falling to 0 with the last fade).
+//!
+//! The form's hit-test callback and its destroy order are
+//! [`exa_ui::menu::splash_bounds`] and [`exa_ui::menu::destroy_splash`].
+//! [`SplashPlugin`] runs and draws the screen when the launcher asks for it
+//! (`--splash`); the hand-over opens the main menu screen.
+//!
+//! Evidence: the splash screen's load, state machine, logo draw and create
+//! routines, their state words and constants.
 
 use bevy::prelude::*;
-use exa_assets::Game;
+use bevy::window::PrimaryWindow;
+use exa_assets::{ColorSpace, Game};
 use exa_formats::rfi::Rfi;
 
 use crate::flow::Viewport;
@@ -32,32 +47,31 @@ pub const LOGO_2: &str = "bmelogol02.rfi";
 pub const HAND_OVER_SOUND: &str = "BME Critters";
 /// Its volume.
 pub const SOUND_VOLUME: f32 = 0.2;
+/// Its pitch.
+pub const SOUND_PITCH: f32 = 1.0;
 /// Its priority.
 pub const SOUND_PRIORITY: u32 = 0x4060;
 
 /// How long the renderer's programs warm up before the first fade.
 pub const WARM_UP_MS: u32 = 1000;
-/// How long the first logo stays fully shown.
+/// How long the first logo stays from the start of its fade.
 pub const LOGO_HOLD_MS: u32 = 2000;
 /// How long the second logo stays before its fade.
 pub const SECOND_HOLD_MS: u32 = 200;
-/// How long the screen waits after the hand-over before it fades to the game.
+/// How long the screen waits after the fade-out before it starts the menu.
 pub const MENU_HOLD_MS: u32 = 1000;
-/// The fade-in rate per millisecond, as a double.
+/// The fade-in rate per millisecond, as a double (1/600).
 pub const FADE_IN_RATE: f64 = 0.001_666_666_666_666_666_8;
-/// The fade-out rate per millisecond, as a double.
+/// The fade-out rate per millisecond, as a double (1/300).
 pub const FADE_OUT_RATE: f64 = 0.003_333_333_333_333_333_5;
-/// The final fade-to-game rate per millisecond, as a double.
+/// The final fade's rate per millisecond, as a double.
 pub const MENU_FADE_RATE: f64 = 0.001;
-/// The fade value below which the screen closes: the smallest float above
-/// zero that the original's fade rate can produce in one step.
+/// The final fade's value below which the screen closes.
 pub const FADE_EPSILON: f32 = 1.192_089_982_282_595_9e-07;
-/// The control value a form reports when no control is under the point.
-pub const NO_CONTROL: i32 = -1;
 /// The size quantisation the logos share with the menu.
 pub const SCALE_STEP: f64 = 0.125;
-/// The client height one scale step stands for.
-pub const SCALE_DIVISOR: f64 = 135.0;
+/// The reciprocal of the client height one scale step stands for (1/135).
+pub const SCALE_PER_PIXEL: f64 = 0.007_407_407_407_407_408;
 
 /// One logo's stored size, in pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,7 +90,7 @@ pub struct LogoRect {
 }
 
 impl LogoRect {
-    /// The rectangle's right and bottom edges.
+    /// The rectangle's right edge.
     pub fn right(&self) -> f32 {
         self.x + self.width
     }
@@ -104,9 +118,11 @@ pub enum State {
 }
 
 impl State {
-    /// The state a word names.
-    pub const fn from_word(word: u8) -> Self {
-        match word {
+    /// The state a word names. Words past 10 match no state: the tick only
+    /// draws the backdrop.
+    pub const fn from_word(word: u8) -> Option<Self> {
+        Some(match word {
+            0 => State::WarmUp,
             1 => State::FadeIn,
             2 => State::SecondLogo,
             3 => State::SecondHold,
@@ -117,25 +133,32 @@ impl State {
             8 => State::Menu,
             9 => State::MenuFade,
             10 => State::FadeToGame,
-            _ => State::WarmUp,
-        }
+            _ => return None,
+        })
     }
 }
 
 /// What one splash tick asks for.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SplashFrame {
-    /// A renderer warm-up pass runs this frame.
-    pub warm_up: bool,
-    /// The logo to draw and where.
-    pub logo: Option<(usize, LogoRect)>,
+    /// The backdrop's alpha this tick (the backdrop is drawn first, black).
     pub alpha: u8,
-    pub darkness: f32,
-    pub fade: f32,
-    /// The sound to start, at this volume.
-    pub sound: Option<(&'static str, f32)>,
-    /// The hand-over callback runs (the main menu is built and shown).
-    pub menu: bool,
+    /// A renderer warm-up pass runs this tick, with this pass number.
+    pub warm_up: Option<u32>,
+    /// The logo to draw, where, and its grey level (the logo is drawn at
+    /// `(tint, tint, tint, 255)`).
+    pub logo: Option<(usize, LogoRect, u8)>,
+    /// The screen-transition audio gain after the tick.
+    pub audio_fade: f32,
+    /// The marker outline fade after the tick.
+    pub marker_fade: f32,
+    /// The sound to start.
+    pub sound: bool,
+    /// The hand-over runs: its callback (the main menu is built and shown)
+    /// and the form is raised over the menu.
+    pub hand_over: bool,
+    /// The main menu's form is brought to the front (the menu stage).
+    pub focus_menu: bool,
     /// The menu's theme starts.
     pub theme: bool,
     /// The screen closes (the form is destroyed).
@@ -147,171 +170,176 @@ pub struct SplashFrame {
 pub struct Splash {
     /// The state word (0 to 10).
     pub state: u8,
-    /// The state's start time.
+    /// The load's (and later stages') start, on either clock.
     pub start_ms: u32,
-    /// The current stage's stamp.
+    /// The current stage's stamp, on the system clock.
     pub stamp_ms: u32,
-    /// The form's overall alpha.
+    /// The backdrop's alpha.
     pub alpha: u8,
-    /// The screen's darkening.
-    pub darkness: f32,
-    /// The logo's fade.
-    pub fade: f32,
-    /// The warm-up frame counter.
+    /// The screen-transition audio gain.
+    pub audio_fade: f32,
+    /// The marker outline fade.
+    pub marker_fade: f32,
+    /// The warm-up pass counter (reset by the load).
     pub frame: u32,
-    /// The busy count the splash holds; the game's loading counter.
+    /// The busy count the splash holds: the game's loading counter.
     pub busy: i32,
-    /// The menu's theme plays on the hand-over.
+    /// The menu's theme plays at the menu stage.
     pub theme_on_menu: bool,
     pub logos: [Logo; 2],
 }
 
 impl Splash {
-    /// Loads the splash at `now`. It holds one busy count; the original
-    /// raises the counter until the menu has faded in.
-    pub fn new(now: u32, logos: [Logo; 2]) -> Self {
+    /// The splash as its creator and its load leave it, at the system clock
+    /// `clock_ms`: the backdrop opaque, the audio gain silent, one busy count
+    /// held (the counter is raised only when it is below one; the caller's
+    /// counter is taken as zero) and the warm-up counter cleared. The boot's
+    /// creator asks for the menu theme.
+    pub fn new(clock_ms: u32, logos: [Logo; 2]) -> Self {
         Self {
             state: 0,
-            start_ms: now,
+            start_ms: clock_ms,
             stamp_ms: 0,
             alpha: 255,
-            darkness: 0.0,
-            fade: 0.0,
+            audio_fade: 0.0,
+            marker_fade: 0.0,
             frame: 0,
             busy: 1,
-            // The boot's creator asks for the menu theme on the hand-over.
             theme_on_menu: true,
             logos,
         }
     }
 
     /// The state.
-    pub fn phase(&self) -> State {
+    pub fn phase(&self) -> Option<State> {
         State::from_word(self.state)
     }
 
-    /// The form's bounds callback: the client rect and no control, -1.
-    pub fn bounds(viewport: Viewport) -> (LogoRect, i32) {
-        (
-            LogoRect {
-                x: 0.0,
-                y: 0.0,
-                width: viewport.width as f32,
-                height: viewport.height as f32,
-            },
-            NO_CONTROL,
-        )
-    }
-
-    /// One tick at `now`. `programs_ready` is the renderer's warm-up answer:
-    /// the settle state waits for it.
-    pub fn tick(&mut self, now: u32, viewport: Viewport, programs_ready: bool) -> SplashFrame {
-        let mut out = SplashFrame::default();
+    /// One tick. `frame_ms` is the frame's time, `clock_ms` the system clock
+    /// read for a stamp; `programs_ready` is the settle stage's warm-up
+    /// answer (the pass reports that nothing is left to build).
+    pub fn tick(
+        &mut self,
+        frame_ms: u32,
+        clock_ms: u32,
+        viewport: Viewport,
+        programs_ready: bool,
+    ) -> SplashFrame {
+        let mut out = SplashFrame {
+            alpha: self.alpha,
+            ..Default::default()
+        };
+        let passed =
+            |since: u32, hold: u32| u64::from(since) + u64::from(hold) < u64::from(frame_ms);
         match self.phase() {
-            State::WarmUp => {
-                if u64::from(self.start_ms) + u64::from(WARM_UP_MS) < u64::from(now) {
+            Some(State::WarmUp) => {
+                if passed(self.start_ms, WARM_UP_MS) {
                     self.state = 1;
-                    self.stamp_ms = now;
+                    self.stamp_ms = clock_ms;
                 } else {
-                    out.warm_up = true;
-                    self.frame = self.frame.wrapping_add(1);
+                    out.warm_up = Some(self.warm_up_pass());
                 }
                 self.alpha = 255;
-                self.fade = 1.0;
+                self.marker_fade = 1.0;
             }
-            State::FadeIn => {
-                self.fade = fade_in(now.wrapping_sub(self.stamp_ms));
-                if 1.0 < self.fade {
-                    self.fade = 1.0;
+            Some(State::FadeIn) => {
+                let mut fade = (elapsed(frame_ms, self.stamp_ms) * FADE_IN_RATE) as f32;
+                if 1.0 < fade {
+                    fade = 1.0;
                 }
-                self.alpha = alpha_of(self.fade);
-                out.logo = Some((0, logo_rect(viewport, self.logos[0])));
-                if u64::from(self.stamp_ms) + u64::from(LOGO_HOLD_MS) < u64::from(now) {
+                out.logo = Some((0, logo_rect(viewport, self.logos[0]), grey(fade)));
+                if passed(self.stamp_ms, LOGO_HOLD_MS) {
                     self.state = 2;
                 }
             }
-            State::SecondLogo => {
-                self.darkness = 1.0;
-                out.sound = Some((HAND_OVER_SOUND, SOUND_VOLUME));
-                self.alpha = 255;
-                out.logo = Some((1, logo_rect(viewport, self.logos[1])));
+            Some(State::SecondLogo) => {
+                self.audio_fade = 1.0;
+                out.sound = true;
+                out.logo = Some((1, logo_rect(viewport, self.logos[1]), 255));
                 self.state = 3;
-                self.stamp_ms = now;
+                self.stamp_ms = clock_ms;
             }
-            State::SecondHold => {
-                out.logo = Some((1, logo_rect(viewport, self.logos[1])));
-                if u64::from(self.stamp_ms) + u64::from(SECOND_HOLD_MS) < u64::from(now) {
+            Some(State::SecondHold) => {
+                out.logo = Some((1, logo_rect(viewport, self.logos[1]), 255));
+                if passed(self.stamp_ms, SECOND_HOLD_MS) {
                     self.state = 4;
-                    self.stamp_ms = now;
+                    self.stamp_ms = clock_ms;
                 } else {
-                    out.warm_up = true;
+                    out.warm_up = Some(self.warm_up_pass());
                 }
             }
-            State::FadeOut => {
-                self.fade = 1.0 - fade_out(now.wrapping_sub(self.stamp_ms));
-                if self.fade <= 0.0 {
-                    self.fade = 0.0;
-                    self.start_ms = now;
+            Some(State::FadeOut) => {
+                let mut fade = (1.0 - elapsed(frame_ms, self.stamp_ms) * FADE_OUT_RATE) as f32;
+                if fade <= 0.0 {
+                    fade = 0.0;
+                    self.start_ms = frame_ms;
                     self.state = 5;
-                    self.stamp_ms = now;
+                    self.stamp_ms = clock_ms;
                 }
-                self.alpha = alpha_of(self.fade);
-                out.logo = Some((1, logo_rect(viewport, self.logos[1])));
+                out.logo = Some((1, logo_rect(viewport, self.logos[1]), grey(fade)));
             }
-            State::Settle => {
+            Some(State::Settle) => {
+                // The pass runs every tick of the stage; the stage ends on
+                // the tick whose pass has nothing left to build.
+                out.warm_up = Some(self.frame);
                 if programs_ready {
                     self.state = 6;
-                } else {
-                    out.warm_up = true;
-                    self.frame = self.frame.wrapping_add(1);
                 }
+                self.frame = self.frame.wrapping_add(1);
             }
-            State::HandOver => {
-                out.menu = true;
+            Some(State::HandOver) => {
+                out.hand_over = true;
                 self.alpha = 255;
                 self.state = 7;
             }
-            State::MenuWait => {
-                if u64::from(self.start_ms) + u64::from(MENU_HOLD_MS) < u64::from(now) {
+            Some(State::MenuWait) => {
+                if passed(self.start_ms, MENU_HOLD_MS) {
                     self.state = 8;
-                    self.darkness = 0.0;
+                    self.audio_fade = 0.0;
                     self.release_busy();
                 }
             }
-            State::Menu => {
+            Some(State::Menu) => {
                 self.state = 9;
-                self.start_ms = now;
-                self.stamp_ms = now;
+                self.start_ms = frame_ms;
+                self.stamp_ms = clock_ms;
             }
-            State::MenuFade => {
+            Some(State::MenuFade) => {
                 self.state = 10;
-                if self.theme_on_menu {
-                    out.theme = true;
-                }
+                out.theme = self.theme_on_menu;
                 self.release_busy();
-                self.start_ms = now;
-                self.stamp_ms = now;
-                out.menu = true;
+                self.start_ms = frame_ms;
+                self.stamp_ms = clock_ms;
+                out.focus_menu = true;
             }
-            State::FadeToGame => {
-                self.fade = 1.0 - menu_fade(now.wrapping_sub(self.stamp_ms));
-                if self.fade < FADE_EPSILON {
-                    self.darkness = 1.0;
-                    self.fade = 0.0;
+            Some(State::FadeToGame) => {
+                let fade = (1.0 - elapsed(frame_ms, self.stamp_ms) * MENU_FADE_RATE) as f32;
+                // A NaN fade keeps the screen up, as the original's compare.
+                if fade < FADE_EPSILON {
+                    self.audio_fade = 1.0;
+                    self.marker_fade = 0.0;
                     out.closed = true;
                 } else {
-                    self.darkness = 1.0 - self.fade;
-                    self.alpha = alpha_of(self.fade);
+                    self.marker_fade = fade;
+                    self.audio_fade = 1.0 - fade;
+                    self.alpha = round_to_i64(fade * 255.0) as u8;
                 }
             }
+            None => {}
         }
-        out.alpha = self.alpha;
-        out.darkness = self.darkness;
-        out.fade = self.fade;
+        out.audio_fade = self.audio_fade;
+        out.marker_fade = self.marker_fade;
         out
     }
 
-    /// The busy count's release, once: it never goes under zero.
+    /// One warm-up pass: the counter's value for this pass, then counted.
+    fn warm_up_pass(&mut self) -> u32 {
+        let pass = self.frame;
+        self.frame = self.frame.wrapping_add(1);
+        pass
+    }
+
+    /// The busy count's release: it never goes under zero.
     fn release_busy(&mut self) {
         if self.busy > 0 {
             self.busy -= 1;
@@ -319,56 +347,51 @@ impl Splash {
     }
 }
 
-/// The logo's place: the scale is `round(height/135)·0.125`, the logo's
-/// stored size times it, centred on the client.
+/// The frame's time less a stamp: the signed 64-bit difference of the two
+/// 32-bit clock words, converted to double.
+fn elapsed(frame_ms: u32, stamp_ms: u32) -> f64 {
+    (i64::from(frame_ms) - i64::from(stamp_ms)) as f64
+}
+
+/// The logo's place: the scale is `round(height/135)·0.125` (the steps in
+/// double, rounded half to even, times the step in double, kept in single),
+/// the logo's stored size times it, centred on the client.
 pub fn logo_rect(viewport: Viewport, logo: Logo) -> LogoRect {
-    let steps = round_even(f64::from(viewport.height) * (1.0 / SCALE_DIVISOR));
+    let steps = round_double(f64::from(viewport.height as i32) * SCALE_PER_PIXEL);
     let scale = (steps as f64 * SCALE_STEP) as f32;
     let width = f32::from(logo.width) * scale;
     let height = f32::from(logo.height) * scale;
     LogoRect {
-        x: (viewport.width as f32 - width) * 0.5,
-        y: (viewport.height as f32 - height) * 0.5,
+        x: (viewport.width as i32 as f32 - width) * 0.5,
+        y: (viewport.height as i32 as f32 - height) * 0.5,
         width,
         height,
     }
 }
 
-/// A double rounded to the nearest integer, ties to even (the processor's
-/// default conversion).
-fn round_even(value: f64) -> i64 {
-    if !value.is_finite() || value >= 9.223_372e18 || value < -9.223_372e18 {
+/// A double converted to an integer with the processor's default rounding:
+/// nearest, ties to even, and the integer-indefinite value for a NaN or an
+/// out-of-range result.
+fn round_double(value: f64) -> i64 {
+    if value.is_nan()
+        || value >= 9.223_372_036_854_775_808e18
+        || value < -9.223_372_036_854_775_808e18
+    {
         i64::MIN
     } else {
         value.round_ties_even() as i64
     }
 }
 
-/// The alpha the fade gives: the fade times 255, converted with the
-/// processor's rounding and kept as a byte.
-fn alpha_of(fade: f32) -> u8 {
-    let value = fade * 255.0;
-    if !value.is_finite() || value >= 9.223_372e18 || value < -9.223_372e18 {
-        0
-    } else {
-        value.round_ties_even() as i64 as u8
-    }
+/// A float converted the same way.
+fn round_to_i64(value: f32) -> i64 {
+    exa_ui::engine_math::round_i64(value)
 }
 
-/// The fade-in value after `elapsed` milliseconds: the elapsed time times
-/// the rate in double precision, kept in single.
-fn fade_in(elapsed: u32) -> f32 {
-    (f64::from(elapsed) * FADE_IN_RATE) as f32
-}
-
-/// The fade-out value after `elapsed` milliseconds.
-fn fade_out(elapsed: u32) -> f32 {
-    (f64::from(elapsed) * FADE_OUT_RATE) as f32
-}
-
-/// The final fade after `elapsed` milliseconds.
-fn menu_fade(elapsed: u32) -> f32 {
-    (f64::from(elapsed) * MENU_FADE_RATE) as f32
+/// The logo's grey level for a fade: the fade times 255, converted with the
+/// processor's rounding, kept as its low byte.
+fn grey(fade: f32) -> u8 {
+    round_to_i64(fade * 255.0) as u8
 }
 
 /// The splash's running form.
@@ -376,10 +399,10 @@ fn menu_fade(elapsed: u32) -> f32 {
 pub struct SplashScreen(pub Option<Splash>);
 
 impl SplashScreen {
-    /// Starts the splash at `now`, if it is not already up.
-    pub fn begin(&mut self, now: u32, logos: [Logo; 2]) {
+    /// Starts the splash at `clock_ms`, if it is not already up.
+    pub fn begin(&mut self, clock_ms: u32, logos: [Logo; 2]) {
         if self.0.is_none() {
-            self.0 = Some(Splash::new(now, logos));
+            self.0 = Some(Splash::new(clock_ms, logos));
         }
     }
 
@@ -394,26 +417,6 @@ impl SplashScreen {
     }
 }
 
-/// The two logos' sizes, read once from the game's textures.
-#[derive(Resource, Clone, Copy, Debug)]
-pub struct SplashLogos(pub [Logo; 2]);
-
-impl Default for SplashLogos {
-    fn default() -> Self {
-        // A placeholder until the game's textures are read.
-        Self([
-            Logo {
-                width: 512,
-                height: 128,
-            },
-            Logo {
-                width: 512,
-                height: 128,
-            },
-        ])
-    }
-}
-
 /// Reads the two logos' sizes from the game's textures.
 pub fn read_logos(game: &Game) -> Option<[Logo; 2]> {
     let read = |name: &str| {
@@ -425,59 +428,167 @@ pub fn read_logos(game: &Game) -> Option<[Logo; 2]> {
     Some([read(LOGO_1)?, read(LOGO_2)?])
 }
 
-/// The splash's plugin: it reads the logo sizes, and ticks the screen when
-/// one was started. Nothing starts it by default; the launcher opens a level
-/// view, not the original's menu flow.
+/// Whether the launcher shows the splash at start-up. Off unless the app
+/// inserts it set: Exarust's launcher opens a view of its own, and the
+/// splash covers its first five seconds.
+#[derive(Resource, Clone, Copy, Debug, Default)]
+pub struct SplashAtStart(pub bool);
+
+/// Above the interface, the HUD and the fades; under the cursor.
+const Z: i32 = 950;
+
+#[derive(Component)]
+struct SplashBackdrop;
+
+#[derive(Component)]
+struct SplashLogo;
+
+/// The two logos' images, loaded when the splash starts.
+#[derive(Resource)]
+struct SplashImages([Handle<Image>; 2]);
+
+/// The splash's plugin: with [`SplashAtStart`] set it starts the screen at
+/// start-up, ticks it on the real clock, draws its backdrop and logos, and
+/// opens the main menu screen at the hand-over.
 pub struct SplashPlugin;
 
 impl Plugin for SplashPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SplashScreen>()
-            .init_resource::<SplashLogos>()
-            .add_systems(Startup, load_logos)
+            .init_resource::<SplashAtStart>()
+            .add_systems(Startup, start)
             .add_systems(Update, tick_splash);
     }
 }
 
-fn load_logos(mut logos: ResMut<SplashLogos>, game: Option<Res<Game>>) {
-    if let Some(game) = game.as_ref()
-        && let Some(read) = read_logos(game)
-    {
-        logos.0 = read;
-    }
+/// The real clock in milliseconds, as the splash's 32-bit clock words.
+fn clock_ms(time: &Time<Real>) -> u32 {
+    time.elapsed().as_millis() as u32
 }
 
-fn tick_splash(
+fn start(
+    mut commands: Commands,
+    at_start: Res<SplashAtStart>,
     mut screen: ResMut<SplashScreen>,
-    logos: Res<SplashLogos>,
+    game: Option<Res<Game>>,
+    mut images: ResMut<Assets<Image>>,
     time: Res<Time<Real>>,
-    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+) {
+    if !at_start.0 {
+        return;
+    }
+    let Some(game) = game else {
+        return;
+    };
+    let Some(logos) = read_logos(&game) else {
+        warn!("splash: the BME logos are missing");
+        return;
+    };
+    let load = |name: &str| game.load_texture(name, ColorSpace::Srgb, None);
+    let (first, second) = match (load(LOGO_1), load(LOGO_2)) {
+        (Ok(first), Ok(second)) => (first, second),
+        (Err(e), _) | (_, Err(e)) => {
+            warn!("splash: {e}");
+            return;
+        }
+    };
+    commands.insert_resource(SplashImages([images.add(first), images.add(second)]));
+    commands
+        .spawn((
+            SplashBackdrop,
+            Node {
+                position_type: PositionType::Absolute,
+                width: percent(100.0),
+                height: percent(100.0),
+                ..default()
+            },
+            BackgroundColor(Color::BLACK),
+            GlobalZIndex(Z),
+        ))
+        .with_child((
+            SplashLogo,
+            Node {
+                position_type: PositionType::Absolute,
+                ..default()
+            },
+            ImageNode::default(),
+            Visibility::Hidden,
+        ));
+    screen.begin(clock_ms(&time), logos);
+}
+
+type BackdropParts<'a> = (Entity, &'a mut BackgroundColor);
+type LogoParts<'a> = (&'a mut Node, &'a mut ImageNode, &'a mut Visibility);
+
+#[allow(clippy::too_many_arguments)]
+fn tick_splash(
+    mut commands: Commands,
+    mut screen: ResMut<SplashScreen>,
+    images: Option<Res<SplashImages>>,
+    time: Res<Time<Real>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut backdrops: Query<BackdropParts, With<SplashBackdrop>>,
+    mut logos: Query<LogoParts, With<SplashLogo>>,
+    mut menu: Option<ResMut<crate::menu_screen::MenuScreen>>,
+    mut flow: Option<ResMut<crate::flow::Flow>>,
 ) {
     let Some(splash) = screen.0.as_mut() else {
         return;
     };
-    let viewport = windows
-        .single()
-        .ok()
-        .map(|window| Viewport {
-            width: window.physical_width(),
-            height: window.physical_height(),
-        })
-        .unwrap_or(Viewport {
-            width: logos.0[0].width.into(),
-            height: logos.0[0].height.into(),
-        });
-    let now = time.elapsed().as_millis() as u32;
-    let frame = splash.tick(now, viewport, true);
-    if let Some((name, volume)) = frame.sound {
-        info!("splash: {name} at {volume}");
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let viewport = Viewport {
+        width: window.physical_width(),
+        height: window.physical_height(),
+    };
+    // The frame's time and the stamp's clock are the same real clock here:
+    // Bevy samples it once a frame.
+    let now = clock_ms(&time);
+    let frame = splash.tick(now, now, viewport, true);
+    if frame.sound {
+        debug!("splash: {HAND_OVER_SOUND} at {SOUND_VOLUME}");
     }
-    if frame.menu {
-        info!("splash: handing over to the main menu");
+    if frame.hand_over {
+        // The hand-over callback: the title page is built and shown under
+        // the splash.
+        if let Some(flow) = flow.as_mut() {
+            for step in flow.after_splash() {
+                debug!("game flow: {step:?}");
+            }
+        }
+        if let Some(menu) = menu.as_mut() {
+            menu.open();
+        }
+    }
+    if frame.theme {
+        debug!("splash: the menu theme starts");
+    }
+    let scale = window.scale_factor();
+    for (_, mut colour) in &mut backdrops {
+        colour.0 = Color::srgba_u8(0, 0, 0, frame.alpha);
+    }
+    for (mut node, mut image, mut visibility) in &mut logos {
+        match (frame.logo, images.as_ref()) {
+            (Some((index, rect, tint)), Some(images)) => {
+                node.left = px(rect.x / scale);
+                node.top = px(rect.y / scale);
+                node.width = px(rect.width / scale);
+                node.height = px(rect.height / scale);
+                image.image = images.0[index].clone();
+                image.color = Color::srgb_u8(tint, tint, tint);
+                *visibility = Visibility::Inherited;
+            }
+            _ => *visibility = Visibility::Hidden,
+        }
     }
     if frame.closed {
-        info!("splash: closed");
+        debug!("splash: closed");
         screen.0 = None;
+        for (entity, _) in &backdrops {
+            commands.entity(entity).despawn();
+        }
+        commands.remove_resource::<SplashImages>();
     }
 }
 
@@ -503,8 +614,15 @@ mod tests {
         ]
     }
 
+    /// A tick where the frame's time and the stamp's clock agree.
+    fn tick(splash: &mut Splash, now: u32, ready: bool) -> SplashFrame {
+        splash.tick(now, now, VIEW, ready)
+    }
+
     #[test]
     fn the_logos_are_centred_and_scaled_by_135ths() {
+        // The shipped double is the nearest one to 1/135.
+        assert_eq!(SCALE_PER_PIXEL, 1.0 / 135.0);
         let rect = logo_rect(VIEW, logos()[0]);
         // 1080/135 = 8 steps, times 0.125: scale 1; 512×128 centred.
         assert_eq!(rect.width, 512.0);
@@ -525,6 +643,15 @@ mod tests {
         assert_eq!(small.height, 24.0);
         assert_eq!(small.x, 352.0);
         assert_eq!(small.y, 214.5);
+        // A client of 1215 is exactly 9 steps: scale 1.125.
+        let nine = logo_rect(
+            Viewport {
+                width: 100,
+                height: 1215,
+            },
+            logos()[0],
+        );
+        assert_eq!(nine.width, 576.0);
         // A zero-height client has no scale.
         let empty = logo_rect(
             Viewport {
@@ -538,115 +665,156 @@ mod tests {
     }
 
     #[test]
-    fn the_splash_waits_a_second_then_fades_in() {
+    fn the_splash_warms_up_a_second_then_fades_the_logo_in_from_black() {
         let mut splash = Splash::new(1000, logos());
-        assert_eq!(splash.phase(), State::WarmUp);
-        let frame = splash.tick(1000, VIEW, true);
-        assert!(frame.warm_up);
+        assert_eq!(splash.audio_fade, 0.0);
+        assert_eq!(splash.phase(), Some(State::WarmUp));
+        let frame = tick(&mut splash, 1000, true);
+        assert_eq!(frame.warm_up, Some(0));
         assert_eq!(frame.alpha, 255);
-        assert_eq!(frame.fade, 1.0);
+        assert_eq!(frame.marker_fade, 1.0);
         // Strictly more than a second: the fade starts at 2001 ms.
-        let frame = splash.tick(2000, VIEW, true);
-        assert!(frame.warm_up);
-        assert_eq!(splash.phase(), State::WarmUp);
-        let frame = splash.tick(2001, VIEW, true);
-        assert_eq!(splash.phase(), State::FadeIn);
+        let frame = tick(&mut splash, 2000, true);
+        assert_eq!(frame.warm_up, Some(1));
+        assert_eq!(splash.phase(), Some(State::WarmUp));
+        let frame = tick(&mut splash, 2001, true);
+        assert_eq!(splash.phase(), Some(State::FadeIn));
         assert_eq!(splash.stamp_ms, 2001);
+        assert_eq!(frame.warm_up, None);
         assert!(frame.logo.is_none());
-        let frame = splash.tick(2002, VIEW, true);
-        assert_eq!(frame.logo.unwrap().0, 0);
-        let frame = splash.tick(2101, VIEW, true);
+        let frame = tick(&mut splash, 2101, true);
         // 100 ms at 1/600 a millisecond is 0.16666667; times 255 is 42.5,
-        // which rounds half to even: 42.
-        assert_eq!(frame.fade, 0.166_666_67);
-        assert_eq!(frame.alpha, 42);
-        // 600 ms is full white: 255.
-        let frame = splash.tick(2601, VIEW, true);
-        assert_eq!(frame.fade, 1.0);
+        // which rounds half to even: grey 42. The backdrop stays opaque.
+        let (index, _, grey) = frame.logo.unwrap();
+        assert_eq!((index, grey), (0, 42));
         assert_eq!(frame.alpha, 255);
+        // 600 ms is full white.
+        let frame = tick(&mut splash, 2601, true);
+        assert_eq!(frame.logo.unwrap().2, 255);
         // The first logo holds until 2000 ms after the fade started.
-        assert_eq!(splash.phase(), State::FadeIn);
-        let frame = splash.tick(4601, VIEW, true);
-        assert_eq!(splash.phase(), State::SecondLogo);
-        // The first logo still draws on the tick that changes state, but the
-        // sound and the second logo draw are the next tick's.
+        assert_eq!(splash.phase(), Some(State::FadeIn));
+        let frame = tick(&mut splash, 4002, true);
+        assert_eq!(splash.phase(), Some(State::SecondLogo));
+        // The first logo still draws on the tick that changes state; the
+        // sound and the second logo are the next tick's.
         assert_eq!(frame.logo.unwrap().0, 0);
-        let frame = splash.tick(4602, VIEW, true);
-        assert_eq!(frame.sound, Some((HAND_OVER_SOUND, SOUND_VOLUME)));
-        assert_eq!(frame.darkness, 1.0);
+        assert!(!frame.sound);
+        let frame = tick(&mut splash, 4003, true);
+        assert!(frame.sound);
+        assert_eq!(frame.audio_fade, 1.0);
         assert_eq!(frame.logo.unwrap().0, 1);
+        assert_eq!(frame.logo.unwrap().2, 255);
     }
 
     #[test]
-    fn the_second_logo_holds_fades_and_settles() {
+    fn a_stamp_after_the_frame_started_is_a_negative_time() {
+        // The stamp's clock ran 3 ms past the frame's time: the next frame,
+        // 1 ms later, is 2 ms before the stamp, not a wrapped 4294967294 ms
+        // (which would clamp the fade to white). The fade is −2/600; times
+        // 255 it is −0.85, which converts to −1, whose low byte is 255: the
+        // original draws that one frame white too, by way of the byte.
+        let mut splash = Splash::new(0, logos());
+        splash.tick(1001, 1004, VIEW, true);
+        assert_eq!(splash.stamp_ms, 1004);
+        let frame = splash.tick(1002, 1005, VIEW, true);
+        assert_eq!(frame.logo.unwrap().2, 255);
+        // 1 ms before the stamp: −0.425 converts to 0, black.
+        let frame = splash.tick(1003, 1005, VIEW, true);
+        assert_eq!(frame.logo.unwrap().2, 0);
+    }
+
+    #[test]
+    fn the_second_logo_holds_fades_to_black_and_settles() {
         let mut splash = Splash::new(0, logos());
         splash.state = 3;
         splash.start_ms = 5000;
         splash.stamp_ms = 5200;
-        splash.tick(5200, VIEW, true);
-        assert_eq!(splash.phase(), State::SecondHold);
-        splash.tick(5400, VIEW, true);
-        assert_eq!(splash.phase(), State::SecondHold);
-        let frame = splash.tick(5401, VIEW, true);
-        assert_eq!(splash.phase(), State::FadeOut);
-        assert!(!frame.warm_up);
-        // 100 ms of the 300 ms fade: 1 − 0.33333334.
-        let frame = splash.tick(5501, VIEW, true);
-        assert!((frame.fade - 0.666_666_7).abs() < 1e-6);
-        assert_eq!(frame.alpha, 170);
-        // 300 ms: zero, and the settle starts.
-        let frame = splash.tick(5701, VIEW, true);
-        assert_eq!(splash.phase(), State::Settle);
-        assert_eq!(frame.alpha, 0);
+        splash.frame = 7;
+        // The hold keeps warming up, counting its passes.
+        let frame = tick(&mut splash, 5200, true);
+        assert_eq!(frame.warm_up, Some(7));
+        assert_eq!(splash.phase(), Some(State::SecondHold));
+        tick(&mut splash, 5400, true);
+        assert_eq!(splash.frame, 9);
+        let frame = tick(&mut splash, 5401, true);
+        assert_eq!(splash.phase(), Some(State::FadeOut));
+        assert_eq!(frame.warm_up, None);
+        // 100 ms of the 300 ms fade: 1 − 1/3 in double, 0.6666667 in single,
+        // grey 170 (169.99999 rounds to 170).
+        let frame = tick(&mut splash, 5501, true);
+        assert_eq!(frame.logo.unwrap().2, 170);
+        assert_eq!(frame.alpha, 255);
+        // 300 ms: black, and the settle starts.
+        let frame = tick(&mut splash, 5701, true);
+        assert_eq!(splash.phase(), Some(State::Settle));
+        assert_eq!(frame.logo.unwrap().2, 0);
         assert_eq!(splash.start_ms, 5701);
-        // A warm-up that is not finished keeps it there; then it hands over.
-        let frame = splash.tick(5900, VIEW, false);
-        assert!(frame.warm_up);
-        assert_eq!(splash.phase(), State::Settle);
-        let frame = splash.tick(5901, VIEW, true);
-        assert!(!frame.menu);
-        assert_eq!(splash.phase(), State::HandOver);
-        let frame = splash.tick(5902, VIEW, true);
-        assert!(frame.menu);
-        assert_eq!(splash.alpha, 255);
-        assert_eq!(splash.phase(), State::MenuWait);
-        // The hand-over's second counts from the fade-out's end.
-        let frame = splash.tick(6702, VIEW, true);
-        assert_eq!(splash.phase(), State::Menu);
-        assert_eq!(splash.darkness, 0.0);
-        assert_eq!(frame.darkness, 0.0);
-        assert_eq!(splash.busy, 0);
-        let frame = splash.tick(6703, VIEW, true);
-        assert!(!frame.menu);
-        assert_eq!(splash.phase(), State::MenuFade);
-        assert_eq!(splash.busy, 0);
-        assert!(!frame.theme);
-        let frame = splash.tick(6704, VIEW, true);
-        assert!(frame.menu);
-        assert!(frame.theme);
-        assert_eq!(splash.phase(), State::FadeToGame);
+        // The settle's pass runs every tick, and counts, until it reports
+        // nothing left to build.
+        let frame = tick(&mut splash, 5800, false);
+        assert_eq!(frame.warm_up, Some(9));
+        assert_eq!(splash.phase(), Some(State::Settle));
+        let frame = tick(&mut splash, 5801, true);
+        assert_eq!(frame.warm_up, Some(10));
+        assert_eq!(splash.frame, 11);
+        assert!(!frame.hand_over);
+        assert_eq!(splash.phase(), Some(State::HandOver));
+        let frame = tick(&mut splash, 5802, true);
+        assert!(frame.hand_over);
+        assert_eq!(splash.phase(), Some(State::MenuWait));
     }
 
     #[test]
-    fn the_last_fade_closes_the_screen() {
+    fn the_menu_waits_a_second_then_starts_its_theme() {
+        let mut splash = Splash::new(0, logos());
+        splash.state = 7;
+        splash.start_ms = 5701;
+        splash.audio_fade = 1.0;
+        // The second counts from the fade-out's end.
+        tick(&mut splash, 6701, true);
+        assert_eq!(splash.phase(), Some(State::MenuWait));
+        let frame = tick(&mut splash, 6702, true);
+        assert_eq!(splash.phase(), Some(State::Menu));
+        assert_eq!(frame.audio_fade, 0.0);
+        assert_eq!(splash.busy, 0);
+        let frame = tick(&mut splash, 6703, true);
+        assert!(!frame.focus_menu);
+        assert_eq!(splash.phase(), Some(State::MenuFade));
+        assert_eq!(splash.busy, 0);
+        let frame = tick(&mut splash, 6704, true);
+        assert!(frame.focus_menu);
+        assert!(frame.theme);
+        assert_eq!(splash.phase(), Some(State::FadeToGame));
+        assert_eq!(splash.stamp_ms, 6704);
+        // A splash made without the theme request starts none.
+        let mut quiet = Splash::new(0, logos());
+        quiet.state = 9;
+        quiet.theme_on_menu = false;
+        assert!(!tick(&mut quiet, 1, true).theme);
+    }
+
+    #[test]
+    fn the_last_fade_uncovers_the_menu_and_closes_the_screen() {
         let mut splash = Splash::new(0, logos());
         splash.state = 10;
         splash.stamp_ms = 10_000;
-        splash.fade = 1.0;
-        let frame = splash.tick(10_100, VIEW, true);
-        // 1 − 0.1 = 0.9; darkness 0.1; alpha 230 (229.5 rounds to even 230).
-        assert!((frame.fade - 0.9).abs() < 1e-6);
-        assert!((frame.darkness - 0.1).abs() < 1e-6);
-        assert_eq!(frame.alpha, 230);
-        let frame = splash.tick(10_999, VIEW, true);
+        let frame = tick(&mut splash, 10_100, true);
+        // 1 − 0.1 = 0.9; the audio gain 0.1; the backdrop's alpha 229.5,
+        // rounded half to even, 230; it is drawn on the next tick.
+        assert_eq!(frame.marker_fade, 0.9);
+        assert!((frame.audio_fade - 0.1).abs() < 1e-6);
+        assert_eq!(frame.alpha, 255);
+        assert_eq!(splash.alpha, 230);
+        assert_eq!(tick(&mut splash, 10_100, true).alpha, 230);
+        let frame = tick(&mut splash, 10_999, true);
         assert!(!frame.closed);
         // 0.001 × 255 = 0.255, which rounds to 0.
-        assert_eq!(frame.alpha, 0);
+        assert_eq!(splash.alpha, 0);
         // At 11 000 the fade is exactly 0, under the epsilon: it closes.
-        let frame = splash.tick(11_000, VIEW, true);
+        let frame = tick(&mut splash, 11_000, true);
         assert!(frame.closed);
-        assert_eq!(splash.darkness, 1.0);
-        assert_eq!(splash.fade, 0.0);
+        assert_eq!(splash.audio_fade, 1.0);
+        assert_eq!(splash.marker_fade, 0.0);
     }
 
     #[test]
@@ -664,12 +832,14 @@ mod tests {
             (9, State::MenuFade),
             (10, State::FadeToGame),
         ] {
-            assert_eq!(State::from_word(word), state);
+            assert_eq!(State::from_word(word), Some(state));
         }
-        let (bounds, control) = Splash::bounds(VIEW);
-        assert_eq!(bounds.width, 1600.0);
-        assert_eq!(bounds.height, 1080.0);
-        assert_eq!(control, -1);
+        // A word past the table only draws the backdrop.
+        let mut stray = Splash::new(0, logos());
+        stray.state = 11;
+        let frame = tick(&mut stray, 5000, true);
+        assert_eq!(frame.alpha, 255);
+        assert!(frame.logo.is_none() && frame.warm_up.is_none());
         let mut screen = SplashScreen::default();
         assert!(!screen.is_active());
         screen.begin(10, logos());
@@ -699,15 +869,15 @@ mod tests {
     }
 
     #[test]
-    fn the_alpha_rounds_to_even_and_the_logo_sizes_are_read() {
-        assert_eq!(alpha_of(0.0), 0);
-        assert_eq!(alpha_of(1.0), 255);
+    fn the_grey_level_rounds_to_even() {
+        assert_eq!(grey(0.0), 0);
+        assert_eq!(grey(1.0), 255);
         // 0.5·255 = 127.5, halfway: to even is 128.
-        assert_eq!(alpha_of(0.5), 128);
-        // 0.1·255 = 25.5: to even is 26.
-        assert_eq!(alpha_of(0.1), 26);
-        assert_eq!(alpha_of(f32::NAN), 0);
-        assert_eq!(fade_in(600), (600.0f64 * FADE_IN_RATE) as f32);
-        assert_eq!(fade_in(600), 1.0);
+        assert_eq!(grey(0.5), 128);
+        // 0.1·255 = 25.5 in single precision: to even is 26.
+        assert_eq!(grey(0.1), 26);
+        // A NaN converts to the integer indefinite, whose low byte is 0.
+        assert_eq!(grey(f32::NAN), 0);
+        assert_eq!((600.0 * FADE_IN_RATE) as f32, 1.0);
     }
 }

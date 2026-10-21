@@ -16,6 +16,7 @@
 //!          --bevy-sun-cascades        the sun keeps Bevy's cascades instead of the original's fitted map
 //!          --no-gi                    no voxel GI (ambient from the environment cube)
 //!          --no-supersample           draw at window resolution (default: 4× supersampling, as the original)
+//!          --splash                   the original's start-up splash (the BME logos, about five seconds), then the main menu
 //!          --gi-warm-up <steps>       GI steps run when a level loads (default 600)
 //!          --size WxH                 window size (default 1600x900)
 //!          --max-fps <n|auto>         hold the frame to n a second, or to the display's rate (off unless FPSLimit is set)
@@ -138,6 +139,9 @@ pub struct Options {
     pub no_supersample: bool,
     /// Hide the frame-rate readout.
     pub no_fps: bool,
+    /// Show the original's start-up splash (the BME logos) over the start,
+    /// then the main menu.
+    pub splash: bool,
     /// Run the GPU benchmark after the start and take its quality levels.
     pub benchmark: bool,
     /// Present frames as soon as they are drawn (for measuring).
@@ -418,6 +422,7 @@ fn main() -> AppExit {
             "--no-gi" => options.gi.enabled = false,
             "--no-supersample" => options.no_supersample = true,
             "--no-fps" => options.no_fps = true,
+            "--splash" => options.splash = true,
             "--benchmark" => options.benchmark = true,
             "--no-vsync" => options.no_vsync = true,
             "--max-fps" => {
@@ -824,6 +829,7 @@ fn main() -> AppExit {
     .insert_resource(view)
     .insert_resource(options.gi)
     .insert_resource(exa_ui::ShowFps(!options.no_fps))
+    .insert_resource(exa_game::splash::SplashAtStart(options.splash))
     .insert_resource(exa_ui::ScriptedPointer(options.cursor.map(Vec2::from)))
     .insert_resource(exa_render::cube_shadows::PointShadows(!options.no_shadows))
     .insert_resource(exa_world::sun_shadow::SunShadowFit(
