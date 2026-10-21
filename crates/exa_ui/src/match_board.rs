@@ -875,6 +875,16 @@ impl Board {
         self.match_type as u32 + 1
     }
 
+    /// The tier the refresh reports for the selected match: none for
+    /// Pugilism (id 6), which is unranked, else the selected tier.
+    pub fn reported_tier(&self) -> Option<usize> {
+        if self.match_id() == 6 {
+            None
+        } else {
+            Some(self.tier)
+        }
+    }
+
     /// The fighter at a pool slot.
     pub fn fighter(&self, slot: usize) -> Option<&Fighter> {
         self.fighters.get(slot)
