@@ -175,10 +175,14 @@ cell's lower and upper floor and underside):
   its floor plus 15, otherwise the lower one; every step reads the lower
   floor of the cell it leaves. Neighbours go north-west, north, north-east,
   west, east, south-west, south, south-east; a step may rise at most four
-  floor units and fall less than 21, needs a lower floor, chooses the lower
-  layer first or a higher upper floor when that is within four, then the
-  upper one only when the lower is more than four above and the upper has
-  enough underside room, and pays `10·Δ² + 5 or 7 + 2·clearance + (penalty
+  floor units and fall less than 21 and needs a lower floor. The lower
+  layer is the candidate when its floor is within four of the current one;
+  a floor more than four above is refused unless its slab leaves ten of
+  room, and then leaves the choice open. The upper layer replaces it when
+  its floor is within four and higher; an upper floor more than four above
+  passes when its slab leaves ten of room (an empty underside with a floor
+  not below the lower one also passes) and keeps the lower candidate;
+  anything else is refused. The step pays `10·Δ² + 5 or 7 + 2·clearance + (penalty
   << shift)`, refused when the shifted penalty is 601 or more. The
   clearance test is `180/(size + 1)`. The open list is LIFO, popped by the
   smallest f with the newest winning a tie; a relaxed node keeps its place
