@@ -36,7 +36,7 @@ notice drops the sleep role and wakes.
 | `personality` | what the brain derives from the record (skill, confidence, restraint, courage, eagerness, blend, jitter, arousal) and the attach step (contact sense, dead and statue cases) |
 | `activity` | applying roles: the init scripts run through `exa_script`'s interpreter (newest role first, with the role's own variables), the mind-control follow, the idle state per activity, the idle-activity registry (the search as 6) |
 | `search` | the companion's search: gathering over the room grid, picking, the look sweep, the forced path, arrival, kneeling, looting worn items, packs and containers, item worth, wear room, comments to the leader, re-arming, tidying, and the world edits its deeds carry out (`apply_deed`) |
-| `manager` | the AI manager's frame (dormant ticks, rising undead, the 3 cm zone check), zone deeds, the group alert and the approach clamp |
+| `manager` | the AI manager's frame (dormant ticks, rising undead, the 3 cm zone check), zone deeds, the group alert (raised, held ten seconds and dropped one every ten), and the approach clamp |
 | `brain` | the components and systems that carry roles into the running game |
 | `idle` | roam, patrol, sentry and the wait, the wander and home-side points, follow, sleep, knock-out and waking |
 | `combatant` | the behaviour base: contacts, perception, the attitude and trust overrides, concern, references, the queued step, the nav footprint |
@@ -86,6 +86,15 @@ go of a swing in the running game, and the cast chooser runs at the first
 place with the power system's answer (`cast`); its downed stop faces the
 body's facing in the guard. The follow check is ported and not yet wired
 into the running game.
+
+**Morale.** Each brain's tick drifts its morale (`combat::drift_morale`, in
+`brain::run_target_passes`): stress falls 0.01 a tick and the alarm by
+0.9999; a drop in the health ratio (`health/max`, scaled by
+`0.4 + 0.2·arousal` while down) lowers the courage; the courage drifts
+toward `max(2·(stress + alarm), 2·total, arousal + 0.5)` at
+`(h + 1)(arousal + 1.1)/2 × 0.0003` (0.00015 above 1); panic takes 0.001
+of the stress over the courage and decays by 0.995; the jitter walks a
+hundredth a tick and falls 0.003 while down, held in ±1.
 
 **Contacts and flight.** A contact flees first when the stress
 (base + stress − courage) passes 3 with an alarm above 0.75 and a way out;

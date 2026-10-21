@@ -24,6 +24,7 @@ use exa_physics::body::BodyTicks;
 
 use crate::Duellist;
 use crate::activity::{self, Applied, Before, IdleKind, IdleRegistry, IdleState};
+use crate::combat;
 use crate::combatant::Combatant;
 use crate::contacts::{self, ContactRecord, Integration, PassReport};
 use crate::idle::Routine;
@@ -75,6 +76,8 @@ pub struct Npc {
     pub pass: PassReport,
     /// The round-robin dialogue cursor.
     pub cursor: usize,
+    /// The morale the AI tick drifts.
+    pub morale: combat::MoraleDrift,
 }
 
 impl Npc {
@@ -89,20 +92,27 @@ impl Npc {
             integration: Integration::default(),
             pass: PassReport::default(),
             cursor: 0,
+            morale: combat::MoraleDrift::default(),
         }
     }
 
     /// The brain of `record`: its traits and the personality they give,
     /// drawing the jitter from `roll`.
     pub fn of_record(record: &CharacterRecord, roll: &mut u32) -> Self {
+        let personality = personality::personality(
+            record.combat_skill,
+            record.traits,
+            record.feral,
+            false,
+            roll,
+        );
         Self {
-            personality: Some(personality::personality(
-                record.combat_skill,
-                record.traits,
-                record.feral,
-                false,
-                roll,
-            )),
+            personality: Some(personality),
+            morale: combat::MoraleDrift {
+                courage: personality.courage,
+                arousal: personality.arousal,
+                ..combat::MoraleDrift::default()
+            },
             ..Self::new(record.traits)
         }
     }
@@ -140,6 +150,7 @@ impl Npc {
 
     /// Integrates the brain's contact with `sighting` and runs the target
     /// pass over it: the level to fight at, 0 when nothing is noticed.
+    #[allow(clippy::too_many_arguments)]
     pub fn run_pass(
         &mut self,
         sighting: contacts::Sighting,
@@ -147,10 +158,25 @@ impl Npc {
         distance_cm: f32,
         in_combat: bool,
         asleep: bool,
+        health: (f32, f32),
+        down: bool,
         now_ms: u32,
+        roll: &mut u32,
     ) -> i32 {
-        let courage = self.personality.map_or(0.5, |p| p.courage);
+        // The AI tick drifts the morale before the contacts are integrated.
+        combat::drift_morale(
+            &mut self.morale,
+            combat::MoraleBody {
+                health: health.0,
+                max_health: health.1,
+                down,
+            },
+            roll,
+        );
+        let courage = self.morale.courage;
         self.integration.courage = courage;
+        self.integration.stress = self.morale.stress;
+        self.integration.alarm = self.morale.alarm;
         contacts::integrate(&mut self.integration, &mut self.contacts, &sight, now_ms);
         let mut morale = contacts::Morale {
             courage,
@@ -280,11 +306,13 @@ pub fn run_target_passes(
         &Combatant,
         &mut Duellist,
         &GlobalTransform,
+        &exa_combat::Fighter,
+        &exa_combat::Condition,
         Option<&Name>,
     )>,
 ) {
     let now = ticks.map_or(0, |t| t.millis() as u32);
-    for (mut npc, mind, combatant, mut duellist, gt, name) in &mut npcs {
+    for (mut npc, mind, combatant, mut duellist, gt, fighter, condition, name) in &mut npcs {
         if npc.personality.is_none() {
             continue;
         }
@@ -327,13 +355,17 @@ pub fn run_target_passes(
             foe_room: 0,
             focus: None,
         };
+        let mut roll = npc.personality.map_or(0, |p| (p.skill * 1000.0) as u32);
         npc.run_pass(
             sighting,
             sight,
             distance_cm,
             duellist.fighting(),
             mind.asleep,
+            (fighter.health.yellow, fighter.health.max),
+            condition.0 & 0x200 != 0,
             now,
+            &mut roll,
         );
         if npc.pass.leave {
             duellist.leave();
@@ -520,12 +552,33 @@ mod tests {
             foe_room: 0,
             focus: None,
         };
-        let level = npc.run_pass(sighting(5.0), sight, 300.0, false, false, 0);
+        let mut roll = 7;
+        let level = npc.run_pass(
+            sighting(5.0),
+            sight,
+            300.0,
+            false,
+            false,
+            (1.0, 1.0),
+            false,
+            0,
+            &mut roll,
+        );
         assert_eq!(level, 3);
         assert_eq!(npc.pass.enter, Some(3));
         assert_eq!(npc.pass.target, Some(1));
         assert_eq!(npc.pass.greet, Some(1));
-        let level = npc.run_pass(sighting(0.0), sight, 300.0, false, false, 1);
+        let level = npc.run_pass(
+            sighting(0.0),
+            sight,
+            300.0,
+            false,
+            false,
+            (1.0, 1.0),
+            false,
+            1,
+            &mut roll,
+        );
         assert_eq!(level, 0);
         assert_eq!(npc.pass.target, None);
     }

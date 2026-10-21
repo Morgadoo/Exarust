@@ -33,6 +33,19 @@
 
 use bevy::math::{Vec2, Vec3};
 
+/// The per-brain group alert counter: above 1 it drops by one every ten
+/// seconds; at 1 it stays, and its clock is parked in the past.
+pub fn decay_alert(count: i32, until_ms: u32, now_ms: u32) -> (i32, u32) {
+    if now_ms <= until_ms {
+        return (count, until_ms);
+    }
+    if count < 2 {
+        (1, u32::MAX)
+    } else {
+        (count - 1, now_ms.wrapping_add(ALERT_HOLD_MS))
+    }
+}
+
 /// A character that moved more than this (cm), squared, checks the zones.
 pub const MOVED_CM2: f32 = 9.0;
 /// The least health pool B a rising body needs.
@@ -194,6 +207,18 @@ pub fn clamp_approach(from: Vec2, target: Vec2, speed: f32, v: Vec2) -> Vec2 {
     let mut step = flat(v);
     crate::combat::keep_off(flat(from), flat(target), speed, &mut step);
     Vec2::new(step.x, step.z)
+}
+
+#[cfg(test)]
+mod alert_tests {
+    use super::*;
+
+    #[test]
+    fn the_group_alert_drops_every_ten_seconds_to_one() {
+        assert_eq!(decay_alert(3, 6000, 5000), (3, 6000));
+        assert_eq!(decay_alert(3, 100, 101), (2, 10_101));
+        assert_eq!(decay_alert(1, 100, 101), (1, u32::MAX));
+    }
 }
 
 #[cfg(test)]
