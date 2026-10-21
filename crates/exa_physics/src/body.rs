@@ -1816,7 +1816,7 @@ impl Ragdoll {
         }
     }
 
-    /// Knocks the body out (`0x100156a90`'s body side): it wakes at 256
+    /// Knocks the body out: it wakes at 256
     /// and its drive loses its tone and stance factor while the support
     /// pins fall back to the living gain (0.08). The character's condition,
     /// state bits and wake timer are `exa_combat::condition`'s.
@@ -2032,7 +2032,7 @@ impl Ragdoll {
     }
 
     /// A part's link mobility: its inverse mass times the link share
-    /// ([`LINK_MOBILITY`]), the original's `+0x50` on a living limb.
+    /// ([`LINK_MOBILITY`]), as the original keeps it on a living limb.
     pub fn link_mobility(&self, part: usize) -> Option<f32> {
         self.parts.get(part).map(|p| p.inverse_mass * LINK_MOBILITY)
     }

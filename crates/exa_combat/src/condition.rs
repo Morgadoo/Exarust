@@ -545,7 +545,7 @@ pub struct StatusEntry {
     pub flags: u32,
 }
 
-/// The status-effect pass (`0x100156330`): with `phase` 0 only the
+/// The status-effect pass: with `phase` 0 only the
 /// character's own effects update; each update's bit 2 removes the entry
 /// (the last entry takes its place and is examined next) and bit 4 calls
 /// the notice. Returns how many entries were removed. The original frees a

@@ -235,8 +235,7 @@ rate to 0 in the hit reaction, and the collapse's death sets yellow to 0.
 Rules: [`docs/formats/OTHER.md`](../../docs/formats/OTHER.md)
 (Regeneration).
 
-A shield arm's stamina (`regen::ShieldStamina`, the original's `+0xd60`
-and `+0xd64`) refills on the body tick: while it is under 1 its rate rises
+A shield arm's stamina (`regen::ShieldStamina`, with its rate) refills on the body tick: while it is under 1 its rate rises
 2e-6 a tick to 0.001 and the stamina rises by the rate; at 1 the rate
 stops. A block restarts the rate at 0, about 6 s to full rate and 15 s
 from empty to full. The body tick that calls it is the kernel lane's

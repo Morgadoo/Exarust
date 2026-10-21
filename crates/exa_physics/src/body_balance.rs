@@ -941,8 +941,8 @@ fn end_step(
     }
 }
 
-/// The heading a reset takes from the chest over the pelvis
-/// (`0x100162af0`): the chest minus the pelvis, normalised, flattened and
+/// The heading a reset takes from the chest over the pelvis:
+/// the chest minus the pelvis, normalised, flattened and
 /// normalised again; zero when the two coincide (or the direction is
 /// vertical). The original then stores it as the body's facing with no
 /// pitch.

@@ -12,7 +12,7 @@
 
 use super::body::Part;
 
-/// A part's state word: the original's class word on the body (`+0x0c`).
+/// A part's state word: the original's class word on the body.
 ///
 /// The bits this crate reads or writes; the family bits say what the body
 /// is (a living limb's family is [`PartState::LIMB`], a cloth or a prop
@@ -40,11 +40,20 @@ impl PartState {
     /// The part has level contacts: add-to-world sets it on a part without
     /// foot contacts and clears it on a foot and its children.
     pub const HAS_CONTACTS: u32 = 0x4_0000;
-    /// The part is inside a striking weapon's chain: its contacts count as
-    /// strikes ([`STRIKING`] is the window, this the chain).
+    /// The strike window bit a contact needs besides [`STRIKING`]: the
+    /// contact routine tests both, the interrupt and the window clear take
+    /// it off, and a body-class routine sets it again.
+    ///
+    /// Note: the original's mark routine sets [`STRIKING`] and a separate
+    /// mark bit (`0x2_0000`), not this one, and its clear drops all three.
+    /// Exarust sets this one with the window so a marked chain strikes; the
+    /// body-class routine that raises it in the original is not traced.
     pub const STRIKE_CHAIN: u32 = 0x1_0000;
-    /// What [`strike`] sets on a chain: the window and the chain.
+    /// What [`strike`] sets on a chain: the window and the chain bit.
     pub const STRIKE_FLAGS: u32 = Self::STRIKING | Self::STRIKE_CHAIN;
+    /// The mark the original's chain walk sets beside the window (the part
+    /// class itself never tests it).
+    pub const STRIKE_MARK: u32 = 0x2_0000;
     /// A living limb's family.
     pub const LIMB: u32 = 0x1200_0000;
     /// The family bits.
@@ -83,21 +92,21 @@ impl PartState {
         self.family() == Self::LIMB
     }
 
-    /// Whether the part strikes: both its window and its chain are set
-    /// (the damage routine tests the window alone, the impact reaction the
-    /// chain).
+    /// Whether the part strikes: both its window and its chain bit are set
+    /// (the contact routine tests the two together).
     pub fn strikes(self) -> bool {
         self.0 & Self::STRIKE_FLAGS == Self::STRIKE_FLAGS
     }
 
-    /// It is an active striker whose chain is set: set both bits.
+    /// It is an active striker whose chain is set: set both bits and the
+    /// walk's mark.
     pub fn strike(&mut self) {
-        self.0 |= Self::STRIKE_FLAGS;
+        self.0 |= Self::STRIKE_FLAGS | Self::STRIKE_MARK;
     }
 
-    /// It is no longer an active striker: clear both bits.
+    /// It is no longer an active striker: clear both bits and the mark.
     pub fn unstrike(&mut self) {
-        self.0 &= !Self::STRIKE_FLAGS;
+        self.0 &= !(Self::STRIKE_FLAGS | Self::STRIKE_MARK);
     }
 }
 
@@ -193,8 +202,8 @@ pub fn ragdoll_state(state: PartState) -> PartState {
     state.with(PartState::MUSCLED)
 }
 
-/// Stamps the sound cooldown `stamp` (`+0x46c`) on a part, its first-child
-/// chain and its weapon ancestors (`0x100157fa0`): the part, each first
+/// Stamps the sound cooldown `stamp` on a part, its first-child
+/// chain and its weapon ancestors: the part, each first
 /// child down the chain, then each parent while it is a striking weapon
 /// (class bit 0x1). `first_child` is each part's first child, `parents` its
 /// parent; a cycle is cut after the part count.
@@ -236,20 +245,20 @@ pub fn stamp_sound_cooldown(
     }
 }
 
-/// The material record a part's impact sound uses (`+0x470`), the tree's
-/// (`+0x728`) and the record's use count (`+0x4c`).
+/// The material record a part's impact sound uses, the tree's
+/// and the record's use count.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MaterialUse {
-    /// The part's own sound material (`+0x470`), once it has one.
+    /// The part's own sound material, once it has one.
     pub reference: Option<u32>,
-    /// The material a leaf of the tree takes (`+0x728`).
+    /// The material a leaf of the tree takes.
     pub tree: Option<u32>,
     /// References taken (a leaf takes one, or two when its own is still
     /// unset).
     pub uses: u32,
 }
 
-/// Gives a body tree the impact-sound material `material` (`0x100165900`):
+/// Gives a body tree the impact-sound material `material`:
 /// a leaf part takes it as its tree material, and as its own if it has none
 /// (each a reference); a part that is not a living limb passes the material
 /// on to its limb-family children. The states and parents describe the tree
@@ -554,7 +563,7 @@ pub struct ImpactReaction {
     /// A stab's or overhead's recorded impact strength,
     /// `round(5√impact)`.
     pub strike_strength: Option<u32>,
-    /// The part loses its strike-chain bit (the original clears `0x10000`).
+    /// The part loses its strike-chain bit (the original's interrupt clears it).
     pub clears_strike_chain: bool,
 }
 
@@ -562,7 +571,7 @@ pub struct ImpactReaction {
 #[derive(Debug, Clone, Copy)]
 pub struct HardImpact {
     /// The attacker's attack state word; only an active striker
-    /// (`flags & 0x10005 == 1`) reacts.
+    /// (the window set, the interrupt bits clear) reacts.
     pub flags: u32,
     /// The attack motion number (5–12).
     pub motion: i32,
@@ -656,7 +665,7 @@ pub fn immediate_counter(flags: u32, clip: i32) -> Option<Counter> {
     }
 }
 
-/// The tally of bleeding wounds a character's limbs add up (`+0x10d4`),
+/// The tally of bleeding wounds a character's limbs add up,
 /// which its body tick turns into damage over time. Only a limb with a bone
 /// index above zero adds: a weapon or a boneless body does not.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -707,17 +716,17 @@ pub struct Contact {
     /// part whose character wields nothing (`class & 0x30 == 0`) or whose
     /// parent is itself a weapon passes without the test.
     pub faces: bool,
-    /// The striker's attack motion (`+0x9b8`).
+    /// The striker's attack motion.
     pub own_motion: i32,
-    /// The striker's attack state word (`+0x1018`).
+    /// The striker's attack state word.
     pub own_flags: u32,
-    /// The striker's pending hit (`+0xc18`).
+    /// The striker's pending hit.
     pub own_pending: i32,
-    /// The struck character is parrying (`+0x12f3`).
+    /// The struck character is parrying.
     pub other_parrying: bool,
-    /// The motion the struck character counters (`+0xf5c`).
+    /// The motion the struck character counters.
     pub other_motion: i32,
-    /// The struck body is the struck character's primary weapon (`+0x988`).
+    /// The struck body is the struck character's primary weapon.
     pub other_is_primary: bool,
     /// The struck body is the struck character's parry target's child or its
     /// second parry body: the wound is refused.
@@ -793,8 +802,10 @@ mod tests {
         state.strike();
         assert!(state.strikes());
         assert_eq!(state.bits() & PartState::STRIKE_FLAGS, 0x1_0001);
+        assert_ne!(state.bits() & PartState::STRIKE_MARK, 0);
         state.unstrike();
         assert!(!state.strikes());
+        assert_eq!(state.bits() & PartState::STRIKE_MARK, 0);
         assert!(state.has(PartState::DYNAMIC));
         assert_eq!(state.without(PartState::DYNAMIC).bits(), PartState::LIMB);
         assert_eq!(PartState(0x0000_2000).family(), 0);

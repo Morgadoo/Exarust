@@ -102,7 +102,7 @@ impl Foley {
 /// sum; the class with the largest sum times [`FOLEY_FACTOR`] wins, and if
 /// that is over 1 the loop's volume is the sum times [`FOLEY_VOLUME`] (its
 /// base the same). A golem body plays `FoleyPlH` (volume 2, base 1) unless
-/// its race has the golem material bit 0x1000, when it plays `Golem_Foley`
+/// its race has the golem material bit set, when it plays `Golem_Foley`
 /// (race 0x1200: 1 and 1; else 6 and 1.5).
 pub fn foley(
     armour: &[PartArmour; 18],

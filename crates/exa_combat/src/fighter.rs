@@ -52,8 +52,8 @@ pub struct Fighter {
     /// The parry in progress: whether it parries and the motion it
     /// counters, which decides the clash's branch.
     pub parry: ParryState,
-    /// The bleeding the struck limbs added up since the body's last tick
-    /// (`+0x10d4`); a boned limb's wound adds its size, and the body tick
+    /// The bleeding the struck limbs added up since the body's last tick:
+    /// a boned limb's wound adds its size, and the body tick
     /// turns the tally into damage over time.
     pub bleeding: WoundTally,
     /// The armour that grants a second wind, and when it may fire again.

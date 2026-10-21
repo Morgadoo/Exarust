@@ -184,7 +184,7 @@ How the original simulates a body (`exa_physics::body`):
   `round(5√impact)` with the strike chain cleared (`part::hard_impact`),
   and a clash may run an immediate counter (the basic attack for motions
   5–7, the combo for 8–10, `part::immediate_counter`). A wound on a boned
-  limb adds its size to the character's bleeding tally `+0x10d4`
+  limb adds its size to the character's bleeding tally
   (`part::WoundTally`), which the body tick turns into yellow and red loss
   ([OTHER.md](OTHER.md), Damage).
 - After the iterations, every sphere collider is tested once against the

@@ -239,16 +239,16 @@ fn wrap_pi(yaw: f32) -> f32 {
 }
 
 /// A parry in progress on the defender: the original's parrying flag
-/// (`+0x12f3`) and the attack motion it counters (`+0xf5c`).
+/// and the attack motion it counters.
 ///
 /// Exarust raises a guard only in tests, so a fighter whose guard is a parry
 /// is parrying until the parry ends; a counter-parry ends it and leaves the
 /// motion it countered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParryState {
-    /// It is parrying (`+0x12f3`).
+    /// It is parrying.
     pub active: bool,
-    /// The attack motion it counters (`+0xf5c`), as the original's motion
+    /// The attack motion it counters, as the original's motion
     /// number, or none.
     pub counter_motion: Option<usize>,
 }
@@ -263,7 +263,7 @@ impl Default for ParryState {
 }
 
 impl ParryState {
-    /// Ends the parry (`0x100162e80`): it counters no motion and is no
+    /// Ends the parry: it counters no motion and is no
     /// longer parrying. The original also disables the grip links of every
     /// held item and relaxes both hands; Exarust has no grip links to
     /// disable yet.

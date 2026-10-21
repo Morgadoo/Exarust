@@ -94,8 +94,8 @@ pub fn holds_regeneration(condition: Condition, motion: Option<usize>) -> bool {
     condition == Condition::ATTACKING || motion == Some(action::COMBAT_IDLE)
 }
 
-/// A shield arm's stamina and its regeneration rate: the original's
-/// `+0xd60` (0..=1) and `+0xd64`, ticked with the body.
+/// A shield arm's stamina and its regeneration rate: the stamina
+/// (0..=1) and the rate, ticked with the body.
 ///
 /// While the stamina is under 1 the rate rises by [`RISE`] a tick to
 /// [`RATE_CAP`] and the stamina rises by the rate; at 1 the rate stops. A

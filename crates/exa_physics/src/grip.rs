@@ -92,8 +92,7 @@ pub enum GripKind {
 /// The parts of the two bodies a grip joins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GripBindings {
-    /// The item's body part the links attach to (its root, the original's
-    /// `param_2`).
+    /// The item's body part the links attach to (its root).
     pub item_part: usize,
     /// The character's hand parts, right then left.
     pub hand_parts: [usize; 2],
@@ -140,7 +139,7 @@ impl GripLink {
         self.flags & ENABLED != 0
     }
 
-    /// Enables the link (the original's `flags & ~0x100000 | 0x100`) and
+    /// Enables the link (it takes the enabled bit and loses the disabled one) and
     /// gives it the slack `slack` (m).
     pub fn enable(&mut self, slack: f32) {
         self.flags = (self.flags & !DISABLED) | ENABLED;
@@ -148,7 +147,7 @@ impl GripLink {
         self.length = slack;
     }
 
-    /// Disables the link (the original's `flags | 0x100000`).
+    /// Disables the link (it takes the disabled bit).
     pub fn disable(&mut self) {
         self.flags |= DISABLED;
     }
@@ -158,28 +157,27 @@ impl GripLink {
 #[derive(Debug, Clone, PartialEq)]
 pub struct GripLinks {
     pub links: Vec<GripLink>,
-    /// The main grip link (`+0x107c`): the last of the table's links.
+    /// The main grip link: the last of the table's links.
     pub main: usize,
-    /// The second hand's link (`+0x1080`).
+    /// The second hand's link.
     pub second: Option<usize>,
-    /// The arm's link (`+0x1084`).
+    /// The arm's link.
     pub arm: Option<usize>,
-    /// The stab's extra link (`+0x1088`).
+    /// The stab's extra link.
     pub extra: Option<usize>,
-    /// The link the flip turns (`+0x108c`).
+    /// The link the flip turns.
     pub flip: Option<usize>,
-    /// The point the flip turns about, in the item's frame (cm, the
-    /// original's `+0x1090`).
+    /// The point the flip turns about, in the item's frame (cm).
     pub flip_point: Vec3,
-    /// The flip's progress, 0 to 1 (`+0x12dc`).
+    /// The flip's progress, 0 to 1.
     pub flip_progress: f32,
-    /// The grip mode (`+0x10b0`), -1 before the first callback.
+    /// The grip mode, -1 before the first callback.
     pub mode: i32,
-    /// A link still relaxing after a grip change (`+0x12ff`).
+    /// A link still relaxing after a grip change.
     pub relaxing: bool,
     /// The flip finished and the item's record must be rebuilt.
     pub record_dirty: bool,
-    /// The soft world link (`+0x614`) and the stiff one (`+0x618`).
+    /// The soft world link and the stiff one.
     pub world_soft: Option<usize>,
     pub world_hard: Option<usize>,
 }
@@ -238,8 +236,8 @@ fn make_link(
 /// Builds the grip links of an item body held by a hand body, in the
 /// original's order: the second hand's and the arm's links first (built
 /// disabled), then the stab's extra link (disabled), then the table's main
-/// links. `scale` is the character's body scale (`+0x410`, the table's
-/// points are scaled by it), `size` its size (`+0x11e8`, which scales the
+/// links. `scale` is the character's body scale (the table's
+/// points are scaled by it), `size` its size (which scales the
 /// second hand's and the arm's points), `item_to_hand` the item node's
 /// matrix in the hand's frame (m), `flip` whether the item is turned, and
 /// `second_hand_factor` W24. The hand/arm points are the table's own points
@@ -398,7 +396,7 @@ pub fn world_links(
 /// Builds a shield's links (`0x153ed0`): three runtime pivots from points on
 /// the shield — its back at (−20, 0, 0) cm to the holding hand, and its two
 /// face points (5, 0, ±15) cm to the other hand — then a soft world link at
-/// its origin (strength 0.05, flags `0x500000`, the original's `+0x614`).
+/// its origin (strength 0.05, the world-link flags).
 /// `holding_hand` is the shield's hand (0 right, 1 left); the two face
 /// points are brought into the other hand's frame by subtracting
 /// `other_hand_offset` (a guess: the original subtracts that part's rest
@@ -479,8 +477,8 @@ pub fn shield_links(
 }
 
 impl GripLinks {
-    /// The grip mode's word changed: the original sets `+0x10b0` and calls
-    /// the entry's callback (`0x154780`). Returns whether it changed.
+    /// The grip mode's word changed: the original stores it and calls
+    /// the entry's callback. Returns whether it changed.
     pub fn set_mode(&mut self, mode: i32) -> bool {
         if mode == self.mode {
             return false;
@@ -495,7 +493,7 @@ impl GripLinks {
     /// hand's, arm's and extra links (the extra with the current distance
     /// as its slack), and a polearm's main link slides with a 15·scale cm
     /// slack in modes 1 and 3. `thrust_three` is the weapon record's
-    /// thrust class (the original's `+0x44 == 3`, which turns a two-handed
+    /// thrust class (class 3, which turns a two-handed
     /// mode 2 into 1 for a half-sword grip, `stab_grip`). Returns false for
     /// a configuration missing a link index (the original reports an
     /// invalid configuration and writes nothing).
