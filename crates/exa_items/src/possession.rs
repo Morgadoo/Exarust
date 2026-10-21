@@ -108,14 +108,14 @@ impl Possessions {
     /// set first), the worn items and the carried list.
     pub fn of_record(record: &CharacterRecord) -> Self {
         let hand = |i: usize| Hand {
-            id: record.hands[i],
-            flags: record.hand_flags[i],
+            id: record.hands[i].id,
+            flags: record.hands[i].flags,
         };
         Self {
-            flags: record.profession,
+            flags: record.profession(),
             out: [hand(0), hand(1)],
             stowed: [hand(2), hand(3)],
-            worn: record.worn.clone(),
+            worn: record.worn_ids().collect(),
             carried: record
                 .inventory
                 .iter()
@@ -677,6 +677,7 @@ impl PlannedArms {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use exa_formats::characters::ItemRef;
 
     fn entry(id: u32, flags: u32) -> Carried {
         Carried {
@@ -983,10 +984,15 @@ mod tests {
     #[test]
     fn a_record_gives_its_sets_and_list() {
         let r = CharacterRecord {
-            hands: [1, 2, 3, 4],
-            hand_flags: [0, LIT, 0, 0],
-            profession: SECOND_SET | 1,
-            worn: vec![8],
+            hands: [
+                ItemRef::new(1, 0),
+                ItemRef::new(2, LIT),
+                ItemRef::new(3, 0),
+                ItemRef::new(4, 0),
+            ],
+            female: true,
+            profession_rest: SECOND_SET,
+            worn: vec![ItemRef::new(8, 0)],
             inventory: vec![exa_formats::characters::Carried {
                 item: 1,
                 flags: HELD,

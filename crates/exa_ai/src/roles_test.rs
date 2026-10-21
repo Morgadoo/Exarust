@@ -464,6 +464,7 @@ fn a_record_gives_its_roles() {
         version: 7,
         roles: vec![HeldRecord {
             id: 9,
+            weight: 0.0,
             explicit: true,
             inherited: 0,
             variables: vec![3],

@@ -266,12 +266,15 @@ pub struct CharacterRecord {
     pub voice_pitch: f32,
     pub female: bool,
     pub race: u8,
-    /// The profession word's other bits, whose meaning is not traced (kept
-    /// so a record writes back as it was read).
+    /// The profession word's other bits, kept so a record writes back as it
+    /// was read: `0x0100_0000` while the second weapon set is out (REA on
+    /// the weapon-set swap, which toggles it); the others are not traced.
     pub profession_rest: u32,
     /// The last level the character was in.
     pub locale: u32,
-    /// Four hand slots: two hands, then a second pair of hands.
+    /// Four hand slots: two hands, then a second pair of hands. A hand's
+    /// flags: `0x0100_0000` the weapon is held flipped, `0x0200_0000` the
+    /// held light burns.
     pub hands: [ItemRef; HANDS],
     /// Worn apparel items.
     pub worn: Vec<ItemRef>,
