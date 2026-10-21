@@ -885,6 +885,34 @@ impl Sector {
         }
     }
 
+    /// Shifts the grid by `(dx, dy)` cells and places every body again
+    /// from its node's translation (the original moves the flat rows, then
+    /// walks its sectors and recomputes each cell).
+    pub fn shift_grid(&mut self, world: &mut World, dx: i32, dy: i32) {
+        let located: Vec<(usize, Option<(i32, i32)>)> = self
+            .bodies
+            .iter()
+            .map(|&body| {
+                let at = world
+                    .bodies
+                    .get(body)
+                    .and_then(|b| b.node)
+                    .and_then(|n| world.nodes.get(n))
+                    .map(|n| n.position);
+                let cell = at.and_then(|p| self.grid.as_ref().and_then(|g| g.locate(p)));
+                (body, cell)
+            })
+            .collect();
+        if let Some(grid) = self.grid.as_mut() {
+            grid.shift(dx, dy);
+        }
+        for (body, cell) in located {
+            if let Some(b) = world.bodies.get_mut(body) {
+                b.cell = cell;
+            }
+        }
+    }
+
     /// Clears the sector's lists, as the original's sector reset does
     /// (bodies, pairs, nodes and other nodes, and its simulation objects).
     pub fn clear(&mut self) {

@@ -371,6 +371,11 @@ fn a_sector_purges_what_left_its_scene() {
     assert_eq!(world.nodes[1].state & state::REGISTERED, 0);
     assert!(sector.grid.as_ref().unwrap().cell((3, 2)).is_empty());
 
+    // A grid shift moves the cells and re-places the body.
+    world.nodes[0].position = Vec3::X * 600.0;
+    sector.shift_grid(&mut world, 1, 0);
+    assert_eq!(world.bodies[0].cell, Some((3, 2)));
+
     // Removing the sub-scene of scene 1 takes what purge_left kept.
     sector.nodes.push(1);
     sector.bodies.push(1);
