@@ -4282,6 +4282,988 @@ pub fn skin_constructor(unit: i32) -> SkinLayout {
     layout
 }
 
+/// A rectangle in the skin's window pixels: left, top, right and bottom.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GuiRect {
+    pub x0: f32,
+    pub y0: f32,
+    pub x1: f32,
+    pub y1: f32,
+}
+
+impl GuiRect {
+    /// A rectangle from its place and size.
+    pub fn sized(x: f32, y: f32, w: f32, h: f32) -> Self {
+        GuiRect {
+            x0: x,
+            y0: y,
+            x1: x + w,
+            y1: y + h,
+        }
+    }
+
+    /// A rectangle from its corners.
+    pub fn corners(x0: f32, y0: f32, x1: f32, y1: f32) -> Self {
+        GuiRect { x0, y0, x1, y1 }
+    }
+}
+
+/// The program a batch's geometry is submitted to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkinMode {
+    /// No program has been selected.
+    None,
+    /// Flat colours, through the solid program.
+    Solid,
+    /// A texture tinted by the `TexCol` uniform.
+    Textured,
+    /// Flat colours clipped by the `Scale` uniform's rounded rectangle.
+    Rounded,
+    /// The GUI subclass' own program.
+    Skin,
+}
+
+/// How a batch's vertices are drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuiDraw {
+    /// Two triangles for every four vertices.
+    Quads,
+    /// Consecutive pairs of vertices as lines.
+    Lines,
+    /// Every three vertices as a triangle.
+    Triangles,
+}
+
+/// A vertex in window pixels: its place, texture coordinate and ink.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GuiVertex {
+    pub x: f32,
+    pub y: f32,
+    pub u: f32,
+    pub v: f32,
+    pub ink: SkinInk,
+}
+
+/// One submitted piece of geometry with the program state it needs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GuiPrimitive {
+    pub mode: SkinMode,
+    pub blend: u16,
+    pub draw: GuiDraw,
+    pub texture_shift: [f32; 2],
+    pub rounded_scale: Option<[f32; 4]>,
+    pub tex_col: Option<f32>,
+    pub vertices: Vec<GuiVertex>,
+}
+
+/// The skin's immediate-mode batcher: the program, blend and ink state the
+/// original keeps in globals, and the geometry gathered between a begin and
+/// an end. Geometry stays in window pixels; the projection to clip space is
+/// applied when the batch is handed to the renderer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkinBatch {
+    pub mode: SkinMode,
+    /// The mode the subclass reports when the skin asks for it.
+    pub subclass_mode: u32,
+    pub blend: u16,
+    pub ink: SkinInk,
+    pub u: f32,
+    pub v: f32,
+    pub vertices: Vec<GuiVertex>,
+    pub primitives: Vec<GuiPrimitive>,
+    pub texture_shift: [f32; 2],
+    pub rounded_scale: Option<[f32; 4]>,
+    /// The textured program's `TexCol`, when one has been set.
+    pub tex_col: Option<f32>,
+    pub begin_calls: u32,
+    pub end_calls: u32,
+    pub mode_calls: u32,
+    /// The texture binds the original's texture setter performs.
+    pub texture_binds: u32,
+}
+
+impl Default for SkinBatch {
+    fn default() -> Self {
+        SkinBatch {
+            mode: SkinMode::None,
+            subclass_mode: 0,
+            blend: 0,
+            ink: [0; 4],
+            u: 0.0,
+            v: 0.0,
+            vertices: Vec::new(),
+            primitives: Vec::new(),
+            texture_shift: [0.0; 2],
+            rounded_scale: None,
+            tex_col: None,
+            begin_calls: 0,
+            end_calls: 0,
+            mode_calls: 0,
+            texture_binds: 0,
+        }
+    }
+}
+
+impl SkinBatch {
+    /// An empty batch.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Selects the renderer for `mode`, as the skin's mode switch does. Mode
+    /// 0x10 asks the subclass for its own mode. A mode the switch does not
+    /// name is stored and binds nothing.
+    pub fn select(&mut self, mode: u32, subclass: u32, textured_tint: bool) {
+        self.mode_calls += 1;
+        if mode == 0x10 {
+            self.mode = SkinMode::Skin;
+            self.subclass_mode = subclass;
+            return;
+        }
+        let chosen = match mode {
+            1 => Some((SkinMode::Solid, None)),
+            2 => Some((
+                SkinMode::Textured,
+                Some(if textured_tint { 1.0 } else { 0.0 }),
+            )),
+            3 => Some((SkinMode::Rounded, None)),
+            5 => Some((SkinMode::Textured, Some(0.0))),
+            _ => None,
+        };
+        if let Some((chosen_mode, tex_col)) = chosen {
+            self.mode = chosen_mode;
+            if let Some(value) = tex_col {
+                self.tex_col = Some(value);
+            }
+        }
+    }
+
+    /// Asks the subclass for its mode, as mode 0x10 does through its slot.
+    pub fn select_subclass(&mut self, subclass: u32) {
+        self.select(0x10, subclass, false);
+    }
+
+    /// Replaces the texture offset. The original stores it in 512ths.
+    pub fn set_texture_shift(&mut self, x: f32, y: f32) {
+        self.texture_shift = [x * 0.001_953_125, y * 0.001_953_125];
+    }
+
+    /// Adds to the texture offset, in 512ths.
+    pub fn add_texture_shift(&mut self, x: f32, y: f32) {
+        self.texture_shift[0] += x * 0.001_953_125;
+        self.texture_shift[1] += y * 0.001_953_125;
+    }
+
+    /// Starts a run of vertices and clears the vertex list.
+    pub fn begin(&mut self) {
+        self.begin_calls += 1;
+        self.vertices.clear();
+    }
+
+    /// Sets the current ink.
+    pub fn set_ink(&mut self, ink: SkinInk) {
+        self.ink = ink;
+    }
+
+    /// Sets the current ink from its bytes.
+    pub fn set_rgba(&mut self, red: u8, green: u8, blue: u8, alpha: u8) {
+        self.ink = [red, green, blue, alpha];
+    }
+
+    /// Sets the current texture coordinate.
+    pub fn set_uv(&mut self, u: f32, v: f32) {
+        self.u = u;
+        self.v = v;
+    }
+
+    /// Appends a vertex at the current ink and texture coordinate.
+    pub fn vertex(&mut self, x: f32, y: f32) {
+        self.vertices.push(GuiVertex {
+            x,
+            y,
+            u: self.u,
+            v: self.v,
+            ink: self.ink,
+        });
+    }
+
+    /// Ends the run and submits it as quads.
+    pub fn end_quads(&mut self) {
+        self.end(GuiDraw::Quads);
+    }
+
+    /// Ends the run and submits it as lines.
+    pub fn end_lines(&mut self) {
+        self.end(GuiDraw::Lines);
+    }
+
+    /// Ends the run and submits it as triangles.
+    pub fn end_triangles(&mut self) {
+        self.end(GuiDraw::Triangles);
+    }
+
+    fn end(&mut self, draw: GuiDraw) {
+        self.end_calls += 1;
+        if self.vertices.is_empty() {
+            return;
+        }
+        let vertices = std::mem::take(&mut self.vertices);
+        self.primitives.push(GuiPrimitive {
+            mode: self.mode,
+            blend: self.blend,
+            draw,
+            texture_shift: self.texture_shift,
+            rounded_scale: self.rounded_scale,
+            tex_col: self.tex_col,
+            vertices,
+        });
+    }
+}
+
+/// Sets the rounded program's `Scale` from a place and the radius the
+/// caller adds on each side: the rect's share of the grown sides, then the
+/// reciprocal of what is left of half the coordinate space.
+pub fn rounded_scale(rect: GuiRect, radius: f32) -> [f32; 4] {
+    let grow = radius * 2.0;
+    let sx = (rect.x1 - rect.x0) / (grow + (rect.x1 - rect.x0)) * 0.5;
+    let sy = (rect.y1 - rect.y0) / (grow + (rect.y1 - rect.y0)) * 0.5;
+    [sx, sy, 1.0 / (0.5 - sx), 1.0 / (0.5 - sy)]
+}
+
+/// The original's line rectangle: the corners pull in half a pixel, then
+/// the four sides are drawn as four line pairs.
+pub fn outline_rect(batch: &mut SkinBatch, rect: GuiRect) {
+    let x0 = rect.x0 + 0.5;
+    let y0 = rect.y0 + 0.5;
+    let x1 = rect.x1 - 0.5;
+    let y1 = rect.y1 - 0.5;
+    batch.begin();
+    batch.vertex(x1, y0);
+    batch.vertex(x0, y0);
+    batch.vertex(x0, y0);
+    batch.vertex(x0, y1);
+    batch.vertex(x0, y1);
+    batch.vertex(x1, y1);
+    batch.vertex(x1, y1);
+    batch.vertex(x1, y0);
+    batch.end_lines();
+}
+
+/// A vertical gradient with four stops: the top ink, its 0.57 and 0.43
+/// mixes towards the bottom ink, then the bottom ink.
+pub fn fade_rect(batch: &mut SkinBatch, rect: GuiRect, bottom: SkinInk, top: SkinInk) {
+    let high = mix_ink(bottom, top, 0.57);
+    let low = mix_ink(bottom, top, 0.43);
+    let mid = (rect.y0 - rect.y1) * 0.5 + rect.y1;
+    batch.begin();
+    batch.set_ink(top);
+    batch.vertex(rect.x1, rect.y0);
+    batch.vertex(rect.x0, rect.y0);
+    batch.set_ink(high);
+    batch.vertex(rect.x0, mid);
+    batch.vertex(rect.x1, mid);
+    batch.set_ink(low);
+    batch.vertex(rect.x1, mid);
+    batch.vertex(rect.x0, mid);
+    batch.set_ink(bottom);
+    batch.vertex(rect.x0, rect.y1);
+    batch.vertex(rect.x1, rect.y1);
+    batch.end_quads();
+}
+
+/// A vertical gradient whose two inks have their alphas scaled by `alpha`
+/// first, with the 0.4 and 0.6 mixes between them.
+pub fn faded_rect(batch: &mut SkinBatch, rect: GuiRect, bottom: SkinInk, top: SkinInk, alpha: f32) {
+    let scaled = |ink: SkinInk| {
+        let mut scaled = ink;
+        scaled[3] = rounded_byte(f32::from(ink[3]) * alpha);
+        scaled
+    };
+    let bottom = scaled(bottom);
+    let top = scaled(top);
+    let high = mix_ink(bottom, top, 0.6);
+    let low = mix_ink(bottom, top, 0.4);
+    let mid = (rect.y0 - rect.y1) * 0.5 + rect.y1;
+    batch.begin();
+    batch.set_ink(top);
+    batch.vertex(rect.x1, rect.y0);
+    batch.vertex(rect.x0, rect.y0);
+    batch.set_ink(high);
+    batch.vertex(rect.x0, mid);
+    batch.vertex(rect.x1, mid);
+    batch.set_ink(low);
+    batch.vertex(rect.x1, mid);
+    batch.vertex(rect.x0, mid);
+    batch.set_ink(bottom);
+    batch.vertex(rect.x0, rect.y1);
+    batch.vertex(rect.x1, rect.y1);
+    batch.end_quads();
+}
+
+/// A bar of vertical stripes. `inks` holds the count plus one: each stripe
+/// runs from one colour to the next, and the last colour closes the bar.
+/// The stripe boundaries are the count's fractions of the width, rounded to
+/// nearest even.
+pub fn stripe_bar(batch: &mut SkinBatch, rect: GuiRect, inks: &[SkinInk]) {
+    let count = inks.len().saturating_sub(1);
+    if count == 0 {
+        return;
+    }
+    let step = ((rect.x1 - rect.x0) as f64 / count as f64) as f32;
+    let mut ink = inks[0];
+    ink[3] = 0xff;
+    batch.begin();
+    batch.set_ink(ink);
+    let mut x = rect.x0;
+    for (index, &next) in inks.iter().enumerate().skip(1) {
+        batch.vertex(x, rect.y0);
+        batch.vertex(x, rect.y1);
+        batch.set_ink(with_alpha(next, 0xff));
+        x = rect.x0 + (index as f32 * step).round_ties_even();
+        batch.vertex(x, rect.y1);
+        batch.vertex(x, rect.y0);
+    }
+    batch.end_quads();
+}
+
+/// The translucent band a listing draws over a selected row: an outline
+/// whose middle is the highlight ink, then glow bands above and below.
+/// Selecting the row widens the glow by the unit.
+pub fn selection_band(
+    batch: &mut SkinBatch,
+    rect: GuiRect,
+    ink: SkinInk,
+    highlight: SkinInk,
+    selected: bool,
+    unit: i32,
+) {
+    let edge = [ink[0], ink[1], ink[2], 25];
+    let low = [highlight[0], highlight[1], highlight[2], 200];
+    let top = [ink[0], ink[1], ink[2], 100];
+    let mid = [ink[0], ink[1], ink[2], 30];
+    let clear = [ink[0], ink[1], ink[2], 0];
+    let corner = -(unit as f32);
+    let reach = if selected {
+        -((unit * 2) as f32)
+    } else {
+        -((unit + 1) as f32)
+    };
+    let left = rect.x0;
+    let right = rect.x1;
+    let top_y = rect.y0;
+    let bottom = rect.y1 - 1.0;
+    let centre = (rect.x0 + rect.x1) * 0.5;
+    let low_y = rect.y0 + 1.0;
+    let high_y = low_y + (rect.y1 - rect.y0 - 2.0);
+    batch.blend = 0x201;
+    batch.begin();
+    batch.set_ink(edge);
+    batch.vertex(left, top_y);
+    batch.set_ink(low);
+    batch.vertex(centre, top_y);
+    batch.vertex(centre, top_y);
+    batch.set_ink(edge);
+    batch.vertex(right, top_y);
+    batch.vertex(right, bottom);
+    batch.set_ink(low);
+    batch.vertex(centre, bottom);
+    batch.vertex(centre, bottom);
+    batch.set_ink(edge);
+    batch.vertex(left, bottom);
+    batch.end_lines();
+    batch.begin();
+    batch.set_ink(clear);
+    batch.vertex(centre, low_y - reach);
+    batch.set_ink(top);
+    batch.vertex(centre, low_y);
+    batch.set_ink(mid);
+    batch.vertex(left, low_y);
+    batch.vertex(left, low_y);
+    batch.set_ink(clear);
+    batch.vertex(left, low_y - corner);
+    batch.vertex(centre, low_y - reach);
+    batch.vertex(centre, low_y - reach);
+    batch.set_ink(mid);
+    batch.vertex(right, low_y);
+    batch.set_ink(top);
+    batch.vertex(centre, low_y);
+    batch.set_ink(clear);
+    batch.vertex(centre, low_y - reach);
+    batch.vertex(right, low_y - corner);
+    batch.set_ink(mid);
+    batch.vertex(right, low_y);
+    batch.vertex(left, high_y);
+    batch.set_ink(clear);
+    batch.vertex(centre, high_y - reach);
+    batch.vertex(left, high_y - corner);
+    batch.vertex(centre, high_y - reach);
+    batch.set_ink(mid);
+    batch.vertex(left, high_y);
+    batch.set_ink(top);
+    batch.vertex(centre, high_y);
+    batch.vertex(centre, high_y);
+    batch.set_ink(mid);
+    batch.vertex(right, high_y);
+    batch.set_ink(clear);
+    batch.vertex(centre, high_y - reach);
+    batch.vertex(right, high_y - corner);
+    batch.vertex(centre, high_y - reach);
+    batch.set_ink(mid);
+    batch.vertex(right, high_y);
+    batch.end_triangles();
+    batch.blend = 0x203;
+}
+
+/// Rounds to nearest even and keeps the low byte, as the original does for
+/// an alpha word.
+fn rounded_byte_wrap(value: f32) -> u8 {
+    if !value.is_finite() || value <= -2_147_483_648.0 || value >= 2_147_483_648.0 {
+        0
+    } else {
+        (value.round_ties_even() as i32) as u8
+    }
+}
+
+/// Draws a rounded rectangle through the rounded program. `radius` is the
+/// side the caller adds, multiplied by four units. `alpha` is the colour's
+/// share of 255.
+pub fn rounded_fill(batch: &mut SkinBatch, rect: GuiRect, unit: i32, radius: f32, alpha: f32) {
+    let grow = unit as f32 * radius * 4.0;
+    batch.select(3, 0, false);
+    batch.set_rgba(0, 0, 0, rounded_byte_wrap(alpha * 255.0));
+    batch.rounded_scale = Some(rounded_scale(rect, grow));
+    batch.begin();
+    batch.set_uv(0.0, 0.0);
+    batch.vertex(rect.x0 - grow, rect.y0 - grow);
+    batch.set_uv(0.0, 1.0);
+    batch.vertex(rect.x0 - grow, rect.y1 + grow);
+    batch.set_uv(1.0, 1.0);
+    batch.vertex(rect.x1 + grow, rect.y1 + grow);
+    batch.set_uv(1.0, 0.0);
+    batch.vertex(rect.x1 + grow, rect.y0 - grow);
+    batch.end_quads();
+}
+
+/// The integer-rectangle variant: the radius is an integer multiple of the
+/// unit and the alpha is already a byte.
+pub fn rounded_fill_fixed(batch: &mut SkinBatch, rect: GuiRect, unit: i32, radius: i32, alpha: u8) {
+    let grow = (i64::from(unit) * i64::from(radius) * 4) as f32;
+    batch.select(3, 0, false);
+    batch.set_rgba(0, 0, 0, alpha);
+    batch.rounded_scale = Some(rounded_scale(rect, grow));
+    batch.begin();
+    batch.set_uv(0.0, 0.0);
+    batch.vertex(rect.x0 - grow, rect.y0 - grow);
+    batch.set_uv(0.0, 1.0);
+    batch.vertex(rect.x0 - grow, rect.y1 + grow);
+    batch.set_uv(1.0, 1.0);
+    batch.vertex(rect.x1 + grow, rect.y1 + grow);
+    batch.set_uv(1.0, 0.0);
+    batch.vertex(rect.x1 + grow, rect.y0 - grow);
+    batch.end_quads();
+}
+
+/// The rounded program's textured border: four bands around the rectangle,
+/// each sampling the corner texture coordinates the rounded shader blends.
+pub fn rounded_textured_frame(
+    batch: &mut SkinBatch,
+    rect: GuiRect,
+    unit: i32,
+    radius: i32,
+    alpha: u8,
+) {
+    let grow = (i64::from(unit) * i64::from(radius)) as f32;
+    batch.select(3, 0, false);
+    batch.set_rgba(0, 0, 0, alpha);
+    let scale = rounded_scale(rect, grow);
+    let sx = scale[0];
+    let sy = scale[1];
+    batch.rounded_scale = Some(scale);
+    let x0 = rect.x0;
+    let y0 = rect.y0;
+    let x1 = rect.x1;
+    let y1 = rect.y1;
+    batch.begin();
+    batch.set_uv(0.0, 0.0);
+    batch.vertex(x0 - grow, y0 - grow);
+    batch.set_uv(0.0, 0.5 - sy);
+    batch.vertex(x0 - grow, y0);
+    batch.set_uv(1.0, 0.5 - sy);
+    batch.vertex(x1 + grow, y0);
+    batch.set_uv(1.0, 0.0);
+    batch.vertex(x1 + grow, y0 - grow);
+    batch.set_uv(0.0, 0.5 - sy);
+    batch.vertex(x0 - grow, y0);
+    batch.set_uv(0.5 - sx, 0.5 - sy);
+    batch.vertex(x0, y0);
+    batch.set_uv(0.5 - sx, 0.5 + sy);
+    batch.vertex(x0, y1);
+    batch.set_uv(0.0, 0.5 + sy);
+    batch.vertex(x0 - grow, y1);
+    batch.set_uv(0.0, 0.5 + sy);
+    batch.vertex(x0 - grow, y1);
+    batch.set_uv(0.0, 1.0);
+    batch.vertex(x0 - grow, y1 + grow);
+    batch.set_uv(1.0, 1.0);
+    batch.vertex(x1 + grow, y1 + grow);
+    batch.set_uv(1.0, 0.5 + sy);
+    batch.vertex(x1 + grow, y1);
+    batch.set_uv(1.0, 0.5 - sy);
+    batch.vertex(x1 + grow, y0);
+    batch.set_uv(0.5 + sx, 0.5 - sy);
+    batch.vertex(x1, y0);
+    batch.set_uv(0.5 + sx, 0.5 + sy);
+    batch.vertex(x1, y1);
+    batch.set_uv(1.0, 0.5 + sy);
+    batch.vertex(x1 + grow, y1);
+    batch.end_quads();
+}
+
+/// Grows a rounded rectangle by the unit times `radius` and fills it.
+pub fn rounded_grow(batch: &mut SkinBatch, rect: GuiRect, unit: i32, radius: f32, alpha: f32) {
+    let grow = unit as f32 * radius;
+    batch.select(3, 0, false);
+    batch.set_rgba(0, 0, 0, rounded_byte_wrap(alpha * 255.0));
+    batch.rounded_scale = Some(rounded_scale(rect, grow));
+    batch.begin();
+    batch.set_uv(0.0, 0.0);
+    batch.vertex(rect.x0 - grow, rect.y0 - grow);
+    batch.set_uv(0.0, 1.0);
+    batch.vertex(rect.x0 - grow, rect.y1 + grow);
+    batch.set_uv(1.0, 1.0);
+    batch.vertex(rect.x1 + grow, rect.y1 + grow);
+    batch.set_uv(1.0, 0.0);
+    batch.vertex(rect.x1 + grow, rect.y0 - grow);
+    batch.end_quads();
+}
+
+/// A four-sided line frame whose sides carry one ink each: top, left,
+/// bottom and right, in that order.
+pub fn edge_frame(batch: &mut SkinBatch, rect: GuiRect, inks: [SkinInk; 4]) {
+    let x0 = rect.x0 + 0.5;
+    let y0 = rect.y0 + 0.5;
+    let x1 = rect.x1 - 0.5;
+    let y1 = rect.y1 - 0.5;
+    batch.begin();
+    batch.set_ink(inks[0]);
+    batch.vertex(x1 - 0.5, y0);
+    batch.vertex(x0, y0);
+    batch.set_ink(inks[1]);
+    batch.vertex(x0, y0);
+    batch.vertex(x0, y1);
+    batch.set_ink(inks[3]);
+    batch.vertex(x0, y1);
+    batch.vertex(x1, y1);
+    batch.set_ink(inks[2]);
+    batch.vertex(x1, y1);
+    batch.vertex(x1, y0 - 1.0);
+    batch.end_lines();
+}
+
+/// Two line frames, the second one pixel inside the first.
+pub fn double_frame(batch: &mut SkinBatch, rect: GuiRect, outer: SkinInk, inner: SkinInk) {
+    let frame = |batch: &mut SkinBatch, rect: GuiRect, ink: SkinInk| {
+        batch.set_ink(ink);
+        batch.vertex(rect.x1 - 0.5, rect.y0 + 0.5);
+        batch.vertex(rect.x0 + 0.5, rect.y0 + 0.5);
+        batch.vertex(rect.x0 + 0.5, rect.y0 + 0.5);
+        batch.vertex(rect.x0 + 0.5, rect.y1 - 0.5);
+        batch.vertex(rect.x0 + 0.5, rect.y1 - 0.5);
+        batch.vertex(rect.x1 - 0.5, rect.y1 - 0.5);
+        batch.vertex(rect.x1 - 0.5, rect.y1 - 0.5);
+        batch.vertex(rect.x1 - 0.5, rect.y0 - 0.5);
+    };
+    batch.begin();
+    frame(batch, rect, outer);
+    frame(
+        batch,
+        GuiRect {
+            x0: rect.x0 + 1.0,
+            y0: rect.y0 + 1.0,
+            x1: rect.x1 - 1.0,
+            y1: rect.y1 - 1.0,
+        },
+        inner,
+    );
+    batch.end_lines();
+}
+
+/// A line frame whose left and right halves fade between three inks: the
+/// top and bottom inks and the 0.65 and 0.35 mixes towards the middle ink.
+pub fn gradient_frame(
+    batch: &mut SkinBatch,
+    rect: GuiRect,
+    top: SkinInk,
+    middle: SkinInk,
+    bottom: SkinInk,
+) {
+    let high = mix_ink(bottom, middle, 0.65);
+    let low = mix_ink(bottom, middle, 0.35);
+    let x0 = rect.x0 + 0.5;
+    let y0 = rect.y0 + 0.5;
+    let x1 = rect.x1 - 0.5;
+    let y1 = rect.y1 - 0.5;
+    let middle_y = (y0 - y1) * 0.5 + y1 + 0.5;
+    batch.begin();
+    batch.set_ink(top);
+    batch.vertex(x0 + 1.0, y0);
+    batch.vertex(x1, y0);
+    batch.set_ink(middle);
+    batch.vertex(x0, y0);
+    batch.set_ink(high);
+    batch.vertex(x0, middle_y);
+    batch.set_ink(low);
+    batch.vertex(x0, middle_y);
+    batch.set_ink(bottom);
+    batch.vertex(x0, y1);
+    batch.vertex(x0, y1);
+    batch.vertex(x1, y1);
+    batch.vertex(x1, y1);
+    batch.set_ink(low);
+    batch.vertex(x1, middle_y);
+    batch.set_ink(high);
+    batch.vertex(x1, middle_y);
+    batch.set_ink(middle);
+    batch.vertex(x1, y0 - 1.0);
+    batch.end_lines();
+}
+
+/// A solid rectangle in the current ink.
+pub fn solid_rect(batch: &mut SkinBatch, rect: GuiRect) {
+    batch.begin();
+    batch.vertex(rect.x1, rect.y0);
+    batch.vertex(rect.x0, rect.y0);
+    batch.vertex(rect.x0, rect.y1);
+    batch.vertex(rect.x1, rect.y1);
+    batch.end_quads();
+}
+
+/// A rectangle with one ink on its top edge and another on its bottom.
+pub fn pair_rect(batch: &mut SkinBatch, rect: GuiRect, bottom: SkinInk, top: SkinInk) {
+    batch.begin();
+    batch.set_ink(top);
+    batch.vertex(rect.x1, rect.y0);
+    batch.vertex(rect.x0, rect.y0);
+    batch.set_ink(bottom);
+    batch.vertex(rect.x0, rect.y1);
+    batch.vertex(rect.x1, rect.y1);
+    batch.end_quads();
+}
+
+/// A one-pixel line box whose top and right sides are one ink and whose
+/// left and bottom sides are another.
+pub fn bordered_rect(batch: &mut SkinBatch, rect: GuiRect, inner: SkinInk, outer: SkinInk) {
+    let x0 = rect.x0 + 0.5;
+    let y0 = rect.y0 + 0.5;
+    let x1 = rect.x1 - 0.5;
+    let y1 = rect.y1 - 0.5;
+    batch.begin();
+    batch.set_ink(outer);
+    batch.vertex(x1, y0);
+    batch.vertex(x0, y0);
+    batch.vertex(x0, y0);
+    batch.set_ink(inner);
+    batch.vertex(x0, y1);
+    batch.vertex(x0, y1);
+    batch.vertex(x1, y1);
+    batch.vertex(x1, y1);
+    batch.set_ink(outer);
+    batch.vertex(x1, y0);
+    batch.end_lines();
+}
+
+/// A four-stop vertical band: `inks` runs from the top to the bottom.
+pub fn four_stop_rect(batch: &mut SkinBatch, rect: GuiRect, inks: [SkinInk; 4]) {
+    let middle = (rect.y0 - rect.y1) * 0.5 + rect.y1;
+    batch.begin();
+    batch.set_ink(inks[0]);
+    batch.vertex(rect.x1, rect.y0);
+    batch.vertex(rect.x0, rect.y0);
+    batch.set_ink(inks[1]);
+    batch.vertex(rect.x0, middle);
+    batch.vertex(rect.x1, middle);
+    batch.set_ink(inks[2]);
+    batch.vertex(rect.x1, middle);
+    batch.vertex(rect.x0, middle);
+    batch.set_ink(inks[3]);
+    batch.vertex(rect.x0, rect.y1);
+    batch.vertex(rect.x1, rect.y1);
+    batch.end_quads();
+}
+
+/// The two-ink band: the top ink from half a pixel in, the bottom ink below
+/// the middle, inset half a pixel at each edge.
+pub fn two_ink_band(batch: &mut SkinBatch, rect: GuiRect, top: SkinInk, bottom: SkinInk) {
+    batch.begin();
+    batch.set_ink(top);
+    batch.vertex(rect.x1 - 0.5, rect.y0 + 0.5);
+    batch.vertex(rect.x0, rect.y0 + 0.5);
+    batch.set_ink(bottom);
+    batch.vertex(rect.x0, rect.y1 - 0.5);
+    batch.vertex(rect.x1, rect.y1 - 0.5);
+    batch.end_quads();
+}
+
+/// A four-sided line frame with one ink per side: top, left, bottom, right.
+pub fn four_ink_frame(batch: &mut SkinBatch, rect: GuiRect, inks: [SkinInk; 4]) {
+    let x0 = rect.x0 + 0.5;
+    let y0 = rect.y0 + 0.5;
+    let x1 = rect.x1 - 0.5;
+    let y1 = rect.y1 - 0.5;
+    batch.begin();
+    batch.set_ink(inks[0]);
+    batch.vertex(x1 - 0.5, y0);
+    batch.vertex(x0, y0);
+    batch.vertex(x0, y0);
+    batch.set_ink(inks[1]);
+    batch.vertex(x0, y1);
+    batch.set_ink(inks[2]);
+    batch.vertex(x0, y1);
+    batch.vertex(x1, y1);
+    batch.vertex(x1, y1);
+    batch.set_ink(inks[3]);
+    batch.vertex(x1, y0 - 1.0);
+    batch.end_lines();
+}
+
+/// A colour with a new alpha.
+pub fn with_alpha(mut ink: SkinInk, alpha: u8) -> SkinInk {
+    ink[3] = alpha;
+    ink
+}
+
+/// The drop shadow ring: an outer edge at `alpha`, fading to clear at the
+/// inset, with the inset clamped to half the height.
+pub fn shadow_ring(batch: &mut SkinBatch, rect: GuiRect, inset: i32, alpha: u8) {
+    let height = (rect.y1 - rect.y0) as i32;
+    let mut inset = inset;
+    if height / 2 < inset {
+        inset = height / 2;
+    }
+    let inset = inset as f32;
+    let dark = [0, 0, 0, alpha];
+    let clear = [0, 0, 0, 0];
+    ring(batch, rect, inset, dark, clear);
+}
+
+fn ring(batch: &mut SkinBatch, rect: GuiRect, inset: f32, outer: SkinInk, inner: SkinInk) {
+    let x0 = rect.x0;
+    let y0 = rect.y0;
+    let x1 = rect.x1;
+    let y1 = rect.y1;
+    batch.begin();
+    batch.set_ink(outer);
+    batch.vertex(x0, y0);
+    batch.vertex(x0, y1);
+    batch.set_ink(inner);
+    batch.vertex(x0 + inset, y1 - inset);
+    batch.vertex(x0 + inset, y0 + inset);
+    batch.vertex(x0 + inset, y0 + inset);
+    batch.vertex(x1 - inset, y0 + inset);
+    batch.set_ink(outer);
+    batch.vertex(x1, y0);
+    batch.vertex(x0, y0);
+    batch.vertex(x1, y1);
+    batch.vertex(x1, y0);
+    batch.set_ink(inner);
+    batch.vertex(x1 - inset, y0 + inset);
+    batch.vertex(x1 - inset, y1 - inset);
+    batch.vertex(x1 - inset, y1 - inset);
+    batch.vertex(x0 + inset, y1 - inset);
+    batch.set_ink(outer);
+    batch.vertex(x0, y1);
+    batch.vertex(x1, y1);
+    batch.end_quads();
+}
+
+/// The fixed bevel ring: six-pixel bands with a 48-alpha outer edge.
+pub fn bevel_ring(batch: &mut SkinBatch, rect: GuiRect) {
+    ring(batch, rect, 6.0, [0, 0, 0, 0x30], [0, 0, 0, 0]);
+}
+
+/// The sunken ring of a control face: the bands alternate between the
+/// highlight ink at alpha 96 and the same ink cleared, then an outline in
+/// the next highlight ink.
+pub fn sunken_ring(batch: &mut SkinBatch, rect: GuiRect, unit: i32, highlight: &SkinGroup) {
+    let face = GuiRect {
+        x0: rect.x0 + 1.0,
+        y0: rect.y0 + 1.0,
+        x1: rect.x1 - 1.0,
+        y1: rect.y1 - 1.0,
+    };
+    let outer = with_alpha([highlight[8][0], highlight[8][1], highlight[8][2], 0], 96);
+    let inner = [highlight[6][0], highlight[6][1], highlight[6][2], 0];
+    ring(batch, face, unit as f32, outer, inner);
+    batch.set_ink(highlight[7]);
+    outline_rect(
+        batch,
+        GuiRect {
+            x0: face.x0 + 1.0,
+            y0: face.y0 + 1.0,
+            x1: face.x1 - 1.0,
+            y1: face.y1 - 1.0,
+        },
+    );
+}
+
+/// The vertical gradient with a clamped middle band: the top ink, the 0.65
+/// and 0.5 mixes, the 0.35 mix and the bottom ink, with the two middle
+/// boundaries held two units in from each end.
+pub fn vertical_gradient(
+    batch: &mut SkinBatch,
+    rect: GuiRect,
+    unit: i32,
+    top: SkinInk,
+    bottom: SkinInk,
+) {
+    let high = mix_ink(bottom, top, 0.65);
+    let middle = mix_ink(bottom, top, 0.5);
+    let low = mix_ink(bottom, top, 0.35);
+    let span = 2.0 * unit as f32;
+    let mid = (rect.y0 - rect.y1) * 0.5 + rect.y1;
+    let upper = if mid > rect.y0 + span {
+        rect.y0 + span
+    } else {
+        mid
+    };
+    let lower = if mid < rect.y1 - span {
+        rect.y1 - span
+    } else {
+        mid
+    };
+    batch.begin();
+    batch.set_ink(top);
+    batch.vertex(rect.x1, rect.y0);
+    batch.vertex(rect.x0, rect.y0);
+    batch.set_ink(high);
+    batch.vertex(rect.x0, upper);
+    batch.vertex(rect.x1, upper);
+    batch.set_ink(middle);
+    batch.vertex(rect.x1, upper);
+    batch.vertex(rect.x0, upper);
+    batch.vertex(rect.x0, lower);
+    batch.vertex(rect.x1, lower);
+    batch.set_ink(low);
+    batch.vertex(rect.x1, lower);
+    batch.vertex(rect.x0, lower);
+    batch.set_ink(bottom);
+    batch.vertex(rect.x0, rect.y1);
+    batch.vertex(rect.x1, rect.y1);
+    batch.end_quads();
+}
+
+/// The line form of that gradient: the same stops drawn as two side rails
+/// and a top and bottom edge.
+pub fn vertical_gradient_frame(
+    batch: &mut SkinBatch,
+    rect: GuiRect,
+    unit: i32,
+    top: SkinInk,
+    bottom: SkinInk,
+) {
+    let high = mix_ink(bottom, top, 0.65);
+    let middle = mix_ink(bottom, top, 0.5);
+    let low = mix_ink(bottom, top, 0.35);
+    let span = 2.0 * unit as f32;
+    let x0 = rect.x0 + 0.5;
+    let y0 = rect.y0 + 0.5;
+    let x1 = rect.x1 - 0.5;
+    let y1 = rect.y1 - 0.5;
+    let mid = (y0 - y1) * 0.5 + y1;
+    let upper = if mid > y0 + span { y0 + span } else { mid };
+    let lower = if mid < y1 - span { y1 - span } else { mid };
+    batch.begin();
+    batch.set_ink(top);
+    batch.vertex(x1, y0);
+    batch.vertex(x0, y0);
+    batch.vertex(x0, y0);
+    batch.set_ink(high);
+    batch.vertex(x0, upper);
+    batch.set_ink(middle);
+    batch.vertex(x0, upper);
+    batch.vertex(x0, lower);
+    batch.set_ink(low);
+    batch.vertex(x0, lower);
+    batch.set_ink(bottom);
+    batch.vertex(x0, y1);
+    batch.vertex(x0, y1);
+    batch.vertex(x1, y1);
+    batch.vertex(x1, y1);
+    batch.set_ink(low);
+    batch.vertex(x1, lower);
+    batch.set_ink(middle);
+    batch.vertex(x1, lower);
+    batch.vertex(x1, upper);
+    batch.set_ink(high);
+    batch.vertex(x1, upper);
+    batch.set_ink(top);
+    batch.vertex(x1, y0);
+    batch.end_lines();
+}
+
+/// The two scroll-arrow strokes: six line pairs whose first four vertices
+/// take the full ink and whose rest take two thirds of its alpha.
+fn arrow_strokes(batch: &mut SkinBatch, points: [(f32, f32); 12], ink: SkinInk) {
+    for (index, (x, y)) in points.into_iter().enumerate() {
+        if index == 4 {
+            batch.set_ink(with_alpha(ink, (ink[3] / 3) * 2));
+        }
+        batch.vertex(x, y);
+    }
+    batch.end_lines();
+}
+
+/// A horizontal scroll arrow: a stroke from the left point to the middle,
+/// then its faded lower copy.
+pub fn scroll_arrow_horizontal(batch: &mut SkinBatch, x: f32, y: f32, w: f32, ink: SkinInk) {
+    let mid = ((w as i32 + 1) as u32 >> 1) as f32;
+    batch.begin();
+    batch.set_ink(ink);
+    arrow_strokes(
+        batch,
+        [
+            (x, y + mid),
+            (x + w * 0.5 - 0.5, y + 1.0),
+            (x + w, y + mid),
+            (x + w * 0.5, y),
+            (x, y + mid + 1.0),
+            (x + w * 0.5 + 0.5, y + 1.0),
+            (x + w, y + mid + 1.0),
+            (x + w * 0.5 + 0.5, y + 2.0),
+            (x, y + mid - 1.0),
+            (x + w * 0.5 + 0.5, y - 1.0),
+            (x + w, y + mid - 1.0),
+            (x + w * 0.5 + 0.5, y),
+        ],
+        ink,
+    );
+}
+
+/// A vertical scroll arrow, turned a quarter from the horizontal one.
+pub fn scroll_arrow_vertical(batch: &mut SkinBatch, x: f32, y: f32, w: f32, ink: SkinInk) {
+    let mid = ((w as i32 + 1) as u32 >> 1) as f32;
+    batch.begin();
+    batch.set_ink(ink);
+    arrow_strokes(
+        batch,
+        [
+            (x, y),
+            (x + w * 0.5, y + mid),
+            (x + w, y),
+            (x + w * 0.5 - 0.5, y + mid + 0.5),
+            (x, y + 1.0),
+            (x + w * 0.5, y + mid + 1.0),
+            (x + w, y + 1.0),
+            (x + w * 0.5 - 0.5, y + mid + 0.5),
+            (x, y - 1.0),
+            (x + w * 0.5, y + mid - 1.0),
+            (x + w, y - 1.0),
+            (x + w * 0.5 - 0.5, y + mid - 0.5),
+        ],
+        ink,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7984,5 +8966,259 @@ mod tests {
         assert_eq!(min_ss(f32::NAN, 0.5), 0.5);
         assert!(min_ss(0.5, f32::NAN).is_nan());
         assert_eq!(min_ss(2.0, 1.0), 1.0);
+    }
+
+    #[test]
+    fn a_batch_selects_its_program_and_texture_offset() {
+        let mut batch = SkinBatch::new();
+        batch.select(5, 0, true);
+        assert_eq!(batch.mode, SkinMode::Textured);
+        assert_eq!(batch.tex_col, Some(0.0));
+        batch.select(2, 0, true);
+        assert_eq!(batch.tex_col, Some(1.0));
+        batch.select(1, 0, false);
+        assert_eq!(batch.mode, SkinMode::Solid);
+        batch.select(3, 0, false);
+        assert_eq!(batch.mode, SkinMode::Rounded);
+        batch.select(0x10, 4, false);
+        assert_eq!((batch.mode, batch.subclass_mode), (SkinMode::Skin, 4));
+        batch.set_texture_shift(512.0, 256.0);
+        assert_eq!(batch.texture_shift, [1.0, 0.5]);
+        batch.add_texture_shift(-256.0, 512.0);
+        assert_eq!(batch.texture_shift, [0.5, 1.5]);
+        assert_eq!(batch.mode_calls, 5);
+    }
+
+    #[test]
+    fn an_outline_draws_four_line_pairs_half_a_pixel_in() {
+        let mut batch = SkinBatch::new();
+        batch.set_ink([1, 2, 3, 4]);
+        outline_rect(&mut batch, GuiRect::corners(10.0, 20.0, 110.0, 100.0));
+        let primitive = &batch.primitives[0];
+        assert_eq!(primitive.draw, GuiDraw::Lines);
+        let points: Vec<(f32, f32)> = primitive.vertices.iter().map(|v| (v.x, v.y)).collect();
+        assert_eq!(
+            points,
+            [
+                (109.5, 20.5),
+                (10.5, 20.5),
+                (10.5, 20.5),
+                (10.5, 99.5),
+                (10.5, 99.5),
+                (109.5, 99.5),
+                (109.5, 99.5),
+                (109.5, 20.5),
+            ]
+        );
+        assert!(primitive.vertices.iter().all(|v| v.ink == [1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn a_fade_rect_runs_top_to_bottom_through_two_mixes() {
+        let mut batch = SkinBatch::new();
+        fade_rect(
+            &mut batch,
+            GuiRect::corners(10.0, 20.0, 110.0, 100.0),
+            [255, 255, 255, 255],
+            [0, 0, 0, 255],
+        );
+        let primitive = &batch.primitives[0];
+        assert_eq!(primitive.draw, GuiDraw::Quads);
+        let inks: Vec<SkinInk> = primitive.vertices.iter().map(|v| v.ink).collect();
+        assert_eq!(inks[0], [0, 0, 0, 255]);
+        assert_eq!(inks[2], [110, 110, 110, 255]);
+        assert_eq!(inks[4], [145, 145, 145, 255]);
+        assert_eq!(inks[6], [255, 255, 255, 255]);
+        assert_eq!(primitive.vertices[2].y, 60.0);
+    }
+
+    #[test]
+    fn a_faded_rect_scales_both_alphas_before_mixing() {
+        let mut batch = SkinBatch::new();
+        faded_rect(
+            &mut batch,
+            GuiRect::corners(0.0, 0.0, 10.0, 10.0),
+            [10, 20, 30, 200],
+            [40, 50, 60, 100],
+            0.5,
+        );
+        let inks: Vec<SkinInk> = batch.primitives[0].vertices.iter().map(|v| v.ink).collect();
+        assert_eq!(inks[0], [40, 50, 60, 50]);
+        assert_eq!(inks[2], [28, 38, 48, 70]);
+        assert_eq!(inks[4], [22, 32, 42, 80]);
+        assert_eq!(inks[6], [10, 20, 30, 100]);
+    }
+
+    #[test]
+    fn a_stripe_bar_walks_the_count_fractions() {
+        let mut batch = SkinBatch::new();
+        stripe_bar(
+            &mut batch,
+            GuiRect::corners(10.0, 20.0, 111.0, 40.0),
+            &[[10, 20, 30, 0], [40, 50, 60, 0], [70, 80, 90, 0]],
+        );
+        let primitive = &batch.primitives[0];
+        let points: Vec<(f32, f32)> = primitive.vertices.iter().map(|v| (v.x, v.y)).collect();
+        assert_eq!(
+            points,
+            [
+                (10.0, 20.0),
+                (10.0, 40.0),
+                (60.0, 40.0),
+                (60.0, 20.0),
+                (60.0, 20.0),
+                (60.0, 40.0),
+                (111.0, 40.0),
+                (111.0, 20.0),
+            ]
+        );
+        assert_eq!(primitive.vertices[0].ink, [10, 20, 30, 255]);
+        assert_eq!(primitive.vertices[2].ink, [40, 50, 60, 255]);
+        assert_eq!(primitive.vertices[4].ink, [40, 50, 60, 255]);
+        assert_eq!(primitive.vertices[6].ink, [70, 80, 90, 255]);
+    }
+
+    #[test]
+    fn a_selection_band_draws_its_outline_and_two_glows() {
+        let mut batch = SkinBatch::new();
+        selection_band(
+            &mut batch,
+            GuiRect::corners(10.0, 20.0, 110.0, 100.0),
+            [10, 20, 30, 255],
+            [200, 100, 50, 255],
+            false,
+            4,
+        );
+        assert_eq!(batch.blend, 0x203);
+        assert_eq!(batch.primitives.len(), 2);
+        assert_eq!(batch.primitives[0].draw, GuiDraw::Lines);
+        let outline = &batch.primitives[0].vertices;
+        assert_eq!((outline[0].x, outline[0].y), (10.0, 20.0));
+        assert_eq!(outline[0].ink, [10, 20, 30, 25]);
+        assert_eq!(outline[1].ink, [200, 100, 50, 200]);
+        assert_eq!((outline[3].x, outline[3].y), (110.0, 20.0));
+        let glow = &batch.primitives[1].vertices;
+        assert_eq!(batch.primitives[1].draw, GuiDraw::Triangles);
+        assert_eq!(glow.len(), 24);
+        assert_eq!((glow[0].x, glow[0].y), (60.0, 26.0));
+        assert_eq!(glow[0].ink, [10, 20, 30, 0]);
+        assert_eq!((glow[1].x, glow[1].y), (60.0, 21.0));
+        assert_eq!(glow[1].ink, [10, 20, 30, 100]);
+        assert_eq!((glow[13].x, glow[13].y), (60.0, 104.0));
+        assert_eq!((glow[14].x, glow[14].y), (10.0, 103.0));
+    }
+
+    #[test]
+    fn a_rounded_fill_sets_its_scale_and_grows_by_four_radii() {
+        let mut batch = SkinBatch::new();
+        rounded_fill(
+            &mut batch,
+            GuiRect::corners(10.0, 20.0, 110.0, 100.0),
+            5,
+            1.0,
+            1.0,
+        );
+        assert_eq!(batch.mode, SkinMode::Rounded);
+        let scale = batch.rounded_scale.expect("a rounded scale");
+        assert_eq!(scale[0], 100.0 / 140.0 * 0.5);
+        assert_eq!(scale[2], 1.0 / (0.5 - scale[0]));
+        assert_eq!(batch.primitives[0].vertices[0].x, -10.0);
+        assert_eq!(batch.primitives[0].vertices[0].y, 0.0);
+        assert_eq!(batch.primitives[0].vertices[2].x, 130.0);
+        assert_eq!(batch.primitives[0].vertices[2].y, 120.0);
+        assert_eq!(batch.primitives[0].vertices[0].ink, [0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn a_shadow_ring_clamps_its_inset_to_half_the_height() {
+        let mut batch = SkinBatch::new();
+        shadow_ring(
+            &mut batch,
+            GuiRect::corners(10.0, 20.0, 30.0, 36.0),
+            10,
+            0x30,
+        );
+        let primitive = &batch.primitives[0];
+        assert_eq!(primitive.vertices.len(), 16);
+        assert_eq!(
+            (primitive.vertices[0].x, primitive.vertices[0].y),
+            (10.0, 20.0)
+        );
+        assert_eq!(primitive.vertices[0].ink, [0, 0, 0, 0x30]);
+        assert_eq!(
+            (primitive.vertices[2].x, primitive.vertices[2].y),
+            (18.0, 28.0)
+        );
+        assert_eq!(primitive.vertices[2].ink, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn a_double_frame_insets_its_second_loop_by_one() {
+        let mut batch = SkinBatch::new();
+        double_frame(
+            &mut batch,
+            GuiRect::corners(10.0, 20.0, 110.0, 100.0),
+            [1, 1, 1, 255],
+            [2, 2, 2, 255],
+        );
+        let primitive = &batch.primitives[0];
+        assert_eq!(primitive.vertices.len(), 16);
+        assert_eq!(primitive.vertices[0].ink, [1, 1, 1, 255]);
+        assert_eq!(
+            (primitive.vertices[0].x, primitive.vertices[0].y),
+            (109.5, 20.5)
+        );
+        assert_eq!(
+            (primitive.vertices[7].x, primitive.vertices[7].y),
+            (109.5, 19.5)
+        );
+        assert_eq!(primitive.vertices[8].ink, [2, 2, 2, 255]);
+        assert_eq!(
+            (primitive.vertices[8].x, primitive.vertices[8].y),
+            (108.5, 21.5)
+        );
+    }
+
+    #[test]
+    fn a_vertical_gradient_holds_its_mix_bands_two_units_in() {
+        let mut batch = SkinBatch::new();
+        vertical_gradient(
+            &mut batch,
+            GuiRect::corners(10.0, 20.0, 110.0, 100.0),
+            4,
+            [0, 0, 0, 255],
+            [255, 255, 255, 255],
+        );
+        let primitive = &batch.primitives[0];
+        assert_eq!(primitive.vertices.len(), 12);
+        assert_eq!(
+            (primitive.vertices[3].x, primitive.vertices[3].y),
+            (110.0, 28.0)
+        );
+        assert_eq!(
+            (primitive.vertices[6].x, primitive.vertices[6].y),
+            (10.0, 92.0)
+        );
+        assert_eq!(primitive.vertices[0].ink, [0, 0, 0, 255]);
+        assert_eq!(primitive.vertices[2].ink, [89, 89, 89, 255]);
+        assert_eq!(primitive.vertices[4].ink, [128, 128, 128, 255]);
+        assert_eq!(primitive.vertices[8].ink, [166, 166, 166, 255]);
+        assert_eq!(primitive.vertices[10].ink, [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn a_scroll_arrow_is_a_line_list_with_a_faded_second_half() {
+        let mut batch = SkinBatch::new();
+        scroll_arrow_horizontal(&mut batch, 10.0, 20.0, 9.0, [1, 2, 3, 200]);
+        let primitive = &batch.primitives[0];
+        assert_eq!(primitive.draw, GuiDraw::Lines);
+        assert_eq!(primitive.vertices.len(), 12);
+        assert_eq!(primitive.vertices[0].x, 10.0);
+        assert_eq!(primitive.vertices[0].y, 25.0);
+        assert_eq!(primitive.vertices[1].x, 14.0);
+        assert_eq!(primitive.vertices[1].y, 21.0);
+        assert_eq!(primitive.vertices[3].ink, [1, 2, 3, 200]);
+        assert_eq!(primitive.vertices[4].ink, [1, 2, 3, 132]);
+        assert_eq!(primitive.vertices[11].ink, [1, 2, 3, 132]);
     }
 }
